@@ -464,27 +464,27 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
             let inst = self.body_rir_ref().get(inst_ref);
             let found = match &inst.data {
-                rue_rir::InstData::Call { name, args }
-                | rue_rir::InstData::MethodCall {
-                    method: name, args, ..
-                } => {
-                    let function_key = self
-                        .resolve_function_name_local(*name, inst.span.file_id)
-                        .unwrap_or(*name);
-                    self.function_info(function_key).is_some_and(|function| {
-                        if !function.is_generic {
-                            false
-                        } else {
+                rue_rir::InstData::Call { args, .. }
+                | rue_rir::InstData::MethodCall { args, .. } => {
+                    self.generic_callee_key(&inst.data, inst.span, None)
+                        .and_then(|key| self.function_info(key))
+                        .is_some_and(|function| {
+                            if !function.is_generic {
+                                return false;
+                            }
+                            // Every comptime argument is a fact site, type
+                            // arguments included: inference substitutes the
+                            // captured type into the callee's parameter and
+                            // return types, and the canonical evaluation this
+                            // pre-pass produces is where that type comes from,
+                            // whatever the argument's spelling (RUE-1967).
                             let param_data = self.body_param_data(function.params);
-                            let param_is_type = self.comptime_type_param_flags(&function);
                             self.body_rir_ref().call_args(args).iter().enumerate().any(
                                 |(index, _)| {
                                     param_data.comptime().get(index).copied().unwrap_or(false)
-                                        && !param_is_type.get(index).copied().unwrap_or(false)
                                 },
                             )
-                        }
-                    })
+                        })
                 }
                 _ => false,
             };
@@ -1246,51 +1246,24 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                 bindings: bindings.clone(),
                             });
                         }
-                        rue_rir::InstData::Call { name, args } => {
-                            let call_span = inst_span;
-                            let function_key = self
-                                .resolve_function_name_local(*name, call_span.file_id)
-                                .unwrap_or(*name);
-                            let call_args = self.body_rir_ref().call_args(args).to_vec();
-                            canonical_evaluations = canonical_evaluations.saturating_add(
-                                self.collect_generic_argument_facts(
-                                    function_key,
-                                    &call_args,
-                                    call_span,
-                                    resolved_types,
-                                    type_subst,
-                                    value_subst,
-                                    &bindings,
-                                    &mut argument_values,
-                                ),
-                            );
-                        }
-                        rue_rir::InstData::MethodCall {
-                            receiver,
-                            method,
-                            args,
-                        } => {
-                            if let Some(module) =
-                                resolved_types.get(receiver).and_then(Type::as_module)
+                        rue_rir::InstData::Call { args, .. }
+                        | rue_rir::InstData::MethodCall { args, .. } => {
+                            if let Some(function_key) =
+                                self.generic_callee_key(&inst_data, inst_span, Some(resolved_types))
                             {
-                                let module_file = self.module_def(module).file_id;
-                                if let Some(function_key) =
-                                    self.resolve_function_name_local(*method, module_file)
-                                {
-                                    let call_args = self.body_rir_ref().call_args(args).to_vec();
-                                    canonical_evaluations = canonical_evaluations.saturating_add(
-                                        self.collect_generic_argument_facts(
-                                            function_key,
-                                            &call_args,
-                                            inst_span,
-                                            resolved_types,
-                                            type_subst,
-                                            value_subst,
-                                            &bindings,
-                                            &mut argument_values,
-                                        ),
-                                    );
-                                }
+                                let call_args = self.body_rir_ref().call_args(args).to_vec();
+                                canonical_evaluations = canonical_evaluations.saturating_add(
+                                    self.collect_generic_argument_facts(
+                                        function_key,
+                                        &call_args,
+                                        inst_span,
+                                        resolved_types,
+                                        type_subst,
+                                        value_subst,
+                                        &bindings,
+                                        &mut argument_values,
+                                    ),
+                                );
                             }
                         }
                         _ => {}
@@ -1352,6 +1325,68 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             scope_nodes,
             scope_materializations,
         ))
+    }
+
+    /// The callee key one call instruction would specialize, for the two call
+    /// shapes that can name a generic function: a direct `f(..)` and a module
+    /// member `m.f(..)`.
+    ///
+    /// The staged pre-pass gate and the fact collector must agree on this. When
+    /// they did not, a module-member generic call was not recognized as a fact
+    /// site, the pre-pass never ran for it, and inference fell back to whatever
+    /// spellings it could name-resolve itself — so the same call took its
+    /// comptime arguments from a different source than a direct call did
+    /// (RUE-1967).
+    ///
+    /// `resolved_types` is the collector's inferred-type map, which resolves
+    /// any receiver expression. The gate runs before those types exist and
+    /// passes `None`; a receiver naming a module binding in this file is still
+    /// resolvable from the declaration state alone, and a receiver that is not
+    /// (a re-export chain) simply leaves the body on the single-pass route it
+    /// was on before.
+    fn generic_callee_key(
+        &self,
+        inst_data: &rue_rir::InstData,
+        span: Span,
+        resolved_types: Option<&AHashMap<InstRef, Type>>,
+    ) -> Option<Spur> {
+        match inst_data {
+            rue_rir::InstData::Call { name, .. } => Some(
+                self.resolve_function_name_local(*name, span.file_id)
+                    .unwrap_or(*name),
+            ),
+            rue_rir::InstData::MethodCall {
+                receiver, method, ..
+            } => {
+                let module =
+                    self.method_receiver_module(*receiver, span.file_id, resolved_types)?;
+                let module_file = self.module_def(module).file_id;
+                self.resolve_function_name_local(*method, module_file)
+            }
+            _ => None,
+        }
+    }
+
+    /// The module a method-call receiver names, from the inferred receiver type
+    /// when one is available and otherwise from the file's module bindings.
+    fn method_receiver_module(
+        &self,
+        receiver: InstRef,
+        file_id: FileId,
+        resolved_types: Option<&AHashMap<InstRef, Type>>,
+    ) -> Option<crate::types::ModuleId> {
+        if let Some(module) = resolved_types
+            .and_then(|types| types.get(&receiver))
+            .and_then(Type::as_module)
+        {
+            return Some(module);
+        }
+        let rue_rir::InstData::VarRef { name, .. } = self.body_rir_ref().get(receiver).data else {
+            return None;
+        };
+        self.call_facts()
+            .call_module_binding(file_id, name)
+            .and_then(|binding| binding.ty.as_module())
     }
 
     fn collect_generic_argument_facts(

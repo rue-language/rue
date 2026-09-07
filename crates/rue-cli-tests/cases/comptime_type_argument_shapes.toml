@@ -1,0 +1,193 @@
+# Comptime type arguments are captured the same way whatever the call's shape
+# (RUE-1967, spec 4.14:5a).
+#
+# Capturing a generic callee's comptime type argument and substituting it into
+# the callee's parameter and return types was written once per call shape, and
+# the copies disagreed: the same `first(U, 3000000000, 4)` was accepted through
+# one shape and rejected through another, either as E0800 ("literal 3000000000
+# out of range for i32", the argument left unconstrained and defaulted) or as
+# E0206 ("expected u64, found type", the unsubstituted `-> T` unified against
+# the real result). One owner now generates every generic call, and the captured
+# arguments are the ones the canonical comptime evaluation produced, so a
+# computed type argument (`Id(u64)`) reaches inference exactly as a written one
+# does.
+#
+# `u64` with a value above the `i32` range is what makes a lost capture
+# observable: the run prints the value, so a defaulted or truncated parameter
+# cannot pass silently.
+
+[section]
+id = "cli.comptime_type_argument_shapes"
+name = "Comptime type arguments across call shapes"
+description = "A generic callee's comptime type argument binds the same type through every call shape and spelling."
+
+[[case]]
+name = "direct_call_const_alias_of_a_primitive"
+description = "A file-level const alias of a primitive as the comptime type argument of a same-file callee."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """
+fn Id(comptime T: type) -> type { T }
+
+const U = Id(u64);
+
+fn first(comptime T: type, a: T, b: T) -> T { a }
+
+fn main() -> i32 {
+    let x = first(U, 3000000000, 4);
+    @dbg(x);
+    0
+}
+""" },
+]
+exit_code = 0
+stdout = "3000000000\n"
+
+[[case]]
+name = "direct_call_type_constructor_application"
+description = "The type-constructor call written at the argument position: only the canonical comptime evaluation can reduce it."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """
+fn Id(comptime T: type) -> type { T }
+
+fn first(comptime T: type, a: T, b: T) -> T { a }
+
+fn main() -> i32 {
+    let x = first(Id(u64), 3000000000, 4);
+    @dbg(x);
+    0
+}
+""" },
+]
+exit_code = 0
+stdout = "3000000000\n"
+
+[[case]]
+name = "module_member_call_const_alias_and_application"
+description = "The module-qualified shape binds the same type from both spellings."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "pick.rue", source = """
+pub fn first(comptime T: type, a: T, b: T) -> T { a }
+""" },
+  { path = "main.rue", source = """
+const m = @import("pick.rue");
+
+fn Id(comptime T: type) -> type { T }
+
+const U = Id(u64);
+
+fn main() -> i32 {
+    let x = m.first(U, 3000000000, 4);
+    let y = m.first(Id(u64), 3000000000, 4);
+    @dbg(x);
+    @dbg(y);
+    0
+}
+""" },
+]
+exit_code = 0
+stdout = "3000000000\n3000000000\n"
+
+[[case]]
+name = "type_qualified_assoc_fn_call_through_a_const_alias"
+description = "A const alias of a primitive reaches an associated function of a type built from it."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """
+fn Id(comptime T: type) -> type { T }
+
+fn Box(comptime T: type) -> type {
+    struct {
+        v: T,
+
+        fn keep(a: T) -> T { a }
+    }
+}
+
+const U = Id(u64);
+const B = Box(U);
+
+fn main() -> i32 {
+    let x = B.keep(3000000000);
+    @dbg(x);
+    0
+}
+""" },
+]
+exit_code = 0
+stdout = "3000000000\n"
+
+[[case]]
+name = "type_qualified_assoc_fn_call_on_an_inline_constructor_head"
+description = "The same associated function reached through an inline type-constructor head."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """
+fn Id(comptime T: type) -> type { T }
+
+fn Box(comptime T: type) -> type {
+    struct {
+        v: T,
+
+        fn keep(a: T) -> T { a }
+    }
+}
+
+const U = Id(u64);
+
+fn main() -> i32 {
+    let x = Box(U).keep(3000000000);
+    @dbg(x);
+    0
+}
+""" },
+]
+exit_code = 0
+stdout = "3000000000\n"
+
+[[case]]
+name = "let_bound_alias_and_bare_primitive_agree_with_the_const_alias"
+description = "The body-local `let` alias and the bare primitive bind the same type as the const alias does."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """
+fn Id(comptime T: type) -> type { T }
+
+fn first(comptime T: type, a: T, b: T) -> T { a }
+
+fn main() -> i32 {
+    let U = Id(u64);
+    let x = first(U, 3000000000, 4);
+    let y = first(u64, 3000000000, 4);
+    @dbg(x);
+    @dbg(y);
+    0
+}
+""" },
+]
+exit_code = 0
+stdout = "3000000000\n3000000000\n"
+
+[[case]]
+name = "generic_return_substitution_survives_the_module_boundary"
+description = "A `-> T` return resolves at a module-qualified call, so a sibling literal takes the substituted width instead of defaulting."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "pick.rue", source = """
+pub fn first(comptime T: type, a: T, b: T) -> T { a }
+""" },
+  { path = "main.rue", source = """
+const m = @import("pick.rue");
+
+fn Id(comptime T: type) -> type { T }
+
+const U = Id(u64);
+
+fn main() -> i32 {
+    if m.first(U, 3000000000, 4) == 3000000000 { 0 } else { 1 }
+}
+""" },
+]
+exit_code = 0

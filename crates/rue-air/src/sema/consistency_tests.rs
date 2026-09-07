@@ -1706,6 +1706,80 @@ mod tests {
         );
     }
 
+    /// One owner generates every call to a generic callee, and its comptime
+    /// arguments come from the canonical semantic evaluation. When the capture
+    /// was written once per call shape, the same call was accepted through one
+    /// shape and rejected through another (RUE-1967).
+    #[test]
+    fn generic_call_generation_has_one_owner() {
+        assert_eq!(
+            GENERATE_SOURCE.matches("fn generate_generic_call(").count(),
+            1,
+            "generic-call constraint generation must have exactly one owner"
+        );
+        let owner = source_item(GENERATE_SOURCE, "fn generate_generic_call(");
+        // The captured facts are the canonical evaluation's, with a
+        // name-resolution fallback for the spellings that need no evaluation.
+        assert_eq!(owner.matches("self.comptime_argument_value(").count(), 2);
+        assert_eq!(owner.matches("self.extract_type_argument(").count(), 1);
+        // Parameter substitution and return substitution both live here, so no
+        // call shape can have one without the other.
+        assert!(owner.contains("self.infer_structured_type_hint("));
+        assert!(owner.contains("self.substituted_generic_return_type("));
+
+        // Only the owner reads a generic callee's comptime arguments.
+        for probe in [
+            "self.comptime_argument_value(",
+            "self.extract_type_argument(",
+            "self.substituted_generic_return_type(",
+        ] {
+            assert_eq!(
+                GENERATE_SOURCE.matches(probe).count(),
+                owner.matches(probe).count(),
+                "{probe} is used outside the single generic-call owner"
+            );
+        }
+
+        // Every call shape that can name a generic callee reaches the owner.
+        assert_eq!(
+            GENERATE_SOURCE
+                .matches("self.generate_generic_call(")
+                .count(),
+            2,
+            "the direct-Call and module-member paths are the two call shapes \
+             that resolve a generic function signature"
+        );
+        for shape in ["InstData::Call { name, args }", "ty.is_module()"] {
+            assert!(
+                GENERATE_SOURCE.contains(shape),
+                "call shape {shape} moved; recheck that it still reaches \
+                 generate_generic_call"
+            );
+        }
+
+        // Sema decides which calls get canonically evaluated comptime
+        // arguments; the staged-pass gate and the fact collector must resolve
+        // the callee the same way or a call shape silently loses its facts.
+        assert_eq!(
+            TYPE_INFERENCE_SOURCE
+                .matches("fn generic_callee_key(")
+                .count(),
+            1
+        );
+        for consumer in ["fn has_comptime_fact_sites(", "fn collect_comptime_facts("] {
+            assert!(
+                source_item(TYPE_INFERENCE_SOURCE, consumer).contains("self.generic_callee_key("),
+                "{consumer} regained its own generic-callee resolution"
+            );
+        }
+        // A comptime type argument is a fact site exactly as a value argument
+        // is: the gate must not filter type parameters back out.
+        assert!(
+            !source_item(TYPE_INFERENCE_SOURCE, "fn has_comptime_fact_sites(")
+                .contains("param_is_type")
+        );
+    }
+
     #[test]
     fn synthetic_type_names_have_one_identity_policy() {
         let consumers = [
