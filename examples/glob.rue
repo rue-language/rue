@@ -1,0 +1,173 @@
+// glob.rue — glob-style pattern matching
+//
+// Implements basic glob matching using recursive descent
+// through pattern strings. Patterns must consume the entire
+// text to succeed.
+//
+// Supported patterns:
+//   - Literal text (e.g., "abc")
+//   - Wildcard "*" matching any sequence of characters
+//   - Alternatives "{a,b}" matching either option
+
+const COMMA: u8 = 44;
+const CURLY_LEFT: u8 = 123;
+const CURLY_RIGHT: u8 = 125;
+const STAR: u8 = 42;
+
+// Match a glob pattern against an entire string.
+fn glob_match(pat: str, text: str) -> bool {
+    _match(pat, text, 0, 0)
+}
+
+// Internal recursive matcher.
+// pat_pos = position in pattern, text_pos = position in text.
+fn _match(pat: str, text: str, pat_pos: u64, text_pos: u64) -> bool {
+    if pat_pos == pat.len() {
+        return text_pos == text.len();
+    }
+
+    let c = pat[pat_pos];
+
+    // '*': delegate to helper
+    if c == STAR {
+        return _match_wildcard(pat, text, pat_pos, text_pos);
+    }
+
+    // '{' — alternatives: {a,b,...}
+    if c == CURLY_LEFT {
+        return _match_alternatives(pat, text, pat_pos, text_pos);
+    }
+
+    // '}' without a preceding '{' is an error
+    if c == CURLY_RIGHT {
+        println("error: unmatched '}' in glob pattern");
+        return false;
+    }
+
+    // Literal character
+    if text_pos >= text.len() {
+        return false;
+    }
+    if text[text_pos] != c {
+        return false;
+    }
+    _match(pat, text, pat_pos + 1, text_pos + 1)
+}
+
+// Match a '*' wildcard: skip pat_pos (the star), then try to match
+// the rest of the pattern at every position from text_pos to end.
+fn _match_wildcard(pat: str, text: str, pat_pos: u64, text_pos: u64) -> bool {
+    let mut i = text_pos;
+    while i <= text.len() {
+        if _match(pat, text, pat_pos + 1, i) {
+            return true;
+        }
+        i = i + 1;
+    }
+    false
+}
+
+// Match alternatives {alt1,alt2,...} starting at pat[pat_pos].
+// pat_pos points to the opening '{'. Nesting is not allowed.
+fn _match_alternatives(pat: str, text: str, pat_pos: u64, text_pos: u64) -> bool {
+    // Find the matching '}' — reject nested braces
+    let mut close: u64 = pat_pos + 1;
+    let mut found = false;
+    while close < pat.len() {
+        let ch = pat[close];
+        if ch == CURLY_LEFT {
+            println("error: nested '{' in glob pattern");
+            return false;
+        }
+        if ch == CURLY_RIGHT {
+            found = true;
+            break;
+        }
+        close = close + 1;
+    }
+    if !found {
+        println("error: unmatched '{' in glob pattern");
+        return false;
+    }
+    // close points to the '}'
+
+    // Try each alternative in turn
+    let mut start = pat_pos + 1; // start of current alternative
+    let mut pos = start;
+    while pos < close {
+        if pat[pos] == COMMA {
+            if _try_alt(pat, text, start, pos, close + 1, text_pos) {
+                return true;
+            }
+            start = pos + 1;
+        }
+        pos = pos + 1;
+    }
+    // Try the last alternative, then match rest after '}'
+    _try_alt(pat, text, start, close, close + 1, text_pos)
+}
+
+// Try one alternative pat[alt_start..alt_end] followed by pat[close..].
+fn _try_alt(pat: str, text: str, alt_start: u64, alt_end: u64, close: u64, text_pos: u64) -> bool {
+    // Match the alternative against text starting at text_pos
+    let mut text_i = text_pos;
+    let mut pat_i = alt_start;
+    while pat_i < alt_end {
+        if text_i >= text.len() {
+            return false;
+        }
+        if pat[pat_i] != text[text_i] {
+            return false;
+        }
+        pat_i = pat_i + 1;
+        text_i = text_i + 1;
+    }
+    // Alternative matched; now match the rest of the pattern
+    _match(pat, text, close, text_i)
+}
+
+// Run a single test.
+fn test(pattern: str, text: str, expected: bool, label: str) {
+    let result = glob_match(pattern, text);
+    if result == expected {
+        println("PASS: ");
+    } else {
+        println("FAIL: ");
+    }
+    println(label);
+}
+
+// Main driver.
+fn main() -> i32 {
+    // Literal matching
+    test("abc", "abc", true,  "'abc' ~ 'abc'");
+    test("ab",  "abc", false, "'ab'  ~ 'abc'");
+    test("abc", "ab",  false, "'abc' ~ 'ab'");
+
+    // Wildcard matching
+    test("*",   "",    true,  "'*' ~ ''");
+    test("*",   "abc", true,  "'*' ~ 'abc'");
+    test("a*c", "abc", true,  "'a*c' ~ 'abc'");
+
+    // Alternatives
+    test("{a,b}", "a",  true,  "'{a,b}' ~ 'a'");
+    test("{a,b}", "c",  false, "'{a,b}' ~ 'c'");
+    test("{a,b}", "ab", false, "'{a,b}' ~ 'ab'");
+
+    // Combined wildcard and alternatives
+    test("*{x,y}", "abcx", true,  "'*{x,y}' ~ 'abcx'");
+
+    // Error: nested braces
+    test("{a,{b,c}}", "a", false, "nested '{{}}' (error expected)");
+    println("");
+
+    // Error: unmatched opening brace
+    test("{a,b", "a", false, "unmatched '{{' (error expected)");
+    println("");
+
+    // Error: unmatched closing brace
+    test("a}b", "ab", false, "unmatched '}}' (error expected)");
+
+    // Success
+    0
+}
