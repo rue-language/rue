@@ -592,6 +592,13 @@ pub struct IntrinsicPlan {
     /// backends refuse the store when either this flag or the materialized
     /// slot count says there are no bytes, so the two answers only ever
     /// subtract stores, never add one.
+    ///
+    /// Since RUE-2094 the two answers cannot actually differ on a graph the
+    /// backends can be handed: CFG verification re-proves the operand's type
+    /// against the pointee after optimization, and both answers are the same
+    /// function of that one type. This stays as the second line of defence for
+    /// a graph that reaches lowering without that proof — see the guard's own
+    /// comment in each backend for why deleting it is the wrong call.
     pub zero_sized_pointee_write: bool,
 }
 

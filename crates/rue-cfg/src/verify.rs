@@ -20,8 +20,9 @@
 //! Every arena value has exactly one legal attachment, block parameters agree
 //! with their attachment metadata, and every operand is defined before use and
 //! dominated by its definition. Targets, variable-length storage slices,
-//! local/parameter slots, places, projections, edge arguments, conditions, and
-//! returns are validated before any getter or graph traversal can index them.
+//! local/parameter slots, places, projections, edge arguments, conditions,
+//! returns, and intrinsic call signatures are validated before any getter or
+//! graph traversal can index them.
 //! Once those structural preconditions hold, a forward dataflow pass verifies
 //! explicit storage lifetimes, explicit Drop consumption, and initialization
 //! of unannotated compiler-owned slots such as runtime drop flags.
@@ -41,7 +42,11 @@ use crate::dominators::DominatorTree;
 use crate::inst::{
     BlockId, Cfg, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator, ValidatedCfg,
 };
-use rue_air::{FrozenTypeInternPool, Type, TypeKind};
+use crate::payload::CfgIntrinsicArgs;
+use rue_air::{
+    AirArgMode, FrozenTypeInternPool, IntrinsicAirArgument, IntrinsicAirArgumentSource,
+    IntrinsicOperation, Type, TypeKind,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum OwnerRoot {
@@ -360,6 +365,23 @@ impl Cfg {
 enum Attachment {
     Param { block: BlockId },
     Inst { block: BlockId, position: usize },
+}
+
+/// Name an intrinsic operand's structural origin for a verification report.
+/// The address-taking intrinsics accept only a place-shaped operand, so the
+/// origin is as much a part of the diagnosis as the type is.
+fn describe_operand_source(source: IntrinsicAirArgumentSource) -> &'static str {
+    match source {
+        IntrinsicAirArgumentSource::Value => "a computed value",
+        IntrinsicAirArgumentSource::Load => "a local load",
+        IntrinsicAirArgumentSource::Param => "a parameter",
+        IntrinsicAirArgumentSource::PlaceRead {
+            terminal_field: true,
+        } => "a field place read",
+        IntrinsicAirArgumentSource::PlaceRead {
+            terminal_field: false,
+        } => "a place read",
+    }
 }
 
 struct Verifier<'a> {
@@ -1634,6 +1656,9 @@ impl<'a> Verifier<'a> {
             CfgInstData::PlaceRead { place } | CfgInstData::PlaceWrite { place, .. } => {
                 self.verify_place(block, value, place)?
             }
+            CfgInstData::Intrinsic {
+                operation, args, ..
+            } => self.verify_intrinsic_operands(block, value, *operation, inst.ty, args)?,
             CfgInstData::BlockParam { .. } => unreachable!(),
             _ => {}
         }
@@ -1644,6 +1669,114 @@ impl<'a> Verifier<'a> {
             }
         });
         operand_result
+    }
+
+    /// Re-prove an intrinsic's operand and result types against the single
+    /// authority that accepted them on AIR.
+    ///
+    /// CFG construction proves this contract once (`build.rs`), but both
+    /// backends derive an intrinsic operand's marshalled width from the
+    /// operand's *own* CFG type, so an optimization pass that substitutes a
+    /// differently typed value into an operand silently rewrites the lowered
+    /// call's ABI. That is the one channel RUE-2086's store-to-load hazard
+    /// flowed through, and it reached codegen only because nothing after
+    /// optimization re-checked operand types. Re-running
+    /// [`IntrinsicOperation::validate_call`] keeps AIR, CFG construction and
+    /// the optimized graph on one contract rather than a second, drifting
+    /// copy of the signature table (RUE-2094).
+    ///
+    /// The operand's structural origin is read back out of the CFG, so the
+    /// address-taking family (`@raw`/`@raw_mut`/`@field_ptr`) is held to the
+    /// same "still a place read" requirement codegen depends on when it takes
+    /// the operand's address (RUE-521).
+    fn verify_intrinsic_operands(
+        &self,
+        block: BlockId,
+        value: CfgValue,
+        operation: IntrinsicOperation,
+        result_ty: Type,
+        args: &CfgIntrinsicArgs,
+    ) -> Result<(), CfgVerificationError> {
+        let operands = self.cfg.intrinsic_args(args);
+        let mut arguments = Vec::with_capacity(operands.len());
+        for &operand in operands {
+            let inst = self.inst(operand, block, "intrinsic argument")?;
+            arguments.push(IntrinsicAirArgument {
+                ty: inst.ty,
+                mode: AirArgMode::Normal,
+                source: self.intrinsic_operand_source(operand),
+            });
+        }
+        // An error type is a diagnostic placeholder, not a claim about a
+        // value's ABI: a graph still carrying one is already reported and its
+        // signature relationships are not meaningful.
+        if result_ty == Type::ERROR || arguments.iter().any(|argument| argument.ty == Type::ERROR) {
+            return Ok(());
+        }
+        if operation.validate_call(self.type_pool, &arguments, result_ty) {
+            return Ok(());
+        }
+        let operand_summary = if operands.is_empty() {
+            "no operands".to_string()
+        } else {
+            operands
+                .iter()
+                .zip(&arguments)
+                .enumerate()
+                .map(|(index, (operand, argument))| {
+                    format!(
+                        "operand {} ({}) has type {:?} from {}",
+                        index,
+                        operand,
+                        argument.ty,
+                        describe_operand_source(argument.source)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        Err(self.semantic_error(
+            CfgVerificationLocation::Instruction { block, value },
+            format_args!(
+                "intrinsic {:?} instruction {} in block {} no longer satisfies its call signature: {}, result type is {:?}",
+                operation, value, block, operand_summary, result_ty
+            ),
+        ))
+    }
+
+    /// The structural origin of an intrinsic operand as the optimized CFG
+    /// presents it, in the vocabulary the shared AIR validator speaks.
+    ///
+    /// The three place-shaped instructions accepted here are exactly the three
+    /// `rue_codegen::value_plan::addressable_value_plan` can lower — it returns
+    /// `None` for everything else — so this classification is neither tighter
+    /// nor looser than code generation's own requirement for an operand whose
+    /// address is taken. A fourth place-shaped instruction has to be added in
+    /// both places, and in `rue_air::intrinsic_air_argument_with_place_lookup`,
+    /// which is the AIR-side original.
+    ///
+    /// Unlike every other verifier arm this reads an operand's *payload*, not
+    /// just its type, and it runs before `verify_use` has proved that operand
+    /// attached — post-optimization verification deliberately tolerates
+    /// detached dead values in the arena. So the projection slice is taken
+    /// through the checked accessor: a corrupt range degrades to `Value` and is
+    /// reported as an ill-typed operand, rather than panicking inside the
+    /// unchecked payload view.
+    fn intrinsic_operand_source(&self, operand: CfgValue) -> IntrinsicAirArgumentSource {
+        match &self.cfg.get_inst(operand).data {
+            CfgInstData::Load { .. } => IntrinsicAirArgumentSource::Load,
+            CfgInstData::Param { .. } => IntrinsicAirArgumentSource::Param,
+            CfgInstData::PlaceRead { place } => IntrinsicAirArgumentSource::PlaceRead {
+                terminal_field: matches!(
+                    self.cfg
+                        .checked_place_projections(place)
+                        .ok()
+                        .and_then(<[Projection]>::last),
+                    Some(Projection::Field { .. })
+                ),
+            },
+            _ => IntrinsicAirArgumentSource::Value,
+        }
     }
 
     fn check_local_slot(
@@ -2206,7 +2339,8 @@ mod tests {
     use crate::{CfgVerificationLocation, OptLevel, opt};
     use lasso::ThreadedRodeo;
     use rue_air::{
-        FrozenTypeInternPool, StructDef, StructField, StructId, Type, TypeInternPool, TypeKind,
+        FrozenTypeInternPool, IntrinsicOperation, StructDef, StructField, StructId, Type,
+        TypeInternPool, TypeKind,
     };
     use rue_span::Span;
 
@@ -4750,6 +4884,123 @@ mod tests {
             },
         );
         cfg.set_terminator(entry, Terminator::Unreachable);
+        cfg.verify_with_type_pool(&pool).unwrap();
+    }
+
+    /// Build `@ptr_write(param0, operand)` where `param0` is a `*mut i64`,
+    /// returning the graph and the pool that defines the pointer type. The
+    /// caller chooses the written operand's type: `Type::I64` is the shape a
+    /// well-formed pipeline produces, and anything else is the ill-typed
+    /// substitution RUE-2086's store-to-load hazard fed to codegen.
+    fn ptr_write_cfg(written_ty: Type) -> (Cfg, FrozenTypeInternPool) {
+        let pool = TypeInternPool::new();
+        let ptr_ty = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::I64));
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(Type::UNIT, 0, 1, "ptr_write".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let pointer = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Param { index: 0 },
+                ty: ptr_ty,
+                span: Span::new(0, 0),
+            },
+        );
+        let written = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Const(0),
+                ty: written_ty,
+                span: Span::new(0, 0),
+            },
+        );
+        let args = cfg.push_intrinsic_args([pointer, written]).unwrap();
+        cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Intrinsic {
+                    operation: IntrinsicOperation::PtrWrite,
+                    name: ThreadedRodeo::default().get_or_intern("ptr_write"),
+                    args,
+                },
+                ty: Type::UNIT,
+                span: Span::new(0, 0),
+            },
+        );
+        cfg.set_terminator(entry, Terminator::Return { value: None });
+        (cfg, pool)
+    }
+
+    /// The channel RUE-2086 flowed through: codegen reads an intrinsic
+    /// operand's marshalled width off the operand's own type, so a pass that
+    /// substitutes a zero-sized value for a `*mut i64`'s pointee silently
+    /// drops the store instead of miscompiling it later (RUE-2094).
+    #[test]
+    #[should_panic(
+        expected = "intrinsic PtrWrite instruction v2 in block bb0 no longer satisfies its call signature"
+    )]
+    fn verify_rejects_intrinsic_operand_of_the_wrong_type() {
+        let (cfg, pool) = ptr_write_cfg(Type::UNIT);
+        cfg.verify_with_type_pool(&pool).unwrap();
+    }
+
+    /// The report names the offending operand, its type, and its origin, so a
+    /// compiler developer reads the substitution straight out of the message.
+    #[test]
+    fn intrinsic_operand_report_names_the_operand_and_its_type() {
+        let (cfg, pool) = ptr_write_cfg(Type::UNIT);
+        let message = cfg.verify_with_type_pool(&pool).unwrap_err().to_string();
+        assert!(
+            message.contains("operand 1 (v1) has type Type::UNIT"),
+            "{message}"
+        );
+        assert!(message.contains("result type is Type::UNIT"), "{message}");
+    }
+
+    /// The matching well-typed graph is accepted: the check re-proves the
+    /// construction-time contract, it does not tighten it.
+    #[test]
+    fn verify_accepts_a_well_typed_intrinsic_operand() {
+        let (cfg, pool) = ptr_write_cfg(Type::I64);
+        cfg.verify_with_type_pool(&pool).unwrap();
+    }
+
+    /// `@raw_mut` lowers by taking its operand's ADDRESS, so the operand has
+    /// to still be a place read after optimization. A constant-folded operand
+    /// is the RUE-521 shape, and it is a type-system violation the shared AIR
+    /// validator already knows how to reject.
+    #[test]
+    #[should_panic(expected = "from a computed value")]
+    fn verify_rejects_address_taking_intrinsic_operand_folded_to_a_constant() {
+        let pool = TypeInternPool::new();
+        let ptr_ty = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::I64));
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(Type::UNIT, 1, 0, "raw_mut".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let folded = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Const(7),
+                ty: Type::I64,
+                span: Span::new(0, 0),
+            },
+        );
+        let args = cfg.push_intrinsic_args([folded]).unwrap();
+        cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Intrinsic {
+                    operation: IntrinsicOperation::RawMut,
+                    name: ThreadedRodeo::default().get_or_intern("raw_mut"),
+                    args,
+                },
+                ty: ptr_ty,
+                span: Span::new(0, 0),
+            },
+        );
+        cfg.set_terminator(entry, Terminator::Return { value: None });
         cfg.verify_with_type_pool(&pool).unwrap();
     }
 

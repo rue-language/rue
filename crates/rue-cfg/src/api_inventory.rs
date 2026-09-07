@@ -300,6 +300,34 @@ fn validated_cfg_consuming_editor_conversion_does_not_copy_payloads() {
     assert!(!conversion.contains("clone("));
 }
 
+/// The post-optimization operand check consumes the same authority CFG
+/// construction does. A second, hand-rolled signature table in the verifier
+/// would drift from `IntrinsicOperation::validate_call` and quietly stop
+/// catching the substitution it exists for (RUE-2094).
+#[test]
+fn cfg_verification_rechecks_intrinsic_operands_through_the_shared_validator() {
+    let verify = include_str!("verify.rs");
+    let production = verify
+        .split("\n#[cfg(test)]\nmod ")
+        .next()
+        .expect("CFG verifier production prefix");
+    assert_eq!(
+        production.matches("operation.validate_call(").count(),
+        1,
+        "CFG verification must re-prove intrinsic call shapes through the one shared validator"
+    );
+    for forbidden in [
+        "IntrinsicOperation::PtrWrite =>",
+        "IntrinsicOperation::PtrRead =>",
+        "pointer_pointee(",
+    ] {
+        assert!(
+            !production.contains(forbidden),
+            "CFG verification grew its own intrinsic signature table: {forbidden}"
+        );
+    }
+}
+
 #[test]
 fn cfg_intrinsics_revalidate_and_preserve_the_semantic_operation() {
     let build = include_str!("build.rs");

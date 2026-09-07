@@ -785,7 +785,7 @@ fn abort_intrinsic_static_contracts_precede_unmodeled_operands() {
     }"#;
 
     for probe in 0..5 {
-        let mut state = query_cfg_state(source).expect("abort-preflight probe must compile");
+        let state = query_cfg_state(source).expect("abort-preflight probe must compile");
         let main_index = state
             .functions
             .iter()
@@ -803,8 +803,6 @@ fn abort_intrinsic_static_contracts_precede_unmodeled_operands() {
             (random, panic, panic_args, assertion, assert_args)
         };
 
-        let type_pool = state.type_pool().clone();
-        let cfg = &mut state.functions[main_index].cfg;
         let (outer, replacement_args, replacement_ty, expected) = match probe {
             0 => (
                 panic,
@@ -838,14 +836,20 @@ fn abort_intrinsic_static_contracts_precede_unmodeled_operands() {
             ),
             _ => unreachable!(),
         };
-        cfg.try_edit(&type_pool, |editor| {
-            editor.replace_intrinsic_args(outer, replacement_args)?;
-            editor.replace_inst_type(outer, replacement_ty)?;
-            Ok::<_, rue_cfg::CfgEditError>(())
-        })
-        .unwrap();
-
-        let cfg = &state.functions[main_index].cfg;
+        // The compiler's own CFG verifier re-proves every intrinsic's call
+        // shape after optimization (RUE-2094), so a graph carrying one of
+        // these malformed intrinsics can no longer be published at all. The
+        // oracle's preflight is a trust boundary for precisely the graphs
+        // verification did not produce — an injected fault, a future
+        // optimizer defect — so the probe is interpreted straight off an
+        // unpublished editor rather than round-tripped through a publisher
+        // whose job is now to reject it.
+        let mut malformed = state.functions[main_index].cfg.clone().into_editor();
+        malformed
+            .replace_intrinsic_args(outer, replacement_args)
+            .unwrap();
+        malformed.replace_inst_type(outer, replacement_ty).unwrap();
+        let cfg = &malformed;
         let mut interp = Interp {
             state: &state,
             stdout_trace: Vec::new(),
