@@ -300,7 +300,16 @@ pub fn strbuf_from_c_string(cstr: ptr mut u8) -> strbuf.StrBuf {
 /// the wrong class — silently, with no diagnostic. Passing any other pointer —
 /// a StrBuf's backing buffer, a C-owned string, one built with a different
 /// length, or an already-freed pointer — is a contract violation.
+///
+/// A NULL `cstr` is the one exception, and it is a PROMISE rather than an
+/// accident: `free_c_string(null)` returns without doing anything, the way C's
+/// `free(NULL)` and the `@free` allocator underneath this function do. The
+/// scan would otherwise start at address 0 and fault. Freeing a conditionally
+/// exported string therefore needs no null test at the call site.
 pub fn free_c_string(cstr: ptr mut u8) {
+    if checked { @ptr_to_int(cstr) } == 0 {
+        return;
+    }
     let mut len: u64 = 0;
     let nul: u8 = 0;
     while checked { @ptr_read(@ptr_offset(cstr, len)) } != nul {
