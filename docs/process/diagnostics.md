@@ -159,9 +159,13 @@ the cycle status is progress text, not an additional diagnostic.
 A `--watch` failure the loop cannot park on — a re-observation or acquisition
 error, which may name a file that does not exist yet — is retried on a timer,
 and the stream carries one array per distinct failure rather than one per retry
-(RUE-2091). The array returns when the rendered diagnostic changes or when a
-source in the watched closure does; an unchanged failure over unchanged bytes
-publishes nothing further. Nothing about the array's shape, code, or framing
+(RUE-2091). The array returns when the rendered diagnostic changes or when any
+source the attempt read does — the retained closure plus whatever that attempt
+itself pulled in, so a module wired into the graph for the first time counts
+even though no successful revision has closed over it yet (RUE-2103). An
+unchanged failure over unchanged bytes publishes nothing further, and
+"unchanged" means the bytes: a save that rewrites a file without editing it is
+not a new revision. Nothing about the array's shape, code, or framing
 changes with it, so this is an emission cadence rather than a schema change.
 
 Driver failures can occur before the initial compilation snapshot exists, or

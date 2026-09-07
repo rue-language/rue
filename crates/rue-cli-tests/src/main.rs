@@ -190,7 +190,7 @@ use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
 use rue_target::{Arch, Target};
@@ -2589,19 +2589,39 @@ fn write_watch_edit(dir: &Path, edit: &WatchEdit) -> Result<(), String> {
     let path = dir.join(&edit.path);
     match (
         edit.delete,
+        edit.touch,
         edit.source.as_deref(),
         edit.symlink_target.as_deref(),
     ) {
-        (true, None, None) => std::fs::remove_file(&path)
+        (true, false, None, None) => std::fs::remove_file(&path)
             .map_err(|error| format!("failed to delete watch fixture {}: {error}", edit.path)),
-        (false, Some(source), None) => std::fs::write(&path, source)
+        (false, true, None, None) => touch_watch_fixture(&path)
+            .map_err(|error| format!("failed to touch watch fixture {}: {error}", edit.path)),
+        (false, false, Some(source), None) => std::fs::write(&path, source)
             .map_err(|error| format!("failed to update watch fixture {}: {error}", edit.path)),
-        (false, None, Some(target)) => replace_watch_symlink(&path, target),
+        (false, false, None, Some(target)) => replace_watch_symlink(&path, target),
         _ => Err(format!(
-            "watch edit {} must specify exactly one of delete, source, or symlink_target",
+            "watch edit {} must specify exactly one of delete, touch, source, or symlink_target",
             edit.path
         )),
     }
+}
+
+/// Restamp a fixture's modification time without touching a byte of it.
+///
+/// Deliberately not a rewrite of the same content: `fs::write` truncates
+/// before it writes, so a re-observation landing in that window would read an
+/// empty file and turn the failure this case is sitting inside into an
+/// ordinary successful cycle. Setting the timestamp alone is the same
+/// user-visible event — a save that changed nothing — with no such window.
+fn touch_watch_fixture(path: &Path) -> std::io::Result<()> {
+    let file = std::fs::OpenOptions::new().write(true).open(path)?;
+    let now = SystemTime::now();
+    file.set_times(
+        std::fs::FileTimes::new()
+            .set_accessed(now)
+            .set_modified(now),
+    )
 }
 
 fn assert_watch_program(
@@ -2687,6 +2707,11 @@ fn run_watch_case(
         return Err(TestFailure::assertion(
             "repeated-failure watch scenario requires two failing edits, an unrelated \
              closure edit, a repair, and a verbatim re-break",
+        ));
+    }
+    if scenario.kind == WatchScenarioKind::FailureOutsideClosure && scenario.edits.len() != 4 {
+        return Err(TestFailure::assertion(
+            "failure-outside-closure watch scenario requires a wiring edit, a content edit, a touch, and a repair",
         ));
     }
     if scenario.kind == WatchScenarioKind::SymlinkRetarget && scenario.edits.len() != 1 {
@@ -2878,6 +2903,29 @@ fn run_watch_case(
             WatchScenarioKind::SymlinkRetarget => {
                 wait_for_watch_event(&mut child, &protocol, "published", 2, deadline)?;
             }
+            WatchScenarioKind::FailureOutsideClosure => {
+                // The opening edit wires a pre-existing broken module into the
+                // closure for the first time. No successful close ever
+                // contained it, so it is in no committed watch closure — and
+                // it is the file the diagnostic names.
+                assert_failure_reported_once(&mut child, &protocol, 1, deadline)?;
+                // Editing that file is a new revision, and the watcher owes it
+                // an answer even though the rendering does not move. Before
+                // RUE-2103 this produced nothing at all, which is exactly the
+                // "did the watcher even see my save" silence the second
+                // suppression trigger exists to prevent.
+                write_watch_edit(dir, &scenario.edits[1])?;
+                assert_failure_reported_once(&mut child, &protocol, 2, deadline)?;
+                // A save that leaves the bytes alone is not a new revision.
+                // The key is the content the attempt read, so the file's new
+                // modification time is invisible and the report stays at two.
+                write_watch_edit(dir, &scenario.edits[2])?;
+                assert_failure_reported_once(&mut child, &protocol, 2, deadline)?;
+                // And repairing that same outside-the-closure module still
+                // publishes promptly.
+                write_watch_edit(dir, &scenario.edits[3])?;
+                wait_for_watch_event(&mut child, &protocol, "published", 2, deadline)?;
+            }
             WatchScenarioKind::RepeatedFailure => {
                 // Each step below kills one way the suppression could be
                 // written wrong, and the loop it exercises is shared, so
@@ -3049,6 +3097,7 @@ fn run_watch_test_case(
         WatchTestScenarioKind::Edit | WatchTestScenarioKind::Cancel => 1,
         WatchTestScenarioKind::CompileError => 2,
         WatchTestScenarioKind::RepeatedFailure => 3,
+        WatchTestScenarioKind::FailureOutsideClosure => 4,
     };
     if scenario.edits.len() != required_edits {
         return Err(TestFailure::assertion(format!(
@@ -3165,6 +3214,19 @@ fn run_watch_test_case(
                 write_watch_edit(dir, &scenario.edits[1])?;
                 assert_failure_reported_once(&mut child, &protocol, 2, deadline)?;
                 write_watch_edit(dir, &scenario.edits[2])?;
+                wait_for_watch_event(&mut child, &protocol, "run-finished", 2, deadline)?;
+            }
+            WatchTestScenarioKind::FailureOutsideClosure => {
+                // The `--watch` case of the same name carries the reasoning;
+                // this pins that the two watchers really do share the arm.
+                wait_for_watch_event(&mut child, &protocol, "run-finished", 1, deadline)?;
+                write_watch_edit(dir, &scenario.edits[0])?;
+                assert_failure_reported_once(&mut child, &protocol, 1, deadline)?;
+                write_watch_edit(dir, &scenario.edits[1])?;
+                assert_failure_reported_once(&mut child, &protocol, 2, deadline)?;
+                write_watch_edit(dir, &scenario.edits[2])?;
+                assert_failure_reported_once(&mut child, &protocol, 2, deadline)?;
+                write_watch_edit(dir, &scenario.edits[3])?;
                 wait_for_watch_event(&mut child, &protocol, "run-finished", 2, deadline)?;
             }
             WatchTestScenarioKind::Cancel => {

@@ -12,7 +12,8 @@ use rue_compiler::{CompileOptions, OptLevel};
 #[cfg(test)]
 use rue_driver::watch_inputs_changed_with_reader;
 use rue_driver::{
-    FilesystemCompilerHost, SourceLoadError, WatchFingerprint, WatchInput, watch_inputs_changed,
+    AttemptedRead, FilesystemCompilerHost, SourceLoadError, WatchFingerprint, WatchInput,
+    watch_inputs_changed,
 };
 use rue_target::Target;
 
@@ -148,9 +149,15 @@ impl ObservationPhase {
 ///   rendering risks swallowing a message the previous one did not contain.
 /// - **The source changed.** A revision that still fails identically is worth
 ///   one line back, because silence after a save is ambiguous: it looks the
-///   same as a watcher that never noticed the file. `observation` is the
-///   physical state of the retained closure this attempt read, so an edit
-///   anywhere in it re-reports even when the compiler's answer is unchanged.
+///   same as a watcher that never noticed the file. Two halves answer that,
+///   because neither alone covers the source a failing attempt reads:
+///   `observation` is the physical state of the *committed* closure at the
+///   start of this attempt, and `attempted_reads` is what the attempt itself
+///   accepted, which is the only account of a module the last successful close
+///   never contained. The second half is what makes the ordinary "wire in the
+///   scratch file I was drafting" edit report: the newly imported file is not
+///   in any committed closure yet, and it is usually the exact file the
+///   diagnostic names and the user is editing (RUE-2103).
 ///
 /// A clock carries neither signal, so there is no time-based reprint: a
 /// stuck-and-unedited watcher stays quiet indefinitely, which is the whole
@@ -158,6 +165,7 @@ impl ObservationPhase {
 struct ReportedFailure {
     diagnostic: String,
     observation: Vec<WatchObservation>,
+    attempted_reads: Vec<AttemptedRead>,
 }
 
 pub(crate) struct WatchRequest {
@@ -425,9 +433,22 @@ pub(crate) fn run(request: WatchRequest) -> ! {
                 }
                 Err(error) => {
                     let diagnostic = render_source_load_error(error, error_format);
+                    // Content hashes of the bytes the attempt accepted, on
+                    // the same terms as the closure observation above: a save
+                    // that rewrites a file without changing it compares equal
+                    // and stays suppressed. Deliberately not the modification
+                    // time the accepted-read manifest also carries, which such
+                    // a save moves without producing a revision anyone asked
+                    // to hear about.
+                    //
+                    // Compared borrowed, and copied only by the branch that
+                    // keeps it: this runs four times a second for as long as a
+                    // failure stands, and the suppressed retry is the path
+                    // RUE-2091 exists to keep both quiet and cheap.
                     let repeat = reported_failure.as_ref().is_some_and(|reported| {
                         reported.diagnostic == diagnostic
                             && reported.observation == observation_baseline
+                            && reported.attempted_reads == host.attempted_reads()
                     });
                     if repeat {
                         test_event(phase.repeated_error_event());
@@ -447,6 +468,7 @@ pub(crate) fn run(request: WatchRequest) -> ! {
                         reported_failure = Some(ReportedFailure {
                             diagnostic,
                             observation: observation_baseline,
+                            attempted_reads: host.attempted_reads().to_vec(),
                         });
                     }
                     thread::sleep(FAILED_REOBSERVE_RETRY);

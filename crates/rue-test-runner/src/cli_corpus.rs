@@ -234,6 +234,12 @@ pub enum WatchScenarioKind {
     /// closure file while the broken one holds still, repairs it, and finally
     /// restores the broken bytes verbatim (RUE-2091).
     RepeatedFailure,
+    /// The same retry timer, but the broken module is one no successful close
+    /// ever contained: a pre-existing file wired into the closure for the first
+    /// time. Edits to it must still be acknowledged even though the diagnostic
+    /// they produce is byte-identical, because that file is the one the user is
+    /// editing (RUE-2103).
+    FailureOutsideClosure,
 }
 
 /// A synchronized end-to-end `rue test --watch` scenario (RUE-2023).
@@ -291,6 +297,10 @@ pub enum WatchTestScenarioKind {
     /// watchers share one loop, so the suppression they share is pinned on
     /// both surfaces (RUE-2091).
     RepeatedFailure,
+    /// [`WatchScenarioKind::FailureOutsideClosure`] on the test watcher. Both
+    /// watchers share the re-observation arm, so they shared the gap and are
+    /// pinned together (RUE-2103).
+    FailureOutsideClosure,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -301,6 +311,12 @@ pub struct WatchEdit {
     pub source: Option<String>,
     #[serde(default)]
     pub delete: bool,
+    /// Restamp the file's modification time and leave its bytes alone — the
+    /// save an editor performs on a document nobody changed. The watcher keys
+    /// on content, so this must produce no new revision and no new report; a
+    /// key built from file metadata instead would report on it (RUE-2103).
+    #[serde(default)]
+    pub touch: bool,
     #[serde(default)]
     pub symlink_target: Option<String>,
 }
