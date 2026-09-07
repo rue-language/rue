@@ -440,9 +440,10 @@ fn native_side(
     // Two recoveries, because a body records the two parameter kinds
     // differently: a by-value parameter through its drop entry or `Param`
     // instruction, a by-reference one only through the pointee type on the
-    // places that read it.
+    // places that read it. The second also names a by-value parameter read
+    // only through places, which the report treats exactly as the first.
     let value_types = rue_air::body_parameter_types(air);
-    let pointee_types = rue_air::by_reference_parameter_pointee_types(air);
+    let pointee_types = rue_air::parameter_place_base_types(air);
 
     let descriptors = parameter_descriptors(cfg);
     let modes: Vec<AbiParameterMode> = descriptors

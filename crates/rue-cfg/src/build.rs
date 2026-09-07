@@ -842,13 +842,15 @@ fn derive_source_param_abi(builder: &CfgBuilder<'_>) -> Vec<SourceParamAbi> {
 
     // Slot -> source type. A parameter's own extent is what groups the slots,
     // so every by-value parameter needs one: the drop schedule and the body's
-    // `Param` instructions name most of them, and a parameter the body only
-    // ever *forwards* — a `borrow` of it as a call argument, say — is named by
-    // the place that reads it. A zero-sized parameter occupies no slot, so it
-    // never claims the slot it shares with the parameter that follows it.
+    // `Param` instructions name most of them, and a parameter the body reads
+    // only through places — one it only ever *forwards*, a `borrow` of it as
+    // a call argument, say, or the error value a synthesized printer walks
+    // field by field with no drop schedule (RUE-1943) — is named by the place
+    // that reads it. A zero-sized parameter occupies no slot, so it never
+    // claims the slot it shares with the parameter that follows it.
     let occupies = |ty: Type| type_pool.abi_slot_count(ty) > 0;
     let mut ty_at: AHashMap<u32, Type> = rue_air::occupying_body_parameter_types(air, occupies);
-    for (slot, ty) in rue_air::by_reference_parameter_pointee_types(air) {
+    for (slot, ty) in rue_air::parameter_place_base_types(air) {
         if occupies(ty) {
             ty_at.entry(slot).or_insert(ty);
         }

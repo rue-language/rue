@@ -504,21 +504,20 @@ pub(crate) fn synthesize_error_printer(
     let owner_ty = semantic_type_from_instance(owner);
     let mut builder = Builder::default();
     let mut statements = builder.prologue();
-    // The error value is one parameter, not one per slot. Naming it whole here
-    // is what makes the CFG's parameter-area descriptor cover the value's full
-    // width; every read below then goes through a place rooted at that one
-    // parameter, so the address arithmetic is the compiler's own rather than a
-    // second copy of it. Reading raw parameter slots would need this body to
-    // restate the parameter area's slot order, which is exactly the knowledge
-    // place lowering already owns.
+    // The error value is one parameter, not one per slot, and every read
+    // below goes through a place rooted at that one parameter, so the address
+    // arithmetic is the compiler's own rather than a second copy of it.
+    // Reading raw parameter slots would need this body to restate the
+    // parameter area's slot order, which is exactly the knowledge place
+    // lowering already owns.
     //
-    // Declared, deliberately unreferenced: the descriptor is derived from the
-    // AIR's `Param` instructions, and this body's real reads are place reads.
-    // Evaluating a whole-value `Param` here would additionally *consume* an
-    // error type that owns anything, and the reads that follow would then be
-    // reads after a move. The parameter's drop schedule cannot supply the
-    // descriptor instead, because this body deliberately has none (6.7:16).
-    builder.add(Data::Param { index: 0 }, owner_ty.clone());
+    // Those places are also what tells CFG construction the parameter's
+    // shape: each carries the owner as its base type, and the parameter-area
+    // descriptor is grouped from that (RUE-1943). No whole-value `Param`
+    // instruction is declared for it. Evaluating one would *consume* an error
+    // type that owns anything, making the reads that follow reads after a
+    // move, and this body deliberately has no drop schedule to name the
+    // parameter instead (6.7:16).
 
     // One payload binding serves every byte-string payload, one variant at a
     // time; it is as wide as the widest such payload and absent when no variant

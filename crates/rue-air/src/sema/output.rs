@@ -304,21 +304,27 @@ pub fn occupying_body_parameter_types(
     types
 }
 
-/// The pointee type of every `borrow` / `inout` parameter the body reaches,
-/// keyed by the parameter's ABI slot.
+/// The base type of every parameter the body reaches through a place, keyed
+/// by the parameter's ABI slot.
 ///
-/// A by-reference parameter has no `Param` instruction and no drop entry — its
-/// slot carries the caller's pointer, and every use goes through a place whose
-/// base is that slot — so [`body_parameter_types`] deliberately does not see
-/// it. The place's own [`AirPlace::base_type`](crate::AirPlace) is the pointee
-/// type, recorded because a physical slot index does not identify it.
+/// A place rooted at a parameter slot carries the logical type stored there
+/// as its own [`AirPlace::base_type`](crate::AirPlace), recorded because a
+/// physical slot index does not identify it. That names two kinds of parameter
+/// [`body_parameter_types`] deliberately does not see. A by-reference
+/// parameter has no `Param` instruction and no drop entry — its slot carries
+/// the caller's pointer and every use goes through a place — so the base type
+/// here is its pointee. And a by-value parameter a body reads only through
+/// places, never whole, has no `Param` instruction either: a parameter that
+/// is only ever forwarded, or the error value a synthesized error printer
+/// walks field by field without a drop schedule (RUE-1943). For those the
+/// base type is the parameter's own, and it is what groups the parameter's
+/// slots into one descriptor at CFG build.
 ///
-/// This is a *presentation* recovery, not an ABI input: a by-reference
-/// parameter crosses as one pointer whatever it points at, so nothing in
-/// classification, layout, or code generation consults this. `--emit abi` reads
-/// it to name the type beside a placement. A parameter the body never reads
-/// through a place has no entry, and the report says so.
-pub fn by_reference_parameter_pointee_types(air: &crate::Air) -> ahash::AHashMap<u32, crate::Type> {
+/// A by-reference entry is presentation only — the parameter crosses as one
+/// pointer whatever it points at, so nothing in classification, layout, or
+/// code generation consults it; `--emit abi` reads it to name the type beside
+/// a placement. A parameter the body never reads through a place has no entry.
+pub fn parameter_place_base_types(air: &crate::Air) -> ahash::AHashMap<u32, crate::Type> {
     let mut types: ahash::AHashMap<u32, crate::Type> = ahash::AHashMap::new();
     for place in air.places() {
         if let crate::AirPlaceBase::Param(slot) = place.base {
