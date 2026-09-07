@@ -2031,6 +2031,18 @@ struct SpliceCalleeOutcome {
     replacement: Option<rue_cfg::CfgValue>,
 }
 
+impl SpliceCalleeOutcome {
+    /// The block the splice moved the call's successors into.
+    ///
+    /// A splice appends the imported callee's blocks at `callee_block_base`
+    /// and the continuation immediately after them, so the arithmetic is a
+    /// property of the splice contract rather than of either driver. It is
+    /// written once, here.
+    fn continuation_block(&self) -> rue_cfg::BlockId {
+        rue_cfg::BlockId::from_raw(self.callee_block_base + self.callee_cfg.block_count() as u32)
+    }
+}
+
 fn plan_codegen_symbol_mappings(
     current: &std::collections::BTreeMap<String, String>,
     source_by_machine: &std::collections::BTreeMap<String, String>,
@@ -2420,9 +2432,9 @@ pub(crate) fn evaluate_optimized_cfg(
     let mut accessor_uses = rue_cfg::AccessorPlaceIndex::build(&state.cfg);
     let mut accessor_calls: std::collections::VecDeque<_> =
         attached_accessor_calls(&state.cfg, 0, 0).into();
-    let mut splice_block_redirects = AHashMap::new();
+    let mut splice_block_redirects = SpliceBlockRedirects::default();
     while let Some((call, call_block)) = accessor_calls.pop_front() {
-        let call_block = resolve_splice_block(call_block, &mut splice_block_redirects);
+        let call_block = splice_block_redirects.resolve(call_block);
         let rue_cfg::CfgInstData::AccessorCall { name, .. } = state.cfg.get_inst(call).data else {
             unreachable!()
         };
@@ -2482,15 +2494,12 @@ pub(crate) fn evaluate_optimized_cfg(
             ))
             .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
         }
-        let continuation = rue_cfg::BlockId::from_raw(
-            splice.callee_block_base + splice.callee_cfg.block_count() as u32,
-        );
         let introduced_calls = attached_accessor_calls(
             &splice.callee_cfg,
             splice.callee_value_base,
             splice.callee_block_base,
         );
-        splice_block_redirects.insert(call_block, continuation);
+        splice_block_redirects.record(call_block, &splice);
         accessor_calls.extend(introduced_calls);
         context.record_work(rue_query::WorkItem::new("cfg.accessor-splices", 1));
     }
@@ -2880,7 +2889,7 @@ pub(crate) fn apply_general_inlining(
         // block split moves every later same-block site into its continuation:
         // the redirect map resolves each site's current block without
         // rescanning the grown caller (RUE-1314).
-        let mut splice_block_redirects = AHashMap::new();
+        let mut splice_block_redirects = SpliceBlockRedirects::default();
         // Each splice defers its call-result replacement; the batch applies
         // them in ONE use-rewrite sweep before verification.
         let mut deferred_replacements =
@@ -2952,7 +2961,7 @@ pub(crate) fn apply_general_inlining(
             // The splice itself validates that `call` is attached to this
             // block, so a stale redirect still fails closed with a
             // per-site CallSiteNotFound rather than splicing elsewhere.
-            let call_block = resolve_splice_block(original_block, &mut splice_block_redirects);
+            let call_block = splice_block_redirects.resolve(original_block);
             context.record_work(rue_query::WorkItem::new(
                 "cfg.general-inline-interner-stages",
                 1,
@@ -2978,10 +2987,7 @@ pub(crate) fn apply_general_inlining(
                 || context.check_canceled(),
             ) {
                 Ok(outcome) => {
-                    let continuation = rue_cfg::BlockId::from_raw(
-                        outcome.callee_block_base + outcome.callee_cfg.block_count() as u32,
-                    );
-                    splice_block_redirects.insert(call_block, continuation);
+                    splice_block_redirects.record(call_block, &outcome);
                     if let Some(replacement) = outcome.replacement {
                         deferred_replacements.insert(call, replacement);
                     }
@@ -3598,18 +3604,41 @@ fn attached_accessor_calls(
         .collect()
 }
 
-fn resolve_splice_block(
-    original: rue_cfg::BlockId,
-    redirects: &mut AHashMap<rue_cfg::BlockId, rue_cfg::BlockId>,
-) -> rue_cfg::BlockId {
-    let mut current = original;
-    while let Some(next) = redirects.get(&current).copied() {
-        current = next;
+/// Where a call site's block went as earlier splices split it.
+///
+/// A splice splits the block holding its call: the instructions after the
+/// call move into a continuation block. Every call site a batch driver still
+/// has to splice names the block it occupied in the published record, which
+/// an earlier splice into that same block has since made stale. Both batch
+/// drivers face exactly that, so the bookkeeping lives here once instead of
+/// each driver rediscovering a site's current block by scanning the grown
+/// caller's blocks for the one whose instruction list contains the call.
+#[derive(Default)]
+struct SpliceBlockRedirects {
+    forward: AHashMap<rue_cfg::BlockId, rue_cfg::BlockId>,
+}
+
+impl SpliceBlockRedirects {
+    /// The block that holds `original`'s remaining sites now.
+    ///
+    /// Splitting a continuation again chains redirects, so the walk follows
+    /// the chain to its end and then compresses the path: each original block
+    /// is walked in full at most once however many times it is split.
+    fn resolve(&mut self, original: rue_cfg::BlockId) -> rue_cfg::BlockId {
+        let mut current = original;
+        while let Some(next) = self.forward.get(&current).copied() {
+            current = next;
+        }
+        if current != original {
+            self.forward.insert(original, current);
+        }
+        current
     }
-    if current != original {
-        redirects.insert(original, current);
+
+    /// Note the split `splice` just made in `call_block`.
+    fn record(&mut self, call_block: rue_cfg::BlockId, splice: &SpliceCalleeOutcome) {
+        self.forward.insert(call_block, splice.continuation_block());
     }
-    current
 }
 
 #[cfg(test)]
@@ -4343,11 +4372,11 @@ mod accessor_graph_tests {
         );
         assert!(accessor_driver.contains("accessor_calls.pop_front()"));
         assert!(accessor_driver.contains("accessor_calls.extend(introduced_calls)"));
-        assert!(accessor_driver.contains("resolve_splice_block("));
+        assert!(accessor_driver.contains("splice_block_redirects.resolve("));
         assert!(accessor_driver.contains("AccessorPlaceIndex::build("));
         assert_eq!(accessor_driver.matches("splice_callee(").count(), 1);
         assert_eq!(general_driver.matches("splice_callee(").count(), 1);
-        assert!(general_driver.contains("resolve_splice_block("));
+        assert!(general_driver.contains("splice_block_redirects.resolve("));
         assert_eq!(production.matches("fn splice_callee(").count(), 1);
         assert_eq!(production.matches(".import_accessor_cfg(").count(), 1);
         // The batch drivers splice in place through the helper: exactly one
@@ -4444,5 +4473,90 @@ mod accessor_graph_tests {
             .0;
         assert!(lookup.contains(".partition_point("));
         assert!(!lookup.contains(".iter().find"));
+    }
+
+    /// Both batch drivers reach a call site's current block through the one
+    /// `SpliceBlockRedirects` bookkeeping, and the general driver answers
+    /// eligibility from a prebuilt map. Each fact used to be a scan the
+    /// driver re-derived per splice or per call site: the block by walking
+    /// every block's instruction list for the one containing the call, and
+    /// the callee's query key by walking the whole batch key list comparing
+    /// recursive function identities (RUE-1725).
+    #[test]
+    fn both_splice_drivers_share_one_block_redirect_bookkeeping() {
+        let source = include_str!("cfg_query.rs");
+        let production = source
+            .split_once("#[cfg(test)]\nmod accessor_graph_tests")
+            .unwrap()
+            .0;
+        let accessor_driver = source
+            .split_once("pub(crate) fn evaluate_optimized_cfg(")
+            .unwrap()
+            .1
+            .split_once("fn optimize_cfg_without_accessors(")
+            .unwrap()
+            .0;
+        let general_driver = source
+            .split_once("pub(crate) fn apply_general_inlining(")
+            .unwrap()
+            .1
+            .split_once("fn recursive_scc_nodes<")
+            .unwrap()
+            .0;
+
+        // One bookkeeping type, one continuation rule, both owned here.
+        assert_eq!(production.matches("struct SpliceBlockRedirects").count(), 1);
+        assert_eq!(production.matches("impl SpliceBlockRedirects").count(), 1);
+        assert_eq!(production.matches("fn continuation_block(").count(), 1);
+        // The continuation's position after the imported callee's blocks is
+        // stated exactly once, inside `continuation_block`.
+        assert_eq!(production.matches("callee_block_base + ").count(), 1);
+
+        for driver in [accessor_driver, general_driver] {
+            // Every driver splice both resolves its site's block and records
+            // the split that splice just made, through the shared type.
+            assert_eq!(driver.matches("SpliceBlockRedirects::default()").count(), 1);
+            assert_eq!(driver.matches("splice_block_redirects.resolve(").count(), 1);
+            assert_eq!(driver.matches("splice_block_redirects.record(").count(), 1);
+            // No driver reaches into the map, re-derives the continuation, or
+            // rediscovers a site's block by scanning the grown caller.
+            for bypass in [
+                ".forward",
+                "BlockId::from_raw(",
+                ".insts.contains(",
+                "blocks().iter().find(",
+            ] {
+                assert!(
+                    !driver.contains(bypass),
+                    "driver re-derives splice block bookkeeping via {bypass}"
+                );
+            }
+        }
+
+        // Eligibility is a map probe, not a scan of the batch key list.
+        assert!(general_driver.contains("key_by_function"));
+        assert!(!general_driver.contains("keys.iter().find"));
+        assert!(!production.contains("keys.iter().find"));
+    }
+
+    /// A block split again by a later splice chains its redirect, and the
+    /// walk compresses the chain so a site's original block is followed in
+    /// full at most once.
+    #[test]
+    fn splice_block_redirects_follow_and_compress_chained_splits() {
+        let block = rue_cfg::BlockId::from_raw;
+        let mut redirects = SpliceBlockRedirects::default();
+        assert_eq!(redirects.resolve(block(0)), block(0));
+
+        redirects.forward.insert(block(0), block(1));
+        redirects.forward.insert(block(1), block(2));
+        assert_eq!(redirects.resolve(block(0)), block(2));
+        assert_eq!(redirects.forward.get(&block(0)), Some(&block(2)));
+
+        redirects.forward.insert(block(2), block(3));
+        assert_eq!(redirects.resolve(block(0)), block(3));
+        assert_eq!(redirects.resolve(block(1)), block(3));
+        assert_eq!(redirects.resolve(block(9)), block(9));
+        assert!(!redirects.forward.contains_key(&block(9)));
     }
 }
