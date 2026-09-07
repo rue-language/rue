@@ -9,8 +9,10 @@ pub(crate) const APPROVED: &str = r#"stable|CompilerSession|artifact-query|embed
 stable|CompilerSession|artifact-query|embedders|import_diagnostics|pub fn import_diagnostics(&mut self)->Result<Arc<FrontendDiagnosticSnapshot>,CompileErrors>
 stable|CompilerSession|artifact-query|embedders|published|pub fn published(&self)->Option<crate::SyntaxView>
 stable|CompilerSession|artifact-query|embedders|rir|pub fn rir(&mut self)->Result<Arc<crate::RirView>,CompileErrors>
+stable|CompilerSession|session-configuration|embedders|configuration|pub fn configuration(&self)->&crate::CompilerSessionConfig
 stable|CompilerSession|session-operation|embedders|new|pub fn new()->Self
 stable|CompilerSession|session-operation|embedders|update|pub fn update(&mut self,snapshot:&SourceSnapshot)->CompilerSessionUpdate
+stable|CompilerSession|session-operation|embedders|with_configuration|pub fn with_configuration(configuration:crate::CompilerSessionConfig)->Self
 stable|CompilerSessionUpdate|artifact-result|embedders|diagnostics|pub fn diagnostics(&self)->&Arc<FrontendDiagnosticSnapshot>
 stable|CompilerSessionUpdate|artifact-result|embedders|into_result|pub fn into_result(self)->Result<crate::SyntaxView,CompileErrors>
 stable|CompilerSessionUpdate|artifact-result|embedders|result|pub fn result(&self)->Result<crate::SyntaxView,&CompileErrors>
@@ -25,6 +27,9 @@ stable|artifact_views|artifact-view|embedders+tooling|SyntaxModuleView|pub use a
 stable|artifact_views|artifact-view|embedders+tooling|SyntaxNodeView|pub use artifact_views::SyntaxNodeView
 stable|artifact_views|artifact-view|embedders+tooling|SyntaxView|pub use artifact_views::SyntaxView
 stable|artifact_views|artifact-view|embedders+tooling|TokenView|pub use artifact_views::TokenView
+stable|configuration|session-configuration|embedders|CompilerConfigurationError|pub use configuration::CompilerConfigurationError
+stable|configuration|session-configuration|embedders|CompilerSessionConfig|pub use configuration::CompilerSessionConfig
+stable|configuration|session-configuration|embedders|MAX_QUERY_WORKERS|pub use configuration::MAX_QUERY_WORKERS
 stable|dependency_envelope|dependency-artifact|source-loaders+embedders|DependencyEnvelope|pub use dependency_envelope::DependencyEnvelope
 stable|dependency_envelope|dependency-artifact|source-loaders+embedders|DependencyEnvelopeStatus|pub use dependency_envelope::DependencyEnvelopeStatus
 stable|dependency_envelope|dependency-artifact|source-loaders+embedders|DependencyResolutionOutcome|pub use dependency_envelope::DependencyResolutionOutcome
@@ -48,7 +53,6 @@ stable|import_graph|dependency-artifact|source-loaders+embedders|CanonicalImport
 stable|import_graph|dependency-artifact|source-loaders+embedders|CanonicalImportResolution|pub use import_graph::CanonicalImportResolution
 stable|import_graph|dependency-artifact|source-loaders+embedders|ImportDirective|pub use import_graph::ImportDirective
 stable|import_graph|dependency-artifact|source-loaders+embedders|ImportDirectives|pub use import_graph::ImportDirectives
-stable|lib|runtime-config|cli+embedders|configure_thread_pool|pub fn configure_thread_pool(jobs:usize)->usize
 stable|queries|compilation-config|cli+embedders|CompileOptions|pub use queries::CompileOptions
 stable|queries|compilation-config|cli+embedders|LinkerMode|pub use queries::LinkerMode
 stable|queries|compilation-config|cli+embedders|RootSelection|pub use queries::RootSelection

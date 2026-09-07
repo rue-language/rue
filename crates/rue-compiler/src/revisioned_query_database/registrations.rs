@@ -296,21 +296,22 @@ pub(crate) const REGISTRATION_MANIFEST: &[(&str, &str, &str, &str)] = &[
 #[cfg(test)]
 impl Default for RevisionedQueryDatabase {
     fn default() -> Self {
-        Self::new_canonical()
+        Self::new_canonical(crate::CompilerSessionConfig::default())
     }
 }
 
 impl RevisionedQueryDatabase {
     pub(crate) fn new(
         _authority: crate::session::RevisionedQueryDatabaseConstructionToken,
+        configuration: crate::CompilerSessionConfig,
     ) -> Self {
-        Self::new_canonical()
+        Self::new_canonical(configuration)
     }
 
-    fn new_canonical() -> Self {
+    fn new_canonical(configuration: crate::CompilerSessionConfig) -> Self {
         Self::with_declaration_memo_retention_and_concurrency(
             DECLARATION_QUERY_MEMO_RETENTION,
-            crate::query_concurrency(),
+            configuration,
             u32::MAX as usize,
         )
     }
@@ -322,7 +323,7 @@ impl RevisionedQueryDatabase {
     pub(crate) fn with_declaration_memo_retention(declaration_memo_retention: usize) -> Self {
         Self::with_declaration_memo_retention_and_concurrency(
             declaration_memo_retention,
-            1,
+            crate::CompilerSessionConfig::with_workers(1).unwrap(),
             rue_lexer::MAX_INTERNED_STRINGS,
         )
     }
@@ -331,7 +332,7 @@ impl RevisionedQueryDatabase {
     pub(crate) fn with_query_concurrency(query_concurrency: usize) -> Self {
         Self::with_declaration_memo_retention_and_concurrency(
             DECLARATION_QUERY_MEMO_RETENTION,
-            query_concurrency,
+            crate::CompilerSessionConfig::with_workers(query_concurrency).unwrap(),
             rue_lexer::MAX_INTERNED_STRINGS,
         )
     }
@@ -340,17 +341,20 @@ impl RevisionedQueryDatabase {
     pub(crate) fn with_interner_limit(max_entries: usize) -> Self {
         Self::with_declaration_memo_retention_and_concurrency(
             DECLARATION_QUERY_MEMO_RETENTION,
-            1,
+            crate::CompilerSessionConfig::with_workers(1).unwrap(),
             max_entries,
         )
     }
 
     fn with_declaration_memo_retention_and_concurrency(
         declaration_memo_retention: usize,
-        query_concurrency: usize,
+        configuration: crate::CompilerSessionConfig,
         max_interner_entries: usize,
     ) -> Self {
-        let runtime = CompilerQueryRuntime(QueryRuntime::new(query_concurrency));
+        let runtime = CompilerQueryRuntime(QueryRuntime::with_retention_budgets(
+            configuration.workers(),
+            configuration.retention_budgets(),
+        ));
         let body_reachability_meter = Arc::new(BodyReachabilityMeter::default());
         let identity_resolution =
             Arc::new(crate::source_snapshot::IdentityResolutionMeter::default());

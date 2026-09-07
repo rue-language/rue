@@ -61,12 +61,13 @@ use rue_compiler::unstable::{
     import_observation_ledger, publish_import_observation_batch, stage_import_input_request,
 };
 use rue_compiler::{
-    CompilerSession, FileMetadataFingerprint, ImportDiscoveryContext, PhysicalFileIdentity,
+    CompilerSession, CompilerSessionConfig, FileMetadataFingerprint, ImportDiscoveryContext,
+    PhysicalFileIdentity,
 };
 use rue_error::{PreviewFeature, PreviewFeatures};
 use rue_oracle::{
     ModelGapKind, Outcome, RunSourceError, TrapKind, run_session_with_cfg_differential,
-    run_source_with_cfg_differential,
+    run_source_with_cfg_differential_with_configuration,
 };
 // The rue-cli-tests corpus schema is owned by `rue_test_runner::cli_corpus`.
 // The differential reads the same authored files as the CLI suite, so it reads
@@ -445,15 +446,6 @@ fn parse_oracle_jobs(raw: Option<&str>) -> Result<Option<usize>, String> {
     }
 }
 
-/// Apply the `RUE_ORACLE_JOBS` bound to the shared compiler query concurrency.
-fn apply_oracle_jobs() -> Result<(), String> {
-    let raw = std::env::var(ORACLE_JOBS_VAR).ok();
-    if let Some(jobs) = parse_oracle_jobs(raw.as_deref())? {
-        rue_compiler::configure_thread_pool(jobs);
-    }
-    Ok(())
-}
-
 fn main() -> ExitCode {
     // The oracle interpreter (`rue_oracle::run_source` -> `eval`) recurses per
     // expression, so a deeply-nested but valid corpus program (e.g. the depth-60
@@ -470,21 +462,34 @@ fn main() -> ExitCode {
 }
 
 fn run() -> ExitCode {
-    if let Err(message) = apply_oracle_jobs() {
-        eprintln!("rue-oracle-diff: {message}");
-        return ExitCode::FAILURE;
-    }
+    let oracle_workers = match parse_oracle_jobs(std::env::var(ORACLE_JOBS_VAR).ok().as_deref()) {
+        Ok(workers) => workers.unwrap_or(0),
+        Err(message) => {
+            eprintln!("rue-oracle-diff: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let oracle_configuration = match CompilerSessionConfig::with_workers(oracle_workers) {
+        Ok(configuration) => configuration,
+        Err(error) => {
+            eprintln!("rue-oracle-diff: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // The configuration is copied into each compiler session below. It is
+    // immutable session input, so concurrent corpus cases cannot race over a
+    // process-global scheduler setting.
     // Subcommand dispatch: `rue-oracle-diff fuzz [...]` runs the differential
     // *fuzzer* (generate valid programs, cross-check oracle vs compiled binary);
     // with no subcommand it runs the corpus differential (below).
     let raw: Vec<String> = std::env::args().skip(1).collect();
     if raw.first().map(String::as_str) == Some("fuzz") {
-        return fuzz::run(&raw[1..]);
+        return fuzz::run(&raw[1..], oracle_configuration);
     }
     // `spec [cases-dir ...]` runs the differential over the rue-spec corpus
     // (templated cases expanded via rue-test-runner) instead of rue-cli-tests.
     if raw.first().map(String::as_str) == Some("spec") {
-        return spec_mode(raw[1..].to_vec());
+        return spec_mode_with_configuration(raw[1..].to_vec(), oracle_configuration);
     }
     // `dump <seed>...` prints the generated program(s) — a debugging aid for
     // inspecting what a seed produces (and reducing a repro by hand).
@@ -501,13 +506,21 @@ fn run() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    corpus_mode(raw)
+    corpus_mode_with_configuration(raw, oracle_configuration)
 }
 
 /// The original corpus differential: run each rue-cli-tests case through the
 /// oracle and check it agrees with the case's expected exit code / stdout /
 /// stderr.
+#[cfg(test)]
 fn corpus_mode(raw_args: Vec<String>) -> ExitCode {
+    corpus_mode_with_configuration(raw_args, CompilerSessionConfig::default())
+}
+
+fn corpus_mode_with_configuration(
+    raw_args: Vec<String>,
+    compiler_configuration: CompilerSessionConfig,
+) -> ExitCode {
     let inventory_scope = if raw_args.is_empty() {
         model_gaps::InventoryScope::Authoritative
     } else {
@@ -569,7 +582,7 @@ fn corpus_mode(raw_args: Vec<String>) -> ExitCode {
     for (path, file) in &loaded_files {
         for case in &file.cases {
             let identity = format!("{}::{}", file.section.id, case.name);
-            let outcome = check_case_with_native(
+            let outcome = check_case_with_native_with_configuration(
                 path,
                 case,
                 file.section.contract.as_deref(),
@@ -577,6 +590,7 @@ fn corpus_mode(raw_args: Vec<String>) -> ExitCode {
                     .as_ref()
                     .zip(execution_timeouts)
                     .map(|(runner, timeouts)| (runner, identity.as_str(), timeouts)),
+                compiler_configuration,
             );
             gap_audit.observe(
                 model_gaps::cli::CaseId::new(&file.section.id, &case.name),
@@ -794,7 +808,10 @@ fn finish_report(report: &Report, corpus: &str) -> ExitCode {
 /// [`rue_test_runner::load_test_files`] — the exact code the spec suite uses —
 /// so template semantics can never drift from the real runner. We then filter
 /// to the shapes the single-source oracle can model (see [`check_spec_case`]).
-fn spec_mode(raw_args: Vec<String>) -> ExitCode {
+fn spec_mode_with_configuration(
+    raw_args: Vec<String>,
+    compiler_configuration: CompilerSessionConfig,
+) -> ExitCode {
     let inventory_scope = if raw_args.is_empty() {
         model_gaps::InventoryScope::Authoritative
     } else {
@@ -851,10 +868,11 @@ fn spec_mode(raw_args: Vec<String>) -> ExitCode {
         for (ident, file) in files {
             for case in &file.case {
                 let identity = format!("{}::{}", file.section.id, case.name);
-                let outcome = check_spec_case_with_native(
+                let outcome = check_spec_case_with_native_with_configuration(
                     &ident,
                     case,
                     native.as_ref().map(|runner| (runner, identity.as_str())),
+                    compiler_configuration,
                 );
                 gap_audit.observe(
                     model_gaps::spec::CaseId::new(&file.section.id, &case.name),
@@ -929,20 +947,40 @@ fn check_spec_case(ident: &str, case: &rue_test_runner::Case) -> CaseOutcome {
     check_spec_case_with_known_gap(ident, case, is_known_gap, None)
 }
 
-fn check_spec_case_with_native(
+fn check_spec_case_with_native_with_configuration(
     ident: &str,
     case: &rue_test_runner::Case,
     native: Option<(&NativeRunner, &str)>,
+    configuration: CompilerSessionConfig,
 ) -> CaseOutcome {
     let is_known_gap = KNOWN_ORACLE_GAPS
         .iter()
         .any(|(i, n, _)| *i == ident && *n == case.name);
-    check_spec_case_with_known_gap(ident, case, is_known_gap, native)
+    check_spec_case_with_known_gap_and_configuration(
+        ident,
+        case,
+        is_known_gap,
+        native,
+        configuration,
+    )
 }
 
+#[cfg(test)]
 fn run_source_with_real_std(
     source: &str,
     preview_features: &PreviewFeatures,
+) -> Result<Result<Outcome, RunSourceError>, String> {
+    run_source_with_real_std_with_configuration(
+        source,
+        preview_features,
+        CompilerSessionConfig::default(),
+    )
+}
+
+fn run_source_with_real_std_with_configuration(
+    source: &str,
+    preview_features: &PreviewFeatures,
+    configuration: CompilerSessionConfig,
 ) -> Result<Result<Outcome, RunSourceError>, String> {
     let std_root = std::env::var_os("RUE_ORACLE_DIFF_STD")
         .map(PathBuf::from)
@@ -969,7 +1007,7 @@ fn run_source_with_real_std(
         root_source,
     )
     .map_err(|error| error.to_string())?;
-    let mut session = CompilerSession::new();
+    let mut session = CompilerSession::with_configuration(configuration);
     let mut identities = BTreeMap::<PathBuf, PhysicalFileIdentity>::new();
     let initial = assembler.snapshot().map_err(|error| error.to_string())?;
     let mut revision = begin_import_input_request(
@@ -1051,11 +1089,28 @@ fn run_source_with_real_std(
     }
 }
 
+#[cfg(test)]
 fn check_spec_case_with_known_gap(
     ident: &str,
     case: &rue_test_runner::Case,
     is_known_gap: bool,
     native: Option<(&NativeRunner, &str)>,
+) -> CaseOutcome {
+    check_spec_case_with_known_gap_and_configuration(
+        ident,
+        case,
+        is_known_gap,
+        native,
+        CompilerSessionConfig::default(),
+    )
+}
+
+fn check_spec_case_with_known_gap_and_configuration(
+    ident: &str,
+    case: &rue_test_runner::Case,
+    is_known_gap: bool,
+    native: Option<(&NativeRunner, &str)>,
+    compiler_configuration: CompilerSessionConfig,
 ) -> CaseOutcome {
     // Mirror the real rue-spec wrapper before classifying case shapes. Preview
     // cases without `preview_should_pass` use xfail semantics there, so they do
@@ -1123,7 +1178,11 @@ fn check_spec_case_with_known_gap(
     );
 
     let oracle_result = if case.real_std {
-        match run_source_with_real_std(&case.source, &preview_features) {
+        match run_source_with_real_std_with_configuration(
+            &case.source,
+            &preview_features,
+            compiler_configuration,
+        ) {
             Ok(result) => result,
             Err(error) => {
                 return classify_frontend_failure(format!(
@@ -1133,7 +1192,11 @@ fn check_spec_case_with_known_gap(
             }
         }
     } else {
-        run_source_with_cfg_differential(&case.source, &preview_features)
+        run_source_with_cfg_differential_with_configuration(
+            &case.source,
+            &preview_features,
+            compiler_configuration,
+        )
     };
     match oracle_result {
         // Only Unsupported values carrying a registrable ModelGapKind count as
@@ -1416,11 +1479,28 @@ fn unsupported_corpus_field(case: &Case) -> Option<IneligibleReason> {
     None
 }
 
+#[cfg(test)]
 fn check_case_with_native(
     path: &Path,
     case: &Case,
     section_contract: Option<&str>,
     native: Option<(&NativeRunner, &str, CliExecutionTimeouts)>,
+) -> CaseOutcome {
+    check_case_with_native_with_configuration(
+        path,
+        case,
+        section_contract,
+        native,
+        CompilerSessionConfig::default(),
+    )
+}
+
+fn check_case_with_native_with_configuration(
+    path: &Path,
+    case: &Case,
+    section_contract: Option<&str>,
+    native: Option<(&NativeRunner, &str, CliExecutionTimeouts)>,
+    compiler_configuration: CompilerSessionConfig,
 ) -> CaseOutcome {
     // Mirror the real CLI runner's wrapper order: explicit and host-filtered
     // cases never reach invocation parsing or execution.
@@ -1519,7 +1599,11 @@ fn check_case_with_native(
     };
 
     let oracle_result = if real_std {
-        match run_source_with_real_std(source, &preview_features) {
+        match run_source_with_real_std_with_configuration(
+            source,
+            &preview_features,
+            compiler_configuration,
+        ) {
             Ok(result) => result,
             Err(error) => {
                 return classify_frontend_failure(format!(
@@ -1530,7 +1614,11 @@ fn check_case_with_native(
             }
         }
     } else {
-        run_source_with_cfg_differential(source, &preview_features)
+        run_source_with_cfg_differential_with_configuration(
+            source,
+            &preview_features,
+            compiler_configuration,
+        )
     };
     match oracle_result {
         Err(error) => {

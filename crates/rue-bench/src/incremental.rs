@@ -13,7 +13,9 @@ use crate::digest::sha256_bytes as sha256;
 use rue_compiler::unstable::{
     EndpointQueryWork, EndpointWork, MetricsSnapshot, QueryRuntimeMetrics, QueryValidationMetrics,
 };
-use rue_compiler::{CompileErrors, CompileOptions, CompileOutput, CompileWarning, OptLevel};
+use rue_compiler::{
+    CompileErrors, CompileOptions, CompileOutput, CompileWarning, CompilerSessionConfig, OptLevel,
+};
 use rue_driver::{FilesystemCompilerHost, HostOpenRequest, SourceLoadError};
 use rue_perf_schema::{
     DisplayIdentityWork, EDIT_REPORT_SCHEMA_VERSION, EditEndpoints, EditManifest, EditOutcome,
@@ -443,6 +445,7 @@ pub(crate) fn run() -> Result<ReportStatus, String> {
                     &fixture.overlays,
                     options.std_root.as_deref(),
                     &compile_options,
+                    CompilerSessionConfig::default(),
                     Some(&fixture.edit(declaration.scenario)),
                     declaration.expected_outcome,
                 )
@@ -705,9 +708,12 @@ pub(crate) fn write_validated_report(
 
 pub(crate) fn measure_sample(request: SampleRequest<'_>) -> Result<SampleObservation, String> {
     let total_started = Instant::now();
-    let resolved_workers = resolve_workers(request.worker_mode);
-    rue_compiler::configure_thread_pool(resolved_workers as usize);
-
+    let compiler_config = CompilerSessionConfig::with_workers(match request.worker_mode {
+        WorkerMode::One => 1,
+        WorkerMode::Automatic => 0,
+    })
+    .map_err(|error| error.to_string())?;
+    let resolved_workers = compiler_config.workers() as u32;
     let isolated = tempfile::tempdir()
         .map_err(|error| format!("could not create isolated fixture: {error}"))?;
     copy_tree(request.fixture_root, isolated.path())?;
@@ -718,7 +724,12 @@ pub(crate) fn measure_sample(request: SampleRequest<'_>) -> Result<SampleObserva
         .map(|path| isolated_path(isolated.path(), path))
         .transpose()?;
 
-    let mut warm = open_host(&root, manifest.as_deref(), request.std_root)?;
+    let mut warm = open_host(
+        &root,
+        manifest.as_deref(),
+        request.std_root,
+        compiler_config,
+    )?;
     warm.acquire_reached_toolchain_modules(request.options)
         .map_err(source_load_error)?;
     let baseline = run_success(&mut warm, request.options)
@@ -825,7 +836,12 @@ pub(crate) fn measure_sample(request: SampleRequest<'_>) -> Result<SampleObserva
     let fresh_identity = match request.fresh_oracle {
         Some(identity) => identity.clone(),
         None => {
-            let mut fresh = open_host(&root, manifest.as_deref(), request.std_root)?;
+            let mut fresh = open_host(
+                &root,
+                manifest.as_deref(),
+                request.std_root,
+                compiler_config,
+            )?;
             fresh
                 .acquire_reached_toolchain_modules(request.options)
                 .map_err(source_load_error)?;
@@ -1021,9 +1037,9 @@ fn collect_retention(
     let workload = &manifest.retention_workload;
     let fixture = fixtures.workload(&workload.id);
     let fixture_root = repo_root.join(&fixture.fixture_root);
-    let resolved_workers = resolve_workers(WorkerMode::Automatic);
-    rue_compiler::configure_thread_pool(resolved_workers as usize);
-
+    let compiler_config =
+        CompilerSessionConfig::with_workers(0).map_err(|error| error.to_string())?;
+    let resolved_workers = compiler_config.workers() as u32;
     let body = fixture.edit(EditScenario::ReachedBodyOnly);
     let error = fixture.edit(EditScenario::ErrorIntroduction);
     let reachability = fixture.edit(EditScenario::ReachabilityDeletion);
@@ -1060,6 +1076,7 @@ fn collect_retention(
         &fixture.overlays,
         std_root,
         options,
+        compiler_config,
         None,
         ExpectedEditOutcome::Success,
     )?;
@@ -1072,6 +1089,7 @@ fn collect_retention(
                 &fixture.overlays,
                 std_root,
                 options,
+                compiler_config,
                 Some(operation),
                 *expected,
             )?,
@@ -1084,7 +1102,7 @@ fn collect_retention(
     copy_tree(&fixture_root, isolated.path())?;
     apply_overlays(isolated.path(), &fixture.overlays)?;
     let root = isolated_path(isolated.path(), &fixture.root_source)?;
-    let mut warm = open_host(&root, None, std_root)?;
+    let mut warm = open_host(&root, None, std_root, compiler_config)?;
     warm.acquire_reached_toolchain_modules(options)
         .map_err(source_load_error)?;
     run_success(&mut warm, options)
@@ -1175,6 +1193,7 @@ fn fresh_fixture_identity(
     overlays: &[OverlayOperation],
     std_root: Option<&Path>,
     options: &CompileOptions,
+    compiler_config: CompilerSessionConfig,
     operation: Option<&EditOperation>,
     expected: ExpectedEditOutcome,
 ) -> Result<OutcomeIdentity, String> {
@@ -1186,7 +1205,7 @@ fn fresh_fixture_identity(
         apply_operation(isolated.path(), operation)?;
     }
     let root = isolated_path(isolated.path(), root_source)?;
-    let mut host = open_host(&root, None, std_root)?;
+    let mut host = open_host(&root, None, std_root, compiler_config)?;
     host.acquire_reached_toolchain_modules(options)
         .map_err(source_load_error)?;
     Ok(fresh_identity(&mut host, options, expected))
@@ -1196,6 +1215,7 @@ fn open_host(
     root: &Path,
     manifest: Option<&Path>,
     std_root: Option<&Path>,
+    compiler_config: CompilerSessionConfig,
 ) -> Result<FilesystemCompilerHost, String> {
     FilesystemCompilerHost::open(HostOpenRequest {
         root_source: root
@@ -1203,6 +1223,7 @@ fn open_host(
             .ok_or_else(|| format!("fixture root is not UTF-8: {}", root.display()))?,
         source_manifest_path: manifest.and_then(Path::to_str),
         std_root,
+        compiler_config,
     })
     .map_err(source_load_error)
 }
@@ -1544,15 +1565,6 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn resolve_workers(mode: WorkerMode) -> u32 {
-    match mode {
-        WorkerMode::One => 1,
-        WorkerMode::Automatic => std::thread::available_parallelism()
-            .map(std::num::NonZeroUsize::get)
-            .unwrap_or(1) as u32,
-    }
-}
-
 fn elapsed_ns(started: Instant) -> u64 {
     let elapsed = started.elapsed().as_nanos();
     elapsed.min(u128::from(u64::MAX)).max(1) as u64
@@ -1723,6 +1735,7 @@ mod tests {
             &[],
             None,
             &options,
+            CompilerSessionConfig::default(),
             Some(&operation),
             ExpectedEditOutcome::Success,
         )

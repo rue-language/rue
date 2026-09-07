@@ -1115,12 +1115,12 @@ impl Program {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rue_compiler::{CompileOptions, CompilerSession, SourceSnapshot};
+    use rue_compiler::{CompileOptions, CompilerSession, CompilerSessionConfig, SourceSnapshot};
 
     fn validate_semantics(source: &str) -> rue_compiler::MultiErrorResult<()> {
         let snapshot = SourceSnapshot::single("<generator>", source)
             .map_err(rue_compiler::CompileErrors::from)?;
-        let mut session = CompilerSession::new();
+        let mut session = CompilerSession::with_configuration(CompilerSessionConfig::default());
         session.update(&snapshot).into_result()?;
         rue_compiler::unstable::rooted_cfg(&mut session, &CompileOptions::default()).map(drop)
     }

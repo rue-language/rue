@@ -36,8 +36,8 @@ use rue_driver::{
 };
 
 use rue_compiler::{
-    CompileErrors, CompileOptions, CompileWarning, FileId, LinkerMode, OptLevel, PreviewFeature,
-    PreviewFeatures, configure_thread_pool,
+    CompileErrors, CompileOptions, CompileWarning, CompilerSessionConfig, FileId, LinkerMode,
+    MAX_QUERY_WORKERS, OptLevel, PreviewFeature, PreviewFeatures,
 };
 #[cfg(test)]
 use rue_compiler::{CompilerSession, SourceMetadata, SourceSnapshot};
@@ -255,7 +255,7 @@ const VERSION: &str = rue_compiler::VERSION;
 /// values like `-j 100000` before the compiler schedules an impractical number
 /// of workers, while still leaving ample room above current CI and
 /// workstation core counts.
-const MAX_EXPLICIT_JOBS: usize = 256;
+const MAX_EXPLICIT_JOBS: usize = MAX_QUERY_WORKERS;
 
 fn print_version() {
     println!("rue {}", VERSION);
@@ -2513,11 +2513,13 @@ fn main() {
         None => None,
     };
 
-    // Configure the compiler's shared structured-query budget before
-    // dispatching to either the `--emit` path or the normal compile path, so
-    // every compile-mode driver path honors `-j`/`--jobs` (RUE-352). In test
-    // mode `--jobs` bounds test processes instead, so the pool auto-detects.
-    let resolved_workers = configure_thread_pool(compile_pool_jobs(&options.mode, options.jobs));
+    // Build the immutable compiler resource configuration before opening the
+    // filesystem host. In test mode `--jobs` bounds test processes instead,
+    // so the compiler configuration keeps automatic worker selection.
+    let compiler_config =
+        CompilerSessionConfig::with_workers(compile_pool_jobs(&options.mode, options.jobs))
+            .expect("CLI job validation must agree with compiler configuration");
+    let resolved_workers = compiler_config.workers();
 
     // Discover and load @import-ed modules from disk, transitively. Sema
     // resolves imports only against already-loaded files, so without this
@@ -2543,6 +2545,7 @@ fn main() {
             root_source: &options.source_path,
             source_manifest_path: options.source_manifest_path.as_deref(),
             std_root: captured_std_root.as_deref(),
+            compiler_config,
         }) {
             Ok(result) => result,
             Err(error) => report_source_load_error(error, options.error_format, &options.mode),
@@ -3158,6 +3161,7 @@ mod tests {
                     root_source: root.to_string_lossy().as_ref(),
                     source_manifest_path: None,
                     std_root: Some(&std_root),
+                    compiler_config: CompilerSessionConfig::default(),
                 })
                 .unwrap();
                 host.acquire_reached_toolchain_modules(&CompileOptions::default())
@@ -3200,6 +3204,7 @@ mod tests {
                     root_source: &root_source,
                     source_manifest_path: None,
                     std_root: None,
+                    compiler_config: CompilerSessionConfig::default(),
                 })
                 .unwrap()
             };
@@ -3262,6 +3267,7 @@ mod tests {
             root_source: main.to_str().unwrap(),
             source_manifest_path: None,
             std_root: None,
+            compiler_config: CompilerSessionConfig::default(),
         })
         .unwrap();
         let options = CompileOptions::default();

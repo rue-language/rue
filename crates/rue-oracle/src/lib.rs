@@ -72,7 +72,8 @@ use lasso::ThreadedRodeo;
 use rue_air::{FrozenTypeInternPool, LayoutKind, RuntimeCallKind, Type, TypeKind};
 use rue_cfg::{Cfg, CfgArgMode, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator};
 use rue_compiler::{
-    CompileErrors, CompileOptions, CompilerSession, PreviewFeatures, SourceSnapshot,
+    CompileErrors, CompileOptions, CompilerSession, CompilerSessionConfig, PreviewFeatures,
+    SourceSnapshot,
 };
 use rue_runtime_abi::RuntimeTarget;
 use std::borrow::Cow;
@@ -162,7 +163,7 @@ fn query_cfg_state_from_snapshot(
     snapshot: &SourceSnapshot,
     options: &CompileOptions,
 ) -> Result<CompileState, CompileErrors> {
-    let mut session = CompilerSession::new();
+    let mut session = CompilerSession::with_configuration(CompilerSessionConfig::default());
     session.update(snapshot).into_result()?;
     query_cfg_state_from_session(session, options)
 }
@@ -640,10 +641,24 @@ pub fn run_source_with_cfg_differential(
     source: &str,
     preview_features: &PreviewFeatures,
 ) -> Result<Outcome, RunSourceError> {
+    run_source_with_cfg_differential_with_configuration(
+        source,
+        preview_features,
+        rue_compiler::CompilerSessionConfig::default(),
+    )
+}
+
+/// Configuration-aware form used by the differential harness when it selects
+/// an explicit per-process worker budget.
+pub fn run_source_with_cfg_differential_with_configuration(
+    source: &str,
+    preview_features: &PreviewFeatures,
+    configuration: rue_compiler::CompilerSessionConfig,
+) -> Result<Outcome, RunSourceError> {
     let snapshot = SourceSnapshot::single("<oracle>", source)
         .map_err(CompileErrors::from)
         .map_err(RunSourceError::Compile)?;
-    let mut session = CompilerSession::new();
+    let mut session = CompilerSession::with_configuration(configuration);
     session
         .update(&snapshot)
         .into_result()

@@ -2004,8 +2004,8 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 45] = [
 ];
 
 // Construction and registration execution is sealed end to end:
-// `CompilerSession::new` enters its derived Default once, the sole frontend
-// field creates its private capability, the token-gated database constructor
+// `CompilerSession::new` and Default enter with_configuration once, the sole
+// frontend field creates its private capability, the token-gated constructor
 // enters the private canonical constructor and ordered composer, and one shared
 // forwarding authority reaches one manifested leaf. Tests retain a separately
 // cfg-gated Default adapter into the private canonical entry. Any control-flow
@@ -2013,26 +2013,28 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 45] = [
 // identity even when constructor, caller, and macro token counts do not.
 const CONSTRUCTION_TOKEN_STRUCT_IDENTITY: (usize, u64) = (80, 5_227_448_979_315_228_973);
 const CONSTRUCTION_TOKEN_IMPL_IDENTITY: (usize, u64) = (108, 2_765_439_612_714_245_239);
-const COMPILER_CRATE_ROOT_IDENTITY: (usize, u64) = (10_841, 1_910_863_920_709_222_275);
+const COMPILER_CRATE_ROOT_IDENTITY: (usize, u64) = (9_554, 8_267_950_807_996_322_251);
 const COMPILER_CRATE_ROOT_NAMESPACE_IDENTITY: (usize, u64, usize, u64) = (
-    115,
-    16_786_415_244_923_993_326,
-    230,
-    6_981_227_682_883_627_572,
+    117,
+    3_245_059_453_758_104_938,
+    234,
+    11_858_083_321_453_235_076,
 );
-const COMPILER_SESSION_ROOT_IDENTITY: (usize, u64) = (4_104, 13_149_755_327_201_892_371);
-const COMPILER_SESSION_CONSTRUCTOR_IDENTITY: (usize, u64) = (82, 10_721_269_354_679_246_675);
-const FRONTEND_DATABASE_CONSTRUCTION_IDENTITY: (usize, u64) = (268, 967_740_565_057_515_587);
-const DATABASE_INHERENT_CONSTRUCTOR_IDENTITY: (usize, u64) = (148, 15_840_470_727_822_522_148);
-const DATABASE_CANONICAL_CONSTRUCTOR_IDENTITY: (usize, u64) = (224, 1_314_571_707_455_964_487);
-const TEST_DEFAULT_DATABASE_ADAPTER_IDENTITY: (usize, u64) = (120, 3_163_599_038_660_274_771);
-const REGISTRATION_DATABASE_IMPL_IDENTITY: (usize, u64) = (35_472, 4_725_960_964_094_195_289);
+const COMPILER_SESSION_ROOT_IDENTITY: (usize, u64) = (4_144, 8_851_562_517_716_222_536);
+const COMPILER_SESSION_CONSTRUCTOR_IDENTITY: (usize, u64) = (102, 5_219_454_448_646_406_172);
+const CONFIGURED_SESSION_CONSTRUCTOR_IDENTITY: (usize, u64) = (1_539, 17_319_142_551_454_732_417);
+
+const FRONTEND_DATABASE_CONSTRUCTION_IDENTITY: (usize, u64) = (337, 8_000_487_404_225_303_363);
+const DATABASE_INHERENT_CONSTRUCTOR_IDENTITY: (usize, u64) = (214, 15_710_556_809_665_731_176);
+const DATABASE_CANONICAL_CONSTRUCTOR_IDENTITY: (usize, u64) = (254, 7_623_037_796_286_753_949);
+const TEST_DEFAULT_DATABASE_ADAPTER_IDENTITY: (usize, u64) = (159, 833_377_014_346_120_505);
+const REGISTRATION_DATABASE_IMPL_IDENTITY: (usize, u64) = (35_841, 394_004_127_612_251_398);
 const SHARED_FAMILY_FORWARDING_IDENTITY: (usize, u64) = (2_609, 9_595_658_320_490_175_466);
-const ORDERED_REGISTRATION_COMPOSER_IDENTITY: (usize, u64) = (33_989, 17_677_990_640_358_315_577);
+const ORDERED_REGISTRATION_COMPOSER_IDENTITY: (usize, u64) = (34_103, 9_655_978_331_066_028_191);
 // Macro imports, definitions, re-exports, and lexical ordering participate in
 // macro resolution. Seal the complete registrations authority and each wrapper
 // aggregate in addition to the executable identities inside them.
-const REGISTRATION_AUTHORITY_MODULE_IDENTITY: (usize, u64) = (45_442, 8_995_470_390_836_206_189);
+const REGISTRATION_AUTHORITY_MODULE_IDENTITY: (usize, u64) = (45_850, 14_304_398_088_276_605_794);
 const REGISTRATION_WRAPPER_MODULE_IDENTITIES: [(usize, u64); 5] = [
     (842, 17_134_465_730_999_135_202),
     (1_146, 9_973_452_843_887_101_603),
@@ -2152,7 +2154,7 @@ fn revisioned_database_hub_and_registered_family_authority_are_structural() {
         ),
         "the token constructor must remain private and one-shot",
     );
-    let compiler_session_marker = "#[derive(Debug, Default)]\npub struct CompilerSession {";
+    let compiler_session_marker = "#[derive(Debug)]\npub struct CompilerSession {";
     let compiler_session_start = session_code
         .find(compiler_session_marker)
         .expect("canonical CompilerSession declaration");
@@ -2167,7 +2169,7 @@ fn revisioned_database_hub_and_registered_family_authority_are_structural() {
     assert_eq!(
         executable_source_shape_identity(compiler_session_root),
         COMPILER_SESSION_ROOT_IDENTITY,
-        "CompilerSession's complete derived-Default field shape changed",
+        "CompilerSession's complete field shape changed",
     );
     let compiler_session_tokens = rust_code_tokens(compiler_session_root);
     let compiler_session_open = compiler_session_tokens
@@ -2182,15 +2184,13 @@ fn revisioned_database_hub_and_registered_family_authority_are_structural() {
             "derive",
             "(",
             "Debug",
-            ",",
-            "Default",
             ")",
             "]",
             "pub",
             "struct",
-            "CompilerSession",
+            "CompilerSession"
         ],
-        "CompilerSession must derive exactly Debug and Default in that reviewed order",
+        "CompilerSession must derive exactly Debug",
     );
     assert_eq!(
         struct_fields_with_type_carrier(
@@ -2199,7 +2199,7 @@ fn revisioned_database_hub_and_registered_family_authority_are_structural() {
             "FrontendQueryDatabase",
         ),
         ["queries|cfg=false|FrontendQueryDatabase"],
-        "derived Default must construct exactly one non-cfg frontend database field named queries",
+        "the session must construct one frontend database",
     );
     let compiler_session_constructor_marker = "pub fn new() -> Self {";
     let compiler_session_constructor_start = session_code
@@ -2221,9 +2221,60 @@ fn revisioned_database_hub_and_registered_family_authority_are_structural() {
     );
     assert_eq!(
         rust_code_tokens(compiler_session_constructor),
-        rust_code_tokens("pub fn new() -> Self { <Self as ::core::default::Default>::default() }",),
-        "CompilerSession::new must return exactly one absolute derived-Default UFCS call",
+        rust_code_tokens(
+            "pub fn new() -> Self { Self::with_configuration(crate::CompilerSessionConfig::default()) }",
+        ),
+        "CompilerSession::new must delegate exactly once to the default configuration",
     );
+    let configured_constructor_marker =
+        "pub fn with_configuration(configuration: crate::CompilerSessionConfig) -> Self {";
+    let configured_constructor =
+        exact_balanced_code_item(session_source, configured_constructor_marker);
+    assert_eq!(
+        executable_source_shape_identity(configured_constructor),
+        CONFIGURED_SESSION_CONSTRUCTOR_IDENTITY,
+        "the configured session initializer must construct exactly one canonical frontend",
+    );
+    assert_eq!(
+        type_method_definitions(session_source, "CompilerSession", "with_configuration"),
+        ["public"],
+        "the session must own one explicit configuration constructor",
+    );
+    let session_default =
+        exact_balanced_code_item(session_source, "impl Default for CompilerSession {");
+    assert_eq!(
+        rust_code_tokens(session_default),
+        rust_code_tokens(
+            "impl Default for CompilerSession { fn default() -> Self { Self::new() } }"
+        ),
+        "Default must enter the same canonical session constructor exactly once",
+    );
+    assert_eq!(
+        type_trait_impl_count(session_source, "CompilerSession", "Default"),
+        1,
+    );
+    let frontend_initializer = "super::FrontendQueryDatabase::new(configuration)";
+    assert_eq!(
+        configured_constructor.matches(frontend_initializer).count(),
+        1
+    );
+    for repeated_initializer in [
+        "[(), ()].map(|()| super::FrontendQueryDatabase::new(configuration)).into_iter().next().unwrap()",
+        "{ let construct = || super::FrontendQueryDatabase::new(configuration); let first = construct(); let _peer = construct(); first }",
+    ] {
+        let repeated =
+            configured_constructor.replacen(frontend_initializer, repeated_initializer, 1);
+        assert_eq!(
+            code_identifier_count(&repeated, "FrontendQueryDatabase"),
+            code_identifier_count(configured_constructor, "FrontendQueryDatabase"),
+            "the fixture must preserve the weaker frontend identifier inventory",
+        );
+        assert_ne!(
+            executable_source_shape_identity(&repeated),
+            CONFIGURED_SESSION_CONSTRUCTOR_IDENTITY,
+            "the configured initializer must reject repeated frontend construction",
+        );
+    }
     assert_eq!(
         type_method_definitions(session_source, "CompilerSession", "new"),
         ["public"],
@@ -2231,14 +2282,14 @@ fn revisioned_database_hub_and_registered_family_authority_are_structural() {
     );
     assert!(
         type_method_definitions(session_source, "CompilerSession", "default").is_empty(),
-        "CompilerSession cannot own an inherent default method that shadows the derived trait",
+        "CompilerSession cannot own an inherent default method that shadows the trait",
     );
     let compiler_session_default_references =
         revisioned_database_default_references(compiler_session_constructor, true);
     assert_eq!(
         compiler_session_default_references,
-        ["Self:call"],
-        "CompilerSession::new must contain one absolute derived-Default reference",
+        Vec::<String>::new(),
+        "CompilerSession::new must not construct a peer database directly",
     );
     #[derive(Default)]
     struct InherentDefaultResolutionProbe {
@@ -2273,12 +2324,13 @@ impl CompilerSession {
         ["private"],
         "the inherent-default fixture must perturb the live method-owner inventory",
     );
-    let absolute_session_default = "<Self as ::core::default::Default>::default()";
+    let absolute_session_default =
+        "Self::with_configuration(crate::CompilerSessionConfig::default())";
     let repeated_session_default_fixtures = [
         (
             "eager map",
             r#"[(), ()]
-            .map(|()| <Self as ::core::default::Default>::default())
+            .map(|()| Self::with_configuration(crate::CompilerSessionConfig::default()))
             .into_iter()
             .next()
             .expect("the expected session is first")"#,
@@ -2289,7 +2341,7 @@ impl CompilerSession {
             let mut expected = None;
             let mut iterations = 0;
             loop {
-                let value = <Self as ::core::default::Default>::default();
+                let value = Self::with_configuration(crate::CompilerSessionConfig::default());
                 if expected.is_none() {
                     expected = Some(value);
                 }
@@ -2304,7 +2356,7 @@ impl CompilerSession {
         (
             "local closure called twice",
             r#"{
-            let construct = || <Self as ::core::default::Default>::default();
+            let construct = || Self::with_configuration(crate::CompilerSessionConfig::default());
             let expected = construct();
             let _peer = construct();
             expected
@@ -2336,6 +2388,7 @@ impl CompilerSession {
     }
     let _token_gated_constructor: fn(
         crate::session::RevisionedQueryDatabaseConstructionToken,
+        crate::CompilerSessionConfig,
     )
         -> crate::revisioned_query_database::RevisionedQueryDatabase =
         crate::revisioned_query_database::RevisionedQueryDatabase::new;
@@ -2453,25 +2506,28 @@ impl CompilerSession {
     );
     let expected_inherent_constructor = r#"pub(crate) fn new(
         _authority: crate::session::RevisionedQueryDatabaseConstructionToken,
+        configuration: crate::CompilerSessionConfig,
     ) -> Self {
-        Self::new_canonical()
+        Self::new_canonical(configuration)
     }"#;
     assert_eq!(
         rust_code_tokens(inherent_database_constructor),
         rust_code_tokens(expected_inherent_constructor),
         "the production constructor must consume the exact session capability and delegate once",
     );
-    let canonical_database_constructor =
-        exact_balanced_code_item(registration_database_impl, "fn new_canonical() -> Self {");
+    let canonical_database_constructor = exact_balanced_code_item(
+        registration_database_impl,
+        "fn new_canonical(configuration: crate::CompilerSessionConfig) -> Self {",
+    );
     assert_eq!(
         executable_source_shape_identity(canonical_database_constructor),
         DATABASE_CANONICAL_CONSTRUCTOR_IDENTITY,
         "the private canonical database constructor changed executable shape",
     );
-    let expected_canonical_constructor = r#"fn new_canonical() -> Self {
+    let expected_canonical_constructor = r#"fn new_canonical(configuration: crate::CompilerSessionConfig) -> Self {
         Self::with_declaration_memo_retention_and_concurrency(
             DECLARATION_QUERY_MEMO_RETENTION,
-            crate::query_concurrency(),
+            configuration,
             u32::MAX as usize,
         )
     }"#;
@@ -2515,7 +2571,7 @@ impl CompilerSession {
     }
     let frontend_queries = include_str!("session/frontend_queries.rs");
     let frontend_database_construction =
-        exact_balanced_code_item(frontend_queries, "impl Default for FrontendQueryDatabase {");
+        exact_balanced_code_item(frontend_queries, "impl FrontendQueryDatabase {");
     assert_eq!(
         executable_source_shape_identity(frontend_database_construction),
         FRONTEND_DATABASE_CONSTRUCTION_IDENTITY,
@@ -2612,14 +2668,14 @@ impl CompilerSession {
     // private-canonical-constructor identity rejects that multiplicity.
     let constructor_one_shot = r#"        Self::with_declaration_memo_retention_and_concurrency(
             DECLARATION_QUERY_MEMO_RETENTION,
-            crate::query_concurrency(),
+            configuration,
             u32::MAX as usize,
         )"#;
     let constructor_repeated = r#"        [(), ()]
             .map(|()| {
                 Self::with_declaration_memo_retention_and_concurrency(
                     DECLARATION_QUERY_MEMO_RETENTION,
-                    crate::query_concurrency(),
+                    configuration,
                     u32::MAX as usize,
                 )
             })
@@ -2635,8 +2691,10 @@ impl CompilerSession {
     );
     let adversarial_constructor =
         canonical_database_constructor.replacen(constructor_one_shot, constructor_repeated, 1);
-    let adversarial_constructor =
-        exact_balanced_code_item(&adversarial_constructor, "fn new_canonical() -> Self {");
+    let adversarial_constructor = exact_balanced_code_item(
+        &adversarial_constructor,
+        "fn new_canonical(configuration: crate::CompilerSessionConfig) -> Self {",
+    );
     assert_eq!(
         code_identifier_count(adversarial_constructor, composer_constructor),
         code_identifier_count(canonical_database_constructor, composer_constructor),
@@ -2658,11 +2716,13 @@ impl CompilerSession {
     // the inherent constructor so two complete runtime graphs cannot be made.
     let frontend_one_shot = r#"revisioned: crate::revisioned_query_database::RevisionedQueryDatabase::new(
                 RevisionedQueryDatabaseConstructionToken::new(),
+                configuration,
             ),"#;
     let frontend_repeated = r#"revisioned: [(), ()]
                 .map(|()| {
                     crate::revisioned_query_database::RevisionedQueryDatabase::new(
                         RevisionedQueryDatabaseConstructionToken::new(),
+                        configuration,
                     )
                 })
                 .into_iter()
@@ -2677,10 +2737,8 @@ impl CompilerSession {
     );
     let adversarial_frontend =
         frontend_database_construction.replacen(frontend_one_shot, frontend_repeated, 1);
-    let adversarial_frontend = exact_balanced_code_item(
-        &adversarial_frontend,
-        "impl Default for FrontendQueryDatabase {",
-    );
+    let adversarial_frontend =
+        exact_balanced_code_item(&adversarial_frontend, "impl FrontendQueryDatabase {");
     assert_eq!(
         revisioned_database_new_references(adversarial_frontend),
         revisioned_database_new_references(frontend_database_construction),
@@ -4021,11 +4079,11 @@ pub(super) use register_parse_import_parse;"#;
         ],
         "the capability type may appear only in its session declaration/private constructor, the frontend call, and the token-gated database signature",
     );
-    let expected_frontend_database_identifiers = [("session".to_owned(), 3)];
+    let expected_frontend_database_identifiers = [("session".to_owned(), 4)];
     assert_eq!(
         identifier_owner_inventory(&compiler_construction_sources, "FrontendQueryDatabase",),
         expected_frontend_database_identifiers,
-        "the frontend database type must have exactly its declaration, Default owner, and canonical CompilerSession field",
+        "the frontend database type must have exactly its declaration, constructor owner, canonical session field, and configured initializer",
     );
     assert_eq!(
         type_method_definition_owner_inventory(
@@ -4087,10 +4145,9 @@ pub(super) use register_parse_import_parse;"#;
         );
     }
 
-    // `CompilerSession` derives `Default`, so every one of its private fields
-    // is part of the runtime-construction authority. These valid-Rust models
-    // preserve the sole explicit token/database calls but make the derived
-    // constructor create a second frontend database. The exact root identity,
+    // Every frontend-bearing session field is part of runtime-construction
+    // authority. These source models add a second carrier without changing
+    // the sole explicit token/database call. The exact root identity,
     // semantic carrier-field check, and compiler-wide identifier/alias
     // inventories independently reject the change.
     let add_compiler_session_field = |field: &str| {
@@ -4122,7 +4179,7 @@ pub(super) use register_parse_import_parse;"#;
         ),
         (
             "local wrapper duplicate",
-            "#[derive(Default)]\nstruct PeerFrontendQueryDatabase(FrontendQueryDatabase);\n",
+            "struct PeerFrontendQueryDatabase(FrontendQueryDatabase);\n",
             "_peer_queries: PeerFrontendQueryDatabase,",
         ),
     ];
@@ -4144,7 +4201,7 @@ pub(super) use register_parse_import_parse;"#;
                 "FrontendQueryDatabase",
             ),
             ["queries|cfg=false|FrontendQueryDatabase"],
-            "the {label} must fail the semantic derived-Default field inventory",
+            "the {label} must fail the semantic frontend field inventory",
         );
         let adversarial_sources = compiler_construction_sources
             .iter()
@@ -4220,7 +4277,7 @@ pub(super) use register_parse_import_parse;"#;
             ),
             ("parsed_modules".to_owned(), "Default:call".to_owned(), 1),
             ("queries".to_owned(), "Default:call".to_owned(), 2),
-            ("session".to_owned(), "Self:call".to_owned(), 5),
+            ("session".to_owned(), "Self:call".to_owned(), 2),
             ("unstable".to_owned(), "Default:call".to_owned(), 10),
             ("unstable".to_owned(), "Self:call".to_owned(), 1),
         ],
@@ -4454,7 +4511,7 @@ pub(super) use register_parse_import_parse;"#;
     ));
     let nested_module_owners = module_owner_inventory(&compiler_module_sources);
     let nested_module_fingerprint = source_inventory_fingerprint(&nested_module_owners);
-    let expected_nested_module_identity = (160, 14_291_932_838_853_825_352);
+    let expected_nested_module_identity = (162, 1_322_855_505_068_179_203);
     assert_eq!(
         (nested_module_owners.len(), nested_module_fingerprint),
         expected_nested_module_identity,
@@ -4646,7 +4703,7 @@ pub(super) use register_parse_import_parse;"#;
     assert_eq!(
         std::str::from_utf8(&compact_registrations)
             .expect("whitespace removal preserves UTF-8")
-            .matches("CompilerQueryRuntime(QueryRuntime::new(query_concurrency))")
+            .matches("CompilerQueryRuntime(QueryRuntime::with_retention_budgets(configuration.workers(),configuration.retention_budgets(),))")
             .count(),
         1,
         "the sole production runtime construction must remain registrations-owned",
@@ -4880,7 +4937,7 @@ pub(super) use register_parse_import_parse;"#;
         });
     assert_eq!(
         (declarations.len(), fingerprint),
-        (214, 11_207_454_508_476_726_153),
+        (214, 9_985_723_480_452_794_499),
         "crate-visible declaration names, signatures, fields, or phase owners changed"
     );
 
@@ -5424,6 +5481,7 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("canonical_semantic", include_str!("canonical_semantic.rs")),
     ("cfg_query", include_str!("cfg_query.rs")),
     ("codegen_query", include_str!("codegen_query.rs")),
+    ("configuration", include_str!("configuration.rs")),
     ("content_digest", include_str!("content_digest.rs")),
     ("object_query", include_str!("object_query.rs")),
     (
@@ -6798,6 +6856,12 @@ fn root_export_metadata(owner: &str, symbol: &str) -> (&'static str, &'static st
             _ => panic!("unclassified import-graph facade export: {symbol}"),
         },
         "diagnostic_attempt_store" => ("diagnostic", "cli+embedders"),
+        "configuration" => match symbol {
+            "CompilerSessionConfig" | "CompilerConfigurationError" | "MAX_QUERY_WORKERS" => {
+                ("session-configuration", "embedders")
+            }
+            _ => panic!("unclassified compiler configuration export: {symbol}"),
+        },
         "rue_error" => match symbol {
             "CompileErrors" | "CompileWarning" | "MultiErrorResult" | "PreviewFeature"
             | "PreviewFeatures" | "VERSION" => ("diagnostic", "cli+embedders"),
@@ -6910,7 +6974,8 @@ fn session_method_metadata(
         }
     } else {
         match symbol {
-            "new" | "update" => "session-operation",
+            "new" | "with_configuration" | "update" => "session-operation",
+            "configuration" => "session-configuration",
             "published" | "committed_import_graph" | "import_diagnostics" | "rir" | "semantic" => {
                 "artifact-query"
             }
@@ -6945,15 +7010,6 @@ fn semantic_api_inventory(facade: &str, modules: &[(&str, &str)]) -> Vec<ApiInve
                 "unstable",
                 "debug-module",
                 "in-tree-tooling",
-                symbol,
-                signature,
-            ));
-        } else if symbol == "configure_thread_pool" {
-            entries.push(ApiInventoryEntry::new(
-                "stable",
-                "lib",
-                "runtime-config",
-                "cli+embedders",
                 symbol,
                 signature,
             ));
@@ -7450,15 +7506,17 @@ fn removed_parallel_entry_points_cannot_return() {
 #[test]
 fn compiler_parallelism_has_one_query_budget_and_no_peer_parallel_frontier() {
     let root = include_str!("lib.rs");
+    let configuration = include_str!("configuration.rs");
     let cfg = include_str!("queries.rs");
     let backend = include_str!("backend.rs");
     let database = REVISIONED_DATABASE_SOURCE;
     assert!(
-        root.contains("QUERY_CONCURRENCY")
-            && root.contains("configure_thread_pool")
-            && database.contains("crate::query_concurrency()")
-            && database.contains("QueryRuntime::new(query_concurrency)"),
-        "compiler runtime configuration must feed the canonical query database budget"
+        !root.contains("QUERY_CONCURRENCY")
+            && !root.contains("configure_thread_pool")
+            && configuration.contains("pub struct CompilerSessionConfig")
+            && database.contains("configuration.workers()")
+            && database.contains("QueryRuntime::with_retention_budgets"),
+        "compiler runtime configuration must be immutable and feed the canonical query database budget"
     );
     for (module, source) in [("queries", cfg), ("backend", backend)] {
         for forbidden in ["rayon", ".par_iter(", ".into_par_iter("] {

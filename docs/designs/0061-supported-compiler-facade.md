@@ -119,11 +119,11 @@ follow-ups, but the supported concepts are:
 requests:
   SourceSnapshot, SourceMetadata, SourceView, FileId
   CompileOptions, LinkerMode, OptLevel, PreviewFeature(s), Target, Arch
+  CompilerSessionConfig, CompilerConfigurationError, MAX_QUERY_WORKERS
   accepted import-read/observation inputs and opaque source/module identities
 
 operations:
   CompilerSession, CompilerSessionUpdate, compile_snapshot
-  configure_thread_pool (process-wide, idempotent configuration)
 
 views/results:
   CompileOutput
@@ -138,6 +138,17 @@ views/results:
 diagnostics. `CompilerSession` returns owner-retaining immutable artifacts
 (normally an `Arc` to a private owner) whose public methods yield the views.
 Views borrow the owner or carry an `Arc`; they never outlive it.
+
+Session resource policy is an immutable `CompilerSessionConfig` supplied at
+construction. `CompilerSession::new()` selects the established defaults;
+`with_configuration` uses a validated explicit policy. The default worker count
+is host parallelism, with one worker if detection fails. Explicit counts are
+bounded by `MAX_QUERY_WORKERS` (256); zero requests automatic selection. The
+resolved count is stored once and reported by the session. Soft retention
+defaults remain 8 GiB of retained charge and four million dependency/input
+observations. Explicit byte and pin budgets may be zero and are accounting
+targets, not hard memory limits. Each session configures its own canonical query
+runtime; constructing one session cannot change another's policy (RUE-1811).
 
 The stable API may expose opaque, equality/hashable IDs such as `FileId`,
 `ModuleId`, `SourceId`, and `SourceRevision`. Their numeric components and
@@ -223,7 +234,8 @@ of the supported API.
 | Keep | `CompileOptions`, `LinkerMode`, `OptLevel`, `PreviewFeature`, `PreviewFeatures`, `Target`, `Arch` | Stable compile request values. Reexports are intentional because they occur in compiler requests. |
 | Keep | `SourceMetadata`, `SourceSnapshot`, `SourceView`, `MAX_SOURCE_BYTES`, `FileId` | Stable owned source request and read-only file view. `FileId` stays opaque. |
 | Keep | `ModuleId`, `ModuleRevision`, `SourceId`, `SourceIdVersion`, `SourceRevision` | Stable opaque identity values; hide representation and construction not required by request assembly. |
-| Keep | `CompilerSession`, `CompilerSessionUpdate`, `compile_snapshot`, `configure_thread_pool` | Stable operations; no other one-shot compiler entry point is allowed. |
+| Keep | `CompilerSession`, `CompilerSessionUpdate`, `compile_snapshot` | Stable operations; no other one-shot compiler entry point is allowed. |
+| Keep | `CompilerSessionConfig`, `CompilerConfigurationError`, `MAX_QUERY_WORKERS` | Validated immutable per-session resource policy and its explicit-worker limit. |
 | Keep | `AcceptedImportSource`, `AcceptedReadManifestEntry`, `FileMetadataFingerprint`, `ImportDiscoveryContext`, `ImportObservation`, `ImportObservationLedger`, `ImportObservationStatus`, `PhysicalFileIdentity` | Stable host-to-session import observation inputs. Constructors validate owned data; identities remain opaque. |
 | View-wrap | `ImportDiscoveryPlan`, `ImportDiscoveryRequest`, `ImportOccurrenceKey`, `ImportCandidateRole` | The host receives a read-only plan/request view and returns observations; it cannot construct query-owned request identity. |
 | Move internal/direct owner | `DiscoverySourceAssembler` | Source aggregation belongs to the post-RUE-861 loader, not the compiler facade. |

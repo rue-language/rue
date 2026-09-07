@@ -44,6 +44,7 @@ mod canonical_merge;
 mod canonical_semantic;
 mod cfg_query;
 mod codegen_query;
+mod configuration;
 mod content_digest;
 mod declaration_candidate;
 mod definition_snapshot;
@@ -129,6 +130,7 @@ pub use import_discovery::{
 };
 // Host discovery-protocol records are published through `unstable` only; the
 // crate-local paths keep the session and its tests on one spelling.
+pub use configuration::{CompilerConfigurationError, CompilerSessionConfig, MAX_QUERY_WORKERS};
 #[cfg(test)]
 pub(crate) use import_discovery::AcceptedImportSource;
 pub(crate) use import_discovery::{
@@ -247,41 +249,3 @@ pub(crate) use rue_linker::{
     Archive, CodeRelocation, Linker, ObjectBuilder, ObjectFile, RelocationType,
 };
 pub(crate) use rue_parser::Parser;
-
-// Zero means no embedder/driver override has been installed yet. The first
-// session lazily snapshots host parallelism so constructing CompilerSession
-// directly retains the CLI's default behavior without a peer executor.
-static QUERY_CONCURRENCY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-/// Configure the compiler's shared structured-query concurrency budget.
-///
-/// Registered batch schedulers consume this one shared budget, keeping
-/// structured-query concurrency under a single authority.
-pub fn configure_thread_pool(jobs: usize) -> usize {
-    let jobs = if jobs == 0 {
-        std::thread::available_parallelism()
-            .map(std::num::NonZeroUsize::get)
-            .unwrap_or(1)
-    } else {
-        jobs
-    };
-    QUERY_CONCURRENCY.store(jobs, std::sync::atomic::Ordering::Release);
-    jobs
-}
-
-pub(crate) fn query_concurrency() -> usize {
-    let configured = QUERY_CONCURRENCY.load(std::sync::atomic::Ordering::Acquire);
-    if configured != 0 {
-        return configured;
-    }
-    let detected = std::thread::available_parallelism()
-        .map(std::num::NonZeroUsize::get)
-        .unwrap_or(1);
-    let _ = QUERY_CONCURRENCY.compare_exchange(
-        0,
-        detected,
-        std::sync::atomic::Ordering::AcqRel,
-        std::sync::atomic::Ordering::Acquire,
-    );
-    QUERY_CONCURRENCY.load(std::sync::atomic::Ordering::Acquire)
-}
