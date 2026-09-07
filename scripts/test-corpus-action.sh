@@ -19,6 +19,7 @@ else
 fi
 CORPUS_ACTION="$SCRIPTS_DIR/corpus-action"
 TIMEOUT_RUNNER="$SCRIPTS_DIR/corpus-timeout.py"
+TIMEOUT_TEST="$SCRIPTS_DIR/test-corpus-timeout.py"
 
 failures=0
 tests=0
@@ -243,6 +244,15 @@ t_timeout() {
     rm -rf "$dir"
 }
 
+# The cleanup deadline has two monotonic-clock edges. Keep the sleep argument
+# non-negative when the clock crosses either edge between loop checks.
+t_timeout_cleanup_deadline_race() {
+    local status
+    PYTHONDONTWRITEBYTECODE=1 python3 "$TIMEOUT_TEST"
+    status=$?
+    check "timeout cleanup deadline race test passes" "0" "$status"
+}
+
 # An ordinary exit 124 is still an ordinary harness result, not a timeout.
 # The private marker keeps the focused timeout diagnostic specific.
 t_exit_124_is_not_timeout() {
@@ -361,17 +371,28 @@ t_usage() {
     check "no arguments is a usage error" "2" "$status"
 }
 
-t_success
-t_failure_writes_no_stamp
-t_absolutize
-t_absolutize_declared_output
-t_missing_absolutize_target_fails
-t_plumbing_is_hidden
-t_timeout
-t_exit_124_is_not_timeout
-t_timeout_kills_descendants
-t_wrapper_cancellation
-t_usage
+run_test() {
+    local test_name
+    test_name="$1"
+    echo "corpus-action: running $test_name" >&2
+    "$test_name"
+}
+
+for test_name in \
+    t_success \
+    t_failure_writes_no_stamp \
+    t_absolutize \
+    t_absolutize_declared_output \
+    t_missing_absolutize_target_fails \
+    t_plumbing_is_hidden \
+    t_timeout \
+    t_timeout_cleanup_deadline_race \
+    t_exit_124_is_not_timeout \
+    t_timeout_kills_descendants \
+    t_wrapper_cancellation \
+    t_usage; do
+    run_test "$test_name"
+done
 
 if [ "$failures" -ne 0 ]; then
     echo "corpus-action: $failures/$tests checks failed" >&2
