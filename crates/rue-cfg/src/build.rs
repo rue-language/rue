@@ -16,8 +16,8 @@ use std::rc::Rc;
 
 use crate::CfgOutput;
 use crate::inst::{
-    BlockId, Cfg, CfgArgMode, CfgCallArg, CfgEditError, CfgInst, CfgInstData, CfgValue, Place,
-    PlaceBase, Projection, Terminator,
+    BlockId, Cfg, CfgArgMode, CfgCallArg, CfgCallContract, CfgCallContractArg, CfgEditError,
+    CfgInst, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator,
 };
 use crate::payload::{
     CfgArrayElements, CfgCallArgs, CfgElseArgs, CfgEnumPayload, CfgGotoArgs, CfgIntrinsicArgs,
@@ -1697,6 +1697,7 @@ impl<'a> CfgBuilder<'a> {
                 name,
                 args,
             } => {
+                let call_contract = self.call_contract(args, ty);
                 if let Some(runtime) = runtime {
                     self.assert_valid_runtime_call_args(
                         *runtime,
@@ -1728,6 +1729,7 @@ impl<'a> CfgBuilder<'a> {
                     ty,
                     span,
                 );
+                self.cfg.set_call_contract(value, call_contract);
                 // A call to a `-> !` function never returns: end the block
                 // here and diverge, exactly like `return`. Handing back a
                 // NEVER-typed "result" would let an enclosing if/match join
@@ -1749,6 +1751,7 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::AccessorCall { name, args } => {
+                let call_contract = self.call_contract(args, ty);
                 let mut arg_vals = Vec::new();
                 for arg in self.air.get_call_args(args) {
                     let Some(value) = self.lower_value(arg.value) else {
@@ -1762,6 +1765,7 @@ impl<'a> CfgBuilder<'a> {
                 let args_result = self.cfg.push_call_args(arg_vals);
                 let args = self.payload_or(args_result, CfgCallArgs::EMPTY, span);
                 let value = self.emit(CfgInstData::AccessorCall { name: *name, args }, ty, span);
+                self.cfg.set_call_contract(value, call_contract);
                 self.cache(air_ref, value);
                 ExprResult {
                     value: Some(value),
@@ -3298,6 +3302,19 @@ impl<'a> CfgBuilder<'a> {
         }
     }
 
+    /// Preserve the effective, already-validated AIR call contract on the
+    /// CFG value. The verifier later compares optimized operands with this
+    /// snapshot instead of deriving a second signature from the call name.
+    fn call_contract(&self, args: &rue_air::AirCallArgs, result: Type) -> CfgCallContract {
+        CfgCallContract::new(
+            self.air.get_call_args(args).map(|arg| CfgCallContractArg {
+                ty: self.air.get(arg.value).ty,
+                mode: Self::convert_arg_mode(arg.mode),
+            }),
+            result,
+        )
+    }
+
     /// Emit drops for all live slots in all scopes (for return).
     /// Drops are emitted in reverse order (LIFO) across all scopes.
     /// Owned (pass-by-value) parameters are dropped after all locals, in
@@ -4299,7 +4316,7 @@ impl<'a> CfgBuilder<'a> {
                 mode: CfgArgMode::Normal,
             }));
             let args = self.payload_or(args_result, CfgCallArgs::EMPTY, span);
-            self.emit(
+            let value = self.emit(
                 CfgInstData::Call {
                     runtime: None,
                     name,
@@ -4307,6 +4324,16 @@ impl<'a> CfgBuilder<'a> {
                 },
                 Type::UNIT,
                 span,
+            );
+            self.cfg.set_call_contract(
+                value,
+                CfgCallContract::new(
+                    [CfgCallContractArg {
+                        ty,
+                        mode: CfgArgMode::Normal,
+                    }],
+                    Type::UNIT,
+                ),
             );
         }
 

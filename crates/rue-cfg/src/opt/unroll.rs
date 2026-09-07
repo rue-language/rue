@@ -11,6 +11,9 @@
 use super::CfgOptimizationError;
 use super::loops::{NaturalLoop, loops};
 use crate::dominators::DominatorTree;
+use crate::inst::CfgCallContract;
+#[cfg(test)]
+use crate::inst::CfgCallContractArg;
 use crate::{
     BlockId, Cfg, CfgCallArg, CfgEditError, CfgInst, CfgInstData, CfgValue, PlaceBase, Projection,
     Terminator, Type,
@@ -588,6 +591,7 @@ struct SourceInst {
     /// takes no read handle on the source graph at all.
     data: CfgInstData,
     operands: SourceOperands,
+    call_contract: Option<CfgCallContract>,
 }
 
 /// One loop-body block as it was before unrolling started, with its
@@ -656,6 +660,7 @@ impl LoopSource {
                         span: inst.span,
                         data: inst.data.duplicate_with_owner(),
                         operands: capture_operands(cfg, &inst.data),
+                        call_contract: cfg.call_contract(value).cloned(),
                     },
                 );
                 if cfg.is_ownership_boundary_value(value) {
@@ -1022,6 +1027,9 @@ fn unroll_one(
             let data = remap_data(&i.operands, cfg, &i.data, &map, Some((trip.slot, raw)))?;
             let nv = map[&v];
             cfg.get_inst_mut(nv).data = data;
+            if let Some(contract) = &i.call_contract {
+                cfg.set_call_contract(nv, contract.clone());
+            }
         }
         iterations.push(block_map);
         all_maps.push(map);
@@ -2419,7 +2427,7 @@ mod tests {
                 mode: crate::CfgArgMode::Normal,
             }])
             .unwrap();
-        cfg.append_inst(
+        let accessor = cfg.append_inst(
             body,
             CfgInst {
                 data: CfgInstData::AccessorCall { name, args },
@@ -2427,8 +2435,28 @@ mod tests {
                 span: Span::new(11, 12),
             },
         );
+        cfg.set_call_contract(
+            accessor,
+            CfgCallContract::new(
+                [CfgCallContractArg {
+                    ty: Type::I32,
+                    mode: crate::CfgArgMode::Normal,
+                }],
+                Type::I32,
+            ),
+        );
         cfg.get_block_mut(body).terminator = term;
         let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.loops_unrolled, 1);
+        cfg.verify_with_fixture_pool().unwrap();
+        assert!(
+            cfg.blocks()
+                .iter()
+                .flat_map(|block| block.insts.iter())
+                .any(|value| {
+                    matches!(cfg.get_inst(*value).data, CfgInstData::AccessorCall { .. })
+                        && cfg.call_contract(*value).is_some()
+                })
+        );
     }
 }

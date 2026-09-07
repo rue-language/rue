@@ -676,6 +676,9 @@ fn user_call_layout_is_rejected_before_unmodeled_operands_run() {
     // Every source/target mode mismatch is one slot wide for this scalar, so
     // a total-width-only guard cannot distinguish it. The Pair probe instead
     // replaces a valid two-slot argument with the one-slot entropy value.
+    // The CFG publication boundary owns this defense: once the call's AIR
+    // contract is frozen, malformed edits must be rejected before the oracle
+    // interpreter sees the graph.
     for (callee_name, replacement_mode) in [
         ("normal", CfgArgMode::Borrow),
         ("normal", CfgArgMode::Inout),
@@ -731,41 +734,37 @@ fn user_call_layout_is_rejected_before_unmodeled_operands_run() {
             )
         };
 
+        let callee_cfg = state
+            .functions
+            .iter()
+            .find(|function| function.is_source_named(callee_name))
+            .map(|function| &*function.cfg)
+            .unwrap_or_else(|| panic!("missing CFG for {callee_name}"));
+        let layout_error = expect_flow_unsupported(contract_interp(&state).preflight_call_layout(
+            callee_cfg,
+            callee_name,
+            [(Type::U32, replacement_mode)],
+        ));
+        assert_eq!(
+            layout_error.kind(),
+            UnsupportedKind::ContractViolation(ContractViolationKind::CallParameterLayout),
+            "{callee_name} must retain the direct callee-layout preflight"
+        );
+
         let type_pool = state.type_pool().clone();
         let cfg = &mut state.functions[main_index].cfg;
         let mut args = cfg.get_call_args(&cfg.get_inst(call).data).to_vec();
         assert_eq!(args.len(), 1, "{callee_name} probe arity");
         args[0].value = random;
         args[0].mode = replacement_mode;
-        cfg.try_edit(&type_pool, |editor| editor.replace_call_args(call, args))
-            .unwrap();
-
-        let cfg = &state.functions[main_index].cfg;
-        let mut interp = Interp {
-            state: &state,
-            stdout_trace: Vec::new(),
-            stdout_bytes: 0,
-            stdout_cap: MAX_STDOUT_BYTES,
-            stderr_cap: MAX_STDERR_BYTES,
-            budget: STEP_BUDGET,
-            depth: 0,
-            heap: Vec::new(),
-            small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
-            heap_metadata_bytes: 0,
-        };
-        let mut frame = Frame {
-            params: Vec::new(),
-            locals: HashMap::new(),
-            cache: HashMap::new(),
-            promoted: HashMap::new(),
-            param_places: HashMap::new(),
-            place_return: false,
-        };
-        let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, call));
-        assert_eq!(
-            unsupported.kind(),
-            UnsupportedKind::ContractViolation(ContractViolationKind::CallParameterLayout),
-            "{callee_name} with {replacement_mode:?} must reject malformed static layout before @random_u32"
+        let error = cfg
+            .try_edit(&type_pool, |editor| editor.replace_call_args(call, args))
+            .expect_err("malformed call edits must fail CFG publication");
+        assert!(
+            error
+                .to_string()
+                .contains("no longer satisfies its established contract"),
+            "{callee_name} with {replacement_mode:?} should fail at the CFG contract boundary: {error}"
         );
     }
 }
@@ -1092,9 +1091,9 @@ fn empty_slice_null_is_a_const_gap_and_user_int_to_ptr_stays_distinct() {
         .iter()
         .position(|function| function.is_source_named("main"))
         .unwrap();
-    let (pointer, init, consumer, mut args) = {
+    let (init, consumer, mut args) = {
         let cfg = &wrong_consumer.functions[main].cfg;
-        let (_, pointer, init) = find_empty_slice_pointer_in_function(&wrong_consumer, "main");
+        let (_, _, init) = find_empty_slice_pointer_in_function(&wrong_consumer, "main");
         let (consumer, args) = cfg
             .blocks()
             .iter()
@@ -1106,19 +1105,22 @@ fn empty_slice_null_is_a_const_gap_and_user_int_to_ptr_stays_distinct() {
                     .filter(|(_, args)| args.iter().any(|arg| arg.value == init))
             })
             .expect("slice call consumer");
-        (pointer, init, consumer, args)
+        (init, consumer, args)
     };
     args.iter_mut()
         .find(|arg| arg.value == init)
         .expect("slice argument")
         .mode = CfgArgMode::Borrow;
     let pool = wrong_consumer.functions[main].type_pool.clone();
-    wrong_consumer.functions[main]
+    let error = wrong_consumer.functions[main]
         .cfg
         .try_edit(&pool, |editor| editor.replace_call_args(consumer, args))
-        .unwrap();
-    let cfg = &wrong_consumer.functions[main].cfg;
-    assert!(!contract_interp(&wrong_consumer).is_empty_slice_pointer(cfg, pointer));
+        .expect_err("mutating a user-call mode must fail CFG publication");
+    assert!(
+        error
+            .to_string()
+            .contains("no longer satisfies its established contract")
+    );
 
     let mut wrong_init_type = query_cfg_state_with_preview_features(source, &preview)
         .expect("slice type probe must compile");
@@ -1127,14 +1129,17 @@ fn empty_slice_null_is_a_const_gap_and_user_int_to_ptr_stays_distinct() {
         .iter()
         .position(|function| function.is_source_named("main"))
         .unwrap();
-    let (_, pointer, init) = find_empty_slice_pointer_in_function(&wrong_init_type, "main");
+    let (_, _, init) = find_empty_slice_pointer_in_function(&wrong_init_type, "main");
     let pool = wrong_init_type.functions[main].type_pool.clone();
-    wrong_init_type.functions[main]
+    let error = wrong_init_type.functions[main]
         .cfg
         .try_edit(&pool, |editor| editor.replace_inst_type(init, Type::UNIT))
-        .unwrap();
-    let cfg = &wrong_init_type.functions[main].cfg;
-    assert!(!contract_interp(&wrong_init_type).is_empty_slice_pointer(cfg, pointer));
+        .expect_err("mutating a user-call operand type must fail CFG publication");
+    assert!(
+        error
+            .to_string()
+            .contains("no longer satisfies its established contract")
+    );
 }
 
 #[test]
