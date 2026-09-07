@@ -87,6 +87,19 @@ pub fn checked_cell_byte_offset(cell_index: u64) -> Result<i32, FrameBudgetExcee
     .map_err(|_| FrameBudgetExceeded)
 }
 
+/// Byte offset of logical slot `slot` within an ascending slot-shaped image,
+/// frame region, or pointee.
+///
+/// This is [`checked_cell_byte_offset`] under the name the slot-by-slot walks
+/// use, so aggregate memory traffic reads its stride from the one layout
+/// authority instead of re-deriving `* SLOT_BYTES` at each access site. A slot
+/// index that overruns the displacement budget is a planning bug rather than a
+/// program input, so it is reported as a panic-backed ICE.
+#[inline]
+pub fn slot_byte_offset(slot: usize) -> i32 {
+    checked_cell_byte_offset(slot as u64).expect("a slot's byte offset must fit displacement")
+}
+
 /// Convert a byte count used as a machine displacement or immediate without
 /// allowing a narrowing conversion to wrap.
 #[inline]

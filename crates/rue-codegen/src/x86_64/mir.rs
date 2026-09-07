@@ -4,6 +4,28 @@
 //! - Maps closely to actual x86-64 instructions
 //! - Uses virtual registers (unlimited) that are later allocated to physical registers
 //! - Can be emitted to machine code or assembly text
+//!
+//! # Label Namespace Separation
+//!
+//! During lowering, we need to generate labels for two distinct purposes:
+//!
+//! 1. **Block labels** - Each CFG basic block gets a label for control flow
+//!    (jumps, branches, etc.). These are derived deterministically from block IDs.
+//!
+//! 2. **Inline labels** - Generated during instruction lowering for things like
+//!    overflow checks, bounds checks, division-by-zero checks, and conditional
+//!    branches within a single CFG instruction.
+//!
+//! To prevent collisions, we partition the `u32` label ID space:
+//!
+//! - **Inline labels**: IDs `0` to `BLOCK_LABEL_BASE - 1` (allocated via [`X86Mir::alloc_label`])
+//! - **Block labels**: IDs `BLOCK_LABEL_BASE` to `u32::MAX` (computed via [`X86Mir::block_label`])
+//!
+//! See [`crate::vreg::BLOCK_LABEL_BASE`] for the constant definition.
+//!
+//! This gives each namespace ~2 billion IDs, which is more than sufficient for
+//! any realistic function. The separation is handled automatically by the
+//! respective methods.
 
 use std::fmt;
 
@@ -20,7 +42,7 @@ const _: () = assert!(std::mem::size_of::<X86Inst>() <= 40);
 pub use crate::reg_class::{RegClass, VRegClasses};
 pub use crate::value_plan::FloatWidth;
 use crate::vreg::MirState;
-pub use crate::vreg::{LabelId, VReg};
+pub use crate::vreg::{BLOCK_LABEL_BASE, LabelId, VReg};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FloatBinOp {
@@ -1561,11 +1583,29 @@ impl X86Mir {
         self.state.vreg_class(vreg)
     }
 
-    /// Allocate a new label ID.
+    /// Allocate a new inline label ID.
+    ///
+    /// These labels are used for control flow within instruction lowering
+    /// (overflow checks, bounds checks, etc.). IDs are allocated starting
+    /// from 0 and incrementing, staying within the lower half of the ID space.
+    ///
+    /// See the module documentation for details on label namespace separation.
     pub fn alloc_label(&mut self) -> LabelId {
         let label = LabelId::new(self.next_label);
         self.next_label += 1;
         label
+    }
+
+    /// Get the label for a CFG basic block.
+    ///
+    /// Block labels use IDs in the upper half of the `u32` space (starting at
+    /// [`BLOCK_LABEL_BASE`]) to avoid collisions with inline labels allocated by
+    /// [`Self::alloc_label`]. The mapping is deterministic: `block_id` maps to
+    /// `BLOCK_LABEL_BASE + block_id`.
+    ///
+    /// See the module documentation for details on label namespace separation.
+    pub fn block_label(block_id: u32) -> LabelId {
+        LabelId::new(BLOCK_LABEL_BASE + block_id)
     }
 
     /// Get the number of virtual registers allocated.

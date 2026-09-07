@@ -105,6 +105,33 @@ fn gp_result_index(pieces: rue_air::RegisterPieces) -> usize {
 /// register — so the two directions name one register file.
 pub(super) const FP_RET_REGS: [Reg; 8] = FP_ARG_REGS;
 
+/// This target's answer to [`crate::call_plan::ScratchOverlap`], read off the
+/// rosters above rather than asserted: the reload scratch registers `x9` and
+/// `v16` sit outside the `x0`-`x7` and `v0`-`v7` result banks, so no spill
+/// reload can land in a result register and a register return writes its
+/// result registers forward.
+pub(super) const RETURN_SCRATCH_OVERLAP: crate::call_plan::ScratchOverlap = {
+    let aliases = roster_contains(&RET_REGS, super::mir::SCRATCH_VALUE)
+        || roster_contains(&FP_RET_REGS, super::mir::SCRATCH_FP_VALUE);
+    if aliases {
+        crate::call_plan::ScratchOverlap::AliasesResultRegister
+    } else {
+        crate::call_plan::ScratchOverlap::Disjoint
+    }
+};
+
+/// Whether `roster` names `reg`.
+const fn roster_contains(roster: &[Reg], reg: Reg) -> bool {
+    let mut index = 0;
+    while index < roster.len() {
+        if roster[index] as u8 == reg as u8 {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
 // Call sequences and the prologue name these registers physically, and liveness
 // models neither those physical definitions nor their uses. So they must be off
 // limits to the allocator, not merely unlikely to collide (RUE-1146).
@@ -568,87 +595,8 @@ impl<'a> CfgLower<'a> {
         });
     }
 
-    /// Recursively collect all scalar vregs from a struct value.
     fn ensure_by_ref_param_ptr(&mut self, param_slot: u32) -> VReg {
-        if let Some(ptr_vreg) = self.by_ref_param_ptrs.get(&param_slot).copied() {
-            return ptr_vreg;
-        }
-
-        // Load the pointer from the param's frame home. A register-only
-        // by-ref pointer (RUE-1170) never reaches this load: the entry
-        // preamble copies it out of its argument register into the cache
-        // before any block is lowered, so the memoized hit above serves it.
-        // Stack-passed pointers stay homed by the prologue, so this load is
-        // uniform regardless of param count.
-        let ptr_vreg = self.mir.alloc_vreg();
-        let slot = self.ctx.param_frame_slot(param_slot);
-        let offset = self.ctx.local_offset(slot);
-        self.mir.push(Aarch64Inst::Ldr {
-            dst: Operand::Virtual(ptr_vreg),
-            base: Reg::Fp,
-            offset,
-        });
-
-        // Cache it for future use
-        self.by_ref_param_ptrs.insert(param_slot, ptr_vreg);
-        ptr_vreg
-    }
-
-    /// Copy every register-only parameter (RUE-1170) out of its incoming
-    /// argument register into a virtual register, before CFG control flow
-    /// begins: the argument registers are caller-saved, so the copies must
-    /// precede every call and dominate every use (including loop back-edges
-    /// into the entry block). A register-only by-ref pointer seeds the
-    /// by-ref cache directly.
-    fn materialize_register_params(&mut self) {
-        for (param_slot, class, location) in self.ctx.param_entry_copies() {
-            let (vreg, copy) = match (class, location) {
-                (
-                    crate::abi_slot_class::AbiSlotClass::Gp,
-                    crate::call_plan::AbiSlotLocation::GpReg(class_index),
-                ) => {
-                    let vreg = self.mir.alloc_vreg();
-                    (
-                        vreg,
-                        Aarch64Inst::MovRR {
-                            dst: Operand::Virtual(vreg),
-                            src: Operand::Physical(ARG_REGS[class_index]),
-                        },
-                    )
-                }
-                (
-                    crate::abi_slot_class::AbiSlotClass::Fp(width),
-                    crate::call_plan::AbiSlotLocation::FpReg(class_index),
-                ) => {
-                    let vreg = self.mir.alloc_vreg_in(crate::reg_class::RegClass::Fp);
-                    (
-                        vreg,
-                        Aarch64Inst::FloatMov {
-                            dst: Operand::Virtual(vreg),
-                            src: Operand::Physical(FP_ARG_REGS[class_index]),
-                            width,
-                        },
-                    )
-                }
-                _ => unreachable!("register-only parameter class and ABI bank must agree"),
-            };
-            self.mir.push(copy);
-            if self.ctx.cfg.is_param_by_ref(param_slot) {
-                self.by_ref_param_ptrs.insert(param_slot, vreg);
-            } else {
-                self.param_reg_vregs.insert(param_slot, vreg);
-            }
-        }
-    }
-
-    /// Materialize every by-reference parameter pointer before CFG control
-    /// flow begins, so the function-wide cache only contains definitions that
-    /// dominate every block which may reuse them.
-    fn preload_by_ref_param_ptrs(&mut self) {
-        self.materialize_register_params();
-        for param_slot in crate::value_plan::by_ref_param_slots(&self.ctx) {
-            self.ensure_by_ref_param_ptr(param_slot);
-        }
+        crate::cfg_lower::ensure_by_ref_param_ptr(self, param_slot)
     }
 
     fn block_label(&self, block_id: BlockId) -> LabelId {
@@ -1024,21 +972,7 @@ impl<'a> CfgLower<'a> {
         &mut self,
         actions: Vec<crate::value_plan::DropAction>,
     ) -> crate::value_plan::ValueResult {
-        for action in actions {
-            // One cleanup call at a time: building the plan emits the
-            // argument's marshaling, and a caller-owned indirect copy must stay
-            // live until the call it belongs to has returned.
-            let plan = crate::call_plan::CallPlan::from_inputs(
-                crate::call_plan::CallTarget::rue(action.symbol),
-                crate::call_plan::ReturnPlan::ZeroSized,
-                std::slice::from_ref(&action.argument),
-                std::slice::from_ref(&action.native),
-                self,
-            );
-            let _ = self.lower_call_plan(plan);
-        }
-
-        crate::value_plan::ValueResult::SideEffect
+        crate::cfg_lower::lower_drop_plan(self, actions)
     }
 
     fn lower_call_plan(
@@ -1257,38 +1191,10 @@ impl<'a> CfgLower<'a> {
     }
 
     /// Extend a foreign scalar return (in `vreg`) to its canonical 64-bit form
-    /// per the target-C classifier (ADR-0064 P2). The narrow value occupies the
-    /// low bits of `x0` with unspecified high bits; this restores the sign/zero
-    /// extension Rue's scalar invariant relies on.
+    /// per the target-C classifier (ADR-0064 P2), through this backend's one
+    /// extension primitive.
     fn emit_c_return_extension(&mut self, vreg: VReg, ext: rue_air::ScalarAbiExtension) {
-        use rue_air::ScalarAbiExtension;
-        let dst = Operand::Virtual(vreg);
-        let src = Operand::Virtual(vreg);
-        match ext {
-            ScalarAbiExtension::None => {}
-            ScalarAbiExtension::Signed { from_bits: 8 } => {
-                self.mir.push(Aarch64Inst::Sxtb { dst, src })
-            }
-            ScalarAbiExtension::Signed { from_bits: 16 } => {
-                self.mir.push(Aarch64Inst::Sxth { dst, src })
-            }
-            ScalarAbiExtension::Signed { from_bits: 32 } => {
-                self.mir.push(Aarch64Inst::Sxtw { dst, src })
-            }
-            ScalarAbiExtension::Unsigned { from_bits: 8 } => {
-                self.mir.push(Aarch64Inst::Uxtb { dst, src })
-            }
-            ScalarAbiExtension::Unsigned { from_bits: 16 } => {
-                self.mir.push(Aarch64Inst::Uxth { dst, src })
-            }
-            ScalarAbiExtension::Unsigned { from_bits: 32 } => {
-                self.mir.push(Aarch64Inst::Uxtw { dst, src });
-            }
-            ScalarAbiExtension::Signed { from_bits }
-            | ScalarAbiExtension::Unsigned { from_bits } => {
-                panic!("unexpected target-C scalar extension width {from_bits}")
-            }
-        }
+        self.emit_extension(vreg, vreg, crate::cfg_lower::c_return_extension(ext));
     }
 
     /// Write the aggregate `value`'s leaves into the compact image at
@@ -2036,99 +1942,7 @@ impl<'a> CfgLower<'a> {
         ty: Type,
         policy: crate::value_plan::ValuePlan,
     ) -> (VReg, Vec<VReg>) {
-        // A slot's register class follows its LEAF, not the type wrapped around
-        // it (RUE-2001): a `struct Q { f: f64 }` and a bare `f64` hold the same
-        // thing in the same one slot, so reading the width off the parameter's
-        // own type would load a float-carrying wrapper with an integer load into
-        // a general-purpose register and hand it to a float-typed consumer.
-        let leaf_types = crate::types::aggregate_leaf_types(self.ctx.type_pool, ty);
-        let float_width = crate::value_plan::primary_slot_float_width(&leaf_types);
-        let dst = self.mir.alloc_vreg_in(if float_width.is_some() {
-            crate::reg_class::RegClass::Fp
-        } else {
-            crate::reg_class::RegClass::Gp
-        });
-        let count = policy.shape.slot_count();
-        if count == 0 {
-            // No slot to load: `dst` stays the never-read placeholder.
-            return (dst, Vec::new());
-        }
-        if let crate::value_plan::StoragePolicy::ParameterSlot { by_ref: true, .. } = policy.storage
-        {
-            let ptr = self.ensure_by_ref_param_ptr(index);
-            if count > 1 {
-                let slots: Vec<_> = (0..count)
-                    .map(|slot| {
-                        let v = self.mir.alloc_vreg();
-                        self.mir.push(Aarch64Inst::LdrIndexedOffset {
-                            dst: Operand::Virtual(v),
-                            base: ptr,
-                            offset: (slot * 8) as i32,
-                        });
-                        v
-                    })
-                    .collect();
-                return (slots[0], slots);
-            }
-            if let Some(width) = float_width {
-                <Self as crate::place_lower::PlaceLowerBackend>::emit_load_ptr_base(
-                    self,
-                    dst,
-                    ptr,
-                    Some(width),
-                );
-            } else {
-                self.mir.push(Aarch64Inst::LdrIndexed {
-                    dst: Operand::Virtual(dst),
-                    base: ptr,
-                });
-            }
-        } else if count > 1 {
-            let slots: Vec<_> = (0..count)
-                .map(|slot| {
-                    let width = crate::value_plan::float_width(leaf_types[slot as usize]);
-                    let v = self.mir.alloc_vreg_in(if width.is_some() {
-                        crate::reg_class::RegClass::Fp
-                    } else {
-                        crate::reg_class::RegClass::Gp
-                    });
-                    let frame_slot = self.ctx.param_value_low_slot(index, count) - slot;
-                    if let Some(width) = width {
-                        <Self as crate::place_lower::PlaceLowerBackend>::emit_float_load_slot(
-                            self, v, frame_slot, width,
-                        );
-                    } else {
-                        self.mir.push(Aarch64Inst::Ldr {
-                            dst: Operand::Virtual(v),
-                            base: Reg::Fp,
-                            offset: self.ctx.local_offset(frame_slot),
-                        });
-                    }
-                    v
-                })
-                .collect();
-            return (slots[0], slots);
-        } else if let Some(&vreg) = self.param_reg_vregs.get(&index) {
-            // Register-only scalar (RUE-1170): the entry preamble copied the
-            // argument register into one read-only vreg shared by every read.
-            return (vreg, Vec::new());
-        } else if let Some(width) = float_width {
-            <Self as crate::place_lower::PlaceLowerBackend>::emit_float_load_slot(
-                self,
-                dst,
-                self.ctx.param_value_low_slot(index, 1),
-                width,
-            );
-        } else {
-            self.mir.push(Aarch64Inst::Ldr {
-                dst: Operand::Virtual(dst),
-                base: Reg::Fp,
-                offset: self
-                    .ctx
-                    .local_offset(self.ctx.param_value_low_slot(index, 1)),
-            });
-        }
-        (dst, Vec::new())
+        crate::cfg_lower::lower_param_value(self, index, ty, policy)
     }
 
     fn lower_scalar_comparison(
@@ -3502,6 +3316,7 @@ impl<'a> CfgLower<'a> {
             IntegerExtension::Sign16 => Aarch64Inst::Sxth { dst, src },
             IntegerExtension::Zero16 => Aarch64Inst::Uxth { dst, src },
             IntegerExtension::Sign32 => Aarch64Inst::Sxtw { dst, src },
+            IntegerExtension::Zero32 => Aarch64Inst::Uxtw { dst, src },
         });
     }
 
@@ -3541,174 +3356,8 @@ impl<'a> CfgLower<'a> {
         self.emit_extension(vreg, vreg, extension);
     }
 
-    /// Emit a comparison instruction.
     fn emit_terminator_plan(&mut self, plan: crate::terminator_plan::TerminatorPlan) {
-        use crate::terminator_plan::{ReturnMode, ReturnValuePlan, TerminatorPlan};
-
-        match plan {
-            TerminatorPlan::Goto { edge } => {
-                self.emit_edge_moves(&edge);
-                if !edge.fallthrough {
-                    self.mir.push(Aarch64Inst::B {
-                        label: self.block_label(edge.target),
-                    });
-                }
-            }
-            TerminatorPlan::Branch {
-                condition,
-                then_edge,
-                else_edge,
-            } => {
-                if then_edge.fallthrough {
-                    let then_setup_label = self.mir.alloc_label();
-                    self.mir.push(Aarch64Inst::Cbnz {
-                        src: Operand::Virtual(condition),
-                        label: then_setup_label,
-                    });
-                    self.emit_edge_moves(&else_edge);
-                    if !else_edge.fallthrough {
-                        self.mir.push(Aarch64Inst::B {
-                            label: self.block_label(else_edge.target),
-                        });
-                    }
-                    self.mir.push(Aarch64Inst::Label {
-                        id: then_setup_label,
-                    });
-                    self.emit_edge_moves(&then_edge);
-                } else {
-                    let else_setup_label = self.mir.alloc_label();
-                    self.mir.push(Aarch64Inst::Cbz {
-                        src: Operand::Virtual(condition),
-                        label: else_setup_label,
-                    });
-                    self.emit_edge_moves(&then_edge);
-                    if !then_edge.fallthrough {
-                        self.mir.push(Aarch64Inst::B {
-                            label: self.block_label(then_edge.target),
-                        });
-                    }
-                    self.mir.push(Aarch64Inst::Label {
-                        id: else_setup_label,
-                    });
-                    self.emit_edge_moves(&else_edge);
-                    if !else_edge.fallthrough {
-                        self.mir.push(Aarch64Inst::B {
-                            label: self.block_label(else_edge.target),
-                        });
-                    }
-                }
-            }
-            TerminatorPlan::Switch {
-                scrutinee,
-                width,
-                cases,
-                default,
-            } => {
-                for case in cases {
-                    let case_vreg = self.mir.alloc_vreg();
-                    self.mir.push(Aarch64Inst::MovImm {
-                        dst: Operand::Virtual(case_vreg),
-                        imm: case.value,
-                    });
-                    if width.bits == 64 {
-                        self.mir.push(Aarch64Inst::Cmp64RR {
-                            src1: Operand::Virtual(scrutinee),
-                            src2: Operand::Virtual(case_vreg),
-                        });
-                    } else {
-                        self.mir.push(Aarch64Inst::CmpRR {
-                            src1: Operand::Virtual(scrutinee),
-                            src2: Operand::Virtual(case_vreg),
-                        });
-                    }
-                    self.mir.push(Aarch64Inst::BCond {
-                        cond: Cond::Eq,
-                        label: self.block_label(case.target),
-                    });
-                }
-                self.mir.push(Aarch64Inst::B {
-                    label: self.block_label(default),
-                });
-            }
-            TerminatorPlan::Return { mode } => match mode {
-                ReturnMode::Exit { call } => {
-                    let _ = self.lower_runtime_call(call);
-                }
-                ReturnMode::Function { value } => match value {
-                    ReturnValuePlan::ZeroSized => self.mir.push(Aarch64Inst::Ret),
-                    ReturnValuePlan::Scalar { value, float_width } => {
-                        self.mir.push(
-                            if self.mir.vreg_class(value) == crate::reg_class::RegClass::Fp {
-                                Aarch64Inst::FloatMov {
-                                    dst: Operand::Physical(Reg::V0),
-                                    src: Operand::Virtual(value),
-                                    width: float_width.expect("FP return width"),
-                                }
-                            } else {
-                                Aarch64Inst::MovRR {
-                                    dst: Operand::Physical(Reg::X0),
-                                    src: Operand::Virtual(value),
-                                }
-                            },
-                        );
-                        self.mir.push(Aarch64Inst::Ret);
-                    }
-                    ReturnValuePlan::Aggregate {
-                        slots,
-                        return_plan,
-                        registers,
-                    } => {
-                        if let crate::call_plan::ReturnPlan::Sret { echoed, .. } = return_plan {
-                            let return_ty = self.ctx.cfg.return_type();
-                            match crate::types::aggregate_physical_slot_map(
-                                self.ctx.type_pool,
-                                return_ty,
-                            ) {
-                                Some(map) => {
-                                    // The sret image is written compact; its padding
-                                    // is zeroed first (ADR-0052 ruling 5).
-                                    let padding =
-                                        self.ctx.type_pool.compact_image_padding_ranges(return_ty);
-                                    crate::agg_slots::store_slots_to_sret_compact(
-                                        self, &slots, &map, &padding,
-                                    )
-                                }
-                                None => match crate::types::aggregate_dispatch_image(
-                                    self.ctx.type_pool,
-                                    return_ty,
-                                ) {
-                                    // Heterogeneous compact aggregate return (RUE-1037):
-                                    // write the sret image with a per-variant tag dispatch.
-                                    Some(image) => crate::agg_slots::store_dispatch_image_to_sret(
-                                        self, &slots, &image,
-                                    ),
-                                    None => crate::agg_slots::store_slots_to_sret(self, &slots),
-                                },
-                            }
-                            // AAPCS64's dedicated `x8` is not echoed; the field
-                            // is read rather than assumed so the two rows stay
-                            // one rule.
-                            if echoed {
-                                crate::agg_slots::SlotBackend::emit_sret_pointer_echo(self);
-                            }
-                        } else {
-                            match registers.as_ref() {
-                                Some(registers) => self.write_return_registers(registers, &slots),
-                                // A zero-sized aggregate names no result
-                                // register because it has no bytes to carry.
-                                None => assert!(
-                                    slots.is_empty(),
-                                    "only a zero-sized aggregate return names no \
-                                     result register"
-                                ),
-                            }
-                        }
-                        self.mir.push(Aarch64Inst::Ret);
-                    }
-                },
-            },
-            TerminatorPlan::Unreachable => self.mir.push(Aarch64Inst::Brk),
-        }
+        crate::cfg_lower::emit_terminator_plan(self, plan)
     }
 
     /// Read one register-returned value's eightbytes out of the result
@@ -3764,6 +3413,11 @@ impl<'a> CfgLower<'a> {
     /// its register; otherwise the leaves are marshaled through the value's
     /// compact image first, and a floating-point piece then carries an image
     /// lane whose bits move whole.
+    ///
+    /// The moves run in the order
+    /// [`ReturnRegisters::write_order`](crate::call_plan::ReturnRegisters::write_order)
+    /// gives for this target's [`RETURN_SCRATCH_OVERLAP`], which is a
+    /// correctness property of a multi-eightbyte return, not a preference.
     fn write_return_registers(
         &mut self,
         registers: &crate::call_plan::ReturnRegisters,
@@ -3779,7 +3433,8 @@ impl<'a> CfgLower<'a> {
             eightbytes.len(),
             "a register return names a result register for every eightbyte"
         );
-        for (reg, value) in registers.regs.iter().zip(&eightbytes) {
+        for position in registers.write_order(RETURN_SCRATCH_OVERLAP) {
+            let (reg, value) = (&registers.regs[position], &eightbytes[position]);
             match *reg {
                 crate::call_plan::ReturnSlotReg::Gp(index) => self.mir.push(Aarch64Inst::MovRR {
                     dst: Operand::Physical(RET_REGS[index]),
@@ -3807,37 +3462,8 @@ impl<'a> CfgLower<'a> {
         }
     }
 
-    fn emit_edge_moves(&mut self, edge: &crate::terminator_plan::EdgePlan) {
-        for movement in &edge.moves {
-            self.mir.push(if let Some(width) = movement.float_width {
-                Aarch64Inst::FloatMov {
-                    dst: Operand::Virtual(movement.destination),
-                    src: Operand::Virtual(movement.source),
-                    width,
-                }
-            } else {
-                Aarch64Inst::MovRR {
-                    dst: Operand::Virtual(movement.destination),
-                    src: Operand::Virtual(movement.source),
-                }
-            });
-        }
-    }
-
-    /// Get the vreg for a CFG value.
     fn get_vreg(&mut self, value: CfgValue) -> VReg {
-        if let Some(&vreg) = self.value_map.get(&value) {
-            return vreg;
-        }
-
-        // Not yet lowered - lower it now
-        let ctx = self.ctx;
-        crate::value_plan::lower_value(&ctx, self, value);
-
-        self.value_map
-            .get(&value)
-            .copied()
-            .expect("value should have been lowered")
+        crate::cfg_lower::get_vreg(self, value)
     }
 }
 
@@ -3863,19 +3489,7 @@ impl crate::terminator_plan::TerminatorAdapter for CfgLower<'_> {
         value: CfgValue,
         plan: crate::value_plan::ValuePlan,
     ) -> crate::value_plan::MaterializedValue {
-        let primary = self.block_param_vregs[&(target, param_index)];
-        let slots = if plan.shape.requires_complete_slots() {
-            let slots = self
-                .struct_slot_vregs
-                .get(&value)
-                .cloned()
-                .expect("aggregate block parameter slots should be preallocated");
-            plan.assert_complete_slots(slots.len());
-            slots
-        } else {
-            Vec::new()
-        };
-        crate::value_plan::MaterializedValue { primary, slots }
+        crate::cfg_lower::materialize_block_param(self, target, param_index, value, plan)
     }
 
     fn emit_block_label(&mut self, block: BlockId) {
@@ -3891,39 +3505,11 @@ impl crate::terminator_plan::TerminatorAdapter for CfgLower<'_> {
 
 impl crate::terminator_plan::CfgLowerAdapter for CfgLower<'_> {
     fn preload_by_ref_params(&mut self) {
-        self.preload_by_ref_param_ptrs();
-        // Read each by-value aggregate parameter whose leaves are not its
-        // eightbytes back out of the compact image the prologue laid down, so
-        // field projection and whole-value reads see the correct decomposition
-        // (ADR-0084).
-        for (base_slot, image_slot_offset, through_pointer, image) in
-            crate::value_plan::param_image_unmarshals(&self.ctx)
-        {
-            crate::agg_slots::unmarshal_param_image(
-                self,
-                base_slot,
-                image_slot_offset,
-                through_pointer,
-                &image,
-            );
-        }
+        crate::cfg_lower::preload_by_ref_params(self)
     }
 
     fn prepare_block_param(&mut self, block: BlockId, index: u32, value: CfgValue, ty: Type) {
-        let primary_ty = crate::types::aggregate_leaf_types(self.ctx.type_pool, ty)
-            .first()
-            .copied()
-            .unwrap_or(ty);
-        let vreg =
-            self.mir
-                .alloc_vreg_in(if crate::value_plan::float_width(primary_ty).is_some() {
-                    crate::reg_class::RegClass::Fp
-                } else {
-                    crate::reg_class::RegClass::Gp
-                });
-        self.block_param_vregs.insert((block, index), vreg);
-        self.value_map.insert(value, vreg);
-        crate::agg_slots::preallocate_block_param_slots(self, value, ty, vreg);
+        crate::cfg_lower::prepare_block_param(self, block, index, value, ty)
     }
 
     fn value_description(&self, value: CfgValue) -> String {
@@ -4467,6 +4053,149 @@ impl crate::foreign_call::ForeignCallLoweringBackend for CfgLower<'_> {
                 self.mir.push(Aarch64Inst::FloatMov { dst, src, width })
             }
         }
+    }
+}
+
+impl<'a> crate::cfg_lower::LoweringDriverBackend<'a> for CfgLower<'a> {
+    fn lowering_context(&self) -> crate::cfg_lower::CfgLowerContext<'a> {
+        self.ctx
+    }
+
+    fn value_map(&mut self) -> &mut AHashMap<CfgValue, VReg> {
+        &mut self.value_map
+    }
+
+    fn block_param_vregs(&mut self) -> &mut AHashMap<(BlockId, u32), VReg> {
+        &mut self.block_param_vregs
+    }
+
+    fn by_ref_param_ptrs(&mut self) -> &mut AHashMap<u32, VReg> {
+        &mut self.by_ref_param_ptrs
+    }
+
+    fn param_reg_vregs(&mut self) -> &mut AHashMap<u32, VReg> {
+        &mut self.param_reg_vregs
+    }
+
+    fn emit_float_reg_move(&mut self, dst: VReg, src: VReg, width: FloatWidth) {
+        self.mir.push(Aarch64Inst::FloatMov {
+            dst: Operand::Virtual(dst),
+            src: Operand::Virtual(src),
+            width,
+        });
+    }
+
+    fn emit_gp_arg_register_copy(&mut self, dst: VReg, index: usize) {
+        self.mir.push(Aarch64Inst::MovRR {
+            dst: Operand::Virtual(dst),
+            src: Operand::Physical(ARG_REGS[index]),
+        });
+    }
+
+    fn emit_fp_arg_register_copy(&mut self, dst: VReg, index: usize, width: FloatWidth) {
+        self.mir.push(Aarch64Inst::FloatMov {
+            dst: Operand::Virtual(dst),
+            src: Operand::Physical(FP_ARG_REGS[index]),
+            width,
+        });
+    }
+
+    fn lower_call_plan(
+        &mut self,
+        plan: crate::call_plan::CallPlan,
+    ) -> crate::value_plan::MaterializedValue {
+        CfgLower::lower_call_plan(self, plan)
+    }
+
+    fn emit_jump_to_block(&mut self, target: BlockId) {
+        let label = self.block_label(target);
+        self.mir.push(Aarch64Inst::B { label });
+    }
+
+    fn emit_branch_if_nonzero(&mut self, condition: VReg, label: LabelId) {
+        self.mir.push(Aarch64Inst::Cbnz {
+            src: Operand::Virtual(condition),
+            label,
+        });
+    }
+
+    fn emit_branch_if_zero(&mut self, condition: VReg, label: LabelId) {
+        self.mir.push(Aarch64Inst::Cbz {
+            src: Operand::Virtual(condition),
+            label,
+        });
+    }
+
+    fn emit_switch_case_compare(
+        &mut self,
+        scrutinee: VReg,
+        value: i64,
+        width: crate::value_plan::IntegerWidth,
+    ) {
+        let case_vreg = self.mir.alloc_vreg();
+        self.mir.push(Aarch64Inst::MovImm {
+            dst: Operand::Virtual(case_vreg),
+            imm: value,
+        });
+        if width.bits == 64 {
+            self.mir.push(Aarch64Inst::Cmp64RR {
+                src1: Operand::Virtual(scrutinee),
+                src2: Operand::Virtual(case_vreg),
+            });
+        } else {
+            self.mir.push(Aarch64Inst::CmpRR {
+                src1: Operand::Virtual(scrutinee),
+                src2: Operand::Virtual(case_vreg),
+            });
+        }
+    }
+
+    fn emit_branch_if_equal(&mut self, target: BlockId) {
+        let label = self.block_label(target);
+        self.mir.push(Aarch64Inst::BCond {
+            cond: Cond::Eq,
+            label,
+        });
+    }
+
+    fn emit_scalar_return_move(&mut self, value: VReg, float_width: Option<FloatWidth>) {
+        self.mir.push(
+            if self.mir.vreg_class(value) == crate::reg_class::RegClass::Fp {
+                Aarch64Inst::FloatMov {
+                    dst: Operand::Physical(Reg::V0),
+                    src: Operand::Virtual(value),
+                    width: float_width.expect("FP return width"),
+                }
+            } else {
+                Aarch64Inst::MovRR {
+                    dst: Operand::Physical(Reg::X0),
+                    src: Operand::Virtual(value),
+                }
+            },
+        );
+    }
+
+    fn emit_return(&mut self) {
+        self.mir.push(Aarch64Inst::Ret);
+    }
+
+    fn emit_unreachable(&mut self) {
+        self.mir.push(Aarch64Inst::Brk);
+    }
+
+    fn write_return_registers(
+        &mut self,
+        registers: &crate::call_plan::ReturnRegisters,
+        slots: &[VReg],
+    ) {
+        CfgLower::write_return_registers(self, registers, slots)
+    }
+
+    fn lower_runtime_call(
+        &mut self,
+        plan: crate::runtime_call_plan::RuntimeCallPlan,
+    ) -> crate::value_plan::MaterializedValue {
+        CfgLower::lower_runtime_call(self, plan)
     }
 }
 
@@ -5093,16 +4822,21 @@ mod tests {
     #[test]
     fn zero32_consumers_use_canonical_uxtw_not_shift_pair() {
         let source = include_str!("cfg_lower.rs");
-        let foreign = source
-            .split("ScalarAbiExtension::Unsigned { from_bits: 32 } => {")
+        // The canonical zero-extension is selected once, in this
+        // backend's single extension primitive; the foreign `unsigned int`
+        // return reaches it through `cfg_lower::c_return_extension`.
+        let widen = source
+            .split("IntegerExtension::Zero32 =>")
             .nth(1)
-            .expect("foreign u32 return extension must remain present")
-            .split("ScalarAbiExtension::Signed { from_bits }")
+            .expect("the canonical 32-bit zero-extension arm must remain present")
+            .split('\n')
             .next()
-            .expect("foreign extension match arm must have a following arm");
-        assert!(foreign.contains("Aarch64Inst::Uxtw"));
-        assert!(!foreign.contains("Aarch64Inst::LslImm"));
-        assert!(!foreign.contains("Aarch64Inst::Lsr64Imm"));
+            .expect("an extension arm is one line");
+        assert!(widen.contains("Aarch64Inst::Uxtw"));
+        assert!(!widen.contains("ShlRI"));
+        assert!(!widen.contains("ShrRI"));
+        assert!(!widen.contains("Lsl"));
+        assert!(!widen.contains("Lsr"));
         let bitcast = source
             .split("BitCastForm::Zero32 => {")
             .nth(1)
@@ -6881,6 +6615,94 @@ mod tests {
                 }
             )
         }));
+    }
+
+    /// A return filling this target's whole general-purpose result bank: eight
+    /// eightbytes, one per result register.
+    fn eight_eightbyte_register_return(
+        pool: &FrozenTypeInternPool,
+        interner: &ThreadedRodeo,
+        eight_id: StructId,
+    ) -> ValidatedCfg {
+        let eight_ty = Type::new_struct(eight_id);
+        let mut fixture = FixtureCfg::new(
+            eight_ty,
+            0,
+            "eight",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            pool,
+            interner,
+        );
+        let base = fixture.konst(7, Type::I64);
+        let fields: Vec<_> = (1..=8)
+            .map(|value| {
+                let literal = fixture.konst(value, Type::I64);
+                fixture.value(CfgInstData::BitXor(base, literal), Type::I64)
+            })
+            .collect();
+        let value = fixture.struct_init(eight_id, &fields, eight_ty);
+        fixture.ret(Some(value));
+        fixture.cfg.finish(pool).expect("test CFG must verify")
+    }
+
+    fn eight_i64_fields() -> [(&'static str, Type); 8] {
+        [
+            ("a", Type::I64),
+            ("b", Type::I64),
+            ("c", Type::I64),
+            ("d", Type::I64),
+            ("e", Type::I64),
+            ("f", Type::I64),
+            ("g", Type::I64),
+            ("h", Type::I64),
+        ]
+    }
+
+    #[test]
+    fn a_multi_eightbyte_return_writes_its_result_registers_forward() {
+        // The reload scratch registers `x9` and `v16` are outside the `x0`-`x7`
+        // and `v0`-`v7` result banks, so no spill reload can land on a result
+        // register and this backend's `RETURN_SCRATCH_OVERLAP` leaves the
+        // return's moves in ascending eightbyte order. The order itself is the
+        // shared decision in `call_plan::return_register_write_order`; only the
+        // predicate is this target's.
+        assert_eq!(
+            RETURN_SCRATCH_OVERLAP,
+            crate::call_plan::ScratchOverlap::Disjoint
+        );
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let eight_id = register_struct(&pool, &interner, "Eight", &eight_i64_fields());
+        let pool = pool.freeze();
+        let cfg = eight_eightbyte_register_return(&pool, &interner, eight_id);
+        let mir = CfgLower::new(&cfg, &pool, &interner, Target::Aarch64Linux)
+            .lower()
+            .expect("eight-eightbyte return must lower");
+        let written: Vec<_> = mir
+            .instructions()
+            .iter()
+            .filter_map(|inst| match inst {
+                Aarch64Inst::MovRR {
+                    dst: Operand::Physical(dst),
+                    src: Operand::Virtual(_),
+                } if RET_REGS.contains(dst) => Some(*dst),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            written,
+            vec![
+                Reg::X0,
+                Reg::X1,
+                Reg::X2,
+                Reg::X3,
+                Reg::X4,
+                Reg::X5,
+                Reg::X6,
+                Reg::X7
+            ]
+        );
     }
 
     #[test]

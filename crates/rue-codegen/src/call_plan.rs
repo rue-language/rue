@@ -241,6 +241,66 @@ impl ReturnRegisters {
     pub fn eightbytes(&self) -> usize {
         self.regs.len()
     }
+
+    /// The eightbyte positions of this return, in the order a callee must move
+    /// them into their result registers.
+    ///
+    /// See [`return_register_write_order`] for why the order is a correctness
+    /// property rather than a preference.
+    pub fn write_order(&self, scratch: ScratchOverlap) -> impl Iterator<Item = usize> + use<> {
+        return_register_write_order(self.eightbytes(), scratch)
+    }
+}
+
+/// Whether a target's register-allocation reload scratch is itself one of the
+/// result registers a return writes.
+///
+/// Every result register is reserved from allocation, so no *source* of a
+/// return move can be sitting in one — with a single exception. When a source
+/// vreg is spilled, register allocation rewrites the move to reload it through
+/// the target's fixed scratch register first, and on a target whose scratch
+/// register is one of the result registers that reload lands in a result
+/// register. SysV AMD64 is such a target twice over: `rax` is both
+/// `SCRATCH_VALUE` and `RET_REGS[0]`, and `xmm0` is both `SCRATCH_FP_VALUE` and
+/// `FP_RET_REGS[0]`. AAPCS64 is not: `x9` and `v16` sit outside `x0`-`x7` and
+/// `v0`-`v7`.
+///
+/// Backends derive this from their own rosters and scratch constants rather
+/// than asserting it, so moving a scratch role onto a result register — or a
+/// result roster onto a scratch register — changes the emission order with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScratchOverlap {
+    /// No scratch register is a result register; the return writes forward.
+    Disjoint,
+    /// A scratch register is also a result register; the return writes in
+    /// reverse.
+    AliasesResultRegister,
+}
+
+/// The eightbyte positions of a register return, in the order the callee must
+/// move them into their result registers.
+///
+/// With [`ScratchOverlap::AliasesResultRegister`] the moves run from the last
+/// eightbyte down to the first, so that any spill reload staged through the
+/// aliasing scratch register happens *before* the move that writes that
+/// register its final result value. Writing forward would instead let a later
+/// eightbyte's reload overwrite an earlier eightbyte's already-delivered
+/// result — silently corrupting eightbyte 0 of a multi-slot return whenever a
+/// later slot happens to be spilled.
+///
+/// With [`ScratchOverlap::Disjoint`] no reload can touch a result register, so
+/// the natural forward order stands.
+///
+/// The same hazard, in the other direction, orders a call's floating-point
+/// argument registers on x86-64 (`lower_foreign_call`).
+pub fn return_register_write_order(
+    eightbytes: usize,
+    scratch: ScratchOverlap,
+) -> impl Iterator<Item = usize> + use<> {
+    (0..eightbytes).map(move |position| match scratch {
+        ScratchOverlap::Disjoint => position,
+        ScratchOverlap::AliasesResultRegister => eightbytes - 1 - position,
+    })
 }
 
 /// The result registers a register-returned value of type `ty` occupies under
@@ -1133,6 +1193,41 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn a_return_writes_its_result_registers_forward_when_no_scratch_aliases_one() {
+        // AAPCS64's shape: `x9`/`v16` are outside the result banks, so nothing
+        // a spill reload stages can land on an already-written result register
+        // and the natural ascending order stands.
+        let order: Vec<usize> = return_register_write_order(4, ScratchOverlap::Disjoint).collect();
+        assert_eq!(order, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn a_return_writes_its_result_registers_in_reverse_when_a_scratch_aliases_one() {
+        // SysV AMD64's shape: `rax` is both the reload scratch and result
+        // register 0, so eightbyte 0 must be written last — after every later
+        // eightbyte's possible reload through it.
+        let order: Vec<usize> =
+            return_register_write_order(4, ScratchOverlap::AliasesResultRegister).collect();
+        assert_eq!(order, vec![3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn a_single_eightbyte_return_has_one_write_under_either_scratch_overlap() {
+        for scratch in [
+            ScratchOverlap::Disjoint,
+            ScratchOverlap::AliasesResultRegister,
+        ] {
+            let order: Vec<usize> = return_register_write_order(1, scratch).collect();
+            assert_eq!(order, vec![0], "{scratch:?}");
+            assert_eq!(
+                return_register_write_order(0, scratch).count(),
+                0,
+                "{scratch:?}"
+            );
+        }
     }
 
     #[test]
