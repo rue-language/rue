@@ -206,38 +206,69 @@ source = "const util = @import(\"util.rue\");\nfn main() -> i32 { util.value() }
 # and its status line on every tick, roughly four identical reports a second
 # for as long as someone sat inside the error.
 #
-# The report now belongs to the failure rather than to the tick. The case
-# stays inside one error for several retries, replaces it with a different one,
-# and finally repairs it, so all three of the behaviors that matter are pinned
-# together: the repeat is silent, a changed failure is not, and the repair
-# still publishes promptly.
+# The report now belongs to the failure rather than to the tick, and it returns
+# on two triggers: the rendered diagnostic changing, or a source in the watched
+# closure changing. The case walks both, plus the memory a successful revision
+# clears, because each is separately mutation-survivable — a suite that pins
+# only the silence would stay green while a later change quietly undid either
+# trigger.
+#
+# `rue test --watch` shares this loop, so `cli.watch_test` pins that the
+# suppression reaches the other watcher rather than re-deriving these three
+# behaviors against it.
 [[case]]
 name = "an_unchanged_reobserve_failure_is_reported_once_not_per_retry"
 files = [
-    { path = "main.rue", source = "const helper = @import(\"helper.rue\");\nfn main() -> i32 { helper.answer() }\n" },
+    { path = "main.rue", source = "const helper = @import(\"helper.rue\");\nconst other = @import(\"other.rue\");\nfn main() -> i32 { helper.answer() + other.extra() }\n" },
     { path = "helper.rue", source = "pub fn answer() -> i32 { 1 }\n" },
+    { path = "other.rue", source = "pub fn extra() -> i32 { 0 }\n" },
 ]
 
 [case.watch]
 kind = "repeated_failure"
-expected_exit_codes = [1, 2]
+# 1 + 0 to start; the repaired revision publishes 2 + 3, which is also the last
+# thing published — the verbatim re-break that follows it compiles nothing.
+expected_exit_codes = [1, 5]
 stderr_occurrences = [
-    # The first failure, held for several retries, reported once.
-    { text = "expected semicolon after expression", count = 1 },
-    # The second is a different message, so it is news and gets its own report.
-    { text = "expected 'mut' or identifier or '_', found ';'", count = 1 },
+    # The first failure, held for several retries, reported once. The code is
+    # part of the expectation: keeping the wording while moving the code would
+    # otherwise pass.
+    { text = "error: [E0102]: expected semicolon after expression", count = 1 },
+    # The second failure is reported three times over three revisions, and
+    # never twice for the same one: once when it replaces the first, once when
+    # an unrelated closure file is saved underneath it, and once when its exact
+    # bytes come back after a repair.
+    { text = "error: [E0100]: expected 'mut' or identifier or '_', found ';'", count = 3 },
     # One status line per report, not one per attempt.
-    { text = "keeping the last successful executable", count = 2 },
+    { text = "keeping the last successful executable", count = 4 },
 ]
 
+# Break the closure. Reported once, however many times it is retried.
 [[case.watch.edits]]
 path = "helper.rue"
 source = "pub fn answer() -> i32 { 1 \n"
 
+# A different failure, and so a different report.
 [[case.watch.edits]]
 path = "helper.rue"
 source = "pub fn answer() -> i32 { let ; }\n"
 
+# A save to another closure file. `helper.rue` is untouched and its rendering
+# is byte-identical, so the diagnostic half of the key cannot explain this
+# report; only the physical observation of the closure can.
+[[case.watch.edits]]
+path = "other.rue"
+source = "pub fn extra() -> i32 { 3 }\n"
+
+# The repair, which must still publish promptly.
 [[case.watch.edits]]
 path = "helper.rue"
 source = "pub fn answer() -> i32 { 2 }\n"
+
+# The previous failure's bytes, restored verbatim: same rendering, and the same
+# physical closure state the third report described, since `other.rue` has not
+# moved since. Only the reset on the intervening successful revision makes this
+# news again.
+[[case.watch.edits]]
+path = "helper.rue"
+source = "pub fn answer() -> i32 { let ; }\n"

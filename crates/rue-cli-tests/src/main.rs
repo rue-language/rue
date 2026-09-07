@@ -2683,9 +2683,10 @@ fn run_watch_case(
             "supersede-acquire watch scenario needs two edits and an acquisition delay",
         ));
     }
-    if scenario.kind == WatchScenarioKind::RepeatedFailure && scenario.edits.len() != 3 {
+    if scenario.kind == WatchScenarioKind::RepeatedFailure && scenario.edits.len() != 5 {
         return Err(TestFailure::assertion(
-            "repeated-failure watch scenario requires two failing edits and a repair",
+            "repeated-failure watch scenario requires two failing edits, an unrelated \
+             closure edit, a repair, and a verbatim re-break",
         ));
     }
     if scenario.kind == WatchScenarioKind::SymlinkRetarget && scenario.edits.len() != 1 {
@@ -2878,6 +2879,11 @@ fn run_watch_case(
                 wait_for_watch_event(&mut child, &protocol, "published", 2, deadline)?;
             }
             WatchScenarioKind::RepeatedFailure => {
+                // Each step below kills one way the suppression could be
+                // written wrong, and the loop it exercises is shared, so
+                // pinning them on the executable watcher covers the test
+                // watcher's copy of the same arm too.
+                //
                 // A syntax error inside the closure fails import discovery, so
                 // the loop retries on its timer rather than parking on a
                 // change. The report belongs to the failure, not to the tick.
@@ -2886,10 +2892,26 @@ fn run_watch_case(
                 // never stopped failing in between.
                 write_watch_edit(dir, &scenario.edits[1])?;
                 assert_failure_reported_once(&mut child, &protocol, 2, deadline)?;
-                // And the repair still publishes promptly: suppression is
-                // about the repeats, not about the loop's responsiveness.
+                // An edit to a DIFFERENT closure file, leaving the broken one
+                // and therefore the whole rendering byte-identical. The report
+                // still comes back, because silence after a save is
+                // indistinguishable from a watcher that never noticed it. This
+                // is the only step that fails if the physical-observation half
+                // of the suppression key stops being compared.
                 write_watch_edit(dir, &scenario.edits[2])?;
+                assert_failure_reported_once(&mut child, &protocol, 3, deadline)?;
+                // The repair still publishes promptly: suppression is about
+                // the repeats, not about the loop's responsiveness.
+                write_watch_edit(dir, &scenario.edits[3])?;
                 wait_for_watch_event(&mut child, &protocol, "published", 2, deadline)?;
+                // Restoring the broken bytes verbatim puts the closure back in
+                // the exact physical state the previous report described, so
+                // only the memory a successful revision clears distinguishes
+                // this failure from a retry. Fingerprints are content hashes
+                // and cannot tell them apart; without the reset this report is
+                // swallowed.
+                write_watch_edit(dir, &scenario.edits[4])?;
+                assert_failure_reported_once(&mut child, &protocol, 4, deadline)?;
             }
             WatchScenarioKind::SupersedeAcquire => {
                 // The first edit wakes the settled loop. Re-observation
