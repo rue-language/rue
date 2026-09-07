@@ -11,7 +11,9 @@ two rules here exploit that:
   linker, its bundled lld, compiler_rt, libunwind, and the glibc it links
   against all come from the SHA-pinned Zig tree instead of whatever the host
   happens to install. That is what makes a Linux link identical between a
-  developer machine, the remote cache, and the remote-execution worker.
+  developer machine, the remote cache, and the remote-execution worker. The
+  linker additionally starts from `toolchains//zig:runtime-cache`, so it finds
+  that runtime already compiled instead of building it per action.
 - `exec_cxx_tools` forwards the `CxxToolsInfo` of a selectable dependency, so
   `toolchains//BUCK` can pick the Zig tools on Linux and keep the prelude's
   path-discovered clang tools on macOS from one exec-configured target.
@@ -20,7 +22,7 @@ two rules here exploit that:
 load("@prelude//cxx:cxx_toolchain_types.bzl", "LinkerType")
 load("@prelude//toolchains:cxx.bzl", "CxxToolsInfo")
 load("@prelude//utils:cmd_script.bzl", "cmd_script")
-load("@toolchains//zig:defs.bzl", "ZigToolchainInfo")
+load("@toolchains//zig:defs.bzl", "ZigToolchainInfo", "zig_with_primed_cache")
 
 def _zig_cxx_tools_impl(ctx: AnalysisContext) -> list[Provider]:
     # `ZigToolchainInfo.zig` is the cache-directory wrapper around the Zig
@@ -28,10 +30,23 @@ def _zig_cxx_tools_impl(ctx: AnalysisContext) -> list[Provider]:
     # one definition of where Zig may write (ZIG_LOCAL_CACHE_DIR and
     # ZIG_GLOBAL_CACHE_DIR under BUCK_SCRATCH_PATH) and makes the bundled
     # libc, compiler_rt, and libunwind sources part of every action key.
-    zig = ctx.attrs._zig[ZigToolchainInfo].zig
+    toolchain = ctx.attrs._zig[ZigToolchainInfo]
+    zig = toolchain.zig
+
+    # The same wrapper, with the action's global cache primed from
+    # toolchains//zig:runtime-cache. Building the glibc start files,
+    # libunwind, and compiler_rt from source is a link-time cost — about 15 s
+    # of wall time with an empty cache — and it is the linker, not the
+    # compiler or the archiver, that pays it, so only the linker takes the
+    # primed cache and only link actions carry the archive as an input
+    # (RUE-1939).
+    linking_zig = zig_with_primed_cache(
+        toolchain,
+        ctx.attrs._runtime_cache[DefaultInfo].default_outputs[0],
+    )
     target = ["-target", ctx.attrs.target]
 
-    def tool(name: str, args: list) -> cmd_args:
+    def tool(name: str, command, args: list) -> cmd_args:
         # The prelude passes each tool to rustc as a single `-Clinker=` path
         # and to its own C rules as one executable, so bundle the multi-word
         # Zig command into a script. `cmd_script` carries the command's hidden
@@ -39,7 +54,7 @@ def _zig_cxx_tools_impl(ctx: AnalysisContext) -> list[Provider]:
         return cmd_script(
             actions = ctx.actions,
             name = name,
-            cmd = cmd_args(zig, args),
+            cmd = cmd_args(command, args),
         )
 
     # The target triple is explicit on every compiler and linker invocation so
@@ -56,10 +71,10 @@ def _zig_cxx_tools_impl(ctx: AnalysisContext) -> list[Provider]:
     # of the runtime objects Zig compiles from source during the link; the
     # script explains why those objects, and only those, would otherwise make
     # the link depend on the checkout path.
-    cc = tool("zig-cc", ["cc"] + target)
-    cxx = tool("zig-c++", ["c++"] + target)
-    ar = tool("zig-ar", ["ar"])
-    linker = tool("zig-link", ["cc"] + target + [
+    cc = tool("zig-cc", zig, ["cc"] + target)
+    cxx = tool("zig-c++", zig, ["c++"] + target)
+    ar = tool("zig-ar", zig, ["ar"])
+    linker = tool("zig-link", linking_zig, ["cc"] + target + [
         cmd_args("-Wl,-T,", ctx.attrs._runtime_debug_discard, delimiter = ""),
     ])
 
@@ -86,6 +101,7 @@ zig_cxx_tools = rule(
         # Zig target triple, including the glibc version to link against, e.g.
         # `x86_64-linux-gnu.2.17`. Selected on the execution platform's CPU.
         "target": attrs.string(),
+        "_runtime_cache": attrs.dep(default = "toolchains//zig:runtime-cache"),
         "_runtime_debug_discard": attrs.source(default = "toolchains//zig:runtime-debug-discard.ld"),
         "_zig": attrs.toolchain_dep(default = "toolchains//:zig"),
     },

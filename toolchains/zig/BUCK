@@ -1,4 +1,12 @@
-load(":defs.bzl", "ZIG_VERSION", "hermetic_zig_toolchain", "zig_c_static_archive", "zig_host_archive")
+load(
+    ":defs.bzl",
+    "ZIG_LINUX_TARGET",
+    "ZIG_VERSION",
+    "hermetic_zig_toolchain",
+    "zig_c_static_archive",
+    "zig_host_archive",
+    "zig_runtime_cache",
+)
 load("@root//:test_defs.bzl", "rue_sh_test")
 
 zig_host_archive("linux-x86_64", "x86_64-linux")
@@ -68,6 +76,20 @@ export_file(
 export_file(
     name = "runtime-debug-discard.ld",
     src = "runtime-debug-discard.ld",
+    visibility = ["toolchains//:zig-cxx-tools"],
+)
+
+# The Zig runtime every Linux link needs, compiled once instead of once per
+# link action (RUE-1939). The linker wrapper in toolchains//:zig-cxx-tools
+# unpacks this archive into the action's scratch directory and points
+# ZIG_GLOBAL_CACHE_DIR at it. Reached only through that exec-configured
+# wrapper, so the CPU select resolves on the execution platform, exactly as
+# the wrapper's own target triple does — hence the shared ZIG_LINUX_TARGET.
+zig_runtime_cache(
+    name = "runtime-cache",
+    src = "runtime_cache_probe.c",
+    compatible_with = ["prelude//os:linux"],
+    target = ZIG_LINUX_TARGET,
     visibility = ["toolchains//:zig-cxx-tools"],
 )
 

@@ -21,6 +21,7 @@ load("@prelude//toolchains:cxx.bzl", "cxx_tools_info_toolchain")
 load("@prelude//toolchains:genrule.bzl", "system_genrule_toolchain")
 load("@prelude//toolchains:python.bzl", "system_python_bootstrap_toolchain")
 load("@prelude//tests:test_toolchain.bzl", "noop_test_toolchain")
+load("@toolchains//zig:defs.bzl", "ZIG_LINUX_TARGET")
 load(":cxx_tools.bzl", "exec_cxx_tools", "zig_cxx_tools")
 load(":rue.bzl", "rue_toolchain")
 load(":remote_test_execution.bzl", "noop_remote_test_execution_toolchain")
@@ -42,15 +43,14 @@ export_file(
 #
 # The glibc floor is `2.17`, the oldest glibc Rust's `*-unknown-linux-gnu`
 # targets support, and the same floor `third-party/reindeer_rules.bzl` uses for
-# the mimalloc archive that these links consume. The linker wrapper applies
+# the mimalloc archive that these links consume; ZIG_LINUX_TARGET carries it,
+# and toolchains//zig:runtime-cache reads the same constant so the cache it
+# primes is the one these links look for. The linker wrapper applies
 # toolchains//zig:runtime-debug-discard.ld so the runtime objects Zig compiles
 # from source during a link do not record the checkout path in debug sections.
 zig_cxx_tools(
     name = "zig-cxx-tools",
-    target = select({
-        "prelude//cpu:arm64": "aarch64-linux-gnu.2.17",
-        "prelude//cpu:x86_64": "x86_64-linux-gnu.2.17",
-    }),
+    target = ZIG_LINUX_TARGET,
     compatible_with = ["prelude//os:linux"],
 )
 
