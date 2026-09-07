@@ -3,8 +3,10 @@
 //! Canonical typed description of the Rue compiler/runtime ABI.
 //!
 //! This crate deliberately has no dependencies. It describes logical C-boundary
-//! facts; target register assignment and compiler semantic types belong to
-//! their respective owners.
+//! facts and other constants the compiler and runtime must agree on byte for
+//! byte (e.g. the shared test-channel/diagnostic rendering bound); target
+//! register assignment and compiler semantic types belong to their respective
+//! owners.
 
 use core::fmt;
 
@@ -58,6 +60,22 @@ pub enum AbiType {
 /// the low 32 bits of the adjacent `u64` bit-pattern parameter may be set.
 pub const FLOAT_WIDTH_F32: u32 = 32;
 pub const FLOAT_WIDTH_F64: u32 = 64;
+
+/// Bound in bytes on a payload rendered for a report (spec 6.7:15, ADR-0083 §2
+/// capture bounds).
+///
+/// Two writers on opposite sides of the boundary hold to this number, and a
+/// consumer that sets a channel record beside the stderr line for the same
+/// failure has to see one bound rather than two that happen to agree: the
+/// compiler's structural payload printer emits it into the rendering code it
+/// generates, and the runtime's test channel cuts a failure record's `message`
+/// to it. The runtime cannot depend on the compiler, so the number lives in
+/// the crate both of them already depend on instead of as a literal in each.
+pub const RENDERING_BOUND: u64 = 4096;
+
+/// Appended to a rendering [`RENDERING_BOUND`] cut short, in the spelling spec
+/// 6.7:15 fixes. Shared by the same two writers, for the same reason.
+pub const RENDERING_TRUNCATION_MARKER: &str = " …[truncated]";
 
 /// How a parameter crosses the C boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2070,6 +2088,18 @@ mod tests {
                 .availability
                 .contains(RuntimeTarget::Aarch64Linux)
         );
+    }
+
+    /// The rendering bound and its marker are one normative pair (spec 6.7:15)
+    /// that the compiler's payload printer and the runtime's test channel both
+    /// read from here. Referencing one constant already makes them agree; this
+    /// pins what they agree *on*, so a change to the number or the spelling has
+    /// to be deliberate and has to reach the specification too.
+    #[test]
+    fn the_rendering_bound_and_marker_are_the_normative_pair() {
+        assert_eq!(RENDERING_BOUND, 4096);
+        assert_eq!(RENDERING_TRUNCATION_MARKER, " \u{2026}[truncated]");
+        assert_eq!(RENDERING_TRUNCATION_MARKER.len(), 15);
     }
 
     #[test]
