@@ -2889,14 +2889,30 @@ impl<'a> CfgLower<'a> {
                 let ptr = plan.args[0].primary;
                 let value = &plan.args[1];
                 if plan.zero_sized_pointee_write || value.slot_count == 0 {
-                    // Nothing to store. The declared pointee's width is the
-                    // authority: a `ptr mut ()` write moves no bytes however
-                    // the value operand materialized, which is what keeps a
-                    // differently typed value forwarded into that operand from
-                    // becoming a store through the zero-sized sentinel address
-                    // (RUE-2086). The materialized slot count still answers for
-                    // a diverging operand, so the two only ever agree to store
-                    // nothing.
+                    // Nothing to store: a `ptr mut ()` write moves no bytes.
+                    //
+                    // The two halves cannot disagree on any graph this backend
+                    // can legally be handed. `CfgLower` takes a `ValidatedCfg`,
+                    // and verification proves an intrinsic operand's type
+                    // against the operation's signature after optimization
+                    // (RUE-2094) — for `@ptr_write` that forces the value
+                    // operand's type to BE the declared pointee, and both
+                    // halves are the same function of that one type.
+                    //
+                    // The disjunct is kept anyway, and must not be deleted on a
+                    // dead-code argument. It is what stands between an
+                    // ill-typed operand and memory corruption if a graph ever
+                    // reaches lowering without that proof: with RUE-2086's
+                    // forwarding fix absent and this test removed, the repro
+                    // stores eight bytes through a zero-sized type's sentinel
+                    // address and faults. Verification is the first line of
+                    // defence and is itself new code with a known hole (it does
+                    // not check user-call arguments); this is the second, and
+                    // the failure mode it converts is "no store" rather than
+                    // "wrong store". It is pinned by
+                    // `zero_sized_pointee_write_plan_stores_nothing_with_a_sized_operand`,
+                    // which has to build the plan directly because no verified
+                    // CFG can express the distinguishing shape.
                 } else if let Some(map) = &plan.physical_slots {
                     // A compact enum value: truncate each internal slot to its
                     // physical width at its compact byte offset (RUE-1000). The
@@ -4985,6 +5001,21 @@ mod tests {
 
     /// A CFG fixture under construction. Instructions append to `current`,
     /// which multi-block fixtures retarget as they go.
+    /// One intrinsic operand plan with the fields this backend's `@ptr_write`
+    /// arm reads: the vreg holding it, how many slots it materialized into, and
+    /// its type.
+    fn arg_plan(primary: VReg, slot_count: u32, ty: Type) -> crate::value_plan::IntrinsicArgPlan {
+        crate::value_plan::IntrinsicArgPlan {
+            primary,
+            slots: Vec::new(),
+            slot_count,
+            integer_extension: crate::value_plan::IntegerExtension::None,
+            place: None,
+            debug: crate::value_plan::DebugValuePlan::Other,
+            ty,
+        }
+    }
+
     struct FixtureCfg<'a> {
         cfg: Cfg,
         current: BlockId,
@@ -5149,6 +5180,26 @@ mod tests {
 
         fn ret(&mut self, result: Option<CfgValue>) {
             self.cfg.set_return(self.current, result);
+        }
+
+        /// Hand a hand-built `IntrinsicPlan` straight to the backend, below the
+        /// `ValidatedCfg` boundary.
+        ///
+        /// CFG verification proves an intrinsic operand's type against the
+        /// operation's signature after optimization (RUE-2094), so the one
+        /// shape that tells RUE-2086's two guard halves apart — a zero-sized
+        /// declared pointee with a *sized* value operand — can no longer be
+        /// expressed as a CFG at all. The plan is the last level at which it
+        /// still can, so the guard is pinned here rather than left untested.
+        fn lower_plan(
+            self,
+            build: impl FnOnce(&mut X86Mir) -> crate::value_plan::IntrinsicPlan,
+        ) -> X86Mir {
+            let cfg = self.cfg.finish(self.pool).expect("test CFG must verify");
+            let mut lower = CfgLower::new(&cfg, self.pool, self.interner);
+            let plan = build(&mut lower.mir);
+            lower.lower_intrinsic_plan(plan);
+            lower.mir
         }
 
         fn lower(self) -> rue_error::CompileResult<X86Mir> {
@@ -7831,9 +7882,17 @@ mod tests {
     /// `$n`. Value forwarding once handed the pointer stored in that shared
     /// slot to the `()`-typed load of the other local, and this arm — reading
     /// the materialized operand's slot count — emitted a real eight-byte store
-    /// through the zero-sized sentinel address. The ill-typed operand is
-    /// reproduced verbatim here so the arm is pinned independently of the
-    /// optimizer that produced it.
+    /// through the zero-sized sentinel address.
+    ///
+    /// The graph that forged that ill-typed operand is no longer
+    /// constructible: CFG verification re-proves every intrinsic's operand
+    /// types after optimization, so a `@ptr_write` whose value operand does
+    /// not match the pointer's declared pointee is an ICE at verification
+    /// rather than a store (RUE-2094, pinned in `rue-cfg`'s
+    /// `verify_rejects_intrinsic_operand_of_the_wrong_type`). The pointee
+    /// then decides the same thing the operand's width does, so what this
+    /// case still pins is the observable contract: a write through
+    /// `ptr mut ()` moves no bytes.
     #[test]
     fn zero_sized_pointee_write_emits_no_store() {
         let interner = ThreadedRodeo::new();
@@ -7850,10 +7909,11 @@ mod tests {
             &interner,
         );
         let address = fixture.konst(1, unit_ptr_ty);
+        let written = fixture.konst(0, Type::UNIT);
         fixture.intrinsic(
             rue_air::IntrinsicOperation::PtrWrite,
             "ptr_write",
-            &[address, address],
+            &[address, written],
             Type::UNIT,
         );
         let zero = fixture.konst(0, Type::I32);
@@ -7867,6 +7927,72 @@ mod tests {
                     | X86Inst::FloatStore { .. }
             )),
             "a zero-sized pointee write must store nothing: {:?}",
+            mir.instructions()
+        );
+    }
+
+    /// The one shape that tells RUE-2086's two guard halves apart, and the only
+    /// level at which it is still constructible.
+    ///
+    /// A zero-sized declared pointee with a *sized* value operand is exactly the
+    /// graph the RUE-2086 forwarding defect produced, and it is what
+    /// `plan.zero_sized_pointee_write` exists to refuse. CFG verification now
+    /// rejects it before code generation ever sees it (RUE-2094), so no fixture
+    /// built through `Cfg::finish` can reach this arm with the two halves
+    /// disagreeing — which would leave the disjunct with no coverage at all and
+    /// invite a future reader to delete it as dead. The plan is handed to the
+    /// backend directly so it stays pinned: without the disjunct this emits a
+    /// real store through a zero-sized type's sentinel address.
+    #[test]
+    fn zero_sized_pointee_write_plan_stores_nothing_with_a_sized_operand() {
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let unit_ptr_ty = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::UNIT));
+        let pool = pool.freeze();
+        let mut fixture = FixtureCfg::new(
+            Type::UNIT,
+            0,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        // The carrier body only has to verify; the plan under test is handed to
+        // the backend directly, not lowered from this graph.
+        fixture.ret(None);
+        let mir = fixture.lower_plan(|mir| {
+            let pointer = mir.alloc_vreg();
+            let written = mir.alloc_vreg();
+            crate::value_plan::IntrinsicPlan {
+                operation: rue_air::IntrinsicOperation::PtrWrite,
+                runtime_call: None,
+                option_discriminants: None,
+                bit_cast_form: None,
+                args: vec![
+                    arg_plan(pointer, 1, unit_ptr_ty),
+                    // The ill-typed operand: a sized value behind a `ptr mut ()`.
+                    arg_plan(written, 1, Type::I64),
+                ],
+                result_ty: Type::UNIT,
+                result_slots: 0,
+                scale: None,
+                narrow_access: None,
+                physical_slots: None,
+                dispatch_image: None,
+                image_padding: Vec::new(),
+                zero_sized_pointee_write: true,
+            }
+        });
+        assert!(
+            !mir.instructions().iter().any(|inst| matches!(
+                inst,
+                X86Inst::MovMRIndexed { .. }
+                    | X86Inst::NarrowStoreIndexed { .. }
+                    | X86Inst::FloatStore { .. }
+            )),
+            "a zero-sized declared pointee must store nothing even when the value \
+             operand materialized a slot: {:?}",
             mir.instructions()
         );
     }
