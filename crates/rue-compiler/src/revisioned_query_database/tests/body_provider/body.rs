@@ -3276,6 +3276,96 @@ fn staged_local_and_selector_work_scales_linearly() {
 }
 
 #[test]
+fn staged_comptime_alias_and_selector_work_scales_linearly() {
+    let make_source = |alias_count: usize| {
+        let aliases = (0..alias_count)
+            .map(|index| format!("let T{index} = u64;"))
+            .collect::<String>();
+        let calls = (0..alias_count)
+            .map(|index| format!("identity(T{index}, 3000000000);"))
+            .collect::<String>();
+        source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                &format!(
+                    "fn identity(comptime T: type, value: T) -> T {{ value }}\nfn choose(comptime n: i32) -> u64 {{ {aliases} if n == 0 {{ {calls} identity(T0, 3000000000) }} else {{ 0 }} }}\nfn main() -> i32 {{ choose(0); 0 }}\n"
+                ),
+            )],
+            1,
+        )
+    };
+    let measure = |source: SourceSnapshot| {
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &source);
+        let crate::FunctionInstanceKey::Definition(base) =
+            free_function_instance(&module, "choose")
+        else {
+            unreachable!("free function helper returns a definition");
+        };
+        let result = database
+            .body_transaction(
+                revision,
+                crate::body_query::BodyQueryKey::new(
+                    crate::FunctionInstanceKey::Specialization {
+                        base: Node::new(crate::FunctionInstanceKey::Definition(base)),
+                        arguments: crate::CanonicalArguments {
+                            types: Arc::from([]),
+                            values: Arc::from([crate::CanonicalArgumentValue::Integer(0)]),
+                        },
+                    },
+                    semantic_configuration(),
+                ),
+                CancellationToken::new(),
+            )
+            .unwrap();
+        assert!(matches!(
+            result.outcome(),
+            rue_query::QueryOutcome::Success(crate::body_query::BodyTransaction::Success { .. })
+        ));
+        database.provider_observation_metrics()
+    };
+
+    let small = measure(make_source(4));
+    let large = measure(make_source(8));
+    assert_eq!(small.staged_binding_scope_nodes, 4);
+    assert_eq!(large.staged_binding_scope_nodes, 8);
+    assert_eq!(
+        large.staged_binding_scope_nodes - small.staged_binding_scope_nodes,
+        4,
+        "each additional alias contributes one persistent lexical scope node"
+    );
+    assert_eq!(
+        large.staged_binding_trie_updates - small.staged_binding_trie_updates,
+        132,
+        "alias trie updates remain proportional to newly visible aliases"
+    );
+    let work = |metrics: crate::unstable::ProviderObservationMetrics| {
+        metrics
+            .staged_probe_nodes
+            .saturating_add(metrics.staged_frontier_bodies)
+            .saturating_add(metrics.staged_resolved_instructions)
+            .saturating_add(metrics.staged_fact_nodes)
+            .saturating_add(metrics.staged_canonical_evaluations)
+            .saturating_add(metrics.staged_constraints_generated)
+            .saturating_add(metrics.staged_binding_scope_nodes)
+            .saturating_add(metrics.staged_binding_materializations)
+            .saturating_add(metrics.staged_binding_trie_updates)
+            .saturating_add(metrics.staged_binding_trie_lookups)
+            .saturating_add(metrics.staged_precompute_nodes)
+    };
+    let small_work = work(small);
+    let large_work = work(large);
+    assert!(large_work >= small_work);
+    assert!(
+        large_work <= small_work.saturating_mul(2),
+        "comptime alias staging must remain linear: small={small_work} large={large_work}"
+    );
+}
+
+#[test]
 fn staged_non_generic_calls_do_not_materialize_scope() {
     let make_source = |locals_count: usize, calls_count: usize| {
         let locals = (0..locals_count)

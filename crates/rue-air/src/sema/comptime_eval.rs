@@ -345,6 +345,8 @@ impl<'a>
                 let locals = &ctx.locals;
                 move |name: &Spur| locals.contains_key(name)
             })),
+            local_binding_membership: None,
+            local_binding_capture: None,
             runtime_binding_names: ctx.params.iter().map(|param| param.name).collect(),
             locals: AHashMap::new(),
             const_module_members: AHashMap::new(),
@@ -392,7 +394,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         resolved_types: &AHashMap<InstRef, Type>,
         type_subst: Option<&AHashMap<Spur, Type>>,
         value_subst: Option<&AHashMap<Spur, ConstValue>>,
-        runtime_membership: std::sync::Arc<dyn Fn(&Spur) -> bool>,
+        local_binding_membership: std::sync::Arc<
+            dyn Fn(&Spur) -> Option<super::ComptimeLocalBinding<Type>>,
+        >,
+        local_binding_capture: std::sync::Arc<
+            dyn Fn() -> Vec<(Spur, super::ComptimeLocalBinding<Type>)>,
+        >,
         expected_result: Option<Type>,
     ) -> Option<ConstValue> {
         let empty_types = AHashMap::new();
@@ -402,7 +409,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             value_subst.unwrap_or(&empty_values),
         );
         env.resolved_types = Some(resolved_types);
-        env.runtime_local_name_membership = Some(runtime_membership);
+        env.local_binding_membership = Some(local_binding_membership);
+        env.local_binding_capture = Some(local_binding_capture);
         env.defining_file = Some(self.body_rir_ref().get(inst_ref).span.file_id);
         env.expected_result = expected_result;
         env.canonical_identity = self.active_anonymous_producer().cloned();
@@ -415,7 +423,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         resolved_types: &AHashMap<InstRef, Type>,
         type_subst: Option<&AHashMap<Spur, Type>>,
         value_subst: Option<&AHashMap<Spur, ConstValue>>,
-        runtime_membership: std::sync::Arc<dyn Fn(&Spur) -> bool>,
+        local_binding_membership: std::sync::Arc<
+            dyn Fn(&Spur) -> Option<super::ComptimeLocalBinding<Type>>,
+        >,
+        local_binding_capture: std::sync::Arc<
+            dyn Fn() -> Vec<(Spur, super::ComptimeLocalBinding<Type>)>,
+        >,
     ) -> CompileResult<Option<bool>> {
         let empty_types = AHashMap::new();
         let empty_values = AHashMap::new();
@@ -424,7 +437,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             value_subst.unwrap_or(&empty_values),
         );
         env.resolved_types = Some(resolved_types);
-        env.runtime_local_name_membership = Some(runtime_membership);
+        env.local_binding_membership = Some(local_binding_membership);
+        env.local_binding_capture = Some(local_binding_capture);
         env.defining_file = Some(self.body_rir_ref().get(condition).span.file_id);
         env.canonical_identity = self.active_anonymous_producer().cloned();
         match ComptimeEngine::new(self).select_branch((), condition, &mut env) {
@@ -447,7 +461,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         resolved_types: &AHashMap<InstRef, Type>,
         type_subst: Option<&AHashMap<Spur, Type>>,
         value_subst: Option<&AHashMap<Spur, ConstValue>>,
-        runtime_membership: std::sync::Arc<dyn Fn(&Spur) -> bool>,
+        local_binding_membership: std::sync::Arc<
+            dyn Fn(&Spur) -> Option<super::ComptimeLocalBinding<Type>>,
+        >,
+        local_binding_capture: std::sync::Arc<
+            dyn Fn() -> Vec<(Spur, super::ComptimeLocalBinding<Type>)>,
+        >,
     ) -> CompileResult<Option<usize>> {
         let empty_types = AHashMap::new();
         let empty_values = AHashMap::new();
@@ -456,7 +475,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             value_subst.unwrap_or(&empty_values),
         );
         env.resolved_types = Some(resolved_types);
-        env.runtime_local_name_membership = Some(runtime_membership);
+        env.local_binding_membership = Some(local_binding_membership);
+        env.local_binding_capture = Some(local_binding_capture);
         env.defining_file = Some(self.body_rir_ref().get(scrutinee).span.file_id);
         env.canonical_identity = self.active_anonymous_producer().cloned();
         match ComptimeEngine::new(self).select_match((), scrutinee, arms, &mut env) {

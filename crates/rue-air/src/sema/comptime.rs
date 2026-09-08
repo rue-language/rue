@@ -10,6 +10,7 @@ use rue_rir::{
     ValidatedRir,
 };
 use rue_span::Span;
+use std::borrow::Cow;
 use std::hash::Hash;
 use std::sync::Arc;
 
@@ -937,6 +938,16 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         if let Some(value) = env.locals.get(name) {
             return ComptimeArrayLengthBinding::LocalValue(value.clone());
         }
+        if let Some(binding) = env
+            .local_binding_membership
+            .as_ref()
+            .and_then(|membership| membership(name))
+        {
+            return match binding {
+                ComptimeLocalBinding::Type(_) => ComptimeArrayLengthBinding::Shadowed,
+                ComptimeLocalBinding::Runtime => ComptimeArrayLengthBinding::RuntimeDependent,
+            };
+        }
         if env.is_runtime_local_name(name) {
             return ComptimeArrayLengthBinding::RuntimeDependent;
         }
@@ -1013,14 +1024,83 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         &mut self,
         program: &H::ProgramKey,
         syntax: rue_rir::RirTypeSyntaxRef,
+        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
         types: &AHashMap<H::Name, H::Type>,
         values: &AHashMap<H::Name, H::Value>,
         span: Span,
     ) -> ComptimeOutcome<H::Type, H::Failure> {
-        match self
-            .host
-            .begin_comptime_type_syntax(program, syntax, types, values, span)
-        {
+        // Feed only the aliases actually mentioned by this syntax into the
+        // host's map-based type resolver. The persistent staged scope remains
+        // a point-lookup trie; this bounded syntax walk avoids materializing
+        // the whole lexical prefix for every generic argument.
+        let mut types = Cow::Borrowed(types);
+        let mut values = Cow::Borrowed(values);
+        if env.local_binding_membership.is_some() {
+            let mut pending = vec![syntax];
+            while let Some(reference) = pending.pop() {
+                let Some(node) = self.host.program_rir(program).type_syntax().node(reference)
+                else {
+                    return ComptimeOutcome::RuntimeDependent;
+                };
+                if let rue_rir::RirTypeSyntaxNode::Named(symbol) = node {
+                    let Some(symbol) = self.host.program_rir(program).type_syntax().symbol(*symbol)
+                    else {
+                        return ComptimeOutcome::RuntimeDependent;
+                    };
+                    let name = self.host.name_from_symbol(program, (*symbol).into());
+                    // An expression-local binding belongs to the active evaluator
+                    // frame and is nearer than the staged lexical checkpoint. This
+                    // projection is also needed by raw-map callers such as
+                    // composite TypeConst and TypeIntrinsic.
+                    if let Some(local) = env.locals.get(&name) {
+                        if let Some(ty) = local.as_type() {
+                            types.to_mut().insert(name.clone(), ty);
+                            values.to_mut().remove(&name);
+                        } else if local.eligible_for_comptime_capture() {
+                            values.to_mut().insert(name.clone(), local.clone());
+                            types.to_mut().remove(&name);
+                        } else {
+                            types.to_mut().remove(&name);
+                            values.to_mut().remove(&name);
+                            return ComptimeOutcome::RuntimeDependent;
+                        }
+                        continue;
+                    }
+                    if let Some(binding) = env
+                        .local_binding_membership
+                        .as_ref()
+                        .and_then(|membership| membership(&name))
+                    {
+                        match binding {
+                            ComptimeLocalBinding::Type(ty) => {
+                                types.to_mut().insert(name.clone(), ty);
+                                values.to_mut().remove(&name);
+                            }
+                            ComptimeLocalBinding::Runtime => {
+                                types.to_mut().remove(&name);
+                                values.to_mut().remove(&name);
+                                return ComptimeOutcome::RuntimeDependent;
+                            }
+                        }
+                    }
+                }
+                if !self
+                    .host
+                    .program_rir(program)
+                    .type_syntax()
+                    .visit_child_references(reference, |child| pending.push(child))
+                {
+                    return ComptimeOutcome::RuntimeDependent;
+                }
+            }
+        }
+        match self.host.begin_comptime_type_syntax(
+            program,
+            syntax,
+            types.as_ref(),
+            values.as_ref(),
+            span,
+        ) {
             ComptimeOutcome::Known(ComptimeStructuredTypeResolution::Ready(value)) => {
                 ComptimeOutcome::Known(value)
             }
@@ -1043,6 +1123,18 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         &mut self,
         program: &H::ProgramKey,
         methods: &rue_rir::RirAnonStructMethodsRange,
+        types: &AHashMap<H::Name, H::Type>,
+        values: &AHashMap<H::Name, H::Value>,
+    ) -> ComptimeOutcome<Vec<ComptimeMethodDescriptor<H::Name, H::Type>>, H::Failure> {
+        let env = ComptimeEnv::new();
+        self.decode_anon_method_descriptors_with_env(program, methods, &env, types, values)
+    }
+
+    fn decode_anon_method_descriptors_with_env(
+        &mut self,
+        program: &H::ProgramKey,
+        methods: &rue_rir::RirAnonStructMethodsRange,
+        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
         types: &AHashMap<H::Name, H::Type>,
         values: &AHashMap<H::Name, H::Value>,
     ) -> ComptimeOutcome<Vec<ComptimeMethodDescriptor<H::Name, H::Type>>, H::Failure> {
@@ -1110,6 +1202,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     match self.evaluate_comptime_type_syntax(
                         program,
                         parameter.ty,
+                        env,
                         types,
                         values,
                         method_span,
@@ -1150,6 +1243,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 match self.evaluate_comptime_type_syntax(
                     program,
                     return_type,
+                    env,
                     types,
                     values,
                     method_span,
@@ -1736,6 +1830,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let spine = decode_module_spine(self.program_rir(), inst_ref)?;
         let root = self.name_from_rir(spine.root.into());
         if env.locals.contains_key(&root)
+            || env
+                .local_binding_membership
+                .as_ref()
+                .and_then(|membership| membership(&root))
+                .is_some()
             || env.is_runtime_local_name(&root)
             || env.runtime_binding_names.contains(&root)
             || env.type_subst.contains_key(&root)
@@ -3029,6 +3128,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     let field_ty = outcome_value!(self.evaluate_comptime_type_syntax(
                         &self.program_key(),
                         type_sym,
+                        env,
                         &local_type_subst,
                         &local_value_subst,
                         span,
@@ -3041,9 +3141,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
 
                 // Decode method signatures in the canonical engine. The host
                 // receives only resolved semantic descriptors below.
-                let method_sigs = outcome_value!(self.decode_anon_method_descriptors(
+                let method_sigs = outcome_value!(self.decode_anon_method_descriptors_with_env(
                     &self.program_key(),
                     methods,
+                    env,
                     &local_type_subst,
                     &local_value_subst,
                 ));
@@ -3105,6 +3206,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         let ty = outcome_value!(self.evaluate_comptime_type_syntax(
                             &self.program_key(),
                             ty_sym,
+                            env,
                             &enum_type_subst,
                             &enum_value_subst,
                             span,
@@ -3150,6 +3252,18 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         }
                         return ComptimeOutcome::RuntimeDependent;
                     }
+                    if let Some(binding) = env
+                        .local_binding_membership
+                        .as_ref()
+                        .and_then(|membership| membership(&type_symbol))
+                    {
+                        return match binding {
+                            ComptimeLocalBinding::Type(ty) => {
+                                ComptimeOutcome::Known(H::Value::type_value(ty))
+                            }
+                            ComptimeLocalBinding::Runtime => ComptimeOutcome::RuntimeDependent,
+                        };
+                    }
                     if let Some(ty) = env.type_subst.get(&type_symbol) {
                         return ComptimeOutcome::Known(H::Value::type_value(ty.clone()));
                     }
@@ -3173,6 +3287,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 let ty = outcome_value!(self.evaluate_comptime_type_syntax(
                     &self.program_key(),
                     type_name,
+                    env,
                     &env.type_subst,
                     &env.value_subst,
                     span,
@@ -3219,6 +3334,18 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 // 1. `let` bindings inside the comptime expression
                 if let Some(v) = env.locals.get(&name) {
                     return ComptimeOutcome::Known(v.clone());
+                }
+                if let Some(binding) = env
+                    .local_binding_membership
+                    .as_ref()
+                    .and_then(|membership| membership(&name))
+                {
+                    return match binding {
+                        ComptimeLocalBinding::Type(ty) => {
+                            ComptimeOutcome::Known(H::Value::type_value(ty))
+                        }
+                        ComptimeLocalBinding::Runtime => ComptimeOutcome::RuntimeDependent,
+                    };
                 }
                 // 2. Runtime locals shadow comptime parameters and file-level
                 //    constants: a reference that resolves to one is not
@@ -3381,6 +3508,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 let intrinsic_ty = outcome_value!(self.evaluate_comptime_type_syntax(
                     &self.program_key(),
                     type_arg,
+                    env,
                     &env.type_subst,
                     &env.value_subst,
                     span,

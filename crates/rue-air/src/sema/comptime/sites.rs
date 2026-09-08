@@ -134,6 +134,16 @@ pub enum ComptimeArrayLengthBinding<V> {
     Unbound,
 }
 
+/// The nearest lexical binding visible to a canonical comptime evaluation.
+/// A type alias and a runtime value with the same source name are distinct
+/// facts; callers must not merge their membership into a boolean set because
+/// doing so loses shadowing order.
+#[derive(Debug, Clone)]
+pub enum ComptimeLocalBinding<T> {
+    Type(T),
+    Runtime,
+}
+
 /// Lexical and substitution state shared by the canonical comptime engine.
 /// Name and file identities are supplied by the host; the evaluator does not
 /// depend on the local interner or file-id representation.
@@ -154,6 +164,16 @@ where
     /// keeps the canonical evaluator from flattening a lexical checkpoint;
     /// ordinary comptime frames continue to use `runtime_local_names`.
     pub runtime_local_name_membership: Option<std::sync::Arc<dyn Fn(&N) -> bool + 'a>>,
+    /// Optional persistent lexical binding lookup supplied by staged
+    /// inference. Unlike runtime-name membership this preserves the nearest
+    /// binding's kind, so aliases can shadow runtime names and vice versa.
+    pub local_binding_membership:
+        Option<std::sync::Arc<dyn Fn(&N) -> Option<ComptimeLocalBinding<T>> + 'a>>,
+    /// Optional capture projection for structured anonymous types. It walks
+    /// the same persistent lexical checkpoint as `local_binding_membership`,
+    /// but is invoked only at a capture boundary rather than per name lookup.
+    pub local_binding_capture:
+        Option<std::sync::Arc<dyn Fn() -> Vec<(N, ComptimeLocalBinding<T>)> + 'a>>,
     pub runtime_binding_names: AHashSet<N>,
     pub locals: AHashMap<N, V>,
     pub const_module_members: AHashMap<InstRef, V>,
@@ -175,6 +195,20 @@ where
     pub(crate) fn substs_with_locals(&self) -> (AHashMap<N, T>, AHashMap<N, V>) {
         let mut type_subst = self.type_subst.clone();
         let mut value_subst = self.value_subst.clone();
+        if let Some(capture) = &self.local_binding_capture {
+            for (name, binding) in capture() {
+                match binding {
+                    ComptimeLocalBinding::Type(ty) => {
+                        type_subst.insert(name.clone(), ty);
+                        value_subst.remove(&name);
+                    }
+                    ComptimeLocalBinding::Runtime => {
+                        type_subst.remove(&name);
+                        value_subst.remove(&name);
+                    }
+                }
+            }
+        }
         for (name, val) in &self.locals {
             if let Some(t) = val.as_type() {
                 type_subst.insert(name.clone(), t);
@@ -198,6 +232,8 @@ where
             resolved_types: None,
             runtime_local_names: AHashSet::new(),
             runtime_local_name_membership: None,
+            local_binding_membership: None,
+            local_binding_capture: None,
             runtime_binding_names: AHashSet::new(),
             locals: AHashMap::new(),
             const_module_members: AHashMap::new(),
@@ -214,6 +250,8 @@ where
             resolved_types: None,
             runtime_local_names: AHashSet::new(),
             runtime_local_name_membership: None,
+            local_binding_membership: None,
+            local_binding_capture: None,
             runtime_binding_names: AHashSet::new(),
             locals: AHashMap::new(),
             const_module_members: AHashMap::new(),
@@ -228,6 +266,11 @@ where
                 .runtime_local_name_membership
                 .as_ref()
                 .is_some_and(|membership| membership(name))
+            || self
+                .local_binding_membership
+                .as_ref()
+                .and_then(|membership| membership(name))
+                .is_some_and(|binding| matches!(binding, ComptimeLocalBinding::Runtime))
     }
 }
 

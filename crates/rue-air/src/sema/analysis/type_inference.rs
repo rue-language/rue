@@ -6,6 +6,7 @@
 use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
 use crate::inference::{FrontierParamOverlay, LazyInferenceFacts, ParamVarInfo};
+use crate::sema::decode_module_spine;
 use ahash::AHashMap;
 use lasso::Key;
 use std::collections::VecDeque;
@@ -112,6 +113,10 @@ struct ComptimeInferenceFrontier {
 struct FrontierBinding {
     name: Spur,
     ty: Option<Type>,
+    /// A precomputed comptime type value carried by this binding. This is
+    /// separate from `ty`, which is the runtime expression type used by the
+    /// inference overlay (`COMPTIME_TYPE` for an alias binding).
+    alias_ty: Option<Type>,
     mode: RirParamMode,
 }
 
@@ -126,49 +131,55 @@ struct FrontierScopeNode {
     binding: FrontierBinding,
     parent: FrontierScope,
     overlay: Option<Arc<FrontierParamOverlay>>,
-    runtime_names: Arc<RuntimeNameTrieNode>,
+    lexical_bindings: Arc<LexicalBindingTrieNode>,
 }
 
 #[derive(Debug, Clone)]
-struct RuntimeNameTrieNode {
-    present: bool,
-    children: [Option<Arc<RuntimeNameTrieNode>>; 2],
+enum LexicalBinding {
+    Runtime,
+    ComptimeType(Type),
 }
 
-impl RuntimeNameTrieNode {
+#[derive(Debug, Clone)]
+struct LexicalBindingTrieNode {
+    value: Option<LexicalBinding>,
+    children: [Option<Arc<LexicalBindingTrieNode>>; 2],
+}
+
+impl LexicalBindingTrieNode {
     fn empty() -> Arc<Self> {
         Arc::new(Self {
-            present: false,
+            value: None,
             children: [None, None],
         })
     }
 
-    fn insert(node: &Arc<Self>, key: u32, bit: u32) -> Arc<Self> {
+    fn insert(node: &Arc<Self>, key: u32, bit: u32, value: LexicalBinding) -> Arc<Self> {
         if bit == 32 {
             return Arc::new(Self {
-                present: true,
+                value: Some(value),
                 children: node.children.clone(),
             });
         }
         let index = ((key >> (31 - bit)) & 1) as usize;
         let child = node.children[index].clone().unwrap_or_else(Self::empty);
-        let updated = Self::insert(&child, key, bit + 1);
+        let updated = Self::insert(&child, key, bit + 1, value);
         let mut children = node.children.clone();
         children[index] = Some(updated);
         Arc::new(Self {
-            present: node.present,
+            value: node.value.clone(),
             children,
         })
     }
 
-    fn contains(node: &Arc<Self>, key: u32, bit: u32) -> bool {
+    fn lookup(node: &Arc<Self>, key: u32, bit: u32) -> Option<LexicalBinding> {
         if bit == 32 {
-            return node.present;
+            return node.value.clone();
         }
         let index = ((key >> (31 - bit)) & 1) as usize;
         node.children[index]
             .as_ref()
-            .is_some_and(|child| Self::contains(child, key, bit + 1))
+            .and_then(|child| Self::lookup(child, key, bit + 1))
     }
 }
 
@@ -213,10 +224,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ) -> FrontierScope {
         let binding_name = binding.name;
         let parent_overlay = scope.as_ref().and_then(|node| node.overlay.clone());
-        let parent_runtime_names = scope
+        let parent_lexical_bindings = scope
             .as_ref()
-            .map(|node| node.runtime_names.clone())
-            .unwrap_or_else(RuntimeNameTrieNode::empty);
+            .map(|node| node.lexical_bindings.clone())
+            .unwrap_or_else(LexicalBindingTrieNode::empty);
+        let lexical_binding = binding
+            .alias_ty
+            .map_or(LexicalBinding::Runtime, LexicalBinding::ComptimeType);
         let overlay = binding
             .ty
             .map(|ty| {
@@ -234,21 +248,54 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             binding,
             parent: scope.clone(),
             overlay,
-            runtime_names: RuntimeNameTrieNode::insert(
-                &parent_runtime_names,
+            lexical_bindings: LexicalBindingTrieNode::insert(
+                &parent_lexical_bindings,
                 binding_name.into_usize() as u32,
                 0,
+                lexical_binding,
             ),
         }))
     }
 }
 
-fn runtime_binding_membership_view(scope: &FrontierScope) -> std::sync::Arc<dyn Fn(&Spur) -> bool> {
+fn lexical_binding_membership_view(
+    scope: &FrontierScope,
+) -> std::sync::Arc<dyn Fn(&Spur) -> Option<crate::sema::ComptimeLocalBinding<Type>>> {
     let scope = scope.clone();
     std::sync::Arc::new(move |name| {
-        scope.as_ref().is_some_and(|node| {
-            RuntimeNameTrieNode::contains(&node.runtime_names, name.into_usize() as u32, 0)
-        })
+        scope
+            .as_ref()
+            .and_then(|node| {
+                LexicalBindingTrieNode::lookup(&node.lexical_bindings, name.into_usize() as u32, 0)
+            })
+            .map(|binding| match binding {
+                LexicalBinding::Runtime => crate::sema::ComptimeLocalBinding::Runtime,
+                LexicalBinding::ComptimeType(ty) => crate::sema::ComptimeLocalBinding::Type(ty),
+            })
+    })
+}
+
+fn lexical_binding_capture_view(
+    scope: &FrontierScope,
+) -> std::sync::Arc<dyn Fn() -> Vec<(Spur, crate::sema::ComptimeLocalBinding<Type>)>> {
+    let scope = scope.clone();
+    std::sync::Arc::new(move || {
+        let mut result = Vec::new();
+        let mut seen = ahash::AHashSet::new();
+        let mut current = scope.clone();
+        while let Some(node) = current {
+            if seen.insert(node.binding.name) {
+                result.push((
+                    node.binding.name,
+                    node.binding.alias_ty.map_or(
+                        crate::sema::ComptimeLocalBinding::Runtime,
+                        crate::sema::ComptimeLocalBinding::Type,
+                    ),
+                ));
+            }
+            current = node.parent.clone();
+        }
+        result
     })
 }
 
@@ -330,8 +377,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 None,
                 None,
             )?;
-        let facts =
-            self.collect_comptime_facts(&probe_types, params, body, type_subst, value_subst, None)?;
+        let facts = self.collect_comptime_facts(
+            &probe_types,
+            params,
+            body,
+            type_subst,
+            value_subst,
+            None,
+            &precompute_snapshot.comptime_local_bindings,
+        )?;
         let (
             mut selections,
             mut argument_values,
@@ -402,6 +456,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     type_subst,
                     value_subst,
                     front.bindings.clone(),
+                    &precompute_snapshot.comptime_local_bindings,
                 )?;
                 selections.extend(nested_selections);
                 argument_values.extend(nested_arguments);
@@ -449,7 +504,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok((result.0, result.1, selections, breakdown))
     }
 
-    fn has_comptime_fact_sites(&self, body: InstRef) -> CompileResult<(bool, u64)> {
+    fn has_comptime_fact_sites(&mut self, body: InstRef) -> CompileResult<(bool, u64)> {
         // Keep the probe decision local to this body.  Scanning the packed
         // module RIR here made every function observe unrelated generic calls
         // (and made the cost proportional to body_count * module_size).
@@ -462,11 +517,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             if !visited.insert(inst_ref) {
                 continue;
             }
-            let inst = self.body_rir_ref().get(inst_ref);
-            let found = match &inst.data {
+            let (inst_data, inst_span) = {
+                let inst = self.body_rir_ref().get(inst_ref);
+                (inst.data.clone(), inst.span)
+            };
+            let found = match &inst_data {
                 rue_rir::InstData::Call { args, .. }
                 | rue_rir::InstData::MethodCall { args, .. } => {
-                    self.generic_callee_key(&inst.data, inst.span, None)
+                    let argument_count = self.body_rir_ref().call_args(args).len();
+                    self.generic_callee_key(&inst_data, inst_span, None)
                         .and_then(|key| self.function_info(key))
                         .is_some_and(|function| {
                             if !function.is_generic {
@@ -479,11 +538,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             // pre-pass produces is where that type comes from,
                             // whatever the argument's spelling (RUE-1967).
                             let param_data = self.body_param_data(function.params);
-                            self.body_rir_ref().call_args(args).iter().enumerate().any(
-                                |(index, _)| {
-                                    param_data.comptime().get(index).copied().unwrap_or(false)
-                                },
-                            )
+                            (0..argument_count).any(|index| {
+                                param_data.comptime().get(index).copied().unwrap_or(false)
+                            })
                         })
                 }
                 _ => false,
@@ -977,6 +1034,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         type_subst: Option<&AHashMap<Spur, Type>>,
         value_subst: Option<&AHashMap<Spur, ConstValue>>,
         inherited_scope: FrontierScope,
+        comptime_local_bindings: &AHashMap<InstRef, Type>,
     ) -> CompileResult<(
         AHashMap<InstRef, crate::sema::ComptimeSelection>,
         AHashMap<InstRef, ConstValue>,
@@ -997,6 +1055,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         FrontierBinding {
                             name: *name,
                             ty: Some(*ty),
+                            alias_ty: None,
                             mode: *mode,
                         },
                     );
@@ -1062,7 +1121,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                 resolved_types,
                                 type_subst,
                                 value_subst,
-                                runtime_binding_membership_view(&bindings),
+                                lexical_binding_membership_view(&bindings),
+                                lexical_binding_capture_view(&bindings),
                             )?
                         {
                             selections
@@ -1141,6 +1201,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                     FrontierBinding {
                                         name,
                                         ty,
+                                        alias_ty: None,
                                         mode: RirParamMode::Normal,
                                     },
                                 );
@@ -1182,7 +1243,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                 resolved_types,
                                 type_subst,
                                 value_subst,
-                                runtime_binding_membership_view(&bindings),
+                                lexical_binding_membership_view(&bindings),
+                                lexical_binding_capture_view(&bindings),
                             )?
                             && crate::sema::comptime::prunable_match_body(
                                 self.body_rir_ref(),
@@ -1288,6 +1350,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                     FrontierBinding {
                                         name: *name,
                                         ty: resolved_types.get(&child).copied(),
+                                        alias_ty: comptime_local_bindings.get(&child).copied(),
                                         mode: RirParamMode::Normal,
                                     },
                                 );
@@ -1340,12 +1403,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ///
     /// `resolved_types` is the collector's inferred-type map, which resolves
     /// any receiver expression. The gate runs before those types exist and
-    /// passes `None`; a receiver naming a module binding in this file is still
-    /// resolvable from the declaration state alone, and a receiver that is not
-    /// (a re-export chain) simply leaves the body on the single-pass route it
-    /// was on before.
+    /// passes `None`; receivers that name module bindings, including
+    /// re-export chains, are resolved through the canonical file/module
+    /// visibility walk.
     fn generic_callee_key(
-        &self,
+        &mut self,
         inst_data: &rue_rir::InstData,
         span: Span,
         resolved_types: Option<&AHashMap<InstRef, Type>>,
@@ -1370,7 +1432,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// The module a method-call receiver names, from the inferred receiver type
     /// when one is available and otherwise from the file's module bindings.
     fn method_receiver_module(
-        &self,
+        &mut self,
         receiver: InstRef,
         file_id: FileId,
         resolved_types: Option<&AHashMap<InstRef, Type>>,
@@ -1382,7 +1444,24 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Some(module);
         }
         let rue_rir::InstData::VarRef { name, .. } = self.body_rir_ref().get(receiver).data else {
-            return None;
+            let spine = decode_module_spine(self.body_rir_ref(), receiver)?;
+            let mut segment_names = Vec::with_capacity(spine.fields.len() + 1);
+            segment_names.push(self.body_interner().resolve(&spine.root).to_owned());
+            segment_names.extend(
+                spine
+                    .fields
+                    .iter()
+                    .map(|field| self.body_interner().resolve(field).to_owned()),
+            );
+            let segments = segment_names.iter().map(String::as_str).collect::<Vec<_>>();
+            return self
+                .resolve_type_module_prefix_in_file(
+                    spine.root_span.file_id,
+                    &segments,
+                    self.body_rir_ref().get(receiver).span,
+                )
+                .ok()
+                .map(|(module, _, _)| module);
         };
         self.call_facts()
             .call_module_binding(file_id, name)
@@ -1429,7 +1508,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         resolved_types,
                         type_subst,
                         value_subst,
-                        runtime_binding_membership_view(scope),
+                        lexical_binding_membership_view(scope),
+                        lexical_binding_capture_view(scope),
                         None,
                     )
                 {
@@ -1460,7 +1540,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 resolved_types,
                 type_subst,
                 value_subst,
-                runtime_binding_membership_view(scope),
+                lexical_binding_membership_view(scope),
+                lexical_binding_capture_view(scope),
                 Some(expected),
             ) {
                 argument_values.insert(arg.value, value);

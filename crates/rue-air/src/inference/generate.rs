@@ -4488,9 +4488,9 @@ impl<'a> ConstraintGenerator<'a> {
     /// each comptime argument as the canonical comptime engine evaluated it
     /// (`collect_generic_argument_facts`), so an argument spelled as a computed
     /// type (`Id(u64)`), a `const` alias, a `let`-bound alias, or a plain type
-    /// name all arrive here as the same `ConstValue`. Constraint generation
-    /// answers only the two forms that need no evaluation at all — see
-    /// [`Self::extract_type_argument`].
+    /// name all arrive here as the same `ConstValue`. During the initial probe,
+    /// before those facts exist, only an enclosing type substitution may be
+    /// used as a bootstrap for a forwarded type parameter.
     ///
     /// `arg_diverged` is threaded so the caller keeps the call's own
     /// reachability accounting.
@@ -4537,7 +4537,12 @@ impl<'a> ConstraintGenerator<'a> {
                 if let Some(ConstValue::Type(concrete_ty)) = self.comptime_argument_value(arg.value)
                 {
                     type_subst.insert(func.param_names[i], concrete_ty);
-                } else if let Some(concrete_ty) = self.extract_type_argument(arg.value, ctx) {
+                } else if self.staged_comptime_selectors
+                    && self
+                        .comptime_argument_values
+                        .is_none_or(|values| values.is_empty())
+                    && let Some(concrete_ty) = self.bootstrap_type_argument(arg.value, ctx)
+                {
                     type_subst.insert(func.param_names[i], concrete_ty);
                 }
             } else if let Some(ConstValue::Integer(v)) = self.comptime_argument_value(arg.value) {
@@ -4618,48 +4623,17 @@ impl<'a> ConstraintGenerator<'a> {
         }
     }
 
-    /// Name-resolve a comptime type argument that needs no evaluation: a
-    /// written type literal (the `i32` in `identity(i32, 42)`), and a name that
-    /// the canonical unqualified-nominal selector binds to a type — a type
-    /// parameter forwarded from the enclosing specialization, a `let`-bound
-    /// comptime alias sema pre-resolved for this walk, a file-level `const`
-    /// alias, a primitive, a declared or built-in struct/enum.
-    ///
-    /// This is a fallback, never a peer: [`Self::generate_generic_call`] asks
-    /// [`Self::comptime_argument_value`] first, so an argument the comptime
-    /// engine evaluated (a computed type such as `Id(u64)`, or any of the
-    /// spellings above) is taken from that one evaluation. `None` means the
-    /// argument is a form only semantic analysis can reduce, and the parameter
-    /// and return constraints that would depend on it are left to it.
-    fn extract_type_argument(&self, arg: InstRef, ctx: &ConstraintContext) -> Option<Type> {
-        let file_id = self.rir.get(arg).span.file_id;
-        match &self.rir.get(arg).data {
-            InstData::TypeConst { type_name } => {
-                match self.infer_rir_type_hint(*type_name, file_id) {
-                    Some(InferType::Concrete(ty)) => Some(ty),
-                    _ => None,
-                }
-            }
-            // A struct/enum name, an alias, or a forwarded type parameter used
-            // as a value parses as a variable reference, not a type literal.
-            //
-            // A local or parameter shadows any same-named struct/enum. A local
-            // *not* bound to a comptime type value (a runtime value) has no
-            // concrete type here. Preserve that error through dependent
-            // substitutions so inference does not manufacture a downstream
-            // mismatch; sema reports the canonical comptime known-value
-            // diagnostic at the argument itself.
-            InstData::VarRef { name, .. } => {
-                let lexical_shadowed = ctx.locals.contains_key(name) || ctx.contains_param(*name);
-                self.unqualified_nominal_type_with_substitution(
-                    *name,
-                    file_id,
-                    self.type_subst,
-                    lexical_shadowed,
-                )
-            }
-            _ => None,
+    /// Bootstrap only an enclosing type substitution during the speculative
+    /// probe. All source names, including primitives, aliases, and nominal
+    /// declarations, are resolved by sema's canonical fact collector.
+    fn bootstrap_type_argument(&self, arg: InstRef, ctx: &ConstraintContext) -> Option<Type> {
+        let InstData::VarRef { name, .. } = self.rir.get(arg).data else {
+            return None;
+        };
+        if ctx.locals.contains_key(&name) {
+            return None;
         }
+        self.type_subst.and_then(|subst| subst.get(&name).copied())
     }
 
     /// Substitute a generic call's comptime type/value arguments into the

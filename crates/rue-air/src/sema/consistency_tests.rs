@@ -1496,7 +1496,6 @@ mod tests {
                 GENERATE_SOURCE,
                 "fn unqualified_nominal_type_with_substitution(",
             ),
-            (GENERATE_SOURCE, "fn extract_type_argument("),
             (GENERATE_SOURCE, "fn infer_type_hint("),
             (GENERATE_SOURCE, "fn infer_named_type_hint("),
             (
@@ -1545,6 +1544,24 @@ mod tests {
         );
         assert!(!adapter.contains("return Some("));
 
+        let bootstrap = source_item(GENERATE_SOURCE, "fn bootstrap_type_argument(");
+        assert_eq!(bootstrap.matches("self.type_subst").count(), 1);
+        assert!(!GENERATE_SOURCE.contains("fn extract_type_argument("));
+        assert!(!bootstrap.contains("unqualified_nominal_type"));
+        for forbidden in [
+            "self.comptime_alias_types",
+            "self.const_type_alias",
+            "Type::from_primitive_name",
+            "struct_type_by_file",
+            "enum_type_by_file",
+            "builtin_struct_type",
+            "builtin_enum_type",
+        ] {
+            assert!(
+                !bootstrap.contains(forbidden),
+                "bootstrap regained {forbidden}"
+            );
+        }
         let direct_nominal_probes = [
             "self.comptime_alias_types.get(",
             "self.const_type_alias(",
@@ -1554,21 +1571,6 @@ mod tests {
             ".builtin_struct_type(",
             ".builtin_enum_type(",
         ];
-        let extract = source_item(GENERATE_SOURCE, "fn extract_type_argument(");
-        assert_eq!(
-            extract
-                .matches("self.unqualified_nominal_type_with_substitution(")
-                .count(),
-            1
-        );
-        assert_eq!(extract.matches(".or_else(").count(), 0);
-        assert_eq!(extract.matches("return Some(").count(), 0);
-        for probe in direct_nominal_probes {
-            assert!(
-                !extract.contains(probe),
-                "extract_type_argument regained {probe}"
-            );
-        }
 
         let hint = source_item(GENERATE_SOURCE, "fn infer_type_hint(");
         let named_start = hint
@@ -1718,10 +1720,10 @@ mod tests {
             "generic-call constraint generation must have exactly one owner"
         );
         let owner = source_item(GENERATE_SOURCE, "fn generate_generic_call(");
-        // The captured facts are the canonical evaluation's, with a
-        // name-resolution fallback for the spellings that need no evaluation.
+        // The captured facts are the canonical evaluation's. The probe retains
+        // only an enclosing type substitution for forwarded parameters.
         assert_eq!(owner.matches("self.comptime_argument_value(").count(), 2);
-        assert_eq!(owner.matches("self.extract_type_argument(").count(), 1);
+        assert_eq!(owner.matches("self.bootstrap_type_argument(").count(), 1);
         // Parameter substitution and return substitution both live here, so no
         // call shape can have one without the other.
         assert!(owner.contains("self.infer_structured_type_hint("));
@@ -1730,7 +1732,7 @@ mod tests {
         // Only the owner reads a generic callee's comptime arguments.
         for probe in [
             "self.comptime_argument_value(",
-            "self.extract_type_argument(",
+            "self.bootstrap_type_argument(",
             "self.substituted_generic_return_type(",
         ] {
             assert_eq!(

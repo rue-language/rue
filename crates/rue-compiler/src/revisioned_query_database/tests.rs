@@ -234,6 +234,7 @@ const EXPECTED_REVISIONED_QUERY_TESTS: &[&str] = &[
     "speculative_frontiers_are_effect_free_and_cannot_publish_host_results",
     "stable_declaration_classification_is_narrow_green_and_multiplicity_sensitive",
     "stable_definition_kinds_have_fixed_syntax_candidate_sets",
+    "staged_comptime_alias_and_selector_work_scales_linearly",
     "staged_comptime_facts_are_repeated_and_parallel_deterministic",
     "staged_frontier_constraint_cancellation_publishes_nothing_and_retry_is_identical",
     "staged_local_and_selector_work_scales_linearly",
