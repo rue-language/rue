@@ -138,6 +138,13 @@ fn reduce_unsigned_div_mod(cfg: &mut Cfg, stats: &mut Stats) {
 /// If `value` is a can't-trap operation that returns one operand unchanged,
 /// return that operand.
 fn identity_target(cfg: &Cfg, value: CfgValue) -> Option<CfgValue> {
+    // `Const` stores floating-point operands as their IEEE bit patterns, so
+    // payloads 0 and 1 are +0.0 and the minimum subnormal, respectively, not
+    // the integer identity values. Floating-point addition also has signed
+    // zero behavior that an identity rewrite would change.
+    if cfg.get_inst(value).ty.is_float() {
+        return None;
+    }
     let is0 = |v: CfgValue| const_int(cfg, v) == Some(0);
     let is1 = |v: CfgValue| const_int(cfg, v) == Some(1);
     match cfg.get_inst(value).data {
@@ -377,6 +384,61 @@ mod tests {
             cfg.get_inst(mul).data,
             CfgInstData::WrappingMul(..)
         ));
+    }
+
+    fn assert_float_identity_matrix(ty: Type) {
+        let mut cfg = make_cfg();
+        let x = push(&mut cfg, CfgInstData::Param { index: 0 }, ty);
+        let zero = push(&mut cfg, CfgInstData::Const(0), ty);
+        let minimum_subnormal = push(&mut cfg, CfgInstData::Const(1), ty);
+        let add_right = push(&mut cfg, CfgInstData::Add(x, zero), ty);
+        let add_left = push(&mut cfg, CfgInstData::Add(zero, x), ty);
+        let sub = push(&mut cfg, CfgInstData::Sub(x, zero), ty);
+        let mul_right = push(&mut cfg, CfgInstData::Mul(x, minimum_subnormal), ty);
+        let mul_left = push(&mut cfg, CfgInstData::Mul(minimum_subnormal, x), ty);
+        let div = push(&mut cfg, CfgInstData::Div(x, minimum_subnormal), ty);
+        cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(div) });
+
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.identities_rewired, 0);
+        assert!(matches!(
+            cfg.get_inst(add_right).data,
+            CfgInstData::Add(a, b) if a == x && b == zero
+        ));
+        assert!(matches!(
+            cfg.get_inst(add_left).data,
+            CfgInstData::Add(a, b) if a == zero && b == x
+        ));
+        assert!(matches!(
+            cfg.get_inst(sub).data,
+            CfgInstData::Sub(a, b) if a == x && b == zero
+        ));
+        assert!(matches!(
+            cfg.get_inst(mul_right).data,
+            CfgInstData::Mul(a, b) if a == x && b == minimum_subnormal
+        ));
+        assert!(matches!(
+            cfg.get_inst(mul_left).data,
+            CfgInstData::Mul(a, b) if a == minimum_subnormal && b == x
+        ));
+        assert!(matches!(
+            cfg.get_inst(div).data,
+            CfgInstData::Div(a, b) if a == x && b == minimum_subnormal
+        ));
+        assert!(matches!(
+            cfg.get_block(cfg.entry).terminator,
+            Terminator::Return { value: Some(v) } if v == div
+        ));
+    }
+
+    #[test]
+    fn test_f32_identity_shapes_untouched() {
+        assert_float_identity_matrix(Type::F32);
+    }
+
+    #[test]
+    fn test_f64_identity_shapes_untouched() {
+        assert_float_identity_matrix(Type::F64);
     }
 
     #[test]
