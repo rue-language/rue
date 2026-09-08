@@ -1225,15 +1225,66 @@ struct LoadedCorpus {
     automatic_examples: Vec<AutomaticExampleContract>,
 }
 
-/// What running one case produced: the compiled program's exit code and
-/// stdout. For cases that don't run a program (`compile_fail`/`compile_only`),
-/// `ran` is false and the other fields are empty. Used by the opt-level
-/// differential runner to compare results across `-O` levels.
+/// What running one case produced: the compiled program's exit code and raw
+/// stdout bytes. For cases that don't run a program
+/// (`compile_fail`/`compile_only`), `ran` is false and the other fields are
+/// empty. Used by the opt-level differential runner to compare results across
+/// `-O` levels.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct RunOutcome {
     ran: bool,
     exit_code: Option<i32>,
-    stdout: String,
+    stdout: Vec<u8>,
+}
+
+/// Render process bytes for diagnostics without making lossy UTF-8 decoding
+/// part of an assertion. The escaped text is useful for familiar output, and
+/// the hex bytes distinguish invalid sequences that decode to the same
+/// replacement character.
+fn display_bytes(bytes: &[u8]) -> String {
+    let rendered = String::from_utf8_lossy(bytes);
+    let hex = bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("{rendered:?} ({} bytes; hex: {hex})", bytes.len())
+}
+
+fn exact_output_mismatch(label: &str, expected: &str, actual: &[u8]) -> Option<TestFailure> {
+    (actual != expected.as_bytes()).then(|| {
+        TestFailure::assertion(format!(
+            "{label} mismatch:\n--- expected ---\n{}\n--- actual ---\n{}",
+            display_bytes(expected.as_bytes()),
+            display_bytes(actual),
+        ))
+    })
+}
+
+fn contains_bytes(actual: &[u8], expected: &str) -> bool {
+    let expected = expected.as_bytes();
+    expected.is_empty()
+        || actual
+            .windows(expected.len())
+            .any(|window| window == expected)
+}
+
+fn count_nonoverlapping_bytes(actual: &[u8], expected: &str) -> usize {
+    let expected = expected.as_bytes();
+    if expected.is_empty() {
+        return actual.len() + 1;
+    }
+
+    let mut count = 0;
+    let mut start = 0;
+    while let Some(offset) = actual[start..]
+        .windows(expected.len())
+        .position(|window| window == expected)
+    {
+        count += 1;
+        start += offset + expected.len();
+    }
+    count
 }
 
 const MAX_EXECUTABLE_BYTES: usize = 64 * 1024 * 1024;
@@ -2243,7 +2294,6 @@ fn run_case(
     )?;
 
     let compile_stderr = String::from_utf8_lossy(&compile_output.stderr).to_string();
-    let compile_stdout = String::from_utf8_lossy(&compile_output.stdout).to_string();
 
     // ICE detection comes first: a compiler panic is never acceptable output,
     // even for compile_fail cases.
@@ -2253,19 +2303,21 @@ fn run_case(
 
     // Debug-spew / leaked-diagnostics guard runs regardless of compile outcome.
     for expected in &case.compile_stderr_contains {
-        if !compile_stderr.contains(expected) {
+        if !contains_bytes(&compile_output.stderr, expected) {
             return Err(TestFailure::assertion(format!(
                 "compiler stderr missing expected substring: {}\n--- actual stderr ---\n{}",
-                expected, compile_stderr
+                expected,
+                display_bytes(&compile_output.stderr)
             )));
         }
     }
 
     for forbidden in &case.compile_stderr_not_contains {
-        if compile_stderr.contains(forbidden) {
+        if contains_bytes(&compile_output.stderr, forbidden) {
             return Err(TestFailure::assertion(format!(
                 "compiler stderr contained forbidden substring: {}\n--- actual stderr ---\n{}",
-                forbidden, compile_stderr
+                forbidden,
+                display_bytes(&compile_output.stderr)
             )));
         }
     }
@@ -2288,19 +2340,21 @@ fn run_case(
     }
 
     for expected in &case.compile_stdout_contains {
-        if !compile_stdout.contains(expected) {
+        if !contains_bytes(&compile_output.stdout, expected) {
             return Err(TestFailure::assertion(format!(
                 "compiler stdout mismatch:\n  expected to contain: {}\n--- actual stdout ---\n{}",
-                expected, compile_stdout
+                expected,
+                display_bytes(&compile_output.stdout)
             )));
         }
     }
 
     for forbidden in &case.compile_stdout_not_contains {
-        if compile_stdout.contains(forbidden) {
+        if contains_bytes(&compile_output.stdout, forbidden) {
             return Err(TestFailure::assertion(format!(
                 "compiler stdout contained forbidden substring: {}\n--- actual stdout ---\n{}",
-                forbidden, compile_stdout
+                forbidden,
+                display_bytes(&compile_output.stdout)
             )));
         }
     }
@@ -2311,7 +2365,9 @@ fn run_case(
         let actual = compile_output.status.code();
         if actual != Some(expected) {
             return Err(TestFailure::assertion(format!(
-                "driver exit mismatch: expected {expected}, actual {actual:?}\n--- stdout ---\n{compile_stdout}\n--- stderr ---\n{compile_stderr}"
+                "driver exit mismatch: expected {expected}, actual {actual:?}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+                display_bytes(&compile_output.stdout),
+                display_bytes(&compile_output.stderr)
             )));
         }
         return Ok(RunOutcome::default());
@@ -2326,10 +2382,11 @@ fn run_case(
             ));
         }
         for expected in &case.error_contains {
-            if !compile_stderr.contains(expected) {
+            if !contains_bytes(&compile_output.stderr, expected) {
                 return Err(TestFailure::assertion(format!(
                     "compiler error mismatch:\n  expected stderr to contain: {}\n--- actual stderr ---\n{}",
-                    expected, compile_stderr
+                    expected,
+                    display_bytes(&compile_output.stderr)
                 )));
             }
         }
@@ -2340,8 +2397,8 @@ fn run_case(
         return Err(TestFailure::assertion(format!(
             "compilation failed (exit: {:?}):\n--- compiler stdout ---\n{}\n--- compiler stderr ---\n{}",
             compile_output.status.code(),
-            compile_stdout,
-            compile_stderr
+            display_bytes(&compile_output.stdout),
+            display_bytes(&compile_output.stderr)
         )));
     }
 
@@ -2417,11 +2474,11 @@ fn watch_event_count(path: &Path, event: &str) -> usize {
 /// "the watcher said this N times" means for a diagnostic: each report is a
 /// whole rendering, and they cannot overlap.
 fn assert_stderr_occurrences(
-    stderr: &str,
+    stderr: &[u8],
     expectations: &[StderrOccurrence],
 ) -> Result<(), String> {
     for expected in expectations {
-        let actual = stderr.matches(expected.text.as_str()).count();
+        let actual = count_nonoverlapping_bytes(stderr, expected.text.as_str());
         if actual != expected.count {
             return Err(format!(
                 "watch stderr held {actual} occurrence(s) of {:?}, expected {}",
@@ -3054,13 +3111,13 @@ fn run_watch_case(
 
     let (status, stdout_bytes, stderr_bytes) = finish_watch_child(child, stdout, stderr, true);
     let result = result.and_then(|()| {
-        let stderr = String::from_utf8_lossy(&stderr_bytes);
         for expected in &scenario.stderr_contains {
-            if !stderr.contains(expected.as_str()) {
+            if !contains_bytes(&stderr_bytes, expected) {
                 return Err(format!("watch stderr did not contain {expected:?}"));
             }
         }
-        assert_stderr_occurrences(&stderr, &scenario.stderr_occurrences)?;
+        assert_stderr_occurrences(&stderr_bytes, &scenario.stderr_occurrences)?;
+        let stderr = String::from_utf8_lossy(&stderr_bytes);
         if scenario.error_format.as_deref() == Some("json") {
             let diagnostics = validate_json_diagnostic_stream(&stderr)
                 .map_err(|error| format!("watch JSON stderr validation failed: {error}"))?;
@@ -3073,8 +3130,8 @@ fn run_watch_case(
     result.map_err(|error| {
         TestFailure::assertion(format!(
             "{error}\nwatch process status: {status:?}\n--- watch stdout ---\n{}\n--- watch stderr ---\n{}",
-            String::from_utf8_lossy(&stdout_bytes),
-            String::from_utf8_lossy(&stderr_bytes),
+            display_bytes(&stdout_bytes),
+            display_bytes(&stderr_bytes),
         ))
     })
 }
@@ -3259,32 +3316,30 @@ fn run_watch_test_case(
                 scenario.expected_exit
             ));
         }
-        let out = String::from_utf8_lossy(&stdout_bytes);
         for expected in &scenario.stdout_contains {
-            if !out.contains(expected.as_str()) {
+            if !contains_bytes(&stdout_bytes, expected) {
                 return Err(format!("watch-test stdout did not contain {expected:?}"));
             }
         }
         for unexpected in &scenario.stdout_not_contains {
-            if out.contains(unexpected.as_str()) {
+            if contains_bytes(&stdout_bytes, unexpected) {
                 return Err(format!("watch-test stdout contained {unexpected:?}"));
             }
         }
-        let err = String::from_utf8_lossy(&stderr_bytes);
         for expected in &scenario.stderr_contains {
-            if !err.contains(expected.as_str()) {
+            if !contains_bytes(&stderr_bytes, expected) {
                 return Err(format!("watch-test stderr did not contain {expected:?}"));
             }
         }
-        assert_stderr_occurrences(&err, &scenario.stderr_occurrences)?;
+        assert_stderr_occurrences(&stderr_bytes, &scenario.stderr_occurrences)?;
         Ok(())
     });
     result.map_err(|error| {
         TestFailure::assertion(format!(
             "{error}\nwatch-test process status: {status:?}\nwatch-test protocol: {:?}\n--- stdout ---\n{}\n--- stderr ---\n{}",
             watch_events(&protocol),
-            String::from_utf8_lossy(&stdout_bytes),
-            String::from_utf8_lossy(&stderr_bytes),
+            display_bytes(&stdout_bytes),
+            display_bytes(&stderr_bytes),
         ))
     })
 }
@@ -3361,28 +3416,27 @@ fn run_case_program(
     }
 
     if let Some(expected) = &case.stdout {
-        if &run_stdout != expected {
-            return Err(TestFailure::assertion(format!(
-                "program stdout mismatch:\n--- expected ---\n{}\n--- actual ---\n{}",
-                expected, run_stdout
-            )));
+        if let Some(error) = exact_output_mismatch("program stdout", expected, &run_output.stdout) {
+            return Err(error);
         }
     }
 
     for expected in &case.stdout_contains {
-        if !run_stdout.contains(expected) {
+        if !contains_bytes(&run_output.stdout, expected) {
             return Err(TestFailure::assertion(format!(
                 "program stdout mismatch:\n  expected to contain: {}\n--- actual stdout ---\n{}",
-                expected, run_stdout
+                expected,
+                display_bytes(&run_output.stdout)
             )));
         }
     }
 
     for expected in &case.runtime_error_contains {
-        if !run_stderr.contains(expected) {
+        if !contains_bytes(&run_output.stderr, expected) {
             return Err(TestFailure::assertion(format!(
                 "program stderr mismatch:\n  expected to contain: {}\n--- actual stderr ---\n{}",
-                expected, run_stderr
+                expected,
+                display_bytes(&run_output.stderr)
             )));
         }
     }
@@ -3390,7 +3444,7 @@ fn run_case_program(
     Ok(RunOutcome {
         ran: true,
         exit_code: actual_exit,
-        stdout: run_stdout,
+        stdout: run_output.stdout,
     })
 }
 
@@ -3438,13 +3492,13 @@ fn run_case_differential(
             Some((base_level, base)) => {
                 if &outcome != base {
                     return Err(TestFailure::assertion(format!(
-                        "opt-level divergence: {} produced (exit={:?}, stdout={:?}) but {} produced (exit={:?}, stdout={:?})",
+                        "opt-level divergence: {} produced (exit={:?}, stdout={}) but {} produced (exit={:?}, stdout={})",
                         base_level,
                         base.exit_code,
-                        base.stdout,
+                        display_bytes(&base.stdout),
                         level,
                         outcome.exit_code,
-                        outcome.stdout
+                        display_bytes(&outcome.stdout)
                     )));
                 }
             }
@@ -4537,11 +4591,9 @@ fn run_example(
                 exp.exit_code, actual_exit, run_stdout, run_stderr
             )));
         }
-        if run_stdout != exp.stdout {
-            return Err(TestFailure::assertion(format!(
-                "example stdout mismatch:\n--- expected ---\n{}\n--- actual ---\n{}",
-                exp.stdout, run_stdout
-            )));
+        if let Some(error) = exact_output_mismatch("example stdout", exp.stdout, &run_output.stdout)
+        {
+            return Err(error);
         }
     }
 
@@ -5521,6 +5573,174 @@ mod tests {
             runtime_error.contains("budget=10 ms"),
             "actual error: {runtime_error}",
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_case_program_compares_stdout_bytes_and_accepts_valid_replacement_text() {
+        let contract = ExecutionContract {
+            class: ExecutionClass::Ordinary,
+            compile_timeout_ms: rue_test_runner::DEFAULT_TIMEOUT_MS,
+            runtime_timeout_ms: rue_test_runner::DEFAULT_TIMEOUT_MS,
+        };
+        let case = Case {
+            name: "byte_exact_stdout".to_string(),
+            stdout: Some("�\n".to_string()),
+            ..Default::default()
+        };
+
+        let (_invalid_directory, invalid_program) = fake_compiler("#!/bin/sh\nprintf '\\377\\n'\n");
+        let invalid_run_directory = tempfile::tempdir().expect("temporary run directory");
+        let invalid_error = run_case_program(
+            &case,
+            &contract,
+            invalid_run_directory.path(),
+            &invalid_program,
+        )
+        .expect_err("a raw 0xff byte must not equal UTF-8 replacement text");
+        assert!(invalid_error.contains("hex: ef bf bd 0a"));
+        assert!(invalid_error.contains("hex: ff 0a"));
+
+        let (_valid_directory, valid_program) =
+            fake_compiler("#!/bin/sh\nprintf '\\357\\277\\275\\n'\n");
+        let valid_run_directory = tempfile::tempdir().expect("temporary run directory");
+        run_case_program(&case, &contract, valid_run_directory.path(), &valid_program)
+            .expect("valid UTF-8 replacement text must match exactly");
+
+        let substring_case = Case {
+            name: "byte_exact_substring".to_string(),
+            stdout_contains: vec!["�".to_string()],
+            ..Default::default()
+        };
+        let substring_run_directory = tempfile::tempdir().expect("temporary run directory");
+        let substring_error = run_case_program(
+            &substring_case,
+            &contract,
+            substring_run_directory.path(),
+            &invalid_program,
+        )
+        .expect_err("a raw 0xff byte must not satisfy a UTF-8 substring");
+        assert!(substring_error.contains("hex: ff 0a"));
+        let valid_substring_run_directory = tempfile::tempdir().expect("temporary run directory");
+        run_case_program(
+            &substring_case,
+            &contract,
+            valid_substring_run_directory.path(),
+            &valid_program,
+        )
+        .expect("valid UTF-8 replacement text must satisfy a substring");
+
+        let (_stderr_invalid_directory, stderr_invalid_program) =
+            fake_compiler("#!/bin/sh\nprintf '\\377\\n' >&2\n");
+        let stderr_case = Case {
+            name: "byte_exact_stderr_substring".to_string(),
+            runtime_error_contains: vec!["�".to_string()],
+            ..Default::default()
+        };
+        let stderr_run_directory = tempfile::tempdir().expect("temporary run directory");
+        let stderr_error = run_case_program(
+            &stderr_case,
+            &contract,
+            stderr_run_directory.path(),
+            &stderr_invalid_program,
+        )
+        .expect_err("a raw 0xff byte must not satisfy a UTF-8 stderr substring");
+        assert!(stderr_error.contains("hex: ff 0a"));
+        let (_stderr_valid_directory, stderr_valid_program) =
+            fake_compiler("#!/bin/sh\nprintf '\\357\\277\\275\\n' >&2\n");
+        let stderr_valid_run_directory = tempfile::tempdir().expect("temporary run directory");
+        run_case_program(
+            &stderr_case,
+            &contract,
+            stderr_valid_run_directory.path(),
+            &stderr_valid_program,
+        )
+        .expect("valid UTF-8 replacement text must satisfy a stderr substring");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn differential_runner_keeps_distinct_invalid_stdout_bytes_distinct() {
+        let (_directory, compiler) = fake_compiler(
+            "#!/bin/sh\ncase \"$*\" in\n  *-O0*) output=\"printf '\\\\377\\\\n'\" ;;\n  *) output=\"printf '\\\\376\\\\n'\" ;;\nesac\nprintf '%s\\n' '#!/bin/sh' > prog\nprintf '%s\\n' \"$output\" >> prog\nchmod +x prog\n",
+        );
+        let case = Case {
+            name: "invalid_differential_stdout".to_string(),
+            files: vec![SourceFile {
+                path: "main.rue".to_string(),
+                source: "fn main() -> i32 { 0 }".to_string(),
+            }],
+            exit_code: Some(0),
+            ..Default::default()
+        };
+        let contract = ExecutionContract {
+            class: ExecutionClass::Ordinary,
+            compile_timeout_ms: rue_test_runner::DEFAULT_TIMEOUT_MS,
+            runtime_timeout_ms: rue_test_runner::DEFAULT_TIMEOUT_MS,
+        };
+
+        let error = run_case_differential(
+            &case,
+            &contract,
+            &compiler,
+            Path::new("std"),
+            Path::new("."),
+        )
+        .expect_err("different invalid bytes must fail the differential check");
+        assert!(error.contains("hex: ff 0a"), "actual error: {error}");
+        assert!(error.contains("hex: fe 0a"), "actual error: {error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn example_exact_stdout_uses_raw_bytes() {
+        let source_directory = tempfile::tempdir().expect("temporary example directory");
+        let source = source_directory.path().join("example.rue");
+        std::fs::write(&source, "fn main() -> i32 { 0 }").expect("write example fixture");
+        let expectation = ExampleExpectation {
+            path: "example.rue",
+            exit_code: 0,
+            stdout: "�\n",
+            stdin: None,
+        };
+        let contract = ExecutionContract {
+            class: ExecutionClass::Ordinary,
+            compile_timeout_ms: rue_test_runner::DEFAULT_TIMEOUT_MS,
+            runtime_timeout_ms: rue_test_runner::DEFAULT_TIMEOUT_MS,
+        };
+
+        let (_invalid_directory, invalid_compiler) = fake_compiler(
+            "#!/bin/sh\nprintf '%s\\n' '#!/bin/sh' > prog\nprintf '%s\\n' \"printf '\\\\377\\\\n'\" >> prog\nchmod +x prog\n",
+        );
+        let invalid_error = run_example(
+            &source,
+            Some(&expectation),
+            &invalid_compiler,
+            Path::new("std"),
+            &contract,
+        )
+        .expect_err("an invalid byte must not equal UTF-8 replacement text");
+        assert!(invalid_error.contains("hex: ff 0a"));
+
+        let (_valid_directory, valid_compiler) = fake_compiler(
+            "#!/bin/sh\nprintf '%s\\n' '#!/bin/sh' > prog\nprintf '%s\\n' \"printf '\\\\357\\\\277\\\\275\\\\n'\" >> prog\nchmod +x prog\n",
+        );
+        run_example(
+            &source,
+            Some(&expectation),
+            &valid_compiler,
+            Path::new("std"),
+            &contract,
+        )
+        .expect("valid UTF-8 replacement text must match exactly");
+    }
+
+    #[test]
+    fn byte_substring_helpers_preserve_nonoverlapping_contracts() {
+        assert_eq!(count_nonoverlapping_bytes(b"aaa", "aa"), 1);
+        assert_eq!(count_nonoverlapping_bytes(b"aaaa", "aa"), 2);
+        assert!(!contains_bytes(b"\xff\n", "�"));
+        assert!(contains_bytes("�\n".as_bytes(), "�"));
     }
 
     #[test]
