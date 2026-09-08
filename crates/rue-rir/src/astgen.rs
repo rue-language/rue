@@ -75,6 +75,15 @@ pub struct AstGen<'a> {
     /// index temporaries of a compound-assignment desugaring (RUE-1043), so
     /// nested and sibling compound assignments never share a temporary.
     compound_counter: u32,
+    /// Source bindings that may be changed while this producer runs. A place
+    /// index referring to one of these must be captured before the compound
+    /// assignment's right-hand side; immutable bindings and file constants
+    /// can be regenerated without changing the selected place.
+    mutable_place_names: AHashSet<Spur>,
+    /// Names inserted into `mutable_place_names` by the current producer or
+    /// lexical block, in insertion order, so scopes can pop without cloning
+    /// the full set.
+    mutable_place_names_added: Vec<Spur>,
     /// Typed structural route to the AST node currently being lowered. The
     /// route is relative to its producing definition and contains no spans or
     /// global instruction ordinals. It anchors string literals and read-only
@@ -199,6 +208,8 @@ impl<'a> AstGen<'a> {
             payload_error: None,
             for_counter: 0,
             compound_counter: 0,
+            mutable_place_names: AHashSet::new(),
+            mutable_place_names_added: Vec::new(),
             structural_path: None,
             anonymous_anchors: AHashMap::new(),
             authoritative_anonymous_anchors: false,
@@ -397,6 +408,40 @@ impl<'a> AstGen<'a> {
         (self.normalize_symbol)(symbol)
     }
 
+    fn register_mutable_parameters(&mut self, names: impl IntoIterator<Item = Spur>) {
+        for name in names {
+            let name = self.symbol(name);
+            self.mark_mutable_name(name);
+        }
+    }
+
+    fn mark_mutable_name(&mut self, name: Spur) {
+        if self.mutable_place_names.insert(name) {
+            self.mutable_place_names_added.push(name);
+        }
+    }
+
+    /// Return whether a syntactically replayable index reads a binding that
+    /// the current producer can mutate. The source-level const resolver and
+    /// semantic analyzer remain authoritative for what a name means; this
+    /// conservative spelling check only decides whether RIR must snapshot it.
+    fn place_operand_reads_mutable_name(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Ident(ident) => self.mutable_place_names.contains(&self.symbol(ident.name)),
+            Expr::SelfExpr(_) => self
+                .self_symbol
+                .is_some_and(|name| self.mutable_place_names.contains(&name)),
+            Expr::Paren(paren) => self.place_operand_reads_mutable_name(&paren.inner),
+            Expr::Field(field) => self.place_operand_reads_mutable_name(&field.base),
+            Expr::Unary(unary) => self.place_operand_reads_mutable_name(&unary.operand),
+            Expr::Binary(binary) => {
+                self.place_operand_reads_mutable_name(&binary.left)
+                    || self.place_operand_reads_mutable_name(&binary.right)
+            }
+            _ => false,
+        }
+    }
+
     /// Intern compiler-generated names through the same bounded symbol space
     /// as source symbols.  The generator still completes its structural walk
     /// with a harmless placeholder after exhaustion so the typed failure can
@@ -471,6 +516,8 @@ impl<'a> AstGen<'a> {
         let outer_path = std::mem::take(&mut self.structural_path);
         let outer_for_counter = std::mem::replace(&mut self.for_counter, 0);
         let outer_compound_counter = std::mem::replace(&mut self.compound_counter, 0);
+        let outer_mutable_place_names = std::mem::take(&mut self.mutable_place_names);
+        let outer_mutable_place_names_added = std::mem::take(&mut self.mutable_place_names_added);
         let has_transported_root =
             self.authoritative_anonymous_anchors && self.producer_root_depth == 0;
         if !has_transported_root {
@@ -485,6 +532,8 @@ impl<'a> AstGen<'a> {
         self.structural_path = outer_path;
         self.for_counter = outer_for_counter;
         self.compound_counter = outer_compound_counter;
+        self.mutable_place_names = outer_mutable_place_names;
+        self.mutable_place_names_added = outer_mutable_place_names_added;
         result
     }
 
@@ -858,9 +907,6 @@ impl<'a> AstGen<'a> {
                 span: p.name.span,
             })
             .collect();
-        // Generate body expression
-        let body = self.gen_expr_at(crate::RirStructuralPathSegment::Body, &method.body);
-
         // Track whether this method has a self receiver (method vs associated
         // function) and, if so, the receiver's passing mode (`borrow self` /
         // `inout self` / bare by-value `self`, RUE-15).
@@ -875,6 +921,26 @@ impl<'a> AstGen<'a> {
             .receiver
             .as_ref()
             .is_some_and(|receiver| receiver.is_mut);
+        self.register_mutable_parameters(
+            method
+                .params
+                .iter()
+                .filter(|param| param.mode == ParamMode::Inout)
+                .map(|param| param.name.name),
+        );
+        if self_is_mut
+            || method
+                .receiver
+                .as_ref()
+                .is_some_and(|receiver| receiver.mode == ParamMode::Inout)
+        {
+            let self_symbol = self.intern_fixed_self();
+            self.mark_mutable_name(self_symbol);
+        }
+
+        // Generate body expression after recording the mutable receiver and
+        // parameter bindings, so compound target indices snapshot them.
+        let body = self.gen_expr_at(crate::RirStructuralPathSegment::Body, &method.body);
 
         // Emit methods as FnDecl instructions with has_self flag.
         // Sema uses has_self to add the implicit self parameter for methods,
@@ -1050,6 +1116,12 @@ impl<'a> AstGen<'a> {
                 span: p.name.span,
             })
             .collect();
+        self.register_mutable_parameters(
+            func.params
+                .iter()
+                .filter(|param| param.mode == ParamMode::Inout)
+                .map(|param| param.name.name),
+        );
         // Generate body expression
         let body = self.gen_expr_at(crate::RirStructuralPathSegment::Body, &func.body);
 
@@ -1819,9 +1891,18 @@ impl<'a> AstGen<'a> {
     }
 
     fn gen_block(&mut self, block: &rue_parser::BlockExpr) -> InstRef {
-        self.with_structural_segment(crate::RirStructuralPathSegment::Body, |this| {
+        let mutable_name_marker = self.mutable_place_names_added.len();
+        let result = self.with_structural_segment(crate::RirStructuralPathSegment::Body, |this| {
             this.gen_block_contents(block)
-        })
+        });
+        while self.mutable_place_names_added.len() > mutable_name_marker {
+            let name = self
+                .mutable_place_names_added
+                .pop()
+                .expect("mutable-name scope marker is within the insertion log");
+            self.mutable_place_names.remove(&name);
+        }
+        result
     }
 
     fn gen_block_contents(&mut self, block: &rue_parser::BlockExpr) -> InstRef {
@@ -2183,6 +2264,16 @@ impl<'a> AstGen<'a> {
                     .map(|ty| self.intern_type_at(crate::RirStructuralPathSegment::ReturnType, ty));
                 let init =
                     self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), &let_stmt.init);
+                // The binding is not in scope in its own initializer. Record
+                // its mutability only after lowering that initializer so a
+                // same-spelled outer const or immutable local keeps its
+                // compile-time/replayable meaning there.
+                if let_stmt.is_mut
+                    && let LetPattern::Ident(ident) = &let_stmt.pattern
+                {
+                    let name = self.symbol(ident.name);
+                    self.mark_mutable_name(name);
+                }
                 self.rir
                     .add_alloc(
                         &directives,
@@ -2267,23 +2358,25 @@ impl<'a> AstGen<'a> {
     /// evaluated once**: an index subexpression that could observe or cause an
     /// effect is bound to a compiler-generated temporary before the place is
     /// projected, and both the read and the write index through that temporary.
-    /// `a[f()] += 1` therefore calls `f` exactly once. Operands that can be
-    /// replayed without changing the program's meaning (literals, variables,
-    /// and arithmetic over them — see [`is_replayable_place_operand`]) are
-    /// regenerated instead of bound, which keeps the common shapes such as
-    /// `a[0] += 1` structurally identical to their expanded form, preserving
-    /// constant-index bounds checking and per-element move tracking.
+    /// `a[f()] += 1` therefore calls `f` exactly once. Operands that are
+    /// immutable for this producer (literals, constants, immutable locals,
+    /// and arithmetic over them) are regenerated instead of bound. Mutable
+    /// reads are captured, so a right-hand-side mutation cannot change the
+    /// place used by the write. The structural shape test remains shared with
+    /// the anonymous-type site walker below; mutability is a producer-local
+    /// fact that the walker does not need for anchor numbering.
     fn gen_compound_assign(&mut self, assign: &AssignStatement, op: CompoundOp) -> InstRef {
         let span = assign.span;
 
-        // The right-hand side keeps operand slot 0, as in a plain assignment.
-        // It is not the first thing to *run*: a bound index temporary is a
-        // statement ahead of the write, so the target's index subexpressions
-        // are evaluated before the right-hand side (5.2:18).
-        let value = self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), &assign.value);
-
         let mut hoisted: Vec<u32> = Vec::new();
-        let place = self.build_compound_place(&assign.target, &mut hoisted);
+        let mut index_ordinal = 0;
+        let place = self.build_compound_place(&assign.target, &mut hoisted, &mut index_ordinal);
+
+        // The right-hand side keeps operand slot 0, as in a plain assignment.
+        // Target index temporaries have already been generated and are listed
+        // first in the enclosing block, so every target index runs before the
+        // right-hand side (5.2:18).
+        let value = self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), &assign.value);
 
         let read = self.gen_compound_read(&place, span);
         let combined = self.rir.add_inst(Inst {
@@ -2309,11 +2402,12 @@ impl<'a> AstGen<'a> {
         &mut self,
         target: &'t AssignTarget,
         hoisted: &mut Vec<u32>,
+        index_ordinal: &mut u32,
     ) -> CompoundPlace<'t> {
         match target {
             AssignTarget::Var(ident) => CompoundPlace::Var(self.symbol(ident.name)),
             AssignTarget::Field(field) => {
-                let (root, mut steps) = self.decompose_place(&field.base, hoisted);
+                let (root, mut steps) = self.decompose_place(&field.base, hoisted, index_ordinal);
                 steps.push(CompoundStep {
                     kind: CompoundStepKind::Field(self.symbol(field.field.name)),
                     span: field.span,
@@ -2321,8 +2415,8 @@ impl<'a> AstGen<'a> {
                 CompoundPlace::Projected { root, steps }
             }
             AssignTarget::Index(index) => {
-                let (root, mut steps) = self.decompose_place(&index.base, hoisted);
-                let operand = self.hoist_place_operand(&index.index, hoisted);
+                let (root, mut steps) = self.decompose_place(&index.base, hoisted, index_ordinal);
+                let operand = self.hoist_place_operand(&index.index, hoisted, index_ordinal);
                 steps.push(CompoundStep {
                     kind: CompoundStepKind::Index(operand),
                     span: index.span,
@@ -2348,12 +2442,13 @@ impl<'a> AstGen<'a> {
         &mut self,
         expr: &'t Expr,
         hoisted: &mut Vec<u32>,
+        index_ordinal: &mut u32,
     ) -> (CompoundRoot<'t>, Vec<CompoundStep<'t>>) {
         match expr {
-            Expr::Paren(paren) => self.decompose_place(&paren.inner, hoisted),
+            Expr::Paren(paren) => self.decompose_place(&paren.inner, hoisted, index_ordinal),
             Expr::Ident(_) | Expr::SelfExpr(_) => (CompoundRoot::Replay(expr), Vec::new()),
             Expr::Field(field) => {
-                let (root, mut steps) = self.decompose_place(&field.base, hoisted);
+                let (root, mut steps) = self.decompose_place(&field.base, hoisted, index_ordinal);
                 steps.push(CompoundStep {
                     kind: CompoundStepKind::Field(self.symbol(field.field.name)),
                     span: field.span,
@@ -2361,8 +2456,8 @@ impl<'a> AstGen<'a> {
                 (root, steps)
             }
             Expr::Index(index) => {
-                let (root, mut steps) = self.decompose_place(&index.base, hoisted);
-                let operand = self.hoist_place_operand(&index.index, hoisted);
+                let (root, mut steps) = self.decompose_place(&index.base, hoisted, index_ordinal);
+                let operand = self.hoist_place_operand(&index.index, hoisted, index_ordinal);
                 steps.push(CompoundStep {
                     kind: CompoundStepKind::Index(operand),
                     span: index.span,
@@ -2384,13 +2479,15 @@ impl<'a> AstGen<'a> {
         &mut self,
         index: &'t Expr,
         hoisted: &mut Vec<u32>,
+        index_ordinal: &mut u32,
     ) -> CompoundOperand<'t> {
-        if is_replayable_place_operand(index) {
+        let ordinal = *index_ordinal;
+        *index_ordinal += 1;
+        if is_replayable_place_operand(index) && !self.place_operand_reads_mutable_name(index) {
             return CompoundOperand::Replay(index);
         }
         // Each hoist owns one statement slot, so its ordinal is a structural
         // segment no other operand of this statement can claim.
-        let ordinal = hoisted.len() as u32;
         let init = self.gen_expr_at(
             crate::RirStructuralPathSegment::Operand(COMPOUND_HOIST_SEGMENT + ordinal),
             index,
@@ -2588,14 +2685,14 @@ enum CompoundOperand<'t> {
     Replay(&'t Expr),
 }
 
-/// Whether an index operand inside a compound-assignment target can be
-/// generated once for the read and again for the write without changing what
-/// the program does.
+/// Whether an index operand has the replayable syntax shared by lowering and
+/// the anonymous-type site walker.
 ///
-/// Only shapes that cannot call a function, allocate, branch, or trap qualify.
-/// Everything else — calls, method calls, intrinsics, `?`, nested indexing,
-/// and every block-like expression — is bound to a temporary instead, so the
-/// place is still evaluated exactly once.
+/// Literals, names, field chains, unary operators, and binary operators are
+/// the admitted shapes. Calls, method calls, intrinsics, `?`, nested indexing,
+/// and block-like expressions are bound to a temporary because their own
+/// execution must happen exactly once. Lowering separately checks whether an
+/// admitted name is mutable before deciding to replay it.
 fn is_replayable_place_operand(expr: &Expr) -> bool {
     match expr {
         Expr::Int(_) | Expr::Bool(_) | Expr::Unit(_) | Expr::Ident(_) | Expr::SelfExpr(_) => true,
@@ -2759,13 +2856,13 @@ impl SiteWalker {
         self.operand(0, |this| this.walk_expr(&assign.value));
         // `build_compound_place`: a bare variable target evaluates nothing, and
         // every projected target decomposes through the same root/step walk.
-        let mut hoists = 0;
+        let mut index_ordinals = 0;
         match &assign.target {
             AssignTarget::Var(_) => {}
-            AssignTarget::Field(field) => self.walk_place_root(&field.base, &mut hoists),
+            AssignTarget::Field(field) => self.walk_place_root(&field.base, &mut index_ordinals),
             AssignTarget::Index(index) => {
-                self.walk_place_root(&index.base, &mut hoists);
-                self.walk_place_operand(&index.index, &mut hoists);
+                self.walk_place_root(&index.base, &mut index_ordinals);
+                self.walk_place_operand(&index.index, &mut index_ordinals);
             }
             AssignTarget::Method(expr) => {
                 self.operand(COMPOUND_ROOT_SEGMENT, |this| this.walk_expr(expr))
@@ -2777,30 +2874,29 @@ impl SiteWalker {
     /// read and for the write, and the only such roots are `Expr::Ident` and
     /// `Expr::SelfExpr`, which carry no literal; anything else is generated
     /// once under the shared-root slot.
-    fn walk_place_root(&mut self, expr: &Expr, hoists: &mut u32) {
+    fn walk_place_root(&mut self, expr: &Expr, index_ordinals: &mut u32) {
         match expr {
-            Expr::Paren(paren) => self.walk_place_root(&paren.inner, hoists),
+            Expr::Paren(paren) => self.walk_place_root(&paren.inner, index_ordinals),
             Expr::Ident(_) | Expr::SelfExpr(_) => {}
-            Expr::Field(field) => self.walk_place_root(&field.base, hoists),
+            Expr::Field(field) => self.walk_place_root(&field.base, index_ordinals),
             Expr::Index(index) => {
-                self.walk_place_root(&index.base, hoists);
-                self.walk_place_operand(&index.index, hoists);
+                self.walk_place_root(&index.base, index_ordinals);
+                self.walk_place_operand(&index.index, index_ordinals);
             }
             other => self.operand(COMPOUND_ROOT_SEGMENT, |this| this.walk_expr(other)),
         }
     }
 
-    /// Numbers `hoist_place_operand`. A replayable operand is regenerated under
-    /// the read and write slots instead of being bound, and
-    /// [`is_replayable_place_operand`] admits only literals, names, and
-    /// arithmetic over them, so no anonymous literal can sit there. Every other
-    /// operand is bound once, owning one statement slot.
-    fn walk_place_operand(&mut self, index: &Expr, hoists: &mut u32) {
+    /// Numbers `hoist_place_operand`. Every index claims an ordinal, including
+    /// a replayed immutable operand, so a later hoisted operand keeps the same
+    /// structural slot as lowering even when an earlier mutable read needs a
+    /// temporary. Only hoisted operands need to be walked for anonymous sites.
+    fn walk_place_operand(&mut self, index: &Expr, index_ordinals: &mut u32) {
+        let ordinal = *index_ordinals;
+        *index_ordinals += 1;
         if is_replayable_place_operand(index) {
             return;
         }
-        let ordinal = *hoists;
-        *hoists += 1;
         self.operand(COMPOUND_HOIST_SEGMENT + ordinal, |this| {
             this.walk_expr(index)
         });
@@ -4408,12 +4504,23 @@ mod tests {
 
     #[test]
     fn compound_assignment_replays_a_pure_index_without_a_temporary() {
-        let counts = inst_kind_counts("fn f(inout a: [i32; 4], i: u64) { a[i + 1] += 1; }");
-        // The index is regenerated for the read and the write rather than
-        // bound, so a constant-foldable index stays visible to later phases.
+        let counts = inst_kind_counts("fn f(inout a: [i32; 4]) { a[1 + 1] += 1; }");
+        // A literal-only index is regenerated for the read and the write
+        // rather than bound, so constant folding stays visible to later
+        // phases.
         assert_eq!(counts.get("index_get"), Some(&1));
         assert_eq!(counts.get("index_set"), Some(&1));
         assert_eq!(counts.get("alloc"), None);
+    }
+
+    #[test]
+    fn compound_assignment_snapshots_a_mutable_index() {
+        let counts = inst_kind_counts("fn f(inout a: [i32; 4], inout i: u64) { a[i + 1] += 1; }");
+        // The mutable read is captured once before the compound RHS. The
+        // generated temporary is the only additional allocation.
+        assert_eq!(counts.get("index_get"), Some(&1));
+        assert_eq!(counts.get("index_set"), Some(&1));
+        assert_eq!(counts.get("alloc"), Some(&1));
     }
 
     #[test]
@@ -4833,6 +4940,10 @@ mod tests {
         (
             "compound assignment with two hoisted index operands",
             "fn f(a: [i32; 2]) -> i32 { a[h(struct { h0: i32 })][h(struct { h1: i32 })] += 1; 0 }",
+        ),
+        (
+            "compound assignment mutable then hoisted index operands",
+            "fn f(inout a: [[i32; 2]; 2]) -> i32 { let mut i = 0; a[i][h(struct { h2: i32 })] += 1; 0 }",
         ),
         (
             "compound assignment through an accessor",

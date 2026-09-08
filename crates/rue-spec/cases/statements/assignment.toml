@@ -397,6 +397,42 @@ fn main() -> i32 {
 compile_fail = true
 
 [[case]]
+name = "compound_assign_constant_index_survives_inner_mutable_shadow"
+spec = ["5.2:18"]
+description = "A mutable shadow in an inner block does not hide a named constant index"
+error_contains = "[E0902]"
+source = """
+const I: u64 = 3;
+
+fn main() -> i32 {
+    let mut arr: [i32; 2] = [1, 2];
+    {
+        let mut I: u64 = 0;
+        I += 1;
+    };
+    arr[I] += 1;
+    arr[0]
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "compound_assign_constant_index_survives_own_initializer"
+spec = ["5.2:18"]
+description = "A mutable binding does not shadow a named constant in its initializer"
+error_contains = "[E0902]"
+source = """
+const I: u64 = 3;
+
+fn main() -> i32 {
+    let mut arr: [i32; 2] = [1, 2];
+    let mut I: u64 = { arr[I] += 1; 0 };
+    arr[0]
+}
+"""
+compile_fail = true
+
+[[case]]
 name = "compound_assign_is_not_an_expression"
 spec = ["5.2:10"]
 error_contains = "[E0100]"
@@ -463,6 +499,119 @@ exit_code = 42
 expected_stdout = """
 3
 """
+
+[[case]]
+name = "compound_assign_snapshots_mutable_index_before_rhs"
+spec = ["5.2:18"]
+description = "A mutable direct index is fixed before the right-hand side runs"
+source = """
+fn bump(inout i: u64) -> i32 {
+    i = 1;
+    2
+}
+
+fn main() -> i32 {
+    let mut a: [i32; 2] = [10, 20];
+    let mut i: u64 = 0;
+    a[i] += bump(inout i);
+    a[0] * 10 + a[1]
+}
+"""
+exit_code = 140
+
+[[case]]
+name = "compound_assign_snapshots_mutable_arithmetic_index"
+spec = ["5.2:18"]
+description = "A mutable arithmetic index is fixed before the right-hand side runs"
+source = """
+fn bump(inout i: u64) -> i32 {
+    i = 2;
+    2
+}
+
+fn main() -> i32 {
+    let mut a: [i32; 3] = [10, 20, 30];
+    let mut i: u64 = 0;
+    a[i + 1] += bump(inout i);
+    if a[0] == 10 && a[1] == 22 && a[2] == 30 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "compound_assign_snapshots_nested_mutable_indices"
+spec = ["5.2:18"]
+description = "Nested projected target indices are fixed before the right-hand side runs"
+source = """
+struct Row { cells: [i32; 2] }
+
+fn bump(inout i: u64) -> i32 {
+    i = 1;
+    2
+}
+
+fn main() -> i32 {
+    let mut rows: [Row; 2] = [
+        Row { cells: [10, 20] },
+        Row { cells: [30, 40] },
+    ];
+    let mut i: u64 = 0;
+    let mut j: u64 = 0;
+    rows[i].cells[j] += bump(inout i);
+    if rows[0].cells[0] == 12
+        && rows[0].cells[1] == 20
+        && rows[1].cells[0] == 30
+        && rows[1].cells[1] == 40 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "compound_assign_snapshots_mutable_method_index"
+spec = ["5.2:18"]
+description = "A method receiver and parameter index are fixed before the RHS"
+source = """
+struct Holder {
+    values: [i32; 2],
+    fn update(inout self, inout i: u64) {
+        self.values[i] += bump(inout i);
+    }
+}
+
+fn bump(inout i: u64) -> i32 {
+    i = 1;
+    2
+}
+
+fn main() -> i32 {
+    let mut h = Holder { values: [10, 20] };
+    let mut i: u64 = 0;
+    h.update(inout i);
+    h.values[0] * 10 + h.values[1]
+}
+"""
+exit_code = 140
+
+[[case]]
+name = "compound_assign_snapshots_mutable_receiver_index"
+spec = ["5.2:18"]
+description = "A mutable receiver field used as an index is fixed before the RHS"
+source = """
+struct Holder {
+    index: u64,
+    values: [i32; 2],
+    fn update(mut self) -> i32 {
+        self.values[self.index] += { self.index = 1; 2 };
+        self.values[0] * 10 + self.values[1]
+    }
+}
+
+fn main() -> i32 {
+    let h = Holder { index: 0, values: [10, 20] };
+    h.update()
+}
+"""
+exit_code = 140
 
 [[case]]
 name = "compound_assign_places_example"
