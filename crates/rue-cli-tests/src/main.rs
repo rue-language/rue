@@ -88,6 +88,8 @@
 //! - `compile_only`: don't run the produced binary
 //! - `driver_exit_code`: exact exit status of a driver subcommand invocation
 //!   that produces no program to run, such as `rue test` (ADR-0083)
+//! - `replay_repro`: stable ID whose published `test_finished.repro` argv and
+//!   environment are replayed and checked for the same one-test selection
 //! - `executable_target`: validate the produced executable's bounded ELF or
 //!   Mach-O structure, architecture, load commands, entry point, and resolved
 //!   entry relocation against this Rue target
@@ -208,6 +210,7 @@ use rue_test_runner::{
     validate_unique_test_names,
 };
 use serde::Serialize;
+use serde_json::Value;
 
 use sharding::CliShardPlan;
 
@@ -2021,6 +2024,7 @@ fn case_runs_prebuilt_program(case: &Case) -> bool {
         name: _,
         description: _,
         contract: _,
+        replay_repro,
         known_bug: _,
         known_bug_on: _,
         only_on: _,
@@ -2076,6 +2080,7 @@ fn case_runs_prebuilt_program(case: &Case) -> bool {
     // `source_path` is the staging key, so it must be the repo-relative form
     // the rule declared rather than an absolute path.
     Path::new(root).is_relative()
+        && replay_repro.is_none()
         && error_contains.is_empty()
         && json_diagnostic_order.is_empty()
         && compile_stdout_contains.is_empty()
@@ -2359,6 +2364,10 @@ fn run_case(
         }
     }
 
+    if let Some(target) = case.replay_repro.as_deref() {
+        replay_published_repro(&compile_output, dir, contract, target)?;
+    }
+
     // A driver subcommand's own exit status, checked before the
     // build-and-run expectations that do not apply to it (ADR-0083 §2).
     if let Some(expected) = case.driver_exit_code {
@@ -2451,6 +2460,171 @@ fn run_case(
     }
 
     run_case_program(case, contract, dir, &program)
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct TestEventSummary {
+    planned: Option<usize>,
+    started: Vec<String>,
+    finished: Vec<(String, String)>,
+}
+
+type PublishedRepros = HashMap<String, (Vec<String>, HashMap<String, String>)>;
+
+/// Read the run membership and verdicts from a JSON test event stream. The
+/// replay assertion compares these records rather than searching presentation
+/// text, so it proves the emitted argv selected the same IDs.
+fn summarize_test_events(stdout: &[u8]) -> Result<(TestEventSummary, PublishedRepros), String> {
+    let mut summary = TestEventSummary::default();
+    let mut repros = HashMap::new();
+    let text = std::str::from_utf8(stdout)
+        .map_err(|error| format!("event stream is not UTF-8: {error}"))?;
+    for (line_number, line) in text.lines().enumerate() {
+        let value: Value = serde_json::from_str(line)
+            .map_err(|error| format!("event line {} is not JSON: {error}", line_number + 1))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| format!("event line {} is not an object", line_number + 1))?;
+        match object.get("event").and_then(Value::as_str) {
+            Some("run_started") => {
+                summary.planned = object
+                    .get("plan")
+                    .and_then(Value::as_object)
+                    .and_then(|plan| plan.get("selected"))
+                    .and_then(Value::as_u64)
+                    .and_then(|selected| usize::try_from(selected).ok());
+            }
+            Some("test_started") => summary.started.push(
+                object
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        format!("event line {} has no test_started id", line_number + 1)
+                    })?
+                    .to_owned(),
+            ),
+            Some("test_finished") => {
+                let id = object
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        format!("event line {} has no test_finished id", line_number + 1)
+                    })?
+                    .to_owned();
+                let verdict = object
+                    .get("verdict")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        format!(
+                            "event line {} has no test_finished verdict",
+                            line_number + 1
+                        )
+                    })?
+                    .to_owned();
+                let argv = object
+                    .get("repro")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| format!("event line {} has no repro argv", line_number + 1))?
+                    .iter()
+                    .map(|argument| {
+                        argument.as_str().map(str::to_owned).ok_or_else(|| {
+                            format!(
+                                "event line {} has a non-string repro argument",
+                                line_number + 1
+                            )
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let mut repro_env = HashMap::new();
+                if let Some(environment) = object.get("repro_env") {
+                    for (key, value) in environment.as_object().ok_or_else(|| {
+                        format!("event line {} has a non-object repro_env", line_number + 1)
+                    })? {
+                        repro_env.insert(
+                            key.clone(),
+                            value
+                                .as_str()
+                                .ok_or_else(|| {
+                                    format!(
+                                        "event line {} has a non-string repro_env value",
+                                        line_number + 1
+                                    )
+                                })?
+                                .to_owned(),
+                        );
+                    }
+                }
+                repros.insert(id.clone(), (argv, repro_env));
+                summary.finished.push((id, verdict));
+            }
+            _ => {}
+        }
+    }
+    if repros.is_empty() {
+        return Err("test event stream has no test_finished repro".to_owned());
+    }
+    if summary.planned != Some(summary.started.len()) {
+        return Err(format!(
+            "run_started selected {:?} tests, but test_started carried {} IDs",
+            summary.planned,
+            summary.started.len()
+        ));
+    }
+    Ok((summary, repros))
+}
+
+/// Execute the exact argv published by a test_finished event, adding only the
+/// JSON presentation needed to inspect the replay's event stream.
+fn replay_published_repro(
+    initial: &Output,
+    directory: &Path,
+    contract: &ExecutionContract,
+    target: &str,
+) -> Result<(), TestFailure> {
+    let (initial_summary, repros) = summarize_test_events(&initial.stdout)
+        .map_err(|error| TestFailure::assertion(format!("invalid emitted repro: {error}")))?;
+    let (argv, environment) = repros.get(target).ok_or_else(|| {
+        TestFailure::assertion(format!("initial run published no repro for {target:?}"))
+    })?;
+    let expected_verdict = initial_summary
+        .finished
+        .iter()
+        .find_map(|(id, verdict)| (id == target).then_some(verdict.clone()))
+        .ok_or_else(|| {
+            TestFailure::assertion(format!("initial run finished no target {target:?}"))
+        })?;
+    let (program, args) = argv
+        .split_first()
+        .ok_or_else(|| TestFailure::assertion("emitted repro argv is empty"))?;
+    let mut command = compiler_command(Path::new(program));
+    command
+        .args(args)
+        .arg("--format")
+        .arg("json")
+        .current_dir(directory);
+    for (key, value) in environment {
+        command.env(key, value);
+    }
+    let replay = run_phase_with_timeout(
+        command,
+        ProcessPhase::Compiler,
+        contract.compile_timeout(),
+        None,
+    )?;
+    let (actual, _) = summarize_test_events(&replay.stdout).map_err(|error| {
+        TestFailure::assertion(format!("replayed repro emitted invalid events: {error}"))
+    })?;
+    let expected = TestEventSummary {
+        planned: Some(1),
+        started: vec![target.to_owned()],
+        finished: vec![(target.to_owned(), expected_verdict)],
+    };
+    if actual != expected {
+        return Err(TestFailure::assertion(format!(
+            "emitted repro selected different tests:\n  initial: {expected:?}\n  replay:  {actual:?}"
+        )));
+    }
+    Ok(())
 }
 
 fn watch_events(path: &Path) -> Vec<String> {
@@ -3922,6 +4096,19 @@ fn driver_exit_code_conflicts_with_compile_fail(case: &Case) -> bool {
     case.driver_exit_code.is_some() && case.compile_fail
 }
 
+fn invalid_replay_repro(case: &Case) -> Option<&'static str> {
+    let target = case.replay_repro.as_deref()?;
+    if target.is_empty() {
+        return Some("`replay_repro` must name a non-empty stable test ID");
+    }
+    if case.compile_fail || case.compile_only || case.watch.is_some() || case.watch_test.is_some() {
+        return Some(
+            "`replay_repro` requires an ordinary one-shot `rue test` case that publishes test events",
+        );
+    }
+    None
+}
+
 /// Return produced-program fields that are meaningless when `compile_only` or
 /// `driver_exit_code` stops the case before a program runs. Keep this list
 /// aligned with the assertions and inputs consumed exclusively by
@@ -4060,6 +4247,14 @@ fn load_cases(cases_dir: &Path) -> LoadedCorpus {
                 // load time so the doc comment's promise is enforced, not merely
                 // documented (RUE-132).
                 for case in &tf.cases {
+                    if let Some(error) = invalid_replay_repro(case) {
+                        eprintln!(
+                            "error: {}: case '{}' declares invalid replay_repro: {error}",
+                            path.display(),
+                            case.name,
+                        );
+                        std::process::exit(1);
+                    }
                     if driver_exit_code_conflicts_with_compile_fail(case) {
                         eprintln!(
                             "error: {}: case '{}' declares both `driver_exit_code` and `compile_fail` — the first asserts an exact status and the second only a nonzero one; keep one",

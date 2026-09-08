@@ -837,6 +837,28 @@ compile_stdout_contains = ["tests.rue::parse_port accepts\ntests.rue::parse_port
 compile_stdout_not_contains = ["lexer"]
 
 [[case]]
+name = "list_exact_filter_excludes_overlapping_ids"
+description = "`--list` and execution share exact stable-ID membership."
+files = [
+    { path = "main.rue", source = """
+const tests = @import("x.rue");
+const prefixed = @import("prefix/x.rue");
+fn main() -> i32 { 0 }
+""" },
+    { path = "x.rue", source = """
+test "alpha" { @assert(1 == 1); }
+test "alphabet" { @assert(1 == 1); }
+""" },
+    { path = "prefix/x.rue", source = """
+test "alpha" { @assert(1 == 1); }
+""" },
+]
+args = ["test", "main.rue", "--list", "--filter", "x.rue::alpha", "--exact"]
+driver_exit_code = 0
+compile_stdout_contains = ["x.rue::alpha\n"]
+compile_stdout_not_contains = ["x.rue::alphabet", "prefix/x.rue::alpha"]
+
+[[case]]
 name = "repeated_filters_union_rather_than_intersect"
 files = [
     { path = "main.rue", source = """
@@ -1041,7 +1063,7 @@ compile_stdout_contains = [
     # them: argv[0] and the root are absolute (they start at the root
     # directory), and everything after the root is the fixed repro tail.
     '"repro":["/',
-    '"--filter","tests.rue::fails on purpose","--seed","9",',
+    '"--filter","tests.rue::fails on purpose","--exact","--seed","9",',
     '"-O0","--timeout-ms","9000"]',
     '/main.rue","--filter"',
     '"stderr":{"bytes_total":17,"data":"assertion failed\n","encoding":"utf8"}',
@@ -1176,43 +1198,51 @@ compile_stdout_contains = [
 [[case]]
 name = "the_repro_argv_reproduces_the_same_verdict_alone"
 description = """
-The repro from the earlier case, run as its own invocation: the same one test,
-the same `assert` verdict, and no other test in the run. A repro that selected
-by the bare name would also re-run the passing homonym below it. The published
-repro spells the root absolutely; a case's argv has to be machine-independent,
-so this one spells it relative to the fixture directory the harness runs in —
-the selection is what the case is about.
+The emitted repro is replayed by the harness as its actual argv and environment:
+the same one test, the same `assert` verdict, and no other test in the run. The
+initial run includes two imported modules whose IDs overlap by path and two
+test names where one is a prefix of the other. A repro that selected by
+substring would run the extra tests too.
 """
 files = [
     { path = "main.rue", source = """
-const tests = @import("tests.rue");
+const tests = @import("x.rue");
+const prefixed = @import("prefix/x.rue");
 
 fn main() -> i32 {
     0
 }
 """ },
-    { path = "tests.rue", source = """
-test "fails on purpose" {
+    { path = "x.rue", source = """
+test "alpha" {
     @assert(1 == 2);
 }
+test "alphabet" {
+    @assert(1 == 1);
+}
 """ },
-    { path = "other.rue", source = """
-test "fails on purpose" {
+    { path = "prefix/x.rue", source = """
+test "alpha" {
     @assert(1 == 1);
 }
 """ },
 ]
 args = [
-    "test", "main.rue", "--filter", "tests.rue::fails on purpose", "--seed", "9",
-    "-O0", "--timeout-ms", "9000",
+    "test", "main.rue", "--seed", "9", "-O0", "--timeout-ms", "9000",
     "-j1", "--format", "json",
 ]
 driver_exit_code = 1
+replay_repro = "x.rue::alpha"
+# The repro invokes the native test image; keep this end-to-end assertion on
+# every native platform where the CLI runner can execute it.
+only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
 compile_stdout_contains = [
-    '"plan":{"selected":1,"total":1}',
+    '"plan":{"selected":3,"total":3}',
     '"kind":"assert"',
-    '"id":"tests.rue::fails on purpose"',
-    '"crash":0,"event":"run_finished","failed":1,"passed":0',
+    '"id":"x.rue::alpha"',
+    '"id":"x.rue::alphabet"',
+    '"id":"prefix/x.rue::alpha"',
+    '"crash":0,"event":"run_finished","failed":1,"passed":2',
 ]
 
 [[case]]

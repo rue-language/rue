@@ -356,6 +356,10 @@ pub struct Case {
     /// Compiler arguments, relative to the temp dir (default: first file + `-o prog`).
     #[serde(default)]
     pub args: Option<Vec<String>>,
+    /// Stable ID whose published `test_finished.repro` argv and environment
+    /// should be replayed, checking that it selects and reports the same test.
+    #[serde(default)]
+    pub replay_repro: Option<String>,
     /// Synthesize a tiny C-free static archive exporting `answer() -> 42` as
     /// pure machine code for the case's target, and substitute its path for the
     /// `${FFI_ARCHIVE}` token in `args` (ADR-0064 C FFI P1 proof program). The
