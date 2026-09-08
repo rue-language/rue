@@ -365,6 +365,54 @@ fn process_byte_literal(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Result<u6
     let rest = lex.remainder();
     let mut chars = rest.char_indices();
 
+    // Consume the malformed literal through an unescaped closing quote, or
+    // stop before the next line terminator. The scanner must skip escaped
+    // characters here: an escaped quote is byte-literal content, not the
+    // delimiter that lets the lexer resume. Keeping the scan on char
+    // boundaries also makes recovery safe for non-ASCII content.
+    fn resync_byte_literal(
+        lex: &mut logos::Lexer<'_, LogosTokenKind>,
+        remainder: &str,
+        consumed: usize,
+    ) {
+        // A malformed escape normally passes the offending character in
+        // `consumed`, but keep a line terminator out of that prefix as well.
+        // This makes the recovery contract explicit if the offending escape
+        // itself is CR or LF, and prevents the scan from ever starting on the
+        // next line.
+        let consumed = remainder[..consumed].find(['\n', '\r']).unwrap_or(consumed);
+        let tail = &remainder[consumed..];
+        let mut chars = tail.char_indices();
+        let mut stop = tail.len();
+
+        while let Some((offset, c)) = chars.next() {
+            match c {
+                '\'' => {
+                    stop = offset + c.len_utf8();
+                    break;
+                }
+                '\n' | '\r' => {
+                    stop = offset;
+                    break;
+                }
+                '\\' => match chars.next() {
+                    // A backslash immediately before a line terminator is
+                    // still bounded by that line; leave the terminator for
+                    // Logos' whitespace skip, as the ordinary unterminated
+                    // paths do.
+                    Some((offset, '\n' | '\r')) => {
+                        stop = offset;
+                        break;
+                    }
+                    Some(_) | None => {}
+                },
+                _ => {}
+            }
+        }
+
+        lex.bump(consumed + stop);
+    }
+
     // Parse the byte content, tracking how many bytes of `rest` it spans.
     let (value, content_len) = match chars.next() {
         None => {
@@ -373,7 +421,7 @@ fn process_byte_literal(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Result<u6
             ));
         }
         Some((_, '\'')) => {
-            lex.bump(1);
+            resync_byte_literal(lex, rest, 0);
             return Err(LexError::MalformedByteLiteral(
                 "empty byte literal `b''`: a byte literal must contain exactly one byte"
                     .to_string(),
@@ -401,7 +449,7 @@ fn process_byte_literal(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Result<u6
                     'r' => b'\r',
                     '0' => 0,
                     other => {
-                        lex.bump(1 + other.len_utf8());
+                        resync_byte_literal(lex, rest, 1 + other.len_utf8());
                         return Err(LexError::MalformedByteLiteral(format!(
                             "unknown escape `\\{}` in byte literal",
                             other.escape_debug()
@@ -413,7 +461,7 @@ fn process_byte_literal(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Result<u6
         },
         Some((_, c)) => {
             if !c.is_ascii() {
-                lex.bump(c.len_utf8());
+                resync_byte_literal(lex, rest, c.len_utf8());
                 return Err(LexError::MalformedByteLiteral(format!(
                     "byte literal must be a single ASCII byte, found `{}`",
                     c.escape_debug()
@@ -432,18 +480,7 @@ fn process_byte_literal(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Result<u6
         Some(_) => {
             // More than one byte before the quote (`b'ab'`). Resync to the
             // closing quote if there is one on this line, else to line end.
-            let tail = &rest[content_len..];
-            let stop = tail
-                .find(['\'', '\n', '\r'])
-                .map(|i| {
-                    if tail.as_bytes()[i] == b'\'' {
-                        i + 1
-                    } else {
-                        i
-                    }
-                })
-                .unwrap_or(tail.len());
-            lex.bump(content_len + stop);
+            resync_byte_literal(lex, rest, content_len);
             Err(LexError::MalformedByteLiteral(
                 "a byte literal must contain exactly one byte".to_string(),
             ))
@@ -1910,6 +1947,96 @@ mod tests {
                 "expected MalformedByteLiteral for {src:?}, got {:?}",
                 err.kind
             );
+        }
+    }
+
+    #[test]
+    fn test_byte_literal_errors_resync_through_delimiter() {
+        // Malformed content must consume its delimiter so it cannot become a
+        // second, bogus unexpected-character diagnostic. Tokens after the
+        // literal still need their original byte spans, and an independent
+        // later error must remain in the complete error set.
+        for src in ["b'\\q'; let later = 1; #", "b'é'; let later = 1; #"] {
+            let mut lexer = LogosTokenKind::lexer_with_extras(src, ThreadedRodeo::new());
+            let mut items = Vec::new();
+            while let Some(result) = lexer.next() {
+                items.push((lexer.span(), result));
+            }
+            let semicolon = src.find(';').unwrap();
+
+            assert_eq!(items.len(), 8);
+            assert_eq!(items[0].0, 0..semicolon);
+            assert!(matches!(
+                &items[0].1,
+                Err(LexError::MalformedByteLiteral(_))
+            ));
+            assert_eq!(items[1].0, semicolon..semicolon + 1);
+            assert!(matches!(&items[1].1, Ok(LogosTokenKind::Semi)));
+            assert!(matches!(&items[2].1, Ok(LogosTokenKind::Let)));
+            assert!(matches!(&items[3].1, Ok(LogosTokenKind::Ident(_))));
+            assert!(matches!(&items[4].1, Ok(LogosTokenKind::Eq)));
+            assert!(matches!(&items[5].1, Ok(LogosTokenKind::Int(1))));
+            assert!(matches!(&items[6].1, Ok(LogosTokenKind::Semi)));
+            assert!(matches!(&items[7].1, Err(LexError::UnexpectedCharacter)));
+            assert_eq!(
+                items[7].0,
+                src.find('#').unwrap()..src.find('#').unwrap() + 1
+            );
+        }
+    }
+
+    #[test]
+    fn test_byte_literal_resync_skips_escaped_quotes() {
+        // After one valid byte, the escaped quote is additional content; the
+        // following unescaped quote is the delimiter to consume.
+        let src = r"b'a\''; let later = 1; #";
+        let mut lexer = LogosTokenKind::lexer_with_extras(src, ThreadedRodeo::new());
+        let mut items = Vec::new();
+        while let Some(result) = lexer.next() {
+            items.push((lexer.span(), result));
+        }
+
+        let semicolon = src.find(';').unwrap();
+        assert_eq!(items[0].0, 0..semicolon);
+        assert!(matches!(
+            &items[0].1,
+            Err(LexError::MalformedByteLiteral(_))
+        ));
+        assert!(matches!(&items[1].1, Ok(LogosTokenKind::Semi)));
+        assert!(matches!(
+            items.last().map(|(_, result)| result),
+            Some(Err(LexError::UnexpectedCharacter))
+        ));
+    }
+
+    #[test]
+    fn test_byte_literal_resync_stops_at_line_boundaries() {
+        for newline in ["\n", "\r", "\r\n"] {
+            for source in [
+                format!("b'\\q{newline}let later = 1; #"),
+                format!("b'\\q\\{newline}let later = 1; #"),
+                format!("b'\\{newline}let later = 1; #"),
+            ] {
+                let mut lexer = LogosTokenKind::lexer_with_extras(&source, ThreadedRodeo::new());
+                let mut items = Vec::new();
+                while let Some(result) = lexer.next() {
+                    items.push((lexer.span(), result));
+                }
+
+                // The malformed literal and the later # are the complete
+                // error set; the `let` after the line boundary remains a
+                // valid token.
+                assert_eq!(items.len(), 7);
+                assert!(matches!(
+                    &items[0].1,
+                    Err(LexError::MalformedByteLiteral(_))
+                ));
+                assert!(matches!(&items[1].1, Ok(LogosTokenKind::Let)));
+                assert!(matches!(
+                    items.last().map(|(_, result)| result),
+                    Some(Err(LexError::UnexpectedCharacter))
+                ));
+            }
         }
     }
 

@@ -39,3 +39,10 @@ fn main() -> i32 { 5 }
 """
 compile_fail = true
 error_contains = ["unknown directive '@important'"]
+
+[[case]]
+name = "malformed_byte_literal_keeps_following_lexer_errors"
+description = "RUE-2133: a malformed byte literal consumes its closing quote during recovery, preserving the primary diagnostic and an independent later lexer error."
+source = "fn main() -> i32 { let bad = b'\\q'; let later = 1; # }"
+compile_fail = true
+error_contains = ["unknown escape `\\q` in byte literal", "unexpected character: #"]
