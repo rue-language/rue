@@ -68,6 +68,11 @@ def normalize(path: str) -> str:
     return posixpath.normpath(path.replace(os.sep, "/"))
 
 
+def escape_manifest_entry(entry: str) -> str:
+    """Quote literal hashes for the source-manifest line grammar."""
+    return entry.replace("#", r"\#")
+
+
 def reanchor(abs_path: str, roots: list[tuple[str, str]]) -> "str | None":
     """Map an envelope-absolute path to a project-relative path.
 
@@ -196,7 +201,10 @@ def main() -> None:
     # Entries resolve against the manifest file's own directory, which keeps
     # them identical across checkout roots.
     manifest_dir = posixpath.dirname(normalize(args.out)) or "."
-    lines = sorted(posixpath.relpath(entry, manifest_dir) for entry in entries)
+    lines = [
+        escape_manifest_entry(posixpath.relpath(entry, manifest_dir))
+        for entry in sorted(entries)
+    ]
     with open(args.out, "w", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
 

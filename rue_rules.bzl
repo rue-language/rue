@@ -208,7 +208,9 @@ def _test_candidate_list(ctx: AnalysisContext):
                 project_path,
                 root_dir,
             ))
-        candidates.append(project_path[len(prefix):])
+        # `rue test` uses the same line grammar as --source-manifest: hashes
+        # begin comments unless escaped at this final serialization boundary.
+        candidates.append(project_path[len(prefix):].replace("#", "\\#"))
     return ctx.actions.write("test-candidates.list", candidates)
 
 

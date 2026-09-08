@@ -109,6 +109,34 @@ class DeriveManifestTest(unittest.TestCase):
         self.assertIn("../stdout-dir/std/option.rue", manifest)
         self.assertNotIn("/checkout", manifest)
 
+    def test_hashes_are_escaped_in_every_declared_union(self):
+        with open(os.path.join(self.cwd, "stdout-dir/std/has#std.rue"), "w") as handle:
+            handle.write("// std\n")
+        env = envelope(
+            "/checkout/prog",
+            "/checkout/stdroot",
+            accepted=["/checkout/prog/has#read.rue"],
+            absent=["/checkout/prog/has#missing.rue"],
+        )
+        result = self.run_derive(
+            env,
+            ["prog/main.rue", "prog/has#read.rue", "prog/has#orphan.rue"],
+            extra=["--include-srcs"],
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            set(self.read_out().splitlines()),
+            {
+                "../prog/has\\#missing.rue",
+                "../prog/has\\#orphan.rue",
+                "../prog/has\\#read.rue",
+                "../prog/main.rue",
+                "../stdout-dir/std/_std.rue",
+                "../stdout-dir/std/has\\#std.rue",
+                "../stdout-dir/std/option.rue",
+            },
+        )
+
     def test_out_of_srcs_read_fails_the_build(self):
         env = envelope(
             "/checkout/prog",
@@ -149,11 +177,18 @@ class DeriveManifestTest(unittest.TestCase):
             env = envelope(
                 fake_root + "/prog",
                 fake_root + "/stdlocation",
-                accepted=[fake_root + "/prog/main.rue"],
-                absent=[fake_root + "/prog/helper.rue"],
+                accepted=[
+                    fake_root + "/prog/main.rue",
+                    fake_root + "/prog/hash#helper.rue",
+                ],
+                absent=[fake_root + "/prog/helper#missing.rue"],
             )
             out = "out/manifest-" + fake_root.replace("/", "_")
-            result = self.run_derive(env, ["prog/main.rue"], out=out)
+            result = self.run_derive(
+                env,
+                ["prog/main.rue", "prog/hash#helper.rue"],
+                out=out,
+            )
             self.assertEqual(result.returncode, 0, result.stderr)
             manifests.append(self.read_out(out))
         self.assertEqual(manifests[0], manifests[1])

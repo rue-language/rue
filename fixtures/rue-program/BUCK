@@ -76,8 +76,8 @@ rue_program_test(
 )
 
 # The rue_test proving ground. `runner/main.rue` imports `lib_tests.rue` and
-# nothing imports `orphan_tests.rue`; both files are in srcs, so both are in
-# the declared candidate inventory.
+# nothing imports `orphan_tests.rue` or `orphan#tests.rue`; all files are in
+# srcs, so all are in the declared candidate inventory.
 #
 # The pair is what pins the rule's one non-obvious behavior. `rue test` reports
 # the orphan as a warning and still exits 0, so a rule that only forwarded the
@@ -95,6 +95,6 @@ rue_test(
     root = "fixtures/rue-program/runner/main.rue",
     srcs = glob(["runner/**/*.rue"]),
     # Negative control: passes if and only if the run WOULD have failed the
-    # target, for exactly this path and for no other reason.
-    expect_unimported = ["orphan_tests.rue"],
+    # target, for exactly these paths and for no other reason.
+    expect_unimported = ["orphan_tests.rue", "orphan#tests.rue"],
 )

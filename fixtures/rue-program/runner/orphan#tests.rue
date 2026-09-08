@@ -1,0 +1,5 @@
+// Declared in srcs, imported by nothing. The hash in this filename exercises
+// the test-candidate inventory's source-manifest line grammar.
+test "nothing imports this hash file" {
+    @assert(1 == 1);
+}
