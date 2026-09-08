@@ -20,14 +20,15 @@ use rue_compiler::unstable::{
 };
 #[cfg(test)]
 use rue_compiler::unstable::{
-    accepted_read_identity_lookups, accepted_read_identity_visits, committed_import_discovery,
-    committed_successor_sharing, exact_import_groups_dispatched, handoff_observation_visits,
-    handoff_observations, import_close_records_reduced, import_frontier_roots_requested,
-    import_plan_groups_constructed, import_view_full_leaves_published,
-    import_view_ledger_entries_cloned, import_view_overlay_leaves_published,
-    import_view_read_entries_compared, import_view_source_entries_compared,
-    parse_invalidation_entries_compared, parse_key_entries_compared, parse_modules_dispatched,
-    parse_sources_materialized, snapshot_module_resolution_visits, snapshot_module_resolutions,
+    MultiFileFormatter, SourceInfo, accepted_read_identity_lookups, accepted_read_identity_visits,
+    committed_import_discovery, committed_successor_sharing, exact_import_groups_dispatched,
+    handoff_observation_visits, handoff_observations, import_close_records_reduced,
+    import_frontier_roots_requested, import_plan_groups_constructed,
+    import_view_full_leaves_published, import_view_ledger_entries_cloned,
+    import_view_overlay_leaves_published, import_view_read_entries_compared,
+    import_view_source_entries_compared, parse_invalidation_entries_compared,
+    parse_key_entries_compared, parse_modules_dispatched, parse_sources_materialized,
+    snapshot_module_resolution_visits, snapshot_module_resolutions,
 };
 #[cfg(test)]
 use rue_compiler::unstable::{frontend_query_invalidations, rooted_cfg};
@@ -38,6 +39,8 @@ use rue_compiler::{
     ImportDiscoveryStatus, ImportDiscoveryView, PhysicalFileIdentity, SourceMetadata,
     SourceSnapshot, TrustedToolchainModuleDemand, trusted_logical_path_for_requested,
 };
+
+use crate::host::HostPathContext;
 
 /// The content fingerprint used by the long-lived filesystem observer.
 ///
@@ -245,33 +248,31 @@ fn attempted_reads_of(manifest: &AcceptedReadManifest) -> Vec<AttemptedRead> {
 #[derive(Debug)]
 pub(crate) struct SourceManifest {
     path: PathBuf,
+    display_path: String,
+    working_directory: PathBuf,
     content_hash: WatchFingerprint,
     allowed: AHashSet<PathBuf>,
     declared_paths: AHashSet<PathBuf>,
 }
 
 impl SourceManifest {
+    #[cfg(test)]
     pub(crate) fn load(path: &str) -> Result<Self, String> {
+        let context = HostPathContext::capture()?;
+        Self::load_with_context(path, &context)
+    }
+
+    pub(crate) fn load_with_context(path: &str, context: &HostPathContext) -> Result<Self, String> {
         let manifest_path = Path::new(path);
-        let content = fs::read_to_string(manifest_path)
+        let anchored_manifest_path = context.anchor(manifest_path);
+        let resolved_manifest_path = normalize_lexical_path(&anchored_manifest_path);
+        let content = fs::read_to_string(&anchored_manifest_path)
             .map_err(|e| format!("Error reading source manifest '{}': {}", path, e))?;
-        let base_dir = manifest_path
+        let base_dir = resolved_manifest_path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        let base_dir = if base_dir.is_absolute() {
-            normalize_lexical_path(base_dir)
-        } else {
-            normalize_lexical_path(
-                &env::current_dir().map_err(|error| {
-                    format!(
-                        "Error reading source manifest '{}': cannot resolve current directory: {}",
-                        path, error
-                    )
-                })?
-                .join(base_dir),
-            )
-        };
+        let base_dir = normalize_lexical_path(base_dir);
 
         let mut allowed = AHashSet::new();
         let mut declared_paths = AHashSet::new();
@@ -314,7 +315,9 @@ impl SourceManifest {
         }
 
         Ok(Self {
-            path: manifest_path.to_path_buf(),
+            path: anchored_manifest_path,
+            display_path: path.to_owned(),
+            working_directory: context.working_directory().to_owned(),
             content_hash: WatchFingerprint::from_bytes(content.as_bytes()),
             allowed,
             declared_paths,
@@ -330,7 +333,13 @@ impl SourceManifest {
     }
 
     fn display_path(&self) -> String {
-        self.path.display().to_string()
+        self.display_path.clone()
+    }
+
+    fn reload(&self) -> Result<Self, String> {
+        let context = HostPathContext::from_working_directory(self.working_directory.clone())
+            .expect("a captured invocation directory is absolute");
+        Self::load_with_context(&self.display_path, &context)
     }
 
     fn policy_revision(&self) -> String {
@@ -354,22 +363,27 @@ impl SourceManifest {
     }
 }
 
-/// Anchor a host-supplied spelling at the current directory and reduce it with
-/// the compiler's one path normalizer.
+/// Reduce an already anchored path with the compiler's one path normalizer.
 ///
-/// Anchoring is the driver's own step: a relative command line argument or
-/// manifest entry names a file relative to the process, and every identity the
-/// compiler mints is absolute. The reduction itself is not the driver's to
+/// The driver anchors relative spellings at the captured invocation directory
+/// or manifest base before calling this function. Every identity the compiler
+/// mints is absolute. The reduction itself is not the driver's to
 /// decide — a manifest key that collapsed `..` differently from the requested
 /// path discovery mints would deny a file the compiler considers declared
 /// (RUE-1979), so it delegates to `normalize_module_path`.
 fn normalize_lexical_path(path: &Path) -> PathBuf {
+    debug_assert!(
+        path.is_absolute(),
+        "path anchoring must happen at the invocation boundary"
+    );
+    PathBuf::from(normalize_module_path(&path.to_string_lossy()))
+}
+
+fn normalize_lexical_path_at(path: &Path, working_directory: &Path) -> PathBuf {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(path)
+        working_directory.join(path)
     };
     PathBuf::from(normalize_module_path(&absolute.to_string_lossy()))
 }
@@ -776,9 +790,10 @@ pub(crate) fn parse_source_manifest_entry(raw_line: &str) -> String {
     entry.trim().to_string()
 }
 
-pub(crate) fn validate_manifest_allows_source(
+fn validate_manifest_allows_source_with_display(
     manifest: Option<&SourceManifest>,
     source_path: &str,
+    display_path: &str,
     role: &str,
 ) -> Result<(), String> {
     let Some(manifest) = manifest else {
@@ -796,7 +811,7 @@ pub(crate) fn validate_manifest_allows_source(
 
     Err(format!(
         "Error: {role} source '{}' is not listed in source manifest '{}'\nManifest entries are allowed source reads, not extra semantic roots.",
-        source_path,
+        display_path,
         manifest.display_path()
     ))
 }
@@ -806,6 +821,7 @@ pub(crate) struct SourceLoadRequest<'a> {
     pub(crate) source_manifest_path: Option<&'a str>,
     pub(crate) std_root: Option<&'a Path>,
     pub(crate) compiler_config: CompilerSessionConfig,
+    pub(crate) path_context: &'a HostPathContext,
 }
 
 #[derive(Debug)]
@@ -918,6 +934,72 @@ pub(crate) fn source_load_internal_error(
     }
 }
 
+fn prepare_source_load_errors(errors: CompileErrors) -> CompileErrors {
+    with_import_migration_helps(&errors)
+}
+
+fn prepare_source_load_error(error: SourceLoadError) -> SourceLoadError {
+    match error {
+        SourceLoadError::Compiler { snapshot, errors } => SourceLoadError::Compiler {
+            snapshot,
+            errors: prepare_source_load_errors(errors),
+        },
+        error => error,
+    }
+}
+
+/// Add presentation-only migration help to module-not-found diagnostics.
+///
+/// This belongs to the driver library because source-load failures can cross
+/// the host boundary before the command-line renderer exists. All diagnostic
+/// batches for one request use the same sibling probe cache, so text and JSON
+/// renderings observe one frozen filesystem fact set.
+pub fn with_import_migration_helps(errors: &CompileErrors) -> CompileErrors {
+    with_import_migration_helps_batches(&[errors])
+        .pop()
+        .expect("one diagnostic batch produces one result")
+}
+
+pub fn with_import_migration_helps_batches(batches: &[&CompileErrors]) -> Vec<CompileErrors> {
+    let mut sibling_exists = AHashMap::<String, bool>::new();
+    batches
+        .iter()
+        .map(|errors| {
+            let mut enriched = CompileErrors::new();
+            for error in errors.iter() {
+                let sibling = match &error.kind {
+                    rue_error::ErrorKind::ModuleNotFound { path, candidates }
+                        if !path.ends_with(".rue") =>
+                    {
+                        let basename = Path::new(path)
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or(path);
+                        let facade_suffix = format!("/_{basename}.rue");
+                        candidates.iter().find_map(|candidate: &String| {
+                            let sibling =
+                                format!("{}.rue", candidate.strip_suffix(&facade_suffix)?);
+                            let exists = *sibling_exists
+                                .entry(sibling.clone())
+                                .or_insert_with(|| Path::new(&sibling).is_file());
+                            exists.then_some((path.clone(), sibling))
+                        })
+                    }
+                    _ => None,
+                };
+                match sibling {
+                    Some((path, sibling)) => enriched.push(error.clone().with_help(format!(
+                        "an extensionless import names the directory facade; the file module \
+                 '{sibling}' is imported with its extension: @import(\"{path}.rue\")"
+                    ))),
+                    None => enriched.push(error.clone()),
+                }
+            }
+            enriched
+        })
+        .collect()
+}
+
 pub(crate) fn load(
     request: SourceLoadRequest<'_>,
 ) -> Result<ImportDiscoveryResult, SourceLoadError> {
@@ -931,19 +1013,34 @@ pub(crate) fn load(
         let _span = tracing::info_span!("source_manifest").entered();
         let manifest = request
             .source_manifest_path
-            .map(SourceManifest::load)
+            .map(|path| SourceManifest::load_with_context(path, request.path_context))
             .transpose()
             .map_err(SourceLoadError::Message)?;
-        validate_manifest_allows_source(manifest.as_ref(), request.root_source, "root")
-            .map_err(SourceLoadError::Message)?;
+        let root_path = normalize_lexical_path_at(
+            Path::new(request.root_source),
+            request.path_context.working_directory(),
+        );
+        validate_manifest_allows_source_with_display(
+            manifest.as_ref(),
+            &root_path.to_string_lossy(),
+            request.root_source,
+            "root",
+        )
+        .map_err(SourceLoadError::Message)?;
         manifest
     };
+    let std_root = request
+        .std_root
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(|path| request.path_context.anchor(path));
     discover_and_load_imports_with_configuration(
         request.root_source,
         manifest,
-        request.std_root,
+        std_root.as_deref(),
         request.compiler_config,
+        request.path_context,
     )
+    .map_err(prepare_source_load_error)
 }
 
 #[derive(Debug)]
@@ -996,6 +1093,7 @@ pub(crate) struct ImportDiscoveryResult {
 #[derive(Debug, Clone)]
 pub(crate) struct SourceResolutionInputs {
     pub(crate) root_path: PathBuf,
+    pub(crate) root_display_path: String,
     pub(crate) context: ImportDiscoveryContext,
 }
 
@@ -1806,11 +1904,13 @@ pub(crate) fn discover_and_load_imports(
     source_manifest: Option<SourceManifest>,
     std_root: Option<&Path>,
 ) -> Result<ImportDiscoveryResult, SourceLoadError> {
+    let path_context = HostPathContext::capture().expect("test invocation directory exists");
     discover_and_load_imports_with_configuration(
         root_source,
         source_manifest,
         std_root,
         CompilerSessionConfig::default(),
+        &path_context,
     )
 }
 
@@ -1819,6 +1919,7 @@ fn discover_and_load_imports_with_configuration(
     source_manifest: Option<SourceManifest>,
     std_root: Option<&Path>,
     compiler_config: CompilerSessionConfig,
+    path_context: &HostPathContext,
 ) -> Result<ImportDiscoveryResult, SourceLoadError> {
     // Validate the root source's span representability before discovery aliases
     // physical identities. With a single positional source there are no
@@ -1835,7 +1936,8 @@ fn discover_and_load_imports_with_configuration(
         });
     }
 
-    let root_path = normalize_lexical_path(Path::new(root_source));
+    let root_path =
+        normalize_lexical_path_at(Path::new(root_source), path_context.working_directory());
     let root_dir = root_path
         .parent()
         .unwrap_or_else(|| Path::new("/"))
@@ -1844,9 +1946,10 @@ fn discover_and_load_imports_with_configuration(
     // configured. Preserve that established contract before canonicalization:
     // canonicalizing `""` would otherwise turn it into the current project
     // directory and make the physical overlap guard reject ordinary projects.
-    let std_root = std_root
+    let std_root: Option<PathBuf> = std_root
         .filter(|path| !path.as_os_str().is_empty())
-        .map(capture_std_root);
+        .map(|path| path_context.anchor(path))
+        .map(|path| capture_std_root(&path));
     let canonicalize_root = || {
         fs::canonicalize(&root_path).map_err(|error| {
             SourceLoadError::Message(format!("Error reading {}: {error}", root_path.display()))
@@ -1941,7 +2044,11 @@ fn discover_and_load_imports_with_configuration(
     let read_manifest = assembler.accepted_read_manifest();
     Ok(ImportDiscoveryResult {
         source_snapshot: close.snapshot,
-        resolution: SourceResolutionInputs { root_path, context },
+        resolution: SourceResolutionInputs {
+            root_path,
+            root_display_path: root_source.to_owned(),
+            context,
+        },
         attempted_reads: attempted_reads_of(&read_manifest),
         read_manifest,
         observed_absent_paths: close.observed_absent_paths,
@@ -1964,6 +2071,13 @@ pub(crate) fn reload_from_filesystem(
     result: &mut ImportDiscoveryResult,
     supersession: Option<&dyn Fn() -> bool>,
 ) -> Result<(), SourceLoadError> {
+    reload_from_filesystem_inner(result, supersession).map_err(prepare_source_load_error)
+}
+
+fn reload_from_filesystem_inner(
+    result: &mut ImportDiscoveryResult,
+    supersession: Option<&dyn Fn() -> bool>,
+) -> Result<(), SourceLoadError> {
     let control = DiscoveryControl::superseding(supersession);
     // This attempt's observation record starts empty and is filled in once the
     // assembler exists, so a failure before any read is described as having
@@ -1973,13 +2087,14 @@ pub(crate) fn reload_from_filesystem(
     let source_manifest = result
         .source_manifest
         .as_ref()
-        .map(|manifest| SourceManifest::load(manifest.path.to_string_lossy().as_ref()))
+        .map(SourceManifest::reload)
         .transpose()
         .map_err(SourceLoadError::Message)?;
     control.checkpoint()?;
-    validate_manifest_allows_source(
+    validate_manifest_allows_source_with_display(
         source_manifest.as_ref(),
         result.resolution.root_path.to_string_lossy().as_ref(),
+        &result.resolution.root_display_path,
         "root",
     )
     .map_err(SourceLoadError::Message)?;
@@ -2149,6 +2264,15 @@ pub(crate) fn acquire_reached_toolchain_modules(
 /// session and host close coherent rather than rolling either half back.
 /// `None` keeps every check a no-op for the one-shot driver.
 pub(crate) fn acquire_reached_toolchain_modules_superseding(
+    result: &mut ImportDiscoveryResult,
+    options: &CompileOptions,
+    supersession: Option<&dyn Fn() -> bool>,
+) -> Result<(), SourceLoadError> {
+    acquire_reached_toolchain_modules_superseding_inner(result, options, supersession)
+        .map_err(prepare_source_load_error)
+}
+
+fn acquire_reached_toolchain_modules_superseding_inner(
     result: &mut ImportDiscoveryResult,
     options: &CompileOptions,
     supersession: Option<&dyn Fn() -> bool>,
@@ -4234,6 +4358,7 @@ mod tests {
                 None,
                 None,
                 configuration,
+                &HostPathContext::capture().unwrap(),
             )
             .unwrap();
             let modules = result
@@ -4424,6 +4549,51 @@ mod tests {
             Err(other) => panic!("policy change escaped typed diagnostics: {other:?}"),
             Ok(()) => panic!("policy change reused a now-denied read"),
         }
+    }
+
+    #[test]
+    fn failed_reobserve_error_owns_attempted_snapshot_after_predecessor_mutation() {
+        let dir = TestDir::new("owned-failed-reobserve-snapshot");
+        let main = dir.write(
+            "main.rue",
+            r#"const leaf = @import("leaf.rue"); fn main() -> i32 { leaf.value() }"#,
+        );
+        let leaf = dir.write("leaf.rue", "pub fn value() -> i32 { 1 }");
+        let mut result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
+
+        fs::write(&leaf, "pub fn value() -> i32 {").unwrap();
+        let error = reload_from_filesystem(&mut result, None)
+            .expect_err("the changed import closure must fail before commit");
+        let SourceLoadError::Compiler { snapshot, errors } = error else {
+            panic!("expected owned compiler diagnostics, got {error:?}");
+        };
+        let snapshot = snapshot.expect("failed closure must carry its attempted snapshot");
+        let attempted_source = snapshot
+            .files()
+            .find(|source| source.path.ends_with("leaf.rue"))
+            .expect("the attempted snapshot retains the failing source")
+            .source
+            .to_owned();
+
+        // The retained error is consumed after a later observation has repaired
+        // the host and the failing file has changed again. Rendering must still
+        // use the attempted snapshot captured with this error.
+        fs::write(&leaf, "pub fn value() -> i32 { 2 }").unwrap();
+        reload_from_filesystem(&mut result, None).unwrap();
+        fs::remove_file(&leaf).unwrap();
+        let sources = snapshot
+            .files()
+            .map(|source| (source.file_id, SourceInfo::new(source.source, source.path)))
+            .collect::<Vec<_>>();
+        let rendered = MultiFileFormatter::new(sources).format_errors(&errors);
+        assert_eq!(attempted_source, "pub fn value() -> i32 {");
+        assert!(rendered.contains("pub fn value() -> i32 {"), "{rendered}");
+        assert!(!rendered.contains("value() -> i32 { 2 }"), "{rendered}");
+        assert!(
+            errors.iter().any(|error| {
+                matches!(error.kind, rue_error::ErrorKind::UnexpectedToken { .. })
+            })
+        );
     }
 
     #[cfg(unix)]

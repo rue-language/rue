@@ -16,7 +16,7 @@ use rue_compiler::unstable::{
 use rue_compiler::{
     CompileErrors, CompileOptions, CompileOutput, CompileWarning, CompilerSessionConfig, OptLevel,
 };
-use rue_driver::{FilesystemCompilerHost, HostOpenRequest, SourceLoadError};
+use rue_driver::{FilesystemCompilerHost, HostOpenRequest, HostPathContext, SourceLoadError};
 use rue_perf_schema::{
     DisplayIdentityWork, EDIT_REPORT_SCHEMA_VERSION, EditEndpoints, EditManifest, EditOutcome,
     EditReport, EditReportIdentity, EditReportRegime, EditRow, EditSample, EditScenario,
@@ -1224,6 +1224,7 @@ fn open_host(
         source_manifest_path: manifest.and_then(Path::to_str),
         std_root,
         compiler_config,
+        path_context: &HostPathContext::capture().map_err(|error| error.to_string())?,
     })
     .map_err(source_load_error)
 }
