@@ -390,6 +390,40 @@ fn main() -> i32 {
 exit_code = 3
 no_warnings = true
 
+[[case]]
+name = "nested_variant_root_wildcard_reachable_after_named_outer_variant"
+source = """
+enum Inner { A(i32), B }
+enum Outer { Pair(Inner, Inner), Empty }
+fn main() -> i32 {
+    match Outer.Pair(Inner.B, Inner.B) {
+        Outer.Pair(Inner.A(v), Inner.B) => v,
+        Outer.Empty => 2,
+        _ => 0,
+    }
+}
+"""
+exit_code = 0
+no_warnings = true
+
+[[case]]
+name = "nested_variant_root_wildcard_unreachable_once"
+source = """
+enum Inner { A(i32), B }
+enum Outer { Pair(Inner, Inner), Empty }
+fn main() -> i32 {
+    match Outer.Pair(Inner.B, Inner.B) {
+        Outer.Pair(Inner.A(v), _) => v,
+        Outer.Pair(Inner.B, _) => 0,
+        Outer.Empty => 2,
+        _ => 3,
+    }
+}
+"""
+exit_code = 0
+warning_contains = ["unreachable pattern", "'_'", "already cover every possible value"]
+expected_warning_count = 1
+
 # RUE-168: a `_` arm is unreachable when the preceding arms already cover
 # every possible value (both bools, or every enum variant). Spec 4.7:17 and
 # 4.7:20 mandate the warning; it previously only fired after an earlier `_`.
