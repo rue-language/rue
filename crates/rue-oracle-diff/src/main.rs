@@ -1420,6 +1420,7 @@ fn unsupported_corpus_field(case: &Case) -> Option<IneligibleReason> {
         // ignoring them here narrows what this harness verifies without
         // changing what the program is expected to do.
         description: _,
+        replay_repro: _,
         output: _,
         error_contains: _,
         compile_stdout_contains: _,

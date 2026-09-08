@@ -691,6 +691,14 @@ as a substring. `--filter` is repeatable and repeated filters **union**. Matchin
 is over the whole ID, so `--filter app/lexer_tests.rue` selects one file's tests
 and `--filter "parse_port"` selects by name fragment.
 
+### `--exact`
+
+`--exact` is a modifier for `--filter`. When present, each filter must equal the
+complete stable ID. Repeated filters still **union**, and an invocation with no
+filters still selects every test. This gives a repro a way to select one ID even
+when another ID begins with it, while leaving ordinary substring filtering
+unchanged.
+
 ### `--shard K/N`
 
 `K` is 1-based. A test belongs to shard `K` when
@@ -738,13 +746,15 @@ the environment it has to be run under:
 
 ```json
 "repro":["/opt/rue/bin/rue","test","/work/app/main.rue",
- "--filter","app/t.rue::parses a port","--seed","417",
+ "--filter","app/t.rue::parses a port","--exact","--seed","417",
  "--target","x86-64-linux","-O0","--timeout-ms","10000"],
 "repro_env":{"RUE_STD_PATH":"/opt/rue/std"}
 ```
 
 It selects by the **full stable ID, never the bare name** — two modules may
 declare tests with the same name, and a repro that re-runs both is not a repro.
+The runner adds `--exact` to every emitted repro, so a stable ID that is a
+prefix of another ID still selects only the failing test.
 The seed, target, optimization level, any enabled preview features, and the
 per-test budget travel with it so the same image is rebuilt, and `--source-manifest` and
 `--link-archive` are repeated when they were given. The target and optimization
@@ -798,7 +808,7 @@ human renderer's `repro:` line is the assignments followed by the argv, all
 shell-quoted for pasting —
 
 ```text
-repro: RUE_STD_PATH=/opt/rue/std /opt/rue/bin/rue test /work/app/main.rue --filter 'app/t.rue::parses a port' --seed 417 --target x86-64-linux -O0 --timeout-ms 10000
+repro: RUE_STD_PATH=/opt/rue/std /opt/rue/bin/rue test /work/app/main.rue --filter 'app/t.rue::parses a port' --exact --seed 417 --target x86-64-linux -O0 --timeout-ms 10000
 ```
 
 — and a consumer should re-execute the array under the object rather than parse

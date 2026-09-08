@@ -118,8 +118,16 @@ impl std::fmt::Display for Shard {
 /// rather than glob or regex because the ID's own shape (`<module>::<name>`)
 /// already gives a user the two prefixes they reach for, and a filter language
 /// is a compatibility surface this ADR does not need.
-pub(crate) fn matches_filters(id: &str, filters: &[String]) -> bool {
-    filters.is_empty() || filters.iter().any(|filter| id.contains(filter.as_str()))
+/// With `exact`, each filter instead has to equal the complete stable ID.
+pub(crate) fn matches_filters(id: &str, filters: &[String], exact: bool) -> bool {
+    filters.is_empty()
+        || filters.iter().any(|filter| {
+            if exact {
+                id == filter
+            } else {
+                id.contains(filter.as_str())
+            }
+        })
 }
 
 /// Which tests an invocation acts on: filter, then shard, in inventory order.
@@ -131,11 +139,12 @@ pub(crate) fn matches_filters(id: &str, filters: &[String]) -> bool {
 pub(crate) fn select<'a>(
     entries: &'a [TestInventoryEntry],
     filters: &[String],
+    exact: bool,
     shard: Option<Shard>,
 ) -> Vec<&'a TestInventoryEntry> {
     entries
         .iter()
-        .filter(|entry| matches_filters(&entry.id, filters))
+        .filter(|entry| matches_filters(&entry.id, filters, exact))
         .filter(|entry| shard.is_none_or(|shard| shard.owns(&entry.id)))
         .collect()
 }
@@ -144,10 +153,11 @@ pub(crate) fn select<'a>(
 pub(crate) fn plan(
     entries: &[TestInventoryEntry],
     filters: &[String],
+    exact: bool,
     shard: Option<Shard>,
     seed: u64,
 ) -> Vec<TestInventoryEntry> {
-    let mut selected: Vec<TestInventoryEntry> = select(entries, filters, shard)
+    let mut selected: Vec<TestInventoryEntry> = select(entries, filters, exact, shard)
         .into_iter()
         .cloned()
         .collect();
@@ -206,20 +216,50 @@ mod tests {
 
     #[test]
     fn no_filter_selects_everything() {
-        assert!(matches_filters("app/m.rue::anything", &[]));
+        assert!(matches_filters("app/m.rue::anything", &[], false));
+        assert!(matches_filters("app/m.rue::anything", &[], true));
     }
 
     #[test]
     fn filters_match_substrings_of_the_stable_id_and_union() {
         let filters = vec!["parse_port".to_owned(), "lexer".to_owned()];
-        assert!(matches_filters("app/p.rue::parse_port accepts", &filters));
-        assert!(matches_filters("app/l.rue::lexer eats spaces", &filters));
-        assert!(!matches_filters("app/x.rue::something else", &filters));
+        assert!(matches_filters(
+            "app/p.rue::parse_port accepts",
+            &filters,
+            false
+        ));
+        assert!(matches_filters(
+            "app/l.rue::lexer eats spaces",
+            &filters,
+            false
+        ));
+        assert!(!matches_filters(
+            "app/x.rue::something else",
+            &filters,
+            false
+        ));
         // The module half of the ID is matchable too, which is how a whole
         // file's tests are selected without naming each one.
         assert!(matches_filters(
             "app/lexer_tests.rue::whatever",
-            &["app/lexer_tests.rue".to_owned()]
+            &["app/lexer_tests.rue".to_owned()],
+            false
+        ));
+    }
+
+    #[test]
+    fn exact_filters_match_one_stable_id_and_still_union() {
+        let filters = vec![
+            "app/tests.rue::alpha".to_owned(),
+            "app/other.rue::beta".to_owned(),
+        ];
+        assert!(matches_filters("app/tests.rue::alpha", &filters, true));
+        assert!(matches_filters("app/other.rue::beta", &filters, true));
+        assert!(!matches_filters("app/tests.rue::alphabet", &filters, true));
+        assert!(!matches_filters(
+            "prefix/app/tests.rue::alpha",
+            &filters,
+            true
         ));
     }
 
@@ -230,7 +270,7 @@ mod tests {
         let mut union: Vec<String> = Vec::new();
         for index in 1..=4 {
             let shard = Shard { index, count: 4 };
-            union.extend(ids(&plan(&entries, &[], Some(shard), 0)));
+            union.extend(ids(&plan(&entries, &[], false, Some(shard), 0)));
         }
         union.sort();
         let mut all = ids(&entries);
@@ -249,12 +289,13 @@ mod tests {
             union.extend(ids(&plan(
                 &entries,
                 &filters,
+                false,
                 Some(Shard { index, count: 2 }),
                 7,
             )));
         }
         union.sort();
-        let mut expected = ids(&plan(&entries, &filters, None, 7));
+        let mut expected = ids(&plan(&entries, &filters, false, None, 7));
         expected.sort();
         assert_eq!(union, expected);
         assert!(expected.len() < 40, "the filter must actually narrow");
@@ -264,12 +305,12 @@ mod tests {
     fn a_seed_reproduces_an_order_and_different_seeds_generally_differ() {
         let entries = inventory(24);
         assert_eq!(
-            ids(&plan(&entries, &[], None, 417)),
-            ids(&plan(&entries, &[], None, 417))
+            ids(&plan(&entries, &[], false, None, 417)),
+            ids(&plan(&entries, &[], false, None, 417))
         );
         assert_ne!(
-            ids(&plan(&entries, &[], None, 417)),
-            ids(&plan(&entries, &[], None, 418))
+            ids(&plan(&entries, &[], false, None, 417)),
+            ids(&plan(&entries, &[], false, None, 418))
         );
     }
 
@@ -277,7 +318,7 @@ mod tests {
     #[test]
     fn the_shuffle_is_a_permutation() {
         let entries = inventory(31);
-        let mut shuffled = ids(&plan(&entries, &[], None, 99));
+        let mut shuffled = ids(&plan(&entries, &[], false, None, 99));
         shuffled.sort();
         let mut all = ids(&entries);
         all.sort();
@@ -304,14 +345,14 @@ mod tests {
     #[test]
     fn a_selection_keeps_inventory_order_while_a_plan_shuffles_it() {
         let entries = inventory(24);
-        let selected: Vec<String> = select(&entries, &[], None)
+        let selected: Vec<String> = select(&entries, &[], false, None)
             .into_iter()
             .map(|entry| entry.id.clone())
             .collect();
         assert_eq!(selected, ids(&entries));
         assert_ne!(
             selected,
-            ids(&plan(&entries, &[], None, 417)),
+            ids(&plan(&entries, &[], false, None, 417)),
             "a run's order is shuffled; a listing's is not"
         );
     }
@@ -323,11 +364,11 @@ mod tests {
         let entries = inventory(40);
         let filters = vec!["test 1".to_owned()];
         let shard = Some(Shard { index: 2, count: 3 });
-        let mut selected: Vec<String> = select(&entries, &filters, shard)
+        let mut selected: Vec<String> = select(&entries, &filters, false, shard)
             .into_iter()
             .map(|entry| entry.id.clone())
             .collect();
-        let mut planned = ids(&plan(&entries, &filters, shard, 417));
+        let mut planned = ids(&plan(&entries, &filters, false, shard, 417));
         assert!(!selected.is_empty(), "the fixture must select something");
         selected.sort();
         planned.sort();
@@ -336,7 +377,7 @@ mod tests {
 
     #[test]
     fn an_empty_or_single_selection_shuffles_without_panicking() {
-        assert!(plan(&[], &[], None, 5).is_empty());
-        assert_eq!(plan(&inventory(1), &[], None, 5).len(), 1);
+        assert!(plan(&[], &[], false, None, 5).is_empty());
+        assert_eq!(plan(&inventory(1), &[], false, None, 5).len(), 1);
     }
 }

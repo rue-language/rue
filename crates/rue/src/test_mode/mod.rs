@@ -107,6 +107,8 @@ impl std::str::FromStr for OutputFormat {
 pub(crate) struct TestOptions {
     pub(crate) list: bool,
     pub(crate) filters: Vec<String>,
+    /// Match filters against complete stable IDs rather than substrings.
+    pub(crate) exact: bool,
     pub(crate) format: OutputFormat,
     pub(crate) timeout_ms: u64,
     pub(crate) shard: Option<Shard>,
@@ -120,6 +122,7 @@ impl Default for TestOptions {
         Self {
             list: false,
             filters: Vec::new(),
+            exact: false,
             format: OutputFormat::default(),
             timeout_ms: DEFAULT_TIMEOUT_MS,
             shard: None,
@@ -399,6 +402,7 @@ pub(crate) fn run_cycle(request: CycleRequest<'_, '_>) -> CycleOutcome {
     let plan = selection::plan(
         &image.inventory.entries,
         &options.filters,
+        options.exact,
         options.shard,
         seed,
     );
@@ -776,7 +780,12 @@ fn complete_listing(
     if !failure_diagnostics.is_empty() {
         diagnostics.print_prepared_errors(&failure_diagnostics);
     }
-    let selected = selection::select(&inventory.entries, &options.filters, options.shard);
+    let selected = selection::select(
+        &inventory.entries,
+        &options.filters,
+        options.exact,
+        options.shard,
+    );
     if selected.is_empty() {
         eprintln!("{}", empty_selection_reason(inventory.entries.len()));
         return TestExitCode::EmptySelection;
@@ -1332,6 +1341,10 @@ impl Repro<'_> {
             self.root.to_owned(),
             "--filter".to_owned(),
             id.to_owned(),
+            // A stable ID can be a prefix of another stable ID. Keep the
+            // runner's exact selector mode on the published argv so this
+            // reproduction names precisely the failing test.
+            "--exact".to_owned(),
             "--seed".to_owned(),
             seed.to_string(),
         ];
@@ -1531,6 +1544,7 @@ mod tests {
                 "/work/app/main.rue",
                 "--filter",
                 "app/t.rue::parses a port",
+                "--exact",
                 "--seed",
                 "417",
                 "--target",

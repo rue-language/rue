@@ -285,6 +285,7 @@ Commands:
   --list               List the inventory; no codegen, no linking, no execution
   --filter <pattern>   Run only tests whose stable id contains <pattern>
                        Can be repeated; repeated filters union
+  --exact              Match --filter values against complete stable ids
   --format <fmt>       Report as human text or as the NDJSON event stream
                        Formats: human, json (default: human)
   --timeout-ms <N>     Per-test wall-clock budget (default: {default_timeout})
@@ -759,6 +760,10 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
                 test.filters.push((*pattern).to_string());
                 test_flags_given.push("--filter");
             }
+            "--exact" => {
+                test.exact = true;
+                test_flags_given.push("--exact");
+            }
             "--format" => {
                 let Some(format_str) = args_iter.next() else {
                     eprintln!("Error: --format requires a value");
@@ -1078,8 +1083,8 @@ fn compile_pool_jobs(mode: &DriverMode, jobs: usize) -> usize {
 /// preview set, per-test budget, and any build-system inputs travel with it.
 /// The target and opt level are emitted even when they were defaulted: a repro
 /// is run later, possibly elsewhere, and "whatever the host was" is not a
-/// reproduction. `--filter` and `--seed` are added by the runner, which owns
-/// the identity being reproduced.
+/// reproduction. `--filter`, `--exact`, and `--seed` are added by the runner,
+/// which owns the identity being reproduced.
 fn test_repro_flags(options: &Options, path_context: &HostPathContext) -> Vec<String> {
     let mut flags = vec![
         "--target".to_string(),
@@ -3504,6 +3509,7 @@ mod tests {
             "main.rue",
             "--filter",
             "parse",
+            "--exact",
             "--filter",
             "lex",
             "--format",
@@ -3518,6 +3524,7 @@ mod tests {
         ]));
         assert_eq!(options.mode, DriverMode::Test);
         assert_eq!(options.test.filters, vec!["parse", "lex"]);
+        assert!(options.test.exact);
         assert_eq!(options.test.format, test_mode::OutputFormat::Json);
         assert_eq!(options.test.seed, Some(417));
         assert_eq!(options.test.timeout_ms, 500);
@@ -3587,6 +3594,7 @@ mod tests {
         let options = unwrap_options(parse_args_from(&["test", "main.rue"]));
         assert!(!options.test.list);
         assert!(options.test.filters.is_empty());
+        assert!(!options.test.exact);
         assert_eq!(options.test.format, test_mode::OutputFormat::Human);
         assert_eq!(options.test.timeout_ms, test_mode::DEFAULT_TIMEOUT_MS);
         assert_eq!(options.test.shard, None);
@@ -3654,6 +3662,7 @@ mod tests {
         for flag in [
             vec!["--list"],
             vec!["--filter", "x"],
+            vec!["--exact"],
             vec!["--format", "json"],
             vec!["--timeout-ms", "10"],
             vec!["--shard", "1/2"],
