@@ -8,9 +8,11 @@ description = "std.math sqrt/floor/ceil/trunc/round/fabs/inf/nan/is_*/rem/total_
 
 [[case]]
 name = "std_math_float_functions"
+differential_opt = true
 description = "Every std.math float function on f64 and f32, including the exact remainder and total order."
 env = { RUE_STD_PATH = "${REAL_STD}" }
 args = ["main.rue", "-o", "prog"]
+stdout = ""
 exit_code = 0
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -89,6 +91,35 @@ fn main() -> i32 {
     let f_neg_zero: f32 = -0.0;
     let f_zero: f32 = 0.0;
     if bad == 0 { bad = check(math.total_cmp(f32, f_neg_zero, f_zero) < 0, 37); }
+
+    // rem preserves the dividend sign on exact zero, for both divisor signs.
+    let four: f64 = 4.0;
+    let neg_four: f64 = -4.0;
+    if bad == 0 { bad = check(math.total_cmp(f64, math.rem(f64, neg_zero, y), neg_zero) == 0, 38); }
+    if bad == 0 { bad = check(math.total_cmp(f64, math.rem(f64, neg_zero, neg_y), neg_zero) == 0, 39); }
+    if bad == 0 { bad = check(math.total_cmp(f64, math.rem(f64, four, y), pos_zero) == 0, 40); }
+    if bad == 0 { bad = check(math.total_cmp(f64, math.rem(f64, four, neg_y), pos_zero) == 0, 41); }
+    if bad == 0 { bad = check(math.total_cmp(f64, math.rem(f64, neg_four, y), neg_zero) == 0, 42); }
+    if bad == 0 { bad = check(math.total_cmp(f64, math.rem(f64, neg_four, neg_y), neg_zero) == 0, 43); }
+    if bad == 0 { bad = check(math.rem(f64, neg_x, neg_y) == -1.5, 44); }
+
+    let f_neg_y: f32 = -2.0;
+    let f_four: f32 = 4.0;
+    let f_neg_four: f32 = -4.0;
+    if bad == 0 { bad = check(math.total_cmp(f32, math.rem(f32, f_neg_zero, f_y), f_neg_zero) == 0, 45); }
+    if bad == 0 { bad = check(math.total_cmp(f32, math.rem(f32, f_neg_zero, f_neg_y), f_neg_zero) == 0, 46); }
+    if bad == 0 { bad = check(math.total_cmp(f32, math.rem(f32, f_four, f_y), f_zero) == 0, 47); }
+    if bad == 0 { bad = check(math.total_cmp(f32, math.rem(f32, f_four, f_neg_y), f_zero) == 0, 48); }
+    if bad == 0 { bad = check(math.total_cmp(f32, math.rem(f32, f_neg_four, f_y), f_neg_zero) == 0, 49); }
+    if bad == 0 { bad = check(math.total_cmp(f32, math.rem(f32, f_neg_four, f_neg_y), f_neg_zero) == 0, 50); }
+    let f_neg_x: f32 = -5.5;
+    if bad == 0 { bad = check(math.rem(f32, f_neg_x, f_y) == -1.5, 51); }
+    if bad == 0 { bad = check(math.rem(f32, f_x, f_neg_y) == 1.5, 52); }
+    if bad == 0 { bad = check(math.rem(f32, f_neg_x, f_neg_y) == -1.5, 53); }
+    if bad == 0 { bad = check(math.is_nan(f32, math.rem(f32, math.nan(f32), f_y)), 54); }
+    if bad == 0 { bad = check(math.is_nan(f32, math.rem(f32, f_x, math.nan(f32))), 55); }
+    if bad == 0 { bad = check(math.is_nan(f32, math.rem(f32, math.inf(f32), f_y)), 56); }
+    if bad == 0 { bad = check(math.is_nan(f32, math.rem(f32, f_x, f_zero)), 57); }
     bad
 }
 """ }]

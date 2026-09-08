@@ -406,8 +406,7 @@ pub fn rem(comptime T: type, x: T, y: T) -> T {
         r = r - d;
     }
     if x < 0.0 {
-        let zero: T = 0.0;
-        zero - r
+        -r
     } else {
         r
     }
