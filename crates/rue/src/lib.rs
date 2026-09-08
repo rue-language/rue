@@ -8,10 +8,15 @@
 mod host;
 #[cfg(test)]
 mod host_workflow_tests;
+mod running_image;
 mod source_loader;
 mod test_candidates;
 
 pub use host::{FilesystemCompilerHost, HostOpenRequest, HostPathContext};
+pub use running_image::{
+    RunningImageIdentity, RunningImageIdentityError, RunningImageIdentityScheme,
+    running_image_identity,
+};
 pub use source_loader::{
     AttemptedRead, HermeticDenialError, SourceLoadError, ToolchainIntegrityError, WatchFingerprint,
     WatchInput, watch_input_fingerprints, watch_inputs_changed, watch_inputs_changed_with_reader,
