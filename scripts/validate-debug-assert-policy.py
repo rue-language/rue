@@ -102,7 +102,9 @@ ALLOWANCES = {
         1, "redundant RIR variable-width encoding check"
     ),
     "crates/rue/src/emit.rs": Allowance(1, "validated sole-dependency emit mode"),
-    "crates/rue/src/source_loader.rs": Allowance(1, "redundant source-plan revision check"),
+    "crates/rue/src/source_loader.rs": Allowance(
+        2, "redundant source-plan revision and captured absolute-path checks"
+    ),
 }
 
 

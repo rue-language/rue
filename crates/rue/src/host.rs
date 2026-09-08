@@ -1,6 +1,7 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rue_compiler::unstable::TestCandidateInventory;
+use rue_compiler::unstable::normalize_module_path;
 use rue_compiler::unstable::{
     CancellableCompileOutcome, CancellableTestImageOutcome, CodegenReady, CompilationCancellation,
     ObjectsReady, PresentationBatchRequest, PresentationOutput, PresentationRequest, TestImage,
@@ -22,16 +23,74 @@ use crate::source_loader::{
 };
 
 /// Immutable filesystem configuration captured when a retained host opens.
+#[derive(Clone, Debug)]
+pub struct HostPathContext {
+    working_directory: PathBuf,
+}
+
+impl HostPathContext {
+    /// Capture the invocation directory once so retained hosts never resolve
+    /// relative inputs against a later ambient working directory.
+    pub fn capture() -> Result<Self, String> {
+        std::env::current_dir()
+            .map(|working_directory| Self { working_directory })
+            .map_err(|error| format!("could not capture invocation directory: {error}"))
+    }
+
+    /// Construct a context for an embedding caller that already owns its path
+    /// resolution boundary.
+    pub fn from_working_directory(working_directory: impl Into<PathBuf>) -> Result<Self, String> {
+        let working_directory = working_directory.into();
+        if !working_directory.is_absolute() {
+            return Err(format!(
+                "invocation directory must be absolute: {}",
+                working_directory.display()
+            ));
+        }
+        Ok(Self { working_directory })
+    }
+
+    pub fn working_directory(&self) -> &Path {
+        &self.working_directory
+    }
+
+    /// Resolve an invocation spelling without consulting the ambient process
+    /// directory. The context is captured once at the request boundary.
+    pub fn resolve(&self, path: &Path) -> PathBuf {
+        let anchored = if path.is_absolute() {
+            path.to_owned()
+        } else {
+            self.working_directory.join(path)
+        };
+        PathBuf::from(normalize_module_path(&anchored.to_string_lossy()))
+    }
+
+    /// Anchor a client filesystem spelling to the captured invocation
+    /// directory while preserving symlinks and `..` components. Compiler
+    /// module identities use [`Self::resolve`]'s lexical normalization; link
+    /// archives, output paths, and reproductions are ordinary filesystem
+    /// arguments and must retain their requested route.
+    pub fn anchor(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            path.to_owned()
+        } else {
+            self.working_directory.join(path)
+        }
+    }
+}
+
 pub struct HostOpenRequest<'a> {
     pub root_source: &'a str,
     pub source_manifest_path: Option<&'a str>,
     pub std_root: Option<&'a Path>,
     pub compiler_config: CompilerSessionConfig,
+    pub path_context: &'a HostPathContext,
 }
 
 /// One canonical filesystem observer and retained compiler session.
 pub struct FilesystemCompilerHost {
     state: ImportDiscoveryResult,
+    path_context: HostPathContext,
 }
 
 impl FilesystemCompilerHost {
@@ -42,8 +101,12 @@ impl FilesystemCompilerHost {
             source_manifest_path: request.source_manifest_path,
             std_root: request.std_root,
             compiler_config: request.compiler_config,
+            path_context: request.path_context,
         })
-        .map(|state| Self { state })
+        .map(|state| Self {
+            state,
+            path_context: request.path_context.clone(),
+        })
     }
 
     /// Re-observe the exact accepted-read closure and publish its successor.
@@ -126,6 +189,14 @@ impl FilesystemCompilerHost {
 
     pub fn root_path(&self) -> &Path {
         &self.state.resolution.root_path
+    }
+
+    pub fn resolve_path(&self, path: &Path) -> PathBuf {
+        self.path_context.resolve(path)
+    }
+
+    pub fn anchor_path(&self, path: &Path) -> PathBuf {
+        self.path_context.anchor(path)
     }
 
     pub fn discovery_context(&self) -> &ImportDiscoveryContext {
@@ -354,6 +425,7 @@ mod tests {
                 source_manifest_path: None,
                 std_root: None,
                 compiler_config: CompilerSessionConfig::default(),
+                path_context: &HostPathContext::capture().unwrap(),
             })
             .unwrap()
         }
@@ -363,6 +435,20 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[test]
+    fn path_context_requires_an_absolute_invocation_directory() {
+        assert!(HostPathContext::from_working_directory("relative").is_err());
+    }
+
+    #[test]
+    fn path_context_resolves_relative_paths_against_its_captured_directory() {
+        let context = HostPathContext::from_working_directory("/tmp/rue-context").unwrap();
+        assert_eq!(
+            context.resolve(Path::new("./out/../program")),
+            PathBuf::from("/tmp/rue-context/program")
+        );
     }
 
     fn run_to_runnable(host: &mut FilesystemCompilerHost) -> CompileOutput {
@@ -455,6 +541,7 @@ mod tests {
             source_manifest_path: Some(manifest.to_str().unwrap()),
             std_root: None,
             compiler_config: CompilerSessionConfig::default(),
+            path_context: &HostPathContext::capture().unwrap(),
         })
         .unwrap();
 
@@ -487,6 +574,7 @@ mod tests {
             source_manifest_path: None,
             std_root: Some(&std_root),
             compiler_config: CompilerSessionConfig::default(),
+            path_context: &HostPathContext::capture().unwrap(),
         })
         .unwrap();
 
@@ -636,6 +724,7 @@ mod test_candidate_acquisition_tests {
             source_manifest_path: Some(manifest.to_str().unwrap()),
             std_root: None,
             compiler_config: CompilerSessionConfig::default(),
+            path_context: &HostPathContext::capture().unwrap(),
         })
         .unwrap();
         let inventory = host.acquire_test_candidates(&declared).unwrap();
@@ -683,6 +772,7 @@ mod test_candidate_acquisition_tests {
             source_manifest_path: None,
             std_root: None,
             compiler_config: CompilerSessionConfig::default(),
+            path_context: &HostPathContext::capture().unwrap(),
         })
         .unwrap();
         let inventory = host

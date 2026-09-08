@@ -1,5 +1,6 @@
 #[cfg(test)]
 use rue_compiler::unstable::MetricsSnapshot;
+use rue_compiler::unstable::PresentationOutput;
 #[cfg(test)]
 use rue_compiler::unstable::update_for_presentation;
 #[cfg(test)]
@@ -7,12 +8,13 @@ use rue_compiler::unstable::{
     CanonicalRirPresentationMetrics, ParseMetrics, SemanticMetrics, rooted_cfg,
 };
 use rue_compiler::unstable::{PresentationBatchRequest, PresentationRequest, PresentationStage};
-#[cfg(test)]
-use rue_compiler::{CompileErrors, CompilerSession, RirView, SourceSnapshot};
 use rue_compiler::{
-    CompileOptions, DependencyEnvelope, DependencyEnvelopeStatus, ImportDiscoveryStatus,
+    AcceptedReadManifest, CompileErrors, CompileOptions, DependencyEnvelope,
+    DependencyEnvelopeStatus, ImportDiscoveryStatus, SourceSnapshot,
 };
-use rue_driver::FilesystemCompilerHost;
+#[cfg(test)]
+use rue_compiler::{CompilerSession, RirView};
+use rue_driver::{AttemptedRead, FilesystemCompilerHost, WatchInput};
 #[cfg(test)]
 use rue_error::{CompileError, ErrorKind};
 #[cfg(test)]
@@ -239,77 +241,128 @@ pub(crate) struct EmitRequest<'a, 'diagnostics> {
     pub(crate) diagnostics: &'a DiagnosticOutput<'diagnostics>,
 }
 
-pub(crate) fn execute(request: EmitRequest<'_, '_>) -> Result<(), ()> {
+struct OwnedEmitResponse {
+    source_snapshot: SourceSnapshot,
+    accepted_reads: AcceptedReadManifest,
+    attempted_reads: Vec<AttemptedRead>,
+    watch_inputs: Vec<WatchInput>,
+    error_format: crate::ErrorFormat,
+    target: rue_target::Target,
+    result: OwnedEmitResult,
+}
+
+enum OwnedEmitResult {
+    Dependencies {
+        json: String,
+        errors: Option<CompileErrors>,
+    },
+    Stages(Vec<OwnedEmitStage>),
+    Failed(CompileErrors),
+    InternalFailure(String),
+}
+
+struct OwnedEmitStage {
+    stage: EmitStage,
+    file: Option<String>,
+    output: PresentationOutput,
+}
+
+fn produce(request: EmitRequest<'_, '_>) -> OwnedEmitResponse {
     let EmitRequest {
         host,
         stages,
         compile_options,
         diagnostics,
     } = request;
-
     let source_snapshot = host.source_snapshot().clone();
+    let accepted_reads = host.accepted_reads().clone();
+    let attempted_reads = host.attempted_reads().to_vec();
+    let watch_inputs = host.watch_inputs();
+    let error_format = diagnostics.format();
+    let target = compile_options.target;
     let discovery_revision = host.discovery_revision().clone();
 
     if stages.contains(&EmitStage::Deps) {
-        // `validate_output_modes` already rejected `--emit deps` mixed with any
-        // other stage before this point, so only the sole-deps case reaches here.
-        debug_assert_eq!(
-            stages.len(),
-            1,
-            "validate_output_modes must reject --emit deps combined with other stages"
-        );
-        let dependency_envelope = DependencyEnvelope::from_closed_revision(&discovery_revision)
-            .expect("closed valid or resolution-incomplete discovery has dependency topology");
+        debug_assert_eq!(stages.len(), 1);
+        let dependency_envelope =
+            match DependencyEnvelope::from_closed_revision(&discovery_revision) {
+                Some(envelope) => envelope,
+                None => {
+                    return OwnedEmitResponse {
+                        source_snapshot,
+                        accepted_reads,
+                        attempted_reads,
+                        watch_inputs,
+                        error_format,
+                        target,
+                        result: OwnedEmitResult::Failed(rue_driver::with_import_migration_helps(
+                            discovery_revision.diagnostics(),
+                        )),
+                    };
+                }
+            };
         let incomplete = dependency_envelope.status == DependencyEnvelopeStatus::Incomplete;
-        match serde_json::to_string_pretty(&dependency_envelope) {
-            Ok(json) => println!("{json}"),
-            Err(error) => {
-                eprintln!("Error emitting dependency envelope: {error}");
-                return Err(());
-            }
-        }
-        if incomplete {
-            diagnostics.print_errors(discovery_revision.diagnostics());
-            return Err(());
-        }
-        return Ok(());
+        let result = match serde_json::to_string_pretty(&dependency_envelope) {
+            Ok(json) => OwnedEmitResult::Dependencies {
+                json,
+                errors: incomplete.then(|| {
+                    rue_driver::with_import_migration_helps(discovery_revision.diagnostics())
+                }),
+            },
+            Err(error) => OwnedEmitResult::InternalFailure(format!(
+                "Error emitting dependency envelope: {error}"
+            )),
+        };
+        return OwnedEmitResponse {
+            source_snapshot,
+            accepted_reads,
+            attempted_reads,
+            watch_inputs,
+            error_format,
+            target,
+            result,
+        };
     }
 
     if discovery_revision.status() != ImportDiscoveryStatus::ClosedValid {
-        diagnostics.print_errors(discovery_revision.diagnostics());
-        return Err(());
+        return OwnedEmitResponse {
+            source_snapshot,
+            accepted_reads,
+            attempted_reads,
+            watch_inputs,
+            error_format,
+            target,
+            result: OwnedEmitResult::Failed(rue_driver::with_import_migration_helps(
+                discovery_revision.diagnostics(),
+            )),
+        };
     }
-    let frontend_route = emit_frontend_route(stages);
-    match frontend_route {
-        EmitFrontendRoute::SessionQuery => {}
+
+    match emit_frontend_route(stages) {
+        EmitFrontendRoute::SessionQuery
+        | EmitFrontendRoute::AstOnlySyntax
+        | EmitFrontendRoute::None => {}
         EmitFrontendRoute::RirOnly => {
-            // RIR is a pre-semantic presentation: force the RIR terminal so its
-            // parse/lowering diagnostics are attributed canonically, but never run
-            // semantic body analysis. Because the trusted-toolchain park is raised
-            // only by reached-body semantic analysis, this performs no park and no
-            // std acquisition — an `--emit rir` run reads zero std modules even for
-            // a reached fallible intrinsic. Semantic-only diagnostics (e.g. an
-            // undefined variable) belong to a normal build or a later `--emit`
-            // stage, not to the untyped-IR presentation.
             if let Err(errors) = host.rir() {
-                diagnostics.print_errors(&errors);
-                return Err(());
+                return OwnedEmitResponse {
+                    source_snapshot,
+                    accepted_reads,
+                    attempted_reads,
+                    watch_inputs,
+                    error_format,
+                    target,
+                    result: OwnedEmitResult::Failed(rue_driver::with_import_migration_helps(
+                        &errors,
+                    )),
+                };
             }
         }
-        EmitFrontendRoute::AstOnlySyntax | EmitFrontendRoute::None => {}
     }
 
     let file_order = source_snapshot
         .files()
         .map(|source| source.file_id)
         .collect::<Vec<_>>();
-
-    // The whole-program stages (RIR and every backend and CFG-side stage) are
-    // presented together, so a run naming several backend stages pays for one
-    // code generation rather than one per stage — the repeated general-inlining
-    // batch a per-stage call incurred at O2/O3 (RUE-1728). Their outputs come
-    // back in the order named. The per-file stages (tokens, AST) keep their own
-    // per-file rendering and are presented as they are reached.
     let whole_program_stages: Vec<PresentationStage> = stages
         .iter()
         .filter_map(|stage| match stage {
@@ -326,23 +379,33 @@ pub(crate) fn execute(request: EmitRequest<'_, '_>) -> Result<(), ()> {
             EmitStage::Tokens | EmitStage::Ast | EmitStage::Deps => None,
         })
         .collect();
-    let mut whole_program_outputs = if whole_program_stages.is_empty() {
-        std::collections::VecDeque::new()
+    let whole_program_outputs = if whole_program_stages.is_empty() {
+        Vec::new()
     } else {
         match host.present_many(PresentationBatchRequest {
             stages: &whole_program_stages,
             options: &compile_options,
             file_order: &file_order,
         }) {
-            Ok(outputs) => std::collections::VecDeque::from(outputs),
+            Ok(outputs) => outputs,
             Err(errors) => {
-                diagnostics.print_errors(&errors);
-                return Err(());
+                return OwnedEmitResponse {
+                    source_snapshot,
+                    accepted_reads,
+                    attempted_reads,
+                    watch_inputs,
+                    error_format,
+                    target,
+                    result: OwnedEmitResult::Failed(rue_driver::with_import_migration_helps(
+                        &errors,
+                    )),
+                };
             }
         }
     };
 
-    let mut warnings_printed = false;
+    let mut whole_program_index = 0;
+    let mut outputs = Vec::new();
     for stage in stages {
         if matches!(stage, EmitStage::Tokens | EmitStage::Ast) {
             let unstable_stage = match stage {
@@ -350,25 +413,36 @@ pub(crate) fn execute(request: EmitRequest<'_, '_>) -> Result<(), ()> {
                 EmitStage::Ast => PresentationStage::Ast,
                 _ => unreachable!(),
             };
-            for source in source_snapshot.files() {
-                match stage {
-                    EmitStage::Tokens => println!("=== Tokens ({}) ===", source.path),
-                    EmitStage::Ast => println!("=== AST ({}) ===", source.path),
-                    _ => unreachable!(),
-                }
+            let files = source_snapshot
+                .files()
+                .map(|source| (source.file_id, source.path.to_owned()))
+                .collect::<Vec<_>>();
+            for (file_id, file_path) in files {
                 let output = match host.present(PresentationRequest {
                     stage: unstable_stage,
                     options: &compile_options,
-                    file_order: &[source.file_id],
+                    file_order: &[file_id],
                 }) {
                     Ok(output) => output,
                     Err(errors) => {
-                        diagnostics.print_errors(&errors);
-                        return Err(());
+                        return OwnedEmitResponse {
+                            source_snapshot,
+                            accepted_reads,
+                            attempted_reads,
+                            watch_inputs,
+                            error_format,
+                            target,
+                            result: OwnedEmitResult::Failed(
+                                rue_driver::with_import_migration_helps(&errors),
+                            ),
+                        };
                     }
                 };
-                print!("{}", output.as_str());
-                println!();
+                outputs.push(OwnedEmitStage {
+                    stage: *stage,
+                    file: Some(file_path),
+                    output,
+                });
             }
             continue;
         }
@@ -376,62 +450,148 @@ pub(crate) fn execute(request: EmitRequest<'_, '_>) -> Result<(), ()> {
             continue;
         }
         let output = whole_program_outputs
-            .pop_front()
-            .expect("one whole-program output per whole-program stage");
-        if !warnings_printed && emit_requires_semantic(&[*stage]) {
-            diagnostics.print_warnings(output.warnings());
-            warnings_printed = true;
+            .get(whole_program_index)
+            .expect("one whole-program output per whole-program stage")
+            .clone();
+        whole_program_index += 1;
+        outputs.push(OwnedEmitStage {
+            stage: *stage,
+            file: None,
+            output,
+        });
+    }
+    OwnedEmitResponse {
+        source_snapshot,
+        accepted_reads,
+        attempted_reads,
+        watch_inputs,
+        error_format,
+        target,
+        result: OwnedEmitResult::Stages(outputs),
+    }
+}
+
+fn complete(response: OwnedEmitResponse) -> Result<(), ()> {
+    let OwnedEmitResponse {
+        source_snapshot,
+        accepted_reads,
+        attempted_reads,
+        watch_inputs,
+        error_format,
+        target,
+        result,
+    } = response;
+    consume_emit_observations(accepted_reads, attempted_reads, watch_inputs);
+    let sources = source_snapshot
+        .files()
+        .map(|source| {
+            (
+                source.file_id,
+                rue_compiler::unstable::SourceInfo::new(source.source, source.path),
+            )
+        })
+        .collect();
+    let diagnostics = DiagnosticOutput::new(error_format, sources);
+    match result {
+        OwnedEmitResult::InternalFailure(message) => {
+            eprintln!("{message}");
+            Err(())
         }
-        match stage {
-            EmitStage::Tokens | EmitStage::Ast => unreachable!(),
-            EmitStage::Rir => {
-                println!("=== RIR ===");
-                println!("{}", output.as_str());
-                println!();
+        OwnedEmitResult::Failed(errors) => {
+            diagnostics.print_prepared_errors(&errors);
+            Err(())
+        }
+        OwnedEmitResult::Dependencies { json, errors } => {
+            println!("{json}");
+            if let Some(errors) = errors {
+                diagnostics.print_prepared_errors(&errors);
+                Err(())
+            } else {
+                Ok(())
             }
-            EmitStage::Air => {
-                println!("=== AIR ===");
-                print!("{}", output.as_str());
-                println!();
+        }
+        OwnedEmitResult::Stages(outputs) => {
+            let mut warnings_printed = false;
+            for owned in outputs {
+                let output = owned.output;
+                if let Some(file) = owned.file {
+                    match owned.stage {
+                        EmitStage::Tokens => println!("=== Tokens ({file}) ==="),
+                        EmitStage::Ast => println!("=== AST ({file}) ==="),
+                        _ => unreachable!(),
+                    }
+                    print!("{}", output.as_str());
+                    println!();
+                    continue;
+                }
+                if !warnings_printed && emit_requires_semantic(&[owned.stage]) {
+                    diagnostics.print_warnings(output.warnings());
+                    warnings_printed = true;
+                }
+                match owned.stage {
+                    EmitStage::Rir => {
+                        println!("=== RIR ===");
+                        println!("{}", output.as_str());
+                        println!();
+                    }
+                    EmitStage::Air => {
+                        println!("=== AIR ===");
+                        print!("{}", output.as_str());
+                        println!();
+                    }
+                    EmitStage::Cfg => {
+                        println!("=== CFG ===");
+                        print!("{}", output.as_str());
+                        println!();
+                    }
+                    EmitStage::Lowering => println!("{}", output.as_str()),
+                    EmitStage::Mir => {
+                        println!("=== MIR ({target}) ===");
+                        println!("{}", output.as_str());
+                    }
+                    EmitStage::Liveness => {
+                        println!("=== Liveness Analysis ({target}) ===");
+                        println!("{}", output.as_str());
+                    }
+                    EmitStage::RegAlloc => {
+                        println!("=== Register Allocation ({target}) ===");
+                        println!("{}", output.as_str());
+                    }
+                    EmitStage::Asm => {
+                        println!("=== Assembly ({target}) ===");
+                        println!("{}", output.as_str());
+                    }
+                    EmitStage::StackFrame => print!("{}", output.as_str()),
+                    EmitStage::Abi => {
+                        println!("=== ABI ({target}) ===");
+                        print!("{}", output.as_str());
+                    }
+                    EmitStage::Tokens | EmitStage::Ast | EmitStage::Deps => unreachable!(),
+                }
             }
-            EmitStage::Cfg => {
-                println!("=== CFG ===");
-                print!("{}", output.as_str());
-                println!();
-            }
-            EmitStage::Lowering => {
-                println!("{}", output.as_str());
-            }
-            EmitStage::Mir => {
-                println!("=== MIR ({}) ===", compile_options.target);
-                println!("{}", output.as_str());
-            }
-            EmitStage::Liveness => {
-                println!("=== Liveness Analysis ({}) ===", compile_options.target);
-                println!("{}", output.as_str());
-            }
-            EmitStage::RegAlloc => {
-                println!("=== Register Allocation ({}) ===", compile_options.target);
-                println!("{}", output.as_str());
-            }
-            EmitStage::Asm => {
-                println!("=== Assembly ({}) ===", compile_options.target);
-                println!("{}", output.as_str());
-            }
-            EmitStage::StackFrame => {
-                print!("{}", output.as_str());
-            }
-            EmitStage::Abi => {
-                println!("=== ABI ({}) ===", compile_options.target);
-                print!("{}", output.as_str());
-            }
-            // Dependency presentation returns before frontend planning above.
-            EmitStage::Deps => {}
+            Ok(())
         }
     }
-
-    Ok(())
 }
+
+fn consume_emit_observations(
+    accepted_reads: AcceptedReadManifest,
+    attempted_reads: Vec<AttemptedRead>,
+    watch_inputs: Vec<WatchInput>,
+) {
+    // The response owns the exact closure and last attempt even though emit's
+    // presentation surface has no event field for them. Consume them at the
+    // completion boundary rather than consulting a successor host state.
+    drop((accepted_reads, attempted_reads, watch_inputs));
+}
+
+pub(crate) fn execute(request: EmitRequest<'_, '_>) -> Result<(), ()> {
+    complete(produce(request))
+}
+
+#[cfg(test)]
+#[path = "emit_owned_tests.rs"]
+mod owned_tests;
 
 #[cfg(test)]
 mod output_mode_tests {

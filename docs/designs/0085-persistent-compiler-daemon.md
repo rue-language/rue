@@ -41,10 +41,12 @@ Start with an opt-in daemon for ordinary compilation, `rue test` (including
 listing), and analysis-only requests through the existing semantic `--emit air`
 surface. Internal linking is used when an executable or test image is needed.
 Make it automatic for that supported surface after correctness, latency, and
-resource behavior are demonstrated. Retain in-memory query results through
-object production, perform a fresh link for image requests, and let the client
-publish or execute the result. Disk-persistent query caches, incremental
-linking, and editor protocols are independent extensions.
+resource behavior are demonstrated. Retain in-memory syntax, semantic, CFG,
+and codegen results, plus object projections when requested. The internal
+linker consumes structured codegen units without serializing objects. Perform
+a fresh link for image requests, and let the client publish or execute the
+result. Disk-persistent query caches, incremental linking, and editor protocols
+are independent extensions.
 
 ## Context
 
@@ -75,6 +77,15 @@ unaffected caller is reused, and executable bytes and warnings agree with a
 fresh compile. That demonstrates useful locality, not a prediction of daemon
 latency on a large program.
 
+The mixed-root regressions in
+[`host_workflow_tests`](../../crates/rue/src/host_workflow_tests.rs) exercise
+analysis, test listing, a test image, and an executable through one host. A
+helper shared by `main` and a test reuses its semantic body, CFG, and codegen
+unit across the root change. Explicit object projections are initially cold
+after an internal-linker image, because that path did not request them; they
+are reused once requested. These tests establish warm/fresh artifact parity
+and query reuse, rather than a client-latency improvement.
+
 ### Remaining costs and current gaps
 
 The CLI process still starts on every command. A new daemon must perform its
@@ -101,10 +112,15 @@ Several relevant issues are present in current source:
   successor. A daemon must still do that work. RUE-1817 tracks reducing the
   warm observation/validation floor; its older measurements are context, not
   measurements of this checkout.
-- The driver has process-global tracing and panic formatting, successful
-  one-shot `process::exit` behavior, and ambient path handling. System linking
-  inherits cwd, environment, and temporary-directory selection. These must
-  not become the configuration of whichever client happened to start a daemon.
+- The driver now captures invocation paths in `HostPathContext` and returns
+  owned executable, test-image, listing, and presentation responses (RUE-2127).
+  Their snapshots and prepared diagnostic facts survive host refresh or drop;
+  publication and test execution remain client operations. This supplies the
+  in-process boundary, while transport and service lifetime remain to be built.
+- Process-global tracing and panic formatting and successful one-shot
+  `process::exit` behavior remain in the driver. System linking inherits cwd,
+  environment, and temporary-directory selection. These must not become the
+  configuration of whichever client happened to start a daemon.
 - [`RevisionedQueryDatabase::drop`](../../crates/rue-compiler/src/revisioned_query_database/shared.rs)
   now explicitly stops and joins runtime workers; the worker-teardown leak is
   historical and removed. Its current ownership comment still documents strong
@@ -220,7 +236,11 @@ symlink-route semantics; blindly canonicalizing every argument would erase
 observations the source loader currently validates. Pass absolute spellings
 and the necessary presentation context through explicit APIs. Reuse the
 compiler-owned `normalize_module_path` authority already used by the source
-loader after anchoring paths to the captured cwd.
+loader for source/module identities after anchoring paths to the captured cwd.
+Ordinary filesystem arguments retain their route: a symlink followed by `..`
+can resolve differently from lexical normalization. In particular, anchor
+manifest reads, standard-library capture, link archives, output destinations,
+and reproduction arguments without changing their existing filesystem semantics.
 
 Keep argument and declared-input validation in the shared invocation path,
 including `--test-candidates` list validation even for ordinary compilation.

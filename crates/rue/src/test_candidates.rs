@@ -17,7 +17,9 @@
 //! a build rule can write either file the same way.
 
 use std::fs;
+use std::path::Path;
 
+use crate::host::HostPathContext;
 use crate::source_loader::parse_source_manifest_entry;
 
 /// Read the declared candidate paths from a `--test-candidates` file.
@@ -27,8 +29,35 @@ use crate::source_loader::parse_source_manifest_entry;
 /// treating an unreadable list as "no candidates declared" would turn a broken
 /// build rule into a warning that never fires.
 pub fn load_declared_candidates(path: &str) -> Result<Vec<String>, String> {
-    let content = fs::read_to_string(path)
-        .map_err(|error| format!("Error reading test candidates '{}': {}", path, error))?;
+    load_declared_candidates_from_path(Path::new(path), path)
+}
+
+/// Read a candidate list using a request's captured cwd. The display spelling
+/// remains in errors while the filesystem read cannot drift if the process cwd
+/// changes before a retained/watch request rereads it.
+pub fn load_declared_candidates_with_context(
+    path: &str,
+    context: &HostPathContext,
+) -> Result<Vec<String>, String> {
+    load_declared_candidates_from_path(&context.anchor(Path::new(path)), path)
+}
+
+/// Read an already anchored candidate-list path while retaining its original
+/// command-line spelling for errors.
+pub fn load_declared_candidates_at(path: &Path, display_path: &str) -> Result<Vec<String>, String> {
+    load_declared_candidates_from_path(path, display_path)
+}
+
+fn load_declared_candidates_from_path(
+    path: &Path,
+    display_path: &str,
+) -> Result<Vec<String>, String> {
+    let content = fs::read_to_string(path).map_err(|error| {
+        format!(
+            "Error reading test candidates '{}': {}",
+            display_path, error
+        )
+    })?;
     let mut candidates = Vec::new();
     for raw_line in content.lines() {
         let entry = parse_source_manifest_entry(raw_line);
@@ -109,6 +138,17 @@ mod tests {
         assert!(
             error.starts_with("Error reading test candidates"),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn captured_context_anchors_relative_candidate_list_reads() {
+        let dir = scratch("candidate-list-context");
+        fs::write(dir.join("candidates.list"), "app/main.rue\n").unwrap();
+        let context = HostPathContext::from_working_directory(&dir).unwrap();
+        assert_eq!(
+            load_declared_candidates_with_context("candidates.list", &context).unwrap(),
+            vec!["app/main.rue".to_owned()]
         );
     }
 }

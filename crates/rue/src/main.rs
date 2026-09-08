@@ -32,7 +32,8 @@ use rue_compiler::unstable::{
 #[cfg(test)]
 use rue_compiler::unstable::{Span, update_for_presentation};
 use rue_driver::{
-    FilesystemCompilerHost, HostOpenRequest, SourceLoadError, ToolchainIntegrityError,
+    FilesystemCompilerHost, HostOpenRequest, HostPathContext, SourceLoadError,
+    ToolchainIntegrityError, with_import_migration_helps,
 };
 
 use rue_compiler::{
@@ -157,7 +158,7 @@ impl LogFormat {
 
 /// Format for compiler diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum ErrorFormat {
+pub(crate) enum ErrorFormat {
     /// Human-readable diagnostics with source snippets.
     #[default]
     Text,
@@ -1079,7 +1080,7 @@ fn compile_pool_jobs(mode: &DriverMode, jobs: usize) -> usize {
 /// is run later, possibly elsewhere, and "whatever the host was" is not a
 /// reproduction. `--filter` and `--seed` are added by the runner, which owns
 /// the identity being reproduced.
-fn test_repro_flags(options: &Options) -> Vec<String> {
+fn test_repro_flags(options: &Options, path_context: &HostPathContext) -> Vec<String> {
     let mut flags = vec![
         "--target".to_string(),
         options.target.to_string(),
@@ -1098,11 +1099,17 @@ fn test_repro_flags(options: &Options) -> Vec<String> {
     // (RUE-2020).
     if let Some(manifest) = &options.source_manifest_path {
         flags.push("--source-manifest".to_string());
-        flags.push(test_mode::absolute_spelling(Path::new(manifest)));
+        flags.push(test_mode::absolute_spelling_at(
+            Path::new(manifest),
+            path_context.working_directory(),
+        ));
     }
     for archive in &options.link_archives {
         flags.push("--link-archive".to_string());
-        flags.push(test_mode::absolute_spelling(archive));
+        flags.push(test_mode::absolute_spelling_at(
+            archive,
+            path_context.working_directory(),
+        ));
     }
     flags
 }
@@ -1191,51 +1198,6 @@ fn validate_watch_modes(options: &Options) -> Result<(), &'static str> {
     }
 }
 
-/// ADR-0078 migration help. An extensionless import names the directory
-/// facade alone under policy v2; when it misses but the sibling file module
-/// `{P}.rue` exists on disk, append the extensioned spelling as a help. The
-/// probe is presentation-only: it runs after discovery has closed, feeds no
-/// observation ledger, and creates no dependency edge, so it can never affect
-/// resolution, closure, or reuse.
-///
-/// `DiagnosticOutput` is its only caller, so the help reaches the reader
-/// whatever produced the diagnostic and whichever renderer presents it — a
-/// batch compile, an `--emit`, a watch cycle, a `rue test` image, and the JSON
-/// copies a `compile_error` event carries. Applying it per entry point instead
-/// is what let `--emit` and `--watch` publish the same `ModuleNotFound`
-/// without it (RUE-1969).
-fn with_import_migration_helps(errors: &CompileErrors) -> CompileErrors {
-    let mut enriched = CompileErrors::new();
-    for error in errors.iter() {
-        let sibling = match &error.kind {
-            rue_error::ErrorKind::ModuleNotFound { path, candidates }
-                if !path.ends_with(".rue") =>
-            {
-                let basename = Path::new(path)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or(path);
-                let facade_suffix = format!("/_{basename}.rue");
-                candidates.iter().find_map(|candidate: &String| {
-                    let sibling = format!("{}.rue", candidate.strip_suffix(&facade_suffix)?);
-                    Path::new(&sibling)
-                        .is_file()
-                        .then_some((path.clone(), sibling))
-                })
-            }
-            _ => None,
-        };
-        match sibling {
-            Some((path, sibling)) => enriched.push(error.clone().with_help(format!(
-                "an extensionless import names the directory facade; the file module \
-                 '{sibling}' is imported with its extension: @import(\"{path}.rue\")"
-            ))),
-            None => enriched.push(error.clone()),
-        }
-    }
-    enriched
-}
-
 struct DiagnosticOutput<'a> {
     format: ErrorFormat,
     /// The path each file is known by, used to put a batch of diagnostics into
@@ -1277,6 +1239,10 @@ impl<'a> DiagnosticOutput<'a> {
         }
     }
 
+    pub(crate) fn format(&self) -> ErrorFormat {
+        self.format
+    }
+
     /// The same JSON objects `--error-format json` publishes for each batch of
     /// diagnostics, in the same source order, whatever format this output was
     /// built for.
@@ -1289,12 +1255,14 @@ impl<'a> DiagnosticOutput<'a> {
     /// The objects come from the diagnostic formatter's own serializer rather
     /// than from a second rendering here, so an event's copy and the
     /// `--error-format json` line on stderr can never disagree about a field.
-    fn json_diagnostic_batches(&self, batches: &[&CompileErrors]) -> Vec<Vec<serde_json::Value>> {
+    pub(crate) fn json_prepared_diagnostic_batches(
+        &self,
+        batches: &[&CompileErrors],
+    ) -> Vec<Vec<serde_json::Value>> {
         let formatter = MultiFileJsonFormatter::new(self.sources.iter().cloned());
         batches
             .iter()
             .map(|errors| {
-                let errors = with_import_migration_helps(errors);
                 self.in_source_order(errors.as_slice())
                     .into_iter()
                     .map(|error| {
@@ -1379,6 +1347,10 @@ impl<'a> DiagnosticOutput<'a> {
 
     fn render_errors(&self, errors: &CompileErrors) -> String {
         let errors = with_import_migration_helps(errors);
+        self.render_prepared_errors(&errors)
+    }
+
+    pub(crate) fn render_prepared_errors(&self, errors: &CompileErrors) -> String {
         let errors = CompileErrors::from(
             self.in_source_order(errors.as_slice())
                 .into_iter()
@@ -1421,6 +1393,10 @@ impl<'a> DiagnosticOutput<'a> {
 
     fn print_errors(&self, errors: &CompileErrors) {
         eprintln!("{}", self.render_errors(errors));
+    }
+
+    pub(crate) fn print_prepared_errors(&self, errors: &CompileErrors) {
+        eprintln!("{}", self.render_prepared_errors(errors));
     }
 
     fn print_warnings(&self, warnings: &[CompileWarning]) {
@@ -2274,7 +2250,7 @@ pub(crate) fn render_source_load_error(
                     "source loader produced an empty compiler diagnostic batch",
                 )
             } else {
-                diagnostics.render_errors(&errors)
+                diagnostics.render_prepared_errors(&errors)
             }
         }
     }
@@ -2481,6 +2457,14 @@ fn main() {
         std::process::exit(driver_failure_exit_code(&options.mode));
     }
 
+    // Capture the invocation directory before any request-relative input is
+    // read. Retained and watch paths must keep referring to this request even
+    // if a client changes the process cwd later.
+    let path_context = HostPathContext::capture().unwrap_or_else(|error| {
+        eprintln!("Error: {error}");
+        std::process::exit(driver_failure_exit_code(&options.mode));
+    });
+
     // Initialize tracing based on CLI options
     // Returns timing data if --time-passes or --benchmark-json was specified
     let timing_data = init_tracing(
@@ -2496,20 +2480,22 @@ fn main() {
     // Reporting against the list is `rue test`'s job (ADR-0083 §1); an ordinary
     // build validates the input and carries it no further.
     let declared_test_candidates = match options.test_candidates_path.as_deref() {
-        Some(path) => match rue_driver::load_declared_candidates(path) {
-            Ok(candidates) => {
-                tracing::debug!(
-                    path,
-                    declared_candidates = candidates.len(),
-                    "test candidate inventory declared"
-                );
-                Some(candidates)
+        Some(path) => {
+            match rue_driver::load_declared_candidates_with_context(path, &path_context) {
+                Ok(candidates) => {
+                    tracing::debug!(
+                        path,
+                        declared_candidates = candidates.len(),
+                        "test candidate inventory declared"
+                    );
+                    Some(candidates)
+                }
+                Err(message) => {
+                    eprintln!("{message}");
+                    std::process::exit(driver_failure_exit_code(&options.mode));
+                }
             }
-            Err(message) => {
-                eprintln!("{message}");
-                std::process::exit(driver_failure_exit_code(&options.mode));
-            }
-        },
+        }
         None => None,
     };
 
@@ -2520,7 +2506,6 @@ fn main() {
         CompilerSessionConfig::with_workers(compile_pool_jobs(&options.mode, options.jobs))
             .expect("CLI job validation must agree with compiler configuration");
     let resolved_workers = compiler_config.workers();
-
     // Discover and load @import-ed modules from disk, transitively. Sema
     // resolves imports only against already-loaded files, so without this
     // step `const utils = @import("utils")` fails with E0704 unless the
@@ -2546,6 +2531,7 @@ fn main() {
             source_manifest_path: options.source_manifest_path.as_deref(),
             std_root: captured_std_root.as_deref(),
             compiler_config,
+            path_context: &path_context,
         }) {
             Ok(result) => result,
             Err(error) => report_source_load_error(error, options.error_format, &options.mode),
@@ -2557,7 +2543,11 @@ fn main() {
         linker: options.linker.clone(),
         opt_level: options.opt_level,
         preview_features: options.preview_features.clone(),
-        link_archives: options.link_archives.clone(),
+        link_archives: options
+            .link_archives
+            .iter()
+            .map(|path| path_context.anchor(path))
+            .collect(),
         // A test request roots every test item in the closure; an executable
         // request roots none of them (ADR-0083 §1). This is the only place the
         // two differ, so `rue test` is one root set away from an ordinary
@@ -2599,12 +2589,20 @@ fn main() {
         // exist, because the loop never returns.
         let mode = match options.mode {
             DriverMode::Test => watch::WatchMode::Test(Box::new(watch::TestWatch {
-                repro_flags: test_repro_flags(&options),
+                repro_flags: test_repro_flags(&options, &path_context),
+                repro_root: test_mode::absolute_spelling_at(
+                    Path::new(&options.source_path),
+                    path_context.working_directory(),
+                ),
                 repro_env: test_repro_env(captured_std_root.as_deref()),
                 jobs: test_mode_jobs(options.jobs),
                 target: options.target,
                 opt_level: options.opt_level,
-                test_candidates_path: options.test_candidates_path.clone(),
+                test_candidates_path: options
+                    .test_candidates_path
+                    .as_deref()
+                    .map(|path| path_context.anchor(Path::new(path)).display().to_string()),
+                test_candidates_display_path: options.test_candidates_path.clone(),
                 // Derived once for the process: consecutive cycles then
                 // shuffle the same way, and a difference between two of them
                 // is attributable to the edit rather than to the order.
@@ -2715,7 +2713,11 @@ fn main() {
                 options: options.test.clone(),
                 diagnostics: &diagnostics,
                 root: options.source_path.clone(),
-                repro_flags: test_repro_flags(&options),
+                repro_flags: test_repro_flags(&options, &path_context),
+                repro_root: test_mode::absolute_spelling_at(
+                    Path::new(&options.source_path),
+                    path_context.working_directory(),
+                ),
                 repro_env: test_repro_env(captured_std_root.as_deref()),
                 jobs: test_mode_jobs(options.jobs),
                 target: options.target,
@@ -2770,12 +2772,13 @@ fn main() {
     // compiler and runner hash the published file rather than the
     // pre-publication linker buffer.
     let benchmark_emitted_output = if options.benchmark_json {
-        match std::fs::read(&options.output_path) {
+        let published_output_path = path_context.anchor(Path::new(&options.output_path));
+        match std::fs::read(&published_output_path) {
             Ok(bytes) => Some(EmittedOutput::of(&bytes)),
             Err(error) => {
                 eprintln!(
                     "Error: could not verify published benchmark output '{}': {error}",
-                    options.output_path
+                    published_output_path.display()
                 );
                 std::process::exit(1);
             }
@@ -3162,6 +3165,7 @@ mod tests {
                     source_manifest_path: None,
                     std_root: Some(&std_root),
                     compiler_config: CompilerSessionConfig::default(),
+                    path_context: &HostPathContext::capture().unwrap(),
                 })
                 .unwrap();
                 host.acquire_reached_toolchain_modules(&CompileOptions::default())
@@ -3205,6 +3209,7 @@ mod tests {
                     source_manifest_path: None,
                     std_root: None,
                     compiler_config: CompilerSessionConfig::default(),
+                    path_context: &HostPathContext::capture().unwrap(),
                 })
                 .unwrap()
             };
@@ -3268,6 +3273,7 @@ mod tests {
             source_manifest_path: None,
             std_root: None,
             compiler_config: CompilerSessionConfig::default(),
+            path_context: &HostPathContext::capture().unwrap(),
         })
         .unwrap();
         let options = CompileOptions::default();
@@ -3735,11 +3741,15 @@ mod tests {
             "--source-manifest",
             "sources.manifest",
         ]));
-        let flags = test_repro_flags(&options);
+        let context = HostPathContext::capture().unwrap();
+        let flags = test_repro_flags(&options, &context);
         // The manifest is absolutized rather than repeated: the `rue_test`
         // rule spells it as a project-relative buck-out path, and a repro is
         // run from somewhere else (RUE-2020).
-        let manifest = test_mode::absolute_spelling(Path::new("sources.manifest"));
+        let manifest = test_mode::absolute_spelling_at(
+            Path::new("sources.manifest"),
+            context.working_directory(),
+        );
         assert!(Path::new(&manifest).is_absolute(), "{manifest}");
         assert!(manifest.ends_with("/sources.manifest"), "{manifest}");
         assert_eq!(

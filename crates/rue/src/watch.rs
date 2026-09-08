@@ -194,6 +194,7 @@ pub(crate) enum WatchMode {
 pub(crate) struct TestWatch {
     pub(crate) options: test_mode::TestOptions,
     pub(crate) repro_flags: Vec<String>,
+    pub(crate) repro_root: String,
     pub(crate) repro_env: Vec<(String, String)>,
     pub(crate) jobs: usize,
     pub(crate) target: Target,
@@ -202,6 +203,7 @@ pub(crate) struct TestWatch {
     /// it names are both ordinary disk state, and a cycle reports what is on
     /// disk now.
     pub(crate) test_candidates_path: Option<String>,
+    pub(crate) test_candidates_display_path: Option<String>,
     /// Derived once for the whole process unless `--seed` was given, so
     /// consecutive cycles shuffle the same way and a difference between two of
     /// them is attributable to the edit rather than to the order.
@@ -718,21 +720,29 @@ fn test_watch_cycle(request: TestWatchCycle<'_, '_>) -> test_mode::CycleOutcome 
     // so a candidate added, removed, or newly broken since the last cycle is
     // reported by this one. The warning it produces is printed by the cycle
     // itself, once, in each cycle whose report is non-empty (RUE-2023).
-    let candidates = match &config.test_candidates_path {
-        Some(path) => match rue_driver::load_declared_candidates(path) {
-            Ok(declared) => match host.acquire_test_candidates(&declared) {
-                Ok(inventory) => Some(inventory),
-                Err(errors) => {
-                    diagnostics.print_errors(&errors);
+    let candidates = match (
+        &config.test_candidates_path,
+        &config.test_candidates_display_path,
+    ) {
+        (Some(path), Some(display_path)) => {
+            match rue_driver::load_declared_candidates_at(Path::new(path), display_path) {
+                Ok(declared) => match host.acquire_test_candidates(&declared) {
+                    Ok(inventory) => Some(inventory),
+                    Err(errors) => {
+                        diagnostics.print_errors(&errors);
+                        return test_mode::CycleOutcome::Finished(
+                            test_mode::TestExitCode::RunnerError,
+                        );
+                    }
+                },
+                Err(message) => {
+                    eprintln!("{message}");
                     return test_mode::CycleOutcome::Finished(test_mode::TestExitCode::RunnerError);
                 }
-            },
-            Err(message) => {
-                eprintln!("{message}");
-                return test_mode::CycleOutcome::Finished(test_mode::TestExitCode::RunnerError);
             }
-        },
-        None => None,
+        }
+        (None, None) => None,
+        _ => unreachable!("candidate path and display path are paired"),
     };
     test_mode::run_cycle(test_mode::CycleRequest {
         host,
@@ -740,6 +750,7 @@ fn test_watch_cycle(request: TestWatchCycle<'_, '_>) -> test_mode::CycleOutcome 
         options: &config.options,
         diagnostics,
         root: source_path,
+        repro_root: &config.repro_root,
         repro_flags: &config.repro_flags,
         repro_env: &config.repro_env,
         jobs: config.jobs,

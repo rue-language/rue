@@ -30,9 +30,9 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use rue_compiler::unstable::{TestCandidateInventory, TestInventoryEntry};
-use rue_compiler::{CompileOptions, OptLevel};
-use rue_driver::FilesystemCompilerHost;
+use rue_compiler::unstable::{SourceInfo, TestCandidateInventory, TestInventoryEntry};
+use rue_compiler::{AcceptedReadManifest, CompileErrors, CompileOptions, OptLevel, SourceSnapshot};
+use rue_driver::{AttemptedRead, FilesystemCompilerHost, WatchInput};
 use rue_target::Target;
 
 use events::{
@@ -137,6 +137,8 @@ pub(crate) struct TestRequest<'a, 'diagnostics> {
     /// The root source exactly as the command line spelled it, which is what
     /// `run_started` publishes.
     pub(crate) root: String,
+    /// The root anchored at the invocation directory for repros.
+    pub(crate) repro_root: String,
     /// The compile-mode flags a repro argv repeats after the filter and seed.
     pub(crate) repro_flags: Vec<String>,
     /// The environment assignments a repro must be run under, sorted by name.
@@ -220,6 +222,7 @@ pub(crate) fn run(request: TestRequest<'_, '_>) -> TestExitCode {
         options,
         diagnostics,
         root,
+        repro_root,
         repro_flags,
         repro_env,
         jobs,
@@ -252,6 +255,7 @@ pub(crate) fn run(request: TestRequest<'_, '_>) -> TestExitCode {
         options: &options,
         diagnostics,
         root: &root,
+        repro_root: &repro_root,
         repro_flags: &repro_flags,
         repro_env: &repro_env,
         jobs,
@@ -285,6 +289,7 @@ pub(crate) struct CycleRequest<'a, 'diagnostics> {
     pub(crate) options: &'a TestOptions,
     pub(crate) diagnostics: &'a crate::DiagnosticOutput<'diagnostics>,
     pub(crate) root: &'a str,
+    pub(crate) repro_root: &'a str,
     pub(crate) repro_flags: &'a [String],
     pub(crate) repro_env: &'a [(String, String)],
     pub(crate) jobs: usize,
@@ -326,6 +331,7 @@ pub(crate) fn run_cycle(request: CycleRequest<'_, '_>) -> CycleOutcome {
         options,
         diagnostics,
         root,
+        repro_root,
         repro_flags,
         repro_env,
         jobs,
@@ -353,14 +359,17 @@ pub(crate) fn run_cycle(request: CycleRequest<'_, '_>) -> CycleOutcome {
     // exists, built from the tests that did analyze (ADR-0083 §3). The cycle
     // that decides all of that is `compile`'s, shared with the executable
     // build and with executable watch (RUE-1969, RUE-2023).
-    let image = match crate::compile::drive_test_cycle(crate::compile::TestCycleRequest {
+    let response = crate::compile::produce_test_cycle(crate::compile::TestCycleRequest {
         host: &mut *host,
         options: compile_options,
-        diagnostics,
+        error_format: diagnostics.format(),
+        candidates,
         image_path: &image_path,
         observation,
-    }) {
-        crate::compile::TestCycleReport::Published(image) => *image,
+    });
+    let multi_module_closure = response.published_user_module_count() > 1;
+    let image = match response.complete(None) {
+        crate::compile::CycleReport::Published(image) => *image,
         crate::compile::TestCycleReport::Failed => {
             discard_run_root(&image_path, &run_root);
             return CycleOutcome::Finished(TestExitCode::RunnerError);
@@ -380,10 +389,11 @@ pub(crate) fn run_cycle(request: CycleRequest<'_, '_>) -> CycleOutcome {
     let reporter = Reporter::new(
         options.format,
         render::Context {
-            multi_module_closure: host.published_user_module_count() > 1,
+            multi_module_closure,
         },
     );
-    let compile_errors = CompileErrorVerdicts::new(&image.compile_failures, diagnostics);
+    let diagnostics = diagnostics_for_snapshot(image.error_format, &image.source_snapshot);
+    let compile_errors = CompileErrorVerdicts::new(&image.compile_failures, &diagnostics);
 
     let total = image.inventory.entries.len();
     let plan = selection::plan(
@@ -409,9 +419,10 @@ pub(crate) fn run_cycle(request: CycleRequest<'_, '_>) -> CycleOutcome {
 
     if plan.is_empty() {
         discard_run_root(&image_path, &run_root);
-        let unimported = report_unimported(host, candidates, diagnostics);
-        let Ok(unimported) = unimported else {
-            return CycleOutcome::Finished(TestExitCode::RunnerError);
+        let unimported = match report_unimported(image.unimported_test_files.as_ref(), &diagnostics)
+        {
+            Ok(unimported) => unimported,
+            Err(_) => return CycleOutcome::Finished(TestExitCode::RunnerError),
         };
         // Said before the terminal event, so a reader of an interleaved
         // terminal sees the reason ahead of the vacuous "0 passed" summary.
@@ -436,8 +447,6 @@ pub(crate) fn run_cycle(request: CycleRequest<'_, '_>) -> CycleOutcome {
     // names the compiler and the root by absolute path rather than by whatever
     // spelling this invocation happened to use (RUE-2020).
     let repro_program = repro_program();
-    let repro_root = absolute_spelling(Path::new(root));
-
     let outcome = execute_plan(ExecutionRequest {
         plan: &plan,
         compile_errors: &compile_errors,
@@ -448,7 +457,7 @@ pub(crate) fn run_cycle(request: CycleRequest<'_, '_>) -> CycleOutcome {
         timeout: Duration::from_millis(options.timeout_ms),
         jobs,
         repro_program: &repro_program,
-        repro_root: &repro_root,
+        repro_root,
         repro_flags,
         repro_env,
         reporter: &reporter,
@@ -481,8 +490,9 @@ pub(crate) fn run_cycle(request: CycleRequest<'_, '_>) -> CycleOutcome {
         return CycleOutcome::Finished(TestExitCode::RunnerError);
     }
 
-    let Ok(unimported) = report_unimported(host, candidates, diagnostics) else {
-        return CycleOutcome::Finished(TestExitCode::RunnerError);
+    let unimported = match report_unimported(image.unimported_test_files.as_ref(), &diagnostics) {
+        Ok(unimported) => unimported,
+        Err(_) => return CycleOutcome::Finished(TestExitCode::RunnerError),
     };
     reporter.emit(&Event::RunFinished {
         passed: outcome.passed,
@@ -565,7 +575,7 @@ impl CompileErrorVerdicts {
             .iter()
             .map(|failure| &failure.errors)
             .collect::<Vec<_>>();
-        let rendered = diagnostics.json_diagnostic_batches(&batches);
+        let rendered = diagnostics.json_prepared_diagnostic_batches(&batches);
         Self {
             by_ordinal: failures
                 .iter()
@@ -695,17 +705,61 @@ fn candidate_source(candidates: Option<&TestCandidateInventory>) -> CandidateSou
 /// that could disagree with the run it previews is worse than no listing. For
 /// the same reason it prints the closure's analysis diagnostics on stderr as
 /// the run path does, while still listing every declaration and exiting `0`.
-fn list(
+struct OwnedListingResponse {
+    source_snapshot: SourceSnapshot,
+    accepted_reads: AcceptedReadManifest,
+    attempted_reads: Vec<AttemptedRead>,
+    watch_inputs: Vec<WatchInput>,
+    error_format: crate::ErrorFormat,
+    result: Result<rue_compiler::unstable::TestListing, CompileErrors>,
+}
+
+fn produce_listing(
     host: &mut FilesystemCompilerHost,
     compile_options: &CompileOptions,
+    error_format: crate::ErrorFormat,
+) -> OwnedListingResponse {
+    let source_snapshot = host.source_snapshot().clone();
+    let accepted_reads = host.accepted_reads().clone();
+    let attempted_reads = host.attempted_reads().to_vec();
+    let watch_inputs = host.watch_inputs();
+    let result = host
+        .test_inventory(compile_options)
+        .map_err(|errors| rue_driver::with_import_migration_helps(&errors))
+        .map(|mut listing| {
+            listing.failure_diagnostics =
+                rue_driver::with_import_migration_helps(&listing.failure_diagnostics);
+            listing
+        });
+    OwnedListingResponse {
+        source_snapshot,
+        accepted_reads,
+        attempted_reads,
+        watch_inputs,
+        error_format,
+        result,
+    }
+}
+
+fn complete_listing(
+    response: OwnedListingResponse,
     options: &TestOptions,
-    diagnostics: &crate::DiagnosticOutput<'_>,
     reporter: &Reporter,
 ) -> TestExitCode {
-    let listing = match host.test_inventory(compile_options) {
+    let OwnedListingResponse {
+        source_snapshot,
+        accepted_reads,
+        attempted_reads,
+        watch_inputs,
+        error_format,
+        result,
+    } = response;
+    drop((accepted_reads, attempted_reads, watch_inputs));
+    let diagnostics = diagnostics_for_snapshot(error_format, &source_snapshot);
+    let listing = match result {
         Ok(listing) => listing,
         Err(errors) => {
-            diagnostics.print_errors(&errors);
+            diagnostics.print_prepared_errors(&errors);
             return TestExitCode::RunnerError;
         }
     };
@@ -720,7 +774,7 @@ fn list(
     // a reader inspecting a suite would see nothing wrong with tests the run
     // will report as `compile_error`.
     if !failure_diagnostics.is_empty() {
-        diagnostics.print_errors(&failure_diagnostics);
+        diagnostics.print_prepared_errors(&failure_diagnostics);
     }
     let selected = selection::select(&inventory.entries, &options.filters, options.shard);
     if selected.is_empty() {
@@ -753,6 +807,17 @@ fn list(
         });
     }
     TestExitCode::AllPassed
+}
+
+fn list(
+    host: &mut FilesystemCompilerHost,
+    compile_options: &CompileOptions,
+    options: &TestOptions,
+    diagnostics: &crate::DiagnosticOutput<'_>,
+    reporter: &Reporter,
+) -> TestExitCode {
+    let response = produce_listing(host, compile_options, diagnostics.format());
+    complete_listing(response, options, reporter)
 }
 
 struct ExecutionRequest<'a> {
@@ -1312,6 +1377,16 @@ pub(crate) fn absolute_spelling(path: &Path) -> String {
     }
 }
 
+/// Anchor a project input at the request cwd without canonicalizing it.
+/// Symlink and `..` routes are part of a source repro's meaning.
+pub(crate) fn absolute_spelling_at(path: &Path, working_directory: &Path) -> String {
+    if path.is_absolute() {
+        path.display().to_string()
+    } else {
+        working_directory.join(path).display().to_string()
+    }
+}
+
 /// An installed artifact spelled by the identity the filesystem gives it.
 ///
 /// The counterpart to [`absolute_spelling`], for paths that are toolchain
@@ -1342,17 +1417,18 @@ pub(crate) fn std_root_spelling(path: &Path) -> String {
 /// Returns `Err(())` when the report itself failed; its diagnostics have
 /// already been presented.
 fn report_unimported(
-    host: &mut FilesystemCompilerHost,
-    candidates: Option<&TestCandidateInventory>,
+    report: Option<
+        &Result<Vec<rue_compiler::unstable::UnimportedTestFile>, rue_compiler::CompileErrors>,
+    >,
     diagnostics: &crate::DiagnosticOutput<'_>,
 ) -> Result<Option<Vec<UnimportedFile>>, ()> {
-    let Some(candidates) = candidates else {
+    let Some(report) = report else {
         return Ok(None);
     };
-    let files = match host.unimported_test_files(candidates) {
+    let files = match report {
         Ok(files) => files,
         Err(errors) => {
-            diagnostics.print_errors(&errors);
+            diagnostics.print_prepared_errors(errors);
             return Err(());
         }
     };
@@ -1377,14 +1453,25 @@ fn report_unimported(
     }
     Ok(Some(
         files
-            .into_iter()
+            .iter()
             .map(|file| UnimportedFile {
-                path: file.path,
+                path: file.path.clone(),
                 tests: file.tests,
                 parse_failed: file.parse_failed,
             })
             .collect(),
     ))
+}
+
+fn diagnostics_for_snapshot(
+    format: crate::ErrorFormat,
+    snapshot: &rue_compiler::SourceSnapshot,
+) -> crate::DiagnosticOutput<'_> {
+    let sources = snapshot
+        .files()
+        .map(|source| (source.file_id, SourceInfo::new(source.source, source.path)))
+        .collect();
+    crate::DiagnosticOutput::new(format, sources)
 }
 
 #[cfg(test)]
@@ -1684,5 +1771,48 @@ mod tests {
         });
         assert_eq!(classification.verdict, Verdict::Fail(FailureKind::Assert));
         assert!(!is_xfail_failure(&classification));
+    }
+
+    #[test]
+    fn owned_listing_survives_host_drop_with_partial_failures() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("main.rue");
+        std::fs::write(
+            &root,
+            "test \"broken\" { let value: i32 = true; let _ = value; }\n\
+             test \"fine\" { let _value = 1; }\n",
+        )
+        .unwrap();
+        let context =
+            rue_driver::HostPathContext::from_working_directory(directory.path()).unwrap();
+        let mut host = rue_driver::FilesystemCompilerHost::open(rue_driver::HostOpenRequest {
+            root_source: "main.rue",
+            source_manifest_path: None,
+            std_root: None,
+            compiler_config: rue_compiler::CompilerSessionConfig::with_workers(1).unwrap(),
+            path_context: &context,
+        })
+        .unwrap();
+        let response = produce_listing(
+            &mut host,
+            &CompileOptions {
+                root_selection: rue_compiler::RootSelection::Tests,
+                ..CompileOptions::default()
+            },
+            crate::ErrorFormat::Json,
+        );
+        let Ok(listing) = &response.result else {
+            panic!("listing should preserve surviving declarations");
+        };
+        assert_eq!(listing.inventory.entries.len(), 2);
+        assert!(!listing.failure_diagnostics.is_empty());
+        std::fs::write(&root, "test \"replacement\" { let _value = 2; }\n").unwrap();
+        host.reobserve().unwrap();
+        drop(host);
+        let reporter = Reporter::new(OutputFormat::Json, render::Context::default());
+        assert_eq!(
+            complete_listing(response, &TestOptions::default(), &reporter),
+            TestExitCode::AllPassed
+        );
     }
 }

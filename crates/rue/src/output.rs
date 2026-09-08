@@ -19,6 +19,7 @@ pub(crate) struct PublishRequest<'a> {
 
 pub(crate) struct PublicationDestination {
     path: PathBuf,
+    display_path: PathBuf,
     source_paths: Vec<PathBuf>,
 }
 
@@ -49,6 +50,28 @@ impl PublishError {
             paths,
             error,
         }
+    }
+
+    /// Finalizers operate on anchored paths. Project their structured path
+    /// fields to the invocation spelling without changing tool stderr or the
+    /// underlying I/O error.
+    fn with_display_path(mut self, actual: &Path, display: &Path) -> Self {
+        match &mut self {
+            Self::WouldClobberSource { path } | Self::Signing { path, .. } => {
+                if path == actual {
+                    *path = display.to_owned();
+                }
+            }
+            Self::Io { paths, .. } => {
+                for path in paths {
+                    if path == actual {
+                        *path = display.to_owned();
+                    }
+                }
+            }
+            Self::InputsChanged => {}
+        }
+        self
     }
 
     pub(crate) fn into_compile_error(self) -> CompileError {
@@ -127,7 +150,7 @@ fn validate_destination(destination: &PublicationDestination) -> Result<(), Publ
         .any(|source| output_would_clobber(&output_key, output_metadata.as_ref(), source))
     {
         return Err(PublishError::WouldClobberSource {
-            path: destination.path.clone(),
+            path: destination.display_path.clone(),
         });
     }
     Ok(())
@@ -135,27 +158,51 @@ fn validate_destination(destination: &PublicationDestination) -> Result<(), Publ
 
 /// Validate source/output identity before compilation and retain the complete
 /// source set for mandatory revalidation immediately before publication.
+#[cfg(test)]
 pub(crate) fn preflight_destination<'a>(
     path: &Path,
     source_paths: impl IntoIterator<Item = &'a str>,
 ) -> Result<PublicationDestination, PublishError> {
-    preflight_destination_paths(path, source_paths.into_iter().map(PathBuf::from))
+    preflight_destination_with_display(path, path, source_paths)
 }
 
-fn preflight_destination_paths(
+pub(crate) fn preflight_destination_with_display<'a>(
     path: &Path,
+    display_path: &Path,
+    source_paths: impl IntoIterator<Item = &'a str>,
+) -> Result<PublicationDestination, PublishError> {
+    preflight_destination_paths_with_display(
+        path,
+        display_path,
+        source_paths.into_iter().map(PathBuf::from),
+    )
+}
+
+fn preflight_destination_paths_with_display(
+    path: &Path,
+    display_path: &Path,
     source_paths: impl IntoIterator<Item = PathBuf>,
 ) -> Result<PublicationDestination, PublishError> {
     let destination = PublicationDestination {
         path: path.to_owned(),
+        display_path: display_path.to_owned(),
         source_paths: source_paths.into_iter().collect(),
     };
     validate_destination(&destination)?;
     Ok(destination)
 }
 
+#[cfg(test)]
 pub(crate) fn preflight_watch_destination(
     path: &Path,
+    inputs: &[WatchInput],
+) -> Result<PublicationDestination, PublishError> {
+    preflight_watch_destination_with_display(path, path, inputs)
+}
+
+pub(crate) fn preflight_watch_destination_with_display(
+    path: &Path,
+    display_path: &Path,
     inputs: &[WatchInput],
 ) -> Result<PublicationDestination, PublishError> {
     let source_paths = inputs
@@ -163,40 +210,52 @@ pub(crate) fn preflight_watch_destination(
         .flat_map(|input| [input.requested_path(), input.canonical_path()])
         .map(Path::to_owned)
         .collect::<Vec<_>>();
-    preflight_destination_paths(path, source_paths)
+    preflight_destination_paths_with_display(path, display_path, source_paths)
 }
 
-struct PendingOutput(PathBuf);
+struct PendingOutput {
+    path: PathBuf,
+    display_path: PathBuf,
+}
 
 impl PendingOutput {
     fn publish(mut self) {
-        self.0 = PathBuf::new();
+        self.path = PathBuf::new();
     }
 }
 
 impl Drop for PendingOutput {
     fn drop(&mut self) {
-        if !self.0.as_os_str().is_empty() {
-            let _ = fs::remove_file(&self.0);
+        if !self.path.as_os_str().is_empty() {
+            let _ = fs::remove_file(&self.path);
         }
     }
 }
 
-fn create_pending_output(destination: &Path) -> Result<(PendingOutput, fs::File), PublishError> {
-    let directory = destination.parent().unwrap_or_else(|| Path::new("."));
+fn create_pending_output(
+    destination: &PublicationDestination,
+) -> Result<(PendingOutput, fs::File), PublishError> {
+    let directory = destination.path.parent().unwrap_or_else(|| Path::new("."));
+    let display_directory = destination
+        .display_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
     let name = destination
+        .path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("rue-output");
     for attempt in 0..1000_u32 {
-        let path = directory.join(format!(".{name}.rue-tmp-{}-{attempt}", std::process::id()));
+        let filename = format!(".{name}.rue-tmp-{}-{attempt}", std::process::id());
+        let path = directory.join(&filename);
+        let display_path = display_directory.join(filename);
         match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(file) => return Ok((PendingOutput(path), file)),
+            Ok(file) => return Ok((PendingOutput { path, display_path }, file)),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
                 return Err(PublishError::io(
                     "could not create temporary executable",
-                    vec![path],
+                    vec![display_path],
                     error,
                 ));
             }
@@ -204,7 +263,7 @@ fn create_pending_output(destination: &Path) -> Result<(PendingOutput, fs::File)
     }
     Err(PublishError::io(
         "could not allocate a temporary executable path",
-        vec![destination.to_owned()],
+        vec![destination.display_path.clone()],
         io::Error::new(
             io::ErrorKind::AlreadyExists,
             "all temporary output names already exist",
@@ -278,24 +337,25 @@ fn publish_executable_with_finalizer_and_observation(
 ) -> Result<(), PublishError> {
     validate_destination(&request.destination)?;
     let destination = &request.destination.path;
-    let (pending, mut file) = create_pending_output(destination)?;
+    let (pending, mut file) = create_pending_output(&request.destination)?;
     file.write_all(request.bytes).map_err(|error| {
         PublishError::io(
             "could not write temporary executable",
-            vec![pending.0.clone()],
+            vec![pending.display_path.clone()],
             error,
         )
     })?;
     file.flush().map_err(|error| {
         PublishError::io(
             "could not flush temporary executable",
-            vec![pending.0.clone()],
+            vec![pending.display_path.clone()],
             error,
         )
     })?;
     drop(file);
 
-    finalizer(&pending.0, request.target)?;
+    finalizer(&pending.path, request.target)
+        .map_err(|error| error.with_display_path(&pending.path, &pending.display_path))?;
 
     // The hook is used only by deterministic unit tests to mutate an input in
     // the narrow window this check protects: after finalization/signing and
@@ -313,10 +373,13 @@ fn publish_executable_with_finalizer_and_observation(
         return Err(PublishError::InputsChanged);
     }
 
-    replace_destination(&pending.0, destination).map_err(|error| {
+    replace_destination(&pending.path, destination).map_err(|error| {
         PublishError::io(
             "could not atomically install finished executable",
-            vec![pending.0.clone(), destination.to_owned()],
+            vec![
+                pending.display_path.clone(),
+                request.destination.display_path.clone(),
+            ],
             error,
         )
     })?;
@@ -346,6 +409,139 @@ fn replace_destination(source: &Path, destination: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn anchored_creation_errors_keep_the_requested_output_directory() {
+        let directory = temporary_directory("publish-display-create");
+        let display = Path::new("missing/program");
+        let destination = preflight_destination_with_display(
+            &directory.join(display),
+            display,
+            std::iter::empty::<&str>(),
+        )
+        .unwrap();
+        let error = publish_executable(PublishRequest {
+            destination,
+            bytes: b"new",
+            target: Target::X86_64Linux,
+        })
+        .unwrap_err();
+        let PublishError::Io {
+            operation, paths, ..
+        } = error
+        else {
+            panic!("a missing parent must report the creation failure");
+        };
+        assert_eq!(operation, "could not create temporary executable");
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].parent(), Some(Path::new("missing")));
+        assert!(
+            paths[0]
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".program.rue-tmp-")
+        );
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn anchored_rename_errors_keep_both_requested_path_spellings() {
+        let directory = temporary_directory("publish-display-rename");
+        fs::create_dir(directory.join("program")).unwrap();
+        let destination = preflight_destination_with_display(
+            &directory.join("program"),
+            Path::new("program"),
+            std::iter::empty::<&str>(),
+        )
+        .unwrap();
+        let error = publish_executable(PublishRequest {
+            destination,
+            bytes: b"new",
+            target: Target::X86_64Linux,
+        })
+        .unwrap_err();
+        let PublishError::Io {
+            operation, paths, ..
+        } = error
+        else {
+            panic!("replacing a directory must report the rename failure");
+        };
+        assert_eq!(
+            operation,
+            "could not atomically install finished executable"
+        );
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0].parent(), Some(Path::new("")));
+        assert_eq!(paths[1], Path::new("program"));
+        assert!(directory.join("program").is_dir());
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn anchored_finalizer_errors_project_paths_and_preserve_tool_errors() {
+        let directory = temporary_directory("publish-display-finalize");
+        let destination_path = directory.join("program");
+        fs::write(&destination_path, b"old").unwrap();
+        let tool_message = format!("opaque tool detail naming {}", directory.display());
+        for signing in [false, true] {
+            let destination = preflight_destination_with_display(
+                &destination_path,
+                Path::new("program"),
+                std::iter::empty::<&str>(),
+            )
+            .unwrap();
+            let error = publish_executable_with_finalizer(
+                PublishRequest {
+                    destination,
+                    bytes: b"new",
+                    target: Target::X86_64Linux,
+                },
+                |temporary, _target| {
+                    assert!(temporary.is_absolute());
+                    assert_eq!(fs::read(temporary).unwrap(), b"new");
+                    if signing {
+                        Err(PublishError::Signing {
+                            path: temporary.to_owned(),
+                            error: SigningError::Rejected(tool_message.clone()),
+                        })
+                    } else {
+                        Err(PublishError::io(
+                            "injected finalizer I/O failure",
+                            vec![temporary.to_owned()],
+                            io::Error::other(tool_message.clone()),
+                        ))
+                    }
+                },
+            )
+            .unwrap_err();
+            let display = match error {
+                PublishError::Signing {
+                    path,
+                    error: SigningError::Rejected(stderr),
+                } => {
+                    assert!(signing);
+                    assert_eq!(stderr, tool_message);
+                    path
+                }
+                PublishError::Io {
+                    mut paths, error, ..
+                } => {
+                    assert!(!signing);
+                    assert_eq!(error.to_string(), tool_message);
+                    assert_eq!(paths.len(), 1);
+                    paths.remove(0)
+                }
+                _ => panic!("the finalizer's typed error must survive publication"),
+            };
+            assert_eq!(display.parent(), Some(Path::new("")));
+            assert_eq!(fs::read(&destination_path).unwrap(), b"old");
+            assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     fn temporary_directory(name: &str) -> PathBuf {
         let unique = std::time::SystemTime::now()
