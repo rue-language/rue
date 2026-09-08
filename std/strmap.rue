@@ -38,12 +38,19 @@
 // the hash before comparing bytes. This mirrors the pooled-bytes interner in
 // examples/ruelex/interner.rue.
 //
-// POOL COMPACTION — inserting over a tombstone (or growing) appends the new
-// key's bytes to `pool` and leaves the old key's bytes stranded in it. Those
-// dead bytes would accumulate forever, so `_grow_to` rebuilds `pool` from
-// scratch, copying only the bytes of OCCUPIED slots. A rehash therefore also
-// compacts the key pool, and the old pool (with its dead bytes) is freed when
-// it is overwritten.
+// POOL COMPACTION — removing a key (and inserting a fresh one over its
+// tombstone) leaves the old key's bytes stranded in `pool`. Those dead bytes
+// must not accumulate forever, so `_grow_to` rebuilds `pool` from scratch,
+// copying only the bytes of OCCUPIED slots: a rehash also compacts the key
+// pool, and the old pool (with its dead bytes) is freed when it is overwritten.
+// Growth alone is not enough of a trigger: a map whose live size stays small
+// while the same keys are inserted and removed never grows, so `dead` counts
+// the stranded bytes and `insert` rehashes at the SAME capacity once they
+// outnumber the live key bytes (past a small floor). Each compaction costs one
+// pass over the table plus the live bytes, and it only fires after at least
+// that many dead bytes were appended, so the work stays amortized O(1) per
+// key byte and `pool` stays within a constant factor of the live key bytes
+// (RUE-2139).
 
 const arraybuf = @import("arraybuf.rue");
 const option = @import("option.rue");
@@ -94,6 +101,9 @@ pub fn StrMap(comptime V: type) -> type {
         states: States,
         count: u64,
         cap: u64,
+        // Key bytes in `pool` that belong to removed (tombstoned) slots. Reset
+        // by every `_grow_to`, which drops them.
+        dead: u64,
         filler: V,
 
         // COPY-`V` ONLY: the gate is stated ahead of everything else so an
@@ -115,6 +125,7 @@ pub fn StrMap(comptime V: type) -> type {
                 states: sb.new(),
                 count: 0,
                 cap: 0,
+                dead: 0,
                 filler: filler,
             };
             m._grow_to(8);
@@ -210,6 +221,16 @@ pub fn StrMap(comptime V: type) -> type {
             self.vals = nv;
             self.states = ns;
             self.cap = new_cap;
+            self.dead = 0;
+        }
+
+        // Whether the stranded key bytes in `pool` have outgrown the live ones.
+        // The floor keeps tiny maps from rebuilding on every other churn;
+        // above it, compacting once dead bytes exceed live bytes bounds the
+        // pool at about twice the live key bytes.
+        fn _needs_compaction(borrow self) -> bool {
+            let live = self.pool.len() - self.dead;
+            self.dead >= 64 && self.dead > live
         }
 
         // Write `k -> v` into `target`, appending the key bytes to the pool.
@@ -241,6 +262,10 @@ pub fn StrMap(comptime V: type) -> type {
                     @panic("out of memory");
                 }
                 self._grow_to(self.cap * 2);
+            } else if self._needs_compaction() {
+                // Same capacity: this rehash exists only to rebuild the pool
+                // without the dead key bytes (it clears tombstones too).
+                self._grow_to(self.cap);
             }
             let khash = _fnv1a(borrow k);
             let klen = k.len();
@@ -305,8 +330,8 @@ pub fn StrMap(comptime V: type) -> type {
         }
 
         // Remove `k`; returns whether it was present. The slot becomes a
-        // tombstone; its key bytes stay in the pool until the next `_grow_to`
-        // compacts them away.
+        // tombstone; its key bytes stay in the pool, counted in `dead`, until
+        // the next `_grow_to` compacts them away.
         fn remove(inout self, borrow k: StrBuf) -> bool {
             let khash = _fnv1a(borrow k);
             let klen = k.len();
@@ -320,6 +345,7 @@ pub fn StrMap(comptime V: type) -> type {
                     if self._key_eq(idx, borrow k, khash, klen) {
                         self.states.set(idx, _TOMBSTONE());
                         self.count -= 1;
+                        self.dead += klen;
                         return true;
                     }
                 }
