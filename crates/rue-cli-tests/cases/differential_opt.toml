@@ -690,6 +690,66 @@ stdout = """21
 """
 exit_code = 42
 
+# Floating-point arithmetic uses the same raw `Const` payload storage as
+# integers, but payload 1 is the minimum subnormal rather than the integer
+# multiplicative identity. Signed zero also makes adding +0.0 observable.
+# Dynamic helper parameters keep these operations out of the immediate
+# constant-folding path, while the exact result checks pin IEEE behavior from
+# spec 3.12:21 at every optimization level.
+[[case]]
+name = "f32_float_peepholes_preserve_ieee_values"
+differential_opt = true
+only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
+files = [{ path = "main.rue", source = """
+fn check_f32(x: f32, tiny: f32, z: f32) -> i32 {
+    let min: f32 = 1e-45;
+    let product_right = x * min;
+    let product_left = min * x;
+    let quotient = tiny / min;
+    let sum_right = z + 0.0;
+    let sum_left = 0.0 + z;
+    if product_right != min { return 1; }
+    if product_left != min { return 2; }
+    if quotient != 1.0 { return 3; }
+    if 1.0 / sum_right <= 0.0 { return 4; }
+    if 1.0 / sum_left <= 0.0 { return 5; }
+    0
+}
+
+fn main() -> i32 {
+    check_f32(1.0, 1e-45, -0.0)
+}
+""" }]
+stdout = ""
+exit_code = 0
+
+[[case]]
+name = "f64_float_peepholes_preserve_ieee_values"
+differential_opt = true
+only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
+files = [{ path = "main.rue", source = """
+fn check_f64(x: f64, tiny: f64, z: f64) -> i32 {
+    let min: f64 = 5e-324;
+    let product_right = x * min;
+    let product_left = min * x;
+    let quotient = tiny / min;
+    let sum_right = z + 0.0;
+    let sum_left = 0.0 + z;
+    if product_right != min { return 1; }
+    if product_left != min { return 2; }
+    if quotient != 1.0 { return 3; }
+    if 1.0 / sum_right <= 0.0 { return 4; }
+    if 1.0 / sum_left <= 0.0 { return 5; }
+    0
+}
+
+fn main() -> i32 {
+    check_f64(1.0, 5e-324, -0.0)
+}
+""" }]
+stdout = ""
+exit_code = 0
+
 # Dominator-scoped CSE (RUE-913, RUE-1874): a repeated pure subexpression's
 # shared operand is value-numbered once and reused, so the three separate `const 100`
 # materializations in `weighted` collapse to a single instruction at -O2. The
