@@ -309,22 +309,43 @@ impl Unifier {
         }
     }
 
-    /// If the original type was a variable bound to IntLiteral,
-    /// rebind it to the concrete integer type.
+    /// Rebind an integer-literal variable to a concrete contextual type.
+    ///
+    /// Contextual integer-to-float admission is the one place where a literal
+    /// variable is intentionally allowed to acquire a non-integer type. The
+    /// applied type must still be an unresolved variable (or a genuine
+    /// `IntLiteral` binding); an already-concrete binding is left untouched so
+    /// a later context reports the conflict instead of overwriting it. When a
+    /// variable is chained to another variable, bind the applied
+    /// representative so the whole equivalence class keeps one type.
     fn rebind_int_literal_to_concrete(&mut self, original: &InferType, concrete_ty: &Type) {
         if let InferType::Var(var) = original {
-            if self.int_literal_vars.contains(var) {
-                self.substitution
-                    .insert(*var, InferType::Concrete(*concrete_ty));
-                return;
-            }
-            // Check if this variable is directly bound to IntLiteral
-            if let Some(bound) = self.substitution.get(*var) {
-                if bound.is_int_literal() {
-                    self.substitution
-                        .insert(*var, InferType::Concrete(*concrete_ty));
+            let resolved = self.substitution.apply(original);
+            let representative = match resolved {
+                InferType::Var(rep)
+                    if self.int_literal_vars.contains(var)
+                        || self.int_literal_vars.contains(&rep) =>
+                {
+                    rep
                 }
-            }
+                InferType::Var(_) => return,
+                // A direct variable-to-IntLiteral mapping has no separate
+                // representative to preserve; retain the old variable slot.
+                InferType::IntLiteral
+                    if self.int_literal_vars.contains(var)
+                        || self
+                            .substitution
+                            .get(*var)
+                            .is_some_and(|bound| bound.is_int_literal()) =>
+                {
+                    *var
+                }
+                // In particular, never overwrite an established concrete
+                // binding merely because its variable is marked as a literal.
+                InferType::Concrete(_) | InferType::Array { .. } | InferType::IntLiteral => return,
+            };
+            self.substitution
+                .insert(representative, InferType::Concrete(*concrete_ty));
         }
     }
 
@@ -596,8 +617,22 @@ impl Unifier {
                 Constraint::ContextualEqual(lhs, rhs, span) => {
                     let lhs_applied = self.substitution.apply(lhs);
                     let rhs_applied = self.substitution.apply(rhs);
-                    let integer_literal = matches!(lhs_applied, InferType::IntLiteral)
-                        || matches!(lhs, InferType::Var(var) if self.int_literal_vars.contains(var));
+                    let integer_literal = match lhs_applied {
+                        // A terminal IntLiteral is itself contextualizable.
+                        InferType::IntLiteral => true,
+                        // A marked variable may cross the implicit boundary
+                        // only while its applied class remains unresolved.
+                        // Checking the applied representative prevents a
+                        // later float context from overwriting an earlier
+                        // concrete integer binding.
+                        InferType::Var(rep) => {
+                            self.int_literal_vars.contains(&rep)
+                                || matches!(lhs, InferType::Var(var) if self.int_literal_vars.contains(var))
+                        }
+                        // Established concrete types must go through ordinary
+                        // equality and therefore report a conflict.
+                        InferType::Concrete(_) | InferType::Array { .. } => false,
+                    };
                     let expected_float =
                         matches!(rhs_applied, InferType::Concrete(Type::F32 | Type::F64));
                     let result = if integer_literal && expected_float {
@@ -1315,6 +1350,96 @@ mod tests {
                     .is_empty()
             );
         }
+
+        // Once a literal class has acquired a concrete type, a later
+        // contextual use is a conflict and must not overwrite that binding.
+        for (first, second, expected, error_expected, error_found) in [
+            (
+                Constraint::equal(
+                    InferType::Var(TypeVarId::new(0)),
+                    InferType::Concrete(Type::I32),
+                    Span::new(0, 1),
+                ),
+                Constraint::contextual(
+                    InferType::Var(TypeVarId::new(0)),
+                    InferType::Concrete(Type::F64),
+                    Span::new(1, 2),
+                ),
+                Type::I32,
+                Type::F64,
+                Type::I32,
+            ),
+            (
+                Constraint::contextual(
+                    InferType::Var(TypeVarId::new(0)),
+                    InferType::Concrete(Type::F64),
+                    Span::new(0, 1),
+                ),
+                Constraint::equal(
+                    InferType::Var(TypeVarId::new(0)),
+                    InferType::Concrete(Type::I32),
+                    Span::new(1, 2),
+                ),
+                Type::F64,
+                Type::I32,
+                Type::F64,
+            ),
+            (
+                Constraint::contextual(
+                    InferType::Var(TypeVarId::new(0)),
+                    InferType::Concrete(Type::F32),
+                    Span::new(0, 1),
+                ),
+                Constraint::contextual(
+                    InferType::Var(TypeVarId::new(0)),
+                    InferType::Concrete(Type::F64),
+                    Span::new(1, 2),
+                ),
+                Type::F32,
+                Type::F64,
+                Type::F32,
+            ),
+            (
+                Constraint::contextual(
+                    InferType::Var(TypeVarId::new(0)),
+                    InferType::Concrete(Type::F64),
+                    Span::new(0, 1),
+                ),
+                Constraint::contextual(
+                    InferType::Var(TypeVarId::new(0)),
+                    InferType::Concrete(Type::F32),
+                    Span::new(1, 2),
+                ),
+                Type::F64,
+                Type::F32,
+                Type::F64,
+            ),
+        ] {
+            let literal = TypeVarId::new(0);
+            let alias = TypeVarId::new(1);
+            let mut unifier = Unifier::new();
+            unifier.mark_int_literal_vars(&[literal]);
+            let errors = unifier.solve_constraints(&[
+                Constraint::equal(
+                    InferType::Var(literal),
+                    InferType::Var(alias),
+                    Span::new(10, 11),
+                ),
+                first,
+                second,
+            ]);
+            assert_eq!(errors.len(), 1);
+            assert_eq!(errors[0].span, Span::new(1, 2));
+            assert!(matches!(
+                errors[0].kind,
+                UnifyResult::TypeMismatch {
+                    expected: InferType::Concrete(expected),
+                    found: InferType::Concrete(found),
+                } if expected == error_expected && found == error_found
+            ));
+            assert_eq!(unifier.resolve(&InferType::Var(literal)), Some(expected));
+            assert_eq!(unifier.resolve(&InferType::Var(alias)), Some(expected));
+        }
     }
 
     #[test]
@@ -1424,6 +1549,32 @@ mod tests {
         assert_eq!(unifier.resolve(&InferType::Var(v0)), Some(Type::I64));
         assert_eq!(unifier.resolve(&InferType::Var(v1)), Some(Type::I64));
         assert_eq!(unifier.resolve(&InferType::Var(v2)), Some(Type::I64));
+
+        // Contextual admission binds the applied representative, preserving
+        // one width for every member of an unresolved literal class.
+        for expected in [Type::F32, Type::F64] {
+            let mut contextual_unifier = Unifier::new();
+            let a = TypeVarId::new(0);
+            let b = TypeVarId::new(1);
+            contextual_unifier.mark_int_literal_vars(&[a]);
+            let errors = contextual_unifier.solve_constraints(&[
+                Constraint::equal(InferType::Var(a), InferType::Var(b), Span::new(0, 5)),
+                Constraint::contextual(
+                    InferType::Var(a),
+                    InferType::Concrete(expected),
+                    Span::new(6, 10),
+                ),
+            ]);
+            assert!(errors.is_empty());
+            assert_eq!(
+                contextual_unifier.resolve(&InferType::Var(a)),
+                Some(expected)
+            );
+            assert_eq!(
+                contextual_unifier.resolve(&InferType::Var(b)),
+                Some(expected)
+            );
+        }
     }
 
     #[test]

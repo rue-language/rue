@@ -391,3 +391,76 @@ fn main() -> i32 {
 }
 """ }]
 stdout = "1\n0\n0\n"
+
+# RUE-2136: a literal's concrete inference must survive a later contextual
+# call. Compile the integer-then-float order at every optimization level
+# through the real driver so a stale contextual rebind cannot become a
+# mixed-width AIR or an optimizer ICE.
+
+[[case]]
+name = "integer_then_float_call_is_rejected_at_o0"
+args = ["main.rue", "-O0", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn use_int(x: i32) -> i32 { x }
+fn use_float(x: f64) -> i32 { if x == 1.0 { 42 } else { 11 } }
+fn main() -> i32 {
+    let x = 1;
+    let y = use_int(x);
+    let z = use_float(x);
+    y + z
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206"]
+compile_stderr_not_contains = ["E9000"]
+
+[[case]]
+name = "integer_then_float_call_is_rejected_at_o1"
+args = ["main.rue", "-O1", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn use_int(x: i32) -> i32 { x }
+fn use_float(x: f64) -> i32 { if x == 1.0 { 42 } else { 11 } }
+fn main() -> i32 {
+    let x = 1;
+    let y = use_int(x);
+    let z = use_float(x);
+    y + z
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206"]
+compile_stderr_not_contains = ["E9000"]
+
+[[case]]
+name = "integer_then_float_call_is_rejected_at_o2"
+args = ["main.rue", "-O2", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn use_int(x: i32) -> i32 { x }
+fn use_float(x: f64) -> i32 { if x == 1.0 { 42 } else { 11 } }
+fn main() -> i32 {
+    let x = 1;
+    let y = use_int(x);
+    let z = use_float(x);
+    y + z
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206"]
+compile_stderr_not_contains = ["E9000"]
+
+[[case]]
+name = "integer_then_float_call_is_rejected_at_o3"
+args = ["main.rue", "-O3", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn use_int(x: i32) -> i32 { x }
+fn use_float(x: f64) -> i32 { if x == 1.0 { 42 } else { 11 } }
+fn main() -> i32 {
+    let x = 1;
+    let y = use_int(x);
+    let z = use_float(x);
+    y + z
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206"]
+compile_stderr_not_contains = ["E9000"]
