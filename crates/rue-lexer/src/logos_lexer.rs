@@ -395,17 +395,16 @@ fn process_byte_literal(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Result<u6
                     stop = offset;
                     break;
                 }
-                '\\' => match chars.next() {
+                '\\' => {
                     // A backslash immediately before a line terminator is
                     // still bounded by that line; leave the terminator for
                     // Logos' whitespace skip, as the ordinary unterminated
                     // paths do.
-                    Some((offset, '\n' | '\r')) => {
+                    if let Some((offset, '\n' | '\r')) = chars.next() {
                         stop = offset;
                         break;
                     }
-                    Some(_) | None => {}
-                },
+                }
                 _ => {}
             }
         }
