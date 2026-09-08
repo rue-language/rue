@@ -153,3 +153,15 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["`@align_of` takes a type in this argument position"]
+
+[[case]]
+name = "value_intrinsic_array_type_is_rejected_semantically"
+description = "An array type in a value-intrinsic argument remains a type and reaches the intrinsic type diagnostic."
+source = """
+fn main() -> i32 {
+    @dbg([i32; 3]);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["[E0702]", "found type"]

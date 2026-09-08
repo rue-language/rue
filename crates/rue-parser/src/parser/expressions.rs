@@ -714,7 +714,40 @@ impl Parser {
         }
     }
 
+    /// Whether the bracketed argument starts with an unambiguous type form.
+    ///
+    /// Array literals and array types share `[value; count]` syntax. A
+    /// semicolon therefore cannot classify the whole bracketed argument by
+    /// itself: `[1; 3]` and `[i32; 3]` need to remain an expression and a type
+    /// respectively. This bounded token check peels nested leading brackets
+    /// and recognizes only type-only starts (primitive/pointer/never syntax),
+    /// while leaving identifier and unit-expression starts ambiguous so named
+    /// and unit values are never treated as types. The canonical `ty()` parser
+    /// still consumes the type once the start is known; this scan only
+    /// resolves the shared leading token.
     fn bracket_is_array_type(&self) -> bool {
+        let mut element_start = self.cursor + 1;
+        let type_start = loop {
+            let Some(token) = self.tokens.get(element_start) else {
+                return false;
+            };
+            match token.kind {
+                TokenKind::LBracket => element_start += 1,
+                kind if self.primitive_spur(kind).is_some() || kind == TokenKind::Ptr => {
+                    break true;
+                }
+                TokenKind::Bang => {
+                    break self.tokens.get(element_start + 1).is_some_and(|token| {
+                        matches!(token.kind, TokenKind::Semi | TokenKind::RBracket)
+                    });
+                }
+                _ => break false,
+            }
+        };
+        if !type_start {
+            return false;
+        }
+
         let mut depth = 0usize;
         for token in &self.tokens[self.cursor..] {
             match token.kind {

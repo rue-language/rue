@@ -31,6 +31,17 @@ fn main() -> i32 {
 exit_code = 4
 
 [[case]]
+name = "intrinsic_array_repeat_value_argument"
+spec = ["4.13:2", "7.1:39"]
+source = """
+fn main() -> i32 {
+    @drop([1; 3]);
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
 name = "unknown_intrinsic"
 spec = ["4.13:5"]
 source = """
