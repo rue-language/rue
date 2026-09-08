@@ -6,12 +6,15 @@ runs the real filesystem driver with `--error-format json`, reads explanations
 and error metadata from `rue-error`, and runs the schema-v1 specification index
 producer. It does not host a daemon or add another compiler frontend.
 
-Run it through Buck so the canonical producer binaries and specification inputs
-are supplied explicitly:
+Run it through Buck so the canonical producer binaries, standard library, and
+specification inputs are supplied explicitly:
 
 ```console
 ./buck2 run //crates/rue-mcp:server
 ```
+
+The Buck target supplies the repository's `//std:std` directory as
+`RUE_STD_PATH`, so standard-library imports work without ambient configuration.
 
 Configure an MCP client with that command, the repository root as its working
 directory, and stdio transport. The server implements MCP revision
