@@ -7,8 +7,9 @@
 // hermetic denial. The binding is deliberately unused: acquisition is
 // triggered by the fallible intrinsic itself.
 const types = @import("sub/types.rue");
+const hash = @import("hash#helper.rue");
 
 fn main() -> i32 {
     let _parsed = @parse_i32("2");
-    types.value()
+    types.value() + hash.value()
 }
