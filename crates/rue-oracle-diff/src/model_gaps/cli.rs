@@ -439,6 +439,12 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "cli.std_env",
+        "var_key_stops_at_first_equals",
+        external(ExternalDependencyKind::EnvCount),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_env",
         "var_present_returns_value",
         external(ExternalDependencyKind::EnvCount),
         &[],
