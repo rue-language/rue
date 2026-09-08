@@ -51,7 +51,18 @@ rue_crate(
     name = "rue-driver",
     crate_root = "src/lib.rs",
     deps = _DEPS,
-    rustc_flags = [
+    test_deps = [
+        "//third-party:tempfile",
+    ],
+    rustc_flags = select({
+        "prelude//os:macos": [
+            "-l",
+            "framework=CoreFoundation",
+            "-l",
+            "framework=Security",
+        ],
+        "DEFAULT": [],
+    }) + [
         "--check-cfg=cfg(rue_benchmark_allocations)",
         "--check-cfg=cfg(rue_release_build)",
         "--check-cfg=cfg(test)",
