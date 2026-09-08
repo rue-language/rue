@@ -113,6 +113,8 @@ def tool_call(request_id, name, arguments):
 
 
 def protocol_and_real_producer_tests():
+    std_path = pathlib.Path(os.environ["RUE_STD_PATH"])
+    assert std_path.is_dir(), "Buck must provide the canonical standard library directory"
     process = server()
     send(process, request("discover", "server/discover"))
     discover = receive_id(process, "discover")["result"]
@@ -304,7 +306,11 @@ def protocol_and_real_producer_tests():
         bounded = assert_tool_views(receive_id(process, "bounded-check"))
         assert bounded["success"] is False and bounded["diagnostics"]
 
-        root.write_text("fn main() -> i32 { 0 }\n", encoding="utf-8")
+        root.write_text(
+            'const std = @import("std");\n'
+            'fn main() -> i32 { if std.ascii.is_digit(48) { 0 } else { 1 } }\n',
+            encoding="utf-8",
+        )
         executable = pathlib.Path(directory) / "program"
         send(process, tool_call("compile", "compile", {"root": str(root), "output": str(executable)}))
         compiled = assert_tool_views(receive_id(process, "compile"))
