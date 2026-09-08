@@ -182,6 +182,13 @@ struct MergedImage {
     rodata: Vec<u8>,
     data: Vec<u8>,
     bss_size: u64,
+    /// Strictest alignment requested by the sections merged into each region.
+    /// These are consumed by the output-format layout after merge offsets have
+    /// been computed, so absolute addresses cannot discard object metadata.
+    text_align: u64,
+    rodata_align: u64,
+    data_align: u64,
+    bss_align: u64,
     /// (object index, section index) -> offset within the region the section
     /// merged into.
     section_offsets: AHashMap<(usize, usize), u64>,
@@ -1622,6 +1629,10 @@ impl Linker {
         let mut rodata = Vec::new();
         let mut data = Vec::new();
         let mut bss_size: u64 = 0;
+        let mut text_align: u64 = 1;
+        let mut rodata_align: u64 = 1;
+        let mut data_align: u64 = 1;
+        let mut bss_align: u64 = 1;
         let mut section_offsets: AHashMap<(usize, usize), u64> = AHashMap::new();
         let mut pending: Vec<PendingRelocation> = Vec::new();
 
@@ -1637,6 +1648,7 @@ impl Linker {
                 }
 
                 let align = section.align.max(policy.text_min_align);
+                text_align = text_align.max(align);
                 let aligned = align_up(text.len() as u64, align) as usize;
                 pad_to_with_cancellation(&mut text, aligned, policy.text_pad, cancellation)?;
 
@@ -1674,6 +1686,7 @@ impl Linker {
                     }
 
                     let align = section.align.max(policy.rodata_min_align);
+                    rodata_align = rodata_align.max(align);
                     let aligned = align_up(buffer.len() as u64, align) as usize;
                     pad_to_with_cancellation(buffer, aligned, ZERO_FILL, cancellation)?;
 
@@ -1706,6 +1719,7 @@ impl Linker {
                 }
 
                 let align = section.align.max(1);
+                data_align = data_align.max(align);
                 let aligned = align_up(data.len() as u64, align) as usize;
                 pad_to_with_cancellation(&mut data, aligned, ZERO_FILL, cancellation)?;
 
@@ -1727,7 +1741,6 @@ impl Linker {
 
         // Zero-initialized data. It occupies no file bytes, so only its size
         // and each section's offset within the region are tracked here.
-        let mut max_bss_align: u64 = 1;
         for (obj_idx, obj) in self.objects.iter().enumerate() {
             check_cancellation(cancellation)?;
             for (sec_idx, section) in obj.sections.iter().enumerate() {
@@ -1736,7 +1749,7 @@ impl Linker {
                 }
 
                 let align = section.align.max(1);
-                max_bss_align = max_bss_align.max(align);
+                bss_align = bss_align.max(align);
                 bss_size = align_up(bss_size, align);
 
                 section_offsets.insert((obj_idx, sec_idx), bss_size);
@@ -1756,7 +1769,8 @@ impl Linker {
         // growing the buffer keeps all three in agreement. The padding costs
         // those bytes in the file, which is what buys the alignment.
         if bss_size > 0 {
-            let base_align = max_bss_align.max(policy.bss_base_min_align);
+            let base_align = bss_align.max(policy.bss_base_min_align);
+            bss_align = base_align;
             let aligned = align_up(data.len() as u64, base_align) as usize;
             pad_to_with_cancellation(&mut data, aligned, ZERO_FILL, cancellation)?;
         }
@@ -1766,6 +1780,10 @@ impl Linker {
             rodata,
             data,
             bss_size,
+            text_align,
+            rodata_align,
+            data_align,
+            bss_align,
             section_offsets,
             pending,
         })
@@ -2159,11 +2177,6 @@ impl Linker {
         const HEADER_SIZE: u64 =
             (ELF64_EHDR_SIZE as u64) + (ELF64_PHDR_SIZE as u64) * MAX_PROGRAM_HEADERS;
 
-        // Code starts right after headers. For ELF loading to work,
-        // (vaddr % page_size) must equal (file_offset % page_size).
-        // With code at file offset HEADER_SIZE, we set vaddr accordingly.
-        let code_start = self.base_addr + HEADER_SIZE;
-
         // Section merge, segment addresses, and symbol resolution are one
         // layout phase; relocation and image serialization follow it. The
         // guards are dropped at those boundaries so the three phases are
@@ -2173,6 +2186,14 @@ impl Linker {
         let policy = LayoutPolicy::for_target(self.target);
         let mut image = self.merge_sections(&policy, cancellation)?;
 
+        // Code starts after the reserved headers, rounded so the first text
+        // section's absolute address honors the strictest input alignment.
+        // Keep the virtual/file relationship constant at `base_addr`; the
+        // target base is page-aligned, so every PT_LOAD below retains the ELF
+        // p_offset/p_vaddr congruence requirement.
+        let code_vaddr = align_up(self.base_addr + HEADER_SIZE, image.text_align);
+        let code_file_offset = code_vaddr - self.base_addr;
+
         // The merge padded the initialized data up to the bss base alignment,
         // so bss starts exactly at its end.
         let bss_offset_in_data = image.data.len() as u64;
@@ -2181,12 +2202,15 @@ impl Linker {
         let has_rodata = !image.rodata.is_empty();
         let has_data_segment = !image.data.is_empty() || image.bss_size > 0;
 
-        // Virtual addresses - calculate with page alignment between segments
-        let code_vaddr = code_start;
+        // Virtual addresses - calculate with page alignment between segments,
+        // plus each region's strictest input alignment.
         let code_size = image.text.len() as u64;
 
         // Rodata starts on the next page boundary after code for W^X protection
-        let rodata_vaddr = align_up(code_vaddr + code_size, self.page_size);
+        let rodata_vaddr = align_up(
+            code_vaddr + code_size,
+            self.page_size.max(image.rodata_align),
+        );
 
         // Calculate data segment layout
         // The data segment starts after rodata (or code if no rodata), page-aligned
@@ -2197,7 +2221,16 @@ impl Linker {
             } else {
                 code_vaddr + code_size
             };
-            align_up(preceding_end, self.page_size)
+            align_up(
+                preceding_end,
+                self.page_size
+                    .max(image.data_align)
+                    .max(if image.bss_size > 0 {
+                        image.bss_align
+                    } else {
+                        1
+                    }),
+            )
         } else {
             0 // Not used
         };
@@ -2232,16 +2265,17 @@ impl Linker {
         //   [Program Header 1: .text (R+X)]
         //   [Program Header 2: .rodata (R)]       -- only if rodata exists
         //   [Program Header 3: .data+.bss (R+W)]  -- only if data/bss exists
+        //   [padding to aligned text file offset]
         //   [.text section data]
-        //   [padding to page boundary]            -- only if rodata exists
+        //   [padding to aligned rodata file offset] -- only if rodata exists
         //   [.rodata section data]
-        //   [padding to page boundary]            -- only if data exists
+        //   [padding to aligned data file offset]   -- only if data exists
         //   [.data section data]
         //
         // Memory layout:
-        //   0x400000 + header_size: .text (R+X)
-        //   next page boundary: .rodata (R)       -- only if rodata exists
-        //   next page boundary: .data+.bss (R+W)  -- only if data/bss exists
+        //   aligned base + header space: .text (R+X)
+        //   aligned boundary: .rodata (R)       -- only if rodata exists
+        //   aligned boundary: .data+.bss (R+W)  -- only if data/bss exists
 
         let MergedImage {
             text: merged_text,
@@ -2255,13 +2289,11 @@ impl Linker {
         let num_program_headers: u16 =
             1 + if has_rodata { 1 } else { 0 } + if has_data_segment { 1 } else { 0 };
 
-        // File offsets
-        let code_file_offset = HEADER_SIZE;
-
         let rodata_file_offset = if has_rodata {
-            // Rodata needs to start on a page boundary in the file so that
-            // (vaddr % page_size) == (file_offset % page_size)
-            align_up(HEADER_SIZE + code_size, self.page_size)
+            // All segment addresses are derived from the same page-aligned
+            // base, so using the corresponding virtual address gives both the
+            // requested section alignment and PT_LOAD congruence.
+            rodata_vaddr - self.base_addr
         } else {
             0 // unused
         };
@@ -2270,14 +2302,14 @@ impl Linker {
         let code_rodata_file_end = if has_rodata {
             rodata_file_offset + merged_rodata.len() as u64
         } else {
-            HEADER_SIZE + code_size
+            code_file_offset + code_size
         };
 
-        // Data segment file offset must satisfy: (p_offset % p_align) == (p_vaddr % p_align)
-        // Since data_vaddr is page-aligned and we want file offset to be page-aligned too,
-        // we pad the file to the next page boundary after code+rodata.
+        // Data segment file offset follows its virtual address from the shared
+        // base, satisfying `(p_offset % p_align) == (p_vaddr % p_align)` while
+        // retaining data and bss section alignment.
         let data_file_offset = if has_data_segment {
-            align_up(code_rodata_file_end, self.page_size)
+            data_vaddr - self.base_addr
         } else {
             0
         };
@@ -2359,17 +2391,11 @@ impl Linker {
             elf.extend_from_slice(&self.page_size.to_le_bytes()); // p_align
         }
 
-        // Pad to the reserved code file offset before writing .text. The text
-        // PT_LOAD's p_offset, code_vaddr, and e_entry all reserve HEADER_SIZE
-        // (space for the maximum number of program headers), but only
-        // num_program_headers were actually written above. Without this pad a
-        // link with fewer than the reserved number of LOAD segments would place
-        // .text at a smaller file offset than its header advertises — a corrupt,
-        // non-loadable executable (and it must be *padded*, not shrunk, because
-        // the ELF rule p_offset % page == p_vaddr % page is baked into
-        // code_vaddr). Real compiles always emit 3 segments, so this was latent;
-        // it is reachable via the Linker API with a code-only / code+rodata
-        // object.
+        // Pad to the reserved and alignment-rounded code file offset before
+        // writing .text. Only num_program_headers were written above, so the
+        // gap is needed for both reduced-segment links and over-page section
+        // alignment; it must be padded rather than shrunk because the ELF
+        // p_offset/p_vaddr congruence is baked into code_vaddr.
         if (elf.len() as u64) < code_file_offset {
             pad_to_with_cancellation(&mut elf, code_file_offset as usize, ZERO_FILL, cancellation)?;
         }
@@ -3148,9 +3174,10 @@ mod tests {
     fn test_code_only_link_text_at_advertised_offset() {
         // A code-only object links to fewer than the reserved number of LOAD
         // segments. The text PT_LOAD's p_offset reserves the max-header
-        // HEADER_SIZE, so the .text bytes must be *padded* to sit at that offset
-        // rather than immediately after the (fewer) written headers — otherwise
-        // the executable is corrupt. Regression for the rue-linker review finding.
+        // HEADER_SIZE (and may include further section-alignment padding), so
+        // the .text bytes must be *padded* to sit at that offset rather than
+        // immediately after the (fewer) written headers — otherwise the
+        // executable is corrupt. Regression for the rue-linker review finding.
         let code = vec![0xB8, 0x2A, 0x00, 0x00, 0x00, 0xC3]; // mov eax, 42; ret
         let obj_bytes = ObjectBuilder::new(ELF_TARGET, "main")
             .code(code.clone())
@@ -3285,6 +3312,17 @@ mod tests {
                 (p_flags, p_offset, p_vaddr)
             })
             .collect()
+    }
+
+    /// Return the advertised file offset and virtual address of merged text.
+    /// ELF may reserve alignment padding between the headers and text, so
+    /// tests must follow the PT_LOAD metadata rather than assuming 232 bytes.
+    fn elf_text_location(elf: &[u8]) -> (usize, u64) {
+        let (_, file_offset, virtual_address) = parse_program_headers(elf)
+            .into_iter()
+            .find(|(flags, ..)| *flags == (PF_R | PF_X))
+            .expect("R+X text segment");
+        (file_offset as usize, virtual_address)
     }
 
     /// Hand-build an object with a `.text` (main: ret) plus one extra section
@@ -3423,7 +3461,7 @@ mod tests {
         let elf = linker.link("main").unwrap();
 
         let phdrs = parse_program_headers(&elf);
-        let (_, text_off, text_vaddr) = phdrs
+        let (_, _, text_vaddr) = phdrs
             .iter()
             .copied()
             .find(|(f, ..)| *f == (PF_R | PF_X))
@@ -3436,7 +3474,7 @@ mod tests {
 
         // main is the first byte of merged text; its vaddr is where the R+X
         // segment maps its file content. Code starts at text_off within it.
-        let main_vaddr = text_vaddr + (TEST_EHDR_SIZE + 3 * TEST_PHDR_SIZE) as u64 - text_off;
+        let main_vaddr = text_vaddr;
         let slot = u64::from_le_bytes(
             elf[ro_off as usize..ro_off as usize + 8]
                 .try_into()
@@ -3458,7 +3496,7 @@ mod tests {
         let elf = linker.link("main").unwrap();
 
         let phdrs = parse_program_headers(&elf);
-        let (_, text_off, text_vaddr) = phdrs
+        let (_, _, text_vaddr) = phdrs
             .iter()
             .copied()
             .find(|(f, ..)| *f == (PF_R | PF_X))
@@ -3469,7 +3507,7 @@ mod tests {
             .find(|(f, ..)| *f == (PF_R | PF_W))
             .expect("RW data segment");
 
-        let main_vaddr = text_vaddr + (TEST_EHDR_SIZE + 3 * TEST_PHDR_SIZE) as u64 - text_off;
+        let main_vaddr = text_vaddr;
         let slot = u64::from_le_bytes(
             elf[data_off as usize..data_off as usize + 8]
                 .try_into()
@@ -5324,8 +5362,8 @@ mod tests {
         let elf = linker.link("main").unwrap();
 
         // Find the code section (after headers)
-        let header_size = TEST_EHDR_SIZE + 3 * TEST_PHDR_SIZE;
-        let code = &elf[header_size..];
+        let (code_offset, _) = elf_text_location(&elf);
+        let code = &elf[code_offset..];
 
         // The instruction should now be LEA (8D) instead of MOV (8B)
         // Layout: REX.W (48) + opcode + ModR/M + disp32
@@ -5369,8 +5407,8 @@ mod tests {
 
         let elf = linker.link("main").unwrap();
 
-        let header_size = TEST_EHDR_SIZE + 3 * TEST_PHDR_SIZE;
-        let code = &elf[header_size..];
+        let (code_offset, _) = elf_text_location(&elf);
+        let code = &elf[code_offset..];
 
         // The instruction should now be LEA (8D) instead of MOV (8B)
         assert_eq!(
@@ -5415,8 +5453,8 @@ mod tests {
 
         let elf = linker.link("main").unwrap();
 
-        let header_size = TEST_EHDR_SIZE + 3 * TEST_PHDR_SIZE;
-        let code = &elf[header_size..];
+        let (code_offset, _) = elf_text_location(&elf);
+        let code = &elf[code_offset..];
 
         // The indirect call should be transformed to: addr32 prefix + direct call
         // FF 15 -> 67 E8 (addr32 prefix makes this a 2-byte replacement)
@@ -5466,8 +5504,8 @@ mod tests {
 
         let elf = linker.link("main").unwrap();
 
-        let header_size = TEST_EHDR_SIZE + 3 * TEST_PHDR_SIZE;
-        let code = &elf[header_size..];
+        let (code_offset, _) = elf_text_location(&elf);
+        let code = &elf[code_offset..];
 
         // REX prefix is preserved, FF 15 becomes 67 E8
         assert_eq!(code[0], 0x48, "REX.W prefix should be preserved");
@@ -5511,8 +5549,8 @@ mod tests {
 
         let elf = linker.link("main").unwrap();
 
-        let header_size = TEST_EHDR_SIZE + 3 * TEST_PHDR_SIZE;
-        let code = &elf[header_size..];
+        let (code_offset, _) = elf_text_location(&elf);
+        let code = &elf[code_offset..];
 
         // Verify LEA transformation preserves the register encoding
         assert_eq!(code[0], 0x48, "REX.W prefix should be preserved");
@@ -5552,8 +5590,8 @@ mod tests {
 
         let elf = linker.link("main").unwrap();
 
-        let header_size = TEST_EHDR_SIZE + 3 * TEST_PHDR_SIZE;
-        let code = &elf[header_size..];
+        let (code_offset, _) = elf_text_location(&elf);
+        let code = &elf[code_offset..];
 
         // For static linking, GotPcRel should be relaxed just like GotPcRelX:
         // MOV (8B) -> LEA (8D)
@@ -5867,11 +5905,9 @@ mod tests {
         linker.add_object(obj1).unwrap();
         let elf = linker.link("main").unwrap();
 
-        // Code is written right after the (single, text-only) program header
-        // in the FILE, but virtual addresses are always computed assuming the
-        // maximum 3 program headers.
-        let code_off = TEST_EHDR_SIZE + 3 * TEST_PHDR_SIZE;
-        let code_vaddr = 0x400000 + (TEST_EHDR_SIZE + 3 * TEST_PHDR_SIZE) as u64;
+        // Follow the text PT_LOAD's advertised file offset; it may include
+        // alignment padding before the merged code.
+        let (code_off, code_vaddr) = elf_text_location(&elf);
         // obj0 .text at merged offset 0; obj1 .text at 32 (24 aligned to 16).
         assert_eq!(
             read_u64_at(&elf, code_off + 8),
@@ -6778,6 +6814,248 @@ mod tests {
         );
         assert_eq!(addr8 % 8, 0, "8-aligned bss symbol at {addr8:#x}");
         assert_eq!(addr16 % 16, 0, "16-aligned bss symbol at {addr16:#x}");
+    }
+
+    /// An over-page section alignment applies to the absolute address of the
+    /// section, not only to its offset in the merged region. Exercise every
+    /// ELF region on both Linux architectures, including the initialized-data
+    /// padding that carries the bss base alignment.
+    #[test]
+    fn elf_overpage_section_alignment_reaches_every_region() {
+        const ALIGN: u64 = 0x1_0000;
+
+        for (target, machine, abs64) in [
+            (
+                Target::X86_64Linux,
+                crate::elf::ElfMachine::X86_64,
+                RelocationType::Abs64,
+            ),
+            (
+                Target::Aarch64Linux,
+                crate::elf::ElfMachine::Aarch64,
+                RelocationType::Aarch64Abs64,
+            ),
+        ] {
+            let text = Section {
+                name: ".text".into(),
+                data: vec![0; 32].into(),
+                size: 32,
+                flags: SectionFlags::ALLOC | SectionFlags::EXEC,
+                relocations: vec![
+                    Relocation {
+                        offset: 0,
+                        symbol_index: 0,
+                        rel_type: abs64,
+                        addend: 0,
+                    },
+                    Relocation {
+                        offset: 8,
+                        symbol_index: 1,
+                        rel_type: abs64,
+                        addend: 0,
+                    },
+                    Relocation {
+                        offset: 16,
+                        symbol_index: 2,
+                        rel_type: abs64,
+                        addend: 0,
+                    },
+                    Relocation {
+                        offset: 24,
+                        symbol_index: 3,
+                        rel_type: abs64,
+                        addend: 0,
+                    },
+                ],
+                align: ALIGN,
+            };
+            let rodata = Section {
+                name: ".rodata".into(),
+                data: vec![0xA1; 8].into(),
+                size: 8,
+                flags: SectionFlags::ALLOC,
+                relocations: Vec::new(),
+                align: ALIGN,
+            };
+            let data = Section {
+                name: ".data".into(),
+                data: vec![0xB2; 8].into(),
+                size: 8,
+                flags: SectionFlags::ALLOC | SectionFlags::WRITE,
+                relocations: Vec::new(),
+                align: ALIGN,
+            };
+            let bss = Section {
+                name: ".bss".into(),
+                data: Vec::new().into(),
+                size: 8,
+                flags: SectionFlags::ALLOC | SectionFlags::WRITE,
+                relocations: Vec::new(),
+                align: ALIGN,
+            };
+            let object = make_obj(
+                machine,
+                vec![text, rodata, data, bss],
+                vec![
+                    sym("main", Some(0), 0, SymbolBinding::Global),
+                    sym("rodata", Some(1), 0, SymbolBinding::Global),
+                    sym("data", Some(2), 0, SymbolBinding::Global),
+                    sym("bss", Some(3), 0, SymbolBinding::Global),
+                    // Keep the relocation indices above stable while making
+                    // the entry point the first text symbol.
+                ],
+            );
+
+            let mut linker = Linker::new(target);
+            linker.add_object(object).unwrap();
+            let elf = linker.link("main").unwrap();
+
+            let (text_off, text_vaddr) = elf_text_location(&elf);
+            let (_, rodata_off, rodata_vaddr) = parse_program_headers(&elf)
+                .into_iter()
+                .find(|(flags, ..)| *flags == PF_R)
+                .expect("R-only rodata segment");
+            let (_, data_off, data_vaddr) = parse_program_headers(&elf)
+                .into_iter()
+                .find(|(flags, ..)| *flags == (PF_R | PF_W))
+                .expect("RW data segment");
+
+            assert_eq!(text_vaddr % ALIGN, 0, "text address {text_vaddr:#x}");
+            assert_eq!(rodata_vaddr % ALIGN, 0, "rodata address {rodata_vaddr:#x}");
+            assert_eq!(data_vaddr % ALIGN, 0, "data address {data_vaddr:#x}");
+
+            let main_addr = read_u64_at(&elf, text_off);
+            let rodata_addr = read_u64_at(&elf, text_off + 8);
+            let data_addr = read_u64_at(&elf, text_off + 16);
+            let bss_addr = read_u64_at(&elf, text_off + 24);
+            assert_eq!(main_addr, text_vaddr);
+            assert_eq!(rodata_addr, rodata_vaddr);
+            assert_eq!(data_addr, data_vaddr);
+            assert_eq!(bss_addr % ALIGN, 0, "bss address {bss_addr:#x}");
+            assert!(bss_addr >= data_vaddr + ALIGN);
+            assert_eq!(&elf[rodata_off as usize..][..8], &[0xA1; 8]);
+            assert_eq!(&elf[data_off as usize..][..8], &[0xB2; 8]);
+
+            // Every PT_LOAD remains congruent at the target's page size, and
+            // its file extent stays within the emitted image.
+            let e_phoff = u64::from_le_bytes(elf[0x20..0x28].try_into().unwrap()) as usize;
+            let e_phnum = u16::from_le_bytes(elf[0x38..0x3A].try_into().unwrap()) as usize;
+            for index in 0..e_phnum {
+                let ph = &elf[e_phoff + index * TEST_PHDR_SIZE..];
+                let p_type = u32::from_le_bytes(ph[0..4].try_into().unwrap());
+                if p_type != PT_LOAD {
+                    continue;
+                }
+                let p_offset = u64::from_le_bytes(ph[8..16].try_into().unwrap());
+                let p_vaddr = u64::from_le_bytes(ph[16..24].try_into().unwrap());
+                let p_align = u64::from_le_bytes(ph[48..56].try_into().unwrap());
+                let p_filesz = u64::from_le_bytes(ph[32..40].try_into().unwrap());
+                let p_memsz = u64::from_le_bytes(ph[40..48].try_into().unwrap());
+                assert!(p_align >= target.page_size());
+                assert_eq!(p_offset % p_align, p_vaddr % p_align);
+                assert!(p_filesz <= p_memsz);
+                assert!(p_offset + p_filesz <= elf.len() as u64);
+            }
+        }
+    }
+
+    /// Segment presence must not change the alignment contract. In particular,
+    /// a code-only image and images with just one writable or read-only region
+    /// still derive their file offsets from the aligned virtual layout.
+    #[test]
+    fn elf_alignment_layout_handles_each_segment_combination() {
+        const OVERPAGE: u64 = 0x1_0000;
+        let cases = [
+            // text only: the header itself is not a valid text base
+            (vec![(".text", 3_u64, OVERPAGE)], None),
+            // text + rodata: only rodata asks for an over-page base
+            (
+                vec![(".text", 3, 16), (".rodata", 8, OVERPAGE)],
+                Some((PF_R, OVERPAGE)),
+            ),
+            // text + initialized data: data alignment must affect both VM and file offsets
+            (
+                vec![(".text", 3, 4), (".data", 8, OVERPAGE)],
+                Some((PF_R | PF_W, OVERPAGE)),
+            ),
+            // text + bss: bss alignment is carried by padded initialized-data extent
+            (
+                vec![(".text", 3, 4), (".bss", 8, OVERPAGE)],
+                Some((PF_R | PF_W, OVERPAGE)),
+            ),
+        ];
+
+        for (section_specs, expected_segment) in cases {
+            let target = Target::X86_64Linux;
+            let sections = section_specs
+                .iter()
+                .map(|&(name, size, align)| Section {
+                    name: name.into(),
+                    data: if name == ".bss" {
+                        Vec::new().into()
+                    } else {
+                        vec![0xCD; size as usize].into()
+                    },
+                    size,
+                    flags: if name == ".text" {
+                        SectionFlags::ALLOC | SectionFlags::EXEC
+                    } else if name == ".data" || name == ".bss" {
+                        SectionFlags::ALLOC | SectionFlags::WRITE
+                    } else {
+                        SectionFlags::ALLOC
+                    },
+                    relocations: Vec::new(),
+                    align,
+                })
+                .collect();
+            let object = make_obj(
+                crate::elf::ElfMachine::X86_64,
+                sections,
+                vec![sym("main", Some(0), 0, SymbolBinding::Global)],
+            );
+
+            let mut linker = Linker::new(target);
+            linker.add_object(object).unwrap();
+            let elf = linker.link("main").unwrap();
+            let text = parse_program_headers(&elf)
+                .into_iter()
+                .find(|(flags, ..)| *flags == (PF_R | PF_X))
+                .expect("text segment");
+            let entry = u64::from_le_bytes(elf[24..32].try_into().unwrap());
+            assert_eq!(entry, text.2, "entry must point at merged text");
+
+            let e_phoff = u64::from_le_bytes(elf[0x20..0x28].try_into().unwrap()) as usize;
+            let e_phnum = u16::from_le_bytes(elf[0x38..0x3A].try_into().unwrap()) as usize;
+            let mut expected_seen = false;
+            for index in 0..e_phnum {
+                let ph = &elf[e_phoff + index * TEST_PHDR_SIZE..];
+                let p_type = u32::from_le_bytes(ph[0..4].try_into().unwrap());
+                if p_type != PT_LOAD {
+                    continue;
+                }
+                let p_flags = u32::from_le_bytes(ph[4..8].try_into().unwrap());
+                let p_offset = u64::from_le_bytes(ph[8..16].try_into().unwrap());
+                let p_vaddr = u64::from_le_bytes(ph[16..24].try_into().unwrap());
+                let p_filesz = u64::from_le_bytes(ph[32..40].try_into().unwrap());
+                let p_memsz = u64::from_le_bytes(ph[40..48].try_into().unwrap());
+                let p_align = u64::from_le_bytes(ph[48..56].try_into().unwrap());
+                assert_eq!(p_offset % p_align, p_vaddr % p_align);
+                assert!(p_filesz <= p_memsz);
+                assert!(p_offset + p_filesz <= elf.len() as u64);
+                if let Some((flags, alignment)) = expected_segment {
+                    if p_flags == flags {
+                        assert_eq!(p_vaddr % alignment, 0);
+                        expected_seen = true;
+                        if flags == (PF_R | PF_W) && section_specs.iter().any(|s| s.0 == ".bss") {
+                            assert_eq!((p_vaddr + p_filesz) % alignment, 0);
+                        }
+                    }
+                }
+            }
+            if expected_segment.is_some() {
+                assert!(expected_seen, "expected segment was not emitted");
+            }
+        }
     }
 
     #[test]
