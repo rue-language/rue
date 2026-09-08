@@ -48,6 +48,8 @@ use crate::constants::{
     N_SECT,
     N_TYPE,
     N_UNDF,
+    N_WEAK_DEF,
+    N_WEAK_REF,
     R_AARCH64_ABS64,
     R_AARCH64_ADD_ABS_LO12_NC,
     R_AARCH64_ADR_PREL_PG_HI21,
@@ -1097,6 +1099,7 @@ impl ObjectFile {
                 let n_strx = read_u32(data, sym_offset) as usize;
                 let n_type = data[sym_offset + 4];
                 let n_sect = data[sym_offset + 5];
+                let n_desc = read_u16(data, sym_offset + 6);
                 let n_value = read_u64(data, sym_offset + 8);
 
                 // Read symbol name from string table
@@ -1118,17 +1121,6 @@ impl ObjectFile {
                 // collapsed "_foo" and "__foo" onto the same "__foo" symbol.
                 name = crate::util::strip_macho_underscore(&name).to_string();
 
-                // Determine binding (external or local)
-                // N_PEXT (0x10) makes a symbol private even if N_EXT is set
-                // Private external symbols should be treated as local to avoid duplicate symbol errors
-                let binding = if n_type & N_EXT != 0 && n_type & 0x10 == 0 {
-                    // External but not private -> Global
-                    SymbolBinding::Global
-                } else {
-                    // Local or private external -> Local
-                    SymbolBinding::Local
-                };
-
                 // Determine if symbol is defined (has a section) or undefined
                 let sym_type_bits = n_type & N_TYPE;
                 let section_index = if sym_type_bits == N_SECT && n_sect > 0 {
@@ -1140,6 +1132,25 @@ impl ObjectFile {
                     None // Absolute symbol (no section)
                 } else {
                     None
+                };
+
+                // N_PEXT marks a private-external symbol, which remains
+                // visible while linking the object and its archive peers. It
+                // is still an external symbol for resolution; only symbols
+                // without N_EXT are object-local. Weakness uses different
+                // descriptor bits for definitions and references (Apple's
+                // nlist.h): N_WEAK_DEF applies to defined symbols and
+                // N_WEAK_REF applies to undefined symbols.
+                let binding = if n_type & N_EXT == 0 {
+                    SymbolBinding::Local
+                } else if (section_index.is_some() && n_desc & N_WEAK_DEF != 0)
+                    || (section_index.is_none()
+                        && sym_type_bits == N_UNDF
+                        && n_desc & N_WEAK_REF != 0)
+                {
+                    SymbolBinding::Weak
+                } else {
+                    SymbolBinding::Global
                 };
 
                 // Determine symbol type based on section flags
@@ -1839,6 +1850,8 @@ impl ObjectFile {
 
 #[cfg(test)]
 mod tests {
+    use crate::constants::N_PEXT;
+
     use super::*;
     use crate::constants::{EI_CLASS, EI_DATA, EI_VERSION, ELF64_SHDR_SIZE as TEST_SHDR_SIZE};
 
@@ -2090,6 +2103,8 @@ mod tests {
         n_type: u8,
         /// 1-indexed section number (0 = NO_SECT).
         n_sect: u8,
+        /// Symbol descriptor bits, including weak definition/reference flags.
+        n_desc: u16,
         n_value: u64,
     }
 
@@ -2211,7 +2226,7 @@ mod tests {
             buf.extend_from_slice(&(name_offsets[i] as u32).to_le_bytes());
             buf.push(sym.n_type);
             buf.push(sym.n_sect);
-            buf.extend_from_slice(&0_u16.to_le_bytes());
+            buf.extend_from_slice(&sym.n_desc.to_le_bytes());
             buf.extend_from_slice(&sym.n_value.to_le_bytes());
         }
         // String table
@@ -2238,6 +2253,7 @@ mod tests {
                 name: "_foo",
                 n_type: N_EXT | N_UNDF,
                 n_sect: 0,
+                n_desc: 0,
                 n_value: 0,
             }],
         );
@@ -2278,6 +2294,7 @@ mod tests {
                 name: "_foo",
                 n_type: N_EXT | N_UNDF,
                 n_sect: 0,
+                n_desc: 0,
                 n_value: 0,
             }],
         );
@@ -2324,6 +2341,7 @@ mod tests {
                 name: "_main",
                 n_type: N_EXT | N_SECT,
                 n_sect: 1,
+                n_desc: 0,
                 n_value: 0,
             }],
         );
@@ -2380,6 +2398,7 @@ mod tests {
                     name: "_main",
                     n_type: N_EXT | N_SECT,
                     n_sect: 1,
+                    n_desc: 0,
                     n_value: 0,
                 },
                 // A LOCAL symbol at offset 0 of __cstring (n_value is the
@@ -2388,6 +2407,7 @@ mod tests {
                     name: "l_str",
                     n_type: N_SECT,
                     n_sect: 2,
+                    n_desc: 0,
                     n_value: 0x10,
                 },
             ],
@@ -2436,12 +2456,14 @@ mod tests {
                     name: "_main",
                     n_type: N_EXT | N_SECT,
                     n_sect: 1,
+                    n_desc: 0,
                     n_value: 4, // 4 into __text (addr 0)
                 },
                 TestMachoSymbol {
                     name: "_str",
                     n_type: N_SECT, // local
                     n_sect: 2,
+                    n_desc: 0,
                     n_value: 0x10 + 5, // 5 into __cstring (addr 0x10)
                 },
             ],
@@ -2458,6 +2480,121 @@ mod tests {
         assert_eq!(s.binding, SymbolBinding::Local);
     }
 
+    /// Mach-O's external and weak visibility bits must survive both parser
+    /// depths because archive indexing uses the symbols-only path while the
+    /// selected member later goes through the full path.
+    #[test]
+    fn test_macho_symbol_bindings_match_at_both_parse_depths() {
+        let obj_bytes = build_test_macho(
+            &[TestMachoSection {
+                sectname: "__text",
+                segname: "__TEXT",
+                addr: 0,
+                data: vec![0u8; 16],
+                relocs: vec![],
+            }],
+            &[
+                TestMachoSymbol {
+                    name: "_global",
+                    n_type: N_EXT | N_SECT,
+                    n_sect: 1,
+                    n_desc: 0,
+                    n_value: 0,
+                },
+                TestMachoSymbol {
+                    name: "_private",
+                    n_type: N_EXT | N_PEXT | N_SECT,
+                    n_sect: 1,
+                    n_desc: 0,
+                    n_value: 4,
+                },
+                TestMachoSymbol {
+                    name: "local",
+                    n_type: N_SECT,
+                    n_sect: 1,
+                    n_desc: 0,
+                    n_value: 8,
+                },
+                TestMachoSymbol {
+                    name: "_weak_def",
+                    n_type: N_EXT | N_SECT,
+                    n_sect: 1,
+                    n_desc: N_WEAK_DEF,
+                    n_value: 12,
+                },
+                TestMachoSymbol {
+                    name: "_weak_ref",
+                    n_type: N_EXT | N_UNDF,
+                    n_sect: 0,
+                    n_desc: N_WEAK_REF,
+                    n_value: 0,
+                },
+                TestMachoSymbol {
+                    name: "_strong_ref",
+                    n_type: N_EXT | N_UNDF,
+                    n_sect: 0,
+                    n_desc: 0,
+                    n_value: 0,
+                },
+                TestMachoSymbol {
+                    name: "_weak_def_ref",
+                    n_type: N_EXT | N_UNDF,
+                    n_sect: 0,
+                    n_desc: N_WEAK_DEF,
+                    n_value: 0,
+                },
+                TestMachoSymbol {
+                    name: "_weak_ref_def",
+                    n_type: N_EXT | N_SECT,
+                    n_sect: 1,
+                    n_desc: N_WEAK_REF,
+                    n_value: 0,
+                },
+                TestMachoSymbol {
+                    name: "_local_weak",
+                    n_type: N_SECT,
+                    n_sect: 1,
+                    n_desc: N_WEAK_DEF,
+                    n_value: 4,
+                },
+                TestMachoSymbol {
+                    name: "_private_weak",
+                    n_type: N_EXT | N_PEXT | N_SECT,
+                    n_sect: 1,
+                    n_desc: N_WEAK_DEF,
+                    n_value: 8,
+                },
+            ],
+        );
+
+        let full = ObjectFile::parse(&obj_bytes).expect("full parse");
+        let symbols_only = ObjectFile::parse_symbols_with_cancellation(&obj_bytes, || false)
+            .expect("symbols-only parse");
+        assert_eq!(full.symbols.len(), symbols_only.symbols.len());
+        for (full, indexed) in full.symbols.iter().zip(symbols_only.symbols.iter()) {
+            assert_eq!(full.name, indexed.name);
+            assert_eq!(full.section_index, indexed.section_index);
+            assert_eq!(full.value, indexed.value);
+            assert_eq!(full.binding, indexed.binding);
+        }
+
+        let binding = |name: &str| {
+            full.find_symbol(name)
+                .unwrap_or_else(|| panic!("missing Mach-O symbol {name}"))
+                .binding
+        };
+        assert_eq!(binding("global"), SymbolBinding::Global);
+        assert_eq!(binding("private"), SymbolBinding::Global);
+        assert_eq!(binding("local"), SymbolBinding::Local);
+        assert_eq!(binding("weak_def"), SymbolBinding::Weak);
+        assert_eq!(binding("weak_ref"), SymbolBinding::Weak);
+        assert_eq!(binding("strong_ref"), SymbolBinding::Global);
+        assert_eq!(binding("weak_def_ref"), SymbolBinding::Global);
+        assert_eq!(binding("weak_ref_def"), SymbolBinding::Global);
+        assert_eq!(binding("local_weak"), SymbolBinding::Local);
+        assert_eq!(binding("private_weak"), SymbolBinding::Weak);
+    }
+
     #[test]
     fn test_macho_symbol_value_below_section_address_is_rejected() {
         let obj_bytes = build_test_macho(
@@ -2472,6 +2609,7 @@ mod tests {
                 name: "_bad",
                 n_type: N_EXT | N_SECT,
                 n_sect: 1,
+                n_desc: 0,
                 n_value: 0x0f,
             }],
         );

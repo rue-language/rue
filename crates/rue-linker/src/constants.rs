@@ -295,6 +295,10 @@ pub const PLATFORM_MACOS: u32 = 1;
 pub const N_EXT: u8 = 0x01;
 /// N_PEXT: Private external symbol (visible for linking but not exported)
 pub const N_PEXT: u8 = 0x10;
+/// N_WEAK_REF: Undefined symbol is a weak reference
+pub const N_WEAK_REF: u16 = 0x0040;
+/// N_WEAK_DEF: Defined symbol is a weak definition
+pub const N_WEAK_DEF: u16 = 0x0080;
 /// N_TYPE: Mask for the type bits in n_type
 pub const N_TYPE: u8 = 0x0E;
 /// N_SECT: Symbol defined in section (type, not flag)

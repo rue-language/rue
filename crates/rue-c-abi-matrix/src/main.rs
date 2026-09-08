@@ -34,6 +34,7 @@
 //! `requires_system_linker` cases follow.
 
 mod grid;
+mod linker_regressions;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -278,6 +279,7 @@ fn main() {
         trials.push(trial(Direction::Import, explicit));
         trials.push(trial(Direction::Export, explicit));
     }
+    trials.extend(linker_regressions::trials());
 
     Harness::with_env().discover(trials).main();
 }
