@@ -11,6 +11,10 @@ thread_local! {
     static FINISH_ARITH_OPERATIONS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static METHOD_FAILURES: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
     static TYPE_RESOLUTION_CALLS: Cell<usize> = const { Cell::new(0) };
+    static PROJECTED_TYPE_MAPS: RefCell<Option<Vec<(
+        AHashMap<FakeName, FakeType>,
+        AHashMap<FakeName, FakeValue>,
+    )>>> = const { RefCell::new(None) };
     static CHECKPOINTS: Cell<usize> = const { Cell::new(0) };
     static ABORT_AT_CHECKPOINT: Cell<Option<usize>> = const { Cell::new(None) };
     static EVALUATE_RHS_AFTER_REJECTION: Cell<bool> = const { Cell::new(true) };
@@ -1097,6 +1101,29 @@ fn local_capture_substitution_removes_the_shadowed_opposite_map() {
 }
 
 #[test]
+fn staged_capture_projection_preserves_nearest_runtime_or_type_binding() {
+    let name = FakeName { ordinal: 12 };
+    let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+    env.type_subst.insert(name.clone(), FakeType(1));
+    env.value_subst.insert(name.clone(), FakeValue::Integer(2));
+    env.local_binding_capture = Some(std::sync::Arc::new({
+        let name = name.clone();
+        move || vec![(name.clone(), ComptimeLocalBinding::Runtime)]
+    }));
+    let (types, values) = env.substs_with_locals();
+    assert!(!types.contains_key(&name));
+    assert!(!values.contains_key(&name));
+
+    env.local_binding_capture = Some(std::sync::Arc::new({
+        let name = name.clone();
+        move || vec![(name.clone(), ComptimeLocalBinding::Type(FakeType(3)))]
+    }));
+    let (types, values) = env.substs_with_locals();
+    assert_eq!(types.get(&name), Some(&FakeType(3)));
+    assert!(!values.contains_key(&name));
+}
+
+#[test]
 fn anonymous_struct_and_enum_hooks_receive_disjoint_type_and_value_captures() {
     let mut struct_editor = rue_rir::RirEditor::new();
     let struct_root = struct_editor
@@ -2009,13 +2036,18 @@ impl ComptimeStructuredTypes for FakeHost {
         &mut self,
         _program: &Self::ProgramKey,
         _syntax: rue_rir::RirTypeSyntaxRef,
-        _types: &AHashMap<Self::Name, Self::Type>,
-        _values: &AHashMap<Self::Name, Self::Value>,
+        types: &AHashMap<Self::Name, Self::Type>,
+        values: &AHashMap<Self::Name, Self::Value>,
         _span: Span,
     ) -> ComptimeOutcome<
         ComptimeStructuredTypeResolution<Self::Type, Self::StructuredTypeSuspension>,
         Self::Failure,
     > {
+        PROJECTED_TYPE_MAPS.with(|observed| {
+            if let Some(observed) = observed.borrow_mut().as_mut() {
+                observed.push((types.clone(), values.clone()));
+            }
+        });
         if TYPE_INTRINSIC_NAME.with(|configured| configured.borrow().is_some()) {
             return ComptimeOutcome::Known(ComptimeStructuredTypeResolution::Ready(FakeType(7)));
         }
@@ -3007,6 +3039,134 @@ fn unknown_expression_intrinsic_rejects_per_program_without_calling_the_hook() {
     REJECTION_EVENTS.with(|events| events.borrow_mut().clear());
     REJECTION_SITES.with(|sites| sites.borrow_mut().clear());
     EXPRESSION_INTRINSIC_NAMES.with(|names| names.borrow_mut().clear());
+}
+
+#[test]
+fn structured_type_projection_preserves_owned_locals_over_staged_bindings() {
+    clear_type_intrinsic_observations();
+    let interner = lasso::ThreadedRodeo::new();
+    let intrinsic_name = interner.get_or_intern("int_max");
+    let local_symbol = interner.get_or_intern("N");
+    let local_name = FakeName {
+        ordinal: SymbolHandle::new(local_symbol).issuing_interner_ordinal() as u32,
+    };
+    let span = Span::new(0, 3);
+    let mut editor = RirEditor::new();
+    let named = editor.add_named_type(local_symbol).unwrap();
+    let array = editor
+        .add_parser_type(
+            &rue_parser::ast::TypeExpr::Array {
+                element: Box::new(rue_parser::ast::TypeExpr::Unit(span)),
+                length: rue_parser::ast::ArrayLength::Named(rue_parser::ast::Ident {
+                    name: local_symbol,
+                    span,
+                }),
+                span,
+            },
+            |symbol| symbol,
+        )
+        .unwrap();
+    let named_root = editor.add_inst(Inst {
+        data: InstData::TypeIntrinsic {
+            name: intrinsic_name,
+            type_arg: named,
+        },
+        span,
+    });
+    let array_root = editor.add_inst(Inst {
+        data: InstData::TypeIntrinsic {
+            name: intrinsic_name,
+            type_arg: array,
+        },
+        span,
+    });
+    let mut host = FakeHost {
+        programs: vec![editor.finish()],
+        type_symbol: SymbolHandle::new(local_symbol),
+        constant: None,
+        dependencies: Vec::new(),
+        call_plans: AHashMap::new(),
+        recursive: None,
+        enter_count: 0,
+        finish_outcome: FakeFinishOutcome::Identity,
+        finished: Vec::new(),
+        float_evaluations: Cell::new(0),
+    };
+    TYPE_INTRINSIC_NAME.with(|configured| {
+        *configured.borrow_mut() = Some((
+            SymbolHandle::new(intrinsic_name).issuing_interner_ordinal() as u32,
+            "int_max",
+        ));
+    });
+    for staged in [
+        ComptimeLocalBinding::Type(FakeType(1)),
+        ComptimeLocalBinding::Runtime,
+    ] {
+        for local in [
+            None,
+            Some(FakeValue::Type(FakeType(3))),
+            Some(FakeValue::Integer(4)),
+        ] {
+            let mut env =
+                ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+            env.type_subst.insert(local_name.clone(), FakeType(9));
+            env.value_subst
+                .insert(local_name.clone(), FakeValue::Integer(2));
+            if let Some(local) = &local {
+                env.locals.insert(local_name.clone(), local.clone());
+            }
+            env.local_binding_membership = Some(std::sync::Arc::new({
+                let name = local_name.clone();
+                let staged = staged.clone();
+                move |candidate| (candidate == &name).then(|| staged.clone())
+            }));
+            PROJECTED_TYPE_MAPS.with(|observed| *observed.borrow_mut() = Some(Vec::new()));
+            // Both consumers enter the real structured-syntax dispatch. Named
+            // type aliases exercise the type map; a Named array length exercises
+            // the value map without asking the host to reinterpret a type name.
+            let root = if local
+                .as_ref()
+                .is_some_and(|value| value.as_type().is_none())
+            {
+                array_root
+            } else {
+                named_root
+            };
+            let outcome = ComptimeEngine::new(&mut host)
+                .evaluate(ComptimeFrame::expression(0, root), &mut env);
+            let observed = PROJECTED_TYPE_MAPS
+                .with(|observed| observed.borrow_mut().take().expect("recording was enabled"));
+            if local.is_none() && matches!(staged, ComptimeLocalBinding::Runtime) {
+                assert!(matches!(outcome, ComptimeOutcome::RuntimeDependent));
+                assert!(
+                    observed.is_empty(),
+                    "a runtime shadow must stop host lookup"
+                );
+                continue;
+            }
+            assert!(
+                matches!(outcome, ComptimeOutcome::Known(_)),
+                "staged {staged:?}, owned {local:?}: {outcome:?}"
+            );
+            assert_eq!(observed.len(), 1);
+            let (types, values) = &observed[0];
+            let expected = local.unwrap_or_else(|| match &staged {
+                ComptimeLocalBinding::Type(ty) => FakeValue::Type(ty.clone()),
+                ComptimeLocalBinding::Runtime => unreachable!("runtime shadow checked above"),
+            });
+            match &expected {
+                FakeValue::Type(ty) => {
+                    assert_eq!(types.get(&local_name), Some(ty));
+                    assert!(!values.contains_key(&local_name));
+                }
+                value => {
+                    assert!(!types.contains_key(&local_name));
+                    assert_eq!(values.get(&local_name), Some(value));
+                }
+            }
+        }
+    }
+    clear_type_intrinsic_observations();
 }
 
 #[test]

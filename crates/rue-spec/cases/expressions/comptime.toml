@@ -406,6 +406,23 @@ fn main() -> i32 {
 exit_code = 0
 
 [[case]]
+name = "generic_type_argument_alias_scope_and_wide_literal"
+spec = ["4.5:4", "4.14:5"]
+description = "Canonical comptime facts preserve a local alias through nested shadowing and restore the enclosing wide type for a generic argument."
+source = """
+fn first(comptime T: type, value: T) -> T { value }
+fn main() -> i32 {
+    let U = u64;
+    if true {
+        let U = i32;
+        first(U, 42);
+    }
+    if first(U, 3000000000) == 3000000000 { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
 name = "file_const_type_alias_generic_argument"
 spec = ["4.14:22"]
 description = "A top-level const type alias is an unqualified comptime type argument (RUE-1966)"

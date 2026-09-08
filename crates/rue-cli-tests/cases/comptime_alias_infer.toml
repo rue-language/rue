@@ -276,3 +276,51 @@ fn main() -> i32 { use(3) }
 compile_fail = true
 error_contains = ["E1201", "parameter 'T'"]
 compile_stderr_not_contains = ["E0206"]
+
+# Canonical facts retain lexical scope while walking staged selector bodies:
+# the inner alias shadows the outer alias only inside its block, and the outer
+# wide type is restored afterwards.
+
+[[case]]
+name = "local_alias_scope_shadow_and_restore"
+description = "A selected inner block may shadow a comptime type alias without changing its sibling or enclosing scope."
+files = [{ path = "main.rue", source = """
+fn Id(comptime T: type) -> type { T }
+fn first(comptime T: type, x: T) -> T { x }
+fn main() -> i32 {
+    let U = Id(u64);
+    if true {
+        let U = i32;
+        @dbg(first(U, 42));
+    }
+    @dbg(first(U, 3000000000));
+    0
+}
+""" }]
+exit_code = 0
+stdout = "42\n3000000000\n"
+
+[[case]]
+name = "local_alias_chain_as_reexported_module_generic_arg"
+description = "A body-local alias chain reaches a re-exported module generic call and preserves its wide argument and return type."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "pick.rue", source = """
+pub fn first(comptime T: type, x: T, y: T) -> T { x }
+""" },
+  { path = "facade.rue", source = """
+pub const pick = @import("pick.rue");
+""" },
+  { path = "main.rue", source = """
+const m = @import("facade.rue");
+fn main() -> i32 {
+    let U = u64;
+    let V = U;
+    let bare = m.pick.first(u64, 3000000000, 4);
+    let alias = m.pick.first(V, 3000000000, 4);
+    if bare == 3000000000 && alias == 3000000000 { 42 } else { 0 }
+}
+""" },
+]
+exit_code = 42
+stdout = ""

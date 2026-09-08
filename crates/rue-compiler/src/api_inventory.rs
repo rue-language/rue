@@ -4337,7 +4337,7 @@ pub(super) use register_parse_import_parse;"#;
             (
                 "revisioned_database::tests::body_provider::body".to_owned(),
                 "RevisionedQueryDatabase:call".to_owned(),
-                54
+                55
             ),
             (
                 "revisioned_database::tests::body_provider::provider".to_owned(),
