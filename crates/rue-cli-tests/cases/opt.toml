@@ -75,6 +75,28 @@ fn main() -> i32 {
 args = ["main.rue", "-O2", "-o", "prog"]
 exit_code = 45
 
+[[case]]
+name = "compound_assignment_freezes_mutable_index_at_every_opt_level"
+description = "A compound target index is evaluated before a RHS mutation at -O0 through -O3."
+files = [{ path = "main.rue", source = """
+fn bump(inout i: u64) -> i32 {
+    i = 1;
+    2
+}
+
+fn main() -> i32 {
+    let mut a: [i32; 2] = [10, 20];
+    let mut i: u64 = 0;
+    a[i] += bump(inout i);
+    a[0] * 10 + a[1]
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 140
+stdout = ""
+differential_opt = true
+only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
+
 # RUE-147: constfold folded signed MIN / -1 (and MIN % -1) to an out-of-range
 # constant instead of refusing, eliding the mandatory overflow trap at -O1+
 # (printed -2147483648 / 0 instead of panicking). The fold must be refused so
