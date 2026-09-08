@@ -141,3 +141,89 @@ test "StrMap survives tombstone churn" {
     m.insert(borrow k, 9);
     @assert_eq(m.get(borrow k), OptI.Some(9));
 }
+
+// Dead key bytes are released without the table ever growing: with a live
+// size that never leaves 0..2 the load threshold is never crossed, so only the
+// dead-byte trigger can bound the pool (RUE-2139). The pool is read directly
+// because retention is not observable through the lookup API.
+test "StrMap bounds its key pool under same-key churn at a fixed live size" {
+    let mut m = StrMap.new(0);
+    let key: StrBuf = "hello";
+    let mut i: i64 = 0;
+    while i < 2000 {
+        m.insert(borrow key, i);
+        @assert_eq(m.get(borrow key), OptI.Some(i));
+        @assert(m.remove(borrow key));
+        @assert_eq(m.get(borrow key), OptI.None);
+        i += 1;
+    }
+    @assert(m.is_empty());
+    // Every churn appended five bytes; unbounded retention would hold 10000.
+    @assert(m.pool.len() < 200);
+}
+
+test "StrMap bounds its key pool under varying-key churn beside a persistent entry" {
+    let mut m = StrMap.new(0);
+    let sentinel: StrBuf = "persistent-sentinel";
+    m.insert(borrow sentinel, -1);
+    let mut i: i64 = 0;
+    while i < 2000 {
+        let key = std.fmt.int_to_string(i64, 100000 + i);
+        m.insert(borrow key, i);
+        @assert_eq(m.len(), 2);
+        @assert_eq(m.get(borrow key), OptI.Some(i));
+        @assert_eq(m.get(borrow sentinel), OptI.Some(-1));
+        @assert(m.remove(borrow key));
+        @assert_eq(m.get(borrow key), OptI.None);
+        i += 1;
+    }
+    @assert_eq(m.len(), 1);
+    @assert_eq(m.get(borrow sentinel), OptI.Some(-1));
+    // Unbounded retention would hold 6 * 2000 dead bytes plus the sentinel.
+    @assert(m.pool.len() < 200);
+    let overwrite: StrBuf = "persistent-sentinel";
+    m.insert(borrow overwrite, 7);
+    @assert_eq(m.len(), 1);
+    @assert_eq(m.get(borrow sentinel), OptI.Some(7));
+}
+
+// Compaction at the same capacity must keep every live entry findable, and
+// growth compaction must still take over once the live size climbs.
+test "StrMap keeps live entries across same-capacity compaction and growth" {
+    let mut m = StrMap.new(0);
+    let a: StrBuf = "alpha";
+    let b: StrBuf = "beta";
+    let c: StrBuf = "gamma";
+    m.insert(borrow a, 1);
+    m.insert(borrow b, 2);
+    m.insert(borrow c, 3);
+    let mut i: i64 = 0;
+    while i < 500 {
+        let key = std.fmt.int_to_string(i64, 5000 + i);
+        m.insert(borrow key, i);
+        @assert(m.remove(borrow key));
+        i += 1;
+    }
+    @assert_eq(m.len(), 3);
+    @assert_eq(m.get(borrow a), OptI.Some(1));
+    @assert_eq(m.get(borrow b), OptI.Some(2));
+    @assert_eq(m.get(borrow c), OptI.Some(3));
+    @assert(m.remove(borrow b));
+    @assert_eq(m.get(borrow b), OptI.None);
+    let mut j: i64 = 0;
+    while j < 300 {
+        let key = std.fmt.int_to_string(i64, j);
+        m.insert(borrow key, j);
+        j += 1;
+    }
+    @assert_eq(m.len(), 302);
+    @assert_eq(m.get(borrow a), OptI.Some(1));
+    @assert_eq(m.get(borrow b), OptI.None);
+    @assert_eq(m.get(borrow c), OptI.Some(3));
+    let mut k: i64 = 0;
+    while k < 300 {
+        let key = std.fmt.int_to_string(i64, k);
+        @assert_eq(m.get(borrow key), OptI.Some(k));
+        k += 1;
+    }
+}
