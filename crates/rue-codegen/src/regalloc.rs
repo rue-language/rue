@@ -1740,6 +1740,11 @@ impl<I> RewriteBuffer<I> {
             .chain(self.main.drain(..))
             .chain(self.after.drain(..))
     }
+
+    #[cfg(test)]
+    pub(crate) fn drain_ordered_for_test(&mut self) -> Vec<I> {
+        self.drain_ordered().collect()
+    }
 }
 
 /// Fail loudly if pre-allocation MIR names an allocatable register directly.

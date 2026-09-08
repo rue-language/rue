@@ -73,16 +73,20 @@ const RUN_TIMEOUT: Duration = Duration::from_secs(120);
 /// documents as its input.
 fn toolchain_available() -> bool {
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
-    *AVAILABLE.get_or_init(|| ["cc", "ar"].iter().all(|tool| responds_to_version(tool)))
+    *AVAILABLE.get_or_init(|| ["cc", "ar"].iter().all(|tool| tool_is_invocable(tool)))
 }
 
-fn responds_to_version(tool: &str) -> bool {
+fn tool_is_invocable(tool: &str) -> bool {
     Command::new(tool)
         .arg("--version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .is_ok_and(|status| status.success())
+        // Some native tools, including Apple's `ar`, reject GNU-only version
+        // flags even though they are fully invocable. Availability is about
+        // spawning the tool; real compile, archive, and link failures are
+        // reported by `run_step` below.
+        .is_ok()
 }
 
 /// The compiler path, made absolute: every subprocess below runs with the
@@ -284,6 +288,7 @@ mod tests {
         Bank, Direction, Leaf, PROBE_BYTES, Position, SHAPES, Shape, Ty, Value, generate,
         positions_for,
     };
+    use super::tool_is_invocable;
     use rue_air::{
         AggregateLeaves, ArgConvention, ArgLocation, CAbiLeaf, CAbiLeafKind, CAbiScalarKind,
         CAbiTypeFacts, PointerLocation, lower_c_signature,
@@ -292,6 +297,28 @@ mod tests {
 
     fn spec() -> CConventionSpec {
         CallingConvention::X86_64SysV.c_spec()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tool_probe_checks_invocability_not_version_exit_status() {
+        // Use a temporary executable that exits nonzero for every invocation,
+        // which models Apple's `ar --version` behavior without depending on a
+        // particular utility's exit status on the host.
+        let directory = tempfile::tempdir().expect("probe temp directory");
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = directory.path().join("nonzero-tool");
+        std::fs::write(&path, b"#!/bin/sh\nexit 1\n").expect("probe executable");
+        let mut permissions = std::fs::metadata(&path)
+            .expect("probe executable metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions).expect("probe executable permissions");
+        assert!(tool_is_invocable(
+            path.to_str().expect("probe path is UTF-8")
+        ));
+        assert!(!tool_is_invocable("__rue_missing_tool_for_probe__"));
     }
 
     /// Every C row the grid is generated for. The host runs one of them; the
