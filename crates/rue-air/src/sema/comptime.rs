@@ -390,6 +390,24 @@ pub trait ComptimeTypeAlgebra: ComptimeDomain {
         >,
         inst_ref: InstRef,
     ) -> Option<Self::Type>;
+    /// Resolve the concrete float type of an operand expression. This is
+    /// separate from `const_expr_type` so comparisons inspect their operands
+    /// rather than their boolean result expression.
+    fn float_expr_type(
+        &self,
+        _program: &Self::ProgramKey,
+        _env: &ComptimeEnv<
+            '_,
+            Self::Value,
+            Self::Type,
+            Self::Name,
+            Self::File,
+            Self::CanonicalIdentity,
+        >,
+        _inst_ref: InstRef,
+    ) -> Option<Self::Type> {
+        None
+    }
     /// Select the integer type for a binary operation. The default preserves
     /// the existing resolved-type lookup; durable hosts can fall back to the
     /// typed metadata carried by the reduced operands without inspecting RIR.
@@ -1931,23 +1949,31 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         }
     }
 
-    /// The float type a compile-time float operation is evaluated at, with its
-    /// width: the frame's expected result when that is a float, else the
-    /// expression's inferred type, else a concrete width an operand already
-    /// carries, else the `f64` default of ADR-0065 §3. This is the width at
-    /// which the same expression would execute at run time, so a `const` and a
-    /// `let` of one expression agree bit for bit.
+    /// The float type a compile-time float operation is evaluated at. Arithmetic
+    /// uses the frame's expected result or expression type before operand
+    /// metadata; comparisons use only their operand types so an enclosing
+    /// boolean or float result cannot choose the comparison width. Both paths
+    /// fall back to the `f64` default of ADR-0065 §3.
     fn float_operation_type(
         &mut self,
         env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
         inst_ref: InstRef,
+        operand_refs: (InstRef, InstRef),
         lhs: &H::Value,
         rhs: Option<&H::Value>,
+        comparison: bool,
     ) -> Option<(H::Type, ComptimeFloatWidth)> {
+        let (lhs_ref, rhs_ref) = operand_refs;
         let candidates = [
-            env.expected_result.clone(),
-            self.host
-                .const_expr_type(&self.program_key(), env, inst_ref),
+            (!comparison).then(|| env.expected_result.clone()).flatten(),
+            (!comparison)
+                .then(|| {
+                    self.host
+                        .const_expr_type(&self.program_key(), env, inst_ref)
+                })
+                .flatten(),
+            self.host.float_expr_type(&self.program_key(), env, lhs_ref),
+            self.host.float_expr_type(&self.program_key(), env, rhs_ref),
             lhs.as_float_type(),
             rhs.and_then(ComptimeValue::as_float_type),
         ];
@@ -1981,6 +2007,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         rhs: H::Value,
         env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
         inst_ref: InstRef,
+        operand_refs: (InstRef, InstRef),
         span: Span,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
         use ComptimeIntegerOperation as Op;
@@ -2003,7 +2030,15 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 &self.diagnostic_site(span),
             );
         }
-        let Some((ty, width)) = self.float_operation_type(env, inst_ref, &lhs, Some(&rhs)) else {
+        let comparison_operation = matches!(operation, Op::Lt | Op::Gt | Op::Le | Op::Ge);
+        let Some((ty, width)) = self.float_operation_type(
+            env,
+            inst_ref,
+            operand_refs,
+            &lhs,
+            Some(&rhs),
+            comparison_operation,
+        ) else {
             return ComptimeOutcome::RuntimeDependent;
         };
         // An operand that already has a concrete float width must agree with
@@ -2084,8 +2119,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         equal: bool,
         env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
         inst_ref: InstRef,
+        operand_refs: (InstRef, InstRef),
     ) -> ComptimeOutcome<H::Value, H::Failure> {
-        let Some((_, width)) = self.float_operation_type(env, inst_ref, lhs, Some(rhs)) else {
+        let Some((_, width)) =
+            self.float_operation_type(env, inst_ref, operand_refs, lhs, Some(rhs), true)
+        else {
             return ComptimeOutcome::RuntimeDependent;
         };
         let (Some(l), Some(r)) = (
@@ -2515,6 +2553,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                             r,
                             env,
                             inst_ref,
+                            (*lhs, *rhs),
                             span,
                         );
                     }
@@ -2552,6 +2591,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                             r,
                             env,
                             inst_ref,
+                            (*lhs, *rhs),
                             span,
                         );
                     }
@@ -2589,6 +2629,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                             r,
                             env,
                             inst_ref,
+                            (*lhs, *rhs),
                             span,
                         );
                     }
@@ -2623,7 +2664,15 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     self.eval_arith_operands(operation, *lhs, *rhs, env, span)
                 ) {
                     ArithOperands::Float(l, r) => {
-                        return self.float_binary(operation, l, r, env, inst_ref, span);
+                        return self.float_binary(
+                            operation,
+                            l,
+                            r,
+                            env,
+                            inst_ref,
+                            (*lhs, *rhs),
+                            span,
+                        );
                     }
                     ArithOperands::Integer(l, r) => (l, r),
                 };
@@ -2678,6 +2727,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
 
             // Comparison operations
             InstData::Eq { lhs, rhs } => {
+                let (lhs_ref, rhs_ref) = (*lhs, *rhs);
                 let lhs = match self.eval(*lhs, env) {
                     ComptimeOutcome::Known(value) => value,
                     ComptimeOutcome::RuntimeDependent => {
@@ -2713,7 +2763,14 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                                 if self.host.float_value_text(&lhs).is_some()
                                     || self.host.float_value_text(&rhs).is_some()
                                 {
-                                    return self.float_equality(&lhs, &rhs, true, env, inst_ref);
+                                    return self.float_equality(
+                                        &lhs,
+                                        &rhs,
+                                        true,
+                                        env,
+                                        inst_ref,
+                                        (lhs_ref, rhs_ref),
+                                    );
                                 }
                                 let site = self.diagnostic_site(span);
                                 self.host.compare_comptime_values(&lhs, &rhs, true, &site)
@@ -2724,6 +2781,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 }
             }
             InstData::Ne { lhs, rhs } => {
+                let (lhs_ref, rhs_ref) = (*lhs, *rhs);
                 let lhs = match self.eval(*lhs, env) {
                     ComptimeOutcome::Known(value) => value,
                     ComptimeOutcome::RuntimeDependent => {
@@ -2759,7 +2817,14 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                                 if self.host.float_value_text(&lhs).is_some()
                                     || self.host.float_value_text(&rhs).is_some()
                                 {
-                                    return self.float_equality(&lhs, &rhs, false, env, inst_ref);
+                                    return self.float_equality(
+                                        &lhs,
+                                        &rhs,
+                                        false,
+                                        env,
+                                        inst_ref,
+                                        (lhs_ref, rhs_ref),
+                                    );
                                 }
                                 let site = self.diagnostic_site(span);
                                 self.host.compare_comptime_values(&lhs, &rhs, false, &site)
@@ -2784,6 +2849,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                             r,
                             env,
                             inst_ref,
+                            (*lhs, *rhs),
                             span,
                         );
                     }
@@ -2814,6 +2880,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                             r,
                             env,
                             inst_ref,
+                            (*lhs, *rhs),
                             span,
                         );
                     }
@@ -2844,6 +2911,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                             r,
                             env,
                             inst_ref,
+                            (*lhs, *rhs),
                             span,
                         );
                     }
@@ -2874,6 +2942,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                             r,
                             env,
                             inst_ref,
+                            (*lhs, *rhs),
                             span,
                         );
                     }
