@@ -245,6 +245,90 @@ fn run_matrix(direction: Direction, abi: &str) -> Result<(), String> {
     }
 }
 
+/// Compile a real C object containing a 64-KiB aligned global, then call an
+/// opaque address getter from Rue through the internal linker. Keeping the
+/// modulo predicate in Rue prevents the C compiler from proving it from the
+/// declaration alone; native Linux execution therefore checks the address the
+/// loader actually assigned to the linked data segment.
+fn run_alignment_regression() -> Result<(), String> {
+    let directory = tempfile::Builder::new()
+        .prefix("rue-c-abi-alignment-")
+        .tempdir()
+        .map_err(|error| format!("could not create alignment fixture directory: {error}"))?;
+    std::fs::write(
+        directory.path().join("aligned.c"),
+        b"__attribute__((aligned(65536))) unsigned char aligned_data[8] = {0x5a};\nunsigned long aligned_data_address(void) { return (unsigned long)(void *)aligned_data; }\n",
+    )
+    .map_err(|error| format!("could not write alignment fixture C source: {error}"))?;
+    std::fs::write(
+        directory.path().join("main.rue"),
+        b"extern \"C\" { fn aligned_data_address() -> u64; }\n\nfn main() -> i32 {\n    let address = checked { aligned_data_address() };\n    @dbg(address % 65536);\n    if address % 65536 == 0 { 0 } else { 1 }\n}\n",
+    )
+    .map_err(|error| format!("could not write alignment fixture Rue source: {error}"))?;
+
+    let mut cc = Command::new("cc");
+    cc.current_dir(directory.path()).args([
+        "-std=c11",
+        "-ffreestanding",
+        "-nostdlib",
+        "-fno-builtin",
+        "-fno-stack-protector",
+        "-fno-pic",
+        "-fno-pie",
+        "-O2",
+        "-c",
+        "aligned.c",
+        "-o",
+        "aligned.o",
+    ]);
+    run_step("cc", cc)?;
+
+    let mut ar = Command::new("ar");
+    ar.current_dir(directory.path())
+        .args(["rcs", "libaligned.a", "aligned.o"]);
+    run_step("ar", ar)?;
+
+    let rue = rue_binary()?;
+    let mut compile = compiler_command(&rue);
+    compile.current_dir(directory.path()).args([
+        "main.rue",
+        "--preview",
+        "c_ffi",
+        "--linker",
+        "internal",
+        "--link-archive",
+        "libaligned.a",
+        "-o",
+        "prog",
+    ]);
+    run_step("rue", compile)?;
+
+    let mut run = Command::new(directory.path().join("prog"));
+    run.current_dir(directory.path());
+    let stdout = run_step("program", run)?;
+    if stdout != "0\n" {
+        return Err(format!(
+            "aligned C data address was not 64-KiB aligned; Rue observed {stdout:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn alignment_trial() -> Trial {
+    Trial::test(
+        "c_abi_matrix::internal_linker_overpage_data_address",
+        |context| {
+            if !cfg!(target_os = "linux") {
+                return context.ignore_for("over-page ELF execution requires native Linux");
+            }
+            if !toolchain_available() {
+                return context.ignore_for("no system `cc` and `ar` toolchain on PATH");
+            }
+            run_alignment_regression().map_err(RunError::fail)
+        },
+    )
+}
+
 fn trial(direction: Direction, abi: &'static str) -> Trial {
     let name = format!(
         "c_abi_matrix::{}_{}",
@@ -273,7 +357,11 @@ fn main() {
         None => "C",
     };
 
-    let mut trials = vec![trial(Direction::Import, "C"), trial(Direction::Export, "C")];
+    let mut trials = vec![
+        trial(Direction::Import, "C"),
+        trial(Direction::Export, "C"),
+        alignment_trial(),
+    ];
     if explicit != "C" {
         trials.push(trial(Direction::Import, explicit));
         trials.push(trial(Direction::Export, explicit));
