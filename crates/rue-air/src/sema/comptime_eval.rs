@@ -2545,6 +2545,17 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeTypeAlgebra for OrdinaryBodyEngine
     ) -> Option<Type> {
         OrdinaryBodyEngine::const_expr_type(self, env, inst_ref)
     }
+    fn float_expr_type(
+        &self,
+        _program: &Self::ProgramKey,
+        env: &ComptimeEnv<'_>,
+        inst_ref: InstRef,
+    ) -> Option<Type> {
+        env.resolved_types?
+            .get(&inst_ref)
+            .copied()
+            .filter(Type::is_float)
+    }
     fn resolve_named_type_value(
         &mut self,
         _program: &Self::ProgramKey,
