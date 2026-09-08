@@ -141,3 +141,36 @@ fn main() -> i32 {
 """ }]
 stdout = "absent\n"
 exit_code = 0
+
+# The key is everything before an entry's FIRST '='. The whole value is
+# returned even when it contains '=' itself, and a name that reads through the
+# separator into the value (`KEY=left` against `KEY=left=right`) is not a key
+# match (RUE-2140). A strict prefix of the key stays absent too.
+[[case]]
+name = "var_key_stops_at_first_equals"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+program_env = { RUE_CLI_ENV_EQ = "left=right" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const Opt = std.option.Option(StrBuf);
+
+fn show(borrow key: StrBuf) {
+    match std.env.var(borrow key) {
+        Opt.Some(v) => @dbg(v),
+        Opt.None => @dbg("absent"),
+    }
+}
+
+fn main() -> i32 {
+    let exact: StrBuf = "RUE_CLI_ENV_EQ";
+    let through: StrBuf = "RUE_CLI_ENV_EQ=left";
+    let prefix: StrBuf = "RUE_CLI_ENV";
+    show(borrow exact);
+    show(borrow through);
+    show(borrow prefix);
+    0
+}
+""" }]
+stdout = "left=right\nabsent\nabsent\n"
+exit_code = 0
