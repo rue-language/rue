@@ -121,6 +121,12 @@ pub const STB_GLOBAL: u8 = 1;
 /// STB_WEAK: Weak symbol
 pub const STB_WEAK: u8 = 2;
 
+// ELF symbol visibility (the low bits of `st_other`)
+
+/// STV_HIDDEN: the symbol resolves across the objects of one link but is not
+/// exported from the linked image (the `st_other` form of Mach-O's N_PEXT).
+pub const STV_HIDDEN: u8 = 2;
+
 // Symbol types (lower 4 bits of st_info)
 
 /// STT_NOTYPE: Symbol type not specified
@@ -303,6 +309,15 @@ pub const N_SECT: u8 = 0x0E;
 pub const N_UNDF: u8 = 0x00;
 /// N_ABS: Absolute symbol
 pub const N_ABS: u8 = 0x02;
+
+// Mach-O symbol descriptors (`n_desc` bits).
+
+/// N_WEAK_REF: an undefined symbol that need not be resolved (the reference
+/// binds to address 0 when no definition is found).
+pub const N_WEAK_REF: u16 = 0x0040;
+/// N_WEAK_DEF: a weak (coalesced) definition; a strong definition overrides
+/// it and the first of several weak definitions wins.
+pub const N_WEAK_DEF: u16 = 0x0080;
 
 // ARM64 relocation types (Mach-O)
 

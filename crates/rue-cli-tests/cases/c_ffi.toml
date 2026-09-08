@@ -1131,6 +1131,107 @@ execute_if_native = true
 stdout = "5\n4\n"
 exit_code = 0
 
+# --- Archive member bindings a C toolchain produces (RUE-2149) --------------
+# The synthesized archive carries a hidden (`visibility("hidden")`) helper in a
+# member AFTER the probe that calls it, and two members that each define the
+# same weak (`__attribute__((weak))`) symbol. Every host links all three
+# targets, which is where Mach-O symbol ingestion used to drop both bindings
+# (the hidden helper became an undefined `E1000`, the weak pair a duplicate);
+# the matching native host also executes the image.
+
+[[case]]
+name = "x86_64_linux_archive_hidden_and_weak_members_link"
+description = "A hidden helper in a later archive member and weak definitions in two pulled members link and run on x86-64 Linux."
+files = [{ path = "main.rue", source = """
+extern "C" {
+    fn ffi_hidden_probe() -> i64;
+    fn ffi_weak_probe_a() -> i64;
+    fn ffi_weak_probe_b() -> i64;
+    fn ffi_weak_shared() -> i64;
+}
+
+fn main() -> i32 {
+    // Pulls the probe member; the hidden helper it calls lives in a later
+    // member and is reached only through the archive index.
+    @dbg(checked { ffi_hidden_probe() });
+    // Pulls both weak members; their two weak `ffi_weak_shared` definitions
+    // coalesce instead of colliding.
+    let a = checked { ffi_weak_probe_a() };
+    let b = checked { ffi_weak_probe_b() };
+    let shared = checked { ffi_weak_shared() };
+    @dbg(a + b + shared);
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "x86-64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = "42\n126\n"
+exit_code = 0
+
+[[case]]
+name = "aarch64_linux_archive_hidden_and_weak_members_link"
+description = "A hidden helper in a later archive member and weak definitions in two pulled members link and run on AArch64 Linux."
+files = [{ path = "main.rue", source = """
+extern "C" {
+    fn ffi_hidden_probe() -> i64;
+    fn ffi_weak_probe_a() -> i64;
+    fn ffi_weak_probe_b() -> i64;
+    fn ffi_weak_shared() -> i64;
+}
+
+fn main() -> i32 {
+    // Pulls the probe member; the hidden helper it calls lives in a later
+    // member and is reached only through the archive index.
+    @dbg(checked { ffi_hidden_probe() });
+    // Pulls both weak members; their two weak `ffi_weak_shared` definitions
+    // coalesce instead of colliding.
+    let a = checked { ffi_weak_probe_a() };
+    let b = checked { ffi_weak_probe_b() };
+    let shared = checked { ffi_weak_shared() };
+    @dbg(a + b + shared);
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "aarch64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = "42\n126\n"
+exit_code = 0
+
+[[case]]
+name = "aarch64_macos_archive_hidden_and_weak_members_link"
+description = "A hidden (N_PEXT) helper in a later archive member and N_WEAK_DEF definitions in two pulled members link into a Mach-O image and run on macOS."
+files = [{ path = "main.rue", source = """
+extern "C" {
+    fn ffi_hidden_probe() -> i64;
+    fn ffi_weak_probe_a() -> i64;
+    fn ffi_weak_probe_b() -> i64;
+    fn ffi_weak_shared() -> i64;
+}
+
+fn main() -> i32 {
+    // Pulls the probe member; the hidden helper it calls lives in a later
+    // member and is reached only through the archive index.
+    @dbg(checked { ffi_hidden_probe() });
+    // Pulls both weak members; their two weak `ffi_weak_shared` definitions
+    // coalesce instead of colliding.
+    let a = checked { ffi_weak_probe_a() };
+    let b = checked { ffi_weak_probe_b() };
+    let shared = checked { ffi_weak_shared() };
+    @dbg(a + b + shared);
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "aarch64-macos", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "aarch64-macos"
+execute_if_native = true
+stdout = "42\n126\n"
+exit_code = 0
+
 # --- P4 export diagnostics (compile-fail) -----------------------------------
 
 [[case]]

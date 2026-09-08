@@ -48,6 +48,8 @@ use crate::constants::{
     N_SECT,
     N_TYPE,
     N_UNDF,
+    N_WEAK_DEF,
+    N_WEAK_REF,
     R_AARCH64_ABS64,
     R_AARCH64_ADD_ABS_LO12_NC,
     R_AARCH64_ADR_PREL_PG_HI21,
@@ -563,6 +565,40 @@ pub enum SymbolBinding {
     Local,
     Global,
     Weak,
+}
+
+/// The binding of a Mach-O symbol from its `n_type` and `n_desc` fields.
+///
+/// This is the one place Mach-O binding bits become a [`SymbolBinding`], so
+/// symbol-only archive indexing and a full parse classify a symbol
+/// identically:
+///
+/// - Without `N_EXT` the symbol is object-local. That includes a bare
+///   `N_PEXT`, which is how `ld -r` marks a private external it has already
+///   turned into a local.
+/// - `N_EXT | N_PEXT` is a private external (`visibility("hidden")`): it is
+///   not exported from the linked image, but it still resolves references
+///   from the other objects of that image, so it binds as a global. Treating
+///   it as local left the definition invisible to archive extraction and to
+///   the cross-object symbol table (RUE-2149).
+/// - `N_WEAK_DEF` on a definition and `N_WEAK_REF` on an undefined symbol are
+///   the weak binding the downstream strong/weak policy expects: a strong
+///   definition overrides a weak one, the first of several weak definitions
+///   wins, and a weak undefined reference pulls no archive member.
+pub(crate) fn macho_symbol_binding(n_type: u8, n_desc: u16) -> SymbolBinding {
+    if n_type & N_EXT == 0 {
+        return SymbolBinding::Local;
+    }
+    let weak_bit = if n_type & N_TYPE == N_UNDF {
+        N_WEAK_REF
+    } else {
+        N_WEAK_DEF
+    };
+    if n_desc & weak_bit != 0 {
+        SymbolBinding::Weak
+    } else {
+        SymbolBinding::Global
+    }
 }
 
 /// Symbol type.
@@ -1097,6 +1133,7 @@ impl ObjectFile {
                 let n_strx = read_u32(data, sym_offset) as usize;
                 let n_type = data[sym_offset + 4];
                 let n_sect = data[sym_offset + 5];
+                let n_desc = read_u16(data, sym_offset + 6);
                 let n_value = read_u64(data, sym_offset + 8);
 
                 // Read symbol name from string table
@@ -1118,16 +1155,7 @@ impl ObjectFile {
                 // collapsed "_foo" and "__foo" onto the same "__foo" symbol.
                 name = crate::util::strip_macho_underscore(&name).to_string();
 
-                // Determine binding (external or local)
-                // N_PEXT (0x10) makes a symbol private even if N_EXT is set
-                // Private external symbols should be treated as local to avoid duplicate symbol errors
-                let binding = if n_type & N_EXT != 0 && n_type & 0x10 == 0 {
-                    // External but not private -> Global
-                    SymbolBinding::Global
-                } else {
-                    // Local or private external -> Local
-                    SymbolBinding::Local
-                };
+                let binding = macho_symbol_binding(n_type, n_desc);
 
                 // Determine if symbol is defined (has a section) or undefined
                 let sym_type_bits = n_type & N_TYPE;
@@ -2090,6 +2118,7 @@ mod tests {
         n_type: u8,
         /// 1-indexed section number (0 = NO_SECT).
         n_sect: u8,
+        n_desc: u16,
         n_value: u64,
     }
 
@@ -2211,7 +2240,7 @@ mod tests {
             buf.extend_from_slice(&(name_offsets[i] as u32).to_le_bytes());
             buf.push(sym.n_type);
             buf.push(sym.n_sect);
-            buf.extend_from_slice(&0_u16.to_le_bytes());
+            buf.extend_from_slice(&sym.n_desc.to_le_bytes());
             buf.extend_from_slice(&sym.n_value.to_le_bytes());
         }
         // String table
@@ -2238,6 +2267,7 @@ mod tests {
                 name: "_foo",
                 n_type: N_EXT | N_UNDF,
                 n_sect: 0,
+                n_desc: 0,
                 n_value: 0,
             }],
         );
@@ -2278,6 +2308,7 @@ mod tests {
                 name: "_foo",
                 n_type: N_EXT | N_UNDF,
                 n_sect: 0,
+                n_desc: 0,
                 n_value: 0,
             }],
         );
@@ -2289,6 +2320,101 @@ mod tests {
         assert_eq!(relocs[0].addend, 0x14);
         assert_eq!(relocs[1].rel_type, RelocationType::AdrpPage21);
         assert_eq!(relocs[1].addend, -8, "24-bit addend must be sign-extended");
+    }
+
+    /// RUE-2149: Mach-O binding bits reach the linker's symbol table intact.
+    /// A private external (`N_EXT | N_PEXT`) is a global for cross-object
+    /// resolution, `N_WEAK_DEF` and `N_WEAK_REF` are weak, and only a symbol
+    /// without `N_EXT` is local — through both a full parse and the
+    /// symbol-only parse the archive index uses.
+    #[test]
+    fn test_macho_symbol_binding_preserves_private_external_and_weak() {
+        use crate::constants::{N_PEXT, N_WEAK_DEF, N_WEAK_REF};
+        let obj_bytes = build_test_macho(
+            &[TestMachoSection {
+                sectname: "__text",
+                segname: "__TEXT",
+                addr: 0,
+                data: vec![0xC0, 0x03, 0x5F, 0xD6],
+                relocs: vec![],
+            }],
+            &[
+                TestMachoSymbol {
+                    name: "_hidden",
+                    n_type: N_EXT | N_PEXT | N_SECT,
+                    n_sect: 1,
+                    n_desc: 0,
+                    n_value: 0,
+                },
+                TestMachoSymbol {
+                    name: "_weak_def",
+                    n_type: N_EXT | N_SECT,
+                    n_sect: 1,
+                    n_desc: N_WEAK_DEF,
+                    n_value: 0,
+                },
+                TestMachoSymbol {
+                    name: "_strong",
+                    n_type: N_EXT | N_SECT,
+                    n_sect: 1,
+                    n_desc: 0,
+                    n_value: 0,
+                },
+                TestMachoSymbol {
+                    name: "_local",
+                    n_type: N_SECT,
+                    n_sect: 1,
+                    n_desc: 0,
+                    n_value: 0,
+                },
+                TestMachoSymbol {
+                    name: "_was_private_now_local",
+                    n_type: N_PEXT | N_SECT,
+                    n_sect: 1,
+                    n_desc: 0,
+                    n_value: 0,
+                },
+                TestMachoSymbol {
+                    name: "_weak_ref",
+                    n_type: N_EXT | N_UNDF,
+                    n_sect: 0,
+                    n_desc: N_WEAK_REF,
+                    n_value: 0,
+                },
+                TestMachoSymbol {
+                    name: "_strong_ref",
+                    n_type: N_EXT | N_UNDF,
+                    n_sect: 0,
+                    n_desc: 0,
+                    n_value: 0,
+                },
+            ],
+        );
+        let expected = [
+            ("hidden", SymbolBinding::Global, true),
+            ("weak_def", SymbolBinding::Weak, true),
+            ("strong", SymbolBinding::Global, true),
+            ("local", SymbolBinding::Local, true),
+            ("was_private_now_local", SymbolBinding::Local, true),
+            ("weak_ref", SymbolBinding::Weak, false),
+            ("strong_ref", SymbolBinding::Global, false),
+        ];
+
+        let full = ObjectFile::parse(&obj_bytes).expect("full parse");
+        let symbols_only = ObjectFile::parse_symbols_with_cancellation(&obj_bytes, || false)
+            .expect("symbol-only parse");
+        for symbols in [&full.symbols, &symbols_only.symbols] {
+            assert_eq!(symbols.len(), expected.len());
+            for (sym, (name, binding, defined)) in symbols.iter().zip(expected) {
+                assert_eq!(sym.name, name);
+                assert_eq!(sym.binding, binding, "binding of {name}");
+                assert_eq!(
+                    sym.section_index.is_some(),
+                    defined,
+                    "definedness of {name}"
+                );
+            }
+        }
     }
 
     /// RUE-131 item 5c: a non-extern relocation against a section with no
@@ -2324,6 +2450,7 @@ mod tests {
                 name: "_main",
                 n_type: N_EXT | N_SECT,
                 n_sect: 1,
+                n_desc: 0,
                 n_value: 0,
             }],
         );
@@ -2380,6 +2507,7 @@ mod tests {
                     name: "_main",
                     n_type: N_EXT | N_SECT,
                     n_sect: 1,
+                    n_desc: 0,
                     n_value: 0,
                 },
                 // A LOCAL symbol at offset 0 of __cstring (n_value is the
@@ -2388,6 +2516,7 @@ mod tests {
                     name: "l_str",
                     n_type: N_SECT,
                     n_sect: 2,
+                    n_desc: 0,
                     n_value: 0x10,
                 },
             ],
@@ -2436,12 +2565,14 @@ mod tests {
                     name: "_main",
                     n_type: N_EXT | N_SECT,
                     n_sect: 1,
+                    n_desc: 0,
                     n_value: 4, // 4 into __text (addr 0)
                 },
                 TestMachoSymbol {
                     name: "_str",
                     n_type: N_SECT, // local
                     n_sect: 2,
+                    n_desc: 0,
                     n_value: 0x10 + 5, // 5 into __cstring (addr 0x10)
                 },
             ],
@@ -2472,6 +2603,7 @@ mod tests {
                 name: "_bad",
                 n_type: N_EXT | N_SECT,
                 n_sect: 1,
+                n_desc: 0,
                 n_value: 0x0f,
             }],
         );

@@ -12,14 +12,14 @@ use crate::constants::{
     LC_DYSYMTAB, LC_SEGMENT_64, LC_SYMTAB, MACHO64_BUILD_VERSION_CMD_SIZE,
     MACHO64_DYSYMTAB_CMD_SIZE, MACHO64_HEADER_SIZE, MACHO64_NLIST_SIZE, MACHO64_RELOC_SIZE,
     MACHO64_SECTION_SIZE, MACHO64_SEGMENT_CMD_SIZE, MACHO64_SYMTAB_CMD_SIZE, MH_MAGIC_64,
-    MH_OBJECT, N_EXT, N_SECT, N_UNDF, PLATFORM_MACOS, R_AARCH64_ABS64, R_AARCH64_ADD_ABS_LO12_NC,
-    R_AARCH64_ADR_PREL_PG_HI21, R_AARCH64_CALL26, R_AARCH64_JUMP26, R_AARCH64_LDST8_ABS_LO12_NC,
-    R_AARCH64_LDST16_ABS_LO12_NC, R_AARCH64_LDST32_ABS_LO12_NC, R_AARCH64_LDST64_ABS_LO12_NC,
-    R_AARCH64_LDST128_ABS_LO12_NC, R_X86_64_32, R_X86_64_32S, R_X86_64_64, R_X86_64_GOTPCREL,
-    R_X86_64_GOTPCRELX, R_X86_64_PC32, R_X86_64_PLT32, R_X86_64_REX_GOTPCRELX,
-    S_ATTR_PURE_INSTRUCTIONS, S_ATTR_SOME_INSTRUCTIONS, SHF_ALLOC, SHF_EXECINSTR, SHF_INFO_LINK,
-    SHT_PROGBITS, SHT_RELA, SHT_STRTAB, SHT_SYMTAB, STB_GLOBAL, STB_LOCAL, STT_FUNC, STT_NOTYPE,
-    STT_SECTION, elf_st_info,
+    MH_OBJECT, N_EXT, N_PEXT, N_SECT, N_UNDF, N_WEAK_DEF, PLATFORM_MACOS, R_AARCH64_ABS64,
+    R_AARCH64_ADD_ABS_LO12_NC, R_AARCH64_ADR_PREL_PG_HI21, R_AARCH64_CALL26, R_AARCH64_JUMP26,
+    R_AARCH64_LDST8_ABS_LO12_NC, R_AARCH64_LDST16_ABS_LO12_NC, R_AARCH64_LDST32_ABS_LO12_NC,
+    R_AARCH64_LDST64_ABS_LO12_NC, R_AARCH64_LDST128_ABS_LO12_NC, R_X86_64_32, R_X86_64_32S,
+    R_X86_64_64, R_X86_64_GOTPCREL, R_X86_64_GOTPCRELX, R_X86_64_PC32, R_X86_64_PLT32,
+    R_X86_64_REX_GOTPCRELX, S_ATTR_PURE_INSTRUCTIONS, S_ATTR_SOME_INSTRUCTIONS, SHF_ALLOC,
+    SHF_EXECINSTR, SHF_INFO_LINK, SHT_PROGBITS, SHT_RELA, SHT_STRTAB, SHT_SYMTAB, STB_GLOBAL,
+    STB_LOCAL, STB_WEAK, STT_FUNC, STT_NOTYPE, STT_SECTION, STV_HIDDEN, elf_st_info,
 };
 
 /// ELF section layout with explicit indices.
@@ -113,6 +113,29 @@ pub struct ObjectBuilder {
     /// Additional global names for the same code, each defined at offset 0 of
     /// the code section alongside [`Self::name`].
     pub aliases: Vec<String>,
+    /// How [`Self::name`] and its aliases bind for cross-object resolution.
+    pub linkage: DefinitionLinkage,
+}
+
+/// How an object's own definitions bind when several objects are linked.
+///
+/// Compiler-emitted objects are always [`DefinitionLinkage::Global`]. The
+/// other forms exist so synthesized foreign members can carry the bindings a
+/// C toolchain produces — `__attribute__((weak))` and
+/// `__attribute__((visibility("hidden")))` — and prove the linker resolves
+/// them the way the native toolchain does (RUE-2149).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DefinitionLinkage {
+    /// A strong, exported definition.
+    #[default]
+    Global,
+    /// A weak definition: overridden by a strong one, and the first of
+    /// several weak definitions wins.
+    Weak,
+    /// A hidden definition (ELF `STV_HIDDEN`, Mach-O `N_PEXT`): it resolves
+    /// references from the other objects of the link but is not exported from
+    /// the linked image.
+    Hidden,
 }
 
 /// A relocation in generated code.
@@ -139,7 +162,16 @@ impl ObjectBuilder {
             relocations: Vec::new(),
             strings: Vec::new(),
             aliases: Vec::new(),
+            linkage: DefinitionLinkage::Global,
         }
+    }
+
+    /// Bind [`Self::name`] and its aliases with `linkage` instead of the
+    /// default strong global binding.
+    #[must_use]
+    pub fn linkage(mut self, linkage: DefinitionLinkage) -> Self {
+        self.linkage = linkage;
+        self
     }
 
     /// Define `name` as an additional global symbol at the start of this
@@ -322,11 +354,19 @@ impl ObjectBuilder {
         // First non-local symbol index (for sh_info)
         let first_global_sym = next_sym_idx;
 
+        // The function and its aliases share one binding: STB_WEAK for a weak
+        // definition, and STV_HIDDEN in st_other for a hidden one.
+        let (def_bind, def_other) = match self.linkage {
+            DefinitionLinkage::Global => (STB_GLOBAL, 0),
+            DefinitionLinkage::Weak => (STB_WEAK, 0),
+            DefinitionLinkage::Hidden => (STB_GLOBAL, STV_HIDDEN),
+        };
+
         // Function symbol (global)
         let func_sym_idx = next_sym_idx;
         symtab.extend_from_slice(&(strtab_name as u32).to_le_bytes()); // st_name
-        symtab.push(elf_st_info(STB_GLOBAL, STT_FUNC)); // st_info
-        symtab.push(0); // st_other
+        symtab.push(elf_st_info(def_bind, STT_FUNC)); // st_info
+        symtab.push(def_other); // st_other
         symtab.extend_from_slice(&ElfSectionLayout::TEXT.to_le_bytes()); // st_shndx: .text
         symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_value
         symtab.extend_from_slice(&(self.code.len() as u64).to_le_bytes()); // st_size
@@ -337,8 +377,8 @@ impl ObjectBuilder {
         // each carries the function symbol's section, value, and size.
         for &name_offset in &alias_name_offsets {
             symtab.extend_from_slice(&(name_offset as u32).to_le_bytes()); // st_name
-            symtab.push(elf_st_info(STB_GLOBAL, STT_FUNC)); // st_info
-            symtab.push(0); // st_other
+            symtab.push(elf_st_info(def_bind, STT_FUNC)); // st_info
+            symtab.push(def_other); // st_other
             symtab.extend_from_slice(&ElfSectionLayout::TEXT.to_le_bytes()); // st_shndx: .text
             symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_value
             symtab.extend_from_slice(&(self.code.len() as u64).to_le_bytes()); // st_size
@@ -1068,19 +1108,28 @@ impl ObjectBuilder {
         // IMPORTANT: Function must be at index 0 so that string symbols start at
         // index 1+. macOS linker rejects r_symbolnum=0 in relocations as invalid.
 
+        // The function and its aliases share one binding: N_WEAK_DEF in
+        // n_desc for a weak definition, and N_PEXT alongside N_EXT for a
+        // hidden (private external) one.
+        let (def_n_type, def_n_desc): (u8, u16) = match self.linkage {
+            DefinitionLinkage::Global => (N_EXT | N_SECT, 0),
+            DefinitionLinkage::Weak => (N_EXT | N_SECT, N_WEAK_DEF),
+            DefinitionLinkage::Hidden => (N_EXT | N_PEXT | N_SECT, 0),
+        };
+
         // Symbol 0: External symbol for the function itself
         macho.extend_from_slice(&(func_name_offset as u32).to_le_bytes()); // n_strx
-        macho.push(N_EXT | N_SECT); // n_type: external, defined in section
+        macho.push(def_n_type); // n_type: external, defined in section
         macho.push(1); // n_sect: section 1 (__text)
-        macho.extend_from_slice(&0_u16.to_le_bytes()); // n_desc
+        macho.extend_from_slice(&def_n_desc.to_le_bytes()); // n_desc
         macho.extend_from_slice(&0_u64.to_le_bytes()); // n_value (function start; __text is at addr 0)
 
         // Alias symbols: the same code start under another name.
         for &name_offset in &alias_name_offsets {
             macho.extend_from_slice(&(name_offset as u32).to_le_bytes()); // n_strx
-            macho.push(N_EXT | N_SECT); // n_type: external, defined in section
+            macho.push(def_n_type); // n_type: external, defined in section
             macho.push(1); // n_sect: section 1 (__text)
-            macho.extend_from_slice(&0_u16.to_le_bytes()); // n_desc
+            macho.extend_from_slice(&def_n_desc.to_le_bytes()); // n_desc
             macho.extend_from_slice(&0_u64.to_le_bytes()); // n_value (__text is at addr 0)
         }
 
