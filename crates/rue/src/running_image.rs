@@ -637,6 +637,15 @@ mod tests {
                 return;
             }
             if let Some(status) = child.try_wait().expect("poll identity fixture") {
+                if path.exists() {
+                    if status.success() {
+                        return;
+                    }
+                    panic!("identity fixture exited with {status} after {marker}");
+                }
+                if status.success() && directory.join("done").exists() {
+                    panic!("identity fixture completed before {marker}: {status}");
+                }
                 panic!("identity fixture exited before {marker}: {status}");
             }
             assert!(Instant::now() < deadline, "timed out waiting for {marker}");
@@ -652,6 +661,12 @@ mod tests {
                 return true;
             }
             if let Some(status) = child.try_wait().expect("poll identity fixture") {
+                if path.exists() || (status.success() && directory.join("done").exists()) {
+                    if status.success() {
+                        return true;
+                    }
+                    panic!("identity fixture exited with {status} after {marker}");
+                }
                 #[cfg(target_os = "macos")]
                 {
                     assert_eq!(
@@ -765,6 +780,15 @@ mod tests {
                 return StageWait::Captured(capture);
             }
             if let Some(status) = child.try_wait().expect("poll identity fixture") {
+                if ready.exists() {
+                    if status.success() {
+                        return StageWait::Ready;
+                    }
+                    panic!("identity fixture exited with {status} after stage {stage}");
+                }
+                if done.exists() && status.success() {
+                    return StageWait::Captured(read_capture(directory, "once"));
+                }
                 assert_eq!(
                     status.signal(),
                     Some(9),
