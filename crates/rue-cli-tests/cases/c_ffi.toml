@@ -1590,3 +1590,70 @@ fn main() -> i32 {
 args = ["--preview", "c_ffi", "--target", "aarch64-linux", "--emit", "asm", "main.rue"]
 compile_only = true
 compile_stdout_contains = ["=== Assembly (aarch64-linux) ==="]
+
+# A narrow integer after eight register-width arguments exercises the physical
+# narrow-store rewrite on each C row. The x86-64 and AAPCS64 rows stage a whole
+# eight-byte slot, while Apple's row emits the natural one-byte store.
+
+[[case]]
+name = "x86_64_linux_stacked_u8_after_eight_u64"
+description = "A narrow integer tail after eight register-width arguments reaches the x86-64 assembly emitter."
+files = [{ path = "main.rue", source = """
+extern "C" {
+    fn ffi_stack_u8(
+        a: u64, b: u64, c: u64, d: u64, e: u64,
+        f: u64, g: u64, h: u64, tail: u8,
+    ) -> u8;
+}
+
+fn main() -> i32 {
+    let value = checked { ffi_stack_u8(1, 2, 3, 4, 5, 6, 7, 8, 9) };
+    @dbg(value);
+    0
+}
+""" }]
+args = ["--preview", "c_ffi", "--target", "x86-64-linux", "--emit", "asm", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== Assembly (x86-64-linux) ==="]
+
+[[case]]
+name = "aarch64_linux_stacked_u8_after_eight_u64"
+description = "A narrow integer tail after eight register-width arguments reaches the AAPCS64 assembly emitter."
+files = [{ path = "main.rue", source = """
+extern "C" {
+    fn ffi_stack_u8(
+        a: u64, b: u64, c: u64, d: u64, e: u64,
+        f: u64, g: u64, h: u64, tail: u8,
+    ) -> u8;
+}
+
+fn main() -> i32 {
+    let value = checked { ffi_stack_u8(1, 2, 3, 4, 5, 6, 7, 8, 9) };
+    @dbg(value);
+    0
+}
+""" }]
+args = ["--preview", "c_ffi", "--target", "aarch64-linux", "--emit", "asm", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== Assembly (aarch64-linux) ==="]
+
+[[case]]
+name = "aarch64_macos_stacked_u8_after_eight_u64"
+description = "A narrow integer tail after eight register-width arguments reaches the Apple arm64 assembly emitter."
+files = [{ path = "main.rue", source = """
+extern "C" {
+    fn ffi_stack_u8(
+        a: u64, b: u64, c: u64, d: u64, e: u64,
+        f: u64, g: u64, h: u64, tail: u8,
+    ) -> u8;
+}
+
+fn main() -> i32 {
+    let value = checked { ffi_stack_u8(1, 2, 3, 4, 5, 6, 7, 8, 9) };
+    @dbg(value);
+    0
+}
+""" }]
+args = ["--preview", "c_ffi", "--target", "aarch64-macos", "--emit", "asm", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== Assembly (aarch64-macos) ==="]

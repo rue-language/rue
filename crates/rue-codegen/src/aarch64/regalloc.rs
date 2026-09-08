@@ -1327,9 +1327,9 @@ impl RegAlloc {
             Aarch64Inst::Ret => mir.push(Aarch64Inst::Ret),
             Aarch64Inst::Brk => mir.push(Aarch64Inst::Brk),
             Aarch64Inst::Svc { imm } => mir.push(Aarch64Inst::Svc { imm }),
-            // The physical-base narrow forms are produced by this pass from the
-            // indexed pseudos above with already-allocated operands; they never
-            // appear in the pre-allocation input, so pass them through unchanged.
+            // The physical-base narrow-load form is produced by this pass from
+            // the indexed pseudo above with already-allocated operands; it
+            // never appears in the pre-allocation input, so pass it through.
             Aarch64Inst::NarrowLoad {
                 dst,
                 base,
@@ -1348,12 +1348,15 @@ impl RegAlloc {
                 base,
                 offset,
                 width,
-            } => mir.push(Aarch64Inst::NarrowStore {
-                src,
-                base,
-                offset,
-                width,
-            }),
+            } => {
+                let src = Self::load_operand(context, mir, src, SCRATCH_VALUE)?;
+                mir.push(Aarch64Inst::NarrowStore {
+                    src,
+                    base,
+                    offset,
+                    width,
+                });
+            }
         }
         Ok(())
     }
@@ -1720,6 +1723,7 @@ impl RegAllocBackend for Aarch64Backend {
 
 #[cfg(test)]
 mod tests {
+    use super::super::Emitter;
     use super::Aarch64Backend;
     use super::liveness;
     use super::{
@@ -1762,6 +1766,138 @@ mod tests {
             error.to_string().contains("was not allocated"),
             "unexpected message: {error}"
         );
+
+        let mut buffer = RewriteBuffer::new();
+        let error = RegAlloc::rewrite_inst(
+            &context,
+            &mut buffer,
+            Aarch64Inst::NarrowStore {
+                src: Operand::Virtual(VReg::new(0)),
+                base: Reg::Sp,
+                offset: 0,
+                width: 1,
+            },
+        )
+        .expect_err("an unassigned narrow-store source must fail the rewrite");
+        assert_eq!(error.kind.code(), ErrorCode::INTERNAL_CODEGEN_ERROR);
+        assert!(
+            error.to_string().contains("was not allocated"),
+            "unexpected message: {error}"
+        );
+    }
+
+    #[test]
+    fn narrow_store_reloads_spilled_source_before_store() {
+        for (width, offset, spill_offset) in [(1, 0, -8), (2, 2, -16), (4, 4, -24)] {
+            let mut allocation: IndexMap<VReg, Option<Allocation<Reg>>> =
+                IndexMap::with_capacity(1);
+            allocation.resize(1, Some(Allocation::Spill(spill_offset)));
+            let coalesce_result = CoalesceResult::empty();
+            let context = AllocationContext::for_test(&allocation, &coalesce_result);
+            let mut buffer = RewriteBuffer::new();
+
+            RegAlloc::rewrite_inst(
+                &context,
+                &mut buffer,
+                Aarch64Inst::NarrowStore {
+                    src: Operand::Virtual(VReg::new(0)),
+                    base: Reg::Sp,
+                    offset,
+                    width,
+                },
+            )
+            .expect("spilled narrow-store source should rewrite");
+
+            let rewritten = buffer.drain_ordered_for_test();
+            assert_eq!(rewritten.len(), 2);
+            assert!(matches!(
+                rewritten[0],
+                Aarch64Inst::Ldr {
+                    dst: Operand::Physical(dst),
+                    base: Reg::Fp,
+                    offset: actual,
+                } if dst == SCRATCH_VALUE && actual == spill_offset
+            ));
+            assert!(matches!(
+                rewritten[1],
+                Aarch64Inst::NarrowStore {
+                    src: Operand::Physical(src),
+                    base: Reg::Sp,
+                    offset: actual,
+                    width: actual_width,
+                } if src == SCRATCH_VALUE && actual == offset && actual_width == width
+            ));
+
+            let mut emitted_mir = Aarch64Mir::new();
+            for inst in rewritten.iter().cloned() {
+                emitted_mir.push(inst);
+            }
+            let (code, _) = Emitter::new(&emitted_mir, 0, 0, 0, &[], &[])
+                .without_frame()
+                .emit()
+                .expect("spilled narrow-store rewrite should encode");
+            assert_eq!(
+                code.len(),
+                8,
+                "reload and narrow store should each encode once"
+            );
+        }
+    }
+
+    #[test]
+    fn narrow_store_preserves_allocated_and_physical_sources() {
+        let mut allocation: IndexMap<VReg, Option<Allocation<Reg>>> = IndexMap::with_capacity(1);
+        allocation.resize(1, Some(Allocation::Register(Reg::X13)));
+        let coalesce_result = CoalesceResult::empty();
+        let context = AllocationContext::for_test(&allocation, &coalesce_result);
+
+        let mut buffer = RewriteBuffer::new();
+        RegAlloc::rewrite_inst(
+            &context,
+            &mut buffer,
+            Aarch64Inst::NarrowStore {
+                src: Operand::Virtual(VReg::new(0)),
+                base: Reg::Sp,
+                offset: 6,
+                width: 2,
+            },
+        )
+        .expect("allocated narrow-store source should rewrite");
+        let rewritten = buffer.drain_ordered_for_test();
+        assert_eq!(rewritten.len(), 1);
+        assert!(matches!(
+            rewritten.as_slice(),
+            [Aarch64Inst::NarrowStore {
+                src: Operand::Physical(Reg::X13),
+                base: Reg::Sp,
+                offset: 6,
+                width: 2,
+            }]
+        ));
+
+        let mut physical_buffer = RewriteBuffer::new();
+        RegAlloc::rewrite_inst(
+            &context,
+            &mut physical_buffer,
+            Aarch64Inst::NarrowStore {
+                src: Operand::Physical(Reg::X14),
+                base: Reg::Sp,
+                offset: 8,
+                width: 4,
+            },
+        )
+        .expect("physical narrow-store source should rewrite");
+        let rewritten = physical_buffer.drain_ordered_for_test();
+        assert_eq!(rewritten.len(), 1);
+        assert!(matches!(
+            rewritten.as_slice(),
+            [Aarch64Inst::NarrowStore {
+                src: Operand::Physical(Reg::X14),
+                base: Reg::Sp,
+                offset: 8,
+                width: 4,
+            }]
+        ));
     }
 
     #[test]
