@@ -3981,6 +3981,156 @@ mod tests {
         );
     }
 
+    /// A GNU `ar` archive holding `members`, the way the CLI harness and a
+    /// C toolchain's `ar rcs` lay one out; only the fields the archive reader
+    /// consumes are populated.
+    fn ar_archive(members: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"!<arch>\n");
+        for (name, data) in members {
+            let mut header = [b' '; 60];
+            let header_name = format!("{name}/");
+            header[..header_name.len()].copy_from_slice(header_name.as_bytes());
+            header[16] = b'0'; // mtime
+            header[28] = b'0'; // uid
+            header[34] = b'0'; // gid
+            header[40..43].copy_from_slice(b"644"); // mode
+            let size = data.len().to_string();
+            header[48..48 + size.len()].copy_from_slice(size.as_bytes());
+            header[58] = b'`';
+            header[59] = b'\n';
+            out.extend_from_slice(&header);
+            out.extend_from_slice(data);
+            if data.len() % 2 == 1 {
+                out.push(b'\n');
+            }
+        }
+        out
+    }
+
+    /// A Mach-O `main` that tail-branches to `callee`, so the link needs
+    /// `callee` resolved through whatever archive supplies it.
+    fn macho_main_branching_to(callee: &str) -> Vec<u8> {
+        ObjectBuilder::new(MACHO_TARGET, "main")
+            .code(vec![0x00, 0x00, 0x00, 0x14]) // b callee
+            .relocation(CodeRelocation {
+                offset: 0,
+                symbol: callee.into(),
+                rel_type: RelocationType::Jump26,
+                addend: 0,
+            })
+            .build()
+    }
+
+    /// Link `main` against `archive` twice — once fully parsed, once indexed —
+    /// and hand back both outcomes, so a test proves the symbol-only index and
+    /// the full parse agree on which members a link needs.
+    fn link_macho_main_against_archive(
+        main: &[u8],
+        archive: &[u8],
+    ) -> [Result<Vec<u8>, LinkError>; 2] {
+        let parsed = {
+            let mut linker = Linker::new(MACHO_TARGET);
+            linker.add_object(ObjectFile::parse(main).unwrap()).unwrap();
+            linker
+                .add_archive(Archive::parse_strict_objects(archive).unwrap())
+                .and_then(|()| linker.link("_main"))
+        };
+        let indexed = {
+            let mut linker = Linker::new(MACHO_TARGET);
+            linker.add_object(ObjectFile::parse(main).unwrap()).unwrap();
+            let index = ArchiveIndex::parse_strict_objects(archive).unwrap();
+            linker
+                .add_archive_index_with_cancellation(&index, &mut || false)
+                .and_then(|()| linker.link("_main"))
+        };
+        [parsed, indexed]
+    }
+
+    /// RUE-2149 case 1: a hidden (`N_PEXT | N_EXT`) helper in a later archive
+    /// member satisfies a reference from an earlier member. Hidden linkage
+    /// keeps the symbol out of the image's exports, not out of the link, so
+    /// the archive index must count it as a provider; treating it as local
+    /// left `helper` undefined.
+    #[test]
+    fn test_macho_archive_hidden_helper_resolves_across_members() {
+        use crate::emit::DefinitionLinkage;
+        let probe = ObjectBuilder::new(MACHO_TARGET, "probe")
+            .code(vec![0x00, 0x00, 0x00, 0x14]) // b helper
+            .relocation(CodeRelocation {
+                offset: 0,
+                symbol: "helper".into(),
+                rel_type: RelocationType::Jump26,
+                addend: 0,
+            })
+            .build();
+        let helper = ObjectBuilder::new(MACHO_TARGET, "helper")
+            .code(vec![0xC0, 0x03, 0x5F, 0xD6]) // ret
+            .linkage(DefinitionLinkage::Hidden)
+            .build();
+        let archive = ar_archive(&[("probe.o", &probe), ("helper.o", &helper)]);
+        let main = macho_main_branching_to("probe");
+
+        for outcome in link_macho_main_against_archive(&main, &archive) {
+            outcome.expect("a hidden helper in a later member must resolve");
+        }
+
+        // Hidden, not local: the parsed member exposes it as a global
+        // definition while a plain `N_SECT` symbol stays local.
+        let parsed = ObjectFile::parse(&helper).unwrap();
+        let sym = parsed.find_symbol("helper").expect("helper is defined");
+        assert_eq!(sym.binding, SymbolBinding::Global);
+    }
+
+    /// RUE-2149 case 2: two required members each carry an `N_WEAK_DEF`
+    /// definition of the same symbol. They coalesce under the established
+    /// first-weak-wins policy instead of being rejected as duplicates, while
+    /// two strong definitions in required members are still a duplicate.
+    #[test]
+    fn test_macho_archive_weak_definitions_coalesce_and_strong_still_collide() {
+        use crate::emit::DefinitionLinkage;
+        // main branches to `probe_a`, whose member also references `probe_b`,
+        // so both members are pulled in.
+        let member = |probe: &str, next: Option<&str>, linkage: DefinitionLinkage| {
+            let mut builder = ObjectBuilder::new(MACHO_TARGET, "shared")
+                .alias(probe)
+                .code(vec![0x00, 0x00, 0x00, 0x14, 0xC0, 0x03, 0x5F, 0xD6])
+                .linkage(linkage);
+            if let Some(next) = next {
+                builder = builder.relocation(CodeRelocation {
+                    offset: 0,
+                    symbol: next.into(),
+                    rel_type: RelocationType::Jump26,
+                    addend: 0,
+                });
+            }
+            builder.build()
+        };
+        let main = macho_main_branching_to("probe_a");
+
+        let weak_a = member("probe_a", Some("probe_b"), DefinitionLinkage::Weak);
+        let weak_b = member("probe_b", None, DefinitionLinkage::Weak);
+        let weak_archive = ar_archive(&[("weak_a.o", &weak_a), ("weak_b.o", &weak_b)]);
+        for outcome in link_macho_main_against_archive(&main, &weak_archive) {
+            outcome.expect("weak definitions in two required members must coalesce");
+        }
+        let parsed = ObjectFile::parse(&weak_a).unwrap();
+        assert_eq!(
+            parsed.find_symbol("shared").unwrap().binding,
+            SymbolBinding::Weak
+        );
+
+        let strong_a = member("probe_a", Some("probe_b"), DefinitionLinkage::Global);
+        let strong_b = member("probe_b", None, DefinitionLinkage::Global);
+        let strong_archive = ar_archive(&[("strong_a.o", &strong_a), ("strong_b.o", &strong_b)]);
+        for outcome in link_macho_main_against_archive(&main, &strong_archive) {
+            assert!(
+                matches!(outcome, Err(LinkError::DuplicateSymbol(ref name)) if name == "shared"),
+                "two strong definitions must still collide"
+            );
+        }
+    }
+
     /// RUE-848: an earlier weak provider and a later strong provider. Archive
     /// extraction is order-driven — the first member satisfying the reference is
     /// pulled, regardless of binding — so the weak member wins and the strong

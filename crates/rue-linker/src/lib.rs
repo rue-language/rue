@@ -23,5 +23,5 @@ pub use elf::{
     ElfMachine, ObjectFile, ObjectFormat, ObjectSymbols, Relocation, RelocationType, Section,
     SectionFlags, StructuredObject, StructuredRelocation, Symbol, SymbolBinding, SymbolType,
 };
-pub use emit::{CodeRelocation, ObjectBuilder};
+pub use emit::{CodeRelocation, DefinitionLinkage, ObjectBuilder};
 pub use linker::{LinkError, Linker};

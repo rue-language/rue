@@ -271,6 +271,16 @@ mod sharding;
 ///   `StrBuf`<->`char*` interop proof: it counts bytes before the NUL terminator
 ///   of the pointer argument, so a `StrBuf` exported via `std.c.owned_c_string`
 ///   round-trips its length through a real foreign call.
+///
+/// Symbol-binding members (RUE-2149), carrying the bindings a C toolchain
+/// produces so archive extraction and strong/weak resolution are proven on
+/// every object format:
+/// - `ffi_hidden_probe() -> 42` calls `ffi_hidden_helper`, a hidden
+///   (`visibility("hidden")`) definition in a LATER member.
+/// - `ffi_weak_probe_a`/`ffi_weak_probe_b` each live in a member whose
+///   definitions are weak (`__attribute__((weak))`) and that also defines
+///   `ffi_weak_shared`; pulling both members must coalesce the two weak
+///   definitions. All three return 42.
 fn synthesize_answer_archive(target: Target) -> TestResult<Vec<u8>> {
     // A leaf function returning 42 (P1).
     let answer: Vec<u8> = match target.arch() {
@@ -342,7 +352,7 @@ fn synthesize_answer_archive(target: Target) -> TestResult<Vec<u8>> {
     objects.push((
         "answer.o".to_string(),
         rue_linker::ObjectBuilder::new(target, "answer")
-            .code(answer)
+            .code(answer.clone())
             .build(),
     ));
     for symbol in echo_symbols {
@@ -764,6 +774,64 @@ fn synthesize_answer_archive(target: Target) -> TestResult<Vec<u8>> {
         caller_objects.push((format!("{symbol}.o"), builder.build()));
     }
     objects.extend(caller_objects);
+
+    // --- Symbol bindings a C toolchain produces (RUE-2149) --------------------
+    //
+    // Two shapes clang archives commonly carry, both of which must survive
+    // symbol ingestion so archive extraction and strong/weak resolution see
+    // them:
+    //
+    // - `ffi_hidden_probe` calls `ffi_hidden_helper`, a hidden
+    //   (`visibility("hidden")`: ELF STV_HIDDEN, Mach-O N_PEXT) definition in
+    //   a LATER member. The probe member is pulled by the program and the
+    //   helper only transitively, so the archive index must count the hidden
+    //   definition as a provider.
+    // - `ffi_weak_probe_a` and `ffi_weak_probe_b` each live in a member that
+    //   also defines the weak `ffi_weak_shared` (`__attribute__((weak))`:
+    //   STB_WEAK, N_WEAK_DEF). A program calling both probes pulls both
+    //   members, so the two weak definitions must coalesce instead of being
+    //   rejected as duplicates.
+    //
+    // Every definition of a member shares its binding, so each weak member
+    // defines `ffi_weak_shared` and carries its probe as a (weak) alias; all
+    // three symbols return 42 through the same leaf code.
+    let hidden_probe: Vec<u8> = match target.arch() {
+        // push rax ; call ffi_hidden_helper ; pop rcx ; ret
+        Arch::X86_64 => vec![0x50, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x59, 0xC3],
+        // stp x29,x30,[sp,#-16]! ; bl ffi_hidden_helper ; ldp x29,x30,[sp],#16 ; ret
+        Arch::Aarch64 => vec![
+            0xFD, 0x7B, 0xBF, 0xA9, 0x00, 0x00, 0x00, 0x94, 0xFD, 0x7B, 0xC1, 0xA8, 0xC0, 0x03,
+            0x5F, 0xD6,
+        ],
+    };
+    let hidden_call_offset: u64 = match target.arch() {
+        Arch::X86_64 => 2,
+        Arch::Aarch64 => 4,
+    };
+    objects.push((
+        "ffi_hidden_probe.o".to_string(),
+        rue_linker::ObjectBuilder::new(target, "ffi_hidden_probe")
+            .code(hidden_probe)
+            .relocation(plt(hidden_call_offset, "ffi_hidden_helper"))
+            .build(),
+    ));
+    objects.push((
+        "ffi_hidden_helper.o".to_string(),
+        rue_linker::ObjectBuilder::new(target, "ffi_hidden_helper")
+            .code(answer.clone())
+            .linkage(rue_linker::DefinitionLinkage::Hidden)
+            .build(),
+    ));
+    for probe in ["ffi_weak_probe_a", "ffi_weak_probe_b"] {
+        objects.push((
+            format!("{probe}.o"),
+            rue_linker::ObjectBuilder::new(target, "ffi_weak_shared")
+                .alias(probe)
+                .code(answer.clone())
+                .linkage(rue_linker::DefinitionLinkage::Weak)
+                .build(),
+        ));
+    }
 
     let members: Vec<(&str, &[u8])> = objects
         .iter()
