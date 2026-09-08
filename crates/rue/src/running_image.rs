@@ -353,6 +353,7 @@ mod macos {
 mod tests {
     use super::*;
     use std::fs;
+    use std::io;
     #[cfg(target_os = "macos")]
     use std::os::unix::process::ExitStatusExt;
     use std::path::{Path, PathBuf};
@@ -561,6 +562,17 @@ mod tests {
         staged: bool,
         pause: bool,
     ) -> HelperChild {
+        try_spawn_helper(path, control, once, staged, pause)
+            .expect("spawn private identity fixture")
+    }
+
+    fn try_spawn_helper(
+        path: &Path,
+        control: &Path,
+        once: bool,
+        staged: bool,
+        pause: bool,
+    ) -> io::Result<HelperChild> {
         let mut command = Command::new(path);
         command
             .args([
@@ -583,9 +595,9 @@ mod tests {
         if pause {
             command.env(HELPER_PAUSE_ENV, "1");
         }
-        HelperChild {
-            child: command.spawn().expect("spawn private identity fixture"),
-        }
+        Ok(HelperChild {
+            child: command.spawn()?,
+        })
     }
 
     struct HelperChild {
@@ -641,14 +653,18 @@ mod tests {
             }
             if let Some(status) = child.try_wait().expect("poll identity fixture") {
                 #[cfg(target_os = "macos")]
-                assert_eq!(
-                    status.signal(),
-                    Some(9),
-                    "only macOS SIGKILL is an unavailable identity: {status}"
-                );
+                {
+                    assert_eq!(
+                        status.signal(),
+                        Some(9),
+                        "only macOS SIGKILL is an unavailable identity: {status}"
+                    );
+                    return false;
+                }
                 #[cfg(not(target_os = "macos"))]
-                panic!("identity fixture terminated before {marker}: {status}");
-                return false;
+                {
+                    panic!("identity fixture terminated before {marker}: {status}");
+                }
             }
             assert!(Instant::now() < deadline, "timed out waiting for {marker}");
             thread::sleep(Duration::from_millis(10));
@@ -722,6 +738,48 @@ mod tests {
         bytes.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 
+    #[cfg(target_os = "macos")]
+    enum StageWait {
+        Ready,
+        Captured(String),
+        Unavailable,
+    }
+
+    #[cfg(target_os = "macos")]
+    fn wait_for_stage_or_terminal(child: &mut Child, directory: &Path, stage: &str) -> StageWait {
+        let deadline = Instant::now() + HELPER_WAIT;
+        let ready = directory.join(format!("stage-{stage}-ready"));
+        let done = directory.join("done");
+        loop {
+            if ready.exists() {
+                return StageWait::Ready;
+            }
+            if done.exists() {
+                let capture = read_capture(directory, "once");
+                child
+                    .wait()
+                    .expect("wait for terminal identity fixture")
+                    .success()
+                    .then_some(())
+                    .expect("terminal identity fixture exited unsuccessfully");
+                return StageWait::Captured(capture);
+            }
+            if let Some(status) = child.try_wait().expect("poll identity fixture") {
+                assert_eq!(
+                    status.signal(),
+                    Some(9),
+                    "only macOS SIGKILL is an unavailable identity: {status}"
+                );
+                return StageWait::Unavailable;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for stage {stage} or terminal identity result"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     fn capture_once(path: &Path) -> String {
         let control = tempfile::tempdir().expect("one-shot identity control directory");
         let mut child = spawn_helper(path, control.path(), true, false, false);
@@ -770,13 +828,28 @@ mod tests {
 
             let control = tempfile::tempdir().expect("native stage control directory");
             let mut child = spawn_helper(&old_image, control.path(), true, true, false);
+            let mut terminal_capture = None;
+            let mut unavailable = false;
             for (index, current_stage) in stages.iter().enumerate() {
                 let ready = format!("stage-{current_stage}-ready");
                 if index <= replacement_stage {
                     wait_for_marker(child.child_mut(), control.path(), &ready);
-                } else if !wait_for_marker_or_terminated(child.child_mut(), control.path(), &ready)
-                {
-                    break;
+                } else {
+                    match wait_for_stage_or_terminal(
+                        child.child_mut(),
+                        control.path(),
+                        current_stage,
+                    ) {
+                        StageWait::Ready => {}
+                        StageWait::Captured(capture) => {
+                            terminal_capture = Some(capture);
+                            break;
+                        }
+                        StageWait::Unavailable => {
+                            unavailable = true;
+                            break;
+                        }
+                    }
                 }
                 if index == replacement_stage {
                     fs::rename(&new_image, &old_image)
@@ -789,11 +862,13 @@ mod tests {
                 );
             }
 
-            let capture = if wait_for_marker_or_terminated(
-                child.child_mut(),
-                control.path(),
-                "done",
-            ) {
+            let capture = if let Some(capture) = terminal_capture {
+                capture
+            } else if unavailable {
+                format!(
+                    "{FIXTURE_VERSION}\nerr\nplatform terminated old image during native stage\n"
+                )
+            } else if wait_for_marker_or_terminated(child.child_mut(), control.path(), "done") {
                 let capture = read_capture(control.path(), "once");
                 child.wait_success();
                 capture
@@ -845,6 +920,20 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    fn assert_invalid_signature(path: &Path) {
+        let output = Command::new("/usr/bin/codesign")
+            .args(["--verify", "--strict"])
+            .arg(path)
+            .output()
+            .expect("verify invalid private Mach-O signature");
+        assert!(
+            !output.status.success(),
+            "mutated signed fixture unexpectedly verifies: {}",
+            path.display()
+        );
+    }
+
+    #[cfg(target_os = "macos")]
     fn macho_uuid(path: &Path) -> String {
         let output = Command::new("/usr/bin/otool")
             .args(["-l"])
@@ -884,6 +973,31 @@ mod tests {
                 Some("err"),
                 "unsigned fixture validated"
             );
+        }
+
+        let invalid = directory.join("compiler-invalid-signed");
+        fs::copy(current, &invalid).expect("copy invalid signed fixture");
+        sign_adhoc(&invalid, "running-image-fixture");
+        append_fixture_difference(&invalid);
+        assert_invalid_signature(&invalid);
+        let control = tempfile::tempdir().expect("invalid signed fixture control directory");
+        match try_spawn_helper(&invalid, control.path(), true, false, false) {
+            Ok(mut child) => {
+                if wait_for_marker_or_terminated(child.child_mut(), control.path(), "done") {
+                    let capture = read_capture(control.path(), "once");
+                    child.wait_success();
+                    assert_eq!(
+                        capture.lines().nth(1),
+                        Some("err"),
+                        "invalid signed fixture validated: {capture}"
+                    );
+                }
+            }
+            Err(error) => assert_eq!(
+                error.kind(),
+                io::ErrorKind::PermissionDenied,
+                "invalid signed fixture startup failed for an unexpected reason: {error}"
+            ),
         }
     }
 }
