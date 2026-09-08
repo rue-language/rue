@@ -70,8 +70,8 @@ struct GroupRow {
     /// An earlier `_` arm already covered this one and the match's own arm
     /// walk reported it, so the group must not report it a second time.
     already_unreachable: bool,
-    /// The arm's analyzed body.
-    body: Option<AirRef>,
+    /// The source-order arm whose analyzed body the selector chooses.
+    arm_index: usize,
 }
 
 /// The arms that match one variant of the scrutinee, at least one of which
@@ -79,8 +79,8 @@ struct GroupRow {
 ///
 /// The group compiles to a decision tree over its rows and that variant's
 /// payload occurrences (RUE-2080): the tree tests one occurrence at a time and
-/// yields the index of the arm that wins, and one flat dispatch on that index
-/// runs the arm. Naming the arm instead of inlining it is what lets several
+/// yields the source ordinal of the arm that wins, and one flat dispatch on
+/// that ordinal runs the arm. Naming the arm instead of inlining it is what lets several
 /// paths through the tree reach one arm — the join a multi-column matrix needs
 /// — while every arm keeps exactly one analyzed body.
 ///
@@ -122,7 +122,7 @@ enum DispatchNode {
 
 /// One arm of the match's own arm list.
 enum RootArm {
-    Direct(AirPattern, AirRef),
+    Direct(AirPattern, usize),
     /// The dispatch of the variant group at this index.
     Group(usize),
 }
@@ -1413,6 +1413,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Track patterns for exhaustiveness checking and duplicate detection
         let mut wildcard_span: Option<Span> = None;
+        let mut wildcard_arm_index: Option<usize> = None;
+        let mut wildcard_outer_uncovered = false;
         let mut bool_true_span: Option<Span> = None;
         let mut bool_false_span: Option<Span> = None;
         let mut seen_ints: AHashMap<i64, Span> = AHashMap::new();
@@ -1425,6 +1427,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Analyze each arm (each arm gets its own scope)
         let mut air_arms: Vec<RootArm> = Vec::new();
+        let mut arm_bodies: Vec<AirRef> = Vec::with_capacity(arms.len());
         let mut result_type: Option<Type> = None;
         let mut result_continues: Option<bool> = None;
         let mut arm_divergence_kinds: Vec<DivergenceKinds> = Vec::with_capacity(arms.len());
@@ -1440,7 +1443,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // readmitted only once every arm has been analyzed (RUE-1678).
         let mut arm_accessor_loans = Vec::with_capacity(arms.len());
 
-        for (pattern, body) in arms.iter() {
+        for (arm_index, (pattern, body)) in arms.iter().enumerate() {
             let pattern_span = pattern.span();
 
             // If we've seen a wildcard, everything after is unreachable
@@ -1497,7 +1500,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         } else {
                             false
                         };
-                        if fully_covered {
+                        if fully_covered && decomposed.is_empty() {
                             ctx.warnings.push(
                                 CompileWarning::new(
                                     WarningKind::UnreachablePattern("_".to_string()),
@@ -1508,7 +1511,25 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                 ),
                             );
                         }
+                        if !decomposed.is_empty() {
+                            wildcard_outer_uncovered = match pattern_enum_id.or_else(|| {
+                                scrutinee_type.try_kind().and_then(|kind| match kind {
+                                    TypeKind::Enum(id) => Some(id),
+                                    _ => None,
+                                })
+                            }) {
+                                Some(enum_id) => {
+                                    let def = self.body_type_pool().enum_def(enum_id);
+                                    let external_non_exhaustive =
+                                        def.is_non_exhaustive && def.file_id != ctx.current_file_id;
+                                    external_non_exhaustive
+                                        || covered_variants.len() < def.variant_count()
+                                }
+                                None => true,
+                            };
+                        }
                         wildcard_span = Some(pattern_span);
+                        wildcard_arm_index = Some(arm_index);
                     }
                 }
                 RirPattern::Int {
@@ -1785,6 +1806,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     .collect();
                 air.add_block(&statements, body_result.air_ref, body_type, pattern_span)?
             };
+            arm_bodies.push(arm_body_ref);
 
             // The arm joins its variant's group, whose decision tree names it
             // by index, or takes an arm slot of the match itself. A variant
@@ -1797,7 +1819,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         fields: placement.fields,
                         span: pattern_span,
                         already_unreachable: wildcard_span.is_some(),
-                        body: Some(arm_body_ref),
+                        arm_index,
                     });
                 }
                 None => {
@@ -1828,7 +1850,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             }
                         }
                     };
-                    air_arms.push(RootArm::Direct(air_pattern, arm_body_ref));
+                    air_arms.push(RootArm::Direct(air_pattern, arm_index));
                 }
             }
         }
@@ -1891,10 +1913,38 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         let final_type = result_type.unwrap_or(Type::UNIT);
 
+        // A root wildcard covers every payload combination of every grouped
+        // variant. Add it to each group's matrix after all arms have been
+        // analyzed, since groups are discovered from the complete pattern set
+        // and the wildcard may precede their first source arm. The body is
+        // selected by arm ordinal below, so this row does not duplicate the
+        // analyzed body in AIR.
+        if let Some(wildcard_arm_index) = wildcard_arm_index {
+            let wildcard_span = wildcard_span.expect("wildcard arm has a span");
+            for group in &mut groups {
+                let payload_len = self
+                    .body_type_pool()
+                    .enum_def(group.enum_id)
+                    .variant_payload(group.variant_index as usize)
+                    .len();
+                group.rows.push(GroupRow {
+                    fields: vec![MatrixPattern::Wildcard; payload_len],
+                    span: wildcard_span,
+                    // This row can be shadowed for one outer variant while
+                    // the root `_` remains reachable through another.
+                    already_unreachable: true,
+                    arm_index: wildcard_arm_index,
+                });
+            }
+        }
+
         // Each variant group's decision tree is built now that every arm has
         // been placed: it decides exhaustiveness over the group's whole matrix
-        // (4.7:39) and which of its arms it can reach (4.7:20).
+        // (4.7:39) and which of its arms it can reach (4.7:20). Group rows are
+        // sorted by their original arm ordinal, including the synthetic root
+        // wildcard row above.
         let mut group_dispatch: Vec<AirRef> = Vec::with_capacity(groups.len());
+        let mut wildcard_reached_in_group = false;
         for group in &groups {
             let payload = self
                 .body_type_pool()
@@ -1918,12 +1968,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 })
                 .collect();
             let witness = vec![Witness::Hole; payload.len()];
-            let rows: Vec<(usize, Vec<MatrixPattern>)> = group
+            let mut rows: Vec<(usize, Vec<MatrixPattern>)> = group
                 .rows
                 .iter()
                 .enumerate()
                 .map(|(index, row)| (index, row.fields.clone()))
                 .collect();
+            rows.sort_by_key(|(index, _)| group.rows[*index].arm_index);
             let mut state = GroupDispatch {
                 group,
                 reached: vec![false; group.rows.len()],
@@ -1931,6 +1982,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             };
             let tree =
                 self.compile_group_matrix(&mut state, &rows, &columns, &witness, ctx, span)?;
+            if let Some(wildcard_arm_index) = wildcard_arm_index
+                && group
+                    .rows
+                    .iter()
+                    .position(|row| row.arm_index == wildcard_arm_index)
+                    .is_some_and(|index| state.reached[index])
+            {
+                wildcard_reached_in_group = true;
+            }
             for (index, row) in group.rows.iter().enumerate() {
                 if state.reached[index] || row.already_unreachable {
                     continue;
@@ -1949,29 +2009,71 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                      matches the same value",
                 ));
             }
-            group_dispatch.push(Self::emit_group_dispatch(
+            group_dispatch.push(Self::emit_group_selector(
                 air,
                 group,
                 &tree,
                 scrutinee_result.air_ref,
-                final_type,
             )?);
         }
 
-        let air_arms: Vec<(AirPattern, AirRef)> = air_arms
-            .iter()
-            .map(|arm| match arm {
-                RootArm::Direct(pattern, body) => (pattern.clone(), *body),
-                RootArm::Group(index) => (
-                    AirPattern::EnumVariant {
-                        enum_id: groups[*index].enum_id,
-                        variant_index: groups[*index].variant_index,
-                    },
-                    group_dispatch[*index],
-                ),
-            })
-            .collect();
-        let air_ref = air.add_match(scrutinee_result.air_ref, &air_arms, final_type, span)?;
+        // A root wildcard can be reachable through a partially covered group
+        // even when every outer variant has appeared. Defer its one warning
+        // until those matrices have contributed their reachability facts.
+        if !decomposed.is_empty()
+            && !wildcard_outer_uncovered
+            && !wildcard_reached_in_group
+            && let Some(wildcard_span) = wildcard_span
+        {
+            ctx.warnings.push(CompileWarning::new(
+                WarningKind::UnreachablePattern("_".to_string()),
+                wildcard_span,
+            ).with_note(
+                "this pattern will never be matched because the arms above already cover every possible value",
+            ));
+        }
+
+        let air_ref = if groups.is_empty() {
+            let body_arms: Vec<(AirPattern, AirRef)> = air_arms
+                .iter()
+                .map(|arm| match arm {
+                    RootArm::Direct(pattern, arm_index) => {
+                        (pattern.clone(), arm_bodies[*arm_index])
+                    }
+                    RootArm::Group(_) => unreachable!("a group requires nested patterns"),
+                })
+                .collect();
+            air.add_match(scrutinee_result.air_ref, &body_arms, final_type, span)?
+        } else {
+            let selector_arms: Vec<(AirPattern, AirRef)> = air_arms
+                .iter()
+                .map(|arm| match arm {
+                    RootArm::Direct(pattern, arm_index) => {
+                        let selector = air.add_inst(AirInst {
+                            data: AirInstData::Const(*arm_index as u64),
+                            ty: Type::I32,
+                            span,
+                        });
+                        (pattern.clone(), selector)
+                    }
+                    RootArm::Group(index) => (
+                        AirPattern::EnumVariant {
+                            enum_id: groups[*index].enum_id,
+                            variant_index: groups[*index].variant_index,
+                        },
+                        group_dispatch[*index],
+                    ),
+                })
+                .collect();
+            let selector =
+                air.add_match(scrutinee_result.air_ref, &selector_arms, Type::I32, span)?;
+            let body_arms: Vec<(AirPattern, AirRef)> = arm_bodies
+                .iter()
+                .enumerate()
+                .map(|(arm_index, body)| (AirPattern::Int(arm_index as i64), *body))
+                .collect();
+            air.add_match(selector, &body_arms, final_type, span)?
+        };
         let match_divergence = if scrutinee_result.continues {
             arm_divergence_kinds
                 .iter()
@@ -3091,35 +3193,20 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
     }
 
-    /// Assemble one variant group's dispatch: the decision tree, which yields
-    /// the index of the arm that matched, and the flat dispatch that runs it.
-    fn emit_group_dispatch(
+    /// Assemble one variant group's selector. The decision tree yields the
+    /// source-order arm ordinal; one flat body dispatch is emitted for the
+    /// whole match after all group selectors have been combined.
+    fn emit_group_selector(
         air: &mut Air,
         group: &VariantGroup,
         tree: &DispatchNode,
         scrutinee: AirRef,
-        result_type: Type,
     ) -> CompileResult<AirRef> {
-        let selector = Self::emit_dispatch_node(air, group, tree, scrutinee)?;
-        let arms = group
-            .rows
-            .iter()
-            .enumerate()
-            .map(|(index, row)| {
-                let body = row.body.ok_or_else(|| {
-                    CompileError::new(
-                        ErrorKind::InternalError("match arm was not analyzed".to_string()),
-                        group.span,
-                    )
-                })?;
-                Ok((AirPattern::Int(index as i64), body))
-            })
-            .collect::<CompileResult<Vec<_>>>()?;
-        Ok(air.add_match(selector, &arms, result_type, group.span)?)
+        Self::emit_dispatch_node(air, group, tree, scrutinee)
     }
 
     /// Emit one node of a group's decision tree, as a match on the occurrence
-    /// it tests whose arms are the sub-trees, or the index of the arm a leaf
+    /// it tests whose arms are the sub-trees, or the source ordinal of the arm a leaf
     /// selects.
     fn emit_dispatch_node(
         air: &mut Air,
@@ -3129,7 +3216,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ) -> CompileResult<AirRef> {
         match node {
             DispatchNode::Row(index) => Ok(air.add_inst(AirInst {
-                data: AirInstData::Const(*index as u64),
+                data: AirInstData::Const(group.rows[*index].arm_index as u64),
                 ty: Type::I32,
                 span: group.rows[*index].span,
             })),

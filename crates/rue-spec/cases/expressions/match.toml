@@ -1800,6 +1800,197 @@ exit_code = 1
 warning_contains = ["unreachable pattern 'Outer.Pair(Inner.A(_), Inner.B)'"]
 
 [[case]]
+name = "nested_variant_pattern_root_wildcard_first"
+spec = ["4.7:18", "4.7:39", "4.7:40"]
+description = "A root wildcard before a nested variant arm covers the grouped payload and keeps the later arm unreachable."
+source = """
+enum Inner { A(i32), B }
+enum Outer { Pair(Inner, Inner), Empty }
+
+fn main() -> i32 {
+    match Outer.Pair(Inner.B, Inner.B) {
+        _ => 0,
+        Outer.Pair(Inner.A(v), Inner.B) => v,
+        Outer.Empty => 2,
+    }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "nested_variant_pattern_root_wildcard_middle"
+spec = ["4.7:18", "4.7:39", "4.7:40"]
+description = "A root wildcard between grouped rows supplies the remaining payload values in source order."
+source = """
+enum Inner { A(i32), B }
+enum Outer { Pair(Inner, Inner), Empty }
+
+fn main() -> i32 {
+    match Outer.Pair(Inner.B, Inner.B) {
+        Outer.Pair(Inner.A(v), Inner.B) => v,
+        _ => 0,
+        Outer.Pair(Inner.B, _) => 2,
+        Outer.Empty => 3,
+    }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "nested_variant_pattern_root_wildcard_last"
+spec = ["4.7:18", "4.7:39", "4.7:40"]
+description = "A root wildcard after all outer variants are named remains reachable for uncovered nested payload combinations."
+source = """
+enum Inner { A(i32), B }
+enum Outer { Pair(Inner, Inner), Empty }
+
+fn main() -> i32 {
+    match Outer.Pair(Inner.B, Inner.B) {
+        Outer.Pair(Inner.A(v), Inner.B) => v,
+        Outer.Empty => 2,
+        _ => 0,
+    }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "nested_variant_pattern_root_wildcard_shared_across_groups"
+spec = ["4.7:18", "4.7:39", "4.7:40"]
+description = "One root wildcard covers the remaining payload values in multiple decomposed outer-variant groups."
+source = """
+enum Inner { A(i32), B }
+enum Other { X(i32), Y }
+enum Outer { Pair(Inner, Inner), Wrap(Other), Empty }
+
+fn classify(o: Outer) -> i32 {
+    match o {
+        Outer.Pair(Inner.A(v), Inner.B) => v,
+        Outer.Wrap(Other.X(v)) => v + 10,
+        _ => 0,
+    }
+}
+
+fn main() -> i32 {
+    classify(Outer.Pair(Inner.B, Inner.B))
+        + classify(Outer.Wrap(Other.Y))
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "nested_variant_pattern_root_wildcard_truly_unreachable"
+spec = ["4.7:18", "4.7:20", "4.7:39", "4.7:40"]
+description = "A root wildcard after complete grouped and outer coverage warns exactly once."
+source = """
+enum Inner { A(i32), B }
+enum Outer { Pair(Inner, Inner), Empty }
+
+fn main() -> i32 {
+    match Outer.Pair(Inner.B, Inner.B) {
+        Outer.Pair(Inner.A(v), _) => v,
+        Outer.Pair(Inner.B, _) => 0,
+        Outer.Empty => 2,
+        _ => 3,
+    }
+}
+"""
+exit_code = 0
+warning_contains = ["unreachable pattern '_'"]
+
+[[case]]
+name = "nested_variant_pattern_group_after_root_wildcard_is_not_selected"
+spec = ["4.7:18", "4.7:20", "4.7:39", "4.7:40"]
+description = "A grouped arm after a root wildcard remains unreachable at runtime and its body is not evaluated."
+source = """
+enum Inner { A(i32), B }
+enum Outer { Pair(Inner, Inner), Empty }
+
+fn main() -> i32 {
+    match Outer.Pair(Inner.B, Inner.B) {
+        Outer.Pair(Inner.A(v), _) => v,
+        _ => {
+            @dbg(7);
+            0
+        },
+        Outer.Pair(Inner.B, _) => {
+            @dbg(99);
+            2
+        },
+        Outer.Empty => 3,
+    }
+}
+"""
+expected_stdout = "7\n"
+exit_code = 0
+
+[[case]]
+name = "nested_variant_pattern_root_wildcard_early_return"
+spec = ["4.7:18", "4.7:39", "4.7:40"]
+description = "A grouped arm selected through the whole-match ordinal dispatch can return directly."
+source = """
+enum Inner { A(i32), B }
+enum Outer { Pair(Inner, Inner), Empty }
+
+fn main() -> i32 {
+    match Outer.Pair(Inner.A(5), Inner.B) {
+        Outer.Pair(Inner.A(v), Inner.B) => return v,
+        _ => 0,
+        Outer.Empty => 2,
+    }
+    9
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "nested_variant_pattern_root_wildcard_break"
+spec = ["4.7:18", "4.7:39", "4.7:40", "4.8:7"]
+description = "A grouped match inside a loop can break through the existing control-flow join."
+source = """
+enum Inner { A(i32), B }
+enum Outer { Pair(Inner, Inner), Empty }
+
+fn main() -> i32 {
+    let mut result = 0;
+    while true {
+        match Outer.Pair(Inner.B, Inner.B) {
+            Outer.Pair(Inner.A(v), Inner.B) => { result = v; },
+            _ => { result = 7; break; },
+            Outer.Empty => { result = 2; },
+        }
+    }
+    result
+}
+"""
+exit_code = 7
+warning_contains = ["unreachable pattern 'Outer.Empty'"]
+
+[[case]]
+name = "nested_variant_pattern_selector_evaluates_scrutinee_once"
+spec = ["4.7:5", "4.7:18", "4.7:39", "4.7:40"]
+description = "The whole-match selector evaluates a side-effecting scrutinee once while dispatching through a grouped matrix."
+source = """
+enum Inner { A(i32), B }
+enum Outer { Pair(Inner, Inner), Empty }
+
+fn make() -> Outer {
+    @dbg(7);
+    Outer.Pair(Inner.B, Inner.B)
+}
+
+fn main() -> i32 {
+    match make() {
+        Outer.Pair(Inner.A(v), Inner.B) => v,
+        _ => 0,
+        Outer.Empty => 2,
+    }
+}
+"""
+expected_stdout = "7\n"
+exit_code = 0
+
+[[case]]
 name = "nested_variant_pattern_second_position_discarded_linear"
 spec = ["4.7:38", "4.7:40"]
 description = "A `_` over a linear payload is rejected wherever it appears, including in a second nested position of the same pattern."
