@@ -223,13 +223,17 @@ mod macos {
             flags: u32,
             information: *mut CFDictionaryRef,
         ) -> OSStatus;
+        static kSecCodeInfoUnique: CFStringRef;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
         fn CFDictionaryGetValue(dictionary: CFDictionaryRef, key: *const c_void) -> CFTypeRef;
         fn CFGetTypeID(value: CFTypeRef) -> usize;
         fn CFDataGetTypeID() -> usize;
         fn CFDataGetBytePtr(data: CFDataRef) -> *const u8;
         fn CFDataGetLength(data: CFDataRef) -> isize;
         fn CFRelease(value: *const c_void);
-        static kSecCodeInfoUnique: CFStringRef;
     }
 
     pub(super) fn capture() -> Result<RunningImageIdentity, RunningImageIdentityError> {
@@ -349,6 +353,8 @@ mod macos {
 mod tests {
     use super::*;
     use std::fs;
+    #[cfg(target_os = "macos")]
+    use std::os::unix::process::ExitStatusExt;
     use std::path::{Path, PathBuf};
     use std::process::{Child, Command, Stdio};
     use std::thread;
@@ -357,6 +363,7 @@ mod tests {
     const HELPER_CONTROL_ENV: &str = "RUE_RUNNING_IMAGE_HELPER_CONTROL";
     const HELPER_ONCE_ENV: &str = "RUE_RUNNING_IMAGE_HELPER_ONCE";
     const HELPER_STAGED_ENV: &str = "RUE_RUNNING_IMAGE_HELPER_STAGED";
+    const HELPER_PAUSE_ENV: &str = "RUE_RUNNING_IMAGE_HELPER_PAUSE";
     #[cfg(target_os = "macos")]
     const NATIVE_STAGE_CONTROL_ENV: &str = "RUE_RUNNING_IMAGE_TEST_STAGE_CONTROL";
     const FIXTURE_VERSION: &str = "running-image-fixture-v1";
@@ -399,8 +406,8 @@ mod tests {
         append_fixture_difference(&image_b);
         #[cfg(target_os = "macos")]
         {
-            sign_adhoc(&image_a, "running-image-fixture-a");
-            sign_adhoc(&image_b, "running-image-fixture-b");
+            sign_adhoc(&image_a, "running-image-fixture");
+            sign_adhoc(&image_b, "running-image-fixture");
             assert_eq!(macho_uuid(&image_a), macho_uuid(&image_b));
         }
         fs::copy(&image_b, &image_b_probe).expect("copy the signed replacement fixture");
@@ -417,7 +424,13 @@ mod tests {
         // Establish that a properly signed private replacement can execute
         // and produce an identity before using it in the replacement race.
         let replacement_control = tempfile::tempdir().expect("replacement control directory");
-        let mut replacement = spawn_helper(&image_b_probe, replacement_control.path(), true, false);
+        let mut replacement = spawn_helper(
+            &image_b_probe,
+            replacement_control.path(),
+            true,
+            false,
+            false,
+        );
         wait_for_marker(replacement.child_mut(), replacement_control.path(), "done");
         let replacement_identity = read_capture(replacement_control.path(), "once");
         replacement.wait_success();
@@ -425,16 +438,26 @@ mod tests {
             &replacement_identity,
             "signed/private image B must capture successfully",
         );
+        let image_a_identity = capture_once(&image_a);
+        assert_ok(
+            &image_a_identity,
+            "signed/private image A must capture successfully",
+        );
         #[cfg(target_os = "macos")]
-        macos_stage_barrier_fixture(&image_a);
+        macos_stage_replacement_fixtures(
+            &image_a,
+            &image_b,
+            &image_a_identity,
+            &replacement_identity,
+        );
+        deletion_only_fixture(&image_a, &image_a_identity);
 
         let old_control = tempfile::tempdir().expect("old-process control directory");
-        let mut old = spawn_helper(&image_a, old_control.path(), false, false);
+        let mut old = spawn_helper(&image_a, old_control.path(), false, false, false);
         wait_for_marker(old.child_mut(), old_control.path(), "ready");
         let before = read_capture(old_control.path(), "before");
         assert_ok(&before, "signed/private image A must capture successfully");
 
-        fs::remove_file(&image_a).expect("delete old image path before replacement");
         fs::rename(&image_b, &image_a).expect("replace image A at the same path");
         touch(old_control.path().join("between"));
         let between_alive =
@@ -480,6 +503,10 @@ mod tests {
         fs::write(control.join("version"), FIXTURE_VERSION).expect("write fixture version");
 
         if std::env::var_os(HELPER_ONCE_ENV).is_some() {
+            if std::env::var_os(HELPER_PAUSE_ENV).is_some() {
+                touch(control.join("capture-ready"));
+                wait_for_parent_marker(&control, "capture");
+            }
             write_capture(&control, "once");
             touch(control.join("done"));
             return;
@@ -527,7 +554,13 @@ mod tests {
         }
     }
 
-    fn spawn_helper(path: &Path, control: &Path, once: bool, staged: bool) -> HelperChild {
+    fn spawn_helper(
+        path: &Path,
+        control: &Path,
+        once: bool,
+        staged: bool,
+        pause: bool,
+    ) -> HelperChild {
         let mut command = Command::new(path);
         command
             .args([
@@ -546,6 +579,9 @@ mod tests {
             command.env(HELPER_STAGED_ENV, "1");
             #[cfg(target_os = "macos")]
             command.env(NATIVE_STAGE_CONTROL_ENV, control);
+        }
+        if pause {
+            command.env(HELPER_PAUSE_ENV, "1");
         }
         HelperChild {
             child: command.spawn().expect("spawn private identity fixture"),
@@ -604,10 +640,14 @@ mod tests {
                 return true;
             }
             if let Some(status) = child.try_wait().expect("poll identity fixture") {
-                assert!(
-                    !status.success(),
-                    "identity fixture exited cleanly before {marker}"
+                #[cfg(target_os = "macos")]
+                assert_eq!(
+                    status.signal(),
+                    Some(9),
+                    "only macOS SIGKILL is an unavailable identity: {status}"
                 );
+                #[cfg(not(target_os = "macos"))]
+                panic!("identity fixture terminated before {marker}: {status}");
                 return false;
             }
             assert!(Instant::now() < deadline, "timed out waiting for {marker}");
@@ -682,22 +722,88 @@ mod tests {
         bytes.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 
-    #[cfg(target_os = "macos")]
-    fn macos_stage_barrier_fixture(path: &Path) {
-        let control = tempfile::tempdir().expect("native identity stage control directory");
-        let mut child = spawn_helper(path, control.path(), true, true);
-        for stage in ["copy-self", "check-validity", "signing-information"] {
-            let ready = format!("stage-{stage}-ready");
-            wait_for_marker(child.child_mut(), control.path(), &ready);
-            touch(control.path().join(format!("stage-{stage}-release")));
-        }
+    fn capture_once(path: &Path) -> String {
+        let control = tempfile::tempdir().expect("one-shot identity control directory");
+        let mut child = spawn_helper(path, control.path(), true, false, false);
         wait_for_marker(child.child_mut(), control.path(), "done");
         let capture = read_capture(control.path(), "once");
         child.wait_success();
-        assert_ok(
-            &capture,
-            "staged signed/private image must capture successfully",
-        );
+        capture
+    }
+
+    fn deletion_only_fixture(path: &Path, expected: &str) {
+        let directory = tempfile::tempdir().expect("delete-only identity fixture directory");
+        let image = directory.path().join("compiler-delete-only");
+        fs::copy(path, &image).expect("copy delete-only identity fixture");
+        let control = tempfile::tempdir().expect("delete-only identity control directory");
+        let mut child = spawn_helper(&image, control.path(), true, false, true);
+        wait_for_marker(child.child_mut(), control.path(), "capture-ready");
+        fs::remove_file(&image).expect("delete fixture before identity capture");
+        touch(control.path().join("capture"));
+        let capture = if wait_for_marker_or_terminated(child.child_mut(), control.path(), "done") {
+            let capture = read_capture(control.path(), "once");
+            child.wait_success();
+            capture
+        } else {
+            format!("{FIXTURE_VERSION}\nerr\nplatform terminated deleted image\n")
+        };
+        assert_old_image_or_unavailable(expected, &capture, "delete-only capture");
+        #[cfg(not(target_os = "macos"))]
+        assert_ok(&capture, "Linux must hash the deleted running image");
+    }
+
+    #[cfg(target_os = "macos")]
+    fn macos_stage_replacement_fixtures(
+        image_a: &Path,
+        image_b: &Path,
+        expected_a: &str,
+        expected_b: &str,
+    ) {
+        assert_ne!(identity_key(expected_a), identity_key(expected_b));
+        let stages = ["copy-self", "check-validity", "signing-information"];
+        for (replacement_stage, stage) in stages.iter().enumerate() {
+            let directory = tempfile::tempdir().expect("native stage fixture directory");
+            let old_image = directory.path().join("compiler-a");
+            let new_image = directory.path().join("compiler-b");
+            fs::copy(image_a, &old_image).expect("copy stage image A");
+            fs::copy(image_b, &new_image).expect("copy stage image B");
+
+            let control = tempfile::tempdir().expect("native stage control directory");
+            let mut child = spawn_helper(&old_image, control.path(), true, true, false);
+            for (index, current_stage) in stages.iter().enumerate() {
+                let ready = format!("stage-{current_stage}-ready");
+                if index <= replacement_stage {
+                    wait_for_marker(child.child_mut(), control.path(), &ready);
+                } else if !wait_for_marker_or_terminated(child.child_mut(), control.path(), &ready)
+                {
+                    break;
+                }
+                if index == replacement_stage {
+                    fs::rename(&new_image, &old_image)
+                        .expect("atomically replace stage fixture image");
+                }
+                touch(
+                    control
+                        .path()
+                        .join(format!("stage-{current_stage}-release")),
+                );
+            }
+
+            let capture = if wait_for_marker_or_terminated(
+                child.child_mut(),
+                control.path(),
+                "done",
+            ) {
+                let capture = read_capture(control.path(), "once");
+                child.wait_success();
+                capture
+            } else {
+                format!(
+                    "{FIXTURE_VERSION}\nerr\nplatform terminated old image during native stage\n"
+                )
+            };
+            assert_old_image_or_unavailable(expected_a, &capture, stage);
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -769,7 +875,7 @@ mod tests {
         fs::copy(current, &unsigned).expect("copy unsigned fixture");
         remove_signature(&unsigned);
         let control = tempfile::tempdir().expect("unsigned fixture control directory");
-        let mut child = spawn_helper(&unsigned, control.path(), true, false);
+        let mut child = spawn_helper(&unsigned, control.path(), true, false, false);
         if wait_for_marker_or_terminated(child.child_mut(), control.path(), "done") {
             let capture = read_capture(control.path(), "once");
             child.wait_success();

@@ -14,8 +14,8 @@ mod test_candidates;
 
 pub use host::{FilesystemCompilerHost, HostOpenRequest, HostPathContext};
 pub use running_image::{
-    RunningImageArchitecture, RunningImageIdentity, RunningImageIdentityError,
-    RunningImageIdentityScheme, RUNNING_IMAGE_IDENTITY_SCHEME_VERSION, running_image_identity,
+    RUNNING_IMAGE_IDENTITY_SCHEME_VERSION, RunningImageArchitecture, RunningImageIdentity,
+    RunningImageIdentityError, RunningImageIdentityScheme, running_image_identity,
 };
 pub use source_loader::{
     AttemptedRead, HermeticDenialError, SourceLoadError, ToolchainIntegrityError, WatchFingerprint,
