@@ -58,6 +58,12 @@ rue_crate(
         "prelude//os:macos": [
             "-l",
             "framework=CoreFoundation",
+        ],
+        "DEFAULT": [],
+    }) + select({
+        # Security.framework owns SecCode; CoreFoundation is linked in the
+        # preceding block for the CFDictionary/CFData helpers.
+        "prelude//os:macos": [
             "-l",
             "framework=Security",
         ],
