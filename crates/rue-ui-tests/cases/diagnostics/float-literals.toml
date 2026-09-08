@@ -97,6 +97,70 @@ fn main() -> i32 { @float_to_int(value()) }
 exit_code = 6
 
 [[case]]
+name = "inferred_integer_rejects_later_float_call"
+description = "A literal inferred as i32 by an earlier call cannot be rebound as f64 by a later call."
+source = """
+fn use_int(x: i32) -> i32 { x }
+fn use_float(x: f64) -> i32 { if x == 1.0 { 42 } else { 11 } }
+fn main() -> i32 {
+    let x = 1;
+    let y = use_int(x);
+    let z = use_float(x);
+    y + z
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected f64, found i32"]
+
+[[case]]
+name = "inferred_float_rejects_later_integer_call"
+description = "A literal inferred as f64 by an earlier call cannot be rebound as i32 by a later call."
+source = """
+fn use_int(x: i32) -> i32 { x }
+fn use_float(x: f64) -> i32 { if x == 1.0 { 42 } else { 11 } }
+fn main() -> i32 {
+    let x = 1;
+    let y = use_float(x);
+    let z = use_int(x);
+    y + z
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i32, found f64"]
+
+[[case]]
+name = "inferred_f32_rejects_later_f64_call"
+description = "A literal inferred as f32 by an earlier call cannot be rebound as f64 by a later call."
+source = """
+fn use_f32(x: f32) -> i32 { if x == 1.0 { 42 } else { 11 } }
+fn use_f64(x: f64) -> i32 { if x == 1.0 { 42 } else { 11 } }
+fn main() -> i32 {
+    let x = 1;
+    let y = use_f32(x);
+    let z = use_f64(x);
+    y + z
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected f64, found f32"]
+
+[[case]]
+name = "inferred_f64_rejects_later_f32_call"
+description = "A literal inferred as f64 by an earlier call cannot be rebound as f32 by a later call."
+source = """
+fn use_f32(x: f32) -> i32 { if x == 1.0 { 42 } else { 11 } }
+fn use_f64(x: f64) -> i32 { if x == 1.0 { 42 } else { 11 } }
+fn main() -> i32 {
+    let x = 1;
+    let y = use_f64(x);
+    let z = use_f32(x);
+    y + z
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected f32, found f64"]
+
+[[case]]
 name = "finite_range_overflow_is_rejected_before_lowering"
 source = """
 fn value() -> f32 { 1e999999 }
