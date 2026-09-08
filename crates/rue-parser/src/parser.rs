@@ -1153,6 +1153,7 @@ mod tests {
             ("!", |t| matches!(t, TypeExpr::Never(_))),
             ("[i32; 4]", |t| matches!(t, TypeExpr::Array { .. })),
             ("[i32; N]", |t| matches!(t, TypeExpr::Array { .. })),
+            ("[(); 3]", |t| matches!(t, TypeExpr::Array { .. })),
             ("[i32]", |t| matches!(t, TypeExpr::Slice { .. })),
             ("[[u8; 2]; 3]", |t| matches!(t, TypeExpr::Array { .. })),
             ("ptr const i32", |t| {
@@ -1248,6 +1249,41 @@ mod tests {
         assert!(matches!(&args[3], IntrinsicArg::Type(TypeExpr::Unit(_))));
         assert!(matches!(&args[4], IntrinsicArg::Expr(Expr::ArrayLit(_))));
         assert!(matches!(&args[5], IntrinsicArg::Expr(Expr::Ident(_))));
+    }
+
+    #[test]
+    fn value_position_intrinsics_accept_array_repeat_expressions() {
+        let args = intrinsic_args("fn f(n: i32) -> i32 { @drop(([1; 3])) }");
+        assert!(matches!(
+            &args[0],
+            IntrinsicArg::Expr(Expr::Paren(paren))
+                if matches!(&*paren.inner, Expr::ArrayLit(array) if array.repeat.is_some())
+        ));
+
+        let args =
+            intrinsic_args("fn f(n: i32, count: i32) -> i32 { @probe([n; count], [[1; 2]; 3]) }");
+        assert!(matches!(
+            &args[0],
+            IntrinsicArg::Expr(Expr::ArrayLit(array)) if array.repeat.is_some()
+        ));
+        assert!(matches!(
+            &args[1],
+            IntrinsicArg::Expr(Expr::ArrayLit(array)) if array.repeat.is_some()
+        ));
+
+        let args = intrinsic_args("fn f() -> i32 { @probe([(); 3], [() == (); 3], [!false; 3]) }");
+        assert!(args.iter().all(|arg| matches!(
+            arg,
+            IntrinsicArg::Expr(Expr::ArrayLit(array)) if array.repeat.is_some()
+        )));
+    }
+
+    #[test]
+    fn value_position_intrinsics_preserve_unambiguous_array_types() {
+        let args = intrinsic_args(
+            "fn f() -> i32 { @probe([i32; 3], [[i32; 2]; 3], [ptr const i32; 3], [!; 3]) }",
+        );
+        assert!(args.iter().all(|arg| matches!(arg, IntrinsicArg::Type(_))));
     }
 
     #[test]
