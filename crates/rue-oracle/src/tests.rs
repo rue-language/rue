@@ -2116,6 +2116,122 @@ fn promoted_zst_parameter_leaves_the_inout_neighbour_writeback_intact() {
     assert_eq!(run(src).stdout, "11\n22\n");
 }
 
+// ---- one representation for the unit value (RUE-2156) ---------------------
+//
+// A unit-typed value is `Value::Unit`, wherever it comes from: the memory
+// model encodes and decodes only that shape at a unit type, and
+// `zero_sized_value` materializes it for a parameter that owns no storage. A
+// `CfgInstData::Const` at a unit type used to answer `Value::Int(0)` instead,
+// so the `()` a literal writes and the `()` a parameter reads were two
+// different `Value`s of the same one-valued type. Structural equality then
+// bottomed out in a representation-sensitive `==` on the leaves and called
+// them unequal, while the compiler answers `true` at every level.
+
+#[test]
+fn zst_struct_parameter_equals_its_literal() {
+    // The issue's repro: the parameter's `()` field came from the type as
+    // `Value::Unit`, the literal's from `Const` as `Value::Int(0)`.
+    let src = "struct Empty { unit: () }
+    fn f(z: Empty) -> i64 {
+        if (z == Empty { unit: () }) { 5 } else { 0 }
+    }
+    fn main() -> i32 {
+        @dbg(f(Empty { unit: () }));
+        0
+    }";
+    assert_eq!(run(src).stdout, "5\n");
+}
+
+#[test]
+fn zst_struct_parameters_equal_each_other() {
+    // Both operands are materialized from the type, so this shape agreed even
+    // before the fix; pin it so the two sides cannot drift apart again.
+    let src = "struct Empty { unit: () }
+    fn f(a: Empty, b: Empty) -> i64 {
+        if (a == b) { 5 } else { 0 }
+    }
+    fn main() -> i32 {
+        @dbg(f(Empty { unit: () }, Empty { unit: () }));
+        0
+    }";
+    assert_eq!(run(src).stdout, "5\n");
+}
+
+#[test]
+fn zst_struct_parameter_is_not_unequal_to_its_literal() {
+    // `!=` takes the same comparison through the opposite `pick`, so the
+    // one-valued type must answer `false` here.
+    let src = "struct Empty { unit: () }
+    fn f(z: Empty) -> i64 {
+        if (z != Empty { unit: () }) { 5 } else { 0 }
+    }
+    fn main() -> i32 {
+        @dbg(f(Empty { unit: () }));
+        0
+    }";
+    assert_eq!(run(src).stdout, "0\n");
+}
+
+#[test]
+fn nested_zst_struct_parameter_equals_its_literal() {
+    // The recursion reaches the unit leaf two struct levels down.
+    let src = "struct Empty { unit: () }
+    struct Nest { e: Empty }
+    fn f(n: Nest) -> i64 {
+        if (n == Nest { e: Empty { unit: () } }) { 5 } else { 0 }
+    }
+    fn main() -> i32 {
+        @dbg(f(Nest { e: Empty { unit: () } }));
+        0
+    }";
+    assert_eq!(run(src).stdout, "5\n");
+}
+
+#[test]
+fn zst_struct_parameter_equals_a_zst_local() {
+    // A zero-sized local is built by `struct_init` over the same `Const`, so
+    // it carried the literal's representation rather than the parameter's.
+    let src = "struct Empty { unit: () }
+    fn f(z: Empty) -> i64 {
+        let local: Empty = Empty { unit: () };
+        if (z == local) { 5 } else { 0 }
+    }
+    fn main() -> i32 {
+        @dbg(f(Empty { unit: () }));
+        0
+    }";
+    assert_eq!(run(src).stdout, "5\n");
+}
+
+#[test]
+fn zst_array_parameter_equals_its_literal() {
+    // An array of unit elements takes the array arm of the same recursion.
+    let src = "fn f(z: [(); 2]) -> i64 {
+        if (z == [(); 2]) { 5 } else { 0 }
+    }
+    fn main() -> i32 {
+        @dbg(f([(); 2]));
+        0
+    }";
+    assert_eq!(run(src).stdout, "5\n");
+}
+
+#[test]
+fn bare_unit_parameter_equals_the_unit_literal() {
+    // A bare `()` parameter agreed by accident: neither operand is an
+    // aggregate, so `cmp` took the numeric path where `as_int` flattens
+    // `Value::Unit` and `Value::Int(0)` alike to zero. Pin it as a
+    // consequence of the one representation instead.
+    let src = "fn f(z: ()) -> i64 {
+        if (z == ()) { 5 } else { 0 }
+    }
+    fn main() -> i32 {
+        @dbg(f(()));
+        0
+    }";
+    assert_eq!(run(src).stdout, "5\n");
+}
+
 #[test]
 fn enum_parameter_width_comes_from_its_static_type() {
     let src = r#"enum Shape { Empty, One(i32), Pair(i32, i32) }

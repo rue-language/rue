@@ -525,60 +525,6 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::Reallocate),
         &[],
     ),
-    Entry::new(
-        "cli.zero_sized_place_address",
-        "all_zst_root_address_is_non_null",
-        intrinsic(UnsupportedIntrinsicKind::PointerWrite),
-        &[],
-    ),
-    Entry::new(
-        "cli.zero_sized_place_address",
-        "all_zst_root_projected_address",
-        intrinsic(UnsupportedIntrinsicKind::PointerWrite),
-        &[],
-    ),
-    Entry::new(
-        "cli.zero_sized_place_address",
-        "all_zst_root_write_moves_no_bytes",
-        intrinsic(UnsupportedIntrinsicKind::PointerWrite),
-        &[],
-    ),
-    Entry::new(
-        "cli.zero_sized_place_address",
-        "indexed_zero_sized_field_address_in_bounds",
-        intrinsic(UnsupportedIntrinsicKind::PointerWrite),
-        &[],
-    ),
-    Entry::new(
-        "cli.zero_sized_place_address",
-        "sized_write_through_shared_slot_still_stores",
-        intrinsic(UnsupportedIntrinsicKind::PointerWrite),
-        &[],
-    ),
-    Entry::new(
-        "cli.zero_sized_place_address",
-        "trailing_zero_sized_field_address_is_non_null_and_distinct",
-        intrinsic(UnsupportedIntrinsicKind::PointerWrite),
-        &[],
-    ),
-    Entry::new(
-        "cli.zero_sized_place_address",
-        "trailing_zero_sized_field_address_keeps_neighbour_intact",
-        intrinsic(UnsupportedIntrinsicKind::PointerWrite),
-        &[],
-    ),
-    Entry::new(
-        "cli.zero_sized_place_address",
-        "trailing_zero_sized_field_write_moves_no_bytes",
-        intrinsic(UnsupportedIntrinsicKind::PointerWrite),
-        &[],
-    ),
-    Entry::new(
-        "cli.zero_sized_place_address",
-        "zero_sized_read_through_shared_slot_stays_correct",
-        intrinsic(UnsupportedIntrinsicKind::PointerWrite),
-        &[],
-    ),
 ];
 
 pub(crate) fn audit(scope: InventoryScope) -> ModelGapAudit<CaseId> {
