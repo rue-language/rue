@@ -504,6 +504,27 @@ pub(crate) trait OrdinaryBodyAnalysisHost:
 {
 }
 
+/// How an unqualified call name reached its callee (RUE-2161).
+///
+/// The callee key is the same either way; the alias arm additionally carries
+/// the constant the name was bound by, because a site that reached its callee
+/// through an alias depends on that constant as well as on the target.
+#[derive(Debug, Clone)]
+pub(crate) enum ResolvedCalleeName {
+    /// A function declared in the naming file.
+    Local(Spur),
+    /// A `const F = <function>;` binding in the naming file.
+    Alias { callee: Spur, alias: ConstInfo },
+}
+
+impl ResolvedCalleeName {
+    pub(crate) fn callee(self) -> Spur {
+        match self {
+            Self::Local(callee) | Self::Alias { callee, .. } => callee,
+        }
+    }
+}
+
 /// Inherent-method receiver for the generic ordinary-body algorithm.
 ///
 /// The engine owns no analyzer representation or alternate semantic algorithm.
@@ -730,6 +751,48 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     }
     pub(crate) fn resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur> {
         DeclarationFacts::resolve_function_name_local(self.storage, name, file)
+    }
+    /// The callee a function-valued `const` alias names, with the alias's own
+    /// constant, when `name` is bound in `file` by `const F = <function>;`.
+    ///
+    /// The callee symbol is the exact internal key the target's own spelling
+    /// resolves to, so an alias is a second name for one callee rather than a
+    /// second callee (RUE-2161).
+    pub(crate) fn const_function_alias(
+        &self,
+        file: FileId,
+        name: Spur,
+    ) -> Option<(Spur, ConstInfo)> {
+        let info = self.value_const(&(file, name))?;
+        let callee = info.value.as_function()?;
+        Some((callee.spur(), info))
+    }
+    /// How an unqualified source name reaches its callee in `file`.
+    ///
+    /// One resolution order for every consumer: a file-local function name,
+    /// and only when there is none, a function-valued `const` alias. Canonical
+    /// merge validation rejects a file that declares both, so the order is a
+    /// cost decision — an ordinary call pays no constant lookup — rather than
+    /// a precedence rule. Call analysis, the staged inference pre-pass, and
+    /// comptime call admission all read this, so a call spelled through an
+    /// alias reaches the same callee identity — and therefore the same
+    /// specialization, signature, and inference facts — as the target's own
+    /// spelling (RUE-2161).
+    pub(crate) fn resolve_callee_name(
+        &self,
+        name: Spur,
+        file: FileId,
+    ) -> Option<ResolvedCalleeName> {
+        if let Some(local) = self.resolve_function_name_local(name, file) {
+            return Some(ResolvedCalleeName::Local(local));
+        }
+        let (callee, alias) = self.const_function_alias(file, name)?;
+        Some(ResolvedCalleeName::Alias { callee, alias })
+    }
+    /// The internal callee key [`Self::resolve_callee_name`] selects.
+    pub(crate) fn resolve_callee_name_local(&self, name: Spur, file: FileId) -> Option<Spur> {
+        self.resolve_callee_name(name, file)
+            .map(ResolvedCalleeName::callee)
     }
     pub(crate) fn module_def(&self, module: ModuleId) -> ModuleDef {
         DeclarationFacts::module_def(self.storage, module)

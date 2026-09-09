@@ -3676,3 +3676,288 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Type-constructor application through a callable const alias (RUE-2161)
+#
+# 6.5:15 makes `const P = Pair;` a callable alias with the same call behavior
+# as the aliased function, and 4.14:23 admits a type-constructor call wherever
+# a type is expected. Composing the two, the alias spelling must reduce to the
+# same type — and take the same inference facts — as the target's own spelling
+# in every position.
+# =============================================================================
+
+[[case]]
+name = "callable_alias_type_constructor_in_param_and_return_position"
+spec = ["4.14:23", "4.14:23b", "6.5:15"]
+description = "A callable const alias of a type constructor is usable in parameter and return type position."
+source = """
+fn Pair(comptime T: type) -> type { struct { a: T, b: T } }
+
+const P = Pair;
+
+fn make() -> P(i32) { P(i32) { a: 20, b: 22 } }
+
+fn total(borrow p: P(i32)) -> i32 { p.a + p.b }
+
+fn main() -> i32 {
+    let p = make();
+    total(borrow p)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "callable_alias_type_constructor_in_const_initializer"
+spec = ["4.14:23", "4.14:23b", "6.5:15", "10.4:21"]
+description = "A callable const alias may head a type-constructor application in another constant's initializer."
+source = """
+fn Pair(comptime T: type) -> type { struct { a: T, b: T } }
+
+const P = Pair;
+const PI = P(i32);
+
+fn total(borrow p: PI) -> i32 { p.a + p.b }
+
+fn main() -> i32 {
+    let p = PI { a: 20, b: 22 };
+    total(borrow p)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "callable_alias_receiver_result_unifies_integer_literal"
+spec = ["4.14:23", "4.14:23b", "6.5:15"]
+description = "A value built through a callable alias carries the same method result types as one built through the target's own spelling, so an integer literal unifies with them."
+source = """
+fn Box(comptime T: type) -> type {
+    struct {
+        v: T,
+
+        fn make(v: T) -> Self { Self { v: v } }
+        fn get(borrow self) -> T { self.v }
+        fn count(borrow self) -> u64 { 1 }
+    }
+}
+
+const B = Box;
+
+fn main() -> i32 {
+    let b = B(i64).make(7);
+    @assert_eq(b.get(), 7);
+    @assert_eq(b.count(), 1);
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "callable_alias_of_imported_type_constructor"
+spec = ["4.14:23", "4.14:23b", "6.5:15"]
+description = "A callable const alias of a generic reached through a module binding resolves in type position and in expression position alike."
+source = """
+const boxes = @import("boxes.rue");
+
+const B = boxes.Box;
+
+fn take(borrow b: B(i64)) -> i64 { b.get() }
+
+fn main() -> i32 {
+    let b = B(i64).make(7);
+    @assert_eq(take(borrow b), 7);
+    42
+}
+"""
+aux_files = { "boxes.rue" = """
+pub fn Box(comptime T: type) -> type {
+    struct {
+        v: T,
+
+        fn make(v: T) -> Self { Self { v: v } }
+        fn get(borrow self) -> T { self.v }
+    }
+}
+""" }
+exit_code = 42
+
+[[case]]
+name = "reexported_callable_alias_in_type_position"
+spec = ["4.14:23", "4.14:23b", "6.5:15"]
+description = "A re-exported callable alias (`pub const Box = lib.Box;`) heads a module-qualified type-constructor application in a signature."
+source = """
+const facade = @import("facade.rue");
+
+fn take(borrow b: facade.Box(i64)) -> i64 { b.get() }
+
+fn main() -> i32 {
+    let b = facade.Box(i64).make(7);
+    @assert_eq(take(borrow b), 7);
+    42
+}
+"""
+aux_files = { "boxes.rue" = """
+pub fn Box(comptime T: type) -> type {
+    struct {
+        v: T,
+
+        fn make(v: T) -> Self { Self { v: v } }
+        fn get(borrow self) -> T { self.v }
+    }
+}
+""", "facade.rue" = """
+const boxes = @import("boxes.rue");
+
+pub const Box = boxes.Box;
+""" }
+exit_code = 42
+
+[[case]]
+name = "callable_alias_of_std_generic_unifies_literals"
+spec = ["4.14:23", "4.14:23b", "6.5:15"]
+real_std = true
+description = "The `const ArrayBuf = std.arraybuf.ArrayBuf;` idiom works in a signature and leaves every method result unifiable with an integer literal."
+source = """
+const std = @import("std");
+
+const ArrayBuf = std.arraybuf.ArrayBuf;
+const Option = std.option.Option;
+
+fn count(borrow xs: ArrayBuf(i64)) -> u64 { xs.len() }
+
+fn first(borrow xs: ArrayBuf(i64)) -> Option(i64) {
+    let head = xs.get(0)?;
+    Option(i64).Some(head)
+}
+
+fn main() -> i32 {
+    let mut xs = ArrayBuf(i64).new();
+    xs.push(7);
+    @assert_eq(count(borrow xs), 1);
+    @assert_eq(first(borrow xs), Option(i64).Some(7));
+    @assert_eq(xs.get_or(0, 0), 7);
+    @assert_eq(xs.get(0), Option(i64).Some(7));
+    let picked = match xs.get(0) {
+        Option(i64).Some(v) => v,
+        Option(i64).None => 0,
+    };
+    @assert_eq(picked, 7);
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "callable_alias_as_a_comptime_type_argument"
+spec = ["4.14:23", "4.14:23b", "4.14:6", "6.5:15"]
+description = "An application of one callable alias is a compile-time-known type argument to another, exactly as the target's own spelling is."
+source = """
+fn Opt(comptime T: type) -> type { enum { Some(T), None } }
+
+fn Box(comptime T: type) -> type {
+    struct {
+        v: T,
+
+        fn make(v: T) -> Self { Self { v: v } }
+        fn count(borrow self) -> u64 { 1 }
+    }
+}
+
+const O = Opt;
+const B = Box;
+
+fn main() -> i32 {
+    let b = B(O(i64)).make(O(i64).Some(7));
+    @assert_eq(b.count(), 1);
+    let inner = match b.v {
+        O(i64).Some(n) => n,
+        O(i64).None => 0,
+    };
+    @assert_eq(inner, 7);
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "callable_alias_of_std_generic_as_a_comptime_type_argument"
+spec = ["4.14:23", "4.14:23b", "4.14:6", "6.5:15"]
+real_std = true
+description = "`ArrayBuf(Option(i64))` through two `const` aliases reduces exactly as the module-qualified spelling does."
+source = """
+const std = @import("std");
+
+const ArrayBuf = std.arraybuf.ArrayBuf;
+const Option = std.option.Option;
+
+fn main() -> i32 {
+    let mut xs = ArrayBuf(Option(i64)).new();
+    xs.push(Option(i64).Some(7));
+    @assert_eq(xs.len(), 1);
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "callable_alias_receiver_constant_index_borrow_accessor"
+spec = ["4.14:23", "4.14:23b", "6.5:15", "6.6:3"]
+real_std = true
+description = "A constant-index borrow accessor on a receiver built through a callable alias lowers exactly as it does through the module-qualified spelling."
+source = """
+const std = @import("std");
+
+const ArrayBuf = std.arraybuf.ArrayBuf;
+
+fn main() -> i32 {
+    let mut c = ArrayBuf(i64).new();
+    c.push(-1);
+    c.push(5);
+    @assert_eq(c.get_ref(0), -1);
+    @assert_eq(c.get_ref(1), 5);
+    @dbg(c.get_ref(0));
+    42
+}
+"""
+expected_stdout = "-1\n"
+exit_code = 42
+
+[[case]]
+name = "pub_callable_alias_reexports_its_constructor"
+spec = ["4.14:23", "4.14:23b", "6.5:15", "10.4:22"]
+description = "A `pub` callable alias re-exports the constructor it names, so a private generic is reachable through it from another directory."
+source = """
+const lib = @import("sub/lib.rue");
+
+fn total(borrow p: lib.P(i32)) -> i32 { p.a + p.b }
+
+fn main() -> i32 {
+    let p = lib.P(i32) { a: 20, b: 22 };
+    total(borrow p)
+}
+"""
+aux_files = { "sub/lib.rue" = """
+fn Pair(comptime T: type) -> type { struct { a: T, b: T } }
+
+pub const P = Pair;
+""" }
+exit_code = 42
+
+[[case]]
+name = "private_callable_alias_is_rejected_as_the_constant"
+spec = ["4.14:23b", "6.5:15", "10.4:22"]
+description = "A private callable alias named from another directory reports the constant, not the public constructor behind it."
+source = """
+const lib = @import("sub/lib.rue");
+
+fn total(borrow p: lib.P(i32)) -> i32 { p.a + p.b }
+
+fn main() -> i32 { 0 }
+"""
+aux_files = { "sub/lib.rue" = """
+pub fn Pair(comptime T: type) -> type { struct { a: T, b: T } }
+
+const P = Pair;
+""" }
+compile_fail = true
+error_contains = ["E0706", "const `P` is private"]

@@ -90,3 +90,51 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["4:28", "field 'text' expects type str", "expected str, found i32"]
+
+# =============================================================================
+# Signature type errors
+# =============================================================================
+
+# A type written in a signature is resolved once, per written type, by the
+# declaration-level type machine. That resolver knows which parameter (or the
+# result) it is resolving, and it is the only place that knows; the stable
+# failure now carries that position, so the diagnostic lands on the type
+# instead of on the whole declaration (RUE-2161).
+
+[[case]]
+name = "unknown_parameter_type_points_at_the_type"
+source = """
+fn f(borrow p: Nope) -> i32 { 0 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["1:16", "unknown type 'Nope'"]
+
+[[case]]
+name = "unknown_parameter_type_constructor_points_at_the_application"
+source = """
+fn f(borrow p: Nope(i32)) -> i32 { 0 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["1:16", "unknown type 'Nope(...)'"]
+
+[[case]]
+name = "unknown_result_type_points_at_the_result_type"
+source = """
+fn f(p: i32) -> Nope(i32) { 0 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["1:17", "unknown type 'Nope(...)'"]
+
+[[case]]
+name = "unknown_method_parameter_type_points_at_the_type"
+source = """
+struct S {
+    fn m(borrow self, x: Nope(i32)) -> i32 { 0 }
+}
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["2:26", "unknown type 'Nope(...)'"]

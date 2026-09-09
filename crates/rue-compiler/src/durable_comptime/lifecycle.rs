@@ -1844,6 +1844,11 @@ pub(crate) struct DurableComptimeCallableAdmissionStart {
     pub(crate) configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
     pub(crate) name: Arc<str>,
     pub(crate) dependency: SemanticDeclarationDependency,
+    /// The function-valued `const` the call reached its callee through, when
+    /// the call was spelled with an alias (RUE-2161). The site depends on the
+    /// alias as well as on the target, so repointing `const F = g;` from `f`
+    /// to `g` invalidates every call that named `F`.
+    pub(crate) alias_dependency: Option<SemanticDeclarationDependency>,
 }
 
 /// The immutable, ordered facts admitted for one durable comptime callable.

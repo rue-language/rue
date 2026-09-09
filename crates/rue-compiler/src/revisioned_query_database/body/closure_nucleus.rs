@@ -242,6 +242,7 @@ pub(crate) fn semantic_nucleus_failure_is_internal_error(
     let kind = match failure {
         F::Diagnostic(kind)
         | F::DiagnosticAtParameter { kind, .. }
+        | F::DiagnosticAtSignatureType { kind, .. }
         | F::DiagnosticAtDeclaration { kind, .. }
         | F::DuplicateDeclaration { kind, .. }
         | F::DiagnosticAtProducerRange { kind, .. }

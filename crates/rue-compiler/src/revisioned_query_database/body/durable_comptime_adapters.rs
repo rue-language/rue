@@ -231,6 +231,65 @@ pub(in crate::revisioned_query_database) struct DurableComptimeRootAuthority<'db
 }
 
 impl<'db> DurableComptimeRootAuthority<'db> {
+    /// Admit a comptime call whose callee is named by a function-valued
+    /// `const` alias.
+    ///
+    /// A `const F = f;` alias is a second name for one callee, so the call is
+    /// admitted against the target's own declaration — the same admission the
+    /// target's own spelling produces — and additionally records a dependency
+    /// on the alias constant (RUE-2161).
+    fn begin_aliased_comptime_call_admission(
+        &self,
+        accessing_source: &crate::StableDefinitionKey,
+        module: &ModuleId,
+        name: &str,
+    ) -> Result<
+        crate::durable_comptime::DurableComptimeCallableAdmissionStart,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        type Failure = crate::semantic_query_nucleus::SemanticNucleusFailure;
+
+        let undefined = || {
+            rue_air::SemanticProviderError::Failure(Failure::Resolution(Arc::from(format!(
+                "undefined comptime function `{name}`"
+            ))))
+        };
+        let Some(alias) =
+            self.provider
+                .candidate_from(accessing_source, module, name, DefinitionKind::Const)?
+        else {
+            return Err(undefined());
+        };
+        let crate::semantic_query_nucleus::ConstResolutionProjection::Value { key, value, .. } =
+            self.provider.const_resolution(alias)?
+        else {
+            return Err(undefined());
+        };
+        let crate::durable_semantics::DurableConstValue::Function(target) = *value else {
+            return Err(undefined());
+        };
+        let mut start =
+            crate::durable_comptime::DurableComptimeSemanticAuthority::begin_comptime_call_admission_for_key(
+                self,
+                accessing_source,
+                &target,
+            )?;
+        start.alias_dependency = Some(
+            crate::semantic_query_nucleus::SemanticDeclarationDependency {
+                source: accessing_source.clone(),
+                kind: rue_air::DeclarationTypeDependencyKind::Body,
+                target:
+                    crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
+                        key,
+                    ),
+            },
+        );
+        Ok(start)
+    }
+
     pub(in crate::revisioned_query_database) fn finish_root(
         mut self,
     ) -> SemanticNucleusTypeProvider<'db> {
@@ -603,8 +662,6 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
             crate::semantic_query_nucleus::SemanticNucleusFailure,
         >,
     > {
-        type Failure = crate::semantic_query_nucleus::SemanticNucleusFailure;
-
         let candidate = self.provider.candidate_from(
             accessing_source,
             module,
@@ -612,9 +669,7 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
             DefinitionKind::Function,
         )?;
         let Some(candidate) = candidate else {
-            return Err(rue_air::SemanticProviderError::Failure(
-                Failure::Resolution(Arc::from(format!("undefined comptime function `{name}`"))),
-            ));
+            return self.begin_aliased_comptime_call_admission(accessing_source, module, name);
         };
         let identity = self.provider.identity(candidate.clone())?;
         Ok(crate::durable_comptime::DurableComptimeCallableAdmissionStart {
@@ -630,6 +685,7 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
                         identity.key,
                     ),
             },
+            alias_dependency: None,
         })
     }
 
@@ -677,6 +733,7 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
                         identity.key,
                     ),
             },
+            alias_dependency: None,
         })
     }
 
@@ -698,6 +755,7 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
             configuration,
             name,
             dependency: _,
+            alias_dependency: _,
         } = start;
         let signature = self.provider.signature(candidate.clone())?;
         let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {

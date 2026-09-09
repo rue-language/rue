@@ -751,6 +751,15 @@ pub(crate) struct ForeignSignatureConflictFailure {
     pub(crate) right: ForeignSignatureSite,
 }
 
+/// Which type written in a declaration's signature a diagnostic belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SignatureTypeAnchor {
+    /// The type of the parameter at this zero-based position.
+    Parameter(u32),
+    /// The declaration's written result type.
+    Result,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SemanticNucleusFailure {
     Shell(Arc<str>),
@@ -760,6 +769,15 @@ pub(crate) enum SemanticNucleusFailure {
     DiagnosticAtParameter {
         kind: rue_error::ErrorKind,
         ordinal: u32,
+    },
+    /// A diagnostic about one type written in a signature, anchored at that
+    /// type rather than at the whole declaration (RUE-2161). The anchor is a
+    /// position in the parsed signature, not a span, so the stable failure
+    /// stays free of revision-local spans exactly as
+    /// [`Self::DiagnosticAtParameter`] does.
+    DiagnosticAtSignatureType {
+        kind: rue_error::ErrorKind,
+        anchor: SignatureTypeAnchor,
     },
     DiagnosticAtDeclaration {
         kind: rue_error::ErrorKind,
@@ -987,9 +1005,9 @@ impl RetainedCharge for SemanticNucleusFailure {
             Self::Shell(detail) | Self::Syntax(detail) | Self::Resolution(detail) => {
                 detail.retained_charge()
             }
-            Self::Diagnostic(kind) | Self::DiagnosticAtParameter { kind, .. } => {
-                kind.retained_charge()
-            }
+            Self::Diagnostic(kind)
+            | Self::DiagnosticAtParameter { kind, .. }
+            | Self::DiagnosticAtSignatureType { kind, .. } => kind.retained_charge(),
             Self::DiagnosticAtProducerRange { kind, producer, .. } => kind
                 .retained_charge()
                 .saturating_add(producer.retained_charge()),

@@ -4352,7 +4352,7 @@ pub(super) use register_parse_import_parse;"#;
             (
                 "revisioned_database::tests::semantic_declaration".to_owned(),
                 "RevisionedQueryDatabase:call".to_owned(),
-                50
+                51
             ),
         ],
         "independent test databases have a separate exact construction inventory",
