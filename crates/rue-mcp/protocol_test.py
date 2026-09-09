@@ -73,13 +73,26 @@ def assert_rpc_error(response, code):
     assert "_meta" not in response
 
 
-def wait_file(path, timeout=5):
+def wait_marker(path, timeout=5):
+    """Wait for a producer's readiness marker and return its parsed content.
+
+    A marker that is absent, empty, or not yet valid JSON is simply not ready:
+    the writers rename a complete file into place, so anything else is a read
+    that arrived first rather than a producer that misbehaved.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if path.exists():
-            return
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            text = ""
+        if text:
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                pass
         time.sleep(0.01)
-    raise AssertionError("producer did not create synchronization file {}".format(path))
+    raise AssertionError("producer did not write synchronization marker {}".format(path))
 
 
 def process_is_alive(pid):
@@ -338,18 +351,41 @@ def protocol_and_real_producer_tests():
     close(process)
 
 
-def write_owned_producer(path):
-    path.write_text(
-        """#!/usr/bin/env python3
-import json, os, pathlib, subprocess, sys, time
+# Every stub producer signals readiness through the same MCP_STARTED marker.
+# Writing that file in place would leave it observable as an empty stub between
+# its creation and its content, so the state is staged beside the marker and
+# renamed onto it: a reader sees the marker absent or complete, never partial.
+MARKER_WRITER = """
+def write_marker(state):
+    marker = pathlib.Path(os.environ['MCP_STARTED'])
+    staging = marker.with_name(marker.name + '.staging')
+    staging.write_text(json.dumps(state), encoding='utf-8')
+    os.replace(staging, marker)
+"""
+
+# Stays alive until cancelled, leaving a descendant and a half-built output
+# tree behind for the server to reclaim.
+OWNED_PRODUCER = "#!/usr/bin/env python3\nimport json, os, pathlib, subprocess, sys, time\n" + MARKER_WRITER + """
 output = pathlib.Path(sys.argv[sys.argv.index('-o') + 1])
 output.with_suffix('.pending').write_text('pending', encoding='utf-8')
 child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
-pathlib.Path(os.environ['MCP_STARTED']).write_text(json.dumps({'producer': os.getpid(), 'descendant': child.pid, 'output': str(output)}), encoding='utf-8')
+write_marker({'producer': os.getpid(), 'descendant': child.pid, 'output': str(output)})
 time.sleep(30)
-""",
-        encoding="utf-8",
-    )
+"""
+
+# Exits as soon as it has published its output, while its descendant retains
+# the inherited output handles.
+INHERITED_PRODUCER = "#!/usr/bin/env python3\nimport json, os, pathlib, subprocess, sys\n" + MARKER_WRITER + """
+output = pathlib.Path(sys.argv[sys.argv.index('-o') + 1])
+output.write_bytes(b'executable')
+output.chmod(0o700)
+child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+write_marker({'descendant': child.pid})
+"""
+
+
+def write_producer(path, source):
+    path.write_text(source, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
@@ -359,7 +395,7 @@ def cancellation_and_cleanup_tests():
     with tempfile.TemporaryDirectory(prefix="rue-mcp-cancel-") as directory:
         directory = pathlib.Path(directory)
         producer = directory / "slow-rue"
-        write_owned_producer(producer)
+        write_producer(producer, OWNED_PRODUCER)
 
         marker = directory / "limits.json"
         process = server({"RUE_BINARY": str(producer), "MCP_STARTED": str(marker)})
@@ -384,8 +420,7 @@ def cancellation_and_cleanup_tests():
         marker = directory / "cancel.json"
         process = server({"RUE_BINARY": str(producer), "MCP_STARTED": str(marker)})
         send(process, tool_call("cancel-spawned", "check", {"root": "unused.rue"}))
-        wait_file(marker)
-        state = json.loads(marker.read_text(encoding="utf-8"))
+        state = wait_marker(marker)
         send(process, {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": {"bad": True}}})
         send(process, request("after-malformed-cancel", "tools/list"))
         assert receive_id(process, "after-malformed-cancel")["result"]["tools"]
@@ -402,31 +437,18 @@ def cancellation_and_cleanup_tests():
         # before the leader is reaped and its PID can be reused.
         inherited = directory / "inherited-rue"
         marker = directory / "inherited.json"
-        inherited.write_text(
-            """#!/usr/bin/env python3
-import json, os, pathlib, subprocess, sys
-output = pathlib.Path(sys.argv[sys.argv.index('-o') + 1])
-output.write_bytes(b'executable')
-output.chmod(0o700)
-child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
-pathlib.Path(os.environ['MCP_STARTED']).write_text(json.dumps({'descendant': child.pid}), encoding='utf-8')
-""",
-            encoding="utf-8",
-        )
-        inherited.chmod(inherited.stat().st_mode | stat.S_IXUSR)
+        write_producer(inherited, INHERITED_PRODUCER)
         process = server({"RUE_BINARY": str(inherited), "MCP_STARTED": str(marker)})
         send(process, tool_call("inherited-pipe", "check", {"root": "unused.rue"}))
         result = assert_tool_views(receive_id(process, "inherited-pipe", timeout=5))
         assert result["success"] is True
-        wait_file(marker)
-        wait_dead(json.loads(marker.read_text(encoding="utf-8"))["descendant"])
+        wait_dead(wait_marker(marker)["descendant"])
         close(process)
 
         marker = directory / "eof.json"
         process = server({"RUE_BINARY": str(producer), "MCP_STARTED": str(marker)})
         send(process, tool_call("eof-spawned", "check", {"root": "unused.rue"}))
-        wait_file(marker)
-        state = json.loads(marker.read_text(encoding="utf-8"))
+        state = wait_marker(marker)
         started = time.monotonic()
         close(process)
         assert time.monotonic() - started < 5
