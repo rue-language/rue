@@ -1,0 +1,155 @@
+# Whole-value equality on zero-sized operands.
+#
+# A zero-sized type has exactly one value, so any two operands of it are equal
+# — the compiler answers that at every optimization level, from the type,
+# without loading anything. `rue-oracle` carried two representations of the
+# unit value instead: `zero_sized_value` materialized `Value::Unit` for a
+# parameter that owns no storage, while a `()` literal reached the interpreter
+# as a `Const(0)` and became `Value::Int(0)`. Structural equality recursed to
+# the unit leaf and fell back to a derived `==` on the two `Value`s, so a
+# zero-sized parameter compared against a zero-sized literal or local was
+# reported UNEQUAL — a red `differential_opt` result for a correctly compiled
+# program (RUE-2156).
+#
+# Two neighbouring shapes agreed only by accident and are pinned here too: a
+# bare `()` operand is not an aggregate, so it took the numeric comparison
+# where both representations flatten to zero; and two zero-sized parameters
+# both come from the type, so neither side carried the literal's shape.
+#
+# `differential_opt` compiles and runs each at `-O0`/`-O1`/`-O2`/`-O3` and
+# requires one answer across all four.
+
+[section]
+id = "cli.zero_sized_equality"
+name = "Equality on zero-sized values"
+description = "A zero-sized type has one value, so whole-value equality on it is decided by the type and never by how an operand was produced (RUE-2156)."
+
+[[case]]
+name = "zero_sized_struct_parameter_equals_its_literal"
+description = "RUE-2156: a zero-sized struct parameter compared against the literal of its own type must be equal."
+files = [{ path = "main.rue", source = """
+struct Empty { unit: () }
+fn f(z: Empty) -> i64 {
+    if (z == Empty { unit: () }) { 5 } else { 0 }
+}
+fn main() -> i32 {
+    @dbg(f(Empty { unit: () }));
+    0
+}
+""" }]
+stdout = "5\n"
+exit_code = 0
+differential_opt = true
+
+# Both operands are materialized from the type, so this shape agreed before the
+# fix; it pins the two sides against drifting apart again.
+[[case]]
+name = "two_zero_sized_struct_parameters_are_equal"
+description = "RUE-2156: two zero-sized struct parameters of the same type are equal, whichever storage-less path produced them."
+files = [{ path = "main.rue", source = """
+struct Empty { unit: () }
+fn f(a: Empty, b: Empty) -> i64 {
+    if (a == b) { 5 } else { 0 }
+}
+fn main() -> i32 {
+    @dbg(f(Empty { unit: () }, Empty { unit: () }));
+    0
+}
+""" }]
+stdout = "5\n"
+exit_code = 0
+differential_opt = true
+
+# `!=` routes the same comparison through the opposite decision, so a
+# one-valued type must answer `false`.
+[[case]]
+name = "zero_sized_struct_parameter_is_not_unequal_to_its_literal"
+description = "RUE-2156: `!=` on a zero-sized struct parameter and its literal is false."
+files = [{ path = "main.rue", source = """
+struct Empty { unit: () }
+fn f(z: Empty) -> i64 {
+    if (z != Empty { unit: () }) { 5 } else { 0 }
+}
+fn main() -> i32 {
+    @dbg(f(Empty { unit: () }));
+    0
+}
+""" }]
+stdout = "0\n"
+exit_code = 0
+differential_opt = true
+
+# Nesting puts the unit leaf two struct levels below the compared root.
+[[case]]
+name = "nested_zero_sized_struct_parameter_equals_its_literal"
+description = "RUE-2156: whole-value equality on a nested zero-sized struct reaches the unit leaf through two levels of recursion."
+files = [{ path = "main.rue", source = """
+struct Empty { unit: () }
+struct Nest { e: Empty }
+fn f(n: Nest) -> i64 {
+    if (n == Nest { e: Empty { unit: () } }) { 5 } else { 0 }
+}
+fn main() -> i32 {
+    @dbg(f(Nest { e: Empty { unit: () } }));
+    0
+}
+""" }]
+stdout = "5\n"
+exit_code = 0
+differential_opt = true
+
+# A zero-sized local is built from the same literal, so it carried the
+# literal's representation and not the parameter's.
+[[case]]
+name = "zero_sized_struct_parameter_equals_a_zero_sized_local"
+description = "RUE-2156: a zero-sized struct parameter equals a zero-sized local of the same type."
+files = [{ path = "main.rue", source = """
+struct Empty { unit: () }
+fn f(z: Empty) -> i64 {
+    let local: Empty = Empty { unit: () };
+    if (z == local) { 5 } else { 0 }
+}
+fn main() -> i32 {
+    @dbg(f(Empty { unit: () }));
+    0
+}
+""" }]
+stdout = "5\n"
+exit_code = 0
+differential_opt = true
+
+# An array of unit elements takes the array arm of the same recursion.
+[[case]]
+name = "zero_sized_array_parameter_equals_its_literal"
+description = "RUE-2156: a `[(); 2]` parameter compared whole against its literal is equal, element by element."
+files = [{ path = "main.rue", source = """
+fn f(z: [(); 2]) -> i64 {
+    if (z == [(); 2]) { 5 } else { 0 }
+}
+fn main() -> i32 {
+    @dbg(f([(); 2]));
+    0
+}
+""" }]
+stdout = "5\n"
+exit_code = 0
+differential_opt = true
+
+# A bare `()` operand is not an aggregate, so it never reached the structural
+# comparison at all and agreed by accident. Pin it as a consequence of the one
+# representation instead.
+[[case]]
+name = "bare_unit_parameter_equals_the_unit_literal"
+description = "RUE-2156: a bare `()` parameter equals the `()` literal."
+files = [{ path = "main.rue", source = """
+fn f(z: ()) -> i64 {
+    if (z == ()) { 5 } else { 0 }
+}
+fn main() -> i32 {
+    @dbg(f(()));
+    0
+}
+""" }]
+stdout = "5\n"
+exit_code = 0
+differential_opt = true

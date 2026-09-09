@@ -3922,11 +3922,25 @@ impl<'a> Interp<'a> {
                         "compiler-synthesized empty-slice null pointer",
                     ));
                 }
-                // The constant is stored as a 64-bit two's-complement bit
-                // pattern (e.g. i32::MIN is `18446744071562067968` =
-                // 0xFFFFFFFF80000000), so a signed type reinterprets it as
-                // signed; an unsigned type takes the u64 value directly.
-                if ty.is_signed() {
+                // A zero-sized type has exactly one value, and the interpreter
+                // spells it `Value::Unit` — nested in the aggregate shape for
+                // a zero-sized struct or array. `zero_sized_value` produces
+                // that form for a parameter that owns no storage,
+                // `decode_value` produces it for a unit-typed read, and
+                // `encode_value` accepts nothing else at a unit type. A `()`
+                // literal arrives here as `Const(0)`, so answering with the
+                // integer pattern would give a one-valued type a second
+                // representation, which structural equality then reports as
+                // unequal (RUE-2156).
+                //
+                // Otherwise the constant is stored as a 64-bit two's-
+                // complement bit pattern (e.g. i32::MIN is
+                // `18446744071562067968` = 0xFFFFFFFF80000000), so a signed
+                // type reinterprets it as signed; an unsigned type takes the
+                // u64 value directly.
+                if self.is_zero_sized(ty) {
+                    self.zero_sized_value(ty)
+                } else if ty.is_signed() {
                     Value::Int(*n as i64 as i128)
                 } else {
                     Value::Int(*n as i128)
@@ -4709,6 +4723,12 @@ impl<'a> Interp<'a> {
             return Ok(x.as_int() == y.as_int());
         }
         match ty.kind() {
+            // A unit type has exactly one value, so its equality is settled by
+            // the type alone. Deciding it here rather than at the fallback's
+            // derived `==` keeps the leaf answer type-driven, as it already is
+            // for the integer and float leaves above, whose representations
+            // `as_int` and `float_equal` normalize rather than compare.
+            TypeKind::Unit => Ok(true),
             TypeKind::Struct(sid) => {
                 let (Value::Aggregate(xs), Value::Aggregate(ys)) = (x, y) else {
                     return Ok(x == y);
