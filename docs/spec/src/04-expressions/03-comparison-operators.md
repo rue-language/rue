@@ -78,7 +78,7 @@ equal field-by-field. Two values of different variants are never equal.
 
 {{ rule(id="4.3:3e", cat="normative") }}
 
-A raw-pointer leaf (a `*const T` or `*mut T` field or element reached while
+A raw-pointer leaf (a `ptr const T` or `ptr mut T` field or element reached while
 comparing an aggregate) compares by **address**: two raw pointers are equal if
 and only if they hold the same address. The pointees are not examined.
 
