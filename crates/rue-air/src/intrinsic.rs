@@ -180,6 +180,11 @@ fn runtime_air_result_type_in_pool(pool: &TypeInternPool, ty: Type) -> Option<Ru
     {
         return Some(RuntimeAirType::StrBuf);
     }
+    if let TypeKind::Array(array) = ty.kind()
+        && is_runtime_text_words(pool.array_def(array))
+    {
+        return Some(RuntimeAirType::StrBuf);
+    }
     if let TypeKind::Enum(enum_id) = ty.kind() {
         let definition = pool.enum_def(enum_id);
         let payload = exact_option_payload(&definition)?;
@@ -197,6 +202,25 @@ fn runtime_air_result_type_in_pool(pool: &TypeInternPool, ty: Type) -> Option<Ru
         });
     }
     runtime_air_type_in_pool(pool, ty)
+}
+
+/// Whether `ty` is the raw machine-word spelling of the runtime's
+/// `StrBufResult` out-pointer shape.
+///
+/// A source `StrBuf` is the ordinary way to receive one of these, but a
+/// *compiler-synthesized* body may not name a standard-library declaration —
+/// the structural error printer is demanded by a `?` or an assertion, not by a
+/// call the request's closure walked, so anything it named would have to be
+/// scheduled into that closure after the fact. Such a body receives the
+/// helper's `{ptr, cap, len}` triple as the three machine words it already is.
+/// Every Rue target is 64-bit, so this array and that triple have one layout.
+pub fn is_runtime_text_words((element, len): (Type, u64)) -> bool {
+    element == Type::U64
+        && len
+            == rue_runtime_abi::AggregateShapeId::StrBufResult
+                .shape()
+                .slots
+                .len() as u64
 }
 
 /// Return the payload of the one accepted Option layout. Runtime return
@@ -297,6 +321,11 @@ impl RuntimeAirTypePool for FrozenTypeInternPool {
         }
         if let TypeKind::Struct(struct_id) = ty.kind()
             && self.is_strbuf(struct_id)
+        {
+            return Some(RuntimeAirType::StrBuf);
+        }
+        if let TypeKind::Array(array) = ty.kind()
+            && is_runtime_text_words(self.array_def(array))
         {
             return Some(RuntimeAirType::StrBuf);
         }

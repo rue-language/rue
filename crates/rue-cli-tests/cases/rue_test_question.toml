@@ -248,3 +248,66 @@ compile_stdout_contains = [
     '"line":10}',
 ]
 compile_stdout_not_contains = ['"column":29,', '"column":9,']
+
+[[case]]
+name = "an_unhandled_container_error_renders_its_elements"
+description = """
+RUE-2165, spec 6.7:15: the container rule is the payload rule, because both
+sides go through the same synthesized printer. An `ArrayBuf(i64)` carried as an
+enum payload renders as its elements inside the variant's parentheses, and one
+that is the whole error renders as the list alone — where before the rule both
+were `{ core: RawBuf(i64), len: 2 }`.
+"""
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+const std = @import("std");
+
+enum Code {
+    Missing,
+    Batch(std.arraybuf.ArrayBuf(i64)),
+}
+
+fn batched() -> std.result.Result(i64, Code) {
+    let R = std.result.Result(i64, Code);
+    let A = std.arraybuf.ArrayBuf(i64);
+    let mut items = A.new();
+    items.push(4);
+    items.push(5);
+    R.Err(Code.Batch(items))
+}
+
+fn bare() -> std.result.Result(i64, std.arraybuf.ArrayBuf(i64)) {
+    let R = std.result.Result(i64, std.arraybuf.ArrayBuf(i64));
+    let A = std.arraybuf.ArrayBuf(i64);
+    let mut items = A.new();
+    items.push(7);
+    R.Err(items)
+}
+
+test "unwraps a batched failure" {
+    let value = batched()?;
+    @assert(value == 0);
+}
+
+test "unwraps a bare container failure" {
+    let value = bare()?;
+    @assert(value == 0);
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"kind":"unhandled_error"',
+    '"payload":"Batch([4, 5])"',
+    '"payload":"[7]"',
+    '"crash":0,"event":"run_finished","failed":2,"passed":0',
+]
