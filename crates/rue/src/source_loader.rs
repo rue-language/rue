@@ -202,46 +202,225 @@ pub fn watch_input_fingerprints(inputs: &[WatchInput]) -> Vec<Option<WatchFinger
         .collect()
 }
 
-/// One physical source read an observation attempt accepted: where it read,
-/// and what it read there.
+/// One physical read an observation attempt made: where it read, and what it
+/// found there — whether or not the read could be accepted as source.
 ///
 /// The committed closure ([`ImportDiscoveryResult::watch_inputs`]) describes
 /// the last attempt that *succeeded*. A failed attempt commits nothing, so a
 /// module it read but never closed over is in no closure at all — and that
 /// module is frequently the one the failure's diagnostic names and the one
 /// being edited, because wiring a pre-existing broken file into the graph for
-/// the first time is exactly how the failure arrives (RUE-2103). This is the
-/// attempt's own record of what it touched, kept whether or not it committed.
+/// the first time is exactly how the failure arrives (RUE-2103).
 ///
-/// The fingerprint is the accepted bytes' content hash, not file metadata, so
-/// re-reading identical content compares equal: a rewrite that changes nothing
-/// is not a new revision, and only a real edit is.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// A candidate the attempt could not read at all is recorded here too, under a
+/// separate outcome. It has no accepted bytes, but it is the same workflow one
+/// step earlier — the file is present and is being edited, it just is not
+/// source yet (invalid UTF-8, a directory in the module's place). Recording
+/// only accepted reads left that family with nothing for the debounce to
+/// observe, so every save after the first was silent (RUE-2105).
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct AttemptedRead {
     requested_path: Arc<str>,
-    canonical_path: Arc<str>,
-    content_fingerprint: u64,
+    outcome: AttemptedReadOutcome,
 }
 
-/// Project an attempt's accepted-read manifest into its observation record.
+/// What an attempt found at an [`AttemptedRead`]'s path.
 ///
-/// Ordered by path rather than by the manifest's module identity so the record
-/// of two attempts over the same files compares equal regardless of the order
-/// discovery happened to reach them.
-fn attempted_reads_of(manifest: &AcceptedReadManifest) -> Vec<AttemptedRead> {
+/// The two variants can never compare equal, so a path that failed to read is
+/// always distinguishable from the same path read successfully — the record
+/// keeps "I could not read this" and "I read exactly these bytes" apart even
+/// when the fingerprints coincide.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum AttemptedReadOutcome {
+    /// The attempt read this file and accepted its bytes as source. The
+    /// fingerprint is the accepted bytes' content hash, not file metadata, so
+    /// re-reading identical content compares equal: a rewrite that changes
+    /// nothing is not a new revision, and only a real edit is.
+    Accepted {
+        canonical_path: Arc<str>,
+        content_fingerprint: u64,
+    },
+    /// The attempt could not turn what is at this path into source. `reason`
+    /// is the failure's shape, so a candidate that starts failing differently
+    /// is a different record; `observed` is whatever the attempt could still
+    /// see there, which is what makes one save distinguishable from the next.
+    Failed { reason: Arc<str>, observed: u64 },
+}
+
+/// Domain separators, so a raw-byte hash and a metadata hash for the same path
+/// cannot coincide.
+const FAILED_READ_CONTENT_TAG: u64 = 0x5255_4532_3130_3501;
+const FAILED_READ_PLACE_TAG: u64 = 0x5255_4532_3130_3502;
+
+/// What an attempt can still observe about a candidate it failed to read.
+///
+/// A failed read has no accepted bytes to hash, so without this the record of
+/// "I tried to read this and could not" is byte-for-byte identical on the next
+/// 250ms retry and on the user's next save, and the watch debounce cannot tell
+/// them apart (RUE-2105).
+///
+/// Metadata decides first, bytes second, on exactly the order the loader's own
+/// routes use: a candidate is classified by `is_file()` and is never opened
+/// unless it is a regular file. That order is load-bearing rather than tidy —
+/// opening a named pipe for reading blocks until a writer appears, so a `mkfifo`
+/// in a module's place would otherwise wedge the probe, and with it the watch
+/// retry that called it, forever.
+///
+/// For a regular file the bytes are the fingerprint: the common shape is a file
+/// that is present and perfectly readable but not *decodable* — invalid UTF-8 —
+/// and hashing its bytes keeps the same content-not-metadata rule the accepted
+/// half uses, so a rewrite that changes nothing still compares equal. Anything
+/// else — a directory, a pipe, a socket, a device, a dangling symlink — and any
+/// regular file whose bytes are unreachable anyway, such as a permission denial,
+/// falls back to the identity and metadata of whatever *is* there, which is all
+/// a failed attempt can see. Nothing at all hashes to zero.
+///
+/// Called only after a read has already failed, so it never runs on the
+/// accepted path. The fallback deliberately never follows a symlink: the record
+/// is about what is literally at the requested spelling.
+fn failed_candidate_fingerprint(path: &Path) -> u64 {
+    if fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
+        && let Ok(bytes) = fs::read(path)
+    {
+        return WatchFingerprint::from_bytes(&bytes).0 ^ FAILED_READ_CONTENT_TAG;
+    }
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return 0;
+    };
+    let identity = physical_file_identity(&metadata);
+    let fingerprint = file_metadata_fingerprint(&metadata);
+    let mut place = [0_u8; 40];
+    for (slot, value) in place.chunks_exact_mut(8).zip([
+        identity.volume(),
+        identity.file(),
+        fingerprint.length(),
+        fingerprint.modified(),
+        fingerprint.changed(),
+    ]) {
+        slot.copy_from_slice(&value.to_le_bytes());
+    }
+    WatchFingerprint::from_bytes(&place).0 ^ FAILED_READ_PLACE_TAG
+}
+
+/// The reads one observation attempt made and could not accept.
+///
+/// Accepted reads survive a failed attempt in the assembler's manifest;
+/// rejected ones survive nowhere, so the attempt collects them here as it goes
+/// and its caller projects them alongside the manifest.
+type FailedReads = Vec<AttemptedRead>;
+
+/// Record a rejected observation, if it is one. Accepted and absent
+/// observations are not failures: an accepted read is already in the
+/// assembler's manifest, and an absent candidate is already a committed
+/// `observed_absent_path`, which the watch closure covers.
+fn record_failed_read(failed: &mut FailedReads, observation: &ImportObservation) {
+    let requested = observation.request().requested_path();
+    let (reason, probe): (String, bool) = match observation.status() {
+        ImportObservationStatus::Absent | ImportObservationStatus::PresentReadable { .. } => return,
+        ImportObservationStatus::PresentUnreadable(reason) => {
+            (format!("unreadable: {reason}"), true)
+        }
+        ImportObservationStatus::InvalidPhysicalType { canonical_path } => (
+            format!("not a regular source file at '{canonical_path}'"),
+            true,
+        ),
+        ImportObservationStatus::UnstableRead(reason) => {
+            (format!("changed during its read: {reason}"), true)
+        }
+        // A lexically denied path must not be probed at all — declining the
+        // filesystem is the whole content of that denial — and a canonically
+        // denied one is a path the policy says this build may not read. Both
+        // are configuration facts about the manifest rather than about what is
+        // on disk, and the manifest is itself a watched input.
+        ImportObservationStatus::DeniedLexical => (
+            "denied by the source manifest read policy".to_owned(),
+            false,
+        ),
+        ImportObservationStatus::DeniedCanonical { canonical_path } => (
+            format!("denied by the source manifest after resolving to '{canonical_path}'"),
+            false,
+        ),
+        // An abandoned attempt is answered by its restart, never by this record.
+        ImportObservationStatus::Cancelled => return,
+    };
+    push_failed_read(failed, requested, reason, probe);
+}
+
+/// Record a demanded trusted toolchain module the host could not acquire.
+///
+/// The same rule as [`record_failed_read`]: a hermetic denial is a statement
+/// about the read policy and must not touch the filesystem, while every
+/// integrity failure is a statement about what is (or is not) under the
+/// standard-library root, and observing it is what lets the next save be told
+/// from the next retry.
+fn record_failed_toolchain_demand(
+    failed: &mut FailedReads,
+    path: &Path,
+    error: &ToolchainAcquisitionError,
+) {
+    let (reason, probe) = match error {
+        ToolchainAcquisitionError::Hermetic(_) => (
+            "denied by the source manifest read policy".to_owned(),
+            false,
+        ),
+        // The failure's class, not its rendered text: the rendered diagnostic
+        // is already the other half of the debounce key, and repeating it here
+        // would add nothing this record does not already distinguish.
+        ToolchainAcquisitionError::Toolchain(error) => (
+            match error {
+                ToolchainIntegrityError::StdRootUnavailable { .. } => {
+                    "no standard-library root is configured".to_owned()
+                }
+                ToolchainIntegrityError::Missing { .. } => "missing from the toolchain".to_owned(),
+                ToolchainIntegrityError::Unreadable { reason, .. } => {
+                    format!("unreadable: {reason}")
+                }
+                ToolchainIntegrityError::Malformed { .. } => "malformed".to_owned(),
+                ToolchainIntegrityError::UnsatisfiedAfterPublish { .. } => {
+                    "unsatisfied after publication".to_owned()
+                }
+            },
+            true,
+        ),
+    };
+    push_failed_read(failed, path.to_string_lossy().as_ref(), reason, probe);
+}
+
+fn push_failed_read(failed: &mut FailedReads, requested: &str, reason: String, probe: bool) {
+    failed.push(AttemptedRead {
+        requested_path: Arc::from(requested),
+        outcome: AttemptedReadOutcome::Failed {
+            reason: Arc::from(reason),
+            observed: if probe {
+                failed_candidate_fingerprint(Path::new(requested))
+            } else {
+                0
+            },
+        },
+    });
+}
+
+/// Project an attempt's accepted-read manifest and its rejected reads into one
+/// observation record.
+///
+/// Sorted and deduplicated over the whole record rather than ordered by the
+/// manifest's module identity, so the record of two attempts over the same
+/// files compares equal regardless of the order discovery happened to reach
+/// them or how many times a round re-probed the same candidate.
+fn attempted_reads_of(manifest: &AcceptedReadManifest, failed: &FailedReads) -> Vec<AttemptedRead> {
     let mut reads: Vec<AttemptedRead> = manifest
         .iter()
         .map(|entry| AttemptedRead {
             requested_path: Arc::from(entry.requested_path()),
-            canonical_path: Arc::from(entry.canonical_path()),
-            content_fingerprint: entry.content_fingerprint(),
+            outcome: AttemptedReadOutcome::Accepted {
+                canonical_path: Arc::from(entry.canonical_path()),
+                content_fingerprint: entry.content_fingerprint(),
+            },
         })
+        .chain(failed.iter().cloned())
         .collect();
-    reads.sort_by(|left, right| {
-        left.requested_path
-            .cmp(&right.requested_path)
-            .then_with(|| left.canonical_path.cmp(&right.canonical_path))
-    });
+    reads.sort();
+    reads.dedup();
     reads
 }
 
@@ -671,11 +850,18 @@ fn execute_import_request(
     request: ImportDiscoveryRequest,
     source_manifest: Option<&SourceManifest>,
     reobserved_reads: Option<&AHashMap<String, AcceptedImportSource>>,
+    failed_reads: &mut FailedReads,
     control: DiscoveryControl<'_>,
 ) -> Result<ImportObservation, SourceLoadError> {
     control.checkpoint()?;
     let observation =
         execute_import_request_uncancelled(request, source_manifest, reobserved_reads);
+    // Every filesystem answer this host gives a discovery frontier passes
+    // through here, so this is the one place a rejected read can be recorded
+    // for all of them: policy denial, a missing canonical route, a directory
+    // where a file belongs, an I/O error, undecodable bytes, or a route that
+    // moved mid-read (RUE-2105).
+    record_failed_read(failed_reads, &observation);
     control.checkpoint()?;
     Ok(observation)
 }
@@ -1475,6 +1661,7 @@ fn run_import_wave(
     frontier: &ImportDemandFrontier,
     source_manifest: Option<&SourceManifest>,
     reobserved_reads: Option<&AHashMap<String, AcceptedImportSource>>,
+    failed_reads: &mut FailedReads,
     control: DiscoveryControl<'_>,
 ) -> Result<(ImportInputRevision, ImportDemandFrontier), SourceLoadError> {
     for attempt in 0..=WAVE_STAMP_RETRIES {
@@ -1495,7 +1682,13 @@ fn run_import_wave(
                 .iter()
                 .cloned()
                 .map(|request| {
-                    execute_import_request(request, source_manifest, reobserved_reads, control)
+                    execute_import_request(
+                        request,
+                        source_manifest,
+                        reobserved_reads,
+                        failed_reads,
+                        control,
+                    )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             extend_import_wave(staging, &mut wave, observations)
@@ -1571,6 +1764,7 @@ fn drive_import_discovery_to_close(
     reobserved_reads: Option<&AHashMap<String, AcceptedImportSource>>,
     continuation: Option<ImportInputRevision>,
     reclose: Option<ReClose<'_>>,
+    failed_reads: &mut FailedReads,
     control: DiscoveryControl<'_>,
 ) -> Result<ClosedDiscovery, SourceLoadError> {
     control.checkpoint()?;
@@ -1754,7 +1948,13 @@ fn drive_import_discovery_to_close(
                     .iter()
                     .cloned()
                     .map(|request| {
-                        execute_import_request(request, source_manifest, reobserved_reads, control)
+                        execute_import_request(
+                            request,
+                            source_manifest,
+                            reobserved_reads,
+                            failed_reads,
+                            control,
+                        )
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 control.checkpoint()?;
@@ -1818,6 +2018,7 @@ fn drive_import_discovery_to_close(
                     &frontier,
                     source_manifest,
                     reobserved_reads,
+                    failed_reads,
                     control,
                 )?;
                 input_revision = revision;
@@ -2030,6 +2231,7 @@ fn discover_and_load_imports_with_configuration(
     // forces a std read. This close threads its assembler, read policy, std root,
     // and closure witness out so that loop can satisfy demands and re-close in the
     // same request generation.
+    let mut failed_reads = FailedReads::new();
     let close = drive_import_discovery_to_close(
         &mut assembler,
         &mut staging,
@@ -2038,6 +2240,7 @@ fn discover_and_load_imports_with_configuration(
         None,
         None,
         None,
+        &mut failed_reads,
         DiscoveryControl::default(),
     )?;
 
@@ -2049,7 +2252,7 @@ fn discover_and_load_imports_with_configuration(
             root_display_path: root_source.to_owned(),
             context,
         },
-        attempted_reads: attempted_reads_of(&read_manifest),
+        attempted_reads: attempted_reads_of(&read_manifest, &failed_reads),
         read_manifest,
         observed_absent_paths: close.observed_absent_paths,
         revision: close.closed,
@@ -2159,6 +2362,7 @@ fn reload_from_filesystem_inner(
     // for requests the new rooted frontier actually issues; making every old
     // read explicit would keep modules that are no longer reachable after an
     // import-set edit and grow the retained snapshot monotonically.
+    let mut failed_reads = FailedReads::new();
     let close = match drive_import_discovery_to_close(
         &mut assembler,
         &mut result.session,
@@ -2167,6 +2371,7 @@ fn reload_from_filesystem_inner(
         Some(&reobserved),
         None,
         None,
+        &mut failed_reads,
         control,
     ) {
         Err(SourceLoadError::Superseded) => {
@@ -2185,13 +2390,14 @@ fn reload_from_filesystem_inner(
         // excluded above: it was abandoned, not answered, and the restart
         // observes the newer bytes itself.
         Err(error) => {
-            result.attempted_reads = attempted_reads_of(&assembler.accepted_read_manifest());
+            result.attempted_reads =
+                attempted_reads_of(&assembler.accepted_read_manifest(), &failed_reads);
             return Err(error);
         }
         Ok(close) => close,
     };
     let read_manifest = assembler.accepted_read_manifest();
-    result.attempted_reads = attempted_reads_of(&read_manifest);
+    result.attempted_reads = attempted_reads_of(&read_manifest, &failed_reads);
     result.source_snapshot = close.snapshot;
     result.read_manifest = read_manifest;
     result.observed_absent_paths = close.observed_absent_paths;
@@ -2315,16 +2521,33 @@ fn acquire_reached_toolchain_modules_superseding_inner(
                 // it, rather than carrying a partial module set forward
                 // (RUE-1863).
                 let mut round_assembler = result.assembler.clone();
+                let mut failed_reads = FailedReads::new();
                 for demand in park.demands() {
                     control.checkpoint()?;
-                    satisfy_toolchain_module_demand(
+                    // A demanded toolchain module is read outside the import
+                    // frontier, so its rejections are recorded here rather than
+                    // in `execute_import_request`. Without it a std module that
+                    // is present but unreadable reports once and then goes
+                    // silent over every later save, exactly as a program module
+                    // did (RUE-2105).
+                    if let Err(error) = satisfy_toolchain_module_demand(
                         &mut round_assembler,
                         &result.resolution.context,
                         result.std_root.as_deref(),
                         result.source_manifest.as_ref(),
                         demand,
-                    )
-                    .map_err(SourceLoadError::from)?;
+                    ) {
+                        record_failed_toolchain_demand(
+                            &mut failed_reads,
+                            &toolchain_module_path(&result.resolution.context, demand),
+                            &error,
+                        );
+                        result.attempted_reads = attempted_reads_of(
+                            &round_assembler.accepted_read_manifest(),
+                            &failed_reads,
+                        );
+                        return Err(SourceLoadError::from(error));
+                    }
                 }
                 let successor = round_assembler
                     .snapshot()
@@ -2365,6 +2588,7 @@ fn acquire_reached_toolchain_modules_superseding_inner(
                     None,
                     Some(delta.revision()),
                     Some(ReClose { delta: &delta }),
+                    &mut failed_reads,
                     control,
                 ) {
                     Ok(reclosed) => reclosed,
@@ -2375,8 +2599,10 @@ fn acquire_reached_toolchain_modules_superseding_inner(
                         // toolchain module from the same one on the next retry
                         // (RUE-2103).
                         if !matches!(error, SourceLoadError::Superseded) {
-                            result.attempted_reads =
-                                attempted_reads_of(&round_assembler.accepted_read_manifest());
+                            result.attempted_reads = attempted_reads_of(
+                                &round_assembler.accepted_read_manifest(),
+                                &failed_reads,
+                            );
                         }
                         let error = reclassify_reclose_failure(
                             error,
@@ -2395,7 +2621,7 @@ fn acquire_reached_toolchain_modules_superseding_inner(
                 // Commit boundary: every assignment below is infallible, so the
                 // round is applied whole or not at all.
                 result.read_manifest = round_assembler.accepted_read_manifest();
-                result.attempted_reads = attempted_reads_of(&result.read_manifest);
+                result.attempted_reads = attempted_reads_of(&result.read_manifest, &failed_reads);
                 result.assembler = round_assembler;
                 result.source_snapshot = reclosed.snapshot;
                 result.revision = reclosed.closed;
@@ -3825,6 +4051,195 @@ mod tests {
             names(result.attempted_reads()),
             ["extra.rue", "helper.rue", "main.rue"]
         );
+    }
+
+    /// The same contract one step earlier in the read: a module that is
+    /// present but that no attempt can turn into source at all — undecodable
+    /// bytes, a directory in its place — has no accepted bytes to fingerprint,
+    /// so recording only accepted reads left it with nothing for the watcher to
+    /// observe and every save after the first was silent (RUE-2105).
+    #[test]
+    fn a_failed_reobservation_records_a_module_it_could_not_read_at_all() {
+        let dir = TestDir::new("failed-attempt-unreadable");
+        let main = dir.write(
+            "main.rue",
+            r#"const helper = @import("helper.rue"); fn main() -> i32 { helper.value() }"#,
+        );
+        let helper = dir.write("helper.rue", "pub fn value() -> i32 { 1 }");
+        let extra = dir.path.join("extra.rue");
+        // Present, readable as bytes, and not source: the shape an editor
+        // produces by saving a binary file over a module.
+        fs::write(&extra, b"pub fn broken() -> i32 { \xff\xfe 2 }\n").unwrap();
+        let mut result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
+        let named = |reads: &[AttemptedRead], name: &str| {
+            reads
+                .iter()
+                .find(|read| read.requested_path.ends_with(name))
+                .cloned()
+        };
+        let names = |reads: &[AttemptedRead]| {
+            reads
+                .iter()
+                .map(|read| {
+                    Path::new(read.requested_path.as_ref())
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(named(result.attempted_reads(), "extra.rue").is_none());
+
+        // Wire it in. The read itself fails, so nothing about it reaches the
+        // accepted-read manifest — the attempt's own record is the only account.
+        fs::write(
+            &helper,
+            r#"const extra = @import("extra.rue"); pub fn value() -> i32 { extra.broken() }"#,
+        )
+        .unwrap();
+        assert!(reload_from_filesystem(&mut result, None).is_err());
+        assert!(
+            !result
+                .watch_inputs()
+                .iter()
+                .any(|input| input.requested_path().ends_with("extra.rue")),
+            "a failed attempt commits nothing, so the closure is still the last successful one"
+        );
+        assert_eq!(
+            names(result.attempted_reads()),
+            ["extra.rue", "helper.rue", "main.rue"]
+        );
+        let undecodable = named(result.attempted_reads(), "extra.rue").unwrap();
+        assert!(matches!(
+            undecodable.outcome,
+            AttemptedReadOutcome::Failed { .. }
+        ));
+
+        // A bare retry over the same bytes records the same thing, which is
+        // what makes a repeat recognizable as one.
+        let failed = result.attempted_reads().to_vec();
+        assert!(reload_from_filesystem(&mut result, None).is_err());
+        assert_eq!(result.attempted_reads(), failed);
+
+        // Editing it records something else, even though it is still exactly
+        // as unreadable and the failure renders identically.
+        fs::write(&extra, b"pub fn broken() -> i32 { \xff\xfe 41 }\n").unwrap();
+        assert!(reload_from_filesystem(&mut result, None).is_err());
+        assert_eq!(names(result.attempted_reads()), names(&failed));
+        assert_ne!(result.attempted_reads(), failed);
+
+        // Content-derived, on the same terms as the accepted half: a save that
+        // moves the modification time without moving a byte is not a revision
+        // anyone asked to hear about.
+        let edited = result.attempted_reads().to_vec();
+        let now = std::time::SystemTime::now();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&extra)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_accessed(now).set_modified(now))
+            .unwrap();
+        assert!(reload_from_filesystem(&mut result, None).is_err());
+        assert_eq!(result.attempted_reads(), edited);
+
+        // A directory in the module's place is the other shape of the same
+        // failure, and it is a different record even though the path is the
+        // same and no bytes were read in either case.
+        fs::remove_file(&extra).unwrap();
+        fs::create_dir(&extra).unwrap();
+        assert!(reload_from_filesystem(&mut result, None).is_err());
+        assert_eq!(names(result.attempted_reads()), names(&failed));
+        let directory = named(result.attempted_reads(), "extra.rue").unwrap();
+        assert_ne!(directory, undecodable);
+        assert!(matches!(
+            directory.outcome,
+            AttemptedReadOutcome::Failed { .. }
+        ));
+
+        // And a repair puts it in the committed closure. The accepted record
+        // for the path can never be mistaken for either failed one, whatever
+        // the fingerprints happen to be.
+        fs::remove_dir(&extra).unwrap();
+        fs::write(&extra, "pub fn broken() -> i32 { 41 }").unwrap();
+        reload_from_filesystem(&mut result, None).unwrap();
+        assert!(
+            result
+                .watch_inputs()
+                .iter()
+                .any(|input| input.requested_path().ends_with("extra.rue"))
+        );
+        let accepted = named(result.attempted_reads(), "extra.rue").unwrap();
+        assert!(matches!(
+            accepted.outcome,
+            AttemptedReadOutcome::Accepted { .. }
+        ));
+        assert_ne!(accepted, undecodable);
+        assert_ne!(accepted, directory);
+    }
+
+    /// A named pipe where a module belongs is classified, never opened.
+    ///
+    /// Every loader route decides a candidate's fate from `is_file()` and
+    /// opens nothing that is not a regular file, which is what keeps a pipe,
+    /// socket, or device in a module's place from blocking the compiler. The
+    /// record of a read the attempt could *not* accept runs on exactly those
+    /// paths and has to hold the same order: `open` on a pipe with no writer
+    /// never returns, so reaching for its bytes wedges the observation and,
+    /// with it, the watch retry that asked for one (RUE-2105).
+    ///
+    /// The assertion that matters is therefore that the call comes back.
+    #[cfg(unix)]
+    #[test]
+    fn a_named_pipe_in_a_modules_place_is_recorded_without_opening_it() {
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::FileTypeExt;
+
+        let dir = TestDir::new("failed-attempt-named-pipe");
+        let main = dir.write(
+            "main.rue",
+            r#"const helper = @import("helper.rue"); fn main() -> i32 { helper.value() }"#,
+        );
+        let helper = dir.write("helper.rue", "pub fn value() -> i32 { 1 }");
+        let extra = dir.path.join("extra.rue");
+        let name = std::ffi::CString::new(extra.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o644) }, 0);
+        assert!(
+            fs::symlink_metadata(&extra).unwrap().file_type().is_fifo(),
+            "the fixture has to actually be a pipe for this to test anything"
+        );
+
+        // Bounded off-thread, because the failure this pins is a call that
+        // never returns rather than one that returns the wrong thing: an
+        // in-line version of this test hangs the whole suite instead of
+        // failing it.
+        let (report, answer) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
+            // Wire the pipe into the closure for the first time.
+            fs::write(
+                &helper,
+                r#"const extra = @import("extra.rue"); pub fn value() -> i32 { extra.broken() }"#,
+            )
+            .unwrap();
+            let rejected = reload_from_filesystem(&mut result, None).is_err();
+            let recorded = result
+                .attempted_reads()
+                .iter()
+                .find(|read| read.requested_path.ends_with("extra.rue"))
+                .cloned();
+            report.send((rejected, recorded)).ok();
+        });
+        let (rejected, recorded) = answer
+            .recv_timeout(Duration::from_secs(30))
+            .expect("observing a module's place must never wait for a pipe's writer");
+
+        assert!(rejected, "a named pipe is not a regular source file");
+        let recorded = recorded.expect("the candidate it could not read is on the record");
+        assert!(matches!(
+            recorded.outcome,
+            AttemptedReadOutcome::Failed { .. }
+        ));
     }
 
     #[test]

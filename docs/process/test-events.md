@@ -900,10 +900,12 @@ has no one revision — and keeps compile mode's own exclusions (`--emit`,
   bytes says nothing. The report returns when the rendered diagnostic changes or
   when any source the attempt read does — the retained closure and whatever
   that attempt itself pulled in, which is what a module wired into the graph
-  for the first time is — so a save that leaves the error standing still gets
-  one line back rather than silence, and a watcher left inside an untouched
-  syntax error stays quiet indefinitely. "Changed" means the bytes, not the
-  modification time: saving a file without editing it is not a new revision.
+  for the first time is, including one it could only *try* to read because the
+  file is present but is not source (RUE-2105) — so a save that leaves the
+  error standing still gets one line back rather than silence, and a watcher
+  left inside an untouched syntax error stays quiet indefinitely. "Changed"
+  means the bytes, not the modification time: saving a file without editing it
+  is not a new revision.
 - **The exit status is produced only on SIGINT or SIGTERM**, and is the last
   cycle that COMPLETED reporting itself on the ordinary
   [exit-code table](#exit-codes): `0` if it passed, `1` if it failed, `3` if it

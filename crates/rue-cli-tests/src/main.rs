@@ -2749,6 +2749,45 @@ const SUPPRESSED_RETRIES: usize = 3;
 /// only an attempt that actually told the user something publishes
 /// `reobserve-error`. That split is what makes the assertion event-driven
 /// instead of a sleep long enough to "probably" cover a few ticks (RUE-2091).
+/// Drive the shared "a module that cannot be read at all was wired into the
+/// closure" sequence, which both watchers run identically (RUE-2105).
+///
+/// The expectations come from the edits rather than from fixed indices, so one
+/// arm covers both shapes of the failure — undecodable bytes and a directory in
+/// the module's place — even though they need different numbers of steps:
+///
+/// - `edits[0]` stages the unreadable module. Nothing imports it yet, so it is
+///   in no closure and no watch input, and the watcher must not stir.
+/// - `edits[1]` wires it in. That is the first report.
+/// - every edit up to the last owes one more report, because a save the user
+///   made is a revision and silence after one is indistinguishable from a
+///   watcher that never noticed it — unless the edit is a `touch`, which moves
+///   no byte and must therefore report nothing.
+/// - the last edit repairs the module; the caller waits for the publication.
+fn run_read_failure_outside_closure(
+    child: &mut std::process::Child,
+    protocol: &Path,
+    dir: &Path,
+    edits: &[WatchEdit],
+    deadline: Instant,
+) -> Result<(), String> {
+    let (repair, leading) = edits
+        .split_last()
+        .ok_or_else(|| "read-failure watch scenario has no edits".to_string())?;
+    write_watch_edit(dir, &leading[0])?;
+    write_watch_edit(dir, &leading[1])?;
+    let mut reports = 1;
+    assert_failure_reported_once(child, protocol, reports, deadline)?;
+    for edit in &leading[2..] {
+        write_watch_edit(dir, edit)?;
+        if !edit.touch {
+            reports += 1;
+        }
+        assert_failure_reported_once(child, protocol, reports, deadline)?;
+    }
+    write_watch_edit(dir, repair)
+}
+
 fn assert_failure_reported_once(
     child: &mut std::process::Child,
     protocol: &Path,
@@ -2886,24 +2925,109 @@ fn replace_watch_symlink(_path: &Path, _target: &str) -> Result<(), String> {
 
 fn write_watch_edit(dir: &Path, edit: &WatchEdit) -> Result<(), String> {
     let path = dir.join(&edit.path);
-    match (
+    let requested = [
         edit.delete,
         edit.touch,
-        edit.source.as_deref(),
-        edit.symlink_target.as_deref(),
-    ) {
-        (true, false, None, None) => std::fs::remove_file(&path)
-            .map_err(|error| format!("failed to delete watch fixture {}: {error}", edit.path)),
-        (false, true, None, None) => touch_watch_fixture(&path)
-            .map_err(|error| format!("failed to touch watch fixture {}: {error}", edit.path)),
-        (false, false, Some(source), None) => std::fs::write(&path, source)
-            .map_err(|error| format!("failed to update watch fixture {}: {error}", edit.path)),
-        (false, false, None, Some(target)) => replace_watch_symlink(&path, target),
-        _ => Err(format!(
-            "watch edit {} must specify exactly one of delete, touch, source, or symlink_target",
+        edit.directory,
+        edit.fifo,
+        edit.source.is_some(),
+        edit.undecodable_source.is_some(),
+        edit.symlink_target.is_some(),
+    ];
+    if requested.iter().filter(|set| **set).count() != 1 {
+        return Err(format!(
+            "watch edit {} must specify exactly one of delete, touch, directory, fifo, source, \
+             undecodable_source, or symlink_target",
             edit.path
-        )),
+        ));
     }
+    let failed =
+        |error: std::io::Error| format!("failed to write watch fixture {}: {error}", edit.path);
+    if edit.delete {
+        return std::fs::remove_file(&path).map_err(failed);
+    }
+    if edit.touch {
+        return touch_watch_fixture(&path).map_err(failed);
+    }
+    if edit.directory {
+        return stage_watch_directory(&path).map_err(failed);
+    }
+    if edit.fifo {
+        return stage_watch_fifo(&path);
+    }
+    if let Some(target) = edit.symlink_target.as_deref() {
+        return replace_watch_symlink(&path, target);
+    }
+    // A repair can land on a path a previous edit turned into something
+    // `fs::write` cannot open: a directory, or a named pipe, where the open
+    // would block until a reader appeared and hang the harness rather than
+    // fail it. Clear those first. Inert for every case that only ever writes
+    // files, and `metadata` follows symlinks, so a case whose fixture is a
+    // symlink to a real file still writes through it as before.
+    match std::fs::metadata(&path) {
+        Ok(existing) if existing.is_dir() => std::fs::remove_dir_all(&path).map_err(failed)?,
+        Ok(existing) if !existing.is_file() => std::fs::remove_file(&path).map_err(failed)?,
+        _ => {}
+    }
+    if let Some(source) = edit.source.as_deref() {
+        return std::fs::write(&path, source).map_err(failed);
+    }
+    let source = edit
+        .undecodable_source
+        .as_deref()
+        .expect("exactly one edit action was requested");
+    std::fs::write(&path, undecodable_bytes(source)).map_err(failed)
+}
+
+/// The text with an invalid UTF-8 sequence in front of it.
+///
+/// `0xff 0xfe` can begin no UTF-8 encoding, so the file is present, has a
+/// stable size and content hash, and is perfectly readable as bytes — it simply
+/// is not text. That is exactly the read failure RUE-2105 is about: the loader
+/// accepts no bytes for the module, so before this it had nothing to key on and
+/// every save after the first was silent. Keeping the rest of the line readable
+/// text keeps the case file legible.
+fn undecodable_bytes(source: &str) -> Vec<u8> {
+    let mut bytes = vec![0xff_u8, 0xfe];
+    bytes.extend_from_slice(source.as_bytes());
+    bytes
+}
+
+/// Put a directory where a module belongs, replacing whatever is there.
+fn stage_watch_directory(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => std::fs::remove_dir_all(path)?,
+    }
+    std::fs::create_dir(path)
+}
+
+/// Put a named pipe where a module belongs, replacing whatever is there.
+///
+/// Built at a sibling path and renamed into place so the module's own path is
+/// never momentarily absent: a re-observation landing in that window renders a
+/// missing import rather than the unreadable one the case is counting.
+#[cfg(unix)]
+fn stage_watch_fifo(path: &Path) -> Result<(), String> {
+    // The staged name is deliberately not a `.rue` spelling, so nothing can
+    // import it and no candidate route ever reaches it.
+    let staging = path.with_extension("rue-fifo-staging");
+    // This harness has no libc dependency, and `mkfifo(1)` is the same call.
+    let staged = std::process::Command::new("mkfifo")
+        .arg(staging.as_os_str())
+        .status()
+        .map_err(|error| format!("failed to run mkfifo: {error}"))?;
+    if !staged.success() {
+        return Err(format!("mkfifo {} failed: {staged}", staging.display()));
+    }
+    std::fs::rename(&staging, path)
+        .map_err(|error| format!("failed to move watch fifo into place: {error}"))
+}
+
+#[cfg(not(unix))]
+fn stage_watch_fifo(_path: &Path) -> Result<(), String> {
+    Err("watch fifo fixtures are only supported on Unix".into())
 }
 
 /// Restamp a fixture's modification time without touching a byte of it.
@@ -3011,6 +3135,12 @@ fn run_watch_case(
     if scenario.kind == WatchScenarioKind::FailureOutsideClosure && scenario.edits.len() != 4 {
         return Err(TestFailure::assertion(
             "failure-outside-closure watch scenario requires a wiring edit, a content edit, a touch, and a repair",
+        ));
+    }
+    if scenario.kind == WatchScenarioKind::ReadFailureOutsideClosure && scenario.edits.len() < 4 {
+        return Err(TestFailure::assertion(
+            "read-failure-outside-closure watch scenario requires a staging edit, a wiring \
+             edit, at least one edit to the unreadable module, and a repair",
         ));
     }
     if scenario.kind == WatchScenarioKind::SymlinkRetarget && scenario.edits.len() != 1 {
@@ -3225,6 +3355,16 @@ fn run_watch_case(
                 write_watch_edit(dir, &scenario.edits[3])?;
                 wait_for_watch_event(&mut child, &protocol, "published", 2, deadline)?;
             }
+            WatchScenarioKind::ReadFailureOutsideClosure => {
+                run_read_failure_outside_closure(
+                    &mut child,
+                    &protocol,
+                    dir,
+                    &scenario.edits,
+                    deadline,
+                )?;
+                wait_for_watch_event(&mut child, &protocol, "published", 2, deadline)?;
+            }
             WatchScenarioKind::RepeatedFailure => {
                 // Each step below kills one way the suppression could be
                 // written wrong, and the loop it exercises is shared, so
@@ -3397,6 +3537,9 @@ fn run_watch_test_case(
         WatchTestScenarioKind::CompileError => 2,
         WatchTestScenarioKind::RepeatedFailure => 3,
         WatchTestScenarioKind::FailureOutsideClosure => 4,
+        // Reads its expectations from the edits themselves, so the lower bound
+        // is all the arity there is to check; the arm validates the rest.
+        WatchTestScenarioKind::ReadFailureOutsideClosure => scenario.edits.len().max(4),
     };
     if scenario.edits.len() != required_edits {
         return Err(TestFailure::assertion(format!(
@@ -3526,6 +3669,19 @@ fn run_watch_test_case(
                 write_watch_edit(dir, &scenario.edits[2])?;
                 assert_failure_reported_once(&mut child, &protocol, 2, deadline)?;
                 write_watch_edit(dir, &scenario.edits[3])?;
+                wait_for_watch_event(&mut child, &protocol, "run-finished", 2, deadline)?;
+            }
+            WatchTestScenarioKind::ReadFailureOutsideClosure => {
+                // The `--watch` case of the same name carries the reasoning;
+                // this pins that the two watchers really do share the arm.
+                wait_for_watch_event(&mut child, &protocol, "run-finished", 1, deadline)?;
+                run_read_failure_outside_closure(
+                    &mut child,
+                    &protocol,
+                    dir,
+                    &scenario.edits,
+                    deadline,
+                )?;
                 wait_for_watch_event(&mut child, &protocol, "run-finished", 2, deadline)?;
             }
             WatchTestScenarioKind::Cancel => {
