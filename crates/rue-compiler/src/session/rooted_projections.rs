@@ -2950,6 +2950,40 @@ fn executable_main_declaration(
     Ok(main_declaration.key.clone())
 }
 
+/// Where in a declaration's signature a query-owned failure belongs.
+///
+/// Two stable failure shapes reach this: a rule about the parameter itself
+/// (a duplicate name) anchors at the whole parameter, and a diagnostic about
+/// one written type anchors at that type (RUE-2161).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SignatureAnchor {
+    Parameter(u32),
+    ParameterType(u32),
+    ResultType,
+}
+
+/// The signature position a failure names, when it names one.
+fn signature_anchor(
+    failure: &crate::semantic_query_nucleus::SemanticNucleusFailure,
+) -> Option<(&rue_error::ErrorKind, SignatureAnchor)> {
+    use crate::semantic_query_nucleus::{
+        SemanticNucleusFailure as F, SignatureTypeAnchor as Written,
+    };
+    match failure {
+        F::DiagnosticAtParameter { kind, ordinal } => {
+            Some((kind, SignatureAnchor::Parameter(*ordinal)))
+        }
+        F::DiagnosticAtSignatureType { kind, anchor } => Some((
+            kind,
+            match anchor {
+                Written::Parameter(ordinal) => SignatureAnchor::ParameterType(*ordinal),
+                Written::Result => SignatureAnchor::ResultType,
+            },
+        )),
+        _ => None,
+    }
+}
+
 fn semantic_nucleus_failure_diagnostics(
     modules: &[Arc<crate::parsed_modules::ParsedModule>],
     declaration: Option<&crate::declaration_candidate::DeclarationCandidateKey>,
@@ -3024,33 +3058,46 @@ fn semantic_nucleus_failure_diagnostics(
             ),
         )));
     }
-    if let (Some(declaration), F::DiagnosticAtParameter { kind, ordinal }) = (declaration, failure)
+    if let Some((kind, anchor)) = signature_anchor(failure)
+        && let Some(declaration) = declaration
         && let Some(module) = modules
             .iter()
             .find(|module| module.module_id() == &declaration.module)
         && let Some(locator) = module.definitions().declaration_locator(declaration)
     {
-        let parameters = module.ast().items.iter().find_map(|item| match item {
+        // One AST lookup answers both anchors: the callable declared at this
+        // locator, whatever item shape carries it.
+        let signature = module.ast().items.iter().find_map(|item| match item {
             rue_parser::ast::Item::Function(function)
                 if function.span == locator.declaration_span =>
             {
-                Some(function.params.as_slice())
+                Some((function.params.as_slice(), function.return_type.as_ref()))
             }
             rue_parser::ast::Item::Struct(structure) => structure
                 .methods
                 .iter()
                 .find(|method| method.span == locator.declaration_span)
-                .map(|method| method.params.as_slice()),
+                .map(|method| (method.params.as_slice(), method.return_type.as_ref())),
             rue_parser::ast::Item::Extern(block) => block
                 .fns
                 .iter()
                 .find(|function| function.span == locator.declaration_span)
-                .map(|function| function.params.as_slice()),
+                .map(|function| (function.params.as_slice(), function.return_type.as_ref())),
             _ => None,
         });
-        if let Some(parameter) = parameters.and_then(|parameters| parameters.get(*ordinal as usize))
-        {
-            return CompileErrors::from(CompileError::new(kind.clone(), parameter.span));
+        if let Some((parameters, return_type)) = signature {
+            let span = match anchor {
+                SignatureAnchor::Parameter(ordinal) => parameters
+                    .get(ordinal as usize)
+                    .map(|parameter| parameter.span),
+                SignatureAnchor::ParameterType(ordinal) => parameters
+                    .get(ordinal as usize)
+                    .map(|parameter| parameter.ty.span()),
+                SignatureAnchor::ResultType => return_type.map(rue_parser::ast::TypeExpr::span),
+            };
+            if let Some(span) = span {
+                return CompileErrors::from(CompileError::new(kind.clone(), span));
+            }
         }
     }
     if let F::DiagnosticAtDeclaration { kind, declaration } = failure
@@ -3215,6 +3262,7 @@ fn semantic_nucleus_failure_diagnostics(
     let (kind, help, note) = match failure {
         F::Diagnostic(kind) => (kind.clone(), None, None),
         F::DiagnosticAtParameter { kind, .. } => (kind.clone(), None, None),
+        F::DiagnosticAtSignatureType { kind, .. } => (kind.clone(), None, None),
         F::DiagnosticAtDeclaration { kind, .. } => (kind.clone(), None, None),
         F::DuplicateDeclaration { kind, .. } => (kind.clone(), None, None),
         F::DuplicateDeclarations(_) => unreachable!("duplicate batches return above"),

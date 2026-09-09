@@ -602,6 +602,36 @@ fn main() -> i32 {
 }
 ```
 
+{{ rule(id="4.14:23b", cat="normative") }}
+
+A type constructor may also be reached through a callable alias — a constant
+bound to the constructor rather than to its application (`const P = Pair;`,
+`const ArrayBuf = std.arraybuf.ArrayBuf;`, rule 6.5:15) — in every position
+rules 4.14:22 and 4.14:23 admit: a type annotation, a parameter, return, field,
+array-element or pointer-pointee type, a comptime `type` argument, another
+constant's initializer, and a path head heading a struct literal, an
+associated-function or enum-variant call, or a match pattern. The alias names
+the same constructor its target names, so the call is evaluated exactly as if
+the target had been named at that point and reduces to the same type: the
+alias introduces no second constructor, no second specialization, and no new
+typing rule. Visibility is the constant's own, by rule 10.4:22: a `pub` alias
+re-exports the constructor it names, and a private alias reached from another
+directory is rejected as the constant it is.
+
+```rue
+fn Pair(comptime T: type) -> type { struct { a: T, b: T } }
+
+const P = Pair;             // callable alias, not an application
+const PI = P(i32);          // applied in another constant's initializer
+
+fn total(borrow p: P(i32)) -> i32 { p.a + p.b }   // parameter position
+
+fn main() -> i32 {
+    let p: PI = P(i32) { a: 20, b: 22 };          // annotation and path head
+    total(borrow p)
+}
+```
+
 {{ rule(id="4.14:24", cat="normative") }}
 
 The comptime parameters of a type constructor — both `type` parameters and

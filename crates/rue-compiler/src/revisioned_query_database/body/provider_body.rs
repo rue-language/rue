@@ -1253,6 +1253,77 @@ impl SemanticNucleusTypeProvider<'_> {
         Ok(())
     }
 
+    /// The declaration a comptime-call head names in `module`, and the
+    /// visibility the access is judged by.
+    ///
+    /// A `const F = <function>;` alias is a second name for one callee, not a
+    /// second callee: when `name` names no function it is resolved through the
+    /// constant's own value, and the head is then built from the target's
+    /// declaration exactly as the target's own spelling builds it (RUE-2161).
+    /// The alias constant joins this site's dependencies alongside the target,
+    /// so repointing the alias invalidates every signature that reached the
+    /// callee through it.
+    ///
+    /// Visibility follows the name that was written, not the declaration
+    /// behind it — the rule 10.4:22 states for a type alias and ADR-0026 for a
+    /// re-exported callable: a `pub` alias of a private constructor re-exports
+    /// it, and a private alias named from another directory is rejected as the
+    /// constant it is. That is what expression position already does, so both
+    /// positions accept the same programs.
+    fn constructor_candidate(
+        &mut self,
+        module: &ModuleId,
+        name: &str,
+    ) -> Result<
+        Option<ConstructorHeadSite>,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        if let Some(candidate) = self.candidate(module, name, DefinitionKind::Function)? {
+            return Ok(Some(ConstructorHeadSite {
+                candidate,
+                visibility: None,
+            }));
+        }
+        let Some(alias) = self.candidate(module, name, DefinitionKind::Const)? else {
+            return Ok(None);
+        };
+        let crate::semantic_query_nucleus::ConstResolutionProjection::Value {
+            key,
+            value,
+            dependencies,
+            ..
+        } = self.const_resolution(alias.clone())?
+        else {
+            return Ok(None);
+        };
+        let crate::durable_semantics::DurableConstValue::Function(target) = *value else {
+            return Ok(None);
+        };
+        self.dependencies.extend(dependencies.iter().cloned());
+        self.dependencies.insert(
+            crate::semantic_query_nucleus::SemanticDeclarationDependency {
+                source: self.dependency_source.clone(),
+                kind: self.dependency_kind,
+                target:
+                    crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
+                        key,
+                    ),
+            },
+        );
+        let visibility = self.identity(alias)?.is_public;
+        Ok(
+            crate::revisioned_query_database::declaration_candidate_for_stable_key(&target).map(
+                |candidate| ConstructorHeadSite {
+                    candidate,
+                    visibility: Some(visibility),
+                },
+            ),
+        )
+    }
+
     fn constructor_fact(
         &mut self,
         module: &ModuleId,
@@ -1271,7 +1342,11 @@ impl SemanticNucleusTypeProvider<'_> {
         >,
     > {
         use crate::semantic_query_nucleus::DeclarationSignatureProjection;
-        let Some(candidate) = self.candidate(module, name, DefinitionKind::Function)? else {
+        let Some(ConstructorHeadSite {
+            candidate,
+            visibility,
+        }) = self.constructor_candidate(module, name)?
+        else {
             return Ok(None);
         };
         let identity = self.identity(candidate.clone())?;
@@ -1321,7 +1396,7 @@ impl SemanticNucleusTypeProvider<'_> {
             site: identity.key,
             parameters: parameters.into(),
             returns_type: result == crate::durable_semantics::DurableType::ComptimeType,
-            is_public: identity.is_public,
+            is_public: visibility.unwrap_or(identity.is_public),
             defining_domain: rue_air::SemanticVisibilityDomain::from_file_path(Some(
                 module.as_str(),
             )),
@@ -2139,6 +2214,15 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
     }
 }
 
+/// The declaration one comptime-call head resolves to, plus the visibility the
+/// written name carries when it is a callable `const` alias (RUE-2161).
+struct ConstructorHeadSite {
+    candidate: crate::declaration_candidate::DeclarationCandidateKey,
+    /// `Some` only for an alias: the constant's own `pub`-ness governs the
+    /// access, so a `pub` alias re-exports a private constructor.
+    visibility: Option<bool>,
+}
+
 pub(in crate::revisioned_query_database) enum ResolveSemanticSignatureError {
     Abort(QueryAbort),
     Failure(Box<crate::semantic_query_nucleus::SemanticNucleusFailure>),
@@ -2147,6 +2231,24 @@ pub(in crate::revisioned_query_database) enum ResolveSemanticSignatureError {
 impl ResolveSemanticSignatureError {
     fn failure(failure: crate::semantic_query_nucleus::SemanticNucleusFailure) -> Self {
         Self::Failure(Box::new(failure))
+    }
+
+    /// Re-anchor a plain signature diagnostic at the type that produced it.
+    ///
+    /// Type resolution runs once per written type, so the position is known
+    /// here and nowhere downstream; without it every unresolvable type in a
+    /// signature reported against the whole declaration (RUE-2161). Only a
+    /// bare diagnostic moves: a failure that already names its own site keeps
+    /// that site.
+    fn at_signature_type(self, anchor: crate::semantic_query_nucleus::SignatureTypeAnchor) -> Self {
+        use crate::semantic_query_nucleus::SemanticNucleusFailure as F;
+        match self {
+            Self::Failure(failure) => match *failure {
+                F::Diagnostic(kind) => Self::failure(F::DiagnosticAtSignatureType { kind, anchor }),
+                failure => Self::failure(failure),
+            },
+            abort => abort,
+        }
     }
 }
 
@@ -2538,13 +2640,21 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
             }
             let parameters = parameters
                 .iter()
-                .map(|parameter| {
+                .enumerate()
+                .map(|(ordinal, parameter)| {
                     let ty = resolve(
                         provider,
                         syntax,
                         parameter.ty,
                         rue_air::DeclarationTypeDependencyKind::Signature,
-                    )?;
+                    )
+                    .map_err(|error| {
+                        error.at_signature_type(
+                            crate::semantic_query_nucleus::SignatureTypeAnchor::Parameter(
+                                ordinal as u32,
+                            ),
+                        )
+                    })?;
                     if parameter.is_comptime && !parsed.is_type_parameter_syntax(parameter.ty) {
                         provider
                             .deferred_value_parameters
@@ -2573,7 +2683,10 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                 syntax,
                 *result,
                 rue_air::DeclarationTypeDependencyKind::Signature,
-            )?;
+            )
+            .map_err(|error| {
+                error.at_signature_type(crate::semantic_query_nucleus::SignatureTypeAnchor::Result)
+            })?;
             if contains_slice(&result) {
                 return Err(diagnostic(rue_error::ErrorKind::SliceReturnNotAllowed));
             }

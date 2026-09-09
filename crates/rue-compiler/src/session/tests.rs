@@ -1111,8 +1111,10 @@ fn provider_observation_counters_record_exact_production_work() {
         .expect("the program analyzes");
     let metrics = crate::unstable::provider_observation_metrics(&session);
     assert_eq!(
-        metrics.name_lookups, 5,
-        "the two distinct named primitive signatures each perform their canonical file-alias probe: {metrics:?}"
+        metrics.name_lookups, 4,
+        "the two distinct named primitive signatures each perform their canonical file-alias probe, \
+         and the unqualified call resolves on its file-local function probe — the function-valued \
+         `const` alias probe runs only when that one misses (RUE-2161): {metrics:?}"
     );
     assert_eq!(metrics.import_lookups, 0);
     assert_eq!(metrics.method_candidates, 0);
@@ -1175,8 +1177,11 @@ fn repeated_named_imports_register_their_identity_closure_once_per_body() {
 
     let metrics = crate::unstable::provider_observation_metrics(&session);
     assert_eq!(
-        metrics.name_lookups, 14,
-        "the first Item payload must serve type minting and endpoint installation without repeating candidate/destructor lookups; signature and struct-literal names also perform their canonical file-const alias probes: {metrics:?}"
+        metrics.name_lookups, 13,
+        "the first Item payload must serve type minting and endpoint installation without repeating \
+         candidate/destructor lookups; signature and struct-literal names also perform their \
+         canonical file-const alias probes, while the unqualified call resolves on its file-local \
+         function probe alone (RUE-2161): {metrics:?}"
     );
     assert_eq!(metrics.declaration_facts, 10, "{metrics:?}");
     assert_eq!(metrics.identity_facts, 5, "{metrics:?}");
@@ -6790,4 +6795,48 @@ fn dropped_compiler_sessions_end_their_query_worker_threads() {
         "{SESSIONS} dropped sessions created {births} worker threads and must \
          own none of them now"
     );
+}
+
+/// Repointing a callable `const` alias must re-analyze every site that named
+/// it (RUE-2161). A signature or body that reaches its callee through the
+/// alias records the constant alongside the target, so the warm session's
+/// artifacts after the edit match a session that never saw the old program.
+#[test]
+fn repointing_a_callable_alias_reanalyzes_every_site_that_named_it() {
+    let program = |target: &str| {
+        format!(
+            r#"
+            fn Wrap1(comptime T: type) -> type {{
+                struct {{ v: T, fn get(borrow self) -> T {{ self.v }} }}
+            }}
+            fn Wrap2(comptime T: type) -> type {{
+                struct {{ v: T, fn get(borrow self) -> T {{ self.v + 1 }} }}
+            }}
+            const W = {target};
+            fn read(borrow w: W(i32)) -> i32 {{ w.get() }}
+            fn main() -> i32 {{
+                let w = W(i32) {{ v: 41 }};
+                read(borrow w)
+            }}
+        "#
+        )
+    };
+    let before = program("Wrap1");
+    let after = program("Wrap2");
+    let original = snapshot(&[(91, "/p/main.rue", "main.rue", &before)], 91);
+    let edited = snapshot(&[(91, "/p/main.rue", "main.rue", &after)], 91);
+
+    let mut session = CompilerSession::new();
+    session.update(&original).into_result().unwrap();
+    session.rooted_cfg(&CompileOptions::default()).unwrap();
+    session.update(&edited).into_result().unwrap();
+    let actual = session.rooted_cfg(&CompileOptions::default()).unwrap();
+
+    let mut fresh_session = CompilerSession::new();
+    fresh_session.update(&edited).into_result().unwrap();
+    let fresh = fresh_session
+        .rooted_cfg(&CompileOptions::default())
+        .unwrap();
+    assert_body_artifact_parity(&actual, &fresh);
+    assert_diagnostic_parity(&session, &fresh_session);
 }

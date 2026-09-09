@@ -6,7 +6,9 @@
 //! loan, move, and representation coercion decisions delegate to
 //! `analysis::ownership`.
 
-use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
+use super::super::ordinary_engine::{
+    OrdinaryBodyAnalysisHost, OrdinaryBodyEngine, ResolvedCalleeName,
+};
 use super::*;
 use crate::sema::NamedConstDependencyTargetEvent;
 use crate::sema::context::DivergenceKind;
@@ -276,63 +278,45 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         let source_name = name;
-        let mut name = name;
-        let mut resolved_alias = false;
-        let const_info = self
-            .call_facts()
-            .call_resolve_const_info_in_file(name, span.file_id);
-        if let Some(const_info) = const_info
-            && let Some(callee) = const_info.value.as_function()
-        {
-            let alias_name = self.body_interner().resolve(&name).to_string();
-            self.check_item_visibility(
-                crate::PrivateItemKind::Const,
-                &alias_name,
-                const_info.span.file_id,
-                const_info.is_pub,
-                span,
-            )?;
-            self.record_body_named_dependency(NamedConstDependencyTargetEvent::ValueConst {
-                file: const_info.span.file_id.index(),
-                name: alias_name,
-            });
-            name = callee.spur();
-            resolved_alias = true;
-        }
-
-        let local_name = (!resolved_alias)
-            .then(|| {
-                self.call_facts()
-                    .call_resolve_function_name_local(name, span.file_id)
-            })
-            .flatten();
-        if let Some(local_name) = local_name {
-            name = local_name;
-        }
-
-        // `print(s)` / `println(s)` / `eprint(s)` / `eprintln(s)` are builtin
-        // free functions, not
-        // user-defined ones: intercept them here before the function lookup,
-        // but only when the program hasn't shadowed the name with its own
-        // `fn print`/`fn println`/`fn eprint`/`fn eprintln` (a user definition
-        // wins, keeping these names unreserved).
-        if !resolved_alias
-            && local_name.is_none()
-            && (source_name == self.known_symbols().print
+        // One resolution order for the callee name, shared with the staged
+        // inference pre-pass and comptime call admission (RUE-2161).
+        let Some(resolved) = self.resolve_callee_name(name, span.file_id) else {
+            // `print(s)` / `println(s)` / `eprint(s)` / `eprintln(s)` are
+            // builtin free functions, not user-defined ones: intercept them
+            // here, but only when the program hasn't shadowed the name with
+            // its own `fn print`/`fn println`/`fn eprint`/`fn eprintln` (a
+            // user definition wins, keeping these names unreserved).
+            if source_name == self.known_symbols().print
                 || source_name == self.known_symbols().println
                 || source_name == self.known_symbols().eprint
-                || source_name == self.known_symbols().eprintln)
-        {
-            return self.analyze_print_builtin(air, source_name, args_range, span, ctx);
-        }
-
-        if !resolved_alias && local_name.is_none() {
+                || source_name == self.known_symbols().eprintln
+            {
+                return self.analyze_print_builtin(air, source_name, args_range, span, ctx);
+            }
             let fn_name_str = self.body_interner().resolve(&source_name).to_string();
             return Err(CompileError::new(
                 ErrorKind::UndefinedFunction(fn_name_str),
                 span,
             ));
-        }
+        };
+        let name = match resolved {
+            ResolvedCalleeName::Local(local) => local,
+            ResolvedCalleeName::Alias { callee, alias } => {
+                let alias_name = self.body_interner().resolve(&source_name).to_string();
+                self.check_item_visibility(
+                    crate::PrivateItemKind::Const,
+                    &alias_name,
+                    alias.span.file_id,
+                    alias.is_pub,
+                    span,
+                )?;
+                self.record_body_named_dependency(NamedConstDependencyTargetEvent::ValueConst {
+                    file: alias.span.file_id.index(),
+                    name: alias_name,
+                });
+                callee
+            }
+        };
 
         // Look up the function
         let source_name = self.call_facts().call_source_function_name(name);

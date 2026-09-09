@@ -4034,8 +4034,20 @@ where
                     .map(|definition| definition.file_id)
             })
             .unwrap_or_else(|| authority.file());
-        let Some(symbol) = self.function_for_file_symbol(file, name) else {
-            return Ok(None);
+        // A function-valued `const` alias names the same constructor the
+        // target's own spelling names, so `Alias(i64)` in type position
+        // resolves to one head and one specialization (RUE-2161).
+        let (symbol, alias) = match self.function_for_file_symbol(file, name) {
+            Some(symbol) => (symbol, None),
+            None => {
+                let Some(info) = self.const_info_for_symbol(file, name) else {
+                    return Ok(None);
+                };
+                let Some(callee) = info.value.as_function() else {
+                    return Ok(None);
+                };
+                (callee.spur(), Some(info))
+            }
         };
         let Some((_, definition)) = self.function_token_for_symbol(symbol) else {
             return Ok(None);
@@ -4043,10 +4055,19 @@ where
         let Some(signature) = DurableCallableSource::function(&self.source, &definition) else {
             return Ok(None);
         };
-        let site = self
-            .source
-            .definition_source(&definition)
-            .map_or(file, |locator| locator.file_id);
+        // Visibility follows the name that was written: a `pub` alias
+        // re-exports a private constructor and a private alias is rejected as
+        // the constant it is (10.4:22, ADR-0026), exactly as expression
+        // position already decides it.
+        let (site, is_public) = match &alias {
+            Some(info) => (info.span.file_id, info.is_pub),
+            None => (
+                self.source
+                    .definition_source(&definition)
+                    .map_or(file, |locator| locator.file_id),
+                signature.is_public,
+            ),
+        };
         let defining_file = self
             .source
             .source_path(site)
@@ -4068,7 +4089,7 @@ where
             site,
             parameters: parameters.into(),
             returns_type: self.callable_returns_type(&signature, signature.type_syntax.as_ref()),
-            is_public: signature.is_public,
+            is_public,
             defining_domain: crate::SemanticVisibilityDomain::from_file_path(Some(
                 defining_file.as_ref(),
             )),

@@ -120,6 +120,11 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
         self.services
             .durable_session_mut()
             .observe_dependency(start.dependency.clone());
+        if let Some(alias) = start.alias_dependency.clone() {
+            self.services
+                .durable_session_mut()
+                .observe_dependency(alias);
+        }
         let modes = argument_modes
             .iter()
             .map(|(mode, _)| match mode {
@@ -1517,6 +1522,11 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeStructuredTypes
         self.services
             .durable_session_mut()
             .observe_dependency(start.dependency.clone());
+        if let Some(alias) = start.alias_dependency.clone() {
+            self.services
+                .durable_session_mut()
+                .observe_dependency(alias);
+        }
         let admission = match self
             .services
             .finish_structured_comptime_call_admission(start, argument_count)

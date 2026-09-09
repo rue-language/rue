@@ -1406,6 +1406,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// passes `None`; receivers that name module bindings, including
     /// re-export chains, are resolved through the canonical file/module
     /// visibility walk.
+    ///
+    /// Both shapes resolve the callee name through
+    /// [`OrdinaryBodyEngine::resolve_callee_name_local`], so a call spelled
+    /// through a function-valued `const` alias is the same fact site as the
+    /// target's own spelling. When it was not, the alias spelling produced no
+    /// canonical comptime arguments, the receiver's type arrived only after
+    /// literal defaulting had already chosen `i32`, and an integer literal
+    /// stopped unifying with the method result (RUE-2161).
     fn generic_callee_key(
         &mut self,
         inst_data: &rue_rir::InstData,
@@ -1414,7 +1422,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ) -> Option<Spur> {
         match inst_data {
             rue_rir::InstData::Call { name, .. } => Some(
-                self.resolve_function_name_local(*name, span.file_id)
+                self.resolve_callee_name_local(*name, span.file_id)
                     .unwrap_or(*name),
             ),
             rue_rir::InstData::MethodCall {
@@ -1423,7 +1431,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 let module =
                     self.method_receiver_module(*receiver, span.file_id, resolved_types)?;
                 let module_file = self.module_def(module).file_id;
-                self.resolve_function_name_local(*method, module_file)
+                self.resolve_callee_name_local(*method, module_file)
             }
             _ => None,
         }

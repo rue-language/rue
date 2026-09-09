@@ -1351,16 +1351,39 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // function key here. Unqualified callers pass a source name, which
         // must be resolved by the current environment's defining file. Keep
         // those representations explicit so neither path can fall back to a
-        // graph-global source-name lookup.
-        let resolved = if name_is_resolved_key {
-            self.function_info(name).map(|info| (name, info))
+        // graph-global source-name lookup. An unqualified source name may be
+        // a function-valued `const` alias; it resolves to the same callee key
+        // the target's own spelling resolves to (RUE-2161).
+        let (resolved, alias) = if name_is_resolved_key {
+            (self.function_info(name).map(|info| (name, info)), None)
         } else {
-            self.resolve_function_name_local(name, file_id)
-                .and_then(|key| self.function_info(key).map(|info| (key, info)))
+            let resolved = self.resolve_callee_name(name, file_id);
+            let alias = match &resolved {
+                Some(super::ordinary_engine::ResolvedCalleeName::Alias { alias, .. }) => {
+                    Some(alias.clone())
+                }
+                _ => None,
+            };
+            (
+                resolved
+                    .map(super::ordinary_engine::ResolvedCalleeName::callee)
+                    .and_then(|key| self.function_info(key).map(|info| (key, info))),
+                alias,
+            )
         };
         let Some((name_key, fn_info)) = resolved else {
             return Ok(None);
         };
+        // A function-valued `const` alias is a second name for the callee, so
+        // the site depends on the alias as well as on the target (RUE-2161).
+        // Recording only the target would let an edit that repoints the alias
+        // leave this site's cached result standing.
+        if let Some(alias) = alias {
+            self.record_body_named_dependency(super::NamedConstDependencyTargetEvent::ValueConst {
+                file: alias.span.file_id.index(),
+                name: self.body_interner().resolve(&name).to_string(),
+            });
+        }
         let is_type_fn = self.function_returns_type(&fn_info);
         self.record_body_named_dependency(super::NamedConstDependencyTargetEvent::FreeFunction {
             file: fn_info.file_id.index(),

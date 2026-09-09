@@ -2660,6 +2660,7 @@ pub(super) mod structured_type_adapter_tests {
                         head.clone(),
                     ),
                 },
+                alias_dependency: None,
             })
         }
 
@@ -2928,6 +2929,9 @@ pub(super) mod structured_type_adapter_tests {
             let initial_active = session.active_calls_for_test();
             let initial_programs = session.program_count_for_test();
             session.observe_dependency(start.dependency.clone());
+            if let Some(alias) = start.alias_dependency.clone() {
+                session.observe_dependency(alias);
+            }
             let result = {
                 let services = DurableComptimeServices::new(&mut authority);
                 services.finish_structured_comptime_call_admission(start, 2)

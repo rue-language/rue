@@ -5495,3 +5495,88 @@ fn deferred_value_call_diagnostics_are_stable_and_keep_query_channels() {
         ResolveSemanticSignatureError::Abort(rue_query::QueryAbort::Canceled)
     ));
 }
+
+/// A signature that reaches a type constructor through a callable `const`
+/// alias must record BOTH declarations: the constant that names the callee and
+/// the callee itself (RUE-2161). Recording only the target would leave the
+/// signature standing when the alias is repointed; recording only the constant
+/// would leave it standing when the constructor's own body changes.
+#[test]
+fn aliased_type_constructor_signature_depends_on_the_alias_and_the_target() {
+    use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+    use crate::semantic_query_nucleus::{
+        SemanticDeclarationDependencyTarget as Target, SemanticNucleusKey as Key,
+        SemanticNucleusValue as Value,
+    };
+
+    let source = source_snapshot(
+        &[(
+            1,
+            "/main.rue",
+            "main.rue",
+            "fn Pair(comptime T: type) -> type { struct { a: T, b: T } } \
+             const P = Pair; \
+             fn direct(borrow p: Pair(i32)) -> i32 { p.a } \
+             fn aliased(borrow p: P(i32)) -> i32 { p.a } \
+             fn main() -> i32 { 0 }",
+        )],
+        1,
+    );
+    let module = ModuleId::from_logical_path("main.rue").unwrap();
+    let mut database = RevisionedQueryDatabase::default();
+    let revision =
+        database.source_revision(&crate::session::ExactSourceInput::new(&source), &source);
+    let stable_key = |kind, name| {
+        crate::StableDefinitionKey::from_stable_parts(
+            module.clone(),
+            crate::StableDefinitionNamespace::Value,
+            kind,
+            name,
+            None,
+        )
+    };
+    let constructor =
+        Target::TypeCallHead(stable_key(crate::StableDefinitionKind::Function, "Pair"));
+    let alias = Target::NamedValue(stable_key(crate::StableDefinitionKind::ValueConst, "P"));
+
+    let targets = |name: &str| {
+        let declaration =
+            declaration_candidate(&database, revision, &module, Category::Function, name);
+        let Value::Signature(signature) = request_semantic_nucleus(
+            &database,
+            revision,
+            Key::Signature(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                declaration,
+                configuration: semantic_configuration(),
+            }),
+        ) else {
+            panic!("expected a signature projection for {name}");
+        };
+        signature
+            .dependencies
+            .iter()
+            .map(|dependency| dependency.target.clone())
+            .collect::<BTreeSet<_>>()
+    };
+
+    let direct = targets("direct");
+    assert!(
+        direct.contains(&constructor),
+        "the direct spelling must depend on the constructor: {direct:?}"
+    );
+    assert!(
+        !direct.contains(&alias),
+        "the direct spelling must not depend on the alias: {direct:?}"
+    );
+
+    let aliased = targets("aliased");
+    assert!(
+        aliased.contains(&constructor),
+        "the alias resolves to the same callee, so the same constructor dependency is \
+         recorded: {aliased:?}"
+    );
+    assert!(
+        aliased.contains(&alias),
+        "the alias constant is a second edge, not a substitute for the first: {aliased:?}"
+    );
+}

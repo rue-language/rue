@@ -19,6 +19,7 @@ const EXPECTED_REVISIONED_QUERY_TESTS: &[&str] = &[
     "absent_declaration_shell_is_a_typed_position_free_failure_terminal",
     "absent_import_bindings_are_first_class_records_with_stamp_discipline",
     "alias_observed_after_publication_keeps_snapshot_manifest_and_view_in_agreement",
+    "aliased_type_constructor_signature_depends_on_the_alias_and_the_target",
     "anonymous_dependency_frontier_canonicalizes_aliases_before_deduplication",
     "anonymous_member_diagnostics_relocate_and_internal_trivia_invalidates",
     "anonymous_member_kind_mismatch_is_deterministic_not_cancellation",
