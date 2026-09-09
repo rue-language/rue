@@ -549,3 +549,83 @@ source = """
 pub fn spare() -> i32 { 41 }
 pub fn broken() -> i32 { 2 }
 """
+
+[[case]]
+name = "an_edit_to_a_newly_imported_unreadable_module_is_acknowledged"
+description = """
+RUE-2105, on the test watcher. The two watchers share one re-observation arm,
+so they share this gap too: a module that is present but cannot be turned into
+source at all — its bytes are not UTF-8 — is accepted by no attempt, so keying
+the suppression only on accepted reads left it with nothing to observe and
+every save after the first was silent.
+
+The first edit stages the unreadable module, the second wires it into the test
+closure, the third edits it, the fourth saves it without changing a byte, and
+the fifth repairs it. Both reports carry the same rendering, so only the record
+of the attempt's rejected read can have produced the second.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 { 0 }
+""" },
+    { path = "helper.rue", source = """
+pub fn double(x: i32) -> i32 { x * 2 }
+""" },
+    { path = "tests.rue", source = """
+const helper = @import("helper.rue");
+
+test "doubles through the helper" {
+    @assert(helper.double(2) == 4);
+}
+""" },
+]
+
+[case.watch_test]
+kind = "read_failure_outside_closure"
+expected_exit = 0
+stdout_contains = [
+    '"cycle":1,"event":"run_started"',
+    '"cycle":2,"event":"run_started"',
+    '"compile_error":0,"crash":0,"event":"run_finished","failed":0,"passed":1',
+]
+stdout_not_contains = [
+    # Neither failing revision published anything, and no cycle number was
+    # spent on one.
+    '"cycle":3',
+    '"event":"run_canceled"',
+]
+stderr_occurrences = [
+    # The same rendering twice: the first report, and the acknowledgement of
+    # the edit to the module it names.
+    { text = "could not read import candidate", count = 2 },
+    { text = "stream did not contain valid UTF-8", count = 2 },
+    { text = "no summary for this revision", count = 2 },
+]
+
+[[case.watch_test.edits]]
+path = "extra.rue"
+undecodable_source = "pub fn broken() -> i32 { 1 }\n"
+
+[[case.watch_test.edits]]
+path = "helper.rue"
+source = """
+const extra = @import("extra.rue");
+
+pub fn double(x: i32) -> i32 { x * 2 }
+"""
+
+[[case.watch_test.edits]]
+path = "extra.rue"
+undecodable_source = "pub fn broken() -> i32 { 41 }\n"
+
+[[case.watch_test.edits]]
+path = "extra.rue"
+touch = true
+
+[[case.watch_test.edits]]
+path = "extra.rue"
+source = """
+pub fn broken() -> i32 { 2 }
+"""

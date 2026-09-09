@@ -240,6 +240,16 @@ pub enum WatchScenarioKind {
     /// they produce is byte-identical, because that file is the one the user is
     /// editing (RUE-2103).
     FailureOutsideClosure,
+    /// The same retry timer and the same outside-the-closure module, one step
+    /// earlier in the read: the module is present but cannot be turned into
+    /// source at all — undecodable bytes, or a directory in its place — so the
+    /// attempt never accepts any bytes for it and there is nothing in any
+    /// manifest to key on. Edits to it must still be acknowledged (RUE-2105).
+    ///
+    /// The arm reads its expectations from the edits: the first stages the
+    /// unreadable module, the second wires it in, every edit between that and
+    /// the last owes a report unless it is a `touch`, and the last repairs.
+    ReadFailureOutsideClosure,
 }
 
 /// A synchronized end-to-end `rue test --watch` scenario (RUE-2023).
@@ -301,6 +311,9 @@ pub enum WatchTestScenarioKind {
     /// watchers share the re-observation arm, so they shared the gap and are
     /// pinned together (RUE-2103).
     FailureOutsideClosure,
+    /// [`WatchScenarioKind::ReadFailureOutsideClosure`] on the test watcher,
+    /// pinned on both surfaces for the same reason (RUE-2105).
+    ReadFailureOutsideClosure,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -317,6 +330,23 @@ pub struct WatchEdit {
     /// key built from file metadata instead would report on it (RUE-2103).
     #[serde(default)]
     pub touch: bool,
+    /// Write this text preceded by an invalid UTF-8 byte sequence, producing a
+    /// file that is present and perfectly readable as bytes but is not text —
+    /// the shape an editor produces by saving a binary over a module. A case
+    /// changes the text to change the file without making it any more
+    /// readable, which is the edit RUE-2105 must acknowledge.
+    #[serde(default)]
+    pub undecodable_source: Option<String>,
+    /// Put a directory at this path, replacing whatever is there. The other
+    /// way a module can be present and unreadable (RUE-2105).
+    #[serde(default)]
+    pub directory: bool,
+    /// Put a named pipe at this path, replacing whatever is there. The read
+    /// failure that must be classified from metadata alone: opening a pipe
+    /// that has no writer never returns, so a probe that reaches for its bytes
+    /// wedges the watcher instead of reporting it (RUE-2105). Unix only.
+    #[serde(default)]
+    pub fifo: bool,
     #[serde(default)]
     pub symlink_target: Option<String>,
 }

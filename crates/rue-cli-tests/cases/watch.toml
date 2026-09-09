@@ -329,3 +329,169 @@ touch = true
 [[case.watch.edits]]
 path = "extra.rue"
 source = "pub fn spare() -> i32 { 41 }\npub fn broken() -> i32 { 2 }\n"
+
+[[case]]
+name = "an_edit_to_a_newly_imported_unreadable_module_is_acknowledged"
+description = """
+RUE-2105. The same failure as the case above, one step earlier in the read.
+`extra.rue` is present but cannot be turned into source at all — its bytes are
+not UTF-8 — so no attempt ever accepts any bytes for it and it appears in no
+accepted-read manifest. Keying the suppression only on what an attempt
+*accepted* therefore left this family with nothing to observe: the failure
+reported once and then went silent over every later save, on the retry timer,
+which is the identical bug the case above closes for a module that reads fine
+and merely fails to parse.
+
+Both reports below carry the same message at the same location, so only the
+record of the attempt's rejected read can have produced the second.
+"""
+files = [
+    { path = "main.rue", source = "const helper = @import(\"helper.rue\");\nfn main() -> i32 { helper.answer() }\n" },
+    { path = "helper.rue", source = "pub fn answer() -> i32 { 1 }\n" },
+]
+
+[case.watch]
+kind = "read_failure_outside_closure"
+expected_exit_codes = [1, 2]
+stderr_occurrences = [
+    { text = "could not read import candidate", count = 2 },
+    { text = "stream did not contain valid UTF-8", count = 2 },
+    # One status line per report, not one per retry and not one per save: the
+    # save that changed no bytes added none.
+    { text = "keeping the last successful executable", count = 2 },
+]
+
+# Stage the unreadable module. Nothing imports it yet, so it is in no closure
+# and no watch input, and the watcher must not stir for it.
+[[case.watch.edits]]
+path = "extra.rue"
+undecodable_source = "pub fn broken() -> i32 { 1 }\n"
+
+# Wire it into the closure for the first time.
+[[case.watch.edits]]
+path = "helper.rue"
+source = "const extra = @import(\"extra.rue\");\npub fn answer() -> i32 { extra.broken() }\n"
+
+# Edit it. It is exactly as unreadable and the diagnostic does not move, but it
+# is a save the user made and it owes an answer.
+[[case.watch.edits]]
+path = "extra.rue"
+undecodable_source = "pub fn broken() -> i32 { 41 }\n"
+
+# Save it without changing a byte. The record is content-derived on both sides
+# of the read, so the new modification time is invisible here too.
+[[case.watch.edits]]
+path = "extra.rue"
+touch = true
+
+# Repair it into real source. The published program answers with it.
+[[case.watch.edits]]
+path = "extra.rue"
+source = "pub fn broken() -> i32 { 2 }\n"
+
+[[case]]
+name = "an_edit_beside_a_directory_in_a_modules_place_is_acknowledged"
+description = """
+RUE-2105, the other shape of the same read failure: a directory where a module
+belongs. There are no bytes to accept, so the record falls back to the identity
+and metadata of whatever is at the path — which is what makes a change under
+that directory a new revision and a save that changes nothing still silent.
+
+The repair replaces the directory with a real module, so the counted string is
+the directory diagnostic alone: it is reported exactly twice, once when the
+directory is wired in and once for the change beneath it.
+"""
+files = [
+    { path = "main.rue", source = "const helper = @import(\"helper.rue\");\nfn main() -> i32 { helper.answer() }\n" },
+    { path = "helper.rue", source = "pub fn answer() -> i32 { 1 }\n" },
+]
+
+[case.watch]
+kind = "read_failure_outside_closure"
+expected_exit_codes = [1, 2]
+stderr_occurrences = [
+    { text = "which is not a regular source file", count = 2 },
+]
+
+# Put a directory where `extra.rue` belongs.
+[[case.watch.edits]]
+path = "extra.rue"
+directory = true
+
+# Wire it in.
+[[case.watch.edits]]
+path = "helper.rue"
+source = "const extra = @import(\"extra.rue\");\npub fn answer() -> i32 { extra.broken() }\n"
+
+# Change what is under it. Creating the entry restamps the directory itself,
+# atomically — nothing here ever leaves the path momentarily absent, which
+# would produce a different diagnostic rather than a repeat of this one.
+[[case.watch.edits]]
+path = "extra.rue/inner.rue"
+source = "pub fn inner() -> i32 { 1 }\n"
+
+# Save that file without changing it. The directory is untouched, so this is
+# not a revision of the module and owes no report.
+[[case.watch.edits]]
+path = "extra.rue/inner.rue"
+touch = true
+
+# Replace the directory with a real module.
+[[case.watch.edits]]
+path = "extra.rue"
+source = "pub fn broken() -> i32 { 2 }\n"
+
+[[case]]
+name = "an_edit_beside_a_named_pipe_in_a_modules_place_is_acknowledged"
+only_on = [
+    "x86-64-linux",
+    "aarch64-linux",
+    "x86-64-macos",
+    "aarch64-macos",
+]
+description = """
+RUE-2105, the read failure that must be classified without opening anything. A
+named pipe where a module belongs is not a regular source file, and opening it
+for reading blocks until a writer appears — which never happens. The loader has
+always decided this from metadata alone; the record of what an attempt could not
+read has to hold the same order, or the observation itself never returns and the
+watcher stops answering entirely rather than merely going quiet.
+
+So the assertion that matters here is that the watcher keeps reporting at all:
+the first report when the pipe is wired in, a second for the closure edit beside
+it, and a publication when the module is repaired into real source.
+"""
+files = [
+    { path = "main.rue", source = "const helper = @import(\"helper.rue\");\nfn main() -> i32 { helper.answer() }\n" },
+    { path = "helper.rue", source = "pub fn answer() -> i32 { 1 }\n" },
+]
+
+[case.watch]
+kind = "read_failure_outside_closure"
+expected_exit_codes = [1, 2]
+stderr_occurrences = [
+    { text = "which is not a regular source file", count = 2 },
+]
+
+# Put a named pipe where `extra.rue` belongs. Nothing imports it yet.
+[[case.watch.edits]]
+path = "extra.rue"
+fifo = true
+
+# Wire it in. This is the report that never arrived while the probe reached for
+# the pipe's bytes.
+[[case.watch.edits]]
+path = "helper.rue"
+source = "const extra = @import(\"extra.rue\");\npub fn answer() -> i32 { extra.broken() }\n"
+
+# Edit the importing module beside it. The pipe is untouched and renders the
+# same diagnostic, so this report can only come from the changed closure read —
+# which the loop has to still be running to produce.
+[[case.watch.edits]]
+path = "helper.rue"
+source = "const extra = @import(\"extra.rue\");\n\npub fn answer() -> i32 { extra.broken() }\n"
+
+# Replace the pipe with a real module.
+[[case.watch.edits]]
+path = "extra.rue"
+source = "pub fn broken() -> i32 { 2 }\n"
