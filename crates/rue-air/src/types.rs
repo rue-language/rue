@@ -515,6 +515,68 @@ impl LangItem {
     }
 }
 
+/// A canonical standard-library container the structural printer renders by
+/// its elements (6.7:15).
+///
+/// Every one of these is an *anonymous* struct minted by a `pub fn Name(comptime
+/// …) -> type` in one std module, so the identity that distinguishes it from a
+/// same-shaped user struct is the producing type function's module and name —
+/// the same relocation-stable provenance rule [`LangItem`] applies to a named
+/// nominal, one level up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum StdContainer {
+    /// `std.arraybuf.ArrayBuf(T)`.
+    ArrayBuf,
+    /// `std.deque.Deque(T)`.
+    Deque,
+    /// `std.stack.Stack(T)`.
+    Stack,
+    /// `std.queue.Queue(T)`.
+    Queue,
+    /// `std.binary_heap.BinaryHeap(T)`.
+    BinaryHeap,
+    /// `std.grid.Grid2D(T)`.
+    Grid2D,
+    /// `std.strmap.StrMap(V)`.
+    StrMap,
+    /// `std.intmap.IntMap(V)`.
+    IntMap,
+}
+
+impl StdContainer {
+    /// Classify the type function that minted an anonymous nominal, only after
+    /// its module has crossed a trusted standard-library provenance boundary.
+    pub fn from_standard_library_type_function(module_path: &str, name: &str) -> Option<Self> {
+        let module = crate::path_norm::normalize_module_path(module_path);
+        Some(match (module.as_str(), name) {
+            ("\0rue-std/arraybuf.rue", "ArrayBuf") => Self::ArrayBuf,
+            ("\0rue-std/deque.rue", "Deque") => Self::Deque,
+            ("\0rue-std/stack.rue", "Stack") => Self::Stack,
+            ("\0rue-std/queue.rue", "Queue") => Self::Queue,
+            ("\0rue-std/binary_heap.rue", "BinaryHeap") => Self::BinaryHeap,
+            ("\0rue-std/grid.rue", "Grid2D") => Self::Grid2D,
+            ("\0rue-std/strmap.rue", "StrMap") => Self::StrMap,
+            ("\0rue-std/intmap.rue", "IntMap") => Self::IntMap,
+            _ => return None,
+        })
+    }
+
+    /// What one of this container's units is called in a measured rendering,
+    /// singular then plural: `StrMap(i64) <2 entries>` against
+    /// `ArrayBuf(Foo) <3 elements>`.
+    pub fn unit_noun(self) -> (&'static str, &'static str) {
+        match self {
+            Self::StrMap | Self::IntMap => ("entry", "entries"),
+            Self::ArrayBuf
+            | Self::Deque
+            | Self::Stack
+            | Self::Queue
+            | Self::BinaryHeap
+            | Self::Grid2D => ("element", "elements"),
+        }
+    }
+}
+
 /// Definition of a struct type.
 #[derive(Debug, Clone)]
 pub struct StructDef {

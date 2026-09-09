@@ -399,6 +399,14 @@ exact longest-common-subsequence expensive is reported as one wholesale
 `delete` followed by one `insert` rather than refined — the invariants above
 hold either way.
 
+There is no element-aware granularity, and none is needed for the list a
+standard container renders as (spec 6.7:15): the common prefix and suffix a
+character diff strips are whole elements plus their separators, so
+`[1, 2, 3]` against `[1, 2, 4]` reports `equal "[1, 2, "`, `delete "3"`,
+`insert "4"`, `equal "]"` — the differing element, located. A container long
+enough to be truncated is cut inside its list and carries the marker, so the
+diff of a truncated pair is a diff of prefixes and says so.
+
 A rendering that is not valid UTF-8 never reaches the diff: `left` and
 `right` are JSON string fields, and a channel line that is not valid UTF-8 is
 rejected as malformed before it becomes a frame at all, yielding `fail` with

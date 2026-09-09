@@ -182,14 +182,42 @@ truncated to it and the marker ` …[truncated]` is appended.
   declaration order, parenthesized and comma-separated, when it has one:
   `Invalid(-7, bad)`.
 - An integer renders in decimal, with a leading `-` when it is negative. A
-  `bool` renders as `true` or `false`.
+  `bool` renders as `true` or `false`. An `f32` or `f64` renders exactly as
+  3.12:40 through 3.12:42 define, through the same formatter `@to_string` uses.
 - A byte string — a `str`, a fixed `Str(N)`, or a `StrBuf` — renders as its own
   bytes, verbatim.
 - A struct renders as `{ field: value, … }`: each field's name, then its
   rendered value, in declaration order.
-- Rendering descends one level. A value reached inside a rendered struct field
-  or enum payload that is itself an aggregate renders as the name of its type,
-  and so does any value these rules cannot otherwise render.
+- A *standard container* — one of the trusted standard library's collection
+  types `ArrayBuf(T)`, `Deque(T)`, `Stack(T)`, `Queue(T)`, `BinaryHeap(T)`,
+  `Grid2D(T)`, `StrMap(V)` and `IntMap(V)` — renders by what it holds, never by
+  its own fields. A container is recognized by that standard-library identity,
+  so a user type of the same shape, or of the same name, is not one.
+- A sequence container renders as `[`, then its elements separated by `, `,
+  then `]`: `[1, 2, 3]`, and `[]` when it is empty. Each element renders by
+  these same rules *as if it were the reported value itself*, because a
+  container is transparent to the one-level rule below: a struct element renders
+  as `{ x: 1 }` and an enum element as `Some(3)`, and it is that element's own
+  fields and payloads which fall to the type-name rule.
+  The order is the container's own — front to back for a `Deque(T)` and a
+  `Queue(T)`, bottom to top for a `Stack(T)`, and storage order rather than
+  sorted order for a `BinaryHeap(T)`. A `Grid2D(T)` is row-major and brackets
+  each row: a two-by-three grid renders as `[[1, 0, 0], [0, 0, 9]]`. A byte
+  string reached as an element renders double-quoted with `\` and `"` escaped,
+  rather than verbatim, so that no element can be mistaken for two.
+- A container whose elements these rules cannot render — because an element is a
+  value they can only *name*, such as a raw pointer, or because the container is
+  nested inside more than four enclosing containers — renders as its type name
+  followed by its size instead: `ArrayBuf(Foo) <3 elements>`, and `<1 element>`
+  for one.
+  `StrMap(V)` and `IntMap(V)` always take that form —
+  `StrMap(i64) <2 entries>` — because their live entries are reached through a
+  representation this rendering does not read.
+- Rendering descends one level, and through a standard container. A value
+  reached inside a rendered struct field or enum payload that is itself an
+  aggregate renders as the name of its type, and so does any value these rules
+  cannot otherwise render; but a standard container reached there renders by its
+  elements, and so does a standard container reached as another one's element.
 
 {{ rule(id="6.7:16", cat="normative") }}
 

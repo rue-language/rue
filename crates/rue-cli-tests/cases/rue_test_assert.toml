@@ -172,6 +172,471 @@ compile_stdout_contains = [
 ]
 
 [[case]]
+name = "a_container_comparison_renders_its_elements"
+description = """
+RUE-2165, spec 6.7:15: a standard container renders by its elements, not by its
+own fields. Before this rule both sides of this comparison rendered
+`{ core: RawBuf(i64), len: 3 }` and the diff was a single `equal` hunk — a
+report that named neither the values compared nor where they parted. The whole
+record is pinned here, diff included: with a list rendering the runner's
+character diff lands on exactly the element that differs.
+"""
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+const std = @import("std");
+
+test "compares two buffers" {
+    let A = std.arraybuf.ArrayBuf(i64);
+    let mut left = A.new();
+    left.push(1);
+    left.push(2);
+    left.push(3);
+    let mut right = A.new();
+    right.push(1);
+    right.push(2);
+    right.push(4);
+    @assert_eq(left, right);
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"diff":[{"op":"equal","text":"[1, 2, "},{"op":"delete","text":"3"},{"op":"insert","text":"4"},{"op":"equal","text":"]"}],"exit_code":101,"kind":"assert_eq","left":"[1, 2, 3]"',
+    '"message":"assertion failed: left == right","right":"[1, 2, 4]"',
+    '"column":5,"file":"tests.rue"',
+    '"line":13}',
+    '"crash":0,"event":"run_finished","failed":1,"passed":0',
+]
+
+[[case]]
+name = "a_container_rendering_shows_length_and_element_differences"
+description = """
+Spec 6.7:15: an empty container renders as `[]`, so an absent element is a
+visible difference rather than an identical rendering; a shorter container is
+the prefix of a longer one, and the diff is the tail. A byte string reached as
+an element is double-quoted with `\\` and `"` escaped, so an element that
+contains the list's own `, ` separator cannot be read as two. Containers nest:
+an `ArrayBuf(ArrayBuf(i64))` renders both levels.
+"""
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+test "empty against one" {
+    let A = std.arraybuf.ArrayBuf(i64);
+    let mut left = A.new();
+    let mut right = A.new();
+    right.push(7);
+    @assert_eq(left, right);
+}
+
+test "lengths differ" {
+    let A = std.arraybuf.ArrayBuf(i64);
+    let mut left = A.new();
+    left.push(1);
+    left.push(2);
+    let mut right = A.new();
+    right.push(1);
+    @assert_eq(left, right);
+}
+
+test "strings are quoted" {
+    let A = std.arraybuf.ArrayBuf(StrBuf);
+    let mut left = A.new();
+    left.push(StrBuf.from_str(borrow "al\\"pha"));
+    left.push(StrBuf.from_str(borrow "b, c"));
+    let mut right = A.new();
+    right.push(StrBuf.from_str(borrow "alpha"));
+    @assert_eq(left, right);
+}
+
+test "containers nest" {
+    let I = std.arraybuf.ArrayBuf(i64);
+    let A = std.arraybuf.ArrayBuf(I);
+    let mut left = A.new();
+    let mut row = I.new();
+    row.push(1);
+    row.push(2);
+    left.push(row);
+    let mut right = A.new();
+    let mut other = I.new();
+    other.push(1);
+    right.push(other);
+    @assert_eq(left, right);
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"kind":"assert_eq","left":"[]","location":{"column":5,"file":"tests.rue","line":9},"message":"assertion failed: left == right","right":"[7]"',
+    '"kind":"assert_eq","left":"[1, 2]","location":{"column":5,"file":"tests.rue","line":19},"message":"assertion failed: left == right","right":"[1]"',
+    '"left":"[\"al\\\"pha\", \"b, c\"]"',
+    '"right":"[\"alpha\"]"',
+    '"left":"[[1, 2]]"',
+    '"right":"[[1]]"',
+    '"crash":0,"event":"run_finished","failed":4,"passed":0',
+]
+
+[[case]]
+name = "each_standard_container_renders_in_its_own_order"
+description = """
+Spec 6.7:15 fixes the order each container renders in: bottom to top for a
+`Stack`, front to back for a `Queue` (whose front has already moved) and a
+`Deque` (a ring, rendered from its head), storage order rather than sorted
+order for a `BinaryHeap`, and row-major with a bracket per row for a `Grid2D`.
+"""
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+const std = @import("std");
+
+test "a stack renders bottom to top" {
+    let S = std.stack.Stack(i64);
+    let mut left = S.new();
+    left.push(1);
+    left.push(2);
+    let mut right = S.new();
+    @assert_eq(left, right);
+}
+
+test "a queue renders front to back" {
+    let Q = std.queue.Queue(i64);
+    let mut left = Q.new();
+    left.enqueue(1);
+    left.enqueue(2);
+    left.enqueue(3);
+    let gone = left.dequeue();
+    let mut right = Q.new();
+    @assert_eq(left, right);
+}
+
+test "a deque renders front to back" {
+    let D = std.deque.Deque(i64);
+    let mut left = D.new(0);
+    left.push_back(1);
+    left.push_back(2);
+    left.push_front(0);
+    let mut right = D.new(0);
+    @assert_eq(left, right);
+}
+
+test "a heap renders in storage order" {
+    let H = std.binary_heap.BinaryHeap(i64);
+    let mut left = H.new();
+    left.push(3);
+    left.push(1);
+    left.push(2);
+    let mut right = H.new();
+    @assert_eq(left, right);
+}
+
+test "a grid renders by rows" {
+    let G = std.grid.Grid2D(i64);
+    let mut left = G.new(2, 3, 0);
+    left.set(0, 0, 1);
+    left.set(1, 2, 9);
+    let mut right = G.new(0, 0, 0);
+    @assert_eq(left, right);
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"left":"[1, 2]","location":{"column":5,"file":"tests.rue","line":9}',
+    '"left":"[2, 3]","location":{"column":5,"file":"tests.rue","line":20}',
+    '"left":"[0, 1, 2]","location":{"column":5,"file":"tests.rue","line":30}',
+    '"left":"[1, 3, 2]","location":{"column":5,"file":"tests.rue","line":40}',
+    '"left":"[[1, 0, 0], [0, 0, 9]]","location":{"column":5,"file":"tests.rue","line":49}',
+    '"crash":0,"event":"run_finished","failed":5,"passed":0',
+]
+
+[[case]]
+name = "a_container_of_records_renders_each_record"
+description = """
+RUE-2165, spec 6.7:15: a container is transparent to the one-level rule, so an
+element that is a struct or an enum renders as one — a list of records is the
+commonest container in a test, and `ArrayBuf(Point) <2 elements>` would say
+nothing about which record differs. It is the *element's* own nested aggregates
+that fall to the type-name rule, not the element itself. Narrow fields are
+pinned here too: `i32`, `u8` and `bool` fields render their own values rather
+than the machine word around them.
+"""
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+const std = @import("std");
+
+@copy struct Point { x: i64, y: bool }
+@copy struct Narrow { a: i32, b: u8, c: bool }
+
+test "struct elements render as records" {
+    let A = std.arraybuf.ArrayBuf(Point);
+    let mut left = A.new();
+    left.push(Point { x: 1, y: true });
+    left.push(Point { x: 2, y: false });
+    let mut right = A.new();
+    right.push(Point { x: 1, y: true });
+    @assert_eq(left, right);
+}
+
+test "narrow fields keep their own values" {
+    let A = std.arraybuf.ArrayBuf(Narrow);
+    let mut left = A.new();
+    left.push(Narrow { a: 0 - 5, b: 200, c: true });
+    let mut right = A.new();
+    @assert_eq(left, right);
+}
+
+test "enum elements render as variants" {
+    let A = std.arraybuf.ArrayBuf(std.option.Option(i64));
+    let O = std.option.Option(i64);
+    let mut left = A.new();
+    left.push(O.Some(3));
+    left.push(O.None);
+    let mut right = A.new();
+    @assert_eq(left, right);
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"left":"[{ x: 1, y: true }, { x: 2, y: false }]"',
+    '"right":"[{ x: 1, y: true }]"',
+    '"left":"[{ a: -5, b: 200, c: true }]"',
+    '"left":"[Some(3), None]"',
+    '"crash":0,"event":"run_finished","failed":3,"passed":0',
+]
+
+[[case]]
+name = "a_container_the_printer_cannot_look_inside_renders_its_size"
+description = """
+Spec 6.7:15: rendering never claims an equality the comparison did not find, so
+a container these rules cannot look into reports the size it does know — with
+the singular spelling for one. A map reaches its live entries through a
+representation this rendering does not read, and a container nested inside more
+than four others is past where the descent stops. A container reached as a
+struct field still renders its elements: the one-level rule stops at a user
+aggregate, not at a standard container.
+"""
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+struct Batch { label: StrBuf, items: std.arraybuf.ArrayBuf(i64) }
+
+test "an int map renders its entry count" {
+    let M = std.intmap.IntMap(i64);
+    let mut left = M.new(0);
+    left.insert(1, 10);
+    left.insert(2, 20);
+    let mut right = M.new(0);
+    right.insert(5, 50);
+    @assert_eq(left, right);
+}
+
+test "a string map renders its entry count" {
+    let M = std.strmap.StrMap(i64);
+    let mut left = M.new(0);
+    let key = StrBuf.from_str(borrow "k");
+    left.insert(borrow key, 7);
+    let mut right = M.new(0);
+    @assert_eq(left, right);
+}
+
+test "the descent stops after four containers" {
+    let A1 = std.arraybuf.ArrayBuf(i64);
+    let A2 = std.arraybuf.ArrayBuf(A1);
+    let A3 = std.arraybuf.ArrayBuf(A2);
+    let A4 = std.arraybuf.ArrayBuf(A3);
+    let A5 = std.arraybuf.ArrayBuf(A4);
+    let mut one = A1.new();
+    one.push(7);
+    let mut two = A2.new();
+    two.push(one);
+    let mut three = A3.new();
+    three.push(two);
+    let mut four = A4.new();
+    four.push(three);
+    let mut left = A5.new();
+    left.push(four);
+    let mut right = A5.new();
+    @assert_eq(left, right);
+}
+
+test "a struct field renders its elements" {
+    let A = std.arraybuf.ArrayBuf(i64);
+    let mut one = A.new();
+    one.push(1);
+    let mut two = A.new();
+    two.push(2);
+    two.push(3);
+    let left = Batch { label: StrBuf.from_str(borrow "one"), items: one };
+    let right = Batch { label: StrBuf.from_str(borrow "two"), items: two };
+    @assert_eq(left, right);
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"left":"IntMap(i64) <2 entries>"',
+    '"right":"IntMap(i64) <1 entry>"',
+    '"left":"StrMap(i64) <1 entry>"',
+    '"right":"StrMap(i64) <0 entries>"',
+    '"left":"[[[[ArrayBuf(i64) <1 element>]]]]"',
+    '"left":"{ label: one, items: [1] }"',
+    '"right":"{ label: two, items: [2, 3] }"',
+    '"crash":0,"event":"run_finished","failed":4,"passed":0',
+]
+
+[[case]]
+name = "a_float_operand_renders_its_digits"
+description = """
+RUE-2165, spec 6.7:15 and 3.12:40-3.12:42: floats were stabilized after the
+payload rules were written, so an `f64` operand used to render as the text
+`f64` on both sides. It now renders through the same shortest-round-trip
+formatter `@to_string` uses, at the leaf, as a struct field, and as a container
+element — and an `f32` prints the digits that identify it as an `f32`.
+"""
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+const std = @import("std");
+
+struct Reading { value: f64, count: i64 }
+
+test "a float scalar renders its digits" {
+    let observed: f64 = 2.5;
+    @assert_eq(observed, 3.5);
+}
+
+test "an f32 renders at its own width" {
+    let observed: f32 = 1.25;
+    @assert_eq(observed, 2.5);
+}
+
+test "a float struct field renders its digits" {
+    let left = Reading { value: 0.5, count: 1 };
+    let right = Reading { value: 0.25, count: 2 };
+    @assert_eq(left, right);
+}
+
+test "float elements render their digits" {
+    let A = std.arraybuf.ArrayBuf(f64);
+    let mut left = A.new();
+    left.push(1.5);
+    left.push(0.0 - 2.25);
+    let mut right = A.new();
+    @assert_eq(left, right);
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"left":"2.5"',
+    '"right":"3.5"',
+    '"left":"1.25"',
+    '"left":"{ value: 0.5, count: 1 }"',
+    '"right":"{ value: 0.25, count: 2 }"',
+    '"left":"[1.5, -2.25]"',
+    '"crash":0,"event":"run_finished","failed":4,"passed":0',
+]
+
+[[case]]
+name = "a_long_container_is_truncated_mid_list"
+description = """
+Spec 6.7:15: a rendering is bounded to 4096 bytes and a truncated one says so.
+A container long enough to exceed the bound is cut inside its element list —
+there is no closing bracket — and the marker follows, so a reader can never
+mistake the prefix for the whole container.
+"""
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+const std = @import("std");
+
+test "a long buffer is truncated mid list" {
+    let A = std.arraybuf.ArrayBuf(i64);
+    let mut left = A.new();
+    let mut i: i64 = 0;
+    while i < 2000 {
+        left.push(i);
+        i += 1;
+    }
+    let mut right = A.new();
+    @assert_eq(left, right);
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"left":"[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,',
+    ', 838, 839, 840,  …[truncated]","location"',
+    '"right":"[]"',
+    '"crash":0,"event":"run_finished","failed":1,"passed":0',
+]
+
+[[case]]
 name = "assert_ne_on_equal_values_reports_the_pair_it_rejected"
 description = """
 An `@assert_ne` failure has two identical renderings, so its diff is one `equal`

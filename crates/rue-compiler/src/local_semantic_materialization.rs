@@ -264,6 +264,29 @@ impl crate::error_printer::ErrorPrinterTypes for LocalFactSelectionIndex<'_> {
             .flatten()
     }
 
+    fn std_container(&self, ty: &crate::TypeInstanceKey) -> Option<rue_air::StdContainer> {
+        // A standard container is an anonymous struct minted by a std type
+        // function, so the identity to gate on is the *producer's*, reached
+        // through the same trusted-provenance boundary a language item uses.
+        let crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(key)) = ty else {
+            return None;
+        };
+        if key.kind != rue_air::AnonymousNominalKind::Struct {
+            return None;
+        }
+        let crate::StableProducerId::Function(function) = &key.producer else {
+            return None;
+        };
+        let definition = crate::semantic_identity::function_base_definition(function)?;
+        if !definition.module().is_trusted_standard_library() {
+            return None;
+        }
+        rue_air::StdContainer::from_standard_library_type_function(
+            definition.module().as_str(),
+            definition.name(),
+        )
+    }
+
     fn type_name(&self, ty: &crate::TypeInstanceKey) -> Arc<str> {
         Arc::from(crate::durable_comptime::durable_type_diagnostic_name(
             &crate::semantic_identity::semantic_type_from_instance(ty),

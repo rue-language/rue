@@ -355,7 +355,19 @@ pub const KNOWN_UNCOVERED_NORMATIVE: &[(&str, &str)] = &[
          `crates/rue-compiler/src/test_image_tests.rs::platform_native_the_reported_payload_is_the_rendered_error`, \
          which pins one shape per rule — `None`, a unit variant, a payload variant \
          carrying a negative integer and a byte string, and a struct — and by the \
-         session test that proves one printer serves every site on an error type.",
+         session test that proves one printer serves every site on an error type. \
+         The standard-container and float rules need the real standard library, \
+         so they are covered by the CLI cases in \
+         `crates/rue-cli-tests/cases/rue_test_assert.toml` \
+         (`a_container_comparison_renders_its_elements`, \
+         `a_container_rendering_shows_length_and_element_differences`, \
+         `each_standard_container_renders_in_its_own_order`, \
+         `a_container_of_records_renders_each_record`, \
+         `a_container_the_printer_cannot_look_inside_renders_its_size`, \
+         `a_long_container_is_truncated_mid_list`, \
+         `a_float_operand_renders_its_digits`) and \
+         `rue_test_question.toml::an_unhandled_container_error_renders_its_elements`, \
+         which drives the same printer from a `?` payload.",
     ),
     (
         "6.7:16",

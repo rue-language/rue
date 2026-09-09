@@ -371,8 +371,9 @@ fn main() -> i32 {
 
 {{ rule(id="3.12:39", cat="normative") }}
 
-`@dbg` (4.13:6) and `@to_string` (§3.7) accept a floating-point argument. The
-text they produce for it is defined by 3.12:40 through 3.12:42.
+`@dbg` (4.13:6) and `@to_string` (§3.7) accept a floating-point argument, and a
+reported failure payload (6.7:15) may contain one. The text produced for it is
+defined by 3.12:40 through 3.12:42, whichever of them asks for it.
 
 {{ rule(id="3.12:40", cat="normative") }}
 
