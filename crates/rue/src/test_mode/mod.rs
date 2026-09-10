@@ -176,7 +176,12 @@ struct Reporter {
     /// Presentation policy the runner's notices need and the event schema does
     /// not carry. See `render::Context`.
     context: render::Context,
-    stdout: Mutex<()>,
+    /// The stdout lock, and with it the human report the run's failures
+    /// accumulate into: a person is shown them once, at the end, in source
+    /// order (RUE-2166). One `Reporter` covers one cycle, so the report never
+    /// outlives the run it describes. Untouched under `--format json`, whose
+    /// every line is published as it happens.
+    stdout: Mutex<render::Report>,
 }
 
 impl Reporter {
@@ -184,12 +189,12 @@ impl Reporter {
         Self {
             format,
             context,
-            stdout: Mutex::new(()),
+            stdout: Mutex::new(render::Report::new()),
         }
     }
 
     fn emit(&self, event: &Event) {
-        let _guard = self
+        let mut report = self
             .stdout
             .lock()
             .unwrap_or_else(|error| error.into_inner());
@@ -199,7 +204,7 @@ impl Reporter {
                 let _ = writeln!(out, "{}", event.to_ndjson());
             }
             OutputFormat::Human => {
-                if let Some(text) = render::render(event) {
+                if let Some(text) = report.observe(event) {
                     let _ = writeln!(out, "{text}");
                 }
             }

@@ -730,8 +730,12 @@ name = "a_flood_is_elided_in_the_human_rendering_so_the_repro_survives"
 description = """
 RUE-1958: the retained window is a megabyte, which is thirteen thousand lines
 in a terminal. The human renderer prints a head and a tail with one line saying
-what it skipped, so the `scratch:` and `repro:` lines below the capture are
+what it skipped, so the summary and the `repro:` line below the capture are
 still on screen. `--format json` remains the lossless copy.
+
+The run has one failure, so RUE-2166's trailer is that failure's complete argv
+rather than a template: one broken test is the common case, and its line should
+be paste-ready without an edit.
 """
 contract = "heavyweight_long"
 files = [
@@ -759,10 +763,69 @@ compile_stdout_contains = [
     "output_overflow",
     "omitted here; --format json carries the whole capture",
     "further bytes were not retained",
+    "0 passed, 1 failed",
     "repro: /",
     "/rue test /",
-    "/main.rue --filter",
-    "0 passed, 1 failed",
+    "/main.rue --filter 'tests.rue::floods its own stdout' --exact",
+]
+compile_stdout_not_contains = ["put a failing test's ID"]
+
+[[case]]
+name = "many_failures_share_one_repro_template_under_the_summary"
+description = """
+RUE-2166: every repro of a run is the same line but for the selector, so a
+report with more than one failure prints it once, under the summary, with the
+selector replaced by a placeholder — each failure's own header is the ID that
+goes in it. `--exact` stays on the template so a pasted ID that is a prefix of
+another still selects one test. No failure block carries a repro of its own.
+
+The blocks are ordered by source position rather than by the shuffle, so the
+seed still governs execution while the report reads the way the file does:
+`zzz` is declared first and reported first.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "zzz fails late" {
+    @assert_eq(1, 2);
+}
+
+test "aaa fails early" {
+    @assert_eq(3, 4);
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "human"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    # Declaration order, whatever order the shuffle ran them in. Neither block
+    # echoes the pinned `panic: assertion failed: left == right` its header
+    # already quotes.
+    """
+FAIL tests.rue::zzz fails late
+  assert_eq: assertion failed: left == right  (tests.rue:2:5)
+  left:  1
+  right: 2
+         ^
+FAIL tests.rue::aaa fails early
+  assert_eq: assertion failed: left == right  (tests.rue:6:5)
+  left:  3
+  right: 4
+         ^
+""",
+    "0 passed, 2 failed",
+    "--filter '<id>' --exact",
+    "put a failing test's ID from above in place of '<id>'",
+]
+compile_stdout_not_contains = [
+    "--filter 'tests.rue::zzz fails late'",
+    "--filter 'tests.rue::aaa fails early'",
 ]
 
 # ========================= listing and selection =========================
@@ -2084,6 +2147,11 @@ analyze yields one `compile_error` verdict per dependent test, not a whole-run
 failure. The independent test is untouched, and the diagnostic reaches stderr
 once for the run however many tests it excluded — the copies in the events are
 the attribution.
+
+RUE-2166: the human report says it once too. One broken helper is one thing to
+fix, so it is one block naming every test it excluded, rather than one block
+per test each repeating the same message. The `run_finished` counts and the
+per-test events are unchanged.
 """
 files = [
     { path = "main.rue", source = """
@@ -2122,11 +2190,16 @@ test "ccc reaches only the good one" {
 args = ["test", "main.rue", "--seed", "1", "-j1"]
 driver_exit_code = 1
 compile_stdout_contains = [
-    "COMPILE ERROR tests.rue::aaa reaches the broken helper",
-    "COMPILE ERROR tests.rue::bbb reaches it too",
+    """
+COMPILE ERROR 2 tests
+  compile_error: type mismatch: expected i32, found bool  (helpers.rue:2:5)
+  the diagnostic is on stderr; these tests were excluded from the image
+    tests.rue::aaa reaches the broken helper
+    tests.rue::bbb reaches it too
+""",
     "1 passed, 2 compile errors (",
 ]
-compile_stdout_not_contains = ["COMPILE ERROR tests.rue::ccc reaches only the good one"]
+compile_stdout_not_contains = ["ccc reaches only the good one"]
 compile_stderr_contains = ["helpers.rue:2:5"]
 
 [[case]]
@@ -2172,11 +2245,16 @@ test "ccc destroys nothing" {
 args = ["test", "main.rue", "--seed", "1", "-j1"]
 driver_exit_code = 1
 compile_stdout_contains = [
-    "COMPILE ERROR tests.rue::aaa destroys one",
-    "COMPILE ERROR tests.rue::bbb destroys one too",
+    """
+COMPILE ERROR 2 tests
+  compile_error: type mismatch: expected i32, found bool  (tests.rue:4:5)
+  the diagnostic is on stderr; these tests were excluded from the image
+    tests.rue::aaa destroys one
+    tests.rue::bbb destroys one too
+""",
     "1 passed, 2 compile errors (",
 ]
-compile_stdout_not_contains = ["COMPILE ERROR tests.rue::ccc destroys nothing"]
+compile_stdout_not_contains = ["ccc destroys nothing"]
 compile_stderr_contains = ["tests.rue:4:5"]
 
 [[case]]
@@ -2452,14 +2530,19 @@ compile_stdout_contains = ['"verdict":"xfail"', '"kind":"assert"', '"passed":1',
 
 [[case]]
 name = "known_bug_xpass_has_a_full_human_report"
-description = "An unexpected pass fails the run and retains output and reproduction information."
+description = """
+An unexpected pass fails the run and retains output and reproduction
+information. Its scratch directory is retained but empty — the test wrote to
+stdout, not to disk — so RUE-2166 names it by the run root rather than spending
+a per-failure line on a path the naming scheme already gives.
+"""
 files = [{ path = "main.rue", source = """
 @known_bug("RUE-2018")
 test "fixed" { println("evidence from the passing test"); }
 """ }]
 args = ["test", "main.rue", "-j1"]
 driver_exit_code = 1
-compile_stdout_contains = ["XPASS main.rue::fixed", "remove the known-bug marker", "evidence from the passing test", "scratch:", "repro:", "0 passed, 1 unexpected pass"]
+compile_stdout_contains = ["XPASS main.rue::fixed", "remove the known-bug marker", "evidence from the passing test", "scratch root:", "repro:", "0 passed, 1 unexpected pass"]
 
 [[case]]
 name = "known_bug_does_not_suppress_timeout"
