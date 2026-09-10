@@ -20,6 +20,7 @@ Types in Rue are categorized by how they behave when *used* (3.8:76):
 The following types are Copy types:
 - All integer types (`i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`)
 - The boolean type (`bool`)
+- The floating-point types (`f32`, `f64`) (3.12:2a)
 - The unit type (`()`)
 - The first-class string types: `str` (3.7:44) and the fixed inline buffers
   `Str(N)` (3.7:50)

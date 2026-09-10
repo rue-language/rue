@@ -23,6 +23,13 @@ parameters and results, `const` annotations, struct fields, array element
 types — and, like the integer type names, may be used as `type` values
 (`@size_of(f64)`).
 
+{{ rule(id="3.12:2a", cat="normative") }}
+
+`f32` and `f64` are Copy types (3.8:2). A floating-point value is duplicated
+by a use and never moved: a binding of either type may be read any number of
+times, passed by value without being consumed, and neither type has a
+destructor (3.9:31) or may be declared `linear` (3.8:58).
+
 {{ rule(id="3.12:3", cat="normative") }}
 
 `comptime_float` is the compile-time-only type of a float literal (ADR-0025),

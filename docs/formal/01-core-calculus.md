@@ -324,12 +324,10 @@ Assignment of the class:
              = Copy   when there are no payload components  -- discriminant-only ⇒ empty join ⇒ Copy (6.3:19, 3.8:2)
 ```
 
-`class(float(w)) = Copy` is **derived, not assumed**. Prose `3.8:2`'s list of
-Copy types predates the float types and does not name them, and `3.12` never
-says it in so many words — but `3.12:26` uses one `f64` binding five times in a
-single body, which only a `Copy` type admits, and `3.12` gives a float type
-neither a destructor (`3.9:31`) nor a `linear` attribute (`3.8:58`). The core
-takes `Copy` on that derivation and records the prose omission as §9 item 5.
+`class(float(w)) = Copy` is stated by the prose: `3.12:2a` classifies both
+float types as Copy and `3.8:2` lists them, so the core takes `Copy` directly
+(the derivation from `3.12:26`, `3.9:31`, and `3.8:58` that an earlier draft
+relied on now merely agrees with it).
 
 An enum has no `@copy`/`linear` attribute of its own: its class is exactly the
 join of its variants' payload classes (`6.3:19`). It is `Copy` iff every payload
@@ -3284,11 +3282,12 @@ locked:
    (matching `3.8:68/70`); dynamic-index moves are forbidden. Confirm this stays
    as the core rule (it is what keeps the ownership analysis decidable without
    dependent types).
-5. **Two float-side prose silences the RUE-2158 amendment could not close
-   itself (§2, §3, §6.4).** Giving `f32`/`f64` their own place in the core
-   forced two questions the prose does not answer. The core takes the
-   conservative reading in each rather than inventing one, and both are marked
-   here rather than left implicit:
+5. **One float-side prose silence the RUE-2158 amendment could not close
+   itself (§2, §6.4).** Giving `f32`/`f64` their own place in the core forced a
+   question the prose does not answer. The core takes the conservative reading
+   rather than inventing one, and it is marked here rather than left implicit
+   (the `Copy` classification, the other silence that amendment found, is now
+   stated by `3.12:2a` and closed):
    - **NaN payloads.** `3.12:32` defines `@total_cmp`'s zero case as the
      operands having "the same bit pattern", and ADR-0065 §8 orders NaNs "by
      sign and payload bit pattern" — but no paragraph says which payload an
@@ -3301,10 +3300,4 @@ locked:
      might not. Confirm that reading — or, if a payload is meant to be
      observable, `𝔽_w` needs a payload component and `3.12:44` needs a
      companion paragraph fixing which payload an operation yields.
-   - **The `Copy` classification of the float types.** `3.8:2`'s list of Copy
-     types predates floats and does not name them, and `3.12` never states it.
-     §3 derives `class(float(w)) = Copy` from `3.12:26`, which uses one `f64`
-     binding five times in one body, and from the absence of any destructor or
-     `linear` attribute on a float type. Confirm the derivation — and `3.8:2`'s
-     list wants the two names added, a prose edit this `docs/formal`-only
-     change deliberately does not make.
+
