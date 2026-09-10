@@ -575,6 +575,7 @@ failure evidence.
 | `fail` | `assert_eq` | A `failure` frame from a failed `@assert_eq`, carrying `left` and `right`. |
 | `fail` | `assert_ne` | The same, from a failed `@assert_ne`. |
 | `fail` | `trap:<class>` | A `failure` frame with that kind — `@panic` and the bounds check write one — or the last stderr line being another pinned runtime message. |
+| `fail` | `trap:segfault` | The last stderr line being `segmentation fault at 0x<address>`: a `SIGSEGV` the runtime did not attribute to a blown stack (RUE-2163). The `message` is that whole line, address included. |
 | `fail` | `unhandled_error` | A `failure` frame with that kind — the test-body `?` failure arm. |
 | `fail` | *(verbatim)* | A `failure` frame with a kind the runner does not know (ADR-0083 §5.1). |
 | `fail` | `exit` | Any other nonzero exit. |
@@ -584,14 +585,32 @@ failure evidence.
 | `compile_error` | `compile_error` | The test's closure failed to analyze, so it was excluded from the image and no process ran. See below. |
 
 `trap:<class>` classes are `panic`, `div_by_zero`, `overflow`,
-`intcast_overflow`, `bounds_check`, `invalid_utf8`, and `stack_overflow`. The
-messages they match are the ones `crates/rue-runtime/src/error.rs` and `entry.rs`
-write before `exit(101)`; `crates/rue-cli-tests/cases/rue_test.toml` runs real
-programs down those paths, so a reworded runtime message fails a case rather than
-silently reclassifying a trap as a bare `exit`. A frame naming one of those
-classes reaches the same kind the stderr match produces, so one trap has one
-spelling however the runner learned of it; a `trap:` name outside the list is
-some other producer's and is published verbatim like any unknown kind.
+`intcast_overflow`, `bounds_check`, `invalid_utf8`, `stack_overflow`, and
+`segfault`. The messages they match are the ones
+`crates/rue-runtime/src/error.rs` and `entry.rs` write before `exit(101)`;
+`crates/rue-cli-tests/cases/rue_test.toml` runs real programs down those paths,
+so a reworded runtime message fails a case rather than silently reclassifying a
+trap as a bare `exit`. A frame naming one of those classes reaches the same kind
+the stderr match produces, so one trap has one spelling however the runner
+learned of it; a `trap:` name outside the list is some other producer's and is
+published verbatim like any unknown kind.
+
+Two of those messages carry a payload and are matched on their pinned prefix
+rather than whole: `@panic("msg")`'s `panic: <msg>`, and `segfault`'s
+`segmentation fault at 0x<address>`. The runtime owns the prefix and only the
+text after it varies, so the match is as exact as the whole-line ones. The
+address travels in the failure record's `message`, which for every trap is the
+stderr line the verdict was classified from; the `location` stays the `test`
+declaration's header, because no lowering stages a site beside a fault.
+
+`stack_overflow` and `segfault` are the two outcomes of one signal. The runtime
+catches `SIGSEGV`, reads the faulting address from `siginfo_t`, and reports a
+stack overflow only when that address falls in the window below the stack base
+it captured at process entry (`crates/rue-runtime/src/fault.rs`); every other
+fault — a null or wild raw-pointer write in a `checked` block, a C FFI callee
+touching bad memory — is a `segfault` naming its address. Before RUE-2163 the
+runtime reported every `SIGSEGV` as a blown stack, so both shapes arrived here
+as `trap:stack_overflow`.
 
 ### The `compile_error` verdict
 
@@ -666,7 +685,8 @@ Precedence, in order:
    message on the last non-empty line of stderr. The last line rather than the
    whole stream, so a test that printed diagnostics of its own before tripping an
    assertion is still classified by the trap it took; the comparison against that
-   line is exact.
+   line is exact, or exact on the pinned prefix for the two messages that carry a
+   payload (`panic: <msg>` and `segmentation fault at 0x<address>`).
 
 ### Reserved values
 
@@ -951,6 +971,12 @@ event of a run and in each `--list --format json` record.
   and optional, and `repro` still holds what it always did — the argv that
   reproduces this one test — in a spelling that resolves from more places than
   the old one, not a different kind of value.
+- The `trap:segfault` failure kind arrived the same way (RUE-2163). The version
+  stays `1.1`: `kind` has been an open field since v1.0 — a consumer already has
+  to publish a kind it does not recognize verbatim — and nothing a `1.1` consumer
+  already read changed. What changed is the runtime beneath it: a fault that used
+  to be reported as `trap:stack_overflow` is now reported as its own class, which
+  is a behavior fix rather than a schema change.
 - `run_started.cycle` and the `run_canceled` event arrived the same way
   (RUE-2023), as an optional field and a new event kind. The version stays
   `1.0`: nothing a `1.0` consumer already read changed, and a consumer that

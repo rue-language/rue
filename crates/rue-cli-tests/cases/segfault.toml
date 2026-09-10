@@ -1,0 +1,66 @@
+# A SIGSEGV that is not a stack overflow reports its faulting address (RUE-2163).
+#
+# RUE-645 installed a SIGSEGV handler so a blown stack aborts cleanly instead of
+# dying by signal, and it reported *every* SIGSEGV as `stack overflow` on the
+# premise that safe Rue has no other way to raise one. `checked` blocks and raw
+# pointers (spec chapter 9) ended that premise, and a C FFI callee never obeyed
+# it: a null or wild `@ptr_write` faulted and the runtime blamed the stack.
+#
+# The handler is now installed with SA_SIGINFO on all three targets, reads the
+# faulting address out of the platform's `siginfo_t`, and reports
+# `segmentation fault at 0x<address>` for any address outside the window below
+# the stack base it captured at process entry. `stack_overflow.toml` holds the
+# other half of the contract — that unbounded recursion still says
+# `stack overflow` — because the two cases are only meaningful together.
+# See crates/rue-runtime/src/fault.rs for the window rule.
+#
+# Platform scope (`only_on` all three targets): the classification is per-target
+# work (three `siginfo_t` layouts, two ways to read `RLIMIT_STACK`, and Darwin's
+# caller-supplied signal trampoline), and each host's CI leg runs its own. A
+# regression is a wrong message, not a signal death, so these are ordinary
+# assertion failures rather than the FATAL shape `stack_overflow.toml` warns
+# about.
+
+[section]
+id = "cli.segfault"
+name = "Segmentation fault classification"
+description = "A SIGSEGV outside the stack window reports 'segmentation fault at 0x<address>' + exit 101 rather than 'stack overflow' (RUE-2163)."
+
+# The address is rendered in lowercase hex with no padding, so a null write is
+# `0x0` and not `0x0000000000000000`. Asserting the trailing newline pins that:
+# a padded address would not match.
+[[case]]
+name = "a_null_pointer_write_reports_a_zero_address"
+description = "Writing through `@int_to_ptr(0)` reports 'segmentation fault at 0x0' + exit 101, not 'stack overflow' (RUE-2163)."
+only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
+files = [{ path = "prog.rue", source = """
+fn main() -> i32 {
+    let zero: u64 = 0;
+    let p: ptr mut i64 = checked { @int_to_ptr(zero) };
+    checked { @ptr_write(p, 7) };
+    0
+}
+""" }]
+stdout = ""
+exit_code = 101
+runtime_error_contains = ["segmentation fault at 0x0\n"]
+
+# An unmapped address far from both the null page and the stack. Every supported
+# target places the main stack gigabytes above 0xdead0000 — macOS aarch64 has the
+# lowest base, around 5.7 GiB — so this address is outside the overflow window on
+# all three, and the message must carry it verbatim.
+[[case]]
+name = "a_wild_pointer_write_reports_its_address"
+description = "Writing through `@int_to_ptr(0xdead0000)` names that address in the message (RUE-2163)."
+only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
+files = [{ path = "prog.rue", source = """
+fn main() -> i32 {
+    let addr: u64 = 0xdead0000;
+    let p: ptr mut i64 = checked { @int_to_ptr(addr) };
+    checked { @ptr_write(p, 7) };
+    0
+}
+""" }]
+stdout = ""
+exit_code = 101
+runtime_error_contains = ["segmentation fault at 0xdead0000\n"]

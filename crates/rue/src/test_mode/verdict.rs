@@ -31,7 +31,7 @@ use std::fmt;
 /// a bare `exit`.
 const TRAP_MESSAGES: &[(&str, &str)] = &[
     // `__rue_panic_no_msg`. The message-carrying `__rue_panic` writes
-    // `panic: <msg>`, which is matched by prefix below.
+    // `panic: <msg>`, which is one of the prefixes below.
     ("panic", "panic"),
     ("error: division by zero", "div_by_zero"),
     ("error: integer overflow", "overflow"),
@@ -41,11 +41,22 @@ const TRAP_MESSAGES: &[(&str, &str)] = &[
     ("stack overflow", "stack_overflow"),
 ];
 
+/// The traps whose pinned message carries a payload after a fixed prefix, and
+/// the `trap:<class>` name the event stream publishes for each.
+///
+/// A prefix is matched only at the start of the last stderr line, so these are
+/// as exact as the whole-line matches above: the runtime owns the prefix, and
+/// only the text after it varies.
+const TRAP_PREFIXES: &[(&str, &str)] = &[
+    // `__rue_panic`, ahead of the user's message text.
+    ("panic: ", "panic"),
+    // The SIGSEGV handler's non-overflow message, ahead of the faulting address
+    // in hex (RUE-2163).
+    ("segmentation fault at 0x", "segfault"),
+];
+
 /// `__rue_assert_failed`'s pinned message.
 const ASSERT_MESSAGE: &str = "assertion failed";
-
-/// `__rue_panic`'s prefix, ahead of the user's message text.
-const PANIC_PREFIX: &str = "panic: ";
 
 /// The `trap:` namespace a runtime trap's own failure frame reports under.
 const TRAP_PREFIX: &str = "trap:";
@@ -55,6 +66,7 @@ const TRAP_PREFIX: &str = "trap:";
 fn trap_class(name: &str) -> Option<&'static str> {
     TRAP_MESSAGES
         .iter()
+        .chain(TRAP_PREFIXES)
         .map(|(_, class)| *class)
         .find(|class| *class == name)
 }
@@ -502,7 +514,8 @@ pub(crate) fn classify(observation: Observation<'_>) -> Classification {
 /// that printed diagnostics of its own before tripping an assertion still
 /// trapped, and classifying it as a bare `exit` because it was chatty would
 /// lose the one piece of structure the abort-only runtime gives us. The match
-/// against that line is exact (or, for `@panic("msg")`, exact on the pinned
+/// against that line is exact (or, for the two messages that carry a payload —
+/// `@panic("msg")` and the segmentation fault's address — exact on the pinned
 /// prefix), so a reworded runtime message is a failed CLI case rather than a
 /// silent reclassification.
 fn classify_runtime_message(stderr: &[u8]) -> Option<FailureKind> {
@@ -512,8 +525,12 @@ fn classify_runtime_message(stderr: &[u8]) -> Option<FailureKind> {
     if last == ASSERT_MESSAGE {
         return Some(FailureKind::Assert);
     }
-    if last.starts_with(PANIC_PREFIX) {
-        return Some(FailureKind::Trap("panic"));
+    if let Some(class) = TRAP_PREFIXES
+        .iter()
+        .find(|(prefix, _)| last.starts_with(prefix))
+        .map(|(_, class)| *class)
+    {
+        return Some(FailureKind::Trap(class));
     }
     TRAP_MESSAGES
         .iter()
@@ -576,6 +593,8 @@ mod tests {
             ("error: index out of bounds\n", "bounds_check"),
             ("error: invalid UTF-8\n", "invalid_utf8"),
             ("stack overflow\n", "stack_overflow"),
+            ("segmentation fault at 0x0\n", "segfault"),
+            ("segmentation fault at 0xdead0000\n", "segfault"),
         ];
         for (stderr, class) in expected {
             assert_eq!(
@@ -584,6 +603,33 @@ mod tests {
                 "stderr {stderr:?}"
             );
         }
+    }
+
+    /// The two SIGSEGV outcomes are separate classes, not one (RUE-2163): a
+    /// wild pointer write used to reach `trap:stack_overflow` because the
+    /// runtime reported every fault as a blown stack.
+    #[test]
+    fn a_segmentation_fault_is_not_a_stack_overflow() {
+        assert_eq!(
+            observe(
+                Ok(101),
+                "segmentation fault at 0x0\n",
+                &ChannelFrames::default()
+            )
+            .verdict,
+            Verdict::Fail(FailureKind::Trap("segfault"))
+        );
+    }
+
+    /// A frame naming `trap:segfault` reaches the same kind the stderr match
+    /// produces, so one trap has one spelling however the runner learned of it.
+    #[test]
+    fn a_reported_segfault_frame_names_the_same_class() {
+        assert_eq!(
+            FailureKind::reported("trap:segfault"),
+            FailureKind::Trap("segfault")
+        );
+        assert_eq!(FailureKind::Trap("segfault").to_string(), "trap:segfault");
     }
 
     /// A test that printed before it trapped still trapped.

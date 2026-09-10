@@ -156,6 +156,11 @@ pub mod random;
 pub mod string;
 pub mod test_channel;
 
+// Crate-internal: the SIGSEGV classification rule and its two pinned messages,
+// shared by the entry handler and the platform modules. Not part of the runtime
+// ABI.
+mod fault;
+
 // Crate-internal: Unicode's well-formed-UTF-8 table, shared by the string
 // decoders and the test channel's JSON escaper. Not part of the runtime ABI.
 mod utf8;

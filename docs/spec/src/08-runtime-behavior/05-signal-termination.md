@@ -13,7 +13,7 @@ indexing) end a program *from inside* with the panic exit code 101. A program
 may also be ended *from outside* the language's control flow when the host
 operating system delivers a **signal** whose default disposition is to terminate
 the process. Rue installs one signal handler and no others: `SIGSEGV` is caught
-so that a stack overflow becomes a clean abort (8.5:6), and every other signal
+so that a memory fault becomes a clean abort (8.5:6), and every other signal
 keeps its platform-default behavior. This section describes the observable exit
 status in that case; because the trigger is external to the language, these
 paragraphs are informative rather than normative.
@@ -27,14 +27,27 @@ disposition would kill the process with the raw crash status `139`
 (`128 + SIGSEGV`, per 8.5:2) and no explanation. Before user code runs, the
 runtime instead
 installs a `SIGSEGV` handler on an alternate signal stack — so the handler can
-run even though the main stack is the thing that overflowed — which writes
-`stack overflow` to standard error and exits with the panic exit code `101`,
-the same code the traps of the preceding sections use. Any `SIGSEGV` is reported
-this way: in safe Rue a blown stack is the only way to raise one, because
-indexing is bounds-checked, there are no raw-pointer dereferences, and
-arithmetic traps rather than corrupting memory. A `SIGSEGV` raised from
-`checked` code (chapter 9), where those guarantees do not hold, is undefined
-behavior under B.3 and is reported the same way regardless of its cause.
+run even though the main stack is the thing that overflowed — which writes a
+one-line reason to standard error and exits with the panic exit code `101`, the
+same code the traps of the preceding sections use.
+
+The handler classifies the fault by the address that raised it, which the
+operating system supplies alongside the signal. A fault whose address lies in
+the region the runtime knows the main stack occupies — the stack base it
+captured at process entry, extended downward by the process's stack limit and
+the host's guard region — is reported as `stack overflow`. Any other fault is
+reported as `segmentation fault at 0x<address>`, with the faulting address in
+lowercase hexadecimal and no padding, so a null write reports
+`segmentation fault at 0x0`.
+
+In safe Rue only the first of those is reachable: indexing is bounds-checked,
+there are no raw-pointer dereferences, and arithmetic traps rather than
+corrupting memory. The second exists for `checked` code (chapter 9) and for
+foreign code called across the boundary of 9.3, where those guarantees do not
+hold. A `SIGSEGV` raised there is undefined behavior under B.3; reporting its
+address is a courtesy of this implementation and not a defined result, and no
+program may rely on which of the two messages a particular fault produces.
+
 Installing the handler is best-effort: on a host where the alternate stack or
 the handler registration is unavailable, the program keeps the default
 `SIGSEGV` disposition and exits with `139` as described above.

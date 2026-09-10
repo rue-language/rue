@@ -1557,16 +1557,18 @@ fn check_case_with_native_with_configuration(
     // Match the CLI runner: omitted `exit_code` means a successful process
     // exit, even when the case asserts on ordinary stderr text.
     let expected_exit = case.exit_code.unwrap_or(0);
-    // A stack-overflow trap (deep/unbounded recursion) is structurally
-    // un-modelable: reproducing it means actually exhausting the machine stack,
-    // which the in-process interpreter cannot do — its own recursion budget
-    // aborts first with a ResourceLimit. So a case expecting this trap is an
-    // oracle gap, not a case the harness can judge (RUE-645).
+    // The two SIGSEGV messages are structurally un-modelable. Reproducing a
+    // stack overflow means actually exhausting the machine stack, which the
+    // in-process interpreter cannot do — its own recursion budget aborts first
+    // with a ResourceLimit (RUE-645). Reproducing a segmentation fault means
+    // actually touching an address the process does not own, which the
+    // interpreter refuses by construction: it models a wild `@int_to_ptr` as an
+    // unsupported dereference rather than a memory access (RUE-2163). Either
+    // way the case is an oracle gap, not one the harness can judge.
     if expected_exit == rue_test_runner::RUNTIME_ERROR_EXIT_CODE
-        && case
-            .runtime_error_contains
-            .iter()
-            .any(|fragment| fragment == "stack overflow")
+        && case.runtime_error_contains.iter().any(|fragment| {
+            fragment == "stack overflow" || fragment.starts_with("segmentation fault at 0x")
+        })
     {
         return CaseOutcome::Ineligible(IneligibleReason::KnownOracleGap);
     }
