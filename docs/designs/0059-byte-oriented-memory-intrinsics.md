@@ -278,6 +278,10 @@ let zero: u64 = 0;
 let null: ptr mut u8 = checked { @int_to_ptr(zero) };
 ```
 
+RUE-2167 removed the second half of that: an integer literal in the address
+position now takes the declared `u64`, so `checked { @int_to_ptr(0) }` compiles
+and the `u64` binding is optional (spec 9.2:6d).
+
 `std/fs.rue` and `std/mem.rue` use exactly this form. Names are chosen so a later strict/exposed
 provenance split does not force a rename of the common path.
 

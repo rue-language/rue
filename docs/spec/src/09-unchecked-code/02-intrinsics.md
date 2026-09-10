@@ -125,21 +125,22 @@ null, and `@ptr_to_int(p) == 0` is the null test.
 evaluates to `u8`, while a byte write requires a `ptr mut u8` and a value of
 exactly `u8`. `@ptr_to_int` accepts a pointer of any pointee type and
 mutability and evaluates to `u64`. `@int_to_ptr` requires an operand of exactly
-`u64` — an untyped integer literal is not accepted, so the null idiom is
-written over a `u64` binding — and evaluates to a `ptr mut T` whose pointee
-type is inferred from context.
+`u64` — an untyped integer literal in that operand position is one of the uses
+that fixes its type (3.1:15), so `@int_to_ptr(0)` writes the null idiom
+directly and no `u64` binding is needed; a literal that takes `u64` here is
+range-checked against it like any other literal given that type (3.1:17) — and
+evaluates to a `ptr mut T` whose pointee type is inferred from context.
 
 {{ rule(id="9.2:6e", cat="example") }}
 
 ```rue
 fn main() -> i32 {
     let mut x: i32 = 10;
-    let zero: u64 = 0;
     checked {
         let p: ptr mut i32 = @raw_mut(x);
         @ptr_write(p, 99);                        // writes @size_of(i32) == 4 bytes
         let back: ptr mut i32 = @int_to_ptr(@ptr_to_int(p));
-        let null: ptr mut u8 = @int_to_ptr(zero); // the null-pointer idiom
+        let null: ptr mut u8 = @int_to_ptr(0);    // the null-pointer idiom
         if @ptr_to_int(null) == 0 { @ptr_read(back) } else { 0 }
     }
 }

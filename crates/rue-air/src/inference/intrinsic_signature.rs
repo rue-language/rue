@@ -334,8 +334,13 @@ pub(crate) const fn intrinsic_shape(name: IntrinsicName) -> IntrinsicShape {
             },
             Fixed(Unit),
         ),
-        // `@int_to_ptr` returns a pointer type inferred from context.
-        I::IntToPtr => IntrinsicSignature::new(Uniform(Free), Fresh),
+        // `@int_to_ptr(addr)` returns a pointer type inferred from context, but
+        // its address operand is the declared `u64` of spec 9.2:6c. An
+        // integer-literal operand sees that type here (RUE-2167), so
+        // `@int_to_ptr(0)` works without pre-binding the address to a `u64`.
+        // Only literals are constrained, as for `@syscall`: a wrongly typed
+        // non-literal keeps semantic analysis' targeted E0702.
+        I::IntToPtr => IntrinsicSignature::new(Uniform(EqualIntLiteral(U64)), Fresh),
         I::TargetArch => IntrinsicSignature::new(Ungenerated, BuiltinEnum("Arch")),
         I::TargetOs => IntrinsicSignature::new(Ungenerated, BuiltinEnum("Os")),
         I::TargetDataModel => IntrinsicSignature::new(Ungenerated, BuiltinEnum("DataModel")),

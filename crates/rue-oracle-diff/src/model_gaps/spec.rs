@@ -302,6 +302,27 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::ParseI64),
         &[],
     ),
+    // RUE-2167: `@int_to_ptr` of a literal address. The oracle's heap is
+    // allocation-shaped, so it models exactly two address sources: a zero
+    // address, which is the null pointer, and an address carrying the
+    // provenance of the pointer `@ptr_to_int` produced it from. A bare numeric
+    // address names no allocation it knows, so the interpreter stops with the
+    // typed `IntToPointer` gap rather than inventing one. The sibling
+    // `int_to_ptr_zero_is_the_null_pointer` and `@ptr_to_int` round-trip cases
+    // in this section are fully modeled and diffed; only these literal
+    // addresses are debt.
+    Entry::new(
+        "runtime.pointers",
+        "int_to_ptr_literal_address_spans_the_u64_range",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &[],
+    ),
+    Entry::new(
+        "runtime.pointers",
+        "int_to_ptr_literal_address_takes_u64",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &[],
+    ),
     // ADR-0059 phase 5 (RUE-963): the typed-access width and unaligned round
     // trip cases anchor their pointers via @int_to_ptr, which the oracle does
     // not model.
