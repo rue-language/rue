@@ -194,27 +194,90 @@ fn main() -> i32 {
 """
 exit_code = 57  # 12345 % 256 = 57
 
-# The null-pointer idiom (9.2:6c): `@int_to_ptr` takes exactly a `u64`, so null
-# is written over a `u64` binding rather than a bare `0` literal, and
-# `@ptr_to_int(p) == 0` is the null test. Round-tripping an address through the
-# pair addresses the same storage.
+# The null-pointer idiom (9.2:6c): `@int_to_ptr` takes exactly a `u64`, and a
+# bare `0` literal in that operand position is fixed to `u64` by the operand
+# type (3.1:15, 9.2:6d), so the idiom needs no `u64` binding. `@ptr_to_int(p)
+# == 0` is the null test, and round-tripping an address through the pair
+# addresses the same storage.
 [[case]]
 name = "int_to_ptr_zero_is_the_null_pointer"
 spec = ["9.2:6c", "9.2:6e"]
 source = """
 fn main() -> i32 {
     let mut x: i32 = 10;
-    let zero: u64 = 0;
     checked {
         let p: ptr mut i32 = @raw_mut(x);
         @ptr_write(p, 99);
         let back: ptr mut i32 = @int_to_ptr(@ptr_to_int(p));
-        let null: ptr mut u8 = @int_to_ptr(zero);
+        let null: ptr mut u8 = @int_to_ptr(0);
         if @ptr_to_int(null) == 0 { @ptr_read(back) } else { 0 }
     }
 }
 """
 exit_code = 99
+
+# RUE-2167: a bare integer literal in `@int_to_ptr`'s address position takes the
+# declared `u64` (3.1:15, 9.2:6d) instead of defaulting to `i32` and failing the
+# operand check. The address is only converted here, never dereferenced, so the
+# case is about the type the literal acquires.
+[[case]]
+name = "int_to_ptr_literal_address_takes_u64"
+spec = ["9.2:6c", "9.2:6d"]
+source = """
+fn main() -> i32 {
+    let p: ptr mut i64 = checked { @int_to_ptr(4096) };
+    let addr: u64 = checked { @ptr_to_int(p) };
+    @intCast(addr / 1024)
+}
+"""
+exit_code = 4
+
+# RUE-2167: the literal takes `u64`, not the widest signed type — an address
+# above `i64::MAX` round-trips unchanged.
+[[case]]
+name = "int_to_ptr_literal_address_spans_the_u64_range"
+spec = ["9.2:6c", "9.2:6d"]
+source = """
+fn main() -> i32 {
+    let p: ptr mut u8 = checked { @int_to_ptr(18446744073709551615) };
+    let addr: u64 = checked { @ptr_to_int(p) };
+    if addr == 18446744073709551615 { 7 } else { 1 }
+}
+"""
+exit_code = 7
+
+# RUE-2167 control: giving the literal the operand's `u64` does not widen what
+# a literal may denote. A value past the tokenization limit (2.1:4) is still
+# rejected here, exactly as it is in a `u64` annotation.
+[[case]]
+name = "int_to_ptr_literal_above_the_u64_range_is_rejected"
+spec = ["9.2:6d", "2.1:4"]
+source = """
+fn main() -> i32 {
+    let p: ptr mut u8 = checked { @int_to_ptr(18446744073709551616) };
+    let addr: u64 = checked { @ptr_to_int(p) };
+    @intCast(addr)
+}
+"""
+compile_fail = true
+expected_error_code = "E0002"
+
+# RUE-2167 control: only an integer literal takes the operand's `u64`. A
+# negated literal is not one, so it keeps the operand check's own diagnostic
+# rather than being laundered into a `u64` address — the same outcome
+# `@syscall` gives a negative argument.
+[[case]]
+name = "int_to_ptr_negative_literal_is_rejected"
+spec = ["9.2:6d"]
+source = """
+fn main() -> i32 {
+    let p: ptr mut u8 = checked { @int_to_ptr(-1) };
+    let addr: u64 = checked { @ptr_to_int(p) };
+    @intCast(addr)
+}
+"""
+compile_fail = true
+expected_error_code = "E0702"
 
 # @ptr_read/@ptr_write move exactly @size_of(T) physical bytes, never a
 # fixed-width slot (9.2:6b). At T = u8 that is one byte: writing through a
