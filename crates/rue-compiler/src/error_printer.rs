@@ -1975,30 +1975,11 @@ impl Builder {
             LeafSource::Payload { .. } => {
                 unreachable!("a payload is staged into a local before it is read through")
             }
-            LeafSource::Element(element) => {
-                let pointer = self.element_pointer(element, owner_ty);
-                if element.prefix.is_empty() && projections.is_empty() {
-                    // A whole element is read through the pointer intrinsic
-                    // rather than an indirect place: an indirect place read of
-                    // a narrower-than-word scalar loads a whole word today —
-                    // `ArrayBuf(u8).get_ref(0)` has the same defect — and
-                    // `@ptr_read` is the path the standard library's own
-                    // element reads already take.
-                    return self.add(
-                        Data::Intrinsic {
-                            operation: IntrinsicOperation::PtrRead,
-                            name: Arc::from(IntrinsicOperation::PtrRead.expected_spelling()),
-                            args: Arc::new([argument(pointer)]),
-                        },
-                        ty,
-                    );
-                }
-                (
-                    PlaceRoot::Indirect(pointer),
-                    element.prefix.clone(),
-                    element_type(&element.view),
-                )
-            }
+            LeafSource::Element(element) => (
+                PlaceRoot::Indirect(self.element_pointer(element, owner_ty)),
+                element.prefix.clone(),
+                element_type(&element.view),
+            ),
         };
         let steps = prefix
             .iter()

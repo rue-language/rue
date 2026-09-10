@@ -2233,3 +2233,55 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E0259", "after an exclusive use"]
+
+# The yielded place is the receiver's own storage (6.6:12), so reading it
+# observes exactly the value stored there — at the element's own width, not at
+# the width of the machine word the element shares with its neighbours
+# (RUE-2168).
+[[case]]
+name = "accessor_result_reads_a_subword_element_at_its_own_width"
+spec = ["6.6:8", "6.6:12"]
+description = "A sub-word element read out of an accessor result is the element, not the word it shares with its neighbours."
+real_std = true
+source = """
+const std = @import("std");
+fn main() -> i32 {
+    let mut bytes = std.arraybuf.ArrayBuf(u8).new();
+    bytes.push(1);
+    bytes.push(0);
+    bytes.push(2);
+    let mut signed = std.arraybuf.ArrayBuf(i16).new();
+    signed.push(-300);
+    signed.push(7);
+    if bytes.get_ref(0) == 1 && bytes.get_ref(2) == 2 && signed.get_ref(0) == -300 {
+        0
+    } else {
+        1
+    }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "accessor_result_projects_a_narrow_field_at_its_own_offset"
+spec = ["6.6:8", "6.6:12"]
+description = "A field projected from an accessor result names that field of the receiver's element, whatever the field's width."
+real_std = true
+source = """
+const std = @import("std");
+@copy
+struct Narrow { a: i32, b: u8, c: bool }
+fn main() -> i32 {
+    let mut xs = std.arraybuf.ArrayBuf(Narrow).new();
+    xs.push(Narrow { a: -5, b: 200, c: true });
+    xs.push(Narrow { a: 7, b: 9, c: false });
+    if xs.get_ref(0).a == -5 && xs.get_ref(0).b == 200 && xs.get_ref(0).c
+        && xs.get_ref(1).b == 9
+    {
+        0
+    } else {
+        1
+    }
+}
+"""
+exit_code = 0

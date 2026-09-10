@@ -214,6 +214,10 @@ pub enum ResidualValuePlan {
         value: MaterializedValue,
         value_shape: ValueShape,
         float_width: Option<FloatWidth>,
+        /// The stored value's own type. An indirect place writes a compact
+        /// image, whose shape is a fact about the whole type rather than about
+        /// its leaves alone.
+        value_ty: Type,
         /// One leaf type per logical slot of the stored value; see
         /// [`crate::place_lower::lower_place_write_plan`].
         leaf_types: Vec<Type>,
@@ -1846,6 +1850,7 @@ fn residual_plan<A: ValueLowerAdapter>(
                 value: operand(ctx, adapter, stored),
                 value_shape: ValuePlan::for_value(ctx, stored).shape,
                 float_width: primary_slot_float_width(&leaf_types),
+                value_ty: ctx.cfg.get_inst(stored).ty,
                 leaf_types,
             }
         }

@@ -248,18 +248,33 @@ pub(crate) fn store_enum_slots_through_ptr<B: SlotBackend>(
     // byte, so the whole image is initialized regardless of prior memory contents.
     zero_padding_through_ptr(b, ptr, padding);
     for (val, slot) in vals.iter().zip(map.iter()) {
-        match (slot.float_width, slot.access) {
-            (Some(width), _) if slot.bit_carrier => {
-                let fp = b.alloc_float_vreg();
-                b.emit_bits_to_float(fp, *val, width);
-                b.emit_float_store_through_ptr(fp, ptr, slot.byte_offset, width);
-            }
-            (Some(width), _) => b.emit_float_store_through_ptr(*val, ptr, slot.byte_offset, width),
-            (None, None) => b.emit_store_through_ptr(*val, ptr, slot.byte_offset),
-            (None, Some(access)) => {
-                b.emit_narrow_store_through_ptr(*val, ptr, slot.byte_offset, access)
-            }
+        store_physical_slot(b, *val, ptr, slot);
+    }
+}
+
+/// Store one value slot into its physical byte position, truncating a narrow
+/// leaf to its compact width and moving a bit-carrier slot back into the float
+/// register class first.
+///
+/// This is the single physical-store leaf: the whole-aggregate image writers and
+/// the indirect-place writer ([`crate::place_lower`]) both go through it, so a
+/// compact image written through a pointer intrinsic and one written through a
+/// place cannot disagree about a byte.
+pub(crate) fn store_physical_slot<B: SlotBackend>(
+    b: &mut B,
+    val: VReg,
+    ptr: VReg,
+    slot: &crate::types::PhysicalEnumSlot,
+) {
+    match (slot.float_width, slot.access) {
+        (Some(width), _) if slot.bit_carrier => {
+            let fp = b.alloc_float_vreg();
+            b.emit_bits_to_float(fp, val, width);
+            b.emit_float_store_through_ptr(fp, ptr, slot.byte_offset, width);
         }
+        (Some(width), _) => b.emit_float_store_through_ptr(val, ptr, slot.byte_offset, width),
+        (None, None) => b.emit_store_through_ptr(val, ptr, slot.byte_offset),
+        (None, Some(access)) => b.emit_narrow_store_through_ptr(val, ptr, slot.byte_offset, access),
     }
 }
 
@@ -273,28 +288,53 @@ pub(crate) fn load_enum_slots_through_ptr<B: SlotBackend>(
     ptr: VReg,
     map: &[crate::types::PhysicalEnumSlot],
 ) -> Vec<VReg> {
-    let mut vregs = Vec::with_capacity(map.len());
-    for slot in map {
-        let dst = if slot.float_width.is_some() && !slot.bit_carrier {
-            b.alloc_float_vreg()
-        } else {
-            b.alloc_vreg()
-        };
-        match (slot.float_width, slot.access) {
-            (Some(width), _) if slot.bit_carrier => {
-                let fp = b.alloc_float_vreg();
-                b.emit_float_load_through_ptr(fp, ptr, slot.byte_offset, width);
-                b.emit_float_to_bits(dst, fp, width);
-            }
-            (Some(width), _) => b.emit_float_load_through_ptr(dst, ptr, slot.byte_offset, width),
-            (None, None) => b.emit_load_through_ptr(dst, ptr, slot.byte_offset),
-            (None, Some(access)) => {
-                b.emit_narrow_load_through_ptr(dst, ptr, slot.byte_offset, access)
-            }
-        }
-        vregs.push(dst);
+    map.iter()
+        .map(|slot| {
+            let dst = alloc_physical_slot_vreg(b, slot);
+            load_physical_slot(b, dst, ptr, slot);
+            dst
+        })
+        .collect()
+}
+
+/// Allocate a vreg of the register class one physical slot's value lives in: a
+/// float class for a float leaf read as a float, the general-purpose class for
+/// everything else including a bit-carrier union slot.
+pub(crate) fn alloc_physical_slot_vreg<B: SlotBackend>(
+    b: &mut B,
+    slot: &crate::types::PhysicalEnumSlot,
+) -> VReg {
+    if slot.float_width.is_some() && !slot.bit_carrier {
+        b.alloc_float_vreg()
+    } else {
+        b.alloc_vreg()
     }
-    vregs
+}
+
+/// Load one value slot from its physical byte position, extending a narrow leaf
+/// back into the slot-shaped register image (zero-extended unsigned, sign-extended
+/// signed — the invariant on [`crate::value_plan::width_extension`]) and moving a
+/// bit-carrier slot out of the float register class.
+///
+/// This is the single physical-load leaf, the counterpart of
+/// [`store_physical_slot`]: the whole-aggregate image readers and the
+/// indirect-place reader ([`crate::place_lower`]) both go through it.
+pub(crate) fn load_physical_slot<B: SlotBackend>(
+    b: &mut B,
+    dst: VReg,
+    ptr: VReg,
+    slot: &crate::types::PhysicalEnumSlot,
+) {
+    match (slot.float_width, slot.access) {
+        (Some(width), _) if slot.bit_carrier => {
+            let fp = b.alloc_float_vreg();
+            b.emit_float_load_through_ptr(fp, ptr, slot.byte_offset, width);
+            b.emit_float_to_bits(dst, fp, width);
+        }
+        (Some(width), _) => b.emit_float_load_through_ptr(dst, ptr, slot.byte_offset, width),
+        (None, None) => b.emit_load_through_ptr(dst, ptr, slot.byte_offset),
+        (None, Some(access)) => b.emit_narrow_load_through_ptr(dst, ptr, slot.byte_offset, access),
+    }
 }
 
 /// Read one by-value aggregate parameter's leaves back out of its compact image

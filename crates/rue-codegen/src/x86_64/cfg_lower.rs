@@ -1937,22 +1937,23 @@ impl<'a> CfgLower<'a> {
             }
             ResidualValuePlan::PlaceRead { place, leaf_types } => {
                 let count = plan.policy.shape.slot_count();
+                let vals =
+                    crate::place_lower::lower_place_read_slots_plan(self, &place, ty, &leaf_types);
                 if count > 1 {
-                    let addr = self.mir.alloc_vreg();
-                    crate::place_lower::lower_checked_place_addr_plan(self, addr, &place);
-                    slots = crate::agg_slots::load_slots_through_ptr_typed(self, addr, &leaf_types);
-                    let dst = slots[0];
-                    dst
-                } else {
-                    let dst =
-                        self.mir
-                            .alloc_vreg_in(if plan.policy.primary_float_width.is_some() {
-                                crate::reg_class::RegClass::Fp
-                            } else {
-                                crate::reg_class::RegClass::Gp
-                            });
-                    crate::place_lower::lower_place_read_plan(self, dst, &place, ty);
-                    dst
+                    slots = vals.clone();
+                }
+                match vals.first() {
+                    Some(first) => *first,
+                    // A zero-sized place loads nothing: its primary is the
+                    // never-read placeholder such a value carries, kept
+                    // allocated so register allocation sees an ordinary value.
+                    None => self
+                        .mir
+                        .alloc_vreg_in(if plan.policy.primary_float_width.is_some() {
+                            crate::reg_class::RegClass::Fp
+                        } else {
+                            crate::reg_class::RegClass::Gp
+                        }),
                 }
             }
             ResidualValuePlan::PlaceWrite {
@@ -1960,6 +1961,7 @@ impl<'a> CfgLower<'a> {
                 value,
                 value_shape,
                 float_width,
+                value_ty,
                 leaf_types,
             } => {
                 let vals = if matches!(
@@ -1978,6 +1980,7 @@ impl<'a> CfgLower<'a> {
                     &place,
                     &vals,
                     float_width,
+                    value_ty,
                     &leaf_types,
                 );
                 return ValueResult::SideEffect;

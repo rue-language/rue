@@ -123,11 +123,13 @@ pub const fn scale_kind(bytes: u64) -> ScaleKind {
 /// addressing strides by the *slot* stride — `abi_slot_count(element) *
 /// SLOT_BYTES` — not the compact element size. Under the slot model the two are
 /// identical (every leaf is eight bytes); under the compact layout (ADR-0052)
-/// they diverge, and the slot stride is the physically correct one because
-/// `[]`-indexed arrays only ever address slot-based storage (a frame value or a
-/// by-reference pointer into the caller's slot-based frame). Heap element
-/// stepping uses `@ptr_offset` (`pointer_offset_scale_plan`), which strides by
-/// the compact element size against a compact heap image (RUE-1014).
+/// they diverge, and the slot stride is the physically correct one for the
+/// slot-based storage this plan addresses: a frame value or a by-reference
+/// pointer into the caller's slot-based frame. An indexed place rooted at a raw
+/// pointer names a compact image instead and uses
+/// [`compact_index_scale_plan`]. Heap element stepping uses `@ptr_offset`
+/// (`pointer_offset_scale_plan`), which strides by the compact element size
+/// against a compact heap image (RUE-1014).
 #[inline]
 pub fn index_scale_plan(type_pool: &FrozenTypeInternPool, array_type: Type) -> ScalePlan {
     let (element_type, _) =
@@ -135,6 +137,20 @@ pub fn index_scale_plan(type_pool: &FrozenTypeInternPool, array_type: Type) -> S
     let slot_stride = u64::from(types::type_slot_count(type_pool, element_type)) * SLOT_BYTES;
     ScalePlan {
         kind: scale_kind(slot_stride),
+        purpose: ScalePurpose::IndexOffset,
+        overflow: OverflowBehavior::Wrap,
+    }
+}
+
+/// Build the scaling plan used for an array `[]` projection of an *indirect*
+/// place, whose storage a raw pointer names and is therefore laid out compactly
+/// (ADR-0052 representation 3). It strides by the compact element stride — the
+/// same distance `@ptr_offset` steps over the same image — so an indexed place
+/// and the pointer intrinsics reach the same element (RUE-2168).
+#[inline]
+pub fn compact_index_scale_plan(type_pool: &FrozenTypeInternPool, array_type: Type) -> ScalePlan {
+    ScalePlan {
+        kind: scale_kind(types::array_element_byte_stride(type_pool, array_type)),
         purpose: ScalePurpose::IndexOffset,
         overflow: OverflowBehavior::Wrap,
     }
