@@ -37,6 +37,36 @@ expected_stdout = """
 exit_code = 0
 
 [[case]]
+name = "float_values_are_copied_on_use_never_moved"
+spec = ["3.12:2a", "3.8:2"]
+description = "A float binding is Copy: it is read repeatedly, passed by value twice, and still usable, with no destructor or linear obligation."
+source = """
+fn halve(x: f64) -> f64 { x / 2.0 }
+fn shrink(x: f32) -> f32 { x - 0.25 }
+
+fn main() -> i32 {
+    let wide: f64 = 5.0;
+    let narrow: f32 = 1.5;
+    @dbg(halve(wide));
+    @dbg(halve(wide));
+    @dbg(shrink(narrow));
+    @dbg(shrink(narrow));
+    @dbg(wide + wide);
+    @dbg(narrow);
+    0
+}
+"""
+expected_stdout = """
+2.5
+2.5
+1.25
+1.25
+10.0
+1.5
+"""
+exit_code = 0
+
+[[case]]
 name = "float_type_names_are_ordinary_identifiers"
 spec = ["3.12:2"]
 description = "f32/f64 name types in every type position and are usable as `type` values"
