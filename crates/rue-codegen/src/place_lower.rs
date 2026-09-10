@@ -67,8 +67,8 @@ pub(crate) trait PlaceLowerBackend: SlotBackend {
     /// Load from the address in `ptr` with no encoded displacement.
     ///
     /// AArch64 has separate base-only and base-plus-zero MIR variants. Keeping
-    /// this leaf preserves the pre-extraction choice at simple and dynamically
-    /// addressed place reads.
+    /// this leaf preserves the pre-extraction choice at a by-reference
+    /// parameter's own pointer and at dynamically addressed frame places.
     fn emit_load_ptr_base(
         &mut self,
         dst: VReg,
@@ -79,12 +79,29 @@ pub(crate) trait PlaceLowerBackend: SlotBackend {
     fn emit_float_store_slot(&mut self, src: VReg, slot: u32, width: crate::value_plan::FloatWidth);
 }
 
+/// Whether `place` names storage a raw pointer reaches rather than the frame.
+///
+/// The pointer an `Indirect` base carries comes from the trusted `@place`
+/// bridge, so it names ordinary program memory, which is laid out compactly
+/// (ADR-0052 representation 3): a field sits at its layout byte offset, an array
+/// element strides by the compact element stride, and a narrow scalar occupies
+/// one, two, or four bytes. Frame storage — a local, a by-value parameter, or
+/// the by-reference pointer a caller formed from one — is the slot-shaped
+/// internal decomposition instead, eight bytes per leaf. The two models disagree
+/// for every type that is not slot-identical, so each place is addressed and
+/// accessed in the model its own base names (RUE-2168).
+fn place_is_indirect(place: &ResolvedPlace) -> bool {
+    matches!(place.base, crate::value_plan::PlaceBasePlan::Pointer(_))
+}
+
 fn resolved_offsets<B: PlaceLowerBackend + ?Sized>(
     b: &mut B,
     place: &ResolvedPlace,
     check_bounds: bool,
 ) -> ResolvedProjectionOffsets {
+    let indirect = place_is_indirect(place);
     let mut static_slot_offset = 0;
+    let mut static_byte_offset: i64 = 0;
     let mut index_levels = Vec::new();
     for projection in &place.projections {
         match *projection {
@@ -93,6 +110,11 @@ fn resolved_offsets<B: PlaceLowerBackend + ?Sized>(
                 field_index,
             } => {
                 static_slot_offset += b.ctx().struct_field_slot_offset(struct_id, field_index);
+                static_byte_offset += crate::types::struct_field_byte_offset(
+                    b.ctx().type_pool,
+                    struct_id,
+                    field_index,
+                ) as i64;
             }
             crate::value_plan::ProjectionPlan::Index { array_type, index } => {
                 if check_bounds {
@@ -103,13 +125,19 @@ fn resolved_offsets<B: PlaceLowerBackend + ?Sized>(
                 }
                 index_levels.push(ResolvedIndexLevel {
                     index,
-                    scale: allocation::index_scale_plan(b.ctx().type_pool, array_type),
+                    scale: if indirect {
+                        allocation::compact_index_scale_plan(b.ctx().type_pool, array_type)
+                    } else {
+                        allocation::index_scale_plan(b.ctx().type_pool, array_type)
+                    },
                 });
             }
         }
     }
     ResolvedProjectionOffsets {
         static_slot_offset,
+        static_byte_offset: i32::try_from(static_byte_offset)
+            .expect("a projected field's compact byte offset fits an addressing displacement"),
         index_levels,
     }
 }
@@ -207,7 +235,8 @@ fn resolved_access<B: PlaceLowerBackend + ?Sized>(
             )
         }
         crate::value_plan::PlaceBasePlan::Pointer(ptr) => {
-            let byte_offset = slot_byte_offset(offsets.static_slot_offset as usize);
+            // Compact displacements, not slot ones: see `place_is_indirect`.
+            let byte_offset = offsets.static_byte_offset;
             if let Some(dynamic) = dynamic_offset {
                 let addr = b.alloc_vreg();
                 b.emit_reg_move(addr, ptr);
@@ -256,7 +285,198 @@ fn frame_access<B: PlaceLowerBackend + ?Sized>(
     }
 }
 
-pub(crate) fn lower_place_read_plan<B: PlaceLowerBackend>(
+/// Read the value of type `ty` out of `place`, returning one vreg per logical
+/// slot in slot order. A zero-sized place yields no vregs; the bounds checks its
+/// projections carry still run.
+///
+/// This is the one place-read entry point both backends use. It routes an
+/// indirect place through the same compact decode `@ptr_read` performs on the
+/// same image, and frame storage through the slot-shaped loads the frame model
+/// needs (see [`place_is_indirect`]).
+pub(crate) fn lower_place_read_slots_plan<B: PlaceLowerBackend>(
+    b: &mut B,
+    place: &ResolvedPlace,
+    ty: Type,
+    leaf_types: &[Type],
+) -> Vec<VReg> {
+    if b.ctx().type_slot_count(ty) == 0 {
+        resolved_offsets(b, place, true);
+        return Vec::new();
+    }
+    if leaf_types.len() > 1 {
+        if place_is_indirect(place) {
+            let (ptr, byte_offset) = indirect_place_address(b, place);
+            return load_pointee(b, ptr, byte_offset, ty, leaf_types);
+        }
+        let addr = b.alloc_vreg();
+        lower_checked_place_addr_plan(b, addr, place);
+        return agg_slots::load_slots_through_ptr_typed(b, addr, leaf_types);
+    }
+    let dst = if crate::value_plan::primary_slot_float_width(leaf_types).is_some() {
+        b.alloc_float_vreg()
+    } else {
+        b.alloc_vreg()
+    };
+    lower_place_read_plan(b, dst, place, ty);
+    vec![dst]
+}
+
+/// The address of an indirect place: the base pointer plus the compact
+/// displacement of its projection chain, with any dynamic index already folded
+/// into a materialized address.
+fn indirect_place_address<B: PlaceLowerBackend>(b: &mut B, place: &ResolvedPlace) -> (VReg, i32) {
+    let offsets = resolved_offsets(b, place, true);
+    match resolved_access(b, place, offsets) {
+        ProjectedAccess::PointerOffset { ptr, byte_offset } => (ptr, byte_offset),
+        ProjectedAccess::PointerAddr(addr) => (addr, 0),
+        ProjectedAccess::FrameSlot(_) => unreachable!("an indirect place has no frame slot"),
+    }
+}
+
+/// Read the multi-slot pointee of type `ty` at `ptr + byte_offset`.
+///
+/// This is the compact decode `@ptr_read` performs, reached from the other end:
+/// an indirect place and the pointer intrinsics name the same image, so they
+/// consult the same authorities — `pointer_image_slot_map` for an aggregate with
+/// a variant-independent image, `aggregate_dispatch_image` for a tag-dispatched
+/// one, and the slot-identical typed loads for an aggregate whose compact image
+/// already is its slot image.
+fn load_pointee<B: PlaceLowerBackend>(
+    b: &mut B,
+    ptr: VReg,
+    byte_offset: i32,
+    ty: Type,
+    leaf_types: &[Type],
+) -> Vec<VReg> {
+    if let Some(map) = crate::types::pointer_image_slot_map(b.ctx().type_pool, ty) {
+        let slots: Vec<_> = map
+            .iter()
+            .map(|slot| shift_physical_slot(slot, byte_offset))
+            .collect();
+        return slots
+            .iter()
+            .map(|slot| {
+                let dst = agg_slots::alloc_physical_slot_vreg(b, slot);
+                agg_slots::load_physical_slot(b, dst, ptr, slot);
+                dst
+            })
+            .collect();
+    }
+    let base = offset_pointer(b, ptr, byte_offset);
+    if let Some(image) = crate::types::aggregate_dispatch_image(b.ctx().type_pool, ty) {
+        return agg_slots::load_dispatch_image(b, base, &image);
+    }
+    agg_slots::load_slots_through_ptr_typed(b, base, leaf_types)
+}
+
+/// Read the one-slot pointee of type `ty` at `ptr + byte_offset` into `dst`.
+///
+/// The single-slot half of [`load_pointee`], kept dst-directed so a scalar read
+/// needs no register move: a sub-word leaf is loaded at `narrow_scalar_access`'s
+/// width and extended into the slot-shaped register image (RUE-1338) — the same
+/// access `@ptr_read` of that leaf emits.
+fn load_pointee_into<B: PlaceLowerBackend>(
+    b: &mut B,
+    dst: VReg,
+    ptr: VReg,
+    byte_offset: i32,
+    ty: Type,
+    leaf: Type,
+) {
+    if let Some(map) = crate::types::pointer_image_slot_map(b.ctx().type_pool, ty) {
+        let [slot] = map.as_slice() else {
+            unreachable!("a one-slot pointee has a one-slot compact image");
+        };
+        let slot = shift_physical_slot(slot, byte_offset);
+        agg_slots::load_physical_slot(b, dst, ptr, &slot);
+        return;
+    }
+    match (
+        crate::value_plan::float_width(leaf),
+        crate::types::narrow_scalar_access(b.ctx().type_pool, leaf),
+    ) {
+        (Some(width), _) => b.emit_float_load_through_ptr(dst, ptr, byte_offset, width),
+        (None, Some(access)) => b.emit_narrow_load_through_ptr(dst, ptr, byte_offset, access),
+        (None, None) => b.emit_load_through_ptr(dst, ptr, byte_offset),
+    }
+}
+
+/// Write `vals` — one vreg per logical slot of a value of type `ty` — into the
+/// pointee at `ptr + byte_offset`. The counterpart of [`load_pointee`] and
+/// [`load_pointee_into`], and the same compact encode `@ptr_write` performs.
+fn store_pointee<B: PlaceLowerBackend>(
+    b: &mut B,
+    vals: &[VReg],
+    ptr: VReg,
+    byte_offset: i32,
+    ty: Type,
+    leaf_types: &[Type],
+) {
+    if let Some(map) = crate::types::pointer_image_slot_map(b.ctx().type_pool, ty) {
+        // Deterministic zero on construction (ADR-0052 ruling 5): the padding of
+        // the value being written, at the position it is written to.
+        let padding = b.ctx().type_pool.compact_image_padding_ranges(ty);
+        if padding.is_empty() {
+            let slots: Vec<_> = map
+                .iter()
+                .map(|slot| shift_physical_slot(slot, byte_offset))
+                .collect();
+            for (val, slot) in vals.iter().zip(slots.iter()) {
+                agg_slots::store_physical_slot(b, *val, ptr, slot);
+            }
+        } else {
+            let base = offset_pointer(b, ptr, byte_offset);
+            agg_slots::store_enum_slots_through_ptr(b, vals, base, &map, &padding);
+        }
+        return;
+    }
+    if let Some(image) = crate::types::aggregate_dispatch_image(b.ctx().type_pool, ty) {
+        let base = offset_pointer(b, ptr, byte_offset);
+        agg_slots::store_dispatch_image(b, vals, base, &image);
+        return;
+    }
+    if leaf_types.len() > 1 {
+        agg_slots::store_slots_through_ptr_typed(b, vals, ptr, byte_offset, leaf_types);
+        return;
+    }
+    let leaf = leaf_types[0];
+    match (
+        crate::value_plan::float_width(leaf),
+        crate::types::narrow_scalar_access(b.ctx().type_pool, leaf),
+    ) {
+        (Some(width), _) => b.emit_float_store_through_ptr(vals[0], ptr, byte_offset, width),
+        (None, Some(access)) => b.emit_narrow_store_through_ptr(vals[0], ptr, byte_offset, access),
+        (None, None) => b.emit_store_through_ptr(vals[0], ptr, byte_offset),
+    }
+}
+
+/// The same physical slot displaced to a sub-object's position in an enclosing
+/// image, so a projected read needs no address arithmetic of its own.
+fn shift_physical_slot(
+    slot: &crate::types::PhysicalEnumSlot,
+    byte_offset: i32,
+) -> crate::types::PhysicalEnumSlot {
+    crate::types::PhysicalEnumSlot {
+        byte_offset: slot.byte_offset + byte_offset,
+        ..*slot
+    }
+}
+
+/// Materialize `ptr + byte_offset` when the displacement cannot travel with the
+/// access itself.
+fn offset_pointer<B: PlaceLowerBackend>(b: &mut B, ptr: VReg, byte_offset: i32) -> VReg {
+    if byte_offset == 0 {
+        return ptr;
+    }
+    let addr = b.alloc_vreg();
+    b.emit_reg_move(addr, ptr);
+    b.emit_addr_add_imm(addr, byte_offset);
+    addr
+}
+
+/// The one-slot half of [`lower_place_read_slots_plan`], for a place rooted in
+/// the frame or at a by-reference parameter's pointer.
+fn lower_place_read_plan<B: PlaceLowerBackend>(
     b: &mut B,
     dst: VReg,
     place: &ResolvedPlace,
@@ -277,6 +497,12 @@ pub(crate) fn lower_place_read_plan<B: PlaceLowerBackend>(
         resolved_offsets(b, place, true);
         return;
     }
+    if place_is_indirect(place) {
+        let leaf = crate::types::aggregate_leaf_types(b.ctx().type_pool, ty)[0];
+        let (ptr, byte_offset) = indirect_place_address(b, place);
+        load_pointee_into(b, dst, ptr, byte_offset, ty, leaf);
+        return;
+    }
     if place.projections.is_empty() {
         match place.base {
             crate::value_plan::PlaceBasePlan::Local(slot) => match float_width {
@@ -294,8 +520,8 @@ pub(crate) fn lower_place_read_plan<B: PlaceLowerBackend>(
                 Some(width) => b.emit_float_load_slot(dst, b.ctx().param_frame_slot(slot), width),
                 None => b.emit_load_slot(dst, b.ctx().param_frame_slot(slot)),
             },
-            crate::value_plan::PlaceBasePlan::Pointer(ptr) => {
-                b.emit_load_ptr_base(dst, ptr, float_width)
+            crate::value_plan::PlaceBasePlan::Pointer(_) => {
+                unreachable!("an indirect place read is decoded compactly above")
             }
         }
         return;
@@ -333,10 +559,16 @@ pub(crate) fn lower_place_write_plan<B: PlaceLowerBackend>(
     place: &ResolvedPlace,
     vals: &[VReg],
     float_width: Option<crate::value_plan::FloatWidth>,
+    value_ty: Type,
     leaf_types: &[Type],
 ) {
     if vals.is_empty() {
         resolved_offsets(b, place, true);
+        return;
+    }
+    if place_is_indirect(place) {
+        let (ptr, byte_offset) = indirect_place_address(b, place);
+        store_pointee(b, vals, ptr, byte_offset, value_ty, leaf_types);
         return;
     }
     if place.projections.is_empty() {
@@ -371,14 +603,8 @@ pub(crate) fn lower_place_write_plan<B: PlaceLowerBackend>(
                 slot,
                 by_ref: false,
             } => agg_slots::store_slots_typed(b, vals, b.ctx().param_frame_slot(slot), leaf_types),
-            crate::value_plan::PlaceBasePlan::Pointer(ptr) => {
-                if vals.len() == 1
-                    && let Some(width) = float_width
-                {
-                    b.emit_float_store_through_ptr(vals[0], ptr, 0, width)
-                } else {
-                    agg_slots::store_slots_through_ptr_typed(b, vals, ptr, 0, leaf_types)
-                }
+            crate::value_plan::PlaceBasePlan::Pointer(_) => {
+                unreachable!("an indirect place write is encoded compactly above")
             }
         }
         return;
@@ -462,7 +688,8 @@ fn lower_place_addr_plan_with_bounds<B: PlaceLowerBackend + ?Sized>(
         }
         crate::value_plan::PlaceBasePlan::Pointer(ptr) => {
             b.emit_reg_move(dst, ptr);
-            let byte_offset = slot_byte_offset(offsets.static_slot_offset as usize);
+            // Compact displacements, not slot ones: see `place_is_indirect`.
+            let byte_offset = offsets.static_byte_offset;
             if byte_offset != 0 {
                 b.emit_addr_add_imm(dst, byte_offset);
             }
@@ -500,7 +727,12 @@ struct ResolvedIndexLevel {
 }
 
 struct ResolvedProjectionOffsets {
+    /// Offset of the projected sub-object in the slot-shaped internal
+    /// decomposition, for a place rooted in the frame.
     static_slot_offset: u32,
+    /// Byte offset of the same sub-object in the compact physical image, for a
+    /// place rooted at a raw pointer (see [`place_is_indirect`]).
+    static_byte_offset: i32,
     index_levels: Vec<ResolvedIndexLevel>,
 }
 
@@ -1524,6 +1756,102 @@ mod tests {
                 }
             )),
             "a zero-sized place must not form a frame address"
+        );
+    }
+
+    /// An indirect place names a compact image, so both its projection
+    /// displacement and its leaf access must be the physical ones (RUE-2168).
+    /// Before this, a projected field was read at its slot offset and a
+    /// sub-word leaf as a whole eight-byte word, so `ArrayBuf(u8).get_ref(0)`
+    /// compared three elements at once.
+    #[test]
+    fn indirect_place_reads_use_compact_offsets_and_widths_on_both_backends() {
+        // The CFG models the body a `borrow` accessor splice leaves behind:
+        //
+        //     fn read(p: ptr mut Narrow) -> i16 { @place(p).b }
+        //
+        // `struct Narrow { a: i32, b: i16 }` lays out compactly as `a` at byte
+        // 0 and `b` at byte 4; its slot decomposition puts `b` at slot 1, byte
+        // 8. Only the compact offset reaches the field.
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let narrow_id = register_struct(
+            &pool,
+            &interner,
+            "Narrow",
+            &[("a", Type::I32), ("b", Type::I16)],
+        );
+        let narrow_ty = Type::new_struct(narrow_id);
+        let ptr_ty = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(narrow_ty));
+        let pool = pool.freeze();
+
+        let mut cfg = Cfg::new(Type::I16, 0, 1, "read".to_string(), vec![false]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let pointer = value(&mut cfg, entry, CfgInstData::Param { index: 0 }, ptr_ty);
+        let read = cfg
+            .append_place_read(
+                entry,
+                PlaceBase::Indirect(pointer),
+                narrow_ty,
+                [Projection::Field {
+                    struct_id: narrow_id,
+                    field_index: 1,
+                }],
+                Type::I16,
+                span(),
+            )
+            .unwrap();
+        cfg.set_return(entry, Some(read));
+
+        let x86 = X86CfgLower::new_unchecked(&cfg, &pool, &interner)
+            .lower()
+            .expect("x86 indirect place read should lower");
+        let arm = Aarch64CfgLower::new_unchecked(&cfg, &pool, &interner, Target::Aarch64Linux)
+            .lower()
+            .expect("AArch64 indirect place read should lower");
+
+        let x86_narrow: Vec<(i32, u8, bool)> = x86
+            .instructions()
+            .iter()
+            .filter_map(|inst| match inst {
+                X86Inst::NarrowLoadIndexed {
+                    offset,
+                    width,
+                    signed,
+                    ..
+                } => Some((*offset, *width, *signed)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(x86_narrow, vec![(4, 2, true)]);
+        assert!(
+            !x86.instructions()
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::MovRMIndexed { .. })),
+            "a sub-word indirect read must not load a whole word"
+        );
+
+        let arm_narrow: Vec<(i32, u8, bool)> = arm
+            .instructions()
+            .iter()
+            .filter_map(|inst| match inst {
+                Aarch64Inst::NarrowLoadIndexed {
+                    offset,
+                    width,
+                    signed,
+                    ..
+                } => Some((*offset, *width, *signed)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(arm_narrow, vec![(4, 2, true)]);
+        assert!(
+            !arm.instructions().iter().any(|inst| matches!(
+                inst,
+                Aarch64Inst::LdrIndexed { .. } | Aarch64Inst::LdrIndexedOffset { .. }
+            )),
+            "a sub-word indirect read must not load a whole word"
         );
     }
 

@@ -281,6 +281,33 @@ pub fn struct_field_slot_offset(
     type_pool.struct_field_slot_offset(struct_id, field_index)
 }
 
+/// Compact physical byte offset of a struct field (ADR-0052 representation 3).
+///
+/// The counterpart of [`struct_field_slot_offset`] for storage a raw pointer
+/// names rather than a frame slot: memory reached through a pointer is laid out
+/// compactly, so a field there sits at its layout byte offset, not at its slot
+/// offset times the slot width. Both offsets are read from the same layout
+/// authority, so they cannot disagree about a slot-identical type.
+pub(crate) fn struct_field_byte_offset(
+    type_pool: &FrozenTypeInternPool,
+    struct_id: StructId,
+    field_index: u32,
+) -> u64 {
+    let layout = type_pool.layout(Type::new_struct(struct_id));
+    let rue_air::layout::LayoutKind::Struct { field_offsets, .. } = &layout.kind else {
+        unreachable!("a struct type must have a struct layout");
+    };
+    field_offsets[field_index as usize]
+}
+
+/// Compact physical stride of one array element, the distance between adjacent
+/// elements in memory a pointer names. The slot-model counterpart is
+/// [`array_element_slot_count`] times the slot width.
+pub(crate) fn array_element_byte_stride(type_pool: &FrozenTypeInternPool, array_type: Type) -> u64 {
+    let (element, _) = array_type_def_from_type(type_pool, array_type).unwrap_or((array_type, 0));
+    type_pool.layout(element).stride
+}
+
 /// Whether `ty`'s compact physical layout (ADR-0052 `aggregate_layout`) is
 /// byte-for-byte identical to the flattened eight-byte slot layout.
 ///

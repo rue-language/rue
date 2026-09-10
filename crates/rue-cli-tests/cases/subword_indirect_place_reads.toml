@@ -1,0 +1,273 @@
+# A `borrow` accessor's result is an indirect place: the trusted `@place`
+# bridge hands code generation a raw pointer into the container's buffer, and
+# `PlaceRead`/`PlaceWrite` on that base name ordinary program memory.
+#
+# That memory is laid out compactly (ADR-0052 representation 3) — a narrow
+# scalar occupies one, two, or four bytes and a field sits at its layout byte
+# offset — while the frame keeps the slot-shaped internal decomposition, eight
+# bytes per leaf. Shared place lowering applied the frame's model to both, so an
+# indirect read of a sub-word element loaded a whole eight-byte word and a
+# projected field was read at `slot * 8` instead of its compact offset. The
+# visible results were silent wrong answers, not crashes: `ArrayBuf(u8)`
+# holding `[1, 0, 2]` compared `get_ref(0)` against `1` as `0x00020001`, and a
+# `{ i32, u8, bool }` element read its second field out of the following
+# element (RUE-2168).
+#
+# The oracle already modeled the indirect place at the element's own width, so
+# these cases are the gate: `differential_opt` compiles and runs each at
+# `-O0`/`-O1`/`-O2`/`-O3` and requires one answer, and the oracle-diff corpus
+# checks that answer against the reference interpreter.
+
+[section]
+id = "cli.subword_indirect_place_reads"
+name = "Sub-word reads through a borrow accessor's place"
+description = "An indirect place is read and written at its element's compact width and byte offset, not at the frame's slot width (RUE-2168)."
+
+# Neighbouring elements are deliberately non-zero: a whole-word load of
+# element 0 of `[1, 0, 2]` reads 0x00020001, which no correct comparison with
+# `1` can produce.
+[[case]]
+name = "unsigned_narrow_elements_compare_at_their_own_width"
+description = "RUE-2168: `u8` and `u16` elements read through `get_ref` compare as one and two bytes, not as the word their neighbours share."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn main() -> i32 {
+    let mut a = std.arraybuf.ArrayBuf(u8).new();
+    a.push(1); a.push(0); a.push(2);
+    @dbg(a.get_ref(0) == 1);
+    @dbg(a.get_ref(0) != 1);
+    @dbg(a.get_ref(0) < 2);
+    @dbg(a.get_ref(2) == 2);
+    let mut b = std.arraybuf.ArrayBuf(u16).new();
+    b.push(7); b.push(1); b.push(65535);
+    @dbg(b.get_ref(0) == 7);
+    @dbg(b.get_ref(2) == 65535);
+    @dbg(b.get_ref(0) < b.get_ref(2));
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "true\nfalse\ntrue\ntrue\ntrue\ntrue\ntrue\n"
+exit_code = 0
+differential_opt = true
+
+# A signed narrow load must sign-extend into the slot-shaped register image
+# (the invariant on `value_plan::width_extension`), or a negative element
+# compares as a large positive one.
+[[case]]
+name = "signed_narrow_elements_sign_extend"
+description = "RUE-2168: negative `i8` and `i16` elements read through `get_ref` sign-extend, so they stay negative."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn main() -> i32 {
+    let mut a = std.arraybuf.ArrayBuf(i8).new();
+    a.push(-5); a.push(-1); a.push(127);
+    @dbg(a.get_ref(0));
+    @dbg(a.get_ref(0) < 0);
+    @dbg(a.get_ref(0) == -5);
+    @dbg(a.get_ref(1));
+    @dbg(a.get_ref(2));
+    let mut b = std.arraybuf.ArrayBuf(i16).new();
+    b.push(-300); b.push(7); b.push(-32768);
+    @dbg(b.get_ref(0));
+    @dbg(b.get_ref(0) < 0);
+    @dbg(b.get_ref(2));
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "-5\ntrue\ntrue\n-1\n127\n-300\ntrue\n-32768\n"
+exit_code = 0
+differential_opt = true
+
+# `i32` occupies four of the eight bytes a slot has, so it read its neighbour
+# too; the whole-word value then overflowed the narrow add rather than
+# producing a wrong sum.
+[[case]]
+name = "i32_elements_read_four_bytes"
+description = "RUE-2168: an `i32` element read through `get_ref` reads four bytes and sign-extends, so a negative element neither trips the overflow check nor absorbs its neighbour."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn main() -> i32 {
+    let mut a = std.arraybuf.ArrayBuf(i32).new();
+    a.push(-70000); a.push(5); a.push(2147483647);
+    @dbg(a.get_ref(0));
+    @dbg(a.get_ref(0) < 0);
+    @dbg(a.get_ref(0) + 1);
+    @dbg(a.get_ref(1) == 5);
+    @dbg(a.get_ref(2));
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "-70000\ntrue\n-69999\ntrue\n2147483647\n"
+exit_code = 0
+differential_opt = true
+
+# Arithmetic is where the wrong width stopped being silent: `1 + 0` on the
+# whole-word image of `[1, 0, 2]` traps the `u8` overflow check.
+[[case]]
+name = "narrow_elements_are_operands_of_checked_arithmetic"
+description = "RUE-2168: a `u8`/`u16` element read through `get_ref` enters an arithmetic operator at its own width, so the result neither overflows nor carries a neighbour."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn main() -> i32 {
+    let mut a = std.arraybuf.ArrayBuf(u8).new();
+    a.push(1); a.push(0); a.push(2);
+    let v: u8 = a.get_ref(0) + 0;
+    @dbg(v);
+    let w: u8 = a.get_ref(0) + a.get_ref(2);
+    @dbg(w);
+    let mut b = std.arraybuf.ArrayBuf(u16).new();
+    b.push(7); b.push(1);
+    let x: u16 = b.get_ref(0) * 2;
+    @dbg(x);
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "1\n3\n14\n"
+exit_code = 0
+differential_opt = true
+
+# `bool` is one byte with a 0/1 validity invariant (ADR-0052 ruling 1); a
+# whole-word load of a `false` element next to a `true` one produced neither.
+[[case]]
+name = "bool_elements_read_one_byte"
+description = "RUE-2168: a `bool` element read through `get_ref` loads one zero-extended byte, preserving its 0/1 validity."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn main() -> i32 {
+    let mut a = std.arraybuf.ArrayBuf(bool).new();
+    a.push(false); a.push(true); a.push(true);
+    @dbg(a.get_ref(0));
+    @dbg(a.get_ref(1));
+    if a.get_ref(0) { @dbg(1); } else { @dbg(2); }
+    @dbg(a.get_ref(1) == a.get_ref(2));
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "false\ntrue\n2\ntrue\n"
+exit_code = 0
+differential_opt = true
+
+# The accessor's `self` is itself a by-reference parameter, so reading an
+# element inside a helper that borrows the whole container puts the indirect
+# place one level further from the frame.
+[[case]]
+name = "a_narrow_element_is_read_through_a_borrowed_container"
+description = "RUE-2168: an accessor read inside a helper that borrows the container reads at the element's own width."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn first(borrow a: std.arraybuf.ArrayBuf(u8)) -> u8 { a.get_ref(0) + 0 }
+fn is_one(borrow a: std.arraybuf.ArrayBuf(u8)) -> bool { a.get_ref(0) == 1 }
+fn head(borrow b: std.arraybuf.ArrayBuf(i16)) -> i16 { b.get_ref(0) + 0 }
+fn main() -> i32 {
+    let mut a = std.arraybuf.ArrayBuf(u8).new();
+    a.push(1); a.push(0); a.push(2);
+    @dbg(first(borrow a));
+    @dbg(is_one(borrow a));
+    let mut b = std.arraybuf.ArrayBuf(i16).new();
+    b.push(-300); b.push(7);
+    @dbg(head(borrow b));
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "1\ntrue\n-300\n"
+exit_code = 0
+differential_opt = true
+
+# `Narrow { a: i32, b: u8, c: bool }` is 6 bytes: `a` at 0, `b` at 4, `c` at 5.
+# Its slot decomposition puts them at bytes 0, 8, and 16, so every projection
+# but the first reached another element.
+[[case]]
+name = "a_struct_element_projects_at_its_compact_field_offsets"
+description = "RUE-2168: a field projected off an accessor's place is read at its compact byte offset, not at its slot offset."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+@copy
+struct Narrow { a: i32, b: u8, c: bool }
+fn main() -> i32 {
+    let mut xs = std.arraybuf.ArrayBuf(Narrow).new();
+    xs.push(Narrow { a: -5, b: 200, c: true });
+    xs.push(Narrow { a: 7, b: 9, c: false });
+    @dbg(xs.get_ref(0).a);
+    @dbg(xs.get_ref(0).b);
+    @dbg(xs.get_ref(0).c);
+    @dbg(xs.get_ref(1).a);
+    @dbg(xs.get_ref(1).b);
+    @dbg(xs.get_ref(1).c);
+    @dbg(xs.get_ref(0).b == 200);
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "-5\n200\ntrue\n7\n9\nfalse\ntrue\n"
+exit_code = 0
+differential_opt = true
+
+# A whole aggregate read out of an accessor's place decodes the same compact
+# image `@ptr_read` of that element decodes, including a nested one.
+[[case]]
+name = "a_whole_element_decodes_its_compact_image"
+description = "RUE-2168: a multi-slot value read through an accessor's place decodes the compact image its container stores."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+@copy
+struct Inner { x: i32, y: u8 }
+@copy
+struct Outer { inner: Inner, tail: u8 }
+fn main() -> i32 {
+    let mut xs = std.arraybuf.ArrayBuf(Outer).new();
+    xs.push(Outer { inner: Inner { x: -5, y: 3 }, tail: 200 });
+    xs.push(Outer { inner: Inner { x: 7, y: 4 }, tail: 9 });
+    let first: Inner = xs.get_ref(0).inner;
+    @dbg(first.x);
+    @dbg(first.y);
+    @dbg(xs.get_ref(1).inner.x);
+    @dbg(xs.get_ref(1).inner.y);
+    @dbg(xs.get_ref(0).tail);
+    @dbg(xs.get_ref(1).tail);
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "-5\n3\n7\n4\n200\n9\n"
+exit_code = 0
+differential_opt = true
+
+# A payload enum's compact image narrows its tag and packs its payload, so an
+# element matched straight out of the accessor exercises the tag-dispatched
+# decode rather than the slot-shaped one.
+[[case]]
+name = "an_enum_element_decodes_its_narrow_tag_and_payload"
+description = "RUE-2168: an enum element read through an accessor's place decodes its compact tag and payload."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+enum Step { Stop, Go(i64), Small(u8) }
+fn main() -> i32 {
+    let mut xs = std.arraybuf.ArrayBuf(Step).new();
+    xs.push(Step.Small(200));
+    xs.push(Step.Go(-7));
+    xs.push(Step.Stop);
+    match xs.get_ref(0) { Step.Stop => { @dbg(0); }, Step.Go(v) => { @dbg(v); }, Step.Small(v) => { @dbg(v); } }
+    match xs.get_ref(1) { Step.Stop => { @dbg(0); }, Step.Go(v) => { @dbg(v); }, Step.Small(v) => { @dbg(v); } }
+    match xs.get_ref(2) { Step.Stop => { @dbg(1); }, Step.Go(v) => { @dbg(v); }, Step.Small(v) => { @dbg(v); } }
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "200\n-7\n1\n"
+exit_code = 0
+differential_opt = true
