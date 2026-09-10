@@ -369,6 +369,16 @@ mod tests {
     const NATIVE_STAGE_CONTROL_ENV: &str = "RUE_RUNNING_IMAGE_TEST_STAGE_CONTROL";
     const FIXTURE_VERSION: &str = "running-image-fixture-v1";
     const HELPER_WAIT: Duration = Duration::from_secs(20);
+    /// Inert bytes that `apply_fixture_difference` rewrites inside a copy of
+    /// this test binary to build a second, differently identified image.
+    ///
+    /// Nothing reads the marker at run time, so a rewritten copy still
+    /// executes. Both spellings are fixed-size arrays of one length, which
+    /// makes an edit that would resize the image a compile error.
+    #[cfg(target_os = "macos")]
+    const FIXTURE_MARKER: &[u8; 41] = b"rue-running-image-fixture-marker-original";
+    #[cfg(target_os = "macos")]
+    const FIXTURE_MARKER_REWRITTEN: &[u8; 41] = b"rue-running-image-fixture-marker-replaced";
 
     #[test]
     fn running_image_identity_has_an_explicit_comparison_domain() {
@@ -404,7 +414,7 @@ mod tests {
             remove_signature(&image_b);
             remove_signature(&image_b_probe);
         }
-        append_fixture_difference(&image_b);
+        apply_fixture_difference(&image_b);
         #[cfg(target_os = "macos")]
         {
             sign_adhoc(&image_a, "running-image-fixture");
@@ -523,23 +533,46 @@ mod tests {
         touch(control.join("done"));
     }
 
-    fn append_fixture_difference(path: &Path) {
+    /// Give the image at `path` different content from the image it was
+    /// copied from, without changing its size or its layout.
+    ///
+    /// On macOS the difference has to be content the platform's identity
+    /// covers. `kSecCodeInfoUnique` is the code directory hash, and the code
+    /// directory hashes every page of the file below the signature, so
+    /// rewriting an inert constant in place is enough: the copy keeps the
+    /// size, load commands and `__LINKEDIT` layout the linker produced, and
+    /// the ad-hoc signature applied afterwards covers the rewritten bytes.
+    ///
+    /// The fixture used to add an unused `@loader_path` rpath with
+    /// `install_name_tool`, which was fragile for a reason unrelated to what
+    /// this test protects. `codesign --remove-signature` truncates the image
+    /// at the 16-byte aligned signature offset, so a stripped copy keeps a
+    /// few bytes of `__LINKEDIT` padding whenever the linker's string table
+    /// did not already end on that boundary. `install_name_tool` refuses such
+    /// a file ("link edit information does not fill the __LINKEDIT segment"),
+    /// so any unrelated change anywhere in the compiler that moved the string
+    /// table by eight bytes flipped this test. Rewriting bytes never moves
+    /// anything, so it does not depend on the link-edit layout at all.
+    fn apply_fixture_difference(path: &Path) {
         #[cfg(target_os = "macos")]
         {
-            // Appending bytes after a Mach-O image fails strict codesign
-            // validation. Adding an unused loader path changes the image's
-            // load commands while keeping it executable and re-signable.
-            let output = Command::new("/usr/bin/install_name_tool")
-                .args(["-add_rpath", "@loader_path"])
-                .arg(path)
-                .output()
-                .expect("modify private Mach-O fixture");
+            use std::os::unix::fs::FileExt;
+
+            let image = fs::read(path).expect("read private Mach-O fixture");
+            let offsets = fixture_marker_offsets(&image);
             assert!(
-                output.status.success(),
-                "install_name_tool failed for {}: {}",
-                path.display(),
-                String::from_utf8_lossy(&output.stderr)
+                !offsets.is_empty(),
+                "{} carries no fixture marker to rewrite",
+                path.display()
             );
+            let file = fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .expect("open private Mach-O fixture for rewriting");
+            for offset in offsets {
+                file.write_all_at(FIXTURE_MARKER_REWRITTEN, offset as u64)
+                    .expect("rewrite private Mach-O fixture marker");
+            }
             return;
         }
 
@@ -553,6 +586,34 @@ mod tests {
                 .write_all(b"different-image-content")
                 .expect("append fixture content difference");
         }
+    }
+
+    /// Every offset in `image` holding the marker this test binary carries.
+    ///
+    /// The marker is in the image because this function names it, so a copy
+    /// of the running test binary always has at least one occurrence to
+    /// rewrite. Rewriting all of them keeps the search independent of how
+    /// many copies of the constant the linker emitted.
+    #[cfg(target_os = "macos")]
+    fn fixture_marker_offsets(image: &[u8]) -> Vec<usize> {
+        let mut offsets = Vec::new();
+        let mut index = 0;
+        while index < image.len() {
+            let Some(candidate) = image[index..]
+                .iter()
+                .position(|byte| *byte == FIXTURE_MARKER[0])
+                .map(|found| index + found)
+            else {
+                break;
+            };
+            if image[candidate..].starts_with(FIXTURE_MARKER) {
+                offsets.push(candidate);
+                index = candidate + FIXTURE_MARKER.len();
+            } else {
+                index = candidate + 1;
+            }
+        }
+        offsets
     }
 
     fn spawn_helper(
@@ -957,27 +1018,77 @@ mod tests {
         );
     }
 
+    /// Break the ad-hoc signature of an already signed private fixture.
+    ///
+    /// The rewrite has to land in the load-command page. That page is
+    /// validated while the kernel loads the image, so a fixture corrupted
+    /// there is refused at `exec` instead of surviving until some later page
+    /// happens to be faulted in. Overwriting the inert `LC_UUID` payload does
+    /// that without moving a byte, which is why it does not depend on the
+    /// link-edit layout the way the `install_name_tool` mutation it replaced
+    /// did.
     #[cfg(target_os = "macos")]
-    fn macho_uuid(path: &Path) -> String {
-        let output = Command::new("/usr/bin/otool")
-            .args(["-l"])
-            .arg(path)
-            .output()
-            .expect("inspect private Mach-O UUID");
-        assert!(
-            output.status.success(),
-            "otool failed for {}",
+    fn invalidate_signed_fixture(path: &Path) {
+        use std::os::unix::fs::FileExt;
+
+        const REWRITTEN_UUID: [u8; 16] = [
+            0x21, 0x69, 0x21, 0x69, 0x21, 0x69, 0x21, 0x69, 0x21, 0x69, 0x21, 0x69, 0x21, 0x69,
+            0x21, 0x69,
+        ];
+
+        let image = fs::read(path).expect("read signed private Mach-O fixture");
+        let offset = macho_uuid_payload_offset(&image, path);
+        assert_ne!(
+            &image[offset..offset + REWRITTEN_UUID.len()],
+            REWRITTEN_UUID,
+            "{} already carries the rewritten UUID",
             path.display()
         );
-        let mut saw_uuid_command = false;
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            if line.trim() == "cmd LC_UUID" {
-                saw_uuid_command = true;
-                continue;
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open signed private Mach-O fixture for rewriting");
+        file.write_all_at(&REWRITTEN_UUID, offset as u64)
+            .expect("rewrite signed private Mach-O fixture UUID");
+    }
+
+    #[cfg(target_os = "macos")]
+    fn macho_uuid(path: &Path) -> [u8; 16] {
+        let image = fs::read(path).expect("read private Mach-O fixture");
+        let offset = macho_uuid_payload_offset(&image, path);
+        image[offset..offset + 16]
+            .try_into()
+            .expect("private Mach-O UUID payload")
+    }
+
+    /// File offset of the `LC_UUID` payload in the Mach-O `image` at `path`.
+    #[cfg(target_os = "macos")]
+    fn macho_uuid_payload_offset(image: &[u8], path: &Path) -> usize {
+        const MACH_MAGIC_64: u32 = 0xfeed_facf;
+        const LC_UUID: u32 = 0x1b;
+
+        let word = |offset: usize| {
+            u32::from_le_bytes(
+                image[offset..offset + 4]
+                    .try_into()
+                    .expect("private Mach-O header word"),
+            )
+        };
+        assert_eq!(
+            word(0),
+            MACH_MAGIC_64,
+            "{} is not a little-endian 64-bit Mach-O",
+            path.display()
+        );
+        let commands = word(16);
+        let mut offset = 32;
+        for _ in 0..commands {
+            let size = word(offset + 4) as usize;
+            assert!(size >= 8, "{} has a malformed load command", path.display());
+            if word(offset) == LC_UUID {
+                return offset + 8;
             }
-            if saw_uuid_command && line.trim_start().starts_with("uuid ") {
-                return line.trim_start()[5..].to_owned();
-            }
+            offset += size;
         }
         panic!("{} has no LC_UUID", path.display());
     }
@@ -1002,7 +1113,7 @@ mod tests {
         let invalid = directory.join("compiler-invalid-signed");
         fs::copy(current, &invalid).expect("copy invalid signed fixture");
         sign_adhoc(&invalid, "running-image-fixture");
-        append_fixture_difference(&invalid);
+        invalidate_signed_fixture(&invalid);
         assert_invalid_signature(&invalid);
         let control = tempfile::tempdir().expect("invalid signed fixture control directory");
         match try_spawn_helper(&invalid, control.path(), true, false, false) {
