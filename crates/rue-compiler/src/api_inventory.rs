@@ -1966,7 +1966,7 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 45] = [
     (9_466, 873_764_896_819_683_713),
     (7_490, 12_196_017_486_031_950_345),
     (1_701, 16_025_502_829_918_190_611),
-    (3_763, 1_124_858_669_055_323_594),
+    (3_795, 3_937_414_938_340_436_614),
     (6_997, 6_265_749_180_761_052_443),
     (18_210, 5_072_850_203_005_355_192),
     (4_522, 5_373_278_958_757_567_170),
@@ -1974,15 +1974,15 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 45] = [
     (2_722, 5_872_377_445_300_688_460),
     (8_143, 86_253_652_908_143_842),
     (8_573, 4_124_823_810_140_583_654),
-    (753, 3_150_885_663_910_159_936),
+    (970, 16_733_311_749_340_788_625),
     (2_583, 15_262_418_539_020_264_161),
-    (11653, 15_769_724_788_918_086_723),
-    (108_305, 456_066_266_069_628_992),
+    (11_629, 16_221_983_252_924_349_648),
+    (108_199, 8_302_308_910_582_227_017),
     (3_254, 11_949_940_325_034_004_149),
     (5_552, 14_658_861_127_087_730_967),
     (872, 14_092_162_116_261_787_003),
-    (1_269, 5_659_334_597_769_566_021),
-    (937, 12_382_607_771_958_723_582),
+    (1_290, 1_207_936_899_910_382_674),
+    (836, 3_950_283_209_266_403_086),
     (1_118, 11_609_591_179_459_560_863),
     (654, 537_683_909_027_197_867),
     (853, 11_600_476_735_713_182_533),
@@ -2028,13 +2028,13 @@ const FRONTEND_DATABASE_CONSTRUCTION_IDENTITY: (usize, u64) = (337, 8_000_487_40
 const DATABASE_INHERENT_CONSTRUCTOR_IDENTITY: (usize, u64) = (214, 15_710_556_809_665_731_176);
 const DATABASE_CANONICAL_CONSTRUCTOR_IDENTITY: (usize, u64) = (254, 7_623_037_796_286_753_949);
 const TEST_DEFAULT_DATABASE_ADAPTER_IDENTITY: (usize, u64) = (159, 833_377_014_346_120_505);
-const REGISTRATION_DATABASE_IMPL_IDENTITY: (usize, u64) = (35_841, 394_004_127_612_251_398);
+const REGISTRATION_DATABASE_IMPL_IDENTITY: (usize, u64) = (36_475, 17_026_732_725_499_497_919);
 const SHARED_FAMILY_FORWARDING_IDENTITY: (usize, u64) = (2_609, 9_595_658_320_490_175_466);
-const ORDERED_REGISTRATION_COMPOSER_IDENTITY: (usize, u64) = (34_103, 9_655_978_331_066_028_191);
+const ORDERED_REGISTRATION_COMPOSER_IDENTITY: (usize, u64) = (34_737, 4_603_882_617_820_224_274);
 // Macro imports, definitions, re-exports, and lexical ordering participate in
 // macro resolution. Seal the complete registrations authority and each wrapper
 // aggregate in addition to the executable identities inside them.
-const REGISTRATION_AUTHORITY_MODULE_IDENTITY: (usize, u64) = (45_850, 14_304_398_088_276_605_794);
+const REGISTRATION_AUTHORITY_MODULE_IDENTITY: (usize, u64) = (46_484, 41_521_323_921_666_457);
 const REGISTRATION_WRAPPER_MODULE_IDENTITIES: [(usize, u64); 5] = [
     (842, 17_134_465_730_999_135_202),
     (1_146, 9_973_452_843_887_101_603),
@@ -4937,7 +4937,7 @@ pub(super) use register_parse_import_parse;"#;
         });
     assert_eq!(
         (declarations.len(), fingerprint),
-        (214, 9_985_723_480_452_794_499),
+        (215, 11_071_889_845_285_197_929),
         "crate-visible declaration names, signatures, fields, or phase owners changed"
     );
 
@@ -5278,6 +5278,7 @@ struct:BodyClosureRequest
 fn:execution_for
 fn:was_retained
 fn:accrue_reachability_work
+fn:absent_body_request
 fn:accrue_candidate_body_plan_work
 use:crate
 use:closure_nucleus

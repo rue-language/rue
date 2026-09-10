@@ -7,14 +7,10 @@ macro_rules! register_semantic_layouts {
                 |left: &crate::type_queries::LayoutValue,
                  right: &crate::type_queries::LayoutValue| left == right,
                 move |context, _, key: &crate::type_queries::TypeQueryKey| {
-                    evaluate_layout(
-                        context,
-                        $layout_family_for_evaluator
-                            .get()
-                            .expect("Layout family is installed before requests"),
-                        &$type_shapes_for_layout,
-                        key,
-                    )
+                    let layouts = $layout_family_for_evaluator
+                        .get()
+                        .ok_or(QueryAbort::ForeignRuntime)?;
+                    evaluate_layout(context, &layouts, &$type_shapes_for_layout, key)
                 },
             )
             .expect("the Layout family has one canonical name")

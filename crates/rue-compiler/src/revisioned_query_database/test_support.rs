@@ -932,6 +932,28 @@ pub(super) fn lookup_incarnation(
     .node_incarnation()
 }
 
+/// A family, revision, and key which together outlive `database`.
+///
+/// The key names a function that does not exist, so the request it belongs to
+/// can never be answered from the memo: it must enter the registered evaluator,
+/// which is the path a teardown-released holder has to refuse (RUE-2072).
+pub(crate) fn absent_body_request(
+    database: &mut RevisionedQueryDatabase,
+    snapshot: &SourceSnapshot,
+) -> (
+    QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::BodyTransaction>,
+    Revision,
+    crate::body_query::BodyQueryKey,
+) {
+    let revision = revision_for(database, snapshot);
+    let module = ModuleId::from_logical_path("main.rue").expect("a valid logical module path");
+    let key = crate::body_query::BodyQueryKey::new(
+        free_function_instance(&module, "no_such_function"),
+        semantic_configuration(),
+    );
+    (database.body_transactions.clone(), revision, key)
+}
+
 /// A handle on the query runtime `database` owns.
 ///
 /// Cloning the handle is how a test outlives the database and still asks what

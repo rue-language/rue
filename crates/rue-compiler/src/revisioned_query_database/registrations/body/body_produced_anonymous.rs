@@ -116,9 +116,9 @@ $runtime
                     };
                     let semantic_nucleus = $semantic_nucleus_for_produced_anonymous_evaluator
                         .get()
-                        .expect("SemanticNucleus is installed before requests begin");
+                        .ok_or(QueryAbort::ForeignRuntime)?;
                     let signature = context.query_registered(
-                        semantic_nucleus,
+                        &semantic_nucleus,
                         crate::semantic_query_nucleus::SemanticNucleusKey::Signature(
                             producer.clone(),
                         ),
@@ -157,7 +157,7 @@ $runtime
                         ));
                     };
                     let projected = context.query_registered(
-                        semantic_nucleus,
+                        &semantic_nucleus,
                         crate::semantic_query_nucleus::SemanticNucleusKey::ComptimeCall(call),
                     )?;
                     let projected = match projected.outcome() {

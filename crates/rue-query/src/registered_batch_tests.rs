@@ -215,7 +215,7 @@ fn shutting_down_a_runtime_joins_its_workers_while_its_core_is_retained() {
     // Stand in for the retained query graph: references that outlive the owner.
     let retained_core = runtime.core.clone();
     let retained_graph = (child, root, runtime.clone());
-    runtime.shutdown_workers();
+    runtime.shut_down();
     drop(runtime);
 
     assert_eq!(
@@ -259,7 +259,7 @@ fn a_batch_dispatched_after_shutdown_aborts_without_panicking() {
         })
         .unwrap();
 
-    runtime.shutdown_workers();
+    runtime.shut_down();
     let abort = runtime
         .request_registered(&root, revision(1), Key("root"), CancellationToken::new())
         .into_result()
