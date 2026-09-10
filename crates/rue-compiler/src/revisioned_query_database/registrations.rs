@@ -460,9 +460,8 @@ impl RevisionedQueryDatabase {
             runtime
         );
         let index_for_import_lookup = module_indexes.clone();
-        let resolve_import_for_lookup = Arc::new(std::sync::OnceLock::<
-            QueryFamily<ResolveImportKey, ResolveImportValue>,
-        >::new());
+        let resolve_import_for_lookup =
+            runtime.late_bound::<QueryFamily<ResolveImportKey, ResolveImportValue>>();
         let resolve_import_for_lookup_evaluator = resolve_import_for_lookup.clone();
         #[cfg(test)]
         let lookup_import_eval_probe = lookup_import_eval_log.clone();
@@ -545,6 +544,13 @@ impl RevisionedQueryDatabase {
             Arc::new(Mutex::new(PublishedDeclarationSemanticsRoot::default()));
         let body_closure_root = Arc::new(Mutex::new(PublishedBodyClosureRoot::default()));
         let body_reachability_root = Arc::new(Mutex::new(PublishedBodyReachabilityRoot::default()));
+        // Each publication root is shared between this database and the
+        // evaluators that publish into it, and holds terminal pins which each
+        // own a family handle. That is the same cycle shape as a back-patched
+        // holder, so the runtime empties them at the same moment (RUE-2072).
+        runtime.release_at_teardown(&declaration_semantics_root);
+        runtime.release_at_teardown(&body_closure_root);
+        runtime.release_at_teardown(&body_reachability_root);
         let warning_body_references = register_body_warning_body_references!(
             call_heads_for_warning_references,
             classifications_for_warning_references,
@@ -570,8 +576,7 @@ impl RevisionedQueryDatabase {
             warning_body_references_for_batch
         );
         let shared_durable_payloads = Arc::new(SharedDurablePayloadCache::default());
-        let body_transaction_evaluator =
-            Arc::new(std::sync::OnceLock::<BodyTransactionEvaluator>::new());
+        let body_transaction_evaluator = runtime.late_bound::<BodyTransactionEvaluator>();
         let body_transaction_evaluator_for_family = body_transaction_evaluator.clone();
         let body_transactions =
             register_body_body_transactions!(body_transaction_evaluator_for_family, runtime);
@@ -579,8 +584,7 @@ impl RevisionedQueryDatabase {
         let body_toolchain_demands =
             register_body_body_toolchain_demands!(artifacts_for_toolchain_demands, runtime);
         let transactions_for_produced_anonymous = body_transactions.clone();
-        let semantic_nucleus_for_produced_anonymous =
-            Arc::new(std::sync::OnceLock::<SemanticNucleusFamily>::new());
+        let semantic_nucleus_for_produced_anonymous = runtime.late_bound::<SemanticNucleusFamily>();
         let semantic_nucleus_for_produced_anonymous_evaluator =
             semantic_nucleus_for_produced_anonymous.clone();
         let body_produced_anonymous = register_body_body_produced_anonymous!(
@@ -590,9 +594,10 @@ impl RevisionedQueryDatabase {
             transactions_for_produced_anonymous
         );
         let produced_anonymous_for_semantic_nucleus = body_produced_anonymous.clone();
-        let type_facts_family = Arc::new(std::sync::OnceLock::<
-            QueryFamily<crate::type_queries::TypeQueryKey, crate::type_queries::TypeFactsValue>,
-        >::new());
+        let type_facts_family = runtime.late_bound::<QueryFamily<
+            crate::type_queries::TypeQueryKey,
+            crate::type_queries::TypeFactsValue,
+        >>();
         let type_facts_for_semantic_nucleus = type_facts_family.clone();
         let semantic_nucleus = register_semantic_semantic_nucleus!(
             artifacts_for_semantic_nucleus,
@@ -662,9 +667,10 @@ impl RevisionedQueryDatabase {
             type_facts_family.set(type_facts.clone()).is_ok(),
             "TypeFacts family is installed once"
         );
-        let layout_family = Arc::new(std::sync::OnceLock::<
-            QueryFamily<crate::type_queries::TypeQueryKey, crate::type_queries::LayoutValue>,
-        >::new());
+        let layout_family = runtime.late_bound::<QueryFamily<
+            crate::type_queries::TypeQueryKey,
+            crate::type_queries::LayoutValue,
+        >>();
         let layout_family_for_evaluator = layout_family.clone();
         let type_shapes_for_layout = type_shapes.clone();
         let layouts = register_semantic_layouts!(
@@ -705,6 +711,9 @@ impl RevisionedQueryDatabase {
         let backend_root = Arc::new(Mutex::new(PublishedBackendRoot::default()));
         let cfg_collection_root = Arc::new(Mutex::new(PublishedCollectionRoot::default()));
         let codegen_collection_root = Arc::new(Mutex::new(PublishedCollectionRoot::default()));
+        runtime.release_at_teardown(&backend_root);
+        runtime.release_at_teardown(&cfg_collection_root);
+        runtime.release_at_teardown(&codegen_collection_root);
         let cfgs_for_raw_batch = cfgs.clone();
         let backend_root_for_raw_cfg_batch = backend_root.clone();
         let body_closure_root_for_raw_cfg_batch = body_closure_root.clone();
@@ -790,6 +799,7 @@ impl RevisionedQueryDatabase {
         );
         let provider_observation_meter = Arc::new(ProviderObservationCounters::default());
         let lookup_root_lease = Arc::new(Mutex::new(PublishedRootLookupLease::default()));
+        runtime.release_at_teardown(&lookup_root_lease);
         let object_projections_for_backend_publication = object_projections.clone();
         let codegen_units_for_backend_publication = codegen_units.clone();
         let backend_root_for_publication = backend_root.clone();

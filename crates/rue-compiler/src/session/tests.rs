@@ -6797,6 +6797,88 @@ fn dropped_compiler_sessions_end_their_query_worker_threads() {
     );
 }
 
+/// RUE-2072: dropping a `CompilerSession` frees the query graph it built, not
+/// merely the worker threads.
+///
+/// Every memo node holds a strong reference to the runtime core, so the core's
+/// reference count is a census of the retained graph: a compiled program left
+/// it in the thousands while the session that produced it was gone. What kept
+/// it alive were the reference cycles named at `RevisionedQueryDatabase`'s
+/// destructor, and the probe for them is a handle that cannot itself keep the
+/// core alive — after the drop there must be nothing left to upgrade to.
+#[test]
+fn dropping_a_compiler_session_frees_its_query_runtime() {
+    let source = parallel_batch_fixture();
+    let snapshot =
+        SourceSnapshot::single("<test>", &source).expect("the fixture is a valid snapshot");
+    let mut session = CompilerSession::with_query_concurrency(2);
+    let published = crate::test_support::publish_test_snapshot(&mut session, &snapshot)
+        .expect("the fixture publishes");
+    crate::queries::compile_with_session(&mut session, &published, &CompileOptions::default())
+        .expect("the fixture compiles");
+
+    let runtime =
+        crate::revisioned_query_database::test_support::query_runtime(&session.queries.revisioned);
+    let weak = runtime.downgrade();
+    let retained_terminals = runtime.metrics().retained_terminals;
+    // One reference is the handle above; the rest are the compiled program's.
+    let held_by_the_graph = weak.strong_count() - 1;
+    drop(runtime);
+    assert!(
+        retained_terminals > 0 && held_by_the_graph > 100,
+        "the fixture must leave a real memo graph behind, or freeing it proves \
+         nothing: {retained_terminals} retained terminals, {held_by_the_graph} \
+         references to the core"
+    );
+
+    drop(session);
+
+    assert_eq!(
+        weak.strong_count(),
+        0,
+        "{held_by_the_graph} references to the runtime core survived the session \
+         that created every one of them"
+    );
+    assert!(
+        weak.upgrade().is_none(),
+        "a freed core must not be reachable from a weak handle"
+    );
+}
+
+/// RUE-2072: a family handle can outlive the database that registered it, and a
+/// request on one must be refused rather than served from a released evaluator.
+///
+/// Teardown empties the back-patched holders the registered evaluators read.
+/// A caller still holding a family and the runtime therefore reaches an
+/// evaluator whose dependencies are gone, which is a defect in that caller —
+/// but it must arrive as a typed abort, never as a panic or as work done
+/// against a half-released graph.
+#[test]
+fn a_request_on_a_query_graph_outliving_its_session_is_refused() {
+    let source = parallel_batch_fixture();
+    let snapshot =
+        SourceSnapshot::single("<test>", &source).expect("the fixture is a valid snapshot");
+    let mut session = CompilerSession::with_query_concurrency(2);
+    let published = crate::test_support::publish_test_snapshot(&mut session, &snapshot)
+        .expect("the fixture publishes");
+    crate::queries::compile_with_session(&mut session, &published, &CompileOptions::default())
+        .expect("the fixture compiles");
+    let (family, revision, key) =
+        crate::revisioned_query_database::test_support::absent_body_request(
+            &mut session.queries.revisioned,
+            &published,
+        );
+    let runtime =
+        crate::revisioned_query_database::test_support::query_runtime(&session.queries.revisioned);
+    drop(session);
+
+    let abort = runtime
+        .request_registered(&family, revision, key, rue_query::CancellationToken::new())
+        .into_result()
+        .expect_err("a torn-down graph must refuse the request rather than serve it");
+    assert_eq!(abort, rue_query::QueryAbort::ForeignRuntime);
+}
+
 /// Repointing a callable `const` alias must re-analyze every site that named
 /// it (RUE-2161). A signature or body that reaches its callee through the
 /// alias records the constant alongside the target, so the warm session's

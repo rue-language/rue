@@ -480,6 +480,9 @@ $runtime
                                 &query.gate.ty,
                                 &query.producer.configuration,
                             )?;
+                            let type_facts = $type_facts_for_semantic_nucleus
+                                .get()
+                                .ok_or(QueryAbort::ForeignRuntime)?;
                             let result = match query.gate.kind {
                                 crate::semantic_query_nucleus::DeferredOwnershipGateKind::RequireDroppable => provider
                                     .type_carries_linear(&query.gate.ty)
@@ -489,12 +492,7 @@ $runtime
                                         }
                                     })),
                                 crate::semantic_query_nucleus::DeferredOwnershipGateKind::RequireTriviallyDroppable => provider
-                                    .type_has_drop_glue(
-                                        $type_facts_for_semantic_nucleus
-                                            .get()
-                                            .expect("TypeFacts family is installed before requests"),
-                                        &query.gate.ty,
-                                    )
+                                    .type_has_drop_glue(&type_facts, &query.gate.ty)
                                     .map(|rejected| rejected.then(|| {
                                         rue_error::ErrorKind::ContainerElementNotTriviallyDroppable {
                                             ty: gate_type_name.clone(),

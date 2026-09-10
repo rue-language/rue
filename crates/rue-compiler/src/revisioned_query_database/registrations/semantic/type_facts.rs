@@ -7,11 +7,12 @@ macro_rules! register_semantic_type_facts {
                 |left: &crate::type_queries::TypeFactsValue,
                  right: &crate::type_queries::TypeFactsValue| left == right,
                 move |context, _, key: &crate::type_queries::TypeQueryKey| {
+                    let type_facts = $type_facts_family_for_evaluator
+                        .get()
+                        .ok_or(QueryAbort::ForeignRuntime)?;
                     evaluate_type_facts(
                         context,
-                        $type_facts_family_for_evaluator
-                            .get()
-                            .expect("TypeFacts family is installed before requests"),
+                        &type_facts,
                         &$type_shapes_for_type_facts,
                         &$semantic_nucleus_for_type_facts,
                         &$lookup_names_for_type_facts,

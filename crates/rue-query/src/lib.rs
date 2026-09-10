@@ -14,6 +14,7 @@ mod outcome;
 mod retention;
 mod revision;
 mod task;
+mod teardown;
 mod validation;
 
 pub use context::*;
@@ -28,6 +29,7 @@ pub use outcome::*;
 pub use retention::*;
 pub use revision::*;
 pub use task::*;
+pub use teardown::*;
 pub use validation::*;
 
 #[cfg(test)]

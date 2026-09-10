@@ -33,6 +33,13 @@ pub(crate) struct RuntimeCore {
     pub(crate) revisions: RwLock<RevisionStore>,
     pub(crate) nodes: RwLock<NodeRegistry>,
     retention_families: Mutex<BTreeMap<u64, Weak<dyn RetentionFamily>>>,
+    /// Values this runtime's owner asked it to empty at teardown: the
+    /// back-patched holders that close the registered evaluator graph's
+    /// backward edges, plus the caller-owned publication roots which retain
+    /// terminal pins. Each is one reference cycle through a family handle, so
+    /// releasing them is what makes dropping the owner free the core
+    /// (RUE-2072).
+    teardown: TeardownRegistry,
     retention_budgets: RetentionBudgets,
     /// Aggregate thresholds are consulted only after a family-local probe, not
     /// by every publication.
@@ -474,6 +481,7 @@ impl QueryRuntime {
                 }),
                 nodes: RwLock::new(NodeRegistry::default()),
                 retention_families: Mutex::new(BTreeMap::new()),
+                teardown: TeardownRegistry::default(),
                 retention_budgets,
                 next_retained_byte_sweep: AtomicU64::new(
                     retention_budgets.retained_bytes.saturating_add(1),
@@ -498,29 +506,72 @@ impl QueryRuntime {
         }
     }
 
-    /// Ends this runtime's physical worker threads.
+    /// Releases everything this runtime's owner gave it: its physical worker
+    /// threads, and the values registered through
+    /// [`late_bound`](Self::late_bound) and
+    /// [`release_at_teardown`](Self::release_at_teardown).
     ///
-    /// Thread creation is the one host resource a query runtime holds, and its
-    /// owner must be able to release it at a point it chooses, because dropping
-    /// the last reference to the core is not a moment that reliably arrives: an
+    /// Both resources need an owner to name the moment, because dropping the
+    /// last reference to the core is not a moment that reliably arrives: an
     /// evaluator graph is free to hold `QueryFamily` and `QueryRuntime` handles
-    /// in cycles. The full account is at the destructor of `rue-compiler`'s
-    /// `RevisionedQueryDatabase` (RUE-2043).
+    /// in cycles, and worker threads cannot wait for a reference count that
+    /// never reaches zero (RUE-2043). Releasing the registered values breaks
+    /// those cycles, so the memo tables and the core are freed with the owner
+    /// rather than surviving it (RUE-2072). The full account is at the
+    /// destructor of `rue-compiler`'s `RevisionedQueryDatabase`.
     ///
     /// Call this from the owner that can prove no request is in flight; for the
     /// compiler that is the destructor of the database holding the runtime. The
-    /// runtime stays a valid value afterwards but owns no workers, and a
-    /// registered batch dispatched onto it is refused with a
-    /// [`WorkerSpawnFailure`](crate::WorkerSpawnFailure) rather than served:
-    /// this is teardown by an owner that is finished, not a way to pause.
-    pub fn shutdown_workers(&self) {
+    /// runtime stays a valid value afterwards but owns no workers and no
+    /// released value: a registered batch dispatched onto it is refused with a
+    /// [`WorkerSpawnFailure`](crate::WorkerSpawnFailure), and a family whose
+    /// evaluator reads a released holder aborts its request, rather than either
+    /// being served. This is teardown by an owner that is finished, not a way
+    /// to pause. Calling it twice releases nothing the second time.
+    pub fn shut_down(&self) {
         self.core.batch_executor.shutdown();
+        self.core.teardown.release();
+    }
+
+    /// Mints a holder for a value a registered evaluator reads but which is
+    /// installed only after that evaluator exists, and registers it for release
+    /// at [`shut_down`](Self::shut_down).
+    pub fn late_bound<T: Send + Sync + 'static>(&self) -> Arc<LateBound<T>> {
+        let holder = Arc::new(LateBound::new());
+        self.core.teardown.register(crate::teardown::erase(&holder));
+        holder
+    }
+
+    /// Registers a caller-owned value for release at
+    /// [`shut_down`](Self::shut_down).
+    ///
+    /// Use it for state shared between the runtime's owner and its registered
+    /// evaluators which retains query terminals — a publication root holding a
+    /// pin set, say. The registry holds `value` weakly and never keeps it
+    /// alive.
+    pub fn release_at_teardown<T: ReleaseOnTeardown + 'static>(&self, value: &Arc<T>) {
+        self.core.teardown.register(crate::teardown::erase(value));
+    }
+
+    /// Values still registered for release at teardown.
+    ///
+    /// Zero after [`shut_down`](Self::shut_down): the registry is consumed
+    /// rather than replayed, which is what makes a second teardown a no-op.
+    pub fn registered_teardown_values(&self) -> usize {
+        self.core.teardown.registered()
+    }
+
+    /// A non-owning handle on this runtime.
+    pub fn downgrade(&self) -> WeakQueryRuntime {
+        WeakQueryRuntime {
+            core: Arc::downgrade(&self.core),
+        }
     }
 
     /// Physical worker threads this runtime owns right now.
     ///
     /// Zero before the first registered batch dispatches one, and zero again
-    /// after [`shutdown_workers`](Self::shutdown_workers) joins them. Paired
+    /// after [`shut_down`](Self::shut_down) joins them. Paired
     /// with [`RuntimeMetrics::batch_worker_thread_births`](crate::RuntimeMetrics)
     /// it is the per-runtime statement of the ownership invariant: the threads
     /// a runtime created are gone, not merely unreferenced.

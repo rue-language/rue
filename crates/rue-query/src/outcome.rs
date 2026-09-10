@@ -323,7 +323,11 @@ pub enum QueryAbort {
     Canceled,
     /// Exact nodes participating in a true dependency cycle.
     Cycle(Arc<[NodeIdentity]>),
-    /// The family belongs to a different runtime.
+    /// The family cannot be served by a live runtime: it belongs to a
+    /// different one, or the runtime's owner has torn it down and released the
+    /// values its registered evaluators read (RUE-2072). Both are defects in
+    /// the caller, reported rather than panicked so a driver publishes them as
+    /// an internal error instead of taking the process down.
     ForeignRuntime,
     /// The requested immutable revision has not been published or was retired.
     UnpublishedRevision(Revision),

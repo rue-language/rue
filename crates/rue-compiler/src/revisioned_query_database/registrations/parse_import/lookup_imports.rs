@@ -34,10 +34,11 @@ macro_rules! register_parse_import_lookup_imports {
                     };
                     if let LookupImportValue(Ok(binding)) = &mut value {
                         let directive = directive.ok_or(QueryAbort::Canceled)?;
+                        let resolve_imports = $resolve_import_for_lookup_evaluator
+                            .get()
+                            .ok_or(QueryAbort::ForeignRuntime)?;
                         let resolved = context.query_registered(
-                            $resolve_import_for_lookup_evaluator
-                                .get()
-                                .expect("ResolveImport is installed before requests begin"),
+                            &resolve_imports,
                             ResolveImportKey {
                                 occurrence: crate::ImportOccurrenceKey::from_directive(directive),
                                 mode: ImportDemandMode::Rooted,

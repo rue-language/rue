@@ -193,6 +193,17 @@ computed. `CompilerSessionWork::retention` reports the current
 session-owned diagnostic entries, distinct source attempts and bytes, unique
 dependency manifests, and invalidation plans.
 
+Dropping a session ends its query graph rather than orphaning it. The
+registered family graph contains reference cycles — back-patched values that
+close its backward edges, and publication roots holding terminal pins — so the
+last reference to the query runtime's core is not a moment that arrives on its
+own. The database that owns the runtime is reachable only through `&mut self`,
+so its destructor is the one point where no request can be in flight: it tears
+the runtime down, which ends the worker threads and releases every registered
+value. A process that compiles one program per session therefore does not
+accumulate the memo nodes, artifacts, and interned types of every program it
+has ever compiled.
+
 Syntax output uses an explicit `ParsedAstPresentation` adapter. It walks the
 `SourceSnapshot` in caller-selected order so diagnostics and `--emit ast`
 retain presentation order without constructing a second parsed or merged

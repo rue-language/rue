@@ -6,10 +6,13 @@ macro_rules! register_body_body_transactions {
                 BODY_QUERY_MEMO_RETENTION,
                 crate::body_query::transaction_equal,
                 move |context, _, key: &crate::body_query::BodyQueryKey| {
-                    $body_transaction_evaluator_for_family
+                    // `None` before installation is a registration defect and
+                    // after teardown is a request against a database that is
+                    // gone; neither may proceed on a released evaluator.
+                    let evaluator = $body_transaction_evaluator_for_family
                         .get()
-                        .expect("BodyTransaction evaluator is installed before requests begin")
-                        .evaluate(context, key)
+                        .ok_or(QueryAbort::ForeignRuntime)?;
+                    evaluator.evaluate(context, key)
                 },
             )
             .expect("the BodyTransaction family has one canonical name")
