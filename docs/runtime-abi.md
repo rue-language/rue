@@ -333,9 +333,11 @@ lowering plus, on the failing branch, the two rendering calls and this pair.
 condition whose only arm is `__rue_test_failure_site` and
 `__rue_test_fail_assert`; the message is materialized before the branch, so it
 is still evaluated when the condition holds. The lowering does not depend on
-whether the request is a test one: an ordinary process simply has no descriptor
-3, so the frame write fails with `EBADF` as designed and the pinned stderr
-message plus exit 101 is the whole report.
+whether the request is a test one; the *runtime* makes that distinction
+instead. `__rue_test_normalize_process` arms the channel, and only the
+synthesized dispatcher's prologue calls it, so in an ordinary process no frame
+is written at all and the pinned stderr message plus exit 101 is the whole
+report (RUE-2066).
 
 `@panic(msg)` and `@panic()` compile to `__rue_test_failure_site` followed by
 the panic helper, under the same adjacency rule and the same build-independent
@@ -373,7 +375,13 @@ record has to stay JSON text (RUE-2064).
 contract.
 
 The completion and failure records go to a dedicated inherited descriptor,
-number 3, one JSON object per line. Writes are best-effort: a test image run by
+number 3, one JSON object per line, **and only from a test image**. The channel
+is armed by `__rue_test_normalize_process`, which the synthesized dispatcher's
+prologue calls before the selected test body runs and nothing else calls, so
+reaching it is the runtime's proof that descriptor 3 is the runner's. An
+ordinary executable never arms it and writes nothing there, whatever its own
+descriptor 3 happens to be — `prog 3>file`, or a program that opened a third
+file of its own (RUE-2066). Within an armed image writes are still best-effort: an image run by
 hand has no such descriptor, so `EBADF` is expected rather than exceptional.
 The channel is not a security boundary — it prevents accidental collision with
 a test's own stdout, which is all its consumers are promised.

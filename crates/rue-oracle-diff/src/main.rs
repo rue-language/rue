@@ -134,6 +134,7 @@ enum IneligibleReason {
     CompilerEnvironment,
     RuntimeArguments,
     RuntimeEnvironment,
+    InheritedDescriptor,
     NamedExecutionContract,
     ExternalSourcePath,
     NoInlineSource,
@@ -164,6 +165,7 @@ impl fmt::Display for IneligibleReason {
             Self::CompilerEnvironment => f.write_str("compiler environment"),
             Self::RuntimeArguments => f.write_str("runtime command-line arguments"),
             Self::RuntimeEnvironment => f.write_str("runtime environment"),
+            Self::InheritedDescriptor => f.write_str("inherited descriptor capture"),
             Self::NamedExecutionContract => f.write_str("named execution contract"),
             Self::ExternalSourcePath => f.write_str("external source path"),
             Self::NoInlineSource => f.write_str("no inline source"),
@@ -1447,7 +1449,17 @@ fn unsupported_corpus_field(case: &Case) -> Option<IneligibleReason> {
         execute_if_native,
         requires_system_linker,
         driver_exit_code,
+        capture_fd3,
+        fd3_empty,
     } = case;
+
+    // Descriptor 3's contents are a property of the *process* the CLI suite
+    // spawns (RUE-2066). The oracle evaluates source in this process and
+    // inherits no such descriptor, so it can neither attach the capture nor
+    // judge what reached it.
+    if *capture_fd3 || *fd3_empty {
+        return Some(IneligibleReason::InheritedDescriptor);
+    }
 
     // `driver_exit_code` declares a driver subcommand that never produces a
     // program: there is no execution for the oracle to agree with.

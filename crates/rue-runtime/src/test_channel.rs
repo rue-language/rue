@@ -7,14 +7,21 @@
 //! security boundary — it exists so an accidental collision with a test's own
 //! stdout or stderr cannot forge or truncate a verdict.
 //!
-//! Two properties are load-bearing:
+//! Three properties are load-bearing:
 //!
-//! - **Writes are best-effort.** A test run by hand has no descriptor 3, so
-//!   `EBADF` is expected rather than exceptional; a runner that closed its read
-//!   end yields `EPIPE`. Both are discarded. (`SIGPIPE` keeps its default
-//!   disposition here exactly as it does for stdout, spec §8.5, so a closed
-//!   reader terminates the process before `write` returns at all. The runner
-//!   holds its read end open until the child exits precisely for this reason.)
+//! - **Only a test image writes.** The assertion family lowers identically
+//!   everywhere (§5.1), so the runtime, not the compiler, decides whether a
+//!   frame is written: the dispatcher's prologue arms the channel, and nothing
+//!   else does. An ordinary executable's descriptor 3 belongs to whoever opened
+//!   it — `prog 3>file`, or a program with a third file of its own — and it
+//!   receives nothing (RUE-2066).
+//! - **Writes are best-effort.** An armed image run by hand has no descriptor
+//!   3, so `EBADF` is expected rather than exceptional; a runner that closed
+//!   its read end yields `EPIPE`. Both are discarded. (`SIGPIPE` keeps its
+//!   default disposition here exactly as it does for stdout, spec §8.5, so a
+//!   closed reader terminates the process before `write` returns at all. The
+//!   runner holds its read end open until the child exits precisely for this
+//!   reason.)
 //! - **No allocation, and no staging buffer.** A record is emitted as runs
 //!   borrowed straight from the caller's own bytes, so no part of it is ever
 //!   assembled in memory first. The only fixed-size buffer is the six bytes one
@@ -33,12 +40,42 @@
 //! `sub_result` identities — are named by the schema and produced by nothing in
 //! this version.
 
-use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 
 use crate::platform;
 
 /// Inherited failure-channel descriptor, pinned by the §3 exec contract.
 pub const CHANNEL_FD: u64 = 3;
+
+/// Whether this process is a test image, and so owns descriptor 3.
+///
+/// Only a test image's dispatcher prologue calls
+/// [`crate::process::__rue_test_normalize_process`], which is the one place
+/// that sets this. An ordinary executable never does, so it never writes a
+/// frame — descriptor 3 there belongs to whoever opened it (`prog 3>file`, or
+/// a program with a third file of its own), and the assertion family must not
+/// scribble JSON into someone else's descriptor (RUE-2066).
+///
+/// `Relaxed` is sufficient: the prologue runs before any user code on the same
+/// thread, so no other ordering could observe the store out of turn.
+static CHANNEL_ARMED: AtomicBool = AtomicBool::new(false);
+
+/// Arm the failure channel: this process is a test image dispatched by the
+/// runner, so descriptor 3 is the channel's write end.
+///
+/// Called from the dispatcher prologue's process normalization and nowhere
+/// else, which is exactly what makes "armed" mean "is a test image".
+pub(crate) fn arm_channel() {
+    CHANNEL_ARMED.store(true, Ordering::Relaxed);
+}
+
+/// Whether [`arm_channel`] has run. Exists so `process.rs` can assert that
+/// normalizing the process is what arms the channel, under the serialization
+/// its own process-global test already keeps.
+#[cfg(test)]
+pub(crate) fn channel_is_armed() -> bool {
+    CHANNEL_ARMED.load(Ordering::Relaxed)
+}
 
 /// The failing source location staged by the most recent
 /// [`__rue_test_failure_site`] call.
@@ -531,12 +568,34 @@ pub(crate) fn report_bounds_check() {
     report_trap(&TRAP_BOUNDS_CHECK_KIND, &BOUNDS_CHECK_MESSAGE, &[]);
 }
 
-/// Best-effort write of already-framed bytes to the inherited channel.
+/// Best-effort write of already-framed bytes to the inherited channel, in a
+/// test image only.
 fn emit_to_channel(bytes: &[u8]) {
-    // Discarded deliberately: `EBADF` when the program was run by hand without
-    // a channel, `EPIPE` when the runner is gone. Neither is recoverable and
-    // neither should disturb the test's own result.
-    let _ = platform::write_all(CHANNEL_FD, bytes);
+    write_when_armed(CHANNEL_ARMED.load(Ordering::Relaxed), bytes, &mut |frame| {
+        // Discarded deliberately: `EBADF` when a test image is run by hand
+        // without a channel, `EPIPE` when the runner is gone. Neither is
+        // recoverable and neither should disturb the test's own result.
+        let _ = platform::write_all(CHANNEL_FD, frame);
+    });
+}
+
+/// The armed gate: a frame reaches the descriptor only in a test image.
+///
+/// This is what keeps the channel the runner's rather than the world's. The
+/// assertion family lowers identically everywhere (§5.1), so without the gate
+/// an ordinary executable run as `prog 3>file` — or one that simply opened a
+/// third file of its own — would receive a JSON failure frame on a descriptor
+/// it was never promised (RUE-2066). The passing path pays nothing and the
+/// failing path pays one relaxed load.
+///
+/// The flag arrives as a parameter, and the descriptor as a sink, so the rule
+/// is checked in-process without writing to whatever the *host's* descriptor 3
+/// happens to be.
+fn write_when_armed(armed: bool, bytes: &[u8], sink: &mut dyn FnMut(&[u8])) {
+    if !armed {
+        return;
+    }
+    sink(bytes);
 }
 
 /// Borrow `len` bytes at `ptr`, tolerating the null-with-zero-length form the
@@ -671,10 +730,10 @@ crate::define_runtime_implementation! {
     /// failed: left == right` on stderr and exit 101.
     ///
     /// Both halves matter in different builds. Inside a test image the frame is
-    /// what the runner reads; in an ordinary executable there is no descriptor
-    /// 3, the frame write fails with `EBADF` as designed, and the pinned stderr
-    /// message is the whole report. `@assert_eq` therefore lowers the same way
-    /// wherever it is written.
+    /// what the runner reads; in an ordinary executable the channel is unarmed,
+    /// no frame is written at all, and the pinned stderr message is the whole
+    /// report. `@assert_eq` therefore lowers the same way wherever it is
+    /// written, and descriptor 3 stays the property of whoever opened it.
     ///
     /// # ABI
     ///
@@ -739,10 +798,10 @@ crate::define_runtime_implementation! {
     /// `panic: ` — because the form is stated, not inferred from the length.
     ///
     /// Both halves matter in different builds. Inside a test image the frame is
-    /// what the runner reads; in an ordinary executable there is no descriptor
-    /// 3, the frame write fails with `EBADF` as designed, and the pinned stderr
-    /// message is the whole report. `@assert` therefore lowers the same way
-    /// wherever it is written.
+    /// what the runner reads; in an ordinary executable the channel is unarmed,
+    /// no frame is written at all, and the pinned stderr message is the whole
+    /// report. `@assert` therefore lowers the same way wherever it is written,
+    /// and descriptor 3 stays the property of whoever opened it.
     ///
     /// # ABI
     ///
@@ -1263,10 +1322,42 @@ mod tests {
         assert_eq!(&TRAP_BOUNDS_CHECK_KIND[..], b"trap:bounds_check");
     }
 
+    /// The RUE-2066 rule, in both directions. An unarmed process is an
+    /// ordinary executable, whose descriptor 3 belongs to whoever opened it, so
+    /// nothing at all is written; an armed one is a test image, and the frame
+    /// reaches the sink byte for byte.
+    #[test]
+    fn a_frame_reaches_the_descriptor_only_while_armed() {
+        let mut written = Vec::new();
+        write_when_armed(false, b"{}\n", &mut |frame| {
+            written.extend_from_slice(frame)
+        });
+        assert!(written.is_empty(), "{:?}", written);
+
+        write_when_armed(true, b"{}\n", &mut |frame| written.extend_from_slice(frame));
+        assert_eq!(&written[..], b"{}\n");
+    }
+
+    /// Arming is what [`emit_to_channel`] reads, so the two halves of the rule
+    /// meet here: `arm_channel` flips exactly the flag the gate consults. The
+    /// flag is never cleared and `process.rs` owns the assertion that the
+    /// dispatcher prologue is what calls this, so nothing here depends on how
+    /// the unit tests interleave.
+    #[test]
+    fn arming_the_channel_opens_the_gate() {
+        arm_channel();
+        assert!(channel_is_armed());
+        write_when_armed(
+            CHANNEL_ARMED.load(Ordering::Relaxed),
+            b"{}\n",
+            &mut |frame| assert_eq!(frame, b"{}\n"),
+        );
+    }
+
     #[test]
     fn writing_to_a_closed_descriptor_is_tolerated() {
-        // The channel is absent whenever a test image is run by hand, so an
-        // `EBADF` write must return rather than abort. A descriptor far above
+        // The channel is absent whenever an armed test image is run by hand, so
+        // an `EBADF` write must return rather than abort. A descriptor far above
         // anything the harness opens stands in for that.
         let _ = platform::write_all(1_000_000, b"{}\n");
     }

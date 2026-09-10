@@ -423,6 +423,21 @@ pub struct Case {
     /// Piped to the compiled program's stdin.
     #[serde(default)]
     pub stdin: Option<String>,
+    /// Attach a capture to the COMPILED PROGRAM's descriptor 3 for its run.
+    ///
+    /// Descriptor 3 is the `rue test` structured failure channel (ADR-0083
+    /// §5.1), and an ordinary executable must leave it alone: it belongs to
+    /// whoever opened it — `prog 3>file`, or a program with a third file of its
+    /// own — and an assertion failure there reports on stderr only (RUE-2066).
+    /// A case sets this to make that descriptor observable, and then asserts on
+    /// it. Unix only; on other hosts the field has no effect. Setup, not an
+    /// assertion, so it needs one of the `fd3_*` fields below to pin anything.
+    #[serde(default)]
+    pub capture_fd3: bool,
+    /// Assert the program wrote nothing to descriptor 3. Requires
+    /// `capture_fd3`.
+    #[serde(default)]
+    pub fd3_empty: bool,
     /// Expect compilation to fail.
     #[serde(default)]
     pub compile_fail: bool,
