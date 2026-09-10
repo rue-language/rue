@@ -484,3 +484,35 @@ json_diagnostic_order = [
   "error E0001 main.rue:1:60",
 ]
 compile_stderr_not_contains = ["unexpected character: '"]
+
+[[case]]
+name = "trusted_module_name_reaches_json_consumers_without_its_provenance_marker"
+description = """
+RUE-2164: the standard library's modules are keyed by the synthetic logical
+path `\\0rue-std/<name>.rue`, and E0707 used to put that key straight into
+`message` — a literal NUL, serialized as `\\u0000`, in the one field the schema
+calls human-readable. No schema field changed: the module name has only ever
+travelled inside `message`, so this pins the rendered text (`std`, not
+`\\u0000rue-std/_std.rue`) and the absence of that escape — and of the raw byte —
+anywhere in the stream. It also pins that the advice rides the existing `helps`
+array rather than being folded into the message.
+"""
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    std.io.println("hello");
+    0
+}
+""" }]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = ["error E0707 main.rue:4:5"]
+compile_stderr_contains = [
+  '"code":"E0707"',
+  '"message":"module `std` has no member `io`"',
+  '"helps":["`print`, `println`, `eprint`, and `eprintln` are free functions in the prelude: call `println(x)` directly, with no module path"]',
+]
+compile_stderr_not_contains = ["\\u0000", "rue-std", "\u0000"]
