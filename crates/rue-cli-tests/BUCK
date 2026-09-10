@@ -21,6 +21,7 @@ rue_binary(
         "//crates/rue-linker:rue-linker",
         "//crates/rue-target:rue-target",
         "//crates/rue-test-runner:rue-test-runner",
+        "//third-party:libc",
         "//third-party:libtest2-mimic",
         "//third-party:serde",
         "//third-party:serde_json",

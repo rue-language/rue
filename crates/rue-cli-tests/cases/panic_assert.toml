@@ -199,6 +199,80 @@ exit_code = 101
 stdout = ""
 runtime_error_contains = ["panic: one is not two"]
 
+# ── Descriptor 3 is not this program's (RUE-2066) ────────────────────────────
+
+# The assertion family lowers identically in a test image and in an ordinary
+# executable (ADR-0083 §5.1), and the failing arm reports on the structured
+# failure channel — descriptor 3. In an ordinary executable that descriptor
+# belongs to whoever opened it: `prog 3>file`, or a program that opened a third
+# file of its own. The runtime therefore arms the channel only from the test
+# dispatcher's prologue, so these programs write their pinned stderr line and
+# nothing at all to 3. Without the armed flag each of them wrote a JSON failure
+# frame into the file.
+[[case]]
+name = "assert_eq_writes_no_frame_to_an_inherited_descriptor_three"
+description = "A failing @assert_eq in an ordinary executable leaves descriptor 3 untouched."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i32 = 41;
+    @assert_eq(a, 42);
+    0
+}
+""" }]
+exit_code = 101
+stdout = ""
+runtime_error_contains = ["panic: assertion failed: left == right"]
+capture_fd3 = true
+fd3_empty = true
+
+[[case]]
+name = "assert_writes_no_frame_to_an_inherited_descriptor_three"
+description = "A failing @assert in an ordinary executable leaves descriptor 3 untouched."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    @assert(false);
+    0
+}
+""" }]
+exit_code = 101
+stdout = ""
+runtime_error_contains = ["assertion failed"]
+capture_fd3 = true
+fd3_empty = true
+
+# The trap helpers report on the same channel, so @panic is the third producer
+# an ordinary executable must keep off descriptor 3.
+[[case]]
+name = "panic_writes_no_frame_to_an_inherited_descriptor_three"
+description = "@panic in an ordinary executable leaves descriptor 3 untouched."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    @panic("boom");
+    0
+}
+""" }]
+exit_code = 101
+stdout = ""
+runtime_error_contains = ["panic: boom"]
+capture_fd3 = true
+fd3_empty = true
+
+# A program that succeeds never reaches the channel at all; the case pins that
+# the capture itself does not perturb an ordinary run.
+[[case]]
+name = "a_passing_program_leaves_descriptor_three_untouched"
+description = "An executable with descriptor 3 open and no failure writes nothing to it."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    @assert(true);
+    7
+}
+""" }]
+exit_code = 7
+stdout = ""
+capture_fd3 = true
+fd3_empty = true
+
 # ── Operand contract rejection ───────────────────────────────────────────────
 
 # The frontend must reject a non-bool condition before backend lowering. It

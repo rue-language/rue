@@ -576,6 +576,20 @@ expected value, target span, content hash of what it replaces), applied by
 a future `rue test --accept` — the runner applying promotions, never the
 test, is what keeps snapshot tests hermetic.
 
+**Amendment (2026-09-10, RUE-2066): only a test image writes to the
+channel.** Making the descriptor best-effort, with `EBADF` as designed, let
+the assertion family lower identically in a test image and in an ordinary
+executable — which is the property this section wants. What it also produced
+was an ordinary executable that happened to have descriptor 3 open (`prog
+3>file`, or a program that had opened a third file) receiving a JSON failure
+frame on it whenever an assertion, `@panic`, or any trap fired. The channel is
+the runner's descriptor, not the world's, so the runtime now arms it: the
+dispatcher's prologue calls `__rue_test_normalize_process` and nothing else
+does, so reaching that call is the proof that descriptor 3 is the channel.
+Unarmed, the record writer returns without writing. The lowering, the schema,
+and the exec contract are unchanged, and the cost is one relaxed atomic load on
+the failing path.
+
 #### 5.2 In-language frameworks are ordinary Rue code; comptime is the generator
 
 BDD vocabularies, table harnesses, and property-test case machinery are

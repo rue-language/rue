@@ -84,6 +84,10 @@
 //!   the inherited environment. Distinct from `env` (the compiler's env)
 //!   (RUE-935)
 //! - `stdin`: piped to the compiled program when it runs
+//! - `capture_fd3` + `fd3_empty`: open a file on the compiled program's
+//!   descriptor 3 for its run and assert nothing reached it — descriptor 3 is
+//!   the `rue test` failure channel, and an ordinary executable does not own
+//!   it (RUE-2066). Unix only
 //! - `compile_fail` + `error_contains`: expect compilation failure
 //! - `compile_only`: don't run the produced binary
 //! - `driver_exit_code`: exact exit status of a driver subcommand invocation
@@ -2111,6 +2115,10 @@ fn case_runs_prebuilt_program(case: &Case) -> bool {
         stdout_contains: _,
         runtime_error_contains: _,
         exit_code: _,
+        // Descriptor 3 is attached by the shared run phase, so a staged
+        // executable inherits it on the same terms as its argv and stdin.
+        capture_fd3: _,
+        fd3_empty: _,
         // The subject: a case must name a checked-in root...
         source_path: Some(root),
         // ...and must leave the compile exactly as `rue <root> -o prog`.
@@ -3758,6 +3766,70 @@ fn wait_for_watch_exit(
     Err("timed out waiting for the interrupted watch-test process to exit".to_string())
 }
 
+/// Put a file on the produced program's descriptor 3 and return its path.
+///
+/// Descriptor 3 has a meaning only inside a `rue test` image, where the runner
+/// installs the structured failure channel's write end there (ADR-0083 §3).
+/// Everywhere else it belongs to whoever opened it, so a case that pins "an
+/// ordinary executable writes nothing there" needs the descriptor actually
+/// open during the run — an unopened 3 makes the write fail with `EBADF` for
+/// the wrong reason and proves nothing.
+///
+/// A regular file rather than a pipe: nothing drains this descriptor while the
+/// program runs, and a program that flooded a pipe nobody reads would block
+/// until the case's timeout instead of failing on its bytes.
+#[cfg(unix)]
+fn attach_descriptor_three(command: &mut Command, dir: &Path) -> TestResult<PathBuf> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+
+    let path = dir.join("fd3.capture");
+    let file = std::fs::File::create(&path).map_err(|error| {
+        TestFailure::fatal(format!(
+            "failed to create the descriptor 3 capture at {}: {error}",
+            path.display()
+        ))
+    })?;
+    // The closure owns the file, so it stays open across the fork and is
+    // closed when the command is dropped.
+    // SAFETY: the closure runs between fork and exec and calls only
+    // `dup2`/`fcntl`, both async-signal-safe, allocating nothing.
+    unsafe {
+        command.pre_exec(move || {
+            let raw = file.as_raw_fd();
+            if raw == 3 {
+                // `dup2(3, 3)` is a no-op that leaves close-on-exec set, so the
+                // descriptor would vanish at exec. Clear the flag instead.
+                if libc::fcntl(3, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                return Ok(());
+            }
+            // `dup2` clears close-on-exec on the new descriptor, which is what
+            // lets 3 survive into the program.
+            if libc::dup2(raw, 3) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(path)
+}
+
+/// Non-unix hosts have no descriptor inheritance to pin, and the CLI corpus
+/// records the field as unix-only.
+#[cfg(not(unix))]
+fn attach_descriptor_three(_command: &mut Command, dir: &Path) -> TestResult<PathBuf> {
+    let path = dir.join("fd3.capture");
+    std::fs::write(&path, b"").map_err(|error| {
+        TestFailure::fatal(format!(
+            "failed to create the descriptor 3 capture at {}: {error}",
+            path.display()
+        ))
+    })?;
+    Ok(path)
+}
+
 /// Run the case's program from its temp directory and check every runtime
 /// expectation.
 ///
@@ -3787,12 +3859,35 @@ fn run_case_program(
     for (key, value) in &case.program_env {
         run_cmd.env(key, value);
     }
+    // Descriptor 3 is the `rue test` failure channel, and an ordinary
+    // executable must leave it alone (RUE-2066). A case that pins that gets a
+    // file on 3 for the program's run and reads it back below.
+    let fd3_capture = if case.capture_fd3 {
+        Some(attach_descriptor_three(&mut run_cmd, dir)?)
+    } else {
+        None
+    };
     let run_output = run_phase_with_timeout(
         run_cmd,
         ProcessPhase::ProducedProgram,
         contract.runtime_timeout(),
         case.stdin.as_deref(),
     )?;
+    if let Some(path) = &fd3_capture {
+        let captured = std::fs::read(path).map_err(|error| {
+            TestFailure::fatal(format!(
+                "failed to read the descriptor 3 capture at {}: {error}",
+                path.display()
+            ))
+        })?;
+        if case.fd3_empty && !captured.is_empty() {
+            return Err(TestFailure::assertion(format!(
+                "program wrote {} byte(s) to descriptor 3, which it does not own:\n{}",
+                captured.len(),
+                display_bytes(&captured)
+            )));
+        }
+    }
 
     let run_stdout = String::from_utf8_lossy(&run_output.stdout).to_string();
     let run_stderr = String::from_utf8_lossy(&run_output.stderr).to_string();
@@ -4320,6 +4415,17 @@ fn driver_exit_code_conflicts_with_compile_fail(case: &Case) -> bool {
     case.driver_exit_code.is_some() && case.compile_fail
 }
 
+/// `capture_fd3` opens a descriptor; it asserts nothing on its own, and an
+/// `fd3_*` assertion with no descriptor open would pass for the wrong reason.
+/// Neither half is meaningful without the other, so say which is missing.
+fn invalid_fd3_capture(case: &Case) -> Option<&'static str> {
+    match (case.capture_fd3, case.fd3_empty) {
+        (true, false) => Some("`capture_fd3` pins nothing without an `fd3_*` assertion"),
+        (false, true) => Some("`fd3_empty` requires `capture_fd3` to open the descriptor"),
+        _ => None,
+    }
+}
+
 fn invalid_replay_repro(case: &Case) -> Option<&'static str> {
     let target = case.replay_repro.as_deref()?;
     if target.is_empty() {
@@ -4352,6 +4458,8 @@ fn compile_only_runtime_fields(case: &Case) -> Vec<&'static str> {
             !case.runtime_error_contains.is_empty(),
         ),
         ("exit_code", case.exit_code.is_some()),
+        ("capture_fd3", case.capture_fd3),
+        ("fd3_empty", case.fd3_empty),
     ]
     .into_iter()
     .filter_map(|(field, present)| present.then_some(field))
@@ -4471,6 +4579,14 @@ fn load_cases(cases_dir: &Path) -> LoadedCorpus {
                 // load time so the doc comment's promise is enforced, not merely
                 // documented (RUE-132).
                 for case in &tf.cases {
+                    if let Some(error) = invalid_fd3_capture(case) {
+                        eprintln!(
+                            "error: {}: case '{}' declares an invalid descriptor 3 capture: {error}",
+                            path.display(),
+                            case.name,
+                        );
+                        std::process::exit(1);
+                    }
                     if let Some(error) = invalid_replay_repro(case) {
                         eprintln!(
                             "error: {}: case '{}' declares invalid replay_repro: {error}",
@@ -6631,6 +6747,37 @@ mod tests {
         assert!(compile_fail_has_exit_code(&case));
     }
 
+    /// Each half of the descriptor 3 capture is useless alone: an open
+    /// descriptor nobody asserts on, or an assertion about a descriptor nobody
+    /// opened (which would pass because the program could not write there at
+    /// all).
+    #[test]
+    fn fd3_capture_requires_both_halves() {
+        assert_eq!(
+            invalid_fd3_capture(&Case {
+                capture_fd3: true,
+                ..Default::default()
+            }),
+            Some("`capture_fd3` pins nothing without an `fd3_*` assertion")
+        );
+        assert_eq!(
+            invalid_fd3_capture(&Case {
+                fd3_empty: true,
+                ..Default::default()
+            }),
+            Some("`fd3_empty` requires `capture_fd3` to open the descriptor")
+        );
+        assert_eq!(
+            invalid_fd3_capture(&Case {
+                capture_fd3: true,
+                fd3_empty: true,
+                ..Default::default()
+            }),
+            None
+        );
+        assert_eq!(invalid_fd3_capture(&Case::default()), None);
+    }
+
     #[test]
     fn compile_only_rejects_each_produced_program_field() {
         let mut cases = Vec::new();
@@ -6642,6 +6789,8 @@ mod tests {
             "stdout_contains",
             "runtime_error_contains",
             "exit_code",
+            "capture_fd3",
+            "fd3_empty",
         ] {
             let mut case = Case {
                 name: field.to_string(),
@@ -6659,6 +6808,8 @@ mod tests {
                 "stdout_contains" => case.stdout_contains = vec!["output".to_string()],
                 "runtime_error_contains" => case.runtime_error_contains = vec!["panic".to_string()],
                 "exit_code" => case.exit_code = Some(0),
+                "capture_fd3" => case.capture_fd3 = true,
+                "fd3_empty" => case.fd3_empty = true,
                 _ => unreachable!(),
             }
             cases.push((field, case));

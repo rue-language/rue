@@ -86,7 +86,7 @@ that implement its channel half.
 | `envp` | exactly `["RUE_TEST=1"]` |
 | working directory | a fresh private scratch directory |
 | stdin | `/dev/null` (immediate EOF) |
-| descriptor 3 | the write end of the structured failure channel |
+| descriptor 3 | the write end of the structured failure channel; only a test image writes to it |
 | process group | its own; the runner kills the group on expiry and again after exit |
 
 These are pinned values, not conveniences. The loader lays the real `argv` and
@@ -179,9 +179,9 @@ empty string; a comparison is recognized by the fields' presence, not by parsing
 through the `__rue_test_fail_comparison` helper
 ([runtime-abi.md](../runtime-abi.md)). They are ordinary intrinsics, usable
 anywhere `@assert` is, and they lower the same way in a test image and in an
-ordinary executable — the only difference is that an ordinary process has no
-descriptor 3, so the frame write fails with `EBADF` as designed and the pinned
-stderr message is the whole report.
+ordinary executable — the only difference is that an ordinary process never
+arms the channel, so no frame is written at all and the pinned stderr message is
+the whole report.
 
 `@assert` reports through the same channel, with `__rue_test_fail_assert`, and
 under the same build-independent rule. Its record's `message` is the pinned
@@ -190,8 +190,14 @@ under the same build-independent rule. Its record's `message` is the pinned
 has to know which was written. Both stderr forms are unchanged: `assertion
 failed` and `panic: {msg}` respectively, with status 101 (spec 4.13:5d).
 
-Writes are best-effort by design: an image run by hand has no descriptor 3, and
-`EBADF` there is expected rather than exceptional. The channel is **not a
+**Only a test image writes to descriptor 3.** The assertion family, `@panic`,
+and the trap helpers lower identically wherever they are written, so the
+distinction is the runtime's: the dispatcher's prologue arms the channel, and
+nothing else does. An ordinary executable's descriptor 3 belongs to whoever
+opened it — `prog 3>file`, or a program that opened a third file of its own —
+and it receives nothing, however the program fails (RUE-2066). Within an armed
+image writes are best-effort by design: an image run by hand has no descriptor
+3, and `EBADF` there is expected rather than exceptional. The channel is **not a
 security boundary** — it prevents accidental collision with a test's own stdout,
 which is all its consumers are promised.
 

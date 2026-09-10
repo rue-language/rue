@@ -166,9 +166,17 @@ pub fn __rue_env_len(index: u64) -> u64 {
 /// them — nothing is copied, nothing is freed — so this is a pure narrowing of
 /// what the accessors will report.
 ///
+/// It also arms the structured failure channel. The dispatcher's prologue is
+/// the only caller, so reaching this function is the runtime's one proof that
+/// it is running inside a test image — which is what descriptor 3 means
+/// (RUE-2066). Everywhere else the assertion family, `@panic`, and the trap
+/// helpers write no frame at all, because an ordinary executable's descriptor
+/// 3 belongs to whoever opened it.
+///
 /// The dispatcher calls this once, before the selected test body runs.
 pub fn __rue_test_normalize_process() {
     ARG_COUNT.store(1, Ordering::Relaxed);
+    crate::test_channel::arm_channel();
 }
 
 #[cfg(test)]
@@ -244,6 +252,9 @@ mod tests {
 
         __rue_test_normalize_process();
         assert_eq!(__rue_arg_count(), 1);
+        // Reaching normalization is the runtime's one proof that this is a
+        // test image, so it is also what arms the failure channel (RUE-2066).
+        assert!(crate::test_channel::channel_is_armed());
         assert_eq!(__rue_arg_len(0), 8);
         // SAFETY: index 0 is in range and addresses 8 readable bytes.
         unsafe {
