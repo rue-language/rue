@@ -30,6 +30,7 @@ ownership discipline that is Rue's memory-safety guarantee.
 ```
 Types
   T ::= int(w, s)              -- integer of width w ∈ {8,16,32,64}, signedness s ∈ {signed, unsigned}
+      | float(w)               -- IEEE 754 binary-w floating point, w ∈ {32, 64}  (the surface f32 / f64; 3.12:1)
       | bool
       | unit
       | never                  -- the ! type; no values
@@ -63,6 +64,8 @@ Expressions
       | @drop ( p )            -- explicit drop of place p (§5.3 statics, §6.11 dynamics; 3.9:37-39)
       | @panic ( s )           -- diverging trap; s a string-valued operand (§5.8 (Panic), §5.7; §6.12, (D-Panic))
       | @dbg ( e )             -- append e's rendering to the observable output (§5.8 (Dbg); §6.9, §6.12)
+      | @f ( e1, ..., ek )     -- FLOAT INTRINSIC (§5.8, §6.4): @f ∈ { @int_to_float, @float_to_int, @float_cast,
+                               --   @total_cmp, @sqrt, @floor, @ceil, @trunc, @round }; k = 1 except @total_cmp's k = 2
       | if e0 { e1 } else { e2 }
       | match e0 { pat1 => e1, ..., patk => ek }
       | let μ x = e1 ; e2      -- binding; scope of x is e2; μ ∈ {∅, mut} is the binding's mutability mark (§5)
@@ -122,6 +125,13 @@ operand need not be a literal (verified: `@panic(m)` for a string binding `m`
 compiles); and a value expression of an integer or `bool` type (verified: the
 compiler's `@dbg` accepts exactly integer, `bool`, and `String`, rejecting an
 aggregate with E0702 — the `String` case again riding with the slice statics).
+The float intrinsics `@f` are not instances of `g(a1..am)` either, for a
+different reason: three of them take their **result** type from context rather
+than from a signature (`3.12:16`, `3.12:17`, `3.12:19`; `4.13:139`–`4.13:141`),
+which no monomorphic `F` signature in §2 can express, and `@float_to_int` traps
+(`3.12:18`), which no user function does. Elaboration has already resolved each
+one's result type, exactly as it resolves a literal's (§5.8), so the core sees
+the concrete width in the form's own typing rule.
 
 Notes on what is **absent by design** (lives in elaboration, `02-elaboration.md`):
 `comptime`, comptime/`type` parameters, generics, method-call syntax **other
@@ -211,6 +221,54 @@ assumed silently:
   the compiler's analysis too (`10.5:4`), so the two artifacts are silent about
   exactly the same programs.
 
+**Floating point is in the core (maintainer ruling, 2026-09-10).** `f32` and
+`f64` are the `float(32)` and `float(64)` above, with their own statics (§5.8),
+their own trap-free dynamics (§6.4), and their equality a stated case of the
+structural relation `≈` rather than the out-of-model leaf the RUE-2007 note in
+§6.4 used to describe. A value of `float(w)` is modeled as an **abstract IEEE
+754 binary-w datum, not a bit pattern**:
+
+```
+  𝔽_w  =  { the finite values of IEEE 754 binary-w, with -0 and +0 distinct }
+          ∪ { -inf, +inf }
+          ∪ { NaN(-), NaN(+) }               -- a NaN carries a SIGN and no payload
+```
+
+`3.12:1` fixes exactly this set ("the finite numbers, the two infinities, and
+the NaNs, with `-0.0` and `+0.0` distinct values"), and a datum — not a
+representation — is what the language's operations observe. The bit-level
+question was checked before deciding, because one operation looks like an
+exception. `@total_cmp` is specified by `3.12:32` as returning zero "when the
+two operands have the same bit pattern", and ADR-0065 §8 orders NaNs "by sign
+and payload bit pattern". A NaN's **sign** is therefore observable, and is
+modeled: `3.12:44` makes the sign of a produced NaN implementation-defined, and
+`3.12:45` says it is observable only through `@total_cmp` or by inspecting the
+bits — and Rue offers no way to inspect a float's bits, which leaves
+`@total_cmp`. A NaN's **payload** is not observable: `@bitCast` reinterprets an
+integer's bits at another *integer* type only (`4.13:118`, `4.13:119`), no
+float↔integer reinterpretation intrinsic exists — ADR-0065 §8 records its
+absence as the very reason `@total_cmp` had to ship — and no literal, operator,
+or intrinsic names a particular payload. Nothing a core program can write
+distinguishes two same-sign NaNs, so modeling a payload would add unobservable
+state; the residual distance between `3.12:32`'s bit-pattern wording and this
+coarser model is recorded as §9 item 5 rather than papered over.
+
+Two model parameters follow from the same paragraphs. Both are fixed per
+target, not chosen by a rule:
+
+```
+  σ_NaN ∈ { -, + }     -- the sign of a NaN the target's hardware produces (3.12:44, Appendix B.1: negative on
+                       --   x86-64, positive on AArch64). Every NaN PRODUCED by a §6.4 float rule is NaN(σ_NaN).
+  rnd_w                -- round to nearest, ties to even: the IEEE 754 default rounding attribute, which 3.12:9
+                       --   fixes for literals and 3.12:21 for arithmetic. Rue has no dynamic rounding mode, so
+                       --   no rule takes one as an argument.
+```
+
+Reduction stays deterministic once `σ_NaN` is fixed, so §6.12's "total,
+deterministic, and observable" claim survives unchanged: the differential
+oracle fixes `σ_NaN` to the target it is comparing against, exactly as
+`3.12:44` requires an implementation to document its choice.
+
 **[open]** Raw pointers and `unchecked` code (chapter 9) are
 initially *out* of the core and added as a distinguished, clearly-marked
 extension; their whole point is to step outside the guarantees the core proves,
@@ -248,7 +306,7 @@ a value of it may be used, and whether it may be discarded (dropped):
 Assignment of the class:
 
 ```
-  class(int(_,_)) = class(bool) = class(unit) = Copy
+  class(int(_,_)) = class(float(_)) = class(bool) = class(unit) = Copy
   class(never)    = Copy            -- vacuous: no values, so any class is sound; Copy is simplest
   class([T; n])   = Linear   if n > 0 and class(T) = Linear
                   = Affine   if n > 0 and class(T) = Affine
@@ -265,6 +323,13 @@ Assignment of the class:
     class(E) = ⊔ { class(Tij) : 1 ≤ i ≤ n, 1 ≤ j ≤ ai }    -- join over EVERY payload component of EVERY variant (6.3:19)
              = Copy   when there are no payload components  -- discriminant-only ⇒ empty join ⇒ Copy (6.3:19, 3.8:2)
 ```
+
+`class(float(w)) = Copy` is **derived, not assumed**. Prose `3.8:2`'s list of
+Copy types predates the float types and does not name them, and `3.12` never
+says it in so many words — but `3.12:26` uses one `f64` binding five times in a
+single body, which only a `Copy` type admits, and `3.12` gives a float type
+neither a destructor (`3.9:31`) nor a `linear` attribute (`3.8:58`). The core
+takes `Copy` on that derivation and records the prose omission as §9 item 5.
 
 An enum has no `@copy`/`linear` attribute of its own: its class is exactly the
 join of its variants' payload classes (`6.3:19`). It is `Copy` iff every payload
@@ -1267,7 +1332,7 @@ stays true now that all three are §2 productions (RUE-1600).
 place, so Σ is unchanged.
 
 ```
-  lit is an integer / bool / unit literal of type T       -- T ∈ { int(w,s), bool, unit }
+  lit is an integer / float / bool / unit literal of type T   -- T ∈ { int(w,s), float(w), bool, unit }
   ─────────────────────────────────────────────────────── (Lit)
   Γ;Σ;Λ ⊢ lit ⇒ T ⊣ Σ
 ```
@@ -1277,6 +1342,19 @@ has already resolved the surface "an integer literal defaults to `i32` unless th
 context requires another type" (`4.1:3`) into a concrete `int(w, s)`, so the core
 sees only the resolved type (`4.1:2` for integers, `4.1:5` for `true`/`false`,
 `4.1:7` for `()`).
+
+A **float** literal is resolved before the core by the same mechanism, and this
+rule mirrors the integer case exactly. `3.12:7` takes the literal's concrete
+type from its context and `3.12:8` defaults it to `f64` when the context
+supplies none — the float counterpart of `4.1:3`'s `i32` default; `3.12:9`
+rounds the exact written decimal to that type under `rnd_w` (§2 — nearest,
+ties to even), converting the text directly with no intermediate width;
+`3.12:10` rejects at compile time a literal that would round to an infinity;
+and `3.12:11` admits an *integer* literal wherever a float type is expected,
+where it denotes that same rounded value. All of this is `comptime_float`
+inference (`3.12:3`, `4.1:13`, `4.1:14`), which elaboration discharges, so the
+core sees a resolved `float(w)` literal and never a `comptime_float` — just as
+it never sees an unresolved integer literal.
 
 **Primitive arithmetic / bitwise `⊕`.** Both operands share one integer type and
 the result has that same type; the operands are `Copy` scalars, so each is an
@@ -1307,8 +1385,9 @@ operand (`4.2:6`; rejecting `neg` on unsigned is `4.2:14`); `not` demands
   Γ;Σ;Λ ⊢ neg e ⇒ int(w,signed) ⊣ Σ'            Γ;Σ;Λ ⊢ not e ⇒ bool ⊣ Σ'        Γ;Σ;Λ ⊢ ~ e ⇒ int(w,s) ⊣ Σ'
 ```
 
-**Ordering compare `⋚`.** Ordering works **only on integers** (`4.3:5`;
-ordering a bool, string, unit, or aggregate is rejected, `4.3:6`), so unlike
+**Ordering compare `⋚`.** Ordering works **only on the numeric types** —
+integers by the rule here and floats by `(Float-Ord)` below (`4.3:5`; ordering
+a bool, string, unit, or aggregate is rejected, `4.3:6`) — so unlike
 `≟` there is no borrow subtlety: both operands are `Copy` scalars and their
 occurrences are ordinary value-context uses (copies), exactly as for `⊕`.
 
@@ -1342,6 +1421,98 @@ well-formed, and two shared reads are always consistent, so `a == a` is too
 (§5.4). Σ2 reflects only the uses performed *inside* compound operand
 subexpressions (e.g. `f() == g()`), never a move of a directly-named operand
 place.
+
+**Float arithmetic, negation, and comparison.** The four arithmetic operators
+work at one float type shared by both operands and produce that type. A float
+is a `Copy` scalar (§3), so each operand occurrence is an ordinary
+value-context copy and the only effect on Σ is whatever the operand
+subexpressions themselves perform — the same shape as `(Arith)`, with a
+different type and, in §6.4, without any trap.
+
+```
+  Γ;Σ;Λ ⊢ e1 ⇒ float(w) ⊣ Σ1     Γ;Σ1;Λ ⊢ e2 ⇒ float(w) ⊣ Σ2     ⊕ ∈ { +,-,*,/ }
+  ─────────────────────────────────────────────────────────────────────────── (Float-Arith)
+  Γ;Σ;Λ ⊢ e1 ⊕ e2 ⇒ float(w) ⊣ Σ2
+
+  Γ;Σ;Λ ⊢ e ⇒ float(w) ⊣ Σ'
+  ────────────────────────────────────── (Float-Neg)
+  Γ;Σ;Λ ⊢ neg e ⇒ float(w) ⊣ Σ'
+
+  Γ;Σ;Λ ⊢ e1 ⇒ float(w) ⊣ Σ1     Γ;Σ1;Λ ⊢ e2 ⇒ float(w) ⊣ Σ2     ⋚ ∈ { <, >, <=, >= }
+  ─────────────────────────────────────────────────────────────────────────── (Float-Ord)
+  Γ;Σ;Λ ⊢ e1 ⋚ e2 ⇒ bool ⊣ Σ2
+```
+
+The single `w` shared by both operands is `3.12:13`: there is no implicit
+widening, so `(Float-Arith)` and `(Float-Ord)` reject an `f32`/`f64` mix, and no
+rule of §5 relates a float operand to an integer one (`3.12:14`) — the only
+bridges are the conversion intrinsics below. `(Float-Neg)` is `3.12:24` and
+`4.2:14`: where `(Neg)` restricts integer negation to a *signed* type, float
+negation applies to every float type, and §6.4 makes it total rather than
+trapping on a minimum. `(Float-Ord)` is `4.3:5`, which orders floats as well as
+integers; `3.12:27`'s partiality is entirely dynamic — statically the result is
+`bool` like any other compare. Equality needs no float rule of its own: `(Eq)`
+already types `e1 ≟ e2` at any shared `T`, and at `T = float(w)` its borrow side
+condition is vacuous, a float being `Copy` and so never moved by a use.
+
+Three operator forms are rejected on floats **by the absence of a rule**, which
+is how §5 rejects everything it does not admit:
+
+- `%` — `(Arith)` admits it only at `int(w,s)` and `(Float-Arith)` omits it, so
+  `e1 % e2` at a float type has no derivation (`3.12:25`; the exact truncated
+  remainder is the library's `std.math.rem`, ADR-0065 Amendment 1 §7);
+- the bitwise and shift operators `& | ^ << >> ~` — `(Arith)` and `(BitNot)`
+  admit them only at `int(w,s)`, and a float is a datum rather than a bit
+  pattern here (§2), so there is nothing for them to act on;
+- `not` — `(Not)` demands `bool` (`4.4:2`).
+
+**Float conversions and the float intrinsics.** The `@f` forms of §2 are the
+only bridges between `float(w)` and the rest of the types. Each takes its
+result type from context (`3.12:16`, `3.12:17`, `3.12:19`), which elaboration
+has already resolved to the concrete `int(w',s')` / `float(w')` the rules name;
+their operands are `Copy` scalars used by value, so Σ threads left-to-right
+through them and nothing more.
+
+```
+  Γ;Σ;Λ ⊢ e ⇒ int(w',s') ⊣ Σ'
+  ────────────────────────────────────────────────── (Int-To-Float)
+  Γ;Σ;Λ ⊢ @int_to_float(e) ⇒ float(w) ⊣ Σ'
+
+  Γ;Σ;Λ ⊢ e ⇒ float(w) ⊣ Σ'
+  ────────────────────────────────────────────────── (Float-To-Int)
+  Γ;Σ;Λ ⊢ @float_to_int(e) ⇒ int(w',s') ⊣ Σ'
+
+  Γ;Σ;Λ ⊢ e ⇒ float(w) ⊣ Σ'        w' ≠ w
+  ────────────────────────────────────────────────── (Float-Cast)
+  Γ;Σ;Λ ⊢ @float_cast(e) ⇒ float(w') ⊣ Σ'
+
+  Γ;Σ;Λ ⊢ e1 ⇒ float(w) ⊣ Σ1     Γ;Σ1;Λ ⊢ e2 ⇒ float(w) ⊣ Σ2
+  ────────────────────────────────────────────────── (Total-Cmp)
+  Γ;Σ;Λ ⊢ @total_cmp(e1, e2) ⇒ int(32,signed) ⊣ Σ2
+
+  Γ;Σ;Λ ⊢ e ⇒ float(w) ⊣ Σ'        ⊙ ∈ { @sqrt, @floor, @ceil, @trunc, @round }
+  ────────────────────────────────────────────────── (Float-Round)
+  Γ;Σ;Λ ⊢ ⊙(e) ⇒ float(w) ⊣ Σ'
+```
+
+`(Int-To-Float)` accepts an operand of any integer type, signed or unsigned
+(`3.12:16`, `4.13:139`); `(Float-To-Int)`'s result may likewise be signed or
+unsigned (`3.12:17`, `4.13:140`), and it is the one float form whose *dynamics*
+can trap (`3.12:18`; §6.4, `(D-Float-To-Int-Trap)`); `(Float-Cast)` converts
+between the two widths and only between them, `w' ≠ w` (`3.12:19`,
+`4.13:141`); `(Total-Cmp)` takes two operands of one float type and yields
+`i32` (`3.12:31`, `4.13:142`); and `(Float-Round)` is the five same-type unary
+intrinsics of `3.12:34` / `4.13:143`. None of the five touches Σ beyond its
+operands' own uses, and a *diverging* operand needs no bottom rule here:
+(Strict-Bottom) (§5.7) already ranges over intrinsic operands.
+
+The integer-to-integer conversion `@intCast` is **not** a core form — §2 has no
+production for it and this document has never given it a rule — so the three
+float conversions arrive first. They are in the core because a float value is
+otherwise unreachable from every other type, and because `@float_to_int` is the
+one float operation that traps: leaving it out would make §6.12's trap
+inventory and §7's progress obligation incomplete. `@intCast` fits the same
+shape when it is written down (`4.13:26`–`4.13:28`).
 
 **Struct construction.** Each field initializer is a value-context use of the
 declared field type — a move for a non-`Copy` field, a copy for a `Copy` one
@@ -1446,7 +1617,7 @@ value-context use.
   ─────────────────────────────────────── (Panic-Operand)
   Γ;Σ;Λ ⊢ @panic(s) ⇒ never ⊣ ⊥;δ_s
 
-  Γ;Σ;Λ ⊢ e ⇒ T ⊣ Σ'        T ∈ { int(w,s), bool }      -- plus the surface's String, with the slice statics
+  Γ;Σ;Λ ⊢ e ⇒ T ⊣ Σ'        T ∈ { int(w,s), float(w), bool }   -- plus the surface's String, with the slice statics
   ─────────────────────────────────────── (Dbg)          -- dynamics: §6.9's intrinsic note
   Γ;Σ;Λ ⊢ @dbg(e) ⇒ unit ⊣ Σ'
 ```
@@ -1459,7 +1630,11 @@ usable after the `if`, and it drops exactly once on the continuing arm.
 `(Dbg)`'s operand restriction is the compiler's
 (E0702); its dynamics append the operand's rendering to the observable output,
 which is why `@dbg` is part of the `Outcome` the differential harness compares
-(§6.12).
+(§6.12). The `float(w)` case is `3.12:39`. This document fixes no *rendering*
+for any type — the text a `@dbg` produces for an integer, a `bool`, or a float
+is prose (`3.12:40`–`3.12:42` for the float cases, including `NaN`, `inf`,
+`-inf`, and `-0.0`), and the differential harness compares the two artifacts'
+output rather than deriving it from a rule here.
 
 **Accessor calls (ADR-0062).** The accessor definition form `fn A.f(…) -> r T
 { b }`, its `yield` body form `b`, and the call expression `p.f(e1..ek)` are §2
@@ -1573,6 +1748,7 @@ them is a bug (RUE-305) — that is the point of pinning both.
                      | †                      -- dead: the identity is spent, its storage gone, and it is never reused (§6.13)
   Store          H : AllocId ⇀ a             -- the allocation store
   Values         v ::= n_T                    -- a scalar integer n of type T = int(w,s), with min_T ≤ n ≤ max_T
+                     | f_T                     -- a float datum f ∈ 𝔽_w of type T = float(w) (§2's value set; §6.4)
                      | b                       -- b ∈ { true, false }
                      | ⟨⟩                      -- unit
                      | { v1, …, vk }_S         -- a struct-S value (fields in declaration order)
@@ -1618,9 +1794,15 @@ fresh identity is one not in `dom(H)`; dead allocations stay in the domain as
 
 `n_T` records the value's integer type because overflow, comparison signedness,
 and bitwise width all depend on it; the oracle carries the same information out of
-band on each CFG instruction's `ty` field. A discriminant-only enum value
-`Kj⟨⟩` is stored as its bare tag (the oracle's `Value::Int` tag); a
-payload-carrying `Kj⟨v1..va⟩` as the tagged aggregate (`Value::Aggregate`, RUE-285).
+band on each CFG instruction's `ty` field. `f_T` records its width for the same
+kind of reason — rounding, the comparison predicates, and `@total_cmp`'s order
+are all width-dependent, and `𝔽_32` and `𝔽_64` are disjoint value sets (§2).
+A float cell is `Copy` (§3), so it is read by `(D-Use-Copy)` and never moved,
+never marked `⊘`, never registered in a scope record, and never names an
+allocation: floats add nothing at all to the store discipline of this section.
+A discriminant-only enum value `Kj⟨⟩` is stored as its bare tag (the oracle's
+`Value::Int` tag); a payload-carrying `Kj⟨v1..va⟩` as the tagged aggregate
+(`Value::Aggregate`, RUE-285).
 
 Four **scope helpers** on frames, used by the rules below, all defined in terms of
 the drop relation `drop(H, ℓ)` of §6.11 (which is itself a no-op on a `⊘` or
@@ -1659,6 +1841,8 @@ same order §5 threads Σ through). This is fixed by a grammar of single-hole
       | Kj( v1, …, v_{i-1}, E, e_{i+1}, … )              -- enum payload component i
       | E . f  | E [ e ]  | v [ E ]                       -- projection base, then index
       | g( v̄, …, E, … )                                  -- a by-VALUE call argument (a by-ref arg is a place, not reduced — §6.9)
+      | @dbg( E )  | @panic( E )  | @f( v̄, …, E, … )     -- intrinsic operands: @dbg's and @panic's message (§6.12), and a
+                                                         --   float intrinsic's operands, left to right (§5.8, §6.4)
       | if E { e1 } else { e2 }                          -- scrutinee
       | match E { … }                                    -- scrutinee
       | let x = E ; e2                                   -- bound expression (e2 not entered until E is a value)
@@ -1805,7 +1989,13 @@ oracle simply reads both equality operands without disturbing storage (`cmp`).
 
 ### 6.4 Primitive operators
 
-All operands are `Copy` scalars, already reduced to `n_T` (or `b`) by §6.2.
+All operands are `Copy` scalars, already reduced to `n_T`, `f_T`, or `b` by
+§6.2. The integer operator rules below are stated over `n_T` at
+`T = int(w,s)` and the float ones over `f_T` at `T = float(w)`, and **no
+operator rule's premises are met by both** — which is what keeps the integer
+traps off floats without any rule having to say so. Only `(D-Eq)`, which is
+stated over arbitrary values, spans the two, and it does so through the leaf
+clauses of `≈`.
 
 **Arithmetic `+ - *` and unary `neg`** compute over ℤ and **trap on overflow** —
 Rue arithmetic never wraps (`3.1:6/13`). Let `n1 ⊕_ℤ n2` be the exact integer
@@ -1845,40 +2035,96 @@ max_T` for a signed `T` (`Neg`).
 `↯rem-zero` on a zero divisor and `↯overflow` on `min_T % -1` (the hardware
 `idiv` faults there even though the mathematical remainder is 0 — `divmod`'s remainder arm).
 
-**Comparison `≟` and the ordering compares `< > <= >=`** yield `bool`
-(`cmp`). Scalars compare by their integer value, respecting
-signedness (the value `n_T` already carries the sign). Only `==`/`!=` may reach an
-aggregate (ordering on aggregates is a §5 type error); there they compare
-**structurally** — a struct field-by-field, an array element-by-element, an enum
-same-tag-and-equal-payload, recursing into nested aggregates (RUE-285) — and
-compare a value of each canonical text rung (`str`, `Str(N)`, or `StrBuf`) by its
-byte content (`4.3:2`):
+**Float arithmetic `+ - * /` and unary `neg` never trap** (`3.12:21`). Write
+`f1 ⊕_w f2` for the IEEE 754 binary-`w` operation named by `⊕`: the exact
+mathematical result on the two data, rounded by `rnd_w` (§2 — nearest, ties to
+even), together with the special cases IEEE 754 fixes for zero, infinite, and
+NaN operands. `⊕_w` is a **total function** `𝔽_w × 𝔽_w → 𝔽_w` (§7's lemma), so
+one rule suffices and there is no companion trap rule:
 
 ```
-  v1 ≈ v2  ⟺  v1 and v2 are structurally equal      (scalars by value; aggregates componentwise; strings by content)
+  ⊕ ∈ { +, -, *, / }        f = f1 ⊕_w f2          -- defined for every f1, f2 ∈ 𝔽_w
+  ───────────────────────────────────────────────────────────────── (D-Float-Arith)
+  (f1)_{float(w)} ⊕ (f2)_{float(w)}  →  (f)_{float(w)}
+
+  ───────────────────────────────────────────────────────────────── (D-Float-Neg)
+  neg (f)_{float(w)}  →  (-f)_{float(w)}      -- sign flip only: -(+0) = -0, -NaN(σ) = NaN(-σ) (3.12:24)
+```
+
+None of `(D-Arith-Trap)`, `(D-Div-Zero)`, or `(D-Div-Overflow)` applies to a
+float redex: each is stated over `n_T` at an integer `T`, so its premises are
+never met. That is exactly the divergence `3.12:22` names — the integer
+division rule "does not apply to floating-point operands" — and `3.12:23`'s
+answer for overflow. Spelled out, as *consequences of* `⊕_w` rather than as
+extra rules:
+
+```
+  f1 finite and ≠ ±0,  f2 = ±0    ⟹  f1 / f2 = ±inf, sign = sign(f1) xor sign(f2)   (3.12:22)
+  f1 = ±0  and  f2 = ±0           ⟹  f1 / f2 = NaN(σ_NaN)                           (3.12:22)
+  exact result too large for 𝔽_w  ⟹  rnd_w yields ±inf of the exact result's sign   (3.12:23)
+  exact result too small for 𝔽_w  ⟹  rnd_w yields ±0 of the exact result's sign     (3.12:23)
+  either operand a NaN            ⟹  the result is NaN(σ_NaN)                       (IEEE 754; 3.12:44 for the sign)
+```
+
+`neg` on a float is not the integer `neg` of `(D-Arith)`: "`neg (min_T)_T →
+↯overflow`" is a statement about `int(w,signed)`, while `3.12:24` makes float
+negation total — it flips a sign bit and changes nothing else, on `-0.0` and on
+a NaN alike. No float arithmetic redex can step to a panic.
+
+**Comparison `≟` and the ordering compares `< > <= >=`** yield `bool`
+(`cmp`). Integer scalars compare by their integer value, respecting
+signedness (the value `n_T` already carries the sign). A **float** scalar
+compares by the IEEE 754 predicate at its width (`3.12:27`, `4.3:5`): `-0.0`
+and `+0.0` compare equal and neither is less than the other (`3.12:28`), and
+when either operand is a NaN the two are *unordered*, so every ordering compare
+is `false` and `!=` is the only compare that is `true`.
+
+```
+  ⋚ ∈ { <, >, <=, >= }      r = the IEEE 754 binary-w predicate named by ⋚, applied to (f1, f2)
+  ───────────────────────────────────────────────────────────────── (D-Float-Ord)
+  (f1)_{float(w)} ⋚ (f2)_{float(w)}  →  r        -- r = false whenever f1 or f2 is a NaN (3.12:27)
+```
+
+Only `==`/`!=` may reach an aggregate (ordering on aggregates is a §5 type
+error); there they compare **structurally** — a struct field-by-field, an array
+element-by-element, an enum same-tag-and-equal-payload, recursing into nested
+aggregates (RUE-285) — and compare a value of each canonical text rung (`str`,
+`Str(N)`, or `StrBuf`) by its byte content (`4.3:2`):
+
+```
+  v1 ≈ v2  ⟺  v1 and v2 are structurally equal      (integer / bool / unit scalars by value; FLOAT scalars by the
+                                                     IEEE 754 equality of 3.12:27; aggregates componentwise;
+                                                     strings by content)
   ─────────────────────────────────────────────────────────────────────────────────── (D-Eq)
   v1 == v2 → (v1 ≈ v2)                v1 != v2 → ¬(v1 ≈ v2)
 ```
 
-**`≈` is a total equivalence on the core's types, and only on those (RUE-2007).**
-Every `T` of §2 bottoms out in an `int(w, s)`, `bool`, or `unit` leaf, each
-comparing by value, and the canonical text rungs added by §6.13.4 compare by
-byte content — every one of those leaf relations is itself reflexive, so `≈` as
-stated above is reflexive, symmetric, and transitive. Prose `4.3:3b`, which
-cites this rule, must not be read as claiming more than that. The surface
-language's **floating-point types** `f32`/`f64` (`3.12:1`) are deliberately
-**not** among §2's `T` and are not modeled here; a float leaf compares by the
-IEEE 754 predicate (`3.12:27`), under which a `NaN` is not equal to itself. So
-`≈` extended over float leaves stays symmetric and transitive but loses
-reflexivity at exactly one place: `¬(v ≈ v)` for any `v` reaching a `NaN`, at
-any depth (`3.12:29`). Extended `≈` is a *partial* equivalence — a partial
-equivalence *relation* in the usual sense, symmetric and transitive without being
-reflexive, not a partially **defined** one. It remains a **total predicate**:
-every pair of well-typed values is either related or not, so `(D-Eq)` still fires
-on every pair and progress is untouched. What `≈` loses is reflexivity, not
-definedness. The prose says the same (`4.3:3g`).
+**`≈` is a partial equivalence on the core's types, and a total predicate
+(RUE-2007, amended by RUE-2158).** Every `T` of §2 bottoms out in an
+`int(w, s)`, `float(w)`, `bool`, or `unit` leaf, and the canonical text rungs
+added by §6.13.4 compare by byte content. The float leaf is the whole reason
+the qualification is needed; its clause of `≈` is IEEE 754 equality
+(`3.12:27`, `3.12:28`):
 
-The extension is **conservative for §7**. `≈` occurs in exactly two rule
+```
+  (f1)_{float(w)} ≈ (f2)_{float(w)}  ⟺  f1 and f2 are the same finite value,
+                                        or both +inf, or both -inf,
+                                        or both zeros of either sign  (-0.0 ≈ +0.0, 3.12:28)
+                                    and NEVER when either is a NaN    (3.12:27)
+```
+
+Every other leaf relation is reflexive, so `≈` is symmetric and transitive
+everywhere, and reflexive everywhere *except* through a NaN: `¬(v ≈ v)` for any
+`v` reaching a NaN, at any depth (`3.12:29`). `≈` is therefore a *partial*
+equivalence — a partial equivalence *relation* in the usual sense, symmetric
+and transitive without being reflexive, not a partially **defined** one. It
+remains a **total predicate**: every pair of well-typed values is either related
+or not, so `(D-Eq)` still fires on every pair and progress is untouched. What
+`≈` loses is reflexivity, not definedness. Prose `4.3:3b` and `4.3:3g`, which
+cite this rule, say the same, and now cite it exactly: the float leaf they
+describe is in the model, not outside it.
+
+The float leaf is **conservative for §7**. `≈` occurs in exactly two rule
 statements in this document — `(D-Eq)` here and the container equations of
 §6.13.4 — and neither appeals to reflexivity: `(D-Eq)` only forwards `≈`'s truth
 value into a `bool`, and `≟` neither moves nor drops its operands (§4.1, §6.3),
@@ -1886,9 +2132,8 @@ so no ownership, drop, or progress obligation is stated in terms of `v ≈ v`. T
 two `a == a` remarks in §5.4 and §5.8 are claims about **loan consistency**, not
 about the value produced, and the meta-level `=` of `(D-Use-Shared-Read)` and of
 §7's preservation statement is identity on model values, which stays reflexive
-whatever IEEE says. Adding a float leaf whose equality is irreflexive therefore
-invalidates no §7 theorem; it changes which `bool` a compare produces and nothing
-else.
+whatever IEEE says. A leaf whose equality is irreflexive therefore invalidates no
+§7 theorem; it changes which `bool` a compare produces and nothing else.
 
 Equality also reaches values through the container **searches** §6.13.3 leaves as
 compositions rather than writing out (`index_of`, `contains`): those evaluate `≟`
@@ -1896,11 +2141,8 @@ and so inherit this answer without naming `≈`. A buffer holding a `NaN` does n
 report that it `contains` one, for the same reason the aggregate around a `NaN`
 is not equal to itself. That is a consequence of the rule, not an exception to
 it, and it is why prose `4.3:3g`'s pointer at `@total_cmp` is advice about
-comparison rather than about the current search methods. Giving `f32`/`f64`
-their own `T`, values, and arithmetic dynamics (including the trap-free division
-of `3.12:22`, which does *not* fit §6.4's `(D-Div-Zero)`) is a separate
-amendment; this note records the equality consequence rather than leaving the
-prose citation overclaiming.
+comparison rather than about the current search methods — the total order itself
+is `(D-Total-Cmp)` below, and a container that needs reflexivity uses it.
 
 **Bitwise `& | ^ ~` and shifts `<< >>`** operate on the `w`-bit two's-complement
 representation and never trap (`bitop`/`shift`). Write `β_w(n)` for
@@ -1930,6 +2172,91 @@ signed type is arithmetic (sign-replicating), on an unsigned type logical
 ```
 
 `not` on `bool` is `not true → false`, `not false → true` (`Not`).
+
+**The float intrinsics `@f`** (§2, §5.8) reduce by their defining equations,
+like every other intrinsic with no core body (§6.9's intrinsic note). Four of
+the five groups are total; `@float_to_int` is the one float form that traps.
+
+```
+  n ∈ ℤ is the operand's value        f = rnd_w(n)
+  ───────────────────────────────────────────────────────────────── (D-Int-To-Float)
+  @int_to_float( (n)_{int(w',s')} )  →  (f)_{float(w)}            -- never traps (3.12:16)
+
+  f is neither a NaN nor ±inf         t = f truncated toward zero        T' = int(w',s')
+  min_{T'} ≤ t ≤ max_{T'}
+  ───────────────────────────────────────────────────────────────── (D-Float-To-Int)
+  @float_to_int( (f)_{float(w)} )  →  (t)_{T'}                    -- truncation toward zero (3.12:17)
+
+  f is a NaN, or f = ±inf, or  t = f truncated toward zero and t ∉ [min_{T'}, max_{T'}]
+  ───────────────────────────────────────────────────────────────── (D-Float-To-Int-Trap)
+  @float_to_int( (f)_{float(w)} )  →  ↯overflow                   -- (3.12:18, 8.1:7)
+
+  w' ≠ w        f' = rnd_{w'}(f)
+  ───────────────────────────────────────────────────────────────── (D-Float-Cast)
+  @float_cast( (f)_{float(w)} )  →  (f')_{float(w')}              -- never traps (3.12:19)
+
+  k < 0 if f1 ≺_w f2        k = 0 if f1 = f2 (the same datum)        k > 0 if f2 ≺_w f1
+  ───────────────────────────────────────────────────────────────── (D-Total-Cmp)
+  @total_cmp( (f1)_{float(w)}, (f2)_{float(w)} )  →  (k)_{int(32,signed)}
+
+  ⊙ ∈ { @sqrt, @floor, @ceil, @trunc, @round }        f' = ⊙_w(f)
+  ───────────────────────────────────────────────────────────────── (D-Float-Round)
+  ⊙( (f)_{float(w)} )  →  (f')_{float(w)}                         -- never traps (3.12:37)
+```
+
+`(D-Float-To-Int)` and `(D-Float-To-Int-Trap)` **partition** `𝔽_w`, which is
+what keeps progress intact for the one trapping form. `3.12:18` states the
+guard both ways — the conversion succeeds exactly when `MIN - 1 < f < MAX + 1`
+for the result type's bounds, equivalently when `f` is not a NaN and its
+truncation lies in `[min_{T'}, max_{T'}]` — and the two readings agree, with
+both infinities failing under either. The trap is **not** a new category: it is
+`↯overflow`, the same `overflow` §6.12 already lists, reported as `integer
+overflow` (`8.1:7`). Float *arithmetic* still never reaches it (`3.12:23`).
+
+`rnd_{w'}` in `(D-Float-Cast)` is exact when `w' > w` (widening is
+value-preserving, `3.12:19`), rounds to nearest with ties to even when
+`w' < w`, and yields `±inf` when the operand's magnitude is too large for
+`𝔽_{w'}`; on a special it carries the class across, an infinity giving the same
+infinity and a NaN giving `NaN(σ_NaN)` (`3.12:44` — a converted NaN is a NaN
+produced by a floating-point operation, so its sign is the target's).
+
+`≺_w` is the IEEE 754 `totalOrder` predicate on `𝔽_w` (`3.12:32`):
+
+```
+  NaN(-)  ≺  -inf  ≺  the negative finite values (descending magnitude)  ≺  -0
+          ≺  +0  ≺  the positive finite values (ascending magnitude)  ≺  +inf  ≺  NaN(+)
+```
+
+— a **total** order, under which `k = 0` holds exactly when the two operands
+are the same datum. That is this model's reading of `3.12:32`'s "the same bit
+pattern" (§2's representation decision, and §9 item 5 for the residual). It is
+the total order `4.3:3g` points at, and it is total precisely where `≈` is not:
+`@total_cmp(f, f) = 0` for every `f`, NaN included.
+
+`⊙_w` is the total function `3.12:35` and `3.12:36` define: the IEEE 754 square
+root for `@sqrt` (`NaN(σ_NaN)` on a negative operand, `-0.0` on `-0.0`, `+inf`
+on `+inf`), and rounding toward `-inf`, toward `+inf`, toward zero, and to
+nearest with ties *away* from zero for `@floor`, `@ceil`, `@trunc`, and
+`@round` — each exact, since an integral value near `f` is always
+representable. `3.12:37` fixes the special cases and makes all five trap-free.
+
+**The oracle does not yet run the float rules.** Every other §6 rule group
+names the `crates/rue-oracle` function that realizes it; the float groups name
+none, because the interpreter reports floats as a *modeled gap* instead of
+evaluating them. A float arithmetic, negation, or comparison instruction — and
+any equality whose operand type reaches a float leaf at any depth — raises
+`SemanticGapKind::FloatArithmetic`, and `@int_to_float` / `@float_to_int` /
+`@float_cast` raise the matching `UnsupportedIntrinsicKind` (verified in
+`crates/rue-oracle/src/lib.rs`; the gaps are registered for the differential
+harness under `crates/rue-oracle-diff/src/model_gaps/`). The interpreter's own
+reason for the gap is the one §2's representation decision turns on: it stores
+scalars as integer bit patterns, so letting a float comparison through would
+model *bit* equality where `3.12:27` asks for IEEE equality. The rules above
+are therefore the paper semantics only, and the RUE-50 differential obligation
+on them is **owed, not discharged** — extending the interpreter to the datum
+model of §2 is step 5 of the README's rubric for this construct, and the rest
+of this section's "the thing that governs the spec is the thing we can run"
+claim does not yet extend to floats.
 
 ### 6.5 Aggregate introduction and projection
 
@@ -2218,7 +2545,7 @@ drop in `3.9` order (`run_drop`):
 
 ```
   drop(H, ⊘)                       = H                                   -- moved-out / uninitialised: skip
-  drop(H, n_T) = drop(H, b) = drop(H, ⟨⟩) = H                            -- scalars are Copy: nothing to drop
+  drop(H, n_T) = drop(H, f_T) = drop(H, b) = drop(H, ⟨⟩) = H             -- scalars are Copy: nothing to drop
   drop(H, { v1,…,vk }_S)           = drop*( H , [v1,…,vk] )              -- S declares NO destructor: fields in DECLARATION order
   drop(H, { v1,…,vk }_S)           = drop*( H1[ℓ↦†] , [c1,…,ck] )        -- S declares a destructor: see the construction below
   drop(H, [ v1,…,vn ])             = drop*( H , [v1,…,vn] )              -- elements in ASCENDING index order
@@ -2290,13 +2617,18 @@ suppresses the later scope-exit drop through the original place.
 
 ### 6.12 Traps and the top-level result
 
-The five trap categories — `overflow` (arithmetic, `neg`, `min_T / -1`),
-`div-zero`, `rem-zero`, `bounds` (a negative or out-of-range array index), and
-`user` (an explicit `@panic`) — each abandon the configuration to `↯κ` and halt
-the program with the panic exit code of Appendix B (101), regardless of
-surrounding context (§6.2, Panic-Lift). They are **total, deterministic, and
-observable**: an alternate compiler must reproduce the same trap on the same
-input (`3.1:6/13`, `8.1`–`8.3`).
+The five trap categories — `overflow` (integer arithmetic, integer `neg`,
+`min_T / -1`, and `@float_to_int` on a NaN or out of range — `3.12:18`,
+`8.1:7`), `div-zero`, `rem-zero`, `bounds` (a negative or out-of-range array
+index), and `user` (an explicit `@panic`) — each abandon the configuration to
+`↯κ` and halt the program with the panic exit code of Appendix B (101),
+regardless of surrounding context (§6.2, Panic-Lift). They are **total,
+deterministic, and observable**: an alternate compiler must reproduce the same
+trap on the same input (`3.1:6/13`, `8.1`–`8.3`). Floating point adds no
+category and only one producer: `@float_to_int` joins the `overflow` list above
+(`8.1:7`), while float arithmetic, negation, comparison, `@float_cast`,
+`@total_cmp`, and the five rounding intrinsics never trap at all (`3.12:21`,
+`3.12:23`, `3.12:24`, `3.12:19`, `3.12:32`, `3.12:37`) — §6.4.
 
 The `user` category is `@panic`'s defining equation (RUE-526 — previously the
 paper machine had no rule for it). `@panic` is an intrinsic (§6.9's
@@ -2825,6 +3157,21 @@ neither claims anything about an uninhabited-parameter function such as
   cells — no new rule is needed, which is precisely why the RUE-390 ruling
   wanted allocations abstract.
 
+**Floats add no obligation to any of the seven** (RUE-2158). `class(float(w))`
+is `Copy` (§3), so a float value is never moved, never leaves a `⊘` behind, has
+no drop glue, is never registered in a scope record, and never names an
+allocation: the no-use-after-move, no-double-free, no-use-after-drop,
+no-use-after-free, consumed-exactly-once, and exclusivity bullets quantify over
+float values vacuously, and no lemma about loans, views, or handles acquires a
+new case. Preservation is immediate: every §6.4 float rule replaces a
+`float(w)` redex with a `float(w)` value, `(D-Float-To-Int)` with the
+`int(w',s')` its typing rule gives, `(D-Total-Cmp)` with an `int(32,signed)`,
+and the compares with a `bool`. Progress is the only theorem that is owed
+anything at all, and what it is owed is exactly the lemma below — that a float
+redex can always take its step. Equality is handled separately by §6.4's `≈`
+paragraph, which shows that the reflexivity the float leaf costs is appealed to
+by no theorem here.
+
 The eventual metatheory proof also owes these explicit lemmas:
 
 - **Loan/drop non-interference.** No live loan root may be in a scope record that
@@ -2841,6 +3188,14 @@ The eventual metatheory proof also owes these explicit lemmas:
   loaned place. This follows from `fully-owned` at loan creation plus the
   no-move-while-loaned premise, and it is the invariant the §6.13.2 view rules
   rely on when runtime indices prevent per-element ownership tracking.
+- **Totality of the float operations.** For each `w ∈ {32, 64}`: `⊕_w` is a
+  total function `𝔽_w × 𝔽_w → 𝔽_w`, `rnd_w` is total into `𝔽_w`, `≺_w` is a
+  total order on `𝔽_w`, each `⊙_w` of §6.4 is total on `𝔽_w`, and the premises
+  of `(D-Float-To-Int)` and `(D-Float-To-Int-Trap)` partition `𝔽_w`. This is
+  what makes every float redex able to step — the one progress obligation
+  floats create (`3.12:21`, `3.12:23`, `3.12:32`, `3.12:37`, and `3.12:18` for
+  the partition). It is a statement about IEEE 754, discharged against the
+  standard rather than against Rue.
 - **Handle-uniqueness preservation.** Reduction preserves (O1): every live
   buffer allocation is named by exactly one live handle (plus, transiently,
   the views its loans justify). The §6.13 equations must be audited to
@@ -2865,13 +3220,15 @@ than hidden.
 For the spec-traceability discipline (`crates/rue-spec`), the correspondence so
 far. As breadth is filled in, each new rule adds its citation. The §6 rows below
 also correspond, function-for-function, to `crates/rue-oracle` — the executable
-witness of the dynamic semantics (RUE-50), cited inline in each §6 rule group.
+witness of the dynamic semantics (RUE-50), cited inline in each §6 rule group;
+the float rows are the one exception, whose oracle correspondence §6.4 records
+as owed rather than discharged.
 
 | Formal notion | Prose paragraphs it formalizes / replaces |
 |---|---|
 | §2 elaboration inventory — *recorded as deferred, not subsumed* | 4.8:23–29 (`for`), 4.8:8/9/10/13, 4.8:27 (`continue`) |
 | §2 reachability-pruning assumption (+ §7's quantification) | 10.5:4, 6.3:12 |
-| §5.8 (Panic)/(Dbg) intrinsic statics | 3.4:2, 8.1–8.3 (`@panic`); `@dbg` has no prose paragraph of its own |
+| §5.8 (Panic)/(Dbg) intrinsic statics | 3.4:2, 8.1–8.3 (`@panic`); 3.12:39 (`@dbg`'s float operand) |
 | §3 multiplicity lattice | 3.8:1–3, 3.8:14/16/18/20, 3.8:30/32/37, 3.8:57/58, 3.8:74, 3.9:31, 6.3:19 |
 | §4.2 definition of *use* (+ §5.1 premises) | 3.8:5, 3.8:7, 3.8:9, 3.8:11, 3.8:22, 3.8:26, 3.8:33, 3.8:53, 3.8:68, 3.9:34 |
 | §5.1 declared-linear projection destructure (smallest place, residue gate, and ownership transition) | 3.8:33, 3.8:60, 3.8:74, 3.9:34 |
@@ -2889,7 +3246,12 @@ witness of the dynamic semantics (RUE-50), cited inline in each §6 rule group.
 | §5.7 divergence + never-coercion; (Loop-Div)/(Loop-Break) loop typing, reachable back-edge invariance, and the break-edge join | 3.4:1/2/3/4/6/6a/8, 3.4:9, 4.8:21, 3.8:50/51/79/80 |
 | §6.2 evaluation order (contexts, left-to-right) | 4.0:3–9 |
 | §6.3 dynamic use: declared-linear destructure, copy vs. ordinary move; equality borrows | 3.8:5/7/22/33/60/68/74, 3.9:1/2/13/15/28/34, 4.3:3f |
-| §6.4 operator dynamics: arith/div/mod, compare, bitwise/shift; the `≈` totality note and its float-leaf exception | 4.2:1, 4.3:1/2, 4.3:3b, 4.3:3g, 4.3a:10, 3.1:6/13, 3.12:27, 3.12:29 |
+| §6.4 operator dynamics: arith/div/mod, compare, bitwise/shift; the `≈` partial-equivalence note (its float leaf below) | 4.2:1, 4.3:1/2, 4.3:3b, 4.3:3g, 4.3a:10, 3.1:6/13 |
+| §2 `float(w)` + the IEEE-datum representation decision; §3 `class(float(w)) = Copy`; §6.1 float values | 3.12:1, 3.12:2, 3.12:44, 3.12:45 |
+| §5.8 float literal typing (`comptime_float` resolved by elaboration, as for integers) | 3.12:3, 3.12:7–11, 4.1:13/14 |
+| §5.8 float operator statics: same-width `+ - * /`, float `neg`, ordering; `%`, bitwise/shift, and `not` rejected by absence | 3.12:13, 3.12:14, 3.12:25, 4.2:14, 4.3:5 |
+| §6.4 float dynamics: trap-free arithmetic, division by zero, overflow to infinity, sign-flip `neg`, the IEEE compares, and `≈` at a float leaf | 3.12:21–24, 3.12:27–29 |
+| §5.8/§6.4 float intrinsics: the three conversions (with `@float_to_int`'s `↯overflow` trap), `@total_cmp`'s `totalOrder`, and the rounding five | 3.12:15–19, 3.12:31/32, 3.12:34–37, 4.13:139–143, 8.1:7 |
 | §6.5 aggregate intro + projection (declared-linear selection and bounds) | 3.5:2, 3.6:16, 3.8:33/60/68, 3.9:34, 4.11:14, 4.12:9, 8.2 |
 | §6.6 enum intro + match dynamics | 6.3:17, 4.7:16 |
 | §6.7/§6.8 let/seq/scope-drop (σ registration + `endscope`), assignment overwrite-drop; α-renamed shadowing | 4.5:3, 3.8:12/13, 3.8:55/64, 3.9 |
@@ -2922,3 +3284,27 @@ locked:
    (matching `3.8:68/70`); dynamic-index moves are forbidden. Confirm this stays
    as the core rule (it is what keeps the ownership analysis decidable without
    dependent types).
+5. **Two float-side prose silences the RUE-2158 amendment could not close
+   itself (§2, §3, §6.4).** Giving `f32`/`f64` their own place in the core
+   forced two questions the prose does not answer. The core takes the
+   conservative reading in each rather than inventing one, and both are marked
+   here rather than left implicit:
+   - **NaN payloads.** `3.12:32` defines `@total_cmp`'s zero case as the
+     operands having "the same bit pattern", and ADR-0065 §8 orders NaNs "by
+     sign and payload bit pattern" — but no paragraph says which payload an
+     operation *produces* (`3.12:44` pins only the sign), and nothing in the
+     language constructs or inspects one: `@bitCast` reinterprets an integer at
+     another integer type only (`4.13:118`, `4.13:119`), and ADR-0065 §8 and
+     its Future Work record the absence of a float↔integer reinterpretation as
+     deliberate. §2 therefore models a NaN as sign-only, so `(D-Total-Cmp)`
+     yields `0` for two same-sign NaNs where a literal bit-pattern reading
+     might not. Confirm that reading — or, if a payload is meant to be
+     observable, `𝔽_w` needs a payload component and `3.12:44` needs a
+     companion paragraph fixing which payload an operation yields.
+   - **The `Copy` classification of the float types.** `3.8:2`'s list of Copy
+     types predates floats and does not name them, and `3.12` never states it.
+     §3 derives `class(float(w)) = Copy` from `3.12:26`, which uses one `f64`
+     binding five times in one body, and from the absence of any destructor or
+     `linear` attribute on a float type. Confirm the derivation — and `3.8:2`'s
+     list wants the two names added, a prose edit this `docs/formal`-only
+     change deliberately does not make.
