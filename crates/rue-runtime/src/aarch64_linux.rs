@@ -368,14 +368,16 @@ pub fn munmap(addr: *mut u8, size: usize) -> i64 {
 }
 
 // ============================================================================
-// Stack-overflow trapping (RUE-645)
+// SIGSEGV trapping (RUE-645, RUE-2163)
 // ============================================================================
 //
 // A stack overflow faults on the guard page and raises SIGSEGV. With no handler
 // the kernel kills the process (exit 139). To abort cleanly we register a small
 // alternate signal stack and a SIGSEGV handler that runs on it (SA_ONSTACK),
-// prints "stack overflow", and exits 101. See `entry::__rue_stack_overflow_handler`
-// for why any SIGSEGV from safe Rue is treated as a stack overflow.
+// which reports either a stack overflow or a segmentation fault at the faulting
+// address and exits 101. The handler is installed with SA_SIGINFO so it can read
+// that address out of `siginfo_t`; see `crate::fault` for the rule that decides
+// between the two.
 //
 // Unlike x86-64, aarch64 Linux needs no user-supplied signal-return trampoline:
 // the kernel installs the sigreturn trampoline from the vDSO automatically when
@@ -394,6 +396,10 @@ const SIGSEGV: u64 = 11;
 /// `SA_ONSTACK`: run the handler on the alternate signal stack.
 const SA_ONSTACK: u64 = 0x0800_0000;
 
+/// `SA_SIGINFO`: deliver the three-argument handler, whose second argument is
+/// the `siginfo_t` carrying the faulting address (RUE-2163).
+const SA_SIGINFO: u64 = 0x0000_0004;
+
 /// Kernel `struct sigaction` layout on aarch64 Linux (asm-generic ABI): handler,
 /// flags, restorer, then mask last.
 #[repr(C)]
@@ -410,6 +416,86 @@ struct StackT {
     ss_sp: *mut u8,
     ss_flags: i32,
     ss_size: usize,
+}
+
+/// The head of the kernel's `siginfo_t`, up to the field this runtime reads.
+///
+/// aarch64 takes the generic layout of `include/uapi/asm-generic/siginfo.h`
+/// unchanged: `si_signo`, `si_errno`, `si_code`, then the `_sifields` union,
+/// whose first member is a pointer and so starts at offset 16 on LP64.
+/// `_sigfault._addr` — the faulting address — is that union's first word. The
+/// kernel's buffer is 128 bytes, so reading these 24 is in bounds.
+#[repr(C)]
+struct SigInfo {
+    si_signo: i32,
+    si_errno: i32,
+    si_code: i32,
+    _pad: i32,
+    si_addr: usize,
+}
+
+/// The faulting address sits at offset 16; a stray field or padding change
+/// here would silently read the wrong word out of the kernel's buffer.
+const _: () = assert!(core::mem::offset_of!(SigInfo, si_addr) == 16);
+
+/// The address a SIGSEGV faulted on, read from the kernel's `siginfo_t`.
+///
+/// # Safety
+///
+/// `info` must be the `siginfo_t` pointer the kernel passed to a `SA_SIGINFO`
+/// signal handler.
+pub unsafe fn fault_address(info: *const u8) -> usize {
+    if info.is_null() {
+        return 0;
+    }
+    // SAFETY: the caller guarantees a kernel-supplied `siginfo_t`, which is at
+    // least 128 bytes and laid out as `SigInfo` describes.
+    unsafe { (*info.cast::<SigInfo>()).si_addr }
+}
+
+/// Linux aarch64 syscall number for prlimit64 (from asm-generic/unistd.h).
+///
+/// The asm-generic table has no `getrlimit`, so `prlimit64` is the only way to
+/// read `RLIMIT_STACK` here; x86-64 uses the same call for symmetry.
+const SYS_PRLIMIT64: u64 = 261;
+
+/// `RLIMIT_STACK` resource number (`include/uapi/asm-generic/resource.h`).
+const RLIMIT_STACK: u64 = 3;
+
+/// `struct rlimit64`: the soft limit, then the hard limit.
+#[repr(C)]
+struct Rlimit64 {
+    rlim_cur: u64,
+    rlim_max: u64,
+}
+
+/// The soft `RLIMIT_STACK`, or `None` when the kernel would not report it.
+///
+/// `RLIM64_INFINITY` (`~0`) is reported as `None`: an unlimited stack gives the
+/// classification no bound to work from, and `crate::fault` substitutes its own
+/// conservative window.
+pub fn stack_limit() -> Option<usize> {
+    let mut limit = Rlimit64 {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    let result: i64;
+    // SAFETY: prlimit64(pid=0 (self), resource, new_limit=NULL, old_limit) only
+    // writes through `old_limit`, which addresses the live local above.
+    unsafe {
+        asm!(
+            "svc #0",
+            in("x8") SYS_PRLIMIT64,
+            inlateout("x0") 0u64 => result, // pid: 0 = this process
+            in("x1") RLIMIT_STACK,
+            in("x2") 0u64,                  // new_limit: NULL
+            in("x3") &raw mut limit,
+        );
+    }
+    if result < 0 || limit.rlim_cur == u64::MAX {
+        return None;
+    }
+    usize::try_from(limit.rlim_cur).ok()
 }
 
 /// Register the alternate signal stack with `sigaltstack(2)`.
@@ -456,11 +542,11 @@ unsafe fn rt_sigaction(sig: u64, act: *const KernelSigaction) -> i64 {
     result
 }
 
-/// Install the stack-overflow SIGSEGV handler (see module comment above).
+/// Install the SIGSEGV handler (see module comment above).
 ///
 /// Best-effort: if the alt stack cannot be mapped or a syscall fails, we return
 /// without installing anything and keep the default SIGSEGV disposition.
-pub fn install_stack_overflow_handler(handler: extern "C" fn(i32) -> !) {
+pub fn install_segv_handler(handler: crate::fault::SegvHandler) {
     /// Size of the alternate signal stack (16 KiB).
     const ALT_STACK_SIZE: usize = 16 * 1024;
 
@@ -482,7 +568,7 @@ pub fn install_stack_overflow_handler(handler: extern "C" fn(i32) -> !) {
 
     let act = KernelSigaction {
         sa_handler: handler as usize,
-        sa_flags: SA_ONSTACK,
+        sa_flags: SA_ONSTACK | SA_SIGINFO,
         sa_restorer: 0,
         sa_mask: 0,
     };
@@ -653,13 +739,31 @@ mod tests {
     }
 
     #[test]
-    fn stack_overflow_handler_is_installable() {
+    fn segv_handler_is_installable() {
         // Reference the installer (and, transitively, its `sigaltstack` /
-        // `rt_sigaction` wrappers and structs) so the RUE-645 stack-overflow
-        // trap machinery is type-checked by the unit-test build. We only take
-        // its address: calling it would install a process-wide SIGSEGV handler,
-        // which must not happen inside the test harness.
-        let installer: fn(extern "C" fn(i32) -> !) = install_stack_overflow_handler;
+        // `rt_sigaction` wrappers and structs) so the SIGSEGV trap machinery is
+        // type-checked by the unit-test build. We only take its address:
+        // calling it would install a process-wide SIGSEGV handler, which must
+        // not happen inside the test harness.
+        let installer: fn(crate::fault::SegvHandler) = install_segv_handler;
         assert!(installer as usize != 0);
+    }
+
+    /// `fault_address` tolerates a null `siginfo_t` (a handler entered without
+    /// one) rather than dereferencing it. The populated path cannot be
+    /// exercised in-process — only the kernel produces a real `siginfo_t` — and
+    /// is covered by the `cli.segfault` cases.
+    #[test]
+    fn a_null_siginfo_reports_a_zero_fault_address() {
+        // SAFETY: the null case is exactly what this asks about.
+        assert_eq!(unsafe { fault_address(core::ptr::null()) }, 0);
+    }
+
+    /// The soft stack limit is a plausible finite size on any host running the
+    /// suite; `None` would mean the syscall shape is wrong.
+    #[test]
+    fn the_stack_limit_is_readable() {
+        let limit = stack_limit().expect("RLIMIT_STACK is set on Linux hosts");
+        assert!(limit >= 64 * 1024, "implausible stack limit: {limit}");
     }
 }

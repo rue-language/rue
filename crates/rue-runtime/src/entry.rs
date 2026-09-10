@@ -32,8 +32,8 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     platform::exit(101)
 }
 
-/// SIGSEGV handler installed by `_start` to turn a stack overflow into a clean
-/// abort (RUE-645).
+/// SIGSEGV handler installed at process entry, which turns a fault into a clean
+/// abort (RUE-645) and says which kind of fault it was (RUE-2163).
 ///
 /// # Why this exists
 ///
@@ -41,28 +41,31 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 /// kernel guard page and raises `SIGSEGV`. With no handler the default
 /// disposition kills the process, and the shell reports the raw crash (exit code
 /// 139 = 128 + SIGSEGV). Rust and Go instead catch this and print a readable
-/// "stack overflow" message before exiting non-zero. This handler does the same:
-/// it writes `"stack overflow\n"` to stderr and exits with code 101 — the same
-/// abort code the other runtime traps use (division by zero, overflow, bounds).
+/// "stack overflow" message before exiting non-zero. This handler does the same,
+/// and exits with code 101 — the same abort code the other runtime traps use
+/// (division by zero, overflow, bounds).
 ///
 /// # Running on an exhausted stack
 ///
-/// The handler cannot run on the main stack, which is what overflowed. `_start`
-/// registers a small alternate signal stack via `sigaltstack` and installs this
-/// handler with `SA_ONSTACK`, so the kernel switches to that alt stack to deliver
-/// the signal. See each platform's `install_stack_overflow_handler`.
+/// The handler cannot run on the main stack, which is what overflowed. The entry
+/// code registers a small alternate signal stack via `sigaltstack` and installs
+/// this handler with `SA_ONSTACK`, so the kernel switches to that alt stack to
+/// deliver the signal. See each platform's `install_segv_handler`.
 ///
-/// # Treating any SIGSEGV as stack overflow
+/// # Classifying the fault
 ///
-/// We do not inspect `siginfo.si_addr` to confirm the fault is near the stack
-/// pointer. In safe Rue there is no other way to reach `SIGSEGV`: array accesses
-/// are bounds-checked, there are no null/raw-pointer dereferences, and arithmetic
-/// traps rather than corrupting memory. So any `SIGSEGV` a compiled Rue program
-/// can produce is a stack overflow, and reporting it as such is correct. This
-/// keeps the handler freestanding (no `SA_SIGINFO`, no `siginfo_t` layout).
+/// A blown stack is no longer the only `SIGSEGV` a Rue program can raise: a
+/// `checked` block can write through a null or wild raw pointer (spec chapter
+/// 9), and a C FFI callee can fault anywhere. The handler is therefore installed
+/// with `SA_SIGINFO` and reads the faulting address out of the `siginfo_t` the
+/// kernel supplies. An address inside the window below the captured stack base
+/// is a stack overflow and keeps the pinned `stack overflow` message; anything
+/// else reports `segmentation fault at 0x<address>`. [`crate::fault`] owns the
+/// window rule and the two messages.
 ///
-/// The signal-number argument is unused for the same reason: this handler is
-/// only ever registered for `SIGSEGV`.
+/// The signal-number argument is unused: this handler is only ever registered
+/// for `SIGSEGV`. The interrupted context is unused too — the handler exits
+/// rather than resuming.
 ///
 /// # Never returns
 ///
@@ -77,26 +80,35 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
         all(target_arch = "aarch64", target_os = "linux")
     )
 ))]
-pub(crate) extern "C" fn __rue_stack_overflow_handler(_sig: i32) -> ! {
-    // "stack overflow\n" built byte-by-byte to avoid the macOS byte-string
-    // linker bug (mirrors the message handlers in `error.rs`).
-    let mut msg = [0u8; 15];
-    msg[0] = b's';
-    msg[1] = b't';
-    msg[2] = b'a';
-    msg[3] = b'c';
-    msg[4] = b'k';
-    msg[5] = b' ';
-    msg[6] = b'o';
-    msg[7] = b'v';
-    msg[8] = b'e';
-    msg[9] = b'r';
-    msg[10] = b'f';
-    msg[11] = b'l';
-    msg[12] = b'o';
-    msg[13] = b'w';
-    msg[14] = b'\n';
-    platform::write_stderr(&msg);
+pub(crate) extern "C" fn __rue_segv_handler(_sig: i32, info: *const u8, _context: *const u8) -> ! {
+    // SAFETY: the kernel delivers this handler's `siginfo_t` in `info`, and the
+    // platform decoder tolerates a null pointer.
+    let address = unsafe { platform::fault_address(info) };
+
+    if crate::fault::is_stack_overflow(address) {
+        // "stack overflow\n" built byte-by-byte to avoid the macOS byte-string
+        // linker bug (mirrors the message handlers in `error.rs`).
+        let mut msg = [0u8; 15];
+        msg[0] = b's';
+        msg[1] = b't';
+        msg[2] = b'a';
+        msg[3] = b'c';
+        msg[4] = b'k';
+        msg[5] = b' ';
+        msg[6] = b'o';
+        msg[7] = b'v';
+        msg[8] = b'e';
+        msg[9] = b'r';
+        msg[10] = b'f';
+        msg[11] = b'l';
+        msg[12] = b'o';
+        msg[13] = b'w';
+        msg[14] = b'\n';
+        platform::write_stderr(&msg);
+    } else {
+        let mut buffer = [0u8; crate::fault::SEGFAULT_MESSAGE_MAX];
+        platform::write_stderr(crate::fault::segfault_message(address, &mut buffer));
+    }
     platform::exit(101)
 }
 
@@ -108,7 +120,28 @@ pub(crate) extern "C" fn __rue_stack_overflow_handler(_sig: i32) -> ! {
         all(target_arch = "aarch64", target_os = "linux")
     )
 ))]
-const _: extern "C" fn(i32) -> ! = __rue_stack_overflow_handler;
+const _: crate::fault::SegvHandler = __rue_segv_handler;
+
+/// Record the stack window and install the SIGSEGV handler before user code
+/// runs, so a fault aborts cleanly (RUE-645) instead of dying with a raw
+/// SIGSEGV (exit 139), and is classified against a real stack bound (RUE-2163).
+///
+/// `stack_top` is the stack pointer at process entry. Best-effort throughout:
+/// if the handler cannot be installed the program simply keeps the default
+/// SIGSEGV disposition, and if the platform cannot report `RLIMIT_STACK` the
+/// classification falls back to its own conservative window.
+#[cfg(all(
+    not(test),
+    any(
+        all(target_arch = "x86_64", target_os = "linux"),
+        all(target_arch = "aarch64", target_os = "macos"),
+        all(target_arch = "aarch64", target_os = "linux")
+    )
+))]
+fn arm_segv_handler(stack_top: usize) {
+    crate::fault::record_stack_window(stack_top, platform::stack_limit());
+    platform::install_segv_handler(__rue_segv_handler);
+}
 
 /// Normal SysV function called by the prologue-free x86-64 Linux entry shim.
 ///
@@ -126,11 +159,9 @@ pub(crate) fn __rue_x86_64_linux_start(stack: *const usize) -> ! {
     // SAFETY: `stack` is the initial process stack pointer from `_start`.
     unsafe { crate::process::capture_from_stack(stack) };
 
-    // Install the stack-overflow SIGSEGV handler before running user code so a
-    // deep-recursion overflow aborts cleanly (RUE-645) instead of dying with a
-    // raw SIGSEGV (exit 139). Best-effort: if setup fails the program simply
-    // keeps the default SIGSEGV disposition.
-    platform::install_stack_overflow_handler(__rue_stack_overflow_handler);
+    // The initial `%rsp` is the base of the main stack, which is what the
+    // SIGSEGV handler classifies a faulting address against (RUE-2163).
+    arm_segv_handler(stack as usize);
 
     // SAFETY: `main` is the linked Rue entry function and uses the C ABI.
     let exit_code = unsafe { main() };
@@ -165,10 +196,16 @@ pub(crate) unsafe fn _main(argc: i32, argv: *const *const u8, envp: *const *cons
     // SAFETY: `argv`/`envp` are the loader-supplied vectors for this process.
     unsafe { crate::process::capture(argc as u64, argv, envp) };
 
-    // Install the stack-overflow SIGSEGV handler before running user code.
-    // (A deliberate no-op on macOS; the Darwin trampoline is tracked by
-    // RUE-707.)
-    platform::install_stack_overflow_handler(__rue_stack_overflow_handler);
+    // dyld hands us argc/argv/envp rather than the raw entry stack, so the
+    // stack base the SIGSEGV handler classifies against is read from `sp` here
+    // (RUE-2163). This is a frame or two below the true base, which only widens
+    // the overflow window downward and so cannot lose a real overflow.
+    let stack_top: usize;
+    // SAFETY: reading the stack pointer has no side effects.
+    unsafe {
+        asm!("mov {}, sp", out(reg) stack_top, options(nomem, nostack, preserves_flags));
+    }
+    arm_segv_handler(stack_top);
 
     let exit_code: i32;
     // SAFETY: This is the program entry point called by the kernel.
@@ -216,11 +253,9 @@ pub(crate) fn __rue_aarch64_linux_start(stack: *const usize) -> ! {
     // SAFETY: `stack` is the initial process stack pointer from `_start`.
     unsafe { crate::process::capture_from_stack(stack) };
 
-    // Install the stack-overflow SIGSEGV handler before running user code so a
-    // deep-recursion overflow aborts cleanly (RUE-645) instead of dying with a
-    // raw SIGSEGV (exit 139). Best-effort: if setup fails the program simply
-    // keeps the default SIGSEGV disposition.
-    platform::install_stack_overflow_handler(__rue_stack_overflow_handler);
+    // The initial `sp` is the base of the main stack, which is what the SIGSEGV
+    // handler classifies a faulting address against (RUE-2163).
+    arm_segv_handler(stack as usize);
 
     let exit_code: i32;
     // SAFETY:

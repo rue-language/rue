@@ -413,6 +413,21 @@ const SIGSEGV: u64 = 11;
 /// differs from Linux's (0x0800_0000).
 const SA_ONSTACK: i32 = 0x0001;
 
+/// Deliver the three-argument handler, whose second argument is the `siginfo_t`
+/// carrying the faulting address (RUE-2163). Darwin's value (0x0040) differs
+/// from Linux's (0x0004).
+const SA_SIGINFO: i32 = 0x0040;
+
+/// macOS syscall number for getrlimit (SYS_getrlimit).
+const SYS_GETRLIMIT: u64 = 194;
+
+/// `RLIMIT_STACK` resource number (XNU `bsd/sys/resource.h`), the same value
+/// Linux uses.
+const RLIMIT_STACK: u64 = 3;
+
+/// Darwin's `RLIM_INFINITY`, which is `(1 << 63) - 1` rather than Linux's `~0`.
+const RLIM_INFINITY: u64 = (1 << 63) - 1;
+
 // Darwin's `sigaction(2)` (SYS_sigaction = 46) takes a `struct __sigaction`
 // that, unlike Linux, carries a CALLER-SUPPLIED signal trampoline
 // (`sa_tramp`): on delivery the kernel jumps to `sa_tramp`, not the handler.
@@ -421,18 +436,24 @@ const SA_ONSTACK: i32 = 0x0001;
 // `sendsig` enters it with
 //   x0 = catcher (the registered handler), x1 = infostyle, x2 = sig,
 //   x3 = siginfo*, x4 = ucontext*.
-// Our catcher is `extern "C" fn(i32) -> !` and exits the process, so the
-// trampoline only needs to invoke it with the signal number in `x0`; it never
-// returns, so no `sigreturn` epilogue is required (the same reasoning as the
-// x86-64 Linux restorer, which also never runs because the handler exits).
+// Our catcher is the `SA_SIGINFO` three-argument handler
+// `extern "C" fn(i32, *const u8, *const u8) -> !`, so the trampoline shuffles
+// the kernel's registers into `(sig, siginfo, ucontext)` — the same shuffle
+// libplatform's own `_sigtramp` performs. The catcher exits the process, so it
+// never returns and no `sigreturn` epilogue is required (the same reasoning as
+// the x86-64 Linux restorer, which also never runs because the handler exits).
+// `infostyle` in x1 is what libc uses to pick a `sigreturn` flavor; a catcher
+// that never returns has no use for it.
 core::arch::global_asm!(
     ".private_extern _rue_darwin_sigtramp",
     ".globl _rue_darwin_sigtramp",
     ".p2align 2",
     "_rue_darwin_sigtramp:",
     "mov x9, x0", // x9 = catcher (the real handler)
-    "mov x0, x2", // x0 = sig (the handler's only argument)
-    "blr x9",     // catcher(sig) — never returns (it exits)
+    "mov x0, x2", // x0 = sig
+    "mov x1, x3", // x1 = siginfo*
+    "mov x2, x4", // x2 = ucontext*
+    "blr x9",     // catcher(sig, siginfo, ucontext) — never returns (it exits)
     "brk #0x1",   // trap if control ever returns here
 );
 
@@ -462,6 +483,83 @@ struct DarwinSigaction {
     sa_tramp: usize,
     sa_mask: u32,
     sa_flags: i32,
+}
+
+/// The head of Darwin's `siginfo_t`, up to the field this runtime reads.
+///
+/// XNU `bsd/sys/signal.h` declares `struct __siginfo` as `si_signo`,
+/// `si_errno`, `si_code`, `si_pid`, `si_uid`, `si_status` — six 32-bit fields —
+/// and then `void *si_addr`, so the faulting address sits at offset 24 rather
+/// than Linux's 16. The struct is 104 bytes, so reading these 32 is in bounds.
+#[repr(C)]
+struct DarwinSigInfo {
+    si_signo: i32,
+    si_errno: i32,
+    si_code: i32,
+    si_pid: i32,
+    si_uid: u32,
+    si_status: i32,
+    si_addr: usize,
+}
+
+/// The faulting address sits at offset 24; a stray field or padding change
+/// here would silently read the wrong word out of the kernel's buffer.
+const _: () = assert!(core::mem::offset_of!(DarwinSigInfo, si_addr) == 24);
+
+/// The address a SIGSEGV faulted on, read from the kernel's `siginfo_t`.
+///
+/// # Safety
+///
+/// `info` must be the `siginfo_t` pointer the kernel passed to a `SA_SIGINFO`
+/// signal handler (by way of `sa_tramp`).
+pub unsafe fn fault_address(info: *const u8) -> usize {
+    if info.is_null() {
+        return 0;
+    }
+    // SAFETY: the caller guarantees a kernel-supplied `siginfo_t`, which is 104
+    // bytes and laid out as `DarwinSigInfo` describes.
+    unsafe { (*info.cast::<DarwinSigInfo>()).si_addr }
+}
+
+/// Darwin `struct rlimit`: the soft limit, then the hard limit, both `rlim_t`
+/// (`__uint64_t`).
+#[repr(C)]
+struct DarwinRlimit {
+    rlim_cur: u64,
+    rlim_max: u64,
+}
+
+/// The soft `RLIMIT_STACK`, or `None` when the kernel would not report it.
+///
+/// `RLIM_INFINITY` is reported as `None`: an unlimited stack gives the
+/// classification no bound to work from, and `crate::fault` substitutes its own
+/// conservative window.
+pub fn stack_limit() -> Option<usize> {
+    let mut limit = DarwinRlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    let result: i64;
+    let err_flag: u64;
+    // SAFETY: getrlimit(which, rlp) writes only through `rlp`, which addresses
+    // the live local above; the carry flag signals an error as in every wrapper
+    // in this module.
+    unsafe {
+        asm!(
+            "svc #0x80",
+            "cset {err}, cs",
+            inlateout("x16") SYS_GETRLIMIT => _,
+            in("x0") RLIMIT_STACK,
+            in("x1") &raw mut limit,
+            lateout("x0") result,
+            err = out(reg) err_flag,
+            out("x17") _,
+        );
+    }
+    if err_flag != 0 || result < 0 || limit.rlim_cur >= RLIM_INFINITY {
+        return None;
+    }
+    usize::try_from(limit.rlim_cur).ok()
 }
 
 /// Register `nss` as the alternate signal stack (`sigaltstack(2)`).
@@ -514,13 +612,14 @@ unsafe fn sigaction_syscall(sig: u64, nsa: *const DarwinSigaction) -> i64 {
     if err_flag != 0 { -result } else { result }
 }
 
-/// Install the stack-overflow SIGSEGV handler (RUE-645 / RUE-707).
+/// Install the SIGSEGV handler (RUE-645 / RUE-707 / RUE-2163).
 ///
 /// Maps a 64 KiB alternate signal stack (comfortably above macOS
 /// `MINSIGSTKSZ`), registers it with `sigaltstack`, and installs a `SIGSEGV`
-/// handler via the raw `sigaction` syscall with `SA_ONSTACK` and our own
-/// `sa_tramp`. A stack overflow then aborts cleanly ("stack overflow", exit
-/// 101) instead of a raw SIGSEGV (exit 139), matching the Linux targets.
+/// handler via the raw `sigaction` syscall with `SA_ONSTACK | SA_SIGINFO` and
+/// our own `sa_tramp`. A fault then aborts cleanly ("stack overflow" or
+/// "segmentation fault at 0x…", exit 101) instead of a raw SIGSEGV (exit 139),
+/// matching the Linux targets.
 ///
 /// Every step is best-effort: any syscall failure leaves the default
 /// disposition in place, and a wrong trampoline only affects the (rare)
@@ -534,7 +633,7 @@ unsafe fn sigaction_syscall(sig: u64, nsa: *const DarwinSigaction) -> i64 {
 /// (LDR from the GOT slot -> ADD of the symbol address), so this reference
 /// links; behavioral verification is CI's macOS leg running the
 /// `stack_overflow.toml` CLI case.
-pub fn install_stack_overflow_handler(handler: extern "C" fn(i32) -> !) {
+pub fn install_segv_handler(handler: crate::fault::SegvHandler) {
     const ALT_STACK_SIZE: usize = 64 * 1024;
 
     let stack = mmap(ALT_STACK_SIZE);
@@ -556,7 +655,7 @@ pub fn install_stack_overflow_handler(handler: extern "C" fn(i32) -> !) {
         sa_handler: handler as usize,
         sa_tramp: rue_darwin_sigtramp as usize,
         sa_mask: 0,
-        sa_flags: SA_ONSTACK,
+        sa_flags: SA_ONSTACK | SA_SIGINFO,
     };
     // SAFETY: `act` is a valid `__sigaction` with a real trampoline; SIGSEGV
     // is a valid signal number.
@@ -633,9 +732,40 @@ mod tests {
         assert_eq!(SYS_WRITE, 4);
         assert_eq!(SYS_MMAP, 197);
         assert_eq!(SYS_MUNMAP, 73);
+        assert_eq!(SYS_GETRLIMIT, 194);
         assert_eq!(STDIN, 0);
         assert_eq!(STDOUT, 1);
         assert_eq!(STDERR, 2);
+    }
+
+    #[test]
+    fn segv_handler_is_installable() {
+        // Reference the installer (and, transitively, its `sigaltstack` /
+        // `sigaction` wrappers, structs, and the `sa_tramp` trampoline) so the
+        // SIGSEGV trap machinery is type-checked by the unit-test build. We
+        // only take its address: calling it would install a process-wide
+        // SIGSEGV handler, which must not happen inside the test harness.
+        let installer: fn(crate::fault::SegvHandler) = install_segv_handler;
+        assert!(installer as usize != 0);
+    }
+
+    /// `fault_address` tolerates a null `siginfo_t` (a trampoline entered
+    /// without one) rather than dereferencing it. The populated path cannot be
+    /// exercised in-process — only the kernel produces a real `siginfo_t` — and
+    /// is covered by the `cli.segfault` cases.
+    #[test]
+    fn a_null_siginfo_reports_a_zero_fault_address() {
+        // SAFETY: the null case is exactly what this asks about.
+        assert_eq!(unsafe { fault_address(core::ptr::null()) }, 0);
+    }
+
+    /// The soft stack limit is a plausible finite size on any macOS host
+    /// running the suite (the default is 8 MiB); `None` would mean the syscall
+    /// shape is wrong.
+    #[test]
+    fn the_stack_limit_is_readable() {
+        let limit = stack_limit().expect("RLIMIT_STACK is set on macOS hosts");
+        assert!(limit >= 64 * 1024, "implausible stack limit: {limit}");
     }
 
     #[test]
@@ -723,15 +853,5 @@ mod tests {
         // Zero-size mmap should fail (returns EINVAL on macOS)
         let ptr = mmap(0);
         assert!(ptr.is_null());
-    }
-
-    #[test]
-    fn stack_overflow_handler_is_installable() {
-        // Reference the installer so the unit-test build type-checks it.
-        // Taking its address keeps the signature in sync with the Linux
-        // backends without executing anything (installing a real SIGSEGV
-        // disposition inside the libtest harness would be hostile).
-        let installer: fn(extern "C" fn(i32) -> !) = install_stack_overflow_handler;
-        assert!(installer as usize != 0);
     }
 }

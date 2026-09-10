@@ -7,13 +7,17 @@
 # abort.
 #
 # The runtime now installs, in `_start`, an alternate signal stack (`sigaltstack`)
-# plus a SIGSEGV handler (`rt_sigaction`, `SA_ONSTACK`) that runs on that alt
-# stack even though the main stack is exhausted. The handler writes
+# plus a SIGSEGV handler (`rt_sigaction`, `SA_ONSTACK | SA_SIGINFO`) that runs on
+# that alt stack even though the main stack is exhausted. The handler writes
 # "stack overflow" to stderr and exits 101 — the same clean-abort code the other
 # runtime traps use (division by zero, overflow, bounds, @panic). This matches
-# how Rust and Go report a blown stack. Any SIGSEGV from safe Rue is treated as a
-# stack overflow: safe Rue has no other way to segfault (bounds-checked, no null
-# derefs, arithmetic traps). See crates/rue-runtime/src/entry.rs.
+# how Rust and Go report a blown stack. See crates/rue-runtime/src/entry.rs.
+#
+# Not every SIGSEGV is a stack overflow: the handler compares the faulting
+# address against the window below the stack base it captured at entry, and any
+# other fault reports `segmentation fault at 0x<address>` instead (RUE-2163).
+# This case is the "still a stack overflow" half of that contract; `segfault.toml`
+# is the other half, and the two are only meaningful together.
 #
 # Platform scope (`only_on` all three targets): the handler is implemented for
 # x86-64 Linux, aarch64 Linux, and aarch64 macOS (RUE-707). The macOS path uses
@@ -23,7 +27,7 @@
 # is verified by CI's macOS leg running this very case. If it regresses there,
 # this case fails loudly — a signal-death is a FATAL failure `known_bug` can't
 # absorb, which is why the scope stays `only_on`. See
-# crates/rue-runtime/src/aarch64_macos.rs::install_stack_overflow_handler.
+# crates/rue-runtime/src/aarch64_macos.rs::install_segv_handler.
 
 [section]
 id = "cli.stack_overflow"

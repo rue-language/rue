@@ -589,6 +589,41 @@ driver_exit_code = 1
 compile_stdout_contains = ['"kind":"trap:div_by_zero"', '"message":"error: division by zero"']
 
 [[case]]
+name = "a_null_pointer_write_is_a_segfault_not_a_stack_overflow"
+description = """
+RUE-2163: the runtime reported every SIGSEGV as `stack overflow`, so a `checked`
+null write reached this taxonomy as `trap:stack_overflow`. The handler now reads
+the faulting address from `siginfo_t` and classifies it, and this runs a real
+null write through the real runtime so both the `trap:segfault` kind and the
+address its message carries are the runtime's own output rather than a retyped
+copy. No lowering stages a site beside a fault, so `location` stays the `test`
+declaration's header the way every other trap's does.
+"""
+files = [
+    { path = "main.rue", source = """
+const tests = @import("tests.rue");
+
+fn main() -> i32 {
+    0
+}
+""" },
+    { path = "tests.rue", source = """
+test "writes through a null pointer" {
+    let zero: u64 = 0;
+    let p: ptr mut i64 = checked { @int_to_ptr(zero) };
+    checked { @ptr_write(p, 7) };
+}
+""" },
+]
+args = ["test", "main.rue", "--seed", "1", "-j1", "--format", "json"]
+driver_exit_code = 1
+compile_stdout_contains = [
+    '"kind":"trap:segfault","location":{"column":1,"file":"tests.rue","line":1}',
+    '"message":"segmentation fault at 0x0"}',
+    '"verdict":"fail"',
+]
+
+[[case]]
 name = "an_early_exit_before_the_epilogue_is_incomplete"
 description = """
 ADR-0083 §3: a body calling `std.exit(0)` before its assertions must not report
