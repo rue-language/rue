@@ -465,6 +465,14 @@ never cut through, the `bytes_total` header is unchanged, and `--format json`
 still carries the retained window whole — the bound is a display bound, not a
 second retention limit.
 
+The human renderer also **omits a stderr block whose whole content is the pinned
+line the failure header already quotes** (RUE-2166) — `panic: <message>` for a
+failed `@assert`, an unhandled `?`, and `@panic`; the trap's own message for a
+trap; `segmentation fault at 0x…` for a segfault. A retained stderr holding
+anything else, or one cut short of `bytes_total`, is printed whole: the rule is
+for a repeat, not for brevity. It never applies to stdout, which is the test's
+alone. `--format json` carries both captures either way.
+
 ### `run_finished`
 
 | Key | Type | Meaning |
@@ -662,7 +670,11 @@ written there once for the run, before any event, in the run's own
 `--error-format` and byte-for-byte as a whole-run failure would have written
 them — so a helper several tests share is reported once, not once per dependent
 test. The `diagnostics` array in each event is the attribution: which test each
-diagnostic excluded. Divergence between the two is a runner bug. They are
+diagnostic excluded. Divergence between the two is a runner bug. The human
+report follows stderr here and prints **one `COMPILE ERROR` block per distinct
+diagnostic** — same code, message, and location — listing every test it excluded
+under it (RUE-2166); the `run_finished.compile_error` count still counts tests,
+and the events are still one per test. They are
 written whatever the selection is, because the analysis root set is the whole
 closure: `--filter` narrows the run set, never the analysis root set, so a
 filtered run's verdicts are unchanged — but a filtered run that silently
@@ -767,6 +779,15 @@ shuffle that surfaced a bug is re-runnable.
 `--list` applies `--filter` and `--shard` but **not** the shuffle: a listing is
 an inventory, and stable-ID order is what makes two listings comparable.
 
+The seed governs **execution** order, and the event stream reports in completion
+order, which is what a consumer tailing a live run needs. The human report is
+read after the run instead, so it orders its failure blocks by the failure
+location's `(file, line, column)` and then by ID (RUE-2166): a shuffled report
+is a list a reader has to sort by hand before they can work through a file. A
+failure located at its test's declaration therefore sorts by the declaration,
+and an xpass — which has no failure record and so no location — sorts by the
+module its ID names, ahead of that module's located failures.
+
 ## Reproduction as data
 
 Every `test_finished` carries the exact argv that reproduces that one test, and
@@ -833,15 +854,36 @@ came from, on the tree it came from, for as long as those artifacts are there.
 
 The argv array and the `repro_env` object are the authoritative forms. The
 human renderer's `repro:` line is the assignments followed by the argv, all
-shell-quoted for pasting —
+shell-quoted for pasting, and a consumer should re-execute the array under the
+object rather than parse the line. Each assignment quotes only its value: a
+shell stops reading a word as an assignment once the name half is quoted.
+
+The line is printed **once per report, under the summary**, never per failure
+(RUE-2166): every repro of a run is the same four hundred characters but for
+the selector, and a reader who has just read the failure blocks does not need
+the paths again beside each one. It takes two forms.
+
+A run with **exactly one failure** prints that failure's complete argv, because
+one broken test is the common case and its line should be paste-ready without
+an edit:
 
 ```text
 repro: RUE_STD_PATH=/opt/rue/std /opt/rue/bin/rue test /work/app/main.rue --filter 'app/t.rue::parses a port' --exact --seed 417 --target x86-64-linux -O0 --timeout-ms 10000
 ```
 
-— and a consumer should re-execute the array under the object rather than parse
-the line. Each assignment quotes only its value: a shell stops reading a word as
-an assignment once the name half is quoted.
+A run with **more than one** prints a template instead, with the selector
+replaced by a placeholder and a line saying what goes in it. Each failure's own
+header above is that ID, and `--exact` stays on the line so a pasted ID that is
+a prefix of another still selects one test:
+
+```text
+repro: RUE_STD_PATH=/opt/rue/std /opt/rue/bin/rue test /work/app/main.rue --filter '<id>' --exact --seed 417 --target x86-64-linux -O0 --timeout-ms 10000
+  put a failing test's ID from above in place of '<id>'
+```
+
+Both forms are presentation. `--format json` is unaffected: every
+`test_finished` carries its own complete `repro` array and `repro_env` object,
+whatever the run's failure count.
 
 ## Scratch directories and isolation
 
@@ -850,6 +892,13 @@ pass and retained on anything else**, with its path in the event. The abort-only
 runtime means destructors do not run on a failing path, so the retained
 directory plus process death is what teardown-on-failure amounts to
 (ADR-0083 §5.4).
+
+The runner creates the directory, makes it the test's working directory, and
+writes nothing into it itself, so a retained one can be empty. The human report
+prints a per-failure `scratch:` line only for a directory that holds something,
+and otherwise names the run directory once, as `scratch root:` beside the
+`repro:` line (RUE-2166): the per-test name is derivable from it. `scratch_dir`
+is on every non-passing `test_finished` either way.
 
 Directories live under a per-run directory named for the seed and the runner's
 process id, and are themselves named `rue-test-<seed>-<ordinal>`. The run
