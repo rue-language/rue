@@ -65,6 +65,15 @@ are serialized in alphabetical order; consumers must not depend on key order.
 | `notes` | array of strings | Contextual footnotes. |
 | `helps` | array of strings | Actionable advice footnotes. |
 
+No key carries a module's identity. A diagnostic that names a module — E0707,
+whose `message` reads ``module `std.arraybuf` has no member `nope` `` — spells
+it the way a program would: the import path for a user module, and the dotted
+`std` / `std.<name>` form for a trusted standard-library module. The compiler
+keys library modules on a synthetic logical path whose leading NUL byte marks
+toolchain provenance (`\0rue-std/_std.rue`); that identity is not part of this
+surface and appears in no field, `message` included (RUE-2164). A consumer that
+wants a file rather than a name reads `spans[].file`.
+
 ### Span object
 
 | Key | Type | Meaning |

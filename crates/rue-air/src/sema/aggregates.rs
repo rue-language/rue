@@ -1442,11 +1442,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         // Member not found in the module
-        Err(CompileError::new(
-            ErrorKind::UnknownModuleMember {
-                module_name: crate::module_display_name(module_fact.import_path()).to_string(),
-                member_name: member_name_str,
-            },
+        Err(crate::unknown_module_member(
+            &crate::module_display_name(module_fact.import_path()),
+            &member_name_str,
             span,
         ))
     }

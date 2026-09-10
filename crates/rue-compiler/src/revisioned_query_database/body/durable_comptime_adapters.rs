@@ -881,11 +881,9 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
         })?
         else {
             return Err(rue_air::SemanticProviderError::Failure(
-                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                    rue_error::ErrorKind::UnknownModuleMember {
-                        module_name: module.to_string(),
-                        member_name: member.to_owned(),
-                    },
+                super::provider_body::unknown_module_member_failure(
+                    &rue_air::module_display_name(module.as_str()),
+                    member,
                 ),
             ));
         };

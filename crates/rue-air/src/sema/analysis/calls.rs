@@ -40,13 +40,7 @@ fn check_module_member_access(
     // re-export const in the facade, whose presence is the membership grant
     // (`pub const f = @import("x").f;`, ADR-0026, RUE-592).
     if !via_reexport && module_file_id != Some(member_file_id) {
-        return Err(CompileError::new(
-            ErrorKind::UnknownModuleMember {
-                module_name: module_name.to_string(),
-                member_name: fn_name_str.to_string(),
-            },
-            span,
-        ));
+        return Err(crate::unknown_module_member(module_name, fn_name_str, span));
     }
 
     Ok(())
@@ -1374,24 +1368,22 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         let function_key = function_key.ok_or_else(|| {
-            CompileError::new(
-                ErrorKind::UnknownModuleMember {
-                    module_name: crate::module_display_name(&module_def.import_path).to_string(),
-                    member_name: fn_name_str.clone(),
-                },
+            crate::unknown_module_member(
+                &crate::module_display_name(&module_def.import_path),
+                &fn_name_str,
                 span,
             )
         })?;
         let fn_info = self
             .call_facts()
             .call_function_info(function_key)
-            .ok_or_compile_error(
-                ErrorKind::UnknownModuleMember {
-                    module_name: crate::module_display_name(&module_def.import_path).to_string(),
-                    member_name: fn_name_str.clone(),
-                },
-                span,
-            )?;
+            .ok_or_else(|| {
+                crate::unknown_module_member(
+                    &crate::module_display_name(&module_def.import_path),
+                    &fn_name_str,
+                    span,
+                )
+            })?;
 
         // Track this function as referenced (for lazy analysis)
         ctx.referenced_functions.insert(function_key);
@@ -1400,7 +1392,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let param_types = param_data.types().to_vec();
         let param_modes = param_data.modes().to_vec();
         check_module_member_access(
-            crate::module_display_name(&module_def.import_path),
+            &crate::module_display_name(&module_def.import_path),
             module_file_id,
             fn_info.file_id,
             &fn_name_str,

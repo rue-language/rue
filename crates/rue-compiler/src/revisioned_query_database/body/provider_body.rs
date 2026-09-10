@@ -6,6 +6,32 @@
 
 use super::super::*;
 
+/// Carry E0707 as a nucleus failure, with the prelude `help:` line attached
+/// when the miss is really a free function written as a module member.
+///
+/// The nucleus holds an [`ErrorKind`] rather than a `CompileError` — its span
+/// is stamped downstream — so the advice rides the `DiagnosticWithHelp`
+/// carrier instead of `CompileError::with_help`. Both halves come from
+/// `rue_air`, so this path and the body-analysis path cannot word the same
+/// diagnostic differently (RUE-2164).
+///
+/// `module_display` must already be `rue_air::module_display_name`'s
+/// rendering.
+pub(super) fn unknown_module_member_failure(
+    module_display: &str,
+    member: &str,
+) -> crate::semantic_query_nucleus::SemanticNucleusFailure {
+    use crate::semantic_query_nucleus::SemanticNucleusFailure as F;
+    let kind = rue_air::unknown_module_member_kind(module_display, member);
+    match rue_air::unknown_module_member_help(module_display, member) {
+        Some(help) => F::DiagnosticWithHelp {
+            kind,
+            help: Arc::from(help),
+        },
+        None => F::Diagnostic(kind),
+    }
+}
+
 fn collect_body_type_reference(
     ty: &rue_air::SemanticImportType<crate::StableDefinitionKey, crate::ModuleId>,
     references: &mut BTreeSet<crate::body_query::BodyReference>,
@@ -1596,7 +1622,7 @@ impl rue_air::SemanticModulePathProvider<ModuleId, ModuleId, StableDefinitionKey
     }
 
     fn module_display_name(&self, module: &ModuleId) -> Arc<str> {
-        Arc::from(module.as_str())
+        Arc::from(rue_air::module_display_name(module.as_str()))
     }
 
     fn accessing_domain(&self, scope: &ModuleId) -> rue_air::SemanticVisibilityDomain {
@@ -2278,14 +2304,9 @@ pub(in crate::revisioned_query_database) fn semantic_type_query_failure(
                     ),
                 ),
                 F::UnknownModuleMember { module, member, .. } => {
-                    ResolveSemanticSignatureError::failure(
-                        crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                            ErrorKind::UnknownModuleMember {
-                                module_name: module.to_string(),
-                                member_name: member.to_string(),
-                            },
-                        ),
-                    )
+                    ResolveSemanticSignatureError::failure(unknown_module_member_failure(
+                        &module, &member,
+                    ))
                 }
                 F::ValueWhereTypeExpected { parameter, .. } => {
                     ResolveSemanticSignatureError::failure(
@@ -2463,14 +2484,9 @@ pub(in crate::revisioned_query_database) fn semantic_type_query_failure(
                     }
                     rue_air::SemanticModulePathFailure::UnknownMember {
                         module, member, ..
-                    } => ResolveSemanticSignatureError::failure(
-                        crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                            ErrorKind::UnknownModuleMember {
-                                module_name: module.to_string(),
-                                member_name: member.to_string(),
-                            },
-                        ),
-                    ),
+                    } => ResolveSemanticSignatureError::failure(unknown_module_member_failure(
+                        &module, &member,
+                    )),
                     rue_air::SemanticModulePathFailure::PrivateMember { member, .. } => {
                         ResolveSemanticSignatureError::failure(
                             crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(

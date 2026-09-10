@@ -788,13 +788,7 @@ fn module_path_compile_error(
             CompileError::new(ErrorKind::UnknownType(name.to_string()), span)
         }
         crate::SemanticModulePathFailure::UnknownMember { module, member, .. } => {
-            CompileError::new(
-                ErrorKind::UnknownModuleMember {
-                    module_name: module.to_string(),
-                    member_name: member.to_string(),
-                },
-                span,
-            )
+            crate::unknown_module_member(&module, &member, span)
         }
         // A module binding is a `const` (spec 10.4:1), so crossing a private
         // one is the ordinary module-member privacy violation E0706 — the same
@@ -888,13 +882,9 @@ pub(super) fn semantic_type_syntax_compile_error(
             },
             span,
         ),
-        E::Semantic(F::UnknownModuleMember { module, member, .. }) => CompileError::new(
-            ErrorKind::UnknownModuleMember {
-                module_name: module.to_string(),
-                member_name: member.to_string(),
-            },
-            span,
-        ),
+        E::Semantic(F::UnknownModuleMember { module, member, .. }) => {
+            crate::unknown_module_member(&module, &member, span)
+        }
         E::Semantic(F::PrivateItem { kind, name, .. }) => CompileError::new(
             crate::private_member_access(crate::PrivateItemKind::from(kind), &name),
             span,

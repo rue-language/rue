@@ -4635,7 +4635,7 @@ fn private_access_has_one_decision_and_one_diagnostic() {
 #[test]
 fn module_diagnostics_have_one_display_name() {
     let registry = include_str!("module_registry.rs");
-    assert!(registry.contains("pub fn module_display_name(import_path: &str) -> &str"));
+    assert!(registry.contains("pub fn module_display_name(import_path: &str) -> Cow<\'_, str>"));
     for (module, source) in AIR_CRATE_SOURCES {
         if *module == "module_registry" {
             continue;

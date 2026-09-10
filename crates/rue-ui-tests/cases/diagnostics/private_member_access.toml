@@ -275,3 +275,111 @@ aux_files = { "sub/lib.rue" = "pub fn real() -> i32 { 1 }\n" }
 compile_fail = true
 expected_error_code = "E0707"
 error_contains = ["module `sub/lib.rue` has no member `Nope`"]
+
+# ---------------------------------------------------------------------------
+# A trusted standard-library module renders as the name a program writes.
+#
+# RUE-2164: the standard library's modules are keyed by the synthetic logical
+# path `\0rue-std/<name>.rue`, whose leading NUL marks toolchain provenance
+# and is disjoint from every expressible filesystem path. That key is an
+# identity, not a name, and it used to reach the reader verbatim:
+# `module `<NUL>rue-std/_std.rue` has no member `io``. It now renders the way
+# the specification and the standard library's own prose spell these modules —
+# `std` for the root and `std.<name>` for a submodule.
+#
+# Each case pins the WHOLE stderr stream with `expected_error`, so the
+# assertion is byte-exact: neither the NUL itself nor the `␀` glyph the text
+# renderer maps it to can hide anywhere in the output.
+
+[[case]]
+name = "std_root_member_miss_names_std_not_its_provenance_marker"
+description = "`std.io.x` is the shape that exposed the leak: no `std.io` exists, so E0707 names the root module — as `std`, byte-exactly, with no NUL and no `␀`. The help line answers the question the reader actually has."
+real_std = true
+source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    std.io.println("x");
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0707"
+expected_error = """
+error: [E0707]: module `std` has no member `io`
+ --> test.rue:4:5
+  |
+4 |     std.io.println("x");
+  |     ^^^^^^
+  |
+  = help: `print`, `println`, `eprint`, and `eprintln` are free functions in the prelude: call `println(x)` directly, with no module path
+"""
+
+[[case]]
+name = "std_submodule_member_miss_names_the_dotted_path"
+description = "A submodule renders as the dotted path a program writes (`std.arraybuf`, spec 4.14), not `\\0rue-std/arraybuf.rue`. A miss that is not reaching for a prelude function carries no help line."
+real_std = true
+source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    std.arraybuf.nope();
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0707"
+expected_error = """
+error: [E0707]: module `std.arraybuf` has no member `nope`
+ --> test.rue:4:5
+  |
+4 |     std.arraybuf.nope();
+  |     ^^^^^^^^^^^^^^^^^^^
+  |
+"""
+
+[[case]]
+name = "prelude_free_function_written_as_a_std_member_gets_the_help"
+description = "`std.println(...)` is the other half of the same misconception, and gets the same answer: the four text functions need no module path at all."
+real_std = true
+source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    std.println("x");
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0707"
+expected_error = """
+error: [E0707]: module `std` has no member `println`
+ --> test.rue:4:5
+  |
+4 |     std.println("x");
+  |     ^^^^^^^^^^^^^^^^
+  |
+  = help: `print`, `println`, `eprint`, and `eprintln` are free functions in the prelude: call `println(x)` directly, with no module path
+"""
+
+[[case]]
+name = "a_user_module_miss_is_unchanged_however_it_is_spelled"
+description = "The rendering and the help are keyed on the trusted namespace, not on how the source spells the binding: a user module bound as `std` and missing `println` still renders as its import path and still carries no help."
+source = """
+const std = @import("io.rue");
+
+fn main() -> i32 {
+    std.println("x")
+}
+"""
+aux_files = { "io.rue" = "pub fn real() -> i32 { 1 }\n" }
+compile_fail = true
+expected_error_code = "E0707"
+expected_error = """
+error: [E0707]: module `io.rue` has no member `println`
+ --> test.rue:4:5
+  |
+4 |     std.println("x")
+  |     ^^^^^^^^^^^^^^^^
+  |
+"""
