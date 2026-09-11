@@ -73,7 +73,14 @@ CorpusRules = collections.namedtuple(
 # would tell a reader diffing two observations that a peer's output changed
 # when only a comment did. The digest is the authoritative half and it records
 # the edit either way.
-PEER_PORT_REVISION = 2
+#
+# It advances to 3 with RUE-1494. The Hugo port of `preview_feature` followed
+# the production shortcode: its ADR link moved from a root-relative
+# `/designs/…` route to the design document on GitHub, named by a new `doc`
+# argument. That is a change to what the port renders, not to a comment, even
+# though the corpus's one call site passes no `adr` and so no rendered page
+# moves.
+PEER_PORT_REVISION = 3
 
 # What the PEERS render, and nothing gazette reads. Inside the comparison
 # identity alone.

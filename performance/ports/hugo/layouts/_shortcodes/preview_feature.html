@@ -2,5 +2,5 @@
 <div class="preview-notice">
     <strong>Preview Feature</strong>:
     This feature requires <code>--preview {{ .Get "feature" }}</code> to use.
-    {{ with .Get "adr" }}See <a href="/designs/{{ . | lower }}">{{ . | upper }}</a> for the design.{{ end }}
+    {{ with .Get "adr" }}See <a href="https://github.com/rue-language/rue/blob/trunk/docs/designs/{{ $.Get "doc" }}">{{ . | upper }}</a> for the design.{{ end }}
 </div>
