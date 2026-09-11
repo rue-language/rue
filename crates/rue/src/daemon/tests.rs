@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
@@ -34,7 +35,6 @@ impl ThreadLauncher {
 
 /// What the in-process service's executor does with a build: answer with
 /// bytes right away, or hold the request until it is canceled or released.
-#[derive(Default)]
 struct Stub {
     /// Builds the executor has started.
     started: AtomicUsize,
@@ -43,9 +43,32 @@ struct Stub {
     /// Hold every build until `release` is set or the request is canceled.
     hold: AtomicBool,
     release: AtomicBool,
+    payload_bytes: AtomicUsize,
+    retained_hosts: AtomicUsize,
+    retained_charge_bytes: AtomicUsize,
+    dependency_pins: AtomicUsize,
+    trim_on_enforce: AtomicBool,
+}
+
+impl Default for Stub {
+    fn default() -> Self {
+        Self {
+            started: AtomicUsize::new(0),
+            canceled: AtomicUsize::new(0),
+            hold: AtomicBool::new(false),
+            release: AtomicBool::new(false),
+            payload_bytes: AtomicUsize::new(TEST_RESPONSE_BYTES),
+            retained_hosts: AtomicUsize::new(1),
+            retained_charge_bytes: AtomicUsize::new(0),
+            dependency_pins: AtomicUsize::new(0),
+            trim_on_enforce: AtomicBool::new(false),
+        }
+    }
 }
 
 struct StubExecutor(Arc<Stub>);
+
+const TEST_RESPONSE_BYTES: usize = 256 * 1024 + 3;
 
 impl BuildExecutor for StubExecutor {
     fn build(
@@ -64,11 +87,12 @@ impl BuildExecutor for StubExecutor {
             }
             thread::sleep(Duration::from_millis(5));
         }
-        // A deterministic payload longer than one chunk, so the transfer is
-        // exercised, derived from the request so a client can check it got
-        // its own answer.
+        // A bounded deterministic payload exercises a real response transfer
+        // without making the daemon suite depend on scheduler time while the
+        // full quick tier runs its tests in parallel. The service-level test
+        // below exercises the actual multi-chunk boundary independently.
         let seed = request.root_source.len() as u8;
-        let bytes: Vec<u8> = (0..(protocol::MAX_CHUNK_BYTES + 3))
+        let bytes: Vec<u8> = (0..self.0.payload_bytes.load(Ordering::Acquire))
             .map(|i| (i as u8).wrapping_add(seed))
             .collect();
         BuildOutput {
@@ -89,7 +113,23 @@ impl BuildExecutor for StubExecutor {
     }
 
     fn retained_hosts(&self) -> u32 {
-        1
+        self.0.retained_hosts.load(Ordering::Acquire) as u32
+    }
+
+    fn retained_charge_bytes(&self) -> u64 {
+        self.0.retained_charge_bytes.load(Ordering::Acquire) as u64
+    }
+
+    fn dependency_pins(&self) -> u64 {
+        self.0.dependency_pins.load(Ordering::Acquire) as u64
+    }
+
+    fn enforce_retention_budget(&mut self) {
+        if self.0.trim_on_enforce.load(Ordering::Acquire) {
+            self.0.retained_hosts.store(0, Ordering::Release);
+            self.0.retained_charge_bytes.store(0, Ordering::Release);
+            self.0.dependency_pins.store(0, Ordering::Release);
+        }
     }
 }
 
@@ -317,6 +357,17 @@ fn start_status_and_stop_round_trip() {
     assert_eq!(report.active_request, None);
     assert_eq!(report.retained_hosts, 1);
     assert_eq!(report.idle_timeout_ms, 60_000);
+    assert_eq!(report.resource_policy.max_connections, MAX_CONNECTIONS + 1);
+    assert_eq!(
+        report.resource_policy.max_queued_requests,
+        MAX_QUEUED_REQUESTS
+    );
+    assert_eq!(report.resource_policy.max_retained_hosts, 1);
+    assert_eq!(
+        report.resource_policy.max_response_bytes,
+        protocol::MAX_RESPONSE_BYTES as u64
+    );
+    assert_eq!(report.resource_pressure.connections, 1);
 
     let again = start(
         fixture.scope(),
@@ -356,6 +407,75 @@ fn start_status_and_stop_round_trip() {
         stop(fixture.scope(), &fixture.root, Duration::from_secs(1)).unwrap(),
         StopOutcome::NotRunning
     );
+}
+
+#[test]
+fn accepted_connections_have_a_hard_bound_and_a_retryable_rejection() {
+    let fixture = Fixture::new();
+    let launcher = ThreadLauncher::new();
+    let started = start_connection(
+        fixture.scope(),
+        &fixture.root,
+        &fixture.options(),
+        &launcher,
+    )
+    .unwrap();
+    let identity = ServiceIdentity::current(fixture.scope()).unwrap();
+    let endpoint = Endpoint::locate(&fixture.root, &identity).unwrap();
+    let mut held = vec![started.connection];
+    for _ in 1..=MAX_CONNECTIONS {
+        held.push(
+            client::connect(endpoint.socket(), &identity.hello(), Duration::from_secs(5)).unwrap(),
+        );
+    }
+    let refused = client::connect(endpoint.socket(), &identity.hello(), Duration::from_secs(5));
+    assert!(
+        matches!(refused, Err(client::ConnectError::Rejected(ref reason)) if reason.contains("connections")),
+        "a full service refuses before allocating another handler: {refused:?}"
+    );
+    drop(held);
+    stop(fixture.scope(), &fixture.root, Duration::from_secs(10)).unwrap();
+}
+
+#[test]
+fn owner_eviction_preserves_the_answer_and_reports_pretrim_peaks() {
+    let fixture = Fixture::new();
+    let stub = Stub::default();
+    stub.retained_charge_bytes.store(17, Ordering::Release);
+    stub.dependency_pins.store(3, Ordering::Release);
+    stub.trim_on_enforce.store(true, Ordering::Release);
+    let launcher = ThreadLauncher::with_stub(stub);
+    let mut started = start_connection(
+        fixture.scope(),
+        &fixture.root,
+        &fixture.options(),
+        &launcher,
+    )
+    .unwrap();
+    let Submission::Accepted { ticket, .. } = started
+        .connection
+        .submit_build(build_request("pressure.rue"))
+        .unwrap()
+    else {
+        panic!("the pressure fixture's build is admitted");
+    };
+    let (result, bytes) = started.connection.await_build(ticket).unwrap();
+    assert!(matches!(result, BuildResult::Ready { .. }));
+    assert_eq!(bytes.len(), TEST_RESPONSE_BYTES);
+
+    let report = status(fixture.scope(), &fixture.root)
+        .unwrap()
+        .expect("the service remains available after eviction");
+    assert_eq!(report.resource_pressure.retained_hosts, 0);
+    assert_eq!(report.resource_pressure.retained_charge_bytes, 0);
+    assert_eq!(report.resource_pressure.dependency_pins, 0);
+    assert_eq!(report.resource_pressure.peak_retained_charge_bytes, 17);
+    assert_eq!(report.resource_pressure.peak_dependency_pins, 3);
+    assert_eq!(report.resource_pressure.source_bytes, 0);
+    assert_eq!(report.resource_pressure.source_files, 0);
+    assert!(report.resource_pressure.peak_response_bytes > 0);
+    drop(started);
+    stop(fixture.scope(), &fixture.root, Duration::from_secs(10)).unwrap();
 }
 
 #[test]
@@ -575,7 +695,7 @@ fn a_build_is_admitted_answered_and_its_bytes_streamed() {
     };
     assert_eq!(stderr, "warning: stub built main.rue\n");
     assert_eq!(announced, bytes.len() as u64);
-    assert_eq!(bytes.len(), protocol::MAX_CHUNK_BYTES + 3);
+    assert_eq!(bytes.len(), TEST_RESPONSE_BYTES);
     assert_eq!(bytes[0], "main.rue".len() as u8);
     assert_eq!(destination.path, "out");
     assert_eq!(launcher.stub.started.load(Ordering::Acquire), 1);
@@ -587,6 +707,267 @@ fn a_build_is_admitted_answered_and_its_bytes_streamed() {
     assert_eq!(report.active_request, None);
     assert_eq!(report.queued_requests, 0);
     stop(fixture.scope(), &fixture.root, Duration::from_secs(10)).unwrap();
+}
+
+#[test]
+fn a_nonreading_build_reply_is_leased_and_stop_remains_bounded() {
+    let fixture = Fixture::new();
+    let launcher = ThreadLauncher::new();
+    start(
+        fixture.scope(),
+        &fixture.root,
+        &fixture.options(),
+        &launcher,
+    )
+    .unwrap();
+    let identity = ServiceIdentity::current(fixture.scope()).unwrap();
+    let endpoint = Endpoint::locate(&fixture.root, &identity).unwrap();
+    let mut raw = UnixStream::connect(endpoint.socket()).unwrap();
+    raw.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    protocol::write_frame(&mut raw, &identity.hello()).unwrap();
+    let welcome: protocol::HelloReply =
+        protocol::read_frame(&mut raw, protocol::MAX_CONTROL_FRAME_BYTES)
+            .unwrap()
+            .expect("the raw peer receives a welcome");
+    assert!(matches!(welcome, protocol::HelloReply::Welcome { .. }));
+    protocol::write_frame(
+        &mut raw,
+        &protocol::Request {
+            id: 1,
+            body: protocol::RequestBody::Build(Box::new(build_request("held.rue"))),
+        },
+    )
+    .unwrap();
+    let accepted: protocol::Response =
+        protocol::read_frame(&mut raw, protocol::MAX_CONTROL_FRAME_BYTES)
+            .unwrap()
+            .expect("the raw peer receives admission");
+    let ticket = match accepted.body {
+        protocol::ResponseBody::Accepted { ticket, .. } => ticket,
+        other => panic!("the build is admitted: {other:?}"),
+    };
+    assert_eq!(ticket, 1);
+    assert!(wait_until(Duration::from_secs(10), || {
+        launcher.stub.started.load(Ordering::Acquire) == 1
+    }));
+    assert!(wait_until(Duration::from_secs(10), || {
+        status(fixture.scope(), &fixture.root)
+            .ok()
+            .flatten()
+            .is_some_and(|report| report.resource_pressure.response_bytes > 0)
+    }));
+
+    // Do not read the completed result or chunks. The service must retain the
+    // owned answer only until its bounded write deadline, while a separate
+    // control connection can still stop it.
+    let started = Instant::now();
+    stop(fixture.scope(), &fixture.root, Duration::from_secs(10)).unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(9),
+        "stop must not wait forever for the non-reading peer"
+    );
+    drop(raw);
+}
+
+#[test]
+fn a_held_response_blocks_the_next_build_until_it_is_drained() {
+    let fixture = Fixture::new();
+    let launcher = ThreadLauncher::new();
+    start(
+        fixture.scope(),
+        &fixture.root,
+        &fixture.options(),
+        &launcher,
+    )
+    .unwrap();
+    let identity = ServiceIdentity::current(fixture.scope()).unwrap();
+    let endpoint = Endpoint::locate(&fixture.root, &identity).unwrap();
+    let mut first = UnixStream::connect(endpoint.socket()).unwrap();
+    first
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    protocol::write_frame(&mut first, &identity.hello()).unwrap();
+    let welcome: protocol::HelloReply =
+        protocol::read_frame(&mut first, protocol::MAX_CONTROL_FRAME_BYTES)
+            .unwrap()
+            .expect("the raw peer receives a welcome");
+    assert!(matches!(welcome, protocol::HelloReply::Welcome { .. }));
+    protocol::write_frame(
+        &mut first,
+        &protocol::Request {
+            id: 1,
+            body: protocol::RequestBody::Build(Box::new(build_request("first.rue"))),
+        },
+    )
+    .unwrap();
+    let accepted: protocol::Response =
+        protocol::read_frame(&mut first, protocol::MAX_CONTROL_FRAME_BYTES)
+            .unwrap()
+            .expect("the first build is admitted");
+    let first_ticket = match accepted.body {
+        protocol::ResponseBody::Accepted { ticket, .. } => ticket,
+        other => panic!("the first build is admitted: {other:?}"),
+    };
+    assert_eq!(first_ticket, 1);
+
+    // Keep the first answer in the kernel's send path. This makes the lease
+    // deterministic without changing the production deadline or payload
+    // policy: the peer's receive window is smaller than the bounded fixture.
+    let receive_size: libc::c_int = 1024;
+    let result = unsafe {
+        libc::setsockopt(
+            first.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUF,
+            (&raw const receive_size).cast(),
+            std::mem::size_of_val(&receive_size) as libc::socklen_t,
+        )
+    };
+    assert_eq!(result, 0, "the test peer receive window is configured");
+    assert!(wait_until(Duration::from_secs(5), || {
+        status(fixture.scope(), &fixture.root)
+            .ok()
+            .flatten()
+            .is_some_and(|report| report.resource_pressure.response_bytes > 0)
+    }));
+
+    let mut second = start_connection(
+        fixture.scope(),
+        &fixture.root,
+        &fixture.options(),
+        &launcher,
+    )
+    .unwrap();
+    let Submission::Accepted {
+        ticket: second_ticket,
+        ..
+    } = second
+        .connection
+        .submit_build(build_request("second.rue"))
+        .unwrap()
+    else {
+        panic!("the second build is admitted behind the first answer");
+    };
+    thread::sleep(Duration::from_millis(250));
+    assert_eq!(
+        launcher.stub.started.load(Ordering::Acquire),
+        1,
+        "the owner waits while the first response lease is held"
+    );
+
+    let first_reply: protocol::BuildReply =
+        protocol::read_frame(&mut first, protocol::MAX_RESULT_FRAME_BYTES)
+            .unwrap()
+            .expect("the held first answer is eventually drained");
+    assert_eq!(first_reply.ticket, first_ticket);
+    let first_bytes = match &first_reply.result {
+        BuildResult::Ready { bytes, .. } => protocol::read_chunks(&mut first, *bytes).unwrap(),
+        other => panic!("the first answer remains valid: {other:?}"),
+    };
+    assert_eq!(first_bytes.len(), TEST_RESPONSE_BYTES);
+    assert!(wait_until(Duration::from_secs(5), || {
+        launcher.stub.started.load(Ordering::Acquire) == 2
+    }));
+    let (second_result, second_bytes) = second.connection.await_build(second_ticket).unwrap();
+    assert!(matches!(second_result, BuildResult::Ready { .. }));
+    assert_eq!(second_bytes.len(), TEST_RESPONSE_BYTES);
+    drop(first);
+    drop(second);
+    stop(fixture.scope(), &fixture.root, Duration::from_secs(10)).unwrap();
+}
+
+#[test]
+fn a_partial_watcher_frame_does_not_hold_completion_past_its_deadline() {
+    let fixture = Fixture::new();
+    let launcher = ThreadLauncher::new();
+    start(
+        fixture.scope(),
+        &fixture.root,
+        &fixture.options(),
+        &launcher,
+    )
+    .unwrap();
+    let identity = ServiceIdentity::current(fixture.scope()).unwrap();
+    let endpoint = Endpoint::locate(&fixture.root, &identity).unwrap();
+    let mut raw = UnixStream::connect(endpoint.socket()).unwrap();
+    raw.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    protocol::write_frame(&mut raw, &identity.hello()).unwrap();
+    let _: protocol::HelloReply = protocol::read_frame(&mut raw, protocol::MAX_CONTROL_FRAME_BYTES)
+        .unwrap()
+        .expect("the raw peer receives a welcome");
+    protocol::write_frame(
+        &mut raw,
+        &protocol::Request {
+            id: 1,
+            body: protocol::RequestBody::Build(Box::new(build_request("drip.rue"))),
+        },
+    )
+    .unwrap();
+    let accepted: protocol::Response =
+        protocol::read_frame(&mut raw, protocol::MAX_CONTROL_FRAME_BYTES)
+            .unwrap()
+            .expect("the build is admitted");
+    let ticket = match accepted.body {
+        protocol::ResponseBody::Accepted { ticket, .. } => ticket,
+        other => panic!("the build is admitted: {other:?}"),
+    };
+    // One byte of a future request leaves the watcher in its partial-frame
+    // path while the owner is already producing the answer.
+    raw.write_all(&[0]).unwrap();
+    let started = Instant::now();
+    let reply: protocol::BuildReply =
+        protocol::read_frame(&mut raw, protocol::MAX_RESULT_FRAME_BYTES)
+            .unwrap()
+            .expect("completion remains observable despite the partial watcher frame");
+    assert_eq!(reply.ticket, ticket);
+    if let BuildResult::Ready { bytes, .. } = reply.result {
+        let _ = protocol::read_chunks(&mut raw, bytes).unwrap();
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "partial watcher input must be bounded: {:?}",
+        started.elapsed()
+    );
+    drop(raw);
+    stop(fixture.scope(), &fixture.root, Duration::from_secs(10)).unwrap();
+}
+
+#[test]
+fn stop_cancels_an_active_build_before_joining_handlers() {
+    let fixture = Fixture::new();
+    let stub = Stub::default();
+    stub.hold.store(true, Ordering::Release);
+    let launcher = ThreadLauncher::with_stub(stub);
+    let mut active = start_connection(
+        fixture.scope(),
+        &fixture.root,
+        &fixture.options(),
+        &launcher,
+    )
+    .unwrap();
+    let Submission::Accepted {
+        ticket: _ticket, ..
+    } = active
+        .connection
+        .submit_build(build_request("active.rue"))
+        .unwrap()
+    else {
+        panic!("the active build is admitted");
+    };
+    assert!(wait_until(Duration::from_secs(10), || {
+        launcher.stub.started.load(Ordering::Acquire) == 1
+    }));
+    let started = Instant::now();
+    stop(fixture.scope(), &fixture.root, Duration::from_secs(10)).unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "stop cancels active work instead of waiting for its hold"
+    );
+    // Stop joins the active handler after cancellation; the peer may observe
+    // EOF rather than a result frame, so the executor's cancellation record
+    // is the stable ownership assertion here.
+    assert_eq!(launcher.stub.canceled.load(Ordering::Acquire), 1);
+    drop(active);
 }
 
 #[test]

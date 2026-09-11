@@ -4937,7 +4937,7 @@ pub(super) use register_parse_import_parse;"#;
         });
     assert_eq!(
         (declarations.len(), fingerprint),
-        (215, 11_071_889_845_285_197_929),
+        (216, 10_859_079_154_876_703_755),
         "crate-visible declaration names, signatures, fields, or phase owners changed"
     );
 
@@ -5295,6 +5295,7 @@ fn:with_interner_limit
 fn:arm_codegen_evaluator_gate_for_test
 fn:arm_codegen_batch_evaluator_gate_for_test
 fn:runtime_metrics_for_test
+fn:runtime_weak
 fn:inject_body_transaction_failure_for_test
 fn:cancel_constraint_generation_after_nodes_for_test
 fn:cancel_frontier_constraint_generation_after_nodes_for_test

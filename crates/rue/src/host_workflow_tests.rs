@@ -39,12 +39,16 @@ impl Project {
     }
 
     fn open(&self) -> FilesystemCompilerHost {
+        self.open_with_workers(1)
+    }
+
+    fn open_with_workers(&self, workers: usize) -> FilesystemCompilerHost {
         let path_context = HostPathContext::from_working_directory(self.0.clone()).unwrap();
         FilesystemCompilerHost::open(HostOpenRequest {
             root_source: "main.rue",
             source_manifest_path: None,
             std_root: None,
-            compiler_config: CompilerSessionConfig::with_workers(1).unwrap(),
+            compiler_config: CompilerSessionConfig::with_workers(workers).unwrap(),
             path_context: &path_context,
         })
         .unwrap()
@@ -169,6 +173,65 @@ fn assert_type_mismatch(errors: &CompileErrors) {
             .any(|error| matches!(error.kind, ErrorKind::TypeMismatch { .. })),
         "expected the fixture's type error, got {errors:?}"
     );
+}
+
+#[test]
+fn retained_hosts_release_runtime_after_mixed_work_and_repair() {
+    let project = Project::new();
+    project.write(SHARED_PROGRAM);
+    let (weak, held_air, held_listing, held_image, held_build, held_errors) = {
+        let mut host = project.open_with_workers(2);
+        let weak = host.unstable_query_runtime_weak();
+        let held_air = air(&mut host).expect("AIR is available");
+        let held_listing = listing(&mut host).expect("listing is available");
+        let held_image = image(&mut host).expect("test image is available");
+        let held_build = build(&mut host).expect("executable is available");
+
+        project.write("fn main() -> i32 {\n    let value: i32 = \"broken\";\n    value\n}\n");
+        host.reobserve().expect("the edited source is observed");
+        let held_errors = build(&mut host)
+            .err()
+            .expect("the edited host reports its error");
+        project.write(SHARED_PROGRAM);
+        host.reobserve().expect("the repaired source is observed");
+        assert!(build(&mut host).is_ok(), "the repaired host recovers");
+        assert!(weak.is_alive(), "the active host owns a live runtime");
+        (
+            weak,
+            held_air,
+            held_listing,
+            held_image,
+            held_build,
+            held_errors,
+        )
+    };
+    assert!(
+        !weak.is_alive(),
+        "owned answers and diagnostics must not retain the dropped host's runtime"
+    );
+    // Keep every answer alive across teardown, then consume it against fresh
+    // results. This checks both reclamation and the owned-response contract.
+    assert_eq!(held_air, air(&mut project.open()).unwrap());
+    assert_listing_eq(&held_listing, &listing(&mut project.open()).unwrap());
+    assert_image_eq(&held_image, &image(&mut project.open()).unwrap());
+    assert_output_eq(
+        &held_build.output,
+        &build(&mut project.open()).unwrap().output,
+    );
+    assert_type_mismatch(&held_errors);
+}
+
+#[test]
+fn an_empty_host_releases_its_runtime() {
+    let project = Project::new();
+    project.write("");
+    let weak = {
+        let host = project.open();
+        let weak = host.unstable_query_runtime_weak();
+        assert!(weak.is_alive());
+        weak
+    };
+    assert!(!weak.is_alive());
 }
 
 const SHARED_PROGRAM: &str = "\

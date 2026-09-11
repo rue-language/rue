@@ -37,6 +37,13 @@ impl CompilerSession {
         };
         crate::unstable::MetricsSnapshot::new(work)
     }
+
+    /// A non-owning runtime handle for host lifecycle qualification. This is
+    /// deliberately observational and cannot be used to issue work.
+    #[doc(hidden)]
+    pub fn unstable_query_runtime_weak(&self) -> crate::unstable::QueryRuntimeLiveness {
+        crate::unstable::QueryRuntimeLiveness::new(self.queries.revisioned.runtime_weak())
+    }
     #[cfg(test)]
     pub(crate) fn set_module_input_retention_for_test(&self, retention_limit: usize) {
         self.queries

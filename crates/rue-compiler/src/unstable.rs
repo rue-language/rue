@@ -137,6 +137,32 @@ pub fn explicit_module_manifest(
     manifest.validate()?;
     Ok(manifest)
 }
+
+/// Opaque lifecycle evidence for the canonical query runtime.
+///
+/// The compiler exposes only non-owning liveness observations to qualification
+/// tests. Keeping the underlying weak handle private prevents callers from
+/// upgrading it into a `QueryRuntime` and issuing work or changing teardown.
+#[derive(Clone, Debug)]
+pub struct QueryRuntimeLiveness {
+    weak: rue_query::WeakQueryRuntime,
+}
+
+impl QueryRuntimeLiveness {
+    pub(crate) fn new(weak: rue_query::WeakQueryRuntime) -> Self {
+        Self { weak }
+    }
+
+    /// Whether the owning compiler session still keeps its query runtime live.
+    pub fn is_alive(&self) -> bool {
+        self.strong_count() != 0
+    }
+
+    /// Number of strong runtime references, for reclamation qualification.
+    pub fn strong_count(&self) -> usize {
+        self.weak.strong_count()
+    }
+}
 /// The one lexical source-path normalizer (`rue-air`'s `path_norm`).
 ///
 /// Every source spelling the compiler keys an identity by passes through this

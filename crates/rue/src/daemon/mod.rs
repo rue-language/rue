@@ -34,10 +34,11 @@ pub use client::{ConnectError, Connection, Submission, SubmitError};
 pub use protocol::{
     BuildKind, BuildRequest, BuildResult, CompileFailureRecord, CrashRecord,
     DAEMON_PROTOCOL_VERSION, DestinationRecord, DiagnosticFormat, IdentityRecord, InputRecord,
-    InventoryEntryRecord, OutputStream, RequestSummary, ServiceInfo, StatusReport, StreamWrite,
-    TestImageRecord, UnimportedFileRecord, UnimportedRecord,
+    InventoryEntryRecord, MAX_RESPONSE_BYTES, OutputStream, RequestSummary, ResourcePolicy,
+    ResourcePressure, ServiceInfo, StatusReport, StreamWrite, TestImageRecord,
+    UnimportedFileRecord, UnimportedRecord,
 };
-pub use service::{BuildExecutor, BuildOutput, MAX_QUEUED_REQUESTS, ServeExit};
+pub use service::{BuildExecutor, BuildOutput, MAX_CONNECTIONS, MAX_QUEUED_REQUESTS, ServeExit};
 
 /// How long an idle service lives by default before retiring itself. A
 /// calibrated policy belongs to the qualification phase (ADR-0085 §7); this is

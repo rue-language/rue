@@ -46,6 +46,13 @@ struct RetainedHost {
     host: FilesystemCompilerHost,
 }
 
+/// Daemon sessions use an explicit provisional budget so a long-lived host
+/// cannot silently inherit the much larger one-shot defaults. Release
+/// calibration may tighten these values without changing ordinary sessions.
+const DAEMON_RETAINED_BYTE_BUDGET: u64 = 256 * 1024 * 1024;
+const DAEMON_DEPENDENCY_PIN_BUDGET: u64 = 1_000_000;
+const DAEMON_AUTOMATIC_WORKERS: usize = 4;
+
 /// The one-host executor of this slice. Bounded multi-host retention is the
 /// qualification phase's (ADR-0085 §7, RUE-2129).
 pub(crate) struct Executor {
@@ -55,6 +62,17 @@ pub(crate) struct Executor {
 impl Executor {
     pub(crate) fn new() -> Self {
         Self { retained: None }
+    }
+
+    fn trim_over_budget(&mut self, byte_budget: u64, pin_budget: u64) {
+        let over = self.retained.as_ref().is_some_and(|retained| {
+            let retention = retained.host.unstable_metrics().retention();
+            retention.retained_bytes as u64 > byte_budget
+                || retention.dependency_pins as u64 > pin_budget
+        });
+        if over {
+            self.retained = None;
+        }
     }
 }
 
@@ -84,8 +102,17 @@ fn parse(request: &BuildRequest) -> Result<Parsed, String> {
                 .map_err(|error| format!("preview feature `{name}`: {error}"))
         })
         .collect::<Result<_, _>>()?;
-    let compiler_config = CompilerSessionConfig::with_workers(request.workers)
-        .map_err(|error| format!("workers {}: {error}", request.workers))?;
+    let workers = if request.workers == 0 {
+        DAEMON_AUTOMATIC_WORKERS
+    } else {
+        request.workers
+    };
+    let compiler_config = CompilerSessionConfig::with_workers_and_retention(
+        workers,
+        DAEMON_RETAINED_BYTE_BUDGET,
+        DAEMON_DEPENDENCY_PIN_BUDGET,
+    )
+    .map_err(|error| format!("workers {}: {error}", request.workers))?;
     let path_context = HostPathContext::from_working_directory(&request.working_directory)
         .map_err(|error| format!("working directory: {error}"))?;
     Ok(Parsed {
@@ -203,7 +230,7 @@ impl BuildExecutor for Executor {
                 };
             }
         };
-        match request.artifact {
+        let output = match request.artifact {
             BuildKind::Executable => {
                 let transport = produce_transport(
                     host,
@@ -279,11 +306,59 @@ impl BuildExecutor for Executor {
                     },
                 }
             }
-        }
+        };
+        output
     }
 
     fn retained_hosts(&self) -> u32 {
         u32::from(self.retained.is_some())
+    }
+
+    fn retained_charge_bytes(&self) -> u64 {
+        self.retained
+            .as_ref()
+            .map(|retained| retained.host.unstable_metrics().retention().retained_bytes as u64)
+            .unwrap_or(0)
+    }
+
+    fn dependency_pins(&self) -> u64 {
+        self.retained
+            .as_ref()
+            .map(|retained| retained.host.unstable_metrics().retention().dependency_pins as u64)
+            .unwrap_or(0)
+    }
+
+    fn retained_byte_budget(&self) -> u64 {
+        DAEMON_RETAINED_BYTE_BUDGET
+    }
+
+    fn dependency_pin_budget(&self) -> u64 {
+        DAEMON_DEPENDENCY_PIN_BUDGET
+    }
+
+    fn source_bytes(&self) -> u64 {
+        self.retained
+            .as_ref()
+            .map(|retained| {
+                retained
+                    .host
+                    .source_snapshot()
+                    .files()
+                    .map(|source| source.source.len() as u64)
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+
+    fn source_files(&self) -> u32 {
+        self.retained
+            .as_ref()
+            .map(|retained| retained.host.source_snapshot().files().count() as u32)
+            .unwrap_or(0)
+    }
+
+    fn enforce_retention_budget(&mut self) {
+        self.trim_over_budget(DAEMON_RETAINED_BYTE_BUDGET, DAEMON_DEPENDENCY_PIN_BUDGET);
     }
 }
 
@@ -488,6 +563,58 @@ mod tests {
     }
 
     #[test]
+    fn daemon_hosts_use_their_explicit_resource_budget() {
+        let project = Project::new(GOOD);
+        let mut executor = Executor::new();
+        let request = project.request("app");
+        let cancellation = CompilationCancellation::new();
+        let output = executor.build(&request, &cancellation);
+        assert!(matches!(output.result, BuildResult::Ready { .. }));
+        let metrics = executor
+            .retained
+            .as_ref()
+            .expect("a successful request retains its host")
+            .host
+            .unstable_metrics()
+            .retention();
+        assert_eq!(
+            metrics.retained_byte_budget as u64,
+            DAEMON_RETAINED_BYTE_BUDGET
+        );
+        assert_eq!(
+            metrics.dependency_pin_budget as u64,
+            DAEMON_DEPENDENCY_PIN_BUDGET
+        );
+    }
+
+    #[test]
+    fn daemon_executor_releases_runtime_after_error_and_repair() {
+        let project = Project::new(GOOD);
+        let mut executor = Executor::new();
+        let cancellation = CompilationCancellation::new();
+        let first = executor.build(&project.request("app"), &cancellation);
+        assert!(matches!(first.result, BuildResult::Ready { .. }));
+        project.write(BROKEN);
+        let broken = executor.build(&project.request("app"), &cancellation);
+        assert!(matches!(broken.result, BuildResult::Rejected { .. }));
+        project.write(GOOD);
+        let repaired = executor.build(&project.request("app"), &cancellation);
+        assert!(matches!(repaired.result, BuildResult::Ready { .. }));
+        let weak = executor
+            .retained
+            .as_ref()
+            .expect("the repaired request retains its host")
+            .host
+            .unstable_query_runtime_weak();
+        assert!(weak.is_alive(), "the live daemon host owns its runtime");
+        drop(executor);
+        assert!(
+            !weak.is_alive(),
+            "dropping the daemon executor must reclaim its query runtime"
+        );
+    }
+
+    #[test]
     fn a_changed_host_key_replaces_the_host_and_a_bad_request_touches_none() {
         let project = Project::new(GOOD);
         let mut executor = Executor::new();
@@ -534,6 +661,52 @@ mod tests {
         assert!(answer.bytes.is_empty());
         let live = executor.build(&project.request("app"), &CompilationCancellation::new());
         assert!(matches!(live.result, BuildResult::Ready { .. }));
+        let weak = executor
+            .retained
+            .as_ref()
+            .expect("the canceled request still leaves a coherent host")
+            .host
+            .unstable_query_runtime_weak();
+        assert!(weak.is_alive());
+        drop(executor);
+        assert!(!weak.is_alive());
+    }
+
+    #[test]
+    fn rotating_the_root_reclaims_the_previous_query_runtime() {
+        let project = Project::new(GOOD);
+        let mut executor = Executor::new();
+        let first = executor.build(
+            &project.request("main-app"),
+            &CompilationCancellation::new(),
+        );
+        assert!(matches!(first.result, BuildResult::Ready { .. }));
+        let previous = executor
+            .retained
+            .as_ref()
+            .expect("the first root is retained")
+            .host
+            .unstable_query_runtime_weak();
+        assert!(previous.is_alive());
+
+        fs::write(project.directory.path().join("other.rue"), GOOD).unwrap();
+        let mut request = project.request("other-app");
+        request.root_source = "other.rue".into();
+        let second = executor.build(&request, &CompilationCancellation::new());
+        assert!(matches!(second.result, BuildResult::Ready { .. }));
+        assert!(
+            !previous.is_alive(),
+            "changing the root must retire the prior runtime"
+        );
+        let current = executor
+            .retained
+            .as_ref()
+            .expect("the second root is retained")
+            .host
+            .unstable_query_runtime_weak();
+        assert!(current.is_alive());
+        drop(executor);
+        assert!(!current.is_alive());
     }
 
     #[test]
@@ -824,3 +997,7 @@ mod test_request_tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "daemon_qualification_tests.rs"]
+mod qualification_tests;
