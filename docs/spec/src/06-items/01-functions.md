@@ -78,7 +78,12 @@ root binding is. An immutable local binding — a `let` binding, or a `for` or
 `match` pattern binding — is rejected with the diagnostic an assignment to that
 place would produce (E0203, 5.2:3). A place rooted at an `inout` parameter is
 mutable (6.1:14); one rooted at a `borrow` parameter is rejected under 6.1:24.
-The requirement is the same one an `inout self` receiver carries (6.4:26).
+A place rooted at a by-value parameter is rejected exactly as one rooted at a
+`let` binding is: the parameter is an immutable binding (6.1:32), and a callee
+that wants to pass its own copy `inout` first copies it into a `let mut`
+binding. The one mutable by-value binding is a `mut self` receiver (6.4:24),
+which is an `inout` root. The requirement is the same one an `inout self`
+receiver carries (6.4:26).
 
 {{ rule(id="6.1:18", cat="dynamic-semantics") }}
 

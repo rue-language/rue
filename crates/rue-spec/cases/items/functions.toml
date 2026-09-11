@@ -624,6 +624,59 @@ compile_fail = true
 error_contains = "E0203"
 
 [[case]]
+name = "inout_arg_by_value_parameter_rejected"
+spec = ["6.1:43", "6.1:32"]
+description = "A by-value parameter is an immutable binding, so passing it `inout` is rejected like a `let` binding"
+source = """
+fn bump(inout x: i32) {
+    x = x + 1;
+}
+fn f(v: i32) -> i32 {
+    bump(inout v);
+    v
+}
+fn main() -> i32 { f(41) }
+"""
+compile_fail = true
+error_contains = "E0203"
+
+[[case]]
+name = "inout_arg_mut_copy_of_parameter_accepted"
+spec = ["6.1:43", "6.1:32"]
+description = "Copying a by-value parameter into a `let mut` binding gives the callee a mutable place to pass `inout`"
+source = """
+fn bump(inout x: i32) {
+    x = x + 1;
+}
+fn f(v: i32) -> i32 {
+    let mut v = v;
+    bump(inout v);
+    v
+}
+fn main() -> i32 { f(41) }
+"""
+exit_code = 42
+
+[[case]]
+name = "inout_arg_mut_self_receiver_accepted"
+spec = ["6.1:43", "6.4:24"]
+description = "A `mut self` receiver is a mutable by-value binding and so an `inout` root"
+source = """
+struct C {
+    v: i32,
+    fn bumped(mut self) -> i32 {
+        bump(inout self.v);
+        self.v
+    }
+}
+fn bump(inout x: i32) {
+    x = x + 1;
+}
+fn main() -> i32 { C { v: 41 }.bumped() }
+"""
+exit_code = 42
+
+[[case]]
 name = "inout_self_receiver_shares_mut_binding_rule"
 spec = ["6.1:43", "6.4:26"]
 description = "An `inout self` receiver carries the same requirement and reports the same diagnostic"

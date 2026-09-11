@@ -116,8 +116,8 @@ error_contains = [
 ]
 
 [[case]]
-name = "inout_argument_of_a_by_value_parameter_is_accepted"
-description = "A by-value parameter names the callee's own copy of the argument, which it may pass `inout`; the post-call read observes the write (spec 6.1:18, RUE-2042)."
+name = "inout_argument_of_a_by_value_parameter_is_rejected"
+description = "A by-value parameter is an immutable binding (spec 6.1:32), so passing it `inout` is the E0203 a `let` binding gets; the help names both repairs (spec 6.1:43, RUE-2079)."
 source = """
 fn bump(inout x: i32) { x = x + 1; }
 
@@ -128,4 +128,28 @@ fn takes(n: i32) -> i32 {
 
 fn main() -> i32 { takes(41) }
 """
-exit_code = 42
+compile_fail = true
+error_contains = [
+    "[E0203]",
+    "cannot assign to immutable variable 'n'",
+    "copy the parameter into a mutable binding first: `let mut n = n;`, or make the parameter `inout n: i32`",
+]
+
+[[case]]
+name = "inout_argument_of_a_by_value_receiver_is_rejected"
+description = "A plain `self` receiver is a by-value parameter too; the help names `mut self` and `inout self` (spec 6.1:43, RUE-2079)."
+source = """
+struct C {
+    v: i32,
+    fn bump_self(self) -> i32 { bump(inout self); self.v }
+}
+fn bump(inout c: C) { c.v = c.v + 1; }
+
+fn main() -> i32 { C { v: 41 }.bump_self() }
+"""
+compile_fail = true
+error_contains = [
+    "[E0203]",
+    "cannot assign to immutable variable 'self'",
+    "declare the receiver `mut self` to mutate the callee's copy, or `inout self` to write back to the caller",
+]

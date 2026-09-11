@@ -6596,20 +6596,43 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &AnalysisContext,
     ) -> CompileResult<()> {
-        let Some(local) = ctx.locals.get(&root) else {
+        let name = self.body_interner().resolve(&root).to_string();
+        if let Some(local) = ctx.locals.get(&root) {
+            if local.is_mut {
+                return Ok(());
+            }
+            let help = format!(
+                "an `inout` argument writes to the caller's place; make the binding mutable: \
+                 `let mut {name} = ...`"
+            );
+            return Err(CompileError::new(ErrorKind::AssignToImmutable(name), span)
+                .with_label("variable declared as immutable here", local.span)
+                .with_help(help));
+        }
+        // A by-value parameter is an immutable binding (spec 6.1:32), so it is
+        // no more an `inout` root than a `let` binding is (RUE-2079). A `mut
+        // self` receiver is the one mutable by-value binding; `inout`
+        // parameters are mutable places, and `borrow` parameters were rejected
+        // before this check ran.
+        let Some(param) = ctx.param(root) else {
             return Ok(());
         };
-        if local.is_mut {
+        if param.mode != RirParamMode::Normal || param.is_mut {
             return Ok(());
         }
-        let name = self.body_interner().resolve(&root).to_string();
-        let help = format!(
-            "an `inout` argument writes to the caller's place; make the binding mutable: \
-             `let mut {name} = ...`"
-        );
-        Err(CompileError::new(ErrorKind::AssignToImmutable(name), span)
-            .with_label("variable declared as immutable here", local.span)
-            .with_help(help))
+        let help = if name == "self" {
+            "an `inout` argument writes to the caller's place; declare the receiver `mut self` \
+             to mutate the callee's copy, or `inout self` to write back to the caller"
+                .to_string()
+        } else {
+            format!(
+                "an `inout` argument writes to the caller's place; copy the parameter into a \
+                 mutable binding first: `let mut {name} = {name};`, or make the parameter \
+                 `inout {name}: {}` to write back to the caller",
+                self.format_type_name(param.ty)
+            )
+        };
+        Err(CompileError::new(ErrorKind::AssignToImmutable(name), span).with_help(help))
     }
 
     /// Reject a mutation of a collection that an enclosing `for` loop is
@@ -7604,7 +7627,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // An `inout` argument writes to the caller's place, so its
                 // root must be a mutable binding — the same requirement an
                 // assignment to that place and an `inout self` receiver carry
-                // (spec 6.1:43, RUE-2054).
+                // (spec 6.1:43, RUE-2054, RUE-2079).
                 if arg.is_inout() {
                     self.reject_immutable_inout_arg_root(
                         root,
