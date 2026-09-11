@@ -216,7 +216,6 @@ impl Parser {
     /// variant pattern's head ends in `=>`, `,`, `)` or a payload list
     /// instead, so the scan never commits to the wrong grammar (RUE-2175).
     fn struct_pattern_ahead(&mut self) -> bool {
-        debug_assert!(matches!(self.kind(), TokenKind::Ident(_)));
         let mut cursor = self.cursor + 1;
         loop {
             if self.nth(cursor - self.cursor) == TokenKind::LParen {
