@@ -298,7 +298,7 @@ error_contains = "method"
 
 [[case]]
 name = "duplicate_method_name_error"
-spec = ["6.4:16"]
+spec = ["6.4:16", "6.1:44"]
 source = """
 struct Point {
     x: i32,

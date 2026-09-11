@@ -6,7 +6,7 @@ description = "Module-scoped top-level names and extent of analysis (spec chapte
 
 [[case]]
 name = "same_named_functions_across_imported_files_ok"
-spec = ["10.5:2"]
+spec = ["10.5:2", "6.1:44"]
 description = "Two loaded files may define the same top-level function name when each is accessed through its own module"
 source = """
 fn main() -> i32 {

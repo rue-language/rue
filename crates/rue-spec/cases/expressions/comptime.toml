@@ -531,7 +531,7 @@ exit_code = 42
 
 [[case]]
 name = "generic_function_multiple_types"
-spec = ["4.14:5"]
+spec = ["4.14:5", "6.1:44"]
 description = "Generic function called with different types creates separate specializations"
 source = """
 fn identity(comptime T: type, x: T) -> T {

@@ -928,13 +928,16 @@ define_error_codes! {
     };
     // 408, 409 retired with the @handle directive (RUE-199).
     DUPLICATE_METHOD = 410 => {
-        explanation: "A struct definition declares more than one method or associated function with the same name. Both declaration forms share the struct's callable-member name space, so each callable member name must be unique within that struct.",
+        explanation: "A struct definition declares more than one method or associated function with the same name. Both declaration forms share the struct's callable-member name space, so each callable member name must be unique within that struct; changing parameter types, count, return type, or mode does not create an overload.",
         likely_cause: "A method or associated function was copied, renamed incompletely, or generated twice in one struct definition. Remove one declaration or give the callable members distinct names.",
         examples: [
             ErrorCodeExample { title: "Duplicate method declaration", source: "struct Point {\n    x: i32,\n\n    fn value(self) -> i32 { self.x }\n    fn value(self) -> i32 { self.x }\n}\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
             ErrorCodeExample { title: "Give each method a unique name", source: "struct Point {\n    x: i32,\n\n    fn value(self) -> i32 { self.x }\n    fn doubled(self) -> i32 { self.x * 2 }\n}\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::Compiles },
         ],
-        references: [ErrorCodeReference { title: "Unique method names", path: "docs/spec/src/06-items/04-impl-blocks.md", rule: Some("6.4:16") }],
+        references: [
+            ErrorCodeReference { title: "Unique method names", path: "docs/spec/src/06-items/04-impl-blocks.md", rule: Some("6.4:16") },
+            ErrorCodeReference { title: "One name, one signature per scope", path: "docs/spec/src/06-items/01-functions.md", rule: Some("6.1:44") },
+        ],
     };
     UNDEFINED_METHOD = 411 => {
         explanation: "A method call names no method available for the receiver's type. Rue resolves user-defined methods on the receiver's struct and supported built-in receiver methods, including operations on strings and slices.",
@@ -1202,13 +1205,16 @@ define_error_codes! {
         references: [ErrorCodeReference { title: "Reserved function names", path: "docs/spec/src/06-items/_index.md", rule: Some("6.0:5") }],
     };
     DUPLICATE_FUNCTION_DEFINITION = 436 => {
-        explanation: "One source file defines the same top-level function name more than once, or reuses a top-level name across functions, constants, and user-defined types. E0436 covers both function/function duplicates and collisions between different top-level declaration kinds; the metadata name and code are shared intentionally.",
+        explanation: "One source file defines the same top-level function name more than once, or reuses a top-level name across functions, constants, and user-defined types. E0436 covers both function/function duplicates and collisions between different top-level declaration kinds; the metadata name and code are shared intentionally. A different parameter type, parameter count, return type, or parameter mode does not create an overload.",
         likely_cause: "A declaration was copied, renamed to an existing item, or generated twice in one module. Remove or rename one declaration. The same spelling may be used independently in another source file because top-level names are module-scoped.",
         examples: [
             ErrorCodeExample { title: "Define a function twice in one module", source: "fn answer() -> i32 { 40 }\nfn answer() -> i32 { 42 }\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
             ErrorCodeExample { title: "Give top-level functions distinct names", source: "fn base() -> i32 { 40 }\nfn answer() -> i32 { base() + 2 }\nfn main() -> i32 { answer() }", outcome: ErrorCodeExampleOutcome::Compiles },
         ],
-        references: [ErrorCodeReference { title: "Module-scoped top-level name uniqueness", path: "docs/spec/src/10-modules/05-program-composition.md", rule: Some("10.5:1") }],
+        references: [
+            ErrorCodeReference { title: "Module-scoped top-level name uniqueness", path: "docs/spec/src/10-modules/05-program-composition.md", rule: Some("10.5:1") },
+            ErrorCodeReference { title: "One name, one signature per scope", path: "docs/spec/src/06-items/01-functions.md", rule: Some("6.1:44") },
+        ],
     };
     MOVE_OUT_OF_INOUT = 437 => {
         explanation: "A function tries to move a non-Copy value, or a non-Copy part of one, out of an `inout` parameter. The callee has exclusive mutable access to caller-owned storage but does not own that storage's value, so moving it would leave the caller with an invalid or partially moved value.",

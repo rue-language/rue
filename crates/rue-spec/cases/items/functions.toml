@@ -71,6 +71,37 @@ spec = ["6.1:2"]
 source = "fn main() -> i32 { 99 }"
 exit_code = 99
 
+# Rue has one callable name per module/type scope. A changed signature does not
+# turn a second same-named declaration into an overload (6.1:44).
+
+[[case]]
+name = "same_function_name_different_parameter_type_rejected"
+spec = ["6.1:44"]
+source = "fn convert(value: i32) -> i32 { value }\nfn convert(value: bool) -> i32 { if value { 1 } else { 0 } }\nfn main() -> i32 { 0 }"
+compile_fail = true
+error_contains = ["E0436", "convert"]
+
+[[case]]
+name = "same_function_name_different_arity_rejected"
+spec = ["6.1:44"]
+source = "fn choose(value: i32) -> i32 { value }\nfn choose(left: i32, right: i32) -> i32 { left + right }\nfn main() -> i32 { 0 }"
+compile_fail = true
+error_contains = ["E0436", "choose"]
+
+[[case]]
+name = "same_function_name_different_return_type_rejected"
+spec = ["6.1:44"]
+source = "fn result() -> i32 { 1 }\nfn result() -> bool { true }\nfn main() -> i32 { 0 }"
+compile_fail = true
+error_contains = ["E0436", "result"]
+
+[[case]]
+name = "same_function_name_different_parameter_mode_rejected"
+spec = ["6.1:44"]
+source = "fn update(value: i32) -> i32 { value }\nfn update(inout value: i32) -> i32 { value }\nfn main() -> i32 { 0 }"
+compile_fail = true
+error_contains = ["E0436", "update"]
+
 # =============================================================================
 # Function parameters
 # =============================================================================

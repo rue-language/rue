@@ -388,6 +388,24 @@ compile_stdout_not_contains = ["Compiled"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
 
 [[case]]
+name = "duplicate_function_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0436"]
+compile_only = true
+compile_stdout_contains = ["E0436: Duplicate function definition", "A different parameter type, parameter count, return type, or parameter mode does not create an overload.", "docs/spec/src/10-modules/05-program-composition.md (spec rule 10.5:1)", "docs/spec/src/06-items/01-functions.md (spec rule 6.1:44)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "duplicate_method_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0410"]
+compile_only = true
+compile_stdout_contains = ["E0410: Duplicate method", "changing parameter types, count, return type, or mode does not create an overload.", "docs/spec/src/06-items/04-impl-blocks.md (spec rule 6.4:16)", "docs/spec/src/06-items/01-functions.md (spec rule 6.1:44)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
 name = "fixed_string_capacity_code_is_explained"
 files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
 args = ["explain", "E0492"]
