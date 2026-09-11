@@ -893,6 +893,112 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Analyze a struct operation instruction.
     ///
     /// Handles: StructDecl, StructInit, FieldGet, FieldSet
+    /// Check a struct pattern's head and field list against the value it
+    /// destructures (spec 5.1:19, 5.1:20, RUE-1884).
+    ///
+    /// The lowering has already bound the initializer to `local` and follows
+    /// this instruction with one `let` of a field read per pattern field, so
+    /// the checks here are the ones those reads cannot make on their own: the
+    /// head names the value's own struct type, and the list names every
+    /// declared field exactly once. A pattern has no rest form, which is what
+    /// makes a field added to the struct an error at every pattern.
+    fn analyze_struct_pattern(
+        &mut self,
+        air: &mut Air,
+        local: Spur,
+        ty: rue_rir::RirTypeSyntaxRef,
+        fields: &rue_rir::RirPatternFieldsRange,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        self.require_preview(
+            rue_error::PreviewFeature::StructPatterns,
+            "struct patterns",
+            span,
+        )?;
+        let head = self.resolve_rir_type_with_ctx(ty, span, ctx)?;
+        let Some(struct_id) = head.as_struct() else {
+            return Err(CompileError::new(
+                ErrorKind::StructPatternNotStruct {
+                    type_name: self.format_type_name(head),
+                },
+                span,
+            )
+            .with_help("a struct pattern names the fields of a struct type"));
+        };
+        let value_ty = ctx.locals.get(&local).map(|var| var.ty).ok_or_else(|| {
+            CompileError::new(
+                ErrorKind::InternalError(
+                    "struct pattern precedes the binding of its temporary".to_string(),
+                ),
+                span,
+            )
+        })?;
+        if value_ty != head {
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: self.format_type_name(head),
+                    found: self.format_type_name(value_ty),
+                },
+                span,
+            )
+            .with_help("the pattern head must name the initializer's own struct type"));
+        }
+
+        let struct_name = self.format_type_name(head);
+        let struct_def = self.body_type_pool().struct_def(struct_id);
+        let mut named = vec![false; struct_def.fields.len()];
+        for field in self.body_rir_ref().pattern_fields(fields) {
+            let field_name = self.body_interner().resolve(&field);
+            let Some((index, _)) = struct_def.find_field(field_name) else {
+                return Err(CompileError::new(
+                    ErrorKind::UnknownField {
+                        struct_name,
+                        field_name: field_name.to_string(),
+                    },
+                    span,
+                ));
+            };
+            if named[index] {
+                return Err(CompileError::new(
+                    ErrorKind::DuplicateField {
+                        struct_name,
+                        field_name: field_name.to_string(),
+                    },
+                    span,
+                ));
+            }
+            named[index] = true;
+        }
+        let missing_fields: Vec<String> = struct_def
+            .fields
+            .iter()
+            .zip(named)
+            .filter(|(_, named)| !named)
+            .map(|(field, _)| field.name.clone())
+            .collect();
+        if !missing_fields.is_empty() {
+            return Err(CompileError::new(
+                ErrorKind::MissingFields(Box::new(MissingFieldsError {
+                    struct_name,
+                    missing_fields,
+                })),
+                span,
+            )
+            .with_help(
+                "a struct pattern names every field of the struct; discard a field with \
+                 `field: _`",
+            ));
+        }
+
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::UnitConst,
+            ty: Type::UNIT,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::UNIT))
+    }
+
     pub(crate) fn analyze_struct_ops(
         &mut self,
         air: &mut Air,
@@ -916,6 +1022,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     ),
                     inst.span,
                 ))
+            }
+
+            InstData::StructPattern { local, ty, fields } => {
+                self.analyze_struct_pattern(air, *local, *ty, fields, inst.span, ctx)
             }
 
             InstData::StructInit {

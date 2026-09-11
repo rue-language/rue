@@ -216,7 +216,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             InstData::StructDecl { .. }
             | InstData::StructInit { .. }
             | InstData::FieldGet { .. }
-            | InstData::FieldSet { .. } => self.analyze_struct_ops(air, inst_ref, ctx),
+            | InstData::FieldSet { .. }
+            | InstData::StructPattern { .. } => self.analyze_struct_ops(air, inst_ref, ctx),
 
             // Array operations
             InstData::ArrayInit { .. }

@@ -12,10 +12,22 @@ A let statement introduces a new variable binding.
 
 {{ rule(id="5.1:2", cat="normative") }}
 
+<!-- grammar-sync(id="5.1:2", production="let_pattern", role="source") -->
+<!-- grammar-sync(id="5.1:2", production="struct_pattern", role="source") -->
+<!-- grammar-sync(id="5.1:2", production="field_patterns", role="source") -->
+<!-- grammar-sync(id="5.1:2", production="field_pattern", role="source") -->
+
 ```ebnf
 let_stmt = "let" [ "mut" ] let_pattern [ ":" type ] "=" expression ";" ;
-let_pattern = IDENT | "_" ;
+let_pattern    = IDENT | "_" | struct_pattern ;
+struct_pattern = type "{" [ field_patterns ] "}" ;
+field_patterns = field_pattern { "," field_pattern } [ "," ] ;
+field_pattern  = [ "mut" ] IDENT
+               | IDENT ":" ( [ "mut" ] IDENT | "_" ) ;
 ```
+
+A `struct_pattern` (5.1:18) is a preview feature; its head is written with
+the type grammar (3.1) and so takes the same forms a `let` annotation does.
 
 ## Immutable Bindings
 
@@ -132,5 +144,72 @@ fn main() -> i32 {
     let _ = 5 + 5;   // evaluated, then discarded; no binding introduced
     let _ = 99;
     3
+}
+```
+
+## Struct Patterns
+
+{{ preview_feature(feature="struct_patterns", adr="ADR-0091", doc="0091-struct-patterns.md") }}
+
+{{ rule(id="5.1:18", cat="normative") }}
+
+A let statement **MAY** bind the fields of a struct value with a *struct
+pattern*: `let T { f: b, ... } = e;`. The head `T` is written with the type
+grammar exactly as a `let` annotation names a type — a struct name, a
+module-qualified name, or a type-constructor call (4.14:23) — and names the
+struct type of `e`. Each field pattern names one declared field of that struct
+and either binds it to a fresh name (`f: b`, or the shorthand `f`, which binds
+the field to a name of its own spelling exactly as field-init shorthand names a
+struct literal's field), binds it mutably (`f: mut b`, or the shorthand
+`mut f`), or discards it (`f: _`). Struct patterns are a preview feature: a let
+statement with a struct pattern **MUST** be compiled with
+`--preview struct_patterns` (8.4:1).
+
+{{ rule(id="5.1:19", cat="legality-rule") }}
+
+The head of a struct pattern **MUST** name a struct type (E0213), and the
+initializer **MUST** have exactly that type (E0206); an explicit annotation on
+the statement is checked against the initializer as usual (5.1:8) and so must
+name the same type. Mutability belongs to a binding and is written inside the
+pattern: `mut` before a struct pattern is a syntax error.
+
+{{ rule(id="5.1:20", cat="legality-rule") }}
+
+A struct pattern has no rest form. It **MUST** name every field the struct
+declares, each exactly once: a field the pattern omits is a compile-time error
+naming the missing fields (E0400), a name that is not a field of the struct is
+E0401, and a field named twice is E0402. Adding a field to a struct is
+therefore a compile-time error at every struct pattern over that struct until
+the pattern names the field.
+
+{{ rule(id="5.1:21", cat="normative") }}
+
+A struct pattern is the sequence of let statements it stands for. The
+initializer is evaluated once and bound to an unnameable temporary as
+`let t: T = e;` would bind it (5.1:8, 5.1:12). Then, for each field pattern in
+source order, a named binding `f: b` is `let b = t.f;` (`let mut b = t.f;` for
+`mut b`) and a discard `f: _` is `let _ = t.f;` (5.1:16). Each binding is
+consequently introduced after the whole initializer and after the bindings of
+earlier fields (5.1:12), shadows as any let binding does (5.1:10), and takes
+its field's value by the rules of field access in value context (4.12): a Copy
+field is copied, a move field is moved out of the temporary, a field whose type
+carries a linear value cannot be discarded (E0478, 3.8), and a move field of a
+struct that has a destructor cannot be moved out (E0456, 3.9). Whatever the
+temporary still owns when the enclosing block ends is dropped then (3.9:4).
+
+{{ rule(id="5.1:22") }}
+
+```rue
+struct Point { x: i32, y: i32 }
+
+fn manhattan(p: Point) -> i32 {
+    let Point { x, y: py } = p;   // binds x and py
+    x + py
+}
+
+fn main() -> i32 {
+    let Point { mut x, y: _ } = Point { x: 40, y: 7 };  // y is discarded
+    x = x + 2;
+    x   // 42
 }
 ```

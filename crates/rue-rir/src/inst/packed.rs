@@ -1736,6 +1736,17 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
                 self.symbol(*field)?;
                 self.reference(*value)?;
             }
+            InstData::StructPattern { local, ty, fields } => {
+                self.byte(64)?;
+                self.symbol(*local)?;
+                self.type_reference(*ty)?;
+                let fields = rir.pattern_fields(fields);
+                self.count(fields.len())?;
+                for field in fields.values() {
+                    self.check()?;
+                    self.symbol(field)?;
+                }
+            }
             InstData::EnumDecl {
                 is_pub,
                 is_non_exhaustive,
@@ -3202,6 +3213,21 @@ impl<
                 let field = self.symbol(reader)?;
                 let value = self.reference(reader)?;
                 add!(InstData::FieldSet { base, field, value })
+            }
+            64 => {
+                let local = self.symbol(reader)?;
+                let ty = self.type_reference(reader)?;
+                let count = Self::count(reader, "pattern fields", 1)?;
+                let mut fields = Vec::new();
+                fields
+                    .try_reserve_exact(count)
+                    .map_err(|_| Self::capacity("pattern fields"))?;
+                for _ in 0..count {
+                    self.check()?;
+                    fields.push(self.symbol(reader)?);
+                }
+                self.destination
+                    .add_struct_pattern(local, ty, &fields, span)?
             }
             50 => {
                 let is_pub = reader.boolean("enum visibility")?;
@@ -5151,6 +5177,7 @@ mod tests {
             field: a,
             value: unit
         });
+        refs.push(editor.add_struct_pattern(a, type_a, &[a, b], span).unwrap());
         refs.push(
             editor
                 .add_enum_decl(true, false, a, &[a, b], &[vec![type_a], vec![]], span)
@@ -5206,17 +5233,17 @@ mod tests {
         refs.push(root);
         assert_eq!(
             refs.len(),
-            63,
+            64,
             "fixture must contain exactly one of every InstData variant"
         );
-        assert_eq!(editor.len(), 63);
+        assert_eq!(editor.len(), 64);
         let variants = editor
             .iter()
             .map(|(_, instruction)| std::mem::discriminant(&instruction.data))
             .collect::<ahash::AHashSet<_>>();
-        assert_eq!(variants.len(), 63, "fixture duplicated an InstData variant");
+        assert_eq!(variants.len(), 64, "fixture duplicated an InstData variant");
         let payload_stats = editor.payload_storage_stats();
-        assert_eq!(RIR_PAYLOAD_FAMILY_NAMES.len(), 17);
+        assert_eq!(RIR_PAYLOAD_FAMILY_NAMES.len(), 18);
         assert!(
             payload_stats
                 .family_logical_bytes

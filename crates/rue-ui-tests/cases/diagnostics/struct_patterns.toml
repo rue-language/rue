@@ -1,0 +1,108 @@
+[section]
+id = "diagnostics.struct_patterns"
+name = "Struct pattern diagnostics"
+description = "Pins the diagnostics of the struct_patterns preview (spec 5.1:18-5.1:21, RUE-1884): the preview gate, the head checks, and the exhaustive field list with its repairs."
+
+[[case]]
+name = "struct_pattern_without_preview_names_the_flag"
+source = """
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let Point { x, y } = Point { x: 40, y: 2 };
+    x + y
+}
+"""
+compile_fail = true
+error_contains = [
+    "[E1100]",
+    "struct patterns requires preview feature `struct_patterns`",
+    "use --preview struct_patterns to enable this feature (ADR-0091)",
+]
+
+[[case]]
+name = "missing_fields_name_every_omitted_field_and_the_discard_form"
+preview = "struct_patterns"
+source = """
+struct Point { x: i32, y: i32, z: i32 }
+
+fn main() -> i32 {
+    let Point { x } = Point { x: 1, y: 2, z: 3 };
+    x
+}
+"""
+compile_fail = true
+error_contains = [
+    "[E0400]",
+    "missing fields 'y', 'z' in struct 'Point'",
+    "a struct pattern names every field of the struct; discard a field with `field: _`",
+]
+
+[[case]]
+name = "non_struct_head_is_rejected_with_the_pattern_code"
+preview = "struct_patterns"
+source = """
+const N = i32;
+
+fn main() -> i32 {
+    let N { value } = 5;
+    value
+}
+"""
+compile_fail = true
+error_contains = [
+    "[E0213]",
+    "cannot destructure a value of type 'i32': not a struct",
+    "a struct pattern names the fields of a struct type",
+]
+
+[[case]]
+name = "head_and_initializer_types_must_agree"
+preview = "struct_patterns"
+source = """
+struct Point { x: i32, y: i32 }
+struct Other { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let Point { x, y } = Other { x: 40, y: 2 };
+    x + y
+}
+"""
+compile_fail = true
+error_contains = [
+    "[E0206]",
+    "type mismatch: expected Point, found Other",
+    "the pattern head must name the initializer's own struct type",
+]
+
+[[case]]
+name = "mut_before_the_pattern_points_inside"
+preview = "struct_patterns"
+source = """
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let mut Point { x, y } = Point { x: 40, y: 2 };
+    x + y
+}
+"""
+compile_fail = true
+error_contains = [
+    "`mut` applies to one binding; write it inside the struct pattern, as in `Point { mut x, y }`",
+]
+
+[[case]]
+name = "unused_pattern_binding_warns_at_the_binding"
+preview = "struct_patterns"
+description = "A field binding is an ordinary local: the unused-variable warning points at the binding name, not the whole pattern."
+source = """
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let Point { x, y } = Point { x: 1, y: 2 };
+    x
+}
+"""
+exit_code = 1
+warning_contains = ["unused variable", "'y'"]
+expected_warning_count = 1

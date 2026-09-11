@@ -296,6 +296,14 @@ def corpus_rules() -> peer_ports.CorpusRules:
 #   the rendering rule itself changed. GAZETTE_PORT_REVISION advances to 3
 #   and PEER_PORT_REVISION to 3 (argued beside it in `gazette_peer_ports.py`).
 #   The corpus's one call site passes no `adr`, so no rendered page moves.
+#
+#   RUE-1884. No production template moved, and the digest below is unchanged.
+#   The review is of the RUE-1494 entry above, which was wrong about the Zola
+#   port: only the Hugo port had followed, and the Zola port still rendered the
+#   `/designs/…` route. The corpus's first page to pass an `adr` (spec 5.1,
+#   struct patterns) exposed it: the semantic oracle rejected the Zola link.
+#   The Zola port now follows, and PEER_PORT_REVISION advances to 4 (argued
+#   beside it in `gazette_peer_ports.py`). GAZETTE_PORT_REVISION does not move.
 PRODUCTION_TEMPLATE_ROOT = "website/templates"
 PRODUCTION_TEMPLATE_DIGEST = (
     "803f829ddf0a9ccd6cf5f5b8c1bdf9f0d1a5904062865a8be63e98f445c63647"

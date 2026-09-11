@@ -1369,6 +1369,7 @@ impl RetainedCharge for rue_error::ErrorKind {
             | E::UndefinedFunction(value)
             | E::AssignToImmutable(value)
             | E::UnknownType(value)
+            | E::StructPatternNotStruct { type_name: value }
             | E::UseAfterMove(value)
             | E::LinearValueNotConsumed(value)
             | E::LinearValueNotConsumedOnAllPaths(value)

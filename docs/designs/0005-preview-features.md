@@ -195,6 +195,10 @@ mechanism), so the `PreviewFeature` enum is not empty.
   module remain exhaustively checked against the variants known there. Adding
   variants can still change layout, ABI, or runtime behavior, so the promise
   does not provide a binary compatibility guarantee.
+- `struct_patterns` — struct destructuring patterns in `let` statements
+  (ADR-0091, RUE-1884): `let Point { x, y } = p;` binds every field by name
+  and has no rest form, so an added field is a compile error at every
+  pattern. Match-arm struct patterns are the feature's second phase.
 
 ## Implementation Phases
 

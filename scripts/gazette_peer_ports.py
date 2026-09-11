@@ -80,7 +80,14 @@ CorpusRules = collections.namedtuple(
 # argument. That is a change to what the port renders, not to a comment, even
 # though the corpus's one call site passes no `adr` and so no rendered page
 # moves.
-PEER_PORT_REVISION = 3
+#
+# It advances to 4 with RUE-1884. RUE-1494 ported the Hugo shortcode but left
+# the Zola port on the old `/designs/…` route, and no corpus page passed an
+# `adr` to show it. The first spec page that does (5.1, struct patterns)
+# rendered a different link under the Zola port than under gazette, which the
+# semantic oracle rejected. The Zola port now follows the production shortcode
+# as Hugo's does, so that page's link moves.
+PEER_PORT_REVISION = 4
 
 # What the PEERS render, and nothing gazette reads. Inside the comparison
 # identity alone.

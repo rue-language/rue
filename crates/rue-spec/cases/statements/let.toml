@@ -462,3 +462,285 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E0478"]
+
+# =============================================================================
+# Struct Patterns (5.1:18-5.1:21, preview feature `struct_patterns`, RUE-1884)
+# =============================================================================
+
+[[case]]
+name = "struct_pattern_binds_every_field"
+spec = ["5.1:18", "5.1:21"]
+preview = "struct_patterns"
+preview_should_pass = true
+description = "Shorthand, renamed, mutable, and discarded field patterns bind a struct's fields"
+source = """
+struct Point { x: i32, y: i32, z: i32 }
+
+fn main() -> i32 {
+    let Point { x, y: py, mut z } = Point { x: 40, y: 2, z: 100 };
+    z = z / 100;
+    let Point { x: _, y: _, z: tail } = Point { x: 1, y: 2, z: 0 };
+    x + py + z + tail - 1
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "struct_pattern_head_forms"
+spec = ["5.1:18"]
+preview = "struct_patterns"
+preview_should_pass = true
+description = "The head takes every form a let annotation does: a struct name and a type-constructor call"
+source = """
+fn Pair(comptime T: type) -> type { struct { a: T, b: T } }
+struct Wrap { inner: i32 }
+
+fn main() -> i32 {
+    let Pair(i32) { a, b } = Pair(i32) { a: 40, b: 2 };
+    let Wrap { inner } = Wrap { inner: a + b };
+    inner
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "struct_pattern_requires_preview"
+spec = ["5.1:18", "8.4:1"]
+description = "A struct pattern without --preview struct_patterns is the preview-gate error naming the feature"
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let Point { x, y } = Point { x: 40, y: 2 };
+    x + y
+}
+"""
+compile_fail = true
+error_contains = ["E1100", "--preview struct_patterns"]
+
+[[case]]
+name = "struct_pattern_head_must_be_a_struct"
+spec = ["5.1:19"]
+preview = "struct_patterns"
+preview_should_pass = true
+source = """
+const N = i32;
+fn main() -> i32 {
+    let N { value } = 5;
+    value
+}
+"""
+compile_fail = true
+error_contains = "E0213"
+
+[[case]]
+name = "struct_pattern_head_must_match_initializer"
+spec = ["5.1:19"]
+preview = "struct_patterns"
+preview_should_pass = true
+source = """
+struct Point { x: i32, y: i32 }
+struct Other { x: i32, y: i32 }
+fn main() -> i32 {
+    let Point { x, y } = Other { x: 40, y: 2 };
+    x + y
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected Point, found Other"]
+
+[[case]]
+name = "struct_pattern_annotation_is_checked_like_any_let"
+spec = ["5.1:19"]
+preview = "struct_patterns"
+preview_should_pass = true
+description = "An explicit annotation on a struct-pattern let names the same type as the head"
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let Point { x, y }: Point = Point { x: 40, y: 2 };
+    x + y
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "struct_pattern_mut_belongs_inside"
+spec = ["5.1:19"]
+preview = "struct_patterns"
+preview_should_pass = true
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let mut Point { x, y } = Point { x: 40, y: 2 };
+    x + y
+}
+"""
+compile_fail = true
+error_contains = "`mut` applies to one binding"
+
+[[case]]
+name = "struct_pattern_missing_field_rejected"
+spec = ["5.1:20"]
+preview = "struct_patterns"
+preview_should_pass = true
+description = "A pattern that omits fields is rejected naming every missing field: there is no rest form"
+source = """
+struct Point { x: i32, y: i32, z: i32 }
+fn main() -> i32 {
+    let Point { x } = Point { x: 1, y: 2, z: 3 };
+    x
+}
+"""
+compile_fail = true
+error_contains = ["E0400", "missing fields 'y', 'z' in struct 'Point'"]
+
+[[case]]
+name = "struct_pattern_unknown_field_rejected"
+spec = ["5.1:20"]
+preview = "struct_patterns"
+preview_should_pass = true
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let Point { x, y, w } = Point { x: 1, y: 2 };
+    x + y + w
+}
+"""
+compile_fail = true
+error_contains = ["E0401", "unknown field 'w'"]
+
+[[case]]
+name = "struct_pattern_duplicate_field_rejected"
+spec = ["5.1:20"]
+preview = "struct_patterns"
+preview_should_pass = true
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let Point { x, y, x: again } = Point { x: 1, y: 2 };
+    x + y + again
+}
+"""
+compile_fail = true
+error_contains = ["E0402", "duplicate field 'x'"]
+
+[[case]]
+name = "struct_pattern_bindings_follow_let_rules"
+spec = ["5.1:21", "5.1:10", "5.1:12"]
+preview = "struct_patterns"
+preview_should_pass = true
+description = "Bindings are introduced after the initializer, shadow outer names, and a parameter destructures like any value"
+source = """
+struct Point { x: i32, y: i32 }
+
+fn sum(p: Point) -> i32 {
+    let Point { x, y } = p;
+    x + y
+}
+
+fn main() -> i32 {
+    let x: i32 = 40;
+    let Point { x, y } = Point { x: x + 2, y: 0 };
+    x + y + sum(Point { x: 0, y: 0 })
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "struct_pattern_moves_a_move_field_and_drops_the_rest"
+spec = ["5.1:21", "3.9:4"]
+preview = "struct_patterns"
+preview_should_pass = true
+description = "A move field leaves the temporary; the temporary's remaining fields drop when the block ends"
+source = """
+struct Tag { id: i32 }
+drop fn Tag(self) { @dbg(self.id); }
+struct Pair { a: Tag, b: Tag }
+
+fn main() -> i32 {
+    {
+        let Pair { a, b: _ } = Pair { a: Tag { id: 1 }, b: Tag { id: 2 } };
+        @dbg(a.id + 10);
+    }
+    @dbg(3);
+    0
+}
+"""
+expected_stdout = """
+2
+11
+1
+3
+"""
+exit_code = 0
+
+[[case]]
+name = "struct_pattern_cannot_discard_a_linear_field"
+spec = ["5.1:21", "5.1:16"]
+preview = "struct_patterns"
+preview_should_pass = true
+source = """
+linear struct Token { id: i32 }
+struct Holder { t: Token, n: i32 }
+fn main() -> i32 {
+    let Holder { t: _, n } = Holder { t: Token { id: 1 }, n: 2 };
+    n
+}
+"""
+compile_fail = true
+error_contains = "E0478"
+
+[[case]]
+name = "struct_pattern_consumes_a_linear_field_by_name"
+spec = ["5.1:21"]
+preview = "struct_patterns"
+preview_should_pass = true
+source = """
+linear struct Token { id: i32 }
+struct Holder { t: Token, n: i32 }
+fn consume(t: Token) -> i32 { t.id }
+fn main() -> i32 {
+    let Holder { t, n } = Holder { t: Token { id: 40 }, n: 2 };
+    consume(t) + n
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "struct_pattern_cannot_move_out_of_a_destructor_struct"
+spec = ["5.1:21"]
+preview = "struct_patterns"
+preview_should_pass = true
+description = "A move field of a struct with a destructor cannot leave it; a Copy field of such a struct is copied and the destructor still runs"
+source = """
+struct Handle { fd: i32 }
+drop fn Handle(self) { @dbg(self.fd); }
+struct Guard { handle: Handle, id: i32 }
+drop fn Guard(self) { @dbg(self.id); }
+fn main() -> i32 {
+    let Guard { handle, id } = Guard { handle: Handle { fd: 3 }, id: 7 };
+    handle.fd + id
+}
+"""
+compile_fail = true
+error_contains = "E0456"
+
+[[case]]
+name = "struct_pattern_copies_a_copy_field_of_a_destructor_struct"
+spec = ["5.1:21"]
+preview = "struct_patterns"
+preview_should_pass = true
+source = """
+struct Guard { id: i32 }
+drop fn Guard(self) { @dbg(self.id); }
+fn main() -> i32 {
+    let Guard { id } = Guard { id: 7 };
+    @dbg(id + 1);
+    0
+}
+"""
+expected_stdout = """
+8
+7
+"""
+exit_code = 0

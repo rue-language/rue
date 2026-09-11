@@ -3325,6 +3325,11 @@ impl<'a> ConstraintGenerator<'a> {
             | InstData::DropFnDecl { .. }
             | InstData::ConstDecl { .. } => InferType::Concrete(Type::UNIT),
 
+            // A struct pattern's field list is checked by semantic analysis
+            // against the declared fields; the bindings it introduces are the
+            // ordinary `Alloc`s that follow it, so it constrains nothing.
+            InstData::StructPattern { .. } => InferType::Concrete(Type::UNIT),
+
             // Method call: receiver.method(args)
             InstData::MethodCall {
                 receiver,

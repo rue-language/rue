@@ -273,6 +273,26 @@ impl Parser {
     fn let_pattern(&mut self, after_mut: bool) -> PResult<LetPattern> {
         if self.at(TokenKind::Underscore) {
             Ok(LetPattern::Wildcard(self.bump().span))
+        } else if matches!(self.kind(), TokenKind::Ident(_))
+            && matches!(
+                self.nth(1),
+                TokenKind::LBrace | TokenKind::Dot | TokenKind::LParen
+            )
+        {
+            // A binder is one identifier followed by `:` or `=`; an identifier
+            // that continues into `{`, a path (`m.Point {`), or a
+            // type-constructor call (`Pair(i32) {`) starts a struct pattern
+            // (spec 5.1:18). `mut` belongs to a binding, not to the pattern,
+            // so it is written inside: `Point { mut x, y }`.
+            if after_mut {
+                self.error(
+                    "`mut` applies to one binding; write it inside the struct pattern, \
+                     as in `Point { mut x, y }`",
+                );
+                return Err(());
+            }
+            self.struct_pattern()
+                .map(|pattern| LetPattern::Struct(Box::new(pattern)))
         } else {
             self.ident_expected(if after_mut {
                 "identifier or '_'"
@@ -281,6 +301,71 @@ impl Parser {
             })
             .map(LetPattern::Ident)
         }
+    }
+
+    /// One struct pattern: `struct_pattern = type "{" [ field_patterns ] "}"`
+    /// (spec 5.1:18). The head is parsed by the canonical type parser, so a
+    /// pattern names its struct exactly as a `let` annotation would.
+    fn struct_pattern(&mut self) -> PResult<StructPattern> {
+        let start = self.start();
+        let ty = self.ty()?;
+        self.expect(TokenKind::LBrace)?;
+        let mut fields = Vec::new();
+        while !self.at(TokenKind::RBrace) {
+            fields.push(self.struct_pattern_field()?);
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RBrace)?;
+        Ok(StructPattern {
+            ty,
+            fields,
+            span: self.span_from(start),
+        })
+    }
+
+    /// One field of a struct pattern: `field_pattern = [ "mut" ] IDENT
+    /// | IDENT ":" ( [ "mut" ] IDENT | "_" )`. The shorthand binds the field
+    /// to a name of its own spelling, mirroring field-init shorthand in a
+    /// struct literal (3.6:15).
+    fn struct_pattern_field(&mut self) -> PResult<StructPatternField> {
+        let start = self.start();
+        if self.eat(TokenKind::Mut) {
+            let name = self.ident_expected("identifier")?;
+            return Ok(StructPatternField {
+                name,
+                binding: StructPatternBinding::Ident { name, is_mut: true },
+                span: self.span_from(start),
+            });
+        }
+        let name = self.ident_expected("field name, 'mut', or '}'")?;
+        let binding = if self.eat(TokenKind::Colon) {
+            if self.at(TokenKind::Underscore) {
+                StructPatternBinding::Wildcard(self.bump().span)
+            } else {
+                let is_mut = self.eat(TokenKind::Mut);
+                let bound = self.ident_expected(if is_mut {
+                    "identifier"
+                } else {
+                    "'mut', identifier, or '_'"
+                })?;
+                StructPatternBinding::Ident {
+                    name: bound,
+                    is_mut,
+                }
+            }
+        } else {
+            StructPatternBinding::Ident {
+                name,
+                is_mut: false,
+            }
+        };
+        Ok(StructPatternField {
+            name,
+            binding,
+            span: self.span_from(start),
+        })
     }
 
     pub(super) fn block(&mut self) -> PResult<BlockExpr> {

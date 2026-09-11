@@ -178,7 +178,7 @@ impl Rir {
             3 => rir.validate_fixed(&range, CALL_ARG_SCHEMA.width, parts),
             7 | 8 => rir.validate_fixed(&range, FIELD_DECL_SCHEMA.width, parts),
             11 => rir.validate_fixed(&range, FIELD_INIT_SCHEMA.width, parts),
-            12 | 13 => rir.validate_fixed(&range, SYMBOL_SCHEMA.width, parts),
+            12 | 13 | 17 => rir.validate_fixed(&range, SYMBOL_SCHEMA.width, parts),
             14 | 15 => rir.validate_enum_payload_words(&range, 1, parts),
             _ => rir.validate_fixed(&range, REF_SCHEMA.width, parts),
         }

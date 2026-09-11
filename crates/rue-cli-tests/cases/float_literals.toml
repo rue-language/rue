@@ -19,7 +19,7 @@ args = ["main.rue", "--preview", "floats", "-o", "prog"]
 compile_fail = true
 error_contains = [
     "unknown preview feature 'floats'",
-    "Available features: test_infra, c_ffi, non_exhaustive_enums",
+    "Available features: test_infra, c_ffi, non_exhaustive_enums, struct_patterns",
 ]
 
 [[case]]

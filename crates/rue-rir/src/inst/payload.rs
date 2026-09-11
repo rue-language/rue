@@ -221,6 +221,7 @@ payload_family!(
     "anonymous struct methods"
 );
 payload_family!(RirFieldInitsRange, FieldInitsFamily, "field initializers");
+payload_family!(RirPatternFieldsRange, PatternFieldsFamily, "pattern fields");
 payload_family!(RirEnumVariantsRange, EnumVariantsFamily, "enum variants");
 payload_family!(
     RirAnonEnumVariantsRange,
@@ -244,7 +245,7 @@ payload_family!(RirArrayElemsRange, ArrayElemsFamily, "array elements");
 /// Verification and benchmark tooling consumes this list so adding a schema
 /// family necessarily changes the cross-phase inventory rather than silently
 /// escaping its coverage.
-pub const RIR_PAYLOAD_FAMILY_NAMES: [&str; 17] = [
+pub const RIR_PAYLOAD_FAMILY_NAMES: [&str; 18] = [
     RirMatchArmsRange::FAMILY,
     RirDirectivesRange::FAMILY,
     RirParamsRange::FAMILY,
@@ -262,6 +263,7 @@ pub const RIR_PAYLOAD_FAMILY_NAMES: [&str; 17] = [
     RirEnumPayloadsRange::FAMILY,
     RirAnonEnumPayloadsRange::FAMILY,
     RirArrayElemsRange::FAMILY,
+    RirPatternFieldsRange::FAMILY,
 ];
 
 /// Read-only accounting for the compact RIR payload store.
@@ -2061,6 +2063,24 @@ impl Rir {
     pub fn anon_enum_variants(&self, range: &RirAnonEnumVariantsRange) -> RirSymbols<'_> {
         self.symbol_view(range, |r| {
             (r.start(), r.extent(), RirAnonEnumVariantsRange::FAMILY)
+        })
+    }
+
+    /// Store the field names a struct pattern writes, in source order
+    /// (spec 5.1:18). Layout: [name: u32] per field.
+    pub(crate) fn add_pattern_fields(
+        &mut self,
+        symbols: &[Spur],
+    ) -> Result<RirPatternFieldsRange, RirPayloadBuildError> {
+        self.add_symbol_words(
+            RirPatternFieldsRange::FAMILY,
+            symbols,
+            RirPatternFieldsRange::from_parts,
+        )
+    }
+    pub fn pattern_fields(&self, range: &RirPatternFieldsRange) -> RirSymbols<'_> {
+        self.symbol_view(range, |r| {
+            (r.start(), r.extent(), RirPatternFieldsRange::FAMILY)
         })
     }
 

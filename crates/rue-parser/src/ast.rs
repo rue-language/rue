@@ -1278,6 +1278,9 @@ pub enum LetPattern {
     Ident(Ident),
     /// Wildcard pattern `_` - discards the value without creating a binding
     Wildcard(Span),
+    /// Struct pattern `T { f: b, ... }` (spec 5.1:18, preview feature
+    /// `struct_patterns`, RUE-1884): binds every field of a struct value.
+    Struct(Box<StructPattern>),
 }
 
 impl LetPattern {
@@ -1286,8 +1289,45 @@ impl LetPattern {
         match self {
             LetPattern::Ident(ident) => ident.span,
             LetPattern::Wildcard(span) => *span,
+            LetPattern::Struct(pattern) => pattern.span,
         }
     }
+}
+
+/// A struct destructuring pattern: `T { f: b, g, h: _ }` (spec 5.1:18).
+///
+/// The head is written with the type grammar (`Point`, `m.Point`,
+/// `Pair(i32)`), exactly as a `let` annotation would name the type. A pattern
+/// has no rest form: it names every field of the struct or is rejected
+/// (5.1:20), so a field added to the type is a compile error at every pattern
+/// that does not bind it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructPattern {
+    /// The struct type the pattern names.
+    pub ty: TypeExpr,
+    /// The field patterns, in source order.
+    pub fields: Vec<StructPatternField>,
+    pub span: Span,
+}
+
+/// One field of a struct pattern: `f: b`, `f: mut b`, `f: _`, or the
+/// shorthand `f` / `mut f` that binds the field to a name of its own spelling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructPatternField {
+    /// The field named.
+    pub name: Ident,
+    /// What the field is bound to.
+    pub binding: StructPatternBinding,
+    pub span: Span,
+}
+
+/// The binding side of a struct pattern field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StructPatternBinding {
+    /// Bind the field to a fresh local, mutable when `is_mut`.
+    Ident { name: Ident, is_mut: bool },
+    /// Discard the field, as `let _ = v.f;` would (5.1:16).
+    Wildcard(Span),
 }
 
 /// A let binding statement.
@@ -2061,6 +2101,18 @@ fn rebind_let_pattern(pattern: &mut LetPattern, file_id: FileId) {
     match pattern {
         LetPattern::Ident(ident) => rebind_ident(ident, file_id),
         LetPattern::Wildcard(span) => rebind_span(span, file_id),
+        LetPattern::Struct(pattern) => {
+            rebind_type(&mut pattern.ty, file_id);
+            for field in &mut pattern.fields {
+                rebind_ident(&mut field.name, file_id);
+                match &mut field.binding {
+                    StructPatternBinding::Ident { name, .. } => rebind_ident(name, file_id),
+                    StructPatternBinding::Wildcard(span) => rebind_span(span, file_id),
+                }
+                rebind_span(&mut field.span, file_id);
+            }
+            rebind_span(&mut pattern.span, file_id);
+        }
     }
 }
 
@@ -2378,6 +2430,10 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
             match &for_expr.binder {
                 LetPattern::Ident(ident) => writeln!(f, "Binder sym:{}", ident.name.into_usize())?,
                 LetPattern::Wildcard(_) => writeln!(f, "Binder _")?,
+                LetPattern::Struct(pattern) => {
+                    writeln!(f, "Binder struct")?;
+                    fmt_struct_pattern(f, pattern, level + 2)?;
+                }
             }
             indent(f, level + 1)?;
             writeln!(f, "Iterable:")?;
@@ -2519,11 +2575,15 @@ fn fmt_stmt(f: &mut fmt::Formatter<'_>, stmt: &Statement, level: usize) -> fmt::
             match &let_stmt.pattern {
                 LetPattern::Ident(ident) => write!(f, " sym:{}", ident.name.into_usize())?,
                 LetPattern::Wildcard(_) => write!(f, " _")?,
+                LetPattern::Struct(_) => write!(f, " struct")?,
             }
             if let Some(ref ty) = let_stmt.ty {
                 write!(f, ": {}", ty)?;
             }
             writeln!(f)?;
+            if let LetPattern::Struct(pattern) = &let_stmt.pattern {
+                fmt_struct_pattern(f, pattern, level + 1)?;
+            }
             fmt_expr(f, &let_stmt.init, level + 1)
         }
         Statement::Assign(assign) => {
@@ -2599,8 +2659,10 @@ mod size_guards {
             size_of::<Statement>(),
         );
         // Was 176: an inline `Directives` SmallVec plus an inline `TypeExpr`.
+        // 56 until struct patterns (RUE-1884): `LetPattern::Struct` boxes its
+        // pattern, and the pointer's alignment widens the enum by one word.
         assert!(
-            size_of::<LetStatement>() <= 56,
+            size_of::<LetStatement>() <= 64,
             "LetStatement grew to {} bytes",
             size_of::<LetStatement>(),
         );
@@ -2621,4 +2683,31 @@ mod size_guards {
         assert_eq!(size_of::<Option<Box<Directives>>>(), size_of::<usize>());
         assert_eq!(size_of::<Option<Box<TypeExpr>>>(), size_of::<usize>());
     }
+}
+
+/// Structural digest of a struct pattern: the head type and each field's
+/// binding, in source order.
+fn fmt_struct_pattern(
+    f: &mut fmt::Formatter<'_>,
+    pattern: &StructPattern,
+    level: usize,
+) -> fmt::Result {
+    indent(f, level)?;
+    writeln!(f, "Pattern {}", pattern.ty)?;
+    for field in &pattern.fields {
+        indent(f, level + 1)?;
+        match &field.binding {
+            StructPatternBinding::Ident { name, is_mut } => writeln!(
+                f,
+                "Field sym:{} -> {}sym:{}",
+                field.name.name.into_usize(),
+                if *is_mut { "mut " } else { "" },
+                name.name.into_usize()
+            )?,
+            StructPatternBinding::Wildcard(_) => {
+                writeln!(f, "Field sym:{} -> _", field.name.name.into_usize())?
+            }
+        }
+    }
+    Ok(())
 }

@@ -22,6 +22,9 @@ const MUT: u64 = 15;
 const COMPTIME: u64 = 25;
 const IDENT_TOKEN: u64 = 2;
 const UNDERSCORE: u64 = 95;
+/// A struct pattern binder (spec 5.1:18); the ruelex port does not parse
+/// the form, so the corpus never contains one, but the shape stays total.
+const STRUCT_PATTERN: u64 = 123;
 const MANIFEST_PATH: &str = "crates/rue-frontend-diff/src/corpus_manifest.rs";
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CAPTURE_BYTES: usize = 16 * 1024 * 1024;
@@ -515,6 +518,7 @@ impl Shapes<'_> {
                     match v.binder {
                         LetPattern::Ident(_) => IDENT_TOKEN,
                         LetPattern::Wildcard(_) => UNDERSCORE,
+                        LetPattern::Struct(_) => STRUCT_PATTERN,
                     }
                 ),
                 self.expr(&v.iterable),
@@ -801,6 +805,7 @@ impl Shapes<'_> {
                         + match v.pattern {
                             LetPattern::Ident(_) => IDENT_TOKEN * 256,
                             LetPattern::Wildcard(_) => UNDERSCORE * 256,
+                            LetPattern::Struct(_) => STRUCT_PATTERN * 256,
                         }
                 ),
                 self.directives(v.directives()),

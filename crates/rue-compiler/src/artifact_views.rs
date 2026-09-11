@@ -1153,17 +1153,54 @@ fn block_record(
     syntax_record("block", block.span, None, None, children)
 }
 
+/// A struct pattern (spec 5.1:18): the head type, then one record per field
+/// naming the field and carrying its binding or wildcard as the child.
+fn struct_pattern_record(
+    owner: &crate::parsed_modules::ParsedModule,
+    pattern: &rue_parser::StructPattern,
+) -> Arc<SyntaxNodeRecord> {
+    let mut children = vec![type_record(owner, &pattern.ty)];
+    for field in &pattern.fields {
+        let binding = match &field.binding {
+            rue_parser::StructPatternBinding::Ident { name, is_mut } => syntax_record(
+                "binding_pattern",
+                name.span,
+                Some(resolved_ident(owner, *name)),
+                Some(Arc::from(bool_name(*is_mut))),
+                Vec::new(),
+            ),
+            rue_parser::StructPatternBinding::Wildcard(span) => {
+                syntax_record("wildcard_pattern", *span, None, None, Vec::new())
+            }
+        };
+        children.push(syntax_record(
+            "struct_pattern_field",
+            field.span,
+            Some(resolved_ident(owner, field.name)),
+            None,
+            vec![binding],
+        ));
+    }
+    syntax_record("struct_pattern", pattern.span, None, None, children)
+}
+
 fn statement_record(
     owner: &crate::parsed_modules::ParsedModule,
     statement: &rue_parser::Statement,
 ) -> Arc<SyntaxNodeRecord> {
     match statement {
         rue_parser::Statement::Let(statement) => {
-            let (name, pattern) = match statement.pattern {
-                rue_parser::LetPattern::Ident(ident) => (Some(resolved_ident(owner, ident)), "let"),
+            let (name, pattern) = match &statement.pattern {
+                rue_parser::LetPattern::Ident(ident) => {
+                    (Some(resolved_ident(owner, *ident)), "let")
+                }
                 rue_parser::LetPattern::Wildcard(_) => (None, "let_wildcard"),
+                rue_parser::LetPattern::Struct(_) => (None, "let_struct_pattern"),
             };
             let mut children = directive_records(owner, statement.directives()).collect::<Vec<_>>();
+            if let rue_parser::LetPattern::Struct(struct_pattern) = &statement.pattern {
+                children.push(struct_pattern_record(owner, struct_pattern));
+            }
             children.push(modifier_record(
                 statement.span,
                 "mutable",
@@ -1341,16 +1378,19 @@ fn expr_record(
             vec![block_record(owner, &loop_expression.body)],
         ),
         Expr::For(loop_expression) => {
-            let binder = match loop_expression.binder {
+            let binder = match &loop_expression.binder {
                 rue_parser::LetPattern::Ident(ident) => syntax_record(
                     "binding_pattern",
                     ident.span,
-                    Some(resolved_ident(owner, ident)),
+                    Some(resolved_ident(owner, *ident)),
                     None,
                     Vec::new(),
                 ),
                 rue_parser::LetPattern::Wildcard(span) => {
-                    syntax_record("wildcard_pattern", span, None, None, Vec::new())
+                    syntax_record("wildcard_pattern", *span, None, None, Vec::new())
+                }
+                rue_parser::LetPattern::Struct(struct_pattern) => {
+                    struct_pattern_record(owner, struct_pattern)
                 }
             };
             syntax_record(
@@ -1694,6 +1734,7 @@ fn rir_kind(data: &rue_rir::InstData) -> &'static str {
         StructInit { .. } => "struct_initializer",
         FieldGet { .. } => "field_read",
         FieldSet { .. } => "field_write",
+        StructPattern { .. } => "struct_pattern",
         EnumDecl { .. } => "enum_declaration",
         EnumVariant { .. } => "enum_variant",
         ArrayInit { .. } => "array_initializer",
@@ -1835,6 +1876,7 @@ fn rir_operands(rir: &rue_rir::Rir, data: &rue_rir::InstData) -> Vec<RirOperandR
             push("base", *base);
             push("value", *value);
         }
+        StructPattern { .. } => {}
         EnumVariant { module, .. } => {
             if let Some(module) = module {
                 push("module", *module);

@@ -2235,6 +2235,19 @@ impl<'a> ParsedBodyProjectionCollector<'a> {
                             self.visit_type(ty)?;
                         }
                         self.visit_expr(&binding.init)?;
+                        if let LetPattern::Struct(pattern) = &binding.pattern {
+                            // A struct pattern's head is a type position and
+                            // each field binding is an ordinary local
+                            // (spec 5.1:18, 5.1:21).
+                            self.visit_type(&pattern.ty)?;
+                            for field in &pattern.fields {
+                                if let rue_parser::StructPatternBinding::Ident { name, .. } =
+                                    &field.binding
+                                {
+                                    self.bind_local(*name)?;
+                                }
+                            }
+                        }
                         if let LetPattern::Ident(ident) = binding.pattern {
                             let alias = (!binding.is_mut)
                                 .then(|| {
