@@ -421,8 +421,8 @@ stdout = """99
 """
 
 [[case]]
-name = "carrier_with_own_destructor_field_move_rejected"
-description = "A carrier that has its own destructor now reaches the destructor-type field-move rejection (E0456) instead of silently skipping its destructor via whole-value consumption (RUE-1591)."
+name = "carrier_with_own_destructor_rejected_at_declaration"
+description = "A carrier that has its own destructor is rejected where it is declared (E0462, spec 3.9:44, RUE-1605): before that ruling the field move reached E0456 (RUE-1591) and the only discharge was `@drop` of the whole value."
 files = [{ path = "main.rue", source = """
 linear struct L { v: i32 }
 struct C { l: L, n: i32 }
@@ -435,8 +435,8 @@ fn main() -> i32 {
 """ }]
 compile_fail = true
 error_contains = [
-    "E0456",
-    "cannot move field `l` out of a value of type 'C', which has a destructor",
+    "E0462",
+    "cannot define a destructor for 'C': field `l` of type 'L' carries a linear value",
 ]
 
 [[case]]

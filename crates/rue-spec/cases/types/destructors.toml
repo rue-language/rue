@@ -1019,6 +1019,176 @@ compile_fail = true
 error_contains = "`@copy` types cannot have destructors"
 
 [[case]]
+name = "destructor_struct_linear_field_rejected"
+spec = ["3.9:44"]
+description = "A struct with a destructor cannot declare a field of a linear struct type (E0462): the destructor could never consume it and the glue would discard it"
+source = """
+linear struct Token { v: i32 }
+
+struct Holder { t: Token, n: i32 }
+
+drop fn Holder(self) { @dbg(self.n); }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "cannot define a destructor for 'Holder': field `t` of type 'Token' carries a linear value"
+
+[[case]]
+name = "destructor_struct_infectious_field_rejected"
+spec = ["3.9:44"]
+description = "The rule follows infection (3.8:58): a field whose type merely contains a linear value, at any nesting depth, is rejected the same way"
+source = """
+linear struct Token { v: i32 }
+
+struct Inner { t: Token }
+
+struct Mid { inner: Inner }
+
+struct Holder { m: Mid, n: i32 }
+
+drop fn Holder(self) { @dbg(self.n); }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "cannot define a destructor for 'Holder': field `m` of type 'Mid' carries a linear value"
+
+[[case]]
+name = "destructor_struct_linear_array_field_rejected"
+spec = ["3.9:44"]
+description = "A fixed array of linear elements carries a linear value, so it is rejected as a field of a destructor-bearing struct"
+source = """
+linear struct Token { v: i32 }
+
+struct Holder { ts: [Token; 2], n: i32 }
+
+drop fn Holder(self) { @dbg(self.n); }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "cannot define a destructor for 'Holder': field `ts` of type '[Token; 2]' carries a linear value"
+
+[[case]]
+name = "destructor_struct_order_independent_rejected"
+spec = ["3.9:44"]
+description = "Declaration order does not matter: a `drop fn` written before its struct is rejected the same way"
+source = """
+linear struct Token { v: i32 }
+
+drop fn Holder(self) { @dbg(self.n); }
+
+struct Holder { t: Token, n: i32 }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "cannot define a destructor for 'Holder'"
+
+[[case]]
+name = "anonymous_destructor_struct_linear_field_rejected"
+spec = ["3.9:44", "3.9:42"]
+description = "An anonymous struct with an in-body destructor is checked at each instantiation: instantiating it with a linear field type is rejected"
+source = """
+linear struct Token { v: i32 }
+
+fn Box(comptime T: type) -> type {
+    struct {
+        value: T,
+        drop fn(self) { @dbg(1); }
+    }
+}
+
+fn main() -> i32 {
+    let B = Box(Token);
+    let b = B { value: Token { v: 1 } };
+    @drop(b);
+    0
+}
+"""
+compile_fail = true
+error_contains = "cannot define a destructor for 'Box(Token)': field `value` of type 'Token' carries a linear value"
+
+[[case]]
+name = "anonymous_destructor_struct_affine_instantiation_ok"
+spec = ["3.9:44", "3.9:42"]
+description = "The same constructor instantiated with an affine field type is unaffected: the destructor runs at scope exit"
+source = """
+fn Box(comptime T: type) -> type {
+    struct {
+        value: T,
+        drop fn(self) { @dbg(7); }
+    }
+}
+
+fn main() -> i32 {
+    let B = Box(i32);
+    let b = B { value: 3 };
+    b.value
+}
+"""
+exit_code = 3
+expected_stdout = "7\n"
+
+[[case]]
+name = "linear_struct_with_destructor_and_affine_fields_ok"
+spec = ["3.9:44"]
+description = "A `linear` struct may have a destructor when none of its fields carries a linear value; `@drop` runs it and satisfies the obligation"
+source = """
+linear struct Guard { v: i32, n: i32 }
+
+drop fn Guard(self) { @dbg(self.v); }
+
+fn main() -> i32 {
+    let g = Guard { v: 5, n: 2 };
+    @drop(g);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "5\n"
+
+[[case]]
+name = "struct_without_destructor_carries_linear_field_ok"
+spec = ["3.9:44", "3.9:46"]
+description = "A struct without a destructor may carry a linear field: the field is moved out to its consumer"
+source = """
+linear struct Token { v: i32 }
+
+struct Bag { t: Token, n: i32 }
+
+fn redeem(t: Token) -> i32 { t.v }
+
+fn main() -> i32 {
+    let b = Bag { t: Token { v: 3 }, n: 1 };
+    redeem(b.t)
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "destructor_struct_field_with_own_destructor_ok"
+spec = ["3.9:44"]
+description = "Control: an affine field whose own type has a destructor is not a linear value; the outer destructor runs before the field's"
+source = """
+struct Inner { v: i32 }
+
+drop fn Inner(self) { @dbg(self.v); }
+
+struct Outer { f: Inner, n: i32 }
+
+drop fn Outer(self) { @dbg(self.n); }
+
+fn main() -> i32 {
+    let o = Outer { f: Inner { v: 1 }, n: 2 };
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "2\n1\n"
+
+[[case]]
 name = "destructor_moves_self_rejected"
 spec = ["3.9:33"]
 description = "Moving `self` out of a destructor body is rejected (E0442): the new owner's drop would re-enter the destructor"

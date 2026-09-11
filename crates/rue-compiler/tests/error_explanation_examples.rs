@@ -37,7 +37,7 @@ fn compiler_owned_explanation_examples_have_the_declared_outcome() {
                 434..=437
                     | 442..=443
                     | 456..=457
-                    | 461
+                    | 461..=462
                     | 474..=475
                     | 478
                     | 480..=497

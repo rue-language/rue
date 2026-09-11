@@ -1725,9 +1725,20 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if !is_anon || self.has_ctor_type_display(ty) {
             return;
         }
-        let Some(fn_info) = self.function_info(ctor) else {
-            return;
-        };
+        if let Some(display) = self.ctor_type_display(ctor, callee_types, callee_values) {
+            self.record_body_ctor_type_display(ty, display);
+        }
+    }
+
+    /// The `Ctor(args...)` spelling of one constructor application, or `None`
+    /// for a partial substitution or an argument with no source spelling.
+    pub(crate) fn ctor_type_display(
+        &self,
+        ctor: Spur,
+        callee_types: &AHashMap<Spur, Type>,
+        callee_values: &AHashMap<Spur, ConstValue>,
+    ) -> Option<String> {
+        let fn_info = self.function_info(ctor)?;
         let param_names = self.body_param_data(fn_info.params).names().to_vec();
         let mut args: Vec<String> = Vec::with_capacity(param_names.len());
         for param in &param_names {
@@ -1738,19 +1749,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     ConstValue::Integer(i) => args.push(i.to_string()),
                     ConstValue::Bool(b) => args.push(b.to_string()),
                     ConstValue::Type(t) => args.push(self.format_type_name(*t)),
-                    _ => return,
+                    _ => return None,
                 }
             } else {
-                return;
+                return None;
             }
         }
         let source_name = self.source_function_name(ctor);
-        let display = format!(
+        Some(format!(
             "{}({})",
             self.body_interner().resolve(&source_name),
             args.join(", ")
-        );
-        self.record_body_ctor_type_display(ty, display);
+        ))
     }
 
     /// Pre-resolve `let`-bound compile-time type aliases in a function body,

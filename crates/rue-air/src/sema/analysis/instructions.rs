@@ -491,16 +491,26 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
                 // Check if an equivalent anonymous struct already exists (structural equality)
                 // This now compares fields, method signatures, AND captured comptime values
-                let (struct_ty, is_new) = self.find_or_create_anon_struct(
-                    crate::AnonymousNominalKey {
-                        kind: crate::AnonymousNominalKind::Struct,
-                        producer: ctx.canonical_producer.clone(),
-                        anchor: anchor.clone(),
-                    },
-                    &struct_fields,
-                    &method_sigs,
-                    &ctx.comptime_value_vars,
-                )?;
+                let (struct_ty, is_new) = self
+                    .find_or_create_anon_struct(
+                        crate::AnonymousNominalKey {
+                            kind: crate::AnonymousNominalKind::Struct,
+                            producer: ctx.canonical_producer.clone(),
+                            anchor: anchor.clone(),
+                        },
+                        &struct_fields,
+                        &method_sigs,
+                        &ctx.comptime_value_vars,
+                    )
+                    .map_err(|error| {
+                        // The declaration-shape rejection (3.9:44) is raised
+                        // without a span; the struct expression is its site.
+                        if error.has_span() {
+                            error
+                        } else {
+                            error.with_primary_span(inst.span)
+                        }
+                    })?;
                 if is_new && !descriptors.is_empty() {
                     let struct_id = struct_ty
                         .as_struct()
