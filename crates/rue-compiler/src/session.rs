@@ -203,7 +203,6 @@ impl ImportDiscoveryRevisionArtifact {
     pub(crate) fn snapshot(&self) -> &SourceSnapshot {
         &self.snapshot
     }
-    #[cfg(test)]
     pub(crate) fn program(&self) -> Option<&Arc<ParsedProgram>> {
         self.program.as_ref()
     }

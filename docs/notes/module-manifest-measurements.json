@@ -1,0 +1,334 @@
+{
+  "metadata": {
+    "compiler_sha256": "5de8974876c04a4778b968df06197e94e7ae120e27c61b8695902e49f563650f",
+    "host": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "workers": [
+      1,
+      4
+    ],
+    "repeats": 5,
+    "description": "Compare fresh compiler invocations over explicit and discovered import graphs.\n\nThese fixtures isolate import acquisition: only main is a semantic body root.\nOS file caches are warm; every sample starts a new compiler process/session.\nRetained-session parity and edit reuse are covered by the host tests separately.\n",
+    "sizes_are_helper_counts": true,
+    "timing_precision": "process monotonic nanoseconds; --time-passes inclusive rows rounded to 0.1 ms",
+    "contract": "external prototype measurement, not a fresh_source_to_native_v1 manifest-mode observation",
+    "compiler_configuration": {
+      "compiler_build_profile": "release_thin_lto",
+      "external_link_archives": 0,
+      "linker": "internal",
+      "optimization": "o0",
+      "output_kind": "native_executable",
+      "preview_features": [],
+      "requested_workers": "one",
+      "resolved_workers": 1,
+      "target": "aarch64-macos"
+    }
+  },
+  "summary": [
+    {
+      "shape": "deep_forward",
+      "modules": 33,
+      "workers": 1,
+      "generation_wall_ms_median": 7.869375,
+      "permutation_equal": true,
+      "filesystem": {
+        "wall_ms_median": 17.838875,
+        "compiler_total_ms_median": 14.1,
+        "source_loading_ms_median": 2.8
+      },
+      "manifest": {
+        "wall_ms_median": 16.512583,
+        "compiler_total_ms_median": 13.0,
+        "source_loading_ms_median": 2.2
+      }
+    },
+    {
+      "shape": "deep_forward",
+      "modules": 33,
+      "workers": 4,
+      "generation_wall_ms_median": 7.869375,
+      "permutation_equal": true,
+      "filesystem": {
+        "wall_ms_median": 16.644541,
+        "compiler_total_ms_median": 13.5,
+        "source_loading_ms_median": 2.8
+      },
+      "manifest": {
+        "wall_ms_median": 15.813417,
+        "compiler_total_ms_median": 12.6,
+        "source_loading_ms_median": 2.1
+      }
+    },
+    {
+      "shape": "deep_forward",
+      "modules": 129,
+      "workers": 1,
+      "generation_wall_ms_median": 16.754459,
+      "permutation_equal": true,
+      "filesystem": {
+        "wall_ms_median": 28.663916,
+        "compiler_total_ms_median": 25.3,
+        "source_loading_ms_median": 8.8
+      },
+      "manifest": {
+        "wall_ms_median": 26.722084,
+        "compiler_total_ms_median": 23.4,
+        "source_loading_ms_median": 7.1
+      }
+    },
+    {
+      "shape": "deep_forward",
+      "modules": 129,
+      "workers": 4,
+      "generation_wall_ms_median": 16.754459,
+      "permutation_equal": true,
+      "filesystem": {
+        "wall_ms_median": 30.286333,
+        "compiler_total_ms_median": 26.8,
+        "source_loading_ms_median": 9.2
+      },
+      "manifest": {
+        "wall_ms_median": 28.032791,
+        "compiler_total_ms_median": 24.6,
+        "source_loading_ms_median": 6.9
+      }
+    },
+    {
+      "shape": "deep_forward",
+      "modules": 513,
+      "workers": 1,
+      "generation_wall_ms_median": 61.335625,
+      "permutation_equal": true,
+      "filesystem": {
+        "wall_ms_median": 86.699375,
+        "compiler_total_ms_median": 82.3,
+        "source_loading_ms_median": 38.3
+      },
+      "manifest": {
+        "wall_ms_median": 82.442875,
+        "compiler_total_ms_median": 78.5,
+        "source_loading_ms_median": 34.3
+      }
+    },
+    {
+      "shape": "deep_forward",
+      "modules": 513,
+      "workers": 4,
+      "generation_wall_ms_median": 61.335625,
+      "permutation_equal": true,
+      "filesystem": {
+        "wall_ms_median": 91.397958,
+        "compiler_total_ms_median": 87.2,
+        "source_loading_ms_median": 38.7
+      },
+      "manifest": {
+        "wall_ms_median": 85.713625,
+        "compiler_total_ms_median": 81.6,
+        "source_loading_ms_median": 33.3
+      }
+    },
+    {
+      "shape": "deep_reverse",
+      "modules": 33,
+      "workers": 1,
+      "generation_wall_ms_median": 7.061375,
+      "permutation_equal": true,
+      "filesystem": {
+        "wall_ms_median": 15.817333,
+        "compiler_total_ms_median": 12.6,
+        "source_loading_ms_median": 2.5
+      },
+      "manifest": {
+        "wall_ms_median": 15.355125,
+        "compiler_total_ms_median": 12.2,
+        "source_loading_ms_median": 2.0
+      }
+    },
+    {
+      "shape": "deep_reverse",
+      "modules": 33,
+      "workers": 4,
+      "generation_wall_ms_median": 7.061375,
+      "permutation_equal": true,
+      "filesystem": {
+        "wall_ms_median": 16.455041,
+        "compiler_total_ms_median": 13.2,
+        "source_loading_ms_median": 2.7
+      },
+      "manifest": {
+        "wall_ms_median": 15.838875,
+        "compiler_total_ms_median": 12.6,
+        "source_loading_ms_median": 2.1
+      }
+    },
+    {
+      "shape": "deep_reverse",
+      "modules": 129,
+      "workers": 1,
+      "generation_wall_ms_median": 16.755333,
+      "permutation_equal": true,
+      "filesystem": {
+        "wall_ms_median": 29.211167,
+        "compiler_total_ms_median": 25.7,
+        "source_loading_ms_median": 8.9
+      },
+      "manifest": {
+        "wall_ms_median": 27.257792,
+        "compiler_total_ms_median": 23.6,
+        "source_loading_ms_median": 7.2
+      }
+    },
+    {
+      "shape": "deep_reverse",
+      "modules": 129,
+      "workers": 4,
+      "generation_wall_ms_median": 16.755333,
+      "permutation_equal": true,
+      "filesystem": {
+        "wall_ms_median": 30.22825,
+        "compiler_total_ms_median": 26.8,
+        "source_loading_ms_median": 9.1
+      },
+      "manifest": {
+        "wall_ms_median": 27.86125,
+        "compiler_total_ms_median": 24.5,
+        "source_loading_ms_median": 6.9
+      }
+    },
+    {
+      "shape": "deep_reverse",
+      "modules": 513,
+      "workers": 1,
+      "generation_wall_ms_median": 60.402083,
+      "permutation_equal": true,
+      "filesystem": {
+        "wall_ms_median": 85.441792,
+        "compiler_total_ms_median": 81.2,
+        "source_loading_ms_median": 36.9
+      },
+      "manifest": {
+        "wall_ms_median": 82.699292,
+        "compiler_total_ms_median": 78.6,
+        "source_loading_ms_median": 34.1
+      }
+    },
+    {
+      "shape": "deep_reverse",
+      "modules": 513,
+      "workers": 4,
+      "generation_wall_ms_median": 60.402083,
+      "permutation_equal": true,
+      "filesystem": {
+        "wall_ms_median": 89.960583,
+        "compiler_total_ms_median": 85.7,
+        "source_loading_ms_median": 37.1
+      },
+      "manifest": {
+        "wall_ms_median": 86.113791,
+        "compiler_total_ms_median": 81.9,
+        "source_loading_ms_median": 33.3
+      }
+    },
+    {
+      "shape": "wide",
+      "modules": 33,
+      "workers": 1,
+      "generation_wall_ms_median": 7.211333,
+      "permutation_equal": true,
+      "filesystem": {
+        "wall_ms_median": 16.101916,
+        "compiler_total_ms_median": 12.9,
+        "source_loading_ms_median": 2.6
+      },
+      "manifest": {
+        "wall_ms_median": 15.680584,
+        "compiler_total_ms_median": 12.4,
+        "source_loading_ms_median": 2.0
+      }
+    },
+    {
+      "shape": "wide",
+      "modules": 33,
+      "workers": 4,
+      "generation_wall_ms_median": 7.211333,
+      "permutation_equal": true,
+      "filesystem": {
+        "wall_ms_median": 17.085667,
+        "compiler_total_ms_median": 13.6,
+        "source_loading_ms_median": 2.7
+      },
+      "manifest": {
+        "wall_ms_median": 16.457667,
+        "compiler_total_ms_median": 13.0,
+        "source_loading_ms_median": 2.1
+      }
+    },
+    {
+      "shape": "wide",
+      "modules": 129,
+      "workers": 1,
+      "generation_wall_ms_median": 17.26,
+      "permutation_equal": true,
+      "filesystem": {
+        "wall_ms_median": 28.796,
+        "compiler_total_ms_median": 25.3,
+        "source_loading_ms_median": 9.0
+      },
+      "manifest": {
+        "wall_ms_median": 26.881917,
+        "compiler_total_ms_median": 23.4,
+        "source_loading_ms_median": 7.1
+      }
+    },
+    {
+      "shape": "wide",
+      "modules": 129,
+      "workers": 4,
+      "generation_wall_ms_median": 17.26,
+      "permutation_equal": true,
+      "filesystem": {
+        "wall_ms_median": 30.461833,
+        "compiler_total_ms_median": 27.0,
+        "source_loading_ms_median": 9.2
+      },
+      "manifest": {
+        "wall_ms_median": 27.960041,
+        "compiler_total_ms_median": 24.4,
+        "source_loading_ms_median": 6.8
+      }
+    },
+    {
+      "shape": "wide",
+      "modules": 513,
+      "workers": 1,
+      "generation_wall_ms_median": 61.174375,
+      "permutation_equal": true,
+      "filesystem": {
+        "wall_ms_median": 86.912084,
+        "compiler_total_ms_median": 82.5,
+        "source_loading_ms_median": 38.1
+      },
+      "manifest": {
+        "wall_ms_median": 82.949292,
+        "compiler_total_ms_median": 78.7,
+        "source_loading_ms_median": 34.5
+      }
+    },
+    {
+      "shape": "wide",
+      "modules": 513,
+      "workers": 4,
+      "generation_wall_ms_median": 61.174375,
+      "permutation_equal": true,
+      "filesystem": {
+        "wall_ms_median": 91.849083,
+        "compiler_total_ms_median": 87.5,
+        "source_loading_ms_median": 38.9
+      },
+      "manifest": {
+        "wall_ms_median": 89.1675,
+        "compiler_total_ms_median": 84.6,
+        "source_loading_ms_median": 34.2
+      }
+    }
+  ]
+}

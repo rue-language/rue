@@ -15,15 +15,128 @@ pub use crate::diagnostic::{
     JsonSuggestion, MultiFileFormatter, MultiFileJsonFormatter, SourceInfo,
 };
 pub use crate::import_discovery::{
-    AcceptedImportSource, DiscoverySourceAssembler, ImportDemandFrontier, ImportDemandMode,
-    ImportDemandRoots, ImportDiscoveryPlan, ImportDiscoveryRequest, ImportDiscoveryWave,
-    ImportInputRevision, ImportObservation, ImportObservationLedger, ImportObservationStatus,
-    requested_path_for_module,
+    AcceptedImportSource, DiscoverySourceAssembler, ExplicitImportBinding, ImportDemandFrontier,
+    ImportDemandMode, ImportDemandRoots, ImportDiscoveryPlan, ImportDiscoveryRequest,
+    ImportDiscoveryWave, ImportInputRevision, ImportObservation, ImportObservationLedger,
+    ImportObservationStatus, requested_path_for_module,
 };
 pub use crate::test_candidates::{
     TestCandidate, TestCandidateInventory, TestCandidateOutcome, UnimportedTestFile,
 };
 pub use crate::warm_fresh_parity::ParityObservation;
+
+/// Decode one manifest binding reference into its typed origin and escaped
+/// payload. Trusted IDs are minted only by accepted source assembly in the
+/// host; this helper never constructs a trusted `ModuleId`.
+pub fn decode_module_reference(value: &str) -> Result<(bool, String), crate::ManifestError> {
+    match crate::module_manifest::decode_module_reference(value)? {
+        crate::module_manifest::ManifestModuleReference::Project(identity) => Ok((false, identity)),
+        crate::module_manifest::ManifestModuleReference::Standard(relative) => Ok((true, relative)),
+    }
+}
+
+/// Generate the sparse v1 module manifest from a closed canonical discovery
+/// revision. The output contains only logical identities, declared source
+/// spellings, and parser-owned decoded import bindings; current bytes and
+/// host authority remain request-local facts and are never serialized.
+pub fn explicit_module_manifest(
+    revision: &crate::ImportDiscoveryView,
+) -> Result<crate::ExplicitModuleManifest, crate::ManifestError> {
+    if revision.status() != crate::ImportDiscoveryStatus::ClosedValid {
+        return Err(crate::ManifestError(
+            "cannot generate a module manifest from an unclosed import revision".into(),
+        ));
+    }
+    let graph = revision
+        .inner
+        .graph()
+        .ok_or_else(|| {
+            crate::ManifestError("closed revision has no canonical import graph".into())
+        })?
+        .graph();
+    let program = revision.inner.program().ok_or_else(|| {
+        crate::ManifestError("closed revision has no retained parsed program".into())
+    })?;
+    let context = revision.inner.context();
+    let mut modules = Vec::new();
+    let mut std_requirements = std::collections::BTreeSet::new();
+    for entry in revision.inner.accepted_read_manifest().iter() {
+        if entry.module().is_trusted_standard_library() {
+            std_requirements.insert(
+                entry
+                    .module()
+                    .as_str()
+                    .strip_prefix(crate::TRUSTED_STANDARD_LIBRARY_NAMESPACE)
+                    .unwrap_or(entry.module().as_str())
+                    .to_owned(),
+            );
+            continue;
+        }
+        let path = std::path::Path::new(entry.requested_path())
+            .strip_prefix(context.project_root())
+            .map_err(|_| {
+                crate::ManifestError(format!(
+                    "module {:?} is outside the captured project root",
+                    entry.module().as_str()
+                ))
+            })?
+            .to_string_lossy()
+            .replace('\\', "/");
+        modules.push(crate::ManifestModule {
+            module: entry.module().as_str().to_owned(),
+            path,
+        });
+    }
+    modules.sort_by(|left, right| left.module.cmp(&right.module));
+    let mut imports = Vec::new();
+    for site in program.import_directives().iter() {
+        let record = graph
+            .record_for_key(
+                site.importer(),
+                rue_air::normalize_module_path(site.specifier()).as_ref(),
+            )
+            .ok_or_else(|| {
+                crate::ManifestError(format!(
+                    "canonical graph has no record for import {:?} in {:?}",
+                    site.specifier(),
+                    site.importer().as_str()
+                ))
+            })?;
+        let target = match record.resolution() {
+            crate::CanonicalImportResolution::Missing => None,
+            crate::CanonicalImportResolution::Resolved(module)
+                if module.is_trusted_standard_library() =>
+            {
+                Some(crate::module_manifest::encode_module_reference(module))
+            }
+            crate::CanonicalImportResolution::Resolved(module) => {
+                Some(crate::module_manifest::encode_module_reference(module))
+            }
+        };
+        let importer = crate::module_manifest::encode_module_reference(site.importer());
+        imports.push(crate::ManifestImport {
+            importer,
+            literal: site.specifier().to_owned(),
+            target,
+        });
+    }
+    imports.sort_by(|left, right| {
+        (&left.importer, &left.literal, &left.target).cmp(&(
+            &right.importer,
+            &right.literal,
+            &right.target,
+        ))
+    });
+    // Multiple source occurrences of the same decoded binding share one
+    // canonical graph record. They are one manifest key, while distinct
+    // target records remain impossible because the graph rejects conflicts.
+    imports
+        .dedup_by(|left, right| left.importer == right.importer && left.literal == right.literal);
+    let mut manifest = crate::ExplicitModuleManifest::new(graph.root().as_str(), modules, imports);
+    manifest.std_requirements = std_requirements.into_iter().collect();
+    manifest.validate()?;
+    Ok(manifest)
+}
 /// The one lexical source-path normalizer (`rue-air`'s `path_norm`).
 ///
 /// Every source spelling the compiler keys an identity by passes through this

@@ -53,6 +53,11 @@ stable|import_graph|dependency-artifact|source-loaders+embedders|CanonicalImport
 stable|import_graph|dependency-artifact|source-loaders+embedders|CanonicalImportResolution|pub use import_graph::CanonicalImportResolution
 stable|import_graph|dependency-artifact|source-loaders+embedders|ImportDirective|pub use import_graph::ImportDirective
 stable|import_graph|dependency-artifact|source-loaders+embedders|ImportDirectives|pub use import_graph::ImportDirectives
+stable|module_manifest|dependency-artifact|source-loaders+embedders|EXPLICIT_MODULE_MANIFEST_VERSION|pub use module_manifest::EXPLICIT_MODULE_MANIFEST_VERSION
+stable|module_manifest|dependency-artifact|source-loaders+embedders|ExplicitModuleManifest|pub use module_manifest::ExplicitModuleManifest
+stable|module_manifest|dependency-artifact|source-loaders+embedders|ManifestError|pub use module_manifest::ManifestError
+stable|module_manifest|dependency-artifact|source-loaders+embedders|ManifestImport|pub use module_manifest::ManifestImport
+stable|module_manifest|dependency-artifact|source-loaders+embedders|ManifestModule|pub use module_manifest::ManifestModule
 stable|queries|compilation-config|cli+embedders|CompileOptions|pub use queries::CompileOptions
 stable|queries|compilation-config|cli+embedders|LinkerMode|pub use queries::LinkerMode
 stable|queries|compilation-config|cli+embedders|RootSelection|pub use queries::RootSelection

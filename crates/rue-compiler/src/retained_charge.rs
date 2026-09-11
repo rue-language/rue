@@ -1137,9 +1137,22 @@ impl RetainedCharge for crate::declaration_candidate::DeclarationShellFact {
 
 impl RetainedCharge for crate::ImportDiscoveryContext {
     fn retained_charge(&self) -> u64 {
-        (self.project_root().len()
+        let binding_charge = self
+            .explicit_manifest_bindings()
+            .into_iter()
+            .flatten()
+            .map(|binding| {
+                binding
+                    .importer()
+                    .retained_charge()
+                    .saturating_add(binding.literal().len() as u64)
+                    .saturating_add(binding.target().map_or(0, RetainedCharge::retained_charge))
+            })
+            .sum::<u64>();
+        ((self.project_root().len()
             + self.std_root().map_or(0, str::len)
-            + self.read_policy_revision().len()) as u64
+            + self.read_policy_revision().len()) as u64)
+            .saturating_add(binding_charge)
     }
 }
 

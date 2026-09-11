@@ -24,7 +24,7 @@ pub const FRONTEND_DIAGNOSTIC_RETENTION_LIMIT: usize = 16;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum FrontendDiagnosticIdentity {
     Syntax,
-    Import(ImportDiagnosticInputDescriptor),
+    Import(Box<ImportDiagnosticInputDescriptor>),
     Merge,
     Rir(SourceRevision),
     Semantic(ResolvedCodegenRevision),

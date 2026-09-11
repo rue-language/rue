@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
@@ -8,16 +9,17 @@ use std::time::{Duration, Instant, SystemTime};
 use ahash::{AHashMap, AHashSet};
 use rue_compiler::unstable::TestCandidateOutcome;
 use rue_compiler::unstable::{
-    AcceptedImportSource, CompilationCancellation, DiscoverySourceAssembler, ImportDemandFrontier,
-    ImportDemandMode, ImportDiscoveryPlan, ImportDiscoveryRequest, ImportDiscoveryWave,
-    ImportInputRevision, ImportObservation, ImportObservationStatus, RootedParkOutcome,
-    TrustedSuccessorDelta, abort_import_input_request, begin_import_input_request,
-    begin_import_wave_with_accepted_reads, close_import_discovery_successor,
-    close_import_input_request, closed_discovery_continuation, discovery_attempt,
-    extend_import_wave, import_demand_frontier_for_roots, import_observation_ledger,
-    plan_delta_roots, plan_round_roots, publish_import_observation_batch, publish_import_wave,
-    publish_trusted_toolchain_successor, rooted_or_toolchain_park_with_cancellation,
-    stage_import_discovery_successor, stage_import_input_request,
+    AcceptedImportSource, CompilationCancellation, DiscoverySourceAssembler, ExplicitImportBinding,
+    ImportDemandFrontier, ImportDemandMode, ImportDiscoveryPlan, ImportDiscoveryRequest,
+    ImportDiscoveryWave, ImportInputRevision, ImportObservation, ImportObservationStatus,
+    RootedParkOutcome, TrustedSuccessorDelta, abort_import_input_request,
+    begin_import_input_request, begin_import_wave_with_accepted_reads,
+    close_import_discovery_successor, close_import_input_request, closed_discovery_continuation,
+    discovery_attempt, extend_import_wave, import_demand_frontier_for_roots,
+    import_observation_ledger, plan_delta_roots, plan_round_roots,
+    publish_import_observation_batch, publish_import_wave, publish_trusted_toolchain_successor,
+    rooted_or_toolchain_park_with_cancellation, stage_import_discovery_successor,
+    stage_import_input_request,
 };
 #[cfg(test)]
 use rue_compiler::unstable::{
@@ -36,9 +38,10 @@ use rue_compiler::unstable::{frontend_query_invalidations, rooted_cfg};
 use rue_compiler::unstable::{normalize_module_path, requested_path_for_module};
 use rue_compiler::{
     AcceptedReadManifest, CompileErrors, CompileOptions, CompilerSession, CompilerSessionConfig,
-    DependencyEnvelope, FileId, FileMetadataFingerprint, ImportDiscoveryContext,
-    ImportDiscoveryStatus, ImportDiscoveryView, PhysicalFileIdentity, SourceMetadata,
-    SourceSnapshot, TrustedToolchainModuleDemand, trusted_logical_path_for_requested,
+    DependencyEnvelope, ExplicitModuleManifest, FileId, FileMetadataFingerprint,
+    ImportDiscoveryContext, ImportDiscoveryStatus, ImportDiscoveryView, PhysicalFileIdentity,
+    SourceMetadata, SourceSnapshot, TrustedToolchainModuleDemand,
+    trusted_logical_path_for_requested,
 };
 
 use crate::host::HostPathContext;
@@ -640,6 +643,44 @@ fn capture_std_root(std_root: &Path) -> PathBuf {
     fs::canonicalize(std_root).unwrap_or_else(|_| normalize_lexical_path(std_root))
 }
 
+fn manifest_reference_module(
+    wire: &str,
+    captured: &BTreeMap<rue_compiler::ModuleId, AcceptedImportSource>,
+) -> Result<rue_compiler::ModuleId, SourceLoadError> {
+    let (is_standard, identity) = rue_compiler::unstable::decode_module_reference(wire)
+        .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+    if !is_standard {
+        ExplicitModuleManifest::module_id(&identity)
+            .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))
+            .and_then(|module| {
+                if captured.contains_key(&module) {
+                    Ok(module)
+                } else {
+                    Err(SourceLoadError::Message(format!(
+                        "Error: manifest module {:?} was not captured",
+                        identity
+                    )))
+                }
+            })
+    } else {
+        let logical = format!(
+            "{}{}",
+            rue_compiler::TRUSTED_STANDARD_LIBRARY_NAMESPACE,
+            identity
+        );
+        captured
+            .keys()
+            .find(|module| module.as_str() == logical)
+            .cloned()
+            .ok_or_else(|| {
+                SourceLoadError::Message(format!(
+                    "Error: standard-library module {:?} was not captured",
+                    wire
+                ))
+            })
+    }
+}
+
 #[derive(Debug)]
 enum StableReadError {
     Io(std::io::Error),
@@ -919,6 +960,41 @@ fn execute_import_request(
     record_failed_read(failed_reads, &observation);
     control.checkpoint()?;
     Ok(observation)
+}
+
+/// Host-side captures for an explicit manifest request. The serialized
+/// bindings select a source by logical identity; this map contains only bytes
+/// and provenance freshly read under the current host authority.
+struct ExplicitManifestInput {
+    bindings: BTreeMap<(String, String), Option<rue_compiler::ModuleId>>,
+}
+
+impl ExplicitManifestInput {
+    fn validate_plan(&self, plan: &ImportDiscoveryPlan) -> Result<(), SourceLoadError> {
+        let actual = plan
+            .groups()
+            .iter()
+            .filter_map(|group| group.first())
+            .map(|request| {
+                (
+                    request.occurrence().importer().as_str().to_owned(),
+                    request.exact_specifier().to_owned(),
+                )
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let declared = self
+            .bindings
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        if actual != declared {
+            return Err(SourceLoadError::Message(
+                "Error: explicit module manifest import bindings do not exactly cover the parsed source closure"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn execute_import_request_uncancelled(
@@ -1313,6 +1389,520 @@ pub(crate) fn load(
     .map_err(prepare_source_load_error)
 }
 
+/// Load a build-system supplied closed module set. Every declared path is read
+/// exactly once under the captured host boundary, then the existing compiler
+/// discovery query is driven with exact `(importer, literal)` bindings. The
+/// compiler therefore still owns import recognition and closure; this mode
+/// only replaces filesystem candidate observation with validated manifest
+/// observations.
+/// A captured explicit closure kept separate from the session it was staged
+/// into. Retained hosts install this only after the canonical close succeeds.
+pub(crate) struct ExplicitManifestCandidate {
+    source_snapshot: SourceSnapshot,
+    resolution: SourceResolutionInputs,
+    read_manifest: AcceptedReadManifest,
+    observed_absent_paths: Vec<PathBuf>,
+    attempted_reads: Vec<AttemptedRead>,
+    revision: Arc<ImportDiscoveryView>,
+    #[cfg(test)]
+    input_revision: ImportInputRevision,
+    #[cfg(test)]
+    witness_discharge: WitnessDischarge,
+    assembler: DiscoverySourceAssembler,
+    std_root: Option<PathBuf>,
+    source_manifest: Option<SourceManifest>,
+    explicit_manifest_path: Option<PathBuf>,
+    explicit_manifest_fingerprint: Option<WatchFingerprint>,
+    explicit_manifest_std_root: Option<PathBuf>,
+    explicit_source_manifest_path: Option<PathBuf>,
+    witness: ImportDemandFrontier,
+}
+
+pub(crate) fn load_explicit_manifest(
+    request: SourceLoadRequest<'_>,
+    manifest_path: &str,
+    manifest_std_root: Option<&Path>,
+) -> Result<ImportDiscoveryResult, SourceLoadError> {
+    let _span = tracing::info_span!(
+        "source_loading",
+        phase = "source_discovery_and_parsing",
+        origin = "explicit_module_manifest"
+    )
+    .entered();
+    let mut session = CompilerSession::with_configuration(request.compiler_config.clone());
+    let candidate = load_explicit_manifest_candidate_inner(
+        request,
+        manifest_path,
+        manifest_std_root,
+        &mut session,
+        None,
+    )?;
+    Ok(ImportDiscoveryResult::from_explicit_candidate(
+        candidate, session,
+    ))
+}
+
+pub(crate) fn load_explicit_manifest_candidate(
+    request: SourceLoadRequest<'_>,
+    manifest_path: &str,
+    manifest_std_root: Option<&Path>,
+    staging: &mut CompilerSession,
+    supersession: Option<&dyn Fn() -> bool>,
+) -> Result<ExplicitManifestCandidate, SourceLoadError> {
+    let _span = tracing::info_span!(
+        "source_loading",
+        phase = "source_discovery_and_parsing",
+        origin = "explicit_module_manifest"
+    )
+    .entered();
+    load_explicit_manifest_candidate_inner(
+        request,
+        manifest_path,
+        manifest_std_root,
+        staging,
+        supersession,
+    )
+}
+
+fn load_explicit_manifest_candidate_inner(
+    request: SourceLoadRequest<'_>,
+    manifest_path: &str,
+    manifest_std_root: Option<&Path>,
+    staging: &mut CompilerSession,
+    supersession: Option<&dyn Fn() -> bool>,
+) -> Result<ExplicitManifestCandidate, SourceLoadError> {
+    check_supersession(supersession)?;
+    let manifest_path = request.path_context.anchor(Path::new(manifest_path));
+    let bytes = fs::read(&manifest_path).map_err(|error| {
+        SourceLoadError::Message(format!(
+            "Error reading module manifest '{}': {error}",
+            manifest_path.display()
+        ))
+    })?;
+    let manifest = ExplicitModuleManifest::parse(&bytes)
+        .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+    check_supersession(supersession)?;
+    let manifest_fingerprint = WatchFingerprint::from_bytes(&bytes);
+    let root_path = normalize_lexical_path_at(
+        Path::new(request.root_source),
+        request.path_context.working_directory(),
+    );
+    let source_manifest = request
+        .source_manifest_path
+        .map(|path| SourceManifest::load_with_context(path, request.path_context))
+        .transpose()
+        .map_err(SourceLoadError::Message)?;
+    if source_manifest
+        .as_ref()
+        .is_some_and(|manifest| !manifest.declares_path_without_probe(&root_path))
+    {
+        return Err(SourceLoadError::Message(
+            "Error: root source is not declared by the source manifest".into(),
+        ));
+    }
+    let root_dir = root_path
+        .parent()
+        .unwrap_or_else(|| Path::new("/"))
+        .to_path_buf();
+    // Declared paths use the same captured project root as the compiler's
+    // logical identities. This keeps generated manifests relocatable within a
+    // build invocation even when the manifest file itself lives elsewhere.
+    let manifest_base = root_dir.clone();
+    let configured_std_root = manifest_std_root
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(|path| request.path_context.anchor(path));
+    let std_root = configured_std_root.as_deref().map(capture_std_root);
+    let root_canonical = fs::canonicalize(&root_path).map_err(|error| {
+        SourceLoadError::Message(format!("Error reading {}: {error}", root_path.display()))
+    })?;
+    if source_manifest
+        .as_ref()
+        .is_some_and(|manifest| !manifest.allows_canonical(&root_canonical))
+    {
+        return Err(SourceLoadError::Message(
+            "Error: root source escapes the source manifest after canonicalization".into(),
+        ));
+    }
+    let canonical_root_dir = root_canonical
+        .parent()
+        .map(|path| path.to_string_lossy().into_owned());
+    let context = ImportDiscoveryContext::new(
+        1,
+        root_dir.to_string_lossy(),
+        canonical_root_dir.as_deref(),
+        std_root
+            .as_deref()
+            .map(|path| path.to_string_lossy())
+            .as_deref(),
+        source_manifest
+            .as_ref()
+            .map(SourceManifest::policy_revision)
+            .unwrap_or_else(|| "explicit-module-manifest-v1".into()),
+    )
+    .map_err(source_load_compiler_error)?;
+    let root_read = stable_read_to_string(&root_canonical).map_err(|error| {
+        SourceLoadError::Message(format!("Error reading {}: {error:?}", root_path.display()))
+    })?;
+    check_supersession(supersession)?;
+    let root_accepted = AcceptedImportSource::new(
+        Arc::from(root_path.to_string_lossy().into_owned()),
+        Arc::from(root_canonical.to_string_lossy().into_owned()),
+        root_read.identity,
+        root_read.fingerprint,
+        Arc::new(root_read.source.clone()),
+    )
+    .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?
+    .with_symlink_route(symlink_route(&root_path, &root_dir));
+    let root_module = ExplicitModuleManifest::module_id(&manifest.root)
+        .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+    let mut assembler = DiscoverySourceAssembler::new_with_symlink_route(
+        context.clone(),
+        root_path.to_string_lossy(),
+        root_canonical.to_string_lossy(),
+        root_read.identity,
+        root_read.fingerprint,
+        Arc::new(root_read.source),
+        symlink_route(&root_path, &root_dir),
+    )
+    .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+    let assembled_root = assembler
+        .snapshot()
+        .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?
+        .source_revision()
+        .root()
+        .clone();
+    if assembled_root != root_module {
+        return Err(SourceLoadError::Message(format!(
+            "Error: module manifest root {:?} does not match source identity {:?}",
+            manifest.root,
+            assembled_root.as_str()
+        )));
+    }
+
+    let mut sources = BTreeMap::new();
+    // The root was captured above from the caller's positional source. A
+    // manifest repeats its logical identity and declared spelling so the
+    // closure is self-describing, but it must not cause a second read of the
+    // same file (which could observe a different generation mid-request).
+    sources.insert(root_module.clone(), root_accepted.clone());
+    for entry in &manifest.modules {
+        check_supersession(supersession)?;
+        let module = ExplicitModuleManifest::module_id(&entry.module)
+            .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+        let requested = manifest_base.join(&entry.path);
+        if module == root_module {
+            let declared = normalize_lexical_path(&requested);
+            if declared != root_path {
+                return Err(SourceLoadError::Message(format!(
+                    "Error: manifest root path '{}' does not match the requested root '{}'",
+                    requested.display(),
+                    root_path.display()
+                )));
+            }
+            continue;
+        }
+        if source_manifest
+            .as_ref()
+            .is_some_and(|manifest| !manifest.declares_path_without_probe(&requested))
+        {
+            return Err(SourceLoadError::Message(format!(
+                "Error: manifest module {:?} is not declared by the source manifest",
+                entry.module
+            )));
+        }
+        let canonical = fs::canonicalize(&requested).map_err(|error| {
+            SourceLoadError::Message(format!(
+                "Error reading manifest module {:?} at '{}': {error}",
+                entry.module,
+                requested.display()
+            ))
+        })?;
+        if source_manifest
+            .as_ref()
+            .is_some_and(|manifest| !manifest.allows_canonical(&canonical))
+        {
+            return Err(SourceLoadError::Message(format!(
+                "Error: manifest module {:?} escapes the source manifest",
+                entry.module
+            )));
+        }
+        if !canonical.is_file() {
+            return Err(SourceLoadError::Message(format!(
+                "Error: manifest module {:?} is not a regular source file",
+                entry.module
+            )));
+        }
+        let read = stable_read_to_string(&canonical).map_err(|error| {
+            SourceLoadError::Message(format!("Error reading {}: {error:?}", requested.display()))
+        })?;
+        check_supersession(supersession)?;
+        let accepted = AcceptedImportSource::new(
+            Arc::from(
+                normalize_lexical_path_at(&requested, request.path_context.working_directory())
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            Arc::from(canonical.to_string_lossy().into_owned()),
+            read.identity,
+            read.fingerprint,
+            Arc::new(read.source),
+        )
+        .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?
+        .with_symlink_route(symlink_route(&requested, &root_dir));
+        let admitted = assembler
+            .add_explicit_with_symlink_route_and_module(
+                accepted.requested_path(),
+                accepted.canonical_path(),
+                accepted.metadata_identity(),
+                accepted.metadata_fingerprint(),
+                accepted.source().clone(),
+                accepted.symlink_route().to_vec().into(),
+            )
+            .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+        if admitted != module {
+            return Err(SourceLoadError::Message(format!(
+                "Error: manifest module identity {:?} does not match the identity {:?} admitted from '{}'",
+                entry.module,
+                admitted.as_str(),
+                requested.display()
+            )));
+        }
+        if sources.insert(module.clone(), accepted).is_some() {
+            return Err(SourceLoadError::Message(format!(
+                "Error: duplicate module identity {:?}",
+                entry.module
+            )));
+        }
+    }
+    if !manifest.std_requirements.is_empty() {
+        let Some(std_root) = std_root.as_deref() else {
+            return Err(SourceLoadError::Message(
+                "Error: explicit module manifest requires --manifest-std-root".into(),
+            ));
+        };
+        for requirement in &manifest.std_requirements {
+            check_supersession(supersession)?;
+            let requested = std_root.join(requirement);
+            if source_manifest
+                .as_ref()
+                .is_some_and(|manifest| !manifest.declares_path_without_probe(&requested))
+            {
+                return Err(SourceLoadError::Message(format!(
+                    "Error: standard-library requirement {:?} is not declared by the source manifest",
+                    requirement
+                )));
+            }
+            let canonical = fs::canonicalize(&requested).map_err(|error| {
+                SourceLoadError::Message(format!(
+                    "Error reading standard-library requirement {:?}: {error}",
+                    requirement
+                ))
+            })?;
+            if source_manifest
+                .as_ref()
+                .is_some_and(|manifest| !manifest.allows_canonical(&canonical))
+            {
+                return Err(SourceLoadError::Message(format!(
+                    "Error: standard-library requirement {:?} escapes the source manifest",
+                    requirement
+                )));
+            }
+            if !canonical.starts_with(std_root) || !canonical.is_file() {
+                return Err(SourceLoadError::Message(format!(
+                    "Error: standard-library requirement {:?} is outside the supplied root or is not a file",
+                    requirement
+                )));
+            }
+            let read = stable_read_to_string(&canonical).map_err(|error| {
+                SourceLoadError::Message(format!(
+                    "Error reading {}: {error:?}",
+                    requested.display()
+                ))
+            })?;
+            check_supersession(supersession)?;
+            let requested =
+                normalize_lexical_path_at(&requested, request.path_context.working_directory());
+            let accepted = AcceptedImportSource::new(
+                Arc::from(requested.to_string_lossy().into_owned()),
+                Arc::from(canonical.to_string_lossy().into_owned()),
+                read.identity,
+                read.fingerprint,
+                Arc::new(read.source),
+            )
+            .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?
+            .with_symlink_route(symlink_route(&requested, std_root));
+            let module = assembler
+                .add_explicit_with_symlink_route_and_module(
+                    accepted.requested_path(),
+                    accepted.canonical_path(),
+                    accepted.metadata_identity(),
+                    accepted.metadata_fingerprint(),
+                    accepted.source().clone(),
+                    accepted.symlink_route().to_vec().into(),
+                )
+                .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+            if sources.insert(module, accepted).is_some() {
+                return Err(SourceLoadError::Message(format!(
+                    "Error: duplicate standard-library requirement {:?}",
+                    requirement
+                )));
+            }
+        }
+    }
+    let mut bindings = BTreeMap::new();
+    for entry in &manifest.imports {
+        let importer = manifest_reference_module(&entry.importer, &sources)?;
+        let target = entry
+            .target
+            .as_deref()
+            .map(|target| manifest_reference_module(target, &sources))
+            .transpose()?;
+        if let Some(target) = &target
+            && !sources.contains_key(target)
+        {
+            return Err(SourceLoadError::Message(format!(
+                "Error: manifest import target {:?} is not declared",
+                entry.target
+            )));
+        }
+        if bindings
+            .insert(
+                (importer.as_str().to_owned(), entry.literal.clone()),
+                target,
+            )
+            .is_some()
+        {
+            return Err(SourceLoadError::Message(format!(
+                "Error: duplicate import binding ({:?}, {:?})",
+                entry.importer, entry.literal
+            )));
+        }
+    }
+    // Reachability is checked from the serialized edge set before any semantic
+    // query is allowed to see the snapshot. Unused entries remain inert and are
+    // rejected as an incomplete/stale closure rather than becoming roots.
+    let mut adjacency = BTreeMap::<String, Vec<String>>::new();
+    for ((importer, _), target) in &bindings {
+        if let Some(target) = target {
+            adjacency
+                .entry(importer.clone())
+                .or_default()
+                .push(target.as_str().to_owned());
+        }
+    }
+    let mut reachable = std::collections::BTreeSet::from([root_module.as_str().to_owned()]);
+    let mut pending = vec![root_module.as_str().to_owned()];
+    while let Some(importer) = pending.pop() {
+        if let Some(targets) = adjacency.get(&importer) {
+            for target in targets {
+                if reachable.insert(target.clone()) {
+                    pending.push(target.clone());
+                }
+            }
+        }
+    }
+    if sources
+        .keys()
+        .any(|module| !module.is_trusted_standard_library() && !reachable.contains(module.as_str()))
+    {
+        return Err(SourceLoadError::Message(
+            "Error: explicit module manifest contains an unused module entry".into(),
+        ));
+    }
+
+    let context = context
+        .with_explicit_manifest(manifest.imports.iter().map(|entry| {
+            let importer = manifest_reference_module(&entry.importer, &sources)
+                .expect("manifest validation and capture checked importer");
+            let target = bindings
+                .get(&(importer.as_str().to_owned(), entry.literal.clone()))
+                .cloned()
+                .flatten();
+            ExplicitImportBinding::new(importer, entry.literal.clone(), target)
+        }))
+        .map_err(source_load_compiler_error)?;
+    // The initial assembler derived every identity while admitting the fresh
+    // reads. Rebuild its in-memory index under the final typed-origin context;
+    // no source is read again, and every rebuilt identity is checked against
+    // the one the manifest loader already admitted.
+    let mut bound_assembler = DiscoverySourceAssembler::new_with_symlink_route(
+        context.clone(),
+        root_accepted.requested_path(),
+        root_accepted.canonical_path(),
+        root_accepted.metadata_identity(),
+        root_accepted.metadata_fingerprint(),
+        root_accepted.source().clone(),
+        root_accepted.symlink_route().to_vec().into(),
+    )
+    .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+    for (module, accepted) in &sources {
+        if module == &root_module {
+            continue;
+        }
+        let admitted = bound_assembler
+            .add_explicit_with_symlink_route_and_module(
+                accepted.requested_path(),
+                accepted.canonical_path(),
+                accepted.metadata_identity(),
+                accepted.metadata_fingerprint(),
+                accepted.source().clone(),
+                accepted.symlink_route().to_vec().into(),
+            )
+            .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+        if admitted != *module {
+            return Err(SourceLoadError::Message(format!(
+                "Error: captured module identity {:?} changed to {:?} while binding the manifest",
+                module.as_str(),
+                admitted.as_str()
+            )));
+        }
+    }
+    let mut assembler = bound_assembler;
+    let explicit = ExplicitManifestInput { bindings };
+    let mut failed_reads = FailedReads::new();
+    let close = drive_import_discovery_to_close(
+        &mut assembler,
+        staging,
+        &context,
+        None,
+        None,
+        Some(&explicit),
+        None,
+        None,
+        &mut failed_reads,
+        DiscoveryControl::superseding(supersession),
+    )?;
+    #[cfg(test)]
+    fire_explicit_candidate_close_hook();
+    let read_manifest = assembler.accepted_read_manifest();
+    Ok(ExplicitManifestCandidate {
+        source_snapshot: close.snapshot,
+        resolution: SourceResolutionInputs {
+            root_path,
+            root_display_path: request.root_source.to_owned(),
+            context,
+        },
+        attempted_reads: attempted_reads_of(&read_manifest, &failed_reads),
+        read_manifest,
+        observed_absent_paths: close.observed_absent_paths,
+        revision: close.closed,
+        #[cfg(test)]
+        input_revision: close.input_revision,
+        #[cfg(test)]
+        witness_discharge: close.witness_discharge,
+        assembler,
+        std_root: std_root.clone(),
+        source_manifest,
+        explicit_manifest_path: Some(manifest_path),
+        explicit_manifest_fingerprint: Some(manifest_fingerprint),
+        explicit_manifest_std_root: configured_std_root,
+        explicit_source_manifest_path: request
+            .source_manifest_path
+            .map(|path| request.path_context.anchor(Path::new(path))),
+        witness: close.witness,
+    })
+}
+
 #[derive(Debug)]
 pub(crate) struct ImportDiscoveryResult {
     pub(crate) source_snapshot: SourceSnapshot,
@@ -1355,9 +1945,91 @@ pub(crate) struct ImportDiscoveryResult {
     /// The read policy trusted-module acquisition obeys (same authority as an
     /// ordinary import read), or `None` when unrestricted.
     source_manifest: Option<SourceManifest>,
+    /// Explicit manifest origin retained for warm reloads.
+    pub(crate) explicit_manifest_path: Option<PathBuf>,
+    pub(crate) explicit_manifest_fingerprint: Option<WatchFingerprint>,
+    pub(crate) explicit_manifest_std_root: Option<PathBuf>,
+    pub(crate) explicit_source_manifest_path: Option<PathBuf>,
     /// The empty rooted closure witness of the current committed close — the
     /// frontier a same-generation trusted-toolchain successor continues from.
     witness: ImportDemandFrontier,
+}
+
+impl ImportDiscoveryResult {
+    fn from_explicit_candidate(
+        candidate: ExplicitManifestCandidate,
+        session: CompilerSession,
+    ) -> Self {
+        let ExplicitManifestCandidate {
+            source_snapshot,
+            resolution,
+            read_manifest,
+            observed_absent_paths,
+            attempted_reads,
+            revision,
+            #[cfg(test)]
+            input_revision,
+            #[cfg(test)]
+            witness_discharge,
+            assembler,
+            std_root,
+            source_manifest,
+            explicit_manifest_path,
+            explicit_manifest_fingerprint,
+            explicit_manifest_std_root,
+            explicit_source_manifest_path,
+            witness,
+        } = candidate;
+        Self {
+            source_snapshot,
+            resolution,
+            read_manifest,
+            observed_absent_paths,
+            attempted_reads,
+            revision,
+            #[cfg(test)]
+            input_revision,
+            #[cfg(test)]
+            witness_discharge,
+            session,
+            assembler,
+            std_root,
+            source_manifest,
+            explicit_manifest_path,
+            explicit_manifest_fingerprint,
+            explicit_manifest_std_root,
+            explicit_source_manifest_path,
+            witness,
+        }
+    }
+
+    pub(crate) fn install_explicit_candidate(&mut self, candidate: ExplicitManifestCandidate) {
+        candidate.install_into(self);
+    }
+}
+
+impl ExplicitManifestCandidate {
+    fn install_into(self, state: &mut ImportDiscoveryResult) {
+        state.source_snapshot = self.source_snapshot;
+        state.resolution = self.resolution;
+        state.read_manifest = self.read_manifest;
+        state.observed_absent_paths = self.observed_absent_paths;
+        state.attempted_reads = self.attempted_reads;
+        state.revision = self.revision;
+        #[cfg(test)]
+        {
+            state.input_revision = self.input_revision;
+            state.witness_discharge = self.witness_discharge;
+        }
+        state.assembler = self.assembler;
+        state.std_root = self.std_root;
+        state.source_manifest = self.source_manifest;
+        state.explicit_manifest_path = self.explicit_manifest_path;
+        state.explicit_manifest_fingerprint = self.explicit_manifest_fingerprint;
+        state.explicit_manifest_std_root = self.explicit_manifest_std_root;
+        state.explicit_source_manifest_path = self.explicit_source_manifest_path;
+        state.witness = self.witness;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1446,6 +2118,12 @@ impl ImportDiscoveryResult {
                 manifest.path.clone(),
                 manifest.content_hash,
             ));
+        }
+        if let (Some(path), Some(fingerprint)) = (
+            &self.explicit_manifest_path,
+            self.explicit_manifest_fingerprint,
+        ) {
+            paths.push(WatchInput::new(path.clone(), path.clone(), fingerprint));
         }
         paths.sort_by(|left, right| {
             left.requested_path()
@@ -1621,6 +2299,10 @@ thread_local! {
     /// commit boundary.
     static IMPORT_COMMIT_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
         const { std::cell::RefCell::new(None) };
+    /// Test hook fired after an explicit candidate's session close commits,
+    /// before the retained host installs the candidate's visible fields.
+    static EXPLICIT_CANDIDATE_CLOSE_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
     /// Waves discarded by that verification and re-run.
     static WAVE_STAMP_RERUNS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
@@ -1662,12 +2344,31 @@ fn fire_import_pre_close_hook() {
 }
 
 #[cfg(test)]
+pub(crate) fn set_import_pre_close_hook(hook: Option<Box<dyn FnMut()>>) {
+    IMPORT_PRE_CLOSE_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
+#[cfg(test)]
 fn fire_import_commit_hook() {
     IMPORT_COMMIT_HOOK.with(|hook| {
         if let Some(hook) = hook.borrow_mut().as_mut() {
             hook();
         }
     });
+}
+
+#[cfg(test)]
+fn fire_explicit_candidate_close_hook() {
+    EXPLICIT_CANDIDATE_CLOSE_HOOK.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook();
+        }
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn set_explicit_candidate_close_hook(hook: Option<Box<dyn FnMut()>>) {
+    EXPLICIT_CANDIDATE_CLOSE_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
 
 /// Whether every source the wave read still has the exact physical identity and
@@ -1745,6 +2446,7 @@ fn run_import_wave(
     frontier: &ImportDemandFrontier,
     source_manifest: Option<&SourceManifest>,
     reobserved_reads: Option<&AHashMap<String, AcceptedImportSource>>,
+    explicit_manifest: Option<&ExplicitManifestInput>,
     failed_reads: &mut FailedReads,
     control: DiscoveryControl<'_>,
 ) -> Result<(ImportInputRevision, ImportDemandFrontier), SourceLoadError> {
@@ -1791,7 +2493,7 @@ fn run_import_wave(
                     .to_owned(),
             ));
         }
-        if !wave_reads_are_stable(&wave, plan.context()) {
+        if explicit_manifest.is_none() && !wave_reads_are_stable(&wave, plan.context()) {
             // A retained request's observations were captured before this wave.
             // Retrying the same frozen map would only rediscover the obsolete
             // route; abort the request so the next watch cycle re-observes it.
@@ -1846,6 +2548,7 @@ fn drive_import_discovery_to_close(
     context: &ImportDiscoveryContext,
     source_manifest: Option<&SourceManifest>,
     reobserved_reads: Option<&AHashMap<String, AcceptedImportSource>>,
+    explicit_manifest: Option<&ExplicitManifestInput>,
     continuation: Option<ImportInputRevision>,
     reclose: Option<ReClose<'_>>,
     failed_reads: &mut FailedReads,
@@ -1927,17 +2630,21 @@ fn drive_import_discovery_to_close(
         control.checkpoint()?;
         let plan = match staged {
             Ok(plan) => plan,
-            Err(_) => {
-                let diagnostics = staging
-                    .import_diagnostics()
-                    .expect("failed staging publishes canonical import diagnostics");
-                let errors = CompileErrors::from(diagnostics.errors().to_vec());
+            Err(errors) => {
+                // Preserve the typed staging failure itself. In particular,
+                // explicit closure validation aborts the open request before
+                // returning, so consulting the session's predecessor
+                // diagnostics here would lose or replace the stale-manifest
+                // error.
                 return Err(SourceLoadError::Compiler {
                     snapshot: Some(snapshot),
                     errors,
                 });
             }
         };
+        if let Some(explicit_manifest) = explicit_manifest {
+            explicit_manifest.validate_plan(&plan)?;
+        }
         // A trusted-toolchain re-close roots its frontier only in the plan's delta
         // occurrences — those owned by modules added since the predecessor close.
         // These come straight from the plan's delta segment, never by filtering the
@@ -2102,6 +2809,7 @@ fn drive_import_discovery_to_close(
                     &frontier,
                     source_manifest,
                     reobserved_reads,
+                    explicit_manifest,
                     failed_reads,
                     control,
                 )?;
@@ -2324,6 +3032,7 @@ fn discover_and_load_imports_with_configuration(
         None,
         None,
         None,
+        None,
         &mut failed_reads,
         DiscoveryControl::default(),
     )?;
@@ -2348,6 +3057,10 @@ fn discover_and_load_imports_with_configuration(
         assembler,
         std_root,
         source_manifest,
+        explicit_manifest_path: None,
+        explicit_manifest_fingerprint: None,
+        explicit_manifest_std_root: None,
+        explicit_source_manifest_path: None,
         witness: close.witness,
     })
 }
@@ -2453,6 +3166,7 @@ fn reload_from_filesystem_inner(
         &context,
         source_manifest.as_ref(),
         Some(&reobserved),
+        None,
         None,
         None,
         &mut failed_reads,
@@ -2628,6 +3342,12 @@ fn acquire_reached_toolchain_modules_inner(
             // revision. Satisfy exactly the parked demands, publish one successor,
             // and re-close so semantic can retry on it.
             RootedParkOutcome::Parked(park) => {
+                if result.explicit_manifest_path.is_some() {
+                    return Err(SourceLoadError::Message(
+                        "Error: explicit module manifest is incomplete for reached toolchain support; regenerate it with the required standard-library entries"
+                            .into(),
+                    ));
+                }
                 // Attribute only the host work which satisfies the park. The
                 // semantic request above already owns its own phase spans; wrapping
                 // the whole fixed-point loop here would misreport that cached
@@ -2702,6 +3422,7 @@ fn acquire_reached_toolchain_modules_inner(
                     &mut result.session,
                     &result.resolution.context,
                     result.source_manifest.as_ref(),
+                    None,
                     None,
                     Some(delta.revision()),
                     Some(ReClose { delta: &delta }),

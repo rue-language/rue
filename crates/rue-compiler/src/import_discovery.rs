@@ -35,6 +35,36 @@ pub struct ImportDiscoveryContext {
     project_root: Arc<str>,
     std_root: Option<Arc<str>>,
     read_policy_revision: Arc<str>,
+    /// Optional build-system supplied exact import bindings. This is part of
+    /// the captured input regime, so ResolveImport can answer from the typed
+    /// origin without manufacturing filesystem observations.
+    explicit_manifest: Option<Arc<[ExplicitImportBinding]>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ExplicitImportBinding {
+    importer: ModuleId,
+    literal: Arc<str>,
+    target: Option<ModuleId>,
+}
+
+impl ExplicitImportBinding {
+    pub fn new(importer: ModuleId, literal: impl Into<Arc<str>>, target: Option<ModuleId>) -> Self {
+        Self {
+            importer,
+            literal: literal.into(),
+            target,
+        }
+    }
+    pub fn importer(&self) -> &ModuleId {
+        &self.importer
+    }
+    pub fn literal(&self) -> &str {
+        &self.literal
+    }
+    pub fn target(&self) -> Option<&ModuleId> {
+        self.target.as_ref()
+    }
 }
 
 impl ImportDiscoveryContext {
@@ -81,7 +111,105 @@ impl ImportDiscoveryContext {
             project_root: Arc::from(project_root),
             std_root,
             read_policy_revision: read_policy_revision.into(),
+            explicit_manifest: None,
         })
+    }
+
+    pub fn with_explicit_manifest(
+        mut self,
+        bindings: impl IntoIterator<Item = ExplicitImportBinding>,
+    ) -> CompileResult<Self> {
+        let mut bindings = bindings.into_iter().collect::<Vec<_>>();
+        bindings.sort_by(|left, right| {
+            left.importer
+                .cmp(&right.importer)
+                .then_with(|| left.literal.cmp(&right.literal))
+                .then_with(|| left.target.cmp(&right.target))
+        });
+        for pair in bindings.windows(2) {
+            if pair[0].importer == pair[1].importer && pair[0].literal == pair[1].literal {
+                let detail = if pair[0].target == pair[1].target {
+                    "duplicate"
+                } else {
+                    "conflicting"
+                };
+                return Err(invalid_input(format!(
+                    "explicit manifest has {detail} bindings for {:?} {:?}",
+                    pair[0].importer, pair[0].literal
+                )));
+            }
+        }
+        self.explicit_manifest = Some(bindings.into());
+        Ok(self)
+    }
+
+    pub fn explicit_manifest_binding(
+        &self,
+        importer: &ModuleId,
+        literal: &str,
+    ) -> Option<&ExplicitImportBinding> {
+        let bindings = self.explicit_manifest.as_deref()?;
+        let index = bindings
+            .binary_search_by(|binding| {
+                binding
+                    .importer
+                    .cmp(importer)
+                    .then_with(|| binding.literal.as_ref().cmp(literal))
+            })
+            .ok()?;
+        bindings.get(index)
+    }
+
+    pub fn has_explicit_manifest(&self) -> bool {
+        self.explicit_manifest.is_some()
+    }
+
+    pub(crate) fn explicit_manifest_bindings(&self) -> Option<&[ExplicitImportBinding]> {
+        self.explicit_manifest.as_deref()
+    }
+
+    /// Validate the parser-owned occurrence key set and target closure at the
+    /// canonical staging boundary. Hosts may use this as a convenience, but a
+    /// direct session/query caller cannot turn an incomplete manifest into a
+    /// closed graph by constructing a context alone.
+    pub(crate) fn validate_explicit_manifest_plan(
+        &self,
+        plan: &ImportDiscoveryPlan,
+        accepted_reads: &AcceptedReadManifest,
+    ) -> CompileResult<()> {
+        let Some(bindings) = self.explicit_manifest.as_deref() else {
+            return Ok(());
+        };
+        let actual = plan
+            .groups()
+            .iter()
+            .filter_map(|group| group.first())
+            .map(|request| {
+                (
+                    request.occurrence().importer().clone(),
+                    request.exact_specifier().to_owned(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let declared = bindings
+            .iter()
+            .map(|binding| (binding.importer.clone(), binding.literal.to_string()))
+            .collect::<BTreeSet<_>>();
+        if actual != declared {
+            return Err(invalid_input(
+                "explicit module manifest bindings do not exactly cover parsed imports",
+            ));
+        }
+        for binding in bindings {
+            if let Some(target) = binding.target() {
+                if accepted_reads.find_module(target).is_none() {
+                    return Err(invalid_input(format!(
+                        "explicit module manifest target {target:?} is outside the captured closure"
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn epoch(&self) -> u64 {
@@ -126,6 +254,22 @@ impl ImportDiscoveryContext {
             None => field(b"no-std"),
         }
         field(self.read_policy_revision.as_bytes());
+        if let Some(bindings) = &self.explicit_manifest {
+            field(b"explicit-manifest-v1");
+            for binding in bindings.iter() {
+                field(binding.importer().as_str().as_bytes());
+                field(binding.literal().as_bytes());
+                match binding.target() {
+                    Some(target) => {
+                        field(b"target-resolved");
+                        field(target.as_str().as_bytes());
+                    }
+                    None => field(b"target-missing"),
+                }
+            }
+        } else {
+            field(b"filesystem-discovery");
+        }
         let bytes = digest.finalize();
         u64::from_le_bytes(bytes[..8].try_into().expect("sha256 yields 32 bytes"))
     }
@@ -2605,6 +2749,36 @@ impl DiscoverySourceAssembler {
         )
     }
 
+    /// Admit one captured source and return the logical identity derived by
+    /// the assembler. Explicit-manifest callers compare this result with the
+    /// serialized module key so the manifest cannot create a second identity
+    /// map for the same physical source.
+    pub fn add_explicit_with_symlink_route_and_module(
+        &mut self,
+        requested_path: &str,
+        canonical_path: &str,
+        metadata_identity: PhysicalFileIdentity,
+        metadata_fingerprint: FileMetadataFingerprint,
+        source: Arc<String>,
+        symlink_route: Arc<[PhysicalFileIdentity]>,
+    ) -> CompileResult<ModuleId> {
+        let accepted = AcceptedImportSource::new(
+            Arc::from(normalize_absolute(requested_path)?),
+            Arc::from(canonical_path),
+            metadata_identity,
+            metadata_fingerprint,
+            source,
+        )?
+        .with_symlink_route(symlink_route);
+        let module = classify_module(
+            &self.context,
+            accepted.requested_path(),
+            accepted.canonical_path(),
+        )?;
+        self.add_source(&accepted)?;
+        Ok(module)
+    }
+
     pub fn add_plan_reads(
         &mut self,
         plan: &ImportDiscoveryPlan,
@@ -3278,6 +3452,56 @@ mod tests {
             "all",
         )
         .expect("a project outside std in both spellings is valid");
+    }
+
+    #[test]
+    fn explicit_manifest_context_rejects_duplicate_keys_before_queries() {
+        let importer = ModuleId::from_logical_path("main.rue").unwrap();
+        let target = ModuleId::from_logical_path("helper.rue").unwrap();
+        let duplicate = context(1).with_explicit_manifest([
+            ExplicitImportBinding::new(importer.clone(), "helper.rue", Some(target.clone())),
+            ExplicitImportBinding::new(importer.clone(), "helper.rue", Some(target)),
+        ]);
+        assert!(duplicate.is_err());
+        let conflict = context(1).with_explicit_manifest([
+            ExplicitImportBinding::new(importer.clone(), "helper.rue", None),
+            ExplicitImportBinding::new(
+                importer.clone(),
+                "helper.rue",
+                Some(ModuleId::from_logical_path("other.rue").unwrap()),
+            ),
+        ]);
+        assert!(conflict.is_err());
+    }
+
+    #[test]
+    fn canonical_staging_rejects_an_omitted_parser_owned_key() {
+        let source = snapshot(
+            &[(
+                1,
+                "/project/main.rue",
+                "main.rue",
+                "const helper = @import(\"helper.rue\"); fn main() -> i32 { 0 }",
+            )],
+            1,
+        );
+        let context = context(1).with_explicit_manifest([]).unwrap();
+        let mut session = crate::CompilerSession::new();
+        let revision = session
+            .begin_import_input_request(
+                &source,
+                context,
+                AcceptedReadManifest::from_entries(accepted_reads(&source).to_vec()),
+            )
+            .unwrap();
+        let error = session
+            .stage_import_input_request(revision)
+            .expect_err("staging must reject an incomplete explicit closure");
+        assert!(
+            error
+                .to_string()
+                .contains("bindings do not exactly cover parsed imports")
+        );
     }
 
     #[test]

@@ -230,6 +230,26 @@ impl CanonicalImportGraph {
         self.records.as_slice()
     }
 
+    /// Find the canonical record for a normalized importer/specifier pair.
+    /// This is the stable lookup used by explicit manifest generation; it does
+    /// not perform resolution or consult the filesystem.
+    pub(crate) fn record_for_key(
+        &self,
+        importer: &ModuleId,
+        normalized_specifier: &str,
+    ) -> Option<&CanonicalImportRecord> {
+        self.records
+            .as_slice()
+            .binary_search_by(|record| {
+                record
+                    .importer()
+                    .cmp(importer)
+                    .then_with(|| record.normalized_specifier().cmp(normalized_specifier))
+            })
+            .ok()
+            .map(|index| &self.records()[index])
+    }
+
     /// Find the unique record for one canonical import key without re-deriving
     /// resolution. The graph's validated order makes this logarithmic.
     #[cfg(test)]

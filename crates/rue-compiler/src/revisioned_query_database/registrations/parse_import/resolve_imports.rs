@@ -34,8 +34,44 @@ macro_rules! register_parse_import_resolve_imports {
                             requests: Arc::from([]),
                             speculative_blocked: false,
                             resolution: None,
+                            explicit_manifest_key_missing: false,
                         }));
                     };
+                    // An explicit build-system manifest is a typed import
+                    // origin. Resolve it directly from the captured binding;
+                    // do not manufacture host observations or rerun candidate
+                    // precedence for a graph the caller already supplied.
+                    if let Some(binding) = view
+                        .context
+                        .explicit_manifest_binding(site.importer(), site.specifier())
+                    {
+                        return Ok(QueryOutput::success(ResolveImportValue {
+                            site_found: true,
+                            groups: Arc::from([]),
+                            requests: Arc::from([]),
+                            speculative_blocked: false,
+                            resolution: Some(match binding.target() {
+                                Some(target) => {
+                                    crate::CanonicalImportResolution::Resolved(target.clone())
+                                }
+                                None => crate::CanonicalImportResolution::Missing,
+                            }),
+                            explicit_manifest_key_missing: false,
+                        }));
+                    }
+                    if view.context.has_explicit_manifest() {
+                        // A closed explicit request is a pure lookup regime.
+                        // An absent key is stale/incomplete input, never a
+                        // reason to fall back to candidate filesystem probes.
+                        return Ok(QueryOutput::success(ResolveImportValue {
+                            site_found: true,
+                            groups: Arc::from([]),
+                            requests: Arc::from([]),
+                            speculative_blocked: false,
+                            resolution: None,
+                            explicit_manifest_key_missing: true,
+                        }));
+                    }
                     context.input(accepted_read_input(key.occurrence.importer()))?;
                     let importer = view
                         .accepted_reads
@@ -61,6 +97,7 @@ macro_rules! register_parse_import_resolve_imports {
                             requests: Arc::from([]),
                             speculative_blocked: false,
                             resolution: Some(crate::CanonicalImportResolution::Missing),
+                            explicit_manifest_key_missing: false,
                         }));
                     }
                     for request in groups.iter().flat_map(|group| group.iter()) {
@@ -128,6 +165,7 @@ macro_rules! register_parse_import_resolve_imports {
                         },
                         speculative_blocked,
                         resolution,
+                        explicit_manifest_key_missing: false,
                     }))
                 },
             )
