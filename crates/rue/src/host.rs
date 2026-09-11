@@ -3,12 +3,13 @@ use std::path::{Path, PathBuf};
 use rue_compiler::unstable::TestCandidateInventory;
 use rue_compiler::unstable::normalize_module_path;
 use rue_compiler::unstable::{
-    CancellableCompileOutcome, CancellableTestImageOutcome, CodegenReady, CompilationCancellation,
-    ObjectsReady, PresentationBatchRequest, PresentationOutput, PresentationRequest, TestImage,
-    TestListing, UnimportedTestFile, cancellable_executable_in_compile_scope,
-    cancellable_test_image_in_compile_scope, codegen_ready, executable_in_compile_scope,
-    objects_ready, runnable_ready, test_image_in_compile_scope, test_inventory,
-    unimported_test_files,
+    CancellableCompileOutcome, CancellablePresentationOutcome, CancellableTestImageOutcome,
+    CancellableTestListingOutcome, CodegenReady, CompilationCancellation, ObjectsReady,
+    PresentationBatchRequest, PresentationOutput, PresentationRequest, TestImage, TestListing,
+    UnimportedTestFile, cancellable_executable_in_compile_scope, cancellable_present_many,
+    cancellable_test_image_in_compile_scope, cancellable_test_inventory, codegen_ready,
+    executable_in_compile_scope, objects_ready, runnable_ready, test_image_in_compile_scope,
+    test_inventory, unimported_test_files,
 };
 use rue_compiler::{
     AcceptedReadManifest, CompileErrors, CompileOptions, CompileOutput, CompilerSessionConfig,
@@ -18,7 +19,7 @@ use rue_compiler::{
 
 use crate::source_loader::{
     AttemptedRead, ImportDiscoveryResult, SourceLoadError, SourceLoadRequest, WatchInput,
-    acquire_reached_toolchain_modules, acquire_reached_toolchain_modules_superseding, load,
+    acquire_reached_toolchain_modules, acquire_reached_toolchain_modules_cancellable, load,
     reload_from_filesystem,
 };
 
@@ -136,17 +137,18 @@ impl FilesystemCompilerHost {
     }
 
     /// Acquire like [`Self::acquire_reached_toolchain_modules`], aborting
-    /// promptly with [`SourceLoadError::Superseded`] once `supersession`
-    /// reports a newer source revision (RUE-1863). A superseded acquisition
-    /// never exposes partial state: a pre-commit abort keeps the prior state,
-    /// while a signal observed after publication may retain that one coherent
-    /// committed acquisition round.
-    pub fn acquire_reached_toolchain_modules_superseding(
+    /// promptly with [`SourceLoadError::Superseded`] once `cancellation` is
+    /// canceled (RUE-1863, RUE-2174): between rounds, inside a round's reads,
+    /// and inside the semantic probe that discovers each round's demands. A
+    /// canceled acquisition never exposes partial state: a pre-commit abort
+    /// keeps the prior state, while a cancellation observed after publication
+    /// may retain that one coherent committed acquisition round.
+    pub fn acquire_reached_toolchain_modules_cancellable(
         &mut self,
         options: &CompileOptions,
-        supersession: &dyn Fn() -> bool,
+        cancellation: &CompilationCancellation,
     ) -> Result<(), SourceLoadError> {
-        acquire_reached_toolchain_modules_superseding(&mut self.state, options, Some(supersession))
+        acquire_reached_toolchain_modules_cancellable(&mut self.state, options, cancellation)
     }
 
     pub fn source_snapshot(&self) -> &SourceSnapshot {
@@ -265,6 +267,17 @@ impl FilesystemCompilerHost {
         self.state.session.unstable_present_many(request)
     }
 
+    /// Produce the presentations like [`Self::present_many`], under a caller's
+    /// cancellation token (RUE-2174), so a retained host can abandon an
+    /// analysis-only request during its CFG-side or backend work.
+    pub fn cancellable_present_many(
+        &mut self,
+        request: PresentationBatchRequest<'_>,
+        cancellation: CompilationCancellation,
+    ) -> CancellablePresentationOutcome {
+        cancellable_present_many(&mut self.state.session, request, cancellation)
+    }
+
     /// Discovery's own diagnostics when this revision's import graph did not
     /// close valid, and nothing when it did.
     ///
@@ -320,6 +333,20 @@ impl FilesystemCompilerHost {
     pub fn test_inventory(&mut self, options: &CompileOptions) -> MultiErrorResult<TestListing> {
         self.closed_discovery()?;
         test_inventory(&mut self.state.session, options)
+    }
+
+    /// Answer the listing like [`Self::test_inventory`], under a caller's
+    /// cancellation token (RUE-2174), so a retained host can abandon a
+    /// `rue test --list` request whose client has gone away.
+    pub fn cancellable_test_inventory(
+        &mut self,
+        options: &CompileOptions,
+        cancellation: CompilationCancellation,
+    ) -> CancellableTestListingOutcome {
+        if let Err(errors) = self.closed_discovery() {
+            return CancellableTestListingOutcome::Errors(errors);
+        }
+        cancellable_test_inventory(&mut self.state.session, options, cancellation)
     }
 
     /// Link the test image for the request's closure and publish the inventory
