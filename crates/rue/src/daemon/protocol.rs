@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 /// The version of the message shapes in this module. It participates in the
 /// service identity, so a client and a service that disagree on it can never
 /// meet on one socket, and the handshake checks it again anyway.
-pub const DAEMON_PROTOCOL_VERSION: u32 = 1;
+pub const DAEMON_PROTOCOL_VERSION: u32 = 2;
 
 /// The largest control frame either side accepts. Control messages are a few
 /// hundred bytes; a frame claiming more than this is a malformed or hostile
@@ -31,6 +31,12 @@ pub const MAX_RESULT_FRAME_BYTES: usize = 64 << 20;
 /// expect and never holds more than one unread chunk beyond the bytes it has
 /// already accepted.
 pub const MAX_CHUNK_BYTES: usize = 4 << 20;
+
+/// The preferred aggregate linked/diagnostic response payloads a service keeps
+/// between completion and socket transfer. One completed answer may exceed
+/// this soft limit while it is protected by its lease and reports pressure;
+/// concurrent completed answers cannot accumulate beyond the limit.
+pub const MAX_RESPONSE_BYTES: usize = 64 << 20;
 
 /// Why a frame could not be read.
 #[derive(Debug)]
@@ -516,6 +522,48 @@ pub struct StatusReport {
     pub active_request: Option<RequestSummary>,
     pub queued_requests: u32,
     pub retained_hosts: u32,
+    pub resource_policy: ResourcePolicy,
+    pub resource_pressure: ResourcePressure,
+}
+
+/// The explicit provisional resource policy used by a daemon. Ordinary
+/// `CompilerSessionConfig` defaults remain independent of this policy.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourcePolicy {
+    pub max_connections: u32,
+    pub max_queued_requests: u32,
+    pub max_retained_hosts: u32,
+    pub max_retained_charge_bytes: u64,
+    pub max_dependency_pins: u64,
+    pub max_response_bytes: u64,
+    pub control_read_timeout_ms: u64,
+    pub response_write_timeout_ms: u64,
+}
+
+/// Current pressure reported by `daemon status`; these are observations, not
+/// lifecycle log messages and are deliberately kept on the control surface.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourcePressure {
+    pub connections: u32,
+    pub queued_requests: u32,
+    pub retained_hosts: u32,
+    pub response_bytes: u64,
+    /// Highest response lease charge observed since service start. This can
+    /// include a single valid soft-overflow answer while it is held by a
+    /// client; it is separate from retained compiler state.
+    pub peak_response_bytes: u64,
+    /// Bytes in the current retained source snapshot. This is an input gauge,
+    /// separate from query-artifact charge and process RSS.
+    pub source_bytes: u64,
+    /// Files in the current retained source snapshot.
+    pub source_files: u32,
+    pub retained_charge_bytes: u64,
+    pub dependency_pins: u64,
+    /// Highest retained query charge observed since service start. This stays
+    /// visible after an over-budget idle host is evicted.
+    pub peak_retained_charge_bytes: u64,
+    /// Highest dependency-pin count observed since service start.
+    pub peak_dependency_pins: u64,
 }
 
 #[cfg(test)]
@@ -684,6 +732,17 @@ mod tests {
                 active_request: None,
                 queued_requests: 0,
                 retained_hosts: 0,
+                resource_policy: ResourcePolicy {
+                    max_connections: 33,
+                    max_queued_requests: 8,
+                    max_retained_hosts: 1,
+                    max_retained_charge_bytes: 0,
+                    max_dependency_pins: 0,
+                    max_response_bytes: MAX_RESPONSE_BYTES as u64,
+                    control_read_timeout_ms: 5_000,
+                    response_write_timeout_ms: 5_000,
+                },
+                resource_pressure: ResourcePressure::default(),
             }),
         };
         let json = serde_json::to_string(&body).unwrap();

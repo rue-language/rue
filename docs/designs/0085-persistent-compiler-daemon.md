@@ -123,9 +123,10 @@ Several relevant issues are present in current source:
   configuration of whichever client happened to start a daemon.
 - [`RevisionedQueryDatabase::drop`](../../crates/rue-compiler/src/revisioned_query_database/shared.rs)
   now explicitly stops and joins runtime workers; the worker-teardown leak is
-  historical and removed. Its current ownership comment still documents strong
-  evaluator cycles retaining runtime state. Dropping a host therefore does not
-  by itself prove that all query memory was reclaimed.
+  historical and removed. Runtime reclamation is now verified through the
+  owning session/runtime drop boundary and weak-runtime probes; a response
+  may outlive a host only because it owns copied result data, never because it
+  retains the query runtime.
 
 RUE-1549's August 27 maintainer comment explicitly keeps the query architecture
 as a product investment in incrementality. This decision follows that direction
@@ -416,15 +417,29 @@ four million dependency/input observations. Expose validated per-session
 overrides. Do not tune daemon-wide defaults by changing ordinary compilation
 defaults, or work around the ownership boundary by toggling a global.
 
-Add service-level limits for retained host count, aggregate charged bytes and
-observations, queued work, response buffers, and idle lifetime. Evict idle
-hosts in least-recently-used order when admitting a new host or closing a
-request under pressure. Release snapshots and response references and stop
-workers with the host. Verify that evicted query state is actually reclaimed:
-resolve the documented evaluator ownership cycles before relying on host
-eviction as a memory bound, or retire the idle service as the reclamation
-boundary. Retention metrics must account separately for query charge,
-host/source state, response buffering, and observed process RSS.
+The qualification service currently uses a conservative explicit provisional
+policy: one retained host, 32 build connections plus one reserved control
+connection, eight queued requests,
+256 MiB of retained query charge, one million dependency pins, 64 MiB of
+concurrent response bytes, five-second control-read and response-write
+deadlines, and a 30-minute idle lifetime. These values are service policy, not ordinary
+`CompilerSessionConfig` defaults, and release calibration may tighten them.
+Admission and response leases are released on every normal, cancellation,
+disconnect, and write-failure path. Retention metrics account separately for
+query charge, dependency pins, host/source state, response buffering, and
+observed process RSS; status retains peak charge and pin counts after an idle
+host is evicted. A full connection or queue is a soft refusal that leaves
+the caller able to retry or use the direct path; completed responses are never
+truncated or published as partial artifacts. One unusually large completed
+answer may be retained as a single protected soft overflow, with its exact
+charge visible in status, so pressure never replaces a valid answer with a
+failure; the owner waits for that lease before starting another request.
+
+Runtime workers are stopped and joined when the session is dropped. Weak
+runtime probes cover empty, mixed-artifact, error/cancel/repair, and rotating
+root sessions, with an alive positive control. Eviction or daemon retirement
+is therefore a bounded owner-lifetime mechanism rather than a workaround for
+an evaluator cycle.
 
 These remain soft memory policies. A protected active request can exceed a
 charge budget; it must remain correct and report pressure. Once it completes,

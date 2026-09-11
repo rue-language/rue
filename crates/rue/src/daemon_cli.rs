@@ -224,6 +224,31 @@ fn render_status(report: &StatusReport) -> String {
     }
     text.push_str(&format!("  queued requests: {}\n", report.queued_requests));
     text.push_str(&format!("  retained hosts: {}\n", report.retained_hosts));
+    let policy = &report.resource_policy;
+    let pressure = &report.resource_pressure;
+    text.push_str(&format!(
+        "  resource policy: connections {}/{}; queued {}/{}; hosts {}/{}; response bytes {}/{}; retained charge {}/{}; dependency pins {}/{}\n",
+        pressure.connections,
+        policy.max_connections,
+        pressure.queued_requests,
+        policy.max_queued_requests,
+        pressure.retained_hosts,
+        policy.max_retained_hosts,
+        pressure.response_bytes,
+        policy.max_response_bytes,
+        pressure.retained_charge_bytes,
+        policy.max_retained_charge_bytes,
+        pressure.dependency_pins,
+        policy.max_dependency_pins,
+    ));
+    text.push_str(&format!(
+        "  source snapshot: {} files, {} bytes; response peak: {} bytes; peak charge: {} bytes; peak pins: {}\n",
+        pressure.source_files,
+        pressure.source_bytes,
+        pressure.peak_response_bytes,
+        pressure.peak_retained_charge_bytes,
+        pressure.peak_dependency_pins
+    ));
     text
 }
 
@@ -306,6 +331,17 @@ mod tests {
             active_request: None,
             queued_requests: 0,
             retained_hosts: 0,
+            resource_policy: daemon::ResourcePolicy {
+                max_connections: 33,
+                max_queued_requests: 8,
+                max_retained_hosts: 1,
+                max_retained_charge_bytes: 256 * 1024 * 1024,
+                max_dependency_pins: 1_000_000,
+                max_response_bytes: daemon::MAX_RESPONSE_BYTES as u64,
+                control_read_timeout_ms: 5_000,
+                response_write_timeout_ms: 5_000,
+            },
+            resource_pressure: daemon::ResourcePressure::default(),
         };
         let text = render_status(&report);
         for needle in [
@@ -313,11 +349,14 @@ mod tests {
             "scope: /work/project",
             "isolation: ci",
             "endpoint: /run/rue/0123",
-            "protocol: 1",
+            "protocol: 2",
             "image: X86_64 LinuxProcSelfExeSha256 abcd",
             "idle timeout: 1800000 ms",
             "active request: none",
             "retained hosts: 0",
+            "resource policy: connections 0/33; queued 0/8; hosts 0/1",
+            "retained charge 0/268435456; dependency pins 0/1000000",
+            "source snapshot: 0 files, 0 bytes; response peak: 0 bytes",
         ] {
             assert!(text.contains(needle), "missing {needle:?} in:\n{text}");
         }

@@ -227,7 +227,12 @@ where
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound
             );
         }
-        if requested != canonical && fs::canonicalize(requested).ok().as_deref() != Some(canonical)
+        // Accepted source reads carry a captured canonical target even when
+        // their original spellings matched. A formerly real directory can
+        // have become a symlink since that capture. Other control inputs may
+        // carry only an anchored spelling, without that source-read evidence.
+        if (input.symlink_boundary.is_some() || requested != canonical)
+            && fs::canonicalize(requested).ok().as_deref() != Some(canonical)
         {
             return true;
         }
@@ -247,7 +252,8 @@ pub fn watch_input_fingerprints(inputs: &[WatchInput]) -> Vec<Option<WatchFinger
             if input.symlink_route_changed() {
                 return None;
             }
-            if input.requested_path() != input.canonical_path()
+            if (input.symlink_boundary.is_some()
+                || input.requested_path() != input.canonical_path())
                 && fs::canonicalize(input.requested_path()).ok().as_deref()
                     != Some(input.canonical_path())
             {
@@ -1942,13 +1948,15 @@ pub(crate) struct ImportDiscoveryResult {
     /// The standard-library root a demanded trusted module resolves against, or
     /// `None` when no toolchain std is configured.
     std_root: Option<PathBuf>,
+    /// The client's anchored route, retained independently of its current
+    /// physical target so a symlink retarget is observed on the next request.
+    pub(crate) configured_std_root: Option<PathBuf>,
     /// The read policy trusted-module acquisition obeys (same authority as an
     /// ordinary import read), or `None` when unrestricted.
     source_manifest: Option<SourceManifest>,
     /// Explicit manifest origin retained for warm reloads.
     pub(crate) explicit_manifest_path: Option<PathBuf>,
     pub(crate) explicit_manifest_fingerprint: Option<WatchFingerprint>,
-    pub(crate) explicit_manifest_std_root: Option<PathBuf>,
     pub(crate) explicit_source_manifest_path: Option<PathBuf>,
     /// The empty rooted closure witness of the current committed close — the
     /// frontier a same-generation trusted-toolchain successor continues from.
@@ -1994,10 +2002,10 @@ impl ImportDiscoveryResult {
             session,
             assembler,
             std_root,
+            configured_std_root: explicit_manifest_std_root,
             source_manifest,
             explicit_manifest_path,
             explicit_manifest_fingerprint,
-            explicit_manifest_std_root,
             explicit_source_manifest_path,
             witness,
         }
@@ -2026,7 +2034,7 @@ impl ExplicitManifestCandidate {
         state.source_manifest = self.source_manifest;
         state.explicit_manifest_path = self.explicit_manifest_path;
         state.explicit_manifest_fingerprint = self.explicit_manifest_fingerprint;
-        state.explicit_manifest_std_root = self.explicit_manifest_std_root;
+        state.configured_std_root = self.explicit_manifest_std_root;
         state.explicit_source_manifest_path = self.explicit_source_manifest_path;
         state.witness = self.witness;
     }
@@ -2105,6 +2113,21 @@ impl ImportDiscoveryResult {
                     .to_path_buf(),
                 Arc::from(entry.symlink_route().to_vec()),
             ));
+            // Std module reads use the captured physical root for trusted
+            // identities. Its configured route also selected those bytes:
+            // retain that alias as a guard so watch polling and client
+            // publication notice a retarget before the next host reload.
+            // Both guards share the accepted file's canonical fingerprint.
+            if let (Some(configured), Some(captured)) = (&self.configured_std_root, &self.std_root)
+                && configured != captured
+                && let Ok(relative) = requested.strip_prefix(captured)
+            {
+                paths.push(WatchInput::new(
+                    configured.join(relative),
+                    PathBuf::from(entry.canonical_path()),
+                    fingerprint,
+                ));
+            }
         }
         paths.extend(
             self.observed_absent_paths
@@ -2112,6 +2135,15 @@ impl ImportDiscoveryResult {
                 .cloned()
                 .map(WatchInput::expected_absence),
         );
+        if let (Some(configured), Some(captured)) = (&self.configured_std_root, &self.std_root)
+            && configured != captured
+        {
+            paths.extend(self.observed_absent_paths.iter().filter_map(|path| {
+                path.strip_prefix(captured)
+                    .ok()
+                    .map(|relative| WatchInput::expected_absence(configured.join(relative)))
+            }));
+        }
         if let Some(manifest) = &self.source_manifest {
             paths.push(WatchInput::new(
                 manifest.path.clone(),
@@ -2939,10 +2971,10 @@ fn discover_and_load_imports_with_configuration(
     // configured. Preserve that established contract before canonicalization:
     // canonicalizing `""` would otherwise turn it into the current project
     // directory and make the physical overlap guard reject ordinary projects.
-    let std_root: Option<PathBuf> = std_root
+    let configured_std_root: Option<PathBuf> = std_root
         .filter(|path| !path.as_os_str().is_empty())
-        .map(|path| path_context.anchor(path))
-        .map(|path| capture_std_root(&path));
+        .map(|path| path_context.anchor(path));
+    let std_root = configured_std_root.as_deref().map(capture_std_root);
     let canonicalize_root = || {
         fs::canonicalize(&root_path).map_err(|error| {
             SourceLoadError::Message(format!("Error reading {}: {error}", root_path.display()))
@@ -3056,10 +3088,10 @@ fn discover_and_load_imports_with_configuration(
         session: staging,
         assembler,
         std_root,
+        configured_std_root,
         source_manifest,
         explicit_manifest_path: None,
         explicit_manifest_fingerprint: None,
-        explicit_manifest_std_root: None,
         explicit_source_manifest_path: None,
         witness: close.witness,
     })
@@ -3102,11 +3134,15 @@ fn reload_from_filesystem_inner(
         .as_ref()
         .map(SourceManifest::policy_revision)
         .unwrap_or_else(|| "unrestricted".into());
+    let std_root = result.configured_std_root.as_deref().map(capture_std_root);
     let context = ImportDiscoveryContext::new(
         result.resolution.context.epoch(),
         result.resolution.context.project_root(),
         None,
-        result.resolution.context.std_root(),
+        std_root
+            .as_ref()
+            .map(|root| root.to_string_lossy())
+            .as_deref(),
         policy_revision.clone(),
     )
     .map_err(source_load_compiler_error)?;
@@ -3203,6 +3239,7 @@ fn reload_from_filesystem_inner(
     result.assembler = assembler;
     result.witness = close.witness;
     result.resolution.context = context;
+    result.std_root = std_root;
     result.source_manifest = source_manifest;
     #[cfg(test)]
     {

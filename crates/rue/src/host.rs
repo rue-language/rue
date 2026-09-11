@@ -145,7 +145,7 @@ impl FilesystemCompilerHost {
                 .as_deref()
                 .and_then(|path| path.to_str())
                 .map(str::to_owned);
-            let std_root = self.state.explicit_manifest_std_root.clone();
+            let std_root = self.state.configured_std_root.clone();
             let candidate = load_explicit_manifest_candidate(
                 SourceLoadRequest {
                     root_source: &root_source,
@@ -193,7 +193,7 @@ impl FilesystemCompilerHost {
                 .as_deref()
                 .and_then(|path| path.to_str())
                 .map(str::to_owned);
-            let std_root = self.state.explicit_manifest_std_root.clone();
+            let std_root = self.state.configured_std_root.clone();
             let candidate = load_explicit_manifest_candidate(
                 SourceLoadRequest {
                     root_source: &root_source,
@@ -342,6 +342,13 @@ impl FilesystemCompilerHost {
     /// session or any query artifacts.
     pub fn unstable_metrics(&self) -> rue_compiler::unstable::MetricsSnapshot {
         self.state.session.unstable_metrics()
+    }
+
+    /// Return a non-owning query-runtime handle for lifecycle qualification;
+    /// it grants no ability to issue compiler work.
+    #[doc(hidden)]
+    pub fn unstable_query_runtime_weak(&self) -> rue_compiler::unstable::QueryRuntimeLiveness {
+        self.state.session.unstable_query_runtime_weak()
     }
 
     /// Query RIR through the retained session for the CLI presentation path.

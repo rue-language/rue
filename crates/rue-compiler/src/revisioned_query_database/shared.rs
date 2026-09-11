@@ -851,6 +851,13 @@ impl Drop for RevisionedQueryDatabase {
 }
 
 impl RevisionedQueryDatabase {
+    /// Return a non-owning runtime handle for lifecycle qualification. The
+    /// database remains the sole owner; callers can only observe whether its
+    /// runtime is still alive after the owner is dropped.
+    pub(crate) fn runtime_weak(&self) -> rue_query::WeakQueryRuntime {
+        self.runtime.downgrade()
+    }
+
     /// Runtime-wide retention belongs to the shared database owner rather than
     /// any compiler phase. This is a read-only projection of the one canonical
     /// `rue-query` runtime.
