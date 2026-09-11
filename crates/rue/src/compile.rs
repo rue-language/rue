@@ -792,6 +792,8 @@ pub(crate) struct CycleTransport<Published> {
     /// Everything the direct compile would have written to stderr up to the
     /// point the client takes over.
     pub(crate) stderr: String,
+    /// Canonical linker duration nested inside the compiler request.
+    pub(crate) link_ns: Option<u64>,
     pub(crate) outcome: TransportOutcome<Published>,
 }
 
@@ -918,6 +920,7 @@ impl<Artifact: CycleArtifact> OwnedCycleResponse<Artifact> {
                     PublicationObservation::OneShot => Vec::new(),
                 };
                 let (output, companion) = artifact.into_parts();
+                let link_ns = output.unstable_link_ns();
                 // The same order `complete` prints in: warnings, then the
                 // companion's own diagnostics.
                 if !output.warnings.is_empty() {
@@ -941,6 +944,7 @@ impl<Artifact: CycleArtifact> OwnedCycleResponse<Artifact> {
                 );
                 CycleTransport {
                     stderr,
+                    link_ns,
                     outcome: TransportOutcome::Ready {
                         target: options.target,
                         bytes: output.elf,
@@ -962,11 +966,13 @@ impl<Artifact: CycleArtifact> OwnedCycleResponse<Artifact> {
                 }
                 CycleTransport {
                     stderr,
+                    link_ns: None,
                     outcome: TransportOutcome::Rejected,
                 }
             }
             OwnedCycleResult::Superseded(_) | OwnedCycleResult::Canceled => CycleTransport {
                 stderr,
+                link_ns: None,
                 outcome: TransportOutcome::Canceled,
             },
         }

@@ -27,6 +27,7 @@ pub(crate) mod verdict;
 use std::io::Write as _;
 use std::path::Path;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -40,6 +41,7 @@ use rue_driver::daemon::{
 };
 use rue_driver::{AttemptedRead, FilesystemCompilerHost, WatchInput};
 use rue_target::Target;
+use sha2::{Digest, Sha256};
 
 use events::{
     CandidateSource, Capture, Comparison, Event, FailureRecord, Location, TestFinished,
@@ -48,6 +50,84 @@ use events::{
 use exec::{DEFAULT_STREAM_BUDGET, Dispatch};
 use selection::Shard;
 use verdict::{FailureKind, TestExpectation, Verdict};
+
+/// Process-local execution evidence for the explicit daemon-performance
+/// sidecar. It counts tests after their child has been reaped, so preparation
+/// or inventory listing cannot masquerade as execution.
+static EXECUTED_TESTS: AtomicU64 = AtomicU64::new(0);
+static LAST_PREPARATION_NS: AtomicU64 = AtomicU64::new(0);
+static LAST_EXECUTION_NS: AtomicU64 = AtomicU64::new(0);
+static LAST_PREPARED_IMAGE_SHA256: Mutex<Option<String>> = Mutex::new(None);
+static PERFORMANCE_CAPTURE_ORIGIN: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Enable the optional daemon-performance capture for this one compiler
+/// invocation. The caller supplies its post-argument-parsing timestamp so direct and
+/// daemon test-image preparation share the same boundary. Ordinary test runs
+/// leave this disabled and therefore perform no image hashing or timing I/O.
+pub(crate) fn enable_performance_capture(origin: Instant) {
+    *PERFORMANCE_CAPTURE_ORIGIN
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(origin);
+    reset_performance_observations();
+}
+
+pub(crate) fn execution_count() -> u64 {
+    EXECUTED_TESTS.load(Ordering::Acquire)
+}
+
+pub(crate) fn performance_phases() -> (Option<u64>, Option<u64>) {
+    let preparation = LAST_PREPARATION_NS.load(Ordering::Acquire);
+    let execution = LAST_EXECUTION_NS.load(Ordering::Acquire);
+    (
+        (preparation != 0).then_some(preparation),
+        (execution != 0).then_some(execution),
+    )
+}
+
+/// The digest of the image that actually reached the runner. This is recorded
+/// after the client-side image publication and kept separate from the event
+/// projection, which describes execution behavior rather than preparation.
+pub(crate) fn prepared_image_sha256() -> Option<String> {
+    LAST_PREPARED_IMAGE_SHA256
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+}
+
+fn reset_performance_observations() {
+    LAST_PREPARATION_NS.store(0, Ordering::Release);
+    LAST_EXECUTION_NS.store(0, Ordering::Release);
+    LAST_PREPARED_IMAGE_SHA256
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take();
+}
+
+fn record_prepared_image(image_path: &Path) {
+    let origin = PERFORMANCE_CAPTURE_ORIGIN
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .copied();
+    if origin.is_none() {
+        return;
+    }
+    let digest = std::fs::read(image_path).ok().map(|bytes| {
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        format!("{:x}", hasher.finalize())
+    });
+    *LAST_PREPARED_IMAGE_SHA256
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = digest;
+    LAST_PREPARATION_NS.store(
+        origin
+            .expect("performance origin checked above")
+            .elapsed()
+            .as_nanos() as u64,
+        Ordering::Release,
+    );
+}
 
 // What the watch loop drives a test cycle with. Test mode owns the run; the
 // loop owns the process's lifetime, the change monitor, and the signals
@@ -230,6 +310,7 @@ impl Reporter {
 
 /// Run `rue test` to an exit status.
 pub(crate) fn run(request: TestRequest<'_, '_>) -> TestExitCode {
+    reset_performance_observations();
     let TestRequest {
         host,
         compile_options,
@@ -324,6 +405,7 @@ pub(crate) fn service_run_root(
 /// happens here too: nothing may spawn before the channel descriptor is
 /// pinned and the signal forwarding installed.
 pub(crate) fn run_service_image(request: ServiceRun<'_>) -> TestExitCode {
+    reset_performance_observations();
     exec::reserve_channel_descriptor();
     exec::install_signal_forwarding();
     let ServiceRun {
@@ -742,6 +824,7 @@ pub(crate) fn run_prepared(request: PreparedRun<'_>) -> CycleOutcome {
         compile_errors,
         unimported,
     } = prepared;
+    record_prepared_image(image_path);
     // Built here rather than earlier because the closure is only published
     // once the image is: nothing before this point could answer how many
     // modules the program has.
@@ -803,6 +886,7 @@ pub(crate) fn run_prepared(request: PreparedRun<'_>) -> CycleOutcome {
     // names the compiler and the root by absolute path rather than by whatever
     // spelling this invocation happened to use (RUE-2020).
     let repro_program = repro_program();
+    let execution_started = Instant::now();
     let outcome = execute_plan(ExecutionRequest {
         plan: &plan,
         compile_errors: &compile_errors,
@@ -866,6 +950,10 @@ pub(crate) fn run_prepared(request: PreparedRun<'_>) -> CycleOutcome {
     // A `compile_error` test is a failed test, not a failed run: exit 1 with
     // the other tests' verdicts, never the 2 that says nothing ran
     // (ADR-0083 §3).
+    LAST_EXECUTION_NS.store(
+        execution_started.elapsed().as_nanos() as u64,
+        Ordering::Release,
+    );
     finish_run(
         if outcome.failed + outcome.timeout + outcome.crash + outcome.compile_error + outcome.xpass
             > 0
@@ -1485,6 +1573,7 @@ fn execute_plan(request: ExecutionRequest<'_>) -> ExecutionOutcome {
                             return;
                         }
                     };
+                    EXECUTED_TESTS.fetch_add(1, Ordering::AcqRel);
                     let expected = classify_expected(
                         entry,
                         request.target,

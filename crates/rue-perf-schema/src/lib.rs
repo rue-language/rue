@@ -51,6 +51,7 @@
 mod benchmark;
 mod boundary;
 mod canonical;
+mod daemon;
 mod encoding;
 mod incremental;
 mod manifest;
@@ -61,6 +62,7 @@ mod scaling;
 mod series;
 mod stats;
 mod stored;
+mod test_output;
 mod timestamp;
 mod validate;
 
@@ -77,6 +79,12 @@ pub use boundary::{
     OptimizationLevel, OutputKind, RunnerBoundaryEvidence, RunnerClockBoundary, WorkerSetting,
 };
 pub use canonical::{CanonicalError, canonical_json, content_address, sorted_json};
+pub use daemon::{
+    DAEMON_PERFORMANCE_RECORD_KIND, DAEMON_PERFORMANCE_SCHEMA_VERSION, DaemonArtifact,
+    DaemonContention, DaemonEndpoint, DaemonIdentity, DaemonInvocationRecord, DaemonObservation,
+    DaemonPerformanceReport, DaemonScenario, DaemonTiming, DaemonWork, ExecutionPath,
+    validate_daemon_invocation_record, validate_daemon_performance_report,
+};
 pub use encoding::{
     CompilerRunInvariant, CompilerWorkloadInvariant, EncodeError, EvidenceSource,
     FULL_EVIDENCE_SCHEMA_VERSION, IDENTITY_DIGEST_TAG, LEGACY_FULL_EVIDENCE_SCHEMA_VERSION,
@@ -130,6 +138,7 @@ pub use stats::{
     ratio, sample_value,
 };
 pub use stored::{Stored, StoredRecordError, StoredRun, StoredRuntimeReport};
+pub use test_output::{TestExecutionProjection, project_test_execution_output};
 pub use timestamp::utc_timestamp;
 pub use validate::{
     Completeness, InvalidSample, InvalidSampleReason, ProcessElapsedRegression,

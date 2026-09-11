@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use tracing::info_span;
 
 use crate::*;
@@ -183,6 +185,9 @@ pub struct CompileOutput {
     pub(crate) semantic_reachability: crate::unstable::SemanticReachabilityMetrics,
     pub(crate) provider_observations: crate::unstable::ProviderObservationMetrics,
     pub(crate) publication: crate::unstable::PublicationMetrics,
+    /// Time spent in the canonical native linker call, excluding source
+    /// observation and query work.
+    pub(crate) link_ns: Option<u64>,
 }
 
 impl CompileOutput {
@@ -197,6 +202,11 @@ impl CompileOutput {
             self.provider_observations,
             self.publication,
         )
+    }
+
+    /// The measured linker phase nested inside this compiler request.
+    pub fn unstable_link_ns(&self) -> Option<u64> {
+        self.link_ns
     }
 }
 
@@ -426,6 +436,7 @@ pub(crate) fn compile_rooted_with_session_with_cancellation(
     let query_runtime = metrics.query_runtime();
     let semantic_reachability = metrics.semantic_reachability();
     let provider_observations = crate::unstable::provider_observation_metrics(session);
+    let link_started = Instant::now();
     let mut output = match rooted.input {
         crate::session::RootedCodegenInput::Structured => {
             let mut export_entries = Vec::with_capacity(rooted.exports.len());
@@ -455,6 +466,7 @@ pub(crate) fn compile_rooted_with_session_with_cancellation(
             image.fresh_link_with_cancellation(options, &rooted.warnings, cancellation)?
         }
     };
+    output.link_ns = Some(link_started.elapsed().as_nanos() as u64);
     check_cancellation()?;
     output.source_stats = SourceStats {
         files: snapshot.len(),

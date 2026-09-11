@@ -1996,7 +1996,23 @@ fn case_compiler_command(
     real_std: &Path,
 ) -> Command {
     let mut command = compiler_command(binary);
-    command.args(args).current_dir(directory);
+    // Corpus cases are hermetic fresh-client checks.  Keep explicit daemon
+    // cases and commands that do not compile intact, while placing the off
+    // switch after the `test` subcommand where the CLI parser accepts it.
+    if args
+        .iter()
+        .any(|arg| arg == "--daemon" || arg.starts_with("--daemon="))
+        || args
+            .first()
+            .is_some_and(|arg| matches!(arg.as_str(), "daemon" | "explain"))
+    {
+        command.args(args);
+    } else if args.first().is_some_and(|arg| arg == "test") {
+        command.arg("test").arg("--daemon=off").args(&args[1..]);
+    } else {
+        command.arg("--daemon=off").args(args);
+    }
+    command.current_dir(directory);
     apply_case_environment(&mut command, environment, real_std);
     command
 }
@@ -2678,11 +2694,17 @@ fn replay_published_repro(
         .split_first()
         .ok_or_else(|| TestFailure::assertion("emitted repro argv is empty"))?;
     let mut command = compiler_command(Path::new(program));
-    command
-        .args(args)
-        .arg("--format")
-        .arg("json")
-        .current_dir(directory);
+    if args
+        .iter()
+        .any(|arg| arg == "--daemon" || arg.starts_with("--daemon="))
+    {
+        command.args(args);
+    } else if args.first().is_some_and(|arg| arg == "test") {
+        command.arg("test").arg("--daemon=off").args(&args[1..]);
+    } else {
+        command.arg("--daemon=off").args(args);
+    }
+    command.arg("--format").arg("json").current_dir(directory);
     for (key, value) in environment {
         command.env(key, value);
     }
@@ -5328,7 +5350,10 @@ fn run_example(
     let dir = temp_dir.path();
 
     let mut cmd = compiler_command(rue_binary);
-    cmd.arg(path).args(["-o", "prog"]).current_dir(dir);
+    cmd.arg("--daemon=off")
+        .arg(path)
+        .args(["-o", "prog"])
+        .current_dir(dir);
     cmd.env("RUE_STD_PATH", real_std);
     let compile_output = run_phase_with_timeout(
         cmd,
@@ -7301,7 +7326,10 @@ mod tests {
             environments.get(std::ffi::OsStr::new("RUST_LOG")),
             Some(&Some(std::ffi::OsStr::new("trace")))
         );
-        assert_eq!(command.get_args().collect::<Vec<_>>(), ["main.rue"]);
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["--daemon=off", "main.rue"]
+        );
         assert_eq!(command.get_current_dir(), Some(Path::new("/case")));
     }
 

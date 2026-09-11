@@ -238,6 +238,7 @@ fn run_once(request: &SampleRequest<'_>) -> Result<CompletedCompile, String> {
     let mut command = Command::new(request.compiler);
     crate::environment::sanitize_compiler_environment(&mut command);
     command
+        .arg("--daemon=off")
         .arg(request.source)
         .arg("-o")
         .arg(&output_path)

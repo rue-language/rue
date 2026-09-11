@@ -836,6 +836,7 @@ fn build_program(
     let mut command = Command::new(&options.compiler);
     crate::environment::sanitize_compiler_environment(&mut command);
     command
+        .arg("--daemon=off")
         .arg(source)
         .arg("-o")
         .arg(binary)

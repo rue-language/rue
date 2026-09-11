@@ -23,8 +23,9 @@ use rue_compiler::unstable::CompilationCancellation;
 
 use super::protocol::{
     BuildReply, BuildRequest, BuildResult, CrashRecord, DAEMON_PROTOCOL_VERSION, Hello, HelloReply,
-    MAX_CONTROL_FRAME_BYTES, MAX_RESPONSE_BYTES, Request, RequestBody, RequestSummary,
-    ResourcePolicy, ResourcePressure, Response, ResponseBody, ServiceInfo, StatusReport,
+    MAX_CONTROL_FRAME_BYTES, MAX_RESPONSE_BYTES, Request, RequestBody, RequestMeasurement,
+    RequestSummary, ResourcePolicy, ResourcePressure, Response, ResponseBody, ServiceInfo,
+    StatusReport,
 };
 
 /// Why the service loop returned.
@@ -112,6 +113,47 @@ pub trait BuildExecutor: Send {
 
     /// Evict an idle host after its completed request has been accounted for.
     fn enforce_retention_budget(&mut self) {}
+
+    /// Generation of the retained canonical session, zero before the first
+    /// host exists. This is an identity counter, not the service compatibility
+    /// hash and not a request sequence.
+    fn session_generation(&self) -> u64 {
+        0
+    }
+
+    /// Whether the most recent request reused that retained session.
+    fn reused_session(&self) -> bool {
+        false
+    }
+
+    /// Cumulative query counters before/after a request. Missing counters are
+    /// represented as `None`; callers must not manufacture reuse evidence.
+    fn query_runtime_counters(&self) -> Option<(u64, u64)> {
+        None
+    }
+
+    /// Identity of the accepted source/read closure for the completed
+    /// request. It is optional because a request can fail before a host is
+    /// opened; callers must preserve that absence rather than guessing.
+    fn input_sha256(&self) -> Option<String> {
+        None
+    }
+
+    /// Resolved compiler workers in the canonical session configuration.
+    fn compiler_workers(&self) -> u32 {
+        0
+    }
+
+    /// Time spent opening/re-observing the source closure and acquiring
+    /// reached toolchain inputs for the completed request.
+    fn observation_ns(&self) -> Option<u64> {
+        None
+    }
+
+    /// Time spent in the canonical native linker, nested in executor work.
+    fn link_ns(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// An executor's answer: the result frame and the bytes that follow it when
@@ -195,6 +237,7 @@ struct Shared {
     dependency_pins: AtomicU64,
     peak_retained_charge_bytes: AtomicU64,
     peak_dependency_pins: AtomicU64,
+    last_measurement: Mutex<Option<RequestMeasurement>>,
     policy: ResourcePolicy,
 }
 
@@ -251,6 +294,11 @@ impl Shared {
                 peak_retained_charge_bytes: self.peak_retained_charge_bytes.load(Ordering::Acquire),
                 peak_dependency_pins: self.peak_dependency_pins.load(Ordering::Acquire),
             },
+            last_measurement: self
+                .last_measurement
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .clone(),
         }
     }
 
@@ -334,6 +382,7 @@ pub(super) fn run(
         dependency_pins: AtomicU64::new(executor.dependency_pins()),
         peak_retained_charge_bytes: AtomicU64::new(executor.retained_charge_bytes()),
         peak_dependency_pins: AtomicU64::new(executor.dependency_pins()),
+        last_measurement: Mutex::new(None),
         policy,
     });
     let owner = {
@@ -420,6 +469,7 @@ fn compiler_owner(
             let _ = job.reply.send(leased_output(
                 job.ticket,
                 BuildOutput::failed("the compiler service is stopping"),
+                None,
                 shared,
             ));
             continue;
@@ -433,6 +483,7 @@ fn compiler_owner(
                     result: BuildResult::Canceled,
                     bytes: Vec::new(),
                 },
+                None,
                 shared,
             ));
             continue;
@@ -446,7 +497,59 @@ fn compiler_owner(
             }),
             Some(job.cancellation.clone()),
         );
+        let generation_before = executor.session_generation();
+        let query_before = executor.query_runtime_counters();
+        let build_started = Instant::now();
         let output = executor.build(&job.request, &job.cancellation);
+        let generation_after = executor.session_generation();
+        let query_after = executor.query_runtime_counters();
+        let query_delta = if generation_before != generation_after {
+            // A new retained session has no predecessor baseline. Its
+            // cumulative counters are therefore the complete contribution of
+            // this request; never subtract counters from a retired session.
+            query_after
+        } else {
+            query_before.zip(query_after).map(|(before, after)| {
+                (
+                    after.0.saturating_sub(before.0),
+                    after.1.saturating_sub(before.1),
+                )
+            })
+        };
+        let (query_claims, query_reuses) = query_delta.map_or((None, None), |(claims, reuses)| {
+            (Some(claims), Some(reuses))
+        });
+        let retained_charge_before_trim = executor.retained_charge_bytes();
+        let dependency_pins_before_trim = executor.dependency_pins();
+        let source_bytes = executor.source_bytes();
+        let measurement = RequestMeasurement {
+            ticket: job.ticket,
+            artifact: job.request.artifact,
+            executor_ns: build_started.elapsed().as_nanos() as u64,
+            session_generation: executor.session_generation(),
+            reused_session: executor.reused_session(),
+            workers: executor.compiler_workers(),
+            observation_ns: executor.observation_ns(),
+            link_ns: executor.link_ns(),
+            test_image_published: matches!(
+                &output.result,
+                BuildResult::Ready {
+                    test_image: Some(_),
+                    ..
+                }
+            ),
+            query_claims,
+            query_reuses,
+            source_bytes,
+            retained_charge_bytes: retained_charge_before_trim,
+            dependency_pins: dependency_pins_before_trim,
+            input_sha256: executor.input_sha256(),
+        };
+        shared
+            .last_measurement
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .replace(measurement.clone());
         shared.set_active(None, None);
         shared
             .source_bytes
@@ -484,7 +587,9 @@ fn compiler_owner(
             .source_files
             .store(executor.source_files(), Ordering::Release);
         shared.touch();
-        let _ = job.reply.send(leased_output(job.ticket, output, shared));
+        let _ = job
+            .reply
+            .send(leased_output(job.ticket, output, Some(measurement), shared));
     }
 }
 
@@ -498,7 +603,12 @@ fn update_peak(peak: &AtomicU64, observed: u64) {
     }
 }
 
-fn leased_output(ticket: u64, mut output: BuildOutput, shared: &Arc<Shared>) -> LeasedOutput {
+fn leased_output(
+    ticket: u64,
+    mut output: BuildOutput,
+    measurement: Option<RequestMeasurement>,
+    shared: &Arc<Shared>,
+) -> LeasedOutput {
     let ready = match &output.result {
         BuildResult::Ready {
             bytes: announced, ..
@@ -509,7 +619,7 @@ fn leased_output(ticket: u64, mut output: BuildOutput, shared: &Arc<Shared>) -> 
         output = BuildOutput::failed("the compiler service produced an invalid response length");
     }
     let ready = matches!(output.result, BuildResult::Ready { .. }) && ready;
-    let encoded = encode_build_reply(ticket, output.result);
+    let encoded = encode_build_reply(ticket, measurement.clone(), output.result);
     let amount = encoded
         .as_ref()
         .ok()
@@ -520,6 +630,7 @@ fn leased_output(ticket: u64, mut output: BuildOutput, shared: &Arc<Shared>) -> 
         );
         let encoded_result = serde_json::to_vec(&BuildReply {
             ticket,
+            measurement,
             result: output.result,
         })
         .unwrap_or_default();
@@ -541,6 +652,7 @@ fn leased_output(ticket: u64, mut output: BuildOutput, shared: &Arc<Shared>) -> 
         );
         let encoded_result = serde_json::to_vec(&BuildReply {
             ticket,
+            measurement,
             result: output.result,
         })
         .unwrap_or_default();
@@ -554,6 +666,7 @@ fn leased_output(ticket: u64, mut output: BuildOutput, shared: &Arc<Shared>) -> 
     let encoded_result = encoded.unwrap_or_else(|_| {
         serde_json::to_vec(&BuildReply {
             ticket,
+            measurement,
             result: BuildResult::Failed {
                 message: "the compiler service could not serialize its response".into(),
                 internal: true,
@@ -575,12 +688,24 @@ fn leased_output(ticket: u64, mut output: BuildOutput, shared: &Arc<Shared>) -> 
 /// Serialize a build result into a capped buffer. `serde_json::to_vec` would
 /// allocate an unbounded second copy of a diagnostic/listing payload before
 /// the aggregate response limit could reject it.
-fn encode_build_reply(ticket: u64, result: BuildResult) -> Result<Vec<u8>, io::Error> {
+fn encode_build_reply(
+    ticket: u64,
+    measurement: Option<RequestMeasurement>,
+    result: BuildResult,
+) -> Result<Vec<u8>, io::Error> {
     let mut buffer = CappedBuffer {
         bytes: Vec::new(),
         limit: MAX_RESPONSE_BYTES,
     };
-    serde_json::to_writer(&mut buffer, &BuildReply { ticket, result }).map_err(io::Error::other)?;
+    serde_json::to_writer(
+        &mut buffer,
+        &BuildReply {
+            ticket,
+            measurement,
+            result,
+        },
+    )
+    .map_err(io::Error::other)?;
     Ok(buffer.bytes)
 }
 
@@ -881,6 +1006,7 @@ fn serve_build(mut stream: UnixStream, request_id: u64, request: BuildRequest, s
             Err(_) => LeasedOutput {
                 encoded_result: serde_json::to_vec(&BuildReply {
                     ticket,
+                    measurement: None,
                     result: BuildResult::Failed {
                         message: "the compiler service ended before answering".into(),
                         internal: true,
@@ -902,6 +1028,7 @@ fn serve_build(mut stream: UnixStream, request_id: u64, request: BuildRequest, s
         Err(_) => LeasedOutput {
             encoded_result: serde_json::to_vec(&BuildReply {
                 ticket,
+                measurement: None,
                 result: BuildResult::Failed {
                     message: "the compiler service ended before answering".into(),
                     internal: true,
