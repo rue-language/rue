@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 
 use rue_compiler::{CompileOptions, LinkerMode};
 use rue_driver::daemon::{
-    self, BuildRequest, BuildResult, DaemonScope, DiagnosticFormat, EndpointRoot, InputRecord,
-    ProcessLauncher, StartOptions, Submission, SubmitError,
+    self, BuildKind, BuildRequest, BuildResult, DaemonScope, DiagnosticFormat, EndpointRoot,
+    InputRecord, ProcessLauncher, StartOptions, Submission, SubmitError,
 };
 use rue_driver::{HostPathContext, WatchInput, WatchInputParts};
 use rue_error::ErrorCode;
@@ -19,6 +19,7 @@ use crate::output::{PublicationDestination, PublishRequest, publish_watch_execut
 use crate::{
     DiagnosticOutput, DriverMode, ErrorFormat, Options, VERSION, compile_pool_jobs,
     driver_failure_exit_code, ice_diagnostic, render_driver_error, render_internal_error,
+    test_mode, test_mode_jobs, test_repro_env, test_repro_flags,
 };
 
 /// `--daemon=<mode>`.
@@ -60,9 +61,6 @@ impl std::str::FromStr for DaemonMode {
 /// the support table of ADR-0085 §2: each of these keeps its existing direct
 /// stream and lifecycle contract until its own slice moves it.
 pub(crate) fn unsupported_reason(options: &Options) -> Option<&'static str> {
-    if options.mode == DriverMode::Test {
-        return Some("`rue test` runs directly until its service slice lands");
-    }
     if options.watch {
         return Some("--watch runs directly");
     }
@@ -96,6 +94,14 @@ pub(crate) enum Outcome {
     Direct,
 }
 
+/// What a test run needs beyond the compile: decided before submission so
+/// the request names the image's staging path.
+struct TestPlan {
+    seed: u64,
+    run_root: PathBuf,
+    image_path: PathBuf,
+}
+
 /// Compile `options` through the service, or report why not.
 pub(crate) fn run(options: &Options, path_context: &HostPathContext) -> Outcome {
     let format = options.error_format;
@@ -119,7 +125,41 @@ pub(crate) fn run(options: &Options, path_context: &HostPathContext) -> Outcome 
         ));
     }
 
-    let request = capture(options, path_context);
+    let kind = match (&options.mode, options.test.list) {
+        (DriverMode::Compile, _) => BuildKind::Executable,
+        (DriverMode::Test, true) => BuildKind::TestListing,
+        (DriverMode::Test, false) => BuildKind::TestImage,
+    };
+    // A test image is staged in the run's own private directory, never at a
+    // path the user named (ADR-0083 §2); it exists before submission so the
+    // service's destination preflight sees it.
+    let test_plan = match kind {
+        BuildKind::TestImage => {
+            let seed = options.test.seed.unwrap_or_else(test_mode::fresh_seed);
+            match test_mode::service_run_root(seed) {
+                Ok((run_root, image_path)) => Some(TestPlan {
+                    seed,
+                    run_root,
+                    image_path,
+                }),
+                Err(message) => {
+                    eprintln!("error: {message}");
+                    return Outcome::Exit(failure_exit);
+                }
+            }
+        }
+        BuildKind::Executable | BuildKind::TestListing => None,
+    };
+    let output_path = match &test_plan {
+        Some(plan) => plan.image_path.display().to_string(),
+        None => options.output_path.clone(),
+    };
+    let discard_plan = |plan: &TestPlan| {
+        let _ = std::fs::remove_file(&plan.image_path);
+        let _ = std::fs::remove_dir(&plan.run_root);
+    };
+
+    let request = capture(options, path_context, kind, output_path);
     let scope_dir = match &options.daemon_scope {
         Some(scope) => path_context.anchor(Path::new(scope)),
         None => {
@@ -129,38 +169,33 @@ pub(crate) fn run(options: &Options, path_context: &HostPathContext) -> Outcome 
                 .unwrap_or_else(|| path_context.working_directory().to_path_buf())
         }
     };
-    let scope = match DaemonScope::new(&scope_dir, options.daemon_isolation.as_deref()) {
-        Ok(scope) => scope,
-        Err(error) => return fallback(format!("no service scope: {error}")),
-    };
-    let root = match EndpointRoot::resolve() {
-        Ok(root) => root,
-        Err(error) => return fallback(format!("no service endpoint: {error}")),
-    };
-    let launcher = match ProcessLauncher::current_executable() {
-        Ok(launcher) => launcher,
-        Err(error) => return fallback(format!("no service launcher: {error}")),
-    };
-    let mut started =
-        match daemon::start_connection(scope, &root, &StartOptions::default(), &launcher) {
-            Ok(started) => started,
-            Err(error) => return fallback(format!("the service is unavailable: {error}")),
+    let submitted = (|| -> Result<(BuildResult, Vec<u8>), Outcome> {
+        let scope = DaemonScope::new(&scope_dir, options.daemon_isolation.as_deref())
+            .map_err(|error| fallback(format!("no service scope: {error}")))?;
+        let root = EndpointRoot::resolve()
+            .map_err(|error| fallback(format!("no service endpoint: {error}")))?;
+        let launcher = ProcessLauncher::current_executable()
+            .map_err(|error| fallback(format!("no service launcher: {error}")))?;
+        let mut started =
+            daemon::start_connection(scope, &root, &StartOptions::default(), &launcher)
+                .map_err(|error| fallback(format!("the service is unavailable: {error}")))?;
+        let ticket = match started.connection.submit_build(request) {
+            Ok(Submission::Accepted { ticket, .. }) => ticket,
+            Ok(Submission::Rejected { reason }) => {
+                return Err(fallback(format!(
+                    "the service refused the request: {reason}"
+                )));
+            }
+            Err(SubmitError::BeforeSubmission(error)) => {
+                return Err(fallback(format!(
+                    "the request could not be submitted: {error}"
+                )));
+            }
+            // The service may have started the request: not a fallback,
+            // however the invocation was configured (ADR-0085 §6).
+            Err(error @ SubmitError::Ambiguous(_)) => return Err(fail(error.to_string())),
         };
-    let ticket = match started.connection.submit_build(request) {
-        Ok(Submission::Accepted { ticket, .. }) => ticket,
-        Ok(Submission::Rejected { reason }) => {
-            return fallback(format!("the service refused the request: {reason}"));
-        }
-        Err(SubmitError::BeforeSubmission(error)) => {
-            return fallback(format!("the request could not be submitted: {error}"));
-        }
-        // The service may have started the request: not a fallback, however
-        // the invocation was configured (ADR-0085 §6).
-        Err(error @ SubmitError::Ambiguous(_)) => return fail(error.to_string()),
-    };
-    let (result, bytes) = match started.connection.await_build(ticket) {
-        Ok(answer) => answer,
-        Err(error) => {
+        started.connection.await_build(ticket).map_err(|error| {
             // A compiler panic aborts the service; it leaves a record naming
             // the request it ended, which is the client's only account of
             // the defect.
@@ -175,20 +210,39 @@ pub(crate) fn run(options: &Options, path_context: &HostPathContext) -> Outcome 
                 );
                 return Outcome::Exit(failure_exit);
             }
-            return fail(format!(
+            fail(format!(
                 "the compiler service ended the request without an answer: {error}"
-            ));
+            ))
+        })
+    })();
+    let (result, bytes) = match submitted {
+        Ok(answer) => answer,
+        Err(outcome) => {
+            if let Some(plan) = &test_plan {
+                discard_plan(plan);
+            }
+            return outcome;
         }
     };
-    drop(started);
 
     match result {
         BuildResult::Rejected { stderr } => {
             eprint!("{stderr}");
-            Outcome::Exit(1)
+            if let Some(plan) = &test_plan {
+                discard_plan(plan);
+            }
+            // A rejected program: compile mode's ordinary status, or the test
+            // runner's "the run did not happen" (ADR-0083 §2).
+            Outcome::Exit(failure_exit)
+        }
+        BuildResult::Listing { stderr, entries } => {
+            Outcome::Exit(test_mode::run_service_listing(stderr, entries, &options.test).code())
         }
         BuildResult::Canceled => fail("the compiler service canceled the request".into()),
         BuildResult::Failed { message, internal } => {
+            if let Some(plan) = &test_plan {
+                discard_plan(plan);
+            }
             if internal {
                 eprintln!("{}", render_internal_error(format, message));
                 Outcome::Exit(failure_exit)
@@ -201,6 +255,7 @@ pub(crate) fn run(options: &Options, path_context: &HostPathContext) -> Outcome 
             target,
             destination,
             inputs,
+            test_image,
             ..
         } => {
             eprint!("{stderr}");
@@ -229,8 +284,19 @@ pub(crate) fn run(options: &Options, path_context: &HostPathContext) -> Outcome 
                     &inputs,
                 )
             };
-            match publication {
-                Ok(()) => {
+            // `InputsChanged` included: a source that changed between the
+            // compile and the rename is refused, not installed, and the last
+            // successfully published file stays (ADR-0085 §5).
+            if let Err(error) = publication {
+                let diagnostics = DiagnosticOutput::new(format, Vec::new());
+                eprintln!("{}", diagnostics.render_error(&error.into_compile_error()));
+                if let Some(plan) = &test_plan {
+                    discard_plan(plan);
+                }
+                return Outcome::Exit(failure_exit);
+            }
+            match test_plan {
+                None => {
                     announce(
                         Announcement::Completed,
                         &options.source_path,
@@ -243,13 +309,34 @@ pub(crate) fn run(options: &Options, path_context: &HostPathContext) -> Outcome 
                     );
                     Outcome::Exit(0)
                 }
-                // `InputsChanged` included: a source that changed between
-                // the compile and the rename is refused, not installed, and
-                // the last successfully published file stays (ADR-0085 §5).
-                Err(error) => {
-                    let diagnostics = DiagnosticOutput::new(format, Vec::new());
-                    eprintln!("{}", diagnostics.render_error(&error.into_compile_error()));
-                    Outcome::Exit(1)
+                Some(plan) => {
+                    let Some(record) = test_image else {
+                        discard_plan(&plan);
+                        return fail(
+                            "the compiler service answered a test request without its inventory"
+                                .into(),
+                        );
+                    };
+                    let std_root = std::env::var_os("RUE_STD_PATH").map(PathBuf::from);
+                    let exit = test_mode::run_service_image(test_mode::ServiceRun {
+                        record: *record,
+                        image_path: &plan.image_path,
+                        run_root: &plan.run_root,
+                        options: &options.test,
+                        root: &options.source_path,
+                        repro_root: &test_mode::absolute_spelling_at(
+                            Path::new(&options.source_path),
+                            path_context.working_directory(),
+                        ),
+                        repro_flags: &test_repro_flags(options, path_context),
+                        repro_env: &test_repro_env(std_root.as_deref()),
+                        jobs: test_mode_jobs(options.jobs),
+                        target: options.target,
+                        opt_level: options.opt_level,
+                        candidates_declared: options.test_candidates_path.is_some(),
+                        seed: plan.seed,
+                    });
+                    Outcome::Exit(exit.code())
                 }
             }
         }
@@ -269,7 +356,12 @@ fn render_daemon_error(format: ErrorFormat, message: String) -> String {
 /// Capture this invocation as the service will see it (ADR-0085 §3): every
 /// path as written together with the directory it was written in, and the
 /// terminal policy of this process's stderr.
-fn capture(options: &Options, path_context: &HostPathContext) -> BuildRequest {
+fn capture(
+    options: &Options,
+    path_context: &HostPathContext,
+    kind: BuildKind,
+    output_path: String,
+) -> BuildRequest {
     let mut preview_features: Vec<String> = options
         .preview_features
         .iter()
@@ -277,10 +369,12 @@ fn capture(options: &Options, path_context: &HostPathContext) -> BuildRequest {
         .collect();
     preview_features.sort();
     BuildRequest {
+        artifact: kind,
         working_directory: path_context.working_directory().display().to_string(),
         root_source: options.source_path.clone(),
-        output_path: options.output_path.clone(),
+        output_path,
         source_manifest_path: options.source_manifest_path.clone(),
+        test_candidates_path: options.test_candidates_path.clone(),
         std_root: std::env::var_os("RUE_STD_PATH")
             .map(|value| value.to_string_lossy().into_owned()),
         workers: compile_pool_jobs(&options.mode, options.jobs),

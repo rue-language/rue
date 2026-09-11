@@ -82,6 +82,7 @@ impl BuildExecutor for StubExecutor {
                 },
                 inputs: Vec::new(),
                 bytes: bytes.len() as u64,
+                test_image: None,
             },
             bytes,
         }
@@ -94,10 +95,12 @@ impl BuildExecutor for StubExecutor {
 
 fn build_request(root_source: &str) -> BuildRequest {
     BuildRequest {
+        artifact: BuildKind::Executable,
         working_directory: "/w".into(),
         root_source: root_source.into(),
         output_path: "out".into(),
         source_manifest_path: None,
+        test_candidates_path: None,
         std_root: None,
         workers: 1,
         target: "x86_64-linux".into(),

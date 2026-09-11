@@ -30,8 +30,14 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use rue_compiler::unstable::{SourceInfo, TestCandidateInventory, TestInventoryEntry};
+use rue_compiler::unstable::{
+    ColorChoice, SourceInfo, TestCandidateInventory, TestExpectedFailure, TestInventoryEntry,
+};
 use rue_compiler::{AcceptedReadManifest, CompileErrors, CompileOptions, OptLevel, SourceSnapshot};
+use rue_driver::daemon::{
+    CompileFailureRecord, InventoryEntryRecord, TestImageRecord, UnimportedFileRecord,
+    UnimportedRecord,
+};
 use rue_driver::{AttemptedRead, FilesystemCompilerHost, WatchInput};
 use rue_target::Target;
 
@@ -283,6 +289,108 @@ pub(crate) fn run(request: TestRequest<'_, '_>) -> TestExitCode {
     }
 }
 
+/// A run whose image the compiler service linked (ADR-0085 §5): the runner
+/// half of [`run`], over the projection the service sent.
+pub(crate) struct ServiceRun<'a> {
+    pub(crate) record: TestImageRecord,
+    pub(crate) image_path: &'a Path,
+    pub(crate) run_root: &'a Path,
+    pub(crate) options: &'a TestOptions,
+    pub(crate) root: &'a str,
+    pub(crate) repro_root: &'a str,
+    pub(crate) repro_flags: &'a [String],
+    pub(crate) repro_env: &'a [(String, String)],
+    pub(crate) jobs: usize,
+    pub(crate) target: Target,
+    pub(crate) opt_level: OptLevel,
+    pub(crate) candidates_declared: bool,
+    pub(crate) seed: u64,
+}
+
+/// The private directory and image path a service-linked run stages its
+/// image in, created before the request is submitted so the service's
+/// destination preflight sees it.
+pub(crate) fn service_run_root(
+    seed: u64,
+) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+    let run_root = exec::run_root(seed, None);
+    std::fs::create_dir_all(&run_root)
+        .map_err(|error| format!("could not create the test run directory: {error}"))?;
+    let image_path = run_root.join("rue-test-image");
+    Ok((run_root, image_path))
+}
+
+/// Run a service-linked image. The process-level setup [`run`] performs
+/// happens here too: nothing may spawn before the channel descriptor is
+/// pinned and the signal forwarding installed.
+pub(crate) fn run_service_image(request: ServiceRun<'_>) -> TestExitCode {
+    exec::reserve_channel_descriptor();
+    exec::install_signal_forwarding();
+    let ServiceRun {
+        record,
+        image_path,
+        run_root,
+        options,
+        root,
+        repro_root,
+        repro_flags,
+        repro_env,
+        jobs,
+        target,
+        opt_level,
+        candidates_declared,
+        seed,
+    } = request;
+    let outcome = run_prepared(PreparedRun {
+        prepared: PreparedImage::from_record(record),
+        image_path,
+        run_root,
+        options,
+        root,
+        repro_root,
+        repro_flags,
+        repro_env,
+        jobs,
+        target,
+        opt_level,
+        candidates: if candidates_declared {
+            CandidateSource::Declared
+        } else {
+            CandidateSource::None
+        },
+        seed,
+        cycle: None,
+        cancellation: None,
+    });
+    match outcome {
+        CycleOutcome::Finished(exit) => exit,
+        CycleOutcome::Canceled | CycleOutcome::Superseded(_) => TestExitCode::RunnerError,
+    }
+}
+
+/// List a service-produced inventory: what the service rendered goes to
+/// stderr, then the selection is emitted exactly as a direct listing is.
+pub(crate) fn run_service_listing(
+    stderr: String,
+    entries: Option<Vec<InventoryEntryRecord>>,
+    options: &TestOptions,
+) -> TestExitCode {
+    let reporter = Reporter::new(options.format, render::Context::default());
+    finish_listing(
+        ListingTransport {
+            stderr,
+            entries: entries.map(|entries| {
+                entries
+                    .into_iter()
+                    .map(inventory_entry_from_record)
+                    .collect()
+            }),
+        },
+        options,
+        &reporter,
+    )
+}
+
 /// Everything one test cycle needs.
 ///
 /// One-shot mode drives exactly one of these; `rue test --watch` drives one per
@@ -391,21 +499,262 @@ pub(crate) fn run_cycle(request: CycleRequest<'_, '_>) -> CycleOutcome {
             return CycleOutcome::Superseded(boundary);
         }
     };
-    // Built here rather than above because the closure is only published once
-    // the image is: nothing before this point could answer how many modules the
-    // program has.
+    let prepared = prepare_image(image, multi_module_closure, ColorChoice::Auto);
+    run_prepared(PreparedRun {
+        prepared,
+        image_path: &image_path,
+        run_root: &run_root,
+        options,
+        root,
+        repro_root,
+        repro_flags,
+        repro_env,
+        jobs,
+        target,
+        opt_level,
+        candidates: candidate_source(candidates),
+        seed,
+        cycle,
+        cancellation,
+    })
+}
+
+/// What a test image carries beside its bytes, projected once into the owned,
+/// render-complete form the runner consumes (ADR-0083 §3): the inventory, the
+/// `compile_error` verdicts with their rendered payloads and JSON copies, and
+/// the unimported-test-file report with its warnings rendered.
+///
+/// Both ways of obtaining an image end here. A direct run projects its own
+/// published image; a run through the compiler service receives the same
+/// projection over the wire (ADR-0085 §5). The runner therefore cannot tell
+/// them apart, which is what keeps the two streams identical by construction
+/// rather than by care.
+pub(crate) struct PreparedImage {
+    multi_module_closure: bool,
+    entries: Vec<TestInventoryEntry>,
+    compile_errors: CompileErrorVerdicts,
+    unimported: UnimportedReport,
+}
+
+/// The unimported-test-file report (ADR-0083 §1), with whatever the direct
+/// path prints for it already rendered.
+enum UnimportedReport {
+    NotDeclared,
+    Files {
+        stderr: String,
+        files: Vec<UnimportedFile>,
+    },
+    Failed {
+        stderr: String,
+    },
+}
+
+/// Project a published image for the runner, rendering under `color`.
+pub(crate) fn prepare_image(
+    image: crate::compile::PublishedTestImage,
+    multi_module_closure: bool,
+    color: ColorChoice,
+) -> PreparedImage {
+    let diagnostics = diagnostics_for_snapshot(image.error_format, &image.source_snapshot, color);
+    let compile_errors = CompileErrorVerdicts::new(&image.compile_failures, &diagnostics);
+    let unimported = match image.unimported_test_files {
+        None => UnimportedReport::NotDeclared,
+        Some(Err(errors)) => UnimportedReport::Failed {
+            stderr: format!("{}\n", diagnostics.render_prepared_errors(&errors)),
+        },
+        Some(Ok(files)) => {
+            let warnings: Vec<rue_compiler::CompileWarning> = files
+                .iter()
+                .map(|file| {
+                    let kind = if file.parse_failed {
+                        rue_error::WarningKind::UnimportedTestFileUnparsable {
+                            path: file.path.clone(),
+                        }
+                    } else {
+                        rue_error::WarningKind::UnimportedTestFile {
+                            path: file.path.clone(),
+                            tests: file.tests,
+                        }
+                    };
+                    rue_compiler::CompileWarning::without_span(kind)
+                })
+                .collect();
+            UnimportedReport::Files {
+                stderr: if warnings.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}\n", diagnostics.render_warnings(&warnings))
+                },
+                files: files
+                    .iter()
+                    .map(|file| UnimportedFile {
+                        path: file.path.clone(),
+                        tests: file.tests,
+                        parse_failed: file.parse_failed,
+                    })
+                    .collect(),
+            }
+        }
+    };
+    PreparedImage {
+        multi_module_closure,
+        entries: image.inventory.entries,
+        compile_errors,
+        unimported,
+    }
+}
+
+impl PreparedImage {
+    /// The wire form (ADR-0085 §5).
+    pub(crate) fn into_record(self) -> TestImageRecord {
+        TestImageRecord {
+            multi_module_closure: self.multi_module_closure,
+            entries: self
+                .entries
+                .into_iter()
+                .map(inventory_entry_record)
+                .collect(),
+            compile_failures: self.compile_errors.into_records(),
+            unimported: match self.unimported {
+                UnimportedReport::NotDeclared => UnimportedRecord::NotDeclared,
+                UnimportedReport::Files { stderr, files } => UnimportedRecord::Files {
+                    stderr,
+                    files: files
+                        .into_iter()
+                        .map(|file| UnimportedFileRecord {
+                            path: file.path,
+                            tests: file.tests,
+                            parse_failed: file.parse_failed,
+                        })
+                        .collect(),
+                },
+                UnimportedReport::Failed { stderr } => UnimportedRecord::Failed { stderr },
+            },
+        }
+    }
+
+    pub(crate) fn from_record(record: TestImageRecord) -> Self {
+        Self {
+            multi_module_closure: record.multi_module_closure,
+            entries: record
+                .entries
+                .into_iter()
+                .map(inventory_entry_from_record)
+                .collect(),
+            compile_errors: CompileErrorVerdicts::from_records(record.compile_failures),
+            unimported: match record.unimported {
+                UnimportedRecord::NotDeclared => UnimportedReport::NotDeclared,
+                UnimportedRecord::Files { stderr, files } => UnimportedReport::Files {
+                    stderr,
+                    files: files
+                        .into_iter()
+                        .map(|file| UnimportedFile {
+                            path: file.path,
+                            tests: file.tests,
+                            parse_failed: file.parse_failed,
+                        })
+                        .collect(),
+                },
+                UnimportedRecord::Failed { stderr } => UnimportedReport::Failed { stderr },
+            },
+        }
+    }
+}
+
+pub(crate) fn inventory_entry_record(entry: TestInventoryEntry) -> InventoryEntryRecord {
+    InventoryEntryRecord {
+        id: entry.id,
+        module: entry.module,
+        name: entry.name,
+        file: entry.file,
+        line: entry.line,
+        column: entry.column,
+        ordinal: entry.ordinal,
+        expected_failures: entry
+            .expected_failures
+            .into_iter()
+            .map(|marker| (marker.issue, marker.platform))
+            .collect(),
+    }
+}
+
+pub(crate) fn inventory_entry_from_record(record: InventoryEntryRecord) -> TestInventoryEntry {
+    TestInventoryEntry {
+        id: record.id,
+        module: record.module,
+        name: record.name,
+        file: record.file,
+        line: record.line,
+        column: record.column,
+        ordinal: record.ordinal,
+        expected_failures: record
+            .expected_failures
+            .into_iter()
+            .map(|(issue, platform)| TestExpectedFailure { issue, platform })
+            .collect(),
+    }
+}
+
+/// Everything the run of an already prepared image needs.
+pub(crate) struct PreparedRun<'a> {
+    pub(crate) prepared: PreparedImage,
+    /// Where the image's bytes already are.
+    pub(crate) image_path: &'a Path,
+    pub(crate) run_root: &'a Path,
+    pub(crate) options: &'a TestOptions,
+    pub(crate) root: &'a str,
+    pub(crate) repro_root: &'a str,
+    pub(crate) repro_flags: &'a [String],
+    pub(crate) repro_env: &'a [(String, String)],
+    pub(crate) jobs: usize,
+    pub(crate) target: Target,
+    pub(crate) opt_level: OptLevel,
+    pub(crate) candidates: CandidateSource,
+    pub(crate) seed: u64,
+    pub(crate) cycle: Option<u64>,
+    pub(crate) cancellation: Option<&'a exec::RunCancellation>,
+}
+
+/// Run the plan over a prepared image: the half of a cycle after the image
+/// exists, shared by direct runs, watch cycles, and runs through the compiler
+/// service.
+pub(crate) fn run_prepared(request: PreparedRun<'_>) -> CycleOutcome {
+    let PreparedRun {
+        prepared,
+        image_path,
+        run_root,
+        options,
+        root,
+        repro_root,
+        repro_flags,
+        repro_env,
+        jobs,
+        target,
+        opt_level,
+        candidates,
+        seed,
+        cycle,
+        cancellation,
+    } = request;
+    let PreparedImage {
+        multi_module_closure,
+        entries,
+        compile_errors,
+        unimported,
+    } = prepared;
+    // Built here rather than earlier because the closure is only published
+    // once the image is: nothing before this point could answer how many
+    // modules the program has.
     let reporter = Reporter::new(
         options.format,
         render::Context {
             multi_module_closure,
         },
     );
-    let diagnostics = diagnostics_for_snapshot(image.error_format, &image.source_snapshot);
-    let compile_errors = CompileErrorVerdicts::new(&image.compile_failures, &diagnostics);
 
-    let total = image.inventory.entries.len();
+    let total = entries.len();
     let plan = selection::plan(
-        &image.inventory.entries,
+        &entries,
         &options.filters,
         options.exact,
         options.shard,
@@ -427,11 +776,10 @@ pub(crate) fn run_cycle(request: CycleRequest<'_, '_>) -> CycleOutcome {
     watch_milestone("run-started");
 
     if plan.is_empty() {
-        discard_run_root(&image_path, &run_root);
-        let unimported = match report_unimported(image.unimported_test_files.as_ref(), &diagnostics)
-        {
+        discard_run_root(image_path, run_root);
+        let unimported = match report_unimported(&unimported) {
             Ok(unimported) => unimported,
-            Err(_) => return CycleOutcome::Finished(TestExitCode::RunnerError),
+            Err(()) => return CycleOutcome::Finished(TestExitCode::RunnerError),
         };
         // Said before the terminal event, so a reader of an interleaved
         // terminal sees the reason ahead of the vacuous "0 passed" summary.
@@ -446,7 +794,7 @@ pub(crate) fn run_cycle(request: CycleRequest<'_, '_>) -> CycleOutcome {
             xpass: 0,
             wall_ms: elapsed_ms(started),
             unimported_test_files: unimported,
-            test_candidates: candidate_source(candidates),
+            test_candidates: candidates,
         });
         watch_milestone("run-finished");
         return CycleOutcome::Finished(TestExitCode::EmptySelection);
@@ -460,8 +808,8 @@ pub(crate) fn run_cycle(request: CycleRequest<'_, '_>) -> CycleOutcome {
         plan: &plan,
         compile_errors: &compile_errors,
         target,
-        image: &image_path,
-        run_root: &run_root,
+        image: image_path,
+        run_root,
         seed,
         timeout: Duration::from_millis(options.timeout_ms),
         jobs,
@@ -475,7 +823,7 @@ pub(crate) fn run_cycle(request: CycleRequest<'_, '_>) -> CycleOutcome {
     // The image is the runner's own artifact and is never retained; the run
     // root goes with it unless a failing test left a scratch directory behind,
     // in which case the non-recursive removal fails and the evidence survives.
-    discard_run_root(&image_path, &run_root);
+    discard_run_root(image_path, run_root);
 
     // An edit that landed mid-run killed the tests that were still going, so
     // the counts describe neither the whole plan nor the verdicts that would
@@ -499,9 +847,9 @@ pub(crate) fn run_cycle(request: CycleRequest<'_, '_>) -> CycleOutcome {
         return CycleOutcome::Finished(TestExitCode::RunnerError);
     }
 
-    let unimported = match report_unimported(image.unimported_test_files.as_ref(), &diagnostics) {
+    let unimported = match report_unimported(&unimported) {
         Ok(unimported) => unimported,
-        Err(_) => return CycleOutcome::Finished(TestExitCode::RunnerError),
+        Err(()) => return CycleOutcome::Finished(TestExitCode::RunnerError),
     };
     reporter.emit(&Event::RunFinished {
         passed: outcome.passed,
@@ -513,7 +861,7 @@ pub(crate) fn run_cycle(request: CycleRequest<'_, '_>) -> CycleOutcome {
         xpass: outcome.xpass,
         wall_ms: elapsed_ms(started),
         unimported_test_files: unimported,
-        test_candidates: candidate_source(candidates),
+        test_candidates: candidates,
     });
     watch_milestone("run-finished");
 
@@ -612,6 +960,46 @@ impl CompileErrorVerdicts {
 
     fn get(&self, ordinal: u32) -> Option<&CompileErrorVerdict> {
         self.by_ordinal.get(&ordinal)
+    }
+
+    fn into_records(self) -> Vec<CompileFailureRecord> {
+        self.by_ordinal
+            .into_iter()
+            .map(|(ordinal, verdict)| CompileFailureRecord {
+                ordinal,
+                xfail_eligible: verdict.xfail_eligible,
+                payload: verdict.payload,
+                message: verdict.message,
+                location: verdict
+                    .location
+                    .map(|location| (location.file, location.line, location.column)),
+                diagnostics: verdict.diagnostics,
+            })
+            .collect()
+    }
+
+    fn from_records(records: Vec<CompileFailureRecord>) -> Self {
+        Self {
+            by_ordinal: records
+                .into_iter()
+                .map(|record| {
+                    (
+                        record.ordinal,
+                        CompileErrorVerdict {
+                            xfail_eligible: record.xfail_eligible,
+                            payload: record.payload,
+                            message: record.message,
+                            location: record.location.map(|(file, line, column)| Location {
+                                file,
+                                line,
+                                column,
+                            }),
+                            diagnostics: record.diagnostics,
+                        },
+                    )
+                })
+                .collect(),
+        }
     }
 }
 
@@ -750,49 +1138,120 @@ fn produce_listing(
     }
 }
 
+/// A listing rendered for its consumer: what goes to stderr, and the
+/// inventory when the listing succeeded. Direct and service listings both
+/// end in [`finish_listing`] over this (ADR-0085 §5).
+pub(crate) struct ListingTransport {
+    pub(crate) stderr: String,
+    /// `None` when the listing itself was refused; `stderr` says why.
+    pub(crate) entries: Option<Vec<TestInventoryEntry>>,
+}
+
+impl OwnedListingResponse {
+    fn into_transport(self, color: ColorChoice) -> ListingTransport {
+        let OwnedListingResponse {
+            source_snapshot,
+            accepted_reads,
+            attempted_reads,
+            watch_inputs,
+            error_format,
+            result,
+        } = self;
+        drop((accepted_reads, attempted_reads, watch_inputs));
+        let diagnostics = diagnostics_for_snapshot(error_format, &source_snapshot, color);
+        let listing = match result {
+            Ok(listing) => listing,
+            Err(errors) => {
+                return ListingTransport {
+                    stderr: format!("{}\n", diagnostics.render_prepared_errors(&errors)),
+                    entries: None,
+                };
+            }
+        };
+        let rue_compiler::unstable::TestListing {
+            inventory,
+            failure_diagnostics,
+        } = listing;
+        // A listing still lists every declaration and still succeeds, but it
+        // says what the run would say about the bodies that did not analyze:
+        // on stderr, in the run's own `--error-format`, through the same
+        // renderer. A listing that swallowed them would be the papercut the
+        // run path refuses to be — a reader inspecting a suite would see
+        // nothing wrong with tests the run will report as `compile_error`.
+        let stderr = if failure_diagnostics.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "{}\n",
+                diagnostics.render_prepared_errors(&failure_diagnostics)
+            )
+        };
+        ListingTransport {
+            stderr,
+            entries: Some(inventory.entries),
+        }
+    }
+}
+
+/// Produce a listing for the compiler service, rendered under `color`.
+pub(crate) fn produce_listing_transport(
+    host: &mut FilesystemCompilerHost,
+    compile_options: &CompileOptions,
+    error_format: crate::ErrorFormat,
+    color: ColorChoice,
+    cancellation: &rue_compiler::unstable::CompilationCancellation,
+) -> Option<ListingTransport> {
+    let source_snapshot = host.source_snapshot().clone();
+    let result = match host.cancellable_test_inventory(compile_options, cancellation.clone()) {
+        rue_compiler::unstable::CancellableTestListingOutcome::Completed(mut listing) => {
+            listing.failure_diagnostics =
+                rue_driver::with_import_migration_helps(&listing.failure_diagnostics);
+            Ok(listing)
+        }
+        rue_compiler::unstable::CancellableTestListingOutcome::Errors(errors) => {
+            Err(rue_driver::with_import_migration_helps(&errors))
+        }
+        rue_compiler::unstable::CancellableTestListingOutcome::Canceled => return None,
+    };
+    Some(
+        OwnedListingResponse {
+            source_snapshot,
+            accepted_reads: host.accepted_reads().clone(),
+            attempted_reads: host.attempted_reads().to_vec(),
+            watch_inputs: host.watch_inputs(),
+            error_format,
+            result,
+        }
+        .into_transport(color),
+    )
+}
+
 fn complete_listing(
     response: OwnedListingResponse,
     options: &TestOptions,
     reporter: &Reporter,
 ) -> TestExitCode {
-    let OwnedListingResponse {
-        source_snapshot,
-        accepted_reads,
-        attempted_reads,
-        watch_inputs,
-        error_format,
-        result,
-    } = response;
-    drop((accepted_reads, attempted_reads, watch_inputs));
-    let diagnostics = diagnostics_for_snapshot(error_format, &source_snapshot);
-    let listing = match result {
-        Ok(listing) => listing,
-        Err(errors) => {
-            diagnostics.print_prepared_errors(&errors);
-            return TestExitCode::RunnerError;
-        }
+    finish_listing(
+        response.into_transport(ColorChoice::Auto),
+        options,
+        reporter,
+    )
+}
+
+/// Print what the listing rendered, then list the selection.
+fn finish_listing(
+    transport: ListingTransport,
+    options: &TestOptions,
+    reporter: &Reporter,
+) -> TestExitCode {
+    let ListingTransport { stderr, entries } = transport;
+    eprint!("{stderr}");
+    let Some(entries) = entries else {
+        return TestExitCode::RunnerError;
     };
-    let rue_compiler::unstable::TestListing {
-        inventory,
-        failure_diagnostics,
-    } = listing;
-    // A listing still lists every declaration and still succeeds, but it says
-    // what the run would say about the bodies that did not analyze: on stderr,
-    // in the run's own `--error-format`, through the same renderer. A listing
-    // that swallowed them would be the papercut the run path refuses to be —
-    // a reader inspecting a suite would see nothing wrong with tests the run
-    // will report as `compile_error`.
-    if !failure_diagnostics.is_empty() {
-        diagnostics.print_prepared_errors(&failure_diagnostics);
-    }
-    let selected = selection::select(
-        &inventory.entries,
-        &options.filters,
-        options.exact,
-        options.shard,
-    );
+    let selected = selection::select(&entries, &options.filters, options.exact, options.shard);
     if selected.is_empty() {
-        eprintln!("{}", empty_selection_reason(inventory.entries.len()));
+        eprintln!("{}", empty_selection_reason(entries.len()));
         return TestExitCode::EmptySelection;
     }
     for entry in selected {
@@ -1434,62 +1893,32 @@ pub(crate) fn std_root_spelling(path: &Path) -> String {
 ///
 /// Returns `Err(())` when the report itself failed; its diagnostics have
 /// already been presented.
-fn report_unimported(
-    report: Option<
-        &Result<Vec<rue_compiler::unstable::UnimportedTestFile>, rue_compiler::CompileErrors>,
-    >,
-    diagnostics: &crate::DiagnosticOutput<'_>,
-) -> Result<Option<Vec<UnimportedFile>>, ()> {
-    let Some(report) = report else {
-        return Ok(None);
-    };
-    let files = match report {
-        Ok(files) => files,
-        Err(errors) => {
-            diagnostics.print_prepared_errors(errors);
-            return Err(());
+/// Say what the prepared report says, where the direct path always said it:
+/// after the run, before `run_finished`.
+fn report_unimported(report: &UnimportedReport) -> Result<Option<Vec<UnimportedFile>>, ()> {
+    match report {
+        UnimportedReport::NotDeclared => Ok(None),
+        UnimportedReport::Failed { stderr } => {
+            eprint!("{stderr}");
+            Err(())
         }
-    };
-    let warnings: Vec<rue_compiler::CompileWarning> = files
-        .iter()
-        .map(|file| {
-            let kind = if file.parse_failed {
-                rue_error::WarningKind::UnimportedTestFileUnparsable {
-                    path: file.path.clone(),
-                }
-            } else {
-                rue_error::WarningKind::UnimportedTestFile {
-                    path: file.path.clone(),
-                    tests: file.tests,
-                }
-            };
-            rue_compiler::CompileWarning::without_span(kind)
-        })
-        .collect();
-    if !warnings.is_empty() {
-        diagnostics.print_warnings(&warnings);
+        UnimportedReport::Files { stderr, files } => {
+            eprint!("{stderr}");
+            Ok(Some(files.clone()))
+        }
     }
-    Ok(Some(
-        files
-            .iter()
-            .map(|file| UnimportedFile {
-                path: file.path.clone(),
-                tests: file.tests,
-                parse_failed: file.parse_failed,
-            })
-            .collect(),
-    ))
 }
 
 fn diagnostics_for_snapshot(
     format: crate::ErrorFormat,
     snapshot: &rue_compiler::SourceSnapshot,
+    color: ColorChoice,
 ) -> crate::DiagnosticOutput<'_> {
     let sources = snapshot
         .files()
         .map(|source| (source.file_id, SourceInfo::new(source.source, source.path)))
         .collect();
-    crate::DiagnosticOutput::new(format, sources)
+    crate::DiagnosticOutput::with_color(format, sources, color)
 }
 
 #[cfg(test)]

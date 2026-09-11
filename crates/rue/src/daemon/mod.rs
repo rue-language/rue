@@ -32,8 +32,10 @@ use sha2::{Digest, Sha256};
 use crate::running_image::{RunningImageIdentity, running_image_identity};
 pub use client::{ConnectError, Connection, Submission, SubmitError};
 pub use protocol::{
-    BuildRequest, BuildResult, CrashRecord, DAEMON_PROTOCOL_VERSION, DestinationRecord,
-    DiagnosticFormat, IdentityRecord, InputRecord, RequestSummary, ServiceInfo, StatusReport,
+    BuildKind, BuildRequest, BuildResult, CompileFailureRecord, CrashRecord,
+    DAEMON_PROTOCOL_VERSION, DestinationRecord, DiagnosticFormat, IdentityRecord, InputRecord,
+    InventoryEntryRecord, RequestSummary, ServiceInfo, StatusReport, TestImageRecord,
+    UnimportedFileRecord, UnimportedRecord,
 };
 pub use service::{BuildExecutor, BuildOutput, MAX_QUEUED_REQUESTS, ServeExit};
 
