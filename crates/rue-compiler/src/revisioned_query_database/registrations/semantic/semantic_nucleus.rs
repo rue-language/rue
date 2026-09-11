@@ -852,6 +852,14 @@ $runtime
                                                                 (crate::durable_semantics::DurableType::F32, crate::durable_semantics::DurableConstValue::Float(value)) => float_const_initializer_bits(value, rue_air::Type::F32, float_initializer_is_literal).is_some(),
                                                                 (crate::durable_semantics::DurableType::F64, crate::durable_semantics::DurableConstValue::Float(value)) => float_const_initializer_bits(value, rue_air::Type::F64, float_initializer_is_literal).is_some(),
                                                                 (_, crate::durable_semantics::DurableConstValue::String(_)) if crate::durable_comptime::is_durable_str_type(&ty) => true,
+                                                                (_, crate::durable_semantics::DurableConstValue::Aggregate(_)) => {
+                                                                    // The canonical AIR host has already performed the
+                                                                    // pool-aware recursive shape/Copy check. Keep the
+                                                                    // declaration projection from discarding that aggregate;
+                                                                    // this final fit check only preserves its typed root and
+                                                                    // shared resource invariant at the query boundary.
+                                                                    crate::durable_comptime::durable_const_fits_type(&value, &ty)
+                                                                }
                                                                 _ => false,
                                                             };
                                                             if compatible {

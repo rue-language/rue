@@ -234,6 +234,96 @@ where
                 ConstValue::Float(content) => crate::SemanticImportConstValue::Float(
                     std::sync::Arc::from(host.resolve_publication_symbol(&content.spur())),
                 ),
+                ConstValue::Aggregate(value) => {
+                    fn export<H: crate::sema::SemanticBodyExportHost + ?Sized>(
+                        host: &H,
+                        value: &ConstValue,
+                    ) -> Result<
+                        crate::SemanticImportConstValue<
+                            crate::SemanticDefinitionToken,
+                            crate::SemanticModuleToken,
+                        >,
+                        crate::SemanticBodyExportFailure,
+                    > {
+                        match value {
+                            ConstValue::Integer(value) => {
+                                return Ok(crate::SemanticImportConstValue::Integer(*value));
+                            }
+                            ConstValue::Bool(value) => {
+                                return Ok(crate::SemanticImportConstValue::Bool(*value));
+                            }
+                            ConstValue::Unit => return Ok(crate::SemanticImportConstValue::Unit),
+                            ConstValue::Type(value) => {
+                                return Ok(crate::SemanticImportConstValue::Type(
+                                    host.export_body_type(*value)?,
+                                ));
+                            }
+                            ConstValue::Function(value) => {
+                                let crate::FunctionInstanceKey::Definition(definition) =
+                                    host.body_function_identity(value.spur())?
+                                else {
+                                    return Err(
+                                        crate::SemanticBodyExportFailure::MissingStableIdentity,
+                                    );
+                                };
+                                return Ok(crate::SemanticImportConstValue::Function(definition));
+                            }
+                            ConstValue::String(value) => {
+                                return Ok(crate::SemanticImportConstValue::String(
+                                    std::sync::Arc::from(
+                                        host.resolve_publication_symbol(&value.spur()),
+                                    ),
+                                ));
+                            }
+                            ConstValue::Float(value) => {
+                                return Ok(crate::SemanticImportConstValue::Float(
+                                    std::sync::Arc::from(
+                                        host.resolve_publication_symbol(&value.spur()),
+                                    ),
+                                ));
+                            }
+                            ConstValue::Aggregate(_) => {}
+                        }
+                        let ConstValue::Aggregate(value) = value else {
+                            unreachable!()
+                        };
+                        let kind = match &value.kind {
+                            crate::sema::ConstAggregateKind::Struct(values) => {
+                                crate::SemanticImportAggregateKind::Struct(
+                                    values
+                                        .iter()
+                                        .map(|v| export(host, v))
+                                        .collect::<Result<Vec<_>, _>>()?
+                                        .into(),
+                                )
+                            }
+                            crate::sema::ConstAggregateKind::Array(values) => {
+                                crate::SemanticImportAggregateKind::Array(
+                                    values
+                                        .iter()
+                                        .map(|v| export(host, v))
+                                        .collect::<Result<Vec<_>, _>>()?
+                                        .into(),
+                                )
+                            }
+                            crate::sema::ConstAggregateKind::Enum { variant, payload } => {
+                                crate::SemanticImportAggregateKind::Enum {
+                                    variant: *variant,
+                                    payload: payload
+                                        .iter()
+                                        .map(|v| export(host, v))
+                                        .collect::<Result<Vec<_>, _>>()?
+                                        .into(),
+                                }
+                            }
+                        };
+                        let ty = host.export_body_type(value.ty)?;
+                        Ok(crate::SemanticImportConstValue::Aggregate(
+                            std::sync::Arc::new(crate::SemanticImportAggregate { ty, kind }),
+                        ))
+                    }
+                    export(host, &ConstValue::Aggregate(value.clone()))?
+                }
             })
         })
         .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
@@ -319,7 +409,7 @@ where
                 values: key
                     .value_args
                     .iter()
-                    .copied()
+                    .cloned()
                     .map(|value| host.canonical_argument_value(value))
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|failure| {
@@ -417,7 +507,7 @@ where
             type_subst.insert(*name, ty);
             type_arg_idx += 1;
         } else {
-            let value = key.value_args.get(value_arg_idx).copied().ok_or_else(|| {
+            let value = key.value_args.get(value_arg_idx).cloned().ok_or_else(|| {
                 CompileError::new(
                     ErrorKind::InternalError(format!(
                         "specialization is missing value argument {value_arg_idx} for '{}'",
@@ -637,6 +727,7 @@ fn mangle_const_value(interner: &ThreadedRodeo, value: &ConstValue) -> String {
         ConstValue::Function(name) => format!("vfn{}", interner.resolve(&name.spur())),
         ConstValue::String(content) => mangle_string_const(interner.resolve(&content.spur())),
         ConstValue::Float(content) => format!("vfloat{}", interner.resolve(&content.spur())),
+        ConstValue::Aggregate(aggregate) => mangle_aggregate_value(aggregate, interner),
     }
 }
 
@@ -650,6 +741,49 @@ fn mangle_string_const(content: &str) -> String {
     let mut result = format!("vstr{}x", content.len());
     for byte in content.as_bytes() {
         write!(&mut result, "{byte:02x}").expect("writing hex into a String cannot fail");
+    }
+    result
+}
+
+fn mangle_aggregate_value(
+    aggregate: &crate::sema::ConstAggregate,
+    interner: &ThreadedRodeo,
+) -> String {
+    use std::fmt::Write;
+
+    // This is a local link-name component, while the published specialization
+    // identity is the typed canonical value projected by the host. Keep the
+    // local component injective and structural nonetheless: a fixed-width
+    // hash can alias distinct aggregates, and `Hash` over ConstValue embeds
+    // interner allocation order for symbol-valued leaves.
+    let mut result = String::from("vagg");
+    write!(&mut result, "t{:08x}k", aggregate.ty.as_u32())
+        .expect("writing a local aggregate mangle cannot fail");
+    match &aggregate.kind {
+        crate::sema::ConstAggregateKind::Struct(values) => {
+            result.push('s');
+            write!(&mut result, "{}:", values.len()).unwrap();
+            for value in values.iter() {
+                let fragment = mangle_const_value(interner, value);
+                write!(&mut result, "{}:{}", fragment.len(), fragment).unwrap();
+            }
+        }
+        crate::sema::ConstAggregateKind::Array(values) => {
+            result.push('a');
+            write!(&mut result, "{}:", values.len()).unwrap();
+            for value in values.iter() {
+                let fragment = mangle_const_value(interner, value);
+                write!(&mut result, "{}:{}", fragment.len(), fragment).unwrap();
+            }
+        }
+        crate::sema::ConstAggregateKind::Enum { variant, payload } => {
+            result.push('e');
+            write!(&mut result, "{}:{}:", variant, payload.len()).unwrap();
+            for value in payload.iter() {
+                let fragment = mangle_const_value(interner, value);
+                write!(&mut result, "{}:{}", fragment.len(), fragment).unwrap();
+            }
+        }
     }
     result
 }

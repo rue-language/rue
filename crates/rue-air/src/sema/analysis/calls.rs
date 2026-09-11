@@ -614,7 +614,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         // not erased from the signature).
                         match self.try_evaluate_const_in_fn(args.get(i).unwrap().value, ctx) {
                             Some(const_val) => {
-                                value_args.push(const_val);
+                                value_args.push(const_val.clone());
                                 value_subst.insert(param_names[i], const_val);
                             }
                             None => {
@@ -686,7 +686,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     // remaining a distinct fixed-capacity type.
                     let value = value_subst
                         .get(&param_names[i])
-                        .copied()
+                        .cloned()
                         .expect("comptime value substitution was captured above");
                     self.validate_comptime_value_for_type(
                         name,

@@ -24,6 +24,41 @@ pub(crate) fn durable_value_from_argument(
         V::Unit => D::Unit,
         V::String(value) => D::String(value.clone()),
         V::Float(value) => D::Float(value.clone()),
+        V::Aggregate(value) => {
+            D::Aggregate(std::sync::Arc::new(rue_air::SemanticImportAggregate {
+                ty: crate::semantic_identity::semantic_type_from_instance(&value.ty),
+                kind: match &value.kind {
+                    rue_air::CanonicalAggregateKind::Struct(values) => {
+                        rue_air::SemanticImportAggregateKind::Struct(
+                            values
+                                .iter()
+                                .map(durable_value_from_argument)
+                                .collect::<Option<Vec<_>>>()?
+                                .into(),
+                        )
+                    }
+                    rue_air::CanonicalAggregateKind::Array(values) => {
+                        rue_air::SemanticImportAggregateKind::Array(
+                            values
+                                .iter()
+                                .map(durable_value_from_argument)
+                                .collect::<Option<Vec<_>>>()?
+                                .into(),
+                        )
+                    }
+                    rue_air::CanonicalAggregateKind::Enum { variant, payload } => {
+                        rue_air::SemanticImportAggregateKind::Enum {
+                            variant: *variant,
+                            payload: payload
+                                .iter()
+                                .map(durable_value_from_argument)
+                                .collect::<Option<Vec<_>>>()?
+                                .into(),
+                        }
+                    }
+                },
+            }))
+        }
     })
 }
 
@@ -517,6 +552,20 @@ fn project_named_value_candidate(
 impl crate::durable_comptime::DurableComptimeSemanticAuthority
     for DurableComptimeRootAuthority<'_>
 {
+    fn type_is_copy(
+        &self,
+        ty: &crate::durable_semantics::DurableType,
+    ) -> Result<
+        bool,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        let mut provider = self.provider.clone();
+        provider.type_is_copy(ty)
+    }
+
     fn check_canceled(&self) -> Result<(), QueryAbort> {
         self.provider.context.check_canceled()
     }
@@ -1001,6 +1050,179 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
     > {
         crate::durable_comptime::resolve_target_enum_variant_facts(type_name, variant)
             .map_err(rue_air::SemanticProviderError::Failure)
+    }
+
+    fn resolve_enum_variant_index(
+        &self,
+        enum_type: &crate::durable_semantics::DurableType,
+        variant: &str,
+    ) -> Result<
+        Option<u32>,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        let crate::durable_semantics::DurableType::Nominal(key) = enum_type else {
+            return Ok(None);
+        };
+        if key.kind() != crate::StableDefinitionKind::Enum {
+            return Ok(None);
+        }
+        let Some(candidate) =
+            self.provider
+                .candidate(key.module(), key.name(), crate::DefinitionKind::Enum)?
+        else {
+            return Ok(None);
+        };
+        let signature = self.provider.signature(candidate)?;
+        let crate::semantic_query_nucleus::DeclarationSignatureProjection::Enum {
+            variants, ..
+        } = signature
+        else {
+            return Ok(None);
+        };
+        Ok(variants
+            .iter()
+            .position(|(name, _)| name.as_ref() == variant)
+            .and_then(|index| u32::try_from(index).ok()))
+    }
+
+    fn resolve_struct_field_index(
+        &self,
+        struct_type: &crate::durable_semantics::DurableType,
+        field: &str,
+    ) -> Result<
+        Option<u32>,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        let crate::durable_semantics::DurableType::Nominal(key) = struct_type else {
+            return Ok(None);
+        };
+        if key.kind() != crate::StableDefinitionKind::Struct {
+            return Ok(None);
+        }
+        let Some(candidate) =
+            self.provider
+                .candidate(key.module(), key.name(), crate::DefinitionKind::Struct)?
+        else {
+            return Ok(None);
+        };
+        let signature = self.provider.signature(candidate)?;
+        let crate::semantic_query_nucleus::DeclarationSignatureProjection::Struct {
+            fields, ..
+        } = signature
+        else {
+            return Ok(None);
+        };
+        Ok(fields
+            .iter()
+            .position(|(name, _)| name.as_ref() == field)
+            .and_then(|index| u32::try_from(index).ok()))
+    }
+
+    fn resolve_struct_field_type(
+        &self,
+        struct_type: &crate::durable_semantics::DurableType,
+        index: u32,
+    ) -> Result<
+        Option<crate::durable_semantics::DurableType>,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        let crate::durable_semantics::DurableType::Nominal(key) = struct_type else {
+            return Ok(None);
+        };
+        if key.kind() != crate::StableDefinitionKind::Struct {
+            return Ok(None);
+        }
+        let Some(candidate) =
+            self.provider
+                .candidate(key.module(), key.name(), crate::DefinitionKind::Struct)?
+        else {
+            return Ok(None);
+        };
+        let signature = self.provider.signature(candidate)?;
+        let crate::semantic_query_nucleus::DeclarationSignatureProjection::Struct {
+            fields, ..
+        } = signature
+        else {
+            return Ok(None);
+        };
+        Ok(fields.get(index as usize).map(|(_, ty)| ty.clone()))
+    }
+
+    fn resolve_struct_field_count(
+        &self,
+        struct_type: &crate::durable_semantics::DurableType,
+    ) -> Result<
+        usize,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        let crate::durable_semantics::DurableType::Nominal(key) = struct_type else {
+            return Ok(0);
+        };
+        if key.kind() != crate::StableDefinitionKind::Struct {
+            return Ok(0);
+        }
+        let Some(candidate) =
+            self.provider
+                .candidate(key.module(), key.name(), crate::DefinitionKind::Struct)?
+        else {
+            return Ok(0);
+        };
+        let signature = self.provider.signature(candidate)?;
+        let crate::semantic_query_nucleus::DeclarationSignatureProjection::Struct {
+            fields, ..
+        } = signature
+        else {
+            return Ok(0);
+        };
+        Ok(fields.len())
+    }
+
+    fn resolve_enum_variant_payload_types(
+        &self,
+        enum_type: &crate::durable_semantics::DurableType,
+        variant: u32,
+    ) -> Result<
+        std::sync::Arc<[crate::durable_semantics::DurableType]>,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        let crate::durable_semantics::DurableType::Nominal(key) = enum_type else {
+            return Ok(std::sync::Arc::from([]));
+        };
+        if key.kind() != crate::StableDefinitionKind::Enum {
+            return Ok(std::sync::Arc::from([]));
+        }
+        let Some(candidate) =
+            self.provider
+                .candidate(key.module(), key.name(), crate::DefinitionKind::Enum)?
+        else {
+            return Ok(std::sync::Arc::from([]));
+        };
+        let signature = self.provider.signature(candidate)?;
+        let crate::semantic_query_nucleus::DeclarationSignatureProjection::Enum {
+            variants, ..
+        } = signature
+        else {
+            return Ok(std::sync::Arc::from([]));
+        };
+        Ok(variants
+            .get(variant as usize)
+            .map(|(_, payload)| std::sync::Arc::from(payload.clone()))
+            .unwrap_or_else(|| std::sync::Arc::from([])))
     }
 }
 

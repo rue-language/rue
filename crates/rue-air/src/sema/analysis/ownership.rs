@@ -5,8 +5,10 @@
 //! them. It extends the canonical body-analysis engine rather than
 //! introducing peer analysis state.
 
-use super::super::analyze_ops::FloatConstSource;
-use super::super::context::{LocalVar, ParamInfo};
+use super::super::analyze_ops::{FloatConstSource, StringConstSource};
+use super::super::context::{
+    ConstAggregateKind, LocalVar, ParamInfo, comptime_value_within_limits,
+};
 use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::super::ownership_state::{FieldPath, VariableMoveState};
 use super::*;
@@ -2227,7 +2229,157 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 )?;
                 (data, ty)
             }
+            ConstValue::Aggregate(_) => {
+                return Err(CompileError::new(
+                    ErrorKind::ComptimeEvaluationFailed {
+                        reason: "aggregate comptime values cannot be materialized here".to_string(),
+                    },
+                    span,
+                ));
+            }
         })
+    }
+
+    /// Materialize a comptime value as ordinary AIR.  Scalar constants use
+    /// the shared scalar materializer above; a structural value is rebuilt
+    /// with the same aggregate instructions used by source initializers, so
+    /// its complete content and declared child types reach runtime codegen.
+    /// The value has already crossed the canonical comptime validator, but
+    /// this boundary repeats the shape checks before emitting any child so a
+    /// malformed retained value cannot become a partial AIR aggregate.
+    pub(crate) fn materialize_comptime_value(
+        &mut self,
+        air: &mut Air,
+        ctx: &mut AnalysisContext,
+        value: ConstValue,
+        ty: Type,
+        anchor: Option<rue_rir::RirStructuralAnchor>,
+        span: Span,
+    ) -> CompileResult<(AirRef, Type)> {
+        let ConstValue::Aggregate(aggregate) = value.clone() else {
+            let valid = match (&value, ty) {
+                (ConstValue::Integer(value), ty) => ty
+                    .integer_semantics()
+                    .is_some_and(|integer| integer.fits_i128(*value)),
+                (ConstValue::Bool(_), Type::BOOL)
+                | (ConstValue::Unit, Type::UNIT)
+                | (ConstValue::Type(_), Type::COMPTIME_TYPE) => true,
+                (ConstValue::String(_), ty) => self.is_str_like(ty),
+                (ConstValue::Float(_), ty) => ty.is_float() || ty == Type::COMPTIME_FLOAT,
+                _ => false,
+            };
+            if !valid {
+                return Err(CompileError::new(
+                    ErrorKind::ComptimeEvaluationFailed {
+                        reason: "invalid structural comptime value".to_owned(),
+                    },
+                    span,
+                ));
+            }
+            let (data, ty) = if let ConstValue::String(content) = value {
+                let content = self.body_interner().resolve(&content.spur()).to_string();
+                let data = self.materialize_string_const(
+                    ctx,
+                    content,
+                    ty,
+                    span,
+                    match anchor {
+                        Some(anchor) => StringConstSource::NamedConst(anchor),
+                        None => StringConstSource::Synthesized,
+                    },
+                )?;
+                (data, ty)
+            } else {
+                self.materialize_const_value(ctx, value, ty, None, span)?
+            };
+            let air_ref = air.add_inst(AirInst { data, ty, span });
+            return Ok((air_ref, ty));
+        };
+
+        let invalid = || {
+            CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: "invalid structural comptime value".to_owned(),
+                },
+                span,
+            )
+        };
+        if !comptime_value_within_limits(&ConstValue::Aggregate(aggregate.clone())) {
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: "structural comptime value exceeds resource limits".to_owned(),
+                },
+                span,
+            ));
+        }
+        if aggregate.ty != ty || !ty.is_copy_in_pool(self.body_type_pool()) {
+            return Err(invalid());
+        }
+
+        let air_ref = match &aggregate.kind {
+            ConstAggregateKind::Struct(values) => {
+                let Some(struct_id) = ty.as_struct() else {
+                    return Err(invalid());
+                };
+                let fields = self.body_type_pool().struct_def(struct_id).fields.clone();
+                if fields.len() != values.len() {
+                    return Err(invalid());
+                }
+                let mut refs = Vec::with_capacity(values.len());
+                for (value, field) in values.iter().cloned().zip(fields.iter()) {
+                    refs.push(
+                        self.materialize_comptime_value(air, ctx, value, field.ty, None, span)?
+                            .0,
+                    );
+                }
+                let source_order = (0..refs.len())
+                    .map(|index| index as u32)
+                    .collect::<Vec<_>>();
+                air.add_struct_init(struct_id, &refs, &source_order, ty, span)
+                    .map_err(CompileError::from)?
+            }
+            ConstAggregateKind::Array(values) => {
+                let Some(array_id) = ty.as_array() else {
+                    return Err(invalid());
+                };
+                let (element, length) = self.body_type_pool().array_def(array_id);
+                if values.len() as u64 != length {
+                    return Err(invalid());
+                }
+                let mut refs = Vec::with_capacity(values.len());
+                for value in values.iter().cloned() {
+                    refs.push(
+                        self.materialize_comptime_value(air, ctx, value, element, None, span)?
+                            .0,
+                    );
+                }
+                air.add_array_init(&refs, ty, span)
+                    .map_err(CompileError::from)?
+            }
+            ConstAggregateKind::Enum { variant, payload } => {
+                let Some(enum_id) = ty.as_enum() else {
+                    return Err(invalid());
+                };
+                let enum_def = self.body_type_pool().enum_def(enum_id);
+                if (*variant as usize) >= enum_def.variants.len() {
+                    return Err(invalid());
+                }
+                let payload_types = enum_def.variant_payload(*variant as usize);
+                if payload_types.len() != payload.len() {
+                    return Err(invalid());
+                }
+                let mut refs = Vec::with_capacity(payload.len());
+                for (value, payload_ty) in payload.iter().cloned().zip(payload_types.iter()) {
+                    refs.push(
+                        self.materialize_comptime_value(air, ctx, value, *payload_ty, None, span)?
+                            .0,
+                    );
+                }
+                air.add_enum_variant(enum_id, *variant, &refs, ty, span)
+                    .map_err(CompileError::from)?
+            }
+        };
+        Ok((air_ref, ty))
     }
 
     /// Analyze a variable reference.
@@ -2557,6 +2709,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     });
                     return Ok(AnalysisResult::new(air_ref, Type::UNIT));
                 }
+                ConstValue::Aggregate(value) => {
+                    let ty = resolved_ty.unwrap_or(value.ty);
+                    let (air_ref, ty) = self.materialize_comptime_value(
+                        air,
+                        ctx,
+                        ConstValue::Aggregate(value.clone()),
+                        ty,
+                        None,
+                        span,
+                    )?;
+                    return Ok(AnalysisResult::new(air_ref, ty));
+                }
             }
         }
 
@@ -2626,14 +2790,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             } else {
                 const_info.ty
             };
-            let (data, ty) = self.materialize_const_value(
+            let (air_ref, ty) = self.materialize_comptime_value(
+                air,
                 ctx,
                 const_info.value,
                 materialized_ty,
                 atom_anchor,
                 span,
             )?;
-            let air_ref = air.add_inst(AirInst { data, ty, span });
             return Ok(AnalysisResult::new(air_ref, ty));
         }
 

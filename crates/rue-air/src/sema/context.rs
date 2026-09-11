@@ -915,7 +915,7 @@ impl AnalysisResult {
 /// This is used for compile-time evaluation of expressions and for
 /// comptime parameters. For example, in `fn Buffer(comptime N: i32)`,
 /// the value of `N` is stored as a `ConstValue::Integer`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ConstValue {
     /// Integer value. Backed by `i128` so the full range of every Rue integer
     /// type is representable (u64 values above `i64::MAX` as well as negative
@@ -949,8 +949,90 @@ pub enum ConstValue {
     String(SymbolHandle),
     /// Exact canonical decimal value, interned as `<significand>e<exponent>`.
     Float(SymbolHandle),
+    /// A bounded structural value used by the canonical comptime evaluator.
+    Aggregate(Arc<ConstAggregate>),
     /// Unit value - the value of `()`.
     Unit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ConstAggregateKind {
+    Struct(Arc<[ConstValue]>),
+    Array(Arc<[ConstValue]>),
+    Enum {
+        variant: u32,
+        payload: Arc<[ConstValue]>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ConstAggregate {
+    pub ty: Type,
+    pub kind: ConstAggregateKind,
+}
+
+pub(crate) const MAX_COMPTIME_AGGREGATE_DEPTH: usize = 64;
+pub(crate) const MAX_COMPTIME_AGGREGATE_NODES: usize = 4096;
+
+fn aggregate_size(value: &ConstValue, depth: usize, nodes: &mut usize) -> Option<usize> {
+    if depth > MAX_COMPTIME_AGGREGATE_DEPTH {
+        return None;
+    }
+    *nodes = nodes.checked_add(1)?;
+    if *nodes > MAX_COMPTIME_AGGREGATE_NODES {
+        return None;
+    }
+    let ConstValue::Aggregate(aggregate) = value else {
+        return Some(1);
+    };
+    let children = match &aggregate.kind {
+        ConstAggregateKind::Struct(values) | ConstAggregateKind::Array(values) => values,
+        ConstAggregateKind::Enum { payload, .. } => payload,
+    };
+    children.iter().try_fold(1usize, |total, child| {
+        total.checked_add(aggregate_size(child, depth + 1, nodes)?)
+    })
+}
+
+/// Check a retained comptime value before a consumer expands its children.
+/// Aggregate registration already uses this walk; exposing the same bounded
+/// predicate lets AIR materialization protect itself from forged or stale
+/// retained values without allocating a second tree.
+pub(crate) fn comptime_value_within_limits(value: &ConstValue) -> bool {
+    aggregate_size(value, 0, &mut 0).is_some()
+}
+
+/// Register one aggregate after checking the shared resource bounds. The
+/// handle is deliberately opaque and never used as a published identity.
+pub fn register_comptime_aggregate(value: ConstAggregate) -> Option<ConstValue> {
+    let type_matches_kind = match &value.kind {
+        ConstAggregateKind::Struct(_) => value.ty.is_struct(),
+        ConstAggregateKind::Array(_) => value.ty.is_array(),
+        ConstAggregateKind::Enum { .. } => value.ty.is_enum(),
+    };
+    if !type_matches_kind {
+        return None;
+    }
+    let value = Arc::new(value);
+    let children = match &value.kind {
+        ConstAggregateKind::Struct(values) | ConstAggregateKind::Array(values) => values,
+        ConstAggregateKind::Enum { payload, .. } => payload,
+    };
+    let mut nodes = 1;
+    for child in children.iter() {
+        aggregate_size(child, 1, &mut nodes)?;
+    }
+    if nodes > MAX_COMPTIME_AGGREGATE_NODES {
+        return None;
+    }
+    Some(ConstValue::Aggregate(value))
+}
+
+pub fn comptime_aggregate(value: ConstValue) -> Option<Arc<ConstAggregate>> {
+    let ConstValue::Aggregate(aggregate) = value else {
+        return None;
+    };
+    Some(aggregate)
 }
 
 impl ConstValue {
@@ -961,47 +1043,47 @@ impl ConstValue {
     /// when the full `i128` backing value is needed.
     ///
     /// [`as_int_value`]: ConstValue::as_int_value
-    pub fn as_integer(self) -> Option<i64> {
+    pub fn as_integer(&self) -> Option<i64> {
         match self {
-            ConstValue::Integer(n) => i64::try_from(n).ok(),
+            ConstValue::Integer(n) => i64::try_from(*n).ok(),
             _ => None,
         }
     }
 
     /// Try to extract the full backing integer value.
-    pub fn as_int_value(self) -> Option<i128> {
+    pub fn as_int_value(&self) -> Option<i128> {
         match self {
-            ConstValue::Integer(n) => Some(n),
+            ConstValue::Integer(n) => Some(*n),
             _ => None,
         }
     }
 
     /// Try to extract a boolean value.
-    pub fn as_bool(self) -> Option<bool> {
+    pub fn as_bool(&self) -> Option<bool> {
         match self {
-            ConstValue::Bool(b) => Some(b),
+            ConstValue::Bool(b) => Some(*b),
             _ => None,
         }
     }
 
     /// Try to extract a type value.
-    pub fn as_type(self) -> Option<Type> {
+    pub fn as_type(&self) -> Option<Type> {
         match self {
-            ConstValue::Type(ty) => Some(ty),
+            ConstValue::Type(ty) => Some(*ty),
             _ => None,
         }
     }
 
     /// Try to extract a function reference.
-    pub fn as_function(self) -> Option<SymbolHandle> {
+    pub fn as_function(&self) -> Option<SymbolHandle> {
         match self {
-            ConstValue::Function(name) => Some(name),
+            ConstValue::Function(name) => Some(*name),
             _ => None,
         }
     }
 
     /// Check if this is a unit value.
-    pub fn is_unit(self) -> bool {
+    pub fn is_unit(&self) -> bool {
         matches!(self, ConstValue::Unit)
     }
 
@@ -1019,6 +1101,7 @@ impl ConstValue {
             // avoid colliding with a real comptime parameter type.
             ConstValue::String(_) => Type::ERROR,
             ConstValue::Float(_) => Type::COMPTIME_FLOAT,
+            ConstValue::Aggregate(aggregate) => aggregate.ty,
             ConstValue::Unit => Type::UNIT,
         }
     }

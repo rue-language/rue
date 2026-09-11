@@ -277,6 +277,64 @@ pub(crate) trait DurableComptimeSemanticAuthority {
         type_name: &str,
         variant: &str,
     ) -> Result<TargetEnumValue, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>>;
+
+    /// Resolve a declared enum variant against the stable nominal identity
+    /// carried by a type value. This keeps variant numbering out of the
+    /// durable value algebra while allowing the canonical engine to construct
+    /// payload-bearing variants from `Choice.Some(value)`.
+    fn resolve_enum_variant_index(
+        &self,
+        _enum_type: &DurableType,
+        _variant: &str,
+    ) -> Result<Option<u32>, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>>
+    {
+        Ok(None)
+    }
+
+    fn resolve_struct_field_index(
+        &self,
+        _struct_type: &DurableType,
+        _field: &str,
+    ) -> Result<Option<u32>, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>>
+    {
+        Ok(None)
+    }
+
+    fn resolve_struct_field_type(
+        &self,
+        _struct_type: &DurableType,
+        _index: u32,
+    ) -> Result<
+        Option<DurableType>,
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    > {
+        Ok(None)
+    }
+
+    fn resolve_struct_field_count(
+        &self,
+        _struct_type: &DurableType,
+    ) -> Result<usize, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>> {
+        Ok(0)
+    }
+
+    fn resolve_enum_variant_payload_types(
+        &self,
+        _enum_type: &DurableType,
+        _variant: u32,
+    ) -> Result<
+        Arc<[DurableType]>,
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    > {
+        Ok(Arc::from([]))
+    }
+
+    fn type_is_copy(
+        &self,
+        _ty: &DurableType,
+    ) -> Result<bool, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>> {
+        Ok(true)
+    }
 }
 
 #[allow(dead_code)] // activated by the canonical durable AIR host
@@ -482,6 +540,63 @@ impl<A: DurableComptimeSemanticAuthority + ?Sized> DurableComptimeServices<'_, A
     {
         self.authority
             .resolve_target_enum_variant(type_name, variant)
+    }
+
+    pub(super) fn resolve_enum_variant_index(
+        &self,
+        enum_type: &DurableType,
+        variant: &str,
+    ) -> Result<Option<u32>, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>>
+    {
+        self.authority
+            .resolve_enum_variant_index(enum_type, variant)
+    }
+
+    pub(super) fn resolve_struct_field_index(
+        &self,
+        struct_type: &DurableType,
+        field: &str,
+    ) -> Result<Option<u32>, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>>
+    {
+        self.authority
+            .resolve_struct_field_index(struct_type, field)
+    }
+
+    pub(super) fn resolve_struct_field_type(
+        &self,
+        struct_type: &DurableType,
+        index: u32,
+    ) -> Result<
+        Option<DurableType>,
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    > {
+        self.authority.resolve_struct_field_type(struct_type, index)
+    }
+
+    pub(super) fn resolve_struct_field_count(
+        &self,
+        struct_type: &DurableType,
+    ) -> Result<usize, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>> {
+        self.authority.resolve_struct_field_count(struct_type)
+    }
+
+    pub(super) fn resolve_enum_variant_payload_types(
+        &self,
+        enum_type: &DurableType,
+        variant: u32,
+    ) -> Result<
+        Arc<[DurableType]>,
+        rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>,
+    > {
+        self.authority
+            .resolve_enum_variant_payload_types(enum_type, variant)
+    }
+
+    pub(super) fn type_is_copy(
+        &self,
+        ty: &DurableType,
+    ) -> Result<bool, rue_air::SemanticProviderError<QueryAbort, SemanticNucleusFailure>> {
+        self.authority.type_is_copy(ty)
     }
 
     /// Finish admission for a structured-type call.  Structured syntax has

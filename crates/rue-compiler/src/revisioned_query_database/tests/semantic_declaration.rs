@@ -1957,7 +1957,7 @@ fn direct_const_keys_preserve_structured_evaluator_failures() {
     assert!(matches!(
         query("AGG"),
         Value::Failure(Failure::Diagnostic(
-            rue_error::ErrorKind::ConstExprNotSupported { .. }
+            rue_error::ErrorKind::ComptimeEvaluationFailed { .. }
         ))
     ));
     for name in ["ZERO", "OVF", "LOCAL"] {

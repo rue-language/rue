@@ -92,6 +92,9 @@ pub use comptime::{
     comptime_depth_exceeded_reason, comptime_depth_over_limit, next_comptime_depth,
 };
 pub use context::ConstValue;
+pub(crate) use context::{
+    ConstAggregate, ConstAggregateKind, MAX_COMPTIME_AGGREGATE_NODES, register_comptime_aggregate,
+};
 pub use declaration_index::RirDeclarationIndexWork;
 pub(crate) use fact_mode::StructuredTypeSyntax;
 pub(crate) use inference_ctx::HostInferenceFacts;

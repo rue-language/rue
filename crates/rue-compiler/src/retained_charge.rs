@@ -568,6 +568,16 @@ impl<D: RetainedCharge, M: RetainedCharge> RetainedCharge
             Self::Function(value) => value.retained_charge(),
             Self::String(value) => value.retained_charge(),
             Self::Float(value) => value.retained_charge(),
+            Self::Aggregate(value) => (std::mem::size_of_val(value) as u64)
+                .saturating_add(std::mem::size_of_val(value.as_ref()) as u64)
+                .saturating_add(value.ty.retained_charge())
+                .saturating_add(match &value.kind {
+                    rue_air::CanonicalAggregateKind::Struct(values)
+                    | rue_air::CanonicalAggregateKind::Array(values) => values.retained_charge(),
+                    rue_air::CanonicalAggregateKind::Enum { payload, .. } => {
+                        payload.retained_charge()
+                    }
+                }),
             Self::Integer(_) | Self::Bool(_) | Self::Unit => 0,
         }
     }
@@ -698,6 +708,17 @@ impl<K: RetainedCharge, M: RetainedCharge> RetainedCharge
             Self::Function(value) => value.retained_charge(),
             Self::String(value) => value.retained_charge(),
             Self::Float(value) => value.retained_charge(),
+            Self::Aggregate(value) => (std::mem::size_of_val(value.as_ref()) as u64)
+                .saturating_add(value.ty.retained_charge())
+                .saturating_add(match &value.kind {
+                    rue_air::SemanticImportAggregateKind::Struct(values)
+                    | rue_air::SemanticImportAggregateKind::Array(values) => {
+                        values.retained_charge()
+                    }
+                    rue_air::SemanticImportAggregateKind::Enum { payload, .. } => {
+                        payload.retained_charge()
+                    }
+                }),
             Self::Integer(_) | Self::Bool(_) | Self::Unit => 0,
         }
     }

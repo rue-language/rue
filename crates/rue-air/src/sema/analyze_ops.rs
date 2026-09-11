@@ -51,6 +51,7 @@ pub(crate) enum FloatConstSource<'a> {
 /// Where a string value came from when it is materialized into AIR.
 pub(crate) enum StringConstSource {
     Literal(RirStructuralAnchor),
+    NamedConst(RirStructuralAnchor),
     Synthesized,
 }
 
@@ -101,6 +102,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
         let local_id = match source {
             StringConstSource::Literal(anchor) => ctx.add_local_string(content, anchor),
+            StringConstSource::NamedConst(anchor) => ctx.add_local_read_only_data(content, anchor),
             StringConstSource::Synthesized => ctx.add_synthesized_string(&content),
         };
         Ok(AirInstData::StringConst(local_id))

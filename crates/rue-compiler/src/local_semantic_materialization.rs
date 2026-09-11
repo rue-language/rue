@@ -8,7 +8,7 @@
 //! configuration are absent because relocation of already-analyzed AIR is
 //! configuration-neutral; they remain part of the downstream CFG query key.
 
-use rue_air::Node;
+use rue_air::{CanonicalAggregateKind, Node};
 use std::hash::Hash;
 use std::sync::Arc;
 
@@ -1058,6 +1058,27 @@ fn mangle_canonical_value(value: &crate::CanonicalArgumentValue) -> String {
         CanonicalArgumentValue::Float(value) => {
             format!("vfloat{}", rue_air::mangle_symbol_component(value))
         }
+        CanonicalArgumentValue::Aggregate(value) => {
+            let children = match &value.kind {
+                CanonicalAggregateKind::Struct(values) | CanonicalAggregateKind::Array(values) => {
+                    values
+                        .iter()
+                        .map(mangle_canonical_value)
+                        .collect::<Vec<_>>()
+                        .join("_")
+                        .to_string()
+                }
+                CanonicalAggregateKind::Enum { variant, payload } => format!(
+                    "e{variant}_{}",
+                    payload
+                        .iter()
+                        .map(mangle_canonical_value)
+                        .collect::<Vec<_>>()
+                        .join("_")
+                ),
+            };
+            format!("vagg{}_{}", mangle_canonical_type(&value.ty), children)
+        }
     }
 }
 
@@ -1668,15 +1689,30 @@ pub(crate) fn select_materialization_facts(
                 self.instance_type(ty);
             }
             for value in arguments.values.iter() {
-                match value {
-                    crate::CanonicalArgumentValue::Type(ty) => self.instance_type(ty),
-                    crate::CanonicalArgumentValue::Function(function) => self.callable(function),
-                    crate::CanonicalArgumentValue::Integer(_)
-                    | crate::CanonicalArgumentValue::Bool(_)
-                    | crate::CanonicalArgumentValue::Unit
-                    | crate::CanonicalArgumentValue::String(_)
-                    | crate::CanonicalArgumentValue::Float(_) => {}
+                self.argument(value);
+            }
+        }
+
+        fn argument(&mut self, value: &crate::CanonicalArgumentValue) {
+            match value {
+                crate::CanonicalArgumentValue::Type(ty) => self.instance_type(ty),
+                crate::CanonicalArgumentValue::Function(function) => self.callable(function),
+                crate::CanonicalArgumentValue::Aggregate(value) => {
+                    self.instance_type(&value.ty);
+                    let values = match &value.kind {
+                        CanonicalAggregateKind::Struct(values)
+                        | CanonicalAggregateKind::Array(values) => values,
+                        CanonicalAggregateKind::Enum { payload, .. } => payload,
+                    };
+                    for value in values.iter() {
+                        self.argument(value);
+                    }
                 }
+                crate::CanonicalArgumentValue::Integer(_)
+                | crate::CanonicalArgumentValue::Bool(_)
+                | crate::CanonicalArgumentValue::Unit
+                | crate::CanonicalArgumentValue::String(_)
+                | crate::CanonicalArgumentValue::Float(_) => {}
             }
         }
 

@@ -700,7 +700,7 @@ impl SemanticNucleusTypeProvider<'_> {
         }
     }
 
-    fn type_is_copy(
+    pub(crate) fn type_is_copy(
         &mut self,
         ty: &crate::durable_semantics::DurableType,
     ) -> Result<
@@ -882,7 +882,7 @@ impl SemanticNucleusTypeProvider<'_> {
         }
     }
 
-    fn candidate(
+    pub(in crate::revisioned_query_database) fn candidate(
         &self,
         module: &ModuleId,
         name: &str,

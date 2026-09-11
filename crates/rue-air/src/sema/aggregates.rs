@@ -1560,14 +1560,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }),
                 _ => None,
             };
-            let (data, ty) = self.materialize_const_value(
+            let (air_ref, ty) = self.materialize_comptime_value(
+                air,
                 ctx,
                 const_info.value,
                 const_info.ty,
                 atom_anchor,
                 span,
             )?;
-            let air_ref = air.add_inst(AirInst { data, ty, span });
             return Ok(AnalysisResult::new(air_ref, ty));
         }
 

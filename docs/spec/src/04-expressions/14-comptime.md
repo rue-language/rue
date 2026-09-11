@@ -94,6 +94,17 @@ parameter = [ "comptime" ] IDENT ":" type ;
 ```
 
 Comptime parameters can have any type, including the special `type` type (see below).
+For value parameters, a reduced aggregate value is supported when its type is a
+Copy struct, enum, or array whose children are themselves in the comptime value
+domain. Aggregate values are checked against their declared field, variant, or
+element types before they cross a comptime call boundary. Move and linear
+aggregate types remain runtime-only values and are rejected when used as
+comptime values.
+
+Structural comptime values are bounded by an implementation resource limit of
+64 levels of nesting and 4096 total value nodes. Exceeding either limit is a
+compile-time error; implementations must reject the value before expanding it
+or recursively materializing its children.
 
 ```rue
 fn multiply(comptime n: i32, value: i32) -> i32 {
@@ -723,6 +734,12 @@ following base cases:
 - a reference to a `comptime` parameter in scope (4.14:5), including a
   `comptime T: type` parameter, whose bound value is fixed at each
   specialization.
+- a struct, enum, or fixed-length array initializer whose type is Copy and
+  whose fields, payload values, or elements are each comptime-evaluable. A
+  struct initializer must name every field exactly once. Enum payloads must
+  match the selected variant, and an array initializer must have the declared
+  length. Array repeat initializers are included when both the repeated value
+  and the count are comptime-evaluable.
 
 A reference to a runtime binding is **not** comptime-evaluable: neither a
 non-`comptime` `let` binding (Chapter 6) nor a non-`comptime` function
@@ -754,6 +771,10 @@ comptime-evaluable, and is otherwise not:
 - parenthesization `( e )`;
 - a block `{ … }` — including a `comptime { … }` block (4.14:2) — whose `let`
   initializers and tail expression are comptime-evaluable.
+- struct, enum, and fixed-length array construction, field access, and constant
+  array indexing, subject to the Copy, declared-shape, and resource rules in
+  4.14:5 and 4.14:26. These forms preserve the nominal identity and declared
+  scalar widths of nested values.
 
 Evaluation of these forms follows runtime semantics exactly, subject to the
 comptime overflow and division restrictions of 4.14:4. If any operand is not

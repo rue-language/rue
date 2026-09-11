@@ -2849,6 +2849,7 @@ fn render_const_info(
         V::Unit => "unit".to_owned(),
         V::String(value) => format!("string:{}", resolve_symbol(value.spur())),
         V::Float(value) => format!("float:{}", resolve_symbol(value.spur())),
+        V::Aggregate(_) => "aggregate".to_owned(),
     };
     ConstInfoRender {
         is_pub: info.is_pub,

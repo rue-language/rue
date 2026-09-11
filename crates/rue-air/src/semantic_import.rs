@@ -203,6 +203,64 @@ pub enum SemanticImportConstValue<K, M> {
     /// boundary.
     String(std::sync::Arc<str>),
     Float(std::sync::Arc<str>),
+    Aggregate(std::sync::Arc<SemanticImportAggregate<K, M>>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SemanticImportAggregate<K, M> {
+    pub ty: SemanticImportType<K, M>,
+    pub kind: SemanticImportAggregateKind<K, M>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SemanticImportAggregateKind<K, M> {
+    Struct(std::sync::Arc<[SemanticImportConstValue<K, M>]>),
+    Array(std::sync::Arc<[SemanticImportConstValue<K, M>]>),
+    Enum {
+        variant: u32,
+        payload: std::sync::Arc<[SemanticImportConstValue<K, M>]>,
+    },
+}
+
+/// Shared bounds for structural comptime values crossing semantic/query
+/// boundaries. The check runs before recursive local materialization.
+pub const MAX_COMPTIME_VALUE_DEPTH: usize = 64;
+pub const MAX_COMPTIME_VALUE_NODES: usize = 4096;
+
+pub fn semantic_import_const_value_within_limits<K, M>(
+    value: &SemanticImportConstValue<K, M>,
+) -> bool {
+    crate::semantic_identity::comptime_values_within_limits(
+        std::slice::from_ref(value),
+        0,
+        &mut 0,
+        &|value| match value {
+            SemanticImportConstValue::Aggregate(aggregate) => match &aggregate.kind {
+                SemanticImportAggregateKind::Struct(values)
+                | SemanticImportAggregateKind::Array(values) => values,
+                SemanticImportAggregateKind::Enum { payload, .. } => payload,
+            },
+            _ => &[],
+        },
+    )
+}
+
+#[allow(dead_code)] // consumed by compiler durable projection
+pub fn semantic_import_const_values_within_limits<K, M>(
+    values: &[SemanticImportConstValue<K, M>],
+) -> bool {
+    // The caller is about to wrap these children in one aggregate node.
+    let mut nodes = 1;
+    crate::semantic_identity::comptime_values_within_limits(values, 1, &mut nodes, &|value| {
+        match value {
+            SemanticImportConstValue::Aggregate(aggregate) => match &aggregate.kind {
+                SemanticImportAggregateKind::Struct(values)
+                | SemanticImportAggregateKind::Array(values) => values,
+                SemanticImportAggregateKind::Enum { payload, .. } => payload,
+            },
+            _ => &[],
+        }
+    })
 }
 
 macro_rules! semantic_import_const_schema {
@@ -215,6 +273,7 @@ macro_rules! semantic_import_const_schema {
             Unit, SemanticImportConstValue::Unit, 4, "unit";
             String, SemanticImportConstValue::String(..), 5, "string";
             Float, SemanticImportConstValue::Float(..), 6, "float";
+            Aggregate, SemanticImportConstValue::Aggregate(..), 7, "aggregate";
         }
     };
 }
@@ -410,6 +469,41 @@ impl<K, M> SemanticImportConstValue<K, M> {
             Self::Unit => SemanticImportConstValue::Unit,
             Self::String(value) => SemanticImportConstValue::String(value.clone()),
             Self::Float(value) => SemanticImportConstValue::Float(value.clone()),
+            Self::Aggregate(value) => {
+                SemanticImportConstValue::Aggregate(Arc::new(SemanticImportAggregate {
+                    ty: value.ty.try_map_identities(key, module)?,
+                    kind: match &value.kind {
+                        SemanticImportAggregateKind::Struct(values) => {
+                            SemanticImportAggregateKind::Struct(
+                                values
+                                    .iter()
+                                    .map(|v| v.try_map_identities(key, module))
+                                    .collect::<Result<Vec<_>, _>>()?
+                                    .into(),
+                            )
+                        }
+                        SemanticImportAggregateKind::Array(values) => {
+                            SemanticImportAggregateKind::Array(
+                                values
+                                    .iter()
+                                    .map(|v| v.try_map_identities(key, module))
+                                    .collect::<Result<Vec<_>, _>>()?
+                                    .into(),
+                            )
+                        }
+                        SemanticImportAggregateKind::Enum { variant, payload } => {
+                            SemanticImportAggregateKind::Enum {
+                                variant: *variant,
+                                payload: payload
+                                    .iter()
+                                    .map(|v| v.try_map_identities(key, module))
+                                    .collect::<Result<Vec<_>, _>>()?
+                                    .into(),
+                            }
+                        }
+                    },
+                }))
+            }
         })
     }
 }
@@ -442,6 +536,27 @@ pub enum SemanticImportFailure {
     BuiltinNominalShadow,
     MissingBodyIdentity,
     IncompleteMaterialization,
+}
+
+fn local_const_value_fits_type(
+    value: &ConstValue,
+    expected: Type,
+    type_pool: &TypeInternPool,
+) -> bool {
+    match value {
+        ConstValue::Integer(value) => expected
+            .integer_semantics()
+            .is_some_and(|integer| integer.fits_i128(*value)),
+        ConstValue::Bool(_) => expected == Type::BOOL,
+        ConstValue::Unit => expected == Type::UNIT,
+        ConstValue::Type(_) | ConstValue::Function(_) => expected == Type::COMPTIME_TYPE,
+        ConstValue::String(_) => expected
+            .as_struct()
+            .and_then(|id| type_pool.text_view_kind(id))
+            .is_some_and(|kind| matches!(kind, crate::types::TextViewKind::Str)),
+        ConstValue::Float(_) => expected.is_float() || expected == Type::COMPTIME_FLOAT,
+        ConstValue::Aggregate(value) => value.ty == expected,
+    }
 }
 
 /// One exact nominal fact supplied to a body-local semantic epoch.
@@ -575,6 +690,66 @@ fn specialization_key<K: Clone + std::hash::Hash, M: Clone + std::hash::Hash>(
             }
             SemanticImportConstValue::Float(value) => {
                 crate::CanonicalArgumentValue::Float(value.clone())
+            }
+            SemanticImportConstValue::Aggregate(value) => {
+                fn convert<K: Clone + std::hash::Hash, M: Clone + std::hash::Hash>(
+                    value: &SemanticImportConstValue<K, M>,
+                ) -> crate::CanonicalArgumentValue<K, M> {
+                    match value {
+                        SemanticImportConstValue::Integer(v) => {
+                            crate::CanonicalArgumentValue::Integer(*v)
+                        }
+                        SemanticImportConstValue::Bool(v) => {
+                            crate::CanonicalArgumentValue::Bool(*v)
+                        }
+                        SemanticImportConstValue::Type(v) => {
+                            crate::CanonicalArgumentValue::Type(Node::new(import_type_identity(v)))
+                        }
+                        SemanticImportConstValue::Function(v) => {
+                            crate::CanonicalArgumentValue::Function(Node::new(
+                                FunctionInstanceKey::Definition(v.clone()),
+                            ))
+                        }
+                        SemanticImportConstValue::Unit => crate::CanonicalArgumentValue::Unit,
+                        SemanticImportConstValue::String(v) => {
+                            crate::CanonicalArgumentValue::String(v.clone())
+                        }
+                        SemanticImportConstValue::Float(v) => {
+                            crate::CanonicalArgumentValue::Float(v.clone())
+                        }
+                        SemanticImportConstValue::Aggregate(a) => {
+                            crate::CanonicalArgumentValue::Aggregate(Node::new(convert_aggregate(
+                                a,
+                            )))
+                        }
+                    }
+                }
+                fn convert_aggregate<K: Clone + std::hash::Hash, M: Clone + std::hash::Hash>(
+                    value: &SemanticImportAggregate<K, M>,
+                ) -> crate::CanonicalAggregateValue<K, M> {
+                    crate::CanonicalAggregateValue {
+                        ty: Node::new(import_type_identity(&value.ty)),
+                        kind: match &value.kind {
+                            SemanticImportAggregateKind::Struct(values) => {
+                                crate::CanonicalAggregateKind::Struct(
+                                    values.iter().map(convert).collect::<Vec<_>>().into(),
+                                )
+                            }
+                            SemanticImportAggregateKind::Array(values) => {
+                                crate::CanonicalAggregateKind::Array(
+                                    values.iter().map(convert).collect::<Vec<_>>().into(),
+                                )
+                            }
+                            SemanticImportAggregateKind::Enum { variant, payload } => {
+                                crate::CanonicalAggregateKind::Enum {
+                                    variant: *variant,
+                                    payload: payload.iter().map(convert).collect::<Vec<_>>().into(),
+                                }
+                            }
+                        },
+                    }
+                }
+                crate::CanonicalArgumentValue::Aggregate(Node::new(convert_aggregate(value)))
             }
         })
         .collect::<Vec<_>>();
@@ -1735,6 +1910,15 @@ where
                     ))
             },
             |specialization| {
+                // The specialization key is a retained canonical fact.  Do
+                // the complete borrowed-tree bound check before converting
+                // children into Nodes; import_const_value_local's bounds
+                // check cannot protect this already-canonical path.
+                if !semantic_import_const_values_within_limits(&specialization.value_arguments) {
+                    return Err(SemanticBodyImportFailure::Semantic(
+                        SemanticImportFailure::InvalidStructuralType,
+                    ));
+                }
                 let key = specialization_key(specialization);
                 let symbol = self.functions.get(&key).copied().ok_or(
                     SemanticBodyImportFailure::Semantic(SemanticImportFailure::MissingFunction),
@@ -2059,7 +2243,15 @@ where
         &self,
         value: &SemanticImportConstValue<K, M>,
     ) -> Result<ConstValue, SemanticImportFailure> {
-        Ok(match value {
+        self.import_const_value_local_as(value, None)
+    }
+
+    fn import_const_value_local_as(
+        &self,
+        value: &SemanticImportConstValue<K, M>,
+        expected: Option<Type>,
+    ) -> Result<ConstValue, SemanticImportFailure> {
+        let imported = match value {
             SemanticImportConstValue::Integer(v) => ConstValue::Integer(*v),
             SemanticImportConstValue::Bool(v) => ConstValue::Bool(*v),
             SemanticImportConstValue::Type(v) => ConstValue::Type(self.import_type_local(v)?),
@@ -2086,7 +2278,84 @@ where
                     .map_err(SemanticImportFailure::Interner)?
                     .into(),
             ),
-        })
+            SemanticImportConstValue::Aggregate(value) => {
+                if !semantic_import_const_value_within_limits(&SemanticImportConstValue::Aggregate(
+                    value.clone(),
+                )) {
+                    return Err(SemanticImportFailure::InvalidStructuralType);
+                }
+                let ty = self.import_type_local(&value.ty)?;
+                if !ty.is_copy_in_pool(&self.type_pool) {
+                    return Err(SemanticImportFailure::InvalidStructuralType);
+                }
+                let kind = match &value.kind {
+                    SemanticImportAggregateKind::Struct(values) => {
+                        let Some(def) = self.type_pool.get_struct_def(ty) else {
+                            return Err(SemanticImportFailure::InvalidStructuralType);
+                        };
+                        if def.fields.len() != values.len() {
+                            return Err(SemanticImportFailure::InvalidStructuralType);
+                        }
+                        crate::sema::ConstAggregateKind::Struct(
+                            values
+                                .iter()
+                                .zip(def.fields.iter())
+                                .map(|(v, field)| {
+                                    self.import_const_value_local_as(v, Some(field.ty))
+                                })
+                                .collect::<Result<Vec<_>, _>>()?
+                                .into(),
+                        )
+                    }
+                    SemanticImportAggregateKind::Array(values) => {
+                        let Some((element, length)) = self.type_pool.get_array_info(ty) else {
+                            return Err(SemanticImportFailure::InvalidStructuralType);
+                        };
+                        if length as usize != values.len() {
+                            return Err(SemanticImportFailure::InvalidStructuralType);
+                        }
+                        crate::sema::ConstAggregateKind::Array(
+                            values
+                                .iter()
+                                .map(|v| self.import_const_value_local_as(v, Some(element)))
+                                .collect::<Result<Vec<_>, _>>()?
+                                .into(),
+                        )
+                    }
+                    SemanticImportAggregateKind::Enum { variant, payload } => {
+                        let Some(def) = self.type_pool.get_enum_def(ty) else {
+                            return Err(SemanticImportFailure::InvalidStructuralType);
+                        };
+                        let Some(payload_types) = def.variant_payloads.get(*variant as usize)
+                        else {
+                            return Err(SemanticImportFailure::InvalidStructuralType);
+                        };
+                        if payload_types.len() != payload.len() {
+                            return Err(SemanticImportFailure::InvalidStructuralType);
+                        }
+                        crate::sema::ConstAggregateKind::Enum {
+                            variant: *variant,
+                            payload: payload
+                                .iter()
+                                .zip(payload_types.iter())
+                                .map(|(v, payload_type)| {
+                                    self.import_const_value_local_as(v, Some(*payload_type))
+                                })
+                                .collect::<Result<Vec<_>, _>>()?
+                                .into(),
+                        }
+                    }
+                };
+                crate::sema::register_comptime_aggregate(crate::sema::ConstAggregate { ty, kind })
+                    .ok_or(SemanticImportFailure::InvalidStructuralType)?
+            }
+        };
+        if let Some(expected) = expected
+            && !local_const_value_fits_type(&imported, expected, &self.type_pool)
+        {
+            return Err(SemanticImportFailure::InvalidStructuralType);
+        }
+        Ok(imported)
     }
 
     /// Project an imported local type back through this epoch's stable join.
@@ -2221,10 +2490,17 @@ where
         if !Arc::ptr_eq(&value.epoch, &self.epoch) {
             return Err(SemanticImportFailure::ForeignLocalValue);
         }
-        Ok(match value.value {
-            ConstValue::Integer(v) => SemanticImportConstValue::Integer(v),
-            ConstValue::Bool(v) => SemanticImportConstValue::Bool(v),
-            ConstValue::Type(v) => SemanticImportConstValue::Type(self.export_type_local(v)?),
+        Ok(self.export_const_value_local(&value.value)?)
+    }
+
+    fn export_const_value_local(
+        &self,
+        value: &ConstValue,
+    ) -> Result<SemanticImportConstValue<K, M>, SemanticImportFailure> {
+        Ok(match value {
+            ConstValue::Integer(v) => SemanticImportConstValue::Integer(*v),
+            ConstValue::Bool(v) => SemanticImportConstValue::Bool(*v),
+            ConstValue::Type(v) => SemanticImportConstValue::Type(self.export_type_local(*v)?),
             ConstValue::Function(symbol) => {
                 let Some(FunctionInstanceKey::Definition(key)) =
                     self.function_exports.get(&symbol.spur())
@@ -2239,6 +2515,40 @@ where
             }
             ConstValue::Float(content) => {
                 SemanticImportConstValue::Float(Arc::from(self.interner.resolve(&content.spur())))
+            }
+            ConstValue::Aggregate(aggregate) => {
+                let ty = self.export_type_local(aggregate.ty)?;
+                let kind = match &aggregate.kind {
+                    crate::sema::ConstAggregateKind::Struct(values) => {
+                        SemanticImportAggregateKind::Struct(
+                            values
+                                .iter()
+                                .map(|v| self.export_const_value_local(v))
+                                .collect::<Result<Vec<_>, _>>()?
+                                .into(),
+                        )
+                    }
+                    crate::sema::ConstAggregateKind::Array(values) => {
+                        SemanticImportAggregateKind::Array(
+                            values
+                                .iter()
+                                .map(|v| self.export_const_value_local(v))
+                                .collect::<Result<Vec<_>, _>>()?
+                                .into(),
+                        )
+                    }
+                    crate::sema::ConstAggregateKind::Enum { variant, payload } => {
+                        SemanticImportAggregateKind::Enum {
+                            variant: *variant,
+                            payload: payload
+                                .iter()
+                                .map(|v| self.export_const_value_local(v))
+                                .collect::<Result<Vec<_>, _>>()?
+                                .into(),
+                        }
+                    }
+                };
+                SemanticImportConstValue::Aggregate(Arc::new(SemanticImportAggregate { ty, kind }))
             }
         })
     }
@@ -2500,7 +2810,7 @@ mod tests {
             );
         }
 
-        assert_eq!(SEMANTIC_IMPORT_CONST_KINDS.len(), 7);
+        assert_eq!(SEMANTIC_IMPORT_CONST_KINDS.len(), 8);
         for (tag, kind) in SEMANTIC_IMPORT_CONST_KINDS.iter().copied().enumerate() {
             assert_eq!(usize::from(kind.schema_tag()), tag);
             assert_eq!(kind.to_string(), kind.display_name());

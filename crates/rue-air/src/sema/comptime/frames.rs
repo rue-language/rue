@@ -113,6 +113,8 @@ pub enum ComptimeMatchPattern<N> {
         type_name: N,
         variant: N,
         binding_count: usize,
+        /// Names of payload bindings in source order; `None` marks a non-binding element.
+        binding_names: Vec<Option<N>>,
     },
     /// A struct pattern (RUE-2175). Its scrutinee is a struct value, which no
     /// comptime scalar is, so a match containing one is never selected here.
@@ -210,6 +212,15 @@ pub fn decode_comptime_match_pattern<N>(
             type_name: name_from_symbol((*type_name).into()),
             variant: name_from_symbol((*variant).into()),
             binding_count: elements.len(),
+            binding_names: elements
+                .iter()
+                .map(|element| match element {
+                    rue_rir::RirPatternElementView::Binding(symbol) => {
+                        Some(name_from_symbol(symbol.into()))
+                    }
+                    rue_rir::RirPatternElementView::Nested(_) => None,
+                })
+                .collect(),
         },
         rue_rir::RirPatternView::Struct { .. } => ComptimeMatchPattern::Struct,
     }

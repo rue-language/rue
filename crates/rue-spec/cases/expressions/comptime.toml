@@ -338,6 +338,52 @@ fn main() -> i32 {
 """
 exit_code = 42
 
+[[case]]
+name = "comptime_param_copy_struct_value"
+spec = ["4.14:5", "4.14:26", "4.14:27"]
+description = "A Copy struct value is reduced structurally, including declaration-order field canonicalization"
+source = """
+@copy struct Pair { left: i32, right: i32 }
+fn sum(comptime p: Pair) -> i32 { p.left * 2 + p.right }
+fn main() -> i32 { sum(Pair { right: 2, left: 20 }) }
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_param_copy_array_value"
+spec = ["4.14:5", "4.14:26", "4.14:27"]
+description = "A fixed-length array value is reduced structurally and indexed in a comptime function"
+source = """
+fn first(comptime values: [i32; 2]) -> i32 { values[0] }
+fn main() -> i32 { first([42, 0]) }
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_param_copy_enum_value"
+spec = ["4.14:5", "4.14:26", "4.14:27", "4.14:19"]
+description = "A Copy enum value selects a comptime match arm and preserves its payload"
+source = """
+enum Choice { Answer(i32), Empty }
+fn choose(comptime choice: Choice) -> i32 {
+    match choice { Choice.Answer(value) => value, Choice.Empty => 0 }
+}
+fn main() -> i32 { choose(Choice.Answer(42)) }
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_param_affine_aggregate_rejected"
+spec = ["4.14:5", "4.14:6", "4.14:26"]
+description = "A move aggregate cannot cross the structural comptime value boundary"
+source = """
+struct Affine { value: i32 }
+fn read(comptime value: Affine) -> i32 { value.value }
+fn main() -> i32 { read(Affine { value: 42 }) }
+"""
+compile_fail = true
+error_contains = ["E1200", "structural comptime values require a Copy type"]
+
 # =============================================================================
 # Phase 3: Type Parameters (ADR-0025)
 # =============================================================================

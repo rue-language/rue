@@ -16,6 +16,37 @@ pub trait ComptimeValue: Clone {
     fn as_boolean(&self) -> Option<bool>;
     fn as_type(&self) -> Option<Self::Type>;
 
+    /// Return the semantic type carried by a reduced value when the host can
+    /// represent it without consulting syntax. This is the type source for
+    /// aggregate construction; contextual hosts may still prefer their
+    /// resolved expression map for untyped literals.
+    fn value_type(&self) -> Option<Self::Type> {
+        self.as_integer_type()
+            .or_else(|| self.as_float_type())
+            .or_else(|| self.as_type())
+    }
+
+    fn aggregate_struct(_ty: Self::Type, _fields: Vec<Self>) -> Option<Self> {
+        None
+    }
+    fn aggregate_array(_ty: Self::Type, _elements: Vec<Self>) -> Option<Self> {
+        None
+    }
+    fn aggregate_enum(_ty: Self::Type, _variant: u32, _payload: Vec<Self>) -> Option<Self> {
+        None
+    }
+
+    /// Borrow the payload of a reduced enum value for match-arm bindings.
+    /// Pattern selection remains in the canonical engine; hosts expose only
+    /// their representation-neutral payload projection.
+    fn aggregate_enum_payload(&self) -> Option<(u32, Vec<Self>)> {
+        None
+    }
+
+    fn aggregate_array_element(&self, _index: usize) -> Option<Self> {
+        None
+    }
+
     /// Whether a reduced value may participate in an anonymous nominal's
     /// captured value substitution.  Semantic domains with lexical handles
     /// (for example modules and target descriptors) can opt out; ordinary

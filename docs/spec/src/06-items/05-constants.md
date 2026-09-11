@@ -113,12 +113,13 @@ const OK: i32 = 2147483647;          // in range: fine
 {{ rule(id="6.5:14", cat="informative") }}
 
 In the current revision the compile-time-evaluable expression forms (6.5:2)
-produce scalar values — integers and `bool` — plus string values from string
-literals (6.5:16), so a value constant's type is in practice a scalar type or
-`str`. There is no const-evaluable form that yields a user struct or an
-array: an aggregate initializer such as a struct literal or an array literal
-is not compile-time evaluable and is rejected (E0434). Constants of aggregate
-type may be revisited in a future revision.
+produce scalar values, string values (6.5:16), and bounded structural values
+while evaluating an initializer. A constant initializer may construct a Copy
+struct, enum, or fixed-length array as an intermediate value, pass it through a
+comptime call, and project a result from it. Such structural values preserve
+nominal identity, field and variant shape, nested scalar widths, and the
+64-level/4096-node limits. Move and linear aggregate values remain outside the
+comptime-evaluable domain.
 
 ## String Constants
 

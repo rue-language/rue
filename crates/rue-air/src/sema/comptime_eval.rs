@@ -64,10 +64,13 @@ use super::comptime::{
     ComptimeMethodDescriptor, ComptimeName, ComptimeNamedValueResolution, ComptimeOutcome,
     ComptimeProgramFacts, ComptimeRejections, ComptimeSelection, ComptimeSemanticRejection,
     ComptimeStructuredTypeResolution, ComptimeStructuredTypes, ComptimeTrap, ComptimeType,
-    ComptimeTypeAlgebra, ComptimeValueAlgebra, comptime_arithmetic_overflow_reason,
+    ComptimeTypeAlgebra, ComptimeValue, ComptimeValueAlgebra, comptime_arithmetic_overflow_reason,
     comptime_untyped_integer_result,
 };
-use super::context::{AnalysisContext, CheckedConstIndexCandidate, ConstValue};
+use super::context::{
+    AnalysisContext, CheckedConstIndexCandidate, ConstAggregate, ConstAggregateKind, ConstValue,
+    comptime_aggregate, register_comptime_aggregate,
+};
 use super::info::FunctionCallInfo;
 use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 
@@ -159,6 +162,7 @@ fn update_checked_const_index_test_stats(update: impl FnOnce(&mut CheckedConstIn
 /// engine must not replay already validated arguments.
 pub struct OrdinaryComptimeCallBinding {
     parameter_names: Vec<Spur>,
+    parameter_types: Vec<Type>,
     parameter_is_type: Vec<bool>,
     arguments: Vec<ConstValue>,
 }
@@ -239,6 +243,52 @@ impl super::comptime::ComptimeValue for ConstValue {
             Self::Type(value) => Some(*value),
             _ => None,
         }
+    }
+    fn value_type(&self) -> Option<Type> {
+        match self {
+            ConstValue::Integer(_) => Some(self.get_type()),
+            ConstValue::Bool(_) => Some(Type::BOOL),
+            ConstValue::Type(_) | ConstValue::Function(_) => Some(Type::COMPTIME_TYPE),
+            ConstValue::Float(_) => Some(Type::COMPTIME_FLOAT),
+            ConstValue::Aggregate(aggregate) => Some(aggregate.ty),
+            ConstValue::Unit => Some(Type::UNIT),
+            ConstValue::String(_) => None,
+        }
+    }
+    fn aggregate_struct(ty: Type, fields: Vec<Self>) -> Option<Self> {
+        register_comptime_aggregate(ConstAggregate {
+            ty,
+            kind: ConstAggregateKind::Struct(fields.into()),
+        })
+    }
+    fn aggregate_array(ty: Type, elements: Vec<Self>) -> Option<Self> {
+        register_comptime_aggregate(ConstAggregate {
+            ty,
+            kind: ConstAggregateKind::Array(elements.into()),
+        })
+    }
+    fn aggregate_enum(ty: Type, variant: u32, payload: Vec<Self>) -> Option<Self> {
+        register_comptime_aggregate(ConstAggregate {
+            ty,
+            kind: ConstAggregateKind::Enum {
+                variant,
+                payload: payload.into(),
+            },
+        })
+    }
+    fn aggregate_enum_payload(&self) -> Option<(u32, Vec<Self>)> {
+        let aggregate = comptime_aggregate(self.clone())?;
+        let ConstAggregateKind::Enum { variant, payload } = &aggregate.kind else {
+            return None;
+        };
+        Some((*variant, payload.to_vec()))
+    }
+    fn aggregate_array_element(&self, index: usize) -> Option<Self> {
+        let aggregate = comptime_aggregate(self.clone())?;
+        let ConstAggregateKind::Array(values) = &aggregate.kind else {
+            return None;
+        };
+        values.get(index).cloned()
     }
 }
 
@@ -869,12 +919,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
     }
 
-    /// The resolved integer type of an expression, when known.
+    /// The resolved type of an expression, when known. Aggregate literals use
+    /// the same query-backed type map as scalar literals so the shared engine
+    /// can construct one typed structural value.
     fn const_expr_type(&self, env: &ComptimeEnv, inst_ref: InstRef) -> Option<Type> {
-        env.resolved_types?
-            .get(&inst_ref)
-            .copied()
-            .filter(Type::is_integer)
+        env.resolved_types?.get(&inst_ref).copied()
     }
 
     /// Finish an arithmetic operation using the kernel's typed result and its
@@ -965,7 +1014,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             if type_flags[index] {
                 type_arguments.push(*type_bindings.get(parameter)?);
             } else {
-                value_arguments.push(*value_bindings.get(parameter)?);
+                value_arguments.push(value_bindings.get(parameter)?.clone());
             }
         }
         let key = ComptimeCallKey {
@@ -1013,7 +1062,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     &frame.value_bindings,
                 )
             {
-                self.memoize_comptime_reduction(key, *value);
+                self.memoize_comptime_reduction(key, value.clone());
             }
         }
         result
@@ -1488,6 +1537,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let param_data = self.body_param_data(admission.payload.params);
         Ok(OrdinaryComptimeCallBinding {
             parameter_names: param_data.names().to_vec(),
+            parameter_types: param_data.types().to_vec(),
             parameter_is_type: self.comptime_type_param_flags(&admission.payload),
             arguments: Vec::with_capacity(_argument_count),
         })
@@ -1505,7 +1555,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // let it mask a later child trap/abort.
         Ok(push_ordinary_comptime_call_argument(
             binding,
-            *argument.value(),
+            argument.value().clone(),
         ))
     }
 
@@ -1579,6 +1629,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         expected: Type,
         span: Span,
     ) -> CompileResult<()> {
+        if matches!(value, ConstValue::Aggregate(_))
+            && !expected.is_copy_in_pool(self.body_type_pool())
+        {
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: "structural comptime values require a Copy type".to_owned(),
+                },
+                span,
+            ));
+        }
+        if matches!(value, ConstValue::Aggregate(_)) {
+            return self.validate_comptime_aggregate_value(&value, expected, 0, &mut 0, span);
+        }
         let string_type = Some(self.get_or_create_str_struct(span)?);
         validate_comptime_value_for_type_impl(
             self.body_interner(),
@@ -1591,6 +1654,156 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             string_type,
             |ty| self.is_str_struct(ty),
         )
+    }
+
+    /// Validate a structural argument against the complete local type shape
+    /// before the comptime call is reduced.  Aggregate handles are opaque,
+    /// so checking only their outer `Type` would admit malformed field counts,
+    /// nested ranges, or a value whose nominal type is not Copy.
+    fn validate_comptime_aggregate_value(
+        &mut self,
+        value: &ConstValue,
+        expected: Type,
+        depth: usize,
+        nodes: &mut usize,
+        span: Span,
+    ) -> CompileResult<()> {
+        if depth > crate::MAX_COMPTIME_VALUE_DEPTH {
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: "structural comptime value exceeds resource limits".to_owned(),
+                },
+                span,
+            ));
+        }
+        *nodes = nodes.saturating_add(1);
+        if *nodes > crate::sema::MAX_COMPTIME_AGGREGATE_NODES {
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: "structural comptime value exceeds resource limits".to_owned(),
+                },
+                span,
+            ));
+        }
+        let ConstValue::Aggregate(aggregate) = value else {
+            let valid = match value {
+                ConstValue::Integer(value) => expected
+                    .integer_semantics()
+                    .is_some_and(|semantics| semantics.fits_i128(*value)),
+                ConstValue::Bool(_) => expected == Type::BOOL,
+                ConstValue::Unit => expected == Type::UNIT,
+                ConstValue::Type(_) => expected == Type::COMPTIME_TYPE,
+                ConstValue::Float(_) => expected.is_float(),
+                ConstValue::String(_) => self.is_str_struct(expected),
+                ConstValue::Function(_) => false,
+                ConstValue::Aggregate(_) => unreachable!(),
+            };
+            if valid {
+                return Ok(());
+            }
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: self.format_type_name(expected),
+                    found: value.get_type().name().to_owned(),
+                },
+                span,
+            ));
+        };
+        if aggregate.ty != expected {
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: self.format_type_name(expected),
+                    found: self.format_type_name(aggregate.ty),
+                },
+                span,
+            ));
+        }
+        if !expected.is_copy_in_pool(self.body_type_pool()) {
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: "structural comptime values require a Copy type".to_owned(),
+                },
+                span,
+            ));
+        }
+        match (&aggregate.kind, expected.kind()) {
+            (ConstAggregateKind::Struct(values), TypeKind::Struct(id)) => {
+                let fields = self.body_type_pool().struct_def(id).fields.clone();
+                if values.len() != fields.len() {
+                    return Err(CompileError::new(
+                        ErrorKind::ComptimeEvaluationFailed {
+                            reason: "structural comptime value has the wrong field count"
+                                .to_owned(),
+                        },
+                        span,
+                    ));
+                }
+                for (child, field) in values.iter().zip(fields.iter()) {
+                    self.validate_comptime_aggregate_value(
+                        child,
+                        field.ty,
+                        depth + 1,
+                        nodes,
+                        span,
+                    )?;
+                }
+            }
+            (ConstAggregateKind::Array(values), TypeKind::Array(id)) => {
+                let (element, length) = self.body_type_pool().array_def(id);
+                if values.len() as u64 != length {
+                    return Err(CompileError::new(
+                        ErrorKind::ComptimeEvaluationFailed {
+                            reason: "structural comptime value has the wrong array length"
+                                .to_owned(),
+                        },
+                        span,
+                    ));
+                }
+                for child in values.iter() {
+                    self.validate_comptime_aggregate_value(child, element, depth + 1, nodes, span)?;
+                }
+            }
+            (ConstAggregateKind::Enum { variant, payload }, TypeKind::Enum(id)) => {
+                let definition = self.body_type_pool().enum_def(id);
+                if *variant as usize >= definition.variant_count() {
+                    return Err(CompileError::new(
+                        ErrorKind::ComptimeEvaluationFailed {
+                            reason: "structural comptime value has an invalid enum variant"
+                                .to_owned(),
+                        },
+                        span,
+                    ));
+                }
+                let payload_types = definition.variant_payload(*variant as usize).to_vec();
+                if payload.len() != payload_types.len() {
+                    return Err(CompileError::new(
+                        ErrorKind::ComptimeEvaluationFailed {
+                            reason: "structural comptime value has the wrong enum payload length"
+                                .to_owned(),
+                        },
+                        span,
+                    ));
+                }
+                for (child, child_type) in payload.iter().zip(payload_types.iter()) {
+                    self.validate_comptime_aggregate_value(
+                        child,
+                        *child_type,
+                        depth + 1,
+                        nodes,
+                        span,
+                    )?;
+                }
+            }
+            _ => {
+                return Err(CompileError::new(
+                    ErrorKind::ComptimeEvaluationFailed {
+                        reason: "structural comptime value kind does not match its type".to_owned(),
+                    },
+                    span,
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Validate the complete comptime argument contract at the shared
@@ -1656,7 +1869,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
                 continue;
             }
-            let value = callee_values.get(name).copied().ok_or_else(|| {
+            let value = callee_values.get(name).cloned().ok_or_else(|| {
                 CompileError::new(
                     ErrorKind::InternalError(format!(
                         "comptime value argument for '{}' is missing while reducing '{}'",
@@ -2573,6 +2786,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeTypeAlgebra for OrdinaryBodyEngine
     fn type_name(&self, ty: &Type) -> String {
         self.format_type_name(*ty)
     }
+    fn type_is_enum(&self, ty: &Type) -> bool {
+        ty.is_enum()
+    }
     fn type_is_unsigned(&self, ty: &Type) -> bool {
         ty.is_unsigned()
     }
@@ -2640,6 +2856,81 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeTypeAlgebra for OrdinaryBodyEngine
 }
 
 impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeValueAlgebra for OrdinaryBodyEngine<'h, H> {
+    fn resolve_comptime_struct(
+        &mut self,
+        ty: Type,
+        fields: Vec<(Spur, ConstValue)>,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeOutcome<ConstValue, Self::Failure> {
+        if !ty.is_copy_in_pool(self.body_type_pool()) {
+            return ComptimeOutcome::HostFailure(comptime_panic_err(
+                "structural comptime values require a Copy type".to_owned(),
+                site.span(),
+            ));
+        }
+        let TypeKind::Struct(struct_id) = ty.kind() else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        let definition = self.body_type_pool().struct_def(struct_id);
+        let mut ordered = vec![None; definition.fields.len()];
+        for (name, value) in fields {
+            let Some((index, _)) = definition.find_field(self.body_interner().resolve(&name))
+            else {
+                return ComptimeOutcome::RuntimeDependent;
+            };
+            if ordered[index].replace(value).is_some() {
+                return ComptimeOutcome::RuntimeDependent;
+            }
+        }
+        let Some(ordered) = ordered.into_iter().collect::<Option<Vec<_>>>() else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        ConstValue::aggregate_struct(ty, ordered)
+            .map_or(ComptimeOutcome::RuntimeDependent, ComptimeOutcome::Known)
+    }
+    fn resolve_comptime_array(
+        &mut self,
+        ty: Type,
+        elements: Vec<ConstValue>,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeOutcome<ConstValue, Self::Failure> {
+        if !ty.is_copy_in_pool(self.body_type_pool()) {
+            return ComptimeOutcome::HostFailure(comptime_panic_err(
+                "structural comptime values require a Copy type".to_owned(),
+                site.span(),
+            ));
+        }
+        ConstValue::aggregate_array(ty, elements)
+            .map_or(ComptimeOutcome::RuntimeDependent, ComptimeOutcome::Known)
+    }
+    fn resolve_comptime_array_repeat(
+        &mut self,
+        ty: Type,
+        element: ConstValue,
+        count: u64,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeOutcome<ConstValue, Self::Failure> {
+        let Ok(count) = usize::try_from(count) else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        if !ty.is_copy_in_pool(self.body_type_pool()) {
+            return ComptimeOutcome::HostFailure(comptime_panic_err(
+                "structural comptime values require a Copy type".to_owned(),
+                site.span(),
+            ));
+        }
+        // The repeated elements are wrapped in one array aggregate node, so
+        // the largest scalar repeat that fits the shared budget is 4095.
+        if count >= crate::sema::MAX_COMPTIME_AGGREGATE_NODES {
+            return ComptimeOutcome::HostFailure(comptime_panic_err(
+                "structural comptime value exceeds resource limits".to_owned(),
+                site.span(),
+            ));
+        }
+        ConstValue::aggregate_array(ty, vec![element; count])
+            .map_or(ComptimeOutcome::RuntimeDependent, ComptimeOutcome::Known)
+    }
+
     fn resolve_comptime_named_value(
         &mut self,
         file: Self::File,
@@ -2703,12 +2994,199 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeValueAlgebra for OrdinaryBodyEngin
             ConstValue::Type(value) => Some(ConstValue::Type(value)),
             ConstValue::String(value) => Some(ConstValue::String(value)),
             ConstValue::Float(value) => Some(ConstValue::Float(value)),
+            ConstValue::Aggregate(_) => Some(info.value),
             _ => None,
         };
         Ok(match value {
             Some(value) => ComptimeNamedValueResolution::Known(value),
             None => ComptimeNamedValueResolution::RuntimeDependent,
         })
+    }
+    fn match_path_pattern(
+        &mut self,
+        pattern: &super::comptime::ComptimeMatchPattern<Spur>,
+        value: &ConstValue,
+        site: &super::comptime::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<Option<bool>, Self::Failure> {
+        let super::comptime::ComptimeMatchPattern::Path {
+            type_name, variant, ..
+        } = pattern
+        else {
+            return Ok(None);
+        };
+        let Some(aggregate) = comptime_aggregate(value.clone()) else {
+            return Ok(None);
+        };
+        let ConstAggregateKind::Enum { variant: index, .. } = &aggregate.kind else {
+            return Ok(Some(false));
+        };
+        let TypeKind::Enum(enum_id) = aggregate.ty.kind() else {
+            return Ok(Some(false));
+        };
+        // Resolve the pattern head through the ordinary type authority. This
+        // preserves aliases and avoids treating a declaration's display name
+        // as its nominal identity.
+        let Some(pattern_ty) =
+            OrdinaryBodyEngine::resolve_named_type_value(self, *type_name, site.span())?
+        else {
+            return Ok(Some(false));
+        };
+        if pattern_ty != aggregate.ty {
+            return Ok(Some(false));
+        }
+        let enum_def = self.body_type_pool().enum_def(enum_id);
+        Ok(Some(enum_def.variants.get(*index as usize).is_some_and(
+            |name| name.as_ref() == self.body_interner().resolve(variant),
+        )))
+    }
+    fn resolve_comptime_enum_variant(
+        &mut self,
+        _module: Option<ConstValue>,
+        type_name: Spur,
+        variant: Spur,
+        site: &super::comptime::ComptimeSite<Self::ProgramKey>,
+        span: Span,
+    ) -> ComptimeOutcome<ConstValue, Self::Failure> {
+        let Some(ty) = (match OrdinaryBodyEngine::resolve_named_type_value(self, type_name, span) {
+            Ok(value) => value,
+            Err(error) => return ComptimeOutcome::HostFailure(error),
+        }) else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        if !ty.is_copy_in_pool(self.body_type_pool()) {
+            return ComptimeOutcome::HostFailure(comptime_panic_err(
+                "structural comptime values require a Copy type".to_owned(),
+                site.span(),
+            ));
+        }
+        let TypeKind::Enum(enum_id) = ty.kind() else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        let enum_def = self.body_type_pool().enum_def(enum_id);
+        let Some(index) = enum_def.find_variant(self.body_interner().resolve(&variant)) else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        ConstValue::aggregate_enum(ty, index as u32, Vec::new())
+            .map_or(ComptimeOutcome::RuntimeDependent, ComptimeOutcome::Known)
+    }
+    fn resolve_comptime_enum_variant_with_payload(
+        &mut self,
+        ty: Type,
+        variant: Spur,
+        payload: Vec<ConstValue>,
+        site: &super::comptime::ComptimeSite<Self::ProgramKey>,
+        _span: Span,
+    ) -> ComptimeOutcome<ConstValue, Self::Failure> {
+        if !ty.is_copy_in_pool(self.body_type_pool()) {
+            return ComptimeOutcome::HostFailure(comptime_panic_err(
+                "structural comptime values require a Copy type".to_owned(),
+                site.span(),
+            ));
+        }
+        let TypeKind::Enum(enum_id) = ty.kind() else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        let enum_def = self.body_type_pool().enum_def(enum_id);
+        let Some(index) = enum_def.find_variant(self.body_interner().resolve(&variant)) else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        ConstValue::aggregate_enum(ty, index as u32, payload)
+            .map_or(ComptimeOutcome::RuntimeDependent, ComptimeOutcome::Known)
+    }
+    fn admit_comptime_enum_variant(
+        &mut self,
+        type_name: Spur,
+        variant: Spur,
+        _has_module: bool,
+        _site: &super::comptime::ComptimeSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<bool, Self::Failure> {
+        let Some(ty) =
+            OrdinaryBodyEngine::resolve_named_type_value(self, type_name, Span::new(0, 0))
+                .map_err(ComptimeHostError::HostFailure)?
+        else {
+            return Ok(false);
+        };
+        let TypeKind::Enum(enum_id) = ty.kind() else {
+            return Ok(false);
+        };
+        Ok(self
+            .body_type_pool()
+            .enum_def(enum_id)
+            .find_variant(self.body_interner().resolve(&variant))
+            .is_some())
+    }
+    fn admit_comptime_member(
+        &mut self,
+        _field: Spur,
+        _site: &super::comptime::ComptimeSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<bool, Self::Failure> {
+        Ok(true)
+    }
+    fn resolve_comptime_member(
+        &mut self,
+        base: ConstValue,
+        field: Spur,
+        site: &super::comptime::ComptimeSite<Self::ProgramKey>,
+        _span: Span,
+    ) -> ComptimeOutcome<ConstValue, Self::Failure> {
+        if let ConstValue::Type(ty) = base {
+            if !ty.is_copy_in_pool(self.body_type_pool()) {
+                return ComptimeOutcome::HostFailure(comptime_panic_err(
+                    "structural comptime values require a Copy type".to_owned(),
+                    site.span(),
+                ));
+            }
+            let TypeKind::Enum(enum_id) = ty.kind() else {
+                return ComptimeOutcome::RuntimeDependent;
+            };
+            let Some(index) = self
+                .body_type_pool()
+                .enum_def(enum_id)
+                .find_variant(self.body_interner().resolve(&field))
+            else {
+                return ComptimeOutcome::RuntimeDependent;
+            };
+            // A payload-carrying variant is a constructor call, not a
+            // nullary member value.  Do not manufacture an empty payload and
+            // let a later projection treat it as a complete enum value.
+            if !self
+                .body_type_pool()
+                .enum_def(enum_id)
+                .variant_payload(index)
+                .is_empty()
+            {
+                return ComptimeOutcome::HostFailure(CompileError::new(
+                    ErrorKind::WrongArgumentCount {
+                        expected: self
+                            .body_type_pool()
+                            .enum_def(enum_id)
+                            .variant_payload(index)
+                            .len(),
+                        found: 0,
+                    },
+                    site.span(),
+                ));
+            }
+            return ConstValue::aggregate_enum(ty, index as u32, Vec::new())
+                .map_or(ComptimeOutcome::RuntimeDependent, ComptimeOutcome::Known);
+        }
+        let Some(aggregate) = comptime_aggregate(base) else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        let ConstAggregateKind::Struct(values) = &aggregate.kind else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        let TypeKind::Struct(struct_id) = aggregate.ty.kind() else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        let name = self.body_interner().resolve(&field);
+        let Some((index, _)) = self.body_type_pool().struct_def(struct_id).find_field(name) else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        values
+            .get(index)
+            .cloned()
+            .map_or(ComptimeOutcome::RuntimeDependent, ComptimeOutcome::Known)
     }
     // The ordinary body value domain has no enum-shaped value, so every
     // path pattern stays undecidable here; the engine decides the scalar
@@ -2824,6 +3302,13 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeCallProtocol for OrdinaryBodyEngin
     ) -> ComptimeHostResult<bool, Self::Failure> {
         OrdinaryBodyEngine::bind_comptime_call_argument(self, binding, argument, index, span)
             .map_err(Into::into)
+    }
+    fn comptime_call_argument_type(
+        &self,
+        binding: &Self::CallBinding,
+        index: usize,
+    ) -> Option<Type> {
+        binding.parameter_types.get(index).copied()
     }
     fn finish_comptime_call_binding(
         &mut self,
@@ -3111,6 +3596,7 @@ mod binding_tests {
             type_name,
             variant,
             binding_count: 0,
+            binding_names: Vec::new(),
         };
         assert_eq!(
             comptime_scalar_pattern_decision(
@@ -3153,6 +3639,7 @@ mod binding_tests {
         let later_name = interner.get_or_intern("later");
         let mut binding = OrdinaryComptimeCallBinding {
             parameter_names: vec![value_name, later_name],
+            parameter_types: vec![Type::I32, Type::I32],
             parameter_is_type: vec![true, false],
             arguments: Vec::new(),
         };
