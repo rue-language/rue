@@ -287,8 +287,9 @@ Usage: rue [options] <root.rue> [output]
 
 The compiler takes exactly one root source file and discovers every other
 file through its @import graph; pass build-system inputs with --source-manifest.
-An ordinary internal-linker build can run through the local compiler service
-with --daemon=auto or --daemon=required (ADR-0085); the default is off.
+An ordinary internal-linker build or `rue test` can run through the local
+compiler service with --daemon=auto or --daemon=required (ADR-0085); the
+default is off.
 
 Commands:
   explain <E####>      Show the compiler-owned explanation for an error code
@@ -371,10 +372,11 @@ Options:
   --daemon <mode>      off (default): compile in this process; auto: use or
                        start the compiler service for supported requests and
                        compile directly otherwise; required: the service must
-                       run it. Supported: ordinary internal-linker builds.
-                       --watch, --emit, --linker, --time-passes,
-                       --benchmark-json, rue test, and compiler tracing run
-                       directly under auto and are refused under required.
+                       run it. Supported: ordinary internal-linker builds,
+                       rue test, and rue test --list. --watch, --emit,
+                       --linker, --time-passes, --benchmark-json, and
+                       compiler tracing run directly under auto and are
+                       refused under required.
   --daemon-scope <dir> The service scope directory (default: the root source's
                        directory); --daemon-isolation <name> selects a
                        separate service within it. Both match `rue daemon`.
@@ -1154,7 +1156,7 @@ fn validate_mode_combinations(options: &Options) -> Result<(), String> {
 /// shared query budget's own auto-detection", while a test run has to name a
 /// concrete number of concurrent processes. ADR-0083 §3's default is every
 /// test in parallel, so zero resolves to available parallelism.
-fn test_mode_jobs(jobs: usize) -> usize {
+pub(crate) fn test_mode_jobs(jobs: usize) -> usize {
     if jobs > 0 {
         return jobs;
     }
@@ -1186,7 +1188,7 @@ pub(crate) fn compile_pool_jobs(mode: &DriverMode, jobs: usize) -> usize {
 /// is run later, possibly elsewhere, and "whatever the host was" is not a
 /// reproduction. `--filter`, `--exact`, and `--seed` are added by the runner,
 /// which owns the identity being reproduced.
-fn test_repro_flags(options: &Options, path_context: &HostPathContext) -> Vec<String> {
+pub(crate) fn test_repro_flags(options: &Options, path_context: &HostPathContext) -> Vec<String> {
     let mut flags = vec![
         "--target".to_string(),
         options.target.to_string(),
@@ -1231,7 +1233,7 @@ fn test_repro_flags(options: &Options, path_context: &HostPathContext) -> Vec<St
 /// The CLI's empty spelling means "no toolchain std is configured" and is
 /// carried verbatim — absolutizing it would silently turn that into the
 /// current directory, which is a different run.
-fn test_repro_env(std_root: Option<&Path>) -> Vec<(String, String)> {
+pub(crate) fn test_repro_env(std_root: Option<&Path>) -> Vec<(String, String)> {
     let Some(std_root) = std_root else {
         return Vec::new();
     };
@@ -1464,7 +1466,7 @@ impl<'a> DiagnosticOutput<'a> {
         }
     }
 
-    fn render_errors(&self, errors: &CompileErrors) -> String {
+    pub(crate) fn render_errors(&self, errors: &CompileErrors) -> String {
         let errors = with_import_migration_helps(errors);
         self.render_prepared_errors(&errors)
     }

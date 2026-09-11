@@ -84,7 +84,7 @@ any failure is the invocation's failure and nothing is retried.
 | Request | `auto` | `required` |
 | --- | --- | --- |
 | Ordinary internal-linker build | service | service |
-| `rue test`, `rue test --list` | direct (its own slice of RUE-2128) | refused |
+| `rue test`, `rue test --list` (the image or inventory; the runner stays in the client) | service | service |
 | `--watch`, any `--emit`, `--linker <cmd>` | direct | refused |
 | `--time-passes`, `--benchmark-json` | direct | refused |
 | Tracing via `--log-level` or `RUST_LOG` | direct | refused |

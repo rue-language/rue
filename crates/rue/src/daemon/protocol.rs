@@ -229,13 +229,30 @@ pub enum RequestBody {
     /// End the service. It answers [`ResponseBody::Stopping`] and then exits;
     /// the caller observes completion by the socket disappearing.
     Stop,
-    /// Compile an executable through the service's retained host (ADR-0085
-    /// §3, §5). The service answers [`ResponseBody::Accepted`] or
+    /// Compile through the service's retained host (ADR-0085 §3, §5): an
+    /// executable, a test image, or a test inventory, as `kind` says. The
+    /// service answers [`ResponseBody::Accepted`] or
     /// [`ResponseBody::Rejected`] before any work begins; an accepted request
     /// is followed on the same connection by one [`BuildReply`] frame and,
     /// when it carries linked bytes, by those bytes in raw chunks. The
     /// connection then carries nothing else.
     Build(Box<BuildRequest>),
+}
+
+/// Which artifact a build request asks for. All three run over the same
+/// retained host; the root selection they imply is request data, never a
+/// host or service namespace (ADR-0085 §3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildKind {
+    /// An executable published at the request's output path.
+    Executable,
+    /// A test image staged at the request's output path, with the inventory
+    /// and per-test compile-failure attribution the client runner needs
+    /// (ADR-0083 §3).
+    TestImage,
+    /// The test inventory alone: no codegen, no link, no bytes.
+    TestListing,
 }
 
 /// How the client wants diagnostics rendered. The service renders once with
@@ -254,6 +271,10 @@ pub enum DiagnosticFormat {
 /// client's own process would have, without ever changing its own cwd.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildRequest {
+    /// Named `artifact` rather than `kind` because the request travels
+    /// flattened into the internally tagged [`RequestBody`], whose tag is
+    /// `kind`.
+    pub artifact: BuildKind,
     /// The client's invocation directory.
     pub working_directory: String,
     /// The root source as written.
@@ -262,6 +283,11 @@ pub struct BuildRequest {
     pub output_path: String,
     /// `--source-manifest` as written.
     pub source_manifest_path: Option<String>,
+    /// `--test-candidates` as written, already validated by the client. Every
+    /// kind acquires it under the host's read policy, as the direct path does
+    /// even for an ordinary build (ADR-0083 §1); a test image also reports
+    /// against it.
+    pub test_candidates_path: Option<String>,
     /// `RUE_STD_PATH` as captured; `None` when unset, `Some("")` when empty,
     /// each keeping its direct-mode meaning.
     pub std_root: Option<String>,
@@ -328,15 +354,23 @@ pub struct BuildReply {
 pub enum BuildResult {
     /// The program was rejected or the destination refused; nothing to publish.
     Rejected { stderr: String },
-    /// The executable is linked. `bytes` raw chunk bytes follow this frame;
-    /// the client publishes them at `destination` after revalidating
-    /// `inputs`, exactly as a watch cycle does.
+    /// The executable or test image is linked. `bytes` raw chunk bytes
+    /// follow this frame; the client publishes them at `destination` after
+    /// revalidating `inputs`, exactly as a watch cycle does. A test image
+    /// also carries what its runner needs.
     Ready {
         stderr: String,
         target: String,
         destination: DestinationRecord,
         inputs: Vec<InputRecord>,
         bytes: u64,
+        test_image: Option<Box<TestImageRecord>>,
+    },
+    /// The test inventory. `entries` is `None` when the listing itself was
+    /// refused; `stderr` then carries why, rendered.
+    Listing {
+        stderr: String,
+        entries: Option<Vec<InventoryEntryRecord>>,
     },
     /// The request's cancellation was observed; nothing was produced.
     Canceled,
@@ -365,6 +399,67 @@ pub struct InputRecord {
     pub symlink_boundary: Option<String>,
     /// `(volume, file)` identities along the expected symlink route.
     pub symlink_route: Vec<(u64, u64)>,
+}
+
+/// One test of an inventory, as the compiler's inventory entry spells it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InventoryEntryRecord {
+    pub id: String,
+    pub module: String,
+    pub name: String,
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+    pub ordinal: u32,
+    /// `(issue, platform)`: `@known_bug` markers, `platform` `None` when
+    /// unscoped.
+    pub expected_failures: Vec<(String, Option<String>)>,
+}
+
+/// What a test image carries beside its bytes (ADR-0083 §3), projected once
+/// by the canonical renderer so the runner never renders a diagnostic itself.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TestImageRecord {
+    /// Whether the closure spans more than one user module.
+    pub multi_module_closure: bool,
+    pub entries: Vec<InventoryEntryRecord>,
+    pub compile_failures: Vec<CompileFailureRecord>,
+    pub unimported: UnimportedRecord,
+}
+
+/// The `compile_error` verdict the compiler decided for one test.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompileFailureRecord {
+    pub ordinal: u32,
+    pub xfail_eligible: bool,
+    pub payload: String,
+    pub message: String,
+    /// `(file, line, column)` of the first diagnostic's primary span.
+    pub location: Option<(String, u32, u32)>,
+    pub diagnostics: Vec<serde_json::Value>,
+}
+
+/// The unimported-test-file report (ADR-0083 §1), rendered.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum UnimportedRecord {
+    /// No `--test-candidates` was declared.
+    NotDeclared,
+    /// The declared files outside the closure, with the warnings the direct
+    /// path prints for them already rendered (empty when there are none).
+    Files {
+        stderr: String,
+        files: Vec<UnimportedFileRecord>,
+    },
+    /// The report itself failed; `stderr` carries the diagnostics rendered.
+    Failed { stderr: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnimportedFileRecord {
+    pub path: String,
+    pub tests: u32,
+    pub parse_failed: bool,
 }
 
 /// A request the service is executing or holding, as status reports it.
@@ -472,6 +567,42 @@ mod tests {
         let mut reader = wire.as_slice();
         let error = read_frame::<Hello>(&mut reader, MAX_CONTROL_FRAME_BYTES).unwrap_err();
         assert!(matches!(error, FrameError::Truncated), "{error}");
+    }
+
+    #[test]
+    fn a_build_request_round_trips_inside_the_tagged_request_body() {
+        let request = Request {
+            id: 3,
+            body: RequestBody::Build(Box::new(BuildRequest {
+                artifact: BuildKind::TestImage,
+                working_directory: "/w".into(),
+                root_source: "main.rue".into(),
+                output_path: "/w/.run/image".into(),
+                source_manifest_path: None,
+                test_candidates_path: Some("tests.txt".into()),
+                std_root: Some(String::new()),
+                workers: 0,
+                target: "x86-64-linux".into(),
+                opt_level: "O2".into(),
+                preview_features: vec!["test_infra".into()],
+                link_archives: Vec::new(),
+                error_format: DiagnosticFormat::Json,
+                color: true,
+            })),
+        };
+        let mut wire = Vec::new();
+        write_frame(&mut wire, &request).unwrap();
+        let mut reader = wire.as_slice();
+        let decoded: Request = read_frame(&mut reader, MAX_CONTROL_FRAME_BYTES)
+            .unwrap()
+            .unwrap();
+        let RequestBody::Build(decoded) = decoded.body else {
+            panic!("a build request decodes as a build");
+        };
+        let RequestBody::Build(original) = request.body else {
+            unreachable!()
+        };
+        assert_eq!(decoded, original);
     }
 
     #[test]

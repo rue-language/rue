@@ -270,10 +270,8 @@ pub(crate) trait CycleArtifact: Sized {
     /// Diagnostics the companion carries, printed after the warnings and
     /// before the publication outcome so a failed publication cannot discard
     /// them. The executable has none.
-    fn print_companion_diagnostics(
-        _companion: &Self::Companion,
-        _diagnostics: &DiagnosticOutput<'_>,
-    ) {
+    fn companion_diagnostics(_companion: &Self::Companion) -> Option<&CompileErrors> {
+        None
     }
 
     fn published(
@@ -512,7 +510,9 @@ impl<Artifact: CycleArtifact> OwnedCycleResponse<Artifact> {
             linked.publish()
         };
         diagnostics.print_warnings(&publication.warnings);
-        Artifact::print_companion_diagnostics(&companion, &diagnostics);
+        if let Some(errors) = Artifact::companion_diagnostics(&companion) {
+            diagnostics.print_prepared_errors(errors);
+        }
         match publication.result {
             Ok(executable) => {
                 if let Some(announcement) = announcement {
@@ -641,13 +641,8 @@ impl CycleArtifact for TestImage {
     /// root set, and a filtered run that silently swallowed a broken test file
     /// would be the papercut the unimported-test-file warning exists to
     /// prevent.
-    fn print_companion_diagnostics(
-        companion: &TestImageCompanion,
-        diagnostics: &DiagnosticOutput<'_>,
-    ) {
-        if !companion.failure_diagnostics.is_empty() {
-            diagnostics.print_prepared_errors(&companion.failure_diagnostics);
-        }
+    fn companion_diagnostics(companion: &TestImageCompanion) -> Option<&CompileErrors> {
+        (!companion.failure_diagnostics.is_empty()).then_some(&companion.failure_diagnostics)
     }
 
     fn prepare(mut self) -> Self {
@@ -787,18 +782,20 @@ fn linker_name(linker: &LinkerMode) -> &str {
     }
 }
 
-/// One executable cycle's owned answer in the form that crosses the service
-/// boundary (ADR-0085 §5): the diagnostic stream rendered once, by the
-/// canonical formatter under the client's own format and color policy, and
-/// the linked bytes with everything the client's publication needs.
-pub(crate) struct CycleTransport {
+/// One cycle's owned answer in the form that crosses the service boundary
+/// (ADR-0085 §5): the diagnostic stream rendered once, by the canonical
+/// formatter under the client's own format and color policy, and the linked
+/// bytes with everything the client's publication needs. `Published` is what
+/// the artifact's cycle promises beside its bytes: nothing an executable
+/// needs, the runner's companion for a test image.
+pub(crate) struct CycleTransport<Published> {
     /// Everything the direct compile would have written to stderr up to the
     /// point the client takes over.
     pub(crate) stderr: String,
-    pub(crate) outcome: TransportOutcome,
+    pub(crate) outcome: TransportOutcome<Published>,
 }
 
-pub(crate) enum TransportOutcome {
+pub(crate) enum TransportOutcome<Published> {
     /// The program was rejected or the destination refused.
     Rejected,
     Canceled,
@@ -809,7 +806,23 @@ pub(crate) enum TransportOutcome {
         /// The accepted observations the client revalidates before the
         /// rename, as a watch cycle does.
         inputs: Vec<WatchInput>,
+        published: Published,
     },
+}
+
+/// How a service request observes its cycle: the accepted-read closure and
+/// the request's cancellation, never superseded, because an ordinary
+/// invocation is independent of every other (ADR-0085 §6).
+fn service_observation<'a>(
+    host: &FilesystemCompilerHost,
+    cancellation: CompilationCancellation,
+    never: &'a dyn Fn() -> bool,
+) -> CycleObservation<'a> {
+    CycleObservation::Watch {
+        inputs: host.watch_inputs(),
+        cancellation,
+        superseded: never,
+    }
 }
 
 /// Produce one executable cycle for a service request: the destination
@@ -823,33 +836,58 @@ pub(crate) fn produce_transport(
     source_path: &str,
     output_path: &Path,
     cancellation: CompilationCancellation,
-) -> CycleTransport {
-    let inputs = host.watch_inputs();
-    // An ordinary invocation is never superseded: a newer command does not
-    // cancel an older one merely because they share a root (ADR-0085 §6).
+) -> CycleTransport<PublishedExecutable> {
     let never = || false;
+    let observation = service_observation(host, cancellation, &never);
     let response = produce::<CompileOutput>(
         host,
         options,
         error_format,
         Some(source_path),
         output_path,
-        CycleObservation::Watch {
-            inputs,
-            cancellation,
-            superseded: &never,
-        },
+        observation,
     );
     response.into_transport(color)
 }
 
-impl OwnedCycleResponse<CompileOutput> {
-    fn into_transport(self, color: rue_compiler::unstable::ColorChoice) -> CycleTransport {
+/// [`produce_transport`] for a test image: the same cycle over the request's
+/// test root set, carrying the runner's companion (ADR-0083 §3).
+pub(crate) fn produce_test_transport(
+    host: &mut FilesystemCompilerHost,
+    options: &CompileOptions,
+    error_format: ErrorFormat,
+    color: rue_compiler::unstable::ColorChoice,
+    candidates: Option<&TestCandidateInventory>,
+    image_path: &Path,
+    cancellation: CompilationCancellation,
+) -> CycleTransport<PublishedTestImage> {
+    let never = || false;
+    let observation = service_observation(host, cancellation, &never);
+    let response = produce_test_cycle(TestCycleRequest {
+        host,
+        options,
+        error_format,
+        candidates,
+        image_path,
+        observation,
+    });
+    response.into_transport(color)
+}
+
+impl<Artifact: CycleArtifact> OwnedCycleResponse<Artifact> {
+    fn into_transport(
+        self,
+        color: rue_compiler::unstable::ColorChoice,
+    ) -> CycleTransport<Artifact::Published> {
         let OwnedCycleResponse {
             source_snapshot,
             error_format,
             options,
             result,
+            unimported_test_files,
+            accepted_reads,
+            attempted_reads,
+            watch_inputs,
             ..
         } = self;
         let source_infos = source_snapshot
@@ -879,16 +917,36 @@ impl OwnedCycleResponse<CompileOutput> {
                     PublicationObservation::Watch(inputs) => inputs,
                     PublicationObservation::OneShot => Vec::new(),
                 };
-                if !artifact.warnings.is_empty() {
-                    line(diagnostics.render_warnings(&artifact.warnings));
+                let (output, companion) = artifact.into_parts();
+                // The same order `complete` prints in: warnings, then the
+                // companion's own diagnostics.
+                if !output.warnings.is_empty() {
+                    line(diagnostics.render_warnings(&output.warnings));
                 }
+                if let Some(errors) = Artifact::companion_diagnostics(&companion) {
+                    line(diagnostics.render_prepared_errors(errors));
+                }
+                let metrics = output.unstable_metrics();
+                let published = Artifact::published(
+                    companion,
+                    PublishedExecutable { metrics },
+                    unimported_test_files,
+                    source_snapshot.clone(),
+                    error_format,
+                    OwnedCycleObservations {
+                        accepted_reads,
+                        attempted_reads,
+                        watch_inputs,
+                    },
+                );
                 CycleTransport {
                     stderr,
                     outcome: TransportOutcome::Ready {
                         target: options.target,
-                        bytes: artifact.elf,
+                        bytes: output.elf,
                         destination,
                         inputs,
+                        published,
                     },
                 }
             }

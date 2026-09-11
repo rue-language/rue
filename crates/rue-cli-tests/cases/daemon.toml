@@ -128,7 +128,7 @@ daemon = { steps = [
   { args = ["--daemon=required", "--linker", "cc", "main.rue"], exit_code = 1, stderr_contains = ["a system linker runs directly"] },
   { args = ["--daemon=required", "--time-passes", "main.rue"], exit_code = 1, stderr_contains = ["--time-passes runs directly"] },
   { args = ["--daemon=required", "--log-level", "debug", "main.rue"], exit_code = 1, stderr_contains = ["compiler tracing (--log-level) runs directly"] },
-  { args = ["--daemon=required", "test", "main.rue"], exit_code = 2, stderr_contains = ["`rue test` runs directly"] },
+  { args = ["--daemon=required", "test", "--watch", "main.rue"], exit_code = 2, stderr_contains = ["Error: --daemon=required: --watch runs directly"] },
   { args = ["--daemon=auto", "--emit", "deps", "main.rue"], exit_code = 0, stdout_contains = ["main.rue"] },
   { args = ["--daemon=sometimes", "main.rue"], exit_code = 1, stderr_contains = ["unknown --daemon mode `sometimes`"] },
   { args = ["--daemon-scope", ".", "main.rue"], exit_code = 1, stderr_contains = ["--daemon-scope requires --daemon=auto or --daemon=required"] },
@@ -152,4 +152,32 @@ daemon = { steps = [
   { args = ["daemon", "stop"], exit_code = 0, stdout_contains = ["stopped service pid"] },
   { args = ["daemon", "stop", "--scope", "sub"], exit_code = 0, stdout_contains = ["stopped service pid"] },
   { args = ["daemon", "stop", "--isolation", "ci"], exit_code = 0, stdout_contains = ["stopped service pid"] },
+] }
+
+[[case]]
+name = "test_runs_and_listings_go_through_the_service"
+description = "rue test and rue test --list under --daemon=required: the service links the image and answers the inventory, the client runs the tests; verdicts, diagnostics, events and exit statuses are direct mode's, and one host serves the test, listing and executable requests of the root."
+files = [
+  { path = "main.rue", source = """
+fn add(a: i32, b: i32) -> i32 { a + b }
+test "adds" { @assert(add(1, 2) == 3); }
+test "fails" { @assert(add(1, 2) == 4); }
+test "broken" { let x: i32 = "nope"; @assert(x == 1); }
+fn main() -> i32 { @dbg(add(20, 22)); 0 }
+""" },
+  { path = "extra_tests.rue", source = "test \"never imported\" { }\n" },
+  { path = "candidates.txt", source = "main.rue\nextra_tests.rue\n" },
+]
+daemon = { steps = [
+  { args = ["test", "--daemon=required", "--seed", "1", "main.rue"], exit_code = 1, stdout_contains = ["FAIL main.rue::fails", "COMPILE ERROR main.rue::broken", "1 passed, 1 failed, 1 compile error"], stderr_contains = ["error: [E0206]: type mismatch: expected string type, found i32", " --> main.rue:4:17"] },
+  { args = ["test", "--daemon=required", "--format", "json", "--seed", "1", "--filter", "adds", "main.rue"], exit_code = 0, stdout_contains = ["\"event\":\"run_started\"", "\"plan\":{\"selected\":1,\"total\":3}", "\"id\":\"main.rue::adds\"", "\"verdict\":\"pass\"", "\"event\":\"run_finished\""], stdout_not_contains = ["main.rue::fails"] },
+  { args = ["test", "--daemon=required", "--seed", "1", "--filter", "broken", "--format", "json", "main.rue"], exit_code = 1, stdout_contains = ["\"verdict\":\"compile_error\"", "\"payload\":\"E0206: type mismatch: expected string type, found i32\"", "\"location\":{\"column\":17,\"file\":\"main.rue\",\"line\":4}"] },
+  { args = ["test", "--daemon=required", "--list", "main.rue"], exit_code = 0, stdout_contains = ["main.rue::adds\nmain.rue::broken\nmain.rue::fails\n"], stderr_contains = ["error: [E0206]"] },
+  { args = ["test", "--daemon=required", "--list", "--filter", "nomatch", "main.rue"], exit_code = 3, stderr_contains = ["error: no tests matched the selection"] },
+  { args = ["test", "--daemon=required", "--seed", "1", "--filter", "adds", "--test-candidates", "candidates.txt", "main.rue"], exit_code = 0, stdout_contains = ["1 passed"], stderr_contains = ["extra_tests.rue"] },
+  { args = ["test", "--daemon=required", "--seed", "1", "--test-candidates", "missing.txt", "main.rue"], exit_code = 2, stderr_contains = ["missing.txt"] },
+  { args = ["daemon", "status"], exit_code = 0, stdout_contains = ["  retained hosts: 1", "  active request: none"] },
+  { args = ["--daemon=required", "main.rue", "-o", "app"], exit_code = 0, stdout_contains = ["Compiled main.rue -> app"], run_output = "app", run_output_stdout_contains = ["42\n"] },
+  { args = ["daemon", "status"], exit_code = 0, stdout_contains = ["  retained hosts: 1"] },
+  { args = ["daemon", "stop"], exit_code = 0, stdout_contains = ["stopped service pid"] },
 ] }
