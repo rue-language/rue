@@ -155,11 +155,11 @@ compile-time error (`E0206`).
 {{ rule(id="3.12:15", cat="informative") }}
 
 Every width or domain change is therefore written explicitly, with one of the
-three conversion intrinsics of the next section. This is the same discipline
-Rue applies to integers, where `@intCast` is required between integer widths,
-and it leaves the never-type coercion of 3.4:3 the language's only coercion:
-giving a literal a type (3.12:7, 3.12:11) is literal typing performed during
-inference, not a conversion of a value that already has one.
+three conversion intrinsics of the next section. This is the general
+no-implicit-conversion discipline of 3.11:8–9; `@intCast` is required between
+integer widths, for example. Giving a literal a type (3.12:7, 3.12:11) is
+literal typing performed during inference, not a conversion of a value that
+already has one.
 
 ## Conversion Intrinsics
 

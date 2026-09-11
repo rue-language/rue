@@ -252,4 +252,5 @@ The table is generated from ADR frontmatter. Run
 | [0087](0087-no-function-overloading-one-name-one-signature.md) | No function overloading: one name, one signature per scope | Accepted | language, semantics, principle |
 | [0088](0088-panic-termination.md) | Panic termination without unwinding or recovery | Accepted | semantics, runtime, ownership, principle |
 | [0089](0089-no-mutable-globals.md) | No mutable globals: immutable module-level values | Accepted | language, semantics, ownership, principle |
+| [0090](0090-no-implicit-conversions.md) | No implicit conversions: typed values cross boundaries explicitly | Accepted | language, types, semantics, principle |
 <!-- ADR-INDEX:END -->
