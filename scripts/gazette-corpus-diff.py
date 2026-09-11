@@ -1571,11 +1571,14 @@ def check_links(out: str, model: Model, scale: int) -> tuple[int, int, int, list
     the entry is stale.
 
     KNOWN LIMIT: only hrefs beginning with the site's base URL are resolved.
-    Root-relative ones are skipped, which today is right — the corpus's are
-    `/spec/` and the `preview_feature` shortcode's `/designs/…`, the latter
-    naming a route no tool emits — but a template that started emitting
+    Root-relative ones are skipped, which today is right — the corpus's only
+    root-relative links are `/spec/` — but a template that started emitting
     relative links would lose coverage silently rather than loudly. The
-    `checked` count printed alongside is what would show it.
+    `checked` count printed alongside is what would show it. The
+    `preview_feature` shortcode's ADR link once sat in this blind spot, as a
+    root-relative `/designs/…` route no tool emits (RUE-1494); it now points
+    at the design document on GitHub, off-site and so unchecked here like
+    every other external link.
     """
     emitted = set(walk_files(out))
     directories = {rel.rsplit("/", 1)[0] + "/" for rel in emitted if "/" in rel}
