@@ -796,8 +796,7 @@ pub(crate) fn run_prepared(request: PreparedRun<'_>) -> CycleOutcome {
             unimported_test_files: unimported,
             test_candidates: candidates,
         });
-        watch_milestone("run-finished");
-        return CycleOutcome::Finished(TestExitCode::EmptySelection);
+        return finish_run(TestExitCode::EmptySelection, cycle);
     }
 
     // A repro is pasted into some other shell, from some other directory, so it
@@ -863,12 +862,11 @@ pub(crate) fn run_prepared(request: PreparedRun<'_>) -> CycleOutcome {
         unimported_test_files: unimported,
         test_candidates: candidates,
     });
-    watch_milestone("run-finished");
 
     // A `compile_error` test is a failed test, not a failed run: exit 1 with
     // the other tests' verdicts, never the 2 that says nothing ran
     // (ADR-0083 §3).
-    CycleOutcome::Finished(
+    finish_run(
         if outcome.failed + outcome.timeout + outcome.crash + outcome.compile_error + outcome.xpass
             > 0
         {
@@ -876,7 +874,24 @@ pub(crate) fn run_prepared(request: PreparedRun<'_>) -> CycleOutcome {
         } else {
             TestExitCode::AllPassed
         },
+        cycle,
     )
+}
+
+/// End a cycle that published `run_finished`.
+///
+/// A watch cycle publishes its exit status before the `run-finished`
+/// milestone, not after: the milestone is what a driver waits for before it
+/// stops the watcher, and the interrupt handler answers with the last status
+/// published, so a status published after the milestone could lose the race
+/// and report the previous cycle's. The watch loop stores the same status
+/// again when the outcome reaches it, which is harmless.
+fn finish_run(exit: TestExitCode, cycle: Option<u64>) -> CycleOutcome {
+    if cycle.is_some() {
+        exec::set_watch_exit_status(exit);
+    }
+    watch_milestone("run-finished");
+    CycleOutcome::Finished(exit)
 }
 
 /// Remove the cycle's image and, if nothing retained a scratch directory
