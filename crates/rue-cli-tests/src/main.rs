@@ -3515,7 +3515,13 @@ fn run_watch_case(
     if let Some(args) = &case.args {
         compiler_args.extend(args.iter().cloned());
     }
-    let daemon_root = daemon_watch.then(|| dir.join("daemon-root"));
+    let daemon_temp_dir = daemon_watch
+        .then(|| short_private_temp_dir("rw"))
+        .transpose()
+        .map_err(|error| {
+            TestFailure::fatal(format!("failed to create watch daemon temp dir: {error}"))
+        })?;
+    let daemon_root = daemon_temp_dir.as_ref().map(|dir| dir.path().join("r"));
     let mut command = case_compiler_command(rue_binary, &compiler_args, dir, &case.env, real_std);
     command
         .env("RUE_WATCH_TEST_PROTOCOL", &protocol)
@@ -3911,7 +3917,13 @@ fn run_watch_test_case(
     }
     compiler_args.extend(scenario.args.iter().cloned());
     let daemon_watch = scenario.args.iter().any(|arg| arg.starts_with("--daemon="));
-    let daemon_root = daemon_watch.then(|| dir.join("daemon-root"));
+    let daemon_temp_dir = daemon_watch
+        .then(|| short_private_temp_dir("rw"))
+        .transpose()
+        .map_err(|error| {
+            TestFailure::fatal(format!("failed to create watch daemon temp dir: {error}"))
+        })?;
+    let daemon_root = daemon_temp_dir.as_ref().map(|dir| dir.path().join("r"));
 
     let mut command = case_compiler_command(rue_binary, &compiler_args, dir, &case.env, real_std);
     command
