@@ -1,8 +1,7 @@
 // std.json — owned JSON values, parsing, and compact serialization (RUE-690).
 //
-// Numbers are stored as their validated source spelling. Rue does not yet have
-// floating-point types, and retaining the lexeme also makes parse/serialize
-// round trips lossless for large integers and exponent notation.
+// Numbers retain their validated source spelling so parse/serialize round
+// trips remain lossless for large integers and exponent notation.
 
 const arraybuf = @import("arraybuf.rue");
 const option = @import("option.rue");
@@ -24,6 +23,9 @@ pub enum Json {
     Object(Object),
 }
 
+// Error offsets are zero-based byte positions. An error names the first byte
+// the parser could not accept; missing bytes use the input length. Incomplete
+// numbers remain InvalidNumber.
 pub enum ParseError {
     UnexpectedEnd(u64),
     UnexpectedByte(u64),
@@ -87,9 +89,15 @@ fn hex_value(b: u8) -> i32 {
     }
 }
 
-fn parse_hex4(borrow input: StrBuf, inout at: u64) -> result.Result(u64, ParseError) {
+// A first unit rejects a decisive low-surrogate prefix; a required second unit
+// enforces one. Keeping both prefix checks here makes truncated surrogate
+// escapes identify an already decisive hex digit without duplicating parsing.
+fn parse_hex4(
+    borrow input: StrBuf,
+    inout at: u64,
+    require_low_surrogate: bool,
+) -> result.Result(u64, ParseError) {
     let R = result.Result(u64, ParseError);
-    let start = at;
     let mut value: u64 = 0;
     let mut i: u64 = 0;
     while i < 4 {
@@ -98,7 +106,18 @@ fn parse_hex4(borrow input: StrBuf, inout at: u64) -> result.Result(u64, ParseEr
         }
         let digit = hex_value(byte(borrow input, at));
         if digit < 0 {
-            return R.Err(ParseError.InvalidUnicode(start));
+            return R.Err(ParseError.InvalidUnicode(at));
+        }
+        if require_low_surrogate && i == 0 && digit != 13 {
+            return R.Err(ParseError.InvalidUnicode(at));
+        }
+        if i == 1 && value == 13 {
+            if !require_low_surrogate && digit >= 12 {
+                return R.Err(ParseError.InvalidUnicode(at));
+            }
+            if require_low_surrogate && digit < 12 {
+                return R.Err(ParseError.InvalidUnicode(at));
+            }
         }
         value = value * 16 + @intCast(digit);
         at += 1;
@@ -136,26 +155,30 @@ fn parse_unicode_escape(
     position: u64,
 ) -> result.Result((), ParseError) {
     let R = result.Result((), ParseError);
-    let first = match parse_hex4(borrow input, inout at) {
+    let first = match parse_hex4(borrow input, inout at, false) {
         result.Result(u64, ParseError).Ok(v) => v,
         result.Result(u64, ParseError).Err(e) => return R.Err(e),
     };
     if first >= 55296 && first <= 56319 {
-        if at + 2 > input.len() || byte(borrow input, at) != 92 || byte(borrow input, at + 1) != 117 {
-            return R.Err(ParseError.InvalidUnicode(position));
+        if at >= input.len() {
+            return R.Err(ParseError.UnexpectedEnd(input.len()));
+        }
+        if byte(borrow input, at) != 92 {
+            return R.Err(ParseError.InvalidUnicode(at));
+        }
+        if at + 1 >= input.len() {
+            return R.Err(ParseError.UnexpectedEnd(input.len()));
+        }
+        if byte(borrow input, at + 1) != 117 {
+            return R.Err(ParseError.InvalidUnicode(at + 1));
         }
         at += 2;
-        let second = match parse_hex4(borrow input, inout at) {
+        let second = match parse_hex4(borrow input, inout at, true) {
             result.Result(u64, ParseError).Ok(v) => v,
             result.Result(u64, ParseError).Err(e) => return R.Err(e),
         };
-        if second < 56320 || second > 57343 {
-            return R.Err(ParseError.InvalidUnicode(position));
-        }
         let cp = 65536 + (first - 55296) * 1024 + (second - 56320);
         push_codepoint(inout out, cp, position)
-    } else if first >= 56320 && first <= 57343 {
-        R.Err(ParseError.InvalidUnicode(position))
     } else {
         push_codepoint(inout out, first, position)
     }
@@ -184,31 +207,30 @@ fn copy_utf8(
     } else {
         return R.Err(ParseError.InvalidUnicode(position));
     }
-    if needed > input.len() - at {
-        return R.Err(ParseError.UnexpectedEnd(at));
-    }
-    let second = byte(borrow input, at);
-    if !continuation(second) {
-        return R.Err(ParseError.InvalidUnicode(at));
-    }
-    // Exclude overlong encodings, UTF-16 surrogate code points, and values
-    // above U+10FFFF by constraining the second byte of boundary leaders.
-    if lead == 224 && second < 160 {
-        return R.Err(ParseError.InvalidUnicode(position));
-    }
-    if lead == 237 && second > 159 {
-        return R.Err(ParseError.InvalidUnicode(position));
-    }
-    if lead == 240 && second < 144 {
-        return R.Err(ParseError.InvalidUnicode(position));
-    }
-    if lead == 244 && second > 143 {
-        return R.Err(ParseError.InvalidUnicode(position));
-    }
-    let mut i: u64 = 1;
+    let mut i: u64 = 0;
     while i < needed {
-        if !continuation(byte(borrow input, at + i)) {
+        if at + i >= input.len() {
+            return R.Err(ParseError.UnexpectedEnd(input.len()));
+        }
+        let current = byte(borrow input, at + i);
+        if !continuation(current) {
             return R.Err(ParseError.InvalidUnicode(at + i));
+        }
+        if i == 0 {
+            // Exclude overlong encodings, UTF-16 surrogate code points, and
+            // values above U+10FFFF by constraining boundary leaders.
+            if lead == 224 && current < 160 {
+                return R.Err(ParseError.InvalidUnicode(at));
+            }
+            if lead == 237 && current > 159 {
+                return R.Err(ParseError.InvalidUnicode(at));
+            }
+            if lead == 240 && current < 144 {
+                return R.Err(ParseError.InvalidUnicode(at));
+            }
+            if lead == 244 && current > 143 {
+                return R.Err(ParseError.InvalidUnicode(at));
+            }
         }
         i += 1;
     }
@@ -224,8 +246,10 @@ fn copy_utf8(
 
 fn parse_string(borrow input: StrBuf, inout at: u64) -> StringResult {
     let R = StringResult;
-    let start = at;
-    if at >= input.len() || byte(borrow input, at) != 34 {
+    if at >= input.len() {
+        return R.Err(ParseError.UnexpectedEnd(input.len()));
+    }
+    if byte(borrow input, at) != 34 {
         return R.Err(ParseError.UnexpectedByte(at));
     }
     at += 1;
@@ -271,11 +295,11 @@ fn parse_string(borrow input: StrBuf, inout at: u64) -> StringResult {
                     result.Result((), ParseError).Err(err) => return R.Err(err),
                 }
             } else {
-                return R.Err(ParseError.InvalidEscape(escape_at));
+                return R.Err(ParseError.InvalidEscape(at - 1));
             }
         }
     }
-    R.Err(ParseError.UnexpectedEnd(start))
+    R.Err(ParseError.UnexpectedEnd(input.len()))
 }
 
 fn consume_digits(borrow input: StrBuf, inout at: u64) -> u64 {
@@ -292,7 +316,7 @@ fn parse_number(borrow input: StrBuf, inout at: u64) -> ParseResult {
     if byte(borrow input, at) == 45 {
         at += 1;
         if at >= input.len() {
-            return R.Err(ParseError.InvalidNumber(start));
+            return R.Err(ParseError.InvalidNumber(input.len()));
         }
     }
     if byte(borrow input, at) == 48 {
@@ -413,10 +437,10 @@ fn parse_object(borrow input: StrBuf, inout at: u64, depth: u64) -> ParseResult 
 
 fn parse_value(borrow input: StrBuf, inout at: u64, depth: u64) -> ParseResult {
     let R = ParseResult;
+    skip_space(borrow input, inout at);
     if depth > 256 {
         return R.Err(ParseError.NestingTooDeep(at));
     }
-    skip_space(borrow input, inout at);
     if at >= input.len() {
         return R.Err(ParseError.UnexpectedEnd(at));
     }

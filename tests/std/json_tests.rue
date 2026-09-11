@@ -61,24 +61,89 @@ test "raw UTF-8 in strings passes through" {
     @assert_eq(roundtrip("\"日本語\""), "\"日本語\"");
 }
 
-// RUE-2015: the offset each variant names follows no single convention yet;
-// these pin the observed values and change with that issue.
-test "parse errors name the byte offset" {
+test "parse errors name the first rejected byte" {
     @assert_eq(error_of(""), ParseError.UnexpectedEnd(0));
     @assert_eq(error_of("[1,"), ParseError.UnexpectedEnd(3));
     @assert_eq(error_of("[1 2]"), ParseError.UnexpectedByte(3));
     @assert_eq(error_of("nul"), ParseError.UnexpectedEnd(3));
     @assert_eq(error_of("01"), ParseError.InvalidNumber(1));
     @assert_eq(error_of("1."), ParseError.InvalidNumber(2));
-    @assert_eq(error_of("-"), ParseError.InvalidNumber(0));
+    @assert_eq(error_of("-"), ParseError.InvalidNumber(1));
     @assert_eq(error_of("1e"), ParseError.InvalidNumber(2));
-    @assert_eq(error_of("\"\\x\""), ParseError.InvalidEscape(1));
-    @assert_eq(error_of("\"\\u12\""), ParseError.InvalidUnicode(3));
-    @assert_eq(error_of("\"\\ud800\""), ParseError.InvalidUnicode(1));
+    @assert_eq(error_of("\"\\x\""), ParseError.InvalidEscape(2));
+    @assert_eq(error_of("\"\\u12\""), ParseError.InvalidUnicode(5));
+    @assert_eq(error_of("\"\\ud800\""), ParseError.InvalidUnicode(7));
     @assert_eq(error_of("1 2"), ParseError.TrailingCharacters(2));
     @assert_eq(error_of("{\"a\" 1}"), ParseError.UnexpectedByte(5));
     @assert_eq(error_of("{1:2}"), ParseError.UnexpectedByte(1));
-    @assert_eq(error_of("\"unterminated"), ParseError.UnexpectedEnd(0));
+    @assert_eq(error_of("\"unterminated"), ParseError.UnexpectedEnd(13));
+}
+
+test "truncated and invalid unicode identify the decisive byte" {
+    @assert_eq(error_of("\"\\u12"), ParseError.UnexpectedEnd(5));
+    @assert_eq(error_of("\"\\ud800"), ParseError.UnexpectedEnd(7));
+    @assert_eq(error_of("\"\\ud800x\""), ParseError.InvalidUnicode(7));
+    @assert_eq(error_of("\"\\ud800\\x\""), ParseError.InvalidUnicode(8));
+    @assert_eq(error_of("\"\\udc00\""), ParseError.InvalidUnicode(4));
+    @assert_eq(error_of("\"\\ud800\\u0041\""), ParseError.InvalidUnicode(9));
+    @assert_eq(error_of("\"\\ud800\\ud800\""), ParseError.InvalidUnicode(10));
+    @assert_eq(error_of("\"\\udc"), ParseError.InvalidUnicode(4));
+    @assert_eq(error_of("\"\\ud800\\ud8"), ParseError.InvalidUnicode(10));
+
+    let mut bad_second = StrBuf.new();
+    bad_second.push(34);
+    bad_second.push(226);
+    bad_second.push(40);
+    bad_second.push(161);
+    @assert_eq(error_of(bad_second), ParseError.InvalidUnicode(2));
+
+    let mut bad_second_truncated = StrBuf.new();
+    bad_second_truncated.push(34);
+    bad_second_truncated.push(226);
+    bad_second_truncated.push(40);
+    @assert_eq(error_of(bad_second_truncated), ParseError.InvalidUnicode(2));
+
+    let mut bad_later = StrBuf.new();
+    bad_later.push(34);
+    bad_later.push(226);
+    bad_later.push(130);
+    bad_later.push(40);
+    @assert_eq(error_of(bad_later), ParseError.InvalidUnicode(3));
+
+    let mut bad_later_truncated = StrBuf.new();
+    bad_later_truncated.push(34);
+    bad_later_truncated.push(240);
+    bad_later_truncated.push(144);
+    bad_later_truncated.push(40);
+    @assert_eq(error_of(bad_later_truncated), ParseError.InvalidUnicode(3));
+
+    let mut truncated_utf8 = StrBuf.new();
+    truncated_utf8.push(34);
+    truncated_utf8.push(226);
+    truncated_utf8.push(130);
+    @assert_eq(error_of(truncated_utf8), ParseError.UnexpectedEnd(3));
+
+    let mut utf8_surrogate = StrBuf.new();
+    utf8_surrogate.push(34);
+    utf8_surrogate.push(237);
+    utf8_surrogate.push(160);
+    utf8_surrogate.push(128);
+    @assert_eq(error_of(utf8_surrogate), ParseError.InvalidUnicode(2));
+
+    let mut utf8_surrogate_truncated = StrBuf.new();
+    utf8_surrogate_truncated.push(34);
+    utf8_surrogate_truncated.push(237);
+    utf8_surrogate_truncated.push(160);
+    @assert_eq(error_of(utf8_surrogate_truncated), ParseError.InvalidUnicode(2));
+
+    let mut escape_after_utf8 = StrBuf.new();
+    escape_after_utf8.push(34);
+    escape_after_utf8.push(195);
+    escape_after_utf8.push(169);
+    escape_after_utf8.push(92);
+    escape_after_utf8.push(120);
+    escape_after_utf8.push(34);
+    @assert_eq(error_of(escape_after_utf8), ParseError.InvalidEscape(4));
 }
 
 test "a control byte inside a string is rejected" {
@@ -95,7 +160,7 @@ test "deep nesting is bounded" {
         R.Ok(v) => @assert(false, "expected an error"),
         R.Err(e) => {
             match e {
-                ParseError.NestingTooDeep(at) => @assert(at > 0),
+                ParseError.NestingTooDeep(at) => @assert_eq(at, 257),
                 ParseError.UnexpectedEnd(at) => @assert(false, "ran off the end before the depth limit"),
                 ParseError.UnexpectedByte(at) => @assert(false, "unexpected byte"),
                 ParseError.InvalidNumber(at) => @assert(false, "invalid number"),
@@ -105,6 +170,21 @@ test "deep nesting is bounded" {
             }
         },
     }
+}
+
+test "nesting offsets skip whitespace before the rejected value" {
+    let mut nested = StrBuf.new();
+    let mut i: u64 = 0;
+    while i < 257 {
+        nested.push_str("{\"a\":");
+        i += 1;
+    }
+    nested.push(32);
+    nested.push(9);
+    nested.push(10);
+    nested.push(32);
+    nested.push_str("null");
+    @assert_eq(error_of(nested), ParseError.NestingTooDeep(1289));
 }
 
 test "values built by hand serialize" {
