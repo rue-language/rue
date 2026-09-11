@@ -211,7 +211,7 @@ error_contains = "type mismatch"
 
 [[case]]
 name = "forward_reference_same_file"
-spec = ["6.5:7", "6.5:9"]
+spec = ["6.5:7", "6.5:9", "10.5:5"]
 description = "A const may reference a const declared later in the file"
 source = """
 const A: i32 = B + 1;
@@ -224,7 +224,7 @@ exit_code = 21
 
 [[case]]
 name = "forward_reference_across_files"
-spec = ["6.5:7", "6.5:10"]
+spec = ["6.5:7", "6.5:10", "10.5:5"]
 description = "A const may reference a const declared in another (imported) file"
 source = """
 const cfg = @import("cfg.rue");

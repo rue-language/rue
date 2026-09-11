@@ -253,4 +253,6 @@ The table is generated from ADR frontmatter. Run
 | [0088](0088-panic-termination.md) | Panic termination without unwinding or recovery | Accepted | semantics, runtime, ownership, principle |
 | [0089](0089-no-mutable-globals.md) | No mutable globals: immutable module-level values | Accepted | language, semantics, ownership, principle |
 | [0090](0090-no-implicit-conversions.md) | No implicit conversions: typed values cross boundaries explicitly | Accepted | language, types, semantics, principle |
+| [0092](0092-no-configuration-declarations.md) | No configuration declarations: target behavior through comptime | Accepted | language, semantics, comptime, principle |
+| [0093](0093-order-independent-program-meaning.md) | Order-independent program meaning | Accepted | language, semantics, modules, principle |
 <!-- ADR-INDEX:END -->

@@ -120,6 +120,31 @@ pub fn triple(x: i32) -> i32 {
 args = ["--source-manifest", "sources.manifest", "main.rue", "-o", "prog"]
 stdout = "42\n"
 
+[[case]]
+name = "source_manifest_entry_order_and_const_relocation_preserve_meaning"
+description = "The manifest may list an imported file before the root, and relocating a module-level import constant below `main` preserves its file-scope binding."
+files = [
+    { path = "sources.manifest", source = """
+utils.rue
+main.rue
+""" },
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    @dbg(utils.triple(14));
+    0
+}
+
+const utils = @import("utils.rue");
+""" },
+    { path = "utils.rue", source = """
+pub fn triple(x: i32) -> i32 {
+    x * 3
+}
+""" },
+]
+args = ["--source-manifest", "sources.manifest", "main.rue", "-o", "prog"]
+stdout = "42\n"
+
 # The manifest membership key and the path import discovery requests are
 # reduced by the same normalizer, so a `.`/`..` spelling of a declared file
 # still declares it.

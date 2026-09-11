@@ -169,7 +169,7 @@ exit_code = 42
 
 [[case]]
 name = "function_forward_reference"
-spec = ["6.1:12"]
+spec = ["6.1:12", "10.5:5"]
 description = "Functions can call other functions regardless of definition order"
 source = """
 fn main() -> i32 { helper() }
@@ -179,7 +179,7 @@ exit_code = 42
 
 [[case]]
 name = "function_mutual_forward_reference"
-spec = ["6.1:12"]
+spec = ["6.1:12", "10.5:5"]
 description = "Functions can have mutual forward references"
 source = """
 fn first(x: i32) -> i32 {
