@@ -300,21 +300,25 @@ pub fn ArrayBuf(comptime T: type) -> type {
             }
         }
 
-        // Overwrite element `i` with `x`. Out-of-bounds indices are ignored.
-        // The element previously at `i` is dropped first (RUE-646): reading it
-        // out and `@drop`ping it runs its destructor, so overwriting a
-        // droppable `T` does not leak the old value. For a `Copy` `T`, `@drop`
-        // has no glue and this is free.
+        // Overwrite element `i` with `x`. An out-of-bounds `i` panics, as it
+        // does for `get_ref`: a write that silently went nowhere is the
+        // lost-update bug, and for a droppable `T` it would also silently
+        // destroy `x` (RUE-1713). The element previously at `i` is dropped
+        // first (RUE-646): reading it out and `@drop`ping it runs its
+        // destructor, so overwriting a droppable `T` does not leak the old
+        // value. For a `Copy` `T`, `@drop` has no glue and this is free.
         fn set(inout self, i: u64, x: T) {
-            if i < self.len {
-                @drop(self.core.read_at(i));
-                self.core.write_at(i, x);
+            if i >= self.len {
+                @panic("index out of bounds");
             }
+            @drop(self.core.read_at(i));
+            self.core.write_at(i, x);
         }
 
         // --- extra operations (Standard library v1, RUE-673) ---
 
-        // Exchange the elements at `i` and `j` (both must be in bounds). Each
+        // Exchange the elements at `i` and `j`. An out-of-bounds index panics
+        // like `set` and `get_ref` (RUE-1713); `i == j` is a no-op. Each
         // slot's value is read out and then written back into the OTHER slot,
         // so every element still has exactly one owner and neither read leaves
         // an aliasing duplicate behind: unlike `get`/`get_or` this is an
@@ -322,7 +326,10 @@ pub fn ArrayBuf(comptime T: type) -> type {
         // drop-glue `T` (RUE-2049). The writes deliberately bypass `set`, which
         // would drop the value the other read already moved out.
         fn swap(inout self, i: u64, j: u64) {
-            if i < self.len && j < self.len && i != j {
+            if i >= self.len || j >= self.len {
+                @panic("index out of bounds");
+            }
+            if i != j {
                 let a = self.core.read_at(i);
                 let b = self.core.read_at(j);
                 self.core.write_at(i, b);
