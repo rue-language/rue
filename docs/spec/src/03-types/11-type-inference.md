@@ -105,18 +105,29 @@ fn main() -> i32 {
 {{ rule(id="3.11:8", cat="legality-rule") }}
 
 When an expected type is imposed on an expression, the expression's inferred
-type **MUST** be compatible with it (1.1): the two types are equal, or the
-inferred type coerces to the expected type. There are no implicit conversions
-between distinct concrete integer types; an incompatible type is a compile-time
-error (E0206).
+type **MUST** be compatible with it (1.1): the two types are identical, or an
+explicit rule for that position admits the expression. An already-typed value
+never undergoes an implicit conversion between distinct concrete types. This
+includes integer widths or signedness domains, `f32` and `f64`, integers and
+floating-point values, `str` and `StrBuf`/`Str(N)`, option wrapping, and
+user-defined types; an incompatible value is a compile-time error.
+Explicit conversion intrinsics and constructors are required for such changes.
+Contextual typing of an untyped literal is inference, not conversion of a
+value that already has a type.
 
 {{ rule(id="3.11:9", cat="normative") }}
 
-The only coercion applied during inference is the never type coercing to any
-type (3.4): a diverging expression (type `!`) is accepted in any expected-type
-position. The resolution of an unannotated integer literal to a concrete integer
-type (3.1:14) is inference, not a coercion — the literal has no fixed type until
-it is solved.
+The only general type coercion applied during inference is the never type
+coercing to any type (3.4:3): a diverging expression (type `!`) is accepted in
+any expected-type position. The resolution of an unannotated integer or float
+literal to a concrete type (3.1:14, 3.12:7, 3.12:11) is inference, not a
+coercion — the literal has no fixed type until it is solved. A string literal
+likewise takes its string representation from context (3.7:3, 3.7:44), without
+converting an already-typed string value. The explicit
+argument-position view materializations defined by 3.7:55, 3.7:58, 3.7:60,
+4.10:4, and 7.2:12 are selected by `borrow` or `inout` and remain available;
+they are passing-mode operations, not first-class value conversions. No other
+type difference is accepted.
 
 {{ rule(id="3.11:10") }}
 
