@@ -186,8 +186,8 @@ pub use semantic_import::{
     SemanticImportNominal, SemanticImportNominalKind, SemanticImportType, SemanticImportTypeFold,
     SemanticImportTypeKind, SemanticImportedConstValue, SemanticImportedType,
     SemanticLocalCallable, SemanticLocalCompleteness, SemanticLocalMaterialization,
-    SemanticLocalNominal, SemanticLocalNominalShape, semantic_import_const_value_within_limits,
-    semantic_import_const_values_within_limits,
+    SemanticLocalNominal, SemanticLocalNominalShape, semantic_import_const_children_within_limits,
+    semantic_import_const_value_within_limits, semantic_import_const_values_within_limits,
 };
 pub use semantic_type_resolution::{
     ComptimeStructuredTypeAuthority, ComptimeStructuredTypeJob, ComptimeStructuredTypePoll,

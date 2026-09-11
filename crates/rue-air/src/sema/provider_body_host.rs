@@ -4242,7 +4242,7 @@ where
             let Some(value) = self.durable_value_from_concrete(value.clone()) else {
                 return Ok(None);
             };
-            durable_values.push((Arc::from(self.interner.resolve(&name)), value));
+            durable_values.push((Arc::from(self.interner.resolve(name)), value));
         }
         let reduced =
             match self
