@@ -1,16 +1,18 @@
-# The local compiler service's controls (ADR-0085 §2, RUE-2128): `rue daemon
-# start|status|stop`. Every case runs against a private endpoint root inside
-# its own directory, so no case shares a service with another or with the
-# developer's real runtime directory, and the harness stops what a case leaves
-# running. The service executes no compiler requests yet; these cases pin the
-# lifecycle contract the request path will rely on: `status` and `stop` never
-# start a service, `start` is idempotent and race-safe, and a scope selects
-# exactly one service.
+# The local compiler service (ADR-0085, RUE-2128): the `rue daemon
+# start|status|stop` controls and `--daemon=auto|required` builds. Every case
+# runs against a private endpoint root inside its own directory, so no case
+# shares a service with another or with the developer's real runtime
+# directory, and the harness stops what a case leaves running. The lifecycle
+# cases pin that `status` and `stop` never start a service, `start` is
+# idempotent and race-safe, and a scope selects exactly one service; the build
+# cases pin that a build through the service publishes a working program,
+# reports a rejected one exactly as direct mode does, and follows the support
+# table.
 
 [section]
 id = "cli.daemon"
-name = "rue daemon lifecycle controls"
-description = "start/status/stop over a user-private endpoint scoped by directory, isolation, and compiler build."
+name = "rue daemon controls and service builds"
+description = "start/status/stop and --daemon builds over a user-private endpoint scoped by directory, isolation, and compiler build."
 
 [[case]]
 name = "status_and_stop_without_a_service_start_nothing"
@@ -80,4 +82,74 @@ daemon = { steps = [
   { args = ["daemon", "start", "--scope", "missing"], exit_code = 1, stderr_contains = ["daemon scope directory", "is not usable"] },
   { args = ["daemon", "start", "--isolation", "no spaces"], exit_code = 1, stderr_contains = ["daemon isolation name"] },
   { args = ["daemon", "status"], exit_code = 1, stderr_contains = ["no service is running for"] },
+] }
+
+[[case]]
+name = "required_builds_run_through_the_service"
+description = "--daemon=required compiles through the service: the client publishes a working program, the service retains the host, and a second build of the same root reuses it."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    @dbg(41 + 1);
+    0
+}
+""" }]
+daemon = { steps = [
+  { args = ["--daemon=required", "main.rue", "-o", "app"], exit_code = 0, stdout_contains = ["Compiled main.rue -> app (target:"], run_output = "app", run_output_stdout_contains = ["42\n"] },
+  { args = ["daemon", "status"], exit_code = 0, stdout_contains = ["rue daemon: running", "  active request: none", "  queued requests: 0", "  retained hosts: 1"] },
+  { args = ["--daemon", "required", "main.rue", "-o", "app2"], exit_code = 0, stdout_contains = ["Compiled main.rue -> app2"], run_output = "app2", run_output_stdout_contains = ["42\n"] },
+  { args = ["daemon", "stop"], exit_code = 0, stdout_contains = ["stopped service pid"] },
+] }
+
+[[case]]
+name = "service_diagnostics_match_direct_mode"
+description = "A rejected program is reported through the service exactly as directly: the same diagnostic text, the same JSON object, the same exit status, and nothing published."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: i32 = "nope";
+    x
+}
+""" }]
+daemon = { steps = [
+  { args = ["main.rue", "-o", "direct"], exit_code = 1, stderr_contains = ["error: [E0206]: type mismatch: expected string type, found i32", " --> main.rue:2:5"] },
+  { args = ["--daemon=required", "main.rue", "-o", "app"], exit_code = 1, stderr_contains = ["error: [E0206]: type mismatch: expected string type, found i32", " --> main.rue:2:5"] },
+  { args = ["--daemon=required", "--error-format", "json", "main.rue", "-o", "app"], exit_code = 1, stderr_contains = ["\"code\":\"E0206\"", "\"file\":\"main.rue\""] },
+  { args = ["daemon", "status"], exit_code = 0, stdout_contains = ["  retained hosts: 1"] },
+  { args = ["daemon", "stop"], exit_code = 0, stdout_contains = ["stopped service pid"] },
+] }
+
+[[case]]
+name = "the_support_table_decides_between_service_and_direct"
+description = "Requests outside the support table run directly under auto and are refused before any work under required; a refused request starts no service."
+files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }\n" }]
+daemon = { steps = [
+  { args = ["--daemon=required", "--emit", "air", "main.rue"], exit_code = 1, stderr_contains = ["Error: --daemon=required: --emit runs directly"] },
+  { args = ["--daemon=required", "--error-format", "json", "--emit", "air", "main.rue"], exit_code = 1, stderr_contains = ["\"code\":\"E1503\"", "--emit runs directly"] },
+  { args = ["--daemon=required", "--watch", "main.rue"], exit_code = 1, stderr_contains = ["Error: --daemon=required: --watch runs directly"] },
+  { args = ["--daemon=required", "--linker", "cc", "main.rue"], exit_code = 1, stderr_contains = ["a system linker runs directly"] },
+  { args = ["--daemon=required", "--time-passes", "main.rue"], exit_code = 1, stderr_contains = ["--time-passes runs directly"] },
+  { args = ["--daemon=required", "--log-level", "debug", "main.rue"], exit_code = 1, stderr_contains = ["compiler tracing (--log-level) runs directly"] },
+  { args = ["--daemon=required", "test", "main.rue"], exit_code = 2, stderr_contains = ["`rue test` runs directly"] },
+  { args = ["--daemon=auto", "--emit", "deps", "main.rue"], exit_code = 0, stdout_contains = ["main.rue"] },
+  { args = ["--daemon=sometimes", "main.rue"], exit_code = 1, stderr_contains = ["unknown --daemon mode `sometimes`"] },
+  { args = ["--daemon-scope", ".", "main.rue"], exit_code = 1, stderr_contains = ["--daemon-scope requires --daemon=auto or --daemon=required"] },
+  { args = ["daemon", "status"], exit_code = 1, stderr_contains = ["no service is running for"] },
+] }
+
+[[case]]
+name = "auto_starts_the_service_its_scope_selects"
+description = "--daemon=auto starts the service for the root's directory; --daemon-scope and --daemon-isolation select the same service the controls address."
+files = [
+  { path = "main.rue", source = "fn main() -> i32 { 0 }\n" },
+  { path = "sub/main.rue", source = "fn main() -> i32 { 0 }\n" },
+]
+daemon = { steps = [
+  { args = ["--daemon=auto", "main.rue", "-o", "app"], exit_code = 0, stdout_contains = ["Compiled main.rue -> app"], run_output = "app" },
+  { args = ["daemon", "status"], exit_code = 0, stdout_contains = ["rue daemon: running", "  retained hosts: 1"] },
+  { args = ["--daemon=auto", "sub/main.rue", "-o", "sub/app"], exit_code = 0, stdout_contains = ["Compiled sub/main.rue -> sub/app"], run_output = "sub/app" },
+  { args = ["daemon", "status", "--scope", "sub"], exit_code = 0, stdout_contains = ["rue daemon: running"] },
+  { args = ["--daemon=auto", "--daemon-scope", ".", "--daemon-isolation", "ci", "sub/main.rue", "-o", "sub/app2"], exit_code = 0, run_output = "sub/app2" },
+  { args = ["daemon", "status", "--isolation", "ci"], exit_code = 0, stdout_contains = ["  isolation: ci", "  retained hosts: 1"] },
+  { args = ["daemon", "stop"], exit_code = 0, stdout_contains = ["stopped service pid"] },
+  { args = ["daemon", "stop", "--scope", "sub"], exit_code = 0, stdout_contains = ["stopped service pid"] },
+  { args = ["daemon", "stop", "--isolation", "ci"], exit_code = 0, stdout_contains = ["stopped service pid"] },
 ] }

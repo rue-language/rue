@@ -51,6 +51,16 @@ use crate::host::HostPathContext;
 pub struct WatchFingerprint(u64);
 
 impl WatchFingerprint {
+    /// The fingerprint's raw value, for carrying it as plain data.
+    pub fn value(self) -> u64 {
+        self.0
+    }
+
+    /// A fingerprint from its raw value.
+    pub fn from_value(value: u64) -> Self {
+        Self(value)
+    }
+
     pub fn from_bytes(bytes: &[u8]) -> Self {
         let mut hash = 0xcbf29ce484222325_u64;
         for byte in bytes {
@@ -78,6 +88,18 @@ pub struct WatchInput {
     expected_fingerprint: Option<WatchFingerprint>,
     symlink_boundary: Option<PathBuf>,
     expected_symlink_route: Arc<[PhysicalFileIdentity]>,
+}
+
+/// The plain-data form of a [`WatchInput`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WatchInputParts {
+    pub requested_path: PathBuf,
+    pub canonical_path: PathBuf,
+    /// `None` records an expected absence.
+    pub fingerprint: Option<u64>,
+    pub symlink_boundary: Option<PathBuf>,
+    /// `(volume, file)` identities along the expected symlink route.
+    pub symlink_route: Vec<(u64, u64)>,
 }
 
 impl WatchInput {
@@ -134,6 +156,38 @@ impl WatchInput {
 
     pub fn expected_fingerprint(&self) -> Option<WatchFingerprint> {
         self.expected_fingerprint
+    }
+
+    /// Reassemble an input from the parts [`Self::into_parts`] produced, so an
+    /// observation can cross a process boundary and still be revalidated by
+    /// the same publication guard (ADR-0085 §5).
+    pub fn from_parts(parts: WatchInputParts) -> Self {
+        Self {
+            requested_path: parts.requested_path,
+            canonical_path: parts.canonical_path,
+            expected_fingerprint: parts.fingerprint.map(WatchFingerprint::from_value),
+            symlink_boundary: parts.symlink_boundary,
+            expected_symlink_route: parts
+                .symlink_route
+                .into_iter()
+                .map(|(volume, file)| PhysicalFileIdentity::new(volume, file))
+                .collect(),
+        }
+    }
+
+    /// Every field of this observation as plain data.
+    pub fn into_parts(self) -> WatchInputParts {
+        WatchInputParts {
+            requested_path: self.requested_path,
+            canonical_path: self.canonical_path,
+            fingerprint: self.expected_fingerprint.map(WatchFingerprint::value),
+            symlink_boundary: self.symlink_boundary,
+            symlink_route: self
+                .expected_symlink_route
+                .iter()
+                .map(|identity| (identity.volume(), identity.file()))
+                .collect(),
+        }
     }
 
     fn symlink_route_changed(&self) -> bool {

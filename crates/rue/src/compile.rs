@@ -760,7 +760,7 @@ fn linked_executable(
     }
 }
 
-fn announce(
+pub(crate) fn announce(
     announcement: Announcement,
     source_path: &str,
     output_path: &str,
@@ -784,6 +784,134 @@ fn linker_name(linker: &LinkerMode) -> &str {
     match linker {
         LinkerMode::Internal => "internal",
         LinkerMode::System(command) => command,
+    }
+}
+
+/// One executable cycle's owned answer in the form that crosses the service
+/// boundary (ADR-0085 §5): the diagnostic stream rendered once, by the
+/// canonical formatter under the client's own format and color policy, and
+/// the linked bytes with everything the client's publication needs.
+pub(crate) struct CycleTransport {
+    /// Everything the direct compile would have written to stderr up to the
+    /// point the client takes over.
+    pub(crate) stderr: String,
+    pub(crate) outcome: TransportOutcome,
+}
+
+pub(crate) enum TransportOutcome {
+    /// The program was rejected or the destination refused.
+    Rejected,
+    Canceled,
+    Ready {
+        target: rue_target::Target,
+        bytes: Vec<u8>,
+        destination: PublicationDestination,
+        /// The accepted observations the client revalidates before the
+        /// rename, as a watch cycle does.
+        inputs: Vec<WatchInput>,
+    },
+}
+
+/// Produce one executable cycle for a service request: the destination
+/// preflight against the accepted-read closure, a cancellable compile, and
+/// the rendering of everything but publication, which belongs to the client.
+pub(crate) fn produce_transport(
+    host: &mut FilesystemCompilerHost,
+    options: &CompileOptions,
+    error_format: ErrorFormat,
+    color: rue_compiler::unstable::ColorChoice,
+    source_path: &str,
+    output_path: &Path,
+    cancellation: CompilationCancellation,
+) -> CycleTransport {
+    let inputs = host.watch_inputs();
+    // An ordinary invocation is never superseded: a newer command does not
+    // cancel an older one merely because they share a root (ADR-0085 §6).
+    let never = || false;
+    let response = produce::<CompileOutput>(
+        host,
+        options,
+        error_format,
+        Some(source_path),
+        output_path,
+        CycleObservation::Watch {
+            inputs,
+            cancellation,
+            superseded: &never,
+        },
+    );
+    response.into_transport(color)
+}
+
+impl OwnedCycleResponse<CompileOutput> {
+    fn into_transport(self, color: rue_compiler::unstable::ColorChoice) -> CycleTransport {
+        let OwnedCycleResponse {
+            source_snapshot,
+            error_format,
+            options,
+            result,
+            ..
+        } = self;
+        let source_infos = source_snapshot
+            .files()
+            .map(|source| {
+                (
+                    source.file_id,
+                    rue_compiler::unstable::SourceInfo::new(source.source, source.path),
+                )
+            })
+            .collect();
+        let diagnostics = DiagnosticOutput::with_color(error_format, source_infos, color);
+        let mut stderr = String::new();
+        // Each rendering is one `eprintln!` in the direct path, so each ends
+        // in exactly one newline here.
+        let mut line = |rendered: String| {
+            stderr.push_str(&rendered);
+            stderr.push('\n');
+        };
+        match result {
+            OwnedCycleResult::Ready {
+                artifact,
+                destination,
+                observation,
+            } => {
+                let inputs = match observation {
+                    PublicationObservation::Watch(inputs) => inputs,
+                    PublicationObservation::OneShot => Vec::new(),
+                };
+                if !artifact.warnings.is_empty() {
+                    line(diagnostics.render_warnings(&artifact.warnings));
+                }
+                CycleTransport {
+                    stderr,
+                    outcome: TransportOutcome::Ready {
+                        target: options.target,
+                        bytes: artifact.elf,
+                        destination,
+                        inputs,
+                    },
+                }
+            }
+            OwnedCycleResult::Failed {
+                errors,
+                publication,
+            } => {
+                if let Some(errors) = errors {
+                    line(diagnostics.render_prepared_errors(&errors));
+                }
+                if let Some(error) = publication {
+                    line(diagnostics.render_error(&error.into_compile_error()));
+                }
+                CycleTransport {
+                    stderr,
+                    outcome: TransportOutcome::Rejected,
+                }
+            }
+            OwnedCycleResult::Superseded(_) | OwnedCycleResult::Canceled => CycleTransport {
+                stderr,
+                outcome: TransportOutcome::Canceled,
+            },
+        }
     }
 }
 

@@ -2282,6 +2282,10 @@ define_error_codes! {
     DRIVER_TOOLCHAIN_INTEGRITY = 1501;
     /// Hermetic policy denied a trusted toolchain input during acquisition.
     DRIVER_HERMETIC_DENIAL = 1502;
+    /// The local compiler service (ADR-0085) could not run a request:
+    /// unavailable, incompatible, refused, or lost after acceptance. Never a
+    /// source error.
+    DRIVER_DAEMON = 1503;
 
     // ========================================================================
     // Internal compiler errors (E9000-E9999)
@@ -5590,6 +5594,7 @@ mod tests {
                 "DRIVER_SOURCE_LOAD",
                 "DRIVER_TOOLCHAIN_INTEGRITY",
                 "DRIVER_HERMETIC_DENIAL",
+                "DRIVER_DAEMON",
             ])
         );
         declared.retain(|name| !name.starts_with("DRIVER_"));
@@ -6486,6 +6491,7 @@ mod tests {
         assert_eq!(ErrorCode::DRIVER_SOURCE_LOAD, ErrorCode(1500));
         assert_eq!(ErrorCode::DRIVER_TOOLCHAIN_INTEGRITY, ErrorCode(1501));
         assert_eq!(ErrorCode::DRIVER_HERMETIC_DENIAL, ErrorCode(1502));
+        assert_eq!(ErrorCode::DRIVER_DAEMON, ErrorCode(1503));
         assert_ne!(
             ErrorCode::DRIVER_SOURCE_LOAD,
             ErrorCode::DRIVER_TOOLCHAIN_INTEGRITY

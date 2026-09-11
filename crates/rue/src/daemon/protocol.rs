@@ -21,6 +21,17 @@ pub const DAEMON_PROTOCOL_VERSION: u32 = 1;
 /// peer, and the connection is dropped instead of allocating for it.
 pub const MAX_CONTROL_FRAME_BYTES: usize = 1 << 20;
 
+/// The largest result frame a client accepts. A result carries the rendered
+/// diagnostics of one request, which a pathological program can make large;
+/// linked bytes never travel inside it.
+pub const MAX_RESULT_FRAME_BYTES: usize = 64 << 20;
+
+/// The largest raw chunk of linked bytes either side sends or accepts. The
+/// result frame announces the total, so a reader knows how many chunks to
+/// expect and never holds more than one unread chunk beyond the bytes it has
+/// already accepted.
+pub const MAX_CHUNK_BYTES: usize = 4 << 20;
+
 /// Why a frame could not be read.
 #[derive(Debug)]
 pub enum FrameError {
@@ -94,6 +105,73 @@ pub fn read_frame<T: DeserializeOwned>(
         .map_err(|error| FrameError::Malformed(error.to_string()))
 }
 
+/// Write one raw byte chunk as a frame: the same length prefix, an opaque body.
+pub fn write_bytes_frame(stream: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
+    let length = u32::try_from(bytes.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a frame cannot exceed 4 GiB"))?;
+    stream.write_all(&length.to_be_bytes())?;
+    stream.write_all(bytes)?;
+    stream.flush()
+}
+
+/// Read one raw byte chunk, or `None` when the peer closed the connection
+/// cleanly between frames. A chunk longer than `limit` is refused before any
+/// of its body is read.
+pub fn read_bytes_frame(
+    stream: &mut impl Read,
+    limit: usize,
+) -> Result<Option<Vec<u8>>, FrameError> {
+    let mut header = [0u8; 4];
+    match stream.read_exact(&mut header) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(error) => return Err(FrameError::Io(error)),
+    }
+    let announced = u32::from_be_bytes(header) as usize;
+    if announced > limit {
+        return Err(FrameError::Oversized { announced, limit });
+    }
+    let mut body = vec![0u8; announced];
+    stream.read_exact(&mut body).map_err(|error| {
+        if error.kind() == io::ErrorKind::UnexpectedEof {
+            FrameError::Truncated
+        } else {
+            FrameError::Io(error)
+        }
+    })?;
+    Ok(Some(body))
+}
+
+/// Write `bytes` as a sequence of bounded chunks. The receiver knows the
+/// total from the result frame that preceded them.
+pub fn write_chunks(stream: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
+    for chunk in bytes.chunks(MAX_CHUNK_BYTES) {
+        write_bytes_frame(stream, chunk)?;
+    }
+    Ok(())
+}
+
+/// Read exactly `total` bytes sent as bounded chunks.
+pub fn read_chunks(stream: &mut impl Read, total: u64) -> Result<Vec<u8>, FrameError> {
+    let total = usize::try_from(total).map_err(|_| FrameError::Oversized {
+        announced: usize::MAX,
+        limit: usize::MAX,
+    })?;
+    let mut bytes = Vec::with_capacity(total.min(MAX_CHUNK_BYTES));
+    while bytes.len() < total {
+        let remaining = total - bytes.len();
+        let chunk = read_bytes_frame(stream, MAX_CHUNK_BYTES.min(remaining))?
+            .ok_or(FrameError::Truncated)?;
+        if chunk.is_empty() {
+            return Err(FrameError::Malformed(
+                "an empty chunk inside a transfer".into(),
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
 /// The running compiler image and service scope a peer claims, in a form
 /// both ends can compare byte for byte.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,6 +229,55 @@ pub enum RequestBody {
     /// End the service. It answers [`ResponseBody::Stopping`] and then exits;
     /// the caller observes completion by the socket disappearing.
     Stop,
+    /// Compile an executable through the service's retained host (ADR-0085
+    /// §3, §5). The service answers [`ResponseBody::Accepted`] or
+    /// [`ResponseBody::Rejected`] before any work begins; an accepted request
+    /// is followed on the same connection by one [`BuildReply`] frame and,
+    /// when it carries linked bytes, by those bytes in raw chunks. The
+    /// connection then carries nothing else.
+    Build(Box<BuildRequest>),
+}
+
+/// How the client wants diagnostics rendered. The service renders once with
+/// the canonical formatter under the client's own policy, so the text on the
+/// client's stderr is byte for byte what a direct compile would have written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticFormat {
+    Text,
+    Json,
+}
+
+/// An executable build captured at the client boundary (ADR-0085 §3): every
+/// path is carried as the command line spelled it together with the
+/// directory it was spelled in, so the service resolves it exactly as the
+/// client's own process would have, without ever changing its own cwd.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildRequest {
+    /// The client's invocation directory.
+    pub working_directory: String,
+    /// The root source as written.
+    pub root_source: String,
+    /// The output path as written.
+    pub output_path: String,
+    /// `--source-manifest` as written.
+    pub source_manifest_path: Option<String>,
+    /// `RUE_STD_PATH` as captured; `None` when unset, `Some("")` when empty,
+    /// each keeping its direct-mode meaning.
+    pub std_root: Option<String>,
+    /// Compiler workers; `0` selects the automatic policy.
+    pub workers: usize,
+    /// The target name as `Target` prints it.
+    pub target: String,
+    /// The optimization level as `-O<n>` spells it, without the `-O`.
+    pub opt_level: String,
+    /// Preview feature names, as `--preview` accepts them.
+    pub preview_features: Vec<String>,
+    /// `--link-archive` paths anchored at the working directory.
+    pub link_archives: Vec<String>,
+    pub error_format: DiagnosticFormat,
+    /// Whether the client's stderr wants color.
+    pub color: bool,
 }
 
 /// One response, carrying the id of the request it answers.
@@ -164,15 +291,104 @@ pub struct Response {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ResponseBody {
     Pong,
-    Status { report: Box<StatusReport> },
+    Status {
+        report: Box<StatusReport>,
+    },
     Stopping,
-    Error { message: String },
+    Error {
+        message: String,
+    },
+    /// The build was admitted. `ticket` names it service-wide, which is how a
+    /// client attributes a crash record to its own request; `queued_ahead`
+    /// is how many admitted requests precede it.
+    Accepted {
+        ticket: u64,
+        queued_ahead: u32,
+    },
+    /// The build was refused before any work began, so the client may run it
+    /// directly (ADR-0085 §6).
+    Rejected {
+        reason: String,
+    },
+}
+
+/// The one result frame an accepted build produces.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BuildReply {
+    pub ticket: u64,
+    pub result: BuildResult,
+}
+
+/// How an accepted build ended. `stderr` is everything the direct compile
+/// would have written to its diagnostic stream up to the point where the
+/// client takes over: source-load failures, program diagnostics, a refused
+/// destination, or the warnings of a successful compile.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BuildResult {
+    /// The program was rejected or the destination refused; nothing to publish.
+    Rejected { stderr: String },
+    /// The executable is linked. `bytes` raw chunk bytes follow this frame;
+    /// the client publishes them at `destination` after revalidating
+    /// `inputs`, exactly as a watch cycle does.
+    Ready {
+        stderr: String,
+        target: String,
+        destination: DestinationRecord,
+        inputs: Vec<InputRecord>,
+        bytes: u64,
+    },
+    /// The request's cancellation was observed; nothing was produced.
+    Canceled,
+    /// The service could not run the request. `internal` marks a compiler
+    /// defect (an internal compiler error) as opposed to an infrastructure
+    /// failure.
+    Failed { message: String, internal: bool },
+}
+
+/// The publication destination as the service's preflight validated it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DestinationRecord {
+    pub path: String,
+    pub display_path: String,
+    pub source_paths: Vec<String>,
+}
+
+/// One accepted filesystem observation, in the shape the watch publication
+/// guard revalidates before the rename.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputRecord {
+    pub requested_path: String,
+    pub canonical_path: String,
+    /// `None` records an expected absence.
+    pub fingerprint: Option<u64>,
+    pub symlink_boundary: Option<String>,
+    /// `(volume, file)` identities along the expected symlink route.
+    pub symlink_route: Vec<(u64, u64)>,
+}
+
+/// A request the service is executing or holding, as status reports it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestSummary {
+    pub ticket: u64,
+    pub root_source: String,
+    pub working_directory: String,
+    pub elapsed_ms: u64,
+}
+
+/// What a service records when a compiler panic ends it during a request, so
+/// the client whose request it was can report the defect (ADR-0085 §6).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrashRecord {
+    pub pid: u32,
+    /// The request that was active, if any.
+    pub ticket: Option<u64>,
+    pub message: String,
+    pub location: Option<String>,
 }
 
 /// What `rue daemon status` reports (ADR-0085 §2): identity, PID, scope,
 /// active request, queue, retained hosts, and the resource policy in force.
-/// The request and host fields are structural placeholders until the service
-/// executes compiler requests; a status consumer sees the same shape then.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusReport {
     pub service: ServiceInfo,
@@ -180,7 +396,7 @@ pub struct StatusReport {
     pub idle_timeout_ms: u64,
     /// Connections open right now, this one included.
     pub connections: u32,
-    pub active_request: Option<String>,
+    pub active_request: Option<RequestSummary>,
     pub queued_requests: u32,
     pub retained_hosts: u32,
 }
@@ -255,6 +471,29 @@ mod tests {
         wire.truncate(wire.len() - 3);
         let mut reader = wire.as_slice();
         let error = read_frame::<Hello>(&mut reader, MAX_CONTROL_FRAME_BYTES).unwrap_err();
+        assert!(matches!(error, FrameError::Truncated), "{error}");
+    }
+
+    #[test]
+    fn chunked_bytes_round_trip_under_the_chunk_bound() {
+        let bytes: Vec<u8> = (0..(2 * MAX_CHUNK_BYTES + 17)).map(|i| i as u8).collect();
+        let mut wire = Vec::new();
+        write_chunks(&mut wire, &bytes).unwrap();
+        // Three chunks: two full, one of 17 bytes.
+        assert_eq!(wire.len(), bytes.len() + 3 * 4);
+        let mut reader = wire.as_slice();
+        assert_eq!(read_chunks(&mut reader, bytes.len() as u64).unwrap(), bytes);
+
+        let mut wire = Vec::new();
+        write_bytes_frame(&mut wire, &vec![1u8; MAX_CHUNK_BYTES + 1]).unwrap();
+        let mut reader = wire.as_slice();
+        let error = read_chunks(&mut reader, (MAX_CHUNK_BYTES + 1) as u64).unwrap_err();
+        assert!(matches!(error, FrameError::Oversized { .. }), "{error}");
+
+        let mut wire = Vec::new();
+        write_chunks(&mut wire, &[1, 2, 3]).unwrap();
+        let mut reader = wire.as_slice();
+        let error = read_chunks(&mut reader, 5).unwrap_err();
         assert!(matches!(error, FrameError::Truncated), "{error}");
     }
 
