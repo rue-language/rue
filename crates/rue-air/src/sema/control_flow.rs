@@ -1516,11 +1516,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .match_arms(arms)
             .iter()
             .any(|(pattern, _)| matches!(pattern, RirPatternView::Struct { .. }));
-        if !scrutinee_type.is_integer()
-            && scrutinee_type != Type::BOOL
-            && !scrutinee_type.is_enum()
-            && !(scrutinee_type.is_struct() && has_struct_pattern_arm)
-        {
+        let matchable = scrutinee_type.is_integer()
+            || scrutinee_type == Type::BOOL
+            || scrutinee_type.is_enum()
+            || (scrutinee_type.is_struct() && has_struct_pattern_arm);
+        if !matchable {
             return Err(CompileError::new(
                 ErrorKind::InvalidMatchType(self.format_type_name(scrutinee_type)),
                 span,
