@@ -87,6 +87,33 @@ fn compiler_owned_explanation_examples_have_the_declared_outcome() {
                                 .all(|code| *code == rue_error::ErrorCode::UNEXPECTED_TOKEN)
                         );
                         assert_eq!(codes[100], metadata.code);
+                    } else if metadata.code == rue_error::ErrorCode::MALFORMED_FLOAT_LITERAL
+                        && example.title == "Leading dot diagnosed by the lexer"
+                    {
+                        assert_eq!(
+                            codes,
+                            [metadata.code, rue_error::ErrorCode::UNEXPECTED_TOKEN,],
+                            "unexpected diagnostics for {:?}: {errors:?}",
+                            example.title
+                        );
+                    } else if matches!(
+                        metadata.code,
+                        rue_error::ErrorCode::INVALID_INTEGER
+                            | rue_error::ErrorCode::INVALID_STRING_ESCAPE
+                            | rue_error::ErrorCode::UNTERMINATED_STRING
+                            | rue_error::ErrorCode::UPPERCASE_BASE_PREFIX
+                            | rue_error::ErrorCode::EMPTY_BASED_LITERAL
+                            | rue_error::ErrorCode::INVALID_DIGIT_FOR_BASE
+                            | rue_error::ErrorCode::MALFORMED_BYTE_LITERAL
+                    ) {
+                        // The lexer omits these malformed literals. The parser
+                        // then diagnoses the missing expression or delimiter.
+                        assert_eq!(
+                            codes,
+                            [metadata.code, rue_error::ErrorCode::UNEXPECTED_TOKEN,],
+                            "unexpected diagnostics for {:?}: {errors:?}",
+                            example.title
+                        );
                     } else {
                         assert_eq!(
                             codes.as_slice(),

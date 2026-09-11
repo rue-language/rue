@@ -16,14 +16,18 @@ macro_rules! register_parse_import_parse_modules {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .remove(&key.0);
-                    let (result, work) =
-                        crate::parsed_modules::parse_source_snapshot_module_with_stage(
+                    let (result, work, diagnostics) =
+                        crate::parsed_modules::parse_source_snapshot_module_with_stage_and_diagnostics(
                             &view.snapshot,
                             &key.0,
                             staged,
                             &$parse_identity_resolution,
                         );
-                    Ok(QueryOutput::success(ParseModuleValue { result, work }))
+                    Ok(QueryOutput::success(ParseModuleValue {
+                        result,
+                        diagnostics,
+                        work,
+                    }))
                 },
             )
             .expect("the ParseModule family has one canonical name")

@@ -833,7 +833,7 @@ impl BodyTransactionEvaluator {
                             }
                         }
                     }
-                    Err(error) => body_failure_with_source(error, &input.source),
+                    Err(errors) => body_failure_with_source(errors, &input.source),
                 }
             } else if let crate::FunctionInstanceKey::Specialization { base: _, arguments } =
                 &key.instance
@@ -1193,7 +1193,7 @@ impl BodyTransactionEvaluator {
                             },
                         }
                     }
-                    Err(error) => body_failure_with_source(error, &input.source),
+                    Err(errors) => body_failure_with_source(errors, &input.source),
                 }
             } else if let crate::FunctionInstanceKey::AnonymousMember { owner, member } =
                 &key.instance
@@ -1528,7 +1528,7 @@ impl BodyTransactionEvaluator {
                             },
                         }
                     }
-                    Err(error) => body_failure_with_source(error, &input.source),
+                    Err(errors) => body_failure_with_source(errors, &input.source),
                 }
             } else {
                 crate::body_query::BodyTransaction::DeterministicFailure {

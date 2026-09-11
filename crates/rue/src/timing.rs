@@ -2075,10 +2075,10 @@ mod tests {
             "parse-error edges: {parse_error_edges:?}"
         );
         assert!(
-            !parse_error_edges
+            parse_error_edges
                 .iter()
                 .any(|(_, child)| child == "parser_directive_validation"),
-            "directive validation must not run after grammar failure: {parse_error_edges:?}"
+            "retained syntax must still run directive validation after grammar recovery: {parse_error_edges:?}"
         );
 
         let validation_edges = capture("@important fn main() -> i32 { 0 }");

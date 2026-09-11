@@ -1490,12 +1490,34 @@ fn exact_same_source(snapshot_text: &Arc<String>, staged_text: &Arc<String>) -> 
     Arc::ptr_eq(snapshot_text, staged_text) || snapshot_text.as_bytes() == staged_text.as_bytes()
 }
 
+#[cfg(test)]
 pub(crate) fn parse_source_snapshot_module_with_stage(
     snapshot: &SourceSnapshot,
     module: &ModuleId,
     staged: Option<StagedModuleParse>,
     meter: &crate::source_snapshot::IdentityResolutionMeter,
 ) -> (Result<Arc<ParsedModule>, CompileErrors>, SyntaxWork) {
+    let (result, work, diagnostics) =
+        parse_source_snapshot_module_with_stage_and_diagnostics(snapshot, module, staged, meter);
+    if diagnostics.is_empty() {
+        (result, work)
+    } else {
+        (Err(diagnostics), work)
+    }
+}
+
+/// Canonical module parse result with recovered frontend diagnostics retained
+/// separately from the strict result adapter.
+pub(crate) fn parse_source_snapshot_module_with_stage_and_diagnostics(
+    snapshot: &SourceSnapshot,
+    module: &ModuleId,
+    staged: Option<StagedModuleParse>,
+    meter: &crate::source_snapshot::IdentityResolutionMeter,
+) -> (
+    Result<Arc<ParsedModule>, CompileErrors>,
+    SyntaxWork,
+    CompileErrors,
+) {
     let file_id = snapshot.file_id_for_module(module, meter).ok_or_else(|| {
         CompileErrors::from(invalid_input(format!(
             "source snapshot contains no module {module}"
@@ -1512,7 +1534,7 @@ pub(crate) fn parse_source_snapshot_module_with_stage(
             }
             parse_snapshot_file(snapshot, file_id)
         }
-        Err(errors) => (Err(errors), SyntaxWork::default()),
+        Err(errors) => (Err(errors.clone()), SyntaxWork::default(), errors),
     }
 }
 
@@ -1543,6 +1565,7 @@ pub(crate) struct StagedModuleParse {
     interner: ThreadedRodeo,
     tokens: crate::syntax::TransientTokenBuffer,
     work: SyntaxWork,
+    diagnostics: CompileErrors,
 }
 
 impl StagedModuleParse {
@@ -1563,10 +1586,10 @@ impl StagedModuleParse {
 /// with the parse itself as a [`StagedModuleParse`] so the published revision's
 /// canonical parse query reuses this work instead of repeating it.
 ///
-/// `None` means the source did not parse. The wave stops extending there and
-/// publishes; the canonical staging parse of the published revision then reports
-/// the diagnostics, exactly as it would have for the hop-granular round that
-/// read the same source.
+/// `None` means the source has diagnostics or recovery could not produce a
+/// syntax tree. Broken syntax is never used as import authority; the canonical
+/// parse of the published revision still retains its recovered tree and
+/// reports the diagnostics.
 pub(crate) fn parse_unpublished_module(
     module: &ModuleId,
     physical_path: &str,
@@ -1579,7 +1602,10 @@ pub(crate) fn parse_unpublished_module(
         crate::queries::SourceView::new(physical_path, source, FileId::new(1)),
         ThreadedRodeo::new(),
     );
-    let ast = outcome.result.ok()?;
+    if !outcome.diagnostics.is_empty() {
+        return None;
+    }
+    let ast = outcome.recovered.clone()?;
     let projections = collect_module_projections(&ast, module, &outcome.interner).ok()?;
     Some((
         projections.imports.valid,
@@ -1590,6 +1616,7 @@ pub(crate) fn parse_unpublished_module(
             interner: outcome.interner,
             tokens: outcome.tokens,
             work: outcome.work,
+            diagnostics: outcome.diagnostics,
         },
     ))
 }
@@ -1605,12 +1632,17 @@ fn build_module_from_staged(
     snapshot: &SourceSnapshot,
     file_id: FileId,
     staged: StagedModuleParse,
-) -> (Result<Arc<ParsedModule>, CompileErrors>, SyntaxWork) {
+) -> (
+    Result<Arc<ParsedModule>, CompileErrors>,
+    SyntaxWork,
+    CompileErrors,
+) {
     let StagedModuleParse {
         ast,
         interner,
         tokens,
         work,
+        diagnostics,
         ..
     } = staged;
     let mut tokens = tokens;
@@ -1632,7 +1664,7 @@ fn build_module_from_staged(
     };
     let result = build_module(snapshot, file_id, ast, interner, work.tokens, tokens)
         .map_err(CompileErrors::from);
-    (result, work)
+    (result, work, diagnostics)
 }
 
 pub(crate) fn rebind_parsed_module(
@@ -1659,23 +1691,33 @@ pub(crate) fn rebind_parsed_module(
 fn parse_snapshot_file(
     snapshot: &SourceSnapshot,
     file_id: FileId,
-) -> (Result<Arc<ParsedModule>, CompileErrors>, SyntaxWork) {
+) -> (
+    Result<Arc<ParsedModule>, CompileErrors>,
+    SyntaxWork,
+    CompileErrors,
+) {
     let source = snapshot.source(file_id).expect("metadata membership");
     let outcome = crate::syntax::parse_file(source, ThreadedRodeo::new());
     let work = outcome.work;
     let tokens = outcome.tokens;
-    let result = outcome.result.and_then(|ast| {
-        build_module(
-            snapshot,
-            file_id,
-            ast,
-            outcome.interner,
-            work.tokens,
-            tokens,
-        )
-        .map_err(CompileErrors::from)
-    });
-    (result, work)
+    // Syntax diagnostics are carried by the side channel. A fatal recovery
+    // failure has no module value, but returning those same diagnostics in the
+    // strict result would make program assembly report each one twice.
+    let result = outcome.recovered.map_or_else(
+        || Err(CompileErrors::new()),
+        |ast| {
+            build_module(
+                snapshot,
+                file_id,
+                ast,
+                outcome.interner,
+                work.tokens,
+                tokens,
+            )
+            .map_err(CompileErrors::from)
+        },
+    );
+    (result, work, outcome.diagnostics)
 }
 
 fn build_module(
@@ -2754,15 +2796,14 @@ fn build_definition_index(
         // definition.
         let item_parts: Vec<_> = if let Item::Extern(block) = item {
             crate::definition_snapshot::extern_definition_parts(block).collect()
+        } else if matches!(item, Item::Error(_)) {
+            // Syntax recovery owns the error node. It has no declaration
+            // identity, so retain the surrounding module and let the
+            // canonical frontend diagnostics gate semantic consumers.
+            continue;
         } else {
             let Some(parts) = definition_parts(item) else {
-                let Item::Error(span) = item else {
-                    unreachable!()
-                };
-                return Err(invalid_input(format!(
-                    "parsed module contains recovered error item at {}..{}",
-                    span.start, span.end
-                )));
+                unreachable!("definition_parts omitted a non-error item")
             };
             vec![parts]
         };
@@ -3286,9 +3327,9 @@ fn build_definition_index(
                 });
             }
             Item::Error(_) => {
-                return Err(invalid_input(
-                    "parsed module contains recovered error item in RIR recipes",
-                ));
+                // Recovered syntax has no executable recipe. The retained
+                // module remains inspectable while syntax diagnostics prevent
+                // semantic and code-generation queries from running.
             }
         }
     }

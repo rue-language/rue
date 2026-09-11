@@ -31,6 +31,86 @@ use crate::inst::{
 use crate::scope::ScopedContext;
 use crate::types::{Type, TypeKind};
 
+/// Statement recovery may replace a failed leaf with an ERROR placeholder.
+/// Control-flow expressions need their edge facts preserved instead, so a
+/// failure at one of these roots remains fatal and cannot become fallthrough.
+struct StatementRecoveryFacts {
+    safe: bool,
+    reads_poison: bool,
+}
+
+fn statement_recovery_facts(
+    rir: &rue_rir::Rir,
+    root: InstRef,
+    ctx: &AnalysisContext<'_>,
+) -> StatementRecoveryFacts {
+    let mut facts = StatementRecoveryFacts {
+        safe: true,
+        reads_poison: false,
+    };
+    let mut pending = vec![root];
+    let mut visited = AHashSet::new();
+    while let Some(instruction) = pending.pop() {
+        if !visited.insert(instruction) {
+            continue;
+        }
+        let data = &rir.get(instruction).data;
+        if matches!(
+            data,
+            InstData::Try { .. }
+                | InstData::Branch { .. }
+                | InstData::Loop { .. }
+                | InstData::InfiniteLoop { .. }
+                | InstData::Match { .. }
+                | InstData::Ret(_)
+                | InstData::Break { .. }
+                | InstData::Continue
+            | InstData::Yield(_)
+            | InstData::Block { .. }
+            // These expressions may consume a linear operand before a later
+            // operand fails. Recovering them would restore the checkpoint and
+            // then let the enclosing scope report a fabricated drop; stop at
+            // the statement boundary until ownership facts are trustworthy.
+            | InstData::Call { .. }
+            | InstData::MethodCall { .. }
+            | InstData::Intrinsic { .. }
+            | InstData::InternalIntrinsic { .. }
+            | InstData::StructInit { .. }
+            | InstData::ArrayInit { .. }
+            | InstData::ArrayRepeat { .. }
+            | InstData::Assign { .. }
+            | InstData::PlaceSet { .. }
+            | InstData::FieldSet { .. }
+            | InstData::IndexSet { .. }
+        ) {
+            facts.safe = false;
+        }
+        if let InstData::VarRef { name, .. } = data
+            && ctx
+                .locals
+                .get(name)
+                .map_or_else(|| ctx.has_param(*name), |local| !local.ty.is_error())
+        {
+            // A failed expression may consume a local before it discovers a
+            // later error, or it may fail before reaching that local. In
+            // either order a rollback would make the enclosing linearity
+            // check observe fabricated fallthrough. Unknown names and
+            // already-poisoned locals remain eligible for diagnostic recovery.
+            facts.safe = false;
+        }
+        if let InstData::VarRef { name, .. } = data
+            && ctx
+                .locals
+                .get(name)
+                .is_some_and(|local| local.ty.is_error())
+        {
+            facts.reads_poison = true;
+        }
+        rir.child_instructions(instruction, &mut pending);
+    }
+    facts
+}
+
 /// The failure kind a test body's `?` reports (ADR-0083 §1).
 const TEST_FAILURE_KIND: &str = "unhandled_error";
 /// The failure message a test body's `?` reports.
@@ -3745,6 +3825,36 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(AnalysisResult::diverged(air_ref, Type::NEVER))
     }
 
+    /// Retain a failed statement only for diagnostic recovery. A failed or
+    /// dependent binding still shadows its predecessor, but owns no AIR value.
+    fn recover_statement_placeholder(
+        &mut self,
+        air: &mut Air,
+        inst_ref: InstRef,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        let inst = self.body_rir_ref().get(inst_ref);
+        let span = inst.span;
+        let failed_binding = match &inst.data {
+            InstData::Alloc {
+                name: Some(name),
+                is_mut,
+                ..
+            } => Some((*name, *is_mut)),
+            _ => None,
+        };
+        if let Some((name, is_mut)) = failed_binding {
+            let slot = self.reserve_frame_slots(&mut ctx.next_slot, 1, span)?;
+            ctx.poison_failed_binding(name, slot, is_mut, span);
+        }
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::UnitConst,
+            ty: Type::ERROR,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::ERROR))
+    }
+
     /// Analyze a block expression.
     fn analyze_block(
         &mut self,
@@ -3753,6 +3863,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
+        ctx.statement_recovery_depth = ctx.statement_recovery_depth.saturating_add(1);
         let prior_divergence = ctx.divergence_kinds;
         ctx.divergence_kinds = DivergenceKinds::NONE;
         // Get the instruction refs from extra data
@@ -3777,6 +3888,30 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // transient edge classification so a dead suffix cannot change
             // the kind captured at the first reachable divergence.
             ctx.divergence_kinds = DivergenceKinds::NONE;
+            let recovery_facts = (self.body_analysis_error_recovery()
+                && ctx.statement_recovery_depth == 1)
+                .then(|| statement_recovery_facts(self.body_rir_ref(), inst_ref, ctx));
+            // ERROR locals preserve failed bindings, not inferred values. Do
+            // not pass their reads to ordinary consumers, which legitimately
+            // require resolved types. A safe dependent statement can retain a
+            // placeholder; control flow or ownership effects instead end this
+            // recovery attempt with the diagnostic that owns the poison.
+            if recovery_facts
+                .as_ref()
+                .is_some_and(|facts| facts.reads_poison)
+                && let Some(error) = self.body_analysis_recovered_errors_mut().first().cloned()
+            {
+                if !recovery_facts.as_ref().expect("recovery facts").safe {
+                    return Err(error);
+                }
+                let result = self.recover_statement_placeholder(air, inst_ref, ctx)?;
+                if is_last {
+                    last_result = Some(result);
+                } else {
+                    statements.push(result.air_ref);
+                }
+                continue;
+            }
             let recovery_checkpoint = self
                 .body_analysis_error_recovery()
                 .then(|| (air.checkpoint(), ctx.clone()));
@@ -3796,18 +3931,40 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
             let result = match outcome {
                 Ok(result) => result,
-                Err(error) if self.body_analysis_error_recovery() => {
+                Err(error)
+                    if self.body_analysis_error_recovery()
+                        && ctx.statement_recovery_depth == 1
+                        && self.body_analysis_error_is_recoverable(&error)
+                        && recovery_facts.as_ref().is_some_and(|facts| facts.safe)
+                        && !matches!(
+                            self.body_rir_ref().get(inst_ref).data,
+                            rue_rir::InstData::Ret(_)
+                                | rue_rir::InstData::Break { .. }
+                                | rue_rir::InstData::Continue
+                        ) =>
+                {
+                    // A failed return/break/continue cannot be represented by
+                    // a continuing ERROR value: doing so would invent a
+                    // fallthrough edge and make later ownership checks
+                    // authoritative. Those control-flow statements remain
+                    // fatal and are handled by the next match arm.
                     let (air_checkpoint, ctx_checkpoint) = recovery_checkpoint
                         .expect("body-analysis recovery checkpoint must accompany recovery mode");
                     air.rollback(air_checkpoint);
                     *ctx = ctx_checkpoint;
-                    self.body_analysis_recovered_errors_mut().push(error);
-                    let air_ref = air.add_inst(AirInst {
-                        data: AirInstData::UnitConst,
-                        ty: Type::ERROR,
-                        span: self.body_rir_ref().get(inst_ref).span,
-                    });
-                    AnalysisResult::new(air_ref, Type::ERROR)
+                    let recovered_errors = self.body_analysis_recovered_errors_mut();
+                    if recovered_errors.len()
+                        >= super::ordinary_engine::BODY_ANALYSIS_DIAGNOSTIC_BUDGET
+                    {
+                        return Err(CompileError::without_span(
+                            ErrorKind::CompilerResourceLimit(format!(
+                                "body analysis exceeded the recovery diagnostic limit of {}",
+                                super::ordinary_engine::BODY_ANALYSIS_DIAGNOSTIC_BUDGET
+                            )),
+                        ));
+                    }
+                    recovered_errors.push(error);
+                    self.recover_statement_placeholder(air, inst_ref, ctx)?
                 }
                 Err(error) => return Err(error),
             };
@@ -3912,6 +4069,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
         };
 
+        ctx.statement_recovery_depth = ctx
+            .statement_recovery_depth
+            .checked_sub(1)
+            .expect("semantic block recovery depth underflow");
         ctx.divergence_kinds = prior_divergence.union(reachable_divergence);
 
         // Only create a Block instruction if there are statements;

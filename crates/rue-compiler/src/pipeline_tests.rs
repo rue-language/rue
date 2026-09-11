@@ -5053,6 +5053,265 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_body_recovery_reports_independent_errors_in_source_order() {
+        let source = "fn helper() -> i32 { let first = missing; let second = absent; 0 } fn main() -> i32 { helper() }";
+        let errors = match test_cfg(source) {
+            Ok(_) => panic!("invalid bindings must reject the program"),
+            Err(errors) => errors,
+        };
+        assert_eq!(
+            errors.len(),
+            2,
+            "independent body errors were collapsed: {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .all(|error| matches!(&error.kind, ErrorKind::UndefinedVariable(_)))
+        );
+        let starts = errors
+            .iter()
+            .map(|error| error.span().expect("body error span").start)
+            .collect::<Vec<_>>();
+        assert!(
+            starts.windows(2).all(|pair| pair[0] < pair[1]),
+            "{starts:?}"
+        );
+    }
+
+    #[test]
+    fn failed_shadowing_binding_poison_prevents_outer_binding_cascade() {
+        let source = "fn main() -> i32 { let value = 1; let value = missing; value + true }";
+        let errors = match test_cfg(source) {
+            Ok(_) => panic!("the failed shadow must reject the program"),
+            Err(errors) => errors,
+        };
+        assert_eq!(
+            errors.len(),
+            1,
+            "poisoned shadow emitted a cascade: {errors:?}"
+        );
+        assert!(matches!(
+            &errors.iter().next().expect("one error").kind,
+            ErrorKind::UndefinedVariable(_)
+        ));
+    }
+
+    #[test]
+    fn failed_mutable_shadow_keeps_assignment_recovery_inert() {
+        let source = "fn main() -> i32 { let mut value = 1; let mut value = missing; value = 2; let y = absent; 0 }";
+        let errors = match test_cfg(source) {
+            Ok(_) => panic!("independent failures must reject the program"),
+            Err(errors) => errors,
+        };
+        assert_eq!(
+            errors.len(),
+            2,
+            "mutable poison emitted a cascade: {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .all(|error| matches!(&error.kind, ErrorKind::UndefinedVariable(_)))
+        );
+    }
+
+    #[test]
+    fn poisoned_bindings_do_not_reach_type_dependent_consumers() {
+        let cases = [
+            ("@dbg(x);", false),
+            ("@drop(x);", false),
+            ("let y = x.len();", false),
+            ("let y = [x];", false),
+            ("let a = [1, 2]; let y = a[x];", false),
+            ("let y = comptime { x };", true),
+            ("let y = x; @dbg(y);", false),
+            ("let y = x;", true),
+            ("let y = x + 1;", true),
+            ("let y = x.field;", true),
+            ("let y = x[0];", true),
+            ("let y = x; let z = y + 1;", true),
+        ];
+        for (dependent, reaches_independent_error) in cases {
+            let source = format!(
+                "fn main() -> i32 {{ let x: comptime_float = 1.0; {dependent} let next = absent; 0 }}"
+            );
+            let mut session = CompilerSession::new();
+            // Repeated and relocated source queries must retain the owning
+            // diagnostic, with no internal error or dependent cascade.
+            let mut initial_span = None;
+            for prefix in ["", "", "// relocated\n"] {
+                let snapshot =
+                    SourceSnapshot::single("poison.rue", format!("{prefix}{source}")).unwrap();
+                session
+                    .update_for_presentation(&snapshot)
+                    .into_result()
+                    .unwrap();
+                let errors = match session.rooted_cfg(&CompileOptions::default()) {
+                    Ok(_) => panic!("poisoned body unexpectedly compiled: {source}"),
+                    Err(errors) => errors,
+                };
+                assert_eq!(
+                    errors.len(),
+                    if reaches_independent_error { 2 } else { 1 },
+                    "dependent statement {dependent:?} emitted a cascade: {errors:?}"
+                );
+                let mut errors = errors.iter();
+                let owner = errors.next().expect("owning annotation error");
+                assert!(
+                    matches!(&owner.kind, ErrorKind::UnknownType(name) if name == "comptime_float"),
+                    "unexpected owner: {owner:?}"
+                );
+                let span = owner.span().expect("owning annotation span");
+                let (start, end) = *initial_span.get_or_insert((span.start, span.end));
+                assert_eq!(
+                    (span.start, span.end),
+                    (start + prefix.len() as u32, end + prefix.len() as u32),
+                    "owning diagnostic did not track relocation"
+                );
+                if reaches_independent_error {
+                    assert!(matches!(
+                        &errors.next().expect("independent error").kind,
+                        ErrorKind::UndefinedVariable(name) if name == "absent"
+                    ));
+                }
+            }
+            let repaired = SourceSnapshot::single(
+                "poison.rue",
+                "fn main() -> i32 { let x: f64 = 1.0; @dbg(x); @drop(x); 0 }",
+            )
+            .unwrap();
+            session
+                .update_for_presentation(&repaired)
+                .into_result()
+                .unwrap();
+            session
+                .rooted_cfg(&CompileOptions::default())
+                .expect("repair must replace the failed body terminal");
+        }
+    }
+
+    #[test]
+    fn safe_poison_tails_preserve_reachable_and_dead_suffix_state() {
+        for source in [
+            "fn main() -> i32 { let x = missing; x }",
+            "fn main() -> i32 { return 0; let x = missing; x }",
+        ] {
+            let errors = match test_cfg(source) {
+                Ok(_) => panic!("poisoned tail unexpectedly compiled"),
+                Err(errors) => errors,
+            };
+            assert_eq!(
+                errors.len(),
+                1,
+                "poisoned tail emitted a cascade: {errors:?}"
+            );
+            assert!(matches!(
+                &errors.iter().next().unwrap().kind,
+                ErrorKind::UndefinedVariable(name) if name == "missing"
+            ));
+        }
+    }
+
+    #[test]
+    fn poisoned_local_shadow_of_parameter_keeps_independent_recovery() {
+        let source = "fn helper(x: i32) -> i32 { let x = missing; let y = x + 1; let z = absent; 0 } fn main() -> i32 { helper(0) }";
+        let errors = match test_cfg(source) {
+            Ok(_) => panic!("failed parameter shadow unexpectedly compiled"),
+            Err(errors) => errors,
+        };
+        let names = errors
+            .iter()
+            .map(|error| match &error.kind {
+                ErrorKind::UndefinedVariable(name) => name.as_str(),
+                _ => panic!("unexpected diagnostic: {error:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["missing", "absent"]);
+    }
+
+    #[test]
+    fn uncertain_linear_recovery_stops_before_scope_obligations() {
+        let common = "linear struct L { value: i32 } fn eat(x: L) -> i32 { x.value }";
+        let cases = [
+            (
+                format!(
+                    "{common} fn main() -> i32 {{ let x = L {{ value: 1 }}; let y = if missing {{ eat(x) }} else {{ eat(x) }}; 0 }}"
+                ),
+                format!(
+                    "{common} fn main() -> i32 {{ let x = L {{ value: 1 }}; let y = if true {{ eat(x) }} else {{ eat(x) }}; 0 }}"
+                ),
+                "missing",
+            ),
+            (
+                format!(
+                    "{common} fn consume(x: L, y: i32) -> i32 {{ eat(x) + y }} fn main() -> i32 {{ let x = L {{ value: 1 }}; let y = consume(x, missing); 0 }}"
+                ),
+                format!(
+                    "{common} fn consume(x: L, y: i32) -> i32 {{ eat(x) + y }} fn main() -> i32 {{ let x = L {{ value: 1 }}; let y = consume(x, 0); 0 }}"
+                ),
+                "missing",
+            ),
+            (
+                format!(
+                    "{common} fn consume(y: i32, x: L) -> i32 {{ eat(x) + y }} fn main() -> i32 {{ let x = L {{ value: 1 }}; let y = consume(missing, x); 0 }}"
+                ),
+                format!(
+                    "{common} fn consume(y: i32, x: L) -> i32 {{ eat(x) + y }} fn main() -> i32 {{ let x = L {{ value: 1 }}; let y = consume(0, x); 0 }}"
+                ),
+                "missing",
+            ),
+            (
+                format!(
+                    "{common} struct S {{ a: L, b: i32 }} fn main() -> i32 {{ let x = L {{ value: 1 }}; let y = S {{ a: x, b: missing }}; eat(y.a); 0 }}"
+                ),
+                format!(
+                    "{common} struct S {{ a: L, b: i32 }} fn main() -> i32 {{ let x = L {{ value: 1 }}; let y = S {{ a: x, b: 0 }}; eat(y.a); 0 }}"
+                ),
+                "missing",
+            ),
+            (
+                format!(
+                    "{common} fn main() -> i32 {{ let x = L {{ value: 1 }}; let y: Missing = x; eat(y); 0 }}"
+                ),
+                format!(
+                    "{common} fn main() -> i32 {{ let x = L {{ value: 1 }}; let y: L = x; eat(y); 0 }}"
+                ),
+                "Missing",
+            ),
+            (
+                format!(
+                    "{common} fn main() -> i32 {{ let mut x = L {{ value: 1 }}; eat(x); x = missing; eat(x); 0 }}"
+                ),
+                format!(
+                    "{common} fn main() -> i32 {{ let mut x = L {{ value: 1 }}; eat(x); x = L {{ value: 2 }}; eat(x); 0 }}"
+                ),
+                "missing",
+            ),
+        ];
+        for (source, corrected, missing_name) in cases {
+            let errors = match test_cfg(&source) {
+                Ok(_) => panic!("uncertain ownership case unexpectedly compiled: {source}"),
+                Err(errors) => errors,
+            };
+            assert_eq!(
+                errors.len(),
+                1,
+                "uncertain ownership recovery emitted a cascade: {errors:?}"
+            );
+            let error = errors.iter().next().expect("one error");
+            assert!(
+                matches!(&error.kind, ErrorKind::UndefinedVariable(name) if name == missing_name)
+                    || matches!(&error.kind, ErrorKind::UnknownType(name) if name == missing_name),
+                "unexpected owning diagnostic: {errors:?}"
+            );
+            test_cfg(&corrected).unwrap_or_else(|errors| {
+                panic!("corrected ownership case failed: {errors:?}\n{corrected}")
+            });
+        }
+    }
+
+    #[test]
     fn test_multiple_errors_display() {
         // Use examples that both result in type mismatch errors
         // Note: Functions must be called from main() to be analyzed (lazy analysis)

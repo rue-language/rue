@@ -2363,6 +2363,20 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let ty = local.ty;
             let slot = local.slot;
 
+            // Failed recovered declarations install an ERROR local solely to
+            // preserve shadowing.  Reading it must propagate that type without
+            // pretending to load or move an uninitialized slot; the original
+            // declaration diagnostic already explains the failure.
+            if ty.is_error() {
+                ctx.used_locals.insert(name);
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::UnitConst,
+                    ty: Type::ERROR,
+                    span,
+                });
+                return Ok(AnalysisResult::new(air_ref, Type::ERROR));
+            }
+
             // Check if this variable has been moved
             if let Some(move_state) = ctx.ownership.moved_vars.get(&name) {
                 if move_state.full_move.is_some()
@@ -3785,6 +3799,24 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let base_result = self.analyze_inst(air, base, ctx)?;
         let base_type = base_result.ty;
 
+        // A recovered declaration can poison its binding with ERROR.  Keep
+        // projections through that value inert so the original diagnostic is
+        // not followed by a misleading "non-struct" cascade.  The body is
+        // already rejected by the recovery ledger, so this placeholder can
+        // never reach code generation.
+        if base_type.is_error() {
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::UnitConst,
+                ty: Type::ERROR,
+                span,
+            });
+            return Ok(AnalysisResult::with_continues(
+                air_ref,
+                Type::ERROR,
+                base_result.continues,
+            ));
+        }
+
         // Handle module member access that wasn't caught above
         if let Some(module_id) = base_type.as_module() {
             return self.analyze_module_type_member_access(
@@ -3997,6 +4029,21 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             } else {
                 trace.base_type
             };
+
+            // Failed recovered bindings carry ERROR.  Do not turn a
+            // dependent projection into a second shape error.
+            if parent_type.is_error() || elem_type.is_error() {
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::UnitConst,
+                    ty: Type::ERROR,
+                    span,
+                });
+                return Ok(AnalysisResult::with_continues(
+                    air_ref,
+                    Type::ERROR,
+                    trace.continues,
+                ));
+            }
 
             if parent_type.as_array().is_none() {
                 // This shouldn't happen if try_trace_place worked correctly
@@ -4235,6 +4282,23 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx.ownership.byref_arg_root = prev_byref_root;
         let base_result = base_result?;
         let base_type = base_result.ty;
+
+        // Preserve the original failure while allowing later statements to
+        // be analyzed.  A poisoned base cannot be safely materialized or
+        // indexed, and emitting a shape diagnostic here would only obscure
+        // the declaration error that caused it.
+        if base_type.is_error() {
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::UnitConst,
+                ty: Type::ERROR,
+                span,
+            });
+            return Ok(AnalysisResult::with_continues(
+                air_ref,
+                Type::ERROR,
+                base_result.continues,
+            ));
+        }
 
         // String byte indexing: `s[i]` reads the i-th BYTE of a String as `u8`
         // (RUE-17 Phase 2, ADR-0035). O(1), bounds-checked at runtime: an
@@ -4959,6 +5023,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         if let Some(mut trace) = traced {
+            if trace.result_type().is_error() {
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::UnitConst,
+                    ty: Type::UNIT,
+                    span,
+                });
+                return Ok(AnalysisResult::with_continues(
+                    air_ref,
+                    Type::UNIT,
+                    trace.continues && value_result.continues,
+                ));
+            }
             // Check if the root variable was fully moved
             if let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) {
                 if let Some(moved_span) = state.full_move {
@@ -5166,6 +5242,22 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         if let Some(mut trace) = traced {
+            // A poisoned recovered binding is only a dependency placeholder.
+            // Keep an assignment through it inert rather than reporting a
+            // second array/field or ownership error.
+            if trace.result_type().is_error() {
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::UnitConst,
+                    ty: Type::UNIT,
+                    span,
+                });
+                return Ok(AnalysisResult::with_continues(
+                    air_ref,
+                    Type::UNIT,
+                    trace.continues && value_result.continues,
+                ));
+            }
+
             // Check if the root variable was fully moved
             if let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) {
                 if let Some(moved_span) = state.full_move {

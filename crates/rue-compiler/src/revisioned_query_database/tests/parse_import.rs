@@ -287,6 +287,24 @@ fn invalid_undemanded_module_is_neither_parsed_nor_lowered() {
 }
 
 #[test]
+fn candidate_rir_composition_rejects_retained_syntax_without_definitions() {
+    let snapshot = source_snapshot(&[(1, "/main.rue", "main.rue", "$ ")], 1);
+    let module = ModuleId::from_logical_path("main.rue").unwrap();
+    let mut database = RevisionedQueryDatabase::default();
+    let revision =
+        database.source_revision(&crate::session::ExactSourceInput::new(&snapshot), &snapshot);
+
+    let (rirs, _work) = database.compose_candidate_module_rirs(revision, [module]);
+    let errors = rirs.expect_err("syntax diagnostics must reject candidate RIR composition");
+    assert!(
+        errors
+            .iter()
+            .any(|error| matches!(error.kind, crate::ErrorKind::UnexpectedCharacter('$'))),
+        "expected the lexical diagnostic, got {errors:?}"
+    );
+}
+
+#[test]
 fn parse_module_frontier_parallelizes_and_reports_exact_work() {
     let texts = (0..8)
         .map(|index| format!("fn f_{index}() -> i32 {{ {index} }}\n"))

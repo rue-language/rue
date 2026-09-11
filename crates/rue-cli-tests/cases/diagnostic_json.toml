@@ -472,7 +472,7 @@ compile_stderr_not_contains = ["error: [E0711]", " --> "]
 
 [[case]]
 name = "malformed_byte_literal_recovery_keeps_compile_json_synchronized"
-description = "RUE-2133: normal compilation preserves both malformed byte-literal diagnostics and the independent later lexer error without creating delimiter diagnostics."
+description = "Normal compilation preserves both malformed byte-literal diagnostics, the parser's missing-expression diagnostics, and the independent later lexer error. Literal closing quotes remain synchronized."
 files = [{ path = "main.rue", source = "fn main() -> i32 { let a = b'\\q'; let b = b'é'; let c = 1; # }" }]
 args = ["--error-format", "json", "main.rue", "-o", "prog"]
 compile_fail = true
@@ -480,7 +480,9 @@ json_diagnostics = true
 error_contains = ["E0009", "E0001"]
 json_diagnostic_order = [
   "error E0009 main.rue:1:28",
+  "error E0100 main.rue:1:33",
   "error E0009 main.rue:1:43",
+  "error E0100 main.rue:1:47",
   "error E0001 main.rue:1:60",
 ]
 compile_stderr_not_contains = ["unexpected character: '"]

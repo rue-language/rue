@@ -230,6 +230,57 @@ impl Parser {
         start
     }
 
+    /// Synchronize a malformed statement at a semicolon or the enclosing
+    /// brace. Nested braces are consumed as part of the failed statement so a
+    /// later statement in the same body can be parsed without crossing its
+    /// delimiter. The returned span is the syntax recovery node's source
+    /// extent; it does not copy the skipped token text.
+    pub(super) fn recover_statement(&mut self, start_cursor: usize) -> Span {
+        let start = self
+            .tokens
+            .get(start_cursor)
+            .map(|token| token.span.start)
+            .unwrap_or_else(|| self.end_offset());
+        // Parsing the failed expression may already have consumed one or more
+        // nested blocks. Reconstruct their delimiter depth from the consumed
+        // prefix so a close brace at the cursor is synchronized against the
+        // correct block rather than stealing the enclosing body's delimiter.
+        let consumed_end = self.cursor.min(self.tokens.len());
+        let mut brace_depth = 0usize;
+        let mut end = self
+            .tokens
+            .get(start_cursor..consumed_end)
+            .and_then(|tokens| tokens.last())
+            .map(|token| token.span.end)
+            .unwrap_or(start);
+        for token in self
+            .tokens
+            .get(start_cursor..consumed_end)
+            .into_iter()
+            .flatten()
+        {
+            match token.kind {
+                TokenKind::LBrace => brace_depth += 1,
+                TokenKind::RBrace => brace_depth = brace_depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        while !self.at(TokenKind::Eof) {
+            if self.at(TokenKind::RBrace) && brace_depth == 0 {
+                break;
+            }
+            let token = self.bump();
+            end = token.span.end;
+            match token.kind {
+                TokenKind::LBrace => brace_depth += 1,
+                TokenKind::RBrace if brace_depth > 0 => brace_depth -= 1,
+                TokenKind::RBrace | TokenKind::Semi if brace_depth == 0 => break,
+                _ => {}
+            }
+        }
+        Span::with_file(self.file_id, start, end)
+    }
+
     fn recover_reserved_let_keywords(&mut self) -> bool {
         let Some(initial_span) = self.errors.last().and_then(CompileError::span) else {
             return false;

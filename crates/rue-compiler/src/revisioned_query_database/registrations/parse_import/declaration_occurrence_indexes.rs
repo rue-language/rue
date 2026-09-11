@@ -11,7 +11,7 @@ $runtime
                     let rue_query::QueryOutcome::Success(parsed) = parsed.outcome() else {
                         unreachable!("ParseModule publishes typed values")
                     };
-                    let value = match &parsed.result {
+                    let value = match parsed.strict_result() {
                         Ok(module) => DeclarationOccurrenceIndexValue::Available(Arc::new(
                             DeclarationOccurrenceIndex {
                                 capabilities: module

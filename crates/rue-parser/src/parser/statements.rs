@@ -291,7 +291,14 @@ impl Parser {
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
             let directed_let = self.at(TokenKind::At) && self.directive_is_followed_by_let();
             if self.at(TokenKind::Let) || (self.at(TokenKind::At) && directed_let) {
-                statements.push(self.let_statement()?);
+                let statement_start = self.cursor;
+                match self.let_statement() {
+                    Ok(statement) => statements.push(statement),
+                    Err(()) => {
+                        let span = self.recover_statement(statement_start);
+                        statements.push(Statement::Expr(Expr::Error(span)));
+                    }
+                }
                 continue;
             }
             // In statement position a block-like expression (`if`/`match`/
@@ -306,49 +313,57 @@ impl Parser {
             // (`let` right-hand sides, parenthesized forms) never reach this arm
             // and continue through Pratt normally.
             let expr_start = self.cursor;
-            let value = if matches!(
-                self.kind(),
-                TokenKind::If
-                    | TokenKind::Match
-                    | TokenKind::While
-                    | TokenKind::Loop
-                    | TokenKind::For
-                    | TokenKind::LBrace
-            ) {
-                let block_like = self.primary()?;
-                if is_control_flow(&block_like) {
-                    if self.at(TokenKind::Minus) {
-                        statements.push(Statement::Expr(block_like));
-                        continue;
-                    }
-                    if binary_binding(self.kind()).is_some() {
-                        let op_span = self
-                            .tokens
-                            .get(self.cursor)
-                            .map(|token| token.span)
-                            .unwrap_or_else(|| {
-                                Span::point_in_file(self.file_id, self.end_offset())
-                            });
-                        self.record_error(
-                            CompileError::new(
-                                ErrorKind::ParseError(
-                                    "a block-like expression in statement position is a \
-                                     complete statement; a binary operator cannot continue it"
-                                        .to_owned(),
+            let value = match (|| -> PResult<Expr> {
+                if matches!(
+                    self.kind(),
+                    TokenKind::If
+                        | TokenKind::Match
+                        | TokenKind::While
+                        | TokenKind::Loop
+                        | TokenKind::For
+                        | TokenKind::LBrace
+                ) {
+                    let block_like = self.primary()?;
+                    if is_control_flow(&block_like) {
+                        if self.at(TokenKind::Minus) {
+                            return Ok(block_like);
+                        }
+                        if binary_binding(self.kind()).is_some() {
+                            let op_span = self
+                                .tokens
+                                .get(self.cursor)
+                                .map(|token| token.span)
+                                .unwrap_or_else(|| {
+                                    Span::point_in_file(self.file_id, self.end_offset())
+                                });
+                            self.record_error(
+                                CompileError::new(
+                                    ErrorKind::ParseError(
+                                        "a block-like expression in statement position is a \
+                                         complete statement; a binary operator cannot continue it"
+                                            .to_owned(),
+                                    ),
+                                    op_span,
+                                )
+                                .with_help(
+                                    "wrap the construct in parentheses to use it as a value, \
+                                     e.g. `(if c { a } else { b }) + x`",
                                 ),
-                                op_span,
-                            )
-                            .with_help(
-                                "wrap the construct in parentheses to use it as a value, \
-                                 e.g. `(if c { a } else { b }) + x`",
-                            ),
-                        );
-                        return Err(());
+                            );
+                            return Err(());
+                        }
                     }
+                    self.pratt_tail(block_like, 0)
+                } else {
+                    self.expr()
                 }
-                self.pratt_tail(block_like, 0)?
-            } else {
-                self.expr()?
+            })() {
+                Ok(value) => value,
+                Err(()) => {
+                    let span = self.recover_statement(expr_start);
+                    statements.push(Statement::Expr(Expr::Error(span)));
+                    continue;
+                }
             };
             // `place = value` and the compound forms `place op= value`
             // (RUE-1043) share one statement shape; the operator, if any, is
@@ -356,11 +371,26 @@ impl Parser {
             let compound = CompoundOp::from_token(self.kind());
             if compound.is_some() || self.at(TokenKind::Eq) {
                 self.bump();
-                let target = expr_to_target(value, self.syms.self_value).ok_or_else(|| {
+                let Some(target) = expr_to_target(value, self.syms.self_value) else {
                     self.error("invalid assignment target");
-                })?;
-                let rhs = Box::new(self.expr()?);
-                self.expect(TokenKind::Semi)?;
+                    let span = self.recover_statement(expr_start);
+                    statements.push(Statement::Expr(Expr::Error(span)));
+                    continue;
+                };
+                let rhs = match self.expr() {
+                    Ok(rhs) => Box::new(rhs),
+                    Err(()) => {
+                        let span = self.recover_statement(expr_start);
+                        statements.push(Statement::Expr(Expr::Error(span)));
+                        continue;
+                    }
+                };
+                if !self.eat(TokenKind::Semi) {
+                    self.unexpected("';'");
+                    let span = self.recover_statement(expr_start);
+                    statements.push(Statement::Expr(Expr::Error(span)));
+                    continue;
+                }
                 statements.push(Statement::Assign(AssignStatement {
                     target,
                     op: compound,
@@ -386,7 +416,8 @@ impl Parser {
                 continue;
             }
             self.error_at("expected semicolon after expression", value.span());
-            return Err(());
+            let span = self.recover_statement(expr_start);
+            statements.push(Statement::Expr(Expr::Error(span)));
         }
         self.expect(TokenKind::RBrace)?;
         let span = self.span_from(start);

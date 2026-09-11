@@ -44,6 +44,12 @@ use crate::types::{ArrayTypeId, EnumId, ModuleDef, ModuleId, StructId, Type};
 use crate::{ParamRange, ParamRangeData};
 use rue_target::Target;
 
+/// Bound semantic statement recovery so malformed bodies cannot consume
+/// unbounded rollback work or diagnostic memory. Reaching the bound is a
+/// fatal resource failure, which keeps omitted diagnostics distinguishable
+/// from cancellation and never permits publication.
+pub(crate) const BODY_ANALYSIS_DIAGNOSTIC_BUDGET: usize = 100;
+
 pub(crate) fn reject_runtime_type_value(
     ty: Type,
     is_comptime: bool,
@@ -454,6 +460,26 @@ pub(crate) trait AnalysisLedgers {
     fn record_resolved_declaration_type(&mut self, ty: Type);
 
     fn body_analysis_error_recovery(&self) -> bool;
+
+    /// Whether a body error can be isolated to the current statement. Hosts
+    /// must keep cancellation, resource exhaustion, invalid compiler input,
+    /// ownership, and publication failures fatal even when statement recovery
+    /// is enabled.
+    fn body_analysis_error_is_recoverable(&self, error: &CompileError) -> bool {
+        // These diagnostics describe an isolated expression or binding. Keep
+        // this list explicit: numeric error-code bands also contain ownership
+        // and other stateful failures whose rollback cannot be trusted.
+        matches!(
+            error.kind,
+            ErrorKind::UndefinedVariable(_)
+                | ErrorKind::UndefinedFunction(_)
+                | ErrorKind::AssignToImmutable(_)
+                | ErrorKind::UnknownType(_)
+                | ErrorKind::TypeMismatch { .. }
+                | ErrorKind::WrongArgumentCount { .. }
+                | ErrorKind::StrViewReassignment
+        )
+    }
 
     fn body_analysis_first_recovered_error(&self) -> Option<CompileError>;
 
@@ -870,6 +896,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     }
     pub(crate) fn body_analysis_recovered_errors_mut(&mut self) -> &mut Vec<CompileError> {
         self.storage.body_analysis_recovered_errors_mut()
+    }
+    pub(crate) fn body_analysis_error_is_recoverable(&self, error: &CompileError) -> bool {
+        self.storage.body_analysis_error_is_recoverable(error)
     }
     pub(crate) fn get_or_create_array_type(&mut self, element: Type, length: u64) -> ArrayTypeId {
         self.storage.intern_array_type(element, length)
@@ -2531,6 +2560,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             expected_type: None,
             missing_inference_integer_type: None,
             recover_missing_ctor_head_arguments: false,
+            statement_recovery_depth: 0,
             infer_ctx,
             accessor_trailing_yield: None,
             accessor_call_insts: AHashMap::new(),
@@ -2666,13 +2696,13 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             }
         }
 
-        if self.storage.body_analysis_error_recovery()
-            && self.storage.body_analysis_first_recovered_error().is_some()
-        {
-            return Err(self
-                .storage
-                .body_analysis_first_recovered_error()
-                .expect("error was checked"));
+        if self.storage.body_analysis_error_recovery() {
+            if self.storage.body_analysis_first_recovered_error().is_some() {
+                return Err(self
+                    .storage
+                    .body_analysis_first_recovered_error()
+                    .expect("error was checked"));
+            }
         }
 
         let air_emission_validation_ns =

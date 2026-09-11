@@ -117,7 +117,7 @@ $runtime
                                             else {
                                                 unreachable!("ParseModule publishes typed values")
                                             };
-                                            match &parsed.result {
+                                            match parsed.strict_result() {
                                                 Err(_) => DeclarationImportQueryValue::Failure(
                                                     DeclarationImportFailure::OccurrencesUnavailable(
                                                         crate::declaration_candidate::DeclarationOccurrenceFailure::ParseRejected {
