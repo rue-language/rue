@@ -327,6 +327,14 @@ pub(crate) fn substitute_durable_generics(
     }
 }
 
+/// Return whether a durable type is the canonical builtin `str` view.
+/// Durable type pools are reconstructed at query boundaries, so this trusted
+/// builtin classifier is the single nominal identity check shared by fit,
+/// lifecycle, and semantic-nucleus adapters.
+pub(crate) fn is_durable_str_type(ty: &DurableType) -> bool {
+    matches!(ty, DurableType::BuiltinNominal { name, .. } if name.as_ref() == "str")
+}
+
 pub(crate) fn durable_const_fits_type(value: &DurableConstValue, ty: &DurableType) -> bool {
     use crate::durable_semantics::{DurableConstValue as V, DurableType as T};
     match (ty, value) {
@@ -335,6 +343,10 @@ pub(crate) fn durable_const_fits_type(value: &DurableConstValue, ty: &DurableTyp
         }
         (T::Bool, V::Bool(_)) | (T::Unit, V::Unit) => true,
         (T::ComptimeType, V::Type(_)) => true,
+        // `str` is a canonical builtin nominal whose pool identity may be
+        // reconstructed at each durable call boundary. The value itself is
+        // content based, so admit it by the trusted nominal classifier.
+        (_, V::String(_)) if is_durable_str_type(ty) => true,
         _ => false,
     }
 }

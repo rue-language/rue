@@ -852,6 +852,16 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
         )))
     }
 
+    fn string_value_text(&self, value: &Self::Value) -> Option<String> {
+        let EvaluatedSemanticConst::Value(value) = value else {
+            return None;
+        };
+        match &value.value {
+            DurableConstValue::String(content) => Some(content.to_string()),
+            _ => None,
+        }
+    }
+
     fn resolve_float_const(
         &mut self,
         content: Self::Name,

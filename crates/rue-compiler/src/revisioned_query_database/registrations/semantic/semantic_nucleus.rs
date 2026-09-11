@@ -830,6 +830,12 @@ $runtime
                                                                     || (matches!(found, crate::durable_semantics::DurableType::ComptimeFloat | crate::durable_semantics::DurableType::I32)
                                                                         && matches!(ty, crate::durable_semantics::DurableType::F32 | crate::durable_semantics::DurableType::F64)
                                                                         && matches!(value, crate::durable_semantics::DurableConstValue::Float(_)))
+                                                                    // A string literal's durable value is reconstructed through
+                                                                    // each body's canonical builtin nominal registry. Compare the
+                                                                    // trusted `str` classifier rather than pool-local Type IDs.
+                                                                    || (crate::durable_comptime::is_durable_str_type(found)
+                                                                        && crate::durable_comptime::is_durable_str_type(&ty)
+                                                                        && matches!(value, crate::durable_semantics::DurableConstValue::String(_)))
                                                             })
                                                                 && match (&ty, &value) {
                                                                 // Integer range is the kernel's to decide:
@@ -845,7 +851,7 @@ $runtime
                                                                 | (crate::durable_semantics::DurableType::ComptimeType, crate::durable_semantics::DurableConstValue::Type(_) | crate::durable_semantics::DurableConstValue::Function(_)) => true,
                                                                 (crate::durable_semantics::DurableType::F32, crate::durable_semantics::DurableConstValue::Float(value)) => float_const_initializer_bits(value, rue_air::Type::F32, float_initializer_is_literal).is_some(),
                                                                 (crate::durable_semantics::DurableType::F64, crate::durable_semantics::DurableConstValue::Float(value)) => float_const_initializer_bits(value, rue_air::Type::F64, float_initializer_is_literal).is_some(),
-                                                                (crate::durable_semantics::DurableType::BuiltinNominal { name, .. }, crate::durable_semantics::DurableConstValue::String(_)) if name.as_ref() == "str" => true,
+                                                                (_, crate::durable_semantics::DurableConstValue::String(_)) if crate::durable_comptime::is_durable_str_type(&ty) => true,
                                                                 _ => false,
                                                             };
                                                             if compatible {

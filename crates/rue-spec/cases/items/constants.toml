@@ -415,18 +415,23 @@ compile_fail = true
 error_contains = ["E0206", "expected i64, found str"]
 
 [[case]]
-name = "string_const_not_comptime_evaluable"
-spec = ["6.5:2", "6.5:16"]
-description = "String values stay outside comptime blocks"
+name = "string_const_comptime_content_is_preserved"
+spec = ["4.14:3", "4.14:26", "4.14:28", "6.5:2", "6.5:16"]
+description = "A string constant can flow through a comptime block and preserve its content"
 source = """
-const S: str = "hello";
+fn identity(comptime s: str) -> str { comptime { s } }
+const S: str = "a\\0b";
 
 fn main() -> i32 {
-    comptime { S }
+    let value: str = comptime { identity(S) };
+    if value.len() != 3 { return 1; }
+    if value[0] != 97 { return 2; }
+    if value[1] != 0 { return 3; }
+    if value[2] != 98 { return 4; }
+    0
 }
 """
-compile_fail = true
-error_contains = ["comptime"]
+exit_code = 0
 
 # =============================================================================
 # The const half of the comptime-position pairs (6.5:2, 6.5:12) — RUE-1968

@@ -797,6 +797,7 @@ enum ConstValueTag {
     Type,
     Function,
     Float,
+    String,
 }
 
 impl ConstValueTag {
@@ -807,9 +808,7 @@ impl ConstValueTag {
             crate::sema::ConstValue::Unit => Self::Unit,
             crate::sema::ConstValue::Type(_) => Self::Type,
             crate::sema::ConstValue::Function(_) => Self::Function,
-            crate::sema::ConstValue::String(_) => {
-                unreachable!("string const values are rejected before tag classification")
-            }
+            crate::sema::ConstValue::String(_) => Self::String,
             crate::sema::ConstValue::Float(_) => Self::Float,
         }
     }
@@ -822,13 +821,14 @@ impl ConstValueTag {
             Self::Type => 3,
             Self::Function => 4,
             Self::Float => 5,
+            Self::String => 6,
         }
     }
 
     const fn payload_width(self) -> usize {
         match self {
             Self::Integer => 4,
-            Self::Bool | Self::Type | Self::Function | Self::Float => 1,
+            Self::Bool | Self::Type | Self::Function | Self::Float | Self::String => 1,
             Self::Unit => 0,
         }
     }
@@ -841,6 +841,7 @@ impl ConstValueTag {
             3 => Some(Self::Type),
             4 => Some(Self::Function),
             5 => Some(Self::Float),
+            6 => Some(Self::String),
             _ => None,
         }
     }
@@ -855,17 +856,6 @@ pub(crate) fn encode_const_values(
         operation: "stage",
         kind,
     };
-    // No comptime parameter has a string type, so the comptime engine never
-    // yields a string const as a specialization argument (RUE-957). Reject
-    // up front so the tag/payload scheme below stays scalar-only.
-    if values
-        .iter()
-        .any(|value| matches!(value, crate::sema::ConstValue::String(_)))
-    {
-        return Err(error(AirBuildErrorKind::ProducerInvariant(
-            "string constants are not valid comptime argument values",
-        )));
-    }
     let word_count = values.iter().try_fold(0usize, |count, value| {
         count.checked_add(1 + ConstValueTag::of(value).payload_width())
     });
@@ -909,8 +899,12 @@ pub(crate) fn encode_const_values(
                         .map_err(|_| error(AirBuildErrorKind::ResourceLimit))?,
                 );
             }
-            crate::sema::ConstValue::String(_) => {
-                unreachable!("string const values are rejected before encoding")
+            crate::sema::ConstValue::String(value) => {
+                words.push(ConstValueTag::String.word());
+                words.push(
+                    u32::try_from(value.issuing_interner_ordinal())
+                        .map_err(|_| error(AirBuildErrorKind::ResourceLimit))?,
+                );
             }
             crate::sema::ConstValue::Float(value) => {
                 words.push(ConstValueTag::Float.word());
@@ -1063,6 +1057,9 @@ impl Iterator for ConstValueIterator<'_> {
                 Spur::try_from_usize(payload[0] as usize).expect("validated const symbol"),
             )),
             ConstValueTag::Float => crate::sema::ConstValue::Float(SymbolHandle::new(
+                Spur::try_from_usize(payload[0] as usize).expect("validated const symbol"),
+            )),
+            ConstValueTag::String => crate::sema::ConstValue::String(SymbolHandle::new(
                 Spur::try_from_usize(payload[0] as usize).expect("validated const symbol"),
             )),
         })
@@ -3118,6 +3115,19 @@ impl Air {
                         "invalid function symbol encoding",
                     ));
                 }
+                ConstValueTag::Float | ConstValueTag::String
+                    if Spur::try_from_usize(payload[0] as usize).is_none() =>
+                {
+                    return Err(AirPayloadError::decode(
+                        "constant value arguments",
+                        range.start,
+                        range.extent,
+                        count,
+                        1 + payload_width,
+                        1 + payload_width,
+                        "invalid constant symbol encoding",
+                    ));
+                }
                 _ => {}
             }
             cursor = &rest[tag.payload_width()..];
@@ -4428,7 +4438,10 @@ mod tests {
             }])
             .unwrap();
         let type_args = air.add_type_args(&[Type::I32]).unwrap();
-        let const_values = air.add_const_values(&[ConstValue::Integer(7)]).unwrap();
+        let string = ConstValue::String(SymbolHandle::new(Spur::try_from_usize(42).unwrap()));
+        let const_values = air
+            .add_const_values(&[ConstValue::Integer(7), string.clone()])
+            .unwrap();
         let intrinsic_args = air.add_intrinsic_args(&[value]).unwrap();
         let block_statements = air.add_block_statements(&[value]).unwrap();
         let struct_fields = air.add_struct_fields(&[value]).unwrap();
@@ -4447,7 +4460,7 @@ mod tests {
         );
         assert_eq!(
             air.get_const_values(&const_values).collect::<Vec<_>>(),
-            [ConstValue::Integer(7)]
+            [ConstValue::Integer(7), string]
         );
         assert_eq!(
             air.get_intrinsic_args(&intrinsic_args).collect::<Vec<_>>(),
@@ -4554,6 +4567,10 @@ mod tests {
         assert_eq!(
             error(&[ConstValueTag::Type.word(), u32::MAX]).reason,
             "invalid type encoding"
+        );
+        assert_eq!(
+            error(&[ConstValueTag::String.word(), u32::MAX]).reason,
+            "invalid constant symbol encoding"
         );
     }
 

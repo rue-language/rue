@@ -3279,6 +3279,254 @@ fn main() -> i32 { u(()) }
 exit_code = 5
 
 [[case]]
+name = "comptime_set_base_string_literal"
+spec = ["4.14:26", "4.14:28"]
+description = "A string literal is a comptime-evaluable base value and can instantiate a string-valued comptime parameter"
+source = """
+fn choose(comptime s: str) -> i32 { 7 }
+fn main() -> i32 { choose("hi") }
+"""
+exit_code = 7
+
+[[case]]
+name = "comptime_string_const_initializer_call"
+spec = ["4.14:5", "4.14:26", "4.14:28", "6.5:2", "6.5:16"]
+description = "A string literal can directly instantiate a string comptime parameter in a const initializer"
+source = """
+fn pick(comptime s: str) -> i32 { 7 }
+const ANSWER: i32 = pick("hi");
+fn main() -> i32 { ANSWER }
+"""
+exit_code = 7
+
+[[case]]
+name = "comptime_string_value_forwards_through_specialization"
+spec = ["4.14:5", "4.14:26", "4.14:28"]
+description = "A named string constant and a forwarded comptime string parameter retain their value through specialization"
+source = """
+fn choose(comptime s: str) -> str { s }
+fn forward(comptime s: str) -> str { choose(s) }
+const WORD: str = "hello";
+fn main() -> i32 {
+    let value: str = forward(WORD);
+    if value.len() != 5 { return 1; }
+    if value[0] != 104 { return 2; }
+    if value[4] != 111 { return 3; }
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "comptime_string_parameter_captured_in_comptime_block"
+spec = ["4.14:5", "4.14:26", "4.14:28"]
+description = "A captured string comptime parameter can be returned from a comptime block with its content intact"
+source = """
+fn choose(comptime s: str) -> str { comptime { s } }
+const WORD: str = "a\\0b";
+fn main() -> i32 {
+    let value: str = choose(WORD);
+    if value.len() != 3 { return 1; }
+    if value[0] != 97 { return 2; }
+    if value[1] != 0 { return 3; }
+    if value[2] != 98 { return 4; }
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "comptime_string_specialization_symbols_are_content_safe"
+spec = ["4.14:5", "4.14:26", "4.14:28"]
+description = "Distinct string argument tuples remain distinct even when their contents contain specialization separators"
+source = """
+fn choose(comptime a: str, comptime b: str) -> i32 {
+    @intCast(a[0]) + @intCast(b[0])
+}
+fn main() -> i32 {
+    let left = choose("x.vstry", "z");
+    let right = choose("x", "y.vstrz");
+    if left != 242 { return 1; }
+    if right != 241 { return 2; }
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "comptime_string_imported_constant_argument"
+spec = ["4.14:5", "4.14:26", "4.14:28", "10.2:1"]
+description = "An imported string constant is a comptime-evaluable argument to a string-valued comptime parameter"
+source = """
+const lib = @import("lib.rue");
+const WORD: str = lib.WORD;
+fn choose(comptime s: str) -> i32 { @intCast(s[0]) }
+fn main() -> i32 { choose(WORD) }
+"""
+aux_files = { "lib.rue" = "pub const WORD: str = \"imported\";" }
+exit_code = 105
+
+[[case]]
+name = "comptime_string_cross_module_specialization_preserves_content"
+spec = ["4.14:5", "4.14:26", "4.14:28", "6.5:2", "10.2:1"]
+description = "A comptime string function specialized in an imported module preserves NUL content through a const"
+source = """
+const lib = @import("lib.rue");
+const VALUE: str = lib.forward("A\\0");
+fn main() -> i32 {
+    if VALUE.len() != 2 { return 1; }
+    if VALUE[0] != 65 { return 2; }
+    if VALUE[1] != 0 { return 3; }
+    0
+}
+"""
+aux_files = { "lib.rue" = "pub fn forward(comptime s: str) -> str { s }" }
+exit_code = 0
+
+[[case]]
+name = "comptime_string_content_preserves_newline_and_unicode"
+spec = ["4.14:5", "4.14:26", "4.14:28"]
+description = "Forwarded and captured string comptime values preserve newline and UTF-8 bytes"
+source = """
+fn forward(comptime s: str) -> str { s }
+fn capture(comptime s: str) -> str { comptime { s } }
+const NEWLINE: str = capture("\\nZ");
+const GREEK: str = forward("λ");
+fn main() -> i32 {
+    if NEWLINE.len() != 2 { return 1; }
+    if NEWLINE[0] != 10 { return 2; }
+    if NEWLINE[1] != 90 { return 3; }
+    if GREEK.len() != 2 { return 4; }
+    if GREEK[0] != 206 { return 5; }
+    if GREEK[1] != 187 { return 6; }
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "comptime_string_equality_closes_comptime_set"
+spec = ["4.14:26", "4.14:27", "6.5:2", "6.5:16"]
+description = "String equality and inequality are comptime-evaluable in both comptime blocks and const initializers"
+source = """
+const SAME: bool = "x" == "x";
+const DIFFERENT: bool = "x" != "y";
+fn main() -> i32 {
+    if !SAME { return 1; }
+    if !DIFFERENT { return 2; }
+    if comptime { "x" == "x" } { 42 } else { 3 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_string_fixed_capacity_block_rejects_overflow"
+spec = ["4.14:3", "4.14:4", "4.14:26"]
+description = "A comptime string result receives the contextual Str(N) capacity check during canonical materialization"
+source = """
+fn main() -> i32 {
+    let value: Str(3) = comptime { "hello" };
+    @intCast(value.len())
+}
+"""
+compile_fail = true
+error_contains = ["E0492", "5 bytes", "Str(3)"]
+
+[[case]]
+name = "comptime_string_literal_contextual_fixed_capacity"
+spec = ["4.14:3", "4.14:4", "4.14:26", "4.14:28"]
+description = "A source string literal in a comptime block can receive a fitting contextual fixed-capacity type"
+source = """
+fn take(s: Str(8)) -> i32 { @intCast(s.len()) }
+fn main() -> i32 { take(comptime { "hi" }) }
+"""
+exit_code = 2
+
+[[case]]
+name = "comptime_string_typed_result_keeps_str_type"
+spec = ["4.14:3", "4.14:4", "4.14:26", "4.14:28"]
+description = "A typed str result from a comptime block is not implicitly converted to Str(N)"
+source = """
+const WORD: str = "hi";
+fn take(s: Str(8)) -> i32 { @intCast(s.len()) }
+fn main() -> i32 { take(comptime { WORD }) }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected Str(8)", "found str"]
+
+[[case]]
+name = "comptime_string_fixed_capacity_parameter_is_not_str"
+spec = ["4.14:5", "4.14:28"]
+description = "Fixed-capacity Str(N) parameters remain distinct from canonical str comptime parameters"
+source = """
+fn choose(comptime s: Str(8)) -> i32 { 7 }
+fn main() -> i32 { choose("hi") }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected Str(8)", "found str"]
+
+[[case]]
+name = "comptime_string_fixed_capacity_parameter_const_is_not_str"
+spec = ["4.14:5", "4.14:28", "6.5:2"]
+description = "The const initializer path applies the same canonical str parameter distinction as ordinary calls"
+source = """
+fn choose(comptime s: Str(8)) -> i32 { 7 }
+const ANSWER: i32 = choose("hi");
+fn main() -> i32 { ANSWER }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected Str(8)", "found str"]
+
+[[case]]
+name = "comptime_float_parameter_ordinary_literal"
+spec = ["4.14:5", "4.14:26", "4.14:28"]
+description = "An ordinary call keeps contextual typing for a comptime float literal"
+source = """
+fn choose(comptime f: f64) -> f64 { f }
+fn main() -> i32 {
+    let value: f64 = choose(1.25);
+    if value == 1.25 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "comptime_float_parameter_block_literal"
+spec = ["4.14:5", "4.14:26", "4.14:28"]
+description = "A comptime-block call keeps contextual typing for a comptime float literal"
+source = """
+fn choose(comptime f: f64) -> f64 { f }
+fn main() -> i32 {
+    let value: f64 = comptime { choose(1.25) };
+    if value == 1.25 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "comptime_string_parameter_rejects_wrong_type"
+spec = ["4.14:5", "4.14:28"]
+description = "A non-string comptime argument still reports the declared string parameter type"
+source = """
+fn choose(comptime s: str) -> i32 { 0 }
+fn main() -> i32 { choose(7) }
+"""
+compile_fail = true
+error_contains = "type mismatch: expected str, found i32"
+
+[[case]]
+name = "comptime_string_parameter_rejects_wrong_type_in_const"
+spec = ["4.14:5", "4.14:28", "6.5:2"]
+description = "A non-string comptime argument in a const initializer reports the declared string parameter type"
+source = """
+fn choose(comptime s: str) -> i32 { 0 }
+const ANSWER: i32 = choose(7);
+fn main() -> i32 { ANSWER }
+"""
+compile_fail = true
+error_contains = "type mismatch: expected str, found i32"
+
+[[case]]
 name = "comptime_set_reject_runtime_let"
 spec = ["4.14:26"]
 description = "A runtime let binding is not comptime-evaluable (RUE-290)"

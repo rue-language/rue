@@ -631,15 +631,27 @@ fn mangle_const_value(interner: &ThreadedRodeo, value: &ConstValue) -> String {
         ConstValue::Bool(b) => format!("v{}", b),
         ConstValue::Unit => "vunit".to_string(),
         ConstValue::Type(ty) => format!("v{}", mangle_type(*ty)),
-        // Both symbol-valued arms spell the symbol's text. Neither is reachable
-        // today — a callable alias is refused as a comptime argument
-        // (`validate_comptime_value_for_type_impl`) and no comptime parameter
-        // has a string type (RUE-957) — but a mangled fragment carrying an
-        // interner index would be a link-name that depends on intern order.
+        // Both symbol-valued arms spell stable text. A mangled fragment must
+        // not carry an interner index because this name becomes a link-time
+        // symbol and interner assignment depends on worker scheduling.
         ConstValue::Function(name) => format!("vfn{}", interner.resolve(&name.spur())),
-        ConstValue::String(content) => format!("vstr{}", interner.resolve(&content.spur())),
+        ConstValue::String(content) => mangle_string_const(interner.resolve(&content.spur())),
         ConstValue::Float(content) => format!("vfloat{}", interner.resolve(&content.spur())),
     }
+}
+
+/// Encode string contents into the identifier-safe specialization namespace.
+/// UTF-8 bytes are hex encoded so NULs, separators, newlines, and Unicode
+/// cannot create ambiguous fragments; the byte length makes the representation
+/// self-delimiting and documents that identity is content based.
+fn mangle_string_const(content: &str) -> String {
+    use std::fmt::Write;
+
+    let mut result = format!("vstr{}x", content.len());
+    for byte in content.as_bytes() {
+        write!(&mut result, "{byte:02x}").expect("writing hex into a String cannot fail");
+    }
+    result
 }
 
 /// Mangle a single type argument into a unique string.

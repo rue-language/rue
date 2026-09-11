@@ -493,8 +493,9 @@ pub trait ComptimeValueAlgebra: ComptimeDomain {
     /// historical evaluate-both-before-validation order.
     fn evaluate_binary_rhs_after_rejection(&self) -> bool;
     /// Compare values that are not represented by the generic integer/bool
-    /// algebra (for example target descriptors). The ordinary body domain
-    /// keeps those comparisons runtime-dependent.
+    /// algebra (for example target descriptors). String equality is handled
+    /// by the engine from this shared content projection; other domains may
+    /// provide their own comparison policy here.
     fn compare_comptime_values(
         &mut self,
         _lhs: &Self::Value,
@@ -511,16 +512,21 @@ pub trait ComptimeValueAlgebra: ComptimeDomain {
         op: &str,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<Option<Self::Value>, Self::Failure>;
-    /// Resolve a string literal in a semantic context. The ordinary body
-    /// value domain has no compile-time string value, so the default keeps
-    /// string expressions runtime-dependent. Durable hosts may use this hook
-    /// for controls such as `@import` without inspecting the instruction.
+    /// Resolve a string literal in a semantic context. Hosts retain the
+    /// content in their value domain and expose it to the engine through
+    /// `string_value_text` for equality and inequality.
     fn resolve_string_const(
         &mut self,
         _content: Self::Name,
         _span: Span,
     ) -> ComptimeOutcome<Self::Value, Self::Failure> {
         ComptimeOutcome::RuntimeDependent
+    }
+    /// Return the stable string content of a known compile-time string value.
+    /// The engine owns equality semantics; hosts only project their value
+    /// representation into this common content view.
+    fn string_value_text(&self, _value: &Self::Value) -> Option<String> {
+        None
     }
     /// Preserve a float literal's exact decimal identity without selecting a
     /// runtime width.
@@ -2760,6 +2766,12 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                                 ComptimeOutcome::Known(H::Value::boolean(lhs == rhs))
                             }
                             _ => {
+                                if let (Some(lhs), Some(rhs)) = (
+                                    self.host.string_value_text(&lhs),
+                                    self.host.string_value_text(&rhs),
+                                ) {
+                                    return ComptimeOutcome::Known(H::Value::boolean(lhs == rhs));
+                                }
                                 if self.host.float_value_text(&lhs).is_some()
                                     || self.host.float_value_text(&rhs).is_some()
                                 {
@@ -2814,6 +2826,12 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                                 ComptimeOutcome::Known(H::Value::boolean(lhs != rhs))
                             }
                             _ => {
+                                if let (Some(lhs), Some(rhs)) = (
+                                    self.host.string_value_text(&lhs),
+                                    self.host.string_value_text(&rhs),
+                                ) {
+                                    return ComptimeOutcome::Known(H::Value::boolean(lhs != rhs));
+                                }
                                 if self.host.float_value_text(&lhs).is_some()
                                     || self.host.float_value_text(&rhs).is_some()
                                 {

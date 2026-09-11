@@ -3,7 +3,7 @@
 //! This category is the canonical instruction dispatcher and owns assignment
 //! analysis for projected places.
 
-use super::super::analyze_ops::FloatConstSource;
+use super::super::analyze_ops::{FloatConstSource, StringConstSource};
 use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
 use crate::sema::comptime::{ComptimeEngine, ComptimeMethodType, ComptimeOutcome};
@@ -303,16 +303,53 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         },
                         inst.span,
                     )),
-                    // The engine never produces string values (string consts
-                    // are non-evaluable in comptime position, RUE-957); keep
-                    // a clean diagnostic should that ever change.
-                    Some(ConstValue::String(_)) => Err(CompileError::new(
-                        ErrorKind::ComptimeEvaluationFailed {
-                            reason: "string values are not supported in comptime blocks"
-                                .to_string(),
-                        },
-                        inst.span,
-                    )),
+                    Some(ConstValue::String(content)) => {
+                        // Contextualize the source literal itself, just as a
+                        // direct literal expression is contextualized. A
+                        // computed or captured `str` result keeps its own
+                        // resolved type, so a surrounding `Str(N)` annotation
+                        // cannot silently convert it into a fixed-capacity
+                        // value. The RIR node is the canonical provenance
+                        // boundary: `StringConst` is the only literal source;
+                        // calls, names, and nested comptime expressions retain
+                        // the type produced by that expression.
+                        let resolved_type = Self::get_resolved_type(
+                            ctx,
+                            *expr,
+                            inst.span,
+                            "comptime string value",
+                        )?;
+                        let is_source_literal = matches!(
+                            &self.body_rir_ref().get(*expr).data,
+                            InstData::StringConst { .. }
+                        );
+                        let ty = if is_source_literal {
+                            ctx.expected_type
+                                .filter(|ty| self.is_str_like(*ty))
+                                .unwrap_or(resolved_type)
+                        } else {
+                            resolved_type
+                        };
+                        let content = self.body_interner().resolve(&content.spur()).to_string();
+                        // A comptime result has no source string occurrence of
+                        // its own (it may be a parameter forwarded through a
+                        // reduced call). Use the canonical synthesized atom
+                        // path so content and length reach the same local
+                        // string table and rodata lowering as a literal.
+                        let data = self.materialize_string_const(
+                            ctx,
+                            content,
+                            ty,
+                            inst.span,
+                            StringConstSource::Synthesized,
+                        )?;
+                        let air_ref = air.add_inst(AirInst {
+                            data,
+                            ty,
+                            span: inst.span,
+                        });
+                        Ok(AnalysisResult::new(air_ref, ty))
+                    }
                     Some(ConstValue::Float(content)) => {
                         let ty = Self::get_resolved_type(
                             ctx,

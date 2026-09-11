@@ -678,6 +678,24 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     &value_subst,
                     span,
                 )?;
+                if is_comptime {
+                    // Generic/runtime lowering keeps a comptime value in the
+                    // call ABI, but its source-level comptime contract still
+                    // needs the canonical value validation. In particular,
+                    // `Str(N)` shares a runtime layout with `str` while
+                    // remaining a distinct fixed-capacity type.
+                    let value = value_subst
+                        .get(&param_names[i])
+                        .copied()
+                        .expect("comptime value substitution was captured above");
+                    self.validate_comptime_value_for_type(
+                        name,
+                        param_names[i],
+                        value,
+                        expected,
+                        span,
+                    )?;
+                }
                 let found = air.get(air_arg.value).ty;
                 if !self.types_compatible(found, expected) && !expected.is_error() {
                     return Err(CompileError::new(

@@ -469,8 +469,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ///    and the arithmetic, bitwise, comparison, and logical operators over
     ///    them; and
     /// 2. it actually folds to a value under the body's comptime environment
-    ///    (a string literal or string constant is its own folded image; the
-    ///    comptime engine deliberately holds no string values).
+    ///    (a string literal or string constant is its own static image).
     ///
     /// The form set is *value-independent* so the criterion can be checked by
     /// inspection. `/` and `%` are excluded outright even for a nonzero
@@ -490,10 +489,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return false;
         }
         // A string literal (or a `const` bound to one) is `.rodata`-backed and
-        // never evaluated: it is already the static image the loan names, and
-        // the comptime engine intentionally carries no string values
-        // (RUE-957), so asking it to fold would reject the very case the
-        // ruling is about.
+        // already the static image the loan names. Keep this fast path so
+        // promotion does not depend on evaluating the surrounding expression.
         if self.borrow_operand_is_static_string(operand, ctx) {
             return true;
         }
@@ -2500,15 +2497,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         span,
                     ));
                 }
-                // No comptime parameter has a string type, so a captured
-                // string value never occurs (RUE-957).
-                ConstValue::String(_) => {
-                    return Err(CompileError::new(
-                        ErrorKind::ConstExprNotSupported {
-                            expr_kind: "a captured string value".to_string(),
-                        },
+                ConstValue::String(content) => {
+                    let ty = match resolved_ty {
+                        Some(ty) if self.is_str_like(ty) => ty,
+                        _ => self.get_or_create_str_struct(span)?,
+                    };
+                    let content = self.body_interner().resolve(&content.spur()).to_string();
+                    let local_id = ctx.add_synthesized_string(&content);
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::StringConst(local_id),
+                        ty,
                         span,
-                    ));
+                    });
+                    return Ok(AnalysisResult::new(air_ref, ty));
                 }
                 ConstValue::Float(content) => {
                     // The captured value carries only its decimal spelling, so
