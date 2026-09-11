@@ -5,6 +5,7 @@
 //! - [`Substitution`] - Mapping from type variables to resolved types
 
 use super::types::{InferType, TypeVarId};
+use lasso::Spur;
 use rue_span::Span;
 use std::cell::RefCell;
 
@@ -28,6 +29,45 @@ pub enum Constraint {
     /// Unlike ordinary equality, this admits an integer *literal* in an f32/f64
     /// destination without making mixed integer/float operators coercive.
     ContextualEqual(InferType, InferType, Span),
+
+    /// A field projection whose base type was not concrete during constraint
+    /// generation. The semantic field lookup is deliberately deferred until
+    /// the base has been solved; this keeps joined values (if/match results)
+    /// from acquiring an unconstrained synthetic field type.
+    FieldGet {
+        base: InferType,
+        field: Spur,
+        result: InferType,
+        span: Span,
+    },
+
+    /// A field assignment whose base type was not concrete during constraint
+    /// generation. Uses the same contextual equality as ordinary field
+    /// initialization and assignment.
+    FieldSet {
+        base: InferType,
+        field: Spur,
+        value: InferType,
+        span: Span,
+    },
+
+    /// An array or slice projection whose element type was unavailable during
+    /// generation. This uses the same deferred projection pass as fields;
+    /// structural `InferType::Array` elements remain intact.
+    IndexGet {
+        base: InferType,
+        result: InferType,
+        span: Span,
+    },
+
+    /// An array or slice assignment whose element type was unavailable during
+    /// generation. Unlike a field assignment this follows the existing strict
+    /// equality rule for indexed stores.
+    IndexSet {
+        base: InferType,
+        value: InferType,
+        span: Span,
+    },
 
     /// Type must be a signed integer: τ ∈ {i8, i16, i32, i64}.
     ///
@@ -83,6 +123,10 @@ impl Constraint {
         match self {
             Constraint::Equal(_, _, span)
             | Constraint::ContextualEqual(_, _, span)
+            | Constraint::FieldGet { span, .. }
+            | Constraint::FieldSet { span, .. }
+            | Constraint::IndexGet { span, .. }
+            | Constraint::IndexSet { span, .. }
             | Constraint::IsSigned(_, span)
             | Constraint::IsInteger(_, span)
             | Constraint::IsNumeric(_, span)

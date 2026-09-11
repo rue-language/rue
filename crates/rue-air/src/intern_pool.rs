@@ -3546,6 +3546,29 @@ impl TypeInternPool {
         inner.struct_lang_items.get(&struct_id) == Some(&LangItem::StrBuf)
     }
 
+    /// The element type of an indexable concrete value. Inference asks the
+    /// same metadata question both before and after a base type is solved.
+    pub(crate) fn index_element_type(&self, ty: Type) -> Option<Type> {
+        if let Some(array_id) = ty.as_array() {
+            return Some(self.array_def(array_id).0);
+        }
+        let struct_id = ty.as_struct()?;
+        if self.is_strbuf(struct_id) {
+            return Some(Type::U8);
+        }
+        match self.text_view_kind(struct_id)? {
+            crate::types::TextViewKind::Str | crate::types::TextViewKind::StrFixed(_) => {
+                Some(Type::U8)
+            }
+            crate::types::TextViewKind::Slice => {
+                match self.struct_def(struct_id).fields.first()?.ty.kind() {
+                    TypeKind::PtrConst(ptr_id) => Some(self.ptr_const_def(ptr_id)),
+                    _ => None,
+                }
+            }
+        }
+    }
+
     /// Record that a struct carries the `@repr(c)` guarantee marker (ADR-0064
     /// Amendment 1). Set during type-name registration; read by the FFI
     /// predicates and extern-signature enforcement.
