@@ -25,6 +25,7 @@ impl Project {
 
     fn request(&self) -> BuildRequest {
         BuildRequest {
+            measure_performance: false,
             artifact: BuildKind::Executable,
             working_directory: self.0.path().display().to_string(),
             root_source: "main.rue".into(),

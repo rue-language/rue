@@ -280,6 +280,9 @@ pub enum DiagnosticFormat {
 /// client's own process would have, without ever changing its own cwd.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildRequest {
+    /// Opt-in request evidence for the separate daemon performance regime.
+    #[serde(default)]
+    pub measure_performance: bool,
     /// Named `artifact` rather than `kind` because the request travels
     /// flattened into the internally tagged [`RequestBody`], whose tag is
     /// `kind`.
@@ -351,6 +354,9 @@ pub enum ResponseBody {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BuildReply {
     pub ticket: u64,
+    /// Measurement for this ticket, carried with the result so concurrent
+    /// status requests cannot attribute another request's last value.
+    pub measurement: Option<RequestMeasurement>,
     pub result: BuildResult,
 }
 
@@ -524,6 +530,36 @@ pub struct StatusReport {
     pub retained_hosts: u32,
     pub resource_policy: ResourcePolicy,
     pub resource_pressure: ResourcePressure,
+    /// The last completed request's canonical service-side measurement. This
+    /// is intentionally a status projection rather than benchmark-json.
+    pub last_measurement: Option<RequestMeasurement>,
+}
+
+/// Service-side lifecycle evidence for one completed request. External client
+/// time and test execution remain caller measurements; these fields identify
+/// the daemon/session generation and the canonical executor boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestMeasurement {
+    pub ticket: u64,
+    pub artifact: BuildKind,
+    pub executor_ns: u64,
+    pub session_generation: u64,
+    pub reused_session: bool,
+    /// Resolved compiler worker count from the accepted session config. This
+    /// is distinct from the request's test-process job count.
+    pub workers: u32,
+    pub observation_ns: Option<u64>,
+    pub link_ns: Option<u64>,
+    pub test_image_published: bool,
+    pub query_claims: Option<u64>,
+    pub query_reuses: Option<u64>,
+    pub source_bytes: u64,
+    pub retained_charge_bytes: u64,
+    pub dependency_pins: u64,
+    /// SHA-256 of the canonical accepted read closure. This is captured by
+    /// the executor before the request answer is transferred, so a client
+    /// never has to reread the source tree to identify the work it observed.
+    pub input_sha256: Option<String>,
 }
 
 /// The explicit provisional resource policy used by a daemon. Ordinary
@@ -644,6 +680,7 @@ mod tests {
         let request = Request {
             id: 3,
             body: RequestBody::Build(Box::new(BuildRequest {
+                measure_performance: false,
                 artifact: BuildKind::TestImage,
                 working_directory: "/w".into(),
                 root_source: "main.rue".into(),
@@ -743,6 +780,7 @@ mod tests {
                     response_write_timeout_ms: 5_000,
                 },
                 resource_pressure: ResourcePressure::default(),
+                last_measurement: None,
             }),
         };
         let json = serde_json::to_string(&body).unwrap();

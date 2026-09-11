@@ -20,6 +20,7 @@
 mod calibrate;
 mod check_baselines;
 mod check_pins;
+mod daemon_performance;
 mod derive;
 mod digest;
 mod environment;
@@ -100,6 +101,9 @@ Required:
   --out <path>         where to write the run object
 
 Subcommands:
+  daemon-performance validate --input <path>
+                       validate a daemon invocation/report with the Rust schema
+
   derive --manifest <path> [--runtime-manifest <path>] --data-root <dir>
          --out <path>
                        rebuild the dashboard's view from raw records. Reads the
@@ -252,6 +256,24 @@ fn main() -> ExitCode {
             Ok(status) => ExitCode::from(status.exit_code()),
             Err(message) => {
                 eprintln!("rue-bench: {message}");
+                ExitCode::from(exit::USAGE)
+            }
+        };
+    }
+    if std::env::args().nth(1).as_deref() == Some("daemon-performance") {
+        let command = std::env::args().nth(2);
+        let result = match command.as_deref() {
+            Some("validate") => daemon_performance::run(),
+            Some("test-output") => daemon_performance::run_test_output(),
+            _ => {
+                eprintln!("rue-bench daemon-performance: expected `validate` or `test-output`");
+                return ExitCode::from(exit::USAGE);
+            }
+        };
+        return match result {
+            Ok(code) => ExitCode::from(code),
+            Err(message) => {
+                eprintln!("rue-bench daemon-performance: {message}");
                 ExitCode::from(exit::USAGE)
             }
         };

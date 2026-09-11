@@ -135,6 +135,7 @@ impl BuildExecutor for StubExecutor {
 
 fn build_request(root_source: &str) -> BuildRequest {
     BuildRequest {
+        measure_performance: false,
         artifact: BuildKind::Executable,
         working_directory: "/w".into(),
         root_source: root_source.into(),

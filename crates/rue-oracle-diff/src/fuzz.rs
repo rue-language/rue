@@ -626,6 +626,10 @@ pub(crate) fn compile_and_run(
     for preview in options.previews {
         compile_cmd.arg("--preview").arg(preview);
     }
+    // Keep this after the historical positional arguments: several oracle
+    // fixtures intentionally inspect the compiler argv while still pinning
+    // the real invocation to a fresh client.
+    compile_cmd.arg("--daemon=off");
     match run_process_with_timeout(compile_cmd, options.compile_timeout)? {
         ProcessOutcome::TimedOut => return Ok(Compiled::CompileTimeout),
         ProcessOutcome::Exited { status, stderr, .. } => {

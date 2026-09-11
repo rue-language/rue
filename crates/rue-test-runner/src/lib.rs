@@ -2820,6 +2820,10 @@ pub fn ice_message(status: &std::process::ExitStatus, stderr: &str) -> Option<Te
 
 fn test_case_compiler_command(case: &Case, binary: &Path) -> Command {
     let mut command = compiler_command(binary);
+    // The shared runner invokes fresh compiler clients directly.  Pin them
+    // away from any ambient developer daemon; daemon-specific scenarios use
+    // the daemon client harness rather than this compiler command.
+    command.arg("--daemon=off");
     if case.real_std {
         let std_path = find_dir("RUE_REAL_STD_PATH", &["std", "../std", "../../std"], "std");
         let std_path = std_path.canonicalize().unwrap_or(std_path);
@@ -4426,7 +4430,14 @@ params = [
         );
         assert_eq!(
             command.get_args().collect::<Vec<_>>(),
-            ["--target", "x86-64-linux", "--preview", "test_infra", "-O2"]
+            [
+                "--daemon=off",
+                "--target",
+                "x86-64-linux",
+                "--preview",
+                "test_infra",
+                "-O2"
+            ]
         );
     }
 

@@ -11,7 +11,7 @@ The compile is THREE STATIC ACTIONS — scan, derive, compile — not a
 `dynamic_output`: the manifest is consumed by path and every command line is
 known at analysis time.
 
-  scan     rue --emit deps ROOT           (no manifest; no -O; no --target —
+  scan     rue --daemon=off --emit deps ROOT (no manifest; no -O; no --target —
                                            the read closure is target-invariant,
                                            so one scan serves every flag set)
   derive   scripts/rue-program-derive-manifest.py
@@ -19,7 +19,7 @@ known at analysis time.
                                            FAILS the build when any accepted
                                            read lies outside srcs ∪ std;
                                            entries machine-stable)
-  compile  rue ROOT --source-manifest M --target T -ON -o OUT
+  compile  rue --daemon=off ROOT --source-manifest M --target T -ON -o OUT
 
 Hermeticity lives in the derive step, not in a downstream audit: an
 out-of-srcs read is an in-band build failure on every build that re-runs the
@@ -127,6 +127,7 @@ def _scan_and_derive(
         envelope.as_output(),
         ctx.attrs.root,
         toolchain.compiler,
+        "--daemon=off",
         # extra_scan_inputs exists only on the boundary-control rule; ordinary
         # rue_programs have no way to smuggle undeclared-but-materialized
         # files into the scan.
@@ -221,6 +222,7 @@ def _rue_program_impl(ctx: AnalysisContext) -> list[Provider]:
     executable = ctx.actions.declare_output(ctx.label.name)
     compile_cmd = cmd_args(
         toolchain.compiler,
+        "--daemon=off",
         ctx.attrs.root,
         "--source-manifest",
         manifest,
@@ -492,6 +494,7 @@ def _rue_test_impl(ctx: AnalysisContext) -> list[Provider]:
     # is a deliberate act, not the default.
     command.add("--")
     command.add(toolchain.compiler)
+    command.add("--daemon=off")
     command.add("test", ctx.attrs.root)
     command.add("--source-manifest", manifest)
     command.add("--test-candidates", candidates)

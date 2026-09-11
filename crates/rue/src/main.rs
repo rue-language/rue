@@ -3,6 +3,7 @@ use std::fmt::Write as _;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 #[cfg(test)]
 use std::{fs, sync::Arc};
 
@@ -36,7 +37,7 @@ use rue_compiler::unstable::{
 use rue_compiler::unstable::{Span, update_for_presentation};
 use rue_driver::{
     FilesystemCompilerHost, HostOpenRequest, HostPathContext, SourceLoadError,
-    ToolchainIntegrityError, with_import_migration_helps,
+    ToolchainIntegrityError, WatchInput, with_import_migration_helps,
 };
 
 use rue_compiler::{
@@ -232,6 +233,9 @@ struct Options {
     error_format: ErrorFormat,
     time_passes: bool,
     benchmark_json: bool,
+    /// Optional explicit performance sidecar. It never changes the ordinary
+    /// diagnostic or program output streams.
+    daemon_performance_json: Option<String>,
     watch: bool,
     /// Number of parallel jobs (0 = auto-detect, use all cores).
     jobs: usize,
@@ -377,6 +381,8 @@ Options:
                        (schema: docs/process/diagnostics.md)
   --time-passes        Show timing for each compilation pass
   --benchmark-json     Output timing as JSON (for benchmarking)
+  --daemon-performance-json <path>
+                       Write one daemon performance invocation sidecar
   --daemon <mode>      off (default): compile in this process; auto: use or
                        start the compiler service for supported requests and
                        compile directly otherwise; required: the service must
@@ -507,6 +513,12 @@ const VALUE_TAKING_OPTIONS: &[&str] = &[
     "-o",
     "--output",
     "--source-manifest",
+    "--module-manifest",
+    "--manifest-std-root",
+    "--daemon",
+    "--daemon-scope",
+    "--daemon-isolation",
+    "--daemon-performance-json",
     "--link-archive",
     "--test-candidates",
     "--filter",
@@ -636,6 +648,7 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
     let mut error_format: Option<ErrorFormat> = None;
     let mut time_passes = false;
     let mut benchmark_json = false;
+    let mut daemon_performance_json: Option<String> = None;
     let mut watch = false;
     let mut jobs: Option<usize> = None;
     let mut source_manifest_path: Option<String> = None;
@@ -909,6 +922,16 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
             "--benchmark-json" => {
                 benchmark_json = true;
             }
+            "--daemon-performance-json" => {
+                let Some(path) = args_iter.next() else {
+                    eprintln!("Error: --daemon-performance-json requires a path");
+                    return ParseResult::Error;
+                };
+                if daemon_performance_json.replace(path.to_string()).is_some() {
+                    eprintln!("Error: --daemon-performance-json may be given at most once");
+                    return ParseResult::Error;
+                }
+            }
             "--watch" => {
                 watch = true;
             }
@@ -1129,6 +1152,7 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         error_format: error_format.unwrap_or_default(),
         time_passes,
         benchmark_json,
+        daemon_performance_json,
         watch,
         jobs: jobs.unwrap_or(0),
         mode,
@@ -1832,6 +1856,14 @@ fn compiler_build_profile() -> CompilerBuildProfile {
     {
         CompilerBuildProfile::Debug
     }
+}
+
+/// Serialize the source closure already admitted by this compiler cycle for
+/// the optional daemon-performance sidecar.  This deliberately consumes the
+/// owned snapshot rather than rereading paths after compilation, so the
+/// identity describes the request that actually produced the answer.
+fn daemon_input_evidence(inputs: &[WatchInput]) -> String {
+    daemon_client::watch_inputs_identity(inputs)
 }
 
 fn compiler_boundary_evidence(
@@ -2621,6 +2653,7 @@ fn main() {
     // the parser is still reported as an ICE. Publish the requested format now
     // that it is known; until this point the hook uses the `text` default.
     set_ice_error_format(options.error_format);
+    let invocation_started = Instant::now();
 
     // Reject incompatible output modes before any tracing, thread-pool, manifest,
     // or source I/O work. This is a pure options check, so surfacing it first
@@ -2660,6 +2693,13 @@ fn main() {
         eprintln!("Error: {error}");
         std::process::exit(driver_failure_exit_code(&options.mode));
     });
+    if let Err(message) = daemon_client::validate_performance_options(&options, &path_context) {
+        eprintln!("{message}");
+        std::process::exit(driver_failure_exit_code(&options.mode));
+    }
+    if options.daemon_performance_json.is_some() {
+        test_mode::enable_performance_capture(invocation_started);
+    }
 
     // Initialize tracing based on CLI options
     // Returns timing data if --time-passes or --benchmark-json was specified
@@ -2923,9 +2963,43 @@ fn main() {
                 compile_options: compile_options.clone(),
                 diagnostics: &diagnostics,
             }) {
+                let accepted_inputs = options
+                    .daemon_performance_json
+                    .as_ref()
+                    .map(|_| daemon_input_evidence(&compiler_host.watch_inputs()));
+                daemon_client::write_performance_sidecar(
+                    &options,
+                    &path_context,
+                    daemon_client::PerformanceObservation {
+                        artifact: rue_driver::daemon::BuildKind::Analysis,
+                        path: rue_perf_schema::ExecutionPath::DirectFresh,
+                        service: None,
+                        measurement: None,
+                        direct_workers: Some(resolved_workers as u32),
+                        accepted_input_identity: accepted_inputs.as_deref(),
+                        transfer_ns: None,
+                    },
+                );
                 std::process::exit(1);
             }
         }
+        let accepted_inputs = options
+            .daemon_performance_json
+            .as_ref()
+            .map(|_| daemon_input_evidence(&compiler_host.watch_inputs()));
+        daemon_client::write_performance_sidecar(
+            &options,
+            &path_context,
+            daemon_client::PerformanceObservation {
+                artifact: rue_driver::daemon::BuildKind::Analysis,
+                path: rue_perf_schema::ExecutionPath::DirectFresh,
+                service: None,
+                measurement: None,
+                direct_workers: Some(resolved_workers as u32),
+                accepted_input_identity: accepted_inputs.as_deref(),
+                transfer_ns: None,
+            },
+        );
         drop(compile_span);
         // `--emit` and `--benchmark-json` both want stdout, so
         // `validate_output_modes` already refused the combination: this path
@@ -2969,6 +3043,23 @@ fn main() {
                 candidates: test_candidate_inventory,
             })
         };
+        let accepted_inputs = options
+            .daemon_performance_json
+            .as_ref()
+            .map(|_| daemon_input_evidence(&compiler_host.watch_inputs()));
+        daemon_client::write_performance_sidecar(
+            &options,
+            &path_context,
+            daemon_client::PerformanceObservation {
+                artifact: rue_driver::daemon::BuildKind::TestImage,
+                path: rue_perf_schema::ExecutionPath::DirectFresh,
+                service: None,
+                measurement: None,
+                direct_workers: Some(resolved_workers as u32),
+                accepted_input_identity: accepted_inputs.as_deref(),
+                transfer_ns: None,
+            },
+        );
         let _ = std::io::stdout().flush();
         std::process::exit(exit.code());
     }
@@ -3007,8 +3098,42 @@ fn main() {
         // Every diagnostic is already on the diagnostic stream. A one-shot
         // cycle is never canceled and never superseded, so the only remaining
         // outcome is a rejected program or a refused publication.
+        let accepted_inputs = options
+            .daemon_performance_json
+            .as_ref()
+            .map(|_| daemon_input_evidence(&compiler_host.watch_inputs()));
+        daemon_client::write_performance_sidecar(
+            &options,
+            &path_context,
+            daemon_client::PerformanceObservation {
+                artifact: rue_driver::daemon::BuildKind::Executable,
+                path: rue_perf_schema::ExecutionPath::DirectFresh,
+                service: None,
+                measurement: None,
+                direct_workers: Some(resolved_workers as u32),
+                accepted_input_identity: accepted_inputs.as_deref(),
+                transfer_ns: None,
+            },
+        );
         std::process::exit(1);
     };
+    let accepted_inputs = options
+        .daemon_performance_json
+        .as_ref()
+        .map(|_| daemon_input_evidence(&compiler_host.watch_inputs()));
+    daemon_client::write_performance_sidecar(
+        &options,
+        &path_context,
+        daemon_client::PerformanceObservation {
+            artifact: rue_driver::daemon::BuildKind::Executable,
+            path: rue_perf_schema::ExecutionPath::DirectFresh,
+            service: None,
+            measurement: None,
+            direct_workers: Some(resolved_workers as u32),
+            accepted_input_identity: accepted_inputs.as_deref(),
+            transfer_ns: None,
+        },
+    );
 
     // Publication may perform target-specific finalization (notably ad-hoc
     // Mach-O signing) after the linker produced its byte buffer. Benchmark
@@ -3807,6 +3932,27 @@ mod tests {
         assert_eq!(options.mode, DriverMode::Compile);
         assert_eq!(options.output_path, "test");
         assert_eq!(options.source_path, "prog.rue");
+    }
+
+    #[test]
+    fn performance_sidecar_values_do_not_select_or_hide_test_mode() {
+        let ordinary = unwrap_options(parse_args_from(&[
+            "--daemon-performance-json",
+            "test",
+            "prog.rue",
+        ]));
+        assert_eq!(ordinary.mode, DriverMode::Compile);
+        assert_eq!(ordinary.daemon_performance_json.as_deref(), Some("test"));
+        let tests = unwrap_options(parse_args_from(&[
+            "--daemon",
+            "required",
+            "--daemon-performance-json",
+            "report.json",
+            "test",
+            "prog.rue",
+        ]));
+        assert_eq!(tests.mode, DriverMode::Test);
+        assert_eq!(tests.daemon, daemon_client::DaemonMode::Required);
     }
 
     /// The same trap for every other value-taking option, checked

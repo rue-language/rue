@@ -57,11 +57,23 @@ const DAEMON_AUTOMATIC_WORKERS: usize = 4;
 /// qualification phase's (ADR-0085 §7, RUE-2129).
 pub(crate) struct Executor {
     retained: Option<RetainedHost>,
+    session_generation: u64,
+    reused_session: bool,
+    last_observation_ns: Option<u64>,
+    last_link_ns: Option<u64>,
+    last_input_sha256: Option<String>,
 }
 
 impl Executor {
     pub(crate) fn new() -> Self {
-        Self { retained: None }
+        Self {
+            retained: None,
+            session_generation: 0,
+            reused_session: false,
+            last_observation_ns: None,
+            last_link_ns: None,
+            last_input_sha256: None,
+        }
     }
 
     fn trim_over_budget(&mut self, byte_budget: u64, pin_budget: u64) {
@@ -86,6 +98,11 @@ struct Parsed {
 }
 
 fn parse(request: &BuildRequest) -> Result<Parsed, String> {
+    if request.measure_performance
+        && (request.test_candidates_path.is_some() || !request.link_archives.is_empty())
+    {
+        return Err("performance evidence does not yet cover test candidates or archives".into());
+    }
     let target = request
         .target
         .parse::<rue_target::Target>()
@@ -154,6 +171,10 @@ impl Executor {
         request: &BuildRequest,
         parsed: &Parsed,
     ) -> Result<&mut FilesystemCompilerHost, SourceLoadError> {
+        // A request starts as a fresh observation.  Only a successfully
+        // committed reobserve is reuse evidence; a failed attempt must not
+        // inherit the predecessor's session identity in its reply.
+        self.reused_session = false;
         let reuse = self
             .retained
             .as_ref()
@@ -163,9 +184,12 @@ impl Executor {
             // A pre-commit failure keeps the prior coherent closure, so the
             // host stays retained; the request is answered with the failure.
             retained.host.reobserve()?;
+            self.reused_session = true;
             return Ok(&mut retained.host);
         }
-        self.retained = None;
+        // Open the successor off to the side.  A failed open leaves the
+        // predecessor available for the next request; the generation advances
+        // only once the new host has been admitted.
         let host = FilesystemCompilerHost::open(HostOpenRequest {
             root_source: &request.root_source,
             source_manifest_path: request.source_manifest_path.as_deref(),
@@ -173,6 +197,7 @@ impl Executor {
             compiler_config: parsed.compiler_config.clone(),
             path_context: &parsed.path_context,
         })?;
+        self.session_generation = self.session_generation.saturating_add(1);
         let retained = self.retained.insert(RetainedHost { key, host });
         Ok(&mut retained.host)
     }
@@ -184,6 +209,10 @@ impl BuildExecutor for Executor {
         request: &BuildRequest,
         cancellation: &CompilationCancellation,
     ) -> BuildOutput {
+        self.reused_session = false;
+        self.last_observation_ns = None;
+        self.last_link_ns = None;
+        self.last_input_sha256 = None;
         let parsed = match parse(request) {
             Ok(parsed) => parsed,
             Err(message) => return BuildOutput::failed(format!("invalid request: {message}")),
@@ -193,7 +222,7 @@ impl BuildExecutor for Executor {
             root_source: request.root_source.clone(),
             source_manifest_path: request.source_manifest_path.clone(),
             std_root: request.std_root.clone(),
-            workers: request.workers,
+            workers: parsed.compiler_config.workers(),
         };
         let rejected = |error: SourceLoadError| BuildOutput {
             result: BuildResult::Rejected {
@@ -204,6 +233,7 @@ impl BuildExecutor for Executor {
             },
             bytes: Vec::new(),
         };
+        let observation_started = std::time::Instant::now();
         let host = match self.host(key, request, &parsed) {
             Ok(host) => host,
             Err(error) => return rejected(error),
@@ -218,6 +248,10 @@ impl BuildExecutor for Executor {
             }
             Err(error) => return rejected(error),
         }
+        let observation_ns = Some(observation_started.elapsed().as_nanos() as u64);
+        let input_sha256 = request
+            .measure_performance
+            .then(|| crate::daemon_client::watch_inputs_identity(&host.watch_inputs()));
         // The declared candidate inventory is acquired under the host's read
         // policy in every mode, as the direct path does, so a build rule that
         // writes a broken list fails the build it broke (ADR-0083 §1).
@@ -230,6 +264,7 @@ impl BuildExecutor for Executor {
                 };
             }
         };
+        let mut link_ns = None;
         let output = match request.artifact {
             BuildKind::Executable => {
                 let transport = produce_transport(
@@ -241,6 +276,7 @@ impl BuildExecutor for Executor {
                     Path::new(&request.output_path),
                     cancellation.clone(),
                 );
+                link_ns = transport.link_ns;
                 ready_output(transport, |_| None)
             }
             BuildKind::TestImage => {
@@ -253,6 +289,7 @@ impl BuildExecutor for Executor {
                     Path::new(&request.output_path),
                     cancellation.clone(),
                 );
+                link_ns = transport.link_ns;
                 let multi_module_closure = host.published_user_module_count() > 1;
                 let color = parsed.color;
                 ready_output(transport, move |published| {
@@ -307,6 +344,9 @@ impl BuildExecutor for Executor {
                 }
             }
         };
+        self.last_observation_ns = observation_ns;
+        self.last_input_sha256 = input_sha256;
+        self.last_link_ns = link_ns;
         output
     }
 
@@ -325,6 +365,34 @@ impl BuildExecutor for Executor {
         self.retained
             .as_ref()
             .map(|retained| retained.host.unstable_metrics().retention().dependency_pins as u64)
+            .unwrap_or(0)
+    }
+
+    fn session_generation(&self) -> u64 {
+        self.session_generation
+    }
+
+    fn reused_session(&self) -> bool {
+        self.reused_session
+    }
+
+    fn query_runtime_counters(&self) -> Option<(u64, u64)> {
+        self.retained.as_ref().map(|retained| {
+            let metrics = retained.host.unstable_metrics().query_runtime();
+            (metrics.claims, metrics.reuses)
+        })
+    }
+
+    fn input_sha256(&self) -> Option<String> {
+        self.last_input_sha256.clone()
+    }
+
+    fn compiler_workers(&self) -> u32 {
+        self.retained
+            .as_ref()
+            .and_then(|retained| {
+                u32::try_from(retained.host.compiler_configuration().workers()).ok()
+            })
             .unwrap_or(0)
     }
 
@@ -355,6 +423,14 @@ impl BuildExecutor for Executor {
             .as_ref()
             .map(|retained| retained.host.source_snapshot().files().count() as u32)
             .unwrap_or(0)
+    }
+
+    fn observation_ns(&self) -> Option<u64> {
+        self.last_observation_ns
+    }
+
+    fn link_ns(&self) -> Option<u64> {
+        self.last_link_ns
     }
 
     fn enforce_retention_budget(&mut self) {
@@ -393,7 +469,9 @@ fn ready_output<Published>(
     transport: CycleTransport<Published>,
     companion: impl FnOnce(Published) -> Option<Box<TestImageRecord>>,
 ) -> BuildOutput {
-    let CycleTransport { stderr, outcome } = transport;
+    let CycleTransport {
+        stderr, outcome, ..
+    } = transport;
     match outcome {
         TransportOutcome::Rejected => BuildOutput {
             result: BuildResult::Rejected { stderr },
@@ -483,12 +561,74 @@ mod tests {
                 link_archives: Vec::new(),
                 error_format: DiagnosticFormat::Text,
                 color: false,
+                measure_performance: true,
             }
         }
     }
 
     pub(super) const GOOD: &str = "fn main() -> i32 { 0 }\n";
     pub(super) const BROKEN: &str = "fn main() -> i32 {\n    let x: i32 = \"nope\";\n    x\n}\n";
+
+    #[test]
+    fn performance_identity_follows_the_accepted_closure_in_each_artifact() {
+        let project = Project::new(GOOD);
+        let mut executor = Executor::new();
+        let cancellation = CompilationCancellation::new();
+        let mut request = project.request("app");
+        let first = executor.build(&request, &cancellation);
+        assert!(matches!(first.result, BuildResult::Ready { .. }));
+        let original = executor.input_sha256().expect("accepted executable inputs");
+        assert!(executor.observation_ns().is_some());
+        assert!(executor.link_ns().is_some());
+
+        request.artifact = BuildKind::Analysis;
+        let analysis = executor.build(&request, &cancellation);
+        assert!(matches!(
+            analysis.result,
+            BuildResult::Presentation { ok: true, .. }
+        ));
+        assert_eq!(executor.input_sha256().as_ref(), Some(&original));
+        assert!(
+            executor.link_ns().is_none(),
+            "analysis must not inherit the previous link clock"
+        );
+
+        project.write(BROKEN);
+        let rejected = executor.build(&request, &cancellation);
+        assert!(matches!(
+            rejected.result,
+            BuildResult::Presentation { ok: false, .. }
+        ));
+        let broken = executor
+            .input_sha256()
+            .expect("rejected program still has accepted reads");
+        assert_ne!(broken, original);
+        assert!(executor.observation_ns().is_some());
+
+        request.measure_performance = false;
+        executor.build(&request, &cancellation);
+        assert!(
+            executor.input_sha256().is_none(),
+            "ordinary clients do not hash the closure"
+        );
+
+        request.measure_performance = true;
+        request.target = "invalid-target".into();
+        let invalid = executor.build(&request, &cancellation);
+        assert!(matches!(
+            invalid.result,
+            BuildResult::Failed {
+                internal: false,
+                ..
+            }
+        ));
+        assert!(
+            executor.input_sha256().is_none(),
+            "a refused request cannot claim its predecessor's inputs"
+        );
+        assert!(executor.observation_ns().is_none());
+        assert!(executor.link_ns().is_none());
+    }
 
     #[test]
     fn a_retained_host_serves_edit_fix_and_revert_with_fresh_parity() {
@@ -775,6 +915,7 @@ mod test_request_tests {
                 link_archives: Vec::new(),
                 error_format: DiagnosticFormat::Text,
                 color: false,
+                measure_performance: true,
             }
         }
     }
@@ -786,6 +927,7 @@ mod test_request_tests {
         let cancellation = CompilationCancellation::new();
 
         let mut request = suite.request(BuildKind::TestImage, "image");
+        request.measure_performance = false;
         request.test_candidates_path = Some("candidates.txt".into());
         let answer = executor.build(&request, &cancellation);
         let BuildResult::Ready {
@@ -973,6 +1115,7 @@ mod test_request_tests {
         let suite = Suite::new();
         let mut executor = Executor::new();
         let mut request = suite.request(BuildKind::TestImage, "image");
+        request.measure_performance = false;
         request.test_candidates_path = Some("missing.txt".into());
         let answer = executor.build(&request, &CompilationCancellation::new());
         let BuildResult::Rejected { stderr } = &answer.result else {

@@ -1392,6 +1392,7 @@ fn finish_internal_link_with_cancellation(
         semantic_reachability: crate::unstable::SemanticReachabilityMetrics::default(),
         provider_observations: crate::unstable::ProviderObservationMetrics::default(),
         publication: crate::unstable::PublicationMetrics::default(),
+        link_ns: None,
     })
 }
 
@@ -1698,6 +1699,7 @@ pub(crate) fn link_system_with_warnings_and_cancellation(
         semantic_reachability: crate::unstable::SemanticReachabilityMetrics::default(),
         provider_observations: crate::unstable::ProviderObservationMetrics::default(),
         publication: crate::unstable::PublicationMetrics::default(),
+        link_ns: None,
     })
 }
 use std::io::{Read, Seek, Write};

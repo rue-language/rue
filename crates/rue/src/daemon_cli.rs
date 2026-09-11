@@ -342,6 +342,7 @@ mod tests {
                 response_write_timeout_ms: 5_000,
             },
             resource_pressure: daemon::ResourcePressure::default(),
+            last_measurement: None,
         };
         let text = render_status(&report);
         for needle in [

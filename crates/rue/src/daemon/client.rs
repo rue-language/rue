@@ -1,11 +1,11 @@
 //! The client half of the service protocol: connect, prove identity, issue
 //! control requests, and submit and await builds.
 
-use std::io;
+use std::io::{self, Read};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::protocol::{
     BuildReply, BuildRequest, BuildResult, Hello, HelloReply, MAX_CONTROL_FRAME_BYTES,
@@ -222,9 +222,44 @@ impl Connection {
     /// and compile for as long as the program takes, and the process ending
     /// is what cancels it.
     pub fn await_build(&mut self, ticket: u64) -> Result<(BuildResult, Vec<u8>), ConnectError> {
+        let (result, bytes, _, _) = self.await_build_with_measurement(ticket, false)?;
+        Ok((result, bytes))
+    }
+
+    /// Like [`Self::await_build`], retaining the canonical measurement that
+    /// belongs to this ticket. Status is only a best-effort display and must
+    /// not be used for attribution when requests contend.
+    pub fn await_build_with_measurement(
+        &mut self,
+        ticket: u64,
+        measure_transfer: bool,
+    ) -> Result<
+        (
+            BuildResult,
+            Vec<u8>,
+            Option<super::protocol::RequestMeasurement>,
+            Option<u64>,
+        ),
+        ConnectError,
+    > {
         self.stream.set_read_timeout(None)?;
-        let reply: BuildReply = read_frame(&mut self.stream, MAX_RESULT_FRAME_BYTES)?
-            .ok_or_else(|| ConnectError::Protocol("the service closed mid-request".into()))?;
+        // Waiting for the first response byte includes queueing and compiler
+        // work. The transfer interval starts only once that byte arrives and
+        // includes frame decoding and the linked-image chunks that follow.
+        let mut first_byte = [0_u8; 1];
+        let mut transfer_started = None;
+        let prefix_len = if measure_transfer {
+            self.stream.read_exact(&mut first_byte)?;
+            transfer_started = Some(Instant::now());
+            1
+        } else {
+            0
+        };
+        let reply: BuildReply = read_frame(
+            &mut first_byte[..prefix_len].chain(&mut self.stream),
+            MAX_RESULT_FRAME_BYTES,
+        )?
+        .ok_or_else(|| ConnectError::Protocol("the service closed mid-request".into()))?;
         if reply.ticket != ticket {
             return Err(ConnectError::Protocol(format!(
                 "the service answered ticket {} while {ticket} was pending",
@@ -235,7 +270,12 @@ impl Connection {
             BuildResult::Ready { bytes, .. } => read_chunks(&mut self.stream, *bytes)?,
             _ => Vec::new(),
         };
-        Ok((reply.result, bytes))
+        Ok((
+            reply.result,
+            bytes,
+            reply.measurement,
+            transfer_started.map(|started| started.elapsed().as_nanos() as u64),
+        ))
     }
 }
 

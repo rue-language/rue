@@ -1332,7 +1332,11 @@ fn run_differential() -> Result<usize, String> {
     let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
     let frontend = temp.path().join("ruelex");
     let mut compile = Command::new(compiler);
-    compile.arg(&root).arg("-o").arg(&frontend);
+    compile
+        .arg("--daemon=off")
+        .arg(&root)
+        .arg("-o")
+        .arg(&frontend);
     checkpoint(&format!("compiling ruelex from {}", root.display()));
     let started = Instant::now();
     let compile = bounded_run(compile, "compile ruelex")?;

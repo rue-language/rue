@@ -211,3 +211,47 @@ daemon = { steps = [
   { args = ["--daemon=required", "--error-format", "json", "--emit", "air", "main.rue"], exit_code = 1, stderr_contains = ["\"code\":\"E0206\""] },
   { args = ["daemon", "stop"], exit_code = 0, stdout_contains = ["stopped service pid"] },
 ] }
+
+[[case]]
+name = "performance_sidecars_never_replace_sources_or_outputs"
+description = "A performance sidecar requires a new file, rejects output aliases before compilation, and leaves the source and executable usable after rejection."
+files = [{ path = "main.rue", source = "fn main() -> i32 { @dbg(42); 0 }\n" }]
+daemon = { steps = [
+  { args = ["--daemon=off", "--daemon-performance-json", "main.rue", "main.rue", "-o", "app"], exit_code = 1, stderr_contains = ["performance sidecar must name a new file"] },
+  { args = ["--daemon=off", "main.rue", "-o", "app"], exit_code = 0, run_output = "app", run_output_stdout_contains = ["42\n"] },
+  { args = ["--daemon=off", "--daemon-performance-json", "app", "main.rue", "-o", "other"], exit_code = 1, stderr_contains = ["performance sidecar must name a new file"] },
+  { args = ["--daemon=off", "--daemon-performance-json", "fresh.json", "main.rue", "-o", "app"], exit_code = 0, run_output = "app", run_output_stdout_contains = ["42\n"] },
+  { args = ["--daemon=off", "--daemon-performance-json", "fresh.json", "main.rue", "-o", "app"], exit_code = 1, stderr_contains = ["performance sidecar must name a new file"] },
+  { args = ["--daemon=off", "--daemon-performance-json", "future", "main.rue", "-o", "future"], exit_code = 1, stderr_contains = ["performance sidecar cannot also be the executable output"] },
+  { args = ["--daemon=required", "--daemon-performance-json", "main.rue", "main.rue", "-o", "app"], exit_code = 1, stderr_contains = ["performance sidecar must name a new file"] },
+  { args = ["daemon", "status"], exit_code = 1, stderr_contains = ["no service is running for"] },
+] }
+
+[[case]]
+name = "performance_sidecars_refuse_unmeasured_input_authority"
+description = "Inputs outside the performance regime fail before source or candidate acquisition and before a daemon can start."
+files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }\n" }]
+daemon = { steps = [
+  { args = ["--daemon=required", "--daemon-performance-json", "candidate.json", "--test-candidates", "missing.txt", "main.rue"], exit_code = 1, stderr_contains = ["test candidates, archives, and test listings are not measured"] },
+  { args = ["--daemon=required", "--daemon-performance-json", "archive.json", "--link-archive", "missing.a", "main.rue"], exit_code = 1, stderr_contains = ["test candidates, archives, and test listings are not measured"] },
+  { args = ["daemon", "status"], exit_code = 1, stderr_contains = ["no service is running for"] },
+] }
+
+[[case]]
+name = "fresh_action_calls_ignore_an_available_service"
+description = "Explicit direct scan, compile, and test calls preserve source-manifest authority while an ambient service stays unused."
+files = [
+  { path = "main.rue", source = "const helper = @import(\"helper.rue\");\nfn main() -> i32 { @dbg(helper.value()); 0 }\ntest \"value\" { @assert(helper.value() == 42); }\n" },
+  { path = "helper.rue", source = "pub fn value() -> i32 { 42 }\n" },
+  { path = "complete.manifest", source = "main.rue\nhelper.rue\n" },
+  { path = "restricted.manifest", source = "main.rue\n" },
+]
+daemon = { steps = [
+  { args = ["daemon", "start", "--idle-timeout-ms", "60000"], exit_code = 0 },
+  { args = ["--daemon=off", "--emit", "deps", "main.rue"], exit_code = 0, stdout_contains = ["helper.rue"] },
+  { args = ["--daemon=off", "main.rue", "--source-manifest", "complete.manifest", "-o", "app"], exit_code = 0, run_output = "app", run_output_stdout_contains = ["42\n"] },
+  { args = ["--daemon=off", "test", "main.rue", "--source-manifest", "complete.manifest", "--seed", "1"], exit_code = 0, stdout_contains = ["1 passed"] },
+  { args = ["--daemon=off", "main.rue", "--source-manifest", "restricted.manifest", "-o", "refused"], exit_code = 1, stderr_contains = ["helper.rue", "source manifest"] },
+  { args = ["daemon", "status", "--json"], exit_code = 0, stdout_contains = ["\"retained_hosts\":0", "\"last_measurement\":null"] },
+  { args = ["daemon", "stop"], exit_code = 0 },
+] }
