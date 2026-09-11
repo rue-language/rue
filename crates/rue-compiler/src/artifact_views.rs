@@ -1599,6 +1599,7 @@ fn pattern_record(
             Vec::new(),
         ),
         rue_parser::Pattern::Path(path) => path_pattern_record(owner, path, span),
+        rue_parser::Pattern::Struct(pattern) => struct_pattern_record(owner, pattern),
     }
 }
 
@@ -1631,6 +1632,7 @@ fn path_pattern_record(
         rue_parser::PatternElement::Nested(nested) => {
             path_pattern_record(owner, nested, nested.span)
         }
+        rue_parser::PatternElement::Struct(pattern) => struct_pattern_record(owner, pattern),
     }));
     syntax_record(
         "path_pattern",

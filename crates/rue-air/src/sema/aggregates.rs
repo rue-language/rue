@@ -945,10 +945,36 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .with_help("the pattern head must name the initializer's own struct type"));
         }
 
-        let struct_name = self.format_type_name(head);
+        let fields: Vec<Spur> = self
+            .body_rir_ref()
+            .pattern_fields(fields)
+            .values()
+            .collect();
+        self.check_struct_pattern_fields(struct_id, fields.into_iter(), span)?;
+
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::UnitConst,
+            ty: Type::UNIT,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::UNIT))
+    }
+
+    /// Check a struct pattern's field list against the struct's declared
+    /// fields (spec 5.1:20, and 4.7:42 for a match arm): every name is a
+    /// field (E0401), no field is named twice (E0402), and no declared field
+    /// is left out (E0400). A pattern has no rest form, which is what makes a
+    /// field added to the struct an error at every pattern over it.
+    pub(crate) fn check_struct_pattern_fields(
+        &self,
+        struct_id: crate::types::StructId,
+        fields: impl Iterator<Item = Spur>,
+        span: Span,
+    ) -> CompileResult<()> {
+        let struct_name = self.format_type_name(Type::new_struct(struct_id));
         let struct_def = self.body_type_pool().struct_def(struct_id);
         let mut named = vec![false; struct_def.fields.len()];
-        for field in self.body_rir_ref().pattern_fields(fields) {
+        for field in fields {
             let field_name = self.body_interner().resolve(&field);
             let Some((index, _)) = struct_def.find_field(field_name) else {
                 return Err(CompileError::new(
@@ -990,13 +1016,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                  `field: _`",
             ));
         }
-
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::UnitConst,
-            ty: Type::UNIT,
-            span,
-        });
-        Ok(AnalysisResult::new(air_ref, Type::UNIT))
+        Ok(())
     }
 
     pub(crate) fn analyze_struct_ops(

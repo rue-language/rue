@@ -65,6 +65,8 @@ pub fn comptime_scalar_pattern_decision<N, V: ComptimeValue>(
                 ComptimePatternDecision::Decided(actual == *expected)
             }),
         ComptimeMatchPattern::Path { .. } => ComptimePatternDecision::HostPath,
+        // A struct value is never a comptime scalar (RUE-2175).
+        ComptimeMatchPattern::Struct => ComptimePatternDecision::Undecidable,
     }
 }
 

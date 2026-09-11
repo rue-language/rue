@@ -12,6 +12,7 @@ A match expression provides multi-way branching based on pattern matching.
 
 {{ rule(id="4.7:2", cat="normative") }}
 
+<!-- grammar-sync(id="4.7:2", production="pattern", role="source") -->
 <!-- grammar-sync(id="4.7:2", production="path_pattern", role="source") -->
 <!-- grammar-sync(id="4.7:2", production="pattern_elements", role="source") -->
 <!-- grammar-sync(id="4.7:2", production="pattern_element", role="source") -->
@@ -23,11 +24,12 @@ match_arm = pattern "=>" expression ;
 pattern        = "_"
                | [ "-" ] INTEGER
                | BOOL
-               | path_pattern ;
+               | path_pattern
+               | struct_pattern ;
 path_pattern = pattern_head "." IDENT [ "(" pattern_elements ")" ] ;
 pattern_head   = qualified_ident [ "(" [ call_args ] ")" ] ;
 pattern_elements = pattern_element { "," pattern_element } [ "," ] ;
-pattern_element = IDENT | "_" | path_pattern ;
+pattern_element = IDENT | "_" | path_pattern | struct_pattern ;
 ```
 
 An enum variant is a `path_pattern`: its `pattern_head` may be a qualified
@@ -39,7 +41,11 @@ module binding (`module.Alias.Variant`, 10.4:21). A bare variant
 pattern omits the optional payload list and is the all-wildcard form. An
 explicit payload list contains one or more positions and may have a trailing
 comma; an empty list such as `Enum.Variant()` is not a pattern. Each position is
-a binding name, the `_` wildcard, or a nested variant pattern (4.7:37).
+a binding name, the `_` wildcard, a nested variant pattern (4.7:37), or a
+struct pattern (4.7:42). A `struct_pattern` is the production of 5.1:2; a
+struct pattern's head is a type, so a name that continues into `{` — directly,
+through a module path, or through a type-constructor call — begins a struct
+pattern and any other name begins a `path_pattern`.
 
 ## Patterns
 
@@ -425,6 +431,74 @@ fn main() -> i32 {
         R.Ok(_) => 0,
         R.Err(E.A(b)) => @intCast(b),   // -> 1
         R.Err(E.B) => 2,
+    }
+}
+```
+
+## Struct Patterns in Match Arms
+
+{{ preview_feature(feature="struct_patterns", adr="ADR-0091", doc="0091-struct-patterns.md") }}
+
+{{ rule(id="4.7:42", cat="normative") }}
+
+A match arm's pattern **MAY** be a struct pattern (5.1:18), `T { f: b, ... }`,
+and a payload position of a tuple-variant pattern (4.7:30) **MAY** hold one:
+`match p { Point { x, y } => ... }` binds the fields of a struct scrutinee, and
+`R.Ok(Point { x, y })` binds the fields of the payload value a variant carries.
+The head is written with the type grammar exactly as a let statement's struct
+pattern writes it — a struct name, a module-qualified name, or a
+type-constructor call — and each field pattern takes the forms of 5.1:18: the
+shorthand `f`, the rename `f: b`, the mutable binding `mut f` or `f: mut b`,
+and the discard `f: _`. A field pattern is a binding, never a nested pattern.
+Struct patterns are a preview feature: a match expression containing one
+**MUST** be compiled with `--preview struct_patterns` (8.4:1).
+
+{{ rule(id="4.7:43", cat="legality-rule") }}
+
+The head of a struct pattern **MUST** name a struct type (E0213), and that type
+**MUST** be the type of the value the pattern is matched against (E0206): the
+scrutinee's type for an arm's own pattern, and the payload field's type for a
+pattern in a payload position (as a nested variant pattern resolves against its
+field, 4.7:37). The field list is checked as 5.1:20 checks it: every declared
+field named exactly once, with a missing field E0400, an unknown name E0401,
+and a repeated field E0402. A scrutinee of struct type is legal only in a match
+some arm of which is a struct pattern; a match over a struct value whose arms
+are all `_` is E0602 as before.
+
+{{ rule(id="4.7:44", cat="normative") }}
+
+A struct pattern is irrefutable (4.7:3): it matches every value of its type. An
+arm whose pattern is a struct pattern therefore makes the match exhaustive by
+itself, and every arm after it is unreachable (4.7:18, 4.7:20); in a payload
+position it covers every value of that position, as a binding does (4.7:39).
+The arm binds as the let statements of 5.1:21 bind: the matched value — the
+scrutinee, or the payload position moved out of its enclosing payload
+(4.7:38) — is bound to an unnameable temporary of the arm, and each field
+pattern in source order is `let b = t.f;`, `let mut b = t.f;`, or
+`let _ = t.f;`, run before the arm body in the body's own scope. A Copy field is
+copied, a move field is moved out of the temporary, a field whose type carries
+a linear value cannot be discarded (E0478), and a move field of a struct that
+has a destructor cannot be moved out (E0456, 3.9). Whatever the temporary still
+owns at the end of the arm is dropped then, with the arm's other bindings, in
+reverse declaration order (4.7:31).
+
+{{ rule(id="4.7:45", cat="example") }}
+
+```rue
+struct Point { x: i32, y: i32 }
+enum Shape { Dot(Point), Empty }
+
+fn origin_distance(s: Shape) -> i32 {
+    match s {
+        Shape.Dot(Point { x, y: py }) => x + py,   // binds x and py
+        Shape.Empty => 0,
+    }
+}
+
+fn main() -> i32 {
+    let p = Point { x: 40, y: 2 };
+    match p {
+        Point { mut x, y: _ } => { x = x + 2; x }  // y is discarded -> 42
     }
 }
 ```

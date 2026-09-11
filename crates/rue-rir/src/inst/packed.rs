@@ -1404,6 +1404,18 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
                     }
                 }
             }
+            RirPatternView::Struct {
+                local, ty, fields, ..
+            } => {
+                self.byte(4)?;
+                self.symbol(*local)?;
+                self.type_reference(*ty)?;
+                self.count(fields.len())?;
+                for field in fields.values() {
+                    self.check()?;
+                    self.symbol(field)?;
+                }
+            }
         }
         Ok(())
     }
@@ -2821,7 +2833,7 @@ impl<
                 family: "match pattern",
             })?;
         let span = self.span(basis, RirSpanField::MatchPattern { arm, nested: index })?;
-        Ok(match Self::byte_tag(reader, "match pattern", 3)? {
+        Ok(match Self::byte_tag(reader, "match pattern", 4)? {
             0 => RirPattern::Wildcard(span),
             1 => RirPattern::Int {
                 value: reader.u64()?,
@@ -2857,6 +2869,25 @@ impl<
                     type_name,
                     variant,
                     elements,
+                    span,
+                }
+            }
+            4 => {
+                let local = self.symbol(reader)?;
+                let ty = self.type_reference(reader)?;
+                let count = Self::count(reader, "struct pattern fields", 1)?;
+                let mut fields = Vec::new();
+                fields
+                    .try_reserve_exact(count)
+                    .map_err(|_| Self::capacity("struct pattern fields"))?;
+                for _ in 0..count {
+                    self.check()?;
+                    fields.push(self.symbol(reader)?);
+                }
+                RirPattern::Struct {
+                    local,
+                    ty,
+                    fields,
                     span,
                 }
             }

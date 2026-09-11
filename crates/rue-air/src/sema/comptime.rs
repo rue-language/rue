@@ -113,7 +113,7 @@ pub(crate) fn prunable_match_body(
                 }
             }
             ComptimeMatchPattern::Integer(_) => {}
-            ComptimeMatchPattern::Path { .. } => return None,
+            ComptimeMatchPattern::Path { .. } | ComptimeMatchPattern::Struct => return None,
         }
     }
     (has_wildcard || (bool_true_covered && bool_false_covered)).then_some(selected)

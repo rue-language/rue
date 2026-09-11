@@ -1970,6 +1970,216 @@ mod typed_payload_tests {
         );
     }
 
+    /// A struct pattern record (RUE-2175) — at arm position and nested in a
+    /// payload position — decodes through the borrowing view, numbers its
+    /// span slot in the arm's preorder, survives the slot-aware editor remap,
+    /// and round-trips through the packed codec.
+    #[test]
+    fn struct_pattern_records_survive_views_remap_and_packing() {
+        let interner = ThreadedRodeo::new();
+        let point = interner.get_or_intern("Point");
+        let hidden = interner.get_or_intern("_@rue:destructure:0");
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+        let file = FileId::new(7);
+        let at = |position| Span::with_file(file, position, position + 1);
+        let context = RirValidationContext {
+            symbol_count: interner.len(),
+            source_lengths: &[(file, 100)],
+        };
+
+        let mut editor = RirEditor::new();
+        let head = editor.add_named_type(point).unwrap();
+        let value = editor.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: at(0),
+        });
+        let arms = [
+            (
+                RirPattern::Struct {
+                    local: hidden,
+                    ty: head,
+                    fields: vec![x, y],
+                    span: at(1),
+                },
+                value,
+            ),
+            (
+                RirPattern::Path {
+                    module: None,
+                    ctor_head: None,
+                    type_name: point,
+                    variant: x,
+                    elements: vec![RirPatternElement::Nested(RirPattern::Struct {
+                        local: hidden,
+                        ty: head,
+                        fields: vec![y],
+                        span: at(3),
+                    })],
+                    span: at(2),
+                },
+                value,
+            ),
+        ];
+        let matched = editor.add_match(value, &arms, at(4)).unwrap();
+        let root = editor
+            .add_fn_decl(
+                &[],
+                false,
+                false,
+                false,
+                false,
+                x,
+                &[],
+                head,
+                matched,
+                false,
+                RirParamMode::Normal,
+                false,
+                false,
+                at(5),
+            )
+            .unwrap();
+        let rir = ValidatedRir::finish(editor, &context).unwrap();
+
+        let check = |rir: &ValidatedRir, matched: InstRef| {
+            let InstData::Match { arms, .. } = &rir.get(matched).data else {
+                panic!("expected the match instruction");
+            };
+            let arms = rir.match_arms(arms);
+            let (first, _) = arms.get(0).unwrap();
+            let RirPatternView::Struct {
+                ty, fields, span, ..
+            } = &first
+            else {
+                panic!("expected a struct pattern at arm position, got {first:?}");
+            };
+            assert_eq!(fields.len(), 2);
+            assert_eq!((span.start, span.end), (1, 2));
+            assert!(matches!(
+                first.to_owned(),
+                RirPattern::Struct { fields, .. } if fields.len() == 2
+            ));
+            let (second, _) = arms.get(1).unwrap();
+            let records = second.preorder();
+            assert_eq!(records.len(), 2);
+            let RirPatternView::Struct {
+                fields,
+                span,
+                ty: nested_ty,
+                ..
+            } = &records[1]
+            else {
+                panic!("expected a nested struct pattern, got {:?}", records[1]);
+            };
+            assert_eq!(fields.len(), 1);
+            assert_eq!((span.start, span.end), (3, 4));
+            assert_eq!(*nested_ty, *ty);
+            assert!(matches!(
+                second.to_owned(),
+                RirPattern::Path { elements, .. }
+                    if matches!(elements[0], RirPatternElement::Nested(RirPattern::Struct { .. }))
+            ));
+        };
+        check(&rir, matched);
+        assert_eq!(
+            span_entries(&rir)
+                .into_iter()
+                .filter(|(slot, _)| matches!(slot.field(), RirSpanField::MatchPattern { .. }))
+                .map(|(slot, span)| (slot.field(), span.start))
+                .collect::<Vec<_>>(),
+            vec![
+                (RirSpanField::MatchPattern { arm: 0, nested: 0 }, 1),
+                (RirSpanField::MatchPattern { arm: 1, nested: 0 }, 2),
+                (RirSpanField::MatchPattern { arm: 1, nested: 1 }, 3),
+            ]
+        );
+
+        let mut destination = RirEditor::new();
+        destination
+            .try_append_remapped_with_span_slots(
+                &rir,
+                std::convert::identity,
+                || Ok::<_, &'static str>(()),
+                |_slot, span| Ok(span),
+            )
+            .unwrap();
+        let destination = ValidatedRir::finish(destination, &context).unwrap();
+        check(&destination, matched);
+
+        let packed = rir
+            .try_pack_candidate(
+                &interner,
+                PackedRirMetadata {
+                    declaration: root,
+                    method_owner: None,
+                },
+                || Ok::<_, std::convert::Infallible>(()),
+                |_slot, span| Ok((span.start, span.end)),
+            )
+            .unwrap();
+        let (decoded, _) = packed
+            .try_decode_validated(
+                PackedRirProjection {
+                    symbol_count: packed.symbol_count(),
+                    file_id: file,
+                    declaration_start: 0,
+                    source_length: 100,
+                },
+                || Ok::<_, std::convert::Infallible>(()),
+            )
+            .unwrap();
+        let decoded_match = decoded
+            .iter()
+            .find_map(|(reference, instruction)| {
+                matches!(instruction.data, InstData::Match { .. }).then_some(reference)
+            })
+            .unwrap();
+        check(&decoded, decoded_match);
+    }
+
+    #[test]
+    fn finish_rejects_unrepresentable_struct_pattern_field_before_iteration() {
+        let symbol = Spur::try_from_usize(0).unwrap();
+        let mut editor = RirEditor::new();
+        let head = editor.add_named_type(symbol).unwrap();
+        let value = editor.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: span(),
+        });
+        editor
+            .add_match(
+                value,
+                &[(
+                    RirPattern::Struct {
+                        local: symbol,
+                        ty: head,
+                        fields: vec![symbol],
+                        span: span(),
+                    },
+                    value,
+                )],
+                span(),
+            )
+            .unwrap();
+        // The arm count occupies word 0, so the record starts at word 1 and its
+        // one field symbol sits at the start of the field section.
+        editor.rir.extra[1 + MATCH_STRUCT_FIELDS_START] = u32::MAX;
+
+        assert_eq!(
+            ValidatedRir::finish(editor, &context()).unwrap_err(),
+            rir_payload_error! {
+                family: RirMatchArmsRange::FAMILY,
+                start: 0,
+                extent: 10,
+                record: Some(0),
+                expected: 9,
+                actual: 9,
+                reason: "symbol word is not representable",
+            }
+        );
+    }
+
     #[test]
     fn finish_rejects_out_of_owner_match_refs_and_context_values() {
         let symbol = Spur::try_from_usize(0).unwrap();

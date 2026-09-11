@@ -18,6 +18,34 @@ impl Parser {
     pub(super) fn at(&self, kind: TokenKind) -> bool {
         self.kind() == kind
     }
+    /// The index of the `)` matching the `(` at token index `open`, if it has
+    /// one. The table behind it is built once, over the whole token stream,
+    /// the first time a head scan needs to look past a group (A.2:2 item 6):
+    /// deciding a group by the token after its `)` then costs one lookup per
+    /// group, so nested groups stay linear in the input.
+    pub(super) fn matching_paren(&mut self, open: usize) -> Option<usize> {
+        if self.paren_close.is_none() {
+            let mut table = vec![u32::MAX; self.tokens.len()];
+            let mut stack: Vec<usize> = Vec::new();
+            for (index, token) in self.tokens.iter().enumerate() {
+                match token.kind {
+                    TokenKind::LParen => stack.push(index),
+                    TokenKind::RParen => {
+                        if let Some(open) = stack.pop() {
+                            table[open] = u32::try_from(index).unwrap_or(u32::MAX);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            self.paren_close = Some(table);
+        }
+        self.paren_close
+            .as_ref()
+            .and_then(|table| table.get(open).copied())
+            .filter(|close| *close != u32::MAX)
+            .map(|close| close as usize)
+    }
     pub(super) fn bump(&mut self) -> Token {
         let token = self.tokens.get(self.cursor).cloned().unwrap_or(Token {
             kind: TokenKind::Eof,

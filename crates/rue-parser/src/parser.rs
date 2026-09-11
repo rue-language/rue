@@ -27,6 +27,11 @@ pub struct Parser {
     /// record `contains_anonymous_type_literal` (RUE-1837); only the difference
     /// across a body matters, so it never needs resetting.
     anonymous_type_literals: usize,
+    /// For each `(` token, the index of its matching `)` (`u32::MAX` when it
+    /// has none). Built once over the whole token stream the first time a
+    /// head scan needs to look past a parenthesised group (A.2:2 item 6), so
+    /// nested groups cost one lookup each instead of one walk each.
+    paren_close: Option<Vec<u32>>,
 }
 struct PrimitiveTypeSpurs {
     i8: Spur,
@@ -162,6 +167,7 @@ impl Parser {
             errors: diagnostics::ParserDiagnostics::default(),
             interner_error,
             anonymous_type_literals: 0,
+            paren_close: None,
         }
     }
 
@@ -186,6 +192,7 @@ impl Parser {
             errors: diagnostics::ParserDiagnostics::default(),
             interner_error,
             anonymous_type_literals: 0,
+            paren_close: None,
         }
     }
 

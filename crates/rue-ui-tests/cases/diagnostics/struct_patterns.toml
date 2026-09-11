@@ -1,7 +1,7 @@
 [section]
 id = "diagnostics.struct_patterns"
 name = "Struct pattern diagnostics"
-description = "Pins the diagnostics of the struct_patterns preview (spec 5.1:18-5.1:21, RUE-1884): the preview gate, the head checks, and the exhaustive field list with its repairs."
+description = "Pins the diagnostics of the struct_patterns preview (spec 5.1:18-5.1:21, RUE-1884; 4.7:42-4.7:44 in match arms, RUE-2175): the preview gate, the head checks, the exhaustive field list with its repairs, and the irrefutable arm."
 
 [[case]]
 name = "struct_pattern_without_preview_names_the_flag"
@@ -106,3 +106,104 @@ fn main() -> i32 {
 exit_code = 1
 warning_contains = ["unused variable", "'y'"]
 expected_warning_count = 1
+
+[[case]]
+name = "match_arm_struct_pattern_without_preview_names_the_flag"
+source = """
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let p = Point { x: 40, y: 2 };
+    match p {
+        Point { x, y } => x + y,
+    }
+}
+"""
+compile_fail = true
+error_contains = [
+    "[E1100]",
+    "struct patterns requires preview feature `struct_patterns`",
+    "use --preview struct_patterns to enable this feature (ADR-0091)",
+]
+
+[[case]]
+name = "arm_after_a_struct_pattern_is_unreachable"
+preview = "struct_patterns"
+source = """
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let p = Point { x: 40, y: 2 };
+    match p {
+        Point { x, y } => x + y,
+        _ => 0,
+    }
+}
+"""
+exit_code = 42
+warning_contains = [
+    "unreachable pattern '_'",
+    "previous struct pattern here",
+    "this pattern will never be matched because the struct pattern above matches every value",
+]
+
+[[case]]
+name = "struct_pattern_after_a_wildcard_is_spelled_in_the_warning"
+preview = "struct_patterns"
+source = """
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let p = Point { x: 40, y: 2 };
+    match p {
+        _ => 42,
+        Point { x, y } => x + y,
+    }
+}
+"""
+exit_code = 42
+warning_contains = [
+    "unreachable pattern 'Point { x, y }'",
+    "previous wildcard pattern here",
+]
+
+[[case]]
+name = "payload_struct_pattern_names_the_field_type_and_the_repair"
+preview = "struct_patterns"
+source = """
+struct Point { x: i32, y: i32 }
+enum R { Ok(i32), Err(i32) }
+
+fn main() -> i32 {
+    let r = R.Ok(1);
+    match r {
+        R.Ok(Point { x, y }) => x + y,
+        R.Err(e) => e,
+    }
+}
+"""
+compile_fail = true
+error_contains = [
+    "[E0206]",
+    "type mismatch: expected Point, found i32",
+    "the pattern head must name the matched value's own struct type",
+]
+
+[[case]]
+name = "struct_scrutinee_without_a_struct_pattern_is_not_matchable"
+preview = "struct_patterns"
+source = """
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let p = Point { x: 1, y: 2 };
+    match p {
+        _ => 3,
+    }
+}
+"""
+compile_fail = true
+error_contains = [
+    "[E0602]",
+    "cannot match on type 'Point', expected integer, bool, or enum",
+]

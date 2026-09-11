@@ -195,11 +195,45 @@ impl Parser {
                 let span = self.bump().span;
                 Ok(Pattern::Bool(BoolLit { value, span }))
             }
+            // A struct pattern's head is a type followed by `{`; a variant
+            // pattern's head is a path followed by `=>` or a payload list. One
+            // scan over the head decides which grammar the name starts
+            // (spec 4.7:2).
+            TokenKind::Ident(_) if self.struct_pattern_ahead() => self
+                .struct_pattern()
+                .map(|pattern| Pattern::Struct(Box::new(pattern))),
             TokenKind::Ident(_) => self.path_pattern(start),
             _ => {
                 self.error("expected pattern");
                 Err(())
             }
+        }
+    }
+
+    /// With the cursor at an identifier, report whether the tokens ahead spell
+    /// a struct pattern head: a type path (`Point`, `m.Point`), optionally
+    /// applied to constructor arguments (`Pair(i32)`), followed by `{`. A
+    /// variant pattern's head ends in `=>`, `,`, `)` or a payload list
+    /// instead, so the scan never commits to the wrong grammar (RUE-2175).
+    fn struct_pattern_ahead(&mut self) -> bool {
+        debug_assert!(matches!(self.kind(), TokenKind::Ident(_)));
+        let mut cursor = self.cursor + 1;
+        loop {
+            if self.nth(cursor - self.cursor) == TokenKind::LParen {
+                let Some(close) = self.matching_paren(cursor) else {
+                    return false;
+                };
+                cursor = close + 1;
+            }
+            let kind = self.nth(cursor - self.cursor);
+            if kind != TokenKind::Dot {
+                return kind == TokenKind::LBrace;
+            }
+            cursor += 1;
+            if !matches!(self.nth(cursor - self.cursor), TokenKind::Ident(_)) {
+                return false;
+            }
+            cursor += 1;
         }
     }
 
@@ -242,7 +276,8 @@ impl Parser {
     }
 
     /// One payload position of a tuple-variant pattern: a binder, the `_`
-    /// discard, or a nested variant pattern (RUE-2053). A nested pattern is
+    /// discard, a nested variant pattern (RUE-2053), or a struct pattern over
+    /// the payload field (RUE-2175). A nested pattern is
     /// parsed by the same `path_pattern` this method is called from — the
     /// pattern grammar has exactly one path parser (RUE-1988), so a payload
     /// position accepts every head form a top-level pattern accepts
@@ -254,6 +289,11 @@ impl Parser {
                 name: self.syms.underscore,
                 span,
             }));
+        }
+        if matches!(self.kind(), TokenKind::Ident(_)) && self.struct_pattern_ahead() {
+            return self
+                .struct_pattern()
+                .map(|pattern| PatternElement::Struct(Box::new(pattern)));
         }
         // A binder is a lone identifier, so the position is a nested pattern
         // exactly when the identifier continues into a path (`E.A`) or a
@@ -304,8 +344,9 @@ impl Parser {
     }
 
     /// One struct pattern: `struct_pattern = type "{" [ field_patterns ] "}"`
-    /// (spec 5.1:18). The head is parsed by the canonical type parser, so a
-    /// pattern names its struct exactly as a `let` annotation would.
+    /// (spec 5.1:18, and 4.7:42 in a match arm). The head is parsed by the
+    /// canonical type parser, so a pattern names its struct exactly as a `let`
+    /// annotation would.
     fn struct_pattern(&mut self) -> PResult<StructPattern> {
         let start = self.start();
         let ty = self.ty()?;
@@ -847,5 +888,103 @@ mod tests {
             parse_errors("fn f(x: i32) -> i32 { match x { Color => 0 } }").first(),
             Some(&"expected '.', found '=>'".to_owned())
         );
+    }
+
+    /// The first arm's pattern of the match a function body ends in.
+    fn first_arm(source: &str) -> Pattern {
+        let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
+        let (ast, _) = Parser::new(tokens, interner).parse().unwrap();
+        let Item::Function(function) = &ast.items[0] else {
+            panic!("expected a function item");
+        };
+        let Expr::Block(body) = &function.body else {
+            panic!("expected a block body");
+        };
+        let Expr::Match(match_expr) = &*body.expr else {
+            panic!("expected a match expression, got {:?}", body.expr);
+        };
+        match_expr.arms[0].pattern.clone()
+    }
+
+    /// A struct pattern in arm position (RUE-2175) carries every field form
+    /// a let pattern does: shorthand, rename, `mut`, and `_`.
+    #[test]
+    fn match_arm_accepts_a_struct_pattern() {
+        let Pattern::Struct(pattern) =
+            first_arm("fn f(p: P) -> i32 { match p { Point { x, y: py, mut z, w: _ } => 1 } }")
+        else {
+            panic!("expected a struct pattern");
+        };
+        assert_eq!(pattern.fields.len(), 4);
+        assert!(matches!(
+            pattern.fields[1].binding,
+            StructPatternBinding::Ident { is_mut: false, .. }
+        ));
+        assert!(matches!(
+            pattern.fields[2].binding,
+            StructPatternBinding::Ident { is_mut: true, .. }
+        ));
+        assert!(matches!(
+            pattern.fields[3].binding,
+            StructPatternBinding::Wildcard(_)
+        ));
+    }
+
+    /// The head takes every form a type does; the scan that tells a struct
+    /// pattern from a variant pattern looks past the path and any constructor
+    /// arguments to the `{`.
+    #[test]
+    fn struct_pattern_heads_take_every_type_form() {
+        for source in [
+            "fn f(p: P) -> i32 { match p { m.Point { x } => 1 } }",
+            "fn f(p: P) -> i32 { match p { Pair(i32) { a, b } => 1 } }",
+            "fn f(p: P) -> i32 { match p { m.Pair(i32, E) { a, b } => 1 } }",
+            "fn f(p: P) -> i32 { match p { Empty {} => 1 } }",
+        ] {
+            assert!(matches!(first_arm(source), Pattern::Struct(_)), "{source}");
+        }
+    }
+
+    /// A variant pattern keeps its grammar whatever head form it takes: the
+    /// struct-pattern scan commits only on a `{`.
+    #[test]
+    fn variant_patterns_are_not_mistaken_for_struct_patterns() {
+        for source in [
+            "fn f(r: R) -> i32 { match r { Color.Red => 1 } }",
+            "fn f(r: R) -> i32 { match r { m.Color.Red => 1 } }",
+            "fn f(r: R) -> i32 { match r { Result(i32, E).Ok(v) => 1 } }",
+            "fn f(r: R) -> i32 { match r { m.Result(i32, E).Ok(v) => 1 } }",
+            "fn f(r: R) -> i32 { match r { R.Ok(v) => { 1 } } }",
+        ] {
+            assert!(matches!(first_arm(source), Pattern::Path(_)), "{source}");
+        }
+    }
+
+    /// A payload position holds a struct pattern (RUE-2175) alongside the
+    /// binder, discard and nested-variant forms.
+    #[test]
+    fn payload_positions_accept_struct_patterns() {
+        let Pattern::Path(pattern) = first_arm(
+            "fn f(r: R) -> i32 { match r { R.Ok(Point { x, y }, _, E.A(b), m.Pair(i32) { a, b }) => 1 } }",
+        ) else {
+            panic!("expected a path pattern");
+        };
+        assert_eq!(pattern.elements.len(), 4);
+        assert!(matches!(pattern.elements[0], PatternElement::Struct(_)));
+        assert!(matches!(pattern.elements[1], PatternElement::Binding(_)));
+        assert!(matches!(pattern.elements[2], PatternElement::Nested(_)));
+        assert!(matches!(pattern.elements[3], PatternElement::Struct(_)));
+    }
+
+    /// A struct pattern's fields are binders only: nesting a pattern inside a
+    /// field position is not part of the grammar.
+    #[test]
+    fn struct_pattern_fields_do_not_nest() {
+        assert!(!parses(
+            "fn f(p: P) -> i32 { match p { Line { a: Point { x, y }, b } => 1 } }"
+        ));
+        assert!(!parses(
+            "fn f(p: P) -> i32 { match p { Cell { c: Color.Red } => 1 } }"
+        ));
     }
 }

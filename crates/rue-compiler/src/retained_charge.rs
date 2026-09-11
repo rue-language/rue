@@ -104,11 +104,17 @@ fn block_charge(block: &ast::BlockExpr) -> u64 {
 fn pattern_charge(pattern: &ast::Pattern) -> u64 {
     match pattern {
         ast::Pattern::Path(path) => path_pattern_charge(path),
+        ast::Pattern::Struct(pattern) => boxed_charge(pattern, struct_pattern_charge),
         ast::Pattern::Wildcard(_)
         | ast::Pattern::Int(_)
         | ast::Pattern::NegInt(_)
         | ast::Pattern::Bool(_) => 0,
     }
+}
+
+/// A struct pattern (RUE-2175) owns its head type and its field list.
+fn struct_pattern_charge(pattern: &ast::StructPattern) -> u64 {
+    type_charge(&pattern.ty).saturating_add(owned_slice_charge(&pattern.fields, |_| 0))
 }
 
 fn path_pattern_charge(path: &ast::PathPattern) -> u64 {
@@ -127,6 +133,9 @@ fn path_pattern_charge(path: &ast::PathPattern) -> u64 {
             |element| match element {
                 ast::PatternElement::Binding(_) => 0,
                 ast::PatternElement::Nested(nested) => path_pattern_charge(nested),
+                ast::PatternElement::Struct(pattern) => {
+                    boxed_charge(pattern, struct_pattern_charge)
+                }
             },
         ))
 }
