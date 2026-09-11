@@ -102,6 +102,38 @@ source = "fn update(value: i32) -> i32 { value }\nfn update(inout value: i32) ->
 compile_fail = true
 error_contains = ["E0436", "update"]
 
+# A parameter declaration has no default value (6.1:45): `= expr` after the
+# parameter type is a syntax error that names the rule, in a function, a
+# method, and an extern declaration alike.
+
+[[case]]
+name = "default_argument_value_rejected"
+spec = ["6.1:45"]
+source = "fn connect(host: i32, timeout: i32 = 30) -> i32 { host + timeout }\nfn main() -> i32 { connect(1) }"
+compile_fail = true
+error_contains = ["Rue has no default arguments"]
+
+[[case]]
+name = "default_argument_value_on_method_rejected"
+spec = ["6.1:45"]
+source = "struct Counter {\n    value: i32,\n\n    fn bump(self, by: i32 = 1) -> i32 { self.value + by }\n}\nfn main() -> i32 { 0 }"
+compile_fail = true
+error_contains = ["Rue has no default arguments"]
+
+[[case]]
+name = "default_argument_value_on_extern_rejected"
+spec = ["6.1:45"]
+source = "extern \"C\" {\n    fn abs(value: i32 = 0) -> i32;\n}\nfn main() -> i32 { 0 }"
+compile_fail = true
+error_contains = ["Rue has no default arguments"]
+
+[[case]]
+name = "distinct_names_replace_default_arguments"
+spec = ["6.1:45"]
+description = "The idiom that replaces a default: one name per arity, each call spelling every argument"
+source = "fn connect_with(host: i32, timeout: i32) -> i32 { host + timeout }\nfn connect(host: i32) -> i32 { connect_with(host, 30) }\nfn main() -> i32 { connect(12) }"
+exit_code = 42
+
 # =============================================================================
 # Function parameters
 # =============================================================================

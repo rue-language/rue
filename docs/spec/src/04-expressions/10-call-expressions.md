@@ -30,7 +30,8 @@ An `inout` argument must denote a place; that requirement is a post-parse legali
 {{ rule(id="4.10:3", cat="legality-rule") }}
 
 The number of arguments **MUST** match the number of parameters in the
-function signature. Each explicit argument's source-level passing mode
+function signature; a parameter has no default value that an omitted argument
+could take (6.1:45). Each explicit argument's source-level passing mode
 **MUST** exactly match the corresponding parameter: an `inout` parameter
 requires an `inout` argument, a `borrow` parameter requires a `borrow`
 argument, and every other parameter, including a `comptime` parameter,

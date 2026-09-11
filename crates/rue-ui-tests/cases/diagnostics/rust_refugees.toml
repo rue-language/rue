@@ -11,7 +11,7 @@
 [section]
 id = "diagnostics.rust_refugees"
 name = "Rust-refugee diagnostics"
-description = "Targeted errors for Rust-isms: `as` casts and `impl` blocks."
+description = "Targeted errors for Rust-isms and other-language habits: `as` casts, `impl` blocks, and default arguments."
 
 [[case]]
 name = "as_cast_targeted_error"
@@ -85,3 +85,18 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["Rue has no `impl` blocks"]
+
+[[case]]
+name = "default_argument_hint"
+description = """
+RUE-1904 / ADR-0094: Rue has no default arguments. `fn f(x: i32 = 3)` is habit
+from Python, C++, Kotlin, and Swift; it used to die at the `=` with an opaque
+"expected ')'". The diagnostic must name the rule and the alternatives (spell
+the argument at each call, or give the common case a distinct function name).
+"""
+source = """
+fn connect(host: i32, timeout: i32 = 30) -> i32 { host + timeout }
+fn main() -> i32 { connect(1) }
+"""
+compile_fail = true
+error_contains = ["Rue has no default arguments", "distinct name"]

@@ -43,7 +43,7 @@ exit_code = 42
 name = "too_few_arguments"
 error_contains = "[E0207]"
 expected_error_code = "E0207"
-spec = ["4.10:3"]
+spec = ["4.10:3", "6.1:45"]
 source = """
 fn add(x: i32, y: i32) -> i32 { x + y }
 fn main() -> i32 { add(42) }
