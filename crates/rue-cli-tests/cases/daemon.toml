@@ -31,9 +31,9 @@ description = "start launches once and then finds the running service; status re
 files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }\n" }]
 daemon = { steps = [
   { args = ["daemon", "start", "--idle-timeout-ms", "60000"], exit_code = 0, stdout_contains = ["rue daemon: started service pid"] },
-  { args = ["daemon", "status"], exit_code = 0, stdout_contains = ["rue daemon: running", "  protocol: 1", "  active request: none", "  retained hosts: 0", "  idle timeout: 60000 ms", "  isolation: none"] },
+  { args = ["daemon", "status"], exit_code = 0, stdout_contains = ["rue daemon: running", "  protocol: 2", "  active request: none", "  retained hosts: 0", "  idle timeout: 60000 ms", "  isolation: none", "  resource policy: connections 1/33; queued 0/8; hosts 0/1", "  source snapshot: 0 files, 0 bytes"] },
   { args = ["daemon", "start", "--idle-timeout-ms", "60000"], exit_code = 0, stdout_contains = ["is already running for"], stdout_not_contains = ["started service"] },
-  { args = ["daemon", "status", "--json"], exit_code = 0, stdout_contains = ["\"protocol_version\":1", "\"retained_hosts\":0", "\"service_hex\":"] },
+  { args = ["daemon", "status", "--json"], exit_code = 0, stdout_contains = ["\"protocol_version\":2", "\"retained_hosts\":0", "\"service_hex\":", "\"max_connections\":33", "\"max_queued_requests\":8", "\"peak_retained_charge_bytes\":0", "\"peak_response_bytes\":0"] },
   { args = ["daemon", "stop"], exit_code = 0, stdout_contains = ["rue daemon: stopped service pid"] },
   { args = ["daemon", "status"], exit_code = 1, stderr_contains = ["no service is running for"] },
   { args = ["daemon", "stop"], exit_code = 0, stdout_contains = ["no service was running for"] },

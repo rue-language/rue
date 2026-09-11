@@ -1021,9 +1021,8 @@ fn read_frame_deadline<T: serde::de::DeserializeOwned>(
     let deadline = Instant::now() + timeout;
     let result = (|| {
         let mut header = [0u8; 4];
-        match read_part(stream, &mut header, deadline)? {
-            false => return Ok(None),
-            true => {}
+        if !read_part(stream, &mut header, deadline)? {
+            return Ok(None);
         }
         let announced = u32::from_be_bytes(header) as usize;
         if announced > limit {
@@ -1156,9 +1155,7 @@ fn write_encoded_frame_with_timeout(
     let deadline = Instant::now() + timeout;
     let result = write_encoded_frame_deadline(stream, body, deadline);
     let restore = stream.set_nonblocking(false);
-    if let Err(error) = restore {
-        return Err(error);
-    }
+    restore?;
     result
 }
 
