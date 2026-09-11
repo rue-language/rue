@@ -91,3 +91,175 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 6
+
+[[case]]
+name = "joined_array_field_read_keeps_declared_width"
+description = "RUE-1778: an array element selected from an if join retains its struct field type before comparing the literal."
+files = [{ path = "main.rue", source = """
+struct T { aux: u64 }
+fn a() -> T { T { aux: 4294967297 } }
+fn b() -> T { T { aux: 2 } }
+fn main() -> i32 {
+    let arr = if true { [a()] } else { [b()] };
+    let n = arr[0];
+    if n.aux == 4294967297 { 1 } else { 0 }
+}
+""" }]
+exit_code = 1
+
+[[case]]
+name = "joined_nested_field_comparison_does_not_truncate"
+description = "A match-selected array element keeps nested field widths in both comparison orders and uncontextualized cast operands."
+files = [{ path = "main.rue", source = """
+struct Inner { value: u64 }
+struct Outer { inner: Inner }
+fn make() -> Outer { Outer { inner: Inner { value: 4294967297 } } }
+fn check(c: bool) -> i32 {
+    let arr = match c { true => [make()], false => [make()] };
+    let n = arr[0];
+    if 1 == n.inner.value { return 1; }
+    if n.inner.value != 4294967297 { return 2; }
+    @intCast(n.inner.value - 4294967297)
+}
+fn main() -> i32 { check(true) + check(false) }
+""" }]
+exit_code = 0
+
+[[case]]
+name = "joined_field_and_index_assignments_keep_context"
+description = "Deferred field stores contextualize integer literals for floats; indexed stores retain the array element width."
+files = [{ path = "main.rue", source = """
+struct T { wide: u64, fraction: f64, data: [u64; 1] }
+fn make() -> T { T { wide: 0, fraction: 0.0, data: [0] } }
+fn check(c: bool) -> i32 {
+    let arr = if c { [make()] } else { [make()] };
+    let mut n = arr[0];
+    n.wide = 4294967297;
+    n.fraction = 3;
+    n.data[0] = 4294967297;
+    if n.wide == 4294967297 && n.fraction == 3.0 && n.data[0] == 4294967297 { 0 } else { 1 }
+}
+fn main() -> i32 { check(true) + check(false) }
+""" }]
+exit_code = 0
+
+[[case]]
+name = "joined_field_assignment_rejects_out_of_range_literal"
+files = [{ path = "main.rue", source = """
+struct T { value: u8 }
+fn make() -> T { T { value: 1 } }
+fn main() -> i32 {
+    let arr = if true { [make()] } else { [make()] };
+    let mut n = arr[0];
+    n.value = 300;
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0800", "300", "u8"]
+
+[[case]]
+name = "joined_field_annotation_preserves_expected_and_found"
+files = [{ path = "main.rue", source = """
+struct T { value: u64 }
+fn make() -> T { T { value: 1 } }
+fn main() -> i32 {
+    let arr = if true { [make()] } else { [make()] };
+    let result: i32 = arr[0].value;
+    result
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206", "expected i32, found u64"]
+
+[[case]]
+name = "joined_field_missing_member_preserves_diagnostic"
+files = [{ path = "main.rue", source = """
+struct T { value: u64 }
+fn make() -> T { T { value: 1 } }
+fn main() -> i32 {
+    let arr = if true { [make()] } else { [make()] };
+    arr[0].missing;
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0401", "missing"]
+
+[[case]]
+name = "joined_field_numeric_predicate_sees_resolved_type"
+files = [{ path = "main.rue", source = """
+struct T { value: u64 }
+fn make() -> T { T { value: 1 } }
+fn main() -> i32 {
+    let arr = if true { [make()] } else { [make()] };
+    let invalid = -arr[0].value;
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0801", "u64"]
+
+[[case]]
+name = "joined_fixed_string_fields_contextualize_literals"
+files = [{ path = "main.rue", source = """
+struct T { text: Str(8), items: [Str(8); 1] }
+fn make() -> T { T { text: "hello", items: ["a"] } }
+fn check(c: bool) -> i32 {
+    let arr = if c { [make()] } else { [make()] };
+    let mut n = arr[0];
+    n.text = "abc";
+    n.items = ["b"];
+    if n.text == "abc" && n.items[0] == "b" { 0 } else { 1 }
+}
+fn main() -> i32 { check(true) + check(false) }
+""" }]
+exit_code = 0
+
+[[case]]
+name = "joined_fixed_string_field_rejects_non_string"
+files = [{ path = "main.rue", source = """
+struct T { text: Str(8) }
+fn make() -> T { T { text: "hello" } }
+fn main() -> i32 {
+    let arr = if true { [make()] } else { [make()] };
+    let mut n = arr[0];
+    n.text = true;
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206", "bool"]
+
+[[case]]
+name = "joined_string_buffer_index_keeps_byte_width"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn make() -> StrBuf { "A" }
+fn check(c: bool) -> i32 {
+    let arr = if c { [make()] } else { [make()] };
+    let text = arr[0];
+    if text[0] + 1 == 66 { 0 } else { 1 }
+}
+fn main() -> i32 { check(true) + check(false) }
+""" }]
+exit_code = 0
+
+[[case]]
+name = "joined_field_method_result_width"
+description = "Deferred method signatures remain a separate inference obligation after field and element projections resolve."
+known_bug = "RUE-2172"
+files = [{ path = "main.rue", source = """
+struct Inner { fn get(self) -> u64 { 4294967297 } }
+struct T { inner: Inner }
+fn make() -> T { T { inner: Inner {} } }
+fn check(c: bool) -> i32 {
+    let arr = if c { [make()] } else { [make()] };
+    let n = arr[0];
+    if 1 == n.inner.get() { 1 } else { 0 }
+}
+fn main() -> i32 { check(true) }
+""" }]
+exit_code = 0

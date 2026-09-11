@@ -828,28 +828,6 @@ impl<'a> ConstraintGenerator<'a> {
         arg_count == 0 && self.interner.resolve(&method) == "len"
     }
 
-    /// Whether an already-known operand is one of Rue's packed string types.
-    /// String indexing is lowered by semantic analysis to a byte read, so its
-    /// result is always `u8`, unlike an array index whose element type comes
-    /// from the array itself. String literals are admitted here too: their
-    /// contextual type is finalized later, but indexing one has the same
-    /// result type regardless of whether it becomes `str` or `StrBuf`.
-    fn is_string_indexable_type(&self, ty: &InferType) -> bool {
-        if self.is_string_concrete(ty) || self.is_string_literal_candidate(ty) {
-            return true;
-        }
-        let InferType::Concrete(t) = ty else {
-            return false;
-        };
-        let Some(id) = t.as_struct() else {
-            return false;
-        };
-        matches!(
-            self.type_pool.text_view_kind(id),
-            Some(crate::types::TextViewKind::Str | crate::types::TextViewKind::StrFixed(_))
-        )
-    }
-
     /// The pointee of a pointer operand whose type is *already* concrete at
     /// constraint-generation time — an annotated binding, a parameter, or a
     /// pointer-returning intrinsic whose result was published by this pass.
@@ -1004,20 +982,7 @@ impl<'a> ConstraintGenerator<'a> {
     /// mixed-width AIR the operator-agreement check in `inst.rs` rejects
     /// (RUE-1636 family; the check found this producer).
     fn concrete_element_type(&self, ty: &InferType) -> Option<Type> {
-        let ty = ty.as_concrete()?;
-        if let Some(array_id) = ty.as_array() {
-            return Some(self.type_pool.array_def(array_id).0);
-        }
-        let id = ty.as_struct()?;
-        // `str`/`Str(N)` share the view representation but index as bytes;
-        // `is_string_indexable_type` answers those before this is consulted.
-        if self.type_pool.text_view_kind(id) != Some(crate::types::TextViewKind::Slice) {
-            return None;
-        }
-        match self.type_pool.struct_def(id).fields.first()?.ty.kind() {
-            TypeKind::PtrConst(ptr_id) => Some(self.type_pool.ptr_const_def(ptr_id)),
-            _ => None,
-        }
+        self.type_pool.index_element_type(ty.as_concrete()?)
     }
 
     /// Provide file-level constant types (name -> declared type) for `VarRef`
@@ -1459,6 +1424,22 @@ impl<'a> ConstraintGenerator<'a> {
             Constraint::Equal(lhs, rhs, _) | Constraint::ContextualEqual(lhs, rhs, _) => {
                 record_type(&mut self.fixed_string_types, self.type_pool, lhs);
                 record_type(&mut self.fixed_string_types, self.type_pool, rhs);
+            }
+            Constraint::FieldGet { base, result, .. } => {
+                record_type(&mut self.fixed_string_types, self.type_pool, base);
+                record_type(&mut self.fixed_string_types, self.type_pool, result);
+            }
+            Constraint::FieldSet { base, value, .. } => {
+                record_type(&mut self.fixed_string_types, self.type_pool, base);
+                record_type(&mut self.fixed_string_types, self.type_pool, value);
+            }
+            Constraint::IndexGet { base, result, .. } => {
+                record_type(&mut self.fixed_string_types, self.type_pool, base);
+                record_type(&mut self.fixed_string_types, self.type_pool, result);
+            }
+            Constraint::IndexSet { base, value, .. } => {
+                record_type(&mut self.fixed_string_types, self.type_pool, base);
+                record_type(&mut self.fixed_string_types, self.type_pool, value);
             }
             Constraint::IsInteger(ty, _)
             | Constraint::IsNumeric(ty, _)
@@ -3051,8 +3032,10 @@ impl<'a> ConstraintGenerator<'a> {
                 // constraints see the real type instead of a free variable.
                 // This prevents literal defaulting from overriding the field
                 // width and gives method calls the concrete receiver they
-                // require. When the base is still a variable, fall back to a
-                // fresh var; sema resolves and diagnoses later.
+                // require. When the base is still a variable, retain a field
+                // obligation for the solver to discharge after joined bases
+                // resolve. A fresh result variable remains the representation
+                // used by all downstream constraints.
                 // (RUE-89, RUE-126)
                 match self.known_field_type(&base_info.ty, *field) {
                     Some(field_ty) => self.type_to_infer(field_ty),
@@ -3110,7 +3093,18 @@ impl<'a> ConstraintGenerator<'a> {
                         };
                         match member_nominal_ty.or(member_const_ty).or(member_module_ty) {
                             Some(member_ty) => self.type_to_infer(member_ty),
-                            None => InferType::Var(self.fresh_var()),
+                            None => {
+                                let result = InferType::Var(self.fresh_var());
+                                if !matches!(base_info.ty, InferType::Concrete(_)) {
+                                    self.add_constraint(Constraint::FieldGet {
+                                        base: base_info.ty,
+                                        field: *field,
+                                        result: result.clone(),
+                                        span,
+                                    });
+                                }
+                                result
+                            }
                         }
                     }
                 }
@@ -3140,6 +3134,13 @@ impl<'a> ConstraintGenerator<'a> {
                             value_info.span,
                         ));
                     }
+                } else if !matches!(base_info.ty, InferType::Concrete(_)) && value_info.continues {
+                    self.add_constraint(Constraint::FieldSet {
+                        base: base_info.ty,
+                        field: *field,
+                        value: value_info.ty,
+                        span: value_info.span,
+                    });
                 }
                 InferType::Concrete(Type::UNIT)
             }
@@ -3244,7 +3245,7 @@ impl<'a> ConstraintGenerator<'a> {
                 // Extract element type from array type.
                 // If base is InferType::Array, we can get the element type directly.
                 // Otherwise, we need a fresh variable that will be resolved later.
-                if self.is_string_indexable_type(&base_info.ty) {
+                if self.is_string_literal_candidate(&base_info.ty) {
                     InferType::Concrete(Type::U8)
                 } else {
                     match &base_info.ty {
@@ -3257,9 +3258,15 @@ impl<'a> ConstraintGenerator<'a> {
                             Some(element_type) => self.type_to_infer(element_type),
                             None => {
                                 // Base might be a type variable that will resolve to an array.
-                                // Use a fresh variable for the element type.
-                                let result_var = self.fresh_var();
-                                InferType::Var(result_var)
+                                // Use a fresh variable and defer the structural
+                                // element projection until the base resolves.
+                                let result = InferType::Var(self.fresh_var());
+                                self.add_constraint(Constraint::IndexGet {
+                                    base: base_info.ty.clone(),
+                                    result: result.clone(),
+                                    span: index_info.span,
+                                });
+                                result
                             }
                         },
                     }
@@ -3300,6 +3307,12 @@ impl<'a> ConstraintGenerator<'a> {
                             value_info.span,
                         ));
                     }
+                } else if !matches!(base_info.ty, InferType::Concrete(_)) && value_info.continues {
+                    self.add_constraint(Constraint::IndexSet {
+                        base: base_info.ty.clone(),
+                        value: value_info.ty,
+                        span: value_info.span,
+                    });
                 }
 
                 InferType::Concrete(Type::UNIT)
@@ -5621,12 +5634,14 @@ mod tests {
 
         // Result is a type variable (element type unknown)
         assert!(info.ty.is_var());
-        // Should generate 1 constraint: index must be an integer (spec 7.1:7)
-        assert_eq!(cgen.constraints().len(), 1);
+        // The index must be an integer, and the unresolved base's element
+        // projection is discharged after the base type is known.
+        assert_eq!(cgen.constraints().len(), 2);
         match &cgen.constraints()[0] {
             Constraint::IsInteger(_, _) => {}
             _ => panic!("Expected IsInteger constraint for index"),
         }
+        assert!(matches!(cgen.constraints()[1], Constraint::IndexGet { .. }));
     }
 
     #[test]
@@ -5665,12 +5680,14 @@ mod tests {
 
         // Index assignment produces Unit
         assert_eq!(info.ty, InferType::Concrete(Type::UNIT));
-        // Should generate 1 constraint: index must be an integer (spec 7.1:7)
-        assert_eq!(cgen.constraints().len(), 1);
+        // The index must be an integer, and an unresolved base retains a
+        // deferred element-store obligation.
+        assert_eq!(cgen.constraints().len(), 2);
         match &cgen.constraints()[0] {
             Constraint::IsInteger(_, _) => {}
             _ => panic!("Expected IsInteger constraint for index"),
         }
+        assert!(matches!(cgen.constraints()[1], Constraint::IndexSet { .. }));
     }
 
     #[test]

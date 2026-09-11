@@ -903,13 +903,43 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         string_literal_types.dedup();
         unifier.mark_string_literal_vars(&string_literal_vars, &string_literal_types);
         let equivalence_queries = std::cell::Cell::new(0usize);
-        let errors = unifier.solve_constraints_with(&constraints, &|left, right| {
-            if left == right {
-                return true;
-            }
-            equivalence_queries.set(equivalence_queries.get() + 1);
-            self.types_equivalent(left, right)
-        });
+        let errors = unifier.solve_constraints_with_projections(
+            &constraints,
+            &|left, right| {
+                if left == right {
+                    return true;
+                }
+                equivalence_queries.set(equivalence_queries.get() + 1);
+                self.types_equivalent(left, right)
+            },
+            &|base, field| {
+                let InferType::Concrete(base) = base else {
+                    return None;
+                };
+                let struct_id = base.as_struct()?;
+                let field_name = self.body_interner().resolve(&field);
+                let field_ty = self
+                    .body_type_pool()
+                    .struct_def(struct_id)
+                    .find_field(field_name)
+                    .map(|(_, field)| field.ty)?;
+                Some(self.type_to_infer_type(field_ty))
+            },
+            &|base| match base {
+                InferType::Array { element, .. } => Some((**element).clone()),
+                InferType::Concrete(ty) => self
+                    .body_type_pool()
+                    .index_element_type(*ty)
+                    .map(|ty| self.type_to_infer_type(ty)),
+                _ => None,
+            },
+            &|ty| {
+                let InferType::Concrete(ty) = ty else {
+                    return false;
+                };
+                self.is_strbuf(*ty) || self.is_str_like(*ty)
+            },
+        );
         self.body_analysis_work_mut()
             .semantic_type_equivalence_queries += equivalence_queries.get();
 
