@@ -227,6 +227,19 @@ pub enum SemanticImportAggregateKind<K, M> {
 pub const MAX_COMPTIME_VALUE_DEPTH: usize = 64;
 pub const MAX_COMPTIME_VALUE_NODES: usize = 4096;
 
+fn semantic_import_const_children<K, M>(
+    value: &SemanticImportConstValue<K, M>,
+) -> &[SemanticImportConstValue<K, M>] {
+    match value {
+        SemanticImportConstValue::Aggregate(aggregate) => match &aggregate.kind {
+            SemanticImportAggregateKind::Struct(values)
+            | SemanticImportAggregateKind::Array(values) => values,
+            SemanticImportAggregateKind::Enum { payload, .. } => payload,
+        },
+        _ => &[],
+    }
+}
+
 pub fn semantic_import_const_value_within_limits<K, M>(
     value: &SemanticImportConstValue<K, M>,
 ) -> bool {
@@ -234,14 +247,7 @@ pub fn semantic_import_const_value_within_limits<K, M>(
         std::slice::from_ref(value),
         0,
         &mut 0,
-        &|value| match value {
-            SemanticImportConstValue::Aggregate(aggregate) => match &aggregate.kind {
-                SemanticImportAggregateKind::Struct(values)
-                | SemanticImportAggregateKind::Array(values) => values,
-                SemanticImportAggregateKind::Enum { payload, .. } => payload,
-            },
-            _ => &[],
-        },
+        &semantic_import_const_children,
     )
 }
 
@@ -249,18 +255,33 @@ pub fn semantic_import_const_value_within_limits<K, M>(
 pub fn semantic_import_const_values_within_limits<K, M>(
     values: &[SemanticImportConstValue<K, M>],
 ) -> bool {
-    // The caller is about to wrap these children in one aggregate node.
+    // These are independent roots in an argument vector. The aggregate
+    // constructor helpers use the sibling function below when these values
+    // are about to become children of a new aggregate node.
+    crate::semantic_identity::comptime_values_within_limits(
+        values,
+        0,
+        &mut 0,
+        &semantic_import_const_children,
+    )
+}
+
+/// Check values that are about to be wrapped in one aggregate node.
+///
+/// The synthetic wrapper is part of the value shape, so reserve its node and
+/// depth before visiting the children. Argument-vector callers must use
+/// [`semantic_import_const_values_within_limits`] instead.
+#[allow(dead_code)] // consumed by compiler durable projection
+pub fn semantic_import_const_children_within_limits<K, M>(
+    values: &[SemanticImportConstValue<K, M>],
+) -> bool {
     let mut nodes = 1;
-    crate::semantic_identity::comptime_values_within_limits(values, 1, &mut nodes, &|value| {
-        match value {
-            SemanticImportConstValue::Aggregate(aggregate) => match &aggregate.kind {
-                SemanticImportAggregateKind::Struct(values)
-                | SemanticImportAggregateKind::Array(values) => values,
-                SemanticImportAggregateKind::Enum { payload, .. } => payload,
-            },
-            _ => &[],
-        }
-    })
+    crate::semantic_identity::comptime_values_within_limits(
+        values,
+        1,
+        &mut nodes,
+        &semantic_import_const_children,
+    )
 }
 
 macro_rules! semantic_import_const_schema {
@@ -2490,7 +2511,7 @@ where
         if !Arc::ptr_eq(&value.epoch, &self.epoch) {
             return Err(SemanticImportFailure::ForeignLocalValue);
         }
-        Ok(self.export_const_value_local(&value.value)?)
+        self.export_const_value_local(&value.value)
     }
 
     fn export_const_value_local(
@@ -2795,6 +2816,63 @@ mod tests {
             is_non_exhaustive: false,
             lang_item: None,
         }
+    }
+
+    fn array_value(
+        values: Vec<SemanticImportConstValue<(), ()>>,
+    ) -> SemanticImportConstValue<(), ()> {
+        let len = values.len() as u64;
+        SemanticImportConstValue::Aggregate(Arc::new(SemanticImportAggregate {
+            ty: SemanticImportType::Array {
+                element: Arc::new(SemanticImportType::I32),
+                len,
+            },
+            kind: SemanticImportAggregateKind::Array(Arc::from(values)),
+        }))
+    }
+
+    fn nested_value(depth: usize) -> SemanticImportConstValue<(), ()> {
+        if depth == 0 {
+            SemanticImportConstValue::Integer(0)
+        } else {
+            SemanticImportConstValue::Aggregate(Arc::new(SemanticImportAggregate {
+                ty: SemanticImportType::I32,
+                kind: SemanticImportAggregateKind::Struct(Arc::from([nested_value(depth - 1)])),
+            }))
+        }
+    }
+
+    #[test]
+    fn comptime_limit_helpers_distinguish_argument_roots_from_wrapped_children() {
+        let children = vec![SemanticImportConstValue::Integer(0); MAX_COMPTIME_VALUE_NODES - 1];
+        let root = array_value(children.clone());
+
+        // A single aggregate root plus its 4095 children is exactly the
+        // shared node budget. The argument-vector helper must not reserve a
+        // second synthetic wrapper around that root.
+        assert!(semantic_import_const_values_within_limits(
+            std::slice::from_ref(&root)
+        ));
+        assert!(semantic_import_const_children_within_limits(&children));
+
+        let too_many_children =
+            vec![SemanticImportConstValue::Integer(0); MAX_COMPTIME_VALUE_NODES];
+        assert!(!semantic_import_const_children_within_limits(
+            &too_many_children
+        ));
+        assert!(!semantic_import_const_values_within_limits(&[array_value(
+            too_many_children
+        ),]));
+    }
+
+    #[test]
+    fn comptime_limit_helpers_accept_the_depth_boundary_and_reject_one_more() {
+        assert!(semantic_import_const_value_within_limits(&nested_value(
+            MAX_COMPTIME_VALUE_DEPTH
+        )));
+        assert!(!semantic_import_const_value_within_limits(&nested_value(
+            MAX_COMPTIME_VALUE_DEPTH + 1
+        )));
     }
 
     #[test]

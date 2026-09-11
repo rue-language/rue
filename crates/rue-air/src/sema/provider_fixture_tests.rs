@@ -20,16 +20,17 @@ use super::ordinary_engine::{
     reset_comptime_reduction_test_stats,
 };
 use super::provider_fixture::{
-    FixtureKey, MethodShape, ProviderFixture, StructShape, comptime_type_param,
-    comptime_value_param, error_source_slice, mode_param, value_param,
+    FixtureCanonicalValue, FixtureKey, MethodShape, ProviderFixture, StructShape,
+    comptime_type_param, comptime_value_param, error_source_slice, mode_param, value_param,
     with_fixture_cancellation_after, with_fixture_durable_integer,
 };
 use super::{
     ComptimeCallKey, ComptimeCallMemoLookup, ComptimeCompletedCallMemo, ComptimeMemoizedOutcome,
 };
 use crate::{
-    ConstValue, SemanticDefinitionToken, SemanticImportConstValue, SemanticImportNominalKind,
-    SemanticImportType, SemanticModuleToken, StableDefinitionKind, StableProducerId, Type,
+    CanonicalAggregateKind, CanonicalAggregateValue, ConstValue, Node, SemanticDefinitionToken,
+    SemanticImportConstValue, SemanticImportNominalKind, SemanticImportType, SemanticModuleToken,
+    StableDefinitionKind, StableProducerId, Type, TypeInstanceKey,
 };
 use rue_rir::SymbolHandle;
 use rue_target::Target;
@@ -928,6 +929,74 @@ fn provider_body_reports_undefined_variable_with_exact_span() {
         "unexpected diagnostic: {error:?}"
     );
     assert_eq!(error_source_slice(source, &error), "missing");
+}
+
+#[test]
+fn provider_specialization_validates_unused_canonical_aggregate_values() {
+    let mut fixture = ProviderFixture::new();
+    let source = "fn ignore(comptime values: [u8; 2]) -> i32 { 42 }";
+    fixture.declare_function(
+        "ignore",
+        vec![comptime_value_param(
+            "values",
+            SemanticImportType::Array {
+                element: Arc::new(SemanticImportType::U8),
+                len: 2,
+            },
+        )],
+        SemanticImportType::I32,
+    );
+    let array_type = Node::new(TypeInstanceKey::Array {
+        element: Node::new(TypeInstanceKey::U8),
+        len: 2,
+    });
+    let malformed_range: FixtureCanonicalValue =
+        crate::CanonicalArgumentValue::Aggregate(Node::new(CanonicalAggregateValue {
+            ty: array_type.clone(),
+            kind: CanonicalAggregateKind::Array(Arc::from([
+                crate::CanonicalArgumentValue::Integer(256),
+                crate::CanonicalArgumentValue::Integer(0),
+            ])),
+        }));
+    let malformed_length: FixtureCanonicalValue =
+        crate::CanonicalArgumentValue::Aggregate(Node::new(CanonicalAggregateValue {
+            ty: array_type,
+            kind: CanonicalAggregateKind::Array(Arc::from([
+                crate::CanonicalArgumentValue::Integer(1),
+            ])),
+        }));
+
+    let valid: FixtureCanonicalValue =
+        crate::CanonicalArgumentValue::Aggregate(Node::new(CanonicalAggregateValue {
+            ty: Node::new(TypeInstanceKey::Array {
+                element: Node::new(TypeInstanceKey::U8),
+                len: 2,
+            }),
+            kind: CanonicalAggregateKind::Array(Arc::from([
+                crate::CanonicalArgumentValue::Integer(1),
+                crate::CanonicalArgumentValue::Integer(0),
+            ])),
+        }));
+    fixture
+        .analyze_specialized_with_canonical_values(source, "ignore", &[valid])
+        .expect("well-formed unused canonical aggregate reaches specialization");
+
+    let range_error = fixture
+        .analyze_specialized_with_canonical_values(source, "ignore", &[malformed_range])
+        .map(|_| ())
+        .expect_err("out-of-range unused canonical aggregate must be rejected at admission");
+    assert!(
+        matches!(&range_error.kind, ErrorKind::TypeMismatch { .. }),
+        "unexpected range diagnostic: {range_error:?}"
+    );
+    let length_error = fixture
+        .analyze_specialized_with_canonical_values(source, "ignore", &[malformed_length])
+        .map(|_| ())
+        .expect_err("wrong-length unused canonical aggregate must be rejected at admission");
+    assert!(
+        matches!(&length_error.kind, ErrorKind::ComptimeEvaluationFailed { reason } if reason.contains("wrong array length")),
+        "unexpected length diagnostic: {length_error:?}"
+    );
 }
 
 // Migrated from `tests::test_use_after_move_error`: ownership diagnostics on

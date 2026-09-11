@@ -510,8 +510,7 @@ where
             let value = key.value_args.get(value_arg_idx).cloned().ok_or_else(|| {
                 CompileError::new(
                     ErrorKind::InternalError(format!(
-                        "specialization is missing value argument {value_arg_idx} for '{}'",
-                        host.body_interner().resolve(name)
+                        "specialization is missing value argument {value_arg_idx}"
                     )),
                     base_info.span,
                 )
@@ -530,6 +529,45 @@ where
             )),
             base_info.span,
         ));
+    }
+
+    // Provider specializations can be requested directly from canonical
+    // arguments, including when the specialized body never reads a comptime
+    // parameter. Validate every value against its substituted declaration
+    // before issuing identity or analyzing the body so unused malformed
+    // aggregate values cannot bypass the ordinary comptime value contract.
+    {
+        let mut engine = OrdinaryBodyEngine::new(host);
+        let mut value_arg_idx = 0;
+        for (param_index, (name, declared, _, is_comptime)) in base_params.iter().enumerate() {
+            if !*is_comptime || param_comptime_type[param_index] {
+                continue;
+            }
+            let value = key.value_args.get(value_arg_idx).cloned().ok_or_else(|| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "specialization is missing value argument {value_arg_idx}"
+                    )),
+                    base_info.span,
+                )
+            })?;
+            let expected = engine.resolve_substituted_param_type(
+                &base_call_info,
+                param_index,
+                *declared,
+                &type_subst,
+                &value_subst,
+                base_info.span,
+            )?;
+            engine.validate_comptime_value_for_type(
+                key.base_name,
+                *name,
+                value,
+                expected,
+                base_info.span,
+            )?;
+            value_arg_idx += 1;
+        }
     }
 
     let identity = OrdinaryBodyEngine::new(host)

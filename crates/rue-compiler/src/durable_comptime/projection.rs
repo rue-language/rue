@@ -630,7 +630,7 @@ pub(crate) fn durable_value_shape(
 }
 
 fn durable_aggregate_children_within_limits(values: &[DurableConstValue]) -> bool {
-    rue_air::semantic_import_const_values_within_limits(values)
+    rue_air::semantic_import_const_children_within_limits(values)
 }
 
 pub(crate) fn evaluated_from_durable_value(value: DurableConstValue) -> EvaluatedSemanticConst {

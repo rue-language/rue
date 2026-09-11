@@ -111,6 +111,7 @@ pub(crate) type FixtureModule = Arc<str>;
 
 pub(crate) type FixtureType = SemanticImportType<FixtureKey, FixtureModule>;
 pub(crate) type FixtureConstValue = SemanticImportConstValue<FixtureKey, FixtureModule>;
+pub(crate) type FixtureCanonicalValue = CanonicalArgumentValue<FixtureKey, FixtureModule>;
 pub(crate) type FixtureBody = ProviderOrdinaryBody<FixtureKey, FixtureModule>;
 pub(crate) type FixtureSpecializedBody = ProviderSpecializedBody<FixtureKey, FixtureModule>;
 
@@ -894,6 +895,16 @@ impl ProviderFixture {
                 .collect::<Vec<_>>()
                 .into(),
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn analyze_specialized_with_canonical_values(
+        &self,
+        source: &str,
+        function: &str,
+        values: &[FixtureCanonicalValue],
+    ) -> CompileResult<FixtureSpecializedBody> {
+        self.analyze_specialized_arguments(source, function, Arc::from([]), values.to_vec().into())
     }
 
     #[cfg(test)]
