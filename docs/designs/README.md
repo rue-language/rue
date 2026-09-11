@@ -257,4 +257,5 @@ The table is generated from ADR frontmatter. Run
 | [0092](0092-no-configuration-declarations.md) | No configuration declarations: target behavior through comptime | Accepted | language, semantics, comptime, principle |
 | [0093](0093-order-independent-program-meaning.md) | Order-independent program meaning | Accepted | language, semantics, modules, principle |
 | [0094](0094-no-default-arguments.md) | No default arguments: every call spells every argument | Accepted | language, syntax, semantics, principle |
+| [0095](0095-checked-block-reasons.md) | Checked block reasons: every checked site states the invariant it relies on | Accepted | language, syntax, semantics, unchecked, tooling |
 <!-- ADR-INDEX:END -->

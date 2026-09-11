@@ -796,7 +796,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         };
         let legal_trailing_bridge = match self.body_rir_ref().get(trailing).data {
             InstData::Yield(operand) => match self.body_rir_ref().get(operand).data {
-                InstData::Checked { expr } => match self.body_rir_ref().get(expr).data {
+                InstData::Checked { expr, .. } => match self.body_rir_ref().get(expr).data {
                     InstData::Intrinsic { name, .. } => {
                         name == self
                             .known_symbols()

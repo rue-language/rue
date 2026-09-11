@@ -714,7 +714,7 @@ impl Rir {
                 | InstData::BitNot { operand }
                 | InstData::Try { operand }
                 | InstData::Comptime { expr: operand }
-                | InstData::Checked { expr: operand } => refs!(*operand),
+                | InstData::Checked { expr: operand, .. } => refs!(*operand),
                 InstData::Branch {
                     cond,
                     then_block,
@@ -1086,7 +1086,7 @@ impl Rir {
             | InstData::BitNot { operand }
             | InstData::Try { operand }
             | InstData::Comptime { expr: operand }
-            | InstData::Checked { expr: operand }
+            | InstData::Checked { expr: operand, .. }
             | InstData::Yield(operand) => out.push(*operand),
             InstData::Branch {
                 cond,

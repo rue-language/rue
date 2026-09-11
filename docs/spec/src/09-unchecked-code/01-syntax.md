@@ -41,8 +41,10 @@ A `checked` block is an expression that enables unchecked operations within its 
 {{ rule(id="9.1:5", cat="syntax") }}
 
 ```ebnf
-checked_expr = "checked" "{" block "}" ;
+checked_expr = "checked" [ STRING ] "{" block "}" ;
 ```
+
+The optional string literal is the block's *reason* (9.1:14).
 
 {{ rule(id="9.1:6", cat="dynamic-semantics") }}
 
@@ -61,6 +63,34 @@ fn main() -> i32 {
         a + b
     };
     x
+}
+```
+
+{{ preview_feature(feature="checked_reasons", adr="ADR-0095", doc="0095-checked-block-reasons.md") }}
+
+{{ rule(id="9.1:14", cat="legality-rule") }}
+
+A `checked` block **MAY** state the invariant it relies on as a string
+literal between `checked` and the block: its *reason*. The reason is part of
+the syntax tree and is carried through the compiler's emitted views of the
+program; it has no effect on the block's value, type, or evaluation (9.1:6).
+Checked block reasons are a preview feature: a `checked` block that states a
+reason **MUST** be compiled with `--preview checked_reasons` (8.4:1). Under
+that preview every `checked` block **MUST** state a reason, and the reason
+**MUST NOT** be empty; a block that omits its reason, or states an empty
+one, is rejected with E1301 at the block. There is no allow-list or
+per-site opt-out: the point of the rule is that every site where the
+programmer takes over an obligation from the compiler has been thought about
+and says so.
+
+{{ rule(id="9.1:15", cat="example") }}
+
+```rue
+fn first(base: ptr const i32, len: u64) -> i32 {
+    if len == 0 { return 0; }
+    checked "len > 0 was established by the guard above, so index 0 is in bounds" {
+        @ptr_read(base)
+    }
 }
 ```
 

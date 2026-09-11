@@ -1695,6 +1695,8 @@ impl RetainedCharge for rue_error::ErrorKind {
             | E::AccessorBodyMissingYield
             | E::YieldOutsideAccessor
             | E::BreakOutsideLoop
+            | E::CheckedReasonMissing
+            | E::CheckedReasonEmpty
             | E::ContinueOutsideLoop
             | E::BreakWithValue
             | E::NonExhaustiveMatch

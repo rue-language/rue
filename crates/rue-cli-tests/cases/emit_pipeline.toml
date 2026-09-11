@@ -547,3 +547,11 @@ args = ["--emit", "mir", "--emit", "asm", "-O2", "main.rue"]
 compile_only = true
 compile_stdout_contains = ["=== MIR (", "=== Assembly ("]
 compile_stderr_not_contains = ["internal compiler error"]
+
+[[case]]
+name = "emit_rir_shows_the_checked_block_reason"
+description = "RUE-1887: a checked block's reason (preview checked_reasons, spec 9.1:14) is carried on the RIR instruction and shown by the RIR view, the surface a listing of checked sites reads."
+files = [{ path = "main.rue", source = "fn main() -> i32 {\n    checked \"the reason is inert but visible to tooling\" { 42 }\n}\n" }]
+args = ["--emit", "rir", "--preview", "checked_reasons", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== RIR ===", "checked \"the reason is inert but visible to tooling\" {"]

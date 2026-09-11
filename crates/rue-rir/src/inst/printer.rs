@@ -933,9 +933,16 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 }
 
                 // Checked block
-                InstData::Checked { expr } => {
-                    writeln!(out, "checked {{ {} }}", self.display_ref(*expr)).unwrap();
-                }
+                InstData::Checked { expr, reason } => match reason {
+                    Some(reason) => writeln!(
+                        out,
+                        "checked {:?} {{ {} }}",
+                        self.interner.resolve(reason),
+                        self.display_ref(*expr)
+                    )
+                    .unwrap(),
+                    None => writeln!(out, "checked {{ {} }}", self.display_ref(*expr)).unwrap(),
+                },
 
                 // Type constant
                 InstData::TypeConst { type_name } => {

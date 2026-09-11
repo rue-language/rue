@@ -674,12 +674,41 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // Checked block: evaluate the inner expression within an unchecked
             // context. Raw-pointer intrinsics and calls to `unchecked fn`s are
             // only legal while `checked_depth > 0` (spec 9.1:1, chapter 9).
-            InstData::Checked { expr } => {
+            InstData::Checked { expr, reason } => {
+                self.check_checked_reason(*reason, inst.span)?;
                 ctx.checked_depth += 1;
                 let result = self.analyze_inst(air, *expr, ctx);
                 ctx.checked_depth -= 1;
                 result
             }
+        }
+    }
+
+    /// The `checked_reasons` preview (ADR-0095, spec 9.1:14): a stated reason
+    /// needs the preview, and under the preview every `checked` block states
+    /// a non-empty one. Without the preview a reason-less block is today's
+    /// ordinary block and passes untouched.
+    fn check_checked_reason(&self, reason: Option<Spur>, span: Span) -> CompileResult<()> {
+        let gate = self.require_preview(
+            rue_error::PreviewFeature::CheckedReasons,
+            "checked block reasons",
+            span,
+        );
+        match reason {
+            Some(reason) => {
+                gate?;
+                if self.body_interner().resolve(&reason).is_empty() {
+                    return Err(CompileError::new(ErrorKind::CheckedReasonEmpty, span)
+                        .with_help("state the invariant the block relies on"));
+                }
+                Ok(())
+            }
+            None if gate.is_ok() => Err(CompileError::new(ErrorKind::CheckedReasonMissing, span)
+                .with_help(
+                    "state the invariant as a string literal after `checked`, e.g. \
+                     `checked \"index < len by the guard above\" { ... }`",
+                )),
+            None => Ok(()),
         }
     }
 }

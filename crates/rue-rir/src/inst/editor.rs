@@ -1508,9 +1508,12 @@ impl RirEditor {
                             expr: remap_ref(*expr),
                         }))
                     }
-                    InstData::Checked { expr } => self.add_inst(payload_free(InstData::Checked {
-                        expr: remap_ref(*expr),
-                    })),
+                    InstData::Checked { expr, reason } => {
+                        self.add_inst(payload_free(InstData::Checked {
+                            expr: remap_ref(*expr),
+                            reason: reason.map(&mut symbol),
+                        }))
+                    }
                     InstData::TypeConst { type_name } => {
                         self.add_inst(payload_free(InstData::TypeConst {
                             type_name: remap_type(*type_name),

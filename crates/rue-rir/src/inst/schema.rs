@@ -948,6 +948,10 @@ pub enum InstData {
     Checked {
         /// The expression inside the checked block
         expr: InstRef,
+        /// The block's stated reason (`checked "why" { ... }`, spec 9.1:14):
+        /// the invariant the programmer relies on. Inert for evaluation; it
+        /// rides the instruction so the RIR view and tooling can list it.
+        reason: Option<Spur>,
     },
 
     /// Type constant: a type used as a value expression (e.g., `i32` in `identity(i32, 42)`)

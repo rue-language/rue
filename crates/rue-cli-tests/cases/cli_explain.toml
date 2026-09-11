@@ -402,6 +402,15 @@ compile_stdout_not_contains = ["Compiled"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
 
 [[case]]
+name = "checked_reason_required_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E1301"]
+compile_only = true
+compile_stdout_contains = ["E1301: Checked reason required", "`checked_reasons` preview feature", "Omit the reason under the preview (requires --preview checked_reasons):", "State the invariant the block relies on (requires --preview checked_reasons):", "docs/spec/src/09-unchecked-code/01-syntax.md (spec rule 9.1:14)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
 name = "duplicate_parameter_code_is_explained"
 files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
 args = ["explain", "E0491"]

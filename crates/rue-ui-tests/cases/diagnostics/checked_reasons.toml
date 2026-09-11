@@ -1,0 +1,59 @@
+# Checked block reasons (RUE-1887, ADR-0095, spec 9.1:14).
+#
+# Under `--preview checked_reasons` a `checked` block states the invariant it
+# relies on as a string literal between the keyword and the block. These pin
+# the three diagnostics: the preview gate when a reason appears without the
+# flag, the missing reason, and the empty reason, and that the missing-reason
+# error points at the block that lacks it, not at the one that has one.
+
+[section]
+id = "diagnostics.checked_reasons"
+name = "Checked block reason diagnostics"
+description = "Pins the diagnostics of the checked_reasons preview (spec 9.1:14, RUE-1887): the preview gate, the missing reason, and the empty reason."
+
+[[case]]
+name = "reason_without_preview_names_the_flag"
+source = """
+fn main() -> i32 {
+    checked "a stated reason" { 42 }
+}
+"""
+compile_fail = true
+error_contains = [
+    "[E1100]",
+    "checked block reasons requires preview feature `checked_reasons`",
+    "use --preview checked_reasons to enable this feature (ADR-0095)",
+]
+
+[[case]]
+name = "missing_reason_points_at_the_block_that_lacks_it"
+preview = "checked_reasons"
+source = """
+fn main() -> i32 {
+    let value: i32 = 42;
+    let p: ptr const i32 = checked "value is a live local for the whole call" { @raw(value) };
+    checked { @ptr_read(p) }
+}
+"""
+compile_fail = true
+error_contains = [
+    "[E1301]",
+    "`checked` block must state the invariant it relies on",
+    "4:5",
+    "state the invariant as a string literal after `checked`, e.g. `checked \"index < len by the guard above\" { ... }`",
+]
+
+[[case]]
+name = "empty_reason_is_rejected"
+preview = "checked_reasons"
+source = """
+fn main() -> i32 {
+    checked "" { 42 }
+}
+"""
+compile_fail = true
+error_contains = [
+    "[E1301]",
+    "`checked` block reason must not be empty",
+]
+
