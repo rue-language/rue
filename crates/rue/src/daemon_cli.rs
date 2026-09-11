@@ -180,9 +180,12 @@ fn execute(invocation: &DaemonInvocation) -> Result<i32, DaemonError> {
                 Ok(0)
             }
         },
-        DaemonCommand::Serve => match daemon::serve(scope, &root, idle_timeout)? {
-            ServeExit::Stopped | ServeExit::Idle | ServeExit::AlreadyRunning => Ok(0),
-        },
+        DaemonCommand::Serve => {
+            let executor = Box::new(crate::daemon_service::Executor::new());
+            match daemon::serve(scope, &root, idle_timeout, executor)? {
+                ServeExit::Stopped | ServeExit::Idle | ServeExit::AlreadyRunning => Ok(0),
+            }
+        }
     }
 }
 
@@ -212,10 +215,13 @@ fn render_status(report: &StatusReport) -> String {
     text.push_str(&format!("  uptime: {} ms\n", report.uptime_ms));
     text.push_str(&format!("  idle timeout: {} ms\n", report.idle_timeout_ms));
     text.push_str(&format!("  connections: {}\n", report.connections));
-    text.push_str(&format!(
-        "  active request: {}\n",
-        report.active_request.as_deref().unwrap_or("none")
-    ));
+    match &report.active_request {
+        Some(active) => text.push_str(&format!(
+            "  active request: #{} {} (in {}, {} ms)\n",
+            active.ticket, active.root_source, active.working_directory, active.elapsed_ms
+        )),
+        None => text.push_str("  active request: none\n"),
+    }
     text.push_str(&format!("  queued requests: {}\n", report.queued_requests));
     text.push_str(&format!("  retained hosts: {}\n", report.retained_hosts));
     text

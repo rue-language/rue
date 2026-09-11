@@ -3211,6 +3211,48 @@ fn run_daemon_steps(
             }
             check_daemon_step_output(&label, step, &stdout, &stderr)?;
         }
+        if let Some(program) = &step.run_output {
+            run_daemon_step_output(case, contract, dir, index, step, program)?;
+        }
+    }
+    Ok(())
+}
+
+/// Run the program a daemon step produced and check it behaves.
+fn run_daemon_step_output(
+    case: &Case,
+    contract: &ExecutionContract,
+    dir: &Path,
+    index: usize,
+    step: &DaemonStep,
+    program: &str,
+) -> TestResult {
+    let path = dir.join(program);
+    let mut command = Command::new(&path);
+    command.current_dir(dir);
+    apply_case_environment(&mut command, &case.env, Path::new(""));
+    let output = run_phase_with_timeout(
+        command,
+        ProcessPhase::ProducedProgram,
+        contract.runtime_timeout(),
+        None,
+    )?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let label = format!("daemon step {index} output `{program}`");
+    let code = output.status.code().unwrap_or(-1);
+    if code != step.run_output_exit_code {
+        return Err(TestFailure::assertion(format!(
+            "{label}: expected exit {}, got {code}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            step.run_output_exit_code
+        )));
+    }
+    for expected in &step.run_output_stdout_contains {
+        if !stdout.contains(expected.as_str()) {
+            return Err(TestFailure::assertion(format!(
+                "{label}: stdout missing {expected:?}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+            )));
+        }
     }
     Ok(())
 }

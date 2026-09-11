@@ -66,8 +66,29 @@ object), and `stop` ends it. Neither `status` nor `stop` starts a service, and
 the scope is only a process grouping: it never changes what a program imports.
 Endpoints live in a user-private directory under `XDG_RUNTIME_DIR` (or the
 system temporary directory); `RUE_DAEMON_ROOT` overrides that root, which is
-how the CLI suite keeps its services apart from yours. The service does not
-yet execute compiler requests; those arrive with the rest of RUE-2128.
+how the CLI suite keeps its services apart from yours.
+
+`--daemon=off|auto|required` decides whether a compilation runs through that
+service. The default is `off`. Under `auto` a supported request uses or starts
+the service for the root source's directory (`--daemon-scope <dir>` and
+`--daemon-isolation <name>` select another, matching the controls' `--scope`
+and `--isolation`); under `required` the service must run it. The service
+compiles through the same host and cycle the direct path uses and hands back
+owned results: the client publishes the executable itself, after revalidating
+the observed inputs, so diagnostics, the success line, and exit statuses are
+those of a direct compile. A request the service refuses before any work
+began, or one outside the support table, runs directly under `auto`; under
+`required` it is an `E1503` error. Once the service has accepted a request,
+any failure is the invocation's failure and nothing is retried.
+
+| Request | `auto` | `required` |
+| --- | --- | --- |
+| Ordinary internal-linker build | service | service |
+| `rue test`, `rue test --list` | direct (its own slice of RUE-2128) | refused |
+| `--watch`, any `--emit`, `--linker <cmd>` | direct | refused |
+| `--time-passes`, `--benchmark-json` | direct | refused |
+| Tracing via `--log-level` or `RUST_LOG` | direct | refused |
+| `--help`, `--version`, `explain`, `rue daemon` | local | local |
 
 The model is exactly one root source file per compile; additional files are
 reached through `@import` and discovered transitively from the root. The legacy

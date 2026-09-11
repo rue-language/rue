@@ -20,8 +20,9 @@ pub use running_image::{
 };
 pub use source_loader::{
     AttemptedRead, HermeticDenialError, SourceLoadError, ToolchainIntegrityError, WatchFingerprint,
-    WatchInput, watch_input_fingerprints, watch_inputs_changed, watch_inputs_changed_with_reader,
-    with_import_migration_helps, with_import_migration_helps_batches,
+    WatchInput, WatchInputParts, watch_input_fingerprints, watch_inputs_changed,
+    watch_inputs_changed_with_reader, with_import_migration_helps,
+    with_import_migration_helps_batches,
 };
 pub use test_candidates::{
     load_declared_candidates, load_declared_candidates_at, load_declared_candidates_with_context,

@@ -17,6 +17,8 @@ mod compile;
 #[cfg(not(rue_benchmark_allocations))]
 mod compiler_allocator;
 mod daemon_cli;
+mod daemon_client;
+mod daemon_service;
 mod emit;
 mod output;
 mod platform_signing;
@@ -28,7 +30,7 @@ use emit::EmitStage;
 #[cfg(test)]
 use emit::{EmitFrontendRoute, build_emit_frontend, emit_frontend_route, emit_requires_semantic};
 use rue_compiler::unstable::{
-    JsonDiagnostic, MultiFileFormatter, MultiFileJsonFormatter, SourceInfo,
+    ColorChoice, JsonDiagnostic, MultiFileFormatter, MultiFileJsonFormatter, SourceInfo,
 };
 #[cfg(test)]
 use rue_compiler::unstable::{Span, update_for_presentation};
@@ -245,6 +247,13 @@ struct Options {
     /// Whether `-o`/`--output` named the output explicitly. Compile mode warns
     /// when `--emit` ignores it; test mode refuses it outright.
     explicit_output: bool,
+    /// Whether to compile through the local compiler service (ADR-0085 §2).
+    daemon: daemon_client::DaemonMode,
+    /// `--daemon-scope`: the service scope directory as written; the default
+    /// is the root source's parent directory.
+    daemon_scope: Option<String>,
+    /// `--daemon-isolation`: the service isolation name.
+    daemon_isolation: Option<String>,
 }
 
 /// Version string for the rue compiler (single-sourced from rue-error so the
@@ -278,6 +287,8 @@ Usage: rue [options] <root.rue> [output]
 
 The compiler takes exactly one root source file and discovers every other
 file through its @import graph; pass build-system inputs with --source-manifest.
+An ordinary internal-linker build can run through the local compiler service
+with --daemon=auto or --daemon=required (ADR-0085); the default is off.
 
 Commands:
   explain <E####>      Show the compiler-owned explanation for an error code
@@ -357,6 +368,16 @@ Options:
                        (schema: docs/process/diagnostics.md)
   --time-passes        Show timing for each compilation pass
   --benchmark-json     Output timing as JSON (for benchmarking)
+  --daemon <mode>      off (default): compile in this process; auto: use or
+                       start the compiler service for supported requests and
+                       compile directly otherwise; required: the service must
+                       run it. Supported: ordinary internal-linker builds.
+                       --watch, --emit, --linker, --time-passes,
+                       --benchmark-json, rue test, and compiler tracing run
+                       directly under auto and are refused under required.
+  --daemon-scope <dir> The service scope directory (default: the root source's
+                       directory); --daemon-isolation <name> selects a
+                       separate service within it. Both match `rue daemon`.
   --watch              Recompile when the accepted source closure changes
                        With `rue test`, re-run the tests instead
   --version            Show version information
@@ -536,7 +557,7 @@ enum DriverMode {
 /// status is `1` and stays that way. Every such site maps through here rather
 /// than repeating the match, so the two modes cannot drift apart one site at a
 /// time.
-fn driver_failure_exit_code(mode: &DriverMode) -> i32 {
+pub(crate) fn driver_failure_exit_code(mode: &DriverMode) -> i32 {
     match mode {
         DriverMode::Test => test_mode::TestExitCode::RunnerError.code(),
         DriverMode::Compile => 1,
@@ -613,6 +634,9 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
     let mut link_archives: Vec<std::path::PathBuf> = Vec::new();
     let mut test = test_mode::TestOptions::default();
     let mut test_flags_given: Vec<&'static str> = Vec::new();
+    let mut daemon: Option<daemon_client::DaemonMode> = None;
+    let mut daemon_scope: Option<String> = None;
+    let mut daemon_isolation: Option<String> = None;
     let mut positional = Vec::new();
     let mut args_iter = args.iter().peekable();
 
@@ -856,6 +880,43 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
             "--watch" => {
                 watch = true;
             }
+            "--daemon" => {
+                let Some(mode_str) = args_iter.next() else {
+                    eprintln!("Error: --daemon requires a value");
+                    eprintln!("Valid modes: {}", daemon_client::DaemonMode::all_names());
+                    return ParseResult::Error;
+                };
+                match mode_str.parse::<daemon_client::DaemonMode>() {
+                    Ok(mode) => daemon = Some(mode),
+                    Err(error) => {
+                        eprintln!("Error: {error}");
+                        return ParseResult::Error;
+                    }
+                }
+            }
+            "--daemon-scope" => {
+                let Some(dir) = args_iter.next() else {
+                    eprintln!("Error: --daemon-scope requires a directory");
+                    return ParseResult::Error;
+                };
+                daemon_scope = Some((*dir).to_owned());
+            }
+            "--daemon-isolation" => {
+                let Some(name) = args_iter.next() else {
+                    eprintln!("Error: --daemon-isolation requires a name");
+                    return ParseResult::Error;
+                };
+                daemon_isolation = Some((*name).to_owned());
+            }
+            _ if arg.starts_with("--daemon=") => {
+                match arg["--daemon=".len()..].parse::<daemon_client::DaemonMode>() {
+                    Ok(mode) => daemon = Some(mode),
+                    Err(error) => {
+                        eprintln!("Error: {error}");
+                        return ParseResult::Error;
+                    }
+                }
+            }
             "--help" | "-h" => {
                 // Explicit help request: success, so write to stdout (RUE-518).
                 print_help();
@@ -986,6 +1047,21 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         );
     }
 
+    let daemon = daemon.unwrap_or_default();
+    if daemon == daemon_client::DaemonMode::Off {
+        if let Some(flag) = [
+            daemon_scope.as_ref().map(|_| "--daemon-scope"),
+            daemon_isolation.as_ref().map(|_| "--daemon-isolation"),
+        ]
+        .into_iter()
+        .flatten()
+        .next()
+        {
+            eprintln!("Error: {flag} requires --daemon=auto or --daemon=required");
+            return ParseResult::Error;
+        }
+    }
+
     let Some(final_target) = target.or_else(Target::host) else {
         eprintln!(
             "Error: no --target specified and this host ({}) is not a supported Rue target",
@@ -997,6 +1073,9 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
     };
 
     ParseResult::Options(Box::new(Options {
+        daemon,
+        daemon_scope,
+        daemon_isolation,
         source_path,
         source_manifest_path,
         test_candidates_path,
@@ -1092,7 +1171,7 @@ fn test_mode_jobs(jobs: usize) -> usize {
 /// auto-detection. Without this, `rue test --jobs 1` — the way to isolate a
 /// test that interferes with its neighbors — would also single-thread a
 /// compilation the isolation question says nothing about.
-fn compile_pool_jobs(mode: &DriverMode, jobs: usize) -> usize {
+pub(crate) fn compile_pool_jobs(mode: &DriverMode, jobs: usize) -> usize {
     match mode {
         DriverMode::Test => 0,
         DriverMode::Compile => jobs,
@@ -1246,14 +1325,27 @@ enum DiagnosticRenderer<'a> {
 
 impl<'a> DiagnosticOutput<'a> {
     fn new(format: ErrorFormat, sources: Vec<(FileId, SourceInfo<'a>)>) -> Self {
+        Self::with_color(format, sources, ColorChoice::Auto)
+    }
+
+    /// An output whose text rendering follows an explicit color policy
+    /// instead of asking whether this process's stderr is a terminal. The
+    /// compiler service renders for a client whose terminal it cannot see
+    /// (ADR-0085 §5).
+    pub(crate) fn with_color(
+        format: ErrorFormat,
+        sources: Vec<(FileId, SourceInfo<'a>)>,
+        color: ColorChoice,
+    ) -> Self {
         let paths = sources
             .iter()
             .map(|(file_id, info)| (*file_id, info.path))
             .collect();
         let renderer = match format {
-            ErrorFormat::Text => {
-                DiagnosticRenderer::Text(MultiFileFormatter::new(sources.iter().cloned()))
-            }
+            ErrorFormat::Text => DiagnosticRenderer::Text(MultiFileFormatter::with_color_choice(
+                sources.iter().cloned(),
+                color,
+            )),
             ErrorFormat::Json => {
                 DiagnosticRenderer::Json(MultiFileJsonFormatter::new(sources.iter().cloned()))
             }
@@ -1357,7 +1449,7 @@ impl<'a> DiagnosticOutput<'a> {
     /// shape rather than switching on object-vs-array (RUE-436). The
     /// single-error paths (output publication, watch-cycle publication) used
     /// to emit a bare object here while every batch path emitted an array.
-    fn render_error(&self, error: &CompileError) -> String {
+    pub(crate) fn render_error(&self, error: &CompileError) -> String {
         match self.format {
             ErrorFormat::Text => match &self.renderer {
                 DiagnosticRenderer::Text(formatter) => formatter.format_error(error),
@@ -1396,7 +1488,7 @@ impl<'a> DiagnosticOutput<'a> {
         }
     }
 
-    fn render_warnings(&self, warnings: &[CompileWarning]) -> String {
+    pub(crate) fn render_warnings(&self, warnings: &[CompileWarning]) -> String {
         let warnings: Vec<CompileWarning> = self
             .in_source_order(warnings)
             .into_iter()
@@ -1667,7 +1759,7 @@ fn benchmark_report(
 /// reads have already completed. `std::process::exit` preserves the platform
 /// atexit path while avoiding a second full destruction walk of that retained
 /// state. This is deliberately not used for watch, emit, or any failure path.
-fn exit_successful_native_compile() -> ! {
+pub(crate) fn exit_successful_native_compile() -> ! {
     let _ = std::io::stdout().flush();
     let _ = std::io::stderr().flush();
     std::process::exit(0);
@@ -2233,6 +2325,14 @@ pub(crate) fn render_source_load_error(
     error: SourceLoadError,
     error_format: ErrorFormat,
 ) -> String {
+    render_source_load_error_with_color(error, error_format, ColorChoice::Auto)
+}
+
+pub(crate) fn render_source_load_error_with_color(
+    error: SourceLoadError,
+    error_format: ErrorFormat,
+    color: ColorChoice,
+) -> String {
     match error {
         SourceLoadError::Message(message) => {
             render_driver_error(ErrorCode::DRIVER_SOURCE_LOAD, message, error_format)
@@ -2270,7 +2370,7 @@ pub(crate) fn render_source_load_error(
                         .collect()
                 })
                 .unwrap_or_default();
-            let diagnostics = DiagnosticOutput::new(error_format, infos);
+            let diagnostics = DiagnosticOutput::with_color(error_format, infos, color);
             if errors.is_empty() {
                 render_internal_error(
                     error_format,
@@ -2283,7 +2383,7 @@ pub(crate) fn render_source_load_error(
     }
 }
 
-fn render_driver_error(code: ErrorCode, message: String, format: ErrorFormat) -> String {
+pub(crate) fn render_driver_error(code: ErrorCode, message: String, format: ErrorFormat) -> String {
     match format {
         ErrorFormat::Text => message,
         ErrorFormat::Json => {
@@ -2301,7 +2401,7 @@ fn render_driver_error(code: ErrorCode, message: String, format: ErrorFormat) ->
     }
 }
 
-fn render_internal_error(format: ErrorFormat, message: impl Into<String>) -> String {
+pub(crate) fn render_internal_error(format: ErrorFormat, message: impl Into<String>) -> String {
     let diagnostics = DiagnosticOutput::new(format, Vec::new());
     diagnostics.render_error(&rue_error::ice_error!(message.into()))
 }
@@ -2364,7 +2464,7 @@ fn ice_panic_diagnostic(info: &std::panic::PanicHookInfo<'_>) -> JsonDiagnostic 
 /// graceful `ice_error!` ICE carries — so a consumer filters both halves of
 /// the ICE surface on one code. The diagnostic has no spans: a panic has no
 /// source location in the *user's* program, and inventing one would be a lie.
-fn ice_diagnostic(payload: &str, panic_site: Option<String>) -> JsonDiagnostic {
+pub(crate) fn ice_diagnostic(payload: &str, panic_site: Option<String>) -> JsonDiagnostic {
     let mut notes = vec![format!("rue version {VERSION}")];
     if let Some(site) = panic_site {
         notes.push(format!("panic at {site}"));
@@ -2529,6 +2629,23 @@ fn main() {
         }
         None => None,
     };
+
+    // A supported request under `--daemon=auto|required` runs through the
+    // local compiler service from here: every argument and declared-input
+    // check above has run, and nothing below has opened a host, a worker
+    // pool, or a source file (ADR-0085 §2, §3). Under `auto` a request the
+    // service rejects before any work began falls through to the direct
+    // path; under `required` it is an error.
+    if options.daemon != daemon_client::DaemonMode::Off {
+        match daemon_client::run(&options, &path_context) {
+            daemon_client::Outcome::Exit(code) => {
+                let _ = std::io::stdout().flush();
+                let _ = std::io::stderr().flush();
+                std::process::exit(code);
+            }
+            daemon_client::Outcome::Direct => {}
+        }
+    }
 
     // Build the immutable compiler resource configuration before opening the
     // filesystem host. In test mode `--jobs` bounds test processes instead,
@@ -4562,7 +4679,7 @@ mod tests {
         assert!(production.contains("match format"));
         assert_eq!(
             production
-                .matches("MultiFileFormatter::new(sources.iter().cloned())")
+                .matches("MultiFileFormatter::with_color_choice(\n                sources.iter().cloned(),")
                 .count(),
             1,
             "text formatter construction must be selected, not duplicated"

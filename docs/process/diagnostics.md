@@ -190,6 +190,7 @@ The canonical driver/host registry is the E1500-E1599 range in
 | `E1500` | ordinary source load | Root/source discovery, ordinary filesystem I/O, or ordinary root/source policy setup failure. |
 | `E1501` | toolchain integrity | A required trusted standard-library input is missing, unreadable, malformed, or otherwise fails the toolchain contract. |
 | `E1502` | hermetic build denial | `SourceLoadError::HermeticDenial`: trusted toolchain acquisition is denied by the source manifest or canonical containment policy; the remedy is build configuration rather than toolchain repair. |
+| `E1503` | compiler service | The local compiler service (ADR-0085) could not run a `--daemon` request: it was unavailable or incompatible under `required`, refused the request, or was lost after accepting it. Never a source error; the program was not judged. |
 
 These codes are stable consumer identifiers and are distinct from compiler
 input errors (`E1400-E1499`) and internal compiler errors

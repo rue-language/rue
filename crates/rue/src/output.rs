@@ -23,6 +23,28 @@ pub(crate) struct PublicationDestination {
     source_paths: Vec<PathBuf>,
 }
 
+impl PublicationDestination {
+    /// A destination the service's preflight already validated, carried to
+    /// the client that publishes it (ADR-0085 §5). The publication guard
+    /// revalidates it against the same source set before the rename.
+    pub(crate) fn from_parts(
+        path: PathBuf,
+        display_path: PathBuf,
+        source_paths: Vec<PathBuf>,
+    ) -> Self {
+        Self {
+            path,
+            display_path,
+            source_paths,
+        }
+    }
+
+    /// `(path, display_path, source_paths)`.
+    pub(crate) fn into_parts(self) -> (PathBuf, PathBuf, Vec<PathBuf>) {
+        (self.path, self.display_path, self.source_paths)
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum PublishError {
     /// The destination is, or became, one of the program's own input sources.

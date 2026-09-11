@@ -1,5 +1,5 @@
-//! The client half of the service protocol: connect, prove identity, and issue
-//! control requests.
+//! The client half of the service protocol: connect, prove identity, issue
+//! control requests, and submit and await builds.
 
 use std::io;
 use std::os::unix::fs::MetadataExt;
@@ -8,8 +8,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use super::protocol::{
-    Hello, HelloReply, MAX_CONTROL_FRAME_BYTES, Request, RequestBody, Response, ResponseBody,
-    ServiceInfo, StatusReport, read_frame, write_frame,
+    BuildReply, BuildRequest, BuildResult, Hello, HelloReply, MAX_CONTROL_FRAME_BYTES,
+    MAX_RESULT_FRAME_BYTES, Request, RequestBody, Response, ResponseBody, ServiceInfo,
+    StatusReport, read_chunks, read_frame, write_frame,
 };
 
 /// Why a connection could not be established or used.
@@ -168,6 +169,109 @@ impl Connection {
             other => Err(unexpected("a stop acknowledgement", &other)),
         }
     }
+
+    /// Submit a build. The answer says whether the service admitted it; an
+    /// admitted build is then awaited with [`Self::await_build`] on this same
+    /// connection, which carries nothing else afterwards.
+    pub fn submit_build(&mut self, request: BuildRequest) -> Result<Submission, SubmitError> {
+        let id = self.next_id;
+        self.next_id += 1;
+        // Until the frame is written the service knows nothing of the
+        // request, so a failure here proves no work began. Once it is
+        // written, a failure is ambiguous: the service may have admitted and
+        // started the request (ADR-0085 §6).
+        write_frame(
+            &mut self.stream,
+            &Request {
+                id,
+                body: RequestBody::Build(Box::new(request)),
+            },
+        )
+        .map_err(|error| SubmitError::BeforeSubmission(ConnectError::Io(error)))?;
+        let response: Response = read_frame(&mut self.stream, MAX_CONTROL_FRAME_BYTES)
+            .map_err(|error| SubmitError::Ambiguous(error.into()))?
+            .ok_or_else(|| {
+                SubmitError::Ambiguous(ConnectError::Protocol(
+                    "the service closed without answering the submission".into(),
+                ))
+            })?;
+        if response.id != id {
+            return Err(SubmitError::Ambiguous(ConnectError::Protocol(format!(
+                "the service answered request {} while {id} was pending",
+                response.id
+            ))));
+        }
+        match response.body {
+            ResponseBody::Accepted {
+                ticket,
+                queued_ahead,
+            } => Ok(Submission::Accepted {
+                ticket,
+                queued_ahead,
+            }),
+            ResponseBody::Rejected { reason } => Ok(Submission::Rejected { reason }),
+            other => Err(SubmitError::Ambiguous(unexpected(
+                "an admission answer",
+                &other,
+            ))),
+        }
+    }
+
+    /// Wait for an admitted build's result and, when it is ready, its linked
+    /// bytes. There is no read timeout: the request may legitimately queue
+    /// and compile for as long as the program takes, and the process ending
+    /// is what cancels it.
+    pub fn await_build(&mut self, ticket: u64) -> Result<(BuildResult, Vec<u8>), ConnectError> {
+        self.stream.set_read_timeout(None)?;
+        let reply: BuildReply = read_frame(&mut self.stream, MAX_RESULT_FRAME_BYTES)?
+            .ok_or_else(|| ConnectError::Protocol("the service closed mid-request".into()))?;
+        if reply.ticket != ticket {
+            return Err(ConnectError::Protocol(format!(
+                "the service answered ticket {} while {ticket} was pending",
+                reply.ticket
+            )));
+        }
+        let bytes = match &reply.result {
+            BuildResult::Ready { bytes, .. } => read_chunks(&mut self.stream, *bytes)?,
+            _ => Vec::new(),
+        };
+        Ok((reply.result, bytes))
+    }
+}
+
+/// Why a submission produced no admission answer.
+#[derive(Debug)]
+pub enum SubmitError {
+    /// The request never reached the service; no work began.
+    BeforeSubmission(ConnectError),
+    /// The request was written but its answer was lost; the service may have
+    /// started it.
+    Ambiguous(ConnectError),
+}
+
+impl std::fmt::Display for SubmitError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BeforeSubmission(error) => write!(formatter, "{error}"),
+            Self::Ambiguous(error) => write!(
+                formatter,
+                "{error} after the request was submitted; whether the service started it is unknown"
+            ),
+        }
+    }
+}
+
+/// The service's admission answer to a build.
+#[derive(Debug)]
+pub enum Submission {
+    Accepted {
+        ticket: u64,
+        queued_ahead: u32,
+    },
+    /// Refused before any work began.
+    Rejected {
+        reason: String,
+    },
 }
 
 fn unexpected(expected: &str, actual: &ResponseBody) -> ConnectError {

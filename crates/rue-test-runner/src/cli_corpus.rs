@@ -377,6 +377,16 @@ pub struct DaemonStep {
     /// step's expectations; it is how a start race is staged.
     #[serde(default = "one")]
     pub concurrency: usize,
+    /// After the invocation, run this executable from the case directory and
+    /// require `run_output_exit_code` and `run_output_stdout_contains` of it.
+    /// It is how a build the service performed is shown to have produced a
+    /// working program.
+    #[serde(default)]
+    pub run_output: Option<String>,
+    #[serde(default)]
+    pub run_output_exit_code: i32,
+    #[serde(default)]
+    pub run_output_stdout_contains: Vec<String>,
 }
 
 fn one() -> usize {

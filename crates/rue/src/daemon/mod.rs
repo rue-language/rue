@@ -30,8 +30,12 @@ use std::time::{Duration, Instant};
 use sha2::{Digest, Sha256};
 
 use crate::running_image::{RunningImageIdentity, running_image_identity};
-pub use protocol::{DAEMON_PROTOCOL_VERSION, IdentityRecord, ServiceInfo, StatusReport};
-pub use service::ServeExit;
+pub use client::{ConnectError, Connection, Submission, SubmitError};
+pub use protocol::{
+    BuildRequest, BuildResult, CrashRecord, DAEMON_PROTOCOL_VERSION, DestinationRecord,
+    DiagnosticFormat, IdentityRecord, InputRecord, RequestSummary, ServiceInfo, StatusReport,
+};
+pub use service::{BuildExecutor, BuildOutput, MAX_QUEUED_REQUESTS, ServeExit};
 
 /// How long an idle service lives by default before retiring itself. A
 /// calibrated policy belongs to the qualification phase (ADR-0085 §7); this is
@@ -425,6 +429,14 @@ impl Endpoint {
     /// Remove the socket and record a dead service left behind. Only valid
     /// while the caller holds proof nobody is alive (the service lock, or the
     /// startup lock plus a free service lock).
+    /// The record a service left when a compiler panic ended it, if any. A
+    /// crash record outlives the service it describes so the client whose
+    /// request it ended can still read it; the next crash overwrites it.
+    pub fn crash_record(&self) -> Option<CrashRecord> {
+        let bytes = fs::read(self.directory.join(service::CRASH_RECORD_FILE)).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
     fn clear_stale(&self) -> Result<(), DaemonError> {
         for path in [&self.socket, &self.record] {
             match fs::remove_file(path) {
@@ -588,6 +600,31 @@ pub fn start(
     options: &StartOptions,
     launcher: &dyn ServiceLauncher,
 ) -> Result<StartOutcome, DaemonError> {
+    let started = start_connection(scope, root, options, launcher)?;
+    Ok(StartOutcome {
+        service: started.connection.service().clone(),
+        launched: started.launched,
+    })
+}
+
+/// A live, identity-checked connection to the service `start_connection`
+/// used or launched, ready to carry one build.
+pub struct StartedConnection {
+    pub connection: Connection,
+    pub launched: bool,
+    /// The endpoint the service holds, where a crash record would be found.
+    pub endpoint: Endpoint,
+}
+
+/// [`start`], keeping the handshake's connection for the caller's request
+/// instead of closing it: the client that compiles through the service
+/// submits on the very connection that proved the service is the right one.
+pub fn start_connection(
+    scope: DaemonScope,
+    root: &EndpointRoot,
+    options: &StartOptions,
+    launcher: &dyn ServiceLauncher,
+) -> Result<StartedConnection, DaemonError> {
     let identity = ServiceIdentity::current(scope)?;
     let endpoint = Endpoint::prepare(root, &identity)?;
     let began = Instant::now();
@@ -602,9 +639,10 @@ pub fn start(
     loop {
         match probe(&endpoint, &identity)? {
             Probe::Live(connection) => {
-                return Ok(StartOutcome {
-                    service: connection.service().clone(),
+                return Ok(StartedConnection {
+                    connection: *connection,
                     launched: launched.is_some(),
+                    endpoint,
                 });
             }
             Probe::Absent => match launched.as_mut() {
@@ -723,14 +761,17 @@ pub fn serve(
     scope: DaemonScope,
     root: &EndpointRoot,
     idle_timeout: Duration,
+    executor: Box<dyn BuildExecutor>,
 ) -> Result<ServeExit, DaemonError> {
     let identity = ServiceIdentity::current(scope)?;
     let endpoint = Endpoint::prepare(root, &identity)?;
     let Some(_service_lock) = FileLock::try_exclusive(&endpoint.service_lock)? else {
         return Ok(ServeExit::AlreadyRunning);
     };
-    // Holding the service lock proves whatever socket is there is dead.
+    // Holding the service lock proves whatever socket is there is dead, and
+    // that any crash record there describes a service that is gone.
     endpoint.clear_stale()?;
+    service::install_panic_recorder(endpoint.directory.clone());
     let listener = std::os::unix::net::UnixListener::bind(&endpoint.socket).map_err(|error| {
         DaemonError::io(format!("binding {}", endpoint.socket.display()), error)
     })?;
@@ -747,7 +788,7 @@ pub fn serve(
         started_at_unix_ms: unix_millis(),
     };
     write_record(&endpoint, &info)?;
-    let exit = service::run(listener, info, idle_timeout);
+    let exit = service::run(listener, info, idle_timeout, executor);
     endpoint.clear_stale()?;
     Ok(exit)
 }
