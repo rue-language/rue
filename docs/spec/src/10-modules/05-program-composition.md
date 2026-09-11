@@ -83,3 +83,16 @@ roots because drop glue is synthesized from the full type pool. ADR-0045
 defines the broader on-demand model; ADR-0047 allows future build-system source
 manifests that constrain which files may be imported without turning every
 declared input into a semantic root.
+
+{{ rule(id="10.5:5", cat="normative") }}
+
+For a selected target, the semantic meaning of a program is determined by its
+root module and the rooted set of declarations reached through the explicit
+imports in that graph. It **MUST** be independent of top-level declaration
+order, import-declaration order, which importer or analyzer runs first, the
+order in which lazy bodies are demanded, and the order of entries in a source
+manifest. Moving a module-level constant import within the same file preserves
+its file-scope binding; this rule does not change the scope of a local `let`.
+This independence concerns semantic meaning only: this rule does not change the
+existing ordering semantics of statements, parameters, fields, enum variants,
+or effectful calls.
