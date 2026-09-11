@@ -81,3 +81,53 @@ fn main() -> i32 {
 # and cannot be registered as a model gap. The three modeled trap categories
 # above keep their `runtime_error` assertions.
 exit_code = 101
+
+[[case]]
+name = "panic_terminates_without_callee_caller_cleanup_or_later_code"
+spec = ["8.0:1", "8.0:2", "3.9:1", "3.9:28"]
+description = "A panic in a callee runs no callee or caller destructor and skips later user code"
+source = """
+struct Guard { value: i32 }
+
+drop fn Guard(self) {
+    @dbg(self.value);
+}
+
+fn stop(guard: Guard) -> i32 {
+    @panic("stop now");
+    @dbg(88);
+}
+
+fn main() -> i32 {
+    let caller_guard = Guard { value: 2 };
+    stop(Guard { value: 1 });
+    @dbg(99);
+    0
+}
+"""
+exit_code = 101
+stderr_contains = "panic: stop now"
+expected_stdout = ""
+
+[[case]]
+name = "overflow_terminates_without_cleanup_or_later_code"
+spec = ["8.0:2", "8.1:2"]
+description = "An arithmetic trap skips a live destructor and all later user code"
+source = """
+struct Guard { value: i32 }
+
+drop fn Guard(self) {
+    @dbg(self.value);
+}
+
+fn main() -> i32 {
+    let guard = Guard { value: 7 };
+    let maximum: i32 = 2147483647;
+    maximum + 1;
+    @dbg(99);
+    0
+}
+"""
+exit_code = 101
+runtime_error = "integer overflow"
+expected_stdout = ""
