@@ -492,32 +492,7 @@ impl Parser {
         };
         self.expect(TokenKind::Eq)?;
         let anonymous_mark = self.anonymous_literal_mark();
-        // Float primitive names remain ordinary identifiers lexically so they
-        // do not steal value-position names. A `const _: type = ...` initializer
-        // is unambiguously type position, however, and must parse float aliases
-        // through the same `TypeExpr` path as the keyword primitive types.
-        // Only `f32` and `f64` qualify: `comptime_float` names no type a
-        // program may write (spec 3.12:3), so it stays an ordinary identifier
-        // and is reported as an undefined constant, as `comptime_int` is.
-        let type_annotated = ty.as_ref().is_some_and(|ty| match ty {
-            TypeExpr::Named(ident) => self.interner.resolve(&ident.name) == "type",
-            _ => false,
-        });
-        let float_type_initializer = match self.kind() {
-            TokenKind::Ident(symbol) => {
-                rue_lexer::is_float_type_name(self.interner.resolve(&symbol))
-            }
-            _ => false,
-        };
-        let init = if type_annotated && float_type_initializer {
-            let type_expr = self.ty()?;
-            Box::new(Expr::TypeLit(TypeLitExpr {
-                span: type_expr.span(),
-                type_expr,
-            }))
-        } else {
-            Box::new(self.expr()?)
-        };
+        let init = Box::new(self.expr()?);
         let contains_anonymous_type_literal = self.saw_anonymous_literal_since(anonymous_mark);
         self.expect(TokenKind::Semi)?;
         Ok(ConstDecl {

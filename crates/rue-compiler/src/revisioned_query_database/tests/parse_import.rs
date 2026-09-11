@@ -289,7 +289,7 @@ fn invalid_undemanded_module_is_neither_parsed_nor_lowered() {
 #[test]
 fn parse_module_frontier_parallelizes_and_reports_exact_work() {
     let texts = (0..8)
-        .map(|index| format!("fn f{index}() -> i32 {{ {index} }}\n"))
+        .map(|index| format!("fn f_{index}() -> i32 {{ {index} }}\n"))
         .collect::<Vec<_>>();
     let paths = (0..8)
         .map(|index| format!("/m{index}.rue"))
@@ -412,14 +412,14 @@ fn parse_module_frontier_one_and_many_workers_preserve_error_order() {
 #[test]
 fn warning_reference_frontier_parallelizes_and_reports_exact_work() {
     let text = (0..32)
-        .map(|index| format!("fn f{index}() -> i32 {{ {index} }}\n"))
+        .map(|index| format!("fn f_{index}() -> i32 {{ {index} }}\n"))
         .collect::<String>();
     let snapshot = source_snapshot(&[(1, "/main.rue", "main.rue", &text)], 1);
     let module = ModuleId::from_logical_path("main.rue").unwrap();
     let keys: Arc<[crate::body_query::BodyQueryKey]> = (0..32)
         .map(|index| {
             crate::body_query::BodyQueryKey::new(
-                free_function_instance(&module, &format!("f{index}")),
+                free_function_instance(&module, &format!("f_{index}")),
                 semantic_configuration(),
             )
         })
@@ -494,9 +494,9 @@ fn warning_reference_frontier_retains_large_cross_revision_narrow_reuse() {
         (0..FUNCTIONS)
             .map(|index| {
                 if changed && index == 17 {
-                    format!("fn f{index}() -> i32 {{ f0() }}\n")
+                    format!("fn f_{index}() -> i32 {{ f_0() }}\n")
                 } else {
-                    format!("fn f{index}() -> i32 {{ {index} }}\n")
+                    format!("fn f_{index}() -> i32 {{ {index} }}\n")
                 }
             })
             .collect::<String>()
@@ -509,7 +509,7 @@ fn warning_reference_frontier_retains_large_cross_revision_narrow_reuse() {
     let keys: Arc<[crate::body_query::BodyQueryKey]> = (0..FUNCTIONS)
         .map(|index| {
             crate::body_query::BodyQueryKey::new(
-                free_function_instance(&module, &format!("f{index}")),
+                free_function_instance(&module, &format!("f_{index}")),
                 semantic_configuration(),
             )
         })
@@ -641,7 +641,7 @@ fn rue_1667_frontier_latency_witness() {
     let parse_texts = (0..PARSE_MODULES)
         .map(|index| {
             format!(
-                "// {}\nfn f{index}() -> i32 {{ {index} }}\n",
+                "// {}\nfn f_{index}() -> i32 {{ {index} }}\n",
                 "x".repeat(PARSE_COMMENT_BYTES)
             )
         })
@@ -669,18 +669,18 @@ fn rue_1667_frontier_latency_witness() {
         .collect::<Vec<_>>();
 
     let warning_calls = (0..WARNING_CALLEES_PER_BODY)
-        .map(|index| format!("f{index}()"))
+        .map(|index| format!("f_{index}()"))
         .collect::<Vec<_>>()
         .join(" + ");
     let warning_text = (0..WARNING_FUNCTIONS)
-        .map(|index| format!("fn f{index}() -> i32 {{ {warning_calls} }}\n"))
+        .map(|index| format!("fn f_{index}() -> i32 {{ {warning_calls} }}\n"))
         .collect::<String>();
     let warning_snapshot = source_snapshot(&[(1, "/main.rue", "main.rue", &warning_text)], 1);
     let warning_module = ModuleId::from_logical_path("main.rue").unwrap();
     let warning_keys: Arc<[crate::body_query::BodyQueryKey]> = (0..WARNING_FUNCTIONS)
         .map(|index| {
             crate::body_query::BodyQueryKey::new(
-                free_function_instance(&warning_module, &format!("f{index}")),
+                free_function_instance(&warning_module, &format!("f_{index}")),
                 semantic_configuration(),
             )
         })

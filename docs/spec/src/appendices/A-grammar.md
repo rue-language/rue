@@ -128,8 +128,7 @@ place_postfix  = "." IDENT | "[" expression "]"
 type           = "i8" | "i16" | "i32" | "i64"
                | "u8" | "u16" | "u32" | "u64"
                | "usize" | "isize"
-               | "f32" | "f64"          (* ordinary identifiers naming builtin
-                                           types, not keywords; §3.12 *)
+               | "f32" | "f64"
                | "bool" | "type" | "()" | "!"
                | "[" type [ ";" array_length ] "]"
                | "ptr" "const" type

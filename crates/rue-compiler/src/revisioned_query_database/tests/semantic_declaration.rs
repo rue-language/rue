@@ -5285,7 +5285,7 @@ fn authoritative_signature_cancellation_publishes_nothing_and_retries() {
 #[test]
 fn declaration_shell_batches_over_64_entries_reuse_without_thrashing() {
     let source_text = (0..129)
-        .map(|index| format!("fn f{index}() {{}}"))
+        .map(|index| format!("fn f_{index}() {{}}"))
         .collect::<Vec<_>>()
         .join("\n");
     let source = source_snapshot(&[(1, "/main.rue", "main.rue", source_text.as_str())], 1);
