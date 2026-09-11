@@ -248,4 +248,5 @@ The table is generated from ADR frontmatter. Run
 | [0083](0083-rue-test-mvp.md) | rue test MVP: test declarations, runner, and event protocol | Accepted | tooling, testing, syntax, semantics, incremental, cli, language-shape |
 | [0084](0084-native-calling-convention.md) | The native Rue calling convention: the target C convention plus a wider return bank | Accepted | abi, codegen, semantics |
 | [0085](0085-persistent-compiler-daemon.md) | Persistent compiler daemon | Accepted | architecture, compiler, incremental, tooling, performance |
+| [0086](0086-no-macros-metaprogramming-never-runs-on-syntax.md) | No macros: metaprogramming never runs on syntax and never introduces names | Accepted | language, syntax, semantics, comptime, tooling, principle |
 <!-- ADR-INDEX:END -->
