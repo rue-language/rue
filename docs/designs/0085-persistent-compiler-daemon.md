@@ -26,8 +26,9 @@ rather than a language `PreviewFeature`.
 
 ADR acceptance is tracked by RUE-2123; implementation is tracked by RUE-2126.
 The opt-in service and its bounded resource qualification are implemented by
-RUE-2128 and RUE-2129. Automatic startup remains gated by the separate
-measurement and rollout decision in RUE-2130.
+RUE-2128 and RUE-2129. RUE-2130 records the measured decision to keep automatic
+use off by default. RUE-2131 extends the service to watch and all presentation
+stages through the existing compiler and client lifecycle owners.
 
 ## Summary
 
@@ -196,16 +197,23 @@ Driver options are `--daemon=off|auto|required`:
 | `auto` | Use or start a compatible daemon for supported requests. An unsupported request or a service known not to have accepted the request uses direct execution. |
 | `required` | Require daemon execution; incompatibility, unavailability, or an unsupported mode is an error. Useful for tests and reproducible performance experiments. |
 
-The initial default remains `off`. The intended final default is `auto` for
-ordinary internal-linker compilation, `rue test` and `rue test --list`, and
-analysis-only `--emit air` requests. `--help`, `--version`, and `explain`
-remain local. Initially `--watch`, other or combined `--emit` requests, explicit system linking,
+The default remains `off`: the RUE-2130
+[qualification](../notes/daemon-performance-regime.md) did not demonstrate an
+end-to-end benefit. Explicit `auto|required` supports ordinary internal-linker
+compilation, `rue test` and `rue test --list`, executable and test watch, and all
+presentation stages, including combined `--emit` requests. Presentation uses
+the existing stage parser, order, and artifact producers. Watch uses the same
+cycle lifecycle as direct execution; the client monitors loader-owned read
+observations and owns publication, diagnostics, test execution, and
+supersession. Canceling its request does not stop the shared service.
+
+`--help`, `--version`, and `explain` remain local. Explicit system linking,
 `--time-passes`, the existing `--benchmark-json` contract, and compiler tracing
 enabled by `--log-level` or `RUST_LOG` use direct mode under `auto`; `required`
-rejects them before starting work. Tracing format retains its existing meaning
-in direct mode. This support table must be documented and tested, so partial
-rollout never silently changes their
-existing stream or lifecycle contracts.
+rejects them before starting work. Existing invalid option combinations remain
+invalid, including watch with presentation or input `--module-manifest`. The
+separate daemon performance-capture contract retains its narrower qualified
+surface. The [driver support table](../development.md) documents these rules.
 
 The analysis-only entry point uses the existing artifact query and its current
 rooting semantics. This ADR does not add a new `rue check` command. The daemon
@@ -540,12 +548,15 @@ input validation. Each slice lands through its own reviewed PR and merge queue.
    retention, idle retirement, process-boundary parity, and edit-sequence
    coverage. The qualification record documents native macOS evidence;
    both supported architectures remain subject to their native CI hosts.
-4. **Performance regime and automatic-mode decision — RUE-2130.** Add separate daemon
-   measurements, pin hermetic/fresh callers to `off`, calibrate policy, then
-   decide whether the supported check/test/build workflow defaults to `auto`.
-5. **Additional consumers — RUE-2131.** Move watch and remaining presentation modes
-   onto the service when each has cancellation and stream-parity coverage.
-   Replace their lifetime adapters while retaining the same executor.
+4. **Performance regime and automatic-mode decision — RUE-2130.** Implemented a
+   separate validated daemon measurement regime and preserved hermetic/fresh
+   callers. Release qualification keeps automatic use off: observed retained
+   query reuse did not produce an end-to-end benefit.
+5. **Additional consumers — RUE-2131.** Implemented service adapters for watch
+   and all presentation stages through the same executor, with cancellation,
+   repair, publication, and stream-parity coverage. The watching client keeps
+   its cycle and test-process lifecycle; loader-owned read observations cross
+   the protocol as owned data.
 
 Acceptance coverage must include unchanged/body/import/manifest/std/archive
 changes; missing candidates appearing; symlink retargeting; target/options and

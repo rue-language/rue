@@ -940,9 +940,13 @@ for no test.
 
 ## `--watch`
 
-`rue test <root> --watch` keeps **one** compiler for the life of the process and
-runs one test cycle per accepted source revision, so a cycle pays for what the
-edit changed rather than for a whole recompile. It combines with every test-mode
+`rue test <root> --watch` retains compiler state between accepted source
+revisions and runs one test cycle per revision. The default `--daemon=off`
+keeps that compiler in the watch process; `--daemon=auto|required` uses the
+shared service and its bounded retention policy. Both use the same cycle
+lifecycle. Test execution, process-group cancellation, scratch directories, and
+event output belong to the watching client. Stopping a watch does not stop the
+service. It combines with every test-mode
 flag except `--list` — a listing is an inventory of one revision, and a watcher
 has no one revision — and keeps compile mode's own exclusions (`--emit`,
 `--benchmark-json`, `--time-passes`, `-o`).

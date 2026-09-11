@@ -85,11 +85,24 @@ any failure is the invocation's failure and nothing is retried.
 | --- | --- | --- |
 | Ordinary internal-linker build | service | service |
 | `rue test`, `rue test --list` (the image or inventory; the runner stays in the client) | service | service |
-| `--emit air` alone (analysis only; nothing is linked) | service | service |
-| `--watch`, any other `--emit`, `--linker <cmd>` | direct | refused |
+| Any supported `--emit` stage or combination (presentation only; nothing is linked) | service | service |
+| Executable `--watch` and `rue test --watch` | service | service |
+| `--linker <cmd>` | direct | refused |
 | `--time-passes`, `--benchmark-json` | direct | refused |
 | Tracing via `--log-level` or `RUST_LOG` | direct | refused |
 | `--help`, `--version`, `explain`, `rue daemon` | local | local |
+
+Watch uses the same cycle lifecycle in direct and service modes. The client
+monitors the loader's accepted and attempted reads, cancels superseded requests,
+and owns output publication and test process groups. Canceling or ending a
+watch does not stop the shared service. Existing watch exclusions still apply,
+including `--emit` and input `--module-manifest`; selecting a daemon does not
+make an otherwise invalid option combination valid.
+
+Automatic service use remains off by default after the
+[client-to-publication qualification](notes/daemon-performance-regime.md).
+The explicit performance-capture mode has its own narrower support table;
+watch and additional presentation stages are not qualified by that experiment.
 
 The model is exactly one root source file per compile; additional files are
 reached through `@import` and discovered transitively from the root. The legacy

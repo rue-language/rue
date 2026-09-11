@@ -77,9 +77,8 @@ impl std::str::FromStr for DaemonMode {
 /// the support table of ADR-0085 §2: each of these keeps its existing direct
 /// stream and lifecycle contract until its own slice moves it.
 pub(crate) fn unsupported_reason(options: &Options) -> Option<&'static str> {
-    // Watch remains a direct-only lifecycle until the service adapter is
-    // selected by the caller. Emit stages, however, are ordinary service
-    // presentation requests and travel through the canonical pipeline.
+    // Watch selects a service adapter for the shared cycle lifecycle. Emit
+    // stages are ordinary requests through the canonical presentation path.
     if !matches!(options.linker, LinkerMode::Internal) {
         return Some("a system linker runs directly");
     }
