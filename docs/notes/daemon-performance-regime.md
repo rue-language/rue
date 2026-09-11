@@ -90,6 +90,93 @@ compiler behavior remains available without the measurement option.
 The explicit `--daemon=off` pins in Rue's rules, corpus, oracle, frontend-diff,
 benchmark, and shared test-runner callers keep hermetic and fresh-process
 measurements independent of ambient developer services. The ordinary CLI
-default remains direct until a separately reviewed release calibration decides
-whether automatic startup is justified. This note does not make that rollout
-decision and does not claim a latency or RSS result.
+default remains direct. The release calibration below does not support automatic
+startup; explicit opt-in remains available.
+
+## Release calibration and default recommendation
+
+The 2026-09-11 qualification used clean source
+`cdf1059285b63bf6712fa639a2e5a1c164b5e4ce` and a release ThinLTO compiler,
+SHA-256 `76049650e3a7288a1d4a58e9906c6f002352886c96fc6da0779a5bec03b7bb29`.
+The host was an Apple M5 with 10 logical CPUs and 24 GiB RAM, running
+macOS 26.6.2 on AArch64. Optimization was O0, with the internal linker and
+no preview features. Build and AIR requests used four compiler workers.
+Tests used one test process and automatic compiler workers: the fresh process
+resolved to 10 workers and the service's resource policy resolved to four.
+This compares the configured product policies; it is not an equal-worker
+compiler scaling experiment.
+
+The [validated report](daemon-performance-qualification.json) contains all 34
+pairs across the fourteen required scenarios. The
+[evidence companion](daemon-performance-evidence.json) preserves compiler and
+validator identities, fixture and standard-library hashes, every subprocess's
+arguments, intervals and stream digests, resource snapshots, sampled RSS,
+cleanup results, and the descriptive summary. The runner keeps raw streams,
+sidecars and produced programs in its output directory. The checked-in report
+can be validated with the command above; the companion is supporting evidence,
+not a second performance-contract schema.
+
+Every paired output, diagnostic and exit status matched. Produced executables
+were actually run and their behavior compared. Each of the five test pairs
+executed and reaped one test on each path, including prepared requests; image
+reuse did not replace execution. Both AIR/test/build orders reused shared
+queries in the same session. The second test request after an executable build
+also passed; the query-runtime regression discovered during qualification is
+covered by the permanent alternating-root and mixed-validation tests.
+Body, API and import edits, an error, repair and revert all passed. Repeated
+large-program requests evicted the retained host and created different session
+generations for identical inputs. Restart changed daemon identity, concurrent
+clients overlapped with an observed queued request, and both private service
+lifetimes were stopped and reaped.
+
+The following are external spawn-to-client-exit durations in milliseconds.
+Rows with multiple observations show medians; all individual timings and ranges
+remain in the report and companion.
+
+| Scenario | Pairs | Fresh direct | Daemon |
+| --- | ---: | ---: | ---: |
+| First startup request, empty private endpoint | 1 | 12.4 | 185.9 |
+| Prepared startup executable | 3 | 16.5 | 175.3 |
+| Prepared Lattice executable | 3 | 719.7 | 1,044.2 |
+| Lattice AIR in mixed workflow | 3 | 707.3 | 1,871.2 |
+| Test after another artifact request | 2 | 27.1 | 173.3 |
+| Prepared test request | 3 | 26.4 | 168.1 |
+| Body edit in the two-module fixture | 1 | 17.6 | 172.4 |
+| 4,096-function requests with host eviction | 2 | 3,355.3 | 11,751.0 |
+| Concurrent Lattice clients | 2 | 855.4 | 2,111.4 |
+
+The daemon was slower in every observed pair. Reuse was real: a prepared
+Lattice request reported over 61,000 query reuses, and the prepared startup
+executor took under one millisecond. The latter still took roughly 175 ms
+at the external client boundary. A representative prepared Lattice reply
+spent about 765 ms transferring and decoding its response. These clocks
+locate costs outside reused compiler work but do not establish which socket,
+serialization or scheduling mechanism caused them. Phase clocks are nested,
+so subtracting or adding them does not produce a complete latency breakdown.
+
+Peak observed retained query charge was 323,961,666 bytes (309.0 MiB), including
+the protected request before the 256 MiB policy retired its host. The peak
+response charge was 2,205,896 bytes (2.1 MiB). Sampled daemon RSS peaks were
+750,496 KiB (732.9 MiB) and 363,040 KiB (354.5 MiB) in the two lifetimes.
+These are daemon RSS observations, not a paired total-process memory comparison;
+the runner did not sample fresh compiler RSS. Query charge, source bytes,
+response charge and RSS overlap and must not be summed. Allocator high-water
+memory may remain after logical eviction, and sampling does not cover the
+first reply's cold-start peak.
+
+**Keep automatic daemon use off.** Correctness, retained reuse and bounded
+lifecycle behavior passed, but this calibration shows no client-latency benefit
+and a persistent process with a substantial memory footprint. It therefore
+provides no evidence for imposing automatic startup on ordinary users.
+Future rollout work should profile transport and end-to-end overhead, then
+repeat the complete qualification after any repair and on additional supported
+hosts before changing the default. No persistence or incremental linking is
+introduced by this measurement work.
+
+These are descriptive observations from one host and one ordered run, with
+three repeats for the prepared cases and fewer for transitions. Normal desktop
+applications remained active; task-owned builds were stopped for the run.
+The fixed fresh-then-daemon order and OS cache effects are not randomized,
+and no confidence interval or cross-platform speedup is claimed. Those limits
+reinforce retaining the current default; they do not turn the measured slowdown
+into a prediction for every workload or machine.
