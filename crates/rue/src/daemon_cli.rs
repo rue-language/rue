@@ -350,7 +350,7 @@ mod tests {
             "scope: /work/project",
             "isolation: ci",
             "endpoint: /run/rue/0123",
-            "protocol: 2",
+            "protocol: 3",
             "image: X86_64 LinuxProcSelfExeSha256 abcd",
             "idle timeout: 1800000 ms",
             "active request: none",

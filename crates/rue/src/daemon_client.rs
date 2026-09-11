@@ -8,11 +8,14 @@ use std::path::{Path, PathBuf};
 
 use rue_compiler::{CompileOptions, LinkerMode};
 use rue_driver::daemon::{
-    self, BuildKind, BuildRequest, BuildResult, DaemonScope, DiagnosticFormat, EndpointRoot,
-    InputRecord, ProcessLauncher, RequestMeasurement, ServiceInfo, StartOptions, Submission,
-    SubmitError,
+    self, BuildKind, BuildObservations, BuildRequest, BuildResult, ConnectError, DaemonScope,
+    DiagnosticFormat, EndpointRoot, InputRecord, ProcessLauncher, RequestMeasurement, ServiceInfo,
+    StartOptions, Submission, SubmitError,
 };
-use rue_driver::{HostPathContext, WatchInput, WatchInputParts};
+use rue_driver::{
+    AttemptedRead, AttemptedReadOutcomeParts, AttemptedReadParts, HostPathContext, WatchInput,
+    WatchInputParts,
+};
 use rue_error::ErrorCode;
 use rue_perf_schema::{
     DAEMON_PERFORMANCE_RECORD_KIND, DAEMON_PERFORMANCE_SCHEMA_VERSION, DaemonArtifact,
@@ -22,8 +25,13 @@ use rue_perf_schema::{
 use sha2::{Digest, Sha256};
 
 use crate::compile::{Announcement, announce};
-use crate::emit::{self, EmitStage};
+use crate::emit;
+use crate::emit::EmitStage;
 use crate::output::{PublicationDestination, PublishRequest, publish_watch_executable};
+use crate::watch::{
+    BackendCycle, BackendFailure, BackendPrepare, WatchBackend, WatchCycleRequest,
+    WatchLoopRequest, WatchMode, WatchTermination,
+};
 use crate::{
     DiagnosticOutput, DriverMode, ErrorFormat, Options, VERSION, compile_pool_jobs,
     driver_failure_exit_code, ice_diagnostic, render_driver_error, render_internal_error,
@@ -69,12 +77,9 @@ impl std::str::FromStr for DaemonMode {
 /// the support table of ADR-0085 §2: each of these keeps its existing direct
 /// stream and lifecycle contract until its own slice moves it.
 pub(crate) fn unsupported_reason(options: &Options) -> Option<&'static str> {
-    if options.watch {
-        return Some("--watch runs directly");
-    }
-    if !options.emit_stages.is_empty() && options.emit_stages != [EmitStage::Air] {
-        return Some("--emit stages other than a sole `air` run directly");
-    }
+    // Watch remains a direct-only lifecycle until the service adapter is
+    // selected by the caller. Emit stages, however, are ordinary service
+    // presentation requests and travel through the canonical pipeline.
     if !matches!(options.linker, LinkerMode::Internal) {
         return Some("a system linker runs directly");
     }
@@ -375,6 +380,10 @@ pub(crate) fn run(options: &Options, path_context: &HostPathContext) -> Outcome 
         ));
     }
 
+    if options.watch {
+        return run_watch(options, path_context);
+    }
+
     let kind = match (&options.mode, options.test.list) {
         (DriverMode::Compile, _) if !options.emit_stages.is_empty() => BuildKind::Analysis,
         (DriverMode::Compile, _) => BuildKind::Executable,
@@ -387,7 +396,7 @@ pub(crate) fn run(options: &Options, path_context: &HostPathContext) -> Outcome 
     let test_plan = match kind {
         BuildKind::TestImage => {
             let seed = options.test.seed.unwrap_or_else(test_mode::fresh_seed);
-            match test_mode::service_run_root(seed) {
+            match test_mode::service_run_root(seed, None) {
                 Ok((run_root, image_path)) => Some(TestPlan {
                     seed,
                     run_root,
@@ -499,7 +508,7 @@ pub(crate) fn run(options: &Options, path_context: &HostPathContext) -> Outcome 
     };
 
     match result {
-        BuildResult::Rejected { stderr } => {
+        BuildResult::Rejected { stderr } | BuildResult::CompileRejected { stderr } => {
             eprint!("{stderr}");
             let accepted_input_identity = measurement
                 .as_ref()
@@ -695,6 +704,8 @@ pub(crate) fn run(options: &Options, path_context: &HostPathContext) -> Outcome 
                         opt_level: options.opt_level,
                         candidates_declared: options.test_candidates_path.is_some(),
                         seed: plan.seed,
+                        cycle: None,
+                        cancellation: None,
                     });
                     write_performance_sidecar(
                         options,
@@ -744,6 +755,11 @@ fn capture(
     BuildRequest {
         measure_performance: options.daemon_performance_json.is_some(),
         artifact: kind,
+        emit_stages: options
+            .emit_stages
+            .iter()
+            .map(|stage| stage.name().into())
+            .collect(),
         working_directory: path_context.working_directory().display().to_string(),
         root_source: options.source_path.clone(),
         output_path,
@@ -765,6 +781,485 @@ fn capture(
             ErrorFormat::Json => DiagnosticFormat::Json,
         },
         color: std::io::stderr().is_terminal(),
+    }
+}
+
+/// Run the service backend through the same watch lifecycle as direct builds.
+fn run_watch(options: &Options, path_context: &HostPathContext) -> Outcome {
+    if !options.emit_stages.is_empty() {
+        return Outcome::Direct;
+    }
+    let scope_dir = match &options.daemon_scope {
+        Some(scope) => path_context.anchor(Path::new(scope)),
+        None => {
+            let root = path_context.anchor(Path::new(&options.source_path));
+            root.parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| path_context.working_directory().to_path_buf())
+        }
+    };
+    let kind = match options.mode {
+        DriverMode::Compile => BuildKind::Executable,
+        DriverMode::Test => BuildKind::TestImage,
+    };
+    let seed = options.test.seed.unwrap_or_else(test_mode::fresh_seed);
+    let backend = ServiceWatchBackend {
+        options,
+        path_context,
+        scope_dir,
+        kind,
+        seed,
+        pending: None,
+        // The service's loader owns root observation and source-manifest
+        // policy. A client-side probe here could read a denied root before
+        // the service has admitted the request.
+        inputs: Vec::new(),
+        attempted_reads: Vec::new(),
+    };
+    let mode = match options.mode {
+        DriverMode::Compile => WatchMode::Executable {
+            output_path: options.output_path.clone(),
+        },
+        DriverMode::Test => WatchMode::Test(Box::new(crate::watch::TestWatch {
+            repro_flags: test_repro_flags(options, path_context),
+            repro_root: test_mode::absolute_spelling_at(
+                Path::new(&options.source_path),
+                path_context.working_directory(),
+            ),
+            repro_env: test_repro_env(std::env::var_os("RUE_STD_PATH").as_deref().map(Path::new)),
+            jobs: test_mode_jobs(options.jobs),
+            target: options.target,
+            opt_level: options.opt_level,
+            test_candidates_path: options
+                .test_candidates_path
+                .as_deref()
+                .map(|path| path_context.anchor(Path::new(path)).display().to_string()),
+            test_candidates_display_path: options.test_candidates_path.clone(),
+            seed,
+            options: options.test.clone(),
+        })),
+    };
+    match crate::watch::run_backend(
+        WatchLoopRequest {
+            source_path: options.source_path.clone(),
+            error_format: options.error_format,
+            mode,
+        },
+        backend,
+    ) {
+        WatchTermination::Direct => Outcome::Direct,
+        WatchTermination::Exit(code) => Outcome::Exit(code),
+    }
+}
+
+struct ServiceWatchBuild {
+    result: BuildResult,
+    bytes: Vec<u8>,
+    run_root: PathBuf,
+    image_path: PathBuf,
+    cleanup: bool,
+}
+
+impl Drop for ServiceWatchBuild {
+    fn drop(&mut self) {
+        if self.cleanup {
+            discard_service_run_root(&self.image_path, &self.run_root);
+        }
+    }
+}
+
+impl ServiceWatchBuild {
+    fn disarm(mut self) -> (BuildResult, Vec<u8>, PathBuf, PathBuf) {
+        self.cleanup = false;
+        (
+            std::mem::replace(&mut self.result, BuildResult::Canceled),
+            std::mem::take(&mut self.bytes),
+            std::mem::take(&mut self.run_root),
+            std::mem::take(&mut self.image_path),
+        )
+    }
+}
+
+fn retire_pending_before_successor<T>(
+    pending: &mut Option<ServiceWatchBuild>,
+    allocate: impl FnOnce() -> T,
+) -> T {
+    drop(pending.take());
+    allocate()
+}
+
+fn discard_service_run_root(image_path: &Path, run_root: &Path) {
+    if !image_path.as_os_str().is_empty() {
+        let _ = std::fs::remove_file(image_path);
+    }
+    if !run_root.as_os_str().is_empty() {
+        let _ = std::fs::remove_dir(run_root);
+    }
+}
+
+struct ServiceRunRootGuard {
+    run_root: PathBuf,
+    image_path: PathBuf,
+    armed: bool,
+}
+
+impl Drop for ServiceRunRootGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            discard_service_run_root(&self.image_path, &self.run_root);
+        }
+    }
+}
+
+struct ServiceWatchBackend<'a> {
+    options: &'a Options,
+    path_context: &'a HostPathContext,
+    scope_dir: PathBuf,
+    kind: BuildKind,
+    seed: u64,
+    pending: Option<ServiceWatchBuild>,
+    inputs: Vec<WatchInput>,
+    attempted_reads: Vec<AttemptedRead>,
+}
+
+impl ServiceWatchBackend<'_> {
+    fn termination(&self, message: String, fallback_allowed: bool) -> BackendPrepare {
+        if fallback_allowed && self.options.daemon == DaemonMode::Auto {
+            BackendPrepare::Terminate(WatchTermination::Direct)
+        } else {
+            eprintln!(
+                "{}",
+                render_daemon_error(self.options.error_format, message)
+            );
+            BackendPrepare::Terminate(WatchTermination::Exit(driver_failure_exit_code(
+                &self.options.mode,
+            )))
+        }
+    }
+
+    fn observation_inputs(&self, observations: &BuildObservations) -> Vec<WatchInput> {
+        let mut inputs: Vec<WatchInput> = observations
+            .inputs
+            .iter()
+            .cloned()
+            .map(watch_input)
+            .collect();
+        inputs.sort_by(|a, b| a.requested_path().cmp(b.requested_path()));
+        inputs.dedup();
+        inputs
+    }
+
+    fn attempted_reads(&self, observations: &BuildObservations) -> Vec<AttemptedRead> {
+        observations
+            .attempted_reads
+            .iter()
+            .cloned()
+            .map(|read| {
+                AttemptedRead::from_parts(AttemptedReadParts {
+                    requested_path: read.requested_path,
+                    outcome: match read.outcome {
+                        rue_driver::daemon::AttemptedReadOutcomeRecord::Accepted {
+                            canonical_path,
+                            content_fingerprint,
+                        } => AttemptedReadOutcomeParts::Accepted {
+                            canonical_path,
+                            content_fingerprint,
+                        },
+                        rue_driver::daemon::AttemptedReadOutcomeRecord::Failed {
+                            reason,
+                            observed,
+                            probe,
+                            route_only,
+                        } => AttemptedReadOutcomeParts::Failed {
+                            reason,
+                            observed,
+                            probe,
+                            route_only,
+                        },
+                    },
+                })
+            })
+            .collect()
+    }
+}
+
+impl WatchBackend for ServiceWatchBackend<'_> {
+    fn prepare_each_cycle(&self) -> bool {
+        true
+    }
+
+    fn announces_reobserve_during_prepare(&self) -> bool {
+        true
+    }
+
+    fn returned_observations_are_authoritative(&self) -> bool {
+        true
+    }
+
+    fn prepare(
+        &mut self,
+        _inputs: &[WatchInput],
+        _reobserve: bool,
+        cycle: u64,
+        cancellation: &rue_compiler::unstable::CompilationCancellation,
+    ) -> BackendPrepare {
+        // A ready image can be rejected as stale after publication
+        // revalidation. Drop its owned preparation before allocating the next
+        // cycle's root, so a stale cycle cannot retain or later delete a path
+        // that the successor just claimed.
+        let root_guard = retire_pending_before_successor(&mut self.pending, || {
+            if self.kind == BuildKind::TestImage {
+                match test_mode::service_run_root(self.seed, Some(cycle)) {
+                    Ok((run_root, image_path)) => Ok(ServiceRunRootGuard {
+                        run_root,
+                        image_path,
+                        armed: true,
+                    }),
+                    Err(message) => Err(message),
+                }
+            } else {
+                Ok(ServiceRunRootGuard {
+                    run_root: PathBuf::new(),
+                    image_path: PathBuf::new(),
+                    armed: true,
+                })
+            }
+        });
+        let mut root_guard = match root_guard {
+            Ok(root_guard) => root_guard,
+            Err(message) => return self.termination(message, false),
+        };
+        let request = capture(
+            self.options,
+            self.path_context,
+            self.kind,
+            if self.kind == BuildKind::TestImage {
+                root_guard.image_path.display().to_string()
+            } else {
+                self.options.output_path.clone()
+            },
+        );
+        let (scope, root, launcher) = match (
+            DaemonScope::new(&self.scope_dir, self.options.daemon_isolation.as_deref()),
+            EndpointRoot::resolve(),
+            ProcessLauncher::current_executable(),
+        ) {
+            (Ok(scope), Ok(root), Ok(launcher)) => (scope, root, launcher),
+            (Err(error), _, _) => {
+                return self.termination(format!("no service scope: {error}"), true);
+            }
+            (_, Err(error), _) => {
+                return self.termination(format!("no service endpoint: {error}"), true);
+            }
+            (_, _, Err(error)) => {
+                return self.termination(format!("no service launcher: {error}"), true);
+            }
+        };
+        let mut started =
+            match daemon::start_connection(scope, &root, &StartOptions::default(), &launcher) {
+                Ok(started) => started,
+                Err(error) => {
+                    return self.termination(format!("the service is unavailable: {error}"), true);
+                }
+            };
+        let ticket = match started.connection.submit_build(request) {
+            Ok(Submission::Accepted { ticket, .. }) => ticket,
+            Ok(Submission::Rejected { reason }) => {
+                return self
+                    .termination(format!("the service refused the request: {reason}"), true);
+            }
+            Err(SubmitError::BeforeSubmission(error)) => {
+                return self
+                    .termination(format!("the request could not be submitted: {error}"), true);
+            }
+            Err(SubmitError::Ambiguous(error)) => {
+                return self.termination(error.to_string(), false);
+            }
+        };
+        let (result, bytes) = match started
+            .connection
+            .await_build_cancellable(ticket, || cancellation.is_canceled())
+        {
+            Ok(answer) => answer,
+            Err(ConnectError::WatchSuperseded) => return BackendPrepare::Superseded,
+            Err(error) => return self.termination(error.to_string(), false),
+        };
+        let observations = started.connection.observations().clone();
+        self.inputs = self.observation_inputs(&observations);
+        self.attempted_reads = self.attempted_reads(&observations);
+        match &result {
+            BuildResult::Canceled if cancellation.is_canceled() => {
+                return BackendPrepare::Superseded;
+            }
+            BuildResult::Rejected { stderr } => {
+                return BackendPrepare::Failed(BackendFailure {
+                    diagnostic: stderr.clone(),
+                    inputs: self.inputs.clone(),
+                    attempted_reads: self.attempted_reads(&observations),
+                });
+            }
+            BuildResult::Failed { message, internal } => {
+                let rendered = if *internal {
+                    render_internal_error(self.options.error_format, message.clone())
+                } else {
+                    render_daemon_error(self.options.error_format, message.clone())
+                };
+                eprintln!("{rendered}");
+                return BackendPrepare::Terminate(WatchTermination::Exit(
+                    driver_failure_exit_code(&self.options.mode),
+                ));
+            }
+            BuildResult::Canceled => return BackendPrepare::Superseded,
+            BuildResult::Listing { .. } | BuildResult::Presentation { .. } => {
+                return self.termination("invalid watch artifact response".into(), false);
+            }
+            BuildResult::Ready { .. } | BuildResult::CompileRejected { .. } => {}
+        }
+        self.pending = Some(ServiceWatchBuild {
+            result,
+            bytes,
+            run_root: root_guard.run_root.clone(),
+            image_path: root_guard.image_path.clone(),
+            cleanup: true,
+        });
+        root_guard.armed = false;
+        BackendPrepare::Ready
+    }
+
+    fn inputs(&self) -> Vec<WatchInput> {
+        self.inputs.clone()
+    }
+
+    fn attempted_reads(&self) -> Vec<AttemptedRead> {
+        self.attempted_reads.clone()
+    }
+
+    fn cycle(&mut self, request: WatchCycleRequest<'_>) -> BackendCycle {
+        let WatchCycleRequest {
+            mode,
+            cancellation,
+            inputs,
+            cycle,
+            ..
+        } = request;
+        let Some(pending) = self.pending.take() else {
+            return BackendCycle::Terminate(WatchTermination::Exit(driver_failure_exit_code(
+                &self.options.mode,
+            )));
+        };
+        if cancellation.compilation.is_canceled() || rue_driver::watch_inputs_changed(&inputs) {
+            return BackendCycle::Superseded(crate::compile::Supersession::BeforePublication);
+        }
+        // An accepted revision whose image failed still reaches the shared
+        // cycle boundary. It owns the same cycle number, diagnostics, and
+        // completion milestones as a direct compilation failure.
+        if let BuildResult::CompileRejected { stderr } = &pending.result {
+            return BackendCycle::Failed {
+                diagnostic: Some(stderr.clone()),
+            };
+        }
+        // The test runner owns cleanup of a published image. Every earlier
+        // return drops the preparation; a published failing test can retain
+        // its own scratch evidence.
+        let (result, bytes, run_root, image_path) = pending.disarm();
+        let BuildResult::Ready {
+            stderr,
+            target,
+            destination,
+            test_image,
+            ..
+        } = result
+        else {
+            return BackendCycle::Terminate(WatchTermination::Exit(driver_failure_exit_code(
+                &self.options.mode,
+            )));
+        };
+        let target = match target.parse::<rue_target::Target>() {
+            Ok(target) => target,
+            Err(error) => {
+                discard_service_run_root(&image_path, &run_root);
+                return BackendCycle::Terminate(
+                    self.termination(error.to_string(), false).termination(),
+                );
+            }
+        };
+        let destination = PublicationDestination::from_parts(
+            PathBuf::from(destination.path),
+            PathBuf::from(destination.display_path),
+            destination
+                .source_paths
+                .into_iter()
+                .map(PathBuf::from)
+                .collect(),
+        );
+        if let Err(error) = publish_watch_executable(
+            PublishRequest {
+                destination,
+                bytes: &bytes,
+                target,
+            },
+            &inputs,
+        ) {
+            if matches!(error, crate::output::PublishError::InputsChanged) {
+                discard_service_run_root(&image_path, &run_root);
+                return BackendCycle::Superseded(crate::compile::Supersession::AtPublication);
+            }
+            discard_service_run_root(&image_path, &run_root);
+            return BackendCycle::Failed {
+                diagnostic: Some(
+                    DiagnosticOutput::new(self.options.error_format, Vec::new())
+                        .render_error(&error.into_compile_error()),
+                ),
+            };
+        }
+        eprint!("{stderr}");
+        if let Some(record) = test_image {
+            let std_root = std::env::var_os("RUE_STD_PATH").map(PathBuf::from);
+            let run_cancellation = cancellation.run();
+            let exit = test_mode::run_service_image(test_mode::ServiceRun {
+                record: *record,
+                image_path: &image_path,
+                run_root: &run_root,
+                options: &self.options.test,
+                root: &self.options.source_path,
+                repro_root: &test_mode::absolute_spelling_at(
+                    Path::new(&self.options.source_path),
+                    self.path_context.working_directory(),
+                ),
+                repro_flags: &test_repro_flags(self.options, self.path_context),
+                repro_env: &test_repro_env(std_root.as_deref()),
+                jobs: test_mode_jobs(self.options.jobs),
+                target: self.options.target,
+                opt_level: self.options.opt_level,
+                candidates_declared: self.options.test_candidates_path.is_some(),
+                seed: self.seed,
+                cycle: Some(cycle),
+                cancellation: run_cancellation,
+            });
+            if cancellation.compilation.is_canceled()
+                || cancellation.run().is_some_and(|r| r.is_canceled())
+            {
+                return BackendCycle::Superseded(crate::compile::Supersession::BeforePublication);
+            }
+            if exit.code() == 2 {
+                return BackendCycle::Failed { diagnostic: None };
+            }
+        }
+        let _ = mode;
+        BackendCycle::Completed
+    }
+}
+
+trait PrepareTermination {
+    fn termination(self) -> WatchTermination;
+}
+
+impl PrepareTermination for BackendPrepare {
+    fn termination(self) -> WatchTermination {
+        match self {
+            BackendPrepare::Terminate(result) => result,
+            _ => WatchTermination::Exit(1),
+        }
     }
 }
 
@@ -804,6 +1299,10 @@ fn render_service_panic(format: ErrorFormat, message: &str, location: Option<Str
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use rue_driver::daemon::DestinationRecord;
+
     use super::*;
 
     #[test]
@@ -826,5 +1325,53 @@ mod tests {
         let json = render_service_panic(ErrorFormat::Json, "boom", None);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed[0]["code"], "E9000");
+    }
+
+    #[test]
+    fn stale_ready_preparation_cleanup_does_not_remove_the_successor_scratch() {
+        let directory = tempfile::tempdir().unwrap();
+        // A successor uses the same cycle-owned path after the stale pending
+        // preparation is dropped. The old build must be cleared before that
+        // path is allocated again, or its Drop would erase the successor.
+        let cycle_root = directory.path().join("run-cycle-2");
+        let image = cycle_root.join("rue-test-image");
+        let failed_scratch = cycle_root.join("rue-test-0-1");
+        fs::create_dir_all(&cycle_root).unwrap();
+        fs::create_dir_all(&failed_scratch).unwrap();
+        fs::write(&image, b"stale").unwrap();
+        fs::write(failed_scratch.join("stderr"), b"retained failure").unwrap();
+
+        let stale = ServiceWatchBuild {
+            result: BuildResult::Ready {
+                stderr: String::new(),
+                target: "x86_64-linux".into(),
+                destination: DestinationRecord {
+                    path: "out".into(),
+                    display_path: "out".into(),
+                    source_paths: Vec::new(),
+                },
+                inputs: Vec::new(),
+                bytes: 0,
+                test_image: None,
+            },
+            bytes: Vec::new(),
+            run_root: cycle_root.clone(),
+            image_path: image.clone(),
+            cleanup: true,
+        };
+        let mut pending = Some(stale);
+        // This is the operation performed before a successor prepare allocates
+        // its cycle-owned root. The old image is disposable; the successor's
+        // failed-test evidence is a separate ownership scope.
+        retire_pending_before_successor(&mut pending, || {
+            fs::create_dir_all(&cycle_root).unwrap();
+            fs::write(&image, b"successor image").unwrap();
+        });
+        assert!(cycle_root.exists());
+        assert_eq!(fs::read(&image).unwrap(), b"successor image");
+        assert_eq!(
+            fs::read(failed_scratch.join("stderr")).unwrap(),
+            b"retained failure"
+        );
     }
 }

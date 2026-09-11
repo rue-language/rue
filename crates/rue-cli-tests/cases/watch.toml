@@ -390,6 +390,52 @@ path = "extra.rue"
 source = "pub fn broken() -> i32 { 2 }\n"
 
 [[case]]
+name = "daemon_watch_edits_and_republishes"
+description = "The daemon-backed executable watcher republishes an edited transitive module."
+files = [
+    { path = "main.rue", source = "const helper = @import(\"helper.rue\");\nfn main() -> i32 { helper.answer() }\n" },
+    { path = "helper.rue", source = "pub fn answer() -> i32 { 1 }\n" },
+]
+args = ["--daemon=required"]
+[case.watch]
+kind = "edit"
+expected_exit_codes = [1, 2]
+[[case.watch.edits]]
+path = "helper.rue"
+source = "pub fn answer() -> i32 { 2 }\n"
+
+[[case]]
+name = "daemon_watch_deleted_import_recovers_when_restored"
+description = "The daemon-backed executable watcher observes a deleted transitive import and resumes after restoration."
+files = [
+    { path = "main.rue", source = "const helper = @import(\"helper.rue\");\nfn main() -> i32 { helper.answer() }\n" },
+    { path = "helper.rue", source = "pub fn answer() -> i32 { 3 }\n" },
+]
+args = ["--daemon=required"]
+[case.watch]
+kind = "delete"
+expected_exit_codes = [3, 4]
+[[case.watch.edits]]
+path = "helper.rue"
+delete = true
+[[case.watch.edits]]
+path = "helper.rue"
+source = "pub fn answer() -> i32 { 4 }\n"
+
+[[case]]
+name = "daemon_watch_missing_import_recovers_when_created"
+description = "The daemon-backed watcher retains an initial missing import observation until the file is created."
+files = [{ path = "main.rue", source = "const helper = @import(\"helper.rue\");\nfn main() -> i32 { helper.answer() }\n" }]
+args = ["--daemon=required"]
+[case.watch]
+kind = "initial_failure"
+expected_exit_codes = [5]
+stderr_contains = ["E0704"]
+[[case.watch.edits]]
+path = "helper.rue"
+source = "pub fn answer() -> i32 { 5 }\n"
+
+[[case]]
 name = "an_edit_beside_a_directory_in_a_modules_place_is_acknowledged"
 description = """
 RUE-2105, the other shape of the same read failure: a directory where a module

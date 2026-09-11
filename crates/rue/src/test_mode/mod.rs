@@ -386,6 +386,11 @@ pub(crate) struct ServiceRun<'a> {
     pub(crate) opt_level: OptLevel,
     pub(crate) candidates_declared: bool,
     pub(crate) seed: u64,
+    /// The shared watch lifecycle's 1-based cycle number, or `None` for a
+    /// one-shot service invocation.
+    pub(crate) cycle: Option<u64>,
+    /// Optional watch-owned cancellation for a client-run service image.
+    pub(crate) cancellation: Option<&'a exec::RunCancellation>,
 }
 
 /// The private directory and image path a service-linked run stages its
@@ -393,8 +398,9 @@ pub(crate) struct ServiceRun<'a> {
 /// destination preflight sees it.
 pub(crate) fn service_run_root(
     seed: u64,
+    cycle: Option<u64>,
 ) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
-    let run_root = exec::run_root(seed, None);
+    let run_root = exec::run_root(seed, cycle);
     std::fs::create_dir_all(&run_root)
         .map_err(|error| format!("could not create the test run directory: {error}"))?;
     let image_path = run_root.join("rue-test-image");
@@ -407,7 +413,12 @@ pub(crate) fn service_run_root(
 pub(crate) fn run_service_image(request: ServiceRun<'_>) -> TestExitCode {
     reset_performance_observations();
     exec::reserve_channel_descriptor();
-    exec::install_signal_forwarding();
+    // A watch lifecycle installs its exit handler once and owns the cycle's
+    // cancellation. Installing one-shot forwarding here would replace that
+    // handler and lose the watch cycle's terminal status.
+    if request.cancellation.is_none() {
+        exec::install_signal_forwarding();
+    }
     let ServiceRun {
         record,
         image_path,
@@ -422,6 +433,8 @@ pub(crate) fn run_service_image(request: ServiceRun<'_>) -> TestExitCode {
         opt_level,
         candidates_declared,
         seed,
+        cancellation,
+        cycle,
     } = request;
     let outcome = run_prepared(PreparedRun {
         prepared: PreparedImage::from_record(record),
@@ -441,8 +454,8 @@ pub(crate) fn run_service_image(request: ServiceRun<'_>) -> TestExitCode {
             CandidateSource::None
         },
         seed,
-        cycle: None,
-        cancellation: None,
+        cycle,
+        cancellation,
     });
     match outcome {
         CycleOutcome::Finished(exit) => exit,

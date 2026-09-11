@@ -18,9 +18,10 @@ use rue_compiler::{
 };
 
 use crate::source_loader::{
-    AttemptedRead, ImportDiscoveryResult, SourceLoadError, SourceLoadRequest, WatchInput,
-    acquire_reached_toolchain_modules, acquire_reached_toolchain_modules_cancellable, load,
-    load_explicit_manifest, load_explicit_manifest_candidate, reload_from_filesystem,
+    AttemptedRead, ImportDiscoveryResult, SourceLoadError, SourceLoadFailure, SourceLoadRequest,
+    WatchInput, acquire_reached_toolchain_modules, acquire_reached_toolchain_modules_cancellable,
+    load, load_explicit_manifest, load_explicit_manifest_candidate, load_with_observations,
+    reload_from_filesystem,
 };
 
 /// Immutable filesystem configuration captured when a retained host opens.
@@ -98,6 +99,22 @@ impl FilesystemCompilerHost {
     /// Open a root source and drive parser-owned import discovery to closure.
     pub fn open(request: HostOpenRequest<'_>) -> Result<Self, SourceLoadError> {
         load(SourceLoadRequest {
+            root_source: request.root_source,
+            source_manifest_path: request.source_manifest_path,
+            std_root: request.std_root,
+            compiler_config: request.compiler_config,
+            path_context: request.path_context,
+        })
+        .map(|state| Self {
+            state,
+            path_context: request.path_context.clone(),
+        })
+    }
+
+    /// Open while preserving the loader-owned failed-read ledger for a
+    /// request boundary that must publish observations on rejection.
+    pub fn open_with_observations(request: HostOpenRequest<'_>) -> Result<Self, SourceLoadFailure> {
+        load_with_observations(SourceLoadRequest {
             root_source: request.root_source,
             source_manifest_path: request.source_manifest_path,
             std_root: request.std_root,

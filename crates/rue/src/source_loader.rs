@@ -74,6 +74,9 @@ impl WatchFingerprint {
     }
 
     pub fn read(path: &Path) -> Option<Self> {
+        if !fs::metadata(path).is_ok_and(|metadata| metadata.is_file()) {
+            return None;
+        }
         fs::read(path).ok().map(|bytes| Self::from_bytes(&bytes))
     }
 }
@@ -288,6 +291,119 @@ pub struct AttemptedRead {
     outcome: AttemptedReadOutcome,
 }
 
+/// Owned wire-friendly projection of an attempted source read.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum AttemptedReadOutcomeParts {
+    Accepted {
+        canonical_path: String,
+        content_fingerprint: u64,
+    },
+    Failed {
+        reason: String,
+        observed: u64,
+        probe: bool,
+        route_only: bool,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct AttemptedReadParts {
+    pub requested_path: String,
+    pub outcome: AttemptedReadOutcomeParts,
+}
+
+impl AttemptedRead {
+    pub fn into_parts(self) -> AttemptedReadParts {
+        AttemptedReadParts {
+            requested_path: self.requested_path.to_string(),
+            outcome: match self.outcome {
+                AttemptedReadOutcome::Accepted {
+                    canonical_path,
+                    content_fingerprint,
+                } => AttemptedReadOutcomeParts::Accepted {
+                    canonical_path: canonical_path.to_string(),
+                    content_fingerprint,
+                },
+                AttemptedReadOutcome::Failed {
+                    reason,
+                    observed,
+                    probe,
+                    route_only,
+                } => AttemptedReadOutcomeParts::Failed {
+                    reason: reason.to_string(),
+                    observed,
+                    probe,
+                    route_only,
+                },
+            },
+        }
+    }
+
+    pub fn from_parts(parts: AttemptedReadParts) -> Self {
+        Self {
+            requested_path: Arc::from(parts.requested_path),
+            outcome: match parts.outcome {
+                AttemptedReadOutcomeParts::Accepted {
+                    canonical_path,
+                    content_fingerprint,
+                } => AttemptedReadOutcome::Accepted {
+                    canonical_path: Arc::from(canonical_path),
+                    content_fingerprint,
+                },
+                AttemptedReadOutcomeParts::Failed {
+                    reason,
+                    observed,
+                    probe,
+                    route_only,
+                } => AttemptedReadOutcome::Failed {
+                    reason: Arc::from(reason),
+                    observed,
+                    probe,
+                    route_only,
+                },
+            },
+        }
+    }
+
+    /// Whether the loader-owned observation has changed. Tagged fingerprints
+    /// are interpreted only here, beside their producer. Lexical denials
+    /// never probe; canonical denials can observe routes without reading contents.
+    pub fn changed(&self) -> bool {
+        match &self.outcome {
+            AttemptedReadOutcome::Accepted {
+                canonical_path,
+                content_fingerprint,
+            } => {
+                let requested = Path::new(self.requested_path.as_ref());
+                let canonical = Path::new(canonical_path.as_ref());
+                // An accepted source read is only safe to poll as a regular
+                // file. In particular, do not hand a path replaced by a
+                // FIFO/socket to fs::read: a watch retry must never block on
+                // a route that the loader no longer accepts.
+                if fs::canonicalize(requested).ok().as_deref() != Some(canonical)
+                    || !fs::metadata(canonical).is_ok_and(|metadata| metadata.is_file())
+                {
+                    return true;
+                }
+                WatchFingerprint::read(canonical)
+                    .is_none_or(|fingerprint| fingerprint.0 != *content_fingerprint)
+            }
+            AttemptedReadOutcome::Failed {
+                observed,
+                probe,
+                route_only,
+                ..
+            } => {
+                let path = Path::new(self.requested_path.as_ref());
+                if *route_only {
+                    return failed_route_fingerprint(path) != *observed;
+                }
+                *probe && failed_candidate_fingerprint(path) != *observed
+            }
+        }
+    }
+}
+
 /// What an attempt found at an [`AttemptedRead`]'s path.
 ///
 /// The two variants can never compare equal, so a path that failed to read is
@@ -308,13 +424,19 @@ enum AttemptedReadOutcome {
     /// is the failure's shape, so a candidate that starts failing differently
     /// is a different record; `observed` is whatever the attempt could still
     /// see there, which is what makes one save distinguishable from the next.
-    Failed { reason: Arc<str>, observed: u64 },
+    Failed {
+        reason: Arc<str>,
+        observed: u64,
+        probe: bool,
+        route_only: bool,
+    },
 }
 
 /// Domain separators, so a raw-byte hash and a metadata hash for the same path
 /// cannot coincide.
 const FAILED_READ_CONTENT_TAG: u64 = 0x5255_4532_3130_3501;
 const FAILED_READ_PLACE_TAG: u64 = 0x5255_4532_3130_3502;
+const FAILED_READ_ROUTE_TAG: u64 = 0x5255_4532_3130_3503;
 
 /// What an attempt can still observe about a candidate it failed to read.
 ///
@@ -366,6 +488,28 @@ fn failed_candidate_fingerprint(path: &Path) -> u64 {
     WatchFingerprint::from_bytes(&place).0 ^ FAILED_READ_PLACE_TAG
 }
 
+/// Fingerprint only the route facts needed to retry a canonically denied read.
+/// It deliberately does not open the denied target's contents. Canonicalizing
+/// the route and recording symlink targets makes a retarget from a denied
+/// location to an allowed one observable without turning policy into a probe.
+fn failed_route_fingerprint(path: &Path) -> u64 {
+    let mut route = Vec::new();
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        if let Ok(target) = fs::read_link(&current) {
+            route.extend_from_slice(current.as_os_str().as_encoded_bytes());
+            route.push(0);
+            route.extend_from_slice(target.as_os_str().as_encoded_bytes());
+            route.push(0);
+        }
+    }
+    if let Ok(canonical) = fs::canonicalize(path) {
+        route.extend_from_slice(canonical.as_os_str().as_encoded_bytes());
+    }
+    WatchFingerprint::from_bytes(&route).0 ^ FAILED_READ_ROUTE_TAG
+}
+
 /// The reads one observation attempt made and could not accept.
 ///
 /// Accepted reads survive a failed attempt in the assembler's manifest;
@@ -379,41 +523,43 @@ type FailedReads = Vec<AttemptedRead>;
 /// `observed_absent_path`, which the watch closure covers.
 fn record_failed_read(failed: &mut FailedReads, observation: &ImportObservation) {
     let requested = observation.request().requested_path();
-    let (reason, probe): (String, bool) = match observation.status() {
+    let (reason, probe, route_only): (String, bool, bool) = match observation.status() {
         ImportObservationStatus::Absent | ImportObservationStatus::PresentReadable { .. } => return,
         ImportObservationStatus::PresentUnreadable(reason) => {
-            (format!("unreadable: {reason}"), true)
+            (format!("unreadable: {reason}"), true, false)
         }
         ImportObservationStatus::InvalidPhysicalType { canonical_path } => (
             format!("not a regular source file at '{canonical_path}'"),
             true,
+            false,
         ),
         ImportObservationStatus::UnstableRead(reason) => {
-            (format!("changed during its read: {reason}"), true)
+            (format!("changed during its read: {reason}"), true, false)
         }
         // A lexically denied path must not be probed at all — declining the
-        // filesystem is the whole content of that denial — and a canonically
-        // denied one is a path the policy says this build may not read. Both
-        // are configuration facts about the manifest rather than about what is
-        // on disk, and the manifest is itself a watched input.
+        // filesystem is the whole content of that denial. A canonical denial
+        // may observe only the route needed to notice a later retarget; the
+        // manifest remains the authority on whether the target may be read.
         ImportObservationStatus::DeniedLexical => (
             "denied by the source manifest read policy".to_owned(),
+            false,
             false,
         ),
         ImportObservationStatus::DeniedCanonical { canonical_path } => (
             format!("denied by the source manifest after resolving to '{canonical_path}'"),
             false,
+            true,
         ),
         // An abandoned attempt is answered by its restart, never by this record.
         ImportObservationStatus::Cancelled => return,
     };
-    push_failed_read(failed, requested, reason, probe);
+    push_failed_read(failed, requested, reason, probe, route_only);
 }
 
 /// Record a demanded trusted toolchain module the host could not acquire.
 ///
-/// The same rule as [`record_failed_read`]: a hermetic denial is a statement
-/// about the read policy and must not touch the filesystem, while every
+/// The same rule as [`record_failed_read`]: lexical denials never probe, and
+/// canonical denials retain only route observations. Every
 /// integrity failure is a statement about what is (or is not) under the
 /// standard-library root, and observing it is what lets the next save be told
 /// from the next retry.
@@ -422,10 +568,11 @@ fn record_failed_toolchain_demand(
     path: &Path,
     error: &ToolchainAcquisitionError,
 ) {
-    let (reason, probe) = match error {
-        ToolchainAcquisitionError::Hermetic(_) => (
+    let (reason, probe, route_only) = match error {
+        ToolchainAcquisitionError::Hermetic(error) => (
             "denied by the source manifest read policy".to_owned(),
             false,
+            error.route_only,
         ),
         // The failure's class, not its rendered text: the rendered diagnostic
         // is already the other half of the debounce key, and repeating it here
@@ -445,21 +592,38 @@ fn record_failed_toolchain_demand(
                 }
             },
             true,
+            false,
         ),
     };
-    push_failed_read(failed, path.to_string_lossy().as_ref(), reason, probe);
+    push_failed_read(
+        failed,
+        path.to_string_lossy().as_ref(),
+        reason,
+        probe,
+        route_only,
+    );
 }
 
-fn push_failed_read(failed: &mut FailedReads, requested: &str, reason: String, probe: bool) {
+fn push_failed_read(
+    failed: &mut FailedReads,
+    requested: &str,
+    reason: String,
+    probe: bool,
+    route_only: bool,
+) {
     failed.push(AttemptedRead {
         requested_path: Arc::from(requested),
         outcome: AttemptedReadOutcome::Failed {
             reason: Arc::from(reason),
             observed: if probe {
                 failed_candidate_fingerprint(Path::new(requested))
+            } else if route_only {
+                failed_route_fingerprint(Path::new(requested))
             } else {
                 0
             },
+            probe,
+            route_only,
         },
     });
 }
@@ -603,6 +767,20 @@ impl SourceManifest {
             declared.join("\0"),
             allowed.join("\0")
         )
+    }
+
+    /// Preserve the manifest read in a failed loader attempt without opening
+    /// it a second time. A valid manifest normally becomes a committed
+    /// `WatchInput`; on a later root-policy/discovery failure this projection
+    /// keeps the same accepted input available to the watch backend.
+    fn attempted_read(&self) -> AttemptedRead {
+        AttemptedRead {
+            requested_path: Arc::from(self.path.to_string_lossy().into_owned()),
+            outcome: AttemptedReadOutcome::Accepted {
+                canonical_path: Arc::from(self.path.to_string_lossy().into_owned()),
+                content_fingerprint: self.content_hash.0,
+            },
+        }
     }
 }
 
@@ -873,6 +1051,7 @@ fn reobserve_accepted_reads(
     source_manifest: Option<&SourceManifest>,
     context: &ImportDiscoveryContext,
     control: DiscoveryControl<'_>,
+    failed_reads: &mut FailedReads,
 ) -> Result<AHashMap<String, AcceptedImportSource>, SourceLoadError> {
     control.checkpoint()?;
     let now = SystemTime::now();
@@ -892,6 +1071,13 @@ fn reobserve_accepted_reads(
         let boundary = context.boundary_for_requested(requested_path);
         if source_manifest.is_some_and(|policy| !policy.declares_path_without_probe(requested_path))
         {
+            push_failed_read(
+                failed_reads,
+                entry.requested_path(),
+                "denied by the source manifest read policy".to_owned(),
+                false,
+                false,
+            );
             continue;
         }
         // The requested spelling is the watchable authority. Re-resolve it on
@@ -899,18 +1085,50 @@ fn reobserve_accepted_reads(
         // cannot keep feeding the old canonical file into the next graph.
         let canonical_path = match fs::canonicalize(requested_path) {
             Ok(path) => path,
-            Err(_) => continue,
+            Err(error) => {
+                push_failed_read(
+                    failed_reads,
+                    entry.requested_path(),
+                    format!("unreadable: {error}"),
+                    true,
+                    false,
+                );
+                continue;
+            }
         };
         if source_manifest.is_some_and(|policy| !policy.allows_canonical(&canonical_path)) {
+            push_failed_read(
+                failed_reads,
+                entry.requested_path(),
+                "denied by the source manifest after canonicalization".to_owned(),
+                false,
+                true,
+            );
             continue;
         }
         if !canonical_path.is_file() {
+            push_failed_read(
+                failed_reads,
+                entry.requested_path(),
+                "not a regular source file".to_owned(),
+                true,
+                false,
+            );
             continue;
         }
         let canonical_unchanged = canonical_path == Path::new(entry.canonical_path());
         let metadata = match fs::metadata(&canonical_path) {
             Ok(metadata) => metadata,
-            Err(_) => continue,
+            Err(error) => {
+                push_failed_read(
+                    failed_reads,
+                    entry.requested_path(),
+                    format!("unreadable: {error}"),
+                    true,
+                    false,
+                );
+                continue;
+            }
         };
         let accepted = if canonical_unchanged
             && !metadata_requires_content_hash(
@@ -931,7 +1149,17 @@ fn reobserve_accepted_reads(
         } else {
             let read = match stable_read_to_string(&canonical_path) {
                 Ok(read) => read,
-                Err(_) => continue,
+                Err(error) => {
+                    let reason = match error {
+                        StableReadError::Io(error) => format!("unreadable: {error}"),
+                        StableReadError::Changed => {
+                            "changed during its read: candidate metadata changed during read"
+                                .to_owned()
+                        }
+                    };
+                    push_failed_read(failed_reads, entry.requested_path(), reason, true, false);
+                    continue;
+                }
             };
             accepted_source_from_read(
                 entry,
@@ -1175,6 +1403,24 @@ pub enum SourceLoadError {
     HermeticDenial(HermeticDenialError),
 }
 
+/// A failed initial load together with the loader's own read ledger. The
+/// ledger is captured while discovery is running; consumers must not infer it
+/// later from rendered diagnostics or probe paths outside the loader policy.
+#[derive(Debug)]
+pub struct SourceLoadFailure {
+    pub error: SourceLoadError,
+    pub attempted_reads: Vec<AttemptedRead>,
+}
+
+impl From<SourceLoadError> for SourceLoadFailure {
+    fn from(error: SourceLoadError) -> Self {
+        Self {
+            error,
+            attempted_reads: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct DiscoveryControl<'a> {
     supersession: Option<&'a dyn Fn() -> bool>,
@@ -1355,6 +1601,15 @@ pub fn with_import_migration_helps_batches(batches: &[&CompileErrors]) -> Vec<Co
 pub(crate) fn load(
     request: SourceLoadRequest<'_>,
 ) -> Result<ImportDiscoveryResult, SourceLoadError> {
+    load_with_observations(request).map_err(|failure| failure.error)
+}
+
+/// Load a fresh root while retaining the canonical loader read ledger when
+/// discovery rejects it. This is the only initial-failure observation source;
+/// callers must not reconstruct it from diagnostics after the fact.
+pub(crate) fn load_with_observations(
+    request: SourceLoadRequest<'_>,
+) -> Result<ImportDiscoveryResult, SourceLoadFailure> {
     // Source loading is the first half of the `compile` root: manifest policy,
     // then the demand-driven import-discovery frontier. It was previously
     // timed only through the `parse_file` spans it happens to contain, which
@@ -1363,36 +1618,72 @@ pub(crate) fn load(
         tracing::info_span!("source_loading", phase = "source_discovery_and_parsing").entered();
     let manifest = {
         let _span = tracing::info_span!("source_manifest").entered();
-        let manifest = request
-            .source_manifest_path
-            .map(|path| SourceManifest::load_with_context(path, request.path_context))
-            .transpose()
-            .map_err(SourceLoadError::Message)?;
+        let manifest = match request.source_manifest_path {
+            Some(path) => match SourceManifest::load_with_context(path, request.path_context) {
+                Ok(manifest) => Some(manifest),
+                Err(error) => {
+                    let requested = request.path_context.anchor(Path::new(path));
+                    let mut attempted_reads = FailedReads::new();
+                    // The manifest path is an explicit request input, so its
+                    // own failure may be probed to wake a repair. The loader
+                    // owns this observation; consumers must not rediscover it
+                    // by parsing the rendered diagnostic.
+                    push_failed_read(
+                        &mut attempted_reads,
+                        requested.to_string_lossy().as_ref(),
+                        error.clone(),
+                        true,
+                        false,
+                    );
+                    return Err(SourceLoadFailure {
+                        error: SourceLoadError::Message(error),
+                        attempted_reads,
+                    });
+                }
+            },
+            None => None,
+        };
         let root_path = normalize_lexical_path_at(
             Path::new(request.root_source),
             request.path_context.working_directory(),
         );
-        validate_manifest_allows_source_with_display(
+        if let Err(error) = validate_manifest_allows_source_with_display(
             manifest.as_ref(),
             &root_path.to_string_lossy(),
             request.root_source,
             "root",
-        )
-        .map_err(SourceLoadError::Message)?;
+        ) {
+            return Err(SourceLoadFailure {
+                error: SourceLoadError::Message(error),
+                attempted_reads: manifest
+                    .as_ref()
+                    .map(|manifest| vec![manifest.attempted_read()])
+                    .unwrap_or_default(),
+            });
+        }
         manifest
     };
+    let manifest_attempt = manifest.as_ref().map(SourceManifest::attempted_read);
     let std_root = request
         .std_root
         .filter(|path| !path.as_os_str().is_empty())
         .map(|path| request.path_context.anchor(path));
-    discover_and_load_imports_with_configuration(
+    discover_and_load_imports_with_configuration_with_observations(
         request.root_source,
         manifest,
         std_root.as_deref(),
         request.compiler_config,
         request.path_context,
     )
-    .map_err(prepare_source_load_error)
+    .map_err(|mut failure| {
+        if let Some(manifest_attempt) = manifest_attempt {
+            failure.attempted_reads.push(manifest_attempt);
+            failure.attempted_reads.sort();
+            failure.attempted_reads.dedup();
+        }
+        failure.error = prepare_source_load_error(failure.error);
+        failure
+    })
 }
 
 /// Load a build-system supplied closed module set. Every declared path is read
@@ -2939,6 +3230,7 @@ pub(crate) fn discover_and_load_imports(
     )
 }
 
+#[cfg(test)]
 fn discover_and_load_imports_with_configuration(
     root_source: &str,
     source_manifest: Option<SourceManifest>,
@@ -2946,6 +3238,23 @@ fn discover_and_load_imports_with_configuration(
     compiler_config: CompilerSessionConfig,
     path_context: &HostPathContext,
 ) -> Result<ImportDiscoveryResult, SourceLoadError> {
+    discover_and_load_imports_with_configuration_with_observations(
+        root_source,
+        source_manifest,
+        std_root,
+        compiler_config,
+        path_context,
+    )
+    .map_err(|failure| failure.error)
+}
+
+fn discover_and_load_imports_with_configuration_with_observations(
+    root_source: &str,
+    source_manifest: Option<SourceManifest>,
+    std_root: Option<&Path>,
+    compiler_config: CompilerSessionConfig,
+    path_context: &HostPathContext,
+) -> Result<ImportDiscoveryResult, SourceLoadFailure> {
     // Validate the root source's span representability before discovery aliases
     // physical identities. With a single positional source there are no
     // duplicate CLI inputs left to detect here; discovery still recognizes
@@ -2958,7 +3267,8 @@ fn discover_and_load_imports_with_configuration(
         return Err(SourceLoadError::Compiler {
             snapshot: None,
             errors: CompileErrors::from(error),
-        });
+        }
+        .into());
     }
 
     let root_path =
@@ -3021,7 +3331,8 @@ fn discover_and_load_imports_with_configuration(
     {
         return Err(SourceLoadError::Message(
             "Error: root source escapes the source manifest after canonicalization".into(),
-        ));
+        )
+        .into());
     }
     let root_read = stable_read_to_string(&root_canonical).map_err(|error| {
         SourceLoadError::Message(match error {
@@ -3056,7 +3367,7 @@ fn discover_and_load_imports_with_configuration(
     // and closure witness out so that loop can satisfy demands and re-close in the
     // same request generation.
     let mut failed_reads = FailedReads::new();
-    let close = drive_import_discovery_to_close(
+    let close = match drive_import_discovery_to_close(
         &mut assembler,
         &mut staging,
         &context,
@@ -3067,7 +3378,18 @@ fn discover_and_load_imports_with_configuration(
         None,
         &mut failed_reads,
         DiscoveryControl::default(),
-    )?;
+    ) {
+        Ok(close) => close,
+        Err(error) => {
+            return Err(SourceLoadFailure {
+                error,
+                attempted_reads: attempted_reads_of(
+                    &assembler.accepted_read_manifest(),
+                    &failed_reads,
+                ),
+            });
+        }
+    };
 
     let read_manifest = assembler.accepted_read_manifest();
     Ok(ImportDiscoveryResult {
@@ -3116,20 +3438,37 @@ fn reload_from_filesystem_inner(
     // read nothing rather than inheriting the previous attempt's files.
     result.attempted_reads.clear();
     control.checkpoint()?;
-    let source_manifest = result
-        .source_manifest
-        .as_ref()
-        .map(SourceManifest::reload)
-        .transpose()
-        .map_err(SourceLoadError::Message)?;
+    let source_manifest = match result.source_manifest.as_ref() {
+        Some(previous) => match previous.reload() {
+            Ok(manifest) => Some(manifest),
+            Err(error) => {
+                let mut failed_reads = FailedReads::new();
+                push_failed_read(
+                    &mut failed_reads,
+                    previous.path.to_string_lossy().as_ref(),
+                    error.clone(),
+                    true,
+                    false,
+                );
+                result.attempted_reads = failed_reads;
+                return Err(SourceLoadError::Message(error));
+            }
+        },
+        None => None,
+    };
     control.checkpoint()?;
-    validate_manifest_allows_source_with_display(
+    if let Err(error) = validate_manifest_allows_source_with_display(
         source_manifest.as_ref(),
         result.resolution.root_path.to_string_lossy().as_ref(),
         &result.resolution.root_display_path,
         "root",
-    )
-    .map_err(SourceLoadError::Message)?;
+    ) {
+        result.attempted_reads = source_manifest
+            .as_ref()
+            .map(|manifest| vec![manifest.attempted_read()])
+            .unwrap_or_default();
+        return Err(SourceLoadError::Message(error));
+    }
     let policy_revision = source_manifest
         .as_ref()
         .map(SourceManifest::policy_revision)
@@ -3146,25 +3485,37 @@ fn reload_from_filesystem_inner(
         policy_revision.clone(),
     )
     .map_err(source_load_compiler_error)?;
-    let reobserved = reobserve_accepted_reads(
+    let mut failed_reads = FailedReads::new();
+    let reobserved = match reobserve_accepted_reads(
         &result.source_snapshot,
         &result.read_manifest,
         source_manifest.as_ref(),
         &context,
         control,
-    )?;
+        &mut failed_reads,
+    ) {
+        Ok(reobserved) => reobserved,
+        Err(error) => {
+            result.attempted_reads = attempted_reads_of(&result.read_manifest, &failed_reads);
+            return Err(error);
+        }
+    };
     let root_module = result.source_snapshot.source_revision().root();
     let root_entry = result
         .read_manifest
         .iter()
         .find(|entry| entry.module() == root_module)
         .expect("a closed read manifest contains its root");
-    let root = reobserved.get(root_entry.requested_path()).ok_or_else(|| {
-        SourceLoadError::Message(format!(
-            "Error reading {}: source is no longer readable",
-            root_entry.requested_path()
-        ))
-    })?;
+    let root = match reobserved.get(root_entry.requested_path()) {
+        Some(root) => root,
+        None => {
+            result.attempted_reads = attempted_reads_of(&result.read_manifest, &failed_reads);
+            return Err(SourceLoadError::Message(format!(
+                "Error reading {}: source is no longer readable",
+                root_entry.requested_path()
+            )));
+        }
+    };
     // The retained root may have been retargeted since the previous close, so
     // its physical spelling is known only after reobservation. Recapture the
     // context with that spelling: discovery owns the overlap policy, and the
@@ -3195,7 +3546,6 @@ fn reload_from_filesystem_inner(
     // for requests the new rooted frontier actually issues; making every old
     // read explicit would keep modules that are no longer reachable after an
     // import-set edit and grow the retained snapshot monotonically.
-    let mut failed_reads = FailedReads::new();
     let close = match drive_import_discovery_to_close(
         &mut assembler,
         &mut result.session,
@@ -3569,6 +3919,7 @@ fn classify_trusted_transitive_failure(
                     logical_path: logical,
                     path,
                     reason: "the source manifest does not declare this path".to_owned(),
+                    route_only: false,
                 })
             }
             ImportObservationStatus::DeniedCanonical { canonical_path } => {
@@ -3576,6 +3927,7 @@ fn classify_trusted_transitive_failure(
                     logical_path: logical,
                     path: PathBuf::from(canonical_path.as_ref()),
                     reason: "its canonical path is not listed in the source manifest".to_owned(),
+                    route_only: true,
                 })
             }
             ImportObservationStatus::Cancelled => continue,
@@ -3725,12 +4077,14 @@ impl std::fmt::Display for ToolchainIntegrityError {
 /// remedy is the source manifest, not the toolchain. It therefore carries its
 /// own outer classification and presentation and never the "toolchain integrity"
 /// / broken-installation framing. A manifest denial is enforced before any
-/// filesystem probe, so a denied path is never even stat-ed.
+/// filesystem probe, so a lexically denied path is never even stat-ed.
+/// Canonical denials retain route observation authority without content reads.
 #[derive(Debug)]
 pub struct HermeticDenialError {
     pub(crate) logical_path: String,
     pub(crate) path: PathBuf,
     pub(crate) reason: String,
+    pub(crate) route_only: bool,
 }
 
 impl std::fmt::Display for HermeticDenialError {
@@ -3831,6 +4185,7 @@ fn satisfy_toolchain_module_demand(
                 "the source manifest '{}' does not declare this path",
                 manifest.display_path()
             ),
+            route_only: false,
         }
         .into());
     }
@@ -3873,6 +4228,7 @@ fn satisfy_toolchain_module_demand(
             "the standard-library root '{}' cannot be canonicalized: {error}",
             std_root.display()
         ),
+        route_only: true,
     })?;
     if !canonical.starts_with(&canonical_std_root) {
         return Err(HermeticDenialError {
@@ -3882,6 +4238,7 @@ fn satisfy_toolchain_module_demand(
                 "it canonicalizes outside the standard-library root '{}'",
                 canonical_std_root.display()
             ),
+            route_only: true,
         }
         .into());
     }
@@ -3898,6 +4255,7 @@ fn satisfy_toolchain_module_demand(
                 "its canonical path is not listed in the source manifest '{}'",
                 manifest.display_path()
             ),
+            route_only: true,
         }
         .into());
     }
@@ -4192,6 +4550,39 @@ mod tests {
 
         assert!(manifest.allows_canonical(&fs::canonicalize(main).unwrap()));
         assert!(manifest.allows_canonical(&fs::canonicalize(hashed).unwrap()));
+    }
+
+    #[test]
+    fn failed_initial_manifest_load_retains_its_loader_observation() {
+        let dir = TestDir::new("source-manifest-failed-observation");
+        dir.write("main.rue", "fn main() -> i32 { 0 }\n");
+        let manifest_path = dir.path.join("sources.manifest");
+        let context = HostPathContext::from_working_directory(dir.path.clone()).unwrap();
+        let root = dir.path.join("main.rue");
+        let root = root.to_string_lossy().into_owned();
+        let manifest = manifest_path.to_string_lossy().into_owned();
+
+        let failure = load_with_observations(SourceLoadRequest {
+            root_source: &root,
+            source_manifest_path: Some(&manifest),
+            std_root: None,
+            compiler_config: CompilerSessionConfig::default(),
+            path_context: &context,
+        })
+        .expect_err("the missing manifest must reject the initial load");
+        let SourceLoadError::Message(error) = failure.error else {
+            panic!("missing manifest should be a source-load message");
+        };
+        assert!(error.contains("source manifest"));
+        assert_eq!(failure.attempted_reads.len(), 1);
+        assert_eq!(
+            failure.attempted_reads[0].requested_path,
+            Arc::<str>::from(manifest_path.to_string_lossy().into_owned())
+        );
+        assert!(!failure.attempted_reads[0].changed());
+
+        fs::write(&manifest_path, "main.rue\n").unwrap();
+        assert!(failure.attempted_reads[0].changed());
     }
 
     #[test]
@@ -5115,6 +5506,56 @@ mod tests {
             recorded.outcome,
             AttemptedReadOutcome::Failed { .. }
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn watch_fingerprint_never_reads_a_directory_or_named_pipe() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let dir = TestDir::new("watch-fingerprint-non-file");
+        let directory = dir.path.join("module.rue");
+        fs::create_dir(&directory).unwrap();
+        assert!(WatchFingerprint::read(&directory).is_none());
+
+        let pipe = dir.path.join("pipe.rue");
+        let name = std::ffi::CString::new(pipe.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o644) }, 0);
+        assert!(WatchFingerprint::read(&pipe).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_denial_watches_only_the_route_until_it_becomes_allowed() {
+        let project = TestDir::new("watch-canonical-denial-project");
+        let stdlib = TestDir::new("watch-canonical-denial-stdlib");
+        let main = project.write("main.rue", FALLIBLE_ROOT);
+        let denied = project.write("outside.rue", MALFORMED_OPTION);
+        let allowed = stdlib.write("allowed.rue", VALID_OPTION);
+        let alias = stdlib.path.join("option.rue");
+        std::os::unix::fs::symlink(&denied, &alias).unwrap();
+        let std_root = fs::canonicalize(&stdlib.path).unwrap();
+        let mut loaded =
+            discover_and_load_imports(main.to_str().unwrap(), None, Some(&std_root)).unwrap();
+        let failure = acquire_reached_toolchain_modules(&mut loaded, &CompileOptions::default())
+            .expect_err("the reached module escapes the trusted root");
+        assert!(matches!(failure, SourceLoadError::HermeticDenial(_)));
+        let attempted = loaded
+            .attempted_reads()
+            .iter()
+            .find(|read| Path::new(read.requested_path.as_ref()) == std_root.join("option.rue"))
+            .expect("the actual acquisition must publish its denied route")
+            .clone();
+        assert!(!attempted.changed());
+        fs::write(&denied, "changed denied contents").unwrap();
+        assert!(!attempted.changed(), "denied contents are not watched");
+        fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&allowed, &alias).unwrap();
+        assert!(attempted.changed(), "retargeting must wake the watcher");
+        reload_from_filesystem(&mut loaded, None).unwrap();
+        acquire_reached_toolchain_modules(&mut loaded, &CompileOptions::default())
+            .expect("the retargeted trusted module can be acquired");
+        assert!(contains_trusted_option(&loaded.source_snapshot));
     }
 
     #[test]

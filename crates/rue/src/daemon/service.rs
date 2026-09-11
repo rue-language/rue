@@ -22,10 +22,10 @@ use std::time::{Duration, Instant};
 use rue_compiler::unstable::CompilationCancellation;
 
 use super::protocol::{
-    BuildReply, BuildRequest, BuildResult, CrashRecord, DAEMON_PROTOCOL_VERSION, Hello, HelloReply,
-    MAX_CONTROL_FRAME_BYTES, MAX_RESPONSE_BYTES, Request, RequestBody, RequestMeasurement,
-    RequestSummary, ResourcePolicy, ResourcePressure, Response, ResponseBody, ServiceInfo,
-    StatusReport,
+    BuildObservations, BuildReply, BuildRequest, BuildResult, CrashRecord, DAEMON_PROTOCOL_VERSION,
+    Hello, HelloReply, MAX_CONTROL_FRAME_BYTES, MAX_RESPONSE_BYTES, Request, RequestBody,
+    RequestMeasurement, RequestSummary, ResourcePolicy, ResourcePressure, Response, ResponseBody,
+    ServiceInfo, StatusReport,
 };
 
 /// Why the service loop returned.
@@ -161,6 +161,7 @@ pub trait BuildExecutor: Send {
 pub struct BuildOutput {
     pub result: BuildResult,
     pub bytes: Vec<u8>,
+    pub observations: BuildObservations,
 }
 
 impl BuildOutput {
@@ -171,6 +172,7 @@ impl BuildOutput {
                 internal: false,
             },
             bytes: Vec::new(),
+            observations: BuildObservations::default(),
         }
     }
 }
@@ -482,6 +484,7 @@ fn compiler_owner(
                 BuildOutput {
                     result: BuildResult::Canceled,
                     bytes: Vec::new(),
+                    observations: BuildObservations::default(),
                 },
                 None,
                 shared,
@@ -619,7 +622,12 @@ fn leased_output(
         output = BuildOutput::failed("the compiler service produced an invalid response length");
     }
     let ready = matches!(output.result, BuildResult::Ready { .. }) && ready;
-    let encoded = encode_build_reply(ticket, measurement.clone(), output.result);
+    let encoded = encode_build_reply(
+        ticket,
+        measurement.clone(),
+        output.result,
+        output.observations,
+    );
     let amount = encoded
         .as_ref()
         .ok()
@@ -632,6 +640,7 @@ fn leased_output(
             ticket,
             measurement,
             result: output.result,
+            observations: BuildObservations::default(),
         })
         .unwrap_or_default();
         return LeasedOutput {
@@ -654,6 +663,7 @@ fn leased_output(
             ticket,
             measurement,
             result: output.result,
+            observations: BuildObservations::default(),
         })
         .unwrap_or_default();
         return LeasedOutput {
@@ -671,6 +681,7 @@ fn leased_output(
                 message: "the compiler service could not serialize its response".into(),
                 internal: true,
             },
+            observations: BuildObservations::default(),
         })
         .unwrap_or_default()
     });
@@ -692,6 +703,7 @@ fn encode_build_reply(
     ticket: u64,
     measurement: Option<RequestMeasurement>,
     result: BuildResult,
+    observations: BuildObservations,
 ) -> Result<Vec<u8>, io::Error> {
     let mut buffer = CappedBuffer {
         bytes: Vec::new(),
@@ -703,6 +715,7 @@ fn encode_build_reply(
             ticket,
             measurement,
             result,
+            observations,
         },
     )
     .map_err(io::Error::other)?;
@@ -1011,6 +1024,7 @@ fn serve_build(mut stream: UnixStream, request_id: u64, request: BuildRequest, s
                         message: "the compiler service ended before answering".into(),
                         internal: true,
                     },
+                    observations: BuildObservations::default(),
                 })
                 .unwrap_or_default(),
                 bytes: Vec::new(),
@@ -1033,6 +1047,7 @@ fn serve_build(mut stream: UnixStream, request_id: u64, request: BuildRequest, s
                     message: "the compiler service ended before answering".into(),
                     internal: true,
                 },
+                observations: BuildObservations::default(),
             })
             .unwrap_or_default(),
             bytes: Vec::new(),
