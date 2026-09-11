@@ -33,7 +33,10 @@ macro_rules! register_parse_import_parse_module_batches {
                             value.clone()
                         })
                         .collect::<Vec<_>>();
-                    let kind = if values.iter().all(|value| value.result.is_ok()) {
+                    let kind = if values
+                        .iter()
+                        .all(|value| value.diagnostics.is_empty() && value.result.is_ok())
+                    {
                         QueryTerminalKind::Success
                     } else {
                         QueryTerminalKind::Failure

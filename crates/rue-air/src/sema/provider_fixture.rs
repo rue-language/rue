@@ -28,7 +28,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use rue_error::{CompileResult, PreviewFeatures};
+use rue_error::{CompileError, CompileResult, PreviewFeatures};
 use rue_lexer::Lexer;
 use rue_parser::Parser;
 use rue_rir::{AstGen, RirEditor, RirValidationContext, ValidatedRir};
@@ -972,6 +972,7 @@ impl ProviderFixture {
             self.preview.clone(),
             &self.well_known,
         )
+        .map_err(CompileError::from)
     }
 
     /// Run the production provider body path over a named member body. The
@@ -1139,9 +1140,11 @@ impl ProviderFixture {
             )
         };
         if extra_source_lengths.is_empty() {
-            analyze()
+            analyze().map_err(rue_error::CompileError::from)
         } else {
-            super::provider_body_host::with_provider_body_test_owner_file(self.facts.file, analyze)
+            super::provider_body_host::with_provider_body_test_owner_file(self.facts.file, || {
+                analyze().map_err(rue_error::CompileError::from)
+            })
         }
     }
 }

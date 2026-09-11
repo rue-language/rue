@@ -197,7 +197,7 @@ compile_stderr_contains = [
 
 [[case]]
 name = "emit_tokens_recovers_malformed_byte_literal_delimiters"
-description = "RUE-2133: --emit tokens JSON diagnostics keep the primary byte-literal errors and the independent later lexer error without reporting either literal's closing quote."
+description = "--emit tokens retains the canonical frontend's byte-literal, parser, and independent later lexer diagnostics without reporting either literal's closing quote."
 files = [{ path = "main.rue", source = "b'\\q'; b'é'; #" }]
 args = ["--emit", "tokens", "--error-format", "json", "main.rue"]
 compile_fail = true
@@ -205,6 +205,7 @@ json_diagnostics = true
 error_contains = ["E0009", "E0001"]
 json_diagnostic_order = [
     "error E0009 main.rue:1:1",
+    "error E0100 main.rue:1:6",
     "error E0009 main.rue:1:8",
     "error E0001 main.rue:1:14",
 ]

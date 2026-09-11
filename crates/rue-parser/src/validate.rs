@@ -30,20 +30,29 @@ use std::collections::HashSet;
 
 /// Walk the AST and report directive-validation diagnostics through the same
 /// bounded per-file policy as grammar recovery.
+#[allow(dead_code)]
 pub fn check_directives(ast: &Ast, interner: &ThreadedRodeo) -> Vec<CompileError> {
-    let mut v = Validator {
-        interner,
-        errors: ParserDiagnostics::default(),
-    };
+    let mut errors = ParserDiagnostics::default();
+    check_directives_into(ast, interner, &mut errors);
+    errors.finish().0
+}
+
+/// Add directive diagnostics to an existing parser collector. Grammar and
+/// validation errors share one budget and one summary for the invocation.
+pub(crate) fn check_directives_into(
+    ast: &Ast,
+    interner: &ThreadedRodeo,
+    errors: &mut ParserDiagnostics,
+) {
+    let mut v = Validator { interner, errors };
     for item in &ast.items {
         v.check_item(item);
     }
-    v.errors.finish().0
 }
 
 struct Validator<'a> {
     interner: &'a ThreadedRodeo,
-    errors: ParserDiagnostics,
+    errors: &'a mut ParserDiagnostics,
 }
 
 impl Validator<'_> {

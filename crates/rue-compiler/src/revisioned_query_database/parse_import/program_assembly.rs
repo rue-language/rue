@@ -1148,6 +1148,14 @@ impl RevisionedQueryDatabase {
                 work.syntax.lexed_bytes += value.work.lexed_bytes;
                 work.syntax.tokens += value.work.tokens;
             }
+            if !value.diagnostics.is_empty() {
+                errors.extend(
+                    value
+                        .diagnostics
+                        .clone()
+                        .map_spans(|span| Span::with_file(*file_id, span.start, span.end)),
+                );
+            }
             match &value.result {
                 Ok(module) => {
                     let projected = crate::parsed_modules::rebind_parsed_module(
@@ -1246,6 +1254,14 @@ impl RevisionedQueryDatabase {
                 work.syntax.lexed_bytes += value.work.lexed_bytes;
                 work.syntax.tokens += value.work.tokens;
             }
+            if !value.diagnostics.is_empty() {
+                errors.extend(
+                    value
+                        .diagnostics
+                        .clone()
+                        .map_spans(|span| Span::with_file(current_file_id, span.start, span.end)),
+                );
+            }
             match &value.result {
                 Ok(module) => {
                     let projected = crate::parsed_modules::rebind_parsed_module(
@@ -1254,7 +1270,9 @@ impl RevisionedQueryDatabase {
                         &self.identity_resolution,
                     );
                     if !computed {
-                        if Arc::ptr_eq(&projected, module) {
+                        if !value.diagnostics.is_empty() {
+                            work.modules_reused += 1;
+                        } else if Arc::ptr_eq(&projected, module) {
                             work.modules_reused += 1;
                         } else {
                             work.modules_rebound += 1;
@@ -1322,6 +1340,13 @@ impl RevisionedQueryDatabase {
             let rue_query::QueryOutcome::Success(parsed_value) = parsed_terminal.outcome() else {
                 unreachable!("ParseModule publishes typed values")
             };
+            // `Ok(result)` is intentionally a strict publication surface;
+            // retained syntax with diagnostics must never authorize candidate
+            // RIR composition, even when it happens to contain no definitions.
+            if !parsed_value.diagnostics.is_empty() {
+                errors.extend(parsed_value.diagnostics.clone());
+                continue;
+            }
             let parsed = match &parsed_value.result {
                 Ok(parsed) => crate::parsed_modules::rebind_parsed_module(
                     &snapshot,

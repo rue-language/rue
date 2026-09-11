@@ -129,6 +129,10 @@ impl ParserDiagnostics {
         self.raw_count
     }
 
+    pub(crate) fn retained_len(&self) -> usize {
+        self.retained.len()
+    }
+
     /// Finish collection, appending the deterministic summary only after
     /// recovery no longer needs `last()`.
     pub(crate) fn finish(mut self) -> (Vec<CompileError>, usize) {

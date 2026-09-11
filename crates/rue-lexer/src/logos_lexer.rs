@@ -1101,15 +1101,31 @@ impl<'a> LogosLexer<'a> {
     pub fn tokenize_preserving_interner(
         self,
     ) -> Result<(Vec<Token>, ThreadedRodeo), (CompileErrors, ThreadedRodeo)> {
+        let (tokens, interner, errors) = self.tokenize_recovered_preserving_interner();
+        if errors.is_empty() {
+            Ok((tokens, interner))
+        } else {
+            Err((errors, interner))
+        }
+    }
+
+    /// Tokenize the entire source while retaining every recoverable token and
+    /// all diagnostics in source order. A malformed character is omitted from
+    /// the token stream, allowing the parser to continue at the next valid
+    /// token; the diagnostic preserves the original span for presentation.
+    pub fn tokenize_recovered_preserving_interner(
+        self,
+    ) -> (Vec<Token>, ThreadedRodeo, CompileErrors) {
         let source_len = match source_len_for_spans(self.file_id, self.source.len()) {
             Ok(source_len) => source_len,
-            Err(error) => return Err((CompileErrors::from(error), self.interner)),
+            Err(error) => return (Vec::new(), self.interner, CompileErrors::from(error)),
         };
 
         // Keep the old density estimate for ordinary files, but cap the initial
         // allocation so sparse large sources do not reserve per-source memory.
         let mut tokens = Vec::with_capacity(initial_token_capacity(self.source.len()));
         let mut errors = CompileErrors::new();
+        let mut diagnostics_summarized = false;
 
         let mut lexer = LogosTokenKind::lexer_with_extras(self.source, self.interner);
 
@@ -1251,6 +1267,21 @@ impl<'a> LogosLexer<'a> {
                                     )
                                 }
                             };
+                            // Resource failures are authoritative even after
+                            // the ordinary diagnostic budget is full. Stop
+                            // scanning so a partial stream cannot masquerade
+                            // as a complete recoverable file.
+                            if matches!(
+                                &kind,
+                                ErrorKind::CompilerResourceLimit(_)
+                                    | ErrorKind::CompilerResourceExhaustion(_)
+                            ) {
+                                errors.push(CompileError::new(kind, rue_span));
+                                break;
+                            }
+                            if diagnostics_summarized {
+                                continue;
+                            }
                             if errors.len() == LEXER_DIAGNOSTIC_BUDGET {
                                 errors.push(CompileError::new(
                                     ErrorKind::LexerDiagnosticsOmitted {
@@ -1258,7 +1289,13 @@ impl<'a> LogosLexer<'a> {
                                     },
                                     rue_span,
                                 ));
-                                break;
+                                // Keep scanning after the summary. The lexer
+                                // has already consumed this bad fragment and
+                                // continuing preserves later valid tokens;
+                                // the bounded collector suppresses further
+                                // diagnostics.
+                                diagnostics_summarized = true;
+                                continue;
                             }
 
                             let mut error = CompileError::new(kind, rue_span);
@@ -1292,11 +1329,7 @@ impl<'a> LogosLexer<'a> {
         // Extract the interner from the logos lexer
         let interner = lexer.extras;
 
-        if !errors.is_empty() {
-            return Err((errors, interner));
-        }
-
-        Ok((tokens, interner))
+        (tokens, interner, errors)
     }
 }
 
@@ -2643,6 +2676,20 @@ mod tests {
             ),
             ErrorKind::CompilerResourceExhaustion(_)
         ));
+    }
+
+    #[test]
+    fn recovered_tokenization_keeps_tokens_after_lexical_errors() {
+        let (tokens, interner, errors) = LogosLexer::new("fn kept() {} $ fn later() {}")
+            .tokenize_recovered_preserving_interner();
+        assert_eq!(errors.len(), 1);
+        assert!(tokens.iter().any(|token| {
+            matches!(token.kind, TokenKind::Ident(name) if interner.resolve(&name) == "kept")
+        }));
+        assert!(tokens.iter().any(|token| {
+            matches!(token.kind, TokenKind::Ident(name) if interner.resolve(&name) == "later")
+        }));
+        assert_eq!(tokens.last().map(|token| token.kind), Some(TokenKind::Eof));
     }
 
     #[test]

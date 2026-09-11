@@ -19,11 +19,10 @@ macro_rules! register_parse_import_module_source_bases {
                     context.input(module_metadata_input(&key.0))?;
                     let parsed =
                         context.query_registered(&$parse_for_module_source_bases, key.clone())?;
-                    let rue_query::QueryOutcome::Success(ParseModuleValue {
-                        result: Ok(parsed),
-                        ..
-                    }) = parsed.outcome()
-                    else {
+                    let rue_query::QueryOutcome::Success(parsed) = parsed.outcome() else {
+                        return Ok(QueryOutput::success(None));
+                    };
+                    let Ok(parsed) = parsed.strict_result() else {
                         return Ok(QueryOutput::success(None));
                     };
                     let view = module_input_view(

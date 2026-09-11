@@ -5,7 +5,7 @@
 
 use tracing::{info, info_span};
 
-use crate::{Lexer, MultiErrorResult, Parser, SourceView, ThreadedRodeo};
+use crate::{CompileErrors, Lexer, MultiErrorResult, Parser, SourceView, ThreadedRodeo};
 
 #[derive(Debug)]
 pub(crate) struct TransientTokenBuffer {
@@ -50,9 +50,9 @@ impl TransientTokenBuffer {
 
 /// Work performed while lexing and parsing source files.
 ///
-/// Token counts include the EOF token emitted by the lexer. A file contributes
-/// tokens only when lexing succeeds and produces the token vector passed to the
-/// parser. Source bytes use UTF-8 byte lengths, matching Rue's byte-based spans.
+/// Token counts include every token retained by the recovering lexer,
+/// including its EOF token. Source bytes use UTF-8 byte lengths, matching
+/// Rue's byte-based spans.
 /// Values describe one bounded syntax run; they are neither process-global
 /// totals nor metadata attached to a reusable parsed artifact. Import discovery
 /// treats one provenance-preserving fixed-point lifecycle as a bounded run, so
@@ -72,6 +72,8 @@ pub struct SyntaxWork {
 
 pub(crate) struct FileParseOutcome {
     pub(crate) result: MultiErrorResult<std::sync::Arc<rue_parser::Ast>>,
+    pub(crate) recovered: Option<std::sync::Arc<rue_parser::Ast>>,
+    pub(crate) diagnostics: CompileErrors,
     pub(crate) interner: ThreadedRodeo,
     pub(crate) tokens: TransientTokenBuffer,
     pub(crate) work: SyntaxWork,
@@ -86,19 +88,9 @@ pub(crate) fn parse_file(source: SourceView<'_>, interner: ThreadedRodeo) -> Fil
     };
 
     let lexer = Lexer::with_interner_and_file_id(source.source, interner, source.file_id);
-    let (tokens, interner) = {
+    let (tokens, interner, lexer_errors) = {
         let _span = info_span!("lexer").entered();
-        match lexer.tokenize_preserving_interner() {
-            Ok(output) => output,
-            Err((errors, interner)) => {
-                return FileParseOutcome {
-                    result: Err(errors),
-                    interner,
-                    tokens: TransientTokenBuffer::new(Vec::new(), true),
-                    work,
-                };
-            }
-        }
+        lexer.tokenize_recovered_preserving_interner()
     };
 
     work.parser_invocations = 1;
@@ -106,27 +98,46 @@ pub(crate) fn parse_file(source: SourceView<'_>, interner: ThreadedRodeo) -> Fil
     info!(token_count = tokens.len(), "lexing complete");
     let token_allocation = tokens.as_ptr() as usize;
 
-    let (ast, interner, tokens) = {
+    // A lexer resource failure means the token stream is incomplete. Preserve
+    // the fatal diagnostic as the sole owner and keep the parser from turning
+    // that partial stream into a retained AST.
+    if lexer_errors.iter().any(|error| {
+        matches!(
+            &error.kind,
+            rue_error::ErrorKind::CompilerResourceLimit(_)
+                | rue_error::ErrorKind::CompilerResourceExhaustion(_)
+        )
+    }) {
+        work.parser_invocations = 0;
+        return FileParseOutcome {
+            result: Err(lexer_errors.clone()),
+            recovered: None,
+            diagnostics: lexer_errors,
+            interner,
+            tokens: TransientTokenBuffer::new(tokens, true),
+            work,
+        };
+    }
+
+    let (ast, interner, tokens, parser_errors) = {
         let _span = info_span!("parser").entered();
         let parser = Parser::new(tokens, interner);
-        match parser.parse_preserving_interner_and_tokens() {
-            Ok(output) => output,
-            Err((errors, interner, tokens)) => {
-                let parser_reused_allocation = tokens.as_ptr() as usize == token_allocation;
-                return FileParseOutcome {
-                    result: Err(errors),
-                    interner,
-                    tokens: TransientTokenBuffer::new(tokens, parser_reused_allocation),
-                    work,
-                };
-            }
-        }
+        parser.parse_recovered_preserving_interner_and_tokens()
     };
 
     let parser_reused_allocation = tokens.as_ptr() as usize == token_allocation;
+    let mut diagnostics = lexer_errors;
+    diagnostics.extend(parser_errors);
+    let recovered = ast.map(std::sync::Arc::new);
+    let result = match &recovered {
+        Some(ast) => diagnostics.clone().into_result_with(ast.clone()),
+        None => Err(diagnostics.clone()),
+    };
 
     FileParseOutcome {
-        result: Ok(std::sync::Arc::new(ast)),
+        result,
+        recovered,
+        diagnostics,
         interner,
         tokens: TransientTokenBuffer::new(tokens, parser_reused_allocation),
         work,
@@ -265,7 +276,7 @@ mod tests {
         assert_eq!(summaries[0].span().unwrap().file_id, FileId::new(10));
         assert_eq!(summaries[1].span().unwrap().file_id, FileId::new(30));
         assert_eq!(work.syntax.lexer_invocations, 3);
-        assert_eq!(work.syntax.parser_invocations, 1);
+        assert_eq!(work.syntax.parser_invocations, 3);
 
         let source_info = SourceInfo::new(&first, "first.rue");
         let text = MultiFileFormatter::with_color_choice(
@@ -322,6 +333,44 @@ mod tests {
     }
 
     #[test]
+    fn parse_file_retains_later_syntax_after_lex_and_parse_errors() {
+        let source = "fn broken( -> i32 { 0 } $ fn kept() {}";
+        let outcome = parse_file(
+            SourceView::new("recovered.rue", source, FileId::new(7)),
+            ThreadedRodeo::new(),
+        );
+        let ast = outcome.recovered.expect("recovery should retain the AST");
+        assert!(!outcome.diagnostics.is_empty());
+        assert!(matches!(ast.items.first(), Some(Item::Error(_))));
+        assert!(
+            ast.items
+                .iter()
+                .any(|item| matches!(item, Item::Function(_)))
+        );
+        assert!(outcome.tokens.as_slice().iter().any(|token| {
+            matches!(token.kind, rue_lexer::TokenKind::Ident(name) if outcome.interner.resolve(&name) == "kept")
+        }));
+        assert!(outcome.result.is_err(), "strict result must remain gated");
+    }
+
+    #[test]
+    fn fatal_recovery_diagnostics_are_reported_once() {
+        let source = "(".repeat(rue_error::MAX_NESTING_DEPTH + 1);
+        let snapshot = SourceSnapshot::single("fatal.rue", source).unwrap();
+        let mut session = CompilerSession::new();
+        let errors = session.update(&snapshot).into_result().unwrap_err();
+        assert_eq!(
+            errors.len(),
+            1,
+            "fatal syntax diagnostics must not duplicate"
+        );
+        assert!(matches!(
+            errors.first().map(|error| &error.kind),
+            Some(ErrorKind::NestingLimitExceeded { .. })
+        ));
+    }
+
+    #[test]
     fn work_uses_utf8_bytes_and_successful_lexer_token_vectors() {
         let valid = "fn main() { // café\n}";
         let FileParseOutcome {
@@ -369,7 +418,7 @@ mod tests {
         );
         assert!(result.is_err());
         assert_eq!(work.lexed_bytes, lex_error.len());
-        assert_eq!(work.tokens, 0);
-        assert_eq!(work.parser_invocations, 0);
+        assert_eq!(work.tokens, 2);
+        assert_eq!(work.parser_invocations, 1);
     }
 }

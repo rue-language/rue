@@ -211,17 +211,38 @@ impl Parser {
     /// ordinary [`Self::parse`] and [`Self::parse_preserving_interner`] entry
     /// points discard it after parsing.
     pub fn parse_preserving_interner_and_tokens(
-        mut self,
+        self,
     ) -> Result<(Ast, ThreadedRodeo, Vec<Token>), (CompileErrors, ThreadedRodeo, Vec<Token>)> {
+        let (ast, interner, tokens, errors) = self.parse_recovered_preserving_interner_and_tokens();
+        if let Some(ast) = ast {
+            if errors.is_empty() {
+                Ok((ast, interner, tokens))
+            } else {
+                Err((errors, interner, tokens))
+            }
+        } else {
+            Err((errors, interner, tokens))
+        }
+    }
+
+    /// Parse while retaining the recovered AST and every diagnostic.
+    ///
+    /// Recovery nodes are deliberately confined to syntax. Downstream
+    /// consumers may inspect the retained tree, but must gate semantic and
+    /// code-generation work on the returned diagnostics.
+    pub fn parse_recovered_preserving_interner_and_tokens(
+        mut self,
+    ) -> (Option<Ast>, ThreadedRodeo, Vec<Token>, CompileErrors) {
         if let Some(kind) = self.interner_error {
-            return Err((
+            return (
+                None,
+                self.interner,
+                self.tokens,
                 CompileErrors::from(CompileError::without_span(rue_lexer::interner_error_kind(
                     kind,
                     "the parser could not intern a required primitive spelling",
                 ))),
-                self.interner,
-                self.tokens,
-            ));
+            );
         }
         let input_token_count = self.tokens.len();
         let parser_token_count = self
@@ -244,7 +265,12 @@ impl Parser {
                 validation_error_count = 0,
                 "parser complete"
             );
-            return Err((CompileErrors::from(vec![error]), self.interner, self.tokens));
+            return (
+                None,
+                self.interner,
+                self.tokens,
+                CompileErrors::from(vec![error]),
+            );
         }
 
         let items = {
@@ -252,29 +278,18 @@ impl Parser {
             self.parse_items_with_recovery()
         };
         let raw_parse_error_count = self.errors.raw_count();
-        let (errors, diagnostic_equality_checks) = std::mem::take(&mut self.errors).finish();
-        let parse_error_count = errors.len();
-        if !errors.is_empty() {
-            info!(
-                outcome = "parse_error",
-                input_token_count,
-                parser_token_count,
-                ast_item_count = 0,
-                raw_parse_error_count,
-                parse_error_count,
-                diagnostic_equality_checks,
-                validation_error_count = 0,
-                "parser complete"
-            );
-            return Err((CompileErrors::from(errors), self.interner, self.tokens));
-        }
-
+        let parse_error_count = self.errors.retained_len();
         let ast = Ast { items };
-        let validation = {
+        {
             let _span = info_span!("parser_directive_validation").entered();
-            crate::validate::check_directives(&ast, &self.interner)
-        };
-        if !validation.is_empty() {
+            crate::validate::check_directives_into(&ast, &self.interner, &mut self.errors);
+        }
+        let validation_error_count = self
+            .errors
+            .raw_count()
+            .saturating_sub(raw_parse_error_count);
+        if validation_error_count != 0 {
+            let (all_errors, diagnostic_equality_checks) = self.errors.finish();
             info!(
                 outcome = "validation_error",
                 input_token_count,
@@ -282,23 +297,37 @@ impl Parser {
                 ast_item_count = ast.items.len(),
                 raw_parse_error_count,
                 parse_error_count,
-                validation_error_count = validation.len(),
+                diagnostic_equality_checks,
+                validation_error_count,
                 "parser complete"
             );
-            return Err((CompileErrors::from(validation), self.interner, self.tokens));
+            return (
+                Some(ast),
+                self.interner,
+                self.tokens,
+                CompileErrors::from(all_errors),
+            );
         }
 
+        let (errors, diagnostic_equality_checks) = self.errors.finish();
+        let diagnostics = CompileErrors::from(errors);
+        let outcome = if diagnostics.is_empty() {
+            "success"
+        } else {
+            "parse_error"
+        };
         info!(
-            outcome = "success",
+            outcome,
             input_token_count,
             parser_token_count,
             ast_item_count = ast.items.len(),
             raw_parse_error_count,
             parse_error_count,
+            diagnostic_equality_checks,
             validation_error_count = 0,
             "parser complete"
         );
-        Ok((ast, self.interner, self.tokens))
+        (Some(ast), self.interner, self.tokens, diagnostics)
     }
 }
 
@@ -596,6 +625,82 @@ mod tests {
         assert_eq!(export.export_abi.as_deref(), Some("C"));
         assert_eq!(interner.resolve(&export.name.name), "kept");
         assert_eq!(ast.items[2], Item::Error(Span::new(62, 64)));
+    }
+
+    #[test]
+    fn production_recovery_retains_later_items_with_diagnostics() {
+        let source = "fn broken( -> i32 { 0 }\nfn kept() {}";
+        let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
+        let (ast, _interner, _tokens, errors) =
+            Parser::new(tokens, interner).parse_recovered_preserving_interner_and_tokens();
+
+        let ast = ast.expect("recoverable syntax should retain an AST");
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(ast.items[0], Item::Error(_)));
+        assert!(matches!(ast.items[1], Item::Function(_)));
+    }
+
+    #[test]
+    fn production_recovery_retains_later_statements_after_bad_expression() {
+        let source = "fn main() -> i32 { let before = 1; before + ; let after = 2; after }";
+        let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
+        let (ast, _interner, _tokens, errors) =
+            Parser::new(tokens, interner).parse_recovered_preserving_interner_and_tokens();
+
+        let ast = ast.expect("recoverable syntax should retain the AST");
+        assert_eq!(errors.len(), 1);
+        let Item::Function(function) = &ast.items[0] else {
+            panic!("function was discarded during expression recovery: {ast:?}");
+        };
+        let Expr::Block(body) = &function.body else {
+            panic!("function body was not retained: {function:?}");
+        };
+        assert!(matches!(
+            body.statements[1],
+            Statement::Expr(Expr::Error(_))
+        ));
+        assert!(matches!(body.statements[2], Statement::Let(_)));
+        assert!(matches!(*body.expr, Expr::Ident(_)));
+    }
+
+    #[test]
+    fn grammar_and_directive_recovery_share_one_diagnostic_budget() {
+        let source = "@nonsense fn f() { let x = ; }\n".repeat(101);
+        let (tokens, interner) = Lexer::new(&source).tokenize().unwrap();
+        let (ast, _, _, errors) =
+            Parser::new(tokens, interner).parse_recovered_preserving_interner_and_tokens();
+        assert!(ast.is_some());
+        assert_eq!(
+            errors
+                .iter()
+                .filter(|error| matches!(error.kind, ErrorKind::ParserDiagnosticsOmitted { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(errors.len(), crate::PARSER_DIAGNOSTIC_BUDGET + 1);
+    }
+
+    #[test]
+    fn statement_recovery_keeps_nested_delimiters_and_following_statements() {
+        let source = "fn main() -> i32 { if true { 1 } + ; let after = 2; after }";
+        let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
+        let (ast, _interner, _tokens, errors) =
+            Parser::new(tokens, interner).parse_recovered_preserving_interner_and_tokens();
+
+        let ast = ast.expect("recoverable syntax should retain the AST");
+        assert_eq!(errors.len(), 1);
+        let Item::Function(function) = &ast.items[0] else {
+            panic!("function was discarded during nested recovery: {ast:?}");
+        };
+        let Expr::Block(body) = &function.body else {
+            panic!("function body was not retained: {function:?}");
+        };
+        assert!(matches!(
+            body.statements[0],
+            Statement::Expr(Expr::Error(_))
+        ));
+        assert!(matches!(body.statements[1], Statement::Let(_)));
+        assert!(matches!(*body.expr, Expr::Ident(_)));
     }
 
     #[test]

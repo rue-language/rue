@@ -850,11 +850,39 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-expected_error_code = "E0011"
+# Recovery retains the parser diagnostic when the invalid token was omitted.
 params = [
-  { case_name = "a_leading_dot", literal = ".5" },
-  { case_name = "a_trailing_dot", literal = "5." },
-  { case_name = "an_empty_exponent", literal = "1e" },
+  { case_name = "a_leading_dot", literal = ".5", expected_error = """
+error: [E0011]: floating-point literal cannot start with `.`: write `0.5` instead of `.5`
+ --> test.rue:2:18
+  |
+2 |     let x: f64 = .5;
+  |                  ^^
+  |
+error: [E0100]: expected expression, found ';'
+ --> test.rue:2:20
+  |
+2 |     let x: f64 = .5;
+  |                    ^
+  |
+error: aborting due to 2 previous errors
+""" },
+  { case_name = "a_trailing_dot", literal = "5.", expected_error_code = "E0011" },
+  { case_name = "an_empty_exponent", literal = "1e", expected_error = """
+error: [E0011]: missing digits in the exponent of floating-point literal `1e`
+ --> test.rue:2:18
+  |
+2 |     let x: f64 = 1e;
+  |                  ^^
+  |
+error: [E0100]: expected expression, found ';'
+ --> test.rue:2:20
+  |
+2 |     let x: f64 = 1e;
+  |                    ^
+  |
+error: aborting due to 2 previous errors
+""" },
 ]
 
 [[case]]

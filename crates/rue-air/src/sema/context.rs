@@ -397,6 +397,10 @@ pub(crate) struct AnalysisContext<'a> {
     /// call arguments reached inside this scope may synthesize the integer
     /// recovery context above.
     pub recover_missing_ctor_head_arguments: bool,
+    /// Nesting of semantic blocks. Statement recovery is enabled only for
+    /// the function's root block; nested blocks must propagate failures so a
+    /// failed branch or loop cannot be replaced with invented fallthrough.
+    pub statement_recovery_depth: u32,
     /// The shared inference context for this body, threaded here so accessor
     /// call expansion (ADR-0062) can run type inference for the accessor's
     /// body on demand before splicing it into the caller.
@@ -602,6 +606,29 @@ impl ScopedContext for AnalysisContext<'_> {
 }
 
 impl<'a> AnalysisContext<'a> {
+    /// Keep a failed recovered allocation from revealing an outer shadowed
+    /// binding to later statements. The poisoned local has no AIR lifetime;
+    /// its ERROR type ensures dependent reads remain diagnostic-only and the
+    /// enclosing body cannot be published.
+    pub(crate) fn poison_failed_binding(
+        &mut self,
+        name: Spur,
+        slot: u32,
+        is_mut: bool,
+        span: Span,
+    ) {
+        self.insert_local(
+            name,
+            LocalVar {
+                slot,
+                ty: Type::ERROR,
+                is_mut,
+                span,
+                allow_unused: true,
+            },
+        );
+    }
+
     pub(crate) fn checked_const_index_scope_key(&self) -> CheckedConstIndexScopeKey {
         // `ComptimeEnv` asks locals only for name membership; slots, mutability,
         // ownership state, and local types cannot affect const evaluation.
@@ -736,6 +763,7 @@ impl<'a> AnalysisContext<'a> {
             expected_type: None,
             missing_inference_integer_type: self.missing_inference_integer_type,
             recover_missing_ctor_head_arguments: self.recover_missing_ctor_head_arguments,
+            statement_recovery_depth: self.statement_recovery_depth,
             infer_ctx: self.infer_ctx,
             accessor_trailing_yield: self.accessor_trailing_yield,
             accessor_call_insts: self.accessor_call_insts.clone(),

@@ -22,7 +22,21 @@ impl QueryKey for ModuleQueryKey {
 #[derive(Debug, Clone)]
 pub(super) struct ParseModuleValue {
     pub(super) result: Result<Arc<ParsedModule>, crate::CompileErrors>,
+    pub(super) diagnostics: crate::CompileErrors,
     pub(super) work: SyntaxWork,
+}
+
+impl ParseModuleValue {
+    /// Return a module only when its syntax phase completed without recovered
+    /// diagnostics. The retained tree is available for presentation through
+    /// `result`, but never authorizes semantic or code-generation queries.
+    pub(super) fn strict_result(&self) -> Result<&Arc<ParsedModule>, crate::CompileErrors> {
+        if !self.diagnostics.is_empty() {
+            Err(self.diagnostics.clone())
+        } else {
+            self.result.as_ref().map_err(Clone::clone)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1041,7 +1055,9 @@ impl LookupImportValue {
 
 impl RetainedCharge for ParseModuleValue {
     fn retained_charge(&self) -> u64 {
-        self.result.retained_charge()
+        self.result
+            .retained_charge()
+            .saturating_add(self.diagnostics.retained_charge())
     }
 }
 
@@ -1796,11 +1812,12 @@ pub(super) fn pending_occurrence_requests(
 }
 
 pub(super) fn parse_module_value_equal(left: &ParseModuleValue, right: &ParseModuleValue) -> bool {
-    match (&left.result, &right.result) {
+    let result_equal = match (&left.result, &right.result) {
         (Ok(left), Ok(right)) => left.revision() == right.revision(),
         (Err(left), Err(right)) => left == right,
         _ => false,
-    }
+    };
+    result_equal && left.diagnostics == right.diagnostics
 }
 
 pub(super) fn module_index_value_equal(left: &ModuleIndexValue, right: &ModuleIndexValue) -> bool {
@@ -1987,11 +2004,10 @@ pub(crate) fn project_transaction_diagnostics(
 }
 
 pub(super) fn body_failure_with_source(
-    error: crate::CompileError,
+    errors: crate::CompileErrors,
     source: &crate::body_query::BodySourceLocator,
 ) -> crate::body_query::BodyTransaction {
-    let (errors, diagnostic_basis) =
-        crate::body_query::relative_body_diagnostics(crate::CompileErrors::from(error), source);
+    let (errors, diagnostic_basis) = crate::body_query::relative_body_diagnostics(errors, source);
     crate::body_query::BodyTransaction::DeterministicFailure {
         errors,
         diagnostic_basis: Some(diagnostic_basis),

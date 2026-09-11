@@ -15,7 +15,7 @@ macro_rules! register_parse_import_module_indexes {
                     let rue_query::QueryOutcome::Success(parsed) = parsed.outcome() else {
                         unreachable!("ParseModule publishes typed values")
                     };
-                    let result = match &parsed.result {
+                    let result = match parsed.strict_result() {
                         Ok(module) => Ok(Arc::new(new_module_index(
                             module.revision().clone(),
                             module
@@ -39,7 +39,7 @@ macro_rules! register_parse_import_module_indexes {
                                 .into(),
                             module.imports().to_vec().into(),
                         ))),
-                        Err(errors) => Err(errors.clone()),
+                        Err(errors) => Err(errors),
                     };
                     Ok(QueryOutput::success(ModuleIndexValue(result)))
                 },

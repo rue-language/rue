@@ -65,6 +65,7 @@ const EXPECTED_REVISIONED_QUERY_TESTS: &[&str] = &[
     "canceled_production_body_attempt_commits_no_lookup_handoff",
     "cancellation_mid_body_materialization_publishes_no_terminal_and_retry_succeeds",
     "candidate_artifact_retention_bounds_history_and_rederives_evicted_values",
+    "candidate_rir_composition_rejects_retained_syntax_without_definitions",
     "canonical_layout_matches_frozen_pool_for_padding_nested_arrays_and_enums",
     "canonical_rir_presentation_preserves_resource_limit_and_capacity_codes",
     "cold_foreign_comptime_probe_admits_owned_program_without_value_evaluation",

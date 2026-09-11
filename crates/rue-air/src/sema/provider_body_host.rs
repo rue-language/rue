@@ -1244,6 +1244,7 @@ struct ProviderBodyHost<'a, P, S, K, M> {
     active_anonymous_producer: Option<super::anon_structs::IssuedStableProducerId>,
     body_work: BodyAnalysisWork,
     expression_breakdown: Option<ExpressionAnalysisBreakdown>,
+    recover_body_errors: bool,
     recovered_errors: Vec<CompileError>,
     deferred_ownership: Vec<super::DeferredOwnershipGate>,
     ctor_displays: AHashMap<Type, String>,
@@ -1408,6 +1409,7 @@ where
             active_anonymous_producer: None,
             body_work: BodyAnalysisWork::default(),
             expression_breakdown: None,
+            recover_body_errors: false,
             recovered_errors: Vec::new(),
             deferred_ownership: Vec::new(),
             ctor_displays: AHashMap::new(),
@@ -4376,6 +4378,95 @@ where
     }
 }
 
+fn recover_body_analysis<T>(
+    recovered_errors: Vec<CompileError>,
+    result: CompileResult<T>,
+) -> Result<T, rue_error::CompileErrors> {
+    match result {
+        Ok(value) if recovered_errors.is_empty() => Ok(value),
+        Ok(_) => Err(recovered_errors.into()),
+        Err(error) if is_statement_recoverable(&error) => {
+            // The first-error attempt returns the ledger's first entry as its
+            // terminal sentinel. Avoid duplicating it when the ledger already
+            // owns the complete batch from the recovery attempt.
+            if recovered_errors.iter().any(|recovered| recovered == &error) {
+                Err(recovered_errors.into())
+            } else {
+                let mut errors = recovered_errors;
+                errors.push(error);
+                Err(errors.into())
+            }
+        }
+        Err(error) => {
+            // A fatal query failure has authority over statement recovery.
+            // Keep the fatal error first so cancellation, resource limits,
+            // and publication failures retain their outer classification.
+            let mut errors = rue_error::CompileErrors::from_error(error);
+            errors.extend(recovered_errors.into());
+            Err(errors)
+        }
+    }
+}
+
+fn is_statement_recoverable(error: &CompileError) -> bool {
+    matches!(
+        &error.kind,
+        ErrorKind::UndefinedVariable(_)
+            | ErrorKind::UndefinedFunction(_)
+            | ErrorKind::AssignToImmutable(_)
+            | ErrorKind::UnknownType(_)
+            | ErrorKind::TypeMismatch { .. }
+            | ErrorKind::WrongArgumentCount { .. }
+            | ErrorKind::StrViewReassignment
+    )
+}
+
+fn finish_provider_result<T>(
+    result: Result<T, rue_error::CompileErrors>,
+    shared_interner: CompileResult<()>,
+) -> Result<T, rue_error::CompileErrors> {
+    match (result, shared_interner) {
+        (Err(errors), Err(_shared_error))
+            if errors.iter().any(|error| {
+                matches!(
+                    error.kind,
+                    ErrorKind::CompilerResourceLimit(_) | ErrorKind::CompilerResourceExhaustion(_)
+                )
+            }) =>
+        {
+            // The provider's typed resource failure owns an exhausted symbol
+            // space already observed while projecting the result. The shared
+            // boundary can observe the same event again, but must not publish
+            // a duplicate diagnostic.
+            Err(errors)
+        }
+        (Err(mut errors), Err(error)) => {
+            // Shared interner exhaustion is a provider-wide fatal boundary;
+            // retain it ahead of any body-local batch. Avoid repeating it if
+            // the closure already observed the same failure.
+            if !errors.iter().any(|existing| existing == &error) {
+                let mut merged = rue_error::CompileErrors::from_error(error);
+                merged.extend(errors);
+                errors = merged;
+            }
+            Err(errors)
+        }
+        (Err(errors), Ok(())) => Err(errors),
+        (Ok(_), Err(error)) => Err(rue_error::CompileErrors::from_error(error)),
+        (Ok(value), Ok(())) => Ok(value),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn fatal_body_failure_keeps_priority_over_recovered_errors() {
+    let recovered = CompileError::without_span(ErrorKind::UndefinedVariable("value".into()));
+    let fatal = CompileError::without_span(ErrorKind::CompilerResourceLimit("AIR words".into()));
+    let errors = recover_body_analysis(vec![recovered], Err::<(), _>(fatal.clone())).unwrap_err();
+    assert_eq!(errors.len(), 2);
+    assert_eq!(errors.first(), Some(&fatal));
+}
+
 impl<P, S, K, M> HostInterrupts for ProviderBodyHost<'_, P, S, K, M>
 where
     P: BodyFactProvider,
@@ -5481,7 +5572,11 @@ where
     fn record_resolved_declaration_type(&mut self, _ty: Type) {}
 
     fn body_analysis_error_recovery(&self) -> bool {
-        false
+        self.recover_body_errors
+    }
+
+    fn body_analysis_error_is_recoverable(&self, error: &CompileError) -> bool {
+        is_statement_recoverable(error)
     }
 
     fn body_analysis_first_recovered_error(&self) -> Option<CompileError> {
@@ -5701,18 +5796,71 @@ pub fn analyze_provider_ordinary_body<P, S, K, M>(
     target: Target,
     preview: PreviewFeatures,
     well_known: &ProviderWellKnownOptionFacts<K, M>,
-) -> CompileResult<ProviderOrdinaryBody<K, M>>
+) -> Result<ProviderOrdinaryBody<K, M>, rue_error::CompileErrors>
 where
     P: BodyFactProvider,
     S: DurableNominalSource<K, M>
         + DurableAnonymousSource<K, M>
         + DurableCallableSource<K, M>
         + DurableConstSource<K, M>
-        + DurableBodyLookupSource<K, M>,
+        + DurableBodyLookupSource<K, M>
+        + Clone,
     K: Clone + Eq + Hash + Ord,
     M: Clone + Eq + Hash + Ord,
 {
-    let result = (|| -> CompileResult<ProviderOrdinaryBody<K, M>> {
+    let result = analyze_provider_ordinary_body_with_recovery(
+        provider,
+        source.clone(),
+        bundle,
+        key.clone(),
+        name,
+        owner_kind,
+        owner_name,
+        target,
+        preview.clone(),
+        well_known,
+        false,
+    );
+    if result
+        .as_ref()
+        .err()
+        .and_then(|errors| errors.first())
+        .is_some_and(is_statement_recoverable)
+    {
+        analyze_provider_ordinary_body_with_recovery(
+            provider, source, bundle, key, name, owner_kind, owner_name, target, preview,
+            well_known, true,
+        )
+    } else {
+        result
+    }
+}
+
+fn analyze_provider_ordinary_body_with_recovery<P, S, K, M>(
+    provider: &P,
+    source: S,
+    bundle: &BodyRirBundle,
+    key: K,
+    name: &str,
+    owner_kind: crate::StableDefinitionKind,
+    owner_name: Option<&str>,
+    target: Target,
+    preview: PreviewFeatures,
+    well_known: &ProviderWellKnownOptionFacts<K, M>,
+    recover_body_errors: bool,
+) -> Result<ProviderOrdinaryBody<K, M>, rue_error::CompileErrors>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>
+        + Clone,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
+    let result = (|| -> Result<ProviderOrdinaryBody<K, M>, rue_error::CompileErrors> {
         let owner_file = bundle
             .source_file_id()
             .or_else(provider_body_test_owner_file)
@@ -5732,6 +5880,7 @@ where
                 "provider body host could not be constructed".into(),
             ))
         })?;
+        host.recover_body_errors = recover_body_errors;
         let initial_anonymous_identities = host
             .canonical_anonymous_types
             .values()
@@ -5784,18 +5933,20 @@ where
                             "provider function containment metadata is unavailable".into(),
                         ))
                     })?;
+                let analysis = OrdinaryBodyEngine::new(&mut host).analyze_single_function_resolved(
+                    &infer,
+                    name,
+                    return_type,
+                    params,
+                    body,
+                    info.span,
+                    info.allow_unused_variable,
+                    info.allow_unreachable_code,
+                    crate::StableDefinitionKind::Function,
+                );
+                let recovered_errors = host.recovered_errors.clone();
                 (
-                    OrdinaryBodyEngine::new(&mut host).analyze_single_function_resolved(
-                        &infer,
-                        name,
-                        return_type,
-                        params,
-                        body,
-                        info.span,
-                        info.allow_unused_variable,
-                        info.allow_unreachable_code,
-                        crate::StableDefinitionKind::Function,
-                    )?,
+                    recover_body_analysis(recovered_errors, analysis)?,
                     body_span,
                 )
             }
@@ -5864,21 +6015,23 @@ where
                             "provider method containment metadata is unavailable".into(),
                         ))
                     })?;
+                let analysis = OrdinaryBodyEngine::new(&mut host).analyze_named_method_resolved(
+                    &infer,
+                    &full_name,
+                    return_type,
+                    params,
+                    body,
+                    info.span,
+                    info.struct_type,
+                    info.has_self,
+                    info.self_mode,
+                    info.self_is_mut,
+                    info.returns_borrow,
+                    info.returns_inout,
+                );
+                let recovered_errors = host.recovered_errors.clone();
                 (
-                    OrdinaryBodyEngine::new(&mut host).analyze_named_method_resolved(
-                        &infer,
-                        &full_name,
-                        return_type,
-                        params,
-                        body,
-                        info.span,
-                        info.struct_type,
-                        info.has_self,
-                        info.self_mode,
-                        info.self_is_mut,
-                        info.returns_borrow,
-                        info.returns_inout,
-                    )?,
+                    recover_body_analysis(recovered_errors, analysis)?,
                     body_span,
                 )
             }
@@ -5931,14 +6084,16 @@ where
                             "provider destructor containment metadata is unavailable".into(),
                         ))
                     })?;
+                let analysis = OrdinaryBodyEngine::new(&mut host).analyze_named_destructor(
+                    &infer,
+                    &full_name,
+                    body,
+                    declaration_span,
+                    owner_type,
+                );
+                let recovered_errors = host.recovered_errors.clone();
                 (
-                    OrdinaryBodyEngine::new(&mut host).analyze_named_destructor(
-                        &infer,
-                        &full_name,
-                        body,
-                        declaration_span,
-                        owner_type,
-                    )?,
+                    recover_body_analysis(recovered_errors, analysis)?,
                     body_span,
                 )
             }
@@ -5983,18 +6138,20 @@ where
                             "provider test containment metadata is unavailable".into(),
                         ))
                     })?;
+                let analysis = OrdinaryBodyEngine::new(&mut host).analyze_single_function_resolved(
+                    &infer,
+                    name,
+                    return_type,
+                    Vec::new(),
+                    body,
+                    declaration_span,
+                    allow_unused_variable,
+                    allow_unreachable_code,
+                    crate::StableDefinitionKind::Test,
+                );
+                let recovered_errors = host.recovered_errors.clone();
                 (
-                    OrdinaryBodyEngine::new(&mut host).analyze_single_function_resolved(
-                        &infer,
-                        name,
-                        return_type,
-                        Vec::new(),
-                        body,
-                        declaration_span,
-                        allow_unused_variable,
-                        allow_unreachable_code,
-                        crate::StableDefinitionKind::Test,
-                    )?,
+                    recover_body_analysis(recovered_errors, analysis)?,
                     body_span,
                 )
             }
@@ -6003,7 +6160,8 @@ where
                     rue_error::ErrorKind::InvalidCompilerInput(
                         "provider body request does not own an executable body".into(),
                     ),
-                ));
+                )
+                .into());
             }
         };
         let expression_engine_ns = elapsed_ns(expression_engine_started);
@@ -6130,21 +6288,10 @@ where
             module_tokens,
         })
     })();
-    match (
+    finish_provider_result(
         result,
         check_shared_interner(bundle.symbol_space(), "ordinary provider analysis"),
-    ) {
-        (Err(error), _)
-            if matches!(
-                &error.kind,
-                ErrorKind::CompilerResourceLimit(_) | ErrorKind::CompilerResourceExhaustion(_)
-            ) =>
-        {
-            Err(error)
-        }
-        (_, Err(error)) => Err(error),
-        (result, Ok(())) => result,
-    }
+    )
 }
 
 fn anonymous_member_in_producer(
@@ -6291,7 +6438,68 @@ pub fn analyze_provider_anonymous_body<P, S, K, M>(
     target: Target,
     preview: PreviewFeatures,
     well_known: &ProviderWellKnownOptionFacts<K, M>,
-) -> CompileResult<ProviderAnonymousBody<K, M>>
+) -> Result<ProviderAnonymousBody<K, M>, rue_error::CompileErrors>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>
+        + Clone,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
+    let result = analyze_provider_anonymous_body_with_recovery(
+        provider,
+        source.clone(),
+        bundle,
+        candidate_root,
+        source_key.clone(),
+        owner,
+        member,
+        target,
+        preview.clone(),
+        well_known,
+        false,
+    );
+    if result
+        .as_ref()
+        .err()
+        .and_then(|errors| errors.first())
+        .is_some_and(is_statement_recoverable)
+    {
+        analyze_provider_anonymous_body_with_recovery(
+            provider,
+            source,
+            bundle,
+            candidate_root,
+            source_key,
+            owner,
+            member,
+            target,
+            preview,
+            well_known,
+            true,
+        )
+    } else {
+        result
+    }
+}
+
+fn analyze_provider_anonymous_body_with_recovery<P, S, K, M>(
+    provider: &P,
+    source: S,
+    bundle: &BodyRirBundle,
+    candidate_root: InstRef,
+    source_key: K,
+    owner: &TypeInstanceKey<K, M>,
+    member: &crate::AnonymousMemberKey,
+    target: Target,
+    preview: PreviewFeatures,
+    well_known: &ProviderWellKnownOptionFacts<K, M>,
+    recover_body_errors: bool,
+) -> Result<ProviderAnonymousBody<K, M>, rue_error::CompileErrors>
 where
     P: BodyFactProvider,
     S: DurableNominalSource<K, M>
@@ -6302,7 +6510,7 @@ where
     K: Clone + Eq + Hash + Ord,
     M: Clone + Eq + Hash + Ord,
 {
-    let result = (|| -> CompileResult<ProviderAnonymousBody<K, M>> {
+    let result = (|| -> Result<ProviderAnonymousBody<K, M>, rue_error::CompileErrors> {
         let owner_file = bundle.source_file_id().ok_or_else(|| {
             CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
                 "provider anonymous body RIR does not have one source file".into(),
@@ -6310,11 +6518,12 @@ where
         })?;
         let TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(durable_owner)) = owner
         else {
-            return Err(CompileError::without_span(
-                rue_error::ErrorKind::InvalidCompilerInput(
+            return Err(
+                CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
                     "anonymous member owner is not an anonymous nominal".into(),
-                ),
-            ));
+                ))
+                .into(),
+            );
         };
         let declaration = {
             let view = bundle.view();
@@ -6369,6 +6578,7 @@ where
                 "provider anonymous body host could not be constructed".into(),
             ))
         })?;
+        host.recover_body_errors = recover_body_errors;
         host.current_declaration_override = Some(declaration);
         let issued_owner = host
             .register_and_issue_anonymous_identity(durable_owner)
@@ -6508,7 +6718,8 @@ where
                         rue_error::ErrorKind::InvalidCompilerInput(
                             "anonymous member fragment did not lower to a method".into(),
                         ),
-                    ));
+                    )
+                    .into());
                 }
             };
         let expected_kind =
@@ -6520,11 +6731,12 @@ where
                 crate::AnonymousMemberKind::AssociatedFunction
             };
         if expected_kind != member.kind {
-            return Err(CompileError::without_span(
-                rue_error::ErrorKind::InvalidCompilerInput(
+            return Err(
+                CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
                     "anonymous member kind disagrees with its producer fragment".into(),
-                ),
-            ));
+                ))
+                .into(),
+            );
         }
         let issued_identity = FunctionInstanceKey::AnonymousMember {
             owner: Node::new(TypeInstanceKey::Nominal(
@@ -6588,11 +6800,12 @@ where
                     *mode == parameter.mode && *comptime == parameter.is_comptime
                 })
         {
-            return Err(CompileError::without_span(
-                rue_error::ErrorKind::InvalidCompilerInput(
+            return Err(
+                CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
                     "anonymous member signature disagrees with its producer fragment".into(),
-                ),
-            ));
+                ))
+                .into(),
+            );
         }
         let materialize = |host: &mut ProviderBodyHost<'_, P, S, K, M>,
                            ty: &crate::DurableAnonymousMethodType<K, M>| {
@@ -6659,7 +6872,8 @@ where
                 self_is_mut,
                 member.kind == crate::AnonymousMemberKind::Destructor,
                 returns_borrow || returns_inout,
-            )?;
+            );
+        let analyzed = recover_body_analysis(host.recovered_errors.clone(), analyzed)?;
         let expression_engine_ns = elapsed_ns(expression_engine_started);
         let expression_breakdown = host
             .expression_breakdown
@@ -6787,21 +7001,10 @@ where
             module_tokens,
         })
     })();
-    match (
+    finish_provider_result(
         result,
         check_shared_interner(bundle.symbol_space(), "anonymous provider analysis"),
-    ) {
-        (Err(error), _)
-            if matches!(
-                &error.kind,
-                ErrorKind::CompilerResourceLimit(_) | ErrorKind::CompilerResourceExhaustion(_)
-            ) =>
-        {
-            Err(error)
-        }
-        (_, Err(error)) => Err(error),
-        (result, Ok(())) => result,
-    }
+    )
 }
 
 /// Run one exact specialization request through the provider-backed body host.
@@ -6815,7 +7018,56 @@ pub fn analyze_provider_specialized_body<P, S, K, M>(
     target: Target,
     preview: PreviewFeatures,
     well_known: &ProviderWellKnownOptionFacts<K, M>,
-) -> CompileResult<ProviderSpecializedBody<K, M>>
+) -> Result<ProviderSpecializedBody<K, M>, rue_error::CompileErrors>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>
+        + Clone,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
+    let result = analyze_provider_specialized_body_with_recovery(
+        provider,
+        source.clone(),
+        bundle,
+        base.clone(),
+        name,
+        arguments,
+        target,
+        preview.clone(),
+        well_known,
+        false,
+    );
+    if result
+        .as_ref()
+        .err()
+        .and_then(|errors| errors.first())
+        .is_some_and(is_statement_recoverable)
+    {
+        analyze_provider_specialized_body_with_recovery(
+            provider, source, bundle, base, name, arguments, target, preview, well_known, true,
+        )
+    } else {
+        result
+    }
+}
+
+fn analyze_provider_specialized_body_with_recovery<P, S, K, M>(
+    provider: &P,
+    source: S,
+    bundle: &BodyRirBundle,
+    base: K,
+    name: &str,
+    arguments: &crate::CanonicalArguments<K, M>,
+    target: Target,
+    preview: PreviewFeatures,
+    well_known: &ProviderWellKnownOptionFacts<K, M>,
+    recover_body_errors: bool,
+) -> Result<ProviderSpecializedBody<K, M>, rue_error::CompileErrors>
 where
     P: BodyFactProvider,
     S: DurableNominalSource<K, M>
@@ -6826,7 +7078,7 @@ where
     K: Clone + Eq + Hash + Ord,
     M: Clone + Eq + Hash + Ord,
 {
-    let result = (|| -> CompileResult<ProviderSpecializedBody<K, M>> {
+    let result = (|| -> Result<ProviderSpecializedBody<K, M>, rue_error::CompileErrors> {
         let owner_file = bundle.source_file_id().ok_or_else(|| {
             CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
                 "provider specialized body RIR does not have one source file".into(),
@@ -6852,6 +7104,7 @@ where
                 "provider specialization host could not be constructed".into(),
             ))
         })?;
+        host.recover_body_errors = recover_body_errors;
         // A generic free function reaches analysis only through its
         // specializations, so the 6.6:3/6.6:4 accessor gate runs here as well.
         if let Some(declaration) = host.endpoint.first_free_function(name, owner_file) {
@@ -6898,7 +7151,8 @@ where
         let host_setup_ns = elapsed_ns(host_setup_started);
         let expression_engine_started = Instant::now();
         let specialized =
-            crate::specialize::analyze_one_specialization_with_host(&mut host, &infer, key)?;
+            crate::specialize::analyze_one_specialization_with_host(&mut host, &infer, key);
+        let specialized = recover_body_analysis(host.recovered_errors.clone(), specialized)?;
         let expression_engine_ns = elapsed_ns(expression_engine_started);
         let expression_breakdown = host
             .expression_breakdown
@@ -7029,19 +7283,8 @@ where
             module_tokens,
         })
     })();
-    match (
+    finish_provider_result(
         result,
         check_shared_interner(bundle.symbol_space(), "specialized provider analysis"),
-    ) {
-        (Err(error), _)
-            if matches!(
-                &error.kind,
-                ErrorKind::CompilerResourceLimit(_) | ErrorKind::CompilerResourceExhaustion(_)
-            ) =>
-        {
-            Err(error)
-        }
-        (_, Err(error)) => Err(error),
-        (result, Ok(())) => result,
-    }
+    )
 }
