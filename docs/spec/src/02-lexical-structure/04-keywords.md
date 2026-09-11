@@ -66,6 +66,8 @@ The following are type names and are reserved:
 | `u16` | 16-bit unsigned integer |
 | `u32` | 32-bit unsigned integer |
 | `u64` | 64-bit unsigned integer |
+| `f32` | IEEE 754 binary32 floating-point (§3.12) |
+| `f64` | IEEE 754 binary64 floating-point (§3.12) |
 | `bool` | Boolean type |
 | `type` | Compile-time type of types |
 | `Self` | The enclosing struct type, within a struct block (§6.4) |

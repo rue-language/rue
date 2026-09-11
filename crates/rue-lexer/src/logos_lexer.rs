@@ -593,6 +593,10 @@ pub enum LogosTokenKind {
     U64,
     #[token("bool")]
     Bool,
+    #[token("f32")]
+    F32,
+    #[token("f64")]
+    F64,
     // `type` — the compile-time type of types (spec 2.4:3). A reserved keyword,
     // not an identifier: it appears only in type position (`comptime T: type`,
     // `-> type`), where the parser maps it back to the interned "type" name so
@@ -822,6 +826,8 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::U32 => TokenKind::U32,
             LogosTokenKind::U64 => TokenKind::U64,
             LogosTokenKind::Bool => TokenKind::Bool,
+            LogosTokenKind::F32 => TokenKind::F32,
+            LogosTokenKind::F64 => TokenKind::F64,
             LogosTokenKind::Type => TokenKind::Type,
             LogosTokenKind::Underscore => TokenKind::Underscore,
             LogosTokenKind::Int(n) => TokenKind::Int(n),
@@ -2132,7 +2138,7 @@ mod tests {
     #[test]
     fn test_logos_type_keywords() {
         // Type names should be recognized as keywords, not identifiers
-        let lexer = LogosLexer::new("i8 i16 i32 i64 u8 u16 u32 u64 bool");
+        let lexer = LogosLexer::new("i8 i16 i32 i64 u8 u16 u32 u64 bool f32 f64");
         let (tokens, _) = lexer.tokenize().unwrap();
 
         assert!(matches!(tokens[0].kind, TokenKind::I8));
@@ -2144,15 +2150,18 @@ mod tests {
         assert!(matches!(tokens[6].kind, TokenKind::U32));
         assert!(matches!(tokens[7].kind, TokenKind::U64));
         assert!(matches!(tokens[8].kind, TokenKind::Bool));
+        assert!(matches!(tokens[9].kind, TokenKind::F32));
+        assert!(matches!(tokens[10].kind, TokenKind::F64));
 
         // Identifiers that start with type names should be identifiers
-        let lexer = LogosLexer::new("i32x i64ptr boolish u8_data");
+        let lexer = LogosLexer::new("i32x i64ptr boolish u8_data f64s");
         let (tokens, interner) = lexer.tokenize().unwrap();
 
         assert_eq!(get_ident_str(&tokens[0].kind, &interner), Some("i32x"));
         assert_eq!(get_ident_str(&tokens[1].kind, &interner), Some("i64ptr"));
         assert_eq!(get_ident_str(&tokens[2].kind, &interner), Some("boolish"));
         assert_eq!(get_ident_str(&tokens[3].kind, &interner), Some("u8_data"));
+        assert_eq!(get_ident_str(&tokens[4].kind, &interner), Some("f64s"));
     }
 
     #[test]

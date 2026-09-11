@@ -49,7 +49,7 @@ contexts:
 
   types:
     # Primitive types
-    - match: \b(bool|i16|i32|i64|i8|u16|u32|u64|u8)\b
+    - match: \b(bool|f32|f64|i16|i32|i64|i8|u16|u32|u64|u8)\b
       scope: storage.type.primitive.rue
     # The enclosing struct type, the pointer constructor, and the type of types
     - match: \b(Self|ptr|type)\b

@@ -186,6 +186,30 @@ compile_fail = true
 # =============================================================================
 
 [[case]]
+name = "type_f32_as_variable"
+error_contains = "[E0100]"
+spec = ["2.4:3", "3.12:2"]
+source = """
+fn main() -> i32 {
+    let f32 = 42;
+    0
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "type_f64_as_variable"
+error_contains = "[E0100]"
+spec = ["2.4:3", "3.12:2"]
+source = """
+fn main() -> i32 {
+    let f64 = 42;
+    0
+}
+"""
+compile_fail = true
+
+[[case]]
 name = "type_i8_as_variable"
 error_contains = "[E0100]"
 spec = ["2.4:3"]

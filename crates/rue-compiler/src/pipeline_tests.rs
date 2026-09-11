@@ -22,11 +22,11 @@ mod tests {
 
     fn wide_reached_program(functions: usize, leaf_value: i32) -> SourceSnapshot {
         assert!(functions > 0);
-        let mut source = format!("fn f0() -> i32 {{ {leaf_value} }} ");
+        let mut source = format!("fn f_0() -> i32 {{ {leaf_value} }} ");
         for index in 1..functions {
-            source.push_str(&format!("fn f{index}() -> i32 {{ f{}() }} ", index - 1));
+            source.push_str(&format!("fn f_{index}() -> i32 {{ f_{}() }} ", index - 1));
         }
-        source.push_str(&format!("fn main() -> i32 {{ f{}() }}", functions - 1));
+        source.push_str(&format!("fn main() -> i32 {{ f_{}() }}", functions - 1));
         SourceSnapshot::single("<wide-backend-root>", source).unwrap()
     }
 
@@ -1359,10 +1359,10 @@ mod tests {
              from one that is merely still sitting under its family's watermark"
         );
 
-        // The discriminating check. `f0` is the only body that differs between
+        // The discriminating check. `f_0` is the only body that differs between
         // `failed_source` and the pressure programs, so it is the one member of
         // the failed batch's cone whose recomputation proves the cone was
-        // released: had the failed batch kept its pins, `f0`'s CodegenUnit
+        // released: had the failed batch kept its pins, `f_0`'s CodegenUnit
         // terminal would have been protected from the eviction above and this
         // re-entry would report `Reused`.
         fail(&mut session, &failed_source);
@@ -1373,7 +1373,7 @@ mod tests {
         );
         let (identity, execution) = &session.codegen_executions()[0];
         assert!(
-            matches!(identity, FunctionInstanceKey::Definition(definition) if definition.name() == "f0")
+            matches!(identity, FunctionInstanceKey::Definition(definition) if definition.name() == "f_0")
                 && *execution == rue_query::RequestExecution::Computed,
             "the changed failed leaf must recompute after its batch cone is released: {:?}",
             session.codegen_executions()
@@ -2216,14 +2216,14 @@ mod tests {
         let snapshot = |salt: usize| {
             let mut source = String::new();
             for index in 0..FUNCTIONS {
-                source.push_str(&format!("fn f{index}() -> i32 {{ {} }} ", index + salt));
+                source.push_str(&format!("fn f_{index}() -> i32 {{ {} }} ", index + salt));
             }
             source.push_str("fn main() -> i32 { ");
             for index in 0..FUNCTIONS {
                 if index != 0 {
                     source.push_str(" + ");
                 }
-                source.push_str(&format!("f{index}()"));
+                source.push_str(&format!("f_{index}()"));
             }
             source.push_str(" }");
             SourceSnapshot::single("<rue-1228-backend-latency>", source).unwrap()
@@ -2415,14 +2415,14 @@ mod tests {
             let mut source = String::new();
             for index in 0..count {
                 let value = if edited == Some(index) { 99 } else { index };
-                source.push_str(&format!("fn f{index}() -> i32 {{ {value} }} "));
+                source.push_str(&format!("fn f_{index}() -> i32 {{ {value} }} "));
             }
             source.push_str("fn main() -> i32 { ");
             for index in 0..count {
                 if index != 0 {
                     source.push_str(" + ");
                 }
-                source.push_str(&format!("f{index}()"));
+                source.push_str(&format!("f_{index}()"));
             }
             source.push_str(" }");
             SourceSnapshot::single("<retained-object-projection>", source).unwrap()
@@ -2447,7 +2447,7 @@ mod tests {
         let removed_object_key = cold
             .cfgs
             .iter()
-            .find(|cfg| format!("{:?}", cfg.function).contains("f17"))
+            .find(|cfg| format!("{:?}", cfg.function).contains("f_17"))
             .map(|cfg| {
                 crate::object_query::ObjectProjectionQueryKey::new(
                     crate::codegen_query::CodegenUnitQueryKey::new(
@@ -2500,7 +2500,7 @@ mod tests {
         let changed = session
             .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
             .unwrap();
-        assert_eq!(computed(&session), 1, "only f17 has new object content");
+        assert_eq!(computed(&session), 1, "only f_17 has new object content");
         let changed_plan = crate::program_image_plan::ProgramImage::from_rooted(
             changed.objects,
             changed.exports,
@@ -2513,7 +2513,7 @@ mod tests {
         assert_eq!(delta.changed.len(), 1, "{delta:?}");
         assert!(delta.removed.is_empty(), "{delta:?}");
         assert!(
-            format!("{:?}", delta.changed[0].function).contains("f17"),
+            format!("{:?}", delta.changed[0].function).contains("f_17"),
             "{delta:?}"
         );
 
@@ -2574,7 +2574,7 @@ mod tests {
                 .object_projection_executions()
                 .iter()
                 .any(|(function, execution)| {
-                    format!("{function:?}").contains("f17")
+                    format!("{function:?}").contains("f_17")
                         && *execution == rue_query::RequestExecution::Computed
                 })
         );

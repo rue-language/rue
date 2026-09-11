@@ -1548,20 +1548,14 @@ mod tests {
         assert_eq!(Type::from_primitive_name("f64"), Some(Type::F64));
     }
 
-    /// The float spellings the lexer publishes and the ones the type table
-    /// resolves are the same set (RUE-1989).
+    /// Every spelling the type table resolves to a float is a lexer keyword
+    /// (spec 2.4:3, RUE-2076), and every keyword the table resolves to a
+    /// float is one of the two float types (RUE-1989).
     ///
-    /// `rue-lexer::FLOAT_TYPE_NAMES` is the one list, read by the parser
-    /// positions that must recognize a float type name lexically. rue-air does
-    /// not depend on the lexer at build time, so the agreement is asserted
-    /// here rather than shared through a call.
+    /// rue-air does not depend on the lexer at build time, so the agreement
+    /// is asserted here rather than shared through a call.
     #[test]
-    fn the_lexer_float_type_names_are_exactly_the_resolvable_float_primitives() {
-        for spelling in rue_lexer::FLOAT_TYPE_NAMES {
-            let resolved = Type::from_primitive_name(spelling).expect("a float type name resolves");
-            assert!(resolved.is_float(), "{spelling} resolved to {resolved:?}");
-        }
-
+    fn the_resolvable_float_primitives_are_exactly_the_float_keywords() {
         let resolvable_floats = [
             "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "usize", "isize", "bool", "()",
             "!", "type", "f32", "f64",
@@ -1569,7 +1563,16 @@ mod tests {
         .into_iter()
         .filter(|name| Type::from_primitive_name(name).is_some_and(|resolved| resolved.is_float()))
         .collect::<Vec<_>>();
-        assert_eq!(resolvable_floats, rue_lexer::FLOAT_TYPE_NAMES);
+        assert_eq!(resolvable_floats, ["f32", "f64"]);
+
+        let float_keywords = rue_lexer::KEYWORDS
+            .iter()
+            .copied()
+            .filter(|name| {
+                Type::from_primitive_name(name).is_some_and(|resolved| resolved.is_float())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(float_keywords, resolvable_floats);
     }
 
     #[test]

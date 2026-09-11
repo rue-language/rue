@@ -91,6 +91,8 @@ const KEYWORD_TOKENS: &[TokenKind] = &[
     TokenKind::Else,
     TokenKind::Enum,
     TokenKind::Extern,
+    TokenKind::F32,
+    TokenKind::F64,
     TokenKind::False,
     TokenKind::Fn,
     TokenKind::For,
@@ -151,25 +153,6 @@ pub fn is_keyword(word: &str) -> bool {
     KEYWORDS.contains(&word)
 }
 
-/// Every floating-point type name a program may write, ordered by spelling.
-///
-/// These are deliberately absent from [`KEYWORDS`]: `f32` and `f64` are
-/// ordinary identifiers naming builtin types (spec 3.12:2), so they do not
-/// steal value-position names, and the token table classifies them as
-/// `Ident`. `comptime_float` is absent for a different reason — it is the
-/// inferred type of a float literal and no program may name it (spec 3.12:3),
-/// exactly as `comptime_int` is unnameable.
-///
-/// This is the one list; the parser positions that must recognize a float type
-/// name lexically read it rather than repeating the spellings, and rue-air's
-/// `Type::from_primitive_name` is tested against it (RUE-1989).
-pub const FLOAT_TYPE_NAMES: &[&str] = &["f32", "f64"];
-
-/// Whether `word` is one of the [`FLOAT_TYPE_NAMES`].
-pub fn is_float_type_name(word: &str) -> bool {
-    FLOAT_TYPE_NAMES.contains(&word)
-}
-
 /// Token kinds in the Rue language.
 ///
 /// This enum is `Copy` since all variants contain only small, copyable data:
@@ -222,6 +205,13 @@ pub enum TokenKind {
     U32,
     U64,
     Bool,
+    // `f32` and `f64` are reserved type names like the integer types (spec
+    // 2.4:3, RUE-2076), so a float type is nameable in value position
+    // (`const c_double = f64;`) through the same keyword path. `comptime_float`
+    // is not among them: it is the inferred type of a float literal and no
+    // program may name it (spec 3.12:3), exactly as `comptime_int` is.
+    F32,
+    F64,
     Type, // type (the compile-time type of types, spec 2.4:3)
 
     // Patterns
@@ -350,6 +340,8 @@ impl TokenKind {
             TokenKind::U32 => "u32",
             TokenKind::U64 => "u64",
             TokenKind::Bool => "bool",
+            TokenKind::F32 => "f32",
+            TokenKind::F64 => "f64",
             TokenKind::Type => "type",
             // Not keywords: the wildcard pattern, the literal and identifier
             // classes, every operator and punctuator, and end of file.
@@ -452,6 +444,8 @@ impl TokenKind {
             TokenKind::U32 => "type 'u32'",
             TokenKind::U64 => "type 'u64'",
             TokenKind::Bool => "type 'bool'",
+            TokenKind::F32 => "type 'f32'",
+            TokenKind::F64 => "type 'f64'",
             TokenKind::Type => "type 'type'",
             TokenKind::Underscore => "'_'",
             TokenKind::Int(_) => "integer",
@@ -570,6 +564,8 @@ impl std::fmt::Display for TokenKind {
             TokenKind::U32 => write!(f, "TYPE(u32)"),
             TokenKind::U64 => write!(f, "TYPE(u64)"),
             TokenKind::Bool => write!(f, "TYPE(bool)"),
+            TokenKind::F32 => write!(f, "TYPE(f32)"),
+            TokenKind::F64 => write!(f, "TYPE(f64)"),
             TokenKind::Type => write!(f, "TYPE(type)"),
             TokenKind::Underscore => write!(f, "UNDERSCORE"),
             TokenKind::Int(v) => write!(f, "INT({})", v),
@@ -632,26 +628,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn float_type_names_are_sorted_unique_identifiers() {
-        let mut sorted = FLOAT_TYPE_NAMES.to_vec();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(sorted, FLOAT_TYPE_NAMES.to_vec());
-
-        for spelling in FLOAT_TYPE_NAMES {
-            assert!(
-                !is_keyword(spelling),
-                "{spelling} names a builtin type without reserving the identifier"
-            );
-            assert!(is_float_type_name(spelling));
+    fn float_type_names_are_keywords() {
+        // `f32` and `f64` are reserved type names (spec 2.4:3, RUE-2076);
+        // `comptime_float` is unnameable (spec 3.12:3) and so stays an
+        // ordinary identifier.
+        for (spelling, kind) in [("f32", TokenKind::F32), ("f64", TokenKind::F64)] {
+            assert!(is_keyword(spelling), "{spelling} is a reserved type name");
             let (tokens, _) = Lexer::new(spelling)
                 .tokenize()
                 .unwrap_or_else(|error| panic!("float type {spelling} failed to lex: {error}"));
-            assert!(matches!(tokens[0].kind, TokenKind::Ident(_)));
+            assert_eq!(tokens[0].kind, kind);
         }
-
-        // Unnameable comptime-only types are not float type names (spec 3.12:3).
-        assert!(!is_float_type_name("comptime_float"));
+        assert!(!is_keyword("comptime_float"));
     }
 
     #[test]

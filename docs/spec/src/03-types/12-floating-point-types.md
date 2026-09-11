@@ -17,11 +17,12 @@ two infinities, and the NaNs, with `-0.0` and `+0.0` distinct values.
 
 {{ rule(id="3.12:2", cat="normative") }}
 
-`f32` and `f64` are ordinary identifiers naming builtin types, not keywords.
-They may be written wherever a type is named — `let` annotations, function
-parameters and results, `const` annotations, struct fields, array element
-types — and, like the integer type names, may be used as `type` values
-(`@size_of(f64)`).
+`f32` and `f64` are reserved type names (2.4:3), exactly as the integer type
+names are: neither may be used as an identifier. They may be written wherever
+a type is named — `let` annotations, function parameters and results, `const`
+annotations, struct fields, array element types — and, like the integer type
+names, may be used as `type` values in value position (`@size_of(f64)`,
+`const c_double = f64;`).
 
 {{ rule(id="3.12:2a", cat="normative") }}
 
