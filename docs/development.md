@@ -49,6 +49,18 @@ source discovery or compilation. A well-formed code may not have a long-form
 explanation yet; malformed, unknown, retired, and not-yet-covered codes exit
 unsuccessfully.
 
+`rue daemon start|status|stop` controls the local compiler service
+(ADR-0085). A service is owned by the current user, a scope directory
+(`--scope`, default the current directory) plus an optional `--isolation`
+name, and the exact compiler build; `start` uses the running service for that
+scope or launches one detached, `status` reports it (`--json` for one JSON
+object), and `stop` ends it. Neither `status` nor `stop` starts a service, and
+the scope is only a process grouping: it never changes what a program imports.
+Endpoints live in a user-private directory under `XDG_RUNTIME_DIR` (or the
+system temporary directory); `RUE_DAEMON_ROOT` overrides that root, which is
+how the CLI suite keeps its services apart from yours. The service does not
+yet execute compiler requests; those arrive with the rest of RUE-2128.
+
 The model is exactly one root source file per compile; additional files are
 reached through `@import` and discovered transitively from the root. The legacy
 flat-mode input form — extra `.rue` files listed positionally — was removed

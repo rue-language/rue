@@ -5,6 +5,7 @@
 //! compiler query graph while one retained `CompilerSession` owns every
 //! compiler artifact across revisions.
 
+pub mod daemon;
 mod host;
 #[cfg(test)]
 mod host_workflow_tests;

@@ -60,6 +60,10 @@
 //!   says nothing about the compile, the case RUNS THAT EXECUTABLE instead of
 //!   compiling — see "Execution modes" below
 //! - `output`: name of produced executable (default `"prog"`)
+//! - `daemon`: ordered `rue daemon` controls run against a private endpoint
+//!   root inside the case directory (`RUE_DAEMON_ROOT`); each step pins an
+//!   exit status and output substrings, and `concurrency` runs a step several
+//!   times at once. The harness stops any service the steps leave behind.
 //! - `watch`: synchronized imperative scenario for real `--watch` orchestration;
 //!   it names a `kind` (`edit`, `cancel`, or `delete`), fixture edits, and the
 //!   expected executable exit codes after the initial and final publication
@@ -201,10 +205,10 @@ use std::time::{Duration, Instant, SystemTime};
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
 use rue_target::{Arch, Target};
 use rue_test_runner::cli_corpus::{
-    AutomaticExampleContract, Case, CliCaseTier, ExecutionClass, ExecutionContractDeclaration,
-    HangTimeoutProfile, Section, StderrOccurrence, TestFile, TimeoutProfile, WatchEdit,
-    WatchScenario, WatchScenarioKind, WatchTestScenario, WatchTestScenarioKind,
-    unknown_known_bug_on_platforms, unknown_only_on_platforms,
+    AutomaticExampleContract, Case, CliCaseTier, DaemonScenario, DaemonStep, ExecutionClass,
+    ExecutionContractDeclaration, HangTimeoutProfile, Section, StderrOccurrence, TestFile,
+    TimeoutProfile, WatchEdit, WatchScenario, WatchScenarioKind, WatchTestScenario,
+    WatchTestScenarioKind, unknown_known_bug_on_platforms, unknown_only_on_platforms,
 };
 use rue_test_runner::{
     ExpectedFailureOutcome, KNOWN_TARGETS, PlatformCaseSelection, ShardSelector, TestFailure,
@@ -2126,6 +2130,7 @@ fn case_runs_prebuilt_program(case: &Case) -> bool {
         output: None,
         watch: None,
         watch_test: None,
+        daemon: None,
         env,
         executable_target: None,
         compile_fail: false,
@@ -3083,6 +3088,205 @@ fn assert_watch_program(
 /// Run a real driver `--watch` process while editing its source files through
 /// a file-backed protocol. The process is always placed in its own group and
 /// killed/reaped after the final publication, including assertion failures.
+/// Run a `rue daemon` lifecycle scenario (ADR-0085).
+///
+/// Every step runs the real driver in the case directory with the endpoint
+/// root pinned to a private directory inside it, so the user's runtime
+/// directory is never touched and cases never share a service. Whatever the
+/// steps leave running is stopped afterwards — on failure too — and a service
+/// that outlives its `stop` is killed, so a failing case cannot leak a
+/// detached process past the suite.
+fn run_daemon_case(
+    case: &Case,
+    scenario: &DaemonScenario,
+    contract: &ExecutionContract,
+    rue_binary: &Path,
+    real_std: &Path,
+) -> TestResult {
+    if scenario.steps.is_empty() {
+        return Err(TestFailure::assertion("daemon scenario has no steps"));
+    }
+    // A short prefix keeps the socket path under the platform bound however
+    // long the system temporary directory is.
+    let temp_dir = tempfile::Builder::new()
+        .prefix("rd")
+        .tempdir()
+        .map_err(|error| {
+            TestFailure::fatal(format!("failed to create daemon temp dir: {error}"))
+        })?;
+    let dir = temp_dir.path();
+    for file in &case.files {
+        let path = dir.join(&file.path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                TestFailure::fatal(format!(
+                    "failed to create daemon fixture directory: {error}"
+                ))
+            })?;
+        }
+        std::fs::write(&path, &file.source).map_err(|error| {
+            TestFailure::fatal(format!(
+                "failed to write daemon fixture {}: {error}",
+                file.path
+            ))
+        })?;
+    }
+    let endpoint_root = dir.join("r");
+    let outcome = run_daemon_steps(
+        case,
+        scenario,
+        contract,
+        rue_binary,
+        real_std,
+        dir,
+        &endpoint_root,
+    );
+    stop_leftover_daemon(case, rue_binary, real_std, dir, &endpoint_root);
+    outcome
+}
+
+fn run_daemon_steps(
+    case: &Case,
+    scenario: &DaemonScenario,
+    contract: &ExecutionContract,
+    rue_binary: &Path,
+    real_std: &Path,
+    dir: &Path,
+    endpoint_root: &Path,
+) -> TestResult {
+    for (index, step) in scenario.steps.iter().enumerate() {
+        if step.concurrency == 0 {
+            return Err(TestFailure::assertion(format!(
+                "daemon step {index} declares concurrency 0"
+            )));
+        }
+        let outputs: Vec<TestResult<Output>> = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..step.concurrency)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut command =
+                            case_compiler_command(rue_binary, &step.args, dir, &case.env, real_std);
+                        command.env("RUE_DAEMON_ROOT", endpoint_root);
+                        run_phase_with_timeout(
+                            command,
+                            ProcessPhase::Compiler,
+                            contract.compile_timeout(),
+                            None,
+                        )
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| {
+                    worker
+                        .join()
+                        .unwrap_or_else(|_| Err(TestFailure::fatal("daemon step thread panicked")))
+                })
+                .collect()
+        });
+        for (run, output) in outputs.into_iter().enumerate() {
+            let output = output?;
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            let label = format!("daemon step {index} (`{}`, run {run})", step.args.join(" "));
+            if let Some(ice) = ice_message(&output.status, &stderr) {
+                return Err(TestFailure::assertion(format!("{label}: {ice}")));
+            }
+            let code = output.status.code().unwrap_or(-1);
+            if code != step.exit_code {
+                return Err(TestFailure::assertion(format!(
+                    "{label}: expected exit {}, got {code}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+                    step.exit_code
+                )));
+            }
+            check_daemon_step_output(&label, step, &stdout, &stderr)?;
+        }
+    }
+    Ok(())
+}
+
+fn check_daemon_step_output(
+    label: &str,
+    step: &DaemonStep,
+    stdout: &str,
+    stderr: &str,
+) -> TestResult {
+    for expected in &step.stdout_contains {
+        if !stdout.contains(expected.as_str()) {
+            return Err(TestFailure::assertion(format!(
+                "{label}: stdout missing {expected:?}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+            )));
+        }
+    }
+    for forbidden in &step.stdout_not_contains {
+        if stdout.contains(forbidden.as_str()) {
+            return Err(TestFailure::assertion(format!(
+                "{label}: stdout must not contain {forbidden:?}\nstdout:\n{stdout}"
+            )));
+        }
+    }
+    for expected in &step.stderr_contains {
+        if !stderr.contains(expected.as_str()) {
+            return Err(TestFailure::assertion(format!(
+                "{label}: stderr missing {expected:?}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Stop every service a scenario's endpoint root still names. A service
+/// that ignores its stop is killed by the pid its record published; the
+/// record is only ever written by a service that held the endpoint, and the
+/// root is private to this case, so the pid cannot name anyone else's
+/// process while the suite runs.
+fn stop_leftover_daemon(case: &Case, rue_binary: &Path, real_std: &Path, dir: &Path, root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let record = entry.path().join("service.json");
+        let Ok(bytes) = std::fs::read(&record) else {
+            continue;
+        };
+        let Ok(info) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        let scope = info
+            .get("scope_directory")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        let isolation = info
+            .get("isolation")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        let mut args = vec!["daemon".to_owned(), "stop".to_owned()];
+        if let Some(scope) = scope {
+            args.push("--scope".to_owned());
+            args.push(scope);
+        }
+        if let Some(isolation) = isolation {
+            args.push("--isolation".to_owned());
+            args.push(isolation);
+        }
+        let mut command = case_compiler_command(rue_binary, &args, dir, &case.env, real_std);
+        command.env("RUE_DAEMON_ROOT", root);
+        let _ = run_with_timeout(command, Duration::from_secs(60), None);
+        if record.exists()
+            && let Some(pid) = info.get("pid").and_then(serde_json::Value::as_u64)
+            && let Ok(pid) = i32::try_from(pid)
+        {
+            // SAFETY: sending a signal to a pid we read from this case's own
+            // private endpoint record.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+            let _ = std::fs::remove_file(&record);
+        }
+    }
+}
+
 fn run_watch_case(
     case: &Case,
     scenario: &WatchScenario,
@@ -4076,6 +4280,8 @@ fn run_case_wrapper(
         run_watch_case(case, scenario, contract, rue_binary, real_std)
     } else if let Some(scenario) = &case.watch_test {
         run_watch_test_case(case, scenario, contract, rue_binary, real_std)
+    } else if let Some(scenario) = &case.daemon {
+        run_daemon_case(case, scenario, contract, rue_binary, real_std)
     } else if case.differential_opt {
         run_case_differential(case, contract, rue_binary, real_std, repo_root)
     } else {
@@ -4431,7 +4637,12 @@ fn invalid_replay_repro(case: &Case) -> Option<&'static str> {
     if target.is_empty() {
         return Some("`replay_repro` must name a non-empty stable test ID");
     }
-    if case.compile_fail || case.compile_only || case.watch.is_some() || case.watch_test.is_some() {
+    if case.compile_fail
+        || case.compile_only
+        || case.watch.is_some()
+        || case.watch_test.is_some()
+        || case.daemon.is_some()
+    {
         return Some(
             "`replay_repro` requires an ordinary one-shot `rue test` case that publishes test events",
         );

@@ -68,6 +68,14 @@ impl RunningImageIdentity {
         &self.value
     }
 
+    /// An identity with caller-chosen bytes, so a test can stand for a
+    /// different compiler build without replacing the running executable.
+    #[cfg(test)]
+    pub(crate) fn for_test(value: Vec<u8>) -> Self {
+        Self::new(RunningImageIdentityScheme::LinuxProcSelfExeSha256, value)
+            .expect("test identities are non-empty")
+    }
+
     fn new(
         scheme: RunningImageIdentityScheme,
         value: Vec<u8>,

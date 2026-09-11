@@ -16,6 +16,7 @@ mod allocation;
 mod compile;
 #[cfg(not(rue_benchmark_allocations))]
 mod compiler_allocator;
+mod daemon_cli;
 mod emit;
 mod output;
 mod platform_signing;
@@ -273,6 +274,7 @@ Usage: rue [options] <root.rue> [output]
        rue [options] <root.rue> -o <output>
        rue test [options] <root.rue>
        rue explain <E####>
+       rue daemon <start|status|stop> [--scope <dir>] [--isolation <name>]
 
 The compiler takes exactly one root source file and discovers every other
 file through its @import graph; pass build-system inputs with --source-manifest.
@@ -280,6 +282,14 @@ file through its @import graph; pass build-system inputs with --source-manifest.
 Commands:
   explain <E####>      Show the compiler-owned explanation for an error code
   test <root.rue>      Build the root's test image and run its tests
+  daemon <command>     Control the local compiler service (ADR-0085): `start`
+                       uses or launches the service for a scope, `status`
+                       reports it, `stop` ends it; neither `status` nor `stop`
+                       starts one. The scope is a directory (--scope, default
+                       the current directory) plus an optional --isolation name;
+                       it groups processes and never changes what a program
+                       imports. --idle-timeout-ms bounds a started service's
+                       idle life; `status --json` reports one JSON object.
 
 `rue test` options (see docs/process/test-events.md for the event schema):
   --list               List the inventory; no codegen, no linking, no execution
@@ -384,6 +394,8 @@ enum ParseResult {
     Options(Box<Options>),
     /// Show compiler-owned information without entering the compile path.
     Explain(ErrorCode),
+    /// Control the local compiler service (ADR-0085); never compiles.
+    Daemon(daemon_cli::DaemonInvocation),
     /// Parsing failed with an error.
     Error,
     /// User requested help or version (already printed, should exit 0).
@@ -556,6 +568,16 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
             return ParseResult::Error;
         }
         return ParseResult::Explain(code);
+    }
+
+    if args[0] == "daemon" {
+        return match daemon_cli::parse_daemon_args(&args[1..]) {
+            Ok(invocation) => ParseResult::Daemon(invocation),
+            Err(message) => {
+                eprintln!("Error: {message}");
+                ParseResult::Error
+            }
+        };
     }
 
     // Decide the subcommand first and drop its token, so the option loop below
@@ -2429,6 +2451,10 @@ fn main() {
             print!("{}", render_error_code_explanation(explanation));
             return;
         }
+        // Service controls run before tracing, worker pools, or any source
+        // I/O exist: a service inherits none of a client's global setup, and a
+        // control never compiles (ADR-0085 §5).
+        ParseResult::Daemon(invocation) => std::process::exit(daemon_cli::run(&invocation)),
         ParseResult::Error => std::process::exit(1),
         ParseResult::Exit => return,
     };
@@ -3342,6 +3368,7 @@ mod tests {
             ParseResult::Error => panic!("Expected Options, got Error"),
             ParseResult::Exit => panic!("Expected Options, got Exit"),
             ParseResult::Explain(_) => panic!("Expected Options, got Explain"),
+            ParseResult::Daemon(_) => panic!("Expected Options, got Daemon"),
         }
     }
 
@@ -4860,6 +4887,25 @@ mod tests {
     #[test]
     fn parse_version_short() {
         assert!(is_exit(&parse_args_from(&["-V"])));
+    }
+
+    #[test]
+    fn parse_daemon_dispatches_before_the_ordinary_option_loop() {
+        let ParseResult::Daemon(invocation) =
+            parse_args_from(&["daemon", "status", "--scope", "proj", "--json"])
+        else {
+            panic!("expected a daemon control");
+        };
+        assert_eq!(invocation.command, daemon_cli::DaemonCommand::Status);
+        assert_eq!(invocation.scope.as_deref(), Some("proj"));
+        assert!(invocation.json);
+        // A malformed control is an argument error, never a compile.
+        assert!(is_error(&parse_args_from(&["daemon"])));
+        assert!(is_error(&parse_args_from(&["daemon", "restart"])));
+        // `daemon` is a command only in first position; a root module of that
+        // name is still a source.
+        let options = unwrap_options(parse_args_from(&["./daemon"]));
+        assert_eq!(options.source_path, "./daemon");
     }
 
     #[test]
