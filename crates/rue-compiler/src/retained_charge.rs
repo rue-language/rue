@@ -1594,6 +1594,10 @@ impl RetainedCharge for rue_error::ErrorKind {
                 .saturating_add(value.struct_name.retained_charge())
                 .saturating_add(value.field_name.retained_charge())
                 .saturating_add(value.field_type.retained_charge()),
+            E::DestructorStructLinearField(value) => (std::mem::size_of_val(value.as_ref()) as u64)
+                .saturating_add(value.struct_name.retained_charge())
+                .saturating_add(value.field_name.retained_charge())
+                .saturating_add(value.field_type.retained_charge()),
             E::LinearFieldDroppedByDestructure(value) => (std::mem::size_of_val(value.as_ref())
                 as u64)
                 .saturating_add(value.struct_name.retained_charge())

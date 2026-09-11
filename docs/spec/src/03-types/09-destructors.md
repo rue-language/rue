@@ -252,6 +252,63 @@ fn main() -> i32 {
 }
 ```
 
+{{ rule(id="3.9:44", cat="legality-rule") }}
+
+A struct type with a user-defined destructor **MUST NOT** declare a field
+whose type carries a linear value (3.8:58): neither a field of a `linear`
+struct type nor a field of a type that is linear by infection, through any
+depth of struct nesting or fixed-array element. A compile-time error is
+raised at the declaration, naming the destructor and the offending field,
+whether the struct is named (its `drop fn` is a top-level item) or anonymous
+(its `drop fn` is in the struct body and the check runs at each
+instantiation, 3.9:42). A `linear` struct **MAY** have a destructor when none
+of its fields carries a linear value, and a struct without a destructor
+**MAY** carry linear fields.
+
+{{ rule(id="3.9:45", cat="informative") }}
+
+The shape is rejected because the field's obligation could never be met. A
+linear value must reach a consumer (3.8:32), and there are only two ways to
+get a field out of a value: move it out, or let the drop glue dispose of it.
+The first is forbidden for a type with a destructor (3.9:34), including
+within the destructor body itself, and the second is exactly the implicit
+discard that linearity exists to forbid. What remained before this rule was
+`@drop` of the whole value (3.9:37), which ran the destructor and then had the
+glue discard the linear field; every other use, consuming the value whole,
+only moved the same undischargeable obligation to a new owner (RUE-1605).
+Rejecting the declaration reports the mistake where it is made instead of at
+each use.
+
+Other languages with linear or non-copyable types reach the same place by
+different routes. Rust has no linear types, but a type that implements `Drop`
+forbids moving a field out (E0509), which is 3.9:34. Austral has no
+destructors at all: a linear value is consumed only by an explicit call or by
+destructuring, so the conflict cannot arise. Swift's non-copyable structs
+with a `deinit` forbid partially consuming `self`, and offer `discard self`
+inside a consuming method to skip the deinitializer so fields can be consumed
+one by one. Rue takes the declaration-time rejection rather than a
+skip-the-destructor escape: a destructor that may not run is a destructor a
+reader cannot rely on.
+
+{{ rule(id="3.9:46", cat="example") }}
+
+```rue
+linear struct Token { v: i32 }
+
+struct Holder { t: Token, n: i32 }
+
+drop fn Holder(self) { @dbg(self.n); }  // ERROR: field `t` carries a linear value
+
+struct Bag { t: Token, n: i32 }          // OK: no destructor, so `t` can be consumed
+
+fn redeem(t: Token) -> i32 { t.v }
+
+fn main() -> i32 {
+    let b = Bag { t: Token { v: 3 }, n: 1 };
+    redeem(b.t)
+}
+```
+
 ## The `@drop` intrinsic
 
 {{ rule(id="3.9:37", cat="normative") }}
@@ -319,7 +376,8 @@ that value is dropped (at scope exit or via `@drop`), before the automatic
 dropping of the value's fields. All destructor legality rules (3.9:26 — at most
 one per type; 3.9:31 — a `@copy` type cannot have one, so a struct with an
 in-body `drop fn` is never `@copy`; 3.9:33 — `self` may not be moved out;
-3.9:34 — a field may not be moved out) apply unchanged.
+3.9:34 — a field may not be moved out; 3.9:44 — no field may carry a linear
+value, checked at each instantiation) apply unchanged.
 
 {{ rule(id="3.9:43", cat="example") }}
 

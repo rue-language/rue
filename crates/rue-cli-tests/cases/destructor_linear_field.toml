@@ -1,0 +1,182 @@
+# A struct with a user-defined destructor cannot carry a linear field
+# (RUE-1605, spec 3.9:44).
+#
+# The destructor may not move a field out of `self` (3.9:34), no other code
+# may move a field out of a value with a destructor, and the glue that runs
+# after the destructor would discard the field, so the only disposal was
+# `@drop` of the whole value — the implicit discard linearity exists to
+# forbid. The shape is rejected at the declaration, for named structs and for
+# anonymous structs at each instantiation, with the destructor and the field
+# both labelled.
+
+[section]
+id = "cli.destructor_linear_field"
+name = "Destructor-bearing structs cannot carry linear fields"
+description = "A `drop fn` on a struct that owns a linear value is rejected at the declaration (RUE-1605)."
+
+[[case]]
+name = "destructor_and_linear_field_both_labelled"
+description = "The diagnostic sits on the `drop fn`, labels the field, and explains why no consumer could ever reach the value."
+files = [{ path = "main.rue", source = """
+linear struct Token { v: i32 }
+
+struct Holder {
+    t: Token,
+    n: i32,
+}
+
+drop fn Holder(self) { @dbg(self.n); }
+
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = [
+    "E0462",
+    "cannot define a destructor for 'Holder': field `t` of type 'Token' carries a linear value",
+    "main.rue:8:1",
+    "destructor defined here",
+    "linear field declared here",
+    "the destructor cannot consume `t`",
+    "remove the `drop fn` and consume the field explicitly",
+]
+
+[[case]]
+name = "drop_fn_before_struct_is_rejected"
+description = "Declaration order does not matter: a `drop fn` before its struct is rejected the same way, still anchored on the `drop fn`."
+files = [{ path = "main.rue", source = """
+linear struct Token { v: i32 }
+
+drop fn Holder(self) { @dbg(self.n); }
+
+struct Holder { t: Token, n: i32 }
+
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = ["E0462", "main.rue:3:1", "destructor defined here", "linear field declared here"]
+
+[[case]]
+name = "infectious_carrier_field_names_the_carrier_type"
+description = "A field that is linear only by infection is rejected too; the message names the field's own type."
+files = [{ path = "main.rue", source = """
+linear struct Token { v: i32 }
+
+struct Inner { t: Token }
+
+struct Holder { inner: Inner, n: i32 }
+
+drop fn Holder(self) { @dbg(self.n); }
+
+fn main() -> i32 { 0 }
+""" }]
+compile_fail = true
+error_contains = [
+    "E0462",
+    "cannot define a destructor for 'Holder': field `inner` of type 'Inner' carries a linear value",
+]
+
+[[case]]
+name = "anonymous_instantiation_in_a_body_is_rejected_at_the_struct_expression"
+description = "An in-body destructor is checked when the anonymous struct is instantiated with a linear field type; the diagnostic names the instantiation."
+files = [{ path = "main.rue", source = """
+linear struct Token { v: i32 }
+
+fn Box(comptime T: type) -> type {
+    struct {
+        value: T,
+        drop fn(self) { @dbg(1); }
+    }
+}
+
+fn main() -> i32 {
+    let B = Box(Token);
+    let b = B { value: Token { v: 1 } };
+    @drop(b);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = [
+    "E0462",
+    "cannot define a destructor for 'Box(Token)': field `value` of type 'Token' carries a linear value",
+]
+
+[[case]]
+name = "anonymous_instantiation_at_file_scope_is_rejected"
+description = "The same check reaches an instantiation evaluated for a file-level constant."
+files = [{ path = "main.rue", source = """
+linear struct Token { v: i32 }
+
+fn Box(comptime T: type) -> type {
+    struct {
+        value: T,
+        drop fn(self) { @dbg(1); }
+    }
+}
+
+const B = Box(Token);
+
+fn main() -> i32 {
+    let b = B { value: Token { v: 1 } };
+    @drop(b);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = [
+    "E0462",
+    "cannot define a destructor for 'Box(Token)': field `value` of type 'Token' carries a linear value",
+]
+
+[[case]]
+name = "whole_value_drop_no_longer_discards_the_field"
+description = "The program the ruling closed: before it, `@drop` of the whole value ran the destructor and let the glue discard the linear field."
+files = [{ path = "main.rue", source = """
+linear struct Token { v: i32 }
+
+struct Holder { t: Token, n: i32 }
+
+drop fn Holder(self) { @dbg(self.n); }
+
+fn main() -> i32 {
+    let h = Holder { t: Token { v: 1 }, n: 7 };
+    @drop(h);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0462"]
+
+[[case]]
+name = "linear_struct_with_destructor_over_affine_fields_runs"
+description = "Control: a `linear` struct whose fields are all affine may have a destructor; `@drop` runs it and satisfies the obligation."
+files = [{ path = "main.rue", source = """
+linear struct Guard { v: i32 }
+
+drop fn Guard(self) { @dbg(self.v); }
+
+fn main() -> i32 {
+    let g = Guard { v: 9 };
+    @drop(g);
+    0
+}
+""" }]
+exit_code = 0
+stdout = "9\n"
+
+[[case]]
+name = "struct_without_destructor_hands_the_field_to_its_consumer"
+description = "Control: without a destructor the linear field is moved out to a consumer and the residue drops normally."
+files = [{ path = "main.rue", source = """
+linear struct Token { v: i32 }
+
+struct Bag { t: Token, n: i32 }
+
+fn redeem(t: Token) -> i32 { t.v }
+
+fn main() -> i32 {
+    let b = Bag { t: Token { v: 4 }, n: 1 };
+    redeem(b.t)
+}
+""" }]
+exit_code = 4

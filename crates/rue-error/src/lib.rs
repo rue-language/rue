@@ -1287,6 +1287,15 @@ define_error_codes! {
         ],
         references: [ErrorCodeReference { title: "Constant initializers must be acyclic", path: "docs/spec/src/06-items/05-constants.md", rule: Some("6.5:8") }],
     };
+    DESTRUCTOR_STRUCT_LINEAR_FIELD = 462 => {
+        explanation: "A struct with a user-defined destructor declared a field that carries a linear value. Such a field could never be consumed: the destructor may not move a field out of `self`, no other code may move a field out of a value whose type has a destructor, and the drop glue that runs after the destructor would silently discard it. The only way to dispose of such a value would be to drop it whole, which defeats the obligation the linear field exists to enforce, so the shape is rejected where it is declared.",
+        likely_cause: "A `drop fn` was added to a struct that owns a linear value, or a linear (or linear-carrying) field was added to a struct with a destructor. Remove the destructor and let the code that consumes the struct consume the field explicitly, or give the field an affine type and run its cleanup in the destructor.",
+        examples: [
+            ErrorCodeExample { title: "Give a destructor to a struct with a linear field", source: "linear struct Token { value: i32 }\nstruct Holder { token: Token, n: i32 }\ndrop fn Holder(self) { @dbg(self.n); }\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
+            ErrorCodeExample { title: "Drop the destructor and consume the field explicitly", source: "linear struct Token { value: i32 }\nstruct Holder { token: Token, n: i32 }\nfn redeem(token: Token) -> i32 { token.value }\nfn main() -> i32 {\n    let holder = Holder { token: Token { value: 42 }, n: 1 };\n    redeem(holder.token)\n}", outcome: ErrorCodeExampleOutcome::Compiles },
+        ],
+        references: [ErrorCodeReference { title: "A destructor-bearing struct cannot carry a linear field", path: "docs/spec/src/03-types/09-destructors.md", rule: Some("3.9:44") }],
+    };
     // 462-473 are reserved by in-flight work.
     LINEAR_FIELD_DROPPED_BY_DESTRUCTURE = 474 => {
         explanation: "A field access on a struct declared `linear` consumes and destructures the smallest enclosing declared-linear place. Rue rejects that access when the residue contains another linear value, because destroying the residue would silently discard its must-consume obligation. A struct that is only linear by infection instead uses ordinary partial-move rules.",
@@ -2443,6 +2452,19 @@ pub struct MissingFieldsError {
 /// Payload for `ErrorKind::CopyStructNonCopyField`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CopyStructNonCopyFieldError {
+    pub struct_name: String,
+    pub field_name: String,
+    pub field_type: String,
+}
+
+/// Payload for `ErrorKind::DestructorStructLinearField`.
+///
+/// A struct with a user-defined destructor declared a field that carries a
+/// linear value (RUE-1605, spec 3.9:44). `field_type` is the field's own
+/// type; when the field is linear only by infection the diagnostic's note
+/// names the component that made it so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DestructorStructLinearFieldError {
     pub struct_name: String,
     pub field_name: String,
     pub field_type: String,
@@ -3621,6 +3643,13 @@ pub enum ErrorKind {
     /// logical resource.
     #[error("cannot define a destructor for '{type_name}': `@copy` types cannot have destructors")]
     CopyStructWithDestructor { type_name: String },
+    /// A struct with a user-defined destructor cannot carry a linear field
+    /// (RUE-1605). The destructor may not consume the field (3.9:34), no user
+    /// may move it out (3.9:34), and the drop glue that follows the destructor
+    /// would discard it, so the field's must-consume obligation could never
+    /// reach a consumer.
+    #[error("cannot define a destructor for '{struct_name}': field `{field_name}` of type '{field_type}' carries a linear value", struct_name = .0.struct_name, field_name = .0.field_name, field_type = .0.field_type)]
+    DestructorStructLinearField(Box<DestructorStructLinearFieldError>),
 
     // Control flow errors
     #[error("'break' outside of loop")]
@@ -4190,6 +4219,7 @@ impl ErrorKind {
                 ErrorCode::MOVE_FIELD_OUT_OF_DESTRUCTOR_TYPE
             }
             ErrorKind::CopyStructWithDestructor { .. } => ErrorCode::COPY_STRUCT_WITH_DESTRUCTOR,
+            ErrorKind::DestructorStructLinearField(_) => ErrorCode::DESTRUCTOR_STRUCT_LINEAR_FIELD,
 
             // Control flow errors (E0500-E0599)
             ErrorKind::BreakOutsideLoop => ErrorCode::BREAK_OUTSIDE_LOOP,

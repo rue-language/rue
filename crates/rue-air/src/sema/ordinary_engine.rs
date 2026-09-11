@@ -1525,6 +1525,37 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             .anonymous_struct_identities_mut()
             .insert(identity.clone(), id);
         self.storage.install_canonical_anonymous_type(ty, identity);
+        // An in-body destructor cannot own a linear field (3.9:44, RUE-1605),
+        // for the same reason a named struct's `drop fn` cannot: the field
+        // could only ever be discarded by the glue. Checked after the
+        // registration so the diagnostic names the instantiation
+        // (`Box(Token)`) rather than the digest spelling. The caller anchors
+        // the span, since the type expression is what is being evaluated.
+        if has_destructor
+            && let Some(field) = fields
+                .iter()
+                .find(|field| self.type_carries_linear(field.ty))
+        {
+            return Err(CompileError::without_span(
+                rue_error::ErrorKind::DestructorStructLinearField(Box::new(
+                    rue_error::DestructorStructLinearFieldError {
+                        struct_name: self.format_type_name(ty),
+                        field_name: field.name.clone(),
+                        field_type: self.format_type_name(field.ty),
+                    },
+                )),
+            )
+            .with_note(format!(
+                "the destructor cannot consume `{}` and no other code can move it out of a \
+                 value with a destructor, so the linear value could only ever be discarded by \
+                 the drop glue that runs after the destructor",
+                field.name
+            ))
+            .with_help(
+                "remove the `drop fn` and consume the field explicitly, or give the field a \
+                 type without a linear obligation",
+            ));
+        }
         Ok((ty, true))
     }
     pub(crate) fn find_or_create_anon_enum(

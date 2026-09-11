@@ -175,6 +175,20 @@ compile_stdout_not_contains = ["Compiled"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
 
 [[case]]
+name = "destructor_linear_field_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0462"]
+compile_only = true
+compile_stdout_contains = [
+  "E0462: Destructor struct linear field",
+  "Give a destructor to a struct with a linear field:",
+  "Drop the destructor and consume the field explicitly:",
+  "docs/spec/src/03-types/09-destructors.md (spec rule 3.9:44)",
+]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
 name = "copy_destructor_code_uses_the_same_compiler_owned_query"
 files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
 args = ["explain", "E0457"]

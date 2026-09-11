@@ -494,6 +494,26 @@ where
         )
     };
     host.replace_active_anonymous_producer(previous);
+    // The destructor-shape rejection (3.9:44) is raised while the anonymous
+    // struct is being minted inside this body, before the application that
+    // produced it can record the type's `Ctor(args...)` display, so the
+    // engine could only spell the digest. This specialization is that
+    // application: give the diagnostic the spelling the type would have had.
+    // A nested constructor's specialization already renamed its own struct,
+    // so only the digest spelling is replaced.
+    let analysis = analysis.map_err(|mut error| {
+        if let ErrorKind::DestructorStructLinearField(payload) = &mut error.kind
+            && payload.struct_name.starts_with("__anon_struct_")
+            && let Some(display) = OrdinaryBodyEngine::new(host).ctor_type_display(
+                key.base_name,
+                &type_subst,
+                &value_subst,
+            )
+        {
+            payload.struct_name = display;
+        }
+        error
+    });
     let (
         air,
         num_locals,

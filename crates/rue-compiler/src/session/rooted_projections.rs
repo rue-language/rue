@@ -3367,6 +3367,55 @@ fn semantic_nucleus_failure_diagnostics(
             return CompileErrors::from(error);
         }
     }
+    if let (Some(declaration), F::Diagnostic(ErrorKind::DestructorStructLinearField(payload))) =
+        (declaration, failure)
+        && let Some(module) = modules
+            .iter()
+            .find(|module| module.module_id() == &declaration.module)
+    {
+        let type_name = payload.struct_name.as_str();
+        let destructor_span = module.ast().items.iter().find_map(|item| match item {
+            rue_parser::ast::Item::DropFn(drop)
+                if module.resolve_raw_symbol(drop.type_name.name) == type_name =>
+            {
+                Some(drop.span)
+            }
+            _ => None,
+        });
+        let field_span = module.ast().items.iter().find_map(|item| match item {
+            rue_parser::ast::Item::Struct(structure)
+                if module.resolve_raw_symbol(structure.name.name) == type_name =>
+            {
+                structure
+                    .fields
+                    .iter()
+                    .find(|field| module.resolve_raw_symbol(field.name.name) == payload.field_name)
+                    .map(|field| field.span)
+            }
+            _ => None,
+        });
+        if let Some(destructor_span) = destructor_span {
+            let mut error = CompileError::new(
+                ErrorKind::DestructorStructLinearField(payload.clone()),
+                destructor_span,
+            )
+            .with_label("destructor defined here", destructor_span)
+            .with_note(format!(
+                "the destructor cannot consume `{field}` and no other code can move it out of a \
+                 value with a destructor, so the linear value could only ever be discarded by \
+                 the drop glue that runs after the destructor",
+                field = payload.field_name
+            ))
+            .with_help(
+                "remove the `drop fn` and consume the field explicitly, or give the field a \
+                 type without a linear obligation",
+            );
+            if let Some(field_span) = field_span {
+                error = error.with_label("linear field declared here", field_span);
+            }
+            return CompileErrors::from(error);
+        }
+    }
     let span = declaration.and_then(|key| {
         modules
             .iter()

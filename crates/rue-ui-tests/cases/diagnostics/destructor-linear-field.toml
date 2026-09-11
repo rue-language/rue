@@ -1,0 +1,71 @@
+[section]
+id = "diagnostics.destructor-linear-field"
+name = "Destructor-bearing struct with a linear field"
+description = "A struct with a user-defined destructor cannot declare a field that carries a linear value (spec 3.9:44, RUE-1605). These cases pin the diagnostic's anchor, labels, note and help."
+
+[[case]]
+name = "named_struct_labels_destructor_and_field"
+description = "The error is anchored on the `drop fn`, labels the field, and the help names both repairs."
+source = """
+linear struct Token { v: i32 }
+
+struct Holder { t: Token, n: i32 }
+
+drop fn Holder(self) { @dbg(self.n); }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+    "[E0462]",
+    "cannot define a destructor for 'Holder': field `t` of type 'Token' carries a linear value",
+    "5:1",
+    "destructor defined here",
+    "linear field declared here",
+    "the destructor cannot consume `t` and no other code can move it out of a value with a destructor",
+    "remove the `drop fn` and consume the field explicitly, or give the field a type without a linear obligation",
+]
+
+[[case]]
+name = "array_field_of_linear_elements"
+description = "A fixed array of linear elements is a linear-carrying field; the message spells the array type."
+source = """
+linear struct Token { v: i32 }
+
+struct Holder { ts: [Token; 3] }
+
+drop fn Holder(self) { @dbg(1); }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+    "[E0462]",
+    "field `ts` of type '[Token; 3]' carries a linear value",
+]
+
+[[case]]
+name = "anonymous_instantiation_names_the_constructor_application"
+description = "For an anonymous struct the diagnostic names the instantiation rather than an internal spelling, and sits on the struct expression."
+source = """
+linear struct Token { v: i32 }
+
+fn Box(comptime T: type) -> type {
+    struct {
+        value: T,
+        drop fn(self) { @dbg(1); }
+    }
+}
+
+fn main() -> i32 {
+    let B = Box(Token);
+    let b = B { value: Token { v: 1 } };
+    @drop(b);
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+    "[E0462]",
+    "cannot define a destructor for 'Box(Token)': field `value` of type 'Token' carries a linear value",
+]

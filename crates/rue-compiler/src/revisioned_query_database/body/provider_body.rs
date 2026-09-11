@@ -2939,6 +2939,60 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                     }
                 }
             }
+            // A destructor-bearing struct cannot carry a linear field
+            // (3.9:44, RUE-1605): the destructor may not consume it, no user
+            // may move it out (3.9:34), and the glue after the destructor
+            // would discard it. Checked here, where the field types are
+            // resolved, because the shape is wrong at the declaration and
+            // not at any one use. The field walk comes first so that a
+            // struct with no linear field never consults the destructor
+            // namespace, whose ambiguity is the destructor's own report
+            // (3.9:26); the lookup itself is the one the `@copy` rule
+            // (3.9:31) makes on the containment path.
+            let mut linear_field = None;
+            for (field_name, field_ty) in &fields {
+                if provider
+                    .type_carries_linear(field_ty)
+                    .map_err(|error| match error {
+                        rue_air::SemanticProviderError::Abort(abort) => {
+                            ResolveSemanticSignatureError::Abort(abort)
+                        }
+                        rue_air::SemanticProviderError::Failure(failure) => {
+                            ResolveSemanticSignatureError::failure(failure)
+                        }
+                    })?
+                {
+                    linear_field = Some((field_name, field_ty));
+                    break;
+                }
+            }
+            if let Some((field_name, field_ty)) = linear_field
+                && provider
+                    .candidate(
+                        module,
+                        provider.dependency_source.name(),
+                        DefinitionKind::Destructor,
+                    )
+                    .map_err(|error| match error {
+                        rue_air::SemanticProviderError::Abort(abort) => {
+                            ResolveSemanticSignatureError::Abort(abort)
+                        }
+                        rue_air::SemanticProviderError::Failure(failure) => {
+                            ResolveSemanticSignatureError::failure(failure)
+                        }
+                    })?
+                    .is_some()
+            {
+                return Err(diagnostic(
+                    rue_error::ErrorKind::DestructorStructLinearField(Box::new(
+                        rue_error::DestructorStructLinearFieldError {
+                            struct_name: provider.dependency_source.name().to_owned(),
+                            field_name: field_name.to_string(),
+                            field_type: durable_type_diagnostic_name(field_ty),
+                        },
+                    )),
+                ));
+            }
             if *is_repr_c {
                 if !provider
                     .configuration
