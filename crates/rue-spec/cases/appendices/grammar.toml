@@ -1,0 +1,221 @@
+[section]
+id = "appendices.grammar"
+spec_chapter = "A"
+name = "Grammar"
+description = "Tests for the parsing requirements of Appendix A: every grammar decision point is settled by its follower token in one committed pass (RUE-1107)."
+
+# =============================================================================
+# Committed parsing (A.2)
+# =============================================================================
+
+[[case]]
+name = "each_decision_point_is_settled_by_its_follower"
+spec = ["A.2:1", "A.2:4"]
+description = "The A.2:4 program: every decision point of A.2:2 in one committed pass, each settled by the token that follows"
+source = """
+fn f(c: bool) -> i32 {
+    if c { 1 } else { 2 }
+    let a = [1; 3];
+    let b = [1, 2, 3];
+    loop { if c { break } break }
+    if c { return a[0] }
+    b[2]
+}
+
+fn main() -> i32 {
+    f(false) * 10 + f(true)
+}
+"""
+exit_code = 31
+
+[[case]]
+name = "sequential_if_else_statements_parse_as_a_sequence"
+spec = ["A.2:1", "A.2:2", "C.6:3"]
+description = "Three hundred statement-position `if ... else ...` statements in one block: each is complete at its closing brace (item 2), none nests in the next, and the sequence is longer than the nesting allowance"
+source = """
+fn main() -> i32 {
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 } if true { 1 } else { 2 }
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "block_tail_is_decided_by_the_closing_brace"
+spec = ["A.2:2"]
+description = "Item 1: the same expression shape is a statement before `;`, an assignment target before `=`, and the tail value before `}`"
+source = """
+fn main() -> i32 {
+    let mut n = 1;
+    n + 1;
+    n = n + 40;
+    n + 1
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "semicolon_free_control_flow_before_the_tail"
+spec = ["A.2:2"]
+description = "Item 2: a statement-position block-like expression followed by anything but `}` is a statement and the next statement begins at that token; followed by `}` it is the tail"
+source = """
+fn main() -> i32 {
+    let c = true;
+    if c { 1 } else { 2 }
+    while false { }
+    { 7; }
+    if c { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "block_like_continued_only_by_postfix_or_new_statement"
+spec = ["A.2:2"]
+description = "Item 3: `-` after a statement-position block-like expression starts a new statement (unary negation); a postfix suffix continues it"
+source = """
+struct P { v: i32 }
+
+fn main() -> i32 {
+    let c = true;
+    if c { 1 } else { 2 }
+    -1;
+    let p = if c { P { v: 40 } } else { P { v: 0 } }.v + 2;
+    p
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "array_list_or_repeat_is_decided_after_the_first_element"
+spec = ["A.2:2"]
+description = "Item 4: `;` after the first element selects the repeat form and `,` or `]` the list form, at every level of a nest"
+source = """
+fn main() -> i32 {
+    let a = [[1, 2], [3, 4]];
+    let b = [[5; 2]; 2];
+    let c = [[6]];
+    let t: [[i32; 2]; 2] = b;
+    a[1][1] + b[0][0] + t[1][1] + c[0][0] + 22
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "return_and_break_operands_are_decided_by_the_next_token"
+spec = ["A.2:2"]
+description = "Item 5: `}` or `;` after the keyword means no operand; any other token begins one"
+source = """
+fn early(c: bool) -> i32 {
+    if c { return 40 }
+    loop { if !c { break } }
+    2
+}
+
+fn unit(c: bool) {
+    if c { return }
+    return;
+}
+
+fn main() -> i32 {
+    unit(true);
+    unit(false);
+    early(true) + early(false)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "pattern_group_role_is_decided_by_the_token_after_it"
+spec = ["A.2:2"]
+description = "Item 6: a parenthesised group after a path segment is constructor arguments when `.` follows its close and payload positions otherwise, including when nested"
+source = """
+fn Wrap(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+
+enum Leaf { Value(i32) }
+enum Tree { Node(Leaf, i32) }
+
+fn main() -> i32 {
+    let w = Wrap(i32).Some(2);
+    let a = match w { Wrap(i32).Some(v) => v, Wrap(i32).None => 0 };
+    let t = Tree.Node(Leaf.Value(30), 10);
+    let b = match t { Tree.Node(Leaf.Value(x), y) => x + y };
+    a + b
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "missing_semicolon_is_reported_at_the_offending_token"
+spec = ["A.2:2"]
+description = "Item 7: an ordinary expression followed by neither `;`, an assignment operator, nor `}` is a syntax error at that point, with no re-parse of what came before"
+source = """
+fn main() -> i32 {
+    let a = 1
+    let b = 2;
+    a + b
+}
+"""
+compile_fail = true
+error_contains = "expected"
