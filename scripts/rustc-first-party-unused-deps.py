@@ -68,21 +68,6 @@ BASELINE_ENTRIES = (
         "used by codegen's in-source test modules; production/test dependency separation is follow-up scope",
     ),
     BaselineEntry(
-        "root//crates/rue-fuzz:rue-fuzz",
-        "root//crates/rue-air:rue-air",
-        "the fuzz binary uses rue-air-fuzz-support instead of the base crate directly",
-    ),
-    BaselineEntry(
-        "root//crates/rue-fuzz:rue-fuzz",
-        "root//crates/rue-cfg:rue-cfg",
-        "the fuzz binary uses rue-cfg-fuzz-support instead of the base crate directly",
-    ),
-    BaselineEntry(
-        "root//crates/rue-fuzz:rue-fuzz",
-        "root//crates/rue-rir:rue-rir",
-        "the fuzz binary uses rue-rir-fuzz-support instead of the base crate directly",
-    ),
-    BaselineEntry(
         "root//crates/rue:rue-driver",
         "root//crates/rue-perf-schema:rue-perf-schema",
         "the shared driver dependency list also serves binaries whose timing module uses the schema",
@@ -91,16 +76,6 @@ BASELINE_ENTRIES = (
         "root//crates/rue:rue-driver",
         "root//crates/rue-target:rue-target",
         "the shared driver dependency list also serves binaries whose output path uses target metadata",
-    ),
-    BaselineEntry(
-        "root//crates/rue-air:rue-air-fuzz-support",
-        "root//crates/rue-lexer:rue-lexer",
-        "the manual fuzz-support target reuses all AIR sources, where lexer use is test-gated",
-    ),
-    BaselineEntry(
-        "root//crates/rue-air:rue-air-fuzz-support",
-        "root//crates/rue-parser:rue-parser",
-        "the manual fuzz-support target reuses all AIR sources, where parser use is test-gated",
     ),
 )
 BASELINE = {(entry.consumer, entry.dependency): entry for entry in BASELINE_ENTRIES}

@@ -637,9 +637,9 @@ impl FuzzTarget for PayloadSchemasTarget {
         // The first bytes select a family and bounded corruption operation in
         // each owner. Results are deliberately accepted: the fuzz invariant is
         // that production checked decoders return structured errors, not panic.
-        let _ = std::hint::black_box(rue_rir_fuzz_support::Rir::fuzz_payload_corruption(input));
-        let _ = std::hint::black_box(rue_air_fuzz_support::Air::fuzz_payload_corruption(input));
-        let _ = std::hint::black_box(rue_cfg_fuzz_support::fuzz_payload_corruption(input));
+        let _ = std::hint::black_box(rue_rir::Rir::fuzz_payload_corruption(input));
+        let _ = std::hint::black_box(rue_air::Air::fuzz_payload_corruption(input));
+        let _ = std::hint::black_box(rue_cfg::fuzz_payload_corruption(input));
         if let Ok(source) = std::str::from_utf8(input) {
             assert_no_ice(&query_semantics(source));
         }
