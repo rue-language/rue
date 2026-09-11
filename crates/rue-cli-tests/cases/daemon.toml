@@ -122,8 +122,8 @@ name = "the_support_table_decides_between_service_and_direct"
 description = "Requests outside the support table run directly under auto and are refused before any work under required; a refused request starts no service."
 files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }\n" }]
 daemon = { steps = [
-  { args = ["--daemon=required", "--emit", "air", "main.rue"], exit_code = 1, stderr_contains = ["Error: --daemon=required: --emit runs directly"] },
-  { args = ["--daemon=required", "--error-format", "json", "--emit", "air", "main.rue"], exit_code = 1, stderr_contains = ["\"code\":\"E1503\"", "--emit runs directly"] },
+  { args = ["--daemon=required", "--emit", "cfg", "main.rue"], exit_code = 1, stderr_contains = ["Error: --daemon=required: --emit stages other than a sole `air` run directly"] },
+  { args = ["--daemon=required", "--error-format", "json", "--emit", "air", "--emit", "cfg", "main.rue"], exit_code = 1, stderr_contains = ["\"code\":\"E1503\"", "--emit stages other than a sole `air` run directly"] },
   { args = ["--daemon=required", "--watch", "main.rue"], exit_code = 1, stderr_contains = ["Error: --daemon=required: --watch runs directly"] },
   { args = ["--daemon=required", "--linker", "cc", "main.rue"], exit_code = 1, stderr_contains = ["a system linker runs directly"] },
   { args = ["--daemon=required", "--time-passes", "main.rue"], exit_code = 1, stderr_contains = ["--time-passes runs directly"] },
@@ -179,5 +179,35 @@ daemon = { steps = [
   { args = ["daemon", "status"], exit_code = 0, stdout_contains = ["  retained hosts: 1", "  active request: none"] },
   { args = ["--daemon=required", "main.rue", "-o", "app"], exit_code = 0, stdout_contains = ["Compiled main.rue -> app"], run_output = "app", run_output_stdout_contains = ["42\n"] },
   { args = ["daemon", "status"], exit_code = 0, stdout_contains = ["  retained hosts: 1"] },
+  { args = ["daemon", "stop"], exit_code = 0, stdout_contains = ["stopped service pid"] },
+] }
+
+[[case]]
+name = "analysis_only_emit_air_goes_through_the_service"
+description = "--emit air under --daemon=required is answered by the service without linking: the AIR text, its warnings, a rejected program's diagnostics and the exit statuses are direct mode's, over the same retained host as the root's executable build."
+files = [{ path = "main.rue", source = """
+fn add(a: i32, b: i32) -> i32 { a + b }
+fn main() -> i32 { let unused: i32 = 7; add(1, 2) - 3 }
+""" }]
+daemon = { steps = [
+  { args = ["--emit", "air", "main.rue"], exit_code = 0, stdout_contains = ["=== AIR ===", "function main:"], stderr_contains = ["warning", "unused"] },
+  { args = ["--daemon=required", "--emit", "air", "main.rue"], exit_code = 0, stdout_contains = ["=== AIR ===", "function main:"], stderr_contains = ["warning", "unused"] },
+  { args = ["daemon", "status"], exit_code = 0, stdout_contains = ["  retained hosts: 1"] },
+  { args = ["--daemon=required", "main.rue", "-o", "app"], exit_code = 0, stdout_contains = ["Compiled main.rue -> app"], run_output = "app" },
+  { args = ["daemon", "stop"], exit_code = 0, stdout_contains = ["stopped service pid"] },
+] }
+
+[[case]]
+name = "a_rejected_analysis_is_reported_as_directly"
+description = "A program the analysis rejects is reported through the service exactly as direct mode reports it, with nothing on stdout."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: i32 = "nope";
+    x
+}
+""" }]
+daemon = { steps = [
+  { args = ["--daemon=required", "--emit", "air", "main.rue"], exit_code = 1, stdout_not_contains = ["=== AIR ==="], stderr_contains = ["error: [E0206]: type mismatch: expected string type, found i32", " --> main.rue:2:5"] },
+  { args = ["--daemon=required", "--error-format", "json", "--emit", "air", "main.rue"], exit_code = 1, stderr_contains = ["\"code\":\"E0206\""] },
   { args = ["daemon", "stop"], exit_code = 0, stdout_contains = ["stopped service pid"] },
 ] }

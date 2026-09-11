@@ -85,7 +85,8 @@ any failure is the invocation's failure and nothing is retried.
 | --- | --- | --- |
 | Ordinary internal-linker build | service | service |
 | `rue test`, `rue test --list` (the image or inventory; the runner stays in the client) | service | service |
-| `--watch`, any `--emit`, `--linker <cmd>` | direct | refused |
+| `--emit air` alone (analysis only; nothing is linked) | service | service |
+| `--watch`, any other `--emit`, `--linker <cmd>` | direct | refused |
 | `--time-passes`, `--benchmark-json` | direct | refused |
 | Tracing via `--log-level` or `RUST_LOG` | direct | refused |
 | `--help`, `--version`, `explain`, `rue daemon` | local | local |

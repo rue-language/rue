@@ -3,17 +3,21 @@ use rue_compiler::unstable::MetricsSnapshot;
 use rue_compiler::unstable::PresentationOutput;
 #[cfg(test)]
 use rue_compiler::unstable::update_for_presentation;
+use rue_compiler::unstable::{
+    CancellablePresentationOutcome, ColorChoice, CompilationCancellation, PresentationBatchRequest,
+    PresentationRequest, PresentationStage,
+};
 #[cfg(test)]
 use rue_compiler::unstable::{
     CanonicalRirPresentationMetrics, ParseMetrics, SemanticMetrics, rooted_cfg,
 };
-use rue_compiler::unstable::{PresentationBatchRequest, PresentationRequest, PresentationStage};
 use rue_compiler::{
     AcceptedReadManifest, CompileErrors, CompileOptions, DependencyEnvelope,
     DependencyEnvelopeStatus, ImportDiscoveryStatus, SourceSnapshot,
 };
 #[cfg(test)]
 use rue_compiler::{CompilerSession, RirView};
+use rue_driver::daemon::{OutputStream, StreamWrite};
 use rue_driver::{AttemptedRead, FilesystemCompilerHost, WatchInput};
 #[cfg(test)]
 use rue_error::{CompileError, ErrorKind};
@@ -267,6 +271,9 @@ struct OwnedEmitStage {
     output: PresentationOutput,
 }
 
+/// The presentation was abandoned at the request's cancellation.
+struct Canceled;
+
 fn produce(request: EmitRequest<'_, '_>) -> OwnedEmitResponse {
     let EmitRequest {
         host,
@@ -274,11 +281,23 @@ fn produce(request: EmitRequest<'_, '_>) -> OwnedEmitResponse {
         compile_options,
         diagnostics,
     } = request;
+    match produce_with_cancellation(host, stages, compile_options, diagnostics.format(), None) {
+        Ok(response) => response,
+        Err(Canceled) => unreachable!("a presentation without a cancellation is never canceled"),
+    }
+}
+
+fn produce_with_cancellation(
+    host: &mut FilesystemCompilerHost,
+    stages: &[EmitStage],
+    compile_options: CompileOptions,
+    error_format: crate::ErrorFormat,
+    cancellation: Option<&CompilationCancellation>,
+) -> Result<OwnedEmitResponse, Canceled> {
     let source_snapshot = host.source_snapshot().clone();
     let accepted_reads = host.accepted_reads().clone();
     let attempted_reads = host.attempted_reads().to_vec();
     let watch_inputs = host.watch_inputs();
-    let error_format = diagnostics.format();
     let target = compile_options.target;
     let discovery_revision = host.discovery_revision().clone();
 
@@ -288,7 +307,7 @@ fn produce(request: EmitRequest<'_, '_>) -> OwnedEmitResponse {
             match DependencyEnvelope::from_closed_revision(&discovery_revision) {
                 Some(envelope) => envelope,
                 None => {
-                    return OwnedEmitResponse {
+                    return Ok(OwnedEmitResponse {
                         source_snapshot,
                         accepted_reads,
                         attempted_reads,
@@ -298,7 +317,7 @@ fn produce(request: EmitRequest<'_, '_>) -> OwnedEmitResponse {
                         result: OwnedEmitResult::Failed(rue_driver::with_import_migration_helps(
                             discovery_revision.diagnostics(),
                         )),
-                    };
+                    });
                 }
             };
         let incomplete = dependency_envelope.status == DependencyEnvelopeStatus::Incomplete;
@@ -313,7 +332,7 @@ fn produce(request: EmitRequest<'_, '_>) -> OwnedEmitResponse {
                 "Error emitting dependency envelope: {error}"
             )),
         };
-        return OwnedEmitResponse {
+        return Ok(OwnedEmitResponse {
             source_snapshot,
             accepted_reads,
             attempted_reads,
@@ -321,11 +340,11 @@ fn produce(request: EmitRequest<'_, '_>) -> OwnedEmitResponse {
             error_format,
             target,
             result,
-        };
+        });
     }
 
     if discovery_revision.status() != ImportDiscoveryStatus::ClosedValid {
-        return OwnedEmitResponse {
+        return Ok(OwnedEmitResponse {
             source_snapshot,
             accepted_reads,
             attempted_reads,
@@ -335,7 +354,7 @@ fn produce(request: EmitRequest<'_, '_>) -> OwnedEmitResponse {
             result: OwnedEmitResult::Failed(rue_driver::with_import_migration_helps(
                 discovery_revision.diagnostics(),
             )),
-        };
+        });
     }
 
     match emit_frontend_route(stages) {
@@ -344,7 +363,7 @@ fn produce(request: EmitRequest<'_, '_>) -> OwnedEmitResponse {
         | EmitFrontendRoute::None => {}
         EmitFrontendRoute::RirOnly => {
             if let Err(errors) = host.rir() {
-                return OwnedEmitResponse {
+                return Ok(OwnedEmitResponse {
                     source_snapshot,
                     accepted_reads,
                     attempted_reads,
@@ -354,7 +373,7 @@ fn produce(request: EmitRequest<'_, '_>) -> OwnedEmitResponse {
                     result: OwnedEmitResult::Failed(rue_driver::with_import_migration_helps(
                         &errors,
                     )),
-                };
+                });
             }
         }
     }
@@ -382,14 +401,23 @@ fn produce(request: EmitRequest<'_, '_>) -> OwnedEmitResponse {
     let whole_program_outputs = if whole_program_stages.is_empty() {
         Vec::new()
     } else {
-        match host.present_many(PresentationBatchRequest {
+        let batch = PresentationBatchRequest {
             stages: &whole_program_stages,
             options: &compile_options,
             file_order: &file_order,
-        }) {
-            Ok(outputs) => outputs,
-            Err(errors) => {
-                return OwnedEmitResponse {
+        };
+        let outcome = match cancellation {
+            Some(cancellation) => host.cancellable_present_many(batch, cancellation.clone()),
+            None => match host.present_many(batch) {
+                Ok(outputs) => CancellablePresentationOutcome::Completed(outputs),
+                Err(errors) => CancellablePresentationOutcome::Errors(errors),
+            },
+        };
+        match outcome {
+            CancellablePresentationOutcome::Completed(outputs) => outputs,
+            CancellablePresentationOutcome::Canceled => return Err(Canceled),
+            CancellablePresentationOutcome::Errors(errors) => {
+                return Ok(OwnedEmitResponse {
                     source_snapshot,
                     accepted_reads,
                     attempted_reads,
@@ -399,7 +427,7 @@ fn produce(request: EmitRequest<'_, '_>) -> OwnedEmitResponse {
                     result: OwnedEmitResult::Failed(rue_driver::with_import_migration_helps(
                         &errors,
                     )),
-                };
+                });
             }
         }
     };
@@ -425,7 +453,7 @@ fn produce(request: EmitRequest<'_, '_>) -> OwnedEmitResponse {
                 }) {
                     Ok(output) => output,
                     Err(errors) => {
-                        return OwnedEmitResponse {
+                        return Ok(OwnedEmitResponse {
                             source_snapshot,
                             accepted_reads,
                             attempted_reads,
@@ -435,7 +463,7 @@ fn produce(request: EmitRequest<'_, '_>) -> OwnedEmitResponse {
                             result: OwnedEmitResult::Failed(
                                 rue_driver::with_import_migration_helps(&errors),
                             ),
-                        };
+                        });
                     }
                 };
                 outputs.push(OwnedEmitStage {
@@ -460,7 +488,7 @@ fn produce(request: EmitRequest<'_, '_>) -> OwnedEmitResponse {
             output,
         });
     }
-    OwnedEmitResponse {
+    Ok(OwnedEmitResponse {
         source_snapshot,
         accepted_reads,
         attempted_reads,
@@ -468,10 +496,86 @@ fn produce(request: EmitRequest<'_, '_>) -> OwnedEmitResponse {
         error_format,
         target,
         result: OwnedEmitResult::Stages(outputs),
+    })
+}
+
+/// Everything one `--emit` writes, in order, to whichever stream, and whether
+/// the invocation succeeded. Direct mode replays it as it is produced; the
+/// compiler service sends it and its client replays it (ADR-0085 §5), so the
+/// streams and their interleaving are the same by construction.
+pub(crate) struct EmitTransport {
+    pub(crate) ok: bool,
+    pub(crate) writes: Vec<StreamWrite>,
+}
+
+impl EmitTransport {
+    fn out(&mut self, text: impl Into<String>) {
+        self.writes.push(StreamWrite {
+            stream: OutputStream::Stdout,
+            text: text.into(),
+        });
+    }
+
+    fn outln(&mut self, text: impl std::fmt::Display) {
+        self.out(format!("{text}\n"));
+    }
+
+    fn errln(&mut self, text: impl std::fmt::Display) {
+        self.writes.push(StreamWrite {
+            stream: OutputStream::Stderr,
+            text: format!("{text}\n"),
+        });
+    }
+}
+
+/// Replay a transport onto this process's streams.
+pub(crate) fn replay(transport: EmitTransport) -> Result<(), ()> {
+    use std::io::Write as _;
+    for write in transport.writes {
+        match write.stream {
+            OutputStream::Stdout => {
+                let mut stdout = std::io::stdout().lock();
+                let _ = stdout.write_all(write.text.as_bytes());
+                let _ = stdout.flush();
+            }
+            OutputStream::Stderr => {
+                let mut stderr = std::io::stderr().lock();
+                let _ = stderr.write_all(write.text.as_bytes());
+                let _ = stderr.flush();
+            }
+        }
+    }
+    if transport.ok { Ok(()) } else { Err(()) }
+}
+
+/// Produce a presentation for the compiler service: the same production as
+/// direct mode under the request's cancellation, rendered under `color`.
+/// `None` when the request was canceled.
+pub(crate) fn produce_transport(
+    host: &mut FilesystemCompilerHost,
+    stages: &[EmitStage],
+    compile_options: CompileOptions,
+    error_format: crate::ErrorFormat,
+    color: ColorChoice,
+    cancellation: &CompilationCancellation,
+) -> Option<EmitTransport> {
+    match produce_with_cancellation(
+        host,
+        stages,
+        compile_options,
+        error_format,
+        Some(cancellation),
+    ) {
+        Ok(response) => Some(render(response, color)),
+        Err(Canceled) => None,
     }
 }
 
 fn complete(response: OwnedEmitResponse) -> Result<(), ()> {
+    replay(render(response, ColorChoice::Auto))
+}
+
+fn render(response: OwnedEmitResponse, color: ColorChoice) -> EmitTransport {
     let OwnedEmitResponse {
         source_snapshot,
         accepted_reads,
@@ -491,23 +595,23 @@ fn complete(response: OwnedEmitResponse) -> Result<(), ()> {
             )
         })
         .collect();
-    let diagnostics = DiagnosticOutput::new(error_format, sources);
+    let diagnostics = DiagnosticOutput::with_color(error_format, sources, color);
+    let mut transport = EmitTransport {
+        ok: false,
+        writes: Vec::new(),
+    };
     match result {
         OwnedEmitResult::InternalFailure(message) => {
-            eprintln!("{message}");
-            Err(())
+            transport.errln(message);
         }
         OwnedEmitResult::Failed(errors) => {
-            diagnostics.print_prepared_errors(&errors);
-            Err(())
+            transport.errln(diagnostics.render_prepared_errors(&errors));
         }
         OwnedEmitResult::Dependencies { json, errors } => {
-            println!("{json}");
-            if let Some(errors) = errors {
-                diagnostics.print_prepared_errors(&errors);
-                Err(())
-            } else {
-                Ok(())
+            transport.outln(json);
+            match errors {
+                Some(errors) => transport.errln(diagnostics.render_prepared_errors(&errors)),
+                None => transport.ok = true,
             }
         }
         OwnedEmitResult::Stages(outputs) => {
@@ -516,62 +620,65 @@ fn complete(response: OwnedEmitResponse) -> Result<(), ()> {
                 let output = owned.output;
                 if let Some(file) = owned.file {
                     match owned.stage {
-                        EmitStage::Tokens => println!("=== Tokens ({file}) ==="),
-                        EmitStage::Ast => println!("=== AST ({file}) ==="),
+                        EmitStage::Tokens => transport.outln(format!("=== Tokens ({file}) ===")),
+                        EmitStage::Ast => transport.outln(format!("=== AST ({file}) ===")),
                         _ => unreachable!(),
                     }
-                    print!("{}", output.as_str());
-                    println!();
+                    transport.out(output.as_str());
+                    transport.outln("");
                     continue;
                 }
                 if !warnings_printed && emit_requires_semantic(&[owned.stage]) {
-                    diagnostics.print_warnings(output.warnings());
+                    if !output.warnings().is_empty() {
+                        transport.errln(diagnostics.render_warnings(output.warnings()));
+                    }
                     warnings_printed = true;
                 }
                 match owned.stage {
                     EmitStage::Rir => {
-                        println!("=== RIR ===");
-                        println!("{}", output.as_str());
-                        println!();
+                        transport.outln("=== RIR ===");
+                        transport.outln(output.as_str());
+                        transport.outln("");
                     }
                     EmitStage::Air => {
-                        println!("=== AIR ===");
-                        print!("{}", output.as_str());
-                        println!();
+                        transport.outln("=== AIR ===");
+                        transport.out(output.as_str());
+                        transport.outln("");
                     }
                     EmitStage::Cfg => {
-                        println!("=== CFG ===");
-                        print!("{}", output.as_str());
-                        println!();
+                        transport.outln("=== CFG ===");
+                        transport.out(output.as_str());
+                        transport.outln("");
                     }
-                    EmitStage::Lowering => println!("{}", output.as_str()),
+                    EmitStage::Lowering => transport.outln(output.as_str()),
                     EmitStage::Mir => {
-                        println!("=== MIR ({target}) ===");
-                        println!("{}", output.as_str());
+                        transport.outln(format!("=== MIR ({target}) ==="));
+                        transport.outln(output.as_str());
                     }
                     EmitStage::Liveness => {
-                        println!("=== Liveness Analysis ({target}) ===");
-                        println!("{}", output.as_str());
+                        transport.outln(format!("=== Liveness Analysis ({target}) ==="));
+                        transport.outln(output.as_str());
                     }
                     EmitStage::RegAlloc => {
-                        println!("=== Register Allocation ({target}) ===");
-                        println!("{}", output.as_str());
+                        transport.outln(format!("=== Register Allocation ({target}) ==="));
+                        transport.outln(output.as_str());
                     }
                     EmitStage::Asm => {
-                        println!("=== Assembly ({target}) ===");
-                        println!("{}", output.as_str());
+                        transport.outln(format!("=== Assembly ({target}) ==="));
+                        transport.outln(output.as_str());
                     }
-                    EmitStage::StackFrame => print!("{}", output.as_str()),
+                    EmitStage::StackFrame => transport.out(output.as_str()),
                     EmitStage::Abi => {
-                        println!("=== ABI ({target}) ===");
-                        print!("{}", output.as_str());
+                        transport.outln(format!("=== ABI ({target}) ==="));
+                        transport.out(output.as_str());
                     }
                     EmitStage::Tokens | EmitStage::Ast | EmitStage::Deps => unreachable!(),
                 }
             }
-            Ok(())
+            transport.ok = true;
         }
     }
+    transport
 }
 
 fn consume_emit_observations(

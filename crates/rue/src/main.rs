@@ -287,9 +287,9 @@ Usage: rue [options] <root.rue> [output]
 
 The compiler takes exactly one root source file and discovers every other
 file through its @import graph; pass build-system inputs with --source-manifest.
-An ordinary internal-linker build or `rue test` can run through the local
-compiler service with --daemon=auto or --daemon=required (ADR-0085); the
-default is off.
+An ordinary internal-linker build, `rue test`, or `--emit air` can run through
+the local compiler service with --daemon=auto or --daemon=required
+(ADR-0085); the default is off.
 
 Commands:
   explain <E####>      Show the compiler-owned explanation for an error code
@@ -373,10 +373,10 @@ Options:
                        start the compiler service for supported requests and
                        compile directly otherwise; required: the service must
                        run it. Supported: ordinary internal-linker builds,
-                       rue test, and rue test --list. --watch, --emit,
-                       --linker, --time-passes, --benchmark-json, and
-                       compiler tracing run directly under auto and are
-                       refused under required.
+                       rue test, rue test --list, and --emit air alone.
+                       --watch, other --emit stages, --linker, --time-passes,
+                       --benchmark-json, and compiler tracing run directly
+                       under auto and are refused under required.
   --daemon-scope <dir> The service scope directory (default: the root source's
                        directory); --daemon-isolation <name> selects a
                        separate service within it. Both match `rue daemon`.
