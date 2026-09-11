@@ -2119,3 +2119,127 @@ fn optional_inputs_record_negative_observations_and_invalidate_on_publication() 
         Err(RevisionError::ReservedInputStamp(input))
     );
 }
+
+#[test]
+fn mixed_validation_recomputation_retains_its_equal_value_child() {
+    // Dependency order must not decide whether unregistered taint erases the
+    // independent need to acquire a validation-only recomputation's lease.
+    for external_first in [true, false] {
+        for workers in [1, 4] {
+            for batched in [false, true] {
+                let runtime = QueryRuntime::new(workers);
+                let first = Revision::new(1, 1);
+                let second = Revision::new(2, 1);
+                let input = InputIdentity::new("source", "mixed-proof-edit");
+                runtime
+                    .publish_revision(first, [(input.clone(), 1)])
+                    .unwrap();
+                runtime
+                    .publish_revision(second, [(input.clone(), 2)])
+                    .unwrap();
+                let external = runtime
+                    .family::<Key, u64>(
+                        if external_first {
+                            "a-external"
+                        } else {
+                            "z-external"
+                        },
+                        8,
+                    )
+                    .unwrap();
+                let child_runs = Arc::new(AtomicUsize::new(0));
+                let child_runs_for_body = child_runs.clone();
+                let child = runtime
+                    .family_with_evaluator::<Key, u64, _>(
+                        "m-recomputed-child",
+                        8,
+                        move |context, _, _| {
+                            context.input(input.clone())?;
+                            child_runs_for_body.fetch_add(1, Ordering::SeqCst);
+                            Ok(QueryOutput::success(1))
+                        },
+                    )
+                    .unwrap();
+                let root_runs = Arc::new(AtomicUsize::new(0));
+                let root_runs_for_body = root_runs.clone();
+                let external_for_root = external.clone();
+                let child_for_root = child.clone();
+                let root = runtime
+                    .family_with_evaluator::<Key, u64, _>(
+                        "mixed-proof-root",
+                        8,
+                        move |context, _, _| {
+                            root_runs_for_body.fetch_add(1, Ordering::SeqCst);
+                            context.query(&external_for_root, Key("external"), |_| {
+                                Ok(QueryOutput::success(1))
+                            })?;
+                            context.query_registered(&child_for_root, Key("child"))?;
+                            Ok(QueryOutput::success(2))
+                        },
+                    )
+                    .unwrap();
+                let original = runtime
+                    .request_registered(&root, first, Key("root"), CancellationToken::new())
+                    .into_result()
+                    .unwrap();
+                let external_terminal = runtime
+                    .request(
+                        &external,
+                        first,
+                        Key("external"),
+                        CancellationToken::new(),
+                        |_| Ok(QueryOutput::success(1)),
+                    )
+                    .into_result()
+                    .unwrap();
+                let mut fallback = RetainedPinSet::new();
+                fallback.lease(external.pin_terminal(&external_terminal).unwrap());
+                let fallback = Arc::new(fallback);
+                let wrapper = runtime
+                    .family::<Key, u64>("mixed-proof-wrapper", 1)
+                    .unwrap();
+                runtime
+                    .request(
+                        &wrapper,
+                        second,
+                        Key("wrapper"),
+                        CancellationToken::new(),
+                        |context| {
+                            // Keep the complete external leaf available for
+                            // promotion without revalidating it in this task
+                            // before the parent's mixed-cone traversal.
+                            let _scope = context
+                                .endorse_registered_validations_from(std::slice::from_ref(
+                                    &fallback,
+                                ))
+                                .unwrap();
+                            let selected = if batched {
+                                context
+                                    .query_registered_batch(&root, [Key("root")])?
+                                    .remove(0)
+                            } else {
+                                context.query_registered(&root, Key("root"))?
+                            };
+                            assert!(
+                                Arc::ptr_eq(&original, &selected),
+                                "the parent's value stayed green"
+                            );
+                            assert!(
+                                !context.task.validation_endorsed(&selected),
+                                "external evaluators keep the proof tainted"
+                            );
+                            let retained = context
+                                .retain_observed_terminal_cone(&selected)
+                                .expect("mixed proof repair must own the recomputed child");
+                            assert_eq!(retained.len(), 3);
+                            Ok(QueryOutput::success(3))
+                        },
+                    )
+                    .into_result()
+                    .unwrap();
+                assert_eq!(root_runs.load(Ordering::SeqCst), 1);
+                assert_eq!(child_runs.load(Ordering::SeqCst), 2);
+            }
+        }
+    }
+}

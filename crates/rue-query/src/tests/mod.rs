@@ -87,7 +87,7 @@ fn query_test_source_inventory_is_exact_and_canonical() {
         .collect();
     assert_eq!(
         expected.len(),
-        173,
+        174,
         "baseline test count changed unexpectedly"
     );
 

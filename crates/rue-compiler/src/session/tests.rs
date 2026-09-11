@@ -6082,6 +6082,56 @@ fn the_test_dispatcher_is_the_test_image_entry_point() {
     assert_eq!(defined_symbols(&executable_again), executable_symbols);
 }
 
+/// Alternating test and executable root selections must preserve the shared
+/// closure cone.  In particular, a retained body-reachability terminal may be
+/// reused while the second root set is validated, but it must still be owned by
+/// the publication task before that task promotes the closure's exact cone.
+#[test]
+fn alternating_test_and_executable_roots_retain_shared_closure_cone() {
+    let source = snapshot(
+        &[
+            (
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "const helper = @import(\"helper.rue\");\n\
+                 fn main() -> i32 { helper.value() }\n\
+                 test \"helper stays positive\" { @assert(helper.value() > 0); }\n",
+            ),
+            (
+                2,
+                "/p/helper.rue",
+                "helper.rue",
+                "pub fn value() -> i32 { 42 }\n",
+            ),
+        ],
+        1,
+    );
+    let mut session = CompilerSession::new();
+    publish_with_test_imports(&mut session, &source);
+
+    let executable = session
+        .rooted_cfg(&test_declaration_options(crate::RootSelection::Executable))
+        .expect("the executable root compiles");
+    let tests = crate::unstable::test_image_in_compile_scope(
+        &mut session,
+        &test_declaration_options(crate::RootSelection::Tests),
+    )
+    .expect("the test root compiles after the executable root");
+    let executable_again = session
+        .rooted_cfg(&test_declaration_options(crate::RootSelection::Executable))
+        .expect("the executable root remains valid after the test root");
+    let tests_again = crate::unstable::test_image_in_compile_scope(
+        &mut session,
+        &test_declaration_options(crate::RootSelection::Tests),
+    )
+    .expect("the test root remains valid on its second request");
+
+    assert_rooted_cfg_parity(&session, &executable, &executable_again);
+    assert_eq!(tests.output.elf, tests_again.output.elf);
+    assert_eq!(tests.inventory.entries, tests_again.inventory.entries);
+}
+
 /// The dispatcher is a root of a test request, so whole-program reachability
 /// keeps it (RUE-1995).
 ///
