@@ -8,11 +8,10 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use super::protocol::{
-    BuildReply, BuildRequest, BuildResult, Hello, HelloReply, MAX_CONTROL_FRAME_BYTES,
-    MAX_RESULT_FRAME_BYTES, Request, RequestBody, Response, ResponseBody, ServiceInfo,
-    StatusReport, read_chunks, read_frame, write_frame,
+    BuildObservations, BuildReply, BuildRequest, BuildResult, Hello, HelloReply,
+    MAX_CONTROL_FRAME_BYTES, MAX_RESULT_FRAME_BYTES, Request, RequestBody, Response, ResponseBody,
+    ServiceInfo, StatusReport, read_chunks, read_frame, write_frame,
 };
-
 /// Why a connection could not be established or used.
 #[derive(Debug)]
 pub enum ConnectError {
@@ -26,6 +25,8 @@ pub enum ConnectError {
     Rejected(String),
     /// The peer did not follow the protocol.
     Protocol(String),
+    /// A watch input changed while this request was compiling.
+    WatchSuperseded,
     Io(io::Error),
 }
 
@@ -39,6 +40,7 @@ impl std::fmt::Display for ConnectError {
                 write!(formatter, "the service refused this client: {reason}")
             }
             Self::Protocol(reason) => write!(formatter, "protocol error: {reason}"),
+            Self::WatchSuperseded => formatter.write_str("the watched source changed"),
             Self::Io(error) => write!(formatter, "{error}"),
         }
     }
@@ -53,17 +55,36 @@ impl From<io::Error> for ConnectError {
 impl From<super::protocol::FrameError> for ConnectError {
     fn from(error: super::protocol::FrameError) -> Self {
         match error {
+            super::protocol::FrameError::Io(error)
+                if error
+                    .get_ref()
+                    .is_some_and(|source| source.is::<WatchSupersededIo>()) =>
+            {
+                Self::WatchSuperseded
+            }
             super::protocol::FrameError::Io(error) => Self::Io(error),
             other => Self::Protocol(other.to_string()),
         }
     }
 }
 
+#[derive(Debug)]
+struct WatchSupersededIo;
+
+impl std::fmt::Display for WatchSupersededIo {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("the watched source changed")
+    }
+}
+
+impl std::error::Error for WatchSupersededIo {}
+
 /// An established, identity-checked connection to a service.
 pub struct Connection {
     stream: UnixStream,
     service: ServiceInfo,
     next_id: u64,
+    observations: BuildObservations,
 }
 
 impl std::fmt::Debug for Connection {
@@ -121,6 +142,7 @@ pub fn connect(
             stream,
             service,
             next_id: 1,
+            observations: BuildObservations::default(),
         }),
         HelloReply::Rejected { reason } => Err(ConnectError::Rejected(reason)),
     }
@@ -255,27 +277,83 @@ impl Connection {
         } else {
             0
         };
-        let reply: BuildReply = read_frame(
+        let (reply, bytes) = read_build_reply(
             &mut first_byte[..prefix_len].chain(&mut self.stream),
-            MAX_RESULT_FRAME_BYTES,
-        )?
-        .ok_or_else(|| ConnectError::Protocol("the service closed mid-request".into()))?;
-        if reply.ticket != ticket {
-            return Err(ConnectError::Protocol(format!(
-                "the service answered ticket {} while {ticket} was pending",
-                reply.ticket
-            )));
-        }
-        let bytes = match &reply.result {
-            BuildResult::Ready { bytes, .. } => read_chunks(&mut self.stream, *bytes)?,
-            _ => Vec::new(),
-        };
+            ticket,
+        )?;
+        self.observations = reply.observations.clone();
         Ok((
             reply.result,
             bytes,
             reply.measurement,
             transfer_started.map(|started| started.elapsed().as_nanos() as u64),
         ))
+    }
+
+    /// Await an admitted build while the caller's shared watch monitor owns
+    /// cancellation. Dropping this connection after `true` cancels only this
+    /// service request through its peer watcher.
+    pub fn await_build_cancellable<F: Fn() -> bool>(
+        &mut self,
+        ticket: u64,
+        canceled: F,
+    ) -> Result<(BuildResult, Vec<u8>), ConnectError> {
+        self.stream.set_nonblocking(true)?;
+        let mut reader = CancellableReader {
+            stream: &mut self.stream,
+            canceled: &canceled,
+        };
+        let (reply, bytes) = read_build_reply(&mut reader, ticket)?;
+        self.observations = reply.observations.clone();
+        self.stream.set_nonblocking(false)?;
+        Ok((reply.result, bytes))
+    }
+
+    /// Observations from the most recently completed build request.
+    pub fn observations(&self) -> &BuildObservations {
+        &self.observations
+    }
+}
+
+/// One decoder for ordinary, measured, and cancelable build clients. Readers
+/// supply their timing or cancellation policy around the same frame/chunk path.
+fn read_build_reply(
+    reader: &mut impl Read,
+    ticket: u64,
+) -> Result<(BuildReply, Vec<u8>), ConnectError> {
+    let reply: BuildReply = read_frame(reader, MAX_RESULT_FRAME_BYTES)?
+        .ok_or_else(|| ConnectError::Protocol("the service closed mid-request".into()))?;
+    if reply.ticket != ticket {
+        return Err(ConnectError::Protocol(format!(
+            "the service answered ticket {} while {ticket} was pending",
+            reply.ticket
+        )));
+    }
+    let bytes = match &reply.result {
+        BuildResult::Ready { bytes, .. } => read_chunks(reader, *bytes)?,
+        _ => Vec::new(),
+    };
+    Ok((reply, bytes))
+}
+
+struct CancellableReader<'a, F> {
+    stream: &'a mut UnixStream,
+    canceled: &'a F,
+}
+
+impl<F: Fn() -> bool> Read for CancellableReader<'_, F> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        loop {
+            if (self.canceled)() {
+                return Err(io::Error::other(WatchSupersededIo));
+            }
+            match self.stream.read(buffer) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                result => return result,
+            }
+        }
     }
 }
 
@@ -318,5 +396,151 @@ fn unexpected(expected: &str, actual: &ResponseBody) -> ConnectError {
     match actual {
         ResponseBody::Error { message } => ConnectError::Protocol(message.clone()),
         other => ConnectError::Protocol(format!("expected {expected}, got {other:?}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::thread;
+    use std::time::Duration;
+
+    use super::*;
+
+    fn send_in_pieces(mut stream: UnixStream, pieces: Vec<Vec<u8>>) {
+        for piece in pieces {
+            stream.write_all(&piece).unwrap();
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn framed(body: &[u8]) -> Vec<u8> {
+        let mut frame = (body.len() as u32).to_be_bytes().to_vec();
+        frame.extend_from_slice(body);
+        frame
+    }
+
+    #[test]
+    fn cancellable_frame_reassembles_partial_header_and_body() {
+        let (writer, mut reader) = UnixStream::pair().unwrap();
+        reader.set_nonblocking(true).unwrap();
+        let body = serde_json::to_vec("fragmented response").unwrap();
+        let frame = framed(&body);
+        let writer = thread::spawn(move || {
+            send_in_pieces(
+                writer,
+                vec![
+                    frame[..1].to_vec(),
+                    frame[1..3].to_vec(),
+                    frame[3..7].to_vec(),
+                    frame[7..].to_vec(),
+                ],
+            );
+        });
+        let canceled = || false;
+        let mut adapter = CancellableReader {
+            stream: &mut reader,
+            canceled: &canceled,
+        };
+        let received: String = read_frame(&mut adapter, 1024).unwrap().unwrap();
+        writer.join().unwrap();
+        assert_eq!(received.as_bytes(), &body[1..body.len() - 1]);
+    }
+
+    #[test]
+    fn cancellable_chunks_reassemble_across_fragmented_frames() {
+        let (writer, mut reader) = UnixStream::pair().unwrap();
+        reader.set_nonblocking(true).unwrap();
+        let writer = thread::spawn(move || {
+            let first = framed(b"first ");
+            let second = framed(b"chunk");
+            send_in_pieces(
+                writer,
+                vec![
+                    first[..2].to_vec(),
+                    first[2..].to_vec(),
+                    second[..1].to_vec(),
+                    second[1..].to_vec(),
+                ],
+            );
+        });
+        let canceled = || false;
+        let mut adapter = CancellableReader {
+            stream: &mut reader,
+            canceled: &canceled,
+        };
+        let received = read_chunks(&mut adapter, 11).unwrap();
+        writer.join().unwrap();
+        assert_eq!(received, b"first chunk");
+    }
+
+    #[test]
+    fn cancellable_frame_rejects_oversized_prefix_before_allocation() {
+        let (mut writer, mut reader) = UnixStream::pair().unwrap();
+        reader.set_nonblocking(true).unwrap();
+        writer.write_all(&4097_u32.to_be_bytes()).unwrap();
+        let canceled = || false;
+        let mut adapter = CancellableReader {
+            stream: &mut reader,
+            canceled: &canceled,
+        };
+        let error = read_frame::<serde_json::Value>(&mut adapter, 4096).unwrap_err();
+        assert!(matches!(
+            error,
+            super::super::protocol::FrameError::Oversized {
+                announced: 4097,
+                limit: 4096
+            }
+        ));
+    }
+
+    #[test]
+    fn cancellable_chunks_reject_a_chunk_larger_than_the_announced_remainder() {
+        let (mut writer, mut reader) = UnixStream::pair().unwrap();
+        reader.set_nonblocking(true).unwrap();
+        writer.write_all(&11_u32.to_be_bytes()).unwrap();
+        writer.write_all(b"eleven bytes").unwrap();
+        let canceled = || false;
+        let mut adapter = CancellableReader {
+            stream: &mut reader,
+            canceled: &canceled,
+        };
+        let error = read_chunks(&mut adapter, 5).unwrap_err();
+        assert!(matches!(
+            error,
+            super::super::protocol::FrameError::Oversized {
+                announced: 11,
+                limit: 5
+            }
+        ));
+    }
+
+    #[test]
+    fn cancellable_frame_aborts_while_waiting_for_the_rest_of_a_frame() {
+        let (writer, mut reader) = UnixStream::pair().unwrap();
+        reader.set_nonblocking(true).unwrap();
+        let canceled = Arc::new(AtomicBool::new(false));
+        let signal = Arc::clone(&canceled);
+        let writer = thread::spawn(move || {
+            writer.try_clone().unwrap().write_all(&[0, 0]).unwrap();
+            thread::sleep(Duration::from_millis(40));
+            signal.store(true, Ordering::Release);
+            drop(writer);
+        });
+        let canceled_fn = || canceled.load(Ordering::Acquire);
+        let mut adapter = CancellableReader {
+            stream: &mut reader,
+            canceled: &canceled_fn,
+        };
+        let error = read_frame::<serde_json::Value>(&mut adapter, 4096).unwrap_err();
+        writer.join().unwrap();
+        assert!(matches!(
+            error,
+            super::super::protocol::FrameError::Io(error)
+                if error.get_ref().is_some_and(|source| source.is::<WatchSupersededIo>())
+        ));
     }
 }

@@ -204,6 +204,25 @@ impl EmitStage {
         "tokens, ast, rir, air, cfg, lowering, mir, liveness, regalloc, asm, stackframe, abi, \
          deps, module-manifest"
     }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Tokens => "tokens",
+            Self::Ast => "ast",
+            Self::Rir => "rir",
+            Self::Air => "air",
+            Self::Cfg => "cfg",
+            Self::Lowering => "lowering",
+            Self::Mir => "mir",
+            Self::Liveness => "liveness",
+            Self::RegAlloc => "regalloc",
+            Self::Asm => "asm",
+            Self::StackFrame => "stackframe",
+            Self::Abi => "abi",
+            Self::Deps => "deps",
+            Self::ModuleManifest => "module-manifest",
+        }
+    }
 }
 
 /// Reject output-mode combinations that cannot coexist, independent of any

@@ -629,3 +629,70 @@ path = "extra.rue"
 source = """
 pub fn broken() -> i32 { 2 }
 """
+
+
+[[case]]
+name = "daemon_required_watch_reuses_the_shared_test_lifecycle"
+description = "The daemon-backed test watcher uses the same deterministic cycle protocol as the direct watcher while the service owns compilation."
+files = [{ path = "main.rue", source = "test \"works\" { @assert(1 == 1); }\nfn main() -> i32 { 0 }\n" }]
+[case.watch_test]
+kind = "edit"
+args = ["--daemon=required"]
+expected_exit = 0
+stdout_contains = [
+    '"cycle":1,"event":"run_started"',
+    '"cycle":2,"event":"run_started"',
+    '"compile_error":0,"crash":0,"event":"run_finished"',
+]
+stdout_not_contains = ['"event":"run_canceled"']
+
+[[case.watch_test.edits]]
+path = "main.rue"
+source = "test \"works\" { @assert(2 == 2); }\nfn main() -> i32 { 0 }\n"
+
+[[case]]
+name = "daemon_required_watch_reports_deleted_import_and_repairs"
+description = "The daemon-backed test watcher suppresses a failed deleted-import cycle and resumes after repair."
+files = [
+    { path = "main.rue", source = "const tests = @import(\"tests.rue\");\nfn main() -> i32 { 0 }\n" },
+    { path = "tests.rue", source = "const helper = @import(\"helper.rue\");\ntest \"works\" { @assert(helper.answer() == 1); }\n" },
+    { path = "helper.rue", source = "pub fn answer() -> i32 { 1 }\n" },
+]
+[case.watch_test]
+kind = "compile_error"
+args = ["--daemon=required"]
+expected_exit = 0
+stdout_contains = [
+    '"cycle":1,"event":"run_started"',
+    # The deleted import fails after the accepted test image attempt, so cycle
+    # 2 has no run events and the repaired revision is cycle 3.
+    '"cycle":3,"event":"run_started"',
+    '"event":"run_finished"',
+]
+stderr_contains = ["E0704"]
+[[case.watch_test.edits]]
+path = "helper.rue"
+delete = true
+[[case.watch_test.edits]]
+path = "helper.rue"
+source = "pub fn answer() -> i32 { 1 }\n"
+
+[[case]]
+name = "daemon_required_watch_cancels_running_test_and_reuses_scratch_cycles"
+description = "A daemon-backed test watch cancels its running client-owned process group and starts the next cycle."
+files = [
+    { path = "main.rue", source = "test \"spins\" { let mut i: i32 = 0; while i >= 0 { if i > 0 { i = i - 1; } } }\nfn main() -> i32 { 0 }\n" },
+]
+[case.watch_test]
+kind = "cancel"
+args = ["--daemon=required"]
+timeout_ms = 8000
+expected_exit = 0
+stdout_contains = [
+    '"cycle":1,"event":"run_canceled"',
+    '"cycle":2,"event":"run_started"',
+    '"event":"run_finished"',
+]
+[[case.watch_test.edits]]
+path = "main.rue"
+source = "test \"settles\" { @assert(1 + 1 == 2); }\nfn main() -> i32 { 0 }\n"

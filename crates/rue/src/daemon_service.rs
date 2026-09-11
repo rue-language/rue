@@ -15,15 +15,17 @@ use rue_compiler::unstable::{
 };
 use rue_compiler::{CompileOptions, CompilerSessionConfig, LinkerMode, RootSelection};
 use rue_driver::daemon::{
-    BuildExecutor, BuildKind, BuildOutput, BuildRequest, BuildResult, DestinationRecord,
-    DiagnosticFormat, InputRecord, TestImageRecord,
+    AttemptedReadOutcomeRecord, AttemptedReadRecord, BuildExecutor, BuildKind, BuildObservations,
+    BuildOutput, BuildRequest, BuildResult, DestinationRecord, DiagnosticFormat, InputRecord,
+    TestImageRecord,
 };
 use rue_driver::{
-    FilesystemCompilerHost, HostOpenRequest, HostPathContext, SourceLoadError,
-    load_declared_candidates_with_context,
+    AttemptedRead, AttemptedReadOutcomeParts, FilesystemCompilerHost, HostOpenRequest,
+    HostPathContext, SourceLoadError, SourceLoadFailure, load_declared_candidates_with_context,
 };
 
 use crate::compile::{CycleTransport, TransportOutcome, produce_test_transport, produce_transport};
+use crate::emit::EmitStage;
 use crate::test_mode::{inventory_entry_record, prepare_image, produce_listing_transport};
 use crate::{DiagnosticOutput, ErrorFormat, render_source_load_error_with_color};
 
@@ -91,6 +93,7 @@ impl Executor {
 /// The parts of a request that must parse before any host is touched.
 struct Parsed {
     options: CompileOptions,
+    emit_stages: Vec<EmitStage>,
     format: ErrorFormat,
     color: ColorChoice,
     compiler_config: CompilerSessionConfig,
@@ -119,6 +122,14 @@ fn parse(request: &BuildRequest) -> Result<Parsed, String> {
                 .map_err(|error| format!("preview feature `{name}`: {error}"))
         })
         .collect::<Result<_, _>>()?;
+    let mut emit_stages = request
+        .emit_stages
+        .iter()
+        .map(|name| name.parse::<EmitStage>().map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    if request.artifact == BuildKind::Analysis && emit_stages.is_empty() {
+        emit_stages.push(EmitStage::Air);
+    }
     let workers = if request.workers == 0 {
         DAEMON_AUTOMATIC_WORKERS
     } else {
@@ -147,6 +158,7 @@ fn parse(request: &BuildRequest) -> Result<Parsed, String> {
                 BuildKind::TestImage | BuildKind::TestListing => RootSelection::Tests,
             },
         },
+        emit_stages,
         format: match request.error_format {
             DiagnosticFormat::Text => ErrorFormat::Text,
             DiagnosticFormat::Json => ErrorFormat::Json,
@@ -170,10 +182,10 @@ impl Executor {
         key: HostKey,
         request: &BuildRequest,
         parsed: &Parsed,
-    ) -> Result<&mut FilesystemCompilerHost, SourceLoadError> {
-        // A request starts as a fresh observation.  Only a successfully
-        // committed reobserve is reuse evidence; a failed attempt must not
-        // inherit the predecessor's session identity in its reply.
+        cancellation: &CompilationCancellation,
+    ) -> Result<&mut FilesystemCompilerHost, SourceLoadFailure> {
+        // Only a successfully committed reobserve is reuse evidence; a failed
+        // attempt must not inherit its predecessor's session identity.
         self.reused_session = false;
         let reuse = self
             .retained
@@ -183,14 +195,19 @@ impl Executor {
             let retained = self.retained.as_mut().expect("checked above");
             // A pre-commit failure keeps the prior coherent closure, so the
             // host stays retained; the request is answered with the failure.
-            retained.host.reobserve()?;
+            retained
+                .host
+                .reobserve_superseding(&|| cancellation.is_canceled())
+                .map_err(|error| SourceLoadFailure {
+                    error,
+                    attempted_reads: retained.host.attempted_reads().to_vec(),
+                })?;
             self.reused_session = true;
             return Ok(&mut retained.host);
         }
-        // Open the successor off to the side.  A failed open leaves the
-        // predecessor available for the next request; the generation advances
-        // only once the new host has been admitted.
-        let host = FilesystemCompilerHost::open(HostOpenRequest {
+        // Open the successor off to the side. A failed open leaves the
+        // predecessor available; generation advances only on admission.
+        let host = FilesystemCompilerHost::open_with_observations(HostOpenRequest {
             root_source: &request.root_source,
             source_manifest_path: request.source_manifest_path.as_deref(),
             std_root: request.std_root.as_deref().map(Path::new),
@@ -224,7 +241,7 @@ impl BuildExecutor for Executor {
             std_root: request.std_root.clone(),
             workers: parsed.compiler_config.workers(),
         };
-        let rejected = |error: SourceLoadError| BuildOutput {
+        let rejected = |error: SourceLoadError, observations: BuildObservations| BuildOutput {
             result: BuildResult::Rejected {
                 stderr: format!(
                     "{}\n",
@@ -232,21 +249,64 @@ impl BuildExecutor for Executor {
                 ),
             },
             bytes: Vec::new(),
+            observations,
         };
         let observation_started = std::time::Instant::now();
-        let host = match self.host(key, request, &parsed) {
+        let host = match self.host(key, request, &parsed, cancellation) {
             Ok(host) => host,
-            Err(error) => return rejected(error),
-        };
-        match host.acquire_reached_toolchain_modules_cancellable(&parsed.options, cancellation) {
-            Ok(()) => {}
-            Err(SourceLoadError::Superseded) => {
+            Err(failure) if matches!(failure.error, SourceLoadError::Superseded) => {
                 return BuildOutput {
                     result: BuildResult::Canceled,
                     bytes: Vec::new(),
+                    observations: BuildObservations::default(),
                 };
             }
-            Err(error) => return rejected(error),
+            Err(failure) => {
+                return rejected(
+                    failure.error,
+                    observations_from_attempts(&failure.attempted_reads),
+                );
+            }
+        };
+        if cancellation.is_canceled() {
+            return BuildOutput {
+                result: BuildResult::Canceled,
+                bytes: Vec::new(),
+                observations: observations(host),
+            };
+        }
+        let needs_semantic = match request.artifact {
+            BuildKind::Analysis => {
+                crate::emit::emit_requires_semantic(&parsed.emit_stages)
+                    || parsed.emit_stages.contains(&EmitStage::ModuleManifest)
+            }
+            BuildKind::Executable | BuildKind::TestImage | BuildKind::TestListing => true,
+        };
+        let acquisition = if needs_semantic {
+            Some(host.acquire_reached_toolchain_modules_cancellable(&parsed.options, cancellation))
+        } else {
+            None
+        };
+        match acquisition {
+            None | Some(Ok(())) => {}
+            Some(Err(SourceLoadError::Superseded)) => {
+                return BuildOutput {
+                    result: BuildResult::Canceled,
+                    bytes: Vec::new(),
+                    observations: observations(host),
+                };
+            }
+            Some(Err(error)) => {
+                let stderr = format!(
+                    "{}\n",
+                    render_source_load_error_with_color(error, parsed.format, parsed.color)
+                );
+                return BuildOutput {
+                    result: BuildResult::Rejected { stderr },
+                    bytes: Vec::new(),
+                    observations: observations(host),
+                };
+            }
         }
         let observation_ns = Some(observation_started.elapsed().as_nanos() as u64);
         let input_sha256 = request
@@ -261,11 +321,12 @@ impl BuildExecutor for Executor {
                 return BuildOutput {
                     result: BuildResult::Rejected { stderr },
                     bytes: Vec::new(),
+                    observations: observations(host),
                 };
             }
         };
         let mut link_ns = None;
-        let output = match request.artifact {
+        let mut output = match request.artifact {
             BuildKind::Executable => {
                 let transport = produce_transport(
                     host,
@@ -301,7 +362,7 @@ impl BuildExecutor for Executor {
             BuildKind::Analysis => {
                 match crate::emit::produce_transport(
                     host,
-                    &[crate::emit::EmitStage::Air],
+                    &parsed.emit_stages,
                     parsed.options.clone(),
                     parsed.format,
                     parsed.color,
@@ -310,6 +371,7 @@ impl BuildExecutor for Executor {
                     None => BuildOutput {
                         result: BuildResult::Canceled,
                         bytes: Vec::new(),
+                        observations: BuildObservations::default(),
                     },
                     Some(presentation) => BuildOutput {
                         result: BuildResult::Presentation {
@@ -317,6 +379,7 @@ impl BuildExecutor for Executor {
                             writes: presentation.writes,
                         },
                         bytes: Vec::new(),
+                        observations: BuildObservations::default(),
                     },
                 }
             }
@@ -331,6 +394,7 @@ impl BuildExecutor for Executor {
                     None => BuildOutput {
                         result: BuildResult::Canceled,
                         bytes: Vec::new(),
+                        observations: BuildObservations::default(),
                     },
                     Some(listing) => BuildOutput {
                         result: BuildResult::Listing {
@@ -340,10 +404,12 @@ impl BuildExecutor for Executor {
                             }),
                         },
                         bytes: Vec::new(),
+                        observations: BuildObservations::default(),
                     },
                 }
             }
         };
+        output.observations = observations(host);
         self.last_observation_ns = observation_ns;
         self.last_input_sha256 = input_sha256;
         self.last_link_ns = link_ns;
@@ -474,12 +540,14 @@ fn ready_output<Published>(
     } = transport;
     match outcome {
         TransportOutcome::Rejected => BuildOutput {
-            result: BuildResult::Rejected { stderr },
+            result: BuildResult::CompileRejected { stderr },
             bytes: Vec::new(),
+            observations: BuildObservations::default(),
         },
         TransportOutcome::Canceled => BuildOutput {
             result: BuildResult::Canceled,
             bytes: Vec::new(),
+            observations: BuildObservations::default(),
         },
         TransportOutcome::Ready {
             target,
@@ -506,6 +574,7 @@ fn ready_output<Published>(
                     test_image: companion(published),
                 },
                 bytes,
+                observations: BuildObservations::default(),
             }
         }
     }
@@ -521,6 +590,97 @@ fn input_record(input: rue_driver::WatchInput) -> InputRecord {
             .symlink_boundary
             .map(|path| path.display().to_string()),
         symlink_route: parts.symlink_route,
+    }
+}
+
+fn observations(host: &FilesystemCompilerHost) -> BuildObservations {
+    BuildObservations {
+        inputs: host.watch_inputs().into_iter().map(input_record).collect(),
+        attempted_reads: host
+            .attempted_reads()
+            .iter()
+            .cloned()
+            .map(|read| {
+                let parts = read.into_parts();
+                let outcome = match parts.outcome {
+                    AttemptedReadOutcomeParts::Accepted {
+                        canonical_path,
+                        content_fingerprint,
+                    } => AttemptedReadOutcomeRecord::Accepted {
+                        canonical_path,
+                        content_fingerprint,
+                    },
+                    AttemptedReadOutcomeParts::Failed {
+                        reason,
+                        observed,
+                        probe,
+                        route_only,
+                    } => AttemptedReadOutcomeRecord::Failed {
+                        reason,
+                        observed,
+                        probe,
+                        route_only,
+                    },
+                };
+                AttemptedReadRecord {
+                    requested_path: parts.requested_path,
+                    outcome,
+                }
+            })
+            .collect(),
+    }
+}
+
+/// Convert the loader-owned attempt ledger to the daemon wire projection.
+/// Failed entries remain failed entries; their domain-tagged observations are
+/// consumed by the shared watcher rather than being reinterpreted as accepted
+/// file fingerprints.
+fn observations_from_attempts(attempts: &[AttemptedRead]) -> BuildObservations {
+    let mut inputs = Vec::new();
+    let mut attempted_reads = Vec::new();
+    for attempt in attempts.iter().cloned() {
+        let parts = attempt.into_parts();
+        let outcome = match parts.outcome {
+            AttemptedReadOutcomeParts::Accepted {
+                canonical_path,
+                content_fingerprint,
+            } => {
+                inputs.push(InputRecord {
+                    requested_path: parts.requested_path.clone(),
+                    canonical_path: canonical_path.clone(),
+                    fingerprint: Some(content_fingerprint),
+                    symlink_boundary: None,
+                    symlink_route: Vec::new(),
+                });
+                AttemptedReadOutcomeRecord::Accepted {
+                    canonical_path,
+                    content_fingerprint,
+                }
+            }
+            AttemptedReadOutcomeParts::Failed {
+                reason,
+                observed,
+                probe,
+                route_only,
+            } => AttemptedReadOutcomeRecord::Failed {
+                reason,
+                observed,
+                probe,
+                route_only,
+            },
+        };
+        attempted_reads.push(AttemptedReadRecord {
+            requested_path: parts.requested_path,
+            outcome,
+        });
+    }
+    inputs.sort_by(|left, right| left.requested_path.cmp(&right.requested_path));
+    inputs.dedup();
+    attempted_reads.sort_by(|left, right| left.requested_path.cmp(&right.requested_path));
+    attempted_reads.dedup();
+    BuildObservations {
+        inputs,
+        attempted_reads,
     }
 }
 
@@ -548,6 +708,7 @@ mod tests {
         fn request(&self, output: &str) -> BuildRequest {
             BuildRequest {
                 artifact: BuildKind::Executable,
+                emit_stages: Vec::new(),
                 working_directory: self.directory.path().display().to_string(),
                 root_source: "main.rue".into(),
                 output_path: output.into(),
@@ -673,12 +834,12 @@ mod tests {
         // host answers it.
         project.write(BROKEN);
         let broken = executor.build(&project.request("app"), &cancellation);
-        let BuildResult::Rejected { stderr } = &broken.result else {
+        let BuildResult::CompileRejected { stderr } = &broken.result else {
             panic!("a broken program is rejected: {:?}", broken.result);
         };
         assert!(stderr.contains("E0206"), "{stderr}");
         let fresh = Executor::new().build(&project.request("app"), &cancellation);
-        let BuildResult::Rejected {
+        let BuildResult::CompileRejected {
             stderr: fresh_stderr,
         } = &fresh.result
         else {
@@ -736,7 +897,7 @@ mod tests {
         assert!(matches!(first.result, BuildResult::Ready { .. }));
         project.write(BROKEN);
         let broken = executor.build(&project.request("app"), &cancellation);
-        assert!(matches!(broken.result, BuildResult::Rejected { .. }));
+        assert!(matches!(broken.result, BuildResult::CompileRejected { .. }));
         project.write(GOOD);
         let repaired = executor.build(&project.request("app"), &cancellation);
         assert!(matches!(repaired.result, BuildResult::Ready { .. }));
@@ -902,6 +1063,7 @@ mod test_request_tests {
         fn request(&self, artifact: BuildKind, output: &str) -> BuildRequest {
             BuildRequest {
                 artifact,
+                emit_stages: Vec::new(),
                 working_directory: self.directory.path().display().to_string(),
                 root_source: "main.rue".into(),
                 output_path: output.into(),
@@ -1036,6 +1198,7 @@ mod test_request_tests {
         match result {
             BuildResult::Ready { stderr, .. }
             | BuildResult::Rejected { stderr }
+            | BuildResult::CompileRejected { stderr }
             | BuildResult::Listing { stderr, .. } => stderr,
             other => panic!("{other:?}"),
         }

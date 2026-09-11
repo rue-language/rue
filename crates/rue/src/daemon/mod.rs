@@ -32,11 +32,12 @@ use sha2::{Digest, Sha256};
 use crate::running_image::{RunningImageIdentity, running_image_identity};
 pub use client::{ConnectError, Connection, Submission, SubmitError};
 pub use protocol::{
-    BuildKind, BuildRequest, BuildResult, CompileFailureRecord, CrashRecord,
-    DAEMON_PROTOCOL_VERSION, DestinationRecord, DiagnosticFormat, IdentityRecord, InputRecord,
-    InventoryEntryRecord, MAX_RESPONSE_BYTES, OutputStream, RequestMeasurement, RequestSummary,
-    ResourcePolicy, ResourcePressure, ServiceInfo, StatusReport, StreamWrite, TestImageRecord,
-    UnimportedFileRecord, UnimportedRecord,
+    AttemptedReadOutcomeRecord, AttemptedReadRecord, BuildKind, BuildObservations, BuildRequest,
+    BuildResult, CompileFailureRecord, CrashRecord, DAEMON_PROTOCOL_VERSION, DestinationRecord,
+    DiagnosticFormat, IdentityRecord, InputRecord, InventoryEntryRecord, MAX_RESPONSE_BYTES,
+    OutputStream, RequestMeasurement, RequestSummary, ResourcePolicy, ResourcePressure,
+    ServiceInfo, StatusReport, StreamWrite, TestImageRecord, UnimportedFileRecord,
+    UnimportedRecord,
 };
 pub use service::{BuildExecutor, BuildOutput, MAX_CONNECTIONS, MAX_QUEUED_REQUESTS, ServeExit};
 
@@ -540,6 +541,9 @@ fn probe(endpoint: &Endpoint, identity: &ServiceIdentity) -> Result<Probe, Daemo
             reason,
         )),
         Err(client::ConnectError::Protocol(reason)) => Err(DaemonError::Protocol(reason)),
+        Err(client::ConnectError::WatchSuperseded) => {
+            Err(DaemonError::Protocol("watch request superseded".into()))
+        }
         Err(client::ConnectError::Io(error)) => Err(DaemonError::io(
             format!("connecting to {}", endpoint.socket.display()),
             error,

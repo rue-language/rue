@@ -83,6 +83,7 @@ impl BuildExecutor for StubExecutor {
                 return BuildOutput {
                     result: BuildResult::Canceled,
                     bytes: Vec::new(),
+                    observations: Default::default(),
                 };
             }
             thread::sleep(Duration::from_millis(5));
@@ -109,6 +110,7 @@ impl BuildExecutor for StubExecutor {
                 test_image: None,
             },
             bytes,
+            observations: Default::default(),
         }
     }
 
@@ -137,6 +139,7 @@ fn build_request(root_source: &str) -> BuildRequest {
     BuildRequest {
         measure_performance: false,
         artifact: BuildKind::Executable,
+        emit_stages: Vec::new(),
         working_directory: "/w".into(),
         root_source: root_source.into(),
         output_path: "out".into(),

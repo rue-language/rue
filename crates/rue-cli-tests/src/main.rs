@@ -3503,12 +3503,28 @@ fn run_watch_case(
         output_name.to_string(),
         "--watch".to_string(),
     ]);
+    let daemon_watch = case
+        .args
+        .as_ref()
+        .is_some_and(|args| args.iter().any(|arg| arg.starts_with("--daemon=")));
+    let preparation_failure_event = if daemon_watch {
+        "reobserve-error"
+    } else {
+        "compile-error"
+    };
+    if let Some(args) = &case.args {
+        compiler_args.extend(args.iter().cloned());
+    }
+    let daemon_root = daemon_watch.then(|| dir.join("daemon-root"));
     let mut command = case_compiler_command(rue_binary, &compiler_args, dir, &case.env, real_std);
     command
         .env("RUE_WATCH_TEST_PROTOCOL", &protocol)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(root) = &daemon_root {
+        command.env("RUE_DAEMON_ROOT", root);
+    }
     if let Some(delay) = scenario.compile_delay_ms {
         command.env("RUE_WATCH_TEST_COMPILE_DELAY_MS", delay.to_string());
     }
@@ -3553,7 +3569,13 @@ fn run_watch_case(
         if scenario.kind == WatchScenarioKind::InitialFailure {
             // The very first cycle is the one that fails, so there is no
             // opening publication to wait for and nothing on disk to run.
-            wait_for_watch_event(&mut child, &protocol, "compile-error", 1, deadline)?;
+            wait_for_watch_event(
+                &mut child,
+                &protocol,
+                preparation_failure_event,
+                1,
+                deadline,
+            )?;
             if program.exists() {
                 return Err("a failed first watch cycle must publish nothing".to_string());
             }
@@ -3588,13 +3610,19 @@ fn run_watch_case(
                 // A deleted transitive input can first be observed as a
                 // closed-invalid revision by the current host snapshot; the
                 // next cycle then reobserves the restored closure.
-                wait_for_watch_event(&mut child, &protocol, "compile-error", 1, deadline)?;
+                wait_for_watch_event(
+                    &mut child,
+                    &protocol,
+                    preparation_failure_event,
+                    1,
+                    deadline,
+                )?;
                 write_watch_edit(dir, &scenario.edits[1])?;
                 wait_for_watch_event(&mut child, &protocol, "published", 2, deadline)?;
                 let events = watch_events(&protocol);
                 let failure = events
                     .iter()
-                    .position(|event| event == "compile-error")
+                    .position(|event| event == preparation_failure_event)
                     .ok_or_else(|| "watch failure anchor disappeared".to_string())?;
                 let reobserve = events
                     .iter()
@@ -3777,6 +3805,9 @@ fn run_watch_case(
     })();
 
     let (status, stdout_bytes, stderr_bytes) = finish_watch_child(child, stdout, stderr, true);
+    if let Some(root) = &daemon_root {
+        stop_leftover_daemon(case, rue_binary, real_std, dir, root);
+    }
     let result = result.and_then(|()| {
         for expected in &scenario.stderr_contains {
             if !contains_bytes(&stderr_bytes, expected) {
@@ -3879,6 +3910,8 @@ fn run_watch_test_case(
         compiler_args.push(timeout.to_string());
     }
     compiler_args.extend(scenario.args.iter().cloned());
+    let daemon_watch = scenario.args.iter().any(|arg| arg.starts_with("--daemon="));
+    let daemon_root = daemon_watch.then(|| dir.join("daemon-root"));
 
     let mut command = case_compiler_command(rue_binary, &compiler_args, dir, &case.env, real_std);
     command
@@ -3886,6 +3919,9 @@ fn run_watch_test_case(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(root) = &daemon_root {
+        command.env("RUE_DAEMON_ROOT", root);
+    }
     configure_process_group(&mut command);
     let mut child = command.spawn().map_err(|error| {
         TestFailure::fatal(format!("failed to spawn watch-test process: {error}"))
@@ -3921,8 +3957,31 @@ fn run_watch_test_case(
             }
             WatchTestScenarioKind::CompileError => {
                 wait_for_watch_event(&mut child, &protocol, "run-finished", 1, deadline)?;
+                let initial_events = watch_events(&protocol).len();
                 write_watch_edit(dir, &scenario.edits[0])?;
                 wait_for_watch_event(&mut child, &protocol, "compile-error", 1, deadline)?;
+                let events = watch_events(&protocol);
+                let phases: Vec<&str> = events[initial_events..]
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|event| {
+                        event.starts_with("reobserve-")
+                            || event.starts_with("acquire-")
+                            || event.starts_with("compile-")
+                    })
+                    .collect();
+                let expected = [
+                    "reobserve-started",
+                    "reobserve-ok",
+                    "acquire-ok",
+                    "compile-started",
+                    "compile-error",
+                ];
+                if phases != expected {
+                    return Err(format!(
+                        "accepted image failure phases differ: expected {expected:?}, actual {phases:?}"
+                    ));
+                }
                 // A failed cycle publishes no events at all: the head event is
                 // owed only to a run that began (test-events.md, "Streams").
                 if watch_event_count(&protocol, "run-started") != 1 {
@@ -3989,6 +4048,9 @@ fn run_watch_test_case(
     })();
 
     let (status, stdout_bytes, stderr_bytes) = finish_watch_child(child, stdout, stderr, true);
+    if let Some(root) = &daemon_root {
+        stop_leftover_daemon(case, rue_binary, real_std, dir, root);
+    }
     let result = result.and_then(|()| {
         let exit = interrupted
             .and_then(|status| status.code())

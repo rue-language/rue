@@ -27,6 +27,7 @@ impl Project {
         BuildRequest {
             measure_performance: false,
             artifact: BuildKind::Executable,
+            emit_stages: Vec::new(),
             working_directory: self.0.path().display().to_string(),
             root_source: "main.rue".into(),
             output_path: "app".into(),
@@ -71,7 +72,10 @@ fn fresh_parity(executor: &mut Executor, request: &BuildRequest, ready: bool) ->
     );
     if !ready {
         assert!(
-            matches!(answer.result, BuildResult::Rejected { .. }),
+            matches!(
+                answer.result,
+                BuildResult::Rejected { .. } | BuildResult::CompileRejected { .. }
+            ),
             "{:?}",
             answer.result
         );

@@ -92,43 +92,6 @@ fn test_boundary_delay() {
     thread::sleep(Duration::from_millis(milliseconds.min(5_000)));
 }
 
-/// Which half of a re-observation cycle is running. One `ChangeMonitor` spans
-/// both, so the phase — not the monitor — decides which protocol event a
-/// supersession or failure reports (RUE-1863).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ObservationPhase {
-    Reobserve,
-    Acquire,
-}
-
-impl ObservationPhase {
-    fn superseded_event(self) -> &'static str {
-        match self {
-            ObservationPhase::Reobserve => "reobserve-superseded",
-            ObservationPhase::Acquire => "acquire-superseded",
-        }
-    }
-
-    /// The milestone for a failure this cycle actually reported to the user.
-    fn error_event(self) -> &'static str {
-        match self {
-            ObservationPhase::Reobserve => "reobserve-error",
-            ObservationPhase::Acquire => "acquire-error",
-        }
-    }
-
-    /// The milestone for a retry that hit the failure already on screen and
-    /// said nothing. The retry itself is not silent to the protocol — a
-    /// harness can still count attempts — but the user's terminal is
-    /// (RUE-2091).
-    fn repeated_error_event(self) -> &'static str {
-        match self {
-            ObservationPhase::Reobserve => "reobserve-error-repeat",
-            ObservationPhase::Acquire => "acquire-error-repeat",
-        }
-    }
-}
-
 /// The re-observation failure whose diagnostic is already on the user's
 /// terminal.
 ///
@@ -176,6 +139,84 @@ pub(crate) struct WatchRequest {
     pub(crate) mode: WatchMode,
 }
 
+/// The result of the backend's pre-cycle work.  Direct watches use this phase
+/// to reobserve and reacquire their retained host; the service backend uses it
+/// to submit and await one request.  The lifecycle below owns the monitor for
+/// both paths.
+pub(crate) enum BackendPrepare {
+    Ready,
+    Superseded,
+    Failed(BackendFailure),
+    Terminate(WatchTermination),
+}
+
+pub(crate) struct BackendFailure {
+    pub(crate) diagnostic: String,
+    pub(crate) inputs: Vec<WatchInput>,
+    pub(crate) attempted_reads: Vec<AttemptedRead>,
+}
+
+pub(crate) enum WatchTermination {
+    Direct,
+    Exit(i32),
+}
+
+pub(crate) enum BackendCycle {
+    Completed,
+    Failed { diagnostic: Option<String> },
+    Superseded(Supersession),
+    Canceled,
+    Terminate(WatchTermination),
+}
+
+pub(crate) struct WatchCycleRequest<'a> {
+    pub(crate) mode: &'a mut WatchMode,
+    pub(crate) source_path: &'a str,
+    pub(crate) error_format: ErrorFormat,
+    pub(crate) cycle: u64,
+    pub(crate) cancellation: &'a CycleCancellation,
+    pub(crate) inputs: Vec<WatchInput>,
+}
+
+/// Operations that differ between a filesystem host and the compiler service.
+/// The watch lifecycle and its one change monitor remain shared.
+pub(crate) trait WatchBackend {
+    fn prepare_each_cycle(&self) -> bool;
+    /// Whether `prepare` returned a fresh observation set from an external
+    /// backend that must be checked before replaying a terminal result.
+    fn returned_observations_are_authoritative(&self) -> bool {
+        false
+    }
+    /// Whether the backend reports the re-observation milestone itself while
+    /// it can still expose the exact phase boundary. The service completes
+    /// re-observation and acquisition in one request, so the shared loop
+    /// emits its milestone after a successful response.
+    fn announces_reobserve_during_prepare(&self) -> bool {
+        false
+    }
+    fn prepare(
+        &mut self,
+        inputs: &[WatchInput],
+        reobserve: bool,
+        cycle: u64,
+        cancellation: &CompilationCancellation,
+    ) -> BackendPrepare;
+    fn inputs(&self) -> Vec<WatchInput>;
+    /// The loader-owned read ledger for the most recent failed preparation.
+    /// Failed entries retain their own tagged observation semantics and are
+    /// watched separately from the accepted closure.
+    fn attempted_reads(&self) -> Vec<AttemptedRead> {
+        Vec::new()
+    }
+    /// Direct hosts retain their established periodic retry behavior after a
+    /// failed re-observation; service clients can wait on the owned ledger
+    /// instead because each retry is a new request boundary.
+    fn retry_failed_preparation(&self) -> bool {
+        false
+    }
+    fn cycle(&mut self, request: WatchCycleRequest<'_>) -> BackendCycle;
+}
+
 /// What one accepted source revision produces.
 ///
 /// The loop itself — the change monitor, re-observation, acquisition,
@@ -217,9 +258,9 @@ pub(crate) struct TestWatch {
 /// both, so the change monitor holds both and the two can never disagree about
 /// whether this cycle is still wanted (RUE-2023).
 #[derive(Clone)]
-struct CycleCancellation {
-    compilation: CompilationCancellation,
-    run: Option<test_mode::RunCancellation>,
+pub(crate) struct CycleCancellation {
+    pub(crate) compilation: CompilationCancellation,
+    pub(crate) run: Option<test_mode::RunCancellation>,
 }
 
 impl CycleCancellation {
@@ -228,6 +269,10 @@ impl CycleCancellation {
         if let Some(run) = &self.run {
             run.cancel();
         }
+    }
+
+    pub(crate) fn run(&self) -> Option<&test_mode::RunCancellation> {
+        self.run.as_ref()
     }
 }
 
@@ -327,10 +372,6 @@ impl ChangeMonitor {
         )
     }
 
-    fn changed(&self) -> bool {
-        self.changed.load(Ordering::Acquire)
-    }
-
     fn finish(self) -> bool {
         self.stop.store(true, Ordering::Release);
         // Idle polling backs off, but completing a compile must never wait for
@@ -345,33 +386,197 @@ impl ChangeMonitor {
 
 pub(crate) fn run(request: WatchRequest) -> ! {
     let WatchRequest {
-        mut host,
+        host,
         compile_options,
+        source_path,
+        error_format,
+        mode,
+    } = request;
+    let backend = DirectBackend {
+        host,
+        compile_options,
+        error_format,
+        first_cycle: true,
+    };
+    match run_backend(
+        WatchLoopRequest {
+            source_path,
+            error_format,
+            mode,
+        },
+        backend,
+    ) {
+        WatchTermination::Direct => unreachable!("direct watch cannot fall back"),
+        WatchTermination::Exit(code) => std::process::exit(code),
+    }
+}
+
+pub(crate) struct WatchLoopRequest {
+    pub(crate) source_path: String,
+    pub(crate) error_format: ErrorFormat,
+    pub(crate) mode: WatchMode,
+}
+
+struct DirectBackend {
+    host: FilesystemCompilerHost,
+    compile_options: CompileOptions,
+    error_format: ErrorFormat,
+    first_cycle: bool,
+}
+
+impl WatchBackend for DirectBackend {
+    fn prepare_each_cycle(&self) -> bool {
+        !self.first_cycle
+    }
+
+    fn prepare(
+        &mut self,
+        _inputs: &[WatchInput],
+        reobserve: bool,
+        _cycle: u64,
+        cancellation: &CompilationCancellation,
+    ) -> BackendPrepare {
+        if !reobserve {
+            self.first_cycle = false;
+            return BackendPrepare::Ready;
+        }
+        let mut result = self
+            .host
+            .reobserve_superseding(&|| cancellation.is_canceled());
+        let mut acquired = false;
+        if result.is_ok() {
+            test_event("reobserve-ok");
+            test_acquire_delay();
+            acquired = true;
+            result = self
+                .host
+                .acquire_reached_toolchain_modules_cancellable(&self.compile_options, cancellation);
+        }
+        match result {
+            Ok(()) => {
+                if acquired && cancellation.is_canceled() {
+                    // The acquisition can finish after the monitor has
+                    // observed a newer revision. Preserve the phase-specific
+                    // protocol milestone before the shared loop discards the
+                    // stale attempt.
+                    test_event("acquire-superseded");
+                }
+                self.first_cycle = false;
+                BackendPrepare::Ready
+            }
+            Err(SourceLoadError::Superseded) if acquired => {
+                test_event("acquire-superseded");
+                BackendPrepare::Superseded
+            }
+            Err(SourceLoadError::Superseded) => BackendPrepare::Superseded,
+            Err(error) => BackendPrepare::Failed(BackendFailure {
+                diagnostic: render_source_load_error(error, self.error_format),
+                inputs: self.host.watch_inputs(),
+                attempted_reads: self.host.attempted_reads().to_vec(),
+            }),
+        }
+    }
+
+    fn inputs(&self) -> Vec<WatchInput> {
+        self.host.watch_inputs()
+    }
+
+    fn attempted_reads(&self) -> Vec<AttemptedRead> {
+        self.host.attempted_reads().to_vec()
+    }
+
+    fn retry_failed_preparation(&self) -> bool {
+        true
+    }
+
+    fn cycle(&mut self, request: WatchCycleRequest<'_>) -> BackendCycle {
+        let WatchCycleRequest {
+            mode,
+            source_path,
+            error_format,
+            cycle,
+            cancellation,
+            inputs,
+        } = request;
+        let source_snapshot = self.host.source_snapshot().clone();
+        let source_infos = source_snapshot
+            .files()
+            .map(|source| (source.file_id, SourceInfo::new(source.source, source.path)))
+            .collect();
+        let diagnostics = DiagnosticOutput::new(error_format, source_infos);
+        let cycle_inputs = inputs;
+        let supersession_inputs = cycle_inputs.clone();
+        let superseded =
+            || cancellation.compilation.is_canceled() || inputs_changed(&supersession_inputs);
+        match mode {
+            WatchMode::Executable { output_path } => executable_status(drive_cycle(CycleRequest {
+                host: &mut self.host,
+                options: &self.compile_options,
+                diagnostics: &diagnostics,
+                source_path,
+                output_path,
+                observation: CycleObservation::Watch {
+                    inputs: cycle_inputs.clone(),
+                    cancellation: cancellation.compilation.clone(),
+                    superseded: &superseded,
+                },
+                announcement: Announcement::Cycle(Instant::now()),
+            }))
+            .into_backend_cycle(),
+            WatchMode::Test(config) => {
+                let Some(run_cancellation) = cancellation.run() else {
+                    return BackendCycle::Canceled;
+                };
+                test_status(test_watch_cycle(TestWatchCycle {
+                    host: &mut self.host,
+                    compile_options: &self.compile_options,
+                    config,
+                    diagnostics: &diagnostics,
+                    source_path,
+                    cycle,
+                    cancellation: run_cancellation,
+                    observation: CycleObservation::Watch {
+                        inputs: cycle_inputs,
+                        cancellation: cancellation.compilation.clone(),
+                        superseded: &superseded,
+                    },
+                }))
+                .into_backend_cycle()
+            }
+        }
+    }
+}
+
+impl CycleStatus {
+    fn into_backend_cycle(self) -> BackendCycle {
+        match self {
+            Self::Completed => BackendCycle::Completed,
+            Self::Failed => BackendCycle::Failed { diagnostic: None },
+            Self::Superseded(boundary) => BackendCycle::Superseded(boundary),
+            Self::Canceled => BackendCycle::Canceled,
+        }
+    }
+}
+
+pub(crate) fn run_backend<B: WatchBackend>(
+    request: WatchLoopRequest,
+    mut backend: B,
+) -> WatchTermination {
+    let WatchLoopRequest {
         source_path,
         error_format,
         mut mode,
     } = request;
+    let mut inputs = backend.inputs();
     let mut needs_reobserve = false;
     let mut cycle: u64 = 0;
     let mut reported_failure: Option<ReportedFailure> = None;
 
     if let WatchMode::Test(_) = &mode {
-        // Once for the process, before anything can spawn: descriptor 3 is
-        // pinned shut so no pipe the standard library opens for its own
-        // bookkeeping can be allocated there and then destroyed by a child's
-        // `dup2` onto the failure channel (`exec::reserve_channel_descriptor`).
-        // Per cycle would be pointless — the reservation is idempotent and
-        // never released — and per spawn would be a race.
         test_mode::reserve_channel_descriptor();
-        // A watch process has no natural end, so being asked to stop IS its
-        // result: it reports the last completed cycle's status rather than
-        // dying of the signal a one-shot run dies of (ADR-0083 §2).
         test_mode::install_watch_signal_exit();
     }
-
     match &mode {
-        // stdout is the event stream in test mode, so the loop's own voice
-        // goes where every other runner notice goes.
         WatchMode::Test(_) => eprintln!("Watching {source_path} for changes"),
         WatchMode::Executable { .. } => println!("Watching {source_path} for changes"),
     }
@@ -379,182 +584,109 @@ pub(crate) fn run(request: WatchRequest) -> ! {
 
     loop {
         let cycle_started = Instant::now();
-        if needs_reobserve {
-            // Observe edits WHILE the cycle re-observes AND acquires: both
-            // halves block on filesystem reads across several waves, and an
-            // edit landing in either must supersede the stale attempt promptly
-            // instead of waiting for compilation proper to notice it
-            // (RUE-1830, RUE-1863). One monitor spans both so the window has
-            // no unobserved seam between them.
-            let stale_inputs = host.watch_inputs();
+        if needs_reobserve || backend.prepare_each_cycle() {
+            let stale_inputs = inputs.clone();
             let cancellation = CompilationCancellation::new();
-            let (monitor, observation_baseline) =
-                ChangeMonitor::start_reobservation(stale_inputs.clone(), cancellation.clone());
-            let superseded = || cancellation.is_canceled();
+            let (monitor, baseline) = if stale_inputs.is_empty() {
+                (None, Vec::new())
+            } else {
+                let (monitor, baseline) =
+                    ChangeMonitor::start_reobservation(stale_inputs.clone(), cancellation.clone());
+                (Some(monitor), baseline)
+            };
             test_event("reobserve-started");
-            let mut phase = ObservationPhase::Reobserve;
-            let mut observed = host.reobserve_superseding(&superseded);
-            if observed.is_ok() {
-                test_event("reobserve-ok");
-                phase = ObservationPhase::Acquire;
-                test_acquire_delay();
-                observed = host
-                    .acquire_reached_toolchain_modules_cancellable(&compile_options, &cancellation);
-            }
-            let monitor_changed = monitor.finish();
-            let changed =
-                monitor_changed || current_observations(&stale_inputs) != observation_baseline;
-            if changed || matches!(&observed, Err(SourceLoadError::Superseded)) {
-                test_event(phase.superseded_event());
-                print_cycle_status(
-                    &mode,
-                    error_format,
-                    format!(
-                        "Watch re-observation superseded after {} ms; a newer source revision is available",
-                        cycle_started.elapsed().as_millis()
-                    ),
-                );
-                // Each phase commits either nothing or one coherent close. Let
-                // the burst settle, then re-observe the exact physical routes
-                // from the newest bytes; `needs_reobserve` remains set.
-                debounce(&stale_inputs);
-                continue;
-            }
-            match observed {
-                Ok(()) => {
-                    test_event("acquire-ok");
-                    // A revision that loads again ends the failure state. The
-                    // next failure is news even if it renders exactly like the
-                    // last one did — reverting to previously broken bytes must
-                    // report, and the fingerprints alone cannot tell that
-                    // revert from a retry, because they are content hashes.
-                    reported_failure = None;
-                }
-                Err(SourceLoadError::Superseded) => {
-                    unreachable!("supersession was handled before source errors")
-                }
-                Err(error) => {
-                    let diagnostic = render_source_load_error(error, error_format);
-                    // Content hashes of the bytes the attempt accepted, on
-                    // the same terms as the closure observation above: a save
-                    // that rewrites a file without changing it compares equal
-                    // and stays suppressed. Deliberately not the modification
-                    // time the accepted-read manifest also carries, which such
-                    // a save moves without producing a revision anyone asked
-                    // to hear about.
-                    //
-                    // Compared borrowed, and copied only by the branch that
-                    // keeps it: this runs four times a second for as long as a
-                    // failure stands, and the suppressed retry is the path
-                    // RUE-2091 exists to keep both quiet and cheap.
-                    let repeat = reported_failure.as_ref().is_some_and(|reported| {
-                        reported.diagnostic == diagnostic
-                            && reported.observation == observation_baseline
-                            && reported.attempted_reads == host.attempted_reads()
-                    });
-                    if repeat {
-                        test_event(phase.repeated_error_event());
-                    } else {
-                        test_event(phase.error_event());
-                        // Diagnostics are stderr's in both formats.
-                        eprintln!("{diagnostic}");
-                        print_cycle_status(
-                            &mode,
-                            error_format,
-                            format!(
-                                "Watch cycle failed after {} ms; {}",
-                                cycle_started.elapsed().as_millis(),
-                                failure_consequence(&mode)
-                            ),
-                        );
-                        reported_failure = Some(ReportedFailure {
-                            diagnostic,
-                            observation: observation_baseline,
-                            attempted_reads: host.attempted_reads().to_vec(),
-                        });
-                    }
-                    thread::sleep(FAILED_REOBSERVE_RETRY);
+            let prepare_cycle = if matches!(mode, WatchMode::Test(_)) {
+                cycle + 1
+            } else {
+                cycle
+            };
+            let prepared =
+                backend.prepare(&stale_inputs, needs_reobserve, prepare_cycle, &cancellation);
+            let monitor_changed = monitor.map(ChangeMonitor::finish).unwrap_or(false);
+            let returned_changed = backend.returned_observations_are_authoritative()
+                && inputs_changed(&backend.inputs());
+            let changed = monitor_changed
+                || (!stale_inputs.is_empty() && current_observations(&stale_inputs) != baseline)
+                || cancellation.is_canceled()
+                || returned_changed;
+            match prepared {
+                BackendPrepare::Terminate(termination) => return termination,
+                BackendPrepare::Superseded if changed => {
+                    test_event("reobserve-superseded");
+                    debounce(&stale_inputs);
+                    inputs = backend.inputs();
                     continue;
+                }
+                BackendPrepare::Superseded => {
+                    test_event("reobserve-superseded");
+                    continue;
+                }
+                BackendPrepare::Failed(_failure) if changed => {
+                    test_event("reobserve-superseded");
+                    debounce(&stale_inputs);
+                    inputs = backend.inputs();
+                    continue;
+                }
+                BackendPrepare::Failed(failure) => {
+                    report_or_suppress_failure(&mode, error_format, &mut reported_failure, failure);
+                    inputs = backend.inputs();
+                    let attempted_reads = backend.attempted_reads();
+                    if backend.retry_failed_preparation() {
+                        thread::sleep(FAILED_REOBSERVE_RETRY);
+                    } else {
+                        wait_for_change(&inputs, &attempted_reads);
+                    }
+                    debounce(&inputs);
+                    needs_reobserve = true;
+                    continue;
+                }
+                BackendPrepare::Ready if changed => {
+                    test_event("reobserve-superseded");
+                    debounce(&stale_inputs);
+                    inputs = backend.inputs();
+                    continue;
+                }
+                BackendPrepare::Ready => {
+                    if needs_reobserve && backend.announces_reobserve_during_prepare() {
+                        test_event("reobserve-ok");
+                    }
+                    test_event("acquire-ok");
+                    reported_failure = None;
                 }
             }
         }
 
-        let inputs = host.watch_inputs();
-        let source_snapshot = host.source_snapshot().clone();
-        let source_infos = source_snapshot
-            .files()
-            .map(|source| (source.file_id, SourceInfo::new(source.source, source.path)))
-            .collect();
-        let diagnostics = DiagnosticOutput::new(error_format, source_infos);
-
-        let cancellation = CompilationCancellation::new();
-        // A test cycle stays abandonable past its compile: one edit cancels
-        // whichever half of the cycle it lands in, so the monitor carries the
-        // authority to kill this cycle's running tests alongside the one that
-        // cancels its compilation (RUE-2023). An executable cycle has no
-        // execution phase and so carries none.
-        let run_cancellation =
-            matches!(mode, WatchMode::Test(_)).then(test_mode::RunCancellation::new);
-        let monitor = ChangeMonitor::start(
-            inputs.clone(),
-            CycleCancellation {
-                compilation: cancellation.clone(),
-                run: run_cancellation.clone(),
-            },
-        );
+        inputs = backend.inputs();
+        let cancellation = CycleCancellation {
+            compilation: CompilationCancellation::new(),
+            run: matches!(mode, WatchMode::Test(_)).then(test_mode::RunCancellation::new),
+        };
+        let monitor = ChangeMonitor::start(inputs.clone(), cancellation.clone());
         test_event("compile-started");
         test_compile_delay();
-        // A cycle is superseded once the monitor has seen an edit, or once a
-        // fresh read of the closure disagrees with what this cycle observed.
-        let superseded = || monitor.changed() || inputs_changed(&inputs);
-        let observation = CycleObservation::Watch {
+        if matches!(mode, WatchMode::Test(_)) {
+            cycle += 1;
+        }
+        let result = backend.cycle(WatchCycleRequest {
+            mode: &mut mode,
+            source_path: &source_path,
+            error_format,
+            cycle,
+            cancellation: &cancellation,
             inputs: inputs.clone(),
-            cancellation,
-            superseded: &superseded,
-        };
-        let status = match &mut mode {
-            WatchMode::Executable { output_path } => executable_status(drive_cycle(CycleRequest {
-                host: &mut host,
-                options: &compile_options,
-                diagnostics: &diagnostics,
-                source_path: &source_path,
-                output_path,
-                observation,
-                announcement: Announcement::Cycle(cycle_started),
-            })),
-            WatchMode::Test(config) => {
-                cycle += 1;
-                test_status(test_watch_cycle(TestWatchCycle {
-                    host: &mut host,
-                    compile_options: &compile_options,
-                    config,
-                    diagnostics: &diagnostics,
-                    source_path: &source_path,
-                    cycle,
-                    cancellation: run_cancellation
-                        .as_ref()
-                        .expect("a test cycle always holds a run cancellation"),
-                    observation,
-                }))
-            }
-        };
+        });
+        let publication_changed = matches!(
+            &result,
+            BackendCycle::Superseded(Supersession::AtPublication)
+        );
+        let monitor_changed = monitor.finish();
+        test_boundary_delay();
+        let observed_changed = inputs_changed(&inputs);
+        let changed = watch_cycle_changed(publication_changed, monitor_changed, observed_changed);
 
-        let mut publication_changed = false;
-        match status {
-            CycleStatus::Completed => {
-                // The milestone names the artifact reaching disk, which both
-                // modes do: an executable at the output path, a test image in
-                // the cycle's own run directory. A test cycle's run milestones
-                // are `test_mode`'s and were emitted inside it.
-                test_event("published");
-                announce_watching(&mode);
-            }
-            CycleStatus::Superseded(boundary) => {
-                // The compile monitor and the publication guard both refuse to
-                // publish a stale revision; the milestone says which of them
-                // caught it, and only the publication guard's answer feeds the
-                // cycle-boundary decision below.
-                publication_changed = matches!(boundary, Supersession::AtPublication);
+        match result {
+            BackendCycle::Terminate(termination) => return termination,
+            BackendCycle::Superseded(boundary) => {
                 test_event(match boundary {
                     Supersession::AtPublication => "canceled-at-publication",
                     Supersession::BeforePublication => "canceled-before-publication",
@@ -568,7 +700,7 @@ pub(crate) fn run(request: WatchRequest) -> ! {
                     ),
                 );
             }
-            CycleStatus::Canceled => {
+            BackendCycle::Canceled => {
                 test_event("canceled");
                 print_cycle_status(
                     &mode,
@@ -579,43 +711,74 @@ pub(crate) fn run(request: WatchRequest) -> ! {
                     ),
                 );
             }
-            CycleStatus::Failed => {
-                test_event("compile-error");
-                print_cycle_status(
-                    &mode,
-                    error_format,
-                    format!(
-                        "Watch cycle failed after {} ms; {}",
-                        cycle_started.elapsed().as_millis(),
-                        failure_consequence(&mode)
-                    ),
-                );
-                // A failed cycle ends the same way a completed one does: the
-                // loop goes back to waiting, and a person is told so.
+            BackendCycle::Completed if !changed => {
+                test_event("published");
                 announce_watching(&mode);
+            }
+            BackendCycle::Completed => {
+                test_event("canceled-at-publication");
+            }
+            BackendCycle::Failed { diagnostic } => {
+                if let Some(diagnostic) = diagnostic
+                    && !changed
+                {
+                    eprint!("{diagnostic}");
+                }
+                if !changed {
+                    test_event("compile-error");
+                    print_cycle_status(
+                        &mode,
+                        error_format,
+                        format!(
+                            "Watch cycle failed after {} ms; {}",
+                            cycle_started.elapsed().as_millis(),
+                            failure_consequence(&mode)
+                        ),
+                    );
+                    announce_watching(&mode);
+                }
             }
         }
 
-        let monitor_changed = monitor.finish();
-        // The monitor has stopped and nothing observes the inputs again until
-        // the trailing check below. That gap is where RUE-1783 lived, and it is
-        // normally too short to hit deliberately -- so the harness can widen it
-        // to make the race reproducible instead of hoping a loaded runner
-        // supplies it.
-        test_boundary_delay();
-        let changed = watch_cycle_changed(
-            publication_changed,
-            monitor_changed,
-            inputs_changed(&inputs),
-        );
+        inputs = backend.inputs();
         match cycle_boundary_action(changed, monitor_changed) {
-            CycleBoundary::Wait => wait_for_change(&inputs),
+            CycleBoundary::Wait => wait_for_change(&inputs, &[]),
             CycleBoundary::Announce => test_event("change-detected"),
             CycleBoundary::AlreadyAnnounced => {}
         }
         debounce(&inputs);
         needs_reobserve = true;
     }
+}
+
+fn report_or_suppress_failure(
+    mode: &WatchMode,
+    format: ErrorFormat,
+    reported: &mut Option<ReportedFailure>,
+    failure: BackendFailure,
+) {
+    let observation = current_observations(&failure.inputs);
+    let repeat = reported.as_ref().is_some_and(|previous| {
+        previous.diagnostic == failure.diagnostic
+            && previous.observation == observation
+            && previous.attempted_reads == failure.attempted_reads
+    });
+    if repeat {
+        test_event("reobserve-error-repeat");
+        return;
+    }
+    test_event("reobserve-error");
+    eprintln!("{}", failure.diagnostic);
+    print_cycle_status(
+        mode,
+        format,
+        format!("Watch cycle failed; {}", failure_consequence(mode)),
+    );
+    *reported = Some(ReportedFailure {
+        diagnostic: failure.diagnostic,
+        observation,
+        attempted_reads: failure.attempted_reads,
+    });
 }
 
 /// What a failed cycle leaves the user with, which is the one thing the two
@@ -791,10 +954,10 @@ fn print_cycle_status(
     }
 }
 
-fn wait_for_change(inputs: &[WatchInput]) {
+fn wait_for_change(inputs: &[WatchInput], attempted_reads: &[AttemptedRead]) {
     let mut poll = PollBackoff::new();
     loop {
-        if inputs_changed(inputs) {
+        if inputs_changed(inputs) || attempted_reads.iter().any(AttemptedRead::changed) {
             test_event("change-detected");
             break;
         }

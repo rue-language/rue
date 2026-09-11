@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 /// The version of the message shapes in this module. It participates in the
 /// service identity, so a client and a service that disagree on it can never
 /// meet on one socket, and the handshake checks it again anyway.
-pub const DAEMON_PROTOCOL_VERSION: u32 = 2;
+pub const DAEMON_PROTOCOL_VERSION: u32 = 3;
 
 /// The largest control frame either side accepts. Control messages are a few
 /// hundred bytes; a frame claiming more than this is a malformed or hostile
@@ -287,6 +287,12 @@ pub struct BuildRequest {
     /// flattened into the internally tagged [`RequestBody`], whose tag is
     /// `kind`.
     pub artifact: BuildKind,
+    /// Requested presentation stages, encoded with the same names accepted
+    /// by the command line. Empty for executable, test, and listing builds.
+    /// Keeping this as data lets the service use the canonical emit pipeline
+    /// instead of maintaining an Air-only special case.
+    #[serde(default)]
+    pub emit_stages: Vec<String>,
     /// The client's invocation directory.
     pub working_directory: String,
     /// The root source as written.
@@ -358,6 +364,44 @@ pub struct BuildReply {
     /// status requests cannot attribute another request's last value.
     pub measurement: Option<RequestMeasurement>,
     pub result: BuildResult,
+    /// Filesystem observations belong to the completed request, including a
+    /// failed or canceled request, so a watch client can recover deleted and
+    /// missing imports without consulting service state.
+    #[serde(default)]
+    pub observations: BuildObservations,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildObservations {
+    pub inputs: Vec<InputRecord>,
+    pub attempted_reads: Vec<AttemptedReadRecord>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttemptedReadRecord {
+    pub requested_path: String,
+    pub outcome: AttemptedReadOutcomeRecord,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AttemptedReadOutcomeRecord {
+    Accepted {
+        canonical_path: String,
+        content_fingerprint: u64,
+    },
+    Failed {
+        reason: String,
+        observed: u64,
+        /// Whether the loader was permitted to inspect the candidate's
+        /// physical contents/metadata. Policy-denied reads remain unprobed.
+        #[serde(default)]
+        probe: bool,
+        /// A canonical policy denial may observe only its symlink route and
+        /// canonical target, never the denied target's contents.
+        #[serde(default)]
+        route_only: bool,
+    },
 }
 
 /// How an accepted build ended. `stderr` is everything the direct compile
@@ -369,6 +413,10 @@ pub struct BuildReply {
 pub enum BuildResult {
     /// The program was rejected or the destination refused; nothing to publish.
     Rejected { stderr: String },
+    /// The retained source revision was accepted and its image compilation
+    /// failed. Watch clients account for this as an attempted cycle so its
+    /// event stream stays aligned with the direct compiler path.
+    CompileRejected { stderr: String },
     /// The executable or test image is linked. `bytes` raw chunk bytes
     /// follow this frame; the client publishes them at `destination` after
     /// revalidating `inputs`, exactly as a watch cycle does. A test image
@@ -682,6 +730,7 @@ mod tests {
             body: RequestBody::Build(Box::new(BuildRequest {
                 measure_performance: false,
                 artifact: BuildKind::TestImage,
+                emit_stages: Vec::new(),
                 working_directory: "/w".into(),
                 root_source: "main.rue".into(),
                 output_path: "/w/.run/image".into(),

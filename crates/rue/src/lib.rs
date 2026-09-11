@@ -19,8 +19,9 @@ pub use running_image::{
     RunningImageIdentityError, RunningImageIdentityScheme, running_image_identity,
 };
 pub use source_loader::{
-    AttemptedRead, HermeticDenialError, SourceLoadError, ToolchainIntegrityError, WatchFingerprint,
-    WatchInput, WatchInputParts, watch_input_fingerprints, watch_inputs_changed,
+    AttemptedRead, AttemptedReadOutcomeParts, AttemptedReadParts, HermeticDenialError,
+    SourceLoadError, SourceLoadFailure, ToolchainIntegrityError, WatchFingerprint, WatchInput,
+    WatchInputParts, watch_input_fingerprints, watch_inputs_changed,
     watch_inputs_changed_with_reader, with_import_migration_helps,
     with_import_migration_helps_batches,
 };
