@@ -708,6 +708,37 @@ mod tests {
         result.expect("execute linked Rue program")
     }
 
+    /// The embedded debug runtime carries the allocator's exact layout checks
+    /// even though the runtime itself is compiled with `-Copt-level=z`. A real
+    /// linked Rue program therefore traps before a wrong-size or
+    /// wrong-alignment free can corrupt allocator state.
+    #[cfg(all(unix, debug_assertions))]
+    #[test]
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_allocator_layout_mismatch_traps_before_free() {
+        for (label, source) in [
+            (
+                "same-class-size",
+                "fn main() { checked { let p: ptr mut u8 = @alloc(63, 1); @free(p, 64, 1); } }",
+            ),
+            (
+                "wrong-class-size",
+                "fn main() { checked { let p: ptr mut u8 = @alloc(4004, 1); @free(p, 3, 1); } }",
+            ),
+            (
+                "invalid-alignment",
+                "fn main() { checked { let p: ptr mut u8 = @alloc(64, 8); @free(p, 64, 16); } }",
+            ),
+        ] {
+            let snapshot = SourceSnapshot::single("allocator-layout.rue", source)
+                .expect("allocator mismatch fixture snapshot");
+            let output = compile_snapshot(&snapshot, &CompileOptions::default())
+                .expect("allocator mismatch fixture links");
+            let execution = execute_compiled_output(&output, label);
+            assert_eq!(execution.status.code(), Some(101), "{label}: {execution:?}");
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]

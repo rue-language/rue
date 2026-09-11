@@ -33,6 +33,14 @@ scripts/rue storage reset /exact/root # full Buck reset of one registered worktr
 scripts/rue cache install            # install the private BuildBuddy cache config
 ```
 
+Buck's default target platform is the debug build; use
+`--target-platforms //platforms:debug` to select it explicitly. The optimized
+compiler and embedded runtime are built with
+`--target-platforms //platforms:release`. The runtime allocator's debug layout
+checks follow this Buck build mode, independent of any Rue source `-O` option:
+default/debug embedded runtimes check exact allocation layouts, while release
+embedded runtimes omit that bookkeeping.
+
 For direct compiler invocations, resolve the binary through `scripts/rue-bin`:
 
 ```bash

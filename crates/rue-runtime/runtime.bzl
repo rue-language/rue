@@ -12,6 +12,16 @@ RUNTIME_COMMON_RUSTC_FLAGS = [
     "-Crelocation-model=static",
 ]
 
+# The embedded runtime is always size-optimized, which otherwise leaves the
+# allocator's debug-only layout checks disabled even in the compiler's default
+# build mode. Keep this separate from the shared runtime flags: those flags
+# also compile zmij, while only the allocator needs this instrumentation.
+RUNTIME_ALLOCATOR_RUSTC_FLAGS = select({
+    "root//constraints:release": ["-Cdebug-assertions=no"],
+    "root//constraints:debug": ["-Cdebug-assertions=yes"],
+    "DEFAULT": ["-Cdebug-assertions=yes"],
+})
+
 # AArch64's LSE atomics use a compiler-rt runtime-detection symbol that Rue
 # does not provide. These flags must not leak into the x86-64 build.
 RUNTIME_AARCH64_RUSTC_FLAGS = [
@@ -77,6 +87,7 @@ def _runtime_staticlib_impl(ctx: AnalysisContext) -> list[Provider]:
         target_sysroot,
     )
     allocator_args.add(ctx.attrs.rustc_flags)
+    allocator_args.add(ctx.attrs.allocator_rustc_flags)
     # Generic allocator code is instantiated into the runtime static library,
     # including source locations used by panic paths. The exported source
     # artifact lives under checkout-specific buck-out roots, so give rustc a
@@ -174,6 +185,7 @@ _runtime_staticlib = rule(
     impl = _runtime_staticlib_impl,
     attrs = {
         "allocator_crate_root": attrs.source(),
+        "allocator_rustc_flags": attrs.list(attrs.arg()),
         "abi_crate_root": attrs.source(),
         "crate_root": attrs.source(),
         "srcs": attrs.list(attrs.source()),
@@ -201,6 +213,7 @@ def runtime_staticlib(name: str, target_triple: str, target_std: str, visibility
         target_std = target_std,
         target_triple = target_triple,
         rustc_flags = flags,
+        allocator_rustc_flags = RUNTIME_ALLOCATOR_RUSTC_FLAGS,
         zmij_crate_root = "//third-party:zmij-0.1.7-lib.rs",
         zmij_traits_source = "//third-party:zmij-0.1.7-traits.rs",
         visibility = visibility,
