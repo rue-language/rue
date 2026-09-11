@@ -9,6 +9,11 @@ pub enum RootedParkOutcome {
     Ready,
     Errors(CompileErrors),
     Parked(Box<crate::ParkedToolchainModules>),
+    /// The caller's cancellation token was canceled while the probe ran. The
+    /// probe published nothing about the program: neither readiness nor a
+    /// park nor diagnostics, so the caller must not treat the request as
+    /// settled (RUE-2174).
+    Canceled,
 }
 
 #[derive(Clone)]

@@ -982,6 +982,7 @@ fn absent_trusted_option_parks_the_rooted_attempt_with_exact_demand_and_anchor()
         RootedParkOutcome::Errors(errors) => {
             panic!("expected a trusted-toolchain park, got errors: {errors:?}")
         }
+        RootedParkOutcome::Canceled => panic!("an uncanceled probe cannot report cancellation"),
     };
 
     // Exact demand set: exactly the trusted std `Option` module.
@@ -1003,6 +1004,160 @@ fn absent_trusted_option_parks_the_rooted_attempt_with_exact_demand_and_anchor()
         !session.queries.revisioned.any_body_transaction_terminal(),
         "the park must precede any body transaction",
     );
+}
+
+/// RUE-2174: the toolchain probe runs under the request's own token. A
+/// request canceled before admission or during its body-closure work settles
+/// nothing — no terminal, no park, no diagnostics — and the next probe over
+/// the same session parks with the exact demand a fresh session would.
+#[test]
+fn canceled_toolchain_probe_settles_nothing_and_recovers() {
+    let source = snapshot(
+        &[(
+            1,
+            "/p/main.rue",
+            "main.rue",
+            "fn main() -> i32 { let _ = @parse_i64(\"1\"); 0 }",
+        )],
+        1,
+    );
+    let mut session = CompilerSession::new();
+    session.update(&source).into_result().unwrap();
+    let options = CompileOptions::default();
+
+    // Before admission.
+    let canceled = rue_query::CancellationToken::new();
+    canceled.cancel();
+    assert!(matches!(
+        session.rooted_or_toolchain_park_with_cancellation(&options, canceled),
+        RootedParkOutcome::Canceled
+    ));
+    assert!(!session.queries.revisioned.any_body_transaction_terminal());
+
+    // During the body-closure work every semantic consumer shares.
+    let token = rue_query::CancellationToken::new();
+    crate::session::set_rooted_cancellation_tripwire(Some((
+        token.clone(),
+        crate::session::RootedCancellationSite::BodyClosure,
+    )));
+    let outcome = session.rooted_or_toolchain_park_with_cancellation(&options, token.clone());
+    crate::session::set_rooted_cancellation_tripwire(None);
+    assert!(token.is_canceled(), "the tripwire must have fired");
+    assert!(matches!(outcome, RootedParkOutcome::Canceled));
+    assert!(!session.queries.revisioned.any_body_transaction_terminal());
+
+    // Recovery: a live request parks with exactly the demand a fresh session
+    // reports, so the canceled attempts left no park attached and no state
+    // behind.
+    let park = match session
+        .rooted_or_toolchain_park_with_cancellation(&options, rue_query::CancellationToken::new())
+    {
+        RootedParkOutcome::Parked(park) => park,
+        RootedParkOutcome::Ready => panic!("expected a trusted-toolchain park"),
+        RootedParkOutcome::Errors(errors) => panic!("expected a park, got errors: {errors:?}"),
+        RootedParkOutcome::Canceled => panic!("a live token cannot report cancellation"),
+    };
+    let demands: Vec<&str> = park
+        .demands()
+        .iter()
+        .map(crate::TrustedToolchainModuleDemand::logical_path)
+        .collect();
+    assert_eq!(demands, vec![crate::OPTION_MODULE_LOGICAL_PATH]);
+    assert_eq!(park.requesters().len(), 1);
+    assert_eq!(park.requesters()[0].name(), "main");
+}
+
+/// RUE-2174: a listing canceled before admission or during its closure
+/// analysis reports neither a partial inventory nor diagnostics, and the next
+/// listing over the same session is byte-for-byte the fresh one: every test
+/// listed, the broken one's diagnostics beside it.
+#[test]
+fn canceled_test_inventory_reports_nothing_and_recovers() {
+    let source = snapshot(
+        &[(
+            1,
+            "/p/main.rue",
+            "main.rue",
+            "fn main() -> i32 { 0 }\n\
+             test \"broken\" { let _bad: i32 = true; }\n\
+             test \"fine\" { }\n",
+        )],
+        1,
+    );
+    let options = test_declaration_options(crate::RootSelection::Tests);
+    let mut session = CompilerSession::new();
+    session.update(&source).into_result().unwrap();
+
+    let canceled = crate::unstable::CompilationCancellation::new();
+    canceled.cancel();
+    assert!(matches!(
+        crate::unstable::cancellable_test_inventory(&mut session, &options, canceled),
+        crate::unstable::CancellableTestListingOutcome::Canceled
+    ));
+
+    let cancellation = crate::unstable::CompilationCancellation::new();
+    let probe = rue_query::CancellationToken::new();
+    crate::session::set_rooted_cancellation_tripwire(Some((
+        probe.clone(),
+        crate::session::RootedCancellationSite::BodyClosure,
+    )));
+    // The tripwire cancels the query token; the host-facing handle observes it
+    // through the same shared state.
+    let outcome = crate::unstable::cancellable_test_inventory(
+        &mut session,
+        &options,
+        cancellation_from_token(&probe),
+    );
+    crate::session::set_rooted_cancellation_tripwire(None);
+    assert!(probe.is_canceled(), "the tripwire must have fired");
+    assert!(matches!(
+        outcome,
+        crate::unstable::CancellableTestListingOutcome::Canceled
+    ));
+    drop(cancellation);
+
+    let listed = match crate::unstable::cancellable_test_inventory(
+        &mut session,
+        &options,
+        crate::unstable::CompilationCancellation::new(),
+    ) {
+        crate::unstable::CancellableTestListingOutcome::Completed(listing) => listing,
+        crate::unstable::CancellableTestListingOutcome::Errors(errors) => {
+            panic!("a live listing analyzes: {errors:?}")
+        }
+        crate::unstable::CancellableTestListingOutcome::Canceled => {
+            panic!("a live token cannot report cancellation")
+        }
+    };
+    let mut fresh = CompilerSession::new();
+    fresh.update(&source).into_result().unwrap();
+    let expected = crate::unstable::test_inventory(&mut fresh, &options).unwrap();
+    assert_eq!(listed.inventory, expected.inventory);
+    assert_eq!(
+        listed.failure_diagnostics.as_slice(),
+        expected.failure_diagnostics.as_slice()
+    );
+    let ids = listed
+        .inventory
+        .entries
+        .iter()
+        .map(|entry| entry.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec!["main.rue::broken", "main.rue::fine"]);
+    assert!(
+        listed
+            .failure_diagnostics
+            .iter()
+            .any(|error| matches!(error.kind, rue_error::ErrorKind::TypeMismatch { .. }))
+    );
+}
+
+/// The host-facing cancellation handle over a query token a test already
+/// holds, so a tripwire armed on the token is observed by the request.
+fn cancellation_from_token(
+    token: &rue_query::CancellationToken,
+) -> crate::unstable::CompilationCancellation {
+    crate::unstable::CompilationCancellation::from_token_for_test(token.clone())
 }
 
 #[test]
@@ -1033,6 +1188,7 @@ fn already_reached_parks_batch_into_one_park_with_unioned_demands_and_anchors() 
         RootedParkOutcome::Errors(errors) => {
             panic!("expected a batched park, got errors: {errors:?}")
         }
+        RootedParkOutcome::Canceled => panic!("an uncanceled probe cannot report cancellation"),
     };
 
     // Union of absent modules across both already-reached bodies, sorted.

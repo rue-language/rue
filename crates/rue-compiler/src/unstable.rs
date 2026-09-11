@@ -540,12 +540,17 @@ pub use crate::session::{
 };
 
 /// Run the production body-closure root without constructing a presentation
-/// artifact.
-pub fn rooted_or_toolchain_park(
+/// artifact, under the request's cancellation (RUE-2174): a host's
+/// acquisition loop hands its admitted request's token to the semantic probe
+/// itself, so an abandoned request stops inside a long body-closure analysis
+/// rather than only between acquisition rounds. A canceled probe reports
+/// [`RootedParkOutcome::Canceled`] and settles nothing.
+pub fn rooted_or_toolchain_park_with_cancellation(
     session: &mut crate::CompilerSession,
     options: &crate::CompileOptions,
+    cancellation: &CompilationCancellation,
 ) -> RootedParkOutcome {
-    session.rooted_or_toolchain_park(options)
+    session.rooted_or_toolchain_park_with_cancellation(options, cancellation.token.clone())
 }
 
 /// Discard protocol-only state from a superseded filesystem observation while
@@ -801,6 +806,45 @@ pub fn test_inventory(
     })
 }
 
+/// Host-facing outcome of a cancellable listing (RUE-2174).
+///
+/// The counterpart of [`CancellableTestImageOutcome`] for `rue test --list`:
+/// a retained host answers the listing under the request's token, and a
+/// request the client abandoned reports neither an inventory nor diagnostics.
+pub enum CancellableTestListingOutcome {
+    Completed(TestListing),
+    Errors(crate::CompileErrors),
+    Canceled,
+}
+
+/// [`test_inventory`] with cooperative cancellation (RUE-2174). The listing's
+/// semantics are unchanged: a broken test is still listed beside its
+/// diagnostics, and only a request refused before any inventory existed is
+/// an error.
+pub fn cancellable_test_inventory(
+    session: &mut crate::CompilerSession,
+    options: &crate::CompileOptions,
+    cancellation: CompilationCancellation,
+) -> CancellableTestListingOutcome {
+    if let Err(errors) = require_test_root_selection(options) {
+        return CancellableTestListingOutcome::Errors(errors);
+    }
+    match session.cancellable_test_inventory(options, cancellation.token) {
+        crate::session::TestInventoryOutcome::Listed(listing) => {
+            CancellableTestListingOutcome::Completed(TestListing {
+                inventory: TestInventory {
+                    entries: listing.entries,
+                },
+                failure_diagnostics: listing.diagnostics,
+            })
+        }
+        crate::session::TestInventoryOutcome::Errors(errors) => {
+            CancellableTestListingOutcome::Errors(errors)
+        }
+        crate::session::TestInventoryOutcome::Canceled => CancellableTestListingOutcome::Canceled,
+    }
+}
+
 /// One test excluded from a test image because its closure failed to analyze.
 ///
 /// The test keeps its `ordinal` — ordinals are the inventory's own indices, so
@@ -1017,6 +1061,13 @@ pub struct CompilationCancellation {
 impl CompilationCancellation {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Wrap a query token a test already holds, so a tripwire armed on that
+    /// token is the cancellation the host-facing request observes.
+    #[cfg(test)]
+    pub(crate) fn from_token_for_test(token: rue_query::CancellationToken) -> Self {
+        Self { token }
     }
 
     pub fn cancel(&self) {
@@ -1428,9 +1479,24 @@ impl crate::CompilerSession {
         &mut self,
         request: PresentationBatchRequest<'_>,
     ) -> Result<Vec<PresentationOutput>, crate::CompileErrors> {
+        self.present_many_with_cancellation(request, rue_query::CancellationToken::new())
+            .map_err(|control| crate::session::pipeline_control_errors("presentation", control))
+    }
+
+    /// [`Self::unstable_present_many`] under a caller's cancellation token
+    /// (RUE-2174). This is the one presentation implementation: the CFG-side
+    /// and backend families each run their rooted request under the token, so
+    /// an abandoned `--emit` request stops inside that work rather than after
+    /// it, and the uncancellable facade above is this with a token nobody can
+    /// cancel.
+    pub(crate) fn present_many_with_cancellation(
+        &mut self,
+        request: PresentationBatchRequest<'_>,
+        cancellation: rue_query::CancellationToken,
+    ) -> Result<Vec<PresentationOutput>, crate::session::PipelineRequestControl> {
         let invalid_input = |message: String| {
-            crate::CompileErrors::from(crate::CompileError::without_span(
-                crate::ErrorKind::InvalidCompilerInput(message),
+            crate::session::PipelineRequestControl::Compile(crate::CompileErrors::from(
+                crate::CompileError::without_span(crate::ErrorKind::InvalidCompilerInput(message)),
             ))
         };
         let program = self.published_owner().cloned().ok_or_else(|| {
@@ -1527,7 +1593,9 @@ impl crate::CompilerSession {
                     }
                 }
                 PresentationStage::Rir => {
-                    let rir = self.canonical_rir()?;
+                    let rir = self
+                        .canonical_rir()
+                        .map_err(crate::session::PipelineRequestControl::Compile)?;
                     let order = rir.presentation_order(request.file_order.iter().copied());
                     write!(
                         &mut text,
@@ -1547,7 +1615,11 @@ impl crate::CompilerSession {
                 | PresentationStage::RegAlloc
                 | PresentationStage::Asm => {
                     if codegen.is_none() {
-                        codegen = Some(self.rooted_codegen(request.options, backend_request)?);
+                        codegen = Some(self.rooted_codegen_with_cancellation(
+                            request.options,
+                            backend_request,
+                            cancellation.clone(),
+                        )?);
                     }
                     let rooted = codegen.as_ref().expect("computed above");
                     warnings = rooted.warnings.clone();
@@ -1560,7 +1632,8 @@ impl crate::CompilerSession {
                 | PresentationStage::StackFrame
                 | PresentationStage::Abi => {
                     if rooted_cfg.is_none() {
-                        rooted_cfg = Some(self.rooted_cfg(request.options)?);
+                        rooted_cfg =
+                            Some(self.rooted_cfg_request(request.options, cancellation.clone())?);
                     }
                     let rooted = rooted_cfg.as_ref().expect("computed above");
                     warnings = rooted.warnings.clone();
@@ -1581,6 +1654,32 @@ impl crate::CompilerSession {
             outputs.push(PresentationOutput { text, warnings });
         }
         Ok(outputs)
+    }
+}
+
+/// Host-facing outcome of a cancellable presentation batch (RUE-2174).
+pub enum CancellablePresentationOutcome {
+    Completed(Vec<PresentationOutput>),
+    Errors(crate::CompileErrors),
+    Canceled,
+}
+
+/// [`crate::CompilerSession::unstable_present_many`] with cooperative
+/// cancellation (RUE-2174), for a retained host whose analysis-only request
+/// can be abandoned while its CFG-side or backend family is being computed.
+pub fn cancellable_present_many(
+    session: &mut crate::CompilerSession,
+    request: PresentationBatchRequest<'_>,
+    cancellation: CompilationCancellation,
+) -> CancellablePresentationOutcome {
+    match session.present_many_with_cancellation(request, cancellation.token) {
+        Ok(outputs) => CancellablePresentationOutcome::Completed(outputs),
+        Err(crate::session::PipelineRequestControl::Abort(rue_query::QueryAbort::Canceled)) => {
+            CancellablePresentationOutcome::Canceled
+        }
+        Err(control) => CancellablePresentationOutcome::Errors(
+            crate::session::pipeline_control_errors("presentation", control),
+        ),
     }
 }
 
@@ -1746,6 +1845,91 @@ mod codegen_unit_tests {
 
     fn borrow_accessor_options() -> crate::CompileOptions {
         crate::CompileOptions::default()
+    }
+
+    /// RUE-2174: a presentation canceled before admission, during its
+    /// body-closure work, during its CFG batch, or inside the backend kernel
+    /// reports nothing, and the next presentation over the same session equals
+    /// a fresh session's.
+    #[test]
+    fn canceled_presentation_reports_nothing_and_recovers() {
+        let snapshot = crate::SourceSnapshot::single(
+            "main.rue",
+            "fn add(x: i32) -> i32 { x + 1 } fn main() -> i32 { add(41) }",
+        )
+        .unwrap();
+        let options = crate::CompileOptions::default();
+        let order = snapshot
+            .files()
+            .map(|file| file.file_id)
+            .collect::<Vec<_>>();
+        let mut session = crate::CompilerSession::new();
+        crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
+        let request = |stages: &'static [PresentationStage]| PresentationBatchRequest {
+            stages,
+            options: &options,
+            file_order: &order,
+        };
+        const CFG_SIDE: &[PresentationStage] = &[PresentationStage::Air];
+        const BACKEND: &[PresentationStage] = &[PresentationStage::Asm];
+
+        let canceled = CompilationCancellation::new();
+        canceled.cancel();
+        assert!(matches!(
+            cancellable_present_many(&mut session, request(CFG_SIDE), canceled),
+            CancellablePresentationOutcome::Canceled
+        ));
+
+        for site in [
+            crate::session::RootedCancellationSite::BodyClosure,
+            crate::session::RootedCancellationSite::CfgBatch,
+        ] {
+            let token = rue_query::CancellationToken::new();
+            crate::session::set_rooted_cancellation_tripwire(Some((token.clone(), site)));
+            let outcome = cancellable_present_many(
+                &mut session,
+                request(CFG_SIDE),
+                CompilationCancellation::from_token_for_test(token.clone()),
+            );
+            crate::session::set_rooted_cancellation_tripwire(None);
+            assert!(token.is_canceled(), "the {site:?} tripwire must have fired");
+            assert!(
+                matches!(outcome, CancellablePresentationOutcome::Canceled),
+                "a request canceled at {site:?} reports cancellation"
+            );
+        }
+
+        let token = rue_query::CancellationToken::new();
+        crate::codegen_query::set_codegen_cancellation_tripwire(Some((token.clone(), 1)));
+        let outcome = cancellable_present_many(
+            &mut session,
+            request(BACKEND),
+            CompilationCancellation::from_token_for_test(token.clone()),
+        );
+        crate::codegen_query::set_codegen_cancellation_tripwire(None);
+        assert!(token.is_canceled(), "the backend tripwire must have fired");
+        assert!(matches!(outcome, CancellablePresentationOutcome::Canceled));
+
+        let mut fresh = crate::CompilerSession::new();
+        crate::publish_test_snapshot(&mut fresh, &snapshot).unwrap();
+        for stages in [CFG_SIDE, BACKEND] {
+            let recovered = match cancellable_present_many(
+                &mut session,
+                request(stages),
+                CompilationCancellation::new(),
+            ) {
+                CancellablePresentationOutcome::Completed(outputs) => outputs,
+                CancellablePresentationOutcome::Errors(errors) => {
+                    panic!("a live presentation renders: {errors:?}")
+                }
+                CancellablePresentationOutcome::Canceled => {
+                    panic!("a live token cannot report cancellation")
+                }
+            };
+            let expected = fresh.unstable_present_many(request(stages)).unwrap();
+            assert_eq!(recovered, expected);
+            assert!(!recovered[0].as_str().is_empty());
+        }
     }
 
     /// RUE-1728: the backend stages are projections of one code generation, so

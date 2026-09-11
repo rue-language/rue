@@ -8,15 +8,16 @@ use std::time::{Duration, Instant, SystemTime};
 use ahash::{AHashMap, AHashSet};
 use rue_compiler::unstable::TestCandidateOutcome;
 use rue_compiler::unstable::{
-    AcceptedImportSource, DiscoverySourceAssembler, ImportDemandFrontier, ImportDemandMode,
-    ImportDiscoveryPlan, ImportDiscoveryRequest, ImportDiscoveryWave, ImportInputRevision,
-    ImportObservation, ImportObservationStatus, RootedParkOutcome, TrustedSuccessorDelta,
-    abort_import_input_request, begin_import_input_request, begin_import_wave_with_accepted_reads,
-    close_import_discovery_successor, close_import_input_request, closed_discovery_continuation,
-    discovery_attempt, extend_import_wave, import_demand_frontier_for_roots,
-    import_observation_ledger, plan_delta_roots, plan_round_roots,
-    publish_import_observation_batch, publish_import_wave, publish_trusted_toolchain_successor,
-    rooted_or_toolchain_park, stage_import_discovery_successor, stage_import_input_request,
+    AcceptedImportSource, CompilationCancellation, DiscoverySourceAssembler, ImportDemandFrontier,
+    ImportDemandMode, ImportDiscoveryPlan, ImportDiscoveryRequest, ImportDiscoveryWave,
+    ImportInputRevision, ImportObservation, ImportObservationStatus, RootedParkOutcome,
+    TrustedSuccessorDelta, abort_import_input_request, begin_import_input_request,
+    begin_import_wave_with_accepted_reads, close_import_discovery_successor,
+    close_import_input_request, closed_discovery_continuation, discovery_attempt,
+    extend_import_wave, import_demand_frontier_for_roots, import_observation_ledger,
+    plan_delta_roots, plan_round_roots, publish_import_observation_batch, publish_import_wave,
+    publish_trusted_toolchain_successor, rooted_or_toolchain_park_with_cancellation,
+    stage_import_discovery_successor, stage_import_input_request,
 };
 #[cfg(test)]
 use rue_compiler::unstable::{
@@ -1041,15 +1042,44 @@ pub enum SourceLoadError {
 #[derive(Clone, Copy, Default)]
 struct DiscoveryControl<'a> {
     supersession: Option<&'a dyn Fn() -> bool>,
+    /// The admitted request's cancellation, when the caller has one. Every
+    /// checkpoint observes it beside the supersession probe, and the semantic
+    /// probe inside toolchain acquisition runs under its token, so a canceled
+    /// request stops inside a long body-closure analysis rather than only
+    /// between acquisition rounds (RUE-2174).
+    cancellation: Option<&'a CompilationCancellation>,
 }
 
 impl<'a> DiscoveryControl<'a> {
     fn superseding(supersession: Option<&'a dyn Fn() -> bool>) -> Self {
-        Self { supersession }
+        Self {
+            supersession,
+            cancellation: None,
+        }
+    }
+
+    fn cancellable(cancellation: &'a CompilationCancellation) -> Self {
+        Self {
+            supersession: None,
+            cancellation: Some(cancellation),
+        }
     }
 
     fn checkpoint(self) -> Result<(), SourceLoadError> {
+        if self
+            .cancellation
+            .is_some_and(CompilationCancellation::is_canceled)
+        {
+            return Err(SourceLoadError::Superseded);
+        }
         check_supersession(self.supersession)
+    }
+
+    /// The token the semantic probe runs under: the request's own when the
+    /// caller supplied one, otherwise one nobody can cancel, which is exactly
+    /// the one-shot driver's uncancellable probe.
+    fn probe_cancellation(self) -> CompilationCancellation {
+        self.cancellation.cloned().unwrap_or_default()
     }
 }
 
@@ -2450,40 +2480,65 @@ pub(crate) fn acquire_reached_toolchain_modules(
     result: &mut ImportDiscoveryResult,
     options: &CompileOptions,
 ) -> Result<(), SourceLoadError> {
-    acquire_reached_toolchain_modules_superseding(result, options, None)
+    acquire_reached_toolchain_modules_inner(result, options, DiscoveryControl::default())
+        .map_err(prepare_source_load_error)
 }
 
-/// [`acquire_reached_toolchain_modules`] under a caller-owned edit-supersession
-/// probe (RUE-1863).
+/// [`acquire_reached_toolchain_modules`] under a caller-owned cancellation
+/// (RUE-1863, RUE-2174).
 ///
-/// Acquisition blocks on demand reads and on a multi-wave trusted re-close, so
-/// a watch cycle needs the same prompt supersession RUE-1830 gave
+/// Acquisition blocks on demand reads, on a multi-wave trusted re-close, and
+/// on the semantic probe that discovers each round's demands, so a watch cycle
+/// or a service request needs the same prompt abandonment RUE-1830 gave
 /// re-observation. Each round is a transaction: the demand reads land in a
 /// CLONE of the assembler, and the host's committed state — snapshot, manifest,
 /// revision, witness, assembler — is replaced only after the re-close returns.
 /// The compiler may provisionally stage that successor while the re-close runs,
-/// but a supersession before close aborts the import-input request, restores the
-/// session's committed selectors, and leaves every host field unchanged.
+/// but a cancellation before close aborts the import-input request, restores
+/// the session's committed selectors, and leaves every host field unchanged.
+/// The semantic probe itself runs under the request's token, so a cancellation
+/// during a long body-closure analysis stops there and settles nothing; it
+/// reports [`SourceLoadError::Superseded`] like every other checkpoint.
 ///
 /// A successful close is the commit boundary. The infallible host assignments
-/// then run to completion, so supersession observed afterward keeps the new
+/// then run to completion, so a cancellation observed afterward keeps the new
 /// session and host close coherent rather than rolling either half back.
-/// `None` keeps every check a no-op for the one-shot driver.
-pub(crate) fn acquire_reached_toolchain_modules_superseding(
+pub(crate) fn acquire_reached_toolchain_modules_cancellable(
     result: &mut ImportDiscoveryResult,
     options: &CompileOptions,
-    supersession: Option<&dyn Fn() -> bool>,
+    cancellation: &CompilationCancellation,
 ) -> Result<(), SourceLoadError> {
-    acquire_reached_toolchain_modules_superseding_inner(result, options, supersession)
-        .map_err(prepare_source_load_error)
+    acquire_reached_toolchain_modules_inner(
+        result,
+        options,
+        DiscoveryControl::cancellable(cancellation),
+    )
+    .map_err(prepare_source_load_error)
 }
 
-fn acquire_reached_toolchain_modules_superseding_inner(
+/// Acquisition under a bare supersession probe, for the loader's own tests of
+/// the round transaction: they trip the probe at counted checkpoints, which a
+/// token cannot express. Production callers hold a request token and use
+/// [`acquire_reached_toolchain_modules_cancellable`].
+#[cfg(test)]
+fn acquire_reached_toolchain_modules_superseding(
     result: &mut ImportDiscoveryResult,
     options: &CompileOptions,
     supersession: Option<&dyn Fn() -> bool>,
 ) -> Result<(), SourceLoadError> {
-    let control = DiscoveryControl::superseding(supersession);
+    acquire_reached_toolchain_modules_inner(
+        result,
+        options,
+        DiscoveryControl::superseding(supersession),
+    )
+    .map_err(prepare_source_load_error)
+}
+
+fn acquire_reached_toolchain_modules_inner(
+    result: &mut ImportDiscoveryResult,
+    options: &CompileOptions,
+    control: DiscoveryControl<'_>,
+) -> Result<(), SourceLoadError> {
     // A discovery that did not close valid (missing or ambiguous imports) has no
     // queryable program, so semantic analysis cannot run and there is nothing to
     // acquire. Leave it untouched: the driver surfaces the canonical import
@@ -2495,9 +2550,17 @@ fn acquire_reached_toolchain_modules_superseding_inner(
     }
     for _ in 0..MAX_TOOLCHAIN_ACQUISITION_ROUNDS {
         control.checkpoint()?;
-        match rooted_or_toolchain_park(&mut result.session, options) {
+        match rooted_or_toolchain_park_with_cancellation(
+            &mut result.session,
+            options,
+            &control.probe_cancellation(),
+        ) {
             // Analysis satisfied every reached-body demand (or there were none).
             RootedParkOutcome::Ready => return Ok(()),
+            // The request was abandoned inside the probe. Nothing was settled
+            // or attached, so this is the same report every other checkpoint
+            // makes; it is never a program diagnostic.
+            RootedParkOutcome::Canceled => return Err(SourceLoadError::Superseded),
             // Deterministic program diagnostics — the source itself, not the
             // toolchain, is at fault, and an erroneous body raises no toolchain
             // park, so there is nothing here to acquire. Reporting stays with
@@ -5523,6 +5586,36 @@ mod tests {
         .expect_err("a superseded acquisition must abort");
         assert!(matches!(error, SourceLoadError::Superseded), "{error:?}");
         assert_nothing_acquired(&mut result);
+    }
+
+    /// RUE-2174: the request token is the cancellation the production loop
+    /// observes. A token canceled before the first checkpoint aborts before
+    /// any demand read and commits nothing; a live token over the same result
+    /// then acquires the demanded module whole.
+    #[test]
+    fn canceled_acquisition_commits_no_partial_state_and_a_live_one_recovers() {
+        let (_project, _stdlib, main, std_root) = fallible_project("cancel-token");
+        let mut result =
+            discover_and_load_imports(main.to_str().unwrap(), None, Some(&std_root)).unwrap();
+        let canceled = CompilationCancellation::new();
+        canceled.cancel();
+        let error = acquire_reached_toolchain_modules_cancellable(
+            &mut result,
+            &CompileOptions::default(),
+            &canceled,
+        )
+        .expect_err("a canceled acquisition must abort");
+        assert!(matches!(error, SourceLoadError::Superseded), "{error:?}");
+        assert_nothing_acquired(&mut result);
+
+        acquire_reached_toolchain_modules_cancellable(
+            &mut result,
+            &CompileOptions::default(),
+            &CompilationCancellation::new(),
+        )
+        .expect("a live acquisition succeeds after a canceled one");
+        assert!(contains_trusted_option(&result.source_snapshot));
+        assert_eq!(result.source_snapshot.source_revision().modules().len(), 2);
     }
 
     /// Whether the demanded trusted module is visible in each of the three

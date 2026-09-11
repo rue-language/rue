@@ -7,13 +7,58 @@ use super::{
     RootedCodegenOutput, RootedCodegenReadyOutput, RootedParkOutcome,
     RootedPreOptimizationCfgOutput, RootedPreOptimizationCfgUnit, SemanticRequestControl,
     StablePreviewFeatures, collect_rooted_exports, no_published_program, pipeline_abort_errors,
-    sort_rooted_warnings, unresolved_toolchain_park_errors,
+    pipeline_control_errors, sort_rooted_warnings, unresolved_toolchain_park_errors,
 };
 use crate::SemanticInputDescriptor;
 use ahash::AHashMap;
 use rue_air::Node;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+
+/// Where a rooted request can be canceled deterministically by a test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RootedCancellationSite {
+    /// Just before the body-closure request every semantic consumer issues:
+    /// the toolchain probe, a listing, a presentation, and a compile.
+    BodyClosure,
+    /// Just before the CFG batch — raw for a pre-optimization request,
+    /// optimized for every other CFG-side presentation or compile — once the
+    /// body closure has been analyzed.
+    CfgBatch,
+}
+
+/// Deterministic mid-request cancellation for tests (RUE-2174), mirroring
+/// `codegen_query::set_codegen_cancellation_tripwire`: reaching `site` cancels
+/// the armed token before the request at that site is issued, so the stale
+/// attempt must exit through the cancellation contract there rather than
+/// completing or settling anything.
+#[cfg(test)]
+static ROOTED_CANCELLATION_TRIPWIRE: std::sync::Mutex<
+    Option<(rue_query::CancellationToken, RootedCancellationSite)>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) fn set_rooted_cancellation_tripwire(
+    tripwire: Option<(rue_query::CancellationToken, RootedCancellationSite)>,
+) {
+    *ROOTED_CANCELLATION_TRIPWIRE.lock().unwrap() = tripwire;
+}
+
+/// One tripwire probe. Free of cost outside test builds.
+fn rooted_cancellation_probe(site: RootedCancellationSite) {
+    #[cfg(test)]
+    {
+        let mut slot = ROOTED_CANCELLATION_TRIPWIRE.lock().unwrap();
+        if let Some((token, armed)) = slot.as_ref()
+            && *armed == site
+        {
+            token.cancel();
+            *slot = None;
+        }
+    }
+    #[cfg(not(test))]
+    let _ = site;
+}
 
 impl CompilerSession {
     /// The call site that demanded `failing`, for a diagnostic raised inside a
@@ -272,6 +317,7 @@ impl CompilerSession {
         // runtime (RUE-1223).
         let _body_closure_collection_span =
             tracing::info_span!("body_closure_collection", phase = "semantic_analysis").entered();
+        rooted_cancellation_probe(RootedCancellationSite::BodyClosure);
         let request = self
             .queries
             .revisioned
@@ -705,22 +751,28 @@ impl CompilerSession {
         &mut self,
         options: &CompileOptions,
     ) -> Result<RootedCfgOutput, CompileErrors> {
+        self.rooted_cfg_request(options, rue_query::CancellationToken::new())
+            .map_err(|control| pipeline_control_errors("rooted CFG", control))
+    }
+
+    /// [`Self::rooted_cfg`] under a caller's cancellation token, keeping the
+    /// differential oracle's injected semantic fault on the same path so a
+    /// cancellable presentation observes exactly what the uncancellable one
+    /// does (RUE-2174).
+    pub(crate) fn rooted_cfg_request(
+        &mut self,
+        options: &CompileOptions,
+        cancellation: rue_query::CancellationToken,
+    ) -> Result<RootedCfgOutput, PipelineRequestControl> {
         if self.oracle_fault == Some(crate::unstable::DifferentialOracleFault::Semantic) {
             self.oracle_fault.take();
-            return Err(CompileErrors::from(CompileError::without_span(
-                ErrorKind::InternalError("differential semantic fault".into()),
+            return Err(PipelineRequestControl::Compile(CompileErrors::from(
+                CompileError::without_span(ErrorKind::InternalError(
+                    "differential semantic fault".into(),
+                )),
             )));
         }
-        match self.rooted_cfg_with_cancellation(options, rue_query::CancellationToken::new()) {
-            Ok(output) => Ok(output),
-            Err(PipelineRequestControl::Compile(errors)) => Err(errors),
-            Err(PipelineRequestControl::Abort(abort)) => {
-                Err(pipeline_abort_errors("rooted CFG", abort))
-            }
-            Err(PipelineRequestControl::Parked(park)) => {
-                Err(unresolved_toolchain_park_errors(&park))
-            }
-        }
+        self.rooted_cfg_with_cancellation(options, cancellation)
     }
 
     /// The request's ordered test inventory, analyzed but not lowered, with the
@@ -738,29 +790,56 @@ impl CompilerSession {
         &mut self,
         options: &CompileOptions,
     ) -> Result<RootedTestInventory, CompileErrors> {
+        match self.cancellable_test_inventory(options, rue_query::CancellationToken::new()) {
+            TestInventoryOutcome::Listed(listing) => Ok(listing),
+            TestInventoryOutcome::Errors(errors) => Err(errors),
+            // The token this passed can never be canceled: nobody else holds it.
+            TestInventoryOutcome::Canceled => {
+                unreachable!("an uncancelled test inventory cannot report cancellation")
+            }
+        }
+    }
+
+    /// [`Self::rooted_test_inventory`] under a caller's cancellation token,
+    /// for a retained host whose listing request can be abandoned (RUE-2174).
+    ///
+    /// Cancellation is an outcome rather than an error for the same reason it
+    /// is one for the test-closure analysis: it says nothing about the program,
+    /// so neither a partial inventory nor diagnostics may be reported for it.
+    pub(crate) fn cancellable_test_inventory(
+        &mut self,
+        options: &CompileOptions,
+        cancellation: rue_query::CancellationToken,
+    ) -> TestInventoryOutcome {
         // A listing reports declarations, so a test whose body does not analyze
         // is still listed: its declaration parsed, and the inventory is built
         // from the declaration projection rather than from the bodies
         // (ADR-0083 §3). Only a rejection that reaches no inventory at all —
         // one the request itself refused, before roots existed — stops it.
-        let (inventory, diagnostics) = match self
-            .rooted_body_graph_attempt(options, rue_query::CancellationToken::new())
-            .map_err(|control| semantic_control_errors("rooted test inventory", control))?
-        {
-            RootedBodyGraphAttempt::Graph(graph) => {
+        let (inventory, diagnostics) = match self.rooted_body_graph_attempt(options, cancellation) {
+            Ok(RootedBodyGraphAttempt::Graph(graph)) => {
                 (Arc::clone(&graph.test_inventory), CompileErrors::default())
             }
-            RootedBodyGraphAttempt::Rejected(rejection) => {
+            Ok(RootedBodyGraphAttempt::Rejected(rejection)) => {
                 if rejection.global {
-                    return Err(rejection.into_errors());
+                    return TestInventoryOutcome::Errors(rejection.into_errors());
                 }
                 (
                     Arc::clone(&rejection.test_inventory),
                     rejection.body_diagnostics(),
                 )
             }
+            Err(SemanticRequestControl::Abort(rue_query::QueryAbort::Canceled)) => {
+                return TestInventoryOutcome::Canceled;
+            }
+            Err(control) => {
+                return TestInventoryOutcome::Errors(semantic_control_errors(
+                    "rooted test inventory",
+                    control,
+                ));
+            }
         };
-        Ok(RootedTestInventory {
+        TestInventoryOutcome::Listed(RootedTestInventory {
             entries: inventory.iter().map(|test| test.entry.clone()).collect(),
             diagnostics,
         })
@@ -1213,6 +1292,9 @@ impl CompilerSession {
                 ),
             );
         }
+        // Both CFG batches — the raw one a pre-optimization request issues and
+        // the optimized one every other consumer issues — follow this point.
+        rooted_cancellation_probe(RootedCancellationSite::CfgBatch);
         if pre_optimization {
             let raw_requests = cfg_inputs
                 .iter()
@@ -1841,6 +1923,11 @@ impl CompilerSession {
         }))
     }
 
+    /// [`Self::rooted_codegen_with_cancellation`] under a token nobody can
+    /// cancel, for tests that want the plain artifact. Production consumers —
+    /// the presentation batch and the compile endpoints — carry their
+    /// request's token instead (RUE-2174).
+    #[cfg(test)]
     pub(crate) fn rooted_codegen(
         &mut self,
         options: &CompileOptions,
@@ -2418,17 +2505,45 @@ impl CompilerSession {
         self.queries.revisioned.query_evictions_for_test()
     }
 
+    /// [`Self::rooted_or_toolchain_park_with_cancellation`] under a token
+    /// nobody can cancel, for tests of the park itself. The production
+    /// acquisition loop always carries its request's token (RUE-2174).
+    #[cfg(test)]
     pub(crate) fn rooted_or_toolchain_park(
         &mut self,
         options: &CompileOptions,
     ) -> RootedParkOutcome {
-        match self.rooted_body_graph_with_cancellation(options, rue_query::CancellationToken::new())
-        {
+        match self.rooted_or_toolchain_park_with_cancellation(
+            options,
+            rue_query::CancellationToken::new(),
+        ) {
+            // The token this passed can never be canceled: nobody else holds it.
+            RootedParkOutcome::Canceled => {
+                unreachable!("an uncancelled toolchain probe cannot report cancellation")
+            }
+            outcome => outcome,
+        }
+    }
+
+    /// [`Self::rooted_or_toolchain_park`] under a caller's cancellation token
+    /// (RUE-2174): the host's acquisition loop hands the admitted request's
+    /// token to the semantic probe itself, so a canceled request stops inside
+    /// a long body-closure analysis rather than only between acquisition
+    /// rounds. A canceled probe attaches no park and settles nothing.
+    pub(crate) fn rooted_or_toolchain_park_with_cancellation(
+        &mut self,
+        options: &CompileOptions,
+        cancellation: rue_query::CancellationToken,
+    ) -> RootedParkOutcome {
+        match self.rooted_body_graph_with_cancellation(options, cancellation) {
             Ok(_) => RootedParkOutcome::Ready,
             Err(SemanticRequestControl::Compile(errors)) => RootedParkOutcome::Errors(errors),
             Err(SemanticRequestControl::Parked(park)) => {
                 self.attach_toolchain_park(&park);
                 RootedParkOutcome::Parked(park)
+            }
+            Err(SemanticRequestControl::Abort(rue_query::QueryAbort::Canceled)) => {
+                RootedParkOutcome::Canceled
             }
             Err(SemanticRequestControl::Abort(abort)) => {
                 panic!("uncanceled rooted body-closure request aborted: {abort:?}")
@@ -3578,6 +3693,18 @@ pub(crate) struct TestClosureAnalysis {
     /// reach it. This is what stderr publishes; the copies attached to each
     /// failed test are the attribution convenience (ADR-0083 §3).
     pub(crate) diagnostics: CompileErrors,
+}
+
+/// What a cancellable test inventory answered (RUE-2174).
+pub(crate) enum TestInventoryOutcome {
+    Listed(RootedTestInventory),
+    /// The request was refused before any inventory existed; a per-body
+    /// failure is listed beside the inventory instead.
+    Errors(CompileErrors),
+    /// The caller abandoned the request. Nothing is reported: a partial
+    /// inventory or its diagnostics would describe a request nobody is
+    /// waiting for.
+    Canceled,
 }
 
 /// What a cancellable test-closure analysis answered (RUE-2023).

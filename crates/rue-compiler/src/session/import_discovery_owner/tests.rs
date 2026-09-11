@@ -73,6 +73,7 @@ fn closed_continuation_for(
         RootedParkOutcome::Errors(errors) => {
             panic!("expected a trusted-toolchain park, got errors: {errors:?}")
         }
+        RootedParkOutcome::Canceled => panic!("an uncanceled probe cannot report cancellation"),
     }
     let token = session
         .closed_discovery_continuation()

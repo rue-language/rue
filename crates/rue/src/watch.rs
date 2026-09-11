@@ -399,7 +399,7 @@ pub(crate) fn run(request: WatchRequest) -> ! {
                 phase = ObservationPhase::Acquire;
                 test_acquire_delay();
                 observed = host
-                    .acquire_reached_toolchain_modules_superseding(&compile_options, &superseded);
+                    .acquire_reached_toolchain_modules_cancellable(&compile_options, &cancellation);
             }
             let monitor_changed = monitor.finish();
             let changed =

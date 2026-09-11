@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rue_compiler::unstable::{
+    CancellablePresentationOutcome, CancellableTestListingOutcome, CompilationCancellation,
     EndpointWork, PresentationBatchRequest, PresentationOutput, PresentationStage,
     QueryRuntimeMetrics, TestImage, TestListing,
 };
@@ -13,7 +14,7 @@ use rue_compiler::{
 };
 use rue_error::ErrorKind;
 
-use crate::{FilesystemCompilerHost, HostOpenRequest, HostPathContext};
+use crate::{FilesystemCompilerHost, HostOpenRequest, HostPathContext, SourceLoadError};
 
 struct Project(PathBuf);
 
@@ -281,6 +282,100 @@ test \"fine\" { let _value = shared(6); }\n",
     );
     // Excluding broken from the runnable image must not change later roots.
     assert_listing_eq(&listing(&mut retained).unwrap(), &listed);
+}
+
+/// RUE-2174: acquisition, listing, and presentation each run under the
+/// request's cancellation. A canceled request reports nothing — no partial
+/// inventory, no diagnostics, no presentation — and the same retained host
+/// then answers a live request exactly as a fresh host does.
+#[test]
+fn canceled_requests_report_nothing_and_the_host_recovers() {
+    let project = Project::new();
+    project.write(
+        "\
+fn shared(x: i32) -> i32 { x + 1 }\n\
+fn main() -> i32 { shared(6) }\n\
+test \"broken\" { let _bad: i32 = true; }\n\
+test \"fine\" { let _value = shared(6); }\n",
+    );
+    let mut retained = project.open();
+    let test_options = options(RootSelection::Tests);
+    let executable_options = options(RootSelection::Executable);
+    let file_order = retained
+        .source_snapshot()
+        .files()
+        .map(|source| source.file_id)
+        .collect::<Vec<_>>();
+    const AIR: &[PresentationStage] = &[PresentationStage::Air];
+    fn air_request<'a>(
+        options: &'a CompileOptions,
+        file_order: &'a [rue_compiler::FileId],
+    ) -> PresentationBatchRequest<'a> {
+        PresentationBatchRequest {
+            stages: AIR,
+            options,
+            file_order,
+        }
+    }
+
+    let canceled = CompilationCancellation::new();
+    canceled.cancel();
+    assert!(matches!(
+        retained.acquire_reached_toolchain_modules_cancellable(&test_options, &canceled),
+        Err(SourceLoadError::Superseded)
+    ));
+    assert!(matches!(
+        retained.cancellable_test_inventory(&test_options, canceled.clone()),
+        CancellableTestListingOutcome::Canceled
+    ));
+    assert!(matches!(
+        retained.cancellable_present_many(
+            air_request(&executable_options, &file_order),
+            canceled.clone()
+        ),
+        CancellablePresentationOutcome::Canceled
+    ));
+
+    let live = CompilationCancellation::new();
+    retained
+        .acquire_reached_toolchain_modules_cancellable(&test_options, &live)
+        .expect("a live acquisition settles");
+    let listed = match retained.cancellable_test_inventory(&test_options, live.clone()) {
+        CancellableTestListingOutcome::Completed(listing) => listing,
+        CancellableTestListingOutcome::Errors(errors) => {
+            panic!("a live listing analyzes: {errors:?}")
+        }
+        CancellableTestListingOutcome::Canceled => {
+            panic!("a live token cannot report cancellation")
+        }
+    };
+    assert_listing_eq(&listed, &listing(&mut project.open()).unwrap());
+    assert_eq!(listed.inventory.entries.len(), 2);
+    assert_eq!(listed.inventory.entries[0].id, "main.rue::broken");
+    assert_eq!(listed.inventory.entries[1].id, "main.rue::fine");
+    assert_type_mismatch(&listed.failure_diagnostics);
+
+    retained
+        .acquire_reached_toolchain_modules_cancellable(&executable_options, &live)
+        .expect("a live acquisition settles");
+    let presented = match retained
+        .cancellable_present_many(air_request(&executable_options, &file_order), live)
+    {
+        CancellablePresentationOutcome::Completed(mut outputs) => outputs.pop().unwrap(),
+        CancellablePresentationOutcome::Errors(errors) => {
+            panic!("a live presentation renders: {errors:?}")
+        }
+        CancellablePresentationOutcome::Canceled => {
+            panic!("a live token cannot report cancellation")
+        }
+    };
+    assert_eq!(presented, air(&mut project.open()).unwrap());
+    // The broken test's diagnostics belong to the listing alone: the
+    // executable request over the same host neither sees them nor fails.
+    assert_output_eq(
+        &build(&mut retained).unwrap().output,
+        &build(&mut project.open()).unwrap().output,
+    );
 }
 
 #[test]
