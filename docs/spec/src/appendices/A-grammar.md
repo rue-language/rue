@@ -335,9 +335,110 @@ Notes:
 - **Statement termination**: `let`, assignment, and ordinary expression
   statements require `;`. Control-flow expressions (`if`, `match`, `while`,
   `loop`, `for`, `break`, `continue`, `return`) and bare blocks may appear as
-  statements without a trailing semicolon.
+  statements without a trailing semicolon. The token that decides each of
+  these forms is given in the parsing requirements below (A.2:2).
 - There is no `impl`-block construct (`impl` remains reserved syntax; 2.4:2):
   methods are declared inline inside the `struct` body, after the fields.
 - **Method receivers** may carry a mode: `inout self` (mutating receiver) or
   `borrow self` (read-only receiver); a bare `self` is by-value. This mirrors
   the `inout`/`borrow` parameter modes; `comptime self` is not permitted.
+
+## Parsing requirements
+
+{{ rule(id="A.2:1", cat="normative") }}
+
+The grammar is *committed*: a conforming implementation **MUST** parse a
+syntactically valid program in one left-to-right pass whose cost is linear in
+the program's token count, up to a constant factor bounded by the nesting
+allowance of C.6:3. Every choice between alternatives **MUST** be settled by
+the current token, by a fixed number of following tokens, or by one forward
+scan to the matching close delimiter of a group that is then parsed once. A
+construct that has been parsed **MUST NOT** be parsed again to settle a later
+choice, and an implementation **MUST NOT** parse an expression speculatively
+and discard the result. Error recovery is held to the same bound: the tokens
+a recovery skips are consumed once. Appendix A is written so that this is
+possible, and a change to the grammar that would require speculative parsing
+is a change to this rule.
+
+{{ rule(id="A.2:2", cat="normative") }}
+
+The decision points of the grammar, and the token that settles each:
+
+1. **Block item or block tail** (`block = { statement } [ expression ]`).
+   After an expression in statement position, `;` makes it an expression
+   statement (5.3:1), `=` or a compound assignment operator makes it the
+   target of an assignment (5.2), and `}` makes it the block's tail value
+   (4.6). A block-like expression (5.3:6) followed by any other token is a
+   complete statement on its own; any other expression followed by any other
+   token is a syntax error at that token, reported as a missing semicolon.
+2. **Semicolon-free control flow or tail value.** A block-like expression in
+   statement position followed by `}` is the block's tail value; followed by
+   anything else it is a statement, and the next statement begins at that
+   token. No token after the closing brace is re-read to make that choice.
+3. **Continuation of a block-like expression.** In statement position a
+   block-like expression is continued only by a postfix suffix (`.`, `(`,
+   `[`, `?`); `-` begins a new statement (5.3:9), and any other infix
+   operator is a syntax error at the operator (5.3:7). In operand position
+   the ordinary precedence climb applies. `else` continues an `if` only when
+   it is the very next token.
+4. **Array list or array repeat** (`[a, b]` against `[a; n]`). The first
+   element is parsed once; the token after it decides: `;` selects the
+   repeat form, whose count is a single integer literal or identifier, and
+   `,` or `]` selects the list form. The same rule decides an array type
+   `[T; n]`, where the token after the element type is always `;`.
+5. **Optional operands of `return` and `break`.** The operand is absent
+   exactly when the token after the keyword is `{`, or one of the expression
+   terminators `;`, `,`, `)`, `]`, `}`, `=>`, or the end of input; any other
+   token begins the operand.
+6. **Payload group or constructor application in a pattern**
+   (`Ok(v)` against `Result(i32, E).Ok(v)`). A parenthesised group after a
+   path segment is scanned once to its matching `)`: a following `.` makes
+   it constructor arguments, and anything else makes it the variant's
+   payload positions. The group is then parsed once in the role the scan
+   chose.
+7. **Recovery.** A malformed item is skipped to the next item keyword at
+   brace depth zero, tracking delimiter depth across the skipped tokens so
+   that an item keyword inside the failed item's own braces does not restart
+   parsing. A missing semicolon or delimiter is reported at the offending
+   token and the parse of the enclosing construct ends there; the tokens
+   already consumed are not revisited.
+
+{{ rule(id="A.2:3", cat="informative") }}
+
+The forms in A.2:2 have each admitted an exponential parser in this
+compiler's history. Before RUE-276 a statement-position block-like expression
+was parsed once to look for a following `-` and then, failing that, parsed
+again by the general expression parser, so `n` nested blocks cost 2^n
+descents; a 20-level nest did not finish. Nested slice types had the same
+shape (RUE-1113). The criterion in A.2:1 is what those fixes established,
+recorded here so that it binds a rewrite of the parser and the Rue-hosted
+frontend (`examples/ruelex`), whose token dump and AST shape are held to the
+production parser by the frontend differential, alike. Both are held to the
+rate itself by generated programs: `scripts/check-parser-complexity.py` runs
+each frontend on a program for every decision point above at two sizes,
+one four times the other, and fails when the larger costs more than a fixed
+multiple of the smaller.
+
+The bound in A.2:1 is linear "up to a constant factor bounded by the nesting
+allowance" because the one forward scan an implementation may make (item 6,
+and the reference implementation's peel of leading `[` tokens when deciding
+whether a bracketed intrinsic argument is a type) can be repeated once per
+level of a nest, and a nest is at most C.6:3 levels deep. The pre-parse
+nesting guard that enforces C.6:3 is held to the same discipline: it reads
+each token once and counts an `else if` link, not a plain `else`, toward the
+depth, discharging a completed chain when the token after its last brace is
+not `else`, so that a sequence of statement-position `if ... else ...`
+statements is a sequence and not a nest (RUE-1107).
+
+{{ rule(id="A.2:4", cat="example") }}
+
+```rue
+fn f(c: bool) -> i32 {
+    if c { 1 } else { 2 }      // complete statement: `}` then `let` (A.2:2 item 2)
+    let a = [1; 3];            // `;` after the first element: repeat form (item 4)
+    let b = [1, 2, 3];         // `,` after the first element: list form (item 4)
+    loop { if c { break } break }  // `}` after `break`: no operand (item 5)
+    if c { return a[0] }       // `a` after `return`: an operand (item 5)
+    b[2]                       // `}` after the expression: the tail (item 1)
+}
+```

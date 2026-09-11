@@ -710,11 +710,30 @@ rue_sh_test(
 # run executes after the corpora. This used to be a bash array of four target
 # names; as a test_suite the membership is a Buck fact, and adding a gate here
 # reaches every caller without editing a script.
+# RUE-1107 (spec A.2): both frontends parse generated programs for every
+# grammar decision point at two sizes, and the larger may cost only a fixed
+# multiple of the smaller. The compiler is driven through `--emit ast` and the
+# Rue-hosted frontend through its `--ast-shape` dump, so the gate holds the
+# parsers to the linear-time criterion from the outside, whatever their
+# implementation. ruelex is compiled from the examples source tree the same
+# way the frontend differential compiles it.
+rue_sh_test(
+    name = "parser-complexity-gates",
+    test = "scripts/check-parser-complexity.py",
+    args = ["--quiet"],
+    env = {
+        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_RUELEX_ROOT": "$(location //examples:rue-sources)/ruelex/main.rue",
+        "RUE_STD_PATH": "$(location //std:std)",
+    },
+)
+
 rue_test_suite(
     name = "repository-quality-gates",
     tests = [
         ":adr-registry-validation",
         ":compiler-spec-machine-index",
+        ":parser-complexity-gates",
         ":rustc-first-party-unused-deps-wrapper-tests",
         ":spec-traceability",
         ":tutorial-snippet-tests",

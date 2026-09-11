@@ -17,6 +17,18 @@ use rue_lexer::{Token, TokenKind};
 pub(crate) fn check_nesting_depth(tokens: &[Token]) -> Option<CompileError> {
     let mut levels = vec![0usize];
     let mut total_ops = 0usize;
+    // `else if` chains nest one `if` per link, so each link counts toward the
+    // level that holds the chain. A chain ends at the `}` that closes its last
+    // branch when no further `else` follows, and the level's ordinary
+    // separators (`;`, `,`, ...) never see that end: a statement-position
+    // `if ... else ...` is complete on its own (5.3:6). Without discharging
+    // a completed chain, every sequential `if ... else ...` statement in one
+    // block would leave a permanent unit behind, and the 257th such statement
+    // was rejected as over-deep (RUE-1107). Sequential chains do not nest, so
+    // a completed chain keeps only the deepest one seen since the last
+    // separator, which stays an upper bound on the AST depth that follows.
+    let mut chain = vec![0usize];
+    let mut deepest_chain = vec![0usize];
     let mut prev: Option<&TokenKind> = None;
 
     macro_rules! reject_if_too_deep {
@@ -32,11 +44,26 @@ pub(crate) fn check_nesting_depth(tokens: &[Token]) -> Option<CompileError> {
         };
     }
 
-    for token in tokens {
+    for (index, token) in tokens.iter().enumerate() {
         let kind = &token.kind;
+        // A block closed on the previous token; if this token does not extend
+        // an `else` chain, the chain that ended there is complete.
+        if matches!(prev, Some(TokenKind::RBrace)) && !matches!(kind, TokenKind::Else) {
+            let level = levels.len() - 1;
+            let completed = chain[level];
+            if completed > 0 {
+                let kept = deepest_chain[level].max(completed);
+                total_ops -= completed + deepest_chain[level];
+                total_ops += kept;
+                deepest_chain[level] = kept;
+                chain[level] = 0;
+            }
+        }
         match kind {
             TokenKind::LParen | TokenKind::LBrace => {
                 levels.push(0);
+                chain.push(0);
+                deepest_chain.push(0);
                 reject_if_too_deep!(token.span);
             }
             TokenKind::LBracket => {
@@ -59,11 +86,15 @@ pub(crate) fn check_nesting_depth(tokens: &[Token]) -> Option<CompileError> {
                     total_ops += 1;
                 }
                 levels.push(0);
+                chain.push(0);
+                deepest_chain.push(0);
                 reject_if_too_deep!(token.span);
             }
             TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket => {
                 if levels.len() > 1 {
                     total_ops -= levels.pop().unwrap();
+                    total_ops -= chain.pop().unwrap();
+                    total_ops -= deepest_chain.pop().unwrap();
                 }
             }
             TokenKind::Semi
@@ -72,8 +103,24 @@ pub(crate) fn check_nesting_depth(tokens: &[Token]) -> Option<CompileError> {
             | TokenKind::Eq
             | TokenKind::Colon
             | TokenKind::Arrow => {
-                total_ops -= *levels.last().unwrap();
-                *levels.last_mut().unwrap() = 0;
+                let level = levels.len() - 1;
+                total_ops -= levels[level] + chain[level] + deepest_chain[level];
+                levels[level] = 0;
+                chain[level] = 0;
+                deepest_chain[level] = 0;
+            }
+            // Only an `else if` link nests: a plain `else { ... }` is the
+            // second child of the one `if` node and its block is counted on
+            // its own `{`.
+            TokenKind::Else => {
+                if tokens
+                    .get(index + 1)
+                    .is_some_and(|next| next.kind == TokenKind::If)
+                {
+                    *chain.last_mut().unwrap() += 1;
+                    total_ops += 1;
+                    reject_if_too_deep!(token.span);
+                }
             }
             TokenKind::Plus
             | TokenKind::Minus
@@ -97,7 +144,6 @@ pub(crate) fn check_nesting_depth(tokens: &[Token]) -> Option<CompileError> {
             | TokenKind::Bang
             | TokenKind::Dot
             | TokenKind::Question
-            | TokenKind::Else
             | TokenKind::Ptr => {
                 *levels.last_mut().unwrap() += 1;
                 total_ops += 1;
@@ -155,6 +201,81 @@ mod tests {
         let error = check_nesting_depth(&input).unwrap();
         assert_eq!(error.span(), Some(input[MAX_NESTING_DEPTH].span));
         assert_eq!(error.span().unwrap().file_id, file);
+    }
+
+    #[test]
+    fn sequential_if_else_statements_do_not_accumulate_depth() {
+        // `if c { } else { }` repeated: each statement is complete at its
+        // closing brace with no separator, and none of them nests in the
+        // next (RUE-1107).
+        let file = FileId::new(4);
+        let statement = [
+            TokenKind::If,
+            TokenKind::True,
+            TokenKind::LBrace,
+            TokenKind::RBrace,
+            TokenKind::Else,
+            TokenKind::LBrace,
+            TokenKind::RBrace,
+        ];
+        let input = tokens(
+            (0..MAX_NESTING_DEPTH + 20).flat_map(|_| statement.clone()),
+            file,
+        );
+        assert!(check_nesting_depth(&input).is_none());
+    }
+
+    #[test]
+    fn sequential_else_if_chains_keep_only_the_deepest() {
+        // Two `else if` links per statement, repeated well past the limit:
+        // a completed chain contributes its own depth once, never per
+        // statement.
+        let file = FileId::new(5);
+        let statement = [
+            TokenKind::If,
+            TokenKind::True,
+            TokenKind::LBrace,
+            TokenKind::RBrace,
+            TokenKind::Else,
+            TokenKind::If,
+            TokenKind::True,
+            TokenKind::LBrace,
+            TokenKind::RBrace,
+            TokenKind::Else,
+            TokenKind::If,
+            TokenKind::True,
+            TokenKind::LBrace,
+            TokenKind::RBrace,
+        ];
+        let input = tokens(
+            (0..MAX_NESTING_DEPTH + 20).flat_map(|_| statement.clone()),
+            file,
+        );
+        assert!(check_nesting_depth(&input).is_none());
+    }
+
+    #[test]
+    fn one_else_if_chain_still_counts_its_links() {
+        // A single chain of `else if` links past the limit nests one `if`
+        // per link and is still rejected.
+        let file = FileId::new(6);
+        let mut kinds = vec![
+            TokenKind::If,
+            TokenKind::True,
+            TokenKind::LBrace,
+            TokenKind::RBrace,
+        ];
+        for _ in 0..MAX_NESTING_DEPTH + 2 {
+            kinds.extend([
+                TokenKind::Else,
+                TokenKind::If,
+                TokenKind::True,
+                TokenKind::LBrace,
+                TokenKind::RBrace,
+            ]);
+        }
+        let input = tokens(kinds, file);
+        assert!(check_nesting_depth(&input).is_some());
     }
 
     #[test]
