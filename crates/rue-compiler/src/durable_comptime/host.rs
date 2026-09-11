@@ -1137,11 +1137,8 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
                 ),
             ));
         };
-        let Some(total_nodes) = 1usize.checked_add(
-            element_nodes
-                .checked_mul(repeat_count)
-                .unwrap_or(usize::MAX),
-        ) else {
+        let Some(total_nodes) = 1usize.checked_add(element_nodes.saturating_mul(repeat_count))
+        else {
             return durable_host_error_outcome(durable_host_error(
                 DurableComptimeFailure::resolution(
                     "structural comptime value exceeds resource limits",
