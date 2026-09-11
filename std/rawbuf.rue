@@ -26,15 +26,14 @@
 // surface here means memory ownership — allocate/reallocate/free, and the
 // buffer's teardown — has one home for both containers.
 //
-//   * OWNING (`cap > 0`): `ptr` addresses `cap` live cells the value owns and
-//     frees at teardown.
-//   * EMPTY (`cap == 0`): `ptr` is null; no allocation is held. No `T` is ever
-//     read or written in this state (the wrapper's `len` is 0), so the null
-//     pointer is never dereferenced.
-//
-// A future non-owning literal-backed state (a `StrBuf` built from a static
-// string literal, §6.13.4) belongs here too, as a third case of the same
-// invariant, so both containers can share it; it is not modeled yet.
+//   * OWNING (`cap > 0`, nonzero-sized `T`): `buf` addresses storage for `cap`
+//     cells that this core frees at teardown.
+//   * NON-OWNING (`cap == 0`): no allocation is held. An empty core has a null
+//     pointer; a literal-backed StrBuf instead holds a borrowed static byte
+//     address. StrBuf bounds reads by its length and promotes to owned storage
+//     before mutation. Neither form returns a block to the allocator.
+//   * ZERO-SIZED ELEMENTS: capacity is recorded without allocating storage;
+//     the pointer remains null and teardown has no block to release.
 
 // The sole raw byte-copy implementation. Callers pass validated logical
 // ranges; this private function performs the shared byte-size, address,
@@ -152,7 +151,7 @@ pub fn RawBuf(comptime T: type) -> type {
         }
 
         // Release the allocation and reset to the empty state. Idempotent and
-        // safe on an empty buffer: `@free(null, 0, align)` is a no-op. Callers
+        // safe on an empty buffer: `release` skips non-owning storage. Callers
         // that have already moved/dropped the live cells use this for early
         // release; the destructor calls the same path at scope exit.
         fn free(inout self) {
@@ -164,10 +163,14 @@ pub fn RawBuf(comptime T: type) -> type {
 
         // Hand the block back to the allocator with exactly the `(size, align)`
         // it was allocated with — the sizeless-allocator ABI's requirement.
-        // A zero-sized `T` never reached the allocator, so `cap * 0` is 0 and
-        // the pointer is null: the call is the documented no-op.
+        // Zero capacity can carry a non-null static address for a literal-backed
+        // StrBuf. Neither that address nor zero-sized-element storage belongs
+        // to the allocator, so both are handled before the allocator call.
         fn release(borrow self) {
             let element_size: u64 = @intCast(@size_of(T));
+            if self.cap == 0 || element_size == 0 {
+                return;
+            }
             let align: u64 = @intCast(@align_of(T));
             checked {
                 let block: ptr mut u8 = @int_to_ptr(@ptr_to_int(self.buf));
