@@ -25,6 +25,9 @@ This is a tooling and process-lifetime change, so rollout uses a driver option
 rather than a language `PreviewFeature`.
 
 ADR acceptance is tracked by RUE-2123; implementation is tracked by RUE-2126.
+The opt-in service and its bounded resource qualification are implemented by
+RUE-2128 and RUE-2129. Automatic startup remains gated by the separate
+measurement and rollout decision in RUE-2130.
 
 ## Summary
 
@@ -55,7 +58,8 @@ are independent extensions.
 The initial findings were checked against source and tests at
 `b90243c49` on 2026-09-07; implementation updates are noted below. Tests cited
 here were read as evidence of existing
-coverage; this research did not run a daemon prototype or measure a speedup.
+coverage; the completed qualification and its resource measurements are
+recorded in [`daemon-resource-qualification.md`](../notes/daemon-resource-qualification.md).
 
 | Current source | Implication for a daemon |
 | --- | --- |
@@ -98,15 +102,17 @@ Several relevant issues are present in current source:
 
 - [`CompilerSessionConfig`](../../crates/rue-compiler/src/configuration.rs)
   now gives each session immutable worker and retention settings (RUE-1811).
-  CLI, benchmark, and oracle callers pass their policy explicitly. This supplies
-  per-session control; daemon-wide resource admission remains to be built.
+  CLI, benchmark, and oracle callers pass their policy explicitly. The daemon
+  adds its own explicit admission, response-lease, and retained-host policy
+  without changing those ordinary defaults; the qualification record is
+  [`daemon-resource-qualification.md`](../notes/daemon-resource-qualification.md).
 - [`retention.rs`](../../crates/rue-query/src/retention.rs) defaults to 8 GiB
   of retained artifact charge and four million dependency/input observations
   **per runtime**. These are soft accounting limits; protected results can
   exceed them. The filesystem host accepts configuration at construction and
-  exposes metrics, but has no production trim operation. Multiplying the
-  established defaults across roots
-  would be an unsuitable implicit daemon policy.
+  exposes metrics. The daemon owner applies a bounded idle-host trim after
+  sampling post-request pressure; multiplying the established defaults across
+  roots would still be an unsuitable implicit daemon policy.
 - [`source_loader::reload_from_filesystem`](../../crates/rue/src/source_loader.rs)
   re-observes the accepted closure and drives import discovery to a coherent
   successor. A daemon must still do that work. RUE-1817 tracks reducing the
@@ -116,7 +122,9 @@ Several relevant issues are present in current source:
   owned executable, test-image, listing, and presentation responses (RUE-2127).
   Their snapshots and prepared diagnostic facts survive host refresh or drop;
   publication and test execution remain client operations. This supplies the
-  in-process boundary, while transport and service lifetime remain to be built.
+  in-process boundary. The opt-in daemon now carries bounded owned responses
+  over its local protocol; its qualification and calibration remain separate
+  from the automatic-mode decision.
 - Process-global tracing and panic formatting and successful one-shot
   `process::exit` behavior remain in the driver. System linking inherits cwd,
   environment, and temporary-directory selection. These must not become the
@@ -336,8 +344,9 @@ input observations needed to use the canonical rendering and publication
 checks without rereading changed source as a diagnostic snapshot. Share those
 projections between direct and daemon consumers. Bound buffering and stop
 production when the client disconnects; do not retain every response forever.
-Initial byte transfer is intentionally simple; measure its cost before adding
-shared files, descriptor passing, or another artifact store.
+Initial byte transfer remains intentionally simple. The qualification measures
+its bounded ownership and deadline behavior; shared files, descriptor passing,
+and another artifact store remain outside this decision.
 
 Test-image responses also carry the canonical inventory and per-test
 compile-failure attribution currently owned by `TestImageCompanion`. Preserve
@@ -417,23 +426,33 @@ four million dependency/input observations. Expose validated per-session
 overrides. Do not tune daemon-wide defaults by changing ordinary compilation
 defaults, or work around the ownership boundary by toggling a global.
 
-The qualification service currently uses a conservative explicit provisional
-policy: one retained host, 32 build connections plus one reserved control
+The qualification service uses a conservative explicit provisional
+policy: one retained host, four automatic compiler workers, 32 build
+connections plus one reserved control
 connection, eight queued requests,
 256 MiB of retained query charge, one million dependency pins, 64 MiB of
 concurrent response bytes, five-second control-read and response-write
-deadlines, and a 30-minute idle lifetime. These values are service policy, not ordinary
-`CompilerSessionConfig` defaults, and release calibration may tighten them.
+deadlines, and a 30-minute idle lifetime. These values are service policy, not
+ordinary `CompilerSessionConfig` defaults, and release calibration may tighten
+them. Status reports current source snapshot file/byte counts, response-lease
+peak, current and peak retained charge/pins, and the active policy. Source
+bytes are accepted snapshot text lengths and may overlap query charge; status
+does not report RSS. Query-charge and pin peaks are sampled after a request
+and before trim; response peaks are recorded at lease acquisition. The 64 MiB
+response value is a soft aggregate pressure target; the existing serialized
+result frame retains its hard protocol bound.
 Admission and response leases are released on every normal, cancellation,
 disconnect, and write-failure path. Retention metrics account separately for
-query charge, dependency pins, host/source state, response buffering, and
-observed process RSS; status retains peak charge and pin counts after an idle
+query charge, dependency pins, host/source state, and response buffering.
+Release calibration observes process RSS externally. Status retains peak
+charge and pin counts after an idle
 host is evicted. A full connection or queue is a soft refusal that leaves
 the caller able to retry or use the direct path; completed responses are never
 truncated or published as partial artifacts. One unusually large completed
 answer may be retained as a single protected soft overflow, with its exact
-charge visible in status, so pressure never replaces a valid answer with a
-failure; the owner waits for that lease before starting another request.
+charge visible in status. Within the existing result-frame contract, pressure
+preserves the completed answer; the owner waits for that lease before starting
+another request.
 
 Runtime workers are stopped and joined when the session is dropped. Weak
 runtime probes cover empty, mixed-artifact, error/cancel/repair, and rotating
@@ -449,7 +468,9 @@ fresh. Cache eviction and service restart may affect latency, never results.
 Idle timeouts avoid leaving a daemon per abandoned worktree indefinitely.
 
 Choose concrete defaults using release-built small, Lattice, and large-workload
-measurements before automatic startup ships. Multiple user-selected scopes
+measurements before automatic startup ships. RUE-2129 records the first
+qualification calibration and does not claim a latency or RSS threshold.
+Multiple user-selected scopes
 can still consume multiple budgets; this ADR does not invent a host-global
 scheduler. Expose this fact and the active policy in `daemon status`.
 
@@ -510,14 +531,15 @@ input validation. Each slice lands through its own reviewed PR and merge queue.
    request diagnostics, and resource policy explicit through the canonical
    path-resolution and host APIs. Migrate affected cycle consumers atomically.
    Preserve existing output contracts.
-2. **Opt-in service — RUE-2128.** Add identity, startup/status/stop, the local protocol,
-   bounded admission, one retained-host execution path, and client publication.
-   Include build, test inventory/test-image, and analysis requests sharing the
-   same host across root sets, plus cancellation and crash recovery, before
-   treating it as usable.
-3. **Correctness and resource qualification — RUE-2129.** Add bounded multi-host retention,
-   idle retirement, process-boundary parity, and edit-sequence stress coverage.
-   Verify both supported architectures on their native CI hosts.
+2. **Opt-in service — RUE-2128.** Implemented identity, startup/status/stop,
+   the local protocol, bounded admission, one retained-host execution path,
+   and client publication. Build, test inventory/test-image, and analysis
+   requests share the host across root sets, with cancellation and crash
+   recovery.
+3. **Correctness and resource qualification — RUE-2129.** Implemented bounded
+   retention, idle retirement, process-boundary parity, and edit-sequence
+   coverage. The qualification record documents native macOS evidence;
+   both supported architectures remain subject to their native CI hosts.
 4. **Performance regime and automatic-mode decision — RUE-2130.** Add separate daemon
    measurements, pin hermetic/fresh callers to `off`, calibrate policy, then
    decide whether the supported check/test/build workflow defaults to `auto`.
@@ -588,8 +610,9 @@ and correctness obligations. Process lifetime does not justify another frontend.
 ## Open Questions
 
 - What daemon-wide host/charge/RSS/idle thresholds are appropriate on developer
-  machines? The session migration preserves the defaults recorded above;
-  daemon bounds require separate calibration before automatic startup.
+  machines? RUE-2129 qualifies a conservative opt-in policy and records its
+  live-charge and RSS observations; RUE-2130 owns the final calibration and
+  automatic-startup decision.
 - Is default scope by root-source directory sufficient for later workspace
   tooling? Initial scope follows the decision above; any later workspace
   marker must remain independent of language import-root semantics.
@@ -617,3 +640,5 @@ or become an undeclared input to fresh-process measurements.
 - [RUE-1811](https://linear.app/steve-klabnik/issue/RUE-1811) and its August 28 default-policy ruling requirement.
 - [RUE-1817](https://linear.app/steve-klabnik/issue/RUE-1817): warm re-observation performance.
 - [RUE-1807](https://linear.app/steve-klabnik/issue/RUE-1807): completed warm edit-sequence fuzzing.
+- [Daemon resource qualification](../notes/daemon-resource-qualification.md): RUE-2129's
+  bounded ownership, reclamation, and release calibration record.
