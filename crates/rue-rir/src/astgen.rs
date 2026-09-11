@@ -77,9 +77,17 @@ pub struct AstGen<'a> {
     /// nested and sibling compound assignments never share a temporary.
     compound_counter: u32,
     /// Monotonic counter used to mint unique names for the hidden temporaries
-    /// of a struct-pattern `let` (spec 5.1:18, RUE-1884), so nested and
-    /// sibling patterns never share one.
+    /// of a struct-pattern `let` (spec 5.1:18, RUE-1884) and of a struct
+    /// pattern in a match arm (4.7:42, RUE-2175), so nested and sibling
+    /// patterns never share one.
     struct_pattern_count: u32,
+    /// The field bindings of the struct patterns in the match arm currently
+    /// being lowered, in pattern preorder (RUE-2175). A struct pattern in arm
+    /// position binds the matched value to a hidden local and reads each field
+    /// out of it with an ordinary `let`; those lets are emitted while the
+    /// pattern is lowered and collected here, and the arm's body is wrapped in
+    /// a block that runs them first.
+    pending_arm_bindings: Vec<u32>,
     /// Source bindings that may be changed while this producer runs. A place
     /// index referring to one of these must be captured before the compound
     /// assignment's right-hand side; immutable bindings and file constants
@@ -214,6 +222,7 @@ impl<'a> AstGen<'a> {
             for_counter: 0,
             compound_counter: 0,
             struct_pattern_count: 0,
+            pending_arm_bindings: Vec::new(),
             mutable_place_names: AHashSet::new(),
             mutable_place_names_added: Vec::new(),
             structural_path: None,
@@ -1393,14 +1402,33 @@ impl<'a> AstGen<'a> {
                         self.with_structural_segment(
                             crate::RirStructuralPathSegment::MatchArm(index as u32),
                             |this| {
+                                // A struct pattern in this arm (RUE-2175) emits
+                                // the lets that bind its fields while it is
+                                // lowered; they run before the body, in the
+                                // body's own scope.
+                                let outer_bindings = std::mem::take(&mut this.pending_arm_bindings);
                                 let pattern = this.with_structural_segment(
                                     crate::RirStructuralPathSegment::Operand(0),
                                     |this| this.gen_pattern(&arm.pattern),
+                                );
+                                let bindings = std::mem::replace(
+                                    &mut this.pending_arm_bindings,
+                                    outer_bindings,
                                 );
                                 let body = this.gen_expr_at(
                                     crate::RirStructuralPathSegment::Operand(1),
                                     &arm.body,
                                 );
+                                let body = if bindings.is_empty() {
+                                    body
+                                } else {
+                                    let mut refs: Vec<InstRef> =
+                                        bindings.into_iter().map(InstRef::from_raw).collect();
+                                    refs.push(body);
+                                    this.rir
+                                        .add_block(&refs, arm.body.span())
+                                        .record_failure(&mut this.payload_error)
+                                };
                                 (pattern, body)
                             },
                         )
@@ -1848,6 +1876,37 @@ impl<'a> AstGen<'a> {
             },
             Pattern::Bool(lit) => RirPattern::Bool(lit.value, lit.span),
             Pattern::Path(path) => self.gen_path_pattern(path),
+            Pattern::Struct(pattern) => self.gen_struct_match_pattern(pattern),
+        }
+    }
+
+    /// Lower one struct pattern in arm position (spec 4.7:42, RUE-2175) to
+    /// the form a let statement's struct pattern takes (5.1:21): the matched
+    /// value is bound to a hidden local, and each field pattern becomes a
+    /// `let` of a field read on that local, emitted here and collected for
+    /// the arm body's wrapper block. The pattern record itself carries the
+    /// hidden name, the head type and the field list so that semantic
+    /// analysis can check the head against the matched value and the list
+    /// against the struct's declared fields before the lets are analyzed.
+    fn gen_struct_match_pattern(&mut self, pattern: &StructPattern) -> RirPattern {
+        let index = self.struct_pattern_count;
+        self.struct_pattern_count += 1;
+        let local = self.intern(format!("_@rue:destructure:{index}"));
+        let head = self.intern_type_at(crate::RirStructuralPathSegment::Operand(0), &pattern.ty);
+        let field_names: Vec<Spur> = pattern
+            .fields
+            .iter()
+            .map(|field| self.symbol(field.name.name))
+            .collect();
+        for (position, field) in pattern.fields.iter().enumerate() {
+            let alloc = self.gen_struct_pattern_field_let(local, field, 1 + position as u32);
+            self.pending_arm_bindings.push(alloc.as_u32());
+        }
+        RirPattern::Struct {
+            local,
+            ty: head,
+            fields: field_names,
+            span: pattern.span,
         }
     }
 
@@ -1883,6 +1942,16 @@ impl<'a> AstGen<'a> {
                     RirPatternElement::Nested(
                         self.with_structural_segment(segment, |this| this.gen_path_pattern(nested)),
                     )
+                }
+                // A struct pattern over the payload field (RUE-2175) takes the
+                // slot a nested variant pattern would, and nests as one.
+                rue_parser::PatternElement::Struct(pattern) => {
+                    let segment = crate::RirStructuralPathSegment::Operand(
+                        (1 + ctor_arity + position) as u32,
+                    );
+                    RirPatternElement::Nested(self.with_structural_segment(segment, |this| {
+                        this.gen_struct_match_pattern(pattern)
+                    }))
                 }
             })
             .collect();
@@ -2331,41 +2400,51 @@ impl<'a> AstGen<'a> {
         out.push(check.as_u32());
 
         for (position, field) in pattern.fields.iter().enumerate() {
-            let field_name = self.symbol(field.name.name);
-            let (binding, is_mut) = match &field.binding {
-                StructPatternBinding::Ident { name, is_mut } => {
-                    (Some(self.symbol(name.name)), *is_mut)
-                }
-                StructPatternBinding::Wildcard(_) => (None, false),
-            };
-            let projection = self.with_structural_segment(
-                crate::RirStructuralPathSegment::Operand(2 + position as u32),
-                |this| {
-                    let base = this.rir.add_inst(Inst {
-                        data: InstData::VarRef {
-                            name: local,
-                            anchor: None,
-                        },
-                        span: field.span,
-                    });
-                    this.rir.add_inst(Inst {
-                        data: InstData::FieldGet {
-                            base,
-                            field: field_name,
-                        },
-                        span: field.span,
-                    })
-                },
-            );
-            if is_mut && let Some(name) = binding {
-                self.mark_mutable_name(name);
-            }
-            let alloc = self
-                .rir
-                .add_alloc(&[], binding, is_mut, None, projection, false, field.span)
-                .record_failure(&mut self.payload_error);
+            let alloc = self.gen_struct_pattern_field_let(local, field, 2 + position as u32);
             out.push(alloc.as_u32());
         }
+    }
+
+    /// Lower one field pattern of a struct pattern to the `let` it stands for
+    /// (5.1:21): `let b = <local>.f;`, `let mut b = <local>.f;`, or
+    /// `let _ = <local>.f;`. The projection takes the structural operand slot
+    /// `operand` of the enclosing pattern.
+    fn gen_struct_pattern_field_let(
+        &mut self,
+        local: Spur,
+        field: &rue_parser::StructPatternField,
+        operand: u32,
+    ) -> InstRef {
+        let field_name = self.symbol(field.name.name);
+        let (binding, is_mut) = match &field.binding {
+            StructPatternBinding::Ident { name, is_mut } => (Some(self.symbol(name.name)), *is_mut),
+            StructPatternBinding::Wildcard(_) => (None, false),
+        };
+        let projection = self.with_structural_segment(
+            crate::RirStructuralPathSegment::Operand(operand),
+            |this| {
+                let base = this.rir.add_inst(Inst {
+                    data: InstData::VarRef {
+                        name: local,
+                        anchor: None,
+                    },
+                    span: field.span,
+                });
+                this.rir.add_inst(Inst {
+                    data: InstData::FieldGet {
+                        base,
+                        field: field_name,
+                    },
+                    span: field.span,
+                })
+            },
+        );
+        if is_mut && let Some(name) = binding {
+            self.mark_mutable_name(name);
+        }
+        self.rir
+            .add_alloc(&[], binding, is_mut, None, projection, false, field.span)
+            .record_failure(&mut self.payload_error)
     }
 
     fn gen_statement(&mut self, stmt: &Statement) -> InstRef {
@@ -3193,6 +3272,9 @@ impl SiteWalker {
                     this.walk_path_pattern(nested)
                 });
             }
+            // A struct pattern in a payload position (RUE-2175) holds a type
+            // and binders only: nothing in it is an expression this walk
+            // numbers, exactly as a let statement's struct pattern (5.1:18).
         }
     }
 }

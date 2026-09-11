@@ -318,25 +318,12 @@ impl Parser {
     /// type-constructor call on a path head (`Result(i32, i32).Ok`, the group
     /// precedes a dot) from a variant's payload bindings (`Ok(v)`, the group is
     /// terminal) during a single left-to-right pass (RUE-947).
-    fn ctor_group_precedes_dot(&self) -> bool {
+    fn ctor_group_precedes_dot(&mut self) -> bool {
         debug_assert!(self.at(TokenKind::LParen));
-        let mut cursor = self.cursor;
-        let mut depth = 0usize;
-        while let Some(token) = self.tokens.get(cursor) {
-            match token.kind {
-                TokenKind::LParen => depth += 1,
-                TokenKind::RParen => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return self.tokens.get(cursor + 1).map(|t| t.kind) == Some(TokenKind::Dot);
-                    }
-                }
-                TokenKind::Eof => return false,
-                _ => {}
-            }
-            cursor += 1;
-        }
-        false
+        let Some(close) = self.matching_paren(self.cursor) else {
+            return false;
+        };
+        self.tokens.get(close + 1).map(|t| t.kind) == Some(TokenKind::Dot)
     }
 
     /// Reject a trailing-dot float literal (`5.`) before it is mistaken for a

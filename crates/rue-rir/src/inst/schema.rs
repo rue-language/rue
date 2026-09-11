@@ -202,6 +202,22 @@ pub enum RirPattern {
         /// Span of the pattern
         span: Span,
     },
+    /// Struct pattern `T { f: b, ... }` (RUE-2175, spec 4.7:42). The pattern
+    /// is irrefutable: it binds the matched value to the hidden `local`, whose
+    /// type must be the struct `ty` names, and the arm body's leading
+    /// statements read each field out of that local (the same lowering a let
+    /// statement's struct pattern has, 5.1:21). `fields` lists every field the
+    /// pattern names, in source order, for the exhaustive field check.
+    Struct {
+        /// The hidden local the matched value is bound to.
+        local: Spur,
+        /// The struct type the pattern head names.
+        ty: RirTypeSyntaxRef,
+        /// Every field the pattern names, in source order.
+        fields: Vec<Spur>,
+        /// Location of the pattern.
+        span: Span,
+    },
 }
 
 impl RirPattern {
@@ -212,6 +228,7 @@ impl RirPattern {
             RirPattern::Int { span, .. } => *span,
             RirPattern::Bool(_, span) => *span,
             RirPattern::Path { span, .. } => *span,
+            RirPattern::Struct { span, .. } => *span,
         }
     }
 }

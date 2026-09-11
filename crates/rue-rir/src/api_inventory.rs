@@ -256,7 +256,7 @@ fn rir_span_storage_is_tied_to_the_canonical_slot_visitor() {
     let pattern = source_region(schema, "pub enum RirPattern {", "impl RirPattern");
     assert_eq!(
         pattern.matches("Span").count(),
-        6,
+        7,
         "pattern span schema changed"
     );
     for shape in [
@@ -264,6 +264,7 @@ fn rir_span_storage_is_tied_to_the_canonical_slot_visitor() {
         "span: Span",
         "Bool(bool, Span)",
         "span: Span",
+        "fields: Vec<Spur>,\n        /// Location of the pattern.\n        span: Span",
     ] {
         assert!(pattern.contains(shape));
     }

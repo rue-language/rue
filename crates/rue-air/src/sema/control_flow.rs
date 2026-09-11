@@ -207,18 +207,61 @@ enum RootArm {
     Group(usize),
 }
 
-/// One level of a placed arm: a variant test and the payload it binds.
-struct ArmLevel<'p> {
-    pattern: &'p RirPattern,
-    /// The value this level's pattern is matched against: the match's
-    /// scrutinee at the outermost level, and the payload field the parent
-    /// level decomposes below that.
-    scrutinee: AirRef,
-    enum_id: crate::types::EnumId,
-    variant_index: u32,
-    /// The payload positions a nested pattern occupies. A level of its own
-    /// follows for each, so this level binds nothing there.
-    nested: Vec<u32>,
+/// One level of a placed arm: a pattern and the value it is matched against.
+enum ArmLevel<'p> {
+    /// A variant test and the payload it binds.
+    Variant {
+        pattern: &'p RirPattern,
+        /// The value this level's pattern is matched against: the match's
+        /// scrutinee at the outermost level, and the payload field the parent
+        /// level decomposes below that.
+        scrutinee: AirRef,
+        enum_id: crate::types::EnumId,
+        variant_index: u32,
+        /// The payload positions a nested pattern occupies. A level of its own
+        /// follows for each, so this level binds nothing there.
+        nested: Vec<u32>,
+    },
+    /// A struct pattern (spec 4.7:42, RUE-2175). It is irrefutable, so it
+    /// tests nothing: it binds the value it is matched against — the match's
+    /// scrutinee, or the payload field the parent level decomposes — to the
+    /// pattern's hidden local, and the arm body's leading `let`s read the
+    /// fields out of that local (5.1:21).
+    Struct {
+        pattern: &'p RirPattern,
+        scrutinee: AirRef,
+        /// The struct type the head names, which is also the value's type.
+        ty: Type,
+    },
+}
+
+impl ArmLevel<'_> {
+    /// The value this level is matched against.
+    fn scrutinee(&self) -> AirRef {
+        match self {
+            ArmLevel::Variant { scrutinee, .. } | ArmLevel::Struct { scrutinee, .. } => *scrutinee,
+        }
+    }
+
+    /// Whether a level of its own follows for some position of this level.
+    fn decomposes(&self) -> bool {
+        match self {
+            ArmLevel::Variant { nested, .. } => !nested.is_empty(),
+            ArmLevel::Struct { .. } => false,
+        }
+    }
+
+    /// The variant this level tests, when it is a variant level.
+    fn variant(&self) -> Option<(crate::types::EnumId, u32)> {
+        match self {
+            ArmLevel::Variant {
+                enum_id,
+                variant_index,
+                ..
+            } => Some((*enum_id, *variant_index)),
+            ArmLevel::Struct { .. } => None,
+        }
+    }
 }
 
 /// Where one arm lands in the match's dispatch, and what it must bind to get
@@ -266,11 +309,19 @@ fn decomposed_variants(patterns: &[&RirPattern]) -> AHashSet<Spur> {
     patterns
         .iter()
         .filter_map(|pattern| match pattern {
+            // A struct pattern in a payload position (RUE-2175) is
+            // irrefutable, so it discriminates nothing: only a nested
+            // *variant* pattern opens a group.
             RirPattern::Path {
                 variant, elements, ..
             } => elements
                 .iter()
-                .any(|element| matches!(element, rue_rir::RirPatternElement::Nested(_)))
+                .any(|element| {
+                    matches!(
+                        element,
+                        rue_rir::RirPatternElement::Nested(RirPattern::Path { .. })
+                    )
+                })
                 .then_some(*variant),
             _ => None,
         })
@@ -1205,6 +1256,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         self.body_interner().resolve(&*type_name),
                         self.body_interner().resolve(&*variant)
                     ),
+                    // A struct pattern's match is never prunable (its
+                    // scrutinee is a struct), so this spelling is nominal.
+                    RirPatternView::Struct { fields, .. } => format!(
+                        "{{ {} }}",
+                        fields
+                            .values()
+                            .map(|field| self.body_interner().resolve(&field).to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
                 };
                 ctx.warnings.push(
                     CompileWarning::new(WarningKind::UnreachablePattern(pat_str), pattern_span)
@@ -1288,9 +1349,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         *first_span_opt = Some(pattern_span);
                     }
                 }
-                // Enum patterns can't appear in a prunable match (they set
-                // `prunable = false` in the caller), so there's nothing to do.
-                RirPatternView::Path { .. } => {}
+                // Enum and struct patterns can't appear in a prunable match
+                // (they set `prunable = false` in the caller), so there's
+                // nothing to do.
+                RirPatternView::Path { .. } | RirPatternView::Struct { .. } => {}
             }
         }
     }
@@ -1445,8 +1507,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let scrutinee_type = scrutinee_result.ty;
         let reachable_edges_after_scrutinee = ctx.ownership.loop_break_stack.clone();
 
-        // Validate that we can match on this type (integers, booleans, and enums)
-        if !scrutinee_type.is_integer() && scrutinee_type != Type::BOOL && !scrutinee_type.is_enum()
+        // Validate that we can match on this type: integers, booleans, enums,
+        // and — when some arm is a struct pattern (4.7:42, RUE-2175) — the
+        // struct that pattern destructures. A struct scrutinee with no struct
+        // pattern to bind it stays what it always was, an invalid match type.
+        let has_struct_pattern_arm = self
+            .body_rir_ref()
+            .match_arms(arms)
+            .iter()
+            .any(|(pattern, _)| matches!(pattern, RirPatternView::Struct { .. }));
+        if !scrutinee_type.is_integer()
+            && scrutinee_type != Type::BOOL
+            && !scrutinee_type.is_enum()
+            && !(scrutinee_type.is_struct() && has_struct_pattern_arm)
         {
             return Err(CompileError::new(
                 ErrorKind::InvalidMatchType(self.format_type_name(scrutinee_type)),
@@ -1494,6 +1567,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Track patterns for exhaustiveness checking and duplicate detection
         let mut wildcard_span: Option<Span> = None;
         let mut wildcard_arm_index: Option<usize> = None;
+        // A struct pattern arm (4.7:42) is irrefutable like `_`: every arm
+        // after it is unreachable, and it makes the match exhaustive. The
+        // first irrefutable arm of either kind is the one a later arm's
+        // warning points at, with the wording for its kind.
+        let mut first_irrefutable: Option<(Span, &'static str, &'static str)> = None;
         let mut wildcard_outer_uncovered = false;
         let mut bool_true_span: Option<Span> = None;
         let mut bool_false_span: Option<Span> = None;
@@ -1526,8 +1604,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         for (arm_index, (pattern, body)) in arms.iter().enumerate() {
             let pattern_span = pattern.span();
 
-            // If we've seen a wildcard, everything after is unreachable
-            if let Some(first_wildcard_span) = wildcard_span {
+            // If we've seen an irrefutable pattern — a wildcard, or a struct
+            // pattern (4.7:42) — everything after is unreachable (4.7:18).
+            if let Some((first_irrefutable_span, label, note)) = first_irrefutable {
                 let pat_str = match &pattern {
                     RirPattern::Wildcard(_) => "_".to_string(),
                     RirPattern::Int {
@@ -1549,16 +1628,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             self.body_interner().resolve(&*variant)
                         )
                     }
+                    RirPattern::Struct { ty, fields, .. } => {
+                        self.spell_struct_pattern(*ty, fields, pattern_span, ctx)
+                    }
                 };
                 ctx.warnings.push(
-                    CompileWarning::new(
-                        WarningKind::UnreachablePattern(pat_str),
-                        pattern_span,
-                    )
-                    .with_label("previous wildcard pattern here", first_wildcard_span)
-                    .with_note(
-                        "this pattern will never be matched because the wildcard pattern above matches everything",
-                    ),
+                    CompileWarning::new(WarningKind::UnreachablePattern(pat_str), pattern_span)
+                        .with_label(label, first_irrefutable_span)
+                        .with_note(note),
                 );
             }
 
@@ -1611,6 +1688,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         wildcard_span = Some(pattern_span);
                         wildcard_arm_index = Some(arm_index);
                     }
+                    first_irrefutable.get_or_insert((
+                        pattern_span,
+                        "previous wildcard pattern here",
+                        "this pattern will never be matched because the wildcard pattern above matches everything",
+                    ));
                 }
                 RirPattern::Int {
                     value, negative, ..
@@ -1690,6 +1772,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // A variant pattern's legality is checked level by level as it
                 // is placed, immediately below.
                 RirPattern::Path { .. } => {}
+                // A struct pattern's head and field list are checked when it
+                // is placed, immediately below. It is irrefutable (4.7:42).
+                RirPattern::Struct { .. } => {
+                    first_irrefutable.get_or_insert((
+                        pattern_span,
+                        "previous struct pattern here",
+                        "this pattern will never be matched because the struct pattern above matches every value",
+                    ));
+                }
             }
 
             // A variant pattern is placed in the match's dispatch: at the
@@ -1698,6 +1789,21 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // variant's group. The walk validates every level it passes
             // through.
             let placement = match &pattern {
+                RirPattern::Struct { .. } => {
+                    let mut levels = Vec::new();
+                    self.resolve_struct_pattern_level(
+                        pattern,
+                        scrutinee_result.air_ref,
+                        scrutinee_type,
+                        ctx,
+                        &mut levels,
+                    )?;
+                    Some(ArmPlacement {
+                        levels,
+                        group: None,
+                        fields: Vec::new(),
+                    })
+                }
                 RirPattern::Path { .. } => {
                     let placement = self.place_match_arm(
                         air,
@@ -1709,14 +1815,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         &mut air_arms,
                         ctx,
                     )?;
-                    pattern_enum_id = Some(placement.levels[0].enum_id);
+                    let (enum_id, root_variant) = placement.levels[0]
+                        .variant()
+                        .expect("a placed variant pattern's first level tests its variant");
+                    pattern_enum_id = Some(enum_id);
                     // The outermost variant is covered by this arm's group,
                     // whether or not the arm discriminates its payload further.
                     // A second arm naming a variant that no arm discriminates
                     // further is unreachable, exactly as a repeated integer or
                     // boolean pattern is; when the variant *is* discriminated,
                     // reachability is decided over the group's matrix instead.
-                    let root_variant = placement.levels[0].variant_index;
                     if let Some(first_span) = covered_variants.get(&root_variant)
                         && placement.group.is_none()
                         && wildcard_span.is_none()
@@ -1766,12 +1874,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             if let Some(placement) = &placement {
                 for level in &placement.levels {
                     let level_stmts = self.materialize_match_bindings(air, level, ctx)?;
-                    if level_stmts.is_empty() && level.nested.is_empty() {
-                        undrained.push(level.scrutinee);
+                    if level_stmts.is_empty() && !level.decomposes() {
+                        undrained.push(level.scrutinee());
                     }
                     binding_stmts.extend(level_stmts);
                 }
-            } else if scrutinee_type.is_enum() {
+            } else if scrutinee_type.is_enum() || scrutinee_type.is_struct() {
+                // A `_` arm over a struct scrutinee (4.7:42) consumes the
+                // value exactly as one over an enum does.
                 undrained.push(scrutinee_result.air_ref);
             }
 
@@ -1912,10 +2022,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             AirPattern::Int(pattern_int_denoted(*value, *negative) as i64)
                         }
                         RirPattern::Bool(b, _) => AirPattern::Bool(*b),
+                        // Irrefutable: the arm's bindings do all the work.
+                        RirPattern::Struct { .. } => AirPattern::Wildcard,
                         RirPattern::Path { .. } => {
-                            let level = placement
+                            let (enum_id, variant_index) = placement
                                 .as_ref()
                                 .and_then(|placement| placement.levels.first())
+                                .and_then(ArmLevel::variant)
                                 .ok_or_else(|| {
                                     CompileError::new(
                                         ErrorKind::InternalError(
@@ -1925,8 +2038,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                     )
                                 })?;
                             AirPattern::EnumVariant {
-                                enum_id: level.enum_id,
-                                variant_index: level.variant_index,
+                                enum_id,
+                                variant_index,
                             }
                         }
                     };
@@ -1955,8 +2068,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
         ctx.ownership.merge_arm_moves(arm_move_states);
 
-        // Exhaustiveness checking
-        let has_wildcard = wildcard_span.is_some();
+        // Exhaustiveness checking. A struct pattern arm is irrefutable
+        // (4.7:42), so it covers the scrutinee as a wildcard does.
+        let has_wildcard = first_irrefutable.is_some();
         let bool_true_covered = bool_true_span.is_some();
         let bool_false_covered = bool_false_span.is_some();
         let is_exhaustive = if scrutinee_type == Type::BOOL {
@@ -2113,7 +2227,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
 
-        let air_ref = if groups.is_empty() {
+        let air_ref = if scrutinee_type.is_struct() {
+            // Every arm over a struct scrutinee is irrefutable (a struct
+            // pattern or `_`), so the first arm always runs: there is no
+            // discriminant to switch on, and the arm's block — its bindings
+            // followed by its body — is the match's value. Later arms were
+            // analyzed for their diagnostics and reported unreachable above.
+            arm_bodies[0]
+        } else if groups.is_empty() {
             let body_arms: Vec<(AirPattern, AirRef)> = air_arms
                 .iter()
                 .map(|arm| match arm {
@@ -3004,7 +3125,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 matches!(element, rue_rir::RirPatternElement::Nested(_)).then_some(index as u32)
             })
             .collect();
-        levels.push(ArmLevel {
+        levels.push(ArmLevel::Variant {
             pattern,
             scrutinee,
             enum_id,
@@ -3021,6 +3142,24 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 fields.push(MatrixPattern::Wildcard);
                 continue;
             };
+            // A struct pattern over the position (4.7:42, RUE-2175) binds the
+            // whole field and discriminates nothing: its level projects the
+            // field out and its row entry is a wildcard.
+            if let RirPattern::Struct { .. } = inner {
+                let value = air.add_inst(AirInst {
+                    data: AirInstData::EnumPayloadGet {
+                        base: scrutinee,
+                        enum_id,
+                        variant_index,
+                        field_index: index as u32,
+                    },
+                    ty: field_type,
+                    span: inner.span(),
+                });
+                self.resolve_struct_pattern_level(inner, value, field_type, ctx, levels)?;
+                fields.push(MatrixPattern::Wildcard);
+                continue;
+            }
             if field_type.as_enum().is_none() {
                 return Err(CompileError::new(
                     ErrorKind::InvalidMatchType(self.format_type_name(field_type)),
@@ -3044,6 +3183,81 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             variant_index,
             fields,
         })
+    }
+
+    /// Resolve one struct pattern (spec 4.7:42, RUE-2175) against the value
+    /// it is matched on and record its level. The checks are the ones a let
+    /// statement's struct pattern makes (5.1:19, 5.1:20): the preview gate,
+    /// a head that names a struct type (E0213) and names the value's own
+    /// type (E0206), and a field list naming every declared field exactly
+    /// once (E0400, E0401, E0402). The field reads themselves are the arm
+    /// body's leading `let`s, analyzed with the body.
+    fn resolve_struct_pattern_level<'p>(
+        &mut self,
+        pattern: &'p RirPattern,
+        scrutinee: AirRef,
+        scrutinee_type: Type,
+        ctx: &AnalysisContext,
+        levels: &mut Vec<ArmLevel<'p>>,
+    ) -> CompileResult<()> {
+        let RirPattern::Struct {
+            ty, fields, span, ..
+        } = pattern
+        else {
+            unreachable!("resolve_struct_pattern_level accepts only struct patterns")
+        };
+        let span = *span;
+        self.require_preview(
+            rue_error::PreviewFeature::StructPatterns,
+            "struct patterns",
+            span,
+        )?;
+        let head = self.resolve_rir_type_with_ctx(*ty, span, ctx)?;
+        let Some(struct_id) = head.as_struct() else {
+            return Err(CompileError::new(
+                ErrorKind::StructPatternNotStruct {
+                    type_name: self.format_type_name(head),
+                },
+                span,
+            )
+            .with_help("a struct pattern names the fields of a struct type"));
+        };
+        if !self.types_equivalent(scrutinee_type, head) {
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: self.format_type_name(head),
+                    found: self.format_type_name(scrutinee_type),
+                },
+                span,
+            )
+            .with_help("the pattern head must name the matched value's own struct type"));
+        }
+        self.check_struct_pattern_fields(struct_id, fields.iter().copied(), span)?;
+        levels.push(ArmLevel::Struct {
+            pattern,
+            scrutinee,
+            ty: head,
+        });
+        Ok(())
+    }
+
+    /// Spell a struct pattern for a diagnostic: `Point { x, y }`.
+    fn spell_struct_pattern(
+        &mut self,
+        ty: rue_rir::RirTypeSyntaxRef,
+        fields: &[Spur],
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> String {
+        let head = match self.resolve_rir_type_with_ctx(ty, span, ctx) {
+            Ok(head) => self.format_type_name(head),
+            Err(_) => "_".to_string(),
+        };
+        let fields: Vec<&str> = fields
+            .iter()
+            .map(|field| self.body_interner().resolve(field))
+            .collect();
+        format!("{head} {{ {} }}", fields.join(", "))
     }
 
     /// Compile one variant group's pattern matrix into a decision tree
@@ -3374,18 +3588,56 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         level: &ArmLevel<'_>,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<Vec<u32>> {
+        let (pattern, enum_id, variant_index, nested_positions, scrutinee_ref) = match level {
+            ArmLevel::Variant {
+                pattern,
+                scrutinee,
+                enum_id,
+                variant_index,
+                nested,
+            } => (*pattern, *enum_id, *variant_index, nested, *scrutinee),
+            // A struct pattern (4.7:42) binds the matched value to its hidden
+            // local — the temporary a let statement's struct pattern binds
+            // (5.1:21) — and the arm body's leading `let`s move or copy each
+            // field out of it. Whatever the local still owns at the arm's end
+            // is dropped then, so the value is fully accounted for and the
+            // caller's whole-scrutinee drop must not run.
+            ArmLevel::Struct {
+                pattern,
+                scrutinee,
+                ty,
+            } => {
+                let RirPattern::Struct { local, span, .. } = pattern else {
+                    unreachable!("a struct level holds a struct pattern")
+                };
+                let (local, span) = (*local, *span);
+                let (slot, storage_live, alloc) =
+                    self.allocate_local_storage(air, *scrutinee, *ty, span, ctx)?;
+                ctx.insert_local(
+                    local,
+                    LocalVar {
+                        slot,
+                        ty: *ty,
+                        is_mut: false,
+                        span,
+                        // Nothing can name the local, and a pattern over a
+                        // field-less struct reads nothing from it.
+                        allow_unused: true,
+                    },
+                );
+                return Ok(vec![storage_live.as_u32(), alloc.as_u32()]);
+            }
+        };
         let RirPattern::Path {
             variant,
             elements,
             span,
             ..
-        } = level.pattern
+        } = pattern
         else {
             return Ok(Vec::new());
         };
         let pattern_span = *span;
-        let (enum_id, variant_index) = (level.enum_id, level.variant_index);
-        let scrutinee_ref = level.scrutinee;
         let def = self.body_type_pool().enum_def(enum_id);
         let variant_name = self.body_interner().resolve(&*variant).to_string();
         let enum_name = self.format_type_name(Type::new_enum(enum_id));
@@ -3464,7 +3716,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // A position a nested pattern occupies is accounted for by the
             // level that matches it (RUE-2053): that level binds the field's
             // own positions, so nothing is bound or dropped here.
-            if level.nested.contains(&(i as u32)) {
+            if nested_positions.contains(&(i as u32)) {
                 continue;
             }
             // The source name at this position, or `None` when the position

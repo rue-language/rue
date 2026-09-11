@@ -2071,3 +2071,275 @@ fn main() -> i32 {
 """
 expected_stdout = "5\n-1\n"
 exit_code = 4
+
+# =============================================================================
+# Struct Patterns in Match Arms (4.7:42-4.7:44, preview feature
+# `struct_patterns`, RUE-2175)
+# =============================================================================
+
+[[case]]
+name = "struct_pattern_arm_binds_every_field"
+spec = ["4.7:42", "4.7:44"]
+preview = "struct_patterns"
+preview_should_pass = true
+description = "An arm's struct pattern over a struct scrutinee binds shorthand, renamed, mutable, and discarded fields"
+source = """
+struct Point { x: i32, y: i32, z: i32, w: i32 }
+
+fn main() -> i32 {
+    let p = Point { x: 40, y: 2, z: 100, w: 7 };
+    match p {
+        Point { x, y: py, mut z, w: _ } => {
+            z = z / 100;
+            x + py + z - 1
+        }
+    }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "struct_pattern_in_a_payload_position"
+spec = ["4.7:42", "4.7:44"]
+preview = "struct_patterns"
+preview_should_pass = true
+description = "A payload position holds a struct pattern that binds the fields of the payload value"
+source = """
+struct Point { x: i32, y: i32 }
+enum R { Ok(Point), Err(i32) }
+
+fn f(k: i32) -> R {
+    if k > 0 { R.Ok(Point { x: 40, y: 2 }) } else { R.Err(7) }
+}
+
+fn main() -> i32 {
+    let a = match f(1) { R.Ok(Point { x, y }) => x + y, R.Err(e) => e };
+    let b = match f(0) { R.Ok(Point { x, y }) => x + y, R.Err(e) => e };
+    a + b - 7
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "struct_pattern_head_takes_every_type_form"
+spec = ["4.7:42"]
+preview = "struct_patterns"
+preview_should_pass = true
+description = "The head is a type: a type-constructor call names an instantiated struct"
+source = """
+fn Pair(comptime T: type) -> type { struct { a: T, b: T } }
+
+fn main() -> i32 {
+    let p = Pair(i32) { a: 40, b: 2 };
+    match p { Pair(i32) { a, b } => a + b }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "struct_pattern_covers_its_payload_position_in_a_variant_group"
+spec = ["4.7:44", "4.7:40"]
+preview = "struct_patterns"
+preview_should_pass = true
+description = "Beside nested variant patterns, a struct pattern covers its position like a binding; the group stays exhaustive over the other columns"
+source = """
+struct Point { x: i32, y: i32 }
+enum Inner { A(i32), B }
+enum Outer { Pair(Inner, Point), Other }
+
+fn pick(o: Outer) -> i32 {
+    match o {
+        Outer.Pair(Inner.A(v), Point { x, y }) => v + x + y,
+        Outer.Pair(Inner.B, Point { x, y: _ }) => x,
+        Outer.Other => 100,
+    }
+}
+
+fn main() -> i32 {
+    let a = pick(Outer.Pair(Inner.A(10), Point { x: 30, y: 2 }));
+    let b = pick(Outer.Pair(Inner.B, Point { x: 1, y: 1 }));
+    a + b - pick(Outer.Other) + 99
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "struct_pattern_arm_is_irrefutable"
+spec = ["4.7:44", "4.7:18"]
+preview = "struct_patterns"
+preview_should_pass = true
+description = "One struct pattern arm is exhaustive over a struct scrutinee, and an arm after it is unreachable"
+source = """
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let p = Point { x: 40, y: 2 };
+    match p {
+        Point { x, y } => x + y,
+        _ => 0,
+    }
+}
+"""
+warning_contains = ["unreachable pattern '_'", "previous struct pattern here"]
+exit_code = 42
+
+[[case]]
+name = "struct_pattern_temporary_drops_at_the_end_of_the_arm"
+spec = ["4.7:44", "4.7:31"]
+preview = "struct_patterns"
+preview_should_pass = true
+description = "A discarded field drops at its own let, a moved field with the arm's bindings, and what the temporary still owns when the arm ends, all before the code after the match"
+source = """
+struct Tag { id: i32 }
+drop fn Tag(self) { @dbg(self.id); }
+struct Pair { a: Tag, b: Tag }
+enum Slot { Full(Pair), Empty }
+
+fn main() -> i32 {
+    let s = Slot.Full(Pair { a: Tag { id: 1 }, b: Tag { id: 2 } });
+    match s {
+        Slot.Full(Pair { a, b: _ }) => @dbg(a.id + 10),
+        Slot.Empty => @dbg(0),
+    }
+    @dbg(3);
+    0
+}
+"""
+expected_stdout = """
+2
+11
+1
+3
+"""
+exit_code = 0
+
+[[case]]
+name = "struct_pattern_arm_cannot_move_out_of_a_destructor_struct"
+spec = ["4.7:44"]
+preview = "struct_patterns"
+preview_should_pass = true
+source = """
+struct Handle { fd: i32 }
+drop fn Handle(self) { @dbg(self.fd); }
+struct Guard { handle: Handle, id: i32 }
+drop fn Guard(self) { @dbg(self.id); }
+fn main() -> i32 {
+    let g = Guard { handle: Handle { fd: 3 }, id: 7 };
+    match g { Guard { handle, id } => handle.fd + id }
+}
+"""
+compile_fail = true
+error_contains = "E0456"
+
+[[case]]
+name = "struct_pattern_arm_cannot_discard_a_linear_field"
+spec = ["4.7:44"]
+preview = "struct_patterns"
+preview_should_pass = true
+source = """
+linear struct Token { id: i32 }
+struct Holder { t: Token, n: i32 }
+fn main() -> i32 {
+    let h = Holder { t: Token { id: 1 }, n: 2 };
+    match h { Holder { t: _, n } => n }
+}
+"""
+compile_fail = true
+error_contains = "E0478"
+
+[[case]]
+name = "struct_pattern_arm_head_must_be_a_struct"
+spec = ["4.7:43"]
+preview = "struct_patterns"
+preview_should_pass = true
+source = """
+enum Color { Red, Blue }
+fn main() -> i32 { let c = Color.Red; match c { Color { x } => 1 } }
+"""
+compile_fail = true
+error_contains = "E0213"
+
+[[case]]
+name = "struct_pattern_arm_head_must_name_the_scrutinee_type"
+spec = ["4.7:43"]
+preview = "struct_patterns"
+preview_should_pass = true
+source = """
+struct Point { x: i32, y: i32 }
+struct Size { w: i32, h: i32 }
+fn main() -> i32 { let p = Point { x: 1, y: 2 }; match p { Size { w, h } => w + h } }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected Size, found Point"]
+
+[[case]]
+name = "struct_pattern_in_a_payload_position_must_name_the_field_type"
+spec = ["4.7:43"]
+preview = "struct_patterns"
+preview_should_pass = true
+source = """
+struct Point { x: i32, y: i32 }
+enum R { Ok(i32), Err(i32) }
+fn main() -> i32 {
+    let r = R.Ok(1);
+    match r { R.Ok(Point { x, y }) => x + y, R.Err(e) => e }
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected Point, found i32"]
+
+[[case]]
+name = "struct_pattern_arm_names_every_field_exactly_once"
+spec = ["4.7:43"]
+preview = "struct_patterns"
+preview_should_pass = true
+source = """
+struct Point { x: i32, y: i32, z: i32 }
+fn main() -> i32 { let p = Point { x: 1, y: 2, z: 3 }; match p { Point { x } => x } }
+"""
+compile_fail = true
+error_contains = ["E0400", "missing fields 'y', 'z' in struct 'Point'"]
+
+[[case]]
+name = "struct_scrutinee_needs_a_struct_pattern_arm"
+spec = ["4.7:43"]
+preview = "struct_patterns"
+preview_should_pass = true
+description = "A match over a struct value whose arms are all `_` is still an invalid match type"
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 { let p = Point { x: 1, y: 2 }; match p { _ => 3 } }
+"""
+compile_fail = true
+error_contains = "E0602"
+
+[[case]]
+name = "struct_pattern_arm_requires_preview"
+spec = ["4.7:42", "8.4:1"]
+description = "A struct pattern in a match arm without --preview struct_patterns is the preview-gate error naming the feature"
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { x: 40, y: 2 };
+    match p { Point { x, y } => x + y }
+}
+"""
+compile_fail = true
+error_contains = ["E1100", "--preview struct_patterns"]
+
+[[case]]
+name = "struct_pattern_field_positions_do_not_nest"
+spec = ["4.7:42"]
+preview = "struct_patterns"
+preview_should_pass = true
+description = "A field pattern is a binding only: a nested pattern inside a field position is a syntax error"
+source = """
+struct Point { x: i32, y: i32 }
+struct Line { a: Point, b: Point }
+fn main() -> i32 {
+    let l = Line { a: Point { x: 1, y: 2 }, b: Point { x: 3, y: 4 } };
+    match l { Line { a: Point { x, y }, b } => x + y + b.x }
+}
+"""
+compile_fail = true
+error_contains = "E0100"

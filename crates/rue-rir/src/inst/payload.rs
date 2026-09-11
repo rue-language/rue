@@ -298,13 +298,21 @@ pub enum RirPatternView<'a> {
         elements: RirPatternElements<'a>,
         span: Span,
     },
+    /// A struct pattern (RUE-2175): the hidden local the value is bound to,
+    /// the head type, and the field names in source order.
+    Struct {
+        local: Spur,
+        ty: RirTypeSyntaxRef,
+        fields: RirSymbols<'a>,
+        span: Span,
+    },
 }
 
 impl RirPatternView<'_> {
     pub fn span(&self) -> Span {
         match self {
             Self::Wildcard(span) | Self::Bool(_, span) => *span,
-            Self::Int { span, .. } | Self::Path { span, .. } => *span,
+            Self::Int { span, .. } | Self::Path { span, .. } | Self::Struct { span, .. } => *span,
         }
     }
 
@@ -335,6 +343,17 @@ impl RirPatternView<'_> {
                 type_name: *type_name,
                 variant: *variant,
                 elements: elements.to_vec(),
+                span: *span,
+            },
+            Self::Struct {
+                local,
+                ty,
+                fields,
+                span,
+            } => RirPattern::Struct {
+                local: *local,
+                ty: *ty,
+                fields: fields.to_vec(),
                 span: *span,
             },
         }
@@ -739,6 +758,9 @@ pub enum PatternKind {
     /// Path pattern: [kind, span_start, span_len, module, type_name, variant]
     /// module is u32::MAX for None, otherwise an InstRef
     Path = 3,
+    /// Struct pattern (RUE-2175): [kind, span_start, span_len, span_file,
+    /// local, type_syntax, n_fields, fields…]
+    Struct = 4,
 }
 
 /// Words each pattern kind occupies, *excluding* the arm-body word.
@@ -756,6 +778,14 @@ const PATTERN_WILDCARD_WORDS: usize = 4; // kind, span_start, span_len, span_fil
 const PATTERN_INT_WORDS: usize = 7; // + value_lo, value_hi, negative
 const PATTERN_BOOL_WORDS: usize = 5; // + value
 const PATTERN_PATH_HEADER_WORDS: usize = 10; // + module, ctor_head, type_name, variant, n_elements, element_words
+/// A struct pattern record (RUE-2175): kind, span×3, the hidden local, the
+/// head's type-syntax reference and the field count, then one symbol word per
+/// field. Fields never nest, so the record's extent is fixed by its count.
+const PATTERN_STRUCT_HEADER_WORDS: usize = 7;
+const MATCH_STRUCT_LOCAL: usize = 4;
+const MATCH_STRUCT_TYPE: usize = 5;
+const MATCH_STRUCT_FIELD_COUNT: usize = 6;
+const MATCH_STRUCT_FIELDS_START: usize = 7;
 /// A binder payload position: [element kind, symbol].
 const PATTERN_ELEMENT_BINDING_WORDS: usize = 2;
 /// Payload-position kinds inside a path record's element section.
@@ -822,6 +852,7 @@ fn encoded_pattern_record_words(pattern: &RirPattern) -> Option<usize> {
         RirPattern::Path { elements, .. } => {
             PATTERN_PATH_HEADER_WORDS.checked_add(encoded_pattern_element_words(elements)?)
         }
+        RirPattern::Struct { fields, .. } => PATTERN_STRUCT_HEADER_WORDS.checked_add(fields.len()),
     }
 }
 
@@ -873,6 +904,9 @@ fn decoded_pattern_record_words(words: &[u32], position: usize) -> Option<usize>
             .and_then(|element_words| {
                 PATTERN_PATH_HEADER_WORDS.checked_add(*element_words as usize)
             }),
+        x if x == PatternKind::Struct as u32 => words
+            .get(position + MATCH_STRUCT_FIELD_COUNT)
+            .and_then(|count| PATTERN_STRUCT_HEADER_WORDS.checked_add(*count as usize)),
         _ => None,
     }
 }
@@ -913,6 +947,19 @@ fn validate_pattern_record(
     if kind == PatternKind::Bool as u32 {
         if words[position + MATCH_VALUE_LO_OR_BOOL_OR_BODY] > 1 {
             return Err("invalid boolean scalar");
+        }
+        return Ok(());
+    }
+    if kind == PatternKind::Struct as u32 {
+        if decode_symbol_word(words[position + MATCH_STRUCT_LOCAL]).is_none() {
+            return Err("symbol word is not representable");
+        }
+        // The type-syntax reference is range-checked against the arena by the
+        // instruction-level validation walk, which owns that table.
+        for field in &words[position + MATCH_STRUCT_FIELDS_START..end] {
+            if decode_symbol_word(*field).is_none() {
+                return Err("symbol word is not representable");
+            }
         }
         return Ok(());
     }
@@ -1039,6 +1086,25 @@ fn decode_pattern_record(
                 return None;
             }
             Some((RirPatternView::Bool(value != 0, span), record_words))
+        }
+        x if x == PatternKind::Struct as u32 => {
+            let count = *words.get(position + MATCH_STRUCT_FIELD_COUNT)? as usize;
+            let section = position + MATCH_STRUCT_FIELDS_START;
+            Some((
+                RirPatternView::Struct {
+                    local: decode_symbol_word(words[position + MATCH_STRUCT_LOCAL])?,
+                    ty: RirTypeSyntaxRef::from_u32(words[position + MATCH_STRUCT_TYPE]),
+                    // The field words were checked by `validate_pattern_record`
+                    // before this record was decoded.
+                    fields: RirSlice::new_validated(
+                        &words[section..section + count],
+                        SYMBOL_SCHEMA.width,
+                        |record| validated_symbol_word(record[0]),
+                    ),
+                    span,
+                },
+                record_words,
+            ))
         }
         x if x == PatternKind::Path as u32 => {
             let count = *words.get(position + MATCH_PATH_ELEMENT_COUNT)? as usize;
@@ -1656,6 +1722,14 @@ impl Rir {
         let limit = || RirPayloadBuildError::ResourceLimitExceeded {
             family: RirMatchArmsRange::FAMILY,
         };
+        if let RirPattern::Struct { local, fields, .. } = pattern {
+            u32::try_from(fields.len()).map_err(|_| limit())?;
+            Self::symbol_word(RirMatchArmsRange::FAMILY, *local)?;
+            for field in fields {
+                Self::symbol_word(RirMatchArmsRange::FAMILY, *field)?;
+            }
+            return Ok(());
+        }
         let RirPattern::Path {
             type_name,
             variant,
@@ -1762,6 +1836,22 @@ impl Rir {
                             Self::encode_pattern_record(words, nested);
                         }
                     }
+                }
+            }
+            RirPattern::Struct {
+                local, ty, fields, ..
+            } => {
+                words.extend([
+                    PatternKind::Struct as u32,
+                    span.start(),
+                    span.len(),
+                    span.file_id.index(),
+                    u32::try_from(local.into_usize()).expect("prevalidated symbol"),
+                    ty.as_u32(),
+                    u32::try_from(fields.len()).expect("prevalidated length"),
+                ]);
+                for field in fields {
+                    words.push(u32::try_from(field.into_usize()).expect("prevalidated symbol"));
                 }
             }
         }

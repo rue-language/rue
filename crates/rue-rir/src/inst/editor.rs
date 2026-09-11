@@ -812,6 +812,7 @@ impl RirEditor {
             take_span: &mut dyn FnMut(RirSpanField) -> Result<Span, RirSpanRemapError<E>>,
             symbol: &mut dyn FnMut(Spur) -> Spur,
             remap_ref: &dyn Fn(InstRef) -> InstRef,
+            remap_type: &dyn Fn(RirTypeSyntaxRef) -> RirTypeSyntaxRef,
         ) -> Result<RirPattern, RirSpanRemapError<E>> {
             let index = *nested;
             *nested += 1;
@@ -840,9 +841,11 @@ impl RirEditor {
                             RirPatternElementView::Binding(name) => {
                                 RirPatternElement::Binding(symbol(name))
                             }
-                            RirPatternElementView::Nested(inner) => RirPatternElement::Nested(
-                                remap_pattern(&inner, arm, nested, take_span, symbol, remap_ref)?,
-                            ),
+                            RirPatternElementView::Nested(inner) => {
+                                RirPatternElement::Nested(remap_pattern(
+                                    &inner, arm, nested, take_span, symbol, remap_ref, remap_type,
+                                )?)
+                            }
                         });
                     }
                     RirPattern::Path {
@@ -854,6 +857,14 @@ impl RirEditor {
                         span,
                     }
                 }
+                RirPatternView::Struct {
+                    local, ty, fields, ..
+                } => RirPattern::Struct {
+                    local: symbol(*local),
+                    ty: remap_type(*ty),
+                    fields: fields.values().map(&mut *symbol).collect(),
+                    span,
+                },
             })
         }
 
@@ -1111,6 +1122,7 @@ impl RirEditor {
                                     &mut take_span,
                                     &mut symbol,
                                     &remap_ref,
+                                    &remap_type,
                                 )?;
                                 Ok((pattern, remap_ref(body)))
                             })

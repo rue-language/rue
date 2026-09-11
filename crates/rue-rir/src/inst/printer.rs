@@ -191,6 +191,20 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     format!("{}({})", base, positions.join(", "))
                 }
             }
+            RirPatternView::Struct {
+                local, ty, fields, ..
+            } => {
+                let fields: Vec<&str> = fields
+                    .iter()
+                    .map(|field| self.interner.resolve(&field))
+                    .collect();
+                format!(
+                    "{} {{ {} }} @{}",
+                    self.format_type(*ty),
+                    fields.join(", "),
+                    self.interner.resolve(&*local)
+                )
+            }
         }
     }
 

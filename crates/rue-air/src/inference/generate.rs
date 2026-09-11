@@ -4342,6 +4342,17 @@ impl<'a> ConstraintGenerator<'a> {
         pattern: &rue_rir::RirPatternView<'_>,
         ctx: &mut ConstraintContext,
     ) {
+        // A struct pattern arm (4.7:42, RUE-2175) binds the scrutinee to its
+        // hidden local, typed by the pattern head; the arm body's leading
+        // lets read the fields out of that local.
+        if let rue_rir::RirPatternView::Struct {
+            local, ty, span, ..
+        } = pattern
+        {
+            let head = self.infer_type_hint(self.rir.type_syntax(), *ty, None, None, span.file_id);
+            self.register_struct_pattern_local(*local, head, *span, ctx);
+            return;
+        }
         let rue_rir::RirPatternView::Path {
             module,
             ctor_head,
@@ -4370,6 +4381,27 @@ impl<'a> ConstraintGenerator<'a> {
             return;
         };
         self.register_payload_bindings(enum_ty, *variant, *elements, *pat_span, ctx);
+    }
+
+    /// Register the hidden local a struct pattern binds the matched value to
+    /// (RUE-2175). Its type is the head's when the head resolves, and a fresh
+    /// variable otherwise; sema reports an unresolvable head itself.
+    fn register_struct_pattern_local(
+        &mut self,
+        local: lasso::Spur,
+        ty: Option<InferType>,
+        span: rue_span::Span,
+        ctx: &mut ConstraintContext,
+    ) {
+        let ty = ty.unwrap_or_else(|| InferType::Var(self.fresh_var()));
+        ctx.insert_local(
+            local,
+            LocalVarInfo {
+                ty,
+                is_mut: false,
+                span,
+            },
+        );
     }
 
     /// Register the locals one variant pattern's payload positions introduce,
@@ -4424,6 +4456,21 @@ impl<'a> ConstraintGenerator<'a> {
                             nested_variant,
                             nested_elements,
                             span,
+                            ctx,
+                        );
+                    }
+                    // A struct pattern over the position (RUE-2175) binds the
+                    // payload field itself to its hidden local.
+                    if let rue_rir::RirPatternView::Struct {
+                        local,
+                        span: nested_span,
+                        ..
+                    } = nested
+                    {
+                        self.register_struct_pattern_local(
+                            local,
+                            Some(InferType::Concrete(ty)),
+                            nested_span,
                             ctx,
                         );
                     }
@@ -4492,6 +4539,11 @@ impl<'a> ConstraintGenerator<'a> {
                     InferType::Concrete(Type::ERROR)
                 }
             }
+            // A struct pattern (RUE-2175) contributes its head type; a head
+            // that does not resolve here is sema's to report.
+            rue_rir::RirPatternView::Struct { ty, span, .. } => self
+                .infer_type_hint(self.rir.type_syntax(), *ty, None, None, span.file_id)
+                .unwrap_or_else(|| InferType::Var(self.fresh_var())),
         }
     }
 

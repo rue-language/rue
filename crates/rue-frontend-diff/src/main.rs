@@ -787,12 +787,42 @@ impl Shapes<'_> {
                         rue_parser::PatternElement::Nested(nested) => {
                             self.pattern(&Pattern::Path(nested.clone()))
                         }
+                        rue_parser::PatternElement::Struct(pattern) => self.struct_pattern(pattern),
                     })),
                     "_".into(),
                     "_".into(),
                 )
             }
+            Pattern::Struct(pattern) => self.struct_pattern(pattern),
         }
+    }
+
+    /// A struct pattern in a match arm (RUE-2175): the head type and one
+    /// field entry per binding, in source order.
+    fn struct_pattern(&self, pattern: &rue_parser::StructPattern) -> String {
+        node(
+            "pattern",
+            " form=struct",
+            self.ty(&pattern.ty),
+            list(pattern.fields.iter().map(|field| {
+                node(
+                    "field-pattern",
+                    match &field.binding {
+                        rue_parser::StructPatternBinding::Ident { is_mut: true, .. } => " form=mut",
+                        rue_parser::StructPatternBinding::Ident { is_mut: false, .. } => {
+                            " form=bind"
+                        }
+                        rue_parser::StructPatternBinding::Wildcard(_) => " form=discard",
+                    },
+                    self.ident(),
+                    "_".into(),
+                    "_".into(),
+                    "_".into(),
+                )
+            })),
+            "_".into(),
+            "_".into(),
+        )
     }
 
     fn statement(&self, statement: &Statement) -> String {

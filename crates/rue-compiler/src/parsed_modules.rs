@@ -2106,6 +2106,22 @@ impl<'a> ParsedBodyProjectionCollector<'a> {
             match element {
                 rue_parser::PatternElement::Binding(binding) => self.bind_local(*binding)?,
                 rue_parser::PatternElement::Nested(nested) => self.visit_path_pattern(nested)?,
+                rue_parser::PatternElement::Struct(pattern) => {
+                    self.visit_struct_pattern(pattern)?
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Record a struct pattern's head as a type position and bind each of its
+    /// field bindings as an ordinary local (spec 5.1:18, 5.1:21; 4.7:42 in a
+    /// match arm).
+    fn visit_struct_pattern(&mut self, pattern: &rue_parser::StructPattern) -> CompileResult<()> {
+        self.visit_type(&pattern.ty)?;
+        for field in &pattern.fields {
+            if let rue_parser::StructPatternBinding::Ident { name, .. } = &field.binding {
+                self.bind_local(*name)?;
             }
         }
         Ok(())
@@ -2278,17 +2294,7 @@ impl<'a> ParsedBodyProjectionCollector<'a> {
                         }
                         self.visit_expr(&binding.init)?;
                         if let LetPattern::Struct(pattern) = &binding.pattern {
-                            // A struct pattern's head is a type position and
-                            // each field binding is an ordinary local
-                            // (spec 5.1:18, 5.1:21).
-                            self.visit_type(&pattern.ty)?;
-                            for field in &pattern.fields {
-                                if let rue_parser::StructPatternBinding::Ident { name, .. } =
-                                    &field.binding
-                                {
-                                    self.bind_local(*name)?;
-                                }
-                            }
+                            self.visit_struct_pattern(pattern)?;
                         }
                         if let LetPattern::Ident(ident) = binding.pattern {
                             let alias = (!binding.is_mut)

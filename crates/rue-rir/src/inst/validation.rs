@@ -289,6 +289,10 @@ impl Rir {
                             MATCH_PATH_ELEMENT_WORDS + 1,
                             "path record header is truncated",
                         ),
+                        Some(kind) if kind == PatternKind::Struct as u32 => (
+                            MATCH_STRUCT_FIELD_COUNT + 1,
+                            "struct record header is truncated",
+                        ),
                         Some(kind)
                             if kind != PatternKind::Wildcard as u32
                                 && kind != PatternKind::Int as u32
@@ -569,10 +573,11 @@ impl Rir {
                         reason: "invalid boolean scalar",
                     });
                 }
-            } else if kind == PatternKind::Path as u32 {
+            } else if kind == PatternKind::Path as u32 || kind == PatternKind::Struct as u32 {
                 // Path records nest (RUE-2053), so their symbols, payload
                 // positions and nesting depth are checked by one recursive walk
-                // rather than a flat scan of a binding array.
+                // rather than a flat scan of a binding array. A struct record
+                // (RUE-2175) takes the same walk for its symbol words.
                 if let Err(reason) = validate_pattern_record(words, position, 0) {
                     return Err(rir_payload_error! {
                         family: RirMatchArmsRange::FAMILY,
@@ -755,6 +760,16 @@ impl Rir {
                                     if let RirPatternElementView::Binding(name) = element {
                                         symbols!(name);
                                     }
+                                }
+                            }
+                            if let RirPatternView::Struct {
+                                local, ty, fields, ..
+                            } = record
+                            {
+                                symbols!(local);
+                                types!(ty);
+                                for field in fields.values() {
+                                    symbols!(field);
                                 }
                             }
                         }

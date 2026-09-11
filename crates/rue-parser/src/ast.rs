@@ -1012,6 +1012,10 @@ pub enum Pattern {
     Bool(BoolLit),
     /// Path pattern (e.g., `Color::Red` for enum variant)
     Path(PathPattern),
+    /// Struct pattern `T { f: b, ... }` over a struct scrutinee (spec 4.7:42,
+    /// preview feature `struct_patterns`, RUE-2175). Irrefutable: it binds
+    /// every field of the value and matches any value of its type.
+    Struct(Box<StructPattern>),
 }
 
 /// A negative integer literal pattern.
@@ -1025,16 +1029,19 @@ pub struct NegIntLit {
 
 /// One payload position of a tuple-variant pattern.
 ///
-/// A position either binds the field to a fresh name (or discards it with `_`)
-/// or holds a nested variant pattern the field must itself match
-/// (`R.Err(E.A(b))`, RUE-2053). Nesting is recursive: a nested pattern's own
-/// payload positions are `PatternElement`s again.
+/// A position either binds the field to a fresh name (or discards it with `_`),
+/// holds a nested variant pattern the field must itself match
+/// (`R.Err(E.A(b))`, RUE-2053), or holds a struct pattern that destructures
+/// the field (`R.Ok(Point { x, y })`, RUE-2175). Nesting is recursive: a
+/// nested variant pattern's own payload positions are `PatternElement`s again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PatternElement {
     /// A payload binding name, or the wildcard `_` that discards the field.
     Binding(Ident),
     /// A nested variant pattern this payload field must match.
     Nested(PathPattern),
+    /// A struct pattern binding the fields of this payload position.
+    Struct(Box<StructPattern>),
 }
 
 impl PatternElement {
@@ -1043,6 +1050,7 @@ impl PatternElement {
         match self {
             PatternElement::Binding(ident) => ident.span,
             PatternElement::Nested(path) => path.span,
+            PatternElement::Struct(pattern) => pattern.span,
         }
     }
 
@@ -1050,7 +1058,7 @@ impl PatternElement {
     pub fn binding(&self) -> Option<&Ident> {
         match self {
             PatternElement::Binding(ident) => Some(ident),
-            PatternElement::Nested(_) => None,
+            PatternElement::Nested(_) | PatternElement::Struct(_) => None,
         }
     }
 }
@@ -1092,6 +1100,7 @@ impl Pattern {
             Pattern::NegInt(lit) => lit.span,
             Pattern::Bool(lit) => lit.span,
             Pattern::Path(path) => path.span,
+            Pattern::Struct(pattern) => pattern.span,
         }
     }
 }
@@ -1294,7 +1303,8 @@ impl LetPattern {
     }
 }
 
-/// A struct destructuring pattern: `T { f: b, g, h: _ }` (spec 5.1:18).
+/// A struct destructuring pattern: `T { f: b, g, h: _ }` (spec 5.1:18 in a
+/// let statement, 4.7:42 in a match arm).
 ///
 /// The head is written with the type grammar (`Point`, `m.Point`,
 /// `Pair(i32)`), exactly as a `let` annotation would name the type. A pattern
@@ -1908,7 +1918,21 @@ fn rebind_pattern(pattern: &mut Pattern, file_id: FileId) {
         Pattern::NegInt(literal) => rebind_span(&mut literal.span, file_id),
         Pattern::Bool(literal) => rebind_span(&mut literal.span, file_id),
         Pattern::Path(path) => rebind_path_pattern(path, file_id),
+        Pattern::Struct(pattern) => rebind_struct_pattern(pattern, file_id),
     }
+}
+
+fn rebind_struct_pattern(pattern: &mut StructPattern, file_id: FileId) {
+    rebind_type(&mut pattern.ty, file_id);
+    for field in &mut pattern.fields {
+        rebind_ident(&mut field.name, file_id);
+        match &mut field.binding {
+            StructPatternBinding::Ident { name, .. } => rebind_ident(name, file_id),
+            StructPatternBinding::Wildcard(span) => rebind_span(span, file_id),
+        }
+        rebind_span(&mut field.span, file_id);
+    }
+    rebind_span(&mut pattern.span, file_id);
 }
 
 fn rebind_path_pattern(path: &mut PathPattern, file_id: FileId) {
@@ -1926,6 +1950,7 @@ fn rebind_path_pattern(path: &mut PathPattern, file_id: FileId) {
         match element {
             PatternElement::Binding(binding) => rebind_ident(binding, file_id),
             PatternElement::Nested(nested) => rebind_path_pattern(nested, file_id),
+            PatternElement::Struct(pattern) => rebind_struct_pattern(pattern, file_id),
         }
     }
     rebind_span(&mut path.span, file_id);
@@ -2101,18 +2126,7 @@ fn rebind_let_pattern(pattern: &mut LetPattern, file_id: FileId) {
     match pattern {
         LetPattern::Ident(ident) => rebind_ident(ident, file_id),
         LetPattern::Wildcard(span) => rebind_span(span, file_id),
-        LetPattern::Struct(pattern) => {
-            rebind_type(&mut pattern.ty, file_id);
-            for field in &mut pattern.fields {
-                rebind_ident(&mut field.name, file_id);
-                match &mut field.binding {
-                    StructPatternBinding::Ident { name, .. } => rebind_ident(name, file_id),
-                    StructPatternBinding::Wildcard(span) => rebind_span(span, file_id),
-                }
-                rebind_span(&mut field.span, file_id);
-            }
-            rebind_span(&mut pattern.span, file_id);
-        }
+        LetPattern::Struct(pattern) => rebind_struct_pattern(pattern, file_id),
     }
 }
 

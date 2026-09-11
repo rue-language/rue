@@ -114,6 +114,9 @@ pub enum ComptimeMatchPattern<N> {
         variant: N,
         binding_count: usize,
     },
+    /// A struct pattern (RUE-2175). Its scrutinee is a struct value, which no
+    /// comptime scalar is, so a match containing one is never selected here.
+    Struct,
 }
 
 /// A semantic reason why the canonical engine cannot reduce an expression.
@@ -208,6 +211,7 @@ pub fn decode_comptime_match_pattern<N>(
             variant: name_from_symbol((*variant).into()),
             binding_count: elements.len(),
         },
+        rue_rir::RirPatternView::Struct { .. } => ComptimeMatchPattern::Struct,
     }
 }
 

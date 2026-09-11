@@ -30,6 +30,7 @@ this appendix governs.
 <!-- grammar-sync(id="5.1:2", production="struct_pattern", role="appendix") -->
 <!-- grammar-sync(id="5.1:2", production="field_patterns", role="appendix") -->
 <!-- grammar-sync(id="5.1:2", production="field_pattern", role="appendix") -->
+<!-- grammar-sync(id="4.7:2", production="pattern", role="appendix") -->
 <!-- grammar-sync(id="4.7:2", production="path_pattern", role="appendix") -->
 <!-- grammar-sync(id="4.7:2", production="pattern_elements", role="appendix") -->
 <!-- grammar-sync(id="4.7:2", production="pattern_element", role="appendix") -->
@@ -237,11 +238,12 @@ match_arm      = pattern "=>" expression ;
 pattern        = "_"
                | [ "-" ] INTEGER
                | BOOL
-               | path_pattern ;
+               | path_pattern
+               | struct_pattern ;
 path_pattern = pattern_head "." IDENT [ "(" pattern_elements ")" ] ;
 pattern_head   = qualified_ident [ "(" [ call_args ] ")" ] ;
 pattern_elements = pattern_element { "," pattern_element } [ "," ] ;
-pattern_element = IDENT | "_" | path_pattern ;
+pattern_element = IDENT | "_" | path_pattern | struct_pattern ;
 while_expr     = "while" expression "{" block "}" ;
 loop_expr      = "loop" "{" block "}" ;
 for_expr       = "for" ( IDENT | "_" ) "in" expression "{" block "}" ;
@@ -338,6 +340,12 @@ Notes:
 - **Nested variant patterns**: a payload position may itself be a
   `path_pattern`, recursively — `R.Err(E.A(b))` — matching against that
   position's payload type (4.7:37).
+- **Struct patterns in arms**: a match arm, or a payload position, may be a
+  `struct_pattern` — `Point { x, y }`, `R.Ok(Point { x, y })` — binding the
+  fields of the struct value there (4.7:42). A name that continues into `{`
+  (directly, through a module path, or through a type-constructor call)
+  begins a struct pattern; any other name begins a `path_pattern`. A struct
+  pattern's field positions are binders and do not nest.
 - **A parameter takes at most one mode** (`comptime`, `inout`, or `borrow`);
   duplicate or conflicting modes are a parse error.
 - **Statement termination**: `let`, assignment, and ordinary expression

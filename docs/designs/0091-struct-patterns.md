@@ -67,6 +67,17 @@ enum payload patterns (4.7:30), but no struct pattern in `let` or `match`.
    the initializer must have exactly that type (E0206).
 5. **Preview gate.** The feature ships behind `--preview struct_patterns`
    until its second phase lands.
+6. **Match arms (phase 2).** A struct pattern may be a match arm's own
+   pattern over a struct scrutinee, or occupy a payload position of a
+   variant pattern (`R.Ok(Point { x, y })`). It is irrefutable, so it makes
+   a match exhaustive by itself and every later arm unreachable, and in a
+   payload position it covers that position as a binding does. It binds
+   exactly as the `let` form does: the matched value — the scrutinee, or the
+   payload field moved out of its variant — is bound to the arm's unnameable
+   temporary and each field pattern is the corresponding `let` of a field
+   read, run before the arm body in the body's scope. A field position of a
+   struct pattern is a binder only; nesting inside it is not part of this
+   ADR.
 
 ### Implementation shape
 
@@ -78,18 +89,28 @@ instruction — preview gate, head resolution, type agreement, and the
 exhaustive field list — before the projections are analyzed, and emits no
 value for it. Nothing downstream of AIR changes.
 
+In a match arm the parser produces `Pattern::Struct` (or a
+`PatternElement::Struct` payload position) and RIR lowering emits a
+`RirPattern::Struct` record carrying the hidden local's name, the head type
+and the field names, plus the per-field `Alloc`s of `FieldGet`s, which wrap
+the arm body in a block. Semantic analysis treats the record as one level of
+the arm's placement: it performs the same head and field checks, allocates
+the matched value — the scrutinee, or the `EnumPayloadGet` projection of its
+payload position — into the hidden local, and leaves the field reads to the
+body's leading `let`s. A struct pattern contributes a wildcard column to a
+variant group's pattern matrix, so nested variant patterns beside it still
+decide exhaustiveness. A match over a struct scrutinee emits no AIR `Match`
+at all: its first arm always runs, so that arm's block is the match's value.
+
 ## Implementation Phases
 
 - [x] **Phase 1: `let` struct patterns** - RUE-1884 (this ADR's initial
   implementation).
-- [ ] **Phase 2: struct patterns in `match` arms** - RUE-2175: a top-level
+- [x] **Phase 2: struct patterns in `match` arms** - RUE-2175: a top-level
   struct pattern over a struct scrutinee and a struct pattern in an enum
-  payload position (`R.Ok(Point { x, y })`). This needs a `RirPattern`
-  variant and its packed-payload encoding, the pattern matrix treating the
-  irrefutable struct row as a binder that owns nested projections, and the
-  same exhaustive field check.
-- [ ] **Stabilization**: drop the preview gate once phase 2 lands and the
-  spec cases run without it.
+  payload position (`R.Ok(Point { x, y })`), spec 4.7:42 through 4.7:45.
+- [ ] **Stabilization**: drop the preview gate now that phase 2 has landed
+  and the spec cases run without it.
 
 ## Consequences
 
@@ -114,8 +135,9 @@ value for it. Nothing downstream of AIR changes.
 
 - Whether a rest form `..` is ever admitted (the ruling asked this to be
   recorded; the answer is deliberately deferred).
-- Nested struct patterns inside a field position (`Line { a: Point { x, y }, b }`)
-  are not part of phase 1.
+- Nested patterns inside a field position (`Line { a: Point { x, y }, b }`,
+  `Cell { c: Color.Red }`) are not part of either phase: a field pattern is a
+  binder only.
 
 ## References
 
@@ -123,4 +145,5 @@ value for it. Nothing downstream of AIR changes.
 - [ADR-0037: Exclusivity model: access-point based](0037-exclusivity-model-access-point-based.md)
 - [ADR-0038: Error handling: sum types, Result/Option, and must-check via linearity](0038-error-handling-sum-types-result-must-check.md)
 - [Let Statements, §5.1](../spec/src/05-statements/01-let-statements.md)
-- RUE-1884, RUE-613, RUE-246
+- [Match Expressions, §4.7](../spec/src/04-expressions/07-match-expressions.md)
+- RUE-1884, RUE-2175, RUE-613, RUE-246
