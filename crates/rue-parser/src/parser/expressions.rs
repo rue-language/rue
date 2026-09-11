@@ -179,8 +179,19 @@ impl Parser {
             }
             TokenKind::Checked => {
                 self.bump();
+                // `checked "reason" { ... }`: the optional string is the block's
+                // stated invariant (spec 9.1:14). The parser always accepts it;
+                // semantic analysis gates it on the `checked_reasons` preview.
+                let reason = match self.kind() {
+                    TokenKind::String(value) => {
+                        let span = self.bump().span;
+                        Some(StringLit { value, span })
+                    }
+                    _ => None,
+                };
                 let inner = Expr::Block(self.block()?);
                 Ok(Expr::Checked(CheckedBlockExpr {
+                    reason,
                     expr: Box::new(inner),
                     span: self.span_from(start),
                 }))

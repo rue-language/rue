@@ -2273,6 +2273,15 @@ define_error_codes! {
     // Unchecked-code errors (E1300-E1399)
     // ========================================================================
     UNCHECKED_OP_REQUIRES_CHECKED = 1300;
+    CHECKED_REASON_REQUIRED = 1301 => {
+        explanation: "Under the `checked_reasons` preview feature, every `checked` block states the invariant it relies on as a string literal between `checked` and the block, and that reason must not be empty. The reason is part of the syntax tree and is carried into the compiler's emitted views, so a reviewer or a tool can read why each unchecked site is sound without reconstructing it.",
+        likely_cause: "A `checked` block was written without a reason, or with an empty string, while compiling with `--preview checked_reasons`. State the invariant the block relies on; there is no per-site opt-out.",
+        examples: [
+            ErrorCodeExample { title: "Omit the reason under the preview", source: "fn main() -> i32 {\n    let value: i32 = 42;\n    let p: ptr const i32 = checked { @raw(value) };\n    checked \"p points at value, which outlives this read\" { @ptr_read(p) }\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: ["checked_reasons"] },
+            ErrorCodeExample { title: "State the invariant the block relies on", source: "fn main() -> i32 {\n    let value: i32 = 42;\n    let p: ptr const i32 = checked \"value is a live local for the whole call\" { @raw(value) };\n    checked \"p points at value, which outlives this read\" { @ptr_read(p) }\n}", outcome: ErrorCodeExampleOutcome::Compiles, preview: ["checked_reasons"] },
+        ],
+        references: [ErrorCodeReference { title: "Checked block reasons", path: "docs/spec/src/09-unchecked-code/01-syntax.md", rule: Some("9.1:14") }],
+    };
 
     // ========================================================================
     // Compiler-input errors (E1400-E1499)
@@ -2569,6 +2578,9 @@ pub enum PreviewFeature {
     /// Struct destructuring patterns in `let` statements (ADR-0091,
     /// RUE-1884): `let Point { x, y } = p;` binds every field by name.
     StructPatterns,
+    /// A stated reason on every `checked` block (ADR-0095, RUE-1887):
+    /// `checked "index < len by the guard above" { ... }`.
+    CheckedReasons,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -2592,6 +2604,7 @@ impl PreviewFeature {
             PreviewFeature::CFfi => "c_ffi",
             PreviewFeature::NonExhaustiveEnums => "non_exhaustive_enums",
             PreviewFeature::StructPatterns => "struct_patterns",
+            PreviewFeature::CheckedReasons => "checked_reasons",
         }
     }
 
@@ -2603,6 +2616,7 @@ impl PreviewFeature {
             PreviewFeature::CFfi => "ADR-0064",
             PreviewFeature::NonExhaustiveEnums => "ADR-0005",
             PreviewFeature::StructPatterns => "ADR-0091",
+            PreviewFeature::CheckedReasons => "ADR-0095",
         }
     }
 
@@ -2613,6 +2627,7 @@ impl PreviewFeature {
             PreviewFeature::CFfi,
             PreviewFeature::NonExhaustiveEnums,
             PreviewFeature::StructPatterns,
+            PreviewFeature::CheckedReasons,
         ]
     }
 
@@ -2656,6 +2671,7 @@ impl std::str::FromStr for PreviewFeature {
             "c_ffi" => Ok(PreviewFeature::CFfi),
             "non_exhaustive_enums" => Ok(PreviewFeature::NonExhaustiveEnums),
             "struct_patterns" => Ok(PreviewFeature::StructPatterns),
+            "checked_reasons" => Ok(PreviewFeature::CheckedReasons),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -4057,6 +4073,14 @@ pub enum ErrorKind {
     // Unchecked-code errors
     #[error("{what} requires a `checked` block")]
     UncheckedOpRequiresChecked { what: String },
+    /// A `checked` block under the `checked_reasons` preview (spec 9.1:14)
+    /// states no reason.
+    #[error("`checked` block must state the invariant it relies on")]
+    CheckedReasonMissing,
+    /// A `checked` block under the `checked_reasons` preview (spec 9.1:14)
+    /// states an empty reason.
+    #[error("`checked` block reason must not be empty")]
+    CheckedReasonEmpty,
 
     // Compiler-input errors
     #[error("invalid compiler input: {0}")]
@@ -4341,6 +4365,9 @@ impl ErrorKind {
             // Unchecked-code errors (E1300-E1399)
             ErrorKind::UncheckedOpRequiresChecked { .. } => {
                 ErrorCode::UNCHECKED_OP_REQUIRES_CHECKED
+            }
+            ErrorKind::CheckedReasonMissing | ErrorKind::CheckedReasonEmpty => {
+                ErrorCode::CHECKED_REASON_REQUIRED
             }
 
             // Compiler-input errors (E1400-E1499)
@@ -6101,7 +6128,7 @@ mod tests {
         let names = PreviewFeature::all_names();
         assert_eq!(
             names,
-            "test_infra, c_ffi, non_exhaustive_enums, struct_patterns"
+            "test_infra, c_ffi, non_exhaustive_enums, struct_patterns, checked_reasons"
         );
     }
 

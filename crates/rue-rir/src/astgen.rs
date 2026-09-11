@@ -1722,8 +1722,15 @@ impl<'a> AstGen<'a> {
                     crate::RirStructuralPathSegment::Operand(0),
                     &checked_block.expr,
                 );
+                let reason = checked_block
+                    .reason
+                    .as_ref()
+                    .map(|reason| self.symbol(reason.value));
                 self.rir.add_inst(Inst {
-                    data: InstData::Checked { expr: inner_expr },
+                    data: InstData::Checked {
+                        expr: inner_expr,
+                        reason,
+                    },
                     span: checked_block.span,
                 })
             }

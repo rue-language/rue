@@ -3762,7 +3762,7 @@ impl<'a> ConstraintGenerator<'a> {
 
             // Checked block: for type inference purposes, the type is the type of the inner expression
             // The actual checking of unchecked operations happens in sema
-            InstData::Checked { expr } => {
+            InstData::Checked { expr, .. } => {
                 // Generate constraints for the inner expression
                 {
                     ctx.checked_depth += 1;

@@ -3833,7 +3833,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // as an indirect AIR place base. Mandatory accessor splicing embeds
         // that ordinary place in the caller CFG; no accessor ABI is involved.
         let bridge = match &self.body_rir_ref().get(operand).data {
-            InstData::Checked { expr } => matches!(
+            InstData::Checked { expr, .. } => matches!(
                 &self.body_rir_ref().get(*expr).data,
                 InstData::Intrinsic { name, .. } if *name == self.known_symbols().intrinsic(IntrinsicName::Place)
             ),

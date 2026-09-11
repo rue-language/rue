@@ -6,6 +6,7 @@
 # - `ptr const T` and `ptr mut T` type syntax
 #
 # These features are now part of the language and do not require a preview feature.
+# The reason clause on a `checked` block (9.1:14) is behind `--preview checked_reasons`.
 
 [section]
 id = "items.unchecked"
@@ -251,6 +252,100 @@ fn main() -> i32 {
         @ptr_write(p, 42);
     };
     x
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Checked block reasons (9.1:14-9.1:15, preview feature `checked_reasons`, RUE-1887)
+# =============================================================================
+
+[[case]]
+name = "checked_reason_accepted_under_preview"
+spec = ["9.1:5", "9.1:14", "9.1:15"]
+preview = "checked_reasons"
+preview_should_pass = true
+source = """
+fn first(base: ptr const i32, len: u64) -> i32 {
+    if len == 0 { return 0; }
+    checked "len > 0 was established by the guard above, so index 0 is in bounds" {
+        @ptr_read(base)
+    }
+}
+
+fn main() -> i32 {
+    let value: i32 = 42;
+    let p: ptr const i32 = checked "value is a live local for the whole call" { @raw(value) };
+    first(p, 1)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "checked_reason_does_not_change_the_block_value"
+spec = ["9.1:6", "9.1:14"]
+preview = "checked_reasons"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let x = checked "no unchecked operation; the reason is inert" {
+        let a = 10;
+        let b = 32;
+        a + b
+    };
+    x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "checked_reason_missing_under_preview_rejected"
+spec = ["9.1:14"]
+preview = "checked_reasons"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let value: i32 = 42;
+    let p: ptr const i32 = checked { @raw(value) };
+    checked "p points at value, which outlives this read" { @ptr_read(p) }
+}
+"""
+compile_fail = true
+error_contains = ["[E1301]", "`checked` block must state the invariant it relies on"]
+
+[[case]]
+name = "checked_reason_empty_under_preview_rejected"
+spec = ["9.1:14"]
+preview = "checked_reasons"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    checked "" { 42 }
+}
+"""
+compile_fail = true
+error_contains = ["[E1301]", "reason must not be empty"]
+
+[[case]]
+name = "checked_reason_without_preview_rejected"
+spec = ["9.1:14", "8.4:1"]
+source = """
+fn main() -> i32 {
+    checked "a reason without the preview" { 42 }
+}
+"""
+compile_fail = true
+error_contains = ["[E1100]", "checked block reasons requires preview feature `checked_reasons`"]
+
+[[case]]
+name = "checked_block_without_reason_still_accepted_without_preview"
+spec = ["9.1:5", "9.1:14"]
+description = "Without the preview, today's reason-less checked blocks compile unchanged"
+source = """
+fn main() -> i32 {
+    let value: i32 = 42;
+    let p: ptr const i32 = checked { @raw(value) };
+    checked { @ptr_read(p) }
 }
 """
 exit_code = 42

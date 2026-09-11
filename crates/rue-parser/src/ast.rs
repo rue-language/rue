@@ -1542,6 +1542,10 @@ pub struct ComptimeBlockExpr {
 /// are only allowed inside checked blocks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedBlockExpr {
+    /// The block's stated reason (`checked "why this is sound" { ... }`):
+    /// the invariant the programmer relies on. Optional in the tree; the
+    /// `checked_reasons` preview (ADR-0095, spec 9.1:14) requires it.
+    pub reason: Option<StringLit>,
     /// The expression inside the checked block
     pub expr: Box<Expr>,
     pub span: Span,
@@ -2111,6 +2115,9 @@ fn rebind_expr(expr: &mut Expr, file_id: FileId) {
             rebind_span(&mut block.span, file_id);
         }
         Expr::Checked(block) => {
+            if let Some(reason) = &mut block.reason {
+                rebind_span(&mut reason.span, file_id);
+            }
             rebind_expr(&mut block.expr, file_id);
             rebind_span(&mut block.span, file_id);
         }
@@ -2559,7 +2566,10 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
             fmt_expr(f, &comptime.expr, level + 1)
         }
         Expr::Checked(checked) => {
-            writeln!(f, "Checked")?;
+            match &checked.reason {
+                Some(reason) => writeln!(f, "Checked(reason sym:{})", reason.value.into_usize())?,
+                None => writeln!(f, "Checked")?,
+            }
             fmt_expr(f, &checked.expr, level + 1)
         }
         Expr::TypeLit(type_lit) => {

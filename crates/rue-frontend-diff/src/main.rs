@@ -686,7 +686,7 @@ impl Shapes<'_> {
                 "checked",
                 "",
                 self.expr(&v.expr),
-                "_".into(),
+                v.reason.as_ref().map_or("_".into(), |_| leaf("string")),
                 "_".into(),
                 "_".into(),
             ),

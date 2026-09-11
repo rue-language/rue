@@ -3813,7 +3813,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             // `checked { expr }` does not change the value produced by a
             // comptime expression. Keep the child traversal in this engine,
             // then let a semantic host observe or refine the completed value.
-            InstData::Checked { expr } => {
+            InstData::Checked { expr, .. } => {
                 if !self.host.allow_checked_comptime() {
                     return ComptimeOutcome::RuntimeDependent;
                 }

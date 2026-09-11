@@ -2489,7 +2489,10 @@ fn durable_only_instruction_forms_cross_the_semantic_host_boundary() {
         .add_intrinsic(intrinsic_name, &[string, integer], Span::new(0, 7))
         .unwrap();
     let checked = editor.add_inst(rue_rir::Inst {
-        data: InstData::Checked { expr: integer },
+        data: InstData::Checked {
+            expr: integer,
+            reason: None,
+        },
         span: Span::new(8, 18),
     });
     let enum_variant = editor.add_inst(rue_rir::Inst {
@@ -3246,7 +3249,10 @@ fn checked_propagates_a_non_known_child_terminal() {
         span: Span::new(0, 3),
     });
     let checked = editor.add_inst(rue_rir::Inst {
-        data: InstData::Checked { expr: child },
+        data: InstData::Checked {
+            expr: child,
+            reason: None,
+        },
         span: Span::new(0, 3),
     });
     let mut host = FakeHost {

@@ -227,7 +227,7 @@ primitive_type_literal = "i8" | "i16" | "i32" | "i64"
 (* Compound expressions *)
 block_expr     = "{" block "}" ;
 comptime_expr  = "comptime" "{" block "}" ;
-checked_expr   = "checked" "{" block "}" ;
+checked_expr   = "checked" [ STRING ] "{" block "}" ;   (* the STRING is the block's reason, 9.1:14; preview `checked_reasons` *)
 control_flow_expr = if_expr | match_expr | while_expr | loop_expr | for_expr
                   | break_expr | "continue" | return_expr ;
 if_expr        = "if" expression "{" block "}" [ else_clause ] ;

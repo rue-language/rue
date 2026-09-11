@@ -1554,7 +1554,10 @@ fn expr_record(
             "checked",
             span,
             None,
-            None,
+            block
+                .reason
+                .as_ref()
+                .map(|reason| Arc::from(owner.resolve_raw_symbol(reason.value))),
             vec![expr_record(owner, &block.expr)],
         ),
         Expr::TypeLit(literal) => syntax_record(
@@ -1905,7 +1908,7 @@ fn rir_operands(rir: &rue_rir::Rir, data: &rue_rir::InstData) -> Vec<RirOperandR
                 push("argument", argument.value);
             }
         }
-        Comptime { expr } | Checked { expr } => push("expression", *expr),
+        Comptime { expr } | Checked { expr, .. } => push("expression", *expr),
         AnonStructType { methods, .. } => {
             for method in rir.anon_struct_methods(methods) {
                 push("method", method);

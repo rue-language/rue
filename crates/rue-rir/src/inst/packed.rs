@@ -1826,7 +1826,11 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
                 self.reference(*body)?;
             }
             InstData::Comptime { expr } => unary!(58, expr),
-            InstData::Checked { expr } => unary!(59, expr),
+            InstData::Checked { expr, reason } => {
+                self.byte(59)?;
+                self.reference(*expr)?;
+                self.optional_symbol(*reason)?;
+            }
             InstData::TypeConst { type_name } => {
                 self.byte(60)?;
                 self.type_reference(*type_name)?;
@@ -3321,7 +3325,11 @@ impl<
                 add!(InstData::DropFnDecl { type_name, body })
             }
             58 => unary!(Comptime, expr),
-            59 => unary!(Checked, expr),
+            59 => {
+                let expr = self.reference(reader)?;
+                let reason = self.optional_symbol(reader)?;
+                add!(InstData::Checked { expr, reason })
+            }
             60 => {
                 let type_name = self.type_reference(reader)?;
                 add!(InstData::TypeConst { type_name })
@@ -5239,7 +5247,10 @@ mod tests {
             body: block
         });
         add!(InstData::Comptime { expr: unit });
-        add!(InstData::Checked { expr: unit });
+        add!(InstData::Checked {
+            expr: unit,
+            reason: Some(a)
+        });
         add!(InstData::TypeConst { type_name: type_a });
         refs.push(
             editor
