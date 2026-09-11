@@ -1967,7 +1967,7 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 45] = [
     (7_490, 12_196_017_486_031_950_345),
     (1_701, 16_025_502_829_918_190_611),
     (3_795, 3_937_414_938_340_436_614),
-    (6_997, 6_265_749_180_761_052_443),
+    (9_189, 10_745_025_233_856_907_355),
     (18_218, 13_299_321_137_409_287_631),
     (4_522, 5_373_278_958_757_567_170),
     (723, 13_306_205_946_719_141_945),
@@ -2013,12 +2013,12 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 45] = [
 // identity even when constructor, caller, and macro token counts do not.
 const CONSTRUCTION_TOKEN_STRUCT_IDENTITY: (usize, u64) = (80, 5_227_448_979_315_228_973);
 const CONSTRUCTION_TOKEN_IMPL_IDENTITY: (usize, u64) = (108, 2_765_439_612_714_245_239);
-const COMPILER_CRATE_ROOT_IDENTITY: (usize, u64) = (9_554, 8_267_950_807_996_322_251);
+const COMPILER_CRATE_ROOT_IDENTITY: (usize, u64) = (9_718, 803_438_823_648_082_540);
 const COMPILER_CRATE_ROOT_NAMESPACE_IDENTITY: (usize, u64, usize, u64) = (
-    117,
-    3_245_059_453_758_104_938,
-    234,
-    11_858_083_321_453_235_076,
+    119,
+    15_412_058_190_339_860_904,
+    240,
+    9_582_655_845_782_885_532,
 );
 const COMPILER_SESSION_ROOT_IDENTITY: (usize, u64) = (4_144, 8_851_562_517_716_222_536);
 const COMPILER_SESSION_CONSTRUCTOR_IDENTITY: (usize, u64) = (102, 5_219_454_448_646_406_172);
@@ -4511,7 +4511,7 @@ pub(super) use register_parse_import_parse;"#;
     ));
     let nested_module_owners = module_owner_inventory(&compiler_module_sources);
     let nested_module_fingerprint = source_inventory_fingerprint(&nested_module_owners);
-    let expected_nested_module_identity = (162, 1_322_855_505_068_179_203);
+    let expected_nested_module_identity = (164, 8_470_719_804_165_535_346);
     assert_eq!(
         (nested_module_owners.len(), nested_module_fingerprint),
         expected_nested_module_identity,
@@ -5514,6 +5514,7 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
         "local_semantic_materialization",
         include_str!("local_semantic_materialization.rs"),
     ),
+    ("module_manifest", include_str!("module_manifest.rs")),
     ("parsed_modules", include_str!("parsed_modules.rs")),
     ("program_image_plan", include_str!("program_image_plan.rs")),
     ("queries", include_str!("queries.rs")),
@@ -6856,6 +6857,14 @@ fn root_export_metadata(owner: &str, symbol: &str) -> (&'static str, &'static st
             | "ImportDirectives" => ("dependency-artifact", "source-loaders+embedders"),
             _ => panic!("unclassified import-graph facade export: {symbol}"),
         },
+        "module_manifest" => match symbol {
+            "EXPLICIT_MODULE_MANIFEST_VERSION"
+            | "ExplicitModuleManifest"
+            | "ManifestError"
+            | "ManifestImport"
+            | "ManifestModule" => ("dependency-artifact", "source-loaders+embedders"),
+            _ => panic!("unclassified module-manifest facade export: {symbol}"),
+        },
         "diagnostic_attempt_store" => ("diagnostic", "cli+embedders"),
         "configuration" => match symbol {
             "CompilerSessionConfig" | "CompilerConfigurationError" | "MAX_QUERY_WORKERS" => {
@@ -7623,7 +7632,7 @@ fn unstable_views_do_not_alias_query_engine_records() {
         reexports,
         [
             "pubusecrate::diagnostic::{ColorChoice,DiagnosticFormatter,JsonDiagnostic,JsonDiagnosticFormatter,JsonSpan,JsonSuggestion,MultiFileFormatter,MultiFileJsonFormatter,SourceInfo,};",
-            "pubusecrate::import_discovery::{AcceptedImportSource,DiscoverySourceAssembler,ImportDemandFrontier,ImportDemandMode,ImportDemandRoots,ImportDiscoveryPlan,ImportDiscoveryRequest,ImportDiscoveryWave,ImportInputRevision,ImportObservation,ImportObservationLedger,ImportObservationStatus,requested_path_for_module,};",
+            "pubusecrate::import_discovery::{AcceptedImportSource,DiscoverySourceAssembler,ExplicitImportBinding,ImportDemandFrontier,ImportDemandMode,ImportDemandRoots,ImportDiscoveryPlan,ImportDiscoveryRequest,ImportDiscoveryWave,ImportInputRevision,ImportObservation,ImportObservationLedger,ImportObservationStatus,requested_path_for_module,};",
             "pubusecrate::test_candidates::{TestCandidate,TestCandidateInventory,TestCandidateOutcome,UnimportedTestFile,};",
             "pubusecrate::warm_fresh_parity::ParityObservation;",
             "pubuserue_air::normalize_module_path;",

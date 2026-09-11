@@ -148,7 +148,7 @@ impl CompilerSession {
         };
         self.publish_diagnostics(
             source,
-            FrontendDiagnosticIdentity::Import(input),
+            FrontendDiagnosticIdentity::Import(Box::new(input)),
             Some(errors),
             &[],
         )

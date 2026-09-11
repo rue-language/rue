@@ -799,6 +799,11 @@ pub(super) struct ResolveImportValue {
     pub(super) requests: Arc<[ImportDiscoveryRequest]>,
     pub(super) speculative_blocked: bool,
     pub(super) resolution: Option<crate::CanonicalImportResolution>,
+    /// Explicit mode distinguishes a parser-owned key omitted by the
+    /// manifest from an explicitly recorded missing target. This prevents a
+    /// direct canonical query from treating stale input as a valid Missing
+    /// terminal.
+    pub(super) explicit_manifest_key_missing: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

@@ -6,10 +6,10 @@ use rue_compiler::unstable::{
     CancellableCompileOutcome, CancellablePresentationOutcome, CancellableTestImageOutcome,
     CancellableTestListingOutcome, CodegenReady, CompilationCancellation, ObjectsReady,
     PresentationBatchRequest, PresentationOutput, PresentationRequest, TestImage, TestListing,
-    UnimportedTestFile, cancellable_executable_in_compile_scope, cancellable_present_many,
-    cancellable_test_image_in_compile_scope, cancellable_test_inventory, codegen_ready,
-    executable_in_compile_scope, objects_ready, runnable_ready, test_image_in_compile_scope,
-    test_inventory, unimported_test_files,
+    UnimportedTestFile, abort_import_input_request, cancellable_executable_in_compile_scope,
+    cancellable_present_many, cancellable_test_image_in_compile_scope, cancellable_test_inventory,
+    codegen_ready, executable_in_compile_scope, objects_ready, runnable_ready,
+    test_image_in_compile_scope, test_inventory, unimported_test_files,
 };
 use rue_compiler::{
     AcceptedReadManifest, CompileErrors, CompileOptions, CompileOutput, CompilerSessionConfig,
@@ -20,7 +20,7 @@ use rue_compiler::{
 use crate::source_loader::{
     AttemptedRead, ImportDiscoveryResult, SourceLoadError, SourceLoadRequest, WatchInput,
     acquire_reached_toolchain_modules, acquire_reached_toolchain_modules_cancellable, load,
-    reload_from_filesystem,
+    load_explicit_manifest, load_explicit_manifest_candidate, reload_from_filesystem,
 };
 
 /// Immutable filesystem configuration captured when a retained host opens.
@@ -110,8 +110,65 @@ impl FilesystemCompilerHost {
         })
     }
 
+    /// Open an opt-in explicit module manifest. The manifest is resolved from
+    /// captured source bytes and exact import bindings; legacy discovery and
+    /// its candidate filesystem probes remain the path used by [`Self::open`].
+    pub fn open_explicit_manifest(
+        request: HostOpenRequest<'_>,
+        manifest_path: &str,
+        manifest_std_root: Option<&Path>,
+    ) -> Result<Self, SourceLoadError> {
+        load_explicit_manifest(
+            SourceLoadRequest {
+                root_source: request.root_source,
+                source_manifest_path: request.source_manifest_path,
+                std_root: request.std_root,
+                compiler_config: request.compiler_config,
+                path_context: request.path_context,
+            },
+            manifest_path,
+            manifest_std_root,
+        )
+        .map(|state| Self {
+            state,
+            path_context: request.path_context.clone(),
+        })
+    }
+
     /// Re-observe the exact accepted-read closure and publish its successor.
     pub fn reobserve(&mut self) -> Result<(), SourceLoadError> {
+        if let Some(manifest) = self.state.explicit_manifest_path.clone() {
+            let root_source = self.state.resolution.root_display_path.clone();
+            let source_manifest = self
+                .state
+                .explicit_source_manifest_path
+                .as_deref()
+                .and_then(|path| path.to_str())
+                .map(str::to_owned);
+            let std_root = self.state.explicit_manifest_std_root.clone();
+            let candidate = load_explicit_manifest_candidate(
+                SourceLoadRequest {
+                    root_source: &root_source,
+                    source_manifest_path: source_manifest.as_deref(),
+                    std_root: None,
+                    compiler_config: self.state.session.configuration().clone(),
+                    path_context: &self.path_context,
+                },
+                &manifest.to_string_lossy(),
+                std_root.as_deref(),
+                &mut self.state.session,
+                None,
+            );
+            let candidate = match candidate {
+                Ok(candidate) => candidate,
+                Err(error) => {
+                    let _ = abort_import_input_request(&mut self.state.session);
+                    return Err(error);
+                }
+            };
+            self.state.install_explicit_candidate(candidate);
+            return Ok(());
+        }
         reload_from_filesystem(&mut self.state, None)
     }
 
@@ -125,6 +182,48 @@ impl FilesystemCompilerHost {
         &mut self,
         supersession: &dyn Fn() -> bool,
     ) -> Result<(), SourceLoadError> {
+        if let Some(manifest) = self.state.explicit_manifest_path.clone() {
+            if supersession() {
+                return Err(SourceLoadError::Superseded);
+            }
+            let root_source = self.state.resolution.root_display_path.clone();
+            let source_manifest = self
+                .state
+                .explicit_source_manifest_path
+                .as_deref()
+                .and_then(|path| path.to_str())
+                .map(str::to_owned);
+            let std_root = self.state.explicit_manifest_std_root.clone();
+            let candidate = load_explicit_manifest_candidate(
+                SourceLoadRequest {
+                    root_source: &root_source,
+                    source_manifest_path: source_manifest.as_deref(),
+                    std_root: None,
+                    compiler_config: self.state.session.configuration().clone(),
+                    path_context: &self.path_context,
+                },
+                &manifest.to_string_lossy(),
+                std_root.as_deref(),
+                &mut self.state.session,
+                Some(supersession),
+            );
+            let candidate = match candidate {
+                Ok(candidate) => candidate,
+                Err(error) => {
+                    let _ = abort_import_input_request(&mut self.state.session);
+                    return Err(error);
+                }
+            };
+            if supersession() {
+                // The close may already have committed this successor. Keep
+                // session, snapshot, graph, and read manifests coherent when
+                // the supersession signal arrives at that boundary.
+                self.state.install_explicit_candidate(candidate);
+                return Err(SourceLoadError::Superseded);
+            }
+            self.state.install_explicit_candidate(candidate);
+            return Ok(());
+        }
         reload_from_filesystem(&mut self.state, Some(supersession))
     }
 
@@ -413,8 +512,10 @@ impl FilesystemCompilerHost {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::fs;
     use std::path::PathBuf;
+    use std::rc::Rc;
 
     use super::*;
 
@@ -485,6 +586,55 @@ mod tests {
         host.runnable_ready(objects).unwrap()
     }
 
+    fn write_two_module_manifest(dir: &TestDir, reverse_modules: bool) -> PathBuf {
+        let modules = if reverse_modules {
+            r#"{"module":"helper.rue","path":"helper.rue"},{"module":"main.rue","path":"main.rue"}"#
+        } else {
+            r#"{"module":"main.rue","path":"main.rue"},{"module":"helper.rue","path":"helper.rue"}"#
+        };
+        dir.write(
+            "modules.json",
+            &format!(
+                r#"{{
+  "version": 1,
+  "root": "main.rue",
+  "modules": [{modules}],
+  "imports": [{{"importer":"project:main.rue","literal":"helper.rue","target":"project:helper.rue"}}],
+  "std_requirements": []
+}}"#
+            ),
+        )
+    }
+
+    fn open_two_module_explicit(dir: &TestDir) -> FilesystemCompilerHost {
+        let root = dir.path.join("main.rue");
+        let manifest = dir.path.join("modules.json");
+        let context = HostPathContext::from_working_directory(dir.path.clone()).unwrap();
+        FilesystemCompilerHost::open_explicit_manifest(
+            HostOpenRequest {
+                root_source: root.to_str().unwrap(),
+                source_manifest_path: None,
+                std_root: None,
+                compiler_config: CompilerSessionConfig::default(),
+                path_context: &context,
+            },
+            manifest.to_str().unwrap(),
+            None,
+        )
+        .unwrap()
+    }
+
+    fn write_two_module_sources(dir: &TestDir, helper_value: i32) {
+        dir.write(
+            "main.rue",
+            "const helper = @import(\"helper.rue\");\nfn main() -> i32 { helper.value() }\n",
+        );
+        dir.write(
+            "helper.rue",
+            &format!("pub fn value() -> i32 {{ {helper_value} }}\n"),
+        );
+    }
+
     #[test]
     fn no_op_reobservation_reuses_the_retained_frontend() {
         let dir = TestDir::new("noop");
@@ -500,6 +650,24 @@ mod tests {
         host.reobserve().unwrap();
         let second = run_to_runnable(&mut host);
         let after = host.state.session.unstable_metrics();
+
+        assert_eq!(first.elf, second.elf);
+        assert!(after.updates() > before.updates());
+        assert_eq!(after.rir().executions, before.rir().executions);
+    }
+
+    #[test]
+    fn explicit_no_op_reobservation_reuses_the_retained_frontend() {
+        let dir = TestDir::new("explicit-noop");
+        write_two_module_sources(&dir, 7);
+        write_two_module_manifest(&dir, false);
+        let mut host = open_two_module_explicit(&dir);
+
+        let first = run_to_runnable(&mut host);
+        let before = host.unstable_metrics();
+        host.reobserve().unwrap();
+        let second = run_to_runnable(&mut host);
+        let after = host.unstable_metrics();
 
         assert_eq!(first.elf, second.elf);
         assert!(after.updates() > before.updates());
@@ -526,6 +694,143 @@ mod tests {
         assert_ne!(before.elf, after.elf);
         assert_eq!(after.elf, expected.elf);
         assert_eq!(after.warnings, expected.warnings);
+    }
+
+    #[test]
+    fn explicit_body_edit_matches_fresh_and_filesystem_hosts() {
+        let dir = TestDir::new("explicit-body-edit");
+        write_two_module_sources(&dir, 1);
+        write_two_module_manifest(&dir, false);
+        let mut retained = open_two_module_explicit(&dir);
+        let before = run_to_runnable(&mut retained);
+
+        write_two_module_sources(&dir, 2);
+        retained.reobserve().unwrap();
+        let after = run_to_runnable(&mut retained);
+        let mut fresh_explicit = open_two_module_explicit(&dir);
+        let expected = run_to_runnable(&mut fresh_explicit);
+        let mut filesystem = dir.open();
+        let ordinary = run_to_runnable(&mut filesystem);
+
+        assert_ne!(before.elf, after.elf);
+        assert_eq!(after.elf, expected.elf);
+        assert_eq!(after.elf, ordinary.elf);
+        assert_eq!(after.warnings, expected.warnings);
+    }
+
+    #[test]
+    fn explicit_stale_keys_keep_last_good_state_then_recover_on_regeneration() {
+        let dir = TestDir::new("explicit-stale-recover");
+        write_two_module_sources(&dir, 3);
+        let manifest = write_two_module_manifest(&dir, false);
+        let mut retained = open_two_module_explicit(&dir);
+        let committed = retained.source_snapshot().source_revision().clone();
+        let expected = run_to_runnable(&mut retained);
+
+        fs::write(
+            &manifest,
+            r#"{
+  "version": 1, "root": "main.rue",
+  "modules": [{"module":"main.rue","path":"main.rue"},{"module":"helper.rue","path":"helper.rue"}],
+  "imports": [], "std_requirements": []
+}"#,
+        )
+        .unwrap();
+        let error = retained
+            .reobserve()
+            .expect_err("an omitted binding must reject the attempted revision");
+        assert!(format!("{error:?}").contains("unused module entry"));
+        assert_eq!(retained.source_snapshot().source_revision(), &committed);
+        assert_eq!(
+            retained.discovery_status(),
+            ImportDiscoveryStatus::ClosedValid
+        );
+        assert!(retained.discovery_refusal().is_none());
+
+        write_two_module_manifest(&dir, false);
+        retained
+            .reobserve()
+            .expect("regenerating the exact manifest restores the closure");
+        let recovered = run_to_runnable(&mut retained);
+        assert_eq!(recovered.elf, expected.elf);
+        assert_eq!(recovered.warnings, expected.warnings);
+    }
+
+    #[test]
+    fn explicit_manifest_order_and_relocation_preserve_output_identity() {
+        let dir = TestDir::new("explicit-order");
+        write_two_module_sources(&dir, 4);
+        write_two_module_manifest(&dir, false);
+        let mut retained = open_two_module_explicit(&dir);
+        let first = run_to_runnable(&mut retained);
+
+        write_two_module_manifest(&dir, true);
+        retained.reobserve().unwrap();
+        let reordered = run_to_runnable(&mut retained);
+
+        let relocated = TestDir::new("explicit-relocated");
+        write_two_module_sources(&relocated, 4);
+        write_two_module_manifest(&relocated, true);
+        let mut moved = open_two_module_explicit(&relocated);
+        let relocated_output = run_to_runnable(&mut moved);
+
+        assert_eq!(first.elf, reordered.elf);
+        assert_eq!(first.elf, relocated_output.elf);
+        assert_eq!(first.warnings, reordered.warnings);
+        assert_eq!(first.warnings, relocated_output.warnings);
+    }
+
+    #[test]
+    fn explicit_superseding_reobserve_preserves_before_and_after_close_states() {
+        let dir = TestDir::new("explicit-superseding");
+        write_two_module_sources(&dir, 5);
+        write_two_module_manifest(&dir, false);
+        let mut host = open_two_module_explicit(&dir);
+        let committed = host.source_snapshot().source_revision().clone();
+
+        let staged = Rc::new(Cell::new(false));
+        let staged_signal = Rc::clone(&staged);
+        crate::source_loader::set_import_pre_close_hook(Some(Box::new(move || {
+            staged_signal.set(true);
+        })));
+        let before = host
+            .reobserve_superseding(&|| staged.get())
+            .expect_err("a pre-close supersession must abort");
+        crate::source_loader::set_import_pre_close_hook(None);
+        assert!(matches!(before, SourceLoadError::Superseded));
+        assert!(
+            staged.get(),
+            "the attempt must reach the pre-close checkpoint"
+        );
+        assert_eq!(host.source_snapshot().source_revision(), &committed);
+
+        write_two_module_sources(&dir, 6);
+        let superseded = Rc::new(Cell::new(false));
+        let signal = Rc::clone(&superseded);
+        crate::source_loader::set_explicit_candidate_close_hook(Some(Box::new(move || {
+            signal.set(true);
+        })));
+        let after = host.reobserve_superseding(&|| superseded.get());
+        crate::source_loader::set_explicit_candidate_close_hook(None);
+        assert!(matches!(after, Err(SourceLoadError::Superseded)));
+        assert!(
+            host.source_snapshot()
+                .files()
+                .any(|source| source.source.contains("{ 6 }"))
+        );
+        assert_eq!(
+            host.source_snapshot().source_revision(),
+            host.discovery_revision().source_revision()
+        );
+        assert_eq!(host.accepted_reads().len(), host.source_snapshot().len());
+
+        host.reobserve_superseding(&|| false)
+            .expect("the coherent postclose successor must recover");
+        let output = run_to_runnable(&mut host);
+        let mut fresh = open_two_module_explicit(&dir);
+        let expected = run_to_runnable(&mut fresh);
+        assert_eq!(output.elf, expected.elf);
+        assert_eq!(output.warnings, expected.warnings);
     }
 
     #[test]
@@ -819,5 +1124,115 @@ mod test_candidate_acquisition_tests {
             rows_of(&report),
             vec![("orphan_tests.rue".to_owned(), 1, false)]
         );
+    }
+
+    #[test]
+    fn explicit_manifest_loads_and_reobserves_the_declared_closure() {
+        let dir = scratch("explicit-manifest");
+        let root = dir.join("main.rue");
+        fs::write(
+            &root,
+            "const h = @import(\"helper.rue\");\nfn main() -> i32 { h.helper() }\n",
+        )
+        .unwrap();
+        fs::write(dir.join("helper.rue"), "pub fn helper() -> i32 { 0 }\n").unwrap();
+        let manifest = dir.join("modules.json");
+        fs::write(
+            &manifest,
+            r#"{
+  "version": 1,
+  "root": "main.rue",
+  "modules": [
+    {"module": "main.rue", "path": "main.rue"},
+    {"module": "helper.rue", "path": "helper.rue"}
+  ],
+  "imports": [
+    {"importer": "project:main.rue", "literal": "helper.rue", "target": "project:helper.rue"}
+  ],
+  "std_requirements": []
+}"#,
+        )
+        .unwrap();
+        let context = HostPathContext::from_working_directory(dir.clone()).unwrap();
+        let mut host = FilesystemCompilerHost::open_explicit_manifest(
+            HostOpenRequest {
+                root_source: root.to_str().unwrap(),
+                source_manifest_path: None,
+                std_root: None,
+                compiler_config: CompilerSessionConfig::default(),
+                path_context: &context,
+            },
+            manifest.to_str().unwrap(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(host.source_snapshot().len(), 2);
+        assert_eq!(host.discovery_status(), ImportDiscoveryStatus::ClosedValid);
+        let before = host.source_snapshot().source_revision().clone();
+        let session_address = std::ptr::addr_of!(host.state.session);
+        fs::write(dir.join("helper.rue"), "pub fn helper() -> i32 { 1 }\n").unwrap();
+        host.reobserve().unwrap();
+        assert_eq!(std::ptr::addr_of!(host.state.session), session_address);
+        assert_ne!(host.source_snapshot().source_revision(), &before);
+        assert_eq!(host.discovery_status(), ImportDiscoveryStatus::ClosedValid);
+    }
+
+    #[test]
+    fn explicit_manifest_reobserve_rejects_stale_keys_and_keeps_last_good_state() {
+        let dir = scratch("explicit-manifest-stale-keys");
+        let root = dir.join("main.rue");
+        fs::write(
+            &root,
+            "const h = @import(\"helper.rue\");\nfn main() -> i32 { h.helper() }\n",
+        )
+        .unwrap();
+        fs::write(dir.join("helper.rue"), "pub fn helper() -> i32 { 0 }\n").unwrap();
+        let manifest = dir.join("modules.json");
+        let valid = r#"{
+  "version": 1, "root": "main.rue",
+  "modules": [{"module":"main.rue","path":"main.rue"},{"module":"helper.rue","path":"helper.rue"}],
+  "imports": [{"importer":"project:main.rue","literal":"helper.rue","target":"project:helper.rue"}],
+  "std_requirements": []
+}"#;
+        fs::write(&manifest, valid).unwrap();
+        let context = HostPathContext::from_working_directory(dir.clone()).unwrap();
+        let mut host = FilesystemCompilerHost::open_explicit_manifest(
+            HostOpenRequest {
+                root_source: root.to_str().unwrap(),
+                source_manifest_path: None,
+                std_root: None,
+                compiler_config: CompilerSessionConfig::default(),
+                path_context: &context,
+            },
+            manifest.to_str().unwrap(),
+            None,
+        )
+        .unwrap();
+        let committed = host.source_snapshot().source_revision().clone();
+        fs::write(
+            &manifest,
+            valid.replace(
+                r#"[{"importer":"project:main.rue","literal":"helper.rue","target":"project:helper.rue"}]"#,
+                "[]",
+            ),
+        )
+        .unwrap();
+        let error = host.reobserve().expect_err("omitted key is stale input");
+        assert!(format!("{error:?}").contains("unused module entry"));
+        assert_eq!(host.source_snapshot().source_revision(), &committed);
+
+        let extra = r#"{
+  "version": 1, "root": "main.rue",
+  "modules": [{"module":"main.rue","path":"main.rue"},{"module":"helper.rue","path":"helper.rue"}],
+  "imports": [
+    {"importer":"project:main.rue","literal":"helper.rue","target":"project:helper.rue"},
+    {"importer":"project:main.rue","literal":"other.rue","target":null}
+  ],
+  "std_requirements": []
+}"#;
+        fs::write(&manifest, extra).unwrap();
+        let error = host.reobserve().expect_err("extra key is stale input");
+        assert!(format!("{error:?}").contains("exactly cover"));
+        assert_eq!(host.source_snapshot().source_revision(), &committed);
     }
 }

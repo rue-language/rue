@@ -56,6 +56,8 @@ pub(crate) enum EmitStage {
     Abi,
     /// Emit the source dependency graph discovered while loading imports.
     Deps,
+    /// Emit the opt-in sparse build-system module manifest.
+    ModuleManifest,
 }
 
 #[cfg(test)]
@@ -191,6 +193,7 @@ impl std::str::FromStr for EmitStage {
             "stackframe" => Ok(EmitStage::StackFrame),
             "abi" => Ok(EmitStage::Abi),
             "deps" => Ok(EmitStage::Deps),
+            "module-manifest" => Ok(EmitStage::ModuleManifest),
             _ => Err(ParseEmitStageError(s.to_string())),
         }
     }
@@ -199,7 +202,7 @@ impl std::str::FromStr for EmitStage {
 impl EmitStage {
     pub(crate) fn all_names() -> &'static str {
         "tokens, ast, rir, air, cfg, lowering, mir, liveness, regalloc, asm, stackframe, abi, \
-         deps"
+         deps, module-manifest"
     }
 }
 
@@ -222,12 +225,38 @@ pub(crate) fn validate_output_modes(
     emit_stages: &[EmitStage],
     benchmark_json: bool,
 ) -> Result<(), String> {
-    if emit_stages.contains(&EmitStage::Deps) && emit_stages.len() != 1 {
-        return Err("Error: --emit deps cannot be combined with other --emit stages".to_string());
+    if (emit_stages.contains(&EmitStage::Deps) || emit_stages.contains(&EmitStage::ModuleManifest))
+        && emit_stages.len() != 1
+    {
+        let stage = if emit_stages.contains(&EmitStage::Deps) {
+            "deps"
+        } else {
+            "module-manifest"
+        };
+        return Err(format!(
+            "Error: --emit {stage} cannot be combined with other --emit stages"
+        ));
     }
     if benchmark_json && !emit_stages.is_empty() {
         return Err(
             "Error: --emit cannot be combined with --benchmark-json (both write to stdout)"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// The benchmark envelope currently identifies captured source inputs, but has
+/// no field for an explicit manifest's binding input. Refuse that combination
+/// before opening either input rather than publishing an incomplete provenance
+/// record.
+pub(crate) fn validate_module_manifest_modes(
+    module_manifest: bool,
+    benchmark_json: bool,
+) -> Result<(), String> {
+    if module_manifest && benchmark_json {
+        return Err(
+            "Error: --module-manifest cannot be combined with --benchmark-json until manifest provenance is recorded"
                 .to_string(),
         );
     }
@@ -259,6 +288,9 @@ enum OwnedEmitResult {
     Dependencies {
         json: String,
         errors: Option<CompileErrors>,
+    },
+    Manifest {
+        json: String,
     },
     Stages(Vec<OwnedEmitStage>),
     Failed(CompileErrors),
@@ -343,6 +375,50 @@ fn produce_with_cancellation(
         });
     }
 
+    if stages.contains(&EmitStage::ModuleManifest) {
+        let manifest = match rue_compiler::unstable::explicit_module_manifest(&discovery_revision) {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                return Ok(OwnedEmitResponse {
+                    source_snapshot,
+                    accepted_reads,
+                    attempted_reads,
+                    watch_inputs,
+                    error_format,
+                    target,
+                    result: OwnedEmitResult::InternalFailure(format!(
+                        "Error emitting module manifest: {error}"
+                    )),
+                });
+            }
+        };
+        let json = match manifest.to_json_bytes() {
+            Ok(bytes) => String::from_utf8(bytes).expect("manifest JSON is UTF-8"),
+            Err(error) => {
+                return Ok(OwnedEmitResponse {
+                    source_snapshot,
+                    accepted_reads,
+                    attempted_reads,
+                    watch_inputs,
+                    error_format,
+                    target,
+                    result: OwnedEmitResult::InternalFailure(format!(
+                        "Error emitting module manifest: {error}"
+                    )),
+                });
+            }
+        };
+        return Ok(OwnedEmitResponse {
+            source_snapshot,
+            accepted_reads,
+            attempted_reads,
+            watch_inputs,
+            error_format,
+            target,
+            result: OwnedEmitResult::Manifest { json },
+        });
+    }
+
     if discovery_revision.status() != ImportDiscoveryStatus::ClosedValid {
         return Ok(OwnedEmitResponse {
             source_snapshot,
@@ -395,7 +471,9 @@ fn produce_with_cancellation(
             EmitStage::Asm => Some(PresentationStage::Asm),
             EmitStage::StackFrame => Some(PresentationStage::StackFrame),
             EmitStage::Abi => Some(PresentationStage::Abi),
-            EmitStage::Tokens | EmitStage::Ast | EmitStage::Deps => None,
+            EmitStage::Tokens | EmitStage::Ast | EmitStage::Deps | EmitStage::ModuleManifest => {
+                None
+            }
         })
         .collect();
     let whole_program_outputs = if whole_program_stages.is_empty() {
@@ -474,7 +552,7 @@ fn produce_with_cancellation(
             }
             continue;
         }
-        if matches!(stage, EmitStage::Deps) {
+        if matches!(stage, EmitStage::Deps | EmitStage::ModuleManifest) {
             continue;
         }
         let output = whole_program_outputs
@@ -614,6 +692,10 @@ fn render(response: OwnedEmitResponse, color: ColorChoice) -> EmitTransport {
                 None => transport.ok = true,
             }
         }
+        OwnedEmitResult::Manifest { json } => {
+            transport.outln(json);
+            transport.ok = true;
+        }
         OwnedEmitResult::Stages(outputs) => {
             let mut warnings_printed = false;
             for owned in outputs {
@@ -672,7 +754,10 @@ fn render(response: OwnedEmitResponse, color: ColorChoice) -> EmitTransport {
                         transport.outln(format!("=== ABI ({target}) ==="));
                         transport.out(output.as_str());
                     }
-                    EmitStage::Tokens | EmitStage::Ast | EmitStage::Deps => unreachable!(),
+                    EmitStage::Tokens
+                    | EmitStage::Ast
+                    | EmitStage::Deps
+                    | EmitStage::ModuleManifest => unreachable!(),
                 }
             }
             transport.ok = true;
@@ -702,7 +787,7 @@ mod owned_tests;
 
 #[cfg(test)]
 mod output_mode_tests {
-    use super::{EmitStage, validate_output_modes};
+    use super::{EmitStage, validate_module_manifest_modes, validate_output_modes};
 
     #[test]
     fn accepts_sole_deps_stage() {
@@ -762,5 +847,13 @@ mod output_mode_tests {
         // matching the pre-RUE-798 ordering in the driver.
         let error = validate_output_modes(&[EmitStage::Deps, EmitStage::Air], true).unwrap_err();
         assert!(error.contains("--emit deps cannot be combined"));
+    }
+
+    #[test]
+    fn explicit_manifest_benchmark_provenance_is_rejected() {
+        let error = validate_module_manifest_modes(true, true).unwrap_err();
+        assert!(error.contains("--module-manifest cannot be combined"));
+        assert!(validate_module_manifest_modes(false, true).is_ok());
+        assert!(validate_module_manifest_modes(true, false).is_ok());
     }
 }

@@ -60,6 +60,7 @@ mod import_discovery;
 mod import_graph;
 mod linking;
 mod local_semantic_materialization;
+mod module_manifest;
 mod object_query;
 mod parsed_modules;
 mod program_image_plan;
@@ -127,6 +128,10 @@ pub use import_discovery::{
     AcceptedReadManifest, AcceptedReadManifestEntry, FileMetadataFingerprint, ImportCandidateRole,
     ImportDiscoveryContext, ImportOccurrenceKey, PhysicalFileIdentity,
     trusted_logical_path_for_requested,
+};
+pub use module_manifest::{
+    EXPLICIT_MODULE_MANIFEST_VERSION, ExplicitModuleManifest, ManifestError, ManifestImport,
+    ManifestModule,
 };
 // Host discovery-protocol records are published through `unstable` only; the
 // crate-local paths keep the session and its tests on one spelling.

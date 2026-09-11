@@ -209,6 +209,10 @@ struct Options {
     /// Optional build-system-facing manifest of source files the compiler may
     /// read while resolving the root module's import graph.
     source_manifest_path: Option<String>,
+    /// Opt-in closed module graph supplied by a build system.
+    module_manifest_path: Option<String>,
+    /// Independently supplied trusted standard-library root for manifest mode.
+    manifest_std_root: Option<String>,
     /// Optional build-system-facing list of files a target declared, used to
     /// report test files nothing imports (ADR-0083 §1). Declaring a candidate
     /// grants no read of it as a source: candidates never join the module
@@ -355,6 +359,10 @@ Options:
   --emit <stage>       Emit intermediate representation and exit
                        Can be specified multiple times for multiple outputs
                        Stages: {emit_stages}
+  --module-manifest <path>
+                       Load an explicit build-system module manifest
+  --manifest-std-root <path>
+                       Trusted standard-library root for manifest mode
   --preview <feature>  Enable a preview feature (can be repeated)
                        Features: {preview_features}
   --log-level <level>  Set logging level (default: off)
@@ -631,6 +639,8 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
     let mut watch = false;
     let mut jobs: Option<usize> = None;
     let mut source_manifest_path: Option<String> = None;
+    let mut module_manifest_path: Option<String> = None;
+    let mut manifest_std_root: Option<String> = None;
     let mut test_candidates_path: Option<String> = None;
     let mut output_path: Option<String> = None;
     let mut link_archives: Vec<std::path::PathBuf> = Vec::new();
@@ -770,6 +780,26 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
                     return ParseResult::Error;
                 };
                 source_manifest_path = Some(path.to_string());
+            }
+            "--module-manifest" => {
+                let Some(path) = args_iter.next() else {
+                    eprintln!("Error: --module-manifest requires a path");
+                    return ParseResult::Error;
+                };
+                if module_manifest_path.replace(path.to_string()).is_some() {
+                    eprintln!("Error: --module-manifest may be given at most once");
+                    return ParseResult::Error;
+                }
+            }
+            "--manifest-std-root" => {
+                let Some(path) = args_iter.next() else {
+                    eprintln!("Error: --manifest-std-root requires a path");
+                    return ParseResult::Error;
+                };
+                if manifest_std_root.replace(path.to_string()).is_some() {
+                    eprintln!("Error: --manifest-std-root may be given at most once");
+                    return ParseResult::Error;
+                }
             }
             "--test-candidates" => {
                 let Some(path) = args_iter.next() else {
@@ -1073,6 +1103,10 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         eprintln!("Valid targets: {}", Target::all_names());
         return ParseResult::Error;
     };
+    if manifest_std_root.is_some() && module_manifest_path.is_none() {
+        eprintln!("Error: --manifest-std-root requires --module-manifest");
+        return ParseResult::Error;
+    }
 
     ParseResult::Options(Box::new(Options {
         daemon,
@@ -1080,6 +1114,8 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         daemon_isolation,
         source_path,
         source_manifest_path,
+        module_manifest_path,
+        manifest_std_root,
         test_candidates_path,
         output_path: final_output_path,
         emit_stages,
@@ -1212,6 +1248,24 @@ pub(crate) fn test_repro_flags(options: &Options, path_context: &HostPathContext
             path_context.working_directory(),
         ));
     }
+    if let Some(manifest) = &options.module_manifest_path {
+        flags.push("--module-manifest".to_string());
+        flags.push(test_mode::absolute_spelling_at(
+            Path::new(manifest),
+            path_context.working_directory(),
+        ));
+    }
+    if let Some(std_root) = &options.manifest_std_root {
+        flags.push("--manifest-std-root".to_string());
+        // An empty spelling means "no explicit std root" to the loader; do
+        // not turn it into the invocation directory while reconstructing a
+        // test failure.
+        flags.push(if std_root.is_empty() {
+            String::new()
+        } else {
+            test_mode::absolute_spelling_at(Path::new(std_root), path_context.working_directory())
+        });
+    }
     for archive in &options.link_archives {
         flags.push("--link-archive".to_string());
         flags.push(test_mode::absolute_spelling_at(
@@ -1297,7 +1351,9 @@ fn render_error_code_explanation(explanation: &ErrorCodeExplanation) -> String {
 }
 
 fn validate_watch_modes(options: &Options) -> Result<(), &'static str> {
-    if options.watch
+    if options.watch && options.module_manifest_path.is_some() {
+        Err("Error: --watch does not support --module-manifest; use the retained host API")
+    } else if options.watch
         && (!options.emit_stages.is_empty() || options.benchmark_json || options.time_passes)
     {
         Err("Error: --watch cannot be combined with --emit, --benchmark-json, or --time-passes")
@@ -2575,6 +2631,13 @@ fn main() {
         eprintln!("{message}");
         std::process::exit(1);
     }
+    if let Err(message) = emit::validate_module_manifest_modes(
+        options.module_manifest_path.is_some(),
+        options.benchmark_json,
+    ) {
+        eprintln!("{message}");
+        std::process::exit(1);
+    }
     if let Err(message) = validate_watch_modes(&options) {
         eprintln!("{message}");
         // A refused `rue test --watch` combination is still "the run did not
@@ -2638,7 +2701,15 @@ fn main() {
     // pool, or a source file (ADR-0085 §2, §3). Under `auto` a request the
     // service rejects before any work began falls through to the direct
     // path; under `required` it is an error.
-    if options.daemon != daemon_client::DaemonMode::Off {
+    if options.module_manifest_path.is_some()
+        && options.daemon == daemon_client::DaemonMode::Required
+    {
+        eprintln!(
+            "Error: --daemon=required does not support --module-manifest; use the direct compiler"
+        );
+        std::process::exit(driver_failure_exit_code(&options.mode));
+    }
+    if options.daemon != daemon_client::DaemonMode::Off && options.module_manifest_path.is_none() {
         match daemon_client::run(&options, &path_context) {
             daemon_client::Outcome::Exit(code) => {
                 let _ = std::io::stdout().flush();
@@ -2669,20 +2740,40 @@ fn main() {
     // incorrectly report the discovery parse as a second timing root; the
     // driver owns the root and compiles through the compile-scope adapter.
     let compile_span = tracing::info_span!("compile", target = %options.target);
-    let captured_std_root = env::var_os("RUE_STD_PATH").map(PathBuf::from);
+    // Explicit manifests carry no ambient authority. Their trusted std root
+    // is a separate invocation input; legacy discovery retains RUE_STD_PATH.
+    let captured_std_root = options
+        .module_manifest_path
+        .is_none()
+        .then(|| env::var_os("RUE_STD_PATH").map(PathBuf::from))
+        .flatten();
+    let captured_manifest_std_root = options
+        .manifest_std_root
+        .as_deref()
+        .filter(|path| !path.is_empty())
+        .map(|path| path_context.anchor(Path::new(path)));
     #[cfg(rue_benchmark_allocations)]
     if options.benchmark_json {
         allocation::begin();
     }
     let mut compiler_host = {
         let _compile = compile_span.enter();
-        match FilesystemCompilerHost::open(HostOpenRequest {
+        let request = HostOpenRequest {
             root_source: &options.source_path,
             source_manifest_path: options.source_manifest_path.as_deref(),
             std_root: captured_std_root.as_deref(),
             compiler_config,
             path_context: &path_context,
-        }) {
+        };
+        let opened = match options.module_manifest_path.as_deref() {
+            Some(manifest) => FilesystemCompilerHost::open_explicit_manifest(
+                request,
+                manifest,
+                captured_manifest_std_root.as_deref(),
+            ),
+            None => FilesystemCompilerHost::open(request),
+        };
+        match opened {
             Ok(result) => result,
             Err(error) => report_source_load_error(error, options.error_format, &options.mode),
         }
@@ -2725,7 +2816,10 @@ fn main() {
     // loop out keeps such an emit at ZERO std reads even for a reached fallible
     // intrinsic with a broken std on disk. When it does run, it runs before both
     // emit and compile, matching the acquire-before-everything ordering.
-    if options.emit_stages.is_empty() || emit::emit_requires_semantic(&options.emit_stages) {
+    if options.emit_stages.is_empty()
+        || emit::emit_requires_semantic(&options.emit_stages)
+        || options.emit_stages.contains(&EmitStage::ModuleManifest)
+    {
         let _compile = compile_span.enter();
         if let Err(error) = compiler_host.acquire_reached_toolchain_modules(&compile_options) {
             report_source_load_error(error, options.error_format, &options.mode);
@@ -3540,6 +3634,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_explicit_module_manifest_and_std_root() {
+        let opts = unwrap_options(parse_args_from(&[
+            "--module-manifest",
+            "modules.json",
+            "--manifest-std-root",
+            "std",
+            "source.rue",
+        ]));
+        assert_eq!(opts.module_manifest_path.as_deref(), Some("modules.json"));
+        assert_eq!(opts.manifest_std_root.as_deref(), Some("std"));
+    }
+
+    #[test]
+    fn manifest_std_root_requires_manifest() {
+        assert!(is_error(&parse_args_from(&[
+            "--manifest-std-root",
+            "std",
+            "source.rue",
+        ])));
+    }
+
+    #[test]
     fn parse_test_candidates() {
         let opts = unwrap_options(parse_args_from(&[
             "--test-candidates",
@@ -3895,6 +4011,10 @@ mod tests {
             "500",
             "--source-manifest",
             "sources.manifest",
+            "--module-manifest",
+            "modules.json",
+            "--manifest-std-root",
+            "std",
         ]));
         let context = HostPathContext::capture().unwrap();
         let flags = test_repro_flags(&options, &context);
@@ -3919,7 +4039,34 @@ mod tests {
                 "500",
                 "--source-manifest",
                 manifest.as_str(),
+                "--module-manifest",
+                test_mode::absolute_spelling_at(
+                    Path::new("modules.json"),
+                    context.working_directory(),
+                )
+                .as_str(),
+                "--manifest-std-root",
+                test_mode::absolute_spelling_at(Path::new("std"), context.working_directory())
+                    .as_str(),
             ]
+        );
+    }
+
+    #[test]
+    fn the_repro_flags_preserve_an_empty_explicit_std_root() {
+        let options = unwrap_options(parse_args_from(&[
+            "test",
+            "main.rue",
+            "--module-manifest",
+            "modules.json",
+            "--manifest-std-root",
+            "",
+        ]));
+        let context = HostPathContext::capture().unwrap();
+        let flags = test_repro_flags(&options, &context);
+        assert_eq!(
+            &flags[flags.len() - 2..],
+            &["--manifest-std-root".to_owned(), String::new()]
         );
     }
 
@@ -5259,6 +5406,17 @@ mod tests {
     }
 
     #[test]
+    fn watch_rejects_explicit_manifest_mode() {
+        let opts = unwrap_options(parse_args_from(&[
+            "--watch",
+            "--module-manifest",
+            "modules.json",
+            "source.rue",
+        ]));
+        assert!(validate_watch_modes(&opts).is_err());
+    }
+
+    #[test]
     fn watch_is_disabled_by_default() {
         let opts = unwrap_options(parse_args_from(&["source.rue"]));
         assert!(!opts.watch);
@@ -5389,6 +5547,10 @@ mod tests {
         );
         assert_eq!("abi".parse::<EmitStage>().unwrap(), EmitStage::Abi);
         assert_eq!("deps".parse::<EmitStage>().unwrap(), EmitStage::Deps);
+        assert_eq!(
+            "module-manifest".parse::<EmitStage>().unwrap(),
+            EmitStage::ModuleManifest
+        );
     }
 
     #[test]
@@ -5402,7 +5564,7 @@ mod tests {
         assert_eq!(
             EmitStage::all_names(),
             "tokens, ast, rir, air, cfg, lowering, mir, liveness, regalloc, asm, stackframe, \
-             abi, deps"
+             abi, deps, module-manifest"
         );
     }
 

@@ -316,14 +316,24 @@ impl CompilerSession {
                 )));
             }
         };
-        self.stage_import_discovery_inner(
+        let plan = self.stage_import_discovery_inner(
             &snapshot,
             context,
             accepted_reads,
             ledger,
             Some(current),
             incremental,
-        )
+        )?;
+        if let Some((_, _, staged_context, staged_reads, _, _)) =
+            self.queries.revisioned.current_import_view_state()
+        {
+            if let Err(error) = staged_context.validate_explicit_manifest_plan(&plan, &staged_reads)
+            {
+                let _ = self.abort_import_input_request();
+                return Err(error.into());
+            }
+        }
+        Ok(plan)
     }
 
     /// Cumulative import occurrences the demand frontier has rooted (RUE-1112).
@@ -644,8 +654,11 @@ impl CompilerSession {
                     .as_ref()
                     .filter(|diagnostics| {
                         diagnostics.source_revision() == source.source_revision()
-                            && diagnostics.identity()
-                                == &FrontendDiagnosticIdentity::Import(input.clone())
+                            && matches!(
+                                diagnostics.identity(),
+                                FrontendDiagnosticIdentity::Import(previous)
+                                    if previous.as_ref() == &input
+                            )
                     })
             {
                 *reused = true;
@@ -656,7 +669,7 @@ impl CompilerSession {
                 guard.started();
                 let diagnostics = self.publish_diagnostics(
                     &source,
-                    FrontendDiagnosticIdentity::Import(input),
+                    FrontendDiagnosticIdentity::Import(Box::new(input)),
                     Some(&errors),
                     &[],
                 );
