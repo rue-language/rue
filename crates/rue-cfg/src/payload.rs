@@ -453,7 +453,6 @@ pub(crate) fn remap_switch_case_targets(
 
 /// Safe fuzzing hook for the owner-local checked CFG range decoders.
 #[doc(hidden)]
-#[cfg(any(test, feature = "fuzz-support"))]
 pub fn fuzz_payload_corruption(input: &[u8]) -> Result<(), PayloadError> {
     let family = input.first().copied().unwrap_or(0) as usize % CFG_PAYLOAD_FAMILY_NAMES.len();
     let operation = input.get(1).copied().unwrap_or(0) % 4;

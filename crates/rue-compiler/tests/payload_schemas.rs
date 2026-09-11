@@ -139,16 +139,16 @@ fn owner_schema_inventories_are_complete_and_deliberate() {
         let input = [u8::try_from(index).unwrap(), 0];
         let error_family = match row.phase {
             "RIR" => {
-                rue_rir_fuzz_support::Rir::fuzz_payload_corruption(&input)
+                rue_rir::Rir::fuzz_payload_corruption(&input)
                     .unwrap_err()
                     .family
             }
             "AIR" => {
-                rue_air_fuzz_support::Air::fuzz_payload_corruption(&input)
+                rue_air::Air::fuzz_payload_corruption(&input)
                     .unwrap_err()
                     .family
             }
-            "CFG" => rue_cfg_fuzz_support::fuzz_payload_corruption(&input)
+            "CFG" => rue_cfg::fuzz_payload_corruption(&input)
                 .unwrap_err()
                 .family(),
             _ => unreachable!(),
@@ -161,19 +161,13 @@ fn owner_schema_inventories_are_complete_and_deliberate() {
         let scalar_input = [u8::try_from(index).unwrap(), 3, 0xff, 0xff, 0xff, 0xff];
         match row.phase {
             "RIR" => {
-                let _ = std::hint::black_box(rue_rir_fuzz_support::Rir::fuzz_payload_corruption(
-                    &scalar_input,
-                ));
+                let _ = std::hint::black_box(rue_rir::Rir::fuzz_payload_corruption(&scalar_input));
             }
             "AIR" => {
-                let _ = std::hint::black_box(rue_air_fuzz_support::Air::fuzz_payload_corruption(
-                    &scalar_input,
-                ));
+                let _ = std::hint::black_box(rue_air::Air::fuzz_payload_corruption(&scalar_input));
             }
             "CFG" => {
-                let _ = std::hint::black_box(rue_cfg_fuzz_support::fuzz_payload_corruption(
-                    &scalar_input,
-                ));
+                let _ = std::hint::black_box(rue_cfg::fuzz_payload_corruption(&scalar_input));
             }
             _ => unreachable!(),
         }

@@ -30,7 +30,6 @@ use lasso::{Key, Spur, ThreadedRodeo};
 use rue_rir::SymbolHandle;
 use rue_span::Span;
 
-#[cfg(any(test, feature = "fuzz-support"))]
 mod payload_support;
 
 /// The published ceiling on AIR instructions in **one function body**
@@ -2919,7 +2918,6 @@ impl Air {
         })
     }
 
-    #[cfg(any(test, feature = "fuzz-support"))]
     fn try_get_refs(
         &self,
         start: u32,
@@ -2943,7 +2941,6 @@ impl Air {
         Ok(words)
     }
 
-    #[cfg(any(test, feature = "fuzz-support"))]
     fn try_get_types(&self, range: &AirTypeArgs) -> Result<&[u32], AirPayloadError> {
         let words = self.try_get_words(range.start, range.extent, "type arguments")?;
         for (record, word) in words.iter().copied().enumerate() {
