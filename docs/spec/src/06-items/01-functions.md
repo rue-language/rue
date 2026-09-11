@@ -24,6 +24,17 @@ param = IDENT ":" type ;
 
 Parameters **MUST** have explicit type annotations.
 
+{{ rule(id="6.1:44", cat="legality-rule") }}
+
+Within a module or type scope, each user-defined function name denotes exactly
+one signature. Rue does not support overloading by parameter type, parameter
+count, return type, or parameter mode (`inout` or `borrow`); two functions or
+callable members with the same name in one scope are therefore rejected even
+when their signatures differ. A comptime specialization of one generic
+function and a fixed numeric operator intrinsic are not overloads. The same
+spelling **MAY** be used in distinct module or type scopes, where ordinary
+scope resolution selects the declaration.
+
 {{ rule(id="6.1:34", cat="legality-rule") }}
 
 The parameters in a single parameter list **MUST** have distinct names. It is a compile-time error for a function or method to declare two parameters with the same name (for example, `fn f(x: i32, x: i32)`); the diagnostic identifies the second occurrence. A method's `self` receiver is not a named parameter for the purpose of this rule.
