@@ -361,3 +361,79 @@ fn main() -> i32 {
     0
 }
 """ }]
+
+# --- Out-of-bounds writes panic (RUE-1713) ---------------------------------
+# The read surface already refuses an out-of-bounds index loudly (`get` is
+# `None`, `get_ref` panics). A write that silently went nowhere is the
+# lost-update bug, so `ArrayBuf.set`/`swap` and `Grid2D.set` panic the same way
+# `get_ref` does instead of ignoring the index. Each case performs an in-bounds
+# write first, so the panic is pinned to the out-of-bounds one.
+
+[[case]]
+name = "arraybuf_set_out_of_bounds_panics"
+description = "ArrayBuf.set with an index equal to len panics with the bounds message instead of discarding the value."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 101
+stdout = "7\n"
+runtime_error_contains = ["panic: index out of bounds"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let B = std.arraybuf.ArrayBuf(i64);
+    let mut v = B.new();
+    v.push(1);
+    v.set(0, 7);
+    @dbg(v.get_or(0, 0));
+    v.set(1, 99);
+    0
+}
+""" }]
+
+[[case]]
+name = "arraybuf_swap_out_of_bounds_panics"
+description = "ArrayBuf.swap with one index out of bounds panics; an in-bounds swap and a same-index swap succeed first."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 101
+stdout = "2\n1\n"
+runtime_error_contains = ["panic: index out of bounds"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let B = std.arraybuf.ArrayBuf(i64);
+    let mut v = B.new();
+    v.push(1);
+    v.push(2);
+    v.swap(0, 1);
+    v.swap(1, 1);
+    @dbg(v.get_or(0, 0));
+    @dbg(v.get_or(1, 0));
+    v.swap(0, 2);
+    0
+}
+""" }]
+
+[[case]]
+name = "grid_set_out_of_bounds_panics"
+description = "Grid2D.set checks each axis: a column equal to cols panics even though it would flatten to a valid index in the next row."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 101
+stdout = "5\n"
+runtime_error_contains = ["panic: index out of bounds"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let G = std.grid.Grid2D(i64);
+    let O = std.option.Option(i64);
+    let mut g = G.new(2, 2, 0);
+    g.set(1, 1, 5);
+    match g.get(1, 1) { O.Some(v) => { @dbg(v); }, O.None => {} }
+    g.set(0, 2, 9);
+    0
+}
+""" }]

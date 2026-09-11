@@ -110,11 +110,15 @@ pub fn Grid2D(comptime T: type) -> type {
             yield self.cells.get_ref(r * self.cols + c);
         }
 
-        // Set cell `(r, c)` to `x`. Out-of-bounds indices are ignored.
+        // Set cell `(r, c)` to `x`. An out-of-bounds cell panics, as it does
+        // for `get_ref` (RUE-1713). The bounds are checked per axis here:
+        // `(0, cols)` on a one-row grid would otherwise flatten to a valid
+        // index in the next row.
         fn set(inout self, r: u64, c: u64, x: T) {
-            if r < self.rows && c < self.cols {
-                self.cells.set(r * self.cols + c, x);
+            if r >= self.rows || c >= self.cols {
+                @panic("index out of bounds");
             }
+            self.cells.set(r * self.cols + c, x);
         }
     }
 }
