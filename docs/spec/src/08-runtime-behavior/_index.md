@@ -30,3 +30,16 @@ must state it rather than cite this paragraph as closed.
 Each is total, deterministic, and observable, so a conforming compiler reproduces
 the same trap on the same input. The following sections state each category
 normatively.
+
+{{ rule(id="8.0:2", cat="normative") }}
+
+A panic terminates the program immediately. No language-level destructor or
+other cleanup runs for the panicking callee, its callers, or any surrounding
+scope, and no user code after the trap executes. Rue provides no language
+construct that observes, catches, unwinds, recovers, or resumes a panic. This
+rule applies to `@panic`, failed `@assert`/`@assert_eq`/`@assert_ne`, integer
+overflow, bounds violations, division or remainder by zero, and every other
+runtime trap defined by this chapter. Recoverable failures are represented as
+typed values such as `Result`, `Option`, or an application enum and propagated
+with `?` (ADR-0038); a host that must survive a panic isolates the work in a
+separate process (ADR-0083).
