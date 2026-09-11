@@ -1740,7 +1740,14 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         ty.is_copy_in_pool(self.body_type_pool())
     }
     pub(crate) fn types_compatible(&self, found: Type, expected: Type) -> bool {
-        found.is_never() || found.is_error() || self.types_equivalent(found, expected)
+        found.is_never()
+            || found.is_error()
+            || self.types_equivalent(found, expected)
+            // The synthetic `str` view is registered in each body-facing type
+            // pool. Preserve its canonical builtin identity across those pool
+            // projections without accepting source-defined structs that merely
+            // happen to use the same spelling.
+            || (self.is_str_struct(found) && self.is_str_struct(expected))
     }
     pub(crate) fn function_returns_type(&self, function: &FunctionCallInfo) -> bool {
         function.returns_type

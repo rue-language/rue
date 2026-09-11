@@ -2165,6 +2165,11 @@ pub(crate) fn bind_durable_comptime_argument(
     );
     if let Some(found) = ty
         && found != expected
+        && !(matches!(
+            &value,
+            crate::durable_semantics::DurableConstValue::String(_)
+        ) && crate::durable_comptime::is_durable_str_type(&found)
+            && crate::durable_comptime::is_durable_str_type(&expected))
     {
         return Err(DurableComptimeFailure::failure(
             SemanticNucleusFailure::Diagnostic(rue_error::ErrorKind::TypeMismatch {

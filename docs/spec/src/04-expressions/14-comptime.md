@@ -24,6 +24,7 @@ comptime expression evaluates to that compile-time value. The following
 operations are supported within comptime blocks:
 
 - Integer literals
+- String literals
 - Boolean literals (`true`, `false`)
 - Arithmetic operators (`+`, `-`, `*`, `/`, `%`) and unary negation (`-`)
 - Comparison operators (`==`, `!=`, `<`, `<=`, `>`, `>=`)
@@ -711,8 +712,8 @@ closes the set — nothing outside these clauses is comptime-evaluable.
 An expression is **comptime-evaluable** in a given scope in each of the
 following base cases:
 
-- an integer literal, a float literal, a boolean literal (`true`, `false`), or
-  the unit value (`()`);
+- an integer literal, a float literal, a string literal, a boolean literal
+  (`true`, `false`), or the unit value (`()`);
 - a reference to a `const` item (Chapter 6), whose initializer is itself
   comptime-evaluable — every `const` initializer is required to be
   comptime-evaluable, so every `const` reference qualifies. This includes a

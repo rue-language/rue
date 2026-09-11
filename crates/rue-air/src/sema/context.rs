@@ -916,9 +916,8 @@ pub enum ConstValue {
     ///
     /// A string constant's use sites materialize it exactly like an inline
     /// string literal: the content joins the function's local string table
-    /// and lowers to `.rodata`-backed `str` (`{ptr, len}`). String constants
-    /// are not usable as comptime arguments (no `comptime s: str` parameters
-    /// exist), so specialization serialization rejects them.
+    /// and lowers to `.rodata`-backed `str` (`{ptr, len}`). Comptime string
+    /// arguments retain this content through specialization and publication.
     String(SymbolHandle),
     /// Exact canonical decimal value, interned as `<significand>e<exponent>`.
     Float(SymbolHandle),

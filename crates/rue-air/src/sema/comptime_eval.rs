@@ -252,6 +252,8 @@ pub(super) fn validate_comptime_value_for_type_impl(
     expected: Type,
     span: Span,
     friendly_type_display: impl Fn(Type) -> String,
+    string_type: Option<Type>,
+    is_string_type: impl Fn(Type) -> bool,
 ) -> CompileResult<()> {
     if matches!(value, ConstValue::Function(_)) {
         return Err(CompileError::new(
@@ -287,7 +289,21 @@ pub(super) fn validate_comptime_value_for_type_impl(
             span,
         ));
     }
-    let found = value.get_type();
+    // Float literals carry their exact decimal spelling as a comptime value
+    // until the call's contextual type selects f32 or f64. Keep that
+    // established literal-typing rule at this shared validation boundary;
+    // rejecting the `comptime_float` marker here would make ordinary and
+    // comptime-block calls disagree.
+    if matches!(value, ConstValue::Float(_)) && expected.is_float() {
+        return Ok(());
+    }
+    if matches!(value, ConstValue::String(_)) && is_string_type(expected) {
+        return Ok(());
+    }
+    let found = match value {
+        ConstValue::String(_) => string_type.unwrap_or(Type::ERROR),
+        _ => value.get_type(),
+    };
     if found != expected {
         return Err(CompileError::new(
             ErrorKind::TypeMismatch {
@@ -1556,13 +1572,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 
     pub(crate) fn validate_comptime_value_for_type(
-        &self,
+        &mut self,
         function_name: Spur,
         param_name: Spur,
         value: ConstValue,
         expected: Type,
         span: Span,
     ) -> CompileResult<()> {
+        let string_type = Some(self.get_or_create_str_struct(span)?);
         validate_comptime_value_for_type_impl(
             self.body_interner(),
             function_name,
@@ -1571,6 +1588,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             expected,
             span,
             |ty| self.format_type_name(ty),
+            string_type,
+            |ty| self.is_str_struct(ty),
         )
     }
 
@@ -2672,6 +2691,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeValueAlgebra for OrdinaryBodyEngin
             ConstValue::Bool(value) => Some(ConstValue::Bool(value)),
             ConstValue::Unit => Some(ConstValue::Unit),
             ConstValue::Type(value) => Some(ConstValue::Type(value)),
+            ConstValue::String(value) => Some(ConstValue::String(value)),
             ConstValue::Float(value) => Some(ConstValue::Float(value)),
             _ => None,
         };
@@ -2716,6 +2736,21 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeValueAlgebra for OrdinaryBodyEngin
         };
         let symbol = self.body_interner().get_or_intern(canonical);
         ComptimeOutcome::Known(ConstValue::Float(rue_rir::SymbolHandle::new(symbol)))
+    }
+    fn resolve_string_const(
+        &mut self,
+        content: Self::Name,
+        _span: Span,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        ComptimeOutcome::Known(ConstValue::String(rue_rir::SymbolHandle::new(content)))
+    }
+    fn string_value_text(&self, value: &ConstValue) -> Option<String> {
+        match value {
+            ConstValue::String(content) => {
+                Some(self.body_interner().resolve(&content.spur()).to_owned())
+            }
+            _ => None,
+        }
     }
     fn float_value_text(&self, value: &ConstValue) -> Option<String> {
         match value {
@@ -2807,13 +2842,25 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeCallProtocol for OrdinaryBodyEngin
         >,
         Self::Failure,
     > {
-        if let Some(result) = OrdinaryBodyEngine::reduce_external_comptime_call(
+        let external_result = OrdinaryBodyEngine::reduce_external_comptime_call(
             self,
             admission.name,
             &bound.callee_types,
             &bound.callee_values,
             span,
-        ) {
+        );
+        if let Some(result) = external_result {
+            // External declaration reduction shares the durable query graph,
+            // so validate its argument contract at this body boundary too.
+            // In particular, fixed-capacity `Str(N)` is a runtime text view,
+            // not the canonical `str` comptime parameter type.
+            self.validate_comptime_call_substitutions(
+                admission.name,
+                &admission.payload,
+                &bound.callee_types,
+                &bound.callee_values,
+                span,
+            )?;
             return result
                 .map(|result| {
                     Some(ComptimeCallPreparation::Memoized(match result {

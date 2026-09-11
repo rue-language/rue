@@ -24,14 +24,10 @@ forms are: literals (4.14:26); the arithmetic, comparison, logical, bitwise,
 and shift operators applied to comptime-evaluable operands (4.14:27);
 `comptime` block expressions (4.14:2, 4.14:27); references to other constants
 (4.14:26); and module expressions (`@import(...)` and module member access —
-chapter 10, 6.5:10). Additionally, a string literal is a valid constant
-initializer (6.5:16) even though it is not in the general comptime-evaluable
-set: string values exist in constant-initializer position only, not in
-`comptime` blocks or `comptime` argument positions. A reference to a function
-item is comptime-evaluable only for the purpose of forming a callable alias
-(6.5:15). An initializer outside this set is a compile-time error (E0434) —
-the same diagnostic 4.14:29 names for a `const` initializer that is not
-comptime-evaluable.
+chapter 10, 6.5:10). A reference to a function item is comptime-evaluable only
+for the purpose of forming a callable alias (6.5:15). An initializer outside
+this set is a compile-time error (E0434) — the same diagnostic 4.14:29 names
+for a `const` initializer that is not comptime-evaluable.
 
 {{ rule(id="6.5:3", cat="example") }}
 
@@ -137,8 +133,8 @@ string constant materializes the same value the string literal itself would
 denote at that site: string constants participate in `str` operations,
 `println`, and reads exactly like inline literals. A constant initialized
 from another string constant (`const B: str = A;`) denotes the same value.
-String values remain outside `comptime` blocks and `comptime` argument
-positions (6.5:2).
+String constants can also be used in `comptime` blocks and `comptime` argument
+positions, retaining their string content and `str` type.
 
 {{ rule(id="6.5:17", cat="example") }}
 

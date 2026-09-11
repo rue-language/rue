@@ -772,10 +772,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         ConstValue::Bool(_) => Type::BOOL,
                         ConstValue::Type(t) => *t,
                         ConstValue::Function(_) => Type::COMPTIME_TYPE,
-                        // No comptime parameter has a string type, so a captured
-                        // string value never occurs (RUE-957); skip rather than
-                        // fabricate a type for it.
-                        ConstValue::String(_) => continue,
+                        // String values carry their content, while the declared
+                        // nominal type is recovered from the same canonical
+                        // `str` identity used for literal inference. Do not
+                        // skip the binding: captured string parameters must
+                        // participate in ordinary contextual inference.
+                        ConstValue::String(_) => str_ty,
                         // A captured float value carries only its decimal
                         // spelling — the capture does not thread the declared
                         // width through either — so it is typed as a fresh

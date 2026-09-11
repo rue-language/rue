@@ -29,7 +29,7 @@
 
 use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use rue_error::{CompileError, CompileResult, ErrorKind};
-use rue_rir::{InstData, InstRef};
+use rue_rir::{InstData, InstRef, RirStructuralAnchor};
 
 use super::context::{AnalysisContext, AnalysisResult};
 use crate::inst::{Air, AirInst, AirInstData};
@@ -46,6 +46,12 @@ use crate::types::Type;
 pub(crate) enum FloatConstSource<'a> {
     Literal { spelling: &'a str, negated: bool },
     ComputedValue { spelling: &'a str },
+}
+
+/// Where a string value came from when it is materialized into AIR.
+pub(crate) enum StringConstSource {
+    Literal(RirStructuralAnchor),
+    Synthesized,
 }
 
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
@@ -71,6 +77,34 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     // ========================================================================
     // Constant materialization: the one owner
     // ========================================================================
+
+    /// Materialize a string through the same local string table and capacity
+    /// rule used by source literals. Comptime results have no source anchor,
+    /// so they use the synthesized atom path while retaining the contextual
+    /// type's fixed-capacity check.
+    pub(crate) fn materialize_string_const(
+        &self,
+        ctx: &mut AnalysisContext,
+        content: String,
+        ty: Type,
+        span: rue_span::Span,
+        source: StringConstSource,
+    ) -> CompileResult<AirInstData> {
+        if let Some(capacity) = self.str_fixed_capacity(ty) {
+            let byte_len = content.len() as u64;
+            if byte_len > capacity {
+                return Err(CompileError::new(
+                    ErrorKind::StrFixedCapacityExceeded { capacity, byte_len },
+                    span,
+                ));
+            }
+        }
+        let local_id = match source {
+            StringConstSource::Literal(anchor) => ctx.add_local_string(content, anchor),
+            StringConstSource::Synthesized => ctx.add_synthesized_string(&content),
+        };
+        Ok(AirInstData::StringConst(local_id))
+    }
 
     /// Materialize an integer constant as the AIR `Const` payload for `ty`.
     ///
@@ -264,24 +298,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // Add string to the local per-function string table.
                 let string_content = self.body_interner().resolve(&*symbol).to_string();
 
-                // Capacity-fits legality (ADR-0043 Phase 5, RUE-326): a string
-                // literal materialized as a fixed `Str(N)` must fit — its UTF-8
-                // byte length must be ≤ N — else it is a clean compile error
-                // (E0492). `str` (no capacity) never triggers this.
-                if let Some(capacity) = self.str_fixed_capacity(ty) {
-                    let byte_len = string_content.len() as u64;
-                    if byte_len > capacity {
-                        return Err(CompileError::new(
-                            ErrorKind::StrFixedCapacityExceeded { capacity, byte_len },
-                            inst.span,
-                        ));
-                    }
-                }
-
-                let local_string_id = ctx.add_local_string(string_content, anchor.clone());
+                let data = self.materialize_string_const(
+                    ctx,
+                    string_content,
+                    ty,
+                    inst.span,
+                    StringConstSource::Literal(anchor.clone()),
+                )?;
 
                 let air_ref = air.add_inst(AirInst {
-                    data: AirInstData::StringConst(local_string_id),
+                    data,
                     ty,
                     span: inst.span,
                 });
