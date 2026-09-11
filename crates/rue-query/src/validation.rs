@@ -4,6 +4,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use smallvec::SmallVec;
 
+// Taint and ownership repair are independent bits: encountering an external
+// evaluator must not erase a validation-only compute/join that still needs a
+// retained lease, in either discovery order. Zero is a complete registered proof.
 pub(crate) const VALIDATION_PROOF_REGISTERED: u8 = 0;
 pub(crate) const VALIDATION_PROOF_RETRYABLE: u8 = 1;
 pub(crate) const VALIDATION_PROOF_UNREGISTERED: u8 = 2;

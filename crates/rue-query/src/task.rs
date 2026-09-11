@@ -430,7 +430,7 @@ impl ValidationProofGuard {
     }
 
     pub(crate) fn retryable(&self) -> bool {
-        self.state() == VALIDATION_PROOF_RETRYABLE
+        self.state() & VALIDATION_PROOF_RETRYABLE != 0
     }
 }
 
@@ -2002,7 +2002,7 @@ impl Task {
 
     pub(crate) fn taint_validation_proofs(&self) {
         for proof in lock(&self.validation_proofs).iter_mut() {
-            *proof = VALIDATION_PROOF_UNREGISTERED;
+            *proof |= VALIDATION_PROOF_UNREGISTERED;
         }
         let mut parent = self
             .validation_proof_parent
@@ -2010,7 +2010,7 @@ impl Task {
             .and_then(Weak::upgrade);
         while let Some(task) = parent {
             for proof in lock(&task.validation_proofs).iter_mut() {
-                *proof = VALIDATION_PROOF_UNREGISTERED;
+                *proof |= VALIDATION_PROOF_UNREGISTERED;
             }
             parent = task
                 .validation_proof_parent
@@ -2021,9 +2021,7 @@ impl Task {
 
     pub(crate) fn defer_validation_proofs(&self) {
         for proof in lock(&self.validation_proofs).iter_mut() {
-            if *proof == VALIDATION_PROOF_REGISTERED {
-                *proof = VALIDATION_PROOF_RETRYABLE;
-            }
+            *proof |= VALIDATION_PROOF_RETRYABLE;
         }
         let mut parent = self
             .validation_proof_parent
@@ -2031,9 +2029,7 @@ impl Task {
             .and_then(Weak::upgrade);
         while let Some(task) = parent {
             for proof in lock(&task.validation_proofs).iter_mut() {
-                if *proof == VALIDATION_PROOF_REGISTERED {
-                    *proof = VALIDATION_PROOF_RETRYABLE;
-                }
+                *proof |= VALIDATION_PROOF_RETRYABLE;
             }
             parent = task
                 .validation_proof_parent
