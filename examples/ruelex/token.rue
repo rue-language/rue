@@ -58,6 +58,8 @@ pub const TYPE_U32: u64 = 46;
 pub const TYPE_U64: u64 = 47;
 pub const TYPE_BOOL: u64 = 48;
 pub const TYPE_TYPE: u64 = 49;
+pub const TYPE_F32: u64 = 50;
+pub const TYPE_F64: u64 = 51;
 
 pub const PLUS: u64 = 60;
 pub const MINUS: u64 = 61;
@@ -183,6 +185,8 @@ pub fn kind_from_name(borrow name: StrBuf) -> u64 {
     if eq(borrow name, "TYPE(u64)") { return TYPE_U64; }
     if eq(borrow name, "TYPE(bool)") { return TYPE_BOOL; }
     if eq(borrow name, "TYPE(type)") { return TYPE_TYPE; }
+    if eq(borrow name, "TYPE(f32)") { return TYPE_F32; }
+    if eq(borrow name, "TYPE(f64)") { return TYPE_F64; }
     if eq(borrow name, "PLUS") { return PLUS; }
     if eq(borrow name, "MINUS") { return MINUS; }
     if eq(borrow name, "STAR") { return STAR; }

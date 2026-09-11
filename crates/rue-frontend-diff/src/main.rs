@@ -193,6 +193,8 @@ impl Shapes<'_> {
                         | "u32"
                         | "u64"
                         | "bool"
+                        | "f32"
+                        | "f64"
                         | "type"
                         | "Self"
                 ) {

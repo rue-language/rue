@@ -201,14 +201,14 @@ error_contains = ["E0404", "cannot define type `str`"]
 
 [[case]]
 name = "primitive_spelling_blocks_same_named_user_struct_literal"
-description = "RUE-1966 primitive control: the legal declaration spelling `f32` cannot make struct-literal resolution disagree with annotation resolution, where the primitive wins."
+description = "RUE-1966 primitive control: `usize` is the one primitive spelling that is still a legal declaration name (f32/f64 became keywords in RUE-2076), and it cannot make struct-literal resolution disagree with annotation resolution, where the primitive wins."
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
-struct f32 { x: i32 }
-fn main() -> i32 { let _: f32 = f32 { x: 42 }; 0 }
+struct usize { x: i32 }
+fn main() -> i32 { let _: usize = usize { x: 42 }; 0 }
 """ }]
 compile_fail = true
-error_contains = ["E0204", "unknown type 'f32'"]
+error_contains = ["E0204", "unknown type 'usize'"]
 
 [[case]]
 name = "non_type_const_is_not_a_struct_literal_alias"
