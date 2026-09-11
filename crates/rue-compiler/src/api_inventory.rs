@@ -4937,7 +4937,7 @@ pub(super) use register_parse_import_parse;"#;
         });
     assert_eq!(
         (declarations.len(), fingerprint),
-        (216, 11_039_517_929_469_320_202),
+        (217, 3_718_522_193_740_259_534),
         "crate-visible declaration names, signatures, fields, or phase owners changed"
     );
 
