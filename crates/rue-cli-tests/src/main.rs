@@ -3507,11 +3507,6 @@ fn run_watch_case(
         .args
         .as_ref()
         .is_some_and(|args| args.iter().any(|arg| arg.starts_with("--daemon=")));
-    let preparation_failure_event = if daemon_watch {
-        "reobserve-error"
-    } else {
-        "compile-error"
-    };
     if let Some(args) = &case.args {
         compiler_args.extend(args.iter().cloned());
     }
@@ -3575,13 +3570,7 @@ fn run_watch_case(
         if scenario.kind == WatchScenarioKind::InitialFailure {
             // The very first cycle is the one that fails, so there is no
             // opening publication to wait for and nothing on disk to run.
-            wait_for_watch_event(
-                &mut child,
-                &protocol,
-                preparation_failure_event,
-                1,
-                deadline,
-            )?;
+            wait_for_watch_event(&mut child, &protocol, "compile-error", 1, deadline)?;
             if program.exists() {
                 return Err("a failed first watch cycle must publish nothing".to_string());
             }
@@ -3616,19 +3605,13 @@ fn run_watch_case(
                 // A deleted transitive input can first be observed as a
                 // closed-invalid revision by the current host snapshot; the
                 // next cycle then reobserves the restored closure.
-                wait_for_watch_event(
-                    &mut child,
-                    &protocol,
-                    preparation_failure_event,
-                    1,
-                    deadline,
-                )?;
+                wait_for_watch_event(&mut child, &protocol, "compile-error", 1, deadline)?;
                 write_watch_edit(dir, &scenario.edits[1])?;
                 wait_for_watch_event(&mut child, &protocol, "published", 2, deadline)?;
                 let events = watch_events(&protocol);
                 let failure = events
                     .iter()
-                    .position(|event| event == preparation_failure_event)
+                    .position(|event| event == "compile-error")
                     .ok_or_else(|| "watch failure anchor disappeared".to_string())?;
                 let reobserve = events
                     .iter()
