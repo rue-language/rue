@@ -40,6 +40,15 @@ inside the struct body (6.4), and a user-defined destructor for a named struct
 is a top-level `drop fn` item (3.9). There is no item form that groups
 implementations under a type the way an `impl` block does in other languages.
 
+## Module-level Value Bindings
+
+**Specification note.** Module-level value bindings are `const` only (6.5:1–2)
+and therefore immutable compile-time values. Rue has no module-level `let`,
+`let mut`, or mutable `static` item. ADR-0089 records this policy and the
+direction for future shared runtime state: immutable bindings with an
+explicitly designed interior-mutability abstraction. Such an abstraction
+remains undesigned.
+
 ## Type Name Uniqueness
 
 {{ rule(id="6.0:2", cat="legality-rule") }}
