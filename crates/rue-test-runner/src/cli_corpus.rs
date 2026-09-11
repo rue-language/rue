@@ -351,6 +351,38 @@ pub struct WatchEdit {
     pub symlink_target: Option<String>,
 }
 
+/// A `rue daemon` lifecycle scenario: driver invocations run in order, each
+/// with its own exit status and output expectations.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DaemonScenario {
+    pub steps: Vec<DaemonStep>,
+}
+
+/// One `rue daemon` invocation in a [`DaemonScenario`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DaemonStep {
+    /// The complete argument list, `daemon` token included.
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub exit_code: i32,
+    #[serde(default)]
+    pub stdout_contains: Vec<String>,
+    #[serde(default)]
+    pub stdout_not_contains: Vec<String>,
+    #[serde(default)]
+    pub stderr_contains: Vec<String>,
+    /// Run this many identical invocations at once. Every one must meet the
+    /// step's expectations; it is how a start race is staged.
+    #[serde(default = "one")]
+    pub concurrency: usize,
+}
+
+fn one() -> usize {
+    1
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Case {
@@ -407,6 +439,12 @@ pub struct Case {
     /// A synchronized, imperative `rue test --watch` integration scenario.
     #[serde(default)]
     pub watch_test: Option<WatchTestScenario>,
+    /// A sequence of `rue daemon` controls against one private endpoint root
+    /// (ADR-0085): the harness runs each step in the case directory, stops
+    /// whatever service the steps left behind, and never touches the user's
+    /// real runtime directory.
+    #[serde(default)]
+    pub daemon: Option<DaemonScenario>,
     /// Extra environment variables for the compiler invocation.
     #[serde(default)]
     pub env: HashMap<String, String>,

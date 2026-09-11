@@ -126,6 +126,7 @@ enum IneligibleReason {
     CompileOnly,
     ApplicableKnownBug,
     WatchOrchestration,
+    DaemonOrchestration,
     DriverInvocation,
     StagedFixtures,
     HostCapability,
@@ -157,6 +158,7 @@ impl fmt::Display for IneligibleReason {
             Self::CompileOnly => f.write_str("compile-only case"),
             Self::ApplicableKnownBug => f.write_str("applicable known bug"),
             Self::WatchOrchestration => f.write_str("watch orchestration"),
+            Self::DaemonOrchestration => f.write_str("daemon orchestration"),
             Self::DriverInvocation => f.write_str("driver-only invocation"),
             Self::StagedFixtures => f.write_str("staged filesystem fixtures"),
             Self::HostCapability => f.write_str("required host capability"),
@@ -1402,6 +1404,7 @@ fn unsupported_corpus_field(case: &Case) -> Option<IneligibleReason> {
         args: _,
         watch: _,
         watch_test: _,
+        daemon: _,
         env: _,
         program_args: _,
         program_env: _,
@@ -1551,6 +1554,11 @@ fn check_case_with_native_with_configuration(
     // the sources it starts with are only the first of them (RUE-2023).
     if case.watch.is_some() || case.watch_test.is_some() {
         return CaseOutcome::Ineligible(IneligibleReason::WatchOrchestration);
+    }
+    // A daemon case is a sequence of service controls against a private
+    // endpoint; it compiles nothing, so there is no execution to compare.
+    if case.daemon.is_some() {
+        return CaseOutcome::Ineligible(IneligibleReason::DaemonOrchestration);
     }
     if let Some(reason) = unsupported_corpus_field(case) {
         return CaseOutcome::Ineligible(reason);
@@ -2557,6 +2565,9 @@ files = [{ path = "probe.rue", source = "not Rue" }]
         case.watch_test = Some(watch_test_scenario());
         assert_cli_ineligible(&case, IneligibleReason::WatchOrchestration);
         case.watch_test = None;
+        case.daemon = Some(rue_test_runner::cli_corpus::DaemonScenario { steps: Vec::new() });
+        assert_cli_ineligible(&case, IneligibleReason::DaemonOrchestration);
+        case.daemon = None;
         case.driver_exit_code = Some(3);
         assert_cli_ineligible(&case, IneligibleReason::DriverInvocation);
         case.driver_exit_code = None;

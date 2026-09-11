@@ -1,0 +1,83 @@
+# The local compiler service's controls (ADR-0085 §2, RUE-2128): `rue daemon
+# start|status|stop`. Every case runs against a private endpoint root inside
+# its own directory, so no case shares a service with another or with the
+# developer's real runtime directory, and the harness stops what a case leaves
+# running. The service executes no compiler requests yet; these cases pin the
+# lifecycle contract the request path will rely on: `status` and `stop` never
+# start a service, `start` is idempotent and race-safe, and a scope selects
+# exactly one service.
+
+[section]
+id = "cli.daemon"
+name = "rue daemon lifecycle controls"
+description = "start/status/stop over a user-private endpoint scoped by directory, isolation, and compiler build."
+
+[[case]]
+name = "status_and_stop_without_a_service_start_nothing"
+description = "A query for a service that does not exist answers no, twice, and a stop is a no-op; neither launches anything."
+files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }\n" }]
+daemon = { steps = [
+  { args = ["daemon", "status"], exit_code = 1, stderr_contains = ["no service is running for"] },
+  { args = ["daemon", "status", "--json"], exit_code = 1, stderr_contains = ["no service is running for"] },
+  { args = ["daemon", "stop"], exit_code = 0, stdout_contains = ["no service was running for"] },
+  { args = ["daemon", "status"], exit_code = 1, stderr_contains = ["no service is running for"] },
+] }
+
+[[case]]
+name = "start_status_and_stop_lifecycle"
+description = "start launches once and then finds the running service; status reports it in text and JSON; stop ends it and status answers no again."
+files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }\n" }]
+daemon = { steps = [
+  { args = ["daemon", "start", "--idle-timeout-ms", "60000"], exit_code = 0, stdout_contains = ["rue daemon: started service pid"] },
+  { args = ["daemon", "status"], exit_code = 0, stdout_contains = ["rue daemon: running", "  protocol: 1", "  active request: none", "  retained hosts: 0", "  idle timeout: 60000 ms", "  isolation: none"] },
+  { args = ["daemon", "start", "--idle-timeout-ms", "60000"], exit_code = 0, stdout_contains = ["is already running for"], stdout_not_contains = ["started service"] },
+  { args = ["daemon", "status", "--json"], exit_code = 0, stdout_contains = ["\"protocol_version\":1", "\"retained_hosts\":0", "\"service_hex\":"] },
+  { args = ["daemon", "stop"], exit_code = 0, stdout_contains = ["rue daemon: stopped service pid"] },
+  { args = ["daemon", "status"], exit_code = 1, stderr_contains = ["no service is running for"] },
+  { args = ["daemon", "stop"], exit_code = 0, stdout_contains = ["no service was running for"] },
+] }
+
+[[case]]
+name = "concurrent_starts_share_one_service"
+description = "Four simultaneous starts serialize on the startup lock: every one reports the same service and exactly one launches."
+files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }\n" }]
+daemon = { steps = [
+  { args = ["daemon", "start", "--idle-timeout-ms", "60000"], exit_code = 0, concurrency = 4, stdout_contains = ["service pid"] },
+  { args = ["daemon", "status"], exit_code = 0, stdout_contains = ["rue daemon: running"] },
+  { args = ["daemon", "stop"], exit_code = 0, stdout_contains = ["rue daemon: stopped service pid"] },
+  { args = ["daemon", "status"], exit_code = 1, stderr_contains = ["no service is running for"] },
+] }
+
+[[case]]
+name = "scope_and_isolation_select_distinct_services"
+description = "A service is owned by its scope directory and isolation name: the default scope, an isolated one, and a subdirectory scope are three services, each stopped on its own."
+files = [
+  { path = "main.rue", source = "fn main() -> i32 { 0 }\n" },
+  { path = "sub/main.rue", source = "fn main() -> i32 { 0 }\n" },
+]
+daemon = { steps = [
+  { args = ["daemon", "start", "--isolation", "ci", "--idle-timeout-ms", "60000"], exit_code = 0, stdout_contains = ["started service pid", "(isolation ci)"] },
+  { args = ["daemon", "status"], exit_code = 1, stderr_contains = ["no service is running for"] },
+  { args = ["daemon", "status", "--isolation", "ci"], exit_code = 0, stdout_contains = ["  isolation: ci"] },
+  { args = ["daemon", "start", "--scope", "sub", "--idle-timeout-ms", "60000"], exit_code = 0, stdout_contains = ["started service pid"] },
+  { args = ["daemon", "status", "--scope", "sub"], exit_code = 0, stdout_contains = ["rue daemon: running"] },
+  { args = ["daemon", "status", "--scope", "."], exit_code = 1, stderr_contains = ["no service is running for"] },
+  { args = ["daemon", "stop", "--isolation", "ci"], exit_code = 0, stdout_contains = ["stopped service pid"] },
+  { args = ["daemon", "status", "--scope", "sub"], exit_code = 0, stdout_contains = ["rue daemon: running"] },
+  { args = ["daemon", "stop", "--scope", "sub"], exit_code = 0, stdout_contains = ["stopped service pid"] },
+  { args = ["daemon", "status", "--scope", "sub"], exit_code = 1, stderr_contains = ["no service is running for"] },
+] }
+
+[[case]]
+name = "malformed_controls_are_argument_errors"
+description = "A missing or unknown command, a flag without its value, and a scope that is not a directory are refused before anything is launched."
+files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }\n" }]
+daemon = { steps = [
+  { args = ["daemon"], exit_code = 1, stderr_contains = ["`rue daemon` needs a command", "Usage: rue daemon"] },
+  { args = ["daemon", "restart"], exit_code = 1, stderr_contains = ["unknown daemon command `restart`"] },
+  { args = ["daemon", "status", "--scope"], exit_code = 1, stderr_contains = ["--scope requires a value"] },
+  { args = ["daemon", "stop", "--json"], exit_code = 1, stderr_contains = ["--json applies to `rue daemon status` only"] },
+  { args = ["daemon", "start", "--scope", "missing"], exit_code = 1, stderr_contains = ["daemon scope directory", "is not usable"] },
+  { args = ["daemon", "start", "--isolation", "no spaces"], exit_code = 1, stderr_contains = ["daemon isolation name"] },
+  { args = ["daemon", "status"], exit_code = 1, stderr_contains = ["no service is running for"] },
+] }
