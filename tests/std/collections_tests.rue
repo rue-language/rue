@@ -184,6 +184,9 @@ test "PriorityQueue pops the lowest priority first and keeps its payload" {
 }
 
 test "Grid2D get and set are bounds-aware" {
+    // An out-of-bounds `set` panics (RUE-1713); the CLI case
+    // `grid_set_out_of_bounds_panics` pins that, since a test cannot expect
+    // a panic. Here only the read side reports out of bounds as None.
     let mut g = Grid.new(2, 3, 0);
     @assert_eq(g.rows(), 2);
     @assert_eq(g.cols(), 3);
@@ -191,7 +194,6 @@ test "Grid2D get and set are bounds-aware" {
     @assert(!g.in_bounds(2, 0));
     @assert(!g.in_bounds(0, 3));
     g.set(1, 2, 42);
-    g.set(5, 5, 99);
     @assert_eq(g.get(1, 2), OptI.Some(42));
     @assert_eq(g.get(0, 0), OptI.Some(0));
     @assert_eq(g.get(2, 0), OptI.None);
