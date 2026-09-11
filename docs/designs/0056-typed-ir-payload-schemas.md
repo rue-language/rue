@@ -390,8 +390,8 @@ a compile-time property covered by compile-fail/API-surface tests, not a
 runtime corruption category. Artifact-instance provenance is enforced by the
 opaque owner-mediated APIs described above and cannot be reconstructed from
 raw bits. Malformed-fixture and fuzz tests use a narrow `cfg(test)` or
-fuzz-support constructor that accepts raw storage and a selected family range,
-then call production checked validation. They do not use pointer fabrication,
+`doc(hidden)` constructor that accepts raw storage and a selected family
+range, then call production checked validation. They do not use pointer fabrication,
 transmute, out-of-bounds writes, or another test-only decoder.
 
 A top-level compiler path converts a `PayloadError` from a reconstructed or

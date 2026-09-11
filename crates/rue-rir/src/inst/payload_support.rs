@@ -127,7 +127,6 @@ impl Rir {
 
     /// Safe fuzzing hook for the owner-local production decoders.
     #[doc(hidden)]
-    #[cfg(any(test, feature = "fuzz-support"))]
     pub fn fuzz_payload_corruption(input: &[u8]) -> Result<(), RirPayloadError> {
         #[derive(Clone, Copy)]
         struct ProbeRange {

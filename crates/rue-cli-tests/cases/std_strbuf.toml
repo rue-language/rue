@@ -8,6 +8,38 @@ name = "Source-defined std.strbuf.StrBuf"
 description = "The named std.strbuf.StrBuf header has its source-defined methods, layout, and drop behavior."
 
 [[case]]
+name = "literal_storage_drop_free_and_promotion"
+description = "Literal-backed strings release no allocation; explicit free, reuse, and promotion preserve ownership (RUE-2173)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+differential_opt = true
+stdout = ""
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const S = std.strbuf.StrBuf;
+
+fn discard(value: S) {}
+
+fn main() -> i32 {
+    let literal: S = "literal";
+    if literal.len() != 7 || literal.capacity() != 0 { return 1; }
+    discard(literal);
+
+    let mut released: S = "release";
+    released.free();
+    released.free();
+    if released.len() != 0 || released.capacity() != 0 { return 2; }
+    released.push(b'x');
+    if released != "x" { return 3; }
+
+    let mut promoted: S = "grow";
+    promoted.push(b'!');
+    if promoted != "grow!" || promoted.capacity() == 0 { return 4; }
+    0
+}
+""" }]
+exit_code = 0
+
+[[case]]
 name = "qualified_nonallocating_surface"
 description = "Qualified construction and nonallocating methods operate on the source-defined type."
 env = { RUE_STD_PATH = "${REAL_STD}" }

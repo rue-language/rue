@@ -60,9 +60,9 @@ stdout = """
   60..65   CONST
   66..71   IDENT(sym:4)
   71..72   COLON
-  73..76   IDENT(sym:5)
+  73..76   TYPE(f64)
   77..78   EQ
-  79..84   FLOAT(sym:6)
+  79..84   FLOAT(sym:5)
   84..85   SEMI
   86..86   EOF
 """

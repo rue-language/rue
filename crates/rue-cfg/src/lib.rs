@@ -41,7 +41,6 @@ pub use inst::{
 };
 pub use opt::{CodeGrowth, CodeGrowthBudget, OptLevel};
 #[doc(hidden)]
-#[cfg(any(test, feature = "fuzz-support"))]
 pub use payload::fuzz_payload_corruption;
 pub use payload::{CFG_PAYLOAD_FAMILY_NAMES, PayloadError};
 pub use verify::{CfgVerificationError, CfgVerificationLocation};

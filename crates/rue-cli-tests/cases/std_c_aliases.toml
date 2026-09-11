@@ -181,6 +181,36 @@ fn main() -> i32 {
 """ }]
 exit_code = 42
 
+# --- c_float / c_double are transparently f32 / f64 -------------------------
+# C `float` and `double` are binary32 and binary64 on every supported target
+# (spec 9.3:1e), so the aliases are the float types themselves: a c_double
+# value flows into an f64 binding with no conversion, the widths are 4 and 8,
+# and both name parameter and result types of a C-convention export
+# (RUE-2076).
+
+[[case]]
+name = "std_c_float_aliases_are_transparent_f32_f64"
+description = "std.c.c_float and std.c.c_double are f32 and f64: transparent, 4 and 8 bytes wide, and usable in an `extern \"C\"` signature."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+pub extern "C" fn rue_scale(x: std.c.c_double, k: std.c.c_float) -> std.c.c_double {
+    let wide: f64 = @float_cast(k);
+    x * wide
+}
+
+fn main() -> i32 {
+    let d: std.c.c_double = 10.5;
+    let plain: f64 = d;
+    let f: i32 = @intCast(@size_of(std.c.c_float));
+    let w: i32 = @intCast(@size_of(std.c.c_double));
+    @float_to_int(rue_scale(plain, 2.0)) + f * 10 + w
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+exit_code = 69
+
 # --- Target data-model descriptor, pinned to each supported target ---------
 # @target_data_model() specializes for the emitted target (RUE-417), exactly
 # like @target_arch()/@target_os(). Every supported target is LP64 => 64.

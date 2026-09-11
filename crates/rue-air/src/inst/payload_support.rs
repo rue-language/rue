@@ -3,7 +3,6 @@ use super::*;
 impl Air {
     /// Safe owner-local fuzzing hook for checked payload decoding.
     #[doc(hidden)]
-    #[cfg(any(test, feature = "fuzz-support"))]
     pub fn fuzz_payload_corruption(input: &[u8]) -> Result<(), AirPayloadError> {
         let family_index =
             input.first().copied().unwrap_or(0) as usize % AIR_PAYLOAD_FAMILY_NAMES.len();

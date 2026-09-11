@@ -236,6 +236,8 @@ impl TokenView {
             U32 => "TYPE(u32)",
             U64 => "TYPE(u64)",
             Bool => "TYPE(bool)",
+            F32 => "TYPE(f32)",
+            F64 => "TYPE(f64)",
             Type => "TYPE(type)",
             Underscore => "UNDERSCORE",
             Int(_) => "INT",

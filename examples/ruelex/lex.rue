@@ -222,6 +222,9 @@ pub struct Lexer {
         if word_eq(borrow key, "u64") { return "TYPE(u64)"; }
         if word_eq(borrow key, "bool") { return "TYPE(bool)"; }
         if word_eq(borrow key, "type") { return "TYPE(type)"; }
+        // f32/f64 are reserved type names too (2.4:3, RUE-2076).
+        if word_eq(borrow key, "f32") { return "TYPE(f32)"; }
+        if word_eq(borrow key, "f64") { return "TYPE(f64)"; }
 
         if word_eq(borrow key, "size_of") || word_eq(borrow key, "align_of") ||
             word_eq(borrow key, "require_droppable") || word_eq(borrow key, "require_trivially_droppable") ||

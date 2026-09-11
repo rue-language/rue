@@ -593,7 +593,7 @@ pub struct Parser {
         self.add_meta(ast.LET, name.value, flags, start, semi.end, directives, ty, value, 0)
     }
 
-    fn is_primitive(kind: u64) -> bool { kind >= token.TYPE_I8 && kind <= token.TYPE_TYPE }
+    fn is_primitive(kind: u64) -> bool { kind >= token.TYPE_I8 && kind <= token.TYPE_F64 }
 
     fn bracket_has_semi(borrow self) -> bool {
         let mut p = self.pos;

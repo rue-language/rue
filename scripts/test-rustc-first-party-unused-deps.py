@@ -485,7 +485,7 @@ raise SystemExit(int(os.environ.get("FAKE_EXIT", "0")))
         self.assertFalse(second.exists())
 
     def test_baseline_entries_are_exact_unique_and_reasoned(self):
-        self.assertEqual(len(WRAPPER.BASELINE_ENTRIES), 8)
+        self.assertEqual(len(WRAPPER.BASELINE_ENTRIES), 3)
         self.assertEqual(len(WRAPPER.BASELINE), len(WRAPPER.BASELINE_ENTRIES))
         for entry in WRAPPER.BASELINE_ENTRIES:
             self.assertTrue(entry.consumer.startswith("root//crates/"))

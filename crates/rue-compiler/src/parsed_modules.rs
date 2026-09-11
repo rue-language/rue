@@ -4348,7 +4348,7 @@ fn main() -> i32 {
                         let value = if edited && index == 73 { 2 } else { 1 };
                         (
                             FileId::new(index),
-                            Arc::new(format!("fn f{index}() -> i32 {{ {value} }}")),
+                            Arc::new(format!("fn f_{index}() -> i32 {{ {value} }}")),
                         )
                     })
                     .collect(),

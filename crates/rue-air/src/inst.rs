@@ -30,7 +30,6 @@ use lasso::{Key, Spur, ThreadedRodeo};
 use rue_rir::SymbolHandle;
 use rue_span::Span;
 
-#[cfg(any(test, feature = "fuzz-support"))]
 mod payload_support;
 
 /// The published ceiling on AIR instructions in **one function body**
@@ -1778,25 +1777,11 @@ impl Air {
                 // unrelated to its operands: the result is always `bool`.
                 //
                 // Operand agreement is enforced here only when the operands
-                // are not both integers. Two producers still emit mixed-width
-                // integer comparisons, and both sit outside this change:
-                //
-                //   * the slice bounds check lowers `s[i]` to
-                //     `Lt(index, len)`, keeping the source index's own
-                //     integer type on the left and the fat pointer's `u64`
-                //     length on the right;
-                //   * an integer literal compared against a struct field
-                //     whose base type is still an inference variable (the
-                //     value came from an `if`/`match` join) defaults to `i32`
-                //     while the field read is the field's declared type —
-                //     the documented `known_field_type` fallback in
-                //     `inference::generate`.
-                //
-                // Both are only accidentally correct: codegen picks a
-                // comparison's width from its LEFT operand, so a narrow left
-                // operand silently truncates the right one. Tighten this to
-                // plain `operands_agree` once those two producers agree with
-                // the invariant (RUE-1654).
+                // are not both integers. A method call whose receiver becomes
+                // concrete only after inference can still leave a neighboring
+                // literal at i32 beside its declared u64 result (RUE-2172).
+                // Tighten this to plain `operands_agree` once that producer
+                // preserves the method signature through constraint solving.
                 AirInstData::Eq(a, b)
                 | AirInstData::Ne(a, b)
                 | AirInstData::Lt(a, b)
@@ -2919,7 +2904,6 @@ impl Air {
         })
     }
 
-    #[cfg(any(test, feature = "fuzz-support"))]
     fn try_get_refs(
         &self,
         start: u32,
@@ -2943,7 +2927,6 @@ impl Air {
         Ok(words)
     }
 
-    #[cfg(any(test, feature = "fuzz-support"))]
     fn try_get_types(&self, range: &AirTypeArgs) -> Result<&[u32], AirPayloadError> {
         let words = self.try_get_words(range.start, range.extent, "type arguments")?;
         for (record, word) in words.iter().copied().enumerate() {

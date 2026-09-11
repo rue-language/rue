@@ -146,7 +146,7 @@ import gazette_peer_ports as peer_ports  # noqa: E402
 # and a label that advanced anyway would tell a reader diffing two observations
 # that the port moved when it did not. What changed is the COMPOSITION of the
 # identities, which `PREPARER_REVISION` records.
-GAZETTE_PORT_REVISION = 2
+GAZETTE_PORT_REVISION = 3
 
 # The revision of the FIXTURE ASSEMBLY this script implements, which
 # `performance/runtime.toml` pins for the gazette workloads. It is not a port
@@ -288,9 +288,17 @@ def corpus_rules() -> peer_ports.CorpusRules:
 #   error pages. They are transient Zola input explicitly excluded from the
 #   committed Gazette corpus, so no port follows and neither port revision
 #   advances. The assembly change is recorded by PREPARER_REVISION.
+#
+#   RUE-1494. `shortcodes/preview_feature.html` moved: its ADR link was a
+#   root-relative `/designs/…` route the site never emits, and it now points
+#   at the design document on GitHub, named by a new `doc` argument. Both
+#   ports follow, because each is a byte-for-byte port of the shortcode and
+#   the rendering rule itself changed. GAZETTE_PORT_REVISION advances to 3
+#   and PEER_PORT_REVISION to 3 (argued beside it in `gazette_peer_ports.py`).
+#   The corpus's one call site passes no `adr`, so no rendered page moves.
 PRODUCTION_TEMPLATE_ROOT = "website/templates"
 PRODUCTION_TEMPLATE_DIGEST = (
-    "3ba142b2b596b823d952fb9d6c7339ffda9f008353c80deb3150aac00437437f"
+    "803f829ddf0a9ccd6cf5f5b8c1bdf9f0d1a5904062865a8be63e98f445c63647"
 )
 
 # Pages Zola emits no rendered body for, so `body` mode has nothing to compare
@@ -1571,11 +1579,14 @@ def check_links(out: str, model: Model, scale: int) -> tuple[int, int, int, list
     the entry is stale.
 
     KNOWN LIMIT: only hrefs beginning with the site's base URL are resolved.
-    Root-relative ones are skipped, which today is right — the corpus's are
-    `/spec/` and the `preview_feature` shortcode's `/designs/…`, the latter
-    naming a route no tool emits — but a template that started emitting
+    Root-relative ones are skipped, which today is right — the corpus's only
+    root-relative links are `/spec/` — but a template that started emitting
     relative links would lose coverage silently rather than loudly. The
-    `checked` count printed alongside is what would show it.
+    `checked` count printed alongside is what would show it. The
+    `preview_feature` shortcode's ADR link once sat in this blind spot, as a
+    root-relative `/designs/…` route no tool emits (RUE-1494); it now points
+    at the design document on GitHub, off-site and so unchecked here like
+    every other external link.
     """
     emitted = set(walk_files(out))
     directories = {rel.rsplit("/", 1)[0] + "/" for rel in emitted if "/" in rel}

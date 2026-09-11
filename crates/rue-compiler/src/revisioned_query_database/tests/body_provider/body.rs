@@ -1532,7 +1532,7 @@ fn sibling_only_edit_keeps_artifact_transaction_and_downstream_green() {
 #[test]
 fn candidate_artifact_retention_bounds_history_and_rederives_evicted_values() {
     let mut text = (0..(BODY_QUERY_MEMO_RETENTION + 6))
-        .map(|index| format!("fn f{index}() -> i32 {{ {index} }}\n"))
+        .map(|index| format!("fn f_{index}() -> i32 {{ {index} }}\n"))
         .collect::<String>();
     text.push_str("fn chosen() -> i32 { 7 }\n");
     let source = source_snapshot(&[(1, "/main.rue", "main.rue", &text)], 1);
@@ -1582,7 +1582,7 @@ fn candidate_artifact_retention_bounds_history_and_rederives_evicted_values() {
         revision,
         &module,
         crate::declaration_candidate::DeclarationCandidateCategory::Function,
-        "f0",
+        "f_0",
     );
     let first_attempt = database.runtime.request_registered(
         &database.declaration_body_plan_artifacts,
@@ -1599,7 +1599,7 @@ fn candidate_artifact_retention_bounds_history_and_rederives_evicted_values() {
     };
     let first_weak = Arc::downgrade(first_artifact);
     let render = |artifact: &crate::canonical_lower::DeclarationBodyPlanArtifacts| {
-        let declaration_start = u32::try_from(text.find("fn f0").unwrap()).unwrap();
+        let declaration_start = u32::try_from(text.find("fn f_0").unwrap()).unwrap();
         let space = rue_rir::SharedSymbolSpace::private();
         let rir = artifact
             .plan
@@ -1623,7 +1623,7 @@ fn candidate_artifact_retention_bounds_history_and_rederives_evicted_values() {
             revision,
             &module,
             crate::declaration_candidate::DeclarationCandidateCategory::Function,
-            &format!("f{index}"),
+            &format!("f_{index}"),
         );
         let terminal = database
             .runtime
@@ -4105,10 +4105,10 @@ fn body_closure_one_and_many_workers_publish_identical_reached_work_and_diagnost
 fn body_reachability_scans_each_prefetched_frontier_once() {
     const CALLEES: usize = 16;
     let mut text = (0..CALLEES)
-        .map(|index| format!("fn f{index}() -> i32 {{ {index} }}\n"))
+        .map(|index| format!("fn f_{index}() -> i32 {{ {index} }}\n"))
         .collect::<String>();
     let expression = (0..CALLEES)
-        .map(|index| format!("f{index}()"))
+        .map(|index| format!("f_{index}()"))
         .collect::<Vec<_>>()
         .join(" + ");
     text.push_str(&format!("fn main() -> i32 {{ {expression} }}\n"));
@@ -4258,10 +4258,10 @@ fn each_body_toolchain_demand_is_queried_once_per_reachability_request() {
     // batch and the sweep overlap by the whole prefetch window.
     const CALLEES: usize = 24;
     let mut text = (0..CALLEES)
-        .map(|index| format!("fn f{index}() -> i32 {{ {index} }}\n"))
+        .map(|index| format!("fn f_{index}() -> i32 {{ {index} }}\n"))
         .collect::<String>();
     let expression = (0..CALLEES)
-        .map(|index| format!("f{index}()"))
+        .map(|index| format!("f_{index}()"))
         .collect::<Vec<_>>()
         .join(" + ");
     text.push_str(&format!("fn main() -> i32 {{ {expression} }}\n"));
@@ -4455,10 +4455,10 @@ fn body_closure_root_pins_reached_programs_past_the_history_floor_and_releases_d
     const CALLEES: usize = 16;
     let source = |reached_callees: usize| {
         let mut text = (0..CALLEES)
-            .map(|index| format!("fn f{index}() -> i32 {{ {index} }}\n"))
+            .map(|index| format!("fn f_{index}() -> i32 {{ {index} }}\n"))
             .collect::<String>();
         let expression = (0..reached_callees)
-            .map(|index| format!("f{index}()"))
+            .map(|index| format!("f_{index}()"))
             .collect::<Vec<_>>()
             .join(" + ");
         text.push_str(&format!("fn main() -> i32 {{ {expression} }}\n"));
@@ -4473,7 +4473,7 @@ fn body_closure_root_pins_reached_programs_past_the_history_floor_and_releases_d
         configuration: semantic_configuration(),
     };
     let deleted_body_key = crate::body_query::BodyQueryKey::new(
-        free_function_instance(&module, &format!("f{}", CALLEES - 1)),
+        free_function_instance(&module, &format!("f_{}", CALLEES - 1)),
         semantic_configuration(),
     );
     let mut database = RevisionedQueryDatabase::with_query_concurrency(4);
@@ -4557,10 +4557,10 @@ fn body_closure_cold_warm_deletion_latency_benchmark() {
     const CALLEES: usize = 128;
     let source = |reached_callees: usize| {
         let mut text = (0..CALLEES)
-            .map(|index| format!("fn f{index}() -> i32 {{ {index} }}\n"))
+            .map(|index| format!("fn f_{index}() -> i32 {{ {index} }}\n"))
             .collect::<String>();
         let expression = (0..reached_callees)
-            .map(|index| format!("f{index}()"))
+            .map(|index| format!("f_{index}()"))
             .collect::<Vec<_>>()
             .join(" + ");
         text.push_str(&format!("fn main() -> i32 {{ {expression} }}\n"));
@@ -4934,11 +4934,11 @@ fn parking_unions_pending_demands_without_re_querying_them() {
     // frontier is still full when the sweep runs.
     const CALLEES: usize = 24;
     let mut text = (0..CALLEES)
-        .map(|index| format!("fn f{index}() -> i32 {{ {index} }}\n"))
+        .map(|index| format!("fn f_{index}() -> i32 {{ {index} }}\n"))
         .collect::<String>();
     text.push_str("fn parked() -> i32 { let _value = @parse_u32(\"1\"); 0 }\n");
     let calls = (0..CALLEES)
-        .map(|index| format!("f{index}()"))
+        .map(|index| format!("f_{index}()"))
         .collect::<Vec<_>>()
         .join(" + ");
     text.push_str(&format!("fn main() -> i32 {{ {calls} + parked() }}\n"));
@@ -4990,9 +4990,9 @@ fn parked_toolchain_rounds_retain_and_reuse_the_exact_reachability_cone() {
                 let next = if index + 1 == CALLEES {
                     "parked()".to_owned()
                 } else {
-                    format!("f{}()", index + 1)
+                    format!("f_{}()", index + 1)
                 };
-                format!("fn f{index}() -> i32 {{ {next} }}\n")
+                format!("fn f_{index}() -> i32 {{ {next} }}\n")
             })
             .collect::<String>();
         if parked {
@@ -5000,12 +5000,12 @@ fn parked_toolchain_rounds_retain_and_reuse_the_exact_reachability_cone() {
         } else {
             text.push_str("fn parked() -> i32 { 0 }\n");
         }
-        text.push_str("fn root() -> i32 { f0() }\n");
+        text.push_str("fn root() -> i32 { f_0() }\n");
         source_snapshot(&[(1, "/main.rue", "main.rue", &text)], 1)
     };
     let module = ModuleId::from_logical_path("main.rue").unwrap();
     let body_keys = (0..CALLEES)
-        .map(|index| free_function_instance(&module, &format!("f{index}")))
+        .map(|index| free_function_instance(&module, &format!("f_{index}")))
         .collect::<Vec<_>>();
     let mut reached_instances = body_keys.clone();
     reached_instances.push(free_function_instance(&module, "root"));

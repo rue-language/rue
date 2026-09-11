@@ -6,6 +6,7 @@
 //! - [`Unifier`] - The unification engine
 
 use ahash::AHashSet;
+use lasso::Spur;
 
 use super::constraint::{Constraint, Substitution};
 use super::types::{InferType, TypeVarId};
@@ -570,10 +571,59 @@ impl Unifier {
         }
     }
 
+    /// Apply contextual equality's narrow implicit literal rule. Keeping this
+    /// in one path is essential for deferred field assignments: a field's
+    /// declared type is learned only after its base resolves, but it must
+    /// admit exactly the same literal contexts as an eagerly known field.
+    fn unify_contextual(
+        &mut self,
+        lhs: &InferType,
+        rhs: &InferType,
+        concrete_types_equal: &dyn Fn(Type, Type) -> bool,
+    ) -> UnifyResult {
+        let lhs_applied = self.substitution.apply(lhs);
+        let rhs_applied = self.substitution.apply(rhs);
+        let integer_literal = match lhs_applied {
+            InferType::IntLiteral => true,
+            InferType::Var(rep) => {
+                self.int_literal_vars.contains(&rep)
+                    || matches!(lhs, InferType::Var(var) if self.int_literal_vars.contains(var))
+            }
+            InferType::Concrete(_) | InferType::Array { .. } => false,
+        };
+        let expected_float = matches!(rhs_applied, InferType::Concrete(Type::F32 | Type::F64));
+        if integer_literal && expected_float {
+            let InferType::Concrete(expected) = rhs_applied else {
+                unreachable!()
+            };
+            self.rebind_int_literal_to_concrete(lhs, &expected);
+            UnifyResult::Ok
+        } else {
+            self.unify_with(lhs, rhs, concrete_types_equal)
+        }
+    }
+
+    fn register_string_context_types(
+        &mut self,
+        ty: &InferType,
+        is_string_context_type: &dyn Fn(&InferType) -> bool,
+    ) {
+        match ty {
+            InferType::Concrete(concrete) if is_string_context_type(ty) => {
+                self.string_literal_types.insert(*concrete);
+            }
+            InferType::Array { element, .. } => {
+                self.register_string_context_types(element, is_string_context_type)
+            }
+            _ => {}
+        }
+    }
+
     /// Solve a list of constraints, collecting any errors.
     ///
-    /// This is the main entry point for Algorithm W. It processes each constraint
-    /// in order, updates the substitution, and collects errors for reporting.
+    /// This is the main entry point for Algorithm W. It solves equality and
+    /// projection relationships before validating predicates, updating the
+    /// substitution and collecting errors for reporting.
     ///
     /// On error, the unifier continues processing remaining constraints to catch
     /// as many errors as possible in one pass. Type variables involved in errors
@@ -590,10 +640,40 @@ impl Unifier {
         constraints: &[Constraint],
         concrete_types_equal: &dyn Fn(Type, Type) -> bool,
     ) -> Vec<UnificationError> {
+        self.solve_constraints_with_projections(
+            constraints,
+            concrete_types_equal,
+            &|_, _| None,
+            &|_| None,
+            &|_| false,
+        )
+    }
+
+    /// Solve constraints with deferred field obligations and demand-driven
+    /// semantic field lookup. Field projections whose base was unresolved
+    /// during generation are revisited after ordinary equalities have joined
+    /// their bases, then again until nested projections reach a fixed point.
+    pub(crate) fn solve_constraints_with_projections(
+        &mut self,
+        constraints: &[Constraint],
+        concrete_types_equal: &dyn Fn(Type, Type) -> bool,
+        field_type: &dyn Fn(&InferType, Spur) -> Option<InferType>,
+        index_element_type: &dyn Fn(&InferType) -> Option<InferType>,
+        is_string_context_type: &dyn Fn(&InferType) -> bool,
+    ) -> Vec<UnificationError> {
         let mut errors = Vec::new();
+        let mut projections = Vec::new();
+        let mut predicates = Vec::new();
 
         for constraint in constraints {
-            let result = match constraint {
+            match constraint {
+                Constraint::FieldGet { .. }
+                | Constraint::FieldSet { .. }
+                | Constraint::IndexGet { .. }
+                | Constraint::IndexSet { .. } => {
+                    projections.push(constraint);
+                    continue;
+                }
                 Constraint::Equal(lhs, rhs, span) => {
                     let result = self.unify_with(lhs, rhs, concrete_types_equal);
                     if !result.is_ok() {
@@ -615,81 +695,109 @@ impl Unifier {
                 // error instead, which is why no source construct may name
                 // `comptime_float` (spec 3.12:3).
                 Constraint::ContextualEqual(lhs, rhs, span) => {
-                    let lhs_applied = self.substitution.apply(lhs);
-                    let rhs_applied = self.substitution.apply(rhs);
-                    let integer_literal = match lhs_applied {
-                        // A terminal IntLiteral is itself contextualizable.
-                        InferType::IntLiteral => true,
-                        // A marked variable may cross the implicit boundary
-                        // only while its applied class remains unresolved.
-                        // Checking the applied representative prevents a
-                        // later float context from overwriting an earlier
-                        // concrete integer binding.
-                        InferType::Var(rep) => {
-                            self.int_literal_vars.contains(&rep)
-                                || matches!(lhs, InferType::Var(var) if self.int_literal_vars.contains(var))
-                        }
-                        // Established concrete types must go through ordinary
-                        // equality and therefore report a conflict.
-                        InferType::Concrete(_) | InferType::Array { .. } => false,
-                    };
-                    let expected_float =
-                        matches!(rhs_applied, InferType::Concrete(Type::F32 | Type::F64));
-                    let result = if integer_literal && expected_float {
-                        let InferType::Concrete(expected) = rhs_applied else {
-                            unreachable!()
-                        };
-                        self.rebind_int_literal_to_concrete(lhs, &expected);
-                        UnifyResult::Ok
-                    } else {
-                        self.unify_with(lhs, rhs, concrete_types_equal)
-                    };
+                    let result = self.unify_contextual(lhs, rhs, concrete_types_equal);
                     if !result.is_ok() {
                         self.recover_from_error(lhs, rhs);
                         errors.push(UnificationError::new(result, *span));
                     }
                     continue;
                 }
-                Constraint::IsSigned(ty, span) => {
-                    let result = self.check_signed(ty);
-                    (result, *span)
+                Constraint::IsSigned(..)
+                | Constraint::IsInteger(..)
+                | Constraint::IsNumeric(..)
+                | Constraint::IsUnsigned(..) => {
+                    predicates.push(constraint);
+                    continue;
                 }
-                Constraint::IsInteger(ty, span) => {
-                    let result = self.check_integer(ty);
-                    (result, *span)
+            }
+        }
+
+        // Resolve field obligations after all ordinary equalities have had a
+        // chance to settle their bases. A nested projection may make the base
+        // of another obligation concrete, so keep applying newly available
+        // obligations until no progress is possible.
+        let mut pending = projections;
+        loop {
+            let mut next = Vec::new();
+            let mut progress = false;
+            for constraint in pending {
+                let projected_type = match constraint {
+                    Constraint::FieldGet { base, field, .. }
+                    | Constraint::FieldSet { base, field, .. } => {
+                        field_type(&self.substitution.apply(base), *field)
+                    }
+                    Constraint::IndexGet { base, .. } | Constraint::IndexSet { base, .. } => {
+                        index_element_type(&self.substitution.apply(base))
+                    }
+                    _ => unreachable!(),
+                };
+                let Some(projected_type) = projected_type else {
+                    next.push(constraint);
+                    continue;
+                };
+                // A demanded field may first expose a generated Str(N),
+                // including one nested inside a structural array type.
+                self.register_string_context_types(&projected_type, is_string_context_type);
+                progress = true;
+                let (actual, expected) = match constraint {
+                    Constraint::FieldGet { result, .. } | Constraint::IndexGet { result, .. } => {
+                        // The declared projection is the actual type; a use
+                        // such as an annotation constrains the result type.
+                        (&projected_type, result)
+                    }
+                    Constraint::FieldSet { value, .. } | Constraint::IndexSet { value, .. } => {
+                        (value, &projected_type)
+                    }
+                    _ => unreachable!(),
+                };
+                let result = if matches!(constraint, Constraint::FieldSet { .. }) {
+                    self.unify_contextual(actual, expected, concrete_types_equal)
+                } else {
+                    self.unify_with(actual, expected, concrete_types_equal)
+                };
+                if !result.is_ok() {
+                    self.recover_from_error(actual, expected);
+                    errors.push(UnificationError::new(result, constraint.span()));
                 }
-                Constraint::IsNumeric(ty, span) => {
-                    let result = self.check_numeric(ty);
-                    (result, *span)
-                }
+            }
+            if !progress || next.is_empty() {
+                // Unavailable projections remain the semantic pass's concern:
+                // it diagnoses unknown fields and invalid bases using source
+                // names. Staged inference can also legitimately lack a base
+                // until canonical comptime selection supplies it.
+                break;
+            }
+            pending = next;
+        }
+
+        // Predicates are checked last so a field obligation can constrain a
+        // numeric/sign/unsigned variable before these checks inspect it.
+        for constraint in predicates {
+            let (result, span) = match constraint {
+                Constraint::IsSigned(ty, span) => (self.check_signed(ty), *span),
+                Constraint::IsInteger(ty, span) => (self.check_integer(ty), *span),
+                Constraint::IsNumeric(ty, span) => (self.check_numeric(ty), *span),
                 Constraint::IsUnsigned(ty, span) => {
-                    // Special handling: if the type is an unbound variable or IntLiteral,
-                    // bind it to u64. This handles integer literals used as array indices.
                     let applied = self.substitution.apply(ty);
-                    match &applied {
+                    match applied {
                         InferType::IntLiteral => {
-                            // IntLiteral bound through a chain - bind the variable to u64
                             if let InferType::Var(var) = ty {
                                 self.substitution
                                     .insert(*var, InferType::Concrete(Type::U64));
                             }
                         }
                         InferType::Var(var) => {
-                            // Unbound variable - bind it to u64
-                            // This happens for integer literal variables that haven't
-                            // been constrained yet.
                             self.substitution
-                                .insert(*var, InferType::Concrete(Type::U64));
+                                .insert(var, InferType::Concrete(Type::U64));
                         }
                         _ => {}
                     }
-                    let result = self.check_unsigned(ty);
-                    (result, *span)
+                    (self.check_unsigned(ty), *span)
                 }
+                _ => unreachable!(),
             };
-
-            if !result.0.is_ok() {
-                errors.push(UnificationError::new(result.0, result.1));
+            if !result.is_ok() {
+                errors.push(UnificationError::new(result, span));
             }
         }
 
@@ -1573,6 +1681,63 @@ mod tests {
             assert_eq!(
                 contextual_unifier.resolve(&InferType::Var(b)),
                 Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn deferred_field_obligations_follow_joined_and_nested_bases() {
+        let base = TypeVarId::new(0);
+        let first = TypeVarId::new(1);
+        let nested = TypeVarId::new(2);
+        let literal = TypeVarId::new(3);
+        let field = Spur::default();
+        let constraints = vec![
+            Constraint::FieldGet {
+                base: InferType::Var(base),
+                field,
+                result: InferType::Var(first),
+                span: Span::new(0, 1),
+            },
+            Constraint::FieldGet {
+                base: InferType::Var(first),
+                field,
+                result: InferType::Var(nested),
+                span: Span::new(2, 3),
+            },
+            Constraint::equal(
+                InferType::Var(base),
+                InferType::Concrete(Type::I32),
+                Span::new(4, 5),
+            ),
+            Constraint::equal(
+                InferType::Var(nested),
+                InferType::Var(literal),
+                Span::new(6, 7),
+            ),
+        ];
+        for reverse in [false, true] {
+            let mut unifier = Unifier::new();
+            unifier.mark_int_literal_vars(&[literal]);
+            let mut ordered = constraints.clone();
+            if reverse {
+                ordered.reverse();
+            }
+            let errors = unifier.solve_constraints_with_projections(
+                &ordered,
+                &|left, right| left == right,
+                &|base, _| {
+                    matches!(base, InferType::Concrete(Type::I32 | Type::U64))
+                        .then_some(InferType::Concrete(Type::U64))
+                },
+                &|_| None,
+                &|_| false,
+            );
+            assert!(errors.is_empty());
+            unifier.default_int_literal_vars(&[literal]);
+            assert_eq!(
+                unifier.substitution.apply(&InferType::Var(literal)),
+                InferType::Concrete(Type::U64)
             );
         }
     }

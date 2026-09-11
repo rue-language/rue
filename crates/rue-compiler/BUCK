@@ -152,10 +152,7 @@ rue_rust_test(
     deps = [
         ":rue-compiler",
         "//crates/rue-air:rue-air",
-        "//crates/rue-air:rue-air-fuzz-support",
         "//crates/rue-cfg:rue-cfg",
-        "//crates/rue-cfg:rue-cfg-fuzz-support",
         "//crates/rue-rir:rue-rir",
-        "//crates/rue-rir:rue-rir-fuzz-support",
     ],
 )
