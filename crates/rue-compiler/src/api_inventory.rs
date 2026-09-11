@@ -1977,7 +1977,7 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 45] = [
     (970, 16_733_311_749_340_788_625),
     (2_583, 15_262_418_539_020_264_161),
     (11_629, 16_221_983_252_924_349_648),
-    (108_947, 7_317_637_614_921_314_832),
+    (109_886, 3_513_831_457_143_536_896),
     (3_254, 11_949_940_325_034_004_149),
     (5_552, 14_658_861_127_087_730_967),
     (872, 14_092_162_116_261_787_003),
@@ -4937,7 +4937,7 @@ pub(super) use register_parse_import_parse;"#;
         });
     assert_eq!(
         (declarations.len(), fingerprint),
-        (216, 10_859_079_154_876_703_755),
+        (216, 11_039_517_929_469_320_202),
         "crate-visible declaration names, signatures, fields, or phase owners changed"
     );
 
@@ -5208,7 +5208,7 @@ fn revisioned_body_and_program_assembly_have_exact_source_owners() {
             });
     assert_eq!(
         (shared_declarations.len(), shared_fingerprint),
-        (55, 420_575_141_232_741_378),
+        (56, 8_314_228_371_259_251_055),
         "database-tree shared body/program API changed"
     );
 }
@@ -5221,6 +5221,7 @@ fn:wait_for_arrivals
 fn:arrivals
 fn:frontier_arrivals
 fn:timed_out
+fn:type_is_copy
 fn:release
 struct:FrontierRendezvousGuard
 struct:TestConstraintGenerationCancellationGuard

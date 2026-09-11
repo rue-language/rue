@@ -334,6 +334,12 @@ pub trait ComptimeTypeAlgebra: ComptimeDomain {
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<(), Self::Failure>;
     fn type_name(&self, ty: &Self::Type) -> String;
+    /// Whether a type value names an enum. This keeps enum-constructor
+    /// dispatch precise without evaluating receivers twice or treating every
+    /// associated type call as a variant constructor.
+    fn type_is_enum(&self, _ty: &Self::Type) -> bool {
+        false
+    }
     fn type_is_unsigned(&self, ty: &Self::Type) -> bool;
     fn type_integer_semantics(&self, ty: &Self::Type) -> Option<IntegerType>;
     /// The float width of `ty`, or `None` for a non-float type. The default
@@ -390,6 +396,44 @@ pub trait ComptimeTypeAlgebra: ComptimeDomain {
         >,
         inst_ref: InstRef,
     ) -> Option<Self::Type>;
+    /// Resolve the nominal type of a structural literal after the engine has
+    /// reduced its children. The engine supplies the semantic name directly;
+    /// hosts do not inspect the literal instruction or its child RIR.
+    fn resolve_comptime_struct_type(
+        &mut self,
+        program: &Self::ProgramKey,
+        name: Self::Name,
+        span: Span,
+    ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
+        self.resolve_named_type_value(program, name, span)
+    }
+    /// Resolve an array literal's type from reduced child values. Contextual
+    /// hosts may retain their resolved expression type; durable hosts use the
+    /// typed value projection and never decode RIR here.
+    fn resolve_comptime_array_type(
+        &mut self,
+        program: &Self::ProgramKey,
+        env: &ComptimeEnv<
+            '_,
+            Self::Value,
+            Self::Type,
+            Self::Name,
+            Self::File,
+            Self::CanonicalIdentity,
+        >,
+        inst_ref: InstRef,
+        element: Option<&Self::Value>,
+        length: u64,
+    ) -> Option<Self::Type> {
+        env.expected_result
+            .clone()
+            .or_else(|| self.const_expr_type(program, env, inst_ref))
+            .or_else(|| {
+                element
+                    .and_then(ComptimeValue::value_type)
+                    .map(|element| self.get_or_create_array_type(element, length))
+            })
+    }
     /// Resolve the concrete float type of an operand expression. This is
     /// separate from `const_expr_type` so comparisons inspect their operands
     /// rather than their boolean result expression.
@@ -458,6 +502,46 @@ pub trait ComptimeTypeAlgebra: ComptimeDomain {
 
 /// Value resolution, arithmetic, comparison, and member/pattern selection.
 pub trait ComptimeValueAlgebra: ComptimeDomain {
+    /// Construct a bounded structural value after the engine has reduced every
+    /// child. Hosts only adapt the resulting value representation; traversal
+    /// and resource accounting remain owned by this engine.
+    fn resolve_comptime_struct(
+        &mut self,
+        _ty: Self::Type,
+        _fields: Vec<(Self::Name, Self::Value)>,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        ComptimeOutcome::RuntimeDependent
+    }
+    fn resolve_comptime_array(
+        &mut self,
+        _ty: Self::Type,
+        _elements: Vec<Self::Value>,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        ComptimeOutcome::RuntimeDependent
+    }
+    fn resolve_comptime_array_repeat(
+        &mut self,
+        _ty: Self::Type,
+        _element: Self::Value,
+        _count: u64,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        ComptimeOutcome::RuntimeDependent
+    }
+    /// Retag enum payload projections with their declared field types before
+    /// a match arm evaluates a bound. Durable values store content separately
+    /// from wrapper metadata, so this keeps width and nominal identity intact
+    /// without putting host-specific type tables in the generic value algebra.
+    fn project_comptime_enum_payload(
+        &mut self,
+        _value: &Self::Value,
+        _variant: u32,
+        payload: Vec<Self::Value>,
+    ) -> ComptimeHostResult<Vec<Self::Value>, Self::Failure> {
+        Ok(payload)
+    }
     fn resolve_comptime_named_value(
         &mut self,
         file: Self::File,
@@ -471,11 +555,12 @@ pub trait ComptimeValueAlgebra: ComptimeDomain {
     /// enum-shaped values a domain can represent, and the default domain
     /// represents none of them.
     fn match_path_pattern(
-        &self,
+        &mut self,
         _pattern: &ComptimeMatchPattern<Self::Name>,
         _value: &Self::Value,
-    ) -> Option<bool> {
-        None
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<Option<bool>, Self::Failure> {
+        Ok(None)
     }
     /// Report a comptime-known `match` whose reached arms all declined.
     /// Selection happens over an exhaustive pattern set (4.14:19, 4.7:9), so
@@ -576,6 +661,20 @@ pub trait ComptimeValueAlgebra: ComptimeDomain {
     ) -> ComptimeOutcome<Self::Value, Self::Failure> {
         ComptimeOutcome::RuntimeDependent
     }
+    /// Construct a payload-bearing enum variant whose receiver reduced to a
+    /// type value (the `Choice.Some(value)` spelling). The engine evaluates
+    /// the receiver and payloads once, then delegates the typed construction
+    /// to the host so ordinary and durable domains share the same path.
+    fn resolve_comptime_enum_variant_with_payload(
+        &mut self,
+        _enum_type: Self::Type,
+        _variant: Self::Name,
+        _payload: Vec<Self::Value>,
+        _site: &ComptimeSite<Self::ProgramKey>,
+        _span: Span,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        ComptimeOutcome::RuntimeDependent
+    }
     fn admit_comptime_enum_variant(
         &mut self,
         _type_name: Self::Name,
@@ -665,6 +764,15 @@ pub trait ComptimeCallProtocol: ComptimeDomain {
         argument_count: usize,
         span: Span,
     ) -> ComptimeHostResult<Self::CallBinding, Self::Failure>;
+    /// Return the declared type for an argument before its expression is
+    /// reduced, so contextual aggregate literals preserve the call contract.
+    fn comptime_call_argument_type(
+        &self,
+        _binding: &Self::CallBinding,
+        _index: usize,
+    ) -> Option<Self::Type> {
+        None
+    }
     /// Push one already-evaluated argument. `false` rejects the call as
     /// runtime-dependent and stops the engine before the next child runs.
     fn bind_comptime_call_argument(
@@ -944,14 +1052,15 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     /// domain is the engine's own (RUE-1968) so both hosts cannot answer it
     /// differently; only an enum-variant path reaches the host.
     fn match_pattern(
-        &self,
+        &mut self,
         pattern: &ComptimeMatchPattern<H::Name>,
         value: &H::Value,
-    ) -> Option<bool> {
+        site: &ComptimeDiagnosticSite<H::ProgramKey>,
+    ) -> ComptimeHostResult<Option<bool>, H::Failure> {
         match comptime_scalar_pattern_decision(pattern, value) {
-            ComptimePatternDecision::Decided(matched) => Some(matched),
-            ComptimePatternDecision::Undecidable => None,
-            ComptimePatternDecision::HostPath => self.host.match_path_pattern(pattern, value),
+            ComptimePatternDecision::Decided(matched) => Ok(Some(matched)),
+            ComptimePatternDecision::Undecidable => Ok(None),
+            ComptimePatternDecision::HostPath => self.host.match_path_pattern(pattern, value, site),
         }
     }
 
@@ -1394,6 +1503,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 InstData::FieldGet { .. } if kind == ComptimeSiteKind::Member => {
                     Some(ComptimeSiteKind::Member)
                 }
+                InstData::MethodCall { .. } if kind == ComptimeSiteKind::Member => {
+                    Some(ComptimeSiteKind::Member)
+                }
                 _ => None,
             };
             if candidate_kind == Some(kind) {
@@ -1488,21 +1600,44 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let value = self.eval(body, env);
         let selected = match value {
             ComptimeOutcome::Known(value) => {
-                let patterns = self.program_rir().match_arms(arms).to_vec();
-                patterns
-                    .into_iter()
-                    .enumerate()
-                    .find_map(|(index, (pattern, _))| {
-                        let pattern = self.decode_match_pattern(&self.program_key(), &pattern);
-                        match self.match_pattern(&pattern, &value) {
-                            Some(true) => Some(ComptimeOutcome::Known(ComptimeSelection::Match {
-                                arm: index,
-                            })),
-                            Some(false) => None,
-                            None => Some(ComptimeOutcome::RuntimeDependent),
-                        }
+                let patterns = self
+                    .program_rir()
+                    .match_arms(arms)
+                    .iter()
+                    .map(|(pattern, body)| {
+                        (
+                            self.decode_match_pattern(&self.program_key(), &pattern),
+                            body,
+                        )
                     })
-                    .unwrap_or(ComptimeOutcome::RuntimeDependent)
+                    .collect::<Vec<_>>();
+                {
+                    let mut selected = ComptimeOutcome::RuntimeDependent;
+                    for (index, (pattern, _)) in patterns.into_iter().enumerate() {
+                        match self.match_pattern(
+                            &pattern,
+                            &value,
+                            &self.diagnostic_site(Span::new(0, 0)),
+                        ) {
+                            Ok(Some(true)) => {
+                                selected =
+                                    ComptimeOutcome::Known(ComptimeSelection::Match { arm: index });
+                                break;
+                            }
+                            Ok(Some(false)) => {}
+                            Ok(None) => {}
+                            Err(ComptimeHostError::HostFailure(error)) => {
+                                selected = ComptimeOutcome::HostFailure(error);
+                                break;
+                            }
+                            Err(ComptimeHostError::Abort(error)) => {
+                                selected = ComptimeOutcome::Abort(error);
+                                break;
+                            }
+                        }
+                    }
+                    selected
+                }
             }
             ComptimeOutcome::RuntimeDependent => ComptimeOutcome::RuntimeDependent,
             ComptimeOutcome::NotReady => ComptimeOutcome::NotReady,
@@ -1576,7 +1711,16 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     ) -> ComptimeOutcome<(), H::Failure> {
         for (index, arg) in args.iter().enumerate() {
             let program = self.program_key();
-            let value = outcome_value!(self.eval(arg.value, env));
+            let previous_expected = env.expected_result.clone();
+            env.expected_result = self.host.comptime_call_argument_type(binding, index);
+            let value = match self.eval(arg.value, env) {
+                ComptimeOutcome::Known(value) => value,
+                other => {
+                    env.expected_result = previous_expected;
+                    return Self::discard_rejection(other);
+                }
+            };
+            env.expected_result = previous_expected;
             let direct_unit_literal = matches!(
                 &self.host.program_rir(&program).get(arg.value).data,
                 InstData::UnitConst
@@ -1746,6 +1890,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
 
     fn evaluate_method_call(
         &mut self,
+        inst_ref: InstRef,
         receiver: InstRef,
         method: H::Name,
         args: &rue_rir::RirCallArgsRange,
@@ -1755,9 +1900,70 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let args = self.program_rir().call_args(args).to_vec();
         if matches!(
             self.host.comptime_method_receiver_policy(),
+            ComptimeMethodReceiverPolicy::SyntacticModulePath
+        ) {
+            let type_value = match self.program_rir().get(receiver).data {
+                InstData::VarRef { name, .. } => {
+                    let name = self.name_from_rir(name.into());
+                    host_value!(
+                        self.host
+                            .resolve_named_type_value(&self.program_key(), name, span,)
+                    )
+                }
+                _ => None,
+            };
+            if let Some(type_value) = type_value {
+                if self.host.type_is_enum(&type_value) {
+                    let previous_expected = env.expected_result.take();
+                    let mut payload = Vec::with_capacity(args.len());
+                    for arg in &args {
+                        let value = match self.eval(arg.value, env) {
+                            ComptimeOutcome::Known(value) => value,
+                            other => {
+                                env.expected_result = previous_expected;
+                                return Self::discard_rejection(other);
+                            }
+                        };
+                        payload.push(value);
+                    }
+                    env.expected_result = previous_expected;
+                    let site = self.semantic_site(inst_ref, ComptimeSiteKind::Member, span);
+                    return self.host.resolve_comptime_enum_variant_with_payload(
+                        type_value, method, payload, &site, span,
+                    );
+                }
+            }
+        }
+        if matches!(
+            self.host.comptime_method_receiver_policy(),
             ComptimeMethodReceiverPolicy::EvaluateReceiver
         ) {
+            // EvaluateReceiver owns exactly one receiver evaluation. A type
+            // receiver is a variant constructor only when its type algebra
+            // confirms an enum; associated calls on struct types continue
+            // through ordinary method admission.
             let receiver = outcome_value!(self.eval(receiver, env));
+            if let Some(enum_type) = receiver.as_type()
+                && self.host.type_is_enum(&enum_type)
+            {
+                let previous_expected = env.expected_result.take();
+                let mut payload = Vec::with_capacity(args.len());
+                for arg in &args {
+                    let value = match self.eval(arg.value, env) {
+                        ComptimeOutcome::Known(value) => value,
+                        other => {
+                            env.expected_result = previous_expected;
+                            return Self::discard_rejection(other);
+                        }
+                    };
+                    payload.push(value);
+                }
+                env.expected_result = previous_expected;
+                let site = self.semantic_site(inst_ref, ComptimeSiteKind::Member, span);
+                return self.host.resolve_comptime_enum_variant_with_payload(
+                    enum_type, method, payload, &site, span,
+                );
+            }
             let arg_modes: Vec<ComptimeArgMode> = args
                 .iter()
                 .map(|arg| (arg.mode, self.program_rir().get(arg.value).span))
@@ -3167,6 +3373,21 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             | InstData::Branch { .. }
             | InstData::Call { .. } => unreachable!("routed by comptime eval trampoline"),
 
+            InstData::IndexGet { base, index } => {
+                let base = outcome_value!(self.eval(*base, env));
+                let index = outcome_value!(self.eval(*index, env));
+                let Some(index) = index
+                    .as_integer()
+                    .and_then(|value| usize::try_from(value).ok())
+                else {
+                    return ComptimeOutcome::RuntimeDependent;
+                };
+                match base.aggregate_array_element(index) {
+                    Some(value) => ComptimeOutcome::Known(value),
+                    None => ComptimeOutcome::RuntimeDependent,
+                }
+            }
+
             // Comptime-known `match`: evaluate the scrutinee, select the first
             // arm whose pattern matches, and reduce to that arm's body value
             // (spec 4.14:19, RUE-262). Scalar patterns are decided here for
@@ -3177,15 +3398,90 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             InstData::Match { scrutinee, arms } => {
                 let scrutinee = *scrutinee;
                 let scrut = outcome_value!(self.eval(scrutinee, env));
-                let arms = self.program_rir().match_arms(arms).to_vec();
-                for (pattern, body) in arms.iter() {
-                    let semantic_pattern = self.decode_match_pattern(&self.program_key(), pattern);
-                    match self.match_pattern(&semantic_pattern, &scrut) {
-                        Some(true) => return self.eval(*body, env),
-                        Some(false) => continue,
+                let arms = self
+                    .program_rir()
+                    .match_arms(arms)
+                    .iter()
+                    .map(|(pattern, body)| {
+                        (
+                            self.decode_match_pattern(&self.program_key(), &pattern),
+                            body,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                for (semantic_pattern, body) in arms.iter() {
+                    match self.match_pattern(semantic_pattern, &scrut, &self.diagnostic_site(span))
+                    {
+                        Ok(Some(true)) => {
+                            // Payload bindings belong to the selected arm's
+                            // lexical environment. The engine extracts only
+                            // the already-reduced payload through the value
+                            // algebra; hosts do not receive RIR or evaluate
+                            // pattern children themselves.
+                            let bindings = match &semantic_pattern {
+                                ComptimeMatchPattern::Path { binding_names, .. } => {
+                                    if binding_names.iter().all(Option::is_none) {
+                                        Vec::new()
+                                    } else {
+                                        let Some((variant, payload)) =
+                                            scrut.aggregate_enum_payload()
+                                        else {
+                                            return ComptimeOutcome::RuntimeDependent;
+                                        };
+                                        let payload = match self
+                                            .host
+                                            .project_comptime_enum_payload(&scrut, variant, payload)
+                                        {
+                                            Ok(payload) => payload,
+                                            Err(ComptimeHostError::HostFailure(error)) => {
+                                                return ComptimeOutcome::HostFailure(error);
+                                            }
+                                            Err(ComptimeHostError::Abort(error)) => {
+                                                return ComptimeOutcome::Abort(error);
+                                            }
+                                        };
+                                        let mut bindings = Vec::new();
+                                        for (index, name) in binding_names.iter().enumerate() {
+                                            let Some(name) = name else { continue };
+                                            let Some(value) = payload.get(index).cloned() else {
+                                                return ComptimeOutcome::RuntimeDependent;
+                                            };
+                                            if self.host.display_name(name) != "_" {
+                                                bindings.push((name.clone(), value));
+                                            }
+                                        }
+                                        bindings
+                                    }
+                                }
+                                _ => Vec::new(),
+                            };
+                            let mut previous = Vec::with_capacity(bindings.len());
+                            for (name, value) in bindings {
+                                previous.push((name.clone(), env.locals.insert(name, value)));
+                            }
+                            let result = self.eval(*body, env);
+                            for (name, value) in previous {
+                                match value {
+                                    Some(value) => {
+                                        env.locals.insert(name, value);
+                                    }
+                                    None => {
+                                        env.locals.remove(&name);
+                                    }
+                                }
+                            }
+                            return result;
+                        }
+                        Ok(Some(false)) => continue,
                         // Undecidable pattern (e.g. an enum-variant `Path`
                         // against a non-representable scrutinee): bail out.
-                        None => return ComptimeOutcome::RuntimeDependent,
+                        Ok(None) => return ComptimeOutcome::RuntimeDependent,
+                        Err(ComptimeHostError::HostFailure(error)) => {
+                            return ComptimeOutcome::HostFailure(error);
+                        }
+                        Err(ComptimeHostError::Abort(error)) => {
+                            return ComptimeOutcome::Abort(error);
+                        }
                     }
                 }
                 self.host.match_no_selected_arm(&self.diagnostic_site(span))
@@ -3392,10 +3688,6 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             InstData::ArrayRepeat { value, count } => {
                 let (value, count) = (*value, count.clone());
                 let value = outcome_value!(self.eval(value, env));
-                let Some(elem_ty) = value.as_type() else {
-                    let site = self.diagnostic_site(span);
-                    return self.host.reject_non_type_array_repeat(value, &site);
-                };
                 let len = match count {
                     RepeatCount::Literal(n) => n,
                     RepeatCount::Named(sym) => {
@@ -3410,8 +3702,26 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         ))
                     }
                 };
-                let array_ty = self.host.get_or_create_array_type(elem_ty, len);
-                ComptimeOutcome::Known(H::Value::type_value(array_ty))
+                if let Some(elem_ty) = value.as_type() {
+                    // A repeat over a type literal is itself a comptime type.
+                    let array_ty = self.host.get_or_create_array_type(elem_ty, len);
+                    return ComptimeOutcome::Known(H::Value::type_value(array_ty));
+                }
+                // A reduced value repeat is a structural array literal. Its
+                // contextual type is resolved through the same array contract
+                // as ArrayInit, then the host performs one bounded admission.
+                let Some(array_ty) = self.host.resolve_comptime_array_type(
+                    &self.program_key(),
+                    env,
+                    inst_ref,
+                    Some(&value),
+                    len,
+                ) else {
+                    return ComptimeOutcome::RuntimeDependent;
+                };
+                let site = self.diagnostic_site(span);
+                self.host
+                    .resolve_comptime_array_repeat(array_ty, value, len, &site)
             }
 
             // VarRef: comptime let-bindings, comptime parameters, file-level
@@ -3625,16 +3935,61 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             } => {
                 let receiver = *receiver;
                 let method = self.name_from_rir((*method).into());
-                self.evaluate_method_call(receiver, method, args, env, span)
+                self.evaluate_method_call(inst_ref, receiver, method, args, env, span)
             }
 
-            InstData::StructInit { .. } | InstData::ArrayInit { .. } => {
-                self.host.reject_comptime_expression(
-                    ComptimeSemanticRejection::AggregateExpression,
-                    &self.diagnostic_site(span),
-                )
+            InstData::StructInit {
+                fields,
+                module,
+                type_name,
+                ..
+            } => {
+                if module.is_some() {
+                    return ComptimeOutcome::RuntimeDependent;
+                }
+                let site = self.diagnostic_site(span);
+                let field_inits: Vec<_> = self
+                    .program_rir()
+                    .field_inits(fields)
+                    .iter()
+                    .map(|field| (field.0, field.1))
+                    .collect();
+                let mut values = Vec::with_capacity(field_inits.len());
+                for (name, field) in field_inits {
+                    values.push((
+                        self.name_from_rir(name.into()),
+                        outcome_value!(self.eval(field, env)),
+                    ));
+                }
+                let type_name = self.name_from_rir((*type_name).into());
+                let ty = match host_value!(self.host.resolve_comptime_struct_type(
+                    &self.program_key(),
+                    type_name,
+                    span,
+                )) {
+                    Some(ty) => ty,
+                    None => return ComptimeOutcome::RuntimeDependent,
+                };
+                self.host.resolve_comptime_struct(ty, values, &site)
             }
-
+            InstData::ArrayInit { elements } => {
+                let site = self.diagnostic_site(span);
+                let array_elements = self.program_rir().array_elements(elements).to_vec();
+                let mut values = Vec::with_capacity(array_elements.len());
+                for element in array_elements {
+                    values.push(outcome_value!(self.eval(element, env)));
+                }
+                let Some(ty) = self.host.resolve_comptime_array_type(
+                    &self.program_key(),
+                    env,
+                    inst_ref,
+                    values.first(),
+                    values.len() as u64,
+                ) else {
+                    return ComptimeOutcome::RuntimeDependent;
+                };
+                self.host.resolve_comptime_array(ty, values, &site)
+            }
             // Everything else requires runtime evaluation. The semantic
             // rejection hook lets durable hosts preserve the exact
             // declaration-time reason while ordinary evaluation remains

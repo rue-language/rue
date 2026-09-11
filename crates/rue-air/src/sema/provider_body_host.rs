@@ -2349,7 +2349,7 @@ where
                 identity,
             )),
             ConstValue::Type(resolved),
-        ) = (&constant.value, info.value)
+        ) = (&constant.value, info.value.clone())
         {
             self.register_provider_anonymous_method_endpoints(identity, resolved)?;
         }
@@ -2893,6 +2893,40 @@ where
                 V::String(Arc::from(self.interner.resolve(&symbol.spur())))
             }
             ConstValue::Float(symbol) => V::Float(Arc::from(self.interner.resolve(&symbol.spur()))),
+            ConstValue::Aggregate(aggregate) => {
+                let ty = self.durable_type_from_concrete(aggregate.ty)?;
+                let kind = match &aggregate.kind {
+                    crate::sema::ConstAggregateKind::Struct(values) => {
+                        crate::SemanticImportAggregateKind::Struct(
+                            values
+                                .iter()
+                                .map(|v| self.durable_value_from_concrete(v.clone()))
+                                .collect::<Option<Vec<_>>>()?
+                                .into(),
+                        )
+                    }
+                    crate::sema::ConstAggregateKind::Array(values) => {
+                        crate::SemanticImportAggregateKind::Array(
+                            values
+                                .iter()
+                                .map(|v| self.durable_value_from_concrete(v.clone()))
+                                .collect::<Option<Vec<_>>>()?
+                                .into(),
+                        )
+                    }
+                    crate::sema::ConstAggregateKind::Enum { variant, payload } => {
+                        crate::SemanticImportAggregateKind::Enum {
+                            variant: *variant,
+                            payload: payload
+                                .iter()
+                                .map(|v| self.durable_value_from_concrete(v.clone()))
+                                .collect::<Option<Vec<_>>>()?
+                                .into(),
+                        }
+                    }
+                };
+                V::Aggregate(Arc::new(crate::SemanticImportAggregate { ty, kind }))
+            }
         })
     }
 
@@ -2915,6 +2949,11 @@ where
         value: &crate::SemanticImportConstValue<K, M>,
     ) -> Option<ConstValue> {
         use crate::SemanticImportConstValue as V;
+        if matches!(value, V::Aggregate(_))
+            && !crate::semantic_import_const_value_within_limits(value)
+        {
+            return None;
+        }
         Some(match value {
             V::Integer(value) => ConstValue::Integer(*value),
             V::Bool(value) => ConstValue::Bool(*value),
@@ -2926,6 +2965,40 @@ where
             V::Unit => ConstValue::Unit,
             V::String(value) => ConstValue::String(self.intern_name(value.as_ref())?.into()),
             V::Float(value) => ConstValue::Float(self.intern_name(value.as_ref())?.into()),
+            V::Aggregate(value) => {
+                let ty = self.materialize_durable_type(&value.ty)?;
+                let kind = match &value.kind {
+                    crate::SemanticImportAggregateKind::Struct(values) => {
+                        crate::sema::ConstAggregateKind::Struct(
+                            values
+                                .iter()
+                                .map(|v| self.materialize_durable_const_value(v))
+                                .collect::<Option<Vec<_>>>()?
+                                .into(),
+                        )
+                    }
+                    crate::SemanticImportAggregateKind::Array(values) => {
+                        crate::sema::ConstAggregateKind::Array(
+                            values
+                                .iter()
+                                .map(|v| self.materialize_durable_const_value(v))
+                                .collect::<Option<Vec<_>>>()?
+                                .into(),
+                        )
+                    }
+                    crate::SemanticImportAggregateKind::Enum { variant, payload } => {
+                        crate::sema::ConstAggregateKind::Enum {
+                            variant: *variant,
+                            payload: payload
+                                .iter()
+                                .map(|v| self.materialize_durable_const_value(v))
+                                .collect::<Option<Vec<_>>>()?
+                                .into(),
+                        }
+                    }
+                };
+                crate::sema::register_comptime_aggregate(crate::sema::ConstAggregate { ty, kind })?
+            }
         })
     }
 
@@ -3071,7 +3144,7 @@ where
                         .map(|(name, value)| {
                             Ok((
                                 Arc::from(self.interner.resolve(name)),
-                                self.canonical_argument_value(*value)?,
+                                self.canonical_argument_value(value.clone())?,
                             ))
                         })
                         .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
@@ -3423,6 +3496,19 @@ where
         &mut self,
         value: &CanonicalArgumentValue<K, M>,
     ) -> Result<ConstValue, crate::SemanticBodyExportFailure> {
+        // Canonical arguments can arrive from another query epoch. Reject
+        // excessive values before resolving types, interning strings, or
+        // recursively allocating local children.
+        if !value.within_resource_limits() {
+            return Err(crate::SemanticBodyExportFailure::MissingStableIdentity);
+        }
+        self.materialize_bounded_argument_value(value)
+    }
+
+    fn materialize_bounded_argument_value(
+        &mut self,
+        value: &CanonicalArgumentValue<K, M>,
+    ) -> Result<ConstValue, crate::SemanticBodyExportFailure> {
         Ok(match value {
             CanonicalArgumentValue::Integer(value) => ConstValue::Integer(*value),
             CanonicalArgumentValue::Bool(value) => ConstValue::Bool(*value),
@@ -3459,6 +3545,41 @@ where
                     .borrow_mut()
                     .insert(symbol, (token, definition.clone()));
                 ConstValue::Function(symbol.into())
+            }
+            CanonicalArgumentValue::Aggregate(value) => {
+                let ty = self.materialize_type_instance(&value.ty)?;
+                let kind = match &value.kind {
+                    crate::CanonicalAggregateKind::Struct(values) => {
+                        crate::sema::ConstAggregateKind::Struct(
+                            values
+                                .iter()
+                                .map(|v| self.materialize_bounded_argument_value(v))
+                                .collect::<Result<Vec<_>, _>>()?
+                                .into(),
+                        )
+                    }
+                    crate::CanonicalAggregateKind::Array(values) => {
+                        crate::sema::ConstAggregateKind::Array(
+                            values
+                                .iter()
+                                .map(|v| self.materialize_bounded_argument_value(v))
+                                .collect::<Result<Vec<_>, _>>()?
+                                .into(),
+                        )
+                    }
+                    crate::CanonicalAggregateKind::Enum { variant, payload } => {
+                        crate::sema::ConstAggregateKind::Enum {
+                            variant: *variant,
+                            payload: payload
+                                .iter()
+                                .map(|v| self.materialize_bounded_argument_value(v))
+                                .collect::<Result<Vec<_>, _>>()?
+                                .into(),
+                        }
+                    }
+                };
+                crate::sema::register_comptime_aggregate(crate::sema::ConstAggregate { ty, kind })
+                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?
             }
         })
     }
@@ -4117,8 +4238,8 @@ where
             durable_types.push((Arc::from(self.interner.resolve(&name)), value));
         }
         let mut durable_values = Vec::with_capacity(value_arguments.len());
-        for &(name, value) in value_arguments {
-            let Some(value) = self.durable_value_from_concrete(value) else {
+        for (name, value) in value_arguments {
+            let Some(value) = self.durable_value_from_concrete(value.clone()) else {
                 return Ok(None);
             };
             durable_values.push((Arc::from(self.interner.resolve(&name)), value));
@@ -4145,8 +4266,8 @@ where
         };
         let materialized = self.materialize_durable_const_value(&value);
         if let Some(ConstValue::Type(ty)) = materialized.as_ref() {
-            let type_arguments = type_arguments.iter().copied().collect();
-            let value_arguments = value_arguments.iter().copied().collect();
+            let type_arguments = type_arguments.iter().cloned().collect();
+            let value_arguments = value_arguments.iter().cloned().collect();
             OrdinaryBodyEngine::new(self).record_ctor_type_display(
                 head.key,
                 *ty,
@@ -5036,7 +5157,7 @@ where
                         })
                         .map(|parameter| {
                             let symbol = self.interner.get(parameter.name.as_ref())?;
-                            self.canonical_argument_value(*callee_values.get(&symbol)?)
+                            self.canonical_argument_value(callee_values.get(&symbol)?.clone())
                                 .ok()
                         })
                         .collect::<Option<Vec<_>>>()?
@@ -5487,6 +5608,41 @@ where
                 CanonicalArgumentValue::Float(self.interner.resolve(&symbol.spur()).into())
             }
             ConstValue::Unit => CanonicalArgumentValue::Unit,
+            ConstValue::Aggregate(aggregate) => {
+                CanonicalArgumentValue::Aggregate(Node::new(crate::CanonicalAggregateValue {
+                    ty: Node::new(self.canonical_type_instance(aggregate.ty)?),
+                    kind: match &aggregate.kind {
+                        crate::sema::ConstAggregateKind::Struct(values) => {
+                            crate::CanonicalAggregateKind::Struct(
+                                values
+                                    .iter()
+                                    .map(|v| self.canonical_argument_value(v.clone()))
+                                    .collect::<Result<Vec<_>, _>>()?
+                                    .into(),
+                            )
+                        }
+                        crate::sema::ConstAggregateKind::Array(values) => {
+                            crate::CanonicalAggregateKind::Array(
+                                values
+                                    .iter()
+                                    .map(|v| self.canonical_argument_value(v.clone()))
+                                    .collect::<Result<Vec<_>, _>>()?
+                                    .into(),
+                            )
+                        }
+                        crate::sema::ConstAggregateKind::Enum { variant, payload } => {
+                            crate::CanonicalAggregateKind::Enum {
+                                variant: *variant,
+                                payload: payload
+                                    .iter()
+                                    .map(|v| self.canonical_argument_value(v.clone()))
+                                    .collect::<Result<Vec<_>, _>>()?
+                                    .into(),
+                            }
+                        }
+                    },
+                }))
+            }
         })
     }
 

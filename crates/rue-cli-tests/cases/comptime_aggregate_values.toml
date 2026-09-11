@@ -1,0 +1,306 @@
+# Structural comptime arguments preserve values and declared types across
+# ordinary body calls and declaration-time evaluation (RUE-562).
+
+[section]
+id = "cli.comptime_aggregate_values"
+name = "Structural comptime value parameters"
+description = "Aggregate values, nominal identities, projections, and diagnostics through the real compiler."
+
+[[case]]
+name = "nested_enum"
+files = [{ path = "main.rue", source = '''
+@copy struct Pair { left: i32, right: i32 }
+@copy struct Batch { values: [Pair; 2] }
+enum Choice { Some(Batch), None }
+fn total(comptime c: Choice) -> i32 { match c { Choice.Some(b) => b.values[0].left + b.values[1].right, Choice.None => 0 } }
+fn main() -> i32 { total(Choice.Some(Batch { values: [Pair { left: 20, right: 0 }, Pair { left: 0, right: 22 }] })) }
+''' }]
+exit_code = 42
+
+[[case]]
+name = "nested_enum_const_initializer"
+files = [{ path = "main.rue", source = '''
+@copy struct Pair { left: i32, right: i32 }
+@copy struct Batch { values: [Pair; 2] }
+enum Choice { Some(Batch), None }
+fn total(comptime c: Choice) -> i32 { match c { Choice.Some(b) => b.values[0].left + b.values[1].right, Choice.None => 0 } }
+const ANSWER: i32 = total(Choice.Some(Batch { values: [Pair { left: 20, right: 0 }, Pair { left: 0, right: 22 }] }));
+fn main() -> i32 { ANSWER }
+''' }]
+exit_code = 42
+
+[[case]]
+name = "variant_identity"
+files = [{ path = "main.rue", source = '''
+enum Choice { A(i32), B(i32) }
+fn total(comptime c: Choice) -> i32 { match c { Choice.A(v) => v, Choice.B(v) => v - 42 } }
+fn main() -> i32 { total(Choice.A(42)) + total(Choice.B(42)) }
+''' }]
+exit_code = 42
+
+[[case]]
+name = "forwarding"
+files = [{ path = "main.rue", source = '''
+@copy struct Pair { left: i32, right: i32 }
+fn inner(comptime p: Pair) -> i32 { p.left * 2 + p.right }
+fn outer(comptime p: Pair) -> i32 { inner(p) }
+fn main() -> i32 { outer(Pair { right: 2, left: 20 }) }
+''' }]
+exit_code = 42
+
+[[case]]
+name = "wide_integer"
+files = [{ path = "main.rue", source = '''
+@copy struct Wide { value: u64 }
+fn is_max(comptime p: Wide) -> i32 { if p.value == 18446744073709551615 { 42 } else { 0 } }
+fn main() -> i32 { is_max(Wide { value: 18446744073709551615 }) }
+''' }]
+exit_code = 42
+
+[[case]]
+name = "empty_array"
+files = [{ path = "main.rue", source = '''
+fn answer(comptime values: [i32; 0]) -> i32 { 42 }
+fn main() -> i32 { answer([]) }
+''' }]
+exit_code = 42
+
+[[case]]
+name = "wrong_nominal"
+files = [{ path = "main.rue", source = '''
+@copy struct A { x: i32 }
+@copy struct B { x: i32 }
+fn value(comptime a: A) -> i32 { a.x }
+fn main() -> i32 { value(B { x: 42 }) }
+''' }]
+compile_fail = true
+compile_stderr_not_contains = ["E9000"]
+compile_stderr_contains = ["E0206"]
+
+[[case]]
+name = "narrow_field_overflow"
+files = [{ path = "main.rue", source = '''
+@copy struct Narrow { x: u8 }
+fn value(comptime a: Narrow) -> i32 { @intCast(a.x) }
+fn main() -> i32 { value(Narrow { x: 256 }) }
+''' }]
+compile_fail = true
+compile_stderr_not_contains = ["E9000"]
+compile_stderr_contains = ["E0800"]
+
+[[case]]
+name = "typed_string_field"
+files = [{ path = "main.rue", source = '''
+@copy struct Buffer { value: Str(2) }
+const WORD: str = "hello";
+fn length(comptime b: Buffer) -> i32 { @intCast(b.value.len()) }
+fn main() -> i32 { length(Buffer { value: WORD }) }
+''' }]
+compile_fail = true
+compile_stderr_not_contains = ["E9000"]
+compile_stderr_contains = ["E0206"]
+
+[[case]]
+name = "durable_widths_u64"
+files = [{ path = "main.rue", source = '''
+@copy struct Wide { value: u64 }
+fn half(comptime p: Wide) -> u64 { p.value / 2 }
+const ANSWER: u64 = half(Wide { value: 18446744073709551614 });
+fn main() -> i32 { if ANSWER == 9223372036854775807 { 42 } else { 0 } }
+''' }]
+exit_code = 42
+
+[[case]]
+name = "durable_widths_f32"
+files = [{ path = "main.rue", source = '''
+@copy struct Sample { value: f32 }
+fn delta(comptime p: Sample) -> f32 { (p.value + 1.0) - p.value }
+const ANSWER: f32 = delta(Sample { value: 16777216.0 });
+fn main() -> i32 { if ANSWER == 0.0 { 42 } else { 0 } }
+''' }]
+exit_code = 42
+
+[[case]]
+name = "durable_widths_array_u64"
+files = [{ path = "main.rue", source = '''
+fn half(comptime a: [u64; 1]) -> u64 { a[0] / 2 }
+const ANSWER: u64 = half([18446744073709551614]);
+fn main() -> i32 { if ANSWER == 9223372036854775807 { 42 } else { 0 } }
+''' }]
+exit_code = 42
+
+[[case]]
+name = "durable_widths_enum_u64"
+files = [{ path = "main.rue", source = '''
+enum Wide { A(u64), B }
+fn half(comptime w: Wide) -> u64 { match w { Wide.A(v) => v / 2, Wide.B => 0 } }
+const ANSWER: u64 = half(Wide.A(18446744073709551614));
+fn main() -> i32 { if ANSWER == 9223372036854775807 { 42 } else { 0 } }
+''' }]
+exit_code = 42
+
+[[case]]
+name = "enum_nominal_durable_valid_nullary"
+files = [{ path = "main.rue", source = '''
+enum A { X, Y }
+enum B { X, Y }
+fn choose(comptime a: A) -> i32 { match a { A.X => 42, A.Y => 0 } }
+const ANSWER: i32 = choose(A.X);
+fn main() -> i32 { ANSWER }
+''' }]
+exit_code = 42
+
+[[case]]
+name = "enum_nominal_durable_valid_payload"
+files = [{ path = "main.rue", source = '''
+enum A { X(i32), Y(i32) }
+enum B { X(i32), Y(i32) }
+fn choose(comptime a: A) -> i32 { match a { A.X(v) => v, A.Y(v) => 0 } }
+const ANSWER: i32 = choose(A.X(42));
+fn main() -> i32 { ANSWER }
+''' }]
+exit_code = 42
+
+[[case]]
+name = "enum_nominal_ordinary"
+files = [{ path = "main.rue", source = '''
+enum A { X, Y }
+enum B { X, Y }
+fn choose(comptime a: A) -> i32 { match a { B.X => 42, B.Y => 0 } }
+fn main() -> i32 { choose(A.X) }
+''' }]
+compile_fail = true
+compile_stderr_not_contains = ["E9000"]
+compile_stderr_contains = ["E0206"]
+
+[[case]]
+name = "enum_nominal_runtime"
+files = [{ path = "main.rue", source = '''
+enum A { X, Y }
+enum B { X, Y }
+fn choose( a: A) -> i32 { match a { B.X => 42, B.Y => 0 } }
+fn main() -> i32 { choose(A.X) }
+''' }]
+compile_fail = true
+compile_stderr_not_contains = ["E9000"]
+compile_stderr_contains = ["E0206"]
+
+[[case]]
+name = "enum_alias_alias"
+files = [{ path = "main.rue", source = '''
+enum Choice { A(i32), B }
+const Alias = Choice;
+fn choose(comptime c: Choice) -> i32 { match c { Alias.A(v) => v, Alias.B => 0 } }
+const ANSWER: i32 = choose(Choice.A(42));
+fn main() -> i32 { ANSWER }
+''' }]
+exit_code = 42
+
+[[case]]
+name = "enum_alias_direct"
+files = [{ path = "main.rue", source = '''
+enum Choice { A(i32), B }
+const Alias = Choice;
+fn choose(comptime c: Choice) -> i32 { match c { Choice.A(v) => v, Choice.B => 0 } }
+const ANSWER: i32 = choose(Choice.A(42));
+fn main() -> i32 { ANSWER }
+''' }]
+exit_code = 42
+
+[[case]]
+name = "enum_alias_runtime"
+files = [{ path = "main.rue", source = '''
+enum Choice { A(i32), B }
+const Alias = Choice;
+fn choose(c: Choice) -> i32 { match c { Alias.A(v) => v, Alias.B => 0 } }
+fn main() -> i32 { choose(Choice.A(42)) }
+''' }]
+exit_code = 42
+
+[[case]]
+name = "durable_struct_named_f32_field"
+files = [{ path = "main.rue", source = '''
+@copy struct Holder { value: f32 }
+const F: f32 = 1.0;
+const H: Holder = Holder { value: F };
+fn take(comptime h: Holder) -> i32 { if h.value == 1.0 { 42 } else { 0 } }
+fn main() -> i32 { take(H) }
+''' }]
+exit_code = 42
+
+[[case]]
+name = "durable_struct_named_f64_field"
+files = [{ path = "main.rue", source = '''
+@copy struct Holder { value: f64 }
+const F: f64 = 1.0;
+const H: Holder = Holder { value: F };
+fn take(comptime h: Holder) -> i32 { if h.value == 1.0 { 42 } else { 0 } }
+fn main() -> i32 { take(H) }
+''' }]
+exit_code = 42
+
+[[case]]
+name = "durable_struct_named_f32_cannot_widen"
+files = [{ path = "main.rue", source = '''
+@copy struct Holder { value: f64 }
+const F: f32 = 1.0;
+const H: Holder = Holder { value: F };
+fn take(comptime h: Holder) -> i32 { 42 }
+fn main() -> i32 { take(H) }
+''' }]
+compile_fail = true
+compile_stderr_not_contains = ["E9000"]
+compile_stderr_contains = ["E0206"]
+
+[[case]]
+name = "durable_struct_named_f64_cannot_narrow"
+files = [{ path = "main.rue", source = '''
+@copy struct Holder { value: f32 }
+const F: f64 = 1.0;
+const H: Holder = Holder { value: F };
+fn take(comptime h: Holder) -> i32 { 42 }
+fn main() -> i32 { take(H) }
+''' }]
+compile_fail = true
+compile_stderr_not_contains = ["E9000"]
+compile_stderr_contains = ["E0206"]
+
+[[case]]
+name = "bare_payload_variant_ordinary_requires_arguments"
+files = [{ path = "main.rue", source = '''
+enum E { Payload(i32), Empty }
+fn ignore(comptime e: E) -> i32 { 42 }
+fn main() -> i32 { ignore(E.Payload) }
+''' }]
+compile_fail = true
+compile_stderr_contains = ["E0207", "expected 1 argument, found 0"]
+compile_stderr_not_contains = ["E9000"]
+
+[[case]]
+name = "bare_payload_variant_durable_requires_arguments"
+files = [{ path = "main.rue", source = '''
+enum E { Payload(i32), Empty }
+fn ignore(comptime e: E) -> i32 { 42 }
+const ANSWER: i32 = ignore(E.Payload); fn main() -> i32 { ANSWER }
+''' }]
+compile_fail = true
+compile_stderr_contains = ["E0207", "expected 1 argument, found 0"]
+compile_stderr_not_contains = ["E9000"]
+
+[[case]]
+name = "generic_copy_aggregate_ordinary_substitutes_prior_type_argument"
+files = [{ path = "main.rue", source = '''
+@copy struct P { x: i32 }
+fn ignore(comptime T: type, comptime p: T) -> i32 { 42 }
+fn main() -> i32 { ignore(P, P { x: 1 }) }
+''' }]
+exit_code = 42
+
+[[case]]
+name = "generic_copy_aggregate_durable_substitutes_prior_type_argument"
+files = [{ path = "main.rue", source = '''
+@copy struct P { x: i32 }
+fn ignore(comptime T: type, comptime p: T) -> i32 { 42 }
+const ANSWER: i32 = ignore(P, P { x: 1 }); fn main() -> i32 { ANSWER }
+''' }]
+exit_code = 42

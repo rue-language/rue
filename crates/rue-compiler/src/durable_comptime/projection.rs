@@ -202,6 +202,7 @@ fn durable_type_diagnostic_name_kernel(ty: &DurableType) -> String {
                             crate::CanonicalArgumentValue::Unit => "()".to_owned(),
                             crate::CanonicalArgumentValue::String(value) => format!("\"{value}\""),
                             crate::CanonicalArgumentValue::Float(value) => value.to_string(),
+                            crate::CanonicalArgumentValue::Aggregate(_) => "<aggregate>".to_owned(),
                         }),
                 );
                 if arguments.is_empty() {
@@ -277,6 +278,7 @@ pub(crate) fn inferred_durable_const_type_name(value: &DurableConstValue) -> &'s
         DurableConstValue::String(_) => "str",
         DurableConstValue::Float(_) => "comptime_float",
         DurableConstValue::Type(_) | DurableConstValue::Function(_) => "type",
+        DurableConstValue::Aggregate(_) => "aggregate",
     }
 }
 
@@ -343,10 +345,47 @@ pub(crate) fn durable_const_fits_type(value: &DurableConstValue, ty: &DurableTyp
         }
         (T::Bool, V::Bool(_)) | (T::Unit, V::Unit) => true,
         (T::ComptimeType, V::Type(_)) => true,
+        (T::F32 | T::F64 | T::ComptimeFloat, V::Float(_)) => true,
         // `str` is a canonical builtin nominal whose pool identity may be
         // reconstructed at each durable call boundary. The value itself is
         // content based, so admit it by the trusted nominal classifier.
         (_, V::String(_)) if is_durable_str_type(ty) => true,
+        (_, V::Aggregate(value)) => {
+            value.ty == *ty
+                && rue_air::semantic_import_const_value_within_limits(&V::Aggregate(value.clone()))
+                && match (&value.kind, ty) {
+                    (rue_air::SemanticImportAggregateKind::Struct(_), T::Nominal(key)) => {
+                        key.kind() == crate::StableDefinitionKind::Struct
+                    }
+                    (
+                        rue_air::SemanticImportAggregateKind::Struct(_),
+                        T::BuiltinNominal {
+                            kind: rue_air::SemanticImportNominalKind::Struct,
+                            ..
+                        },
+                    ) => true,
+                    (
+                        rue_air::SemanticImportAggregateKind::Array(values),
+                        T::Array { element, len },
+                    ) => {
+                        values.len() as u64 == *len
+                            && values
+                                .iter()
+                                .all(|value| durable_const_fits_type(value, element))
+                    }
+                    (rue_air::SemanticImportAggregateKind::Enum { .. }, T::Nominal(key)) => {
+                        key.kind() == crate::StableDefinitionKind::Enum
+                    }
+                    (
+                        rue_air::SemanticImportAggregateKind::Enum { .. },
+                        T::BuiltinNominal {
+                            kind: rue_air::SemanticImportNominalKind::Enum,
+                            ..
+                        },
+                    ) => true,
+                    _ => false,
+                }
+        }
         _ => false,
     }
 }
@@ -551,6 +590,73 @@ pub(crate) enum EvaluatedSemanticConst {
     TargetEnum(TargetEnumValue),
 }
 
+pub(crate) fn into_durable_value(value: EvaluatedSemanticConst) -> Option<DurableConstValue> {
+    match value {
+        EvaluatedSemanticConst::Value(value) => Some(value.value.clone()),
+        EvaluatedSemanticConst::Module(_) | EvaluatedSemanticConst::TargetEnum(_) => None,
+    }
+}
+
+/// Return the node count and deepest relative level of an already-owned
+/// durable value without expanding it. Repeat construction uses this
+/// preflight so its allocation cannot be the first operation to exceed the
+/// shared aggregate budget.
+pub(crate) fn durable_value_shape(
+    value: &DurableConstValue,
+    depth: usize,
+) -> Option<(usize, usize)> {
+    if depth > rue_air::MAX_COMPTIME_VALUE_DEPTH {
+        return None;
+    }
+    let DurableConstValue::Aggregate(aggregate) = value else {
+        return Some((1, depth));
+    };
+    let children = match &aggregate.kind {
+        rue_air::SemanticImportAggregateKind::Struct(values)
+        | rue_air::SemanticImportAggregateKind::Array(values) => values,
+        rue_air::SemanticImportAggregateKind::Enum { payload, .. } => payload,
+    };
+    let mut nodes = 1usize;
+    let mut deepest = depth;
+    for child in children.iter() {
+        let (child_nodes, child_depth) = durable_value_shape(child, depth + 1)?;
+        nodes = nodes.checked_add(child_nodes)?;
+        if nodes > rue_air::MAX_COMPTIME_VALUE_NODES {
+            return None;
+        }
+        deepest = deepest.max(child_depth);
+    }
+    Some((nodes, deepest))
+}
+
+fn durable_aggregate_children_within_limits(values: &[DurableConstValue]) -> bool {
+    rue_air::semantic_import_const_values_within_limits(values)
+}
+
+pub(crate) fn evaluated_from_durable_value(value: DurableConstValue) -> EvaluatedSemanticConst {
+    let ty = match &value {
+        DurableConstValue::Integer(_) => DurableType::I32,
+        DurableConstValue::Bool(_) => DurableType::Bool,
+        DurableConstValue::Type(_) => DurableType::ComptimeType,
+        DurableConstValue::Function(_) => DurableType::ComptimeType,
+        DurableConstValue::Unit => DurableType::Unit,
+        DurableConstValue::String(_) => DurableType::BuiltinNominal {
+            name: Arc::from("str"),
+            kind: rue_air::SemanticImportNominalKind::Struct,
+        },
+        DurableConstValue::Float(_) => DurableType::ComptimeFloat,
+        DurableConstValue::Aggregate(aggregate) => aggregate.ty.clone(),
+    };
+    EvaluatedSemanticConst::Value(TypedSemanticConst::typed(value, ty))
+}
+
+pub(crate) fn evaluated_from_durable_value_with_type(
+    value: DurableConstValue,
+    ty: DurableType,
+) -> EvaluatedSemanticConst {
+    EvaluatedSemanticConst::Value(TypedSemanticConst::typed(value, ty))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TargetEnumValue {
     pub(crate) type_name: &'static str,
@@ -715,6 +821,7 @@ pub(crate) fn durable_target_path_pattern_matches<N: AsRef<str>>(
                 type_name,
                 variant,
                 binding_count: 0,
+                ..
             },
             EvaluatedSemanticConst::TargetEnum(target),
         ) if type_name.as_ref() == target.type_name && variant.as_ref() == target.variant
@@ -894,6 +1001,100 @@ impl ComptimeValue for EvaluatedSemanticConst {
         ))
     }
 
+    fn aggregate_struct(ty: Self::Type, fields: Vec<Self>) -> Option<Self> {
+        let values = fields
+            .into_iter()
+            .map(into_durable_value)
+            .collect::<Option<Vec<_>>>()?;
+        if !durable_aggregate_children_within_limits(&values) {
+            return None;
+        }
+        Some(Self::Value(TypedSemanticConst::typed(
+            DurableConstValue::Aggregate(Arc::new(rue_air::SemanticImportAggregate {
+                ty: ty.0.clone(),
+                kind: rue_air::SemanticImportAggregateKind::Struct(values.into()),
+            })),
+            ty.0,
+        )))
+    }
+
+    fn aggregate_array(ty: Self::Type, elements: Vec<Self>) -> Option<Self> {
+        let values = elements
+            .into_iter()
+            .map(into_durable_value)
+            .collect::<Option<Vec<_>>>()?;
+        if !durable_aggregate_children_within_limits(&values) {
+            return None;
+        }
+        Some(Self::Value(TypedSemanticConst::typed(
+            DurableConstValue::Aggregate(Arc::new(rue_air::SemanticImportAggregate {
+                ty: ty.0.clone(),
+                kind: rue_air::SemanticImportAggregateKind::Array(values.into()),
+            })),
+            ty.0,
+        )))
+    }
+
+    fn aggregate_enum(ty: Self::Type, variant: u32, payload: Vec<Self>) -> Option<Self> {
+        let values = payload
+            .into_iter()
+            .map(into_durable_value)
+            .collect::<Option<Vec<_>>>()?;
+        if !durable_aggregate_children_within_limits(&values) {
+            return None;
+        }
+        Some(Self::Value(TypedSemanticConst::typed(
+            DurableConstValue::Aggregate(Arc::new(rue_air::SemanticImportAggregate {
+                ty: ty.0.clone(),
+                kind: rue_air::SemanticImportAggregateKind::Enum {
+                    variant,
+                    payload: values.into(),
+                },
+            })),
+            ty.0,
+        )))
+    }
+
+    fn aggregate_enum_payload(&self) -> Option<(u32, Vec<Self>)> {
+        let Self::Value(value) = self else {
+            return None;
+        };
+        let DurableConstValue::Aggregate(aggregate) = &value.value else {
+            return None;
+        };
+        let rue_air::SemanticImportAggregateKind::Enum { variant, payload } = &aggregate.kind
+        else {
+            return None;
+        };
+        Some((
+            *variant,
+            payload
+                .iter()
+                .cloned()
+                .map(evaluated_from_durable_value)
+                .collect(),
+        ))
+    }
+
+    fn aggregate_array_element(&self, index: usize) -> Option<Self> {
+        let Self::Value(value) = self else {
+            return None;
+        };
+        let DurableConstValue::Aggregate(aggregate) = &value.value else {
+            return None;
+        };
+        let rue_air::SemanticImportAggregateKind::Array(values) = &aggregate.kind else {
+            return None;
+        };
+        let DurableType::Array { element, .. } = &aggregate.ty else {
+            return None;
+        };
+        values
+            .get(index)
+            .cloned()
+            .map(|value| evaluated_from_durable_value_with_type(value, element.as_ref().clone()))
+    }
+
     fn as_integer(&self) -> Option<i128> {
         let Self::Value(value) = self else {
             return None;
@@ -905,7 +1106,8 @@ impl ComptimeValue for EvaluatedSemanticConst {
             | DurableConstValue::Function(_)
             | DurableConstValue::Unit
             | DurableConstValue::String(_)
-            | DurableConstValue::Float(_) => None,
+            | DurableConstValue::Float(_)
+            | DurableConstValue::Aggregate(_) => None,
         }
     }
 
@@ -920,7 +1122,8 @@ impl ComptimeValue for EvaluatedSemanticConst {
             | DurableConstValue::Function(_)
             | DurableConstValue::Unit
             | DurableConstValue::String(_)
-            | DurableConstValue::Float(_) => None,
+            | DurableConstValue::Float(_)
+            | DurableConstValue::Aggregate(_) => None,
         }
     }
 
@@ -935,8 +1138,31 @@ impl ComptimeValue for EvaluatedSemanticConst {
             | DurableConstValue::Function(_)
             | DurableConstValue::Unit
             | DurableConstValue::String(_)
-            | DurableConstValue::Float(_) => None,
+            | DurableConstValue::Float(_)
+            | DurableConstValue::Aggregate(_) => None,
         }
+    }
+
+    fn value_type(&self) -> Option<Self::Type> {
+        let Self::Value(value) = self else {
+            return None;
+        };
+        Some(DurableComptimeType(value.ty.clone().unwrap_or_else(
+            || match &value.value {
+                DurableConstValue::Integer(_) => DurableType::I64,
+                DurableConstValue::Bool(_) => DurableType::Bool,
+                DurableConstValue::Type(_) | DurableConstValue::Function(_) => {
+                    DurableType::ComptimeType
+                }
+                DurableConstValue::Unit => DurableType::Unit,
+                DurableConstValue::String(_) => DurableType::BuiltinNominal {
+                    name: Arc::from("str"),
+                    kind: rue_air::SemanticImportNominalKind::Struct,
+                },
+                DurableConstValue::Float(_) => DurableType::ComptimeFloat,
+                DurableConstValue::Aggregate(aggregate) => aggregate.ty.clone(),
+            },
+        )))
     }
 
     fn eligible_for_comptime_capture(&self) -> bool {
@@ -1021,6 +1247,38 @@ mod tests {
                 },
             ))
         );
+    }
+
+    #[test]
+    fn durable_array_fit_checks_length_and_element_ranges_recursively() {
+        let array = DurableType::Array {
+            element: Arc::new(DurableType::U8),
+            len: 2,
+        };
+        let aggregate = |values: Arc<[DurableConstValue]>| {
+            DurableConstValue::Aggregate(Arc::new(rue_air::SemanticImportAggregate {
+                ty: array.clone(),
+                kind: rue_air::SemanticImportAggregateKind::Array(values),
+            }))
+        };
+        assert!(durable_const_fits_type(
+            &aggregate(Arc::from([
+                DurableConstValue::Integer(1),
+                DurableConstValue::Integer(2),
+            ])),
+            &array,
+        ));
+        assert!(!durable_const_fits_type(
+            &aggregate(Arc::from([DurableConstValue::Integer(1)])),
+            &array,
+        ));
+        assert!(!durable_const_fits_type(
+            &aggregate(Arc::from([
+                DurableConstValue::Integer(1),
+                DurableConstValue::Integer(256),
+            ])),
+            &array,
+        ));
     }
 
     #[test]
@@ -1391,6 +1649,7 @@ mod tests {
                 type_name: Arc::from(type_name),
                 variant: Arc::from(variant),
                 binding_count,
+                binding_names: Vec::new(),
             }
         };
 

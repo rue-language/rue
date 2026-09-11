@@ -284,6 +284,69 @@ pub enum CanonicalArgumentValue<D, M> {
     Unit,
     String(Arc<str>),
     Float(Arc<str>),
+    Aggregate(Node<CanonicalAggregateValue<D, M>>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CanonicalAggregateValue<D, M> {
+    pub ty: Node<TypeInstanceKey<D, M>>,
+    pub kind: CanonicalAggregateKind<D, M>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CanonicalAggregateKind<D, M> {
+    Struct(Arc<[CanonicalArgumentValue<D, M>]>),
+    Array(Arc<[CanonicalArgumentValue<D, M>]>),
+    Enum {
+        variant: u32,
+        payload: Arc<[CanonicalArgumentValue<D, M>]>,
+    },
+}
+
+/// Check a borrowed value tree before allocating its local representation.
+/// `depth` and `nodes` account for a wrapper the caller may be about to build.
+/// Count every occurrence, including shared subtrees: materialization expands
+/// occurrences into separate local values.
+pub(crate) fn comptime_values_within_limits<V>(
+    values: &[V],
+    depth: usize,
+    nodes: &mut usize,
+    children: &impl for<'a> Fn(&'a V) -> &'a [V],
+) -> bool {
+    if values.is_empty() {
+        return true;
+    }
+    if depth > crate::MAX_COMPTIME_VALUE_DEPTH {
+        return false;
+    }
+    let Some(total) = nodes.checked_add(values.len()) else {
+        return false;
+    };
+    if total > crate::MAX_COMPTIME_VALUE_NODES {
+        return false;
+    }
+    *nodes = total;
+    values
+        .iter()
+        .all(|value| comptime_values_within_limits(children(value), depth + 1, nodes, children))
+}
+
+impl<D, M> CanonicalArgumentValue<D, M> {
+    pub(crate) fn within_resource_limits(&self) -> bool {
+        comptime_values_within_limits(
+            std::slice::from_ref(self),
+            0,
+            &mut 0,
+            &|value| match value {
+                Self::Aggregate(aggregate) => match &aggregate.kind {
+                    CanonicalAggregateKind::Struct(values)
+                    | CanonicalAggregateKind::Array(values) => values,
+                    CanonicalAggregateKind::Enum { payload, .. } => payload,
+                },
+                _ => &[],
+            },
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -342,6 +405,7 @@ where
                 CanonicalArgumentValue::Unit => "()".to_owned(),
                 CanonicalArgumentValue::String(value) => format!("\"{value}\""),
                 CanonicalArgumentValue::Float(value) => value.to_string(),
+                CanonicalArgumentValue::Aggregate(_) => "<aggregate>".to_owned(),
             });
         }
     }
@@ -534,6 +598,37 @@ impl<D, M> CanonicalArgumentValue<D, M> {
             Self::Unit => CanonicalArgumentValue::Unit,
             Self::String(value) => CanonicalArgumentValue::String(value.clone()),
             Self::Float(value) => CanonicalArgumentValue::Float(value.clone()),
+            Self::Aggregate(value) => {
+                CanonicalArgumentValue::Aggregate(Node::new(CanonicalAggregateValue {
+                    ty: Node::new(value.ty.try_map_identities(definition, module)?),
+                    kind: match &value.kind {
+                        CanonicalAggregateKind::Struct(values) => CanonicalAggregateKind::Struct(
+                            values
+                                .iter()
+                                .map(|value| value.try_map_identities(definition, module))
+                                .collect::<Result<Vec<_>, _>>()?
+                                .into(),
+                        ),
+                        CanonicalAggregateKind::Array(values) => CanonicalAggregateKind::Array(
+                            values
+                                .iter()
+                                .map(|value| value.try_map_identities(definition, module))
+                                .collect::<Result<Vec<_>, _>>()?
+                                .into(),
+                        ),
+                        CanonicalAggregateKind::Enum { variant, payload } => {
+                            CanonicalAggregateKind::Enum {
+                                variant: *variant,
+                                payload: payload
+                                    .iter()
+                                    .map(|value| value.try_map_identities(definition, module))
+                                    .collect::<Result<Vec<_>, _>>()?
+                                    .into(),
+                            }
+                        }
+                    },
+                }))
+            }
         })
     }
 }
@@ -892,6 +987,70 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+
+    type BoundedValue = CanonicalArgumentValue<&'static str, &'static str>;
+
+    fn bounded_aggregate(kind: usize, values: Vec<BoundedValue>) -> BoundedValue {
+        let ty = Node::new(TypeInstanceKey::I32);
+        let values = Arc::from(values);
+        BoundedValue::Aggregate(Node::new(CanonicalAggregateValue {
+            ty,
+            kind: match kind {
+                0 => CanonicalAggregateKind::Struct(values),
+                1 => CanonicalAggregateKind::Array(values),
+                _ => CanonicalAggregateKind::Enum {
+                    variant: 0,
+                    payload: values,
+                },
+            },
+        }))
+    }
+
+    #[test]
+    fn canonical_value_preflight_counts_the_root_and_every_shared_occurrence() {
+        for kind in 0..3 {
+            let leaf = BoundedValue::Integer(42);
+            let at_limit = bounded_aggregate(
+                kind,
+                vec![leaf.clone(); crate::MAX_COMPTIME_VALUE_NODES - 1],
+            );
+            assert!(at_limit.within_resource_limits());
+            let too_wide = bounded_aggregate(kind, vec![leaf; crate::MAX_COMPTIME_VALUE_NODES]);
+            assert!(!too_wide.within_resource_limits());
+
+            // Two references to the same 2048-node subtree expand to 4097
+            // value occurrences after adding their containing aggregate.
+            let shared = bounded_aggregate(
+                kind,
+                vec![BoundedValue::Unit; crate::MAX_COMPTIME_VALUE_NODES / 2 - 1],
+            );
+            assert!(shared.within_resource_limits());
+            assert!(
+                !bounded_aggregate(kind, vec![shared.clone(), shared]).within_resource_limits()
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_value_preflight_bounds_mixed_aggregate_nesting() {
+        let mut value = BoundedValue::Bool(true);
+        for depth in 0..crate::MAX_COMPTIME_VALUE_DEPTH {
+            value = bounded_aggregate(depth % 3, vec![value]);
+        }
+        assert!(value.within_resource_limits());
+        value = bounded_aggregate(0, vec![value]);
+        assert!(!value.within_resource_limits());
+    }
+
+    #[test]
+    fn comptime_value_preflight_rejects_wide_input_before_visiting_children() {
+        assert!(!comptime_values_within_limits(
+            &[(); crate::MAX_COMPTIME_VALUE_NODES + 1],
+            0,
+            &mut 0,
+            &|_| panic!("an oversized envelope must not enter a materializer"),
+        ));
+    }
 
     #[test]
     fn taxonomy_declares_every_kind_namespace_and_owner_shape_once() {

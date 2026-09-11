@@ -1,6 +1,7 @@
 use super::body::BodyInputResolver;
 use super::body::*;
 use super::*;
+#[derive(Clone)]
 pub(super) struct SemanticNucleusTypeProvider<'a> {
     pub(super) context: &'a QueryContext,
     pub(super) family: &'a SemanticNucleusFamily,

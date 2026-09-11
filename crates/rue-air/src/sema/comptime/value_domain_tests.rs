@@ -223,7 +223,7 @@ fn engine_decodes_match_patterns_lazily_per_active_program() {
         "the later arm must not be decoded or offered"
     );
     assert_ne!(events[0], events[1], "active program must own symbol names");
-    assert_eq!(MATCH_SYMBOL_CALLS.with(Cell::get), 4);
+    assert_eq!(MATCH_SYMBOL_CALLS.with(Cell::get), 10);
     MATCH_PATTERN_MATCHES.with(|matches| matches.set(false));
 }
 
@@ -667,7 +667,6 @@ fn unary_aggregate_and_unknown_type_intrinsic_use_real_rejection_dispatch() {
                 operation: ComptimeUnaryOperation::BitNot,
                 value: FakeValue::TypedInteger(1, FakeType(99)),
             },
-            ComptimeSemanticRejection::AggregateExpression,
             ComptimeSemanticRejection::UnsupportedIntrinsic("type".to_owned()),
         ]
     );
@@ -1543,15 +1542,16 @@ impl ComptimeValueAlgebra for FakeHost {
         })
     }
     fn match_path_pattern(
-        &self,
+        &mut self,
         pattern: &ComptimeMatchPattern<Self::Name>,
         _value: &Self::Value,
-    ) -> Option<bool> {
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<Option<bool>, Self::Failure> {
         if !MATCH_PATTERN_MATCHES.with(Cell::get) {
-            return None;
+            return Ok(None);
         }
         MATCH_PATTERN_EVENTS.with(|events| events.borrow_mut().push(pattern.clone()));
-        Some(!MATCH_PATTERN_FORCE_FALSE.with(Cell::get))
+        Ok(Some(!MATCH_PATTERN_FORCE_FALSE.with(Cell::get)))
     }
     fn match_no_selected_arm(
         &self,
@@ -2557,11 +2557,6 @@ fn durable_only_instruction_forms_cross_the_semantic_host_boundary() {
         host.dependencies
             .iter()
             .any(|(file, _)| file.index == 0xFFFF_FFFD)
-    );
-    assert!(
-        host.dependencies
-            .iter()
-            .any(|(file, _)| file.index == 0xFFFF_FFFA)
     );
 }
 

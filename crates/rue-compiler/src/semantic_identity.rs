@@ -7,7 +7,7 @@
 
 #![allow(dead_code)] // Phase-4 seams consumed incrementally by later query families.
 
-use rue_air::Node;
+use rue_air::{CanonicalAggregateKind, CanonicalAggregateValue, Node};
 use std::fmt::Write as _;
 use std::sync::Arc;
 
@@ -497,12 +497,53 @@ pub(crate) fn argument_value_from_semantic(
         V::Unit => CanonicalArgumentValue::Unit,
         V::String(value) => CanonicalArgumentValue::String(value.clone()),
         V::Float(value) => CanonicalArgumentValue::Float(value.clone()),
+        V::Aggregate(value) => {
+            CanonicalArgumentValue::Aggregate(Node::new(CanonicalAggregateValue {
+                ty: Node::new(type_instance_from_semantic(&value.ty)),
+                kind: match &value.kind {
+                    rue_air::SemanticImportAggregateKind::Struct(values) => {
+                        CanonicalAggregateKind::Struct(
+                            values
+                                .iter()
+                                .map(argument_value_from_semantic)
+                                .collect::<Option<Vec<_>>>()?
+                                .into(),
+                        )
+                    }
+                    rue_air::SemanticImportAggregateKind::Array(values) => {
+                        CanonicalAggregateKind::Array(
+                            values
+                                .iter()
+                                .map(argument_value_from_semantic)
+                                .collect::<Option<Vec<_>>>()?
+                                .into(),
+                        )
+                    }
+                    rue_air::SemanticImportAggregateKind::Enum { variant, payload } => {
+                        CanonicalAggregateKind::Enum {
+                            variant: *variant,
+                            payload: payload
+                                .iter()
+                                .map(argument_value_from_semantic)
+                                .collect::<Option<Vec<_>>>()?
+                                .into(),
+                        }
+                    }
+                },
+            }))
+        }
     })
 }
 
 pub(crate) fn function_instance_from_specialization(
     value: &rue_air::SemanticSpecializationIdentity<StableDefinitionKey, ModuleId>,
 ) -> Option<FunctionInstanceKey> {
+    // Canonical conversion recursively allocates the identity tree.  Bound
+    // the borrowed semantic values before any Node or Arc is created so the
+    // retained key path cannot bypass the shared aggregate resource policy.
+    if !rue_air::semantic_import_const_values_within_limits(&value.value_arguments) {
+        return None;
+    }
     let types = value
         .type_arguments
         .iter()
@@ -743,6 +784,25 @@ fn encode_argument_value(value: &CanonicalArgumentValue, output: &mut String) {
             tag(output, 6);
             bytes(output, value);
         }
+        CanonicalArgumentValue::Aggregate(value) => {
+            tag(output, 7);
+            encode_type(&value.ty, output);
+            match &value.kind {
+                CanonicalAggregateKind::Struct(values) => {
+                    tag(output, 0);
+                    sequence(output, values, encode_argument_value);
+                }
+                CanonicalAggregateKind::Array(values) => {
+                    tag(output, 1);
+                    sequence(output, values, encode_argument_value);
+                }
+                CanonicalAggregateKind::Enum { variant, payload } => {
+                    tag(output, 2);
+                    number(output, *variant);
+                    sequence(output, payload, encode_argument_value);
+                }
+            }
+        }
     }
 }
 
@@ -949,6 +1009,52 @@ mod tests {
             encoded,
             "q3_44_n40_-1701411834604692317316873037158841057284_n1_05_n2_10"
         );
+    }
+
+    #[test]
+    fn aggregate_specialization_identity_is_structural_and_interner_independent() {
+        fn type_definition(name: &str) -> StableDefinitionKey {
+            StableDefinitionKey::for_test(
+                ModuleId::from_logical_path("pkg/types.rue").unwrap(),
+                StableDefinitionNamespace::Type,
+                StableDefinitionKind::Struct,
+                Arc::from(name),
+                None,
+            )
+        }
+
+        let function = definition("pkg/main.rue", "choose");
+        let record = type_definition("Record");
+        let other_record = type_definition("OtherRecord");
+        let make_value = |ty: StableDefinitionKey, right: i128| {
+            CanonicalArgumentValue::Aggregate(Node::new(CanonicalAggregateValue {
+                ty: Node::new(TypeInstanceKey::Nominal(NominalInstanceKey::Named(ty))),
+                kind: CanonicalAggregateKind::Struct(Arc::from([
+                    CanonicalArgumentValue::Integer(20),
+                    CanonicalArgumentValue::Integer(right),
+                ])),
+            }))
+        };
+        let specialize = |value| {
+            function_instance_from_canonical_arguments(function.clone(), vec![], vec![value])
+        };
+
+        // Rebuilding the same graph (the durable equivalent of a fresh
+        // interner/session) produces the same published symbol, while both a
+        // leaf change and a nominal change remain distinct.
+        let first = specialize(make_value(record.clone(), 22));
+        let rebuilt = specialize(make_value(record.clone(), 22));
+        let changed_leaf = specialize(make_value(record, 23));
+        let changed_nominal = specialize(make_value(other_record, 22));
+        let encode = |value: &FunctionInstanceKey| {
+            StableSymbolEncoder::encode(&StableSymbolId::Callable(StableCallableId::Function(
+                value.clone(),
+            )))
+        };
+        assert_eq!(first, rebuilt);
+        assert_eq!(encode(&first), encode(&rebuilt));
+        assert_ne!(encode(&first), encode(&changed_leaf));
+        assert_ne!(encode(&first), encode(&changed_nominal));
     }
 
     #[test]

@@ -867,13 +867,13 @@ fn production_comptime_key_separates_real_identity_target_type_and_value() {
         callable_issuer,
         base.configuration,
         base.type_arguments[0],
-        base.value_arguments[0],
+        base.value_arguments[0].clone(),
     );
     let generic_counterfeit = key(
         generic_specialization,
         base.configuration,
         base.type_arguments[0],
-        base.value_arguments[0],
+        base.value_arguments[0].clone(),
     );
     let target_counterfeit = key(
         observed[0].declaration.clone(),
@@ -883,13 +883,13 @@ fn production_comptime_key_separates_real_identity_target_type_and_value() {
             Target::X86_64Linux
         },
         base.type_arguments[0],
-        base.value_arguments[0],
+        base.value_arguments[0].clone(),
     );
     let type_counterfeit = key(
         function_base.declaration.clone(),
         function_base.configuration,
         anonymous_b,
-        function_base.value_arguments[0],
+        function_base.value_arguments[0].clone(),
     );
     let value_counterfeit = key(
         function_base.declaration.clone(),
@@ -1076,6 +1076,32 @@ fn provider_body_resolves_nested_struct_field_types() {
         )
         .expect("nested aggregate construction analyzes");
     assert_eq!(body.function.air.return_type(), crate::types::Type::I32);
+}
+
+// Structural values are a Copy-only comptime domain.  The ordinary producer
+// must enforce that boundary while constructing a value in a comptime block,
+// before field projection could otherwise make an affine value appear as a
+// harmless scalar.
+#[test]
+fn provider_body_rejects_affine_comptime_aggregate() {
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_struct("Affine", vec![("x", SemanticImportType::I32)], false);
+    fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
+    let error = fixture
+        .analyze(
+            "fn main() -> i32 {
+    comptime { let value = Affine { x: 42 }; value.x }
+}",
+            "main",
+        )
+        .map(|_| ())
+        .expect_err("an affine aggregate cannot enter structural comptime evaluation");
+    match error.kind {
+        ErrorKind::ComptimeEvaluationFailed { reason } => {
+            assert!(reason.contains("structural comptime values require a Copy type"));
+        }
+        other => panic!("unexpected diagnostic: {other:?}"),
+    }
 }
 
 // Direct provider-path coverage of a method call: the member is resolved

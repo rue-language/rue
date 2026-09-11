@@ -10,6 +10,7 @@ use super::projection::*;
 use super::services::*;
 use super::structured::*;
 use super::*;
+use rue_air::ComptimeValueAlgebra;
 
 #[cfg(test)]
 thread_local! {
@@ -45,6 +46,191 @@ impl<'a, A: DurableComptimeHostAuthority + ?Sized> DurableComptimeHost<'a, A> {
         Self {
             services: DurableComptimeServices::new(authority),
         }
+    }
+
+    /// Validate a durable structural value against its complete declared
+    /// shape before any consumer projects or expands its children.  Aggregate
+    /// values are bounded and Copy-only at this one authority boundary; all
+    /// recursive callers use this same check.
+    fn validate_durable_value(
+        &self,
+        value: &DurableConstValue,
+        expected: &DurableType,
+        depth: usize,
+        nodes: &mut usize,
+    ) -> rue_air::ComptimeHostResult<bool, DurableComptimeHostFailure> {
+        if depth > rue_air::MAX_COMPTIME_VALUE_DEPTH {
+            return Err(durable_host_error(DurableComptimeFailure::resolution(
+                "structural comptime value exceeds resource limits",
+            )));
+        }
+        *nodes = nodes.saturating_add(1);
+        if *nodes > rue_air::MAX_COMPTIME_VALUE_NODES {
+            return Err(durable_host_error(DurableComptimeFailure::resolution(
+                "structural comptime value exceeds resource limits",
+            )));
+        }
+        let DurableConstValue::Aggregate(aggregate) = value else {
+            return Ok(durable_const_fits_type(value, expected));
+        };
+        // Run the shared shape walk before resolving field metadata or
+        // allocating type vectors.  Imported values are untrusted query
+        // payloads, so a later recursive consumer must never be the first
+        // place that discovers an oversized tree.
+        if !rue_air::semantic_import_const_value_within_limits(&DurableConstValue::Aggregate(
+            aggregate.clone(),
+        )) {
+            return Err(durable_host_error(DurableComptimeFailure::resolution(
+                "structural comptime value exceeds resource limits",
+            )));
+        }
+        if aggregate.ty != *expected
+            || !self
+                .services
+                .type_is_copy(expected)
+                .map_err(durable_provider_error)?
+        {
+            return Ok(false);
+        }
+        let check_children = |children: &[DurableConstValue],
+                              types: Vec<DurableType>,
+                              this: &Self,
+                              nodes: &mut usize| {
+            if children.len() != types.len() {
+                return Ok(false);
+            }
+            for (child, ty) in children.iter().zip(types.iter()) {
+                if !this.validate_durable_value(child, ty, depth + 1, nodes)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        };
+        match (&aggregate.kind, expected) {
+            (
+                rue_air::SemanticImportAggregateKind::Array(values),
+                DurableType::Array { element, len },
+            ) => {
+                if *len as usize != values.len() {
+                    return Ok(false);
+                }
+                check_children(
+                    values,
+                    vec![element.as_ref().clone(); values.len()],
+                    self,
+                    nodes,
+                )
+            }
+            (rue_air::SemanticImportAggregateKind::Struct(values), DurableType::Nominal(key))
+                if key.kind() == crate::StableDefinitionKind::Struct =>
+            {
+                let count = self
+                    .services
+                    .resolve_struct_field_count(expected)
+                    .map_err(durable_provider_error)?;
+                if count != values.len() {
+                    return Ok(false);
+                }
+                let mut types = Vec::with_capacity(count);
+                for index in 0..count {
+                    let Some(ty) = self
+                        .services
+                        .resolve_struct_field_type(expected, index as u32)
+                        .map_err(durable_provider_error)?
+                    else {
+                        return Ok(false);
+                    };
+                    types.push(ty);
+                }
+                check_children(values, types, self, nodes)
+            }
+            (
+                rue_air::SemanticImportAggregateKind::Enum { variant, payload },
+                DurableType::Nominal(key),
+            ) if key.kind() == crate::StableDefinitionKind::Enum => {
+                let types = self
+                    .services
+                    .resolve_enum_variant_payload_types(expected, *variant)
+                    .map_err(durable_provider_error)?;
+                check_children(payload, types.to_vec(), self, nodes)
+            }
+            (
+                rue_air::SemanticImportAggregateKind::Struct(values),
+                DurableType::BuiltinNominal {
+                    kind: rue_air::SemanticImportNominalKind::Struct,
+                    ..
+                },
+            ) => {
+                let count = self
+                    .services
+                    .resolve_struct_field_count(expected)
+                    .map_err(durable_provider_error)?;
+                if count != values.len() {
+                    return Ok(false);
+                }
+                let mut types = Vec::with_capacity(count);
+                for index in 0..count {
+                    let Some(ty) = self
+                        .services
+                        .resolve_struct_field_type(expected, index as u32)
+                        .map_err(durable_provider_error)?
+                    else {
+                        return Ok(false);
+                    };
+                    types.push(ty);
+                }
+                check_children(values, types, self, nodes)
+            }
+            (
+                rue_air::SemanticImportAggregateKind::Enum { variant, payload },
+                DurableType::BuiltinNominal {
+                    kind: rue_air::SemanticImportNominalKind::Enum,
+                    ..
+                },
+            ) => {
+                let types = self
+                    .services
+                    .resolve_enum_variant_payload_types(expected, *variant)
+                    .map_err(durable_provider_error)?;
+                check_children(payload, types.to_vec(), self, nodes)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Preserve the declared type carried by a reduced value while allowing
+    /// the two source literals whose type is selected by context.  The raw
+    /// durable representation intentionally erases this information, so
+    /// checking the wrapper must happen before `into_durable_value`.
+    fn durable_child_type_mismatch(
+        value: &EvaluatedSemanticConst,
+        expected: &DurableType,
+    ) -> Option<DurableType> {
+        let EvaluatedSemanticConst::Value(value) = value else {
+            return None;
+        };
+        match value.ty.as_ref() {
+            None => None,
+            Some(actual) if actual == expected => None,
+            Some(DurableType::ComptimeFloat)
+                if matches!(expected, DurableType::F32 | DurableType::F64) =>
+            {
+                None
+            }
+            Some(actual) => Some(actual.clone()),
+        }
+    }
+
+    fn durable_child_type_error(
+        found: DurableType,
+        expected: &DurableType,
+    ) -> rue_air::ComptimeHostError<DurableComptimeHostFailure> {
+        durable_host_error(DurableComptimeFailure::failure(
+            SemanticNucleusFailure::Diagnostic(rue_error::ErrorKind::TypeMismatch {
+                expected: durable_type_diagnostic_name(expected),
+                found: durable_type_diagnostic_name(&found),
+            }),
+        ))
     }
 
     #[allow(dead_code)]
@@ -560,6 +746,9 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
     fn type_name(&self, ty: &Self::Type) -> String {
         DurableComptimeScalarPolicy::type_name(ty.as_ref())
     }
+    fn type_is_enum(&self, ty: &Self::Type) -> bool {
+        matches!(ty.as_ref(), DurableType::Nominal(key) if key.kind() == crate::StableDefinitionKind::Enum)
+    }
 
     fn type_is_unsigned(&self, ty: &Self::Type) -> bool {
         DurableComptimeScalarPolicy::type_is_unsigned(ty.as_ref())
@@ -669,15 +858,41 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
 
     fn resolve_named_type_value(
         &mut self,
-        _program: &Self::ProgramKey,
-        _name: Self::Name,
-        _span: rue_span::Span,
+        program: &Self::ProgramKey,
+        name: Self::Name,
+        span: rue_span::Span,
     ) -> rue_air::ComptimeHostResult<Option<Self::Type>, Self::Failure> {
-        // Durable TypeConst names are resolved by the canonical keyed
-        // structured-type continuation below. Returning `None` here avoids a
-        // speculative named-value query/dependency before that resolver has
-        // established the exact type-syntax authority.
-        Ok(None)
+        let builtin = match name.as_str() {
+            "i8" => Some(DurableType::I8),
+            "i16" => Some(DurableType::I16),
+            "i32" => Some(DurableType::I32),
+            "i64" => Some(DurableType::I64),
+            "u8" => Some(DurableType::U8),
+            "u16" => Some(DurableType::U16),
+            "u32" => Some(DurableType::U32),
+            "u64" => Some(DurableType::U64),
+            "bool" => Some(DurableType::Bool),
+            "unit" => Some(DurableType::Unit),
+            "never" => Some(DurableType::Never),
+            "type" => Some(DurableType::ComptimeType),
+            "f32" => Some(DurableType::F32),
+            "f64" => Some(DurableType::F64),
+            "comptime_float" => Some(DurableType::ComptimeFloat),
+            "str" => Some(DurableType::BuiltinNominal {
+                name: Arc::from("str"),
+                kind: rue_air::SemanticImportNominalKind::Struct,
+            }),
+            _ => None,
+        };
+        if let Some(ty) = builtin {
+            return Ok(Some(DurableComptimeType(ty)));
+        }
+        let file = self.file_for_program_span(program, &span);
+        let resolution = self.resolve_comptime_named_value(file, name, span)?;
+        let rue_air::ComptimeNamedValueResolution::Known(value) = resolution else {
+            return Ok(None);
+        };
+        Ok(value.as_type())
     }
 
     fn resolve_comptime_type_path(
@@ -738,6 +953,213 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
 impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
     for DurableComptimeHost<'_, A>
 {
+    fn project_comptime_enum_payload(
+        &mut self,
+        value: &Self::Value,
+        variant: u32,
+        payload: Vec<Self::Value>,
+    ) -> rue_air::ComptimeHostResult<Vec<Self::Value>, Self::Failure> {
+        let EvaluatedSemanticConst::Value(value) = value else {
+            return Ok(payload);
+        };
+        let DurableConstValue::Aggregate(aggregate) = &value.value else {
+            return Ok(payload);
+        };
+        let types = self
+            .services
+            .resolve_enum_variant_payload_types(&aggregate.ty, variant)
+            .map_err(durable_provider_error)?;
+        if payload.len() != types.len() {
+            return Err(durable_host_error(DurableComptimeFailure::resolution(
+                "enum payload arity does not match its declaration",
+            )));
+        }
+        let mut projected = Vec::with_capacity(payload.len());
+        for (value, ty) in payload.into_iter().zip(types.iter()) {
+            let Some(value) = into_durable_value(value) else {
+                return Err(durable_host_error(DurableComptimeFailure::resolution(
+                    "enum payload contains a non-value projection",
+                )));
+            };
+            projected.push(evaluated_from_durable_value_with_type(value, ty.clone()));
+        }
+        Ok(projected)
+    }
+
+    fn resolve_comptime_struct(
+        &mut self,
+        ty: Self::Type,
+        fields: Vec<(Self::Name, Self::Value)>,
+        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
+        let field_count = match self.services.resolve_struct_field_count(ty.as_ref()) {
+            Ok(field_count) => field_count,
+            Err(error) => return durable_host_error_outcome(durable_provider_error(error)),
+        };
+        let is_copy = match self.services.type_is_copy(ty.as_ref()) {
+            Ok(is_copy) => is_copy,
+            Err(error) => return durable_host_error_outcome(durable_provider_error(error)),
+        };
+        if !is_copy {
+            return durable_host_error_outcome(durable_host_error(
+                DurableComptimeFailure::comptime_failure(
+                    "structural comptime values require a Copy type",
+                ),
+            ));
+        }
+        let mut ordered = Vec::with_capacity(fields.len());
+        for (name, value) in fields {
+            let index = match self
+                .services
+                .resolve_struct_field_index(ty.as_ref(), name.as_str())
+            {
+                Ok(Some(index)) => index,
+                Ok(None) => return rue_air::ComptimeOutcome::RuntimeDependent,
+                Err(error) => return durable_host_error_outcome(durable_provider_error(error)),
+            };
+            if ordered
+                .iter()
+                .any(|(seen, _): &(u32, Self::Value)| *seen == index)
+            {
+                return rue_air::ComptimeOutcome::RuntimeDependent;
+            }
+            let field_type = match self.services.resolve_struct_field_type(ty.as_ref(), index) {
+                Ok(Some(field_type)) => field_type,
+                Ok(None) => return rue_air::ComptimeOutcome::RuntimeDependent,
+                Err(error) => return durable_host_error_outcome(durable_provider_error(error)),
+            };
+            if let Some(found) = Self::durable_child_type_mismatch(&value, &field_type) {
+                return durable_host_error_outcome(Self::durable_child_type_error(
+                    found,
+                    &field_type,
+                ));
+            }
+            let Some(durable_value) = into_durable_value(value.clone()) else {
+                return rue_air::ComptimeOutcome::RuntimeDependent;
+            };
+            let mut nodes = 0;
+            match self.validate_durable_value(&durable_value, &field_type, 0, &mut nodes) {
+                Ok(true) => {}
+                Ok(false) => return rue_air::ComptimeOutcome::RuntimeDependent,
+                Err(error) => return durable_host_error_outcome(error),
+            }
+            ordered.push((index, value));
+        }
+        if ordered.len() != field_count {
+            return rue_air::ComptimeOutcome::RuntimeDependent;
+        }
+        ordered.sort_by_key(|(index, _)| *index);
+        EvaluatedSemanticConst::aggregate_struct(
+            ty,
+            ordered.into_iter().map(|(_, value)| value).collect(),
+        )
+        .map_or_else(
+            || {
+                durable_host_error_outcome(durable_host_error(DurableComptimeFailure::resolution(
+                    "structural comptime value exceeds resource limits",
+                )))
+            },
+            rue_air::ComptimeOutcome::Known,
+        )
+    }
+
+    fn resolve_comptime_array(
+        &mut self,
+        ty: Self::Type,
+        elements: Vec<Self::Value>,
+        _site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
+        let DurableType::Array { element, len } = ty.as_ref() else {
+            return rue_air::ComptimeOutcome::RuntimeDependent;
+        };
+        match self.services.type_is_copy(ty.as_ref()) {
+            Ok(true) => {}
+            Ok(false) => {
+                return durable_host_error_outcome(durable_host_error(
+                    DurableComptimeFailure::comptime_failure(
+                        "structural comptime values require a Copy type",
+                    ),
+                ));
+            }
+            Err(error) => return durable_host_error_outcome(durable_provider_error(error)),
+        }
+        if elements.len() as u64 != *len {
+            return rue_air::ComptimeOutcome::RuntimeDependent;
+        }
+        for value in &elements {
+            if let Some(found) = Self::durable_child_type_mismatch(value, element.as_ref()) {
+                return durable_host_error_outcome(Self::durable_child_type_error(
+                    found,
+                    element.as_ref(),
+                ));
+            }
+            let Some(value) = into_durable_value(value.clone()) else {
+                return rue_air::ComptimeOutcome::RuntimeDependent;
+            };
+            let mut nodes = 0;
+            match self.validate_durable_value(&value, element.as_ref(), 0, &mut nodes) {
+                Ok(true) => {}
+                Ok(false) => return rue_air::ComptimeOutcome::RuntimeDependent,
+                Err(error) => return durable_host_error_outcome(error),
+            }
+        }
+        EvaluatedSemanticConst::aggregate_array(ty, elements).map_or_else(
+            || {
+                durable_host_error_outcome(durable_host_error(DurableComptimeFailure::resolution(
+                    "structural comptime value exceeds resource limits",
+                )))
+            },
+            rue_air::ComptimeOutcome::Known,
+        )
+    }
+
+    fn resolve_comptime_array_repeat(
+        &mut self,
+        ty: Self::Type,
+        element: Self::Value,
+        count: u64,
+        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
+        let Some(durable_element) = into_durable_value(element.clone()) else {
+            return rue_air::ComptimeOutcome::RuntimeDependent;
+        };
+        let Some((element_nodes, element_depth)) = durable_value_shape(&durable_element, 1) else {
+            return durable_host_error_outcome(durable_host_error(
+                DurableComptimeFailure::resolution(
+                    "structural comptime value exceeds resource limits",
+                ),
+            ));
+        };
+        let Some(repeat_count) = usize::try_from(count).ok() else {
+            return durable_host_error_outcome(durable_host_error(
+                DurableComptimeFailure::resolution(
+                    "structural comptime value exceeds resource limits",
+                ),
+            ));
+        };
+        let Some(total_nodes) = 1usize.checked_add(
+            element_nodes
+                .checked_mul(repeat_count)
+                .unwrap_or(usize::MAX),
+        ) else {
+            return durable_host_error_outcome(durable_host_error(
+                DurableComptimeFailure::resolution(
+                    "structural comptime value exceeds resource limits",
+                ),
+            ));
+        };
+        if total_nodes > rue_air::MAX_COMPTIME_VALUE_NODES
+            || element_depth > rue_air::MAX_COMPTIME_VALUE_DEPTH
+        {
+            return durable_host_error_outcome(durable_host_error(
+                DurableComptimeFailure::resolution(
+                    "structural comptime value exceeds resource limits",
+                ),
+            ));
+        }
+        self.resolve_comptime_array(ty, vec![element; repeat_count], site)
+    }
+
     fn resolve_comptime_named_value(
         &mut self,
         file: Self::File,
@@ -776,11 +1198,53 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
     }
 
     fn match_path_pattern(
-        &self,
+        &mut self,
         pattern: &rue_air::ComptimeMatchPattern<Self::Name>,
         value: &Self::Value,
-    ) -> Option<bool> {
-        Some(durable_target_path_pattern_matches(pattern, value))
+        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeHostResult<Option<bool>, Self::Failure> {
+        if durable_target_path_pattern_matches(pattern, value) {
+            return Ok(Some(true));
+        }
+        let rue_air::ComptimeMatchPattern::Path {
+            module_qualified: false,
+            type_name,
+            variant,
+            ..
+        } = pattern
+        else {
+            return Ok(Some(false));
+        };
+        let EvaluatedSemanticConst::Value(value) = value else {
+            return Ok(Some(false));
+        };
+        let rue_air::SemanticImportConstValue::Aggregate(aggregate) = &value.value else {
+            return Ok(Some(false));
+        };
+        let rue_air::SemanticImportAggregateKind::Enum { variant: index, .. } = &aggregate.kind
+        else {
+            return Ok(Some(false));
+        };
+        // Resolve the pattern head through the same durable type authority as
+        // calls and constructors. Comparing display names would reject aliases
+        // and could conflate distinct nominals with the same spelling.
+        let Some(pattern_ty) = <Self as rue_air::ComptimeTypeAlgebra>::resolve_named_type_value(
+            self,
+            site.program(),
+            type_name.clone(),
+            site.span(),
+        )?
+        else {
+            return Ok(Some(false));
+        };
+        if pattern_ty.0 != aggregate.ty {
+            return Ok(Some(false));
+        }
+        let expected = self
+            .services
+            .resolve_enum_variant_index(&aggregate.ty, variant.as_str())
+            .map_err(durable_provider_error)?;
+        Ok(Some(expected.is_some_and(|expected| expected == *index)))
     }
 
     fn match_no_selected_arm(
@@ -1010,6 +1474,63 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
         }
     }
 
+    fn resolve_comptime_enum_variant_with_payload(
+        &mut self,
+        enum_type: DurableComptimeType,
+        variant: Self::Name,
+        payload: Vec<Self::Value>,
+        _site: &rue_air::ComptimeSite<Self::ProgramKey>,
+        _span: rue_span::Span,
+    ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
+        let index = match self
+            .services
+            .resolve_enum_variant_index(&enum_type.0, variant.as_str())
+        {
+            Ok(Some(index)) => index,
+            Ok(None) => return rue_air::ComptimeOutcome::RuntimeDependent,
+            Err(error) => return durable_host_error_outcome(durable_provider_error(error)),
+        };
+        match self.services.type_is_copy(&enum_type.0) {
+            Ok(true) => {}
+            Ok(false) => {
+                return durable_host_error_outcome(durable_host_error(
+                    DurableComptimeFailure::comptime_failure(
+                        "structural comptime values require a Copy type",
+                    ),
+                ));
+            }
+            Err(error) => return durable_host_error_outcome(durable_provider_error(error)),
+        }
+        let payload_types = match self
+            .services
+            .resolve_enum_variant_payload_types(&enum_type.0, index)
+        {
+            Ok(payload_types) => payload_types,
+            Err(error) => return durable_host_error_outcome(durable_provider_error(error)),
+        };
+        if payload.len() != payload_types.len() {
+            return rue_air::ComptimeOutcome::RuntimeDependent;
+        }
+        let mut nodes = 0;
+        for (value, ty) in payload.iter().zip(payload_types.iter()) {
+            if let Some(found) = Self::durable_child_type_mismatch(value, ty) {
+                return durable_host_error_outcome(Self::durable_child_type_error(found, ty));
+            }
+            let Some(value) = into_durable_value(value.clone()) else {
+                return rue_air::ComptimeOutcome::RuntimeDependent;
+            };
+            match self.validate_durable_value(&value, ty, 0, &mut nodes) {
+                Ok(true) => {}
+                Ok(false) => return rue_air::ComptimeOutcome::RuntimeDependent,
+                Err(error) => return durable_host_error_outcome(error),
+            }
+        }
+        EvaluatedSemanticConst::aggregate_enum(enum_type, index, payload).map_or(
+            rue_air::ComptimeOutcome::RuntimeDependent,
+            rue_air::ComptimeOutcome::Known,
+        )
+    }
+
     fn admit_comptime_enum_variant(
         &mut self,
         _type_name: Self::Name,
@@ -1047,6 +1568,95 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeValueAlgebra
         site: &rue_air::ComptimeSite<Self::ProgramKey>,
         _span: rue_span::Span,
     ) -> rue_air::ComptimeOutcome<Self::Value, Self::Failure> {
+        if let EvaluatedSemanticConst::Value(value) = &base {
+            if let DurableConstValue::Type(enum_type) = &value.value {
+                match self.services.type_is_copy(enum_type) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        return durable_host_error_outcome(durable_host_error(
+                            DurableComptimeFailure::comptime_failure(
+                                "structural comptime values require a Copy type",
+                            ),
+                        ));
+                    }
+                    Err(error) => {
+                        return durable_host_error_outcome(durable_provider_error(error));
+                    }
+                }
+                let index = match self
+                    .services
+                    .resolve_enum_variant_index(enum_type, field.as_str())
+                {
+                    Ok(Some(index)) => index,
+                    Ok(None) => return rue_air::ComptimeOutcome::RuntimeDependent,
+                    Err(error) => {
+                        return durable_host_error_outcome(durable_provider_error(error));
+                    }
+                };
+                let payload_types = match self
+                    .services
+                    .resolve_enum_variant_payload_types(enum_type, index)
+                {
+                    Ok(payload_types) => payload_types,
+                    Err(error) => {
+                        return durable_host_error_outcome(durable_provider_error(error));
+                    }
+                };
+                // A payload-bearing variant needs an explicit constructor
+                // call.  A member path cannot silently manufacture its
+                // payload, since that would publish an invalid enum value.
+                if !payload_types.is_empty() {
+                    return rue_air::ComptimeOutcome::HostFailure(durable_host_failure(
+                        DurableComptimeFailure::failure(SemanticNucleusFailure::Diagnostic(
+                            rue_error::ErrorKind::WrongArgumentCount {
+                                expected: payload_types.len(),
+                                found: 0,
+                            },
+                        )),
+                    ));
+                }
+                return EvaluatedSemanticConst::aggregate_enum(
+                    DurableComptimeType(enum_type.clone()),
+                    index,
+                    Vec::new(),
+                )
+                .map_or(
+                    rue_air::ComptimeOutcome::RuntimeDependent,
+                    rue_air::ComptimeOutcome::Known,
+                );
+            }
+            if let DurableConstValue::Aggregate(aggregate) = &value.value {
+                if let rue_air::SemanticImportAggregateKind::Struct(fields) = &aggregate.kind {
+                    let Some(index) = (match self
+                        .services
+                        .resolve_struct_field_index(&aggregate.ty, field.as_str())
+                    {
+                        Ok(index) => index,
+                        Err(error) => {
+                            return durable_host_error_outcome(durable_provider_error(error));
+                        }
+                    }) else {
+                        return rue_air::ComptimeOutcome::RuntimeDependent;
+                    };
+                    let Some(field_value) = fields.get(index as usize).cloned() else {
+                        return rue_air::ComptimeOutcome::RuntimeDependent;
+                    };
+                    let field_type = match self
+                        .services
+                        .resolve_struct_field_type(&aggregate.ty, index)
+                    {
+                        Ok(Some(field_type)) => field_type,
+                        Ok(None) => return rue_air::ComptimeOutcome::RuntimeDependent,
+                        Err(error) => {
+                            return durable_host_error_outcome(durable_provider_error(error));
+                        }
+                    };
+                    return rue_air::ComptimeOutcome::Known(
+                        evaluated_from_durable_value_with_type(field_value, field_type),
+                    );
+                }
+            }
+        }
         let EvaluatedSemanticConst::Module(module) = base else {
             return rue_air::ComptimeOutcome::HostFailure(durable_host_failure(
                 DurableComptimeFailure::resolution("member access on a non-module const value"),
@@ -1225,6 +1835,27 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeCallProtocol
                 },
             )));
         };
+        if matches!(value.value, DurableConstValue::Aggregate(_)) {
+            let expected = substitute_durable_generics(
+                &parameter.ty,
+                &binding
+                    .type_arguments()
+                    .iter()
+                    .map(|(_, ty)| ty.clone())
+                    .collect::<Vec<_>>(),
+            );
+            if !self
+                .services
+                .type_is_copy(&expected)
+                .map_err(durable_provider_error)?
+            {
+                return Err(durable_host_error(
+                    DurableComptimeFailure::comptime_failure(
+                        "structural comptime values require a Copy type",
+                    ),
+                ));
+            }
+        }
         bind_durable_comptime_argument(
             binding,
             &header.name,
@@ -1234,6 +1865,16 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeCallProtocol
         )
         .map_err(durable_host_error)?;
         Ok(true)
+    }
+
+    fn comptime_call_argument_type(
+        &self,
+        binding: &Self::CallBinding,
+        index: usize,
+    ) -> Option<Self::Type> {
+        binding
+            .parameter(index)
+            .map(|parameter| DurableComptimeType(parameter.ty.clone()))
     }
 
     fn finish_comptime_call_binding(

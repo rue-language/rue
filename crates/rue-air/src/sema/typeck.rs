@@ -672,7 +672,7 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
             .as_ref()
             .and_then(|substitutions| substitutions.get(&symbol))
         {
-            *value
+            value.clone()
         } else if let Some(info) = self.host.type_syntax_value_const(root_file, symbol) {
             self.host
                 .type_syntax_record_named_const_dependency(info.span.file_id, name.to_owned());
@@ -751,7 +751,7 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
         if let Some(value_substitutions) = &self.state.value_substitutions
             && let Some(value) = value_substitutions.get(&symbol)
         {
-            return Ok(*value);
+            return Ok(value.clone());
         }
         if let Some(type_substitutions) = &self.state.type_substitutions
             && let Some(ty) = type_substitutions.get(&symbol)

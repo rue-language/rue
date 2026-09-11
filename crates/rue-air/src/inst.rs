@@ -323,6 +323,170 @@ impl AirValidationContext<'_> {
         }
     }
 
+    fn is_copy_type(&self, ty: Type) -> bool {
+        match self {
+            Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => ty.is_copy_in_pool(pool),
+            Self::Canonical(pool) | Self::CanonicalWithSymbols(pool, _) => {
+                ty.is_copy_in_frozen_pool(pool)
+            }
+        }
+    }
+
+    fn validate_const_value(
+        &self,
+        value: &crate::sema::ConstValue,
+        expected: Option<Type>,
+        depth: usize,
+        nodes: &mut usize,
+    ) -> Result<(), String> {
+        if depth > crate::MAX_COMPTIME_VALUE_DEPTH {
+            return Err("constant value exceeds resource limits".into());
+        }
+        *nodes = nodes
+            .checked_add(1)
+            .ok_or_else(|| "constant value node budget overflow".to_owned())?;
+        if *nodes > crate::MAX_COMPTIME_VALUE_NODES {
+            return Err("constant value exceeds resource limits".into());
+        }
+        let kind_matches = |actual: Type| expected.is_none_or(|wanted| wanted == actual);
+        match value {
+            crate::sema::ConstValue::Integer(integer) => {
+                let Some(ty) = expected else {
+                    return Ok(());
+                };
+                if !ty
+                    .integer_semantics()
+                    .is_some_and(|semantics| semantics.fits_i128(*integer))
+                {
+                    return Err(format!("integer constant does not fit {}", ty.name()));
+                }
+            }
+            crate::sema::ConstValue::Bool(_) => {
+                if !kind_matches(Type::BOOL) {
+                    return Err("boolean constant has the wrong type".into());
+                }
+            }
+            crate::sema::ConstValue::Unit => {
+                if !kind_matches(Type::UNIT) {
+                    return Err("unit constant has the wrong type".into());
+                }
+            }
+            crate::sema::ConstValue::Type(ty) => {
+                self.validate_type(*ty)?;
+                if !kind_matches(Type::COMPTIME_TYPE) {
+                    return Err("type constant has the wrong type".into());
+                }
+            }
+            crate::sema::ConstValue::Function(symbol) => {
+                self.validate_symbol(symbol.spur())?;
+                if !kind_matches(Type::COMPTIME_TYPE) {
+                    return Err("function constant has the wrong type".into());
+                }
+            }
+            crate::sema::ConstValue::String(symbol) => {
+                self.validate_symbol(symbol.spur())?;
+                if let Some(ty) = expected {
+                    let is_str = ty.as_struct().is_some_and(|id| match self {
+                        Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => matches!(
+                            pool.text_view_kind(id),
+                            Some(crate::types::TextViewKind::Str)
+                        ),
+                        Self::Canonical(pool) | Self::CanonicalWithSymbols(pool, _) => matches!(
+                            pool.text_view_kind(id),
+                            Some(crate::types::TextViewKind::Str)
+                        ),
+                    });
+                    if !is_str {
+                        return Err("string constant has the wrong type".into());
+                    }
+                }
+            }
+            crate::sema::ConstValue::Float(symbol) => {
+                self.validate_symbol(symbol.spur())?;
+                if let Some(ty) = expected
+                    && !ty.is_float()
+                    && ty != Type::COMPTIME_FLOAT
+                {
+                    return Err("float constant has the wrong type".into());
+                }
+            }
+            crate::sema::ConstValue::Aggregate(aggregate) => {
+                self.validate_type(aggregate.ty)?;
+                if expected.is_some_and(|ty| ty != aggregate.ty) {
+                    return Err("aggregate constant type does not match its declaration".into());
+                }
+                if !self.is_copy_type(aggregate.ty) {
+                    return Err("aggregate constant type is not Copy".into());
+                }
+                match (&aggregate.kind, aggregate.ty.kind()) {
+                    (
+                        crate::sema::ConstAggregateKind::Struct(values),
+                        crate::TypeKind::Struct(id),
+                    ) => {
+                        let fields = match self {
+                            Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => {
+                                &pool.struct_def(id).fields
+                            }
+                            Self::Canonical(pool) | Self::CanonicalWithSymbols(pool, _) => {
+                                &pool.struct_def(id).fields
+                            }
+                        };
+                        if values.len() != fields.len() {
+                            return Err(
+                                "struct constant field count does not match its declaration".into(),
+                            );
+                        }
+                        for (child, field) in values.iter().zip(fields.iter()) {
+                            self.validate_const_value(child, Some(field.ty), depth + 1, nodes)?;
+                        }
+                    }
+                    (
+                        crate::sema::ConstAggregateKind::Array(values),
+                        crate::TypeKind::Array(id),
+                    ) => {
+                        let (element, len) = match self {
+                            Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => {
+                                pool.array_def(id)
+                            }
+                            Self::Canonical(pool) | Self::CanonicalWithSymbols(pool, _) => {
+                                pool.array_def(id)
+                            }
+                        };
+                        if values.len() as u64 != len {
+                            return Err(
+                                "array constant length does not match its declaration".into()
+                            );
+                        }
+                        for child in values.iter() {
+                            self.validate_const_value(child, Some(element), depth + 1, nodes)?;
+                        }
+                    }
+                    (
+                        crate::sema::ConstAggregateKind::Enum { variant, payload },
+                        crate::TypeKind::Enum(id),
+                    ) => {
+                        let expected_len = self.enum_payload_len(id, *variant)?;
+                        if payload.len() != expected_len {
+                            return Err(
+                                "enum constant payload does not match its declaration".into()
+                            );
+                        }
+                        for (index, child) in payload.iter().enumerate() {
+                            self.validate_const_value(
+                                child,
+                                Some(self.enum_payload_type(id, *variant, index as u32)?),
+                                depth + 1,
+                                nodes,
+                            )?;
+                        }
+                    }
+                    _ => return Err("aggregate constant kind does not match its type".into()),
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn validate_enum_variant(&self, id: crate::EnumId, variant: u32) -> Result<(), String> {
         let count = match self {
             Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => pool
@@ -798,6 +962,7 @@ enum ConstValueTag {
     Function,
     Float,
     String,
+    Aggregate,
 }
 
 impl ConstValueTag {
@@ -810,6 +975,7 @@ impl ConstValueTag {
             crate::sema::ConstValue::Function(_) => Self::Function,
             crate::sema::ConstValue::String(_) => Self::String,
             crate::sema::ConstValue::Float(_) => Self::Float,
+            crate::sema::ConstValue::Aggregate(_) => Self::Aggregate,
         }
     }
 
@@ -822,6 +988,7 @@ impl ConstValueTag {
             Self::Function => 4,
             Self::Float => 5,
             Self::String => 6,
+            Self::Aggregate => 7,
         }
     }
 
@@ -830,6 +997,7 @@ impl ConstValueTag {
             Self::Integer => 4,
             Self::Bool | Self::Type | Self::Function | Self::Float | Self::String => 1,
             Self::Unit => 0,
+            Self::Aggregate => 0,
         }
     }
 
@@ -842,6 +1010,7 @@ impl ConstValueTag {
             4 => Some(Self::Function),
             5 => Some(Self::Float),
             6 => Some(Self::String),
+            7 => Some(Self::Aggregate),
             _ => None,
         }
     }
@@ -856,8 +1025,47 @@ pub(crate) fn encode_const_values(
         operation: "stage",
         kind,
     };
+    fn encoded_words(
+        value: &crate::sema::ConstValue,
+        depth: usize,
+        nodes: &mut usize,
+    ) -> Option<usize> {
+        if depth > 64 {
+            return None;
+        }
+        *nodes = nodes.checked_add(1)?;
+        if *nodes > crate::sema::MAX_COMPTIME_AGGREGATE_NODES {
+            return None;
+        }
+        if let crate::sema::ConstValue::Aggregate(aggregate) = value {
+            let children = match &aggregate.kind {
+                crate::sema::ConstAggregateKind::Struct(values)
+                | crate::sema::ConstAggregateKind::Array(values) => values,
+                crate::sema::ConstAggregateKind::Enum { payload, .. } => payload,
+            };
+            // Every aggregate header contains the tag, type, kind, and child
+            // count. Enum headers additionally contain the variant index.
+            // Keep this reservation in lockstep with `append` below: the
+            // vector is deliberately reserved before any recursive encoding
+            // can run so malformed or oversized values cannot grow it without
+            // the checked size calculation seeing that growth.
+            let prefix = if matches!(
+                &aggregate.kind,
+                crate::sema::ConstAggregateKind::Enum { .. }
+            ) {
+                5
+            } else {
+                4
+            };
+            return children.iter().try_fold(prefix as usize, |total, child| {
+                total.checked_add(encoded_words(child, depth + 1, nodes)?)
+            });
+        }
+        Some(1 + ConstValueTag::of(value).payload_width())
+    }
+    let mut nodes = 0;
     let word_count = values.iter().try_fold(0usize, |count, value| {
-        count.checked_add(1 + ConstValueTag::of(value).payload_width())
+        count.checked_add(encoded_words(value, 0, &mut nodes)?)
     });
     let word_count = word_count.ok_or_else(|| error(AirBuildErrorKind::ResourceLimit))?;
     let mut words = Vec::new();
@@ -912,6 +1120,55 @@ pub(crate) fn encode_const_values(
                     u32::try_from(value.issuing_interner_ordinal())
                         .map_err(|_| error(AirBuildErrorKind::ResourceLimit))?,
                 );
+            }
+            crate::sema::ConstValue::Aggregate(aggregate) => {
+                fn append(
+                    value: &crate::sema::ConstValue,
+                    words: &mut Vec<u32>,
+                ) -> Result<(), AirBuildError> {
+                    let error = |kind| AirBuildError {
+                        phase: "AIR",
+                        family: "constant value arguments",
+                        operation: "stage",
+                        kind,
+                    };
+                    let crate::sema::ConstValue::Aggregate(aggregate) = value else {
+                        unreachable!()
+                    };
+                    words.push(ConstValueTag::Aggregate.word());
+                    words.push(aggregate.ty.as_u32());
+                    let children = match &aggregate.kind {
+                        crate::sema::ConstAggregateKind::Struct(values)
+                        | crate::sema::ConstAggregateKind::Array(values) => values,
+                        crate::sema::ConstAggregateKind::Enum { payload, .. } => payload,
+                    };
+                    match &aggregate.kind {
+                        crate::sema::ConstAggregateKind::Struct(_) => words.push(0),
+                        crate::sema::ConstAggregateKind::Array(_) => words.push(1),
+                        crate::sema::ConstAggregateKind::Enum { variant, .. } => {
+                            words.push(2);
+                            words.push(*variant);
+                        }
+                    }
+                    words.push(
+                        u32::try_from(children.len())
+                            .map_err(|_| error(AirBuildErrorKind::ResourceLimit))?,
+                    );
+                    for child in children.iter() {
+                        match child {
+                            crate::sema::ConstValue::Aggregate(_) => append(child, words)?,
+                            _ => {
+                                let child_words = encode_const_values(std::slice::from_ref(child))?;
+                                words.extend(child_words);
+                            }
+                        }
+                    }
+                    Ok(())
+                }
+                append(
+                    &crate::sema::ConstValue::Aggregate(aggregate.clone()),
+                    &mut words,
+                )?;
             }
         }
     }
@@ -1029,6 +1286,113 @@ pub struct ConstValueIterator<'a> {
     remaining: usize,
 }
 
+const MAX_DECODED_CONST_NODES: usize = 4096;
+
+fn decode_const_value(
+    words: &[u32],
+    depth: usize,
+    nodes: &mut usize,
+) -> Option<(crate::sema::ConstValue, usize)> {
+    let tag = ConstValueTag::from_word(*words.first()?)?;
+    if depth > 64 {
+        return None;
+    }
+    *nodes = nodes.checked_add(1)?;
+    if *nodes > MAX_DECODED_CONST_NODES {
+        return None;
+    }
+    let scalar = |width: usize| words.get(1..1 + width);
+    let value = match tag {
+        ConstValueTag::Integer => {
+            let payload = scalar(4)?;
+            let mut bits = 0u128;
+            for (index, word) in payload.iter().copied().enumerate() {
+                bits |= u128::from(word) << (32 * index);
+            }
+            (crate::sema::ConstValue::Integer(bits as i128), 5)
+        }
+        ConstValueTag::Bool => {
+            let value = match *scalar(1)?.first()? {
+                0 => false,
+                1 => true,
+                _ => return None,
+            };
+            (crate::sema::ConstValue::Bool(value), 2)
+        }
+        ConstValueTag::Unit => (crate::sema::ConstValue::Unit, 1),
+        ConstValueTag::Type => (
+            crate::sema::ConstValue::Type(Type::try_from_u32(*scalar(1)?.first()?)?),
+            2,
+        ),
+        ConstValueTag::Function => (
+            crate::sema::ConstValue::Function(SymbolHandle::new(Spur::try_from_usize(
+                *scalar(1)?.first()? as usize,
+            )?)),
+            2,
+        ),
+        ConstValueTag::Float => (
+            crate::sema::ConstValue::Float(SymbolHandle::new(Spur::try_from_usize(
+                *scalar(1)?.first()? as usize,
+            )?)),
+            2,
+        ),
+        ConstValueTag::String => (
+            crate::sema::ConstValue::String(SymbolHandle::new(Spur::try_from_usize(
+                *scalar(1)?.first()? as usize,
+            )?)),
+            2,
+        ),
+        ConstValueTag::Aggregate => {
+            let ty = Type::try_from_u32(*words.get(1)?)?;
+            let kind = *words.get(2)?;
+            match kind {
+                0 if !ty.is_struct() => return None,
+                1 if !ty.is_array() => return None,
+                2 if !ty.is_enum() => return None,
+                0..=2 => {}
+                _ => return None,
+            }
+            let (variant, count_word) = if kind == 2 {
+                (*words.get(3)?, 4)
+            } else {
+                (0, 3)
+            };
+            let count = usize::try_from(*words.get(count_word)?).ok()?;
+            // A child occupies at least one word.  Check both the aggregate
+            // node budget and the available payload before reserving the
+            // attacker-controlled vector; the recursive decoder must never
+            // allocate a claimed child count and discover truncation later.
+            if count > MAX_DECODED_CONST_NODES.saturating_sub(*nodes)
+                || count > words.len().saturating_sub(count_word + 1)
+            {
+                return None;
+            }
+            let mut cursor = count_word + 1;
+            let mut children = Vec::with_capacity(count);
+            for _ in 0..count {
+                let (child, used) = decode_const_value(words.get(cursor..)?, depth + 1, nodes)?;
+                cursor = cursor.checked_add(used)?;
+                children.push(child);
+            }
+            let aggregate_kind = match kind {
+                0 => crate::sema::ConstAggregateKind::Struct(children.into()),
+                1 => crate::sema::ConstAggregateKind::Array(children.into()),
+                2 => crate::sema::ConstAggregateKind::Enum {
+                    variant,
+                    payload: children.into(),
+                },
+                _ => unreachable!("aggregate kind checked before decoding"),
+            };
+            let value = crate::sema::register_comptime_aggregate(crate::sema::ConstAggregate {
+                ty,
+                kind: aggregate_kind,
+            })?;
+            (value, cursor)
+        }
+    };
+    Some(value)
+}
+
 impl Iterator for ConstValueIterator<'_> {
     type Item = crate::sema::ConstValue;
 
@@ -1036,33 +1400,11 @@ impl Iterator for ConstValueIterator<'_> {
         if self.remaining == 0 {
             return None;
         }
-        let tag = ConstValueTag::from_word(self.words[0])?;
-        let payload = &self.words[1..1 + tag.payload_width()];
-        self.words = &self.words[1 + tag.payload_width()..];
+        let mut nodes = 0;
+        let (value, used) = decode_const_value(self.words, 0, &mut nodes)?;
+        self.words = &self.words[used..];
         self.remaining -= 1;
-        Some(match tag {
-            ConstValueTag::Integer => {
-                let mut bits = 0u128;
-                for (index, word) in payload.iter().copied().enumerate() {
-                    bits |= u128::from(word) << (32 * index);
-                }
-                crate::sema::ConstValue::Integer(bits as i128)
-            }
-            ConstValueTag::Bool => crate::sema::ConstValue::Bool(payload[0] == 1),
-            ConstValueTag::Unit => crate::sema::ConstValue::Unit,
-            ConstValueTag::Type => crate::sema::ConstValue::Type(
-                Type::try_from_u32(payload[0]).expect("validated const type"),
-            ),
-            ConstValueTag::Function => crate::sema::ConstValue::Function(SymbolHandle::new(
-                Spur::try_from_usize(payload[0] as usize).expect("validated const symbol"),
-            )),
-            ConstValueTag::Float => crate::sema::ConstValue::Float(SymbolHandle::new(
-                Spur::try_from_usize(payload[0] as usize).expect("validated const symbol"),
-            )),
-            ConstValueTag::String => crate::sema::ConstValue::String(SymbolHandle::new(
-                Spur::try_from_usize(payload[0] as usize).expect("validated const symbol"),
-            )),
-        })
+        Some(value)
     }
 }
 
@@ -1961,22 +2303,19 @@ impl Air {
                             fail(Some(index), format!("invalid type argument: {reason}"))
                         })?;
                     }
+                    let mut const_nodes = 0;
                     for value in self
                         .try_get_const_values(value_args)
                         .map_err(|e| fail(Some(index), e.to_string()))?
                     {
-                        if let crate::sema::ConstValue::Type(ty) = value {
-                            validate_type(ty).map_err(|reason| {
+                        context
+                            .validate_const_value(&value, None, 0, &mut const_nodes)
+                            .map_err(|reason| {
                                 fail(
                                     Some(index),
-                                    format!("invalid constant type argument: {reason}"),
+                                    format!("invalid constant value argument: {reason}"),
                                 )
                             })?;
-                        } else if let crate::sema::ConstValue::Function(symbol) = value {
-                            context
-                                .validate_symbol(symbol.spur())
-                                .map_err(|reason| fail(Some(index), reason))?;
-                        }
                     }
                     for arg in self
                         .try_get_call_args(args)
@@ -3057,7 +3396,59 @@ impl Air {
         let words = self.try_get_words(range.start, range.extent, "constant value arguments")?;
         let mut cursor = words;
         let mut count = 0usize;
+        // This is one argument vector, so the node budget is shared by all
+        // roots. Resetting it for every aggregate would admit 4096 nodes per
+        // argument and let a large call payload evade the published bound.
+        let mut nodes = 0usize;
         while let Some((&tag_word, rest)) = cursor.split_first() {
+            if tag_word == ConstValueTag::Aggregate.word() {
+                let Some((_, used)) = decode_const_value(cursor, 0, &mut nodes) else {
+                    return Err(AirPayloadError::decode(
+                        "constant value arguments",
+                        range.start,
+                        range.extent,
+                        count,
+                        1,
+                        rest.len().saturating_add(1),
+                        "invalid or oversized aggregate encoding",
+                    ));
+                };
+                cursor = cursor.get(used..).ok_or_else(|| {
+                    AirPayloadError::decode(
+                        "constant value arguments",
+                        range.start,
+                        range.extent,
+                        count,
+                        used,
+                        cursor.len(),
+                        "truncated aggregate encoding",
+                    )
+                })?;
+                count += 1;
+                continue;
+            }
+            nodes = nodes.checked_add(1).ok_or_else(|| {
+                AirPayloadError::decode(
+                    "constant value arguments",
+                    range.start,
+                    range.extent,
+                    count,
+                    1,
+                    1,
+                    "constant value node budget overflow",
+                )
+            })?;
+            if nodes > MAX_DECODED_CONST_NODES {
+                return Err(AirPayloadError::decode(
+                    "constant value arguments",
+                    range.start,
+                    range.extent,
+                    count,
+                    1,
+                    1,
+                    "constant value arguments exceed resource limits",
+                ));
+            }
             let tag = ConstValueTag::from_word(tag_word).ok_or_else(|| {
                 AirPayloadError::decode(
                     "constant value arguments",
@@ -4572,6 +4963,47 @@ mod tests {
             error(&[ConstValueTag::String.word(), u32::MAX]).reason,
             "invalid constant symbol encoding"
         );
+        assert_eq!(
+            error(&[ConstValueTag::Aggregate.word(), Type::I32.as_u32(), 1, 0,]).reason,
+            "invalid or oversized aggregate encoding"
+        );
+    }
+
+    #[test]
+    fn checked_const_decoder_shares_the_node_budget_across_roots() {
+        let mut air = Air::new(Type::UNIT);
+        let words = vec![ConstValueTag::Unit.word(); MAX_DECODED_CONST_NODES + 1];
+        let (start, extent) = air.append_words("test", &words).unwrap();
+        let error = air
+            .try_get_const_values(&AirConstValueWords { start, extent })
+            .unwrap_err();
+        assert_eq!(
+            error.reason,
+            "constant value arguments exceed resource limits"
+        );
+    }
+
+    #[test]
+    fn checked_const_decoder_rejects_aggregate_children_before_reserving_them() {
+        let mut air = Air::new(Type::UNIT);
+        let mut words = vec![
+            ConstValueTag::Aggregate.word(),
+            // The scalar type deliberately mismatches the array kind; the
+            // decoder must still reject the claimed child count before a
+            // large vector reservation.
+            Type::I32.as_u32(),
+            1,
+            MAX_DECODED_CONST_NODES as u32,
+        ];
+        words.extend(std::iter::repeat_n(
+            ConstValueTag::Unit.word(),
+            MAX_DECODED_CONST_NODES,
+        ));
+        let (start, extent) = air.append_words("test", &words).unwrap();
+        let error = air
+            .try_get_const_values(&AirConstValueWords { start, extent })
+            .unwrap_err();
+        assert_eq!(error.reason, "invalid or oversized aggregate encoding");
     }
 
     #[test]

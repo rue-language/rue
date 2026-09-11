@@ -637,7 +637,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             ComptimeCallMemoLookup::Memoized(ComptimeMemoizedOutcome::Known(value)) => {
                 #[cfg(test)]
                 update_comptime_reduction_test_stats(|stats| stats.hits += 1);
-                Some(*value)
+                Some(value.clone())
             }
             ComptimeCallMemoLookup::Memoized(_) | ComptimeCallMemoLookup::Miss => None,
         }
@@ -653,7 +653,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         // same frame, so retain the first successful result deterministically.
         let insertion = self
             .comptime_reduction_memo
-            .insert(key, ComptimeMemoizedOutcome::Known(value))
+            .insert(key, ComptimeMemoizedOutcome::Known(value.clone()))
             .is_ok();
         #[cfg(test)]
         if insertion {
@@ -1203,7 +1203,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 .into(),
             values: value_args
                 .iter()
-                .copied()
+                .cloned()
                 .map(|value| self.storage.canonical_argument_value(value))
                 .collect::<Result<Vec<_>, _>>()?
                 .into(),
@@ -1463,9 +1463,13 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                     *tys.get(param_name).ok_or(F::MissingStableIdentity)?,
                 )?);
             } else {
-                values.push(self.storage.canonical_argument_value(
-                    *vals.get(param_name).ok_or(F::MissingStableIdentity)?,
-                )?);
+                values.push(
+                    self.storage.canonical_argument_value(
+                        vals.get(param_name)
+                            .ok_or(F::MissingStableIdentity)?
+                            .clone(),
+                    )?,
+                );
             }
         }
         let arguments = IssuedCanonicalArguments {

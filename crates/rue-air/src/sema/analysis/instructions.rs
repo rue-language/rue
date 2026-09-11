@@ -375,6 +375,23 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         });
                         Ok(AnalysisResult::new(air_ref, ty))
                     }
+                    Some(ConstValue::Aggregate(value)) => {
+                        let ty = Self::get_resolved_type(
+                            ctx,
+                            inst_ref,
+                            inst.span,
+                            "comptime aggregate value",
+                        )?;
+                        let (air_ref, ty) = self.materialize_comptime_value(
+                            air,
+                            ctx,
+                            ConstValue::Aggregate(value),
+                            ty,
+                            None,
+                            inst.span,
+                        )?;
+                        Ok(AnalysisResult::new(air_ref, ty))
+                    }
                     Some(ConstValue::Unit) => {
                         let ty = Type::UNIT;
                         let air_ref = air.add_inst(AirInst {

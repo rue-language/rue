@@ -172,19 +172,22 @@ pub use semantic_body::{
 };
 pub use semantic_identity::{
     AnonymousMemberKey, AnonymousMemberKind, AnonymousNominalKey, AnonymousNominalKind,
-    CanonicalArgumentValue, CanonicalArguments, CanonicalDisplayParameter, CompilerCallableId,
-    FunctionInstanceKey, LocalAtomId, LocalAtomKind, LocalAtomRecord, Node, NominalInstanceKey,
-    STABLE_DEFINITION_KINDS, STABLE_DEFINITION_NAMESPACES, SemanticBodyLocalAtom, StableCallableId,
-    StableDefinitionKind, StableDefinitionNamespace, StableProducerId, StableSymbolId,
-    TypeInstanceKey, format_canonical_application,
+    CanonicalAggregateKind, CanonicalAggregateValue, CanonicalArgumentValue, CanonicalArguments,
+    CanonicalDisplayParameter, CompilerCallableId, FunctionInstanceKey, LocalAtomId, LocalAtomKind,
+    LocalAtomRecord, Node, NominalInstanceKey, STABLE_DEFINITION_KINDS,
+    STABLE_DEFINITION_NAMESPACES, SemanticBodyLocalAtom, StableCallableId, StableDefinitionKind,
+    StableDefinitionNamespace, StableProducerId, StableSymbolId, TypeInstanceKey,
+    format_canonical_application,
 };
 pub use semantic_import::{
-    SEMANTIC_IMPORT_CONST_KINDS, SEMANTIC_IMPORT_TYPE_KINDS, SemanticImportConstKind,
-    SemanticImportConstValue, SemanticImportEpoch, SemanticImportFailure, SemanticImportNominal,
-    SemanticImportNominalKind, SemanticImportType, SemanticImportTypeFold, SemanticImportTypeKind,
-    SemanticImportedConstValue, SemanticImportedType, SemanticLocalCallable,
-    SemanticLocalCompleteness, SemanticLocalMaterialization, SemanticLocalNominal,
-    SemanticLocalNominalShape,
+    MAX_COMPTIME_VALUE_DEPTH, MAX_COMPTIME_VALUE_NODES, SEMANTIC_IMPORT_CONST_KINDS,
+    SEMANTIC_IMPORT_TYPE_KINDS, SemanticImportAggregate, SemanticImportAggregateKind,
+    SemanticImportConstKind, SemanticImportConstValue, SemanticImportEpoch, SemanticImportFailure,
+    SemanticImportNominal, SemanticImportNominalKind, SemanticImportType, SemanticImportTypeFold,
+    SemanticImportTypeKind, SemanticImportedConstValue, SemanticImportedType,
+    SemanticLocalCallable, SemanticLocalCompleteness, SemanticLocalMaterialization,
+    SemanticLocalNominal, SemanticLocalNominalShape, semantic_import_const_value_within_limits,
+    semantic_import_const_values_within_limits,
 };
 pub use semantic_type_resolution::{
     ComptimeStructuredTypeAuthority, ComptimeStructuredTypeJob, ComptimeStructuredTypePoll,

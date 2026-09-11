@@ -55,6 +55,14 @@ pub(crate) fn canonical_specialized_function_instance(
     type_arguments: &[(Arc<str>, DurableType)],
     value_arguments: &[(Arc<str>, DurableConstValue)],
 ) -> Result<crate::FunctionInstanceKey, DurableComptimeProducerIssuanceError> {
+    if !rue_air::semantic_import_const_values_within_limits(
+        &value_arguments
+            .iter()
+            .map(|(_, value)| value.clone())
+            .collect::<Vec<_>>(),
+    ) {
+        return Err(DurableComptimeProducerIssuanceError::InvalidValueArgument);
+    }
     let types = type_arguments
         .iter()
         .map(|(_, value)| crate::semantic_identity::type_instance_from_semantic(value))
@@ -2012,6 +2020,10 @@ impl DurableComptimeBinding {
         index: usize,
     ) -> Option<&crate::declaration_candidate::DeclarationParameterHeader> {
         self.admission.shell_parameters.get(index)
+    }
+
+    pub(super) fn type_arguments(&self) -> &[(Arc<str>, DurableType)] {
+        &self.type_arguments
     }
 
     /// Finish binding only after every argument has passed the canonical

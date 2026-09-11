@@ -4730,11 +4730,11 @@ impl<'a> ConstraintGenerator<'a> {
     /// Bare value-parameter references remain available during the probe.
     fn comptime_argument_value(&self, arg: InstRef) -> Option<ConstValue> {
         self.comptime_argument_values
-            .and_then(|values| values.get(&arg).copied())
+            .and_then(|values| values.get(&arg).cloned())
             .or_else(|| match self.rir.get(arg).data {
                 InstData::VarRef { name, .. } => self
                     .comptime_values
-                    .and_then(|values| values.get(&name).copied()),
+                    .and_then(|values| values.get(&name).cloned()),
                 _ => None,
             })
     }

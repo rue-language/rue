@@ -797,6 +797,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             continue;
                         }
                         ConstValue::Unit => Type::UNIT,
+                        ConstValue::Aggregate(_index) => const_val.get_type(),
                     };
                     param_vars.entry(*name).or_insert(ParamVarInfo {
                         ty: self.type_to_infer_type(ty),
@@ -1584,7 +1585,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 lexical_binding_capture_view(scope),
                 Some(expected),
             ) {
-                argument_values.insert(arg.value, value);
+                argument_values.insert(arg.value, value.clone());
                 callee_values.insert(param_names[index], value);
             }
         }

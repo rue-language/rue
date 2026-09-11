@@ -2210,7 +2210,43 @@ pub(in crate::sema) fn semantic_import_type_mentions_generic_parameter<K, M>(
                 | crate::CanonicalArgumentValue::Unit
                 | crate::CanonicalArgumentValue::String(_)
                 | crate::CanonicalArgumentValue::Float(_) => false,
+                crate::CanonicalArgumentValue::Aggregate(value) => {
+                    type_instance(&value.ty)
+                        || match &value.kind {
+                            crate::CanonicalAggregateKind::Struct(values)
+                            | crate::CanonicalAggregateKind::Array(values) => {
+                                values.iter().any(canonical_value)
+                            }
+                            crate::CanonicalAggregateKind::Enum { payload, .. } => {
+                                payload.iter().any(canonical_value)
+                            }
+                        }
+                }
             })
+    }
+
+    fn canonical_value<K, M>(value: &crate::CanonicalArgumentValue<K, M>) -> bool {
+        match value {
+            crate::CanonicalArgumentValue::Type(value) => type_instance(value),
+            crate::CanonicalArgumentValue::Function(value) => function_instance(value),
+            crate::CanonicalArgumentValue::Aggregate(value) => {
+                type_instance(&value.ty)
+                    || match &value.kind {
+                        crate::CanonicalAggregateKind::Struct(values)
+                        | crate::CanonicalAggregateKind::Array(values) => {
+                            values.iter().any(canonical_value)
+                        }
+                        crate::CanonicalAggregateKind::Enum { payload, .. } => {
+                            payload.iter().any(canonical_value)
+                        }
+                    }
+            }
+            crate::CanonicalArgumentValue::Integer(_)
+            | crate::CanonicalArgumentValue::Bool(_)
+            | crate::CanonicalArgumentValue::Unit
+            | crate::CanonicalArgumentValue::String(_)
+            | crate::CanonicalArgumentValue::Float(_) => false,
+        }
     }
 
     // The producer is the whole reach of an anonymous key: the arguments it was
@@ -2748,7 +2784,7 @@ pub trait DurableConstSource<K, M> {
 }
 
 /// The durable-derived subset of [`ConstInfo`], cached by const key.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ConstIdentity {
     is_pub: bool,
     ty: Type,
@@ -2788,8 +2824,8 @@ where
         if let Some(err) = self.const_poisoned.get(key) {
             return Err(err.clone());
         }
-        if let Some(&identity) = self.const_values.get(key) {
-            return Ok(identity);
+        if let Some(identity) = self.const_values.get(key) {
+            return Ok(identity.clone());
         }
 
         let DurableConst {
@@ -2812,7 +2848,7 @@ where
             ty,
             value,
         };
-        self.const_values.insert(key.clone(), identity);
+        self.const_values.insert(key.clone(), identity.clone());
         Ok(identity)
     }
 
@@ -2832,6 +2868,11 @@ where
         value: &SemanticImportConstValue<K, M>,
     ) -> Result<ConstValue, IdentityMintError> {
         use SemanticImportConstValue as V;
+        if matches!(value, V::Aggregate(_))
+            && !crate::semantic_import_const_value_within_limits(value)
+        {
+            return Err(IdentityMintError::InvalidStructuralType);
+        }
         Ok(match value {
             V::Integer(value) => ConstValue::Integer(*value),
             V::Bool(value) => ConstValue::Bool(*value),
@@ -2859,6 +2900,41 @@ where
                     .map_err(IdentityMintError::Interner)?
                     .into(),
             ),
+            V::Aggregate(value) => {
+                let ty = self.resolve_const_type(key, &value.ty)?;
+                let kind = match &value.kind {
+                    crate::SemanticImportAggregateKind::Struct(values) => {
+                        crate::sema::ConstAggregateKind::Struct(
+                            values
+                                .iter()
+                                .map(|v| self.resolve_const_value(key, v))
+                                .collect::<Result<Vec<_>, _>>()?
+                                .into(),
+                        )
+                    }
+                    crate::SemanticImportAggregateKind::Array(values) => {
+                        crate::sema::ConstAggregateKind::Array(
+                            values
+                                .iter()
+                                .map(|v| self.resolve_const_value(key, v))
+                                .collect::<Result<Vec<_>, _>>()?
+                                .into(),
+                        )
+                    }
+                    crate::SemanticImportAggregateKind::Enum { variant, payload } => {
+                        crate::sema::ConstAggregateKind::Enum {
+                            variant: *variant,
+                            payload: payload
+                                .iter()
+                                .map(|v| self.resolve_const_value(key, v))
+                                .collect::<Result<Vec<_>, _>>()?
+                                .into(),
+                        }
+                    }
+                };
+                crate::sema::register_comptime_aggregate(crate::sema::ConstAggregate { ty, kind })
+                    .ok_or(IdentityMintError::InvalidStructuralType)?
+            }
         })
     }
 }

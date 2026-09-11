@@ -225,6 +225,31 @@ impl DurableEncode for crate::CanonicalArgumentValue<String, String> {
                 encode_variant(state, 6);
                 value.hash(state);
             }
+            Self::Aggregate(value) => {
+                encode_variant(state, 7);
+                value.durable_encode(state);
+            }
+        }
+    }
+}
+
+impl DurableEncode for crate::CanonicalAggregateValue<String, String> {
+    fn durable_encode<H: Hasher>(&self, state: &mut H) {
+        self.ty.durable_encode(state);
+        match &self.kind {
+            crate::CanonicalAggregateKind::Struct(values) => {
+                encode_variant(state, 0);
+                encode_slice(state, values);
+            }
+            crate::CanonicalAggregateKind::Array(values) => {
+                encode_variant(state, 1);
+                encode_slice(state, values);
+            }
+            crate::CanonicalAggregateKind::Enum { variant, payload } => {
+                encode_variant(state, 2);
+                variant.hash(state);
+                encode_slice(state, payload);
+            }
         }
     }
 }
