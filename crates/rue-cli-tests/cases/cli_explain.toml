@@ -393,6 +393,15 @@ compile_stdout_not_contains = ["Compiled"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
 
 [[case]]
+name = "wrong_argument_count_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0207"]
+compile_only = true
+compile_stdout_contains = ["E0207: Wrong argument count", "Rue has no default arguments, so a missing call argument is never filled in from the declaration.", "docs/spec/src/04-expressions/10-call-expressions.md (spec rule 4.10:3)", "docs/spec/src/06-items/01-functions.md (spec rule 6.1:45)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
 name = "duplicate_parameter_code_is_explained"
 files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
 args = ["explain", "E0491"]

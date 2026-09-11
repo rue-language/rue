@@ -35,6 +35,17 @@ function and a fixed numeric operator intrinsic are not overloads. The same
 spelling **MAY** be used in distinct module or type scopes, where ordinary
 scope resolution selects the declaration.
 
+{{ rule(id="6.1:45", cat="legality-rule") }}
+
+A parameter declaration **MUST NOT** carry a default value: the parameter
+grammar (6.1:15) has no initializer, and a declaration such as
+`fn connect(host: str, timeout: i32 = 30)` is rejected at the `=` with a
+diagnostic naming the rule. Every call therefore supplies an argument for
+every parameter (4.10:3), so the values a call passes are visible at the call
+site and never filled in from the declaration. An API with a common
+configuration spells it as a distinct function name, a named constructor, or
+a configuration value built by the caller (ADR-0094).
+
 {{ rule(id="6.1:34", cat="legality-rule") }}
 
 The parameters in a single parameter list **MUST** have distinct names. It is a compile-time error for a function or method to declare two parameters with the same name (for example, `fn f(x: i32, x: i32)`); the diagnostic identifies the second occurrence. A method's `self` receiver is not a named parameter for the purpose of this rule.

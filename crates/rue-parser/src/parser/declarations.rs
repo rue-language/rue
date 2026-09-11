@@ -551,6 +551,17 @@ impl Parser {
         let name = self.ident_expected("'comptime' or 'inout' or 'borrow' or identifier or …")?;
         self.expect(TokenKind::Colon)?;
         let ty = self.ty()?;
+        if self.at(TokenKind::Eq) {
+            // ADR-0094: a parameter never carries a default value, so `= expr`
+            // after the type is refused here with the alternatives rather than
+            // falling through to a generic "expected ')'" at the `=`.
+            self.error(
+                "Rue has no default arguments; every call spells every argument. Pass the \
+                 value at each call site, or define a second function with a distinct name \
+                 for the common case",
+            );
+            return Err(());
+        }
         Ok(Param {
             mode,
             name,

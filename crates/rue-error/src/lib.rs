@@ -651,8 +651,8 @@ define_error_codes! {
         }],
     };
     WRONG_ARGUMENT_COUNT = 207 => {
-        explanation: "A call-like construct supplied the wrong number of values or bindings. This applies to function and built-in calls, enum tuple-variant construction (including a payload variant used as a bare value), and enum payload patterns with an explicit binding list.",
-        likely_cause: "A function or built-in call has a missing or extra argument; an enum value supplies the wrong number of payload values; a payload-carrying variant was used without constructing its payload; or a match pattern's parenthesized bindings do not match the variant's payload arity.",
+        explanation: "A call-like construct supplied the wrong number of values or bindings. This applies to function and built-in calls, enum tuple-variant construction (including a payload variant used as a bare value), and enum payload patterns with an explicit binding list. Rue has no default arguments, so a missing call argument is never filled in from the declaration.",
+        likely_cause: "A function or built-in call has a missing or extra argument; an enum value supplies the wrong number of payload values; a payload-carrying variant was used without constructing its payload; or a match pattern's parenthesized bindings do not match the variant's payload arity. Pass every argument at the call, or give the common case its own function name.",
         examples: [
             ErrorCodeExample {
                 title: "Missing call argument",
@@ -670,6 +670,11 @@ define_error_codes! {
                 title: "Call argument arity and modes",
                 path: "docs/spec/src/04-expressions/10-call-expressions.md",
                 rule: Some("4.10:3"),
+            },
+            ErrorCodeReference {
+                title: "No default arguments",
+                path: "docs/spec/src/06-items/01-functions.md",
+                rule: Some("6.1:45"),
             },
             ErrorCodeReference {
                 title: "Enum payload-pattern arity",
