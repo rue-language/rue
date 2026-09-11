@@ -253,6 +253,9 @@ pub enum BuildKind {
     TestImage,
     /// The test inventory alone: no codegen, no link, no bytes.
     TestListing,
+    /// The analysis-only presentation `--emit air`: semantic analysis of the
+    /// executable root set, rendered; no codegen, no link, no bytes.
+    Analysis,
 }
 
 /// How the client wants diagnostics rendered. The service renders once with
@@ -372,6 +375,10 @@ pub enum BuildResult {
         stderr: String,
         entries: Option<Vec<InventoryEntryRecord>>,
     },
+    /// A presentation: everything the direct `--emit` would have written, in
+    /// the order it would have written it, to whichever stream. `ok` is
+    /// whether the direct invocation would have succeeded.
+    Presentation { ok: bool, writes: Vec<StreamWrite> },
     /// The request's cancellation was observed; nothing was produced.
     Canceled,
     /// The service could not run the request. `internal` marks a compiler
@@ -399,6 +406,21 @@ pub struct InputRecord {
     pub symlink_boundary: Option<String>,
     /// `(volume, file)` identities along the expected symlink route.
     pub symlink_route: Vec<(u64, u64)>,
+}
+
+/// Which standard stream a write belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputStream {
+    Stdout,
+    Stderr,
+}
+
+/// One write the direct path would have made, verbatim.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamWrite {
+    pub stream: OutputStream,
+    pub text: String,
 }
 
 /// One test of an inventory, as the compiler's inventory entry spells it.

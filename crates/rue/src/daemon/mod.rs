@@ -34,8 +34,8 @@ pub use client::{ConnectError, Connection, Submission, SubmitError};
 pub use protocol::{
     BuildKind, BuildRequest, BuildResult, CompileFailureRecord, CrashRecord,
     DAEMON_PROTOCOL_VERSION, DestinationRecord, DiagnosticFormat, IdentityRecord, InputRecord,
-    InventoryEntryRecord, RequestSummary, ServiceInfo, StatusReport, TestImageRecord,
-    UnimportedFileRecord, UnimportedRecord,
+    InventoryEntryRecord, OutputStream, RequestSummary, ServiceInfo, StatusReport, StreamWrite,
+    TestImageRecord, UnimportedFileRecord, UnimportedRecord,
 };
 pub use service::{BuildExecutor, BuildOutput, MAX_QUEUED_REQUESTS, ServeExit};
 

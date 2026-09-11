@@ -15,6 +15,7 @@ use rue_driver::{HostPathContext, WatchInput, WatchInputParts};
 use rue_error::ErrorCode;
 
 use crate::compile::{Announcement, announce};
+use crate::emit::{self, EmitStage};
 use crate::output::{PublicationDestination, PublishRequest, publish_watch_executable};
 use crate::{
     DiagnosticOutput, DriverMode, ErrorFormat, Options, VERSION, compile_pool_jobs,
@@ -64,8 +65,8 @@ pub(crate) fn unsupported_reason(options: &Options) -> Option<&'static str> {
     if options.watch {
         return Some("--watch runs directly");
     }
-    if !options.emit_stages.is_empty() {
-        return Some("--emit runs directly");
+    if !options.emit_stages.is_empty() && options.emit_stages != [EmitStage::Air] {
+        return Some("--emit stages other than a sole `air` run directly");
     }
     if !matches!(options.linker, LinkerMode::Internal) {
         return Some("a system linker runs directly");
@@ -126,6 +127,7 @@ pub(crate) fn run(options: &Options, path_context: &HostPathContext) -> Outcome 
     }
 
     let kind = match (&options.mode, options.test.list) {
+        (DriverMode::Compile, _) if !options.emit_stages.is_empty() => BuildKind::Analysis,
         (DriverMode::Compile, _) => BuildKind::Executable,
         (DriverMode::Test, true) => BuildKind::TestListing,
         (DriverMode::Test, false) => BuildKind::TestImage,
@@ -148,7 +150,7 @@ pub(crate) fn run(options: &Options, path_context: &HostPathContext) -> Outcome 
                 }
             }
         }
-        BuildKind::Executable | BuildKind::TestListing => None,
+        BuildKind::Executable | BuildKind::TestListing | BuildKind::Analysis => None,
     };
     let output_path = match &test_plan {
         Some(plan) => plan.image_path.display().to_string(),
@@ -237,6 +239,12 @@ pub(crate) fn run(options: &Options, path_context: &HostPathContext) -> Outcome 
         }
         BuildResult::Listing { stderr, entries } => {
             Outcome::Exit(test_mode::run_service_listing(stderr, entries, &options.test).code())
+        }
+        BuildResult::Presentation { ok, writes } => {
+            match emit::replay(emit::EmitTransport { ok, writes }) {
+                Ok(()) => Outcome::Exit(0),
+                Err(()) => Outcome::Exit(1),
+            }
         }
         BuildResult::Canceled => fail("the compiler service canceled the request".into()),
         BuildResult::Failed { message, internal } => {

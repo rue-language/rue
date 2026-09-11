@@ -99,7 +99,7 @@ fn parse(request: &BuildRequest) -> Result<Parsed, String> {
             // executable request roots none of them (ADR-0083 §1). Root
             // selection is request data over the one shared host.
             root_selection: match request.artifact {
-                BuildKind::Executable => RootSelection::Executable,
+                BuildKind::Executable | BuildKind::Analysis => RootSelection::Executable,
                 BuildKind::TestImage | BuildKind::TestListing => RootSelection::Tests,
             },
         },
@@ -233,6 +233,28 @@ impl BuildExecutor for Executor {
                         prepare_image(published, multi_module_closure, color).into_record(),
                     ))
                 })
+            }
+            BuildKind::Analysis => {
+                match crate::emit::produce_transport(
+                    host,
+                    &[crate::emit::EmitStage::Air],
+                    parsed.options.clone(),
+                    parsed.format,
+                    parsed.color,
+                    cancellation,
+                ) {
+                    None => BuildOutput {
+                        result: BuildResult::Canceled,
+                        bytes: Vec::new(),
+                    },
+                    Some(presentation) => BuildOutput {
+                        result: BuildResult::Presentation {
+                            ok: presentation.ok,
+                            writes: presentation.writes,
+                        },
+                        bytes: Vec::new(),
+                    },
+                }
             }
             BuildKind::TestListing => {
                 match produce_listing_transport(
@@ -390,8 +412,8 @@ mod tests {
         }
     }
 
-    const GOOD: &str = "fn main() -> i32 { 0 }\n";
-    const BROKEN: &str = "fn main() -> i32 {\n    let x: i32 = \"nope\";\n    x\n}\n";
+    pub(super) const GOOD: &str = "fn main() -> i32 { 0 }\n";
+    pub(super) const BROKEN: &str = "fn main() -> i32 {\n    let x: i32 = \"nope\";\n    x\n}\n";
 
     #[test]
     fn a_retained_host_serves_edit_fix_and_revert_with_fresh_parity() {
@@ -702,6 +724,75 @@ mod test_request_tests {
             | BuildResult::Listing { stderr, .. } => stderr,
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn an_analysis_request_renders_the_presentation_over_the_shared_host() {
+        let suite = Suite::new();
+        let mut executor = Executor::new();
+        let cancellation = CompilationCancellation::new();
+        let answer = executor.build(&suite.request(BuildKind::Analysis, "unused"), &cancellation);
+        let BuildResult::Presentation { ok, writes } = &answer.result else {
+            panic!("{:?}", answer.result);
+        };
+        assert!(ok);
+        assert!(answer.bytes.is_empty(), "an analysis links nothing");
+        let stdout: String = writes
+            .iter()
+            .filter(|write| write.stream == rue_driver::daemon::OutputStream::Stdout)
+            .map(|write| write.text.as_str())
+            .collect();
+        assert!(stdout.starts_with("=== AIR ===\n"), "{stdout}");
+        assert!(stdout.contains("function main:"), "{stdout}");
+        // The executable root set: the test bodies' failure is not this
+        // request's to report.
+        assert!(
+            writes
+                .iter()
+                .all(|write| write.stream == rue_driver::daemon::OutputStream::Stdout),
+            "{writes:?}"
+        );
+        assert_eq!(executor.retained_hosts(), 1);
+
+        // A fresh executor writes the same sequence.
+        let fresh =
+            Executor::new().build(&suite.request(BuildKind::Analysis, "unused"), &cancellation);
+        let BuildResult::Presentation {
+            writes: fresh_writes,
+            ..
+        } = fresh.result
+        else {
+            panic!("{:?}", fresh.result);
+        };
+        assert_eq!(&fresh_writes, writes);
+
+        // A rejected program: its diagnostics on stderr, nothing on stdout,
+        // not ok; then a canceled request, then recovery over the same host.
+        fs::write(
+            suite.directory.path().join("main.rue"),
+            super::tests::BROKEN,
+        )
+        .unwrap();
+        let rejected = executor.build(&suite.request(BuildKind::Analysis, "unused"), &cancellation);
+        let BuildResult::Presentation { ok, writes } = &rejected.result else {
+            panic!("{:?}", rejected.result);
+        };
+        assert!(!ok);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].stream, rue_driver::daemon::OutputStream::Stderr);
+        assert!(writes[0].text.contains("E0206"), "{}", writes[0].text);
+        let canceled = CompilationCancellation::new();
+        canceled.cancel();
+        let answer = executor.build(&suite.request(BuildKind::Analysis, "unused"), &canceled);
+        assert!(matches!(answer.result, BuildResult::Canceled));
+        fs::write(suite.directory.path().join("main.rue"), SUITE).unwrap();
+        let recovered =
+            executor.build(&suite.request(BuildKind::Analysis, "unused"), &cancellation);
+        assert!(matches!(
+            recovered.result,
+            BuildResult::Presentation { ok: true, .. }
+        ));
+        assert_eq!(executor.retained_hosts(), 1);
     }
 
     #[test]
