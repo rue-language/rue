@@ -3106,14 +3106,9 @@ fn run_daemon_case(
     if scenario.steps.is_empty() {
         return Err(TestFailure::assertion("daemon scenario has no steps"));
     }
-    // A short prefix keeps the socket path under the platform bound however
-    // long the system temporary directory is.
-    let temp_dir = tempfile::Builder::new()
-        .prefix("rd")
-        .tempdir()
-        .map_err(|error| {
-            TestFailure::fatal(format!("failed to create daemon temp dir: {error}"))
-        })?;
+    let temp_dir = short_private_temp_dir("rd").map_err(|error| {
+        TestFailure::fatal(format!("failed to create daemon temp dir: {error}"))
+    })?;
     let dir = temp_dir.path();
     for file in &case.files {
         let path = dir.join(&file.path);
@@ -3143,6 +3138,20 @@ fn run_daemon_case(
     );
     stop_leftover_daemon(case, rue_binary, real_std, dir, &endpoint_root);
     outcome
+}
+
+/// Creates a private temporary directory short enough to hold a daemon
+/// endpoint: Unix socket paths are bounded at about a hundred bytes, and the
+/// system temporary directory under Buck2 is a deep scratch path, so `/tmp`
+/// is tried first and the system directory is the fallback.
+fn short_private_temp_dir(prefix: &str) -> std::io::Result<tempfile::TempDir> {
+    let short = Path::new("/tmp");
+    if short.is_dir() {
+        if let Ok(dir) = tempfile::Builder::new().prefix(prefix).tempdir_in(short) {
+            return Ok(dir);
+        }
+    }
+    tempfile::Builder::new().prefix(prefix).tempdir()
 }
 
 fn run_daemon_steps(

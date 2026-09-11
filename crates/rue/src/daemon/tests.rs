@@ -61,9 +61,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        // A short root: the socket path must stay under the platform bound
-        // even when the system temporary directory is long.
-        let dir = tempfile::Builder::new().prefix("rd").tempdir().unwrap();
+        let dir = short_private_temp_dir();
         let scope_dir = dir.path().join("scope");
         fs::create_dir(&scope_dir).unwrap();
         let root = EndpointRoot::explicit(dir.path().join("r"));
@@ -84,6 +82,20 @@ impl Fixture {
             startup_timeout: Duration::from_secs(20),
         }
     }
+}
+
+/// A private temporary directory short enough to hold an endpoint: Unix
+/// socket paths are bounded at about a hundred bytes, and the system
+/// temporary directory under Buck2 is a deep scratch path, so `/tmp` is tried
+/// first and the system directory is the fallback.
+fn short_private_temp_dir() -> tempfile::TempDir {
+    let short = Path::new("/tmp");
+    if short.is_dir() {
+        if let Ok(dir) = tempfile::Builder::new().prefix("rd").tempdir_in(short) {
+            return dir;
+        }
+    }
+    tempfile::Builder::new().prefix("rd").tempdir().unwrap()
 }
 
 fn wait_until(deadline: Duration, mut condition: impl FnMut() -> bool) -> bool {
