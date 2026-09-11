@@ -753,6 +753,22 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     )
                     .unwrap();
                 }
+                InstData::StructPattern { local, ty, fields } => {
+                    let fields: Vec<&str> = self
+                        .rir
+                        .pattern_fields(fields)
+                        .iter()
+                        .map(|field| self.interner.resolve(&field))
+                        .collect();
+                    writeln!(
+                        out,
+                        "struct_pattern {} : {} {{ {} }}",
+                        self.interner.resolve(&*local),
+                        self.format_type(*ty),
+                        fields.join(", ")
+                    )
+                    .unwrap();
+                }
                 InstData::FieldSet { base, field, value } => {
                     writeln!(
                         out,

@@ -948,3 +948,12 @@ compile_stdout_contains = [
 ]
 compile_stdout_not_contains = ["Compiled"]
 compile_stderr_not_contains = ["main.rue", "error[E"]
+
+[[case]]
+name = "struct_pattern_not_struct_code_is_explained"
+files = [{ path = "main.rue", source = "fn # this source must never be parsed\n" }]
+args = ["explain", "E0213"]
+compile_only = true
+compile_stdout_contains = ["E0213: Struct pattern not struct", "preview feature `struct_patterns`", "docs/spec/src/05-statements/01-let-statements.md (spec rule 5.1:19)"]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["main.rue", "error[E"]

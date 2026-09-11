@@ -844,8 +844,8 @@ define_error_codes! {
     // Struct/enum errors (E0400-E0499)
     // ========================================================================
     MISSING_FIELDS = 400 => {
-        explanation: "A struct value was constructed without an initializer for every field declared by its type.",
-        likely_cause: "A field was omitted from the struct literal, often after the struct definition gained a new field. Supply each declared field exactly once; initializer order does not matter.",
+        explanation: "A struct value was constructed without an initializer for every field declared by its type, or a struct pattern (preview feature `struct_patterns`) names fewer fields than its type declares. A struct pattern has no rest form: it must name every field, so a field added to the type is reported at every pattern that does not bind it.",
+        likely_cause: "A field was omitted from the struct literal or pattern, often after the struct definition gained a new field. Supply each declared field exactly once; order does not matter. In a pattern, bind the field or discard it with `field: _`.",
         examples: [
             ErrorCodeExample { title: "Omitted struct field", source: "struct Point { x: i32, y: i32 }\nfn main() -> i32 {\n    let point = Point { x: 10 };\n    point.x\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
             ErrorCodeExample { title: "Initialize every field", source: "struct Point { x: i32, y: i32 }\nfn main() -> i32 {\n    let point = Point { x: 10, y: 32 };\n    point.x + point.y\n}", outcome: ErrorCodeExampleOutcome::Compiles },
@@ -853,7 +853,7 @@ define_error_codes! {
         references: [ErrorCodeReference { title: "Complete struct initialization", path: "docs/spec/src/03-types/06-struct-types.md", rule: Some("3.6:5") }],
     };
     UNKNOWN_FIELD = 401 => {
-        explanation: "A struct literal, field access, or another field-naming operation uses an identifier that is not a field of the relevant struct type.",
+        explanation: "A struct literal, struct pattern, field access, or another field-naming operation uses an identifier that is not a field of the relevant struct type.",
         likely_cause: "The field name is misspelled, belongs to a different struct, or the struct definition was changed without updating its construction or use.",
         examples: [
             ErrorCodeExample { title: "Access an unknown field", source: "struct Point { x: i32, y: i32 }\nfn main() -> i32 {\n    let point = Point { x: 10, y: 32 };\n    point.z\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
@@ -865,8 +865,8 @@ define_error_codes! {
         ],
     };
     DUPLICATE_FIELD = 402 => {
-        explanation: "A struct declaration defines the same field name more than once, or a struct literal supplies more than one initializer for the same field.",
-        likely_cause: "A field declaration or initializer was duplicated, possibly after a rename or copy-and-paste edit. Give every declared field a unique name, and initialize each field at most once in a struct literal.",
+        explanation: "A struct declaration defines the same field name more than once, a struct literal supplies more than one initializer for the same field, or a struct pattern names the same field twice.",
+        likely_cause: "A field declaration, initializer, or pattern field was duplicated, possibly after a rename or copy-and-paste edit. Give every declared field a unique name, and name each field at most once in a struct literal or pattern.",
         examples: [
             ErrorCodeExample { title: "Repeated field initializer", source: "struct Point { x: i32, y: i32 }\nfn main() -> i32 {\n    let point = Point { x: 10, x: 20, y: 32 };\n    point.y\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode },
             ErrorCodeExample { title: "Initialize each field once", source: "struct Point { x: i32, y: i32 }\nfn main() -> i32 {\n    let point = Point { x: 10, y: 32 };\n    point.x + point.y\n}", outcome: ErrorCodeExampleOutcome::Compiles },
@@ -875,6 +875,15 @@ define_error_codes! {
             ErrorCodeReference { title: "Unique struct field declarations", path: "docs/spec/src/03-types/06-struct-types.md", rule: Some("3.6:6") },
             ErrorCodeReference { title: "Struct literal field matching", path: "docs/spec/src/03-types/06-struct-types.md", rule: Some("3.6:15") },
         ],
+    };
+    STRUCT_PATTERN_NOT_STRUCT = 213 => {
+        explanation: "A struct pattern (preview feature `struct_patterns`) destructures a value whose type is not a struct. `let T { ... } = e;` names the fields of a struct type, so the initializer must have exactly the struct type the pattern's head names.",
+        likely_cause: "The pattern head names a type that is not a struct, or the initializer has a different type than the head. Name the initializer's own struct type in the pattern head, or bind the value with an ordinary `let`.",
+        examples: [
+            ErrorCodeExample { title: "Destructure an integer", source: "const N = i32;\nfn main() -> i32 {\n    let N { value } = 5;\n    value\n}", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: ["struct_patterns"] },
+            ErrorCodeExample { title: "Destructure a struct value", source: "struct Point { x: i32, y: i32 }\nfn main() -> i32 {\n    let Point { x, y } = Point { x: 40, y: 2 };\n    x + y\n}", outcome: ErrorCodeExampleOutcome::Compiles, preview: ["struct_patterns"] },
+        ],
+        references: [ErrorCodeReference { title: "Struct patterns", path: "docs/spec/src/05-statements/01-let-statements.md", rule: Some("5.1:19") }],
     };
     COPY_STRUCT_NON_COPY_FIELD = 403 => {
         explanation: "A struct marked `@copy` contains a field whose type has move semantics. Implicitly duplicating the outer value would also have to duplicate that non-Copy field.",
@@ -1591,7 +1600,7 @@ define_error_codes! {
         ],
         references: [ErrorCodeReference { title: "Borrowed string views cannot escape", path: "docs/spec/src/03-types/07-string-type.md", rule: Some("3.7:59") }],
     };
-    // E0498 (CONTAINER_ELEMENT_HAS_DESTRUCTOR) was retired by RUE-646: owning
+    // E0212 (CONTAINER_ELEMENT_HAS_DESTRUCTOR) was retired by RUE-646: owning
     // growable containers now run each live element's drop glue before freeing
     // their buffer (Rust's `Vec<T>` discipline), so a destructor-bearing element
     // type is legal. The code number is left retired (a gap is fine) rather than
@@ -2552,6 +2561,9 @@ pub enum PreviewFeature {
     CFfi,
     /// Public enums may promise that importing matches include a wildcard.
     NonExhaustiveEnums,
+    /// Struct destructuring patterns in `let` statements (ADR-0091,
+    /// RUE-1884): `let Point { x, y } = p;` binds every field by name.
+    StructPatterns,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -2574,6 +2586,7 @@ impl PreviewFeature {
             PreviewFeature::TestInfra => "test_infra",
             PreviewFeature::CFfi => "c_ffi",
             PreviewFeature::NonExhaustiveEnums => "non_exhaustive_enums",
+            PreviewFeature::StructPatterns => "struct_patterns",
         }
     }
 
@@ -2584,6 +2597,7 @@ impl PreviewFeature {
             PreviewFeature::TestInfra => "ADR-0005",
             PreviewFeature::CFfi => "ADR-0064",
             PreviewFeature::NonExhaustiveEnums => "ADR-0005",
+            PreviewFeature::StructPatterns => "ADR-0091",
         }
     }
 
@@ -2593,6 +2607,7 @@ impl PreviewFeature {
             PreviewFeature::TestInfra,
             PreviewFeature::CFfi,
             PreviewFeature::NonExhaustiveEnums,
+            PreviewFeature::StructPatterns,
         ]
     }
 
@@ -2635,6 +2650,7 @@ impl std::str::FromStr for PreviewFeature {
             "test_infra" => Ok(PreviewFeature::TestInfra),
             "c_ffi" => Ok(PreviewFeature::CFfi),
             "non_exhaustive_enums" => Ok(PreviewFeature::NonExhaustiveEnums),
+            "struct_patterns" => Ok(PreviewFeature::StructPatterns),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -3276,6 +3292,10 @@ pub enum ErrorKind {
         struct_name: String,
         field_name: String,
     },
+    /// A struct pattern destructures a value whose type is not a struct
+    /// (spec 5.1:19, RUE-1884).
+    #[error("cannot destructure a value of type '{type_name}': not a struct")]
+    StructPatternNotStruct { type_name: String },
     /// Anonymous struct with no fields is not allowed
     #[error("empty struct is not allowed")]
     EmptyStruct,
@@ -4133,6 +4153,7 @@ impl ErrorKind {
             ErrorKind::MissingFields(_) => ErrorCode::MISSING_FIELDS,
             ErrorKind::UnknownField { .. } => ErrorCode::UNKNOWN_FIELD,
             ErrorKind::DuplicateField { .. } => ErrorCode::DUPLICATE_FIELD,
+            ErrorKind::StructPatternNotStruct { .. } => ErrorCode::STRUCT_PATTERN_NOT_STRUCT,
             ErrorKind::EmptyStruct => ErrorCode::EMPTY_STRUCT,
             ErrorKind::CopyStructNonCopyField(_) => ErrorCode::COPY_STRUCT_NON_COPY_FIELD,
             ErrorKind::ReservedTypeName { .. } => ErrorCode::RESERVED_TYPE_NAME,
@@ -6073,7 +6094,10 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(names, "test_infra, c_ffi, non_exhaustive_enums");
+        assert_eq!(
+            names,
+            "test_infra, c_ffi, non_exhaustive_enums, struct_patterns"
+        );
     }
 
     #[test]

@@ -26,6 +26,10 @@ this appendix governs.
 <!-- grammar-sync(id="6.6:2", production="yield_expr", role="appendix") -->
 <!-- grammar-sync(id="6.7:2", production="item", role="appendix", relation="contains", symbol="test_item") -->
 <!-- grammar-sync(id="6.7:2", production="test_item", role="appendix") -->
+<!-- grammar-sync(id="5.1:2", production="let_pattern", role="appendix") -->
+<!-- grammar-sync(id="5.1:2", production="struct_pattern", role="appendix") -->
+<!-- grammar-sync(id="5.1:2", production="field_patterns", role="appendix") -->
+<!-- grammar-sync(id="5.1:2", production="field_pattern", role="appendix") -->
 <!-- grammar-sync(id="4.7:2", production="path_pattern", role="appendix") -->
 <!-- grammar-sync(id="4.7:2", production="pattern_elements", role="appendix") -->
 <!-- grammar-sync(id="4.7:2", production="pattern_element", role="appendix") -->
@@ -103,7 +107,11 @@ test_item      = directives "test" STRING "{" block "}" ;
 (* Statements *)
 statement      = let_stmt | assign_stmt | expr_stmt ;
 let_stmt       = directives "let" [ "mut" ] let_pattern [ ":" type ] "=" expression ";" ;
-let_pattern    = IDENT | "_" ;
+let_pattern    = IDENT | "_" | struct_pattern ;
+struct_pattern = type "{" [ field_patterns ] "}" ;
+field_patterns = field_pattern { "," field_pattern } [ "," ] ;
+field_pattern  = [ "mut" ] IDENT
+               | IDENT ":" ( [ "mut" ] IDENT | "_" ) ;
 assign_stmt    = place_expr ( "=" | compound_op ) expression ";" ;
 compound_op    = "+=" | "-=" | "*=" | "/=" | "%="
                | "&=" | "|=" | "^=" | "<<=" | ">>=" ;

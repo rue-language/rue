@@ -23,8 +23,9 @@ use rue_parser::ast::{ConstDecl, DropFn, ExternBlock, ExternFn, TestDecl};
 use rue_parser::intrinsics::{OFFSET_OF_INTRINSIC, TYPE_INTRINSICS};
 use rue_parser::{
     ArgMode, ArrayLength, AssignStatement, AssignTarget, BinaryOp, CallArg, CompoundOp, Directive,
-    EnumDecl, Expr, Function, IntrinsicArg, Item, LetPattern, Method, ParamMode, Pattern,
-    Statement, StructDecl, TypeExpr, UnaryOp, ast::Visibility,
+    EnumDecl, Expr, Function, IntrinsicArg, Item, LetPattern, LetStatement, Method, ParamMode,
+    Pattern, Statement, StructDecl, StructPattern, StructPatternBinding, TypeExpr, UnaryOp,
+    ast::Visibility,
 };
 
 use crate::inst::{
@@ -75,6 +76,10 @@ pub struct AstGen<'a> {
     /// index temporaries of a compound-assignment desugaring (RUE-1043), so
     /// nested and sibling compound assignments never share a temporary.
     compound_counter: u32,
+    /// Monotonic counter used to mint unique names for the hidden temporaries
+    /// of a struct-pattern `let` (spec 5.1:18, RUE-1884), so nested and
+    /// sibling patterns never share one.
+    struct_pattern_count: u32,
     /// Source bindings that may be changed while this producer runs. A place
     /// index referring to one of these must be captured before the compound
     /// assignment's right-hand side; immutable bindings and file constants
@@ -208,6 +213,7 @@ impl<'a> AstGen<'a> {
             payload_error: None,
             for_counter: 0,
             compound_counter: 0,
+            struct_pattern_count: 0,
             mutable_place_names: AHashSet::new(),
             mutable_place_names_added: Vec::new(),
             structural_path: None,
@@ -1914,13 +1920,15 @@ impl<'a> AstGen<'a> {
             // statements + 1 for the final expression
             let mut inst_refs = Vec::with_capacity(block.statements.len() + 1);
 
-            // Generate all statements first
+            // Generate all statements first. A statement usually lowers to
+            // one instruction; a struct-pattern `let` lowers to the hidden
+            // temporary, the pattern check, and one binding per field, all
+            // of which belong to the enclosing block's own scope.
             for (index, stmt) in block.statements.iter().enumerate() {
-                let inst_ref = self.with_structural_segment(
+                self.with_structural_segment(
                     crate::RirStructuralPathSegment::Statement(index as u32),
-                    |this| this.gen_statement(stmt),
+                    |this| this.gen_statement_into(stmt, &mut inst_refs),
                 );
-                inst_refs.push(inst_ref.as_u32());
             }
 
             // Generate the final expression
@@ -2116,6 +2124,9 @@ impl<'a> AstGen<'a> {
         let binder_name: Option<Spur> = match &for_expr.binder {
             LetPattern::Ident(id) => Some(self.symbol(id.name)),
             LetPattern::Wildcard(_) => Some(self.intern(format!("_@rue:for:elem:{n}"))),
+            // The parser only produces struct patterns for `let` binders
+            // (spec 5.1:18); a `for` binder is an identifier or `_`.
+            LetPattern::Struct(_) => unreachable!("for binders are identifiers or `_`"),
         };
         let p_for_get = self.rir.add_inst(Inst {
             data: InstData::VarRef {
@@ -2250,6 +2261,113 @@ impl<'a> AstGen<'a> {
             .record_failure(&mut self.payload_error)
     }
 
+    /// Lower one statement, appending every block-level instruction it
+    /// produces to `out` in execution order.
+    fn gen_statement_into(&mut self, stmt: &Statement, out: &mut Vec<u32>) {
+        if let Statement::Let(let_stmt) = stmt
+            && let LetPattern::Struct(pattern) = &let_stmt.pattern
+        {
+            self.gen_struct_pattern_let(let_stmt, pattern, out);
+            return;
+        }
+        let inst_ref = self.gen_statement(stmt);
+        out.push(inst_ref.as_u32());
+    }
+
+    /// Lower `let T { f: b, ... } = init;` (spec 5.1:18) to the ordinary
+    /// binding instructions it stands for:
+    ///
+    /// ```text
+    /// let <hidden>: <annotation> = init;   // the pattern head is checked
+    /// struct_pattern <hidden> : T { f, ... } // against the value's type here
+    /// let b = <hidden>.f;                  // or `let _ = <hidden>.f;`
+    /// ...
+    /// ```
+    ///
+    /// Each binding is then an ordinary `let` of a field read (5.1:21), so
+    /// mutability, shadowing, unused-binding warnings, moves out of the
+    /// temporary, and the discard of a `_` field all follow the rules those
+    /// statements already have. The hidden name is not an identifier, so no
+    /// program can name the temporary.
+    fn gen_struct_pattern_let(
+        &mut self,
+        let_stmt: &LetStatement,
+        pattern: &StructPattern,
+        out: &mut Vec<u32>,
+    ) {
+        let directives = self.convert_directives(let_stmt.directives());
+        let index = self.struct_pattern_count;
+        self.struct_pattern_count += 1;
+        let local = self.intern(format!("_@rue:destructure:{index}"));
+        let annotation = let_stmt
+            .ty
+            .as_ref()
+            .map(|ty| self.intern_type_at(crate::RirStructuralPathSegment::ReturnType, ty));
+        let head = self.intern_type_at(crate::RirStructuralPathSegment::Operand(1), &pattern.ty);
+        let init = self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), &let_stmt.init);
+        let temporary = self
+            .rir
+            .add_alloc(
+                &directives,
+                Some(local),
+                false,
+                annotation,
+                init,
+                false,
+                let_stmt.span,
+            )
+            .record_failure(&mut self.payload_error);
+        out.push(temporary.as_u32());
+
+        let field_names: Vec<Spur> = pattern
+            .fields
+            .iter()
+            .map(|field| self.symbol(field.name.name))
+            .collect();
+        let check = self
+            .rir
+            .add_struct_pattern(local, head, &field_names, pattern.span)
+            .record_failure(&mut self.payload_error);
+        out.push(check.as_u32());
+
+        for (position, field) in pattern.fields.iter().enumerate() {
+            let field_name = self.symbol(field.name.name);
+            let (binding, is_mut) = match &field.binding {
+                StructPatternBinding::Ident { name, is_mut } => {
+                    (Some(self.symbol(name.name)), *is_mut)
+                }
+                StructPatternBinding::Wildcard(_) => (None, false),
+            };
+            let projection = self.with_structural_segment(
+                crate::RirStructuralPathSegment::Operand(2 + position as u32),
+                |this| {
+                    let base = this.rir.add_inst(Inst {
+                        data: InstData::VarRef {
+                            name: local,
+                            anchor: None,
+                        },
+                        span: field.span,
+                    });
+                    this.rir.add_inst(Inst {
+                        data: InstData::FieldGet {
+                            base,
+                            field: field_name,
+                        },
+                        span: field.span,
+                    })
+                },
+            );
+            if is_mut && let Some(name) = binding {
+                self.mark_mutable_name(name);
+            }
+            let alloc = self
+                .rir
+                .add_alloc(&[], binding, is_mut, None, projection, false, field.span)
+                .record_failure(&mut self.payload_error);
+            out.push(alloc.as_u32());
+        }
+    }
+
     fn gen_statement(&mut self, stmt: &Statement) -> InstRef {
         match stmt {
             Statement::Let(let_stmt) => {
@@ -2257,6 +2375,9 @@ impl<'a> AstGen<'a> {
                 let name = match &let_stmt.pattern {
                     LetPattern::Ident(ident) => Some(self.symbol(ident.name)),
                     LetPattern::Wildcard(_) => None,
+                    LetPattern::Struct(_) => {
+                        unreachable!("struct-pattern lets lower through gen_statement_into")
+                    }
                 };
                 let ty = let_stmt
                     .ty

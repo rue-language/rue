@@ -475,6 +475,11 @@ impl Rir {
                         (r.start(), r.extent(), RirFieldInitsRange::FAMILY)
                     })?
                 }
+                InstData::StructPattern { fields, .. } => {
+                    self.validate_fixed_symbols(fields, SYMBOL_SCHEMA, |r| {
+                        (r.start(), r.extent(), RirPatternFieldsRange::FAMILY)
+                    })?
+                }
                 InstData::EnumDecl {
                     variants, payloads, ..
                 } => {
@@ -918,6 +923,13 @@ impl Rir {
                     refs!(*base, *value);
                     symbols!(*field);
                 }
+                InstData::StructPattern { local, ty, fields } => {
+                    symbols!(*local);
+                    types!(*ty);
+                    for field in self.pattern_fields(fields) {
+                        symbols!(field);
+                    }
+                }
                 InstData::EnumDecl {
                     name,
                     variants,
@@ -1121,6 +1133,7 @@ impl Rir {
             }
             InstData::FieldGet { base, .. } => out.push(*base),
             InstData::FieldSet { base, value, .. } => out.extend([*base, *value]),
+            InstData::StructPattern { .. } => {}
             InstData::EnumVariant { module, .. } => out.extend(module.iter().copied()),
             InstData::ArrayInit { elements } => out.extend(self.array_elements(elements).values()),
             InstData::ArrayRepeat { value, .. } => out.push(*value),

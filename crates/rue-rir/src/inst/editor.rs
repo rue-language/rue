@@ -504,6 +504,23 @@ impl RirEditor {
         })
     }
 
+    /// Add the field list of a struct pattern (spec 5.1:18).
+    pub fn add_struct_pattern(
+        &mut self,
+        local: Spur,
+        ty: RirTypeSyntaxRef,
+        fields: &[Spur],
+        span: Span,
+    ) -> Result<InstRef, RirPayloadBuildError> {
+        self.atomic(|rir| {
+            let fields = rir.add_pattern_fields(fields)?;
+            Ok(rir.add_inst(Inst {
+                data: InstData::StructPattern { local, ty, fields },
+                span,
+            }))
+        })
+    }
+
     pub fn add_enum_decl(
         &mut self,
         is_pub: bool,
@@ -1387,6 +1404,14 @@ impl RirEditor {
                             field: symbol(*field),
                             value: remap_ref(*value),
                         }))
+                    }
+                    InstData::StructPattern { local, ty, fields } => {
+                        let fields = source
+                            .pattern_fields(fields)
+                            .values()
+                            .map(&mut symbol)
+                            .collect::<Vec<_>>();
+                        self.add_struct_pattern(symbol(*local), remap_type(*ty), &fields, span)?
                     }
                     InstData::EnumDecl {
                         is_pub,

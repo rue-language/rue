@@ -43,9 +43,9 @@ pub use inst::{
     RirEnumPayloads, RirEnumPayloadsRange, RirEnumVariantsRange, RirFallibleIntrinsic,
     RirFallibleIntrinsicSet, RirFieldInitsRange, RirInternalIntrinsicArgsRange,
     RirIntrinsicArgsRange, RirMatchArmsRange, RirParam, RirParamMode, RirParamsRange, RirPattern,
-    RirPatternElement, RirPatternElementView, RirPatternElements, RirPatternView,
-    RirPayloadBuildError, RirPayloadError, RirPayloadStorageStats, RirPrinter, RirSpanField,
-    RirSpanRemapError, RirSpanSlot, RirSpanTraversalError, RirStructFieldsRange,
+    RirPatternElement, RirPatternElementView, RirPatternElements, RirPatternFieldsRange,
+    RirPatternView, RirPayloadBuildError, RirPayloadError, RirPayloadStorageStats, RirPrinter,
+    RirSpanField, RirSpanRemapError, RirSpanSlot, RirSpanTraversalError, RirStructFieldsRange,
     RirStructMethodsRange, RirStructuralAnchor, RirStructuralPathSegment, RirValidationContext,
     ValidatedRir, directives_allow,
 };

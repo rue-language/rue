@@ -811,6 +811,24 @@ pub enum InstData {
         value: InstRef,
     },
 
+    /// The field list of a struct pattern, `let T { f: b, ... } = e;`
+    /// (spec 5.1:18, RUE-1884).
+    ///
+    /// The lowering binds the initializer to a hidden local and then binds
+    /// each field with an ordinary `Alloc` of a `FieldGet` on that local; this
+    /// instruction precedes those projections so that semantic analysis can
+    /// check the pattern's field list against the struct's declared fields
+    /// (5.1:20) and the head type against the value's type before any
+    /// projection is analyzed. It has no value.
+    StructPattern {
+        /// The hidden local holding the destructured value.
+        local: Spur,
+        /// The struct type the pattern head names.
+        ty: RirTypeSyntaxRef,
+        /// Every field the pattern names, in source order.
+        fields: RirPatternFieldsRange,
+    },
+
     // Enum operations
     /// Enum type declaration
     /// Variants are stored in the typed enum-variant payload family.
