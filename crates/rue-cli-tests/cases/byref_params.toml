@@ -649,12 +649,14 @@ fn main() -> i32 {
 exit_code = 42
 
 # ---------------------------------------------------------------------------
-# The CALLER's own parameter passed by reference (RUE-2042).
+# The CALLER's own parameter passed onward by reference (RUE-2042).
 #
 # Passing a place by reference hands the callee that place's ADDRESS, so every
 # read of the same root after the call must observe what the callee wrote.
-# That holds whatever the root is, and a caller's own by-value parameter is a
-# root like any other: `fn f(v: i64) { bump(inout v); v }` returns 6, not 5.
+# That holds whatever the root is. A by-value parameter is an immutable
+# binding and so cannot be that root (spec 6.1:43, RUE-2079); the parameter
+# roots that remain are an `inout` parameter passed onward and a `mut self`
+# receiver, and the RUE-2042 rule is their defence.
 #
 # A parameter read is materialized as a `Param { index }` instruction rather
 # than a `Load`, and the optimizer keys repeated reads of a never-written
@@ -668,11 +670,32 @@ exit_code = 42
 [[case]]
 name = "inout_param_arg_reread_after_call"
 differential_opt = true
-description = "RUE-2042 repro: a scalar by-value parameter passed `inout` reads the callee's write afterwards, not its entry value."
+description = "RUE-2042 repro on the surviving shape: a scalar `inout` parameter passed onward reads the callee's write afterwards, not its entry value."
 files = [{ path = "main.rue", source = """
 fn bump(inout x: i64) { x = x + 1; }
-fn f(v: i64) -> i64 { bump(inout v); v }
-fn main() -> i32 { @intCast(f(5)) }
+fn f(inout v: i64) -> i64 { bump(inout v); v }
+fn main() -> i32 {
+    let mut v: i64 = 5;
+    @intCast(f(inout v))
+}
+""" }]
+stdout = ""
+exit_code = 6
+
+[[case]]
+name = "inout_mut_self_field_arg_reread_after_call"
+differential_opt = true
+description = "A `mut self` receiver is the one mutable by-value parameter: its field passed `inout` reads the callee's write afterwards."
+files = [{ path = "main.rue", source = """
+struct C {
+    v: i64,
+    fn f(mut self) -> i64 { bump(inout self.v); self.v }
+}
+fn bump(inout x: i64) { x = x + 1; }
+fn main() -> i32 {
+    let c = C { v: 5 };
+    @intCast(c.f())
+}
 """ }]
 stdout = ""
 exit_code = 6
@@ -686,8 +709,11 @@ fn poke(inout x: i64) {
     let p: ptr mut i64 = checked { @raw_mut(x) };
     checked { @ptr_write(p, 42); };
 }
-fn f(v: i64) -> i64 { poke(inout v); v }
-fn main() -> i32 { @intCast(f(5)) }
+fn f(inout v: i64) -> i64 { poke(inout v); v }
+fn main() -> i32 {
+    let mut v: i64 = 5;
+    @intCast(f(inout v))
+}
 """ }]
 stdout = ""
 exit_code = 42
@@ -698,7 +724,7 @@ differential_opt = true
 description = "The call sits in a loop body: each iteration's read must observe the previous iteration's write, so three iterations add three."
 files = [{ path = "main.rue", source = """
 fn bump(inout x: i64) { x = x + 1; }
-fn f(v: i64) -> i64 {
+fn f(inout v: i64) -> i64 {
     let mut i: i64 = 0;
     while i < 3 {
         bump(inout v);
@@ -706,7 +732,10 @@ fn f(v: i64) -> i64 {
     }
     v
 }
-fn main() -> i32 { @intCast(f(5)) }
+fn main() -> i32 {
+    let mut v: i64 = 5;
+    @intCast(f(inout v))
+}
 """ }]
 stdout = ""
 exit_code = 8
@@ -717,13 +746,15 @@ differential_opt = true
 description = "The call sits in one arm of an `if` and the read is after the join, so the taken arm reports 6 and the untaken one reports 5."
 files = [{ path = "main.rue", source = """
 fn bump(inout x: i64) { x = x + 1; }
-fn f(v: i64, c: bool) -> i64 {
+fn f(inout v: i64, c: bool) -> i64 {
     if c { bump(inout v); }
     v
 }
 fn main() -> i32 {
-    @dbg(f(5, true));
-    @dbg(f(5, false));
+    let mut a: i64 = 5;
+    let mut b: i64 = 5;
+    @dbg(f(inout a, true));
+    @dbg(f(inout b, false));
     0
 }
 """ }]
@@ -739,8 +770,11 @@ differential_opt = true
 description = "Two by-ref passes of the same parameter: the second call's argument reads the first call's write, and so does the final read."
 files = [{ path = "main.rue", source = """
 fn bump(inout x: i64) { x = x + 1; }
-fn f(v: i64) -> i64 { bump(inout v); bump(inout v); v }
-fn main() -> i32 { @intCast(f(5)) }
+fn f(inout v: i64) -> i64 { bump(inout v); bump(inout v); v }
+fn main() -> i32 {
+    let mut v: i64 = 5;
+    @intCast(f(inout v))
+}
 """ }]
 stdout = ""
 exit_code = 7
@@ -748,18 +782,21 @@ exit_code = 7
 [[case]]
 name = "inout_param_arg_subword_and_float_scalars"
 differential_opt = true
-description = "The rule is per ABI slot, not per width: `u8`, `bool`, and `f64` parameters passed `inout` all re-read the callee's write."
+description = "The rule is per ABI slot, not per width: `u8`, `bool`, and `f64` parameters passed onward `inout` all re-read the callee's write."
 files = [{ path = "main.rue", source = """
 fn bump8(inout x: u8) { x = x + 1; }
 fn flip(inout b: bool) { b = !b; }
 fn bumpf(inout x: f64) { x = x + 1.0; }
-fn u8_case(v: u8) -> u8 { bump8(inout v); v }
-fn bool_case(v: bool) -> bool { flip(inout v); v }
-fn f64_case(v: f64) -> f64 { bumpf(inout v); v }
+fn u8_case(inout v: u8) -> u8 { bump8(inout v); v }
+fn bool_case(inout v: bool) -> bool { flip(inout v); v }
+fn f64_case(inout v: f64) -> f64 { bumpf(inout v); v }
 fn main() -> i32 {
-    @dbg(u8_case(5));
-    @dbg(bool_case(false));
-    @dbg(f64_case(5.0));
+    let mut a: u8 = 5;
+    let mut b: bool = false;
+    let mut c: f64 = 5.0;
+    @dbg(u8_case(inout a));
+    @dbg(bool_case(inout b));
+    @dbg(f64_case(inout c));
     0
 }
 """ }]
@@ -769,6 +806,17 @@ true
 6.0
 """
 exit_code = 0
+
+[[case]]
+name = "inout_by_value_param_arg_rejected"
+description = "A by-value parameter is an immutable binding, so passing it `inout` is E0203 (spec 6.1:43, RUE-2079); the local-copy control below is the legal spelling."
+files = [{ path = "main.rue", source = """
+fn bump(inout x: i64) { x = x + 1; }
+fn f(v: i64) -> i64 { bump(inout v); v }
+fn main() -> i32 { @intCast(f(5)) }
+""" }]
+compile_fail = true
+error_contains = ["[E0203]", "cannot assign to immutable variable 'v'"]
 
 [[case]]
 name = "inout_local_arg_reread_control"
@@ -789,12 +837,15 @@ exit_code = 6
 [[case]]
 name = "inout_aggregate_param_arg_reread_control"
 differential_opt = true
-description = "Control: a multi-slot aggregate parameter passed `inout` reads through a projection rather than a whole-slot parameter read, and was always correct."
+description = "Control: a multi-slot aggregate `inout` parameter passed onward reads through a projection rather than a whole-slot parameter read, and was always correct."
 files = [{ path = "main.rue", source = """
 struct P { a: i64, b: i64 }
 fn poke(inout p: P) { p.a = 9; }
-fn f(v: P) -> i64 { poke(inout v); v.a }
-fn main() -> i32 { @intCast(f(P { a: 1, b: 2 })) }
+fn f(inout v: P) -> i64 { poke(inout v); v.a }
+fn main() -> i32 {
+    let mut p = P { a: 1, b: 2 };
+    @intCast(f(inout p))
+}
 """ }]
 stdout = ""
 exit_code = 9
