@@ -2013,12 +2013,12 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 45] = [
 // identity even when constructor, caller, and macro token counts do not.
 const CONSTRUCTION_TOKEN_STRUCT_IDENTITY: (usize, u64) = (80, 5_227_448_979_315_228_973);
 const CONSTRUCTION_TOKEN_IMPL_IDENTITY: (usize, u64) = (108, 2_765_439_612_714_245_239);
-const COMPILER_CRATE_ROOT_IDENTITY: (usize, u64) = (9_718, 803_438_823_648_082_540);
+const COMPILER_CRATE_ROOT_IDENTITY: (usize, u64) = (10_066, 14_874_521_457_728_586_383);
 const COMPILER_CRATE_ROOT_NAMESPACE_IDENTITY: (usize, u64, usize, u64) = (
-    119,
-    15_412_058_190_339_860_904,
-    240,
-    9_582_655_845_782_885_532,
+    120,
+    3_363_798_739_151_463_513,
+    241,
+    4_013_234_295_038_604_646,
 );
 const COMPILER_SESSION_ROOT_IDENTITY: (usize, u64) = (4_144, 8_851_562_517_716_222_536);
 const COMPILER_SESSION_CONSTRUCTOR_IDENTITY: (usize, u64) = (102, 5_219_454_448_646_406_172);
@@ -6903,6 +6903,10 @@ fn root_export_metadata(owner: &str, symbol: &str) -> (&'static str, &'static st
                 ("toolchain-module-demand", "source-loaders+embedders")
             }
             _ => panic!("unclassified toolchain-module-demand facade export: {symbol}"),
+        },
+        "rue_air" => match symbol {
+            "module_display_name" => ("diagnostic", "cli+embedders"),
+            _ => panic!("unclassified rue_air facade export: {symbol}"),
         },
         "rue_cfg" | "rue_target" => ("compilation-config", "cli+embedders"),
         _ => panic!("unclassified facade export owner: {owner}::{symbol}"),

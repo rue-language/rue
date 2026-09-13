@@ -67,9 +67,10 @@ json_diagnostic_order = ["error E1501 -"]
 error_contains = [
   '"code":"E1501"',
   '"message":"Toolchain integrity error:',
+  "the trusted standard-library module 'std.option' is missing from the toolchain at '",
   '"spans":[]',
 ]
-compile_stderr_not_contains = ["E9000", "internal compiler error", "error: [", " --> "]
+compile_stderr_not_contains = ["E9000", "internal compiler error", "error: [", " --> ", "\\u0000", "rue-std/"]
 
 [[case]]
 name = "hermetic_toolchain_denial_is_json"
@@ -86,9 +87,37 @@ json_diagnostic_order = ["error E1502 -"]
 error_contains = [
   '"code":"E1502"',
   '"message":"Hermetic build configuration error:',
+  "the trusted standard-library module 'std.option' at '",
   '"spans":[]',
 ]
-compile_stderr_not_contains = ["E9000", "internal compiler error", "Toolchain integrity error", "error: [", " --> "]
+compile_stderr_not_contains = ["E9000", "internal compiler error", "Toolchain integrity error", "error: [", " --> ", "\\u0000", "rue-std/"]
+
+[[case]]
+name = "unconfigured_std_names_the_module_as_a_program_spells_it"
+description = "RUE-2192: the driver's toolchain-integrity text names the demanded trusted module `std.option`, never the synthetic NUL-prefixed identity that keys it inside the compiler, in both the human and the JSON rendering."
+files = [{ path = "main.rue", source = 'fn main() -> i32 { let _ = @parse_i64("1"); 0 }' }]
+env = { RUE_STD_PATH = "" }
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = [
+  "Toolchain integrity error: the program requires the trusted standard-library module 'std.option', but no standard-library path is configured (set RUE_STD_PATH).",
+]
+compile_stderr_not_contains = ["rue-std/", "\u0000", "E9000", "internal compiler error"]
+
+[[case]]
+name = "unconfigured_std_names_the_module_as_a_program_spells_it_json"
+description = "RUE-2192: the same E1501 message under --error-format json, with the module named `std.option` and no escaped NUL in the wire text."
+files = [{ path = "main.rue", source = 'fn main() -> i32 { let _ = @parse_i64("1"); 0 }' }]
+env = { RUE_STD_PATH = "" }
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = ["error E1501 -"]
+error_contains = [
+  '"code":"E1501"',
+  "the program requires the trusted standard-library module 'std.option', but no standard-library path is configured",
+]
+compile_stderr_not_contains = ["rue-std/", "\\u0000", "E9000", "internal compiler error"]
 
 [[case]]
 name = "empty_call_argument_is_at_comma"

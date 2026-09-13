@@ -167,6 +167,11 @@ pub use source_identity::{
 };
 pub use source_metadata::SourceMetadata;
 pub use source_snapshot::{MAX_SOURCE_BYTES, MAX_SOURCE_FILES, SourceSnapshot};
+// The one display policy for a module's name in a diagnostic: the import path
+// of a user module, the dotted `std` / `std.<name>` form of a trusted module,
+// never the synthetic NUL-prefixed logical identity (RUE-2164). Hosts that
+// render their own diagnostics about trusted modules name them through it.
+pub use rue_air::module_display_name;
 // The declared test-candidate inventory is a host protocol record, published
 // through `unstable` while `rue test` is still being built (ADR-0083 Phase 2).
 pub(crate) use test_candidates::{
