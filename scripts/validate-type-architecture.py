@@ -26,6 +26,7 @@ OPAQUE_IDS = (
     "ArrayTypeId",
     "PtrConstTypeId",
     "PtrMutTypeId",
+    "FunctionTypeId",
 )
 COMPOSITE_TAGS = {
     "Struct": 100,
@@ -34,6 +35,7 @@ COMPOSITE_TAGS = {
     "Module": 103,
     "PtrConst": 104,
     "PtrMut": 105,
+    "Function": 106,
 }
 TAG_ASSIGNMENT = re.compile(
     r"\b(?P<category>" + "|".join(COMPOSITE_TAGS) + r")\s*=\s*"
@@ -75,6 +77,9 @@ PUBLIC_TYPE_DECLARATION_ALLOWLIST = {
     ("rue-air", "types.rs", "ArrayTypeId"): "opaque typed structural pool identity",
     ("rue-air", "types.rs", "PtrConstTypeId"): "opaque typed structural pool identity",
     ("rue-air", "types.rs", "PtrMutTypeId"): "opaque typed structural pool identity",
+    ("rue-air", "types.rs", "FunctionTypeId"): "opaque typed structural pool identity",
+    ("rue-air", "types.rs", "FunctionTypeParam"): "function signature definition schema (ADR-0096)",
+    ("rue-air", "types.rs", "FunctionTypeDef"): "function signature definition schema (ADR-0096)",
     ("rue-air", "types.rs", "ModuleId"): "module identity carried by canonical Type",
     ("rue-air", "intern_pool.rs", "TypeData"): "canonical pool storage schema",
     ("rue-air", "intern_pool.rs", "TypeValidationError"): "checked pool boundary error",
@@ -134,6 +139,7 @@ COMPACT_U32_NEWTYPE_ALLOWLIST = {
     ("rue-air", "types.rs", "ArrayTypeId"): "opaque array pool identity",
     ("rue-air", "types.rs", "PtrConstTypeId"): "opaque const-pointer pool identity",
     ("rue-air", "types.rs", "PtrMutTypeId"): "opaque mut-pointer pool identity",
+    ("rue-air", "types.rs", "FunctionTypeId"): "opaque function-type pool identity",
     ("rue-air", "types.rs", "ModuleId"): "request-local module identity",
     ("rue-air", "inference/types.rs", "TypeVarId"): "inference-local variable identity",
     ("rue-air", "inst.rs", "AirPlaceRef"): "typed AIR place index",

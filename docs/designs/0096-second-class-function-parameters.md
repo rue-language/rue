@@ -53,8 +53,8 @@ persist is passed again at each call.
 
 ## Context
 
-The prototype ports (`docs/notes/interfaces-port-measurements.md`) need
-comparators and predicates over identifiers that carry external context: a
+The prototype ports measured for RUE-2107 need comparators and predicates
+over identifiers that carry external context: a
 sort keyed by a policy, a visitor over a table, a filter over a buffer. Rue
 has no way to pass behavior at all today, so each such algorithm is
 duplicated per comparison or written against a fixed one.
