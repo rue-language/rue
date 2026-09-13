@@ -2841,7 +2841,8 @@ fn earliest_call_anchor(
         .iter()
         .filter(|inst| match &inst.data {
             rue_air::SemanticBodyInstData::Call { function, .. }
-            | rue_air::SemanticBodyInstData::AccessorCall { function, .. } => function == callee,
+            | rue_air::SemanticBodyInstData::AccessorCall { function, .. }
+            | rue_air::SemanticBodyInstData::FnRef { function } => function == callee,
             rue_air::SemanticBodyInstData::CallSpecialized { identity, .. } => {
                 crate::semantic_identity::function_instance_from_specialization(identity)
                     .is_some_and(|instance| instance == *callee)

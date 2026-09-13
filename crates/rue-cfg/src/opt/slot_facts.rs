@@ -221,7 +221,9 @@ impl LoopSlotFactsWorkspace {
                             unknown_memory_target = true;
                         }
                     },
-                    CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } => {
+                    CfgInstData::Call { args, .. }
+                    | CfgInstData::AccessorCall { args, .. }
+                    | CfgInstData::CallIndirect { args, .. } => {
                         // Retain exact by-ref roots in the shared facts as well
                         // as the conservative unknown-call barrier.
                         for arg in cfg.call_args(args) {
@@ -343,7 +345,9 @@ pub(super) fn classify_slot_writes(cfg: &Cfg, reachable: Option<&BitSet>) -> Vec
                 // By-ref arguments on either call form pass the ADDRESS of
                 // the argument place: disqualify any local the argument
                 // roots (module docs).
-                CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } => {
+                CfgInstData::Call { args, .. }
+                | CfgInstData::AccessorCall { args, .. }
+                | CfgInstData::CallIndirect { args, .. } => {
                     for arg in cfg.call_args(args) {
                         if !arg.is_by_ref() {
                             continue;
@@ -443,7 +447,9 @@ pub(super) fn classify_never_written_params(cfg: &Cfg) -> Vec<bool> {
                         mark_written(&mut never_written, slot);
                     }
                 }
-                CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } => {
+                CfgInstData::Call { args, .. }
+                | CfgInstData::AccessorCall { args, .. }
+                | CfgInstData::CallIndirect { args, .. } => {
                     for arg in cfg.call_args(args) {
                         if !arg.is_by_ref() {
                             continue;

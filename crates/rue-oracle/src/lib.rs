@@ -439,6 +439,9 @@ fn output_stream_name(kind: ResourceLimitKind) -> &'static str {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ContractViolationKind {
     MissingFunctionBody,
+    /// An indirect call's callee operand did not evaluate to a function
+    /// address (ADR-0096).
+    IndirectCalleeNotAFunction,
     BlockArgumentArity,
     MissingTerminator,
     BuiltinArity,
@@ -878,6 +881,10 @@ enum Value {
     /// representation so a pointer read/write, offset, or int round-trip resolves
     /// to the same backing store the source place or allocation owns.
     Ptr(Option<PtrTarget>),
+    /// The address of a named function, the value a `fn` parameter binds
+    /// (ADR-0096, RUE-2194): the callee CFG's internal symbol. It is one slot
+    /// wide, copied freely, and consumed only by an indirect call.
+    Function(String),
 }
 
 /// A provenance-carrying pointer value: allocation identity plus canonical
@@ -1032,7 +1039,9 @@ impl Value {
             // sends a pointer to `values_equal_typed` instead, because reading
             // every address as zero would call two distinct pointers equal
             // (spec 4.3:3e). Defined so callers need not thread an error.
-            Value::Unit | Value::Aggregate(_) | Value::Ptr(_) => 0,
+            // A function address is likewise never a number: the only
+            // operation on it is the indirect call (ADR-0096).
+            Value::Unit | Value::Aggregate(_) | Value::Ptr(_) | Value::Function(_) => 0,
         }
     }
     fn as_bool(&self) -> bool {
@@ -1040,7 +1049,7 @@ impl Value {
             Value::Bool(b) => *b,
             Value::Int(n) => *n != 0,
             Value::AddressInt { value, .. } => *value != 0,
-            Value::Unit | Value::Aggregate(_) | Value::Ptr(_) => false,
+            Value::Unit | Value::Aggregate(_) | Value::Ptr(_) | Value::Function(_) => false,
         }
     }
 }
@@ -4282,8 +4291,33 @@ impl<'a> Interp<'a> {
                 }
                 Value::Ptr(Some(self.call_accessor(&fname, &argvals, param_places)?))
             }
-            CfgInstData::Call { runtime, name, .. } => {
-                let fname = self.interner().resolve(name).to_string();
+            CfgInstData::FnAddr { name } => {
+                Value::Function(self.interner().resolve(name).to_string())
+            }
+            CfgInstData::Call { .. } | CfgInstData::CallIndirect { .. } => {
+                // A direct call names its callee; an indirect call evaluates
+                // the callback operand to the function address it carries
+                // (ADR-0096). Everything after that is one call path.
+                let (fname, runtime) = match &inst.data {
+                    CfgInstData::Call { runtime, name, .. } => {
+                        (self.interner().resolve(name).to_string(), *runtime)
+                    }
+                    CfgInstData::CallIndirect { callee, .. } => {
+                        match self.eval(cfg, frame, *callee)? {
+                            Value::Function(name) => (name, None),
+                            other => {
+                                return Err(unsupported(
+                                    UnsupportedKind::ContractViolation(
+                                        ContractViolationKind::IndirectCalleeNotAFunction,
+                                    ),
+                                    format!("indirect call through {other:?}"),
+                                ));
+                            }
+                        }
+                    }
+                    _ => unreachable!("matched a call instruction"),
+                };
+                let runtime = &runtime;
                 let call_args = cfg.get_call_args(&inst.data).to_vec();
                 let arg_types: Vec<Type> = call_args
                     .iter()

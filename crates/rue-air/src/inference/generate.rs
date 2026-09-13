@@ -788,6 +788,13 @@ impl<'a> ConstraintGenerator<'a> {
     /// `arg == expected` equality when the expected type is one of these; the
     /// real compatibility check (including the `Str(N)` capacity-fits rule) and
     /// the fat-pointer/`str` materialization happen in semantic analysis.
+    /// Whether a parameter position binds a callback (ADR-0096): the operand
+    /// is resolved by name in semantic analysis, so inference constrains
+    /// nothing against it, exactly as it defers a slice view.
+    fn is_callback_param_type(ty: &InferType) -> bool {
+        matches!(ty, InferType::Concrete(t) if t.is_function())
+    }
+
     fn is_slice_struct_type(&self, ty: InferType) -> bool {
         if let InferType::Concrete(t) = ty
             && let Some(id) = t.as_struct()
@@ -1800,7 +1807,15 @@ impl<'a> ConstraintGenerator<'a> {
                 if let Some(local) = ctx.locals.get(name) {
                     local.ty.clone()
                 } else if let Some(param) = ctx.lookup_param(*name) {
-                    param.ty.clone()
+                    // A callback parameter has no first-class value (ADR-0096):
+                    // its forward is bound by name and any other read is the
+                    // targeted escape diagnostic in semantic analysis, so
+                    // inference publishes no type for it to mismatch against.
+                    if Self::is_callback_param_type(&param.ty) {
+                        InferType::Concrete(Type::ERROR)
+                    } else {
+                        param.ty.clone()
+                    }
                 } else if let Some(binding_ty) = self.module_binding_type((span.file_id, *name)) {
                     // Module binding declared in this file (`const m =
                     // @import(...)`): per-file scoped and distinct from the
@@ -2058,7 +2073,44 @@ impl<'a> ConstraintGenerator<'a> {
                         self.interner.resolve(name),
                         "print" | "println" | "eprint" | "eprintln"
                     );
-                let result = if is_print_builtin {
+                // A call through a callback parameter follows the parameter's
+                // `fn` type (ADR-0096, RUE-2194): each argument is constrained
+                // by the position's declared type and the call has the
+                // declared result.
+                let callback = if ctx.locals.contains_key(name) {
+                    None
+                } else {
+                    ctx.lookup_param(*name).and_then(|param| match param.ty {
+                        InferType::Concrete(ty) => ty.as_function(),
+                        _ => None,
+                    })
+                };
+                let result = if let Some(callback) = callback {
+                    let def = self.type_pool.function_def(callback);
+                    for (index, arg) in args.iter().enumerate() {
+                        let arg_info =
+                            self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
+                        arg_diverged |= !arg_info.continues;
+                        if self.was_canceled() {
+                            break;
+                        }
+                        let Some(param) = def.params.get(index) else {
+                            continue;
+                        };
+                        let param_ty = self.type_to_infer(param.ty);
+                        if self.is_slice_struct_type(param_ty.clone())
+                            || Self::is_callback_param_type(&param_ty)
+                        {
+                            continue;
+                        }
+                        self.add_constraint(Constraint::contextual(
+                            arg_info.ty,
+                            param_ty,
+                            arg_info.span,
+                        ));
+                    }
+                    self.type_to_infer(def.result)
+                } else if is_print_builtin {
                     for arg in args.iter() {
                         let info = self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
                         arg_diverged |= !info.continues;
@@ -2109,7 +2161,10 @@ impl<'a> ConstraintGenerator<'a> {
                             // Slice parameters coerce from an array argument
                             // (`borrow arr`); skip strict equality and let sema
                             // materialize the fat pointer (ADR-0043, RUE-322).
-                            if self.is_slice_struct_type(param_ty.clone()) {
+                            // A callback parameter is bound by name (ADR-0096).
+                            if self.is_slice_struct_type(param_ty.clone())
+                                || Self::is_callback_param_type(param_ty)
+                            {
                                 continue;
                             }
                             self.add_constraint(Constraint::contextual(
@@ -3526,7 +3581,9 @@ impl<'a> ConstraintGenerator<'a> {
                                         // equality and let sema materialize the
                                         // fat-pointer view (ADR-0043, RUE-322,
                                         // RUE-559) — same as the direct-Call path.
-                                        if self.is_slice_struct_type(param_ty.clone()) {
+                                        if self.is_slice_struct_type(param_ty.clone())
+                                            || Self::is_callback_param_type(param_ty)
+                                        {
                                             continue;
                                         }
                                         self.add_constraint(Constraint::contextual(
@@ -3646,8 +3703,9 @@ impl<'a> ConstraintGenerator<'a> {
                                     // `Str(N)` expressions; sema still
                                     // requires exact capacity for non-literals
                                     // (RUE-634/RUE-636).
-                                    let defer_equality =
-                                        self.is_slice_struct_type(param_type.clone());
+                                    let defer_equality = self
+                                        .is_slice_struct_type(param_type.clone())
+                                        || Self::is_callback_param_type(param_type);
                                     let arg_info = self.generate_sequenced_operand(
                                         arg.value,
                                         ctx,
@@ -4165,7 +4223,8 @@ impl<'a> ConstraintGenerator<'a> {
         let args = self.rir.call_args(args);
         let mut arg_diverged = false;
         for (arg, param_type) in args.iter().zip(method_sig.param_types.iter()) {
-            let defer_equality = self.is_slice_struct_type(param_type.clone());
+            let defer_equality = self.is_slice_struct_type(param_type.clone())
+                || Self::is_callback_param_type(param_type);
             let arg_info = self.generate_sequenced_operand(arg.value, ctx, !arg_diverged);
             arg_diverged |= !arg_info.continues;
             if self.was_canceled() {
@@ -4663,8 +4722,11 @@ impl<'a> ConstraintGenerator<'a> {
                 declared.clone()
             };
             // Slice parameters coerce from an array argument (ADR-0043,
-            // RUE-322); see the non-generic path.
-            if self.is_slice_struct_type(expected.clone()) {
+            // RUE-322); see the non-generic path. A callback parameter is
+            // bound by name in semantic analysis (ADR-0096).
+            if self.is_slice_struct_type(expected.clone())
+                || Self::is_callback_param_type(&expected)
+            {
                 continue;
             }
             self.add_constraint(Constraint::equal(

@@ -7,7 +7,7 @@ feature-flag: fn_params
 created: 2026-09-13
 accepted: 2026-09-13
 implemented:
-spec-sections: ["6.1:46", "6.1:47", "6.1:48", "6.1:49"]
+spec-sections: ["6.1:46", "6.1:47", "6.1:48", "6.1:49", "6.1:50", "6.1:51", "6.1:52"]
 superseded-by:
 relates: ["RUE-2107", "RUE-2112", "RUE-2113", "RUE-2193", "RUE-2194", "RUE-2195", "RUE-1886", "ADR-0005", "ADR-0043", "ADR-0084", "ADR-0087"]
 ---
@@ -17,8 +17,10 @@ relates: ["RUE-2107", "RUE-2112", "RUE-2113", "RUE-2193", "RUE-2194", "RUE-2195"
 ## Status
 
 Accepted on 2026-09-13 by Steve (the RUE-2107 ruling: the researched v1 is
-ratified as written). Phase 1, the `fn` parameter type, is implemented behind
-the `fn_params` preview feature.
+ratified as written). Phases 1 and 2, the `fn` parameter type and the callback
+semantics through CFG and the reference interpreter, are implemented behind
+the `fn_params` preview feature; native code generation refuses a bound
+callback until phase 3 lowers the indirect call.
 
 ## Summary
 
@@ -117,14 +119,17 @@ the later designs are not constrained by it.
 
 ## Implementation Phases
 
-- [ ] **Phase 1: the `fn` parameter type** - RUE-2193. Parser, RIR, AIR
+- [x] **Phase 1: the `fn` parameter type** - RUE-2193. Parser, RIR, AIR
   type pool, semantic resolution behind `fn_params`, the position rule, and
   the durable identity and import encodings, so a declaration may name a
   callback parameter.
-- [ ] **Phase 2: callback semantics through CFG** - RUE-2194. Binding a
-  named function to a `fn` parameter with exact signature matching, calling
-  through the parameter, forwarding, every escape rejection, the AIR and CFG
-  instructions, and the oracle interpreter.
+- [x] **Phase 2: callback semantics through CFG** - RUE-2194. Binding a
+  named function to a `fn` parameter with exact signature matching (E0215),
+  the eligible argument forms (E0216), calling through the parameter,
+  forwarding, every escape rejection (E0217), the `fn_ref`/`call_indirect`
+  AIR and `fn_addr`/`call_indirect` CFG instructions with their durable
+  encodings, and the oracle interpreter. Native code generation refuses a
+  function that binds or calls a callback until phase 3.
 - [ ] **Phase 3: native indirect calls** - RUE-2195. Function-address
   materialization and indirect call on x86-64 and AArch64 through the
   canonical call plan, with executable spec coverage.

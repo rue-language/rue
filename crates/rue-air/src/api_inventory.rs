@@ -1551,6 +1551,10 @@ const AIR_CRATE_SOURCES: &[(&str, &str)] = &[
         include_str!("sema/analysis/builtin_ops.rs"),
     ),
     (
+        "sema/analysis/callbacks",
+        include_str!("sema/analysis/callbacks.rs"),
+    ),
+    (
         "sema/analysis/calls",
         include_str!("sema/analysis/calls.rs"),
     ),
@@ -3871,6 +3875,7 @@ fn retired_source_owned_sema_plane_cannot_return() {
         include_str!("sema/aggregates.rs"),
         include_str!("sema/analysis.rs"),
         include_str!("sema/analysis/builtin_ops.rs"),
+        include_str!("sema/analysis/callbacks.rs"),
         include_str!("sema/analysis/calls.rs"),
         include_str!("sema/analysis/instructions.rs"),
         include_str!("sema/analysis/intrinsics.rs"),
@@ -4056,6 +4061,10 @@ fn sema_diagnostics_use_the_friendly_type_display_authority() {
             include_str!("sema/analysis/builtin_ops.rs"),
         ),
         (
+            "sema/analysis/callbacks",
+            include_str!("sema/analysis/callbacks.rs"),
+        ),
+        (
             "sema/analysis/calls",
             include_str!("sema/analysis/calls.rs"),
         ),
@@ -4192,6 +4201,7 @@ fn sema_diagnostics_use_the_friendly_type_display_authority() {
         "sema/aggregates",
         "sema/analysis",
         "sema/analysis/builtin_ops",
+        "sema/analysis/callbacks",
         "sema/analysis/calls",
         "sema/analysis/instructions",
         "sema/analysis/intrinsics",
@@ -4223,6 +4233,7 @@ fn sema_diagnostics_use_the_friendly_type_display_authority() {
         include_str!("sema/aggregates.rs"),
         include_str!("sema/analysis.rs"),
         include_str!("sema/analysis/builtin_ops.rs"),
+        include_str!("sema/analysis/callbacks.rs"),
         include_str!("sema/analysis/calls.rs"),
         include_str!("sema/analysis/instructions.rs"),
         include_str!("sema/analysis/intrinsics.rs"),

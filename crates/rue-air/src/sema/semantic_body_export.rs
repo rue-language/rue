@@ -406,6 +406,13 @@ pub(crate) fn export_body<H: SemanticBodyExportHost>(
                 function: host.body_function_identity(*name)?,
                 args: call_args(args)?,
             },
+            AirInstData::FnRef { name } => SemanticBodyInstData::FnRef {
+                function: host.body_function_identity(*name)?,
+            },
+            AirInstData::CallIndirect { callee, args } => SemanticBodyInstData::CallIndirect {
+                callee: r(*callee, current)?,
+                args: call_args(args)?,
+            },
             AirInstData::CallGeneric { .. } => return Err(F::UnsupportedGenericCall),
             AirInstData::Intrinsic {
                 operation,

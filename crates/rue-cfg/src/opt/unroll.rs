@@ -443,7 +443,9 @@ fn recognize(cfg: &Cfg, lp: &NaturalLoop) -> Option<Trip> {
                 {
                     return None;
                 }
-                CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. }
+                CfgInstData::Call { args, .. }
+                | CfgInstData::AccessorCall { args, .. }
+                | CfgInstData::CallIndirect { args, .. }
                     if cfg
                         .call_args(args)
                         .iter()
@@ -561,6 +563,10 @@ fn capture_operands(cfg: &Cfg, data: &CfgInstData) -> SourceOperands {
     match data {
         CfgInstData::Call { .. } => operands.call_args = cfg.get_call_args(data).to_vec(),
         CfgInstData::AccessorCall { args, .. } => operands.call_args = cfg.call_args(args).to_vec(),
+        CfgInstData::CallIndirect { callee, args } => {
+            operands.values = vec![*callee];
+            operands.call_args = cfg.call_args(args).to_vec();
+        }
         CfgInstData::Intrinsic { .. } => operands.values = cfg.get_intrinsic_args(data).to_vec(),
         CfgInstData::StructInit { .. } => operands.values = cfg.get_struct_fields(data).to_vec(),
         CfgInstData::ArrayInit { elements, .. } => {
@@ -827,6 +833,14 @@ fn remap_data(
         },
         CfgInstData::AccessorCall { name, .. } => CfgInstData::AccessorCall {
             name: *name,
+            args: cfg.push_call_args(operands.call_args.iter().map(|a| CfgCallArg {
+                value: m(a.value),
+                mode: a.mode,
+            }))?,
+        },
+        CfgInstData::FnAddr { name } => CfgInstData::FnAddr { name: *name },
+        CfgInstData::CallIndirect { .. } => CfgInstData::CallIndirect {
+            callee: m(operands.values[0]),
             args: cfg.push_call_args(operands.call_args.iter().map(|a| CfgCallArg {
                 value: m(a.value),
                 mode: a.mode,

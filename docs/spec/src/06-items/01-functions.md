@@ -408,6 +408,50 @@ fn twice(step: fn(fn(i32) -> i32, i32) -> i32) {}
 fn main() -> i32 { 0 }
 ```
 
+{{ rule(id="6.1:50", cat="legality-rule") }}
+
+The argument written for a `fn` parameter **MUST** name a function, or
+forward a `fn` parameter of the enclosing function (6.1:51). A named
+function is an ordinary monomorphic free function in scope, a
+module-qualified function (`m.f`), a compile-time alias to one
+(`const CB = f;`), or a receiverless associated function of a concrete type
+(`Type.f`), subject to the ordinary visibility rules (10.3); naming it makes
+its body reachable. Its signature **MUST** be exactly the parameter's `fn`
+type (6.1:48): a function whose arity, parameter modes, parameter types, or
+result differ is rejected (E0215). When the callee is generic and the
+parameter's `fn` type mentions a comptime type parameter, the signature is
+checked against the substituted type at the call. A method with a receiver, a
+generic function, a foreign (`extern "C"`) or `unchecked` function, an
+accessor, a `-> type` constructor, a builtin, and any expression that does
+not name a function are rejected (E0216); a named wrapper with the expected
+signature is the one spelling for each of those.
+
+{{ rule(id="6.1:51", cat="legality-rule") }}
+
+Inside the body, a `fn` parameter has exactly two uses. It **MAY** be called:
+the call follows the parameter's `fn` type exactly as a direct call follows
+the callee's declaration, with the same argument count, the same explicit
+`borrow` and `inout` argument modes (6.1:15), the same exclusivity rules
+(6.1:20, 6.1:30, 6.1:36), and the declared result type; arguments are
+positional. It **MAY** be forwarded: passed unchanged as the argument to
+another `fn` parameter of the same type. Every other read of the parameter
+is an escape and is rejected (E0217): binding it with `let`, returning it,
+passing it to a parameter of any other type, comparing it, or taking its
+address. A named function is likewise not a value: outside a call and a
+`fn` argument position it is rejected (E0217). A `let` that shadows a
+callback parameter rebinds the name to a value (5.1:11).
+
+{{ rule(id="6.1:52", cat="dynamic-semantics") }}
+
+A call through a `fn` parameter invokes the function the call site that
+supplied it named, with the arguments passed under the callback's declared
+modes: a `borrow` argument is read through, an `inout` argument is written
+back on return, and a by-value argument is moved or copied, exactly as at a
+direct call. The callback **MAY** be called zero or more times and forwarded
+any number of times; forwarding passes the same function on. Calling through
+a `fn` parameter is never observably different from calling the named
+function directly.
+
 ## Parameter Immutability
 
 {{ rule(id="6.1:32", cat="legality-rule") }}

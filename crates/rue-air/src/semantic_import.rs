@@ -1253,6 +1253,15 @@ where
                     air.add_accessor_call(name, &args, ty, span)?;
                     continue;
                 }
+                SemanticBodyInstData::FnRef { function } => AirInstData::FnRef {
+                    name: resolve_function(function)?,
+                },
+                SemanticBodyInstData::CallIndirect { callee, args } => {
+                    let callee = r(*callee)?;
+                    let args = call_args(args, current)?;
+                    air.add_call_indirect(callee, &args, ty, span)?;
+                    continue;
+                }
                 SemanticBodyInstData::RuntimeCall { runtime, args } => {
                     let args = call_args(args, current)?;
                     air.add_call(
@@ -3778,6 +3787,59 @@ mod tests {
                 .value
                 .as_u32(),
             2
+        );
+    }
+
+    /// A callback bound with `fn_ref` and called with `call_indirect`
+    /// (ADR-0096) rebuilds as the matching AIR pair, with the callee symbol
+    /// resolved through the epoch exactly as a direct call's is.
+    #[test]
+    fn structured_body_import_rebuilds_callback_binding_and_indirect_call() {
+        use crate::SemanticBodyInstData as D;
+        let epoch = Epoch::new(
+            vec![],
+            vec![("callback", Arc::from("callback#stable"))],
+            vec![],
+        )
+        .unwrap();
+        let input = body(vec![
+            D::FnRef {
+                function: FunctionInstanceKey::Definition("callback"),
+            },
+            D::Const(41),
+            D::CallIndirect {
+                callee: 0,
+                args: vec![crate::SemanticBodyCallArg {
+                    value: 1,
+                    mode: crate::AirArgMode::Normal,
+                }]
+                .into(),
+            },
+            D::Ret(Some(2)),
+        ]);
+        let imported = epoch
+            .import_body(&input, Span::with_file(FileId::new(9), 100, 200))
+            .unwrap();
+        assert_eq!(imported.air.len(), 4);
+        assert!(matches!(
+            imported.air.get(crate::AirRef::from_raw(0)).data,
+            crate::AirInstData::FnRef { .. }
+        ));
+        let crate::AirInstData::CallIndirect { callee, ref args } =
+            imported.air.get(crate::AirRef::from_raw(2)).data
+        else {
+            panic!("call_indirect not reconstructed")
+        };
+        assert_eq!(callee.as_u32(), 0);
+        assert_eq!(
+            imported
+                .air
+                .get_call_args(args)
+                .next()
+                .unwrap()
+                .value
+                .as_u32(),
+            1
         );
     }
 

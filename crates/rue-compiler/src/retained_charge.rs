@@ -848,6 +848,8 @@ impl<K: RetainedCharge, M: RetainedCharge> RetainedCharge for rue_air::SemanticB
             Self::AccessorCall { function, args } => function
                 .retained_charge()
                 .saturating_add(args.retained_charge()),
+            Self::FnRef { function } => function.retained_charge(),
+            Self::CallIndirect { args, .. } => args.retained_charge(),
             Self::RuntimeCall { args, .. } => args.retained_charge(),
             Self::CallSpecialized { identity, args } => identity
                 .retained_charge()
@@ -1727,6 +1729,14 @@ impl RetainedCharge for rue_error::ErrorKind {
             | E::SliceInAggregateField
             | E::SliceEscapesScope => 0,
             E::FnTypeOutsideParameter { position } => position.retained_charge(),
+            E::CallbackSignatureMismatch(value) => (std::mem::size_of_val(value.as_ref()) as u64)
+                .saturating_add(value.function.retained_charge())
+                .saturating_add(value.expected.retained_charge())
+                .saturating_add(value.found.retained_charge()),
+            E::IneligibleCallback { found, reason } => {
+                found.retained_charge() + reason.retained_charge()
+            }
+            E::CallbackEscape { what } => what.retained_charge(),
         }
     }
 }

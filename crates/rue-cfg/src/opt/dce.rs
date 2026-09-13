@@ -288,7 +288,8 @@ pub(super) fn visit_instruction_uses_kinded(
         | CfgInstData::BoolConst(_)
         | CfgInstData::StringConst(_)
         | CfgInstData::Param { .. }
-        | CfgInstData::BlockParam { .. } => {}
+        | CfgInstData::BlockParam { .. }
+        | CfgInstData::FnAddr { .. } => {}
 
         // Binary operations
         CfgInstData::Add(lhs, rhs)
@@ -327,6 +328,16 @@ pub(super) fn visit_instruction_uses_kinded(
         // The one arm that distinguishes the two kinds: a by-reference
         // argument forwards the address of the place its operand reads.
         CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } => {
+            for arg in cfg.call_args(args) {
+                let kind = match arg.mode {
+                    CfgArgMode::Normal => CfgUseKind::Value,
+                    CfgArgMode::Inout | CfgArgMode::Borrow => CfgUseKind::Address,
+                };
+                f(arg.value, kind);
+            }
+        }
+        CfgInstData::CallIndirect { callee, args } => {
+            read!(*callee);
             for arg in cfg.call_args(args) {
                 let kind = match arg.mode {
                     CfgArgMode::Normal => CfgUseKind::Value,

@@ -31,7 +31,7 @@ impl Cfg {
                 CfgInstData::EnumVariant { payload, .. } => {
                     account(3, payload.extent(), std::mem::size_of::<CfgValue>())
                 }
-                CfgInstData::Call { args, .. } => {
+                CfgInstData::Call { args, .. } | CfgInstData::CallIndirect { args, .. } => {
                     account(7, args.extent(), std::mem::size_of::<CfgCallArg>())
                 }
                 CfgInstData::PlaceRead { place } | CfgInstData::PlaceWrite { place, .. } => {

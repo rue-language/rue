@@ -383,6 +383,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 }
 
 mod builtin_ops;
+mod callbacks;
 mod calls;
 mod instructions;
 mod intrinsics;

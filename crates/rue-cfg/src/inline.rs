@@ -1330,6 +1330,24 @@ fn translate_data(
                 args: dst.push_call_args(args)?,
             }
         }
+        FnAddr { name } => FnAddr { name: *name },
+        CallIndirect {
+            callee: target,
+            args,
+        } => {
+            let args: Vec<CfgCallArg> = callee
+                .call_args(args)
+                .iter()
+                .map(|arg| CfgCallArg {
+                    value: splice.value(arg.value),
+                    mode: arg.mode,
+                })
+                .collect();
+            CallIndirect {
+                callee: splice.value(*target),
+                args: dst.push_call_args(args)?,
+            }
+        }
         AccessorCall { name, args } => {
             let args: Vec<CfgCallArg> = callee
                 .call_args(args)

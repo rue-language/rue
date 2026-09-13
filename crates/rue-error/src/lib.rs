@@ -902,6 +902,39 @@ define_error_codes! {
         ],
         references: [ErrorCodeReference { title: "Function parameter types", path: "docs/spec/src/06-items/01-functions.md", rule: Some("6.1:47") }],
     };
+    /// The function named as a callback argument does not have exactly the
+    /// `fn` parameter's signature (ADR-0096, RUE-2194).
+    CALLBACK_SIGNATURE_MISMATCH = 215 => {
+        explanation: "The argument to a `fn` parameter (preview feature `fn_params`) must be a named function whose signature is exactly the parameter's: the same number of parameters, the same mode and type at every position, and the same result type. No conversion relates two `fn` types: an integer parameter is not widened, a `borrow` parameter does not stand in for a by-value one, and a result is not adapted.",
+        likely_cause: "The callback's declaration differs from the `fn` type in one parameter mode, one parameter type, the arity, or the result. Change the declaration to match, or write a wrapper function with exactly the expected signature and pass that.",
+        examples: [
+            ErrorCodeExample { title: "Pass a function with a wider parameter", source: "fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }\nfn widen(value: i64) -> i64 { value }\nfn main() -> i32 { apply(widen, 1) }", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: ["fn_params"] },
+            ErrorCodeExample { title: "Pass a function with exactly the signature", source: "fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }\nfn double(value: i32) -> i32 { value * 2 }\nfn main() -> i32 { apply(double, 1) }", outcome: ErrorCodeExampleOutcome::Compiles, preview: ["fn_params"] },
+        ],
+        references: [ErrorCodeReference { title: "Callback arguments", path: "docs/spec/src/06-items/01-functions.md", rule: Some("6.1:50") }],
+    };
+    /// The argument to a `fn` parameter is not an eligible named function
+    /// (ADR-0096 §4, RUE-2194).
+    INELIGIBLE_CALLBACK = 216 => {
+        explanation: "A `fn` parameter (preview feature `fn_params`) binds a named function: an ordinary monomorphic free function, a module-qualified function, a compile-time alias to one, or a receiverless associated function of a concrete type. Any other expression, and a function of a kind that has no plain callable address, is rejected: a method with a receiver, a generic function, an `extern \"C\"` or `unchecked` function, a `-> type` constructor, an accessor, and a builtin.",
+        likely_cause: "The argument is an expression rather than a function name, or it names a generic, foreign, unchecked, or receiver-taking function. Write a named wrapper function with the expected signature that calls the intended function, and pass the wrapper.",
+        examples: [
+            ErrorCodeExample { title: "Pass an integer where a callback is expected by name", source: "fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }\nfn main() -> i32 { apply(1 + 1, 1) }", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: ["fn_params"] },
+            ErrorCodeExample { title: "Name a monomorphic wrapper", source: "fn identity(comptime T: type, value: T) -> T { value }\nfn identity_i32(value: i32) -> i32 { identity(i32, value) }\nfn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }\nfn main() -> i32 { apply(identity_i32, 1) }", outcome: ErrorCodeExampleOutcome::Compiles, preview: ["fn_params"] },
+        ],
+        references: [ErrorCodeReference { title: "Callback arguments", path: "docs/spec/src/06-items/01-functions.md", rule: Some("6.1:50") }],
+    };
+    /// A callback parameter or a named function was read as a value
+    /// (ADR-0096 §5, RUE-2194).
+    CALLBACK_ESCAPE = 217 => {
+        explanation: "A callback has no first-class value. Inside a body a `fn` parameter has exactly two uses: it is called with ordinary call rules, or it is forwarded as the argument to another `fn` parameter of the same type. Reading it anywhere else (binding it with `let`, returning it, comparing it, taking its address, storing it in an aggregate) is an escape and is rejected. A named function is likewise not a value outside a call or a `fn` argument position.",
+        likely_cause: "The body bound a callback parameter to a local, returned it, or used it in an expression, or a named function was mentioned without calling it. Call the callback, forward it directly as an argument, or pass the behavior again at each call that needs it.",
+        examples: [
+            ErrorCodeExample { title: "Bind a callback parameter with `let`", source: "fn apply(cb: fn(i32) -> i32, value: i32) -> i32 {\n    let kept = cb;\n    value\n}\nfn step(value: i32) -> i32 { value }\nfn main() -> i32 { apply(step, 1) }", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: ["fn_params"] },
+            ErrorCodeExample { title: "Call the callback instead", source: "fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::Compiles, preview: ["fn_params"] },
+        ],
+        references: [ErrorCodeReference { title: "Callback uses", path: "docs/spec/src/06-items/01-functions.md", rule: Some("6.1:51")}],
+    };
     COPY_STRUCT_NON_COPY_FIELD = 403 => {
         explanation: "A struct marked `@copy` contains a field whose type has move semantics. Implicitly duplicating the outer value would also have to duplicate that non-Copy field.",
         likely_cause: "A field is a struct without `@copy`, a move-typed aggregate, or another type that cannot be implicitly duplicated. Remove `@copy` from the outer struct or make every field type Copy when that is semantically valid.",
@@ -2560,6 +2593,15 @@ pub struct IntrinsicTypeMismatchError {
     pub found: String,
 }
 
+/// Payload for `ErrorKind::CallbackSignatureMismatch` (ADR-0096): the named
+/// function, the `fn` type the parameter expects, and the signature found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallbackSignatureMismatchError {
+    pub function: String,
+    pub expected: String,
+    pub found: String,
+}
+
 // ============================================================================
 // Preview Features
 // ============================================================================
@@ -4093,6 +4135,32 @@ pub enum ErrorKind {
     )]
     FnTypeOutsideParameter { position: String },
 
+    /// The named function passed to a `fn` parameter does not have exactly
+    /// the parameter's signature (ADR-0096, RUE-2194). No conversion relates
+    /// two `fn` types (spec 6.1:48), so the message spells both signatures.
+    #[error(
+        "function `{function}` has signature {found}, but the `fn` parameter expects {expected}: \
+         a callback must match the parameter's modes, types, and result exactly (ADR-0096)",
+        function = .0.function, expected = .0.expected, found = .0.found
+    )]
+    CallbackSignatureMismatch(Box<CallbackSignatureMismatchError>),
+
+    /// The argument to a `fn` parameter is not an eligible callback: it is
+    /// not a named function at all, or it names a function of a kind that
+    /// has no callable address (ADR-0096 §4, RUE-2194).
+    #[error("{found} cannot be bound to a `fn` parameter: {reason} (ADR-0096)")]
+    IneligibleCallback { found: String, reason: String },
+
+    /// A callback parameter, or a named function, was read as a value
+    /// (ADR-0096 §5, RUE-2194). A callback has no first-class value: the only
+    /// uses of a `fn` parameter are calling it and forwarding it to another
+    /// `fn` parameter of the same type.
+    #[error(
+        "{what} cannot be used as a value: a callback is second-class and may only be \
+         called or passed to a `fn` parameter (ADR-0096)"
+    )]
+    CallbackEscape { what: String },
+
     // Comptime errors
     #[error("comptime evaluation failed: {reason}")]
     ComptimeEvaluationFailed { reason: String },
@@ -4388,6 +4456,9 @@ impl ErrorKind {
             ErrorKind::SliceInAggregateField => ErrorCode::SLICE_IN_AGGREGATE_FIELD,
             ErrorKind::SliceEscapesScope => ErrorCode::SLICE_ESCAPES_SCOPE,
             ErrorKind::FnTypeOutsideParameter { .. } => ErrorCode::FN_TYPE_OUTSIDE_PARAMETER,
+            ErrorKind::CallbackSignatureMismatch(_) => ErrorCode::CALLBACK_SIGNATURE_MISMATCH,
+            ErrorKind::IneligibleCallback { .. } => ErrorCode::INELIGIBLE_CALLBACK,
+            ErrorKind::CallbackEscape { .. } => ErrorCode::CALLBACK_ESCAPE,
 
             // Comptime errors (E1200-E1299)
             ErrorKind::ComptimeEvaluationFailed { .. } => ErrorCode::COMPTIME_EVALUATION_FAILED,

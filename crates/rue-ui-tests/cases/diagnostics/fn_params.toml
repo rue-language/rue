@@ -2,15 +2,19 @@
 #
 # A `fn` type names a callback signature and is legal only as the type of a
 # by-value runtime parameter. These cases pin the preview gate, the spelling
-# the type is rendered with, and the E0214 rejection of every other position.
-# Passing, calling, and forwarding a callback are RUE-2194. A body is analyzed
-# only when it is reachable, so the body-level positions are exercised from
-# `main`.
+# the type is rendered with, and the E0214 rejection of every other position
+# (RUE-2193), then the rules of binding, calling, and forwarding a callback
+# (RUE-2194): the exact-signature match (E0215), the eligible argument forms
+# (E0216), and the escape rejection (E0217). A body is analyzed only when it
+# is reachable, so the body-level positions are exercised from `main`. A
+# program that binds a callback compiles through the reference interpreter;
+# its native lowering is RUE-2195, so the accepted forms are pinned by the
+# `cli.fn_params_callbacks` emit cases and the oracle's unit tests.
 
 [section]
 id = "diagnostics.fn_params"
 name = "Function parameter type diagnostics"
-description = "Pins the diagnostics of the fn_params preview (spec 6.1:46-6.1:48, RUE-2193): the preview gate, the rendered spelling of a function type, and the E0214 rejection of a `fn` type in every position other than a by-value runtime parameter."
+description = "Pins the diagnostics of the fn_params preview (spec 6.1:46-6.1:51, RUE-2193, RUE-2194): the preview gate, the rendered spelling of a function type, the E0214 rejection of a `fn` type outside a by-value runtime parameter, the E0215 exact-signature match, the E0216 eligible argument forms, and the E0217 escape rejection."
 
 [[case]]
 name = "fn_type_without_preview_names_the_flag"
@@ -34,13 +38,15 @@ source = """
 struct Policy { descending: bool }
 
 fn choose(cmp: fn(borrow Policy, i64, inout [u8; 4]) -> bool) -> i32 { 0 }
+fn wrap(cb: fn(i32) -> i32) -> i32 { choose(cb) }
+fn step(value: i32) -> i32 { value }
 
-fn main() -> i32 { choose(1) }
+fn main() -> i32 { wrap(step) }
 """
 compile_fail = true
 error_contains = [
     "[E0206]",
-    "found fn(borrow Policy, i64, inout [u8; 4]) -> bool",
+    "expected fn(borrow Policy, i64, inout [u8; 4]) -> bool, found fn(i32) -> i32",
 ]
 
 [[case]]
@@ -48,11 +54,13 @@ name = "fn_type_with_a_unit_result_is_rendered_without_the_arrow"
 preview = "fn_params"
 source = """
 fn each(visit: fn(i32)) -> i32 { 0 }
+fn wrap(cb: fn(i32) -> i32) -> i32 { each(cb) }
+fn step(value: i32) -> i32 { value }
 
-fn main() -> i32 { each(true) }
+fn main() -> i32 { wrap(step) }
 """
 compile_fail = true
-error_contains = ["[E0206]", "expected fn(i32), found bool"]
+error_contains = ["[E0206]", "expected fn(i32), found fn(i32) -> i32"]
 
 [[case]]
 name = "nested_fn_types_are_admitted_in_parameter_position"
@@ -243,3 +251,333 @@ fn main() -> i32 { @intCast(@size_of(fn(i32) -> i32)) }
 """
 compile_fail = true
 error_contains = ["[E0214]", "not an intrinsic type argument"]
+
+# ---------------------------------------------------------------------------
+# Binding a callback (spec 6.1:50, RUE-2194)
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "callback_argument_must_match_the_signature_exactly"
+description = "No conversion relates two `fn` types (6.1:48): a wider parameter type is a different signature."
+preview = "fn_params"
+source = """
+fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }
+fn widen(value: i64) -> i64 { value }
+
+fn main() -> i32 { apply(widen, 1) }
+"""
+compile_fail = true
+error_contains = [
+    "[E0215]",
+    "function `widen` has signature fn(i64) -> i64, but the `fn` parameter expects fn(i32) -> i32",
+    "a callback must match the parameter's modes, types, and result exactly (ADR-0096)",
+]
+
+[[case]]
+name = "callback_argument_mode_is_part_of_the_signature"
+preview = "fn_params"
+source = """
+struct Policy { descending: bool }
+
+fn choose(cmp: fn(borrow Policy, i64, i64) -> bool) -> i32 { 0 }
+fn by_value(p: Policy, a: i64, b: i64) -> bool { a < b }
+
+fn main() -> i32 { choose(by_value) }
+"""
+compile_fail = true
+error_contains = [
+    "[E0215]",
+    "function `by_value` has signature fn(Policy, i64, i64) -> bool, but the `fn` parameter expects fn(borrow Policy, i64, i64) -> bool",
+]
+
+[[case]]
+name = "callback_signature_is_checked_after_generic_substitution"
+description = "A generic callee's `fn(T) -> T` parameter binds the named function first and checks it once `T` is known."
+preview = "fn_params"
+source = """
+fn apply(comptime T: type, cb: fn(T) -> T, value: T) -> T { cb(value) }
+fn widen(value: i64) -> i64 { value }
+
+fn main() -> i32 { apply(i32, widen, 1) }
+"""
+compile_fail = true
+error_contains = [
+    "[E0215]",
+    "function `widen` has signature fn(i64) -> i64, but the `fn` parameter expects fn(i32) -> i32",
+]
+
+[[case]]
+name = "callback_argument_that_is_an_expression_is_rejected"
+preview = "fn_params"
+source = """
+fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }
+
+fn main() -> i32 { apply(1 + 1, 1) }
+"""
+compile_fail = true
+error_contains = [
+    "[E0216]",
+    "an expression cannot be bound to a `fn` parameter",
+    "a `fn` parameter binds a named function: a free function, a module-qualified function, a compile-time alias to one, or a receiverless associated function (ADR-0096)",
+]
+
+[[case]]
+name = "callback_argument_that_is_a_value_parameter_is_rejected"
+preview = "fn_params"
+source = """
+fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { apply(value, value) }
+fn step(value: i32) -> i32 { value }
+
+fn main() -> i32 { apply(step, 1) }
+"""
+compile_fail = true
+error_contains = ["[E0216]", "the parameter `value` of type i32 cannot be bound to a `fn` parameter"]
+
+[[case]]
+name = "callback_argument_that_is_a_local_is_rejected"
+preview = "fn_params"
+source = """
+fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }
+
+fn main() -> i32 {
+    let step = 2;
+    apply(step, 1)
+}
+"""
+compile_fail = true
+error_contains = ["[E0216]", "the local `step` of type i32 cannot be bound to a `fn` parameter"]
+
+[[case]]
+name = "generic_function_is_not_a_callback"
+preview = "fn_params"
+source = """
+fn identity(comptime T: type, value: T) -> T { value }
+fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }
+
+fn main() -> i32 { apply(identity, 1) }
+"""
+compile_fail = true
+error_contains = [
+    "[E0216]",
+    "the generic function `identity` cannot be bound to a `fn` parameter",
+    "a callback is monomorphic; write a named function that supplies the comptime arguments and pass that",
+]
+
+[[case]]
+name = "unchecked_function_is_not_a_callback"
+preview = "fn_params"
+source = """
+unchecked fn raw(value: i32) -> i32 { value }
+fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }
+
+fn main() -> i32 { apply(raw, 1) }
+"""
+compile_fail = true
+error_contains = [
+    "[E0216]",
+    "the unchecked function `raw` cannot be bound to a `fn` parameter",
+    "an `unchecked` function may only be called inside a `checked` block",
+]
+
+[[case]]
+name = "method_with_a_receiver_is_not_a_callback"
+description = "Unbound instance-method conversion is excluded from v1 (ADR-0096 open question)."
+preview = "fn_params"
+source = """
+struct Counter {
+    n: i32,
+    fn get(self) -> i32 { self.n }
+}
+fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }
+
+fn main() -> i32 { apply(Counter.get, 2) }
+"""
+compile_fail = true
+error_contains = [
+    "[E0216]",
+    "the method `Counter.get` cannot be bound to a `fn` parameter",
+    "a method takes a receiver",
+]
+
+[[case]]
+name = "builtin_is_not_a_callback"
+preview = "fn_params"
+source = """
+fn each(visit: fn(i32)) -> i32 { visit(1); 0 }
+
+fn main() -> i32 { each(println) }
+"""
+compile_fail = true
+error_contains = [
+    "[E0216]",
+    "the builtin `println` cannot be bound to a `fn` parameter",
+    "a builtin has no callable address",
+]
+
+[[case]]
+name = "type_constructor_is_not_a_callback"
+preview = "fn_params"
+source = """
+fn Make() -> type { struct { n: i32 } }
+fn make(cb: fn() -> i32) -> i32 { cb() }
+
+fn main() -> i32 { make(Make) }
+"""
+compile_fail = true
+error_contains = [
+    "[E0216]",
+    "the type constructor `Make` cannot be bound to a `fn` parameter",
+    "a `-> type` function is reduced at compile time and has no runtime body",
+]
+
+[[case]]
+name = "undefined_callback_name_is_an_undefined_function"
+preview = "fn_params"
+source = """
+fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }
+
+fn main() -> i32 { apply(missing, 1) }
+"""
+compile_fail = true
+error_contains = ["[E0202]", "undefined function 'missing'"]
+
+# ---------------------------------------------------------------------------
+# Using a callback (spec 6.1:51, RUE-2194)
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "callback_parameter_bound_with_let_is_an_escape"
+preview = "fn_params"
+source = """
+fn apply(cb: fn(i32) -> i32, value: i32) -> i32 {
+    let kept = cb;
+    value
+}
+fn step(value: i32) -> i32 { value }
+
+fn main() -> i32 { apply(step, 1) }
+"""
+compile_fail = true
+error_contains = [
+    "[E0217]",
+    "the callback parameter `cb` cannot be used as a value",
+    "a callback is second-class and may only be called or passed to a `fn` parameter (ADR-0096)",
+]
+
+[[case]]
+name = "callback_parameter_returned_is_an_escape"
+preview = "fn_params"
+source = """
+fn pick(cb: fn(i32) -> i32) -> i32 { cb }
+fn step(value: i32) -> i32 { value }
+
+fn main() -> i32 { pick(step) }
+"""
+compile_fail = true
+error_contains = ["[E0217]", "the callback parameter `cb` cannot be used as a value"]
+
+[[case]]
+name = "callback_parameter_passed_to_a_value_parameter_is_an_escape"
+preview = "fn_params"
+source = """
+fn takes(x: i32) -> i32 { x }
+fn use_cb(cb: fn(i32) -> i32) -> i32 { takes(cb) }
+fn step(value: i32) -> i32 { value }
+
+fn main() -> i32 { use_cb(step) }
+"""
+compile_fail = true
+error_contains = ["[E0217]", "the callback parameter `cb` cannot be used as a value"]
+
+[[case]]
+name = "named_function_used_as_a_value_is_an_escape"
+preview = "fn_params"
+source = """
+fn double(value: i32) -> i32 { value * 2 }
+
+fn main() -> i32 {
+    let f = double;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["[E0217]", "the function `double` cannot be used as a value"]
+
+[[case]]
+name = "forwarded_callback_must_have_the_receiving_parameter_type"
+description = "Forwarding is the one other use of a callback, and it is exact: `fn(i32) -> i32` is not `fn(i32)`."
+preview = "fn_params"
+source = """
+fn each(visit: fn(i32)) -> i32 { visit(1); 0 }
+fn apply(cb: fn(i32) -> i32) -> i32 { each(cb) }
+fn step(value: i32) -> i32 { value }
+
+fn main() -> i32 { apply(step) }
+"""
+compile_fail = true
+error_contains = ["[E0206]", "expected fn(i32), found fn(i32) -> i32"]
+
+[[case]]
+name = "call_through_a_callback_checks_the_argument_count"
+preview = "fn_params"
+source = """
+fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value, value) }
+fn step(value: i32) -> i32 { value }
+
+fn main() -> i32 { apply(step, 1) }
+"""
+compile_fail = true
+error_contains = ["[E0207]", "expected 1 argument, found 2"]
+
+[[case]]
+name = "call_through_a_callback_checks_the_argument_modes"
+description = "The callback's `fn` type carries the modes a call must spell, exactly as a declaration does."
+preview = "fn_params"
+source = """
+struct Policy { descending: bool }
+
+fn choose(borrow p: Policy, a: i64, b: i64,
+          cmp: fn(borrow Policy, i64, i64) -> bool) -> i64 {
+    if cmp(p, a, b) { a } else { b }
+}
+fn precedes(borrow p: Policy, a: i64, b: i64) -> bool { a < b }
+
+fn main() -> i32 {
+    let p = Policy { descending: false };
+    @intCast(choose(borrow p, 1, 2, precedes))
+}
+"""
+compile_fail = true
+error_contains = ["[E0432]", "argument to borrow parameter must use 'borrow' keyword"]
+
+[[case]]
+name = "call_through_a_callback_keeps_the_exclusivity_rules"
+preview = "fn_params"
+source = """
+fn bump(inout a: i32, inout b: i32) { a = a + b; }
+fn twice(step: fn(inout i32, inout i32), inout n: i32) { step(inout n, inout n); }
+
+fn main() -> i32 {
+    let mut count = 1;
+    twice(bump, inout count);
+    count
+}
+"""
+compile_fail = true
+error_contains = ["[E0426]", "cannot pass same variable 'n' to multiple inout parameters"]
+
+[[case]]
+name = "a_let_shadowing_a_callback_parameter_is_a_value"
+description = "A `let` rebinds the name for the rest of the scope (5.1:11); the shadowed callback is no longer callable by that name."
+preview = "fn_params"
+source = """
+fn apply(cb: fn(i32) -> i32, value: i32) -> i32 {
+    let cb = 3;
+    cb(value)
+}
+fn step(value: i32) -> i32 { value }
+
+fn main() -> i32 { apply(step, 1) }
+"""
+compile_fail = true
+error_contains = ["[E0202]", "undefined function 'cb'"]

@@ -123,7 +123,9 @@ pub(crate) fn may_trap(cfg: &Cfg, value: CfgValue) -> bool {
 pub(crate) fn has_observable_side_effect(cfg: &Cfg, value: CfgValue) -> bool {
     match &cfg.get_inst(value).data {
         // Function and intrinsic calls can have arbitrary effects.
-        CfgInstData::Call { .. } | CfgInstData::Intrinsic { .. } => true,
+        CfgInstData::Call { .. }
+        | CfgInstData::CallIndirect { .. }
+        | CfgInstData::Intrinsic { .. } => true,
 
         // Memory writes.
         CfgInstData::Alloc { .. }

@@ -1,0 +1,129 @@
+# Second-class callbacks through the driver (ADR-0096, RUE-2194).
+#
+# A named function bound to a `fn` parameter is a `fn_ref` in AIR and a
+# `fn_addr` in CFG; a call through the parameter is `call_indirect` in both.
+# The reference interpreter executes these (rue-oracle's unit tests); their
+# native lowering is RUE-2195, so a native build of a program that binds a
+# callback is refused with a diagnostic that names the missing lowering rather
+# than miscompiled.
+
+[section]
+id = "cli.fn_params_callbacks"
+name = "Callback binding and indirect calls under --preview fn_params"
+description = "Pins the AIR and CFG presentation of a bound callback and an indirect call (RUE-2194), the module-qualified and associated-function argument forms, the foreign-function rejection, and the native-codegen refusal that stands until RUE-2195."
+
+[[case]]
+name = "emit_air_shows_fn_ref_and_call_indirect"
+description = "Binding a named function is `fn_ref @symbol`; calling through the parameter is `call_indirect %callee(args)`."
+files = [{ path = "main.rue", source = """
+struct Policy { descending: bool }
+
+fn precedes(borrow p: Policy, a: i64, b: i64) -> bool {
+    if p.descending { a > b } else { a < b }
+}
+
+fn choose(borrow p: Policy, a: i64, b: i64,
+          cmp: fn(borrow Policy, i64, i64) -> bool) -> i64 {
+    if cmp(borrow p, a, b) { a } else { b }
+}
+
+fn forward(borrow p: Policy, a: i64, b: i64,
+           cmp: fn(borrow Policy, i64, i64) -> bool) -> i64 {
+    choose(borrow p, a, b, cmp)
+}
+
+fn main() -> i32 {
+    let p = Policy { descending: true };
+    @intCast(forward(borrow p, 3, 9, precedes))
+}
+""" }]
+args = ["--preview", "fn_params", "--emit", "air", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== AIR ===", "fn_ref @", "precedes", "call_indirect %"]
+compile_stderr_not_contains = ["error", "internal compiler error"]
+
+[[case]]
+name = "emit_cfg_shows_fn_addr_and_call_indirect"
+description = "The CFG carries the same pair: `fn_addr @symbol` and `call_indirect v(args)` with the by-reference argument modes of the callback's `fn` type."
+files = [{ path = "main.rue", source = """
+struct Policy { descending: bool }
+
+fn precedes(borrow p: Policy, a: i64, b: i64) -> bool {
+    if p.descending { a > b } else { a < b }
+}
+
+fn choose(borrow p: Policy, a: i64, b: i64,
+          cmp: fn(borrow Policy, i64, i64) -> bool) -> i64 {
+    if cmp(borrow p, a, b) { a } else { b }
+}
+
+fn main() -> i32 {
+    let p = Policy { descending: true };
+    @intCast(choose(borrow p, 3, 9, precedes))
+}
+""" }]
+args = ["--preview", "fn_params", "--emit", "cfg", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["fn_addr @", "precedes", "call_indirect v0(borrow v1, v2, v3)"]
+compile_stderr_not_contains = ["error", "internal compiler error"]
+
+[[case]]
+name = "module_qualified_and_associated_functions_bind_as_callbacks"
+description = "`module.function` and `Type.function` name a callback exactly as an unqualified name does (ADR-0096 §4)."
+files = [
+    { path = "main.rue", source = """
+const helper = @import("helper.rue");
+
+struct Counter {
+    n: i32,
+    fn zero() -> i32 { 0 }
+}
+
+fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }
+fn make(cb: fn() -> i32) -> i32 { cb() }
+
+fn main() -> i32 { apply(helper.triple, 2) + make(Counter.zero) }
+""" },
+    { path = "helper.rue", source = "pub fn triple(value: i32) -> i32 { value * 3 }\n" },
+]
+args = ["--preview", "fn_params", "--emit", "cfg", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["fn_addr @", "triple", "zero", "call_indirect v0()"]
+compile_stderr_not_contains = ["error", "internal compiler error"]
+
+[[case]]
+name = "foreign_function_is_not_a_callback"
+description = "An `extern \"C\"` import is called under the C convention and has no Rue callable address (ADR-0096 §4)."
+files = [{ path = "main.rue", source = """
+extern "C" {
+    fn abs(value: i32) -> i32;
+}
+fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }
+
+fn main() -> i32 { apply(abs, 1) }
+""" }]
+args = ["--preview", "fn_params", "--preview", "c_ffi", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = [
+    "E0216",
+    "the foreign function `abs` cannot be bound to a `fn` parameter",
+    "write a named Rue function that calls it inside a `checked` block and pass that",
+]
+
+[[case]]
+name = "native_build_of_a_bound_callback_is_refused_until_rue_2195"
+description = "Both backends refuse a function that binds or calls a callback with a diagnostic naming the missing lowering, rather than miscompiling it."
+files = [{ path = "main.rue", source = """
+fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }
+fn step(value: i32) -> i32 { value + 1 }
+
+fn main() -> i32 { apply(step, 41) }
+""" }]
+args = ["--preview", "fn_params", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = [
+    "E9001",
+    "calling through a `fn` parameter",
+    "is not supported by native code generation yet",
+    "RUE-2195",
+]

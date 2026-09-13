@@ -1752,6 +1752,51 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
 
+            AirInstData::FnRef { name } => {
+                let value = self.emit(CfgInstData::FnAddr { name: *name }, ty, span);
+                self.cache(air_ref, value);
+                ExprResult {
+                    value: Some(value),
+                    continuation: Continuation::Continues,
+                }
+            }
+
+            AirInstData::CallIndirect { callee, args } => {
+                let call_contract = self.call_contract(args, ty);
+                let Some(callee) = self.lower_value(*callee) else {
+                    return Self::diverged();
+                };
+                let mut arg_vals = Vec::new();
+                for arg in self.air.get_call_args(args) {
+                    let Some(value) = self.lower_value(arg.value) else {
+                        return Self::diverged();
+                    };
+                    arg_vals.push(CfgCallArg {
+                        value,
+                        mode: Self::convert_arg_mode(arg.mode),
+                    });
+                }
+                let args_result = self.cfg.push_call_args(arg_vals);
+                let args = self.payload_or(args_result, CfgCallArgs::EMPTY, span);
+                let value = self.emit(CfgInstData::CallIndirect { callee, args }, ty, span);
+                self.cfg.set_call_contract(value, call_contract);
+                // A callback whose result is `!` never returns, exactly as a
+                // direct call to a `-> !` function (RUE-347).
+                if ty == Type::NEVER {
+                    self.cfg
+                        .set_terminator(self.current_block, Terminator::Unreachable);
+                    return ExprResult {
+                        value: None,
+                        continuation: Continuation::Diverged,
+                    };
+                }
+                self.cache(air_ref, value);
+                ExprResult {
+                    value: Some(value),
+                    continuation: Continuation::Continues,
+                }
+            }
+
             AirInstData::AccessorCall { name, args } => {
                 let call_contract = self.call_contract(args, ty);
                 let mut arg_vals = Vec::new();

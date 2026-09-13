@@ -2422,6 +2422,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 let ty = param_info.ty;
                 let name_str = self.body_interner().resolve(&name);
 
+                // A callback parameter has no first-class value (spec 6.1:51,
+                // ADR-0096 §5): its call and its forward are bound by name
+                // before a read is ever analyzed, so any read reaching here is
+                // an escape.
+                if ty.is_function() {
+                    return Err(CompileError::new(
+                        ErrorKind::CallbackEscape {
+                            what: format!("the callback parameter `{name_str}`"),
+                        },
+                        span,
+                    ));
+                }
+
                 // Check if this parameter has been moved
                 if let Some(move_state) = ctx.ownership.moved_vars.get(&name) {
                     if move_state.full_move.is_some()
@@ -2833,6 +2846,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // Any other resolution failure: not a type name, keep falling
             // through to the undefined-variable error below.
             Err(_) => {}
+        }
+
+        // A named function is not a value either (spec 6.1:51): it is
+        // called, or passed to a `fn` parameter, and nothing else.
+        if self.resolve_callee_name(name, span.file_id).is_some() {
+            return Err(CompileError::new(
+                ErrorKind::CallbackEscape {
+                    what: format!("the function `{name_str}`"),
+                },
+                span,
+            ));
         }
 
         // Not a parameter, local, type, or constant - undefined variable
@@ -7757,6 +7781,24 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // caller's fat pointer via ParamStore.
             let param_ty = param_types[i];
             let param_mode = param_modes[i];
+            // A `fn` parameter binds a named function or a forwarded callback
+            // parameter (ADR-0096, RUE-2194): the operand is resolved by name,
+            // never analyzed as a value expression.
+            // A generic callee's parameter type is a placeholder until its
+            // type arguments are known; an operand that names a callable is
+            // bound with its own signature and checked once they are.
+            let binds_callback = param_mode == RirParamMode::Normal
+                && (param_ty.is_function()
+                    || (param_ty == Type::COMPTIME_TYPE && self.operand_names_callable(&arg, ctx)));
+            if binds_callback {
+                let expected = param_ty.is_function().then_some(param_ty);
+                let value = self.bind_callback_argument(air, &arg, expected, ctx)?;
+                air_args.push(AirCallArg {
+                    value,
+                    mode: AirArgMode::Normal,
+                });
+                continue;
+            }
             let is_str_param = self.is_str_like(param_ty);
             let is_inout_str_param =
                 param_mode == RirParamMode::Inout && self.is_str_struct(param_ty);

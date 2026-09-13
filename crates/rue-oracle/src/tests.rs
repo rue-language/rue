@@ -97,6 +97,12 @@ fn run_test_preview(src: &str) -> Outcome {
         .unwrap_or_else(|error| panic!("oracle failed: {error}"))
 }
 
+fn run_fn_params(src: &str) -> Outcome {
+    let preview_features = PreviewFeatures::from([PreviewFeature::FnParams]);
+    run_source_with_preview_features(src, &preview_features)
+        .unwrap_or_else(|error| panic!("oracle failed: {error}"))
+}
+
 fn expect_unsupported(src: &str) -> Unsupported {
     expect_unsupported_with_preview(src, &PreviewFeatures::new())
 }
@@ -3134,4 +3140,92 @@ fn int_to_ptr_zero_is_null() {
         @intCast(z)
     }"#;
     assert_eq!(run(src).exit_code, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Second-class callbacks (ADR-0096, RUE-2194): a named function bound to a
+// `fn` parameter is a function address the interpreter calls through
+// `call_indirect` with the ordinary call semantics — by-reference arguments
+// included — and forwards unchanged.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn callback_is_called_through_its_parameter_and_forwarded() {
+    let src = r#"struct Policy { descending: bool }
+
+    fn precedes(borrow p: Policy, a: i64, b: i64) -> bool {
+        if p.descending { a > b } else { a < b }
+    }
+
+    fn choose(borrow p: Policy, a: i64, b: i64,
+              cmp: fn(borrow Policy, i64, i64) -> bool) -> i64 {
+        if cmp(borrow p, a, b) { a } else { b }
+    }
+
+    fn forward(borrow p: Policy, a: i64, b: i64,
+               cmp: fn(borrow Policy, i64, i64) -> bool) -> i64 {
+        choose(borrow p, a, b, cmp)
+    }
+
+    fn main() -> i32 {
+        let up = Policy { descending: false };
+        let down = Policy { descending: true };
+        let first = choose(borrow up, 3, 9, precedes);
+        let second = forward(borrow down, 3, 9, precedes);
+        @intCast(first * 10 + second)
+    }"#;
+    assert_eq!(run_fn_params(src).exit_code, 39);
+}
+
+#[test]
+fn callback_writes_back_through_an_inout_argument() {
+    let src = r#"fn bump(inout n: i32) { n = n + 1; }
+
+    fn twice(step: fn(inout i32), inout n: i32) {
+        step(inout n);
+        step(inout n);
+    }
+
+    fn main() -> i32 {
+        let mut count = 40;
+        twice(bump, inout count);
+        count
+    }"#;
+    assert_eq!(run_fn_params(src).exit_code, 42);
+}
+
+#[test]
+fn callback_parameters_nest_and_bind_associated_functions_and_aliases() {
+    let src = r#"struct Counter {
+        n: i32,
+        fn zero() -> i32 { 0 }
+    }
+
+    fn inc(value: i32) -> i32 { value + 1 }
+    const STEP = inc;
+
+    fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }
+    fn twice(step: fn(fn(i32) -> i32, i32) -> i32, value: i32) -> i32 {
+        step(inc, step(STEP, value))
+    }
+    fn make(cb: fn() -> i32) -> i32 { cb() }
+
+    fn main() -> i32 { twice(apply, 40) + make(Counter.zero) }"#;
+    assert_eq!(run_fn_params(src).exit_code, 42);
+}
+
+#[test]
+fn callback_bound_to_a_generic_callee_is_checked_after_substitution() {
+    let src = r#"fn apply(comptime T: type, cb: fn(T) -> T, value: T) -> T { cb(value) }
+    fn step(value: i32) -> i32 { value + 1 }
+    fn main() -> i32 { apply(i32, step, 41) }"#;
+    assert_eq!(run_fn_params(src).exit_code, 42);
+}
+
+#[test]
+fn callback_result_and_side_effects_are_observed_in_call_order() {
+    let src = r#"fn show(value: i32) { @dbg(value); }
+    fn each(visit: fn(i32)) -> i32 { visit(1); visit(2); 0 }
+    fn main() -> i32 { each(show) }"#;
+    assert_eq!(run_fn_params(src).stdout, "1\n2\n");
 }

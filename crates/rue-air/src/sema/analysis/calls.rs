@@ -65,7 +65,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Receiver exclusivity is checked separately for methods because their
     /// implicit `self` access participates in the same loan set as the explicit
     /// arguments.
-    fn validate_call_contract(
+    pub(super) fn validate_call_contract(
         &self,
         args_range: &rue_rir::RirCallArgsRange,
         param_types: &[Type],
@@ -272,6 +272,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         let source_name = name;
+        // A callback parameter is called through its `fn` type (ADR-0096,
+        // RUE-2194). The parameter binding wins over an item of the same
+        // name exactly as it does for a value read (spec 5.1:11); a `let`
+        // shadowing the parameter is a value, not a callable.
+        if !ctx.locals.contains_key(&name)
+            && let Some(param) = ctx.param(name)
+            && param.ty.is_function()
+        {
+            let (slot, callback) = (param.abi_slot, param.ty);
+            return self.analyze_callback_call(air, slot, callback, args_range, span, ctx);
+        }
         // One resolution order for the callee name, shared with the staged
         // inference pre-pass and comptime call admission (RUE-2161).
         let Some(resolved) = self.resolve_callee_name(name, span.file_id) else {
@@ -698,12 +709,31 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
                 let found = air.get(air_arg.value).ty;
                 if !self.types_compatible(found, expected) && !expected.is_error() {
+                    let arg_span = self.body_rir_ref().get(args.get(i).unwrap().value).span;
+                    // A named function bound to a `fn` parameter whose type
+                    // mentions a comptime type parameter is checked here,
+                    // once the substitution is known (ADR-0096, RUE-2194).
+                    if expected.is_function()
+                        && let AirInstData::FnRef { name: callee } = air.get(air_arg.value).data
+                    {
+                        let source = self.call_facts().call_source_function_name(callee);
+                        return Err(CompileError::new(
+                            ErrorKind::CallbackSignatureMismatch(Box::new(
+                                rue_error::CallbackSignatureMismatchError {
+                                    function: self.body_interner().resolve(&source).to_string(),
+                                    expected: self.format_type_name(expected),
+                                    found: self.format_type_name(found),
+                                },
+                            )),
+                            arg_span,
+                        ));
+                    }
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
                             expected: self.format_type_name(expected),
                             found: self.format_type_name(found),
                         },
-                        self.body_rir_ref().get(args.get(i).unwrap().value).span,
+                        arg_span,
                     ));
                 }
             }

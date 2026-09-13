@@ -153,8 +153,9 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
     let mut byref_arg_values: AHashSet<CfgValue> = AHashSet::new();
     for block in cfg.blocks() {
         for &value in &block.insts {
-            if let CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } =
-                &cfg.get_inst(value).data
+            if let CfgInstData::Call { args, .. }
+            | CfgInstData::AccessorCall { args, .. }
+            | CfgInstData::CallIndirect { args, .. } = &cfg.get_inst(value).data
             {
                 for arg in cfg.call_args(args) {
                     if arg.is_by_ref() {
@@ -268,7 +269,9 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
                 }
                 // Both call forms can pass a place to code that writes through
                 // it, so a by-ref argument invalidates the tracked value.
-                CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } => {
+                CfgInstData::Call { args, .. }
+                | CfgInstData::AccessorCall { args, .. }
+                | CfgInstData::CallIndirect { args, .. } => {
                     let mut clear_all = false;
                     for arg in cfg.call_args(&args).to_vec() {
                         if !arg.is_by_ref() {
