@@ -1270,6 +1270,21 @@ impl RegAlloc {
                 );
             }
 
+            Aarch64Inst::SymbolAddr { dst, symbol_id } => {
+                alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
+                    emit |dst_op| {
+                        mir.push(Aarch64Inst::SymbolAddr { dst: dst_op, symbol_id });
+                    },
+                    store |offset| {
+                        mir.push_after(Aarch64Inst::Str {
+                            src: Operand::Physical(SCRATCH_VALUE),
+                            base: Reg::Fp,
+                            offset,
+                        });
+                    },
+                );
+            }
+
             Aarch64Inst::StringConstPtr { dst, string_id } => {
                 alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
                     emit |dst_op| {
@@ -1323,6 +1338,10 @@ impl RegAlloc {
             Aarch64Inst::Label { id } => mir.push(Aarch64Inst::Label { id }),
             Aarch64Inst::Bl { symbol_id, returns } => {
                 mir.push(Aarch64Inst::Bl { symbol_id, returns })
+            }
+            Aarch64Inst::Blr { target } => {
+                let target_op = Self::load_operand(context, mir, target, SCRATCH_VALUE)?;
+                mir.push(Aarch64Inst::Blr { target: target_op });
             }
             Aarch64Inst::Ret => mir.push(Aarch64Inst::Ret),
             Aarch64Inst::Brk => mir.push(Aarch64Inst::Brk),

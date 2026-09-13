@@ -129,11 +129,16 @@ pub(crate) fn validate_pre_lowering_budget_for_target(
     for raw in 0..cfg.value_count() {
         let value = CfgValue::from_raw(raw as u32);
         let inst = cfg.get_inst(value);
-        let CfgInstData::Call { name, .. } = &inst.data else {
-            continue;
+        // A call through a `fn` parameter is a native Rue call whose target is
+        // a value (ADR-0096); it reserves the same outgoing area a direct call
+        // to the same signature would.
+        let foreign = match &inst.data {
+            CfgInstData::Call { name, .. } => foreign_symbol_convention(*name),
+            CfgInstData::CallIndirect { .. } => None,
+            _ => continue,
         };
         let call_args = cfg.get_call_args(&inst.data);
-        if let Some(convention) = foreign_symbol_convention(*name) {
+        if let Some(convention) = foreign {
             crate::foreign_call::ForeignCallInputs::checked_call_area_bytes(
                 cfg, type_pool, inst.ty, call_args, convention,
             )

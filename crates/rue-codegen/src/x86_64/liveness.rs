@@ -291,6 +291,9 @@ pub fn uses(inst: &X86Inst) -> VRegList {
         X86Inst::Push { src } => {
             add_if_virtual(src, &mut result);
         }
+        X86Inst::CallReg { target } => {
+            add_if_virtual(target, &mut result);
+        }
         X86Inst::Lea { .. } => {
             // LEA only defines dst, it does not read dst's previous value.
             // base is a physical register (Reg), so no vreg use.
@@ -321,6 +324,7 @@ pub fn uses(inst: &X86Inst) -> VRegList {
             add_if_virtual(src, &mut result);
         }
         X86Inst::StringConstPtr { .. }
+        | X86Inst::SymbolAddr { .. }
         | X86Inst::StringConstLen { .. }
         | X86Inst::StringConstCap { .. } => {
             // Only defines, no uses
@@ -486,6 +490,7 @@ pub fn defs(inst: &X86Inst) -> VRegList {
             // SIB store writes to memory, no register def
         }
         X86Inst::StringConstPtr { dst, .. }
+        | X86Inst::SymbolAddr { dst, .. }
         | X86Inst::StringConstLen { dst, .. }
         | X86Inst::StringConstCap { dst, .. } => {
             add_if_virtual(dst, &mut result);
@@ -505,6 +510,7 @@ pub fn defs(inst: &X86Inst) -> VRegList {
         | X86Inst::Jmp { .. }
         | X86Inst::Label { .. }
         | X86Inst::CallRel { .. }
+        | X86Inst::CallReg { .. }
         | X86Inst::Syscall
         | X86Inst::Ret
         | X86Inst::Ud2 => {

@@ -94,7 +94,10 @@ fn cmp_zero_to_tst_safe(instructions: &[Aarch64Inst], idx: usize) -> bool {
             | Aarch64Inst::Label { .. }
             | Aarch64Inst::Cbz { .. }
             | Aarch64Inst::Cbnz { .. } => return false,
-            Aarch64Inst::Bl { .. } | Aarch64Inst::Svc { .. } | Aarch64Inst::Ret => return true,
+            Aarch64Inst::Bl { .. }
+            | Aarch64Inst::Blr { .. }
+            | Aarch64Inst::Svc { .. }
+            | Aarch64Inst::Ret => return true,
             inst if writes_flags(inst) => return true,
             _ => {}
         }

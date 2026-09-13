@@ -209,7 +209,7 @@ fn get_latency(inst: &X86Inst) -> u32 {
         X86Inst::Pop { .. } => 4,
 
         // Calls: 5+ cycles (variable, includes return prediction)
-        X86Inst::CallRel { .. } => 5,
+        X86Inst::CallRel { .. } | X86Inst::CallReg { .. } => 5,
         X86Inst::Syscall => 100, // Syscalls are very slow
 
         // Control flow (don't schedule across these)
@@ -232,6 +232,7 @@ fn get_latency(inst: &X86Inst) -> u32 {
 
         // String constants (pseudo-instructions)
         X86Inst::StringConstPtr { .. }
+        | X86Inst::SymbolAddr { .. }
         | X86Inst::StringConstLen { .. }
         | X86Inst::StringConstCap { .. } => 1,
     }
@@ -259,6 +260,7 @@ fn is_barrier(inst: &X86Inst) -> bool {
             | X86Inst::Jmp { .. }
             | X86Inst::Label { .. }
             | X86Inst::CallRel { .. }
+            | X86Inst::CallReg { .. }
             | X86Inst::Syscall
             | X86Inst::Ret
             | X86Inst::Ud2
@@ -449,7 +451,9 @@ pub(super) fn regs_read(inst: &X86Inst) -> RegList<Reg> {
             add_if_phys(index, &mut result);
             add_if_phys(src, &mut result);
         }
+        X86Inst::CallReg { target } => add_if_phys(target, &mut result),
         X86Inst::StringConstPtr { .. }
+        | X86Inst::SymbolAddr { .. }
         | X86Inst::StringConstLen { .. }
         | X86Inst::StringConstCap { .. }
         | X86Inst::CallRel { .. }
@@ -587,10 +591,11 @@ pub(super) fn regs_written(inst: &X86Inst) -> RegList<Reg> {
         X86Inst::MovMRIndexed { .. } | X86Inst::NarrowStoreIndexed { .. } => {}
         X86Inst::MovRMSib { dst, .. } => add_if_phys(dst, &mut result),
         X86Inst::MovMRSib { .. } => {} // Store doesn't write to register (only memory)
-        X86Inst::CallRel { .. } | X86Inst::Syscall => {
+        X86Inst::CallRel { .. } | X86Inst::CallReg { .. } | X86Inst::Syscall => {
             // Clobbers handled separately via clobbers()
         }
         X86Inst::StringConstPtr { dst, .. }
+        | X86Inst::SymbolAddr { dst, .. }
         | X86Inst::StringConstLen { dst, .. }
         | X86Inst::StringConstCap { dst, .. } => {
             add_if_phys(dst, &mut result);

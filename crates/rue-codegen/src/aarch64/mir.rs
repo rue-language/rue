@@ -1122,6 +1122,13 @@ pub enum Aarch64Inst {
         returns: ReturnBehavior,
     },
 
+    /// `blr reg` - Branch with link through the code address a register
+    /// holds: the callback bound to a `fn` parameter (ADR-0096). The target
+    /// is an ordinary register read; a spilled target reloads through the
+    /// value scratch, which the argument sequence has finished with once the
+    /// call is placed. It clobbers exactly what `bl` does and returns.
+    Blr { target: Operand },
+
     /// `ret` - Return (branch to LR).
     Ret,
 
@@ -1163,6 +1170,11 @@ pub enum Aarch64Inst {
     /// Load string capacity (pseudo-instruction resolved during emission)
     /// For string literals, this is always 0 (indicating rodata, not heap)
     StringConstCap { dst: Operand, string_id: u32 },
+
+    /// `adrp dst, symbol; add dst, dst, :lo12:symbol` - The address of a
+    /// named function (ADR-0096): a page-relative load of a symbol in the
+    /// MIR symbol table, relocated exactly as a string constant's address.
+    SymbolAddr { dst: Operand, symbol_id: u32 },
 }
 
 impl Aarch64Inst {
@@ -1198,7 +1210,7 @@ impl Aarch64Inst {
         match self {
             Aarch64Inst::FloatConst { .. } => &[Reg::X9],
             // Function calls clobber all caller-saved registers per AAPCS64
-            Aarch64Inst::Bl { .. } => &[
+            Aarch64Inst::Bl { .. } | Aarch64Inst::Blr { .. } => &[
                 Reg::X0,
                 Reg::X1,
                 Reg::X2,
@@ -1605,6 +1617,10 @@ impl fmt::Display for Aarch64Inst {
             Aarch64Inst::Bvc { label } => write!(f, "b.vc {}", label),
             Aarch64Inst::Label { id } => write!(f, "{}:", id),
             Aarch64Inst::Bl { symbol_id, .. } => write!(f, "bl sym{}", symbol_id),
+            Aarch64Inst::Blr { target } => write!(f, "blr {}", target),
+            Aarch64Inst::SymbolAddr { dst, symbol_id } => {
+                write!(f, "adrp+add {}, sym{}", dst, symbol_id)
+            }
             Aarch64Inst::Ret => write!(f, "ret"),
             Aarch64Inst::Brk => write!(f, "brk #0x1"),
             Aarch64Inst::Svc { imm } => write!(f, "svc #{:#x}", imm),

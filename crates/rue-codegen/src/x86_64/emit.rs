@@ -1547,6 +1547,18 @@ impl<'a> Emitter<'a> {
                 self.emit_call_rel(symbol);
                 end_inst!(self, "call {}", symbol);
             }
+            X86Inst::CallReg { target } => {
+                let target = target.as_physical();
+                self.begin_inst();
+                self.emit_call_reg(target);
+                end_inst!(self, "call {}", target);
+            }
+            X86Inst::SymbolAddr { dst, symbol_id } => {
+                let symbol = self.mir.get_symbol(*symbol_id).to_string();
+                self.begin_inst();
+                self.emit_symbol_addr(dst.as_physical(), &symbol);
+                end_inst!(self, "lea {}, [rip + {}]", dst.as_physical(), symbol);
+            }
             X86Inst::Syscall => {
                 self.begin_inst();
                 self.emit_syscall();
@@ -2379,6 +2391,34 @@ impl<'a> Emitter<'a> {
         // Record relocation using the helper
         self.relocations
             .push(EmittedRelocation::x86_call(reloc_offset, symbol));
+    }
+
+    /// Emit `call r64` - call through the code address in a register.
+    ///
+    /// Encoding: [REX.B] FF /2 with ModR/M mod=11, reg=010, r/m=target.
+    fn emit_call_reg(&mut self, target: Reg) {
+        let enc = target.encoding();
+        if target.needs_rex() {
+            self.code.push(0x41);
+        }
+        self.code.push(0xFF);
+        self.code.push(0xD0 | (enc & 7));
+    }
+
+    /// Emit `lea dst, [rip + symbol]` for the address of a named function
+    /// (ADR-0096). The same RIP-relative form and PC32 relocation as a
+    /// string constant's address, against the function's symbol.
+    fn emit_symbol_addr(&mut self, dst: Reg, symbol: &str) {
+        let dst_enc = dst.encoding();
+        let rex = 0x48 | if dst.needs_rex() { 0x04 } else { 0x00 };
+        self.code.push(rex);
+        self.code.push(0x8D);
+        let modrm = ((dst_enc & 7) << 3) | 0x05;
+        self.code.push(modrm);
+        let reloc_offset = self.code.len() as u64;
+        self.code.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        self.relocations
+            .push(EmittedRelocation::x86_pc32(reloc_offset, symbol));
     }
 
     /// Emit LEA dst, [rip + offset] for loading string constant address.
@@ -5174,6 +5214,56 @@ mod tests {
         });
         // lea rax, [rip+disp32] -> 48 8D 05 00 00 00 00
         assert_eq!(code, vec![0x48, 0x8D, 0x05, 0x00, 0x00, 0x00, 0x00]);
+    }
+
+    /// `call r64` (ADR-0096): FF /2 with the register in r/m, REX.B for the
+    /// extended bank. No relocation: the target is the register's value.
+    #[test]
+    fn test_call_reg() {
+        assert_eq!(
+            emit_single(X86Inst::CallReg {
+                target: Operand::Physical(Reg::Rax),
+            }),
+            vec![0xFF, 0xD0]
+        );
+        assert_eq!(
+            emit_single(X86Inst::CallReg {
+                target: Operand::Physical(Reg::R11),
+            }),
+            vec![0x41, 0xFF, 0xD3]
+        );
+        assert_eq!(
+            emit_single(X86Inst::CallReg {
+                target: Operand::Physical(Reg::Rbx),
+            }),
+            vec![0xFF, 0xD3]
+        );
+    }
+
+    /// The address of a named function (ADR-0096) is the same RIP-relative
+    /// `lea` a string constant's address is, relocated PC32 against the
+    /// function's own symbol.
+    #[test]
+    fn test_symbol_addr() {
+        use crate::RelocationKind;
+
+        let mut mir = X86Mir::new();
+        let symbol_id = mir.intern_symbol("callee");
+        mir.push(X86Inst::SymbolAddr {
+            dst: Operand::Physical(Reg::R12),
+            symbol_id,
+        });
+        let (code, relocs) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap();
+        // lea r12, [rip+disp32] -> 4C 8D 25 00 00 00 00
+        assert_eq!(code, vec![0x4C, 0x8D, 0x25, 0x00, 0x00, 0x00, 0x00]);
+        assert_eq!(relocs.len(), 1);
+        assert_eq!(relocs[0].symbol, "callee");
+        assert_eq!(relocs[0].kind, RelocationKind::X86Pc32);
+        assert_eq!(relocs[0].offset, 3);
+        assert_eq!(relocs[0].addend, -4);
     }
 
     #[test]

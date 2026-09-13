@@ -252,6 +252,8 @@ const OPCODE_BCOND: u32 = 0x54000000;
 const OPCODE_CBZ_X: u32 = 0xB4000000;
 /// BL symbol - Branch with link
 const OPCODE_BL: u32 = 0x94000000;
+/// BLR Xn: branch with link to the address in a register (ADR-0096).
+const OPCODE_BLR: u32 = 0xD63F0000;
 /// RET - Return (branch to LR)
 const OPCODE_RET: u32 = 0xD65F03C0;
 /// BRK #1 - Software breakpoint (raises SIGTRAP). Encoding:
@@ -1758,6 +1760,33 @@ impl<'a> Emitter<'a> {
                 self.begin_inst();
                 self.emit_bl(symbol);
                 end_inst!(self, "bl {}", symbol);
+            }
+            Aarch64Inst::Blr { target } => {
+                let rn = target.as_physical();
+                self.begin_inst();
+                self.emit_u32(OPCODE_BLR | (rn.encoding() as u32) << 5);
+                end_inst!(self, "blr {}", rn);
+            }
+            Aarch64Inst::SymbolAddr { dst, symbol_id } => {
+                // The address of a named function: ADRP to its page, ADD its
+                // page offset, each relocated against the symbol exactly as a
+                // string constant's address is (ADR-0096).
+                let rd = dst.as_physical();
+                let symbol = self.mir.get_symbol(*symbol_id).to_string();
+                self.begin_inst();
+                let offset = self.code.len();
+                let adrp = OPCODE_ADRP | rd.encoding() as u32;
+                self.emit_u32(adrp);
+                self.relocations
+                    .push(EmittedRelocation::aarch64_adrp(offset as u64, &symbol));
+                end_inst!(self, "adrp {}, {}", rd, symbol);
+                self.begin_inst();
+                let offset = self.code.len();
+                let add = OPCODE_ADD_IMM_X | (rd.encoding() as u32) << 5 | rd.encoding() as u32;
+                self.emit_u32(add);
+                self.relocations
+                    .push(EmittedRelocation::aarch64_add_lo12(offset as u64, &symbol));
+                end_inst!(self, "add {}, {}, :lo12:{}", rd, rd, symbol);
             }
 
             Aarch64Inst::Ret => {
@@ -4914,6 +4943,52 @@ mod tests {
         // cbnz x0, label
         let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
         assert_eq!(inst & 0xFF00001F, 0xB5000000, "Should be CBNZ");
+    }
+
+    /// `blr xn` (ADR-0096): D63F0000 with the target register in Rn. No
+    /// relocation: the target is the register's value.
+    #[test]
+    fn test_blr() {
+        let code = emit_single(Aarch64Inst::Blr {
+            target: Operand::Physical(Reg::X13),
+        });
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst, 0xD63F01A0, "Should be BLR X13");
+    }
+
+    /// The address of a named function (ADR-0096) is the `adrp`+`add` pair a
+    /// string constant's address is, each relocated against the function's
+    /// own symbol.
+    #[test]
+    fn test_symbol_addr() {
+        use crate::RelocationKind;
+
+        let mut mir = Aarch64Mir::new();
+        let symbol_id = mir.intern_symbol("callee");
+        mir.push(Aarch64Inst::SymbolAddr {
+            dst: Operand::Physical(Reg::X13),
+            symbol_id,
+        });
+        let (code, relocs) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap();
+        assert_eq!(code.len(), 8);
+        let adrp = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(adrp & 0x9F00001F, 0x9000000D, "Should be ADRP X13");
+        let add = u32::from_le_bytes(code[4..8].try_into().unwrap());
+        assert_eq!(
+            add & 0xFFC003FF,
+            0x910001AD,
+            "Should be ADD X13, X13, #lo12"
+        );
+        assert_eq!(relocs.len(), 2);
+        assert_eq!(relocs[0].symbol, "callee");
+        assert_eq!(relocs[0].kind, RelocationKind::Aarch64AdrpPage21);
+        assert_eq!(relocs[0].offset, 0);
+        assert_eq!(relocs[1].symbol, "callee");
+        assert_eq!(relocs[1].kind, RelocationKind::Aarch64AddLo12);
+        assert_eq!(relocs[1].offset, 4);
     }
 
     #[test]

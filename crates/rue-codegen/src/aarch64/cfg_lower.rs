@@ -1056,8 +1056,19 @@ impl<'a> CfgLower<'a> {
                 src: Operand::Virtual(hidden.pointer),
             });
         }
-        let symbol_id = self.intern_symbol(plan.target.symbol());
-        self.mir.push(Aarch64Inst::call(symbol_id));
+        match &plan.target {
+            // A callback's code address was materialized before the argument
+            // leaves, in a register the argument sequence never writes.
+            crate::call_plan::CallTarget::Indirect(target) => {
+                self.mir.push(Aarch64Inst::Blr {
+                    target: Operand::Virtual(*target),
+                });
+            }
+            target => {
+                let symbol_id = self.intern_symbol(target.symbol());
+                self.mir.push(Aarch64Inst::call(symbol_id));
+            }
+        }
         if plan.stack_bytes > 0 {
             self.mir.push(Aarch64Inst::AddImm {
                 dst: Operand::Physical(Reg::Sp),
@@ -1300,6 +1311,15 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(Aarch64Inst::MovImm {
                     dst: Operand::Virtual(dst),
                     imm: value as i64,
+                });
+                dst
+            }
+            ResidualValuePlan::FunctionAddress { symbol } => {
+                let dst = self.mir.alloc_vreg();
+                let symbol_id = self.intern_symbol(&symbol);
+                self.mir.push(Aarch64Inst::SymbolAddr {
+                    dst: Operand::Virtual(dst),
+                    symbol_id,
                 });
                 dst
             }

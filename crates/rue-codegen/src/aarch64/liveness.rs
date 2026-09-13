@@ -246,6 +246,9 @@ fn uses(inst: &Aarch64Inst) -> VRegList {
         Aarch64Inst::Cbz { src, .. } | Aarch64Inst::Cbnz { src, .. } => {
             add_if_virtual(src, &mut result);
         }
+        Aarch64Inst::Blr { target } => {
+            add_if_virtual(target, &mut result);
+        }
         Aarch64Inst::Cset { .. } => {
             // Only defines
         }
@@ -287,6 +290,7 @@ fn uses(inst: &Aarch64Inst) -> VRegList {
             add_if_virtual(src, &mut result);
         }
         Aarch64Inst::StringConstPtr { .. }
+        | Aarch64Inst::SymbolAddr { .. }
         | Aarch64Inst::StringConstLen { .. }
         | Aarch64Inst::StringConstCap { .. } => {
             // Only defines, no uses
@@ -427,6 +431,7 @@ pub(crate) fn defs(inst: &Aarch64Inst) -> VRegList {
             add_if_virtual(dst, &mut result);
         }
         Aarch64Inst::StringConstPtr { dst, .. }
+        | Aarch64Inst::SymbolAddr { dst, .. }
         | Aarch64Inst::StringConstLen { dst, .. }
         | Aarch64Inst::StringConstCap { dst, .. } => {
             add_if_virtual(dst, &mut result);
@@ -437,6 +442,7 @@ pub(crate) fn defs(inst: &Aarch64Inst) -> VRegList {
         | Aarch64Inst::Bvc { .. }
         | Aarch64Inst::Label { .. }
         | Aarch64Inst::Bl { .. }
+        | Aarch64Inst::Blr { .. }
         | Aarch64Inst::Ret
         | Aarch64Inst::Brk
         | Aarch64Inst::Svc { .. } => {

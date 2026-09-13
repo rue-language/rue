@@ -40,7 +40,7 @@ const fn callee_pairing(
     c_convention: CallingConvention,
 ) -> ConventionSpec {
     match target {
-        CallTarget::Rue(_) => native,
+        CallTarget::Rue(_) | CallTarget::Indirect(_) => native,
         CallTarget::MemoryBuiltin(_) => ConventionSpec::c(c_convention),
     }
 }
@@ -54,6 +54,10 @@ const fn callee_pairing(
 pub enum CallTarget {
     Rue(String),
     MemoryBuiltin(MemoryBuiltinId),
+    /// A callback bound to a `fn` parameter (ADR-0096 §6): the callee's code
+    /// address is the value in this virtual register, and the call crosses
+    /// the native Rue convention exactly as a direct call does.
+    Indirect(VReg),
 }
 
 /// Checked identity for one compiler-built C memory routine.
@@ -96,6 +100,9 @@ impl CallTarget {
         match self {
             Self::Rue(symbol) => symbol,
             Self::MemoryBuiltin(id) => id.symbol(),
+            Self::Indirect(_) => {
+                panic!("an indirect call target is a register value, not a symbol")
+            }
         }
     }
 }

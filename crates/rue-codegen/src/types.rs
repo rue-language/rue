@@ -1131,7 +1131,7 @@ pub(crate) fn compact_physical_access_unsupported(
             // its compact image (ADR-0084) and marshaled through it, so it is
             // allowed exactly when it has a variant-independent or
             // tag-dispatched one; an array without an image stays refused.
-            CfgInstData::Call { .. } => {
+            CfgInstData::Call { .. } | CfgInstData::CallIndirect { .. } => {
                 for arg in cfg.get_call_args(&inst.data) {
                     let arg_ty = cfg.get_inst(arg.value).ty;
                     if call_boundary_unsupported(arg_ty) {
@@ -1272,21 +1272,6 @@ pub(crate) fn ensure_compact_layout_codegen_supported(
     type_pool: &FrozenTypeInternPool,
     interner: &ThreadedRodeo,
 ) -> rue_error::CompileResult<()> {
-    // A callback bound or called through a `fn` parameter (ADR-0096) has no
-    // native lowering yet: function-address materialization and the indirect
-    // call through the canonical call plan are RUE-2195. Refuse the function
-    // by name rather than miscompile it; the reference interpreter runs it.
-    if let Some(construct) = indirect_call_unsupported(cfg) {
-        return Err(rue_error::CompileError::without_span(
-            rue_error::ErrorKind::InternalCodegenError(format!(
-                "{construct} in function `{}` is not supported by native code generation yet: \
-                 the address of a named function and the call through a `fn` parameter \
-                 (ADR-0096, preview `fn_params`) are lowered natively by RUE-2195",
-                cfg.fn_name()
-            )),
-        ));
-    }
-
     // A raw pointer into a non-slot-identical frame aggregate mixes the frame's
     // slot layout with compact-image pointer semantics (RUE-1035 M2). Name the
     // construct — not the preview — and point at the working heap alternative.
@@ -1326,26 +1311,6 @@ pub(crate) fn ensure_compact_layout_codegen_supported(
         ));
     }
     Ok(())
-}
-
-/// The first callback construct (ADR-0096) in `cfg`, named for the refusal
-/// diagnostic: a function-address materialization or an indirect call. Both
-/// backends refuse such a function until RUE-2195 lowers them.
-fn indirect_call_unsupported(cfg: &Cfg) -> Option<&'static str> {
-    for block in cfg.blocks() {
-        for &value in &block.insts {
-            match &cfg.get_inst(value).data {
-                CfgInstData::FnAddr { .. } => {
-                    return Some("binding a named function to a `fn` parameter");
-                }
-                CfgInstData::CallIndirect { .. } => {
-                    return Some("calling through a `fn` parameter");
-                }
-                _ => {}
-            }
-        }
-    }
-    None
 }
 
 // The drop-glue array symbol name comes from the single authority in

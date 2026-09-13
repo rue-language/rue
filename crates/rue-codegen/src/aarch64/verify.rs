@@ -132,7 +132,7 @@ impl StackVerifyAdapter for Aarch64StackVerifyAdapter<'_> {
 
     fn alignment_violation(&self, inst: &Self::Inst, current_depth: i64) -> Option<String> {
         match inst {
-            Aarch64Inst::Bl { .. } => {
+            Aarch64Inst::Bl { .. } | Aarch64Inst::Blr { .. } => {
                 // At a call site, SP must be 16-byte aligned.
                 // Unlike x86-64, the return address goes into LR, not pushed to stack,
                 // so the callee sees SP at the same alignment as the caller.

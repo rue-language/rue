@@ -1230,6 +1230,21 @@ impl RegAlloc {
                 });
             }
 
+            X86Inst::SymbolAddr { dst, symbol_id } => {
+                alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
+                    emit |dst_op| {
+                        mir.push(X86Inst::SymbolAddr { dst: dst_op, symbol_id });
+                    },
+                    store |offset| {
+                        mir.push_after(X86Inst::MovMR {
+                            base: Reg::Rbp,
+                            offset,
+                            src: Operand::Physical(SCRATCH_VALUE),
+                        });
+                    },
+                );
+            }
+
             X86Inst::StringConstPtr { dst, string_id } => {
                 alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
                     emit |dst_op| {
@@ -1293,6 +1308,10 @@ impl RegAlloc {
             X86Inst::Label { id } => mir.push(X86Inst::Label { id }),
             X86Inst::CallRel { symbol_id, returns } => {
                 mir.push(X86Inst::CallRel { symbol_id, returns })
+            }
+            X86Inst::CallReg { target } => {
+                let target_op = Self::load_operand(context, mir, target, SCRATCH_VALUE)?;
+                mir.push(X86Inst::CallReg { target: target_op });
             }
             X86Inst::Syscall => mir.push(X86Inst::Syscall),
             X86Inst::Ret => mir.push(X86Inst::Ret),
