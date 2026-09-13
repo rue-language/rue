@@ -2073,15 +2073,146 @@ error_contains = ["E0214", "not a `borrow` parameter"]
 [[case]]
 name = "fn_type_identity_is_its_modes_types_and_result"
 spec = ["6.1:48"]
-description = "The type a callback parameter binds is spelled from its signature alone: every mode, every type, and the result, with no parameter names"
+description = "The type a callback parameter binds is spelled from its signature alone: every mode, every type, and the result, with no parameter names; a by-value parameter is a different mode from a `borrow` one"
 preview = "fn_params"
 preview_should_pass = true
 source = """
 struct Policy { descending: bool }
 
 fn choose(cmp: fn(borrow Policy, i64, i64) -> bool) -> i32 { 0 }
+fn by_value(policy: Policy, first: i64, second: i64) -> bool { first < second }
 
-fn main() -> i32 { choose(true) }
+fn main() -> i32 { choose(by_value) }
 """
 compile_fail = true
-error_contains = ["E0206", "expected fn(borrow Policy, i64, i64) -> bool, found bool"]
+error_contains = ["E0215", "function `by_value` has signature fn(Policy, i64, i64) -> bool, but the `fn` parameter expects fn(borrow Policy, i64, i64) -> bool"]
+
+[[case]]
+name = "callback_argument_must_have_exactly_the_parameter_signature"
+spec = ["6.1:50", "6.1:48"]
+description = "A named function whose signature differs from the `fn` type in one parameter type is not a conversion candidate"
+preview = "fn_params"
+preview_should_pass = true
+source = """
+fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }
+fn widen(value: i64) -> i64 { value }
+
+fn main() -> i32 { apply(widen, 1) }
+"""
+compile_fail = true
+error_contains = ["E0215", "function `widen` has signature fn(i64) -> i64, but the `fn` parameter expects fn(i32) -> i32"]
+
+[[case]]
+name = "callback_signature_is_checked_against_the_substituted_type"
+spec = ["6.1:50"]
+preview = "fn_params"
+preview_should_pass = true
+source = """
+fn apply(comptime T: type, cb: fn(T) -> T, value: T) -> T { cb(value) }
+fn widen(value: i64) -> i64 { value }
+
+fn main() -> i32 { apply(i32, widen, 1) }
+"""
+compile_fail = true
+error_contains = ["E0215", "expects fn(i32) -> i32"]
+
+[[case]]
+name = "callback_argument_must_name_a_function"
+spec = ["6.1:50"]
+description = "An expression that does not name a function cannot bind a `fn` parameter"
+preview = "fn_params"
+preview_should_pass = true
+source = """
+fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }
+
+fn main() -> i32 { apply(1 + 1, 1) }
+"""
+compile_fail = true
+error_contains = ["E0216", "an expression cannot be bound to a `fn` parameter"]
+
+[[case]]
+name = "generic_and_receiver_taking_functions_are_not_callbacks"
+spec = ["6.1:50"]
+description = "A generic function has no single callable address; a named monomorphic wrapper is the spelling"
+preview = "fn_params"
+preview_should_pass = true
+source = """
+fn identity(comptime T: type, value: T) -> T { value }
+fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }
+
+fn main() -> i32 { apply(identity, 1) }
+"""
+compile_fail = true
+error_contains = ["E0216", "the generic function `identity` cannot be bound to a `fn` parameter"]
+
+[[case]]
+name = "callback_parameter_bound_with_let_is_an_escape"
+spec = ["6.1:51"]
+preview = "fn_params"
+preview_should_pass = true
+source = """
+fn apply(cb: fn(i32) -> i32, value: i32) -> i32 {
+    let kept = cb;
+    value
+}
+fn step(value: i32) -> i32 { value }
+
+fn main() -> i32 { apply(step, 1) }
+"""
+compile_fail = true
+error_contains = ["E0217", "the callback parameter `cb` cannot be used as a value"]
+
+[[case]]
+name = "named_function_is_not_a_value"
+spec = ["6.1:51"]
+preview = "fn_params"
+preview_should_pass = true
+source = """
+fn double(value: i32) -> i32 { value * 2 }
+
+fn main() -> i32 {
+    let f = double;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0217", "the function `double` cannot be used as a value"]
+
+[[case]]
+name = "forwarded_callback_keeps_its_exact_type"
+spec = ["6.1:51", "6.1:48"]
+description = "Forwarding passes the callback to a `fn` parameter of the same type; a different signature is a type mismatch"
+preview = "fn_params"
+preview_should_pass = true
+source = """
+fn each(visit: fn(i32)) -> i32 { visit(1); 0 }
+fn apply(cb: fn(i32) -> i32) -> i32 { each(cb) }
+fn step(value: i32) -> i32 { value }
+
+fn main() -> i32 { apply(step) }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected fn(i32), found fn(i32) -> i32"]
+
+[[case]]
+name = "call_through_a_callback_follows_its_fn_type"
+spec = ["6.1:51"]
+description = "The call's argument modes come from the callback's `fn` type exactly as from a declaration"
+preview = "fn_params"
+preview_should_pass = true
+source = """
+struct Policy { descending: bool }
+
+fn choose(borrow p: Policy, a: i64, b: i64,
+          cmp: fn(borrow Policy, i64, i64) -> bool) -> i64 {
+    if cmp(p, a, b) { a } else { b }
+}
+fn precedes(borrow p: Policy, a: i64, b: i64) -> bool { a < b }
+
+fn main() -> i32 {
+    let p = Policy { descending: false };
+    @intCast(choose(borrow p, 1, 2, precedes))
+}
+"""
+compile_fail = true
+error_contains = ["E0432", "argument to borrow parameter must use 'borrow' keyword"]

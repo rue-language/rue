@@ -111,6 +111,8 @@ fn live_instruction_kind(data: &AirInstData) -> rue_air::SemanticBodyInstKind {
         } => K::RuntimeCall,
         AirInstData::Call { runtime: None, .. } => K::Call,
         AirInstData::AccessorCall { .. } => K::AccessorCall,
+        AirInstData::FnRef { .. } => K::FnRef,
+        AirInstData::CallIndirect { .. } => K::CallIndirect,
         AirInstData::CallGeneric { .. } => K::CallGeneric,
         AirInstData::Intrinsic { .. } => K::Intrinsic,
         AirInstData::Param { .. } => K::Param,
@@ -800,13 +802,17 @@ impl CfgDomainProjection {
         let mut symbols_by_live = None;
         for block in cfg.blocks() {
             for value in &block.insts {
-                let rue_cfg::CfgInstData::Call {
-                    runtime: None,
-                    name,
-                    ..
-                } = &cfg.get_inst(*value).data
-                else {
-                    continue;
+                // A function bound to a `fn` parameter is a runtime callable
+                // exactly as a direct callee is: its body must exist at link
+                // time for the callback to reach it (ADR-0096).
+                let name = match &cfg.get_inst(*value).data {
+                    rue_cfg::CfgInstData::Call {
+                        runtime: None,
+                        name,
+                        ..
+                    }
+                    | rue_cfg::CfgInstData::FnAddr { name } => name,
+                    _ => continue,
                 };
                 let symbols_by_live = symbols_by_live.get_or_insert_with(|| {
                     let mut index = AHashMap::with_capacity(self.symbols.len());
@@ -1078,7 +1084,8 @@ impl CfgDomainProjection {
                     name,
                     ..
                 }
-                | AirInstData::AccessorCall { name, .. } => {
+                | AirInstData::AccessorCall { name, .. }
+                | AirInstData::FnRef { name } => {
                     let callable = stable_callable(*name).ok_or(CfgDomainFailure::MissingSymbol)?;
                     symbols.push((*name, StableCfgSymbol::Callable(callable)));
                 }

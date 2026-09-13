@@ -336,6 +336,15 @@ pub enum SemanticBodyInstData<K, M> {
     Param {
         index: u32,
     },
+    /// The address of a named function bound to a `fn` parameter (RUE-2194).
+    FnRef {
+        function: FunctionInstanceKey<K, M>,
+    },
+    /// A call through a callback value of `fn` type (RUE-2194).
+    CallIndirect {
+        callee: SemanticBodyRef,
+        args: Arc<[SemanticBodyCallArg]>,
+    },
     Block {
         statements: Arc<[SemanticBodyRef]>,
         value: SemanticBodyRef,
@@ -457,6 +466,8 @@ macro_rules! semantic_body_inst_schema {
             StorageDead, SemanticBodyInstData::StorageDead { .. }, 56, "storage_dead";
             MarkMoved, SemanticBodyInstData::MarkMoved { .. }, 57, "mark_moved";
             AccessorCall, SemanticBodyInstData::AccessorCall { .. }, 58, "accessor_call";
+            FnRef, SemanticBodyInstData::FnRef { .. }, 59, "fn_ref";
+            CallIndirect, SemanticBodyInstData::CallIndirect { .. }, 60, "call_indirect";
         }
     };
 }
@@ -685,6 +696,13 @@ impl<K, M> SemanticBodyInstData<K, M> {
                 args: args.clone(),
             },
             D::Param { index } => D::Param { index: *index },
+            D::FnRef { function } => D::FnRef {
+                function: function.try_map_identities(key, module)?,
+            },
+            D::CallIndirect { callee, args } => D::CallIndirect {
+                callee: *callee,
+                args: args.clone(),
+            },
             D::Block { statements, value } => D::Block {
                 statements: statements.clone(),
                 value: *value,
@@ -882,6 +900,14 @@ impl<K, M> SemanticBodyInstData<K, M> {
             }
             D::RuntimeCall { args: values, .. } | D::Intrinsic { args: values, .. } => {
                 args(visitor, values)
+            }
+            D::FnRef { function } => visitor(SemanticBodyInstDependency::Function(function)),
+            D::CallIndirect {
+                callee,
+                args: values,
+            } => {
+                inst(visitor, *callee);
+                args(visitor, values);
             }
             D::CallSpecialized {
                 identity,
@@ -1382,12 +1408,19 @@ mod schema_tests {
                 function: FunctionInstanceKey::Definition("accessor"),
                 args: call_args(&[1]),
             },
+            D::FnRef {
+                function: FunctionInstanceKey::Definition("callback"),
+            },
+            D::CallIndirect {
+                callee: 59,
+                args: call_args(&[1]),
+            },
         ]
     }
 
     #[test]
     fn semantic_body_instruction_schema_has_stable_unique_metadata() {
-        assert_eq!(SEMANTIC_BODY_INST_KINDS.len(), 59);
+        assert_eq!(SEMANTIC_BODY_INST_KINDS.len(), 61);
         for (tag, kind) in SEMANTIC_BODY_INST_KINDS.iter().copied().enumerate() {
             assert_eq!(usize::from(kind.schema_tag()), tag);
             assert!(!kind.display_name().is_empty());
@@ -1574,6 +1607,16 @@ mod schema_tests {
                 function: FunctionInstanceKey::Definition(key),
                 ..
             } if key == "mapped:accessor"
+        ));
+        assert!(matches!(
+            map(&samples[59]),
+            SemanticBodyInstData::FnRef {
+                function: FunctionInstanceKey::Definition(key),
+            } if key == "mapped:callback"
+        ));
+        assert!(matches!(
+            map(&samples[60]),
+            SemanticBodyInstData::CallIndirect { callee: 59, .. }
         ));
     }
 

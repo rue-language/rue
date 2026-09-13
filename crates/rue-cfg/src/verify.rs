@@ -283,6 +283,7 @@ impl Cfg {
             | CfgInstData::StringConst(_)
             | CfgInstData::Param { .. }
             | CfgInstData::BlockParam { .. }
+            | CfgInstData::FnAddr { .. }
             | CfgInstData::Load { .. }
             | CfgInstData::StorageLive { .. }
             | CfgInstData::StorageDead { .. } => {}
@@ -325,6 +326,12 @@ impl Cfg {
             }
 
             CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } => {
+                for arg in self.call_args(args) {
+                    out.push(arg.value);
+                }
+            }
+            CfgInstData::CallIndirect { callee, args } => {
+                out.push(*callee);
                 for arg in self.call_args(args) {
                     out.push(arg.value);
                 }
@@ -1515,7 +1522,9 @@ impl<'a> Verifier<'a> {
                     value,
                 };
                 match data {
-                    CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } => {
+                    CfgInstData::Call { args, .. }
+                    | CfgInstData::AccessorCall { args, .. }
+                    | CfgInstData::CallIndirect { args, .. } => {
                         self.cfg
                             .checked_call_args(args)
                             .map_err(|error| self.payload_error(location, error))?;
@@ -1659,6 +1668,30 @@ impl<'a> Verifier<'a> {
             CfgInstData::Call { .. } | CfgInstData::AccessorCall { .. } => {
                 self.verify_call_contract(block, value, inst.ty)?
             }
+            CfgInstData::FnAddr { .. } => {
+                if !inst.ty.is_function() {
+                    return Err(self.semantic_error(
+                        CfgVerificationLocation::Instruction { block, value },
+                        format_args!(
+                            "fn_addr {} in block {} must have a `fn` type; found {:?}",
+                            value, block, inst.ty
+                        ),
+                    ));
+                }
+            }
+            CfgInstData::CallIndirect { callee, .. } => {
+                let callee_ty = self.inst(*callee, block, "indirect callee")?.ty;
+                if !callee_ty.is_function() {
+                    return Err(self.semantic_error(
+                        CfgVerificationLocation::Instruction { block, value },
+                        format_args!(
+                            "call_indirect {} in block {} calls through {:?}, which is not a `fn` type",
+                            value, block, callee_ty
+                        ),
+                    ));
+                }
+                self.verify_call_contract(block, value, inst.ty)?
+            }
             CfgInstData::Intrinsic {
                 operation, args, ..
             } => self.verify_intrinsic_operands(block, value, *operation, inst.ty, args)?,
@@ -1694,9 +1727,9 @@ impl<'a> Verifier<'a> {
             ));
         };
         let args = match &self.cfg.get_inst(value).data {
-            CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } => {
-                self.cfg.call_args(args)
-            }
+            CfgInstData::Call { args, .. }
+            | CfgInstData::AccessorCall { args, .. }
+            | CfgInstData::CallIndirect { args, .. } => self.cfg.call_args(args),
             _ => unreachable!("call contract attached to a non-call instruction"),
         };
         if result_ty != contract.result {
@@ -2299,6 +2332,7 @@ impl<'a> Verifier<'a> {
             | CfgInstData::StringConst(_)
             | CfgInstData::Param { .. }
             | CfgInstData::BlockParam { .. }
+            | CfgInstData::FnAddr { .. }
             | CfgInstData::Load { .. }
             | CfgInstData::StorageLive { .. }
             | CfgInstData::StorageDead { .. } => {}
@@ -2359,6 +2393,12 @@ impl<'a> Verifier<'a> {
                 f(*value, "place-write value");
             }
             CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } => {
+                for arg in self.cfg.call_args(args) {
+                    f(arg.value, "call argument");
+                }
+            }
+            CfgInstData::CallIndirect { callee, args } => {
+                f(*callee, "indirect callee");
                 for arg in self.cfg.call_args(args) {
                     f(arg.value, "call argument");
                 }
@@ -5026,6 +5066,139 @@ mod tests {
     fn verify_accepts_a_well_typed_intrinsic_operand() {
         let (cfg, pool) = ptr_write_cfg(Type::I64);
         cfg.verify_with_type_pool(&pool).unwrap();
+    }
+
+    fn callback_type(pool: &TypeInternPool) -> Type {
+        pool.try_intern_function(rue_air::FunctionTypeDef {
+            params: vec![rue_air::FunctionTypeParam {
+                mode: rue_air::FunctionParamMode::Value,
+                ty: Type::I64,
+            }],
+            result: Type::I64,
+        })
+        .unwrap()
+    }
+
+    /// A callback bound by `fn_addr` and called by `call_indirect` (ADR-0096)
+    /// verifies exactly as a direct call does: the callee value must have a
+    /// `fn` type and the established contract must hold.
+    #[test]
+    fn verify_accepts_an_indirect_call_through_a_fn_typed_value() {
+        let pool = TypeInternPool::new();
+        let callback = callback_type(&pool);
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(Type::I64, 0, 0, "indirect".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let target = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::FnAddr {
+                    name: ThreadedRodeo::default().get_or_intern("callee"),
+                },
+                ty: callback,
+                span: Span::new(0, 0),
+            },
+        );
+        let argument = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Const(7),
+                ty: Type::I64,
+                span: Span::new(0, 0),
+            },
+        );
+        let args = cfg
+            .push_call_args([CfgCallArg {
+                value: argument,
+                mode: CfgArgMode::Normal,
+            }])
+            .unwrap();
+        let call = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::CallIndirect {
+                    callee: target,
+                    args,
+                },
+                ty: Type::I64,
+                span: Span::new(0, 0),
+            },
+        );
+        cfg.set_call_contract(
+            call,
+            CfgCallContract::new(
+                [CfgCallContractArg {
+                    ty: Type::I64,
+                    mode: CfgArgMode::Normal,
+                }],
+                Type::I64,
+            ),
+        );
+        cfg.set_terminator(entry, Terminator::Return { value: Some(call) });
+        cfg.verify_with_type_pool(&pool).unwrap();
+
+        let rendered = cfg.to_string();
+        assert!(rendered.contains("fn_addr @"), "{rendered}");
+        assert!(rendered.contains("call_indirect v0(v1)"), "{rendered}");
+    }
+
+    #[test]
+    fn verify_rejects_a_fn_addr_without_a_fn_type() {
+        let pool = TypeInternPool::new().freeze();
+        let mut cfg = Cfg::new(Type::I64, 0, 0, "indirect".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let target = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::FnAddr {
+                    name: ThreadedRodeo::default().get_or_intern("callee"),
+                },
+                ty: Type::I64,
+                span: Span::new(0, 0),
+            },
+        );
+        cfg.set_terminator(
+            entry,
+            Terminator::Return {
+                value: Some(target),
+            },
+        );
+        let message = cfg.verify_with_type_pool(&pool).unwrap_err().to_string();
+        assert!(message.contains("must have a `fn` type"), "{message}");
+    }
+
+    #[test]
+    fn verify_rejects_an_indirect_call_through_a_non_fn_value() {
+        let pool = TypeInternPool::new().freeze();
+        let mut cfg = Cfg::new(Type::I64, 0, 0, "indirect".to_string(), vec![]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let target = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Const(0),
+                ty: Type::I64,
+                span: Span::new(0, 0),
+            },
+        );
+        let args = cfg.push_call_args([]).unwrap();
+        let call = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::CallIndirect {
+                    callee: target,
+                    args,
+                },
+                ty: Type::I64,
+                span: Span::new(0, 0),
+            },
+        );
+        cfg.set_call_contract(call, CfgCallContract::new([], Type::I64));
+        cfg.set_terminator(entry, Terminator::Return { value: Some(call) });
+        let message = cfg.verify_with_type_pool(&pool).unwrap_err().to_string();
+        assert!(message.contains("which is not a `fn` type"), "{message}");
     }
 
     fn ordinary_call_cfg(

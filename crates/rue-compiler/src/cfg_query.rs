@@ -2739,20 +2739,30 @@ pub(crate) fn apply_general_inlining(
         for block in record.cfg.blocks() {
             let block_returns = returning_blocks[block.id.as_u32() as usize];
             for &value in &block.insts {
-                let rue_cfg::CfgInstData::Call { runtime, name, .. } =
-                    record.cfg.get_inst(value).data
-                else {
-                    continue;
+                // A callback bound by `fn_addr` is an edge to its target (the
+                // body is reached through the indirect call) but never a
+                // direct call site; an indirect call is a call to an unknown
+                // target, so it counts as a returning call and nothing else.
+                let (name, is_call_site) = match record.cfg.get_inst(value).data {
+                    rue_cfg::CfgInstData::Call { runtime, name, .. } => {
+                        any_returning_call |= block_returns;
+                        if runtime.is_some() {
+                            continue;
+                        }
+                        (name, true)
+                    }
+                    rue_cfg::CfgInstData::FnAddr { name } => (name, false),
+                    rue_cfg::CfgInstData::CallIndirect { .. } => {
+                        any_returning_call |= block_returns;
+                        continue;
+                    }
+                    _ => continue,
                 };
-                any_returning_call |= block_returns;
-                if runtime.is_some() {
-                    continue;
-                }
                 let Some(callee) = record.domains.callable_for_symbol(name) else {
                     continue;
                 };
                 function_edges.push(callee.clone());
-                if record_keys.contains(&callee) {
+                if is_call_site && record_keys.contains(&callee) {
                     calls.push((value, callee, block.id));
                 }
             }
@@ -3184,14 +3194,18 @@ pub(crate) fn apply_general_inlining(
         let mut dependencies = Vec::new();
         for block in record.cfg.blocks() {
             for &value in &block.insts {
-                let rue_cfg::CfgInstData::Call { runtime, name, .. } =
-                    record.cfg.get_inst(value).data
-                else {
-                    continue;
+                // A callback target reached through `fn_addr` is a dependency
+                // exactly as a direct callee is (ADR-0096).
+                let name = match record.cfg.get_inst(value).data {
+                    rue_cfg::CfgInstData::Call { runtime, name, .. } => {
+                        if runtime.is_some() {
+                            continue;
+                        }
+                        name
+                    }
+                    rue_cfg::CfgInstData::FnAddr { name } => name,
+                    _ => continue,
                 };
-                if runtime.is_some() {
-                    continue;
-                }
                 let edge = match record.domains.callable_for_symbol(name) {
                     Some(callee) => {
                         let in_batch = final_keys.contains(&callee);

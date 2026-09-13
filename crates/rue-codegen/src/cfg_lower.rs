@@ -195,6 +195,20 @@ fn format_cfg_inst_data_impl(
                 .unwrap_or(name);
             format!("call @{}({})", name, args.join(", "))
         }
+        CfgInstData::FnAddr { name } => {
+            let name = interner
+                .map(|interner| interner.resolve(name).to_string())
+                .unwrap_or_else(|| name.into_usize().to_string());
+            format!("fn_addr @{name}")
+        }
+        CfgInstData::CallIndirect { callee, .. } => {
+            let args: Vec<String> = cfg
+                .get_call_args(data)
+                .iter()
+                .map(|a| format!("{}", a.value))
+                .collect();
+            format!("call_indirect {}({})", callee, args.join(", "))
+        }
         CfgInstData::Intrinsic {
             operation, name, ..
         } => {

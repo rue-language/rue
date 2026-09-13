@@ -2282,6 +2282,20 @@ impl Air {
                         check_ref(arg.value)?;
                     }
                 }
+                AirInstData::FnRef { name } => {
+                    context
+                        .validate_symbol(*name)
+                        .map_err(|reason| fail(Some(index), reason))?;
+                }
+                AirInstData::CallIndirect { callee, args } => {
+                    check_ref(*callee)?;
+                    for arg in self
+                        .try_get_call_args(args)
+                        .map_err(|e| fail(Some(index), e.to_string()))?
+                    {
+                        check_ref(arg.value)?;
+                    }
+                }
                 AirInstData::CallGeneric {
                     name,
                     type_args,
@@ -2707,6 +2721,26 @@ impl Air {
         }))
     }
 
+    pub(crate) fn add_call_indirect(
+        &mut self,
+        callee: AirRef,
+        args: &[AirCallArg],
+        ty: Type,
+        span: Span,
+    ) -> Result<AirRef, AirBuildError> {
+        self.preflight_refs(
+            "indirect call operands",
+            std::iter::once(callee).chain(args.iter().map(|arg| arg.value)),
+        )?;
+        self.reserve_instruction("indirect call arguments")?;
+        let args = self.add_call_args(args)?;
+        Ok(self.push_inst(AirInst {
+            data: AirInstData::CallIndirect { callee, args },
+            ty,
+            span,
+        }))
+    }
+
     pub(crate) fn add_accessor_call(
         &mut self,
         name: Spur,
@@ -2980,6 +3014,7 @@ impl Air {
                 inst.data,
                 AirInstData::Match { .. }
                     | AirInstData::Call { .. }
+                    | AirInstData::CallIndirect { .. }
                     | AirInstData::CallGeneric { .. }
                     | AirInstData::Intrinsic { .. }
                     | AirInstData::Block { .. }
@@ -4092,6 +4127,27 @@ pub enum AirInstData {
         index: u32,
     },
 
+    /// The address of a named function, bound to a `fn` parameter
+    /// (ADR-0096, RUE-2194). The instruction's type is the callback's `fn`
+    /// type; the symbol names a monomorphic callable exactly as a [`Self::Call`]
+    /// does, so the target's body is reachable and its symbol is validated the
+    /// same way.
+    FnRef {
+        /// Function name (interned symbol)
+        name: Spur,
+    },
+
+    /// A call through a callback value (RUE-2194). The callee is an
+    /// instruction of `fn` type — a [`Self::FnRef`] or a [`Self::Param`] read
+    /// of a callback parameter — never a symbol. Arguments follow the
+    /// callee's `fn` type exactly as a direct call follows its declaration.
+    CallIndirect {
+        /// The callback value being called
+        callee: AirRef,
+        /// Start index into extra array for arguments
+        args: AirCallArgs,
+    },
+
     /// Block expression with statements and final value.
     /// Used to group side-effect statements with their result value,
     /// enabling demand-driven lowering for short-circuit evaluation.
@@ -4433,6 +4489,20 @@ impl Air {
                     writeln!(f, ")")?;
                 }
                 AirInstData::Param { index } => writeln!(f, "param {}", index)?,
+                AirInstData::FnRef { name } => match interner {
+                    Some(interner) => writeln!(f, "fn_ref @{}", interner.resolve(name))?,
+                    None => writeln!(f, "fn_ref @{}", name.into_usize())?,
+                },
+                AirInstData::CallIndirect { callee, args } => {
+                    write!(f, "call_indirect {}(", callee)?;
+                    for (i, arg) in self.get_call_args(args).enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", arg)?;
+                    }
+                    writeln!(f, ")")?;
+                }
                 AirInstData::Block { statements, value } => {
                     write!(f, "block [")?;
                     for (i, s) in self.get_block_statements(statements).enumerate() {

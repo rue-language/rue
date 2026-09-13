@@ -208,6 +208,11 @@ impl CfgInstData {
                 name: *name,
                 args: args.duplicate(),
             },
+            Self::FnAddr { name } => Self::FnAddr { name: *name },
+            Self::CallIndirect { callee, args } => Self::CallIndirect {
+                callee: *callee,
+                args: args.duplicate(),
+            },
             Self::Intrinsic {
                 operation,
                 name,
@@ -563,6 +568,21 @@ pub enum CfgInstData {
     /// Mandatory-inline place-producing accessor call.
     AccessorCall {
         name: Spur,
+        args: CfgCallArgs,
+    },
+
+    /// The address of a named function: the value a `fn` parameter binds
+    /// (ADR-0096, RUE-2194). The instruction's type is the callback's `fn`
+    /// type; the symbol is a monomorphic callable exactly as a `Call`'s.
+    FnAddr {
+        name: Spur,
+    },
+
+    /// A call through a callback value (RUE-2194). `callee` is a value of
+    /// `fn` type; the arguments use the call-argument family and the call
+    /// carries an established contract exactly as a direct call does.
+    CallIndirect {
+        callee: CfgValue,
         args: CfgCallArgs,
     },
 
@@ -1330,6 +1350,15 @@ impl Cfg {
                         .push_call_args(self.call_args(args).iter().copied())
                         .map_err(CfgRemapError::Edit)?,
                 },
+                FnAddr { name } => FnAddr {
+                    name: domain!(symbol(*name)),
+                },
+                CallIndirect { callee, args } => CallIndirect {
+                    callee: *callee,
+                    args: cfg
+                        .push_call_args(self.call_args(args).iter().copied())
+                        .map_err(CfgRemapError::Edit)?,
+                },
                 Intrinsic {
                     operation,
                     name,
@@ -1920,9 +1949,9 @@ impl Cfg {
     /// owner-bound payload range.
     pub fn get_call_args<'a>(&'a self, data: &CfgInstData) -> &'a [CfgCallArg] {
         match data {
-            CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } => {
-                self.call_args(args)
-            }
+            CfgInstData::Call { args, .. }
+            | CfgInstData::AccessorCall { args, .. }
+            | CfgInstData::CallIndirect { args, .. } => self.call_args(args),
             _ => panic!("get_call_args called on non-call instruction"),
         }
     }
@@ -1980,14 +2009,16 @@ impl Cfg {
         const OP: &str = "call arguments";
         if !matches!(
             self.values.get(value.0 as usize).map(|inst| &inst.data),
-            Some(CfgInstData::Call { .. })
+            Some(CfgInstData::Call { .. } | CfgInstData::CallIndirect { .. })
         ) {
             return Err(Self::invalid_edit(OP, "target is not a Call instruction"));
         }
         let staged = Self::stage_edit(OP, values)?;
         self.validate_value_refs(OP, staged.iter(), |arg| arg.value)?;
         let args = payload::push_call_args(&mut self.call_args, staged)?;
-        let CfgInstData::Call { args: stored, .. } = &mut self.values[value.0 as usize].data else {
+        let (CfgInstData::Call { args: stored, .. }
+        | CfgInstData::CallIndirect { args: stored, .. }) = &mut self.values[value.0 as usize].data
+        else {
             return Err(Self::invalid_edit(OP, "target changed during replacement"));
         };
         *stored = args;
@@ -3137,6 +3168,19 @@ impl Cfg {
                             }),
                     )?;
                 }
+                CallIndirect { callee, args } => {
+                    *callee = map(*callee);
+                    before_payload(payload::CfgCallArgs::FAMILY)?;
+                    *args = payload::push_call_args(
+                        &mut self.call_args,
+                        payload::call_args(&old_call_args, args)
+                            .iter()
+                            .map(|arg| CfgCallArg {
+                                value: map(arg.value),
+                                mode: arg.mode,
+                            }),
+                    )?;
+                }
                 Intrinsic { args, .. } => {
                     before_payload(payload::CfgIntrinsicArgs::FAMILY)?;
                     *args = payload::push_intrinsic_args(
@@ -3182,6 +3226,7 @@ impl Cfg {
                 | StringConst(_)
                 | Param { .. }
                 | BlockParam { .. }
+                | FnAddr { .. }
                 | Load { .. }
                 | StorageLive { .. }
                 | StorageDead { .. } => {}
@@ -3634,6 +3679,24 @@ impl Cfg {
                     Some(interner) => write!(f, "call @{}(", interner.resolve(name))?,
                     None => write!(f, "call @{}(", name.into_usize())?,
                 }
+                for (i, arg) in self.call_args(args).iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    match arg.mode {
+                        CfgArgMode::Inout => write!(f, "inout {}", arg.value)?,
+                        CfgArgMode::Borrow => write!(f, "borrow {}", arg.value)?,
+                        CfgArgMode::Normal => write!(f, "{}", arg.value)?,
+                    }
+                }
+                write!(f, ")")
+            }
+            CfgInstData::FnAddr { name } => match interner {
+                Some(interner) => write!(f, "fn_addr @{}", interner.resolve(name)),
+                None => write!(f, "fn_addr @{}", name.into_usize()),
+            },
+            CfgInstData::CallIndirect { callee, args } => {
+                write!(f, "call_indirect {}(", callee)?;
                 for (i, arg) in self.call_args(args).iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;

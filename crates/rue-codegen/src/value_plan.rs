@@ -2446,6 +2446,11 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
         CfgInstData::AccessorCall { .. } => {
             panic!("mandatory-inline accessor call reached codegen")
         }
+        CfgInstData::FnAddr { .. } | CfgInstData::CallIndirect { .. } => {
+            unreachable!(
+                "callback construct reached codegen: the backend entry refuses it until RUE-2195"
+            )
+        }
     }
 }
 
