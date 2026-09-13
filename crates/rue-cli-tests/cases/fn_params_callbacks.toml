@@ -1,16 +1,16 @@
-# Second-class callbacks through the driver (ADR-0096, RUE-2194).
+# Second-class callbacks through the driver (ADR-0096, RUE-2194, RUE-2195).
 #
 # A named function bound to a `fn` parameter is a `fn_ref` in AIR and a
 # `fn_addr` in CFG; a call through the parameter is `call_indirect` in both.
-# The reference interpreter executes these (rue-oracle's unit tests); their
-# native lowering is RUE-2195, so a native build of a program that binds a
-# callback is refused with a diagnostic that names the missing lowering rather
-# than miscompiled.
+# Both native backends lower the pair (RUE-2195): the function's address is a
+# PC-relative symbol load and the call is a register-indirect call through
+# the ordinary native call plan, so the executable cases here run the same
+# programs the reference interpreter runs in rue-oracle's unit tests.
 
 [section]
 id = "cli.fn_params_callbacks"
 name = "Callback binding and indirect calls under --preview fn_params"
-description = "Pins the AIR and CFG presentation of a bound callback and an indirect call (RUE-2194), the module-qualified and associated-function argument forms, the foreign-function rejection, and the native-codegen refusal that stands until RUE-2195."
+description = "Pins the AIR and CFG presentation of a bound callback and an indirect call (RUE-2194), the module-qualified and associated-function argument forms, the foreign-function rejection, and the native execution of bound, forwarded, nested and by-reference callbacks on both backends (RUE-2195)."
 
 [[case]]
 name = "emit_air_shows_fn_ref_and_call_indirect"
@@ -111,19 +111,98 @@ error_contains = [
 ]
 
 [[case]]
-name = "native_build_of_a_bound_callback_is_refused_until_rue_2195"
-description = "Both backends refuse a function that binds or calls a callback with a diagnostic naming the missing lowering, rather than miscompiling it."
+name = "bound_callback_runs_natively"
+description = "The comparator example of ADR-0096: a `borrow` context argument, two by-value arguments, a bound callback and a forwarded one, called through the native indirect call."
 files = [{ path = "main.rue", source = """
-fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }
-fn step(value: i32) -> i32 { value + 1 }
+struct Policy { descending: bool }
 
-fn main() -> i32 { apply(step, 41) }
+fn precedes(borrow p: Policy, a: i64, b: i64) -> bool {
+    if p.descending { a > b } else { a < b }
+}
+
+fn choose(borrow p: Policy, a: i64, b: i64,
+          cmp: fn(borrow Policy, i64, i64) -> bool) -> i64 {
+    if cmp(borrow p, a, b) { a } else { b }
+}
+
+fn forward(borrow p: Policy, a: i64, b: i64,
+           cmp: fn(borrow Policy, i64, i64) -> bool) -> i64 {
+    choose(borrow p, a, b, cmp)
+}
+
+fn main() -> i32 {
+    let up = Policy { descending: false };
+    let down = Policy { descending: true };
+    let first = choose(borrow up, 3, 9, precedes);
+    let second = forward(borrow down, 3, 9, precedes);
+    @intCast(first * 10 + second)
+}
 """ }]
 args = ["--preview", "fn_params", "main.rue", "-o", "prog"]
-compile_fail = true
-error_contains = [
-    "E9001",
-    "calling through a `fn` parameter",
-    "is not supported by native code generation yet",
-    "RUE-2195",
-]
+exit_code = 39
+
+[[case]]
+name = "callback_writes_back_through_inout_and_takes_stack_arguments"
+description = "An `inout` argument crosses the indirect call by address and is written back; eight integer arguments spill the register roster onto the outgoing stack area exactly as at a direct call."
+files = [{ path = "main.rue", source = """
+fn bump(inout n: i32) { n = n + 1; }
+
+fn twice(step: fn(inout i32), inout n: i32) {
+    step(inout n);
+    step(inout n);
+}
+
+fn add8(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64, h: i64) -> i64 {
+    a + b + c + d + e + f + g + h
+}
+
+fn total(cb: fn(i64, i64, i64, i64, i64, i64, i64, i64) -> i64) -> i64 {
+    cb(1, 2, 3, 4, 5, 6, 7, 8)
+}
+
+fn main() -> i32 {
+    let mut count = 4;
+    twice(bump, inout count);
+    @intCast(total(add8)) + count
+}
+""" }]
+args = ["--preview", "fn_params", "main.rue", "-o", "prog"]
+exit_code = 42
+
+[[case]]
+name = "nested_aliased_and_associated_callbacks_run_natively"
+description = "A callback that takes a callback, a `const` alias, a receiverless associated function and a generic callee's substituted `fn(T) -> T` parameter all reach their targets."
+files = [{ path = "main.rue", source = """
+struct Counter {
+    n: i32,
+    fn zero() -> i32 { 0 }
+}
+
+fn inc(value: i32) -> i32 { value + 1 }
+const STEP = inc;
+
+fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }
+fn twice(step: fn(fn(i32) -> i32, i32) -> i32, value: i32) -> i32 {
+    step(inc, step(STEP, value))
+}
+fn make(cb: fn() -> i32) -> i32 { cb() }
+fn generic(comptime T: type, cb: fn(T) -> T, value: T) -> T { cb(value) }
+
+fn main() -> i32 { twice(apply, 38) + make(Counter.zero) + generic(i32, inc, 1) }
+""" }]
+args = ["--preview", "fn_params", "main.rue", "-o", "prog"]
+exit_code = 42
+
+[[case]]
+name = "by_value_aggregate_argument_crosses_the_indirect_call"
+description = "A two-slot struct passed by value to the callback is marshaled through the same argument plan as a direct call."
+files = [{ path = "main.rue", source = """
+struct Pair { a: i64, b: i64 }
+
+fn sum(p: Pair, k: i64) -> i64 { p.a + p.b + k }
+fn apply(cb: fn(Pair, i64) -> i64, p: Pair, k: i64) -> i64 { cb(p, k) }
+
+fn main() -> i32 { @intCast(apply(sum, Pair { a: 20, b: 20 }, 2)) }
+""" }]
+args = ["--preview", "fn_params", "main.rue", "-o", "prog"]
+exit_code = 42

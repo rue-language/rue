@@ -70,6 +70,13 @@ pub enum ResidualValuePlan {
     StringConst {
         string_id: u32,
     },
+    /// The address of a named function, the value a `fn` parameter binds
+    /// (ADR-0096): one general-purpose slot holding the resolved symbol's
+    /// code address, materialized through the backend's PC-relative
+    /// symbol-address form.
+    FunctionAddress {
+        symbol: String,
+    },
     Param {
         index: u32,
     },
@@ -956,6 +963,7 @@ pub enum ValueKind {
     Constant,
     BoolConstant,
     StringConstant,
+    FunctionAddress,
     Parameter,
     BlockParameter,
     BinaryArithmetic,
@@ -1429,6 +1437,7 @@ enum ResidualInput {
     Const(u64),
     BoolConst(bool),
     StringConst(u32),
+    FunctionAddress(Spur),
     Param(u32),
     BlockParam(u32),
     Eq(CfgValue, CfgValue),
@@ -1553,6 +1562,9 @@ fn residual_plan<A: ValueLowerAdapter>(
         ResidualInput::Const(value) => ResidualValuePlan::Const { value },
         ResidualInput::BoolConst(value) => ResidualValuePlan::BoolConst { value },
         ResidualInput::StringConst(string_id) => ResidualValuePlan::StringConst { string_id },
+        ResidualInput::FunctionAddress(name) => ResidualValuePlan::FunctionAddress {
+            symbol: adapter.resolve_symbol(name),
+        },
         ResidualInput::Param(index) => ResidualValuePlan::Param { index },
         ResidualInput::BlockParam(index) => ResidualValuePlan::BlockParam { index },
         ResidualInput::Eq(lhs, rhs) => comparison_plan(ctx, adapter, ComparisonOp::Eq, lhs, rhs),
@@ -1877,6 +1889,7 @@ fn residual_kind(plan: &ResidualValuePlan) -> ValueKind {
         ResidualValuePlan::Const { .. } => ValueKind::Constant,
         ResidualValuePlan::BoolConst { .. } => ValueKind::BoolConstant,
         ResidualValuePlan::StringConst { .. } => ValueKind::StringConstant,
+        ResidualValuePlan::FunctionAddress { .. } => ValueKind::FunctionAddress,
         ResidualValuePlan::Param { .. } => ValueKind::Parameter,
         ResidualValuePlan::BlockParam { .. } => ValueKind::BlockParameter,
         ResidualValuePlan::Comparison { .. } => ValueKind::Comparison,
@@ -2446,10 +2459,56 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
         CfgInstData::AccessorCall { .. } => {
             panic!("mandatory-inline accessor call reached codegen")
         }
-        CfgInstData::FnAddr { .. } | CfgInstData::CallIndirect { .. } => {
-            unreachable!(
-                "callback construct reached codegen: the backend entry refuses it until RUE-2195"
-            )
+        CfgInstData::FnAddr { name } => lower_residual!(ResidualInput::FunctionAddress(*name)),
+        CfgInstData::CallIndirect { callee, .. } => {
+            let call_args = ctx.cfg.get_call_args(&inst.data);
+            let by_ref_plans = call_args
+                .iter()
+                .map(|arg| match arg.mode {
+                    rue_cfg::CfgArgMode::Inout | rue_cfg::CfgArgMode::Borrow => Some(
+                        addressable_value_plan(ctx, adapter, arg.value).unwrap_or_else(|| {
+                            panic!(
+                                "malformed CFG: by-ref call argument is not an addressable place"
+                            )
+                        }),
+                    ),
+                    rue_cfg::CfgArgMode::Normal => None,
+                })
+                .collect::<Vec<_>>();
+            let inputs = crate::call_plan::CallInputs::from_cfg(
+                ctx.cfg,
+                ctx.type_pool,
+                inst.ty,
+                call_args,
+                &by_ref_plans,
+                adapter.native_convention(),
+            );
+            // The callee is a value of `fn` type (ADR-0096 §6): one
+            // general-purpose slot holding the code address. It is
+            // materialized before the argument leaves, so it never sits in a
+            // register the argument sequence writes. The arguments and the
+            // result cross the native convention exactly as at a direct call.
+            let target = operand(ctx, adapter, *callee).primary;
+            let result_float_width = primary_slot_float_width(&crate::types::aggregate_leaf_types(
+                ctx.type_pool,
+                inst.ty,
+            ));
+            let result_vreg = adapter.reserve_typed_value_result(result_float_width);
+            let mut plan = crate::call_plan::CallPlan::from_inputs_with_result(
+                crate::call_plan::CallTarget::Indirect(target),
+                inputs.return_plan,
+                inputs.compact_return_image.clone(),
+                inputs.compact_return_dispatch.clone(),
+                &inputs.args,
+                &inputs.natives,
+                adapter,
+                Some(result_vreg),
+            );
+            plan.result_float_width = result_float_width;
+            plan.return_registers = inputs.return_registers.clone();
+            let result = adapter.emit_call(plan);
+            cache_result(adapter, value, result);
+            Some(ValueKind::Call)
         }
     }
 }

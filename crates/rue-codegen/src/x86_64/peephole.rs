@@ -127,7 +127,9 @@ fn flags_dead_after(instructions: &[X86Inst], idx: usize) -> bool {
             return true;
         }
         match inst {
-            X86Inst::CallRel { .. } | X86Inst::Syscall | X86Inst::Ret => return true,
+            X86Inst::CallRel { .. } | X86Inst::CallReg { .. } | X86Inst::Syscall | X86Inst::Ret => {
+                return true;
+            }
             X86Inst::Jmp { .. } | X86Inst::Label { .. } => return false,
             _ => {}
         }
@@ -159,7 +161,10 @@ fn compute_flags_dead(instructions: &[X86Inst]) -> Vec<bool> {
             true
         } else {
             match inst {
-                X86Inst::CallRel { .. } | X86Inst::Syscall | X86Inst::Ret => true,
+                X86Inst::CallRel { .. }
+                | X86Inst::CallReg { .. }
+                | X86Inst::Syscall
+                | X86Inst::Ret => true,
                 X86Inst::Jmp { .. } | X86Inst::Label { .. } => false,
                 _ => scan_after,
             }

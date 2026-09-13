@@ -2216,3 +2216,77 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E0432", "argument to borrow parameter must use 'borrow' keyword"]
+
+[[case]]
+name = "call_through_a_callback_invokes_the_bound_function"
+spec = ["6.1:52", "6.1:50", "6.1:51"]
+description = "The comparator example of ADR-0096: the bound and the forwarded callback both reach the named function with the `borrow` context and the by-value arguments"
+preview = "fn_params"
+preview_should_pass = true
+source = """
+struct Policy { descending: bool }
+
+fn precedes(borrow p: Policy, a: i64, b: i64) -> bool {
+    if p.descending { a > b } else { a < b }
+}
+
+fn choose(borrow p: Policy, a: i64, b: i64,
+          cmp: fn(borrow Policy, i64, i64) -> bool) -> i64 {
+    if cmp(borrow p, a, b) { a } else { b }
+}
+
+fn forward(borrow p: Policy, a: i64, b: i64,
+           cmp: fn(borrow Policy, i64, i64) -> bool) -> i64 {
+    choose(borrow p, a, b, cmp)
+}
+
+fn main() -> i32 {
+    let up = Policy { descending: false };
+    let down = Policy { descending: true };
+    let first = choose(borrow up, 3, 9, precedes);
+    let second = forward(borrow down, 3, 9, precedes);
+    @intCast(first * 10 + second)
+}
+"""
+exit_code = 39
+
+[[case]]
+name = "callback_inout_argument_is_written_back"
+spec = ["6.1:52"]
+description = "An `inout` argument crosses the call through the callback by address and is written back on return, exactly as at a direct call; the callback may be invoked more than once"
+preview = "fn_params"
+preview_should_pass = true
+source = """
+fn bump(inout n: i32) { n = n + 1; }
+
+fn twice(step: fn(inout i32), inout n: i32) {
+    step(inout n);
+    step(inout n);
+}
+
+fn main() -> i32 {
+    let mut count = 40;
+    twice(bump, inout count);
+    count
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "forwarded_callback_reaches_the_same_function"
+spec = ["6.1:52", "6.1:51"]
+description = "Forwarding passes the same function on: a callback taking a callback and a `const` alias both invoke the named function"
+preview = "fn_params"
+preview_should_pass = true
+source = """
+fn inc(value: i32) -> i32 { value + 1 }
+const STEP = inc;
+
+fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }
+fn twice(step: fn(fn(i32) -> i32, i32) -> i32, value: i32) -> i32 {
+    step(inc, step(STEP, value))
+}
+
+fn main() -> i32 { twice(apply, 40) }
+"""
+exit_code = 42

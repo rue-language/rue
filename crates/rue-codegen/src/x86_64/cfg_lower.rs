@@ -1209,8 +1209,19 @@ impl<'a> CfgLower<'a> {
                 width,
             });
         }
-        let symbol_id = self.intern_symbol(plan.target.symbol());
-        self.mir.push(X86Inst::call(symbol_id));
+        match &plan.target {
+            // A callback's code address was materialized before the argument
+            // leaves, in a register the argument sequence never writes.
+            crate::call_plan::CallTarget::Indirect(target) => {
+                self.mir.push(X86Inst::CallReg {
+                    target: Operand::Virtual(*target),
+                });
+            }
+            target => {
+                let symbol_id = self.intern_symbol(target.symbol());
+                self.mir.push(X86Inst::call(symbol_id));
+            }
+        }
         if plan.stack_bytes > 0 {
             self.mir.push(X86Inst::AddRI {
                 dst: Operand::Physical(Reg::Rsp),
@@ -1560,6 +1571,15 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(X86Inst::MovRI32 {
                     dst: Operand::Virtual(dst),
                     imm: value as i32,
+                });
+                dst
+            }
+            ResidualValuePlan::FunctionAddress { symbol } => {
+                let dst = self.mir.alloc_vreg();
+                let symbol_id = self.intern_symbol(&symbol);
+                self.mir.push(X86Inst::SymbolAddr {
+                    dst: Operand::Virtual(dst),
+                    symbol_id,
                 });
                 dst
             }

@@ -17,10 +17,10 @@ relates: ["RUE-2107", "RUE-2112", "RUE-2113", "RUE-2193", "RUE-2194", "RUE-2195"
 ## Status
 
 Accepted on 2026-09-13 by Steve (the RUE-2107 ruling: the researched v1 is
-ratified as written). Phases 1 and 2, the `fn` parameter type and the callback
-semantics through CFG and the reference interpreter, are implemented behind
-the `fn_params` preview feature; native code generation refuses a bound
-callback until phase 3 lowers the indirect call.
+ratified as written). Phases 1 through 3 are implemented behind the
+`fn_params` preview feature: the `fn` parameter type, the callback semantics
+through CFG and the reference interpreter, and the native indirect call on
+both backends. Phase 4 validates the feature and removes the gate.
 
 ## Summary
 
@@ -130,9 +130,12 @@ the later designs are not constrained by it.
   AIR and `fn_addr`/`call_indirect` CFG instructions with their durable
   encodings, and the oracle interpreter. Native code generation refuses a
   function that binds or calls a callback until phase 3.
-- [ ] **Phase 3: native indirect calls** - RUE-2195. Function-address
-  materialization and indirect call on x86-64 and AArch64 through the
-  canonical call plan, with executable spec coverage.
+- [x] **Phase 3: native indirect calls** - RUE-2195. Function-address
+  materialization (`lea rip`; `adrp`+`add`, relocated like a string
+  constant's address) and the register-indirect call (`call r64`; `blr`)
+  through the canonical call plan on x86-64 and AArch64, placed after the
+  argument leaves in a register the argument sequence never writes, with
+  executable spec, CLI and oracle-diff coverage.
 - [ ] **Phase 4: validation and stabilization** - RUE-2113. Port a realistic
   comparator and predicate, measure indirect-call overhead, and remove the
   preview gate for exactly the subset above.

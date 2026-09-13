@@ -636,7 +636,7 @@ fn scan_param_references(cfg: &Cfg, type_pool: &FrozenTypeInternPool) -> ParamRe
                         }
                     }
                 }
-                data @ CfgInstData::Call { .. } => {
+                data @ (CfgInstData::Call { .. } | CfgInstData::CallIndirect { .. }) => {
                     // A by-reference call argument forwards the address of
                     // its operand. When that operand is a by-value parameter,
                     // `byref_args` takes the address of its frame home.

@@ -6,10 +6,10 @@
 # (RUE-2193), then the rules of binding, calling, and forwarding a callback
 # (RUE-2194): the exact-signature match (E0215), the eligible argument forms
 # (E0216), and the escape rejection (E0217). A body is analyzed only when it
-# is reachable, so the body-level positions are exercised from `main`. A
-# program that binds a callback compiles through the reference interpreter;
-# its native lowering is RUE-2195, so the accepted forms are pinned by the
-# `cli.fn_params_callbacks` emit cases and the oracle's unit tests.
+# is reachable, so the body-level positions are exercised from `main`. The
+# accepted forms run natively and under the reference interpreter; they are
+# pinned by the `cli.fn_params_callbacks` cases, the spec cases for 6.1:52
+# and the oracle's unit tests.
 
 [section]
 id = "diagnostics.fn_params"

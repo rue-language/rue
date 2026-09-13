@@ -190,7 +190,7 @@ fn get_latency(inst: &Aarch64Inst) -> u32 {
         | Aarch64Inst::Uxth { .. } => 1,
 
         // Calls: 5+ cycles (variable, includes return prediction)
-        Aarch64Inst::Bl { .. } => 5,
+        Aarch64Inst::Bl { .. } | Aarch64Inst::Blr { .. } => 5,
 
         // Control flow (don't schedule across these)
         Aarch64Inst::B { .. }
@@ -207,6 +207,7 @@ fn get_latency(inst: &Aarch64Inst) -> u32 {
 
         // String constants (pseudo-instructions)
         Aarch64Inst::StringConstPtr { .. }
+        | Aarch64Inst::SymbolAddr { .. }
         | Aarch64Inst::StringConstLen { .. }
         | Aarch64Inst::StringConstCap { .. } => 1,
 
@@ -232,6 +233,7 @@ fn is_barrier(inst: &Aarch64Inst) -> bool {
             | Aarch64Inst::Cbnz { .. }
             | Aarch64Inst::Label { .. }
             | Aarch64Inst::Bl { .. }
+            | Aarch64Inst::Blr { .. }
             // A syscall is a barrier exactly like a call: the kernel reads its
             // argument registers and writes x0. Without this, the scheduler was
             // free to hoist the x0 result capture ABOVE `svc #0`, so every used
@@ -276,6 +278,7 @@ pub(super) fn regs_read(inst: &Aarch64Inst) -> RegList<Reg> {
 
     match inst {
         Aarch64Inst::FloatConst { .. } => {}
+        Aarch64Inst::Blr { target } => add_if_phys(target, &mut result),
         Aarch64Inst::FloatLoad { base, .. } => result.push(*base),
         Aarch64Inst::FloatMov { src, .. }
         | Aarch64Inst::FloatToBits { src, .. }
@@ -406,6 +409,7 @@ pub(super) fn regs_read(inst: &Aarch64Inst) -> RegList<Reg> {
         | Aarch64Inst::Brk
         | Aarch64Inst::Svc { .. }
         | Aarch64Inst::StringConstPtr { .. }
+        | Aarch64Inst::SymbolAddr { .. }
         | Aarch64Inst::StringConstLen { .. }
         | Aarch64Inst::StringConstCap { .. } => {}
     }
@@ -492,6 +496,7 @@ pub(super) fn regs_written(inst: &Aarch64Inst) -> RegList<Reg> {
         | Aarch64Inst::NarrowLoad { dst, .. }
         | Aarch64Inst::NarrowLoadIndexed { dst, .. }
         | Aarch64Inst::StringConstPtr { dst, .. }
+        | Aarch64Inst::SymbolAddr { dst, .. }
         | Aarch64Inst::StringConstLen { dst, .. }
         | Aarch64Inst::StringConstCap { dst, .. } => {
             add_if_phys(dst, &mut result);
@@ -518,7 +523,7 @@ pub(super) fn regs_written(inst: &Aarch64Inst) -> RegList<Reg> {
         | Aarch64Inst::TstRR { .. } => {
             // Only sets flags
         }
-        Aarch64Inst::Bl { .. } => {
+        Aarch64Inst::Bl { .. } | Aarch64Inst::Blr { .. } => {
             // Clobbers handled separately via clobbers()
         }
         Aarch64Inst::Svc { .. } => {

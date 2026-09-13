@@ -129,7 +129,7 @@ impl StackVerifyAdapter for X86StackVerifyAdapter<'_> {
 
     fn alignment_violation(&self, inst: &Self::Inst, current_depth: i64) -> Option<String> {
         match inst {
-            X86Inst::CallRel { .. } => {
+            X86Inst::CallRel { .. } | X86Inst::CallReg { .. } => {
                 // At a call site, RSP must be 16-byte aligned.
                 // Since the call will push an 8-byte return address,
                 // the callee will see RSP 8 bytes below a 16-byte boundary,

@@ -914,6 +914,15 @@ pub enum X86Inst {
         returns: ReturnBehavior,
     },
 
+    /// `call reg` - Call through the code address a register holds: the
+    /// callback bound to a `fn` parameter (ADR-0096). The target is an
+    /// ordinary register read; a spilled target reloads through the value
+    /// scratch, which the argument sequence has finished with once the call
+    /// is placed. It clobbers exactly what a direct call does and returns.
+    CallReg {
+        target: Operand,
+    },
+
     /// `syscall` - Invoke system call.
     Syscall,
 
@@ -1058,6 +1067,14 @@ pub enum X86Inst {
         string_id: u32,
     },
 
+    /// `lea dst, [rip + symbol]` - The address of a named function
+    /// (ADR-0096): a PC-relative load of a symbol in the MIR symbol table,
+    /// relocated exactly as a string constant's address is.
+    SymbolAddr {
+        dst: Operand,
+        symbol_id: u32,
+    },
+
     /// Load string capacity (pseudo-instruction resolved during emission)
     /// For string literals, this is always 0 (indicating rodata, not heap)
     StringConstCap {
@@ -1109,7 +1126,7 @@ impl X86Inst {
             X86Inst::Cdq | X86Inst::Cqo => &[Reg::Rdx],
             X86Inst::FloatConst { .. } | X86Inst::FloatNeg { .. } => &[Reg::Rax],
             // Function calls clobber all caller-saved registers per System V AMD64 ABI
-            X86Inst::CallRel { .. } => &[
+            X86Inst::CallRel { .. } | X86Inst::CallReg { .. } => &[
                 Reg::Rax,
                 Reg::Rcx,
                 Reg::Rdx,
@@ -1352,6 +1369,10 @@ impl fmt::Display for X86Inst {
             X86Inst::Jmp { label } => write!(f, "jmp {}", label),
             X86Inst::Label { id } => write!(f, "{}:", id),
             X86Inst::CallRel { symbol_id, .. } => write!(f, "call sym{}", symbol_id),
+            X86Inst::CallReg { target } => write!(f, "call {}", target),
+            X86Inst::SymbolAddr { dst, symbol_id } => {
+                write!(f, "lea {}, [rip + sym{}]", dst, symbol_id)
+            }
             X86Inst::Syscall => write!(f, "syscall"),
             X86Inst::Ret => write!(f, "ret"),
             X86Inst::Ud2 => write!(f, "ud2"),

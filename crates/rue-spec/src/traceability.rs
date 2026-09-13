@@ -285,16 +285,6 @@ pub const FOCUSED_CASE_MAX_SOURCE_LINES: usize = 40;
 /// mirrors the `known_bug` xfail convention: an exemption that starts passing
 /// must be retired so it converts back into an enforced check.
 pub const KNOWN_UNCOVERED_NORMATIVE: &[(&str, &str)] = &[
-    // ADR-0096 phase 2 (RUE-2194): the reference interpreter executes a call
-    // through a `fn` parameter (rue-oracle's unit tests pin the dynamic
-    // semantics), but an executable spec case needs the native indirect
-    // call, which lands with RUE-2195 and covers this rule then.
-    (
-        "6.1:52",
-        "Calling through a `fn` parameter (ADR-0096): the semantics run under \
-         the reference interpreter, and the executable corpus case follows the \
-         native indirect-call lowering in RUE-2195.",
-    ),
     // ADR-0064 P4 (RUE-1058) foreign-boundary rules. These are normative but not
     // coverable by the standalone spec corpus: the abort proof needs a C caller
     // linked to a Rue export (a harness only the preview-gated `c_ffi` CLI suite
