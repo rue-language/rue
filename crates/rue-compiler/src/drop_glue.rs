@@ -246,6 +246,24 @@ fn plan_type_matches_live(
                 types_by_identity,
             )
         }),
+        P::Function { params, result } => live.as_function().is_some_and(|id| {
+            let def = type_pool.function_def(id);
+            def.params.len() == params.len()
+                && def
+                    .params
+                    .iter()
+                    .zip(params)
+                    .all(|(live, (mode, planned))| {
+                        live.mode == *mode
+                            && plan_type_matches_live(
+                                planned,
+                                live.ty,
+                                type_pool,
+                                types_by_identity,
+                            )
+                    })
+                && plan_type_matches_live(result, def.result, type_pool, types_by_identity)
+        }),
         P::Array { .. } | P::Slice { .. } | P::BuiltinNominal { .. } | P::Nominal(_) => {
             types_by_identity.get(planned).is_some_and(|ty| *ty == live)
         }
@@ -780,6 +798,22 @@ mod tests {
                 type_pool.ptr_mut_def(id),
                 type_pool,
             ))),
+            TypeKind::Function(id) => {
+                let def = type_pool.function_def(id);
+                T::Function {
+                    params: def
+                        .params
+                        .iter()
+                        .map(|param| {
+                            (
+                                param.mode,
+                                Node::new(test_type_identity(param.ty, type_pool)),
+                            )
+                        })
+                        .collect(),
+                    result: Node::new(test_type_identity(def.result, type_pool)),
+                }
+            }
             TypeKind::Module(_) | TypeKind::Error => {
                 panic!("test drop-glue plans contain only materializable runtime types")
             }

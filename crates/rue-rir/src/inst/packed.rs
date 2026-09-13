@@ -1065,6 +1065,22 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
                         .map_err(|_| PackedRirEncodeError::CapacityFailure)?;
                     self.types.extend_from_slice(&value.to_le_bytes());
                 }
+                RirTypeSyntaxNode::Function { params, result } => {
+                    self.type_byte(13)?;
+                    let words = arena
+                        .words(*params)
+                        .ok_or(PackedRirEncodeError::InvalidMetadata)?;
+                    if !words.len().is_multiple_of(2) {
+                        return Err(PackedRirEncodeError::InvalidMetadata);
+                    }
+                    self.type_count(words.len() / 2)?;
+                    for param in words.chunks_exact(2) {
+                        self.check()?;
+                        self.type_u32(param[0])?;
+                        self.type_child(RirTypeSyntaxRef::from_u32(param[1]))?;
+                    }
+                    self.type_child(*result)?;
+                }
             }
         }
         Ok(())
@@ -2526,7 +2542,7 @@ impl<
             .map_err(|_| Self::capacity("type syntax nodes"))?;
         for _ in 0..self.types {
             self.check()?;
-            let node = match Self::byte_tag(reader, "type syntax node", 12)? {
+            let node = match Self::byte_tag(reader, "type syntax node", 13)? {
                 0 => RirTypeSyntaxNode::Named(self.type_symbol(reader)?),
                 1 => RirTypeSyntaxNode::Qualified {
                     path: self.type_path(reader)?,
@@ -2665,6 +2681,37 @@ impl<
                     RirTypeSyntaxNode::Integer(i128::from_le_bytes(
                         bytes.try_into().expect("sixteen-byte slice"),
                     ))
+                }
+                13 => {
+                    let param_count = Self::count(reader, "function type parameters", 2)?;
+                    let mut words = Vec::new();
+                    words
+                        .try_reserve_exact(param_count.saturating_mul(2))
+                        .map_err(|_| Self::capacity("function type parameters"))?;
+                    for _ in 0..param_count {
+                        self.check()?;
+                        let mode = reader.u32()?;
+                        if mode > 2 {
+                            return Err(PackedRirDecodeError::InvalidTag {
+                                family: "function type parameter mode",
+                                tag: u8::try_from(mode).unwrap_or(u8::MAX),
+                            }
+                            .into());
+                        }
+                        words.push(mode);
+                        words.push(self.type_child(reader)?.as_u32());
+                    }
+                    let params =
+                        self.destination
+                            .type_syntax
+                            .push_words(words)
+                            .map_err(|error| {
+                                PackedRirAppendError::Build(type_syntax_build_error(error))
+                            })?;
+                    RirTypeSyntaxNode::Function {
+                        params,
+                        result: self.type_child(reader)?,
+                    }
                 }
                 _ => unreachable!(),
             };
@@ -3742,6 +3789,7 @@ mod tests {
                 slice: [u8],\
                 const_ptr: ptr const i32,\
                 mut_ptr: ptr mut i32,\
+                callback: fn(i32, borrow Name, inout [u8; 4]) -> bool,\
                 call: Result([Widget; fact(N)], lib.Option(Str(8)))\
             ) {}\
             fn make_struct() -> type {\
@@ -4181,7 +4229,7 @@ mod tests {
             .iter()
             .map(std::mem::discriminant)
             .collect::<ahash::AHashSet<_>>();
-        assert_eq!(variants.len(), 13, "fixture must cover every type node");
+        assert_eq!(variants.len(), 14, "fixture must cover every type node");
 
         let packed = pack(&source, &symbols, root);
         let (decoded, metadata) = packed
@@ -4311,12 +4359,12 @@ mod tests {
         assert_eq!(header.types, 2);
 
         let mut bad_tag = packed.as_bytes().to_vec();
-        bad_tag[header.types_offset] = 13;
+        bad_tag[header.types_offset] = 14;
         assert_eq!(
             decode_error(PackedValidatedRir(Arc::from(bad_tag))),
             PackedRirDecodeError::InvalidTag {
                 family: "type syntax node",
-                tag: 13,
+                tag: 14,
             }
         );
 

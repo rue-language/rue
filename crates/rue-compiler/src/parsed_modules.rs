@@ -2187,6 +2187,14 @@ impl<'a> ParsedBodyProjectionCollector<'a> {
             TypeExpr::PointerConst { pointee, .. } | TypeExpr::PointerMut { pointee, .. } => {
                 self.visit_type(pointee)?;
             }
+            TypeExpr::Function { params, ret, .. } => {
+                for param in params {
+                    self.visit_type(&param.ty)?;
+                }
+                if let Some(ret) = ret {
+                    self.visit_type(ret)?;
+                }
+            }
             TypeExpr::TypeCall { name, args, .. } => {
                 self.add_unqualified(*name)?;
                 for argument in args {

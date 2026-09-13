@@ -199,6 +199,11 @@ mechanism), so the `PreviewFeature` enum is not empty.
   match arms (ADR-0091, RUE-1884, RUE-2175): `let Point { x, y } = p;` and
   `match r { R.Ok(Point { x, y }) => .. }` bind every field by name and have
   no rest form, so an added field is a compile error at every pattern.
+- `checked_reasons` — a stated reason on every `checked` block (ADR-0095,
+  RUE-1887): `checked "index < len by the guard above" { ... }`.
+- `fn_params` — second-class function parameters (ADR-0096, RUE-2112): a
+  parameter of type `fn(A, borrow B) -> R` that a named function is passed
+  to and that the body calls or forwards, never stores.
 
 ## Implementation Phases
 

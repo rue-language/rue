@@ -1240,6 +1240,21 @@ where
                     .try_intern_ptr_mut(pointee)
                     .map_err(|_| IdentityMintError::InvalidStructuralType)?
             }
+            S::Function { params, result } => {
+                let params = params
+                    .iter()
+                    .map(|(mode, ty)| {
+                        Ok(crate::FunctionTypeParam {
+                            mode: *mode,
+                            ty: self.resolve(ty)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, IdentityMintError>>()?;
+                let result = self.resolve(result)?;
+                self.type_pool
+                    .try_intern_function(crate::FunctionTypeDef { params, result })
+                    .map_err(|_| IdentityMintError::InvalidStructuralType)?
+            }
             S::Slice { element, name } => {
                 // A slice view is a generated fat-pointer struct. Registered
                 // exactly as `SemanticImportedProgram::import_type_local`
@@ -1311,6 +1326,21 @@ where
                 let pointee = self.resolve_provider_type(pointee)?;
                 self.type_pool
                     .try_intern_ptr_mut(pointee)
+                    .map_err(|_| IdentityMintError::InvalidStructuralType)
+            }
+            SemanticImportType::Function { params, result } => {
+                let params = params
+                    .iter()
+                    .map(|(mode, ty)| {
+                        Ok(crate::FunctionTypeParam {
+                            mode: *mode,
+                            ty: self.resolve_provider_type(ty)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, IdentityMintError>>()?;
+                let result = self.resolve_provider_type(result)?;
+                self.type_pool
+                    .try_intern_function(crate::FunctionTypeDef { params, result })
                     .map_err(|_| IdentityMintError::InvalidStructuralType)
             }
             _ => self.resolve(value),
@@ -2192,6 +2222,21 @@ where
                     .try_intern_ptr_mut(pointee)
                     .map_err(|_| IdentityMintError::InvalidStructuralType)
             }
+            SemanticImportType::Function { params, result } => {
+                let params = params
+                    .iter()
+                    .map(|(mode, ty)| {
+                        Ok(crate::FunctionTypeParam {
+                            mode: *mode,
+                            ty: self.resolve_anonymous_shape_type(ty)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, IdentityMintError>>()?;
+                let result = self.resolve_anonymous_shape_type(result)?;
+                self.type_pool
+                    .try_intern_function(crate::FunctionTypeDef { params, result })
+                    .map_err(|_| IdentityMintError::InvalidStructuralType)
+            }
             _ => self.resolve_provider_type(value),
         }
     }
@@ -2283,6 +2328,9 @@ pub(in crate::sema) fn semantic_import_type_mentions_generic_parameter<K, M>(
             | crate::TypeInstanceKey::Slice { element, .. }
             | crate::TypeInstanceKey::PtrConst(element)
             | crate::TypeInstanceKey::PtrMut(element) => type_instance(element),
+            crate::TypeInstanceKey::Function { params, result } => {
+                params.iter().any(|(_, ty)| type_instance(ty)) || type_instance(result)
+            }
             crate::TypeInstanceKey::I8
             | crate::TypeInstanceKey::I16
             | crate::TypeInstanceKey::I32
@@ -2313,6 +2361,12 @@ pub(in crate::sema) fn semantic_import_type_mentions_generic_parameter<K, M>(
         | SemanticImportType::PtrMut(element)
         | SemanticImportType::Slice { element, .. } => {
             semantic_import_type_mentions_generic_parameter(element)
+        }
+        SemanticImportType::Function { params, result } => {
+            params
+                .iter()
+                .any(|(_, ty)| semantic_import_type_mentions_generic_parameter(ty))
+                || semantic_import_type_mentions_generic_parameter(result)
         }
         SemanticImportType::I8
         | SemanticImportType::I16
@@ -2705,6 +2759,21 @@ where
                 let pointee = self.resolve_callable_type(key, pointee)?;
                 self.type_pool
                     .try_intern_ptr_mut(pointee)
+                    .map_err(|_| IdentityMintError::InvalidStructuralType)
+            }
+            SemanticImportType::Function { params, result } => {
+                let params = params
+                    .iter()
+                    .map(|(mode, ty)| {
+                        Ok(crate::FunctionTypeParam {
+                            mode: *mode,
+                            ty: self.resolve_callable_type(key, ty)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, IdentityMintError>>()?;
+                let result = self.resolve_callable_type(key, result)?;
+                self.type_pool
+                    .try_intern_function(crate::FunctionTypeDef { params, result })
                     .map_err(|_| IdentityMintError::InvalidStructuralType)
             }
             SemanticImportType::AnonymousNominal(identity) => {
@@ -4015,6 +4084,15 @@ mod tests {
             }
             TypeKind::PtrConst(id) => format!("ptr const {}", render(pool, pool.ptr_const_def(id))),
             TypeKind::PtrMut(id) => format!("ptr mut {}", render(pool, pool.ptr_mut_def(id))),
+            TypeKind::Function(id) => {
+                let def = pool.function_def(id);
+                crate::types::function_type_name(
+                    def.params
+                        .iter()
+                        .map(|param| (param.mode, render(pool, param.ty))),
+                    (def.result != Type::UNIT).then(|| render(pool, def.result)),
+                )
+            }
             TypeKind::Module(_) => "<module>".into(),
             TypeKind::ComptimeType => "type".into(),
             TypeKind::F32 => "f32".into(),

@@ -34,6 +34,7 @@ impl Parser {
                     None => TypeExpr::Slice { element, span },
                 })
             }
+            TokenKind::Fn => self.function_type(),
             TokenKind::Ptr => {
                 self.bump();
                 let mutable = if self.eat(TokenKind::Const) {
@@ -103,6 +104,70 @@ impl Parser {
                 Err(())
             }
         }
+    }
+
+    /// `fn(A, borrow B, inout C) -> R`: the type of a second-class callback
+    /// parameter (ADR-0096, RUE-2193). Each parameter is a mode followed by a
+    /// type and carries no name; `comptime` is not a callback mode. An
+    /// omitted result is `()`, exactly as on a declaration.
+    fn function_type(&mut self) -> PResult<TypeExpr> {
+        let start = self.start();
+        self.expect(TokenKind::Fn)?;
+        self.expect(TokenKind::LParen)?;
+        let mut params = Vec::new();
+        if !self.at(TokenKind::RParen) {
+            loop {
+                let param_start = self.start();
+                let mode = match self.kind() {
+                    TokenKind::Inout => {
+                        self.bump();
+                        ParamMode::Inout
+                    }
+                    TokenKind::Borrow => {
+                        self.bump();
+                        ParamMode::Borrow
+                    }
+                    TokenKind::Comptime => {
+                        self.error(
+                            "a `fn` type parameter cannot be `comptime`: a callback is a \
+                             runtime value and every parameter it takes is a runtime value",
+                        );
+                        return Err(());
+                    }
+                    _ => ParamMode::Normal,
+                };
+                if matches!(self.kind(), TokenKind::Inout | TokenKind::Borrow) {
+                    self.error(format!(
+                        "duplicate parameter modifier {}",
+                        self.kind().name()
+                    ));
+                    return Err(());
+                }
+                let ty = self.ty()?;
+                params.push(FnTypeParam {
+                    mode,
+                    ty,
+                    span: self.span_from(param_start),
+                });
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
+                if self.at(TokenKind::RParen) {
+                    break;
+                }
+            }
+        }
+        self.expect(TokenKind::RParen)?;
+        let ret = if self.eat(TokenKind::Arrow) {
+            Some(Box::new(self.ty()?))
+        } else {
+            None
+        };
+        Ok(TypeExpr::Function {
+            params,
+            ret,
+            span: self.span_from(start),
+        })
     }
 
     pub(super) fn primitive_spur(&self, kind: TokenKind) -> Option<Spur> {
@@ -407,5 +472,29 @@ mod tests {
     #[test]
     fn rejects_an_incomplete_pointer_type() {
         assert!(!parses("fn f(x: ptr i32) {}"));
+    }
+
+    #[test]
+    fn parses_function_types_in_parameter_position() {
+        // ADR-0096: modes precede types, no parameter is named, the result
+        // is optional, and the syntax nests inside its own parameter list.
+        assert!(parses("fn f(cb: fn()) {}"));
+        assert!(parses(
+            "fn f(cb: fn(i32, borrow Policy, inout [u8; 4]) -> bool) {}"
+        ));
+        assert!(parses("fn f(cb: fn(fn(i32) -> i32, i32) -> i32,) {}"));
+        assert!(parses("fn f(cb: fn(i32,) -> ptr const i32) {}"));
+    }
+
+    #[test]
+    fn rejects_malformed_function_types() {
+        // Parameter names, `comptime`, and doubled modes are not part of a
+        // function type; a missing parameter list is not one either.
+        assert!(!parses("fn f(cb: fn(x: i32) -> i32) {}"));
+        assert!(!parses("fn f(cb: fn(comptime T: type) -> i32) {}"));
+        assert!(!parses("fn f(cb: fn(comptime i32) -> i32) {}"));
+        assert!(!parses("fn f(cb: fn(borrow inout i32)) {}"));
+        assert!(!parses("fn f(cb: fn -> i32) {}"));
+        assert!(!parses("fn f(cb: fn(i32) ->) {}"));
     }
 }

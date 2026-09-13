@@ -535,6 +535,14 @@ pub trait SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>:
     fn ptr_mut_type(&mut self, pointee: T)
     -> SemanticProviderResult<T, Self::Abort, Self::Failure>;
 
+    /// A function type `fn(A, borrow B) -> R` (ADR-0096) from its resolved
+    /// parameter modes and types and its resolved result.
+    fn function_type(
+        &mut self,
+        params: Vec<(crate::FunctionParamMode, T)>,
+        result: T,
+    ) -> SemanticProviderResult<T, Self::Abort, Self::Failure>;
+
     fn slice_type(
         &mut self,
         scope: &S,
@@ -1540,6 +1548,11 @@ enum StructuredTypeWork<T> {
     },
     FinishPointerConst,
     FinishPointerMut,
+    /// Pop the result and then one value per mode, in reverse, and build the
+    /// function type.
+    FinishFunction {
+        modes: Vec<crate::FunctionParamMode>,
+    },
     BeginCall {
         reference: rue_rir::RirTypeSyntaxRef,
         segments: Vec<Arc<str>>,
@@ -1710,6 +1723,28 @@ where
                             R::PointerMut { pointee } => {
                                 machine.work.push(StructuredTypeWork::FinishPointerMut);
                                 machine.work.push(StructuredTypeWork::Evaluate(pointee));
+                            }
+                            R::Function { params, result } => {
+                                let words = arena.words(params).ok_or_else(node_unknown)?;
+                                let mut modes = Vec::with_capacity(words.len() / 2);
+                                let mut children = Vec::with_capacity(words.len() / 2);
+                                for param in words.chunks_exact(2) {
+                                    modes.push(
+                                        crate::FunctionParamMode::from_stable_word(param[0])
+                                            .ok_or_else(node_unknown)?,
+                                    );
+                                    children.push(rue_rir::RirTypeSyntaxRef::from_u32(param[1]));
+                                }
+                                // Work is a stack: the parameters are evaluated
+                                // first in source order, then the result, and
+                                // the finish step pops them back in that order.
+                                machine
+                                    .work
+                                    .push(StructuredTypeWork::FinishFunction { modes });
+                                machine.work.push(StructuredTypeWork::Evaluate(result));
+                                for child in children.into_iter().rev() {
+                                    machine.work.push(StructuredTypeWork::Evaluate(child));
+                                }
                             }
                             R::TypeCall { path, arguments } => {
                                 let segments = structured_path(arena, path, resolve_symbol)
@@ -1960,6 +1995,22 @@ where
                         machine
                             .values
                             .push(lift_provider(provider.ptr_mut_type(pointee))?);
+                    }
+                    StructuredTypeWork::FinishFunction { modes } => {
+                        let Some(result) = machine.values.pop() else {
+                            return Err(unknown(machine.root));
+                        };
+                        let mut params = Vec::with_capacity(modes.len());
+                        for mode in modes.iter().rev() {
+                            let Some(ty) = machine.values.pop() else {
+                                return Err(unknown(machine.root));
+                            };
+                            params.push((*mode, ty));
+                        }
+                        params.reverse();
+                        machine
+                            .values
+                            .push(lift_provider(provider.function_type(params, result))?);
                     }
                 }
                 Ok(None)
@@ -2376,6 +2427,22 @@ mod tests {
         fn ptr_mut_type(&mut self, _pointee: &'static str) -> FixtureResult<&'static str> {
             self.calls.push("ptr_mut".to_string());
             Ok("ptr mut")
+        }
+
+        fn function_type(
+            &mut self,
+            params: Vec<(crate::FunctionParamMode, &'static str)>,
+            result: &'static str,
+        ) -> FixtureResult<&'static str> {
+            self.calls.push(format!(
+                "function({})->{result}",
+                params
+                    .iter()
+                    .map(|(mode, ty)| format!("{}{ty}", mode.keyword()))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ));
+            Ok("fn")
         }
 
         fn slice_type(

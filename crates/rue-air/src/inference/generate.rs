@@ -4825,6 +4825,13 @@ impl<'a> ConstraintGenerator<'a> {
                 };
                 Some(InferType::Concrete(ty))
             }
+            // A `fn` type is legal only as a parameter's type (ADR-0096), and
+            // parameter types enter inference from the resolved signature, not
+            // from a hint. Every hint position that reaches here (a `let`
+            // annotation, a pattern head) is one semantic analysis rejects with
+            // E0214, so the hint stays unknown rather than steering the
+            // initializer into a type mismatch that would hide that rejection.
+            RirTypeSyntaxNode::Function { .. } => None,
             RirTypeSyntaxNode::Qualified { .. }
             | RirTypeSyntaxNode::Slice { .. }
             | RirTypeSyntaxNode::AnonymousStruct { .. }

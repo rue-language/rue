@@ -309,6 +309,15 @@ mod type_syntax_provider_trace_tests {
             panic!("unused test host hook")
         }
 
+        fn type_syntax_make_function(
+            &mut self,
+            _params: Vec<(crate::FunctionParamMode, Type)>,
+            _result: Type,
+            _span: Span,
+        ) -> CompileResult<Type> {
+            panic!("unused test host hook")
+        }
+
         fn type_syntax_make_slice(
             &mut self,
             _syntax: &str,
@@ -1034,6 +1043,18 @@ where
             TypeKind::PtrMut(id) => T::PtrMut(Arc::new(
                 self.export_body_type(self.type_pool.ptr_mut_def(id))?,
             )),
+            TypeKind::Function(id) => {
+                let def = self.type_pool.function_def(id);
+                T::Function {
+                    params: def
+                        .params
+                        .iter()
+                        .map(|param| Ok((param.mode, self.export_body_type(param.ty)?)))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into(),
+                    result: Arc::new(self.export_body_type(def.result)?),
+                }
+            }
             TypeKind::Struct(id) => {
                 let def = self.type_pool.struct_def(id);
                 if let Some(identity) = self.issued_anonymous_identity_for_type(ty) {
@@ -1478,6 +1499,15 @@ where
             T::PtrMut(pointee) => {
                 let pointee = self.push_durable_type_syntax(builder, pointee, parameters)?;
                 builder.push_pointer_mut_type(pointee).ok()
+            }
+            T::Function { params, result } => {
+                let mut pushed = Vec::with_capacity(params.len());
+                for (mode, ty) in params.iter() {
+                    let ty = self.push_durable_type_syntax(builder, ty, parameters)?;
+                    pushed.push((mode.stable_word(), ty));
+                }
+                let result = self.push_durable_type_syntax(builder, result, parameters)?;
+                builder.push_function_type(pushed, result).ok()
             }
             T::Slice { element, .. } => {
                 let element = self.push_durable_type_syntax(builder, element, parameters)?;
@@ -2527,6 +2557,14 @@ where
             },
             T::PtrConst(inner) => S::PtrConst(Arc::new(self.type_instance_import(inner)?)),
             T::PtrMut(inner) => S::PtrMut(Arc::new(self.type_instance_import(inner)?)),
+            T::Function { params, result } => S::Function {
+                params: params
+                    .iter()
+                    .map(|(mode, ty)| Ok((*mode, self.type_instance_import(ty)?)))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into(),
+                result: Arc::new(self.type_instance_import(result)?),
+            },
             T::Module(module) => {
                 let (id, _) = self
                     .register_module_target(module.clone())
@@ -2603,6 +2641,12 @@ where
             | T::PtrConst(element)
             | T::PtrMut(element) => {
                 self.install_anonymous_dependencies(element, visited_named)?;
+            }
+            T::Function { params, result } => {
+                for (_, ty) in params.iter() {
+                    self.install_anonymous_dependencies(ty, visited_named)?;
+                }
+                self.install_anonymous_dependencies(result, visited_named)?;
             }
             _ => {}
         }
@@ -2725,6 +2769,16 @@ where
                     .record(ProviderBodyWorkEvent::TypeEdgeTraversed);
                 self.register_import_nominal_identities_inner(element)?;
             }
+            T::Function { params, result } => {
+                for (_, ty) in params.iter() {
+                    self.provider_body_work
+                        .record(ProviderBodyWorkEvent::TypeEdgeTraversed);
+                    self.register_import_nominal_identities_inner(ty)?;
+                }
+                self.provider_body_work
+                    .record(ProviderBodyWorkEvent::TypeEdgeTraversed);
+                self.register_import_nominal_identities_inner(result)?;
+            }
             T::I8
             | T::I16
             | T::I32
@@ -2821,6 +2875,14 @@ where
             },
             T::PtrConst(inner) => S::PtrConst(Arc::new(self.type_instance_import(inner)?)),
             T::PtrMut(inner) => S::PtrMut(Arc::new(self.type_instance_import(inner)?)),
+            T::Function { params, result } => S::Function {
+                params: params
+                    .iter()
+                    .map(|(mode, ty)| Ok((*mode, self.type_instance_import(ty)?)))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into(),
+                result: Arc::new(self.type_instance_import(result)?),
+            },
             T::Module(module) => S::Module(module.clone()),
             T::GenericParameter(index) => S::GenericParameter(*index),
         })
@@ -2857,6 +2919,18 @@ where
             TypeKind::PtrMut(id) => T::PtrMut(Arc::new(
                 self.durable_type_from_concrete(self.type_pool.ptr_mut_def(id))?,
             )),
+            TypeKind::Function(id) => {
+                let def = self.type_pool.function_def(id);
+                T::Function {
+                    params: def
+                        .params
+                        .iter()
+                        .map(|param| Some((param.mode, self.durable_type_from_concrete(param.ty)?)))
+                        .collect::<Option<Vec<_>>>()?
+                        .into(),
+                    result: Arc::new(self.durable_type_from_concrete(def.result)?),
+                }
+            }
             TypeKind::Struct(_) | TypeKind::Enum(_) => {
                 if let Some(identity) = self.durable_anonymous_types.get(&ty).cloned() {
                     T::AnonymousNominal(identity)
@@ -3671,6 +3745,10 @@ where
     fn endpoint_intern_ptr_mut(&self, pointee: Type) -> Option<Type> {
         self.type_pool.try_intern_ptr_mut(pointee).ok()
     }
+
+    fn endpoint_intern_function(&self, def: crate::FunctionTypeDef) -> Option<Type> {
+        self.type_pool.try_intern_function(def).ok()
+    }
 }
 
 impl<P, S, K, M> CallResolutionFacts for ProviderBodyHost<'_, P, S, K, M>
@@ -4076,6 +4154,7 @@ where
         length: u64,
         span: Span,
     ) -> CompileResult<Type> {
+        reject_function_child(element, "an array element", span)?;
         self.type_pool
             .try_intern_array(element, length)
             .map_err(|failure| {
@@ -4087,6 +4166,7 @@ where
     }
 
     fn type_syntax_make_ptr_const(&mut self, pointee: Type, span: Span) -> CompileResult<Type> {
+        reject_function_child(pointee, "a pointer pointee", span)?;
         self.type_pool
             .try_intern_ptr_const(pointee)
             .map_err(|failure| {
@@ -4098,11 +4178,42 @@ where
     }
 
     fn type_syntax_make_ptr_mut(&mut self, pointee: Type, span: Span) -> CompileResult<Type> {
+        reject_function_child(pointee, "a pointer pointee", span)?;
         self.type_pool
             .try_intern_ptr_mut(pointee)
             .map_err(|failure| {
                 CompileError::new(
                     rue_error::ErrorKind::UnknownType(format!("pointer type: {failure:?}")),
+                    span,
+                )
+            })
+    }
+
+    fn type_syntax_make_function(
+        &mut self,
+        params: Vec<(crate::FunctionParamMode, Type)>,
+        result: Type,
+        span: Span,
+    ) -> CompileResult<Type> {
+        // The grammar is gated (ADR-0096): a `fn` type written anywhere is
+        // the preview's surface, so the gate sits where the syntax becomes a
+        // type rather than at each position that admits one.
+        self.require_preview(
+            rue_error::PreviewFeature::FnParams,
+            "function parameter types",
+            span,
+        )?;
+        self.type_pool
+            .try_intern_function(crate::FunctionTypeDef {
+                params: params
+                    .into_iter()
+                    .map(|(mode, ty)| crate::FunctionTypeParam { mode, ty })
+                    .collect(),
+                result,
+            })
+            .map_err(|failure| {
+                CompileError::new(
+                    rue_error::ErrorKind::UnknownType(format!("function type: {failure:?}")),
                     span,
                 )
             })
@@ -4114,6 +4225,7 @@ where
         element: Type,
         span: Span,
     ) -> CompileResult<Type> {
+        reject_function_child(element, "a slice element", span)?;
         let durable = self.durable_type_from_concrete(element).ok_or_else(|| {
             CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
         })?;
@@ -4227,6 +4339,9 @@ where
         value_arguments: &[(Spur, ConstValue)],
         span: Span,
     ) -> CompileResult<Option<ConstValue>> {
+        for (_, ty) in type_arguments {
+            reject_function_child(*ty, "a type argument", span)?;
+        }
         let Some((_, definition)) = self.function_token_for_symbol(head.key) else {
             return Ok(None);
         };
@@ -4386,6 +4501,17 @@ where
             T::PtrMut(element) => {
                 format!("ptr mut {}", self.friendly_durable_type_display(element)?)
             }
+            T::Function { params, result } => crate::types::function_type_name(
+                params
+                    .iter()
+                    .map(|(mode, ty)| Some((*mode, self.friendly_durable_type_display(ty)?)))
+                    .collect::<Option<Vec<_>>>()?,
+                if **result == T::Unit {
+                    None
+                } else {
+                    Some(self.friendly_durable_type_display(result)?)
+                },
+            ),
             T::Module(module) => self.source.module_path(module),
             T::GenericParameter(index) => format!("T{index}"),
         })
@@ -4479,6 +4605,15 @@ where
                 "ptr mut {}",
                 self.friendly_type_display(self.type_pool.ptr_mut_def(id))
             ),
+            Some(TypeKind::Function(id)) => {
+                let def = self.type_pool.function_def(id);
+                crate::types::function_type_name(
+                    def.params
+                        .iter()
+                        .map(|param| (param.mode, self.friendly_type_display(param.ty))),
+                    (def.result != Type::UNIT).then(|| self.friendly_type_display(def.result)),
+                )
+            }
             _ => ty.safe_name_with_pool(Some(&self.type_pool)),
         }
     }
@@ -5557,6 +5692,17 @@ where
             }
             TypeKind::PtrMut(id) => {
                 TypeInstanceKey::PtrMut(Node::new(recurse(self.type_pool.ptr_mut_def(id))?))
+            }
+            TypeKind::Function(id) => {
+                let def = self.type_pool.function_def(id);
+                TypeInstanceKey::Function {
+                    params: def
+                        .params
+                        .iter()
+                        .map(|param| Ok((param.mode, Node::new(recurse(param.ty)?))))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    result: Node::new(recurse(def.result)?),
+                }
             }
             TypeKind::Struct(id) => match self.body_struct_identity(id)? {
                 crate::NominalInstanceKey::Builtin { kind, name } => {
@@ -7443,4 +7589,19 @@ where
         result,
         check_shared_interner(bundle.symbol_space(), "specialized provider analysis"),
     )
+}
+
+/// Refuse a `fn` type as a structural child of another type (ADR-0096, spec
+/// 6.1:47): a callback is second-class and is never an element, pointee,
+/// slice element, or type argument.
+fn reject_function_child(ty: Type, position: &str, span: Span) -> CompileResult<()> {
+    if ty.is_function() {
+        return Err(CompileError::new(
+            rue_error::ErrorKind::FnTypeOutsideParameter {
+                position: position.to_owned(),
+            },
+            span,
+        ));
+    }
+    Ok(())
 }

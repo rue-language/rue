@@ -840,6 +840,7 @@ fn mangle_type(ty: Type) -> String {
         TypeKind::Array(id) => format!("array{}", id.0),
         TypeKind::PtrConst(id) => format!("ptr_const{}", id.0),
         TypeKind::PtrMut(id) => format!("ptr_mut{}", id.0),
+        TypeKind::Function(id) => format!("fn{}", id.0),
         TypeKind::Module(id) => format!("module{}", id.0),
         _ => ty.name().to_string(),
     }

@@ -3576,6 +3576,17 @@ impl<'p, 'o, 'db>
         Ok(crate::DurableType::PtrMut(Arc::new(pointee)))
     }
 
+    fn function_type(
+        &mut self,
+        params: Vec<(rue_air::FunctionParamMode, crate::DurableType)>,
+        result: crate::DurableType,
+    ) -> rue_air::SemanticProviderResult<crate::DurableType, Self::Abort, Self::Failure> {
+        Ok(crate::DurableType::Function {
+            params: params.into(),
+            result: Arc::new(result),
+        })
+    }
+
     fn slice_type(
         &mut self,
         _scope: &ModuleId,

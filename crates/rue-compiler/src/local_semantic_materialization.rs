@@ -973,7 +973,9 @@ impl rue_air::drop_glue_names::DropGlueTypeShapeSource for DurableDropGlueType<'
             },
             T::PtrConst(pointee) => Shape::PtrConst(DurableDropGlueType(pointee)),
             T::PtrMut(pointee) => Shape::PtrMut(DurableDropGlueType(pointee)),
-            T::Slice { .. } | T::Module(_) | T::GenericParameter(_) => return None,
+            T::Slice { .. } | T::Module(_) | T::GenericParameter(_) | T::Function { .. } => {
+                return None;
+            }
         })
     }
 }
@@ -1024,6 +1026,16 @@ fn mangle_canonical_type(ty: &crate::TypeInstanceKey) -> String {
         TypeInstanceKey::PtrMut(pointee) => {
             format!("ptr_mut{}", mangle_canonical_type(pointee))
         }
+        TypeInstanceKey::Function { params, result } => format!(
+            "fn{}_{}_r{}",
+            params.len(),
+            params
+                .iter()
+                .map(|(mode, ty)| format!("{}{}", mode.stable_word(), mangle_canonical_type(ty)))
+                .collect::<Vec<_>>()
+                .join("_"),
+            mangle_canonical_type(result)
+        ),
         TypeInstanceKey::Module(module) => format!(
             "module{}",
             rue_air::mangle_symbol_component(module.logical_path())
@@ -1656,6 +1668,12 @@ pub(crate) fn select_materialization_facts(
                 T::Array { element, .. } => self.instance_type(element),
                 T::Slice { element, .. } | T::PtrConst(element) | T::PtrMut(element) => {
                     self.opaque_instance_type(element)
+                }
+                T::Function { params, result } => {
+                    for (_, ty) in params {
+                        self.opaque_instance_type(ty);
+                    }
+                    self.opaque_instance_type(result);
                 }
                 T::Module(module) => {
                     self.modules.insert(module.clone());

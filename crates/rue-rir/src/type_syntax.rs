@@ -108,6 +108,14 @@ pub enum RirTypeSyntaxNode {
     PointerMut {
         pointee: RirTypeSyntaxRef,
     },
+    /// A function type `fn(A, borrow B) -> R` (ADR-0096, RUE-2193).
+    Function {
+        /// Fixed-width `(mode, type ref)` pairs. The mode word is the stable
+        /// parameter-mode encoding: 0 by value, 1 `inout`, 2 `borrow`.
+        params: RirTypeSyntaxRange,
+        /// The result type; an omitted result is an explicit `Unit` node.
+        result: RirTypeSyntaxRef,
+    },
     TypeCall {
         path: RirTypeSyntaxRange,
         arguments: RirTypeSyntaxRange,
@@ -203,6 +211,18 @@ impl<S> RirTypeSyntaxArena<S> {
             RirTypeSyntaxNode::Slice { element } => visit(*element),
             RirTypeSyntaxNode::PointerConst { pointee }
             | RirTypeSyntaxNode::PointerMut { pointee } => visit(*pointee),
+            RirTypeSyntaxNode::Function { params, result } => {
+                let Some(params) = self.words(*params) else {
+                    return false;
+                };
+                if params.len() % 2 != 0 {
+                    return false;
+                }
+                for param in params.chunks_exact(2) {
+                    visit(RirTypeSyntaxRef::from_u32(param[1]));
+                }
+                visit(*result);
+            }
             RirTypeSyntaxNode::TypeCall { arguments, .. }
             | RirTypeSyntaxNode::ValueCall { arguments, .. } => {
                 let Some(arguments) = self.words(*arguments) else {
@@ -354,6 +374,32 @@ impl<S> RirTypeSyntaxArena<S> {
                 output.push_str("ptr mut ");
                 if !self.write_type(*pointee, output, resolve) {
                     return false;
+                }
+            }
+            RirTypeSyntaxNode::Function { params, result } => {
+                let Some(params) = self.words(*params) else {
+                    return false;
+                };
+                output.push_str("fn(");
+                for (index, param) in params.chunks_exact(2).enumerate() {
+                    if index != 0 {
+                        output.push_str(", ");
+                    }
+                    match param[0] {
+                        1 => output.push_str("inout "),
+                        2 => output.push_str("borrow "),
+                        _ => {}
+                    }
+                    if !self.write_type(RirTypeSyntaxRef::from_u32(param[1]), output, resolve) {
+                        return false;
+                    }
+                }
+                output.push(')');
+                if !matches!(self.node(*result), Some(RirTypeSyntaxNode::Unit)) {
+                    output.push_str(" -> ");
+                    if !self.write_type(*result, output, resolve) {
+                        return false;
+                    }
                 }
             }
             RirTypeSyntaxNode::TypeCall { path, arguments } => {
@@ -544,6 +590,25 @@ impl<S> RirTypeSyntaxArena<S> {
                 RirTypeSyntaxNode::Slice { element }
                 | RirTypeSyntaxNode::PointerConst { pointee: element }
                 | RirTypeSyntaxNode::PointerMut { pointee: element } => check_ref(*element)?,
+                RirTypeSyntaxNode::Function { params, result } => {
+                    let params = words(*params)?;
+                    if !params.len().is_multiple_of(2) {
+                        return Err(invalid(
+                            Some(owner_ref),
+                            "function type parameter record is truncated",
+                        ));
+                    }
+                    for param in params.chunks_exact(2) {
+                        if param[0] > 2 {
+                            return Err(invalid(
+                                Some(owner_ref),
+                                "function type parameter mode is not a callback mode",
+                            ));
+                        }
+                        check_ref(RirTypeSyntaxRef::from_u32(param[1]))?;
+                    }
+                    check_ref(*result)?;
+                }
                 RirTypeSyntaxNode::AnonymousStruct { fields, methods } => {
                     let fields = words(*fields)?;
                     if !fields.len().is_multiple_of(2) {
@@ -839,6 +904,19 @@ impl<S: Clone + Eq + Hash> RirTypeSyntaxBuilder<S> {
             TypeExpr::PointerMut { pointee, .. } => RirTypeSyntaxNode::PointerMut {
                 pointee: self.push_parser_type(pointee, resolve)?,
             },
+            TypeExpr::Function { params, ret, .. } => {
+                let mut words = Vec::with_capacity(params.len().saturating_mul(2));
+                for param in params {
+                    let ty = self.push_parser_type(&param.ty, resolve)?;
+                    words.extend([stable_param_mode(param.mode), ty.as_u32()]);
+                }
+                let params = self.push_words(words)?;
+                let result = match ret {
+                    Some(ret) => self.push_parser_type(ret, resolve)?,
+                    None => self.push_node(RirTypeSyntaxNode::Unit)?,
+                };
+                RirTypeSyntaxNode::Function { params, result }
+            }
             TypeExpr::TypeCall { name, args, .. } => {
                 let name = self.symbol(resolve(name.name))?;
                 let path = self.push_words([name.as_u32()])?;
@@ -931,6 +1009,22 @@ impl<S: Clone + Eq + Hash> RirTypeSyntaxBuilder<S> {
         pointee: RirTypeSyntaxRef,
     ) -> Result<RirTypeSyntaxRef, RirTypeSyntaxBuildError> {
         self.push_node(RirTypeSyntaxNode::PointerMut { pointee })
+    }
+
+    /// Construct one function type from already-pushed parameter and result
+    /// nodes. Each parameter carries its stable mode word (0 by value,
+    /// 1 `inout`, 2 `borrow`).
+    pub fn push_function_type(
+        &mut self,
+        params: impl IntoIterator<Item = (u32, RirTypeSyntaxRef)>,
+        result: RirTypeSyntaxRef,
+    ) -> Result<RirTypeSyntaxRef, RirTypeSyntaxBuildError> {
+        let mut words = Vec::new();
+        for (mode, ty) in params {
+            words.extend([mode, ty.as_u32()]);
+        }
+        let params = self.push_words(words)?;
+        self.push_node(RirTypeSyntaxNode::Function { params, result })
     }
 
     /// Append one validated declaration-local arena, remapping its dense symbol
@@ -1038,6 +1132,32 @@ impl<S: Clone + Eq + Hash> RirTypeSyntaxBuilder<S> {
                     RirTypeSyntaxNode::PointerMut { pointee } => RirTypeSyntaxNode::PointerMut {
                         pointee: map_ref(*pointee).map_err(RirTypeSyntaxAppendError::Malformed)?,
                     },
+                    RirTypeSyntaxNode::Function { params, result } => {
+                        let param_words =
+                            source.words(*params).ok_or(RirTypeSyntaxValidationError {
+                                node: None,
+                                reason: "type-syntax payload range is outside its arena",
+                            })?;
+                        let mut mapped_params = Vec::new();
+                        mapped_params
+                            .try_reserve_exact(param_words.len())
+                            .map_err(|_| RirTypeSyntaxBuildError::TooMuchPayload)?;
+                        for param in param_words.chunks_exact(2) {
+                            checkpoint().map_err(RirTypeSyntaxAppendError::Checkpoint)?;
+                            mapped_params.extend([
+                                param[0],
+                                map_ref(RirTypeSyntaxRef::from_u32(param[1]))
+                                    .map_err(RirTypeSyntaxAppendError::Malformed)?
+                                    .as_u32(),
+                            ]);
+                        }
+                        let params = self.push_words(mapped_params)?;
+                        RirTypeSyntaxNode::Function {
+                            params,
+                            result: map_ref(*result)
+                                .map_err(RirTypeSyntaxAppendError::Malformed)?,
+                        }
+                    }
                     RirTypeSyntaxNode::TypeCall { path, arguments } => {
                         RirTypeSyntaxNode::TypeCall {
                             path: map_path(self, *path)?,
@@ -1370,6 +1490,16 @@ mod tests {
                 RirTypeSyntaxNode::Slice { element }
                 | RirTypeSyntaxNode::PointerConst { pointee: element }
                 | RirTypeSyntaxNode::PointerMut { pointee: element } => children.push(*element),
+                RirTypeSyntaxNode::Function { params, result } => {
+                    children.extend(
+                        arena
+                            .words(*params)
+                            .unwrap()
+                            .chunks_exact(2)
+                            .map(|param| RirTypeSyntaxRef::from_u32(param[1])),
+                    );
+                    children.push(*result);
+                }
                 RirTypeSyntaxNode::TypeCall { arguments, .. }
                 | RirTypeSyntaxNode::ValueCall { arguments, .. } => {
                     children.extend(
@@ -1385,5 +1515,51 @@ mod tests {
             }
             assert!(children.iter().all(|child| child.index() < owner));
         }
+    }
+
+    #[test]
+    fn function_types_render_with_modes_and_an_elided_unit_result() {
+        // ADR-0096: the canonical spelling keeps each parameter's mode, elides
+        // `-> ()`, and nests inside its own parameter list.
+        let source = "fn f(cb: fn(i32, borrow Policy, inout [u8; 4]) -> bool, \
+                      unit: fn(), higher: fn(fn(i32) -> i32, i32) -> i32) {}";
+        let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
+        let (program, interner) = Parser::new(tokens, interner).parse().unwrap();
+        let Item::Function(function) = &program.items[0] else {
+            panic!("expected a function");
+        };
+        let mut builder = RirTypeSyntaxBuilder::<Arc<str>>::default();
+        let roots = function
+            .params
+            .iter()
+            .map(|param| {
+                builder
+                    .push_parser_type(&param.ty, |spur| Arc::from(interner.resolve(&spur)))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let arena = builder.finish();
+        let rendered = roots
+            .iter()
+            .map(|root| {
+                arena
+                    .render_type_with(*root, |symbol| symbol.as_ref())
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rendered,
+            [
+                "fn(i32, borrow Policy, inout [u8; 4]) -> bool",
+                "fn()",
+                "fn(fn(i32) -> i32, i32) -> i32",
+            ]
+        );
+        let function_nodes = arena
+            .nodes()
+            .iter()
+            .filter(|node| matches!(node, RirTypeSyntaxNode::Function { .. }))
+            .count();
+        assert_eq!(function_nodes, 4);
     }
 }

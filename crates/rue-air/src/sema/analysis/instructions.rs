@@ -458,6 +458,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                 inst.span,
                             )
                         })?;
+                    // A callback is second-class (ADR-0096, 6.1:47): no
+                    // field can hold one.
+                    if field_ty.is_function() {
+                        return Err(CompileError::new(
+                            ErrorKind::FnTypeOutsideParameter {
+                                position: "a struct field".to_owned(),
+                            },
+                            inst.span,
+                        ));
+                    }
                     struct_fields.push(StructField {
                         name: name_str,
                         ty: field_ty,
@@ -644,6 +654,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             return Err(CompileError::new(
                                 ErrorKind::ComptimeEvaluationFailed {
                                     reason: "type values cannot exist at runtime".to_string(),
+                                },
+                                inst.span,
+                            ));
+                        }
+                        // A callback is second-class (ADR-0096, 6.1:47): no
+                        // payload can hold one.
+                        if field_ty.is_function() {
+                            return Err(CompileError::new(
+                                ErrorKind::FnTypeOutsideParameter {
+                                    position: "an enum payload".to_owned(),
                                 },
                                 inst.span,
                             ));

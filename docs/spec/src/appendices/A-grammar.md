@@ -142,11 +142,20 @@ type           = "i8" | "i16" | "i32" | "i64"
                | "[" type [ ";" array_length ] "]"
                | "ptr" "const" type
                | "ptr" "mut" type
+               | fn_type
                | anon_struct_type
                | anon_enum_type
                | "Self"
                | named_type ;
 named_type     = qualified_ident [ "(" [ type_call_args ] ")" ] ;
+fn_type        = "fn" "(" [ fn_type_params ] ")" [ "->" type ] ;  (* the type of a
+                                                                   second-class callback
+                                                                   parameter (ADR-0096,
+                                                                   preview fn_params);
+                                                                   where it may appear is
+                                                                   a legality rule *)
+fn_type_params = fn_type_param { "," fn_type_param } [ "," ] ;
+fn_type_param  = [ "inout" | "borrow" ] type ;
 qualified_ident = IDENT { "." IDENT } ;
 type_call_args = type_call_arg { "," type_call_arg } [ "," ] ;
 type_call_arg  = type | [ "-" ] INTEGER ;  (* a type argument for a `comptime T: type` parameter, or an integer value argument for a comptime value parameter such as `comptime N: i32` *)

@@ -36,8 +36,8 @@ use rue_span::FileId;
 use crate::layout::{Layout, LayoutKind, PaddingRange};
 use crate::type_encoding;
 use crate::types::{
-    ArrayTypeId, EnumDef, EnumId, LangItem, PtrConstTypeId, PtrMutTypeId, StructDef, StructField,
-    StructId, Type, TypeKind,
+    ArrayTypeId, EnumDef, EnumId, FunctionTypeDef, FunctionTypeId, LangItem, PtrConstTypeId,
+    PtrMutTypeId, StructDef, StructField, StructId, Type, TypeKind,
 };
 
 /// Type data stored in the intern pool.
@@ -89,6 +89,14 @@ pub enum TypeData {
     ///
     /// `ptr mut T` - pointer to mutable data.
     PtrMut { pointee: Type },
+
+    /// Function type (structural type, ADR-0096).
+    ///
+    /// `fn(A, borrow B) -> R` - the type of a second-class callback
+    /// parameter. Two function types with the same parameter modes and types
+    /// and the same result are the same type. The definition sits behind an
+    /// `Arc` so an entry stays three words wide however long the signature.
+    Function(Arc<FunctionTypeDef>),
 }
 
 /// Why a compact [`Type`] cannot be used for a requested pool operation.
@@ -101,6 +109,10 @@ pub enum TypeValidationError {
     IncompleteDefinition,
     ComptimeStructuralChild,
     ModuleStructuralChild,
+    /// A function type was used as an element, pointee, field, or payload.
+    /// A callback is second-class and may only be a parameter's type, or a
+    /// parameter of another function type (ADR-0096).
+    FunctionStructuralChild,
     RecoveryType,
 }
 
@@ -158,6 +170,7 @@ impl TypeData {
             Self::Array { .. } => PoolEntryKind::Array,
             Self::PtrConst { .. } => PoolEntryKind::PtrConst,
             Self::PtrMut { .. } => PoolEntryKind::PtrMut,
+            Self::Function(_) => PoolEntryKind::Function,
         }
     }
 
@@ -168,7 +181,7 @@ impl TypeData {
             Self::Array {
                 abi_slots: stored, ..
             } => *stored = abi_slots,
-            Self::PtrConst { .. } | Self::PtrMut { .. } => {}
+            Self::PtrConst { .. } | Self::PtrMut { .. } | Self::Function(_) => {}
             Self::ReservedStruct | Self::DeclaredStruct(_) | Self::DeclaredEnum(_) => {
                 unreachable!("incomplete type has no derived ABI width")
             }
@@ -183,11 +196,16 @@ enum PoolEntryKind {
     Array,
     PtrConst,
     PtrMut,
+    Function,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ValidationMode {
     StructuralChild,
+    /// A parameter or result of a function type: every structural child is
+    /// admitted, function types included, because a callback may take a
+    /// callback (ADR-0096 forwarding through a higher-order parameter).
+    CallableChild,
     Complete,
     CompleteChild,
 }
@@ -233,7 +251,10 @@ impl ValidationMode {
     }
 
     fn is_structural_child(self) -> bool {
-        matches!(self, Self::StructuralChild | Self::CompleteChild)
+        matches!(
+            self,
+            Self::StructuralChild | Self::CallableChild | Self::CompleteChild
+        )
     }
 
     fn child(self) -> Self {
@@ -588,6 +609,9 @@ struct TypeInternPoolInner {
     /// Structural type deduplication: pointee -> canonical ptr mut `Type`.
     ptr_mut_map: AHashMap<Type, Type>,
 
+    /// Structural type deduplication: signature -> canonical function `Type`.
+    function_map: AHashMap<FunctionTypeDef, Type>,
+
     /// Ownership facts indexed in lockstep with `types` (so also from
     /// `base_len` up). `None` is permitted only while declaration shells or a
     /// metadata mutation await the next canonical containment pass.
@@ -710,6 +734,7 @@ fn complete_type_handle(index: usize, data: &TypeData) -> Type {
         TypeData::Array { .. } => Type::new_array(ArrayTypeId::from_pool_index(index)),
         TypeData::PtrConst { .. } => Type::new_ptr_const(PtrConstTypeId::from_pool_index(index)),
         TypeData::PtrMut { .. } => Type::new_ptr_mut(PtrMutTypeId::from_pool_index(index)),
+        TypeData::Function(_) => Type::new_function(FunctionTypeId::from_pool_index(index)),
         TypeData::ReservedStruct | TypeData::DeclaredStruct(_) | TypeData::DeclaredEnum(_) => {
             unreachable!("complete type-pool traversal contains an incomplete entry")
         }
@@ -813,6 +838,7 @@ impl TypeInternPoolInner {
             array_map: AHashMap::new(),
             ptr_const_map: AHashMap::new(),
             ptr_mut_map: AHashMap::new(),
+            function_map: AHashMap::new(),
             containment_facts: Vec::new(),
             pending_facts: 0,
             facts_stale: false,
@@ -959,6 +985,14 @@ impl TypeInternPoolInner {
         })
     }
 
+    fn lookup_function(&self, def: &FunctionTypeDef) -> Option<Type> {
+        self.function_map.get(def).copied().or_else(|| {
+            self.base
+                .as_ref()
+                .and_then(|base| base.function_map.get(def).copied())
+        })
+    }
+
     fn lookup_struct_by_file_name(&self, key: &(FileId, Spur)) -> Option<Type> {
         self.struct_by_file_name.get(key).copied().or_else(|| {
             self.base
@@ -1010,6 +1044,8 @@ impl TypeInternPoolInner {
         flat.array_map.extend(self.array_map.iter());
         flat.ptr_const_map.extend(self.ptr_const_map.iter());
         flat.ptr_mut_map.extend(self.ptr_mut_map.iter());
+        flat.function_map
+            .extend(self.function_map.iter().map(|(def, ty)| (def.clone(), *ty)));
         flat.anonymous_structs
             .extend(self.anonymous_structs.iter().copied());
         flat.anonymous_enums
@@ -1055,6 +1091,7 @@ impl TypeInternPoolInner {
             array_map: AHashMap::new(),
             ptr_const_map: AHashMap::new(),
             ptr_mut_map: AHashMap::new(),
+            function_map: AHashMap::new(),
             containment_facts: Vec::new(),
             pending_facts,
             facts_stale,
@@ -1178,7 +1215,8 @@ impl TypeInternPoolInner {
                 | TypeData::DeclaredStruct(_)
                 | TypeData::DeclaredEnum(_)
                 | TypeData::PtrConst { .. }
-                | TypeData::PtrMut { .. } => Vec::new(),
+                | TypeData::PtrMut { .. }
+                | TypeData::Function(_) => Vec::new(),
             })
             .collect()
     }
@@ -1193,6 +1231,7 @@ impl TypeInternPoolInner {
                 TypeData::Array { .. }
                 | TypeData::PtrConst { .. }
                 | TypeData::PtrMut { .. }
+                | TypeData::Function(_)
                 | TypeData::ReservedStruct
                 | TypeData::DeclaredStruct(_)
                 | TypeData::DeclaredEnum(_) => None,
@@ -1214,6 +1253,9 @@ impl TypeInternPoolInner {
             }
             TypeData::PtrMut { .. } => {
                 Type::new_ptr_mut(PtrMutTypeId::from_pool_index(index as u32))
+            }
+            TypeData::Function(_) => {
+                Type::new_function(FunctionTypeId::from_pool_index(index as u32))
             }
             TypeData::ReservedStruct => Type::new_struct(StructId::from_pool_index(index as u32)),
         }
@@ -1302,7 +1344,7 @@ impl TypeInternPoolInner {
                     has_destructor: false,
                 },
                 TypeData::Array { len, .. } => crate::drop_glue::DropGlueShape::Array { len: *len },
-                TypeData::PtrConst { .. } | TypeData::PtrMut { .. } => {
+                TypeData::PtrConst { .. } | TypeData::PtrMut { .. } | TypeData::Function(_) => {
                     crate::drop_glue::DropGlueShape::Trivial
                 }
                 TypeData::ReservedStruct
@@ -1317,7 +1359,8 @@ impl TypeInternPoolInner {
                 TypeData::Enum(_)
                 | TypeData::Array { .. }
                 | TypeData::PtrConst { .. }
-                | TypeData::PtrMut { .. } => TypeContainmentFacts::default(),
+                | TypeData::PtrMut { .. }
+                | TypeData::Function(_) => TypeContainmentFacts::default(),
                 TypeData::ReservedStruct
                 | TypeData::DeclaredStruct(_)
                 | TypeData::DeclaredEnum(_) => continue,
@@ -1390,7 +1433,9 @@ impl TypeInternPoolInner {
                         })
                     }
                 }
-                TypeData::PtrConst { .. } | TypeData::PtrMut { .. } => Some(1),
+                TypeData::PtrConst { .. } | TypeData::PtrMut { .. } | TypeData::Function(_) => {
+                    Some(1)
+                }
                 TypeData::ReservedStruct
                 | TypeData::DeclaredStruct(_)
                 | TypeData::DeclaredEnum(_) => None,
@@ -1463,7 +1508,8 @@ impl TypeInternPoolInner {
             | TypeKind::F64
             | TypeKind::Error
             | TypeKind::PtrConst(_)
-            | TypeKind::PtrMut(_) => 1,
+            | TypeKind::PtrMut(_)
+            | TypeKind::Function(_) => 1,
             TypeKind::Unit
             | TypeKind::Never
             | TypeKind::ComptimeType
@@ -1531,7 +1577,7 @@ impl TypeInternPoolInner {
             TypeData::Struct(data) => data.abi_slots,
             TypeData::Enum(data) => data.abi_slots,
             TypeData::Array { abi_slots, .. } => *abi_slots,
-            TypeData::PtrConst { .. } | TypeData::PtrMut { .. } => 1,
+            TypeData::PtrConst { .. } | TypeData::PtrMut { .. } | TypeData::Function(_) => 1,
             TypeData::ReservedStruct | TypeData::DeclaredStruct(_) | TypeData::DeclaredEnum(_) => {
                 unreachable!("unavailable child has no derived ABI width")
             }
@@ -1543,7 +1589,7 @@ impl TypeInternPoolInner {
             TypeData::Struct(data) => Some(data.abi_slots),
             TypeData::Enum(data) => Some(data.abi_slots),
             TypeData::Array { abi_slots, .. } => Some(*abi_slots),
-            TypeData::PtrConst { .. } | TypeData::PtrMut { .. } => return,
+            TypeData::PtrConst { .. } | TypeData::PtrMut { .. } | TypeData::Function(_) => return,
             TypeData::ReservedStruct | TypeData::DeclaredStruct(_) | TypeData::DeclaredEnum(_) => {
                 return;
             }
@@ -1559,6 +1605,7 @@ impl TypeInternPoolInner {
             } => *stored = abi_slots,
             TypeData::PtrConst { .. }
             | TypeData::PtrMut { .. }
+            | TypeData::Function(_)
             | TypeData::ReservedStruct
             | TypeData::DeclaredStruct(_)
             | TypeData::DeclaredEnum(_) => unreachable!(),
@@ -1587,7 +1634,7 @@ impl TypeInternPoolInner {
                 has_destructor: false,
             },
             TypeData::Array { len, .. } => crate::drop_glue::DropGlueShape::Array { len: *len },
-            TypeData::PtrConst { .. } | TypeData::PtrMut { .. } => {
+            TypeData::PtrConst { .. } | TypeData::PtrMut { .. } | TypeData::Function(_) => {
                 crate::drop_glue::DropGlueShape::Trivial
             }
             TypeData::ReservedStruct | TypeData::DeclaredStruct(_) | TypeData::DeclaredEnum(_) => {
@@ -1608,10 +1655,12 @@ impl TypeInternPoolInner {
                 ..TypeDerivedFacts::default()
             },
             TypeData::Array { .. } => TypeDerivedFacts::default(),
-            TypeData::PtrConst { .. } | TypeData::PtrMut { .. } => TypeDerivedFacts {
-                abi_slots: 1,
-                ..TypeDerivedFacts::default()
-            },
+            TypeData::PtrConst { .. } | TypeData::PtrMut { .. } | TypeData::Function(_) => {
+                TypeDerivedFacts {
+                    abi_slots: 1,
+                    ..TypeDerivedFacts::default()
+                }
+            }
             TypeData::ReservedStruct | TypeData::DeclaredStruct(_) | TypeData::DeclaredEnum(_) => {
                 return None;
             }
@@ -1647,7 +1696,7 @@ impl TypeInternPoolInner {
                     .unwrap_or(u32::MAX);
             }
             TypeData::Array { .. } => {}
-            TypeData::PtrConst { .. } | TypeData::PtrMut { .. } => {}
+            TypeData::PtrConst { .. } | TypeData::PtrMut { .. } | TypeData::Function(_) => {}
             TypeData::ReservedStruct | TypeData::DeclaredStruct(_) | TypeData::DeclaredEnum(_) => {
                 unreachable!()
             }
@@ -1822,6 +1871,23 @@ impl TypeInternPoolInner {
         }
     }
 
+    fn function_def(&self, id: FunctionTypeId) -> FunctionTypeDef {
+        match self.data(id.pool_index()) {
+            TypeData::Function(def) => FunctionTypeDef::clone(def),
+            // See `struct_def`: aliasing is confined to the capacity-latch
+            // window, and the error result terminates the walk.
+            _ if self.capacity_exceeded() => FunctionTypeDef {
+                params: Vec::new(),
+                result: Type::ERROR,
+            },
+            other => panic!(
+                "Expected function type at pool index {}, got {:?}",
+                id.pool_index(),
+                other
+            ),
+        }
+    }
+
     fn ptr_mut_def(&self, id: PtrMutTypeId) -> Type {
         match self.data(id.pool_index()) {
             TypeData::PtrMut { pointee } => *pointee,
@@ -1865,6 +1931,7 @@ impl TypeInternPoolInner {
                     Type::new_ptr_const(PtrConstTypeId::from_pool_index(index))
                 }
                 TypeData::PtrMut { .. } => Type::new_ptr_mut(PtrMutTypeId::from_pool_index(index)),
+                TypeData::Function(_) => Type::new_function(FunctionTypeId::from_pool_index(index)),
                 TypeData::ReservedStruct
                 | TypeData::DeclaredStruct(_)
                 | TypeData::DeclaredEnum(_) => {
@@ -1905,6 +1972,7 @@ impl TypeInternPoolInner {
             TypeKind::Array(id) => (id.pool_index(), PoolEntryKind::Array),
             TypeKind::PtrConst(id) => (id.pool_index(), PoolEntryKind::PtrConst),
             TypeKind::PtrMut(id) => (id.pool_index(), PoolEntryKind::PtrMut),
+            TypeKind::Function(id) => (id.pool_index(), PoolEntryKind::Function),
         };
         let entry = self
             .try_entry(index as usize)
@@ -1980,6 +2048,7 @@ impl TypeInternPoolInner {
             TypeKind::Array(id) => (id.pool_index(), PoolEntryKind::Array),
             TypeKind::PtrConst(id) => (id.pool_index(), PoolEntryKind::PtrConst),
             TypeKind::PtrMut(id) => (id.pool_index(), PoolEntryKind::PtrMut),
+            TypeKind::Function(id) => (id.pool_index(), PoolEntryKind::Function),
             _ => unreachable!("primitive and non-pool kinds returned above"),
         };
         let entry = self
@@ -1991,6 +2060,12 @@ impl TypeInternPoolInner {
             } else {
                 Err(TypeValidationError::KindMismatch)
             };
+        }
+        // A callback is second-class (ADR-0096): it is a parameter's type or
+        // a parameter of another callback, never the element, pointee, field,
+        // or payload of a value that can be stored.
+        if mode == ValidationMode::StructuralChild && matches!(entry, TypeData::Function(_)) {
+            return Err(TypeValidationError::FunctionStructuralChild);
         }
 
         match entry {
@@ -2018,6 +2093,18 @@ impl TypeInternPoolInner {
             }
             TypeData::PtrConst { pointee } | TypeData::PtrMut { pointee } => {
                 self.validate_type_inner(*pointee, mode.child(), visited)
+            }
+            TypeData::Function(def) => {
+                let child_mode = if mode.requires_complete() {
+                    ValidationMode::CompleteChild
+                } else {
+                    ValidationMode::CallableChild
+                };
+                def.params
+                    .iter()
+                    .map(|param| param.ty)
+                    .chain(std::iter::once(def.result))
+                    .try_for_each(|child| self.validate_type_inner(child, child_mode, visited))
             }
         }
     }
@@ -2048,7 +2135,8 @@ impl TypeInternPoolInner {
             | TypeKind::F64
             | TypeKind::Error
             | TypeKind::PtrConst(_)
-            | TypeKind::PtrMut(_) => 1,
+            | TypeKind::PtrMut(_)
+            | TypeKind::Function(_) => 1,
             TypeKind::Unit
             | TypeKind::Never
             | TypeKind::ComptimeType
@@ -2177,7 +2265,10 @@ impl TypeInternPoolInner {
             TypeKind::I16 | TypeKind::U16 => (2, 2),
             TypeKind::I32 | TypeKind::U32 | TypeKind::F32 => (4, 4),
             TypeKind::I64 | TypeKind::U64 | TypeKind::F64 => (8, 8),
-            TypeKind::PtrConst(_) | TypeKind::PtrMut(_) | TypeKind::Error => (8, 8),
+            TypeKind::PtrConst(_)
+            | TypeKind::PtrMut(_)
+            | TypeKind::Function(_)
+            | TypeKind::Error => (8, 8),
             TypeKind::Unit
             | TypeKind::Never
             | TypeKind::ComptimeType
@@ -2503,6 +2594,15 @@ impl TypeInternPoolInner {
                 }
                 _ => format!("<ptr mut#{}>", id.0),
             },
+            Some(TypeKind::Function(id)) => match self.try_entry(id.pool_index() as usize) {
+                Some(TypeData::Function(def)) => crate::types::function_type_name(
+                    def.params
+                        .iter()
+                        .map(|param| (param.mode, self.safe_type_name(param.ty))),
+                    (def.result != Type::UNIT).then(|| self.safe_type_name(def.result)),
+                ),
+                _ => format!("<fn#{}>", id.0),
+            },
             Some(_) => ty.name().to_string(),
             None => format!("<invalid type encoding: {:#x}>", ty.raw_encoding()),
         }
@@ -2541,7 +2641,8 @@ impl TypeInternPoolInner {
             | TypeKind::F64
             | TypeKind::ComptimeFloat
             | TypeKind::PtrConst(_)
-            | TypeKind::PtrMut(_) => true,
+            | TypeKind::PtrMut(_)
+            | TypeKind::Function(_) => true,
             TypeKind::Struct(id) => self
                 .struct_metadata(id)
                 .map(|metadata| metadata.is_copy)
@@ -2592,7 +2693,10 @@ impl TypeInternPoolInner {
                 TypeData::DeclaredStruct(_) | TypeData::Struct(_) => stats.struct_count += 1,
                 TypeData::DeclaredEnum(_) | TypeData::Enum(_) => stats.enum_count += 1,
                 TypeData::Array { .. } => stats.array_count += 1,
-                TypeData::ReservedStruct | TypeData::PtrConst { .. } | TypeData::PtrMut { .. } => {}
+                TypeData::ReservedStruct
+                | TypeData::PtrConst { .. }
+                | TypeData::PtrMut { .. }
+                | TypeData::Function(_) => {}
             }
         }
         stats
@@ -3305,6 +3409,52 @@ impl TypeInternPool {
         Ok(ty)
     }
 
+    /// Intern a function type after validating every parameter and result
+    /// child in this pool (ADR-0096). A parameter of a function type may
+    /// itself be a function type; every other child follows the structural
+    /// rules of an array element or pointee.
+    pub fn try_intern_function(&self, def: FunctionTypeDef) -> Result<Type, TypeValidationError> {
+        let validate = |inner: &TypeInternPoolInner| {
+            def.params
+                .iter()
+                .map(|param| param.ty)
+                .chain(std::iter::once(def.result))
+                .try_for_each(|child| {
+                    inner.validate_type_inner(
+                        child,
+                        ValidationMode::CallableChild,
+                        &mut TypeVisitSet::new(),
+                    )
+                })
+        };
+        // Fast path: check with read lock
+        {
+            let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+            validate(&inner)?;
+            if let Some(existing) = inner.lookup_function(&def) {
+                return Ok(existing);
+            }
+        }
+
+        // Slow path: acquire write lock
+        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        validate(&inner)?;
+
+        // Double-check after acquiring write lock
+        if let Some(existing) = inner.lookup_function(&def) {
+            return Ok(existing);
+        }
+
+        let pool_index = inner.next_pool_index();
+        let ty = Type::new_function(FunctionTypeId::from_pool_index(pool_index));
+        let entry = TypeData::Function(Arc::new(def.clone()));
+        let facts = inner.incremental_facts(&entry);
+        inner.push_entry(entry, facts.map(|facts| facts.containment));
+        inner.function_map.insert(def, ty);
+
+        Ok(ty)
+    }
+
     /// Look up a struct by defining file and source name.
     pub fn get_struct_by_file_name(&self, file_id: FileId, name: Spur) -> Option<Type> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
@@ -3336,6 +3486,7 @@ impl TypeInternPool {
             TypeKind::Array(id) => (id.pool_index(), PoolEntryKind::Array),
             TypeKind::PtrConst(id) => (id.pool_index(), PoolEntryKind::PtrConst),
             TypeKind::PtrMut(id) => (id.pool_index(), PoolEntryKind::PtrMut),
+            TypeKind::Function(id) => (id.pool_index(), PoolEntryKind::Function),
             _ => return None,
         };
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
@@ -3834,6 +3985,12 @@ impl TypeInternPool {
         inner.ptr_mut_def(ptr_id)
     }
 
+    /// The parameters and result of a function type (ADR-0096).
+    pub fn function_def(&self, id: FunctionTypeId) -> FunctionTypeDef {
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        inner.function_def(id)
+    }
+
     /// Get all struct IDs registered in the pool.
     ///
     /// Returns a vector of all StructId values, useful for iterating over all
@@ -4125,6 +4282,11 @@ impl FrozenTypeInternPool {
 
     pub fn ptr_mut_def(&self, id: PtrMutTypeId) -> Type {
         self.inner.ptr_mut_def(id)
+    }
+
+    /// The parameters and result of a function type (ADR-0096).
+    pub fn function_def(&self, id: FunctionTypeId) -> FunctionTypeDef {
+        self.inner.function_def(id)
     }
 
     /// Look up an already-completed mutable pointer type without modifying the pool.

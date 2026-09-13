@@ -176,6 +176,7 @@ fn slot_layout_agrees<P: crate::FfiTypePool + ?Sized>(
         | TypeKind::U64
         | TypeKind::PtrConst(_)
         | TypeKind::PtrMut(_)
+        | TypeKind::Function(_)
         | TypeKind::Error => true,
         // Zero-sized and compile-time-only types have identical (zero) extent.
         TypeKind::Unit
@@ -268,6 +269,7 @@ impl CAbiScalarKind {
             | TypeKind::U64
             | TypeKind::PtrConst(_)
             | TypeKind::PtrMut(_)
+            | TypeKind::Function(_)
             | TypeKind::Error => Self::RegisterWidth,
             _ => return None,
         })

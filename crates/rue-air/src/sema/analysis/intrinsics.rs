@@ -280,6 +280,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // the typed row instead of comparing strings per case.
         let intrinsic = self.known_symbols().classify_intrinsic(name);
         let ty = self.resolve_rir_type_with_ctx(type_arg, span, ctx)?;
+        if ty.is_function() {
+            return Err(CompileError::new(
+                ErrorKind::FnTypeOutsideParameter {
+                    position: "an intrinsic type argument".to_owned(),
+                },
+                span,
+            ));
+        }
 
         let value: u64 = match intrinsic {
             // `@require_droppable(T)` is the owning-container well-formedness
@@ -420,6 +428,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
     ) -> CompileResult<AnalysisResult> {
         let ty = self.resolve_rir_type(type_arg, span)?;
+        if ty.is_function() {
+            return Err(CompileError::new(
+                ErrorKind::FnTypeOutsideParameter {
+                    position: "an intrinsic type argument".to_owned(),
+                },
+                span,
+            ));
+        }
 
         // `@offset_of` is only meaningful for a struct type: only structs have
         // named fields. A non-struct operand is the same error class as `.f`
