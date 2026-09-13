@@ -64,6 +64,7 @@ stable|queries|compilation-config|cli+embedders|RootSelection|pub use queries::R
 stable|queries|compile-artifact|cli+embedders|CompileOutput|pub use queries::CompileOutput
 stable|queries|compile-artifact|cli+embedders|SourceView|pub use queries::SourceView
 stable|queries|one-shot-operation|cli+embedders|compile_snapshot|pub use queries::compile_snapshot
+stable|rue_air|diagnostic|cli+embedders|module_display_name|pub use rue_air::module_display_name
 stable|rue_cfg|compilation-config|cli+embedders|OptLevel|pub use rue_cfg::OptLevel
 stable|rue_error|diagnostic|cli+embedders|CompileErrors|pub use rue_error::CompileErrors
 stable|rue_error|diagnostic|cli+embedders|CompileWarning|pub use rue_error::CompileWarning

@@ -40,7 +40,7 @@ use rue_compiler::{
     AcceptedReadManifest, CompileErrors, CompileOptions, CompilerSession, CompilerSessionConfig,
     DependencyEnvelope, ExplicitModuleManifest, FileId, FileMetadataFingerprint,
     ImportDiscoveryContext, ImportDiscoveryStatus, ImportDiscoveryView, PhysicalFileIdentity,
-    SourceMetadata, SourceSnapshot, TrustedToolchainModuleDemand,
+    SourceMetadata, SourceSnapshot, TrustedToolchainModuleDemand, module_display_name,
     trusted_logical_path_for_requested,
 };
 
@@ -4030,14 +4030,21 @@ pub enum ToolchainIntegrityError {
 impl std::fmt::Display for ToolchainIntegrityError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Toolchain integrity error: ")?;
+        // The synthetic logical identity keys the module inside the compiler;
+        // a person is told the name a program spells (`std.option`), through
+        // the one display policy every diagnostic uses (RUE-2164, RUE-2192).
+        // The filesystem path beside it stays as observed: it names the read
+        // that failed.
         match self {
             Self::StdRootUnavailable { logical_path } => write!(
                 f,
-                "the program requires the trusted standard-library module '{logical_path}', but no standard-library path is configured (set RUE_STD_PATH). This is a broken toolchain installation, not a program error."
+                "the program requires the trusted standard-library module '{}', but no standard-library path is configured (set RUE_STD_PATH). This is a broken toolchain installation, not a program error.",
+                module_display_name(logical_path)
             ),
             Self::Missing { logical_path, path } => write!(
                 f,
-                "the trusted standard-library module '{logical_path}' is missing from the toolchain at '{}'. The standard library must exist as a toolchain guarantee; this is a broken installation.",
+                "the trusted standard-library module '{}' is missing from the toolchain at '{}'. The standard library must exist as a toolchain guarantee; this is a broken installation.",
+                module_display_name(logical_path),
                 path.display()
             ),
             Self::Unreadable {
@@ -4046,7 +4053,8 @@ impl std::fmt::Display for ToolchainIntegrityError {
                 reason,
             } => write!(
                 f,
-                "the trusted standard-library module '{logical_path}' at '{}' could not be read: {reason}. This is a broken toolchain installation.",
+                "the trusted standard-library module '{}' at '{}' could not be read: {reason}. This is a broken toolchain installation.",
+                module_display_name(logical_path),
                 path.display()
             ),
             Self::Malformed {
@@ -4055,12 +4063,14 @@ impl std::fmt::Display for ToolchainIntegrityError {
                 errors,
             } => write!(
                 f,
-                "the trusted standard-library module '{logical_path}' at '{}' is malformed: {errors}. This is a broken toolchain installation.",
+                "the trusted standard-library module '{}' at '{}' is malformed: {errors}. This is a broken toolchain installation.",
+                module_display_name(logical_path),
                 path.display()
             ),
             Self::UnsatisfiedAfterPublish { logical_path } => write!(
                 f,
-                "the trusted standard-library module '{logical_path}' was read and published but did not appear in the successor module set. This is a compiler invariant violation."
+                "the trusted standard-library module '{}' was read and published but did not appear in the successor module set. This is a compiler invariant violation.",
+                module_display_name(logical_path)
             ),
         }
     }
@@ -4092,7 +4102,7 @@ impl std::fmt::Display for HermeticDenialError {
         write!(
             f,
             "Hermetic build configuration error: the trusted standard-library module '{}' at '{}' is not permitted by the hermetic build configuration: {}. This is a build-configuration error (adjust the source manifest), not a broken toolchain.",
-            self.logical_path,
+            module_display_name(&self.logical_path),
             self.path.display(),
             self.reason
         )
@@ -7345,6 +7355,16 @@ mod tests {
             !hermetic_message.contains("broken toolchain installation"),
             "the hermetic denial must NOT claim a broken installation: {hermetic_message}",
         );
+        // The module is named as a program spells it, never by the synthetic
+        // NUL-prefixed identity that keys it inside the compiler (RUE-2192).
+        assert!(
+            hermetic_message.contains("module 'std.option'"),
+            "the hermetic denial names the module for a person: {hermetic_message}",
+        );
+        assert!(
+            !hermetic_message.contains('\0') && !hermetic_message.contains("rue-std/"),
+            "no synthetic identity may leak: {hermetic_message:?}",
+        );
 
         // The genuine toolchain-corruption class keeps the opposite label, so the
         // two are provably disjoint at the CLI boundary.
@@ -7358,6 +7378,101 @@ mod tests {
                 && !corruption.contains("Hermetic build configuration error"),
             "toolchain corruption must keep its distinct label: {corruption}",
         );
+        assert!(
+            corruption.contains("module 'std.option' is missing from the toolchain at '")
+                && corruption.contains("option.rue'"),
+            "the missing module is named for a person and its path as observed: {corruption}",
+        );
+        assert!(
+            !corruption.contains('\0') && !corruption.contains("rue-std/"),
+            "no synthetic identity may leak: {corruption:?}",
+        );
+    }
+
+    /// Every driver-owned toolchain message names the trusted module the way
+    /// a program spells it, `std` for the facade and `std.<name>` otherwise,
+    /// and none carries the synthetic NUL-prefixed identity (RUE-2192).
+    #[test]
+    fn toolchain_messages_name_trusted_modules_as_programs_spell_them() {
+        let facade = format!(
+            "{}_std.rue",
+            rue_compiler::TRUSTED_STANDARD_LIBRARY_NAMESPACE
+        );
+        let nested = format!(
+            "{}math/float.rue",
+            rue_compiler::TRUSTED_STANDARD_LIBRARY_NAMESPACE
+        );
+        let option = rue_compiler::OPTION_MODULE_LOGICAL_PATH.to_owned();
+        let messages = [
+            ToolchainIntegrityError::StdRootUnavailable {
+                logical_path: option.clone(),
+            }
+            .to_string(),
+            ToolchainIntegrityError::Missing {
+                logical_path: facade,
+                path: PathBuf::from("/sdk/_std.rue"),
+            }
+            .to_string(),
+            ToolchainIntegrityError::Unreadable {
+                logical_path: nested,
+                path: PathBuf::from("/sdk/math/float.rue"),
+                reason: "permission denied".into(),
+            }
+            .to_string(),
+            ToolchainIntegrityError::Malformed {
+                logical_path: option.clone(),
+                path: PathBuf::from("/sdk/option.rue"),
+                errors: CompileErrors::default(),
+            }
+            .to_string(),
+            ToolchainIntegrityError::UnsatisfiedAfterPublish {
+                logical_path: option.clone(),
+            }
+            .to_string(),
+            HermeticDenialError {
+                logical_path: option,
+                path: PathBuf::from("/sdk/option.rue"),
+                reason: "not declared by the source manifest".into(),
+                route_only: false,
+            }
+            .to_string(),
+        ];
+        assert!(
+            messages[0].contains("module 'std.option'"),
+            "{}",
+            messages[0]
+        );
+        assert!(
+            messages[1].contains("module 'std' is missing"),
+            "{}",
+            messages[1]
+        );
+        assert!(
+            messages[2].contains("module 'std.math.float' at '/sdk/math/float.rue'"),
+            "{}",
+            messages[2]
+        );
+        assert!(
+            messages[3].contains("module 'std.option' at '/sdk/option.rue'"),
+            "{}",
+            messages[3]
+        );
+        assert!(
+            messages[4].contains("module 'std.option' was read"),
+            "{}",
+            messages[4]
+        );
+        assert!(
+            messages[5].contains("module 'std.option' at '/sdk/option.rue'"),
+            "{}",
+            messages[5]
+        );
+        for message in &messages {
+            assert!(
+                !message.contains('\0') && !message.contains("rue-std/"),
+                "no synthetic identity may leak: {message:?}"
+            );
+        }
     }
 
     /// Manifest authority: when the manifest declares AND allows the canonical
