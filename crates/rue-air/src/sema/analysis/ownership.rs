@@ -1968,7 +1968,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // `let s: [i32] = ...` binding would let the view escape its
             // argument scope (E0489).
             self.reject_slice_escape(ty_sym, span, ErrorKind::SliceEscapesScope)?;
-            Some(self.resolve_rir_type_with_ctx(ty_sym, span, ctx)?)
+            let annotation = self.resolve_rir_type_with_ctx(ty_sym, span, ctx)?;
+            // A callback is second-class (ADR-0096, 6.1:47): it is bound by a
+            // parameter and never by a local.
+            if annotation.is_function() {
+                return Err(CompileError::new(
+                    ErrorKind::FnTypeOutsideParameter {
+                        position: "a `let` binding".to_owned(),
+                    },
+                    span,
+                ));
+            }
+            Some(annotation)
         } else {
             None
         };

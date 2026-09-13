@@ -56,6 +56,10 @@ fn type_charge(ty: &ast::TypeExpr) -> u64 {
         | TypeExpr::PointerMut {
             pointee: element, ..
         } => boxed_charge(element, type_charge),
+        TypeExpr::Function { params, ret, .. } => {
+            owned_slice_charge(params, |param| type_charge(&param.ty))
+                .saturating_add(ret.as_ref().map_or(0, |ret| boxed_charge(ret, type_charge)))
+        }
         TypeExpr::AnonymousStruct {
             fields, methods, ..
         } => owned_slice_charge(fields, |field| type_charge(&field.ty))
@@ -626,6 +630,10 @@ impl<D: RetainedCharge, M: RetainedCharge> RetainedCharge for rue_air::TypeInsta
             Self::Array { element, .. } | Self::PtrConst(element) | Self::PtrMut(element) => {
                 element.retained_charge()
             }
+            Self::Function { params, result } => {
+                owned_slice_charge(params, |(_, ty)| ty.retained_charge())
+                    .saturating_add(result.retained_charge())
+            }
             Self::Slice { element, name } => element
                 .retained_charge()
                 .saturating_add(name.retained_charge()),
@@ -675,6 +683,13 @@ impl<K: RetainedCharge, M: RetainedCharge> RetainedCharge for rue_air::SemanticI
             Self::Array { element, .. } | Self::PtrConst(element) | Self::PtrMut(element) => {
                 element.retained_charge()
             }
+            Self::Function { params, result } => params
+                .iter()
+                .fold(0u64, |charge, (_, ty)| {
+                    charge.saturating_add(ty.retained_charge())
+                })
+                .saturating_add(std::mem::size_of_val(params.as_ref()) as u64)
+                .saturating_add(result.retained_charge()),
             Self::Slice { element, name } => element
                 .retained_charge()
                 .saturating_add(name.retained_charge()),
@@ -1711,6 +1726,7 @@ impl RetainedCharge for rue_error::ErrorKind {
             | E::SliceReturnNotAllowed
             | E::SliceInAggregateField
             | E::SliceEscapesScope => 0,
+            E::FnTypeOutsideParameter { position } => position.retained_charge(),
         }
     }
 }

@@ -1114,6 +1114,7 @@ fn type_may_need_drop_glue<K, M>(ty: &rue_air::SemanticImportType<K, M>) -> bool
         | T::ComptimeFloat
         | T::PtrConst(_)
         | T::PtrMut(_)
+        | T::Function { .. }
         | T::Slice { .. }
         | T::Module(_)
         | T::GenericParameter(_) => rue_air::drop_glue::may_require_drop_glue(

@@ -627,7 +627,9 @@ pub(super) fn evaluate_type_shape(
         | T::Unit
         | T::Never => TypeShapeValue::Available(TypeShape::Scalar),
         T::F32 | T::F64 => TypeShapeValue::Available(TypeShape::Scalar),
-        T::PtrConst(_) | T::PtrMut(_) => TypeShapeValue::Available(TypeShape::Pointer),
+        T::PtrConst(_) | T::PtrMut(_) | T::Function { .. } => {
+            TypeShapeValue::Available(TypeShape::Pointer)
+        }
         T::Slice { .. } => TypeShapeValue::Available(TypeShape::Slice),
         T::Array { element, len } => TypeShapeValue::Available(TypeShape::Array {
             element: element.as_ref().clone(),
@@ -849,7 +851,7 @@ pub(super) fn evaluate_type_facts(
         | T::Unit
         | T::Never => direct(true),
         T::F32 | T::F64 | T::ComptimeFloat => direct(true),
-        T::PtrConst(_) | T::PtrMut(_) => direct(true),
+        T::PtrConst(_) | T::PtrMut(_) | T::Function { .. } => direct(true),
         T::Slice { .. } => direct(true),
         T::ComptimeType | T::Module(_) | T::GenericParameter(_) => direct(true),
         T::BuiltinNominal { kind, name } | T::Nominal(N::Builtin { kind, name })
@@ -1200,7 +1202,8 @@ pub(super) fn evaluate_layout(
 ) -> Result<QueryOutput<crate::type_queries::LayoutValue>, QueryAbort> {
     use crate::TypeInstanceKey as T;
     use crate::type_queries::{CanonicalLayout, CanonicalLayoutKind, LayoutValue, TypeShape};
-    if matches!(key.ty, T::PtrConst(_) | T::PtrMut(_)) {
+    // A callback is one code pointer (ADR-0096): it shares the pointer layout.
+    if matches!(key.ty, T::PtrConst(_) | T::PtrMut(_) | T::Function { .. }) {
         return Ok(QueryOutput::success(LayoutValue::Available(
             CanonicalLayout {
                 size: 8,

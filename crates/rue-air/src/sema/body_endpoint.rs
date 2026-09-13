@@ -91,6 +91,7 @@ pub(crate) trait BodyEndpointProvider {
 
     /// Intern a `ptr mut` type, or `None` on a type-validation failure.
     fn endpoint_intern_ptr_mut(&self, pointee: Type) -> Option<Type>;
+    fn endpoint_intern_function(&self, def: crate::FunctionTypeDef) -> Option<Type>;
 }
 
 /// Materialize a canonical type-instance key into a concrete [`Type`], with
@@ -194,6 +195,21 @@ pub(in crate::sema) fn resolve_instance_type<P: BodyEndpointProvider>(
         T::PtrMut(value) => facts
             .endpoint_intern_ptr_mut(resolve_instance_type(facts, value)?)
             .ok_or_else(missing)?,
+        T::Function { params, result } => {
+            let params = params
+                .iter()
+                .map(|(mode, ty)| {
+                    Ok(crate::FunctionTypeParam {
+                        mode: *mode,
+                        ty: resolve_instance_type(facts, ty)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let result = resolve_instance_type(facts, result)?;
+            facts
+                .endpoint_intern_function(crate::FunctionTypeDef { params, result })
+                .ok_or_else(missing)?
+        }
         T::Module(token) => {
             let endpoint = facts.endpoint_module_endpoint(*token).ok_or_else(missing)?;
             let id = facts
@@ -1148,6 +1164,14 @@ where
             .pool()
             .type_pool()
             .try_intern_ptr_mut(pointee)
+            .ok()
+    }
+
+    fn endpoint_intern_function(&self, def: crate::FunctionTypeDef) -> Option<Type> {
+        self.identity
+            .pool()
+            .type_pool()
+            .try_intern_function(def)
             .ok()
     }
 }

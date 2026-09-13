@@ -890,6 +890,18 @@ define_error_codes! {
         ],
         references: [ErrorCodeReference { title: "Struct patterns", path: "docs/spec/src/05-statements/01-let-statements.md", rule: Some("5.1:19") }],
     };
+    /// A `fn` type was written outside the one position it is legal in: the
+    /// type of a by-value runtime parameter (ADR-0096, RUE-2193). The message
+    /// names the position that was written.
+    FN_TYPE_OUTSIDE_PARAMETER = 214 => {
+        explanation: "A function type `fn(A, borrow B) -> R` (preview feature `fn_params`) names a second-class callback: a parameter that a named function is passed to and that the body calls or forwards. The callback exists only for the duration of the call, so a `fn` type may be written only as the type of a by-value runtime parameter, including a parameter inside another `fn` type's parameter list. It cannot be a return type, a `let` or `const` annotation, a struct field or enum payload, an array element, a pointer pointee, a slice element, a type argument, or the type of a `borrow`, `inout`, or `comptime` parameter.",
+        likely_cause: "A function tried to store, return, or nest a callback. Take the callback as a by-value parameter and call or forward it inside the body; to keep behavior across calls, pass it again at each call, or name a function directly.",
+        examples: [
+            ErrorCodeExample { title: "Return a callback", source: "fn pick(cb: fn(i32) -> i32) -> fn(i32) -> i32 { cb }\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: ["fn_params"] },
+            ErrorCodeExample { title: "Take the callback as a parameter", source: "fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { 0 }\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::Compiles, preview: ["fn_params"] },
+        ],
+        references: [ErrorCodeReference { title: "Function parameter types", path: "docs/spec/src/06-items/01-functions.md", rule: Some("6.1:47") }],
+    };
     COPY_STRUCT_NON_COPY_FIELD = 403 => {
         explanation: "A struct marked `@copy` contains a field whose type has move semantics. Implicitly duplicating the outer value would also have to duplicate that non-Copy field.",
         likely_cause: "A field is a struct without `@copy`, a move-typed aggregate, or another type that cannot be implicitly duplicated. Remove `@copy` from the outer struct or make every field type Copy when that is semantically valid.",
@@ -2581,6 +2593,10 @@ pub enum PreviewFeature {
     /// A stated reason on every `checked` block (ADR-0095, RUE-1887):
     /// `checked "index < len by the guard above" { ... }`.
     CheckedReasons,
+    /// Second-class function parameters (ADR-0096, RUE-2112): a parameter
+    /// of type `fn(A, borrow B) -> R` that a named function is passed to and
+    /// that the body calls or forwards, never stores.
+    FnParams,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -2605,6 +2621,7 @@ impl PreviewFeature {
             PreviewFeature::NonExhaustiveEnums => "non_exhaustive_enums",
             PreviewFeature::StructPatterns => "struct_patterns",
             PreviewFeature::CheckedReasons => "checked_reasons",
+            PreviewFeature::FnParams => "fn_params",
         }
     }
 
@@ -2617,6 +2634,7 @@ impl PreviewFeature {
             PreviewFeature::NonExhaustiveEnums => "ADR-0005",
             PreviewFeature::StructPatterns => "ADR-0091",
             PreviewFeature::CheckedReasons => "ADR-0095",
+            PreviewFeature::FnParams => "ADR-0096",
         }
     }
 
@@ -2628,6 +2646,7 @@ impl PreviewFeature {
             PreviewFeature::NonExhaustiveEnums,
             PreviewFeature::StructPatterns,
             PreviewFeature::CheckedReasons,
+            PreviewFeature::FnParams,
         ]
     }
 
@@ -2672,6 +2691,7 @@ impl std::str::FromStr for PreviewFeature {
             "non_exhaustive_enums" => Ok(PreviewFeature::NonExhaustiveEnums),
             "struct_patterns" => Ok(PreviewFeature::StructPatterns),
             "checked_reasons" => Ok(PreviewFeature::CheckedReasons),
+            "fn_params" => Ok(PreviewFeature::FnParams),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -4063,6 +4083,16 @@ pub enum ErrorKind {
     )]
     SliceEscapesScope,
 
+    /// A `fn` type (ADR-0096, RUE-2193) was written somewhere other than the
+    /// type of a by-value runtime parameter. A callback is second-class: it
+    /// is bound by a parameter, called, or forwarded, and never stored,
+    /// returned, or made an element of another type.
+    #[error(
+        "a `fn` type may only be the type of a by-value parameter, not {position}: \
+         a callback is second-class and cannot be stored, returned, or nested in another type (ADR-0096)"
+    )]
+    FnTypeOutsideParameter { position: String },
+
     // Comptime errors
     #[error("comptime evaluation failed: {reason}")]
     ComptimeEvaluationFailed { reason: String },
@@ -4357,6 +4387,7 @@ impl ErrorKind {
             ErrorKind::SliceReturnNotAllowed => ErrorCode::SLICE_RETURN_NOT_ALLOWED,
             ErrorKind::SliceInAggregateField => ErrorCode::SLICE_IN_AGGREGATE_FIELD,
             ErrorKind::SliceEscapesScope => ErrorCode::SLICE_ESCAPES_SCOPE,
+            ErrorKind::FnTypeOutsideParameter { .. } => ErrorCode::FN_TYPE_OUTSIDE_PARAMETER,
 
             // Comptime errors (E1200-E1299)
             ErrorKind::ComptimeEvaluationFailed { .. } => ErrorCode::COMPTIME_EVALUATION_FAILED,
@@ -6128,7 +6159,7 @@ mod tests {
         let names = PreviewFeature::all_names();
         assert_eq!(
             names,
-            "test_infra, c_ffi, non_exhaustive_enums, struct_patterns, checked_reasons"
+            "test_infra, c_ffi, non_exhaustive_enums, struct_patterns, checked_reasons, fn_params"
         );
     }
 

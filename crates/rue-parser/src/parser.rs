@@ -1280,6 +1280,9 @@ mod tests {
             ("ptr mut ptr const u8", |t| {
                 matches!(t, TypeExpr::PointerMut { .. })
             }),
+            ("fn(i32, borrow Point) -> bool", |t| {
+                matches!(t, TypeExpr::Function { .. })
+            }),
             ("Pair(i32, [i32; 2])", |t| {
                 matches!(t, TypeExpr::TypeCall { .. })
             }),

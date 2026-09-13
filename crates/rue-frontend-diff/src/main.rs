@@ -289,6 +289,23 @@ impl Shapes<'_> {
                 "_".into(),
                 "_".into(),
             ),
+            TypeExpr::Function { params, ret, .. } => node(
+                "fn-type",
+                "",
+                list(params.iter().map(|param| {
+                    node(
+                        "param",
+                        &format!(" mode={}", Self::param_mode(param.mode)),
+                        self.ty(&param.ty),
+                        "_".into(),
+                        "_".into(),
+                        "_".into(),
+                    )
+                })),
+                ret.as_deref().map_or("_".into(), |ret| self.ty(ret)),
+                "_".into(),
+                "_".into(),
+            ),
             TypeExpr::PointerConst { pointee, .. } => node(
                 "ptr-type",
                 " mode=36",

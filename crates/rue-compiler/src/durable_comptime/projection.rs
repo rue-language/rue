@@ -220,6 +220,12 @@ fn durable_type_diagnostic_name_kernel(ty: &DurableType) -> String {
             format!("ptr const {}", durable_type_diagnostic_name(pointee))
         }
         T::PtrMut(pointee) => format!("ptr mut {}", durable_type_diagnostic_name(pointee)),
+        T::Function { params, result } => rue_air::function_type_name(
+            params
+                .iter()
+                .map(|(mode, ty)| (*mode, durable_type_diagnostic_name(ty))),
+            (**result != T::Unit).then(|| durable_type_diagnostic_name(result)),
+        ),
         T::Module(module) => module.to_string(),
         T::GenericParameter(index) => format!("T{index}"),
     }
@@ -325,6 +331,14 @@ pub(crate) fn substitute_durable_generics(
             pointee,
             type_arguments,
         ))),
+        T::Function { params, result } => T::Function {
+            params: params
+                .iter()
+                .map(|(mode, ty)| (*mode, substitute_durable_generics(ty, type_arguments)))
+                .collect::<Vec<_>>()
+                .into(),
+            result: Arc::new(substitute_durable_generics(result, type_arguments)),
+        },
         _ => ty.clone(),
     }
 }

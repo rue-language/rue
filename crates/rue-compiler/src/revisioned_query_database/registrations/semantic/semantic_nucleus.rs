@@ -690,6 +690,21 @@ $runtime
                                                 ))
                                                 .with_terminal_kind(QueryTerminalKind::Failure));
                                             }
+                                            // A callback is second-class (ADR-0096,
+                                            // 6.1:47): a `const` cannot hold one.
+                                            if matches!(
+                                                expected_type,
+                                                Some(crate::durable_semantics::DurableType::Function { .. })
+                                            ) {
+                                                return Ok(QueryOutput::success(Value::Failure(
+                                                    Failure::Diagnostic(
+                                                        rue_error::ErrorKind::FnTypeOutsideParameter {
+                                                            position: "a `const`".to_owned(),
+                                                        },
+                                                    ),
+                                                ))
+                                                .with_terminal_kind(QueryTerminalKind::Failure));
+                                            }
                                     let core = match crate::body_query::OwnedComptimeProgramCore::finalize_imports(
                                         core,
                                         || context.check_canceled(),

@@ -321,6 +321,7 @@ impl SemanticNucleusTypeProvider<'_> {
             }
             T::AnonymousNominal(_)
             | T::Slice { .. }
+            | T::Function { .. }
             | T::Unit
             | T::Never
             | T::ComptimeType
@@ -493,6 +494,8 @@ impl SemanticNucleusTypeProvider<'_> {
         match ty {
             T::Array { len: 0, .. } => Ok(LinearOwnershipFact::DoesNotCarry),
             T::Array { element, .. } => self.type_carries_linear_inner(element, walk),
+            // A callback is one code pointer: it owns nothing (ADR-0096).
+            T::Function { .. } => Ok(LinearOwnershipFact::DoesNotCarry),
             T::Nominal(key) => {
                 if !walk.visiting.insert(key.clone()) {
                     // Provisional: this key is already on the stack, so the
@@ -789,6 +792,7 @@ impl SemanticNucleusTypeProvider<'_> {
             | T::ComptimeFloat
             | T::PtrConst(_)
             | T::PtrMut(_)
+            | T::Function { .. }
             | T::Module(_)
             | T::Slice { .. }
             | T::BuiltinNominal { .. } => Ok(true),
@@ -1945,6 +1949,7 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         QueryAbort,
         crate::semantic_query_nucleus::SemanticNucleusFailure,
     > {
+        reject_function_child(&element, "an array element")?;
         Ok(match length {
             Some(len) => crate::durable_semantics::DurableType::Array {
                 element: Arc::new(element),
@@ -1961,6 +1966,7 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         QueryAbort,
         crate::semantic_query_nucleus::SemanticNucleusFailure,
     > {
+        reject_function_child(&pointee, "a pointer pointee")?;
         Ok(crate::durable_semantics::DurableType::PtrConst(Arc::new(
             pointee,
         )))
@@ -1973,9 +1979,42 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         QueryAbort,
         crate::semantic_query_nucleus::SemanticNucleusFailure,
     > {
+        reject_function_child(&pointee, "a pointer pointee")?;
         Ok(crate::durable_semantics::DurableType::PtrMut(Arc::new(
             pointee,
         )))
+    }
+    fn function_type(
+        &mut self,
+        params: Vec<(rue_air::FunctionParamMode, crate::durable_semantics::DurableType)>,
+        result: crate::durable_semantics::DurableType,
+    ) -> rue_air::SemanticProviderResult<
+        crate::durable_semantics::DurableType,
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        // The grammar is gated (ADR-0096): a `fn` type written anywhere is
+        // the preview's surface, so the gate sits where the syntax becomes a
+        // type rather than at each position that admits one.
+        if !self
+            .configuration
+            .preview_features
+            .contains(rue_error::PreviewFeature::FnParams)
+        {
+            return Self::provider_domain_failure(
+                crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticWithHelp {
+                    kind: rue_error::ErrorKind::PreviewFeatureRequired {
+                        feature: rue_error::PreviewFeature::FnParams,
+                        what: "function parameter types".to_owned(),
+                    },
+                    help: Arc::from(rue_error::PreviewFeature::FnParams.enable_help()),
+                },
+            );
+        }
+        Ok(crate::durable_semantics::DurableType::Function {
+            params: params.into(),
+            result: Arc::new(result),
+        })
     }
     fn slice_type(
         &mut self,
@@ -1987,6 +2026,7 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         QueryAbort,
         crate::semantic_query_nucleus::SemanticNucleusFailure,
     > {
+        reject_function_child(&element, "a slice element")?;
         Ok(crate::durable_semantics::DurableType::Slice {
             element: Arc::new(element),
             name: Arc::from(syntax),
@@ -2162,6 +2202,9 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
             ComptimeCallQueryKey, ComptimeCallResultProjection as P, DeclarationSemanticQueryKey,
             SemanticNucleusKey as K, SemanticNucleusValue as V,
         };
+        for (_, ty) in type_arguments {
+            reject_function_child(ty, "a type argument")?;
+        }
         let declaration = crate::declaration_candidate::DeclarationCandidateKey {
             module: head.key.module().clone(),
             category: crate::declaration_candidate::DeclarationCandidateCategory::Function,
@@ -2534,6 +2577,20 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
         )
     };
 
+    // A `fn` type is legal only as the type of a by-value runtime parameter
+    // (ADR-0096, 6.1:47). The structural constructors already refuse it as an
+    // element, pointee, or slice element, so the positions left to the
+    // signature are the ones named here.
+    let fn_type_position = |ty: &crate::durable_semantics::DurableType, position: &str| {
+        if matches!(ty, crate::durable_semantics::DurableType::Function { .. }) {
+            Err(diagnostic(rue_error::ErrorKind::FnTypeOutsideParameter {
+                position: position.to_owned(),
+            }))
+        } else {
+            Ok(())
+        }
+    };
+
     let resolve = |provider: &mut SemanticNucleusTypeProvider<'_>,
                    syntax: &rue_rir::RirTypeSyntaxArena<Arc<str>>,
                    root: rue_rir::RirTypeSyntaxRef,
@@ -2676,6 +2733,18 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                             .deferred_value_parameters
                             .insert(Arc::from(parsed.symbol(parameter.name)), ty.clone());
                     }
+                    if parameter.is_comptime {
+                        fn_type_position(&ty, "a `comptime` parameter")?;
+                    }
+                    match parameter.mode {
+                        crate::declaration_candidate::DeclarationParameterMode::Value => {}
+                        crate::declaration_candidate::DeclarationParameterMode::Borrow => {
+                            fn_type_position(&ty, "a `borrow` parameter")?;
+                        }
+                        crate::declaration_candidate::DeclarationParameterMode::Inout => {
+                            fn_type_position(&ty, "an `inout` parameter")?;
+                        }
+                    }
                     Ok(DurableSemanticParameter {
                         name: Arc::from(parsed.symbol(parameter.name)),
                         ty,
@@ -2706,6 +2775,7 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
             if contains_slice(&result) {
                 return Err(diagnostic(rue_error::ErrorKind::SliceReturnNotAllowed));
             }
+            fn_type_position(&result, "a return type")?;
             if (*is_extern || *is_c_export)
                 && !provider
                     .configuration
@@ -2905,6 +2975,9 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                 .collect::<Result<Vec<_>, ResolveSemanticSignatureError>>()?;
             if fields.iter().any(|(_, ty)| contains_slice(ty)) {
                 return Err(diagnostic(rue_error::ErrorKind::SliceInAggregateField));
+            }
+            for (_, ty) in &fields {
+                fn_type_position(ty, "a struct field")?;
             }
             if fields
                 .iter()
@@ -3146,6 +3219,9 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
             {
                 return Err(diagnostic(rue_error::ErrorKind::SliceInAggregateField));
             }
+            for ty in variants.iter().flat_map(|(_, payload)| payload.iter()) {
+                fn_type_position(ty, "an enum payload")?;
+            }
             Ok(Output::Enum {
                 variants: variants.into(),
                 is_non_exhaustive: *is_non_exhaustive,
@@ -3331,4 +3407,29 @@ impl BodyInputResolver {
         }
         self.resolve_selected_artifact(context, key, definition, candidate)
     }
+}
+
+/// Refuse a `fn` type as a structural child of another type (ADR-0096, spec
+/// 6.1:47): a callback is second-class and is never an element, pointee, or
+/// slice element, whichever declaration the type is written in.
+fn reject_function_child(
+    ty: &crate::durable_semantics::DurableType,
+    position: &str,
+) -> Result<
+    (),
+    rue_air::SemanticProviderError<
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    >,
+> {
+    if matches!(ty, crate::durable_semantics::DurableType::Function { .. }) {
+        return Err(rue_air::SemanticProviderError::Failure(
+            crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                rue_error::ErrorKind::FnTypeOutsideParameter {
+                    position: position.to_owned(),
+                },
+            ),
+        ));
+    }
+    Ok(())
 }

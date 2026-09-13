@@ -348,6 +348,66 @@ fn main() -> i32 {
 }
 ```
 
+## Function Parameter Types
+
+{{ preview_feature(feature="fn_params", adr="ADR-0096", doc="0096-second-class-function-parameters.md") }}
+
+{{ rule(id="6.1:46", cat="syntax") }}
+
+```ebnf
+fn_type        = "fn" "(" [ fn_type_params ] ")" [ "->" type ] ;
+fn_type_params = fn_type_param { "," fn_type_param } [ "," ] ;
+fn_type_param  = [ "inout" | "borrow" ] type ;
+```
+
+A *function type* names the signature of a callback: the mode and type of
+each parameter, in order, and the result type. A parameter's mode precedes
+its type exactly as on a declaration (6.1:15), no parameter is named, and an
+omitted result is `()` (6.1:5). A `fn` type **MAY** appear inside another
+`fn` type's parameter list. `comptime` is not a mode a function type can
+spell. Function parameter types are a preview feature: a program that writes
+a `fn` type **MUST** be compiled with `--preview fn_params` (8.4:1).
+
+{{ rule(id="6.1:47", cat="legality-rule") }}
+
+A `fn` type **MUST** appear only as the type of a by-value runtime parameter
+of a function, method, or associated function, or as a parameter of another
+`fn` type. A callback is second-class: the value a `fn` parameter binds
+exists only for the duration of the call it was passed to. A `fn` type is
+therefore rejected (E0214) as a return type, as a `let` or `const`
+annotation, as a struct field or enum payload, as an array element, a pointer
+pointee, or a slice element, as a type argument, and as the type of a
+`borrow`, `inout`, or `comptime` parameter. The callback parameter itself is
+immutable (6.1:32) and carries no mode.
+
+{{ rule(id="6.1:48", cat="normative") }}
+
+Two `fn` types are the same type exactly when they have the same number of
+parameters, the same mode and the same type at every parameter position, and
+the same result type, after ordinary type resolution. Parameter names never
+take part in a function type's identity, and no conversion relates two
+distinct `fn` types: neither integer widening nor a change of mode nor any
+variance in a parameter or result adapts one signature to another. A value of
+`fn` type is one non-null code pointer with no environment; it is copied
+freely and has no destructor.
+
+{{ rule(id="6.1:49", cat="example") }}
+
+```rue
+struct Policy { descending: bool }
+
+// Declares a callback parameter: modes precede types, and the parameter
+// list nests inside its own signature.
+fn choose(borrow p: Policy, a: i64, b: i64,
+          cmp: fn(borrow Policy, i64, i64) -> bool) -> i64 { a }
+
+fn each(items: [i32; 4], visit: fn(i32)) {}
+
+fn twice(step: fn(fn(i32) -> i32, i32) -> i32) {}
+
+fn main() -> i32 { 0 }
+```
+
 ## Parameter Immutability
 
 {{ rule(id="6.1:32", cat="legality-rule") }}

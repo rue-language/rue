@@ -1,0 +1,245 @@
+# Second-class function parameter types (ADR-0096, RUE-2193).
+#
+# A `fn` type names a callback signature and is legal only as the type of a
+# by-value runtime parameter. These cases pin the preview gate, the spelling
+# the type is rendered with, and the E0214 rejection of every other position.
+# Passing, calling, and forwarding a callback are RUE-2194. A body is analyzed
+# only when it is reachable, so the body-level positions are exercised from
+# `main`.
+
+[section]
+id = "diagnostics.fn_params"
+name = "Function parameter type diagnostics"
+description = "Pins the diagnostics of the fn_params preview (spec 6.1:46-6.1:48, RUE-2193): the preview gate, the rendered spelling of a function type, and the E0214 rejection of a `fn` type in every position other than a by-value runtime parameter."
+
+[[case]]
+name = "fn_type_without_preview_names_the_flag"
+source = """
+fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { value }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+    "[E1100]",
+    "function parameter types requires preview feature `fn_params`",
+    "use --preview fn_params to enable this feature (ADR-0096)",
+]
+
+[[case]]
+name = "fn_type_is_rendered_with_its_modes"
+description = "A mismatch names the callback's type exactly as a program spells it: modes before types, no parameter names."
+preview = "fn_params"
+source = """
+struct Policy { descending: bool }
+
+fn choose(cmp: fn(borrow Policy, i64, inout [u8; 4]) -> bool) -> i32 { 0 }
+
+fn main() -> i32 { choose(1) }
+"""
+compile_fail = true
+error_contains = [
+    "[E0206]",
+    "found fn(borrow Policy, i64, inout [u8; 4]) -> bool",
+]
+
+[[case]]
+name = "fn_type_with_a_unit_result_is_rendered_without_the_arrow"
+preview = "fn_params"
+source = """
+fn each(visit: fn(i32)) -> i32 { 0 }
+
+fn main() -> i32 { each(true) }
+"""
+compile_fail = true
+error_contains = ["[E0206]", "expected fn(i32), found bool"]
+
+[[case]]
+name = "nested_fn_types_are_admitted_in_parameter_position"
+description = "A callback may take a callback: the parameter list of a `fn` type is itself parameter position (6.1:47)."
+preview = "fn_params"
+source = """
+fn twice(step: fn(fn(i32) -> i32, i32) -> i32, unit: fn()) -> i32 { 0 }
+
+fn main() -> i32 { 0 }
+"""
+compile_only = true
+
+[[case]]
+name = "fn_type_as_return_type_is_rejected"
+preview = "fn_params"
+source = """
+fn pick(cb: fn(i32) -> i32) -> fn(i32) -> i32 { cb }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+    "[E0214]",
+    "a `fn` type may only be the type of a by-value parameter, not a return type",
+    "a callback is second-class and cannot be stored, returned, or nested in another type (ADR-0096)",
+]
+
+[[case]]
+name = "fn_type_on_a_borrow_parameter_is_rejected"
+preview = "fn_params"
+source = """
+fn apply(borrow cb: fn(i32) -> i32) -> i32 { 0 }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["[E0214]", "not a `borrow` parameter"]
+
+[[case]]
+name = "fn_type_on_an_inout_parameter_is_rejected"
+preview = "fn_params"
+source = """
+fn apply(inout cb: fn(i32) -> i32) -> i32 { 0 }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["[E0214]", "not an `inout` parameter"]
+
+[[case]]
+name = "fn_type_on_a_comptime_parameter_is_rejected"
+preview = "fn_params"
+source = """
+fn apply(comptime cb: fn(i32) -> i32) -> i32 { 0 }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["[E0214]", "not a `comptime` parameter"]
+
+[[case]]
+name = "fn_type_as_a_struct_field_is_rejected"
+preview = "fn_params"
+source = """
+struct Handler { cb: fn(i32) -> i32 }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["[E0214]", "not a struct field"]
+
+[[case]]
+name = "fn_type_as_an_anonymous_struct_field_is_rejected"
+description = "A type constructor cannot build a struct that stores a callback either."
+preview = "fn_params"
+source = """
+fn Make() -> type { struct { cb: fn(i32) -> i32 } }
+
+fn apply(m: Make()) -> i32 { 0 }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["[E0214]", "not a struct field"]
+
+[[case]]
+name = "fn_type_as_an_enum_payload_is_rejected"
+preview = "fn_params"
+source = """
+enum Action { Run(fn(i32) -> i32), Skip }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["[E0214]", "not an enum payload"]
+
+[[case]]
+name = "fn_type_as_an_anonymous_enum_payload_is_rejected"
+preview = "fn_params"
+source = """
+fn Make() -> type { enum { Run(fn(i32) -> i32), Skip } }
+
+fn apply(m: Make()) -> i32 { 0 }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["[E0214]", "not an enum payload"]
+
+[[case]]
+name = "fn_type_as_an_array_element_is_rejected"
+preview = "fn_params"
+source = """
+fn apply(cbs: [fn(i32) -> i32; 2]) -> i32 { 0 }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["[E0214]", "not an array element"]
+
+[[case]]
+name = "fn_type_as_a_pointer_pointee_is_rejected"
+preview = "fn_params"
+source = """
+fn apply(cb: ptr const fn(i32) -> i32) -> i32 { 0 }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["[E0214]", "not a pointer pointee"]
+
+[[case]]
+name = "fn_type_as_a_slice_element_is_rejected"
+preview = "fn_params"
+source = """
+fn apply(borrow cbs: [fn(i32) -> i32]) -> i32 { 0 }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["[E0214]", "not a slice element"]
+
+[[case]]
+name = "fn_type_as_a_type_argument_is_rejected"
+description = "A type constructor cannot be instantiated over a callback: `Wrap(fn(...))` would be a stored callback."
+preview = "fn_params"
+source = """
+fn Wrap(comptime T: type) -> type { struct { value: T } }
+
+fn apply(w: Wrap(fn(i32) -> i32)) -> i32 { 0 }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["[E0214]", "not a type argument"]
+
+[[case]]
+name = "fn_type_as_a_let_annotation_is_rejected"
+preview = "fn_params"
+source = """
+fn main() -> i32 {
+    let kept: fn(i32) -> i32 = 0;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["[E0214]", "not a `let` binding"]
+
+[[case]]
+name = "fn_type_as_a_const_annotation_is_rejected"
+preview = "fn_params"
+source = """
+fn double(value: i32) -> i32 { value * 2 }
+
+const CB: fn(i32) -> i32 = double;
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["[E0214]", "not a `const`"]
+
+[[case]]
+name = "fn_type_as_an_intrinsic_type_argument_is_rejected"
+description = "A callback has no size a program may ask for: `@size_of` and its siblings take no `fn` type."
+preview = "fn_params"
+source = """
+fn main() -> i32 { @intCast(@size_of(fn(i32) -> i32)) }
+"""
+compile_fail = true
+error_contains = ["[E0214]", "not an intrinsic type argument"]

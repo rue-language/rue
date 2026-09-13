@@ -121,6 +121,10 @@ impl DropGlueTypeShapeSource for PoolType<'_> {
             TypeKind::PtrMut(ptr_id) => Some(DropGlueTypeShape::PtrMut(nested(
                 self.type_pool.ptr_mut_def(ptr_id),
             ))),
+            // A callback is one trivially dropped code pointer and can never be
+            // an element of a value that owns glue (ADR-0096); the leaf spelling
+            // only keeps the vocabulary total.
+            TypeKind::Function(id) => leaf(&format!("fn{}", id.pool_index())),
         }
     }
 }

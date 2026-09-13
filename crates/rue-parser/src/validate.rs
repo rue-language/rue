@@ -473,6 +473,15 @@ impl Validator<'_> {
             TypeExpr::PointerConst { pointee, .. } | TypeExpr::PointerMut { pointee, .. } => {
                 self.check_type_expr(pointee)
             }
+            // A function type carries parameter and result types only.
+            TypeExpr::Function { params, ret, .. } => {
+                for param in params {
+                    self.check_type_expr(&param.ty);
+                }
+                if let Some(ret) = ret {
+                    self.check_type_expr(ret);
+                }
+            }
             // Type-function application: recurse into each type argument.
             TypeExpr::TypeCall { args, .. } | TypeExpr::QualifiedTypeCall { args, .. } => {
                 for arg in args {

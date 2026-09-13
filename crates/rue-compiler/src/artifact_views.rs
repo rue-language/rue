@@ -1063,6 +1063,37 @@ fn type_record(
                 })
                 .collect(),
         ),
+        TypeExpr::Function { params, ret, .. } => syntax_record(
+            "function_type",
+            span,
+            None,
+            None,
+            params
+                .iter()
+                .map(|param| {
+                    syntax_record(
+                        "function_type_param",
+                        param.span,
+                        None,
+                        Some(Arc::from(if param.mode == rue_parser::ParamMode::Normal {
+                            "value"
+                        } else {
+                            param.mode.keyword()
+                        })),
+                        vec![type_record(owner, &param.ty)],
+                    )
+                })
+                .chain(ret.iter().map(|ret| {
+                    syntax_record(
+                        "function_type_result",
+                        ret.span(),
+                        None,
+                        None,
+                        vec![type_record(owner, ret)],
+                    )
+                }))
+                .collect(),
+        ),
         TypeExpr::PointerConst { pointee, .. } => syntax_record(
             "const_pointer_type",
             span,

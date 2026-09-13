@@ -15,6 +15,7 @@ use rue_span::FileId;
 
 use crate::Node;
 use crate::builtin_universe::BuiltinUniverse;
+use crate::types::FunctionParamMode;
 use crate::{
     Air, AirCallArg, AirInst, AirInstData, AirPattern, AirProjection, AirRef, AnonymousNominalKey,
     ConstValue, EnumDef, EnumId, FunctionInstanceKey, ModuleId, ModuleRegistry, NominalInstanceKey,
@@ -77,6 +78,12 @@ pub enum SemanticImportType<K, M> {
     },
     Module(M),
     GenericParameter(u32),
+    /// A function type `fn(A, borrow B) -> R` (ADR-0096): the parameter
+    /// modes and types in order, then the result.
+    Function {
+        params: Arc<[(FunctionParamMode, Self)]>,
+        result: Arc<Self>,
+    },
 }
 
 macro_rules! semantic_import_type_schema {
@@ -106,6 +113,7 @@ macro_rules! semantic_import_type_schema {
             F32, SemanticImportType::F32, 21, "f32";
             F64, SemanticImportType::F64, 22, "f64";
             ComptimeFloat, SemanticImportType::ComptimeFloat, 23, "comptime_float";
+            Function, SemanticImportType::Function { .. }, 24, "function";
         }
     };
 }
@@ -189,6 +197,10 @@ pub enum SemanticImportTypeFold<'a, K, M, T> {
     },
     Module(&'a M),
     GenericParameter(u32),
+    Function {
+        params: Vec<(FunctionParamMode, T)>,
+        result: T,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -374,6 +386,7 @@ impl<K, M> SemanticImportType<K, M> {
             | K::Array(_)
             | K::PtrConst(_)
             | K::PtrMut(_)
+            | K::Function(_)
             | K::Module(_)
             | K::Error => return None,
         })
@@ -417,6 +430,13 @@ impl<K, M> SemanticImportType<K, M> {
             },
             S::Module(module) => F::Module(module),
             S::GenericParameter(index) => F::GenericParameter(*index),
+            S::Function { params, result } => F::Function {
+                params: params
+                    .iter()
+                    .map(|(mode, ty)| Ok((*mode, ty.try_fold(fold)?)))
+                    .collect::<Result<Vec<_>, E>>()?,
+                result: result.try_fold(fold)?,
+            },
         };
         fold(node)
     }
@@ -468,6 +488,10 @@ impl<K, M> SemanticImportType<K, M> {
                 },
                 F::Module(value) => T::Module(module(value)?),
                 F::GenericParameter(index) => T::GenericParameter(index),
+                F::Function { params, result } => T::Function {
+                    params: params.into(),
+                    result: Arc::new(result),
+                },
             })
         })
     }
@@ -685,6 +709,13 @@ fn import_type_identity<K: Clone + std::hash::Hash, M: Clone + std::hash::Hash>(
         },
         S::Module(module) => TypeInstanceKey::Module(module.clone()),
         S::GenericParameter(index) => TypeInstanceKey::GenericParameter(*index),
+        S::Function { params, result } => TypeInstanceKey::Function {
+            params: params
+                .iter()
+                .map(|(mode, ty)| (*mode, Node::new(import_type_identity(ty))))
+                .collect(),
+            result: Node::new(import_type_identity(result)),
+        },
     }
 }
 
@@ -2166,6 +2197,15 @@ where
                 F::PtrMut(value) => type_pool
                     .try_intern_ptr_mut(value)
                     .map_err(|_| SemanticImportFailure::InvalidStructuralType)?,
+                F::Function { params, result } => type_pool
+                    .try_intern_function(crate::FunctionTypeDef {
+                        params: params
+                            .into_iter()
+                            .map(|(mode, ty)| crate::FunctionTypeParam { mode, ty })
+                            .collect(),
+                        result,
+                    })
+                    .map_err(|_| SemanticImportFailure::InvalidStructuralType)?,
                 F::Slice { element, name } => {
                     let symbol = self
                         .symbol_space
@@ -2494,6 +2534,18 @@ where
             crate::TypeKind::PtrMut(id) => SemanticImportType::PtrMut(Arc::new(
                 self.export_type_local_validated(self.type_pool.ptr_mut_def(id))?,
             )),
+            crate::TypeKind::Function(id) => {
+                let def = self.type_pool.function_def(id);
+                SemanticImportType::Function {
+                    params: def
+                        .params
+                        .iter()
+                        .map(|param| Ok((param.mode, self.export_type_local_validated(param.ty)?)))
+                        .collect::<Result<Vec<_>, SemanticImportFailure>>()?
+                        .into(),
+                    result: Arc::new(self.export_type_local_validated(def.result)?),
+                }
+            }
             crate::TypeKind::Module(id) => SemanticImportType::Module(
                 self.module_exports
                     .get(&id)
@@ -2877,7 +2929,7 @@ mod tests {
 
     #[test]
     fn canonical_schema_kinds_have_stable_unique_tags_and_names() {
-        assert_eq!(SEMANTIC_IMPORT_TYPE_KINDS.len(), 24);
+        assert_eq!(SEMANTIC_IMPORT_TYPE_KINDS.len(), 25);
         for (tag, kind) in SEMANTIC_IMPORT_TYPE_KINDS.iter().copied().enumerate() {
             assert_eq!(usize::from(kind.schema_tag()), tag);
             assert_eq!(kind.to_string(), kind.display_name());
@@ -2921,6 +2973,15 @@ mod tests {
             TypeKind::Module(id) => {
                 format!("module {}", epoch.module_registry().get_def(id).file_path)
             }
+            TypeKind::Function(id) => {
+                let def = epoch.type_pool().function_def(id);
+                crate::types::function_type_name(
+                    def.params
+                        .iter()
+                        .map(|param| (param.mode, projection(epoch, param.ty))),
+                    (def.result != Type::UNIT).then(|| projection(epoch, def.result)),
+                )
+            }
             other => format!("{other:?}"),
         }
     }
@@ -2958,6 +3019,14 @@ mod tests {
             },
             ImportType::PtrConst(Arc::new(ImportType::Nominal("Record"))),
             ImportType::PtrMut(Arc::new(ImportType::Nominal("Record"))),
+            ImportType::Function {
+                params: vec![
+                    (FunctionParamMode::Value, ImportType::I32),
+                    (FunctionParamMode::Borrow, ImportType::Nominal("Record")),
+                ]
+                .into(),
+                result: Arc::new(ImportType::Bool),
+            },
             ImportType::Module("pkg/main.rue"),
             ImportType::GenericParameter(3),
             ImportType::AnonymousNominal(crate::AnonymousNominalKey {
@@ -2992,6 +3061,7 @@ mod tests {
             Slice,
             PtrConst,
             PtrMut,
+            Function,
             Module,
             Generic,
             AnonymousNominal,
@@ -3018,6 +3088,7 @@ mod tests {
             Tag::Slice,
             Tag::PtrConst,
             Tag::PtrMut,
+            Tag::Function,
             Tag::Module,
             Tag::Generic,
             Tag::AnonymousNominal,
@@ -3048,6 +3119,7 @@ mod tests {
                         F::Slice { .. } => Tag::Slice,
                         F::PtrConst(_) => Tag::PtrConst,
                         F::PtrMut(_) => Tag::PtrMut,
+                        F::Function { .. } => Tag::Function,
                         F::Module(_) => Tag::Module,
                         F::GenericParameter(_) => Tag::Generic,
                         F::AnonymousNominal(_) => Tag::AnonymousNominal,

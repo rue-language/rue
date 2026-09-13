@@ -1992,3 +1992,96 @@ fn width(borrow s: str) -> i32 { @intCast(s.len()) }
 fn main() -> i32 { width(borrow "hello") }
 """
 exit_code = 5
+
+# =============================================================================
+# Function Parameter Types (6.1:46-6.1:49, preview feature `fn_params`,
+# ADR-0096, RUE-2193). Passing, calling, and forwarding a callback are
+# RUE-2194.
+# =============================================================================
+
+[[case]]
+name = "fn_parameter_type_declares_a_callback_signature"
+spec = ["6.1:46", "6.1:49"]
+description = "A `fn` type names modes before types, no parameter names, an optional result, and nests inside its own parameter list"
+preview = "fn_params"
+preview_should_pass = true
+source = """
+struct Policy { descending: bool }
+
+fn choose(borrow p: Policy, a: i64, b: i64,
+          cmp: fn(borrow Policy, i64, i64) -> bool) -> i64 { a }
+
+fn each(items: [i32; 4], visit: fn(i32)) {}
+
+fn twice(step: fn(fn(i32) -> i32, i32) -> i32) {}
+
+fn main() -> i32 { 0 }
+"""
+exit_code = 0
+
+[[case]]
+name = "fn_parameter_type_requires_the_preview"
+spec = ["6.1:46", "8.4:1"]
+source = """
+fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { value }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E1100", "requires preview feature `fn_params`"]
+
+[[case]]
+name = "fn_type_is_rejected_as_a_return_type"
+spec = ["6.1:47"]
+preview = "fn_params"
+preview_should_pass = true
+source = """
+fn pick(cb: fn(i32) -> i32) -> fn(i32) -> i32 { cb }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0214", "not a return type"]
+
+[[case]]
+name = "fn_type_is_rejected_in_storage_positions"
+spec = ["6.1:47"]
+description = "A struct field is one of the storage positions a second-class callback cannot occupy"
+preview = "fn_params"
+preview_should_pass = true
+source = """
+struct Handler { cb: fn(i32) -> i32 }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0214", "not a struct field"]
+
+[[case]]
+name = "fn_type_is_rejected_on_a_by_reference_parameter"
+spec = ["6.1:47"]
+preview = "fn_params"
+preview_should_pass = true
+source = """
+fn apply(borrow cb: fn(i32) -> i32) -> i32 { 0 }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0214", "not a `borrow` parameter"]
+
+[[case]]
+name = "fn_type_identity_is_its_modes_types_and_result"
+spec = ["6.1:48"]
+description = "The type a callback parameter binds is spelled from its signature alone: every mode, every type, and the result, with no parameter names"
+preview = "fn_params"
+preview_should_pass = true
+source = """
+struct Policy { descending: bool }
+
+fn choose(cmp: fn(borrow Policy, i64, i64) -> bool) -> i32 { 0 }
+
+fn main() -> i32 { choose(true) }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected fn(borrow Policy, i64, i64) -> bool, found bool"]

@@ -400,6 +400,14 @@ pub(super) mod structured_type_adapter_tests {
             unreachable!("fixture has no pointer syntax")
         }
 
+        fn function_type(
+            &mut self,
+            _params: Vec<(rue_air::FunctionParamMode, DurableType)>,
+            _result: DurableType,
+        ) -> rue_air::SemanticProviderResult<DurableType, Self::Abort, Self::Failure> {
+            unreachable!("fixture has no function-type syntax")
+        }
+
         fn slice_type(
             &mut self,
             _scope: &ModuleId,

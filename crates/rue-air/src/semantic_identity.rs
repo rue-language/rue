@@ -545,6 +545,11 @@ pub enum TypeInstanceKey<D, M> {
     PtrMut(Node<Self>),
     Module(M),
     GenericParameter(u32),
+    /// A function type `fn(A, borrow B) -> R` (ADR-0096).
+    Function {
+        params: Vec<(crate::FunctionParamMode, Node<Self>)>,
+        result: Node<Self>,
+    },
 }
 
 /// Canonical identity of one source or synthesized function instance.
@@ -798,6 +803,15 @@ impl<D, M> TypeInstanceKey<D, M> {
             }
             Self::Module(value) => TypeInstanceKey::Module(module(value)?),
             Self::GenericParameter(index) => TypeInstanceKey::GenericParameter(*index),
+            Self::Function { params, result } => TypeInstanceKey::Function {
+                params: params
+                    .iter()
+                    .map(|(mode, ty)| {
+                        Ok((*mode, Node::new(ty.try_map_identities(definition, module)?)))
+                    })
+                    .collect::<Result<Vec<_>, E>>()?,
+                result: Node::new(result.try_map_identities(definition, module)?),
+            },
         })
     }
 }

@@ -251,6 +251,131 @@ impl PtrMutTypeId {
     }
 }
 
+/// An opaque identifier for a function type entry issued by the type pool
+/// (ADR-0096, RUE-2193).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FunctionTypeId(pub(crate) u32);
+
+impl FunctionTypeId {
+    /// Create a FunctionTypeId from a pool index.
+    #[inline]
+    pub(crate) fn from_pool_index(pool_index: u32) -> Self {
+        FunctionTypeId(pool_index)
+    }
+
+    /// Get the pool index for this function type.
+    #[inline]
+    pub(crate) fn pool_index(self) -> u32 {
+        self.0
+    }
+}
+
+/// The passing mode of one parameter of a function type: the mode the
+/// callback's caller spells at the call, exactly as on a declaration
+/// (spec 6.1:15). A callback takes no `comptime` parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FunctionParamMode {
+    /// Passed by value.
+    Value,
+    /// Passed by exclusive reference (`inout`).
+    Inout,
+    /// Passed by shared reference (`borrow`).
+    Borrow,
+}
+
+impl FunctionParamMode {
+    /// The mode a declared parameter carries in RIR.
+    pub fn from_rir(mode: rue_rir::RirParamMode) -> Self {
+        match mode {
+            rue_rir::RirParamMode::Normal => Self::Value,
+            rue_rir::RirParamMode::Inout => Self::Inout,
+            rue_rir::RirParamMode::Borrow => Self::Borrow,
+        }
+    }
+
+    /// The RIR parameter mode this callback mode is checked as.
+    pub fn to_rir(self) -> rue_rir::RirParamMode {
+        match self {
+            Self::Value => rue_rir::RirParamMode::Normal,
+            Self::Inout => rue_rir::RirParamMode::Inout,
+            Self::Borrow => rue_rir::RirParamMode::Borrow,
+        }
+    }
+
+    /// The stable word the RIR type syntax and durable encodings carry:
+    /// 0 by value, 1 `inout`, 2 `borrow`.
+    pub fn from_stable_word(word: u32) -> Option<Self> {
+        Some(match word {
+            0 => Self::Value,
+            1 => Self::Inout,
+            2 => Self::Borrow,
+            _ => return None,
+        })
+    }
+
+    /// See [`Self::from_stable_word`].
+    pub fn stable_word(self) -> u32 {
+        match self {
+            Self::Value => 0,
+            Self::Inout => 1,
+            Self::Borrow => 2,
+        }
+    }
+
+    /// The source keyword, empty for a by-value parameter.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            Self::Value => "",
+            Self::Inout => "inout",
+            Self::Borrow => "borrow",
+        }
+    }
+}
+
+/// One parameter of a function type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FunctionTypeParam {
+    pub mode: FunctionParamMode,
+    pub ty: Type,
+}
+
+/// The structural definition of a function type: its parameter modes and
+/// types and its result type. Two function types with equal definitions are
+/// the same type (ADR-0096); the pool deduplicates on this value.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FunctionTypeDef {
+    pub params: Vec<FunctionTypeParam>,
+    pub result: Type,
+}
+
+/// The one spelling of a function type: `fn(i32, borrow Policy) -> bool`,
+/// with a unit result elided. Every renderer of a function type goes through
+/// this so the spelling cannot drift between diagnostics, durable
+/// projections, and emitted views.
+#[must_use]
+pub fn function_type_name(
+    params: impl IntoIterator<Item = (FunctionParamMode, String)>,
+    result: Option<String>,
+) -> String {
+    let mut output = String::from("fn(");
+    for (index, (mode, ty)) in params.into_iter().enumerate() {
+        if index != 0 {
+            output.push_str(", ");
+        }
+        if mode != FunctionParamMode::Value {
+            output.push_str(mode.keyword());
+            output.push(' ');
+        }
+        output.push_str(&ty);
+    }
+    output.push(')');
+    if let Some(result) = result {
+        output.push_str(" -> ");
+        output.push_str(&result);
+    }
+    output
+}
+
 /// A unique identifier for a module (imported file).
 ///
 /// Modules are created by `@import("path.rue")` and represent the public
@@ -321,6 +446,8 @@ pub enum TypeKind {
     PtrConst(PtrConstTypeId),
     /// Raw pointer to mutable data: ptr mut T
     PtrMut(PtrMutTypeId),
+    /// A function type: fn(A, borrow B) -> R (ADR-0096)
+    Function(FunctionTypeId),
     /// A module type (from @import)
     Module(ModuleId),
     /// An error type (used during type checking to continue after errors)
@@ -402,6 +529,7 @@ impl std::fmt::Debug for Type {
             TypeKind::Array(id) => write!(f, "Type::new_array({id:?})"),
             TypeKind::PtrConst(id) => write!(f, "Type::new_ptr_const({id:?})"),
             TypeKind::PtrMut(id) => write!(f, "Type::new_ptr_mut({id:?})"),
+            TypeKind::Function(id) => write!(f, "Type::new_function({id:?})"),
             TypeKind::Module(id) => write!(f, "Type::new_module(ModuleId({}))", id.0),
         }
     }
@@ -485,6 +613,12 @@ impl Type {
     #[inline]
     pub const fn new_ptr_mut(id: PtrMutTypeId) -> Type {
         Self::new_composite(Composite::PtrMut, id.0)
+    }
+
+    /// Create a function type from a FunctionTypeId (ADR-0096).
+    #[inline]
+    pub const fn new_function(id: FunctionTypeId) -> Type {
+        Self::new_composite(Composite::Function, id.0)
     }
 
     /// Create a module type from a ModuleId.
@@ -820,6 +954,10 @@ impl Type {
                 kind: Composite::PtrMut,
                 payload,
             } => Some(TypeKind::PtrMut(PtrMutTypeId(payload))),
+            Decoded::Composite {
+                kind: Composite::Function,
+                payload,
+            } => Some(TypeKind::Function(FunctionTypeId(payload))),
         }
     }
 
@@ -843,6 +981,7 @@ impl Type {
             TypeKind::Array(_) => "<array>",
             TypeKind::PtrConst(_) => "<ptr const>",
             TypeKind::PtrMut(_) => "<ptr mut>",
+            TypeKind::Function(_) => "<fn>",
             TypeKind::Module(_) => "<module>",
             TypeKind::Error => "<error>",
             TypeKind::Never => "!",
@@ -888,6 +1027,7 @@ impl Type {
             Some(TypeKind::Array(id)) => format!("<array#{}>", id.0),
             Some(TypeKind::PtrConst(id)) => format!("<ptr const#{}>", id.0),
             Some(TypeKind::PtrMut(id)) => format!("<ptr mut#{}>", id.0),
+            Some(TypeKind::Function(id)) => format!("<fn#{}>", id.0),
             Some(_) => self.name().to_string(),
             None => format!("<invalid type encoding: {:#x}>", self.0),
         }
@@ -1082,6 +1222,22 @@ impl Type {
     #[inline]
     pub fn is_ptr(&self) -> bool {
         self.is_ptr_const() || self.is_ptr_mut()
+    }
+
+    /// Check if this is a function type (ADR-0096).
+    #[inline]
+    pub fn is_function(&self) -> bool {
+        type_encoding::has_composite_kind(self.0, Composite::Function)
+    }
+
+    /// Get the function type ID if this is a function type.
+    #[inline]
+    pub fn as_function(&self) -> Option<FunctionTypeId> {
+        if self.is_function() {
+            Some(FunctionTypeId(self.0 >> type_encoding::PAYLOAD_SHIFT))
+        } else {
+            None
+        }
     }
 
     /// Check if this is a signed integer type.
@@ -1943,7 +2099,7 @@ mod tests {
         // Invalid tags
         assert!(Type::try_from_u32(50).is_none());
         assert!(Type::try_from_u32(99).is_none());
-        assert!(Type::try_from_u32(106).is_none());
+        assert!(Type::try_from_u32(107).is_none());
         assert!(Type::try_from_u32(255).is_none());
         assert!(Type::try_from_u32(1 << type_encoding::PAYLOAD_SHIFT).is_none());
     }
@@ -2068,6 +2224,7 @@ mod tests {
         Slice(Box<StructuredType>),
         PointerConst(Box<StructuredType>),
         PointerMut(Box<StructuredType>),
+        Function(Vec<(u32, StructuredType)>, Box<StructuredType>),
         TypeCall(Vec<String>, Vec<StructuredType>),
         ValueCall(String, Vec<StructuredType>),
         Integer(i128),
@@ -2156,6 +2313,20 @@ mod tests {
                 StructuredType::PointerConst(Box::new(child(*pointee)))
             }
             Node::PointerMut { pointee } => StructuredType::PointerMut(Box::new(child(*pointee))),
+            Node::Function { params, result } => StructuredType::Function(
+                arena
+                    .words(*params)
+                    .expect("valid function parameters")
+                    .chunks_exact(2)
+                    .map(|param| {
+                        (
+                            param[0],
+                            child(rue_rir::RirTypeSyntaxRef::from_u32(param[1])),
+                        )
+                    })
+                    .collect(),
+                Box::new(child(*result)),
+            ),
             Node::TypeCall { path, arguments } => StructuredType::TypeCall(
                 symbols(arena, interner, *path),
                 arena

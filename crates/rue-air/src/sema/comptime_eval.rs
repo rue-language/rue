@@ -3534,6 +3534,23 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeRejections for OrdinaryBodyEngine<
     ) -> ComptimeHostResult<(), Self::Failure> {
         OrdinaryBodyEngine::require_preview(self, feature, what, site.span()).map_err(Into::into)
     }
+    fn reject_callback_member(
+        &self,
+        ty: &Type,
+        position: &str,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<(), Self::Failure> {
+        if ty.is_function() {
+            return Err(CompileError::new(
+                ErrorKind::FnTypeOutsideParameter {
+                    position: position.to_owned(),
+                },
+                site.span(),
+            )
+            .into());
+        }
+        Ok(())
+    }
     fn depth_exceeded(
         &self,
         name: &Spur,

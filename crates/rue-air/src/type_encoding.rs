@@ -10,7 +10,7 @@ pub(crate) const PAYLOAD_SHIFT: u32 = 8;
 pub(crate) const MAX_PAYLOAD: u32 = u32::MAX >> PAYLOAD_SHIFT;
 pub(crate) const RESERVED_AFTER_PRIMITIVES_START: u32 = 16;
 pub(crate) const RESERVED_AFTER_PRIMITIVES_END: u32 = 99;
-pub(crate) const RESERVED_AFTER_COMPOSITES_START: u32 = 106;
+pub(crate) const RESERVED_AFTER_COMPOSITES_START: u32 = 107;
 pub(crate) const RESERVED_AFTER_COMPOSITES_END: u32 = TAG_MASK;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +49,8 @@ pub(crate) enum Composite {
     Module = 103,
     PtrConst = 104,
     PtrMut = 105,
+    /// A function type `fn(A, borrow B) -> R` (ADR-0096).
+    Function = 106,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,6 +106,7 @@ pub(crate) const fn decode(raw: u32) -> Option<Decoded> {
         103 => Composite::Module,
         104 => Composite::PtrConst,
         105 => Composite::PtrMut,
+        106 => Composite::Function,
         _ => return None,
     };
     Some(Decoded::Composite {

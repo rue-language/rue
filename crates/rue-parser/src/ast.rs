@@ -564,6 +564,14 @@ pub enum TypeExpr {
     },
     /// Raw pointer to immutable data: ptr const T
     PointerConst { pointee: Box<TypeExpr>, span: Span },
+    /// A function type, the type of a second-class callback parameter
+    /// (ADR-0096, RUE-2193): `fn(A, borrow B, inout C) -> R`. Modes precede
+    /// types and no parameter is named; an omitted result is `()`.
+    Function {
+        params: Vec<FnTypeParam>,
+        ret: Option<Box<TypeExpr>>,
+        span: Span,
+    },
     /// Raw pointer to mutable data: ptr mut T
     PointerMut { pointee: Box<TypeExpr>, span: Span },
     /// A type-function application used directly in type position:
@@ -651,6 +659,19 @@ impl fmt::Display for ArrayLength {
     }
 }
 
+/// One parameter of a function type: `borrow Policy` in
+/// `fn(borrow Policy, i64) -> bool`. The mode is `Normal`, `Inout`, or
+/// `Borrow`; a `comptime` mode is rejected by the parser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FnTypeParam {
+    /// Parameter passing mode
+    pub mode: ParamMode,
+    /// Parameter type
+    pub ty: TypeExpr,
+    /// Span covering the mode and the type
+    pub span: Span,
+}
+
 /// A field in an anonymous struct type expression.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnonStructField {
@@ -668,6 +689,7 @@ impl TypeExpr {
         match self {
             TypeExpr::Named(ident) => ident.span,
             TypeExpr::Qualified { span, .. } => *span,
+            TypeExpr::Function { span, .. } => *span,
             TypeExpr::Unit(span) => *span,
             TypeExpr::Never(span) => *span,
             TypeExpr::Array { span, .. } => *span,
@@ -743,6 +765,23 @@ impl fmt::Display for TypeExpr {
             }
             TypeExpr::PointerConst { pointee, .. } => write!(f, "ptr const {}", pointee),
             TypeExpr::PointerMut { pointee, .. } => write!(f, "ptr mut {}", pointee),
+            TypeExpr::Function { params, ret, .. } => {
+                write!(f, "fn(")?;
+                for (i, param) in params.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    if param.mode != ParamMode::Normal {
+                        write!(f, "{} ", param.mode.keyword())?;
+                    }
+                    write!(f, "{}", param.ty)?;
+                }
+                write!(f, ")")?;
+                if let Some(ret) = ret {
+                    write!(f, " -> {}", ret)?;
+                }
+                Ok(())
+            }
             TypeExpr::TypeCall { name, args, .. } => {
                 write!(f, "sym:{}(", name.name.into_usize())?;
                 for (i, arg) in args.iter().enumerate() {
@@ -1872,6 +1911,16 @@ fn rebind_type(ty: &mut TypeExpr, file_id: FileId) {
         }
         TypeExpr::PointerConst { pointee, span } | TypeExpr::PointerMut { pointee, span } => {
             rebind_type(pointee, file_id);
+            rebind_span(span, file_id);
+        }
+        TypeExpr::Function { params, ret, span } => {
+            for param in params {
+                rebind_type(&mut param.ty, file_id);
+                rebind_span(&mut param.span, file_id);
+            }
+            if let Some(ret) = ret {
+                rebind_type(ret, file_id);
+            }
             rebind_span(span, file_id);
         }
         TypeExpr::TypeCall { name, args, span } => {

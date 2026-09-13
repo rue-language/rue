@@ -179,6 +179,33 @@ fn canonical_type_from_live_cached(
             aggregates,
             stable_by_live,
         )?)),
+        K::Function(id) => {
+            let def = pool.function_def(id);
+            CanonicalType::Function {
+                params: def
+                    .params
+                    .iter()
+                    .map(|param| {
+                        Ok((
+                            param.mode,
+                            canonical_type_from_live_cached(
+                                param.ty,
+                                pool,
+                                aggregates,
+                                stable_by_live,
+                            )?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, CfgDomainFailure>>()?
+                    .into(),
+                result: Arc::new(canonical_type_from_live_cached(
+                    def.result,
+                    pool,
+                    aggregates,
+                    stable_by_live,
+                )?),
+            }
+        }
         K::Struct(_) | K::Enum(_) => crate::semantic_identity::semantic_type_from_instance(
             aggregates
                 .aggregate_type(ty)

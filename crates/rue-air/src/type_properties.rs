@@ -13,8 +13,8 @@ use rue_span::FileId;
 
 use crate::type_encoding::{self, Composite};
 use crate::{
-    ArrayTypeId, EnumDef, EnumId, ModuleId, PtrConstTypeId, PtrMutTypeId, StructDef, StructField,
-    StructId, Type, TypeInternPool, TypeKind, TypeValidationError,
+    ArrayTypeId, EnumDef, EnumId, FunctionTypeId, ModuleId, PtrConstTypeId, PtrMutTypeId,
+    StructDef, StructField, StructId, Type, TypeInternPool, TypeKind, TypeValidationError,
 };
 
 fn hash(value: Type) -> u64 {
@@ -107,6 +107,11 @@ fn encoding_shape_is_exact_and_checked_round_trips_preserve_kind_metadata() {
                 Type::new_ptr_mut(PtrMutTypeId::from_pool_index(payload)),
                 Composite::PtrMut,
                 TypeKind::PtrMut(PtrMutTypeId::from_pool_index(payload)),
+            ),
+            (
+                Type::new_function(FunctionTypeId::from_pool_index(payload)),
+                Composite::Function,
+                TypeKind::Function(FunctionTypeId::from_pool_index(payload)),
             ),
         ];
         let mut raw_values = AHashSet::new();
@@ -315,12 +320,22 @@ fn pool_validation_rejects_wrong_kinds_ranges_and_illegal_children_without_alias
     let array = pool.try_intern_array(Type::I32, 7).unwrap();
     let ptr_const = pool.try_intern_ptr_const(Type::I32).unwrap();
     let ptr_mut = pool.try_intern_ptr_mut(Type::I32).unwrap();
+    let function = pool
+        .try_intern_function(crate::FunctionTypeDef {
+            params: vec![crate::FunctionTypeParam {
+                mode: crate::FunctionParamMode::Value,
+                ty: Type::I32,
+            }],
+            result: Type::BOOL,
+        })
+        .unwrap();
     let entries = [
         (structure.pool_index(), 0usize),
         (enumeration.pool_index(), 1),
         (array.as_array().unwrap().pool_index(), 2),
         (ptr_const.as_ptr_const().unwrap().pool_index(), 3),
         (ptr_mut.as_ptr_mut().unwrap().pool_index(), 4),
+        (function.as_function().unwrap().pool_index(), 5),
     ];
 
     for (pool_index, actual_kind) in entries {
@@ -330,6 +345,7 @@ fn pool_validation_rejects_wrong_kinds_ranges_and_illegal_children_without_alias
             Type::new_array(ArrayTypeId::from_pool_index(pool_index)),
             Type::new_ptr_const(PtrConstTypeId::from_pool_index(pool_index)),
             Type::new_ptr_mut(PtrMutTypeId::from_pool_index(pool_index)),
+            Type::new_function(FunctionTypeId::from_pool_index(pool_index)),
         ];
         assert_eq!(
             forged.into_iter().collect::<AHashSet<_>>().len(),
@@ -338,10 +354,14 @@ fn pool_validation_rejects_wrong_kinds_ranges_and_illegal_children_without_alias
         for (encoded_kind, ty) in forged.into_iter().enumerate() {
             assert_eq!(
                 pool.validate_structural_child(ty),
-                if encoded_kind == actual_kind {
-                    Ok(())
-                } else {
+                if encoded_kind != actual_kind {
                     Err(TypeValidationError::KindMismatch)
+                } else if ty.is_function() {
+                    // A callback is never a structural child (ADR-0096); the
+                    // handle itself is well formed.
+                    Err(TypeValidationError::FunctionStructuralChild)
+                } else {
+                    Ok(())
                 }
             );
         }
@@ -353,6 +373,7 @@ fn pool_validation_rejects_wrong_kinds_ranges_and_illegal_children_without_alias
         Type::new_array(ArrayTypeId::from_pool_index(type_encoding::MAX_PAYLOAD)),
         Type::new_ptr_const(PtrConstTypeId::from_pool_index(type_encoding::MAX_PAYLOAD)),
         Type::new_ptr_mut(PtrMutTypeId::from_pool_index(type_encoding::MAX_PAYLOAD)),
+        Type::new_function(FunctionTypeId::from_pool_index(type_encoding::MAX_PAYLOAD)),
     ] {
         assert!(ty.is_valid());
         assert_eq!(

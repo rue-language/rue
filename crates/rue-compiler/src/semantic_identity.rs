@@ -417,6 +417,13 @@ pub(crate) fn type_instance_from_semantic(
         T::PtrMut(pointee) => {
             TypeInstanceKey::PtrMut(Node::new(type_instance_from_semantic(pointee)))
         }
+        T::Function { params, result } => TypeInstanceKey::Function {
+            params: params
+                .iter()
+                .map(|(mode, ty)| (*mode, Node::new(type_instance_from_semantic(ty))))
+                .collect(),
+            result: Node::new(type_instance_from_semantic(result)),
+        },
         T::Module(module) => TypeInstanceKey::Module(module.clone()),
         T::GenericParameter(index) => TypeInstanceKey::GenericParameter(*index),
     }
@@ -476,6 +483,14 @@ pub(crate) fn semantic_type_from_instance(
         TypeInstanceKey::PtrMut(pointee) => {
             S::PtrMut(Arc::new(semantic_type_from_instance(pointee)))
         }
+        TypeInstanceKey::Function { params, result } => S::Function {
+            params: params
+                .iter()
+                .map(|(mode, ty)| (*mode, semantic_type_from_instance(ty)))
+                .collect::<Vec<_>>()
+                .into(),
+            result: Arc::new(semantic_type_from_instance(result)),
+        },
         TypeInstanceKey::Module(module) => S::Module(module.clone()),
         TypeInstanceKey::GenericParameter(index) => S::GenericParameter(*index),
     }
@@ -883,6 +898,15 @@ fn encode_type(value: &TypeInstanceKey, output: &mut String) {
             tag(output, 20);
             encode_type(element, output);
             bytes(output, name);
+        }
+        TypeInstanceKey::Function { params, result } => {
+            tag(output, 25);
+            number(output, params.len() as u64);
+            for (mode, ty) in params {
+                number(output, u64::from(mode.stable_word()));
+                encode_type(ty, output);
+            }
+            encode_type(result, output);
         }
     }
 }

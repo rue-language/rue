@@ -2347,6 +2347,28 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeRejections
         ))
     }
 
+    fn reject_callback_member(
+        &self,
+        ty: &Self::Type,
+        position: &str,
+        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeHostResult<(), Self::Failure> {
+        if matches!(
+            ty.as_ref(),
+            crate::durable_semantics::DurableType::Function { .. }
+        ) {
+            return Err(rue_air::ComptimeHostError::HostFailure(
+                durable_diagnostic_failure(
+                    &self.diagnostic_site(site),
+                    rue_error::ErrorKind::FnTypeOutsideParameter {
+                        position: position.to_owned(),
+                    },
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     fn depth_exceeded(
         &self,
         name: &Self::Name,

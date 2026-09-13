@@ -357,6 +357,15 @@ impl DurableEncode for crate::TypeInstanceKey<String, String> {
                 encode_variant(state, 19);
                 index.hash(state);
             }
+            Self::Function { params, result } => {
+                encode_variant(state, 24);
+                params.len().hash(state);
+                for (mode, ty) in params {
+                    mode.stable_word().hash(state);
+                    ty.durable_encode(state);
+                }
+                result.durable_encode(state);
+            }
         }
     }
 }

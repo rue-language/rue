@@ -2175,6 +2175,15 @@ impl ComptimeRejections for FakeHost {
     ) -> ComptimeHostResult<(), Self::Failure> {
         Ok(())
     }
+
+    fn reject_callback_member(
+        &self,
+        _ty: &Self::Type,
+        _position: &str,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<(), Self::Failure> {
+        Ok(())
+    }
     fn depth_exceeded(
         &self,
         _name: &Self::Name,
