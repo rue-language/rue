@@ -1446,6 +1446,7 @@ fn unsupported_corpus_field(case: &Case) -> Option<IneligibleReason> {
         // reproduce.
         symlinks,
         hard_links,
+        binary_files,
         requires_case_insensitive_fs,
         ffi_answer_archive,
         executable_target,
@@ -1469,10 +1470,11 @@ fn unsupported_corpus_field(case: &Case) -> Option<IneligibleReason> {
     if driver_exit_code.is_some() {
         return Some(IneligibleReason::DriverInvocation);
     }
-    // Links are staged into the compile's working directory before the case
-    // runs, and the in-process oracle has no such directory. A dangling or
-    // aliasing link is frequently the whole point of the case.
-    if !symlinks.is_empty() || !hard_links.is_empty() {
+    // Links and byte-for-byte fixtures are staged into the compile's working
+    // directory before the case runs, and the in-process oracle has no such
+    // directory. A dangling or aliasing link, or a malformed object an
+    // argument points at, is frequently the whole point of the case.
+    if !symlinks.is_empty() || !hard_links.is_empty() || !binary_files.is_empty() {
         return Some(IneligibleReason::StagedFixtures);
     }
     // Capability-scoped cases are reported as ignored by the CLI suite on a
@@ -1952,7 +1954,7 @@ fn discover_toml(dirs: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>) {
 mod tests {
     use super::*;
     use rue_test_runner::cli_corpus::{
-        HardLinkFixture, SourceFile, SymlinkFixture, WatchScenario, WatchScenarioKind,
+        BinaryFile, HardLinkFixture, SourceFile, SymlinkFixture, WatchScenario, WatchScenarioKind,
         WatchTestScenario, WatchTestScenarioKind,
     };
 
@@ -2290,6 +2292,16 @@ files = [{ path = "probe.rue", source = "fn main() -> i32 { 0 }" }]
         case.hard_links = vec![HardLinkFixture {
             link: "alias.rue".to_string(),
             target: "probe.rue".to_string(),
+        }];
+        assert_eq!(
+            unsupported_corpus_field(&case),
+            Some(IneligibleReason::StagedFixtures)
+        );
+
+        let mut case = base.clone();
+        case.binary_files = vec![BinaryFile {
+            path: "bad.o".to_string(),
+            hex: "7f45 4c46".to_string(),
         }];
         assert_eq!(
             unsupported_corpus_field(&case),
