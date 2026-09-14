@@ -1108,3 +1108,105 @@ fn main() -> i32 {
     if score == 9 { 79 } else { @intCast(score) }
 }
 """ }]
+
+[[case]]
+name = "std_merge_sort_m3"
+description = "RUE-683: merge_sort and merge_sort_by are stable O(n log n) sorts: records with equal keys keep their input order under both (and sort_by orders the same `@copy`-less records), a 257-element pseudo-random buffer sorts and stays a permutation, and a comparator with context sorts descending (8 checks -> exit 75)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 75
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+struct Rec { key: i64, tag: i64 }
+struct NoContext {}
+fn by_key(borrow ctx: NoContext, a: Rec, b: Rec) -> bool { a.key < b.key }
+
+struct Policy { descending: bool }
+fn precedes(borrow p: Policy, a: i64, b: i64) -> bool {
+    if p.descending { a > b } else { a < b }
+}
+
+// Record order: keys 2,1,2,0,1 with tags 1..5; a stable sort by key yields
+// tags 4, 2, 5, 1, 3.
+fn stable_by_key_ok(borrow recs: std.arraybuf.ArrayBuf(Rec)) -> bool {
+    let expect: [i64; 5] = [4, 2, 5, 1, 3];
+    let mut i: u64 = 0;
+    while i < 5 {
+        let r = recs.get_or(i, Rec { key: -1, tag: -1 });
+        if r.tag != expect[i] { return false; }
+        i += 1;
+    }
+    true
+}
+
+fn fill_records(inout recs: std.arraybuf.ArrayBuf(Rec)) {
+    recs.push(Rec { key: 2, tag: 1 });
+    recs.push(Rec { key: 1, tag: 2 });
+    recs.push(Rec { key: 2, tag: 3 });
+    recs.push(Rec { key: 0, tag: 4 });
+    recs.push(Rec { key: 1, tag: 5 });
+}
+
+fn main() -> i32 {
+    let mut score: i32 = 0;
+    let Recs = std.arraybuf.ArrayBuf(Rec);
+    let Ints = std.arraybuf.ArrayBuf(i64);
+    let none = NoContext {};
+
+    // merge_sort_by is stable.
+    let mut recs = Recs.new();
+    fill_records(inout recs);
+    std.sort.merge_sort_by(Rec, NoContext, borrow none, inout recs, by_key);
+    if std.sort.is_sorted_by(Rec, NoContext, borrow none, borrow recs, by_key) { score = score + 1; }
+    if stable_by_key_ok(borrow recs) { score = score + 1; }
+
+    // insertion_sort_by agrees with it on the same input, and sort_by (not
+    // stable) still orders the same `@copy`-less records by key.
+    let mut again = Recs.new();
+    fill_records(inout again);
+    std.sort.insertion_sort_by(Rec, NoContext, borrow none, inout again, by_key);
+    let mut quick = Recs.new();
+    fill_records(inout quick);
+    std.sort.sort_by(Rec, NoContext, borrow none, inout quick, by_key);
+    if stable_by_key_ok(borrow again) && std.sort.is_sorted_by(Rec, NoContext, borrow none, borrow quick, by_key) { score = score + 1; }
+
+    // merge_sort (natural order) over an odd-length pseudo-random buffer:
+    // sorted afterwards, and still a permutation (sum preserved).
+    let mut v = Ints.new();
+    let mut x: u64 = 88172645463325252;
+    let mut sum: i64 = 0;
+    let mut i: u64 = 0;
+    while i < 257 {
+        x = x ^ (x << 13); x = x ^ (x >> 7); x = x ^ (x << 17);
+        let value: i64 = @intCast((x >> 1) % 1000);
+        v.push(value);
+        sum = sum + value;
+        i += 1;
+    }
+    std.sort.merge_sort(i64, inout v);
+    if std.sort.is_sorted(i64, borrow v) { score = score + 1; }
+    let mut after: i64 = 0;
+    i = 0;
+    while i < v.len() { after = after + v.get_or(i, 0); i += 1; }
+    if after == sum && v.len() == 257 { score = score + 1; }
+
+    // Empty and singleton inputs are no-ops.
+    let mut empty = Ints.new();
+    std.sort.merge_sort(i64, inout empty);
+    let mut one = Ints.new();
+    one.push(7);
+    std.sort.merge_sort(i64, inout one);
+    if empty.len() == 0 && one.get_or(0, 0) == 7 { score = score + 1; }
+
+    // merge_sort_by under a descending policy.
+    let down = Policy { descending: true };
+    let mut w = Ints.new();
+    w.push(5); w.push(2); w.push(9); w.push(1); w.push(7); w.push(2);
+    std.sort.merge_sort_by(i64, Policy, borrow down, inout w, precedes);
+    if std.sort.is_sorted_by(i64, Policy, borrow down, borrow w, precedes) { score = score + 1; }
+    if w.get_or(0, 0) == 9 && w.get_or(5, 0) == 1 { score = score + 1; }
+
+    if score == 8 { 75 } else { @intCast(score) }
+}
+""" }]

@@ -20,14 +20,36 @@
 // still rejects it with E0206 against the `a < b` inside `_less`, and it cannot
 // be heap-ordered in any case.
 //
-// `new`, `len` and `is_empty` never read an element, so they stay ungated. A
-// custom-comparator heap is the M4 follow-up (needs function values, RUE-643).
+// `new`, `len` and `is_empty` never read an element, so they stay ungated.
 //
 //     const std = @import("std");
 //     let H = std.binary_heap.BinaryHeap(i64);
 //     let mut h = H.new();
 //     h.push(5); h.push(1); h.push(3);
 //     h.pop();      // Some(1)  — smallest first
+//
+// ORDERING BY A CALLBACK (RUE-683). `BinaryHeapBy(T, C)` and
+// `PriorityQueueBy(P, V, C)` take the ordering as a second-class function
+// parameter (ADR-0096, 6.1:46) with an explicit context `C`, exactly as
+// `std.sort.sort_by` does: `less: fn(borrow C, T, T) -> bool` says whether the
+// first element sits nearer the top. A callback cannot be stored (6.1:51), so
+// the heap does not remember its ordering: every `push` and `pop` receives
+// the context and the comparator again, and a heap is consistent only while
+// every operation on it uses the same ordering. The context is how a
+// comparison reaches state that is not in the elements — a cost table the
+// elements index, a policy that flips the direction — without capturing it.
+//
+//     struct Cost { w: [u64; 4] }
+//     fn cheaper(borrow c: Cost, a: u64, b: u64) -> bool { c.w[a] < c.w[b] }
+//     let H = std.binary_heap.BinaryHeapBy(u64, Cost);
+//     let mut h = H.new();
+//     h.push(borrow cost, 2, cheaper);
+//     h.pop(borrow cost, cheaper);      // Some(id) — cheapest first
+//
+// The `By` types are the same sifts as their natural-order twins with
+// `less(borrow ctx, a, b)` where the twins write `a < b`; they cannot share a
+// body because the natural order of a comptime `T` is an operator, not a named
+// function a `fn` parameter can bind (see std/sort.rue).
 
 const arraybuf = @import("arraybuf.rue");
 const option = @import("option.rue");
@@ -234,6 +256,226 @@ pub fn PriorityQueue(comptime P: type, comptime V: type) -> type {
                 let smallest = self.data.pop();
                 self._sift_down(0);
                 smallest
+            }
+        }
+    }
+}
+
+// A binary heap ordered by a caller-supplied comparator with an explicit
+// context (module header). The element nearest the top is the one `less`
+// orders before every other; with `a < b` as the comparator this is `BinaryHeap`.
+// COPY-`T` ONLY: `push`, `pop` and `peek` gate `T` first, as `BinaryHeap` does.
+pub fn BinaryHeapBy(comptime T: type, comptime C: type) -> type {
+    let Buf = arraybuf.ArrayBuf(T);
+    struct {
+        data: Buf,
+
+        fn new() -> Self {
+            let b = arraybuf.ArrayBuf(T);
+            Self { data: b.new() }
+        }
+
+        fn len(borrow self) -> u64 {
+            self.data.len()
+        }
+        fn is_empty(borrow self) -> bool {
+            self.data.is_empty()
+        }
+
+        // Whether element `i` orders before element `j` under `less`.
+        fn _less(borrow self, borrow ctx: C, i: u64, j: u64, less: fn(borrow C, T, T) -> bool) -> bool {
+            let O = option.Option(T);
+            match self.data.get(i) {
+                O.Some(a) => {
+                    match self.data.get(j) {
+                        O.Some(b) => less(borrow ctx, a, b),
+                        O.None => false,
+                    }
+                },
+                O.None => false,
+            }
+        }
+
+        fn _sift_down(inout self, borrow ctx: C, start: u64, less: fn(borrow C, T, T) -> bool) {
+            let mut i = start;
+            let n = self.data.len();
+            loop {
+                let l = 2 * i + 1;
+                let r = 2 * i + 2;
+                let mut top = i;
+                if l < n {
+                    if self._less(borrow ctx, l, top, less) {
+                        top = l;
+                    }
+                }
+                if r < n {
+                    if self._less(borrow ctx, r, top, less) {
+                        top = r;
+                    }
+                }
+                if top == i {
+                    break;
+                }
+                self.data.swap(i, top);
+                i = top;
+            }
+        }
+
+        // Insert `x` under `less`. COPY-`T` ONLY (the sift-up compares by-copy
+        // reads).
+        fn push(inout self, borrow ctx: C, x: T, less: fn(borrow C, T, T) -> bool) {
+            // Gated first, so an owning `T` is named here (module header).
+            @require_trivially_droppable(T);
+            self.data.push(x);
+            let mut i = self.data.len() - 1;
+            while i > 0 {
+                let parent = (i - 1) / 2;
+                if self._less(borrow ctx, i, parent, less) {
+                    self.data.swap(i, parent);
+                    i = parent;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // The top element by copy, or `None`. COPY-`T` ONLY. Needs no
+        // comparator: the top is wherever the last `push` or `pop` left it.
+        fn peek(borrow self) -> option.Option(T) {
+            // Gated first, so an owning `T` is named here (module header).
+            @require_trivially_droppable(T);
+            self.data.get(0)
+        }
+
+        // Remove and return the top element under `less`, or `None` when
+        // empty. COPY-`T` ONLY (the sift-down compares by-copy reads).
+        fn pop(inout self, borrow ctx: C, less: fn(borrow C, T, T) -> bool) -> option.Option(T) {
+            // Gated first, so an owning `T` is named here (module header).
+            @require_trivially_droppable(T);
+            let O = option.Option(T);
+            let n = self.data.len();
+            if n == 0 {
+                O.None
+            } else if n == 1 {
+                self.data.pop()
+            } else {
+                self.data.swap(0, n - 1);
+                let top = self.data.pop();
+                self._sift_down(borrow ctx, 0, less);
+                top
+            }
+        }
+    }
+}
+
+// A priority queue whose priorities are ordered by a caller-supplied
+// comparator with an explicit context (module header): `less(borrow ctx, p, q)`
+// says whether priority `p` is served before `q`, so a max-queue, a queue over
+// a cost table, or one that breaks ties by a second key needs no wrapper type.
+// COPY-ONLY in `P` and `V`, gated separately as `PriorityQueue` does. `pop`
+// returns the whole `Pair(P, V)` — read `.first` (priority) and `.second`
+// (payload).
+pub fn PriorityQueueBy(comptime P: type, comptime V: type, comptime C: type) -> type {
+    let Item = tuple.Pair(P, V);
+    let Buf = arraybuf.ArrayBuf(Item);
+    struct {
+        data: Buf,
+
+        fn new() -> Self {
+            let b = arraybuf.ArrayBuf(Item);
+            Self { data: b.new() }
+        }
+
+        fn len(borrow self) -> u64 {
+            self.data.len()
+        }
+        fn is_empty(borrow self) -> bool {
+            self.data.is_empty()
+        }
+
+        fn _less(borrow self, borrow ctx: C, i: u64, j: u64, less: fn(borrow C, P, P) -> bool) -> bool {
+            let O = option.Option(Item);
+            match self.data.get(i) {
+                O.Some(a) => {
+                    match self.data.get(j) {
+                        O.Some(b) => less(borrow ctx, a.first, b.first),
+                        O.None => false,
+                    }
+                },
+                O.None => false,
+            }
+        }
+
+        fn _sift_down(inout self, borrow ctx: C, start: u64, less: fn(borrow C, P, P) -> bool) {
+            let mut i = start;
+            let n = self.data.len();
+            loop {
+                let l = 2 * i + 1;
+                let r = 2 * i + 2;
+                let mut top = i;
+                if l < n {
+                    if self._less(borrow ctx, l, top, less) {
+                        top = l;
+                    }
+                }
+                if r < n {
+                    if self._less(borrow ctx, r, top, less) {
+                        top = r;
+                    }
+                }
+                if top == i {
+                    break;
+                }
+                self.data.swap(i, top);
+                i = top;
+            }
+        }
+
+        // Insert `payload` with priority `prio` under `less`.
+        fn push(inout self, borrow ctx: C, prio: P, payload: V, less: fn(borrow C, P, P) -> bool) {
+            // Gated first and per parameter, so the offending half is the one
+            // named rather than the enclosing `Pair(P, V)` (module header).
+            @require_trivially_droppable(P);
+            @require_trivially_droppable(V);
+            let it = Item.new(prio, payload);
+            self.data.push(it);
+            let mut i = self.data.len() - 1;
+            while i > 0 {
+                let parent = (i - 1) / 2;
+                if self._less(borrow ctx, i, parent, less) {
+                    self.data.swap(i, parent);
+                    i = parent;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // The `(priority, payload)` pair at the top by copy, or `None`.
+        fn peek(borrow self) -> option.Option(Item) {
+            @require_trivially_droppable(P);
+            @require_trivially_droppable(V);
+            self.data.get(0)
+        }
+
+        // Remove and return the `(priority, payload)` pair served first under
+        // `less`, or `None` when empty.
+        fn pop(inout self, borrow ctx: C, less: fn(borrow C, P, P) -> bool) -> option.Option(Item) {
+            // Gated first and per parameter, so the offending half is the one
+            // named rather than the enclosing `Pair(P, V)` (module header).
+            @require_trivially_droppable(P);
+            @require_trivially_droppable(V);
+            let O = option.Option(Item);
+            let n = self.data.len();
+            if n == 0 {
+                O.None
+            } else if n == 1 {
+                self.data.pop()
+            } else {
+                self.data.swap(0, n - 1);
+                let top = self.data.pop();
+                self._sift_down(borrow ctx, 0, less);
+                top
             }
         }
     }

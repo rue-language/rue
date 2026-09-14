@@ -28,6 +28,13 @@
 //     std.sort.sort_by(u64, Weights, borrow weights, inout ids, lighter);
 //     let n = std.sort.partition_by(i64, Threshold, borrow limit, inout v, heavy);
 //
+// STABLE SORTS. `insertion_sort` and `insertion_sort_by` are stable but
+// quadratic; `merge_sort` and `merge_sort_by` are stable in O(n log n) at the
+// cost of one scratch buffer the size of the input, filled and drained once per
+// doubling of the run width. Equal elements keep their input order under every
+// stable sort here: a merge takes from the right run only when its element
+// strictly precedes the left one.
+//
 // The `_by` sorts are the same algorithms as their natural-order twins, with
 // `less(borrow ctx, a, b)` where the twins write `a < b`. They cannot share one
 // body: the natural order of a comptime `T` is the operator, and an operator is
@@ -221,22 +228,21 @@ pub fn insertion_sort_by(comptime T: type, comptime C: type, borrow ctx: C, inou
 
 // `median_of_three` under a caller-supplied ordering.
 fn median_of_three_by(comptime T: type, comptime C: type, borrow ctx: C, borrow xs: arraybuf.ArrayBuf(T), a: u64, b: u64, c: u64, less: fn(borrow C, T, T) -> bool) -> u64 {
-    let va = _at(T, borrow xs, a);
-    let vb = _at(T, borrow xs, b);
-    let vc = _at(T, borrow xs, c);
-    if less(borrow ctx, va, vb) {
-        if less(borrow ctx, vb, vc) {
+    // The comparator consumes its by-value operands, so every comparison
+    // reads its two slots afresh (see `merge_sort_by`).
+    if less(borrow ctx, _at(T, borrow xs, a), _at(T, borrow xs, b)) {
+        if less(borrow ctx, _at(T, borrow xs, b), _at(T, borrow xs, c)) {
             return b;
         }
-        if less(borrow ctx, va, vc) {
+        if less(borrow ctx, _at(T, borrow xs, a), _at(T, borrow xs, c)) {
             return c;
         }
         return a;
     }
-    if less(borrow ctx, va, vc) {
+    if less(borrow ctx, _at(T, borrow xs, a), _at(T, borrow xs, c)) {
         return a;
     }
-    if less(borrow ctx, vb, vc) {
+    if less(borrow ctx, _at(T, borrow xs, b), _at(T, borrow xs, c)) {
         return c;
     }
     b
@@ -252,12 +258,13 @@ fn qsort_range_by(comptime T: type, comptime C: type, borrow ctx: C, inout xs: a
         let mid = lo + (hi - lo) / 2;
         let pivot_index = median_of_three_by(T, C, borrow ctx, borrow xs, lo, mid, hi, less);
         xs.swap(pivot_index, hi);
-        let pivot = _at(T, borrow xs, hi);
         let mut store = lo;
         let mut j = lo;
         while j < hi {
-            let vj = _at(T, borrow xs, j);
-            if less(borrow ctx, vj, pivot) {
+            // The pivot stays in slot `hi` for the whole partition, and the
+            // comparator consumes its operands, so both are read per
+            // comparison (see `merge_sort_by`).
+            if less(borrow ctx, _at(T, borrow xs, j), _at(T, borrow xs, hi)) {
                 xs.swap(store, j);
                 store += 1;
             }
@@ -299,6 +306,117 @@ pub fn sort_by(comptime T: type, comptime C: type, borrow ctx: C, inout xs: arra
     let n = xs.len();
     if n > 1 {
         qsort_range_by(T, C, borrow ctx, inout xs, 0, n - 1, less);
+    }
+}
+
+// Merge sort: stable, O(n log n), O(n) scratch. Bottom-up: runs of width 1,
+// 2, 4, ... are merged pairwise from `xs` into `tmp` and copied back, so the
+// recursion depth of a top-down merge sort is never paid and the two buffers
+// alternate roles through the copy rather than through pointer juggling.
+pub fn merge_sort(comptime T: type, inout xs: arraybuf.ArrayBuf(T)) {
+    // COPY-`T` ONLY (module header): stated first so an owning element type is
+    // named here rather than deeper in, at a comparison or a by-copy read.
+    @require_trivially_droppable(T);
+    let n = xs.len();
+    if n < 2 {
+        return;
+    }
+    let B = arraybuf.ArrayBuf(T);
+    let mut tmp = B.new();
+    tmp.reserve(n);
+    let mut width: u64 = 1;
+    while width < n {
+        tmp.clear();
+        let mut lo: u64 = 0;
+        while lo < n {
+            let mid = if lo + width < n { lo + width } else { n };
+            let hi = if lo + 2 * width < n { lo + 2 * width } else { n };
+            let mut i = lo;
+            let mut j = mid;
+            while i < mid && j < hi {
+                let a = _at(T, borrow xs, i);
+                let b = _at(T, borrow xs, j);
+                // Take the right element only when it strictly precedes the
+                // left one, so equal elements keep their input order.
+                if b < a {
+                    tmp.push(b);
+                    j += 1;
+                } else {
+                    tmp.push(a);
+                    i += 1;
+                }
+            }
+            while i < mid {
+                tmp.push(_at(T, borrow xs, i));
+                i += 1;
+            }
+            while j < hi {
+                tmp.push(_at(T, borrow xs, j));
+                j += 1;
+            }
+            lo = hi;
+        }
+        let mut k: u64 = 0;
+        while k < n {
+            xs.set(k, _at(T, borrow tmp, k));
+            k += 1;
+        }
+        width = width * 2;
+    }
+}
+
+// `merge_sort` under a caller-supplied ordering: stable, O(n log n), O(n)
+// scratch. `less(borrow ctx, a, b)` is the strict ordering `a` precedes `b`.
+pub fn merge_sort_by(comptime T: type, comptime C: type, borrow ctx: C, inout xs: arraybuf.ArrayBuf(T), less: fn(borrow C, T, T) -> bool) {
+    // COPY-`T` ONLY (module header): stated first so an owning element type is
+    // named here rather than deeper in, at a comparison or a by-copy read.
+    @require_trivially_droppable(T);
+    let n = xs.len();
+    if n < 2 {
+        return;
+    }
+    let B = arraybuf.ArrayBuf(T);
+    let mut tmp = B.new();
+    tmp.reserve(n);
+    let mut width: u64 = 1;
+    while width < n {
+        tmp.clear();
+        let mut lo: u64 = 0;
+        while lo < n {
+            let mid = if lo + width < n { lo + width } else { n };
+            let hi = if lo + 2 * width < n { lo + 2 * width } else { n };
+            let mut i = lo;
+            let mut j = mid;
+            while i < mid && j < hi {
+                // Strictly-precedes keeps equal elements in input order. The
+                // comparator consumes its by-value operands, so the element
+                // taken is read again from its slot rather than reused: a
+                // by-copy read of a Copy `T` is free, and a `@copy`-less
+                // record of scalars sorts without a move error.
+                if less(borrow ctx, _at(T, borrow xs, j), _at(T, borrow xs, i)) {
+                    tmp.push(_at(T, borrow xs, j));
+                    j += 1;
+                } else {
+                    tmp.push(_at(T, borrow xs, i));
+                    i += 1;
+                }
+            }
+            while i < mid {
+                tmp.push(_at(T, borrow xs, i));
+                i += 1;
+            }
+            while j < hi {
+                tmp.push(_at(T, borrow xs, j));
+                j += 1;
+            }
+            lo = hi;
+        }
+        let mut k: u64 = 0;
+        while k < n {
+            xs.set(k, _at(T, borrow tmp, k));
+            k += 1;
+        }
+        width = width * 2;
     }
 }
 
