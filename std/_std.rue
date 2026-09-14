@@ -8,6 +8,8 @@
 //   and float math (sqrt/floor/ceil/trunc/round, inf/nan predicates, exact
 //   rem, total_cmp)
 // - std.cmp: Ordering + generic min/max/clamp/cmp
+// - std.iter: eager map/filter/fold/reduce/for_each/count_if/any/all/find_index/
+//   max_by/min_by over ArrayBuf(T), each taking a callback with explicit context
 // - std.mem: swap / replace (inout helpers)
 // - std.tuple: Pair / Triple
 // - std.fmt: scalar-to-string formatting (int/float/bool, hex/binary)
@@ -73,6 +75,10 @@ pub const ascii = @import("ascii.rue");
 pub const strings = @import("strings.rue");
 pub const json = @import("json.rue");
 pub const sort = @import("sort.rue");
+// Eager combinators over ArrayBuf(T) with a callback and an explicit context
+// (RUE-684, ADR-0096): for_each / count_if / any / all / find_index / fold /
+// reduce / map / filter / max_by / min_by, plus natural-order sum / min / max.
+pub const iter = @import("iter.rue");
 pub const rand = @import("rand.rue");
 
 // Byte hashing (RUE-682): FNV-1a/64 and djb2, incrementally through
