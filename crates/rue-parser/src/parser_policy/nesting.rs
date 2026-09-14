@@ -29,6 +29,14 @@ pub(crate) fn check_nesting_depth(tokens: &[Token]) -> Option<CompileError> {
     // separator, which stays an upper bound on the AST depth that follows.
     let mut chain = vec![0usize];
     let mut deepest_chain = vec![0usize];
+    // A function type `fn(..) -> T` nests its result type: `fn() -> fn() ->
+    // fn() -> i32` recurses once per `fn`, yet its parentheses are balanced
+    // and the `->` that ends a signature resets the level's operator count.
+    // Each `fn` that opens a type therefore counts on its own ledger, which
+    // an arrow never discharges; the ledger drains when the level closes,
+    // at any other separator, or when a `fn` opens a declaration instead
+    // (RUE-2202).
+    let mut fn_types = vec![0usize];
     let mut prev: Option<&TokenKind> = None;
 
     macro_rules! reject_if_too_deep {
@@ -64,6 +72,7 @@ pub(crate) fn check_nesting_depth(tokens: &[Token]) -> Option<CompileError> {
                 levels.push(0);
                 chain.push(0);
                 deepest_chain.push(0);
+                fn_types.push(0);
                 reject_if_too_deep!(token.span);
             }
             TokenKind::LBracket => {
@@ -88,6 +97,7 @@ pub(crate) fn check_nesting_depth(tokens: &[Token]) -> Option<CompileError> {
                 levels.push(0);
                 chain.push(0);
                 deepest_chain.push(0);
+                fn_types.push(0);
                 reject_if_too_deep!(token.span);
             }
             TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket => {
@@ -95,19 +105,46 @@ pub(crate) fn check_nesting_depth(tokens: &[Token]) -> Option<CompileError> {
                     total_ops -= levels.pop().unwrap();
                     total_ops -= chain.pop().unwrap();
                     total_ops -= deepest_chain.pop().unwrap();
+                    total_ops -= fn_types.pop().unwrap();
                 }
             }
             TokenKind::Semi
             | TokenKind::Comma
             | TokenKind::FatArrow
             | TokenKind::Eq
-            | TokenKind::Colon
-            | TokenKind::Arrow => {
+            | TokenKind::Colon => {
+                let level = levels.len() - 1;
+                total_ops -= levels[level] + chain[level] + deepest_chain[level] + fn_types[level];
+                levels[level] = 0;
+                chain[level] = 0;
+                deepest_chain[level] = 0;
+                fn_types[level] = 0;
+            }
+            // A signature's arrow completes the parameter list but not a
+            // function type: the result type that follows nests inside it.
+            TokenKind::Arrow => {
                 let level = levels.len() - 1;
                 total_ops -= levels[level] + chain[level] + deepest_chain[level];
                 levels[level] = 0;
                 chain[level] = 0;
                 deepest_chain[level] = 0;
+            }
+            // `fn (` opens a function type, one wrapper deep in the type it
+            // is written in; `fn name(` opens a declaration and ends any
+            // function type the level was still counting.
+            TokenKind::Fn => {
+                let level = levels.len() - 1;
+                if tokens
+                    .get(index + 1)
+                    .is_some_and(|next| next.kind == TokenKind::LParen)
+                {
+                    fn_types[level] += 1;
+                    total_ops += 1;
+                    reject_if_too_deep!(token.span);
+                } else {
+                    total_ops -= fn_types[level];
+                    fn_types[level] = 0;
+                }
             }
             // Only an `else if` link nests: a plain `else { ... }` is the
             // second child of the one `if` node and its block is counted on
@@ -159,7 +196,12 @@ pub(crate) fn check_nesting_depth(tokens: &[Token]) -> Option<CompileError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lasso::Key;
     use rue_span::{FileId, Span};
+
+    fn ident() -> TokenKind {
+        TokenKind::Ident(lasso::Spur::try_from_usize(1).unwrap())
+    }
 
     fn tokens(kinds: impl IntoIterator<Item = TokenKind>, file: FileId) -> Vec<Token> {
         kinds
@@ -201,6 +243,80 @@ mod tests {
         let error = check_nesting_depth(&input).unwrap();
         assert_eq!(error.span(), Some(input[MAX_NESTING_DEPTH].span));
         assert_eq!(error.span().unwrap().file_id, file);
+    }
+
+    #[test]
+    fn function_type_result_chains_count_toward_the_budget() {
+        // `fn() -> fn() -> ... -> i32`: every `fn` nests its result type,
+        // although its parentheses balance and each arrow completes a
+        // signature (RUE-2202).
+        let file = FileId::new(11);
+        let link = [
+            TokenKind::Fn,
+            TokenKind::LParen,
+            TokenKind::RParen,
+            TokenKind::Arrow,
+        ];
+        let deep = tokens(
+            (0..MAX_NESTING_DEPTH + 2)
+                .flat_map(|_| link.clone())
+                .chain([TokenKind::I32]),
+            file,
+        );
+        let error = check_nesting_depth(&deep).expect("an over-deep chain is rejected");
+        assert_eq!(error.span().unwrap().file_id, file);
+        let shallow = tokens(
+            (0..MAX_NESTING_DEPTH / 2)
+                .flat_map(|_| link.clone())
+                .chain([TokenKind::I32]),
+            file,
+        );
+        assert!(check_nesting_depth(&shallow).is_none());
+    }
+
+    #[test]
+    fn sequential_function_types_do_not_accumulate_depth() {
+        // Parameters of function type separated by commas, and declarations
+        // that return function types, are siblings: each `fn` ledger drains
+        // at the separator or at the next declaration (RUE-2202).
+        let file = FileId::new(12);
+        let param = [
+            ident(),
+            TokenKind::Colon,
+            TokenKind::Fn,
+            TokenKind::LParen,
+            TokenKind::RParen,
+            TokenKind::Arrow,
+            TokenKind::I32,
+            TokenKind::Comma,
+        ];
+        let params = tokens(
+            [TokenKind::Fn, ident(), TokenKind::LParen]
+                .into_iter()
+                .chain((0..MAX_NESTING_DEPTH + 20).flat_map(|_| param.clone()))
+                .chain([TokenKind::RParen, TokenKind::LBrace, TokenKind::RBrace]),
+            file,
+        );
+        assert!(check_nesting_depth(&params).is_none());
+        let declaration = [
+            TokenKind::Fn,
+            ident(),
+            TokenKind::LParen,
+            TokenKind::RParen,
+            TokenKind::Arrow,
+            TokenKind::Fn,
+            TokenKind::LParen,
+            TokenKind::RParen,
+            TokenKind::Arrow,
+            TokenKind::I32,
+            TokenKind::LBrace,
+            TokenKind::RBrace,
+        ];
+        let declarations = tokens(
+            (0..MAX_NESTING_DEPTH + 20).flat_map(|_| declaration.clone()),
+            file,
+        );
+        assert!(check_nesting_depth(&declarations).is_none());
     }
 
     #[test]

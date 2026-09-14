@@ -334,3 +334,23 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 0
+
+# RUE-2202: a function type nests its result type, so a chain of `fn() ->`
+# wrappers is as deep as it is long although every parenthesis balances. The
+# pre-parse guard must report E0482 before the recursive type parser exhausts
+# its stack; a chain inside the documented allowance still parses (it is then
+# the ordinary E0214 of a `fn` type in result position, not this guard's
+# business).
+[[case]]
+name = "function_type_result_chain_beyond_the_budget_is_rejected"
+files = [{ path = "main.rue", source = "fn f(x: fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->i32) {}\nfn main() -> i32 { 0 }\n" }]
+args = ["--emit", "ast", "main.rue"]
+compile_fail = true
+error_contains = ["E0482"]
+
+[[case]]
+name = "function_type_result_chain_within_the_budget_parses"
+files = [{ path = "main.rue", source = "fn f(x: fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->fn()->i32) {}\nfn main() -> i32 { 0 }\n" }]
+args = ["--emit", "ast", "main.rue"]
+compile_only = true
+compile_stderr_not_contains = ["E0482", "overflowed"]
