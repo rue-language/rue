@@ -361,16 +361,38 @@ fn recognize(cfg: &Cfg, lp: &NaturalLoop) -> Option<Trip> {
     // A constant Alloc is only a valid initial value when no reaching write
     // in the preheader can replace it. The first phase rejects that shape
     // rather than trying to reconstruct a full reaching-definitions analysis.
-    if cfg.get_block(outside[0]).insts.iter().any(|value| {
-        matches!(
-            cfg.get_inst(*value).data,
-            CfgInstData::Store { slot: s, .. } if s == slot
-        ) || matches!(
-            cfg.get_inst(*value).data,
-            CfgInstData::PlaceWrite { ref place, .. }
-                if matches!(place.base, PlaceBase::Local(s) if s == slot)
-        )
-    }) {
+    // A call that receives the slot by reference (`bump(inout i)`, through a
+    // direct, accessor or indirect call) is such a write: the callee may
+    // store to the slot before the loop is entered, so the Alloc's constant
+    // is not the trip count's starting point (RUE-2199).
+    let preheader_insts = &cfg.get_block(outside[0]).insts;
+    let slot_place_values: AHashSet<CfgValue> = preheader_insts
+        .iter()
+        .copied()
+        .filter(|value| match &cfg.get_inst(*value).data {
+            CfgInstData::Load { slot: s } => *s == slot,
+            CfgInstData::PlaceRead { place } => {
+                matches!(place.base, PlaceBase::Local(s) if s == slot)
+            }
+            _ => false,
+        })
+        .collect();
+    if preheader_insts
+        .iter()
+        .any(|value| match &cfg.get_inst(*value).data {
+            CfgInstData::Store { slot: s, .. } => *s == slot,
+            CfgInstData::PlaceWrite { place, .. } => {
+                matches!(place.base, PlaceBase::Local(s) if s == slot)
+            }
+            CfgInstData::Call { args, .. }
+            | CfgInstData::AccessorCall { args, .. }
+            | CfgInstData::CallIndirect { args, .. } => cfg
+                .call_args(args)
+                .iter()
+                .any(|arg| arg.is_by_ref() && slot_place_values.contains(&arg.value)),
+            _ => false,
+        })
+    {
         return None;
     }
     // Do not clone a loop whose SSA result is consumed by an external block.
