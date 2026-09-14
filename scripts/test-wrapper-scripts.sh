@@ -874,7 +874,8 @@ EOF
   chmod +x "$sb/compiler"
 
   rc=0
-  PATH="$sb/fakebin:$PATH" \
+  env -u RUE_CLI_EXECUTION_CONTRACTS_JSON \
+    PATH="$sb/fakebin:$PATH" \
     FAKE_CONTRACTS_PATH="$sb/contracts.json" \
     RUE_BINARY="$sb/compiler" \
     COMPILE_LOG="$sb/compile.log" \
@@ -894,7 +895,8 @@ exit 7
 EOF
   chmod +x "$sb/buck2"
   rc=0
-  out="$(PATH="$sb/fakebin:$PATH" RUE_BINARY="$sb/compiler" \
+  out="$(env -u RUE_CLI_EXECUTION_CONTRACTS_JSON \
+    PATH="$sb/fakebin:$PATH" RUE_BINARY="$sb/compiler" \
     COMPILE_LOG="$sb/compile.log" \
     TMPDIR="$sb/tmp" \
     "$sb/scripts/run-sanitizer.sh" 2>&1)" || rc=$?
