@@ -20,9 +20,13 @@ looking for them.
   method". Generic code is written with `comptime` type parameters, and each
   instantiation is checked separately. Interfaces are the next major language
   feature under design.
-- **Closures and function values.** You cannot pass a function as an
-  argument or store one in a struct. The design direction is second-class
-  function parameters, in the same spirit as slices.
+- **Closures and function values.** A function can take a callback as a
+  parameter of type `fn(A, borrow B) -> R` and pass it a named function, and
+  the body can call or forward it; `std.sort.sort_by` is the standard example.
+  A callback is second-class, in the same spirit as slices: it cannot be
+  stored in a local, a field, or a collection, returned, or captured, and
+  there are no closures. Behavior that must persist is passed again at each
+  call.
 - **Format strings.** Output is `+` and `@to_string`. A compile-time
   formatting facility is possible under Rue's rules (it would run on a string
   literal, not on syntax) but does not exist.

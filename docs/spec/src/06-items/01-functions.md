@@ -350,8 +350,6 @@ fn main() -> i32 {
 
 ## Function Parameter Types
 
-{{ preview_feature(feature="fn_params", adr="ADR-0096", doc="0096-second-class-function-parameters.md") }}
-
 {{ rule(id="6.1:46", cat="syntax") }}
 
 ```ebnf
@@ -365,8 +363,7 @@ each parameter, in order, and the result type. A parameter's mode precedes
 its type exactly as on a declaration (6.1:15), no parameter is named, and an
 omitted result is `()` (6.1:5). A `fn` type **MAY** appear inside another
 `fn` type's parameter list. `comptime` is not a mode a function type can
-spell. Function parameter types are a preview feature: a program that writes
-a `fn` type **MUST** be compiled with `--preview fn_params` (8.4:1).
+spell.
 
 {{ rule(id="6.1:47", cat="legality-rule") }}
 

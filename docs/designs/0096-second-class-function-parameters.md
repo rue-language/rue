@@ -1,12 +1,12 @@
 ---
 id: 0096
 title: "Second-class function parameters: callbacks that are passed, called, and forwarded, never stored"
-status: accepted
+status: implemented
 tags: [language, syntax, semantics, types, abi, ownership]
 feature-flag: fn_params
 created: 2026-09-13
 accepted: 2026-09-13
-implemented:
+implemented: 2026-09-14
 spec-sections: ["6.1:46", "6.1:47", "6.1:48", "6.1:49", "6.1:50", "6.1:51", "6.1:52"]
 superseded-by:
 relates: ["RUE-2107", "RUE-2112", "RUE-2113", "RUE-2193", "RUE-2194", "RUE-2195", "RUE-1886", "ADR-0005", "ADR-0043", "ADR-0084", "ADR-0087"]
@@ -16,11 +16,39 @@ relates: ["RUE-2107", "RUE-2112", "RUE-2113", "RUE-2193", "RUE-2194", "RUE-2195"
 
 ## Status
 
-Accepted on 2026-09-13 by Steve (the RUE-2107 ruling: the researched v1 is
-ratified as written). Phases 1 through 3 are implemented behind the
-`fn_params` preview feature: the `fn` parameter type, the callback semantics
-through CFG and the reference interpreter, and the native indirect call on
-both backends. Phase 4 validates the feature and removes the gate.
+Implemented. Accepted on 2026-09-13 by Steve (the RUE-2107 ruling: the
+researched v1 is ratified as written). Phases 1 through 3 delivered the `fn`
+parameter type, the callback semantics through CFG and the reference
+interpreter, and the native indirect call on both backends behind the
+`fn_params` preview feature; phase 4 (RUE-2113) validated the feature against
+the RUE-2107 exit criteria and removed the gate on 2026-09-14, so the subset
+decided below is stable Rue. The measurements phase 4 rests on are in
+[docs/notes/fn-params-indirect-call-overhead.md](../notes/fn-params-indirect-call-overhead.md).
+
+### Deferred
+
+Everything outside the decided subset stays undecided, not rejected. Each item
+below is a later design with its own ADR, and the escape rule (decision 5) was
+chosen so that none of them is constrained by this one:
+
+- **Closures.** A callback has no environment: nothing is captured, and the
+  context a comparator or predicate needs is an explicit `borrow` or `inout`
+  argument the caller passes at every call.
+- **Storage.** A `fn` type is legal only as a by-value runtime parameter
+  (E0214) and a callback parameter may only be called or forwarded (E0217).
+  Keeping a callback in a local, a field, an array, a container, an `Option`,
+  or a return value, and comparing or converting it, wait for a first-class
+  function-value design.
+- **Extern callbacks.** An `extern "C"` function is not an eligible argument
+  (E0216) and a Rue callback never crosses the C boundary in either direction;
+  a named Rue wrapper around a `checked` foreign call is the one spelling.
+  Passing a Rue function to C, and receiving a C function pointer, need the
+  ADR-0064 boundary to say what a code pointer means on each side.
+- **Generic and receiver adaptation.** A generic function and a method with a
+  receiver are not eligible (E0216); a monomorphic wrapper names the
+  specialization or takes the receiver explicitly. The spelling for naming a
+  generic specialization directly, and unbound `Type.method` conversion,
+  remain open questions below.
 
 ## Summary
 
@@ -136,9 +164,15 @@ the later designs are not constrained by it.
   through the canonical call plan on x86-64 and AArch64, placed after the
   argument leaves in a register the argument sequence never writes, with
   executable spec, CLI and oracle-diff coverage.
-- [ ] **Phase 4: validation and stabilization** - RUE-2113. Port a realistic
-  comparator and predicate, measure indirect-call overhead, and remove the
-  preview gate for exactly the subset above.
+- [x] **Phase 4: validation and stabilization** - RUE-2113. `std.sort`
+  gained `sort_by`, `insertion_sort_by`, `is_sorted_by` and `partition_by`, a
+  comparator and a predicate API that take an explicit context, and the
+  Mosaic example ranks its search terms through `sort_by` with the index as
+  the comparator's context; the CLI cases cover float, two-slot and
+  hidden-result callbacks, an `inout` aggregate context, and a callback
+  forwarded across three modules; the overhead of the indirect call was
+  measured; and the `fn_params` preview gate was removed for exactly the
+  subset above.
 
 ## Consequences
 

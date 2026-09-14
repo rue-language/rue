@@ -2008,24 +2008,6 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         QueryAbort,
         crate::semantic_query_nucleus::SemanticNucleusFailure,
     > {
-        // The grammar is gated (ADR-0096): a `fn` type written anywhere is
-        // the preview's surface, so the gate sits where the syntax becomes a
-        // type rather than at each position that admits one.
-        if !self
-            .configuration
-            .preview_features
-            .contains(rue_error::PreviewFeature::FnParams)
-        {
-            return Self::provider_domain_failure(
-                crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticWithHelp {
-                    kind: rue_error::ErrorKind::PreviewFeatureRequired {
-                        feature: rue_error::PreviewFeature::FnParams,
-                        what: "function parameter types".to_owned(),
-                    },
-                    help: Arc::from(rue_error::PreviewFeature::FnParams.enable_help()),
-                },
-            );
-        }
         Ok(crate::durable_semantics::DurableType::Function {
             params: params.into(),
             result: Arc::new(result),

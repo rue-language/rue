@@ -4195,14 +4195,6 @@ where
         result: Type,
         span: Span,
     ) -> CompileResult<Type> {
-        // The grammar is gated (ADR-0096): a `fn` type written anywhere is
-        // the preview's surface, so the gate sits where the syntax becomes a
-        // type rather than at each position that admits one.
-        self.require_preview(
-            rue_error::PreviewFeature::FnParams,
-            "function parameter types",
-            span,
-        )?;
         self.type_pool
             .try_intern_function(crate::FunctionTypeDef {
                 params: params

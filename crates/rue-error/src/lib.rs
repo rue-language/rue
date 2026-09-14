@@ -894,33 +894,33 @@ define_error_codes! {
     /// type of a by-value runtime parameter (ADR-0096, RUE-2193). The message
     /// names the position that was written.
     FN_TYPE_OUTSIDE_PARAMETER = 214 => {
-        explanation: "A function type `fn(A, borrow B) -> R` (preview feature `fn_params`) names a second-class callback: a parameter that a named function is passed to and that the body calls or forwards. The callback exists only for the duration of the call, so a `fn` type may be written only as the type of a by-value runtime parameter, including a parameter inside another `fn` type's parameter list. It cannot be a return type, a `let` or `const` annotation, a struct field or enum payload, an array element, a pointer pointee, a slice element, a type argument, or the type of a `borrow`, `inout`, or `comptime` parameter.",
+        explanation: "A function type `fn(A, borrow B) -> R` names a second-class callback: a parameter that a named function is passed to and that the body calls or forwards. The callback exists only for the duration of the call, so a `fn` type may be written only as the type of a by-value runtime parameter, including a parameter inside another `fn` type's parameter list. It cannot be a return type, a `let` or `const` annotation, a struct field or enum payload, an array element, a pointer pointee, a slice element, a type argument, or the type of a `borrow`, `inout`, or `comptime` parameter.",
         likely_cause: "A function tried to store, return, or nest a callback. Take the callback as a by-value parameter and call or forward it inside the body; to keep behavior across calls, pass it again at each call, or name a function directly.",
         examples: [
-            ErrorCodeExample { title: "Return a callback", source: "fn pick(cb: fn(i32) -> i32) -> fn(i32) -> i32 { cb }\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: ["fn_params"] },
-            ErrorCodeExample { title: "Take the callback as a parameter", source: "fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { 0 }\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::Compiles, preview: ["fn_params"] },
+            ErrorCodeExample { title: "Return a callback", source: "fn pick(cb: fn(i32) -> i32) -> fn(i32) -> i32 { cb }\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: [] },
+            ErrorCodeExample { title: "Take the callback as a parameter", source: "fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { 0 }\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::Compiles, preview: [] },
         ],
         references: [ErrorCodeReference { title: "Function parameter types", path: "docs/spec/src/06-items/01-functions.md", rule: Some("6.1:47") }],
     };
     /// The function named as a callback argument does not have exactly the
     /// `fn` parameter's signature (ADR-0096, RUE-2194).
     CALLBACK_SIGNATURE_MISMATCH = 215 => {
-        explanation: "The argument to a `fn` parameter (preview feature `fn_params`) must be a named function whose signature is exactly the parameter's: the same number of parameters, the same mode and type at every position, and the same result type. No conversion relates two `fn` types: an integer parameter is not widened, a `borrow` parameter does not stand in for a by-value one, and a result is not adapted.",
+        explanation: "The argument to a `fn` parameter must be a named function whose signature is exactly the parameter's: the same number of parameters, the same mode and type at every position, and the same result type. No conversion relates two `fn` types: an integer parameter is not widened, a `borrow` parameter does not stand in for a by-value one, and a result is not adapted.",
         likely_cause: "The callback's declaration differs from the `fn` type in one parameter mode, one parameter type, the arity, or the result. Change the declaration to match, or write a wrapper function with exactly the expected signature and pass that.",
         examples: [
-            ErrorCodeExample { title: "Pass a function with a wider parameter", source: "fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }\nfn widen(value: i64) -> i64 { value }\nfn main() -> i32 { apply(widen, 1) }", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: ["fn_params"] },
-            ErrorCodeExample { title: "Pass a function with exactly the signature", source: "fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }\nfn double(value: i32) -> i32 { value * 2 }\nfn main() -> i32 { apply(double, 1) }", outcome: ErrorCodeExampleOutcome::Compiles, preview: ["fn_params"] },
+            ErrorCodeExample { title: "Pass a function with a wider parameter", source: "fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }\nfn widen(value: i64) -> i64 { value }\nfn main() -> i32 { apply(widen, 1) }", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: [] },
+            ErrorCodeExample { title: "Pass a function with exactly the signature", source: "fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }\nfn double(value: i32) -> i32 { value * 2 }\nfn main() -> i32 { apply(double, 1) }", outcome: ErrorCodeExampleOutcome::Compiles, preview: [] },
         ],
         references: [ErrorCodeReference { title: "Callback arguments", path: "docs/spec/src/06-items/01-functions.md", rule: Some("6.1:50") }],
     };
     /// The argument to a `fn` parameter is not an eligible named function
     /// (ADR-0096 §4, RUE-2194).
     INELIGIBLE_CALLBACK = 216 => {
-        explanation: "A `fn` parameter (preview feature `fn_params`) binds a named function: an ordinary monomorphic free function, a module-qualified function, a compile-time alias to one, or a receiverless associated function of a concrete type. Any other expression, and a function of a kind that has no plain callable address, is rejected: a method with a receiver, a generic function, an `extern \"C\"` or `unchecked` function, a `-> type` constructor, an accessor, and a builtin.",
+        explanation: "A `fn` parameter binds a named function: an ordinary monomorphic free function, a module-qualified function, a compile-time alias to one, or a receiverless associated function of a concrete type. Any other expression, and a function of a kind that has no plain callable address, is rejected: a method with a receiver, a generic function, an `extern \"C\"` or `unchecked` function, a `-> type` constructor, an accessor, and a builtin.",
         likely_cause: "The argument is an expression rather than a function name, or it names a generic, foreign, unchecked, or receiver-taking function. Write a named wrapper function with the expected signature that calls the intended function, and pass the wrapper.",
         examples: [
-            ErrorCodeExample { title: "Pass an integer where a callback is expected by name", source: "fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }\nfn main() -> i32 { apply(1 + 1, 1) }", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: ["fn_params"] },
-            ErrorCodeExample { title: "Name a monomorphic wrapper", source: "fn identity(comptime T: type, value: T) -> T { value }\nfn identity_i32(value: i32) -> i32 { identity(i32, value) }\nfn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }\nfn main() -> i32 { apply(identity_i32, 1) }", outcome: ErrorCodeExampleOutcome::Compiles, preview: ["fn_params"] },
+            ErrorCodeExample { title: "Pass an integer where a callback is expected by name", source: "fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }\nfn main() -> i32 { apply(1 + 1, 1) }", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: [] },
+            ErrorCodeExample { title: "Name a monomorphic wrapper", source: "fn identity(comptime T: type, value: T) -> T { value }\nfn identity_i32(value: i32) -> i32 { identity(i32, value) }\nfn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }\nfn main() -> i32 { apply(identity_i32, 1) }", outcome: ErrorCodeExampleOutcome::Compiles, preview: [] },
         ],
         references: [ErrorCodeReference { title: "Callback arguments", path: "docs/spec/src/06-items/01-functions.md", rule: Some("6.1:50") }],
     };
@@ -930,8 +930,8 @@ define_error_codes! {
         explanation: "A callback has no first-class value. Inside a body a `fn` parameter has exactly two uses: it is called with ordinary call rules, or it is forwarded as the argument to another `fn` parameter of the same type. Reading it anywhere else (binding it with `let`, returning it, comparing it, taking its address, storing it in an aggregate) is an escape and is rejected. A named function is likewise not a value outside a call or a `fn` argument position.",
         likely_cause: "The body bound a callback parameter to a local, returned it, or used it in an expression, or a named function was mentioned without calling it. Call the callback, forward it directly as an argument, or pass the behavior again at each call that needs it.",
         examples: [
-            ErrorCodeExample { title: "Bind a callback parameter with `let`", source: "fn apply(cb: fn(i32) -> i32, value: i32) -> i32 {\n    let kept = cb;\n    value\n}\nfn step(value: i32) -> i32 { value }\nfn main() -> i32 { apply(step, 1) }", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: ["fn_params"] },
-            ErrorCodeExample { title: "Call the callback instead", source: "fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::Compiles, preview: ["fn_params"] },
+            ErrorCodeExample { title: "Bind a callback parameter with `let`", source: "fn apply(cb: fn(i32) -> i32, value: i32) -> i32 {\n    let kept = cb;\n    value\n}\nfn step(value: i32) -> i32 { value }\nfn main() -> i32 { apply(step, 1) }", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: [] },
+            ErrorCodeExample { title: "Call the callback instead", source: "fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }\nfn main() -> i32 { 0 }", outcome: ErrorCodeExampleOutcome::Compiles, preview: [] },
         ],
         references: [ErrorCodeReference { title: "Callback uses", path: "docs/spec/src/06-items/01-functions.md", rule: Some("6.1:51")}],
     };
@@ -2635,10 +2635,6 @@ pub enum PreviewFeature {
     /// A stated reason on every `checked` block (ADR-0095, RUE-1887):
     /// `checked "index < len by the guard above" { ... }`.
     CheckedReasons,
-    /// Second-class function parameters (ADR-0096, RUE-2112): a parameter
-    /// of type `fn(A, borrow B) -> R` that a named function is passed to and
-    /// that the body calls or forwards, never stores.
-    FnParams,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -2663,7 +2659,6 @@ impl PreviewFeature {
             PreviewFeature::NonExhaustiveEnums => "non_exhaustive_enums",
             PreviewFeature::StructPatterns => "struct_patterns",
             PreviewFeature::CheckedReasons => "checked_reasons",
-            PreviewFeature::FnParams => "fn_params",
         }
     }
 
@@ -2676,7 +2671,6 @@ impl PreviewFeature {
             PreviewFeature::NonExhaustiveEnums => "ADR-0005",
             PreviewFeature::StructPatterns => "ADR-0091",
             PreviewFeature::CheckedReasons => "ADR-0095",
-            PreviewFeature::FnParams => "ADR-0096",
         }
     }
 
@@ -2688,7 +2682,6 @@ impl PreviewFeature {
             PreviewFeature::NonExhaustiveEnums,
             PreviewFeature::StructPatterns,
             PreviewFeature::CheckedReasons,
-            PreviewFeature::FnParams,
         ]
     }
 
@@ -2733,7 +2726,6 @@ impl std::str::FromStr for PreviewFeature {
             "non_exhaustive_enums" => Ok(PreviewFeature::NonExhaustiveEnums),
             "struct_patterns" => Ok(PreviewFeature::StructPatterns),
             "checked_reasons" => Ok(PreviewFeature::CheckedReasons),
-            "fn_params" => Ok(PreviewFeature::FnParams),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -6230,7 +6222,7 @@ mod tests {
         let names = PreviewFeature::all_names();
         assert_eq!(
             names,
-            "test_infra, c_ffi, non_exhaustive_enums, struct_patterns, checked_reasons, fn_params"
+            "test_infra, c_ffi, non_exhaustive_enums, struct_patterns, checked_reasons"
         );
     }
 

@@ -97,12 +97,6 @@ fn run_test_preview(src: &str) -> Outcome {
         .unwrap_or_else(|error| panic!("oracle failed: {error}"))
 }
 
-fn run_fn_params(src: &str) -> Outcome {
-    let preview_features = PreviewFeatures::from([PreviewFeature::FnParams]);
-    run_source_with_preview_features(src, &preview_features)
-        .unwrap_or_else(|error| panic!("oracle failed: {error}"))
-}
-
 fn expect_unsupported(src: &str) -> Unsupported {
     expect_unsupported_with_preview(src, &PreviewFeatures::new())
 }
@@ -3174,7 +3168,7 @@ fn callback_is_called_through_its_parameter_and_forwarded() {
         let second = forward(borrow down, 3, 9, precedes);
         @intCast(first * 10 + second)
     }"#;
-    assert_eq!(run_fn_params(src).exit_code, 39);
+    assert_eq!(run(src).exit_code, 39);
 }
 
 #[test]
@@ -3191,7 +3185,7 @@ fn callback_writes_back_through_an_inout_argument() {
         twice(bump, inout count);
         count
     }"#;
-    assert_eq!(run_fn_params(src).exit_code, 42);
+    assert_eq!(run(src).exit_code, 42);
 }
 
 #[test]
@@ -3211,7 +3205,7 @@ fn callback_parameters_nest_and_bind_associated_functions_and_aliases() {
     fn make(cb: fn() -> i32) -> i32 { cb() }
 
     fn main() -> i32 { twice(apply, 40) + make(Counter.zero) }"#;
-    assert_eq!(run_fn_params(src).exit_code, 42);
+    assert_eq!(run(src).exit_code, 42);
 }
 
 #[test]
@@ -3219,7 +3213,7 @@ fn callback_bound_to_a_generic_callee_is_checked_after_substitution() {
     let src = r#"fn apply(comptime T: type, cb: fn(T) -> T, value: T) -> T { cb(value) }
     fn step(value: i32) -> i32 { value + 1 }
     fn main() -> i32 { apply(i32, step, 41) }"#;
-    assert_eq!(run_fn_params(src).exit_code, 42);
+    assert_eq!(run(src).exit_code, 42);
 }
 
 #[test]
@@ -3227,5 +3221,5 @@ fn callback_result_and_side_effects_are_observed_in_call_order() {
     let src = r#"fn show(value: i32) { @dbg(value); }
     fn each(visit: fn(i32)) -> i32 { visit(1); visit(2); 0 }
     fn main() -> i32 { each(show) }"#;
-    assert_eq!(run_fn_params(src).stdout, "1\n2\n");
+    assert_eq!(run(src).stdout, "1\n2\n");
 }
