@@ -2330,13 +2330,28 @@ impl<'a> AstGen<'a> {
         // substitutes U+FFFD for invalid sequences (ADR-0035). Everything else
         // iterates by position (array element / String byte). The receiver of
         // the call is the actual collection.
-        let (coll_expr, is_chars, is_lossy): (&Expr, bool, bool) = match &*for_expr.iterable {
+        //
+        // Parentheses are transparent (4.2:3): `(s)`, `(s).chars()` and
+        // `(s.chars())` are the bare forms, so they are peeled before the
+        // view and the bare-variable shapes below are recognized. Nothing is
+        // lost by peeling: a parenthesized expression lowers to exactly its
+        // inner expression, so a temporary collection is still generated once
+        // and at the same structural position (RUE-2201).
+        fn peel_parens(expr: &Expr) -> &Expr {
+            let mut expr = expr;
+            while let Expr::Paren(paren) = expr {
+                expr = &paren.inner;
+            }
+            expr
+        }
+        let iterable = peel_parens(&for_expr.iterable);
+        let (coll_expr, is_chars, is_lossy): (&Expr, bool, bool) = match iterable {
             Expr::MethodCall(mc) if mc.args.is_empty() => {
                 let method = self.symbol(mc.method.name);
                 match self.interner.resolve(&method) {
-                    "chars" => (&mc.receiver, true, false),
-                    "chars_lossy" => (&mc.receiver, true, true),
-                    _ => (&*for_expr.iterable, false, false),
+                    "chars" => (peel_parens(&mc.receiver), true, false),
+                    "chars_lossy" => (peel_parens(&mc.receiver), true, true),
+                    _ => (iterable, false, false),
                 }
             }
             other => (other, false, false),

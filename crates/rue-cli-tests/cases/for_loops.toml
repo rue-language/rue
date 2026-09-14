@@ -138,3 +138,30 @@ fn main() -> i32 {
 """ }]
 exit_code = 3
 stdout = "97\n65533\n98\n"
+
+# RUE-2201: parentheses are transparent (4.2:3), so a parenthesized StrBuf
+# iterable, a parenthesized `.chars()` receiver and a parenthesized whole view
+# are the bare forms: the buffer is iterated by shared read and stays usable
+# afterwards, and the scalar views still count scalars rather than bytes.
+[[case]]
+name = "parenthesized_strbuf_iterables_and_views_do_not_move_the_buffer"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 75
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn main() -> i32 {
+    let s = StrBuf.from_str(borrow "héllo");
+    let mut bytes: i32 = 0;
+    for b in (s) { bytes = bytes + 1; }
+    let mut scalars: i32 = 0;
+    for c in (s).chars() { scalars = scalars + 1; }
+    let mut again: i32 = 0;
+    for c in (s.chars()) { again = again + 1; }
+    let mut lossy: i32 = 0;
+    for c in (s.chars_lossy()) { lossy = lossy + 1; }
+    // 6 bytes, 5 scalars three times: 60 + 15 = 75, and `s` is still live.
+    if bytes == @intCast(s.len()) { @intCast(s.len()) * 10 + scalars + again + lossy } else { 1 }
+}
+""" }]
