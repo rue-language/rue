@@ -191,6 +191,31 @@ pub(crate) fn semantic_candidate_import_occurrences(
 }
 
 impl SemanticNucleusTypeProvider<'_> {
+    /// A deferred semantic requirement cannot be decided while one of its
+    /// type arguments is still an unresolved generic.  Looking through a
+    /// nominal here would re-enter that nominal's signature, so this helper
+    /// only walks the transparent durable constructors; nominal contents are
+    /// checked after specialization materializes their projection.
+    pub(in crate::revisioned_query_database) fn type_contains_unresolved_generic(
+        ty: &crate::durable_semantics::DurableType,
+    ) -> bool {
+        use crate::durable_semantics::DurableType as T;
+        match ty {
+            T::GenericParameter(_) => true,
+            T::Array { element, .. }
+            | T::Slice { element, .. }
+            | T::PtrConst(element)
+            | T::PtrMut(element) => Self::type_contains_unresolved_generic(element),
+            T::Function { params, result } => {
+                params
+                    .iter()
+                    .any(|(_, ty)| Self::type_contains_unresolved_generic(ty))
+                    || Self::type_contains_unresolved_generic(result)
+            }
+            _ => false,
+        }
+    }
+
     pub(in crate::revisioned_query_database) fn with_dependency_source<R>(
         &mut self,
         source: &crate::StableDefinitionKey,
@@ -212,7 +237,7 @@ impl SemanticNucleusTypeProvider<'_> {
         effects.apply_to(
             &mut self.anonymous_nominals,
             &mut self.dependencies,
-            &mut self.deferred_ownership,
+            &mut self.deferred_requirements,
             policy,
         );
     }
@@ -2221,6 +2246,39 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
             .iter()
             .map(|(_, ty)| ty.clone())
             .collect::<Vec<_>>();
+        // Preserve bound obligations on the durable projection as well as on
+        // an executable body host.  A type constructor can occur in a
+        // declaration signature, where there is no body transaction to run
+        // the ordinary call checker; the deferred semantic query consumes
+        // this exact gate after substitution.
+        for (index, parameter) in parameters.iter().enumerate() {
+            if parameter.bounds.is_empty()
+                || parameter.ty != crate::durable_semantics::DurableType::ComptimeType
+            {
+                continue;
+            }
+            let Some((_, argument)) = type_arguments
+                .iter()
+                .find(|(name, _)| parameter.name.as_ref() == name.as_ref())
+            else {
+                continue;
+            };
+            self.deferred_requirements.insert(
+                crate::semantic_query_nucleus::DeferredRequirement {
+                    kind: crate::semantic_query_nucleus::DeferredRequirementKind::InterfaceBound {
+                        callable: head.key.clone(),
+                        parameter_index: index as u32,
+                    },
+                    ty: argument.clone(),
+                    source: Arc::new(crate::semantic_query_nucleus::DeferredRequirementSource {
+                        declaration: declaration.clone(),
+                        start: 0,
+                        end: 0,
+                    }),
+                    application: None,
+                },
+            );
+        }
         for (name, value) in value_arguments {
             let Some((_, parameter)) = head
                 .parameters
@@ -2259,10 +2317,27 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         match queried {
             V::ComptimeCall(value) => {
                 let mut effects = crate::durable_comptime::DurableComptimeEffects::default();
+                // A nested constructor may publish a requirement against one
+                // of its generic parameters.  Rebind that requirement in the
+                // caller's specialization before transporting it upward;
+                // otherwise an outer constructor would retain an inert
+                // `GenericParameter` gate forever.
+                let deferred_requirements = value
+                    .deferred_requirements
+                    .iter()
+                    .cloned()
+                    .map(|mut gate| {
+                        gate.ty = substitute_durable_generics(
+                            &gate.ty,
+                            &concrete_type_arguments,
+                        );
+                        gate
+                    })
+                    .collect::<Vec<_>>();
                 effects.merge_projection(
                     &value.anonymous_nominals,
                     &value.dependencies,
-                    &value.deferred_ownership,
+                    &deferred_requirements,
                     &crate::durable_comptime::DurableComptimeApplicationPolicy::preserve(),
                 );
                 self.merge_comptime_effects(
@@ -2316,6 +2391,415 @@ impl ResolveSemanticSignatureError {
             abort => abort,
         }
     }
+}
+
+/// Resolve one retained type root of a declaration signature.
+fn resolve_signature_type_root(
+    provider: &mut SemanticNucleusTypeProvider<'_>,
+    module: &ModuleId,
+    syntax: &rue_rir::RirTypeSyntaxArena<Arc<str>>,
+    root: rue_rir::RirTypeSyntaxRef,
+) -> Result<crate::durable_semantics::DurableType, ResolveSemanticSignatureError> {
+    provider.dependency_kind = rue_air::DeclarationTypeDependencyKind::Signature;
+    rue_air::resolve_structured_semantic_type_syntax(provider, module, syntax, root)
+        .map_err(semantic_type_query_failure)
+}
+
+/// Whether a durable nominal key names an `interface` shell (spec 6.8),
+/// read from the declaration shell so the answer needs neither the
+/// interface's nor the asking declaration's resolved signature.
+fn is_interface_shell(
+    provider: &mut SemanticNucleusTypeProvider<'_>,
+    key: &StableDefinitionKey,
+) -> Result<bool, ResolveSemanticSignatureError> {
+    if key.kind() != crate::StableDefinitionKind::Struct {
+        return Ok(false);
+    }
+    let shell = provider
+        .context
+        .query_registered(
+            provider.shells,
+            DeclarationShellQueryKey(crate::declaration_candidate::DeclarationCandidateKey {
+                module: key.module().clone(),
+                category: crate::declaration_candidate::DeclarationCandidateCategory::Struct,
+                name: Arc::from(key.name()),
+                owner: None,
+                duplicate_discriminator: 0,
+            }),
+        )
+        .map_err(ResolveSemanticSignatureError::Abort)?;
+    let rue_query::QueryOutcome::Success(shell) = shell.outcome() else {
+        unreachable!("DeclarationShell publishes typed values")
+    };
+    Ok(matches!(
+        shell,
+        DeclarationShellQueryValue::Available(shell) if shell.is_interface
+    ))
+}
+
+/// The nucleus failure the type resolver reports for a name it cannot
+/// resolve, when `error` is that failure.
+fn unknown_type_name(error: &ResolveSemanticSignatureError) -> Option<String> {
+    let ResolveSemanticSignatureError::Failure(failure) = error else {
+        return None;
+    };
+    match failure.as_ref() {
+        crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+            rue_error::ErrorKind::UnknownType(name),
+        ) => Some(name.clone()),
+        _ => None,
+    }
+}
+
+/// Resolve a type root that must name an interface (a bound, a header
+/// assertion, a refinement, a freestanding assertion; spec 6.8:18). An
+/// unresolvable name is E0300 and any other type is E0306, both anchored
+/// by `anchor`.
+fn resolve_interface_reference(
+    provider: &mut SemanticNucleusTypeProvider<'_>,
+    module: &ModuleId,
+    syntax: &rue_rir::RirTypeSyntaxArena<Arc<str>>,
+    root: rue_rir::RirTypeSyntaxRef,
+    anchor: &dyn Fn(rue_error::ErrorKind) -> ResolveSemanticSignatureError,
+) -> Result<StableDefinitionKey, ResolveSemanticSignatureError> {
+    let rendered = || syntax.render_type(root).unwrap_or_default();
+    let resolved = match resolve_signature_type_root(provider, module, syntax, root) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            return Err(match unknown_type_name(&error) {
+                Some(name) => anchor(rue_error::ErrorKind::InterfaceNotFound { name }),
+                None => error,
+            });
+        }
+    };
+    match resolved {
+        crate::durable_semantics::DurableType::Nominal(key)
+            if is_interface_shell(provider, &key)? =>
+        {
+            Ok(key)
+        }
+        _ => Err(anchor(rue_error::ErrorKind::BoundIsNotAnInterface {
+            name: rendered(),
+        })),
+    }
+}
+
+/// Whether `module` may use the interfaces feature (spec 6.8:3, 6.8:25):
+/// every module under `--preview interfaces`, and a trusted standard-library
+/// module always. The exemption is what lets std declare interfaces,
+/// conformances, and bounds that an ordinary program uses without the flag;
+/// a user module that writes any of them itself still needs the preview.
+fn interfaces_enabled_for(provider: &SemanticNucleusTypeProvider<'_>, module: &ModuleId) -> bool {
+    provider
+        .configuration
+        .preview_features
+        .contains(rue_error::PreviewFeature::Interfaces)
+        || module.is_trusted_standard_library()
+}
+
+/// Classify a comptime parameter that is not declared `: type` (spec
+/// 6.8:14): its interface bound when it names one or more interfaces, or
+/// empty when it is an ordinary comptime value parameter. A composed bound
+/// (`A + B`) is always a bound, so each name in it must be an interface; a
+/// single name is a bound only when it resolves to an interface, except that
+/// a struct name — never a comptime value type — is E0306 under the preview.
+/// A trusted standard-library module is exempt from the gate (spec 6.8:25),
+/// so std can declare bounds a program compiled without the preview calls.
+fn classify_interface_bounds(
+    provider: &mut SemanticNucleusTypeProvider<'_>,
+    module: &ModuleId,
+    syntax: &rue_rir::RirTypeSyntaxArena<Arc<str>>,
+    parameter: &crate::semantic_query_nucleus::ParsedSemanticParameter,
+    ordinal: u32,
+) -> Result<Arc<[StableDefinitionKey]>, ResolveSemanticSignatureError> {
+    let at_parameter = |kind| {
+        ResolveSemanticSignatureError::failure(
+            crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticAtParameter {
+                kind,
+                ordinal,
+            },
+        )
+    };
+    let composed = !parameter.bounds.is_empty();
+    let preview = interfaces_enabled_for(provider, module);
+    let mut keys = Vec::with_capacity(1 + parameter.bounds.len());
+    for root in std::iter::once(parameter.ty).chain(parameter.bounds.iter().copied()) {
+        if composed || !keys.is_empty() {
+            keys.push(resolve_interface_reference(
+                provider,
+                module,
+                syntax,
+                root,
+                &at_parameter,
+            )?);
+            continue;
+        }
+        // A single name: only an interface makes it a bound.
+        let Ok(crate::durable_semantics::DurableType::Nominal(key)) =
+            resolve_signature_type_root(provider, module, syntax, root)
+        else {
+            return Ok(Arc::from([]));
+        };
+        if is_interface_shell(provider, &key)? {
+            keys.push(key);
+        } else if preview && key.kind() == crate::StableDefinitionKind::Struct {
+            return Err(at_parameter(rue_error::ErrorKind::BoundIsNotAnInterface {
+                name: syntax.render_type(root).unwrap_or_default(),
+            }));
+        } else {
+            return Ok(Arc::from([]));
+        }
+    }
+    if !preview {
+        return Err(at_parameter(rue_error::ErrorKind::PreviewFeatureRequired {
+            feature: rue_error::PreviewFeature::Interfaces,
+            what: "an interface bound on a comptime parameter".to_owned(),
+        }));
+    }
+    Ok(keys.into())
+}
+
+/// The diagnostic for an interface where a type is required (spec 6.8:18),
+/// as the nucleus reports it for a signature or field position: the kind
+/// and the help text, for the anchor to compose.
+fn reject_interface_type(
+    provider: &mut SemanticNucleusTypeProvider<'_>,
+    ty: &crate::durable_semantics::DurableType,
+    anchor: impl Fn(rue_error::ErrorKind, String) -> ResolveSemanticSignatureError,
+) -> Result<(), ResolveSemanticSignatureError> {
+    use crate::durable_semantics::DurableType as T;
+    let mut pending = vec![ty];
+    while let Some(ty) = pending.pop() {
+        match ty {
+            T::Nominal(key) => {
+                if is_interface_shell(provider, key)? {
+                    let name = key.name();
+                    return Err(anchor(
+                        rue_error::ErrorKind::TypeMismatch {
+                            expected: "a type".to_owned(),
+                            found: format!("interface `{name}`"),
+                        },
+                        format!(
+                            "an interface is not a type; bound a comptime type parameter with it instead: `comptime T: {name}`"
+                        ),
+                    ));
+                }
+            }
+            T::Array { element, .. }
+            | T::Slice { element, .. }
+            | T::PtrConst(element)
+            | T::PtrMut(element) => pending.push(element),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Resolve the parsed interface facts of a struct-shaped declaration (spec
+/// 6.8): the preview gate (6.8:3), each asserted or refined interface
+/// (6.8:9, 6.8:7), the associated type declarations or type-valued
+/// requirements, and the requirement names.
+fn resolve_conformance_facts(
+    provider: &mut SemanticNucleusTypeProvider<'_>,
+    module: &ModuleId,
+    syntax: &rue_rir::RirTypeSyntaxArena<Arc<str>>,
+    parsed: &crate::semantic_query_nucleus::ParsedConformanceFacts,
+) -> Result<crate::durable_semantics::DurableConformanceFacts, ResolveSemanticSignatureError> {
+    if !parsed.uses_interfaces() {
+        return Ok(crate::durable_semantics::DurableConformanceFacts::default());
+    }
+    let producer = declaration_candidate_for_stable_key(&provider.dependency_source)
+        .expect("struct signature has a declaration candidate");
+    let at_producer_range = |kind, start, end| {
+        ResolveSemanticSignatureError::failure(
+            crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticAtProducerRange {
+                kind,
+                producer: producer.clone(),
+                start,
+                end,
+            },
+        )
+    };
+    let at_declaration = |kind| {
+        ResolveSemanticSignatureError::failure(
+            crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(kind),
+        )
+    };
+    if !interfaces_enabled_for(provider, module) {
+        let kind = rue_error::ErrorKind::PreviewFeatureRequired {
+            feature: rue_error::PreviewFeature::Interfaces,
+            what: if parsed.is_interface {
+                "an `interface` declaration".to_owned()
+            } else if !parsed.conformances.is_empty() {
+                "a conformance assertion".to_owned()
+            } else {
+                "an associated type declaration".to_owned()
+            },
+        };
+        // A header assertion is gated at its `is` list; an interface or a
+        // lone associated type declaration at the whole declaration.
+        return Err(
+            match (parsed.conformances.first(), parsed.conformances.last()) {
+                (Some(first), Some(last)) if !parsed.is_interface => {
+                    at_producer_range(kind, first.start, last.end)
+                }
+                _ => at_declaration(kind),
+            },
+        );
+    }
+    let mut conformances = Vec::with_capacity(parsed.conformances.len());
+    for conformance in parsed.conformances.iter() {
+        let interface = resolve_interface_reference(
+            provider,
+            module,
+            syntax,
+            conformance.interface,
+            &|kind| at_producer_range(kind, conformance.start, conformance.end),
+        )?;
+        conformances.push(rue_air::DurableConformance {
+            interface,
+            start: conformance.start,
+            end: conformance.end,
+        });
+    }
+    let mut assoc_types = Vec::with_capacity(parsed.assoc_types.len());
+    for (name, root, is_public) in parsed.assoc_types.iter() {
+        let name: Arc<str> = Arc::from(
+            syntax
+                .symbol(*name)
+                .expect("signature symbols are validated when projected")
+                .as_ref(),
+        );
+        let ty = resolve_signature_type_root(provider, module, syntax, *root)?;
+        reject_interface_type(provider, &ty, |kind, help| {
+            ResolveSemanticSignatureError::failure(
+                crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticWithHelp {
+                    kind,
+                    help: Arc::from(help),
+                },
+            )
+        })?;
+        assoc_types.push((name, ty, *is_public));
+    }
+    let requirements = parsed
+        .requirements
+        .iter()
+        .map(|name| {
+            Arc::from(
+                syntax
+                    .symbol(*name)
+                    .expect("signature symbols are validated when projected")
+                    .as_ref(),
+            )
+        })
+        .collect::<Vec<Arc<str>>>();
+    Ok(crate::durable_semantics::DurableConformanceFacts {
+        is_interface: parsed.is_interface,
+        conformances: conformances.into(),
+        assoc_types: assoc_types.into(),
+        requirements: requirements.into(),
+    })
+}
+
+/// Resolve the freestanding conformance assertions of one module (spec
+/// 6.8:9): each `Type is I + J;` item's subject and interfaces, under the
+/// interfaces preview gate (spec 6.8:3). Every diagnostic is anchored at the
+/// assertion's own source range.
+pub(in crate::revisioned_query_database) fn resolve_module_conformances(
+    provider: &mut SemanticNucleusTypeProvider<'_>,
+    module: &ModuleId,
+    parsed: &crate::parsed_modules::ParsedModule,
+) -> Result<Vec<crate::durable_semantics::DurableConformanceAssertion>, ResolveSemanticSignatureError>
+{
+    let at_range = |kind, span: rue_span::Span| {
+        ResolveSemanticSignatureError::failure(
+            crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticAtModuleRange {
+                kind,
+                module: module.clone(),
+                start: span.start,
+                end: span.end,
+            },
+        )
+    };
+    let preview = interfaces_enabled_for(provider, module);
+    let mut assertions = Vec::new();
+    for item in &parsed.ast().items {
+        let rue_parser::ast::Item::Conformance(assertion) = item else {
+            continue;
+        };
+        if !preview {
+            return Err(at_range(
+                rue_error::ErrorKind::PreviewFeatureRequired {
+                    feature: rue_error::PreviewFeature::Interfaces,
+                    what: "a conformance assertion".to_owned(),
+                },
+                assertion.span,
+            ));
+        }
+        let mut builder = rue_rir::RirTypeSyntaxBuilder::default();
+        let resolve_symbol = |symbol| Arc::from(parsed.resolve_raw_symbol(symbol));
+        let subject_root = builder
+            .push_parser_type(&assertion.subject, resolve_symbol)
+            .map_err(|error| {
+                ResolveSemanticSignatureError::failure(
+                    crate::semantic_query_nucleus::SemanticNucleusFailure::Syntax(Arc::from(
+                        format!(
+                            "conformance assertion syntax exceeds the supported size: {error:?}"
+                        ),
+                    )),
+                )
+            })?;
+        let interface_roots = assertion
+            .interfaces
+            .iter()
+            .map(|interface| {
+                builder
+                    .push_parser_type(interface, resolve_symbol)
+                    .map(|root| (root, interface.span()))
+                    .map_err(|error| {
+                        ResolveSemanticSignatureError::failure(
+                            crate::semantic_query_nucleus::SemanticNucleusFailure::Syntax(
+                                Arc::from(format!(
+                                    "conformance assertion syntax exceeds the supported size: {error:?}"
+                                )),
+                            ),
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let syntax = builder.finish();
+        let subject = resolve_signature_type_root(provider, module, &syntax, subject_root)
+            .map_err(|error| match error {
+                ResolveSemanticSignatureError::Failure(failure) => match *failure {
+                    crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(kind) => {
+                        at_range(kind, assertion.subject.span())
+                    }
+                    other => ResolveSemanticSignatureError::failure(other),
+                },
+                abort => abort,
+            })?;
+        reject_interface_type(provider, &subject, |kind, _| {
+            at_range(kind, assertion.subject.span())
+        })?;
+        let mut interfaces = Vec::with_capacity(interface_roots.len());
+        for (root, span) in interface_roots {
+            interfaces.push(resolve_interface_reference(
+                provider,
+                module,
+                &syntax,
+                root,
+                &|kind| at_range(kind, span),
+            )?);
+        }
+        assertions.push(crate::durable_semantics::DurableConformanceAssertion {
+            subject,
+            interfaces: interfaces.into(),
+            module: module.clone(),
+            start: assertion.span.start,
+            end: assertion.span.end,
+        });
+    }
+    Ok(assertions)
 }
 
 pub(in crate::revisioned_query_database) fn semantic_type_query_failure(
@@ -2611,6 +3095,7 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
             accessor_result_mode,
             accessor_body,
             accessor_cycle,
+            owner_placeholders,
             ..
         } => {
             if *is_accessor {
@@ -2698,37 +3183,90 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                     ));
                 }
             }
+            // The names an interface requirement binds for its owner (`Self`
+            // and the interface's type-valued associated constants, spec
+            // 6.8:5) are generic placeholders ahead of the callable's own
+            // comptime type parameters: the requirement's signature is then
+            // deferred exactly like a generic signature, and conformance
+            // verification substitutes the conforming type through the
+            // retained syntax (spec 6.8:10).
             let mut generic_index = 0_u32;
-            for parameter in parameters.iter() {
-                if parameter.is_comptime && parsed.is_type_parameter_syntax(parameter.ty) {
-                    provider.substitutions.insert(
-                        Arc::from(parsed.symbol(parameter.name)),
-                        crate::durable_semantics::DurableType::GenericParameter(generic_index),
-                    );
-                    generic_index += 1;
+            for placeholder in owner_placeholders.iter() {
+                provider.substitutions.insert(
+                    Arc::from(parsed.symbol(*placeholder)),
+                    crate::durable_semantics::DurableType::GenericParameter(generic_index),
+                );
+                generic_index += 1;
+            }
+            // A comptime parameter is a type parameter when it is declared
+            // `: type` or when it carries an interface bound (spec 6.8:14);
+            // a bound is classified before the other parameters resolve so
+            // `x: T` can already name it.
+            let mut parameter_bounds = Vec::with_capacity(parameters.len());
+            for (ordinal, parameter) in parameters.iter().enumerate() {
+                let mut bounds: Arc<[StableDefinitionKey]> = Arc::from([]);
+                if parameter.is_comptime {
+                    let is_type = parsed.is_type_parameter_syntax(parameter.ty);
+                    if !is_type {
+                        bounds = classify_interface_bounds(
+                            provider,
+                            module,
+                            syntax,
+                            parameter,
+                            ordinal as u32,
+                        )?;
+                    }
+                    if is_type || !bounds.is_empty() {
+                        provider.substitutions.insert(
+                            Arc::from(parsed.symbol(parameter.name)),
+                            crate::durable_semantics::DurableType::GenericParameter(generic_index),
+                        );
+                        generic_index += 1;
+                    }
                 }
+                parameter_bounds.push(bounds);
             }
             let parameters = parameters
                 .iter()
+                .zip(parameter_bounds)
                 .enumerate()
-                .map(|(ordinal, parameter)| {
-                    let ty = resolve(
-                        provider,
-                        syntax,
-                        parameter.ty,
-                        rue_air::DeclarationTypeDependencyKind::Signature,
-                    )
-                    .map_err(|error| {
-                        error.at_signature_type(
-                            crate::semantic_query_nucleus::SignatureTypeAnchor::Parameter(
-                                ordinal as u32,
-                            ),
+                .map(|(ordinal, (parameter, bounds))| {
+                    let ty = if bounds.is_empty() {
+                        resolve(
+                            provider,
+                            syntax,
+                            parameter.ty,
+                            rue_air::DeclarationTypeDependencyKind::Signature,
                         )
-                    })?;
-                    if parameter.is_comptime && !parsed.is_type_parameter_syntax(parameter.ty) {
+                        .map_err(|error| {
+                            error.at_signature_type(
+                                crate::semantic_query_nucleus::SignatureTypeAnchor::Parameter(
+                                    ordinal as u32,
+                                ),
+                            )
+                        })?
+                    } else {
+                        // A bounded parameter is a type parameter (spec
+                        // 6.8:16); only the call site reads its bound.
+                        crate::durable_semantics::DurableType::ComptimeType
+                    };
+                    if parameter.is_comptime
+                        && bounds.is_empty()
+                        && !parsed.is_type_parameter_syntax(parameter.ty)
+                    {
                         provider
                             .deferred_value_parameters
                             .insert(Arc::from(parsed.symbol(parameter.name)), ty.clone());
+                    }
+                    if !parameter.is_comptime {
+                        reject_interface_type(provider, &ty, |kind, help| {
+                            ResolveSemanticSignatureError::failure(
+                                crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticWithHelp {
+                                    kind,
+                                    help: Arc::from(help),
+                                },
+                            )
+                        })?;
                     }
                     if parameter.is_comptime {
                         fn_type_position(&ty, "a `comptime` parameter")?;
@@ -2757,6 +3295,7 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                             }
                         },
                         is_comptime: parameter.is_comptime,
+                        bounds,
                     })
                 })
                 .collect::<Result<Vec<_>, ResolveSemanticSignatureError>>()?;
@@ -2772,6 +3311,14 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
             if contains_slice(&result) {
                 return Err(diagnostic(rue_error::ErrorKind::SliceReturnNotAllowed));
             }
+            reject_interface_type(provider, &result, |kind, help| {
+                ResolveSemanticSignatureError::failure(
+                    crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticWithHelp {
+                        kind,
+                        help: Arc::from(help),
+                    },
+                )
+            })?;
             fn_type_position(&result, "a return type")?;
             if (*is_extern || *is_c_export)
                 && !provider
@@ -2940,8 +3487,10 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
             is_copy,
             is_linear,
             is_repr_c,
+            conformance,
             ..
         } => {
+            let conformance = resolve_conformance_facts(provider, module, syntax, conformance)?;
             if let Some(kind) = rue_air::declaration_validation::linear_copy_struct(
                 provider.dependency_source.name(),
                 *is_linear,
@@ -2985,6 +3534,16 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                         "type values cannot exist at runtime",
                     )),
                 ));
+            }
+            for (_, ty) in &fields {
+                reject_interface_type(provider, ty, |kind, help| {
+                    ResolveSemanticSignatureError::failure(
+                        crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticWithHelp {
+                            kind,
+                            help: Arc::from(help),
+                        },
+                    )
+                })?;
             }
             if *is_copy {
                 for (field_name, field_ty) in &fields {
@@ -3125,6 +3684,7 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                 is_copy: *is_copy,
                 is_linear: *is_linear,
                 is_repr_c: *is_repr_c,
+                conformance,
             })
         }
         Input::Enum {

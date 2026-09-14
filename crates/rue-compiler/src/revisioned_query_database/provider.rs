@@ -539,6 +539,11 @@ pub(crate) struct CompilerBodyDurableSource<'a> {
     pub(super) visibility_domains: Rc<rue_air::SemanticVisibilityDomainCache<crate::FileId>>,
     pub(crate) source_locators:
         Rc<std::cell::RefCell<AHashMap<ModuleId, rue_air::DurableBodySourceLocator>>>,
+    /// The program's freestanding assertions, shared by one canonical query
+    /// and retained here for this body's repeated conformance checks.
+    pub(super) visible_conformances: Rc<
+        std::cell::RefCell<Option<Arc<[crate::durable_semantics::DurableConformanceAssertion]>>>,
+    >,
 }
 
 pub(super) struct ResolvedDeclarationCandidate {
@@ -568,7 +573,37 @@ impl<'a> CompilerBodyDurableSource<'a> {
             source_paths: Rc::new(std::cell::RefCell::new(source_paths)),
             visibility_domains: Rc::new(rue_air::SemanticVisibilityDomainCache::default()),
             source_locators: Rc::new(std::cell::RefCell::new(source_locators)),
+            visible_conformances: Rc::new(std::cell::RefCell::new(None)),
         }
+    }
+
+    /// Program-global assertions from the selected import graph (spec 6.8:15).
+    /// The nucleus owns aggregation and its root/import dependencies.
+    fn visible_conformances(&self) -> Arc<[crate::durable_semantics::DurableConformanceAssertion]> {
+        if let Some(assertions) = self.visible_conformances.borrow().as_ref() {
+            return assertions.clone();
+        }
+        let query = crate::semantic_query_nucleus::SemanticNucleusKey::ProgramConformances(
+            self.provider.queries.configuration.clone(),
+        );
+        let assertions = match self.provider.nucleus(query) {
+            Some(crate::semantic_query_nucleus::SemanticNucleusValue::ProgramConformances(
+                assertions,
+            )) => assertions,
+            Some(crate::semantic_query_nucleus::SemanticNucleusValue::Failure(failure)) => {
+                *self
+                    .provider
+                    .queries
+                    .producer_transport_failure
+                    .borrow_mut() = Some(Box::new(failure));
+                self.provider.observe_abort(QueryAbort::Canceled);
+                return Arc::from([]);
+            }
+            None => return Arc::from([]),
+            Some(_) => unreachable!("ProgramConformances publishes assertions or a typed failure"),
+        };
+        *self.visible_conformances.borrow_mut() = Some(assertions.clone());
+        assertions
     }
 
     pub(super) fn candidate(
@@ -1169,7 +1204,13 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
     }
 
     fn definition_name(&self, definition: &crate::StableDefinitionKey) -> Option<Arc<str>> {
-        Some(definition.shared_name().clone())
+        // A skolem is read as the parameter it stands for (spec 6.8:22).
+        Some(
+            crate::skolem::SkolemIdentity::parse(definition).map_or_else(
+                || definition.shared_name().clone(),
+                |skolem| skolem.display_name(),
+            ),
+        )
     }
 
     fn reduce_comptime_call(
@@ -1260,11 +1301,11 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
             }
             _ => return rue_air::DurableComptimeCallOutcome::NotReduced,
         };
-        for gate in projection.deferred_ownership.iter() {
+        for gate in projection.deferred_requirements.iter() {
             let ownership = match self.provider.nucleus_result(
-                crate::semantic_query_nucleus::SemanticNucleusKey::DeferredOwnership(
-                    crate::semantic_query_nucleus::DeferredOwnershipQueryKey {
-                        producer: declaration.clone(),
+                crate::semantic_query_nucleus::SemanticNucleusKey::DeferredRequirement(
+                    crate::semantic_query_nucleus::DeferredRequirementQueryKey {
+                        producer: (declaration.clone()).into(),
                         gate: gate.clone(),
                     },
                 ),
@@ -1278,9 +1319,9 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
             };
             match ownership {
                 None => {}
-                Some(crate::semantic_query_nucleus::SemanticNucleusValue::DeferredOwnership) => {}
+                Some(crate::semantic_query_nucleus::SemanticNucleusValue::DeferredRequirement) => {}
                 Some(crate::semantic_query_nucleus::SemanticNucleusValue::Failure(
-                    crate::semantic_query_nucleus::SemanticNucleusFailure::OwnershipGate {
+                    crate::semantic_query_nucleus::SemanticNucleusFailure::DeferredRequirement {
                         kind,
                         gate,
                     },
@@ -1295,7 +1336,8 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
                     );
                 }
                 Some(crate::semantic_query_nucleus::SemanticNucleusValue::Failure(failure))
-                    if semantic_nucleus_failure_is_internal_error(&failure) =>
+                    if matches!(failure, crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticAtModuleSpans { .. })
+                        || semantic_nucleus_failure_is_internal_error(&failure) =>
                 {
                     *self
                         .provider
@@ -1405,6 +1447,32 @@ impl rue_air::DurableNominalSource<crate::StableDefinitionKey, ModuleId>
             .map(|source| source.file_id)
     }
 
+    fn nominal_producer_span(
+        &self,
+        key: &crate::StableDefinitionKey,
+        start: u32,
+        end: u32,
+    ) -> Option<rue_span::Span> {
+        let candidate = self.candidate(key)?;
+        self.provider
+            .producer_relative_span(&candidate.declaration, start, end)
+    }
+
+    fn visible_conformance_assertions(
+        &self,
+    ) -> Arc<[crate::durable_semantics::DurableConformanceAssertion]> {
+        self.visible_conformances()
+    }
+
+    fn module_range_span(&self, module: &ModuleId, start: u32, end: u32) -> Option<rue_span::Span> {
+        rue_air::DurableBodyLookupSource::module_source(self, module)
+            .map(|source| rue_span::Span::with_file(source.file_id, start, end))
+    }
+
+    fn skolem_display_name(&self, key: &crate::StableDefinitionKey) -> Option<Arc<str>> {
+        crate::skolem::SkolemIdentity::parse(key).map(|skolem| skolem.display_name())
+    }
+
     fn nominal(
         &self,
         key: &crate::StableDefinitionKey,
@@ -1420,6 +1488,14 @@ impl rue_air::DurableNominalSource<crate::StableDefinitionKey, ModuleId>
                 .meter()
                 .nominal_materialization_reuses
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Some(nominal);
+        }
+        if let Some(skolem) = crate::skolem::SkolemIdentity::parse(key) {
+            let nominal = self.skolem_nominal(key, &skolem)?;
+            self.durable_payloads
+                .borrow_mut()
+                .named_nominals
+                .insert(key.clone(), nominal.clone());
             return Some(nominal);
         }
         if let Some((nominal, anonymous_nominals)) = self
@@ -1481,11 +1557,13 @@ impl rue_air::DurableNominalSource<crate::StableDefinitionKey, ModuleId>
                 fields,
                 is_copy,
                 is_linear,
+                conformance,
                 ..
             } => rue_air::DurableNominalBody::Struct {
                 fields,
                 is_copy,
                 is_linear,
+                conformance,
             },
             Projection::Enum {
                 variants,
@@ -1631,8 +1709,134 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
             .meter()
             .method_materializations
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let owner = key.owner()?;
         let signature = self.signature(key)?;
+        self.method_from_signature(key, signature)
+    }
+
+    fn requirement_signature(
+        &self,
+        key: &crate::StableDefinitionKey,
+    ) -> Option<rue_air::DurableMethod<crate::StableDefinitionKey, ModuleId>> {
+        // The signature terminal alone: `signature` would also record a body
+        // reference to the requirement stub, and a stub is never a body the
+        // closure should reach.
+        let candidate = self.candidate(key)?;
+        let query = crate::semantic_query_nucleus::SemanticNucleusKey::Signature(
+            self.provider.declaration_query_key(&candidate.declaration),
+        );
+        let Some(crate::semantic_query_nucleus::SemanticNucleusValue::Signature(signature)) =
+            self.provider.nucleus(query)
+        else {
+            return None;
+        };
+        self.method_from_signature(key, signature)
+    }
+
+    fn uses_deferred_body_type_placeholders(&self) -> bool {
+        true
+    }
+}
+
+impl CompilerBodyDurableSource<'_> {
+    /// The durable shape of a skolem (spec 6.8:20), rebuilt from the bounded
+    /// function's signature: a fieldless move struct with no destructor,
+    /// under the skolem's reserved name, whose header asserts exactly the
+    /// parameter's bound set and whose associated types are the opaque
+    /// skolems of every associated-type requirement the bounds and the
+    /// interfaces they refine declare. An associated-type skolem asserts
+    /// nothing: an associated-type requirement carries no bound. The
+    /// members are not durable facts — the body host synthesizes them from
+    /// the requirement signatures when it prepares the skolem.
+    fn skolem_nominal(
+        &self,
+        key: &crate::StableDefinitionKey,
+        skolem: &crate::skolem::SkolemIdentity,
+    ) -> Option<rue_air::DurableNominal<crate::StableDefinitionKey, ModuleId>> {
+        let candidate = self.candidate(&skolem.function)?;
+        let signature = self.signature_for_candidate(&candidate.declaration)?;
+        let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
+            parameters,
+            ..
+        } = signature.signature
+        else {
+            return None;
+        };
+        let parameter = parameters
+            .iter()
+            .find(|parameter| parameter.name == skolem.parameter)?;
+        let bounds: &[crate::StableDefinitionKey] = if skolem.assoc.is_some() {
+            &[]
+        } else {
+            &parameter.bounds
+        };
+        // The refinement closure of the bound set (spec 6.8:7), walked once
+        // for the associated-type names it declares; acyclic by rule, and the
+        // visited list keeps an ill-formed cycle from looping.
+        let mut closure = bounds.to_vec();
+        let mut assoc_names = Vec::new();
+        let mut next = 0;
+        while next < closure.len() {
+            let current = closure[next].clone();
+            next += 1;
+            let Some(nominal) = rue_air::DurableNominalSource::nominal(self, &current) else {
+                continue;
+            };
+            let rue_air::DurableNominalBody::Struct { conformance, .. } = nominal.body else {
+                continue;
+            };
+            for parent in conformance.conformances.iter() {
+                if !closure.contains(&parent.interface) {
+                    closure.push(parent.interface.clone());
+                }
+            }
+            for (name, _, _) in conformance.assoc_types.iter() {
+                if !assoc_names.contains(name) {
+                    assoc_names.push(name.clone());
+                }
+            }
+        }
+        let assoc_types = assoc_names
+            .into_iter()
+            .map(|name| {
+                let assoc = crate::DurableType::Nominal(skolem.assoc(&name).key());
+                (name, assoc, true)
+            })
+            .collect();
+        Some(rue_air::DurableNominal {
+            name: Arc::from(key.name()),
+            module_path: Arc::from(key.module().logical_path()),
+            is_public: false,
+            is_builtin: false,
+            lang_item: None,
+            is_repr_c: false,
+            has_destructor: false,
+            body: rue_air::DurableNominalBody::Struct {
+                fields: Arc::from([]),
+                is_copy: false,
+                is_linear: false,
+                conformance: rue_air::DurableConformanceFacts {
+                    is_interface: false,
+                    conformances: bounds
+                        .iter()
+                        .map(|interface| rue_air::DurableConformance {
+                            interface: interface.clone(),
+                            start: 0,
+                            end: 0,
+                        })
+                        .collect(),
+                    assoc_types,
+                    requirements: Arc::from([]),
+                },
+            },
+        })
+    }
+
+    fn method_from_signature(
+        &self,
+        key: &crate::StableDefinitionKey,
+        signature: crate::semantic_query_nucleus::ResolvedDeclarationSignature,
+    ) -> Option<rue_air::DurableMethod<crate::StableDefinitionKey, ModuleId>> {
+        let owner = key.owner()?;
         let type_syntax = signature.callable_type_syntax;
         let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
             parameters,
@@ -1666,10 +1870,6 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
             returns_inout: accessor_result_mode
                 == crate::durable_semantics::DurableParameterMode::Inout,
         })
-    }
-
-    fn uses_deferred_body_type_placeholders(&self) -> bool {
-        true
     }
 }
 

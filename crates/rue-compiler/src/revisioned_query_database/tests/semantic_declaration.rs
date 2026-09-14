@@ -11,6 +11,7 @@ fn foreign_signature_agreement_uses_resolved_identity_mode_and_comptime_not_name
         ty,
         mode,
         is_comptime,
+        bounds: Arc::from([]),
     };
     let left = [parameter("left", Type::I64, Mode::Value, false)];
     let renamed = [parameter("right", Type::I64, Mode::Value, false)];
@@ -399,7 +400,7 @@ fn nucleus_failure_message(
             F::Diagnostic(kind)
             | F::DiagnosticAtParameter { kind, .. }
             | F::DiagnosticAtDeclaration { kind, .. }
-            | F::OwnershipGate { kind, .. }
+            | F::DeferredRequirement { kind, .. }
             | F::DiagnosticWithHelp { kind, .. }
             | F::DiagnosticWithNote { kind, .. },
         ) => Some(kind.to_string()),
@@ -600,6 +601,7 @@ fn direct_identity_and_signature_families_are_complete_per_declaration() {
                     is_copy,
                     is_linear,
                     is_repr_c,
+                    ..
                 } = signature
                 else {
                     panic!("S must project a struct signature: {signature:?}")
@@ -1253,20 +1255,20 @@ fn direct_ownership_terminals_accept_droppable_and_reject_linear_payloads() {
             14,
         );
         let V::ConstResolution(crate::semantic_query_nucleus::ConstResolutionProjection::Value {
-            deferred_ownership,
+            deferred_requirements,
             ..
         }) = resolution
         else {
             panic!("direct const producer failed before its ownership gate: {resolution:?}")
         };
-        let [gate] = deferred_ownership.as_ref() else {
-            panic!("expected one direct ownership gate: {deferred_ownership:?}")
+        let [gate] = deferred_requirements.as_ref() else {
+            panic!("expected one direct ownership gate: {deferred_requirements:?}")
         };
         let (keyed, keyed_attempt) = request_semantic_nucleus_observed(
             &database,
             revision,
-            Key::DeferredOwnership(crate::semantic_query_nucleus::DeferredOwnershipQueryKey {
-                producer,
+            Key::DeferredRequirement(crate::semantic_query_nucleus::DeferredRequirementQueryKey {
+                producer: producer.into(),
                 gate: gate.clone(),
             }),
         );
@@ -1290,7 +1292,7 @@ fn direct_ownership_terminals_accept_droppable_and_reject_linear_payloads() {
             18,
         );
         match expected_failure {
-            None => assert_eq!(keyed, V::DeferredOwnership),
+            None => assert_eq!(keyed, V::DeferredRequirement),
             Some(expected) => {
                 assert_eq!(nucleus_failure_message(&keyed).as_deref(), Some(expected));
             }
@@ -1389,25 +1391,25 @@ fn ownership_property_memo_preserves_decisions_across_repeats_and_recursion() {
             Key::ConstResolution(producer.clone()),
         );
         let V::ConstResolution(crate::semantic_query_nucleus::ConstResolutionProjection::Value {
-            deferred_ownership,
+            deferred_requirements,
             ..
         }) = resolution
         else {
             panic!("{name}: producer failed before its ownership gate: {resolution:?}")
         };
-        let [gate] = deferred_ownership.as_ref() else {
-            panic!("{name}: expected one ownership gate: {deferred_ownership:?}")
+        let [gate] = deferred_requirements.as_ref() else {
+            panic!("{name}: expected one ownership gate: {deferred_requirements:?}")
         };
         let (keyed, _) = request_semantic_nucleus_observed(
             &database,
             revision,
-            Key::DeferredOwnership(crate::semantic_query_nucleus::DeferredOwnershipQueryKey {
-                producer,
+            Key::DeferredRequirement(crate::semantic_query_nucleus::DeferredRequirementQueryKey {
+                producer: producer.into(),
                 gate: gate.clone(),
             }),
         );
         match expected_failure {
-            None => assert_eq!(keyed, V::DeferredOwnership, "{name}"),
+            None => assert_eq!(keyed, V::DeferredRequirement, "{name}"),
             Some(expected) => {
                 assert_eq!(
                     nucleus_failure_message(&keyed).as_deref(),
@@ -1423,8 +1425,8 @@ fn ownership_property_memo_preserves_decisions_across_repeats_and_recursion() {
 fn drop_glue_provider_preserves_exceptional_query_semantics() {
     use crate::declaration_candidate::DeclarationCandidateCategory as Category;
     use crate::semantic_query_nucleus::{
-        DeferredOwnershipGate, DeferredOwnershipGateKind, DeferredOwnershipGateSource,
-        DeferredOwnershipQueryKey, SemanticNucleusKey as Key, SemanticNucleusValue as V,
+        DeferredRequirement, DeferredRequirementKind, DeferredRequirementQueryKey,
+        DeferredRequirementSource, SemanticNucleusKey as Key, SemanticNucleusValue as V,
     };
     use crate::{DurableType as T, StableDefinitionKind as Kind};
 
@@ -1477,12 +1479,12 @@ fn drop_glue_provider_preserves_exceptional_query_semantics() {
         )
     };
     let key = |ty: T| {
-        Key::DeferredOwnership(DeferredOwnershipQueryKey {
-            producer: producer.clone(),
-            gate: DeferredOwnershipGate {
-                kind: DeferredOwnershipGateKind::RequireTriviallyDroppable,
+        Key::DeferredRequirement(DeferredRequirementQueryKey {
+            producer: producer.clone().into(),
+            gate: DeferredRequirement {
+                kind: DeferredRequirementKind::RequireTriviallyDroppable,
                 ty,
-                source: Arc::new(DeferredOwnershipGateSource {
+                source: Arc::new(DeferredRequirementSource {
                     declaration: declaration.clone(),
                     start: 0,
                     end: 0,
@@ -1504,7 +1506,7 @@ fn drop_glue_provider_preserves_exceptional_query_semantics() {
         request_semantic_nucleus_observed(&database, revision, key(zero_malformed));
     assert_eq!(
         zero_value,
-        V::DeferredOwnership,
+        V::DeferredRequirement,
         "zero multiplicity must not consult an unavailable element"
     );
     assert!(
@@ -1530,7 +1532,7 @@ fn drop_glue_provider_preserves_exceptional_query_semantics() {
 
     assert_eq!(
         request_semantic_nucleus(&database, revision, key(T::Nominal(named("A")))),
-        V::DeferredOwnership,
+        V::DeferredRequirement,
         "a genuine by-value cycle must use the provisional least fixed point"
     );
 
@@ -2455,7 +2457,7 @@ fn live_type_provider_array_length_adapter_preserves_integer_boundaries_without_
                 dependency_source,
                 dependency_kind: rue_air::DeclarationTypeDependencyKind::Signature,
                 dependencies: BTreeSet::new(),
-                deferred_ownership: BTreeSet::new(),
+                deferred_requirements: BTreeSet::new(),
                 ownership_properties: BTreeMap::new(),
             };
             let mut resolve = |name: &'static str| {
@@ -2553,7 +2555,7 @@ fn live_type_provider_array_length_adapter_preserves_integer_boundaries_without_
                 dependency_source,
                 dependency_kind: rue_air::DeclarationTypeDependencyKind::Signature,
                 dependencies: BTreeSet::new(),
-                deferred_ownership: BTreeSet::new(),
+                deferred_requirements: BTreeSet::new(),
                 ownership_properties: BTreeMap::new(),
             };
             cancel_in_closure.cancel();
@@ -2762,7 +2764,7 @@ fn live_root_authority_resolves_keyed_substitutions_and_restores_provider_state(
                 dependency_source,
                 dependency_kind: rue_air::DeclarationTypeDependencyKind::Signature,
                 dependencies: BTreeSet::new(),
-                deferred_ownership: BTreeSet::new(),
+                deferred_requirements: BTreeSet::new(),
                 ownership_properties: BTreeMap::new(),
             };
             let session = crate::durable_comptime::DurableComptimeSession::new(
@@ -3079,7 +3081,7 @@ fn production_root_authority_keyed_admission_preserves_identity_and_dependency()
                 dependency_source: accessing_source.clone(),
                 dependency_kind: rue_air::DeclarationTypeDependencyKind::Body,
                 dependencies: BTreeSet::new(),
-                deferred_ownership: BTreeSet::new(),
+                deferred_requirements: BTreeSet::new(),
                 ownership_properties: BTreeMap::new(),
             };
             let session = crate::durable_comptime::DurableComptimeSession::new(
@@ -3184,7 +3186,7 @@ fn production_root_authority_keyed_admission_preserves_identity_and_dependency()
                 dependency_source: accessing_source.clone(),
                 dependency_kind: rue_air::DeclarationTypeDependencyKind::Body,
                 dependencies: BTreeSet::new(),
-                deferred_ownership: BTreeSet::new(),
+                deferred_requirements: BTreeSet::new(),
                 ownership_properties: BTreeMap::new(),
             };
             let session = crate::durable_comptime::DurableComptimeSession::new(
@@ -3921,6 +3923,7 @@ fn semantic_nucleus_resolves_exact_signatures_without_whole_module_semantics() {
                     is_copy: false,
                     is_linear: false,
                     is_repr_c: false,
+                    conformance: crate::durable_semantics::DurableConformanceFacts::default(),
                 },
                 callable_type_syntax: None,
                 anonymous_nominals: Arc::from([]),
@@ -3934,7 +3937,7 @@ fn semantic_nucleus_resolves_exact_signatures_without_whole_module_semantics() {
                     },
                 ]
                 .into(),
-                deferred_ownership: Arc::from([]),
+                deferred_requirements: Arc::from([]),
             })
         );
 
@@ -4101,19 +4104,19 @@ fn require_droppable_propagates_signature_cycles_and_accepts_deferred_pointer_gr
     let Value::Signature(signature) = signature else {
         panic!("expected deferred pointer signature, got {signature:?}")
     };
-    let [gate] = signature.deferred_ownership.as_ref() else {
+    let [gate] = signature.deferred_requirements.as_ref() else {
         panic!("expected one deferred ownership gate: {signature:?}")
     };
     assert_eq!(
         request_semantic_nucleus(
             &control_database,
             control_revision,
-            Key::DeferredOwnership(crate::semantic_query_nucleus::DeferredOwnershipQueryKey {
-                producer,
+            Key::DeferredRequirement(crate::semantic_query_nucleus::DeferredRequirementQueryKey {
+                producer: producer.into(),
                 gate: gate.clone(),
             }),
         ),
-        Value::DeferredOwnership,
+        Value::DeferredRequirement,
     );
 }
 
@@ -5579,4 +5582,57 @@ fn aliased_type_constructor_signature_depends_on_the_alias_and_the_target() {
         aliased.contains(&alias),
         "the alias constant is a second edge, not a substitute for the first: {aliased:?}"
     );
+}
+
+#[test]
+fn program_conformances_observe_the_root_and_exclude_unreachable_snapshot_modules() {
+    use crate::semantic_query_nucleus::{SemanticNucleusKey as Key, SemanticNucleusValue as Value};
+    let configuration = crate::semantic_query_nucleus::SemanticQueryConfiguration {
+        preview_features: crate::StablePreviewFeatures::new(&crate::PreviewFeatures::from([
+            crate::PreviewFeature::Interfaces,
+        ])),
+        ..semantic_configuration()
+    };
+    let mut database = RevisionedQueryDatabase::default();
+    for root_number in [1, 2, 1] {
+        let root = crate::FileId::new(root_number);
+        let a = crate::FileId::new(1);
+        let b = crate::FileId::new(2);
+        let metadata = crate::SourceMetadata::new(
+            root,
+            AHashMap::from([
+                (a, "/project/a.rue".to_owned()),
+                (b, "/project/b.rue".to_owned()),
+            ]),
+            AHashMap::from([(a, "a.rue".to_owned()), (b, "b.rue".to_owned())]),
+        )
+        .unwrap();
+        let text = "interface Show { fn show(borrow self) -> i64; } struct Value { fn show(borrow self) -> i64 { 1 } } Value is Show; fn main() {}";
+        let source = crate::SourceSnapshot::new(
+            metadata,
+            vec![
+                (a, Arc::new(text.to_owned())),
+                (b, Arc::new(text.to_owned())),
+            ],
+        )
+        .unwrap();
+        let revision =
+            database.source_revision(&crate::session::ExactSourceInput::new(&source), &source);
+        let (value, request) = request_semantic_nucleus_observed(
+            &database,
+            revision,
+            Key::ProgramConformances(configuration.clone()),
+        );
+        let Value::ProgramConformances(assertions) = value else {
+            panic!("{value:?}");
+        };
+        assert_eq!(
+            assertions.len(),
+            1,
+            "unreachable assertions must not enter the program"
+        );
+        assert_eq!(&assertions[0].module, source.source_revision().root());
+        assert_eq!(request.inputs().len(), 1);
+        assert_eq!(request.inputs()[0].input, program_root_input());
+    }
 }

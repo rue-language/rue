@@ -651,11 +651,34 @@ fn lower_parsed_declaration_body_plan_internal(
                 ordinal,
             } => (
                 rue_rir::AstGenCandidate::Method { method, ordinal },
-                Some(owner),
+                Some(MethodOwnerSyntax {
+                    name: owner.name,
+                    is_public: owner.visibility == rue_parser::ast::Visibility::Public,
+                    is_linear: owner.is_linear,
+                }),
             ),
             crate::parsed_modules::ParsedDeclarationAstRef::ExternFunction { function, .. } => {
                 (rue_rir::AstGenCandidate::ExternFn(function), None)
             }
+            crate::parsed_modules::ParsedDeclarationAstRef::Interface(value) => {
+                (rue_rir::AstGenCandidate::InterfaceShell(value), None)
+            }
+            crate::parsed_modules::ParsedDeclarationAstRef::InterfaceRequirement {
+                owner,
+                requirement,
+                ordinal,
+            } => (
+                rue_rir::AstGenCandidate::InterfaceRequirement {
+                    interface: owner,
+                    requirement,
+                    ordinal,
+                },
+                Some(MethodOwnerSyntax {
+                    name: owner.name,
+                    is_public: owner.visibility == rue_parser::ast::Visibility::Public,
+                    is_linear: false,
+                }),
+            ),
             crate::parsed_modules::ParsedDeclarationAstRef::Test(value) => {
                 (rue_rir::AstGenCandidate::Test(value), None)
             }
@@ -715,7 +738,7 @@ fn lower_parsed_declaration_body_plan_internal(
         Some(PackedRirMethodOwner {
             declaration,
             name: owner_name,
-            is_public: owner.visibility == rue_parser::ast::Visibility::Public,
+            is_public: owner.is_public,
             is_linear: owner.is_linear,
         })
     } else {
@@ -743,6 +766,14 @@ fn lower_parsed_declaration_body_plan_internal(
         source_length,
         checkpoint,
     )
+}
+
+/// The owner facts a method or interface-requirement candidate carries into
+/// its packed metadata: struct and interface owners differ only in these.
+struct MethodOwnerSyntax {
+    name: rue_parser::Ident,
+    is_public: bool,
+    is_linear: bool,
 }
 
 fn validate_candidate_root(
@@ -1059,6 +1090,10 @@ fn candidate_root_index(
             Roots::Struct {
                 declaration,
                 methods,
+            }
+            | Roots::Interface {
+                declaration,
+                requirements: methods,
             } => {
                 emitted.push(EmittedDeclarationRoot {
                     declaration: declaration.declaration,
@@ -1071,6 +1106,10 @@ fn candidate_root_index(
                     owner: Some(declaration.declaration),
                 }));
             }
+            // A freestanding conformance assertion has no declaration
+            // candidate (spec 6.8:11; the semantic nucleus resolves it per
+            // module), so its root has no key to join.
+            Roots::Conformance(_) => {}
             Roots::Extern(functions) => {
                 emitted.extend(functions.iter().map(|declaration| EmittedDeclarationRoot {
                     declaration: declaration.declaration,

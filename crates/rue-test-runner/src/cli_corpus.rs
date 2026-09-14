@@ -119,9 +119,15 @@ pub struct ExecutionContractDeclaration {
 #[serde(deny_unknown_fields)]
 pub struct AutomaticExampleContract {
     pub path: String,
-    pub contract: String,
+    /// A named execution contract, or none when the entry only supplies a
+    /// preview feature or tier override.
+    #[serde(default)]
+    pub contract: Option<String>,
     #[serde(default)]
     pub tier: CliCaseTier,
+    /// Preview feature required by the example's own source.
+    #[serde(default)]
+    pub preview: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

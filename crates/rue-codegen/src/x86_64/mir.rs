@@ -1679,7 +1679,7 @@ impl X86Mir {
         !self
             .instructions
             .iter()
-            .any(|inst| matches!(inst, X86Inst::CallRel { .. }))
+            .any(|inst| matches!(inst, X86Inst::CallRel { .. } | X86Inst::CallReg { .. }))
     }
 
     /// Consume the MIR and return its instructions.
@@ -1705,6 +1705,15 @@ impl fmt::Display for X86Mir {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indirect_call_requires_a_non_leaf_prologue() {
+        let mut mir = X86Mir::new();
+        mir.instructions.push(X86Inst::CallReg {
+            target: Operand::Physical(Reg::Rbx),
+        });
+        assert!(!mir.is_leaf());
+    }
 
     #[test]
     fn test_x86_inst_size() {

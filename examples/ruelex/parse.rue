@@ -743,7 +743,13 @@ pub struct Parser {
             let name = self.expect(token.IDENT);
             let _ = self.expect(token.COLON);
             let ty = self.parse_type();
-            let p = self.add_meta(ast.PARAM, name.value, mode, start, self.arena.at(ty).end, ty, 0, 0, 0);
+            let mut bounds: u64 = 0;
+            if mode == token.COMPTIME {
+                while self.eat(token.PLUS) {
+                    bounds = self.append(bounds, self.parse_type());
+                }
+            }
+            let p = self.add_meta(ast.PARAM, name.value, mode, start, self.previous().end, ty, bounds, 0, 0);
             params = self.append(params, p);
             if !self.eat(token.COMMA) { break; }
         }
@@ -769,15 +775,27 @@ pub struct Parser {
     fn parse_struct(inout self, directives: u64, flags: u64) -> u64 {
         let start = self.expect(token.STRUCT).start;
         let name = self.expect(token.IDENT);
+        let conformances = if self.at_is_keyword() {
+            let _ = self.bump();
+            self.parse_interface_list()
+        } else { 0 };
         let _ = self.expect(token.LBRACE);
         let mut members: u64 = 0;
+        let mut phase: u64 = 0;
         while !self.at(token.RBRACE) && !self.eof() {
             let dirs = self.parse_directives();
             if self.at(token.FN) {
+                phase = 2;
                 members = self.append(members, self.parse_function(dirs, 0, true));
             } else if self.at(token.DROP) {
+                phase = 2;
                 members = self.append(members, self.parse_drop(true));
+            } else if self.at(token.CONST) || self.at(token.PUB) {
+                if phase == 2 { self.report(token.FN); }
+                phase = 1;
+                members = self.append(members, self.parse_assoc_type());
             } else {
+                if phase != 0 { self.report(token.FN); }
                 let field = self.expect(token.IDENT);
                 let _ = self.expect(token.COLON);
                 let ty = self.parse_type();
@@ -786,7 +804,71 @@ pub struct Parser {
             }
         }
         let close = self.expect(token.RBRACE);
-        self.add_meta(ast.STRUCT_DEF, name.value, flags, start, close.end, directives, members, 0, 0)
+        self.add_meta(ast.STRUCT_DEF, name.value, flags, start, close.end, directives, members, conformances, 0)
+    }
+
+    fn at_is_keyword(borrow self) -> bool {
+        self.at(token.IDENT) && self.current().ctx == token.CTX_IS
+    }
+
+    fn parse_interface_list(inout self) -> u64 {
+        let mut interfaces = self.append(0, self.parse_type());
+        while self.eat(token.PLUS) {
+            interfaces = self.append(interfaces, self.parse_type());
+        }
+        interfaces
+    }
+
+    fn parse_assoc_type(inout self) -> u64 {
+        let start = self.current().start;
+        let flags = if self.eat(token.PUB) { 1 } else { 0 };
+        let _ = self.expect(token.CONST);
+        let name = self.expect(token.IDENT);
+        let _ = self.expect(token.EQ);
+        let ty = self.parse_type();
+        let close = self.expect(token.SEMI);
+        self.add_meta(ast.ASSOC_TYPE, name.value, flags, start, close.end, ty, 0, 0, 0)
+    }
+
+    fn parse_interface(inout self, directives: u64, flags: u64) -> u64 {
+        let start = self.expect(token.INTERFACE).start;
+        let name = self.expect(token.IDENT);
+        let parents = if self.eat(token.COLON) { self.parse_interface_list() } else { 0 };
+        let _ = self.expect(token.LBRACE);
+        let mut requirements: u64 = 0;
+        while !self.at(token.RBRACE) && !self.eof() {
+            let dirs = self.parse_directives();
+            if self.eat(token.CONST) {
+                if dirs != 0 { self.report(token.CONST); }
+                let member = self.expect(token.IDENT);
+                let _ = self.expect(token.COLON);
+                let _ = self.expect(token.TYPE_TYPE);
+                let close = self.expect(token.SEMI);
+                requirements = self.append(requirements, self.add(ast.ASSOC_REQUIREMENT, member.value, member.start, close.end, 0, 0, 0));
+            } else {
+                let member_start = self.expect(token.FN).start;
+                let member = self.expect(token.IDENT);
+                let params = self.parse_params(true);
+                let ret = if self.eat(token.ARROW) {
+                    let _ = if self.at(token.BORROW) || self.at(token.INOUT) { self.bump().kind } else { 0 };
+                    self.parse_type()
+                } else { 0 };
+                let close = self.expect(token.SEMI);
+                requirements = self.append(requirements, self.add(ast.REQUIREMENT, member.value, member_start, close.end, dirs, params, ret));
+            }
+        }
+        let close = self.expect(token.RBRACE);
+        self.add_meta(ast.INTERFACE, name.value, flags, start, close.end, directives, requirements, parents, 0)
+    }
+
+    fn parse_conformance(inout self) -> u64 {
+        let start = self.current().start;
+        let subject = self.parse_type();
+        if !self.at_is_keyword() { self.report(token.IDENT); }
+        let _ = self.bump();
+        let interfaces = self.parse_interface_list();
+        let close = self.expect(token.SEMI);
+        self.add(ast.CONFORMANCE, 0, start, close.end, subject, interfaces, 0)
     }
 
     fn parse_anon_struct_type(inout self, with_methods: bool) -> u64 {
@@ -905,10 +987,17 @@ pub struct Parser {
         if self.at(token.FN) { self.parse_function(directives, flags, false) }
         else if self.at(token.STRUCT) { self.parse_struct(directives, flags) }
         else if self.at(token.ENUM) { self.parse_enum(directives, flags) }
+        else if self.at(token.INTERFACE) {
+            if flags > 1 { self.report(token.FN); }
+            self.parse_interface(directives, flags)
+        }
         else if self.at(token.DROP) { self.parse_drop(false) }
         else if self.at(token.CONST) { self.parse_const(directives, flags) }
         else if flags == 0 && self.at_test_item() { self.parse_test(directives) }
-        else {
+        else if flags == 0 && (self.at(token.IDENT) || self.at(token.LBRACKET) || self.at(token.PTR) || self.at(token.SELFTYPE) || Self.is_primitive(self.kind())) {
+            if directives != 0 { self.report(token.FN); }
+            self.parse_conformance()
+        } else {
             self.report(token.FN);
             let bad = self.bump();
             self.add(ast.ERROR, bad.kind, bad.start, bad.end, directives, 0, 0)

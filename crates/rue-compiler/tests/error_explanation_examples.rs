@@ -28,6 +28,7 @@ fn compiler_owned_explanation_examples_have_the_declared_outcome() {
         (1..=11).contains(&metadata.code.0)
             || (100..=103).contains(&metadata.code.0)
             || (200..=211).contains(&metadata.code.0)
+            || (300..=307).contains(&metadata.code.0)
             || (400..=407).contains(&metadata.code.0)
             || (410..=418).contains(&metadata.code.0)
             || (419..=424).contains(&metadata.code.0)

@@ -1563,6 +1563,10 @@ const AIR_CRATE_SOURCES: &[(&str, &str)] = &[
         include_str!("sema/analysis/instructions.rs"),
     ),
     (
+        "sema/analysis/interfaces",
+        include_str!("sema/analysis/interfaces.rs"),
+    ),
+    (
         "sema/analysis/intrinsics",
         include_str!("sema/analysis/intrinsics.rs"),
     ),
@@ -1573,6 +1577,10 @@ const AIR_CRATE_SOURCES: &[(&str, &str)] = &[
     (
         "sema/analysis/pointers",
         include_str!("sema/analysis/pointers.rs"),
+    ),
+    (
+        "sema/analysis/skolem",
+        include_str!("sema/analysis/skolem.rs"),
     ),
     (
         "sema/analysis/type_inference",
@@ -4073,6 +4081,10 @@ fn sema_diagnostics_use_the_friendly_type_display_authority() {
             include_str!("sema/analysis/instructions.rs"),
         ),
         (
+            "sema/analysis/interfaces",
+            include_str!("sema/analysis/interfaces.rs"),
+        ),
+        (
             "sema/analysis/intrinsics",
             include_str!("sema/analysis/intrinsics.rs"),
         ),
@@ -4083,6 +4095,10 @@ fn sema_diagnostics_use_the_friendly_type_display_authority() {
         (
             "sema/analysis/pointers",
             include_str!("sema/analysis/pointers.rs"),
+        ),
+        (
+            "sema/analysis/skolem",
+            include_str!("sema/analysis/skolem.rs"),
         ),
         (
             "sema/analysis/type_inference",

@@ -191,6 +191,11 @@ mechanism), so the `PreviewFeature` enum is not empty.
 
 ### Active preview features
 
+- `interfaces` — declared, structurally verified conformance and interface
+  bounds on comptime type parameters (spec 6.8). The preview checks supported
+  bounded function bodies at their definitions; generic type constructors,
+  methods, and comptime value parameters retain the limitations stated in
+  6.8:24. These limitations must be resolved before stabilization.
 - `non_exhaustive_enums` — `@non_exhaustive` public enums (RUE-1104). The
   directive is an opt-in source/API compatibility promise: matches from an
   importing module must include a wildcard, while matches in the defining

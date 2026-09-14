@@ -16,7 +16,7 @@ pub(super) struct SemanticNucleusTypeProvider<'a> {
     pub(super) dependency_source: crate::StableDefinitionKey,
     pub(super) dependency_kind: rue_air::DeclarationTypeDependencyKind,
     pub(super) dependencies: BTreeSet<crate::semantic_query_nucleus::SemanticDeclarationDependency>,
-    pub(super) deferred_ownership: BTreeSet<crate::semantic_query_nucleus::DeferredOwnershipGate>,
+    pub(super) deferred_requirements: BTreeSet<crate::semantic_query_nucleus::DeferredRequirement>,
     /// Recursive ownership answers already proven for a nominal type, for the
     /// life of this provider. See [`OwnershipProperties`].
     pub(super) ownership_properties: BTreeMap<crate::StableDefinitionKey, OwnershipProperties>,
@@ -1636,7 +1636,7 @@ pub(super) fn exact_specialized_callable_types(
         dependency_source: definition.clone(),
         dependency_kind: rue_air::DeclarationTypeDependencyKind::Signature,
         dependencies: BTreeSet::new(),
-        deferred_ownership: BTreeSet::new(),
+        deferred_requirements: BTreeSet::new(),
         ownership_properties: BTreeMap::new(),
     };
     let mut resolve = |root: rue_rir::RirTypeSyntaxRef| {

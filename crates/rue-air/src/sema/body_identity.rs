@@ -110,6 +110,13 @@ pub enum DurableNominalBody<K, M> {
         fields: Arc<[(Arc<str>, SemanticImportType<K, M>)]>,
         is_copy: bool,
         is_linear: bool,
+        /// The interface-related declaration facts (spec 6.8): whether this
+        /// shell is an `interface`, what it asserts or refines, and its
+        /// associated types or type-valued requirements. The third tuple element
+        /// records whether a concrete associated type is public; interface
+        /// requirements are public by definition and conformance checking uses
+        /// this fact when crossing module boundaries.
+        conformance: DurableConformanceFacts<K, M>,
     },
     Enum {
         /// Canonically shared variants in declaration order: source name and
@@ -117,6 +124,57 @@ pub enum DurableNominalBody<K, M> {
         variants: Arc<[(Arc<str>, Arc<[SemanticImportType<K, M>]>)]>,
         is_non_exhaustive: bool,
     },
+}
+
+/// One interface named by a struct header (`struct S is I`) or by an
+/// interface's refinement list (`interface I: P`), spec 6.8:9 and 6.8:7. The
+/// source range of the name is declaration-relative so the durable payload
+/// carries no revision-local span; a host recovers the absolute span through
+/// [`DurableNominalSource::nominal_producer_span`] when it reports a failed
+/// verification at the assertion (spec 6.8:10).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DurableConformance<K> {
+    pub interface: K,
+    pub start: u32,
+    pub end: u32,
+}
+
+/// The interface facts of a struct-shaped declaration (spec 6.8). A plain
+/// struct carries its header assertions and associated type declarations; an
+/// `interface` shell carries `is_interface`, the interfaces it refines in
+/// `conformances`, its type-valued requirements in `assoc_types` (each paired
+/// with [`SemanticImportType::ComptimeType`]), and its method and
+/// associated-function requirement names in `requirements`. Requirement
+/// signatures are ordinary durable methods of the shell.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DurableConformanceFacts<K, M> {
+    pub is_interface: bool,
+    pub conformances: Arc<[DurableConformance<K>]>,
+    pub assoc_types: Arc<[(Arc<str>, SemanticImportType<K, M>, bool)]>,
+    pub requirements: Arc<[Arc<str>]>,
+}
+
+impl<K, M> Default for DurableConformanceFacts<K, M> {
+    fn default() -> Self {
+        Self {
+            is_interface: false,
+            conformances: Arc::from([]),
+            assoc_types: Arc::from([]),
+            requirements: Arc::from([]),
+        }
+    }
+}
+
+/// A resolved freestanding conformance assertion (`Type is I + J;`, spec
+/// 6.8:9): the asserted subject, the interfaces, and the assertion's source
+/// range in its module so a failed verification is reported at the assertion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableConformanceAssertion<K, M> {
+    pub subject: SemanticImportType<K, M>,
+    pub interfaces: Arc<[K]>,
+    pub module: M,
+    pub start: u32,
+    pub end: u32,
 }
 
 /// Durable metadata for one named nominal, sufficient to register a
@@ -162,6 +220,38 @@ pub trait DurableNominalSource<K, M> {
     /// default keeps fixture sources conservative.
     fn module_is_trusted_standard_library(&self, _module: &M) -> bool {
         false
+    }
+
+    /// The absolute span of a declaration-relative range inside the named
+    /// nominal's declaration, when the caller analyzes against a concrete
+    /// source snapshot. Used to point a failed conformance verification at
+    /// the struct header's `is` list (spec 6.8:10).
+    fn nominal_producer_span(&self, _key: &K, _start: u32, _end: u32) -> Option<Span> {
+        None
+    }
+
+    /// The user-facing name of a skolem type (spec 6.8:20) — the bounded
+    /// comptime parameter it stands for, such as `T`, or `T.Element` for
+    /// one of its associated types — or `None` when `key` names an ordinary
+    /// nominal. A skolem's durable `name` is a reserved, unspellable symbol
+    /// that keeps it distinct from every program type in the pool; this is
+    /// what every diagnostic renders instead.
+    fn skolem_display_name(&self, _key: &K) -> Option<Arc<str>> {
+        None
+    }
+
+    /// The freestanding conformance assertions visible from the body being
+    /// analyzed: those of its own module and of every module that module
+    /// transitively imports (spec 6.8:15). Struct-header assertions are
+    /// carried by the struct's own [`DurableNominalBody::Struct`] instead.
+    fn visible_conformance_assertions(&self) -> Arc<[DurableConformanceAssertion<K, M>]> {
+        Arc::from([])
+    }
+
+    /// The absolute span of a module-relative source range, for reporting a
+    /// freestanding assertion's verification failure at the assertion.
+    fn module_range_span(&self, _module: &M, _start: u32, _end: u32) -> Option<Span> {
+        None
     }
 }
 
@@ -1379,12 +1469,18 @@ where
         let symbol = self
             .intern_name(name.as_ref())
             .map_err(IdentityMintError::Interner)?;
-        let name = name.clone();
+        // A skolem's durable `name` is its unique pool symbol; the type the
+        // user reads is the bounded parameter's name (spec 6.8:22).
+        let name = self
+            .source
+            .skolem_display_name(key)
+            .unwrap_or_else(|| name.clone());
         match body {
             DurableNominalBody::Struct {
                 fields,
                 is_copy,
                 is_linear,
+                conformance,
             } => {
                 let (id, _) = self.type_pool.declare_struct(
                     symbol,
@@ -1409,6 +1505,9 @@ where
                 }
                 if is_repr_c {
                     self.type_pool.set_struct_repr_c(id);
+                }
+                if conformance.is_interface {
+                    self.type_pool.set_struct_interface(id);
                 }
                 let mut resolved = Vec::with_capacity(fields.len());
                 for (field_name, field_ty) in fields.iter() {
@@ -1547,13 +1646,19 @@ where
         let symbol = self
             .intern_name(name.as_ref())
             .map_err(IdentityMintError::Interner)?;
-        let name = name.clone();
+        // A skolem's durable `name` is its unique pool symbol; the type the
+        // user reads is the bounded parameter's name (spec 6.8:22).
+        let name = self
+            .source
+            .skolem_display_name(key)
+            .unwrap_or_else(|| name.clone());
 
         match body {
             DurableNominalBody::Struct {
                 fields,
                 is_copy,
                 is_linear,
+                conformance,
             } => {
                 let (id, _) = self.type_pool.declare_struct(
                     symbol,
@@ -1578,6 +1683,9 @@ where
                 }
                 if is_repr_c {
                     self.type_pool.set_struct_repr_c(id);
+                }
+                if conformance.is_interface {
+                    self.type_pool.set_struct_interface(id);
                 }
 
                 let mut resolved = Vec::with_capacity(fields.len());
@@ -2400,6 +2508,14 @@ pub struct DurableSignatureParameter<K, M> {
     pub ty: SemanticImportType<K, M>,
     pub mode: SemanticParameterMode,
     pub is_comptime: bool,
+    /// The interfaces a bounded comptime type parameter names
+    /// (`comptime T: Equatable + Sequence`, spec 6.8:14), as durable nominal
+    /// keys. Non-empty only for a comptime parameter whose `ty` is
+    /// [`SemanticImportType::ComptimeType`]: the nucleus classifies a bound
+    /// as a type parameter, so every consumer keyed on `ComptimeType` treats
+    /// a bounded parameter exactly like `comptime T: type` (spec 6.8:16) and
+    /// only the call site reads the bound (spec 6.8:15).
+    pub bounds: Arc<[K]>,
 }
 
 /// Exact parser-structured parameter and result types retained by the
@@ -2458,6 +2574,15 @@ pub trait DurableCallableSource<K, M> {
     /// The durable signature for a method key, or `None` if the key names no
     /// method in the durable universe.
     fn method(&self, key: &K) -> Option<DurableMethod<K, M>>;
+
+    /// The durable signature of an interface requirement (spec 6.8:5), read
+    /// for conformance verification only. Unlike [`Self::method`], consulting
+    /// it makes nothing reachable: a requirement has no body to run, so the
+    /// verification that reads it must not draw the requirement's stub into
+    /// the body closure.
+    fn requirement_signature(&self, key: &K) -> Option<DurableMethod<K, M>> {
+        self.method(key)
+    }
 
     /// Whether dependent callable types are being materialized for an
     /// executable body-analysis host. Such a host carries the exact syntax
@@ -3902,6 +4027,7 @@ mod tests {
             ty,
             mode,
             is_comptime,
+            bounds: Arc::from([]),
         }
     }
 
@@ -4026,6 +4152,7 @@ mod tests {
                 .collect(),
             is_copy,
             is_linear,
+            conformance: DurableConformanceFacts::default(),
         }
     }
 

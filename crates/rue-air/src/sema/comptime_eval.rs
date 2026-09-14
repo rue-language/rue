@@ -370,7 +370,7 @@ pub(super) fn validate_comptime_value_for_type_impl(
     }
     Ok(())
 }
-use super::{DeferredOwnershipGate, DeferredOwnershipGateKind};
+use super::{DeferredRequirement, DeferredRequirementKind};
 use crate::integer_semantics::CheckedIntegerResult;
 use crate::types::{ArrayLen, StructField, Type, TypeKind};
 
@@ -1259,11 +1259,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 Some(true) => return Err(self.require_droppable_error(ty, span)),
                 Some(false) => return Ok(()),
                 None => {
-                    self.defer_ownership_gate(
-                        DeferredOwnershipGateKind::RequireDroppable,
-                        ty,
-                        span,
-                    );
+                    self.defer_ownership_gate(DeferredRequirementKind::RequireDroppable, ty, span);
                     return Ok(());
                 }
             }
@@ -1334,6 +1330,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         shape: impl FnOnce(&Self) -> CompileResult<ElementGateShape>,
     ) -> CompileResult<()> {
+        // A synthesized skolem is intentionally fieldless and has no
+        // destructor, but its representation is still opaque at the generic
+        // definition site. Do not let that synthetic shape satisfy a
+        // duplication gate; only independently non-owning pointer types may
+        // pass without knowing the pointee's ownership.
+        if self.type_ownership_depends_on_skolem(ty) {
+            let shape = shape(self)?;
+            return Err(self.trivially_droppable_error(ty, span, shape));
+        }
         if self.declaration_binding_active() {
             match self.known_drop_glue_during_binding(ty) {
                 Some(true) => {
@@ -1343,7 +1348,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 Some(false) => return Ok(()),
                 None => {
                     self.defer_ownership_gate(
-                        DeferredOwnershipGateKind::RequireTriviallyDroppable,
+                        DeferredRequirementKind::RequireTriviallyDroppable,
                         ty,
                         span,
                     );
@@ -1382,12 +1387,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         )
     }
 
-    fn defer_ownership_gate(&mut self, kind: DeferredOwnershipGateKind, ty: Type, span: Span) {
+    fn defer_ownership_gate(&mut self, kind: DeferredRequirementKind, ty: Type, span: Span) {
         debug_assert!(self.declaration_binding_active());
         debug_assert!(self.type_ownership_depends_on_nominal(ty));
-        let gate = DeferredOwnershipGate { kind, ty, span };
-        if !self.deferred_ownership_gates_mut().contains(&gate) {
-            self.deferred_ownership_gates_mut().push(gate);
+        let gate = DeferredRequirement { kind, ty, span };
+        if !self.deferred_requirements_gates_mut().contains(&gate) {
+            self.deferred_requirements_gates_mut().push(gate);
         }
     }
 

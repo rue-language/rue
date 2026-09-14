@@ -1,5 +1,5 @@
 macro_rules! register_semantic_semantic_nucleus {
-    ($artifacts_for_semantic_nucleus:ident, $declaration_memo_retention:ident, $imports_for_semantic_nucleus:ident, $names_for_semantic_nucleus:ident, $parse_for_semantic_nucleus:ident, $produced_anonymous_for_semantic_nucleus:ident, $runtime:ident, $shells_for_semantic_nucleus:ident, $type_facts_for_semantic_nucleus:ident) => {{
+    ($module_store_for_semantic_nucleus:ident, $lookup_imports_for_semantic_nucleus:ident, $artifacts_for_semantic_nucleus:ident, $declaration_memo_retention:ident, $imports_for_semantic_nucleus:ident, $names_for_semantic_nucleus:ident, $parse_for_semantic_nucleus:ident, $produced_anonymous_for_semantic_nucleus:ident, $runtime:ident, $shells_for_semantic_nucleus:ident, $type_facts_for_semantic_nucleus:ident, $body_transaction_evaluator_for_semantic_nucleus:ident) => {{
 $runtime
             .family_with_equality_and_evaluator(
                 "compiler.semantic-nucleus",
@@ -12,9 +12,278 @@ $runtime
                         SemanticNucleusValue as Value,
                     };
 
+                    if let Key::DeferredRequirement(query) = key {
+                        use crate::semantic_query_nucleus::DeferredRequirementProducer as Producer;
+                        let configuration = query.producer.configuration().clone();
+                        let projection = match &query.producer {
+                            Producer::Declaration(producer) if producer.declaration.category
+                                == crate::declaration_candidate::DeclarationCandidateCategory::ConstCandidate => {
+                                context.query_registered(family, Key::ConstResolution(producer.clone()))?
+                            }
+                            Producer::Declaration(producer) => {
+                                context.query_registered(family, Key::Signature(producer.clone()))?
+                            }
+                            Producer::Module(producer) => {
+                                context.query_registered(family, Key::ModuleConformances(producer.clone()))?
+                            }
+                        };
+                        let (dependency_source, anonymous_nominals) = match projection.outcome() {
+                            rue_query::QueryOutcome::Success(Value::ConstResolution(
+                                crate::semantic_query_nucleus::ConstResolutionProjection::Value {
+                                    key, anonymous_nominals, ..
+                                },
+                            )) => (key.clone(), anonymous_nominals.clone()),
+                            rue_query::QueryOutcome::Success(Value::Signature(signature)) => {
+                                (signature.definition.clone(), signature.anonymous_nominals.clone())
+                            }
+                            rue_query::QueryOutcome::Success(Value::ModuleConformances(projection)) => {
+                                let Producer::Module(producer) = &query.producer else {
+                                    unreachable!("module projection has a module owner")
+                                };
+                                (crate::semantic_query_nucleus::module_conformances_source(&producer.module),
+                                    projection.anonymous_nominals.clone())
+                            }
+                            rue_query::QueryOutcome::Success(Value::Failure(failure)) => {
+                                return Ok(QueryOutput::success(Value::Failure(failure.clone()))
+                                    .with_terminal_kind(QueryTerminalKind::Failure));
+                            }
+                            _ => unreachable!("deferred requirement owner returned the wrong projection"),
+                        };
+                            let mut provider = SemanticNucleusTypeProvider {
+                                context,
+                                family,
+                                shells: &$shells_for_semantic_nucleus,
+                                names: &$names_for_semantic_nucleus,
+                                configuration: configuration.clone(),
+                                substitutions: BTreeMap::new(),
+                                value_substitutions: BTreeMap::new(),
+                                deferred_value_parameters: BTreeMap::new(),
+                                anonymous_nominals: BTreeMap::new(),
+                                dependency_source,
+                                dependency_kind:
+                                    rue_air::DeclarationTypeDependencyKind::Signature,
+                                dependencies: BTreeSet::new(),
+                                deferred_requirements: BTreeSet::new(),
+                                ownership_properties: BTreeMap::new(),
+                            };
+                            if let Err(error) = provider
+                                .merge_anonymous_projections(anonymous_nominals.as_ref())
+                            {
+                                match error {
+                                    rue_air::SemanticProviderError::Failure(failure) => {
+                                        return Ok(QueryOutput::success(Value::Failure(failure))
+                                            .with_terminal_kind(QueryTerminalKind::Failure));
+                                    }
+                                    rue_air::SemanticProviderError::Abort(abort) => {
+                                        return Err(abort);
+                                    }
+                                }
+                            }
+                            // Generic requirements are carried forward until
+                            // the completed consumer has concrete arguments;
+                            // inspecting their nominal shape here would
+                            // recurse into the signature currently producing
+                            // the requirement.
+                            if matches!(query.gate.kind, crate::semantic_query_nucleus::DeferredRequirementKind::InterfaceBound { .. })
+                                && SemanticNucleusTypeProvider::type_contains_unresolved_generic(
+                                &query.gate.ty,
+                            ) {
+                                return Ok(QueryOutput::success(Value::DeferredRequirement));
+                            }
+                            let gate_type_name = deferred_gate_type_diagnostic_name(
+                                context,
+                                family,
+                                &query.gate.ty,
+                                &configuration,
+                            )?;
+                            let type_facts = $type_facts_for_semantic_nucleus
+                                .get()
+                                .ok_or(QueryAbort::ForeignRuntime)?;
+                            let result = match &query.gate.kind {
+                                crate::semantic_query_nucleus::DeferredRequirementKind::RequireDroppable => provider
+                                    .type_carries_linear(&query.gate.ty)
+                                    .map(|rejected| rejected.then(|| {
+                                        rue_error::ErrorKind::ContainerElementIsLinear {
+                                            ty: gate_type_name.clone(),
+                                        }
+                                    })),
+                                crate::semantic_query_nucleus::DeferredRequirementKind::RequireTriviallyDroppable => provider
+                                    .type_has_drop_glue(&type_facts, &query.gate.ty)
+                                    .map(|rejected| rejected.then(|| {
+                                        rue_error::ErrorKind::ContainerElementNotTriviallyDroppable {
+                                            ty: gate_type_name.clone(),
+                                            // Deferral only happens while a
+                                            // declaration binds — never in a
+                                            // body with a receiver — so the
+                                            // gate guards a construction.
+                                            shape: rue_error::ElementGateShape::Construction,
+                                        }
+                                    })),
+                                // Interface-bound requirements are checked by
+                                // the completed body consumer through the AIR
+                                // adapter.  The deferred projection remains a
+                                // transport fact and must not query Signature
+                                // while Signature itself is being produced.
+                                crate::semantic_query_nucleus::DeferredRequirementKind::InterfaceBound {
+                                    callable,
+                                    parameter_index,
+                                } => $body_transaction_evaluator_for_semantic_nucleus
+                                    .get()
+                                    .ok_or(QueryAbort::ForeignRuntime)?
+                                    .check_interface_bound(
+                                        context,
+                                        configuration.clone(),
+                                        callable,
+                                        *parameter_index as usize,
+                                        &query.gate.ty,
+                                        anonymous_nominals.as_ref(),
+                                    ),
+                            };
+                            let value = match result {
+                                Ok(Some(kind)) => Value::Failure(Failure::DeferredRequirement {
+                                    kind,
+                                    gate: query.gate.clone(),
+                                }),
+                                Ok(None) => Value::DeferredRequirement,
+                                Err(rue_air::SemanticProviderError::Failure(failure)) => {
+                                    Value::Failure(failure)
+                                }
+                                Err(rue_air::SemanticProviderError::Abort(abort)) => {
+                                    return Err(abort)
+                                }
+                            };
+                        let kind = if matches!(value, Value::Failure(_)) {
+                            QueryTerminalKind::Failure
+                        } else {
+                            QueryTerminalKind::Success
+                        };
+                        return Ok(QueryOutput::success(value).with_terminal_kind(kind));
+                    }
+
+                    if let Key::ProgramConformances(configuration) = key {
+                        context.input(program_root_input())?;
+                        let view = module_input_view(&$module_store_for_semantic_nucleus, context.revision())?;
+                        let mut pending = BTreeSet::from([view.snapshot.source_revision().root().clone()]);
+                        let mut visited = BTreeSet::new();
+                        let mut assertions = Vec::new();
+                        while let Some(module) = pending.pop_first() {
+                            if !visited.insert(module.clone()) {
+                                continue;
+                            }
+                            let parsed = context.query_registered(
+                                &$parse_for_semantic_nucleus, ModuleQueryKey(module.clone()),
+                            )?;
+                            let rue_query::QueryOutcome::Success(ParseModuleValue { result: Ok(parsed), .. }) = parsed.outcome() else {
+                                return Ok(QueryOutput::success(Value::Failure(Failure::Syntax(Arc::from(
+                                    "conformance assertion module failed to parse",
+                                )))).with_terminal_kind(QueryTerminalKind::Failure));
+                            };
+                            for import in parsed.imports() {
+                                let binding = context.query_registered(
+                                    &$lookup_imports_for_semantic_nucleus,
+                                    LookupImportKey { module: module.clone(), specifier: Arc::from(import.specifier()) },
+                                )?;
+                                let rue_query::QueryOutcome::Success(LookupImportValue(Ok(binding))) = binding.outcome() else {
+                                    return Ok(QueryOutput::success(Value::Failure(Failure::Resolution(Arc::from(
+                                        "program conformance scope has an unresolved import",
+                                    )))).with_terminal_kind(QueryTerminalKind::Failure));
+                                };
+                                let Some(target) = &binding.target else {
+                                    return Err(QueryAbort::Canceled);
+                                };
+                                pending.insert(target.clone());
+                            }
+                            let resolved = context.query_registered(family, Key::ModuleConformances(
+                                crate::semantic_query_nucleus::ModuleSemanticQueryKey { module, configuration: configuration.clone() },
+                            ))?;
+                            match resolved.outcome() {
+                                rue_query::QueryOutcome::Success(Value::ModuleConformances(values)) => assertions.extend(values.assertions.iter().cloned()),
+                                rue_query::QueryOutcome::Success(Value::Failure(failure)) => {
+                                    return Ok(QueryOutput::success(Value::Failure(failure.clone())).with_terminal_kind(QueryTerminalKind::Failure));
+                                }
+                                _ => unreachable!("ModuleConformances publishes assertions or a typed failure"),
+                            }
+                        }
+                        return Ok(QueryOutput::success(Value::ProgramConformances(assertions.into())));
+                    }
+
+                    // The per-module queries have no declaration shell: a
+                    // freestanding conformance assertion is a bodiless fact
+                    // with no identity (spec 6.8:11), resolved per module.
+                    let Some(declaration) = key.declaration() else {
+                        let Key::ModuleConformances(query) = key else {
+                            unreachable!("only per-module nucleus keys have no declaration")
+                        };
+                        let parsed_module = context.query_registered(
+                            &$parse_for_semantic_nucleus,
+                            ModuleQueryKey(query.module.clone()),
+                        )?;
+                        let rue_query::QueryOutcome::Success(parsed_module) =
+                            parsed_module.outcome()
+                        else {
+                            unreachable!("ParseModule publishes typed values")
+                        };
+                        let value = match &parsed_module.result {
+                            Err(_) => Value::Failure(Failure::Syntax(Arc::from(
+                                "conformance assertion module failed to parse",
+                            ))),
+                            Ok(parsed) => {
+                                let mut provider = SemanticNucleusTypeProvider {
+                                    context,
+                                    family,
+                                    shells: &$shells_for_semantic_nucleus,
+                                    names: &$names_for_semantic_nucleus,
+                                    configuration: query.configuration.clone(),
+                                    substitutions: BTreeMap::new(),
+                                    value_substitutions: BTreeMap::new(),
+                                    deferred_value_parameters: BTreeMap::new(),
+                                    anonymous_nominals: BTreeMap::new(),
+                                    dependency_source:
+                                        crate::semantic_query_nucleus::module_conformances_source(
+                                            &query.module,
+                                        ),
+                                    dependency_kind:
+                                        rue_air::DeclarationTypeDependencyKind::Signature,
+                                    dependencies: BTreeSet::new(),
+                                    deferred_requirements: BTreeSet::new(),
+                                    ownership_properties: BTreeMap::new(),
+                                };
+                                match resolve_module_conformances(
+                                    &mut provider,
+                                    &query.module,
+                                    parsed,
+                                ) {
+                                    Ok(assertions) => Value::ModuleConformances(
+                                        crate::semantic_query_nucleus::ModuleConformanceProjection {
+                                            assertions: assertions.into(),
+                                            anonymous_nominals: provider.anonymous_nominals.into_values().collect::<Vec<_>>().into(),
+                                            deferred_requirements: provider.deferred_requirements.into_iter().collect::<Vec<_>>().into(),
+                                        },
+                                    ),
+                                    Err(ResolveSemanticSignatureError::Abort(QueryAbort::Cycle(
+                                        nodes,
+                                    ))) => Value::Failure(Failure::Cycle(
+                                        semantic_nucleus_cycle_names(&nodes),
+                                    )),
+                                    Err(ResolveSemanticSignatureError::Abort(abort)) => {
+                                        return Err(abort);
+                                    }
+                                    Err(ResolveSemanticSignatureError::Failure(failure)) => {
+                                        Value::Failure(*failure)
+                                    }
+                                }
+                            }
+                        };
+                        let kind = if matches!(value, Value::Failure(_)) {
+                            QueryTerminalKind::Failure
+                        } else {
+                            QueryTerminalKind::Success
+                        };
+                        return Ok(QueryOutput::success(value).with_terminal_kind(kind));
+                    };
                     let shell = context.query_registered(
                         &$shells_for_semantic_nucleus,
-                        DeclarationShellQueryKey(key.declaration().clone()),
+                        DeclarationShellQueryKey(declaration.clone()),
                     )?;
                     let rue_query::QueryOutcome::Success(shell) = shell.outcome() else {
                         unreachable!("DeclarationShell publishes typed values")
@@ -30,6 +299,9 @@ $runtime
                         }
                     };
                     let value = match key {
+                        Key::ModuleConformances(_) | Key::ProgramConformances(_) => {
+                            unreachable!("per-module nucleus keys are answered before the shell")
+                        }
                         #[cfg(test)]
                         Key::EngineCycleProbe(_) => {
                             let _ = context.query_registered(family, key.clone())?;
@@ -298,7 +570,7 @@ $runtime
                                                 dependency_source,
                                                 dependency_kind: rue_air::DeclarationTypeDependencyKind::Signature,
                                                 dependencies: BTreeSet::new(),
-                                                deferred_ownership: BTreeSet::new(),
+                                                deferred_requirements: BTreeSet::new(),
                                                 ownership_properties: BTreeMap::new(),
                                             };
                                             match resolve_parsed_semantic_signature(
@@ -306,32 +578,34 @@ $runtime
                                                 &query.declaration.module,
                                                 &parsed,
                                             ) {
-                                                Ok(signature) => Value::Signature(
-                                                    crate::semantic_query_nucleus::ResolvedDeclarationSignature {
-                                                        definition: provider.dependency_source.clone(),
-                                                        signature,
-                                                        callable_type_syntax: parsed
-                                                            .callable_type_syntax(),
-                                                        anonymous_nominals: provider
-                                                            .anonymous_nominals
-                                                            .values()
-                                                            .cloned()
-                                                            .collect::<Vec<_>>()
-                                                            .into(),
-                                                        dependencies: provider
-                                                            .dependencies
-                                                            .iter()
-                                                            .cloned()
-                                                            .collect::<Vec<_>>()
-                                                            .into(),
-                                                        deferred_ownership: provider
-                                                            .deferred_ownership
-                                                            .iter()
-                                                            .cloned()
-                                                            .collect::<Vec<_>>()
-                                                            .into(),
-                                                    },
-                                                ),
+                                                Ok(signature) => {
+                                                    Value::Signature(
+                                                        crate::semantic_query_nucleus::ResolvedDeclarationSignature {
+                                                            definition: provider.dependency_source.clone(),
+                                                            signature,
+                                                            callable_type_syntax: parsed
+                                                                .callable_type_syntax(),
+                                                            anonymous_nominals: provider
+                                                                .anonymous_nominals
+                                                                .values()
+                                                                .cloned()
+                                                                .collect::<Vec<_>>()
+                                                                .into(),
+                                                            dependencies: provider
+                                                                .dependencies
+                                                                .iter()
+                                                                .cloned()
+                                                                .collect::<Vec<_>>()
+                                                                .into(),
+                                                            deferred_requirements: provider
+                                                                .deferred_requirements
+                                                                .iter()
+                                                                .cloned()
+                                                                .collect::<Vec<_>>()
+                                                                .into(),
+                                                        },
+                                                    )
+                                                }
                                                 Err(ResolveSemanticSignatureError::Abort(
                                                     QueryAbort::Cycle(nodes),
                                                 )) => Value::Failure(Failure::SignatureReentry {
@@ -365,7 +639,7 @@ $runtime
                                 dependency_kind:
                                     rue_air::DeclarationTypeDependencyKind::Signature,
                                 dependencies: BTreeSet::new(),
-                                deferred_ownership: BTreeSet::new(),
+                                deferred_requirements: BTreeSet::new(),
                                 ownership_properties: BTreeMap::new(),
                             };
                             match provider
@@ -380,144 +654,7 @@ $runtime
                                 }
                             }
                         }
-                        Key::DeferredOwnership(query) => {
-                            let (dependency_source, anonymous_nominals) = if query
-                                .producer
-                                .declaration
-                                .category
-                                == crate::declaration_candidate::DeclarationCandidateCategory::ConstCandidate
-                            {
-                                let resolution = context.query_registered(
-                                    family,
-                                    Key::ConstResolution(query.producer.clone()),
-                                )?;
-                                let rue_query::QueryOutcome::Success(resolution) =
-                                    resolution.outcome()
-                                else {
-                                    unreachable!("SemanticNucleus publishes typed values")
-                                };
-                                match resolution {
-                                    Value::ConstResolution(
-                                        crate::semantic_query_nucleus::ConstResolutionProjection::Value {
-                                            key,
-                                            anonymous_nominals,
-                                            ..
-                                        },
-                                    ) => (key.clone(), anonymous_nominals.clone()),
-                                    Value::Failure(failure) => {
-                                        return Ok(QueryOutput::success(Value::Failure(
-                                            failure.clone(),
-                                        ))
-                                        .with_terminal_kind(QueryTerminalKind::Failure));
-                                    }
-                                    _ => unreachable!(
-                                        "const deferred ownership producer returned the wrong projection"
-                                    ),
-                                }
-                            } else {
-                                let signature = context.query_registered(
-                                    family,
-                                    Key::Signature(query.producer.clone()),
-                                )?;
-                                let rue_query::QueryOutcome::Success(signature) =
-                                    signature.outcome()
-                                else {
-                                    unreachable!("SemanticNucleus publishes typed values")
-                                };
-                                match signature {
-                                    Value::Signature(signature) => (
-                                        crate::semantic_query_nucleus::direct_identity(shell)
-                                            .expect(
-                                                "deferred ownership producer has a direct identity",
-                                            )
-                                            .key,
-                                        signature.anonymous_nominals.clone(),
-                                    ),
-                                    Value::Failure(failure) => {
-                                        return Ok(QueryOutput::success(Value::Failure(
-                                            failure.clone(),
-                                        ))
-                                        .with_terminal_kind(QueryTerminalKind::Failure));
-                                    }
-                                    _ => unreachable!(
-                                        "signature deferred ownership producer returned the wrong projection"
-                                    ),
-                                }
-                            };
-                            let mut provider = SemanticNucleusTypeProvider {
-                                context,
-                                family,
-                                shells: &$shells_for_semantic_nucleus,
-                                names: &$names_for_semantic_nucleus,
-                                configuration: query.producer.configuration.clone(),
-                                substitutions: BTreeMap::new(),
-                                value_substitutions: BTreeMap::new(),
-                                deferred_value_parameters: BTreeMap::new(),
-                                anonymous_nominals: BTreeMap::new(),
-                                dependency_source,
-                                dependency_kind:
-                                    rue_air::DeclarationTypeDependencyKind::Signature,
-                                dependencies: BTreeSet::new(),
-                                deferred_ownership: BTreeSet::new(),
-                                ownership_properties: BTreeMap::new(),
-                            };
-                            if let Err(error) = provider
-                                .merge_anonymous_projections(anonymous_nominals.as_ref())
-                            {
-                                match error {
-                                    rue_air::SemanticProviderError::Failure(failure) => {
-                                        return Ok(QueryOutput::success(Value::Failure(failure))
-                                            .with_terminal_kind(QueryTerminalKind::Failure));
-                                    }
-                                    rue_air::SemanticProviderError::Abort(abort) => {
-                                        return Err(abort);
-                                    }
-                                }
-                            }
-                            let gate_type_name = deferred_gate_type_diagnostic_name(
-                                context,
-                                family,
-                                &query.gate.ty,
-                                &query.producer.configuration,
-                            )?;
-                            let type_facts = $type_facts_for_semantic_nucleus
-                                .get()
-                                .ok_or(QueryAbort::ForeignRuntime)?;
-                            let result = match query.gate.kind {
-                                crate::semantic_query_nucleus::DeferredOwnershipGateKind::RequireDroppable => provider
-                                    .type_carries_linear(&query.gate.ty)
-                                    .map(|rejected| rejected.then(|| {
-                                        rue_error::ErrorKind::ContainerElementIsLinear {
-                                            ty: gate_type_name.clone(),
-                                        }
-                                    })),
-                                crate::semantic_query_nucleus::DeferredOwnershipGateKind::RequireTriviallyDroppable => provider
-                                    .type_has_drop_glue(&type_facts, &query.gate.ty)
-                                    .map(|rejected| rejected.then(|| {
-                                        rue_error::ErrorKind::ContainerElementNotTriviallyDroppable {
-                                            ty: gate_type_name.clone(),
-                                            // Deferral only happens while a
-                                            // declaration binds — never in a
-                                            // body with a receiver — so the
-                                            // gate guards a construction.
-                                            shape: rue_error::ElementGateShape::Construction,
-                                        }
-                                    })),
-                            };
-                            match result {
-                                Ok(Some(kind)) => Value::Failure(Failure::OwnershipGate {
-                                    kind,
-                                    gate: query.gate.clone(),
-                                }),
-                                Ok(None) => Value::DeferredOwnership,
-                                Err(rue_air::SemanticProviderError::Failure(failure)) => {
-                                    Value::Failure(failure)
-                                }
-                                Err(rue_air::SemanticProviderError::Abort(abort)) => {
-                                    return Err(abort)
-                                }
-                            }
-                        }
+                        Key::DeferredRequirement(_) => unreachable!("deferred requirements are evaluated before declaration dispatch"),
                         Key::ConstResolution(query) => {
                             let named = context.query_registered(
                                 &$names_for_semantic_nucleus,
@@ -639,7 +776,7 @@ $runtime
                                                 dependency_source: const_identity.key.clone(),
                                                 dependency_kind: rue_air::DeclarationTypeDependencyKind::DeclaredType,
                                                 dependencies: BTreeSet::new(),
-                                                deferred_ownership: BTreeSet::new(),
+                                                deferred_requirements: BTreeSet::new(),
                                                 ownership_properties: BTreeMap::new(),
                                             };
                                     let session = crate::durable_comptime::DurableComptimeSession::new(
@@ -895,8 +1032,8 @@ $runtime
                                                                         .cloned()
                                                                         .collect::<Vec<_>>()
                                                                         .into(),
-                                                                    deferred_ownership: provider
-                                                                        .deferred_ownership
+                                                                    deferred_requirements: provider
+                                                                        .deferred_requirements
                                                                         .iter()
                                                                         .cloned()
                                                                         .collect::<Vec<_>>()
@@ -1259,7 +1396,7 @@ $runtime
                                                     }
                                                 }
                                             }
-                                            let provider = SemanticNucleusTypeProvider {
+                                            let mut provider = SemanticNucleusTypeProvider {
                                                 context,
                                                 family,
                                                 shells: &$shells_for_semantic_nucleus,
@@ -1275,9 +1412,49 @@ $runtime
                                                 dependency_source: producer_key.clone(),
                                                 dependency_kind: rue_air::DeclarationTypeDependencyKind::Body,
                                                 dependencies: BTreeSet::new(),
-                                                deferred_ownership: BTreeSet::new(),
+                                                deferred_requirements: BTreeSet::new(),
                                                 ownership_properties: BTreeMap::new(),
                                             };
+                                            // The root producer is also a
+                                            // constructor-call boundary. Its
+                                            // concrete type arguments must be
+                                            // retained even when the body
+                                            // itself has no ordinary call
+                                            // site to observe them.
+                                            for (index, parameter) in
+                                                callable_parameters.iter().enumerate()
+                                            {
+                                                if parameter.bounds.is_empty()
+                                                    || parameter.ty
+                                                        != crate::durable_semantics::DurableType::ComptimeType
+                                                {
+                                                    continue;
+                                                }
+                                                let Some((_, argument)) = call
+                                                    .type_arguments
+                                                    .iter()
+                                                    .find(|(name, _)| parameter.name.as_ref() == name.as_ref())
+                                                else {
+                                                    continue;
+                                                };
+                                                if !parameter.bounds.is_empty() {
+                                                    provider.deferred_requirements.insert(
+                                                        crate::semantic_query_nucleus::DeferredRequirement {
+                                                            kind: crate::semantic_query_nucleus::DeferredRequirementKind::InterfaceBound {
+                                                                callable: producer_key.clone(),
+                                                                parameter_index: index as u32,
+                                                            },
+                                                            ty: argument.clone(),
+                                                            source: Arc::new(crate::semantic_query_nucleus::DeferredRequirementSource {
+                                                                declaration: call.declaration.declaration.clone(),
+                                                                start: 0,
+                                                                end: 0,
+                                                            }),
+                                                            application: None,
+                                                        },
+                                                    );
+                                                }
+                                            }
                                             let session = crate::durable_comptime::DurableComptimeSession::new(
                                                 producer_key.clone(),
                                                 call.declaration.declaration.clone(),
@@ -1446,8 +1623,8 @@ $runtime
                                                             .cloned()
                                                             .collect::<Vec<_>>()
                                                             .into(),
-                                                        deferred_ownership: provider
-                                                            .deferred_ownership
+                                                        deferred_requirements: provider
+                                                            .deferred_requirements
                                                             .iter()
                                                             .cloned()
                                                             .collect::<Vec<_>>()
@@ -1472,8 +1649,8 @@ $runtime
                                                                 .cloned()
                                                                 .collect::<Vec<_>>()
                                                                 .into(),
-                                                            deferred_ownership: provider
-                                                                .deferred_ownership
+                                                            deferred_requirements: provider
+                                                                .deferred_requirements
                                                                 .iter()
                                                                 .cloned()
                                                                 .collect::<Vec<_>>()

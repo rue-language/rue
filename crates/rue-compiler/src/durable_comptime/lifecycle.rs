@@ -352,8 +352,8 @@ impl<V, F> DurableComptimeCompletion<V, F> {
     }
 
     #[cfg(test)]
-    fn deferred_ownership(&self) -> impl Iterator<Item = &DeferredOwnershipGate> {
-        self.effects.deferred_ownership()
+    fn deferred_requirements(&self) -> impl Iterator<Item = &DeferredRequirement> {
+        self.effects.deferred_requirements()
     }
 
     #[cfg(test)]
@@ -471,6 +471,43 @@ pub(crate) enum DurableComptimePreparedCall {
 }
 
 impl DurableComptimeSession {
+    fn interface_bound_requirements(
+        parameters: &[crate::durable_semantics::DurableSemanticParameter],
+        type_arguments: &[(Arc<str>, DurableType)],
+        callable: &crate::StableDefinitionKey,
+        declaration: &crate::declaration_candidate::DeclarationCandidateKey,
+        start: u32,
+        end: u32,
+    ) -> Vec<DeferredRequirement> {
+        parameters
+            .iter()
+            .enumerate()
+            .filter_map(|(index, parameter)| {
+                if parameter.bounds.is_empty() || parameter.ty != DurableType::ComptimeType {
+                    return None;
+                }
+                let argument = type_arguments
+                    .iter()
+                    .find(|(name, _)| parameter.name.as_ref() == name.as_ref())?
+                    .1
+                    .clone();
+                Some(DeferredRequirement {
+                    kind: crate::semantic_query_nucleus::DeferredRequirementKind::InterfaceBound {
+                        callable: callable.clone(),
+                        parameter_index: index as u32,
+                    },
+                    ty: argument,
+                    source: Arc::new(crate::semantic_query_nucleus::DeferredRequirementSource {
+                        declaration: declaration.clone(),
+                        start,
+                        end,
+                    }),
+                    application: None,
+                })
+            })
+            .collect()
+    }
+
     pub(crate) fn new(
         parent_producer: crate::StableDefinitionKey,
         parent_declaration: crate::declaration_candidate::DeclarationCandidateKey,
@@ -733,6 +770,15 @@ impl DurableComptimeSession {
             expected_result,
         } = pending;
         let DurableStructuredTypePendingCall { request, edge } = pending;
+
+        let requirements = Self::interface_bound_requirements(
+            &admission.parameters,
+            &request.type_arguments,
+            &request.head_key,
+            &admission.candidate,
+            request.call_span.start,
+            request.call_span.end,
+        );
         match lookup {
             ForeignComptimeCallLookup::Admitted(program) => {
                 // Validate every immutable child fact before consuming the
@@ -813,6 +859,9 @@ impl DurableComptimeSession {
                     call_identity: None,
                     expected_result: Some(expected_result),
                 };
+                for requirement in requirements {
+                    self.observe_deferred_requirement(requirement);
+                }
                 Ok(DurableStructuredTypeCall::Enter {
                     program,
                     frame: Box::new(frame),
@@ -824,6 +873,9 @@ impl DurableComptimeSession {
                     .consume_foreign_lookup(edge, ForeignComptimeCallLookup::Ready(projection))?
                 {
                     DurableComptimeForeignCall::Ready(result) => {
+                        for requirement in requirements {
+                            self.observe_deferred_requirement(requirement);
+                        }
                         Ok(DurableStructuredTypeCall::Ready { result })
                     }
                     DurableComptimeForeignCall::Enter { .. }
@@ -1275,6 +1327,19 @@ impl DurableComptimeSession {
                 DurableComptimeLifecycleError::BindingMismatch,
             ));
         }
+        // Comptime calls use the ordinary call protocol, including helpers
+        // returning values inside a type constructor. Stage each bound
+        // requirement before consuming the child, then publish it only after
+        // the ready or admitted transition succeeds. Failed and NotReady
+        // probes therefore cannot leak effects into the parent scope.
+        let requirements = Self::interface_bound_requirements(
+            &bound.admission.parameters,
+            &bound.type_arguments,
+            &producer,
+            &edge.parent_declaration,
+            call_span.start,
+            call_span.end,
+        );
         match lookup {
             ForeignComptimeCallLookup::Ready(projection) => {
                 let expected_result = bound.expected_result.clone();
@@ -1283,6 +1348,9 @@ impl DurableComptimeSession {
                     .lifecycle
                     .merge_ready_projection_owned(&mut edge, projection)
                     .map_err(DurableComptimeForeignCallError::Lifecycle)?;
+                for requirement in requirements {
+                    self.observe_deferred_requirement(requirement);
+                }
                 Ok(DurableComptimePreparedCall::Ready {
                     result,
                     expected_result,
@@ -1301,6 +1369,9 @@ impl DurableComptimeSession {
                 let (frame, ticket) = self
                     .admit_foreign_frame(program, Box::new(ticket), call_span, bound)
                     .map_err(DurableComptimeForeignCallError::FrameAdmission)?;
+                for requirement in requirements {
+                    self.observe_deferred_requirement(requirement);
+                }
                 Ok(DurableComptimePreparedCall::Enter {
                     frame: Box::new(frame),
                     ticket,
@@ -1339,8 +1410,8 @@ impl DurableComptimeSession {
         self.lifecycle.observe_dependency(dependency);
     }
 
-    pub(crate) fn observe_deferred_ownership(&mut self, gate: DeferredOwnershipGate) {
-        self.lifecycle.observe_deferred_ownership(gate);
+    pub(crate) fn observe_deferred_requirement(&mut self, gate: DeferredRequirement) {
+        self.lifecycle.observe_deferred_requirement(gate);
     }
 
     /// Enter one lifecycle ticket through the session-owned funnel.  Keeping
@@ -1594,8 +1665,9 @@ impl DurableComptimeCallLifecycle {
             .observe_anonymous_nominal(nominal);
     }
 
-    pub(crate) fn observe_deferred_ownership(&mut self, gate: DeferredOwnershipGate) {
-        self.current_effects_mut().observe_deferred_ownership(gate);
+    pub(crate) fn observe_deferred_requirement(&mut self, gate: DeferredRequirement) {
+        self.current_effects_mut()
+            .observe_deferred_requirement(gate);
     }
 
     /// Consume an edge on the admitted-program branch and derive the exact
@@ -1677,7 +1749,7 @@ impl DurableComptimeCallLifecycle {
         ready.merge_projection(
             &projection.anonymous_nominals,
             &projection.dependencies,
-            &projection.deferred_ownership,
+            &projection.deferred_requirements,
             &preserve,
         );
         edge.consumed = true;
@@ -2287,6 +2359,7 @@ mod effect_lifecycle_tests {
             ty,
             mode: DurableParameterMode::Value,
             is_comptime: true,
+            bounds: Arc::from([]),
         }
     }
 
@@ -2532,7 +2605,7 @@ mod effect_lifecycle_tests {
         let effects = session.drain_root_effects().unwrap();
         assert_eq!(
             effects
-                .deferred_ownership()
+                .deferred_requirements()
                 .next()
                 .unwrap()
                 .application
@@ -2924,11 +2997,11 @@ mod effect_lifecycle_tests {
         .unwrap()
     }
 
-    fn gate(ordinal: u32) -> DeferredOwnershipGate {
-        DeferredOwnershipGate {
-            kind: crate::semantic_query_nucleus::DeferredOwnershipGateKind::RequireDroppable,
+    fn gate(ordinal: u32) -> DeferredRequirement {
+        DeferredRequirement {
+            kind: crate::semantic_query_nucleus::DeferredRequirementKind::RequireDroppable,
             ty: DurableType::I32,
-            source: Arc::new(crate::semantic_query_nucleus::DeferredOwnershipGateSource {
+            source: Arc::new(crate::semantic_query_nucleus::DeferredRequirementSource {
                 declaration:
                     crate::revisioned_query_database::declaration_candidate_for_stable_key(
                         &definition("child"),
@@ -2943,7 +3016,7 @@ mod effect_lifecycle_tests {
 
     fn child_effects(ordinal: u32) -> DurableComptimeEffects {
         let mut effects = DurableComptimeEffects::default();
-        effects.observe_deferred_ownership(gate(ordinal));
+        effects.observe_deferred_requirement(gate(ordinal));
         effects
     }
 
@@ -2954,7 +3027,7 @@ mod effect_lifecycle_tests {
             ),
             anonymous_nominals: Arc::from([]),
             dependencies: Arc::from([]),
-            deferred_ownership: Arc::from([gate(ordinal)]),
+            deferred_requirements: Arc::from([gate(ordinal)]),
         }
     }
 
@@ -2966,12 +3039,12 @@ mod effect_lifecycle_tests {
         let mut effects = DurableComptimeEffects::default();
         let mut gate = gate(ordinal);
         gate.application = Some(
-            crate::semantic_query_nucleus::DeferredOwnershipApplication {
+            crate::semantic_query_nucleus::DeferredRequirementApplication {
                 declaration,
                 call_ordinal,
             },
         );
-        effects.observe_deferred_ownership(gate);
+        effects.observe_deferred_requirement(gate);
         effects
     }
 
@@ -3012,8 +3085,8 @@ mod effect_lifecycle_tests {
             for dependency in effects.dependencies().cloned() {
                 self.observe_dependency(dependency);
             }
-            for gate in effects.deferred_ownership().cloned() {
-                self.observe_deferred_ownership(gate);
+            for gate in effects.deferred_requirements().cloned() {
+                self.observe_deferred_requirement(gate);
             }
             self.finish(ticket, outcome)
         }
@@ -3101,11 +3174,11 @@ mod effect_lifecycle_tests {
                 definition("child"),
             ),
         });
-        effects.observe_deferred_ownership(gate(1));
+        effects.observe_deferred_requirement(gate(1));
         assert_eq!(effects.anonymous_nominals().count(), 1);
         assert_eq!(effects.dependencies().count(), 1);
         assert_eq!(effects.anonymous_nominals().next(), Some(&second));
-        assert_eq!(effects.deferred_ownership().count(), 1);
+        assert_eq!(effects.deferred_requirements().count(), 1);
     }
 
     #[test]
@@ -3126,7 +3199,7 @@ mod effect_lifecycle_tests {
                 definition("child"),
             ),
         });
-        lifecycle.observe_deferred_ownership(gate(77));
+        lifecycle.observe_deferred_requirement(gate(77));
         let completion = lifecycle
             .complete_root(rue_air::ComptimeOutcome::<u32, ()>::Known(17))
             .unwrap();
@@ -3136,10 +3209,10 @@ mod effect_lifecycle_tests {
         ));
         assert_eq!(completion.effects().anonymous_nominals().count(), 1);
         assert_eq!(completion.effects().dependencies().count(), 1);
-        assert_eq!(completion.effects().deferred_ownership().count(), 1);
+        assert_eq!(completion.effects().deferred_requirements().count(), 1);
         let (outcome, effects) = completion.into_parts();
         assert!(matches!(outcome, rue_air::ComptimeOutcome::Known(17)));
-        assert_eq!(effects.deferred_ownership().count(), 1);
+        assert_eq!(effects.deferred_requirements().count(), 1);
     }
 
     #[test]
@@ -3312,7 +3385,7 @@ mod effect_lifecycle_tests {
         assert_eq!(
             context.application_policy,
             DurableComptimeApplicationPolicy::ApplyAtParentCall {
-                application: crate::semantic_query_nucleus::DeferredOwnershipApplication {
+                application: crate::semantic_query_nucleus::DeferredRequirementApplication {
                     declaration: context.parent_declaration.clone(),
                     call_ordinal: 42,
                 },
@@ -3584,7 +3657,7 @@ mod effect_lifecycle_tests {
         );
         let effects = lifecycle.complete_known().unwrap();
         let applications = effects
-            .deferred_ownership()
+            .deferred_requirements()
             .map(|gate| {
                 let application = gate.application.as_ref().unwrap();
                 (application.declaration.clone(), application.call_ordinal)
@@ -3626,7 +3699,7 @@ mod effect_lifecycle_tests {
         let effects = lifecycle.complete_known().unwrap();
         assert!(
             effects
-                .deferred_ownership()
+                .deferred_requirements()
                 .next()
                 .unwrap()
                 .application
@@ -3647,7 +3720,7 @@ mod effect_lifecycle_tests {
         let expression_effects = expression.complete_known().unwrap();
         assert_eq!(
             expression_effects
-                .deferred_ownership()
+                .deferred_requirements()
                 .next()
                 .unwrap()
                 .application
@@ -3666,7 +3739,7 @@ mod effect_lifecycle_tests {
             structured
                 .complete_known()
                 .unwrap()
-                .deferred_ownership()
+                .deferred_requirements()
                 .next()
                 .unwrap()
                 .application
@@ -3694,7 +3767,7 @@ mod effect_lifecycle_tests {
         let effects = expression_outer.complete_known().unwrap();
         assert_eq!(
             effects
-                .deferred_ownership()
+                .deferred_requirements()
                 .next()
                 .unwrap()
                 .application
@@ -3722,7 +3795,7 @@ mod effect_lifecycle_tests {
         let effects = structured_outer.complete_known().unwrap();
         assert_eq!(
             effects
-                .deferred_ownership()
+                .deferred_requirements()
                 .next()
                 .unwrap()
                 .application
@@ -3774,10 +3847,10 @@ mod effect_lifecycle_tests {
             )
             .unwrap();
         let effects = lifecycle.complete_known().unwrap();
-        assert_eq!(effects.deferred_ownership().count(), 1);
+        assert_eq!(effects.deferred_requirements().count(), 1);
         assert_eq!(
             effects
-                .deferred_ownership()
+                .deferred_requirements()
                 .next()
                 .unwrap()
                 .application
@@ -3800,7 +3873,7 @@ mod effect_lifecycle_tests {
         let applications = lifecycle
             .complete_known()
             .unwrap()
-            .deferred_ownership()
+            .deferred_requirements()
             .map(|gate| gate.application.as_ref().unwrap().call_ordinal)
             .collect::<Vec<_>>();
         assert_eq!(applications, vec![40, 41]);
@@ -3828,7 +3901,7 @@ mod effect_lifecycle_tests {
             lifecycle
                 .complete_known()
                 .unwrap()
-                .deferred_ownership()
+                .deferred_requirements()
                 .count(),
             1
         );
@@ -3851,7 +3924,11 @@ mod effect_lifecycle_tests {
             .merge_ready_projection(&mut edge, &projection)
             .unwrap();
         assert_eq!(
-            owner.complete_known().unwrap().deferred_ownership().count(),
+            owner
+                .complete_known()
+                .unwrap()
+                .deferred_requirements()
+                .count(),
             1
         );
     }
@@ -3894,7 +3971,7 @@ mod effect_lifecycle_tests {
             .unwrap();
         let effects = expression_lifecycle.complete_known().unwrap();
         let applications = effects
-            .deferred_ownership()
+            .deferred_requirements()
             .map(|gate| gate.application.clone().unwrap())
             .collect::<Vec<_>>();
         assert_eq!(applications.len(), 2);
@@ -3928,13 +4005,13 @@ mod effect_lifecycle_tests {
             .unwrap();
         let effects = structured_lifecycle.complete_known().unwrap();
         let mut applications = effects
-            .deferred_ownership()
+            .deferred_requirements()
             .map(|gate| gate.application.clone());
         assert!(applications.next().unwrap().is_none());
         assert_eq!(
             applications.next().unwrap(),
             Some(
-                crate::semantic_query_nucleus::DeferredOwnershipApplication {
+                crate::semantic_query_nucleus::DeferredRequirementApplication {
                     declaration: child_declaration,
                     call_ordinal: 4,
                 }
@@ -3969,7 +4046,7 @@ mod effect_lifecycle_tests {
             structured_nested_lifecycle
                 .complete_known()
                 .unwrap()
-                .deferred_ownership()
+                .deferred_requirements()
                 .all(|gate| gate.application.is_none())
         );
     }
@@ -4051,7 +4128,7 @@ mod effect_lifecycle_tests {
         let applications = lifecycle
             .complete_known()
             .unwrap()
-            .deferred_ownership()
+            .deferred_requirements()
             .map(|gate| gate.application.as_ref().unwrap().call_ordinal)
             .collect::<Vec<_>>();
         assert_eq!(applications, vec![10, 11]);
@@ -4090,7 +4167,7 @@ mod effect_lifecycle_tests {
         fn finish_pair(
             outer_context: DurableComptimeCallContext,
             inner_context: DurableComptimeCallContext,
-        ) -> Vec<Option<crate::semantic_query_nucleus::DeferredOwnershipApplication>> {
+        ) -> Vec<Option<crate::semantic_query_nucleus::DeferredRequirementApplication>> {
             let mut lifecycle = lifecycle();
             let mut outer = lifecycle.prepare(outer_context).unwrap();
             lifecycle.enter(&outer).unwrap();
@@ -4118,7 +4195,7 @@ mod effect_lifecycle_tests {
             lifecycle
                 .complete_known()
                 .unwrap()
-                .deferred_ownership()
+                .deferred_requirements()
                 .map(|gate| gate.application.clone())
                 .collect()
         }
@@ -4128,7 +4205,7 @@ mod effect_lifecycle_tests {
         let structured = structured_context();
         let structured_inner = structured_context_with_parent(definition("child"));
         let expected = Some(
-            crate::semantic_query_nucleus::DeferredOwnershipApplication {
+            crate::semantic_query_nucleus::DeferredRequirementApplication {
                 declaration:
                     crate::revisioned_query_database::declaration_candidate_for_stable_key(
                         &definition("child"),
@@ -4154,7 +4231,7 @@ mod effect_lifecycle_tests {
         let inner_context = context_with_parent(definition("child"), 2);
         let mut outer = lifecycle.prepare(outer_context).unwrap();
         lifecycle.enter(&outer).unwrap();
-        lifecycle.observe_deferred_ownership(gate(1));
+        lifecycle.observe_deferred_requirement(gate(1));
         let mut inner = lifecycle.prepare(inner_context).unwrap();
         lifecycle.enter(&inner).unwrap();
         let outer_outcome = rue_air::ComptimeOutcome::<(), ()>::Known(());
@@ -4166,7 +4243,7 @@ mod effect_lifecycle_tests {
         assert_eq!(
             lifecycle
                 .root_effects_for_test()
-                .deferred_ownership()
+                .deferred_requirements()
                 .count(),
             0
         );
@@ -4187,7 +4264,7 @@ mod effect_lifecycle_tests {
             .unwrap();
         let effects = lifecycle.complete_known().unwrap();
         let applications = effects
-            .deferred_ownership()
+            .deferred_requirements()
             .map(|gate| {
                 let application = gate.application.as_ref().unwrap();
                 (application.declaration.clone(), application.call_ordinal)
@@ -4227,7 +4304,7 @@ mod effect_lifecycle_tests {
         assert_eq!(
             lifecycle
                 .root_effects_for_test()
-                .deferred_ownership()
+                .deferred_requirements()
                 .count(),
             0
         );
@@ -4270,7 +4347,7 @@ mod effect_lifecycle_tests {
             lifecycle
                 .complete_known()
                 .unwrap()
-                .deferred_ownership()
+                .deferred_requirements()
                 .count(),
             1
         );
@@ -4347,7 +4424,7 @@ mod effect_lifecycle_tests {
         let mut effects = DurableComptimeEffects::default();
         let mut gate = gate(21);
         gate.application = Some(
-            crate::semantic_query_nucleus::DeferredOwnershipApplication {
+            crate::semantic_query_nucleus::DeferredRequirementApplication {
                 declaration:
                     crate::revisioned_query_database::declaration_candidate_for_stable_key(
                         &definition("child"),
@@ -4356,7 +4433,7 @@ mod effect_lifecycle_tests {
                 call_ordinal: 99,
             },
         );
-        effects.observe_deferred_ownership(gate);
+        effects.observe_deferred_requirement(gate);
         lifecycle
             .finish_with_effects(
                 &mut ticket,
@@ -4367,7 +4444,7 @@ mod effect_lifecycle_tests {
         let effects = lifecycle.complete_known().unwrap();
         assert_eq!(
             effects
-                .deferred_ownership()
+                .deferred_requirements()
                 .next()
                 .unwrap()
                 .application

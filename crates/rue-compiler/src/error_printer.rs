@@ -586,10 +586,32 @@ fn container_parts(
                 element: Some(element),
             })
         }
-        // `StrMap`/`IntMap` are open-addressed tables whose live slots are
-        // marked by a private state byte, so the printer reports the entry
-        // count the table itself keeps rather than guessing at occupancy.
-        C::StrMap | C::IntMap => Some(ContainerParts {
+        // Maps render the live entry count maintained by their storage.
+        // StrMap adapts the key convention of its inner HashMap.
+        C::StrMap => {
+            let index = field_index(&fields, "inner")?;
+            let inner_ty =
+                crate::semantic_identity::type_instance_from_semantic(&fields[index as usize].1);
+            let inner_fields = types.struct_fields(&inner_ty)?;
+            let inner_nominal = type_nominal(&inner_ty)?;
+            Some(ContainerParts {
+                base: Vec::new(),
+                base_is_mut: false,
+                length: vec![
+                    PrinterProjection {
+                        nominal: nominal.clone(),
+                        field_index: index,
+                    },
+                    named_u64_field(&inner_nominal, &inner_fields, "count")?,
+                ],
+                start: None,
+                count: None,
+                modulus: None,
+                row: None,
+                element: None,
+            })
+        }
+        C::IntMap => Some(ContainerParts {
             base: Vec::new(),
             base_is_mut: false,
             length: vec![named_u64_field(&nominal, &fields, "count")?],

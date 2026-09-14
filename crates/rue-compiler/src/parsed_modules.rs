@@ -478,6 +478,16 @@ pub enum ParsedDeclarationAstRef<'a> {
         /// block.
         abi: &'a str,
     },
+    /// An `interface` declaration, a struct-category candidate whose RIR
+    /// shell is a `StructDecl` with `is_interface` (spec 6.8).
+    Interface(&'a rue_parser::ast::InterfaceDecl),
+    /// One method or associated-function requirement of an interface, at
+    /// `ordinal` among [`rue_parser::ast::InterfaceDecl::method_requirements`].
+    InterfaceRequirement {
+        owner: &'a rue_parser::ast::InterfaceDecl,
+        requirement: &'a rue_parser::ast::MethodSig,
+        ordinal: u32,
+    },
     /// A `test "name" { .. }` declaration (ADR-0083 §1).
     Test(&'a rue_parser::ast::TestDecl),
 }
@@ -828,6 +838,15 @@ impl ParsedModule {
                 {
                     Some(ParsedDeclarationAstRef::Struct(value))
                 }
+                // An interface is a struct-category candidate: it lowers to
+                // the `StructDecl` shape (spec 6.8, `is_interface`).
+                Item::Interface(value)
+                    if span_matches(value.span)
+                        && name_matches(value.name.name, key.name.as_ref())
+                        && key.owner.is_none() =>
+                {
+                    Some(ParsedDeclarationAstRef::Interface(value))
+                }
                 _ => None,
             },
             (
@@ -880,25 +899,47 @@ impl ParsedModule {
                 DeclarationCandidateCategory::Method
                 | DeclarationCandidateCategory::AssociatedFunction,
             ) => {
-                let Item::Struct(owner) = item(ordinal)? else {
-                    return None;
-                };
-                let method = owner.methods.get(usize::try_from(method_ordinal).ok()?)?;
                 let owner_key = key.owner.as_ref()?;
-                if !span_matches(method.span)
-                    || !name_matches(method.name.name, key.name.as_ref())
-                    || owner_key.category != DeclarationCandidateCategory::Struct
-                    || !name_matches(owner.name.name, owner_key.name.as_ref())
-                    || (key.category == DeclarationCandidateCategory::Method)
-                        != method.receiver.is_some()
-                {
+                if owner_key.category != DeclarationCandidateCategory::Struct {
                     return None;
                 }
-                Some(ParsedDeclarationAstRef::Method {
-                    owner,
-                    method,
-                    ordinal: method_ordinal,
-                })
+                match item(ordinal)? {
+                    Item::Struct(owner) => {
+                        let method = owner.methods.get(usize::try_from(method_ordinal).ok()?)?;
+                        if !span_matches(method.span)
+                            || !name_matches(method.name.name, key.name.as_ref())
+                            || !name_matches(owner.name.name, owner_key.name.as_ref())
+                            || (key.category == DeclarationCandidateCategory::Method)
+                                != method.receiver.is_some()
+                        {
+                            return None;
+                        }
+                        Some(ParsedDeclarationAstRef::Method {
+                            owner,
+                            method,
+                            ordinal: method_ordinal,
+                        })
+                    }
+                    Item::Interface(owner) => {
+                        let requirement = owner
+                            .method_requirements()
+                            .nth(usize::try_from(method_ordinal).ok()?)?;
+                        if !span_matches(requirement.span)
+                            || !name_matches(requirement.name.name, key.name.as_ref())
+                            || !name_matches(owner.name.name, owner_key.name.as_ref())
+                            || (key.category == DeclarationCandidateCategory::Method)
+                                != requirement.receiver.is_some()
+                        {
+                            return None;
+                        }
+                        Some(ParsedDeclarationAstRef::InterfaceRequirement {
+                            owner,
+                            requirement,
+                            ordinal: method_ordinal,
+                        })
+                    }
+                    _ => None,
+                }
             }
             (
                 ParsedDeclarationAstLocator::ExternFunction {
@@ -2060,6 +2101,9 @@ impl<'a> ParsedBodyProjectionCollector<'a> {
         let outcome = (|| {
             for parameter in parameters {
                 self.visit_type(&parameter.ty)?;
+                for bound in &parameter.bounds {
+                    self.visit_type(bound)?;
+                }
                 self.bind_local(parameter.name)?;
             }
             if let Some(result) = result {
@@ -2078,6 +2122,9 @@ impl<'a> ParsedBodyProjectionCollector<'a> {
     ) -> CompileResult<()> {
         for parameter in parameters {
             self.visit_type(&parameter.ty)?;
+            for bound in &parameter.bounds {
+                self.visit_type(bound)?;
+            }
         }
         if let Some(result) = result {
             self.visit_type(result)?;
@@ -2532,6 +2579,42 @@ fn collect_module_projections(
                     );
                 }
             }
+            Item::Interface(value) => {
+                let mut collector =
+                    ParsedBodyProjectionCollector::new(module, resolver, &mut projections.imports);
+                for parent in &value.parents {
+                    collector.visit_type(parent)?;
+                }
+                for (requirement_index, requirement) in value.method_requirements().enumerate() {
+                    let requirement_index = u32::try_from(requirement_index)
+                        .map_err(|_| invalid_input("parsed requirement ordinal exceeds u32"))?;
+                    let mut collector = ParsedBodyProjectionCollector::new(
+                        module,
+                        resolver,
+                        &mut projections.imports,
+                    );
+                    collector
+                        .visit_signature(&requirement.params, requirement.return_type.as_ref())?;
+                    // A requirement has no body, but its candidate is a method
+                    // and the warning projection expects every method locator
+                    // to own a (here empty) call-head set.
+                    projections.warning_call_heads.insert(
+                        ParsedDeclarationAstLocator::StructMethod {
+                            item: item_index,
+                            method: requirement_index,
+                        },
+                        collector.finish(),
+                    );
+                }
+            }
+            Item::Conformance(value) => {
+                let mut collector =
+                    ParsedBodyProjectionCollector::new(module, resolver, &mut projections.imports);
+                collector.visit_type(&value.subject)?;
+                for interface in &value.interfaces {
+                    collector.visit_type(interface)?;
+                }
+            }
             Item::DropFn(value) => {
                 let mut collector =
                     ParsedBodyProjectionCollector::new(module, resolver, &mut projections.imports);
@@ -2823,6 +2906,10 @@ fn build_definition_index(
         // definition.
         let item_parts: Vec<_> = if let Item::Extern(block) = item {
             crate::definition_snapshot::extern_definition_parts(block).collect()
+        } else if let Item::Conformance(_) = item {
+            // A freestanding conformance assertion names no definition
+            // (spec 6.8:9); the semantic nucleus resolves it per module.
+            Vec::new()
         } else if matches!(item, Item::Error(_)) {
             // Syntax recovery owns the error node. It has no declaration
             // identity, so retain the surrounding module and let the
@@ -2921,6 +3008,8 @@ fn build_definition_index(
                     is_generic,
                     is_unchecked,
                     is_extern,
+                    is_interface: category == DeclarationCandidateCategory::Struct
+                        && matches!(item, Item::Interface(_)),
                     signature_fingerprint,
                 },
                 ast_locator,
@@ -3079,6 +3168,78 @@ fn build_definition_index(
                     ),
                 )?;
             }
+            Item::Interface(interface) => {
+                let owner_name = resolve_name(interface.name)?;
+                push(
+                    DeclarationCandidateCategory::Struct,
+                    owner_name.clone(),
+                    None,
+                    ParsedDeclarationAstLocator::TopLevel { item: item_index },
+                    interface.visibility == Visibility::Public,
+                    Arc::from([]),
+                    None,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    Arc::from([]),
+                    interface.span,
+                    vec![interface.span],
+                    None,
+                    None,
+                    Arc::from([]),
+                )?;
+                let owner = DeclarationCandidateOwner {
+                    category: DeclarationCandidateCategory::Struct,
+                    name: owner_name,
+                };
+                for (requirement_index, requirement) in interface.method_requirements().enumerate()
+                {
+                    let requirement_index = u32::try_from(requirement_index)
+                        .map_err(|_| invalid_input("parsed requirement ordinal exceeds u32"))?;
+                    let receiver = requirement
+                        .receiver
+                        .as_ref()
+                        .map(|receiver| candidate_parameter_mode(receiver.mode).0);
+                    push(
+                        if receiver.is_some() {
+                            DeclarationCandidateCategory::Method
+                        } else {
+                            DeclarationCandidateCategory::AssociatedFunction
+                        },
+                        resolve_name(requirement.name)?,
+                        Some(owner.clone()),
+                        ParsedDeclarationAstLocator::StructMethod {
+                            item: item_index,
+                            method: requirement_index,
+                        },
+                        false,
+                        parameters(&requirement.params)?,
+                        receiver,
+                        requirement
+                            .receiver
+                            .as_ref()
+                            .is_some_and(|receiver| receiver.is_mut),
+                        is_generic(&requirement.params)?,
+                        false,
+                        false,
+                        requirement.place_return.is_some(),
+                        Arc::from([]),
+                        requirement.span,
+                        vec![requirement.span],
+                        None,
+                        None,
+                        Arc::from([]),
+                    )?;
+                }
+            }
+            // A freestanding conformance assertion has no declaration
+            // candidate: it is a bodiless, idempotent fact with no identity
+            // (spec 6.8:11). The semantic nucleus resolves each module's
+            // assertions as one per-module projection
+            // (`SemanticNucleusKey::ModuleConformances`).
+            Item::Conformance(_) => {}
             Item::DropFn(value) => push(
                 DeclarationCandidateCategory::Destructor,
                 resolve_name(value.type_name)?,
@@ -3335,6 +3496,27 @@ fn build_definition_index(
                     methods: methods.into(),
                 });
             }
+            Item::Interface(interface) => {
+                let shell = exact_key(ParsedDeclarationAstLocator::TopLevel { item })?;
+                let requirements = interface
+                    .method_requirements()
+                    .enumerate()
+                    .map(|(requirement, _)| {
+                        exact_key(ParsedDeclarationAstLocator::StructMethod {
+                            item,
+                            method: u32::try_from(requirement).map_err(|_| {
+                                invalid_input("parsed requirement ordinal exceeds u32")
+                            })?,
+                        })
+                    })
+                    .collect::<CompileResult<Vec<_>>>()?;
+                rir_recipes.push(ParsedRirRecipe::Struct {
+                    shell,
+                    methods: requirements.into(),
+                });
+            }
+            // No candidate, so no RIR recipe: see the candidate index above.
+            Item::Conformance(_) => {}
             Item::Extern(block) => {
                 let functions = block
                     .fns
@@ -3614,6 +3796,16 @@ extern "C" { fn getpid() -> i32; }
                 ParsedDeclarationAstRef::ExternFunction { function, .. } => {
                     (C::ExternFunction, function.span)
                 }
+                ParsedDeclarationAstRef::Interface(value) => (C::Struct, value.span),
+                ParsedDeclarationAstRef::InterfaceRequirement {
+                    owner, requirement, ..
+                } => {
+                    assert!(
+                        requirement.span.start >= owner.span.start
+                            && requirement.span.end <= owner.span.end
+                    );
+                    (key.category, requirement.span)
+                }
                 ParsedDeclarationAstRef::Test(value) => (C::Test, value.span),
             };
             assert_eq!(category, key.category);
@@ -3635,6 +3827,10 @@ extern "C" { fn getpid() -> i32; }
                 ParsedDeclarationAstRef::Destructor(value) => value.span,
                 ParsedDeclarationAstRef::Method { method, .. } => method.span,
                 ParsedDeclarationAstRef::ExternFunction { function, .. } => function.span,
+                ParsedDeclarationAstRef::Interface(value) => value.span,
+                ParsedDeclarationAstRef::InterfaceRequirement { requirement, .. } => {
+                    requirement.span
+                }
                 ParsedDeclarationAstRef::Test(value) => value.span,
             };
             assert_eq!(span.file_id, FileId::new(9));

@@ -142,6 +142,22 @@ args = ["main.rue", "-o", "prog"]
 exit_code = 39
 
 [[case]]
+name = "callback_in_zero_slot_associated_wrapper_runs_at_every_opt_level"
+differential_opt = true
+description = "A callback call in an associated function on a zero-slot struct still gets a non-leaf prologue at every optimization level, including the non-inlined O3 body (RUE-2196)."
+files = [{ path = "main.rue", source = """
+struct S {
+    fn apply(f: fn(i32) -> i32) -> i32 { f(41) + 0 }
+}
+
+fn inc(value: i32) -> i32 { value + 1 }
+
+fn main() -> i32 { S.apply(inc) }
+""" }]
+stdout = ""
+exit_code = 42
+
+[[case]]
 name = "callback_writes_back_through_inout_and_takes_stack_arguments"
 description = "An `inout` argument crosses the indirect call by address and is written back; eight integer arguments spill the register roster onto the outgoing stack area exactly as at a direct call."
 files = [{ path = "main.rue", source = """

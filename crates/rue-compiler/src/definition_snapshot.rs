@@ -485,6 +485,19 @@ pub(crate) fn definition_parts(item: &Item) -> Option<DefinitionParts> {
             name: enumeration.name,
             declaration_span: enumeration.span,
         },
+        // An interface occupies the type namespace like a struct (spec 6.8:4)
+        // and lowers to the `StructDecl` shape, so it is a struct definition
+        // to every presemantic consumer.
+        Item::Interface(interface) => DefinitionParts {
+            namespace: DefinitionNamespace::ModuleItem,
+            kind: DefinitionKind::Struct,
+            visibility: Some(interface.visibility),
+            name: interface.name,
+            declaration_span: interface.span,
+        },
+        // A freestanding conformance assertion names no definition (spec
+        // 6.8:9, 6.8:11); the semantic nucleus resolves it per module.
+        Item::Conformance(_) => return None,
         Item::DropFn(drop_function) => DefinitionParts {
             namespace: DefinitionNamespace::Destructor,
             kind: DefinitionKind::Destructor,

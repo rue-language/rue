@@ -127,7 +127,8 @@ pub use sema::{
     DurableAnonymousMethodType, DurableAnonymousShape, DurableAnonymousSource,
     DurableBodyLookupSource, DurableBodyModuleBinding, DurableBodySourceLocator,
     DurableCallableSource, DurableCallableTypeSyntax, DurableComptimeCallOutcome,
-    DurableComptimeDiagnostic, DurableConst, DurableConstSource, DurableFunction, DurableMethod,
+    DurableComptimeDiagnostic, DurableConformance, DurableConformanceAssertion,
+    DurableConformanceFacts, DurableConst, DurableConstSource, DurableFunction, DurableMethod,
     DurableNominal, DurableNominalBody, DurableNominalSource, DurableReducedComptimeCall,
     DurableSignatureParameter, DurableTryProducer, FunctionInfo, ImplicitDropDependencySourceEvent,
     ImplicitNamedDestructorDependencyEvent, ImportResolution, MAX_COMPTIME_CALL_DEPTH,
@@ -143,9 +144,9 @@ pub use sema::{
     SemanticProducedAnonymousMethodSignature, SemanticProducedAnonymousMethodType,
     SemanticProducedAnonymousNominal, SemanticProducedAnonymousNominalShape, SourceParamAbi,
     analyze_provider_anonymous_body, analyze_provider_ordinary_body,
-    analyze_provider_specialized_body, body_parameter_types, comptime_call_cycle_reason,
-    comptime_depth_exceeded_reason, comptime_depth_over_limit, next_comptime_depth,
-    occupying_body_parameter_types, parameter_place_base_types,
+    analyze_provider_specialized_body, body_parameter_types, check_provider_interface_bound,
+    comptime_call_cycle_reason, comptime_depth_exceeded_reason, comptime_depth_over_limit,
+    next_comptime_depth, occupying_body_parameter_types, parameter_place_base_types,
 };
 pub use sema::{
     COMPTIME_MATCH_NO_SELECTED_ARM, ComptimeDiagnosticSite, ComptimeIntegerOperation,

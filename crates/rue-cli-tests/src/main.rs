@@ -113,6 +113,9 @@
 //! - `tier = "slow"` on a section or `[[automatic_example]]`: keep exhaustive
 //!   or full-program large-example coverage behind the dedicated slow Buck
 //!   target
+//! - `preview = "<feature>"` on an `[[automatic_example]]`: compile that
+//!   example with `--preview <feature>`, for an example whose own sources use
+//!   a gated feature (std's use of one needs no flag)
 //! - `known_bug = "RUE-123"`: expected failure (xfail), using the canonical
 //!   `RUE-<positive integer>` spelling with no leading zeroes. An ordinary
 //!   assertion failure is ignored with the bug reference. A fatal subprocess
@@ -1294,6 +1297,7 @@ impl ExecutionContract {
 struct AutomaticExampleMetadata {
     contract: ExecutionContract,
     tier: CliCaseTier,
+    preview: Option<String>,
 }
 
 #[derive(Debug)]
@@ -5337,16 +5341,18 @@ fn validate_contract_metadata(
                 entry.path,
             ));
         }
-        if !corpus.contracts.contains_key(&entry.contract) {
-            return Err(format!(
-                "automatic example '{}' references unknown contract '{}'",
-                entry.path, entry.contract,
-            ));
+        if let Some(name) = &entry.contract {
+            if !corpus.contracts.contains_key(name) {
+                return Err(format!(
+                    "automatic example '{}' references unknown contract '{}'",
+                    entry.path, name,
+                ));
+            }
         }
         let contract = resolve_contract(
             &corpus.contracts,
             &corpus.timeout_profiles,
-            Some(&entry.contract),
+            entry.contract.as_deref(),
         );
         if automatic_contracts
             .insert(
@@ -5354,6 +5360,7 @@ fn validate_contract_metadata(
                 AutomaticExampleMetadata {
                     contract,
                     tier: entry.tier,
+                    preview: entry.preview.clone(),
                 },
             )
             .is_some()
@@ -5363,7 +5370,9 @@ fn validate_contract_metadata(
                 entry.path,
             ));
         }
-        used_contracts.insert(entry.contract.clone());
+        if let Some(name) = &entry.contract {
+            used_contracts.insert(name.clone());
+        }
     }
 
     let mut unused = corpus
@@ -5401,12 +5410,16 @@ fn run_example(
     rue_binary: &Path,
     real_std: &Path,
     contract: &ExecutionContract,
+    preview: Option<&str>,
 ) -> TestResult {
     let temp_dir = tempfile::tempdir()
         .map_err(|e| TestFailure::fatal(format!("failed to create temp dir: {}", e)))?;
     let dir = temp_dir.path();
 
     let mut cmd = compiler_command(rue_binary);
+    if let Some(feature) = preview {
+        cmd.args(["--preview", feature]);
+    }
     cmd.arg("--daemon=off")
         .arg(path)
         .args(["-o", "prog"])
@@ -5603,6 +5616,7 @@ fn example_trials(
         let contract = metadata
             .map(|metadata| metadata.contract.clone())
             .unwrap_or_else(|| resolve_contract(&HashMap::new(), timeout_profiles, None));
+        let preview = metadata.and_then(|metadata| metadata.preview.clone());
         let heavyweight = contract.is_heavyweight();
         let rue_binary = rue_binary.to_path_buf();
         let real_std = real_std.to_path_buf();
@@ -5620,8 +5634,15 @@ fn example_trials(
                 let expectation = EXAMPLE_EXPECTATIONS
                     .iter()
                     .find(|e| e.path == relative_path);
-                run_example(&path, expectation, &rue_binary, &real_std, &contract)
-                    .map_err(RunError::fail)
+                run_example(
+                    &path,
+                    expectation,
+                    &rue_binary,
+                    &real_std,
+                    &contract,
+                    preview.as_deref(),
+                )
+                .map_err(RunError::fail)
             })
         });
         trials.push(if heavyweight {
@@ -6275,7 +6296,8 @@ mod tests {
             .find(|entry| entry.path == "mosaic/main.rue")
             .expect("mosaic/main.rue must declare an automatic-example contract");
         assert_eq!(automatic.tier, CliCaseTier::Slow);
-        assert_eq!(automatic.contract, "heavyweight_long");
+        assert_eq!(automatic.contract.as_deref(), Some("heavyweight_long"));
+        assert_eq!(automatic.preview, None);
 
         assert_eq!(mosaic.section.tier, CliCaseTier::Slow);
         assert_eq!(mosaic.section.contract.as_deref(), Some("heavyweight_long"));
@@ -6284,6 +6306,23 @@ mod tests {
             authority.contracts["heavyweight_long"].timeout_profile,
             TimeoutProfile::Slow
         );
+    }
+
+    #[test]
+    fn hashmap_automatic_example_carries_the_interfaces_preview() {
+        // examples/hashmap declares its own conformance (spec 6.8), so its
+        // automatic entry exists to carry the preview flag: no contract, the
+        // premerge tier, and `preview = "interfaces"`.
+        let authority = toml::from_str::<TestFile>(include_str!("execution_contracts.toml"))
+            .expect("execution_contracts.toml parses as a corpus file");
+        let automatic = authority
+            .automatic_example
+            .iter()
+            .find(|entry| entry.path == "hashmap/main.rue")
+            .expect("hashmap/main.rue must declare an automatic-example entry");
+        assert_eq!(automatic.contract, None);
+        assert_eq!(automatic.tier, CliCaseTier::Premerge);
+        assert_eq!(automatic.preview.as_deref(), Some("interfaces"));
     }
 
     #[test]
@@ -6597,6 +6636,7 @@ mod tests {
             &invalid_compiler,
             Path::new("std"),
             &contract,
+            None,
         )
         .expect_err("an invalid byte must not equal UTF-8 replacement text");
         assert!(invalid_error.contains("hex: ff 0a"));
@@ -6610,6 +6650,7 @@ mod tests {
             &valid_compiler,
             Path::new("std"),
             &contract,
+            None,
         )
         .expect("valid UTF-8 replacement text must match exactly");
     }

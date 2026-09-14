@@ -1,0 +1,217 @@
+[section]
+id = "items.interface_constructor_bounds"
+name = "Interface bounds in type constructor applications"
+description = "Concrete bounds apply uniformly to value calls, declaration types, and assertion subjects."
+
+[[case]]
+name = "field_type_checks_constructor_bound"
+spec = ["6.8:15", "6.8:24"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn Wrapper(comptime T: Show) -> type { struct { value: T } }
+struct Container { wrapped: Wrapper(i64) }
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E0305"]
+
+[[case]]
+name = "enum_payload_checks_constructor_bound"
+spec = ["6.8:15", "6.8:24"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn Wrapper(comptime T: Show) -> type { struct { value: T } }
+enum Container { Wrapped(Wrapper(i64)), Empty }
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E0305"]
+
+[[case]]
+name = "return_type_checks_constructor_bound"
+spec = ["6.8:15", "6.8:24"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn Wrapper(comptime T: Show) -> type { struct { value: T } }
+fn impossible() -> Wrapper(i64) { @panic("unused"); }
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E0305"]
+
+[[case]]
+name = "constant_alias_checks_constructor_bound"
+spec = ["6.8:15", "6.8:24"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn Wrapper(comptime T: Show) -> type { struct { value: T } }
+const Bad = Wrapper(i64);
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E0305"]
+
+[[case]]
+name = "nested_constructor_checks_inner_bound"
+spec = ["6.8:15", "6.8:24"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn Wrapper(comptime T: Show) -> type { struct { value: T } }
+fn Outer(comptime U: type) -> type { Wrapper(U) }
+struct Container { wrapped: Outer(i64) }
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E0305"]
+
+[[case]]
+name = "constructor_returning_existing_type_checks_bound"
+spec = ["6.8:15", "6.8:24"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn Alias(comptime T: Show) -> type { i64 }
+struct Container { value: Alias(i64) }
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E0305"]
+
+[[case]]
+name = "constructor_argument_checks_member_signature"
+spec = ["6.8:15", "6.8:24"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn Wrapper(comptime T: Show) -> type { struct { value: T } }
+struct Wrong is Show { fn show(borrow self) -> bool { true } }
+struct Container { wrapped: Wrapper(Wrong) }
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E0303"]
+
+[[case]]
+name = "assertion_subject_checks_constructor_bound"
+spec = ["6.8:15", "6.8:24"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+interface Mark { fn mark(borrow self) -> i64; }
+fn Marked(comptime T: Show) -> type { struct { fn mark(borrow self) -> i64 { 3 } } }
+Marked(i64) is Mark;
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E0305"]
+
+[[case]]
+name = "assertion_subject_can_rely_on_another_program_assertion"
+spec = ["6.8:9", "6.8:15", "6.8:24"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+interface Mark { fn mark(borrow self) -> i64; }
+struct Value { fn show(borrow self) -> i64 { 1 } }
+fn Marked(comptime T: Show) -> type { struct { fn mark(borrow self) -> i64 { 3 } } }
+Marked(Value) is Mark;
+Value is Show;
+fn read(comptime T: Mark, borrow value: T) -> i64 { value.mark() }
+fn main() -> i32 { let M = Marked(Value); @intCast(read(M, borrow M {})) }
+"""
+exit_code = 3
+
+[[case]]
+name = "bound_index_survives_a_preceding_comptime_value_parameter"
+spec = ["6.8:15", "6.8:24"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn Wrapper(comptime N: u64, comptime T: Show) -> type { struct { value: T } }
+struct Container { wrapped: Wrapper(3, i64) }
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E0305"]
+
+[[case]]
+name = "bounded_signature_application_is_checked_after_substitution"
+spec = ["6.8:15", "6.8:19", "6.8:24"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+struct Value is Show { fn show(borrow self) -> i64 { 4 } }
+fn Wrapper(comptime T: Show) -> type { struct { value: T } }
+fn read(comptime T: Show, borrow wrapped: Wrapper(T)) -> i64 { wrapped.value.show() }
+fn main() -> i32 {
+    let W = Wrapper(Value);
+    let wrapped = W { value: Value {} };
+    @intCast(read(Value, borrow wrapped))
+}
+"""
+exit_code = 4
+
+[[case]]
+name = "anonymous_constructor_argument_uses_program_conformance"
+spec = ["6.8:9", "6.8:15", "6.8:24"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn Value() -> type { struct { fn show(borrow self) -> i64 { 9 } } }
+fn Wrapper(comptime T: Show) -> type { struct { value: T } }
+Value() is Show;
+struct Container { wrapped: Wrapper(Value()) }
+fn main() -> i32 {
+    let V = Value();
+    let W = Wrapper(V);
+    let wrapped = W { value: V {} };
+    @intCast(wrapped.value.show())
+}
+"""
+exit_code = 9
+
+[[case]]
+name = "recursive_requirement_constructor_is_rejected_without_crashing"
+spec = ["6.8:15", "6.8:24"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface I { fn wrap(borrow self) -> Wrapped(Self); }
+fn Wrapped(comptime T: I) -> type { struct { value: T } }
+struct S is I { fn wrap(borrow self) -> Wrapped(S) { @panic("unused") } }
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E1200", "recursive interface-bound verification"]
+
+[[case]]
+name = "constructor_value_helper_checks_bound"
+spec = ["6.8:15", "6.8:24"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface I { fn f(borrow self); }
+fn helper(comptime T: I) -> i32 { 0 }
+fn Wrap() -> type { let n = helper(i64); struct { value: i64 } }
+struct Holder { value: Wrap() }
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E0305"]

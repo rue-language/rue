@@ -37,6 +37,7 @@ fn accessor_shape() -> MethodShape {
         is_accessor: true,
         returns_borrow: true,
         returns_inout: false,
+        type_syntax: None,
     }
 }
 
@@ -47,6 +48,7 @@ fn mutable_accessor_shape() -> MethodShape {
         is_accessor: true,
         returns_borrow: false,
         returns_inout: true,
+        type_syntax: None,
     }
 }
 

@@ -32,6 +32,45 @@ pub(crate) struct ParsedSemanticParameter {
     pub(crate) mode: crate::declaration_candidate::DeclarationParameterMode,
     pub(crate) is_comptime: bool,
     pub(crate) ty: rue_rir::RirTypeSyntaxRef,
+    /// The further `+`-separated interfaces of a composed comptime bound
+    /// (`comptime T: A + B` carries `B` here, spec 6.8:14); `ty` carries the
+    /// first. Empty for every other parameter.
+    pub(crate) bounds: Arc<[rue_rir::RirTypeSyntaxRef]>,
+}
+
+/// One interface named by a struct header or an interface refinement list,
+/// with the declaration-relative range of the name for diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ParsedConformance {
+    pub(crate) interface: rue_rir::RirTypeSyntaxRef,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+/// The parsed interface facts of a struct-shaped declaration (spec 6.8),
+/// before resolution: a struct's header assertions and associated type
+/// declarations, or an interface's refinement list, type-valued requirement
+/// names, and method-requirement names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ParsedConformanceFacts {
+    pub(crate) is_interface: bool,
+    pub(crate) conformances: Arc<[ParsedConformance]>,
+    pub(crate) assoc_types: Arc<
+        [(
+            rue_rir::RirTypeSyntaxSymbol,
+            rue_rir::RirTypeSyntaxRef,
+            bool,
+        )],
+    >,
+    pub(crate) requirements: Arc<[rue_rir::RirTypeSyntaxSymbol]>,
+}
+
+impl ParsedConformanceFacts {
+    /// Whether the declaration uses any construct of the interfaces preview
+    /// (spec 6.8:3).
+    pub(crate) fn uses_interfaces(&self) -> bool {
+        self.is_interface || !self.conformances.is_empty() || !self.assoc_types.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +122,12 @@ pub(crate) enum ParsedSemanticSignature {
         /// decided from the retained owner-method facts. Always `None` for an
         /// ordinary callable.
         accessor_cycle: Option<Arc<str>>,
+        /// Names an interface requirement binds for its owner: `Self` and
+        /// each type-valued associated constant of the interface (spec
+        /// 6.8:5). The signature resolves them as generic placeholders so a
+        /// conformance check can substitute the conforming type later.
+        /// Empty for every callable that is not an interface requirement.
+        owner_placeholders: Arc<[rue_rir::RirTypeSyntaxSymbol]>,
     },
     Struct {
         syntax: rue_rir::RirTypeSyntaxArena<Arc<str>>,
@@ -90,6 +135,7 @@ pub(crate) enum ParsedSemanticSignature {
         is_copy: bool,
         is_linear: bool,
         is_repr_c: bool,
+        conformance: ParsedConformanceFacts,
     },
     Enum {
         syntax: rue_rir::RirTypeSyntaxArena<Arc<str>>,
@@ -188,10 +234,43 @@ fn parsed_parameters<'a>(
                 ty: syntax
                     .push_parser_type(&parameter.ty, |symbol| Arc::from(resolve(symbol)))
                     .map_err(type_syntax_build_failure)?,
+                bounds: parameter
+                    .bounds
+                    .iter()
+                    .map(|bound| {
+                        syntax
+                            .push_parser_type(bound, |symbol| Arc::from(resolve(symbol)))
+                            .map_err(type_syntax_build_failure)
+                    })
+                    .collect::<Result<Vec<_>, Arc<str>>>()?
+                    .into(),
             })
         })
         .collect::<Result<Vec<_>, Arc<str>>>()
         .map(Into::into)
+}
+
+/// The interfaces a struct header asserts or an interface refines, with each
+/// name's range relative to the owning declaration (`declaration`).
+fn parsed_conformances<'a>(
+    syntax: &mut rue_rir::RirTypeSyntaxBuilder<Arc<str>>,
+    resolve: impl Copy + Fn(Spur) -> &'a str,
+    interfaces: &[rue_parser::ast::TypeExpr],
+    declaration: rue_span::Span,
+) -> Result<Vec<ParsedConformance>, Arc<str>> {
+    interfaces
+        .iter()
+        .map(|interface| {
+            let span = interface.span();
+            Ok(ParsedConformance {
+                interface: syntax
+                    .push_parser_type(interface, |symbol| Arc::from(resolve(symbol)))
+                    .map_err(type_syntax_build_failure)?,
+                start: span.start.saturating_sub(declaration.start),
+                end: span.end.saturating_sub(declaration.start),
+            })
+        })
+        .collect()
 }
 
 fn type_syntax_build_failure(error: rue_rir::RirTypeSyntaxBuildError) -> Arc<str> {
@@ -413,10 +492,20 @@ pub(crate) fn project_semantic_signature(
                     abi: Option<&str>,
                     is_accessor,
                     accessor_result_mode,
-                    body: Option<&rue_parser::ast::Expr>|
+                    body: Option<&rue_parser::ast::Expr>,
+                    owner_placeholders: &[&str]|
      -> Result<ParsedSemanticSignature, Arc<str>> {
         let mut syntax = rue_rir::RirTypeSyntaxBuilder::default();
         let parameters = parsed_parameters(&mut syntax, resolve, parameters)?;
+        let owner_placeholders = owner_placeholders
+            .iter()
+            .map(|name| {
+                syntax
+                    .intern_symbol(Arc::from(*name))
+                    .map_err(type_syntax_build_failure)
+            })
+            .collect::<Result<Vec<_>, Arc<str>>>()?
+            .into();
         let result = match result {
             Some(value) => syntax
                 .push_parser_type(value, |symbol| Arc::from(resolve(symbol)))
@@ -447,6 +536,7 @@ pub(crate) fn project_semantic_signature(
                 AccessorBodyVerdict::MissingTrailingYield
             },
             accessor_cycle: is_accessor.then(|| accessor_cycle.clone()).flatten(),
+            owner_placeholders,
         })
     };
 
@@ -469,6 +559,7 @@ pub(crate) fn project_semantic_signature(
                 crate::declaration_candidate::DeclarationParameterMode::Value
             },
             Some(&function.body),
+            &[],
         ),
         ParsedDeclarationAstRef::ExternFunction { function, abi } => callable(
             &function.params,
@@ -482,6 +573,7 @@ pub(crate) fn project_semantic_signature(
             false,
             crate::declaration_candidate::DeclarationParameterMode::Value,
             None,
+            &[],
         ),
         ParsedDeclarationAstRef::Method { method, .. } => callable(
             &method.params,
@@ -504,9 +596,103 @@ pub(crate) fn project_semantic_signature(
                 crate::declaration_candidate::DeclarationParameterMode::Value
             },
             Some(&method.body),
+            &[],
         ),
+        // A requirement binds `Self` and the interface's type-valued
+        // associated constants (spec 6.8:5); conformance verification
+        // substitutes the conforming type for them later.
+        ParsedDeclarationAstRef::InterfaceRequirement {
+            owner, requirement, ..
+        } => callable(
+            &requirement.params,
+            requirement.return_type.as_ref(),
+            requirement.receiver.is_some(),
+            requirement.receiver.as_ref().map_or(
+                crate::declaration_candidate::DeclarationParameterMode::Value,
+                |receiver| parameter_mode(receiver.mode).0,
+            ),
+            false,
+            false,
+            false,
+            None,
+            false,
+            crate::declaration_candidate::DeclarationParameterMode::Value,
+            None,
+            &std::iter::once("Self")
+                .chain(
+                    owner
+                        .assoc_type_requirements()
+                        .map(|requirement| resolve(requirement.name.name)),
+                )
+                .collect::<Vec<_>>(),
+        ),
+        // An interface's shell signature is the struct shape with no fields
+        // (spec 6.8): its refinement list, type-valued requirements, and
+        // method-requirement names are its conformance facts, and each
+        // method requirement is a method candidate of the shell.
+        ParsedDeclarationAstRef::Interface(interface) => {
+            let mut syntax = rue_rir::RirTypeSyntaxBuilder::default();
+            let conformances =
+                parsed_conformances(&mut syntax, resolve, &interface.parents, interface.span)?;
+            let assoc_types = interface
+                .assoc_type_requirements()
+                .map(|requirement| {
+                    Ok((
+                        syntax
+                            .intern_symbol(Arc::from(resolve(requirement.name.name)))
+                            .map_err(type_syntax_build_failure)?,
+                        syntax
+                            .push_named_type(Arc::from("type"))
+                            .map_err(type_syntax_build_failure)?,
+                        true,
+                    ))
+                })
+                .collect::<Result<Vec<_>, Arc<str>>>()?;
+            let requirements = interface
+                .method_requirements()
+                .map(|requirement| {
+                    syntax
+                        .intern_symbol(Arc::from(resolve(requirement.name.name)))
+                        .map_err(type_syntax_build_failure)
+                })
+                .collect::<Result<Vec<_>, Arc<str>>>()?;
+            Ok(ParsedSemanticSignature::Struct {
+                syntax: syntax.finish(),
+                fields: Arc::from([]),
+                is_copy: false,
+                is_linear: false,
+                is_repr_c: false,
+                conformance: ParsedConformanceFacts {
+                    is_interface: true,
+                    conformances: conformances.into(),
+                    assoc_types: assoc_types.into(),
+                    requirements: requirements.into(),
+                },
+            })
+        }
         ParsedDeclarationAstRef::Struct(structure) => {
             let mut syntax = rue_rir::RirTypeSyntaxBuilder::default();
+            let conformances = parsed_conformances(
+                &mut syntax,
+                resolve,
+                &structure.conformances,
+                structure.span,
+            )?;
+            let assoc_types = structure
+                .assoc_types
+                .iter()
+                .map(|assoc| {
+                    Ok((
+                        syntax
+                            .intern_symbol(Arc::from(resolve(assoc.name.name)))
+                            .map_err(type_syntax_build_failure)?,
+                        syntax
+                            .push_parser_type(&assoc.ty, |symbol| Arc::from(resolve(symbol)))
+                            .map_err(type_syntax_build_failure)?,
+                        assoc.visibility == rue_parser::ast::Visibility::Public,
+                    ))
+                })
+                .collect::<Result<Vec<_>, Arc<str>>>()?;
             let fields = structure
                 .fields
                 .iter()
@@ -533,6 +719,12 @@ pub(crate) fn project_semantic_signature(
                     .directives
                     .iter()
                     .any(|directive| directive.repr_arg() == Some(rue_parser::ReprArg::C)),
+                conformance: ParsedConformanceFacts {
+                    is_interface: false,
+                    conformances: conformances.into(),
+                    assoc_types: assoc_types.into(),
+                    requirements: Arc::from([]),
+                },
             })
         }
         ParsedDeclarationAstRef::Enum(value) => {
@@ -600,6 +792,7 @@ pub(crate) fn project_semantic_signature(
             false,
             crate::declaration_candidate::DeclarationParameterMode::Value,
             None,
+            &[],
         ),
         ParsedDeclarationAstRef::Destructor(_) => Ok(ParsedSemanticSignature::Destructor),
         ParsedDeclarationAstRef::Const(_) => Err(Arc::from(
@@ -620,6 +813,39 @@ pub(crate) struct DeclarationSemanticQueryKey {
     pub(crate) configuration: SemanticQueryConfiguration,
 }
 
+/// A per-module semantic query: the freestanding conformance assertions of
+/// one module under one configuration (spec 6.8:9).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ModuleSemanticQueryKey {
+    pub(crate) module: ModuleId,
+    pub(crate) configuration: SemanticQueryConfiguration,
+}
+
+/// The stable key the per-module conformance query resolves names from: a
+/// synthetic type-namespace key in the module, so name lookup sees exactly
+/// what a declaration of that module sees. Its reserved name cannot be
+/// spelled in source, so it never collides with a real definition.
+pub(crate) fn module_conformances_source(module: &ModuleId) -> StableDefinitionKey {
+    StableDefinitionKey::from_stable_parts(
+        module.clone(),
+        Namespace::Type,
+        Kind::Struct,
+        Arc::from("\0module-conformances"),
+        None,
+    )
+}
+
+impl ModuleSemanticQueryKey {
+    pub(crate) fn stable_identity(&self) -> String {
+        format!(
+            "{}:{:?}:{:?}",
+            self.module.logical_path(),
+            self.configuration.target,
+            self.configuration.preview_features,
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ComptimeCallQueryKey {
     pub(crate) declaration: DeclarationSemanticQueryKey,
@@ -634,36 +860,79 @@ pub(crate) struct AnonymousNominalQueryKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct DeferredOwnershipQueryKey {
-    pub(crate) producer: DeclarationSemanticQueryKey,
-    pub(crate) gate: DeferredOwnershipGate,
+pub(crate) enum DeferredRequirementProducer {
+    Declaration(DeclarationSemanticQueryKey),
+    Module(ModuleSemanticQueryKey),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum DeferredOwnershipGateKind {
-    RequireDroppable,
-    RequireTriviallyDroppable,
+impl From<DeclarationSemanticQueryKey> for DeferredRequirementProducer {
+    fn from(value: DeclarationSemanticQueryKey) -> Self {
+        Self::Declaration(value)
+    }
+}
+
+impl DeferredRequirementProducer {
+    pub(crate) fn configuration(&self) -> &SemanticQueryConfiguration {
+        match self {
+            Self::Declaration(query) => &query.configuration,
+            Self::Module(query) => &query.configuration,
+        }
+    }
+
+    fn stable_identity(&self) -> String {
+        match self {
+            Self::Declaration(query) => format!("declaration:{}", query.stable_identity()),
+            Self::Module(query) => format!("module:{}", query.stable_identity()),
+        }
+    }
+
+    fn declaration(&self) -> Option<&DeclarationCandidateKey> {
+        match self {
+            Self::Declaration(query) => Some(&query.declaration),
+            Self::Module(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct DeferredRequirementQueryKey {
+    pub(crate) producer: DeferredRequirementProducer,
+    pub(crate) gate: DeferredRequirement,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct DeferredOwnershipApplication {
+pub(crate) enum DeferredRequirementKind {
+    RequireDroppable,
+    RequireTriviallyDroppable,
+    /// A concrete argument of a comptime parameter must satisfy the
+    /// callable's interface bound.  This travels with the same deferred
+    /// effect channel as ownership gates so type-constructor projections do
+    /// not lose the requirement at a declaration boundary.
+    InterfaceBound {
+        callable: StableDefinitionKey,
+        parameter_index: u32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct DeferredRequirementApplication {
     pub(crate) declaration: DeclarationCandidateKey,
     pub(crate) call_ordinal: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct DeferredOwnershipGateSource {
+pub(crate) struct DeferredRequirementSource {
     pub(crate) declaration: DeclarationCandidateKey,
     pub(crate) start: u32,
     pub(crate) end: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct DeferredOwnershipGate {
-    pub(crate) kind: DeferredOwnershipGateKind,
+pub(crate) struct DeferredRequirement {
+    pub(crate) kind: DeferredRequirementKind,
     pub(crate) ty: DurableType,
-    pub(crate) source: Arc<DeferredOwnershipGateSource>,
-    pub(crate) application: Option<DeferredOwnershipApplication>,
+    pub(crate) source: Arc<DeferredRequirementSource>,
+    pub(crate) application: Option<DeferredRequirementApplication>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -671,10 +940,17 @@ pub(crate) enum SemanticNucleusKey {
     Identity(DeclarationSemanticQueryKey),
     Signature(DeclarationSemanticQueryKey),
     NominalWellFormedness(DeclarationSemanticQueryKey),
-    DeferredOwnership(DeferredOwnershipQueryKey),
+    DeferredRequirement(DeferredRequirementQueryKey),
     ConstResolution(DeclarationSemanticQueryKey),
     ComptimeCall(ComptimeCallQueryKey),
     AnonymousNominal(AnonymousNominalQueryKey),
+    /// The resolved freestanding conformance assertions of one module (spec
+    /// 6.8:9). An assertion is a bodiless, idempotent fact with no identity
+    /// (spec 6.8:11), so it has no declaration candidate: the module is the
+    /// unit of resolution, and bodies aggregate the modules they can see.
+    ModuleConformances(ModuleSemanticQueryKey),
+    /// Assertions selected by the program root's canonical import graph.
+    ProgramConformances(SemanticQueryConfiguration),
     #[cfg(test)]
     EngineCycleProbe(DeclarationSemanticQueryKey),
 }
@@ -687,8 +963,8 @@ impl SemanticNucleusKey {
             Self::NominalWellFormedness(key) => {
                 format!("nominal-well-formed:{}", key.stable_identity())
             }
-            Self::DeferredOwnership(key) => format!(
-                "deferred-ownership:{}:{:?}",
+            Self::DeferredRequirement(key) => format!(
+                "deferred-requirement:{}:{:?}",
                 key.producer.stable_identity(),
                 key.gate
             ),
@@ -704,6 +980,12 @@ impl SemanticNucleusKey {
                 key.producer.stable_identity(),
                 key.identity,
             ),
+            Self::ProgramConformances(configuration) => {
+                format!("program-conformances:{configuration:?}")
+            }
+            Self::ModuleConformances(key) => {
+                format!("module-conformances:{}", key.stable_identity())
+            }
             #[cfg(test)]
             Self::EngineCycleProbe(key) => {
                 format!("engine-cycle-probe:{}", key.stable_identity())
@@ -711,17 +993,20 @@ impl SemanticNucleusKey {
         }
     }
 
-    pub(crate) fn declaration(&self) -> &DeclarationCandidateKey {
+    /// The declaration candidate a query is about; `None` for the per-module
+    /// queries, which have no declaration shell.
+    pub(crate) fn declaration(&self) -> Option<&DeclarationCandidateKey> {
         match self {
             Self::Identity(key)
             | Self::Signature(key)
             | Self::NominalWellFormedness(key)
-            | Self::ConstResolution(key) => &key.declaration,
-            Self::DeferredOwnership(key) => &key.producer.declaration,
-            Self::ComptimeCall(key) => &key.declaration.declaration,
-            Self::AnonymousNominal(key) => &key.producer.declaration,
+            | Self::ConstResolution(key) => Some(&key.declaration),
+            Self::DeferredRequirement(key) => key.producer.declaration(),
+            Self::ComptimeCall(key) => Some(&key.declaration.declaration),
+            Self::AnonymousNominal(key) => Some(&key.producer.declaration),
+            Self::ModuleConformances(_) | Self::ProgramConformances(_) => None,
             #[cfg(test)]
-            Self::EngineCycleProbe(key) => &key.declaration,
+            Self::EngineCycleProbe(key) => Some(&key.declaration),
         }
     }
 }
@@ -800,9 +1085,25 @@ pub(crate) enum SemanticNucleusFailure {
         start: u32,
         end: u32,
     },
-    OwnershipGate {
+    /// A diagnostic anchored at a source range of a module that belongs to
+    /// no declaration: a freestanding conformance assertion (spec 6.8:9).
+    /// Offsets are module-relative, as the assertion's parsed span is.
+    /// A complete diagnostic whose span stream uses module-relative offsets.
+    /// File IDs are erased; the matching module stream restores them in the
+    /// current source snapshot. Producers observe each module source locator.
+    DiagnosticAtModuleSpans {
+        error: crate::CompileError,
+        span_modules: Arc<[ModuleId]>,
+    },
+    DiagnosticAtModuleRange {
         kind: rue_error::ErrorKind,
-        gate: DeferredOwnershipGate,
+        module: ModuleId,
+        start: u32,
+        end: u32,
+    },
+    DeferredRequirement {
+        kind: rue_error::ErrorKind,
+        gate: DeferredRequirement,
     },
     DiagnosticWithHelp {
         kind: rue_error::ErrorKind,
@@ -824,11 +1125,32 @@ pub(crate) enum SemanticNucleusValue {
     Identity(DeclarationIdentityProjection),
     Signature(ResolvedDeclarationSignature),
     NominalWellFormedness,
-    DeferredOwnership,
+    DeferredRequirement,
     ConstResolution(ConstResolutionProjection),
     ComptimeCall(ComptimeCallProjection),
     AnonymousNominal(DurableAnonymousNominal),
+    ModuleConformances(ModuleConformanceProjection),
+    ProgramConformances(Arc<[crate::durable_semantics::DurableConformanceAssertion]>),
     Failure(SemanticNucleusFailure),
+}
+
+/// Raw conformance facts and constructor effects produced by one module.
+/// Validation runs only after this projection has been published, so an
+/// assertion subject may rely on another assertion in the selected program.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ModuleConformanceProjection {
+    pub(crate) assertions: Arc<[crate::durable_semantics::DurableConformanceAssertion]>,
+    pub(crate) anonymous_nominals: Arc<[DurableAnonymousNominal]>,
+    pub(crate) deferred_requirements: Arc<[DeferredRequirement]>,
+}
+
+impl RetainedCharge for ModuleConformanceProjection {
+    fn retained_charge(&self) -> u64 {
+        self.assertions
+            .retained_charge()
+            .saturating_add(self.anonymous_nominals.retained_charge())
+            .saturating_add(self.deferred_requirements.retained_charge())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -844,7 +1166,7 @@ pub(crate) struct ResolvedDeclarationSignature {
     pub(crate) callable_type_syntax: Option<rue_air::DurableCallableTypeSyntax>,
     pub(crate) anonymous_nominals: Arc<[DurableAnonymousNominal]>,
     pub(crate) dependencies: Arc<[SemanticDeclarationDependency]>,
-    pub(crate) deferred_ownership: Arc<[DeferredOwnershipGate]>,
+    pub(crate) deferred_requirements: Arc<[DeferredRequirement]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -852,7 +1174,7 @@ pub(crate) struct ComptimeCallProjection {
     pub(crate) result: ComptimeCallResultProjection,
     pub(crate) anonymous_nominals: Arc<[DurableAnonymousNominal]>,
     pub(crate) dependencies: Arc<[SemanticDeclarationDependency]>,
-    pub(crate) deferred_ownership: Arc<[DeferredOwnershipGate]>,
+    pub(crate) deferred_requirements: Arc<[DeferredRequirement]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -922,6 +1244,7 @@ pub(crate) enum DeclarationSignatureProjection {
         is_copy: bool,
         is_linear: bool,
         is_repr_c: bool,
+        conformance: crate::durable_semantics::DurableConformanceFacts,
     },
     Enum {
         variants: Arc<[(Arc<str>, Arc<[DurableType]>)]>,
@@ -938,7 +1261,7 @@ pub(crate) enum ConstResolutionProjection {
         value: Box<DurableConstValue>,
         anonymous_nominals: Arc<[DurableAnonymousNominal]>,
         dependencies: Arc<[SemanticDeclarationDependency]>,
-        deferred_ownership: Arc<[DeferredOwnershipGate]>,
+        deferred_requirements: Arc<[DeferredRequirement]>,
     },
     ModuleBinding {
         key: StableDefinitionKey,
@@ -952,22 +1275,28 @@ pub(crate) struct DeclarationSemanticValue {
     pub(crate) payload: DurableDeclarationPayload,
 }
 
-impl RetainedCharge for DeferredOwnershipApplication {
+impl RetainedCharge for DeferredRequirementApplication {
     fn retained_charge(&self) -> u64 {
         self.declaration.retained_charge()
     }
 }
 
-impl RetainedCharge for DeferredOwnershipGateSource {
+impl RetainedCharge for DeferredRequirementSource {
     fn retained_charge(&self) -> u64 {
         self.declaration.retained_charge()
     }
 }
 
-impl RetainedCharge for DeferredOwnershipGate {
+impl RetainedCharge for DeferredRequirement {
     fn retained_charge(&self) -> u64 {
+        let kind = match &self.kind {
+            DeferredRequirementKind::RequireDroppable
+            | DeferredRequirementKind::RequireTriviallyDroppable => 0,
+            DeferredRequirementKind::InterfaceBound { callable, .. } => callable.retained_charge(),
+        };
         self.ty
             .retained_charge()
+            .saturating_add(kind)
             .saturating_add(self.source.retained_charge())
             .saturating_add(self.application.retained_charge())
     }
@@ -1011,6 +1340,15 @@ impl RetainedCharge for SemanticNucleusFailure {
             Self::DiagnosticAtProducerRange { kind, producer, .. } => kind
                 .retained_charge()
                 .saturating_add(producer.retained_charge()),
+            Self::DiagnosticAtModuleSpans {
+                error,
+                span_modules,
+            } => error
+                .retained_charge()
+                .saturating_add(span_modules.retained_charge()),
+            Self::DiagnosticAtModuleRange { kind, module, .. } => kind
+                .retained_charge()
+                .saturating_add(module.retained_charge()),
             Self::DiagnosticAtDeclaration { kind, declaration } => kind
                 .retained_charge()
                 .saturating_add(declaration.retained_charge()),
@@ -1024,7 +1362,7 @@ impl RetainedCharge for SemanticNucleusFailure {
                 .saturating_add(duplicate.retained_charge()),
             Self::DuplicateDeclarations(failures) => failures.retained_charge(),
             Self::ForeignSignatureConflict(failure) => failure.retained_charge(),
-            Self::OwnershipGate { kind, gate } => kind
+            Self::DeferredRequirement { kind, gate } => kind
                 .retained_charge()
                 .saturating_add(gate.retained_charge()),
             Self::DiagnosticWithHelp { kind, help } => kind
@@ -1074,7 +1412,13 @@ impl RetainedCharge for DeclarationSignatureProjection {
             } => parameters
                 .retained_charge()
                 .saturating_add(result.retained_charge()),
-            Self::Struct { fields, .. } => fields.retained_charge(),
+            Self::Struct {
+                fields,
+                conformance,
+                ..
+            } => fields
+                .retained_charge()
+                .saturating_add(conformance.retained_charge()),
             Self::Enum { variants, .. } => variants.retained_charge(),
             Self::Destructor => 0,
         }
@@ -1093,7 +1437,7 @@ impl RetainedCharge for ResolvedDeclarationSignature {
             .saturating_add(callable_type_syntax)
             .saturating_add(self.anonymous_nominals.retained_charge())
             .saturating_add(self.dependencies.retained_charge())
-            .saturating_add(self.deferred_ownership.retained_charge())
+            .saturating_add(self.deferred_requirements.retained_charge())
     }
 }
 
@@ -1112,7 +1456,7 @@ impl RetainedCharge for ComptimeCallProjection {
             .retained_charge()
             .saturating_add(self.anonymous_nominals.retained_charge())
             .saturating_add(self.dependencies.retained_charge())
-            .saturating_add(self.deferred_ownership.retained_charge())
+            .saturating_add(self.deferred_requirements.retained_charge())
     }
 }
 
@@ -1125,14 +1469,14 @@ impl RetainedCharge for ConstResolutionProjection {
                 value,
                 anonymous_nominals,
                 dependencies,
-                deferred_ownership,
+                deferred_requirements,
             } => key
                 .retained_charge()
                 .saturating_add(ty.retained_charge())
                 .saturating_add(value.retained_charge())
                 .saturating_add(anonymous_nominals.retained_charge())
                 .saturating_add(dependencies.retained_charge())
-                .saturating_add(deferred_ownership.retained_charge()),
+                .saturating_add(deferred_requirements.retained_charge()),
             Self::ModuleBinding { key, target } => key
                 .retained_charge()
                 .saturating_add(target.retained_charge()),
@@ -1145,10 +1489,12 @@ impl RetainedCharge for SemanticNucleusValue {
         match self {
             Self::Identity(value) => value.retained_charge(),
             Self::Signature(value) => value.retained_charge(),
-            Self::NominalWellFormedness | Self::DeferredOwnership => 0,
+            Self::NominalWellFormedness | Self::DeferredRequirement => 0,
             Self::ConstResolution(value) => value.retained_charge(),
             Self::ComptimeCall(value) => value.retained_charge(),
             Self::AnonymousNominal(value) => value.retained_charge(),
+            Self::ModuleConformances(value) => value.retained_charge(),
+            Self::ProgramConformances(value) => value.retained_charge(),
             Self::Failure(failure) => failure.retained_charge(),
         }
     }
@@ -1191,10 +1537,12 @@ impl DeclarationSemanticValue {
                 is_copy,
                 is_linear,
                 is_repr_c: _,
+                conformance,
             } => DurableDeclarationPayload::Struct {
                 fields,
                 is_copy,
                 is_linear,
+                conformance,
             },
             DeclarationSignatureProjection::Enum {
                 variants,
@@ -1316,6 +1664,7 @@ mod tests {
             is_generic: false,
             is_unchecked: false,
             is_extern: false,
+            is_interface: false,
             signature_fingerprint: [0; 32],
         }
     }

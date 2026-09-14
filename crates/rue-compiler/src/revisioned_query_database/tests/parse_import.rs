@@ -3278,7 +3278,11 @@ fn input_stamp_tables_follow_exact_retained_full_and_overlay_views() {
     assert_eq!(module_store.revisions.len(), GENERATIONS as usize * 2);
     let mut module_refs = AHashMap::new();
     let mut metadata_refs = AHashMap::new();
+    let mut root_refs = AHashMap::new();
     for view in &module_store.revisions {
+        if let Some(root) = &view.stamp_lease.root {
+            *root_refs.entry(root.clone()).or_insert(0) += 1;
+        }
         for source in view.snapshot.source_revision().modules() {
             *module_refs
                 .entry(ModuleInputLeaf {
@@ -3292,6 +3296,7 @@ fn input_stamp_tables_follow_exact_retained_full_and_overlay_views() {
     }
     assert_exact_values(&module_store.stamps, &module_refs);
     assert_exact_values(&module_store.metadata_stamps, &metadata_refs);
+    assert_exact_values(&module_store.root_stamps, &root_refs);
     drop(module_store);
 
     // Exercise the same centralized module-view trimming primitive at a
@@ -3341,6 +3346,7 @@ fn input_stamp_tables_follow_exact_retained_full_and_overlay_views() {
                 metadata,
                 stamp_lease: Arc::new(ModuleInputStampLease {
                     parent: None,
+                    root: None,
                     sources: sources.into(),
                     metadata: Arc::from([]),
                 }),

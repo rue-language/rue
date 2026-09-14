@@ -3376,6 +3376,7 @@ impl<'a> ConstraintGenerator<'a> {
             // Type declarations don't produce values
             InstData::FnDecl { .. }
             | InstData::StructDecl { .. }
+            | InstData::ConformanceDecl { .. }
             | InstData::EnumDecl { .. }
             | InstData::DropFnDecl { .. }
             | InstData::ConstDecl { .. } => InferType::Concrete(Type::UNIT),
