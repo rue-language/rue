@@ -517,3 +517,37 @@ fn main() -> i32 {
 """
 exit_code = 15
 expected_stdout = "7\n8\n99\n"
+
+# Parentheses are transparent (4.2:3), so a parenthesized iterable is the
+# bare form: the collection is iterated by shared read (4.8:26) and stays
+# usable afterwards, and a parenthesized temporary is evaluated once. The
+# string-view forms `(s).chars()` and `(s.chars())` need std and are pinned
+# by the CLI corpus (RUE-2201).
+[[case]]
+name = "for_parenthesized_iterable_is_a_shared_read"
+spec = ["4.8:26", "4.2:3"]
+source = """
+fn main() -> i32 {
+    let a = [1, 2, 3];
+    let mut sum: i32 = 0;
+    for x in (a) { sum = sum + x; }
+    sum * 10 + a[2]
+}
+"""
+exit_code = 63
+
+[[case]]
+name = "for_parenthesized_temporary_collection_is_evaluated_once"
+spec = ["4.8:26", "4.2:3"]
+source = """
+fn make() -> [i32; 3] {
+    @dbg(7);
+    [1, 2, 3]
+}
+fn main() -> i32 {
+    let mut sum: i32 = 0;
+    for x in (make()) { sum = sum + x; }
+    sum
+}
+"""
+exit_code = 6
