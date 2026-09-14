@@ -63,7 +63,9 @@ pub use binding_manifest::{
 // RUE-1831: the comptime module tree as one string, for the structural
 // guards in `api_inventory` and `consistency_tests`. `comptime` itself
 // stays private; only the guard source crosses this boundary.
-pub(crate) use aggregate_resolution::{decode_module_spine, select_module_nominal};
+pub(crate) use aggregate_resolution::{
+    ModuleTypeMember, decode_module_spine, select_module_nominal, select_module_type_member,
+};
 pub use comptime::ComptimeMethodReceiverPolicy;
 pub use comptime::{
     COMPTIME_MATCH_NO_SELECTED_ARM, ComptimeDiagnosticSite, ComptimeFloatWidth,

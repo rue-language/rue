@@ -163,10 +163,28 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         self.free_function_callback(callee, span, true)
     }
 
-    /// Resolve `module.function` or `Type.function` written as a callback
-    /// argument. A module member is a free function of the imported file or a
-    /// public function-valued re-export (ADR-0026); a type member is a
-    /// receiverless associated function of a concrete struct.
+    /// The dotted spelling of a callback argument's base (`m`, `m.S`,
+    /// `outer.inner`), for diagnostics and the callable's display.
+    fn member_base_display(&self, base: InstRef) -> Option<String> {
+        let spine = crate::sema::decode_module_spine(self.body_rir_ref(), base)?;
+        let interner = self.body_interner();
+        Some(
+            std::iter::once(spine.root)
+                .chain(spine.fields.iter().copied())
+                .map(|name| interner.resolve(&name).to_string())
+                .collect::<Vec<_>>()
+                .join("."),
+        )
+    }
+
+    /// Resolve `module.function`, `outer.inner.function`, `Type.function`
+    /// or `module.Type.function` written as a callback argument. A module
+    /// member is a free function of the imported file or a public
+    /// function-valued re-export (ADR-0026); a type member is a receiverless
+    /// associated function of a concrete struct. The module prefix is a
+    /// dotted spine resolved by the one module-path walker, so a re-export
+    /// chain and a module-qualified type bind exactly as they call
+    /// (RUE-1964, RUE-2197).
     fn named_member_callback(
         &mut self,
         base: InstRef,
@@ -175,33 +193,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &mut AnalysisContext,
     ) -> CompileResult<NamedCallable> {
         let member_str = self.body_interner().resolve(&member).to_string();
-        let InstData::VarRef {
-            name: base_name, ..
-        } = self.body_rir_ref().get(base).data
-        else {
+        let Some(base_str) = self.member_base_display(base) else {
             return Err(self.ineligible_callback(
                 "a field access".to_string(),
                 NOT_A_FUNCTION_NAME,
                 span,
             ));
         };
-        let base_str = self.body_interner().resolve(&base_name).to_string();
 
-        // `module.function`: the module is a body-local binding of module
-        // type or the file's own `const m = @import(..)` binding (RUE-113).
-        let module_id = ctx
-            .locals
-            .get(&base_name)
-            .and_then(|local| local.ty.as_module())
-            .or_else(|| {
-                if self.is_runtime_value_binding(base_name, ctx) {
-                    return None;
-                }
-                self.call_facts()
-                    .call_module_binding(span.file_id, base_name)
-                    .and_then(|binding| binding.ty.as_module())
-            });
-        if let Some(module_id) = module_id {
+        // `module.function` / `outer.inner.function`: the base names a
+        // module — a body-local binding of module type, the file's own
+        // `const m = @import(..)` binding (RUE-113), or a re-export chain.
+        if let Some(module_id) = self.try_module_id_of(base, span, ctx)? {
             let module_def = self.call_facts().call_module_def(module_id);
             let module_file = module_def.file_id;
             let module_name = crate::module_display_name(&module_def.import_path);
@@ -241,12 +244,56 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Ok(callable);
         }
 
+        let display = format!("{base_str}.{member_str}");
+
+        // `module.Type.function`: a receiverless associated function of a
+        // struct the module's file defines or re-exports, under module-
+        // qualified visibility (E0706) exactly as the call form (RUE-488).
+        if let InstData::FieldGet {
+            base: module_ref,
+            field: type_name,
+        } = self.body_rir_ref().get(base).data
+            && let Some(module_id) = self.try_module_id_of(module_ref, span, ctx)?
+        {
+            let module_def = self.call_facts().call_module_def(module_id);
+            let module_file = module_def.file_id;
+            let module_name = crate::module_display_name(&module_def.import_path);
+            let type_str = self.body_interner().resolve(&type_name).to_string();
+            let selected = {
+                let facts = self.aggregate_facts();
+                crate::sema::select_module_type_member(facts, module_file, type_name)
+            };
+            let Some(nominal) = selected.as_struct() else {
+                if matches!(selected, crate::sema::ModuleTypeMember::Absent) {
+                    return Err(crate::unknown_module_member(&module_name, &type_str, span));
+                }
+                return Err(self.ineligible_callback(
+                    format!("the member `{display}`"),
+                    NOT_A_FUNCTION_NAME,
+                    span,
+                ));
+            };
+            let struct_id = nominal.id;
+            let struct_def = self.body_type_pool().struct_def(struct_id);
+            self.check_module_qualified_visibility(
+                nominal.alias,
+                module_file,
+                (struct_def.file_id, struct_def.is_pub),
+                crate::PrivateItemKind::Struct,
+                &type_str,
+                span,
+            )?;
+            return self.assoc_function_callback(struct_id, member, type_str, display, span, ctx);
+        }
+
         // `Type.function`: a receiverless associated function of a concrete
         // struct named in this file (ADR-0046).
-        if !self.is_runtime_value_binding(base_name, ctx)
+        if let InstData::VarRef {
+            name: base_name, ..
+        } = self.body_rir_ref().get(base).data
+            && !self.is_runtime_value_binding(base_name, ctx)
             && let Some((struct_id, _)) = self.resolve_struct_type_name(base_name, ctx)
         {
-            let display = format!("{base_str}.{member_str}");
             let struct_def = self.body_type_pool().struct_def(struct_id);
             self.check_item_visibility(
                 crate::PrivateItemKind::Struct,
@@ -255,50 +302,66 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 struct_def.is_pub,
                 span,
             )?;
-            let method = self
-                .call_facts()
-                .call_method_info(struct_id, member)
-                .ok_or_compile_error(
-                    ErrorKind::UndefinedAssocFn {
-                        type_name: base_str.clone(),
-                        function_name: member_str.clone(),
-                    },
-                    span,
-                )?;
-            if method.has_self {
-                return Err(self.ineligible_callback(
-                    format!("the method `{display}`"),
-                    "a method takes a receiver; write a named function that calls it on an explicit argument and pass that",
-                    span,
-                ));
-            }
-            if method.returns_borrow || method.returns_inout {
-                return Err(self.ineligible_callback(
-                    format!("the accessor `{display}`"),
-                    "an accessor is inlined at each call and has no callable address",
-                    span,
-                ));
-            }
-            let params = self.body_param_data(method.params);
-            if params.comptime().iter().any(|&comptime| comptime) {
-                return Err(self.ineligible_callback(
-                    format!("the generic function `{display}`"),
-                    GENERIC_CALLBACK,
-                    span,
-                ));
-            }
-            let signature = signature_of(params.types(), params.modes(), method.return_type);
-            let symbol = self.method_symbol_handle(struct_id, &member_str, false)?;
-            ctx_referenced_method(ctx, struct_id, member);
-            self.record_body_method_dependency((struct_id, member))?;
-            return Ok(NamedCallable {
-                symbol,
-                display,
-                signature,
-            });
+            return self.assoc_function_callback(struct_id, member, base_str, display, span, ctx);
         }
 
         Err(self.ineligible_callback("a field access".to_string(), NOT_A_FUNCTION_NAME, span))
+    }
+
+    /// Classify the associated function `member` of `struct_id` as a
+    /// callback: a receiverless, non-accessor, monomorphic member has a
+    /// plain callable address (ADR-0096 §4).
+    fn assoc_function_callback(
+        &mut self,
+        struct_id: crate::types::StructId,
+        member: Spur,
+        type_display: String,
+        display: String,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<NamedCallable> {
+        let member_str = self.body_interner().resolve(&member).to_string();
+        let method = self
+            .call_facts()
+            .call_method_info(struct_id, member)
+            .ok_or_compile_error(
+                ErrorKind::UndefinedAssocFn {
+                    type_name: type_display,
+                    function_name: member_str.clone(),
+                },
+                span,
+            )?;
+        if method.has_self {
+            return Err(self.ineligible_callback(
+                format!("the method `{display}`"),
+                "a method takes a receiver; write a named function that calls it on an explicit argument and pass that",
+                span,
+            ));
+        }
+        if method.returns_borrow || method.returns_inout {
+            return Err(self.ineligible_callback(
+                format!("the accessor `{display}`"),
+                "an accessor is inlined at each call and has no callable address",
+                span,
+            ));
+        }
+        let params = self.body_param_data(method.params);
+        if params.comptime().iter().any(|&comptime| comptime) {
+            return Err(self.ineligible_callback(
+                format!("the generic function `{display}`"),
+                GENERIC_CALLBACK,
+                span,
+            ));
+        }
+        let signature = signature_of(params.types(), params.modes(), method.return_type);
+        let symbol = self.method_symbol_handle(struct_id, &member_str, false)?;
+        ctx_referenced_method(ctx, struct_id, member);
+        self.record_body_method_dependency((struct_id, member))?;
+        Ok(NamedCallable {
+            symbol,
+            display,
+            signature,
+        })
     }
 
     /// Classify a resolved free function as a callback: only an ordinary
@@ -366,7 +429,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// generic callee's placeholder parameter type cannot say whether it is a
     /// `fn` type until the type arguments are known, so this decides whether
     /// the operand is bound by name or analyzed as a value.
-    pub(super) fn operand_names_callable(&self, arg: &RirCallArg, ctx: &AnalysisContext) -> bool {
+    pub(super) fn operand_names_callable(
+        &mut self,
+        arg: &RirCallArg,
+        ctx: &AnalysisContext,
+    ) -> bool {
         let span = self.body_rir_ref().get(arg.value).span;
         match self.body_rir_ref().get(arg.value).data {
             InstData::VarRef { name, .. } => {
@@ -379,25 +446,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 self.resolve_callee_name(name, span.file_id).is_some()
             }
             InstData::FieldGet { base, field } => {
-                let InstData::VarRef {
-                    name: base_name, ..
-                } = self.body_rir_ref().get(base).data
-                else {
-                    return false;
-                };
-                let module_id = ctx
-                    .locals
-                    .get(&base_name)
-                    .and_then(|local| local.ty.as_module())
-                    .or_else(|| {
-                        if self.is_runtime_value_binding(base_name, ctx) {
-                            return None;
-                        }
-                        self.call_facts()
-                            .call_module_binding(span.file_id, base_name)
-                            .and_then(|binding| binding.ty.as_module())
-                    });
-                if let Some(module_id) = module_id {
+                // The same three shapes `named_member_callback` binds, decided
+                // without emitting: a module's function or function-valued
+                // re-export, a module-qualified struct's receiverless
+                // associated function, or a local struct's (RUE-2197).
+                if let Ok(Some(module_id)) = self.try_module_id_of(base, span, ctx) {
                     let module_file = self.call_facts().call_module_def(module_id).file_id;
                     return self
                         .call_facts()
@@ -408,6 +461,28 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             .call_value_const(module_file, field)
                             .is_some_and(|info| matches!(info.value, ConstValue::Function(_)));
                 }
+                if let InstData::FieldGet {
+                    base: module_ref,
+                    field: type_name,
+                } = self.body_rir_ref().get(base).data
+                    && let Ok(Some(module_id)) = self.try_module_id_of(module_ref, span, ctx)
+                {
+                    let module_file = self.call_facts().call_module_def(module_id).file_id;
+                    let selected = {
+                        let facts = self.aggregate_facts();
+                        crate::sema::select_module_type_member(facts, module_file, type_name)
+                    };
+                    return selected
+                        .as_struct()
+                        .and_then(|nominal| self.call_facts().call_method_info(nominal.id, field))
+                        .is_some_and(|method| !method.has_self);
+                }
+                let InstData::VarRef {
+                    name: base_name, ..
+                } = self.body_rir_ref().get(base).data
+                else {
+                    return false;
+                };
                 !self.is_runtime_value_binding(base_name, ctx)
                     && self
                         .resolve_struct_type_name(base_name, ctx)

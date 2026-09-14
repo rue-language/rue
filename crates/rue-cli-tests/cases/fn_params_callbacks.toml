@@ -325,3 +325,79 @@ pub fn choose(borrow p: policy.Policy, a: i64, b: i64,
 ]
 args = ["main.rue", "-o", "prog"]
 exit_code = 39
+
+[[case]]
+name = "module_qualified_associated_functions_and_reexport_chains_bind_as_callbacks"
+description = "RUE-2197: `module.Type.function` and a function reached through a re-export chain (`outer.inner.f`, 10.4) bind as callbacks exactly as they call, including into a generic receiving function; the direct call and a local `const` alias are the controls."
+files = [
+    { path = "main.rue", source = """
+const h = @import("helper.rue");
+const outer = @import("outer.rue");
+const S = h.S;
+
+fn apply0(f: fn() -> i32) -> i32 { f() }
+fn apply1(f: fn(i32) -> i32) -> i32 { f(41) }
+fn generic(comptime T: type, f: fn(T) -> T, value: T) -> T { f(value) }
+
+fn main() -> i32 {
+    let direct = h.S.answer() + outer.inner.inc(41);           // 84
+    let qualified = apply0(h.S.answer) + apply1(outer.inner.inc); // 84
+    let aliased = apply0(S.answer);                              // 42
+    let deep = apply1(outer.inner.S2.bump);                      // 42
+    let generic_bound = generic(i32, h.S.twice, 21);             // 42
+    if direct == 84 && qualified == 84 && aliased == 42 && deep == 42 && generic_bound == 42 { 42 } else { 1 }
+}
+""" },
+    { path = "helper.rue", source = """
+pub struct S {
+    fn answer() -> i32 { 42 }
+    fn twice(x: i32) -> i32 { x * 2 }
+}
+""" },
+    { path = "outer.rue", source = """
+pub const inner = @import("inner.rue");
+""" },
+    { path = "inner.rue", source = """
+pub fn inc(x: i32) -> i32 { x + 1 }
+pub struct S2 {
+    fn bump(x: i32) -> i32 { x + 1 }
+}
+""" },
+]
+args = ["main.rue", "-o", "prog"]
+exit_code = 42
+
+[[case]]
+name = "module_qualified_callback_rejections_follow_the_call_rules"
+description = "RUE-2197: through a module the same ineligibility rules apply as for a local type: a receiver method is rejected (E0216)."
+files = [
+    { path = "main.rue", source = """
+const h = @import("helper.rue");
+fn apply(f: fn(i32) -> i32) -> i32 { f(1) }
+fn main() -> i32 { apply(h.S.scale) }
+""" },
+    { path = "helper.rue", source = """
+pub struct S {
+    k: i32,
+    fn scale(borrow self, x: i32) -> i32 { x * self.k }
+}
+""" },
+]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0216", "the method `h.S.scale`", "a method takes a receiver"]
+
+[[case]]
+name = "module_qualified_callback_to_an_unknown_type_names_the_module"
+description = "RUE-2197: an unknown member of the module is reported as such rather than as an ineligible field access."
+files = [
+    { path = "main.rue", source = """
+const h = @import("helper.rue");
+fn apply(f: fn() -> i32) -> i32 { f() }
+fn main() -> i32 { apply(h.Missing.answer) }
+""" },
+    { path = "helper.rue", source = "pub fn keep() -> i32 { 0 }\n" },
+]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["Missing"]
