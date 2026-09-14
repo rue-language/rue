@@ -824,11 +824,11 @@ EOF
   out="$(PATH="$sb/fakebin:$PATH" \
     RUE_BINARY="$sb/compiler" \
     RUE_CLI_EXECUTION_CONTRACTS_JSON="$sb/contracts.json" \
-    COMPILE_ARGS_LOG="$sb/compile-args.log" \
+    COMPILE_LOG="$sb/compile.log" \
     TMPDIR="$sb/tmp" \
     "$sb/scripts/run-sanitizer.sh" 2>&1)" || rc=$?
   check "run-sanitizer: malformed preview metadata fails closed" \
-    "$([ "$rc" -ne 0 ] && grep -q 'no automatic_example list' <<<"$out" && [ ! -f "$sb/compile-args.log" ] && echo 0 || echo 1)"
+    "$([ "$rc" -ne 0 ] && grep -q 'no automatic_example list' <<<"$out" && [ ! -f "$sb/compile.log" ] && echo 0 || echo 1)"
   rm -rf "$sb"
 
   sb="$(make_sanitizer_sandbox)"
@@ -836,11 +836,70 @@ EOF
   out="$(env -u RUE_CLI_EXECUTION_CONTRACTS_JSON \
     PATH="$sb/fakebin:$PATH" \
     RUE_BINARY="$sb/compiler" \
-    COMPILE_ARGS_LOG="$sb/compile-args.log" \
+    COMPILE_LOG="$sb/compile.log" \
     TMPDIR="$sb/tmp" \
     "$sb/scripts/run-sanitizer.sh" 2>&1)" || rc=$?
   check "run-sanitizer: missing preview metadata resolver fails closed" \
-    "$([ "$rc" -ne 0 ] && grep -q 'artifact was not provided' <<<"$out" && [ ! -f "$sb/compile-args.log" ] && echo 0 || echo 1)"
+    "$([ "$rc" -ne 0 ] && grep -q 'artifact was not provided' <<<"$out" && [ ! -f "$sb/compile.log" ] && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
+test_sanitizer_materializes_contracts_with_buck() {
+  local sb rc out
+
+  sb="$(make_sanitizer_sandbox)"
+  rm -f "$sb/contracts.json"
+  cat >"$sb/buck2" <<'EOF'
+#!/usr/bin/env bash
+printf '{"automatic_example":[{"path":"top.rue","preview":"interfaces"}]}\n' >"$FAKE_CONTRACTS_PATH"
+printf '%s\n' "$FAKE_CONTRACTS_PATH"
+EOF
+  chmod +x "$sb/buck2"
+  cat >"$sb/compiler" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$COMPILE_ARGS_LOG"
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    out="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+[ -n "$out" ] || exit 89
+printf '#!/bin/sh\nexit 0\n' >"$out"
+chmod +x "$out"
+EOF
+  chmod +x "$sb/compiler"
+
+  rc=0
+  PATH="$sb/fakebin:$PATH" \
+    FAKE_CONTRACTS_PATH="$sb/contracts.json" \
+    RUE_BINARY="$sb/compiler" \
+    COMPILE_LOG="$sb/compile.log" \
+    COMPILE_ARGS_LOG="$sb/compile-args.log" \
+    TMPDIR="$sb/tmp" \
+    "$sb/scripts/run-sanitizer.sh" >/dev/null 2>&1 || rc=$?
+  check "run-sanitizer: default Buck materialization supplies metadata" \
+    "$([ "$rc" -eq 0 ] && grep -Fq "$sb/examples/top.rue --preview interfaces -o " "$sb/compile-args.log" && echo 0 || echo 1)"
+  rm -rf "$sb"
+
+  sb="$(make_sanitizer_sandbox)"
+  rm -f "$sb/contracts.json"
+  cat >"$sb/buck2" <<'EOF'
+#!/usr/bin/env bash
+echo 'fake Buck failed to materialize execution contracts' >&2
+exit 7
+EOF
+  chmod +x "$sb/buck2"
+  rc=0
+  out="$(PATH="$sb/fakebin:$PATH" RUE_BINARY="$sb/compiler" \
+    COMPILE_LOG="$sb/compile.log" \
+    TMPDIR="$sb/tmp" \
+    "$sb/scripts/run-sanitizer.sh" 2>&1)" || rc=$?
+  check "run-sanitizer: Buck materialization failure is propagated" \
+    "$([ "$rc" -eq 7 ] && grep -q 'fake Buck failed' <<<"$out" && [ ! -f "$sb/compile.log" ] && echo 0 || echo 1)"
   rm -rf "$sb"
 }
 
@@ -1796,6 +1855,7 @@ test_testsh_delegates_selection_to_buck
 test_sanitizer_defaults_std_path
 test_sanitizer_recursive_discovery_contract
 test_sanitizer_applies_automatic_previews
+test_sanitizer_materializes_contracts_with_buck
 test_sanitizer_status_contracts
 
 echo "--------------------------------------------------"
