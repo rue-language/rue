@@ -1024,3 +1024,87 @@ fn main() -> i32 {
     0
 }
 """ }]
+
+[[case]]
+name = "std_sort_by_m3"
+description = "RUE-2113: sort_by / insertion_sort_by / is_sorted_by / partition_by order and split an ArrayBuf through a callback with an explicit context: ids sorted by a weight table, records sorted stably by a field, a policy that flips the direction, and a threshold predicate (9 checks -> exit 79)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 79
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+// Sort ids by a weight table the comparator reads through its context.
+struct Weights { w: [i64; 5] }
+fn lighter(borrow ctx: Weights, a: u64, b: u64) -> bool { ctx.w[a] < ctx.w[b] }
+
+// Sort records by one field; the stable sort keeps equal keys in input order.
+struct Rec { key: i64, tag: i64 }
+struct NoContext {}
+fn by_key(borrow ctx: NoContext, a: Rec, b: Rec) -> bool { a.key < b.key }
+
+// One comparator, two directions: the policy is the context.
+struct Policy { descending: bool }
+fn precedes(borrow p: Policy, a: i64, b: i64) -> bool {
+    if p.descending { a > b } else { a < b }
+}
+
+// A predicate over a threshold.
+struct Threshold { min: i64 }
+fn at_least(borrow t: Threshold, v: i64) -> bool { v >= t.min }
+
+fn main() -> i32 {
+    let mut score: i32 = 0;
+    let Ids = std.arraybuf.ArrayBuf(u64);
+    let Recs = std.arraybuf.ArrayBuf(Rec);
+    let Ints = std.arraybuf.ArrayBuf(i64);
+
+    // sort_by with a weight table: ids come out in weight order.
+    let weights = Weights { w: [30, 10, 50, 20, 40] };
+    let mut ids = Ids.new();
+    ids.push(0); ids.push(1); ids.push(2); ids.push(3); ids.push(4);
+    std.sort.sort_by(u64, Weights, borrow weights, inout ids, lighter);
+    if std.sort.is_sorted_by(u64, Weights, borrow weights, borrow ids, lighter) { score = score + 1; }
+    if ids.get_or(0, 9) == 1 && ids.get_or(1, 9) == 3 && ids.get_or(2, 9) == 0 { score = score + 1; }
+    if ids.get_or(3, 9) == 4 && ids.get_or(4, 9) == 2 { score = score + 1; }
+
+    // insertion_sort_by is stable: the two key-2 records keep tags 1 then 3.
+    let none = NoContext {};
+    let mut recs = Recs.new();
+    recs.push(Rec { key: 2, tag: 1 });
+    recs.push(Rec { key: 1, tag: 2 });
+    recs.push(Rec { key: 2, tag: 3 });
+    recs.push(Rec { key: 0, tag: 4 });
+    std.sort.insertion_sort_by(Rec, NoContext, borrow none, inout recs, by_key);
+    if std.sort.is_sorted_by(Rec, NoContext, borrow none, borrow recs, by_key) { score = score + 1; }
+    let first = recs.get_or(0, Rec { key: -1, tag: -1 });
+    let third = recs.get_or(2, Rec { key: -1, tag: -1 });
+    let fourth = recs.get_or(3, Rec { key: -1, tag: -1 });
+    if first.tag == 4 && third.tag == 1 && fourth.tag == 3 { score = score + 1; }
+
+    // The same comparator sorts both ways under two contexts.
+    let up = Policy { descending: false };
+    let down = Policy { descending: true };
+    let mut v = Ints.new();
+    v.push(5); v.push(2); v.push(9); v.push(1); v.push(7); v.push(2);
+    std.sort.sort_by(i64, Policy, borrow up, inout v, precedes);
+    if std.sort.is_sorted(i64, borrow v) && v.get_or(0, 0) == 1 && v.get_or(5, 0) == 9 { score = score + 1; }
+    std.sort.sort_by(i64, Policy, borrow down, inout v, precedes);
+    if std.sort.is_sorted_by(i64, Policy, borrow down, borrow v, precedes) && v.get_or(0, 0) == 9 { score = score + 1; }
+    if !std.sort.is_sorted(i64, borrow v) { score = score + 1; }
+
+    // partition_by splits by the predicate and reports the accepted count.
+    let limit = Threshold { min: 5 };
+    let n = std.sort.partition_by(i64, Threshold, borrow limit, inout v, at_least);
+    let mut accepted_ok = n == 3;
+    let mut i: u64 = 0;
+    while i < v.len() {
+        let x = v.get_or(i, 0);
+        if (i < n) != (x >= 5) { accepted_ok = false; }
+        i += 1;
+    }
+    if accepted_ok { score = score + 1; }
+
+    if score == 9 { 79 } else { @intCast(score) }
+}
+""" }]
