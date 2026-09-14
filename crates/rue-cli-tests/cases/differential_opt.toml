@@ -1266,3 +1266,49 @@ fn main() -> i32 {
 """ }]
 stdout = "7\n7\n"
 exit_code = 0
+
+# RUE-2199: a call that receives the induction variable by reference before
+# the loop is a write to it. -O3's constant-trip unrolling read the variable's
+# initial value from its Alloc and only refused a Store or PlaceWrite in the
+# preheader, so `S.bump(inout i)` was ignored and the loop was materialized
+# from the stale initializer: three iterations where two run. Both a helper
+# that -O3 inlines (the associated function) and one that survives inlining
+# (the recursive free function) are covered, so the refusal is exercised on
+# the call itself and not only on the store inlining exposes.
+[[case]]
+name = "unrolling_refuses_a_by_reference_call_on_the_induction_variable"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+struct S {
+    fn bump(inout x: i32) { x = x + 1; }
+}
+
+fn bump_times(inout x: i32, n: i32) {
+    if n > 0 {
+        x = x + 1;
+        bump_times(inout x, n - 1);
+    }
+}
+
+fn main() -> i32 {
+    let mut i: i32 = 0;
+    S.bump(inout i);
+    let mut s: i32 = 0;
+    while i < 3 {
+        s = s + 1;
+        i = i + 1;
+    }
+    let mut j: i32 = 0;
+    bump_times(inout j, 2);
+    let mut t: i32 = 0;
+    while j < 5 {
+        t = t + 1;
+        j = j + 1;
+    }
+    @dbg(s);
+    @dbg(t);
+    s * 10 + t
+}
+""" }]
+stdout = "2\n3\n"
+exit_code = 23
