@@ -437,3 +437,77 @@ fn main() -> i32 {
     0
 }
 """ }]
+
+[[case]]
+name = "binary_heap_by_and_priority_queue_by"
+description = "RUE-683: BinaryHeapBy orders ids through a cost table the comparator reads from its context, PriorityQueueBy serves a max-queue and a tie-broken queue through comparators on the priority, and peek needs no comparator (9 checks -> exit 91)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 91
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+struct Cost { w: [u64; 5] }
+fn cheaper(borrow c: Cost, a: u64, b: u64) -> bool { c.w[a] < c.w[b] }
+
+struct NoContext {}
+fn larger(borrow ctx: NoContext, a: i64, b: i64) -> bool { a > b }
+
+fn main() -> i32 {
+    let mut score: i32 = 0;
+    let Ou = std.option.Option(u64);
+
+    // BinaryHeapBy over ids ordered by a cost table: pops come out cheapest
+    // first, and peek shows the top without a comparator.
+    let H = std.binary_heap.BinaryHeapBy(u64, Cost);
+    let cost = Cost { w: [30, 10, 50, 20, 40] };
+    let mut h = H.new();
+    h.push(borrow cost, 0, cheaper);
+    h.push(borrow cost, 1, cheaper);
+    h.push(borrow cost, 2, cheaper);
+    h.push(borrow cost, 3, cheaper);
+    h.push(borrow cost, 4, cheaper);
+    if h.len() == 5 { score = score + 1; }
+    match h.peek() { Ou.Some(v) => { if v == 1 { score = score + 1; } }, Ou.None => {} }
+    let expect: [u64; 5] = [1, 3, 0, 4, 2];
+    let mut ordered = true;
+    let mut k: u64 = 0;
+    while k < 5 {
+        match h.pop(borrow cost, cheaper) {
+            Ou.Some(v) => { if v != expect[k] { ordered = false; } },
+            Ou.None => { ordered = false; },
+        }
+        k += 1;
+    }
+    if ordered { score = score + 1; }
+    if h.is_empty() { score = score + 1; }
+    match h.pop(borrow cost, cheaper) { Ou.Some(v) => {}, Ou.None => { score = score + 1; } }
+
+    // PriorityQueueBy as a max-queue: the comparator flips the order.
+    let PQ = std.binary_heap.PriorityQueueBy(i64, u64, NoContext);
+    let Item = std.tuple.Pair(i64, u64);
+    let OItem = std.option.Option(Item);
+    let none = NoContext {};
+    let mut q = PQ.new();
+    q.push(borrow none, 3, 30, larger);
+    q.push(borrow none, 9, 90, larger);
+    q.push(borrow none, 1, 10, larger);
+    q.push(borrow none, 9, 91, larger);
+    match q.peek() { OItem.Some(it) => { if it.first == 9 { score = score + 1; } }, OItem.None => {} }
+    let mut first_two_are_nines = true;
+    let mut payload_sum: u64 = 0;
+    k = 0;
+    while k < 2 {
+        match q.pop(borrow none, larger) {
+            OItem.Some(it) => { if it.first != 9 { first_two_are_nines = false; } payload_sum = payload_sum + it.second; },
+            OItem.None => { first_two_are_nines = false; },
+        }
+        k += 1;
+    }
+    if first_two_are_nines && payload_sum == 181 { score = score + 1; }
+    match q.pop(borrow none, larger) { OItem.Some(it) => { if it.first == 3 && it.second == 30 { score = score + 1; } }, OItem.None => {} }
+    match q.pop(borrow none, larger) { OItem.Some(it) => { if it.first == 1 && q.is_empty() { score = score + 1; } }, OItem.None => {} }
+
+    if score == 9 { 91 } else { @intCast(score) }
+}
+""" }]
