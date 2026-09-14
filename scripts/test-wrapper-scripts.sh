@@ -574,6 +574,7 @@ test_sanitizer_defaults_std_path() {
   printf 'fn main() -> i32 { 0 }\n' >"$sb/examples/calculator/main.rue"
   printf 'fn main() -> i32 { 0 }\n' >"$sb/examples/std/arraybuf_demo.rue"
   echo '// fake bundled standard library' >"$sb/std/_std.rue"
+  printf '{"automatic_example":[]}\n' >"$sb/contracts.json"
 
   cat >"$sb/compiler" <<'EOF'
 #!/usr/bin/env bash
@@ -625,6 +626,7 @@ EOF
     RUE_BINARY="$sb/compiler" \
     EXPECTED_STD="$sb/std" \
     COMPILE_LOG="$sb/compile.log" \
+    RUE_CLI_EXECUTION_CONTRACTS_JSON="$sb/contracts.json" \
     TMPDIR="$sb/tmp" \
     "$sb/scripts/run-sanitizer.sh" >/dev/null 2>&1 || rc=$?
 
@@ -639,6 +641,7 @@ EOF
     RUE_STD_PATH="$sb/alternate-std" \
     EXPECTED_STD="$sb/alternate-std" \
     COMPILE_LOG="$sb/override-compile.log" \
+    RUE_CLI_EXECUTION_CONTRACTS_JSON="$sb/contracts.json" \
     TMPDIR="$sb/tmp" \
     "$sb/scripts/run-sanitizer.sh" >/dev/null 2>&1 || rc=$?
   check "run-sanitizer: explicit std path override is preserved" \
@@ -662,6 +665,7 @@ make_sanitizer_sandbox() {
   printf 'fn main() -> i32 { 0 }\n' >"$sb/examples/meridian/main.rue"
   printf 'fn main() -> i32 { 0 }\n' >"$sb/examples/std/arraybuf_demo.rue"
   echo '// fake bundled standard library' >"$sb/std/_std.rue"
+  printf '{"automatic_example":[]}\n' >"$sb/contracts.json"
 
   cat >"$sb/compiler" <<'EOF'
 #!/usr/bin/env bash
@@ -730,6 +734,7 @@ run_sanitizer_sandbox() {
   PATH="$sb/fakebin:$PATH" \
     RUE_BINARY="$sb/compiler" \
     COMPILE_LOG="$sb/compile.log" \
+    RUE_CLI_EXECUTION_CONTRACTS_JSON="$sb/contracts.json" \
     TMPDIR="$sb/tmp" \
     "$sb/scripts/run-sanitizer.sh"
 }
@@ -758,6 +763,84 @@ test_sanitizer_recursive_discovery_contract() {
     "$([ "$rc" -eq 0 ] && grep -Fxq "$sb/examples/caldera/main.rue" "$sb/compile.log" 2>/dev/null && echo 0 || echo 1)"
   check "run-sanitizer: selecting Caldera does not implicitly include Meridian" \
     "$(! grep -Fxq "$sb/examples/meridian/main.rue" "$sb/compile.log" 2>/dev/null && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
+# The sanitizer consumes the same Buck-materialized contract artifact as the
+# CLI harness. Check the exact path match, including an extra source supplied
+# by the caller, and reject malformed metadata before any source is compiled.
+test_sanitizer_applies_automatic_previews() {
+  local sb rc out
+
+  sb="$(make_sanitizer_sandbox)"
+  mkdir -p "$sb/examples/hashmap"
+  printf 'fn main() -> i32 { 0 }\n' >"$sb/examples/hashmap/main.rue"
+  printf 'fn main() -> i32 { 0 }\n' >"$sb/extra.rue"
+  mkdir -p "$sb/hashmap"
+  printf 'fn main() -> i32 { 0 }\n' >"$sb/hashmap/main.rue"
+  cat >"$sb/contracts.json" <<'EOF'
+{"automatic_example":[{"path":"hashmap/main.rue","preview":"interfaces"}]}
+EOF
+  cat >"$sb/compiler" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$COMPILE_ARGS_LOG"
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    out="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+[ -n "$out" ] || exit 89
+printf '#!/bin/sh\nexit 0\n' >"$out"
+chmod +x "$out"
+EOF
+  chmod +x "$sb/compiler"
+
+  rc=0
+  PATH="$sb/fakebin:$PATH" \
+    RUE_BINARY="$sb/compiler" \
+    RUE_CLI_EXECUTION_CONTRACTS_JSON="$sb/contracts.json" \
+    COMPILE_ARGS_LOG="$sb/compile-args.log" \
+    TMPDIR="$sb/tmp" \
+    "$sb/scripts/run-sanitizer.sh" "$sb/extra.rue" "hashmap/main.rue" >/dev/null 2>&1 || rc=$?
+  check "run-sanitizer: automatic example preview metadata succeeds" \
+    "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
+  check "run-sanitizer: matching automatic example receives its preview" \
+    "$(grep -Fq "$sb/examples/hashmap/main.rue --preview interfaces -o " "$sb/compile-args.log" && echo 0 || echo 1)"
+  check "run-sanitizer: ordinary examples receive no preview flag" \
+    "$(grep -F "$sb/examples/top.rue " "$sb/compile-args.log" | grep -Fv -- '--preview' >/dev/null && echo 0 || echo 1)"
+  check "run-sanitizer: extra programs receive no preview flag" \
+    "$(grep -F "$sb/extra.rue " "$sb/compile-args.log" | grep -Fv -- '--preview' >/dev/null && echo 0 || echo 1)"
+  check "run-sanitizer: out-of-examples paths cannot inherit a preview" \
+    "$(grep -E '^hashmap/main[.]rue ' "$sb/compile-args.log" | grep -Fv -- '--preview' >/dev/null && echo 0 || echo 1)"
+  rm -rf "$sb"
+
+  sb="$(make_sanitizer_sandbox)"
+  printf '{"automatic_example":{}}\n' >"$sb/contracts.json"
+  rc=0
+  out="$(PATH="$sb/fakebin:$PATH" \
+    RUE_BINARY="$sb/compiler" \
+    RUE_CLI_EXECUTION_CONTRACTS_JSON="$sb/contracts.json" \
+    COMPILE_ARGS_LOG="$sb/compile-args.log" \
+    TMPDIR="$sb/tmp" \
+    "$sb/scripts/run-sanitizer.sh" 2>&1)" || rc=$?
+  check "run-sanitizer: malformed preview metadata fails closed" \
+    "$([ "$rc" -ne 0 ] && grep -q 'no automatic_example list' <<<"$out" && [ ! -f "$sb/compile-args.log" ] && echo 0 || echo 1)"
+  rm -rf "$sb"
+
+  sb="$(make_sanitizer_sandbox)"
+  rc=0
+  out="$(env -u RUE_CLI_EXECUTION_CONTRACTS_JSON \
+    PATH="$sb/fakebin:$PATH" \
+    RUE_BINARY="$sb/compiler" \
+    COMPILE_ARGS_LOG="$sb/compile-args.log" \
+    TMPDIR="$sb/tmp" \
+    "$sb/scripts/run-sanitizer.sh" 2>&1)" || rc=$?
+  check "run-sanitizer: missing preview metadata resolver fails closed" \
+    "$([ "$rc" -ne 0 ] && grep -q 'artifact was not provided' <<<"$out" && [ ! -f "$sb/compile-args.log" ] && echo 0 || echo 1)"
   rm -rf "$sb"
 }
 
@@ -1712,6 +1795,7 @@ test_ci_corpus_inventory_is_graph_derived_and_fails_closed
 test_testsh_delegates_selection_to_buck
 test_sanitizer_defaults_std_path
 test_sanitizer_recursive_discovery_contract
+test_sanitizer_applies_automatic_previews
 test_sanitizer_status_contracts
 
 echo "--------------------------------------------------"
