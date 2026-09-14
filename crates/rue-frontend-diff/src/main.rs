@@ -54,6 +54,10 @@ const SYNTAX_PROBES: &[(&str, &str)] = &[
         "fn f(value: outer.Result(inner.Value, inner.Error)) { match value { outer.Result(inner.Value, inner.Error).Ok(v) => {} } }",
     ),
     (
+        "fn-types.rue",
+        "fn f(cb: fn(borrow P, i64, inout [u8; 4]) -> bool, each: fn(i32), twice: fn(fn(i32) -> i32, i32) -> i32) {}",
+    ),
+    (
         "compound-assignment.rue",
         "fn f(inout o: O) { o.n += 1; o.n -= 1; o.n *= 2; o.n /= 2; o.n %= 3; o.n &= 7; o.n |= 8; o.n ^= 9; o.n <<= 1; o.n >>= 1; o.a[0] += 1; o.n = o.n + 1; }",
     ),
