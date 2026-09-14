@@ -137,6 +137,16 @@ pub struct SourceFile {
     pub source: String,
 }
 
+/// A file staged byte-for-byte from its hex spelling before the case runs.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BinaryFile {
+    pub path: String,
+    /// The file's bytes as hex digits, two per byte; whitespace is ignored so
+    /// a long fixture can be wrapped.
+    pub hex: String,
+}
+
 /// A symbolic link staged in the temp directory before the case runs.
 ///
 /// `target` is written verbatim and is deliberately not validated or resolved:
@@ -413,6 +423,12 @@ pub struct Case {
     /// Files written to the temp directory before invoking the compiler.
     #[serde(default)]
     pub files: Vec<SourceFile>,
+    /// Files written byte-for-byte from a hex spelling, alongside `files`. A
+    /// `files` entry is UTF-8 text, so a fixture that is not text — an object
+    /// inside an archive whose header carries bytes above 0x7f — is spelled
+    /// here as hex digits (RUE-2200).
+    #[serde(default)]
+    pub binary_files: Vec<BinaryFile>,
     /// Symbolic links staged in the temp directory alongside `files`. A `files`
     /// entry can only produce a regular file, so this is what lets a case pin
     /// symlink behavior.
