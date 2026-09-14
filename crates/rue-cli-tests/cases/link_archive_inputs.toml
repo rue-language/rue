@@ -1,0 +1,33 @@
+# Static-archive inputs that are not what they claim (RUE-2200). A malformed
+# object inside a `--link-archive` archive is a user input, so the linker must
+# refuse it with an ordinary link error: never an internal compiler error, a
+# panic, or a signal exit.
+
+[section]
+id = "cli.link_archive_inputs"
+name = "Malformed --link-archive inputs"
+description = "A corrupt ELF member of a static archive is reported as a link error rather than aborting the compiler."
+
+# The archive holds one 64-byte ELF64 relocatable header whose section table
+# offset is `2^64 - 32` with one 64-byte section header: computing the header's
+# end used to overflow (`attempt to add with overflow`) and abort the compiler
+# with SIGABRT. Spelled as bytes because an ELF header is not UTF-8 text.
+[[case]]
+name = "section_table_offset_overflow_in_an_archive_member_is_a_link_error"
+binary_files = [{ path = "bad.a", hex = """
+    213c617263683e0a6261642e6f2f202020202020202020203020202020202020
+    2020202030202020202030202020202036343420202020203634202020202020
+    2020600a7f454c460201010000000000000000000100b7000100000000000000
+    000000000000000000000000e0ffffffffffffff000000000000000000004000
+    01000000
+""" }]
+files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }\n" }]
+args = ["main.rue", "--link-archive", "bad.a", "-o", "prog"]
+compile_fail = true
+error_contains = [
+    "E1000",
+    "failed to parse link archive",
+    "object member `bad.o/`",
+    "invalid section: section header offset overflows",
+]
+compile_stderr_not_contains = ["panicked", "internal compiler error", "overflowed"]

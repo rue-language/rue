@@ -1503,15 +1503,29 @@ impl ObjectFile {
 
         for i in 0..e_shnum {
             check_parse_cancellation(cancellation)?;
-            let sh_offset = e_shoff + i * e_shentsize;
-            if sh_offset + e_shentsize > data.len() {
+            // `e_shoff` is an untrusted 64-bit field: near `u64::MAX` the
+            // header address and its end wrap, so both are computed with
+            // checked arithmetic and an overflow is the same invalid table a
+            // header past the end of the file is (RUE-2200).
+            let (sh_offset, sh_end) = i
+                .checked_mul(e_shentsize)
+                .and_then(|table_offset| e_shoff.checked_add(table_offset))
+                .and_then(|sh_offset| {
+                    sh_offset
+                        .checked_add(e_shentsize)
+                        .map(|sh_end| (sh_offset, sh_end))
+                })
+                .ok_or_else(|| {
+                    ParseError::InvalidSection("section header offset overflows".into())
+                })?;
+            if sh_end > data.len() {
                 return Err(ParseError::InvalidSection(
                     "section header out of bounds".into(),
                 ));
             }
 
-            let sh = &data[sh_offset..sh_offset + e_shentsize];
-            // Bounds are guaranteed by the check above (sh_offset + e_shentsize <= data.len())
+            let sh = &data[sh_offset..sh_end];
+            // Bounds are guaranteed by the check above (sh_end <= data.len())
             // and e_shentsize >= 64 for valid ELF64 section headers
             let name_offset = read_u32(sh, 0);
             let sh_type = read_u32(sh, 4);
@@ -2733,6 +2747,33 @@ mod tests {
         assert!(matches!(
             ObjectFile::parse(&data),
             Err(ParseError::UnsupportedMachine(0x03))
+        ));
+    }
+
+    #[test]
+    fn section_table_offset_near_the_address_limit_is_an_invalid_section() {
+        // RUE-2200: `e_shoff = u64::MAX - 31` with one 64-byte header used to
+        // overflow the header-end computation and abort the compiler; it is a
+        // parse error like any other out-of-bounds table.
+        let mut data = [0u8; ELF64_EHDR_SIZE];
+        data[0..4].copy_from_slice(&ELF_MAGIC);
+        data[EI_CLASS] = ELFCLASS64;
+        data[EI_DATA] = ELFDATA2LSB;
+        data[E_TYPE_OFFSET..E_TYPE_OFFSET + 2].copy_from_slice(&ET_REL.to_le_bytes());
+        data[E_MACHINE_OFFSET..E_MACHINE_OFFSET + 2].copy_from_slice(&EM_AARCH64.to_le_bytes());
+        data[E_SHOFF_OFFSET..E_SHOFF_OFFSET + 8].copy_from_slice(&(u64::MAX - 31).to_le_bytes());
+        data[E_SHENTSIZE_OFFSET..E_SHENTSIZE_OFFSET + 2].copy_from_slice(&64_u16.to_le_bytes());
+        data[E_SHNUM_OFFSET..E_SHNUM_OFFSET + 2].copy_from_slice(&1_u16.to_le_bytes());
+        assert!(matches!(
+            ObjectFile::parse(&data),
+            Err(ParseError::InvalidSection(message)) if message.contains("overflows")
+        ));
+        // The same table one header past the end of the file, without the
+        // wrap, keeps its out-of-bounds report.
+        data[E_SHOFF_OFFSET..E_SHOFF_OFFSET + 8].copy_from_slice(&64_u64.to_le_bytes());
+        assert!(matches!(
+            ObjectFile::parse(&data),
+            Err(ParseError::InvalidSection(message)) if message.contains("out of bounds")
         ));
     }
 

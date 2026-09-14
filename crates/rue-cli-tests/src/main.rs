@@ -67,6 +67,10 @@
 //! - `watch`: synchronized imperative scenario for real `--watch` orchestration;
 //!   it names a `kind` (`edit`, `cancel`, or `delete`), fixture edits, and the
 //!   expected executable exit codes after the initial and final publication
+//! - `binary_files`: files written byte-for-byte before the compile, as
+//!   `[{ path = "name", hex = "7f454c46..." }]` (whitespace in `hex` is
+//!   ignored). A `files` entry is UTF-8 text; this is the form for a fixture
+//!   that is not, such as a malformed object inside a `--link-archive`.
 //! - `symlinks`: symbolic links created in the temp directory before the
 //!   compile, as `[{ link = "name", target = "..." }]`. The target is written
 //!   verbatim and is NOT required to exist: a dangling link is a legitimate
@@ -2129,6 +2133,7 @@ fn case_runs_prebuilt_program(case: &Case) -> bool {
         // from the same temp directory with the same argv, stdin, and
         // environment as the compile path, so all of these carry over.
         files: _,
+        binary_files: _,
         symlinks: _,
         hard_links: _,
         requires_case_insensitive_fs: _,
@@ -2276,6 +2281,19 @@ fn run_case(
             })?;
         }
         std::fs::write(&path, &file.source)
+            .map_err(|e| TestFailure::fatal(format!("failed to write {}: {}", file.path, e)))?;
+    }
+    for file in &case.binary_files {
+        let path = dir.join(&file.path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                TestFailure::fatal(format!("failed to create dir for {}: {}", file.path, e))
+            })?;
+        }
+        let bytes = decode_hex_fixture(&file.hex).map_err(|message| {
+            TestFailure::fatal(format!("binary file {} is not hex: {message}", file.path))
+        })?;
+        std::fs::write(&path, bytes)
             .map_err(|e| TestFailure::fatal(format!("failed to write {}: {}", file.path, e)))?;
     }
 
@@ -3016,6 +3034,25 @@ fn write_watch_edit(dir: &Path, edit: &WatchEdit) -> Result<(), String> {
         .as_deref()
         .expect("exactly one edit action was requested");
     std::fs::write(&path, undecodable_bytes(source)).map_err(failed)
+}
+
+/// The bytes a `binary_files` entry spells as hex digits, two per byte, with
+/// whitespace ignored so a long fixture can be wrapped in the case file.
+fn decode_hex_fixture(hex: &str) -> Result<Vec<u8>, String> {
+    let digits: Vec<u8> = hex
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .collect();
+    if digits.len() % 2 != 0 {
+        return Err(format!("{} hex digits is an odd count", digits.len()));
+    }
+    digits
+        .chunks(2)
+        .map(|pair| {
+            let text = std::str::from_utf8(pair).map_err(|_| "non-ASCII digit".to_string())?;
+            u8::from_str_radix(text, 16).map_err(|_| format!("`{text}` is not a hex byte"))
+        })
+        .collect()
 }
 
 /// The text with an invalid UTF-8 sequence in front of it.
