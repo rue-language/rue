@@ -1994,17 +1994,15 @@ fn main() -> i32 { width(borrow "hello") }
 exit_code = 5
 
 # =============================================================================
-# Function Parameter Types (6.1:46-6.1:49, preview feature `fn_params`,
-# ADR-0096, RUE-2193). Passing, calling, and forwarding a callback are
-# RUE-2194.
+# Function Parameter Types (6.1:46-6.1:49, ADR-0096, RUE-2193). Passing,
+# calling, and forwarding a callback are RUE-2194; RUE-2113 stabilized the
+# feature, so no case here needs a preview flag.
 # =============================================================================
 
 [[case]]
 name = "fn_parameter_type_declares_a_callback_signature"
 spec = ["6.1:46", "6.1:49"]
 description = "A `fn` type names modes before types, no parameter names, an optional result, and nests inside its own parameter list"
-preview = "fn_params"
-preview_should_pass = true
 source = """
 struct Policy { descending: bool }
 
@@ -2020,21 +2018,8 @@ fn main() -> i32 { 0 }
 exit_code = 0
 
 [[case]]
-name = "fn_parameter_type_requires_the_preview"
-spec = ["6.1:46", "8.4:1"]
-source = """
-fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { value }
-
-fn main() -> i32 { 0 }
-"""
-compile_fail = true
-error_contains = ["E1100", "requires preview feature `fn_params`"]
-
-[[case]]
 name = "fn_type_is_rejected_as_a_return_type"
 spec = ["6.1:47"]
-preview = "fn_params"
-preview_should_pass = true
 source = """
 fn pick(cb: fn(i32) -> i32) -> fn(i32) -> i32 { cb }
 
@@ -2047,8 +2032,6 @@ error_contains = ["E0214", "not a return type"]
 name = "fn_type_is_rejected_in_storage_positions"
 spec = ["6.1:47"]
 description = "A struct field is one of the storage positions a second-class callback cannot occupy"
-preview = "fn_params"
-preview_should_pass = true
 source = """
 struct Handler { cb: fn(i32) -> i32 }
 
@@ -2060,8 +2043,6 @@ error_contains = ["E0214", "not a struct field"]
 [[case]]
 name = "fn_type_is_rejected_on_a_by_reference_parameter"
 spec = ["6.1:47"]
-preview = "fn_params"
-preview_should_pass = true
 source = """
 fn apply(borrow cb: fn(i32) -> i32) -> i32 { 0 }
 
@@ -2074,8 +2055,6 @@ error_contains = ["E0214", "not a `borrow` parameter"]
 name = "fn_type_identity_is_its_modes_types_and_result"
 spec = ["6.1:48"]
 description = "The type a callback parameter binds is spelled from its signature alone: every mode, every type, and the result, with no parameter names; a by-value parameter is a different mode from a `borrow` one"
-preview = "fn_params"
-preview_should_pass = true
 source = """
 struct Policy { descending: bool }
 
@@ -2091,8 +2070,6 @@ error_contains = ["E0215", "function `by_value` has signature fn(Policy, i64, i6
 name = "callback_argument_must_have_exactly_the_parameter_signature"
 spec = ["6.1:50", "6.1:48"]
 description = "A named function whose signature differs from the `fn` type in one parameter type is not a conversion candidate"
-preview = "fn_params"
-preview_should_pass = true
 source = """
 fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }
 fn widen(value: i64) -> i64 { value }
@@ -2105,8 +2082,6 @@ error_contains = ["E0215", "function `widen` has signature fn(i64) -> i64, but t
 [[case]]
 name = "callback_signature_is_checked_against_the_substituted_type"
 spec = ["6.1:50"]
-preview = "fn_params"
-preview_should_pass = true
 source = """
 fn apply(comptime T: type, cb: fn(T) -> T, value: T) -> T { cb(value) }
 fn widen(value: i64) -> i64 { value }
@@ -2120,8 +2095,6 @@ error_contains = ["E0215", "expects fn(i32) -> i32"]
 name = "callback_argument_must_name_a_function"
 spec = ["6.1:50"]
 description = "An expression that does not name a function cannot bind a `fn` parameter"
-preview = "fn_params"
-preview_should_pass = true
 source = """
 fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }
 
@@ -2134,8 +2107,6 @@ error_contains = ["E0216", "an expression cannot be bound to a `fn` parameter"]
 name = "generic_and_receiver_taking_functions_are_not_callbacks"
 spec = ["6.1:50"]
 description = "A generic function has no single callable address; a named monomorphic wrapper is the spelling"
-preview = "fn_params"
-preview_should_pass = true
 source = """
 fn identity(comptime T: type, value: T) -> T { value }
 fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }
@@ -2148,8 +2119,6 @@ error_contains = ["E0216", "the generic function `identity` cannot be bound to a
 [[case]]
 name = "callback_parameter_bound_with_let_is_an_escape"
 spec = ["6.1:51"]
-preview = "fn_params"
-preview_should_pass = true
 source = """
 fn apply(cb: fn(i32) -> i32, value: i32) -> i32 {
     let kept = cb;
@@ -2165,8 +2134,6 @@ error_contains = ["E0217", "the callback parameter `cb` cannot be used as a valu
 [[case]]
 name = "named_function_is_not_a_value"
 spec = ["6.1:51"]
-preview = "fn_params"
-preview_should_pass = true
 source = """
 fn double(value: i32) -> i32 { value * 2 }
 
@@ -2182,8 +2149,6 @@ error_contains = ["E0217", "the function `double` cannot be used as a value"]
 name = "forwarded_callback_keeps_its_exact_type"
 spec = ["6.1:51", "6.1:48"]
 description = "Forwarding passes the callback to a `fn` parameter of the same type; a different signature is a type mismatch"
-preview = "fn_params"
-preview_should_pass = true
 source = """
 fn each(visit: fn(i32)) -> i32 { visit(1); 0 }
 fn apply(cb: fn(i32) -> i32) -> i32 { each(cb) }
@@ -2198,8 +2163,6 @@ error_contains = ["E0206", "expected fn(i32), found fn(i32) -> i32"]
 name = "call_through_a_callback_follows_its_fn_type"
 spec = ["6.1:51"]
 description = "The call's argument modes come from the callback's `fn` type exactly as from a declaration"
-preview = "fn_params"
-preview_should_pass = true
 source = """
 struct Policy { descending: bool }
 
@@ -2221,8 +2184,6 @@ error_contains = ["E0432", "argument to borrow parameter must use 'borrow' keywo
 name = "call_through_a_callback_invokes_the_bound_function"
 spec = ["6.1:52", "6.1:50", "6.1:51"]
 description = "The comparator example of ADR-0096: the bound and the forwarded callback both reach the named function with the `borrow` context and the by-value arguments"
-preview = "fn_params"
-preview_should_pass = true
 source = """
 struct Policy { descending: bool }
 
@@ -2254,8 +2215,6 @@ exit_code = 39
 name = "callback_inout_argument_is_written_back"
 spec = ["6.1:52"]
 description = "An `inout` argument crosses the call through the callback by address and is written back on return, exactly as at a direct call; the callback may be invoked more than once"
-preview = "fn_params"
-preview_should_pass = true
 source = """
 fn bump(inout n: i32) { n = n + 1; }
 
@@ -2276,8 +2235,6 @@ exit_code = 42
 name = "forwarded_callback_reaches_the_same_function"
 spec = ["6.1:52", "6.1:51"]
 description = "Forwarding passes the same function on: a callback taking a callback and a `const` alias both invoke the named function"
-preview = "fn_params"
-preview_should_pass = true
 source = """
 fn inc(value: i32) -> i32 { value + 1 }
 const STEP = inc;

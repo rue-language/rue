@@ -9,7 +9,7 @@
 
 [section]
 id = "cli.fn_params_callbacks"
-name = "Callback binding and indirect calls under --preview fn_params"
+name = "Callback binding and indirect calls"
 description = "Pins the AIR and CFG presentation of a bound callback and an indirect call (RUE-2194), the module-qualified and associated-function argument forms, the foreign-function rejection, and the native execution of bound, forwarded, nested and by-reference callbacks on both backends (RUE-2195)."
 
 [[case]]
@@ -37,7 +37,7 @@ fn main() -> i32 {
     @intCast(forward(borrow p, 3, 9, precedes))
 }
 """ }]
-args = ["--preview", "fn_params", "--emit", "air", "main.rue"]
+args = ["--emit", "air", "main.rue"]
 compile_only = true
 compile_stdout_contains = ["=== AIR ===", "fn_ref @", "precedes", "call_indirect %"]
 compile_stderr_not_contains = ["error", "internal compiler error"]
@@ -62,7 +62,7 @@ fn main() -> i32 {
     @intCast(choose(borrow p, 3, 9, precedes))
 }
 """ }]
-args = ["--preview", "fn_params", "--emit", "cfg", "main.rue"]
+args = ["--emit", "cfg", "main.rue"]
 compile_only = true
 compile_stdout_contains = ["fn_addr @", "precedes", "call_indirect v0(borrow v1, v2, v3)"]
 compile_stderr_not_contains = ["error", "internal compiler error"]
@@ -86,7 +86,7 @@ fn main() -> i32 { apply(helper.triple, 2) + make(Counter.zero) }
 """ },
     { path = "helper.rue", source = "pub fn triple(value: i32) -> i32 { value * 3 }\n" },
 ]
-args = ["--preview", "fn_params", "--emit", "cfg", "main.rue"]
+args = ["--emit", "cfg", "main.rue"]
 compile_only = true
 compile_stdout_contains = ["fn_addr @", "triple", "zero", "call_indirect v0()"]
 compile_stderr_not_contains = ["error", "internal compiler error"]
@@ -102,7 +102,7 @@ fn apply(cb: fn(i32) -> i32, value: i32) -> i32 { cb(value) }
 
 fn main() -> i32 { apply(abs, 1) }
 """ }]
-args = ["--preview", "fn_params", "--preview", "c_ffi", "main.rue", "-o", "prog"]
+args = ["--preview", "c_ffi", "main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = [
     "E0216",
@@ -138,7 +138,7 @@ fn main() -> i32 {
     @intCast(first * 10 + second)
 }
 """ }]
-args = ["--preview", "fn_params", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 39
 
 [[case]]
@@ -166,7 +166,7 @@ fn main() -> i32 {
     @intCast(total(add8)) + count
 }
 """ }]
-args = ["--preview", "fn_params", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 42
 
 [[case]]
@@ -190,7 +190,7 @@ fn generic(comptime T: type, cb: fn(T) -> T, value: T) -> T { cb(value) }
 
 fn main() -> i32 { twice(apply, 38) + make(Counter.zero) + generic(i32, inc, 1) }
 """ }]
-args = ["--preview", "fn_params", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 42
 
 [[case]]
@@ -204,5 +204,108 @@ fn apply(cb: fn(Pair, i64) -> i64, p: Pair, k: i64) -> i64 { cb(p, k) }
 
 fn main() -> i32 { @intCast(apply(sum, Pair { a: 20, b: 20 }, 2)) }
 """ }]
-args = ["--preview", "fn_params", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 42
+
+[[case]]
+name = "float_two_slot_and_hidden_result_callbacks_run_natively"
+description = "RUE-2113 exit criteria: a callback that takes and returns `f64` in the floating-point registers, one that returns a two-slot struct in registers, and one that returns a three-slot struct through the hidden result location all cross the indirect call exactly as a direct call."
+files = [{ path = "main.rue", source = """
+struct Pair { a: i64, b: i64 }
+struct Triple { a: i64, b: i64, c: i64 }
+
+fn scale(x: f64, k: f64) -> f64 { x * k }
+fn mix(x: f64, k: f64, cb: fn(f64, f64) -> f64) -> f64 { cb(x, k) + 0.5 }
+
+fn split(n: i64) -> Pair { Pair { a: n / 2, b: n - n / 2 } }
+fn halves(n: i64, cb: fn(i64) -> Pair) -> i64 {
+    let p = cb(n);
+    p.a * 100 + p.b
+}
+
+fn spread(n: i64) -> Triple { Triple { a: n, b: n + 1, c: n + 2 } }
+fn total(n: i64, cb: fn(i64) -> Triple) -> i64 {
+    let t = cb(n);
+    t.a + t.b + t.c
+}
+
+fn main() -> i32 {
+    let f: i64 = @float_to_int(mix(3.0, 2.5, scale));  // 7.5 + 0.5 = 8
+    let two = halves(7, split);                        // 3 * 100 + 4 = 304
+    let three = total(10, spread);                     // 10 + 11 + 12 = 33
+    @intCast(f + two - three - 237)                    // 42
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 42
+
+[[case]]
+name = "inout_aggregate_context_is_written_back_through_the_indirect_call"
+description = "RUE-2113 exit criteria: a mutable context struct reaches the callback by `inout` on every call and every write is visible to the caller afterwards."
+files = [{ path = "main.rue", source = """
+struct Stats { sum: i64, seen: i64, max: i64 }
+
+fn tally(inout s: Stats, v: i64) {
+    s.sum = s.sum + v;
+    s.seen = s.seen + 1;
+    if v > s.max { s.max = v; }
+}
+
+fn each(items: [i64; 4], inout s: Stats, visit: fn(inout Stats, i64)) {
+    for v in items {
+        visit(inout s, v);
+    }
+}
+
+fn main() -> i32 {
+    let mut s = Stats { sum: 0, seen: 0, max: 0 };
+    each([5, 17, 3, 9], inout s, tally);
+    @intCast(s.sum + s.seen - s.max + 21)  // 34 + 4 - 17 + 21 = 42
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 42
+
+[[case]]
+name = "callback_forwarded_across_modules_reaches_its_target"
+description = "RUE-2113 exit criteria: the root names a callback from one module, passes it to a second module, which forwards it to a third; the target and the context both survive the two module boundaries."
+files = [
+    { path = "main.rue", source = """
+const policy = @import("policy.rue");
+const pipeline = @import("pipeline.rue");
+
+fn main() -> i32 {
+    let up = policy.Policy { descending: false };
+    let down = policy.Policy { descending: true };
+    let first = pipeline.run(borrow up, 3, 9, policy.precedes);
+    let second = pipeline.run(borrow down, 3, 9, policy.precedes);
+    @intCast(first * 10 + second)
+}
+""" },
+    { path = "policy.rue", source = """
+pub struct Policy { descending: bool }
+
+pub fn precedes(borrow p: Policy, a: i64, b: i64) -> bool {
+    if p.descending { a > b } else { a < b }
+}
+""" },
+    { path = "pipeline.rue", source = """
+const policy = @import("policy.rue");
+const engine = @import("engine.rue");
+
+pub fn run(borrow p: policy.Policy, a: i64, b: i64,
+           cmp: fn(borrow policy.Policy, i64, i64) -> bool) -> i64 {
+    engine.choose(borrow p, a, b, cmp)
+}
+""" },
+    { path = "engine.rue", source = """
+const policy = @import("policy.rue");
+
+pub fn choose(borrow p: policy.Policy, a: i64, b: i64,
+              cmp: fn(borrow policy.Policy, i64, i64) -> bool) -> i64 {
+    if cmp(borrow p, a, b) { a } else { b }
+}
+""" },
+]
+args = ["main.rue", "-o", "prog"]
+exit_code = 39

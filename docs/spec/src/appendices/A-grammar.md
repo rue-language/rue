@@ -150,10 +150,9 @@ type           = "i8" | "i16" | "i32" | "i64"
 named_type     = qualified_ident [ "(" [ type_call_args ] ")" ] ;
 fn_type        = "fn" "(" [ fn_type_params ] ")" [ "->" type ] ;  (* the type of a
                                                                    second-class callback
-                                                                   parameter (ADR-0096,
-                                                                   preview fn_params);
+                                                                   parameter (ADR-0096);
                                                                    where it may appear is
-                                                                   a legality rule *)
+                                                                   a legality rule (6.1:47) *)
 fn_type_params = fn_type_param { "," fn_type_param } [ "," ] ;
 fn_type_param  = [ "inout" | "borrow" ] type ;
 qualified_ident = IDENT { "." IDENT } ;

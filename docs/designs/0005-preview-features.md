@@ -183,6 +183,8 @@ The following preview features completed this process and are now stable (their
 - `floats` — `f32`/`f64`, IEEE-754 arithmetic, and `comptime_float` literals;
   see ADR-0065; stabilized by RUE-1076 on 2026-09-04.
 - `test_declarations` — see ADR-0083; stabilized by RUE-1955 on 2026-09-04.
+- `fn_params` — second-class function parameters, `cb: fn(A, borrow B) -> R`;
+  see ADR-0096; stabilized by RUE-2113 on 2026-09-14.
 
 `test_infra` remains permanently unstable (it exists only to exercise the gating
 mechanism), so the `PreviewFeature` enum is not empty.
@@ -201,9 +203,6 @@ mechanism), so the `PreviewFeature` enum is not empty.
   no rest form, so an added field is a compile error at every pattern.
 - `checked_reasons` — a stated reason on every `checked` block (ADR-0095,
   RUE-1887): `checked "index < len by the guard above" { ... }`.
-- `fn_params` — second-class function parameters (ADR-0096, RUE-2112): a
-  parameter of type `fn(A, borrow B) -> R` that a named function is passed
-  to and that the body calls or forwards, never stores.
 
 ## Implementation Phases
 
