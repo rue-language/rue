@@ -1,0 +1,304 @@
+// std.iter — eager combinators over `ArrayBuf(T)` (RUE-684).
+//
+// Each combinator walks a buffer once and applies a callback to every element:
+// `for_each`, `count_if`, `any`, `all`, `find_index`, `fold`, `reduce`, `map`,
+// `filter`, `max_by`, `min_by`, plus the natural-order `sum`, `min` and `max`.
+// The callback is a second-class function parameter (ADR-0096, 6.1:46) with an
+// explicit context, exactly as in `std.sort`: `pred: fn(borrow C, T) -> bool`,
+// `step: fn(borrow C, A, T) -> A`, `less: fn(borrow C, T, T) -> bool`. The
+// context is how a callback reaches state that is not in the element — a
+// threshold, a lookup table, a policy — without capturing it; `for_each` takes
+// its context `inout` so a visitor can accumulate into it. A callback that
+// needs no context takes an empty struct.
+//
+//     const std = @import("std");
+//     struct Limit { min: i64 }
+//     fn heavy(borrow l: Limit, v: i64) -> bool { v >= l.min }
+//     let n = std.iter.count_if(i64, Limit, borrow limit, borrow v, heavy);
+//     let big = std.iter.filter(i64, Limit, borrow limit, borrow v, heavy);
+//
+// EAGER, NOT LAZY. Every combinator runs to completion and `map`/`filter`
+// return a fresh `ArrayBuf`; there is no iterator object to chain or to stop
+// early with. The extensible, lazy protocol is the RUE-219 / RUE-246 design;
+// these are the direct forms that protocol would specialize to.
+//
+// COPY-`T` ONLY. Every combinator reads its elements out of the buffer by copy
+// while the slots stay live, so an element is duplicated rather than consumed —
+// what a Copy type does (3.8:1). Rue has no intrinsic that gates on Copy, so
+// each entry point states the half it can as its FIRST statement:
+// `@require_trivially_droppable(T)` (E0711) rejects a `T` with drop glue and
+// names it (RUE-2049); a `@copy`-less record of scalars passes, because the
+// language has no Copy gate (RUE-2028), and is duplicated soundly since it owns
+// nothing. The accumulator `A` of `fold` and the result `U` of `map` are moved,
+// never copied, so neither is gated: a `fold` may build a `StrBuf` and a `map`
+// may produce owning values.
+//
+// A comparator or a step consumes its by-value operands, so a combinator that
+// must use an element after the callback has seen it reads the slot again
+// rather than reusing the value (see `max_by`).
+
+const arraybuf = @import("arraybuf.rue");
+const option = @import("option.rue");
+
+// Element `i`, which every caller here has already proved in bounds; the
+// by-copy read itself lives in `ArrayBuf.get`.
+fn _at(comptime T: type, borrow xs: arraybuf.ArrayBuf(T), i: u64) -> T {
+    let O = option.Option(T);
+    match xs.get(i) {
+        O.Some(v) => v,
+        O.None => @panic("index out of bounds"),
+    }
+}
+
+// Call `visit(inout ctx, x)` for every element in order. The context is
+// `inout` so the visitor can accumulate into it.
+pub fn for_each(comptime T: type, comptime C: type, inout ctx: C, borrow xs: arraybuf.ArrayBuf(T), visit: fn(inout C, T)) {
+    // COPY-`T` ONLY (module header): stated first so an owning element type is
+    // named here rather than at the by-copy read.
+    @require_trivially_droppable(T);
+    let n = xs.len();
+    let mut i: u64 = 0;
+    while i < n {
+        visit(inout ctx, _at(T, borrow xs, i));
+        i += 1;
+    }
+}
+
+// How many elements satisfy `pred`.
+pub fn count_if(comptime T: type, comptime C: type, borrow ctx: C, borrow xs: arraybuf.ArrayBuf(T), pred: fn(borrow C, T) -> bool) -> u64 {
+    // COPY-`T` ONLY (module header).
+    @require_trivially_droppable(T);
+    let n = xs.len();
+    let mut count: u64 = 0;
+    let mut i: u64 = 0;
+    while i < n {
+        if pred(borrow ctx, _at(T, borrow xs, i)) {
+            count += 1;
+        }
+        i += 1;
+    }
+    count
+}
+
+// Whether at least one element satisfies `pred`; false on an empty buffer.
+// Stops at the first hit.
+pub fn any(comptime T: type, comptime C: type, borrow ctx: C, borrow xs: arraybuf.ArrayBuf(T), pred: fn(borrow C, T) -> bool) -> bool {
+    // COPY-`T` ONLY (module header).
+    @require_trivially_droppable(T);
+    let n = xs.len();
+    let mut i: u64 = 0;
+    while i < n {
+        if pred(borrow ctx, _at(T, borrow xs, i)) {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+// Whether every element satisfies `pred`; true on an empty buffer. Stops at
+// the first miss.
+pub fn all(comptime T: type, comptime C: type, borrow ctx: C, borrow xs: arraybuf.ArrayBuf(T), pred: fn(borrow C, T) -> bool) -> bool {
+    // COPY-`T` ONLY (module header).
+    @require_trivially_droppable(T);
+    let n = xs.len();
+    let mut i: u64 = 0;
+    while i < n {
+        if !pred(borrow ctx, _at(T, borrow xs, i)) {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+// The index of the first element that satisfies `pred`, or `None`.
+pub fn find_index(comptime T: type, comptime C: type, borrow ctx: C, borrow xs: arraybuf.ArrayBuf(T), pred: fn(borrow C, T) -> bool) -> option.Option(u64) {
+    // COPY-`T` ONLY (module header).
+    @require_trivially_droppable(T);
+    let O = option.Option(u64);
+    let n = xs.len();
+    let mut i: u64 = 0;
+    while i < n {
+        if pred(borrow ctx, _at(T, borrow xs, i)) {
+            return O.Some(i);
+        }
+        i += 1;
+    }
+    O.None
+}
+
+// Left fold: `step(borrow ctx, acc, x)` for every element in order, starting
+// from `init`. The accumulator moves through the steps and is never copied, so
+// `A` may own resources (a `StrBuf` being built, a growing `ArrayBuf`).
+pub fn fold(comptime T: type, comptime A: type, comptime C: type, borrow ctx: C, borrow xs: arraybuf.ArrayBuf(T), init: A, step: fn(borrow C, A, T) -> A) -> A {
+    // COPY-`T` ONLY (module header).
+    @require_trivially_droppable(T);
+    let n = xs.len();
+    let mut acc = init;
+    let mut i: u64 = 0;
+    while i < n {
+        acc = step(borrow ctx, acc, _at(T, borrow xs, i));
+        i += 1;
+    }
+    acc
+}
+
+// Fold without an initial value: the first element seeds the accumulator and
+// `step` combines it with each later element in order. `None` on an empty
+// buffer.
+pub fn reduce(comptime T: type, comptime C: type, borrow ctx: C, borrow xs: arraybuf.ArrayBuf(T), step: fn(borrow C, T, T) -> T) -> option.Option(T) {
+    // COPY-`T` ONLY (module header).
+    @require_trivially_droppable(T);
+    let O = option.Option(T);
+    let n = xs.len();
+    if n == 0 {
+        return O.None;
+    }
+    let mut acc = _at(T, borrow xs, 0);
+    let mut i: u64 = 1;
+    while i < n {
+        acc = step(borrow ctx, acc, _at(T, borrow xs, i));
+        i += 1;
+    }
+    O.Some(acc)
+}
+
+// A new buffer holding `f(borrow ctx, x)` for every element, in order. The
+// results are moved into the buffer, so `U` may own resources.
+pub fn map(comptime T: type, comptime U: type, comptime C: type, borrow ctx: C, borrow xs: arraybuf.ArrayBuf(T), f: fn(borrow C, T) -> U) -> arraybuf.ArrayBuf(U) {
+    // COPY-`T` ONLY (module header).
+    @require_trivially_droppable(T);
+    let B = arraybuf.ArrayBuf(U);
+    let n = xs.len();
+    let mut out = B.new();
+    out.reserve(n);
+    let mut i: u64 = 0;
+    while i < n {
+        out.push(f(borrow ctx, _at(T, borrow xs, i)));
+        i += 1;
+    }
+    out
+}
+
+// A new buffer holding every element that satisfies `pred`, in order.
+pub fn filter(comptime T: type, comptime C: type, borrow ctx: C, borrow xs: arraybuf.ArrayBuf(T), pred: fn(borrow C, T) -> bool) -> arraybuf.ArrayBuf(T) {
+    // COPY-`T` ONLY (module header).
+    @require_trivially_droppable(T);
+    let B = arraybuf.ArrayBuf(T);
+    let n = xs.len();
+    let mut out = B.new();
+    let mut i: u64 = 0;
+    while i < n {
+        if pred(borrow ctx, _at(T, borrow xs, i)) {
+            out.push(_at(T, borrow xs, i));
+        }
+        i += 1;
+    }
+    out
+}
+
+// The greatest element under `less`, or `None` when empty. On ties the first
+// of the equal elements is returned: a later element replaces the current
+// best only when the best strictly precedes it.
+pub fn max_by(comptime T: type, comptime C: type, borrow ctx: C, borrow xs: arraybuf.ArrayBuf(T), less: fn(borrow C, T, T) -> bool) -> option.Option(T) {
+    // COPY-`T` ONLY (module header).
+    @require_trivially_droppable(T);
+    let O = option.Option(T);
+    let n = xs.len();
+    if n == 0 {
+        return O.None;
+    }
+    let mut best: u64 = 0;
+    let mut i: u64 = 1;
+    while i < n {
+        // The comparator consumes its operands, so both are read per
+        // comparison; only the index of the best is carried.
+        if less(borrow ctx, _at(T, borrow xs, best), _at(T, borrow xs, i)) {
+            best = i;
+        }
+        i += 1;
+    }
+    O.Some(_at(T, borrow xs, best))
+}
+
+// The least element under `less`, or `None` when empty. On ties the first of
+// the equal elements is returned.
+pub fn min_by(comptime T: type, comptime C: type, borrow ctx: C, borrow xs: arraybuf.ArrayBuf(T), less: fn(borrow C, T, T) -> bool) -> option.Option(T) {
+    // COPY-`T` ONLY (module header).
+    @require_trivially_droppable(T);
+    let O = option.Option(T);
+    let n = xs.len();
+    if n == 0 {
+        return O.None;
+    }
+    let mut best: u64 = 0;
+    let mut i: u64 = 1;
+    while i < n {
+        if less(borrow ctx, _at(T, borrow xs, i), _at(T, borrow xs, best)) {
+            best = i;
+        }
+        i += 1;
+    }
+    O.Some(_at(T, borrow xs, best))
+}
+
+// The sum of every element under `+`, starting from `zero`. The additive
+// identity is an argument because Rue has no way to spell "the zero of `T`"
+// for a comptime `T`; pass `0` for an integer or `0.0` for a float type.
+pub fn sum(comptime T: type, borrow xs: arraybuf.ArrayBuf(T), zero: T) -> T {
+    // COPY-`T` ONLY (module header).
+    @require_trivially_droppable(T);
+    let n = xs.len();
+    let mut acc = zero;
+    let mut i: u64 = 0;
+    while i < n {
+        acc = acc + _at(T, borrow xs, i);
+        i += 1;
+    }
+    acc
+}
+
+// The greatest element under `<`, or `None` when empty; the first of equal
+// elements wins.
+pub fn max(comptime T: type, borrow xs: arraybuf.ArrayBuf(T)) -> option.Option(T) {
+    // COPY-`T` ONLY (module header).
+    @require_trivially_droppable(T);
+    let O = option.Option(T);
+    let n = xs.len();
+    if n == 0 {
+        return O.None;
+    }
+    let mut best = _at(T, borrow xs, 0);
+    let mut i: u64 = 1;
+    while i < n {
+        let x = _at(T, borrow xs, i);
+        if best < x {
+            best = x;
+        }
+        i += 1;
+    }
+    O.Some(best)
+}
+
+// The least element under `<`, or `None` when empty; the first of equal
+// elements wins.
+pub fn min(comptime T: type, borrow xs: arraybuf.ArrayBuf(T)) -> option.Option(T) {
+    // COPY-`T` ONLY (module header).
+    @require_trivially_droppable(T);
+    let O = option.Option(T);
+    let n = xs.len();
+    if n == 0 {
+        return O.None;
+    }
+    let mut best = _at(T, borrow xs, 0);
+    let mut i: u64 = 1;
+    while i < n {
+        let x = _at(T, borrow xs, i);
+        if x < best {
+            best = x;
+        }
+        i += 1;
+    }
+    O.Some(best)
+}

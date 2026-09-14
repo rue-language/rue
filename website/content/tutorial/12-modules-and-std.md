@@ -154,7 +154,7 @@ The current modules are:
 | `std.intmap`, `std.strmap`, `std.bitset`, `std.grid` | maps keyed by integers or strings, bit sets, 2-D grids |
 | `std.math`, `std.cmp`, `std.hash`, `std.rand` | integer and float math, ordering, hashing, random numbers |
 | `std.fs`, `std.env`, `std.net`, `std.binary` | files and directories, environment, TCP, byte encoding |
-| `std.json`, `std.sort` | JSON parsing, sorting in natural order or by a callback with explicit context |
+| `std.json`, `std.sort`, `std.iter` | JSON parsing, sorting in natural order or by a callback with explicit context, `map`/`filter`/`fold` combinators over buffers |
 | `std.mem`, `std.tuple`, `std.c` | `swap`/`replace`, pairs and triples, C scalar aliases |
 
 The library is written in Rue, in the repository's `std/` directory, and

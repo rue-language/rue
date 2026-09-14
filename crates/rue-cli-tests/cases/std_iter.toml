@@ -1,0 +1,75 @@
+# std.iter — eager combinators over ArrayBuf(T) with a callback and an explicit
+# context (RUE-684, ADR-0096). Each case drives the REAL std through
+# @import("std") (RUE_STD_PATH) so the module's own by-copy gates and the
+# generic instantiation of every combinator run as a user would run them.
+
+[section]
+id = "cli.std_iter"
+name = "Standard library — std.iter combinators"
+description = "for_each / count_if / any / all / find_index / fold / reduce / map / filter / max_by / min_by / sum / min / max over ArrayBuf(T) through callbacks with explicit context (RUE-684)."
+
+[[case]]
+name = "std_iter_combinators"
+description = "Every combinator over one six-element buffer: predicates with a threshold context, a fold into an integer and into a StrBuf, reduce, map with a scale context, filter, max_by/min_by with first-of-ties, natural sum/min/max, an inout visitor context, max_by over @copy-less records, and the empty-buffer answers (17 checks -> exit 99)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 99
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+struct Limit { min: i64 }
+fn at_least(borrow l: Limit, v: i64) -> bool { v >= l.min }
+struct Scale { k: i64 }
+fn times(borrow s: Scale, v: i64) -> i64 { v * s.k }
+struct NoContext {}
+fn add(borrow c: NoContext, acc: i64, v: i64) -> i64 { acc + v }
+fn join(borrow c: NoContext, acc: StrBuf, v: i64) -> StrBuf { let mut out = acc; out.push_str(@to_string(v)); out.push_str(","); out }
+fn bigger(borrow c: NoContext, acc: i64, v: i64) -> i64 { if v > acc { v } else { acc } }
+fn less(borrow c: NoContext, a: i64, b: i64) -> bool { a < b }
+struct Stats { seen: i64, total: i64 }
+fn tally(inout s: Stats, v: i64) { s.seen = s.seen + 1; s.total = s.total + v; }
+struct Rec { key: i64, tag: i64 }
+fn by_key(borrow c: NoContext, a: Rec, b: Rec) -> bool { a.key < b.key }
+
+fn main() -> i32 {
+    let Ints = std.arraybuf.ArrayBuf(i64);
+    let Oi = std.option.Option(i64);
+    let Ou = std.option.Option(u64);
+    let Recs = std.arraybuf.ArrayBuf(Rec);
+    let ORec = std.option.Option(Rec);
+    let none = NoContext {};
+    let mut v = Ints.new();
+    v.push(5); v.push(1); v.push(9); v.push(3); v.push(9); v.push(2);
+    let mut score: i32 = 0;
+    let limit = Limit { min: 4 };
+    if std.iter.count_if(i64, Limit, borrow limit, borrow v, at_least) == 3 { score = score + 1; }
+    if std.iter.any(i64, Limit, borrow limit, borrow v, at_least) && !std.iter.all(i64, Limit, borrow limit, borrow v, at_least) { score = score + 1; }
+    match std.iter.find_index(i64, Limit, borrow limit, borrow v, at_least) { Ou.Some(i) => { if i == 0 { score = score + 1; } }, Ou.None => {} }
+    if std.iter.fold(i64, i64, NoContext, borrow none, borrow v, 0, add) == 29 { score = score + 1; }
+    let joined = std.iter.fold(i64, StrBuf, NoContext, borrow none, borrow v, StrBuf.new(), join);
+    if joined.len() == 12 { score = score + 1; }
+    match std.iter.reduce(i64, NoContext, borrow none, borrow v, bigger) { Oi.Some(m) => { if m == 9 { score = score + 1; } }, Oi.None => {} }
+    let scale = Scale { k: 3 };
+    let tripled = std.iter.map(i64, i64, Scale, borrow scale, borrow v, times);
+    if tripled.len() == 6 && tripled.get_or(2, 0) == 27 { score = score + 1; }
+    let big = std.iter.filter(i64, Limit, borrow limit, borrow v, at_least);
+    if big.len() == 3 && big.get_or(0, 0) == 5 && big.get_or(1, 0) == 9 && big.get_or(2, 0) == 9 { score = score + 1; }
+    match std.iter.max_by(i64, NoContext, borrow none, borrow v, less) { Oi.Some(m) => { if m == 9 { score = score + 1; } }, Oi.None => {} }
+    match std.iter.min_by(i64, NoContext, borrow none, borrow v, less) { Oi.Some(m) => { if m == 1 { score = score + 1; } }, Oi.None => {} }
+    if std.iter.sum(i64, borrow v, 0) == 29 { score = score + 1; }
+    match std.iter.max(i64, borrow v) { Oi.Some(m) => { if m == 9 { score = score + 1; } }, Oi.None => {} }
+    match std.iter.min(i64, borrow v) { Oi.Some(m) => { if m == 1 { score = score + 1; } }, Oi.None => {} }
+    let mut stats = Stats { seen: 0, total: 0 };
+    std.iter.for_each(i64, Stats, inout stats, borrow v, tally);
+    if stats.seen == 6 && stats.total == 29 { score = score + 1; }
+    // records: max_by over @copy-less structs, first of ties wins
+    let mut recs = Recs.new();
+    recs.push(Rec { key: 2, tag: 1 }); recs.push(Rec { key: 7, tag: 2 }); recs.push(Rec { key: 7, tag: 3 });
+    match std.iter.max_by(Rec, NoContext, borrow none, borrow recs, by_key) { ORec.Some(r) => { if r.tag == 2 { score = score + 1; } }, ORec.None => {} }
+    let empty = Ints.new();
+    match std.iter.reduce(i64, NoContext, borrow none, borrow empty, bigger) { Oi.Some(m) => {}, Oi.None => { score = score + 1; } }
+    if std.iter.all(i64, Limit, borrow limit, borrow empty, at_least) && !std.iter.any(i64, Limit, borrow limit, borrow empty, at_least) { score = score + 1; }
+    if score == 17 { 99 } else { score }
+}
+""" }]
