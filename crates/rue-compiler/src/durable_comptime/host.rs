@@ -708,10 +708,10 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
         let (declaration, start, end) = self.diagnostic_site(site).into_parts();
         self.services
             .durable_session_mut()
-            .observe_deferred_ownership(DeferredOwnershipGate {
-                kind: crate::semantic_query_nucleus::DeferredOwnershipGateKind::RequireDroppable,
+            .observe_deferred_requirement(DeferredRequirement {
+                kind: crate::semantic_query_nucleus::DeferredRequirementKind::RequireDroppable,
                 ty: ty.0,
-                source: Arc::new(crate::semantic_query_nucleus::DeferredOwnershipGateSource {
+                source: Arc::new(crate::semantic_query_nucleus::DeferredRequirementSource {
                     declaration,
                     start,
                     end,
@@ -729,11 +729,10 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
         let (declaration, start, end) = self.diagnostic_site(site).into_parts();
         self.services
             .durable_session_mut()
-            .observe_deferred_ownership(DeferredOwnershipGate {
-            kind:
-                crate::semantic_query_nucleus::DeferredOwnershipGateKind::RequireTriviallyDroppable,
+            .observe_deferred_requirement(DeferredRequirement {
+            kind: crate::semantic_query_nucleus::DeferredRequirementKind::RequireTriviallyDroppable,
             ty: ty.0,
-            source: Arc::new(crate::semantic_query_nucleus::DeferredOwnershipGateSource {
+            source: Arc::new(crate::semantic_query_nucleus::DeferredRequirementSource {
                 declaration,
                 start,
                 end,

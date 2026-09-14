@@ -38,7 +38,7 @@ contexts:
     - match: \b(break|continue|else|for|if|in|loop|match|return|while|yield)\b
       scope: keyword.control.rue
     # Declarations and modifiers
-    - match: \b(borrow|checked|comptime|const|drop|enum|extern|fn|impl|inout|let|linear|mut|pub|struct|unchecked)\b
+    - match: \b(borrow|checked|comptime|const|drop|enum|extern|fn|impl|inout|interface|let|linear|mut|pub|struct|unchecked)\b
       scope: keyword.declaration.rue
     # Boolean literals
     - match: \b(false|true)\b

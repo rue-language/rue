@@ -72,6 +72,11 @@ pub const FLOAT: u64 = 57;
 // parameter list of PARAM nodes carrying their mode in `aux`, `b` the result
 // type or NONE when the arrow is omitted.
 pub const FN_TYPE: u64 = 58;
+pub const INTERFACE: u64 = 59;
+pub const REQUIREMENT: u64 = 60;
+pub const ASSOC_REQUIREMENT: u64 = 61;
+pub const ASSOC_TYPE: u64 = 62;
+pub const CONFORMANCE: u64 = 63;
 
 pub struct Node {
     kind: u64,
@@ -172,6 +177,11 @@ pub struct Arena {
         else if kind == FUNCTION { "function" }
         else if kind == PARAM { "param" }
         else if kind == STRUCT_DEF { "struct" }
+        else if kind == INTERFACE { "interface" }
+        else if kind == REQUIREMENT { "requirement" }
+        else if kind == ASSOC_REQUIREMENT { "assoc-type-requirement" }
+        else if kind == ASSOC_TYPE { "assoc-type" }
+        else if kind == CONFORMANCE { "conformance" }
         else if kind == FIELD_DEF { "field-def" }
         else if kind == METHOD { "method" }
         else if kind == ENUM_DEF { "enum" }
@@ -233,7 +243,7 @@ pub struct Arena {
         } else if n.kind == PARAM {
             out.push_str(" mode=");
             Self.append_u(inout out, n.aux);
-        } else if n.kind == FUNCTION || n.kind == STRUCT_DEF || n.kind == ENUM_DEF || n.kind == CONST_DECL {
+        } else if n.kind == FUNCTION || n.kind == STRUCT_DEF || n.kind == ENUM_DEF || n.kind == CONST_DECL || n.kind == INTERFACE || n.kind == ASSOC_TYPE {
             out.push_str(" flags=");
             Self.append_u(inout out, n.aux);
         } else if n.kind == LET {

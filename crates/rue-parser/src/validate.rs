@@ -17,7 +17,10 @@
 //! `@syscall`, `@intCast`, ...) are validated by sema, which already rejects
 //! unknown intrinsics.
 
-use crate::ast::{Ast, Directive, Expr, IntrinsicArg, Item, Method, Statement, TypeExpr};
+use crate::ast::{
+    Ast, Directive, Expr, InterfaceDecl, InterfaceRequirement, IntrinsicArg, Item, Method,
+    ParamMode, PlaceReturn, Statement, TypeExpr,
+};
 use crate::directives::{
     DirectiveArgValue, DirectiveArity, DirectiveName, DirectiveSite, ReprArg, directive_name_list,
     is_canonical_known_bug_marker, is_known_bug_platform, repr_arg_list, site_list,
@@ -26,7 +29,7 @@ use crate::directives::{
 use crate::parser_policy::diagnostics::ParserDiagnostics;
 use lasso::ThreadedRodeo;
 use rue_error::{CompileError, ErrorKind};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Walk the AST and report directive-validation diagnostics through the same
 /// bounded per-file policy as grammar recovery.
@@ -48,6 +51,7 @@ pub(crate) fn check_directives_into(
     for item in &ast.items {
         v.check_item(item);
     }
+    v.check_interface_refinement_cycles(ast);
 }
 
 struct Validator<'a> {
@@ -56,6 +60,51 @@ struct Validator<'a> {
 }
 
 impl Validator<'_> {
+    /// Refinement is a declaration-level graph rule. Keep this check in the
+    /// parser validator so an A:B / B:A pair cannot survive as an apparently
+    /// valid durable interface fact whose later closure walk merely stops at a
+    /// visited node.
+    fn check_interface_refinement_cycles(&mut self, ast: &Ast) {
+        let interfaces = ast
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Interface(interface) => Some(interface),
+                _ => None,
+            })
+            .map(|interface| (interface.name.name, interface))
+            .collect::<HashMap<_, _>>();
+        let mut reported = HashSet::new();
+        for (&name, interface) in &interfaces {
+            let mut work = vec![(name, Vec::new())];
+            while let Some((current, mut path)) = work.pop() {
+                if let Some(index) = path.iter().position(|candidate| *candidate == current) {
+                    let cycle = &path[index..];
+                    if cycle.iter().any(|candidate| !reported.contains(candidate)) {
+                        self.errors.push(CompileError::new(
+                            ErrorKind::ParseError(format!(
+                                "interface refinement must be acyclic (cycle includes `{}`)",
+                                self.interner.resolve(&current)
+                            )),
+                            interface.span,
+                        ));
+                        reported.extend(cycle.iter().copied());
+                    }
+                    break;
+                }
+                path.push(current);
+                let Some(declaration) = interfaces.get(&current) else {
+                    continue;
+                };
+                for parent in &declaration.parents {
+                    if let TypeExpr::Named(parent) = parent {
+                        work.push((parent.name, path.clone()));
+                    }
+                }
+            }
+        }
+    }
+
     fn check_directives(&mut self, directives: &[Directive], site: DirectiveSite) {
         self.check_known_bug_combinations(directives, site);
         for directive in directives {
@@ -292,6 +341,8 @@ impl Validator<'_> {
                     ));
                 }
             }
+            Item::Interface(interface) => self.check_interface(interface),
+            Item::Conformance(_) => {}
             Item::DropFn(d) => self.check_expr(&d.body),
             Item::Test(t) => {
                 self.check_directives(&t.directives, DirectiveSite::Test);
@@ -309,6 +360,71 @@ impl Validator<'_> {
     fn check_method(&mut self, method: &Method) {
         self.check_directives(&method.directives, DirectiveSite::Method);
         self.check_expr(&method.body);
+    }
+
+    fn check_interface(&mut self, interface: &InterfaceDecl) {
+        self.check_directives(&interface.directives, DirectiveSite::Interface);
+        let interface_name = self.interner.resolve(&interface.name.name);
+        if interface.requirements.is_empty() {
+            self.errors.push(CompileError::new(
+                ErrorKind::ParseError(format!(
+                    "interface `{interface_name}` is empty; an interface must declare at least one requirement"
+                )),
+                interface.span,
+            ));
+        }
+        let mut seen = HashSet::new();
+        for requirement in &interface.requirements {
+            let (name, span) = match requirement {
+                InterfaceRequirement::Method(signature) => {
+                    if let Some(directive) = signature.directives.first() {
+                        self.errors.push(CompileError::new(
+                            ErrorKind::ParseError(
+                                "an interface requirement cannot carry directives".to_owned(),
+                            ),
+                            directive.span,
+                        ));
+                    }
+                    if let Some(parameter) = signature
+                        .params
+                        .iter()
+                        .find(|parameter| parameter.mode == ParamMode::Comptime)
+                    {
+                        self.errors.push(CompileError::new(
+                            ErrorKind::ParseError(
+                                "an interface requirement cannot declare comptime parameters"
+                                    .to_owned(),
+                            ),
+                            parameter.span,
+                        ));
+                    }
+                    if let Some(place_return) = signature.place_return {
+                        self.errors.push(CompileError::new(
+                            ErrorKind::ParseError(
+                                "an interface requirement cannot declare a place-returning result"
+                                    .to_owned(),
+                            ),
+                            match place_return {
+                                PlaceReturn::Borrow(span) | PlaceReturn::Inout(span) => span,
+                            },
+                        ));
+                    }
+                    (signature.name, signature.span)
+                }
+                InterfaceRequirement::AssocType(requirement) => {
+                    (requirement.name, requirement.span)
+                }
+            };
+            if !seen.insert(name.name) {
+                self.errors.push(CompileError::new(
+                    ErrorKind::DuplicateInterfaceRequirement {
+                        interface: interface_name.to_string(),
+                        member: self.interner.resolve(&name.name).to_string(),
+                    },
+                    span,
+                ));
+            }
+        }
     }
 
     fn check_statement(&mut self, statement: &Statement) {

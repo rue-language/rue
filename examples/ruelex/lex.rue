@@ -201,6 +201,7 @@ pub struct Lexer {
         if word_eq(borrow key, "struct") { return "STRUCT"; }
         if word_eq(borrow key, "enum") { return "ENUM"; }
         if word_eq(borrow key, "impl") { return "IMPL"; }
+        if word_eq(borrow key, "interface") { return "INTERFACE"; }
         if word_eq(borrow key, "self") { return "SELF"; }
         if word_eq(borrow key, "Self") { return "SELFTYPE"; }
         if word_eq(borrow key, "drop") { return "DROP"; }
@@ -239,6 +240,8 @@ pub struct Lexer {
         // (6.7:4). Recording the lexeme is all the parser needs to decide.
         if word_eq(borrow key, "test") {
             self.last_ctx = token.CTX_TEST;
+        } else if word_eq(borrow key, "is") {
+            self.last_ctx = token.CTX_IS;
         }
 
         let sym = self.interner.intern(borrow key);

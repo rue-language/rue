@@ -10,6 +10,7 @@ real.
 
 | File | Records | Status | Superseded by |
 | --- | --- | --- | --- |
+| [abstraction-design-survey.md](abstraction-design-survey.md) | Survey of abstraction mechanisms (traits, interfaces, comptime, dictionaries) across Carbon, Swift, Hylo, Zig, Go, Rust, Mojo, and Austral, with a corpus repetition census and a recommendation as input to the RUE-246 ruling. | current | — |
 | [adr-0076-symbol-handle-ordered-use-audit.md](adr-0076-symbol-handle-ordered-use-audit.md) | ADR-0076 Phase 1: the complete inventory of ordered and value-bearing symbol-handle uses, their conversions, and what a revision-shared interner still owes. | current | — |
 | [adr-0071-phase-1-reference-baseline.md](adr-0071-phase-1-reference-baseline.md) | The first complete `fresh_source_to_native_v1` reference measurements closing ADR-0071's measurement phase. | current | — |
 | [adr-0071-horizontal-vertical-ownership-reaudit.md](adr-0071-horizontal-vertical-ownership-reaudit.md) | Current-source whole-pipeline ownership re-audit after the accepted ADR-0071 and RUE-1510 work, with the next measured verticals. | current | — |
@@ -22,6 +23,7 @@ real.
 | [daemon-performance-regime.md](daemon-performance-regime.md) | RUE-2130's validated client-to-publication daemon measurement boundary, identities, parity rules, and scenario coverage. | current | — |
 | [module-manifest-measurements.md](module-manifest-measurements.md) | Release measurements of explicit and discovered import graphs on 2026-09-11, including generation cost and executable equivalence. | historical | — |
 | [compact-layout-default.md](compact-layout-default.md) | The 2026-07-19 cutover (RUE-987) making ADR-0052's compact physical layout Rue's only memory representation, and what observably changed. | historical | ADR-0052 and the specification hold the living layout rules |
+| [interfaces-port-measurements.md](interfaces-port-measurements.md) | The first port of `std/` and the examples to the `interfaces` preview: what the v1 feature could express, the exact limitation behind everything it could not, and before/after compile-time measurements on one debug-built compiler. | historical | The preview integration and current specification supersede the prototype limitations; timings describe the original measured revision. |
 | [fn-params-indirect-call-overhead.md](fn-params-indirect-call-overhead.md) | RUE-2113 reference measurement of the cost of a call through a second-class `fn` parameter against a direct call, the comparator sort against the natural-order sort, and the generated instance count, on one x86-64 host. | current | — |
 | [ffi-abi-conformance-audit.md](ffi-abi-conformance-audit.md) | RUE-738 audit of Rue's two calling conventions and the compiler/runtime `TargetC` ABI contract. | current | — |
 | [per-body-identity-closure-materialization.md](per-body-identity-closure-materialization.md) | Instruction-level measurement of per-body identity closure materialization and of the durable-source provider queries around it, on Lattice, Mosaic, and a generated chain shape, with the sharing designs each does and does not support. | current | — |

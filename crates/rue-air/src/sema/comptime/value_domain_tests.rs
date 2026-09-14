@@ -5669,6 +5669,7 @@ fn own_comptime_type_parameter_wins_before_later_type_resolution() {
         data: InstData::UnitConst,
         span: Span::new(10, 11),
     });
+    let bounds = editor.add_parameter_bounds(&[]).unwrap();
     let method = editor
         .add_fn_decl(
             &[],
@@ -5683,6 +5684,7 @@ fn own_comptime_type_parameter_wins_before_later_type_resolution() {
                 mode: rue_rir::RirParamMode::Normal,
                 is_comptime: true,
                 span: Span::new(12, 13),
+                bounds,
             }],
             type_syntax,
             body,

@@ -47,10 +47,10 @@ error_contains = [
 
 [[case]]
 name = "a_bare_test_identifier_is_not_a_test_declaration"
-description = "`test` is a contextual keyword: without a following string literal it is an ordinary identifier, so `test { }` at item position is an unknown item prefix."
+description = "`test` is a contextual keyword: without a following string literal it is an ordinary identifier, so an item beginning with it requires the `is` of a conformance assertion."
 source = """
 test { }
 fn main() -> i32 { 0 }
 """
 compile_fail = true
-error_contains = ["E0100", "'test'"]
+error_contains = ["E0100", "expected 'is', found '{'"]

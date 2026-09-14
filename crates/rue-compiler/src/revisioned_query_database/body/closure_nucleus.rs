@@ -240,13 +240,15 @@ pub(crate) fn semantic_nucleus_failure_is_internal_error(
             .any(|failure| matches!(failure.kind, rue_error::ErrorKind::InternalError(_)));
     }
     let kind = match failure {
+        F::DiagnosticAtModuleSpans { error, .. } => &error.kind,
         F::Diagnostic(kind)
         | F::DiagnosticAtParameter { kind, .. }
         | F::DiagnosticAtSignatureType { kind, .. }
         | F::DiagnosticAtDeclaration { kind, .. }
         | F::DuplicateDeclaration { kind, .. }
         | F::DiagnosticAtProducerRange { kind, .. }
-        | F::OwnershipGate { kind, .. }
+        | F::DiagnosticAtModuleRange { kind, .. }
+        | F::DeferredRequirement { kind, .. }
         | F::DiagnosticWithHelp { kind, .. }
         | F::DiagnosticWithNote { kind, .. } => kind,
         F::Shell(_)
@@ -803,6 +805,74 @@ impl RevisionedQueryDatabase {
                     ),
                 });
             };
+            // Freestanding conformance assertions (spec 6.8:9) belong to no
+            // declaration; resolving them here is what makes their preview
+            // gate and name errors surface for a program that never relies
+            // on them.
+            let terminal = context
+                .query_registered(
+                    semantic_nucleus,
+                    Key::ModuleConformances(
+                        crate::semantic_query_nucleus::ModuleSemanticQueryKey {
+                            module: module.clone(),
+                            configuration: configuration.clone(),
+                        },
+                    ),
+                )
+                .map_err(SemanticNucleusBatchFailure::Query)?;
+            let rue_query::QueryOutcome::Success(conformances) = terminal.outcome() else {
+                unreachable!("SemanticNucleus publishes typed values")
+            };
+            if let Value::Failure(failure) = conformances {
+                return Err(SemanticNucleusBatchFailure::Stable {
+                    declaration: None,
+                    failure: Box::new(failure.clone()),
+                });
+            }
+            let Value::ModuleConformances(conformances) = conformances else {
+                unreachable!("module conformance query returned the wrong projection")
+            };
+            for gate in conformances.deferred_requirements.iter() {
+                let checked = context.query_registered(
+                    semantic_nucleus,
+                    Key::DeferredRequirement(crate::semantic_query_nucleus::DeferredRequirementQueryKey {
+                        producer: crate::semantic_query_nucleus::DeferredRequirementProducer::Module(
+                            crate::semantic_query_nucleus::ModuleSemanticQueryKey {
+                                module: module.clone(),
+                                configuration: configuration.clone(),
+                            },
+                        ),
+                        gate: gate.clone(),
+                    }),
+                ).map_err(SemanticNucleusBatchFailure::Query)?;
+                match checked.outcome() {
+                    rue_query::QueryOutcome::Success(Value::DeferredRequirement) => {}
+                    rue_query::QueryOutcome::Success(Value::Failure(failure)) => {
+                        return Err(SemanticNucleusBatchFailure::Stable {
+                            declaration: None,
+                            failure: Box::new(failure.clone()),
+                        });
+                    }
+                    _ => unreachable!("module requirement returned the wrong projection"),
+                }
+            }
+            for value in conformances.anonymous_nominals.iter() {
+                if let Err(identity) = crate::durable_semantics::merge_anonymous_nominal(
+                    &mut anonymous_nominals,
+                    value,
+                ) {
+                    return Err(SemanticNucleusBatchFailure::Stable {
+                        declaration: None,
+                        failure: Box::new(
+                            crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(
+                                Arc::from(format!(
+                                    "conflicting durable anonymous facts for {identity:?}"
+                                )),
+                            ),
+                        ),
+                    });
+                }
+            }
             let mut functions = BTreeMap::new();
             let mut function_names = BTreeMap::new();
             let mut type_names = BTreeMap::new();
@@ -1014,7 +1084,7 @@ impl RevisionedQueryDatabase {
                     if let crate::semantic_query_nucleus::ConstResolutionProjection::Value {
                         anonymous_nominals: projected,
                         dependencies: projected_dependencies,
-                        deferred_ownership,
+                        deferred_requirements,
                         ..
                     } = &resolution
                     {
@@ -1036,10 +1106,10 @@ impl RevisionedQueryDatabase {
                             }
                         }
                         dependencies.extend(projected_dependencies.iter().cloned());
-                        for gate in deferred_ownership.iter() {
-                            let Value::DeferredOwnership = request(Key::DeferredOwnership(
-                                crate::semantic_query_nucleus::DeferredOwnershipQueryKey {
-                                    producer: query.clone(),
+                        for gate in deferred_requirements.iter() {
+                            let Value::DeferredRequirement = request(Key::DeferredRequirement(
+                                crate::semantic_query_nucleus::DeferredRequirementQueryKey {
+                                    producer: (query.clone()).into(),
                                     gate: gate.clone(),
                                 },
                             ))?
@@ -1147,10 +1217,10 @@ impl RevisionedQueryDatabase {
                             (declaration.clone(), parameters.clone(), result.clone())
                         });
                     }
-                    for gate in signature.deferred_ownership.iter() {
-                        let Value::DeferredOwnership = request(Key::DeferredOwnership(
-                            crate::semantic_query_nucleus::DeferredOwnershipQueryKey {
-                                producer: query.clone(),
+                    for gate in signature.deferred_requirements.iter() {
+                        let Value::DeferredRequirement = request(Key::DeferredRequirement(
+                            crate::semantic_query_nucleus::DeferredRequirementQueryKey {
+                                producer: (query.clone()).into(),
                                 gate: gate.clone(),
                             },
                         ))?

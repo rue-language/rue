@@ -259,9 +259,9 @@ impl CompilerSession {
         // This is the single root-set authority. `RootSelection::Tests` roots
         // every test declaration in the module closure and neither needs nor
         // roots `main`; `RootSelection::Executable` roots `main` plus the
-        // c-export roots and never roots a test (ADR-0083 §1). The two sets are
-        // disjoint, which is what makes a test body invisible to an executable
-        // request rather than merely unreferenced by one.
+        // c-export roots and never roots a test (ADR-0083 §1). Their executable
+        // roots are disjoint; both modes also perform the analysis-only
+        // definition checks added below.
         //
         // A test request additionally answers with the inventory of EVERY test
         // declaration, whether or not this request analyzes it: ordinals are
@@ -269,7 +269,7 @@ impl CompilerSession {
         // `compile_error` test from its root set would otherwise renumber every
         // later test (ADR-0083 §3).
         let mut test_inventory = Vec::new();
-        let (main, roots) = match options.root_selection {
+        let (main, mut roots) = match options.root_selection {
             crate::RootSelection::Tests => {
                 let declared = projection
                     .declarations
@@ -302,6 +302,15 @@ impl CompilerSession {
                 (Some(main), roots)
             }
         };
+        // Every bounded function gets its definition check in either root
+        // selection, whether or not it is called (spec 6.8:19). These roots
+        // contribute diagnostics and are excluded from executable CFGs.
+        roots.extend(crate::skolem::skolem_check_roots(
+            &projection.declarations,
+            options
+                .preview_features
+                .contains(&rue_error::PreviewFeature::Interfaces),
+        ));
         let configuration = crate::semantic_query_nucleus::SemanticQueryConfiguration {
             target: options.target,
             preview_features: StablePreviewFeatures::new(&options.preview_features),
@@ -906,6 +915,7 @@ impl CompilerSession {
             .closure
             .reached
             .iter()
+            .filter(|identity| !crate::skolem::instance_is_skolem_check(identity))
             .cloned()
             .collect::<BTreeSet<_>>();
         identities.extend(
@@ -1015,6 +1025,12 @@ impl CompilerSession {
             else {
                 continue;
             };
+            // A skolem check is analysis-only (spec 6.8:22): it has no
+            // symbol, no CFG, and no code.
+            if crate::skolem::instance_is_skolem_check(&closure_body.key.instance) {
+                work.cfg.skolem_checks_filtered += 1;
+                continue;
+            }
             let locator = self
                 .queries
                 .revisioned
@@ -2603,9 +2619,8 @@ impl CompilerSession {
     /// call relation backwards from each failed body to find them. Anything
     /// that belongs to no single body — a closure fatal, an anonymous-fact
     /// conflict, a failed import — is outside every test closure and still
-    /// fails the whole run, and so is a failed body no test root reaches, which
-    /// would mean the attribution missed an edge rather than that the failure
-    /// belongs to nobody.
+    /// fails the whole run. An analysis-only definition check also fails the
+    /// whole run: it validates the program independently of individual tests.
     pub(crate) fn rooted_test_closure_analysis(
         &mut self,
         options: &CompileOptions,
@@ -2690,10 +2705,9 @@ impl CompilerSession {
                 }
             }
             if reaching.is_empty() {
-                // A diagnostic inside no test's closure is one this walk failed
-                // to attribute, not one nobody owns: the closure was built from
-                // the test roots, so every body in it is reachable from one.
-                // Reporting the whole run is the honest answer.
+                // Analysis-only definition roots belong to the program rather
+                // than an individual test. Their diagnostics fail the whole
+                // run; the same fallback also covers an unattributable edge.
                 return TestClosureAnalysisOutcome::Errors(rejection.into_errors());
             }
             for ordinal in reaching {
@@ -2914,11 +2928,14 @@ fn rooted_unused_function_warnings(
         }
         })
         .collect::<BTreeSet<_>>();
+    // A skolem check reaches its function without any call: it is not a use
+    // (spec 6.8:19), so an uncalled bounded function still warns.
     referenced.extend(
         graph
             .closure
             .reached
             .iter()
+            .filter(|instance| !crate::skolem::instance_is_skolem_check(instance))
             .filter_map(crate::semantic_identity::function_base_definition)
             .cloned(),
     );
@@ -3105,11 +3122,39 @@ fn semantic_nucleus_failure_diagnostics(
     declaration: Option<&crate::declaration_candidate::DeclarationCandidateKey>,
     failure: &crate::semantic_query_nucleus::SemanticNucleusFailure,
 ) -> CompileErrors {
+    let mut diagnostics = CompileErrors::new();
+    for error in
+        semantic_nucleus_failure_diagnostics_unassisted(modules, declaration, failure).into_iter()
+    {
+        // Every preview gate reads the same way, wherever it is anchored:
+        // the declaration-level gates say which flag enables the feature
+        // exactly as the body-level `require_preview` does.
+        let error = match &error.kind {
+            ErrorKind::PreviewFeatureRequired { feature, .. } => {
+                let help = format!(
+                    "use --preview {} to enable this feature ({})",
+                    feature.name(),
+                    feature.adr()
+                );
+                error.with_help(help)
+            }
+            _ => error,
+        };
+        diagnostics.push(error);
+    }
+    diagnostics
+}
+
+fn semantic_nucleus_failure_diagnostics_unassisted(
+    modules: &[Arc<crate::parsed_modules::ParsedModule>],
+    declaration: Option<&crate::declaration_candidate::DeclarationCandidateKey>,
+    failure: &crate::semantic_query_nucleus::SemanticNucleusFailure,
+) -> CompileErrors {
     use crate::semantic_query_nucleus::SemanticNucleusFailure as F;
     if let F::DuplicateDeclarations(failures) = failure {
         let mut diagnostics = CompileErrors::new();
         for failure in failures.iter() {
-            diagnostics.extend(semantic_nucleus_failure_diagnostics(
+            diagnostics.extend(semantic_nucleus_failure_diagnostics_unassisted(
                 modules,
                 None,
                 &F::DuplicateDeclaration {
@@ -3273,6 +3318,33 @@ fn semantic_nucleus_failure_diagnostics(
             ),
         );
     }
+    if let F::DiagnosticAtModuleSpans {
+        error,
+        span_modules,
+    } = failure
+    {
+        let Some(files) = span_modules
+            .iter()
+            .map(|source| {
+                modules
+                    .iter()
+                    .find(|module| module.module_id() == source)
+                    .map(|module| module.file_id())
+            })
+            .collect::<Option<Vec<_>>>()
+        else {
+            return CompileErrors::from(CompileError::without_span(ErrorKind::InternalError(
+                "semantic diagnostic source is absent from the current program".to_owned(),
+            )));
+        };
+        let mut files = files.into_iter();
+        return CompileErrors::from(error.clone().map_spans(|mut span| {
+            span.file_id = files
+                .next()
+                .expect("diagnostic modules match the span stream");
+            span
+        }));
+    }
     if let F::DiagnosticAtProducerRange {
         kind,
         producer: producer_key,
@@ -3296,7 +3368,23 @@ fn semantic_nucleus_failure_diagnostics(
             rue_span::Span::with_file(producer.file_id, start, end),
         ));
     }
-    if let F::OwnershipGate { kind, gate } = failure {
+    if let F::DiagnosticAtModuleRange {
+        kind,
+        module,
+        start,
+        end,
+    } = failure
+        && let Some(file) = modules
+            .iter()
+            .find(|candidate| candidate.module_id() == module)
+            .map(|module| module.file_id())
+    {
+        return CompileErrors::from(CompileError::new(
+            kind.clone(),
+            rue_span::Span::with_file(file, *start, *end),
+        ));
+    }
+    if let F::DeferredRequirement { kind, gate } = failure {
         let primary_span = declaration.and_then(|key| {
             modules
                 .iter()
@@ -3435,7 +3523,9 @@ fn semantic_nucleus_failure_diagnostics(
             unreachable!("foreign-signature conflicts return above")
         }
         F::DiagnosticAtProducerRange { kind, .. } => (kind.clone(), None, None),
-        F::OwnershipGate { kind, .. } => (kind.clone(), None, None),
+        F::DiagnosticAtModuleRange { kind, .. } => (kind.clone(), None, None),
+        F::DiagnosticAtModuleSpans { .. } => unreachable!("module-span diagnostics return above"),
+        F::DeferredRequirement { kind, .. } => (kind.clone(), None, None),
         F::DiagnosticWithHelp { kind, help } => (kind.clone(), Some(help.clone()), None),
         F::DiagnosticWithNote { kind, note } => (kind.clone(), None, Some(note.clone())),
         F::Cycle(nodes) => (

@@ -25,7 +25,9 @@ use super::body_endpoint::BodyEndpointProvider;
 use super::call_resolution::CallResolutionFacts;
 use super::fact_mode::{ArrayLengthRequest, ModulePrefixRequest, StructuredTypeSyntaxRequest};
 use super::inference_ctx::{InferenceFactSource, InferenceGeneratedNominalOverlays};
-use super::info::{FunctionCallInfo, MethodCallInfo};
+use super::info::{
+    ConformanceAssertion, FunctionCallInfo, InterfaceFacts, MethodCallInfo, RequirementSignature,
+};
 use super::ordinary_engine::{
     AnalysisLedgers, AnonymousNominalLedger, BodyAuthority, DeclarationFacts,
     DiagnosticPresentation, ExpressionAnalysisBreakdown, HostInterrupts, OrdinaryBodyAnalysisHost,
@@ -281,6 +283,10 @@ mod type_syntax_provider_trace_tests {
             _name: Spur,
             _kind: TypeSyntaxNamedKind,
         ) -> CompileResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
+            panic!("unused test host hook")
+        }
+
+        fn type_syntax_is_interface(&self, _ty: Type) -> bool {
             panic!("unused test host hook")
         }
 
@@ -1227,6 +1233,14 @@ struct ProviderBodyHost<'a, P, S, K, M> {
     durable_signature_files: RefCell<AHashMap<ParamRange, FileId>>,
     named_method_infos: RefCell<AHashMap<(StructId, Spur), MethodCallInfo>>,
     const_infos: RefCell<AHashMap<(FileId, Spur), ConstInfo>>,
+    /// The conformance assertions visible from this body per subject type
+    /// (spec 6.8:15): header assertions from the subject's durable nominal
+    /// and freestanding assertions from the durable source, resolved once
+    /// per body.
+    conformance_assertions: RefCell<AHashMap<Type, Vec<ConformanceAssertion>>>,
+    // Requirement signatures can themselves apply bounded constructors. This
+    // request-local set rejects recursive proofs without assuming conformance.
+    active_constructor_bound_checks: AHashSet<(Spur, usize, Type)>,
     observed_named_definitions: RefCell<AHashSet<K>>,
     /// Request-local state for recursive named-import identity closures. The
     /// in-progress state breaks type cycles; the complete state skips repeated
@@ -1267,10 +1281,15 @@ struct ProviderBodyHost<'a, P, S, K, M> {
     expression_breakdown: Option<ExpressionAnalysisBreakdown>,
     recover_body_errors: bool,
     recovered_errors: Vec<CompileError>,
-    deferred_ownership: Vec<super::DeferredOwnershipGate>,
+    deferred_requirements: Vec<super::DeferredRequirement>,
     ctor_displays: AHashMap<Type, String>,
     current_anonymous_identity:
         Option<FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>>,
+    /// The synthesized inherent members of every skolem prepared for this
+    /// body (spec 6.8:20), keyed by member name. Present, possibly empty,
+    /// for each prepared skolem; the named-method lookup answers a skolem
+    /// from here and never from the interface shells' own candidates.
+    skolem_members: RefCell<AHashMap<StructId, AHashMap<Spur, MethodCallInfo>>>,
 }
 
 impl<'a, P, S, K, M> ProviderBodyHost<'a, P, S, K, M>
@@ -1404,6 +1423,8 @@ where
             durable_signature_files: RefCell::new(AHashMap::new()),
             named_method_infos: RefCell::new(AHashMap::new()),
             const_infos: RefCell::new(AHashMap::new()),
+            conformance_assertions: RefCell::new(AHashMap::new()),
+            active_constructor_bound_checks: AHashSet::new(),
             observed_named_definitions: RefCell::new(AHashSet::new()),
             import_nominal_registrations: RefCell::new(AHashMap::new()),
             provider_body_work: ProviderBodyWorkCounters::default(),
@@ -1432,9 +1453,10 @@ where
             expression_breakdown: None,
             recover_body_errors: false,
             recovered_errors: Vec::new(),
-            deferred_ownership: Vec::new(),
+            deferred_requirements: Vec::new(),
             ctor_displays: AHashMap::new(),
             current_anonymous_identity: None,
+            skolem_members: RefCell::new(AHashMap::new()),
         };
         for identity in &well_known.nominals {
             if host
@@ -2138,6 +2160,12 @@ where
         {
             return Some(info);
         }
+        // A skolem's members are its bound's requirements, already
+        // instantiated and registered by `install_skolem_members`; it has no
+        // declaration to consult (spec 6.8:20).
+        if let Some(members) = self.skolem_members.borrow().get(&struct_id) {
+            return members.get(&symbol).copied();
+        }
         let owner_type = Type::new_struct(struct_id);
         let receiver_key = self
             .nominal_tokens
@@ -2404,6 +2432,123 @@ where
             .borrow_mut()
             .insert((file, symbol), info.clone());
         Some(info)
+    }
+
+    /// The durable key of a registered named struct, for the interface facts
+    /// that read its durable nominal (spec 6.8).
+    fn durable_struct_key(&self, struct_id: StructId) -> Option<K> {
+        let ty = Type::new_struct(struct_id);
+        self.nominal_tokens
+            .borrow()
+            .get(&ty)
+            .map(|(_, key)| key.clone())
+            .or_else(|| self.endpoint.durable_named_identity(ty))
+    }
+
+    /// Register and resolve a durable type that a declaration fact names
+    /// (an asserted interface, an associated type), on the same path an
+    /// imported signature type takes.
+    fn resolve_durable_type(&self, ty: &crate::SemanticImportType<K, M>) -> Option<Type> {
+        self.register_import_nominal_identities(ty).ok()?;
+        self.state
+            .identity_context()
+            .pool_mut()?
+            .resolve_provider_type(ty)
+            .ok()
+    }
+
+    /// The pool struct a durable nominal key names, registering it on first
+    /// sight so its methods can be looked up by name.
+    fn struct_for_durable_key(&self, key: &K) -> Option<StructId> {
+        self.resolve_durable_type(&crate::SemanticImportType::Nominal(key.clone()))?
+            .as_struct()
+    }
+
+    /// The durable signature behind a resolved free-function call, when the
+    /// callee is a provider-backed definition rather than a request-local
+    /// closure.
+    fn durable_function_for_call(
+        &self,
+        function: &FunctionCallInfo,
+    ) -> Option<crate::DurableFunction<K, M>> {
+        let same_body = |candidate: FunctionInfo| candidate.params == function.params;
+        let same_call = |candidate: FunctionCallInfo| candidate.params == function.params;
+        let symbol = if self
+            .endpoint
+            .endpoint_function_info(self.function_symbol)
+            .is_some_and(same_body)
+        {
+            Some(self.function_symbol)
+        } else {
+            self.function_infos
+                .borrow()
+                .iter()
+                .find_map(|(symbol, info)| same_call(*info).then_some(*symbol))
+        };
+        let key = symbol
+            .and_then(|symbol| self.function_tokens.borrow().get(&symbol).cloned())
+            .map(|(_, key)| key)?;
+        DurableCallableSource::function(&self.source, &key)
+    }
+
+    /// Register one synthesized skolem member (spec 6.8:20): its call
+    /// signature in the parameter arena, and the requirement stub of the
+    /// interface it comes from as the callee identity a call records. The
+    /// stub is never analyzed or emitted — a skolem body is analysis-only
+    /// (spec 6.8:22) — so recording it draws nothing into the closure.
+    fn register_skolem_member(
+        &self,
+        struct_id: StructId,
+        member: &super::analysis::SkolemMember,
+    ) -> Option<MethodCallInfo> {
+        let RequirementSignature {
+            has_self,
+            self_mode,
+            params,
+            result,
+            returns_borrow,
+            returns_inout,
+        } = &member.signature;
+        let names = params
+            .iter()
+            .map(|(name, _, _, _)| self.intern_name(name.as_ref()))
+            .collect::<Option<Vec<_>>>()?;
+        let range = self.state.allocate_params(
+            names,
+            params.iter().map(|(_, _, ty, _)| *ty),
+            params.iter().map(|(_, mode, _, _)| *mode),
+            params.iter().map(|(_, _, _, comptime)| *comptime),
+        );
+        let interface_key = self.durable_struct_key(member.interface)?;
+        let owner = self.source.definition_name(&interface_key)?;
+        let (key, _) = self
+            .source
+            .named_member(&interface_key, &owner, &member.name)?;
+        let full_symbol = self.member_callable_symbol(struct_id, &member.name, *has_self)?;
+        let kind = if *has_self {
+            crate::StableDefinitionKind::Method
+        } else {
+            crate::StableDefinitionKind::AssociatedFunction
+        };
+        let token = self.endpoint.register_body_owner(
+            key.clone(),
+            self.owner_file,
+            &member.name,
+            kind,
+            Some(&owner),
+        )?;
+        self.function_tokens
+            .borrow_mut()
+            .insert(full_symbol, (token, key));
+        Some(MethodCallInfo {
+            struct_type: Type::new_struct(struct_id),
+            has_self: *has_self,
+            self_mode: *self_mode,
+            params: range,
+            return_type: *result,
+            returns_borrow: *returns_borrow,
+            returns_inout: *returns_inout,
+        })
     }
 
     fn declared_nominal_type_for_symbol(&self, file: FileId, symbol: Spur) -> Option<Type> {
@@ -3944,8 +4089,12 @@ where
             .map(Type::new_struct)
     }
     fn inference_struct_type_by_file(&self, key: (FileId, Spur)) -> Option<Type> {
-        self.declared_nominal_type_for_symbol(key.0, key.1)
-            .filter(|ty| ty.as_struct().is_some())
+        // An interface shell is not a type (spec 6.8:18): inference gets no
+        // hint for it, and the annotation's ordinary resolution reports it.
+        self.nominal_type_for_symbol(key.0, key.1).filter(|ty| {
+            ty.as_struct()
+                .is_some_and(|id| !self.type_pool.is_struct_interface(id))
+        })
     }
     fn inference_builtin_enum_type(&self, name: Spur) -> Option<Type> {
         self.endpoint
@@ -4134,6 +4283,11 @@ where
             )),
             defining_file,
         }))
+    }
+
+    fn type_syntax_is_interface(&self, ty: Type) -> bool {
+        ty.as_struct()
+            .is_some_and(|id| self.type_pool.is_struct_interface(id))
     }
 
     fn type_syntax_make_str(&mut self, span: Span) -> CompileResult<Type> {
@@ -4337,6 +4491,46 @@ where
         let Some((_, definition)) = self.function_token_for_symbol(head.key) else {
             return Ok(None);
         };
+        // Type constructors are calls too.  Their type arguments used to
+        // bypass the ordinary call-bound check because the structured type
+        // resolver went straight to the durable reduction seam.  Reuse the
+        // canonical interface checker while the constructor's concrete
+        // arguments and full parameter positions are still available.
+        if let Some(function) = self.function_info_for_symbol(head.key) {
+            for (index, parameter) in head.parameters.iter().enumerate() {
+                if !parameter.is_comptime || !parameter.is_type {
+                    continue;
+                }
+                let Some((_, argument)) = type_arguments
+                    .iter()
+                    .find(|(name, _)| *name == parameter.name)
+                else {
+                    continue;
+                };
+                let active = (head.key, index, *argument);
+                if !self.active_constructor_bound_checks.insert(active) {
+                    return Err(CompileError::new(
+                        ErrorKind::ComptimeEvaluationFailed {
+                            reason: format!(
+                                "recursive interface-bound verification through `{}` is not supported in the interfaces preview",
+                                self.interner.resolve(&head.key),
+                            ),
+                        },
+                        span,
+                    ));
+                }
+                let checked = OrdinaryBodyEngine::new(self).check_interface_bounds(
+                    &function,
+                    index,
+                    parameter.name,
+                    *argument,
+                    span,
+                    span,
+                );
+                self.active_constructor_bound_checks.remove(&active);
+                checked?;
+            }
+        }
         let mut durable_types = Vec::with_capacity(type_arguments.len());
         for &(name, value) in type_arguments {
             let Some(value) = self.durable_type_from_concrete(value) else {
@@ -5037,25 +5231,7 @@ where
         {
             return flags.clone();
         }
-        let same_body = |candidate: FunctionInfo| candidate.params == function.params;
-        let same_call = |candidate: FunctionCallInfo| candidate.params == function.params;
-        let symbol = if self
-            .endpoint
-            .endpoint_function_info(self.function_symbol)
-            .is_some_and(same_body)
-        {
-            Some(self.function_symbol)
-        } else {
-            self.function_infos
-                .borrow()
-                .iter()
-                .find_map(|(symbol, info)| same_call(*info).then_some(*symbol))
-        };
-        if let Some(key) = symbol
-            .and_then(|symbol| self.function_tokens.borrow().get(&symbol).cloned())
-            .map(|(_, key)| key)
-            && let Some(durable) = DurableCallableSource::function(&self.source, &key)
-        {
+        if let Some(durable) = self.durable_function_for_call(function) {
             let flags = durable
                 .parameters
                 .iter()
@@ -5427,6 +5603,269 @@ where
             )
             .with_help(feature.enable_help()))
         }
+    }
+
+    fn interface_facts(&mut self, interface: StructId) -> Option<InterfaceFacts> {
+        let key = self.durable_struct_key(interface)?;
+        let nominal = DurableNominalSource::nominal(&self.source, &key)?;
+        let crate::DurableNominalBody::Struct { conformance, .. } = nominal.body else {
+            return None;
+        };
+        if !conformance.is_interface {
+            return None;
+        }
+        let parents = conformance
+            .conformances
+            .iter()
+            .filter_map(|parent| self.struct_for_durable_key(&parent.interface))
+            .collect();
+        Some(InterfaceFacts {
+            name: nominal.name,
+            parents,
+            assoc_requirements: conformance
+                .assoc_types
+                .iter()
+                .map(|(name, _, _)| name.clone())
+                .collect(),
+            method_requirements: conformance.requirements.to_vec(),
+        })
+    }
+
+    fn assoc_type(&mut self, subject: Type, name: &str) -> Option<Type> {
+        let key = self.durable_struct_key(subject.as_struct()?)?;
+        let nominal = DurableNominalSource::nominal(&self.source, &key)?;
+        let crate::DurableNominalBody::Struct { conformance, .. } = nominal.body else {
+            return None;
+        };
+        let (_, ty, is_public) = conformance
+            .assoc_types
+            .iter()
+            .find(|(declared, _, _)| declared.as_ref() == name)?;
+        if !is_public {
+            return None;
+        }
+        self.resolve_durable_type(ty)
+    }
+
+    fn conformance_assertions(&mut self, subject: Type) -> Vec<ConformanceAssertion> {
+        if let Some(assertions) = self.conformance_assertions.borrow().get(&subject) {
+            return assertions.clone();
+        }
+        let mut assertions = Vec::new();
+        // The subject's own header list (`struct S is I + J`, spec 6.8:9).
+        let subject_key = subject
+            .as_struct()
+            .and_then(|owner| self.durable_struct_key(owner));
+        if let Some(key) = &subject_key
+            && let Some(nominal) = DurableNominalSource::nominal(&self.source, key)
+            && let crate::DurableNominalBody::Struct { conformance, .. } = nominal.body
+        {
+            for asserted in conformance.conformances.iter() {
+                if let Some(interface) = self.struct_for_durable_key(&asserted.interface) {
+                    assertions.push(ConformanceAssertion {
+                        interface,
+                        span: self
+                            .source
+                            .nominal_producer_span(key, asserted.start, asserted.end),
+                    });
+                }
+            }
+        }
+        // Freestanding assertions visible from this body (`S is I;`). A
+        // nominal subject is matched by durable key without resolving it;
+        // any other subject (a primitive) resolves without registration.
+        for assertion in self.source.visible_conformance_assertions().iter() {
+            let matches = match &assertion.subject {
+                crate::SemanticImportType::Nominal(asserted) => {
+                    subject_key.as_ref() == Some(asserted)
+                }
+                other => self.resolve_durable_type(other) == Some(subject),
+            };
+            if !matches {
+                continue;
+            }
+            for interface in assertion.interfaces.iter() {
+                if let Some(interface) = self.struct_for_durable_key(interface) {
+                    assertions.push(ConformanceAssertion {
+                        interface,
+                        span: self.source.module_range_span(
+                            &assertion.module,
+                            assertion.start,
+                            assertion.end,
+                        ),
+                    });
+                }
+            }
+        }
+        self.conformance_assertions
+            .borrow_mut()
+            .insert(subject, assertions.clone());
+        assertions
+    }
+
+    fn comptime_parameter_bounds(
+        &mut self,
+        function: &FunctionCallInfo,
+        index: usize,
+    ) -> Vec<StructId> {
+        let Some(durable) = self.durable_function_for_call(function) else {
+            return Vec::new();
+        };
+        let Some(parameter) = durable.parameters.get(index) else {
+            return Vec::new();
+        };
+        parameter
+            .bounds
+            .iter()
+            .filter_map(|bound| self.struct_for_durable_key(bound))
+            .collect()
+    }
+
+    fn interface_requirement_signature(
+        &mut self,
+        interface: StructId,
+        name: &str,
+        self_type: Type,
+        assoc_types: &[(Arc<str>, Type)],
+        span: Span,
+    ) -> CompileResult<Option<RequirementSignature>> {
+        let Some(key) = self.durable_struct_key(interface) else {
+            return Ok(None);
+        };
+        let Some(owner) = self.source.definition_name(&key) else {
+            return Ok(None);
+        };
+        let Some((requirement, _)) = self.source.named_member(&key, &owner, name) else {
+            return Ok(None);
+        };
+        let Some(method) = DurableCallableSource::requirement_signature(&self.source, &requirement)
+        else {
+            return Ok(None);
+        };
+        // A requirement mentioning `Self` or an associated-constant name is
+        // deferred in its durable signature (the nucleus binds those names
+        // as generic placeholders), so its exact syntax is re-resolved under
+        // the subject's substitutions; every other type is already exact.
+        let syntax = method
+            .type_syntax
+            .as_ref()
+            .and_then(|syntax| self.remap_callable_type_syntax(syntax));
+        let root_file = self.source.nominal_file_id(&key).unwrap_or(self.owner_file);
+        let mut substitutions = AHashMap::new();
+        if let Some(symbol) = self.intern_name("Self") {
+            substitutions.insert(symbol, self_type);
+        }
+        for (assoc, ty) in assoc_types {
+            if let Some(symbol) = self.intern_name(assoc.as_ref()) {
+                substitutions.insert(symbol, *ty);
+            }
+        }
+        let interner = Arc::clone(&self.interner);
+        let resolve = |host: &mut Self,
+                       ty: &crate::SemanticImportType<K, M>,
+                       root: Option<rue_rir::RirTypeSyntaxRef>|
+         -> CompileResult<Type> {
+            let deferred = matches!(ty, crate::SemanticImportType::ComptimeType)
+                || super::body_identity::semantic_import_type_mentions_generic_parameter(ty);
+            let exact = if deferred {
+                None
+            } else {
+                host.resolve_durable_type(ty)
+            };
+            if let Some(exact) = exact {
+                return Ok(exact);
+            }
+            let (Some(syntax), Some(root)) = (syntax.as_ref(), root) else {
+                return Err(CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "interface requirement `{owner}.{name}` is missing its structured declaration syntax"
+                    )),
+                    span,
+                ));
+            };
+            let structured = super::fact_mode::StructuredTypeSyntax {
+                arena: syntax.arena.clone(),
+                root,
+            };
+            host.resolve_structured_type_syntax(StructuredTypeSyntaxRequest {
+                syntax: &structured,
+                root_file,
+                span,
+                type_substitutions: Some(&substitutions),
+                value_substitutions: None,
+            })
+            .map_err(|failure| semantic_type_syntax_compile_error(&interner, failure, span))
+        };
+        let mut params = Vec::with_capacity(method.parameters.len());
+        for (index, parameter) in method.parameters.iter().enumerate() {
+            let root = syntax
+                .as_ref()
+                .and_then(|syntax| syntax.parameters.get(index).copied());
+            let ty = resolve(self, &parameter.ty, root)?;
+            let mode = match parameter.mode {
+                crate::SemanticParameterMode::Value => RirParamMode::Normal,
+                crate::SemanticParameterMode::Borrow => RirParamMode::Borrow,
+                crate::SemanticParameterMode::Inout => RirParamMode::Inout,
+            };
+            params.push((parameter.name.clone(), mode, ty, parameter.is_comptime));
+        }
+        let result_root = syntax.as_ref().map(|syntax| syntax.result);
+        let result = resolve(self, &method.result, result_root)?;
+        Ok(Some(RequirementSignature {
+            has_self: method.has_self,
+            self_mode: match method.self_mode {
+                crate::SemanticParameterMode::Value => RirParamMode::Normal,
+                crate::SemanticParameterMode::Borrow => RirParamMode::Borrow,
+                crate::SemanticParameterMode::Inout => RirParamMode::Inout,
+            },
+            params,
+            result,
+            returns_borrow: method.returns_borrow,
+            returns_inout: method.returns_inout,
+        }))
+    }
+
+    fn skolem_display_name(&mut self, struct_id: StructId) -> Option<Arc<str>> {
+        let key = self.durable_struct_key(struct_id)?;
+        self.source.skolem_display_name(&key)
+    }
+
+    fn skolem_prepared(&self, struct_id: StructId) -> bool {
+        self.skolem_members.borrow().contains_key(&struct_id)
+    }
+
+    fn skolem_parameter_span(&self, display: &str) -> Span {
+        // `T.Element` stands for an associated type of parameter `T`; the
+        // parameter is what the source declares.
+        let parameter = display.split('.').next().unwrap_or(display);
+        let Some(info) = self.endpoint.endpoint_function_info(self.function_symbol) else {
+            return Span::with_file(self.owner_file, 0, 0);
+        };
+        if let InstData::FnDecl { params, .. } = &self.rir.rir().get(info.declaration).data {
+            for param in self.rir.rir().params(params) {
+                if self.interner.resolve(&param.name) == parameter {
+                    return param.span;
+                }
+            }
+        }
+        info.span
+    }
+
+    fn install_skolem_members(
+        &mut self,
+        struct_id: StructId,
+        members: Vec<super::analysis::SkolemMember>,
+    ) {
+        let mut table = AHashMap::with_capacity(members.len());
+        for member in members {
+            let Some(symbol) = self.intern_name(member.name.as_ref()) else {
+                continue;
+            };
+            if let Some(info) = self.register_skolem_member(struct_id, &member) {
+                table.insert(symbol, info);
+            }
+        }
+        self.skolem_members.borrow_mut().insert(struct_id, table);
     }
 
     fn declaration_binding_active(&self) -> bool {
@@ -5895,8 +6334,8 @@ where
     ) {
     }
 
-    fn deferred_ownership_gates_mut(&mut self) -> &mut Vec<super::DeferredOwnershipGate> {
-        &mut self.deferred_ownership
+    fn deferred_requirements_gates_mut(&mut self) -> &mut Vec<super::DeferredRequirement> {
+        &mut self.deferred_requirements
     }
 }
 
@@ -7301,6 +7740,85 @@ where
     )
 }
 
+/// Validate a deferred constructor argument through the ordinary interface
+/// checker. The bundle supplies the callable's canonical declaration metadata;
+/// its body is neither evaluated nor specialized by this operation.
+pub fn check_provider_interface_bound<P, S, K, M>(
+    provider: &P,
+    source: S,
+    bundle: &BodyRirBundle,
+    base: K,
+    name: &str,
+    parameter_index: usize,
+    argument: &TypeInstanceKey<K, M>,
+    target: Target,
+    preview: PreviewFeatures,
+    well_known: &ProviderWellKnownOptionFacts<K, M>,
+) -> CompileResult<()>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
+    let invalid = |detail: &str| {
+        CompileError::without_span(ErrorKind::InvalidCompilerInput(detail.to_owned()))
+    };
+    let owner_file = bundle
+        .source_file_id()
+        .ok_or_else(|| invalid("interface-bound declaration RIR does not have one source file"))?;
+    let mut host = ProviderBodyHost::new(
+        provider,
+        source,
+        bundle,
+        base,
+        owner_file,
+        name,
+        crate::StableDefinitionKind::Function,
+        None,
+        target,
+        preview,
+        well_known,
+    )
+    .map_err(identity_mint_compile_error)?
+    .ok_or_else(|| invalid("interface-bound provider host could not be constructed"))?;
+    let function = host
+        .function_info_for_symbol(host.function_symbol)
+        .ok_or_else(|| invalid("interface-bound callable metadata is unavailable"))?;
+    let parameter = host
+        .state
+        .param_data(function.params)
+        .names()
+        .get(parameter_index)
+        .copied()
+        .ok_or_else(|| invalid("interface-bound parameter index is out of range"))?;
+    let span = host
+        .endpoint
+        .endpoint_function_info(host.function_symbol)
+        .ok_or_else(|| invalid("interface-bound callable declaration is unavailable"))?
+        .span;
+    let argument = host
+        .materialize_type_instance(argument)
+        .map_err(|failure| {
+            CompileError::without_span(ErrorKind::InvalidCompilerInput(format!(
+                "interface-bound type argument is unavailable: {failure:?}"
+            )))
+        })?;
+    OrdinaryBodyEngine::new(&mut host).prepare_skolems(&[argument])?;
+    OrdinaryBodyEngine::new(&mut host).check_interface_bounds(
+        &function,
+        parameter_index,
+        parameter,
+        argument,
+        span,
+        span,
+    )
+}
+
 /// Run one exact specialization request through the provider-backed body host.
 pub fn analyze_provider_specialized_body<P, S, K, M>(
     provider: &P,
@@ -7429,6 +7947,9 @@ where
                     "provider specialization value argument is unavailable: {failure:?}"
                 )))
             })?;
+        // A skolem check is this same entry with skolems as the type
+        // arguments (spec 6.8:19); their members exist only once synthesized.
+        OrdinaryBodyEngine::new(&mut host).prepare_skolems(&type_args)?;
         let key = crate::specialize::SpecializationKey {
             base_name: host.function_symbol,
             type_args,

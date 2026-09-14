@@ -1,0 +1,244 @@
+[section]
+id = "cli.interfaces"
+name = "The interfaces preview gate through the driver"
+description = """
+Spec 6.8 (`--preview interfaces`): the whole feature sits behind one preview
+flag, so the driver is where both directions of the gate meet the real
+binary. Without the flag an interface declaration is E1100; with it a program
+that declares an interface, asserts conformance in a struct header and
+freestanding, and calls through a bounded comptime parameter compiles, links,
+and runs. The bound is erased after analysis, so the executable is an ordinary
+specialization.
+"""
+
+[[case]]
+name = "interface_without_preview_is_gated"
+description = "Without --preview interfaces the declaration is the standard gated-feature error, naming the flag."
+files = [{ path = "main.rue", source = """
+interface Show { fn show(borrow self) -> i64; }
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = [
+    "E1100",
+    "an `interface` declaration requires preview feature `interfaces`",
+    "use --preview interfaces to enable this feature (ADR-0005)",
+]
+
+[[case]]
+name = "bounded_program_runs_end_to_end"
+description = "With the flag a header assertion, a freestanding assertion, and a refining bound all resolve, verify, and run."
+files = [{ path = "main.rue", source = """
+interface Show { fn show(borrow self) -> i64; }
+interface Loud: Show { fn twice(borrow self) -> i64; }
+struct Val is Show {
+    n: i64,
+    fn show(borrow self) -> i64 { self.n }
+    fn twice(borrow self) -> i64 { self.n * 2 }
+}
+Val is Loud;
+fn render(comptime T: Loud, borrow x: T) -> i64 { x.show() + x.twice() }
+fn main() -> i32 {
+    let v = Val { n: 3 };
+    @dbg(render(Val, borrow v));
+    @intCast(render(Val, borrow v))
+}
+""" }]
+args = ["--preview", "interfaces", "main.rue", "-o", "prog"]
+stdout = "9\n"
+exit_code = 9
+
+[[case]]
+name = "unsatisfied_bound_is_a_driver_error"
+description = "A bound the argument type does not satisfy fails the build with E0305 at the call and no ICE."
+files = [{ path = "main.rue", source = """
+interface Show { fn show(borrow self) -> i64; }
+struct Val { n: i64, fn show(borrow self) -> i64 { self.n } }
+fn render(comptime T: Show, borrow x: T) -> i64 { x.show() }
+fn main() -> i32 { @intCast(render(Val, borrow Val { n: 3 })) }
+""" }]
+args = ["--preview", "interfaces", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0305", "type `Val` does not conform to interface `Show`"]
+compile_stderr_not_contains = ["internal compiler error"]
+
+[[case]]
+name = "private_associated_type_does_not_satisfy_public_requirement"
+description = "An associated type requirement is public across a conformance boundary; a private struct declaration cannot satisfy it."
+files = [{ path = "main.rue", source = """
+interface Has { const Element: type; fn n(borrow self) -> i64; }
+struct S is Has {
+    const Element = i64;
+    fn n(borrow self) -> i64 { 0 }
+}
+fn check(comptime T: Has, borrow x: T) -> i64 { x.n() }
+fn main() -> i32 { let s = S{}; @intCast(check(S, borrow s)) }
+""" }]
+args = ["--preview", "interfaces", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0304", "missing associated type `Element`"]
+compile_stderr_not_contains = ["internal compiler error"]
+
+[[case]]
+name = "nominal_types_with_the_same_short_name_do_not_match"
+description = "Conformance compares resolved nominal identities even when imported types render with the same short name."
+files = [
+    { path = "a.rue", source = "pub struct Item {}" },
+    { path = "b.rue", source = "pub struct Item {}" },
+    { path = "main.rue", source = """
+const a = @import("a.rue");
+const b = @import("b.rue");
+interface I { fn take(borrow self, x: a.Item); }
+struct S is I { fn take(borrow self, x: b.Item) {} }
+fn check(comptime T: I, borrow x: T) {}
+fn main() { let s = S{}; check(S, borrow s); }
+""" },
+]
+args = ["--preview", "interfaces", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0303", "member `take` has signature", "requirement is"]
+compile_stderr_not_contains = ["internal compiler error"]
+
+[[case]]
+name = "skolem_check_covers_imported_modules"
+description = """
+The skolem check (spec 6.8:19) runs for every bounded function in the import
+graph: a helper module's function that is never called still fails the build
+at its definition, with the note, and the build produces no executable.
+"""
+files = [
+    { path = "main.rue", source = """
+const helper = @import("helper.rue");
+fn main() -> i32 { @intCast(helper.answer()) }
+""" },
+    { path = "helper.rue", source = """
+interface Show { fn show(borrow self) -> i64; }
+pub fn answer() -> i64 { 3 }
+pub fn render(comptime T: Show, borrow x: T) -> i64 { x.show() + x.extra() }
+""" },
+]
+args = ["--preview", "interfaces", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = [
+    "E0411",
+    "no method named 'extra' found for type 'T'",
+    "helper.rue:3",
+    "while checking `render` against the bound of parameter `T`",
+]
+compile_stderr_not_contains = ["internal compiler error"]
+
+[[case]]
+name = "std_bounded_generic_runs_without_the_preview"
+description = """
+Spec 6.8:25: the trusted standard library declares interfaces, asserts that
+`StrBuf` conforms, and bounds `std.cmp.equals` / `std.cmp.compare` — none
+of which needs the flag from the program that calls them. The program itself
+declares nothing gated, so it compiles without `--preview`.
+"""
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn main() -> i32 {
+    let a: StrBuf = "apple";
+    let b: StrBuf = "banana";
+    let O = std.cmp.Ordering;
+    let order = match std.cmp.compare(StrBuf, borrow a, borrow b) {
+        O.Less => 1,
+        O.Equal => 2,
+        O.Greater => 3,
+    };
+    @dbg(order);
+    if std.cmp.equals(StrBuf, borrow a, borrow a) { order + 6 } else { 0 }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "1\n"
+exit_code = 7
+
+[[case]]
+name = "std_bounded_generic_is_skolem_checked_without_the_preview"
+description = """
+Spec 6.8:25 lifts the preview gate for a trusted standard-library module,
+not the definition-site check (6.8:19): a std bounded function whose body
+uses a member outside its bound fails the build of a program that never
+calls it and never passes the flag, with the check's note. The standard
+library here is a case-local stub, so the failure is planted rather than
+found in the real std.
+"""
+env = { RUE_STD_PATH = "sdk" }
+files = [
+    { path = "sdk/_std.rue", source = """
+pub interface Show { fn show(borrow self) -> i64; }
+pub fn render(comptime T: Show, borrow x: T) -> i64 { x.show() + x.extra() }
+""" },
+    { path = "main.rue", source = """
+const std = @import("std");
+fn main() -> i32 { 0 }
+""" },
+]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = [
+    "E0411",
+    "no method named 'extra' found for type 'T'",
+    "while checking `render` against the bound of parameter `T`",
+]
+compile_stderr_not_contains = ["E1100", "internal compiler error"]
+
+[[case]]
+name = "sibling_assertion_is_visible_throughout_the_selected_program"
+description = "A conformance asserted in one imported module satisfies a bound inside a sibling without changing name visibility."
+files = [
+    { path = "main.rue", source = """
+const checks = @import("checks.rue");
+const assertions = @import("assertions.rue");
+fn main() -> i32 { @intCast(checks.run()) }
+""" },
+    { path = "checks.rue", source = """
+pub interface Show { fn show(borrow self) -> i64; }
+pub struct Value { fn show(borrow self) -> i64 { 7 } }
+fn read(comptime T: Show, borrow value: T) -> i64 { value.show() }
+pub fn run() -> i64 { read(Value, borrow Value {}) }
+""" },
+    { path = "assertions.rue", source = """
+const checks = @import("checks.rue");
+checks.Value is checks.Show;
+checks.Value is checks.Show;
+""" },
+]
+args = ["--preview", "interfaces", "main.rue", "-o", "prog"]
+exit_code = 7
+
+[[case]]
+name = "global_assertions_preserve_private_interface_visibility"
+description = "Program-global conformance facts do not let an assertion name a private interface in another directory."
+files = [
+    { path = "main.rue", source = """
+const declarations = @import("private/declarations.rue");
+declarations.Value is declarations.Hidden;
+fn main() {}
+""" },
+    { path = "private/declarations.rue", source = """
+interface Hidden { fn show(borrow self) -> i64; }
+pub struct Value { fn show(borrow self) -> i64 { 7 } }
+""" },
+]
+args = ["--preview", "interfaces", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0706", "Hidden"]
+compile_stderr_not_contains = ["internal compiler error"]
+
+[[case]]
+name = "comptime_parameter_mismatch_is_visible_in_the_signature_diagnostic"
+description = "A comptime inherent parameter cannot satisfy a runtime parameter requirement, and E0303 shows the difference."
+files = [{ path = "main.rue", source = """
+interface Action { fn act(borrow self, n: i64); }
+struct Value is Action { fn act(borrow self, comptime n: i64) {} }
+fn invoke(comptime T: Action, borrow x: T) { x.act(3); }
+fn main() { invoke(Value, borrow Value {}); }
+""" }]
+args = ["--preview", "interfaces", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0303", "comptime _: i64", "requirement is `fn act(borrow self, _: i64)`"]

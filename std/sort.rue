@@ -44,8 +44,8 @@
 // ADR-0096's "no generic callbacks" rule; RUE-2113 measured the indirect call
 // itself in docs/notes/fn-params-indirect-call-overhead.md.
 //
-// COPY-`T` ONLY. Every comparison reads its two operands out of the buffer by
-// copy while the slots stay live, so a use of an element duplicates it rather
+// COPY-`T` ONLY for the natural-order and callback entry points. Each reads
+// its operands by copy while the slots stay live, so a use duplicates an element rather
 // than consuming it — that is what a Copy type does (3.8:1). Ordering also
 // needs the built-in `<`, which restricts `T` further to an integer or
 // floating-point type; that half is not expressible as a gate, the same gap
@@ -58,8 +58,8 @@
 // E0206/E0205 a comparison or a by-copy read would raise several frames deeper
 // inside this module (RUE-2049). A by-copy read of a drop-glue element while
 // its slot stays live would alias the element's owned buffer and double-free at
-// scope exit (RUE-651); sorting owned elements needs an ordering that reads
-// through `get_ref` borrows and is out of scope here.
+// scope exit (RUE-651). The interface entry points below read owning elements
+// through `get_ref` borrows instead.
 //
 // The gate covers the drop-glue half only. A move-only `T` with no drop glue is
 // exactly a struct not marked `@copy` (3.8:3, 3.8:19): it passes the gate,
@@ -73,7 +73,22 @@
 // default value, so nothing here assumes `T` admits the literal `0` — the
 // integer-only restriction the earlier `get_or(i, 0)` reads carried.
 
+// ORDERED ELEMENTS. `sort_by_order` and `is_sorted_by_order` are the
+// interface-bounded counterparts: they take any `T` conforming to
+// `std.interfaces.Ordered` (spec 6.8) — `StrBuf`, or a program's own struct
+// under `--preview interfaces` — and never copy an element. Comparisons read
+// both elements in place through `ArrayBuf.get_ref` and exchanges go through
+// `ArrayBuf.swap`, so an owning element type is sorted without duplicating
+// its buffer. They sit beside the `<` versions rather than replacing them:
+// an integer has no methods, so it cannot conform, and a bounded parameter
+// has no `<` (spec 6.8:20).
+//
+//     let mut names = std.arraybuf.ArrayBuf(StrBuf).new();
+//     // ... push names ...
+//     std.sort.sort_by_order(StrBuf, inout names);   // byte-lexicographic
+
 const arraybuf = @import("arraybuf.rue");
+const interfaces = @import("interfaces.rue");
 const option = @import("option.rue");
 
 // Element `i`, which every caller here has already proved in bounds. Reading
@@ -507,4 +522,89 @@ pub fn binary_search(comptime T: type, borrow xs: arraybuf.ArrayBuf(T), target: 
         }
     }
     O.None
+}
+
+// Whether element `i` orders strictly before element `j` under `T.less`,
+// reading both in place.
+fn less_at(comptime T: interfaces.Ordered, borrow xs: arraybuf.ArrayBuf(T), i: u64, j: u64) -> bool {
+    xs.get_ref(i).less(borrow xs.get_ref(j))
+}
+
+// Quicksort over the inclusive range `[lo, hi]` under `T.less`: the same
+// median-of-three, smaller-partition-recursive scheme as `qsort_range`, with
+// every read replaced by an in-place comparison and every write by a swap.
+// The pivot is parked at `hi` for the partition pass, so `less_at(j, hi)` is
+// the comparison against it.
+fn qsort_range_by_order(comptime T: interfaces.Ordered, inout xs: arraybuf.ArrayBuf(T), lo: u64, hi: u64) {
+    let mut lo = lo;
+    let mut hi = hi;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        // Median of three by comparisons alone.
+        let pivot_index = if less_at(T, borrow xs, lo, mid) {
+            if less_at(T, borrow xs, mid, hi) { mid } else if less_at(T, borrow xs, lo, hi) { hi } else { lo }
+        } else if less_at(T, borrow xs, lo, hi) {
+            lo
+        } else if less_at(T, borrow xs, mid, hi) {
+            hi
+        } else {
+            mid
+        };
+        xs.swap(pivot_index, hi);
+        let mut store = lo;
+        let mut j = lo;
+        while j < hi {
+            if less_at(T, borrow xs, j, hi) {
+                xs.swap(store, j);
+                store += 1;
+            }
+            j += 1;
+        }
+        xs.swap(store, hi);
+
+        let left_len = store - lo;
+        let right_len = hi - store;
+        if left_len < right_len {
+            if left_len > 1 {
+                qsort_range_by_order(T, inout xs, lo, store - 1);
+            }
+            if store == hi {
+                return;
+            }
+            lo = store + 1;
+        } else {
+            if right_len > 1 {
+                qsort_range_by_order(T, inout xs, store + 1, hi);
+            }
+            if store == lo {
+                return;
+            }
+            hi = store - 1;
+        }
+    }
+}
+
+// Sort under `Ordered.less`: average O(n log n), in place, not stable. Works
+// for any conforming element type, owning or `Copy`.
+pub fn sort_by_order(comptime T: interfaces.Ordered, inout xs: arraybuf.ArrayBuf(T)) {
+    let n = xs.len();
+    if n > 1 {
+        qsort_range_by_order(T, inout xs, 0, n - 1);
+    }
+}
+
+// Whether `xs` is in non-decreasing order under `Ordered.less`.
+pub fn is_sorted_by_order(comptime T: interfaces.Ordered, borrow xs: arraybuf.ArrayBuf(T)) -> bool {
+    let n = xs.len();
+    if n < 2 {
+        return true;
+    }
+    let mut i: u64 = 1;
+    while i < n {
+        if less_at(T, borrow xs, i, i - 1) {
+            return false;
+        }
+        i += 1;
+    }
+    true
 }

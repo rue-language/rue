@@ -104,6 +104,7 @@ const KEYWORD_TOKENS: &[TokenKind] = &[
     TokenKind::Impl,
     TokenKind::In,
     TokenKind::Inout,
+    TokenKind::Interface,
     TokenKind::Let,
     TokenKind::Linear,
     TokenKind::Loop,
@@ -182,7 +183,8 @@ pub enum TokenKind {
     False,
     Struct,
     Enum,
-    Impl, // impl (reserved; no impl blocks in Rue — methods live in struct bodies)
+    Impl,      // impl (reserved; no impl blocks in Rue — methods live in struct bodies)
+    Interface, // interface declaration (spec 6.8, `--preview interfaces`)
     Drop,
     Linear,    // linear struct modifier
     SelfValue, // self (value, not type)
@@ -343,6 +345,7 @@ impl TokenKind {
             TokenKind::F32 => "f32",
             TokenKind::F64 => "f64",
             TokenKind::Type => "type",
+            TokenKind::Interface => "interface",
             // Not keywords: the wildcard pattern, the literal and identifier
             // classes, every operator and punctuator, and end of file.
             TokenKind::Underscore
@@ -424,6 +427,7 @@ impl TokenKind {
             TokenKind::Struct => "'struct'",
             TokenKind::Enum => "'enum'",
             TokenKind::Impl => "'impl'",
+            TokenKind::Interface => "'interface'",
             TokenKind::Drop => "'drop'",
             TokenKind::Linear => "'linear'",
             TokenKind::SelfValue => "'self'",
@@ -544,6 +548,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Struct => write!(f, "STRUCT"),
             TokenKind::Enum => write!(f, "ENUM"),
             TokenKind::Impl => write!(f, "IMPL"),
+            TokenKind::Interface => write!(f, "INTERFACE"),
             TokenKind::Drop => write!(f, "DROP"),
             TokenKind::Linear => write!(f, "LINEAR"),
             TokenKind::SelfValue => write!(f, "SELF"),

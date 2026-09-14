@@ -7128,3 +7128,298 @@ fn repointing_a_callable_alias_reanalyzes_every_site_that_named_it() {
     assert_body_artifact_parity(&actual, &fresh);
     assert_diagnostic_parity(&session, &fresh_session);
 }
+
+#[test]
+fn program_conformances_follow_assertion_import_and_root_revisions() {
+    let common = r#"
+pub interface Show { fn show(borrow self) -> i64; }
+pub struct Value { fn show(borrow self) -> i64 { 7 } }
+pub fn read(comptime T: Show, borrow value: T) -> i64 { value.show() }
+pub fn Wrapper(comptime T: Show) -> type { struct { value: T } }
+pub fn run() -> i64 {
+    let W = Wrapper(Value);
+    let wrapped = W { value: Value {} };
+    read(Value, borrow wrapped.value)
+}
+"#;
+    let with_assertion = "const c = @import(\"common.rue\"); c.Value is c.Show;";
+    let without_assertion = "const c = @import(\"common.rue\");";
+    let entry = "const c = @import(\"common.rue\"); const a = @import(\"assertions.rue\"); fn main() -> i32 { @intCast(c.run()) }";
+    let other_entry = "const c = @import(\"common.rue\"); fn main() -> i32 { @intCast(c.run()) }";
+    let options = CompileOptions {
+        preview_features: PreviewFeatures::from([PreviewFeature::Interfaces]),
+        ..CompileOptions::default()
+    };
+    let mut warm = CompilerSession::new();
+    for (root, main, assertion, should_pass) in [
+        (1, entry, with_assertion, true),
+        (1, entry, without_assertion, false),
+        (1, entry, with_assertion, true),
+        (1, other_entry, with_assertion, false),
+        (1, entry, with_assertion, true),
+        (4, entry, with_assertion, false),
+        (1, entry, with_assertion, true),
+    ] {
+        let source = snapshot(
+            &[
+                (1, "/project/main.rue", "main.rue", main),
+                (2, "/project/common.rue", "common.rue", common),
+                (3, "/project/assertions.rue", "assertions.rue", assertion),
+                (4, "/project/other.rue", "other.rue", other_entry),
+            ],
+            root,
+        );
+        publish_with_test_imports(&mut warm, &source);
+        let actual = warm.rooted_cfg(&options);
+        let mut cold = CompilerSession::new();
+        publish_with_test_imports(&mut cold, &source);
+        let expected = cold.rooted_cfg(&options);
+        assert_eq!(actual.is_ok(), should_pass, "warm: {actual:?}");
+        assert_eq!(expected.is_ok(), should_pass, "cold: {expected:?}");
+        if let Err(errors) = actual {
+            assert!(
+                errors.iter().any(|error| matches!(
+                    &error.kind,
+                    ErrorKind::InterfaceBoundNotSatisfied { .. }
+                )),
+                "{errors:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn program_conformance_failures_survive_independent_body_queries() {
+    let source = SourceSnapshot::single(
+        "main.rue",
+        r#"
+interface Show { fn show(borrow self) -> i64; }
+struct Value is Show { fn show(borrow self) -> i64 { 1 } }
+Value is Missing;
+fn read(comptime T: Show, borrow value: T) -> i64 { value.show() }
+fn main() -> i32 { @intCast(read(Value, borrow Value {})) }
+"#,
+    )
+    .unwrap();
+    let options = CompileOptions {
+        preview_features: PreviewFeatures::from([PreviewFeature::Interfaces]),
+        ..CompileOptions::default()
+    };
+    let mut session = CompilerSession::new();
+    session.update(&source).into_result().unwrap();
+    let key = body_query_key_in(&options, "main.rue", "main");
+    let revision = session
+        .queries
+        .revisioned
+        .current_semantic_revision()
+        .unwrap();
+    let failure = session
+        .queries
+        .revisioned
+        .body_transaction(revision, key, rue_query::CancellationToken::new())
+        .unwrap_err();
+    let crate::revisioned_query_database::BodyTransactionRequestFailure::ProducerFailed(failure) =
+        failure
+    else {
+        panic!("{failure:?}");
+    };
+    assert!(
+        matches!(failure.as_ref(), crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticAtModuleRange {
+        kind: ErrorKind::InterfaceNotFound { name }, ..
+    } if name == "Missing"),
+        "{failure:?}"
+    );
+}
+
+#[test]
+fn interface_definition_checks_fail_the_whole_test_request() {
+    let source = SourceSnapshot::single(
+        "main.rue",
+        r#"
+interface Show { fn show(borrow self) -> i64; }
+fn invalid(comptime T: Show, borrow x: T) { x.missing(); }
+test "fine" {}
+"#,
+    )
+    .unwrap();
+    let options = CompileOptions {
+        root_selection: crate::RootSelection::Tests,
+        preview_features: PreviewFeatures::from([PreviewFeature::Interfaces]),
+        ..CompileOptions::default()
+    };
+    let mut session = CompilerSession::new();
+    crate::test_support::TestDiscoveryHost::new(&source)
+        .unwrap()
+        .drive(&mut session)
+        .unwrap();
+    let errors = session
+        .rooted_test_closure_analysis(&options)
+        .err()
+        .expect("an invalid definition fails the whole test request");
+    assert!(errors.to_string().contains("missing"), "{errors:?}");
+    let errors = crate::unstable::test_image_in_compile_scope(&mut session, &options).unwrap_err();
+    assert!(errors.to_string().contains("missing"), "{errors:?}");
+}
+
+#[test]
+fn interface_definition_checks_preserve_test_recovery_and_stay_out_of_cfg() {
+    let declarations = r#"
+interface Show { fn show(borrow self) -> i64; }
+fn valid(comptime T: Show, borrow x: T) -> i64 { x.show() }
+test "bbb fine" {}
+"#;
+    let options = CompileOptions {
+        root_selection: crate::RootSelection::Tests,
+        preview_features: PreviewFeatures::from([PreviewFeature::Interfaces]),
+        ..CompileOptions::default()
+    };
+    let mut session = CompilerSession::new();
+    publish_with_test_imports(
+        &mut session,
+        &SourceSnapshot::single("main.rue", declarations).unwrap(),
+    );
+    let cfg = session.rooted_cfg(&options).unwrap();
+    assert_eq!(cfg.work().cfg.skolem_checks_filtered, 1);
+    assert!(
+        cfg.functions()
+            .iter()
+            .all(|unit| !crate::skolem::instance_is_skolem_check(&unit.function))
+    );
+    let source = SourceSnapshot::single(
+        "main.rue",
+        format!("{declarations}\ntest \"aaa broken\" {{ let x: i32 = true; }}"),
+    )
+    .unwrap();
+    crate::test_support::TestDiscoveryHost::new(&source)
+        .unwrap()
+        .drive(&mut session)
+        .unwrap();
+    let image = crate::unstable::test_image_in_compile_scope(&mut session, &options).unwrap();
+    assert_eq!(image.compile_failures.len(), 1);
+    assert_eq!(image.compile_failures[0].entry.id, "main.rue::aaa broken");
+    assert_eq!(image.compile_failures[0].entry.ordinal, 0);
+    assert_eq!(image.inventory.entries[1].id, "main.rue::bbb fine");
+    assert_eq!(image.inventory.entries[1].ordinal, 1);
+}
+
+#[test]
+fn constructor_bound_requirements_survive_cached_declaration_projections() {
+    let common = r#"
+pub interface Show { fn show(borrow self) -> i64; }
+pub struct Value { fn show(borrow self) -> i64 { 7 } }
+pub fn Wrapper(comptime T: Show) -> type { struct { value: T } }
+pub struct Holder { wrapped: Wrapper(Value) }
+"#;
+    let entry =
+        "const c = @import(\"common.rue\"); const a = @import(\"assertions.rue\"); fn main() {}";
+    let options = CompileOptions {
+        preview_features: PreviewFeatures::from([PreviewFeature::Interfaces]),
+        ..CompileOptions::default()
+    };
+    let mut warm = CompilerSession::new();
+    for assertion in [
+        "const c = @import(\"common.rue\"); c.Value is c.Show;",
+        "const c = @import(\"common.rue\");",
+        "const c = @import(\"common.rue\"); c.Value is c.Show;",
+    ] {
+        let source = snapshot(
+            &[
+                (1, "/project/main.rue", "main.rue", entry),
+                (2, "/project/common.rue", "common.rue", common),
+                (3, "/project/assertions.rue", "assertions.rue", assertion),
+            ],
+            1,
+        );
+        let should_pass = assertion.contains(" is ");
+        publish_with_test_imports(&mut warm, &source);
+        let actual = warm.rooted_cfg(&options);
+        let mut cold = CompilerSession::new();
+        publish_with_test_imports(&mut cold, &source);
+        let expected = cold.rooted_cfg(&options);
+        assert_eq!(actual.is_ok(), should_pass, "warm: {actual:?}");
+        assert_eq!(expected.is_ok(), should_pass, "cold: {expected:?}");
+        if let Err(errors) = actual {
+            assert!(
+                errors.iter().any(|error| matches!(
+                    &error.kind,
+                    ErrorKind::InterfaceBoundNotSatisfied { .. }
+                )),
+                "{errors:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn constructor_bound_diagnostics_preserve_labels_across_source_edits() {
+    let common = "pub interface Both { fn first(borrow self); fn second(borrow self); }\n\
+        pub struct Value {}\n\
+        pub fn Wrapper(comptime T: Both) -> type { struct { value: T } }\n\
+        pub struct Holder { wrapped: Wrapper(Value) }";
+    let entry =
+        "const c = @import(\"common.rue\"); const a = @import(\"assertions.rue\"); fn main() {}";
+    let assertion = "const c = @import(\"common.rue\"); c.Value is c.Both;";
+    let options = CompileOptions {
+        preview_features: PreviewFeatures::from([PreviewFeature::Interfaces]),
+        ..CompileOptions::default()
+    };
+    let mut warm = CompilerSession::new();
+    for (prefix, common_id, assertion_id) in [("", 2, 3), ("// shifted\n\n", 2, 3), ("", 9, 4)] {
+        let padding = " ".repeat(32 - prefix.len());
+        let shifted_common = format!("{prefix}{common}{padding}");
+        let shifted_assertion = format!("{prefix}{assertion}{padding}");
+        let source = snapshot(
+            &[
+                (1, "/project/main.rue", "main.rue", entry),
+                (
+                    common_id,
+                    "/project/common.rue",
+                    "common.rue",
+                    &shifted_common,
+                ),
+                (
+                    assertion_id,
+                    "/project/assertions.rue",
+                    "assertions.rue",
+                    &shifted_assertion,
+                ),
+            ],
+            1,
+        );
+        publish_with_test_imports(&mut warm, &source);
+        let actual = warm.rooted_cfg(&options).unwrap_err();
+        let mut cold = CompilerSession::new();
+        publish_with_test_imports(&mut cold, &source);
+        let expected = cold.rooted_cfg(&options).unwrap_err();
+        assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
+        let error = actual
+            .iter()
+            .find(|error| matches!(error.kind, ErrorKind::InterfaceMemberMissing(_)))
+            .expect("the constructor checks both required members");
+        let primary = error.span().unwrap();
+        let published = warm.import_diagnostics().unwrap();
+        assert_eq!(
+            published.source().metadata().physical_path(primary.file_id),
+            Some("assertions.rue")
+        );
+        assert_eq!(
+            primary.start as usize,
+            shifted_assertion.find("c.Value").unwrap()
+        );
+        assert!(
+            error
+                .diagnostic()
+                .labels
+                .iter()
+                .any(|label| label.message == "missing member `second`" && label.span == primary)
+        );
+        assert!(error.diagnostic().labels.iter().any(|label| {
+            label.message == "conformance relied on here"
+                && published
+                    .source()
+                    .metadata()
+                    .physical_path(label.span.file_id)
+                    == Some("common.rue")
+        }));
+    }
+}

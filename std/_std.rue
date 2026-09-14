@@ -7,7 +7,9 @@
 // - std.math: Integer math (generic min/max/abs/gcd/isqrt/pow, i64 checked_*)
 //   and float math (sqrt/floor/ceil/trunc/round, inf/nan predicates, exact
 //   rem, total_cmp)
-// - std.cmp: Ordering + generic min/max/clamp/cmp
+// - std.interfaces: Equatable / Hashable / Ordered / Display, the interfaces
+//   std's bounded generics require (StrBuf conforms to all four)
+// - std.cmp: Ordering + generic min/max/clamp/cmp, `equals` over Equatable
 // - std.iter: eager map/filter/fold/reduce/for_each/count_if/any/all/find_index/
 //   max_by/min_by over ArrayBuf(T), each taking a callback with explicit context
 // - std.mem: swap / replace (inout helpers)
@@ -15,7 +17,9 @@
 // - std.fmt: scalar-to-string formatting (int/float/bool, hex/binary)
 // - std.option.Option: Optional values
 // - std.result.Result: Fallible values (Ok/Err), propagated with `?`
-// - std.intmap.IntMap / std.strmap.StrMap: open-addressing hash maps
+// - std.hashmap.HashMap(K, V): open-addressing hash map over any
+//   `Hashable + Equatable` key; std.strmap.StrMap is its StrBuf-keyed form
+//   and std.intmap.IntMap the separate integer-keyed one
 // - std.hash: FNV-1a/64 and djb2 byte hashing (Hasher + one-shot helpers)
 // - std.strbuf.StrBuf: Growable strings, with copying bridges to str and
 //   ArrayBuf(u8) (`from_str`, `from_bytes`, `to_bytes`, and append variants)
@@ -34,6 +38,7 @@
 
 // Re-export library modules.
 pub const math = @import("math.rue");
+pub const interfaces = @import("interfaces.rue");
 pub const cmp = @import("cmp.rue");
 pub const mem = @import("mem.rue");
 pub const tuple = @import("tuple.rue");
@@ -66,6 +71,7 @@ pub const queue = @import("queue.rue");
 pub const deque = @import("deque.rue");
 pub const grid = @import("grid.rue");
 pub const binary_heap = @import("binary_heap.rue");
+pub const hashmap = @import("hashmap.rue");
 pub const intmap = @import("intmap.rue");
 pub const strmap = @import("strmap.rue");
 pub const bitset = @import("bitset.rue");

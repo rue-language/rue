@@ -128,7 +128,8 @@ pub use body_endpoint::ProviderEndpointFacts;
 pub use body_identity::{
     BodyRirBundle, BodyRirIndexAttribution, BodyRirView, DurableAnonymousMethod,
     DurableAnonymousMethodType, DurableAnonymousShape, DurableAnonymousSource,
-    DurableCallableSource, DurableCallableTypeSyntax, DurableConst, DurableConstSource,
+    DurableCallableSource, DurableCallableTypeSyntax, DurableConformance,
+    DurableConformanceAssertion, DurableConformanceFacts, DurableConst, DurableConstSource,
     DurableFunction, DurableMethod, DurableNominal, DurableNominalBody, DurableNominalSource,
     DurableSignatureParameter, ProviderBodyAnalysisState, ProviderIdentityContext,
 };
@@ -141,7 +142,7 @@ pub use provider_body_host::{
     SemanticProducedAnonymousMethodSignature, SemanticProducedAnonymousMethodType,
     SemanticProducedAnonymousNominal, SemanticProducedAnonymousNominalShape,
     analyze_provider_anonymous_body, analyze_provider_ordinary_body,
-    analyze_provider_specialized_body,
+    analyze_provider_specialized_body, check_provider_interface_bound,
 };
 
 use rue_span::Span;
@@ -149,14 +150,14 @@ use rue_span::Span;
 use crate::types::Type;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DeferredOwnershipGateKind {
+pub(crate) enum DeferredRequirementKind {
     RequireDroppable,
     RequireTriviallyDroppable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DeferredOwnershipGate {
-    kind: DeferredOwnershipGateKind,
+pub(crate) struct DeferredRequirement {
+    kind: DeferredRequirementKind,
     ty: Type,
     span: Span,
 }

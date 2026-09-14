@@ -599,7 +599,12 @@ impl RevisionedQueryDatabase {
             crate::type_queries::TypeFactsValue,
         >>();
         let type_facts_for_semantic_nucleus = type_facts_family.clone();
+        let body_transaction_evaluator_for_semantic_nucleus = body_transaction_evaluator.clone();
+        let module_store_for_semantic_nucleus = module_store.clone();
+        let lookup_imports_for_semantic_nucleus = lookup_imports.clone();
         let semantic_nucleus = register_semantic_semantic_nucleus!(
+            module_store_for_semantic_nucleus,
+            lookup_imports_for_semantic_nucleus,
             artifacts_for_semantic_nucleus,
             declaration_memo_retention,
             imports_for_semantic_nucleus,
@@ -608,7 +613,8 @@ impl RevisionedQueryDatabase {
             produced_anonymous_for_semantic_nucleus,
             runtime,
             shells_for_semantic_nucleus,
-            type_facts_for_semantic_nucleus
+            type_facts_for_semantic_nucleus,
+            body_transaction_evaluator_for_semantic_nucleus
         );
         assert!(
             semantic_nucleus_for_produced_anonymous

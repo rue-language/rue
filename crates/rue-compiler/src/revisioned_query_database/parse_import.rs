@@ -711,6 +711,7 @@ pub(super) struct ModuleInputView {
 
 #[derive(Debug)]
 pub(super) struct ModuleInputStampLease {
+    pub(super) root: Option<ModuleId>,
     pub(super) parent: Option<Arc<ModuleInputStampLease>>,
     pub(super) sources: Arc<[ModuleRevision]>,
     pub(super) metadata: Arc<[ModuleMetadataLeaf]>,
@@ -737,6 +738,7 @@ pub(super) struct ModuleInputStore {
     pub(super) next_stamp: u64,
     pub(super) stamps: AHashMap<ModuleInputLeaf, RetainedValueStamp>,
     pub(super) metadata_stamps: AHashMap<ModuleMetadataLeaf, RetainedValueStamp>,
+    pub(super) root_stamps: AHashMap<ModuleId, RetainedValueStamp>,
 }
 
 #[cfg(test)]
@@ -764,6 +766,7 @@ impl Default for ModuleInputStore {
             next_stamp: 1,
             stamps: AHashMap::new(),
             metadata_stamps: AHashMap::new(),
+            root_stamps: AHashMap::new(),
         }
     }
 }
@@ -1423,6 +1426,12 @@ impl Default for ImportInputStore {
     }
 }
 
+/// The selected program root is independent of the source leaves: switching
+/// roots among the same files must invalidate program-wide semantic facts.
+pub(super) fn program_root_input() -> InputIdentity {
+    InputIdentity::new("program-root", "selected")
+}
+
 pub(super) fn module_source_input(module: &ModuleId) -> InputIdentity {
     InputIdentity::new("module-source", Arc::<str>::from(module.as_str()))
 }
@@ -1652,6 +1661,9 @@ pub(super) fn release_orphaned_module_stamp_leases(
         }
         for metadata in lease.metadata.iter() {
             release_stamp_value(&mut store.metadata_stamps, metadata);
+        }
+        if let Some(root) = &lease.root {
+            release_stamp_value(&mut store.root_stamps, root);
         }
         next = lease.parent;
     }
@@ -2096,6 +2108,11 @@ pub(super) fn publish_module_inputs_delta(
         .get(&parent_revision)
         .expect("a module overlay extends its retained exact parent view")
         .clone();
+    assert_eq!(
+        snapshot.source_revision().root(),
+        parent_view.snapshot.source_revision().root(),
+        "an additive module overlay preserves the selected program root"
+    );
     let parent_lease = parent_view.stamp_lease.clone();
     let mut leaves = Vec::new();
     let mut metadata_leases = Vec::new();
@@ -2141,6 +2158,7 @@ pub(super) fn publish_module_inputs_delta(
     );
     let stamp_lease = Arc::new(ModuleInputStampLease {
         parent: Some(parent_lease),
+        root: None,
         sources: new_sources.to_vec().into(),
         metadata: metadata_leases.into(),
     });
@@ -2161,7 +2179,15 @@ pub(super) fn publish_module_inputs(
     let mut store = store
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut leaves = Vec::new();
+    let root = snapshot.source_revision().root().clone();
+    let ModuleInputStore {
+        next_stamp,
+        root_stamps,
+        ..
+    } = &mut *store;
+    let root_stamp = exact_value_stamp(next_stamp, root_stamps, &root);
+    retain_stamp_value(root_stamps, &root);
+    let mut leaves = vec![(program_root_input(), root_stamp)];
     let mut sources = Vec::new();
     let mut metadata_leases = Vec::new();
     let metadata_by_module = module_metadata_leaves(snapshot);
@@ -2194,6 +2220,7 @@ pub(super) fn publish_module_inputs(
     }
     let stamp_lease = Arc::new(ModuleInputStampLease {
         parent: None,
+        root: Some(root),
         sources: sources.into(),
         metadata: metadata_leases.into(),
     });

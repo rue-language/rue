@@ -844,6 +844,94 @@ define_error_codes! {
     /// band rather than with its E04xx duplicate-definition siblings because
     /// that band is at its ceiling (E0499).
     DUPLICATE_TEST_DEFINITION = 262;
+    // E0300-E0307 form the interface block (spec 6.8, `--preview interfaces`).
+    /// A conformance assertion, refinement list, or bound names an interface
+    /// that does not exist in scope (spec 6.8:18).
+    INTERFACE_NOT_FOUND = 300 => {
+        explanation: "A conformance assertion, refinement, or comptime parameter bound names an interface that cannot be resolved. Interface declarations follow ordinary module naming and visibility rules.",
+        likely_cause: "The interface name is misspelled, its module has not been imported, or the declaration is private. Declare the interface or use its accessible module-qualified name.",
+        examples: [
+            ErrorCodeExample { title: "Unknown interface", source: "struct Value is Missing {}\nfn main() {}", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: ["interfaces"] },
+            ErrorCodeExample { title: "Declare the interface", source: "interface Marker { fn mark(borrow self); }\nstruct Value is Marker { fn mark(borrow self) {} }\nfn main() {}", outcome: ErrorCodeExampleOutcome::Compiles, preview: ["interfaces"] },
+        ],
+        references: [ErrorCodeReference { title: "Interfaces", path: "docs/spec/src/06-items/08-interfaces.md", rule: Some("6.8:18") }],
+    };
+    /// Two requirements of one interface share a name (spec 6.8:6).
+    DUPLICATE_INTERFACE_REQUIREMENT = 301 => {
+        explanation: "An interface declares more than one requirement with the same name. Requirement names are unique within an interface; different parameter lists do not introduce overloads.",
+        likely_cause: "A requirement was repeated or two operations were given the same name. Remove the duplicate or give distinct operations distinct names.",
+        examples: [
+            ErrorCodeExample { title: "Repeated requirement", source: "interface Show { fn show(borrow self); fn show(borrow self); }\nfn main() {}", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: ["interfaces"] },
+            ErrorCodeExample { title: "One requirement per name", source: "interface Show { fn show(borrow self); }\nfn main() {}", outcome: ErrorCodeExampleOutcome::Compiles, preview: ["interfaces"] },
+        ],
+        references: [ErrorCodeReference { title: "Interface requirements", path: "docs/spec/src/06-items/08-interfaces.md", rule: Some("6.8:6") }],
+    };
+    /// A conformance assertion names a type that has no inherent member of a
+    /// required name (spec 6.8:10).
+    INTERFACE_MEMBER_MISSING = 302 => {
+        explanation: "A type asserts conformance to an interface but has no inherent member with a required name. A bodiless conformance assertion verifies existing members; it does not supply an implementation.",
+        likely_cause: "A required method or receiverless function is missing or misspelled. Add an inherent member with the required signature, or remove the unsupported assertion.",
+        examples: [
+            ErrorCodeExample { title: "Missing method", source: "interface Show { fn show(borrow self) -> i64; }\nstruct Value is Show {}\nfn read(comptime T: Show, borrow x: T) -> i64 { x.show() }\nfn main() -> i32 { @intCast(read(Value, borrow Value {})) }", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: ["interfaces"] },
+            ErrorCodeExample { title: "Supply the inherent method", source: "interface Show { fn show(borrow self) -> i64; }\nstruct Value is Show { fn show(borrow self) -> i64 { 42 } }\nfn read(comptime T: Show, borrow x: T) -> i64 { x.show() }\nfn main() -> i32 { @intCast(read(Value, borrow Value {})) }", outcome: ErrorCodeExampleOutcome::Compiles, preview: ["interfaces"] },
+        ],
+        references: [ErrorCodeReference { title: "Conformance verification", path: "docs/spec/src/06-items/08-interfaces.md", rule: Some("6.8:10") }],
+    };
+    /// A conformance assertion names a type whose inherent member exists but
+    /// does not have the requirement's signature (spec 6.8:10).
+    INTERFACE_SIGNATURE_MISMATCH = 303 => {
+        explanation: "A required inherent member exists, but its signature differs from the interface requirement after substituting Self and associated types. Receiver modes, parameter modes and types, and the result must match.",
+        likely_cause: "The method uses a different access mode or type. Compare the expected and found signatures in the diagnostic and align the inherent declaration with the requirement.",
+        examples: [
+            ErrorCodeExample { title: "Different return type", source: "interface Show { fn show(borrow self) -> i64; }\nstruct Value is Show { fn show(borrow self) -> bool { true } }\nfn read(comptime T: Show, borrow x: T) -> i64 { x.show() }\nfn main() -> i32 { @intCast(read(Value, borrow Value {})) }", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: ["interfaces"] },
+            ErrorCodeExample { title: "Matching return type", source: "interface Show { fn show(borrow self) -> i64; }\nstruct Value is Show { fn show(borrow self) -> i64 { 42 } }\nfn read(comptime T: Show, borrow x: T) -> i64 { x.show() }\nfn main() -> i32 { @intCast(read(Value, borrow Value {})) }", outcome: ErrorCodeExampleOutcome::Compiles, preview: ["interfaces"] },
+        ],
+        references: [ErrorCodeReference { title: "Conformance signatures", path: "docs/spec/src/06-items/08-interfaces.md", rule: Some("6.8:10") }],
+    };
+    /// A conformance assertion names a type that declares no associated type
+    /// for a type-valued associated constant requirement (spec 6.8:10).
+    MISSING_ASSOCIATED_TYPE = 304 => {
+        explanation: "An interface requires a type-valued associated constant for which the conforming type has no public associated type declaration.",
+        likely_cause: "The type omitted the associated type, spelled its name differently, or did not expose it publicly. Add a matching pub const declaration naming the associated type.",
+        examples: [
+            ErrorCodeExample { title: "Missing associated type", source: "interface HasElement { const Element: type; }\nstruct Value is HasElement {}\nfn accept(comptime T: HasElement, borrow x: T) {}\nfn main() { accept(Value, borrow Value {}); }", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: ["interfaces"] },
+            ErrorCodeExample { title: "Declare the public associated type", source: "interface HasElement { const Element: type; }\nstruct Value is HasElement { pub const Element = i64; }\nfn accept(comptime T: HasElement, borrow x: T) {}\nfn main() { accept(Value, borrow Value {}); }", outcome: ErrorCodeExampleOutcome::Compiles, preview: ["interfaces"] },
+        ],
+        references: [ErrorCodeReference { title: "Associated type requirements", path: "docs/spec/src/06-items/08-interfaces.md", rule: Some("6.8:10") }],
+    };
+    /// A call binds a type argument that does not conform to every interface
+    /// in the parameter's bound (spec 6.8:15).
+    INTERFACE_BOUND_NOT_SATISFIED = 305 => {
+        explanation: "A comptime type argument does not have an asserted conformance satisfying an interface bound. Having matching inherent members alone does not establish declared conformance.",
+        likely_cause: "The concrete type needs a conformance assertion, or an enclosing generic parameter needs the required interface in its own bound. Follow the diagnostic's suggested assertion or bound addition.",
+        examples: [
+            ErrorCodeExample { title: "Matching member without an assertion", source: "interface Show { fn show(borrow self) -> i64; }\nstruct Value { fn show(borrow self) -> i64 { 42 } }\nfn read(comptime T: Show, borrow x: T) -> i64 { x.show() }\nfn main() -> i32 { @intCast(read(Value, borrow Value {})) }", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: ["interfaces"] },
+            ErrorCodeExample { title: "Assert conformance", source: "interface Show { fn show(borrow self) -> i64; }\nstruct Value is Show { fn show(borrow self) -> i64 { 42 } }\nfn read(comptime T: Show, borrow x: T) -> i64 { x.show() }\nfn main() -> i32 { @intCast(read(Value, borrow Value {})) }", outcome: ErrorCodeExampleOutcome::Compiles, preview: ["interfaces"] },
+        ],
+        references: [ErrorCodeReference { title: "Interface bounds", path: "docs/spec/src/06-items/08-interfaces.md", rule: Some("6.8:15") }],
+    };
+    /// A comptime parameter bound (spec 6.8:14), a conformance assertion, or
+    /// a refinement list names something that is not an interface.
+    BOUND_IS_NOT_AN_INTERFACE = 306 => {
+        explanation: "A conformance assertion, refinement, or interface bound names an entity that is not an interface. An ordinary concrete type cannot be used as an interface requirement.",
+        likely_cause: "A struct, enum, or primitive type was supplied where an interface name is required. Use a declared interface, or use comptime T: type for an unbounded type parameter.",
+        examples: [
+            ErrorCodeExample { title: "Concrete type used as a bound", source: "struct Concrete {}\nfn accept(comptime T: Concrete, borrow x: T) {}\nfn main() {}", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: ["interfaces"] },
+            ErrorCodeExample { title: "Use an interface bound", source: "interface Marker { fn mark(borrow self); }\nfn accept(comptime T: Marker, borrow x: T) {}\nfn main() {}", outcome: ErrorCodeExampleOutcome::Compiles, preview: ["interfaces"] },
+        ],
+        references: [ErrorCodeReference { title: "Bound declarations", path: "docs/spec/src/06-items/08-interfaces.md", rule: Some("6.8:14") }],
+    };
+    /// Two interfaces of one bound set declare a requirement of the same
+    /// name with different signatures (spec 6.8:21).
+    CONFLICTING_BOUND_REQUIREMENTS = 307 => {
+        explanation: "Interfaces combined in one bound require the same member name with incompatible signatures. A bounded parameter must satisfy every requirement, and Rue does not select an overload through conformance.",
+        likely_cause: "Two combined interfaces disagree about a receiver mode, parameter, result, or member kind. Align their shared requirement or give the distinct operations distinct names.",
+        examples: [
+            ErrorCodeExample { title: "Conflicting result types", source: "interface Sized { fn len(borrow self) -> u64; }\ninterface Counted { fn len(borrow self) -> i64; }\nfn measure(comptime T: Sized + Counted, borrow x: T) -> u64 { x.len() }\nfn main() {}", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: ["interfaces"] },
+            ErrorCodeExample { title: "Compatible shared requirement", source: "interface Sized { fn len(borrow self) -> u64; }\ninterface Counted { fn len(borrow self) -> u64; }\nfn measure(comptime T: Sized + Counted, borrow x: T) -> u64 { x.len() }\nfn main() {}", outcome: ErrorCodeExampleOutcome::Compiles, preview: ["interfaces"] },
+        ],
+        references: [ErrorCodeReference { title: "Bound consistency", path: "docs/spec/src/06-items/08-interfaces.md", rule: Some("6.8:21") }],
+    };
 
     // ========================================================================
     // Struct/enum errors (E0400-E0499)
@@ -2577,6 +2665,33 @@ pub struct ForeignSignatureConflictError {
     pub previously_declared: String,
 }
 
+/// Payload for `ErrorKind::InterfaceMemberMissing` and
+/// `ErrorKind::MissingAssociatedType`, boxed under the three-String policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterfaceRequirementUnsatisfiedError {
+    /// The type the conformance assertion names.
+    pub ty: String,
+    /// The interface it is asserted to conform to.
+    pub interface: String,
+    /// The requirement that has no counterpart on the type.
+    pub member: String,
+}
+
+/// Payload for `ErrorKind::InterfaceSignatureMismatch`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterfaceSignatureMismatchError {
+    /// The type the conformance assertion names.
+    pub ty: String,
+    /// The interface it is asserted to conform to.
+    pub interface: String,
+    /// The requirement whose counterpart has the wrong signature.
+    pub member: String,
+    /// The requirement's signature after substituting the type for `Self`.
+    pub expected: String,
+    /// The inherent member's actual signature.
+    pub found: String,
+}
+
 /// Payload for `ErrorKind::LinearFieldDroppedByDestructure`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinearFieldDroppedByDestructureError {
@@ -2629,6 +2744,10 @@ pub enum PreviewFeature {
     CFfi,
     /// Public enums may promise that importing matches include a wildcard.
     NonExhaustiveEnums,
+    /// Interfaces: `interface` declarations, `is` conformance assertions, and
+    /// interface bounds on comptime type parameters (spec 6.8). Gated until
+    /// conformance verification and bound checking are complete.
+    Interfaces,
     /// Struct destructuring patterns in `let` statements (ADR-0091,
     /// RUE-1884): `let Point { x, y } = p;` binds every field by name.
     StructPatterns,
@@ -2657,6 +2776,7 @@ impl PreviewFeature {
             PreviewFeature::TestInfra => "test_infra",
             PreviewFeature::CFfi => "c_ffi",
             PreviewFeature::NonExhaustiveEnums => "non_exhaustive_enums",
+            PreviewFeature::Interfaces => "interfaces",
             PreviewFeature::StructPatterns => "struct_patterns",
             PreviewFeature::CheckedReasons => "checked_reasons",
         }
@@ -2669,6 +2789,7 @@ impl PreviewFeature {
             PreviewFeature::TestInfra => "ADR-0005",
             PreviewFeature::CFfi => "ADR-0064",
             PreviewFeature::NonExhaustiveEnums => "ADR-0005",
+            PreviewFeature::Interfaces => "ADR-0005",
             PreviewFeature::StructPatterns => "ADR-0091",
             PreviewFeature::CheckedReasons => "ADR-0095",
         }
@@ -2680,6 +2801,7 @@ impl PreviewFeature {
             PreviewFeature::TestInfra,
             PreviewFeature::CFfi,
             PreviewFeature::NonExhaustiveEnums,
+            PreviewFeature::Interfaces,
             PreviewFeature::StructPatterns,
             PreviewFeature::CheckedReasons,
         ]
@@ -2724,6 +2846,7 @@ impl std::str::FromStr for PreviewFeature {
             "test_infra" => Ok(PreviewFeature::TestInfra),
             "c_ffi" => Ok(PreviewFeature::CFfi),
             "non_exhaustive_enums" => Ok(PreviewFeature::NonExhaustiveEnums),
+            "interfaces" => Ok(PreviewFeature::Interfaces),
             "struct_patterns" => Ok(PreviewFeature::StructPatterns),
             "checked_reasons" => Ok(PreviewFeature::CheckedReasons),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
@@ -3714,6 +3837,55 @@ pub enum ErrorKind {
         "recursive accessor `{method}`: an accessor may not invoke itself, directly or through other accessors, in its own body"
     )]
     AccessorRecursion { method: String },
+
+    // ========================================================================
+    // Interface errors (E0300-E0307, spec 6.8, `--preview interfaces`)
+    // ========================================================================
+    /// A conformance assertion, refinement list, or bound names an unknown
+    /// interface.
+    #[error("interface `{name}` not found")]
+    InterfaceNotFound { name: String },
+    /// Two requirements of one interface share a name.
+    #[error("interface `{interface}` declares requirement `{member}` more than once")]
+    DuplicateInterfaceRequirement { interface: String, member: String },
+    /// The asserted type has no inherent member of the requirement's name.
+    #[error(
+        "type `{}` does not conform to `{}`: missing member `{}`",
+        .0.ty,
+        .0.interface,
+        .0.member
+    )]
+    InterfaceMemberMissing(Box<InterfaceRequirementUnsatisfiedError>),
+    /// The asserted type's inherent member has the wrong signature.
+    #[error(
+        "type `{}` does not conform to `{}`: member `{}` has signature `{}`, but the requirement is `{}`",
+        .0.ty,
+        .0.interface,
+        .0.member,
+        .0.found,
+        .0.expected
+    )]
+    InterfaceSignatureMismatch(Box<InterfaceSignatureMismatchError>),
+    /// The asserted type declares no associated type of the requirement's name.
+    #[error(
+        "type `{}` does not conform to `{}`: missing associated type `{}`",
+        .0.ty,
+        .0.interface,
+        .0.member
+    )]
+    MissingAssociatedType(Box<InterfaceRequirementUnsatisfiedError>),
+    /// A call binds a type argument that does not conform to a bound.
+    #[error("type `{ty}` does not conform to interface `{interface}`")]
+    InterfaceBoundNotSatisfied { ty: String, interface: String },
+    /// A comptime parameter bound, a conformance assertion, or a refinement
+    /// list names something that is not an interface.
+    #[error("`{name}` is not an interface")]
+    BoundIsNotAnInterface { name: String },
+    /// Two interfaces of one bound set declare a requirement of the same
+    /// name with different signatures, so the bound provides no single
+    /// member of that name (spec 6.8:21).
+    #[error("conflicting requirements `{member}` in bound `{bound}`")]
+    ConflictingBoundRequirements { member: String, bound: String },
     /// Cannot move `self` out of a destructor body (RUE-139). The compiler
     /// drops a value by running its destructor and THEN dropping its fields;
     /// moving `self` to a new owner (a call argument, another binding, ...)
@@ -4352,6 +4524,22 @@ impl ErrorKind {
                 ErrorCode::ACCESSOR_PARAM_MODE_UNSUPPORTED
             }
             ErrorKind::AccessorRecursion { .. } => ErrorCode::ACCESSOR_RECURSION,
+
+            // Interface errors (E0300-E0307)
+            ErrorKind::InterfaceNotFound { .. } => ErrorCode::INTERFACE_NOT_FOUND,
+            ErrorKind::DuplicateInterfaceRequirement { .. } => {
+                ErrorCode::DUPLICATE_INTERFACE_REQUIREMENT
+            }
+            ErrorKind::InterfaceMemberMissing(_) => ErrorCode::INTERFACE_MEMBER_MISSING,
+            ErrorKind::InterfaceSignatureMismatch(_) => ErrorCode::INTERFACE_SIGNATURE_MISMATCH,
+            ErrorKind::MissingAssociatedType(_) => ErrorCode::MISSING_ASSOCIATED_TYPE,
+            ErrorKind::InterfaceBoundNotSatisfied { .. } => {
+                ErrorCode::INTERFACE_BOUND_NOT_SATISFIED
+            }
+            ErrorKind::BoundIsNotAnInterface { .. } => ErrorCode::BOUND_IS_NOT_AN_INTERFACE,
+            ErrorKind::ConflictingBoundRequirements { .. } => {
+                ErrorCode::CONFLICTING_BOUND_REQUIREMENTS
+            }
             ErrorKind::InoutKeywordMissing => ErrorCode::INOUT_KEYWORD_MISSING,
             ErrorKind::BorrowKeywordMissing => ErrorCode::BORROW_KEYWORD_MISSING,
             ErrorKind::UnexpectedCallArgumentMode { .. } => {
@@ -6222,7 +6410,112 @@ mod tests {
         let names = PreviewFeature::all_names();
         assert_eq!(
             names,
-            "test_infra, c_ffi, non_exhaustive_enums, struct_patterns, checked_reasons"
+            "test_infra, c_ffi, non_exhaustive_enums, interfaces, struct_patterns, checked_reasons"
+        );
+    }
+
+    #[test]
+    fn test_preview_feature_interfaces() {
+        let feature: PreviewFeature = "interfaces".parse().unwrap();
+        assert_eq!(feature, PreviewFeature::Interfaces);
+        assert_eq!(feature.name(), "interfaces");
+        assert_eq!(feature.adr(), "ADR-0005");
+        assert!(PreviewFeature::all().contains(&PreviewFeature::Interfaces));
+    }
+
+    #[test]
+    fn test_interface_error_codes() {
+        // Spec 6.8: the interface diagnostics occupy E0300-E0307 in the
+        // semantic band, immediately after the borrow-accessor block.
+        let cases: [(ErrorKind, ErrorCode, &str); 8] = [
+            (
+                ErrorKind::InterfaceNotFound {
+                    name: "Equatable".into(),
+                },
+                ErrorCode::INTERFACE_NOT_FOUND,
+                "E0300",
+            ),
+            (
+                ErrorKind::DuplicateInterfaceRequirement {
+                    interface: "Equatable".into(),
+                    member: "equals".into(),
+                },
+                ErrorCode::DUPLICATE_INTERFACE_REQUIREMENT,
+                "E0301",
+            ),
+            (
+                ErrorKind::InterfaceMemberMissing(Box::new(InterfaceRequirementUnsatisfiedError {
+                    ty: "i64".into(),
+                    interface: "Equatable".into(),
+                    member: "equals".into(),
+                })),
+                ErrorCode::INTERFACE_MEMBER_MISSING,
+                "E0302",
+            ),
+            (
+                ErrorKind::InterfaceSignatureMismatch(Box::new(InterfaceSignatureMismatchError {
+                    ty: "Id".into(),
+                    interface: "Equatable".into(),
+                    member: "equals".into(),
+                    expected: "fn equals(borrow self, borrow other: Id) -> bool".into(),
+                    found: "fn equals(self, other: Id) -> bool".into(),
+                })),
+                ErrorCode::INTERFACE_SIGNATURE_MISMATCH,
+                "E0303",
+            ),
+            (
+                ErrorKind::MissingAssociatedType(Box::new(InterfaceRequirementUnsatisfiedError {
+                    ty: "Range".into(),
+                    interface: "Sequence".into(),
+                    member: "Element".into(),
+                })),
+                ErrorCode::MISSING_ASSOCIATED_TYPE,
+                "E0304",
+            ),
+            (
+                ErrorKind::InterfaceBoundNotSatisfied {
+                    ty: "i64".into(),
+                    interface: "Equatable".into(),
+                },
+                ErrorCode::INTERFACE_BOUND_NOT_SATISFIED,
+                "E0305",
+            ),
+            (
+                ErrorKind::BoundIsNotAnInterface {
+                    name: "Point".into(),
+                },
+                ErrorCode::BOUND_IS_NOT_AN_INTERFACE,
+                "E0306",
+            ),
+            (
+                ErrorKind::ConflictingBoundRequirements {
+                    member: "len".into(),
+                    bound: "Sized + Counted".into(),
+                },
+                ErrorCode::CONFLICTING_BOUND_REQUIREMENTS,
+                "E0307",
+            ),
+        ];
+        for (kind, code, rendered) in cases {
+            assert_eq!(kind.code(), code);
+            assert_eq!(code.to_string(), rendered);
+        }
+        assert_eq!(
+            ErrorKind::InterfaceBoundNotSatisfied {
+                ty: "i64".into(),
+                interface: "Equatable".into(),
+            }
+            .to_string(),
+            "type `i64` does not conform to interface `Equatable`"
+        );
+        assert_eq!(
+            ErrorKind::MissingAssociatedType(Box::new(InterfaceRequirementUnsatisfiedError {
+                ty: "Range".into(),
+                interface: "Sequence".into(),
+                member: "Element".into(),
+            }))
+            .to_string(),
+            "type `Range` does not conform to `Sequence`: missing associated type `Element`"
         );
     }
 

@@ -4,6 +4,18 @@ const OptI = std.option.Option(i64);
 const IntMap = std.intmap.IntMap(i64);
 const StrMap = std.strmap.StrMap(i64);
 
+// Retention is not observable through the lookup API. Count bytes in every
+// retained key, including dead entries awaiting HashMap's next compaction.
+fn retained_key_bytes(borrow m: StrMap) -> u64 {
+    let mut bytes: u64 = 0;
+    let mut i: u64 = 0;
+    while i < m.inner.keys.len() {
+        bytes += m.inner.keys.get_ref(i).len();
+        i += 1;
+    }
+    bytes
+}
+
 test "IntMap insert, get, contains, overwrite, remove" {
     let mut m = IntMap.new(0);
     @assert(m.is_empty());
@@ -110,7 +122,7 @@ test "StrMap distinguishes prefixes, the empty key, and byte-identical copies" {
     @assert_eq(m.get(borrow built), OptI.None);
 }
 
-test "StrMap grows, compacting its key pool, and keeps every entry" {
+test "StrMap grows and keeps every entry" {
     let mut m = StrMap.new(0);
     let mut i: i64 = 0;
     while i < 1000 {
@@ -142,11 +154,10 @@ test "StrMap survives tombstone churn" {
     @assert_eq(m.get(borrow k), OptI.Some(9));
 }
 
-// Dead key bytes are released without the table ever growing: with a live
-// size that never leaves 0..2 the load threshold is never crossed, so only the
-// dead-byte trigger can bound the pool (RUE-2139). The pool is read directly
-// because retention is not observable through the lookup API.
-test "StrMap bounds its key pool under same-key churn at a fixed live size" {
+// HashMap compacts dead entries at the same capacity when its retained entry
+// count reaches the load threshold. A fixed live size must not grow either
+// the slot table or retained key storage under churn (RUE-2139).
+test "StrMap bounds retained keys under same-key churn at a fixed live size" {
     let mut m = StrMap.new(0);
     let key: StrBuf = "hello";
     let mut i: i64 = 0;
@@ -158,11 +169,13 @@ test "StrMap bounds its key pool under same-key churn at a fixed live size" {
         i += 1;
     }
     @assert(m.is_empty());
-    // Every churn appended five bytes; unbounded retention would hold 10000.
-    @assert(m.pool.len() < 200);
+    // Every churn copied five bytes; unbounded retention would hold 10000.
+    @assert_eq(m.inner.cap, 8);
+    @assert(m.inner.keys.len() <= 5);
+    @assert(retained_key_bytes(borrow m) < 200);
 }
 
-test "StrMap bounds its key pool under varying-key churn beside a persistent entry" {
+test "StrMap bounds retained keys under varying-key churn beside a persistent entry" {
     let mut m = StrMap.new(0);
     let sentinel: StrBuf = "persistent-sentinel";
     m.insert(borrow sentinel, -1);
@@ -180,7 +193,9 @@ test "StrMap bounds its key pool under varying-key churn beside a persistent ent
     @assert_eq(m.len(), 1);
     @assert_eq(m.get(borrow sentinel), OptI.Some(-1));
     // Unbounded retention would hold 6 * 2000 dead bytes plus the sentinel.
-    @assert(m.pool.len() < 200);
+    @assert_eq(m.inner.cap, 8);
+    @assert(m.inner.keys.len() <= 5);
+    @assert(retained_key_bytes(borrow m) < 200);
     let overwrite: StrBuf = "persistent-sentinel";
     m.insert(borrow overwrite, 7);
     @assert_eq(m.len(), 1);

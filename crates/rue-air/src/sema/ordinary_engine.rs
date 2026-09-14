@@ -30,7 +30,9 @@ use super::fact_mode::{
     ArrayLengthRequest, BodyAnalysisReadHost, ModulePrefixRequest, StructuredTypeSyntax,
     StructuredTypeSyntaxRequest, TypeSyntaxResult,
 };
-use super::info::{FunctionCallInfo, MethodCallInfo};
+use super::info::{
+    ConformanceAssertion, FunctionCallInfo, InterfaceFacts, MethodCallInfo, RequirementSignature,
+};
 use super::{
     AnalyzedBodyOwnerEvent, AnalyzedFunction, BodyAnalysisWork, ConstInfo, ConstValue,
     DeclarationTypeDependencyKind, DeclarationTypeDependencySourceKind, FunctionInfo,
@@ -40,7 +42,7 @@ use crate::inference::{InferType, LazyInferenceFacts};
 use crate::inst::Air;
 use crate::inst::{AirInst, AirInstData};
 use crate::intern_pool::TypeInternPool;
-use crate::types::{ArrayTypeId, EnumId, ModuleDef, ModuleId, StructId, Type};
+use crate::types::{ArrayTypeId, EnumId, ModuleDef, ModuleId, StructId, Type, TypeKind};
 use crate::{ParamRange, ParamRangeData};
 use rue_target::Target;
 
@@ -294,6 +296,60 @@ pub(crate) trait DeclarationFacts {
         span: Span,
     ) -> CompileResult<()>;
 
+    /// The interface facts of `interface` when it is an `interface` shell
+    /// (spec 6.8), or `None` for an ordinary struct.
+    fn interface_facts(&mut self, interface: StructId) -> Option<InterfaceFacts>;
+
+    /// The associated type `name` declared in the body of the struct
+    /// `subject` (`pub const Name = Type;`, spec 6.8:10).
+    fn assoc_type(&mut self, subject: Type, name: &str) -> Option<Type>;
+
+    /// Every conformance assertion for `subject` this body can see: the
+    /// subject's struct-header list and the freestanding assertions of the
+    /// selected program's import graph (spec 6.8:15).
+    fn conformance_assertions(&mut self, subject: Type) -> Vec<ConformanceAssertion>;
+
+    /// The interfaces bounding comptime parameter `index` of `function`
+    /// (spec 6.8:14); empty for an unbounded parameter.
+    fn comptime_parameter_bounds(
+        &mut self,
+        function: &FunctionCallInfo,
+        index: usize,
+    ) -> Vec<StructId>;
+
+    /// The signature of requirement `name` of `interface` with `self_type`
+    /// substituted for `Self` and `assoc_types` for the interface's
+    /// associated-constant names (spec 6.8:10). `None` when the interface
+    /// declares no such requirement.
+    fn interface_requirement_signature(
+        &mut self,
+        interface: StructId,
+        name: &str,
+        self_type: Type,
+        assoc_types: &[(Arc<str>, Type)],
+        span: Span,
+    ) -> CompileResult<Option<RequirementSignature>>;
+
+    /// The user-facing name of a skolem struct (spec 6.8:20) — the bounded
+    /// parameter it stands for — or `None` for an ordinary struct.
+    fn skolem_display_name(&mut self, struct_id: StructId) -> Option<Arc<str>>;
+
+    /// Whether a skolem's synthesized members are already installed.
+    fn skolem_prepared(&self, struct_id: StructId) -> bool;
+
+    /// The span of the analyzed function's comptime parameter that a skolem
+    /// stands for, where a bound-set conflict is reported (spec 6.8:21);
+    /// the function's own span when the parameter cannot be located.
+    fn skolem_parameter_span(&self, display: &str) -> Span;
+
+    /// Install the synthesized inherent members of a skolem (spec 6.8:20)
+    /// so the ordinary named-method lookup answers for it.
+    fn install_skolem_members(
+        &mut self,
+        struct_id: StructId,
+        members: Vec<super::analysis::SkolemMember>,
+    );
+
     fn declaration_binding_active(&self) -> bool;
 
     fn known_linear_during_binding(&self, ty: Type) -> Option<bool>;
@@ -499,7 +555,7 @@ pub(crate) trait AnalysisLedgers {
         >,
     );
 
-    fn deferred_ownership_gates_mut(&mut self) -> &mut Vec<super::DeferredOwnershipGate>;
+    fn deferred_requirements_gates_mut(&mut self) -> &mut Vec<super::DeferredRequirement>;
 }
 
 /// The presentation authority for type names in body diagnostics.
@@ -561,6 +617,12 @@ pub(crate) struct OrdinaryBodyEngine<'h, H: OrdinaryBodyAnalysisHost> {
     storage: &'h mut H,
     comptime_reduction_memo:
         ComptimeCompletedCallMemo<IssuedStableProducerId, Target, Type, ConstValue, ConstValue>,
+    /// Conformance assertions this body has already verified against the
+    /// subject's inherent members (spec 6.8:10), keyed by subject type and
+    /// interface. Repeated assertions of one fact are identical (spec
+    /// 6.8:11), so one verification per body answers every call relying on
+    /// it.
+    pub(super) verified_conformances: AHashSet<(Type, StructId)>,
 }
 
 #[cfg(test)]
@@ -626,6 +688,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         Self {
             storage,
             comptime_reduction_memo: ComptimeCompletedCallMemo::new(),
+            verified_conformances: AHashSet::new(),
         }
     }
 
@@ -922,6 +985,49 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         span: Span,
     ) -> CompileResult<()> {
         self.storage.require_preview(feature, what, span)
+    }
+    pub(crate) fn interface_facts(&mut self, interface: StructId) -> Option<InterfaceFacts> {
+        self.storage.interface_facts(interface)
+    }
+    pub(crate) fn assoc_type(&mut self, subject: Type, name: &str) -> Option<Type> {
+        self.storage.assoc_type(subject, name)
+    }
+    pub(crate) fn conformance_assertions(&mut self, subject: Type) -> Vec<ConformanceAssertion> {
+        self.storage.conformance_assertions(subject)
+    }
+    pub(crate) fn comptime_parameter_bounds(
+        &mut self,
+        function: &FunctionCallInfo,
+        index: usize,
+    ) -> Vec<StructId> {
+        self.storage.comptime_parameter_bounds(function, index)
+    }
+    pub(crate) fn interface_requirement_signature(
+        &mut self,
+        interface: StructId,
+        name: &str,
+        self_type: Type,
+        assoc_types: &[(Arc<str>, Type)],
+        span: Span,
+    ) -> CompileResult<Option<RequirementSignature>> {
+        self.storage
+            .interface_requirement_signature(interface, name, self_type, assoc_types, span)
+    }
+    pub(crate) fn skolem_display_name(&mut self, struct_id: StructId) -> Option<Arc<str>> {
+        self.storage.skolem_display_name(struct_id)
+    }
+    pub(crate) fn skolem_prepared(&self, struct_id: StructId) -> bool {
+        self.storage.skolem_prepared(struct_id)
+    }
+    pub(crate) fn skolem_parameter_span(&self, display: &str) -> Span {
+        self.storage.skolem_parameter_span(display)
+    }
+    pub(crate) fn install_skolem_members(
+        &mut self,
+        struct_id: StructId,
+        members: Vec<super::analysis::SkolemMember>,
+    ) {
+        self.storage.install_skolem_members(struct_id, members)
     }
     pub(crate) fn format_type_name(&self, ty: Type) -> String {
         self.storage.friendly_type_display(ty)
@@ -1416,6 +1522,100 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn type_has_drop_glue(&self, ty: Type) -> bool {
         self.body_type_pool().type_needs_drop(ty)
     }
+
+    /// Whether `ty` contains a skolem in a position whose ownership is part of
+    /// the value. A raw pointer is an opaque handle, so its pointee is
+    /// deliberately not followed here: pointers to bounded types remain
+    /// independently trivially droppable. Aggregate fields, enum payloads,
+    /// and array elements are followed transitively, including synthetic
+    /// skolems for associated types.
+    pub(crate) fn type_ownership_depends_on_skolem(&mut self, ty: Type) -> bool {
+        let mut seen = AHashSet::new();
+        self.type_contains_skolem_inner(ty, true, &mut seen)
+    }
+
+    /// Whether `ty` contains a skolem anywhere in its source-visible shape.
+    /// Layout reflection uses this stricter mode because even a composed type
+    /// exposes representation information when its layout is queried.
+    pub(crate) fn type_contains_skolem(&mut self, ty: Type) -> bool {
+        let mut seen = AHashSet::new();
+        self.type_contains_skolem_inner(ty, false, &mut seen)
+    }
+
+    fn type_contains_skolem_inner(
+        &mut self,
+        ty: Type,
+        ownership_only: bool,
+        seen: &mut AHashSet<Type>,
+    ) -> bool {
+        if !seen.insert(ty) {
+            return false;
+        }
+        match ty.kind() {
+            TypeKind::Struct(id) => {
+                if self.skolem_display_name(id).is_some() {
+                    return true;
+                }
+                let fields = self
+                    .body_type_pool()
+                    .struct_def(id)
+                    .fields
+                    .iter()
+                    .map(|field| field.ty)
+                    .collect::<Vec<_>>();
+                fields
+                    .into_iter()
+                    .any(|field| self.type_contains_skolem_inner(field, ownership_only, seen))
+            }
+            TypeKind::Enum(id) => {
+                let payloads = self
+                    .body_type_pool()
+                    .enum_def(id)
+                    .variant_payloads
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .collect::<Vec<_>>();
+                payloads
+                    .into_iter()
+                    .any(|payload| self.type_contains_skolem_inner(payload, ownership_only, seen))
+            }
+            TypeKind::Array(id) => {
+                let (element, length) = self.body_type_pool().array_def(id);
+                // An empty array owns no element values. Its element type can
+                // still matter to source-visible layout reflection, so only
+                // the ownership query skips the recursive walk.
+                !(ownership_only && length == 0)
+                    && self.type_contains_skolem_inner(element, ownership_only, seen)
+            }
+            TypeKind::PtrConst(_) | TypeKind::PtrMut(_) if ownership_only => false,
+            TypeKind::PtrConst(id) => {
+                let pointee = self.body_type_pool().ptr_const_def(id);
+                self.type_contains_skolem_inner(pointee, ownership_only, seen)
+            }
+            TypeKind::PtrMut(id) => {
+                let pointee = self.body_type_pool().ptr_mut_def(id);
+                self.type_contains_skolem_inner(pointee, ownership_only, seen)
+            }
+            TypeKind::Function(id) => {
+                // Function values are code pointers and do not own any of the
+                // parameter/result types they mention. Keep following them
+                // for source-visible reflection, but treat them like raw
+                // pointers for the ownership gate.
+                if ownership_only {
+                    return false;
+                }
+                let function = self.body_type_pool().function_def(id);
+                function
+                    .params
+                    .into_iter()
+                    .any(|param| self.type_contains_skolem_inner(param.ty, ownership_only, seen))
+                    || self.type_contains_skolem_inner(function.result, ownership_only, seen)
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn type_ownership_depends_on_nominal(&self, ty: Type) -> bool {
         match ty.kind() {
             crate::types::TypeKind::Struct(_) | crate::types::TypeKind::Enum(_) => true,
@@ -1674,10 +1874,10 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn record_body_ctor_type_display(&mut self, ty: Type, display: String) {
         self.storage.record_body_ctor_type_display(ty, display)
     }
-    pub(crate) fn deferred_ownership_gates_mut(
+    pub(crate) fn deferred_requirements_gates_mut(
         &mut self,
-    ) -> &mut Vec<super::DeferredOwnershipGate> {
-        self.storage.deferred_ownership_gates_mut()
+    ) -> &mut Vec<super::DeferredRequirement> {
+        self.storage.deferred_requirements_gates_mut()
     }
     pub(crate) fn resolve_canonical_import(
         &self,

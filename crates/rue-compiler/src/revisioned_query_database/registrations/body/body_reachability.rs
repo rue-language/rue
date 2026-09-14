@@ -632,6 +632,38 @@ $runtime
                         // one memo claim and dependency validation per reached
                         // body without adding an independent invalidation edge.
                         let references = transaction.references();
+                        // A skolem check is analysis-only (spec 6.8:22): it
+                        // may reach another helper that is itself instantiated
+                        // with the same opaque arguments, so that helper must
+                        // be analyzed for diagnostics too. Follow only those
+                        // callable edges; concrete callees, interface stubs,
+                        // type producers, and drop/printer projections remain
+                        // excluded. Ordinary bodies retain every reference.
+                        let skolem_check =
+                            crate::skolem::instance_is_skolem_check(instance.as_ref());
+                        let scheduled_references: std::borrow::Cow<'_, [_]> = if skolem_check {
+                            std::borrow::Cow::Owned(
+                                references
+                                    .0
+                                    .iter()
+                                    .filter(|reference| {
+                                        matches!(
+                                            reference,
+                                            crate::body_query::BodyReference::Callable(callable)
+                                                if !matches!(
+                                                    callable,
+                                                    crate::FunctionInstanceKey::DropGlue(_)
+                                                        | crate::FunctionInstanceKey::ErrorPrinter(_)
+                                                )
+                                                    && crate::skolem::instance_is_skolem_check(callable)
+                                        )
+                                    })
+                                    .cloned()
+                                    .collect(),
+                            )
+                        } else {
+                            std::borrow::Cow::Borrowed(&references.0)
+                        };
                         reached_body_keys.push(body_key.clone());
                         // A deterministic body diagnostic is terminal for this
                         // body's dependents. Keep scheduling references that
@@ -685,7 +717,7 @@ $runtime
                                 break;
                             }
                         }
-                        for reference in references.0.iter() {
+                        for reference in scheduled_references.iter() {
                             match reference {
                                 crate::body_query::BodyReference::Callable(callable) => {
                                     // A structural printer is synthesized, not

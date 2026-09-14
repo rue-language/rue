@@ -126,7 +126,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
 
             InstData::OffsetOf { type_arg, field } => {
-                self.analyze_offset_of(air, *type_arg, *field, inst.span)
+                self.analyze_offset_of(air, *type_arg, *field, inst.span, ctx)
             }
 
             _ => Err(CompileError::new(
@@ -288,6 +288,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             ));
         }
+        if matches!(intrinsic, Some(I::SizeOf | I::AlignOf)) && self.type_contains_skolem(ty) {
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "layout reflection on opaque bounded type `{}` is not supported",
+                        self.format_type_name(ty)
+                    ),
+                },
+                span,
+            ));
+        }
 
         let value: u64 = match intrinsic {
             // `@require_droppable(T)` is the owning-container well-formedness
@@ -426,12 +437,24 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         type_arg: rue_rir::RirTypeSyntaxRef,
         field: Spur,
         span: Span,
+        ctx: &AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let ty = self.resolve_rir_type(type_arg, span)?;
+        let ty = self.resolve_rir_type_with_ctx(type_arg, span, ctx)?;
         if ty.is_function() {
             return Err(CompileError::new(
                 ErrorKind::FnTypeOutsideParameter {
                     position: "an intrinsic type argument".to_owned(),
+                },
+                span,
+            ));
+        }
+        if self.type_contains_skolem(ty) {
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "layout reflection on opaque bounded type `{}` is not supported",
+                        self.format_type_name(ty)
+                    ),
                 },
                 span,
             ));

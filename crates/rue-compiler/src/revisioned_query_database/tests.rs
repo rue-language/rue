@@ -169,6 +169,7 @@ const EXPECTED_REVISIONED_QUERY_TESTS: &[&str] = &[
     "platform_native_direct_target_selected_comptime_evaluates_under_the_host_arch",
     "production_provider_boundary_uses_owned_handles_and_shared_rir_view",
     "production_root_authority_keyed_admission_preserves_identity_and_dependency",
+    "program_conformances_observe_the_root_and_exclude_unreachable_snapshot_modules",
     "provider_aggregate_facts_is_accessible_follows_the_directory_domain",
     "provider_aggregate_facts_resolve_nominals_and_builtins",
     "provider_aggregate_facts_selection_order_follows_the_candidate_ranking",

@@ -170,6 +170,162 @@ impl BodyTransactionEvaluator {
         }
     }
 
+    /// Validate one deferred interface requirement through the canonical AIR
+    /// checker.  This adapter materializes only the callable's declaration
+    /// bundle; it never evaluates or schedules the callable body.
+    pub(in crate::revisioned_query_database) fn check_interface_bound(
+        &self,
+        context: &rue_query::QueryContext,
+        configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
+        callable: &crate::StableDefinitionKey,
+        parameter_index: usize,
+        argument: &crate::durable_semantics::DurableType,
+        anonymous_nominals: &[crate::durable_semantics::DurableAnonymousNominal],
+    ) -> Result<
+        Option<rue_error::ErrorKind>,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        let instance = crate::FunctionInstanceKey::Definition(callable.clone());
+        let key = crate::body_query::BodyQueryKey::new(instance, configuration.clone());
+        // The callable is commonly a generic type constructor.  Its
+        // declaration bundle is enough for the AIR bound checker, so use the
+        // producer artifact resolver rather than requesting an executable
+        // definition body (which correctly rejects unspecialized generics).
+        let input = self
+            .body_input
+            .resolve_producer_artifact(context, &key)
+            .map_err(rue_air::SemanticProviderError::Abort)?;
+        let input = match input {
+            crate::body_query::BodyInputValue::Available(input) => input,
+            crate::body_query::BodyInputValue::Incomplete(_) => {
+                return Err(rue_air::SemanticProviderError::Abort(QueryAbort::Canceled));
+            }
+        };
+        let symbol_space = self.symbol_space.generation(context.revision());
+        let bundle = match input.artifacts.plan.materialize_body_rir_bundle(
+            &symbol_space,
+            input.source.file_id,
+            input.source.declaration_start,
+            input.source.source_length,
+            || context.check_canceled(),
+        ) {
+            Ok(bundle) => bundle,
+            Err(crate::canonical_lower::BodyPlanMaterializationFailure::Query(abort)) => {
+                return Err(rue_air::SemanticProviderError::Abort(abort));
+            }
+            Err(error) => {
+                return Ok(Some(rue_error::ErrorKind::InternalError(format!(
+                    "interface-bound declaration materialization failed: {error}"
+                ))));
+            }
+        };
+        let observed = std::rc::Rc::new(std::cell::RefCell::new(ObservedLookupRoot::new()));
+        let positive_references = std::rc::Rc::new(std::cell::RefCell::new(BTreeSet::new()));
+        let provider = CompilerBodyFactProvider::new(self.compiler_body_provider_queries(
+            context,
+            configuration.clone(),
+            observed,
+            positive_references,
+        ));
+        let source = CompilerBodyDurableSource::with_anonymous(
+            &provider,
+            anonymous_nominals,
+            Some((
+                callable.module().clone(),
+                rue_air::DurableBodySourceLocator {
+                    file_id: input.source.file_id,
+                    physical_path: input.source.physical_path.clone(),
+                    source_length: input.source.source_length,
+                    source_text: input.source.source_text.clone(),
+                },
+            )),
+        );
+        let preview = configuration
+            .preview_features
+            .names()
+            .iter()
+            .filter_map(|name| name.parse().ok())
+            .collect();
+        let argument = crate::semantic_identity::type_instance_from_semantic(argument);
+        let well_known = rue_air::ProviderWellKnownOptionFacts {
+            nominals: Vec::new(),
+            option_by_payload: Vec::new(),
+        };
+        let source_locators = source.source_locators.clone();
+        let result = rue_air::check_provider_interface_bound(
+            &provider,
+            source,
+            &bundle,
+            callable.clone(),
+            callable.name(),
+            parameter_index,
+            &argument,
+            configuration.target,
+            preview,
+            &well_known,
+        );
+        match provider.finish_status() {
+            Ok(()) => {}
+            Err(CompilerBodyProviderStatus::Fatal(abort)) => {
+                return Err(rue_air::SemanticProviderError::Abort(abort));
+            }
+            Err(CompilerBodyProviderStatus::Incomplete(_)) => {
+                if let Some(failure) = provider
+                    .queries
+                    .producer_transport_failure
+                    .borrow()
+                    .as_ref()
+                {
+                    return Err(rue_air::SemanticProviderError::Failure((**failure).clone()));
+                }
+                return Err(rue_air::SemanticProviderError::Abort(QueryAbort::Canceled));
+            }
+            Err(CompilerBodyProviderStatus::Ready) => unreachable!(),
+        }
+        match result {
+            Ok(()) => Ok(None),
+            Err(error) => {
+                let sources = source_locators.borrow();
+                let mut span_modules = Vec::new();
+                let mut missing_source = false;
+                let error = error.map_spans(|mut span| {
+                    if let Some((module, _)) = sources
+                        .iter()
+                        .find(|(_, locator)| locator.file_id == span.file_id)
+                    {
+                        span_modules.push(module.clone());
+                    } else {
+                        missing_source = true;
+                    }
+                    span.file_id = crate::FileId::DEFAULT;
+                    span
+                });
+                if missing_source {
+                    return Ok(Some(rue_error::ErrorKind::InternalError(
+                        "interface-bound diagnostic source is unavailable".to_owned(),
+                    )));
+                }
+                // These diagnostics retain absolute offsets within each module.
+                // Source-locator equality deliberately ignores text changes, so
+                // observe the complete parse to invalidate offsets after edits.
+                for module in span_modules.iter().collect::<BTreeSet<_>>() {
+                    context
+                        .query_registered(&self.parse_modules, ModuleQueryKey(module.clone()))
+                        .map_err(rue_air::SemanticProviderError::Abort)?;
+                }
+                Err(rue_air::SemanticProviderError::Failure(
+                    crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticAtModuleSpans {
+                        error,
+                        span_modules: span_modules.into(),
+                    },
+                ))
+            }
+        }
+    }
+
     pub(in crate::revisioned_query_database) fn evaluate(
         &self,
         context: &rue_query::QueryContext,
@@ -1193,7 +1349,22 @@ impl BodyTransactionEvaluator {
                             },
                         }
                     }
-                    Err(errors) => body_failure_with_source(errors, &input.source),
+                    Err(errors) => {
+                        // A skolem check's diagnostics say which bound the
+                        // body was checked against (spec 6.8:22).
+                        let errors = match crate::skolem::skolem_check_note(&definition, arguments)
+                        {
+                            Some(note) => errors
+                                .into_iter()
+                                .map(|error| error.with_note(note.clone()))
+                                .fold(crate::CompileErrors::new(), |mut errors, error| {
+                                    errors.push(error);
+                                    errors
+                                }),
+                            None => errors,
+                        };
+                        body_failure_with_source(errors, &input.source)
+                    }
                 }
             } else if let crate::FunctionInstanceKey::AnonymousMember { owner, member } =
                 &key.instance

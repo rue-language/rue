@@ -27,8 +27,8 @@ use crate::semantic_query_nucleus::SemanticNucleusFailure;
 
 type DurableAnonymousNominal = crate::durable_semantics::DurableAnonymousNominal;
 type SemanticDeclarationDependency = crate::semantic_query_nucleus::SemanticDeclarationDependency;
-type DeferredOwnershipGate = crate::semantic_query_nucleus::DeferredOwnershipGate;
-type DeferredOwnershipApplication = crate::semantic_query_nucleus::DeferredOwnershipApplication;
+type DeferredRequirement = crate::semantic_query_nucleus::DeferredRequirement;
+type DeferredRequirementApplication = crate::semantic_query_nucleus::DeferredRequirementApplication;
 
 mod diagnostics;
 mod effects;

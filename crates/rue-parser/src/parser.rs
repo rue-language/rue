@@ -49,6 +49,10 @@ struct PrimitiveTypeSpurs {
     self_value: Spur,
     type_kw: Spur,
     as_kw: Spur,
+    /// The contextual keyword `is` of a conformance assertion (spec 6.8:9).
+    /// It lexes as an identifier and is recognized only where the grammar
+    /// expects it, so `is` remains usable as an ordinary name.
+    is_kw: Spur,
     /// The contextual `test` keyword (ADR-0083 §1). Only a keyword at item
     /// position when followed by a string literal; an ordinary identifier
     /// everywhere else.
@@ -88,6 +92,7 @@ impl PrimitiveTypeSpurs {
             self_value: intern("self")?,
             type_kw: intern("type")?,
             as_kw: intern("as")?,
+            is_kw: intern("is")?,
             test_kw: intern("test")?,
             drop_kw: intern("drop")?,
             drop_marker: intern("__drop")?,
@@ -113,6 +118,7 @@ impl PrimitiveTypeSpurs {
             self_value: symbol,
             type_kw: symbol,
             as_kw: symbol,
+            is_kw: symbol,
             test_kw: symbol,
             drop_kw: symbol,
             drop_marker: symbol,
@@ -388,6 +394,85 @@ mod tests {
     }
 
     #[test]
+    fn interface_validation_enforces_body_legality_rules() {
+        // Spec 6.8:6: no empty interfaces, distinct requirement names, and no
+        // directives on a requirement.
+        let errors = parse_source("interface Marker { }").unwrap_err();
+        assert!(errors.iter().any(|error| matches!(
+            &error.kind,
+            ErrorKind::ParseError(message) if message.contains("interface `Marker` is empty")
+        )));
+        let errors = parse_source(
+            "interface I { fn f(self) -> i32; const f: type; fn g(self); fn g(self) -> i32; }",
+        )
+        .unwrap_err();
+        let duplicates: Vec<_> = errors
+            .iter()
+            .filter_map(|error| match &error.kind {
+                ErrorKind::DuplicateInterfaceRequirement { interface, member } => {
+                    Some((interface.as_str(), member.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(duplicates, [("I", "f"), ("I", "g")]);
+        assert_eq!(
+            errors.first().unwrap().kind.code(),
+            rue_error::ErrorCode::DUPLICATE_INTERFACE_REQUIREMENT
+        );
+        let errors =
+            parse_source("interface I { @allow(unused_variable) fn f(self); }").unwrap_err();
+        assert!(errors.iter().any(|error| matches!(
+            &error.kind,
+            ErrorKind::ParseError(message) if message.contains("cannot carry directives")
+        )));
+        // An unknown directive on the interface itself is reported at the
+        // interface site.
+        let errors = parse_source("@copy interface I { fn f(self); }").unwrap_err();
+        assert!(errors.iter().any(|error| matches!(
+            &error.kind,
+            ErrorKind::ParseError(message) if message.contains("interfaces")
+        )));
+        assert!(parse_source("interface I { fn f(self); fn g(self); const E: type; }").is_ok());
+    }
+
+    #[test]
+    fn ast_display_prints_interface_syntax() {
+        let (ast, _) = parse_source(
+            "pub interface Collection: Sequence + Equatable { const Element: type; fn len(borrow self) -> u64; } \
+             struct Range is Sequence { cur: i64, pub const Element = i64; fn next(inout self) -> i64 { self.cur } } \
+             i64 is Equatable + Sequence; \
+             fn f(comptime T: Equatable + Sequence, x: T) -> T { x }",
+        )
+        .unwrap();
+        let printed = ast.to_string();
+        let interface = printed.lines().next().unwrap();
+        assert!(interface.starts_with("pub Interface sym:"), "{printed}");
+        assert!(
+            interface.contains(": sym:") && interface.contains(" + sym:"),
+            "{printed}"
+        );
+        assert!(
+            printed.contains("  AssocType sym:") && printed.contains(" : type\n"),
+            "{printed}"
+        );
+        assert!(printed.contains("  Requirement sym:"), "{printed}");
+        assert!(
+            printed.contains("Struct sym:") && printed.contains(" is sym:"),
+            "{printed}"
+        );
+        assert!(
+            printed.contains("  pub AssocType sym:") && printed.contains(" = sym:"),
+            "{printed}"
+        );
+        assert!(printed.contains("Conformance sym:"), "{printed}");
+        assert!(
+            printed.contains("comptime sym:") && printed.contains(" + sym:"),
+            "{printed}"
+        );
+    }
+
+    #[test]
     fn enum_display_retains_declaration_directives() {
         let (ast, _) = parse_source("@non_exhaustive pub enum Color { Red, Green }").unwrap();
         let rendered = ast.to_string();
@@ -445,6 +530,11 @@ mod tests {
                 matches!(item, Item::Enum(_))
             }),
             (
+                "interface Choice { fn pick(borrow self) -> i32; }",
+                recovery::ItemStart::Interface,
+                |item| matches!(item, Item::Interface(_)),
+            ),
+            (
                 "drop fn Buffer(self) {}",
                 recovery::ItemStart::Drop,
                 |item| matches!(item, Item::DropFn(_)),
@@ -495,6 +585,8 @@ mod tests {
             let span = match &ast.items[0] {
                 Item::Function(item) => item.span,
                 Item::Struct(item) => item.span,
+                Item::Interface(item) => item.span,
+                Item::Conformance(item) => item.span,
                 Item::Enum(item) => item.span,
                 Item::DropFn(item) => item.span,
                 Item::Extern(item) => item.span,

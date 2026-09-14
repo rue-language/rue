@@ -1,0 +1,160 @@
+[section]
+id = "items.interface_opacity"
+name = "Opaque types in interface definition checks"
+description = "Definition checking does not expose synthetic layout or ownership properties."
+
+[[case]]
+name = "uncalled_size_query_is_rejected"
+spec = ["6.8:19", "6.8:20", "6.8:22"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn size(comptime T: Show) -> i32 { @size_of(T) }
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["opaque bounded type"]
+
+[[case]]
+name = "uncalled_alignment_query_is_rejected"
+spec = ["6.8:19", "6.8:20", "6.8:22"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn align(comptime T: Show) -> i32 { @align_of(T) }
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["opaque bounded type"]
+
+[[case]]
+name = "nested_aggregate_layout_query_is_rejected"
+spec = ["6.8:19", "6.8:20", "6.8:22"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn Box(comptime T: type) -> type { struct { inner: T } }
+fn size(comptime T: Show) -> i32 { @size_of(Box(Box(T))) }
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["opaque bounded type"]
+
+[[case]]
+name = "associated_type_layout_query_is_rejected"
+spec = ["6.8:19", "6.8:20", "6.8:22"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+fn Box(comptime U: type) -> type {
+    struct { value: U, fn size(borrow self) -> i32 { @size_of(U) } }
+}
+interface Items { const Element: type; fn item(borrow self) -> Box(Element); }
+fn size(comptime T: Items, borrow xs: T) -> i32 {
+    let item = xs.item();
+    item.size()
+}
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["opaque bounded type"]
+
+[[case]]
+name = "helper_layout_query_is_checked_transitively"
+spec = ["6.8:19", "6.8:20", "6.8:22"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn reflect(comptime U: type) -> i32 { @size_of(U) }
+fn size(comptime T: Show) -> i32 { reflect(T) }
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["opaque bounded type"]
+
+[[case]]
+name = "trivial_drop_cannot_be_inferred_for_opaque_value"
+spec = ["6.8:19", "6.8:20", "6.8:22"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn duplicate(comptime T: Show) { @require_trivially_droppable(T); }
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E0711"]
+
+[[case]]
+name = "deferred_constructor_gate_cannot_infer_trivial_drop"
+spec = ["6.8:19", "6.8:20", "6.8:22"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn Storage(comptime T: type) -> type { @require_trivially_droppable(T); struct { value: T } }
+fn duplicate(comptime T: Show) { let S = Storage(T); }
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E0711"]
+
+[[case]]
+name = "independently_nonowning_types_pass_trivial_drop_gates"
+spec = ["6.8:20"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn check(comptime T: Show) {
+    @require_trivially_droppable(ptr const T);
+    @require_trivially_droppable(ptr mut T);
+    @require_trivially_droppable([T; 0]);
+}
+fn main() -> i32 { 0 }
+"""
+exit_code = 0
+
+[[case]]
+name = "aggregate_field_offset_query_is_rejected"
+spec = ["6.8:19", "6.8:20", "6.8:22"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn Box(comptime T: type) -> type { struct { inner: T } }
+fn offset(comptime T: Show) -> u64 { @offset_of(Box(T), inner) }
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["opaque bounded type"]
+
+[[case]]
+name = "bounded_arraybuf_borrowing_needs_no_element_layout"
+spec = ["6.8:17", "6.8:19", "6.8:20", "6.8:22"]
+preview = "interfaces"
+preview_should_pass = true
+real_std = true
+source = """
+const std = @import("std");
+const Equatable = std.interfaces.Equatable;
+const ArrayBuf = std.arraybuf.ArrayBuf;
+fn contains(comptime T: Equatable, borrow xs: ArrayBuf(T), borrow x: T) -> bool {
+    let mut i: u64 = 0;
+    while i < xs.len() {
+        if xs.get_ref(i).equals(borrow x) { return true; }
+        i += 1;
+    }
+    false
+}
+struct Id is Equatable {
+    n: i64,
+    fn equals(borrow self, borrow other: Id) -> bool { self.n == other.n }
+}
+fn main() -> i32 { 0 }
+"""
+exit_code = 0

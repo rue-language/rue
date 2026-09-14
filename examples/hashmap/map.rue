@@ -1,81 +1,46 @@
-// Open-addressing i64->i64 hash map: linear probing, tombstones, and
-// load-factor-driven rehash into a doubled table. States ride a parallel
-// buffer (0=empty, 1=full, 2=tombstone).
+// An i64 -> i64 map over `std.hashmap.HashMap` (spec 6.7, `--preview
+// interfaces`). The generic map takes any key conforming to
+// `std.interfaces.Hashable + Equatable`; an integer cannot conform (it has no
+// methods), so the key is a one-field struct that supplies `equals` and
+// `hash` — the wrapper-type route spec 6.7:11 names. The open-addressing
+// table, probing, tombstones, and rehash that used to live here are now the
+// standard library's.
 const std = @import("std");
-const Ints = std.arraybuf.ArrayBuf(i64);
 const OptI64 = std.option.Option(i64);
 
-pub struct Map {
-    keys: Ints,
-    vals: Ints,
-    state: Ints,
-    live: u64,
-    used: u64,
-    cap: u64,
+pub struct Key is std.interfaces.Equatable + std.interfaces.Hashable {
+    n: i64,
 
-    fn with_capacity(cap: u64) -> Self {
-        let mut keys = Ints.new();
-        let mut vals = Ints.new();
-        let mut state = Ints.new();
-        let mut i: u64 = 0;
-        while i < cap {
-            keys.push(0);
-            vals.push(0);
-            state.push(0);
-            i += 1;
-        }
-        Self { keys: keys, vals: vals, state: state, live: 0, used: 0, cap: cap }
-    }
+    fn equals(borrow self, borrow other: Key) -> bool { self.n == other.n }
 
-    fn hash(borrow self, key: i64) -> u64 {
-        // Fibonacci-ish scramble; keep it positive via masking.
-        let h = (key * 2654435761) % 9223372036854775807;
+    // Fibonacci-ish scramble of the two's-complement bits; the map folds the
+    // hash into its table itself.
+    fn hash(borrow self) -> u64 {
+        let h = (self.n * 2654435761) % 9223372036854775807;
         let positive = if h < 0 { 0 - h } else { h };
-        let m: u64 = @intCast(positive);
-        m % self.cap
+        @intCast(positive)
+    }
+}
+
+const Inner = std.hashmap.HashMap(Key, i64);
+
+pub struct Map {
+    inner: Inner,
+
+    // The capacity hint is the map's own business now; the constructor keeps
+    // its shape so `main.rue` reads as before.
+    fn with_capacity(cap: u64) -> Self {
+        let _hint = cap;
+        Self { inner: Inner.new() }
     }
 
     fn insert(inout self, key: i64, val: i64) {
-        // Grow at 70% usage (live + tombstones).
-        if (self.used * 10) >= (self.cap * 7) {
-            self.grow();
-        }
-        let mut i = self.hash(key);
-        loop {
-            let s = self.state.get_or(i, 0);
-            if s == 1 {
-                if self.keys.get_or(i, 0) == key {
-                    self.vals.set(i, val);
-                    break;
-                }
-                i = (i + 1) % self.cap;
-            } else {
-                // empty or tombstone: claim it
-                if s == 0 { self.used += 1; }
-                self.keys.set(i, key);
-                self.vals.set(i, val);
-                self.state.set(i, 1);
-                self.live += 1;
-                break;
-            }
-        }
+        self.inner.insert(Key { n: key }, val);
     }
 
     fn get(borrow self, key: i64) -> OptI64 {
-        let mut i = self.hash(key);
-        let mut probes: u64 = 0;
-        while probes < self.cap {
-            let s = self.state.get_or(i, 0);
-            if s == 0 { break; }
-            if s == 1 {
-                if self.keys.get_or(i, 0) == key {
-                    return OptI64.Some(self.vals.get_or(i, 0));
-                }
-            }
-            i = (i + 1) % self.cap;
-            probes += 1;
-        }
-        OptI64.None
+        let k = Key { n: key };
+        self.inner.get(borrow k)
     }
 
     fn get_or(borrow self, key: i64, default: i64) -> i64 {
@@ -86,45 +51,9 @@ pub struct Map {
     }
 
     fn remove(inout self, key: i64) -> bool {
-        let mut i = self.hash(key);
-        let mut probes: u64 = 0;
-        let mut removed = false;
-        while probes < self.cap {
-            let s = self.state.get_or(i, 0);
-            if s == 0 { break; }
-            if s == 1 {
-                if self.keys.get_or(i, 0) == key {
-                    self.state.set(i, 2);   // tombstone
-                    self.live -= 1;
-                    removed = true;
-                    break;
-                }
-            }
-            i = (i + 1) % self.cap;
-            probes += 1;
-        }
-        removed
+        let k = Key { n: key };
+        self.inner.remove(borrow k)
     }
 
-    fn len(borrow self) -> u64 { self.live }
-
-    fn grow(inout self) {
-        let old_cap = self.cap;
-        let mut bigger = Map.with_capacity(old_cap * 2);
-        let mut j: u64 = 0;
-        while j < old_cap {
-            if self.state.get_or(j, 0) == 1 {
-                bigger.insert(self.keys.get_or(j, 0), self.vals.get_or(j, 0));
-            }
-            j += 1;
-        }
-        // Field-by-field move of the local into self: each assignment
-        // overwrite-drops the old buffer and partially moves `bigger`.
-        self.keys = bigger.keys;
-        self.vals = bigger.vals;
-        self.state = bigger.state;
-        self.cap = bigger.cap;
-        self.live = bigger.live;
-        self.used = bigger.used;
-    }
+    fn len(borrow self) -> u64 { self.inner.len() }
 }

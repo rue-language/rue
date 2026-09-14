@@ -60,6 +60,7 @@ pub const TYPE_BOOL: u64 = 48;
 pub const TYPE_TYPE: u64 = 49;
 pub const TYPE_F32: u64 = 50;
 pub const TYPE_F64: u64 = 51;
+pub const INTERFACE: u64 = 52;
 
 pub const PLUS: u64 = 60;
 pub const MINUS: u64 = 61;
@@ -118,6 +119,7 @@ pub const UNKNOWN: u64 = 255;
 // lexer tags the word here instead.
 pub const CTX_NONE: u64 = 0;
 pub const CTX_TEST: u64 = 1;
+pub const CTX_IS: u64 = 2;
 
 pub struct Token {
     kind: u64,
@@ -167,6 +169,7 @@ pub fn kind_from_name(borrow name: StrBuf) -> u64 {
     if eq(borrow name, "STRUCT") { return STRUCT; }
     if eq(borrow name, "ENUM") { return ENUM; }
     if eq(borrow name, "IMPL") { return IMPL; }
+    if eq(borrow name, "INTERFACE") { return INTERFACE; }
     if eq(borrow name, "SELF") { return SELF; }
     if eq(borrow name, "SELFTYPE") { return SELFTYPE; }
     if eq(borrow name, "DROP") { return DROP; }

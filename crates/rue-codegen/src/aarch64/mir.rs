@@ -1807,7 +1807,7 @@ impl Aarch64Mir {
         !self
             .instructions
             .iter()
-            .any(|inst| matches!(inst, Aarch64Inst::Bl { .. }))
+            .any(|inst| matches!(inst, Aarch64Inst::Bl { .. } | Aarch64Inst::Blr { .. }))
     }
 
     /// Consume the MIR and return its instructions.
@@ -1833,6 +1833,15 @@ impl fmt::Display for Aarch64Mir {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indirect_call_requires_a_non_leaf_prologue() {
+        let mut mir = Aarch64Mir::new();
+        mir.instructions.push(Aarch64Inst::Blr {
+            target: Operand::Physical(Reg::X19),
+        });
+        assert!(!mir.is_leaf());
+    }
 
     #[test]
     fn test_aarch64_inst_size() {
