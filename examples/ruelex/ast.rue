@@ -68,6 +68,10 @@ pub const TEST_DECL: u64 = 56;
 // A float literal (2.1:29); like INT its `value` is the token payload, here the
 // lexer's interned symbol for the literal's text.
 pub const FLOAT: u64 = 57;
+// A function type `fn(borrow P, i64) -> bool` (6.1:46, ADR-0096): `a` is the
+// parameter list of PARAM nodes carrying their mode in `aux`, `b` the result
+// type or NONE when the arrow is omitted.
+pub const FN_TYPE: u64 = 58;
 
 pub struct Node {
     kind: u64,
@@ -131,6 +135,7 @@ pub struct Arena {
         else if kind == ARRAY_TYPE { "array-type" }
         else if kind == SLICE_TYPE { "slice-type" }
         else if kind == PTR_TYPE { "ptr-type" }
+        else if kind == FN_TYPE { "fn-type" }
         else if kind == ANON_STRUCT_TYPE { "anon-struct-type" }
         else if kind == ANON_ENUM_TYPE { "anon-enum-type" }
         else if kind == BINARY { "binary" }

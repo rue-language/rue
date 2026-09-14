@@ -646,6 +646,7 @@ pub struct Parser {
         }
         if t.kind == token.STRUCT { return self.parse_anon_struct_type(false); }
         if t.kind == token.ENUM { return self.parse_anon_enum_type(); }
+        if t.kind == token.FN { return self.parse_fn_type(); }
         let name = self.expect(token.IDENT);
         let mut path = self.add(ast.IDENT, name.value, name.start, name.end, 0, 0, 0);
         while self.eat(token.DOT) {
@@ -656,6 +657,32 @@ pub struct Parser {
             let args = self.parse_type_args();
             self.add(ast.TYPE_CALL, 0, name.start, self.previous().end, path, args, 0)
         } else { self.add(ast.TYPE, token.IDENT, name.start, self.arena.at(path).end, path, 0, 0) }
+    }
+
+    // `fn` `(` [ [inout|borrow] type { `,` ... } ] `)` [ `->` type ]: the
+    // type of a second-class callback parameter (6.1:46). Parameters are
+    // unnamed PARAM nodes whose mode is the token kind exactly as in a
+    // declaration; `comptime` is not a mode a function type can spell.
+    fn parse_fn_type(inout self) -> u64 {
+        let start = self.expect(token.FN).start;
+        let _ = self.expect(token.LPAREN);
+        let mut params: u64 = 0;
+        while !self.at(token.RPAREN) && !self.eof() {
+            let p_start = self.current().start;
+            let mode = if self.at(token.INOUT) || self.at(token.BORROW) { self.bump().kind } else { 0 };
+            let ty = self.parse_type();
+            let p = self.add_meta(ast.PARAM, 0, mode, p_start, self.arena.at(ty).end, ty, 0, 0, 0);
+            params = self.append(params, p);
+            if !self.eat(token.COMMA) { break; }
+        }
+        let close = self.expect(token.RPAREN);
+        let mut end = close.end;
+        let ret = if self.eat(token.ARROW) {
+            let r = self.parse_type();
+            end = self.arena.at(r).end;
+            r
+        } else { 0 };
+        self.add(ast.FN_TYPE, 0, start, end, params, ret, 0)
     }
 
     fn parse_type_args(inout self) -> u64 {
