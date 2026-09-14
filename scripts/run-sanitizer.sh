@@ -97,6 +97,103 @@ fi
 work="$(mktemp -d)"
 echo "run-sanitizer: workdir $work" >&2
 
+# Automatic examples share their preview requirements with the CLI harness.
+# The authored TOML is materialized by Buck as a JSON twin, which keeps this
+# Bash driver on the repository's Python 3.9 floor without growing a second
+# TOML parser or a hard-coded example list. Callers such as the Buck wrapper
+# tests may provide the artifact directly; a checkout run materializes it on
+# demand through the canonical target.
+contracts_json="${RUE_CLI_EXECUTION_CONTRACTS_JSON:-}"
+if [[ -z "$contracts_json" && -x "$repo_root/buck2" ]]; then
+    contracts_error="$work/execution-contracts.build.log"
+    contracts_status=0
+    contracts_json="$(
+        "$repo_root/buck2" build //:cli-execution-contracts-json --show-simple-output \
+            2>"$contracts_error"
+    )" || contracts_status=$?
+    if [[ "$contracts_status" -ne 0 ]]; then
+        echo "run-sanitizer: failed to materialize CLI execution contracts (exit $contracts_status):" >&2
+        sed 's/^/    /' "$contracts_error" >&2
+        exit "$contracts_status"
+    fi
+fi
+if [[ -n "$contracts_json" ]]; then
+    if [[ "$contracts_json" != /* ]]; then
+        contracts_json="$repo_root/$contracts_json"
+    fi
+    if [[ ! -f "$contracts_json" ]]; then
+        echo "run-sanitizer: CLI execution contracts artifact is missing: $contracts_json" >&2
+        exit 1
+    fi
+    if ! python3 - "$contracts_json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+try:
+    with open(path, encoding="utf-8") as stream:
+        data = json.load(stream)
+except (OSError, ValueError) as error:
+    print(f"run-sanitizer: invalid CLI execution contracts JSON: {error}", file=sys.stderr)
+    raise SystemExit(1)
+
+entries = data.get("automatic_example") if isinstance(data, dict) else None
+if not isinstance(entries, list):
+    print("run-sanitizer: CLI execution contracts JSON has no automatic_example list", file=sys.stderr)
+    raise SystemExit(1)
+
+seen = set()
+for entry in entries:
+    if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+        print("run-sanitizer: automatic_example entries must have string paths", file=sys.stderr)
+        raise SystemExit(1)
+    example_path = entry["path"]
+    if not example_path or example_path.startswith("/") or "\n" in example_path or "\t" in example_path:
+        print(f"run-sanitizer: invalid automatic example path: {example_path!r}", file=sys.stderr)
+        raise SystemExit(1)
+    if example_path in seen:
+        print(f"run-sanitizer: duplicate automatic example path: {example_path}", file=sys.stderr)
+        raise SystemExit(1)
+    seen.add(example_path)
+    if "preview" in entry:
+        preview = entry["preview"]
+        if not isinstance(preview, str) or not preview or "\n" in preview or "\t" in preview:
+            print(f"run-sanitizer: invalid preview for automatic example: {example_path}", file=sys.stderr)
+            raise SystemExit(1)
+PY
+    then
+        exit 1
+    fi
+fi
+if [[ -z "$contracts_json" ]]; then
+    echo "run-sanitizer: CLI execution contracts artifact was not provided and could not be built" >&2
+    exit 1
+fi
+
+preview_for_label() {
+    local wanted="$1"
+    if [[ "$wanted" != examples/* ]]; then
+        return 0
+    fi
+    # CLI automatic-example paths are relative to examples/, while discovery
+    # labels retain that directory to make diagnostics unambiguous.
+    if [[ "$wanted" == examples/* ]]; then
+        wanted="${wanted#examples/}"
+    fi
+    python3 - "$contracts_json" "$wanted" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    data = json.load(stream)
+wanted = sys.argv[2]
+for entry in data["automatic_example"]:
+    if entry["path"] == wanted:
+        print(entry.get("preview", ""))
+        break
+PY
+}
+
 # --- Curated corpus: small programs that lean on heap/aggregate paths the
 #     stock examples touch only lightly. Kept here (not in examples/) so they
 #     can hammer growth loops without cluttering the user-facing examples.
@@ -274,7 +371,11 @@ for f in "$work"/san_*.rue; do
     add_program "$f" "exit:0" "curated/$(basename "$f")"
 done
 for f in "$@"; do
-    add_program "$f" "memory-only" "$f"
+    extra_label="$f"
+    if [[ "$extra_label" == "$repo_root"/* ]]; then
+        extra_label="${extra_label#"$repo_root/"}"
+    fi
+    add_program "$f" "memory-only" "$extra_label"
 done
 
 # GNU timeout's status 124 is also a valid program exit. Run Valgrind through a
@@ -304,7 +405,20 @@ for ((i = 0; i < ${#programs[@]}; i++)); do
     compile_log="$work/$artifact.compile"
     status_file="$work/$artifact.status"
 
-    if ! "$rue" "$src" -o "$bin" > "$compile_log" 2>&1; then
+    compile_args=("$rue" "$src")
+    if [[ -n "$contracts_json" ]]; then
+        preview=""
+        if ! preview="$(preview_for_label "$label")"; then
+            echo "FAIL(metadata) $label (could not read CLI execution contracts)"
+            failures=$((failures + 1))
+            continue
+        fi
+        if [[ -n "$preview" ]]; then
+            compile_args+=(--preview "$preview")
+        fi
+    fi
+    compile_args+=(-o "$bin")
+    if ! "${compile_args[@]}" > "$compile_log" 2>&1; then
         echo "FAIL(compile) $label"
         sed 's/^/    /' "$compile_log"
         failures=$((failures + 1))
