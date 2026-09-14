@@ -327,6 +327,35 @@ args = ["main.rue", "-o", "prog"]
 exit_code = 39
 
 [[case]]
+name = "callback_only_wrappers_keep_their_frames_at_every_optimization_level"
+description = "RUE-2196: a wrapper whose only call goes through its fn parameter has no locals, spills or homed parameters, so it is a frameless leaf unless the indirect call counts as a call. It must: `blr` clobbers the AArch64 link register and `call r64` needs the call-boundary alignment. Free, associated and unit-returning wrappers, with zero and one arguments, run at every optimization level (differential_opt), including the associated wrapper that inlining does not remove at -O3."
+differential_opt = true
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn answer() -> i32 { 42 }
+fn inc(x: i32) -> i32 { x + 1 }
+fn note(x: i32) { @dbg(x); }
+
+fn apply0(f: fn() -> i32) -> i32 { f() }
+fn apply1(f: fn(i32) -> i32) -> i32 { f(41) }
+fn visit(f: fn(i32)) { f(7) }
+
+struct S {
+    fn apply(f: fn(i32) -> i32) -> i32 { f(41) + 0 }
+}
+
+fn main() -> i32 {
+    let a = apply0(answer);
+    let b = apply1(inc);
+    visit(note);
+    let c = S.apply(inc);
+    if a == 42 && b == 42 && c == 42 { 42 } else { 1 }
+}
+""" }]
+stdout = "7\n"
+exit_code = 42
+
+[[case]]
 name = "module_qualified_associated_functions_and_reexport_chains_bind_as_callbacks"
 description = "RUE-2197: `module.Type.function` and a function reached through a re-export chain (`outer.inner.f`, 10.4) bind as callbacks exactly as they call, including into a generic receiving function; the direct call and a local `const` alias are the controls."
 files = [
