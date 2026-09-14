@@ -1462,7 +1462,6 @@ rue_sh_test(
     test = "scripts/test-wrapper-scripts.sh",
     env = {
         "RUE_WRAPPER_ROOT": "$(location :wrapper-script-inputs)",
-        "RUE_CLI_EXECUTION_CONTRACTS_JSON": "$(location :cli-execution-contracts-json)",
     },
 )
 
