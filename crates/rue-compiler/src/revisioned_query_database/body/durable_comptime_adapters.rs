@@ -158,6 +158,12 @@ pub(in crate::revisioned_query_database) fn collect_anonymous_nominal_type_depen
         | T::Slice { element, .. }
         | T::PtrConst(element)
         | T::PtrMut(element) => collect_anonymous_nominal_type_dependencies(element, output),
+        T::Function { params, result } => {
+            for (_, ty) in params.iter() {
+                collect_anonymous_nominal_type_dependencies(ty, output);
+            }
+            collect_anonymous_nominal_type_dependencies(result, output);
+        }
         _ => {}
     }
 }

@@ -419,6 +419,12 @@ fn collect_slice_sources(
         T::Array { element, .. } | T::PtrConst(element) | T::PtrMut(element) => {
             collect_slice_sources(element, output, work)
         }
+        T::Function { params, result } => {
+            for (_, ty) in params.iter() {
+                collect_slice_sources(ty, output, work);
+            }
+            collect_slice_sources(result, output, work);
+        }
         _ => {}
     }
 }
@@ -1580,6 +1586,16 @@ pub(crate) fn select_materialization_facts(
                 T::PtrConst(element) | T::PtrMut(element) | T::Slice { element, .. } => {
                     self.opaque_semantic_type(element)
                 }
+                // A callback is one code pointer (ADR-0096): the types its
+                // signature names are reached through it exactly as a
+                // pointee is, and the instructions that pass or receive the
+                // values carry them in full.
+                T::Function { params, result } => {
+                    for (_, ty) in params.iter() {
+                        self.opaque_semantic_type(ty);
+                    }
+                    self.opaque_semantic_type(result);
+                }
                 T::Module(module) => {
                     self.modules.insert(module.clone());
                 }
@@ -1620,6 +1636,12 @@ pub(crate) fn select_materialization_facts(
                 | T::PtrConst(element)
                 | T::PtrMut(element)
                 | T::Slice { element, .. } => self.opaque_semantic_type(element),
+                T::Function { params, result } => {
+                    for (_, ty) in params.iter() {
+                        self.opaque_semantic_type(ty);
+                    }
+                    self.opaque_semantic_type(result);
+                }
                 T::Module(module) => {
                     self.modules.insert(module.clone());
                 }

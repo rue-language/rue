@@ -3777,6 +3777,12 @@ pub(super) fn durable_type_uses_anonymous_nominal(ty: &crate::DurableType) -> bo
         | T::Slice { element, .. }
         | T::PtrConst(element)
         | T::PtrMut(element) => durable_type_uses_anonymous_nominal(element),
+        T::Function { params, result } => {
+            params
+                .iter()
+                .any(|(_, ty)| durable_type_uses_anonymous_nominal(ty))
+                || durable_type_uses_anonymous_nominal(result)
+        }
         _ => false,
     }
 }

@@ -45,6 +45,14 @@ fn collect_body_type_reference(
         | T::Slice { element, .. }
         | T::PtrConst(element)
         | T::PtrMut(element) => collect_body_type_reference(element, references),
+        // A callback signature names every nominal its parameters and result
+        // mention (ADR-0096); a body that calls through it needs each of them.
+        T::Function { params, result } => {
+            for (_, ty) in params.iter() {
+                collect_body_type_reference(ty, references);
+            }
+            collect_body_type_reference(result, references);
+        }
         _ => {}
     }
 }
@@ -1154,9 +1162,10 @@ impl SemanticNucleusTypeProvider<'_> {
                             }
                         }
                     }
-                    // Pointers and slices are indirection and therefore break
-                    // the by-value containment graph.
-                    T::PtrConst(_) | T::PtrMut(_) | T::Slice { .. } => {}
+                    // Pointers, slices and callbacks (one code pointer) are
+                    // indirection and therefore break the by-value
+                    // containment graph.
+                    T::PtrConst(_) | T::PtrMut(_) | T::Slice { .. } | T::Function { .. } => {}
                     _ => {}
                 }
             }
@@ -1711,6 +1720,12 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
                 | crate::durable_semantics::DurableType::PtrConst(element)
                 | crate::durable_semantics::DurableType::PtrMut(element) => {
                     collect(element, output)
+                }
+                crate::durable_semantics::DurableType::Function { params, result } => {
+                    for (_, ty) in params.iter() {
+                        collect(ty, output);
+                    }
+                    collect(result, output);
                 }
                 _ => {}
             }
