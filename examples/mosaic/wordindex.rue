@@ -1,6 +1,7 @@
 // Search-term index built from canonical block text. A StrMap gives amortized
 // lookup while stable first-seen ids provide deterministic enumeration and tie
-// breaking; ranking keys are sorted as copy-only integers.
+// breaking; ranking sorts the term ids with `std.sort.sort_by`, the index
+// itself being the comparator's explicit context (ADR-0096).
 const std = @import("std");
 const escape = @import("escape.rue");
 const model = @import("model.rue");
@@ -154,25 +155,25 @@ pub fn build(borrow site: model.Site) -> Index {
     index
 }
 
-fn ranking_key(count: u64, id: u64) -> u64 {
-    let bounded = if count > 999999 { 999999 } else { count };
-    (999999 - bounded) * 1000000 + (id % 1000000)
+// The ranking order over term ids: more occurrences first, then the earlier
+// first-seen id. The comparator reads the counts through the index it is
+// handed as context rather than packing count and id into one sortable
+// integer, so no bound on either value is baked into the order. Ties are
+// impossible (ids are distinct), so the unstable sort is deterministic.
+fn ranks_before(borrow index: Index, a: u64, b: u64) -> bool {
+    let count_a = index.counts.get_or(a, 0);
+    let count_b = index.counts.get_or(b, 0);
+    if count_a != count_b { count_a > count_b } else { a < b }
 }
 
 fn ranked_ids(borrow index: Index) -> model.U64s {
-    let mut keys = model.U64s.new();
+    let mut ids = model.U64s.new();
     let mut i: u64 = 0;
     while i < index.terms.len() {
-        keys.push(ranking_key(index.counts.get_or(i, 0), i));
+        ids.push(i);
         i += 1;
     }
-    std.sort.quicksort(u64, inout keys);
-    let mut ids = model.U64s.new();
-    i = 0;
-    while i < keys.len() {
-        ids.push(keys.get_or(i, 0) % 1000000);
-        i += 1;
-    }
+    std.sort.sort_by(u64, Index, borrow index, inout ids, ranks_before);
     ids
 }
 

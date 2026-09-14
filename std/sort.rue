@@ -14,6 +14,29 @@
 //     std.sort.quicksort(i64, inout v);
 //     let hit = std.sort.binary_search(i64, v, target);   // Option(u64)
 //
+// ORDERING BY A CALLBACK. The `_by` entry points take the ordering as a
+// second-class function parameter (ADR-0096, 6.1:46) together with an explicit
+// context the callback reads through: `less: fn(borrow C, T, T) -> bool` for
+// the sorts and `pred: fn(borrow C, T) -> bool` for the partition. The context
+// is how a comparison reaches state that is not in the elements — a table of
+// weights the elements index, a policy that flips the direction — without
+// capturing anything: the caller passes it once and the callback receives it
+// on every comparison. A callback that needs no context takes an empty struct.
+//
+//     struct Weights { w: [i64; 4] }
+//     fn lighter(borrow ctx: Weights, a: u64, b: u64) -> bool { ctx.w[a] < ctx.w[b] }
+//     std.sort.sort_by(u64, Weights, borrow weights, inout ids, lighter);
+//     let n = std.sort.partition_by(i64, Threshold, borrow limit, inout v, heavy);
+//
+// The `_by` sorts are the same algorithms as their natural-order twins, with
+// `less(borrow ctx, a, b)` where the twins write `a < b`. They cannot share one
+// body: the natural order of a comptime `T` is the operator, and an operator is
+// not a named monomorphic function that a `fn` parameter can bind (6.1:50), so
+// `quicksort(T, ...)` cannot delegate to `sort_by` and `sort_by` cannot take a
+// generic `less` in its place. That duplication is the documented cost of
+// ADR-0096's "no generic callbacks" rule; RUE-2113 measured the indirect call
+// itself in docs/notes/fn-params-indirect-call-overhead.md.
+//
 // COPY-`T` ONLY. Every comparison reads its two operands out of the buffer by
 // copy while the slots stay live, so a use of an element duplicates it rather
 // than consuming it — that is what a Copy type does (3.8:1). Ordering also
@@ -171,6 +194,114 @@ pub fn quicksort(comptime T: type, inout xs: arraybuf.ArrayBuf(T)) {
     }
 }
 
+// Insertion sort under a caller-supplied ordering: stable, O(n^2), good on
+// small or nearly-sorted inputs. `less(borrow ctx, a, b)` is the strict
+// ordering `a` precedes `b`; equal elements keep their relative order.
+pub fn insertion_sort_by(comptime T: type, comptime C: type, borrow ctx: C, inout xs: arraybuf.ArrayBuf(T), less: fn(borrow C, T, T) -> bool) {
+    // COPY-`T` ONLY (module header): stated first so an owning element type is
+    // named here rather than deeper in, at a comparison or a by-copy read.
+    @require_trivially_droppable(T);
+    let n = xs.len();
+    let mut i: u64 = 1;
+    while i < n {
+        let mut j = i;
+        while j > 0 {
+            let prev = _at(T, borrow xs, j - 1);
+            let cur = _at(T, borrow xs, j);
+            if less(borrow ctx, cur, prev) {
+                xs.swap(j - 1, j);
+                j -= 1;
+            } else {
+                j = 0;
+            }
+        }
+        i += 1;
+    }
+}
+
+// `median_of_three` under a caller-supplied ordering.
+fn median_of_three_by(comptime T: type, comptime C: type, borrow ctx: C, borrow xs: arraybuf.ArrayBuf(T), a: u64, b: u64, c: u64, less: fn(borrow C, T, T) -> bool) -> u64 {
+    let va = _at(T, borrow xs, a);
+    let vb = _at(T, borrow xs, b);
+    let vc = _at(T, borrow xs, c);
+    if less(borrow ctx, va, vb) {
+        if less(borrow ctx, vb, vc) {
+            return b;
+        }
+        if less(borrow ctx, va, vc) {
+            return c;
+        }
+        return a;
+    }
+    if less(borrow ctx, va, vc) {
+        return a;
+    }
+    if less(borrow ctx, vb, vc) {
+        return c;
+    }
+    b
+}
+
+// `qsort_range` under a caller-supplied ordering: the same median-of-three
+// pivot, the same smaller-partition recursion, the same O(log n) stack bound.
+// The callback is forwarded unchanged into each recursive call (6.1:51).
+fn qsort_range_by(comptime T: type, comptime C: type, borrow ctx: C, inout xs: arraybuf.ArrayBuf(T), lo: u64, hi: u64, less: fn(borrow C, T, T) -> bool) {
+    let mut lo = lo;
+    let mut hi = hi;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        let pivot_index = median_of_three_by(T, C, borrow ctx, borrow xs, lo, mid, hi, less);
+        xs.swap(pivot_index, hi);
+        let pivot = _at(T, borrow xs, hi);
+        let mut store = lo;
+        let mut j = lo;
+        while j < hi {
+            let vj = _at(T, borrow xs, j);
+            if less(borrow ctx, vj, pivot) {
+                xs.swap(store, j);
+                store += 1;
+            }
+            j += 1;
+        }
+        xs.swap(store, hi);
+
+        let left_len = store - lo;
+        let right_len = hi - store;
+        if left_len < right_len {
+            if left_len > 1 {
+                qsort_range_by(T, C, borrow ctx, inout xs, lo, store - 1, less);
+            }
+            if store == hi {
+                return;
+            }
+            lo = store + 1;
+        } else {
+            if right_len > 1 {
+                qsort_range_by(T, C, borrow ctx, inout xs, store + 1, hi, less);
+            }
+            if store == lo {
+                return;
+            }
+            hi = store - 1;
+        }
+    }
+}
+
+// Quicksort under a caller-supplied ordering: average O(n log n), in place,
+// not stable. `less(borrow ctx, a, b)` must be a strict weak ordering; with a
+// strict total order (ties broken by the elements themselves) the result is
+// deterministic. The context reaches every comparison by `borrow`, so the
+// callback may read it and nothing else may write it during the sort.
+pub fn sort_by(comptime T: type, comptime C: type, borrow ctx: C, inout xs: arraybuf.ArrayBuf(T), less: fn(borrow C, T, T) -> bool) {
+    // COPY-`T` ONLY (module header): stated first so an owning element type is
+    // named here rather than deeper in, at a comparison or a by-copy read.
+    @require_trivially_droppable(T);
+    let n = xs.len();
+    if n > 1 {
+        qsort_range_by(T, C, borrow ctx, inout xs, 0, n - 1, less);
+    }
+}
+
 // Whether `xs` is in non-decreasing order under `<`.
 pub fn is_sorted(comptime T: type, borrow xs: arraybuf.ArrayBuf(T)) -> bool {
     // COPY-`T` ONLY (module header): stated first so an owning element type is
@@ -190,6 +321,49 @@ pub fn is_sorted(comptime T: type, borrow xs: arraybuf.ArrayBuf(T)) -> bool {
         i += 1;
     }
     true
+}
+
+// Whether `xs` is in non-decreasing order under a caller-supplied ordering:
+// no element precedes the one before it.
+pub fn is_sorted_by(comptime T: type, comptime C: type, borrow ctx: C, borrow xs: arraybuf.ArrayBuf(T), less: fn(borrow C, T, T) -> bool) -> bool {
+    // COPY-`T` ONLY (module header): stated first so an owning element type is
+    // named here rather than deeper in, at a comparison or a by-copy read.
+    @require_trivially_droppable(T);
+    let n = xs.len();
+    if n < 2 {
+        return true;
+    }
+    let mut i: u64 = 1;
+    while i < n {
+        let prev = _at(T, borrow xs, i - 1);
+        let cur = _at(T, borrow xs, i);
+        if less(borrow ctx, cur, prev) {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+// Move every element that satisfies `pred(borrow ctx, x)` in front of every
+// element that does not, in place, and return how many satisfy it: the
+// accepted elements are `xs[0..n)` afterwards and the rest are `xs[n..len)`.
+// Neither group keeps its relative order. Each element is tested exactly once.
+pub fn partition_by(comptime T: type, comptime C: type, borrow ctx: C, inout xs: arraybuf.ArrayBuf(T), pred: fn(borrow C, T) -> bool) -> u64 {
+    // COPY-`T` ONLY (module header): stated first so an owning element type is
+    // named here rather than deeper in, at a predicate or a by-copy read.
+    @require_trivially_droppable(T);
+    let n = xs.len();
+    let mut front: u64 = 0;
+    let mut i: u64 = 0;
+    while i < n {
+        if pred(borrow ctx, _at(T, borrow xs, i)) {
+            xs.swap(front, i);
+            front += 1;
+        }
+        i += 1;
+    }
+    front
 }
 
 // Binary search for `target` in a buffer that is already sorted ascending.
