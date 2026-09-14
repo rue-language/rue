@@ -2290,3 +2290,24 @@ fn twice(step: fn(fn(i32) -> i32, i32) -> i32, value: i32) -> i32 {
 fn main() -> i32 { twice(apply, 40) }
 """
 exit_code = 42
+
+[[case]]
+name = "callback_signature_alone_names_the_nominal_types_it_uses"
+spec = ["6.1:50", "6.1:52"]
+description = "A struct that appears only inside a `fn` type of the callee's signature, and nowhere else in that signature, is still part of what the body needs: the callback receives and returns it exactly as a direct call would (RUE-2113 regression)"
+source = """
+struct Pair { a: i64, b: i64 }
+struct Triple { a: i64, b: i64, c: i64 }
+
+fn sum(p: Pair) -> i64 { p.a + p.b }
+fn apply(n: i64, cb: fn(Pair) -> i64) -> i64 { cb(Pair { a: n, b: 1 }) }
+
+fn spread(n: i64) -> Triple { Triple { a: n, b: n + 1, c: n + 2 } }
+fn total(n: i64, cb: fn(i64) -> Triple) -> i64 {
+    let t = cb(n);
+    t.a + t.b + t.c
+}
+
+fn main() -> i32 { @intCast(apply(5, sum) + total(10, spread)) }
+"""
+exit_code = 39
