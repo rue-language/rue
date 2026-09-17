@@ -146,6 +146,29 @@ fn resolved_root_count<B: PlaceLowerBackend + ?Sized>(b: &B, place: &ResolvedPla
     b.ctx().type_slot_count(place.base_type)
 }
 
+/// Whether `place` projects out of a frame-resident root that owns no slot: a
+/// local or by-value parameter of a zero-sized type such as `[i32; 0]`.
+///
+/// The zero-sized diversions elsewhere in this module key on the *selected*
+/// sub-object, but a dynamic index into a zero-length array selects a sized
+/// element (`a[i]` of `[i32; 0]` is one `i32` slot) out of a root with no
+/// storage at all. The frame arithmetic has nothing to anchor on — the root's
+/// slot range is empty, and a by-value parameter of this type has no storage
+/// plan entry to home — so the access is diverted to the canonical zero-sized
+/// address (RUE-605, RUE-2207). The value is never reached: every level that
+/// makes the root zero-sized while the leaf is not is a zero-length array, and
+/// its bounds check, already emitted by [`resolved_offsets`], traps first. A
+/// by-reference parameter or an indirect base carries a real pointer whatever
+/// its pointee's size, so those keep their ordinary addressing.
+fn frame_root_is_zero_sized(place: &ResolvedPlace, root_count: u32) -> bool {
+    root_count == 0
+        && matches!(
+            place.base,
+            crate::value_plan::PlaceBasePlan::Local(_)
+                | crate::value_plan::PlaceBasePlan::Param { by_ref: false, .. }
+        )
+}
+
 /// Slot count of the sub-object the projection chain selects.
 ///
 /// Every projection carries the type it projects *out of*, so the last link
@@ -201,6 +224,11 @@ fn resolved_access<B: PlaceLowerBackend + ?Sized>(
     offsets: ResolvedProjectionOffsets,
 ) -> ProjectedAccess {
     let root_count = resolved_root_count(b, place);
+    if frame_root_is_zero_sized(place, root_count) {
+        let addr = b.alloc_vreg();
+        b.emit_zero_sized_place_addr(addr);
+        return ProjectedAccess::PointerAddr(addr);
+    }
     let dynamic_offset = compute_resolved_index_offset(b, &offsets.index_levels);
     match place.base {
         crate::value_plan::PlaceBasePlan::Local(slot) => frame_access(
@@ -646,11 +674,11 @@ fn lower_place_addr_plan_with_bounds<B: PlaceLowerBackend + ?Sized>(
     // indexed place keeps its language-level trap edge even though the address
     // itself is a constant. The index math below is deliberately skipped: a
     // zero-sized element has a zero stride, so no index can move the address.
-    if resolved_projected_slot_count(b, place) == 0 {
+    let root_count = resolved_root_count(b, place);
+    if resolved_projected_slot_count(b, place) == 0 || frame_root_is_zero_sized(place, root_count) {
         b.emit_zero_sized_place_addr(dst);
         return;
     }
-    let root_count = resolved_root_count(b, place);
     let dynamic = compute_resolved_index_offset(b, &offsets.index_levels);
     match place.base {
         crate::value_plan::PlaceBasePlan::Local(slot) => {
@@ -1571,6 +1599,131 @@ mod tests {
         assert!(unit_write_arm.instructions().iter().any(|inst| {
             matches!(inst, Aarch64Inst::Bl { symbol_id, .. } if unit_write_arm.get_symbol(*symbol_id) == "__rue_bounds_check")
         }));
+    }
+
+    /// A sized element projected out of a zero-sized root — a dynamic index
+    /// into a `[i32; 0]` local or by-value parameter — lowers on both backends
+    /// with its bounds check intact and no frame address formed (RUE-2207).
+    /// The leaf is one slot, so the leaf-keyed zero-sized diversions do not
+    /// apply; before the fix the local root underflowed the slot arithmetic
+    /// and the parameter root asked the storage plan for a slot it never
+    /// allocated.
+    #[test]
+    fn dynamic_index_into_zero_length_root_lowers_on_both_backends() {
+        // Two CFGs, one per root shape:
+        //
+        //     fn local(i: u64) -> i32 { let a: [i32; 0] = []; a[i] }
+        //     fn param(a: [i32; 0], i: u64) -> i32 { a[i] }
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let empty_ty = Type::new_array(pool.intern_array_from_type(Type::I32, 0));
+        let pool = pool.freeze();
+
+        let mut local_cfg = Cfg::new(Type::I32, 1, 1, "local".to_string(), vec![false]);
+        let entry = local_cfg.new_block();
+        local_cfg.entry = entry;
+        storage_live(&mut local_cfg, entry, 0, empty_ty);
+        let index = value(
+            &mut local_cfg,
+            entry,
+            CfgInstData::Param { index: 0 },
+            Type::U64,
+        );
+        let element = local_cfg
+            .append_place_read(
+                entry,
+                PlaceBase::Local(0),
+                empty_ty,
+                [Projection::Index {
+                    array_type: empty_ty,
+                    index,
+                }],
+                Type::I32,
+                span(),
+            )
+            .unwrap();
+        storage_dead(&mut local_cfg, entry, 0, empty_ty);
+        local_cfg.set_return(entry, Some(element));
+
+        let mut param_cfg = Cfg::new(Type::I32, 0, 2, "param".to_string(), vec![false, false]);
+        let entry = param_cfg.new_block();
+        param_cfg.entry = entry;
+        let index = value(
+            &mut param_cfg,
+            entry,
+            CfgInstData::Param { index: 1 },
+            Type::U64,
+        );
+        let element = param_cfg
+            .append_place_read(
+                entry,
+                PlaceBase::Param(0),
+                empty_ty,
+                [Projection::Index {
+                    array_type: empty_ty,
+                    index,
+                }],
+                Type::I32,
+                span(),
+            )
+            .unwrap();
+        param_cfg.set_return(entry, Some(element));
+
+        for (cfg, shape) in [(&local_cfg, "local"), (&param_cfg, "by-value parameter")] {
+            let x86 = X86CfgLower::new_unchecked(cfg, &pool, &interner)
+                .lower()
+                .unwrap_or_else(|error| panic!("x86 {shape} root should lower: {error:?}"));
+            assert!(
+                x86.instructions().iter().any(|inst| matches!(
+                    inst,
+                    X86Inst::CallRel { symbol_id, .. }
+                        if x86.get_symbol(*symbol_id) == "__rue_bounds_check"
+                )),
+                "the {shape} root keeps its bounds trap edge"
+            );
+            assert!(
+                x86.instructions().iter().any(|inst| matches!(
+                    inst,
+                    X86Inst::MovRI64 { imm, .. } if *imm == ZERO_SIZED_PLACE_ADDR
+                )),
+                "the {shape} root is addressed at the canonical zero-sized address"
+            );
+            assert!(
+                !x86.instructions()
+                    .iter()
+                    .any(|inst| matches!(inst, X86Inst::Lea { .. })),
+                "a zero-sized {shape} root must not form a frame address"
+            );
+
+            let arm = Aarch64CfgLower::new_unchecked(cfg, &pool, &interner, Target::Aarch64Linux)
+                .lower()
+                .unwrap_or_else(|error| panic!("AArch64 {shape} root should lower: {error:?}"));
+            assert!(
+                arm.instructions().iter().any(|inst| matches!(
+                    inst,
+                    Aarch64Inst::Bl { symbol_id, .. }
+                        if arm.get_symbol(*symbol_id) == "__rue_bounds_check"
+                )),
+                "the {shape} root keeps its bounds trap edge"
+            );
+            assert!(
+                arm.instructions().iter().any(|inst| matches!(
+                    inst,
+                    Aarch64Inst::MovImm { imm, .. } if *imm == ZERO_SIZED_PLACE_ADDR
+                )),
+                "the {shape} root is addressed at the canonical zero-sized address"
+            );
+            assert!(
+                !arm.instructions().iter().any(|inst| matches!(
+                    inst,
+                    Aarch64Inst::AddImm {
+                        src: Aarch64Operand::Physical(Aarch64Reg::Fp),
+                        ..
+                    }
+                )),
+                "a zero-sized {shape} root must not form a frame address"
+            );
+        }
     }
 
     /// Forming the address of a place with no storage yields
