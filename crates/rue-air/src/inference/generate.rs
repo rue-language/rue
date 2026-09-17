@@ -467,6 +467,15 @@ pub struct ConstraintGenerator<'a> {
     /// (RUE-599). `None` only in unit tests; production passes the map via
     /// [`Self::with_inline_ctor_head_types`].
     inline_ctor_head_types: Option<&'a AHashMap<InstRef, Type>>,
+    /// Sema's pre-resolved `let` annotations naming a fixed string `Str(N)`
+    /// (binding-site Alloc `InstRef` -> concrete type). `Str(N)` is a
+    /// value-parameterized builtin that only semantic type resolution mints,
+    /// so the annotation is not a nominal fact this generator can look up;
+    /// without it the binding took its initializer's type and an annotated
+    /// string literal stayed an unbound literal variable (RUE-2211). `None`
+    /// only in unit tests; production passes the map via
+    /// [`Self::with_fixed_string_annotations`].
+    fixed_string_annotations: Option<&'a AHashMap<InstRef, Type>>,
     /// Method signatures registered after the shared `InferenceContext` was
     /// built: anonymous-struct methods are registered lazily during comptime
     /// evaluation, so they're absent from `methods`. Consulted when a method
@@ -688,6 +697,7 @@ impl<'a> ConstraintGenerator<'a> {
             comptime_alias_types: AHashMap::new(),
             alias_scope_stack: Vec::new(),
             inline_ctor_head_types: None,
+            fixed_string_annotations: None,
             extra_method_sigs: None,
             const_values: None,
             const_function_aliases: None,
@@ -751,6 +761,7 @@ impl<'a> ConstraintGenerator<'a> {
             comptime_alias_types: AHashMap::new(),
             alias_scope_stack: Vec::new(),
             inline_ctor_head_types: None,
+            fixed_string_annotations: None,
             extra_method_sigs: None,
             const_values: None,
             const_function_aliases: None,
@@ -780,14 +791,6 @@ impl<'a> ConstraintGenerator<'a> {
         self
     }
 
-    /// Is `ty` the synthetic slice struct `[T]` (ADR-0043, RUE-322), the `str`
-    /// string type (RUE-324), or a fixed-capacity string `Str(N)` (RUE-326)? A
-    /// slice parameter accepts an array argument by coercion (`sum(borrow a)`),
-    /// and a `str`/`Str(N)` position accepts a string literal (whose HM type is
-    /// `String`) by coercion, so the constraint generator must NOT impose strict
-    /// `arg == expected` equality when the expected type is one of these; the
-    /// real compatibility check (including the `Str(N)` capacity-fits rule) and
-    /// the fat-pointer/`str` materialization happen in semantic analysis.
     /// Whether a parameter position binds a callback (ADR-0096): the operand
     /// is resolved by name in semantic analysis, so inference constrains
     /// nothing against it, exactly as it defers a slice view.
@@ -795,11 +798,31 @@ impl<'a> ConstraintGenerator<'a> {
         matches!(ty, InferType::Concrete(t) if t.is_function())
     }
 
+    /// Is `ty` the synthetic slice struct `[T]` (ADR-0043, RUE-322) or the
+    /// `str` string type (RUE-324)? A slice parameter accepts an array argument
+    /// by coercion (`sum(borrow a)`), and a `borrow str` / `inout str` position
+    /// accepts any string buffer as a view (3.7:60), so the constraint
+    /// generator must NOT impose strict `arg == expected` equality when the
+    /// expected type is one of these; the real compatibility check and the
+    /// fat-pointer/`str` materialization happen in semantic analysis.
+    ///
+    /// A fixed-capacity `Str(N)` (RUE-326) is deliberately NOT in this family.
+    /// It is a nominal value type: a string literal still reaches it by
+    /// contextual binding (every `Str(N)` identity is a string-literal context
+    /// type in unification), but a typed value must match it exactly. Deferring
+    /// it left an annotated `let c: Str(8) = "..."` as an unbound literal
+    /// variable that a later `StrBuf` parameter silently claimed, so the callee
+    /// read a three-word header out of a two-word view (RUE-2211), and let
+    /// `let s: Str(1) = word` bind a `str` under a fixed-string annotation
+    /// (RUE-2178). Sema still owns the literal capacity rule (3.7:51).
     fn is_slice_struct_type(&self, ty: InferType) -> bool {
         if let InferType::Concrete(t) = ty
             && let Some(id) = t.as_struct()
         {
-            return self.type_pool.text_view_kind(id).is_some();
+            return matches!(
+                self.type_pool.text_view_kind(id),
+                Some(crate::types::TextViewKind::Str | crate::types::TextViewKind::Slice)
+            );
         }
         false
     }
@@ -1057,6 +1080,17 @@ impl<'a> ConstraintGenerator<'a> {
         inline_ctor_head_types: &'a AHashMap<InstRef, Type>,
     ) -> Self {
         self.inline_ctor_head_types = Some(inline_ctor_head_types);
+        self
+    }
+
+    /// Provide sema's pre-resolved fixed-string `let` annotations (binding-site
+    /// Alloc `InstRef` -> concrete type). See the `fixed_string_annotations`
+    /// field (RUE-2211).
+    pub fn with_fixed_string_annotations(
+        mut self,
+        fixed_string_annotations: &'a AHashMap<InstRef, Type>,
+    ) -> Self {
+        self.fixed_string_annotations = Some(fixed_string_annotations);
         self
     }
 
@@ -1871,13 +1905,24 @@ impl<'a> ConstraintGenerator<'a> {
                     // applied by the authoritative semantic pass. Eagerly
                     // substituting them here makes inference reject programs
                     // that the semantic annotation/coercion path accepts.
-                    let annotated = self.infer_type_hint(
-                        self.rir.type_syntax(),
-                        *type_syntax,
-                        None,
-                        None,
-                        span.file_id,
-                    );
+                    //
+                    // A fixed-string annotation (`Str(N)`, alone or nested in
+                    // an array or pointer) is not a nominal fact this hint can
+                    // name; sema pre-resolved it by binding site, so the
+                    // binding is that concrete type here (RUE-2211).
+                    let annotated = self
+                        .fixed_string_annotations
+                        .and_then(|annotations| annotations.get(&inst_ref))
+                        .map(|ty| self.type_to_infer(*ty))
+                        .or_else(|| {
+                            self.infer_type_hint(
+                                self.rir.type_syntax(),
+                                *type_syntax,
+                                None,
+                                None,
+                                span.file_id,
+                            )
+                        });
                     if let Some(annotated_ty) = annotated {
                         // A `str` annotation (ADR-0043 Phase 3, RUE-324) accepts
                         // a string literal (HM type `String`) by coercion, and a
