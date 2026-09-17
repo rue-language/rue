@@ -229,3 +229,136 @@ fn main() -> i32 {
 }
 """
 exit_code = 0
+
+# 3.7:60 — a `Str(N)` value converts only to a `borrow str` / `inout str` view,
+# never to the other buffer type. A `StrBuf` parameter has a different layout
+# (a three-word growable header against the two-word fixed view), so accepting
+# the argument let the callee read and write through the wrong offsets and a
+# `push` wrote into the literal's read-only bytes (RUE-2211). The mismatch is
+# E0206 in every parameter mode, exactly as a struct-field initializer reports.
+[[case]]
+name = "str_fixed_to_strbuf_inout_param_rejected"
+spec = ["3.7:60"]
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn grow(inout x: StrBuf) { x.push(65); }
+fn main() -> i32 {
+    let mut c: Str(8) = "hello!!";
+    grow(inout c);
+    @intCast(c.len())
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected StrBuf, found Str(8)"]
+
+[[case]]
+name = "str_fixed_to_strbuf_borrow_param_rejected"
+spec = ["3.7:60"]
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn length(borrow x: StrBuf) -> u64 { x.len() }
+fn main() -> i32 {
+    let c: Str(8) = "hello!!";
+    @intCast(length(borrow c))
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected StrBuf, found Str(8)"]
+
+[[case]]
+name = "str_fixed_to_strbuf_value_param_rejected"
+spec = ["3.7:60"]
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn length(x: StrBuf) -> u64 { x.len() }
+fn main() -> i32 {
+    let c: Str(8) = "abcdefgh";
+    @intCast(length(c))
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected StrBuf, found Str(8)"]
+
+# 3.7:60 — the reverse direction: a `StrBuf` is not a `Str(N)`, in a
+# by-reference mode as well as by value.
+[[case]]
+name = "strbuf_to_str_fixed_borrow_param_rejected"
+spec = ["3.7:60"]
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn length(borrow x: Str(8)) -> u64 { x.len() }
+fn main() -> i32 {
+    let b: StrBuf = "xyz";
+    @intCast(length(borrow b))
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected Str(8), found StrBuf"]
+
+# 3.7:50 — a `Str(N)` annotation is contextual only for a string literal. An
+# already-typed initializer (a `str` constant here) must have that exact type;
+# the annotation is not dropped in favor of the initializer's type (RUE-2178).
+[[case]]
+name = "str_fixed_annotation_rejects_typed_str_initializer"
+spec = ["3.7:50"]
+source = """
+const WORD: str = "hello";
+fn main() -> i32 {
+    let s: Str(1) = WORD;
+    @intCast(s.len())
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected Str(1), found str"]
+
+# 3.7:50 — nor does one fixed capacity stand in for another (RUE-636).
+[[case]]
+name = "str_fixed_annotation_rejects_other_capacity"
+spec = ["3.7:50"]
+source = """
+fn main() -> i32 {
+    let c: Str(8) = "hi";
+    let q: Str(4) = c;
+    @intCast(q.len())
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected Str(4), found Str(8)"]
+
+# 3.7:50 — a fixed-string binding keeps its declared type through a runtime
+# assignment and a later call, so the contextual literal path is unchanged.
+[[case]]
+name = "str_fixed_binding_is_the_annotated_type"
+spec = ["3.7:50"]
+source = """
+fn length(borrow x: Str(8)) -> u64 { x.len() }
+fn main() -> i32 {
+    let mut c: Str(8) = "hi";
+    c = "hello";
+    @intCast(length(borrow c))
+}
+"""
+exit_code = 5
+
+# 3.7:50 — the annotation is contextual through array nesting too: each
+# element literal takes the element capacity, and the elements are the
+# annotated type afterwards.
+[[case]]
+name = "str_fixed_array_annotation_types_each_element"
+spec = ["3.7:50"]
+source = """
+fn length(borrow x: Str(8)) -> u64 { x.len() }
+fn main() -> i32 {
+    let a: [Str(8); 2] = ["ab", "cde"];
+    @intCast(length(borrow a[1]) + a[0].len())
+}
+"""
+exit_code = 5

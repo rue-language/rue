@@ -302,6 +302,7 @@ fn lexical_binding_capture_view(
 #[derive(Clone)]
 struct PrecomputeSnapshot {
     comptime_local_bindings: Arc<AHashMap<InstRef, Type>>,
+    fixed_string_annotations: Arc<AHashMap<InstRef, Type>>,
     inline_ctor_head_types: Arc<AHashMap<InstRef, Type>>,
 }
 
@@ -593,73 +594,79 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             target: "rue::timing",
             tracing::Level::INFO
         );
-        let (comptime_local_bindings, precompute_work, inline_ctor_head_types) =
-            if let Some(snapshot) = precompute_snapshot {
-                // The probe already walked and evaluated all reachable
-                // aliases/inline heads. Reuse that immutable checkpoint in
-                // every frontier and the final root pass; replaying these
-                // recursive walks per selected body was the remaining source
-                // of quadratic staged work.
-                (
-                    snapshot.comptime_local_bindings.clone(),
-                    Default::default(),
-                    snapshot.inline_ctor_head_types.clone(),
-                )
-            } else {
-                let (comptime_local_bindings, mut precompute_work) = self
-                    .precompute_comptime_type_locals(
-                        body,
-                        type_subst,
-                        value_subst,
-                        &runtime_params,
-                        precompute_attribution_enabled,
-                    )?;
+        let (
+            comptime_local_bindings,
+            fixed_string_annotations,
+            precompute_work,
+            inline_ctor_head_types,
+        ) = if let Some(snapshot) = precompute_snapshot {
+            // The probe already walked and evaluated all reachable
+            // aliases/inline heads. Reuse that immutable checkpoint in
+            // every frontier and the final root pass; replaying these
+            // recursive walks per selected body was the remaining source
+            // of quadratic staged work.
+            (
+                snapshot.comptime_local_bindings.clone(),
+                snapshot.fixed_string_annotations.clone(),
+                Default::default(),
+                snapshot.inline_ctor_head_types.clone(),
+            )
+        } else {
+            let (precomputed_locals, mut precompute_work) = self.precompute_comptime_type_locals(
+                body,
+                type_subst,
+                value_subst,
+                &runtime_params,
+                precompute_attribution_enabled,
+            )?;
+            let comptime_local_bindings = precomputed_locals.aliases;
+            let fixed_string_annotations = precomputed_locals.fixed_string_annotations;
 
-                // The inline-head pre-reduction below evaluates head expressions
-                // without walking the body, so it can't replay lexical scope; give it
-                // the flattened name view. Same-named ties resolve to the later
-                // binding site deterministically (instruction order, which follows
-                // program order) — matching the old flat map for this opportunistic
-                // path.
-                let mut flat_bindings: Vec<(InstRef, Type)> = comptime_local_bindings
-                    .iter()
-                    .map(|(inst_ref, ty)| (*inst_ref, *ty))
-                    .collect();
-                flat_bindings.sort_by_key(|(inst_ref, _)| inst_ref.as_u32());
-                let comptime_local_types: AHashMap<Spur, Type> = flat_bindings
-                    .into_iter()
-                    .filter_map(
-                        |(inst_ref, ty)| match self.body_rir_ref().get(inst_ref).data {
-                            rue_rir::InstData::Alloc {
-                                name: Some(name), ..
-                            } => Some((name, ty)),
-                            _ => None,
-                        },
-                    )
-                    .collect();
-
-                // Pre-reduce inline type-constructor heads (`F(args).Variant(..)`,
-                // `F(args) { ... }`; RUE-596) to their concrete types, keyed by the
-                // head's `InstRef` — the nameless analogue of the alias map above.
-                // Without this, a construction argument on an inline head was never
-                // constrained and an integer payload literal defaulted to `i32`
-                // (RUE-599). Runs before the lazy-method collection below so methods
-                // registered while reducing a head are included in it.
-                let (inline_ctor_head_types, inline_work) = self
-                    .precompute_inline_ctor_head_types(
-                        body,
-                        type_subst,
-                        value_subst,
-                        &comptime_local_types,
-                        precompute_attribution_enabled,
-                    )?;
-                precompute_work.accrue(inline_work);
-                (
-                    Arc::new(comptime_local_bindings),
-                    precompute_work,
-                    Arc::new(inline_ctor_head_types),
+            // The inline-head pre-reduction below evaluates head expressions
+            // without walking the body, so it can't replay lexical scope; give it
+            // the flattened name view. Same-named ties resolve to the later
+            // binding site deterministically (instruction order, which follows
+            // program order) — matching the old flat map for this opportunistic
+            // path.
+            let mut flat_bindings: Vec<(InstRef, Type)> = comptime_local_bindings
+                .iter()
+                .map(|(inst_ref, ty)| (*inst_ref, *ty))
+                .collect();
+            flat_bindings.sort_by_key(|(inst_ref, _)| inst_ref.as_u32());
+            let comptime_local_types: AHashMap<Spur, Type> = flat_bindings
+                .into_iter()
+                .filter_map(
+                    |(inst_ref, ty)| match self.body_rir_ref().get(inst_ref).data {
+                        rue_rir::InstData::Alloc {
+                            name: Some(name), ..
+                        } => Some((name, ty)),
+                        _ => None,
+                    },
                 )
-            };
+                .collect();
+
+            // Pre-reduce inline type-constructor heads (`F(args).Variant(..)`,
+            // `F(args) { ... }`; RUE-596) to their concrete types, keyed by the
+            // head's `InstRef` — the nameless analogue of the alias map above.
+            // Without this, a construction argument on an inline head was never
+            // constrained and an integer payload literal defaulted to `i32`
+            // (RUE-599). Runs before the lazy-method collection below so methods
+            // registered while reducing a head are included in it.
+            let (inline_ctor_head_types, inline_work) = self.precompute_inline_ctor_head_types(
+                body,
+                type_subst,
+                value_subst,
+                &comptime_local_types,
+                precompute_attribution_enabled,
+            )?;
+            precompute_work.accrue(inline_work);
+            (
+                Arc::new(comptime_local_bindings),
+                Arc::new(fixed_string_annotations),
+                precompute_work,
+                Arc::new(inline_ctor_head_types),
+            )
+        };
         let precompute_ns = elapsed_ns(precompute_started);
         let precompute_eval_provider_ns = precompute_work.eval_provider_ns.min(precompute_ns);
         let precompute_structural_ns = precompute_ns - precompute_eval_provider_ns;
@@ -722,6 +729,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             cgen = cgen.with_string_literal_default(str_ty);
             let mut cgen = cgen
                 .with_comptime_local_bindings(&comptime_local_bindings)
+                .with_fixed_string_annotations(&fixed_string_annotations)
                 .with_inline_ctor_head_types(&inline_ctor_head_types)
                 .with_comptime_values(value_subst)
                 .with_comptime_selections(selections, staged)
@@ -1054,6 +1062,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             },
             PrecomputeSnapshot {
                 comptime_local_bindings,
+                fixed_string_annotations,
                 inline_ctor_head_types,
             },
         ))

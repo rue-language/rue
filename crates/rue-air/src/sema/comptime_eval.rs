@@ -2023,6 +2023,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// substitutions (specialized generic bodies), so aliases like
     /// `let P = Pair(T)` resolve. Discovered aliases also feed back into the
     /// evaluation environment, so chains (`let Q = Wrap(P)`) resolve too.
+    ///
+    /// The same walk pre-resolves every `let` annotation that names a fixed
+    /// string `Str(N)` (3.7:49), directly or as an array element or pointee.
+    /// Inference resolves an annotation only from its own nominal facts, and
+    /// `Str(N)` is a value-parameterized builtin that only semantic type
+    /// resolution mints; without the concrete identity, inference typed such a
+    /// binding by its initializer, so `let c: Str(8) = "..."` stayed an
+    /// unbound string-literal variable that a later `StrBuf` parameter claimed
+    /// (RUE-2211) and `let s: Str(1) = word` never compared the annotation to
+    /// the `str` initializer (RUE-2178).
     pub(crate) fn precompute_comptime_type_locals(
         &mut self,
         body: InstRef,
@@ -2030,12 +2040,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         value_subst: Option<&AHashMap<Spur, ConstValue>>,
         runtime_params: &[Spur],
         attribution_enabled: bool,
-    ) -> CompileResult<(AHashMap<InstRef, Type>, ComptimePrecomputeAttribution)> {
+    ) -> CompileResult<(PrecomputedTypeLocals, ComptimePrecomputeAttribution)> {
         let mut attribution = ComptimePrecomputeAttribution {
             enabled: attribution_enabled,
             ..ComptimePrecomputeAttribution::default()
         };
-        let mut discovered: AHashMap<InstRef, Type> = AHashMap::new();
+        let mut discovered = PrecomputedTypeLocals::default();
         let mut eval_types: AHashMap<Spur, Type> = type_subst.cloned().unwrap_or_default();
         let eval_values: AHashMap<Spur, ConstValue> = value_subst.cloned().unwrap_or_default();
         let mut runtime_bindings: AHashSet<Spur> = runtime_params.iter().copied().collect();
@@ -2064,7 +2074,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     fn walk_comptime_type_locals(
         &mut self,
         inst_ref: InstRef,
-        discovered: &mut AHashMap<InstRef, Type>,
+        discovered: &mut PrecomputedTypeLocals,
         eval_types: &mut AHashMap<Spur, Type>,
         eval_values: &AHashMap<Spur, ConstValue>,
         runtime_bindings: &mut AHashSet<Spur>,
@@ -2110,11 +2120,32 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     }
                 }
             }
-            InstData::Alloc { name, init, .. } => {
+            InstData::Alloc { name, init, ty, .. } => {
                 if attribution.enabled {
                     attribution.alias_allocations_examined += 1;
                 }
-                let (name, init) = (*name, *init);
+                let (name, init, annotation) = (*name, *init, *ty);
+                if let Some(annotation) = annotation
+                    && self.type_syntax_names_fixed_string(annotation)
+                {
+                    // Resolved under the aliases and comptime values in
+                    // scope at this statement, exactly as semantic analysis
+                    // will resolve it again; an annotation that does not
+                    // resolve here is left for that pass to report.
+                    let span = self.body_rir_ref().get(inst_ref).span;
+                    if let Some(resolved) = self
+                        .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
+                            annotation,
+                            eval_types,
+                            eval_values,
+                            span,
+                        )
+                    {
+                        discovered
+                            .fixed_string_annotations
+                            .insert(inst_ref, resolved);
+                    }
+                }
                 if let Some(name) = name {
                     let alias = if initializer_may_evaluate_to_type_with_bindings(
                         self.body_rir_ref(),
@@ -2149,7 +2180,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     let was_runtime = runtime_bindings.remove(&name);
                     frame.push((name, old_type, was_runtime));
                     if let Some(ty) = alias {
-                        discovered.insert(inst_ref, ty);
+                        discovered.aliases.insert(inst_ref, ty);
                         eval_types.insert(name, ty);
                     } else {
                         runtime_bindings.insert(name);
@@ -2217,6 +2248,35 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Whether a `let` annotation names the fixed string `Str(N)` at its root
+    /// or through array-element and pointee nesting. The name is reserved for
+    /// the builtin (6.0:3), so the spelling alone identifies it; a `Str(N)`
+    /// inside a user type constructor's arguments is that constructor's to
+    /// evaluate and is not searched.
+    fn type_syntax_names_fixed_string(&self, reference: rue_rir::RirTypeSyntaxRef) -> bool {
+        use rue_rir::RirTypeSyntaxNode;
+
+        let arena = self.body_rir_ref().type_syntax();
+        match arena.node(reference) {
+            Some(RirTypeSyntaxNode::TypeCall { path, .. }) => {
+                let Some([callee]) = arena.words(*path) else {
+                    return false;
+                };
+                arena
+                    .symbol(rue_rir::RirTypeSyntaxSymbol::from_u32(*callee))
+                    .is_some_and(|symbol| self.body_interner().resolve(symbol) == "Str")
+            }
+            Some(RirTypeSyntaxNode::Array { element, .. }) => {
+                self.type_syntax_names_fixed_string(*element)
+            }
+            Some(
+                RirTypeSyntaxNode::PointerConst { pointee }
+                | RirTypeSyntaxNode::PointerMut { pointee },
+            ) => self.type_syntax_names_fixed_string(*pointee),
+            _ => false,
+        }
     }
 
     /// Evaluate a `let` initializer as a compile-time type value, if it is
@@ -2341,6 +2401,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
         Ok((reduced, attribution))
     }
+}
+
+/// The `let` bindings a body's pre-inference walk resolved, keyed by the
+/// binding's `Alloc` instruction (see `precompute_comptime_type_locals`).
+#[derive(Debug, Default, Clone)]
+pub(crate) struct PrecomputedTypeLocals {
+    /// Comptime type aliases (`let P = F();`): the aliased concrete type.
+    pub(crate) aliases: AHashMap<InstRef, Type>,
+    /// Annotations naming a fixed string `Str(N)` (`let s: Str(8) = ...`,
+    /// `let a: [Str(4); 2] = ...`): the annotation's concrete type.
+    pub(crate) fixed_string_annotations: AHashMap<InstRef, Type>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
