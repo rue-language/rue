@@ -150,6 +150,22 @@ fn parse_args() -> Result<Options, String> {
     })
 }
 
+/// Create the caller's work directory and resolve it against the invocation
+/// directory, once, before any path is derived from it.
+///
+/// Every sample runs with the work directory as its current directory, and
+/// the executable, fixture and output paths handed to it are all joined onto
+/// the work directory. A relative spelling therefore resolved twice: the
+/// child looked up `work/wordfreq-program` from inside `work/`, and could not
+/// be spawned at all (RUE-2206). Resolving here makes the relative and the
+/// absolute spelling of one directory behave identically.
+fn resolve_workdir(directory: &Path) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(directory)
+        .map_err(|error| format!("could not create {}: {error}", directory.display()))?;
+    std::path::absolute(directory)
+        .map_err(|error| format!("could not resolve {}: {error}", directory.display()))
+}
+
 /// Run the runtime suite for one platform epoch.
 pub fn run() -> Result<u8, String> {
     let mut options = parse_args()?;
@@ -191,17 +207,14 @@ pub fn run() -> Result<u8, String> {
 
     let holder;
     let workdir = match &options.workdir {
-        Some(directory) => {
-            std::fs::create_dir_all(directory)
-                .map_err(|error| format!("could not create {}: {error}", directory.display()))?;
-            directory.as_path()
-        }
+        Some(directory) => resolve_workdir(directory)?,
         None => {
             holder = tempfile::tempdir()
                 .map_err(|error| format!("could not create a work directory: {error}"))?;
-            holder.path()
+            holder.path().to_path_buf()
         }
     };
+    let workdir = workdir.as_path();
 
     let started_at = utc_timestamp();
     let compiler_version = compiler_version(&options.compiler)?;
@@ -1556,6 +1569,38 @@ mod tests {
         let path = directory.join("expected-stdout.txt");
         std::fs::write(&path, contents).unwrap();
         path
+    }
+
+    /// A relative work directory is resolved against the invocation directory
+    /// once, so the paths derived from it stay valid inside a child whose
+    /// current directory is that work directory (RUE-2206).
+    #[test]
+    fn relative_workdir_resolves_to_the_absolute_invocation_path() {
+        let temporary = tempfile::tempdir().unwrap();
+        let absolute = temporary.path().join("work");
+        let resolved = resolve_workdir(&absolute).unwrap();
+        assert!(resolved.is_absolute());
+        assert!(resolved.is_dir());
+        assert_eq!(resolved, absolute);
+
+        let relative = Path::new("rue-bench-relative-workdir-test");
+        let resolved = resolve_workdir(relative).unwrap();
+        let cleanup = std::fs::remove_dir(&resolved);
+        assert!(resolved.is_absolute(), "{}", resolved.display());
+        assert_eq!(resolved, std::env::current_dir().unwrap().join(relative));
+        cleanup.unwrap();
+
+        // The executable and the sample destinations are joined onto the
+        // resolved directory, so they are absolute wherever the child runs.
+        let binary = resolved.join("wordfreq-program");
+        let destination = resolved.join("wordfreq-out-0");
+        let arguments = resolve_arguments(&workload(), &resolved.join("input.txt"), &destination);
+        assert!(binary.is_absolute());
+        assert!(
+            arguments
+                .iter()
+                .all(|argument| Path::new(argument).is_absolute())
+        );
     }
 
     #[test]
