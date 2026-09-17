@@ -214,7 +214,12 @@ fn selector_matches(selector: &str, spec_ids: &[String]) -> bool {
 
 /// Split raw argv into specification selectors and the arguments the libtest
 /// harness should still parse.
-fn partition_spec_selectors(raw_args: &[String]) -> (Vec<String>, Vec<String>) {
+///
+/// A `--spec` with no value is an error rather than an empty selection: an
+/// empty selector list means "the whole corpus", so a trailing `--spec` (or
+/// one followed by another flag) would silently run or list every case in
+/// place of the filtered run the caller asked for (RUE-2205).
+fn partition_spec_selectors(raw_args: &[String]) -> Result<(Vec<String>, Vec<String>), String> {
     let mut selectors = Vec::new();
     let mut harness_args = Vec::new();
     let mut arguments = raw_args.iter();
@@ -227,6 +232,9 @@ fn partition_spec_selectors(raw_args: &[String]) -> (Vec<String>, Vec<String>) {
     let mut expecting_selector = false;
     for argument in arguments {
         if expecting_selector {
+            if argument.starts_with("--") {
+                return Err(missing_spec_value(Some(argument)));
+            }
             selectors.push(argument.clone());
             expecting_selector = false;
             previous = None;
@@ -250,8 +258,23 @@ fn partition_spec_selectors(raw_args: &[String]) -> (Vec<String>, Vec<String>) {
         previous = Some(argument.as_str());
         harness_args.push(argument.clone());
     }
+    if expecting_selector {
+        return Err(missing_spec_value(None));
+    }
 
-    (selectors, harness_args)
+    Ok((selectors, harness_args))
+}
+
+/// The diagnostic for a `--spec` that is not followed by a selector.
+fn missing_spec_value(found: Option<&str>) -> String {
+    let found = match found {
+        Some(argument) => format!("found `{argument}`"),
+        None => "found the end of the arguments".to_string(),
+    };
+    format!(
+        "--spec requires a value: a section selector such as `4.2` or a paragraph selector \
+         such as `4.2:5`, but {found}"
+    )
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -335,7 +358,11 @@ fn main() {
         return;
     }
 
-    let (spec_selectors, harness_args) = partition_spec_selectors(&raw_args);
+    let (spec_selectors, harness_args) =
+        partition_spec_selectors(&raw_args).unwrap_or_else(|error| {
+            eprintln!("error: {error}");
+            std::process::exit(2);
+        });
 
     let platform_selection = PlatformCaseSelection::from_env().unwrap_or_else(|error| {
         eprintln!("error: {error}");
@@ -437,20 +464,24 @@ mod runner_tests {
     use super::*;
     use rue_test_runner::TestFailure;
 
-    fn selectors(args: &[&str]) -> Vec<String> {
+    fn partition(args: &[&str]) -> Result<(Vec<String>, Vec<String>), String> {
         let raw: Vec<String> = std::iter::once("rue-spec")
             .chain(args.iter().copied())
             .map(str::to_string)
             .collect();
-        partition_spec_selectors(&raw).0
+        partition_spec_selectors(&raw)
+    }
+
+    fn selectors(args: &[&str]) -> Vec<String> {
+        partition(args)
+            .expect("a complete argument list partitions")
+            .0
     }
 
     fn harness_args(args: &[&str]) -> Vec<String> {
-        let raw: Vec<String> = std::iter::once("rue-spec")
-            .chain(args.iter().copied())
-            .map(str::to_string)
-            .collect();
-        partition_spec_selectors(&raw).1
+        partition(args)
+            .expect("a complete argument list partitions")
+            .1
     }
 
     #[test]
@@ -504,6 +535,33 @@ mod runner_tests {
                 "4.2".to_string()
             ]
         );
+    }
+
+    /// A `--spec` with no value must not degrade into "no selectors", which
+    /// selects the whole corpus (RUE-2205).
+    #[test]
+    fn a_spec_flag_without_a_value_is_rejected() {
+        let trailing = partition(&["--list", "--spec"]).unwrap_err();
+        assert!(trailing.contains("--spec requires a value"), "{trailing}");
+        assert!(trailing.contains("end of the arguments"), "{trailing}");
+
+        let flag_as_value = partition(&["--spec", "--list"]).unwrap_err();
+        assert!(
+            flag_as_value.contains("--spec requires a value"),
+            "{flag_as_value}"
+        );
+        assert!(flag_as_value.contains("`--list`"), "{flag_as_value}");
+
+        // The complete spellings and an unfiltered run are unaffected.
+        assert_eq!(
+            selectors(&["--list", "--spec", "4.2"]),
+            vec!["4.2".to_string()]
+        );
+        assert_eq!(
+            selectors(&["--spec=4.2:5", "--list"]),
+            vec!["4.2:5".to_string()]
+        );
+        assert!(selectors(&["--list"]).is_empty());
     }
 
     #[test]
