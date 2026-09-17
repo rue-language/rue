@@ -141,6 +141,101 @@ fn main() -> i32 {
 exit_code = 77
 
 # =============================================================================
+# Whole-array pointees (9.1:10): `ptr const [T; N]` / `ptr mut [T; N]` read
+# and write the whole array. The read result and the written value meet an
+# explicit array type exactly as a scalar pointee does; an interned array type
+# in an inference constraint never unified with the structural shape every
+# other array position uses, so these were rejected as "expected [i64; 4],
+# found [i64; 4]" (RUE-2212) and the literal form as "expected [i64; 2], found
+# [{integer}; 2]" (RUE-2213).
+# =============================================================================
+
+[[case]]
+name = "ptr_read_array_pointee_into_annotated_binding"
+spec = ["9.1:10", "9.2:6b"]
+source = """
+fn main() -> i32 {
+    let src: [i64; 4] = [1, 2, 3, 4];
+    let whole: [i64; 4] = checked {
+        let ps: ptr const [i64; 4] = @raw(src);
+        @ptr_read(ps)
+    };
+    @intCast(whole[0] + whole[3])
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "ptr_write_array_pointee_from_typed_value"
+spec = ["9.1:10", "9.2:6b"]
+source = """
+fn main() -> i32 {
+    let mut dst: [i64; 2] = [0, 0];
+    let value: [i64; 2] = [5, 6];
+    checked {
+        let pd: ptr mut [i64; 2] = @raw_mut(dst);
+        @ptr_write(pd, value);
+    };
+    @intCast(dst[0] + dst[1])
+}
+"""
+exit_code = 11
+
+# 9.2:6d — an array literal written directly takes the pointee's element type,
+# as `let a: [i64; 2] = [5, 6];` does.
+[[case]]
+name = "ptr_write_array_literal_takes_pointee_element_type"
+spec = ["9.2:6d"]
+source = """
+fn main() -> i32 {
+    let mut dst: [i64; 2] = [0, 0];
+    checked {
+        let pd: ptr mut [i64; 2] = @raw_mut(dst);
+        @ptr_write(pd, [5, 6]);
+    };
+    @intCast(dst[1])
+}
+"""
+exit_code = 6
+
+[[case]]
+name = "ptr_read_and_write_struct_array_pointee"
+spec = ["9.1:10", "9.2:6b"]
+source = """
+struct P { a: i64, b: i64 }
+fn main() -> i32 {
+    let mut dst: [P; 2] = [P { a: 0, b: 0 }, P { a: 0, b: 0 }];
+    let value: [P; 2] = [P { a: 5, b: 6 }, P { a: 7, b: 8 }];
+    let back: [P; 2] = checked {
+        let pd: ptr mut [P; 2] = @raw_mut(dst);
+        @ptr_write(pd, value);
+        let ps: ptr const [P; 2] = @raw(dst);
+        @ptr_read(ps)
+    };
+    @intCast(back[1].b)
+}
+"""
+exit_code = 8
+
+# 9.2:6d — the element type is still checked: a `[i64; 4]` pointee is not a
+# `[i32; 4]` value.
+[[case]]
+name = "ptr_read_array_pointee_element_mismatch_rejected"
+spec = ["9.2:6d"]
+source = """
+fn main() -> i32 {
+    let src: [i64; 4] = [1, 2, 3, 4];
+    let whole: [i32; 4] = checked {
+        let ps: ptr const [i64; 4] = @raw(src);
+        @ptr_read(ps)
+    };
+    whole[0]
+}
+"""
+compile_fail = true
+error_contains = "E0206"
+
+# =============================================================================
 # @int_to_ptr converts u64 address to pointer with explicit type annotation
 # =============================================================================
 

@@ -2346,12 +2346,21 @@ impl<'a> ConstraintGenerator<'a> {
                                     // strict-equality exemption as a call argument
                                     // (see `is_slice_struct_type`); sema still
                                     // materializes and checks it.
+                                    //
+                                    // The pointee enters the constraint through
+                                    // `type_to_infer`, so an array pointee is the
+                                    // structural shape every other array position
+                                    // uses: an interned `[i64; 2]` never unifies
+                                    // with a structural one, so a written array
+                                    // literal or an already-typed array value was
+                                    // rejected as "expected [i64; 2], found
+                                    // [i64; 2]" (RUE-2212, RUE-2213).
                                     if let Some(pointee) = pointee
                                         && !self.is_slice_struct_type(InferType::Concrete(pointee))
                                     {
                                         self.add_constraint(Constraint::contextual(
                                             info.ty,
-                                            InferType::Concrete(pointee),
+                                            self.type_to_infer(pointee),
                                             info.span,
                                         ));
                                     }
@@ -2387,8 +2396,12 @@ impl<'a> ConstraintGenerator<'a> {
                                 pointee = self.concrete_pointee_type(&info.ty);
                             }
                         }
+                        // Published through `type_to_infer` so an array pointee
+                        // is structural, as every other array-typed expression
+                        // is; an interned array never unified with an annotated
+                        // one (RUE-2212).
                         match pointee {
-                            Some(pointee) => InferType::Concrete(pointee),
+                            Some(pointee) => self.type_to_infer(pointee),
                             None => {
                                 let result_var = self.fresh_var();
                                 InferType::Var(result_var)
