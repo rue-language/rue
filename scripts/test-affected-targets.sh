@@ -347,7 +347,7 @@ git -C "$E" add std/math.rue && git -C "$E" commit -qm std-change
 printf 'M\tstd/math.rue\n' >"$E/expected-changes"
 decide "$E/out-std"
 check "e2e: std source selects the std test target" yes \
-  "$(if impacted_lines "$E/out-std" | grep -Fxq -- //tests/std:std-tests; then echo yes; else echo no; fi)"
+  "$(if grep -Fxq -- //tests/std:std-tests <<<"$(impacted_lines "$E/out-std")"; then echo yes; else echo no; fi)"
 impacted_lines "$E/out-std" >"$E/std-impacted"
 check "e2e: narrowed premerge scope retains std tests" //tests/std:std-tests \
   "$(cd "$E" && RUE_AFFECTED_BUCK2="$E/bin/fake-buck" "$E/scripts/affected-targets" narrow-scope linux-premerge-tests "$E/std-impacted" 2>/dev/null)"
