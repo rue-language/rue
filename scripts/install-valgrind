@@ -74,6 +74,7 @@ select_ubuntu_sources() {
                 } else {
                     sub(/^[[:space:]]+/, "", line)
                 }
+                sub(/[[:space:]]+$/, "", line)
                 count = split(line, uris, /[[:space:]]+/)
                 saw_uris = 1
                 for (uri_index = 1; uri_index <= count; uri_index++) {
@@ -96,6 +97,10 @@ select_ubuntu_sources() {
             }
             {
                 stanza = stanza $0 ORS
+                # Comments do not terminate a continued field in deb822.
+                if ($0 ~ /^[[:space:]]*#/) {
+                    next
+                }
                 if ($0 ~ /^Types:[[:space:]]*/) {
                     types = $0
                     sub(/^[^:]*:[[:space:]]*/, "", types)
