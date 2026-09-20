@@ -81,6 +81,11 @@ format, exports and imports checks. Configured graph queries confirmed the
 same three distribution nodes in both modes, and action queries retained
 `-Cdebug-assertions=yes` for debug allocators and `no` for release allocators.
 
+The [PR's macOS CI run](https://github.com/rue-language/rue/actions/runs/35529704593)
+also retained 392 cache hits while reducing local actions from six to five
+and downloads from 171 MiB to 145 MiB compared with the September 20 baseline
+above. This confirms one less distribution download and extraction in CI.
+
 ## Measurement and configuration controls
 
 `RUE_NO_REMOTE_CACHE=1` previously skipped config provisioning but left an
