@@ -269,14 +269,21 @@ while [ "$#" -gt 0 ]; do if [ "$1" = --output ]; then output="$2"; shift 2; cont
 # A BTD-shaped fake here hid the head-graph parse bug while CI fell open to
 # FULL on every pull request.
 printf "%s\n" "{\"buck.package\":\"root//\",\"name\":\"spec-tests\",\"buck.type\":\"prelude//rules.bzl:sh_test\"}" \
-  "{\"buck.package\":\"root//tests/std\",\"name\":\"std-tests\",\"buck.type\":\"root//rue_rules.bzl:_rue_test\"}" \
+  "{\"buck.package\":\"root//tests/std\",\"name\":\"std-tests\",\"buck.type\":\"root//rue_rules.bzl:_rue_test\",\"buck.deps\":[\"root//std:std\"]}" \
   "{\"buck.package\":\"root//\",\"name\":\"unimpacted\",\"buck.type\":\"prelude//rules.bzl:sh_test\"}" >"$output"'
 fake "$E/bin/fake-btd" 'set -euo pipefail
 printf "%s\n" "$@" >"$RUE_AFFECTED_BTD_ARGS"
 changes=""
-while [ "$#" -gt 0 ]; do if [ "$1" = --changes ]; then changes="$2"; shift 2; continue; fi; shift; done
+diff=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = --changes ]; then changes="$2"; shift 2; continue; fi
+  if [ "$1" = --diff ]; then diff="$2"; shift 2; continue; fi
+  shift
+done
 cmp -s "$changes" "$RUE_AFFECTED_EXPECTED_CHANGES"
-if grep -Eq "^M[[:space:]]std/" "$changes"; then
+if grep -Eq "^M[[:space:]]std/" "$changes" &&
+    grep -Fq "\"name\":\"std-tests\"" "$diff" &&
+    grep -Fq "\"root//std:std\"" "$diff"; then
   printf "%s\n" "{\"target\":\"root//tests/std:std-tests\"}"
 else
   printf "%s\n" "{\"target\":\"root//:spec-tests\"}" "{\"target\":\"root//crates/deleted:base-only\"}"
