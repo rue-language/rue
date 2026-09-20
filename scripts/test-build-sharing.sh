@@ -357,17 +357,91 @@ test_buck_wrapper_links_installed_config() {
     run_wrapper "$sb" keep.args build //:probe
     check "buck wrapper: an existing per-checkout config is never replaced" \
         "$([ ! -L "$sb/.buckconfig.local" ] && grep -q 'must survive' "$sb/.buckconfig.local" && [ "$(head -n 1 "$sb/keep.args")" = build ] && echo 0 || echo 1)"
+    cp "$sb/.buckconfig.local" "$sb/handwritten.before"
+    WRAPPER_ENV="RUE_NO_REMOTE_CACHE=1" run_wrapper "$sb" handwritten-optout.args build //:probe
+    check "buck wrapper: cache opt-out preserves a hand-written config byte-for-byte" \
+        "$(cmp -s "$sb/.buckconfig.local" "$sb/handwritten.before" && \
+          grep -Fxq -- '--local-only' "$sb/handwritten-optout.args" && \
+          grep -Fxq -- '--no-remote-cache' "$sb/handwritten-optout.args" && echo 0 || echo 1)"
 
     rm "$sb/.buckconfig.local"
     ln -s "$sb/missing-user-config" "$sb/.buckconfig.local"
     run_wrapper "$sb" broken.args build //:probe
     check "buck wrapper: a broken user symlink is left alone and never blocks local builds" \
         "$([[ -L "$sb/.buckconfig.local" ]] && [ "$(readlink "$sb/.buckconfig.local")" = "$sb/missing-user-config" ] && [ "$(head -n 1 "$sb/broken.args")" = build ] && echo 0 || echo 1)"
+
+    # The opt-out must also leave an already-installed link untouched. This is
+    # the original regression: skipping lazy linking did not stop Buck from
+    # reading a link that was already present in the worktree.
+    rm "$sb/.buckconfig.local"
+    ln -s "$config" "$sb/.buckconfig.local"
+    WRAPPER_ENV="RUE_NO_REMOTE_CACHE=1" run_wrapper "$sb" optout-link.args build //:probe
+    check "buck wrapper: cache opt-out preserves an existing installed link" \
+        "$([[ -L "$sb/.buckconfig.local" ]] && [ "$(readlink "$sb/.buckconfig.local")" = "$config" ] && \
+          grep -Fxq -- '--local-only' "$sb/optout-link.args" && grep -Fxq -- '--no-remote-cache' "$sb/optout-link.args" && echo 0 || echo 1)"
     rm "$sb/.buckconfig.local"
 
+    # Read-only verification still may inspect Buck's current config, but the
+    # opt-out must not create the lazy link that a later build would consume.
+    WRAPPER_ENV="RUE_NO_REMOTE_CACHE=1" run_wrapper "$sb" audit-optout.args audit config buck2_re_client.engine_address
+    check "buck wrapper: cache opt-out audit skips lazy provisioning" \
+        "$([ ! -e "$sb/.buckconfig.local" ] && [ ! -L "$sb/.buckconfig.local" ] && \
+          [ "$(tr '\n' ' ' <"$sb/audit-optout.args")" = 'audit config buck2_re_client.engine_address ' ] && echo 0 || echo 1)"
+
     WRAPPER_ENV="RUE_NO_REMOTE_CACHE=1" run_wrapper "$sb" optout.args build //:probe
-    check "buck wrapper: RUE_NO_REMOTE_CACHE=1 links nothing and adds no preference" \
-        "$([ ! -e "$sb/.buckconfig.local" ] && [ ! -L "$sb/.buckconfig.local" ] && [ "$(tr '\n' ' ' <"$sb/optout.args")" = 'build //:probe ' ] && echo 0 || echo 1)"
+    check "buck wrapper: RUE_NO_REMOTE_CACHE=1 links nothing with an installed config" \
+        "$([ ! -e "$sb/.buckconfig.local" ] && [ ! -L "$sb/.buckconfig.local" ] && \
+          grep -Fxq -- '--local-only' "$sb/optout.args" && grep -Fxq -- '--no-remote-cache' "$sb/optout.args" && \
+          ! grep -Fxq -- '--prefer-local' "$sb/optout.args" && echo 0 || echo 1)"
+
+    # The opt-out must remain cache-free when the caller supplies a separator:
+    # injected Buck flags belong before it, while program arguments retain
+    # their exact order and values.
+    WRAPPER_ENV="RUE_NO_REMOTE_CACHE=1" run_wrapper "$sb" optout-separator.args run //:probe -- program --no-remote-cache --prefer-remote
+    local local_only_line no_remote_line separator_line
+    local_only_line="$(argv_line "$sb/optout-separator.args" --local-only)"
+    no_remote_line="$(argv_line "$sb/optout-separator.args" --no-remote-cache)"
+    separator_line="$(argv_line "$sb/optout-separator.args" --)"
+    check "buck wrapper: cache opt-out flags precede and preserve separator arguments" \
+        "$([ -n "$local_only_line" ] && [ -n "$no_remote_line" ] && [ -n "$separator_line" ] && \
+          [ "$local_only_line" -lt "$separator_line" ] && [ "$no_remote_line" -lt "$separator_line" ] && \
+          [ "$(sed -n "$((separator_line + 1))p" "$sb/optout-separator.args")" = program ] && \
+          [ "$(sed -n "$((separator_line + 2))p" "$sb/optout-separator.args")" = --no-remote-cache ] && \
+          [ "$(sed -n "$((separator_line + 3))p" "$sb/optout-separator.args")" = --prefer-remote ] && echo 0 || echo 1)"
+
+    # All execution commands receive the same cache-free contract, and an
+    # explicit copy of both injected flags is not duplicated.
+    local execution_kind optout_args_ok
+    for execution_kind in build test run install; do
+        WRAPPER_ENV="RUE_NO_REMOTE_CACHE=1" run_wrapper "$sb" "$execution_kind-optout.args" "$execution_kind" //:probe
+        optout_args_ok=1
+        if [ "$(grep -Fc -- '--local-only' "$sb/$execution_kind-optout.args")" -eq 1 ] &&
+           [ "$(grep -Fc -- '--no-remote-cache' "$sb/$execution_kind-optout.args")" -eq 1 ] &&
+           ! grep -Fxq -- '--prefer-local' "$sb/$execution_kind-optout.args"; then
+            optout_args_ok=0
+        fi
+        check "buck wrapper: cache opt-out covers $execution_kind" \
+            "$optout_args_ok"
+    done
+    WRAPPER_ENV="RUE_NO_REMOTE_CACHE=1" run_wrapper "$sb" explicit-optout.args build --local-only --no-remote-cache //:probe
+    optout_args_ok=1
+    if [ "$(grep -Fc -- '--local-only' "$sb/explicit-optout.args")" -eq 1 ] &&
+       [ "$(grep -Fc -- '--no-remote-cache' "$sb/explicit-optout.args")" -eq 1 ]; then
+        optout_args_ok=0
+    fi
+    check "buck wrapper: explicit cache-free flags are not duplicated" \
+        "$optout_args_ok"
+
+    # An execution preference would make the opt-out dependent on the caller's
+    # choice, so reject each conflicting mode before DotSlash is invoked.
+    local conflict conflict_rc
+    for conflict in --prefer-local --prefer-remote --remote-only --write-to-cache-anyway --upload-all-actions; do
+        rm -f "$sb/conflict.args"
+        conflict_rc=0
+        WRAPPER_ENV="RUE_NO_REMOTE_CACHE=1" run_wrapper "$sb" conflict.args build "$conflict" //:probe || conflict_rc=$?
+        check "buck wrapper: cache opt-out rejects $conflict" \
+            "$([ "$conflict_rc" -eq 2 ] && [ ! -e "$sb/conflict.args" ] && grep -Fq "conflicts with $conflict" "$sb/conflict.args.out" && echo 0 || echo 1)"
+    done
 
     chmod 644 "$config"
     run_wrapper "$sb" insecure.args build //:probe

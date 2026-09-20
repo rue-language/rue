@@ -26,7 +26,11 @@ atomically writes the private config with mode 0600 to
 ${XDG_CONFIG_HOME:-~/.config}/rue/buildbuddy.buckconfig (RUE_BUILDBUDDY_CONFIG
 names another path). Re-run it to replace an existing config. The credential
 is never printed. Remove the file to stop using the remote cache, or set
-RUE_NO_REMOTE_CACHE=1 to keep one command cache-free.
+RUE_NO_REMOTE_CACHE=1 for one cache-free build/test/run/install command. The
+repository wrapper then skips provisioning and passes --local-only plus
+--no-remote-cache, even if .buckconfig.local already exists. It rejects
+conflicting execution preferences, --write-to-cache-anyway, and
+--upload-all-actions in that mode.
 
 verify asks the Buck daemon whether it actually has a remote-cache engine
 address and fails when BUILDBUDDY_API_KEY is set but the daemon has none. It
