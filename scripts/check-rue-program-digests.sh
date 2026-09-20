@@ -39,9 +39,31 @@ DECLARED="fixtures/rue-program/hello/shared.rue"
 UNDECLARED="fixtures/rue-program/boundary/extra.rue"
 
 restore() {
-    git checkout --quiet -- "$DECLARED" "$UNDECLARED" 2>/dev/null || true
+    local output status=0
+    output="$(git checkout --quiet -- "$DECLARED" "$UNDECLARED" 2>&1)" || status=$?
+    if [[ "$status" -ne 0 ]]; then
+        printf 'FAIL: could not restore digest fixtures (status %s)\n' "$status" >&2
+        [[ -z "$output" ]] || printf '%s\n' "$output" >&2
+    fi
+    return "$status"
 }
-trap restore EXIT
+
+cleanup() {
+    local original=$? restore_status=0
+    # This trap exits explicitly after disabling itself, so a failed restore
+    # cannot recurse through EXIT or replace the status of the failed probe.
+    trap - EXIT
+    restore || restore_status=$?
+    if [[ "$original" -ne 0 ]]; then
+        [[ "$restore_status" -eq 0 ]] || printf 'FAIL: fixture restore also failed after status %s\n' "$original" >&2
+        exit "$original"
+    fi
+    if [[ "$restore_status" -ne 0 ]]; then
+        exit "$restore_status"
+    fi
+    exit 0
+}
+trap cleanup EXIT
 
 rue_actions_of_last_build() {
     # what-ran reports the latest invocation's executed actions; rue_scan /
@@ -136,7 +158,13 @@ fi
 echo "  ok: $ran rue_* action(s) re-ran"
 
 echo "digest-check: (3) reverting must converge back to steady state"
-restore
+if restore; then
+    :
+else
+    status=$?
+    echo "FAIL: fixture restore failed before the convergence check" >&2
+    exit "$status"
+fi
 settle
 echo "  ok"
 

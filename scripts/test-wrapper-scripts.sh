@@ -1295,6 +1295,33 @@ EOF
     "$(grep -Fq 'MOCK_LOG_ERROR' <<<"$out" && echo 0 || echo 1)"
   check "digest check: execution-log failure cannot report PASS" \
     "$(! grep -Fq 'digest-check: PASS' <<<"$out" && echo 0 || echo 1)"
+  check "digest check: execution-log failure restores fixtures" \
+    "$(cd "$sb" && git diff --quiet -- fixtures/rue-program/hello/shared.rue \
+      fixtures/rue-program/boundary/extra.rue && echo 0 || echo 1)"
+
+  rm -f "$sb/fake-build-count"
+  : >"$sb/.git/index.lock"
+  rc=0
+  out="$(cd "$sb" && RUE_BUCK2="$sb/buck2" \
+    ./scripts/check-rue-program-digests.sh 2>&1)" || rc=$?
+  check "digest check: midpoint restore failure exits non-zero" \
+    "$([ "$rc" -ne 0 ] && grep -Fq 'could not restore digest fixtures' <<<"$out" && echo 0 || echo 1)"
+  check "digest check: midpoint restore failure cannot report PASS" \
+    "$(! grep -Fq 'digest-check: PASS' <<<"$out" && echo 0 || echo 1)"
+  rm -f "$sb/.git/index.lock"
+  git -C "$sb" checkout --quiet -- fixtures/rue-program/hello/shared.rue \
+    fixtures/rue-program/boundary/extra.rue
+
+  rm -f "$sb/fake-build-count"
+  : >"$sb/.git/index.lock"
+  rc=0
+  out="$(cd "$sb" && RUE_BUCK2="$sb/buck2" FAKE_MODE=build-fail \
+    ./scripts/check-rue-program-digests.sh 2>&1)" || rc=$?
+  check "digest check: cleanup restore failure preserves original status" \
+    "$([ "$rc" -eq 7 ] && grep -Fq 'fixture restore also failed after status 7' <<<"$out" && echo 0 || echo 1)"
+  rm -f "$sb/.git/index.lock"
+  git -C "$sb" checkout --quiet -- fixtures/rue-program/hello/shared.rue \
+    fixtures/rue-program/boundary/extra.rue
   rm -rf "$sb"
 }
 
