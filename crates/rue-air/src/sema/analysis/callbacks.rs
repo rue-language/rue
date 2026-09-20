@@ -429,6 +429,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// generic callee's placeholder parameter type cannot say whether it is a
     /// `fn` type until the type arguments are known, so this decides whether
     /// the operand is bound by name or analyzed as a value.
+    ///
+    /// A `Type.member` operand answers yes for ANY member of that name, not
+    /// only an eligible one. `Type.method` is never a value expression, so
+    /// analyzing it as one reported field access on a `type` (E0423) instead
+    /// of the ADR-0096 refusal that says a method takes a receiver
+    /// (RUE-2260). Binding it by name reaches the one place that classifies a
+    /// member, which explains exactly why it cannot bind.
     pub(super) fn operand_names_callable(
         &mut self,
         arg: &RirCallArg,
@@ -475,7 +482,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     return selected
                         .as_struct()
                         .and_then(|nominal| self.call_facts().call_method_info(nominal.id, field))
-                        .is_some_and(|method| !method.has_self);
+                        .is_some();
                 }
                 let InstData::VarRef {
                     name: base_name, ..
@@ -489,7 +496,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         .and_then(|(struct_id, _)| {
                             self.call_facts().call_method_info(struct_id, field)
                         })
-                        .is_some_and(|method| !method.has_self)
+                        .is_some()
             }
             _ => false,
         }

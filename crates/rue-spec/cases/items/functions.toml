@@ -2117,6 +2117,19 @@ compile_fail = true
 error_contains = ["E0216", "the generic function `identity` cannot be bound to a `fn` parameter"]
 
 [[case]]
+name = "receiver_method_bound_to_a_generic_callback_parameter"
+spec = ["6.1:50"]
+description = "A `Type.method` operand is refused by the callback rule even when the receiving `fn` parameter's type still mentions the callee's own comptime parameter"
+source = """
+struct S { k: i32, fn scale(borrow self, x: i32) -> i32 { x * self.k } }
+fn apply(comptime T: type, f: fn(borrow T, i32) -> i32, s: T, x: i32) -> i32 { f(borrow s, x) }
+
+fn main() -> i32 { let s = S { k: 3 }; apply(S, S.scale, s, 5) }
+"""
+compile_fail = true
+error_contains = ["E0216", "the method `S.scale` cannot be bound to a `fn` parameter", "a method takes a receiver"]
+
+[[case]]
 name = "callback_parameter_bound_with_let_is_an_escape"
 spec = ["6.1:51"]
 source = """
