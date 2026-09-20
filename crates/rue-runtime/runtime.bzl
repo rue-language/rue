@@ -247,7 +247,10 @@ _runtime_staticlib = rule(
         "hosted_threads": attrs.bool(default = False),
         "libc_sources": attrs.dep(),
         "srcs": attrs.list(attrs.source()),
-        "target_std": attrs.dep(),
+        # The fixed target triple and rust-std label specify the ABI; keep
+        # archive extraction in the execution configuration so host and
+        # debug/release consumers can share the same input.
+        "target_std": attrs.exec_dep(),
         "target_triple": attrs.string(),
         "rustc_flags": attrs.list(attrs.arg()),
         "zmij_crate_root": attrs.source(),
