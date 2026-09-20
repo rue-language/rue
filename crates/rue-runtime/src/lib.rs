@@ -69,6 +69,28 @@
 // documentation for readers of this source file.
 #![allow(unused_doc_comments)]
 
+// Hosted archives use the vendored no_std libc bindings for pthreads and the
+// Linux loader handoff. Freestanding archives intentionally do not carry this
+// dependency or any libc-shaped imports.
+#[cfg(rue_hosted_threads)]
+extern crate libc;
+
+#[cfg(all(
+    not(test),
+    rue_hosted_threads,
+    target_arch = "x86_64",
+    target_os = "linux"
+))]
+use crate::entry::__rue_x86_64_linux_hosted_start;
+
+#[cfg(all(
+    not(test),
+    rue_hosted_threads,
+    target_arch = "aarch64",
+    target_os = "linux"
+))]
+use crate::entry::__rue_aarch64_linux_hosted_start;
+
 // Platform-specific implementations
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 mod x86_64_linux;
@@ -160,6 +182,10 @@ pub mod test_channel;
 // shared by the entry handler and the platform modules. Not part of the runtime
 // ABI.
 mod fault;
+
+// Private synchronization building blocks for the hosted runtime.
+#[cfg(rue_hosted_threads)]
+mod parking;
 
 // Crate-internal: Unicode's well-formed-UTF-8 table, shared by the string
 // decoders and the test channel's JSON escaper. Not part of the runtime ABI.
@@ -356,7 +382,12 @@ macro_rules! declare_linux_entry {
         // aligning the stack, then tail-calls the Rust start helper. Capturing
         // before `and rsp, -16` is required — the alignment can move `%rsp`, and
         // the helper's own prologue would otherwise clobber the entry pointer.
-        #[cfg(all(not(test), target_arch = "x86_64", target_os = "linux"))]
+        #[cfg(all(
+            not(test),
+            not(rue_hosted_threads),
+            target_arch = "x86_64",
+            target_os = "linux"
+        ))]
         core::arch::global_asm!(
             concat!(".pushsection .text.", stringify!($function), ",\"ax\",@progbits"),
             concat!(".global ", stringify!($function)),
@@ -375,7 +406,12 @@ macro_rules! declare_linux_entry {
         // pointing at argc; a plain Rust entry function's prologue would adjust
         // `sp` before we could read it, so the shim captures `sp` into `x0`
         // first and calls the Rust start helper.
-        #[cfg(all(not(test), target_arch = "aarch64", target_os = "linux"))]
+        #[cfg(all(
+            not(test),
+            not(rue_hosted_threads),
+            target_arch = "aarch64",
+            target_os = "linux"
+        ))]
         core::arch::global_asm!(
             concat!(".pushsection .text.", stringify!($function), ",\"ax\",@progbits"),
             concat!(".global ", stringify!($function)),
@@ -391,6 +427,52 @@ macro_rules! declare_linux_entry {
             concat!(".size ", stringify!($function), ", .-", stringify!($function)),
             ".popsection",
             start = sym __rue_aarch64_linux_start,
+        );
+
+        // Hosted Linux keeps the loader's finalizer while forwarding the
+        // untouched startup stack to the runtime helper. x86-64 receives it
+        // in `%rdx`; AArch64 receives it in `x0` at process entry.
+        #[cfg(all(
+            not(test),
+            rue_hosted_threads,
+            target_arch = "x86_64",
+            target_os = "linux"
+        ))]
+        core::arch::global_asm!(
+            concat!(".pushsection .text.", stringify!($function), ",\"ax\",@progbits"),
+            concat!(".global ", stringify!($function)),
+            concat!(".type ", stringify!($function), ",@function"),
+            concat!(stringify!($function), ":"),
+            "mov rdi, rsp",
+            "mov rsi, rdx",
+            "and rsp, -16",
+            "call {start}",
+            "ud2",
+            concat!(".size ", stringify!($function), ", .-", stringify!($function)),
+            ".popsection",
+            start = sym __rue_x86_64_linux_hosted_start,
+        );
+
+        #[cfg(all(
+            not(test),
+            rue_hosted_threads,
+            target_arch = "aarch64",
+            target_os = "linux"
+        ))]
+        core::arch::global_asm!(
+            concat!(".pushsection .text.", stringify!($function), ",\"ax\",@progbits"),
+            concat!(".global ", stringify!($function)),
+            concat!(".type ", stringify!($function), ",@function"),
+            concat!(stringify!($function), ":"),
+            "mov x1, x0",
+            "mov x0, sp",
+            "and x9, x0, #-16",
+            "mov sp, x9",
+            "bl {start}",
+            "brk #0x1",
+            concat!(".size ", stringify!($function), ", .-", stringify!($function)),
+            ".popsection",
+            start = sym __rue_aarch64_linux_hosted_start,
         );
 
         #[cfg(all(

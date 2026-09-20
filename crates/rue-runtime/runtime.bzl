@@ -40,6 +40,7 @@ def _runtime_staticlib_impl(ctx: AnalysisContext) -> list[Provider]:
     abi_rlib = ctx.actions.declare_output("librue_runtime_abi-{}.rlib".format(target))
     allocator_rlib = ctx.actions.declare_output("librue_allocator-{}.rlib".format(target))
     zmij_rlib = ctx.actions.declare_output("libzmij-{}.rlib".format(target))
+    libc_rlib = None
     archive = ctx.actions.declare_output("librue_runtime-{}.a".format(target))
     zmij_source_dir = ctx.actions.symlinked_dir(
         "zmij-src-{}".format(target),
@@ -49,6 +50,11 @@ def _runtime_staticlib_impl(ctx: AnalysisContext) -> list[Provider]:
         },
     )
     zmij_crate_root = zmij_source_dir.project("lib.rs")
+    libc_source_dir = None
+    libc_crate_root = None
+    if ctx.attrs.hosted_threads:
+        libc_source_dir = ctx.attrs.libc_sources[DefaultInfo].default_outputs[0]
+        libc_crate_root = libc_source_dir.project("vendor/libc-0.2.178/src/lib.rs")
 
     abi_args = cmd_args(toolchain.compiler)
     abi_args.add(
@@ -144,6 +150,50 @@ def _runtime_staticlib_impl(ctx: AnalysisContext) -> list[Provider]:
         identifier = target,
     )
 
+    if ctx.attrs.hosted_threads:
+        # Build libc from the complete vendored source tree for this fixed
+        # target. The ordinary third-party target is configured for the host,
+        # which is unsuitable when this action emits an AArch64 archive on an
+        # x86-64 executor. The source and target sysroot are the only inputs.
+        # libc 0.2.178's build script selects no ABI-changing cfg for these
+        # three 64-bit GNU Linux / Darwin targets; rustc's target cfgs select
+        # the same bindings as the host-configured third-party target.
+        libc_rlib = ctx.actions.declare_output("libc-{}.rlib".format(target))
+        libc_args = cmd_args(toolchain.compiler)
+        libc_args.add(
+            "--crate-name",
+            "libc",
+            "--crate-type",
+            "rlib",
+            "--edition",
+            "2021",
+            "--target",
+            target,
+            "--sysroot",
+            target_sysroot,
+            "--cfg",
+            'feature="default"',
+            "--cfg",
+            'feature="std"',
+            "--remap-path-prefix",
+            cmd_args(
+                libc_source_dir,
+                format = "{}=/rue/third-party",
+            ),
+        )
+        libc_args.add(
+            cmd_args(
+                libc_crate_root,
+                hidden = [libc_source_dir],
+            )
+        )
+        libc_args.add("-o", libc_rlib.as_output())
+        ctx.actions.run(
+            libc_args,
+            category = "runtime_libc_rlib",
+            identifier = target,
+        )
+
     args = cmd_args(toolchain.compiler)
     args.add(
         "--crate-name",
@@ -170,6 +220,12 @@ def _runtime_staticlib_impl(ctx: AnalysisContext) -> list[Provider]:
         "--extern",
         cmd_args("zmij=", zmij_rlib, delimiter = ""),
     )
+    if ctx.attrs.hosted_threads:
+        args.add("--cfg", "rue_hosted_threads")
+        args.add(
+            "--extern",
+            cmd_args("libc=", libc_rlib, delimiter = ""),
+        )
     args.add(cmd_args(ctx.attrs.crate_root, hidden = ctx.attrs.srcs))
     args.add("-o", archive.as_output())
 
@@ -188,6 +244,8 @@ _runtime_staticlib = rule(
         "allocator_rustc_flags": attrs.list(attrs.arg()),
         "abi_crate_root": attrs.source(),
         "crate_root": attrs.source(),
+        "hosted_threads": attrs.bool(default = False),
+        "libc_sources": attrs.dep(),
         "srcs": attrs.list(attrs.source()),
         "target_std": attrs.dep(),
         "target_triple": attrs.string(),
@@ -198,8 +256,8 @@ _runtime_staticlib = rule(
     },
 )
 
-def runtime_staticlib(name: str, target_triple: str, target_std: str, visibility: list[str] = []):
-    """Build the no_std Rue runtime for a fixed target with the host rustc."""
+def runtime_staticlib(name: str, target_triple: str, target_std: str, hosted_threads: bool = False, visibility: list[str] = []):
+    """Build a no_std Rue runtime for a fixed target with the host rustc."""
     flags = RUNTIME_COMMON_RUSTC_FLAGS
     if target_triple.startswith("aarch64-"):
         flags = flags + RUNTIME_AARCH64_RUSTC_FLAGS
@@ -210,6 +268,8 @@ def runtime_staticlib(name: str, target_triple: str, target_std: str, visibility
         abi_crate_root = "//crates/rue-runtime-abi:lib.rs",
         crate_root = "src/lib.rs",
         srcs = glob(["src/**/*.rs"]),
+        hosted_threads = hosted_threads,
+        libc_sources = "//third-party:libc-0.2.178-sources",
         target_std = target_std,
         target_triple = target_triple,
         rustc_flags = flags,
