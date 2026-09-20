@@ -183,6 +183,13 @@ a slice author writes:
 
   Citations count only inside `/-- … -/` and `/-! … -/` comments, including
   inside code spans there; a `--` line comment is invisible to the index.
+- A label is a claim: write `(Rule)` only where the declaration really is
+  that rule's image, because the index's inverse table reads every label as
+  "this rule is mechanized here". Where the fragment abstracts a rule away
+  rather than modelling it — `mkres`/`consume` stand in for §5.8's aggregate
+  introduction and call forms, which the fragment has neither fields nor
+  functions for — name the form in prose with a section pointer and say what
+  is not modelled, so the rule keeps reading *not yet mechanized*.
 - A constructor of an inductive may carry its own doc-comment (the `Typed`
   rules do; each cites its rule). One without inherits its type's row.
 - A declaration that mechanizes nothing on its own (an inversion lemma, a

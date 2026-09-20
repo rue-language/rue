@@ -3,7 +3,7 @@
 ════════════════════════════════════════════════════════════════════════════════
 Well-typed scalar flow: a binding used twice by copy.
 
-Rules exercised: (Use-Copy) §5.1 · (Let) §5.6
+Rules exercised: (Use-Copy) §5.1 · (Let) §5.3
 
 ── The program ─────────────────────────────────────────────────────────────────
 

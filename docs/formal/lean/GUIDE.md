@@ -260,6 +260,9 @@ No drop event is ever emitted (both values were consumed, so every cell was
 output line is the value, `2`. The bridge expectation in `corpus.json` is
 exactly that: `{"kind": "ok", "stdout": ["2"], "exit": 0}`.
 
+Both tables above are generated for every corpus case: this one is
+`explain/reinit.txt`, printed by `lake exe ruecore-explain reinit`.
+
 ### The theorem that covers it
 
 `check` accepted, so by `check_sound` a derivation `Typed [] reinit .int []`

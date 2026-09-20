@@ -4,7 +4,7 @@
 Two affine bindings in nested scopes drop innermost first, each at its own
 scope's close.
 
-Rules exercised: (Let) §5.6 · endscope §6.7 · 3.9:2
+Rules exercised: (Let) §5.3 · §5.6 scope exit · (D-EndScope) §6.7 · 3.9:2
 
 ── The program ─────────────────────────────────────────────────────────────────
 

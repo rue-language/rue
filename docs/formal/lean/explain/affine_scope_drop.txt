@@ -4,7 +4,7 @@
 An affine resource silently dropped at scope exit; the trace shows the drop
 before the value.
 
-Rules exercised: (Let) §5.6 · endscope §6.7
+Rules exercised: (Let) §5.3 · §5.6 scope exit · (D-EndScope) §6.7
 
 ── The program ─────────────────────────────────────────────────────────────────
 
