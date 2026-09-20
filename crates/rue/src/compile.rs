@@ -777,6 +777,7 @@ pub(crate) fn announce(
 
 fn linker_name(linker: &LinkerMode) -> &str {
     match linker {
+        LinkerMode::Auto => "auto",
         LinkerMode::Internal => "internal",
         LinkerMode::System(command) => command,
     }

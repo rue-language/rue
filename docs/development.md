@@ -83,7 +83,7 @@ any failure is the invocation's failure and nothing is retried.
 
 | Request | `auto` | `required` |
 | --- | --- | --- |
-| Ordinary internal-linker build | service | service |
+| Ordinary freestanding build (`--linker auto`) | service | service |
 | `rue test`, `rue test --list` (the image or inventory; the runner stays in the client) | service | service |
 | Any supported `--emit` stage or combination (presentation only; nothing is linked) | service | service |
 | Executable `--watch` and `rue test --watch` | service | service |
@@ -103,6 +103,16 @@ Automatic service use remains off by default after the
 [client-to-publication qualification](notes/daemon-performance-regime.md).
 The explicit performance-capture mode has its own narrower support table;
 watch and additional presentation stages are not qualified by that experiment.
+
+Executable linking defaults to `--linker auto`. A freestanding program keeps
+the retained internal-linker path. If reached runtime helpers declare the
+`HostedThreads` requirement, `auto` uses the native system C driver so the
+hosted startup and thread substrate can be linked. A hosted foreign-target
+build must name a suitable C driver explicitly; `auto` never guesses a cross
+driver. Explicit `--linker internal` rejects a reached hosted requirement and
+reports that the request must use `auto` or a suitable driver. Daemon clients
+may request `auto`, but the service reconstructs requests with internal
+linking; hosted links therefore require `--daemon off`.
 
 The model is exactly one root source file per compile; additional files are
 reached through `@import` and discovered transitively from the root. The legacy

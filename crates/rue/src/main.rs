@@ -351,9 +351,12 @@ Options:
                        (ADR-0064 C FFI); can be repeated
   --target <target>    Set compilation target (default: host)
                        Valid targets: {targets}
-  --linker <linker>    Set linker to use (default: internal)
-                       Use 'internal' for built-in linker, or a command
+  --linker <linker>    Set linker to use (default: auto)
+                       Use 'auto' to select from reached runtime helpers,
+                       'internal' for the built-in linker, or a command
                        like 'clang', 'gcc', or 'ld' for system linker
+                       Hosted runtime helpers use the native C driver under
+                       'auto'; foreign targets need an explicit driver
                        A system linker keeps function symbols for native
                        profilers (see docs/process/profiling.md)
   -O<level>            Set optimization level (default: -O0)
@@ -699,13 +702,13 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
             "--linker" => {
                 let Some(linker_str) = args_iter.next() else {
                     eprintln!("Error: --linker requires a value");
-                    eprintln!("Use 'internal' or a system linker command like 'clang'");
+                    eprintln!("Use 'auto', 'internal', or a system linker command like 'clang'");
                     return ParseResult::Error;
                 };
-                linker = Some(if *linker_str == "internal" {
-                    LinkerMode::Internal
-                } else {
-                    LinkerMode::System(linker_str.to_string())
+                linker = Some(match &**linker_str {
+                    "auto" => LinkerMode::Auto,
+                    "internal" => LinkerMode::Internal,
+                    _ => LinkerMode::System(linker_str.to_string()),
                 });
             }
             "--preview" => {
@@ -1911,6 +1914,7 @@ fn compiler_boundary_evidence(
                 OptLevel::O3 => OptimizationLevel::O3,
             },
             linker: match &options.linker {
+                LinkerMode::Auto => LinkPolicy::Auto,
                 LinkerMode::Internal => LinkPolicy::Internal,
                 LinkerMode::System(_) => LinkPolicy::System,
             },
@@ -4716,6 +4720,12 @@ mod tests {
     }
 
     #[test]
+    fn parse_linker_auto() {
+        let opts = unwrap_options(parse_args_from(&["--linker", "auto", "source.rue"]));
+        assert_eq!(opts.linker, LinkerMode::Auto);
+    }
+
+    #[test]
     fn parse_linker_system_clang() {
         let opts = unwrap_options(parse_args_from(&["--linker", "clang", "source.rue"]));
         assert_eq!(opts.linker, LinkerMode::System("clang".to_string()));
@@ -5435,7 +5445,7 @@ mod tests {
     #[test]
     fn parse_defaults_linker() {
         let opts = unwrap_options(parse_args_from(&["source.rue"]));
-        assert_eq!(opts.linker, LinkerMode::Internal);
+        assert_eq!(opts.linker, LinkerMode::Auto);
     }
 
     #[test]

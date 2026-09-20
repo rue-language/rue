@@ -145,6 +145,27 @@ pub enum RuntimeTarget {
     Aarch64Macos,
 }
 
+/// The strongest runtime substrate required by one reached helper.
+///
+/// Common helpers have no hosted-only requirement and therefore use the
+/// freestanding row. A future helper can opt into `HostedThreads` in the same
+/// manifest row that controls whether the runtime wrapper is emitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeRequirement {
+    Freestanding,
+    HostedThreads,
+}
+
+impl RuntimeRequirement {
+    /// Combine two reached requirements into the strongest runtime flavor.
+    pub const fn union(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::HostedThreads, _) | (_, Self::HostedThreads) => Self::HostedThreads,
+            (Self::Freestanding, Self::Freestanding) => Self::Freestanding,
+        }
+    }
+}
+
 impl RuntimeTarget {
     /// Direct `write(2)` syscall number for this supported runtime target.
     ///
@@ -421,6 +442,7 @@ macro_rules! runtime_helpers {
                 result: $result:expr,
                 safety: $safety:expr,
                 returns: $returns:expr
+                $(, requirement: $requirement:ident)?
             }
         ),+ $(,)?
     ) => {
@@ -472,6 +494,7 @@ macro_rules! runtime_helpers {
                     result: $result,
                     safety: $safety,
                     return_behavior: $returns,
+                    requirement: runtime_helpers!(@requirement $($requirement)?),
                     availability: ALL_TARGETS,
                 }
             ),+
@@ -499,6 +522,12 @@ macro_rules! runtime_helpers {
     (@is_unsafe unsafe) => {
         true
     };
+    (@requirement) => {
+        RuntimeRequirement::Freestanding
+    };
+    (@requirement $requirement:ident) => {
+        RuntimeRequirement::$requirement
+    };
 }
 
 /// Complete logical signature and contract for one runtime helper.
@@ -520,6 +549,7 @@ pub struct RuntimeHelper {
     pub result: AbiResult,
     pub safety: SafetyContract,
     pub return_behavior: ReturnBehavior,
+    pub requirement: RuntimeRequirement,
     pub availability: TargetSet,
 }
 

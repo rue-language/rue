@@ -191,12 +191,119 @@ pub(crate) struct ProgramImagePlan {
     pub(crate) runtime_abi_version: u32,
     pub(crate) runtime_abi_symbol: &'static str,
     pub(crate) runtime_archive: RuntimeArchiveIdentity,
+    pub(crate) runtime_flavor: RuntimeFlavor,
     pub(crate) required_runtime_symbols: Vec<String>,
 }
 
 /// Stable local representation avoids making the linker implementation type
 /// part of the plan's API surface.
 pub(crate) use crate::object_query::ObjectFormat as ProgramObjectFormat;
+
+/// The runtime ABI selected by the reached helper set.  This is deliberately
+/// a compiler-owned type: archive identity and linker policy are derived from
+/// the typed ABI manifest, never from source or preview configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum RuntimeFlavor {
+    Freestanding,
+    HostedThreads,
+}
+
+impl RuntimeFlavor {
+    fn for_requirement(requirement: rue_runtime_abi::RuntimeRequirement) -> Self {
+        match requirement {
+            rue_runtime_abi::RuntimeRequirement::Freestanding => Self::Freestanding,
+            rue_runtime_abi::RuntimeRequirement::HostedThreads => Self::HostedThreads,
+        }
+    }
+
+    fn union(self, other: Self) -> Self {
+        if matches!(self, Self::HostedThreads) || matches!(other, Self::HostedThreads) {
+            Self::HostedThreads
+        } else {
+            Self::Freestanding
+        }
+    }
+
+    /// A hosted archive contains the common freestanding helpers plus the
+    /// helpers whose manifest rows explicitly require hosted support. A
+    /// freestanding archive must reject those hosted-only rows.
+    pub(crate) fn includes_requirement(
+        self,
+        requirement: rue_runtime_abi::RuntimeRequirement,
+    ) -> bool {
+        matches!(self, Self::HostedThreads)
+            || matches!(
+                requirement,
+                rue_runtime_abi::RuntimeRequirement::Freestanding
+            )
+    }
+
+    pub(crate) fn helper_available(
+        self,
+        helper: &rue_runtime_abi::RuntimeHelper,
+        target: rue_runtime_abi::RuntimeTarget,
+    ) -> bool {
+        helper.availability.contains(target) && self.includes_requirement(helper.requirement)
+    }
+}
+
+pub(crate) fn hosted_system_link_required(
+    target: Target,
+    linker: &LinkerMode,
+    flavor: RuntimeFlavor,
+) -> Result<bool, &'static str> {
+    if matches!(flavor, RuntimeFlavor::Freestanding) {
+        return Ok(false);
+    }
+    match linker {
+        LinkerMode::Internal => Err(
+            "hosted runtime requirements cannot be satisfied by explicit internal linking; use --linker auto or a suitable system C driver (and use --daemon off)",
+        ),
+        LinkerMode::Auto if Target::host() != Some(target) => Err(
+            "hosted runtime requirements for a foreign target need an explicit suitable C driver; --linker auto only supports the native target",
+        ),
+        LinkerMode::Auto | LinkerMode::System(_) => Ok(true),
+    }
+}
+
+/// The one lightweight runtime decision shared by structured and projected
+/// links.  Objects are only materialized after this plan selects a system
+/// linker; internal freestanding links continue to admit retained units.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuntimeLinkPlan {
+    pub(crate) flavor: RuntimeFlavor,
+    pub(crate) required_symbols: Vec<String>,
+}
+
+pub(crate) fn runtime_link_plan_with_cancellation<'a>(
+    units: impl IntoIterator<Item = &'a crate::codegen_query::CodegenUnit>,
+    target: Target,
+    cancellation: &rue_query::CancellationToken,
+) -> CancellableImageResult<RuntimeLinkPlan> {
+    let entry_point = crate::linking::entry_point_symbol(target);
+    let mut required_symbols = BTreeSet::from([
+        entry_point.to_owned(),
+        rue_runtime_abi::RUNTIME_ABI_VERSION_SYMBOL.to_owned(),
+    ]);
+    let mut flavor = RuntimeFlavor::Freestanding;
+    for unit in units {
+        check_cancellation(cancellation)?;
+        for relocation in unit.relocations.iter() {
+            check_cancellation(cancellation)?;
+            if let Some(export) = rue_runtime_abi::classify_export(&relocation.symbol) {
+                required_symbols.insert(relocation.symbol.to_string());
+                if let rue_runtime_abi::RuntimeExport::Helper(helper) = export {
+                    flavor =
+                        flavor.union(RuntimeFlavor::for_requirement(helper.helper().requirement));
+                }
+            }
+        }
+    }
+    Ok(RuntimeLinkPlan {
+        flavor,
+        required_symbols: required_symbols.into_iter().collect(),
+    })
+}
 
 /// Exact per-unit transition between two plans.  Linker placement/state is
 /// intentionally absent: a later incremental linker can consume these facts.
@@ -272,6 +379,7 @@ impl ProgramImagePlan {
             || self.runtime_abi_version != previous.runtime_abi_version
             || self.runtime_abi_symbol != previous.runtime_abi_symbol
             || self.runtime_archive != previous.runtime_archive
+            || self.runtime_flavor != previous.runtime_flavor
             || self.required_runtime_symbols != previous.required_runtime_symbols;
         Ok(delta)
     }
@@ -303,7 +411,7 @@ impl ProgramImage {
         options: &CompileOptions,
     ) -> MultiErrorResult<Self> {
         uncancellable(
-            Self::from_rooted_with_cancellation(
+            Self::from_rooted_entries_with_cancellation(
                 objects,
                 exports,
                 options,
@@ -313,9 +421,43 @@ impl ProgramImage {
         )
     }
 
-    pub(crate) fn from_rooted_with_cancellation(
+    pub(crate) fn from_rooted_entries_with_cancellation(
         objects: Vec<CollectedObjectProjection>,
         exports: Vec<RootedExport>,
+        options: &CompileOptions,
+        cancellation: &rue_query::CancellationToken,
+    ) -> CancellableImageResult<Self> {
+        let runtime_plan = runtime_link_plan_with_cancellation(
+            objects.iter().map(|object| object.unit.as_ref()),
+            options.target,
+            cancellation,
+        )?;
+        let mut export_entries = Vec::with_capacity(exports.len());
+        for export in &exports {
+            check_cancellation(cancellation)?;
+            export_entries.push(backend::generate_export_entry(options.target, export));
+        }
+        let objects = project_export_aliases_with_cancellation(
+            objects,
+            &export_entries,
+            options,
+            cancellation,
+        )?;
+        Self::from_rooted_with_plan_and_cancellation(
+            objects,
+            &exports,
+            export_entries,
+            &runtime_plan,
+            options,
+            cancellation,
+        )
+    }
+
+    pub(crate) fn from_rooted_with_plan_and_cancellation(
+        objects: Vec<CollectedObjectProjection>,
+        exports: &[RootedExport],
+        export_entries: Vec<backend::ExportEntry>,
+        runtime_plan: &RuntimeLinkPlan,
         options: &CompileOptions,
         cancellation: &rue_query::CancellationToken,
     ) -> CancellableImageResult<Self> {
@@ -325,22 +467,7 @@ impl ProgramImage {
         let _span = info_span!("program_image_plan", phase = "object_generation").entered();
         let unit_identities = validate_rooted_program_image_inputs_with_cancellation(
             &objects,
-            &exports,
-            cancellation,
-        )?;
-        let mut export_entries = Vec::with_capacity(exports.len());
-        for export in &exports {
-            check_cancellation(cancellation)?;
-            export_entries.push(backend::generate_export_entry(options.target, export));
-        }
-        // An aliased export's C symbol is defined by the native body's own
-        // object, so the bodies that carry one are re-projected with their
-        // alias names. The cached projection is keyed by the codegen unit
-        // alone, which does not know the program's export set.
-        let objects = project_export_aliases_with_cancellation(
-            objects,
-            &export_entries,
-            options,
+            exports,
             cancellation,
         )?;
         let plan = ProgramImagePlan::from_rooted_inputs_with_cancellation(
@@ -348,6 +475,7 @@ impl ProgramImage {
             unit_identities,
             options,
             &export_entries,
+            runtime_plan,
             cancellation,
         )?;
         Ok(Self {
@@ -496,10 +624,18 @@ impl ProgramImage {
                 ))),
             ));
         }
+        let needs_system =
+            hosted_system_link_required(options.target, &options.linker, self.plan.runtime_flavor)
+                .map_err(|message| {
+                    crate::session::PipelineRequestControl::Compile(CompileErrors::from(
+                        CompileError::without_span(ErrorKind::LinkError(message.into())),
+                    ))
+                })?;
         match &options.linker {
             LinkerMode::Internal => {
                 linking::link_internal_structured_with_warnings_and_cancellation(
                     options,
+                    self.plan.runtime_flavor,
                     &self.inputs,
                     &backend::export_alias_names(&self.export_entries),
                     &backend::export_thunk_objects(&self.export_entries),
@@ -513,6 +649,29 @@ impl ProgramImage {
                     options,
                     &objects,
                     command,
+                    self.plan.runtime_flavor,
+                    warnings,
+                    cancellation,
+                )
+            }
+            LinkerMode::Auto => {
+                if !needs_system {
+                    return linking::link_internal_structured_with_warnings_and_cancellation(
+                        options,
+                        self.plan.runtime_flavor,
+                        &self.inputs,
+                        &backend::export_alias_names(&self.export_entries),
+                        &backend::export_thunk_objects(&self.export_entries),
+                        warnings,
+                        cancellation,
+                    );
+                }
+                let objects = self.fresh_objects_with_cancellation(options, cancellation)?;
+                linking::link_system_with_warnings_and_cancellation(
+                    options,
+                    &objects,
+                    "cc",
+                    self.plan.runtime_flavor,
                     warnings,
                     cancellation,
                 )
@@ -576,6 +735,7 @@ impl ProgramImagePlan {
         unit_identities: Vec<String>,
         options: &CompileOptions,
         export_entries: &[backend::ExportEntry],
+        runtime_plan: &RuntimeLinkPlan,
         cancellation: &rue_query::CancellationToken,
     ) -> CancellableImageResult<Self> {
         let mut plan_units = Vec::with_capacity(units.len());
@@ -605,7 +765,7 @@ impl ProgramImagePlan {
         Self::finish_with_cancellation(
             plan_units,
             plan_entries,
-            units.iter().map(|unit| unit.unit.as_ref()),
+            runtime_plan,
             options,
             cancellation,
         )
@@ -638,26 +798,29 @@ impl ProgramImagePlan {
                 .then_with(|| left.native_symbol.cmp(&right.native_symbol))
         });
 
-        Self::finish(
-            plan_units,
-            plan_entries,
-            units.iter().map(|unit| unit.unit.as_ref()),
-            options,
-        )
+        let runtime_plan = uncancellable(
+            runtime_link_plan_with_cancellation(
+                units.iter().map(|unit| unit.unit.as_ref()),
+                options.target,
+                &rue_query::CancellationToken::new(),
+            ),
+            "program image runtime plan",
+        )?;
+        Self::finish(plan_units, plan_entries, &runtime_plan, options)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    fn finish<'a>(
+    fn finish(
         plan_units: Vec<ProgramImageUnit>,
         export_entries: Vec<ProgramImageExportEntry>,
-        units: impl IntoIterator<Item = &'a crate::codegen_query::CodegenUnit>,
+        runtime_plan: &RuntimeLinkPlan,
         options: &CompileOptions,
     ) -> MultiErrorResult<Self> {
         uncancellable(
             Self::finish_with_cancellation(
                 plan_units,
                 export_entries,
-                units,
+                runtime_plan,
                 options,
                 &rue_query::CancellationToken::new(),
             ),
@@ -665,10 +828,10 @@ impl ProgramImagePlan {
         )
     }
 
-    fn finish_with_cancellation<'a>(
+    fn finish_with_cancellation(
         plan_units: Vec<ProgramImageUnit>,
         export_entries: Vec<ProgramImageExportEntry>,
-        units: impl IntoIterator<Item = &'a crate::codegen_query::CodegenUnit>,
+        runtime_plan: &RuntimeLinkPlan,
         options: &CompileOptions,
         cancellation: &rue_query::CancellationToken,
     ) -> CancellableImageResult<Self> {
@@ -678,19 +841,6 @@ impl ProgramImagePlan {
         // spelling rule, so the plan and the linker cannot disagree about which
         // symbol the image enters at (RUE-1984).
         let entry_point = crate::linking::entry_point_symbol(options.target);
-        let mut required_runtime_symbols = BTreeSet::new();
-        required_runtime_symbols.insert(entry_point.to_owned());
-        required_runtime_symbols.insert(rue_runtime_abi::RUNTIME_ABI_VERSION_SYMBOL.to_owned());
-        for unit in units {
-            check_cancellation(cancellation)?;
-            for relocation in unit.relocations.iter() {
-                check_cancellation(cancellation)?;
-                let symbol = &relocation.symbol;
-                if rue_runtime_abi::classify_export(symbol).is_some() {
-                    required_runtime_symbols.insert(symbol.to_string());
-                }
-            }
-        }
 
         let plan = Self {
             units: plan_units,
@@ -704,8 +854,12 @@ impl ProgramImagePlan {
             entry_point,
             runtime_abi_version: rue_runtime_abi::RUNTIME_ABI_VERSION,
             runtime_abi_symbol: rue_runtime_abi::RUNTIME_ABI_VERSION_SYMBOL,
-            runtime_archive: RuntimeArchiveIdentity::for_target(options.target),
-            required_runtime_symbols: required_runtime_symbols.into_iter().collect(),
+            runtime_archive: RuntimeArchiveIdentity::for_target_and_flavor(
+                options.target,
+                runtime_plan.flavor,
+            ),
+            runtime_flavor: runtime_plan.flavor,
+            required_runtime_symbols: runtime_plan.required_symbols.clone(),
         };
         // Both private construction paths validate their raw unit and export
         // identities before translating them into this canonical plan.
@@ -916,6 +1070,9 @@ fn validate_program_image_plan(plan: &ProgramImagePlan) -> MultiErrorResult<()> 
 static X86_64_LINUX_RUNTIME_DIGEST: OnceLock<ContentDigest> = OnceLock::new();
 static AARCH64_LINUX_RUNTIME_DIGEST: OnceLock<ContentDigest> = OnceLock::new();
 static AARCH64_MACOS_RUNTIME_DIGEST: OnceLock<ContentDigest> = OnceLock::new();
+static X86_64_LINUX_HOSTED_RUNTIME_DIGEST: OnceLock<ContentDigest> = OnceLock::new();
+static AARCH64_LINUX_HOSTED_RUNTIME_DIGEST: OnceLock<ContentDigest> = OnceLock::new();
+static AARCH64_MACOS_HOSTED_RUNTIME_DIGEST: OnceLock<ContentDigest> = OnceLock::new();
 
 /// Counts every request for archive content, cached or not, so a test can
 /// assert that an ordinary compilation never reaches for the archive bytes.
@@ -939,11 +1096,17 @@ static RUNTIME_ARCHIVE_CONTENT_REQUESTS: std::sync::atomic::AtomicUsize =
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RuntimeArchiveIdentity {
     target: Target,
+    flavor: RuntimeFlavor,
 }
 
 impl RuntimeArchiveIdentity {
+    #[allow(dead_code)]
     pub(crate) fn for_target(target: Target) -> Self {
-        Self { target }
+        Self::for_target_and_flavor(target, RuntimeFlavor::Freestanding)
+    }
+
+    pub(crate) fn for_target_and_flavor(target: Target, flavor: RuntimeFlavor) -> Self {
+        Self { target, flavor }
     }
 
     /// SHA-256 over the exact embedded archive bytes, memoized for the process
@@ -952,15 +1115,24 @@ impl RuntimeArchiveIdentity {
     pub(crate) fn content_digest(self) -> ContentDigest {
         #[cfg(test)]
         RUNTIME_ARCHIVE_CONTENT_REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let cache = match self.target {
-            Target::X86_64Linux => &X86_64_LINUX_RUNTIME_DIGEST,
-            Target::Aarch64Linux => &AARCH64_LINUX_RUNTIME_DIGEST,
-            Target::Aarch64Macos => &AARCH64_MACOS_RUNTIME_DIGEST,
+        let cache = match (self.target, self.flavor) {
+            (Target::X86_64Linux, RuntimeFlavor::Freestanding) => &X86_64_LINUX_RUNTIME_DIGEST,
+            (Target::Aarch64Linux, RuntimeFlavor::Freestanding) => &AARCH64_LINUX_RUNTIME_DIGEST,
+            (Target::Aarch64Macos, RuntimeFlavor::Freestanding) => &AARCH64_MACOS_RUNTIME_DIGEST,
+            (Target::X86_64Linux, RuntimeFlavor::HostedThreads) => {
+                &X86_64_LINUX_HOSTED_RUNTIME_DIGEST
+            }
+            (Target::Aarch64Linux, RuntimeFlavor::HostedThreads) => {
+                &AARCH64_LINUX_HOSTED_RUNTIME_DIGEST
+            }
+            (Target::Aarch64Macos, RuntimeFlavor::HostedThreads) => {
+                &AARCH64_MACOS_HOSTED_RUNTIME_DIGEST
+            }
         };
         *cache.get_or_init(|| {
             bytes_digest(
                 b"rue.program-image.runtime-archive\0v1\0",
-                linking::runtime_for_target(self.target),
+                linking::runtime_for_target_and_flavor(self.target, self.flavor),
             )
         })
     }
@@ -1100,6 +1272,7 @@ mod tests {
             runtime_abi_version: rue_runtime_abi::RUNTIME_ABI_VERSION,
             runtime_abi_symbol: rue_runtime_abi::RUNTIME_ABI_VERSION_SYMBOL,
             runtime_archive: RuntimeArchiveIdentity::for_target(Target::X86_64Linux),
+            runtime_flavor: RuntimeFlavor::Freestanding,
             required_runtime_symbols: vec!["_start".to_owned()],
         }
     }
@@ -1167,6 +1340,51 @@ mod tests {
         assert_ne!(
             bytes_digest(b"test-domain", b"runtime"),
             bytes_digest(b"test-domain", b"Runtime")
+        );
+    }
+
+    #[test]
+    fn hosted_runtime_route_requires_a_native_or_explicit_system_linker() {
+        let hosted = RuntimeFlavor::HostedThreads;
+        for &target in Target::all() {
+            assert_eq!(
+                hosted_system_link_required(target, &LinkerMode::Auto, RuntimeFlavor::Freestanding),
+                Ok(false),
+                "ordinary Auto remains the retained freestanding path"
+            );
+            assert_eq!(
+                hosted_system_link_required(target, &LinkerMode::System("cc".into()), hosted),
+                Ok(true)
+            );
+            assert!(
+                hosted_system_link_required(target, &LinkerMode::Internal, hosted)
+                    .unwrap_err()
+                    .contains("--daemon off")
+            );
+            match Target::host() {
+                Some(native) if native == target => assert_eq!(
+                    hosted_system_link_required(target, &LinkerMode::Auto, hosted),
+                    Ok(true)
+                ),
+                _ => assert!(
+                    hosted_system_link_required(target, &LinkerMode::Auto, hosted)
+                        .unwrap_err()
+                        .contains("foreign target")
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn runtime_link_plan_fixture_keeps_hosted_flavor_typed() {
+        let plan = RuntimeLinkPlan {
+            flavor: RuntimeFlavor::HostedThreads,
+            required_symbols: vec!["_start".to_owned(), "__rue_runtime_abi_v1".to_owned()],
+        };
+        assert_eq!(plan.flavor, RuntimeFlavor::HostedThreads);
+        assert_eq!(
+            RuntimeArchiveIdentity::for_target_and_flavor(Target::X86_64Linux, plan.flavor,).flavor,
+            RuntimeFlavor::HostedThreads
         );
     }
 

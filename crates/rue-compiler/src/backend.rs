@@ -98,6 +98,28 @@ pub(crate) fn project_backend_object(
     Ok(obj_builder.build())
 }
 
+pub(crate) fn project_backend_object_with_cancellation(
+    unit: &crate::codegen_query::CodegenUnit,
+    target: Target,
+    aliases: &[String],
+    cancellation: &rue_query::CancellationToken,
+) -> Result<Vec<u8>, crate::session::PipelineRequestControl> {
+    if cancellation.is_canceled() {
+        return Err(crate::session::PipelineRequestControl::Abort(
+            rue_query::QueryAbort::Canceled,
+        ));
+    }
+    let bytes = project_backend_object(unit, target, aliases).map_err(|error| {
+        crate::session::PipelineRequestControl::Compile(CompileErrors::from(error))
+    })?;
+    if cancellation.is_canceled() {
+        return Err(crate::session::PipelineRequestControl::Abort(
+            rue_query::QueryAbort::Canceled,
+        ));
+    }
+    Ok(bytes)
+}
+
 fn map_linker_relocation(
     target: Target,
     kind: RelocationKind,
