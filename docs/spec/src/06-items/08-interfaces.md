@@ -292,8 +292,17 @@ rejected, including queries reached through generic helpers. Likewise,
 `@require_trivially_droppable` **MUST NOT** succeed merely because a skolem's
 synthetic representation has no destructor: an interface bound does not
 establish that property. A pointer's own trivial drop behavior does not depend
-on its pointee. Compiler-internal layout calculations remain available for
-analysis and do not make a layout value available to the source program.
+on its pointee. Addressing a value of such a type, or walking an address of
+one, is the same query by another spelling -- `@ptr_to_int(@ptr_offset(p, 1))`
+is `@size_of(T)` -- so `@raw`, `@raw_mut`, and `@field_ptr` applied to a place
+of an opaque type, and `@ptr_offset`, `@ptr_read`, and `@ptr_write` (with
+their unaligned variants) applied to a pointer whose pointee is one, **MUST**
+be rejected with E0309, which names the intrinsic and the type. The trusted
+standard library (6.8:25) is exempt: its generic containers are the
+representation layer, and a bounded body reaches their cells only through an
+API that yields places and borrows, never an address. Compiler-internal layout
+calculations remain available for analysis and do not make a layout value
+available to the source program.
 
 {{ rule(id="6.8:21", cat="legality-rule") }}
 
