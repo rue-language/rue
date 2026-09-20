@@ -7,3 +7,7 @@ name = "RueCore"
 [[lean_exe]]
 name = "ruecore-corpus"
 root = "RueCore.CorpusMain"
+
+[[lean_exe]]
+name = "ruecore-explain"
+root = "RueCore.ExplainMain"
