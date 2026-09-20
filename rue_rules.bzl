@@ -539,7 +539,9 @@ _rue_test = rule(
         # Rue toolchain carries the same artifact through a provider, but BTD
         # cannot follow that provider when it computes a changed-file closure;
         # a std/ edit must therefore reach this premerge test target directly.
-        "std": attrs.dep(default = "root//std:std"),
+        "std": attrs.default_only(
+            attrs.dep(default = "root//std:std"),
+        ),
         "_derive": attrs.dep(providers = [RunInfo], default = "root//:rue-program-derive-manifest"),
         "_runner": attrs.dep(providers = [RunInfo], default = "root//:rue-test-supervisor"),
         "_scan": attrs.dep(providers = [RunInfo], default = "root//:rue-program-scan"),

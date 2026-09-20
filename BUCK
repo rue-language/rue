@@ -1371,11 +1371,20 @@ rue_tool_test(
 # the macos-15 runner execute with Bash 3.2, so the native lanes run them on
 # that interpreter instead of leaving Bash 4 constructs to a Linux-only pass
 # (RUE-1506).
+filegroup(
+    name = "affected-targets-rule-inputs",
+    srcs = ["rue_rules.bzl"],
+)
+
 rue_sh_test(
     name = "affected-targets-tool-tests",
     test = "scripts/test-affected-targets.sh",
     platform = "native",
+    env = {
+        "RUE_AFFECTED_RULES": "$(location :affected-targets-rule-inputs)/rue_rules.bzl",
+    },
     resources = [
+        ":affected-targets-rule-inputs",
         "scripts/affected-targets",
         "scripts/ci-clippy",
         "scripts/ci-corpus-selected",
