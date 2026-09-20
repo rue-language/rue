@@ -248,7 +248,7 @@ check "parser: unknown flag is a usage error" "<rc=2>" "$(parse --no-such-flag '
 
 # --- end to end: git status + BTD + real-shaped `buck2 targets` dump ---------
 E="$WORK/e2e"
-mkdir -p "$E/scripts" "$E/bin" "$E/docs"
+mkdir -p "$E/scripts" "$E/bin" "$E/docs" "$E/std"
 cp "$SCRIPTS_DIR/affected-targets" "$SCRIPTS_DIR/parse-btd-impacted.py" "$E/scripts/"
 fake "$E/bin/fake-buck" 'set -euo pipefail
 if [ "${1:-}" = uquery ]; then
@@ -257,6 +257,7 @@ if [ "${1:-}" = uquery ]; then
     "kind('"'"'_corpus_action'"'"'"*) echo root//:spec-tests-action ;;
     "attrfilter(labels, '"'"'rue_heavy_suite'"'"'"*) echo root//:spec-tests ;;
     "attrfilter(labels, '"'"'rue_platform_native'"'"'"*) echo root//crates/rue-codegen:rue-codegen-test ;;
+    "attrfilter(labels, rue_test_tier_premerge"*) echo root//tests/std:std-tests ;;
     *) exit 1 ;;
   esac
   exit 0
@@ -268,17 +269,23 @@ while [ "$#" -gt 0 ]; do if [ "$1" = --output ]; then output="$2"; shift 2; cont
 # A BTD-shaped fake here hid the head-graph parse bug while CI fell open to
 # FULL on every pull request.
 printf "%s\n" "{\"buck.package\":\"root//\",\"name\":\"spec-tests\",\"buck.type\":\"prelude//rules.bzl:sh_test\"}" \
+  "{\"buck.package\":\"root//tests/std\",\"name\":\"std-tests\",\"buck.type\":\"root//rue_rules.bzl:_rue_test\"}" \
   "{\"buck.package\":\"root//\",\"name\":\"unimpacted\",\"buck.type\":\"prelude//rules.bzl:sh_test\"}" >"$output"'
 fake "$E/bin/fake-btd" 'set -euo pipefail
 printf "%s\n" "$@" >"$RUE_AFFECTED_BTD_ARGS"
 changes=""
 while [ "$#" -gt 0 ]; do if [ "$1" = --changes ]; then changes="$2"; shift 2; continue; fi; shift; done
 cmp -s "$changes" "$RUE_AFFECTED_EXPECTED_CHANGES"
-printf "%s\n" "{\"target\":\"root//:spec-tests\"}" "{\"target\":\"root//crates/deleted:base-only\"}"'
+if grep -Eq "^M[[:space:]]std/" "$changes"; then
+  printf "%s\n" "{\"target\":\"root//tests/std:std-tests\"}"
+else
+  printf "%s\n" "{\"target\":\"root//:spec-tests\"}" "{\"target\":\"root//crates/deleted:base-only\"}"
+fi'
 git -C "$E" init -q
 git -C "$E" config user.email tests@example.invalid
 git -C "$E" config user.name affected-targets-test
 printf 'before\n' >"$E/docs/input.txt"
+printf 'before\n' >"$E/std/math.rue"
 git -C "$E" add . && git -C "$E" commit -qm base
 printf 'after\n' >"$E/docs/input.txt"
 git -C "$E" add docs/input.txt && git -C "$E" commit -qm head
@@ -292,6 +299,10 @@ decide() { # decide <output-file> [VAR=VALUE ...] -> exit status of decide
       GITHUB_OUTPUT="$out" GITHUB_STEP_SUMMARY="$E/summary" env "$@" scripts/affected-targets decide >/dev/null 2>&1 )
 }
 output_value() { sed -n "s/^$2=//p" "$1"; }
+impacted_lines() {
+  sed -n '/^impacted<</,/^RUE_EOF/p' "$1" |
+    sed -E '/^impacted<</d;/^RUE_EOF/d'
+}
 decide "$E/out"
 check "e2e: a docs-only diff is a selective decision" false "$(output_value "$E/out" full)"
 check "e2e: the impacted corpus is selected" "//:spec-tests" "$(output_value "$E/out" selected)"
@@ -310,6 +321,15 @@ output=""; while [ "$#" -gt 0 ]; do if [ "$1" = --output ]; then output="$2"; sh
 check "e2e: an empty successful head dump runs the full suite" true "$(decide "$E/out-empty" RUE_AFFECTED_BUCK2="$E/bin/empty-head-buck"; output_value "$E/out-empty" full)"
 check "e2e: merge_group is an authoritative full run" true "$(decide "$E/out-mg" RUE_AFFECTED_EVENT=merge_group; output_value "$E/out-mg" full)"
 check "e2e: workflow_dispatch is an authoritative full run" true "$(decide "$E/out-wd" RUE_AFFECTED_EVENT=workflow_dispatch; output_value "$E/out-wd" full)"
+printf 'std source\n' >"$E/std/math.rue"
+git -C "$E" add std/math.rue && git -C "$E" commit -qm std-change
+printf 'M\tstd/math.rue\n' >"$E/expected-changes"
+decide "$E/out-std"
+check "e2e: std source selects the std test target" yes \
+  "$(if impacted_lines "$E/out-std" | grep -Fxq -- //tests/std:std-tests; then echo yes; else echo no; fi)"
+impacted_lines "$E/out-std" >"$E/std-impacted"
+check "e2e: narrowed premerge scope retains std tests" //tests/std:std-tests \
+  "$(cd "$E" && RUE_AFFECTED_BUCK2="$E/bin/fake-buck" "$E/scripts/affected-targets" narrow-scope linux-premerge-tests "$E/std-impacted" 2>/dev/null)"
 printf 'x\n' >"$E/BUCK" && git -C "$E" add BUCK && git -C "$E" commit -qm graph-global
 check "e2e: a graph-global path forces a full run before any tool runs" "true " \
   "$(decide "$E/out-force" RUE_AFFECTED_BTD="$E/absent"; echo "$(output_value "$E/out-force" full) $(output_value "$E/out-force" selected)")"

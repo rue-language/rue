@@ -535,6 +535,11 @@ _rue_test = rule(
         # paths. Not for production targets.
         "expect_unimported": attrs.list(attrs.string(), default = []),
         "labels": attrs.list(attrs.string(), default = []),
+        # Keep the standard-library tree as a direct graph dependency. The
+        # Rue toolchain carries the same artifact through a provider, but BTD
+        # cannot follow that provider when it computes a changed-file closure;
+        # a std/ edit must therefore reach this premerge test target directly.
+        "std": attrs.dep(default = "root//std:std"),
         "_derive": attrs.dep(providers = [RunInfo], default = "root//:rue-program-derive-manifest"),
         "_runner": attrs.dep(providers = [RunInfo], default = "root//:rue-test-supervisor"),
         "_scan": attrs.dep(providers = [RunInfo], default = "root//:rue-program-scan"),
