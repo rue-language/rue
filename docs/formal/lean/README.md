@@ -44,6 +44,23 @@ Rue module, the verified checker's verdict, and the interpreter's outcome.
 oracle, and the native binary on each source. Any pairwise disagreement is a
 defect in one of the four views (RUE-305).
 
+Running the consumer needs neither `lake` nor `elan`: the corpus it reads is
+the Buck target's own `corpus.json`.
+
+```bash
+scripts/rue lean-bridge                      # or: ./buck2 run //:lean-bridge
+scripts/rue lean-bridge -- --case overflow   # one case
+scripts/rue lean-bridge -- --report-json /tmp/bridge.json
+```
+
+It prints a line per case, then — for each disagreeing case — the printed
+program, the four views side by side, and the pair(s) that disagree, with a
+tally at the end; `--report-json` writes the same findings as JSON so two runs
+can be diffed. It exits non-zero when any disagreement exists, which it does
+today: `cond_drop_affine` ICEs the compiler (RUE-2290). The mode is a `buck2
+run` entry point and belongs to no test tier, so nothing in CI requests it
+until ADR-0097's gate is met (RUE-2241).
+
 One case, abbreviated:
 
 ```json

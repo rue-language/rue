@@ -71,6 +71,11 @@ pub(crate) struct CompileOptions<'a> {
     pub(crate) std_path: Option<&'a Path>,
     pub(crate) compile_timeout: Duration,
     pub(crate) runtime_timeout: Duration,
+    /// Ask the compiler for `--error-format json`, so a caller can read the
+    /// diagnostic *codes* of a rejection instead of prose. Only the Lean-corpus
+    /// bridge needs them; fuzz and the corpus differentials leave this off and
+    /// keep the human-readable stderr their reports quote (RUE-2228).
+    pub(crate) error_format_json: bool,
 }
 
 /// Outcome of compiling and running a generated program natively.
@@ -395,6 +400,7 @@ pub fn run(args: &[String], configuration: CompilerSessionConfig) -> ExitCode {
                     std_path: None,
                     compile_timeout: cfg.timeout,
                     runtime_timeout: cfg.timeout,
+                    error_format_json: false,
                 },
             ) {
                 Ok(c) => c,
@@ -625,6 +631,12 @@ pub(crate) fn compile_and_run(
     }
     for preview in options.previews {
         compile_cmd.arg("--preview").arg(preview);
+    }
+    // One command builder, one optional flag: the Lean-corpus bridge needs the
+    // rejection's diagnostic codes (docs/process/diagnostics.md), and reading
+    // them must not mean a second, drifting compile invocation (RUE-2228).
+    if options.error_format_json {
+        compile_cmd.arg("--error-format").arg("json");
     }
     // Keep this after the historical positional arguments: several oracle
     // fixtures intentionally inspect the compiler argv while still pinning
@@ -1128,6 +1140,7 @@ mod tests {
                 std_path: Some(&std_path),
                 compile_timeout: Duration::from_secs(5),
                 runtime_timeout: Duration::from_secs(5),
+                error_format_json: false,
             },
         )
         .expect("run fake compiler");
@@ -1530,6 +1543,7 @@ mod tests {
                 std_path: None,
                 compile_timeout: Duration::from_millis(200),
                 runtime_timeout: Duration::from_secs(5),
+                error_format_json: false,
             },
         )
         .expect("spawn fake compiler");
@@ -1569,6 +1583,7 @@ mod tests {
                 std_path: None,
                 compile_timeout: Duration::from_millis(200),
                 runtime_timeout: Duration::from_secs(5),
+                error_format_json: false,
             },
         )
         .expect("spawn descendant compiler fixture");
@@ -1606,6 +1621,7 @@ mod tests {
             std_path: None,
             compile_timeout: Duration::from_secs(5),
             runtime_timeout: Duration::from_secs(5),
+            error_format_json: false,
         };
         let error = compile_and_run(
             &compiler,
@@ -1649,6 +1665,7 @@ mod tests {
             std_path: None,
             compile_timeout: Duration::from_secs(5),
             runtime_timeout: Duration::from_secs(5),
+            error_format_json: false,
         };
         let crashing = fake_compiler(workdir.path(), "#!/bin/sh\nkill -TERM $$\n");
         let crash = compile_and_run(
@@ -1687,6 +1704,7 @@ mod tests {
                 std_path: None,
                 compile_timeout: Duration::from_secs(30),
                 runtime_timeout: Duration::from_secs(5),
+                error_format_json: false,
             },
         )
         .expect("run fake compiler");

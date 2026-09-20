@@ -56,6 +56,22 @@ default. The audit prints the exact `Entry::new(...)` line to add, which is
 the whole fix — read past "unknown oracle model gap" to it rather than reading
 the message as a compiler bug. RUE-1711 cost a red CI round for want of this.
 
+ADR-0097's differential bridge is the other direction: a check no tier runs
+at all. It compares the Lean mechanization's exported corpus with the
+compiler, the oracle, and native binaries, and it is a `buck2 run` entry point
+rather than a test target, because RUE-2241 is the issue that decides whether
+CI gates on it — and because it is red today on one case (RUE-2290). Run it by
+hand when the mechanization, the corpus, or ownership checking changes:
+
+```bash
+scripts/rue lean-bridge            # or: ./buck2 run //:lean-bridge
+scripts/rue lean-bridge -- --case cond_drop_affine --report-json /tmp/bridge.json
+```
+
+It exits non-zero on any disagreement and names the pair of views that
+disagree, never which of them is wrong. `docs/formal/lean/README.md` explains
+the corpus it reads.
+
 Native AArch64 execution is validated only by the Linux ARM64 and macOS CI
 legs. Locally, inspect cross-target output with `--emit asm`; a one-backend
 fix that looks fine on x86-64 will bounce there.
