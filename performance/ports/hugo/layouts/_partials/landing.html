@@ -84,7 +84,9 @@
                 <p class="note-summary">{{ . }}</p>
                 {{ else }}
                 {{ with .Summary }}
-                <p class="note-summary">{{ . | plainify | truncate 180 }}</p>
+                {{/* Match Tera's character limit; Hugo's truncate uses word boundaries. */}}
+                {{ $summary := . | plainify }}
+                <p class="note-summary">{{ if gt (strings.RuneCount $summary) 180 }}{{ substr $summary 0 180 }}…{{ else }}{{ $summary }}{{ end }}</p>
                 {{ end }}
                 {{ end }}
             </div>
