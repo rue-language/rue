@@ -308,8 +308,65 @@ crate::define_runtime_implementation! {
     }
 }
 
-// No unit tests for this module: the `_start`/`_main` entry points and
-// `__rue_exit` cannot be exercised in-process (they require being the real
-// program entry point / terminate the process). They are covered end-to-end
-// by the spec and CLI integration suites, which run compiled Rue programs
-// and assert on their exit codes.
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use self::std::process::{Command, Stdio};
+    use self::std::string::String;
+    use self::std::thread;
+    use self::std::time::{Duration, Instant};
+
+    #[test]
+    fn process_exit_from_worker_terminates_subprocess() {
+        const CHILD_ENV: &str = "RUE_PROCESS_EXIT_WORKER_CHILD";
+        const REQUESTED_EXIT_STATUS: i32 = 37;
+
+        if self::std::env::var_os(CHILD_ENV).is_some() {
+            thread::spawn(|| crate::platform::exit(REQUESTED_EXIT_STATUS))
+                .join()
+                .unwrap();
+            unreachable!("the worker's process-wide exit returned");
+        }
+
+        let mut child = Command::new(self::std::env::current_exe().expect("current test binary"))
+            .args([
+                "--exact",
+                "entry::tests::process_exit_from_worker_terminates_subprocess",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            // With panic=abort, libtest otherwise adds a subprocess that
+            // translates the requested status into a failed-test status.
+            .env(
+                "__RUST_TEST_INVOKE",
+                "entry::tests::process_exit_from_worker_terminates_subprocess",
+            )
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn process-exit child");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = child.try_wait().expect("wait for process-exit child") {
+                let output = child
+                    .wait_with_output()
+                    .expect("collect process-exit child output");
+                assert_eq!(
+                    status.code(),
+                    Some(REQUESTED_EXIT_STATUS),
+                    "child stderr: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                return;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("process-exit child did not terminate within ten seconds");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
