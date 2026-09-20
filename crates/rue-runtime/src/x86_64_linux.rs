@@ -40,8 +40,8 @@ const SYS_MMAP: i64 = 9;
 /// Linux syscall number for munmap (see `man 2 munmap`).
 const SYS_MUNMAP: i64 = 11;
 
-/// Linux syscall number for exit (see `man 2 exit`).
-const SYS_EXIT: i64 = 60;
+/// Linux syscall number for process-wide exit (see `man 2 exit_group`).
+const SYS_EXIT_GROUP: i64 = 231;
 
 /// Standard input file descriptor.
 pub const STDIN: u64 = 0;
@@ -654,11 +654,11 @@ pub fn install_segv_handler(handler: crate::fault::SegvHandler) {
     let _ = unsafe { rt_sigaction(SIGSEGV, &act) };
 }
 
-/// Exit the process with the given status code.
+/// Exit the process and all of its threads with the given status code.
 ///
-/// This performs a direct syscall to `exit(2)` and never returns.
-/// The process terminates immediately without running any cleanup code
-/// or destructors.
+/// This performs a direct syscall to `exit_group(2)` and never returns. The
+/// process terminates immediately without running any cleanup code or
+/// destructors.
 ///
 /// # Arguments
 ///
@@ -674,7 +674,7 @@ pub fn exit(status: i32) -> ! {
     unsafe {
         asm!(
             "syscall",
-            in("rax") SYS_EXIT,
+            in("rax") SYS_EXIT_GROUP,
             in("rdi") status as i64,
             options(noreturn)
         );
@@ -684,10 +684,6 @@ pub fn exit(status: i32) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Note: We can't easily test exit() or the functions that call it
-    // because they terminate the process. Those are tested via integration
-    // tests that spawn child processes.
 
     #[test]
     fn test_write_to_stderr() {
@@ -761,7 +757,7 @@ mod tests {
         assert_eq!(SYS_WRITE, 1);
         assert_eq!(SYS_MMAP, 9);
         assert_eq!(SYS_MUNMAP, 11);
-        assert_eq!(SYS_EXIT, 60);
+        assert_eq!(SYS_EXIT_GROUP, 231);
         assert_eq!(STDIN, 0);
         assert_eq!(STDOUT, 1);
         assert_eq!(STDERR, 2);

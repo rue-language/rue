@@ -369,9 +369,8 @@ fn read_line_impl(out: *mut OptionStrBufResult, some_disc: u64, none_disc: u64) 
     let result = STDIN_BUFFER
         .with(|input| read_line_from_fd(input, out, some_disc, none_disc, platform::STDIN));
     if let Err(failure) = result {
-        // Trap only after `with` releases the process-global input lock. On
-        // Linux, the raw exit syscall terminates only the calling thread, so a
-        // native embedder may legitimately invoke the runtime again.
+        // Release the process-global input lock before reporting the failure
+        // and terminating the process.
         failure.trap();
     }
 }
@@ -769,8 +768,8 @@ mod tests {
             .unwrap_err();
         assert_eq!(failure, super::ReadLineFailure::Input);
 
-        // A Linux runtime trap exits only the invoking thread. Returning the
-        // failure through `with` must therefore release this lock first.
+        // Return the failure through `with` only after its process-global lock
+        // is released, before the platform exit path terminates execution.
         assert_eq!(input.with(|_| 42), 42);
     }
 

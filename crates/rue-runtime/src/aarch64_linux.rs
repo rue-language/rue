@@ -34,8 +34,9 @@ const SYS_READ: u64 = 63;
 /// Linux aarch64 syscall number for write (from asm-generic/unistd.h).
 const SYS_WRITE: u64 = RuntimeTarget::Aarch64Linux.write_syscall_number();
 
-/// Linux aarch64 syscall number for exit (from asm-generic/unistd.h).
-const SYS_EXIT: u64 = 93;
+/// Linux aarch64 syscall number for process-wide exit (from
+/// asm-generic/unistd.h, `exit_group`).
+const SYS_EXIT_GROUP: u64 = 94;
 
 /// Linux aarch64 syscall number for mmap (from asm-generic/unistd.h).
 const SYS_MMAP: u64 = 222;
@@ -576,15 +577,15 @@ pub fn install_segv_handler(handler: crate::fault::SegvHandler) {
     let _ = unsafe { rt_sigaction(SIGSEGV, &act) };
 }
 
-/// Exit the process with the given status code.
+/// Exit the process and all of its threads with the given status code.
 ///
-/// This performs a direct syscall to `exit(2)` and never returns.
+/// This performs a direct syscall to `exit_group(2)` and never returns.
 pub fn exit(status: i32) -> ! {
     // SAFETY: The exit syscall is always safe to call and never returns.
     unsafe {
         asm!(
             "svc #0",
-            in("x8") SYS_EXIT,
+            in("x8") SYS_EXIT_GROUP,
             in("x0") status as u64,
             options(noreturn)
         );
@@ -643,7 +644,7 @@ mod tests {
         // Verify our syscall numbers match Linux aarch64
         assert_eq!(SYS_READ, 63);
         assert_eq!(SYS_WRITE, 64);
-        assert_eq!(SYS_EXIT, 93);
+        assert_eq!(SYS_EXIT_GROUP, 94);
         assert_eq!(SYS_MMAP, 222);
         assert_eq!(SYS_MUNMAP, 215);
         assert_eq!(STDIN, 0);
