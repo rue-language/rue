@@ -9,7 +9,7 @@ accepted:
 implemented:
 spec-sections: []
 superseded-by:
-relates: ["RUE-1882", "RUE-2226", "RUE-207", "RUE-206", "RUE-50", "RUE-305", "RUE-2227", "RUE-2228", "RUE-2237", "RUE-2241", "RUE-2245", "RUE-2247", "RUE-2249", "ADR-0082", "ADR-0083"]
+relates: ["RUE-1882", "RUE-2226", "RUE-207", "RUE-206", "RUE-50", "RUE-305", "RUE-2227", "RUE-2228", "RUE-2233", "RUE-2237", "RUE-2241", "RUE-2245", "RUE-2247", "RUE-2249", "RUE-2251", "RUE-2282", "RUE-2283", "ADR-0082", "ADR-0083"]
 ---
 
 # ADR-0097: Mechanized formal core
@@ -71,15 +71,15 @@ Three properties of the spike shape the decisions below.
   model of the language, proofs of its key properties, and differential
   random testing between the model and the Rust implementation
   (<https://github.com/cedar-policy/cedar-spec>).
-- **Cheap to build and run.** Core Lean suffices; no Mathlib. A cold build
-  is seconds. The toolchain is a per-platform, SHA-pinned release archive,
-  which is what `elan` downloads and also what the repository's
-  `toolchain_distribution` rule (`toolchains/distribution.bzl`, RUE-2003)
-  already fetches for Rust and Zig. One caveat shapes how it is declared:
-  an unpacked Lean toolchain is about 35,000 files and 2.7 GB, the same
-  many-small-files shape that RUE-2003 found BuildBuddy truncating, at
-  roughly twice the Zig distribution's file count. The rule's CAS opt-out
-  is therefore essential, not optional.
+- **Cheap to build, not cheap to fetch.** Core Lean suffices; no Mathlib.
+  A cold build is seconds. The toolchain is a per-platform, SHA-pinned
+  release archive, the same thing `elan` downloads, and a fit for the
+  repository's `toolchain_distribution` rule (`toolchains/distribution.bzl`,
+  RUE-2003) once that rule learns zstd, since Lean ships `.tar.zst` and
+  `.zip` only. Its shape is size, not file count: about 17,500 files but
+  2.7 GB unpacked from a 570 MB archive, comparable to Zig by count and
+  eight times its bytes, so the rule's CAS opt-out matters here for cache
+  volume as much as for the RUE-2003 truncation.
 - **Reviewable in an unusual way.** The kernel checks the proofs. What it
   cannot check is whether a theorem *statement* says what the calculus says,
   whether the fragment boundary is stated honestly, or whether a printer
@@ -97,17 +97,19 @@ across many sessions and several agents.
 1. **Adopt the artifact, with Buck managing the toolchain.**
    `docs/formal/lean/` is the mechanization home: Lean package `RueCore`,
    zero dependencies beyond core Lean, built with `lake build`. The Lean
-   toolchain is a Buck `toolchain_distribution` beside Rust and Zig: a
-   SHA-pinned per-platform archive fetched from its origin and extracted
-   with the CAS upload opt-out, so the tree never enters the remote cache.
-   The build is a Buck target (a genrule running `lake build` against that
-   toolchain, emitting a build stamp and the axioms report) that
-   `scripts/rue` exposes. The `lean-toolchain` file stays as the pin lake
+   toolchain is a Buck `toolchain_distribution` beside Rust and Zig, for
+   all four supported platforms: a SHA-pinned archive fetched from its
+   origin and extracted with the CAS upload opt-out, so the tree never
+   enters the remote cache (the rule gains a zstd path to do it). The build
+   is a Buck target (a genrule running `lake build` against that toolchain,
+   emitting a build stamp and the axioms report via the toolchain's own
+   `leanchecker`) that `scripts/rue` exposes. The `lean-toolchain` file stays as the pin lake
    and the editor extension read, and a validator asserts the Buck pin
    matches it so the two cannot drift; `elan` remains an optional
    developer convenience, never a CI dependency. Until decision 5's gate
-   is met, the target is build-only: it carries no test tier, so no CI
-   lane requests it. The spike lands as the seed under RUE-2226 after this
+   is met, the target is build-only: it carries no test tier, and
+   `buck2 test` does not build non-test targets, so neither the nightly
+   `//...` sweep nor any required lane requests it. The spike lands as the seed under RUE-2226 after this
    ADR is accepted.
 
 2. **Authority: four views, no precedence.** RUE-305 ratified that the
@@ -127,11 +129,15 @@ across many sessions and several agents.
    never a named violation. Progress and preservation are one statement,
    with "Σ faithfully tracks the store's initialization" (§7's phrase) as the
    preservation invariant. Named corollaries per §7 bullet are the
-   deliverable the metatheory cites. A small-step relation is added only if
-   a theorem needs one, with the standard step-function/relation equivalence
-   lemma; `03-metatheory.md` records this choice and the reason (same
-   corollaries, far less mechanization overhead, and shape-identity with the
-   oracle).
+   deliverable the metatheory cites. §6 is written small-step, so `eval` is
+   a second presentation of the same dynamics: its adequacy to §6's
+   reduction is an owed lemma (RUE-207), and §6's heading and §7's first
+   bullet are reworded as a normal spec change (RUE-2226) so the views
+   agree. A refusal is a positive result in this form, so every `Violation`
+   and panic kind gets a kernel-checked witness per slice, and fuel, when it
+   lands, brings monotonicity and no-masking lemmas (RUE-2233).
+   `03-metatheory.md` records the choice and the reason (same corollaries,
+   far less overhead, shape-identity with the oracle).
 
 4. **Rubric step 6.** The extension rubric in `docs/formal/README.md` gains a
    sixth step: *extend the mechanization, or file the gap as a tracked issue
@@ -143,23 +149,26 @@ across many sessions and several agents.
 
 5. **Posture and promotion criteria.** The mechanization is experimental and
    non-blocking. Nothing runs in CI until (a) the safety theorem covers the
-   full core dynamics for by-value programs (structs, paths, enums, calls,
-   loops, drop order, no-double-free; RUE-2237 is the terminal issue) and
-   (b) an independent review (decision 7, checkpoint C) confirms the proof
-   is established. The mechanism is the test-tier system: Rue's tiers are
-   exhaustive (every test target carries exactly one of `premerge`, `slow`,
-   `stress`, and every tier must be deliberately selected by a CI job), so
-   a Lean *test* target cannot exist without being scheduled somewhere.
-   Before the gate there is no test target, only the build target of
-   decision 1. At the gate, RUE-2241 wraps that target in a test (`lake
-   build`, `lean4checker`, the axioms assertion, the bridge corpus) and
-   picks its tier: `slow`, whose scheduled failures already surface through
-   the scheduled-workflow health check (RUE-1507), or a new tier reserved
-   for experimental work that a scheduled lane runs and the health check
-   exempts. That tier choice is RUE-2241's decision, made when the cost of
-   a red run is known. Promotion to a merge-queue gate is a separate
-   decision this ADR names but does not make; it needs a track record from
-   the scheduled tier first.
+   full core dynamics for by-value programs (every Phase C slice: structs,
+   paths, enums, arrays, declared-linear destructure, the leaf and float
+   inventory, calls, loops, drop order, no-double-free) and (b) an
+   independent review (decision 7, checkpoint C, RUE-2251) confirms the
+   proof is established. The mechanism is the test-tier system, read
+   correctly: `premerge` and `slow` are both pre-merge selectors (`slow` is
+   the oracle-diff corpus lane), `stress` runs in the nightly release sweep,
+   that sweep runs `//...` and so reaches every tier not excluded by label,
+   and `scripts/rue test` runs premerge plus slow. Before the gate there is
+   no test target, only the build target of decision 1. At the gate,
+   RUE-2241 wraps that target in a test (`lake build`, `leanchecker`, the
+   axioms assertion, the bridge corpus) and picks its tier: `stress`, riding
+   the nightly sweep, or a new experimental tier with its own scheduled lane
+   and `--exclude` labels in the sweep and in `test.sh`. The
+   scheduled-workflow health check blocks a merge only for a schedule that
+   has never succeeded (RUE-1507), so a new lane's first two runs are the
+   exposure and an ordinary red run is a warning either way. That choice is
+   RUE-2241's, made with the measured fetch cost in hand. Promotion to a
+   merge-queue gate is a separate decision this ADR names but does not
+   make.
 
 6. **Explainability is a tenet, not a follow-up.** Formal work only its
    author can read is not verified in any useful sense, and the bus-factor
@@ -182,9 +191,10 @@ across many sessions and several agents.
    faithfulness against the surface language, and scope claims against the
    code, with a maintainer as the human of record. The implementers are
    Claude models, so the reviewers are Steve's Codex agents (`agent:codex`).
-   Each checkpoint is a Linear issue (RUE-2249 through RUE-2252) that blocks
-   the next phase's start and closes when the review is delivered and its
-   findings are filed, not when they are fixed. Rationale: RUE-305's
+   Each checkpoint is a Linear issue (RUE-2249 through RUE-2252) that gates
+   the work its brief covers, as the Phases list records, and closes when
+   the review is delivered and its findings are filed, not when they are
+   fixed. Rationale: RUE-305's
    discipline needs an independent reader for the fourth view, and
    same-family review shares blind spots.
 
@@ -209,13 +219,13 @@ start. A random core-program generator (RUE-2229) follows.
 - The runtime core only. Comptime evaluation and monomorphization remain an
   elaboration layer outside the theorems (RUE-206; §9 item 1 of the
   calculus).
-- Raw pointers and `unchecked` code stay outside the core. Buffers are
-  modeled through the §6.13 container defining equations with the §6.13.5
-  library obligations as explicit, assumed interfaces (§9 item 2); a
-  semantic proof of the obligations themselves is a later, separate
-  decision.
-- Loans are second-class and never escape a call (§9 item 3). Phase D
-  begins with the maintainer confirming this and §9 item 2.
+- Raw pointers and `unchecked` code stay outside the core, buffers are
+  modeled through the §6.13 container equations with the §6.13.5 library
+  obligations as explicit assumed interfaces, and loans are second-class
+  and never escape a call. These are the calculus's §9 items 2 and 3,
+  assumed here and ratified by a maintainer under RUE-2283 before Phase D
+  starts; item 5 (sign-only NaN) is assumed the same way by the leaf
+  inventory. A semantic proof of the obligations is a later decision.
 - No Mathlib, no `native_decide`, no `Classical.choice`. The trust report
   asserts the axiom set is `propext` and `Quot.sound` only, plus declared
   obligation interfaces once they exist.
@@ -230,13 +240,14 @@ Tracked as milestones of the "Formal core mechanization" Linear project.
       RUE-2249 (review checkpoint A gates Phase C)
 - [ ] **Phase B: Bridge at fragment scope** - RUE-2227, RUE-2228, RUE-2229,
       RUE-2250 (checkpoint B gates CI)
-- [ ] **Phase C: Grow the fragment** - RUE-2230 through RUE-2237, RUE-2251
-      (checkpoint C is the "established proof" gate)
-- [ ] **Phase D: Loans and the store** - RUE-2238, RUE-2239, RUE-2240,
-      RUE-2252 (checkpoint D gates the metatheory)
+- [ ] **Phase C: Grow the fragment** - RUE-2230 through RUE-2237, RUE-2282,
+      RUE-2251 (checkpoint C is the "established proof" gate)
+- [ ] **Phase D: Loans and the store** - RUE-2283 (the §9 rulings),
+      RUE-2238, RUE-2239, RUE-2240, RUE-2252 (checkpoint D gates the
+      metatheory)
 - [ ] **Cross-cutting: Explainability** - RUE-2245, RUE-2246, RUE-2247
 - [ ] **Phase E: Institutionalize** - RUE-207 (`03-metatheory.md` filled;
-      this ADR becomes `implemented`), RUE-2241 (scheduled CI tier)
+      this ADR becomes `implemented`), RUE-2241 (CI test target and tier)
 
 ## Consequences
 
@@ -247,8 +258,9 @@ Tracked as milestones of the "Formal core mechanization" Linear project.
   cross-rule invariant bug that produced RUE-387, RUE-1591, RUE-1614, and
   RUE-1615 is checked by construction as the fragment grows.
 - Drift between the four views becomes a red bridge run rather than a
-  latent divergence, and disagreement reports name the pair, so the
-  RUE-305 rule is applied mechanically rather than by recollection.
+  latent divergence, in CI once the tier exists and at every checkpoint
+  before that, and disagreement reports name the pair, so the RUE-305 rule
+  is applied mechanically rather than by recollection.
 - The theorem form matches the oracle's shape, so the Lean model doubles as
   a second executable semantics and the existing RUE-50 harness gains a
   third participant without a new architecture.
@@ -263,14 +275,17 @@ Tracked as milestones of the "Formal core mechanization" Linear project.
   syntax-directed rules, the spike's pattern); extension is checker-first,
   so `check` grows cheaply and `check_sound` follows mechanically; rubric
   step 6 makes "file the gap" an honest exit, so the obligation is tracked
-  rather than blocking.
-- A third hermetic toolchain distribution in the Buck graph, and the
-  largest by file count. Because its extracted tree stays out of the CAS,
-  every lane with a fresh `buck-out` whose graph reaches the Lean target
-  fetches and extracts it from the origin. Accepted because only lanes
-  that request the target pay: before the gate none do, and after it only
-  the scheduled tier does. The pin validator is the price of keeping
-  `lean-toolchain` and the Buck archive in agreement.
+  rather than blocking. The Phase C slices are independent in meaning, not
+  in files: all extend one inductive and one induction, so they serialize
+  on the package and the second to land re-proves.
+- A third hermetic toolchain distribution in the Buck graph, the largest
+  by bytes. Because its extracted tree stays out of the CAS, every lane
+  with a fresh `buck-out` whose graph reaches the Lean target fetches about
+  570 MB and extracts 2.7 GB, more than twice RUE-2003's measured cost for
+  all current distributions combined. Accepted because only lanes that
+  request the target pay: before the gate none do, and after it only the
+  lane RUE-2241 picks does. The pin validator and the rule's zstd path are
+  the price.
 - Reviewer capacity. Four checkpoints, each a real review by a maintainer's
   agent fleet. Accepted because the alternative, same-family self-review of
   theorem statements, is the failure mode this ADR exists to avoid.
@@ -288,11 +303,13 @@ Tracked as milestones of the "Formal core mechanization" Linear project.
 - **Merge-queue gate.** Named in decision 5, deliberately not decided. The
   question returns when the scheduled tier has a track record and the
   proof-maintenance cost is measured rather than estimated.
-- **Which tier at the gate.** `slow` reuses existing scheduling and
-  monitoring but lets a red Lean run turn required CI red through the
-  health check; a dedicated experimental tier costs a tier-vocabulary
-  change and a health-check exemption. RUE-2241 decides with the measured
-  fetch and build cost in hand.
+- **Which tier at the gate.** `stress` rides the nightly `//...` sweep,
+  which has no owner and is often red, so a Lean failure there is easy to
+  miss; a dedicated experimental tier costs a tier-vocabulary change, a
+  scheduled lane, and exclusion labels, and meets the health check only in
+  its first two runs. RUE-2241 decides with the measured cost in hand.
+- **§9 items 2, 3, and 5.** Assumed by the mechanization, ratified under
+  RUE-2283; this ADR's `implemented` status is contingent on them.
 - **Obligation proofs.** Whether to prove the §6.13.5 library obligations
   semantically, and with what logic, is deferred to Phase D's end.
 - **Reviewer rotation.** Decision 7 names Codex because that is the
