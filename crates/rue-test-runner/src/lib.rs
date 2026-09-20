@@ -2861,25 +2861,40 @@ struct StructuredDiagnostic {
     helps: Vec<String>,
 }
 
-fn parse_json_error_codes(stderr: &str) -> Result<Vec<String>, String> {
-    let mut codes = Vec::new();
+/// One error-severity diagnostic of the `--error-format json` surface, in the
+/// two fields a consumer reports: the code it cites and what it says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JsonErrorDiagnostic {
+    pub code: String,
+    pub message: String,
+}
+
+/// Read the canonical JSON diagnostic stream (docs/process/diagnostics.md).
+///
+/// This is the one reader of that versioned surface: it fails closed on a line
+/// that is not a batch of the documented shape, on an empty batch, on an empty
+/// `message`, and on a severity outside `error`/`warning`, so schema drift
+/// stops a consumer rather than silently emptying its results. Warnings carry
+/// no code and are skipped.
+pub fn parse_json_error_diagnostics(stderr: &str) -> Result<Vec<JsonErrorDiagnostic>, String> {
+    let mut diagnostics = Vec::new();
     for (line_index, line) in stderr.lines().enumerate() {
         if line.is_empty() {
             continue;
         }
-        let diagnostics: Vec<StructuredDiagnostic> = serde_json::from_str(line).map_err(|error| {
+        let batch: Vec<StructuredDiagnostic> = serde_json::from_str(line).map_err(|error| {
             format!(
                 "diagnostic line {} does not match the canonical JSON diagnostic schema: {error}",
                 line_index + 1
             )
         })?;
-        if diagnostics.is_empty() {
+        if batch.is_empty() {
             return Err(format!(
                 "diagnostic line {} is an empty JSON batch",
                 line_index + 1
             ));
         }
-        for (diagnostic_index, diagnostic) in diagnostics.into_iter().enumerate() {
+        for (diagnostic_index, diagnostic) in batch.into_iter().enumerate() {
             if diagnostic.message.is_empty() {
                 return Err(format!(
                     "diagnostic {} on line {} has an empty `message`",
@@ -2888,7 +2903,10 @@ fn parse_json_error_codes(stderr: &str) -> Result<Vec<String>, String> {
                 ));
             }
             match diagnostic.severity.as_str() {
-                "error" => codes.push(diagnostic.code),
+                "error" => diagnostics.push(JsonErrorDiagnostic {
+                    code: diagnostic.code,
+                    message: diagnostic.message,
+                }),
                 "warning" => {}
                 other => {
                     return Err(format!(
@@ -2900,7 +2918,16 @@ fn parse_json_error_codes(stderr: &str) -> Result<Vec<String>, String> {
             }
         }
     }
-    Ok(codes)
+    Ok(diagnostics)
+}
+
+/// The error codes of [`parse_json_error_diagnostics`], for callers that only
+/// assert on codes.
+pub fn parse_json_error_codes(stderr: &str) -> Result<Vec<String>, String> {
+    Ok(parse_json_error_diagnostics(stderr)?
+        .into_iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect())
 }
 
 /// Run a single test case.
@@ -5041,6 +5068,21 @@ params = [
         assert!(parse_json_error_codes(r#"[{"code":206,"severity":"error"}]"#).is_err());
         assert!(parse_json_error_codes(r#"[{"code":"E0206","severity":"error"}]"#).is_err());
         assert!(parse_json_error_codes("not json").is_err());
+    }
+
+    #[test]
+    fn test_json_error_diagnostics_carry_messages_through_the_same_parser() {
+        let batch = r#"[{"code":"","helps":[],"message":"unused function 'f'","notes":[],"severity":"warning","spans":[],"suggestions":[]},{"code":"E0406","helps":[],"message":"linear value must be consumed","notes":[],"severity":"error","spans":[],"suggestions":[]}]"#;
+        assert_eq!(
+            parse_json_error_diagnostics(batch).unwrap(),
+            vec![JsonErrorDiagnostic {
+                code: "E0406".to_string(),
+                message: "linear value must be consumed".to_string(),
+            }]
+        );
+        // The codes view is the same parse, so it fails closed identically.
+        assert!(parse_json_error_diagnostics("not json").is_err());
+        assert!(parse_json_error_diagnostics("[]").is_err());
     }
 
     #[test]
