@@ -87,7 +87,12 @@ CorpusRules = collections.namedtuple(
 # rendered a different link under the Zola port than under gazette, which the
 # semantic oracle rejected. The Zola port now follows the production shortcode
 # as Hugo's does, so that page's link moves.
-PEER_PORT_REVISION = 4
+#
+# It advances to 5 with RUE-2293. The new blog excerpt reaches a truncation
+# boundary where Hugo's word-aware truncate differs from Tera's character
+# limit. The landing-page port now cuts at the same character count as Gazette
+# and Zola before appending the ellipsis; the oracle remains unchanged.
+PEER_PORT_REVISION = 5
 
 # What the PEERS render, and nothing gazette reads. Inside the comparison
 # identity alone.
