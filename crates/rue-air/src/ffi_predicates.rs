@@ -164,6 +164,10 @@ pub trait FfiTypePool {
     }
     /// The element type of a fixed-size array.
     fn ffi_array_element(&self, id: ArrayTypeId) -> Type;
+    /// The declared length of a fixed-size array. The layout predicates need
+    /// it because a zero-length array has no elements to disagree about,
+    /// whatever its element type would say on its own.
+    fn ffi_array_len(&self, id: ArrayTypeId) -> u64;
 }
 
 /// Whether a scalar type kind is a C-compatible scalar (integer widths, `bool`,
@@ -395,7 +399,7 @@ mod tests {
     #[derive(Default)]
     struct MockPool {
         structs: AHashMap<u32, MockStruct>,
-        arrays: AHashMap<u32, Type>,
+        arrays: AHashMap<u32, (Type, u64)>,
     }
 
     #[derive(Default, Clone)]
@@ -412,7 +416,10 @@ mod tests {
             Type::new_struct(StructId::from_pool_index(id))
         }
         fn add_array(&mut self, id: u32, element: Type) -> Type {
-            self.arrays.insert(id, element);
+            self.add_array_len(id, element, 4)
+        }
+        fn add_array_len(&mut self, id: u32, element: Type, len: u64) -> Type {
+            self.arrays.insert(id, (element, len));
             Type::new_array(ArrayTypeId::from_pool_index(id))
         }
     }
@@ -431,7 +438,10 @@ mod tests {
             self.structs[&id.0].fields.clone()
         }
         fn ffi_array_element(&self, id: ArrayTypeId) -> Type {
-            self.arrays[&id.0]
+            self.arrays[&id.0].0
+        }
+        fn ffi_array_len(&self, id: ArrayTypeId) -> u64 {
+            self.arrays[&id.0].1
         }
     }
 

@@ -4513,6 +4513,9 @@ impl crate::ffi_predicates::FfiTypePool for TypeInternPool {
     fn ffi_array_element(&self, id: ArrayTypeId) -> Type {
         self.array_def(id).0
     }
+    fn ffi_array_len(&self, id: ArrayTypeId) -> u64 {
+        self.array_def(id).1
+    }
 }
 
 impl crate::ffi_predicates::FfiTypePool for FrozenTypeInternPool {
@@ -4537,6 +4540,9 @@ impl crate::ffi_predicates::FfiTypePool for FrozenTypeInternPool {
     }
     fn ffi_array_element(&self, id: ArrayTypeId) -> Type {
         self.array_def(id).0
+    }
+    fn ffi_array_len(&self, id: ArrayTypeId) -> u64 {
+        self.array_def(id).1
     }
 }
 
