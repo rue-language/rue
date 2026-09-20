@@ -35,7 +35,10 @@
 //! - **By-ref (`inout`/`borrow`) call arguments** rooted at a `Load` or
 //!   `PlaceRead` of the local, on either call form (`Call`/`AccessorCall`):
 //!   those pass the slot's ADDRESS to the callee, which may write through it,
-//!   and the by-ref lowering requires the argument to stay a place anyway.
+//!   and the by-ref lowering requires the argument to stay a place anyway. A
+//!   by-ref argument whose root this scan cannot resolve to a specific slot
+//!   disqualifies every local, matching
+//!   [`classify_never_written_params`].
 //! - **Address-taken slots** (`@raw`/`@raw_mut`/`@field_ptr`, recorded by
 //!   CfgBuilder): codegen lowers those intrinsics by taking the operand's
 //!   address, so a rewritten `Load` would make the forwarded value be
@@ -47,6 +50,16 @@
 //!   same slot may return ownership to the caller on one path and be dropped
 //!   in the callee on another, so a slot-wide disqualification would be too
 //!   coarse. Constopt and forwarding consult the per-value marker instead.
+//!
+//! Writes through a pointer — an `@ptr_write`/`@byte_copy`/`@byte_set`
+//! intrinsic, a destructor body, a `PlaceWrite` through an indirect or
+//! accessor-yielded base — need no arm of their own, and that is a property of
+//! the list above rather than an accident: a pointer aimed at a local can only
+//! be produced by an address-taking intrinsic rooted at it or by handing the
+//! slot to a callee by reference, and both already disqualify the slot. (The
+//! block-local Rule 2 table in [`super::forward`] keeps those barriers anyway,
+//! as a backstop against a future escape channel; a whole-function
+//! classification cannot afford the same hammer.)
 //!
 //! ## Loop-scoped invariance
 //!
@@ -356,12 +369,24 @@ pub(super) fn classify_slot_writes(cfg: &Cfg, reachable: Option<&BitSet>) -> Vec
                             CfgInstData::Load { slot } => {
                                 record_write(&mut slot_writes, *slot, None);
                             }
-                            CfgInstData::PlaceRead { place } => {
-                                if let PlaceBase::Local(slot) = place.base {
+                            CfgInstData::PlaceRead { place } => match place.base {
+                                PlaceBase::Local(slot) => {
                                     record_write(&mut slot_writes, slot, None);
                                 }
-                            }
-                            _ => {}
+                                // A parameter root hands over a parameter
+                                // slot's address, which cannot alias a local.
+                                PlaceBase::Param(_) => {}
+                                PlaceBase::Accessor(_) | PlaceBase::Indirect(_) => {
+                                    slot_writes.fill(SlotWrites::Disqualified);
+                                }
+                            },
+                            // A by-ref root this scan cannot resolve to a
+                            // specific slot: the address handed over may be
+                            // any local's, so disqualify every one. This is
+                            // the same fail-closed rule
+                            // `classify_never_written_params` applies to
+                            // parameters (RUE-2262).
+                            _ => slot_writes.fill(SlotWrites::Disqualified),
                         }
                     }
                 }

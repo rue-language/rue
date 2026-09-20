@@ -1974,8 +1974,14 @@ impl CfgSpliceState {
             .enumerate()
             .map(|(position, atom)| (atom.identity.clone(), position))
             .collect();
+        // The reverse map keys only machine symbols this program DEFINES. A
+        // foreign one is defined outside it, so several source declarations
+        // may name it (spec 9.3:5) and it is deliberately absent here.
         let mut source_by_machine = std::collections::BTreeMap::new();
         for (source, machine) in record.codegen.symbol_mappings.iter() {
+            if record.codegen.foreign_symbols.contains_key(machine) {
+                continue;
+            }
             if let Some(previous) = source_by_machine.insert(machine.clone(), source.clone())
                 && previous != *source
             {
@@ -2045,10 +2051,28 @@ impl SpliceCalleeOutcome {
     }
 }
 
+/// Merge the callee's source-to-machine symbol map into the caller's.
+///
+/// Two rules hold the merged map together. A source symbol names exactly one
+/// machine symbol, always. A machine symbol is *emitted* by exactly one source
+/// symbol — otherwise two definitions would collide in the object file.
+///
+/// The second rule applies only to machine symbols the program defines. A
+/// foreign one is defined outside it, and spec 9.3:5 lets several modules
+/// declare the same foreign symbol; each `extern "C"` block mints its own
+/// source symbol for it, so the declarations legitimately share one machine
+/// symbol and nothing emits it (RUE-2271 — inlining across two such modules
+/// raised a `ConflictingMachineSymbol` ICE at `-O3`). Those symbols are
+/// therefore exempt from the second rule, but only while both sides agree on
+/// the classification: a callee's foreign declaration of a machine symbol the
+/// caller *defines* is a real collision and still fails. `source_by_machine`
+/// keys defined machine symbols only, which is what makes that test exact.
 fn plan_codegen_symbol_mappings(
     current: &std::collections::BTreeMap<String, String>,
     source_by_machine: &std::collections::BTreeMap<String, String>,
     imported: &std::collections::BTreeMap<String, String>,
+    current_foreign: &std::collections::BTreeMap<String, rue_target::CallingConvention>,
+    imported_foreign: &std::collections::BTreeMap<String, rue_target::CallingConvention>,
 ) -> Result<Vec<(String, String)>, SpliceCalleeFailure> {
     let mut additions = Vec::new();
     let mut added_source_by_machine = std::collections::BTreeMap::<&str, &str>::new();
@@ -2058,15 +2082,28 @@ fn plan_codegen_symbol_mappings(
         {
             return Err(SpliceCalleeFailure::ConflictingSourceSymbol);
         }
-        if let Some(previous) = source_by_machine.get(machine)
-            && previous != source
-        {
-            return Err(SpliceCalleeFailure::ConflictingMachineSymbol);
-        }
-        if let Some(previous) = added_source_by_machine.insert(machine, source)
-            && previous != source
-        {
-            return Err(SpliceCalleeFailure::ConflictingMachineSymbol);
+        let imported_convention = imported_foreign.get(machine);
+        let shared_foreign_symbol = imported_convention.is_some()
+            && match current_foreign.get(machine) {
+                // Both sides declare it foreign: the classifications must
+                // agree, or the two declarations do not describe one symbol.
+                Some(convention) => Some(convention) == imported_convention,
+                // The caller does not know it as foreign. If it maps a source
+                // symbol onto it, that symbol defines it and the callee's
+                // declaration collides with the definition.
+                None => !source_by_machine.contains_key(machine),
+            };
+        if !shared_foreign_symbol {
+            if let Some(previous) = source_by_machine.get(machine)
+                && previous != source
+            {
+                return Err(SpliceCalleeFailure::ConflictingMachineSymbol);
+            }
+            if let Some(previous) = added_source_by_machine.insert(machine, source)
+                && previous != source
+            {
+                return Err(SpliceCalleeFailure::ConflictingMachineSymbol);
+            }
         }
         if !current.contains_key(source) {
             additions.push((source.clone(), machine.clone()));
@@ -2246,6 +2283,8 @@ fn splice_callee(
         &state.symbol_mappings,
         &state.source_by_machine,
         &callee.codegen.symbol_mappings,
+        &state.foreign_symbols,
+        &callee.codegen.foreign_symbols,
     )?;
     let foreign_additions = callee
         .codegen
@@ -2324,9 +2363,15 @@ fn splice_callee(
         state.local_atoms.push(atom);
     }
     for (source, machine) in mapping_additions {
-        state
-            .source_by_machine
-            .insert(machine.clone(), source.clone());
+        // A foreign machine symbol is defined outside the program and stays
+        // out of the reverse map, which keys defined symbols only (RUE-2271).
+        if !state.foreign_symbols.contains_key(&machine)
+            && !callee.codegen.foreign_symbols.contains_key(&machine)
+        {
+            state
+                .source_by_machine
+                .insert(machine.clone(), source.clone());
+        }
         state.symbol_mappings.insert(source, machine);
     }
     state.foreign_symbols.extend(foreign_additions);
@@ -4171,11 +4216,14 @@ mod accessor_graph_tests {
             std::collections::BTreeMap::from([("source".to_owned(), "machine".to_owned())]);
         let reverse =
             std::collections::BTreeMap::from([("machine".to_owned(), "source".to_owned())]);
+        let no_foreign = std::collections::BTreeMap::new();
         assert!(matches!(
             plan_codegen_symbol_mappings(
                 &current,
                 &reverse,
                 &std::collections::BTreeMap::from([("source".to_owned(), "other".to_owned(),)]),
+                &no_foreign,
+                &no_foreign,
             ),
             Err(SpliceCalleeFailure::ConflictingSourceSymbol)
         ));
@@ -4184,10 +4232,70 @@ mod accessor_graph_tests {
             ("other".to_owned(), "machine".to_owned()),
         ]);
         assert!(matches!(
-            plan_codegen_symbol_mappings(&current, &reverse, &imported),
+            plan_codegen_symbol_mappings(&current, &reverse, &imported, &no_foreign, &no_foreign),
             Err(SpliceCalleeFailure::ConflictingMachineSymbol)
         ));
         assert_eq!(current.len(), 1);
+    }
+
+    #[test]
+    fn codegen_mapping_merge_shares_one_foreign_machine_symbol() {
+        // RUE-2271: spec 9.3:5 lets several modules declare the same foreign
+        // symbol, and each `extern "C"` block mints its own source symbol for
+        // it. Nothing emits a foreign symbol, so the two declarations may
+        // share one machine symbol; inlining one module into the other used to
+        // read that as a machine-symbol collision and ICE at -O3.
+        let current =
+            std::collections::BTreeMap::from([("root::dup_add".to_owned(), "dup_add".to_owned())]);
+        // A foreign machine symbol is not keyed in the reverse map, which
+        // names only the symbols this program defines.
+        let reverse = std::collections::BTreeMap::new();
+        let foreign = std::collections::BTreeMap::from([(
+            "dup_add".to_owned(),
+            rue_target::CallingConvention::X86_64SysV,
+        )]);
+        let imported = std::collections::BTreeMap::from([(
+            "module::dup_add".to_owned(),
+            "dup_add".to_owned(),
+        )]);
+        assert_eq!(
+            plan_codegen_symbol_mappings(&current, &reverse, &imported, &foreign, &foreign)
+                .unwrap(),
+            vec![("module::dup_add".to_owned(), "dup_add".to_owned())]
+        );
+
+        // A foreign declaration of a machine symbol the caller DEFINES is a
+        // real collision and still fails.
+        let defining_reverse =
+            std::collections::BTreeMap::from([("dup_add".to_owned(), "root::dup_add".to_owned())]);
+        let no_foreign = std::collections::BTreeMap::new();
+        assert!(matches!(
+            plan_codegen_symbol_mappings(
+                &current,
+                &defining_reverse,
+                &imported,
+                &no_foreign,
+                &foreign,
+            ),
+            Err(SpliceCalleeFailure::ConflictingMachineSymbol)
+        ));
+
+        // Two foreign declarations that disagree on the calling convention do
+        // not describe one symbol, so the exemption does not apply.
+        let other_convention = std::collections::BTreeMap::from([(
+            "dup_add".to_owned(),
+            rue_target::CallingConvention::Rue,
+        )]);
+        assert!(matches!(
+            plan_codegen_symbol_mappings(
+                &current,
+                &defining_reverse,
+                &imported,
+                &other_convention,
+                &foreign,
+            ),
+            Err(SpliceCalleeFailure::ConflictingMachineSymbol)
+        ));
     }
 
     fn chain(size: usize) -> std::collections::BTreeMap<usize, Vec<usize>> {

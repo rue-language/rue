@@ -32,9 +32,10 @@
 //!   unrolling need on its own: hoisting a `may_trap` op into a zero-trip
 //!   preheader would manufacture a trap or fault out of thin air.
 //! - [`has_observable_side_effect`]: the instruction is visible beyond its
-//!   result value — `Call`, `Intrinsic`, `Alloc`, `Store`, `ParamStore`,
-//!   `PlaceWrite`, `Drop`, `StorageLive`/`StorageDead`. This is the axis DCE
-//!   needs to keep an op live even when its result is unused.
+//!   result value — every call form (`Call`, `CallIndirect`, `AccessorCall`),
+//!   `Intrinsic`, `Alloc`, `Store`, `ParamStore`, `PlaceWrite`, `Drop`,
+//!   `StorageLive`/`StorageDead`. This is the axis DCE needs to keep an op
+//!   live even when its result is unused.
 //! - [`materializes_owned_value`]: the instruction's result type carries drop
 //!   glue, so the value it produces owns resources and the CFG owes it exactly
 //!   one `Drop` per materialization. This is the axis CSE and LICM need: a pass
@@ -114,17 +115,25 @@ pub(crate) fn may_trap(cfg: &Cfg, value: CfgValue) -> bool {
 
 /// Returns `true` if `value` has an effect observable beyond its result value.
 ///
-/// These are the ops DCE must keep live even when their result is unused:
-/// `Call`, `Intrinsic`, `Alloc`, `Store`, `ParamStore`, `PlaceWrite`, `Drop`,
-/// and `StorageLive`/`StorageDead`. This axis is independent of [`may_trap`]:
-/// none of these are counted here for their trap potential (a `Call` may of
-/// course trap, but it is kept live for its effect, and it is not part of the
-/// `may_trap` speculation set because it is never a hoist candidate anyway).
+/// These are the ops DCE must keep live even when their result is unused: every
+/// call form (`Call`, `CallIndirect`, `AccessorCall`), `Intrinsic`, `Alloc`,
+/// `Store`, `ParamStore`, `PlaceWrite`, `Drop`, and
+/// `StorageLive`/`StorageDead`. This axis is independent of [`may_trap`]: none
+/// of these are counted here for their trap potential (a call may of course
+/// trap, but it is kept live for its effect, and no call form is part of the
+/// `may_trap` speculation set because this axis already keeps every one of them
+/// out of the hoist candidates).
 pub(crate) fn has_observable_side_effect(cfg: &Cfg, value: CfgValue) -> bool {
     match &cfg.get_inst(value).data {
-        // Function and intrinsic calls can have arbitrary effects.
+        // Function and intrinsic calls can have arbitrary effects. An
+        // `AccessorCall` is a call like any other here: production pipelines
+        // splice every accessor before `optimize()` runs, but the classifier
+        // answers for the graph it is given, and an un-spliced accessor call
+        // that DCE deleted or LICM hoisted would drop or duplicate the
+        // callee's effects (RUE-2264).
         CfgInstData::Call { .. }
         | CfgInstData::CallIndirect { .. }
+        | CfgInstData::AccessorCall { .. }
         | CfgInstData::Intrinsic { .. } => true,
 
         // Memory writes.
@@ -392,6 +401,7 @@ mod tests {
         let interner = ThreadedRodeo::new();
         let name = interner.get_or_intern("f");
         let args = cfg.push_call_args(std::iter::empty()).unwrap();
+        let accessor_args = cfg.push_call_args(std::iter::empty()).unwrap();
         let condition = add(&mut cfg, CfgInstData::BoolConst(true), Type::BOOL);
         let iargs = cfg.push_intrinsic_args([condition]).unwrap();
 
@@ -436,6 +446,14 @@ mod tests {
                 },
                 Type::UNIT,
             ),
+            add(
+                &mut cfg,
+                CfgInstData::AccessorCall {
+                    name,
+                    args: accessor_args,
+                },
+                Type::UNIT,
+            ),
             add(&mut cfg, CfgInstData::Drop { value: v }, Type::UNIT),
             add(
                 &mut cfg,
@@ -465,6 +483,52 @@ mod tests {
                 "effecting ops must NOT be speculatable"
             );
         }
+    }
+
+    #[test]
+    fn accessor_calls_are_observable_like_any_other_call() {
+        // RUE-2264: `AccessorCall` was absent from both matches, so
+        // `is_speculatable` answered true for it. Production pipelines splice
+        // accessors before `optimize()` runs, but the classifier answers for
+        // the graph it is handed, and DCE (`has_side_effects`) and LICM
+        // (`is_hoist_candidate`) both read this answer directly — deleting or
+        // hoisting an un-spliced accessor call would drop or duplicate the
+        // callee's effects.
+        let mut cfg = make_cfg();
+        let interner = ThreadedRodeo::new();
+        let name = interner.get_or_intern("Vec.at");
+        let accessor_args = cfg.push_call_args(std::iter::empty()).unwrap();
+        let accessor = add(
+            &mut cfg,
+            CfgInstData::AccessorCall {
+                name,
+                args: accessor_args,
+            },
+            Type::I32,
+        );
+        let direct_args = cfg.push_call_args(std::iter::empty()).unwrap();
+        let direct = add(
+            &mut cfg,
+            CfgInstData::Call {
+                runtime: None,
+                name,
+                args: direct_args,
+            },
+            Type::I32,
+        );
+
+        assert!(has_observable_side_effect(&cfg, accessor));
+        assert!(!is_speculatable(&cfg, accessor));
+        // The two call forms agree on every axis the classifier names.
+        assert_eq!(
+            has_observable_side_effect(&cfg, accessor),
+            has_observable_side_effect(&cfg, direct)
+        );
+        assert_eq!(may_trap(&cfg, accessor), may_trap(&cfg, direct));
+        assert_eq!(
+            is_speculatable(&cfg, accessor),
+            is_speculatable(&cfg, direct)
+        );
     }
 
     // --- The pure-and-speculatable set: bitwise, shifts, comparisons,
