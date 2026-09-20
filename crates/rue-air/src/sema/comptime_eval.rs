@@ -1259,7 +1259,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 Some(true) => return Err(self.require_droppable_error(ty, span)),
                 Some(false) => return Ok(()),
                 None => {
-                    self.defer_ownership_gate(DeferredRequirementKind::RequireDroppable, ty, span);
+                    self.defer_ownership_gate(DeferredRequirementKind::Droppable, ty, span);
                     return Ok(());
                 }
             }
@@ -1275,7 +1275,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             "@require_transferable",
             span,
         )?;
-        self.defer_ownership_gate(DeferredRequirementKind::RequireTransferable, ty, span);
+        self.defer_ownership_gate(DeferredRequirementKind::Transferable, ty, span);
         Ok(())
     }
 
@@ -1360,7 +1360,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 Some(false) => return Ok(()),
                 None => {
                     self.defer_ownership_gate(
-                        DeferredRequirementKind::RequireTriviallyDroppable,
+                        DeferredRequirementKind::TriviallyDroppable,
                         ty,
                         span,
                     );

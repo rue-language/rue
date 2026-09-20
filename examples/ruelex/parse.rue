@@ -195,6 +195,9 @@ pub struct Parser {
             self.parse_return()
         } else if t.kind == token.YIELD {
             self.parse_yield()
+        } else if t.kind == token.AT && self.directives_before(token.STRUCT) {
+            let directives = self.parse_directives();
+            self.parse_anon_struct_type(true, directives)
         } else if t.kind == token.AT {
             self.parse_intrinsic()
         } else if t.kind == token.MINUS || t.kind == token.BANG || t.kind == token.TILDE {
@@ -203,7 +206,7 @@ pub struct Parser {
             let end = self.arena.at(inner).end;
             self.add(ast.UNARY, op.kind, op.start, end, inner, 0, 0)
         } else if t.kind == token.STRUCT {
-            self.parse_anon_struct_type(true)
+            self.parse_anon_struct_type(true, 0)
         } else if t.kind == token.ENUM {
             self.parse_anon_enum_type()
         } else {
@@ -520,7 +523,7 @@ pub struct Parser {
         let mut stmts: u64 = 0;
         let mut tail: u64 = 0;
         while !self.at(token.RBRACE) && !self.eof() {
-            if self.at(token.LET) || self.directives_before_let() {
+            if self.at(token.LET) || self.directives_before(token.LET) {
                 let directives = self.parse_directives();
                 let s = self.parse_let(directives);
                 stmts = self.append(stmts, s);
@@ -561,7 +564,7 @@ pub struct Parser {
     // Directives and intrinsics share the same `@ IDENT (...)` prefix. Scan
     // without producing diagnostics so an expression statement such as
     // `@dbg(f(i));` is not damaged by speculative directive parsing.
-    fn directives_before_let(borrow self) -> bool {
+    fn directives_before(borrow self, following: u64) -> bool {
         if !self.at(token.AT) { return false; }
         let mut p = self.pos;
         loop {
@@ -570,15 +573,18 @@ pub struct Parser {
             if self.kind_at(p) != token.IDENT { return false; }
             p += 1;
             if self.kind_at(p) == token.LPAREN {
+                let mut depth: u64 = 1;
                 p += 1;
-                while self.kind_at(p) != token.RPAREN && self.kind_at(p) != token.EOF {
+                while depth != 0 {
+                    let kind = self.kind_at(p);
+                    if kind == token.EOF { return false; }
+                    if kind == token.LPAREN { depth += 1; }
+                    else if kind == token.RPAREN { depth -= 1; }
                     p += 1;
                 }
-                if self.kind_at(p) != token.RPAREN { return false; }
-                p += 1;
             }
         }
-        self.kind_at(p) == token.LET
+        self.kind_at(p) == following
     }
 
     fn parse_let(inout self, directives: u64) -> u64 {
@@ -644,7 +650,7 @@ pub struct Parser {
             let inner = self.parse_type();
             return self.add(ast.PTR_TYPE, mode, start, self.arena.at(inner).end, inner, 0, 0);
         }
-        if t.kind == token.STRUCT { return self.parse_anon_struct_type(false); }
+        if t.kind == token.STRUCT { return self.parse_anon_struct_type(false, 0); }
         if t.kind == token.ENUM { return self.parse_anon_enum_type(); }
         if t.kind == token.FN { return self.parse_fn_type(); }
         let name = self.expect(token.IDENT);
@@ -712,8 +718,10 @@ pub struct Parser {
             let mut args: u64 = 0;
             if self.eat(token.LPAREN) {
                 while !self.at(token.RPAREN) && !self.eof() {
-                    let a = self.expect(token.IDENT);
-                    args = self.append(args, self.add(ast.IDENT, a.value, a.start, a.end, 0, 0, 0));
+                    let string = self.at(token.STRING);
+                    let a = if string { self.bump() } else { self.expect(token.IDENT) };
+                    let kind = if string { ast.STRING } else { ast.IDENT };
+                    args = self.append(args, self.add(kind, a.value, a.start, a.end, 0, 0, 0));
                     if !self.eat(token.COMMA) { break; }
                 }
                 let _ = self.expect(token.RPAREN);
@@ -871,7 +879,7 @@ pub struct Parser {
         self.add(ast.CONFORMANCE, 0, start, close.end, subject, interfaces, 0)
     }
 
-    fn parse_anon_struct_type(inout self, with_methods: bool) -> u64 {
+    fn parse_anon_struct_type(inout self, with_methods: bool, directives: u64) -> u64 {
         let start = self.expect(token.STRUCT).start;
         let _ = self.expect(token.LBRACE);
         let mut members: u64 = 0;
@@ -890,7 +898,7 @@ pub struct Parser {
             }
         }
         let close = self.expect(token.RBRACE);
-        self.add(ast.ANON_STRUCT_TYPE, 0, start, close.end, members, 0, 0)
+        self.add(ast.ANON_STRUCT_TYPE, 0, start, close.end, members, directives, 0)
     }
 
     fn parse_anon_enum_type(inout self) -> u64 {

@@ -324,7 +324,7 @@ impl InterfaceDecl {
         self.requirements
             .iter()
             .filter_map(|requirement| match requirement {
-                InterfaceRequirement::Method(signature) => Some(signature),
+                InterfaceRequirement::Method(signature) => Some(signature.as_ref()),
                 InterfaceRequirement::AssocType(_) => None,
             })
     }
@@ -344,7 +344,7 @@ impl InterfaceDecl {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InterfaceRequirement {
     /// A bodiless method or associated-function signature.
-    Method(MethodSig),
+    Method(Box<MethodSig>),
     /// A type-valued associated constant requirement `const Name: type;`.
     AssocType(AssocTypeRequirement),
 }

@@ -553,7 +553,7 @@ impl Parser {
                     return Err(());
                 }
                 self.expect(TokenKind::Semi)?;
-                Ok(InterfaceRequirement::Method(MethodSig {
+                Ok(InterfaceRequirement::Method(Box::new(MethodSig {
                     directives: head.directives,
                     name: head.name,
                     receiver: head.receiver,
@@ -561,7 +561,7 @@ impl Parser {
                     return_type: head.return_type,
                     place_return: head.place_return,
                     span: self.span_from(start),
-                }))
+                })))
             }
             _ => {
                 self.unexpected("'const' or 'fn' or '}'");
