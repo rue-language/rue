@@ -33,6 +33,51 @@ The two pins are held equal by `scripts/validate-lean-toolchain-pin.py`. The
 Buck target is build-only and carries no test tier: nothing in CI runs it
 until ADR-0097's gate is met (RUE-2241).
 
+## The bridge corpus (ADR-0097, RUE-2227)
+
+`lake exe ruecore-corpus` (or the `corpus.json` output of `scripts/rue lean`)
+prints every corpus case as JSON: the fragment program printed as a complete
+Rue module, the verified checker's verdict, and the interpreter's outcome.
+`crates/rue-oracle-diff` consumes it (RUE-2228) and runs the compiler, the
+oracle, and the native binary on each source. Any pairwise disagreement is a
+defect in one of the four views (RUE-305).
+
+One case, abbreviated:
+
+```json
+{
+  "name": "affine_scope_drop",
+  "description": "An affine resource silently dropped at scope exit; ...",
+  "rules": ["(Let) §5.6", "endscope §6.7"],
+  "source": "// Case: affine_scope_drop\n// ...\nfn main() -> i32 { ... }\n",
+  "verdict": {"accept": {"type": "i64"}},
+  "expected": {"kind": "ok", "stdout": ["7", "1"], "exit": 0}
+}
+```
+
+`verdict` is `{"accept": {"type": T}}` or `{"reject": {}}`. `expected` is
+`ok` with the stdout lines the native binary must print (one line per drop
+event in trace order, then the program's value) and exit 0; `panic` with
+`overflow` or `divZero` (the trap ends the process before the value prints,
+so only the trap kind is compared; the compiler's runtime reports these as
+`error: integer overflow` / `error: division by zero` with exit status 101);
+or, for a rejected program, `stuck` with the refusal the machine would
+reach, which the bridge cannot observe because the compiler rejects the
+program first (the compiler's diagnostics for the seed cases: E0406 linear
+leak, E0205 use after move, E0443 join, E0493 linear overwrite, E0478
+linear discard).
+
+How a drop event becomes a printed line is decided per multiplicity class
+by the spec's destructor rules; `RueCore/Print.lean`'s module docstring is
+the reference. In short: a copy value has no destructor and no events; an
+affine resource's destructor prints its payload while a `live` flag holds,
+and `consume` disarms the husk first; a linear resource cannot carry a
+destructor (3.9:34 would forbid the projection `consume` needs), so its
+only observable event, an explicit `@drop`, is printed as
+`@dbg(consume_linear(x))`. Every printed program opens with a comment naming
+its case, its rules, and its expected outcome in words, so `corpus.json`
+doubles as a readable example set.
+
 ## How to read this, with no Lean
 
 - **A judgment is an inductive type.** The calculus writes
@@ -69,6 +114,8 @@ until ADR-0097's gate is met (RUE-2241).
 | `RueCore/Soundness.lean` | value typing, the store–Σ agreement invariant `Matches`, **the safety theorem** and per-§7-bullet corollaries | §7 |
 | `RueCore/Checker.lean` | decidable checker `check` + `check_sound` (every acceptance is a derivation) | §5 as an algorithm |
 | `RueCore/Examples.lean` | `#eval` demos; kernel-checked acceptance/rejection of example programs | — |
+| `RueCore/Print.lean` | core syntax → Rue source, and the observation channel (one printed line per drop event, per multiplicity class) | §2 elaboration inventory, 3.9 |
+| `RueCore/Corpus.lean` | the bridge corpus: each case's checker verdict and interpreter outcome, exported as JSON (`lake exe ruecore-corpus`) | §5, §6, §7 witnesses |
 
 The fragment: scalars + an abstract resource type `res κ` carrying its
 multiplicity class; use (copy/move), `@drop`, `let` scope exit with the

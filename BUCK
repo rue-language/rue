@@ -776,6 +776,7 @@ lean_package(
     srcs = "//docs:formal-lean",
     toolchain = "toolchains//:lean-distribution",
     module = "RueCore",
+    corpus_exe = "ruecore-corpus",
     trust = [
         "RueCore.soundness",
         "RueCore.no_use_after_move",

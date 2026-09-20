@@ -90,6 +90,22 @@ example : check [] linearLeaked = none := by rfl
 example : check [] useAfterMove = none := by rfl
 example : check [] linearHalfConsumed = none := by rfl
 
+/-!
+## Refusals and traps, kernel-checked
+
+In interpreter form a violation is a positive result, so `soundness` is only
+as strong as `eval`'s refusal enumeration. These witnesses pin each refusal
+and trap the fragment can reach to a program that reaches it, checked by the
+kernel rather than observed by `#eval` (ADR-0097; the bridge cannot observe
+refusals, because the compiler rejects those programs first).
+-/
+
+example : eval [] [] linearLeaked = .stuck .linearLeak := by rfl
+example : eval [] [] useAfterMove = .stuck .useAfterMove := by rfl
+example : eval [] [] linearHalfConsumed = .stuck .linearLeak := by rfl
+example : eval [] [] overflow = .panic .overflow := by rfl
+example : eval [] [] divZero = .panic .divZero := by rfl
+
 #eval check [] scalars
 #eval check [] linearLeaked
 

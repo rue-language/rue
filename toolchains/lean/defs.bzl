@@ -75,6 +75,8 @@ def _lean_package_impl(ctx: AnalysisContext) -> list[Provider]:
         ],
     )
     allowed = " ".join(ctx.attrs.allowed_axioms)
+    corpus_exe = ctx.attrs.corpus_exe or ""
+
     script = ctx.actions.write(
         "lean-package.sh",
         [
@@ -94,6 +96,14 @@ def _lean_package_impl(ctx: AnalysisContext) -> list[Provider]:
             'lake build "$module" > "$out/build.log" 2>&1',
             'lake env lean Trust.lean > "$out/axioms.txt" 2>&1',
             'lake env leanchecker "$module" > "$out/leanchecker.txt" 2>&1',
+            # The bridge corpus (RUE-2227), when the package declares an
+            # exporter: built and run here so `corpus.json` is a Buck
+            # artifact the rue-oracle-diff consumer can take by $(location).
+            'corpus_exe="$6"',
+            'if [ -n "$corpus_exe" ]; then',
+            '  lake build "$corpus_exe" >> "$out/build.log" 2>&1',
+            '  lake exe "$corpus_exe" > "$out/corpus.json"',
+            'fi',
             # Every `#print axioms` line reads `'<theorem>' depends on axioms: [a, b]`
             # (or `does not depend on any axioms`); reject any axiom outside the
             # allowed set.
@@ -125,6 +135,7 @@ def _lean_package_impl(ctx: AnalysisContext) -> list[Provider]:
             trust,
             output.as_output(),
             ctx.attrs.module,
+            corpus_exe,
         ),
         category = "lean_package",
         identifier = ctx.label.name,
@@ -141,6 +152,11 @@ lean_package = rule(
             attrs.string(),
             default = ["propext", "Quot.sound"],
             doc = "Axioms the `trust` theorems may depend on; anything else fails the build.",
+        ),
+        "corpus_exe": attrs.option(
+            attrs.string(),
+            default = None,
+            doc = "A `lean_exe` of the package whose stdout is written to `corpus.json`.",
         ),
         "module": attrs.string(doc = "Root module `lake build` and `leanchecker` are given."),
         "srcs": attrs.dep(doc = "The Lake package directory (a dict-form filegroup)."),
