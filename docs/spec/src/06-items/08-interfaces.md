@@ -277,7 +277,13 @@ a fresh opaque skolem, written `T.Element` in diagnostics. It is a move type
 (3.8), exposes no fields, and has no
 operators (4.2, 4.3): a body may only move, borrow, and drop values of `T`, call
 its requirements, and pass `T` where a bound its own bound covers is
-required.
+required. Applying a built-in operator to an operand whose type is, or
+structurally contains, an opaque skolem **MUST** be rejected; for the
+equality operators `==` and `!=`, whose structural rule (4.3:3) would
+otherwise recurse through the skolem, the diagnostic is E0308 and names the
+operator and the operand type. Conformance to an interface that requires a
+comparison supplies that comparison as a named requirement, not as an
+operator.
 
 The skolem's internal representation supplies no source-visible layout or
 ownership guarantees beyond these operations. Source-level `@size_of`,

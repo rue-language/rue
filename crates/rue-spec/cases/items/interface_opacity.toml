@@ -158,3 +158,63 @@ struct Id is Equatable {
 fn main() -> i32 { 0 }
 """
 exit_code = 0
+
+[[case]]
+name = "equality_on_an_opaque_bounded_value_is_rejected"
+spec = ["6.8:19", "6.8:20", "6.8:22"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn same(comptime T: Show, borrow x: T, borrow y: T) -> bool { x == y }
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E0308", "operator `==`", "opaque bounded type `T`"]
+
+[[case]]
+name = "inequality_on_an_opaque_bounded_value_is_rejected"
+spec = ["6.8:19", "6.8:20", "6.8:22"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn differ(comptime T: Show, borrow x: T, borrow y: T) -> bool { x != y }
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E0308", "operator `!=`", "opaque bounded type `T`"]
+
+[[case]]
+name = "equality_on_an_aggregate_of_opaque_bounded_values_is_rejected"
+spec = ["6.8:19", "6.8:20", "6.8:22"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+fn same(comptime T: Show, x: T, y: T) -> bool {
+    let a: [T; 2] = [x, y];
+    let b: [T; 2] = [a[0], a[1]];
+    a == b
+}
+fn main() {}
+"""
+compile_fail = true
+error_contains = ["E0308", "operator `==`", "[T; 2]"]
+
+[[case]]
+name = "concrete_struct_equality_is_unaffected"
+spec = ["6.8:19", "6.8:20"]
+preview = "interfaces"
+preview_should_pass = true
+source = """
+interface Show { fn show(borrow self) -> i64; }
+struct Val is Show { n: i64, fn show(borrow self) -> i64 { self.n } }
+fn render(comptime T: Show, borrow x: T) -> i64 { x.show() }
+fn main() -> i32 {
+    let a = Val { n: 4 };
+    let b = Val { n: 4 };
+    if a == b { @intCast(render(Val, borrow a)) } else { 0 }
+}
+"""
+exit_code = 4
