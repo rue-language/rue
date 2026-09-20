@@ -54,6 +54,16 @@ different path for both `install` and the wrapper. A hand-written
 `.buckconfig.local` (see `.buckconfig.local.example`) is left alone and still
 makes the wrapper default to `--prefer-local`.
 
+For a cache-free command, set `RUE_NO_REMOTE_CACHE=1`. For `build`, `test`,
+`run`, and `install`, the wrapper skips lazy provisioning and passes both
+`--local-only` and `--no-remote-cache`, even when `.buckconfig.local` already
+exists. The first flag prevents remote execution; the second prevents remote
+cache reads and writes. Arguments after Buck's `--` separator remain program
+arguments. Explicit execution preferences (`--prefer-local`,
+`--prefer-remote`, or `--remote-only`), `--write-to-cache-anyway`, and
+`--upload-all-actions` are rejected in this mode. `audit` and other read-only
+queries do not provision a config under the opt-out.
+
 ## Host-wide disk lifecycle
 
 Every worktree has its own `buck-out`; a large primary checkout and many smaller

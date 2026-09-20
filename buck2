@@ -9,17 +9,40 @@ execution_command=0
 audit_command=0
 explicit_preference=0
 remote_cache_disabled=0
+cache_optout=0
+optout_conflict=""
+has_local_only=0
+has_no_remote_cache=0
+if [[ "${RUE_NO_REMOTE_CACHE:-}" == 1 ]]; then
+    cache_optout=1
+    remote_cache_disabled=1
+fi
 if [[ "${#args[@]}" -gt 0 ]]; then
     for arg in "${args[@]}"; do
         [[ "$arg" == "--" ]] && break
         case "$arg" in
             build|test|run|install) execution_command=1 ;;
             audit) audit_command=1 ;;
-            --prefer-local|--prefer-remote|--remote-only) explicit_preference=1 ;;
-            --local-only) explicit_preference=1; remote_cache_disabled=1 ;;
-            --no-remote-cache) remote_cache_disabled=1 ;;
+            --prefer-local|--prefer-remote|--remote-only)
+                explicit_preference=1
+                if [[ "$cache_optout" -eq 1 && -z "$optout_conflict" ]]; then
+                    optout_conflict="$arg"
+                fi
+                ;;
+            --local-only) explicit_preference=1; remote_cache_disabled=1; has_local_only=1 ;;
+            --no-remote-cache) remote_cache_disabled=1; has_no_remote_cache=1 ;;
+            --write-to-cache-anyway|--upload-all-actions)
+                if [[ "$cache_optout" -eq 1 && -z "$optout_conflict" ]]; then
+                    optout_conflict="$arg"
+                fi
+                ;;
         esac
     done
+fi
+
+if [[ "$cache_optout" -eq 1 && "$execution_command" -eq 1 && -n "$optout_conflict" ]]; then
+    echo "error: RUE_NO_REMOTE_CACHE=1 conflicts with $optout_conflict; remove the flag or unset RUE_NO_REMOTE_CACHE" >&2
+    exit 2
 fi
 
 # Starting another disk-heavy command near ENOSPC is unsafe, but nothing this
@@ -58,8 +81,9 @@ fi
 # settings: a --config-file leaves `buck2 status` at digest_algorithms null
 # (SHA1, which BuildBuddy's CAS rejects) and the daemon with no RE engine
 # address, while a changed .buckconfig.local restarts the daemon with both
-# applied. RUE_NO_REMOTE_CACHE=1 skips the link for one command
-# (scripts/check-reproducible-compiler.sh). Any existing .buckconfig.local,
+# applied. RUE_NO_REMOTE_CACHE=1 skips the link and forces --local-only plus
+# --no-remote-cache for one execution command (scripts/check-reproducible-
+# compiler.sh). Any existing .buckconfig.local,
 # symlink or file, belongs to the user and is left alone, and a config another
 # account can read is refused with a warning rather than linked; neither ever
 # blocks a local build.
@@ -84,29 +108,44 @@ if [[ "$execution_command" -eq 1 || "$audit_command" -eq 1 ]] && [[ "${RUE_NO_RE
 fi
 
 # The remote-cache execution platform must set remote_enabled for OSS Buck2 to
-# connect to the action cache. Its limited-hybrid default otherwise prefers
-# remote execution, which Rue cannot rely on until RUE-320 fixes remote linking.
-# Force cache lookup followed by local execution unless the caller explicitly
+# connect to the action cache. Its hybrid default prefers remote execution, so
+# force cache lookup followed by local execution unless the caller explicitly
 # selected an execution mode. This runs after the link step so the first build
-# in a new worktree gets the preference too.
+# in a new worktree gets the preference too. Full remote execution is supported
+# by the pinned platform and remains an explicit choice.
 uses_remote_cache=0
 if [[ -r "$local_config" ]] &&
    grep -Eq '^[[:space:]]*execution_platforms[[:space:]]*=[[:space:]]*root//platforms:remote_cache([[:space:]]|$)' "$local_config"; then
     uses_remote_cache=1
 fi
 
-if [[ "$uses_remote_cache" -eq 1 ]] && [[ "$execution_command" -eq 1 ]] && [[ "$explicit_preference" -eq 0 ]]; then
+# RUE_NO_REMOTE_CACHE is a per-command cache-free mode. Skipping lazy config
+# provisioning alone is insufficient when a worktree already has a central or
+# hand-written .buckconfig.local: Buck would still read that config and could
+# contact the RE service. Force local execution and disable remote cache reads
+# and writes, while preserving every argument after Buck's `--` separator.
+wrapper_flags=()
+if [[ "$cache_optout" -eq 1 ]] && [[ "$execution_command" -eq 1 ]]; then
+    [[ "$has_local_only" -eq 1 ]] || wrapper_flags+=(--local-only)
+    [[ "$has_no_remote_cache" -eq 1 ]] || wrapper_flags+=(--no-remote-cache)
+elif [[ "$uses_remote_cache" -eq 1 ]] && [[ "$execution_command" -eq 1 ]] && [[ "$explicit_preference" -eq 0 ]]; then
+    wrapper_flags+=(--prefer-local)
+fi
+
+if [[ "${#wrapper_flags[@]}" -gt 0 ]]; then
     original_args=("${args[@]}")
     args=()
     inserted=0
     for arg in "${original_args[@]}"; do
         if [[ "$arg" == "--" ]] && [[ "$inserted" -eq 0 ]]; then
-            args+=(--prefer-local)
+            args+=("${wrapper_flags[@]}")
             inserted=1
         fi
         args+=("$arg")
     done
-    [[ "$inserted" -eq 1 ]] || args+=(--prefer-local)
+    if [[ "$inserted" -eq 0 ]]; then
+        args+=("${wrapper_flags[@]}")
+    fi
 fi
 
 # BuildBuddy sometimes terminates a BatchReadBlobs response mid-stream while
