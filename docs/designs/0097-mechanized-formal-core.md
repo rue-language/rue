@@ -21,14 +21,16 @@ Proposal, filed under RUE-1882. Acceptance ratifies the seven decisions in
 this record lands separately under RUE-2226 once this ADR is accepted, and
 the project that grows it is tracked in Linear as "Formal core mechanization"
 (RUE-1882 is its first issue). This ADR reaches `implemented` when
-`docs/formal/03-metatheory.md` cites a kernel-checked theorem for every
-§7 bullet of the core calculus (RUE-207).
+the metatheory document the calculus plans (`03-metatheory.md`, next to
+`docs/formal/01-core-calculus.md`) cites a kernel-checked theorem for every
+§7 bullet (RUE-207).
 
 ## Summary
 
 `docs/formal/01-core-calculus.md` §7 states seven memory-safety theorems and
-promises a `03-metatheory.md` that proves them. A spike (2026-08-28,
-`docs/notes/lean-mechanization-spike.md`) mechanized a fragment of the
+promises a `03-metatheory.md` that proves them. A spike (2026-08-28; its note,
+`lean-mechanization-spike.md`, lands under `docs/notes/` with RUE-2226)
+mechanized a fragment of the
 calculus in Lean 4 and proved the fragment's slice of §7 with zero `sorry`
 and no dependencies beyond core Lean. This ADR adopts that artifact as a
 **fourth view** of the language beside the prose, the core, and the compiler;
@@ -273,8 +275,8 @@ Tracked as milestones of the "Formal core mechanization" Linear project.
 
 ## References
 
-- `docs/notes/lean-mechanization-spike.md`: the spike's findings, per-§7
-  assessment, and original milestone ladder (lands with RUE-2226).
+- `lean-mechanization-spike.md` under `docs/notes/` (lands with RUE-2226):
+  the spike's findings, per-§7 assessment, and original milestone ladder.
 - `docs/formal/README.md`: the three views and the extension rubric this
   ADR extends; `docs/formal/01-core-calculus.md` §7 and §9.
 - RUE-305 (authority rule), RUE-50 (differential oracle), RUE-207
