@@ -184,6 +184,33 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ))
     }
 
+    /// Refuse a built-in operator whose operand type is, or structurally
+    /// contains, an opaque bounded type parameter (spec 6.8:20).
+    ///
+    /// Structural equality accepts any struct-, array-, or enum-kinded
+    /// operand and recurses to scalar leaves (4.3:3). A skolem is a fieldless
+    /// nominal struct, so that recursion would answer `==` for a type whose
+    /// bound requires no comparison at all. Concrete types are unaffected: a
+    /// skolem exists only while a bounded body is checked against its bound
+    /// (spec 6.8:19), so every instantiation keeps ordinary struct equality.
+    pub(super) fn reject_opaque_bounded_operator(
+        &mut self,
+        ty: Type,
+        op: &str,
+        span: Span,
+    ) -> CompileResult<()> {
+        if !self.type_contains_skolem(ty) {
+            return Ok(());
+        }
+        Err(CompileError::new(
+            ErrorKind::OpaqueBoundedOperator {
+                op: op.to_string(),
+                ty: self.format_type_name(ty),
+            },
+            span,
+        ))
+    }
+
     /// Lower one comparison over two already-analyzed operands.
     ///
     /// This is the single comparison lowering. `==`/`!=`/`<`/… reach it from
@@ -203,6 +230,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
+        if let Some(op) = match comparison {
+            AirInstData::Eq(..) => Some("=="),
+            AirInstData::Ne(..) => Some("!="),
+            _ => None,
+        } {
+            self.reject_opaque_bounded_operator(lhs.ty, op, span)?;
+        }
         if matches!(comparison, AirInstData::Eq(..) | AirInstData::Ne(..))
             && let Some(result) =
                 self.try_prepare_aggregate_equality(air, &comparison, lhs, rhs, span, ctx)?

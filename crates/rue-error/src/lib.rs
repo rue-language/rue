@@ -844,7 +844,7 @@ define_error_codes! {
     /// band rather than with its E04xx duplicate-definition siblings because
     /// that band is at its ceiling (E0499).
     DUPLICATE_TEST_DEFINITION = 262;
-    // E0300-E0307 form the interface block (spec 6.8, `--preview interfaces`).
+    // E0300-E0309 form the interface block (spec 6.8, `--preview interfaces`).
     /// A conformance assertion, refinement list, or bound names an interface
     /// that does not exist in scope (spec 6.8:18).
     INTERFACE_NOT_FOUND = 300 => {
@@ -931,6 +931,32 @@ define_error_codes! {
             ErrorCodeExample { title: "Compatible shared requirement", source: "interface Sized { fn len(borrow self) -> u64; }\ninterface Counted { fn len(borrow self) -> u64; }\nfn measure(comptime T: Sized + Counted, borrow x: T) -> u64 { x.len() }\nfn main() {}", outcome: ErrorCodeExampleOutcome::Compiles, preview: ["interfaces"] },
         ],
         references: [ErrorCodeReference { title: "Bound consistency", path: "docs/spec/src/06-items/08-interfaces.md", rule: Some("6.8:21") }],
+    };
+    /// A bounded body applies a built-in operator to a value of its opaque
+    /// bounded type parameter (spec 6.8:20).
+    OPAQUE_BOUNDED_OPERATOR = 308 => {
+        explanation: "A bounded comptime type parameter is opaque inside its own function body: it has exactly the members its bound requires and none of the built-in operators of chapters 4.2 and 4.3. Equality is not a universal operation, so `==` and `!=` are unavailable on a value whose type is, or contains, such a parameter.",
+        likely_cause: "The body compares two values of its bounded parameter with `==` or `!=`. Require the comparison in the bound as a named method, such as `fn equals(borrow self, borrow other: Self) -> bool`, and call that instead.",
+        examples: [
+            ErrorCodeExample { title: "Equality on an opaque bounded type", source: "interface Show { fn show(borrow self) -> i64; }
+fn same(comptime T: Show, borrow x: T, borrow y: T) -> bool { x == y }
+fn main() {}", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: ["interfaces"] },
+            ErrorCodeExample { title: "Require the comparison", source: "interface Equatable { fn equals(borrow self, borrow other: Self) -> bool; }\nfn same(comptime T: Equatable, borrow x: T, borrow y: T) -> bool { x.equals(borrow y) }\nfn main() {}", outcome: ErrorCodeExampleOutcome::Compiles, preview: ["interfaces"] },
+        ],
+        references: [ErrorCodeReference { title: "Opaque bounded bodies", path: "docs/spec/src/06-items/08-interfaces.md", rule: Some("6.8:20") }],
+    };
+    /// A bounded body takes the address of, or reads through a pointer to, a
+    /// value of its opaque bounded type parameter (spec 6.8:20).
+    OPAQUE_BOUNDED_ADDRESS = 309 => {
+        explanation: "A bounded comptime type parameter supplies no source-visible layout inside its own function body. Taking a raw pointer to such a value, or offsetting and dereferencing one, would recover the size and field placement the parameter does not expose, so those intrinsics are unavailable.",
+        likely_cause: "The body applies `@raw`, `@raw_mut`, `@field_ptr`, `@ptr_offset`, `@ptr_read`, or `@ptr_write` to a value of its bounded parameter. Move, borrow, and drop the value, or call a requirement of its bound, instead of addressing it.",
+        examples: [
+            ErrorCodeExample { title: "Raw pointer to an opaque bounded value", source: "interface Show { fn show(borrow self) -> i64; }
+fn addr(comptime T: Show, x: T) -> ptr const T { checked { @raw(x) } }
+fn main() {}", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: ["interfaces"] },
+            ErrorCodeExample { title: "Use the value without addressing it", source: "interface Show { fn show(borrow self) -> i64; }\nfn read(comptime T: Show, borrow x: T) -> i64 { x.show() }\nfn main() {}", outcome: ErrorCodeExampleOutcome::Compiles, preview: ["interfaces"] },
+        ],
+        references: [ErrorCodeReference { title: "Opaque bounded bodies", path: "docs/spec/src/06-items/08-interfaces.md", rule: Some("6.8:20") }],
     };
 
     // ========================================================================
@@ -3845,7 +3871,7 @@ pub enum ErrorKind {
     AccessorRecursion { method: String },
 
     // ========================================================================
-    // Interface errors (E0300-E0307, spec 6.8, `--preview interfaces`)
+    // Interface errors (E0300-E0309, spec 6.8, `--preview interfaces`)
     // ========================================================================
     /// A conformance assertion, refinement list, or bound names an unknown
     /// interface.
@@ -3892,6 +3918,16 @@ pub enum ErrorKind {
     /// member of that name (spec 6.8:21).
     #[error("conflicting requirements `{member}` in bound `{bound}`")]
     ConflictingBoundRequirements { member: String, bound: String },
+    /// A bounded body applies a built-in operator to a value whose type is,
+    /// or contains, its opaque bounded type parameter. The skolem has the
+    /// members of its bound and no operators (spec 6.8:20).
+    #[error("operator `{op}` is not available on opaque bounded type `{ty}`")]
+    OpaqueBoundedOperator { op: String, ty: String },
+    /// A bounded body takes the address of, or reads through a pointer to, a
+    /// value whose type is, or contains, its opaque bounded type parameter.
+    /// The skolem supplies no source-visible layout (spec 6.8:20).
+    #[error("`{intrinsic}` is not available on opaque bounded type `{ty}`")]
+    OpaqueBoundedAddress { intrinsic: String, ty: String },
     /// Cannot move `self` out of a destructor body (RUE-139). The compiler
     /// drops a value by running its destructor and THEN dropping its fields;
     /// moving `self` to a new owner (a call argument, another binding, ...)
@@ -4531,7 +4567,7 @@ impl ErrorKind {
             }
             ErrorKind::AccessorRecursion { .. } => ErrorCode::ACCESSOR_RECURSION,
 
-            // Interface errors (E0300-E0307)
+            // Interface errors (E0300-E0309)
             ErrorKind::InterfaceNotFound { .. } => ErrorCode::INTERFACE_NOT_FOUND,
             ErrorKind::DuplicateInterfaceRequirement { .. } => {
                 ErrorCode::DUPLICATE_INTERFACE_REQUIREMENT
@@ -4546,6 +4582,8 @@ impl ErrorKind {
             ErrorKind::ConflictingBoundRequirements { .. } => {
                 ErrorCode::CONFLICTING_BOUND_REQUIREMENTS
             }
+            ErrorKind::OpaqueBoundedOperator { .. } => ErrorCode::OPAQUE_BOUNDED_OPERATOR,
+            ErrorKind::OpaqueBoundedAddress { .. } => ErrorCode::OPAQUE_BOUNDED_ADDRESS,
             ErrorKind::InoutKeywordMissing => ErrorCode::INOUT_KEYWORD_MISSING,
             ErrorKind::BorrowKeywordMissing => ErrorCode::BORROW_KEYWORD_MISSING,
             ErrorKind::UnexpectedCallArgumentMode { .. } => {
@@ -6431,9 +6469,9 @@ mod tests {
 
     #[test]
     fn test_interface_error_codes() {
-        // Spec 6.8: the interface diagnostics occupy E0300-E0307 in the
+        // Spec 6.8: the interface diagnostics occupy E0300-E0309 in the
         // semantic band, immediately after the borrow-accessor block.
-        let cases: [(ErrorKind, ErrorCode, &str); 8] = [
+        let cases: [(ErrorKind, ErrorCode, &str); 10] = [
             (
                 ErrorKind::InterfaceNotFound {
                     name: "Equatable".into(),
@@ -6501,6 +6539,22 @@ mod tests {
                 ErrorCode::CONFLICTING_BOUND_REQUIREMENTS,
                 "E0307",
             ),
+            (
+                ErrorKind::OpaqueBoundedOperator {
+                    op: "==".into(),
+                    ty: "T".into(),
+                },
+                ErrorCode::OPAQUE_BOUNDED_OPERATOR,
+                "E0308",
+            ),
+            (
+                ErrorKind::OpaqueBoundedAddress {
+                    intrinsic: "@raw".into(),
+                    ty: "T".into(),
+                },
+                ErrorCode::OPAQUE_BOUNDED_ADDRESS,
+                "E0309",
+            ),
         ];
         for (kind, code, rendered) in cases {
             assert_eq!(kind.code(), code);
@@ -6522,6 +6576,22 @@ mod tests {
             }))
             .to_string(),
             "type `Range` does not conform to `Sequence`: missing associated type `Element`"
+        );
+        assert_eq!(
+            ErrorKind::OpaqueBoundedOperator {
+                op: "==".into(),
+                ty: "T".into(),
+            }
+            .to_string(),
+            "operator `==` is not available on opaque bounded type `T`"
+        );
+        assert_eq!(
+            ErrorKind::OpaqueBoundedAddress {
+                intrinsic: "@raw".into(),
+                ty: "T".into(),
+            }
+            .to_string(),
+            "`@raw` is not available on opaque bounded type `T`"
         );
     }
 

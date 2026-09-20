@@ -1665,6 +1665,14 @@ impl RetainedCharge for rue_error::ErrorKind {
             | E::ConflictingBoundRequirements {
                 member: left,
                 bound: right,
+            }
+            | E::OpaqueBoundedOperator {
+                op: left,
+                ty: right,
+            }
+            | E::OpaqueBoundedAddress {
+                intrinsic: left,
+                ty: right,
             } => left
                 .retained_charge()
                 .saturating_add(right.retained_charge()),
