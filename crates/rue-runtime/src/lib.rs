@@ -118,6 +118,8 @@ use aarch64_macos as platform;
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 use aarch64_linux as platform;
 
+use rue_runtime_abi::{FailureReport, FailureSite};
+
 // Compile error for unsupported platforms
 #[cfg(not(any(
     all(target_arch = "x86_64", target_os = "linux"),
@@ -247,9 +249,6 @@ macro_rules! call_runtime_helper_implementation {
     };
     (__rue_test_complete($($argument:expr),*)) => {
         crate::test_channel::__rue_test_complete($($argument),*)
-    };
-    (__rue_test_failure_site($($argument:expr),*)) => {
-        crate::test_channel::__rue_test_failure_site($($argument),*)
     };
     (__rue_test_fail($($argument:expr),*)) => {
         crate::test_channel::__rue_test_fail($($argument),*)

@@ -26,7 +26,8 @@ use crate::declaration_validation::{
     accessor_yield_root_error,
 };
 use crate::inst::{
-    Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirPattern, AirPlaceBase, AirRef,
+    Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirPattern, AirPlaceBase, AirProjection,
+    AirRef,
 };
 use crate::scope::ScopedContext;
 use crate::types::{Type, TypeKind};
@@ -2563,18 +2564,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Build the test-body form of the `?` desugaring (ADR-0083 §1, spec 6.7).
     ///
     /// The success arm is the ordinary one. The failure arm reports and traps
-    /// instead of returning: it renders the error, stages the `?` site, and
-    /// calls the terminal failure helper, which writes one `unhandled_error`
+    /// instead of returning: it renders the error, constructs the caller-owned
+    /// `?` report, and calls the terminal failure helper, which writes one `unhandled_error`
     /// frame on the ADR-0083 §5.1 channel and aborts.
     ///
-    /// The two channel calls are a pair by ABI — a failure record is ten
-    /// arguments and every runtime helper is register-only — and the second
-    /// adopts whatever site the first staged, so nothing may run between them.
-    /// Everything the record carries is therefore materialized as a statement
-    /// *before* the site call: the rendered payload, the kind, and the message.
-    /// The payload is named twice, once as that statement and once as the
-    /// terminal call's argument, which is what puts the rendering before the
-    /// pair rather than inside it.
+    /// Everything the record carries is materialized before its borrow: the
+    /// rendered payload, the kind, and the message. This keeps evaluation
+    /// traps attached to their own source rather than a caller's report.
     #[allow(clippy::too_many_arguments)]
     fn build_test_try_desugar(
         &mut self,
@@ -2631,19 +2627,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
         };
 
-        let site = self.stage_failure_site(air, ctx, str_ty, span)?;
-
         let kind = self.synthesized_string(air, ctx, TEST_FAILURE_KIND, str_ty, span);
         let message = self.synthesized_string(air, ctx, TEST_FAILURE_MESSAGE, str_ty, span);
-        let report = self.runtime_channel_call(
+        let (descriptor, mut prefix) =
+            self.build_failure_report(air, ctx, kind, message, payload, str_ty, span)?;
+        let report = self.runtime_channel_borrow_call(
             air,
             crate::RuntimeCallKind::TestFail,
-            &[kind, message, payload],
+            &[descriptor],
             Type::NEVER,
             span,
         )?;
-        let fail_body =
-            air.add_block(&[payload, kind, message, site], report, Type::NEVER, span)?;
+        prefix.extend([payload, kind, message]);
+        let fail_body = air.add_block(&prefix, report, Type::NEVER, span)?;
 
         let air_arms = [
             (
@@ -2665,11 +2661,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(AnalysisResult::new(air_ref, success_payload_ty))
     }
 
-    /// Emit one ADR-0083 §5.1 failure-channel call by its manifest symbol.
-    ///
-    /// Shared with the comparison intrinsics (`@assert_eq`/`@assert_ne`,
-    /// ADR-0083 Phase 2.5), which report on the same channel.
-    pub(in crate::sema) fn runtime_channel_call(
+    pub(in crate::sema) fn runtime_channel_borrow_call(
         &mut self,
         air: &mut Air,
         runtime: crate::RuntimeCallKind,
@@ -2680,15 +2672,20 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let name = self.intern_body_symbol(runtime.helper().helper().symbol)?;
         let args = args
             .iter()
-            .map(|value| AirCallArg {
+            .enumerate()
+            .map(|(index, value)| AirCallArg {
                 value: *value,
-                mode: AirArgMode::Normal,
+                mode: if index == 0 {
+                    AirArgMode::Borrow
+                } else {
+                    AirArgMode::Normal
+                },
             })
             .collect::<Vec<_>>();
         Ok(air.add_call(Some(runtime), name, &args, ty, span)?)
     }
 
-    /// Stage the source location the next failure record will carry.
+    /// Build the caller-owned source-location words carried by a failure record.
     ///
     /// Every producer of an ADR-0083 §5.1 report that names a site reaches
     /// this: a test body's `?` failure arm, the assertion family, and — since
@@ -2696,31 +2693,30 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// panic helper. The bounds checks are not among them. Each is a bare
     /// condition with no call beside it — the slice check is a `BoundsCheck`
     /// intrinsic, the fixed-array check is lowered below AIR, and `s[i]`'s is
-    /// inside the runtime helper itself — and staging a site for any of them
+    /// inside the runtime helper itself — and building a site for any of them
     /// costs the passing path, so `__rue_bounds_check` states its class and
     /// leaves the location empty.
     ///
-    /// The staged site is consumed by whatever aborts next, so this call must
-    /// be the last thing before that terminal call: anything evaluated in
-    /// between could abort on a path that stages nothing and would then adopt
-    /// this site.
+    /// The words are materialized before the terminal call and borrowed for its
+    /// duration, so evaluation traps cannot observe another caller's state.
     ///
-    /// A site the host cannot resolve is staged as the empty file at 0:0 rather
-    /// than reported as a compile error: the ABI accepts an absent location,
+    /// A site the host cannot resolve is materialized as the empty file at 0:0
+    /// rather than reported as a compile error: the ABI accepts an absent location,
     /// and a report that cannot name its line is still a better failure than no
     /// report. The runner answers an empty location from the test declaration's
     /// header.
-    pub(in crate::sema) fn stage_failure_site(
+    pub(in crate::sema) fn build_failure_site(
         &mut self,
         air: &mut Air,
         ctx: &mut AnalysisContext,
         str_ty: Type,
         span: Span,
-    ) -> CompileResult<AirRef> {
+    ) -> CompileResult<(AirRef, Vec<AirRef>)> {
         let (path, line, column) = self
             .body_source_coordinate(span)
             .unwrap_or_else(|| (Arc::from(""), 0, 0));
         let file = self.synthesized_string(air, ctx, &path, str_ty, span);
+        let (file, mut prefix) = self.materialize_borrow_argument(air, file, str_ty, span, ctx)?;
         let line = air.add_inst(AirInst {
             data: AirInstData::Const(u64::from(line)),
             ty: Type::U32,
@@ -2731,13 +2727,177 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ty: Type::U32,
             span,
         });
-        self.runtime_channel_call(
+        let ptr = self.project_addressable_component(
             air,
-            crate::RuntimeCallKind::TestFailureSite,
-            &[file, line, column],
-            Type::UNIT,
+            file,
+            str_ty,
+            AirProjection::Field {
+                struct_id: str_ty.as_struct().expect("str is a synthetic struct"),
+                field_index: 0,
+            },
+            self.body_type_pool()
+                .struct_def(str_ty.as_struct().unwrap())
+                .fields[0]
+                .ty,
             span,
-        )
+        )?;
+        let len = self.project_addressable_component(
+            air,
+            file,
+            str_ty,
+            AirProjection::Field {
+                struct_id: str_ty.as_struct().unwrap(),
+                field_index: 1,
+            },
+            Type::U64,
+            span,
+        )?;
+        let ptr = air.add_intrinsic(
+            crate::IntrinsicOperation::PtrToInt,
+            self.known_symbols()
+                .intrinsic(rue_builtins::IntrinsicName::PtrToInt),
+            &[ptr],
+            Type::U64,
+            span,
+        )?;
+        let site_ty = Type::new_array(self.get_or_create_array_type(Type::U64, 3));
+        let line = air.add_inst(AirInst {
+            data: AirInstData::IntCast {
+                value: line,
+                from_ty: Type::U32,
+            },
+            ty: Type::U64,
+            span,
+        });
+        let shift = air.add_inst(AirInst {
+            data: AirInstData::Const(32),
+            ty: Type::U64,
+            span,
+        });
+        let line = air.add_inst(AirInst {
+            data: AirInstData::Shl(line, shift),
+            ty: Type::U64,
+            span,
+        });
+        let column = air.add_inst(AirInst {
+            data: AirInstData::IntCast {
+                value: column,
+                from_ty: Type::U32,
+            },
+            ty: Type::U64,
+            span,
+        });
+        let position = air.add_inst(AirInst {
+            data: AirInstData::BitOr(line, column),
+            ty: Type::U64,
+            span,
+        });
+        let site = air.add_array_init(&[ptr, len, position], site_ty, span)?;
+        let (site, site_prefix) =
+            self.materialize_borrow_argument(air, site, site_ty, span, ctx)?;
+        prefix.extend(site_prefix);
+        Ok((site, prefix))
+    }
+
+    /// Build the canonical nine-word caller-owned failure descriptor. The
+    /// descriptor is an ordinary fixed array in AIR; only its final call mode
+    /// is borrowed, so both cfg backends consume the same materialized layout.
+    pub(in crate::sema) fn build_failure_report(
+        &mut self,
+        air: &mut Air,
+        ctx: &mut AnalysisContext,
+        kind: AirRef,
+        first: AirRef,
+        second: AirRef,
+        str_ty: Type,
+        span: Span,
+    ) -> CompileResult<(AirRef, Vec<AirRef>)> {
+        let (site, mut prefix) = self.build_failure_site(air, ctx, str_ty, span)?;
+        let (kind, kind_prefix) = self.materialize_borrow_argument(air, kind, str_ty, span, ctx)?;
+        let (first, first_prefix) =
+            self.materialize_borrow_argument(air, first, str_ty, span, ctx)?;
+        let (second, second_prefix) =
+            self.materialize_borrow_argument(air, second, str_ty, span, ctx)?;
+        prefix.extend(kind_prefix);
+        prefix.extend(first_prefix);
+        prefix.extend(second_prefix);
+        let site_ty = air.get(site).ty;
+        let site_id = site_ty.as_array().expect("failure site is an array");
+        let (site_elem, _) = self.body_type_pool().array_def(site_id);
+        let index = |air: &mut Air, n| {
+            air.add_inst(AirInst {
+                data: AirInstData::Const(n),
+                ty: Type::U64,
+                span,
+            })
+        };
+        let project = |this: &mut Self, air: &mut Air, base, n| {
+            let index_ref = index(air, n);
+            this.project_addressable_component(
+                air,
+                base,
+                site_ty,
+                AirProjection::Index {
+                    array_type: site_ty,
+                    index: index_ref,
+                },
+                site_elem,
+                span,
+            )
+        };
+        let site_words = [
+            project(self, air, site, 0)?,
+            project(self, air, site, 1)?,
+            project(self, air, site, 2)?,
+        ];
+        let ptr_word = |this: &mut Self, air: &mut Air, value| -> CompileResult<AirRef> {
+            let ptr = this.project_addressable_component(
+                air,
+                value,
+                str_ty,
+                AirProjection::Field {
+                    struct_id: str_ty.as_struct().expect("str is a synthetic struct"),
+                    field_index: 0,
+                },
+                this.body_type_pool()
+                    .struct_def(str_ty.as_struct().unwrap())
+                    .fields[0]
+                    .ty,
+                span,
+            )?;
+            Ok(air.add_intrinsic(
+                crate::IntrinsicOperation::PtrToInt,
+                this.known_symbols()
+                    .intrinsic(rue_builtins::IntrinsicName::PtrToInt),
+                &[ptr],
+                Type::U64,
+                span,
+            )?)
+        };
+        let len_word = |this: &mut Self, air: &mut Air, value| {
+            this.project_addressable_component(
+                air,
+                value,
+                str_ty,
+                AirProjection::Field {
+                    struct_id: str_ty.as_struct().expect("str is a synthetic struct"),
+                    field_index: 1,
+                },
+                Type::U64,
+                span,
+            )
+        };
+        let mut words = Vec::with_capacity(9);
+        words.extend(site_words);
+        words.extend([ptr_word(self, air, kind)?, len_word(self, air, kind)?]);
+        words.extend([ptr_word(self, air, first)?, len_word(self, air, first)?]);
+        words.extend([ptr_word(self, air, second)?, len_word(self, air, second)?]);
+        let report_ty = Type::new_array(self.get_or_create_array_type(Type::U64, 9));
+        let report = air.add_array_init(&words, report_ty, span)?;
+        let (report, report_prefix) =
+            self.materialize_borrow_argument(air, report, report_ty, span, ctx)?;
+        prefix.extend(report_prefix);
+        Ok((report, prefix))
     }
 
     /// Materialize one compiler-authored `str` run in this body.

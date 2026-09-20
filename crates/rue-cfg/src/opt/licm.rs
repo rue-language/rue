@@ -1132,7 +1132,7 @@ mod tests {
             &mut s.cfg,
             s.body,
             CfgInstData::Intrinsic {
-                operation: rue_air::IntrinsicOperation::PanicNoMessage,
+                operation: rue_air::IntrinsicOperation::AssertFailed,
                 name: Spur::try_from_usize(0).unwrap(),
                 args,
             },

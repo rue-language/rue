@@ -5147,14 +5147,29 @@ mod tests {
             let mut args = Vec::new();
             for operand in operands {
                 let value = match operand {
-                    Operand::Diverge => fixture.inst(
-                        D::Intrinsic {
-                            operation: rue_air::IntrinsicOperation::PanicNoMessage,
-                            name: Arc::from("panic"),
-                            args: Arc::new([]),
-                        },
-                        ImportTy::Never,
-                    ),
+                    Operand::Diverge => {
+                        let word = fixture.inst(D::Const(0), ImportTy::U64);
+                        let site = fixture.inst(
+                            D::ArrayInit {
+                                elements: Arc::from([word, word, word]),
+                                shape: rue_air::ArrayInitShape::Elementwise,
+                            },
+                            ImportTy::Array {
+                                element: Arc::new(ImportTy::U64),
+                                len: 3,
+                            },
+                        );
+                        fixture.inst(
+                            D::RuntimeCall {
+                                runtime: rue_air::RuntimeCallKind::PanicNoMessage,
+                                args: Arc::from([SemanticBodyCallArg {
+                                    value: site,
+                                    mode: AirArgMode::Borrow,
+                                }]),
+                            },
+                            ImportTy::Never,
+                        )
+                    }
                     Operand::Value(ty) => fixture.inst(D::Const(0), ty),
                 };
                 args.push(SemanticBodyCallArg {

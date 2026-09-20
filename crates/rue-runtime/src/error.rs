@@ -33,7 +33,7 @@ pub(crate) fn allocation_failure() -> ! {
     msg[12] = b'y';
     // SAFETY: `msg` is live for the non-returning call and describes exactly
     // 13 initialized bytes.
-    unsafe { __rue_panic(msg.as_ptr(), msg.len() as u64) }
+    unsafe { __rue_panic(core::ptr::null(), msg.as_ptr(), msg.len() as u64) }
 }
 
 crate::define_runtime_implementation! {
@@ -82,8 +82,7 @@ crate::define_runtime_implementation! {
         msg[21] = b'r';
         msg[22] = b'o';
         msg[23] = b'\n';
-        platform::write_stderr(&msg);
-        platform::exit(101)
+        crate::test_channel::terminal_stderr(&msg)
     }
 }
 
@@ -133,8 +132,7 @@ crate::define_runtime_implementation! {
         msg[21] = b'o';
         msg[22] = b'w';
         msg[23] = b'\n';
-        platform::write_stderr(&msg);
-        platform::exit(101)
+        crate::test_channel::terminal_stderr(&msg)
     }
 }
 
@@ -188,8 +186,7 @@ crate::define_runtime_implementation! {
         msg[26] = b'o';
         msg[27] = b'w';
         msg[28] = b'\n';
-        platform::write_stderr(&msg);
-        platform::exit(101)
+        crate::test_channel::terminal_stderr(&msg)
     }
 }
 
@@ -207,9 +204,8 @@ crate::define_runtime_implementation! {
     /// 2. Writes `"error: index out of bounds\n"` to stderr (best-effort)
     /// 3. Exits with code 101
     ///
-    /// The record carries whatever site
-    /// [`crate::test_channel::__rue_test_failure_site`] staged (RUE-2019). No
-    /// route here stages one: the fixed-array check the compiler emits below
+    /// The record carries an absent site (RUE-2019). No
+    /// route here supplies one: the fixed-array check the compiler emits below
     /// AIR, the slice check semantic analysis emits as a `BoundsCheck`
     /// intrinsic, and the `s[i]` check inside
     /// [`crate::string::__rue_str_byte_at`] all reach this helper with nothing
@@ -262,8 +258,7 @@ crate::define_runtime_implementation! {
         msg[24] = b'd';
         msg[25] = b's';
         msg[26] = b'\n';
-        platform::write_stderr(&msg);
-        platform::exit(101)
+        crate::test_channel::terminal_stderr_after_gate(&msg)
     }
 }
 
@@ -313,8 +308,7 @@ crate::define_runtime_implementation! {
         msg[18] = b'-';
         msg[19] = b'8';
         msg[20] = b'\n';
-        platform::write_stderr(&msg);
-        platform::exit(101)
+        crate::test_channel::terminal_stderr(&msg)
     }
 }
 
@@ -349,7 +343,7 @@ crate::define_runtime_implementation! {
     ///
     /// Called by code generated for the `@panic("...")` intrinsic. Writes a
     /// `trap:panic` failure record on the ADR-0083 §5.1 channel carrying
-    /// whatever site [`crate::test_channel::__rue_test_failure_site`] staged,
+    /// the caller-owned site,
     /// then `"panic: "`, the user-supplied message bytes, and a trailing
     /// newline to stderr, then exits with code 101 (the same abort path as the
     /// other runtime traps: division by zero, overflow, bounds, cast overflow).
@@ -371,7 +365,9 @@ crate::define_runtime_implementation! {
     /// # ABI
     ///
     /// ```text
-    /// extern "C" fn __rue_panic(ptr: *const u8, len: u64) -> !
+    /// unsafe extern "C" fn __rue_panic(
+    ///     site: *const FailureSite, ptr: *const u8, len: u64,
+    /// ) -> !
     /// ```
     ///
     /// - `ptr` / `len` are the message string's fat-pointer fields (the `cap`
@@ -383,7 +379,11 @@ crate::define_runtime_implementation! {
     /// When `len > 0`, `ptr` must be non-null and point to `len` valid,
     /// initialized bytes that stay valid for the call. `ptr` may be null when
     /// `len == 0`.
-    pub unsafe extern "C" fn __rue_panic(ptr: *const u8, len: u64) -> ! {
+    pub unsafe extern "C" fn __rue_panic(
+        site: *const rue_runtime_abi::FailureSite,
+        ptr: *const u8,
+        len: u64,
+    ) -> ! {
         let message = if len > 0 {
             // SAFETY: the caller guarantees a non-null pointer valid for `len`
             // initialized bytes when the length is positive.
@@ -391,7 +391,8 @@ crate::define_runtime_implementation! {
         } else {
             &[]
         };
-        crate::test_channel::report_panic(message);
+        // SAFETY: inherited from this helper's ABI contract.
+        unsafe { crate::test_channel::report_panic(site, message) };
         panic_stderr(message)
     }
 }
@@ -412,12 +413,16 @@ crate::define_runtime_implementation! {
     /// # ABI
     ///
     /// ```text
-    /// extern "C" fn __rue_panic_no_msg() -> !
+    /// unsafe extern "C" fn __rue_panic_no_msg(site: *const FailureSite) -> !
     /// ```
     ///
-    /// No arguments. Never returns.
-    pub extern "C" fn __rue_panic_no_msg() -> ! {
-        crate::test_channel::report_panic_no_message();
+    /// `site` may be null for runtime-generated failures. Otherwise it must
+    /// point to a readable caller-owned [`FailureSite`] for this call.
+    pub unsafe extern "C" fn __rue_panic_no_msg(
+        site: *const rue_runtime_abi::FailureSite,
+    ) -> ! {
+        // SAFETY: inherited from this helper's ABI contract.
+        unsafe { crate::test_channel::report_panic_no_message(site) };
         let mut msg = [0u8; 6];
         msg[0] = b'p';
         msg[1] = b'a';
@@ -450,27 +455,34 @@ crate::define_runtime_implementation! {
     ///
     /// No arguments. Never returns.
     pub extern "C" fn __rue_assert_failed() -> ! {
-        let mut msg = [0u8; 17];
-        msg[0] = b'a';
-        msg[1] = b's';
-        msg[2] = b's';
-        msg[3] = b'e';
-        msg[4] = b'r';
-        msg[5] = b't';
-        msg[6] = b'i';
-        msg[7] = b'o';
-        msg[8] = b'n';
-        msg[9] = b' ';
-        msg[10] = b'f';
-        msg[11] = b'a';
-        msg[12] = b'i';
-        msg[13] = b'l';
-        msg[14] = b'e';
-        msg[15] = b'd';
-        msg[16] = b'\n';
-        platform::write_stderr(&msg);
-        platform::exit(101)
+        crate::test_channel::acquire_terminal_report_gate();
+        assert_failed_stderr()
     }
+}
+
+/// Stderr and exit leaf for an assertion whose caller already owns the
+/// terminal report gate.
+pub(crate) fn assert_failed_stderr() -> ! {
+    let mut msg = [0u8; 17];
+    msg[0] = b'a';
+    msg[1] = b's';
+    msg[2] = b's';
+    msg[3] = b'e';
+    msg[4] = b'r';
+    msg[5] = b't';
+    msg[6] = b'i';
+    msg[7] = b'o';
+    msg[8] = b'n';
+    msg[9] = b' ';
+    msg[10] = b'f';
+    msg[11] = b'a';
+    msg[12] = b'i';
+    msg[13] = b'l';
+    msg[14] = b'e';
+    msg[15] = b'd';
+    msg[16] = b'\n';
+    platform::write_stderr(&msg);
+    platform::exit(101)
 }
 
 #[cfg(test)]

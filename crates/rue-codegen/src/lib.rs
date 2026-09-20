@@ -839,14 +839,7 @@ mod tests {
             },
         );
         let str_ty = Type::new_struct(str_id);
-        let result_ty = if matches!(
-            operation,
-            IntrinsicOperation::PanicNoMessage | IntrinsicOperation::Panic
-        ) {
-            Type::NEVER
-        } else {
-            Type::UNIT
-        };
+        let result_ty = Type::UNIT;
         let type_pool = type_pool.freeze();
         let mut cfg = Cfg::new(
             result_ty,
@@ -860,8 +853,7 @@ mod tests {
         let span = Span::new(0, 1);
         let mut append = |data, ty| cfg.append_inst(entry, CfgInst { data, ty, span });
         let args = match operation {
-            IntrinsicOperation::PanicNoMessage => vec![],
-            IntrinsicOperation::Panic | IntrinsicOperation::DebugStr => {
+            IntrinsicOperation::DebugStr => {
                 vec![append(CfgInstData::StringConst(0), str_ty)]
             }
             IntrinsicOperation::AssertFailed | IntrinsicOperation::BoundsCheck => {
@@ -1189,8 +1181,6 @@ mod tests {
     #[test]
     fn typed_trap_and_debug_dispatch_ignores_counterfeit_diagnostic_names_on_every_target() {
         let operations = [
-            IntrinsicOperation::PanicNoMessage,
-            IntrinsicOperation::Panic,
             IntrinsicOperation::AssertFailed,
             IntrinsicOperation::BoundsCheck,
             IntrinsicOperation::DebugI64,

@@ -5,8 +5,6 @@
 //!
 //! See ADR-0027 for the design rationale.
 
-use crate::platform;
-
 define_runtime_implementation! {
     /// Generate a random u32 value.
     ///
@@ -151,8 +149,7 @@ fn get_random_bytes(buf: &mut [u8]) {
 /// message to stderr and exits with code 101 (the standard Rue runtime error
 /// exit code).
 fn random_error(msg: &[u8]) -> ! {
-    platform::write_stderr(msg);
-    platform::exit(101);
+    crate::test_channel::terminal_stderr(msg)
 }
 
 #[cfg(test)]

@@ -2150,7 +2150,6 @@ impl<'a> CfgLower<'a> {
         plan: crate::value_plan::TrapPlan,
     ) -> crate::value_plan::MaterializedValue {
         match plan {
-            crate::value_plan::TrapPlan::Panic { call } => self.lower_runtime_call(call),
             crate::value_plan::TrapPlan::Assert { condition, call } => {
                 let pass = self.mir.alloc_label();
                 self.mir.push(Aarch64Inst::Cbnz {
@@ -2598,9 +2597,7 @@ impl<'a> CfgLower<'a> {
                 });
                 dst
             }
-            rue_air::IntrinsicOperation::PanicNoMessage
-            | rue_air::IntrinsicOperation::Panic
-            | rue_air::IntrinsicOperation::AssertFailed
+            rue_air::IntrinsicOperation::AssertFailed
             | rue_air::IntrinsicOperation::BoundsCheck => {
                 unreachable!("trap handled above")
             }

@@ -1,13 +1,11 @@
 # A `@panic` guard costs the passing path no prologue (RUE-2065).
 #
-# `@panic` stages its failure site with `__rue_test_failure_site` and then calls
-# the panic helper, so the arm holds the site's four operands and the message
-# across an ordinary *returning* call. Read as textual intervals, those values —
-# and every value the guarded function keeps live across the guard — cross a
-# call, which is the one thing that makes a callee-saved register the only legal
-# home. The prologue then saves a register the arm alone touches, and every
-# entry pays a store and every exit a load on the path that never panics: the
-# cost `docs/process/test-events.md` says a guarded accessor must not pay.
+# `@panic` builds a caller-owned location manifest and then calls the panic
+# helper. The arm's descriptor values are live across an ordinary call, which
+# is the one thing that makes a callee-saved register the only legal home. The
+# prologue then saves a register the arm alone touches, and every entry pays a
+# store and every exit a load on the path that never panics: the cost
+# `docs/process/test-events.md` says a guarded accessor must not pay.
 #
 # Allocation now reads two divergence facts. A clobber inside a region control
 # can only leave by aborting cannot destroy a value with no use in that region,
@@ -196,14 +194,8 @@ stdout = "41\n77\n42\n"
 runtime_error_contains = ["panic: guard"]
 exit_code = 101
 
-# RUE-2088: the arm's staging call is not a call boundary. `open` contains one
-# `Call` — `__rue_test_failure_site`, inside the `@panic` arm — and O2's leaf
-# rule used to refuse every callee containing any call, so a small guarded
-# accessor stayed out of line for a call that can only run on its way to an
-# abort. The rule now counts only calls in blocks that can reach the callee's
-# return. The caller below carries a string of its own so the arm's constants
-# import into its type pool; without one, importability still keeps the guard
-# out of line, which is its own issue.
+# RUE-2088: the canonical panic report is a call boundary. The caller below
+# carries a string of its own so the arm's constants import into its type pool.
 [[case]]
 name = "a_panic_guard_is_inlined_at_o2"
 description = "The failure-site call inside a `@panic` arm no longer makes the guard a non-leaf: at -O2 no call to `open` survives in `main`, and the folded guard leaves no panic call behind at a constant site."

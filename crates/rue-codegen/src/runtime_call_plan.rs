@@ -152,7 +152,9 @@ const fn scalar_kind(ty: AbiType) -> CAbiScalarKind {
         | AbiType::U64
         | AbiType::Usize
         | AbiType::BoolWordI64
-        | AbiType::MutBytePointer => CAbiScalarKind::RegisterWidth,
+        | AbiType::MutBytePointer
+        | AbiType::FailureSite
+        | AbiType::FailureReport => CAbiScalarKind::RegisterWidth,
     }
 }
 
@@ -561,7 +563,7 @@ mod tests {
         assert_eq!(
             RuntimeCallPlan::new(RuntimeHelperId::Panic, []),
             Err(RuntimeCallPlanError::ParameterCount {
-                expected: 2,
+                expected: 3,
                 actual: 0,
             })
         );
@@ -570,6 +572,7 @@ mod tests {
                 RuntimeHelperId::Panic,
                 [
                     RuntimeCallArg::out_pointer(AggregateShapeId::StrBufResult),
+                    RuntimeCallArg::immediate(0, AbiType::U64),
                     RuntimeCallArg::immediate(0, AbiType::U64),
                 ],
             ),

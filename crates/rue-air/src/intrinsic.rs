@@ -144,6 +144,15 @@ fn runtime_air_type_in_pool(pool: &TypeInternPool, ty: Type) -> Option<RuntimeAi
     if ty == Type::NEVER {
         return Some(RuntimeAirType::Never);
     }
+    if let TypeKind::Array(array) = ty.kind() {
+        let (element, length) = pool.array_def(array);
+        if element == Type::U64 && length == rue_runtime_abi::FAILURE_SITE_SLOTS as u64 {
+            return Some(RuntimeAirType::FailureSite);
+        }
+        if element == Type::U64 && length == rue_runtime_abi::FAILURE_REPORT_SLOTS as u64 {
+            return Some(RuntimeAirType::FailureReport);
+        }
+    }
     if ty.is_signed() {
         return Some(RuntimeAirType::SignedInteger);
     }
@@ -289,6 +298,15 @@ impl RuntimeAirTypePool for FrozenTypeInternPool {
         if ty == Type::NEVER {
             return Some(RuntimeAirType::Never);
         }
+        if let TypeKind::Array(array) = ty.kind() {
+            let (element, length) = self.array_def(array);
+            if element == Type::U64 && length == rue_runtime_abi::FAILURE_SITE_SLOTS as u64 {
+                return Some(RuntimeAirType::FailureSite);
+            }
+            if element == Type::U64 && length == rue_runtime_abi::FAILURE_REPORT_SLOTS as u64 {
+                return Some(RuntimeAirType::FailureReport);
+            }
+        }
         if ty.is_signed() {
             return Some(RuntimeAirType::SignedInteger);
         }
@@ -368,8 +386,6 @@ pub fn runtime_air_result_type(pool: &impl RuntimeAirTypePool, ty: Type) -> Opti
 /// A total, semantically selected intrinsic operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IntrinsicOperation {
-    PanicNoMessage,
-    Panic,
     AssertFailed,
     BoundsCheck,
     DebugI64,
@@ -445,9 +461,7 @@ fn scalar_bits(ty: Type) -> Option<u32> {
 impl IntrinsicOperation {
     /// Every semantic identity, kept in one place so consumers and tests can
     /// prove that dispatch remains exhaustive when a new intrinsic is added.
-    pub const ALL: [Self; 51] = [
-        Self::PanicNoMessage,
-        Self::Panic,
+    pub const ALL: [Self; 49] = [
         Self::AssertFailed,
         Self::BoundsCheck,
         Self::DebugI64,
@@ -505,7 +519,6 @@ impl IntrinsicOperation {
     /// identity rather than a dispatch key.
     pub const fn intrinsic_name(self) -> IntrinsicName {
         match self {
-            Self::PanicNoMessage | Self::Panic => IntrinsicName::Panic,
             Self::AssertFailed | Self::BoundsCheck => IntrinsicName::Assert,
             Self::DebugI64
             | Self::DebugU64
@@ -579,8 +592,6 @@ impl IntrinsicOperation {
 
     pub fn from_runtime_call(runtime: RuntimeCallKind) -> Option<Self> {
         Some(match runtime {
-            RuntimeCallKind::PanicNoMessage => Self::PanicNoMessage,
-            RuntimeCallKind::Panic => Self::Panic,
             RuntimeCallKind::AssertFailed => Self::AssertFailed,
             RuntimeCallKind::BoundsCheck => Self::BoundsCheck,
             RuntimeCallKind::DebugI64 => Self::DebugI64,
@@ -633,11 +644,12 @@ impl IntrinsicOperation {
             // around a pair of calls, not one conditional runtime call.
             | RuntimeCallKind::TestNormalizeProcess
             | RuntimeCallKind::TestComplete
-            | RuntimeCallKind::TestFailureSite
             | RuntimeCallKind::TestFail
             | RuntimeCallKind::TestFailComparison
             | RuntimeCallKind::TestFailAssert
-            | RuntimeCallKind::TestUsageError => return None,
+            | RuntimeCallKind::TestUsageError
+            | RuntimeCallKind::Panic
+            | RuntimeCallKind::PanicNoMessage => return None,
         })
     }
 
@@ -650,8 +662,6 @@ impl IntrinsicOperation {
     /// metadata side channel.
     pub fn runtime_call(self) -> Option<RuntimeCallKind> {
         Some(match self {
-            Self::PanicNoMessage => RuntimeCallKind::PanicNoMessage,
-            Self::Panic => RuntimeCallKind::Panic,
             Self::AssertFailed => RuntimeCallKind::AssertFailed,
             Self::BoundsCheck => RuntimeCallKind::BoundsCheck,
             Self::ReadLine => RuntimeCallKind::ReadLine,
@@ -708,10 +718,6 @@ impl IntrinsicOperation {
     /// runtime helper from the typed operation.
     pub fn runtime_call_kind(self) -> Option<RuntimeCallKind> {
         self.runtime_call()
-    }
-
-    pub fn panic_no_message(self) -> bool {
-        matches!(self, Self::PanicNoMessage)
     }
 
     /// Validate an intrinsic's complete AIR call shape. Runtime-backed
@@ -872,9 +878,7 @@ impl IntrinsicOperation {
                     && (result.is_integer() || result.is_float())
                     && scalar_bits(first.ty) == scalar_bits(result)
             }
-            Self::PanicNoMessage
-            | Self::Panic
-            | Self::AssertFailed
+            Self::AssertFailed
             | Self::BoundsCheck
             | Self::DebugI64
             | Self::DebugU64
@@ -915,9 +919,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::sync::Arc;
 
-    const EXACT_OPERATIONS: [(IntrinsicOperation, &str); 51] = [
-        (IntrinsicOperation::PanicNoMessage, "panic"),
-        (IntrinsicOperation::Panic, "panic"),
+    const EXACT_OPERATIONS: [(IntrinsicOperation, &str); 49] = [
         (IntrinsicOperation::AssertFailed, "assert"),
         (IntrinsicOperation::BoundsCheck, "assert"),
         (IntrinsicOperation::DebugI64, "dbg"),
@@ -969,12 +971,7 @@ mod tests {
         (IntrinsicOperation::FloatRound, "round"),
     ];
 
-    const EXACT_RUNTIME_MAPPINGS: [(IntrinsicOperation, RuntimeCallKind); 30] = [
-        (
-            IntrinsicOperation::PanicNoMessage,
-            RuntimeCallKind::PanicNoMessage,
-        ),
-        (IntrinsicOperation::Panic, RuntimeCallKind::Panic),
+    const EXACT_RUNTIME_MAPPINGS: [(IntrinsicOperation, RuntimeCallKind); 28] = [
         (
             IntrinsicOperation::AssertFailed,
             RuntimeCallKind::AssertFailed,
@@ -1018,7 +1015,7 @@ mod tests {
     // family, which sema selects from ordinary method calls, and the ADR-0083
     // test channel, which the synthesized dispatcher and the assertion sugar
     // emit as direct calls rather than through an `IntrinsicOperation`.
-    const ORDINARY_CALL_ONLY: [RuntimeCallKind; 23] = [
+    const ORDINARY_CALL_ONLY: [RuntimeCallKind; 24] = [
         RuntimeCallKind::StrByteAt,
         RuntimeCallKind::StrCharScalar,
         RuntimeCallKind::StrCharNext,
@@ -1035,9 +1032,10 @@ mod tests {
         RuntimeCallKind::StrEprintProjected,
         RuntimeCallKind::StrEprintlnAggregate,
         RuntimeCallKind::StrEprintlnProjected,
+        RuntimeCallKind::Panic,
+        RuntimeCallKind::PanicNoMessage,
         RuntimeCallKind::TestNormalizeProcess,
         RuntimeCallKind::TestComplete,
-        RuntimeCallKind::TestFailureSite,
         RuntimeCallKind::TestFail,
         RuntimeCallKind::TestFailComparison,
         RuntimeCallKind::TestFailAssert,
@@ -1046,7 +1044,7 @@ mod tests {
 
     #[test]
     fn all_operations_are_unique_and_runtime_mapping_is_symmetric() {
-        assert_eq!(IntrinsicOperation::ALL.len(), 51);
+        assert_eq!(IntrinsicOperation::ALL.len(), 49);
 
         assert_eq!(
             IntrinsicOperation::ALL,
@@ -1077,8 +1075,7 @@ mod tests {
 
     #[test]
     fn inventory_and_runtime_partition_are_exact() {
-        const SPELLINGS: [&str; 45] = [
-            "panic",
+        const SPELLINGS: [&str; 44] = [
             "assert",
             "dbg",
             "read_line",
@@ -1135,7 +1132,7 @@ mod tests {
             .iter()
             .filter_map(|operation| operation.runtime_call_kind())
             .collect::<Vec<_>>();
-        assert_eq!(runtime.len(), 30);
+        assert_eq!(runtime.len(), 28);
         assert_eq!(
             IntrinsicOperation::ALL
                 .iter()
@@ -1149,14 +1146,14 @@ mod tests {
                 .enumerate()
                 .filter(|(index, kind)| !runtime[..*index].contains(kind))
                 .count(),
-            30
+            28
         );
         assert_eq!(
             runtime,
             EXACT_RUNTIME_MAPPINGS.map(|(_, runtime)| runtime),
             "the exact intrinsic-to-runtime map drifted"
         );
-        assert_eq!(RuntimeCallKind::ALL.len(), 53);
+        assert_eq!(RuntimeCallKind::ALL.len(), 52);
 
         for kind in RuntimeCallKind::ALL {
             assert_eq!(
@@ -1851,8 +1848,6 @@ mod tests {
         let mut_u8 = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::U8));
         let n = crate::AirArgMode::Normal;
         let signatures = [
-            (IntrinsicOperation::PanicNoMessage, vec![], Type::NEVER),
-            (IntrinsicOperation::Panic, vec![(text, n)], Type::NEVER),
             (
                 IntrinsicOperation::AssertFailed,
                 vec![(Type::BOOL, n)],

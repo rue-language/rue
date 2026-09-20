@@ -1657,7 +1657,7 @@ mod tests {
     #[test]
     fn divergence_covers_a_whole_guard_arm_and_stops_at_the_join() {
         // The shape a `@panic`-guarded accessor lowers to: the receiver is
-        // defined before the guard, the arm stages a failure site and aborts,
+        // defined before the guard, the arm prepares a failure site and aborts,
         // and the continuation reads the receiver after the join. Everything
         // from the branch into the arm to the trap is reachable only on the
         // path that aborts; the guard branch and the continuation are not.

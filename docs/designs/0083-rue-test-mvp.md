@@ -590,6 +590,19 @@ Unarmed, the record writer returns without writing. The lowering, the schema,
 and the exec contract are unchanged, and the cost is one relaxed atomic load on
 the failing path.
 
+**Amendment (2026-09-20, RUE-2285): caller-owned reports and concurrent
+termination.** A failure location is a three-word `repr(C)` `FailureSite`, and
+the complete nine-word `FailureReport` owns the site plus its rendered views.
+Compiler lowering materializes these fixed arrays and passes one borrow to the
+terminal helper; no process-global staged location exists. Message and operand
+rendering happens before report construction, so a trap during rendering keeps
+its own source. Hosted ordinary reporters share one private parking gate: the
+winner holds it through the complete frame, stderr, and process exit, while
+competing reporters park. The complete frame acquires and releases the same
+gate. Signal handlers and explicit raw exits bypass the gate and can truncate a
+best-effort final record, which is the defined asynchronous boundary. Fields
+remain bounded to 4 KiB, and complete frames are not assumed to fit `PIPE_BUF`.
+
 #### 5.2 In-language frameworks are ordinary Rue code; comptime is the generator
 
 BDD vocabularies, table harnesses, and property-test case machinery are
@@ -742,10 +755,10 @@ companion project "rue test follow-ups" (§6).
       agent-first in transport but prose in content has not met the bar.
 - [x] **Phase 2.6: `@assert` reports its own site** - RUE-1953. `@assert`
       joins the family on the §5.1 channel through one further helper,
-      `__rue_test_fail_assert` (ABI version 5), so a test with several bare
+      `__rue_test_fail_assert` (ABI version 6), so a test with several bare
       assertions names the one that failed instead of the declaration
-      header. It lowers to a branch around the staging and terminal calls,
-      the same shape the comparison family uses and identically inside and
+      header. It lowers to a branch around caller-owned report construction
+      and the terminal call, the same shape the comparison family uses and identically inside and
       outside a test image; both pinned stderr forms and exit 101 are
       unchanged (spec 4.13:5d). The dedicated message-carrying `@assert`
       lowering retires with it: the conditional `assert` intrinsic now has

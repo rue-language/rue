@@ -834,6 +834,24 @@ fn dynamic_panic_stderr_obeys_the_shared_raw_byte_limit() {
 }
 
 #[test]
+fn assertion_stderr_keeps_messages_beyond_the_json_rendering_bound() {
+    let message = "x".repeat(rue_runtime_abi::RENDERING_BOUND as usize + 1);
+    let source = format!("fn main() -> i32 {{ @assert(false, \"{message}\"); 0 }}");
+    let complete = format!("panic: {message}\n");
+    let outcome = run_with_output_caps(&source, MAX_STDOUT_BYTES, complete.len())
+        .expect("the JSON rendering bound must not truncate or reject assertion stderr");
+    assert_eq!(outcome.stderr, complete);
+    assert_eq!(outcome.panic, Some(TrapKind::UserPanic));
+    assert_eq!(outcome.exit_code, 101);
+    let unsupported = run_with_output_caps(&source, MAX_STDOUT_BYTES, complete.len() - 1)
+        .expect_err("the explicit message, prefix, and newline share the stderr budget");
+    assert_eq!(
+        unsupported.kind(),
+        UnsupportedKind::ResourceLimit(ResourceLimitKind::StderrBytes)
+    );
+}
+
+#[test]
 fn stdout_at_cap_remains_exact() {
     let out = run_with_stdout_cap("fn main() -> i32 { @dbg(7); @dbg(true); 0 }", 7)
         .unwrap_or_else(|unsupported| panic!("exactly capped output failed: {unsupported}"));
@@ -993,8 +1011,6 @@ fn every_known_unsupported_intrinsic_has_a_closed_kind() {
     }
 
     for operation in [
-        Operation::PanicNoMessage,
-        Operation::Panic,
         Operation::AssertFailed,
         Operation::BoundsCheck,
         Operation::DebugI64,
@@ -1017,7 +1033,7 @@ fn every_known_unsupported_intrinsic_has_a_closed_kind() {
         );
     }
 
-    assert_eq!(Operation::ALL.len(), 51);
+    assert_eq!(Operation::ALL.len(), 49);
 }
 
 #[test]
@@ -1586,12 +1602,10 @@ fn slice_bounds_check_uses_index_trap_category_without_changing_assertions() {
 }
 
 /// `@assert` reports on the ADR-0083 §5.1 channel in every build (RUE-1953),
-/// so a failing assertion in an ordinary program is a branch around two channel
-/// calls rather than one conditional intrinsic. The interpreter models both —
-/// the staged site has no observable effect where there is no descriptor 3, and
-/// the terminal call aborts — and what it must agree with the native runtime
-/// about is exactly what spec 4.13:5d pins: the two messages and the trap
-/// category each takes.
+/// so a failing assertion in an ordinary program branches to a terminal report
+/// call. The caller-owned descriptor supplies the message without staging global
+/// state. The interpreter agrees with the native stderr behavior pinned by
+/// spec 4.13:5d: the two messages and the trap category each takes.
 #[test]
 fn assert_reports_through_the_channel_and_keeps_its_pinned_messages() {
     let bare = run("fn main() -> i32 { @assert(1 + 1 == 3); 0 }");

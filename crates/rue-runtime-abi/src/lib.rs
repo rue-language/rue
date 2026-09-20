@@ -18,7 +18,7 @@ use core::fmt;
 #[macro_export]
 macro_rules! runtime_abi_version {
     ($callback:ident) => {
-        $callback!(5, __rue_runtime_abi_v5);
+        $callback!(6, __rue_runtime_abi_v6);
     };
 }
 
@@ -47,6 +47,10 @@ pub enum AbiType {
     Byte,
     /// A mutable opaque byte pointer returned in a scalar result or aggregate slot.
     MutBytePointer,
+    /// Pointee identity for the caller-owned three-word diagnostic site.
+    FailureSite,
+    /// Pointee identity for the caller-owned nine-word diagnostic report.
+    FailureReport,
     /// The target C ABI's `usize`, used only by compiler-built memory routines.
     Usize,
 }
@@ -76,6 +80,75 @@ pub const RENDERING_BOUND: u64 = 4096;
 /// Appended to a rendering [`RENDERING_BOUND`] cut short, in the spelling spec
 /// 6.7:15 fixes. Shared by the same two writers, for the same reason.
 pub const RENDERING_TRUNCATION_MARKER: &str = " …[truncated]";
+
+/// Caller-owned source location used by diagnostic runtime helpers.
+///
+/// The three fields are deliberately full-width ABI words. `position` packs
+/// the source line in its high 32 bits and the column in its low 32 bits.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FailureSite {
+    pub file_ptr: *const u8,
+    pub file_len: u64,
+    pub position: u64,
+}
+
+/// Caller-owned structured failure record consumed by the test channel.
+///
+/// The six words after [`FailureSite`] are, in order, kind pointer/length,
+/// first pointer/length, and second pointer/length. The logical fields are
+/// intentionally represented as words so compiler lowering can construct the
+/// record as a fixed `[u64; 9]` aggregate without introducing a nominal
+/// compiler type for this runtime-only descriptor.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FailureReport {
+    pub site: FailureSite,
+    pub kind_ptr: *const u8,
+    pub kind_len: u64,
+    pub first_ptr: *const u8,
+    pub first_len: u64,
+    pub second_ptr: *const u8,
+    pub second_len: u64,
+}
+
+pub const FAILURE_SITE_SLOTS: usize = 3;
+pub const FAILURE_REPORT_SLOTS: usize = 9;
+pub const FAILURE_SITE_SIZE: usize = core::mem::size_of::<FailureSite>();
+pub const FAILURE_SITE_ALIGN: usize = core::mem::align_of::<FailureSite>();
+pub const FAILURE_REPORT_SIZE: usize = core::mem::size_of::<FailureReport>();
+pub const FAILURE_REPORT_ALIGN: usize = core::mem::align_of::<FailureReport>();
+pub const FAILURE_SITE_FILE_PTR_OFFSET: usize = core::mem::offset_of!(FailureSite, file_ptr);
+pub const FAILURE_SITE_FILE_LEN_OFFSET: usize = core::mem::offset_of!(FailureSite, file_len);
+pub const FAILURE_SITE_POSITION_OFFSET: usize = core::mem::offset_of!(FailureSite, position);
+pub const FAILURE_REPORT_SITE_OFFSET: usize = core::mem::offset_of!(FailureReport, site);
+pub const FAILURE_REPORT_KIND_PTR_OFFSET: usize = core::mem::offset_of!(FailureReport, kind_ptr);
+pub const FAILURE_REPORT_KIND_LEN_OFFSET: usize = core::mem::offset_of!(FailureReport, kind_len);
+pub const FAILURE_REPORT_FIRST_PTR_OFFSET: usize = core::mem::offset_of!(FailureReport, first_ptr);
+pub const FAILURE_REPORT_FIRST_LEN_OFFSET: usize = core::mem::offset_of!(FailureReport, first_len);
+pub const FAILURE_REPORT_SECOND_PTR_OFFSET: usize =
+    core::mem::offset_of!(FailureReport, second_ptr);
+pub const FAILURE_REPORT_SECOND_LEN_OFFSET: usize =
+    core::mem::offset_of!(FailureReport, second_len);
+
+const _: () = {
+    assert!(FAILURE_SITE_SLOTS == 3);
+    assert!(FAILURE_REPORT_SLOTS == 9);
+    assert!(FAILURE_SITE_SIZE == 24);
+    assert!(FAILURE_SITE_ALIGN == 8);
+    assert!(FAILURE_REPORT_SIZE == 72);
+    assert!(FAILURE_REPORT_ALIGN == 8);
+    assert!(FAILURE_SITE_FILE_PTR_OFFSET == 0);
+    assert!(FAILURE_SITE_FILE_LEN_OFFSET == 8);
+    assert!(FAILURE_SITE_POSITION_OFFSET == 16);
+    assert!(FAILURE_REPORT_SITE_OFFSET == 0);
+    assert!(FAILURE_REPORT_KIND_PTR_OFFSET == 24);
+    assert!(FAILURE_REPORT_KIND_LEN_OFFSET == 32);
+    assert!(FAILURE_REPORT_FIRST_PTR_OFFSET == 40);
+    assert!(FAILURE_REPORT_FIRST_LEN_OFFSET == 48);
+    assert!(FAILURE_REPORT_SECOND_PTR_OFFSET == 56);
+    assert!(FAILURE_REPORT_SECOND_LEN_OFFSET == 64);
+};
 
 /// How a parameter crosses the C boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -644,18 +717,22 @@ macro_rules! for_each_runtime_helper {
             safety: TERMINATES,
             returns: NEVER
         },
-        Panic => unsafe __rue_panic(ptr: *const u8, len: u64) -> ! {
+        Panic => unsafe __rue_panic(site: *const FailureSite, ptr: *const u8, len: u64) -> ! {
             symbol: "__rue_panic",
-            parameters: params![BYTE_VIEW, U64_VALUE],
+            parameters: params![
+                AbiParameter::const_pointer(AbiType::FailureSite),
+                BYTE_VIEW,
+                U64_VALUE,
+            ],
             result: VOID,
             safety: READABLE.union(TERMINATES),
             returns: NEVER
         },
-        PanicNoMessage => safe __rue_panic_no_msg() -> ! {
+        PanicNoMessage => unsafe __rue_panic_no_msg(site: *const FailureSite) -> ! {
             symbol: "__rue_panic_no_msg",
-            parameters: params![],
+            parameters: params![AbiParameter::const_pointer(AbiType::FailureSite)],
             result: VOID,
-            safety: TERMINATES,
+            safety: READABLE.union(TERMINATES),
             returns: NEVER
         },
         AssertFailed => safe __rue_assert_failed() -> ! {
@@ -1014,44 +1091,15 @@ macro_rules! for_each_runtime_helper {
             safety: SafetyContract::NONE,
             returns: RETURNS
         },
-        // A failure record carries more than a register-only call can take:
-        // three byte views plus a file, a line, and a column is ten arguments,
-        // and every runtime helper is register-only (six on x86-64). The record
-        // is therefore assembled by two calls. This one stages the failing
-        // source location, and the terminal call below emits the record and
-        // aborts. Nothing may run between them.
-        TestFailureSite => unsafe __rue_test_failure_site(
-            file_ptr: *const u8,
-            file_len: u64,
-            line: u32,
-            column: u32,
-        ) {
-            symbol: "__rue_test_failure_site",
-            parameters: params![BYTE_VIEW, U64_VALUE, U32_VALUE, U32_VALUE],
-            result: VOID,
-            // The file bytes are borrowed, not copied: they must stay readable
-            // until the `__rue_test_fail` that consumes this site has written
-            // its record.
-            safety: READABLE,
-            returns: RETURNS
-        },
+        // The caller owns a fixed-width FailureReport containing its
+        // caller-owned FailureSite and all rendered byte views. One borrowed
+        // aggregate keeps source evaluation and report construction together;
+        // no process-global location is paired with a later terminal call.
         TestFail => unsafe __rue_test_fail(
-            kind_ptr: *const u8,
-            kind_len: u64,
-            message_ptr: *const u8,
-            message_len: u64,
-            payload_ptr: *const u8,
-            payload_len: u64,
+            report: *const FailureReport,
         ) -> ! {
             symbol: "__rue_test_fail",
-            parameters: params![
-                BYTE_VIEW,
-                U64_VALUE,
-                BYTE_VIEW,
-                U64_VALUE,
-                BYTE_VIEW,
-                U64_VALUE,
-            ],
+            parameters: params![AbiParameter::const_pointer(AbiType::FailureReport)],
             result: VOID,
             safety: READABLE.union(TERMINATES),
             returns: NEVER
@@ -1060,25 +1108,12 @@ macro_rules! for_each_runtime_helper {
         // It carries the two rendered operands where `__rue_test_fail` carries
         // one message and one open payload, so a consumer reads `left` and
         // `right` as separate fields instead of parsing them back out of one
-        // string. The message is pinned by the kind rather than passed, which
-        // is what keeps this to the same six registers.
+        // string. The message is pinned by the kind rather than passed.
         TestFailComparison => unsafe __rue_test_fail_comparison(
-            kind_ptr: *const u8,
-            kind_len: u64,
-            left_ptr: *const u8,
-            left_len: u64,
-            right_ptr: *const u8,
-            right_len: u64,
+            report: *const FailureReport,
         ) -> ! {
             symbol: "__rue_test_fail_comparison",
-            parameters: params![
-                BYTE_VIEW,
-                U64_VALUE,
-                BYTE_VIEW,
-                U64_VALUE,
-                BYTE_VIEW,
-                U64_VALUE,
-            ],
+            parameters: params![AbiParameter::const_pointer(AbiType::FailureReport)],
             result: VOID,
             safety: READABLE.union(TERMINATES),
             returns: NEVER
@@ -1091,12 +1126,14 @@ macro_rules! for_each_runtime_helper {
         // message and the whole stderr line. Neither form carries a `payload`;
         // a bare assertion has nothing structured to put in one.
         TestFailAssert => unsafe __rue_test_fail_assert(
-            message_ptr: *const u8,
-            message_len: u64,
+            report: *const FailureReport,
             with_message: u32,
         ) -> ! {
             symbol: "__rue_test_fail_assert",
-            parameters: params![BYTE_VIEW, U64_VALUE, U32_VALUE],
+            parameters: params![
+                AbiParameter::const_pointer(AbiType::FailureReport),
+                U32_VALUE,
+            ],
             result: VOID,
             safety: READABLE.union(TERMINATES),
             returns: NEVER
@@ -1468,7 +1505,7 @@ const fn ends_with_decimal_version(symbol: &str, version: u32) -> bool {
     // `@assert` form, `__rue_test_fail_assert`. This explicit check makes an
     // ABI bump update both metadata values rather than silently retaining a
     // stale symbol.
-    version == 5 && string_eq(symbol, "__rue_runtime_abi_v5")
+    version == 6 && string_eq(symbol, "__rue_runtime_abi_v6")
 }
 
 /// Validate all table ordering, uniqueness, classification, and layout invariants.
@@ -1554,7 +1591,7 @@ mod tests {
     #[test]
     fn manifest_is_const_valid_and_exhaustive() {
         assert_eq!(validate_manifest(), Ok(()));
-        assert_eq!(RuntimeHelperId::ALL.len(), 57);
+        assert_eq!(RuntimeHelperId::ALL.len(), 56);
         assert_eq!(RuntimeHelperId::ALL.len(), RUNTIME_HELPERS.len());
         for (index, id) in RuntimeHelperId::ALL.iter().copied().enumerate() {
             assert_eq!(id as usize, index);
@@ -1628,7 +1665,6 @@ mod tests {
             "__rue_byte_set",
             "__rue_test_normalize_process",
             "__rue_test_complete",
-            "__rue_test_failure_site",
             "__rue_test_fail",
             "__rue_test_fail_comparison",
             "__rue_test_fail_assert",
@@ -1644,7 +1680,7 @@ mod tests {
     #[test]
     fn every_helper_has_the_exact_accepted_signature_and_contract() {
         fn check(
-            visited: &mut [bool; 57],
+            visited: &mut [bool; 56],
             ids: &[RuntimeHelperId],
             parameters: &[AbiParameter],
             result: AbiResult,
@@ -1665,7 +1701,7 @@ mod tests {
             }
         }
 
-        let mut visited = [false; 57];
+        let mut visited = [false; 56];
         check(
             &mut visited,
             &[RuntimeHelperId::Exit],
@@ -1713,7 +1749,6 @@ mod tests {
                 RuntimeHelperId::Overflow,
                 RuntimeHelperId::IntcastOverflow,
                 RuntimeHelperId::BoundsCheck,
-                RuntimeHelperId::PanicNoMessage,
                 RuntimeHelperId::AssertFailed,
                 RuntimeHelperId::InvalidUtf8,
             ],
@@ -1724,8 +1759,20 @@ mod tests {
         );
         check(
             &mut visited,
+            &[RuntimeHelperId::PanicNoMessage],
+            &[AbiParameter::const_pointer(AbiType::FailureSite)],
+            VOID,
+            READABLE.union(TERMINATES),
+            NEVER,
+        );
+        check(
+            &mut visited,
             &[RuntimeHelperId::Panic],
-            &[BYTE_VIEW, U64_VALUE],
+            &[
+                AbiParameter::const_pointer(AbiType::FailureSite),
+                BYTE_VIEW,
+                U64_VALUE,
+            ],
             VOID,
             READABLE.union(TERMINATES),
             NEVER,
@@ -1931,21 +1978,11 @@ mod tests {
         );
         check(
             &mut visited,
-            &[RuntimeHelperId::TestFailureSite],
-            &[BYTE_VIEW, U64_VALUE, U32_VALUE, U32_VALUE],
-            VOID,
-            READABLE,
-            RETURNS,
-        );
-        check(
-            &mut visited,
             &[
                 RuntimeHelperId::TestFail,
                 RuntimeHelperId::TestFailComparison,
             ],
-            &[
-                BYTE_VIEW, U64_VALUE, BYTE_VIEW, U64_VALUE, BYTE_VIEW, U64_VALUE,
-            ],
+            &[AbiParameter::const_pointer(AbiType::FailureReport)],
             VOID,
             READABLE.union(TERMINATES),
             NEVER,
@@ -1953,7 +1990,10 @@ mod tests {
         check(
             &mut visited,
             &[RuntimeHelperId::TestFailAssert],
-            &[BYTE_VIEW, U64_VALUE, U32_VALUE],
+            &[
+                AbiParameter::const_pointer(AbiType::FailureReport),
+                U32_VALUE,
+            ],
             VOID,
             READABLE.union(TERMINATES),
             NEVER,
@@ -2158,7 +2198,7 @@ mod tests {
 
     #[test]
     fn abi_version_metadata_is_a_one_byte_data_export() {
-        assert_eq!(RUNTIME_ABI_VERSION, 5);
+        assert_eq!(RUNTIME_ABI_VERSION, 6);
         assert_eq!(
             RUNTIME_ABI_VERSION_SYMBOL,
             format!("__rue_runtime_abi_v{RUNTIME_ABI_VERSION}")

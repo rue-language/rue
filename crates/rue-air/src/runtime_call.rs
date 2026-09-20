@@ -26,6 +26,8 @@ pub enum RuntimeOperandOrigin {
     BytePointerArgument(u8),
     TextPointer(u8),
     TextLength(u8),
+    FailureSiteArgument(u8),
+    FailureReportArgument(u8),
     ProjectedTextPointer(u8),
     ProjectedTextLength(u8),
     OptionDiscriminant(OptionVariant),
@@ -55,6 +57,8 @@ pub enum RuntimeAirType {
     UnsignedInteger,
     Integer,
     Text,
+    FailureSite,
+    FailureReport,
     BytePointer,
     ConstBytePointer,
     MutPointer,
@@ -83,6 +87,14 @@ impl RuntimeOperandOrigin {
             }
             Self::TextLength(_) | Self::ProjectedTextLength(_) | Self::OptionDiscriminant(_) => {
                 parameter.ty == AbiType::U64 && parameter.mode == ParameterMode::Value
+            }
+            Self::FailureSiteArgument(_) => {
+                parameter.ty == AbiType::FailureSite
+                    && parameter.mode == ParameterMode::ConstPointer
+            }
+            Self::FailureReportArgument(_) => {
+                parameter.ty == AbiType::FailureReport
+                    && parameter.mode == ParameterMode::ConstPointer
             }
             Self::ValueArgument { ty, .. } => {
                 parameter.ty == ty && parameter.mode == ParameterMode::Value
@@ -162,8 +174,6 @@ pub enum RuntimeCallKind {
     TestNormalizeProcess,
     /// Write the dispatcher's terminal completion frame (ADR-0083 §3).
     TestComplete,
-    /// Stage the source location the next failure record carries.
-    TestFailureSite,
     /// Report a structured failure on the §5.1 channel, then abort.
     TestFail,
     /// Report a structured comparison failure — the two rendered operands as
@@ -342,45 +352,31 @@ const BYTE_SET: &[RuntimeOperandOrigin] = &[
     },
 ];
 
-// The ADR-0083 §5.1 failure record, in the two calls a register-only helper
-// budget affords: `__rue_test_failure_site(file, line, column)` stages the
-// location, then `__rue_test_fail(kind, message, payload)` emits the record and
-// aborts. `payload` is the open, versioned field an assertion library fills in.
-const TEST_FAILURE_SITE: &[RuntimeOperandOrigin] = &[
-    RuntimeOperandOrigin::TextPointer(0),
-    RuntimeOperandOrigin::TextLength(0),
-    RuntimeOperandOrigin::ValueArgument {
-        index: 1,
-        ty: AbiType::U32,
-    },
-    RuntimeOperandOrigin::ValueArgument {
-        index: 2,
-        ty: AbiType::U32,
-    },
-];
-// `__rue_test_fail_assert(message, with_message)`. The site is staged by the
-// same first call the other reporting helpers use; what differs is the second
-// operand, which states which of `@assert`'s two pinned stderr forms this is
-// rather than leaving the helper to infer it from an empty message.
-const TEST_FAIL_ASSERT: &[RuntimeOperandOrigin] = &[
-    RuntimeOperandOrigin::TextPointer(0),
-    RuntimeOperandOrigin::TextLength(0),
-    RuntimeOperandOrigin::ValueArgument {
-        index: 1,
-        ty: AbiType::U32,
-    },
-];
-const TEST_FAIL: &[RuntimeOperandOrigin] = &[
-    RuntimeOperandOrigin::TextPointer(0),
-    RuntimeOperandOrigin::TextLength(0),
+// The ADR-0083 §5.1 failure record is a caller-owned fixed array borrowed by
+// the terminal helper. `payload` remains the open, versioned field an
+// assertion library fills in.
+const PANIC: &[RuntimeOperandOrigin] = &[
+    RuntimeOperandOrigin::FailureSiteArgument(0),
     RuntimeOperandOrigin::TextPointer(1),
     RuntimeOperandOrigin::TextLength(1),
-    RuntimeOperandOrigin::TextPointer(2),
-    RuntimeOperandOrigin::TextLength(2),
+];
+const PANIC_NO_MESSAGE: &[RuntimeOperandOrigin] = &[RuntimeOperandOrigin::FailureSiteArgument(0)];
+const TEST_FAILURE_REPORT: &[RuntimeOperandOrigin] =
+    &[RuntimeOperandOrigin::FailureReportArgument(0)];
+// `__rue_test_fail_assert(report, with_message)`. The report owns the site and
+// all rendered views; the second operand states which of `@assert`'s two
+// pinned stderr forms this is rather than leaving the helper to infer it from
+// an empty message.
+const TEST_FAIL_ASSERT: &[RuntimeOperandOrigin] = &[
+    RuntimeOperandOrigin::FailureReportArgument(0),
+    RuntimeOperandOrigin::ValueArgument {
+        index: 1,
+        ty: AbiType::U32,
+    },
 ];
 
 impl RuntimeCallKind {
-    pub const ALL: [Self; 53] = [
+    pub const ALL: [Self; 52] = [
         Self::StrByteAt,
         Self::StrCharScalar,
         Self::StrCharNext,
@@ -429,7 +425,6 @@ impl RuntimeCallKind {
         Self::ByteSet,
         Self::TestNormalizeProcess,
         Self::TestComplete,
-        Self::TestFailureSite,
         Self::TestFail,
         Self::TestFailComparison,
         Self::TestFailAssert,
@@ -482,7 +477,6 @@ impl RuntimeCallKind {
             Self::ByteSet => RuntimeHelperId::ByteSet,
             Self::TestNormalizeProcess => RuntimeHelperId::TestNormalizeProcess,
             Self::TestComplete => RuntimeHelperId::TestComplete,
-            Self::TestFailureSite => RuntimeHelperId::TestFailureSite,
             Self::TestFail => RuntimeHelperId::TestFail,
             Self::TestFailComparison => RuntimeHelperId::TestFailComparison,
             Self::TestFailAssert => RuntimeHelperId::TestFailAssert,
@@ -500,12 +494,12 @@ impl RuntimeCallKind {
             Self::ToString => FORMAT_SIGNED,
             Self::ToStringUnsigned => FORMAT_UNSIGNED,
             Self::ToStringFloat => FORMAT_FLOAT,
+            Self::Panic => PANIC,
             Self::StrPrintAggregate
             | Self::StrPrintlnAggregate
             | Self::StrEprintAggregate
             | Self::StrEprintlnAggregate
-            | Self::DebugStr
-            | Self::Panic => TEXT,
+            | Self::DebugStr => TEXT,
             Self::StrPrintProjected
             | Self::StrPrintlnProjected
             | Self::StrEprintProjected
@@ -515,8 +509,8 @@ impl RuntimeCallKind {
             Self::DebugBool => BOOL_SCALAR,
             Self::DebugFloat => FLOAT_BITS_AND_WIDTH,
 
-            Self::PanicNoMessage
-            | Self::AssertFailed
+            Self::PanicNoMessage => PANIC_NO_MESSAGE,
+            Self::AssertFailed
             | Self::BoundsCheck
             | Self::RandomU32
             | Self::RandomU64
@@ -533,11 +527,10 @@ impl RuntimeCallKind {
             Self::Realloc | Self::Resize => RESIZE_LAYOUT,
             Self::ByteCopy | Self::ByteMove => BYTE_COPY,
             Self::ByteSet => BYTE_SET,
-            Self::TestFailureSite => TEST_FAILURE_SITE,
             // The comparison form carries `kind`, `left`, and `right` where the
             // open form carries `kind`, `message`, and `payload`: three byte
             // views either way, so one operand plan serves both.
-            Self::TestFail | Self::TestFailComparison => TEST_FAIL,
+            Self::TestFail | Self::TestFailComparison => TEST_FAILURE_REPORT,
             Self::TestFailAssert => TEST_FAIL_ASSERT,
         }
     }
@@ -709,6 +702,12 @@ impl RuntimeCallKind {
                 RuntimeOperandOrigin::ProjectedTextLength(index) => {
                     require(index, RuntimeAirType::U64)
                 }
+                RuntimeOperandOrigin::FailureSiteArgument(index) => {
+                    require(index, RuntimeAirType::FailureSite)
+                }
+                RuntimeOperandOrigin::FailureReportArgument(index) => {
+                    require(index, RuntimeAirType::FailureReport)
+                }
             };
             if !valid {
                 return false;
@@ -723,8 +722,18 @@ impl RuntimeCallKind {
             .iter()
             .zip(arguments)
             .all(|(expected, actual)| {
-                expected.is_some_and(|expected| Self::air_type_accepts(expected, actual.ty))
-                    && actual.mode == crate::AirArgMode::Normal
+                let Some(expected) = expected else {
+                    return false;
+                };
+                if !Self::air_type_accepts(*expected, actual.ty) {
+                    return false;
+                }
+                match expected {
+                    RuntimeAirType::FailureSite | RuntimeAirType::FailureReport => {
+                        actual.mode == crate::AirArgMode::Borrow
+                    }
+                    _ => actual.mode == crate::AirArgMode::Normal,
+                }
             })
     }
 
@@ -737,6 +746,8 @@ impl RuntimeCallKind {
             AbiType::BoolWordI64 => RuntimeAirType::Bool,
             AbiType::Byte => RuntimeAirType::UnsignedInteger,
             AbiType::MutBytePointer => RuntimeAirType::MutBytePointer,
+            AbiType::FailureSite => RuntimeAirType::FailureSite,
+            AbiType::FailureReport => RuntimeAirType::FailureReport,
         }
     }
 
@@ -823,6 +834,49 @@ mod tests {
                 mode: crate::AirArgMode::Borrow,
             }])
         );
+        for mode in [
+            crate::AirArgMode::Normal,
+            crate::AirArgMode::Borrow,
+            crate::AirArgMode::Inout,
+        ] {
+            for (kind, ty, extra) in [
+                (
+                    RuntimeCallKind::PanicNoMessage,
+                    RuntimeAirType::FailureSite,
+                    None,
+                ),
+                (
+                    RuntimeCallKind::Panic,
+                    RuntimeAirType::FailureSite,
+                    Some(RuntimeAirType::Text),
+                ),
+                (
+                    RuntimeCallKind::TestFail,
+                    RuntimeAirType::FailureReport,
+                    None,
+                ),
+                (
+                    RuntimeCallKind::TestFailComparison,
+                    RuntimeAirType::FailureReport,
+                    None,
+                ),
+                (
+                    RuntimeCallKind::TestFailAssert,
+                    RuntimeAirType::FailureReport,
+                    Some(RuntimeAirType::U32),
+                ),
+            ] {
+                let mut arguments = vec![RuntimeAirArgument { ty, mode }];
+                if let Some(extra) = extra {
+                    arguments.push(normal(extra));
+                }
+                assert_eq!(
+                    kind.validate_air_arguments(&arguments),
+                    mode == crate::AirArgMode::Borrow,
+                    "{kind:?} must require an exact borrowed report, got {mode:?}",
+                );
+            }
+        }
     }
 
     #[test]

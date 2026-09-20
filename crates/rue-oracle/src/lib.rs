@@ -1111,7 +1111,6 @@ enum PlaceAccess {
 
 #[derive(Clone, Copy)]
 enum AbortIntrinsic {
-    Panic,
     Assert,
 }
 
@@ -1244,9 +1243,7 @@ fn unsupported_intrinsic_kind_for_operation(
         rue_air::IntrinsicOperation::EnvLen => {
             UnsupportedKind::ExternalDependency(External::EnvLen)
         }
-        rue_air::IntrinsicOperation::PanicNoMessage
-        | rue_air::IntrinsicOperation::Panic
-        | rue_air::IntrinsicOperation::AssertFailed
+        rue_air::IntrinsicOperation::AssertFailed
         | rue_air::IntrinsicOperation::BoundsCheck
         | rue_air::IntrinsicOperation::DebugI64
         | rue_air::IntrinsicOperation::DebugU64
@@ -1292,8 +1289,6 @@ fn unsupported_runtime_call_kind(kind: RuntimeCallKind) -> Option<UnsupportedRun
         | RuntimeCallKind::DebugBool
         | RuntimeCallKind::DebugFloat
         | RuntimeCallKind::DebugStr
-        | RuntimeCallKind::Panic
-        | RuntimeCallKind::PanicNoMessage
         | RuntimeCallKind::AssertFailed
         | RuntimeCallKind::BoundsCheck
         | RuntimeCallKind::ReadLine
@@ -1327,11 +1322,12 @@ fn unsupported_runtime_call_kind(kind: RuntimeCallKind) -> Option<UnsupportedRun
         // gap by the time either is evaluated.
         | RuntimeCallKind::TestNormalizeProcess
         | RuntimeCallKind::TestComplete
-        | RuntimeCallKind::TestFailureSite
         | RuntimeCallKind::TestFail
         | RuntimeCallKind::TestFailComparison
         | RuntimeCallKind::TestFailAssert
-        | RuntimeCallKind::TestUsageError => None,
+        | RuntimeCallKind::TestUsageError
+        | RuntimeCallKind::Panic
+        | RuntimeCallKind::PanicNoMessage => None,
     }
 }
 
@@ -1622,6 +1618,50 @@ impl<'a> Interp<'a> {
         Ok(bytes)
     }
 
+    /// Read one byte-view field from the caller-owned nine-word failure report.
+    /// `PtrToInt` preserves hidden address provenance in the value model, so
+    /// this recovers the allocation before reading the rendered bytes instead
+    /// of treating the numeric pointer as an arbitrary integer.
+    fn failure_report_field_bytes(
+        &self,
+        cells: &[Value],
+        pointer_index: usize,
+        length_index: usize,
+    ) -> Step<Vec<u8>> {
+        let gap = unsupported_intrinsic_kind_for_operation(rue_air::IntrinsicOperation::PtrRead);
+        let length = cells
+            .get(length_index)
+            .ok_or_else(|| unsupported(gap, "failure report length is missing"))?
+            .as_int();
+        if length < 0 {
+            return Err(unsupported(
+                gap,
+                "failure report field has a negative length",
+            ));
+        }
+        if length == 0 {
+            return Ok(Vec::new());
+        }
+        let Value::AddressInt { value, provenance } = cells
+            .get(pointer_index)
+            .ok_or_else(|| unsupported(gap, "failure report pointer is missing"))?
+        else {
+            return Err(unsupported(gap, "failure report pointer has no provenance"));
+        };
+        let target = self
+            .address_target(*value as u128, &provenance.0)
+            .ok_or_else(|| unsupported(gap, "failure report pointer has invalid provenance"))?;
+        // The report's JSON field limit does not limit the diagnostic on
+        // stderr. Reuse the ordinary bounded text reader so explicit messages
+        // retain all bytes while malformed lengths cannot cause an unbounded
+        // allocation or read loop.
+        self.text_bytes_bounded(
+            &Value::Aggregate(vec![Value::Ptr(Some(target)), Value::Int(length)]),
+            Some(self.stderr_cap.saturating_sub(self.stderr_bytes)),
+            ResourceLimitKind::StderrBytes,
+        )
+    }
+
     /// Materialize a text value: mint a heap byte allocation holding `bytes` and
     /// build the ABI-shaped header over it. A two-slot `slots` yields a
     /// `str`/`Str(N)` view `{ptr, len}`; a three-slot `slots` yields an owned
@@ -1689,13 +1729,10 @@ impl<'a> Interp<'a> {
     /// Whether `kind` is a §5.1 failure-channel call the interpreter models,
     /// validating its whole static shape before an operand is evaluated.
     ///
-    /// `@assert` lowers to the staging call and the terminal report in every
-    /// build, not only in a test image (spec 4.13:5d, ADR-0083), so an ordinary
-    /// corpus program reaches both — and, unlike the comparison family, with no
-    /// rendering in front of them to stop at. The channel itself is invisible
-    /// here: an ordinary process has no descriptor 3, so the frame write fails
-    /// with `EBADF` by design and what is left to model is the staging call's
-    /// absence of effect and the terminal call's pinned abort.
+    /// `@assert` lowers to one terminal report in every build, not only in a
+    /// test image. The caller-owned descriptor is ordinary aggregate data and
+    /// has no independent runtime effect here; the channel itself is invisible
+    /// to an ordinary process, so the frame write fails with `EBADF` by design.
     fn preflight_test_channel_call(
         &self,
         kind: RuntimeCallKind,
@@ -1704,7 +1741,6 @@ impl<'a> Interp<'a> {
         result_ty: Type,
     ) -> Step<bool> {
         let expected = match kind {
-            RuntimeCallKind::TestFailureSite => 3,
             RuntimeCallKind::TestFailAssert => 2,
             _ => return Ok(false),
         };
@@ -1715,24 +1751,22 @@ impl<'a> Interp<'a> {
                 format!("runtime call '{name}' arity"),
             ));
         }
-        if !arg_modes.iter().all(|mode| *mode == CfgArgMode::Normal) {
+        if arg_modes[0] != CfgArgMode::Borrow || arg_modes[1] != CfgArgMode::Normal {
             return Err(unsupported(
                 UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature),
                 format!("runtime call '{name}' argument mode"),
             ));
         }
         let signature_matches = match kind {
-            RuntimeCallKind::TestFailureSite => {
-                self.is_str_like_type(arg_types[0])
-                    && arg_types[1] == Type::U32
-                    && arg_types[2] == Type::U32
-                    && result_ty == Type::UNIT
+            RuntimeCallKind::TestFailAssert => {
+                let report = matches!(arg_types[0].kind(), TypeKind::Array(id) if {
+                    let (element, length) = self.type_pool().array_def(id);
+                    element == Type::U64
+                        && length == rue_runtime_abi::FAILURE_REPORT_SLOTS as u64
+                });
+                report && arg_types[1] == Type::U32 && result_ty == PANIC_CFG_RESULT_TYPE
             }
-            _ => {
-                self.is_str_like_type(arg_types[0])
-                    && arg_types[1] == Type::U32
-                    && result_ty == PANIC_CFG_RESULT_TYPE
-            }
+            _ => false,
         };
         if !signature_matches {
             return Err(unsupported(
@@ -1743,28 +1777,91 @@ impl<'a> Interp<'a> {
         Ok(true)
     }
 
+    /// Validate the canonical runtime panic calls. Their source site is a
+    /// borrowed fixed array, while the message remains an ordinary text view.
+    fn preflight_panic_call(
+        &self,
+        kind: RuntimeCallKind,
+        arg_types: &[Type],
+        arg_modes: &[CfgArgMode],
+        result_ty: Type,
+    ) -> Step<bool> {
+        let expected = match kind {
+            RuntimeCallKind::PanicNoMessage => 1,
+            RuntimeCallKind::Panic => 2,
+            _ => return Ok(false),
+        };
+        if arg_types.len() != expected || arg_modes.len() != expected {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallArity),
+                format!("runtime call '{}' arity", kind.helper().symbol()),
+            ));
+        }
+        if arg_modes[0] != CfgArgMode::Borrow
+            || (expected == 2 && arg_modes[1] != CfgArgMode::Normal)
+        {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature),
+                format!("runtime call '{}' argument mode", kind.helper().symbol()),
+            ));
+        }
+        let site = matches!(arg_types[0].kind(), TypeKind::Array(id) if {
+            let (element, length) = self.type_pool().array_def(id);
+            element == Type::U64 && length == rue_runtime_abi::FAILURE_SITE_SLOTS as u64
+        });
+        let message = expected == 1 || self.is_text_type(arg_types[1]);
+        if !site || !message || result_ty != PANIC_CFG_RESULT_TYPE {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature),
+                format!("runtime call '{}' signature", kind.helper().symbol()),
+            ));
+        }
+        Ok(true)
+    }
+
     /// Execute one modeled failure-channel call.
     ///
-    /// The staging call has no observable effect in an ordinary program, and
-    /// the terminal one writes exactly what spec 4.13:5d pins — the same two
+    /// The terminal call writes exactly what spec 4.13:5d pins — the same two
     /// messages, and the same two trap categories, the conditional `@assert`
     /// intrinsic wrote before the report was added.
     fn eval_test_channel_call(&mut self, kind: RuntimeCallKind, args: &[Value]) -> Step<Value> {
-        if kind == RuntimeCallKind::TestFailureSite {
-            return Ok(Value::Unit);
+        if kind == RuntimeCallKind::PanicNoMessage {
+            return self.abort_with_stderr(TrapKind::UserPanic, &[b"panic\n"]);
         }
-        match args {
-            [_, Value::Int(0)] => {
+        if kind == RuntimeCallKind::Panic {
+            let [_, message] = args else {
+                unreachable!("preflight validated the panic call");
+            };
+            let bytes = self.text_bytes(message)?;
+            return self.abort_with_stderr(TrapKind::UserPanic, &[b"panic: ", &bytes, b"\n"]);
+        }
+        if kind != RuntimeCallKind::TestFailAssert || args.len() != 2 {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature),
+                "runtime call is not a modeled test assertion",
+            ));
+        }
+        let Value::Aggregate(report) = &args[0] else {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature),
+                "runtime assertion report is not an aggregate",
+            ));
+        };
+        if report.len() != rue_runtime_abi::FAILURE_REPORT_SLOTS {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature),
+                "runtime assertion report has the wrong shape",
+            ));
+        }
+        match &args[1] {
+            Value::Int(0) => {
                 self.abort_with_stderr(TrapKind::AssertionFailure, &[b"assertion failed\n"])
             }
-            [message, Value::Int(_)] if Self::text_ptr_len(message).is_some() => {
-                let bytes = self.text_bytes(message)?;
+            Value::Int(_) => {
+                let bytes = self.failure_report_field_bytes(report, 5, 6)?;
                 self.abort_with_stderr(TrapKind::UserPanic, &[b"panic: ", &bytes, b"\n"])
             }
-            _ => Err(unsupported(
-                UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature),
-                "runtime call '__rue_test_fail_assert' runtime value shape",
-            )),
+            _ => unreachable!("preflight validated the assertion selector"),
         }
     }
 
@@ -2376,8 +2473,7 @@ impl<'a> Interp<'a> {
                 args.len() == 4
             }
             rue_air::IntrinsicOperation::Syscall => (1..=7).contains(&args.len()),
-            rue_air::IntrinsicOperation::Panic
-            | rue_air::IntrinsicOperation::AssertFailed
+            rue_air::IntrinsicOperation::AssertFailed
             | rue_air::IntrinsicOperation::BoundsCheck
             | rue_air::IntrinsicOperation::DebugI64
             | rue_air::IntrinsicOperation::DebugU64
@@ -2409,7 +2505,6 @@ impl<'a> Interp<'a> {
             | rue_air::IntrinsicOperation::FloatCeil
             | rue_air::IntrinsicOperation::FloatTrunc
             | rue_air::IntrinsicOperation::FloatRound => args.len() == 1,
-            rue_air::IntrinsicOperation::PanicNoMessage => args.is_empty(),
         };
         if !arity_matches {
             return UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicArity);
@@ -2548,9 +2643,7 @@ impl<'a> Interp<'a> {
                 (ty(0) == Type::NEVER && result_ty.is_float())
                     || (ty(0).is_float() && result_ty.is_float() && ty(0) != result_ty)
             }
-            rue_air::IntrinsicOperation::PanicNoMessage
-            | rue_air::IntrinsicOperation::Panic
-            | rue_air::IntrinsicOperation::AssertFailed
+            rue_air::IntrinsicOperation::AssertFailed
             | rue_air::IntrinsicOperation::BoundsCheck
             | rue_air::IntrinsicOperation::DebugI64
             | rue_air::IntrinsicOperation::DebugU64
@@ -2572,7 +2665,7 @@ impl<'a> Interp<'a> {
         }
     }
 
-    /// Validate every static part of `@panic` / `@assert` before evaluating an
+    /// Validate every static part of the conditional `@assert` before evaluating an
     /// operand. This keeps malformed outer CFG from being hidden by an
     /// external-dependency or model-gap operand and mirrors the native
     /// lowering's exact ABI assumptions.
@@ -2584,9 +2677,6 @@ impl<'a> Interp<'a> {
         result_ty: Type,
     ) -> Step<Option<AbortIntrinsic>> {
         let intrinsic = match operation {
-            rue_air::IntrinsicOperation::PanicNoMessage | rue_air::IntrinsicOperation::Panic => {
-                AbortIntrinsic::Panic
-            }
             rue_air::IntrinsicOperation::AssertFailed => AbortIntrinsic::Assert,
             rue_air::IntrinsicOperation::BoundsCheck
             | rue_air::IntrinsicOperation::DebugI64
@@ -2638,8 +2728,6 @@ impl<'a> Interp<'a> {
             | rue_air::IntrinsicOperation::BitCast => return Ok(None),
         };
         let arity_matches = match operation {
-            rue_air::IntrinsicOperation::PanicNoMessage => args.is_empty(),
-            rue_air::IntrinsicOperation::Panic => args.len() == 1,
             rue_air::IntrinsicOperation::AssertFailed => args.len() == 1,
             rue_air::IntrinsicOperation::BoundsCheck
             | rue_air::IntrinsicOperation::DebugI64
@@ -2699,12 +2787,6 @@ impl<'a> Interp<'a> {
 
         let ty = |index: usize| cfg.get_inst(args[index]).ty;
         let signature_matches = match intrinsic {
-            AbortIntrinsic::Panic => {
-                result_ty == PANIC_CFG_RESULT_TYPE
-                    && (args.is_empty()
-                        || self.is_str_like_type(ty(0))
-                        || self.is_owned_string_type(ty(0)))
-            }
             // The conditional `assert` intrinsic carries its condition and
             // nothing else since `@assert` moved to the §5.1 report
             // (RUE-1953); a comptime-decidable `@assert_eq` is what still
@@ -2765,20 +2847,6 @@ impl<'a> Interp<'a> {
         // true path.
         let values = self.eval_all(cfg, frame, args)?;
         match intrinsic {
-            AbortIntrinsic::Panic => match values.as_slice() {
-                [] => self.abort_with_stderr(TrapKind::UserPanic, &[b"panic\n"]),
-                [message] if Self::text_ptr_len(message).is_some() => {
-                    // The message is a materialized `str` view; read its bytes
-                    // from the heap before aborting (RUE-1010 §6.13).
-                    let bytes = self.text_bytes(message)?;
-                    self.abort_with_stderr(TrapKind::UserPanic, &[b"panic: ", &bytes, b"\n"])
-                }
-                [_] => Err(unsupported(
-                    UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
-                    "intrinsic @panic runtime value shape",
-                )),
-                _ => unreachable!("@panic arity was preflighted"),
-            },
             AbortIntrinsic::Assert => {
                 let [Value::Bool(condition)] = values.as_slice() else {
                     return Err(unsupported(
@@ -2899,9 +2967,7 @@ impl<'a> Interp<'a> {
                 self.write_dbg_text(text.into_bytes())?
             }
             rue_air::IntrinsicOperation::DebugStr => self.write_dbg(&val, arg_ty)?,
-            rue_air::IntrinsicOperation::PanicNoMessage
-            | rue_air::IntrinsicOperation::Panic
-            | rue_air::IntrinsicOperation::AssertFailed
+            rue_air::IntrinsicOperation::AssertFailed
             | rue_air::IntrinsicOperation::BoundsCheck
             | rue_air::IntrinsicOperation::ReadLine
             | rue_air::IntrinsicOperation::ParseI32
@@ -4331,7 +4397,10 @@ impl<'a> Interp<'a> {
                 };
                 let is_channel_call = if let Some(runtime) = runtime {
                     !is_string_builtin
-                        && self.preflight_test_channel_call(*runtime, &arg_types, &arg_modes, ty)?
+                        && (self.preflight_panic_call(*runtime, &arg_types, &arg_modes, ty)?
+                            || self.preflight_test_channel_call(
+                                *runtime, &arg_types, &arg_modes, ty,
+                            )?)
                 } else {
                     false
                 };
@@ -4494,9 +4563,7 @@ impl<'a> Interp<'a> {
                     rue_air::IntrinsicOperation::BoundsCheck => {
                         self.eval_bounds_check_intrinsic(cfg, frame, *operation, &args, ty)?
                     }
-                    rue_air::IntrinsicOperation::PanicNoMessage
-                    | rue_air::IntrinsicOperation::Panic
-                    | rue_air::IntrinsicOperation::AssertFailed => {
+                    rue_air::IntrinsicOperation::AssertFailed => {
                         let Some(intrinsic) =
                             self.preflight_abort_intrinsic(cfg, *operation, &args, ty)?
                         else {
@@ -7288,9 +7355,7 @@ impl<'a> Interp<'a> {
                 allocation.provenance[start..end].fill(None);
                 Ok(Some(Value::Unit))
             }
-            rue_air::IntrinsicOperation::PanicNoMessage
-            | rue_air::IntrinsicOperation::Panic
-            | rue_air::IntrinsicOperation::AssertFailed
+            rue_air::IntrinsicOperation::AssertFailed
             | rue_air::IntrinsicOperation::BoundsCheck
             | rue_air::IntrinsicOperation::DebugI64
             | rue_air::IntrinsicOperation::DebugU64

@@ -599,7 +599,7 @@ impl<Reg: Copy + Eq + std::hash::Hash + 'static> LivenessInfo<Reg> {
     /// then silently read off half a value — which is how a diverging use
     /// recorded against a move's destination went missing, relaxed the clobber
     /// rule for the merged interval, and handed an arm's live value a register
-    /// the arm's staging call destroys (RUE-2065).
+    /// the arm's report setup destroys (RUE-2065).
     ///
     /// The facts, and what merging each one means:
     ///
@@ -702,7 +702,7 @@ impl<Reg: Copy + Eq> ClobberIndex<Reg> {
     /// print a fixed message and exit without a backtrace (RUE-1146's audit).
     ///
     /// The same reasoning reaches past the trap call to every instruction in
-    /// its region. A `@panic` arm stages a failure site with an ordinary
+    /// its region. A `@panic` arm prepares a failure site with an ordinary
     /// *returning* call before aborting, and that call's clobber sits textually
     /// inside the live range of every value the guarded function holds across
     /// the guard — the receiver and index of a bounds-checked accessor, say.
@@ -3328,9 +3328,9 @@ mod tests {
     #[test]
     fn clobber_index_ignores_a_returning_call_inside_a_diverging_region() {
         // A `@panic` arm: the guarded function's value is defined at 0 and used
-        // at 4, and the arm between them stages a failure site with an ordinary
+        // at 4, and the arm between them prepares a failure site with an ordinary
         // returning call at 1 before aborting at 3. Instructions 1..=3 are
-        // reachable only on the path that aborts, so the staging call's clobber
+        // reachable only on the path that aborts, so the report setup's clobber
         // cannot destroy a value with no use in the arm.
         let mut liveness = make_liveness_with_clobbers(vec![(0, 0, 4)], REG0_AT_1_AND_3);
         mark_non_returning(&mut liveness, &[3]);
@@ -3346,8 +3346,8 @@ mod tests {
 
     #[test]
     fn clobber_index_keeps_a_diverging_clobber_for_a_value_the_arm_reads() {
-        // The same shape, except the value is the staged message the arm itself
-        // reads after the staging call returns. That use is on the aborting
+        // The same shape, except the value is the report message the arm itself
+        // reads after the report setup returns. That use is on the aborting
         // path, so the clobber is real and no relaxation applies to it.
         let mut liveness = make_liveness_with_clobbers(vec![(0, 0, 4)], REG0_AT_1_AND_3);
         mark_non_returning(&mut liveness, &[3]);
@@ -3417,12 +3417,12 @@ mod tests {
     fn coalescing_carries_a_diverging_use_to_the_representative() {
         // The shape an `if`/`else` join lowers to when a `@panic` arm reads the
         // joined value: the arm's copy `mov v1, v0` at 1 is a coalesce
-        // candidate, the arm stages a failure site with a returning call at 2
+        // candidate, the arm prepares a failure site with a returning call at 2
         // that clobbers a caller-saved register, and the arm reads the merged
         // value at 3 before aborting at 4. Liveness recorded that read against
         // v1, so unless coalescing folds the fact into the representative the
         // clobber rule reads "no diverging use" off v0 and hands it the very
-        // register the staging call destroys.
+        // register the report setup destroys.
         let mut liveness = make_liveness_with_clobbers(vec![(0, 0, 1), (1, 1, 4)], REG9_AT_2);
         mark_non_returning(&mut liveness, &[4]);
         mark_diverging(&mut liveness, &[2, 3, 4], &[1]);
@@ -3462,7 +3462,7 @@ mod tests {
         assert_eq!(
             allocation[VReg::new(0)],
             Some(Allocation::Register(TestReg(0))),
-            "the arm reads the merged value across the staging call, so the \
+            "the arm reads the merged value across report setup, so the \
              clobbered caller-saved register is not a legal home for it"
         );
         assert_eq!(used_callee_saved, vec![TestReg(0)]);

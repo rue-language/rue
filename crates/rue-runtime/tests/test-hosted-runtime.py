@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run the hosted runtime smoke test against the native archive."""
 
+import json
 import os
 import platform
 import subprocess
@@ -48,6 +49,7 @@ def run():
             str(executable),
             str(test_dir / "hosted-main.c"),
             str(test_dir / "hosted-pthread.c"),
+            str(test_dir / "hosted-reporting.c"),
             archive,
             *libraries,
         ]
@@ -64,6 +66,54 @@ def run():
             raise RuntimeError(
                 f"hosted runtime exited {completed.returncode}, expected 37"
             )
+        report_path = Path(directory) / "report.jsonl"
+        child_environment["RUE_HOSTED_REPORT_FILE"] = str(report_path)
+        unarmed = subprocess.run(
+            [str(executable), "panic-unarmed"], capture_output=True,
+            env=child_environment, timeout=10,
+        )
+        if unarmed.returncode != 101 or unarmed.stderr != b"panic\n":
+            raise RuntimeError(
+                f"hosted startup did not initialize panic reporting: {unarmed}"
+            )
+        if report_path.read_bytes() != b"caller-owned descriptor\n":
+            raise RuntimeError("unarmed reporting overwrote the caller's descriptor 3")
+
+        left_message = b'left:"\\\n' + b"L" * (5000 - 8)
+        right_message = b'right:\n\\"' + b"R" * (4100 - 9)
+        expected = {
+            'left/"thread\none.rue': (111, 7, left_message),
+            'a-different/right\\worker.rue': (999, 123, right_message),
+        }
+        for mode in ["assert-race", "complete-race"]:
+            for iteration in range(12):
+                completed = subprocess.run(
+                    [str(executable), mode], capture_output=True,
+                    env=child_environment, timeout=10,
+                )
+                if completed.returncode != 101 or completed.stdout:
+                    raise RuntimeError(f"{mode} iteration {iteration} failed: {completed}")
+                records = [json.loads(line) for line in report_path.read_bytes().splitlines()]
+                if mode == "complete-race" and len(records) == 2:
+                    if records.pop(0) != {"record": "complete", "schema": "1.0"}:
+                        raise RuntimeError("completion and failure frames interleaved")
+                if len(records) != 1:
+                    raise RuntimeError(f"{mode} must end in exactly one whole failure: {records}")
+                record = records[0]
+                location = record["location"]
+                if mode == "complete-race" and location["file"] != 'a-different/right\\worker.rue':
+                    raise RuntimeError("completion race reported an impossible caller")
+                line, column, message = expected[location["file"]]
+                if location != {"file": location["file"], "line": line, "column": column}:
+                    raise RuntimeError(f"concurrent source sites were mixed: {location}")
+                framed = message[:4096].decode("utf-8") + " …[truncated]"
+                if record != {
+                    "record": "failure", "schema": "1.0", "kind": "assert",
+                    "message": framed, "location": location,
+                }:
+                    raise RuntimeError(f"{mode} emitted an incoherent or unbounded report")
+                if completed.stderr != b"panic: " + message + b"\n":
+                    raise RuntimeError(f"{mode} terminated before the winning stderr completed")
     return 0
 
 

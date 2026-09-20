@@ -86,10 +86,8 @@ fn call_sequence(unit: &crate::session::RootedCfgUnit) -> Vec<String> {
     sequence
 }
 
-/// The failing arm's order is a contract with the runtime: both renderings
-/// first, then the staging call, then the terminal report — because the site
-/// the second call adopts is whatever the first staged, and nothing may run
-/// between them.
+/// The failing arm renders both operands before constructing its caller-owned
+/// report and issuing the terminal report.
 #[test]
 fn the_failing_arm_renders_then_stages_then_reports() {
     let output = rooted_cfg(
@@ -111,7 +109,6 @@ fn main() -> i32 {
             "__rue_fn_main_2erue__value",
             "printer#0",
             "printer#0",
-            "TestFailureSite",
             "TestFailComparison",
         ]
     );
@@ -150,8 +147,7 @@ fn main() -> i32 {
     );
 }
 
-/// The staged site must be consumed by the very next instruction: a call
-/// between them would report against a location it did not stage.
+/// The terminal report remains the final runtime call after both renderings.
 #[test]
 fn the_channel_pair_is_adjacent_in_the_lowered_cfg() {
     let output = rooted_cfg(
@@ -172,25 +168,13 @@ fn main() -> i32 {
         rue_cfg::CfgInstData::Call { runtime, .. } => *runtime,
         _ => None,
     };
-    let block =
-        unit.cfg()
-            .blocks()
-            .iter()
-            .find(|block| {
-                block.insts.iter().any(|value| {
-                    runtime_of(value) == Some(rue_air::RuntimeCallKind::TestFailureSite)
-                })
+    assert!(
+        unit.cfg().blocks().iter().any(|block| {
+            block.insts.iter().any(|value| {
+                runtime_of(value) == Some(rue_air::RuntimeCallKind::TestFailComparison)
             })
-            .expect("the failing arm stages a site");
-    let staged = block
-        .insts
-        .iter()
-        .position(|value| runtime_of(value) == Some(rue_air::RuntimeCallKind::TestFailureSite))
-        .expect("the staging call is in this block");
-    assert_eq!(
-        block.insts.get(staged + 1).and_then(runtime_of),
-        Some(rue_air::RuntimeCallKind::TestFailComparison),
-        "a staged site must be consumed by the very next instruction"
+        }),
+        "the failure arm emits the canonical comparison report"
     );
 }
 
@@ -331,12 +315,7 @@ fn main() -> i32 {
     .expect("a constant comparison is legal");
     assert_eq!(
         call_sequence(unit(&output, "check")),
-        [
-            "printer#0",
-            "printer#0",
-            "TestFailureSite",
-            "TestFailComparison",
-        ],
+        ["printer#0", "printer#0", "TestFailComparison",],
         "a statically failing comparison reports like any other"
     );
     assert_eq!(

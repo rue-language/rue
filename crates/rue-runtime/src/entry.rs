@@ -116,14 +116,9 @@ pub(crate) extern "C" fn __rue_segv_handler(_sig: i32, info: *const u8, _context
 ))]
 const _: crate::fault::SegvHandler = __rue_segv_handler;
 
-/// Record the stack window and install the SIGSEGV handler before user code
-/// runs, so a fault aborts cleanly (RUE-645) instead of dying with a raw
-/// SIGSEGV (exit 139), and is classified against a real stack bound (RUE-2163).
-///
-/// `stack_top` is the stack pointer at process entry. Best-effort throughout:
-/// if the handler cannot be installed the program simply keeps the default
-/// SIGSEGV disposition, and if the platform cannot report `RLIMIT_STACK` the
-/// classification falls back to its own conservative window.
+/// Initialize process-wide runtime state before user code. Hosted entries
+/// reach this only after libc startup; their parked I/O, reporting, and fault
+/// state must all be ready before any worker can run.
 #[cfg(all(
     not(test),
     any(
@@ -132,15 +127,21 @@ const _: crate::fault::SegvHandler = __rue_segv_handler;
         all(target_arch = "aarch64", target_os = "linux")
     )
 ))]
-#[cfg(not(rue_hosted_threads))]
-fn arm_segv_handler(stack_top: usize) {
-    crate::fault::record_stack_window(stack_top, platform::stack_limit());
-    platform::install_segv_handler(__rue_segv_handler);
-}
-
-#[cfg(all(rue_hosted_threads, not(test)))]
-fn arm_segv_handler(stack_top: usize) -> Result<(), i32> {
-    crate::fault::initialize_main(stack_top, platform::stack_limit())
+fn initialize_runtime(stack_top: usize) -> Result<(), i32> {
+    #[cfg(rue_hosted_threads)]
+    {
+        crate::io::initialize_hosted()?;
+        // SAFETY: startup calls this once before any user worker can access
+        // the reporting mutex, whose static address remains stable.
+        unsafe { crate::test_channel::initialize_hosted_reporting() }?;
+        crate::fault::initialize_main(stack_top, platform::stack_limit())
+    }
+    #[cfg(not(rue_hosted_threads))]
+    {
+        crate::fault::record_stack_window(stack_top, platform::stack_limit());
+        platform::install_segv_handler(__rue_segv_handler);
+        Ok(())
+    }
 }
 
 /// Normal SysV function called by the prologue-free x86-64 Linux entry shim.
@@ -161,7 +162,9 @@ pub(crate) fn __rue_x86_64_linux_start(stack: *const usize) -> ! {
 
     // The initial `%rsp` is the base of the main stack, which is what the
     // SIGSEGV handler classifies a faulting address against (RUE-2163).
-    arm_segv_handler(stack as usize);
+    if initialize_runtime(stack as usize).is_err() {
+        platform::exit(101);
+    }
 
     // SAFETY: `main` is the linked Rue entry function and uses the C ABI.
     let exit_code = unsafe { main() };
@@ -204,11 +207,8 @@ extern "C" fn __rue_hosted_main(
             envp as *const *const u8,
         )
     };
-    if crate::io::initialize_hosted().is_err() {
-        platform::exit(101);
-    }
     let stack = HOSTED_START_STACK.load(core::sync::atomic::Ordering::Acquire);
-    if arm_segv_handler(stack).is_err() {
+    if initialize_runtime(stack).is_err() {
         platform::exit(101);
     }
 
@@ -324,10 +324,6 @@ pub(crate) unsafe fn _main(argc: i32, argv: *const *const u8, envp: *const *cons
     // `std.env` can read them later (RUE-935).
     // SAFETY: `argv`/`envp` are the loader-supplied vectors for this process.
     unsafe { crate::process::capture(argc as u64, argv, envp) };
-    #[cfg(rue_hosted_threads)]
-    if crate::io::initialize_hosted().is_err() {
-        platform::exit(101);
-    }
 
     // dyld hands us argc/argv/envp rather than the raw entry stack, so the
     // stack base the SIGSEGV handler classifies against is read from `sp` here
@@ -338,12 +334,9 @@ pub(crate) unsafe fn _main(argc: i32, argv: *const *const u8, envp: *const *cons
     unsafe {
         asm!("mov {}, sp", out(reg) stack_top, options(nomem, nostack, preserves_flags));
     }
-    #[cfg(rue_hosted_threads)]
-    if arm_segv_handler(stack_top).is_err() {
+    if initialize_runtime(stack_top).is_err() {
         platform::exit(101);
     }
-    #[cfg(not(rue_hosted_threads))]
-    arm_segv_handler(stack_top);
 
     let exit_code: i32;
     // SAFETY: This is the program entry point called by the kernel.
@@ -393,7 +386,9 @@ pub(crate) fn __rue_aarch64_linux_start(stack: *const usize) -> ! {
 
     // The initial `sp` is the base of the main stack, which is what the SIGSEGV
     // handler classifies a faulting address against (RUE-2163).
-    arm_segv_handler(stack as usize);
+    if initialize_runtime(stack as usize).is_err() {
+        platform::exit(101);
+    }
 
     let exit_code: i32;
     // SAFETY:

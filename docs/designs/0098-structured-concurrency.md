@@ -56,8 +56,10 @@ that must change before safe threads are public:
 
 - Every process-exit path must terminate all threads. The initial prerequisite
   replaces Linux's thread-exit syscall with `exit_group`.
-- Assertion locations are staged globally across two runtime calls, and a
-  structured diagnostic is emitted through multiple writes.
+- Assertion locations and complete failure reports are caller-owned records,
+  and one private parking gate serializes each ordinary terminal report across
+  its complete frame, stderr, and process exit. Signal and explicit raw-exit
+  paths bypass that gate and may truncate a best-effort final record.
 - Signal disposition is process-wide but alternate signal stacks are per
   thread. `fault.rs` currently records only the main stack's window.
 - Process arguments and environment are published during startup.

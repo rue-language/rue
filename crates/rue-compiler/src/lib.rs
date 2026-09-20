@@ -253,8 +253,6 @@ pub(crate) use semantic_symbols::SemanticSymbolUniverse;
 pub(crate) use syntax::SyntaxWork;
 
 pub(crate) use lasso::ThreadedRodeo;
-#[cfg(test)]
-pub(crate) use rue_air::Type;
 pub(crate) use rue_codegen::RelocationKind;
 pub(crate) use rue_linker::{
     Archive, CodeRelocation, Linker, ObjectBuilder, ObjectFile, RelocationType,

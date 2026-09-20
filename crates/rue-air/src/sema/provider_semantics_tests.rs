@@ -117,7 +117,8 @@ fn provider_body_keeps_reserved_looking_source_intrinsics_unknown() {
 // never changes that result, and only unit trailing assertions synthesize a
 // return. The `diverge` callee crosses as a durable fact.
 //
-// The two are different AIR shapes. `@panic` is one intrinsic. `@assert` is a
+// The two are different AIR shapes. `@panic` is one canonical runtime call.
+// `@assert` is a
 // branch with no else whose then-arm reports the failure on the ADR-0083 §5.1
 // channel and aborts, so its result type is the branch's — and its failing arm
 // is a pair of runtime calls, not an intrinsic.
@@ -156,7 +157,16 @@ fn provider_body_panic_is_never_and_assert_is_unit() {
                 let selected = if asserts {
                     matches!(inst.data, AirInstData::Branch { .. })
                 } else {
-                    matches!(inst.data, AirInstData::Intrinsic { .. })
+                    matches!(
+                        inst.data,
+                        AirInstData::Call {
+                            runtime: Some(
+                                crate::RuntimeCallKind::Panic
+                                    | crate::RuntimeCallKind::PanicNoMessage
+                            ),
+                            ..
+                        }
+                    )
                 };
                 selected.then_some(inst.ty)
             })
