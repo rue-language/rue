@@ -51,19 +51,18 @@ separate RUE-1885 workstream and are not a prerequisite for explicit contexts.
 
 The allocator in `crates/rue-allocator/src/lib.rs` already serializes its
 mutable state and requires a concurrently callable page mapper. Replacing the
-allocator is not a concurrency prerequisite. The runtime does have assumptions
-that must change before safe threads are public:
+allocator is not a concurrency prerequisite. The runtime provides these foundations before safe threads are public:
 
-- Every process-exit path must terminate all threads. The initial prerequisite
-  replaces Linux's thread-exit syscall with `exit_group`.
+- Every process-exit path terminates all threads. Linux uses `exit_group`.
 - Assertion locations and complete failure reports are caller-owned records,
   and one private parking gate serializes each ordinary terminal report across
   its complete frame, stderr, and process exit. Signal and explicit raw-exit
   paths bypass that gate and may truncate a best-effort final record.
-- Signal disposition is process-wide but alternate signal stacks are per
-  thread. `fault.rs` currently records only the main stack's window.
-- Process arguments and environment are published during startup.
-- Standard input holds a spin lock while performing a blocking read.
+- Signal disposition is process-wide. Each worker has a dedicated alternate
+  signal stack and a registered stack window retained through its join.
+- Process arguments and environment are published immutably during startup.
+- Hosted standard-input contention parks while another thread performs a
+  blocking read.
 
 The compiler's own query workers are an implementation of the compiler, not a
 Rue program runtime. Program concurrency neither imports that scheduler nor
@@ -320,8 +319,8 @@ and memory costs before claiming no-Pin or no-allocation async.
 
 - [x] **Process-wide Linux termination** — RUE-2273.
 - [x] **This decision and adversarial design review** — RUE-2274.
-- [ ] **Pthread lifecycle, runtime safety, and hosted integration** — RUE-2275.
-- [ ] **Canonical transferability and explicit thread affinity** — RUE-2276.
+- [x] **Pthread lifecycle, runtime safety, and hosted integration** — RUE-2275.
+- [x] **Canonical transferability and explicit thread affinity** — RUE-2276.
 - [ ] **Scoped `join_inout`, native validation, and first workload** — RUE-2277.
 - [ ] **Consuming owned fork/join adapters** — RUE-2278.
 - [ ] **Scoped sharing and bounded parallel algorithms** — RUE-2279.

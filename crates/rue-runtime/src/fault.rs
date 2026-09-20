@@ -60,11 +60,116 @@
 //! fault at the address it touched, which is the more useful of the two
 //! answers.
 
+#[cfg(all(test, rue_hosted_threads))]
+extern crate std;
+
 #[cfg(rue_hosted_threads)]
 use core::marker::PhantomData;
 #[cfg(rue_hosted_threads)]
 use core::sync::atomic::{AtomicU8, AtomicU64};
 use core::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(all(test, rue_hosted_threads))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TestFailurePoint {
+    Reserve,
+    Allocate,
+    MutexInit,
+    CondvarInit,
+    Create,
+    WorkerRegistration,
+    WorkerInitialization,
+}
+
+#[cfg(all(test, rue_hosted_threads))]
+impl TestFailurePoint {
+    const fn code(self) -> u8 {
+        match self {
+            Self::Reserve => 1,
+            Self::Allocate => 2,
+            Self::MutexInit => 3,
+            Self::CondvarInit => 4,
+            Self::Create => 5,
+            Self::WorkerRegistration => 6,
+            Self::WorkerInitialization => 7,
+        }
+    }
+}
+
+#[cfg(all(test, rue_hosted_threads))]
+static TEST_FAILURE: AtomicU8 = AtomicU8::new(0);
+
+#[cfg(all(test, rue_hosted_threads))]
+pub(crate) fn set_test_failure(point: TestFailurePoint) {
+    assert_eq!(
+        TEST_FAILURE.swap(point.code(), Ordering::SeqCst),
+        0,
+        "runtime failure injection is not nestable"
+    );
+}
+
+#[cfg(all(test, rue_hosted_threads))]
+pub(crate) fn clear_test_failure() {
+    assert_eq!(
+        TEST_FAILURE.swap(0, Ordering::SeqCst),
+        0,
+        "failure was not consumed"
+    );
+}
+
+#[cfg(all(test, rue_hosted_threads))]
+pub(crate) fn take_test_failure(point: TestFailurePoint) -> bool {
+    TEST_FAILURE
+        .compare_exchange(point.code(), 0, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+}
+
+#[cfg(all(test, rue_hosted_threads))]
+pub(crate) static REGISTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(all(test, rue_hosted_threads))]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct TestResourceCounts {
+    pub(crate) slot_acquires: usize,
+    pub(crate) slot_releases: usize,
+    pub(crate) stack_allocations: usize,
+    pub(crate) stack_destroys: usize,
+    pub(crate) stack_registrations: usize,
+    pub(crate) mutex_inits: usize,
+    pub(crate) mutex_destroys: usize,
+    pub(crate) condvar_inits: usize,
+    pub(crate) condvar_destroys: usize,
+    pub(crate) pthread_creates: usize,
+    pub(crate) pthread_joins: usize,
+}
+
+#[cfg(all(test, rue_hosted_threads))]
+static TEST_SLOT_ACQUIRES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(all(test, rue_hosted_threads))]
+static TEST_SLOT_RELEASES: AtomicUsize = AtomicUsize::new(0);
+#[cfg(all(test, rue_hosted_threads))]
+static TEST_STACK_ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(all(test, rue_hosted_threads))]
+static TEST_STACK_DESTROYS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(all(test, rue_hosted_threads))]
+static TEST_STACK_REGISTRATIONS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(all(test, rue_hosted_threads))]
+pub(crate) fn test_resource_counts() -> TestResourceCounts {
+    TestResourceCounts {
+        slot_acquires: TEST_SLOT_ACQUIRES.load(Ordering::Acquire),
+        slot_releases: TEST_SLOT_RELEASES.load(Ordering::Acquire),
+        stack_allocations: TEST_STACK_ALLOCATIONS.load(Ordering::Acquire),
+        stack_destroys: TEST_STACK_DESTROYS.load(Ordering::Acquire),
+        stack_registrations: TEST_STACK_REGISTRATIONS.load(Ordering::Acquire),
+        mutex_inits: crate::join::test_mutex_inits(),
+        mutex_destroys: crate::join::test_mutex_destroys(),
+        condvar_inits: crate::join::test_condvar_inits(),
+        condvar_destroys: crate::join::test_condvar_destroys(),
+        pthread_creates: crate::join::test_pthread_creates(),
+        pthread_joins: crate::join::test_pthread_joins(),
+    }
+}
 
 /// The `SA_SIGINFO` handler shape every platform installs: the signal number,
 /// the kernel's `siginfo_t`, and the interrupted context.
@@ -99,7 +204,7 @@ static STACK_LOW: AtomicUsize = AtomicUsize::new(0);
 #[cfg(rue_hosted_threads)]
 const MAIN_SLOT: usize = 0;
 #[cfg(rue_hosted_threads)]
-const WORKER_SLOT_COUNT: usize = 64;
+pub(crate) const WORKER_SLOT_COUNT: usize = 64;
 #[cfg(rue_hosted_threads)]
 const SLOT_FREE: u8 = 0;
 #[cfg(rue_hosted_threads)]
@@ -196,6 +301,8 @@ unsafe impl Send for WorkerSlotToken {}
 #[cfg(rue_hosted_threads)]
 impl Drop for WorkerSlotReservation {
     fn drop(&mut self) {
+        #[cfg(test)]
+        TEST_SLOT_RELEASES.fetch_add(1, Ordering::AcqRel);
         FAULT_SLOTS[self.index]
             .state
             .store(SLOT_FREE, Ordering::Release);
@@ -205,6 +312,8 @@ impl Drop for WorkerSlotReservation {
 #[cfg(rue_hosted_threads)]
 impl Drop for WorkerSlotToken {
     fn drop(&mut self) {
+        #[cfg(test)]
+        TEST_SLOT_RELEASES.fetch_add(1, Ordering::AcqRel);
         FAULT_SLOTS[self.index]
             .state
             .store(SLOT_FREE, Ordering::Release);
@@ -236,6 +345,8 @@ impl Drop for WorkerRegistration {
                 )
                 .is_ok()
         );
+        #[cfg(test)]
+        TEST_SLOT_RELEASES.fetch_add(1, Ordering::AcqRel);
     }
 }
 
@@ -265,6 +376,10 @@ pub(crate) fn stack_window(stack_top: usize, stack_limit: Option<usize>) -> (usi
 
 #[cfg(rue_hosted_threads)]
 pub(crate) fn reserve_worker_slot() -> Result<WorkerSlotReservation, i32> {
+    #[cfg(test)]
+    if take_test_failure(TestFailurePoint::Reserve) {
+        return Err(libc::EAGAIN);
+    }
     for index in (MAIN_SLOT + 1)..WORKER_SLOT_COUNT {
         let slot = &FAULT_SLOTS[index];
         if slot
@@ -277,6 +392,8 @@ pub(crate) fn reserve_worker_slot() -> Result<WorkerSlotReservation, i32> {
             )
             .is_ok()
         {
+            #[cfg(test)]
+            TEST_SLOT_ACQUIRES.fetch_add(1, Ordering::AcqRel);
             return Ok(WorkerSlotReservation { index });
         }
     }
@@ -321,7 +438,16 @@ pub(crate) fn initialize_main(stack_top: usize, stack_limit: Option<usize>) -> R
 
 #[cfg(rue_hosted_threads)]
 pub(crate) fn allocate_worker_alt_stack() -> Result<AltSignalStack, i32> {
-    crate::platform::allocate_thread_alt_stack()
+    #[cfg(test)]
+    if take_test_failure(TestFailurePoint::Allocate) {
+        return Err(libc::ENOMEM);
+    }
+    let result = crate::platform::allocate_thread_alt_stack();
+    #[cfg(test)]
+    if result.is_ok() {
+        TEST_STACK_ALLOCATIONS.fetch_add(1, Ordering::AcqRel);
+    }
+    result
 }
 
 #[cfg(rue_hosted_threads)]
@@ -343,6 +469,8 @@ pub(crate) unsafe fn initialize_worker(
     // SAFETY: the function's contract dedicates this mapping to this one
     // pthread and keeps it alive until join.
     unsafe { crate::platform::register_thread_alt_stack(stack) }?;
+    #[cfg(test)]
+    TEST_STACK_REGISTRATIONS.fetch_add(1, Ordering::AcqRel);
     publish_worker_slot(token, crate::platform::worker_stack_bounds())
 }
 
@@ -373,7 +501,7 @@ fn publish_worker_slot(
 /// bounds-query failure to exercise reservation rollback. The caller must
 /// destroy the returned mapping after the worker thread has joined.
 #[cfg(all(test, rue_hosted_threads))]
-unsafe fn initialize_worker_with_bounds_for_test(
+pub(crate) unsafe fn initialize_worker_with_bounds_for_test(
     token: WorkerSlotToken,
     stack: &AltSignalStack,
     bounds: Result<(usize, usize), i32>,
@@ -381,6 +509,7 @@ unsafe fn initialize_worker_with_bounds_for_test(
     // SAFETY: the test dedicates this mapping to the child and joins before
     // destroying it.
     unsafe { crate::platform::register_thread_alt_stack(stack) }?;
+    TEST_STACK_REGISTRATIONS.fetch_add(1, Ordering::AcqRel);
     publish_worker_slot(token, bounds)
 }
 
@@ -388,7 +517,12 @@ unsafe fn initialize_worker_with_bounds_for_test(
 pub(crate) unsafe fn destroy_worker_alt_stack(stack: AltSignalStack) -> Result<(), i32> {
     // SAFETY: the caller proves that the worker has joined and no signal can
     // still execute on this mapping.
-    unsafe { crate::platform::destroy_thread_alt_stack(stack) }
+    let result = unsafe { crate::platform::destroy_thread_alt_stack(stack) };
+    #[cfg(test)]
+    if result.is_ok() {
+        TEST_STACK_DESTROYS.fetch_add(1, Ordering::AcqRel);
+    }
+    result
 }
 
 /// Record the stack window the SIGSEGV handler classifies against.
@@ -588,12 +722,9 @@ mod hosted_tests {
 
     use super::*;
     use std::process::{Command, Stdio};
-    use std::sync::Mutex;
     use std::thread;
     use std::time::{Duration, Instant};
     use std::vec::Vec;
-
-    static REGISTRY_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     /// The registry is intentionally exercised in one test because its static
     /// slots are process-wide: this covers the exhaustion and reuse protocol

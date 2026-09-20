@@ -153,7 +153,8 @@ const fn scalar_kind(ty: AbiType) -> CAbiScalarKind {
         | AbiType::Usize
         | AbiType::BoolWordI64
         | AbiType::MutBytePointer
-        | AbiType::FailureReport => CAbiScalarKind::RegisterWidth,
+        | AbiType::FailureReport
+        | AbiType::CodePointer => CAbiScalarKind::RegisterWidth,
     }
 }
 

@@ -8,6 +8,8 @@ extern uint64_t __rue_env_count(void);
 extern unsigned char *__rue_env_ptr(uint64_t index);
 extern uint64_t __rue_env_len(uint64_t index);
 extern int run_hosted_pthread_probe(void);
+extern int run_hosted_join_probe(void);
+extern int run_hosted_join_trap_probe(const char *mode);
 extern int run_hosted_reporting_probe(const char *mode);
 
 int main(void) {
@@ -21,6 +23,12 @@ int main(void) {
         return run_hosted_reporting_probe((const char *)__rue_arg_ptr(1));
     }
 
+    if (__rue_arg_count() == 2 &&
+        (strcmp((const char *)__rue_arg_ptr(1), "join-worker-trap") == 0 ||
+         strcmp((const char *)__rue_arg_ptr(1), "join-parent-trap") == 0)) {
+        return run_hosted_join_trap_probe((const char *)__rue_arg_ptr(1));
+    }
+
     if (__rue_arg_count() != 2 || __rue_arg_len(1) != sizeof(expected_argument) - 1 ||
         memcmp(__rue_arg_ptr(1), expected_argument, sizeof(expected_argument) - 1) != 0) {
         return 31;
@@ -29,6 +37,10 @@ int main(void) {
     for (uint64_t index = 0; index < __rue_env_count(); index++) {
         if (__rue_env_len(index) == sizeof(expected_environment) - 1 &&
             memcmp(__rue_env_ptr(index), expected_environment, sizeof(expected_environment) - 1) == 0) {
+            int join_result = run_hosted_join_probe();
+            if (join_result != 0) {
+                return join_result;
+            }
             return run_hosted_pthread_probe();
         }
     }

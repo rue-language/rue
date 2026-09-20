@@ -23,11 +23,42 @@ FLOAT_FORMAT_SYMBOL = "__rue_to_string_float"
 # for the hosted archives. Freestanding archives retain the empty import set.
 HOSTED_PTHREAD_IMPORTS = (
     "pthread_mutex_init",
+    "pthread_mutex_destroy",
     "pthread_mutex_lock",
     "pthread_mutex_unlock",
     "pthread_mutexattr_destroy",
     "pthread_mutexattr_init",
     "pthread_mutexattr_settype",
+    "pthread_cond_destroy",
+    "pthread_cond_init",
+    "pthread_cond_signal",
+    "pthread_cond_wait",
+    "pthread_create",
+    "pthread_getattr_np",
+    "pthread_attr_destroy",
+    "pthread_attr_getguardsize",
+    "pthread_attr_getstack",
+    "pthread_join",
+    "pthread_self",
+)
+HOSTED_DARWIN_PTHREAD_IMPORTS = (
+    "pthread_mutex_init",
+    "pthread_mutex_destroy",
+    "pthread_mutex_lock",
+    "pthread_mutex_unlock",
+    "pthread_mutexattr_destroy",
+    "pthread_mutexattr_init",
+    "pthread_mutexattr_settype",
+    "pthread_cond_destroy",
+    "pthread_cond_init",
+    "pthread_cond_signal",
+    "pthread_cond_wait",
+    "pthread_create",
+    "pthread_get_stackaddr_np",
+    "pthread_get_stacksize_np",
+    "pthread_join",
+    "pthread_self",
+    "vm_page_size",
 )
 ELF_SHT_RELA = 4
 ELF_SHT_REL = 9
@@ -1046,7 +1077,7 @@ def main():
         Path(os.environ["RUNTIME_HOSTED_AARCH64_MACOS"]),
         "macho",
         0x0100000C,
-        required_undefined=HOSTED_PTHREAD_IMPORTS,
+        required_undefined=HOSTED_DARWIN_PTHREAD_IMPORTS,
     )
 
 
