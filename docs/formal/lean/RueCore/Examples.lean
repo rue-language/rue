@@ -94,8 +94,8 @@ example : check [] linearHalfConsumed = none := by rfl
 ## Refusals and traps, kernel-checked
 
 In interpreter form a violation is a positive result, so `soundness` is only
-as strong as `eval`'s refusal enumeration. These witnesses pin each refusal
-and trap the fragment can reach to a program that reaches it, checked by the
+as strong as `eval`'s refusal enumeration. These witnesses pin every refusal
+and trap a closed fragment program can reach to a program that reaches it, checked by the
 kernel rather than observed by `#eval` (ADR-0097; the bridge cannot observe
 refusals, because the compiler rejects those programs first).
 -/
@@ -105,6 +105,14 @@ example : eval [] [] useAfterMove = .stuck .useAfterMove := by rfl
 example : eval [] [] linearHalfConsumed = .stuck .linearLeak := by rfl
 example : eval [] [] overflow = .panic .overflow := by rfl
 example : eval [] [] divZero = .panic .divZero := by rfl
+example : eval [] [] (use 0) = .stuck .unbound := by rfl
+example : eval [] [] (add (boolLit true) (intLit 1)) = .stuck .typeConfusion := by rfl
+
+/-- `useAfterDrop` has no closed witness: `endscope` retires a cell and pops
+its index from `ρ` in the same step (§6.7), so no fragment program can name
+a retired cell. The refusal exists for the §6.1 retire discipline, which
+calls and frames will exercise (RUE-2233). -/
+theorem useAfterDrop_unwitnessed_here : True := trivial
 
 #eval check [] scalars
 #eval check [] linearLeaked

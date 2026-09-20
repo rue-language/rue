@@ -74,7 +74,13 @@ affine resource's destructor prints its payload while a `live` flag holds,
 and `consume` disarms the husk first; a linear resource cannot carry a
 destructor (3.9:34 would forbid the projection `consume` needs), so its
 only observable event, an explicit `@drop`, is printed as
-`@dbg(consume_linear(x))`. Every printed program opens with a comment naming
+`@dbg(consume_linear(x))`, the one place the printed program is not the
+identity elaboration (its core image is a consume, so the compiler's
+`@drop`-on-linear path is not exercised by the bridge). Two limits, accepted
+at fragment scope: a trap discards the Lean trace, so drops before a panic
+are not compared (RUE-2282 gives `.panic` its trace); and drop lines and the
+value line are both bare integers, so a drop of `n` swapped with a value `n`
+would not be told apart. Every printed program opens with a comment naming
 its case, its rules, and its expected outcome in words, so `corpus.json`
 doubles as a readable example set.
 
