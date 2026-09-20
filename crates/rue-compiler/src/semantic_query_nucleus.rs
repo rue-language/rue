@@ -135,6 +135,8 @@ pub(crate) enum ParsedSemanticSignature {
         is_copy: bool,
         is_linear: bool,
         is_repr_c: bool,
+        thread_bound: bool,
+        unchecked_transfer_reason: Option<Arc<str>>,
         conformance: ParsedConformanceFacts,
     },
     Enum {
@@ -662,6 +664,8 @@ pub(crate) fn project_semantic_signature(
                 is_copy: false,
                 is_linear: false,
                 is_repr_c: false,
+                thread_bound: false,
+                unchecked_transfer_reason: None,
                 conformance: ParsedConformanceFacts {
                     is_interface: true,
                     conformances: conformances.into(),
@@ -719,6 +723,17 @@ pub(crate) fn project_semantic_signature(
                     .directives
                     .iter()
                     .any(|directive| directive.repr_arg() == Some(rue_parser::ReprArg::C)),
+                thread_bound: rue_parser::ast::has_directive(
+                    &structure.directives,
+                    rue_parser::DirectiveName::ThreadBound,
+                ),
+                unchecked_transfer_reason: rue_parser::ast::find_directive(
+                    &structure.directives,
+                    rue_parser::DirectiveName::UncheckedTransfer,
+                )
+                .and_then(|directive| directive.args.first())
+                .filter(|arg| arg.value == rue_parser::DirectiveArgValue::UncheckedTransferReason)
+                .map(|arg| Arc::from(resolve(arg.ident.name))),
                 conformance: ParsedConformanceFacts {
                     is_interface: false,
                     conformances: conformances.into(),
@@ -904,6 +919,7 @@ pub(crate) struct DeferredRequirementQueryKey {
 pub(crate) enum DeferredRequirementKind {
     RequireDroppable,
     RequireTriviallyDroppable,
+    RequireTransferable,
     /// A concrete argument of a comptime parameter must satisfy the
     /// callable's interface bound.  This travels with the same deferred
     /// effect channel as ownership gates so type-constructor projections do
@@ -1244,6 +1260,8 @@ pub(crate) enum DeclarationSignatureProjection {
         is_copy: bool,
         is_linear: bool,
         is_repr_c: bool,
+        thread_bound: bool,
+        unchecked_transfer_reason: Option<Arc<str>>,
         conformance: crate::durable_semantics::DurableConformanceFacts,
     },
     Enum {
@@ -1291,7 +1309,8 @@ impl RetainedCharge for DeferredRequirement {
     fn retained_charge(&self) -> u64 {
         let kind = match &self.kind {
             DeferredRequirementKind::RequireDroppable
-            | DeferredRequirementKind::RequireTriviallyDroppable => 0,
+            | DeferredRequirementKind::RequireTriviallyDroppable
+            | DeferredRequirementKind::RequireTransferable => 0,
             DeferredRequirementKind::InterfaceBound { callable, .. } => callable.retained_charge(),
         };
         self.ty
@@ -1537,11 +1556,15 @@ impl DeclarationSemanticValue {
                 is_copy,
                 is_linear,
                 is_repr_c: _,
+                thread_bound,
+                unchecked_transfer_reason,
                 conformance,
             } => DurableDeclarationPayload::Struct {
                 fields,
                 is_copy,
                 is_linear,
+                thread_bound,
+                unchecked_transfer_reason,
                 conformance,
             },
             DeclarationSignatureProjection::Enum {

@@ -123,6 +123,15 @@ impl Parser {
                     Ok(Expr::Ident(name))
                 }
             }
+            TokenKind::At if self.starts_annotated_anonymous_struct() => {
+                self.anonymous_type_literals += 1;
+                let directives = self.directives()?;
+                let type_expr = self.anonymous_struct_type_with_directives(true, &directives)?;
+                Ok(Expr::TypeLit(TypeLitExpr {
+                    span: type_expr.span(),
+                    type_expr: Box::new(type_expr),
+                }))
+            }
             TokenKind::At => self.intrinsic(),
             TokenKind::If => self.if_expr(),
             TokenKind::While => self.while_expr(),
@@ -205,7 +214,7 @@ impl Parser {
                 let type_expr = self.anonymous_struct_type(true)?;
                 Ok(Expr::TypeLit(TypeLitExpr {
                     span: type_expr.span(),
-                    type_expr,
+                    type_expr: Box::new(type_expr),
                 }))
             }
             TokenKind::Enum => {
@@ -214,7 +223,7 @@ impl Parser {
                 let variants = self.enum_variants()?;
                 let span = self.span_from(start);
                 Ok(Expr::TypeLit(TypeLitExpr {
-                    type_expr: TypeExpr::AnonymousEnum { variants, span },
+                    type_expr: Box::new(TypeExpr::AnonymousEnum { variants, span }),
                     span,
                 }))
             }
@@ -222,7 +231,7 @@ impl Parser {
                 let type_expr = self.ty()?;
                 Ok(Expr::TypeLit(TypeLitExpr {
                     span: type_expr.span(),
-                    type_expr,
+                    type_expr: Box::new(type_expr),
                 }))
             }
             _ => {

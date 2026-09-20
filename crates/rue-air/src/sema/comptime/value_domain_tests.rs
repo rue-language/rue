@@ -1359,6 +1359,8 @@ impl ComptimeTypeAlgebra for FakeHost {
         _identity: Self::AnonymousIdentity,
         _fields: &[ComptimeField<Self::Name, Self::Type>],
         _sigs: &[ComptimeMethodDescriptor<Self::Name, Self::Type>],
+        _thread_bound: bool,
+        _unchecked_transfer_reason: Option<Self::Name>,
         type_subst: &AHashMap<Self::Name, Self::Type>,
         value_subst: &AHashMap<Self::Name, Self::Value>,
     ) -> ComptimeHostResult<(Self::Type, bool), Self::Failure> {
@@ -1405,6 +1407,13 @@ impl ComptimeTypeAlgebra for FakeHost {
     ) -> ComptimeHostResult<(), Self::Failure> {
         Ok(())
     }
+    fn check_require_transferable(
+        &mut self,
+        _ty: Self::Type,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<(), Self::Failure> {
+        Ok(())
+    }
     fn check_trivially_droppable(
         &mut self,
         _ty: Self::Type,
@@ -1442,6 +1451,7 @@ impl ComptimeTypeAlgebra for FakeHost {
                 FakeValue::integer_typed(-128, Some(ty))
             }
             ComptimeTypeIntrinsic::RequireDroppable
+            | ComptimeTypeIntrinsic::RequireTransferable
             | ComptimeTypeIntrinsic::RequireTriviallyDroppable => FakeValue::Unit,
         }))
     }

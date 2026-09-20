@@ -802,6 +802,381 @@ pub(super) fn type_facts_from_terminal(
     }
 }
 
+/// Compute transferability for one root type without publishing provisional
+/// answers for any of its children.  Ownership facts may query another
+/// `type-facts` key for each child, but transferability has a different shape:
+/// an asserted raw pointer is allowed to inspect its pointee, and that graph
+/// can therefore contain a cycle through nominal types.  Keeping the walk
+/// local to this root makes the cycle policy explicit and prevents a query
+/// cycle from being mistaken for a positive fact.
+fn evaluate_transferability(
+    context: &rue_query::QueryContext,
+    type_shapes: &QueryFamily<
+        crate::type_queries::TypeQueryKey,
+        crate::type_queries::TypeShapeValue,
+    >,
+    semantic_nucleus: &SemanticNucleusFamily,
+    lookup_names: &QueryFamily<LookupNameKey, LookupNameValue>,
+    body_produced_anonymous: &QueryFamily<
+        crate::body_query::BodyQueryKey,
+        crate::body_query::ProducedAnonymous,
+    >,
+    key: &crate::type_queries::TypeQueryKey,
+) -> Result<Result<(bool, Option<Arc<str>>), crate::type_queries::TypeQueryFailure>, QueryAbort> {
+    struct Walk<'a> {
+        context: &'a rue_query::QueryContext,
+        type_shapes:
+            &'a QueryFamily<crate::type_queries::TypeQueryKey, crate::type_queries::TypeShapeValue>,
+        semantic_nucleus: &'a SemanticNucleusFamily,
+        lookup_names: &'a QueryFamily<LookupNameKey, LookupNameValue>,
+        body_produced_anonymous:
+            &'a QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::ProducedAnonymous>,
+        configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
+        visiting: BTreeSet<(crate::TypeInstanceKey, bool)>,
+        visited: BTreeSet<(crate::TypeInstanceKey, bool)>,
+    }
+
+    impl<'a> Walk<'a> {
+        fn shape(
+            &self,
+            ty: &crate::TypeInstanceKey,
+        ) -> Result<Option<crate::type_queries::TypeShape>, QueryAbort> {
+            let terminal = self.context.query_registered(
+                self.type_shapes,
+                crate::type_queries::TypeQueryKey {
+                    ty: ty.clone(),
+                    configuration: self.configuration.clone(),
+                },
+            )?;
+            Ok(type_shape_from_terminal(&terminal).ok().cloned())
+        }
+
+        fn failure(path: &str, detail: impl std::fmt::Display) -> Arc<str> {
+            if path.is_empty() {
+                Arc::from(detail.to_string())
+            } else {
+                Arc::from(format!("{path}: {detail}"))
+            }
+        }
+
+        fn child_path(path: &str, label: &str) -> String {
+            if path.is_empty() {
+                label.to_owned()
+            } else {
+                format!("{path}.{label}")
+            }
+        }
+
+        fn named_signature(
+            &self,
+            definition: &StableDefinitionKey,
+        ) -> Result<Option<crate::semantic_query_nucleus::DeclarationSignatureProjection>, QueryAbort>
+        {
+            let Some(candidate) = declaration_candidate_for_stable_key(definition) else {
+                return Ok(None);
+            };
+            let terminal = self.context.query_registered(
+                self.semantic_nucleus,
+                crate::semantic_query_nucleus::SemanticNucleusKey::Signature(
+                    crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                        declaration: candidate,
+                        configuration: self.configuration.clone(),
+                    },
+                ),
+            )?;
+            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+                return Ok(None);
+            };
+            match value {
+                crate::semantic_query_nucleus::SemanticNucleusValue::Signature(signature) => {
+                    Ok(Some(signature.signature.clone()))
+                }
+                _ => Ok(None),
+            }
+        }
+
+        fn has_named_destructor(
+            &self,
+            definition: &StableDefinitionKey,
+        ) -> Result<Result<bool, Arc<str>>, QueryAbort> {
+            let terminal = self.context.query_registered(
+                self.lookup_names,
+                LookupNameKey {
+                    module: definition.module().clone(),
+                    namespace: DefinitionNamespace::Destructor,
+                    name: Arc::from(definition.name()),
+                },
+            )?;
+            match terminal.outcome() {
+                rue_query::QueryOutcome::Success(LookupNameValue(Ok(facts))) => {
+                    Ok(Ok(!facts.is_empty()))
+                }
+                rue_query::QueryOutcome::Success(LookupNameValue(Err(failure))) => Ok(Err(
+                    Arc::from(format!("destructor metadata is unavailable: {failure:?}")),
+                )),
+                _ => Ok(Err(Arc::from("destructor metadata is unavailable"))),
+            }
+        }
+
+        fn walk(
+            &mut self,
+            ty: &crate::TypeInstanceKey,
+            path: &str,
+            allow_asserted_pointer: bool,
+        ) -> Result<Option<Arc<str>>, QueryAbort> {
+            use crate::type_queries::TypeShape;
+            use crate::{NominalInstanceKey as N, TypeInstanceKey as T};
+
+            let visit_key = (ty.clone(), allow_asserted_pointer);
+            if self.visiting.contains(&visit_key) || self.visited.contains(&visit_key) {
+                return Ok(None);
+            }
+            self.visiting.insert(visit_key.clone());
+            let result = match ty {
+                T::I8
+                | T::I16
+                | T::I32
+                | T::I64
+                | T::U8
+                | T::U16
+                | T::U32
+                | T::U64
+                | T::Bool
+                | T::Unit
+                | T::Never
+                | T::F32
+                | T::F64
+                | T::ComptimeFloat
+                | T::ComptimeType
+                | T::Module(_) => None,
+                T::GenericParameter(_) => Some(Self::failure(
+                    path,
+                    "generic type parameter transferability is unavailable",
+                )),
+                T::PtrConst(pointee) | T::PtrMut(pointee) => {
+                    if !allow_asserted_pointer {
+                        Some(Self::failure(
+                            path,
+                            "raw pointers do not transfer without an owning assertion",
+                        ))
+                    } else {
+                        let pointee_path = Self::child_path(path, "pointee");
+                        self.walk(pointee.as_ref(), &pointee_path, false)?
+                    }
+                }
+                T::Function { .. } | T::Slice { .. } => Some(Self::failure(
+                    path,
+                    "this type has thread-affine representation",
+                )),
+                T::Array { element, .. } => self.walk(element.as_ref(), path, false)?,
+                T::BuiltinNominal { kind, name } | T::Nominal(N::Builtin { kind, name })
+                    if *kind == rue_air::AnonymousNominalKind::Struct
+                        && rue_air::is_string_view_struct_name(name) =>
+                {
+                    None
+                }
+                T::BuiltinNominal { kind, name } | T::Nominal(N::Builtin { kind, name })
+                    if *kind == rue_air::AnonymousNominalKind::Enum =>
+                {
+                    rue_builtins::get_builtin_enum(name)
+                        .is_none()
+                        .then(|| Self::failure(path, "builtin nominal is not transferable"))
+                }
+                T::BuiltinNominal { .. } | T::Nominal(N::Builtin { .. }) => {
+                    Some(Self::failure(path, "builtin nominal is not transferable"))
+                }
+                T::Nominal(N::Named(definition)) => {
+                    let Some(signature) = self.named_signature(definition)? else {
+                        return Ok(Some(Self::failure(
+                            path,
+                            "transferability metadata is unavailable",
+                        )));
+                    };
+                    let (unchecked_reason, is_enum) = match &signature {
+                        crate::semantic_query_nucleus::DeclarationSignatureProjection::Struct {
+                            thread_bound,
+                            unchecked_transfer_reason,
+                            ..
+                        } => {
+                            if *thread_bound {
+                                return Ok(Some(Self::failure(
+                                    path,
+                                    "type is marked @thread_bound",
+                                )));
+                            }
+                            (unchecked_transfer_reason.clone(), false)
+                        }
+                        crate::semantic_query_nucleus::DeclarationSignatureProjection::Enum {
+                            ..
+                        } => (None, true),
+                        _ => {
+                            return Ok(Some(Self::failure(
+                                path,
+                                "named type resolved to a non-type signature",
+                            )));
+                        }
+                    };
+                    let has_destructor = if is_enum {
+                        false
+                    } else {
+                        match self.has_named_destructor(definition)? {
+                            Ok(has_destructor) => has_destructor,
+                            Err(detail) => {
+                                return Ok(Some(Self::failure(path, detail)));
+                            }
+                        }
+                    };
+                    if has_destructor && unchecked_reason.is_none() {
+                        return Ok(Some(Self::failure(
+                            path,
+                            "a user-defined destructor requires @unchecked_transfer(\"reason\")",
+                        )));
+                    }
+                    let Some(shape) = self.shape(ty)? else {
+                        return Ok(Some(Self::failure(
+                            path,
+                            "transferability shape is unavailable",
+                        )));
+                    };
+                    let children = match shape {
+                        TypeShape::Struct { fields } => fields
+                            .iter()
+                            .map(|(name, child)| (name.clone(), child.clone()))
+                            .collect::<Vec<_>>(),
+                        TypeShape::Enum { variants } => variants
+                            .iter()
+                            .flat_map(|(variant, fields)| {
+                                fields.iter().enumerate().map(move |(index, child)| {
+                                    (
+                                        Arc::from(format!("variant {variant} payload {index}")),
+                                        child.clone(),
+                                    )
+                                })
+                            })
+                            .collect::<Vec<_>>(),
+                        _ => {
+                            return Ok(Some(Self::failure(
+                                path,
+                                "type shape is neither a struct nor an enum",
+                            )));
+                        }
+                    };
+                    let asserted = unchecked_reason.is_some() && !is_enum;
+                    let mut failure = None;
+                    for (label, child) in children {
+                        let child_path = Self::child_path(path, &label);
+                        if let Some(child_failure) = self.walk(&child, &child_path, asserted)? {
+                            failure = Some(child_failure);
+                            break;
+                        }
+                    }
+                    failure
+                }
+                T::Nominal(N::Anonymous(identity)) => {
+                    let nominal = query_anonymous_nominal(
+                        self.context,
+                        self.semantic_nucleus,
+                        self.body_produced_anonymous,
+                        identity,
+                        &self.configuration,
+                    )?;
+                    let Ok(nominal) = nominal else {
+                        return Ok(Some(Self::failure(
+                            path,
+                            "anonymous transferability metadata is unavailable",
+                        )));
+                    };
+                    let (thread_bound, unchecked_reason, has_destructor) = match &nominal.shape {
+                        crate::durable_semantics::DurableAnonymousNominalShape::Struct {
+                            methods,
+                            thread_bound,
+                            unchecked_transfer_reason,
+                            ..
+                        } => (
+                            *thread_bound,
+                            unchecked_transfer_reason.clone(),
+                            methods.iter().any(|method| {
+                                rue_air::drop_glue::is_anonymous_destructor(
+                                    method.name.as_ref(),
+                                    method.has_self,
+                                )
+                            }),
+                        ),
+                        crate::durable_semantics::DurableAnonymousNominalShape::Enum { .. } => {
+                            (false, None, false)
+                        }
+                    };
+                    if thread_bound {
+                        return Ok(Some(Self::failure(path, "type is marked @thread_bound")));
+                    }
+                    if has_destructor && unchecked_reason.is_none() {
+                        return Ok(Some(Self::failure(
+                            path,
+                            "a user-defined destructor requires @unchecked_transfer(\"reason\")",
+                        )));
+                    }
+                    let Some(shape) = self.shape(ty)? else {
+                        return Ok(Some(Self::failure(
+                            path,
+                            "transferability shape is unavailable",
+                        )));
+                    };
+                    let children = match shape {
+                        TypeShape::Struct { fields } => fields.iter().cloned().collect::<Vec<_>>(),
+                        TypeShape::Enum { variants } => variants
+                            .iter()
+                            .flat_map(|(variant, fields)| {
+                                fields.iter().enumerate().map(move |(index, child)| {
+                                    (
+                                        Arc::from(format!("variant {variant} payload {index}")),
+                                        child.clone(),
+                                    )
+                                })
+                            })
+                            .collect(),
+                        _ => {
+                            return Ok(Some(Self::failure(
+                                path,
+                                "anonymous type shape is neither a struct nor an enum",
+                            )));
+                        }
+                    };
+                    let mut failure = None;
+                    let asserted = unchecked_reason.is_some()
+                        && !matches!(
+                            &nominal.shape,
+                            crate::durable_semantics::DurableAnonymousNominalShape::Enum { .. }
+                        );
+                    for (label, child) in children {
+                        let child_path = Self::child_path(path, &label);
+                        if let Some(child_failure) = self.walk(&child, &child_path, asserted)? {
+                            failure = Some(child_failure);
+                            break;
+                        }
+                    }
+                    failure
+                }
+            };
+            self.visiting.remove(&visit_key);
+            self.visited.insert(visit_key);
+            Ok(result)
+        }
+    }
+
+    let mut walk = Walk {
+        context,
+        type_shapes,
+        semantic_nucleus,
+        lookup_names,
+        body_produced_anonymous,
+        configuration: key.configuration.clone(),
+        visiting: BTreeSet::new(),
+        visited: BTreeSet::new(),
+    };
+    let failure = walk.walk(&key.ty, "", false)?;
+    Ok(Ok((failure.is_none(), failure)))
+}
+
 pub(super) fn evaluate_type_facts(
     context: &rue_query::QueryContext,
     family: &QueryFamily<crate::type_queries::TypeQueryKey, crate::type_queries::TypeFactsValue>,
@@ -829,11 +1204,13 @@ pub(super) fn evaluate_type_facts(
                 .with_terminal_kind(QueryTerminalKind::Failure));
         }
     };
-    let direct = |is_copy| {
+    let direct = |is_copy, transferable, transfer_failure| {
         TypeFactsValue::Available(Box::new(TypeFacts {
             is_copy,
             carries_linear: false,
             needs_drop: false,
+            transferable,
+            transfer_failure,
             destructor: None,
             shape: canonical_shape.clone(),
         }))
@@ -849,23 +1226,42 @@ pub(super) fn evaluate_type_facts(
         | T::U64
         | T::Bool
         | T::Unit
-        | T::Never => direct(true),
-        T::F32 | T::F64 | T::ComptimeFloat => direct(true),
-        T::PtrConst(_) | T::PtrMut(_) | T::Function { .. } => direct(true),
-        T::Slice { .. } => direct(true),
-        T::ComptimeType | T::Module(_) | T::GenericParameter(_) => direct(true),
+        | T::Never => direct(true, true, None),
+        T::F32 | T::F64 | T::ComptimeFloat => direct(true, true, None),
+        T::PtrConst(_) | T::PtrMut(_) => direct(
+            true,
+            false,
+            Some(Arc::from(
+                "raw pointers do not transfer without an owning assertion",
+            )),
+        ),
+        T::Function { .. } | T::Slice { .. } => direct(
+            true,
+            false,
+            Some(Arc::from("this type has thread-affine representation")),
+        ),
+        T::ComptimeType | T::Module(_) | T::GenericParameter(_) => direct(true, true, None),
         T::BuiltinNominal { kind, name } | T::Nominal(N::Builtin { kind, name })
             if *kind == rue_air::AnonymousNominalKind::Struct
                 && rue_air::is_string_view_struct_name(name) =>
         {
-            direct(true)
+            direct(true, true, None)
         }
         T::BuiltinNominal { kind, name } | T::Nominal(N::Builtin { kind, name })
             if *kind == rue_air::AnonymousNominalKind::Enum =>
         {
-            direct(rue_builtins::get_builtin_enum(name).is_some())
+            let known = rue_builtins::get_builtin_enum(name).is_some();
+            direct(
+                known,
+                known,
+                (!known).then(|| Arc::from("builtin nominal is not transferable")),
+            )
         }
-        T::BuiltinNominal { .. } | T::Nominal(N::Builtin { .. }) => direct(false),
+        T::BuiltinNominal { .. } | T::Nominal(N::Builtin { .. }) => direct(
+            false,
+            false,
+            Some(Arc::from("builtin nominal is not transferable")),
+        ),
         T::Array { element, len } => {
             let child = context.query_registered(
                 family,
@@ -882,6 +1278,8 @@ pub(super) fn evaluate_type_facts(
                         rue_air::drop_glue::DropGlueShape::Array { len: *len },
                         [child.needs_drop],
                     ),
+                    transferable: true,
+                    transfer_failure: None,
                     destructor: None,
                     shape: canonical_shape.clone(),
                 })),
@@ -966,6 +1364,8 @@ pub(super) fn evaluate_type_facts(
                         }
                         carries_linear |= child.carries_linear;
                         child_needs_drop.push(child.needs_drop);
+                        // Transferability is computed by the root-local walk
+                        // below; child facts here supply only ownership/drop data.
                     }
                     Err(failure) => {
                         return Ok(QueryOutput::success(TypeFactsValue::Failure(failure))
@@ -1007,6 +1407,8 @@ pub(super) fn evaluate_type_facts(
                 is_copy,
                 carries_linear,
                 needs_drop,
+                transferable: true,
+                transfer_failure: None,
                 destructor,
                 shape,
             }))
@@ -1079,6 +1481,8 @@ pub(super) fn evaluate_type_facts(
                         is_copy &= child.is_copy;
                         carries_linear |= child.carries_linear;
                         child_needs_drop.push(child.needs_drop);
+                        // Transferability is computed by the root-local walk
+                        // below; child facts here supply only ownership/drop data.
                     }
                     Err(failure) => {
                         return Ok(QueryOutput::success(TypeFactsValue::Failure(failure))
@@ -1096,11 +1500,35 @@ pub(super) fn evaluate_type_facts(
                 is_copy,
                 carries_linear,
                 needs_drop,
+                transferable: true,
+                transfer_failure: None,
                 destructor,
                 shape,
             }))
         }
     };
+    let transfer = if matches!(value, TypeFactsValue::Available(_)) {
+        Some(evaluate_transferability(
+            context,
+            type_shapes,
+            semantic_nucleus,
+            lookup_names,
+            body_produced_anonymous,
+            key,
+        )?)
+    } else {
+        None
+    };
+    match transfer {
+        Some(Ok((transferable, transfer_failure))) => {
+            if let TypeFactsValue::Available(facts) = &mut value {
+                facts.transferable = transferable;
+                facts.transfer_failure = transfer_failure;
+            }
+        }
+        Some(Err(failure)) => value = TypeFactsValue::Failure(failure),
+        None => {}
+    }
     if let TypeFactsValue::Available(facts) = &mut value {
         facts.shape = canonical_shape;
     }

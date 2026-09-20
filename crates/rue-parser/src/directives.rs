@@ -74,6 +74,10 @@ vocabulary! {
         /// `@repr(<argument>)` is the representation guarantee marker
         /// (spec 2.5:33, ADR-0064 Amendment 1).
         Repr = "repr",
+        /// `@thread_bound` prevents a struct from crossing a thread boundary.
+        ThreadBound = "thread_bound",
+        /// `@unchecked_transfer("reason")` records an audited transfer assertion.
+        UncheckedTransfer = "unchecked_transfer",
         /// `@non_exhaustive` opts a public enum into the source compatibility
         /// contract for matches in importing modules.
         NonExhaustive = "non_exhaustive",
@@ -161,6 +165,8 @@ pub enum DirectiveArgValue {
     Repr(ReprArg),
     /// A quoted string accepted by a test expectation directive.
     KnownBugText,
+    /// A quoted non-empty assertion attached to `@unchecked_transfer`.
+    UncheckedTransferReason,
     Unrecognized,
 }
 
@@ -181,6 +187,9 @@ impl DirectiveName {
             DirectiveName::Copy => &[DirectiveSite::Struct],
             // spec 2.5:34
             DirectiveName::Repr => &[DirectiveSite::Struct],
+            DirectiveName::ThreadBound | DirectiveName::UncheckedTransfer => {
+                &[DirectiveSite::Struct]
+            }
             DirectiveName::NonExhaustive => &[DirectiveSite::Enum],
             DirectiveName::KnownBug | DirectiveName::KnownBugOn => &[DirectiveSite::Test],
         }
@@ -195,6 +204,8 @@ impl DirectiveName {
             DirectiveName::Copy => DirectiveArity::None,
             // spec 2.5:34: parameterized, exactly one representation argument.
             DirectiveName::Repr => DirectiveArity::ExactlyOne,
+            DirectiveName::ThreadBound => DirectiveArity::None,
+            DirectiveName::UncheckedTransfer => DirectiveArity::ExactlyOne,
             DirectiveName::NonExhaustive => DirectiveArity::None,
             DirectiveName::KnownBug => DirectiveArity::ExactlyOne,
             DirectiveName::KnownBugOn => DirectiveArity::ExactlyTwo,
@@ -217,10 +228,15 @@ impl DirectiveName {
             DirectiveName::KnownBug | DirectiveName::KnownBugOn if quoted => {
                 DirectiveArgValue::KnownBugText
             }
+            DirectiveName::UncheckedTransfer if quoted && !text.is_empty() => {
+                DirectiveArgValue::UncheckedTransferReason
+            }
             DirectiveName::Copy
             | DirectiveName::NonExhaustive
             | DirectiveName::KnownBug
-            | DirectiveName::KnownBugOn => DirectiveArgValue::Unrecognized,
+            | DirectiveName::KnownBugOn
+            | DirectiveName::ThreadBound
+            | DirectiveName::UncheckedTransfer => DirectiveArgValue::Unrecognized,
         }
     }
 }
@@ -356,7 +372,7 @@ mod tests {
     fn diagnostic_lists_read_as_prose() {
         assert_eq!(
             directive_name_list(),
-            "@allow, @copy, @repr, @non_exhaustive, @known_bug, and @known_bug_on"
+            "@allow, @copy, @repr, @thread_bound, @unchecked_transfer, @non_exhaustive, @known_bug, and @known_bug_on"
         );
         assert_eq!(
             warning_name_list(),

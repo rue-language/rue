@@ -431,7 +431,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 fields,
                 methods,
                 anchor,
+                thread_bound,
+                unchecked_transfer_reason,
             } => {
+                if (*thread_bound || unchecked_transfer_reason.is_some())
+                    && !self.file_module_is_trusted_standard_library(inst.span.file_id)
+                {
+                    self.require_preview(
+                        rue_error::PreviewFeature::Concurrency,
+                        "a concurrency transferability marker",
+                        inst.span,
+                    )?;
+                }
                 // Get the field declarations from the RIR
                 let field_decls = self.body_rir_ref().anon_struct_fields(fields).to_vec();
 
@@ -566,6 +577,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         },
                         &struct_fields,
                         &method_sigs,
+                        *thread_bound,
+                        unchecked_transfer_reason.map(|reason| {
+                            std::sync::Arc::from(self.body_interner().resolve(&reason))
+                        }),
                         &ctx.comptime_value_vars,
                     )
                     .map_err(|error| {

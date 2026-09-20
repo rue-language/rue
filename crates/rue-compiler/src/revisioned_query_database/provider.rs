@@ -1243,6 +1243,7 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
                     rue_air::DurableComptimeDiagnostic {
                         kind: rue_air::comptime_call_cycle_diagnostic(definition.name()),
                         span: None,
+                        help: None,
                     },
                 );
             }
@@ -1270,7 +1271,28 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
                 crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(kind),
             ) => {
                 return rue_air::DurableComptimeCallOutcome::Diagnostic(
-                    rue_air::DurableComptimeDiagnostic { kind, span: None },
+                    rue_air::DurableComptimeDiagnostic {
+                        kind,
+                        span: None,
+                        help: None,
+                    },
+                );
+            }
+            crate::semantic_query_nucleus::SemanticNucleusValue::Failure(
+                crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticWithHelp {
+                    kind,
+                    help,
+                },
+            ) => {
+                // A remedy does not make a diagnosed call runtime-dependent.
+                // Preserve the authority's error and help through the same
+                // reduction boundary as an unadorned diagnostic.
+                return rue_air::DurableComptimeCallOutcome::Diagnostic(
+                    rue_air::DurableComptimeDiagnostic {
+                        kind,
+                        span: None,
+                        help: Some(help),
+                    },
                 );
             }
             crate::semantic_query_nucleus::SemanticNucleusValue::Failure(
@@ -1283,7 +1305,11 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
             ) => {
                 let span = self.provider.producer_relative_span(&producer, start, end);
                 return rue_air::DurableComptimeCallOutcome::Diagnostic(
-                    rue_air::DurableComptimeDiagnostic { kind, span },
+                    rue_air::DurableComptimeDiagnostic {
+                        kind,
+                        span,
+                        help: None,
+                    },
                 );
             }
             // The same cycle, observed as a recorded nucleus failure rather
@@ -1296,6 +1322,7 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
                     rue_air::DurableComptimeDiagnostic {
                         kind: rue_air::comptime_call_cycle_diagnostic(definition.name()),
                         span: None,
+                        help: None,
                     },
                 );
             }
@@ -1332,7 +1359,7 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
                         gate.source.end,
                     );
                     return rue_air::DurableComptimeCallOutcome::Diagnostic(
-                        rue_air::DurableComptimeDiagnostic { kind, span },
+                        rue_air::DurableComptimeDiagnostic { kind, span, help: None },
                     );
                 }
                 Some(crate::semantic_query_nucleus::SemanticNucleusValue::Failure(failure))
@@ -2078,18 +2105,23 @@ pub(super) fn project_provider_anonymous_shape(
     nominal: &crate::durable_semantics::DurableAnonymousNominal,
 ) -> rue_air::DurableAnonymousShape<crate::StableDefinitionKey, ModuleId> {
     match &nominal.shape {
-        crate::durable_semantics::DurableAnonymousNominalShape::Struct { fields, methods } => {
-            rue_air::DurableAnonymousShape::Struct {
-                fields: fields
-                    .iter()
-                    .map(|(name, ty)| (name.clone(), ty.clone()))
-                    .collect(),
-                struct_methods: methods
-                    .iter()
-                    .map(|method| (method.name.clone(), method.has_self))
-                    .collect(),
-            }
-        }
+        crate::durable_semantics::DurableAnonymousNominalShape::Struct {
+            fields,
+            methods,
+            thread_bound,
+            unchecked_transfer_reason,
+        } => rue_air::DurableAnonymousShape::Struct {
+            fields: fields
+                .iter()
+                .map(|(name, ty)| (name.clone(), ty.clone()))
+                .collect(),
+            struct_methods: methods
+                .iter()
+                .map(|method| (method.name.clone(), method.has_self))
+                .collect(),
+            thread_bound: *thread_bound,
+            unchecked_transfer_reason: unchecked_transfer_reason.clone(),
+        },
         crate::durable_semantics::DurableAnonymousNominalShape::Enum { variants } => {
             rue_air::DurableAnonymousShape::Enum {
                 variants: variants
@@ -2163,38 +2195,43 @@ pub(super) fn project_provider_produced_anonymous_nominals(
                 })
             };
             let shape = match &value.shape {
-                rue_air::SemanticProducedAnonymousNominalShape::Struct { fields, methods } => {
-                    Shape::Struct {
-                        fields: fields
-                            .iter()
-                            .map(|(name, ty)| Ok((name.clone(), map_type(ty)?)))
-                            .collect::<Result<Vec<_>, _>>()?
-                            .into(),
-                        methods: methods
-                            .iter()
-                            .map(|method| {
-                                Ok(Method {
-                                    name: method.name.clone(),
-                                    has_self: method.has_self,
-                                    self_mode: mode(method.self_mode),
-                                    returns_borrow: method.returns_borrow,
-                                    returns_inout: method.returns_inout,
-                                    parameters: method
-                                        .parameters
-                                        .iter()
-                                        .map(|(ty, parameter_mode, comptime)| {
-                                            Ok((method_type(ty)?, mode(*parameter_mode), *comptime))
-                                        })
-                                        .collect::<Result<Vec<_>, _>>()?
-                                        .into(),
-                                    result: method_type(&method.result)?,
-                                    has_body: true,
-                                })
+                rue_air::SemanticProducedAnonymousNominalShape::Struct {
+                    fields,
+                    methods,
+                    thread_bound,
+                    unchecked_transfer_reason,
+                } => Shape::Struct {
+                    fields: fields
+                        .iter()
+                        .map(|(name, ty)| Ok((name.clone(), map_type(ty)?)))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into(),
+                    methods: methods
+                        .iter()
+                        .map(|method| {
+                            Ok(Method {
+                                name: method.name.clone(),
+                                has_self: method.has_self,
+                                self_mode: mode(method.self_mode),
+                                returns_borrow: method.returns_borrow,
+                                returns_inout: method.returns_inout,
+                                parameters: method
+                                    .parameters
+                                    .iter()
+                                    .map(|(ty, parameter_mode, comptime)| {
+                                        Ok((method_type(ty)?, mode(*parameter_mode), *comptime))
+                                    })
+                                    .collect::<Result<Vec<_>, _>>()?
+                                    .into(),
+                                result: method_type(&method.result)?,
+                                has_body: true,
                             })
-                            .collect::<Result<Vec<_>, _>>()?
-                            .into(),
-                    }
-                }
+                        })
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into(),
+                    thread_bound: *thread_bound,
+                    unchecked_transfer_reason: unchecked_transfer_reason.clone(),
+                },
                 rue_air::SemanticProducedAnonymousNominalShape::Enum { variants } => Shape::Enum {
                     variants: variants
                         .iter()

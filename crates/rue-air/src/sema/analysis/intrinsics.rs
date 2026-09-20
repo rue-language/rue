@@ -81,6 +81,7 @@ const fn unchecked_operation_family(
         | I::SizeOf
         | I::AlignOf
         | I::RequireDroppable
+        | I::RequireTransferable
         | I::RequireTriviallyDroppable
         | I::IntMax
         | I::IntMin
@@ -310,6 +311,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // to E0700.
             Some(I::RequireDroppable) => {
                 self.check_require_droppable(ty, span)?;
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::Const(0),
+                    ty: Type::UNIT,
+                    span,
+                });
+                return Ok(AnalysisResult::new(air_ref, Type::UNIT));
+            }
+            Some(I::RequireTransferable) => {
+                self.check_require_transferable(ty, span)?;
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Const(0),
                     ty: Type::UNIT,
@@ -805,6 +815,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             I::SizeOf
             | I::AlignOf
             | I::RequireDroppable
+            | I::RequireTransferable
             | I::RequireTriviallyDroppable
             | I::IntMax
             | I::IntMin

@@ -1977,7 +1977,7 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 45] = [
     (970, 16_733_311_749_340_788_625),
     (2_583, 15_262_418_539_020_264_161),
     (11_629, 16_221_983_252_924_349_648),
-    (124_144, 10_114_650_780_093_977_904),
+    (126_179, 17_062_825_999_244_602_264),
     (3_254, 11_949_940_325_034_004_149),
     (5_552, 14_658_861_127_087_730_967),
     (872, 14_092_162_116_261_787_003),
@@ -1994,7 +1994,7 @@ const REGISTRATION_LEAF_ONE_SHOT_IDENTITIES: [(usize, u64); 45] = [
     (767, 4_982_863_983_734_830_002),
     (3_611, 15_282_171_189_445_768_455),
     (4_802, 13_585_732_442_571_114_436),
-    (2_906, 14_218_343_244_686_701_314),
+    (6_857, 16_800_899_144_116_129_036),
     (53_799, 15_857_746_459_832_546_211),
     (8_851, 7_734_652_166_175_953_446),
     (14_038, 8_977_560_222_769_304_814),
@@ -2028,13 +2028,13 @@ const FRONTEND_DATABASE_CONSTRUCTION_IDENTITY: (usize, u64) = (337, 8_000_487_40
 const DATABASE_INHERENT_CONSTRUCTOR_IDENTITY: (usize, u64) = (214, 15_710_556_809_665_731_176);
 const DATABASE_CANONICAL_CONSTRUCTOR_IDENTITY: (usize, u64) = (254, 7_623_037_796_286_753_949);
 const TEST_DEFAULT_DATABASE_ADAPTER_IDENTITY: (usize, u64) = (159, 833_377_014_346_120_505);
-const REGISTRATION_DATABASE_IMPL_IDENTITY: (usize, u64) = (36_874, 12_224_704_021_912_801_954);
+const REGISTRATION_DATABASE_IMPL_IDENTITY: (usize, u64) = (36_983, 12_657_903_054_231_355_211);
 const SHARED_FAMILY_FORWARDING_IDENTITY: (usize, u64) = (2_609, 9_595_658_320_490_175_466);
-const ORDERED_REGISTRATION_COMPOSER_IDENTITY: (usize, u64) = (35_136, 8_119_109_862_206_507_827);
+const ORDERED_REGISTRATION_COMPOSER_IDENTITY: (usize, u64) = (35_245, 504_020_763_754_301_894);
 // Macro imports, definitions, re-exports, and lexical ordering participate in
 // macro resolution. Seal the complete registrations authority and each wrapper
 // aggregate in addition to the executable identities inside them.
-const REGISTRATION_AUTHORITY_MODULE_IDENTITY: (usize, u64) = (46_883, 5_123_518_998_290_946_646);
+const REGISTRATION_AUTHORITY_MODULE_IDENTITY: (usize, u64) = (46_992, 5_511_630_509_204_421_113);
 const REGISTRATION_WRAPPER_MODULE_IDENTITIES: [(usize, u64); 5] = [
     (842, 17_134_465_730_999_135_202),
     (1_146, 9_973_452_843_887_101_603),
@@ -4332,12 +4332,12 @@ pub(super) use register_parse_import_parse;"#;
             (
                 "revisioned_database::tests::backend".to_owned(),
                 "RevisionedQueryDatabase:call".to_owned(),
-                17
+                19
             ),
             (
                 "revisioned_database::tests::body_provider::body".to_owned(),
                 "RevisionedQueryDatabase:call".to_owned(),
-                55
+                56
             ),
             (
                 "revisioned_database::tests::body_provider::provider".to_owned(),

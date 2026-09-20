@@ -362,6 +362,7 @@ pub(crate) const fn intrinsic_shape(name: IntrinsicName) -> IntrinsicShape {
         I::SizeOf
         | I::AlignOf
         | I::RequireDroppable
+        | I::RequireTransferable
         | I::RequireTriviallyDroppable
         | I::IntMax
         | I::IntMin

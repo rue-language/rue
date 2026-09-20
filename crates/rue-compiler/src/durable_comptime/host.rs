@@ -10,7 +10,7 @@ use super::projection::*;
 use super::services::*;
 use super::structured::*;
 use super::*;
-use rue_air::ComptimeValueAlgebra;
+use rue_air::{ComptimeRejections, ComptimeValueAlgebra};
 
 #[cfg(test)]
 thread_local! {
@@ -564,6 +564,8 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
         identity: Self::AnonymousIdentity,
         fields: &[rue_air::ComptimeField<Self::Name, Self::Type>],
         sigs: &[rue_air::ComptimeMethodDescriptor<Self::Name, Self::Type>],
+        thread_bound: bool,
+        unchecked_transfer_reason: Option<Self::Name>,
         type_subst: &AHashMap<Self::Name, Self::Type>,
         value_subst: &AHashMap<Self::Name, Self::Value>,
     ) -> rue_air::ComptimeHostResult<(Self::Type, bool), Self::Failure> {
@@ -640,6 +642,8 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
                 shape: DurableAnonymousNominalDescriptorShape::Struct {
                     fields: fields.into(),
                     methods: methods.into(),
+                    thread_bound,
+                    unchecked_transfer_reason: unchecked_transfer_reason.map(|name| name.0),
                 },
                 type_captures: type_captures.into(),
                 value_captures: value_captures.into(),
@@ -721,6 +725,32 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
         Ok(())
     }
 
+    fn check_require_transferable(
+        &mut self,
+        ty: Self::Type,
+        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeHostResult<(), Self::Failure> {
+        self.require_preview(
+            rue_error::PreviewFeature::Concurrency,
+            "@require_transferable",
+            site,
+        )?;
+        let (declaration, start, end) = self.diagnostic_site(site).into_parts();
+        self.services
+            .durable_session_mut()
+            .observe_deferred_requirement(DeferredRequirement {
+                kind: crate::semantic_query_nucleus::DeferredRequirementKind::RequireTransferable,
+                ty: ty.0,
+                source: Arc::new(crate::semantic_query_nucleus::DeferredRequirementSource {
+                    declaration,
+                    start,
+                    end,
+                }),
+                application: None,
+            });
+        Ok(())
+    }
+
     fn check_trivially_droppable(
         &mut self,
         ty: Self::Type,
@@ -784,6 +814,10 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
         match intrinsic {
             rue_air::ComptimeTypeIntrinsic::RequireDroppable => {
                 self.check_require_droppable(ty, site)?;
+                Ok(Some(EvaluatedSemanticConst::unit()))
+            }
+            rue_air::ComptimeTypeIntrinsic::RequireTransferable => {
+                self.check_require_transferable(ty, site)?;
                 Ok(Some(EvaluatedSemanticConst::unit()))
             }
             rue_air::ComptimeTypeIntrinsic::RequireTriviallyDroppable => {
@@ -2344,6 +2378,25 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeRejections
                 feature.enable_help(),
             ),
         ))
+    }
+
+    fn require_transfer_marker_preview(
+        &self,
+        site: &rue_air::ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> rue_air::ComptimeHostResult<(), Self::Failure> {
+        if site
+            .program()
+            .declaration
+            .module()
+            .is_trusted_standard_library()
+        {
+            return Ok(());
+        }
+        self.require_preview(
+            rue_error::PreviewFeature::Concurrency,
+            "a concurrency transferability marker",
+            site,
+        )
     }
 
     fn reject_callback_member(

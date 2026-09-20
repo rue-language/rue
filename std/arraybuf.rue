@@ -109,6 +109,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
     // Droppable elements (primitives, pointers, `Copy` structs, destructor-
     // bearing structs, nested containers) pass.
     @require_droppable(T);
+    @unchecked_transfer("ArrayBuf solely owns initialized elements and its RawBuf allocation, drops elements on the receiving thread only when recursive T transfer passes, and moving the owner preserves its allocation address; retained raw pointer aliases remain the caller's unchecked obligation")
     struct {
         // The raw growable allocation (shared core, RUE-1066). ArrayBuf adds the
         // length, the element drop discipline, and the growth policy on top.

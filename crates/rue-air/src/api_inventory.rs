@@ -2378,7 +2378,7 @@ fn comptime_host_is_an_empty_umbrella_over_its_capabilities() {
             owner.push((rest.split('(').next().unwrap_or_default(), current));
         }
     }
-    assert_eq!(owner.len(), 80, "the host contract lost or gained a method");
+    assert_eq!(owner.len(), 82, "the host contract lost or gained a method");
     for (method, trait_name) in &owner {
         assert!(
             capabilities.contains(trait_name),
@@ -2399,6 +2399,7 @@ fn diagnostic_hooks_are_keyed_by_the_engine_program() {
     for hook in [
         "fn match_no_selected_arm(",
         "fn require_preview(",
+        "fn require_transfer_marker_preview(",
         "fn reject_callback_member(",
         "fn depth_exceeded(",
         "fn literal_out_of_range(",

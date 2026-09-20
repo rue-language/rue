@@ -60,6 +60,8 @@ pub(crate) struct TypeFacts {
     pub(crate) is_copy: bool,
     pub(crate) carries_linear: bool,
     pub(crate) needs_drop: bool,
+    pub(crate) transferable: bool,
+    pub(crate) transfer_failure: Option<Arc<str>>,
     pub(crate) destructor: Option<crate::FunctionInstanceKey>,
     /// Repeated for ownership consumers that need to enumerate children. The
     /// canonical structural stamp is [`TypeShapeValue`]; layout never observes

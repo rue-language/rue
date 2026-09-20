@@ -64,6 +64,7 @@ Expression intrinsics (usable in any expression position):
 | `@align_of` | Get type alignment in bytes | 1 type | `i32` |
 | `@require_droppable` | Enforce the owning-container element-type gate | 1 type | `()` |
 | `@require_trivially_droppable` | Enforce the trivially-droppable element-type gate (a by-copy read, a value built from copies, or any other duplication of elements) | 1 type | `()` |
+| `@require_transferable` | Require the type to be transferable across a concurrency thread boundary (preview) | 1 type | `()` |
 | `@int_max` | Largest value of an integer type (§4.13:126) | 1 type (integer) | that integer type |
 | `@int_min` | Smallest value of an integer type (§4.13:126) | 1 type (integer) | that integer type |
 | `@offset_of` | Get a struct field's byte offset | 1 type, 1 field name | `u64` |
@@ -98,6 +99,18 @@ Expression intrinsics (usable in any expression position):
 | `@trunc` | Round toward zero (§4.13:143) | 1 expression (float) | that float type |
 | `@round` | Round to nearest, ties away from zero (§4.13:143) | 1 expression (float) | that float type |
 | `@import` | Import module | 1 expression (string literal) | module type |
+
+{{ rule(id="4.13:6a", cat="normative") }}
+
+`@require_transferable(T)` takes exactly one type and succeeds only when the
+canonical transferability fact for `T` is true. The fact recursively examines
+struct fields, array elements, and enum payloads. Raw pointers are rejected
+unless they are directly owned by a struct marked `@unchecked_transfer`; that
+assertion checks the pointee recursively and does not permit a pointer to a
+pointer. A reachable `@thread_bound` type or a user-defined destructor without
+an audit assertion is a compile-time error. Generic type parameters and
+unavailable metadata fail closed. The intrinsic requires `--preview
+concurrency`.
 
 Unchecked intrinsics (only valid inside a `checked` block; see §9.2 for their
 full semantics):

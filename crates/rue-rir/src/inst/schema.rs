@@ -1016,6 +1016,10 @@ pub enum InstData {
         fields: RirAnonStructFieldsRange,
         /// Index into extra data where method InstRefs start
         methods: RirAnonStructMethodsRange,
+        /// Transferability metadata attached to the anonymous type literal.
+        thread_bound: bool,
+        /// Audited assertion permitting direct raw-pointer ownership transfer.
+        unchecked_transfer_reason: Option<Spur>,
         /// Structural occurrence relative to the producing definition body.
         anchor: RirStructuralAnchor,
     },

@@ -28,6 +28,7 @@ pub const TYPE_INTRINSICS: &[&str] = &[
     "size_of",
     "align_of",
     "require_droppable",
+    "require_transferable",
     "require_trivially_droppable",
     "int_max",
     "int_min",

@@ -619,6 +619,18 @@ impl RirEditor {
         anchor: RirStructuralAnchor,
         span: Span,
     ) -> Result<InstRef, RirPayloadBuildError> {
+        self.add_anon_struct_type_with_transfer_metadata(fields, methods, false, None, anchor, span)
+    }
+
+    pub fn add_anon_struct_type_with_transfer_metadata(
+        &mut self,
+        fields: &[(Spur, RirTypeSyntaxRef)],
+        methods: &[InstRef],
+        thread_bound: bool,
+        unchecked_transfer_reason: Option<Spur>,
+        anchor: RirStructuralAnchor,
+        span: Span,
+    ) -> Result<InstRef, RirPayloadBuildError> {
         self.atomic(|rir| {
             let fields = rir.add_anon_struct_fields(fields)?;
             let methods = rir.add_anon_struct_methods(methods)?;
@@ -626,6 +638,8 @@ impl RirEditor {
                 data: InstData::AnonStructType {
                     fields,
                     methods,
+                    thread_bound,
+                    unchecked_transfer_reason,
                     anchor,
                 },
                 span,
@@ -1598,6 +1612,8 @@ impl RirEditor {
                     InstData::AnonStructType {
                         fields,
                         methods,
+                        thread_bound,
+                        unchecked_transfer_reason,
                         anchor,
                     } => {
                         let fields = source
@@ -1610,7 +1626,14 @@ impl RirEditor {
                             .values()
                             .map(remap_ref)
                             .collect::<Vec<_>>();
-                        self.add_anon_struct_type(&fields, &methods, anchor.clone(), span)?
+                        self.add_anon_struct_type_with_transfer_metadata(
+                            &fields,
+                            &methods,
+                            *thread_bound,
+                            *unchecked_transfer_reason,
+                            anchor.clone(),
+                            span,
+                        )?
                     }
                     InstData::AnonEnumType {
                         variants: variant_range,

@@ -1,0 +1,93 @@
+# Transferability directives and the canonical `@require_transferable` fact.
+
+[section]
+id = "diagnostics.transferability"
+name = "Transferability diagnostics"
+description = "Concurrency transfer markers validate on named and anonymous structs and reject unsafe roots."
+
+[[case]]
+name = "anonymous_transfer_directive_conflict"
+preview = "concurrency"
+source = """
+fn Token() -> type {
+    @thread_bound
+    @unchecked_transfer("conflicting")
+    struct { value: i32 }
+}
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["@thread_bound and @unchecked_transfer cannot be combined"]
+
+[[case]]
+name = "anonymous_transfer_directive_requires_preview"
+source = """
+fn Token() -> type {
+    @thread_bound
+    struct { value: i32 }
+}
+fn main() -> i32 {
+    let T = Token();
+    let _ = T;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E1100", "requires preview feature", "use --preview concurrency"]
+
+[[case]]
+name = "require_transferable_rejects_thread_bound_field"
+preview = "concurrency"
+source = """
+@thread_bound
+struct Token { value: i32 }
+struct Holder { token: Token }
+fn main() -> i32 {
+    @require_transferable(Holder);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E1200", "thread_bound"]
+
+[[case]]
+name = "anonymous_transfer_marker_rejects_duplicate"
+preview = "concurrency"
+source = """
+fn Token() -> type {
+    @thread_bound
+    @thread_bound
+    struct { value: i32 }
+}
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["@thread_bound may appear only once"]
+
+[[case]]
+name = "const_anonymous_bound_marker_requires_preview"
+source = """
+fn Token() -> type { @thread_bound struct { value: i32 } }
+const T = Token();
+fn main() -> i32 { let x = T { value: 0 }; x.value }
+"""
+compile_fail = true
+error_contains = ["E1100", "concurrency"]
+
+[[case]]
+name = "const_anonymous_audit_marker_requires_preview"
+source = """
+fn Token() -> type { @unchecked_transfer("thread-independent") struct { value: i32 } }
+const T = Token();
+fn main() -> i32 { let x = T { value: 0 }; x.value }
+"""
+compile_fail = true
+error_contains = ["E1100", "concurrency"]
+
+[[case]]
+name = "comptime_transfer_gate_requires_preview"
+source = """
+fn main() -> i32 { comptime { @require_transferable(i32); 0 } }
+"""
+compile_fail = true
+error_contains = ["E1100", "concurrency"]

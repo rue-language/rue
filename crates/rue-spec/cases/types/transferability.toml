@@ -1,0 +1,194 @@
+# Transferability facts and the concurrency preview markers.
+
+[section]
+id = "types.transferability"
+spec_chapter = "3.10"
+name = "Transferability"
+description = "Canonical structural transfer facts, audited ownership assertions, and thread-bound markers."
+
+[[case]]
+name = "thread_bound_field_rejected"
+spec = ["2.5:42", "4.13:6a"]
+preview = "concurrency"
+preview_should_pass = true
+source = """
+@thread_bound
+struct Token { value: i32 }
+struct Holder { token: Token }
+fn main() -> i32 {
+    @require_transferable(Holder);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E1200", "thread_bound"]
+
+[[case]]
+name = "audited_owner_accepts_direct_pointer"
+spec = ["2.5:43", "4.13:6a"]
+preview = "concurrency"
+preview_should_pass = true
+source = """
+fn Owner(comptime T: type) -> type {
+    @unchecked_transfer("the owner releases its allocation on either thread")
+    struct { data: ptr mut T, drop fn(self) {} }
+}
+fn main() -> i32 {
+    @require_transferable(Owner(i32));
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "anonymous_marker_conflict_rejected"
+spec = ["2.5:44", "4.14:7a"]
+preview = "concurrency"
+preview_should_pass = true
+source = """
+fn Token() -> type {
+    @thread_bound
+    @unchecked_transfer("conflicting")
+    struct { value: i32 }
+}
+fn main() -> i32 { let T = Token(); let _ = T; 0 }
+"""
+compile_fail = true
+error_contains = ["cannot be combined"]
+
+[[case]]
+name = "recursive_owner_cycle_is_transferable"
+spec = ["2.5:43", "4.13:6a"]
+preview = "concurrency"
+preview_should_pass = true
+source = """
+@unchecked_transfer("each node owns its recursive allocation")
+struct A { b: ptr mut B }
+@unchecked_transfer("each node owns its recursive allocation")
+struct B { a: ptr mut A }
+fn main() -> i32 {
+    @require_transferable(A);
+    @require_transferable(B);
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "recursive_owner_cycle_rejects_from_a"
+spec = ["2.5:42", "4.13:6a"]
+preview = "concurrency"
+preview_should_pass = true
+source = """
+@thread_bound struct Token { id: i32 }
+@unchecked_transfer("each node owns its recursive allocation")
+struct A { b: ptr mut B }
+@unchecked_transfer("each node owns its recursive allocation")
+struct B { a: ptr mut A, token: Token }
+fn main() -> i32 { @require_transferable(A); 0 }
+"""
+compile_fail = true
+error_contains = ["E1200", "thread_bound"]
+
+[[case]]
+name = "recursive_owner_cycle_rejects_from_b"
+spec = ["2.5:42", "4.13:6a"]
+preview = "concurrency"
+preview_should_pass = true
+source = """
+@thread_bound struct Token { id: i32 }
+@unchecked_transfer("each node owns its recursive allocation")
+struct A { b: ptr mut B }
+@unchecked_transfer("each node owns its recursive allocation")
+struct B { a: ptr mut A, token: Token }
+fn main() -> i32 { @require_transferable(B); 0 }
+"""
+compile_fail = true
+error_contains = ["E1200", "thread_bound"]
+
+[[case]]
+name = "pointer_pointer_assertion_does_not_transfer"
+spec = ["2.5:43", "4.13:6a"]
+preview = "concurrency"
+preview_should_pass = true
+source = """
+@unchecked_transfer("the outer allocation is exclusively owned")
+struct Owner { data: ptr mut ptr mut i32 }
+fn main() -> i32 { @require_transferable(Owner); 0 }
+"""
+compile_fail = true
+error_contains = ["E1200"]
+
+[[case]]
+name = "zero_length_array_still_checks_element"
+spec = ["2.5:42", "4.13:6a"]
+preview = "concurrency"
+preview_should_pass = true
+source = """
+@thread_bound struct Token { id: i32 }
+fn main() -> i32 { @require_transferable([Token; 0]); 0 }
+"""
+compile_fail = true
+error_contains = ["E1200", "thread_bound"]
+
+[[case]]
+name = "custom_drop_requires_audit"
+spec = ["2.5:42", "4.13:6a"]
+preview = "concurrency"
+preview_should_pass = true
+source = """
+struct D { value: i32 }
+drop fn D(self) {}
+fn main() -> i32 { @require_transferable(D); 0 }
+"""
+compile_fail = true
+error_contains = ["E1200"]
+
+[[case]]
+name = "generated_drop_preserves_audited_child"
+spec = ["2.5:43", "4.13:6a"]
+preview = "concurrency"
+preview_should_pass = true
+source = """
+@unchecked_transfer("the audited owner releases its resource on either thread")
+struct D { value: i32 }
+drop fn D(self) {}
+struct Outer { value: D }
+fn main() -> i32 { @require_transferable(Outer); 0 }
+"""
+exit_code = 0
+
+[[case]]
+name = "anonymous_custom_drop_requires_audit"
+spec = ["2.5:42", "4.13:6a"]
+preview = "concurrency"
+preview_should_pass = true
+source = """
+fn D() -> type { struct { value: i32, drop fn(self) {} } }
+fn main() -> i32 { @require_transferable(D()); 0 }
+"""
+compile_fail = true
+error_contains = ["E1200"]
+
+[[case]]
+name = "builtin_enum_spelling_does_not_bypass_affinity"
+spec = ["2.5:42", "4.13:6a"]
+preview = "concurrency"
+preview_should_pass = true
+source = """
+@thread_bound struct Token { id: i32 }
+enum Arch { Bad(Token), Good }
+fn main() -> i32 { @require_transferable(Arch); 0 }
+"""
+compile_fail = true
+error_contains = ["E1200", "thread_bound"]
+
+[[case]]
+name = "primitive_array_is_transferable"
+spec = ["4.13:6a"]
+preview = "concurrency"
+preview_should_pass = true
+source = """
+fn main() -> i32 { @require_transferable([i32; 2]); 0 }
+"""
+exit_code = 0

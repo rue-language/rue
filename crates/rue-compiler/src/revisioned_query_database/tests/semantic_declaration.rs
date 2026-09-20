@@ -3923,6 +3923,8 @@ fn semantic_nucleus_resolves_exact_signatures_without_whole_module_semantics() {
                     is_copy: false,
                     is_linear: false,
                     is_repr_c: false,
+                    thread_bound: false,
+                    unchecked_transfer_reason: None,
                     conformance: crate::durable_semantics::DurableConformanceFacts::default(),
                 },
                 callable_type_syntax: None,

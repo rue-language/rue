@@ -1,0 +1,92 @@
+# End-to-end CLI coverage for the concurrency transferability preview.
+
+[section]
+id = "cli.transferability"
+name = "Concurrency transferability"
+description = "The CLI accepts audited owning assertions and rejects thread-bound roots."
+
+[[case]]
+name = "audited_owner_is_transferable"
+files = [{ path = "main.rue", source = """
+fn Owner(comptime T: type) -> type {
+    @unchecked_transfer("the owner releases its allocation on either thread")
+    struct { data: ptr mut T, drop fn(self) {} }
+}
+fn main() -> i32 {
+    @require_transferable(Owner(i32));
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "concurrency", "-o", "prog"]
+stdout = ""
+
+[[case]]
+name = "thread_bound_root_is_rejected"
+files = [{ path = "main.rue", source = """
+@thread_bound
+struct Token { value: i32 }
+fn main() -> i32 {
+    @require_transferable(Token);
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "concurrency", "-o", "prog"]
+compile_fail = true
+error_contains = ["E1200", "thread_bound"]
+
+[[case]]
+name = "imported_generic_gate_rejects_thread_bound_substitution"
+args = ["main.rue", "--preview", "concurrency", "-o", "prog"]
+compile_fail = true
+error_contains = ["E1200", "thread_bound"]
+files = [
+  { path = "main.rue", source = """
+const lib = @import("lib.rue");
+const Checked = lib.Gate(lib.Token);
+fn main() -> i32 {
+    0
+}
+""" },
+  { path = "lib.rue", source = """
+@thread_bound
+pub struct Token { value: i32 }
+pub fn Gate(comptime T: type) -> type {
+    @require_transferable(T);
+    struct {}
+}
+""" },
+]
+
+[[case]]
+name = "local_arraybuf_of_thread_bound_values_remains_legal"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "--preview", "concurrency", "-o", "prog"]
+exit_code = 0
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+@thread_bound struct Token { value: i32 }
+fn main() -> i32 {
+    let V = std.arraybuf.ArrayBuf(Token);
+    let mut values = V.new();
+    values.push(Token { value: 23 });
+    values.free();
+    0
+}
+""" }]
+
+[[case]]
+name = "std_audit_marker_is_available_without_user_preview"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const Values = std.arraybuf.ArrayBuf(i32);
+fn main() -> i32 {
+    let mut values = Values.new();
+    values.push(23);
+    let value = values.pop_or(0);
+    values.free();
+    value - 23
+}
+""" }]

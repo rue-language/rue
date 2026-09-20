@@ -232,6 +232,8 @@ mod tests {
             shape: crate::SemanticProducedAnonymousNominalShape::Struct {
                 fields: Arc::from([(Arc::from(field), ty)]),
                 methods: Arc::new([]),
+                thread_bound: false,
+                unchecked_transfer_reason: None,
             },
             type_captures: Arc::new([]),
             value_captures: Arc::new([]),

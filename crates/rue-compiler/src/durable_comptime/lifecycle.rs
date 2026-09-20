@@ -2658,6 +2658,9 @@ mod effect_lifecycle_tests {
                         result: rue_air::ComptimeMethodType::SelfType,
                         declaration_span: rue_span::Span::new(0, 0),
                     }]),
+
+                    thread_bound: false,
+                    unchecked_transfer_reason: None,
                 },
                 type_captures: Arc::from([(Arc::from("T"), DurableType::U64)]),
                 value_captures: Arc::from([(Arc::from("n"), DurableConstValue::Integer(9))]),
@@ -2858,6 +2861,9 @@ mod effect_lifecycle_tests {
                 shape: DurableAnonymousNominalDescriptorShape::Struct {
                     fields: Arc::from([]),
                     methods: Arc::from([]),
+
+                    thread_bound: false,
+                    unchecked_transfer_reason: None,
                 },
                 type_captures: Arc::from([]),
                 value_captures: Arc::from([]),
@@ -3121,6 +3127,9 @@ mod effect_lifecycle_tests {
             crate::durable_semantics::DurableAnonymousNominalShape::Struct {
                 fields: Arc::from([]),
                 methods: Arc::from([]),
+
+                thread_bound: false,
+                unchecked_transfer_reason: None,
             },
             Arc::from([]),
             Arc::from([]),
@@ -3148,6 +3157,9 @@ mod effect_lifecycle_tests {
             crate::durable_semantics::DurableAnonymousNominalShape::Struct {
                 fields: Arc::from([]),
                 methods: Arc::from([]),
+
+                thread_bound: false,
+                unchecked_transfer_reason: None,
             },
             Arc::from([]),
             Arc::from([]),

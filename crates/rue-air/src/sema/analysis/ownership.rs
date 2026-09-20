@@ -2110,14 +2110,23 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 let mut env = super::super::comptime_eval::ComptimeEnv::for_analysis(ctx);
                 self.eval_const_expr(init, &mut env)
             };
-            if let Ok(Some(ConstValue::Type(ty))) = folded {
-                ctx.bind_comptime_type_var(name, ty);
-                let nop_ref = air.add_inst(AirInst {
-                    data: AirInstData::UnitConst,
-                    ty: Type::UNIT,
-                    span,
-                });
-                return Ok(AnalysisResult::new(nop_ref, Type::UNIT));
+            match folded {
+                Ok(Some(ConstValue::Type(ty))) => {
+                    ctx.bind_comptime_type_var(name, ty);
+                    let nop_ref = air.add_inst(AirInst {
+                        data: AirInstData::UnitConst,
+                        ty: Type::UNIT,
+                        span,
+                    });
+                    return Ok(AnalysisResult::new(nop_ref, Type::UNIT));
+                }
+                // A comptime reduction can reject the defining expression
+                // before the runtime binding fallback below. Preserve that
+                // diagnostic (in particular a missing preview gate) instead
+                // of replacing it with the less useful type-storage error.
+                Err(error) => return Err(error),
+                Ok(None) => {}
+                Ok(Some(_)) => {}
             }
 
             // Otherwise it genuinely can't be stored at runtime.

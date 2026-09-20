@@ -5185,3 +5185,106 @@ fn body_closure_digest_forcing_rejects_mutation_after_publication() {
         1,
     );
 }
+
+#[test]
+fn transfer_requirements_revalidate_retained_bodies_and_relocate_diagnostics() {
+    let configuration = crate::semantic_query_nucleus::SemanticQueryConfiguration {
+        preview_features: crate::StablePreviewFeatures::new(&crate::PreviewFeatures::from([
+            crate::PreviewFeature::Concurrency,
+        ])),
+        ..semantic_configuration()
+    };
+    let module = ModuleId::from_logical_path("main.rue").unwrap();
+    let key = crate::body_query::BodyQueryKey::new(
+        free_function_instance(&module, "check"),
+        configuration,
+    );
+    let mut database = RevisionedQueryDatabase::default();
+    let mut previous_raw = None;
+    let mut previous_input = None;
+    for (file_id, bound, prefix, gap, same_body) in [
+        (1, false, "", "", false),
+        (1, true, "", "", true),
+        (7, true, "// relocated source\n\n", "", true),
+        (7, true, "// relocated source\n\n", "       ", false),
+        (7, false, "// relocated source\n\n", "       ", true),
+    ] {
+        let marker = if bound { "@thread_bound\n" } else { "" };
+        let text = format!(
+            "{prefix}{marker}struct Token {{ value: i32 }}\n\
+             fn check() {{ {gap}@require_transferable(Token); }}\n"
+        );
+        let snapshot = source_snapshot(&[(file_id, "/main.rue", "main.rue", &text)], file_id);
+        let revision = revision_for(&mut database, &snapshot);
+        let input = database
+            .body_input(revision, key.clone(), CancellationToken::new())
+            .unwrap();
+        let raw = database
+            .body_transaction(revision, key.clone(), CancellationToken::new())
+            .expect("the raw body transaction must publish without a query cycle");
+        assert!(matches!(
+            raw.outcome(),
+            rue_query::QueryOutcome::Success(crate::body_query::BodyTransaction::Success { .. })
+        ));
+        if same_body {
+            assert_eq!(
+                previous_input,
+                Some(input.stamp()),
+                "unmodified body input must be retained"
+            );
+            assert_eq!(
+                previous_raw,
+                Some(raw.stamp()),
+                "transfer checking must revalidate a retained transaction"
+            );
+        }
+        previous_input = Some(input.stamp());
+        previous_raw = Some(raw.stamp());
+        let rue_query::QueryOutcome::Success(crate::body_query::BodyInputValue::Available(input)) =
+            input.outcome()
+        else {
+            panic!("body source remains available");
+        };
+        for _ in 0..2 {
+            let attempt = database.runtime.request_registered(
+                &database.body_analysis_bundles,
+                revision,
+                key.clone(),
+                CancellationToken::new(),
+            );
+            let terminal = attempt.terminal().expect("bundle must not cycle or cancel");
+            let rue_query::QueryOutcome::Success(bundle) = terminal.outcome() else {
+                panic!("body analysis publishes typed transfer diagnostics");
+            };
+            let projected =
+                project_transaction_diagnostics(bundle.transaction.clone(), Some(&input.source));
+            match projected {
+                crate::body_query::BodyTransaction::Success { .. } => {
+                    assert!(
+                        !bound,
+                        "a warmed success cannot bypass a newly negative transfer fact"
+                    );
+                }
+                crate::body_query::BodyTransaction::DeterministicFailure { errors, .. } => {
+                    assert!(
+                        bound,
+                        "removing affinity must invalidate the cached failure"
+                    );
+                    assert_eq!(errors.len(), 1);
+                    let error = errors.iter().next().unwrap();
+                    assert!(error.to_string().contains("thread_bound"));
+                    let span = error
+                        .span()
+                        .expect("transfer failure needs its source site");
+                    let site = u32::try_from(text.find("@require_transferable").unwrap()).unwrap();
+                    assert_eq!(span.file_id, rue_span::FileId::new(file_id));
+                    assert!(
+                        span.start <= site && site < span.end,
+                        "stale diagnostic: {span:?}, expected {site}"
+                    );
+                }
+                other => panic!("transfer failure must not become control flow: {other:?}"),
+            }
+        }
+    }
+}

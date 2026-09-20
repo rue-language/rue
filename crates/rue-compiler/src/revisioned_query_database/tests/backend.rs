@@ -2313,3 +2313,175 @@ fn drop_glue_plan_is_cold_reusable_and_changes_with_order_not_only_nested_set() 
         Some(cold_machine_symbol.as_ref())
     );
 }
+
+#[test]
+fn transferable_pointer_cycles_are_root_order_independent_and_invalidate() {
+    let configuration = crate::semantic_query_nucleus::SemanticQueryConfiguration {
+        preview_features: crate::StablePreviewFeatures::new(&crate::PreviewFeatures::from([
+            crate::PreviewFeature::Concurrency,
+        ])),
+        ..semantic_configuration()
+    };
+    let module = ModuleId::from_logical_path("main.rue").unwrap();
+    let key = |name: &str| crate::type_queries::TypeQueryKey {
+        ty: crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(
+            crate::StableDefinitionKey::from_stable_parts(
+                module.clone(),
+                crate::StableDefinitionNamespace::Type,
+                crate::StableDefinitionKind::Struct,
+                name,
+                None,
+            ),
+        )),
+        configuration: configuration.clone(),
+    };
+    let source = |bound: bool| {
+        let marker = if bound { "@thread_bound" } else { "" };
+        source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                &format!(
+                    "{marker}\nstruct Token {{ value: i32 }}\n\
+                 @unchecked_transfer(\"exclusive cyclic owner\")\n\
+                 struct A {{ next: ptr mut B }}\n\
+                 @unchecked_transfer(\"exclusive cyclic owner\")\n\
+                 struct B {{ next: ptr mut A, token: Token }}\n\
+                 fn main() {{}}\n"
+                ),
+            )],
+            1,
+        )
+    };
+    // A query for one root must not publish a provisional positive fact for
+    // another member of the cycle. Exercise both cold root orders and edits
+    // in both directions using the same retained database.
+    for order in [["A", "B"], ["B", "A"]] {
+        let mut database = RevisionedQueryDatabase::default();
+        for bound in [true, false, true] {
+            let revision = revision_for(&mut database, &source(bound));
+            for name in order {
+                let cold = database.runtime.request_registered(
+                    &database.type_facts,
+                    revision,
+                    key(name),
+                    CancellationToken::new(),
+                );
+                let terminal = cold.terminal().expect("transfer query must not cycle");
+                let rue_query::QueryOutcome::Success(
+                    crate::type_queries::TypeFactsValue::Available(facts),
+                ) = terminal.outcome()
+                else {
+                    panic!(
+                        "transfer facts must be available for {name}: {:?}",
+                        terminal.outcome()
+                    );
+                };
+                assert_eq!(facts.transferable, !bound, "root {name}, order {order:?}");
+                assert_eq!(facts.transfer_failure.is_some(), bound);
+                if bound {
+                    assert!(
+                        facts
+                            .transfer_failure
+                            .as_deref()
+                            .unwrap()
+                            .contains("thread_bound")
+                    );
+                }
+                let warm = database.runtime.request_registered(
+                    &database.type_facts,
+                    revision,
+                    key(name),
+                    CancellationToken::new(),
+                );
+                assert_eq!(terminal.stamp(), warm.terminal().unwrap().stamp());
+            }
+        }
+    }
+}
+
+#[test]
+fn anonymous_transfer_markers_invalidate_warmed_type_factory_gates() {
+    let configuration = crate::semantic_query_nucleus::SemanticQueryConfiguration {
+        preview_features: crate::StablePreviewFeatures::new(&crate::PreviewFeatures::from([
+            crate::PreviewFeature::Concurrency,
+        ])),
+        ..semantic_configuration()
+    };
+    let module = ModuleId::from_logical_path("main.rue").unwrap();
+    let key = crate::body_query::BodyQueryKey::new(
+        free_function_instance(&module, "check"),
+        configuration,
+    );
+    let mut database = RevisionedQueryDatabase::default();
+    let mut input_stamp = None;
+    for (marker, expected, reason) in [
+        ("", false, "requires @unchecked_transfer"),
+        (
+            "@unchecked_transfer(\"no thread-affine resources\")",
+            true,
+            "",
+        ),
+        ("@thread_bound", false, "thread_bound"),
+        (
+            "@unchecked_transfer(\"reviewed destructor is thread-independent\")",
+            true,
+            "",
+        ),
+        ("", false, "requires @unchecked_transfer"),
+    ] {
+        let text = format!(
+            "fn Owner() -> type {{ {marker}\n\
+             struct {{ value: i32, drop fn(self) {{}} }} }}\n\
+             fn check() {{ let T = Owner(); @require_transferable(T); }}\n"
+        );
+        let snapshot = source_snapshot(&[(1, "/main.rue", "main.rue", &text)], 1);
+        let revision = revision_for(&mut database, &snapshot);
+        let input = database
+            .body_input(revision, key.clone(), CancellationToken::new())
+            .unwrap();
+        if let Some(previous) = input_stamp {
+            assert_eq!(previous, input.stamp(), "only the type producer changed");
+        }
+        input_stamp = Some(input.stamp());
+        for _ in 0..2 {
+            let attempt = database.runtime.request_registered(
+                &database.body_analysis_bundles,
+                revision,
+                key.clone(),
+                CancellationToken::new(),
+            );
+            let terminal = attempt
+                .terminal()
+                .expect("anonymous transfer query must not cycle");
+            let rue_query::QueryOutcome::Success(bundle) = terminal.outcome() else {
+                panic!("anonymous transfer gate publishes typed outcomes");
+            };
+            match &bundle.transaction {
+                crate::body_query::BodyTransaction::Success { .. } => {
+                    assert!(
+                        expected,
+                        "stale positive transfer fact for marker {marker:?}"
+                    );
+                }
+                crate::body_query::BodyTransaction::DeterministicFailure { errors, .. } => {
+                    assert!(
+                        !expected,
+                        "stale negative transfer fact for marker {marker:?}: {errors:?}"
+                    );
+                    assert!(
+                        bundle.produced_anonymous.is_none(),
+                        "a rejected body must not publish anonymous facts to its closure"
+                    );
+                    assert!(
+                        errors
+                            .iter()
+                            .any(|error| error.to_string().contains(reason))
+                    );
+                }
+                other => panic!("type factory gate must not become a control outcome: {other:?}"),
+            }
+        }
+    }
+}

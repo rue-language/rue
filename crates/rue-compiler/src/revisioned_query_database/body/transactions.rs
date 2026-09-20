@@ -875,6 +875,18 @@ impl BodyTransactionEvaluator {
                             .module_tokens
                             .into_iter()
                             .collect::<AHashMap<_, _>>();
+                        let map_definition = |token: &rue_air::SemanticDefinitionToken| {
+                            definition_tokens
+                                .get(token)
+                                .cloned()
+                                .ok_or(rue_air::SemanticStableResolutionFailure::Missing)
+                        };
+                        let map_module = |token: &rue_air::SemanticModuleToken| {
+                            module_tokens
+                                .get(token)
+                                .cloned()
+                                .ok_or(rue_air::SemanticStableResolutionFailure::Missing)
+                        };
                         let nested = analyzed
                             .referenced_specializations
                             .iter()
@@ -921,8 +933,36 @@ impl BodyTransactionEvaluator {
                                 &definition_tokens,
                                 &module_tokens,
                             );
-                        match (body, nested, produced_anonymous_nominals) {
-                            (Ok(body), Ok(_), Ok(produced_anonymous_nominals)) => {
+                        let transfer_requirements = analyzed
+                            .transfer_requirements
+                            .iter()
+                            .map(|requirement| {
+                                requirement
+                                    .ty
+                                    .try_map_identities(&map_definition, &map_module)
+                                    .map(|ty| crate::body_query::BodyTransferRequirement {
+                                        ty,
+                                        coordinate: crate::body_query::body_diagnostic_coordinate(
+                                            requirement.span.file_id,
+                                            requirement.span.start,
+                                            requirement.span.end,
+                                            &input.source,
+                                        ),
+                                    })
+                            })
+                            .collect::<Result<Vec<_>, _>>();
+                        match (
+                            body,
+                            nested,
+                            produced_anonymous_nominals,
+                            transfer_requirements,
+                        ) {
+                            (
+                                Ok(body),
+                                Ok(_),
+                                Ok(produced_anonymous_nominals),
+                                Ok(transfer_requirements),
+                            ) => {
                                 collect_published_body_references(&body, &mut references);
                                 crate::body_query::BodyTransaction::Success {
                                     body: Arc::new(crate::body_query::CanonicalBody::Ordinary {
@@ -935,11 +975,12 @@ impl BodyTransactionEvaluator {
                                     produced_anonymous_nominals,
                                     consulted_anonymous_nominals: consulted_anonymous_nominals
                                         .clone(),
+                                    transfer_requirements: transfer_requirements.into(),
                                     lookup_observations:
                                         crate::body_query::BodyLookupObservations::default(),
                                 }
                             }
-                            (Err(failure), _, _) => {
+                            (Err(failure), _, _, _) => {
                                 crate::body_query::BodyTransaction::DeterministicFailure {
                                     diagnostic_basis: None,
                                     errors: crate::CompileErrors::from(
@@ -955,7 +996,7 @@ impl BodyTransactionEvaluator {
                                         crate::body_query::BodyLookupObservations::default(),
                                 }
                             }
-                            (_, Err(failure), _) => {
+                            (_, Err(failure), _, _) => {
                                 crate::body_query::BodyTransaction::DeterministicFailure {
                                     diagnostic_basis: None,
                                     errors: crate::CompileErrors::from(
@@ -971,7 +1012,7 @@ impl BodyTransactionEvaluator {
                                         crate::body_query::BodyLookupObservations::default(),
                                 }
                             }
-                            (_, _, Err(failure)) => {
+                            (_, _, Err(failure), _) => {
                                 crate::body_query::BodyTransaction::DeterministicFailure {
                                     diagnostic_basis: None,
                                     errors: crate::CompileErrors::from(
@@ -979,6 +1020,21 @@ impl BodyTransactionEvaluator {
                                             rue_error::ErrorKind::OutputPublication(format!(
                                                 "provider produced anonymous relocation failed: \
                                                  {failure:?}"
+                                            )),
+                                        ),
+                                    ),
+                                    references: crate::body_query::BodyReferences(Arc::from([])),
+                                    lookup_observations:
+                                        crate::body_query::BodyLookupObservations::default(),
+                                }
+                            }
+                            (_, _, _, Err(failure)) => {
+                                crate::body_query::BodyTransaction::DeterministicFailure {
+                                    diagnostic_basis: None,
+                                    errors: crate::CompileErrors::from(
+                                        crate::CompileError::without_span(
+                                            rue_error::ErrorKind::OutputPublication(format!(
+                                                "provider transfer requirement relocation failed: {failure:?}"
                                             )),
                                         ),
                                     ),
@@ -1250,14 +1306,65 @@ impl BodyTransactionEvaluator {
                             &definition_tokens,
                             &module_tokens,
                         );
-                        match (identity, body, dependencies, nested, locally_produced) {
+                        let transfer_requirements = analyzed
+                            .transfer_requirements
+                            .iter()
+                            .map(|requirement| {
+                                requirement
+                                    .ty
+                                    .try_map_identities(&definition, &module)
+                                    .map(|ty| crate::body_query::BodyTransferRequirement {
+                                        ty,
+                                        coordinate: crate::body_query::body_diagnostic_coordinate(
+                                            requirement.span.file_id,
+                                            requirement.span.start,
+                                            requirement.span.end,
+                                            &input.source,
+                                        ),
+                                    })
+                            })
+                            .collect::<Result<Vec<_>, _>>();
+                        match (
+                            identity,
+                            body,
+                            dependencies,
+                            nested,
+                            locally_produced,
+                            transfer_requirements,
+                        ) {
                             (
                                 Ok(identity),
                                 Ok(body),
                                 Ok(dependencies),
                                 Ok(nested),
                                 Ok(locally_produced),
+                                Ok(transfer_requirements),
                             ) => {
+                                // The durable comptime projection is the
+                                // authoritative producer fact for an
+                                // anonymous type constructor. Specialized AIR
+                                // analysis can also report a thin local view
+                                // of that same nominal; retain only local
+                                // identities absent from the complete
+                                // projection so transfer metadata cannot be
+                                // downgraded during publication.
+                                let projected_ids = produced_anonymous_nominals
+                                    .0
+                                    .iter()
+                                    .map(|nominal| nominal.identity.clone())
+                                    .collect::<BTreeSet<_>>();
+                                let locally_produced =
+                                    crate::body_query::BodyProducedAnonymousNominals(
+                                        locally_produced
+                                            .0
+                                            .iter()
+                                            .filter(|nominal| {
+                                                !projected_ids.contains(&nominal.identity)
+                                            })
+                                            .cloned()
+                                            .collect::<Vec<_>>()
+                                            .into(),
+                                    );
                                 let mut references = analyzed
                                     .referenced_definitions
                                     .into_iter()
@@ -1328,6 +1435,7 @@ impl BodyTransactionEvaluator {
                                             ),
                                         consulted_anonymous_nominals: consulted_anonymous_nominals
                                             .clone(),
+                                        transfer_requirements: transfer_requirements.into(),
                                         lookup_observations:
                                             crate::body_query::BodyLookupObservations::default(),
                                     }
@@ -1637,12 +1745,37 @@ impl BodyTransactionEvaluator {
                                 &definition_tokens,
                                 &module_tokens,
                             );
-                        match (identity, body, nested, produced_anonymous_nominals) {
+                        let transfer_requirements = analyzed
+                            .transfer_requirements
+                            .iter()
+                            .map(|requirement| {
+                                requirement
+                                    .ty
+                                    .try_map_identities(&definition, &module)
+                                    .map(|ty| crate::body_query::BodyTransferRequirement {
+                                        ty,
+                                        coordinate: crate::body_query::body_diagnostic_coordinate(
+                                            requirement.span.file_id,
+                                            requirement.span.start,
+                                            requirement.span.end,
+                                            &input.source,
+                                        ),
+                                    })
+                            })
+                            .collect::<Result<Vec<_>, _>>();
+                        match (
+                            identity,
+                            body,
+                            nested,
+                            produced_anonymous_nominals,
+                            transfer_requirements,
+                        ) {
                             (
                                 Ok(identity),
                                 Ok(body),
                                 Ok(nested),
                                 Ok(produced_anonymous_nominals),
+                                Ok(transfer_requirements),
                             ) if identity == key.instance && body_anchor.is_some() => {
                                 let mut references = analyzed
                                     .referenced_definitions
@@ -1679,6 +1812,7 @@ impl BodyTransactionEvaluator {
                                     produced_anonymous_nominals,
                                     consulted_anonymous_nominals: consulted_anonymous_nominals
                                         .clone(),
+                                    transfer_requirements: transfer_requirements.into(),
                                     lookup_observations:
                                         crate::body_query::BodyLookupObservations::default(),
                                 }

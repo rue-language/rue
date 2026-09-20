@@ -191,7 +191,10 @@ type_call_args = type_call_arg { "," type_call_arg } [ "," ] ;
 type_call_arg  = type | [ "-" ] INTEGER ;  (* a type argument for a `comptime T: type` parameter, or an integer value argument for a comptime value parameter such as `comptime N: i32` *)
 array_length   = INTEGER | IDENT | length_call ;
 length_call    = IDENT "(" [ array_length { "," array_length } [ "," ] ] ")" ;  (* comptime-evaluable call, e.g. fact(4) *)
-anon_struct_type = "struct" "{" [ anon_struct_fields ] "}" ;
+anon_struct_type = transfer_directives "struct" "{" [ anon_struct_fields ] "}" ;
+transfer_directives = { transfer_directive } ;
+transfer_directive = "@thread_bound"
+                   | "@unchecked_transfer" "(" STRING ")" ;
 anon_struct_value = "struct" "{" [ anon_struct_fields ] { anon_struct_member } "}" ;
 anon_struct_fields = struct_field { "," struct_field } [ "," ] ;
 anon_struct_member = method | anon_drop_fn ;

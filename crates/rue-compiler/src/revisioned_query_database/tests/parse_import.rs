@@ -1190,6 +1190,9 @@ fn compiler_body_anonymous_registry_unifies_producers_and_keeps_rich_facts() {
         crate::durable_semantics::DurableAnonymousNominalShape::Struct {
             fields: Arc::from([]),
             methods: Arc::from([]),
+
+            thread_bound: false,
+            unchecked_transfer_reason: None,
         },
         Arc::from([]),
         Arc::from([]),
@@ -1210,6 +1213,9 @@ fn compiler_body_anonymous_registry_unifies_producers_and_keeps_rich_facts() {
                 ),
                 has_body: false,
             }]),
+
+            thread_bound: false,
+            unchecked_transfer_reason: None,
         },
         Arc::from([(Arc::from("T"), rue_air::SemanticImportType::I32)]),
         Arc::from([]),
@@ -1234,6 +1240,9 @@ fn compiler_body_anonymous_registry_unifies_producers_and_keeps_rich_facts() {
         crate::durable_semantics::DurableAnonymousNominalShape::Struct {
             fields: Arc::from([(Arc::from("counterfeit"), rue_air::SemanticImportType::I64)]),
             methods: Arc::from([]),
+
+            thread_bound: false,
+            unchecked_transfer_reason: None,
         },
     );
     registry.extend([&counterfeit]);
@@ -1274,6 +1283,9 @@ fn anonymous_dependency_frontier_canonicalizes_aliases_before_deduplication() {
         crate::durable_semantics::DurableAnonymousNominalShape::Struct {
             fields: Arc::from([]),
             methods: Arc::from([]),
+
+            thread_bound: false,
+            unchecked_transfer_reason: None,
         },
         Arc::from([]),
         Arc::from([]),
@@ -1322,6 +1334,9 @@ fn provider_produced_anonymous_projection_rejects_conflicting_duplicate_identity
         shape: rue_air::SemanticProducedAnonymousNominalShape::Struct {
             fields: Arc::from([(Arc::from(field), ty)]),
             methods: Arc::from([]),
+
+            thread_bound: false,
+            unchecked_transfer_reason: None,
         },
         type_captures: Arc::from([]),
         value_captures: Arc::from([]),
@@ -1369,6 +1384,9 @@ fn provider_produced_anonymous_projection_rejects_relocated_thin_rich_duplicate(
         shape: rue_air::SemanticProducedAnonymousNominalShape::Struct {
             fields: Arc::from([(Arc::from("value"), rue_air::TypeInstanceKey::I32)]),
             methods: Arc::from([]),
+
+            thread_bound: false,
+            unchecked_transfer_reason: None,
         },
         type_captures,
         value_captures: Arc::from([]),

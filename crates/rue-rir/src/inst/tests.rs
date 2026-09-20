@@ -2542,6 +2542,8 @@ mod typed_payload_tests {
             |fields| InstData::AnonStructType {
                 fields,
                 methods: RirAnonStructMethodsRange::payload_fallback(),
+                thread_bound: false,
+                unchecked_transfer_reason: None,
                 anchor: RirStructuralAnchor::new(vec![RirStructuralPathSegment::AnonymousType(0),]),
             }
         );
