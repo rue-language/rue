@@ -38,7 +38,8 @@ class InstallerTests(unittest.TestCase):
                 )
             elif source_layout == "deb822-reordered":
                 (source_parts / "ubuntu.sources").write_text(
-                    "URIs: http://azure.archive.ubuntu.com/ubuntu/\n"
+                    "URIs: http://azure.archive.ubuntu.com/ubuntu/   \n"
+                    "# Comments do not end a continued URI field.\n"
                     "  https://security.ubuntu.com/ubuntu/\n"
                     "Suites: noble noble-security\n"
                     "Components: main universe restricted multiverse\n"
@@ -46,6 +47,7 @@ class InstallerTests(unittest.TestCase):
                     "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n\n"
                     "Types: deb\n"
                     "URIs: http://archive.ubuntu.com/ubuntu/\n"
+                    "# This continuation makes the whole stanza third-party.\n"
                     "  https://dl.google.com/linux/chrome/deb\n"
                     "Suites: noble\n"
                     "Components: main\n"
