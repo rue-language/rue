@@ -96,7 +96,7 @@ def stepLines (n : Nat) (s : Step) : List String :=
     sp (2 * min s.depth 8) ++ s.rule
   let ind := 9
   head ::
-  (sp ind ++ pad 8 "expr" ++ clip 80 (exprLine s.binders s.expr)) ::
+  (sp ind ++ pad 8 "expr" ++ clip 80 s.text) ::
   (sp ind ++ pad 8 "store" ++ clip 72 (storeLine s.storeBefore)) ::
   (sp ind ++ pad 8 "  →" ++ clip 72 (storeLine s.storeAfter)) ::
   (if s.events.isEmpty then []

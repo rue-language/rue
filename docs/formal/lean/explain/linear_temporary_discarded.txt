@@ -38,7 +38,7 @@ premises are the nodes indented under it, in premise order.
             the discarded value has type RLinear, which carries a linear value
             ((Seq) premise `carries_linear(T1) = false`, §5.3; 3.8:64; the
             compiler reports E0478)
-      (Struct-Intro) §5.8
+      resource intro §5.8 (the shape of the aggregate-introduction rule; `res κ` has no fields)
         e       RLinear { value: 3 }
         Γ;Σ     (empty)
         ⇒       RLinear  ⊣  (empty)
@@ -58,7 +58,7 @@ is the nesting depth and `>>` marks a drop event.
          store   (empty)
            →     (empty)
          result  value 3
-  [2]   d1    (D-Struct) §6.5
+  [2]   d1    resource intro §6.5
          expr    RLinear { value: 3 }
          store   (empty)
            →     (empty)
@@ -68,11 +68,13 @@ is the nesting depth and `>>` marks a drop event.
          store   (empty)
            →     (empty)
          result  REFUSED (linearDiscard)
-                 a sequence discarded a linear value: the temporary's obligation was
-                 never discharged ((D-Seq) §6.7; 3.8:64; §7)
+                 a sequence discarded a linear value: no §6 rule fires here — §5.3's
+                 discard check (3.8:64) should have rejected the program, so the
+                 interpreter names the refusal instead, and §7 forbids it
 
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: REFUSED (linearDiscard)
-         a sequence discarded a linear value: the temporary's obligation was
-         never discharged ((D-Seq) §6.7; 3.8:64; §7)
+         a sequence discarded a linear value: no §6 rule fires here — §5.3's
+         discard check (3.8:64) should have rejected the program, so the
+         interpreter names the refusal instead, and §7 forbids it
 
