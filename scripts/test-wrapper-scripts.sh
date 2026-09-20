@@ -1119,9 +1119,10 @@ test_ci_timed_preserves_status_and_summarizes_actions() {
 echo 'first line'
 echo 'Commands: 10 (cached: 7, remote: 1, local: 2)'
 echo 'Commands: 5 (cached: 3, remote: 1, local: 1)'
-echo '✓ Pass: root//:spec-tests (1m12.250s)'
+echo '✓ Pass: root//:spec-tests (1:12.250s)'
 echo '✓ Pass: root//:ui-tests (7.5s)'
 echo '✗ Fail: root//:cli-tests (2s)'
+echo '✓ Pass: root//:slow-tests (2m3.125s)'
 echo 'Skip: root//:stress-tests'
 echo 'cli-tests: measured 37 cases in /tmp/timings.jsonl'
 echo 'Network: Up: 214KiB  Down: 274MiB  (GRPC-SESSION-ID)'
@@ -1140,10 +1141,11 @@ EOF
     "$(grep -Fq '| passed |' "$sb/summary" && grep -Fq '| 2 | 15 | 10 | 2 | 3 |' "$sb/summary" && echo 0 || echo 1)"
   check "ci-timed: CLI case count is included" \
     "$(grep -Fq '| 37 | 2 | 15 |' "$sb/summary" && echo 0 || echo 1)"
-  # 72.250 + 7.500 + 2.000, summed across minutes, fractional, and whole-second
-  # spellings; the duration-less Skip line contributes nothing.
+  # 72.250 + 7.500 + 2.000 + 123.125, summed across colon, minute,
+  # fractional, and whole-second spellings; the duration-less Skip line
+  # contributes nothing.
   check "ci-timed: opaque test-process time is separated from action counts" \
-    "$(grep -Fq '| 81.750s |' "$sb/summary" && echo 0 || echo 1)"
+    "$(grep -Fq '| 204.875s |' "$sb/summary" && echo 0 || echo 1)"
   check "ci-timed: action-cache hit rate is reported" \
     "$(grep -Fq '| 66% |' "$sb/summary" && echo 0 || echo 1)"
   # 274MiB + 2.0GiB down, 214KiB + 1.0MiB up, summed across invocations and
