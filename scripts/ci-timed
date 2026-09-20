@@ -58,9 +58,9 @@ while IFS= read -r line; do
     # harness process. Buck reports each test's own duration on its result line
     # ("Pass: root//:spec-tests (73.4s)"); summing those separates harness time
     # from action-graph time (RUE-1165).
-    if [[ "$line" =~ (Pass|Fail|Timeout|Fatal|Omit):[[:space:]]+[^[:space:]]+[[:space:]]+\(([0-9]+m)?([0-9]+)(\.[0-9]+)?s\) ]]; then
+    if [[ "$line" =~ (Pass|Fail|Timeout|Fatal|Omit):[[:space:]]+[^[:space:]]+[[:space:]]+\(([0-9]+[m:])?([0-9]+)(\.[0-9]+)?s\) ]]; then
         ((tests_seen += 1))
-        minutes="${BASH_REMATCH[2]%m}"
+        minutes="${BASH_REMATCH[2]%[m:]}"
         fraction="${BASH_REMATCH[4]#.}000"
         ((test_ms += ((10#${minutes:-0} * 60) + 10#${BASH_REMATCH[3]}) * 1000 + 10#${fraction:0:3}))
     fi
