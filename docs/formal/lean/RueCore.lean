@@ -5,3 +5,6 @@ import RueCore.Soundness
 import RueCore.Examples
 import RueCore.Print
 import RueCore.Corpus
+import RueCore.Explain
+import RueCore.Explain.Text
+import RueCore.Explain.Html
