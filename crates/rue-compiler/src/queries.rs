@@ -191,6 +191,9 @@ pub struct CompileOutput {
     /// Time spent in the canonical native linker call, excluding source
     /// observation and query work.
     pub(crate) link_ns: Option<u64>,
+    /// The link implementation this compilation actually ran, which is the
+    /// resolution of [`LinkerMode`] rather than the requested mode.
+    pub(crate) resolved_link: crate::unstable::ResolvedLink,
 }
 
 impl CompileOutput {
@@ -210,6 +213,12 @@ impl CompileOutput {
     /// The measured linker phase nested inside this compiler request.
     pub fn unstable_link_ns(&self) -> Option<u64> {
         self.link_ns
+    }
+
+    /// The link implementation that produced these bytes. `LinkerMode::Auto`
+    /// is a request; this is what the compiler executed.
+    pub fn unstable_resolved_link(&self) -> crate::unstable::ResolvedLink {
+        self.resolved_link
     }
 }
 

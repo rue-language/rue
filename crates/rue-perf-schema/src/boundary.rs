@@ -47,11 +47,13 @@ pub enum OptimizationLevel {
 }
 
 /// Link implementation used to produce the executable.
+///
+/// These are implementations, not driver request modes. A mode which only
+/// selects between them — `--linker auto` — is resolved by the compiler before
+/// it reports evidence, because the evidence describes executed work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LinkPolicy {
-    /// Select internal or system linking from reached runtime requirements.
-    Auto,
     /// Rue's built-in linker.
     Internal,
     /// An external command selected by the caller.

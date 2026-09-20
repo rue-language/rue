@@ -1792,6 +1792,7 @@ fn benchmark_report(
     timing: &timing::TimingData,
     options: &Options,
     resolved_workers: usize,
+    resolved_link: rue_compiler::unstable::ResolvedLink,
     source_snapshot: &rue_compiler::SourceSnapshot,
     metrics: rue_compiler::unstable::OneShotMetrics,
     emitted_output: EmittedOutput,
@@ -1821,6 +1822,7 @@ fn benchmark_report(
     report.compiler_boundary = compiler_boundary_evidence(
         options,
         resolved_workers,
+        resolved_link,
         source_snapshot,
         emitted_output.clone(),
     );
@@ -1872,6 +1874,7 @@ fn daemon_input_evidence(inputs: &[WatchInput]) -> String {
 fn compiler_boundary_evidence(
     options: &Options,
     resolved_workers: usize,
+    resolved_link: rue_compiler::unstable::ResolvedLink,
     snapshot: &rue_compiler::SourceSnapshot,
     emitted_output: EmittedOutput,
 ) -> Option<CompilerBoundaryEvidence> {
@@ -1913,10 +1916,12 @@ fn compiler_boundary_evidence(
                 OptLevel::O2 => OptimizationLevel::O2,
                 OptLevel::O3 => OptimizationLevel::O3,
             },
-            linker: match &options.linker {
-                LinkerMode::Auto => LinkPolicy::Auto,
-                LinkerMode::Internal => LinkPolicy::Internal,
-                LinkerMode::System(_) => LinkPolicy::System,
+            // The boundary records the link implementation that ran, not the
+            // mode the driver was asked for: `--linker auto` resolves during
+            // the link, and ADR-0071 evidence describes executed work.
+            linker: match resolved_link {
+                rue_compiler::unstable::ResolvedLink::Internal => LinkPolicy::Internal,
+                rue_compiler::unstable::ResolvedLink::System => LinkPolicy::System,
             },
             output_kind: OutputKind::NativeExecutable,
             requested_workers,
@@ -3165,6 +3170,7 @@ fn main() {
             timing,
             &options,
             resolved_workers,
+            output.unstable_resolved_link(),
             &source_snapshot,
             output.unstable_metrics(),
             emitted_output,

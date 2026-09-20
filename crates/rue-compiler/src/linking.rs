@@ -1530,6 +1530,7 @@ fn finish_internal_link_with_cancellation(
         provider_observations: crate::unstable::ProviderObservationMetrics::default(),
         publication: crate::unstable::PublicationMetrics::default(),
         link_ns: None,
+        resolved_link: crate::unstable::ResolvedLink::Internal,
     })
 }
 
@@ -1883,6 +1884,7 @@ pub(crate) fn link_system_with_warnings_and_cancellation(
         provider_observations: crate::unstable::ProviderObservationMetrics::default(),
         publication: crate::unstable::PublicationMetrics::default(),
         link_ns: None,
+        resolved_link: crate::unstable::ResolvedLink::System,
     })
 }
 use std::io::{Read, Seek, Write};

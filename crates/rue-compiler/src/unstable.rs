@@ -3864,6 +3864,20 @@ pub struct OneShotMetrics {
     pub publication: PublicationMetrics,
 }
 
+/// The link implementation one completed compilation actually ran.
+///
+/// [`crate::LinkerMode::Auto`] is a request, not an implementation: the link
+/// resolves it from the program's reached runtime requirements. Callers that
+/// must describe executed work rather than intent — the ADR-0071 build-boundary
+/// evidence above all — read this instead of the requested mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolvedLink {
+    /// Rue's built-in linker produced the executable.
+    Internal,
+    /// An external C driver produced the executable.
+    System,
+}
+
 /// Deterministic publication-seam health for one compiler process (RUE-1576).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PublicationMetrics {
