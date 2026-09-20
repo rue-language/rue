@@ -53,8 +53,17 @@ is unchanged.
 def _strip_components(strip_prefix: str) -> int:
     return len([c for c in strip_prefix.split("/") if c != ""])
 
+# `tar` decompressor flag per archive format. `xz` is the Rust and Zig
+# format; Lean publishes `.tar.zst` only (ADR-0097), and both GNU tar and
+# bsdtar decode it through the host's zstd support, the same kind of host
+# dependency `-J` already has on liblzma.
+_TAR_DECOMPRESS = {
+    "xz": "-J",
+    "zstd": "--zstd",
+}
+
 def _toolchain_distribution_impl(ctx: AnalysisContext) -> list[Provider]:
-    archive = ctx.actions.declare_output("archive.tar.xz")
+    archive = ctx.actions.declare_output("archive.tar." + ctx.attrs.compression)
     ctx.actions.download_file(
         archive.as_output(),
         ctx.attrs.url,
@@ -78,12 +87,13 @@ def _toolchain_distribution_impl(ctx: AnalysisContext) -> list[Provider]:
         cmd_args(
             "/bin/sh",
             "-c",
-            'set -eu; mkdir -p "$1"; exec tar -J -x -f "$2" -C "$1" --strip-components="$3" "$4"',
+            'set -eu; mkdir -p "$1"; exec tar "$5" -x -f "$2" -C "$1" --strip-components="$3" "$4"',
             "toolchain_distribution",
             output.as_output(),
             archive,
             str(_strip_components(ctx.attrs.strip_prefix)),
             ctx.attrs.strip_prefix,
+            _TAR_DECOMPRESS[ctx.attrs.compression],
         ),
         category = "toolchain_distribution",
         identifier = ctx.label.name,
@@ -96,12 +106,17 @@ def _toolchain_distribution_impl(ctx: AnalysisContext) -> list[Provider]:
 toolchain_distribution = rule(
     impl = _toolchain_distribution_impl,
     attrs = {
+        "compression": attrs.enum(
+            ["xz", "zstd"],
+            default = "xz",
+            doc = "Archive compression: `xz` (`.tar.xz`) or `zstd` (`.tar.zst`).",
+        ),
         "sha256": attrs.string(
             doc = "SHA256 of the archive. Pins the payload; buck2 verifies it.",
         ),
         "strip_prefix": attrs.string(
             doc = "Top-level directory inside the archive, removed on extraction.",
         ),
-        "url": attrs.string(doc = "Origin URL of the `.tar.xz` archive."),
+        "url": attrs.string(doc = "Origin URL of the `.tar.xz` or `.tar.zst` archive."),
     },
 )

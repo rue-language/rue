@@ -23,6 +23,7 @@
 #   scripts/rue ui [pattern]       UI/diagnostics tests, optional filter
 #   scripts/rue frontend-manifest  Refresh the audited frontend corpus manifest
 #   scripts/rue fmt                Format the code (./fmt.sh)
+#   scripts/rue lean               Build and check the Lean mechanization; print its axioms report
 #   scripts/rue storage [args...]  Inspect or reclaim Buck outputs across worktrees
 #                                  (status | plan [age] | clean [age] | reset ROOT ...)
 #   scripts/rue gc [age]           Compatibility alias for host-wide stale cleanup
@@ -238,6 +239,13 @@ case "$cmd" in
         RUE_FRONTEND_DIFF_CORPUS="$repo_root/$corpus_output" \
         ./buck2 run //crates/rue-frontend-diff:rue-frontend-diff -- \
             --refresh-manifest "$repo_root/crates/rue-frontend-diff/src/corpus_manifest.rs"
+        ;;
+    lean)
+        # The mechanized formal core (docs/formal/lean, ADR-0097): a build-only
+        # Buck target with no test tier, run on demand. Its outputs are reports;
+        # the axioms listing is the one a reader wants to see.
+        lean_output="$(./buck2 build root//:lean-ruecore --show-simple-output)"
+        cat "$repo_root/$lean_output/axioms.txt"
         ;;
     fmt)
         ./fmt.sh "$@"

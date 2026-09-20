@@ -121,6 +121,26 @@ toolchain_alias(
     visibility = ["PUBLIC"],
 )
 
+# Lean is the proof assistant behind the mechanized formal core (ADR-0097):
+# a relocatable, SHA-pinned distribution per host, consumed as an exec-dep by
+# the Lake package rule so the select sees the execution platform. It is not
+# a toolchain in the prelude sense (nothing compiles through it); the alias
+# only names the right tree.
+alias(
+    name = "lean-distribution",
+    actual = select({
+        "prelude//os:linux": select({
+            "prelude//cpu:arm64": "toolchains//lean:dist-linux-aarch64",
+            "prelude//cpu:x86_64": "toolchains//lean:dist-linux-x86_64",
+        }),
+        "prelude//os:macos": select({
+            "prelude//cpu:arm64": "toolchains//lean:dist-macos-aarch64",
+            "prelude//cpu:x86_64": "toolchains//lean:dist-macos-x86_64",
+        }),
+    }),
+    visibility = ["PUBLIC"],
+)
+
 # Zig is a relocatable, SHA-pinned distribution. It builds compiler-host
 # native dependencies on every platform and is the C toolchain behind every
 # Rust compile and link on Linux (`:zig-cxx-tools` above). It is deliberately

@@ -13,11 +13,14 @@ the prose specification (`docs/spec/`) cannot:
 
 The prose spec answers "what does this feature do, for a human learning the
 language." The formal core answers "what is the *exact* meaning, for a compiler
-author or a proof." The compiler is a third view — the running realization. All
-three are views of one language and must agree where they overlap; a genuine
-disagreement is a bug in one of them, reconciled by fixing whichever is wrong
-rather than by precedence (RUE-305), and surfaced mechanically by the
-differential oracle. Where the core is silent, the prose governs.
+author or a proof." The compiler is a third view — the running realization.
+The mechanization (`lean/`, ADR-0097) is a fourth: the core's rules and its
+§7 theorems as kernel-checked Lean statements. All four are views of one
+language and must agree where they overlap; a genuine disagreement is a bug
+in one of them, reconciled by fixing whichever is wrong rather than by
+precedence (RUE-305), and surfaced mechanically by the differential oracle
+and, for the fourth view, by the statement review its checkpoints require.
+Where the core is silent, the prose governs.
 
 > **Status: foundation in progress.** This is being built keystone-first. The
 > core calculus, the definition of *use*, and the shape of the ownership and
@@ -154,8 +157,13 @@ core), provide, in order:
 5. **Oracle case + differential test.** Extend the reference interpreter, and add
    a test program exercising the construct that must agree between interpreter
    and compiler.
+6. **Mechanization, or the gap.** Extend `lean/` with the rule, its `eval`
+   arm, and the re-proved theorem — or, when that is more than the change can
+   carry, file the gap as an issue in the "Formal core mechanization" project
+   and cite it from the rule. A language change is never blocked on a proof,
+   only tracked (ADR-0097).
 
-A change that cannot be expressed by touching exactly these five things is a
+A change that cannot be expressed by touching exactly these six things is a
 change to the *framework*, not the language — and that is the kind of thing to
 escalate to a maintainer, not to do mechanically.
 
@@ -179,5 +187,12 @@ shape.
   safety), stated precisely.
 - *(planned)* `02-elaboration.md` — surface→core desugaring and the comptime /
   monomorphization semantics.
-- *(planned)* `03-metatheory.md` — proofs (progress, preservation, and the
-  memory-safety corollaries) as they are discharged.
+- **`03-metatheory.md`** — the proofs, as they are discharged: each §7 bullet
+  names the Lean theorem that establishes it, the fragment it covers, and the
+  assumptions it takes. A skeleton today; filled in by the "Formal core
+  mechanization" project (RUE-207).
+- **`lean/`** — the mechanization (ADR-0097): package `RueCore`, a Lean 4
+  transcription of §2–§7 for a growing fragment, with the safety theorem
+  proved over a definitional interpreter that has the same shape as
+  `rue-oracle`. Its README has a no-Lean reading guide and the build
+  commands (`scripts/rue lean`).
