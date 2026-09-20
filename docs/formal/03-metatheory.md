@@ -13,7 +13,7 @@ definitional interpreter, `eval`, rather than over §6's small-step relation
 (ADR-0097, decision 3): a well-typed program evaluates to a well-typed value,
 a defined panic, or exhausted fuel, and never to a named stuck state. Each
 theorem below is stated in that form. Its agreement with §6's reduction is
-the adequacy lemma owed in the last section. To check any claim yourself:
+the adequacy lemma owed in the last section, which ADR-0097 requires before any CI promotion (RUE-2289). To check any claim yourself:
 `scripts/rue lean` builds the package, re-checks it, and prints the axioms
 every listed theorem depends on; the reading guide in `lean/README.md` is the
 entry point for a reader with no Lean.
@@ -96,7 +96,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 |---|---|
 | Totality of the float operations | not yet stated; an assumption about IEEE 754, named as such (RUE-2282) |
 | Handle-uniqueness preservation (O1) | not yet mechanized (RUE-2240) |
-| Adequacy of `eval` to §6's reduction | not yet stated (RUE-207) |
+| Adequacy of `eval` to §6's reduction, and progress/preservation derived over the mechanized relation | not yet stated; a Phase C deliverable required at checkpoint C and the CI gate (RUE-2289) |
 | Fuel monotonicity and no masking | not yet stated; arrives with fuel (RUE-2233) |
 
 ## Traceability
