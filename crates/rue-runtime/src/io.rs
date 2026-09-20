@@ -7,9 +7,15 @@
 //! - `__rue_str_eprint` / `__rue_str_eprintln` - Write a `str` view to stderr
 
 use core::cell::UnsafeCell;
+#[cfg(rue_hosted_threads)]
+use core::pin::Pin;
+#[cfg(not(rue_hosted_threads))]
+use core::sync::atomic::AtomicBool;
+#[cfg(rue_hosted_threads)]
+use core::sync::atomic::AtomicU8;
 #[cfg(test)]
 use core::sync::atomic::AtomicUsize;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::Ordering;
 
 use crate::heap;
 use crate::platform;
@@ -230,17 +236,20 @@ impl StdinBuffer {
 
 /// Process-global stdin state.
 ///
-/// Rue does not currently expose threads, but keeping the state synchronized
-/// makes the runtime ABI sound for native embedders too. The lock spans the
-/// blocking read so one logical line cannot interleave with another caller.
+/// Hosted callers share one parked mutex; freestanding callers use the
+/// existing atomic spin lock. The lock spans the blocking read so one logical
+/// line cannot interleave with another caller.
+#[cfg(not(rue_hosted_threads))]
 struct GlobalStdinBuffer {
     locked: AtomicBool,
     buffer: UnsafeCell<StdinBuffer>,
 }
 
 // SAFETY: `with` serializes every access to `buffer`.
+#[cfg(not(rue_hosted_threads))]
 unsafe impl Sync for GlobalStdinBuffer {}
 
+#[cfg(not(rue_hosted_threads))]
 impl GlobalStdinBuffer {
     const fn new() -> Self {
         Self {
@@ -272,7 +281,81 @@ impl GlobalStdinBuffer {
     }
 }
 
+#[cfg(rue_hosted_threads)]
+struct GlobalStdinBuffer {
+    mutex: UnsafeCell<crate::parking::ParkMutex>,
+    state: AtomicU8,
+    buffer: UnsafeCell<StdinBuffer>,
+}
+
+#[cfg(rue_hosted_threads)]
+unsafe impl Sync for GlobalStdinBuffer {}
+
+#[cfg(rue_hosted_threads)]
+impl GlobalStdinBuffer {
+    const INITIALIZING: u8 = 1;
+    const READY: u8 = 2;
+    const FAILED: u8 = 3;
+
+    const fn new() -> Self {
+        Self {
+            mutex: UnsafeCell::new(crate::parking::ParkMutex::new()),
+            state: AtomicU8::new(0),
+            buffer: UnsafeCell::new(StdinBuffer::new()),
+        }
+    }
+
+    fn initialize(self: Pin<&Self>) -> Result<(), i32> {
+        let this = self.get_ref();
+        match this.state.compare_exchange(
+            0,
+            Self::INITIALIZING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {}
+            Err(Self::READY) => return Ok(()),
+            Err(_) => return Err(libc::EBUSY),
+        }
+        // SAFETY: this static storage never moves, and initialization occurs
+        // before any worker can access it.
+        let mutex = unsafe { Pin::new_unchecked(&mut *this.mutex.get()) };
+        match mutex.init() {
+            Ok(()) => {
+                this.state.store(Self::READY, Ordering::Release);
+                Ok(())
+            }
+            Err(error) => {
+                this.state.store(Self::FAILED, Ordering::Release);
+                Err(error)
+            }
+        }
+    }
+
+    fn with<R>(
+        self: Pin<&Self>,
+        operation: impl FnOnce(&mut StdinBuffer) -> R,
+    ) -> Result<R, ReadLineFailure> {
+        let this = self.get_ref();
+        if this.state.load(Ordering::Acquire) != Self::READY {
+            return Err(ReadLineFailure::Input);
+        }
+        // SAFETY: the static mutex address is stable for the process lifetime.
+        let mutex = unsafe { Pin::new_unchecked(&*this.mutex.get()) };
+        let _guard = mutex.lock().map_err(|_| ReadLineFailure::Input)?;
+        // SAFETY: the pthread guard serializes every access to this cell.
+        Ok(operation(unsafe { &mut *this.buffer.get() }))
+    }
+}
+
 static STDIN_BUFFER: GlobalStdinBuffer = GlobalStdinBuffer::new();
+
+#[cfg(rue_hosted_threads)]
+#[allow(dead_code)]
+pub(crate) fn initialize_hosted() -> Result<(), i32> {
+    // SAFETY: this process-global storage never moves.
+    unsafe { Pin::new_unchecked(&STDIN_BUFFER) }.initialize()
+}
 
 #[cfg(test)]
 static READ_LINE_SYSCALLS: AtomicUsize = AtomicUsize::new(0);
@@ -366,8 +449,17 @@ pub unsafe fn __rue_read_line(out: *mut OptionStrBufResult, some_disc: u64, none
 /// - A read error occurs (panics)
 #[inline]
 fn read_line_impl(out: *mut OptionStrBufResult, some_disc: u64, none_disc: u64) {
+    #[cfg(not(rue_hosted_threads))]
     let result = STDIN_BUFFER
         .with(|input| read_line_from_fd(input, out, some_disc, none_disc, platform::STDIN));
+    #[cfg(rue_hosted_threads)]
+    let result = {
+        // SAFETY: this process-global storage never moves.
+        let stdin = unsafe { Pin::new_unchecked(&STDIN_BUFFER) };
+        stdin
+            .with(|input| read_line_from_fd(input, out, some_disc, none_disc, platform::STDIN))
+            .and_then(|result| result)
+    };
     if let Err(failure) = result {
         // Release the process-global input lock before reporting the failure
         // and terminating the process.
@@ -512,6 +604,12 @@ mod tests {
     use self::std::os::fd::AsRawFd;
     use self::std::os::unix::net::UnixStream;
     use self::std::process::Command;
+    #[cfg(rue_hosted_threads)]
+    use self::std::sync::Arc;
+    #[cfg(rue_hosted_threads)]
+    use self::std::sync::mpsc;
+    #[cfg(rue_hosted_threads)]
+    use self::std::time::Duration;
     use self::std::time::Instant;
     use self::std::vec;
     use self::std::vec::Vec;
@@ -663,6 +761,8 @@ mod tests {
     fn read_line_allocation_failure_uses_canonical_trap() {
         const CHILD_ENV: &str = "RUE_READ_LINE_OOM_CHILD";
         if self::std::env::var_os(CHILD_ENV).is_some() {
+            #[cfg(rue_hosted_threads)]
+            super::initialize_hosted().expect("initialize hosted stdin");
             crate::heap::fail_allocations_after_for_test(0);
             let mut out = super::OptionStrBufResult {
                 disc: 0,
@@ -755,7 +855,9 @@ mod tests {
 
     #[test]
     fn read_failure_releases_the_global_input_lock() {
-        let input = super::GlobalStdinBuffer::new();
+        let input = self::std::boxed::Box::pin(super::GlobalStdinBuffer::new());
+        #[cfg(rue_hosted_threads)]
+        input.as_ref().initialize().unwrap();
         let mut out = super::OptionStrBufResult {
             disc: 0,
             ptr: core::ptr::null_mut(),
@@ -763,14 +865,74 @@ mod tests {
             cap: 0,
         };
 
-        let failure = input
+        #[cfg(not(rue_hosted_threads))]
+        let failure = match input
+            .as_ref()
             .with(|buffer| super::read_line_from(buffer, &mut out, 1, 0, &mut |_, _| -4))
-            .unwrap_err();
+        {
+            Ok(()) => panic!("expected input error"),
+            Err(error) => error,
+        };
+        #[cfg(rue_hosted_threads)]
+        let failure = match input
+            .as_ref()
+            .with(|buffer| super::read_line_from(buffer, &mut out, 1, 0, &mut |_, _| -4))
+        {
+            Ok(result) => result.expect_err("expected input error"),
+            Err(error) => error,
+        };
         assert_eq!(failure, super::ReadLineFailure::Input);
 
         // Return the failure through `with` only after its process-global lock
         // is released, before the platform exit path terminates execution.
+        #[cfg(not(rue_hosted_threads))]
         assert_eq!(input.with(|_| 42), 42);
+        #[cfg(rue_hosted_threads)]
+        assert_eq!(input.as_ref().with(|_| 42).unwrap(), 42);
+    }
+
+    #[cfg(rue_hosted_threads)]
+    #[test]
+    fn hosted_stdin_contention_parks_until_the_reader_releases() {
+        let input = Arc::new(super::GlobalStdinBuffer::new());
+        // SAFETY: the Arc allocation is stable for all references in this
+        // test, and remains alive until both workers have joined.
+        unsafe { core::pin::Pin::new_unchecked(&*input) }
+            .initialize()
+            .expect("initialize parked stdin");
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+
+        let first_input = Arc::clone(&input);
+        let first = self::std::thread::spawn(move || {
+            // SAFETY: the Arc keeps the initialized object pinned and alive.
+            let input = unsafe { core::pin::Pin::new_unchecked(&*first_input) };
+            input
+                .with(|_| {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                })
+                .unwrap();
+        });
+
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("first reader entered critical section");
+        let second_input = Arc::clone(&input);
+        let second = self::std::thread::spawn(move || {
+            // SAFETY: the Arc keeps the initialized object pinned and alive.
+            let input = unsafe { core::pin::Pin::new_unchecked(&*second_input) };
+            input.with(|_| acquired_tx.send(()).unwrap()).unwrap();
+        });
+
+        assert!(acquired_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        release_tx.send(()).unwrap();
+        acquired_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("parked reader was not awakened");
+        first.join().unwrap();
+        second.join().unwrap();
     }
 
     /// Focused manual benchmark for RUE-1172. A Unix stream feeds the same

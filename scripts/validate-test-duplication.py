@@ -159,6 +159,7 @@ ALLOWANCES = (
             "//crates/rue-codegen:rue-codegen-test",
             "//crates/rue-linker:rue-linker-test",
             "//crates/rue-runtime-abi:rue-runtime-abi-test",
+            "//crates/rue-runtime:rue-runtime-test",
             "//crates/rue-runtime:rue-runtime-hosted-test",
             "//crates/rue-runtime:hosted-runtime-native-test",
             "//crates/rue-runtime:runtime-archives-test",
