@@ -52,6 +52,23 @@ class InstallerTests(unittest.TestCase):
                     "Suites: noble\n"
                     "Components: main\n"
                 )
+            elif source_layout in ("deb822-mirror", "deb822-mirror-third-party"):
+                (apt_root / "apt-mirrors.txt").write_text(
+                    "http://azure.archive.ubuntu.com/ubuntu/\tpriority:1\n"
+                    + (
+                        "https://dl.google.com/linux/chrome/deb\tpriority:2\n"
+                        if source_layout == "deb822-mirror-third-party"
+                        else "https://archive.ubuntu.com/ubuntu/\tpriority:2\n"
+                    )
+                    + "https://security.ubuntu.com/ubuntu/\tpriority:3\n"
+                )
+                (source_parts / "ubuntu.sources").write_text(
+                    "Types: deb\n"
+                    "URIs: mirror+file:/etc/apt/apt-mirrors.txt\n"
+                    "Suites: noble noble-updates noble-security\n"
+                    "Components: main universe restricted multiverse\n"
+                    "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n"
+                )
             elif source_layout == "classic":
                 (apt_root / "sources.list").write_text(
                     "# deb http://archive.ubuntu.com/ubuntu comment-only main\n"
@@ -179,6 +196,20 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("azure.archive.ubuntu.com", source_trace)
         self.assertIn("security.ubuntu.com", source_trace)
         self.assertNotIn("dl.google.com", source_trace)
+
+    def test_deb822_runner_mirror_file_is_accepted(self):
+        result, _, _, source_trace = self.run_installer(source_layout="deb822-mirror")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("mirror+file:/etc/apt/apt-mirrors.txt", source_trace)
+
+    def test_deb822_runner_mirror_file_must_be_official(self):
+        result, apt_args, timeout_args, _ = self.run_installer(
+            source_layout="deb822-mirror-third-party"
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no official Ubuntu package source found", result.stderr)
+        self.assertEqual(apt_args, [])
+        self.assertEqual(timeout_args, [])
 
     def test_classic_sources_list_is_filtered_and_reused(self):
         result, apt_args, _, source_trace = self.run_installer(source_layout="classic")
