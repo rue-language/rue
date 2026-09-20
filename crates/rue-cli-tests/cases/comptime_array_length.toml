@@ -151,14 +151,14 @@ exit_code = 42
 [[case]]
 name = "local_annotation_two_specializations"
 files = [{ path = "main.rue", source = """
-fn head(comptime N: i32) -> i32 {
-    let y: [i32; N] = [7, 7, 7];
+fn head(comptime N: i32, input: [i32; N]) -> i32 {
+    let y: [i32; N] = input;
     y[0] + N
 }
 
 fn main() -> i32 {
-    @dbg(head(2));
-    @dbg(head(3));
+    @dbg(head(2, [7, 7]));
+    @dbg(head(3, [7, 7, 7]));
     0
 }
 """ }]
