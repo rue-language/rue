@@ -672,7 +672,7 @@ crate::define_runtime_implementation! {
                 formatter.format(f32::from_bits(bits as u32))
             }
             FLOAT_WIDTH_F64 => formatter.format(f64::from_bits(bits)),
-            _ => crate::error::__rue_panic_no_msg(),
+            _ => unsafe { crate::error::__rue_panic_no_msg(core::ptr::null()) },
         };
 
         // SAFETY: inherited from this function's caller contract.

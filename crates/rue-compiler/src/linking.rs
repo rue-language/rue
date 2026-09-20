@@ -2602,7 +2602,7 @@ mod runtime_archive_validation_tests {
         inventory.symbols.push(marker("__rue_runtime_abi_v0", 1));
         let stale = error(&inventory, RuntimeTarget::Aarch64Linux);
         assert!(stale.contains(
-            "stale runtime ABI marker `__rue_runtime_abi_v0`; expected `__rue_runtime_abi_v5`"
+            "stale runtime ABI marker `__rue_runtime_abi_v0`; expected `__rue_runtime_abi_v6`"
         ));
 
         inventory
@@ -2756,7 +2756,7 @@ mod runtime_archive_validation_tests {
         let err = validation_error(&bytes);
         assert!(
             err.contains(
-                "stale runtime ABI marker `__rue_runtime_abi_v0`; expected `__rue_runtime_abi_v5`"
+                "stale runtime ABI marker `__rue_runtime_abi_v0`; expected `__rue_runtime_abi_v6`"
             ),
             "{err}"
         );

@@ -1,6 +1,7 @@
 //! Adversarial contracts for calls, intrinsics, and pointer provenance.
 
 use super::*;
+use rue_cfg::CfgCallArg;
 
 fn expect_flow_unsupported<T>(result: Step<T>) -> Unsupported {
     match result {
@@ -478,6 +479,45 @@ fn find_intrinsic_in_function<'a>(
     (cfg, value, args, ty)
 }
 
+fn find_runtime_call_in_function<'a>(
+    state: &'a CompileState,
+    function_name: &str,
+    expected: RuntimeCallKind,
+) -> (&'a Cfg, CfgValue, Vec<CfgCallArg>, Type) {
+    let function = state
+        .functions
+        .iter()
+        .position(|function| function.is_source_named(function_name))
+        .unwrap_or_else(|| panic!("missing CFG for {function_name}"));
+    let cfg = &state.functions[function].cfg;
+    let mut found = None;
+    for value in cfg
+        .blocks()
+        .iter()
+        .flat_map(|block| block.insts.iter().copied())
+    {
+        let inst = cfg.get_inst(value);
+        let CfgInstData::Call {
+            runtime: Some(runtime),
+            ..
+        } = &inst.data
+        else {
+            continue;
+        };
+        if *runtime != expected {
+            continue;
+        }
+        let item = (value, cfg.get_call_args(&inst.data).to_vec(), inst.ty);
+        assert!(
+            found.replace(item).is_none(),
+            "expected exactly one {expected:?} call in {function_name}"
+        );
+    }
+    let (value, args, ty) =
+        found.unwrap_or_else(|| panic!("missing {expected:?} call in {function_name}"));
+    (cfg, value, args, ty)
+}
+
 fn find_empty_slice_pointer_in_function<'a>(
     state: &'a CompileState,
     function_name: &str,
@@ -625,64 +665,6 @@ fn shared_str_character_builtins_require_and_model_ptr_len_offset() {
 }
 
 #[test]
-fn panic_never_signature_is_an_oracle_contract_for_both_arities() {
-    let state = query_cfg_state(
-        r#"fn panic_no_message() { @panic() }
-        fn panic_with_message() { @panic("boom") }
-        fn main() -> i32 {
-            panic_no_message();
-            panic_with_message();
-            0
-        }"#,
-    )
-    .expect("both panic arities must compile with the never contract");
-    let interp = Interp {
-        state: &state,
-        stdout_trace: Vec::new(),
-        stdout_bytes: 0,
-        stdout_cap: MAX_STDOUT_BYTES,
-        stderr_trace: Vec::new(),
-        stderr_bytes: 0,
-        stderr_cap: MAX_STDERR_BYTES,
-        budget: STEP_BUDGET,
-        depth: 0,
-        heap: Vec::new(),
-        small_free_heads: [None; ORACLE_SMALL_CLASS_COUNT],
-        heap_metadata_bytes: 0,
-    };
-    for function_name in ["panic_no_message", "panic_with_message"] {
-        state.select_source_function(function_name);
-        let (cfg, _intrinsic, args, result_ty) =
-            find_intrinsic_in_function(&state, function_name, "panic");
-        let operation = if function_name == "panic_no_message" {
-            rue_air::IntrinsicOperation::PanicNoMessage
-        } else {
-            rue_air::IntrinsicOperation::Panic
-        };
-        // `@panic` diverges, so the compiler types it `!` (never) (RUE-512).
-        assert_eq!(result_ty, Type::NEVER, "{function_name} compiler metadata");
-        // The abort preflight (the oracle's panic contract since RUE-589)
-        // accepts exactly the never-typed shape...
-        assert!(
-            matches!(
-                interp.preflight_abort_intrinsic(cfg, operation, &args, result_ty,),
-                Ok(Some(AbortIntrinsic::Panic))
-            ),
-            "{function_name} never signature must pass preflight"
-        );
-        // ...and rejects stale unit-typed metadata as a contract violation.
-        match interp.preflight_abort_intrinsic(cfg, operation, &args, Type::UNIT) {
-            Err(Flow::Unsupported(unsupported)) => assert_eq!(
-                unsupported.kind(),
-                UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
-                "{function_name} must reject the stale unit-typed metadata"
-            ),
-            _ => panic!("{function_name}: stale unit-typed metadata must be a contract violation"),
-        }
-    }
-}
-
-#[test]
 fn oracle_intrinsic_execution_is_operation_selected() {
     let source = include_str!("../lib.rs");
     let intrinsic_branch = source
@@ -818,7 +800,7 @@ fn user_call_layout_is_rejected_before_unmodeled_operands_run() {
 fn abort_intrinsic_static_contracts_precede_unmodeled_operands() {
     // A comptime-decidable `@assert_eq` is what still lowers to the conditional
     // `assert` intrinsic: source `@assert` reports on the ADR-0083 §5.1 channel
-    // instead (RUE-1953), so it is a branch around two runtime calls and no
+    // instead (RUE-1953), so it branches to a terminal runtime report and is no
     // longer an abort intrinsic to preflight. The intrinsic that remains takes
     // its condition and nothing else.
     let source = r#"fn main() -> i32 {
@@ -840,41 +822,33 @@ fn abort_intrinsic_static_contracts_precede_unmodeled_operands() {
             let (_, random, random_args, _) =
                 find_intrinsic_in_function(&state, "main", "random_u32");
             assert!(random_args.is_empty());
-            let (_, panic, panic_args, _) = find_intrinsic_in_function(&state, "main", "panic");
+            let (_, panic, panic_args, _) =
+                find_runtime_call_in_function(&state, "main", RuntimeCallKind::Panic);
             let (_, assertion, assert_args, _) =
                 find_intrinsic_in_function(&state, "main", "assert");
             assert!(cfg.get_inst(random).ty == Type::U32);
             (random, panic, panic_args, assertion, assert_args)
         };
 
-        let (outer, replacement_args, replacement_ty, expected) = match probe {
+        let (outer, replacement_ty, expected) = match probe {
             0 => (
                 panic,
-                vec![panic_args[0], random],
                 PANIC_CFG_RESULT_TYPE,
-                ContractViolationKind::IntrinsicArity,
+                ContractViolationKind::RuntimeCallArity,
             ),
             1 => (
                 panic,
-                vec![random],
                 PANIC_CFG_RESULT_TYPE,
-                ContractViolationKind::IntrinsicSignature,
+                ContractViolationKind::RuntimeCallSignature,
             ),
-            2 => (
-                assertion,
-                vec![assert_args[0], random],
-                Type::UNIT,
-                ContractViolationKind::IntrinsicArity,
-            ),
+            2 => (assertion, Type::UNIT, ContractViolationKind::IntrinsicArity),
             3 => (
                 assertion,
-                vec![random],
                 Type::UNIT,
                 ContractViolationKind::IntrinsicSignature,
             ),
             4 => (
                 assertion,
-                assert_args.clone(),
                 Type::NEVER,
                 ContractViolationKind::IntrinsicSignature,
             ),
@@ -889,9 +863,29 @@ fn abort_intrinsic_static_contracts_precede_unmodeled_operands() {
         // unpublished editor rather than round-tripped through a publisher
         // whose job is now to reject it.
         let mut malformed = state.functions[main_index].cfg.clone().into_editor();
-        malformed
-            .replace_intrinsic_args(outer, replacement_args)
-            .unwrap();
+        match probe {
+            0 => malformed.replace_call_args(outer, [panic_args[0]]).unwrap(),
+            1 => malformed
+                .replace_call_args(
+                    outer,
+                    [
+                        panic_args[0],
+                        CfgCallArg {
+                            value: random,
+                            mode: CfgArgMode::Normal,
+                        },
+                    ],
+                )
+                .unwrap(),
+            2 => malformed
+                .replace_intrinsic_args(outer, [assert_args[0], random])
+                .unwrap(),
+            3 => malformed.replace_intrinsic_args(outer, [random]).unwrap(),
+            4 => malformed
+                .replace_intrinsic_args(outer, assert_args.clone())
+                .unwrap(),
+            _ => unreachable!(),
+        }
         malformed.replace_inst_type(outer, replacement_ty).unwrap();
         let cfg = &malformed;
         let mut interp = Interp {
@@ -927,18 +921,26 @@ fn abort_intrinsic_static_contracts_precede_unmodeled_operands() {
 
 #[test]
 fn abort_intrinsics_require_exact_runtime_value_shapes() {
-    // As above: the surviving `assert` intrinsic is the comptime-decidable
-    // comparison's, whose only operand is the condition. `@panic` is the one
-    // abort intrinsic that still carries text.
+    // The surviving `assert` intrinsic is the comptime-decidable comparison's,
+    // whose only operand is the condition. The canonical panic runtime call
+    // carries a borrowed site record beside its text view.
     let source = r#"fn main() -> i32 {
+        let entropy: u32 = @random_u32();
         @assert_eq(1, 1);
         @panic("stop");
-        0
+        if entropy == 0 { 0 } else { 1 }
     }"#;
 
     {
         let state = query_cfg_state(source).expect("abort value-shape probe must compile");
-        let (cfg, intrinsic, args, _) = find_intrinsic_in_function(&state, "main", "panic");
+        let main_index = state
+            .functions
+            .iter()
+            .position(|function| function.is_source_named("main"))
+            .expect("main CFG");
+        let (_cfg, call, args, _) =
+            find_runtime_call_in_function(&state, "main", RuntimeCallKind::Panic);
+        let (_, random, _, _) = find_intrinsic_in_function(&state, "main", "random_u32");
         let mut interp = Interp {
             state: &state,
             stdout_trace: Vec::new(),
@@ -961,13 +963,25 @@ fn abort_intrinsics_require_exact_runtime_value_shapes() {
             param_places: HashMap::new(),
             place_return: false,
         };
-        frame.cache.insert(args[0].as_u32(), Value::Int(7));
+        let mut malformed = state.functions[main_index].cfg.clone().into_editor();
+        malformed
+            .replace_call_args(
+                call,
+                [
+                    args[0],
+                    CfgCallArg {
+                        value: random,
+                        mode: CfgArgMode::Normal,
+                    },
+                ],
+            )
+            .unwrap();
 
-        let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, intrinsic));
+        let unsupported = expect_flow_unsupported(interp.eval(&malformed, &mut frame, call));
         assert_eq!(
             unsupported.kind(),
-            UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
-            "@panic must reject a non-text runtime value"
+            UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature),
+            "@panic must reject a non-text runtime value before evaluating it"
         );
     }
 
@@ -1512,7 +1526,7 @@ fn every_source_intrinsic_operation_survives_semantic_export_import_and_cfg_buil
             }
         }
     }
-    assert_eq!(rue_air::IntrinsicOperation::ALL.len(), 51);
+    assert_eq!(rue_air::IntrinsicOperation::ALL.len(), 49);
     for operation in rue_air::IntrinsicOperation::ALL {
         if matches!(
             operation,

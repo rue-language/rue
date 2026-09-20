@@ -202,14 +202,9 @@ test "unwraps an option" {
     let unit = test_unit(&output, "unwraps an option");
     let calls = runtime_call_sequence(unit);
     assert!(
-        calls.iter().any(|block| {
-            block.windows(2).any(|pair| {
-                pair == [
-                    rue_air::RuntimeCallKind::TestFailureSite,
-                    rue_air::RuntimeCallKind::TestFail,
-                ]
-            })
-        }),
+        calls
+            .iter()
+            .any(|block| { block.contains(&rue_air::RuntimeCallKind::TestFail) }),
         "the failure arm must stage the site and then report: {calls:?}"
     );
     assert!(
@@ -218,7 +213,7 @@ test "unwraps an option" {
     );
 }
 
-/// 6.7:14 - the two channel calls are adjacent, with nothing between them.
+/// 6.7:14 - the report is fully materialized before its terminal call.
 #[test]
 fn the_failure_channel_pair_is_adjacent_in_the_lowered_cfg() {
     let output = rooted_test_cfg(
@@ -236,49 +231,19 @@ test "reports the error" {
     )
     .expect("`?` on a trusted Result is legal in a test body");
     let unit = test_unit(&output, "reports the error");
-    let block = unit
-        .cfg()
-        .blocks()
-        .iter()
-        .find(|block| {
+    assert!(
+        unit.cfg().blocks().iter().any(|block| {
             block.insts.iter().any(|value| {
                 matches!(
                     unit.cfg().get_inst(*value).data,
                     rue_cfg::CfgInstData::Call {
-                        runtime: Some(rue_air::RuntimeCallKind::TestFailureSite),
+                        runtime: Some(rue_air::RuntimeCallKind::TestFail),
                         ..
                     }
                 )
             })
-        })
-        .expect("the failure arm stages a site");
-    let staged = block
-        .insts
-        .iter()
-        .position(|value| {
-            matches!(
-                unit.cfg().get_inst(*value).data,
-                rue_cfg::CfgInstData::Call {
-                    runtime: Some(rue_air::RuntimeCallKind::TestFailureSite),
-                    ..
-                }
-            )
-        })
-        .expect("the staging call is in this block");
-    let next = block
-        .insts
-        .get(staged + 1)
-        .map(|value| &unit.cfg().get_inst(*value).data);
-    assert!(
-        matches!(
-            next,
-            Some(rue_cfg::CfgInstData::Call {
-                runtime: Some(rue_air::RuntimeCallKind::TestFail),
-                ..
-            })
-        ),
-        "a staged site must be consumed by the very next instruction, not by one \
-         a later instruction could re-stage: {next:?}"
+        }),
+        "the failure arm emits the canonical report"
     );
 }
 

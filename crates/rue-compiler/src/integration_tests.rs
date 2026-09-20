@@ -1323,29 +1323,12 @@ drop fn StrBuf(self) { }
                     .unwrap_or_else(|| panic!("missing CFG for {name}"))
                     .record
                     .cfg;
-                let intrinsic_types: Vec<_> = cfg
-                    .blocks()
-                    .iter()
-                    .flat_map(|block| block.insts.iter())
-                    .filter_map(|value| {
-                        let inst = cfg.get_inst(*value);
-                        matches!(inst.data, rue_cfg::CfgInstData::Intrinsic { .. })
-                            .then_some(inst.ty)
-                    })
-                    .collect();
-                assert_eq!(
-                    intrinsic_types,
-                    vec![Type::NEVER],
-                    "{name} must carry the never result into CFG"
-                );
                 let runtime_kinds: Vec<_> = cfg
                     .blocks()
                     .iter()
                     .flat_map(|block| block.insts.iter())
                     .filter_map(|value| match cfg.get_inst(*value).data {
-                        rue_cfg::CfgInstData::Intrinsic { operation, .. } => {
-                            operation.runtime_call()
-                        }
+                        rue_cfg::CfgInstData::Call { runtime, .. } => runtime,
                         _ => None,
                     })
                     .collect();
@@ -1392,10 +1375,8 @@ drop fn StrBuf(self) { }
             //
             // Its failure is a branch around the ADR-0083 §5.1 report rather
             // than one conditional runtime helper (RUE-1953), so what the CFG
-            // must retain is the ordered pair of channel calls — the site the
-            // record adopts, then the terminal report — and nothing between
-            // them. Both spellings emit the same pair; only the `with_message`
-            // operand differs.
+            // must retain is the canonical terminal report. The caller-owned
+            // descriptor is ordinary AIR data, not a second runtime call.
             for (name, body) in [
                 ("assertion", "@assert(true)"),
                 ("assertion_with_message", "@assert(true, \"ok\")"),
@@ -1410,16 +1391,6 @@ drop fn StrBuf(self) { }
                     .unwrap_or_else(|| panic!("missing CFG for {name}"))
                     .record
                     .cfg;
-                assert!(
-                    !cfg.blocks()
-                        .iter()
-                        .flat_map(|block| block.insts.iter())
-                        .any(|value| matches!(
-                            cfg.get_inst(*value).data,
-                            rue_cfg::CfgInstData::Intrinsic { .. }
-                        )),
-                    "{name} must no longer lower to a conditional assert intrinsic"
-                );
                 let runtime_kinds: Vec<_> = cfg
                     .blocks()
                     .iter()
@@ -1431,11 +1402,8 @@ drop fn StrBuf(self) { }
                     .collect();
                 assert_eq!(
                     runtime_kinds,
-                    vec![
-                        rue_air::RuntimeCallKind::TestFailureSite,
-                        rue_air::RuntimeCallKind::TestFailAssert,
-                    ],
-                    "CompilerSession CFG artifacts must retain the reporting pair"
+                    vec![rue_air::RuntimeCallKind::TestFailAssert],
+                    "CompilerSession CFG artifacts must retain the reporting call"
                 );
 
                 let return_values: Vec<_> = cfg

@@ -40,7 +40,16 @@
 //! `sub_result` identities — are named by the schema and produced by nothing in
 //! this version.
 
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+#[cfg(all(test, rue_hosted_threads))]
+extern crate std;
+
+#[cfg(rue_hosted_threads)]
+use core::cell::UnsafeCell;
+#[cfg(rue_hosted_threads)]
+use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+use rue_runtime_abi::{FailureReport, FailureSite};
 
 use crate::platform;
 
@@ -69,6 +78,49 @@ pub(crate) fn arm_channel() {
     CHANNEL_ARMED.store(true, Ordering::Relaxed);
 }
 
+#[cfg(rue_hosted_threads)]
+struct ReportMutexStorage(UnsafeCell<crate::parking::ParkMutex>);
+#[cfg(rue_hosted_threads)]
+unsafe impl Sync for ReportMutexStorage {}
+#[cfg(rue_hosted_threads)]
+static REPORT_MUTEX: ReportMutexStorage =
+    ReportMutexStorage(UnsafeCell::new(crate::parking::ParkMutex::new()));
+#[cfg(rue_hosted_threads)]
+static REPORT_MUTEX_READY: AtomicBool = AtomicBool::new(false);
+#[cfg(all(rue_hosted_threads, test))]
+static REPORT_TEST_INIT_LOCK: AtomicBool = AtomicBool::new(false);
+
+#[cfg(all(test, rue_hosted_threads))]
+const TEST_PARTIAL_FRAME_PATH_ENV: &str = "RUE_REPORT_TEST_FRAME_PATH";
+#[cfg(all(test, rue_hosted_threads))]
+const TEST_PARTIAL_STARTED_PATH_ENV: &str = "RUE_REPORT_TEST_STARTED_PATH";
+#[cfg(all(test, rue_hosted_threads))]
+const TEST_PARTIAL_CONTENTION_PATH_ENV: &str = "RUE_REPORT_TEST_CONTENTION_PATH";
+#[cfg(all(test, rue_hosted_threads))]
+const TEST_PARTIAL_RELEASE_PATH_ENV: &str = "RUE_REPORT_TEST_RELEASE_PATH";
+#[cfg(all(test, rue_hosted_threads))]
+static TEST_PARTIAL_BYTES: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+#[cfg(all(test, rue_hosted_threads))]
+static TEST_PARTIAL_PAUSED: AtomicBool = AtomicBool::new(false);
+#[cfg(all(test, rue_hosted_threads))]
+static TEST_PARTIAL_CONTENTION_REPORTED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(rue_hosted_threads)]
+pub(crate) unsafe fn initialize_hosted_reporting() -> Result<(), i32> {
+    if REPORT_MUTEX_READY.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    // SAFETY: the startup hook calls this exactly once before user code or
+    // worker threads can observe the runtime. The static address never moves.
+    let storage = unsafe { &mut *REPORT_MUTEX.0.get() };
+    let result = unsafe { Pin::new_unchecked(storage) }.init();
+    if result.is_ok() {
+        REPORT_MUTEX_READY.store(true, Ordering::Release);
+    }
+    result
+}
+
 /// Whether [`arm_channel`] has run. Exists so `process.rs` can assert that
 /// normalizing the process is what arms the channel, under the serialization
 /// its own process-global test already keeps.
@@ -77,25 +129,12 @@ pub(crate) fn channel_is_armed() -> bool {
     CHANNEL_ARMED.load(Ordering::Relaxed)
 }
 
-/// The failing source location staged by the most recent
-/// [`__rue_test_failure_site`] call.
-///
-/// A failure record carries three byte views plus a file, a line, and a column
-/// — ten arguments, where every runtime helper is register-only and x86-64
-/// affords six. The record is therefore assembled by two calls, and this holds
-/// the first one's result until the second consumes it. Generated code emits
-/// the pair adjacently with nothing in between, and the process aborts inside
-/// the second, so the window is a straight line with no other Rue code in it.
-///
-/// The pointer is borrowed rather than copied: the runtime allocates nothing,
-/// and the caller's obligation to keep those bytes readable across the pair is
-/// exactly what the manifest's `READABLE_BYTES` contract records.
-static SITE_FILE: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
-static SITE_FILE_LEN: AtomicU64 = AtomicU64::new(0);
-/// Line in the high half, column in the low half. One word rather than two
-/// keeps the staged site to three statics, and neither field is meaningful
-/// without the other.
-static SITE_POSITION: AtomicU64 = AtomicU64::new(0);
+/// Ownership of the terminal report channel. A terminal reporter keeps this
+/// gate until process termination; competing ordinary reporters park in the
+/// compare/exchange loop and therefore cannot emit a second complete frame or
+/// exit early. Signal and explicit-exit paths never enter this helper.
+#[cfg(not(rue_hosted_threads))]
+static REPORT_GATE: AtomicBool = AtomicBool::new(false);
 
 /// The literal frame text, in field order. Every record carries the schema
 /// version inline, so a reader never has to infer it.
@@ -124,9 +163,8 @@ const ASSERT_KIND: [u8; 6] = *b"assert";
 
 /// The pinned message each comparison kind reports.
 ///
-/// The message is chosen by the kind rather than passed, which is what keeps
-/// the comparison call to the six registers every runtime helper is limited to
-/// while still carrying both rendered operands. A kind this does not recognize
+/// The message is chosen by the kind rather than passed while still carrying
+/// both rendered operands. A kind this does not recognize
 /// gets the bare `assertion failed`, so an unknown kind is still a report.
 const ASSERT_EQ_KIND: [u8; 9] = *b"assert_eq";
 const ASSERT_NE_KIND: [u8; 9] = *b"assert_ne";
@@ -424,9 +462,8 @@ fn failure_frame(
 /// carry no role, so `@assert_eq(got, want)` — the conventional spelling, with
 /// the observed value first — reads the way it is spelled.
 ///
-/// The message is not a parameter: it is pinned by the kind, which is what
-/// keeps this call to the six registers a runtime helper is limited to while
-/// still carrying both operands.
+/// The message is not a parameter: it is pinned by the kind while still
+/// carrying both operands.
 fn comparison_frame(
     emit: &mut dyn FnMut(&[u8]),
     kind: &[u8],
@@ -508,23 +545,22 @@ fn trap_frame(
     writer.raw(&LOCATION_TAIL);
 }
 
-/// The site [`__rue_test_failure_site`] most recently staged.
-///
-/// An unstaged site is the null-with-zero-length form the ABI permits, which
+/// Decode a caller-owned site. A null site is the ABI's absent-location form,
+/// which
 /// reads back as the empty file at 0:0 — the shape every reporting helper
 /// already writes when its caller could not name a location, and the one the
 /// runner answers by falling back to the test declaration's header.
-fn staged_site() -> (&'static [u8], u32, u32) {
-    let position = SITE_POSITION.load(Ordering::Relaxed);
-    // SAFETY: a staged site's bytes stay readable across the pair, and an
-    // unstaged one is the null-with-zero-length form `view` accepts.
-    let file = unsafe {
-        view(
-            SITE_FILE.load(Ordering::Relaxed) as *const u8,
-            SITE_FILE_LEN.load(Ordering::Relaxed),
-        )
-    };
-    (file, (position >> 32) as u32, position as u32)
+unsafe fn site_view(site: *const FailureSite) -> (&'static [u8], u32, u32) {
+    if site.is_null() {
+        return (&[], 0, 0);
+    }
+    // SAFETY: the caller owns a readable FailureSite for the duration of the
+    // terminal helper, as required by the runtime manifest.
+    let site = unsafe { &*site };
+    // SAFETY: the site descriptor's pointer/length pair is caller-owned and
+    // valid for this call.
+    let file = unsafe { view(site.file_ptr, site.file_len) };
+    (file, (site.position >> 32) as u32, site.position as u32)
 }
 
 /// Report one runtime trap on the §5.1 channel, ahead of its pinned stderr
@@ -535,12 +571,18 @@ fn staged_site() -> (&'static [u8], u32, u32) {
 /// line without its newline, so a trap that reports here changes the record's
 /// `location` and nothing else.
 ///
-/// The frame is written whether or not a site was staged, exactly as the
+/// The frame is written whether or not a site is available, exactly as the
 /// assertion helpers write theirs: a trap reached without one — an allocation
 /// failure, or a check the compiler emits below AIR — still reports, with the
 /// empty location the runner answers from the test's header.
-fn report_trap(kind: &[u8], message_prefix: &[u8], message: &[u8]) {
-    let (file, line, column) = staged_site();
+unsafe fn report_trap(
+    site: *const FailureSite,
+    kind: &[u8],
+    message_prefix: &[u8],
+    message: &[u8],
+) {
+    let (file, line, column) = unsafe { site_view(site) };
+    acquire_terminal_report_gate();
     trap_frame(
         &mut emit_to_channel,
         kind,
@@ -553,30 +595,186 @@ fn report_trap(kind: &[u8], message_prefix: &[u8], message: &[u8]) {
 }
 
 /// Report a `@panic(msg)` as a `trap:panic` failure (RUE-2019).
-pub(crate) fn report_panic(message: &[u8]) {
-    report_trap(&TRAP_PANIC_KIND, &PANIC_PREFIX, message);
+pub(crate) unsafe fn report_panic(site: *const FailureSite, message: &[u8]) {
+    // SAFETY: inherited from the runtime ABI helper's caller contract.
+    unsafe { report_trap(site, &TRAP_PANIC_KIND, &PANIC_PREFIX, message) };
 }
 
 /// Report a `@panic()` as a `trap:panic` failure, under the message-less
 /// form's own pinned stderr line.
-pub(crate) fn report_panic_no_message() {
-    report_trap(&TRAP_PANIC_KIND, &PANIC_MESSAGE, &[]);
+pub(crate) unsafe fn report_panic_no_message(site: *const FailureSite) {
+    // SAFETY: inherited from the runtime ABI helper's caller contract.
+    unsafe { report_trap(site, &TRAP_PANIC_KIND, &PANIC_MESSAGE, &[]) };
 }
 
 /// Report a failed bounds check as a `trap:bounds_check` failure.
 pub(crate) fn report_bounds_check() {
-    report_trap(&TRAP_BOUNDS_CHECK_KIND, &BOUNDS_CHECK_MESSAGE, &[]);
+    // SAFETY: a null site is the documented absent-location representation.
+    unsafe {
+        report_trap(
+            core::ptr::null(),
+            &TRAP_BOUNDS_CHECK_KIND,
+            &BOUNDS_CHECK_MESSAGE,
+            &[],
+        )
+    };
+}
+
+#[cfg(rue_hosted_threads)]
+fn acquire_report_gate() -> crate::parking::ParkMutexGuard<'static> {
+    #[cfg(test)]
+    report_test_contention_attempt();
+
+    #[cfg(test)]
+    if !REPORT_MUTEX_READY.load(Ordering::Acquire) {
+        // Unit tests call runtime helpers directly rather than through the
+        // process entry hook; serialize first-use initialization so the
+        // UnsafeCell-backed mutex is never initialized concurrently.
+        while REPORT_TEST_INIT_LOCK
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        if !REPORT_MUTEX_READY.load(Ordering::Acquire) {
+            let _ = unsafe { initialize_hosted_reporting() };
+        }
+        REPORT_TEST_INIT_LOCK.store(false, Ordering::Release);
+    }
+    if !REPORT_MUTEX_READY.load(Ordering::Acquire) {
+        platform::exit(101);
+    }
+    // SAFETY: startup initialized the static before publishing READY, and it
+    // remains pinned until process termination.
+    let mutex = unsafe { &*REPORT_MUTEX.0.get() };
+    match unsafe { Pin::new_unchecked(mutex) }.lock() {
+        Ok(guard) => guard,
+        Err(_) => platform::exit(101),
+    }
+}
+
+#[cfg(all(rue_hosted_threads, test))]
+fn report_test_contention_attempt() {
+    if !TEST_PARTIAL_PAUSED.load(Ordering::Acquire)
+        || TEST_PARTIAL_CONTENTION_REPORTED.load(Ordering::Acquire)
+    {
+        return;
+    }
+    let Some(path) = std::env::var_os(TEST_PARTIAL_CONTENTION_PATH_ENV) else {
+        return;
+    };
+    if TEST_PARTIAL_CONTENTION_REPORTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        std::fs::write(path, b"contending").expect("publish gate contention marker");
+    }
+}
+
+#[cfg(not(rue_hosted_threads))]
+fn acquire_report_gate() {
+    while REPORT_GATE
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        core::hint::spin_loop();
+    }
+}
+
+pub(crate) fn acquire_terminal_report_gate() {
+    #[cfg(rue_hosted_threads)]
+    {
+        core::mem::forget(acquire_report_gate());
+    }
+    #[cfg(not(rue_hosted_threads))]
+    acquire_report_gate();
+}
+
+/// Acquire the terminal gate for an ordinary runtime diagnostic and then write
+/// its already-rendered stderr bytes before exiting. Framed reporters already
+/// own this gate and use their private stderr leaves instead; this entry point
+/// is for traps whose only observable output is stderr.
+pub(crate) fn terminal_stderr(bytes: &[u8]) -> ! {
+    acquire_terminal_report_gate();
+    terminal_stderr_after_gate(bytes)
+}
+
+/// Write an ordinary diagnostic after its caller has already acquired the
+/// terminal gate. Framed reporters and reports that also have a structured
+/// record use this leaf to avoid recursive gate acquisition.
+pub(crate) fn terminal_stderr_after_gate(bytes: &[u8]) -> ! {
+    platform::write_stderr(bytes);
+    platform::exit(101)
+}
+
+#[cfg(not(rue_hosted_threads))]
+fn release_report_gate() {
+    REPORT_GATE.store(false, Ordering::Release);
 }
 
 /// Best-effort write of already-framed bytes to the inherited channel, in a
 /// test image only.
 fn emit_to_channel(bytes: &[u8]) {
     write_when_armed(CHANNEL_ARMED.load(Ordering::Relaxed), bytes, &mut |frame| {
+        #[cfg(all(test, rue_hosted_threads))]
+        if emit_to_test_partial_sink(frame) {
+            return;
+        }
         // Discarded deliberately: `EBADF` when a test image is run by hand
         // without a channel, `EPIPE` when the runner is gone. Neither is
         // recoverable and neither should disturb the test's own result.
         let _ = platform::write_all(CHANNEL_FD, frame);
     });
+}
+
+#[cfg(all(test, rue_hosted_threads))]
+fn emit_to_test_partial_sink(bytes: &[u8]) -> bool {
+    use std::fs::{self, OpenOptions};
+    use std::io::Write;
+    use std::path::Path;
+    use std::thread;
+    use std::time::Duration;
+
+    let Some(frame_path) = std::env::var_os(TEST_PARTIAL_FRAME_PATH_ENV) else {
+        return false;
+    };
+    let Some(started_path) = std::env::var_os(TEST_PARTIAL_STARTED_PATH_ENV) else {
+        return false;
+    };
+    let Some(release_path) = std::env::var_os(TEST_PARTIAL_RELEASE_PATH_ENV) else {
+        return false;
+    };
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(frame_path)
+        .expect("open partial report frame sink");
+    let already_written = TEST_PARTIAL_BYTES.load(Ordering::Relaxed);
+    const PAUSE_AFTER: usize = 24;
+    if !TEST_PARTIAL_PAUSED.load(Ordering::Acquire)
+        && already_written < PAUSE_AFTER
+        && already_written.saturating_add(bytes.len()) >= PAUSE_AFTER
+        && TEST_PARTIAL_PAUSED
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    {
+        let split = PAUSE_AFTER - already_written;
+        file.write_all(&bytes[..split])
+            .expect("write partial report prefix");
+        TEST_PARTIAL_BYTES.fetch_add(split, Ordering::Release);
+        fs::write(started_path, b"paused").expect("publish partial report marker");
+        while !Path::new(&release_path).exists() {
+            thread::sleep(Duration::from_millis(1));
+        }
+        file.write_all(&bytes[split..])
+            .expect("write remainder of partial report");
+        TEST_PARTIAL_BYTES.fetch_add(bytes.len() - split, Ordering::Release);
+    } else {
+        file.write_all(bytes).expect("write report frame");
+        TEST_PARTIAL_BYTES.fetch_add(bytes.len(), Ordering::Release);
+    }
+    true
 }
 
 /// The armed gate: a frame reaches the descriptor only in a test image.
@@ -625,52 +823,25 @@ crate::define_runtime_implementation! {
     /// Called only from the synthesized dispatcher's epilogue, after the
     /// selected test body returns normally.
     pub extern "C" fn __rue_test_complete() {
-        complete_frame(&mut emit_to_channel);
-    }
-}
-
-crate::define_runtime_implementation! {
-    /// Stage the source location the next failure record will carry.
-    ///
-    /// Paired with [`__rue_test_fail`], which consumes it. Nothing clears the
-    /// staging afterwards, because nothing runs afterwards: the consumer aborts
-    /// the process. A site staged without a following failure would be adopted
-    /// by the next one, which generated code never allows — it emits the two
-    /// calls together.
-    ///
-    /// # ABI
-    ///
-    /// ```text
-    /// extern "C" fn __rue_test_failure_site(
-    ///     file_ptr: *const u8, file_len: u64, line: u32, column: u32,
-    /// )
-    /// ```
-    ///
-    /// # Safety
-    ///
-    /// `file_ptr`/`file_len` must describe initialized bytes that stay valid
-    /// until the paired `__rue_test_fail` has written its record, or be null
-    /// with a zero length.
-    pub unsafe extern "C" fn __rue_test_failure_site(
-        file_ptr: *const u8,
-        file_len: u64,
-        line: u32,
-        column: u32,
-    ) {
-        SITE_FILE.store(file_ptr as *mut u8, Ordering::Relaxed);
-        SITE_FILE_LEN.store(file_len, Ordering::Relaxed);
-        SITE_POSITION.store(
-            (u64::from(line) << 32) | u64::from(column),
-            Ordering::Relaxed,
-        );
+        #[cfg(rue_hosted_threads)]
+        {
+            let _guard = acquire_report_gate();
+            complete_frame(&mut emit_to_channel);
+        }
+        #[cfg(not(rue_hosted_threads))]
+        {
+            acquire_report_gate();
+            complete_frame(&mut emit_to_channel);
+            release_report_gate();
+        }
     }
 }
 
 crate::define_runtime_implementation! {
     /// Report a structured test failure, then abort like any other trap.
     ///
-    /// Writes one `failure` frame to the channel — carrying whatever location
-    /// [`__rue_test_failure_site`] staged, or none — and then takes the
+    /// Writes one `failure` frame to the channel, carrying the location in the
+    /// caller-owned report, and then takes the
     /// ordinary panic path: `panic: {message}\n` on stderr and exit 101. The
     /// frame goes first so a failure is recorded even if the stderr write is
     /// lost.
@@ -679,9 +850,7 @@ crate::define_runtime_implementation! {
     ///
     /// ```text
     /// extern "C" fn __rue_test_fail(
-    ///     kind_ptr: *const u8, kind_len: u64,
-    ///     message_ptr: *const u8, message_len: u64,
-    ///     payload_ptr: *const u8, payload_len: u64,
+    ///     report: *const FailureReport,
     /// ) -> !
     /// ```
     ///
@@ -689,24 +858,19 @@ crate::define_runtime_implementation! {
     ///
     /// Each pointer/length pair must describe initialized bytes valid for the
     /// call, or be null with a zero length.
-    pub unsafe extern "C" fn __rue_test_fail(
-        kind_ptr: *const u8,
-        kind_len: u64,
-        message_ptr: *const u8,
-        message_len: u64,
-        payload_ptr: *const u8,
-        payload_len: u64,
-    ) -> ! {
-        // SAFETY: the caller guarantees every pair describes readable bytes.
-        let message = unsafe { view(message_ptr, message_len) };
-        // SAFETY: as above.
-        let (kind, payload) = unsafe {
+    pub unsafe extern "C" fn __rue_test_fail(report: *const FailureReport) -> ! {
+        // SAFETY: the caller guarantees the report and all of its views remain
+        // readable for the terminal helper.
+        let report = unsafe { &*report };
+        let (kind, message, payload) = unsafe {
             (
-                view(kind_ptr, kind_len),
-                view(payload_ptr, payload_len),
+                view(report.kind_ptr, report.kind_len),
+                view(report.first_ptr, report.first_len),
+                view(report.second_ptr, report.second_len),
             )
         };
-        let (file, line, column) = staged_site();
+        let (file, line, column) = unsafe { site_view(&report.site) };
+        acquire_terminal_report_gate();
         failure_frame(
             &mut emit_to_channel,
             kind,
@@ -739,9 +903,7 @@ crate::define_runtime_implementation! {
     ///
     /// ```text
     /// extern "C" fn __rue_test_fail_comparison(
-    ///     kind_ptr: *const u8, kind_len: u64,
-    ///     left_ptr: *const u8, left_len: u64,
-    ///     right_ptr: *const u8, right_len: u64,
+    ///     report: *const FailureReport,
     /// ) -> !
     /// ```
     ///
@@ -749,23 +911,19 @@ crate::define_runtime_implementation! {
     ///
     /// Each pointer/length pair must describe initialized bytes valid for the
     /// call, or be null with a zero length.
-    pub unsafe extern "C" fn __rue_test_fail_comparison(
-        kind_ptr: *const u8,
-        kind_len: u64,
-        left_ptr: *const u8,
-        left_len: u64,
-        right_ptr: *const u8,
-        right_len: u64,
-    ) -> ! {
-        // SAFETY: the caller guarantees every pair describes readable bytes.
+    pub unsafe extern "C" fn __rue_test_fail_comparison(report: *const FailureReport) -> ! {
+        // SAFETY: the caller guarantees the report and all of its views remain
+        // readable for the terminal helper.
+        let report = unsafe { &*report };
         let (kind, left, right) = unsafe {
             (
-                view(kind_ptr, kind_len),
-                view(left_ptr, left_len),
-                view(right_ptr, right_len),
+                view(report.kind_ptr, report.kind_len),
+                view(report.first_ptr, report.first_len),
+                view(report.second_ptr, report.second_len),
             )
         };
-        let (file, line, column) = staged_site();
+        let (file, line, column) = unsafe { site_view(&report.site) };
+        acquire_terminal_report_gate();
         comparison_frame(
             &mut emit_to_channel,
             kind,
@@ -784,7 +942,7 @@ crate::define_runtime_implementation! {
     ///
     /// The `@assert` form of [`__rue_test_fail`] (spec 4.13:5d). It writes a
     /// `failure` frame of kind `assert` carrying whatever location
-    /// [`__rue_test_failure_site`] staged, and then writes the pinned stderr
+    /// carried by the caller-owned report, and then writes the pinned stderr
     /// line the assertion has always written and exits 101.
     ///
     /// `@assert` has two pinned stderr forms rather than one, which is why the
@@ -807,22 +965,24 @@ crate::define_runtime_implementation! {
     ///
     /// ```text
     /// extern "C" fn __rue_test_fail_assert(
-    ///     message_ptr: *const u8, message_len: u64, with_message: u32,
+    ///     report: *const FailureReport, with_message: u32,
     /// ) -> !
     /// ```
     ///
     /// # Safety
     ///
-    /// `message_ptr`/`message_len` must describe initialized bytes valid for
-    /// the call, or be null with a zero length.
+    /// `report` must point to a caller-owned descriptor whose views remain
+    /// readable for the call.
     pub unsafe extern "C" fn __rue_test_fail_assert(
-        message_ptr: *const u8,
-        message_len: u64,
+        report: *const FailureReport,
         with_message: u32,
     ) -> ! {
-        // SAFETY: the caller guarantees the pair describes readable bytes.
-        let message = unsafe { view(message_ptr, message_len) };
-        let (file, line, column) = staged_site();
+        // SAFETY: the caller guarantees the report and all of its views remain
+        // readable for the terminal helper.
+        let report = unsafe { &*report };
+        let message = unsafe { view(report.first_ptr, report.first_len) };
+        let (file, line, column) = unsafe { site_view(&report.site) };
+        acquire_terminal_report_gate();
         let framed = if with_message == 0 {
             &ASSERT_MESSAGE[..]
         } else {
@@ -836,7 +996,7 @@ crate::define_runtime_implementation! {
             column,
         );
         if with_message == 0 {
-            crate::error::__rue_assert_failed()
+            crate::error::assert_failed_stderr()
         } else {
             crate::error::panic_stderr(message)
         }
@@ -866,6 +1026,318 @@ mod tests {
 
     use super::*;
     use std::vec::Vec;
+
+    #[cfg(rue_hosted_threads)]
+    mod gate {
+        use super::*;
+
+        use std::fs;
+        use std::ops::{Deref, DerefMut};
+        use std::path::{Path, PathBuf};
+        use std::process::{Child, Command, Output, Stdio};
+        use std::thread;
+        use std::time::{Duration, Instant};
+
+        const GATE_CHILD_ENV: &str = "RUE_REPORT_GATE_CHILD";
+        const GATE_TEST_NAME: &str = "test_channel::tests::gate::terminal_gate_subprocesses";
+
+        #[cfg(unix)]
+        unsafe extern "C" {
+            fn close(fd: i32) -> i32;
+            fn raise(signal: i32) -> i32;
+        }
+
+        struct ChildGuard(Option<Child>);
+
+        impl ChildGuard {
+            fn wait_with_output(&mut self) -> std::io::Result<Output> {
+                self.0
+                    .take()
+                    .expect("owned reporting child")
+                    .wait_with_output()
+            }
+        }
+
+        impl Deref for ChildGuard {
+            type Target = Child;
+
+            fn deref(&self) -> &Child {
+                self.0.as_ref().expect("owned reporting child")
+            }
+        }
+
+        impl DerefMut for ChildGuard {
+            fn deref_mut(&mut self) -> &mut Child {
+                self.0.as_mut().expect("owned reporting child")
+            }
+        }
+
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                if let Some(child) = &mut self.0 {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+
+        fn fail_child(child: &mut Child, message: &str) -> ! {
+            // Explicit cleanup also covers panic-abort test binaries, where Drop
+            // cannot run after a failed assertion.
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("{message}");
+        }
+
+        fn assert_stays_parked(child: &mut Child, frame: &Path) {
+            // The child publishes its marker immediately before locking. Leave it
+            // free to attempt that lock while the first writer remains paused;
+            // sleeping in the child would let a broken gate pass this test.
+            let deadline = Instant::now() + Duration::from_millis(100);
+            loop {
+                match child.try_wait() {
+                    Ok(None) => {}
+                    Ok(Some(status)) => fail_child(
+                        child,
+                        &std::format!("ordinary reporter exited before frame release: {status}"),
+                    ),
+                    Err(error) => fail_child(
+                        child,
+                        &std::format!("cannot poll parked reporting child: {error}"),
+                    ),
+                }
+                match fs::read(frame) {
+                    Ok(bytes) if bytes == COMPLETE_FRAME[..24] => {}
+                    Ok(bytes) => fail_child(
+                        child,
+                        &std::format!("paused report changed before release: {bytes:?}"),
+                    ),
+                    Err(error) => fail_child(
+                        child,
+                        &std::format!("cannot read paused reporting frame: {error}"),
+                    ),
+                }
+                if Instant::now() >= deadline {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+        }
+
+        fn release_frame(child: &mut Child, path: &Path) {
+            if let Err(error) = fs::write(path, b"release") {
+                fail_child(
+                    child,
+                    &std::format!("cannot release reporting frame: {error}"),
+                );
+            }
+        }
+
+        fn wait_for_marker(child: &mut Child, path: &Path) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !path.exists() {
+                if Instant::now() >= deadline {
+                    fail_child(
+                        child,
+                        &std::format!("reporting child did not publish {}", path.display()),
+                    );
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+        }
+
+        fn wait_for_child(child: &mut Child) -> std::process::ExitStatus {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => return status,
+                    Ok(None) => {}
+                    Err(error) => {
+                        fail_child(child, &std::format!("cannot poll reporting child: {error}"))
+                    }
+                }
+                if Instant::now() >= deadline {
+                    fail_child(
+                        child,
+                        "reporting child did not terminate within ten seconds",
+                    );
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+        }
+
+        fn gate_test_paths(mode: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+            let stem = std::format!("rue-report-gate-{}-{mode}", std::process::id());
+            let root = std::env::temp_dir();
+            (
+                root.join(std::format!("{stem}.frame")),
+                root.join(std::format!("{stem}.started")),
+                root.join(std::format!("{stem}.ordinary")),
+                root.join(std::format!("{stem}.release")),
+            )
+        }
+
+        fn spawn_gate_child(
+            mode: &str,
+            paths: &(PathBuf, PathBuf, PathBuf, PathBuf),
+        ) -> ChildGuard {
+            ChildGuard(Some(
+                Command::new(std::env::current_exe().expect("current test binary"))
+                    .args(["--exact", GATE_TEST_NAME, "--nocapture"])
+                    .env(GATE_CHILD_ENV, mode)
+                    .env(TEST_PARTIAL_FRAME_PATH_ENV, &paths.0)
+                    .env(TEST_PARTIAL_STARTED_PATH_ENV, &paths.1)
+                    .env(TEST_PARTIAL_CONTENTION_PATH_ENV, &paths.2)
+                    .env(TEST_PARTIAL_RELEASE_PATH_ENV, &paths.3)
+                    .env("__RUST_TEST_INVOKE", GATE_TEST_NAME)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .expect("spawn reporting-gate child"),
+            ))
+        }
+
+        fn remove_gate_test_paths(paths: &(PathBuf, PathBuf, PathBuf, PathBuf)) {
+            for path in [&paths.0, &paths.1, &paths.2, &paths.3] {
+                let _ = fs::remove_file(path);
+            }
+        }
+
+        /// Exercise the real hosted ParkMutex with a frame that is observably
+        /// partial. The ordinary overflow reporter must park behind the first
+        /// writer and only emit stderr after the complete frame is released.
+        /// Separate subprocesses prove that explicit exit and an arriving signal
+        /// terminate promptly while another thread still owns the gate.
+        #[test]
+        fn terminal_gate_subprocesses() {
+            if let Some(mode) = std::env::var_os(GATE_CHILD_ENV) {
+                let mode = mode.to_string_lossy();
+                arm_channel();
+                let started = PathBuf::from(
+                    std::env::var_os(TEST_PARTIAL_STARTED_PATH_ENV)
+                        .expect("child reporting marker path"),
+                );
+                thread::spawn(|| crate::test_channel::__rue_test_complete());
+                while !started.exists() {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                match mode.as_ref() {
+                    "ordinary" => {
+                        thread::spawn(move || crate::error::__rue_overflow());
+                        loop {
+                            thread::sleep(Duration::from_secs(1));
+                        }
+                    }
+                    "input" => {
+                        crate::io::initialize_hosted().expect("initialize hosted stdin");
+                        // Closing stdin makes the real read syscall return EBADF;
+                        // ReadLineFailure::Input must use the same terminal gate
+                        // as arithmetic traps while the complete frame is held.
+                        #[cfg(unix)]
+                        unsafe {
+                            let _ = close(0);
+                        }
+                        let mut out = rue_runtime_abi::OptionStrBufResult {
+                            disc: u64::MAX,
+                            ptr: core::ptr::null_mut(),
+                            len: 0,
+                            cap: 0,
+                        };
+                        // SAFETY: `out` is aligned writable sret storage for the
+                        // runtime's public read-line ABI.
+                        unsafe { crate::io::__rue_read_line(&mut out, 1, 0) };
+                        panic!("closed stdin unexpectedly returned");
+                    }
+                    "raw-exit" => crate::platform::exit(37),
+                    "signal" => {
+                        let stack_marker = 0usize;
+                        crate::fault::initialize_main(
+                            (&stack_marker as *const usize) as usize,
+                            crate::platform::stack_limit(),
+                        )
+                        .expect("initialize hosted fault handler");
+                        // SAFETY: raising SIGSEGV is intentional subprocess-test
+                        // control flow; Rue's installed handler exits 101.
+                        let result = unsafe { raise(11) };
+                        panic!("SIGSEGV handler returned: {result}");
+                    }
+                    other => panic!("unknown reporting-gate child mode: {other}"),
+                }
+            }
+
+            let (frame, started, contention, release) = gate_test_paths("ordinary");
+            let paths = (
+                frame.clone(),
+                started.clone(),
+                contention.clone(),
+                release.clone(),
+            );
+            let mut child = spawn_gate_child("ordinary", &paths);
+            wait_for_marker(&mut child, &started);
+            wait_for_marker(&mut child, &contention);
+            assert_stays_parked(&mut child, &frame);
+            release_frame(&mut child, &release);
+            let status = wait_for_child(&mut child);
+            let output = child
+                .wait_with_output()
+                .expect("collect ordinary reporter output");
+            assert_eq!(status.code(), Some(101), "ordinary child: {output:?}");
+            assert_eq!(output.stderr, b"error: integer overflow\n");
+            assert_eq!(
+                fs::read(&frame).expect("read complete frame"),
+                COMPLETE_FRAME
+            );
+            remove_gate_test_paths(&paths);
+
+            let (frame, started, contention, release) = gate_test_paths("input");
+            let paths = (
+                frame.clone(),
+                started.clone(),
+                contention.clone(),
+                release.clone(),
+            );
+            let mut child = spawn_gate_child("input", &paths);
+            wait_for_marker(&mut child, &started);
+            wait_for_marker(&mut child, &contention);
+            assert_stays_parked(&mut child, &frame);
+            release_frame(&mut child, &release);
+            let status = wait_for_child(&mut child);
+            let output = child
+                .wait_with_output()
+                .expect("collect input reporter output");
+            assert_eq!(status.code(), Some(101), "input child: {output:?}");
+            assert_eq!(output.stderr, b"error: input error\n");
+            assert_eq!(
+                fs::read(&frame).expect("read complete frame after input error"),
+                COMPLETE_FRAME
+            );
+            remove_gate_test_paths(&paths);
+
+            let (frame, started, ordinary, release) = gate_test_paths("raw-exit");
+            let paths = (frame, started.clone(), ordinary, release);
+            let mut child = spawn_gate_child("raw-exit", &paths);
+            wait_for_marker(&mut child, &started);
+            let status = wait_for_child(&mut child);
+            assert_eq!(status.code(), Some(37));
+            remove_gate_test_paths(&paths);
+
+            let (frame, started, ordinary, release) = gate_test_paths("signal");
+            let paths = (frame, started.clone(), ordinary, release);
+            let mut child = spawn_gate_child("signal", &paths);
+            wait_for_marker(&mut child, &started);
+            let status = wait_for_child(&mut child);
+            let output = child
+                .wait_with_output()
+                .expect("collect signal reporter output");
+            assert_eq!(status.code(), Some(101), "signal child: {output:?}");
+            assert!(
+                output.stderr.starts_with(b"segmentation fault at 0x"),
+                "signal stderr: {:?}",
+                output.stderr
+            );
+            remove_gate_test_paths(&paths);
+        }
+    }
 
     fn frame_bytes(build: impl FnOnce(&mut dyn FnMut(&[u8]))) -> Vec<u8> {
         let mut collected = Vec::new();
@@ -931,7 +1403,8 @@ mod tests {
     }
 
     /// The message is pinned by the kind, not passed, which is what keeps the
-    /// comparison call inside the six-register helper budget.
+    /// comparison report with both rendered operands in its caller-owned
+    /// descriptor.
     #[test]
     fn each_comparison_kind_pins_its_own_message() {
         let ne =
@@ -1229,21 +1702,16 @@ mod tests {
     }
 
     #[test]
-    fn a_staged_site_round_trips_through_the_packed_position() {
+    fn a_caller_owned_site_round_trips_through_the_packed_position() {
         let file = b"app/parser_tests.rue";
-        // SAFETY: `file` outlives the read below.
-        unsafe { __rue_test_failure_site(file.as_ptr(), file.len() as u64, 7, 3) };
-        let position = SITE_POSITION.load(Ordering::Relaxed);
-        assert_eq!(((position >> 32) as u32, position as u32), (7, 3));
-        assert_eq!(SITE_FILE_LEN.load(Ordering::Relaxed), file.len() as u64);
-        // SAFETY: the staged pointer is `file`, still live here.
-        let staged = unsafe {
-            view(
-                SITE_FILE.load(Ordering::Relaxed) as *const u8,
-                SITE_FILE_LEN.load(Ordering::Relaxed),
-            )
+        let site = FailureSite {
+            file_ptr: file.as_ptr(),
+            file_len: file.len() as u64,
+            position: (7u64 << 32) | 3,
         };
-        assert_eq!(staged, file);
+        let (viewed_file, line, column) = unsafe { site_view(&site) };
+        assert_eq!(viewed_file, file);
+        assert_eq!((line, column), (7, 3));
     }
 
     /// A trap's frame is the bare assertion's shape — no `payload`, no operands
@@ -1286,12 +1754,12 @@ mod tests {
         );
     }
 
-    /// A trap reached with no staged site — an allocation failure, or a check
+    /// A trap reached with no caller-owned site — an allocation failure, or a check
     /// the compiler emits below AIR — still reports. The empty location is what
     /// the runner answers from the test declaration's header, so the record is
     /// never worse than the stderr classification it replaces.
     #[test]
-    fn an_unstaged_trap_frame_names_no_file() {
+    fn a_trap_without_site_names_no_file() {
         let bytes = frame_bytes(|emit| {
             trap_frame(
                 emit,

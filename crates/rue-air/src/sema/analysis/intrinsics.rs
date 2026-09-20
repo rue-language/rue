@@ -1540,8 +1540,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         // `@panic` reports its own site. The runtime writes the `trap:panic`
-        // record from inside the panic helper, so the staging call is the whole
-        // of the lowering's addition and it is the same in a test image and in
+        // record from inside the panic helper, so the caller-owned site is part
+        // of the same canonical call in a test image and in
         // an ordinary executable: there is no descriptor 3 in the latter, the
         // record write fails with `EBADF` as designed, and the pinned stderr
         // line spec 4.13:5c fixes is the whole report (RUE-2019).
@@ -1554,16 +1554,24 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // silent no-op. `@panic` has type `!` (never): it diverges and never
             // returns, so it participates in never coercion just like a `-> !`
             // call, `return`, or `break` (spec 3.4:2, 4.13:5c; RUE-512).
-            let site = self.stage_failure_site(air, ctx, str_ty, span)?;
-            let panic_ref = air.add_intrinsic(
-                crate::IntrinsicOperation::PanicNoMessage,
-                self.known_symbols()
-                    .intrinsic(rue_builtins::IntrinsicName::Panic),
-                &[],
+            let (site, prefix) = self.build_failure_site(air, ctx, str_ty, span)?;
+            let name = self.intern_body_symbol(
+                crate::RuntimeCallKind::PanicNoMessage
+                    .helper()
+                    .helper()
+                    .symbol,
+            )?;
+            let panic_ref = air.add_call(
+                Some(crate::RuntimeCallKind::PanicNoMessage),
+                name,
+                &[AirCallArg {
+                    value: site,
+                    mode: AirArgMode::Borrow,
+                }],
                 Type::NEVER,
                 span,
             )?;
-            let air_ref = air.add_block(&[site], panic_ref, Type::NEVER, span)?;
+            let air_ref = air.add_block(&prefix, panic_ref, Type::NEVER, span)?;
             ctx.divergence_kinds
                 .insert(super::super::context::DivergenceKind::Panic);
             return Ok(AnalysisResult::diverged(air_ref, Type::NEVER));
@@ -1589,20 +1597,30 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         } else {
             (arg_result.air_ref, Vec::new())
         };
-        // The message is materialized before the site is staged, never after:
-        // evaluating it can itself abort — a bounds check inside it traps
-        // without staging anything — and a site staged first would be adopted
-        // by that inner failure and report this line for it.
-        let site = self.stage_failure_site(air, ctx, str_ty, span)?;
-        let intrinsic_ref = air.add_intrinsic(
-            crate::IntrinsicOperation::Panic,
-            self.known_symbols()
-                .intrinsic(rue_builtins::IntrinsicName::Panic),
-            &[arg_ref],
+        // Render the message before constructing the caller-owned site: a
+        // bounds check inside it traps with no report for this outer panic, so
+        // it must never inherit the outer panic's source.
+        let (site, mut prefix) = self.build_failure_site(air, ctx, str_ty, span)?;
+        let name =
+            self.intern_body_symbol(crate::RuntimeCallKind::Panic.helper().helper().symbol)?;
+        let intrinsic_ref = air.add_call(
+            Some(crate::RuntimeCallKind::Panic),
+            name,
+            &[
+                AirCallArg {
+                    value: site,
+                    mode: AirArgMode::Borrow,
+                },
+                AirCallArg {
+                    value: arg_ref,
+                    mode: AirArgMode::Normal,
+                },
+            ],
             Type::NEVER,
             span,
         )?;
-        let reported = air.add_block(&[arg_ref, site], intrinsic_ref, Type::NEVER, span)?;
+        prefix.insert(0, arg_ref);
+        let reported = air.add_block(&prefix, intrinsic_ref, Type::NEVER, span)?;
         let air_ref =
             self.wrap_value_with_temp_scope(air, reported, Type::NEVER, span, temp_scope)?;
         // An operand that diverges prevents the explicit panic call from
@@ -1719,13 +1737,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(AnalysisResult::new(air_ref, Type::UNIT))
     }
 
-    /// The failing arm of an `@assert`: stage the site, report, abort.
+    /// The failing arm of an `@assert`: build its report and abort.
     ///
-    /// The two channel calls are a pair by ABI — a failure record is more
-    /// arguments than a register-only helper can take — and the second adopts
-    /// whatever site the first staged, so nothing may run between them. The
-    /// message is not one of them: it was materialized before the branch, and
-    /// the arm only hands the terminal call the view it already has.
+    /// The report is a caller-owned fixed-width aggregate. Rendered message
+    /// text is materialized before the branch so a render trap keeps its own
+    /// source, then the failing arm constructs and borrows the complete report.
     ///
     /// The lowering is the same in a test image and in an ordinary executable
     /// (ADR-0083's rule for the assertion family). Only the outcome differs,
@@ -1740,8 +1756,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AirRef> {
         let str_ty = self.get_or_create_str_struct(span)?;
-        let site = self.stage_failure_site(air, ctx, str_ty, span)?;
-
         // Which of the two pinned stderr forms this is, stated rather than
         // inferred from the message's length: `@assert(cond, "")` is the
         // message form and keeps printing `panic: `.
@@ -1752,14 +1766,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         });
         let message =
             message.unwrap_or_else(|| self.synthesized_string(air, ctx, "", str_ty, span));
-        let report = self.runtime_channel_call(
+        let kind = self.synthesized_string(air, ctx, "assert", str_ty, span);
+        let empty = self.synthesized_string(air, ctx, "", str_ty, span);
+        let (descriptor, mut prefix) =
+            self.build_failure_report(air, ctx, kind, message, empty, str_ty, span)?;
+        let report = self.runtime_channel_borrow_call(
             air,
             crate::RuntimeCallKind::TestFailAssert,
-            &[message, with_message],
+            &[descriptor, with_message],
             Type::NEVER,
             span,
         )?;
-        Ok(air.add_block(&[with_message, site], report, Type::NEVER, span)?)
+        prefix.push(with_message);
+        Ok(air.add_block(&prefix, report, Type::NEVER, span)?)
     }
 
     /// Analyze `@assert_eq(left, right)` and `@assert_ne(left, right)`
@@ -2002,14 +2021,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         self.materialize_borrow_argument(air, value, ty, span, ctx)
     }
 
-    /// The failing arm of a comparison assertion: render, stage the site,
-    /// report, abort.
+    /// The failing arm of a comparison assertion: render, build the report,
+    /// and abort.
     ///
-    /// The two channel calls are a pair by ABI — a failure record is more
-    /// arguments than a register-only helper can take — and the second adopts
-    /// whatever site the first staged, so nothing may run between them. Both
-    /// renderings are therefore materialized as statements *before* the site
-    /// call, exactly as the test-body `?` arm materializes its payload.
+    /// Both renderings are materialized before the caller-owned report is
+    /// constructed, exactly as the test-body `?` arm materializes its payload.
     #[allow(clippy::too_many_arguments)]
     fn build_comparison_report(
         &mut self,
@@ -2040,26 +2056,21 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let left_text = render(air, left)?;
         let right_text = render(air, right)?;
 
-        // A site the host cannot resolve is reported as the empty file at 0:0
-        let site = self.stage_failure_site(air, ctx, str_ty, span)?;
-
-        // The message is pinned by the kind inside the runtime helper, which is
-        // what keeps this terminal call to the six registers every runtime
-        // helper is limited to while still carrying both renderings.
+        // The message is pinned by the kind inside the runtime helper while
+        // the caller-owned report carries both renderings.
         let kind = self.synthesized_string(air, ctx, intrinsic_name, str_ty, span);
-        let report = self.runtime_channel_call(
+        let empty = self.synthesized_string(air, ctx, "", str_ty, span);
+        let (descriptor, mut prefix) =
+            self.build_failure_report(air, ctx, kind, left_text, right_text, str_ty, span)?;
+        let report = self.runtime_channel_borrow_call(
             air,
             crate::RuntimeCallKind::TestFailComparison,
-            &[kind, left_text, right_text],
+            &[descriptor],
             Type::NEVER,
             span,
         )?;
-        Ok(air.add_block(
-            &[left_text, right_text, kind, site],
-            report,
-            Type::NEVER,
-            span,
-        )?)
+        prefix.extend([left_text, right_text, kind, empty]);
+        Ok(air.add_block(&prefix, report, Type::NEVER, span)?)
     }
 
     /// Evaluate a comparison whose operands both analyzed to a compile-time

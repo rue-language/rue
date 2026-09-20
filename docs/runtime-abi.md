@@ -287,31 +287,30 @@ diagnostic and terminate the process with the runtime-error status.
 
 ## The test failure channel
 
-Seven helpers implement the ADR-0083 §3 and §5.1 channel. Three are dispatcher
+Six helpers implement the ADR-0083 §3 and §5.1 channel. Three are dispatcher
 plumbing no source spelling selects; the reporting helpers are what a test
 body's `?`, the assertion family, and `@panic` lower to, in an ordinary
-executable as well as in a test image. `@panic` reaches only
-`__rue_test_failure_site` of them: its record is written by the panic helper it
-aborts through, not by a channel export (RUE-2019).
+executable as well as in a test image. Failure locations and reports are
+caller-owned `repr(C)` records. The compiler constructs their fixed-width
+`u64` storage and passes a borrow, so concurrent failures cannot share a
+process-global source slot.
 
 - `__rue_test_normalize_process` narrows the captured argument count to one, so
   a test observes the pinned inventory rather than the selector it was
   dispatched by.
 - `__rue_test_complete` writes the terminal completion record.
-- `__rue_test_failure_site` and `__rue_test_fail` report one structured failure
-  and abort. They are a pair because a failure record carries three byte views
-  plus a file, a line, and a column — ten arguments, where every runtime helper
-  is register-only and x86-64 affords six. The first stages the location, the
-  second emits the record and takes the ordinary panic path; nothing runs
-  between them, and the staged file bytes must stay readable across both.
+- `__rue_test_fail` reports one structured failure and aborts. Its one argument
+  is a borrowed `FailureReport`; the report contains a borrowed `FailureSite`
+  plus the rendered kind and payload views. The compiler materializes the
+  complete record before the call, so evaluation traps report their own source
+  and there is no adjacent staging call or process-global source state.
 - `__rue_test_fail_comparison` is the same terminal call for a comparison
   assertion (Phase 2.5, ABI version 3): it carries the two rendered operands as
   the record's `left` and `right` where `__rue_test_fail` carries a message
   and the open payload. Its message is not a parameter — it is pinned by the
   kind, `assertion failed: left == right` for `assert_eq` and
   `assertion failed: left != right` for `assert_ne` — which is what keeps a
-  six-register call able to carry both operands. It pairs with
-  `__rue_test_failure_site` under the same adjacency rule.
+  six-register call able to carry both operands.
 - `__rue_test_fail_assert` is the same terminal call for `@assert`
   (spec 4.13:5d, ABI version 5). It writes a record of kind `assert` that ends
   at the location — no `payload`, and no operands — and then writes the one
@@ -321,8 +320,7 @@ aborts through, not by a channel export (RUE-2019).
   and stderr carry the pinned `assertion failed`; otherwise the caller's text is
   the record's message and `panic: {message}` is the stderr line. An empty
   message is still the message form, so `@assert(c, "")` keeps printing
-  `panic: `. It pairs with `__rue_test_failure_site` under the same adjacency
-  rule.
+  `panic: `.
 - `__rue_test_usage_error` writes one pinned diagnostic for a malformed
   selector and *returns*, unlike every other stderr-writing runtime path,
   because the dispatcher owns that case's exit status.
@@ -330,31 +328,30 @@ aborts through, not by a channel export (RUE-2019).
 `@assert_eq(l, r)` and `@assert_ne(l, r)` compile to the ordinary equality
 lowering plus, on the failing branch, the two rendering calls and this pair.
 `@assert(cond)` and `@assert(cond, msg)` compile to a branch on the negated
-condition whose only arm is `__rue_test_failure_site` and
-`__rue_test_fail_assert`; the message is materialized before the branch, so it
-is still evaluated when the condition holds. The lowering does not depend on
+condition whose only arm is `__rue_test_fail_assert`; the message is rendered
+before the report record is assembled, so an evaluation trap reports its own
+source rather than stale assertion state. The lowering does not depend on
 whether the request is a test one; the *runtime* makes that distinction
 instead. `__rue_test_normalize_process` arms the channel, and only the
 synthesized dispatcher's prologue calls it, so in an ordinary process no frame
 is written at all and the pinned stderr message plus exit 101 is the whole
 report (RUE-2066).
 
-`@panic(msg)` and `@panic()` compile to `__rue_test_failure_site` followed by
-the panic helper, under the same adjacency rule and the same build-independent
-rule (RUE-2019). The panic helpers are not channel exports and their signatures
-are unchanged; what changed is that `__rue_panic` and `__rue_panic_no_msg` now
-write a `trap:panic` record carrying the staged site *before* their pinned
-stderr line, and `__rue_bounds_check` writes a `trap:bounds_check` record the
-same way. Each record's message is that helper's own stderr line without the
-newline, so nothing a consumer already read changes. The site is staged by the
-`@panic` lowering alone. Everything else reaches these helpers with nothing
-staged and reports the empty location the runner answers from the test
+`@panic(msg)` and `@panic()` compile to a canonical borrowed `FailureSite`
+followed by the panic helper, under the same build-independent rule (RUE-2019).
+The panic helpers are not channel exports; `__rue_panic` and
+`__rue_panic_no_msg` receive the site directly and write a `trap:panic` record
+before their pinned stderr line, while `__rue_bounds_check` writes a
+`trap:bounds_check` record with a null site. Each record's message is that
+helper's own stderr line without the newline, so nothing a consumer already
+read changes. Runtime failures that have no source site report the empty
+location the runner answers from the test
 declaration's header: an allocation failure, the fixed-array bounds check
 codegen emits from a place projection, the slice bounds check semantic analysis
 emits as a `BoundsCheck` intrinsic, and the `s[i]` check `__rue_str_byte_at`
-performs inside the runtime. Staging inside the arm costs the passing path no
-prologue: codegen treats the arm as a diverging region, so neither the staging
-call's clobbers nor the registers the arm occupies reach the guarded function's
+performs inside the runtime. Site materialization inside the arm costs the
+passing path no prologue: codegen treats the arm as a diverging region, so
+neither the report setup's clobbers nor the registers the arm occupies reach the guarded function's
 prologue (RUE-2065; `docs/process/test-events.md`). Because the panic helpers
 now report, the three terminal channel helpers take the stderr half of the panic
 path directly rather than calling `__rue_panic` — a second `trap:panic` frame
@@ -385,6 +382,15 @@ file of its own (RUE-2066). Within an armed image writes are still best-effort: 
 hand has no such descriptor, so `EBADF` is expected rather than exceptional.
 The channel is not a security boundary — it prevents accidental collision with
 a test's own stdout, which is all its consumers are promised.
+
+In a hosted process, the terminal report winner acquires one private parking
+gate before writing its complete frame, stderr, and process exit. Competing
+ordinary reporters park on that same gate and do not exit early. Completion
+acquires and releases the gate around its complete frame. Signal handlers and
+explicit raw exits bypass the gate and may leave a best-effort record
+truncated; this is the defined boundary for asynchronous termination. Record
+fields remain bounded to 4 KiB and ordinary frames are not assumed to fit
+`PIPE_BUF`.
 
 Its capability class is **hermetic-compatible, on the same grounds as stdout**:
 runner-pinned, fully captured, and budgeted. ADR-0083 §5.1 records that

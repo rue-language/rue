@@ -201,17 +201,25 @@ image writes are best-effort by design: an image run by hand has no descriptor
 security boundary** — it prevents accidental collision with a test's own stdout,
 which is all its consumers are promised.
 
+Hosted terminal reporting uses one private parking gate. The first ordinary
+reporter to acquire it remains the winner through the complete frame, stderr,
+and process exit; competing ordinary reporters park and never exit early.
+Completion uses the same gate around its complete frame. Signal handlers and
+explicit raw exits bypass the gate and may truncate a best-effort final record.
+This is the defined asynchronous boundary; record fields remain bounded to
+4 KiB, while complete ordinary frames are allowed to exceed `PIPE_BUF`.
+
 **Producers in this version.** Records reach the channel by two routes, both
 the implementation's. Compiler-synthesized code writes them for `@assert`,
 `@assert_eq`, `@assert_ne`, the test-body `?` failure arm, and the dispatcher's
-`complete` epilogue; for `@panic` it stages only the site, and the panic helper
-that `@panic` aborts through writes the record. The runtime writes them for
-itself from inside the trap helpers, which is how a failure with no Rue call
-site at all still reports: an allocation failure reaches `__rue_panic`, an
-`s[i]` past the end reaches `__rue_bounds_check` from within
-`__rue_str_byte_at`, and a standard library guard that spells `@panic` reports
-as any other `@panic` does (RUE-2019). Nothing in the language can call
-`__rue_test_failure_site` or `__rue_test_fail`, so the user assertion library of
+`complete` epilogue; `@panic` passes its caller-owned site directly to the
+panic helper. The runtime writes records for itself from inside the trap
+helpers, which is how a failure with no Rue call site at all still reports: an
+allocation failure reaches `__rue_panic`, an `s[i]` past the end reaches
+`__rue_bounds_check` from within `__rue_str_byte_at`, and a standard library
+guard that spells `@panic` reports as any other `@panic` does (RUE-2019).
+Nothing in the language can call
+`__rue_test_fail`, so the user assertion library of
 ADR-0083 §5.1 is what the open `kind` and the reserved payload shapes
 are *for* rather than something that exists yet — a line naming an unknown
 `record` is recorded as malformed, which fails the test. A user-callable
@@ -343,39 +351,21 @@ Which failures carry a site of their own, and which still fall back to the
 | `trap:panic` | The `@panic` intrinsic's own site, both spellings alike (RUE-2019). |
 | Every other `trap:<class>` | The `test` declaration's header. |
 
-The remaining traps are the checks no lowering stages a site beside: the
+The remaining traps are checks whose runtime call receives no source site: the
 fixed-array bounds check in the place lowering, the slice bounds check semantic
 analysis emits as a `BoundsCheck` intrinsic, the `s[i]` check
 `__rue_str_byte_at` performs inside the runtime, and the division-by-zero,
-overflow, and `@intCast` range checks the CFG and codegen insert. The slice
-check is an AIR intrinsic and does carry a span, so what stops it is cost rather
-than reach: staging a site beside the check would run on every access, and
-staging it inside a failing arm would turn a trap edge into a branch on the
-negated condition and a cold arm in every function that indexes. Until the trap
-edge can carry a site the passing path does not pay for, those failures name the
-header, and their `kind` is still exact — `__rue_bounds_check` writes its
-`trap:bounds_check` record whether or not a site was staged, so the class comes
-from the channel rather than from matching a stderr line.
+overflow, and `@intCast` range checks the CFG and codegen insert. These checks
+name the header, and their `kind` is still exact — `__rue_bounds_check` writes
+its `trap:bounds_check` record, so the class comes from the channel rather than
+from matching a stderr line.
 
 The policy those traps and the `@panic` arm share is that **the passing path
-pays nothing for a staged site**. Staging beside a check would break it outright
-— the staging call would run on every access — so a site is only ever staged
-inside the arm that is about to fail. What the arm costs the passing path is
-then a register-allocation question, and RUE-2065 settled it: allocation reads
-divergence, meaning the regions control can only leave by aborting. A clobber
-inside such a region cannot destroy a value with no use in one, so the receiver
-and index a guarded accessor holds across its guard can stay in caller-saved
-registers; and a callee-saved register only such a region occupies never enters
-the prologue, because the function does not return to restore it. What the arm
-*reads* still costs: a value the arm itself uses does cross the staging call,
-and takes a callee-saved register like any value that crosses a call. A `@panic`
-arm reads only the site operands it stages itself, so the guard adds a branch on
-the negated condition and a cold arm, and no prologue save the arm is
-responsible for — subject to ordinary register pressure, which on x86-64 leaves
-`open` one save because `r11` is its only allocatable caller-saved register.
-`crates/rue-cli-tests/cases/panic_guard_prologue.toml` pins that on both
-backends.
-
+pays nothing for report construction**. A site or message is materialized only
+on the failing arm, after source expressions have rendered; a render trap
+therefore keeps its own source location. The arm's ordinary register pressure
+and divergence rules remain the same as other terminating calls, which
+`crates/rue-cli-tests/cases/panic_guard_prologue.toml` pins on both backends.
 `timeout` and `crash` verdicts also carry a failure record, with kind `timeout`
 and `signal` respectively.
 

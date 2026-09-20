@@ -486,9 +486,6 @@ pub enum ArithmeticOperation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrapPlan {
-    Panic {
-        call: crate::runtime_call_plan::RuntimeCallPlan,
-    },
     Assert {
         condition: VReg,
         call: crate::runtime_call_plan::RuntimeCallPlan,
@@ -2213,40 +2210,6 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                 .collect();
             if matches!(
                 operation,
-                IntrinsicOperation::PanicNoMessage | IntrinsicOperation::Panic
-            ) {
-                let runtime = operation
-                    .runtime_call_kind()
-                    .expect("panic operation must be runtime-backed");
-                let call = match operation {
-                    IntrinsicOperation::PanicNoMessage => {
-                        crate::runtime_call_plan::RuntimeCallPlan::no_args(runtime.helper())
-                    }
-                    IntrinsicOperation::Panic => {
-                        let message = values
-                            .first()
-                            .expect("validated panic must have one text argument");
-                        crate::runtime_call_plan::RuntimeCallPlan::expect_manifest(
-                            runtime.helper(),
-                            [
-                                crate::runtime_call_plan::RuntimeCallArg::const_pointer(
-                                    message.slots[0],
-                                    rue_runtime_abi::AbiType::Byte,
-                                ),
-                                crate::runtime_call_plan::RuntimeCallArg::value(
-                                    message.slots[1],
-                                    rue_runtime_abi::AbiType::U64,
-                                ),
-                            ],
-                        )
-                    }
-                    _ => unreachable!("non-panic operation in panic dispatch"),
-                };
-                let result = adapter.emit_trap(TrapPlan::Panic { call });
-                cache_result(adapter, value, result);
-                Some(ValueKind::Intrinsic)
-            } else if matches!(
-                operation,
                 IntrinsicOperation::AssertFailed | IntrinsicOperation::BoundsCheck
             ) {
                 // Both take no runtime arguments: the condition is tested here
@@ -2685,10 +2648,7 @@ fn intrinsic_runtime_call(
                 _ => unreachable!("non-debug operation in debug dispatch"),
             }
         }
-        IntrinsicOperation::Panic
-        | IntrinsicOperation::PanicNoMessage
-        | IntrinsicOperation::AssertFailed
-        | IntrinsicOperation::BoundsCheck => {
+        IntrinsicOperation::AssertFailed | IntrinsicOperation::BoundsCheck => {
             unreachable!("trap runtime calls are planned by exact operation above")
         }
         IntrinsicOperation::PtrToInt
@@ -4563,11 +4523,6 @@ mod tests {
     #[test]
     fn trap_operations_have_exact_manifest_runtime_identities() {
         for (operation, helper) in [
-            (
-                IntrinsicOperation::PanicNoMessage,
-                RuntimeHelperId::PanicNoMessage,
-            ),
-            (IntrinsicOperation::Panic, RuntimeHelperId::Panic),
             (
                 IntrinsicOperation::AssertFailed,
                 RuntimeHelperId::AssertFailed,

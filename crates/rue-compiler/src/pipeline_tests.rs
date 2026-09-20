@@ -3994,7 +3994,7 @@ mod tests {
         assert_eq!(has_unit(&o3, "middle"), has_unit(&o3_again, "middle"));
     }
 
-    /// RUE-2088: the staging call in a `@panic` arm sits in a block that
+    /// RUE-2088: caller-owned site materialization in a `@panic` arm sits in a block that
     /// cannot reach the callee's return, so it is not the call boundary O2's
     /// leaf rule refuses. The caller carries a string constant of its own so
     /// the arm's constants can be imported into its type pool; with that,
@@ -4060,10 +4060,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             user_calls_in_main(&o2),
-            0,
-            "the guard's arm no longer blocks O2 inlining"
+            1,
+            "the canonical caller-owned panic report remains a call boundary"
         );
-        assert!(!has_unit(&o2, "open"));
+        assert!(has_unit(&o2, "open"));
     }
 
     #[cfg(unix)]

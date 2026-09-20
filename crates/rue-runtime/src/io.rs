@@ -391,8 +391,7 @@ impl ReadLineFailure {
                 msg[16] = b'o';
                 msg[17] = b'r';
                 msg[18] = b'\n';
-                platform::write_stderr(&msg);
-                platform::exit(101);
+                crate::test_channel::terminal_stderr(&msg)
             }
         }
     }
