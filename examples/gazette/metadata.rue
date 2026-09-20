@@ -1,0 +1,384 @@
+// Metadata for one rendered Markdown body.
+//
+// This is deliberately a consumer of the emitted HTML. Markdown, shortcode,
+// and raw-HTML paths therefore contribute to the same plain text and heading
+// table, and TOC/search cannot drift by each growing a second parser. The
+// scanner understands HTML tags, comments, script/style raw text, and the
+// entities Gazette emits; code contents remain ordinary searchable text.
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct Heading {
+    id: StrBuf,
+    title: StrBuf,
+    level: u64,
+    permalink: StrBuf,
+    body: StrBuf,
+}
+
+pub const Headings = std.arraybuf.ArrayBuf(Heading);
+pub const AllHeadings = std.arraybuf.ArrayBuf(Headings);
+pub const Strings = std.arraybuf.ArrayBuf(StrBuf);
+
+struct RawHeading {
+    id_start: u64,
+    id_end: u64,
+    level: u64,
+    title_start: u64,
+    title_end: u64,
+    body_start: u64,
+    body_end: u64,
+}
+
+struct Span {
+    start: u64,
+    end: u64,
+}
+
+const RawHeadings = std.arraybuf.ArrayBuf(RawHeading);
+
+pub struct Document {
+    plain_text: StrBuf,
+    page_body: StrBuf,
+    headings: Headings,
+    ids: Strings,
+    refs: Strings,
+}
+
+fn lower(b: u8) -> u8 {
+    if b >= 65 && b <= 90 { b + 32 } else { b }
+}
+
+fn tag_end(borrow html: StrBuf, start: u64) -> u64 {
+    let mut i = start;
+    let mut quote: u8 = 0;
+    while i < html.len() {
+        let b = text.byte_of(borrow html, i);
+        if quote != 0 {
+            if b == quote { quote = 0; }
+        } else if b == 34 || b == 39 { quote = b; }
+        else if b == 62 { return i; }
+        i += 1;
+    }
+    html.len()
+}
+
+fn tag_name(borrow html: StrBuf, start: u64, end: u64) -> StrBuf {
+    let mut i = start + 1;
+    if i < end && text.byte_of(borrow html, i) == 47 { i += 1; }
+    while i < end && text.is_blank_byte(text.byte_of(borrow html, i)) { i += 1; }
+    let begin = i;
+    while i < end {
+        let b = text.byte_of(borrow html, i);
+        if !((b >= 65 && b <= 90) || (b >= 97 && b <= 122) || (b >= 48 && b <= 57)) { break; }
+        i += 1;
+    }
+    let raw = text.slice(borrow html, begin, i);
+    let mut out = StrBuf.new();
+    let mut j: u64 = 0;
+    while j < raw.len() { out.push(lower(text.byte_of(borrow raw, j))); j += 1; }
+    out
+}
+
+// Walk one opening tag's attributes. Attribute names are tokenized before
+// values are decoded, so `data-id="fake"` and `title="href='/fake'"` never
+// become IDs or links. The tag end was found with quote awareness, so a `>` in
+// a quoted attribute cannot terminate this pass early.
+fn scan_attributes(
+    borrow html: StrBuf,
+    start: u64,
+    end: u64,
+    inout ids: Strings,
+    inout refs: Strings,
+) -> Span {
+    let mut heading_id = Span { start: 0, end: 0 };
+    let mut i = start + 1;
+    while i < end && !text.is_blank_byte(text.byte_of(borrow html, i)) { i += 1; }
+    while i < end {
+        while i < end && (text.is_blank_byte(text.byte_of(borrow html, i)) || text.byte_of(borrow html, i) == 47) { i += 1; }
+        if i >= end { break; }
+        let name_start = i;
+        while i < end {
+            let b = text.byte_of(borrow html, i);
+            if !((b >= 65 && b <= 90) || (b >= 97 && b <= 122) || (b >= 48 && b <= 57) || b == 45 || b == 58 || b == 95) { break; }
+            i += 1;
+        }
+        if i == name_start { i += 1; continue; }
+        let raw_name = text.slice(borrow html, name_start, i);
+        let mut name = StrBuf.new();
+        let mut n: u64 = 0;
+        while n < raw_name.len() { name.push(lower(text.byte_of(borrow raw_name, n))); n += 1; }
+        while i < end && text.is_blank_byte(text.byte_of(borrow html, i)) { i += 1; }
+        if i >= end || text.byte_of(borrow html, i) != 61 { continue; }
+        i += 1;
+        while i < end && text.is_blank_byte(text.byte_of(borrow html, i)) { i += 1; }
+        if i >= end { break; }
+        let quote = text.byte_of(borrow html, i);
+        let value_start = if quote == 34 || quote == 39 { i + 1 } else { i };
+        let value_end = if quote == 34 || quote == 39 {
+            text.find_byte_in(borrow html, quote, value_start, end)
+        } else {
+            let mut e = value_start;
+            while e < end && !text.is_blank_byte(text.byte_of(borrow html, e)) { e += 1; }
+            e
+        };
+        let is_id = StrBuf.equals_borrowed(borrow name, borrow "id");
+        let is_ref = StrBuf.equals_borrowed(borrow name, borrow "href") || StrBuf.equals_borrowed(borrow name, borrow "src")
+            || StrBuf.equals_borrowed(borrow name, borrow "poster") || StrBuf.equals_borrowed(borrow name, borrow "action");
+        if is_id || is_ref {
+            let mut decoded = StrBuf.new();
+            append_visible(borrow html, value_start, value_end, inout decoded);
+            if is_id {
+                if decoded.len() > 0 && heading_id.end == heading_id.start {
+                    heading_id = Span { start: value_start, end: value_end };
+                }
+                ids.push(decoded);
+            } else { refs.push(decoded); }
+        }
+        i = if quote == 34 || quote == 39 { value_end + 1 } else { value_end };
+    }
+    heading_id
+}
+
+fn append_codepoint(inout out: StrBuf, value: u64) {
+    if value <= 127 { out.push(@intCast(value)); }
+    else if value <= 2047 {
+        out.push(@intCast(192 + value / 64)); out.push(@intCast(128 + value % 64));
+    } else if value <= 65535 {
+        out.push(@intCast(224 + value / 4096));
+        out.push(@intCast(128 + (value / 64) % 64)); out.push(@intCast(128 + value % 64));
+    } else if value <= 1114111 {
+        out.push(@intCast(240 + value / 262144)); out.push(@intCast(128 + (value / 4096) % 64));
+        out.push(@intCast(128 + (value / 64) % 64)); out.push(@intCast(128 + value % 64));
+    }
+}
+
+fn append_entity(borrow html: StrBuf, start: u64, end: u64, inout out: StrBuf) {
+    let entity = text.slice(borrow html, start, end);
+    if StrBuf.equals_borrowed(borrow entity, borrow "&amp;") { out.push(38); }
+    else if StrBuf.equals_borrowed(borrow entity, borrow "&lt;") { out.push(60); }
+    else if StrBuf.equals_borrowed(borrow entity, borrow "&gt;") { out.push(62); }
+    else if StrBuf.equals_borrowed(borrow entity, borrow "&quot;") { out.push(34); }
+    else if StrBuf.equals_borrowed(borrow entity, borrow "&#x2F;") || StrBuf.equals_borrowed(borrow entity, borrow "&#47;") { out.push(47); }
+    else if StrBuf.equals_borrowed(borrow entity, borrow "&#39;") { out.push(39); }
+    else if StrBuf.equals_borrowed(borrow entity, borrow "&nbsp;") || StrBuf.equals_borrowed(borrow entity, borrow "&thinsp;") { out.push(32); }
+    else if entity.len() > 3 && text.byte_of(borrow entity, 1) == 35 {
+        let mut value: u64 = 0;
+        let mut i: u64 = 2;
+        let mut hex = false;
+        if i < entity.len() && (text.byte_of(borrow entity, i) == 120 || text.byte_of(borrow entity, i) == 88) { hex = true; i += 1; }
+        while i + 1 < entity.len() {
+            let b = text.byte_of(borrow entity, i);
+            let digit = if b >= 48 && b <= 57 { b - 48 }
+                else if hex && b >= 65 && b <= 70 { b - 55 }
+                else if hex && b >= 97 && b <= 102 { b - 87 }
+                else { 255 };
+            if digit == 255 { break; }
+            value = if hex { value * 16 + @intCast(digit) } else { value * 10 + @intCast(digit) };
+            i += 1;
+        }
+        if value <= 1114111 { append_codepoint(inout out, value); } else { out.append_borrowed(borrow entity); }
+    } else { out.append_borrowed(borrow entity); }
+}
+
+fn append_visible(borrow html: StrBuf, start: u64, end: u64, inout out: StrBuf) {
+    let mut i = start;
+    while i < end {
+        let b = text.byte_of(borrow html, i);
+        if b == 38 {
+            let semi = text.find_byte(borrow html, 59, i + 1);
+            if semi < end && semi - i <= 12 { append_entity(borrow html, i, semi + 1, inout out); i = semi + 1; continue; }
+        }
+        out.push(b); i += 1;
+    }
+}
+
+fn is_block(borrow name: StrBuf) -> bool {
+    StrBuf.equals_borrowed(borrow name, borrow "p") || StrBuf.equals_borrowed(borrow name, borrow "div")
+        || StrBuf.equals_borrowed(borrow name, borrow "li") || StrBuf.equals_borrowed(borrow name, borrow "pre")
+        || StrBuf.equals_borrowed(borrow name, borrow "blockquote") || StrBuf.equals_borrowed(borrow name, borrow "br")
+        || StrBuf.equals_borrowed(borrow name, borrow "hr") || StrBuf.equals_borrowed(borrow name, borrow "th")
+        || StrBuf.equals_borrowed(borrow name, borrow "td") || heading_level(borrow name) > 0
+}
+
+fn heading_level(borrow name: StrBuf) -> u64 {
+    if name.len() != 2 || text.byte_of(borrow name, 0) != 104 { return 0; }
+    let b = text.byte_of(borrow name, 1);
+    if b < 49 || b > 54 { 0 } else { @intCast(b - 48) }
+}
+
+// Raw-text elements are not HTML-tokenized until their matching close tag.
+// Searching for a real `</script>`/`</style>` boundary avoids treating `<` in
+// JavaScript comparisons or CSS values as a tag that consumes the close tag.
+fn raw_close(borrow html: StrBuf, from: u64, borrow element: StrBuf) -> u64 {
+    let mut i = from;
+    while i < html.len() {
+        let at = text.find_byte(borrow html, 60, i);
+        if at >= html.len() { return html.len(); }
+        if at + 2 + element.len() <= html.len()
+            && text.byte_of(borrow html, at + 1) == 47 {
+            let mut matches = true;
+            let mut j: u64 = 0;
+            while j < element.len() {
+                if lower(text.byte_of(borrow html, at + 2 + j)) != text.byte_of(borrow element, j) {
+                    matches = false; break;
+                }
+                j += 1;
+            }
+            let after = at + 2 + element.len();
+            if matches && after < html.len() {
+                let boundary = text.byte_of(borrow html, after);
+                if text.is_blank_byte(boundary) || boundary == 62 || boundary == 47 {
+                    return at;
+                }
+            }
+        }
+        i = at + 1;
+    }
+    html.len()
+}
+
+// Keep metadata compact and stable across Markdown, shortcode, and raw HTML
+// emitters. Block tags have already inserted separators while scanning, so
+// this pass only folds whitespace and trims the outside of each field.
+fn normalize(borrow source: StrBuf) -> StrBuf {
+    let mut out = StrBuf.new();
+    let mut pending = false;
+    let mut i: u64 = 0;
+    while i < source.len() {
+        let b = text.byte_of(borrow source, i);
+        if text.is_blank_byte(b) {
+            if out.len() > 0 { pending = true; }
+        } else {
+            if pending { out.push(32); pending = false; }
+            out.push(b);
+        }
+        i += 1;
+    }
+    out
+}
+
+fn append_fragment(borrow id: StrBuf, inout url: StrBuf) {
+    let mut i: u64 = 0;
+    while i < id.len() {
+        let b = text.byte_of(borrow id, i);
+        if text.is_alnum(b) || b == 45 || b == 46 || b == 95 || b == 126 { url.push(b); }
+        else {
+            url.push(37);
+            url.push(text.byte_of(borrow "0123456789ABCDEF", @intCast(b / 16)));
+            url.push(text.byte_of(borrow "0123456789ABCDEF", @intCast(b % 16)));
+        }
+        i += 1;
+    }
+}
+
+pub fn scan(borrow html: StrBuf, borrow permalink: StrBuf) -> Document {
+    let mut out = StrBuf.new();
+    let mut raw_headings = RawHeadings.new();
+    let mut ids = Strings.new();
+    let mut refs = Strings.new();
+    let mut active = std.arraybuf.ArrayBuf(u64).new();
+    let mut in_heading: u64 = 0;
+    let mut skip: StrBuf = StrBuf.new();
+    let mut i: u64 = 0;
+    while i < html.len() {
+        if skip.len() > 0 {
+            let at = raw_close(borrow html, i, borrow skip);
+            if at >= html.len() { break; }
+            let end = tag_end(borrow html, at);
+            skip = StrBuf.new();
+            i = if end < html.len() { end + 1 } else { html.len() }; continue;
+        }
+        if html.matches_at(i, borrow "<!--") {
+            let close = text.find_from(borrow html, borrow "-->", i + 4);
+            i = if close < html.len() { close + 3 } else { html.len() }; continue;
+        }
+        if text.byte_of(borrow html, i) == 60 {
+            let end = tag_end(borrow html, i);
+            let name = tag_name(borrow html, i, end);
+            let closing = i + 1 < end && text.byte_of(borrow html, i + 1) == 47;
+            let id_span = if !closing { scan_attributes(borrow html, i, end, inout ids, inout refs) } else { Span { start: 0, end: 0 } };
+            if !closing && (StrBuf.equals_borrowed(borrow name, borrow "script") || StrBuf.equals_borrowed(borrow name, borrow "style")) { skip = name; i = if end < html.len() { end + 1 } else { html.len() }; continue; }
+            if !closing && is_block(borrow name) { out.push(10); }
+            let level = heading_level(borrow name);
+            if !closing && level > 0 {
+                if id_span.end > id_span.start {
+                    let mut k: u64 = 0;
+                    while k < active.len() {
+                        let old = raw_headings.get_or(active.get_or(k, 0), RawHeading { id_start: 0, id_end: 0, level: 0, title_start: 0, title_end: 0, body_start: 0, body_end: 0 });
+                        let mut closed = old;
+                        closed.body_end = out.len();
+                        raw_headings.set(active.get_or(k, 0), closed);
+                        k += 1;
+                    }
+                    active = std.arraybuf.ArrayBuf(u64).new();
+                }
+                let id_start = id_span.start;
+                let index = raw_headings.len();
+                raw_headings.push(RawHeading {
+                    id_start: id_start, id_end: id_span.end, level: level,
+                    title_start: out.len(), title_end: out.len(), body_start: out.len(), body_end: 0,
+                });
+                if id_span.end > id_span.start { active.push(index); in_heading = index + 1; }
+            } else if closing && level > 0 {
+                if in_heading > 0 {
+                    let index = in_heading - 1;
+                    let mut closed = raw_headings.get_or(index, RawHeading { id_start: 0, id_end: 0, level: 0, title_start: 0, title_end: 0, body_start: 0, body_end: 0 });
+                    closed.title_end = out.len();
+                    closed.body_start = out.len();
+                    raw_headings.set(index, closed);
+                }
+                in_heading = 0;
+            }
+            let void_block = StrBuf.equals_borrowed(borrow name, borrow "br") || StrBuf.equals_borrowed(borrow name, borrow "hr");
+            if is_block(borrow name) && (closing || void_block) {
+                if closing && (StrBuf.equals_borrowed(borrow name, borrow "th") || StrBuf.equals_borrowed(borrow name, borrow "td")) { out.push(32); }
+                else { out.push(10); }
+            }
+            i = if end < html.len() { end + 1 } else { html.len() }; continue;
+        }
+        let next = text.find_byte(borrow html, 60, i);
+        let end = if next < html.len() { next } else { html.len() };
+        let mut visible = StrBuf.new(); append_visible(borrow html, i, end, inout visible);
+        out.append_borrowed(borrow visible);
+        i = end;
+    }
+    let mut h: u64 = 0;
+    while h < raw_headings.len() {
+        let raw = raw_headings.get_or(h, RawHeading { id_start: 0, id_end: 0, level: 0, title_start: 0, title_end: 0, body_start: 0, body_end: 0 });
+        if raw.body_end == 0 { let mut fixed = raw; fixed.body_end = out.len(); raw_headings.set(h, fixed); }
+        h += 1;
+    }
+    let mut headings = Headings.new();
+    h = 0;
+    while h < raw_headings.len() {
+        let raw = raw_headings.get_or(h, RawHeading { id_start: 0, id_end: 0, level: 0, title_start: 0, title_end: 0, body_start: 0, body_end: 0 });
+        let mut id = StrBuf.new();
+        if raw.id_end > raw.id_start { append_visible(borrow html, raw.id_start, raw.id_end, inout id); }
+        if id.len() == 0 { h += 1; continue; }
+        let mut link = permalink.clone(); link.push(35); append_fragment(borrow id, inout link);
+        headings.push(Heading {
+            id: id,
+            title: normalize(borrow text.slice(borrow out, raw.title_start, raw.title_end)),
+            level: raw.level,
+            permalink: link,
+            body: normalize(borrow text.slice(borrow out, raw.body_start, raw.body_end)),
+        });
+        h += 1;
+    }
+    let mut first_anchored = raw_headings.len();
+    let mut candidate: u64 = 0;
+    while candidate < raw_headings.len() {
+        let raw = raw_headings.get_or(candidate, RawHeading { id_start: 0, id_end: 0, level: 0, title_start: 0, title_end: 0, body_start: 0, body_end: 0 });
+        if raw.id_end > raw.id_start { first_anchored = candidate; break; }
+        candidate += 1;
+    }
+    let page_body = if first_anchored == raw_headings.len() {
+        normalize(borrow out)
+    } else {
+        let first = raw_headings.get_or(first_anchored, RawHeading { id_start: 0, id_end: 0, level: 0, title_start: 0, title_end: 0, body_start: 0, body_end: 0 });
+        normalize(borrow text.slice(borrow out, 0, first.title_start))
+    };
+    Document { plain_text: normalize(borrow out), page_body: page_body, headings: headings, ids: ids, refs: refs }
+}

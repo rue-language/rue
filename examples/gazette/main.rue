@@ -44,6 +44,7 @@ const std = @import("std");
 const ast = @import("tmpl_ast.rue");
 const frontmatter = @import("frontmatter.rue");
 const markdown = @import("markdown.rue");
+const metadata = @import("metadata.rue");
 const site = @import("site.rue");
 const text = @import("text.rue");
 const tmpl_eval = @import("tmpl_eval.rue");
@@ -53,6 +54,7 @@ const tests_text = @import("text_tests.rue");
 const tests_frontmatter = @import("frontmatter_tests.rue");
 const tests_markdown = @import("markdown_tests.rue");
 const tests_highlight = @import("highlight_tests.rue");
+const tests_metadata = @import("metadata_tests.rue");
 const StrBuf = std.strbuf.StrBuf;
 const OptStr = std.option.Option(StrBuf);
 
@@ -111,10 +113,12 @@ fn render_mode(inout eng: ast.Engine, borrow path: StrBuf, template_out: u64) ->
         return false;
     }
     let source = input.data;
+    eng.set_source(borrow path);
     let front = frontmatter.parse(inout eng.arena, borrow source);
     let expanded = markdown.expand_shortcodes(
         inout eng, borrow source, front.body_start, front.body_line,
     );
+    eng.set_source(borrow path);
     let doc = markdown.render(inout eng, borrow expanded, front.body_line);
 
     let mut out = StrBuf.new();
@@ -321,6 +325,17 @@ fn self_test(inout report: StrBuf) -> u64 {
     check(inout report, inout failures, "raw inline HTML still passes through",
         borrow render_md(inout eng, "a <kbd>Ctrl</kbd> b\n"),
         "<p>a <kbd>Ctrl</kbd> b</p>\n");
+
+    let scanned = metadata.scan(borrow "<h2 id=\"one\">One <em>Thing</em></h2><p>body &amp; text</p><script>fake()</script>", borrow "https://example.test/page/");
+    check(inout report, inout failures, "rendered metadata extracts heading and plain text",
+        borrow text.decimal(scanned.headings.len()), "1");
+    check(inout report, inout failures, "metadata decodes entities and skips script text",
+        borrow scanned.plain_text, "One Thing body & text");
+    let scanned_edges = metadata.scan(borrow "<H3 data-id=\"wrong\" ID=\"right\">Left</H3><BR><TABLE><TR><TD>Cell</TD><TD>Two</TD></TR></TABLE><SCRIPT>ignored</SCRIPT>after", borrow "https://example.test/page/");
+    check(inout report, inout failures, "metadata uses exact mixed-case id attributes",
+        borrow text.decimal(scanned_edges.headings.len()), "1");
+    check(inout report, inout failures, "metadata separates void and table blocks",
+        borrow scanned_edges.plain_text, "Left Cell Two after");
 
     // GFM fixes every body row to the header's width.
     check(inout report, inout failures, "table rows are padded and truncated to the header width",
@@ -562,6 +577,7 @@ fn main() -> i32 {
     let mut output = StrBuf.new();
     let mut have_output = false;
     let mut list_output = false;
+    let mut check_links = false;
     let mut i: u64 = 1;
     while i < argc {
         match std.env.arg(i) {
@@ -572,6 +588,8 @@ fn main() -> i32 {
                     mode_build = true;
                 } else if str_eq(borrow a, "--list") {
                     list_output = true;
+                } else if str_eq(borrow a, "--check") {
+                    check_links = true;
                 } else if str_eq(borrow a, "-o") {
                     i += 1;
                     match std.env.arg(i) {
@@ -616,6 +634,7 @@ fn main() -> i32 {
                                 print(message);
                                 return 2;
                             }
+                            eng.set_source(borrow path);
                             let _ = tmpl_parse.parse_template(inout eng, name, borrow loaded.data);
                         },
                         OptStr.None => { return 2; },
@@ -632,13 +651,13 @@ fn main() -> i32 {
 
     if mode_build {
         if !have_target || !have_output {
-            print("usage: gazette build SITE_DIR -o OUTPUT_DIR [--base-url URL] [--list]\n");
+            print("usage: gazette build SITE_DIR -o OUTPUT_DIR [--base-url URL] [--list] [--check]\n");
             return 2;
         }
         let mut report = StrBuf.new();
         // A site build binds its own base URL from `config.toml`, so the
         // placeholder bound above is replaced rather than consulted.
-        let ok = site.build(inout eng, borrow target, borrow output, list_output, inout report);
+        let ok = site.build(inout eng, borrow target, borrow output, list_output, check_links, inout report);
         let mut diagnostics = StrBuf.new();
         eng.arena.append_diagnostics(inout diagnostics);
         if diagnostics.len() > 0 { print(diagnostics); }
@@ -647,7 +666,7 @@ fn main() -> i32 {
     }
 
     if !mode_render || !have_target {
-        print("usage: gazette [build SITE_DIR -o OUTPUT_DIR [--base-url URL] [--list]] [render [-t NAME=PATH]... [-u URL] [--template-out NAME] FILE.md]\n");
+        print("usage: gazette [build SITE_DIR -o OUTPUT_DIR [--base-url URL] [--list] [--check]] [render [-t NAME=PATH]... [-u URL] [--template-out NAME] FILE.md]\n");
         return 2;
     }
 

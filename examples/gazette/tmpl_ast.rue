@@ -107,6 +107,9 @@ pub struct Expr { tag: u64, a: u64, b: u64, c: u64, next: u64 }
 // which is how block definitions are collected without a second parse.
 pub struct Template {
     name: u64,
+    // Lookup names are relative to the template directory. Diagnostics retain
+    // the actual input path supplied by the host when this file was parsed.
+    source: u64,
     body: u64,
     base: u64,
     node_start: u64,
@@ -121,7 +124,7 @@ pub struct BlockDef { owner: u64, name: u64, body: u64 }
 // and a call's argument list are the same shape and evaluate through the same
 // code. `owner` scopes the macro to its defining template, which is what makes
 // `self::name` resolution unambiguous when two templates define the same name.
-pub struct MacroDef { owner: u64, name: u64, params: u64, body: u64 }
+pub struct MacroDef { owner: u64, name: u64, params: u64, body: u64, line: u64 }
 
 pub const Chunks = std.arraybuf.ArrayBuf(Chunk);
 pub const Nodes = std.arraybuf.ArrayBuf(Node);
@@ -134,11 +137,11 @@ pub fn empty_chunk() -> Chunk { Chunk { kind: 0, kw: 0, a: 0, b: 0, flags: 0, li
 pub fn empty_node() -> Node { Node { tag: 0, a: NONE(), b: NONE(), c: NONE(), next: NONE(), line: 0 } }
 pub fn empty_expr() -> Expr { Expr { tag: 0, a: NONE(), b: NONE(), c: NONE(), next: NONE() } }
 pub fn empty_template() -> Template {
-    Template { name: NONE(), body: NONE(), base: NONE(), node_start: 0, node_end: 0 }
+    Template { name: NONE(), source: NONE(), body: NONE(), base: NONE(), node_start: 0, node_end: 0 }
 }
 pub fn empty_blockdef() -> BlockDef { BlockDef { owner: NONE(), name: NONE(), body: NONE() } }
 pub fn empty_macrodef() -> MacroDef {
-    MacroDef { owner: NONE(), name: NONE(), params: NONE(), body: NONE() }
+    MacroDef { owner: NONE(), name: NONE(), params: NONE(), body: NONE(), line: 0 }
 }
 
 // Everything the two template modules touch. Keeping one owner means the
@@ -166,6 +169,8 @@ pub struct Engine {
     // Render depth guard: template inheritance and `for` bodies recurse, and a
     // cyclic `{% extends %}` would otherwise recurse without bound.
     depth: u64,
+    // Source path used by diagnostics raised while evaluating a template.
+    source: u64,
 
     fn new() -> Self {
         Self {
@@ -180,6 +185,7 @@ pub struct Engine {
             bindings: value.Entries.new(),
             scope_marks: value.U64s.new(),
             depth: 0,
+            source: NONE(),
         }
     }
 
@@ -320,9 +326,23 @@ pub struct Engine {
     // two conflicting paths into the same object.
     fn key(inout self, name: StrBuf) -> u64 { self.arena.strings.intern(borrow name) }
 
+    fn set_source(inout self, borrow source: StrBuf) {
+        let id = self.arena.strings.intern(borrow source);
+        self.source = id;
+        self.arena.set_source(id);
+    }
+
+    fn current_source(borrow self) -> u64 { self.source }
+
+    fn restore_source(inout self, source: u64) {
+        self.source = source;
+        self.arena.set_source(source);
+    }
+
     fn empty(inout self) -> u64 { self.arena.empty_string }
 
     fn error(inout self, code: u64, line: u64, detail: StrBuf, subject: u64) {
+        self.arena.set_source(self.source);
         self.arena.error(code, line, detail, subject);
     }
 }

@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 
 class Page(HTMLParser):
@@ -24,6 +24,9 @@ class Page(HTMLParser):
         self.classes = set()
         self.ids = set()
         self.refresh = None
+        self.metadata = {}
+        self.canonical = None
+        self.links = set()
         self.feed(path.read_text(encoding="utf-8"))
 
     def handle_starttag(self, tag, attrs):
@@ -33,6 +36,12 @@ class Page(HTMLParser):
             self.ids.add(fields["id"])
         if tag == "meta" and fields.get("http-equiv", "").lower() == "refresh":
             self.refresh = fields.get("content", "")
+        if tag == "meta":
+            self.metadata[fields.get("name", fields.get("property", ""))] = fields.get("content", "")
+        if tag == "link" and fields.get("rel") == "canonical":
+            self.canonical = fields.get("href")
+        if tag == "a":
+            self.links.add(fields.get("href", ""))
 
     def handle_data(self, data):
         self.text.append(data)
@@ -78,15 +87,42 @@ def check(public: Path, source: Path) -> list[str]:
         require(str(performance["index"]) in home_text, "homepage lost fractional performance data")
 
     search = json.loads((public / "search_index.en.json").read_text())
+    require(search.get("format_version") == 2, "search is not Gazette's plain-text format v2")
     docs = search.get("documents", [])
     require(bool(docs), "search has no documents")
     refs = [doc["ref"] for doc in docs]
     require(len(refs) == len(set(refs)), "search contains duplicate document URLs")
+    pages = {}
+    headings = 0
     for doc in docs:
-        require(all(key in doc for key in ("title", "description", "path", "body")),
+        require(all(key in doc for key in ("page_ref", "title", "heading", "description", "path", "body")),
                 "incomplete search document: " + doc["ref"])
-        route = urlsplit(doc["ref"]).path.strip("/")
-        require((public / route / "index.html").is_file(), "search points to a missing page: " + route)
+        ref = urlsplit(doc["ref"])
+        route = unquote(ref.path).strip("/")
+        target = public / route / "index.html"
+        require(target.is_file(), "search points to a missing page: " + route)
+        require(doc["page_ref"] == ref._replace(fragment="").geturl(), "search parent URL mismatch: " + doc["ref"])
+        if not target.is_file():
+            continue
+        if route not in pages:
+            pages[route] = Page(target)
+        page = pages[route]
+        require(page.canonical == doc["page_ref"], "incorrect canonical URL: " + route)
+        require(page.metadata.get("og:url") == doc["page_ref"], "incorrect social URL: " + route)
+        for key in ("description", "og:title", "og:description", "og:image", "og:image:alt",
+                    "twitter:card", "twitter:title", "twitter:description", "twitter:image"):
+            require(bool(page.metadata.get(key)), "missing page metadata " + key + ": " + route)
+        image = urlsplit(page.metadata.get("og:image", ""))
+        if image.netloc == ref.netloc:
+            require((public / unquote(image.path).lstrip("/")).is_file(), "missing social image: " + route)
+        if ref.fragment:
+            headings += 1
+            require(bool(doc["heading"]), "section search document has no heading: " + doc["ref"])
+            require(unquote(ref.fragment) in page.ids, "search points to a missing heading: " + doc["ref"])
+            if route.startswith(("spec/", "tutorial/", "std/", "blog/")):
+                require("page-toc" in page.classes and doc["ref"] in page.links,
+                        "contents navigation omitted heading: " + doc["ref"])
+    require(headings > 0, "search omitted heading documents")
     routes = {urlsplit(ref).path for ref in refs}
     require("/" in routes and "/blog/" in routes, "search omitted section documents")
     for path in (source / "content/errors").rglob("index.md"):
@@ -125,9 +161,16 @@ def check(public: Path, source: Path) -> list[str]:
     first_page = Page(public / "blog/page/1/index.html")
     require(bool(first_page.refresh) and "/blog/" in first_page.refresh,
             "blog/page/1 is not a redirect to the canonical listing")
+    for path in (public / "blog/page").glob("*/index.html"):
+        if path.parent.name == "1":
+            continue
+        page = Page(path)
+        expected_url = (homepage.canonical or "").rstrip("/") + "/blog/page/" + path.parent.name + "/"
+        require(page.canonical == expected_url and page.metadata.get("og:url") == expected_url,
+                "pagination lost its own canonical/social URL: " + str(path.relative_to(public)))
     sitemap = ET.parse(public / "sitemap.xml")
     locations = {node.text for node in sitemap.findall(".//{http://www.sitemaps.org/schemas/sitemap/0.9}loc")}
-    require(set(refs).issubset(locations), "sitemap omits source page URLs")
+    require({doc["page_ref"] for doc in docs}.issubset(locations), "sitemap omits source page URLs")
     return failures
 
 
@@ -143,7 +186,7 @@ def main() -> int:
     if failures:
         print("Website verification failed:\n" + "\n".join("  " + item for item in failures), file=sys.stderr)
         return 1
-    print("Website verified: routes, data, excerpts, highlighting, search documents, pagination, feeds and sitemap")
+    print("Website verified: routes, data, excerpts, highlighting, section search, contents navigation, page metadata, pagination, feeds and sitemap")
     return 0
 
 

@@ -1,0 +1,51 @@
+// Focused tests for the one rendered-HTML metadata scanner shared by TOCs,
+// search, and native output checking.
+const std = @import("std");
+const metadata = @import("metadata.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+test "metadata decodes entities and keeps visible raw text" {
+    let doc = metadata.scan(
+        borrow "<SCRIPT>if (a < b) hidden();</SCRIPT>Before<p>&#x3bb; &#128512; &nbsp; foo<em>bar</em><br>Visible</p>",
+        borrow "https://example.test/doc/",
+    );
+    @assert_eq(doc.plain_text, "Before λ 😀 foobar Visible");
+}
+
+test "metadata tokenizes exact attributes and decodes references" {
+    let doc = metadata.scan(
+        borrow "<div\n data-id=\"fake\" title=\"id='invented' href='/fake'\" id=\"real&#x2d;id\" href=\"/page&#x2F;\" SRC='asset.png' poster=poster.jpg action=/submit></div>",
+        borrow "/doc/",
+    );
+    @assert_eq(doc.ids.len(), 1);
+    @assert_eq(doc.ids.get_ref(0), "real-id");
+    @assert_eq(doc.refs.len(), 4);
+    @assert_eq(doc.refs.get_ref(0), "/page/");
+    @assert_eq(doc.refs.get_ref(1), "asset.png");
+    @assert_eq(doc.refs.get_ref(2), "poster.jpg");
+    @assert_eq(doc.refs.get_ref(3), "/submit");
+}
+
+test "metadata partitions anchored heading bodies without nesting duplicates" {
+    let doc = metadata.scan(
+        borrow "<p>Intro</p><h2 id=\"one%\">One</h2><p>First</p><h3 id=\"two\">Two</h3><p>Second</p>",
+        borrow "/doc/",
+    );
+    @assert_eq(doc.page_body, "Intro");
+    @assert_eq(doc.headings.len(), 2);
+    @assert_eq(doc.headings.get_ref(0).title, "One");
+    @assert_eq(doc.headings.get_ref(0).body, "First");
+    @assert_eq(doc.headings.get_ref(1).title, "Two");
+    @assert_eq(doc.headings.get_ref(1).body, "Second");
+    @assert_eq(doc.headings.get_ref(0).permalink, "/doc/#one%25");
+}
+
+test "unanchored headings stay in preceding text and out of TOC links" {
+    let doc = metadata.scan(
+        borrow "<h2 id=\"one\">One</h2><p>Before</p><h2>Unlinked</h2><p>Still first</p><h2 id=\"two\">Two</h2><p>Last</p>",
+        borrow "/doc/",
+    );
+    @assert_eq(doc.headings.len(), 2);
+    @assert_eq(doc.headings.get_ref(0).body, "Before Unlinked Still first");
+    @assert_eq(doc.headings.get_ref(1).body, "Last");
+}

@@ -6,6 +6,7 @@
 <article class="py-12">
     <div class="max-w-3xl mx-auto px-6 prose">
         <h1>{{ page.title }}</h1>
+        {{ self::page_toc(headings=page.toc) }}
         {{ page.content | safe }}
     </div>
 </article>

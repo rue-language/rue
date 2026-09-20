@@ -1,0 +1,236 @@
+// Validate references against the exact emitted file inventory. Filesystem
+// lookups would hide case errors on a case-insensitive developer filesystem.
+// HTML parsing belongs to metadata.rue; this module only resolves URLs and
+// compares their destinations with that shared scan's IDs.
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+pub const Strings = std.arraybuf.ArrayBuf(StrBuf);
+
+pub struct Document {
+    path: StrBuf,
+    source: StrBuf,
+    ids: Strings,
+    refs: Strings,
+}
+pub const Documents = std.arraybuf.ArrayBuf(Document);
+
+fn equal(borrow a: StrBuf, borrow b: StrBuf) -> bool {
+    StrBuf.equals_borrowed(borrow a, borrow b)
+}
+
+fn find(borrow items: Strings, borrow item: StrBuf) -> u64 {
+    let mut i: u64 = 0;
+    while i < items.len() {
+        if equal(borrow items.get_ref(i), borrow item) { return i; }
+        i += 1;
+    }
+    items.len()
+}
+
+fn hex(b: u8) -> u8 {
+    if b >= 48 && b <= 57 { b - 48 }
+    else if b >= 65 && b <= 70 { b - 55 }
+    else if b >= 97 && b <= 102 { b - 87 }
+    else { 255 }
+}
+
+fn decode(borrow value: StrBuf) -> StrBuf {
+    let mut out = StrBuf.new();
+    let mut i: u64 = 0;
+    while i < value.len() {
+        let b = text.byte_of(borrow value, i);
+        if b == 37 && i + 2 < value.len() {
+            let a = hex(text.byte_of(borrow value, i + 1));
+            let c = hex(text.byte_of(borrow value, i + 2));
+            if a != 255 && c != 255 { out.push(a * 16 + c); i += 3; continue; }
+        }
+        out.push(b); i += 1;
+    }
+    out
+}
+
+fn lower(borrow value: StrBuf) -> StrBuf {
+    let mut out = StrBuf.new();
+    let mut i: u64 = 0;
+    while i < value.len() { out.push(text.lower_byte(text.byte_of(borrow value, i))); i += 1; }
+    out
+}
+
+struct Absolute { origin: StrBuf, path: StrBuf }
+
+fn absolute(borrow value: StrBuf) -> Absolute {
+    let scheme = text.find_from(borrow value, borrow "://", 0);
+    let authority = if scheme < value.len() { scheme + 3 } else { 2 };
+    let mut end = authority;
+    while end < value.len() {
+        let b = text.byte_of(borrow value, end);
+        if b == 47 || b == 63 || b == 35 { break; }
+        end += 1;
+    }
+    let mut path = text.slice(borrow value, end, value.len());
+    if path.len() == 0 || text.byte_of(borrow path, 0) != 47 {
+        let mut rooted = StrBuf.new(); rooted.push(47); rooted.append_borrowed(borrow path); path = rooted;
+    }
+    let mut origin = lower(borrow text.slice(borrow value, 0, end));
+    // Browsers omit a scheme's default port from its origin identity.
+    if origin.starts_with(borrow "https://") && origin.ends_with(borrow ":443") {
+        origin = text.slice(borrow origin, 0, origin.len() - 4);
+    } else if origin.starts_with(borrow "http://") && origin.ends_with(borrow ":80") {
+        origin = text.slice(borrow origin, 0, origin.len() - 3);
+    }
+    Absolute { origin: origin, path: path }
+}
+
+// Collapse URL dot segments after percent decoding. At a URL root, `..` stays
+// at the root, just as browser navigation does; it never escapes the output.
+fn normalize(borrow path: StrBuf) -> StrBuf {
+    let decoded = decode(borrow path);
+    let mut parts = Strings.new();
+    let mut i: u64 = 0;
+    while i < decoded.len() {
+        let end = text.find_byte(borrow decoded, 47, i);
+        let part = text.slice(borrow decoded, i, end);
+        if equal(borrow part, borrow "..") {
+            if parts.len() > 0 { let _ = parts.pop(); }
+        } else if part.len() > 0 && !equal(borrow part, borrow ".") { parts.push(part); }
+        i = end + 1;
+    }
+    let mut out = StrBuf.new();
+    i = 0;
+    while i < parts.len() {
+        if i > 0 { out.push(47); }
+        out.append_borrowed(borrow parts.get_ref(i)); i += 1;
+    }
+    out
+}
+
+struct Destination { local: bool, path: StrBuf, fragment: StrBuf, within_mount: bool, directory: bool }
+
+fn resolve(borrow reference: StrBuf, borrow current: StrBuf, borrow base: Absolute) -> Destination {
+    let mut url = text.trim(borrow reference);
+    let mut external = false;
+    if url.starts_with(borrow "//") {
+        let scheme_end = text.find_byte(borrow base.origin, 58, 0);
+        let mut full = text.slice(borrow base.origin, 0, scheme_end + 1);
+        full.append_borrowed(borrow url); url = full;
+    }
+    let colon = text.find_byte(borrow url, 58, 0);
+    let slash = text.find_byte(borrow url, 47, 0);
+    let query = text.find_byte(borrow url, 63, 0);
+    let hash = text.find_byte(borrow url, 35, 0);
+    if colon < url.len() && colon < slash && colon < query && colon < hash {
+        let parsed = absolute(borrow url);
+        external = !equal(borrow parsed.origin, borrow base.origin);
+        url = parsed.path;
+    }
+    if external { return Destination { local: false, path: StrBuf.new(), fragment: StrBuf.new(), within_mount: true, directory: false }; }
+    let hash_at = text.find_byte(borrow url, 35, 0);
+    let fragment = if hash_at < url.len() { decode(borrow text.slice(borrow url, hash_at + 1, url.len())) } else { StrBuf.new() };
+    let query_at = text.find_byte_in(borrow url, 63, 0, hash_at);
+    let end = if query_at < hash_at { query_at } else { hash_at };
+    let mut path = text.slice(borrow url, 0, end);
+    let mount = normalize(borrow base.path);
+    if path.len() == 0 { return Destination { local: true, path: current.clone(), fragment: fragment, within_mount: true, directory: false }; }
+    let decoded_path = decode(borrow path);
+    let directory = decoded_path.ends_with(borrow "/") || decoded_path.ends_with(borrow "/.")
+        || decoded_path.ends_with(borrow "/..") || equal(borrow decoded_path, borrow ".") || equal(borrow decoded_path, borrow "..");
+    if text.byte_of(borrow path, 0) != 47 {
+        let mut prefix = mount.clone();
+        if prefix.len() > 0 { prefix.push(47); }
+        let mut parent = current.len();
+        while parent > 0 && text.byte_of(borrow current, parent - 1) != 47 { parent -= 1; }
+        prefix.append_borrowed(borrow text.slice(borrow current, 0, parent));
+        prefix.append_borrowed(borrow path); path = prefix;
+    }
+    let clean = normalize(borrow path);
+    let mut mount_prefix = mount.clone(); mount_prefix.push(47);
+    let within = mount.len() == 0 || equal(borrow clean, borrow mount) || clean.starts_with(borrow mount_prefix);
+    let relative = if mount.len() == 0 { clean } else if within { text.slice(borrow clean, mount.len() + 1, clean.len()) } else { clean };
+    Destination { local: true, path: relative, fragment: fragment, within_mount: within, directory: directory }
+}
+
+fn diagnostic(borrow doc: Document, borrow kind: StrBuf, borrow target: StrBuf, inout report: StrBuf) {
+    report.append_borrowed(borrow doc.source);
+    report.push_str(" (output "); report.append_borrowed(borrow doc.path);
+    report.push_str("): "); report.append_borrowed(borrow kind);
+    report.push_str(": "); report.append_borrowed(borrow target); report.push(10);
+}
+
+fn validate_document(borrow doc: Document, borrow files: Strings, borrow docs: Documents, borrow base: Absolute, inout report: StrBuf) -> bool {
+    let mut ok = true;
+    let mut i: u64 = 0;
+    while i < doc.ids.len() {
+        if find(borrow doc.ids, borrow doc.ids.get_ref(i)) != i {
+            diagnostic(borrow doc, borrow "duplicate id", borrow doc.ids.get_ref(i), inout report); ok = false;
+        }
+        i += 1;
+    }
+    i = 0;
+    while i < doc.refs.len() {
+        let target = resolve(borrow doc.refs.get_ref(i), borrow doc.path, borrow base);
+        if target.local {
+            let mut path = target.path;
+            let mut found = !target.directory && find(borrow files, borrow path) < files.len();
+            if !found {
+                if path.len() > 0 { path.push(47); }
+                path.push_str("index.html");
+                found = find(borrow files, borrow path) < files.len();
+            }
+            if !found || !target.within_mount {
+                diagnostic(borrow doc, borrow "missing local target", borrow doc.refs.get_ref(i), inout report); ok = false;
+            } else if target.fragment.len() > 0 {
+                let mut d: u64 = 0;
+                while d < docs.len() {
+                    if equal(borrow docs.get_ref(d).path, borrow path) {
+                        if find(borrow docs.get_ref(d).ids, borrow target.fragment) == docs.get_ref(d).ids.len() {
+                            diagnostic(borrow doc, borrow "missing fragment", borrow doc.refs.get_ref(i), inout report); ok = false;
+                        }
+                        break;
+                    }
+                    d += 1;
+                }
+            }
+        }
+        i += 1;
+    }
+    ok
+}
+
+pub fn validate(borrow files: Strings, borrow docs: Documents, borrow base_url: StrBuf, inout report: StrBuf) -> bool {
+    let base = absolute(borrow base_url);
+    let mut ok = true;
+    let mut i: u64 = 0;
+    while i < docs.len() {
+        if !validate_document(borrow docs.get_ref(i), borrow files, borrow docs, borrow base, inout report) { ok = false; }
+        i += 1;
+    }
+    ok
+}
+
+test "local references resolve under a base URL mount" {
+    let base = absolute(borrow "https://example.test/docs/");
+    let current: StrBuf = "guide/topic/index.html";
+    let relative = resolve(borrow "../../target/?mode=1#caf%C3%A9", borrow current, borrow base);
+    @assert(relative.local && relative.within_mount);
+    @assert_eq(relative.path, "target");
+    @assert_eq(relative.fragment, "café");
+    let query = resolve(borrow "?view=print#local", borrow current, borrow base);
+    @assert_eq(query.path, "guide/topic/index.html");
+    @assert_eq(query.fragment, "local");
+    let rooted = resolve(borrow "/docs/assets/a%20b.svg", borrow current, borrow base);
+    @assert_eq(rooted.path, "assets/a b.svg");
+    let outside = resolve(borrow "/elsewhere/", borrow current, borrow base);
+    @assert(!outside.within_mount);
+}
+
+test "origin matching does not mistake an external prefix for a local URL" {
+    let base = absolute(borrow "https://example.test");
+    let local = resolve(borrow "//example.test/target/#anchor", borrow "index.html", borrow base);
+    @assert(local.local);
+    @assert_eq(local.path, "target");
+    let foreign = resolve(borrow "https://example.test.evil/missing", borrow "index.html", borrow base);
+    @assert(!foreign.local);
+    let mail = resolve(borrow "mailto:hello@example.test", borrow "index.html", borrow base);
+    @assert(!mail.local);
+}

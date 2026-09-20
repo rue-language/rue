@@ -28,6 +28,7 @@ on:
       - 'scripts/extract-source-excerpts.py'
       - 'scripts/generate-site-status.py'
       - 'scripts/check-website.py'
+      - 'scripts/serve-website.py'
       - '.github/workflows/deploy-website.yml'
   # PRs still build (no deploy — that's trunk-only) on spec changes too, so a
   # spec edit that breaks the website build is caught before merge.
@@ -52,6 +53,7 @@ on:
       - 'scripts/extract-source-excerpts.py'
       - 'scripts/generate-site-status.py'
       - 'scripts/check-website.py'
+      - 'scripts/serve-website.py'
       - '.github/workflows/deploy-website.yml'
   # The dashboard's other input is the `performance-data-v1` branch, which is
   # not part of this repository's source tree: no push to trunk can describe a

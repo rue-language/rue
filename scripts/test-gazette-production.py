@@ -98,12 +98,14 @@ class ProductionTests(unittest.TestCase):
         self.write(site, "templates/page.html", "{{ page.content | safe }}")
         return site
 
-    def build(self, site: Path, success=True, base_url=None) -> Path:
+    def run_build(self, site: Path, base_url=None, check=False):
         output = site / "out"
         command = [str(self.binary), "build", str(site), "-o", str(output)]
         if base_url is not None:
             command.extend(["--base-url", base_url])
-        result = subprocess.run(
+        if check:
+            command.append("--check")
+        return subprocess.run(
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -111,12 +113,15 @@ class ProductionTests(unittest.TestCase):
             encoding="utf-8",
             check=False,
         )
+
+    def build(self, site: Path, success=True, base_url=None, check=False) -> Path:
+        result = self.run_build(site, base_url=base_url, check=check)
         details = result.stdout + result.stderr
         if success:
             self.assertEqual(result.returncode, 0, details)
         else:
             self.assertNotEqual(result.returncode, 0, details)
-        return output
+        return site / "out"
 
     def read(self, output: Path, path="index.html") -> str:
         target = output / path
@@ -179,12 +184,14 @@ class ProductionTests(unittest.TestCase):
     def paginated_site(self, count: int, name="site", feeds=False) -> Path:
         config = 'generate_feeds = true\nfeed_filenames = ["rss.xml"]\n' if feeds else ""
         site = self.site(name, config)
+        self.write(site, "templates/index.html", '<p id="current">{{ current_url }}</p>')
         self.write(site, "content/blog/_index.md", (
             '+++\ntitle = "Blog"\nsort_by = "date"\npaginate_by = 10\n'
             + ('generate_feeds = true\n' if feeds else "")
             + 'template = "blog.html"\n+++\n'
         ))
         self.write(site, "templates/blog.html", (
+            '<p id="current">{{ current_url }}</p><p id="section">{{ section.permalink }}</p>'
             '<div id="posts">{% for p in paginator.pages %}[{{ p.title }}]{% endfor %}</div>'
             '{% if paginator.previous %}<a href="{{ paginator.previous }}">previous</a>{% endif %}'
             '{% if paginator.next %}<a href="{{ paginator.next }}">next</a>{% endif %}'
@@ -202,6 +209,11 @@ class ProductionTests(unittest.TestCase):
         output = self.build(site)
         first = Document(self.read(output, "blog/index.html"))
         second = Document(self.read(output, "blog/page/2/index.html"))
+        self.assertEqual(Document(self.read(output)).ids["current"], "https://example.test/")
+        self.assertEqual(first.ids["current"], "https://example.test/blog/")
+        self.assertEqual(second.ids["current"], "https://example.test/blog/page/2/")
+        self.assertEqual(first.ids["section"], "https://example.test/blog/")
+        self.assertEqual(second.ids["section"], "https://example.test/blog/")
         self.assertEqual(first.ids["posts"],
                          "".join("[post-%02d]" % day for day in range(12, 2, -1)))
         self.assertEqual(second.ids["posts"], "[post-02][post-01]")
@@ -284,7 +296,9 @@ class ProductionTests(unittest.TestCase):
             'description = "A description"\n+++\nQuotes & symbols.\n'
         ))
         output = self.build(site)
-        documents = json.loads(self.read(output, "search_index.en.json"))["documents"]
+        search = json.loads(self.read(output, "search_index.en.json"))
+        self.assertEqual(search["format_version"], 2)
+        documents = search["documents"]
         indexed = {document["ref"]: document for document in documents}
         content_urls = {
             "https://example.test/", "https://example.test/blog/", "https://example.test/about/",
@@ -294,7 +308,9 @@ class ProductionTests(unittest.TestCase):
         self.assertEqual(about["title"], 'Quoted "Title" café')
         self.assertEqual(about["description"], "A description")
         self.assertEqual(about["path"], "https://example.test/about/")
-        self.assertIn("Quotes &amp; symbols.", about["body"])
+        self.assertEqual(" ".join(about["body"].split()), "Quotes & symbols.")
+        self.assertEqual(about["page_ref"], about["ref"])
+        self.assertEqual(about["heading"], "")
         sitemap = ET.fromstring(self.read(output, "sitemap.xml"))
         locations = {node.text for node in sitemap.iter() if node.tag.endswith("}loc")}
         self.assertEqual(locations, content_urls | {
@@ -377,6 +393,322 @@ class ProductionTests(unittest.TestCase):
                 output = self.build(site, success=False)
                 self.assertFalse((site / "escaped/index.html").exists())
                 self.assertEqual([p for p in output.rglob("*") if p.is_file()], [])
+
+    def linked_site(self, name="site") -> Path:
+        site = self.site(name)
+        self.write(site, "content/target.md", (
+            '+++\ntitle = "Target"\n+++\n'
+            '<h2 id="remote">Remote</h2><p id="café">Unicode anchor.</p>\n'
+        ))
+        self.write(site, "content/source.md", (
+            '+++\ntitle = "Source"\npath = "guide/topic"\n+++\n'
+            '<h2 id="local">Local</h2>\n'
+        ))
+        self.write(site, "static/assets/a b.svg", '<svg xmlns="http://www.w3.org/2000/svg"/>')
+        self.write(site, "static/assets/site.css", "p { color: black; }")
+        self.write(site, "static/assets/site.js", "const ready = true;")
+        return site
+
+    def test_native_check_resolves_local_links_assets_queries_and_fragments(self):
+        site = self.linked_site()
+        self.write(site, "templates/page.html", """
+{{ page.content | safe }}
+<a href="?view=print">This page with a query</a>
+<a href="/target/?x=1&amp;y=2#remote">Root route</a>
+<a href="../../target/#caf%C3%A9">Relative route and encoded fragment</a>
+<a href="https://example.test/target/index.html#remote">Same origin</a>
+<a href="https://EXAMPLE.TEST:443/target/#remote">Same origin with an explicit default port</a>
+<a href="//example.test/target/#remote">Protocol relative</a>
+<img src="/assets/a%20b.svg?cache=1" alt="A graphic">
+<link rel="stylesheet" href="/assets/site.css?v=1">
+<script src="/assets/site.js?v=1"></script>
+<a href="{{ get_url(path='@/target.md') }}#remote">Template escaped URL</a>
+<p title='not attributes: id="invented-id" href="/attribute-missing/"'>Quoted attribute text.</p>
+<svg><symbol id="symbol"><path d="M0 0"/></symbol><use href="#symbol"></use></svg>
+<p id="Case">Uppercase</p><p id="case">Lowercase</p>
+<a href="#Case">Uppercase anchor</a><a href="#case">Lowercase anchor</a>
+<a href="https://elsewhere.test/missing#missing">External</a>
+<a href="https://example.test.evil/missing#missing">Different origin with a shared prefix</a>
+<a href="mailto:hello@example.test">Email</a>
+<a href="tel:123">Phone</a>
+<img src="data:image/svg+xml,empty" alt="Inline">
+<!-- <a href="/comment-missing/">Ignored comment</a> -->
+<script>const example = '<a href="/script-missing/">ignored</a>';</script>
+""")
+        self.write(site, "content/source.md", (
+            '+++\ntitle = "Source"\npath = "guide/topic"\n+++\n'
+            '<h2 id="local">Local</h2>\n'
+            '<a href="#local">Same page</a><a href="?view=print#local">Query and fragment</a>\n'
+        ))
+        output = self.build(site, check=True)
+        result = subprocess.run(
+            [str(self.binary), "build", str(site), "-o", str(output) + "/", "--check"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_native_check_rejects_missing_local_references_case_sensitively(self):
+        cases = {
+            "root-page": '<a href="/missing/">Missing</a>',
+            "relative-page": '<a href="../../missing/">Missing</a>',
+            "same-origin-page": '<a href="https://example.test/missing/">Missing</a>',
+            "same-origin-default-port": '<a href="https://example.test:443/missing/">Missing</a>',
+            "same-page-fragment": '<a href="#absent">Missing</a>',
+            "query-fragment": '<a href="?v=1#absent">Missing</a>',
+            "other-page-fragment": '<a href="/target/#absent">Missing</a>',
+            "encoded-fragment": '<a href="/target/#not%20present">Missing</a>',
+            "path-case": '<a href="/TARGET/">Wrong case</a>',
+            "fragment-case": '<a href="/target/#Remote">Wrong case</a>',
+            "image": '<img src="/assets/missing.svg" alt="Missing">',
+            "script": '<script src="/assets/missing.js"></script>',
+            "stylesheet": '<link rel="stylesheet" href="/assets/missing.css">',
+            "fake-id-attribute": '<p title=\'id="invented-id"\'>Text</p><a href="#invented-id">Missing</a>',
+        }
+        for name, markup in cases.items():
+            with self.subTest(case=name):
+                site = self.linked_site(name)
+                self.write(site, "content/source.md", (
+                    '+++\ntitle = "Source"\npath = "guide/topic"\n+++\n' + markup + "\n"
+                ))
+                # Ordinary rendering remains available, but checking rejects
+                # the same site with an actionable source and target report.
+                self.build(site)
+                result = self.run_build(site, check=True)
+                details = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 1, details)
+                self.assertIn("content/source.md", details)
+                target = Document(markup).links
+                if target:
+                    self.assertIn(target[0], unescape(details))
+
+        site = self.linked_site("escaped-template-reference")
+        self.write(site, "templates/page.html", (
+            '{{ page.content | safe }}'
+            '<img src="{{ get_url(path=\'assets/missing.svg\') }}" alt="Missing">'
+        ))
+        result = self.run_build(site, check=True)
+        details = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 1, details)
+        self.assertIn("assets/missing.svg", unescape(details))
+
+    def test_native_check_rejects_duplicate_ids_on_one_page(self):
+        site = self.linked_site()
+        self.write(site, "content/source.md", (
+            '+++\ntitle = "Source"\npath = "guide/topic"\n+++\n'
+            '<h2 id="repeated">First</h2><p id="repeated">Second</p>\n'
+        ))
+        result = self.run_build(site, check=True)
+        details = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 1, details)
+        self.assertIn("content/source.md", details)
+        self.assertIn("repeated", details)
+
+    def test_diagnostics_identify_content_config_and_template_sources(self):
+        cases = [
+            ("front-matter", "content/broken.md", '+++\ntitle = [\n+++\nBody.\n'),
+            ("markdown", "content/broken.md", '+++\ntitle = "Broken"\n+++\n~~unsupported~~\n'),
+            ("template-parse", "templates/layouts/broken.html", '{% if true %}Unclosed'),
+            ("template-runtime", "templates/layouts/broken.html", '{{ 5 / 0 }}'),
+            ("config", "config.toml", 'base_url = [\n'),
+        ]
+        for name, source, contents in cases:
+            with self.subTest(case=name):
+                site = self.site(name)
+                if source.startswith("templates/"):
+                    self.write(site, "templates/index.html", '{% extends "layouts/broken.html" %}')
+                self.write(site, source, contents)
+                result = self.run_build(site)
+                details = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 1, details)
+                self.assertIn(source, details)
+
+    def test_runtime_diagnostics_restore_the_calling_template_source(self):
+        cases = [
+            ("after-inherited-macro", {
+                "templates/index.html": (
+                    '{% extends "base.html" %}{% block content %}'
+                    '{{ self::good() }}{{ 5 / 0 }}{% endblock %}'
+                ),
+                "templates/base.html": (
+                    '{% macro good() %}Good macro.{% endmacro %}'
+                    '{% block content %}Base{% endblock %}'
+                ),
+            }, "templates/index.html"),
+            ("after-inherited-block", {
+                "templates/index.html": '{% extends "base.html" %}{% block content %}Child{% endblock %}',
+                "templates/base.html": '{% block content %}Base{% endblock %}{{ 5 / 0 }}',
+            }, "templates/base.html"),
+            ("supplied-macro-argument", {
+                "templates/index.html": (
+                    '{% extends "base.html" %}{% block content %}'
+                    '{{ self::value(x=5 / 0) }}{% endblock %}'
+                ),
+                "templates/base.html": (
+                    '{% macro value(x) %}{{ x }}{% endmacro %}'
+                    '{% block content %}Base{% endblock %}'
+                ),
+            }, "templates/index.html"),
+            ("default-macro-argument", {
+                "templates/index.html": (
+                    '{% extends "base.html" %}{% block content %}\n'
+                    '{{ self::value() }}{% endblock %}'
+                ),
+                "templates/base.html": (
+                    '\n\n{% macro value(x=5 / 0) %}{{ x }}{% endmacro %}'
+                    '{% block content %}Base{% endblock %}'
+                ),
+            }, "templates/base.html"),
+        ]
+        for name, sources, expected in cases:
+            with self.subTest(case=name):
+                site = self.site(name)
+                for path, source in sources.items():
+                    self.write(site, path, source)
+                result = self.run_build(site)
+                details = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 1, details)
+                self.assertIn(expected, details)
+                if name == "default-macro-argument":
+                    self.assertIn("template:3:", details)
+
+    def test_content_metadata_uses_rendered_headings_and_visible_text(self):
+        for minify in (False, True):
+            with self.subTest(minify=minify):
+                site = self.site("metadata-%s" % minify, (
+                    'generate_content_metadata = true\nminify_html = %s\n'
+                    % str(minify).lower()
+                ))
+                body = """Opening <em>inline</em> text &amp; &#x3bb;.
+
+Named&nbsp;space&thinsp;entities and &#128512;.
+
+## First *heading*
+
+First body with foo<em>bar</em>.
+
+| Left | Right |
+| --- | --- |
+| Cell one | Cell two |
+
+```text
+let x = a < b && c > d;
+```
+
+<H3 data-id="not-the-anchor" ID = 'raw' title="quoted > value">Raw <strong>bold</strong> &amp; title</H3>
+<DIV>Block one</DIV><DIV>Block two<BR>after break</DIV>
+
+{{ chapter(title="Shortcode title") }}
+
+Last paragraph.
+
+<!-- <h2 id="hidden-comment">hidden comment</h2> -->
+<SCRIPT>const hidden = '<h2 id="hidden-script">hidden script</h2>';</SCRIPT>
+<STYLE>.hidden { content: "hidden style"; }</STYLE>
+<p>After hidden blocks.</p>
+"""
+                self.write(site, "templates/shortcodes/chapter.html", '<h2 id="shortcode">{{ title }}</h2>')
+                metadata = (
+                    '<pre id="plain">{{ OBJ.plain_text }}</pre>'
+                    '<div id="toc">{% for h in OBJ.toc %}'
+                    '[{{ h.id }}|{{ h.title }}|{{ h.level }}|{{ h.permalink }}]'
+                    '{% endfor %}</div>{{ OBJ.content | safe }}'
+                )
+                self.write(site, "templates/index.html", metadata.replace("OBJ", "section"))
+                self.write(site, "templates/page.html", metadata.replace("OBJ", "page"))
+                self.write(site, "content/_index.md", (
+                    '+++\ntitle = "Root"\ntemplate = "index.html"\n+++\n' + body
+                ))
+                self.write(site, "content/doc.md", '+++\ntitle = "Doc"\n+++\n' + body)
+                output = self.build(site)
+                expected_plain = (
+                    "Opening inline text & λ. Named space entities and 😀. "
+                    "First heading First body with foobar. Left Right Cell one Cell two "
+                    "let x = a < b && c > d; "
+                    "Raw bold & title Block one Block two after break Shortcode title Last paragraph. "
+                    "After hidden blocks."
+                )
+                headings = [("first-heading", "First heading", 2),
+                            ("raw", "Raw bold & title", 3), ("shortcode", "Shortcode title", 2)]
+                for path, route in [("index.html", "/"), ("doc/index.html", "/doc/")]:
+                    with self.subTest(page=path):
+                        document = Document(self.read(output, path))
+                        self.assertEqual(" ".join(document.ids["plain"].split()), expected_plain)
+                        expected_toc = "".join(
+                            "[%s|%s|%d|https://example.test%s#%s]"
+                            % (identifier, title, level, route, identifier)
+                            for identifier, title, level in headings
+                        )
+                        self.assertEqual(document.ids["toc"], expected_toc)
+
+    def test_search_v2_indexes_plain_text_and_distinct_heading_destinations(self):
+        site = self.site(config=(
+            'generate_content_metadata = true\nbuild_search_index = true\n'
+            '[search]\nindex_format = "gazette_json"\n'
+        ))
+        self.write(site, "content/doc.md", """+++
+title = "A page title"
+description = "A page description"
++++
+Preamble only.
+
+## First section
+
+First-only phrase &amp; &#955;.
+
+<h4>Unanchored label</h4><p>Unanchored-only phrase.</p>
+
+### Child section
+
+Child-only phrase with foo<em>bar</em>.
+
+<h2 id="raw-second">Second <strong>section</strong></h2>
+<p>Second-only phrase.</p>
+<!-- hidden comment -->
+<script>const hidden = "hidden script";</script>
+<style>.hidden { content: "hidden style"; }</style>
+""")
+        output = self.build(site)
+        search = json.loads(self.read(output, "search_index.en.json"))
+        self.assertEqual(search["format_version"], 2)
+        documents = search["documents"]
+        indexed = {document["ref"]: document for document in documents}
+        base = "https://example.test/doc/"
+        expected_refs = {"https://example.test/", base, base + "#first-section",
+                         base + "#child-section", base + "#raw-second"}
+        self.assertEqual(len(documents), len(expected_refs))
+        self.assertEqual(set(indexed), expected_refs)
+        introduction = indexed[base]
+        self.assertEqual(introduction["heading"], "")
+        self.assertEqual(" ".join(introduction["body"].split()), "Preamble only.")
+        for fragment, title, present, absent in [
+            ("first-section", "First section", "First-only phrase & λ.",
+             ["Child-only phrase", "Second-only phrase"]),
+            ("child-section", "Child section", "Child-only phrase with foobar.",
+             ["First-only phrase", "Second-only phrase", "Unanchored-only phrase"]),
+            ("raw-second", "Second section", "Second-only phrase.",
+             ["First-only phrase", "Child-only phrase", "Unanchored-only phrase"]),
+        ]:
+            document = indexed[base + "#" + fragment]
+            self.assertEqual(document["heading"], title)
+            self.assertIn(present, document["body"])
+            for other in absent:
+                self.assertNotIn(other, document["body"])
+            self.assertNotIn("Preamble only.", document["body"])
+        first_body = indexed[base + "#first-section"]["body"]
+        self.assertIn("Unanchored label", first_body)
+        self.assertIn("Unanchored-only phrase.", first_body)
+        all_bodies = " ".join(document["body"] for document in documents)
+        for phrase in ("Preamble only.", "First-only phrase", "Child-only phrase",
+                       "Second-only phrase", "Unanchored-only phrase"):
+            self.assertEqual(all_bodies.count(phrase), 1, phrase)
+        for reference in expected_refs - {"https://example.test/"}:
+            document = indexed[reference]
+            self.assertEqual(document["page_ref"], base)
+            self.assertEqual(document["title"], "A page title")
+            self.assertEqual(document["description"], "A page description")
+            self.assertEqual(document["path"], reference)
+            for excluded in ("<p>", "<em>", "&amp;", "hidden comment", "hidden script", "hidden style"):
+                self.assertNotIn(excluded, document["body"])
 
     def test_minification_preserves_raw_text_and_quoted_attributes(self):
         specimens = [

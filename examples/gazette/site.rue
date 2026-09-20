@@ -55,6 +55,8 @@ const std = @import("std");
 const ast = @import("tmpl_ast.rue");
 const frontmatter = @import("frontmatter.rue");
 const markdown = @import("markdown.rue");
+const metadata = @import("metadata.rue");
+const check = @import("check.rue");
 const highlight = @import("highlight.rue");
 const text = @import("text.rue");
 const tmpl_eval = @import("tmpl_eval.rue");
@@ -241,6 +243,8 @@ pub struct Keys {
     base_url_global: u64,
     site_root_global: u64,
     routes_global: u64,
+    plain_text: u64,
+    toc: u64,
 }
 
 fn intern_keys(inout eng: ast.Engine) -> Keys {
@@ -277,6 +281,8 @@ fn intern_keys(inout eng: ast.Engine) -> Keys {
         base_url_global: eng.key("__base_url"),
         site_root_global: eng.key("__site_root"),
         routes_global: eng.key("__routes"),
+        plain_text: eng.key("plain_text"),
+        toc: eng.key("toc"),
     }
 }
 
@@ -299,6 +305,9 @@ pub struct Page {
     summary: u64,
     entry: u64,
     object: u64,
+    plain_text: u64,
+    toc: u64,
+    search_body: u64,
 }
 
 pub fn empty_page() -> Page {
@@ -306,6 +315,7 @@ pub fn empty_page() -> Page {
         rel: NONE(), route: NONE(), permalink: NONE(), source: NONE(), front: NONE(),
         body_start: 0, body_line: 1, section: NONE(), is_index: false, weight: NONE(),
         template: NONE(), path: NONE(), content: NONE(), summary: NONE(), entry: NONE(), object: NONE(),
+        plain_text: NONE(), toc: NONE(), search_body: NONE(),
     }
 }
 
@@ -359,6 +369,7 @@ pub struct Site {
     minify_html: bool,
     highlight_code: bool,
     metadata: bool,
+    content_metadata: bool,
     highlight_themes: u64,
     search_index: bool,
     pages_rendered: u64,
@@ -369,6 +380,7 @@ pub struct Site {
     // build. It is what makes the emitted file set assertable from a CLI test.
     list: bool,
     listing: StrBuf,
+    heading_meta: metadata.AllHeadings,
 
     fn new() -> Self {
         Self {
@@ -381,6 +393,7 @@ pub struct Site {
                 base_url_global: 0,
                 site_root_global: 0,
                 routes_global: 0,
+                plain_text: 0, toc: 0,
             },
             pages: Pages.new(),
             sections: Sections.new(),
@@ -388,7 +401,7 @@ pub struct Site {
             section_subs: value.U64s.new(),
             dir_ids: value.U64s.new(),
             dir_index: value.U64s.new(),
-            config: 0, global_feeds: false, minify_html: false, highlight_code: false, metadata: false, highlight_themes: NONE(), search_index: false,
+            config: 0, global_feeds: false, minify_html: false, highlight_code: false, metadata: false, content_metadata: false, highlight_themes: NONE(), search_index: false,
             root: StrBuf.new(),
             content_root: StrBuf.new(),
             output_root: StrBuf.new(),
@@ -396,6 +409,7 @@ pub struct Site {
             files_written: 0,
             list: false,
             listing: StrBuf.new(),
+            heading_meta: metadata.AllHeadings.new(),
         }
     }
 
@@ -417,12 +431,14 @@ fn fail(inout eng: ast.Engine, detail: StrBuf, subject: u64) {
 // links that happen to work locally.
 fn load_config(inout site: Site, inout eng: ast.Engine) -> bool {
     let path = join_path(borrow site.root, borrow "config.toml");
+    eng.set_source(borrow path);
     let input = read_file(borrow path);
     if !input.ok {
         let subject = eng.arena.strings.intern(borrow path);
         fail(inout eng, "cannot read the site configuration", subject);
         return false;
     }
+    eng.set_source(borrow path);
     let parsed = frontmatter.parse_document(inout eng.arena, borrow input.data);
     site.config = parsed.root;
     if !parsed.ok { return false; }
@@ -455,6 +471,7 @@ fn load_config(inout site: Site, inout eng: ast.Engine) -> bool {
     site.global_feeds = eng.arena.truthy(eng.arena.map_get(site.config, site.keys.generate_feeds));
     site.minify_html = eng.arena.truthy(eng.arena.map_get(site.config, eng.key("minify_html")));
     site.metadata = eng.arena.truthy(eng.arena.map_get_literal(site.config, "generate_metadata"));
+    site.content_metadata = eng.arena.truthy(eng.arena.map_get_literal(site.config, "generate_content_metadata"));
     site.search_index = eng.arena.truthy(eng.arena.map_get(site.config, eng.key("build_search_index")));
     let search = eng.arena.map_get_literal(site.config, "search");
     let format = eng.arena.map_get_literal(search, "index_format");
@@ -482,8 +499,10 @@ fn load_highlighting(inout site: Site, inout eng: ast.Engine) -> bool {
         fail(inout eng, "syntax_definitions must name a site-relative JSON file", NONE()); return false;
     }
     let path = join_path(borrow site.root, borrow relative);
+    eng.set_source(borrow path);
     let input = read_file(borrow path);
     if !input.ok { fail(inout eng, "cannot read syntax definitions", eng.key(path)); return false; }
+    eng.set_source(borrow path);
     let parsed = frontmatter.parse_json(inout eng.arena, borrow input.data);
     if !parsed.ok || !highlight.validate(inout eng, parsed.root) { return false; }
     eng.set_global(eng.key("__highlight_syntaxes"), parsed.root);
@@ -546,12 +565,14 @@ fn load_templates(inout site: Site, inout eng: ast.Engine) -> bool {
             let path = entries.path(i);
             if path.ends_with(borrow ".html") || path.ends_with(borrow ".xml") {
                 let name = text.slice(borrow path, prefix, path.len());
+                eng.set_source(borrow path);
                 let input = read_file(borrow path);
                 if !input.ok {
                     let subject = eng.arena.strings.intern(borrow path);
                     fail(inout eng, "cannot read a template", subject);
                     ok = false;
                 } else {
+                    eng.set_source(borrow path);
                     let _ = tmpl_parse.parse_template(inout eng, name, borrow input.data);
                 }
             }
@@ -588,12 +609,14 @@ fn discover(inout site: Site, inout eng: ast.Engine) -> bool {
             let path = entries.path(i);
             if path.ends_with(borrow ".md") {
                 let rel = text.slice(borrow path, prefix, path.len());
+                eng.set_source(borrow path);
                 let input = read_file(borrow path);
                 if !input.ok {
                     let subject = eng.arena.strings.intern(borrow path);
                     fail(inout eng, "cannot read a content file", subject);
                     ok = false;
                 } else {
+                    eng.set_source(borrow path);
                     if !add_page(inout site, inout eng, borrow rel, borrow input.data) { ok = false; }
                 }
             }
@@ -668,6 +691,9 @@ fn add_page(inout site: Site, inout eng: ast.Engine, borrow rel: StrBuf, borrow 
         summary: NONE(),
         entry: NONE(),
         object: NONE(),
+        plain_text: NONE(),
+        toc: NONE(),
+        search_body: NONE(),
     });
     front.ok
 }
@@ -1011,6 +1037,27 @@ fn sort_subsections(borrow site: Site, borrow eng: ast.Engine, inout list: value
 // Markdown
 // ---------------------------------------------------------------------------
 
+fn add_toc_heading(inout eng: ast.Engine, borrow heading: metadata.Heading, inout values: value.U64s) {
+    let mut fields = value.Entries.new();
+    put(inout fields, eng.key("id"), eng.arena.string(borrow heading.id));
+    put(inout fields, eng.key("title"), eng.arena.string(borrow heading.title));
+    put(inout fields, eng.key("level"), eng.arena.integer(heading.level));
+    put(inout fields, eng.key("permalink"), eng.arena.string(borrow heading.permalink));
+    values.push(eng.arena.map(borrow fields));
+}
+
+fn metadata_toc(inout eng: ast.Engine, borrow doc: metadata.Document) -> u64 {
+    let mut values = value.U64s.new();
+    let mut i: u64 = 0;
+    while i < doc.headings.len() {
+        if doc.headings.get_ref(i).id.len() > 0 {
+            add_toc_heading(inout eng, borrow doc.headings.get_ref(i), inout values);
+        }
+        i += 1;
+    }
+    eng.arena.array(borrow values)
+}
+
 // Render every page's body once. Section index templates show their pages'
 // summaries, so every body must be rendered before any template runs.
 fn render_bodies(inout site: Site, inout eng: ast.Engine) {
@@ -1022,11 +1069,27 @@ fn render_bodies(inout site: Site, inout eng: ast.Engine) {
         eng.set_global(site.keys.page_url_global, url_value);
 
         let source = eng.arena.strings.copy(page.source);
+        let source_path = join_path(borrow site.content_root, borrow eng.arena.strings.copy(page.rel));
+        eng.set_source(borrow source_path);
         let expanded = markdown.expand_shortcodes(
             inout eng, borrow source, page.body_start, page.body_line,
         );
+        // A shortcode evaluates a template and can leave the evaluator's
+        // source set to that template. Markdown diagnostics belong to the
+        // content file that contains the shortcode, so restore it at the
+        // boundary between the two passes.
+        eng.set_source(borrow source_path);
         let doc = markdown.render(inout eng, borrow expanded, page.body_line);
         page.content = eng.arena.string(borrow doc.html);
+        if site.content_metadata || site.search_index {
+            let rendered_metadata = metadata.scan(borrow doc.html, borrow permalink);
+            page.plain_text = eng.arena.string(borrow rendered_metadata.plain_text);
+            page.search_body = eng.arena.string(borrow rendered_metadata.page_body);
+            page.toc = metadata_toc(inout eng, borrow rendered_metadata);
+            site.heading_meta.push(rendered_metadata.headings);
+        } else {
+            site.heading_meta.push(metadata.Headings.new());
+        }
         // Zola's `page.summary` exists only when the body carries a
         // `<!-- more -->` marker; the templates gate on its presence, so a
         // whole-body fallback would print every post in full on the index.
@@ -1074,6 +1137,10 @@ fn build_entry(inout site: Site, inout eng: ast.Engine, index: u64) -> u64 {
     let path_value = eng.arena.string(borrow path);
     put(inout fields, site.keys.path, path_value);
     put(inout fields, site.keys.summary, page.summary);
+    if page.plain_text != NONE() {
+        put(inout fields, site.keys.plain_text, page.plain_text);
+        put(inout fields, site.keys.toc, page.toc);
+    }
     eng.arena.map(borrow fields)
 }
 
@@ -1093,6 +1160,10 @@ fn build_object(inout site: Site, inout eng: ast.Engine, index: u64, lower: u64,
     put(inout fields, site.keys.path, path_value);
     put(inout fields, site.keys.summary, page.summary);
     put(inout fields, site.keys.content, page.content);
+    if page.plain_text != NONE() {
+        put(inout fields, site.keys.plain_text, page.plain_text);
+        put(inout fields, site.keys.toc, page.toc);
+    }
     put(inout fields, site.keys.lower, lower);
     put(inout fields, site.keys.higher, higher);
     eng.arena.map(borrow fields)
@@ -1182,6 +1253,10 @@ fn build_section_object(borrow site: Site, inout eng: ast.Engine, index: u64) ->
     let path_value = eng.arena.string(borrow path);
     put(inout fields, site.keys.path, path_value);
     put(inout fields, site.keys.content, page.content);
+    if page.plain_text != NONE() {
+        put(inout fields, site.keys.plain_text, page.plain_text);
+        put(inout fields, site.keys.toc, page.toc);
+    }
 
     let mut listed = value.U64s.new();
     let mut k: u64 = 0;
@@ -1223,6 +1298,15 @@ fn output_path(borrow site: Site, borrow eng: ast.Engine, route_id: u64, name: S
 }
 
 fn render_named(inout site: Site, inout eng: ast.Engine, name: u64, route: u64, file: StrBuf) -> bool {
+    // Pagination renders the same section at distinct routes. Expose the
+    // actual emitted URL independently of the section's canonical identity.
+    let mut current_route = eng.arena.strings.copy(route);
+    if !StrBuf.equals_borrowed(borrow file, borrow "index.html") {
+        if current_route.len() > 0 && !current_route.ends_with(borrow "/") { current_route.push(47); }
+        current_route.append_borrowed(borrow file);
+    }
+    let current_url = tmpl_eval.join_base(inout eng, borrow current_route);
+    eng.set_global(eng.key("current_url"), eng.arena.string(borrow current_url));
     let mut out = StrBuf.new();
     if !tmpl_eval.render(inout eng, name, inout out) { return false; }
     // Only when listing: this runs once per emitted file, and an unconditional
@@ -1602,6 +1686,43 @@ fn copy_static(inout site: Site, inout eng: ast.Engine) -> bool {
     ok
 }
 
+fn emit_heading_search_docs(
+    inout documents: std.arraybuf.ArrayBuf(std.json.Json),
+    borrow headings: metadata.Headings,
+    borrow page_url: StrBuf,
+    borrow page_title: StrBuf,
+    borrow description: StrBuf,
+) {
+    // A heading owns its strings, so keep the accessor result borrowed for the
+    // whole record construction instead of copying the struct out.
+    let mut h: u64 = 0;
+    while h < headings.len() {
+        emit_one_heading_search_doc(inout documents, borrow headings.get_ref(h), borrow page_url, borrow page_title, borrow description);
+        h += 1;
+    }
+}
+
+fn emit_one_heading_search_doc(
+    inout documents: std.arraybuf.ArrayBuf(std.json.Json),
+    borrow heading: metadata.Heading,
+    borrow page_url: StrBuf,
+    borrow page_title: StrBuf,
+    borrow description: StrBuf,
+) {
+        if heading.id.len() > 0 {
+            let mut hk = std.arraybuf.ArrayBuf(StrBuf).new();
+            let mut hv = std.arraybuf.ArrayBuf(std.json.Json).new();
+            hk.push("ref"); hv.push(std.json.Json.String(heading.permalink.clone()));
+            hk.push("page_ref"); hv.push(std.json.Json.String(page_url.clone()));
+            hk.push("title"); hv.push(std.json.Json.String(page_title.clone()));
+            hk.push("heading"); hv.push(std.json.Json.String(heading.title.clone()));
+            hk.push("description"); hv.push(std.json.Json.String(description.clone()));
+            hk.push("path"); hv.push(std.json.Json.String(heading.permalink.clone()));
+            hk.push("body"); hv.push(std.json.Json.String(heading.body.clone()));
+            documents.push(std.json.Json.Object(std.json.Object { keys: hk, values: hv }));
+        }
+}
+
 fn emit_search_index(inout site: Site, inout eng: ast.Engine) -> bool {
     let mut documents = std.arraybuf.ArrayBuf(std.json.Json).new();
     let mut i: u64 = 0;
@@ -1612,16 +1733,26 @@ fn emit_search_index(inout site: Site, inout eng: ast.Engine) -> bool {
             let mut keys = std.arraybuf.ArrayBuf(StrBuf).new();
             let mut values = std.arraybuf.ArrayBuf(std.json.Json).new();
             keys.push("ref"); values.push(std.json.Json.String(eng.arena.strings.copy(page.permalink)));
+            keys.push("page_ref"); values.push(std.json.Json.String(eng.arena.strings.copy(page.permalink)));
             keys.push("title"); values.push(std.json.Json.String(eng.arena.scalar(eng.arena.map_get(page.front, site.keys.title))));
+            keys.push("heading"); values.push(std.json.Json.String(StrBuf.new()));
             keys.push("description"); values.push(std.json.Json.String(eng.arena.scalar(eng.arena.map_get(page.front, site.keys.description))));
             keys.push("path"); values.push(std.json.Json.String(eng.arena.strings.copy(page.permalink)));
-            keys.push("body"); values.push(std.json.Json.String(eng.arena.scalar(page.content)));
+            keys.push("body"); values.push(std.json.Json.String(eng.arena.scalar(page.search_body)));
             documents.push(std.json.Json.Object(std.json.Object { keys: keys, values: values }));
+
+            let page_url = eng.arena.strings.copy(page.permalink);
+            let page_title = eng.arena.scalar(eng.arena.map_get(page.front, site.keys.title));
+            let description = eng.arena.scalar(eng.arena.map_get(page.front, site.keys.description));
+            emit_heading_search_docs(
+                inout documents, borrow site.heading_meta.get_ref(i), borrow page_url,
+                borrow page_title, borrow description,
+            );
         }
         i += 1;
     }
-    let mut keys = std.arraybuf.ArrayBuf(StrBuf).new(); keys.push("documents");
-    let mut values = std.arraybuf.ArrayBuf(std.json.Json).new(); values.push(std.json.Json.Array(documents));
+    let mut keys = std.arraybuf.ArrayBuf(StrBuf).new(); keys.push("format_version"); keys.push("documents");
+    let mut values = std.arraybuf.ArrayBuf(std.json.Json).new(); values.push(std.json.Json.Number("2")); values.push(std.json.Json.Array(documents));
     let out = std.json.to_string(std.json.Json.Object(std.json.Object { keys: keys, values: values }));
     if !write_output(borrow join_path(borrow site.output_root, borrow "search_index.en.json"), borrow out) { return false; }
     site.files_written += 1;
@@ -1709,6 +1840,54 @@ fn copy_one(borrow from: StrBuf, borrow to: StrBuf) -> bool {
 // Driver
 // ---------------------------------------------------------------------------
 
+fn source_for_output(borrow site: Site, borrow eng: ast.Engine, borrow path: StrBuf) -> StrBuf {
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let page = site.page_at(i);
+        let mut expected = eng.arena.strings.copy(page.route);
+        expected.push_str("index.html");
+        if StrBuf.equals_borrowed(borrow expected, borrow path) {
+            return join_path(borrow site.content_root, borrow eng.arena.strings.copy(page.rel));
+        }
+        if page.is_index {
+            let mut paginated = eng.arena.strings.copy(page.route); paginated.push_str("page/");
+            if path.starts_with(borrow paginated) {
+                return join_path(borrow site.content_root, borrow eng.arena.strings.copy(page.rel));
+            }
+        }
+        i += 1;
+    }
+    join_path(borrow site.output_root, borrow path)
+}
+
+fn check_output(borrow site: Site, inout eng: ast.Engine, inout report: StrBuf) -> bool {
+    let entries = match std.fs.walk(borrow site.output_root) {
+        DirRes.Ok(list) => list,
+        DirRes.Err(_e) => { fail(inout eng, "cannot inspect generated output", NONE()); return false; },
+    };
+    let mut files = check.Strings.new();
+    let mut documents = check.Documents.new();
+    let prefix = site.output_root.len() + if site.output_root.ends_with(borrow "/") { 0 } else { 1 };
+    let mut i: u64 = 0;
+    while i < entries.len() {
+        if entries.is_file(i) {
+            let path = entries.path(i);
+            let rel = text.slice(borrow path, prefix, path.len());
+            files.push(rel.clone());
+            if rel.ends_with(borrow ".html") || rel.ends_with(borrow ".svg") {
+                let input = read_file(borrow path);
+                if !input.ok { fail(inout eng, "cannot read generated output", eng.arena.strings.intern(borrow path)); return false; }
+                let doc = metadata.scan(borrow input.data, borrow "");
+                let source = source_for_output(borrow site, borrow eng, borrow rel);
+                documents.push(check.Document { path: rel, source: source, ids: doc.ids, refs: doc.refs });
+            }
+        }
+        i += 1;
+    }
+    let base = eng.arena.scalar(eng.lookup(site.keys.base_url_global));
+    check.validate(borrow files, borrow documents, borrow base, inout report)
+}
+
 // Build the site rooted at `root` into `output`. The stages are ordered by
 // their real dependencies and each one refuses to continue past a failure that
 // would make the next stage's output meaningless, so a broken site produces
@@ -1718,6 +1897,7 @@ pub fn build(
     borrow root: StrBuf,
     borrow output: StrBuf,
     list: bool,
+    check_links: bool,
     inout report: StrBuf,
 ) -> bool {
     let mut site = Site.new();
@@ -1751,5 +1931,7 @@ pub fn build(
     report.push_str(" sections, ");
     report.push_str(text.decimal(site.files_written));
     report.push_str(" files written\n");
-    emitted && copied && highlighted && searched && global_feed && metadata && eng.arena.error_count() == 0
+    let rendered = emitted && copied && highlighted && searched && global_feed && metadata && eng.arena.error_count() == 0;
+    if !rendered { return false; }
+    if check_links { check_output(borrow site, inout eng, inout report) } else { true }
 }

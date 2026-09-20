@@ -468,9 +468,9 @@ stdout_contains = ["shortcode:5: unknown shortcode (gallery)"]
 # individual names, which the runner deliberately does not print on a pass.
 [[case]]
 name = "gazette_test_declarations_run_under_rue_test"
-description = "`rue test` over the example's root discovers and passes all 42 test declarations in its four test modules"
+description = "`rue test` over the example's root discovers and passes all 48 test declarations in its transitive modules"
 source_path = "examples/gazette/main.rue"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 args = ["test", "${SOURCE}", "--seed", "1"]
 driver_exit_code = 0
-compile_stdout_contains = ["42 passed ("]
+compile_stdout_contains = ["48 passed ("]

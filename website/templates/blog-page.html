@@ -24,6 +24,7 @@
             </details>
             {% endif %}
         </header>
+        {{ self::page_toc(headings=page.toc) }}
         <div class="prose">
             {{ page.content | safe }}
         </div>

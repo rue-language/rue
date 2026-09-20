@@ -932,7 +932,11 @@ fn render_block(inout eng: ast.Engine, n: ast.Node, borrow chain: value.U64s, in
         let owner = chain.get_or(i, NONE());
         let body = eng.find_block(owner, n.a);
         if body != NONE() {
+            let caller_source = eng.current_source();
+            let owner_template = eng.template(owner);
+            eng.restore_source(owner_template.source);
             render_body(inout eng, body, borrow chain, inout out);
+            eng.restore_source(caller_source);
             return;
         }
         i += 1;
@@ -949,27 +953,33 @@ pub fn render(inout eng: ast.Engine, name: u64, inout out: StrBuf) -> bool {
         fail(inout eng, 0, "unknown template", name);
         return false;
     }
+    let caller_source = eng.current_source();
     let mut chain = value.U64s.new();
     let mut current = index;
     while current != NONE() {
+        let t = eng.template(current);
+        eng.restore_source(t.source);
         if chain.len() >= MAX_DEPTH() {
             fail(inout eng, 0, "template inheritance chain is cyclic or too deep", name);
+            eng.restore_source(caller_source);
             return false;
         }
         chain.push(current);
-        let t = eng.template(current);
         if t.base == NONE() { break; }
         let parent = eng.find_template(t.base);
         if parent == NONE() {
             fail(inout eng, 0, "extends names an unregistered template", t.base);
+            eng.restore_source(caller_source);
             return false;
         }
         current = parent;
     }
     let root = eng.template(chain.get_or(chain.len() - 1, index));
+    eng.restore_source(root.source);
     eng.push_scope();
     render_body(inout eng, root.body, borrow chain, inout out);
     eng.pop_scope();
+    eng.restore_source(caller_source);
     true
 }
 
@@ -989,7 +999,7 @@ pub fn render_shortcode(
         return false;
     }
     eng.push_scope();
-    bind_call_arguments(inout eng, e.b, NONE(), line);
+    bind_call_arguments(inout eng, e.b, NONE(), NONE(), 0, line);
     let ok = render(inout eng, template_name, inout out);
     eng.pop_scope();
     ok
@@ -1004,7 +1014,7 @@ pub fn render_shortcode(
 // for whatever the content wrote. One binder serves both, so a macro call and a
 // shortcode invocation cannot drift apart — which is also what keeps the
 // fairness property intact, since the two share the measured path.
-fn bind_call_arguments(inout eng: ast.Engine, args: u64, params: u64, line: u64) {
+fn bind_call_arguments(inout eng: ast.Engine, args: u64, params: u64, default_source: u64, default_line: u64, line: u64) {
     if params == NONE() {
         let mut current = args;
         while current != NONE() {
@@ -1038,11 +1048,15 @@ fn bind_call_arguments(inout eng: ast.Engine, args: u64, params: u64, line: u64)
             i += 1;
         }
         if bound == NONE() {
-            bound = if declared.b == NONE() {
-                eng.arena.null()
-            } else {
-                eval(inout eng, declared.b, line)
-            };
+            if declared.b == NONE() { bound = eng.arena.null(); }
+            else {
+                // Supplied expressions belong to the caller; a default is
+                // source from the template that declared this parameter.
+                let caller_source = eng.current_source();
+                eng.restore_source(default_source);
+                bound = eval(inout eng, declared.b, default_line);
+                eng.restore_source(caller_source);
+            }
         }
         eng.bind(declared.a, bound);
         param = declared.next;
@@ -1104,9 +1118,13 @@ fn render_macro_call(
         return;
     }
     let definition = eng.macro_at(found);
+    let caller_source = eng.current_source();
+    let owner_template = eng.template(definition.owner);
     eng.push_scope();
-    bind_call_arguments(inout eng, e.b, definition.params, line);
+    bind_call_arguments(inout eng, e.b, definition.params, owner_template.source, definition.line, line);
+    eng.restore_source(owner_template.source);
     render_body(inout eng, definition.body, borrow chain, inout out);
+    eng.restore_source(caller_source);
     eng.pop_scope();
     eng.leave();
 }
