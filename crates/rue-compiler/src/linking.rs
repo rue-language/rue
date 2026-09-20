@@ -430,11 +430,23 @@ fn wait_for_linker(
 static RUNTIME_X86_64_LINUX: &[u8] = include_bytes!("librue_runtime-x86_64-unknown-linux-gnu.a");
 static RUNTIME_AARCH64_LINUX: &[u8] = include_bytes!("librue_runtime-aarch64-unknown-linux-gnu.a");
 static RUNTIME_AARCH64_MACOS: &[u8] = include_bytes!("librue_runtime-aarch64-apple-darwin.a");
+static RUNTIME_HOSTED_X86_64_LINUX: &[u8] =
+    include_bytes!("librue_runtime-hosted-x86_64-unknown-linux-gnu.a");
+static RUNTIME_HOSTED_AARCH64_LINUX: &[u8] =
+    include_bytes!("librue_runtime-hosted-aarch64-unknown-linux-gnu.a");
+static RUNTIME_HOSTED_AARCH64_MACOS: &[u8] =
+    include_bytes!("librue_runtime-hosted-aarch64-apple-darwin.a");
 static RUNTIME_X86_64_LINUX_VALIDATION: std::sync::OnceLock<Result<(), String>> =
     std::sync::OnceLock::new();
 static RUNTIME_AARCH64_LINUX_VALIDATION: std::sync::OnceLock<Result<(), String>> =
     std::sync::OnceLock::new();
 static RUNTIME_AARCH64_MACOS_VALIDATION: std::sync::OnceLock<Result<(), String>> =
+    std::sync::OnceLock::new();
+static RUNTIME_HOSTED_X86_64_LINUX_VALIDATION: std::sync::OnceLock<Result<(), String>> =
+    std::sync::OnceLock::new();
+static RUNTIME_HOSTED_AARCH64_LINUX_VALIDATION: std::sync::OnceLock<Result<(), String>> =
+    std::sync::OnceLock::new();
+static RUNTIME_HOSTED_AARCH64_MACOS_VALIDATION: std::sync::OnceLock<Result<(), String>> =
     std::sync::OnceLock::new();
 static EMBEDDED_RUNTIME_INDEXES: EmbeddedRuntimeIndexCaches = EmbeddedRuntimeIndexCaches::new();
 /// Times the embedded runtime archive has actually been decoded. Parsing it
@@ -571,6 +583,9 @@ struct EmbeddedRuntimeIndexCaches {
     x86_64_linux: EmbeddedRuntimeIndexCache,
     aarch64_linux: EmbeddedRuntimeIndexCache,
     aarch64_macos: EmbeddedRuntimeIndexCache,
+    hosted_x86_64_linux: EmbeddedRuntimeIndexCache,
+    hosted_aarch64_linux: EmbeddedRuntimeIndexCache,
+    hosted_aarch64_macos: EmbeddedRuntimeIndexCache,
 }
 
 impl EmbeddedRuntimeIndexCaches {
@@ -579,6 +594,9 @@ impl EmbeddedRuntimeIndexCaches {
             x86_64_linux: EmbeddedRuntimeIndexCache::new(),
             aarch64_linux: EmbeddedRuntimeIndexCache::new(),
             aarch64_macos: EmbeddedRuntimeIndexCache::new(),
+            hosted_x86_64_linux: EmbeddedRuntimeIndexCache::new(),
+            hosted_aarch64_linux: EmbeddedRuntimeIndexCache::new(),
+            hosted_aarch64_macos: EmbeddedRuntimeIndexCache::new(),
         }
     }
 
@@ -588,6 +606,24 @@ impl EmbeddedRuntimeIndexCaches {
             Target::Aarch64Linux => &self.aarch64_linux,
             Target::Aarch64Macos => &self.aarch64_macos,
         }
+    }
+
+    fn for_target_and_flavor(
+        &self,
+        target: Target,
+        flavor: crate::program_image_plan::RuntimeFlavor,
+    ) -> &EmbeddedRuntimeIndexCache {
+        if matches!(
+            flavor,
+            crate::program_image_plan::RuntimeFlavor::HostedThreads
+        ) {
+            return match target {
+                Target::X86_64Linux => &self.hosted_x86_64_linux,
+                Target::Aarch64Linux => &self.hosted_aarch64_linux,
+                Target::Aarch64Macos => &self.hosted_aarch64_macos,
+            };
+        }
+        self.for_target(target)
     }
 }
 
@@ -626,6 +662,26 @@ pub(crate) fn entry_point_symbol(target: Target) -> &'static str {
 
 /// Return the embedded rue-runtime archive matching `target`.
 pub(crate) fn runtime_for_target(target: Target) -> &'static [u8] {
+    runtime_for_target_and_flavor(
+        target,
+        crate::program_image_plan::RuntimeFlavor::Freestanding,
+    )
+}
+
+pub(crate) fn runtime_for_target_and_flavor(
+    target: Target,
+    flavor: crate::program_image_plan::RuntimeFlavor,
+) -> &'static [u8] {
+    if matches!(
+        flavor,
+        crate::program_image_plan::RuntimeFlavor::HostedThreads
+    ) {
+        return match target {
+            Target::X86_64Linux => RUNTIME_HOSTED_X86_64_LINUX,
+            Target::Aarch64Linux => RUNTIME_HOSTED_AARCH64_LINUX,
+            Target::Aarch64Macos => RUNTIME_HOSTED_AARCH64_MACOS,
+        };
+    }
     match target {
         Target::X86_64Linux => RUNTIME_X86_64_LINUX,
         Target::Aarch64Linux => RUNTIME_AARCH64_LINUX,
@@ -871,6 +927,7 @@ fn validate_runtime_inventory(
     match validate_runtime_inventory_with_cancellation(
         inventory,
         target,
+        crate::program_image_plan::RuntimeFlavor::Freestanding,
         &rue_query::CancellationToken::new(),
     ) {
         Ok(()) => Ok(()),
@@ -897,6 +954,7 @@ fn runtime_definitions_with_cancellation<'a>(
 fn validate_runtime_inventory_with_cancellation(
     inventory: &RuntimeArchiveInventory,
     target: rue_runtime_abi::RuntimeTarget,
+    flavor: crate::program_image_plan::RuntimeFlavor,
     cancellation: &rue_query::CancellationToken,
 ) -> Result<(), RuntimeArchiveWorkError> {
     check_runtime_archive_work(cancellation)?;
@@ -919,7 +977,7 @@ fn validate_runtime_inventory_with_cancellation(
         check_runtime_archive_work(cancellation)?;
         let helper = id.helper();
         let found = runtime_definitions_with_cancellation(inventory, helper.symbol, cancellation)?;
-        if helper.availability.contains(target) {
+        if flavor.helper_available(helper, target) {
             match found.len() {
                 0 => {
                     errors.insert(format!("missing runtime helper `{}`", helper.symbol));
@@ -1053,7 +1111,20 @@ fn validate_runtime_archive(runtime_bytes: &[u8], target: Target) -> Result<Arch
 }
 
 /// The per-target validation memo.
-fn embedded_runtime_validation(target: Target) -> &'static std::sync::OnceLock<Result<(), String>> {
+fn embedded_runtime_validation(
+    target: Target,
+    flavor: crate::program_image_plan::RuntimeFlavor,
+) -> &'static std::sync::OnceLock<Result<(), String>> {
+    if matches!(
+        flavor,
+        crate::program_image_plan::RuntimeFlavor::HostedThreads
+    ) {
+        return match target {
+            Target::X86_64Linux => &RUNTIME_HOSTED_X86_64_LINUX_VALIDATION,
+            Target::Aarch64Linux => &RUNTIME_HOSTED_AARCH64_LINUX_VALIDATION,
+            Target::Aarch64Macos => &RUNTIME_HOSTED_AARCH64_MACOS_VALIDATION,
+        };
+    }
     match target {
         Target::X86_64Linux => &RUNTIME_X86_64_LINUX_VALIDATION,
         Target::Aarch64Linux => &RUNTIME_AARCH64_LINUX_VALIDATION,
@@ -1069,22 +1140,43 @@ fn embedded_runtime_validation(target: Target) -> &'static std::sync::OnceLock<R
 /// drop it is pure overhead on every link after the first — including every
 /// warm rebuild in a retained `--watch` session, where the embedded bytes
 /// cannot change within the process (RUE-1845).
+#[cfg_attr(not(test), allow(dead_code))]
 fn validate_runtime_archive_only_with_cancellation(
     runtime_bytes: &[u8],
     target: Target,
     cancellation: &rue_query::CancellationToken,
 ) -> CancellableLinkResult<()> {
+    validate_runtime_archive_only_with_flavor_and_cancellation(
+        runtime_bytes,
+        target,
+        crate::program_image_plan::RuntimeFlavor::Freestanding,
+        cancellation,
+    )
+}
+
+fn validate_runtime_archive_only_with_flavor_and_cancellation(
+    runtime_bytes: &[u8],
+    target: Target,
+    flavor: crate::program_image_plan::RuntimeFlavor,
+    cancellation: &rue_query::CancellationToken,
+) -> CancellableLinkResult<()> {
     check_cancellation(cancellation)?;
     // The same physical-identity test the memo itself is keyed on: a
     // caller-supplied archive that merely compares equal is still validated.
-    if std::ptr::eq(runtime_bytes, runtime_for_target(target))
-        && let Some(validation) = embedded_runtime_validation(target).get()
+    if std::ptr::eq(runtime_bytes, runtime_for_target_and_flavor(target, flavor))
+        && let Some(validation) = embedded_runtime_validation(target, flavor).get()
     {
         return validation
             .clone()
             .map_err(|error| compile_control(link_error(error)));
     }
-    validate_runtime_archive_with_cancellation(runtime_bytes, target, cancellation).map(|_| ())
+    validate_runtime_archive_with_flavor_and_cancellation(
+        runtime_bytes,
+        target,
+        flavor,
+        cancellation,
+    )
+    .map(|_| ())
 }
 
 /// Index the runtime archive for linking, decoding only what selection reads.
@@ -1130,22 +1222,44 @@ fn validated_runtime_index_with_cancellation<'a>(
     )
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn validated_runtime_index_in_caches_with_cancellation<'cache, 'bytes>(
     runtime_bytes: &'bytes [u8],
     target: Target,
     cancellation: &rue_query::CancellationToken,
     embedded_indexes: &'cache EmbeddedRuntimeIndexCaches,
 ) -> CancellableLinkResult<ValidatedRuntimeIndex<'cache, 'bytes>> {
+    validated_runtime_index_in_caches_with_flavor_and_cancellation(
+        runtime_bytes,
+        target,
+        crate::program_image_plan::RuntimeFlavor::Freestanding,
+        cancellation,
+        embedded_indexes,
+    )
+}
+
+fn validated_runtime_index_in_caches_with_flavor_and_cancellation<'cache, 'bytes>(
+    runtime_bytes: &'bytes [u8],
+    target: Target,
+    flavor: crate::program_image_plan::RuntimeFlavor,
+    cancellation: &rue_query::CancellationToken,
+    embedded_indexes: &'cache EmbeddedRuntimeIndexCaches,
+) -> CancellableLinkResult<ValidatedRuntimeIndex<'cache, 'bytes>> {
     check_cancellation(cancellation)?;
-    let embedded_runtime = runtime_for_target(target);
+    let embedded_runtime = runtime_for_target_and_flavor(target, flavor);
     if std::ptr::eq(runtime_bytes, embedded_runtime) {
         return embedded_indexes
-            .for_target(target)
+            .for_target_and_flavor(target, flavor)
             .get_or_index(embedded_runtime, cancellation)
             .map(ValidatedRuntimeIndex::Embedded);
     }
 
-    validate_runtime_archive_with_cancellation(runtime_bytes, target, cancellation)?;
+    validate_runtime_archive_with_flavor_and_cancellation(
+        runtime_bytes,
+        target,
+        flavor,
+        cancellation,
+    )?;
     check_cancellation(cancellation)?;
     parse_runtime_index_with_cancellation(runtime_bytes, cancellation)
         .map(ValidatedRuntimeIndex::Supplied)
@@ -1177,9 +1291,24 @@ fn parse_runtime_index_with_cancellation<'a>(
     Ok(index)
 }
 
+#[allow(dead_code)]
 fn validate_runtime_archive_with_cancellation(
     runtime_bytes: &[u8],
     target: Target,
+    cancellation: &rue_query::CancellationToken,
+) -> CancellableLinkResult<Archive> {
+    validate_runtime_archive_with_flavor_and_cancellation(
+        runtime_bytes,
+        target,
+        crate::program_image_plan::RuntimeFlavor::Freestanding,
+        cancellation,
+    )
+}
+
+fn validate_runtime_archive_with_flavor_and_cancellation(
+    runtime_bytes: &[u8],
+    target: Target,
+    flavor: crate::program_image_plan::RuntimeFlavor,
     cancellation: &rue_query::CancellationToken,
 ) -> CancellableLinkResult<Archive> {
     check_cancellation(cancellation)?;
@@ -1202,8 +1331,8 @@ fn validate_runtime_archive_with_cancellation(
         )));
     }
     check_cancellation(cancellation)?;
-    let embedded_runtime = runtime_for_target(target);
-    let embedded_validation = embedded_runtime_validation(target);
+    let embedded_runtime = runtime_for_target_and_flavor(target, flavor);
+    let embedded_validation = embedded_runtime_validation(target, flavor);
     if std::ptr::eq(runtime_bytes, embedded_runtime) {
         if let Some(validation) = embedded_validation.get() {
             validation
@@ -1216,6 +1345,7 @@ fn validate_runtime_archive_with_cancellation(
                 validate_runtime_inventory_with_cancellation(
                     &inventory,
                     runtime_target(target),
+                    flavor,
                     cancellation,
                 )
             })();
@@ -1239,6 +1369,7 @@ fn validate_runtime_archive_with_cancellation(
         validate_runtime_inventory_with_cancellation(
             &inventory,
             runtime_target(target),
+            flavor,
             cancellation,
         )
         .map_err(map_runtime_archive_work_control)?;
@@ -1268,7 +1399,10 @@ fn validate_parsed_runtime_archive(
         validate_runtime_inventory(&inventory, runtime_target(target))
     };
     let embedded_runtime = runtime_for_target(target);
-    let embedded_validation = embedded_runtime_validation(target);
+    let embedded_validation = embedded_runtime_validation(
+        target,
+        crate::program_image_plan::RuntimeFlavor::Freestanding,
+    );
     if std::ptr::eq(runtime_bytes, embedded_runtime) {
         embedded_validation.get_or_init(validate).clone()?;
     } else {
@@ -1321,6 +1455,7 @@ fn finish_internal_link(
         finish_internal_link_with_cancellation(
             linker,
             options,
+            crate::program_image_plan::RuntimeFlavor::Freestanding,
             object_count,
             warnings,
             &rue_query::CancellationToken::new(),
@@ -1332,12 +1467,13 @@ fn finish_internal_link(
 fn finish_internal_link_with_cancellation(
     mut linker: Linker,
     options: &CompileOptions,
+    flavor: crate::program_image_plan::RuntimeFlavor,
     object_count: usize,
     warnings: &[CompileWarning],
     cancellation: &rue_query::CancellationToken,
 ) -> CancellableLinkResult<CompileOutput> {
     check_cancellation(cancellation)?;
-    let runtime_bytes = runtime_for_target(options.target);
+    let runtime_bytes = runtime_for_target_and_flavor(options.target, flavor);
     let entry_point = entry_point_symbol(options.target);
     linker.require_symbol(entry_point);
     {
@@ -1350,10 +1486,11 @@ fn finish_internal_link_with_cancellation(
                 .map_err(map_linker_control)?;
         }
         check_cancellation(cancellation)?;
-        add_runtime_archive_to_linker_with_cancellation(
+        add_runtime_archive_to_linker_with_flavor_and_cancellation(
             &mut linker,
             runtime_bytes,
             options.target,
+            flavor,
             cancellation,
             &EMBEDDED_RUNTIME_INDEXES,
         )?;
@@ -1396,6 +1533,7 @@ fn finish_internal_link_with_cancellation(
     })
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn add_runtime_archive_to_linker_with_cancellation(
     linker: &mut Linker,
     runtime_bytes: &[u8],
@@ -1403,9 +1541,28 @@ fn add_runtime_archive_to_linker_with_cancellation(
     cancellation: &rue_query::CancellationToken,
     embedded_indexes: &EmbeddedRuntimeIndexCaches,
 ) -> CancellableLinkResult<()> {
-    let runtime = validated_runtime_index_in_caches_with_cancellation(
+    add_runtime_archive_to_linker_with_flavor_and_cancellation(
+        linker,
         runtime_bytes,
         target,
+        crate::program_image_plan::RuntimeFlavor::Freestanding,
+        cancellation,
+        embedded_indexes,
+    )
+}
+
+fn add_runtime_archive_to_linker_with_flavor_and_cancellation(
+    linker: &mut Linker,
+    runtime_bytes: &[u8],
+    target: Target,
+    flavor: crate::program_image_plan::RuntimeFlavor,
+    cancellation: &rue_query::CancellationToken,
+    embedded_indexes: &EmbeddedRuntimeIndexCaches,
+) -> CancellableLinkResult<()> {
+    let runtime = validated_runtime_index_in_caches_with_flavor_and_cancellation(
+        runtime_bytes,
+        target,
+        flavor,
         cancellation,
         embedded_indexes,
     )?;
@@ -1418,6 +1575,7 @@ fn add_runtime_archive_to_linker_with_cancellation(
 /// because they are synthesized outside the retained CodegenUnit query.
 pub(crate) fn link_internal_structured_with_warnings_and_cancellation(
     options: &CompileOptions,
+    flavor: crate::program_image_plan::RuntimeFlavor,
     objects: &[crate::object_query::CollectedObjectProjection],
     export_aliases: &ExportAliasNames,
     export_thunk_objects: &[Vec<u8>],
@@ -1426,6 +1584,7 @@ pub(crate) fn link_internal_structured_with_warnings_and_cancellation(
 ) -> CancellableLinkResult<CompileOutput> {
     link_internal_structured_admission_with_cancellation(
         options,
+        flavor,
         objects.len(),
         export_thunk_objects,
         warnings,
@@ -1448,6 +1607,7 @@ pub(crate) fn link_internal_structured_with_warnings_and_cancellation(
 
 pub(crate) fn link_internal_structured_units_with_warnings_and_cancellation(
     options: &CompileOptions,
+    flavor: crate::program_image_plan::RuntimeFlavor,
     units: &[crate::codegen_query::CollectedCodegenUnit],
     export_aliases: &ExportAliasNames,
     export_thunk_objects: &[Vec<u8>],
@@ -1456,6 +1616,7 @@ pub(crate) fn link_internal_structured_units_with_warnings_and_cancellation(
 ) -> CancellableLinkResult<CompileOutput> {
     link_internal_structured_admission_with_cancellation(
         options,
+        flavor,
         units.len(),
         export_thunk_objects,
         warnings,
@@ -1478,6 +1639,7 @@ pub(crate) fn link_internal_structured_units_with_warnings_and_cancellation(
 
 fn link_internal_structured_admission_with_cancellation(
     options: &CompileOptions,
+    flavor: crate::program_image_plan::RuntimeFlavor,
     object_count: usize,
     export_thunk_objects: &[Vec<u8>],
     warnings: &[CompileWarning],
@@ -1500,6 +1662,7 @@ fn link_internal_structured_admission_with_cancellation(
     finish_internal_link_with_cancellation(
         linker,
         options,
+        flavor,
         object_count + export_thunk_objects.len(),
         warnings,
         cancellation,
@@ -1562,6 +1725,7 @@ pub(crate) fn link_system_with_warnings(
             options,
             object_files,
             linker_cmd,
+            crate::program_image_plan::RuntimeFlavor::Freestanding,
             warnings,
             &rue_query::CancellationToken::new(),
         ),
@@ -1573,6 +1737,7 @@ pub(crate) fn link_system_with_warnings_and_cancellation(
     options: &CompileOptions,
     object_files: &[Vec<u8>],
     linker_cmd: &str,
+    flavor: crate::program_image_plan::RuntimeFlavor,
     warnings: &[CompileWarning],
     cancellation: &rue_query::CancellationToken,
 ) -> CancellableLinkResult<CompileOutput> {
@@ -1585,10 +1750,15 @@ pub(crate) fn link_system_with_warnings_and_cancellation(
     )
     .entered();
 
-    let runtime_bytes = runtime_for_target(options.target);
+    let runtime_bytes = runtime_for_target_and_flavor(options.target, flavor);
     // The system linker consumes the archive bytes directly, so validate the
     // embedded target and typed ABI before writing them to disk.
-    validate_runtime_archive_only_with_cancellation(runtime_bytes, options.target, cancellation)?;
+    validate_runtime_archive_only_with_flavor_and_cancellation(
+        runtime_bytes,
+        options.target,
+        flavor,
+        cancellation,
+    )?;
     check_cancellation(cancellation)?;
 
     // Set up temporary directory with object files and runtime
@@ -1609,7 +1779,14 @@ pub(crate) fn link_system_with_warnings_and_cancellation(
         cmd.arg("-e").arg(entry_point_symbol(options.target));
     } else {
         // Linux/ELF-specific flags
-        cmd.arg("-static");
+        if matches!(
+            flavor,
+            crate::program_image_plan::RuntimeFlavor::Freestanding
+        ) {
+            cmd.arg("-static");
+        } else {
+            cmd.arg("-no-pie");
+        }
         cmd.arg("-nostdlib");
     }
 
@@ -1633,6 +1810,12 @@ pub(crate) fn link_system_with_warnings_and_cancellation(
     // macOS requires libSystem for syscalls
     if options.target.is_macho() {
         cmd.arg("-lSystem");
+    } else if matches!(
+        flavor,
+        crate::program_image_plan::RuntimeFlavor::HostedThreads
+    ) {
+        cmd.arg("-lc");
+        cmd.arg("-lpthread");
     }
 
     // Redirect output into owner-only workspace leaves. This preserves
@@ -1811,6 +1994,7 @@ mod temp_link_dir_tests {
             &options,
             &[],
             linker.to_str().unwrap(),
+            crate::program_image_plan::RuntimeFlavor::Freestanding,
             &[],
             &cancellation,
         );
@@ -1869,6 +2053,77 @@ mod temp_link_dir_tests {
         let error =
             link_system_with_warnings(&options, &[], failure.to_str().unwrap(), &[]).unwrap_err();
         assert!(error.to_string().contains("ordinary failure"));
+    }
+
+    #[test]
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_hosted_runtime_plan_links_and_starts_a_real_image() {
+        let target = Target::host().expect("tests require a supported host");
+        let runtime_plan = crate::program_image_plan::RuntimeLinkPlan {
+            flavor: crate::program_image_plan::RuntimeFlavor::HostedThreads,
+            required_symbols: vec![
+                entry_point_symbol(target).to_owned(),
+                rue_runtime_abi::RUNTIME_ABI_VERSION_SYMBOL.to_owned(),
+            ],
+        };
+        assert_eq!(
+            crate::program_image_plan::hosted_system_link_required(
+                target,
+                &LinkerMode::Auto,
+                runtime_plan.flavor,
+            ),
+            Ok(true)
+        );
+
+        let main_code = if matches!(target, Target::Aarch64Linux | Target::Aarch64Macos) {
+            // `mov w0, #0; ret` in AArch64 encoding.
+            vec![0x00, 0x00, 0x80, 0xd2, 0xc0, 0x03, 0x5f, 0xd6]
+        } else {
+            // `xor eax, eax; ret` in x86-64 encoding.
+            vec![0x31, 0xc0, 0xc3]
+        };
+        let object = rue_linker::ObjectBuilder::new(target, "main")
+            .code(main_code)
+            .build();
+        let options = CompileOptions {
+            target,
+            linker: LinkerMode::Auto,
+            ..CompileOptions::default()
+        };
+        let output = link_system_with_warnings_and_cancellation(
+            &options,
+            &[object],
+            "cc",
+            runtime_plan.flavor,
+            &[],
+            &rue_query::CancellationToken::new(),
+        )
+        .unwrap();
+
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("hosted-runtime-plan");
+        std::fs::write(&executable, output.elf).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(&executable, permissions).unwrap();
+        }
+        let mut child = std::process::Command::new(&executable).spawn().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("hosted runtime image did not exit before its deadline");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(status.success(), "hosted runtime exited with {status}");
     }
 
     #[test]
@@ -2089,8 +2344,12 @@ mod runtime_archive_validation_tests {
         let cancellation = rue_query::CancellationToken::new();
         set_runtime_archive_cancellation_tripwire(Some((cancellation.clone(), 128)));
 
-        let result =
-            validate_runtime_inventory_with_cancellation(&inventory, target, &cancellation);
+        let result = validate_runtime_inventory_with_cancellation(
+            &inventory,
+            target,
+            crate::program_image_plan::RuntimeFlavor::Freestanding,
+            &cancellation,
+        );
 
         let error = result.unwrap_err();
         assert!(matches!(error, RuntimeArchiveWorkError::Canceled));
@@ -2565,6 +2824,109 @@ mod runtime_archive_validation_tests {
     }
 
     #[test]
+    fn flavor_availability_keeps_hosted_only_rows_out_of_free_archives() {
+        let target = RuntimeTarget::X86_64Linux;
+        let mut hosted_only = *RuntimeHelperId::Alloc.helper();
+        hosted_only.requirement = rue_runtime_abi::RuntimeRequirement::HostedThreads;
+        assert!(
+            crate::program_image_plan::RuntimeFlavor::HostedThreads
+                .helper_available(&hosted_only, target)
+        );
+        assert!(
+            !crate::program_image_plan::RuntimeFlavor::Freestanding
+                .helper_available(&hosted_only, target)
+        );
+        assert_eq!(
+            rue_runtime_abi::RuntimeRequirement::Freestanding
+                .union(rue_runtime_abi::RuntimeRequirement::HostedThreads),
+            rue_runtime_abi::RuntimeRequirement::HostedThreads
+        );
+    }
+
+    #[test]
+    fn all_target_flavor_archives_validate_and_keep_distinct_identity() {
+        let cancellation = rue_query::CancellationToken::new();
+        let mut identities = Vec::new();
+        let mut index_addresses = Vec::new();
+        let mut archives = Vec::new();
+        for &target in Target::all() {
+            for flavor in [
+                crate::program_image_plan::RuntimeFlavor::Freestanding,
+                crate::program_image_plan::RuntimeFlavor::HostedThreads,
+            ] {
+                let bytes = runtime_for_target_and_flavor(target, flavor);
+                validate_runtime_archive_with_flavor_and_cancellation(
+                    bytes,
+                    target,
+                    flavor,
+                    &cancellation,
+                )
+                .unwrap();
+                let indexed = validated_runtime_index_in_caches_with_flavor_and_cancellation(
+                    bytes,
+                    target,
+                    flavor,
+                    &cancellation,
+                    &EMBEDDED_RUNTIME_INDEXES,
+                )
+                .unwrap();
+                let ValidatedRuntimeIndex::Embedded(index) = indexed else {
+                    panic!("embedded bytes must use the embedded index cache");
+                };
+                index_addresses.push(index as *const _ as usize);
+                let identity =
+                    crate::program_image_plan::RuntimeArchiveIdentity::for_target_and_flavor(
+                        target, flavor,
+                    );
+                identities.push(identity);
+                archives.push((bytes, identity.content_digest()));
+            }
+        }
+        for (index, identity) in identities.iter().enumerate() {
+            assert!(
+                identities[index + 1..]
+                    .iter()
+                    .all(|other| identity != other),
+                "target/flavor archive identities must remain pairwise distinct"
+            );
+        }
+        for (index, address) in index_addresses.iter().enumerate() {
+            assert!(
+                index_addresses[index + 1..]
+                    .iter()
+                    .all(|other| address != other),
+                "target/flavor archive indexes must remain separately cached"
+            );
+        }
+        for (index, (bytes, digest)) in archives.iter().enumerate() {
+            for (other_bytes, other_digest) in &archives[index + 1..] {
+                assert_eq!(
+                    bytes == other_bytes,
+                    digest == other_digest,
+                    "archive digest must exactly reflect embedded bytes"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn supplied_runtime_bytes_do_not_enter_embedded_index_caches() {
+        let target = Target::X86_64Linux;
+        let flavor = crate::program_image_plan::RuntimeFlavor::HostedThreads;
+        let supplied = runtime_for_target_and_flavor(target, flavor).to_vec();
+        let cancellation = rue_query::CancellationToken::new();
+        let indexed = validated_runtime_index_in_caches_with_flavor_and_cancellation(
+            &supplied,
+            target,
+            flavor,
+            &cancellation,
+            &EMBEDDED_RUNTIME_INDEXES,
+        )
+        .unwrap();
+        assert!(matches!(indexed, ValidatedRuntimeIndex::Supplied(_)));
+    }
+
+    #[test]
     fn rejects_missing_and_duplicate_helpers() {
         let mut inventory = valid_inventory(RuntimeTarget::X86_64Linux, 1);
         inventory
@@ -2962,7 +3324,12 @@ mod tests {
         // steady state below is asserted.
         validate_runtime_archive_only_with_cancellation(bytes, target, &cancellation).unwrap();
         assert!(
-            embedded_runtime_validation(target).get().is_some(),
+            embedded_runtime_validation(
+                target,
+                crate::program_image_plan::RuntimeFlavor::Freestanding,
+            )
+            .get()
+            .is_some(),
             "the verdict should be memoized after one validation"
         );
 

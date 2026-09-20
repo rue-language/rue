@@ -1,7 +1,8 @@
 # Profiling Rue executables: the symbolized build workflow
 
-The default Rue build links with the internal linker, which deliberately emits
-a minimal executable image: no section table, no symbol table, no debug or
+The default Rue build uses `--linker auto`. Freestanding programs take the
+internal linker, which deliberately emits a minimal executable image: no
+section table, no symbol table, no debug or
 unwind sections. That is the right default for a fast, reproducible build, but
 a native profiler can only show raw addresses in it, and size-attribution
 tools have nothing to attribute.
@@ -24,6 +25,12 @@ makes the measured code representative.
 This works on every supported platform with a C toolchain installed:
 x86-64 Linux and AArch64 Linux (`cc` from gcc or clang), and AArch64 macOS
 (`cc` from the Xcode command-line tools).
+
+The same native-driver rule applies automatically when a program reaches a
+runtime helper requiring `HostedThreads`. A foreign-target hosted build must
+provide its cross C driver explicitly; `auto` does not infer one. Explicit
+`--linker internal` is rejected for hosted requirements, and daemon clients
+should use `--daemon off` for that path.
 
 ## Verifying the symbols
 

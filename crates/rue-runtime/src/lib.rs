@@ -267,6 +267,19 @@ macro_rules! call_runtime_helper_implementation {
 
 macro_rules! declare_runtime_helper {
     (
+        HostedThreads;
+        $($tokens:tt)*
+    ) => {
+        #[cfg(rue_hosted_threads)]
+        declare_runtime_helper! { $($tokens)* }
+    };
+    (
+        Freestanding;
+        $($tokens:tt)*
+    ) => {
+        declare_runtime_helper! { $($tokens)* }
+    };
+    (
         safe $function:ident($($argument:ident : $rust_type:ty),* $(,)?) $(-> $result:ty)?
     ) => {
         #[unsafe(no_mangle)]
@@ -297,11 +310,13 @@ macro_rules! declare_runtime_helpers {
                 result: $abi_result:expr,
                 safety: $contract:expr,
                 returns: $returns:expr
+                $(, requirement: $requirement:ident)?
             }
         ),+ $(,)?
     ) => {
         $(
             declare_runtime_helper! {
+                $($requirement;)?
                 $safety $function($($argument: $rust_type),*) $(-> $result)?
             }
         )+

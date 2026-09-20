@@ -79,7 +79,7 @@ impl std::str::FromStr for DaemonMode {
 pub(crate) fn unsupported_reason(options: &Options) -> Option<&'static str> {
     // Watch selects a service adapter for the shared cycle lifecycle. Emit
     // stages are ordinary requests through the canonical presentation path.
-    if !matches!(options.linker, LinkerMode::Internal) {
+    if matches!(options.linker, LinkerMode::System(_)) {
         return Some("a system linker runs directly");
     }
     if options.time_passes {
@@ -285,7 +285,7 @@ pub(crate) fn validate_performance_options(
         || options.module_manifest_path.is_some()
         || options.test_candidates_path.is_some()
         || !options.link_archives.is_empty()
-        || options.linker != LinkerMode::Internal
+        || matches!(options.linker, LinkerMode::System(_))
         || options.test.list
         || (!options.emit_stages.is_empty() && options.emit_stages != [EmitStage::Air])
     {

@@ -34,7 +34,10 @@ impl<'a> SourceView<'a> {
 /// an external system linker like `clang`, `gcc`, or `ld`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkerMode {
-    /// Use the internal linker (default).
+    /// Choose internal linking for freestanding images and the native C
+    /// driver when reached helpers require hosted threads.
+    Auto,
+    /// Use the internal linker explicitly.
     Internal,
     /// Use an external system linker (e.g., "clang", "ld", "gcc").
     System(String),
@@ -42,7 +45,7 @@ pub enum LinkerMode {
 
 impl Default for LinkerMode {
     fn default() -> Self {
-        LinkerMode::Internal
+        LinkerMode::Auto
     }
 }
 
@@ -120,7 +123,7 @@ impl Default for CompileOptions {
         Self {
             target: Target::host()
                 .expect("Rue cannot choose a default compile target on this unsupported host"),
-            linker: LinkerMode::Internal,
+            linker: LinkerMode::Auto,
             opt_level: OptLevel::default(),
             preview_features: PreviewFeatures::new(),
             link_archives: Vec::new(),
@@ -341,7 +344,7 @@ pub(crate) fn compile_with_session_with_cancellation(
     }
     require_published_snapshot_membership(session, snapshot)
         .map_err(crate::session::PipelineRequestControl::Compile)?;
-    let rooted = if matches!(options.linker, LinkerMode::Internal) {
+    let rooted = if matches!(options.linker, LinkerMode::Internal | LinkerMode::Auto) {
         session.rooted_codegen_internal_with_cancellation(
             options,
             rue_codegen::BackendArtifactRequest::default(),
@@ -439,6 +442,11 @@ pub(crate) fn compile_rooted_with_session_with_cancellation(
     let link_started = Instant::now();
     let mut output = match rooted.input {
         crate::session::RootedCodegenInput::Structured => {
+            let runtime_plan = crate::program_image_plan::runtime_link_plan_with_cancellation(
+                rooted.units.iter().map(|unit| unit.unit.as_ref()),
+                options.target,
+                cancellation,
+            )?;
             let mut export_entries = Vec::with_capacity(rooted.exports.len());
             for export in &rooted.exports {
                 check_cancellation()?;
@@ -447,22 +455,66 @@ pub(crate) fn compile_rooted_with_session_with_cancellation(
                     export,
                 ));
             }
-            crate::linking::link_internal_structured_units_with_warnings_and_cancellation(
-                options,
-                &rooted.units,
-                &crate::backend::export_alias_names(&export_entries),
-                &crate::backend::export_thunk_objects(&export_entries),
-                &rooted.warnings,
-                cancellation,
-            )?
+            let needs_system = crate::program_image_plan::hosted_system_link_required(
+                options.target,
+                &options.linker,
+                runtime_plan.flavor,
+            )
+            .map_err(|message| {
+                crate::session::PipelineRequestControl::Compile(CompileErrors::from(
+                    CompileError::without_span(ErrorKind::LinkError(message.into())),
+                ))
+            })?;
+            if needs_system {
+                let aliases = crate::backend::export_alias_names(&export_entries);
+                let mut objects = Vec::with_capacity(rooted.units.len());
+                for collected in &rooted.units {
+                    check_cancellation()?;
+                    let bytes = crate::backend::project_backend_object_with_cancellation(
+                        &collected.unit,
+                        options.target,
+                        aliases
+                            .get(collected.unit.defined_symbol.as_ref())
+                            .map_or(&[][..], Vec::as_slice),
+                        cancellation,
+                    )?;
+                    objects.push(crate::object_query::CollectedObjectProjection {
+                        function: collected.function.clone(),
+                        unit: collected.unit.clone(),
+                        object: std::sync::Arc::new(
+                            crate::object_query::ObjectProjection::from_bytes(bytes),
+                        ),
+                    });
+                }
+                let image = crate::program_image_plan::ProgramImage::from_rooted_with_plan_and_cancellation(
+                    objects,
+                    &rooted.exports,
+                    export_entries,
+                    &runtime_plan,
+                    options,
+                    cancellation,
+                )?;
+                image.fresh_link_with_cancellation(options, &rooted.warnings, cancellation)?
+            } else {
+                crate::linking::link_internal_structured_units_with_warnings_and_cancellation(
+                    options,
+                    runtime_plan.flavor,
+                    &rooted.units,
+                    &crate::backend::export_alias_names(&export_entries),
+                    &crate::backend::export_thunk_objects(&export_entries),
+                    &rooted.warnings,
+                    cancellation,
+                )?
+            }
         }
         crate::session::RootedCodegenInput::Projected => {
-            let image = crate::program_image_plan::ProgramImage::from_rooted_with_cancellation(
-                rooted.objects,
-                rooted.exports,
-                options,
-                cancellation,
-            )?;
+            let image =
+                crate::program_image_plan::ProgramImage::from_rooted_entries_with_cancellation(
+                    rooted.objects,
+                    rooted.exports,
+                    options,
+                    cancellation,
+                )?;
             image.fresh_link_with_cancellation(options, &rooted.warnings, cancellation)?
         }
     };

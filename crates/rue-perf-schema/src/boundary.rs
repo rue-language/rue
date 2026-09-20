@@ -50,6 +50,8 @@ pub enum OptimizationLevel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LinkPolicy {
+    /// Select internal or system linking from reached runtime requirements.
+    Auto,
     /// Rue's built-in linker.
     Internal,
     /// An external command selected by the caller.
