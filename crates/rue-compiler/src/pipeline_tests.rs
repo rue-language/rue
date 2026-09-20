@@ -3994,11 +3994,11 @@ mod tests {
         assert_eq!(has_unit(&o3, "middle"), has_unit(&o3_again, "middle"));
     }
 
-    /// RUE-2088: caller-owned site materialization in a `@panic` arm sits in a block that
-    /// cannot reach the callee's return, so it is not the call boundary O2's
-    /// leaf rule refuses. The caller carries a string constant of its own so
-    /// the arm's constants can be imported into its type pool; with that,
-    /// the guarded accessor is consumed at O2 and its body dropped.
+    /// RUE-2088: scalar source-file and packed-position operands in a `@panic`
+    /// arm sit in a block that cannot reach the callee's return, so they do not
+    /// make the call boundary that O2's leaf rule refuses. The caller carries
+    /// a string constant of its own so the arm's constants can be imported into
+    /// its type pool; the guarded accessor is consumed at O2 and its body drops.
     #[test]
     fn phase2_admits_a_callee_whose_only_call_diverges() {
         let snapshot = SourceSnapshot::single(
@@ -4058,12 +4058,8 @@ mod tests {
                 ..CompileOptions::default()
             })
             .unwrap();
-        assert_eq!(
-            user_calls_in_main(&o2),
-            1,
-            "the canonical caller-owned panic report remains a call boundary"
-        );
-        assert!(has_unit(&o2, "open"));
+        assert_eq!(user_calls_in_main(&o2), 0);
+        assert!(!has_unit(&o2, "open"));
     }
 
     #[cfg(unix)]

@@ -5034,7 +5034,11 @@ mod tests {
                 return_type: self.return_type,
                 instructions: self.instructions.into(),
                 places: self.places.into(),
-                strings: Arc::new([]),
+                // The divergence fixture uses the canonical builtin `str`
+                // shape for panic's source file operand. Keep its string
+                // table populated so the imported `StringConst(0)` is a
+                // complete durable body reference.
+                strings: Arc::from([Arc::from("")]),
                 local_atoms: Arc::new([]),
                 param_drops: self.param_drops.into(),
                 borrow_slots: Arc::new([]),

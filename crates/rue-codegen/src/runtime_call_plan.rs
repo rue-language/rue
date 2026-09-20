@@ -570,7 +570,7 @@ mod tests {
             RuntimeCallPlan::new(
                 RuntimeHelperId::Panic,
                 [
-                    RuntimeCallArg::const_pointer(VReg::new(0), AbiType::Byte),
+                    RuntimeCallArg::out_pointer(AggregateShapeId::StrBufResult),
                     RuntimeCallArg::immediate(0, AbiType::U64),
                     RuntimeCallArg::immediate(0, AbiType::U64),
                     RuntimeCallArg::immediate(0, AbiType::U64),
