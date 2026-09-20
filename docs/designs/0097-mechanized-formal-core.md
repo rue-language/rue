@@ -66,8 +66,11 @@ Three properties of the spike shape the decisions below.
   artifact is therefore an interpreter that produces a result plus a drop
   trace, which is what `crates/rue-oracle` is. That makes a three-way
   differential loop (Lean model, oracle, compiler) a natural extension of
-  RUE-50 rather than a new architecture; AWS Cedar's
-  verification-guided-development practice is the production precedent.
+  RUE-50 rather than a new architecture. AWS Cedar's
+  verification-guided development is the production precedent: a Lean
+  model of the language, proofs of its key properties, and differential
+  random testing between the model and the Rust implementation
+  (<https://github.com/cedar-policy/cedar-spec>).
 - **Cheap to build and run.** Core Lean suffices; no Mathlib. A cold build
   is seconds. The toolchain is a per-platform, SHA-pinned release archive,
   which is what `elan` downloads and also what the repository's
@@ -314,6 +317,9 @@ Tracked as milestones of the "Formal core mechanization" Linear project.
   mechanization".
 - ADR-0082 (a process ADR of the same shape), ADR-0083 (a phased project
   ADR whose review rounds were its ratification).
-- AWS Cedar's verification-guided development (Lean model, Rust
-  implementation, differential testing between them) as the external
-  precedent for the bridge.
+- AWS Cedar's verification-guided development as the external precedent
+  for the bridge: the Lean formalization and differential-testing harness
+  at <https://github.com/cedar-policy/cedar-spec>, and the paper "Cedar: A
+  New Language for Expressive, Fast, Safe, and Analyzable Authorization"
+  (Cutler et al., OOPSLA 2024; extended version at
+  <https://arxiv.org/abs/2403.04651>).
