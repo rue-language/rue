@@ -1,0 +1,147 @@
+════════════════════════════════════════════════════════════════════════════════
+ linear_half_consumed
+════════════════════════════════════════════════════════════════════════════════
+A linear value consumed in one arm of an if only: the §5.5 join rejects it;
+dynamically it leaks on the other path.
+
+Rules exercised: (If) §5.5 join · 3.8:50
+
+── The program ─────────────────────────────────────────────────────────────────
+
+    {
+        let v0: RLinear = RLinear { value: 9 };
+        {
+            if false {
+                consume_linear(v0)
+            } else {
+                0
+            };
+            0
+        }
+    }
+
+── What the checker says (§5) ──────────────────────────────────────────────────
+
+Verdict: REJECTED by the checker (§5).
+
+The premise that fails, at (If) §5.5 join:
+
+    on  if false { consume_linear(v0) } else { 0 }
+
+    the two arms disagree on a linear-carrying entry — v0: RLinear is MovedOut
+    in the then-arm and Owned in the else-arm, so a linear value is consumed
+    on only some paths ((If) premise `Σ' = join(Σ1, Σ2)`, §5.5; 3.8:50; the
+    compiler reports E0443)
+
+── The derivation (§5) ─────────────────────────────────────────────────────────
+
+Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
+fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
+premises are the nodes indented under it, in premise order.
+
+  (Let) §5.6 + scope-exit leak check
+    e       { let v0: RLinear = RLinear { value: 9 }; { if false { consume_linear(v0) } els…
+    Γ;Σ     (empty)
+    ✗       this premise fails:
+            a premise's own derivation failed — the reason is the rejected
+            premise nested under this rule
+      (Struct-Intro) §5.8
+        e       RLinear { value: 9 }
+        Γ;Σ     (empty)
+        ⇒       RLinear  ⊣  (empty)
+          (Lit) §5.8
+            e       9
+            Γ;Σ     (empty)
+            ⇒       i64  ⊣  (empty)
+      (Seq) §5.3, 3.8:64
+        e       { if false { consume_linear(v0) } else { 0 }; 0 }
+        Γ;Σ     [v0: RLinear = Owned]
+        ✗       this premise fails:
+                a premise's own derivation failed — the reason is the rejected
+                premise nested under this rule
+          (If) §5.5 join
+            e       if false { consume_linear(v0) } else { 0 }
+            Γ;Σ     [v0: RLinear = Owned]
+            ✗       this premise fails:
+                    the two arms disagree on a linear-carrying entry — v0: RLinear is
+                    MovedOut in the then-arm and Owned in the else-arm, so a linear
+                    value is consumed on only some paths ((If) premise `Σ' = join(Σ1,
+                    Σ2)`, §5.5; 3.8:50; the compiler reports E0443)
+              (Lit) §5.8
+                e       false
+                Γ;Σ     [v0: RLinear = Owned]
+                ⇒       bool  ⊣  [v0: RLinear = Owned]
+              (Call) §5.8
+                e       consume_linear(v0)
+                Γ;Σ     [v0: RLinear = Owned]
+                ⇒       i64  ⊣  [v0: RLinear = MovedOut]
+                  (Use-Move) §5.1
+                    e       v0
+                    Γ;Σ     [v0: RLinear = Owned]
+                    ⇒       RLinear  ⊣  [v0: RLinear = MovedOut]
+              (Lit) §5.8
+                e       0
+                Γ;Σ     [v0: RLinear = Owned]
+                ⇒       i64  ⊣  [v0: RLinear = Owned]
+
+── The run (§6) ────────────────────────────────────────────────────────────────
+
+One row per evaluated node, in execution order: a node's premises run before
+the node itself, so the table reads top to bottom as the machine ran. `d<n>`
+is the nesting depth and `>>` marks a drop event.
+
+  [1]   d2      literal §6.3
+         expr    9
+         store   (empty)
+           →     (empty)
+         result  value 9
+  [2]   d1    (D-Struct) §6.5
+         expr    RLinear { value: 9 }
+         store   (empty)
+           →     (empty)
+         result  value RLinear { 9 }
+  [3]   d1    (D-Let) §6.7 (mint the binding)
+         expr    { let v0: RLinear = RLinear { value: 9 }; { if false { consume_linear(v0) } els…
+         store   (empty)
+           →     [ℓ0 = RLinear { 9 }]
+         result  value RLinear { 9 }
+  [4]   d3        literal §6.3
+         expr    false
+         store   [ℓ0 = RLinear { 9 }]
+           →     [ℓ0 = RLinear { 9 }]
+         result  value false
+  [5]   d3        literal §6.3
+         expr    0
+         store   [ℓ0 = RLinear { 9 }]
+           →     [ℓ0 = RLinear { 9 }]
+         result  value 0
+  [6]   d2      (D-If-F) §6.6
+         expr    if false { consume_linear(v0) } else { 0 }
+         store   [ℓ0 = RLinear { 9 }]
+           →     [ℓ0 = RLinear { 9 }]
+         result  value 0
+  [7]   d2      literal §6.3
+         expr    0
+         store   [ℓ0 = RLinear { 9 }]
+           →     [ℓ0 = RLinear { 9 }]
+         result  value 0
+  [8]   d1    (D-Seq) §6.7
+         expr    { if false { consume_linear(v0) } else { 0 }; 0 }
+         store   [ℓ0 = RLinear { 9 }]
+           →     [ℓ0 = RLinear { 9 }]
+         result  value 0
+  [9]   d0  (D-EndScope) §6.7 (retire the binding)
+         expr    { let v0: RLinear = RLinear { value: 9 }; { if false { consume_linear(v0) } els…
+         store   [ℓ0 = RLinear { 9 }]
+           →     [ℓ0 = RLinear { 9 }]
+         result  REFUSED (linearLeak)
+                 scope exit reached a live linear value: a linear obligation was
+                 never discharged (endscope §6.7, the §5.6 leak check executed;
+                 3.8:32; §7 “consumed exactly once”)
+
+────────────────────────────────────────────────────────────────────────────────
+Outcome: REFUSED (linearLeak)
+         scope exit reached a live linear value: a linear obligation was
+         never discharged (endscope §6.7, the §5.6 leak check executed;
+         3.8:32; §7 “consumed exactly once”)
+

@@ -1,0 +1,64 @@
+════════════════════════════════════════════════════════════════════════════════
+ bool_result
+════════════════════════════════════════════════════════════════════════════════
+A boolean value from a comparison.
+
+Rules exercised: §5.8 operator statics · §6.4
+
+── The program ─────────────────────────────────────────────────────────────────
+
+    (3 < 2)
+
+── What the checker says (§5) ──────────────────────────────────────────────────
+
+Verdict: ACCEPTED by the checker (§5).
+         type bool, outgoing Γ;Σ (empty)
+
+         `check_sound` ties this acceptance to a real derivation, so the §7
+         safety theorems apply to this program.
+
+── The derivation (§5) ─────────────────────────────────────────────────────────
+
+Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
+fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
+premises are the nodes indented under it, in premise order.
+
+  (Ord) §5.8
+    e       (3 < 2)
+    Γ;Σ     (empty)
+    ⇒       bool  ⊣  (empty)
+      (Lit) §5.8
+        e       3
+        Γ;Σ     (empty)
+        ⇒       i64  ⊣  (empty)
+      (Lit) §5.8
+        e       2
+        Γ;Σ     (empty)
+        ⇒       i64  ⊣  (empty)
+
+── The run (§6) ────────────────────────────────────────────────────────────────
+
+One row per evaluated node, in execution order: a node's premises run before
+the node itself, so the table reads top to bottom as the machine ran. `d<n>`
+is the nesting depth and `>>` marks a drop event.
+
+  [1]   d1    literal §6.3
+         expr    3
+         store   (empty)
+           →     (empty)
+         result  value 3
+  [2]   d1    literal §6.3
+         expr    2
+         store   (empty)
+           →     (empty)
+         result  value 2
+  [3]   d0  ordering compare §6.4
+         expr    (3 < 2)
+         store   (empty)
+           →     (empty)
+         result  value false
+
+────────────────────────────────────────────────────────────────────────────────
+Outcome: ok — value false
+         drop trace: (no drops)
+

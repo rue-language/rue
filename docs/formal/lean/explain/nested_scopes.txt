@@ -1,0 +1,119 @@
+════════════════════════════════════════════════════════════════════════════════
+ nested_scopes
+════════════════════════════════════════════════════════════════════════════════
+Two affine bindings in nested scopes drop innermost first, each at its own
+scope's close.
+
+Rules exercised: (Let) §5.6 · endscope §6.7 · 3.9:2
+
+── The program ─────────────────────────────────────────────────────────────────
+
+    {
+        let v0: RAffine = RAffine { value: 1, live: true };
+        {
+            let v1: RAffine = RAffine { value: 2, live: true };
+            0
+        }
+    }
+
+── What the checker says (§5) ──────────────────────────────────────────────────
+
+Verdict: ACCEPTED by the checker (§5).
+         type i64, outgoing Γ;Σ (empty)
+
+         `check_sound` ties this acceptance to a real derivation, so the §7
+         safety theorems apply to this program.
+
+── The derivation (§5) ─────────────────────────────────────────────────────────
+
+Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
+fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
+premises are the nodes indented under it, in premise order.
+
+  (Let) §5.6 + scope-exit leak check
+    e       { let v0: RAffine = RAffine { value: 1, live: true }; { let v1: RAffine = RAffi…
+    Γ;Σ     (empty)
+    ⇒       i64  ⊣  (empty)
+      (Struct-Intro) §5.8
+        e       RAffine { value: 1, live: true }
+        Γ;Σ     (empty)
+        ⇒       RAffine  ⊣  (empty)
+          (Lit) §5.8
+            e       1
+            Γ;Σ     (empty)
+            ⇒       i64  ⊣  (empty)
+      (Let) §5.6 + scope-exit leak check
+        e       { let v1: RAffine = RAffine { value: 2, live: true }; 0 }
+        Γ;Σ     [v0: RAffine = Owned]
+        ⇒       i64  ⊣  [v0: RAffine = Owned]
+          (Struct-Intro) §5.8
+            e       RAffine { value: 2, live: true }
+            Γ;Σ     [v0: RAffine = Owned]
+            ⇒       RAffine  ⊣  [v0: RAffine = Owned]
+              (Lit) §5.8
+                e       2
+                Γ;Σ     [v0: RAffine = Owned]
+                ⇒       i64  ⊣  [v0: RAffine = Owned]
+          (Lit) §5.8
+            e       0
+            Γ;Σ     [v1: RAffine = Owned, v0: RAffine = Owned]
+            ⇒       i64  ⊣  [v1: RAffine = Owned, v0: RAffine = Owned]
+
+── The run (§6) ────────────────────────────────────────────────────────────────
+
+One row per evaluated node, in execution order: a node's premises run before
+the node itself, so the table reads top to bottom as the machine ran. `d<n>`
+is the nesting depth and `>>` marks a drop event.
+
+  [1]   d2      literal §6.3
+         expr    1
+         store   (empty)
+           →     (empty)
+         result  value 1
+  [2]   d1    (D-Struct) §6.5
+         expr    RAffine { value: 1, live: true }
+         store   (empty)
+           →     (empty)
+         result  value RAffine { 1 }
+  [3]   d1    (D-Let) §6.7 (mint the binding)
+         expr    { let v0: RAffine = RAffine { value: 1, live: true }; { let v1: RAffine = RAffi…
+         store   (empty)
+           →     [ℓ0 = RAffine { 1 }]
+         result  value RAffine { 1 }
+  [4]   d3        literal §6.3
+         expr    2
+         store   [ℓ0 = RAffine { 1 }]
+           →     [ℓ0 = RAffine { 1 }]
+         result  value 2
+  [5]   d2      (D-Struct) §6.5
+         expr    RAffine { value: 2, live: true }
+         store   [ℓ0 = RAffine { 1 }]
+           →     [ℓ0 = RAffine { 1 }]
+         result  value RAffine { 2 }
+  [6]   d2      (D-Let) §6.7 (mint the binding)
+         expr    { let v1: RAffine = RAffine { value: 2, live: true }; 0 }
+         store   [ℓ0 = RAffine { 1 }]
+           →     [ℓ0 = RAffine { 1 }, ℓ1 = RAffine { 2 }]
+         result  value RAffine { 2 }
+  [7]   d2      literal §6.3
+         expr    0
+         store   [ℓ0 = RAffine { 1 }, ℓ1 = RAffine { 2 }]
+           →     [ℓ0 = RAffine { 1 }, ℓ1 = RAffine { 2 }]
+         result  value 0
+  [8]   d1    (D-EndScope) §6.7 (retire the binding)
+         expr    { let v1: RAffine = RAffine { value: 2, live: true }; 0 }
+         store   [ℓ0 = RAffine { 1 }, ℓ1 = RAffine { 2 }]
+           →     [ℓ0 = RAffine { 1 }, ℓ1 = † (retired)]
+         events  >> drop ℓ1 = RAffine { 2 }
+         result  value 0
+  [9]   d0  (D-EndScope) §6.7 (retire the binding)
+         expr    { let v0: RAffine = RAffine { value: 1, live: true }; { let v1: RAffine = RAffi…
+         store   [ℓ0 = RAffine { 1 }, ℓ1 = † (retired)]
+           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         events  >> drop ℓ0 = RAffine { 1 }
+         result  value 0
+
+────────────────────────────────────────────────────────────────────────────────
+Outcome: ok — value 0
+         drop trace: drop ℓ1 = RAffine { 2 }; drop ℓ0 = RAffine { 1 }
+

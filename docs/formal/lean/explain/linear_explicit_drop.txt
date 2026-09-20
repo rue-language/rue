@@ -1,0 +1,105 @@
+════════════════════════════════════════════════════════════════════════════════
+ linear_explicit_drop
+════════════════════════════════════════════════════════════════════════════════
+A linear resource discharged by the core's @drop (the only non-move discharge
+of a linear obligation); printed as a consuming read, since RLinear cannot
+carry a destructor (Print.lean).
+
+Rules exercised: (@Drop) §5.3 · 3.9:39
+
+── The program ─────────────────────────────────────────────────────────────────
+
+    {
+        let v0: RLinear = RLinear { value: 9 };
+        {
+            @dbg(consume_linear(v0));
+            3
+        }
+    }
+
+── What the checker says (§5) ──────────────────────────────────────────────────
+
+Verdict: ACCEPTED by the checker (§5).
+         type i64, outgoing Γ;Σ (empty)
+
+         `check_sound` ties this acceptance to a real derivation, so the §7
+         safety theorems apply to this program.
+
+── The derivation (§5) ─────────────────────────────────────────────────────────
+
+Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
+fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
+premises are the nodes indented under it, in premise order.
+
+  (Let) §5.6 + scope-exit leak check
+    e       { let v0: RLinear = RLinear { value: 9 }; { @dbg(consume_linear(v0)); 3 } }
+    Γ;Σ     (empty)
+    ⇒       i64  ⊣  (empty)
+      (Struct-Intro) §5.8
+        e       RLinear { value: 9 }
+        Γ;Σ     (empty)
+        ⇒       RLinear  ⊣  (empty)
+          (Lit) §5.8
+            e       9
+            Γ;Σ     (empty)
+            ⇒       i64  ⊣  (empty)
+      (Seq) §5.3, 3.8:64
+        e       { @dbg(consume_linear(v0)); 3 }
+        Γ;Σ     [v0: RLinear = Owned]
+        ⇒       i64  ⊣  [v0: RLinear = MovedOut]
+          (@Drop) §5.3
+            e       @dbg(consume_linear(v0))
+            Γ;Σ     [v0: RLinear = Owned]
+            ⇒       ()  ⊣  [v0: RLinear = MovedOut]
+          (Lit) §5.8
+            e       3
+            Γ;Σ     [v0: RLinear = MovedOut]
+            ⇒       i64  ⊣  [v0: RLinear = MovedOut]
+
+── The run (§6) ────────────────────────────────────────────────────────────────
+
+One row per evaluated node, in execution order: a node's premises run before
+the node itself, so the table reads top to bottom as the machine ran. `d<n>`
+is the nesting depth and `>>` marks a drop event.
+
+  [1]   d2      literal §6.3
+         expr    9
+         store   (empty)
+           →     (empty)
+         result  value 9
+  [2]   d1    (D-Struct) §6.5
+         expr    RLinear { value: 9 }
+         store   (empty)
+           →     (empty)
+         result  value RLinear { 9 }
+  [3]   d1    (D-Let) §6.7 (mint the binding)
+         expr    { let v0: RLinear = RLinear { value: 9 }; { @dbg(consume_linear(v0)); 3 } }
+         store   (empty)
+           →     [ℓ0 = RLinear { 9 }]
+         result  value RLinear { 9 }
+  [4]   d2      @drop §6.11
+         expr    @dbg(consume_linear(v0))
+         store   [ℓ0 = RLinear { 9 }]
+           →     [ℓ0 = ⊘ (moved out)]
+         events  >> drop ℓ0 = RLinear { 9 }
+         result  value ()
+  [5]   d2      literal §6.3
+         expr    3
+         store   [ℓ0 = ⊘ (moved out)]
+           →     [ℓ0 = ⊘ (moved out)]
+         result  value 3
+  [6]   d1    (D-Seq) §6.7
+         expr    { @dbg(consume_linear(v0)); 3 }
+         store   [ℓ0 = RLinear { 9 }]
+           →     [ℓ0 = ⊘ (moved out)]
+         result  value 3
+  [7]   d0  (D-EndScope) §6.7 (retire the binding)
+         expr    { let v0: RLinear = RLinear { value: 9 }; { @dbg(consume_linear(v0)); 3 } }
+         store   [ℓ0 = ⊘ (moved out)]
+           →     [ℓ0 = † (retired)]
+         result  value 3
+
+────────────────────────────────────────────────────────────────────────────────
+Outcome: ok — value 3
+         drop trace: drop ℓ0 = RLinear { 9 }
+

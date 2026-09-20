@@ -1,0 +1,82 @@
+════════════════════════════════════════════════════════════════════════════════
+ resource_result
+════════════════════════════════════════════════════════════════════════════════
+The program's value is a resource: main observes its payload and never drops
+it.
+
+Rules exercised: §4.3 expression value
+
+── The program ─────────────────────────────────────────────────────────────────
+
+    {
+        let v0: i64 = 4;
+        RAffine { value: v0, live: true }
+    }
+
+── What the checker says (§5) ──────────────────────────────────────────────────
+
+Verdict: ACCEPTED by the checker (§5).
+         type RAffine, outgoing Γ;Σ (empty)
+
+         `check_sound` ties this acceptance to a real derivation, so the §7
+         safety theorems apply to this program.
+
+── The derivation (§5) ─────────────────────────────────────────────────────────
+
+Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
+fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
+premises are the nodes indented under it, in premise order.
+
+  (Let) §5.6 + scope-exit leak check
+    e       { let v0: i64 = 4; RAffine { value: v0, live: true } }
+    Γ;Σ     (empty)
+    ⇒       RAffine  ⊣  (empty)
+      (Lit) §5.8
+        e       4
+        Γ;Σ     (empty)
+        ⇒       i64  ⊣  (empty)
+      (Struct-Intro) §5.8
+        e       RAffine { value: v0, live: true }
+        Γ;Σ     [v0: i64 = Owned]
+        ⇒       RAffine  ⊣  [v0: i64 = Owned]
+          (Use-Copy) §5.1
+            e       v0
+            Γ;Σ     [v0: i64 = Owned]
+            ⇒       i64  ⊣  [v0: i64 = Owned]
+
+── The run (§6) ────────────────────────────────────────────────────────────────
+
+One row per evaluated node, in execution order: a node's premises run before
+the node itself, so the table reads top to bottom as the machine ran. `d<n>`
+is the nesting depth and `>>` marks a drop event.
+
+  [1]   d1    literal §6.3
+         expr    4
+         store   (empty)
+           →     (empty)
+         result  value 4
+  [2]   d1    (D-Let) §6.7 (mint the binding)
+         expr    { let v0: i64 = 4; RAffine { value: v0, live: true } }
+         store   (empty)
+           →     [ℓ0 = 4]
+         result  value 4
+  [3]   d2      (D-Use-Copy) §6.3
+         expr    v0
+         store   [ℓ0 = 4]
+           →     [ℓ0 = 4]
+         result  value 4
+  [4]   d1    (D-Struct) §6.5
+         expr    RAffine { value: v0, live: true }
+         store   [ℓ0 = 4]
+           →     [ℓ0 = 4]
+         result  value RAffine { 4 }
+  [5]   d0  (D-EndScope) §6.7 (retire the binding)
+         expr    { let v0: i64 = 4; RAffine { value: v0, live: true } }
+         store   [ℓ0 = 4]
+           →     [ℓ0 = † (retired)]
+         result  value RAffine { 4 }
+
+────────────────────────────────────────────────────────────────────────────────
+Outcome: ok — value RAffine { 4 }
+         drop trace: (no drops)
+

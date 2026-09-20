@@ -1,0 +1,147 @@
+════════════════════════════════════════════════════════════════════════════════
+ join_agrees
+════════════════════════════════════════════════════════════════════════════════
+A linear value consumed in both arms of an if: the join agrees, the program is
+accepted, and the value chosen is the taken arm's.
+
+Rules exercised: (If) §5.5 join · 3.8:50
+
+── The program ─────────────────────────────────────────────────────────────────
+
+    {
+        let v0: RLinear = RLinear { value: 6 };
+        if (1 < 2) {
+            consume_linear(v0)
+        } else {
+            (consume_linear(v0) + 1)
+        }
+    }
+
+── What the checker says (§5) ──────────────────────────────────────────────────
+
+Verdict: ACCEPTED by the checker (§5).
+         type i64, outgoing Γ;Σ (empty)
+
+         `check_sound` ties this acceptance to a real derivation, so the §7
+         safety theorems apply to this program.
+
+── The derivation (§5) ─────────────────────────────────────────────────────────
+
+Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
+fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
+premises are the nodes indented under it, in premise order.
+
+  (Let) §5.6 + scope-exit leak check
+    e       { let v0: RLinear = RLinear { value: 6 }; if (1 < 2) { consume_linear(v0) } els…
+    Γ;Σ     (empty)
+    ⇒       i64  ⊣  (empty)
+      (Struct-Intro) §5.8
+        e       RLinear { value: 6 }
+        Γ;Σ     (empty)
+        ⇒       RLinear  ⊣  (empty)
+          (Lit) §5.8
+            e       6
+            Γ;Σ     (empty)
+            ⇒       i64  ⊣  (empty)
+      (If) §5.5 join
+        e       if (1 < 2) { consume_linear(v0) } else { (consume_linear(v0) + 1) }
+        Γ;Σ     [v0: RLinear = Owned]
+        ⇒       i64  ⊣  [v0: RLinear = MovedOut]
+          (Ord) §5.8
+            e       (1 < 2)
+            Γ;Σ     [v0: RLinear = Owned]
+            ⇒       bool  ⊣  [v0: RLinear = Owned]
+              (Lit) §5.8
+                e       1
+                Γ;Σ     [v0: RLinear = Owned]
+                ⇒       i64  ⊣  [v0: RLinear = Owned]
+              (Lit) §5.8
+                e       2
+                Γ;Σ     [v0: RLinear = Owned]
+                ⇒       i64  ⊣  [v0: RLinear = Owned]
+          (Call) §5.8
+            e       consume_linear(v0)
+            Γ;Σ     [v0: RLinear = Owned]
+            ⇒       i64  ⊣  [v0: RLinear = MovedOut]
+              (Use-Move) §5.1
+                e       v0
+                Γ;Σ     [v0: RLinear = Owned]
+                ⇒       RLinear  ⊣  [v0: RLinear = MovedOut]
+          (Arith) §5.8
+            e       (consume_linear(v0) + 1)
+            Γ;Σ     [v0: RLinear = Owned]
+            ⇒       i64  ⊣  [v0: RLinear = MovedOut]
+              (Call) §5.8
+                e       consume_linear(v0)
+                Γ;Σ     [v0: RLinear = Owned]
+                ⇒       i64  ⊣  [v0: RLinear = MovedOut]
+                  (Use-Move) §5.1
+                    e       v0
+                    Γ;Σ     [v0: RLinear = Owned]
+                    ⇒       RLinear  ⊣  [v0: RLinear = MovedOut]
+              (Lit) §5.8
+                e       1
+                Γ;Σ     [v0: RLinear = MovedOut]
+                ⇒       i64  ⊣  [v0: RLinear = MovedOut]
+
+── The run (§6) ────────────────────────────────────────────────────────────────
+
+One row per evaluated node, in execution order: a node's premises run before
+the node itself, so the table reads top to bottom as the machine ran. `d<n>`
+is the nesting depth and `>>` marks a drop event.
+
+  [1]   d2      literal §6.3
+         expr    6
+         store   (empty)
+           →     (empty)
+         result  value 6
+  [2]   d1    (D-Struct) §6.5
+         expr    RLinear { value: 6 }
+         store   (empty)
+           →     (empty)
+         result  value RLinear { 6 }
+  [3]   d1    (D-Let) §6.7 (mint the binding)
+         expr    { let v0: RLinear = RLinear { value: 6 }; if (1 < 2) { consume_linear(v0) } els…
+         store   (empty)
+           →     [ℓ0 = RLinear { 6 }]
+         result  value RLinear { 6 }
+  [4]   d3        literal §6.3
+         expr    1
+         store   [ℓ0 = RLinear { 6 }]
+           →     [ℓ0 = RLinear { 6 }]
+         result  value 1
+  [5]   d3        literal §6.3
+         expr    2
+         store   [ℓ0 = RLinear { 6 }]
+           →     [ℓ0 = RLinear { 6 }]
+         result  value 2
+  [6]   d2      ordering compare §6.4
+         expr    (1 < 2)
+         store   [ℓ0 = RLinear { 6 }]
+           →     [ℓ0 = RLinear { 6 }]
+         result  value true
+  [7]   d3        (D-Use-Move) §6.3
+         expr    v0
+         store   [ℓ0 = RLinear { 6 }]
+           →     [ℓ0 = ⊘ (moved out)]
+         result  value RLinear { 6 }
+  [8]   d2      (D-Call) §6.9
+         expr    consume_linear(v0)
+         store   [ℓ0 = RLinear { 6 }]
+           →     [ℓ0 = ⊘ (moved out)]
+         result  value 6
+  [9]   d1    (D-If-T) §6.6
+         expr    if (1 < 2) { consume_linear(v0) } else { (consume_linear(v0) + 1) }
+         store   [ℓ0 = RLinear { 6 }]
+           →     [ℓ0 = ⊘ (moved out)]
+         result  value 6
+  [10]  d0  (D-EndScope) §6.7 (retire the binding)
+         expr    { let v0: RLinear = RLinear { value: 6 }; if (1 < 2) { consume_linear(v0) } els…
+         store   [ℓ0 = ⊘ (moved out)]
+           →     [ℓ0 = † (retired)]
+         result  value 6
+
+────────────────────────────────────────────────────────────────────────────────
+Outcome: ok — value 6
+         drop trace: (no drops)
+

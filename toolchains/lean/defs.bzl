@@ -76,6 +76,7 @@ def _lean_package_impl(ctx: AnalysisContext) -> list[Provider]:
     )
     allowed = " ".join(ctx.attrs.allowed_axioms)
     corpus_exe = ctx.attrs.corpus_exe or ""
+    extra_exes = " ".join(ctx.attrs.extra_exes)
 
     script = ctx.actions.write(
         "lean-package.sh",
@@ -104,6 +105,14 @@ def _lean_package_impl(ctx: AnalysisContext) -> list[Provider]:
             '  lake build "$corpus_exe" >> "$out/build.log" 2>&1',
             '  lake exe "$corpus_exe" > "$out/corpus.json"',
             'fi',
+            # Executables the package ships that are not exporters (the
+            # explainability renderer, RUE-2246): built so they keep
+            # compiling, never run, because their output is a rendering for
+            # a reader rather than a build input.
+            'extra_exes="' + extra_exes + '"',
+            'for exe in $extra_exes; do',
+            '  lake build "$exe" >> "$out/build.log" 2>&1',
+            'done',
             # Every `#print axioms` line reads `'<theorem>' depends on axioms: [a, b]`
             # (or `does not depend on any axioms`); reject any axiom outside the
             # allowed set.
@@ -157,6 +166,11 @@ lean_package = rule(
             attrs.string(),
             default = None,
             doc = "A `lean_exe` of the package whose stdout is written to `corpus.json`.",
+        ),
+        "extra_exes": attrs.list(
+            attrs.string(),
+            default = [],
+            doc = "Further `lean_exe`s of the package to build (not run), so they keep compiling.",
         ),
         "module": attrs.string(doc = "Root module `lake build` and `leanchecker` are given."),
         "srcs": attrs.dep(doc = "The Lake package directory (a dict-form filegroup)."),
