@@ -3,3 +3,5 @@ import RueCore.Statics
 import RueCore.Dynamics
 import RueCore.Soundness
 import RueCore.Examples
+import RueCore.Print
+import RueCore.Corpus

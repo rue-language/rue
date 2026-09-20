@@ -3,3 +3,7 @@ defaultTargets = ["RueCore"]
 
 [[lean_lib]]
 name = "RueCore"
+
+[[lean_exe]]
+name = "ruecore-corpus"
+root = "RueCore.CorpusMain"
