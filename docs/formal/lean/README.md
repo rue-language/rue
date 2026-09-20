@@ -7,7 +7,8 @@ proofs part of the formal core; the findings and project outline live in
 `../../notes/lean-mechanization-spike.md`.
 
 **Status: complete, zero `sorry`, axioms `propext`/`Quot.sound` only**
-(no `Classical.choice`, no `native_decide`). Adopted as the fourth view of the
+(no `Classical.choice`, no `native_decide`; `TRUST.md` is the generated
+evidence, and `DIGEST.md` is every statement it is evidence for). Adopted as the fourth view of the
 language by ADR-0097 (`docs/designs/0097-mechanized-formal-core.md`), which
 fixes the theorem shape, the authority rule, and the non-blocking posture the
 project "Formal core mechanization" grows this seed under.
@@ -144,6 +145,50 @@ that `check` and `eval` do not produce; a divergence would be a failed
 proof, not a rendering bug. Both lemmas are in the Buck target's `trust`
 list, so their axioms are checked with the safety theorems'.
 
+## Deciding whether to believe it (RUE-2247)
+
+Two generated reports for a reader who knows type systems or proof assistants
+and wants to judge the mechanization without trusting whoever wrote it:
+
+```bash
+lake exe ruecore-digest > DIGEST.md          # every statement
+lake exe ruecore-digest --trust > TRUST.md   # every statement's axioms
+```
+
+`DIGEST.md` is every theorem in the `RueCore` namespace with the statement
+Lean elaborated — not a transcription of it — its doc-comment, and every
+definition those statements are written in terms of, in dependency order. It
+opens with the fragment boundary, quoted from `INDEX.md`'s coverage lines, so
+the scope is visible before the claims are. Proof bodies are deliberately
+absent: a proof is checked by the kernel, and what the kernel appealed to is
+the other report. Definition bodies are absent too, with one exception — a
+definition that *is* a type or a predicate (`Ctx`, `CellMatches`, `InBounds`)
+is part of what a statement says, so its body is printed and the constants it
+mentions get entries of their own. That gives the file a property worth
+checking: every `RueCore` constant occurring in a signature it prints has an
+entry in it.
+
+`TRUST.md` is, for every theorem, the axioms `Lean.collectAxioms` reports for
+its proof — so the `sorry` count is read from the axioms rather than from a
+grep, and a `sorry` behind a macro would still show — plus the axioms the
+package declares itself (none today; when the project's obligation interfaces
+arrive they appear there with their doc-comments, which is where an
+assumption's source belongs) and the pinned toolchain. `propext` and
+`Quot.sound` are this project's policy; `Classical.choice` is kernel-checked
+but outside it; `sorryAx` and `Lean.ofReduceBool`/`ofReduceNat`
+(`native_decide`) are holes. The exe exits non-zero on anything outside the
+policy, which fails the Buck build too — and unlike the target's `trust` list,
+it covers *every* theorem, including ones no trusted theorem uses.
+
+Both reports are read out of the compiled environment (`Lean.Environment`), so
+neither can drift from the sources the way a hand-written summary can, and
+both are committed. There is no drift gate on the committed copies: nothing in
+CI runs the Lean build until ADR-0097's gate is met (RUE-2241), so a reviewer
+regenerates both and diffs, which is what `GUIDE.md`'s "Validating this in
+thirty minutes" asks for. `scripts/rue lean` prints `trust.md` from the Buck
+build's own outputs, beside `digest.md`, `corpus.json`, `axioms.txt`, and the
+`leanchecker` re-check.
+
 ## How to read this, with no Lean
 
 `GUIDE.md` is the full reader's guide: each Lean artifact in the calculus's
@@ -183,8 +228,8 @@ mechanized*. The short version:
   program and watch the result change. Each `example : check ... = none := by
   rfl` is a kernel-checked rejection.
 - **Check what is trusted.** `#print axioms RueCore.soundness` must list only
-  `propext` and `Quot.sound`. `scripts/rue lean` prints that report and fails
-  if anything else appears.
+  `propext` and `Quot.sound`. `scripts/rue lean` prints `TRUST.md`, which says
+  the same for every theorem, and fails if anything else appears.
 
 ## Doc-comment convention (what the index reads)
 
@@ -226,8 +271,17 @@ a slice author writes:
   rules (`Examples.lean`, `Corpus.lean`) says `xref: examples` in its module
   docstring; its declarations are indexed when they cite something and never
   required to.
+- The same script holds `SYNTAX_FORMS`, the table mapping each alternative of
+  the calculus's §2 grammar to the `Expr`/`Ty` constructors that mechanize it,
+  or to *not yet mechanized* with the reason. The gate fails on an alternative
+  with no row, on a row for an alternative §2 no longer writes, and on a row
+  naming a constructor the sources no longer declare — but only a human can
+  say that a new constructor *is* a form's image, so a slice that gives a form
+  its first core image updates its row in the same change.
 - After editing doc-comments, run `scripts/validate-lean-xref-index.py
-  --write` and commit the regenerated `INDEX.md`.
+  --write` and commit the regenerated `INDEX.md`; after editing anything the
+  statements or the proofs touch, regenerate `DIGEST.md` and `TRUST.md` too
+  (`lake exe ruecore-digest`, `--trust`) and commit them.
 
 ## What is mechanized
 
@@ -243,7 +297,9 @@ a slice author writes:
 | `RueCore/Corpus.lean` | the bridge corpus: each case's checker verdict and interpreter outcome, exported as JSON (`lake exe ruecore-corpus`) | §5, §6, §7 witnesses |
 | `RueCore/Explain.lean` | instrumented mirrors of `check` and `eval` — derivation trees with the failing premise named, and step tables with stores and drop events — with the lemmas tying both to the proved definitions | §5, §6 as an explanation |
 | `RueCore/Explain/Text.lean`, `RueCore/Explain/Html.lean` | the terminal and self-contained-page renderings (`lake exe ruecore-explain`); the checked-in text is in `explain/` | — |
-| `GUIDE.md`, `INDEX.md` | the reader's guide, and the generated rule ↔ declaration ↔ paragraph index (`scripts/validate-lean-xref-index.py`) | §5, §6 coverage |
+| `RueCore/Digest.lean`, `RueCore/DigestMain.lean` | the statement digest and the trust report, walked out of the compiled environment (`lake exe ruecore-digest`) | the claim inventory and its trust boundary |
+| `DIGEST.md`, `TRUST.md` | (generated) every theorem's statement with the definitions it is written in terms of; every theorem's axioms, `sorry` count, and declared assumptions | §7's claims, stated |
+| `GUIDE.md`, `INDEX.md` | the reader's guide, including the thirty-minute validation procedure, and the generated form ↔ rule ↔ declaration ↔ paragraph index (`scripts/validate-lean-xref-index.py`) | §2, §5, §6 coverage |
 
 The fragment: scalars + an abstract resource type `res κ` carrying its
 multiplicity class; use (copy/move), `@drop`, `let` scope exit with the

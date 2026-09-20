@@ -768,9 +768,12 @@ rue_tool_test(
 # distribution (toolchains//:lean-distribution) and reports on itself: the
 # build log, the toolchain's own leanchecker re-check, and the `#print axioms`
 # listing for the theorems named in `trust`, which fails the build if any
-# theorem depends on an axiom beyond propext and Quot.sound. Deliberately not
-# a test target: no tier applies, so no CI lane requests it until the ADR's
-# gate is met (RUE-2241). `scripts/rue lean` builds it and prints the report.
+# theorem depends on an axiom beyond propext and Quot.sound. It also runs the
+# package's own reports (RUE-2247): `digest.md`, every theorem's statement,
+# and `trust.md`, every theorem's axioms, which fails the build on a proof
+# outside the policy whether or not `trust` names it. Deliberately not a test
+# target: no tier applies, so no CI lane requests it until the ADR's gate is
+# met (RUE-2241). `scripts/rue lean` builds it and prints the trust report.
 lean_package(
     name = "lean-ruecore",
     srcs = "//docs:formal-lean",
@@ -778,6 +781,10 @@ lean_package(
     module = "RueCore",
     corpus_exe = "ruecore-corpus",
     extra_exes = ["ruecore-explain"],
+    report_exes = {
+        "digest.md": ["ruecore-digest"],
+        "trust.md": ["ruecore-digest", "--trust"],
+    },
     trust = [
         "RueCore.soundness",
         "RueCore.no_use_after_move",

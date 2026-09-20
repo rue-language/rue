@@ -247,9 +247,11 @@ case "$cmd" in
     lean)
         # The mechanized formal core (docs/formal/lean, ADR-0097): a build-only
         # Buck target with no test tier, run on demand. Its outputs are reports;
-        # the axioms listing is the one a reader wants to see.
+        # the trust report is the one a reader wants to see, and it names the
+        # others (RUE-2247).
         lean_output="$(./buck2 build root//:lean-ruecore --show-simple-output)"
-        cat "$repo_root/$lean_output/axioms.txt"
+        cat "$repo_root/$lean_output/trust.md"
+        printf '\nReports: %s\n' "$repo_root/$lean_output"
         ;;
     lean-bridge)
         # ADR-0097's differential bridge (RUE-2228). A `buck2 run` entry point,
