@@ -104,10 +104,11 @@ pub fn is_multislot_aggregate(ty: Type, slot_count: u32) -> bool {
 /// (ADR-0052).
 ///
 /// True for eight-byte leaves (`i64`/`u64`/pointers, the recovery scalar) and
-/// zero-sized / compile-time-only types, and for aggregates built entirely from
-/// slot-identical leaves. Narrow scalars (one/two/four bytes) and enums (narrow
-/// tag) are not slot-identical, and neither is a float leaf: it is read and
-/// written by a floating-point access at its own width, never as an opaque
+/// zero-sized / compile-time-only types — including a zero-length array, whose
+/// element type is never laid out (RUE-2256) — and for aggregates built entirely
+/// from slot-identical leaves. Narrow scalars (one/two/four bytes) and enums
+/// (narrow tag) are not slot-identical, and neither is a float leaf: it is read
+/// and written by a floating-point access at its own width, never as an opaque
 /// slot, even where its footprint is eight bytes. This is the single authority
 /// code generation's narrow-access refusal (RUE-974) consults, so no two sites
 /// disagree about which types the compact layout leaves unchanged.
@@ -131,9 +132,10 @@ pub fn is_slot_identical_layout<P: crate::FfiTypePool + ?Sized>(type_pool: &P, t
 ///
 /// True for every leaf whose compact footprint already fills a slot —
 /// `i64`/`u64`/pointers, the recovery scalar, **and `f64`** — for zero-sized and
-/// compile-time-only types, and for structs and arrays built entirely from such
-/// leaves. False for a narrow scalar (`bool`/`i8`/`u8`/`i16`/`u16`/`i32`/`u32`,
-/// and `f32`, whose compact stride is four bytes against an eight-byte slot),
+/// compile-time-only types, for a zero-length array (it has no element to stride
+/// over, RUE-2256), and for structs and arrays built entirely from such leaves.
+/// False for a narrow scalar (`bool`/`i8`/`u8`/`i16`/`u16`/`i32`/`u32`, and
+/// `f32`, whose compact stride is four bytes against an eight-byte slot),
 /// for an enum (its tag is narrowed), and for any aggregate holding one.
 ///
 /// It differs from [`is_slot_identical_layout`] in exactly one place, `f64`.
@@ -203,6 +205,14 @@ fn slot_layout_agrees<P: crate::FfiTypePool + ?Sized>(
             .into_iter()
             .all(|field_ty| slot_layout_agrees(type_pool, field_ty, floats)),
         TypeKind::Array(id) => {
+            // A zero-length array holds no element, so there is no stride and no
+            // leaf for the two models to disagree about: both give it zero
+            // extent, exactly like the zero-sized leaves above. Asking the
+            // element type alone would refuse `[i32; 0]` for a narrowness that
+            // no byte of the array ever exhibits (RUE-2256).
+            if type_pool.ffi_array_len(id) == 0 {
+                return true;
+            }
             let element = type_pool.ffi_array_element(id);
             slot_layout_agrees(type_pool, element, floats)
         }
@@ -606,6 +616,56 @@ mod tests {
             panic!("an array projects aggregate facts, got {facts:?}");
         };
         assert_eq!(leaves, crate::AggregateLeaves::all_integer(size));
+    }
+
+    /// A zero-length array has no element to lay out, so both layout
+    /// predicates must answer for its own (zero) extent rather than for what
+    /// its element type would say on its own (RUE-2256).
+    ///
+    /// Before this, `[i32; 0]` inherited `i32`'s narrowness: the backend's
+    /// raw-pointer gate refused `@raw` of one with the internal-error-class
+    /// E9001, and the compact-image marshal it implied had no entries for the
+    /// pointer read to index.
+    #[test]
+    fn a_zero_length_array_is_slot_identical_whatever_its_element_is() {
+        let pool = crate::TypeInternPool::new();
+        // A zero-length array of every leaf shape the predicates refuse.
+        let empty: Vec<Type> = [Type::I32, Type::U8, Type::BOOL, Type::I16, Type::F32]
+            .into_iter()
+            .map(|element| Type::new_array(pool.intern_array_from_type(element, 0)))
+            .collect();
+        // Non-empty arrays of the same elements, and a zero-length array of a
+        // zero-length array: the length has to be read at every level.
+        let non_empty: Vec<Type> = [Type::I32, Type::U8, Type::BOOL, Type::I16, Type::F32]
+            .into_iter()
+            .map(|element| Type::new_array(pool.intern_array_from_type(element, 4)))
+            .collect();
+        let nested_empty = Type::new_array(pool.intern_array_from_type(empty[0], 3));
+        let pool = pool.freeze();
+
+        for ty in &empty {
+            assert!(
+                is_slot_identical_layout(&pool, *ty),
+                "a zero-length array occupies no byte in either model: {ty:?}"
+            );
+            assert!(compact_stride_matches_slot_stride(&pool, *ty));
+            assert_eq!(pool.abi_slot_count(*ty), 0);
+        }
+        assert!(
+            is_slot_identical_layout(&pool, nested_empty),
+            "an array of zero-length arrays is zero-sized through its element"
+        );
+        assert!(compact_stride_matches_slot_stride(&pool, nested_empty));
+
+        // The refusal RUE-1595 depends on is untouched for every length above
+        // zero.
+        for ty in &non_empty {
+            assert!(
+                !is_slot_identical_layout(&pool, *ty),
+                "a non-empty narrow array still disagrees with the slot model: {ty:?}"
+            );
+            assert!(!compact_stride_matches_slot_stride(&pool, *ty));
+        }
     }
 
     /// The extension a scalar crossing `convention` needs in each direction,
