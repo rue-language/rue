@@ -242,3 +242,33 @@ fn main() { invoke(Value, borrow Value {}); }
 args = ["--preview", "interfaces", "main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["E0303", "comptime _: i64", "requirement is `fn act(borrow self, _: i64)`"]
+
+[[case]]
+name = "a_comptime_struct_parameter_is_not_a_bound"
+description = "`comptime p: P` where `P` names a struct stays the comptime value parameter of 4.14:5 under the preview, on a free function and on a method reached module-qualified (RUE-2242)."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+const THREE_FOUR: lib.P = lib.THREE_FOUR;
+fn main() -> i32 {
+    @dbg(lib.sum(THREE_FOUR));
+    let h = lib.Holder { v: 1 };
+    @dbg(h.scaled(THREE_FOUR));
+    0
+}
+""" },
+    { path = "lib.rue", source = """
+@copy
+pub struct P { a: i32, b: i32 }
+pub const THREE_FOUR: P = P { a: 3, b: 4 };
+pub fn sum(comptime p: P) -> i32 { p.a + p.b }
+@copy
+pub struct Holder {
+    v: i32,
+    fn scaled(borrow self, comptime p: P) -> i32 { self.v * p.a + p.b }
+}
+""" },
+]
+args = ["--preview", "interfaces", "main.rue", "-o", "prog"]
+stdout = "7\n7\n"
+exit_code = 0

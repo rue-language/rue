@@ -390,10 +390,11 @@ Options:
                        start the compiler service for supported requests and
                        compile directly otherwise; required: the service must
                        run it. Supported: ordinary internal-linker builds,
-                       rue test, rue test --list, and --emit air alone.
-                       --watch, other --emit stages, --linker, --time-passes,
-                       --benchmark-json, and compiler tracing run directly
-                       under auto and are refused under required.
+                       rue test, rue test --list, --watch, and any --emit
+                       stage or combination. --linker, --module-manifest,
+                       --time-passes, --benchmark-json, and compiler tracing
+                       (--log-level or RUST_LOG) run directly under auto and
+                       are refused under required (table: docs/development.md).
   --daemon-scope <dir> The service scope directory (default: the root source's
                        directory); --daemon-isolation <name> selects a
                        separate service within it. Both match `rue daemon`.

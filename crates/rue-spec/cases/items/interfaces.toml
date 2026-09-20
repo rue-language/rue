@@ -398,15 +398,49 @@ error_contains = [
 [[case]]
 name = "bound_must_name_an_interface"
 spec = ["6.8:14"]
+description = "A composed annotation is a bound by construction, so every name in it must be an interface."
 preview = "interfaces"
 preview_should_pass = true
 source = """
+interface Show { fn show(borrow self) -> i64; }
 struct Plain { n: i64 }
-fn f(comptime T: Plain, x: T) -> T { x }
+fn f(comptime T: Plain + Show, x: T) -> T { x }
 fn main() -> i32 { 0 }
 """
 compile_fail = true
 error_contains = ["E0306", "Plain"]
+
+[[case]]
+name = "a_single_type_name_is_a_comptime_value_parameter"
+spec = ["6.8:14", "4.14:5"]
+description = "`comptime p: P` for a struct, enum, or type-constructor `P` stays the comptime value parameter of 4.14:5 under the preview; only an interface name makes it a bound (RUE-2242)."
+preview = "interfaces"
+preview_should_pass = true
+source = """
+@copy
+struct P { a: i32, b: i32 }
+enum E { A, B }
+const ONE: P = P { a: 1, b: 1 };
+fn sum(comptime p: P) -> i32 { p.a + p.b }
+fn Buf(comptime p: P) -> type { struct { data: [i32; 2] } }
+fn pick(comptime e: E) -> i32 { if e == E.A { 0 } else { 1 } }
+@copy
+struct Holder {
+    v: i32,
+    fn scaled(borrow self, comptime p: P) -> i32 { self.v * p.a + p.b }
+}
+fn mixed(comptime p: P, comptime T: type, x: T) -> i32 { p.a + p.b + @intCast(x) }
+fn main() -> i32 {
+    let b: Buf(ONE) = Buf(ONE) { data: [1, 2] };
+    let h = Holder { v: 1 };
+    sum(P { a: 3, b: 4 })
+        + h.scaled(P { a: 3, b: 4 })
+        + mixed(P { a: 3, b: 4 }, i32, 0)
+        + b.data[1]
+        + pick(E.A)
+}
+"""
+exit_code = 23
 
 [[case]]
 name = "interface_is_not_a_type"

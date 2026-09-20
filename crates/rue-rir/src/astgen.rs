@@ -2519,7 +2519,8 @@ impl<'a> AstGen<'a> {
             LetPattern::Ident(id) => Some(self.symbol(id.name)),
             LetPattern::Wildcard(_) => Some(self.intern(format!("_@rue:for:elem:{n}"))),
             // The parser only produces struct patterns for `let` binders
-            // (spec 5.1:18); a `for` binder is an identifier or `_`.
+            // (spec 5.1:18); `for_binder` rejects the struct shape with a
+            // syntax error, so a `for` binder is an identifier or `_`.
             LetPattern::Struct(_) => unreachable!("for binders are identifiers or `_`"),
         };
         let p_for_get = self.rir.add_inst(Inst {

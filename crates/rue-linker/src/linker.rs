@@ -192,6 +192,9 @@ struct MergedImage {
     /// (object index, section index) -> offset within the region the section
     /// merged into.
     section_offsets: AHashMap<(usize, usize), u64>,
+    /// Name -> offset within the bss region, for each surviving tentative
+    /// definition the linker allocated itself (RUE-2257).
+    common_offsets: AHashMap<String, u64>,
     pending: Vec<PendingRelocation>,
 }
 
@@ -357,24 +360,28 @@ fn validate_defined_symbols(
 
 /// Whether `sym` is a definition that satisfies references to its name.
 ///
-/// A definition is section-anchored, globally visible (strong or weak), and
-/// named; anonymous and local symbols never participate in cross-object
-/// resolution. Both `add_object` and archive extraction ask this question, so
-/// they ask it in one place.
+/// A definition is section-anchored — or an ELF tentative definition, which
+/// the linker itself places in .bss (RUE-2257) — globally visible (strong or
+/// weak), and named; anonymous and local symbols never participate in
+/// cross-object resolution. Both `add_object` and archive extraction ask this
+/// question, so they ask it in one place.
 fn provides_definition(sym: &Symbol) -> bool {
-    sym.section_index.is_some()
+    (sym.section_index.is_some() || sym.common.is_some())
         && (sym.binding == SymbolBinding::Global || sym.binding == SymbolBinding::Weak)
         && !sym.name.is_empty()
 }
 
 /// Whether `sym` is an undefined reference that some definition must satisfy.
 ///
-/// The counterpart of [`provides_definition`]: no section, strong global
-/// binding, and named. An undefined *weak* reference does not demand a
-/// definition — it resolves to address 0 (RUE-131 item 9) — so it must not pull
-/// an archive member in.
+/// The counterpart of [`provides_definition`]: no section and no tentative
+/// extent, strong global binding, and named. An undefined *weak* reference does
+/// not demand a definition — it resolves to address 0 (RUE-131 item 9) — so it
+/// must not pull an archive member in.
 fn references_undefined(sym: &Symbol) -> bool {
-    sym.section_index.is_none() && sym.binding == SymbolBinding::Global && !sym.name.is_empty()
+    sym.section_index.is_none()
+        && sym.common.is_none()
+        && sym.binding == SymbolBinding::Global
+        && !sym.name.is_empty()
 }
 
 /// Queue an undefined symbol name for archive resolution, at most once.
@@ -1313,7 +1320,28 @@ impl Linker {
         for sym in &obj.symbols {
             check_cancellation(cancellation)?;
             if provides_definition(sym) {
-                if let Some((_, existing)) = self.global_symbols.get(&sym.name) {
+                if let Some((existing_obj, existing)) = self.global_symbols.get(&sym.name) {
+                    // A tentative definition (ELF `SHN_COMMON`) is not a
+                    // collision: two of them merge into one object of the
+                    // largest extent and strictest alignment, and any real
+                    // definition displaces every tentative one, whichever
+                    // order the objects arrive in (RUE-2257).
+                    if existing.common.is_some() || sym.common.is_some() {
+                        let replacement = match (existing.common, sym.common) {
+                            (Some(existing_align), Some(align)) => {
+                                let mut merged = existing.clone();
+                                merged.size = existing.size.max(sym.size);
+                                merged.common = Some(existing_align.max(align));
+                                Some((*existing_obj, merged))
+                            }
+                            (Some(_), None) => Some((obj_index, sym.clone())),
+                            _ => None,
+                        };
+                        if let Some(entry) = replacement {
+                            self.global_symbols.insert(sym.name.clone(), entry);
+                        }
+                        continue;
+                    }
                     // Two strong definitions collide; weak symbols defer.
                     if existing.binding != SymbolBinding::Weak && sym.binding != SymbolBinding::Weak
                     {
@@ -1760,6 +1788,38 @@ impl Linker {
             }
         }
 
+        // Tentative definitions (ELF `SHN_COMMON`) belong to no section, so
+        // the linker reserves their storage itself, after every real .bss
+        // section and before the region's base is aligned. Only the definition
+        // that won resolution is placed, and objects and their symbol tables
+        // are walked in order, so the layout is a function of the link inputs
+        // alone (RUE-2257).
+        let mut common_offsets: AHashMap<String, u64> = AHashMap::new();
+        for (obj_idx, obj) in self.objects.iter().enumerate() {
+            check_cancellation(cancellation)?;
+            for sym in &obj.symbols {
+                if sym.common.is_none() {
+                    continue;
+                }
+                let Some((winner_obj, winner)) = self.global_symbols.get(&sym.name) else {
+                    continue;
+                };
+                let Some(align) = winner.common else {
+                    // A real definition displaced this tentative one; it is
+                    // placed with its own section instead.
+                    continue;
+                };
+                if *winner_obj != obj_idx || common_offsets.contains_key(&sym.name) {
+                    continue;
+                }
+                let align = align.max(1);
+                bss_align = bss_align.max(align);
+                bss_size = align_up(bss_size, align);
+                common_offsets.insert(sym.name.clone(), bss_size);
+                bss_size += winner.size;
+            }
+        }
+
         // Those offsets are relative to the start of the bss region, so an
         // offset only lands where its section asked if the region's BASE is
         // itself aligned at least as strictly as the strictest section in it
@@ -1785,6 +1845,7 @@ impl Linker {
             data_align,
             bss_align,
             section_offsets,
+            common_offsets,
             pending,
         })
     }
@@ -1806,10 +1867,27 @@ impl Linker {
     fn resolve_symbol_addresses(
         &self,
         section_offsets: &AHashMap<(usize, usize), u64>,
+        common_offsets: &AHashMap<String, u64>,
         bases: &SectionBases,
         cancellation: &mut impl FnMut() -> bool,
     ) -> Result<SymbolAddresses, LinkError> {
         let mut addresses = SymbolAddresses::default();
+
+        // Surviving tentative definitions (RUE-2257). They belong to no
+        // section, so the merge reserved their storage directly in the bss
+        // region and their address is that region's base plus the offset it
+        // recorded. They are globals by construction, and are registered
+        // first so a real definition of the same name — which would have
+        // displaced the tentative one during resolution, and so has no entry
+        // here — always wins the map below.
+        for (name, offset) in common_offsets {
+            check_cancellation(cancellation)?;
+            let addr = bases
+                .bss
+                .checked_add(*offset)
+                .ok_or_else(|| LinkError::UndefinedSymbol(format!("{name} (bss overflow)")))?;
+            addresses.globals.insert(name.clone(), addr);
+        }
 
         for (obj_idx, obj) in self.objects.iter().enumerate() {
             check_cancellation(cancellation)?;
@@ -2101,8 +2179,12 @@ impl Linker {
             bss: bss_vaddr,
         };
 
-        let symbol_addresses =
-            self.resolve_symbol_addresses(&image.section_offsets, &bases, cancellation)?;
+        let symbol_addresses = self.resolve_symbol_addresses(
+            &image.section_offsets,
+            &image.common_offsets,
+            &bases,
+            cancellation,
+        )?;
 
         let entry_vaddr = self.entry_address(&symbol_addresses, entry_point)?;
         let entry_offset = entry_vaddr - text_vaddr;
@@ -2244,8 +2326,12 @@ impl Linker {
             bss: bss_vaddr,
         };
 
-        let symbol_addresses =
-            self.resolve_symbol_addresses(&image.section_offsets, &bases, cancellation)?;
+        let symbol_addresses = self.resolve_symbol_addresses(
+            &image.section_offsets,
+            &image.common_offsets,
+            &bases,
+            cancellation,
+        )?;
 
         let entry_addr = self.entry_address(&symbol_addresses, entry_point)?;
 
@@ -2557,6 +2643,7 @@ mod tests {
             size,
             binding: SymbolBinding::Global,
             sym_type: SymbolType::Func,
+            common: None,
         }
     }
 
@@ -3359,6 +3446,7 @@ mod tests {
             size: 1,
             binding: SymbolBinding::Global,
             sym_type: SymbolType::Func,
+            common: None,
         }];
         let mut section_map = AHashMap::new();
         section_map.insert(".text".into(), 0);
@@ -3573,6 +3661,7 @@ mod tests {
                 size: 1,
                 binding: SymbolBinding::Global,
                 sym_type: SymbolType::Func,
+                common: None,
             },
             Symbol {
                 name: "bss_static".into(),
@@ -3581,6 +3670,7 @@ mod tests {
                 size: 8,
                 binding: SymbolBinding::Global,
                 sym_type: SymbolType::Object,
+                common: None,
             },
         ];
         let mut section_map = AHashMap::new();
@@ -3760,6 +3850,7 @@ mod tests {
                 size: 1,
                 binding,
                 sym_type: SymbolType::Func,
+                common: None,
             }],
             section_map: AHashMap::from([(".text".into(), 0)]),
             machine: crate::elf::ElfMachine::X86_64,
@@ -3838,6 +3929,7 @@ mod tests {
                 size: 1,
                 binding: *binding,
                 sym_type: SymbolType::Func,
+                common: None,
             })
             .collect();
         symbols.extend(undefs.iter().map(|name| Symbol {
@@ -3847,6 +3939,7 @@ mod tests {
             size: 0,
             binding: SymbolBinding::Global,
             sym_type: SymbolType::None,
+            common: None,
         }));
         ObjectFile {
             sections: vec![Section {
@@ -4430,6 +4523,7 @@ mod tests {
                     size: 11,
                     binding: SymbolBinding::Global,
                     sym_type: SymbolType::Func,
+                    common: None,
                 },
                 Symbol {
                     name: "optional_hook".into(),
@@ -4438,6 +4532,7 @@ mod tests {
                     size: 0,
                     binding: SymbolBinding::Weak,
                     sym_type: SymbolType::None,
+                    common: None,
                 },
             ],
             section_map: AHashMap::from([(".text".into(), 0)]),
@@ -4781,6 +4876,7 @@ mod tests {
             size: 0,
             binding: SymbolBinding::Global,
             sym_type: SymbolType::Func,
+            common: None,
         };
 
         // The main symbol
@@ -4791,6 +4887,7 @@ mod tests {
             size: 6,
             binding: SymbolBinding::Global,
             sym_type: SymbolType::Func,
+            common: None,
         };
 
         // Null symbol at index 0
@@ -4801,6 +4898,7 @@ mod tests {
             size: 0,
             binding: SymbolBinding::Local,
             sym_type: SymbolType::None,
+            common: None,
         };
 
         let obj = ObjectFile {
@@ -4866,6 +4964,7 @@ mod tests {
             size: 6,
             binding: SymbolBinding::Global,
             sym_type: SymbolType::Func,
+            common: None,
         };
 
         // Null symbol at index 0
@@ -4876,6 +4975,7 @@ mod tests {
             size: 0,
             binding: SymbolBinding::Local,
             sym_type: SymbolType::None,
+            common: None,
         };
 
         let obj = ObjectFile {
@@ -5785,6 +5885,7 @@ mod tests {
             size: 8,
             binding: SymbolBinding::Global,
             sym_type: SymbolType::Func,
+            common: None,
         };
 
         let obj = ObjectFile {
@@ -5845,6 +5946,7 @@ mod tests {
                 size: 4,
                 binding: SymbolBinding::Global,
                 sym_type: SymbolType::Func,
+                common: None,
             };
             let obj = ObjectFile {
                 sections: vec![text_section],
@@ -5897,6 +5999,7 @@ mod tests {
             size: 4,
             binding: SymbolBinding::Global,
             sym_type: SymbolType::Func,
+            common: None,
         };
 
         let obj = ObjectFile {
@@ -5966,6 +6069,7 @@ mod tests {
             size: 0,
             binding,
             sym_type: SymbolType::Func,
+            common: None,
         }
     }
 
@@ -7500,5 +7604,188 @@ mod tests {
             rodata_vaddr,
             "the ELF path resolves the same reference to its own rodata segment"
         );
+    }
+
+    // =========================================================================
+    // RUE-2257: ELF tentative definitions (`SHN_COMMON`)
+    // =========================================================================
+
+    /// A tentative definition: no section, the extent in `size`, the alignment
+    /// in `common`, exactly as the ELF parser records `SHN_COMMON`.
+    fn common_sym(name: &str, size: u64, align: u64) -> Symbol {
+        Symbol {
+            name: name.into(),
+            section_index: None,
+            value: 0,
+            size,
+            binding: SymbolBinding::Global,
+            sym_type: SymbolType::Object,
+            common: Some(align),
+        }
+    }
+
+    /// A NOBITS section: memory but no file bytes, the home of `.bss`.
+    fn bss_section(name: &str, size: u64, align: u64) -> Section {
+        Section {
+            name: name.into(),
+            data: Vec::new(),
+            size,
+            flags: SectionFlags::ALLOC | SectionFlags::WRITE,
+            relocations: Vec::new(),
+            align,
+        }
+    }
+
+    fn abs64_at(offset: u64, symbol_index: usize) -> Relocation {
+        Relocation {
+            offset,
+            symbol_index,
+            rel_type: RelocationType::Abs64,
+            addend: 0,
+        }
+    }
+
+    /// A reference to a common symbol is a reference to storage the linker
+    /// owns, not an undefined symbol: it is allocated in the merged bss and
+    /// patched with that address. Before RUE-2257 every reserved `st_shndx`
+    /// read as "undefined" and the link failed with E1000.
+    #[test]
+    fn elf_common_symbol_is_allocated_in_bss_and_resolved() {
+        let obj = make_obj(
+            crate::elf::ElfMachine::X86_64,
+            vec![text_section(".text", vec![0u8; 16], vec![abs64_at(8, 1)])],
+            vec![
+                sym("main", Some(0), 0, SymbolBinding::Global),
+                common_sym("common_var", 4, 8),
+            ],
+        );
+
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(obj).unwrap();
+        let elf = linker.link("main").unwrap();
+
+        let (code_off, code_vaddr) = elf_text_location(&elf);
+        let address = read_u64_at(&elf, code_off + 8);
+        assert_ne!(address, 0, "a common symbol must not resolve to nothing");
+        assert!(
+            address > code_vaddr,
+            "the common's storage follows the code: {address:#x} vs {code_vaddr:#x}"
+        );
+        assert_eq!(
+            address % 8,
+            0,
+            "the common's own alignment must be honored: {address:#x}"
+        );
+    }
+
+    /// Two objects declaring the same common name share one slot, sized and
+    /// aligned by the largest declaration. The neighbouring common that
+    /// follows pins the merged extent: it sits exactly 32 bytes on, which only
+    /// holds if the 32-byte declaration won over the 4-byte one.
+    #[test]
+    fn elf_duplicate_common_symbols_merge_to_the_largest() {
+        let obj0 = make_obj(
+            crate::elf::ElfMachine::X86_64,
+            vec![text_section(
+                ".text",
+                vec![0u8; 32],
+                vec![abs64_at(8, 1), abs64_at(16, 2)],
+            )],
+            vec![
+                sym("main", Some(0), 0, SymbolBinding::Global),
+                common_sym("wide", 4, 4),
+                common_sym("narrow", 8, 8),
+            ],
+        );
+        let obj1 = make_obj(
+            crate::elf::ElfMachine::X86_64,
+            vec![text_section(".text", vec![0u8; 16], vec![abs64_at(8, 1)])],
+            vec![
+                sym("second", Some(0), 0, SymbolBinding::Global),
+                common_sym("wide", 32, 16),
+            ],
+        );
+
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(obj0).unwrap();
+        linker.add_object(obj1).unwrap();
+        let elf = linker.link("main").unwrap();
+
+        let (code_off, _) = elf_text_location(&elf);
+        let wide = read_u64_at(&elf, code_off + 8);
+        let narrow = read_u64_at(&elf, code_off + 16);
+        // obj0's .text is 32 bytes; obj1's follows at 32 (16-byte aligned).
+        let wide_from_obj1 = read_u64_at(&elf, code_off + 32 + 8);
+
+        assert_eq!(
+            wide, wide_from_obj1,
+            "both declarations of `wide` must name one object"
+        );
+        assert_eq!(
+            wide % 16,
+            0,
+            "the strictest alignment of the two declarations wins: {wide:#x}"
+        );
+        assert_eq!(
+            narrow - wide,
+            32,
+            "`wide` must have reserved the larger of its two extents"
+        );
+    }
+
+    /// A real definition displaces every tentative one, whichever order the
+    /// objects are added in, and the tentative declaration then gets no
+    /// storage of its own: `x` and `y` stay 4 bytes apart inside the defining
+    /// object's own `.bss`.
+    #[test]
+    fn elf_real_definition_displaces_a_common_declaration() {
+        let declaring = || {
+            make_obj(
+                crate::elf::ElfMachine::X86_64,
+                vec![text_section(
+                    ".text",
+                    vec![0u8; 24],
+                    vec![abs64_at(8, 1), abs64_at(16, 2)],
+                )],
+                vec![
+                    sym("main", Some(0), 0, SymbolBinding::Global),
+                    common_sym("x", 4, 4),
+                    sym("y", None, 0, SymbolBinding::Global),
+                ],
+            )
+        };
+        let defining = || {
+            make_obj(
+                crate::elf::ElfMachine::X86_64,
+                vec![bss_section(".bss", 8, 4)],
+                vec![
+                    sym("x", Some(0), 0, SymbolBinding::Global),
+                    sym("y", Some(0), 4, SymbolBinding::Global),
+                ],
+            )
+        };
+
+        for declaration_first in [true, false] {
+            let mut linker = Linker::new(ELF_TARGET);
+            if declaration_first {
+                linker.add_object(declaring()).unwrap();
+                linker.add_object(defining()).unwrap();
+            } else {
+                linker.add_object(defining()).unwrap();
+                linker.add_object(declaring()).unwrap();
+            }
+            let elf = linker.link("main").unwrap();
+
+            let (code_off, _) = elf_text_location(&elf);
+            let x = read_u64_at(&elf, code_off + 8);
+            let y = read_u64_at(&elf, code_off + 16);
+            assert_eq!(
+                y - x,
+                4,
+                "`x` must resolve to the real definition's .bss slot, \
+                 not to separate tentative storage (declaration first: \
+                 {declaration_first})"
+            );
+        }
     }
 }
