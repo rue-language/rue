@@ -6,9 +6,10 @@ import RueCore.Syntax
 `crates/rue-oracle` interprets the compiler's CFG built from Rue source and
 cannot consume core syntax, so the differential bridge (ADR-0097, RUE-2227)
 runs the cheap direction: every fragment program is printed as a Rue program
-whose surface forms elaborate back to exactly the core forms it came from
-(§2's elaboration inventory), and the compiler, the oracle, and the native
-binary are then run on that program.
+whose surface forms elaborate back to the core forms it came from (§2's
+elaboration inventory), with one documented exception (`drop` on a linear
+binding, below), and the compiler, the oracle, and the native binary are
+then run on that program.
 
 ## The observation channel
 
@@ -40,7 +41,11 @@ interpreter emits no events for some classes at all:
   only observable event for a linear value is an explicit `@drop`, since a
   leak, an overwrite, and a discard are refusals; so the image of `drop i`
   on a linear binding is `@dbg(consume_linear(x))`: the same ownership
-  effect (`x` consumed, 3.8:33) and the same observation (one line).
+  effect (`x` consumed, 3.8:33) and the same observation (one line). This
+  is the one place the printed program is not the identity elaboration:
+  its core image is `consume (use i)` plus an intrinsic, so the compiler's
+  own `@drop`-discharges-a-linear path (3.9:39) is not exercised by the
+  bridge for linear values.
 
 Every printed program is a complete Rue module: a fixed prelude declaring
 the three resource types and their consumers, then `main`, which binds the

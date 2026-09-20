@@ -31,8 +31,13 @@ One array of case objects. Fields:
   observable (the machine discards it) and only the trap kind is compared.
   For a rejected program `expected` is `{"kind": "stuck", "violation":
   <name>}`: the refusal the machine reaches, kernel-checked in
-  `Examples.lean`, which the bridge cannot observe because the compiler
-  rejects the program first.
+  `Examples.lean` and below, which the bridge cannot observe because the
+  compiler rejects the program first. A `panic` outcome carries no trace on
+  the Lean side (`EvalRes.panic` discards it), so drops before a trap are a
+  blind spot of the bridge at this fragment; RUE-2282 gives `.panic` its
+  trace. Drop lines and the value line are both bare integers, so the
+  projection is not injective: a drop of payload `n` swapped with a value
+  `n` would not be told apart. Accepted at fragment scope.
 
 The output is deterministic: cases are listed in a fixed order and nothing
 depends on the environment.
@@ -69,7 +74,7 @@ def cases : List Case := [
     expr := Examples.linearConsumed },
   { name := "linear_leaked",
     description := "A linear resource reaching scope exit unconsumed: rejected statically (E0406) and refused dynamically (linearLeak).",
-    rules := ["§5.6 residual-linear leak check", "3.8:62"],
+    rules := ["§5.6 residual-linear leak check", "3.8:32"],
     expr := Examples.linearLeaked },
   { name := "use_after_move",
     description := "A moved affine binding used again: rejected statically (E0205) and refused dynamically (useAfterMove).",
@@ -89,7 +94,7 @@ def cases : List Case := [
     expr := Examples.overflow },
   { name := "div_zero",
     description := "Division by zero traps with a defined panic.",
-    rules := ["§6.4 arithmetic traps", "3.1:13"],
+    rules := ["§6.4 arithmetic traps", "4.2:11"],
     expr := Examples.divZero },
   { name := "copy_resource",
     description := "A copy resource: @drop is a no-op, uses copy, nothing is ever printed for it.",
@@ -101,7 +106,7 @@ def cases : List Case := [
     rules := ["(@Drop) §5.3", "§6.11", "3.9:37"],
     expr := letIn false (mkres .affine (intLit 8)) (seq (drop 0) (intLit 2)) },
   { name := "linear_explicit_drop",
-    description := "A linear resource discharged by @drop: the only non-move discharge of a linear obligation.",
+    description := "A linear resource discharged by the core's @drop (the only non-move discharge of a linear obligation); printed as a consuming read, since RLinear cannot carry a destructor (Print.lean).",
     rules := ["(@Drop) §5.3", "3.9:39"],
     expr := letIn false (mkres .linear (intLit 9)) (seq (drop 0) (intLit 3)) },
   { name := "affine_temporary_discarded",
@@ -114,7 +119,7 @@ def cases : List Case := [
     expr := seq (mkres .linear (intLit 3)) (intLit 4) },
   { name := "affine_overwrite",
     description := "Assigning over a live affine value drops the old value at the assignment, then the new one at scope exit.",
-    rules := ["(Assign) §5.2", "§6.8 overwrite-drop", "3.8:72"],
+    rules := ["(Assign) §5.2", "§6.8 overwrite-drop", "3.9:18"],
     expr := letIn true (mkres .affine (intLit 1))
       (seq (assign 0 (mkres .affine (intLit 2))) (intLit 9)) },
   { name := "linear_overwrite",
@@ -124,7 +129,7 @@ def cases : List Case := [
       (seq (assign 0 (mkres .linear (intLit 2))) (consume (use 0))) },
   { name := "join_agrees",
     description := "A linear value consumed in both arms of an if: the join agrees, the program is accepted, and the value chosen is the taken arm's.",
-    rules := ["(If) §5.5 join", "3.8:51"],
+    rules := ["(If) §5.5 join", "3.8:50"],
     expr := letIn false (mkres .linear (intLit 6))
       (ite (lt (intLit 1) (intLit 2)) (consume (use 0)) (add (consume (use 0)) (intLit 1))) },
   { name := "nested_scopes",
@@ -136,6 +141,11 @@ def cases : List Case := [
     description := "The program's value is a resource: main observes its payload and never drops it.",
     rules := ["§4.3 expression value"],
     expr := letIn false (intLit 4) (mkres .affine (use 0)) },
+  { name := "cond_drop_affine",
+    description := "An affine resource dropped explicitly in one arm of an if and left to scope exit on the other: accepted (the join sends it to MovedOut), one drop line either way. The compiler ICEs on this today (RUE-2290); the bridge stays red here until it is fixed.",
+    rules := ["(@Drop) §5.3", "(If) §5.5 join", "3.9:38"],
+    expr := letIn false (mkres .affine (intLit 5))
+      (seq (ite (boolLit true) (drop 0) unitLit) (intLit 9)) },
   { name := "bool_result",
     description := "A boolean value from a comparison.",
     rules := ["§5.8 operator statics", "§6.4"],
@@ -161,11 +171,14 @@ def valueLine : Val → Option String
   | .unit => none
   | .res _ n => some (toString n)
 
-/-- One stdout line per drop event: the dropped resource's payload. Copy
-values produce no events (`eval`), so every event here is a printed line. -/
+/-- One stdout line per drop event: the dropped resource's payload. `eval`
+emits events only for affine and linear resources, so any other value here
+is a broken invariant, reported loudly rather than printed as an empty
+line. -/
 def eventLine : Event → String
-  | .drop _ v => (valueLine v).getD ""
-  | .dropTemp v => (valueLine v).getD ""
+  | .drop _ (.res _ n) => toString n
+  | .dropTemp (.res _ n) => toString n
+  | ev => panic! s!"drop event of a non-resource value: {repr ev}"
 
 def panicName : PanicKind → String
   | .overflow => "overflow"
