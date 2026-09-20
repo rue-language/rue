@@ -1,0 +1,139 @@
+════════════════════════════════════════════════════════════════════════════════
+ use_after_move
+════════════════════════════════════════════════════════════════════════════════
+A moved affine binding used again: rejected statically (E0205) and refused
+dynamically (useAfterMove).
+
+Rules exercised: (Use-Move) §5.1 · 3.8:5
+
+── The program ─────────────────────────────────────────────────────────────────
+
+    {
+        let v0: RAffine = RAffine { value: 1, live: true };
+        {
+            let v1: RAffine = v0;
+            consume_affine(v0)
+        }
+    }
+
+── What the checker says (§5) ──────────────────────────────────────────────────
+
+Verdict: REJECTED by the checker (§5).
+
+The premise that fails, at (Use-Copy)/(Use-Move) §5.1:
+
+    on  v0
+
+    a use of a place whose Σ state is MovedOut — the value was already moved
+    out ((Use-Copy)/(Use-Move) premise `Σ(p) = Owned`, §5.1; 3.8:5; the
+    compiler reports E0205)
+
+── The derivation (§5) ─────────────────────────────────────────────────────────
+
+Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
+fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
+premises are the nodes indented under it, in premise order.
+
+  (Let) §5.6 + scope-exit leak check
+    e       { let v0: RAffine = RAffine { value: 1, live: true }; { let v1: RAffine = v0; c…
+    Γ;Σ     (empty)
+    ✗       this premise fails:
+            a premise's own derivation failed — the reason is the rejected
+            premise nested under this rule
+      (Struct-Intro) §5.8
+        e       RAffine { value: 1, live: true }
+        Γ;Σ     (empty)
+        ⇒       RAffine  ⊣  (empty)
+          (Lit) §5.8
+            e       1
+            Γ;Σ     (empty)
+            ⇒       i64  ⊣  (empty)
+      (Let) §5.6 + scope-exit leak check
+        e       { let v1: RAffine = v0; consume_affine(v0) }
+        Γ;Σ     [v0: RAffine = Owned]
+        ✗       this premise fails:
+                a premise's own derivation failed — the reason is the rejected
+                premise nested under this rule
+          (Use-Move) §5.1
+            e       v0
+            Γ;Σ     [v0: RAffine = Owned]
+            ⇒       RAffine  ⊣  [v0: RAffine = MovedOut]
+          (Call) §5.8
+            e       consume_affine(v0)
+            Γ;Σ     [v1: RAffine = Owned, v0: RAffine = MovedOut]
+            ✗       this premise fails:
+                    a premise's own derivation failed — the reason is the rejected
+                    premise nested under this rule
+              (Use-Copy)/(Use-Move) §5.1
+                e       v0
+                Γ;Σ     [v1: RAffine = Owned, v0: RAffine = MovedOut]
+                ✗       this premise fails:
+                        a use of a place whose Σ state is MovedOut — the value was already
+                        moved out ((Use-Copy)/(Use-Move) premise `Σ(p) = Owned`, §5.1;
+                        3.8:5; the compiler reports E0205)
+
+── The run (§6) ────────────────────────────────────────────────────────────────
+
+One row per evaluated node, in execution order: a node's premises run before
+the node itself, so the table reads top to bottom as the machine ran. `d<n>`
+is the nesting depth and `>>` marks a drop event.
+
+  [1]   d2      literal §6.3
+         expr    1
+         store   (empty)
+           →     (empty)
+         result  value 1
+  [2]   d1    (D-Struct) §6.5
+         expr    RAffine { value: 1, live: true }
+         store   (empty)
+           →     (empty)
+         result  value RAffine { 1 }
+  [3]   d1    (D-Let) §6.7 (mint the binding)
+         expr    { let v0: RAffine = RAffine { value: 1, live: true }; { let v1: RAffine = v0; c…
+         store   (empty)
+           →     [ℓ0 = RAffine { 1 }]
+         result  value RAffine { 1 }
+  [4]   d2      (D-Use-Move) §6.3
+         expr    v0
+         store   [ℓ0 = RAffine { 1 }]
+           →     [ℓ0 = ⊘ (moved out)]
+         result  value RAffine { 1 }
+  [5]   d2      (D-Let) §6.7 (mint the binding)
+         expr    { let v1: RAffine = v0; consume_affine(v0) }
+         store   [ℓ0 = ⊘ (moved out)]
+           →     [ℓ0 = ⊘ (moved out), ℓ1 = RAffine { 1 }]
+         result  value RAffine { 1 }
+  [6]   d3        (D-Use-Copy)/(D-Use-Move) §6.3
+         expr    v0
+         store   [ℓ0 = ⊘ (moved out), ℓ1 = RAffine { 1 }]
+           →     [ℓ0 = ⊘ (moved out), ℓ1 = RAffine { 1 }]
+         result  REFUSED (useAfterMove)
+                 a read of a cell holding ⊘: the value was already moved out of this
+                 place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
+  [7]   d2      (D-Call) §6.9 — a premise did not complete
+         expr    consume_affine(v0)
+         store   [ℓ0 = ⊘ (moved out), ℓ1 = RAffine { 1 }]
+           →     [ℓ0 = ⊘ (moved out), ℓ1 = RAffine { 1 }]
+         result  REFUSED (useAfterMove)
+                 a read of a cell holding ⊘: the value was already moved out of this
+                 place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
+  [8]   d1    (D-Let) §6.7 — a premise did not complete
+         expr    { let v1: RAffine = v0; consume_affine(v0) }
+         store   [ℓ0 = RAffine { 1 }]
+           →     [ℓ0 = ⊘ (moved out)]
+         result  REFUSED (useAfterMove)
+                 a read of a cell holding ⊘: the value was already moved out of this
+                 place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
+  [9]   d0  (D-Let) §6.7 — a premise did not complete
+         expr    { let v0: RAffine = RAffine { value: 1, live: true }; { let v1: RAffine = v0; c…
+         store   (empty)
+           →     (empty)
+         result  REFUSED (useAfterMove)
+                 a read of a cell holding ⊘: the value was already moved out of this
+                 place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
+
+────────────────────────────────────────────────────────────────────────────────
+Outcome: REFUSED (useAfterMove)
+         a read of a cell holding ⊘: the value was already moved out of this
+         place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
+

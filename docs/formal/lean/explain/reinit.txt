@@ -1,0 +1,160 @@
+════════════════════════════════════════════════════════════════════════════════
+ reinit
+════════════════════════════════════════════════════════════════════════════════
+Move a linear value out, assign a new one back in, consume it: legal
+reinitialization.
+
+Rules exercised: (Assign) §5.2 · 3.8:55
+
+── The program ─────────────────────────────────────────────────────────────────
+
+    {
+        let mut v0: RLinear = RLinear { value: 1 };
+        {
+            consume_linear(v0);
+            {
+                { v0 = RLinear { value: 2 }; };
+                consume_linear(v0)
+            }
+        }
+    }
+
+── What the checker says (§5) ──────────────────────────────────────────────────
+
+Verdict: ACCEPTED by the checker (§5).
+         type i64, outgoing Γ;Σ (empty)
+
+         `check_sound` ties this acceptance to a real derivation, so the §7
+         safety theorems apply to this program.
+
+── The derivation (§5) ─────────────────────────────────────────────────────────
+
+Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
+fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
+premises are the nodes indented under it, in premise order.
+
+  (Let) §5.6 + scope-exit leak check
+    e       { let mut v0: RLinear = RLinear { value: 1 }; { consume_linear(v0); { { v0 = RL…
+    Γ;Σ     (empty)
+    ⇒       i64  ⊣  (empty)
+      (Struct-Intro) §5.8
+        e       RLinear { value: 1 }
+        Γ;Σ     (empty)
+        ⇒       RLinear  ⊣  (empty)
+          (Lit) §5.8
+            e       1
+            Γ;Σ     (empty)
+            ⇒       i64  ⊣  (empty)
+      (Seq) §5.3, 3.8:64
+        e       { consume_linear(v0); { { v0 = RLinear { value: 2 }; }; consume_linear(v0) } }
+        Γ;Σ     [v0: RLinear mut = Owned]
+        ⇒       i64  ⊣  [v0: RLinear mut = MovedOut]
+          (Call) §5.8
+            e       consume_linear(v0)
+            Γ;Σ     [v0: RLinear mut = Owned]
+            ⇒       i64  ⊣  [v0: RLinear mut = MovedOut]
+              (Use-Move) §5.1
+                e       v0
+                Γ;Σ     [v0: RLinear mut = Owned]
+                ⇒       RLinear  ⊣  [v0: RLinear mut = MovedOut]
+          (Seq) §5.3, 3.8:64
+            e       { { v0 = RLinear { value: 2 }; }; consume_linear(v0) }
+            Γ;Σ     [v0: RLinear mut = MovedOut]
+            ⇒       i64  ⊣  [v0: RLinear mut = MovedOut]
+              (Assign) §5.2, 3.8:77
+                e       { v0 = RLinear { value: 2 }; }
+                Γ;Σ     [v0: RLinear mut = MovedOut]
+                ⇒       ()  ⊣  [v0: RLinear mut = Owned]
+                  (Struct-Intro) §5.8
+                    e       RLinear { value: 2 }
+                    Γ;Σ     [v0: RLinear mut = MovedOut]
+                    ⇒       RLinear  ⊣  [v0: RLinear mut = MovedOut]
+                      (Lit) §5.8
+                        e       2
+                        Γ;Σ     [v0: RLinear mut = MovedOut]
+                        ⇒       i64  ⊣  [v0: RLinear mut = MovedOut]
+              (Call) §5.8
+                e       consume_linear(v0)
+                Γ;Σ     [v0: RLinear mut = Owned]
+                ⇒       i64  ⊣  [v0: RLinear mut = MovedOut]
+                  (Use-Move) §5.1
+                    e       v0
+                    Γ;Σ     [v0: RLinear mut = Owned]
+                    ⇒       RLinear  ⊣  [v0: RLinear mut = MovedOut]
+
+── The run (§6) ────────────────────────────────────────────────────────────────
+
+One row per evaluated node, in execution order: a node's premises run before
+the node itself, so the table reads top to bottom as the machine ran. `d<n>`
+is the nesting depth and `>>` marks a drop event.
+
+  [1]   d2      literal §6.3
+         expr    1
+         store   (empty)
+           →     (empty)
+         result  value 1
+  [2]   d1    (D-Struct) §6.5
+         expr    RLinear { value: 1 }
+         store   (empty)
+           →     (empty)
+         result  value RLinear { 1 }
+  [3]   d1    (D-Let) §6.7 (mint the binding)
+         expr    { let mut v0: RLinear = RLinear { value: 1 }; { consume_linear(v0); { { v0 = RL…
+         store   (empty)
+           →     [ℓ0 = RLinear { 1 }]
+         result  value RLinear { 1 }
+  [4]   d3        (D-Use-Move) §6.3
+         expr    v0
+         store   [ℓ0 = RLinear { 1 }]
+           →     [ℓ0 = ⊘ (moved out)]
+         result  value RLinear { 1 }
+  [5]   d2      (D-Call) §6.9
+         expr    consume_linear(v0)
+         store   [ℓ0 = RLinear { 1 }]
+           →     [ℓ0 = ⊘ (moved out)]
+         result  value 1
+  [6]   d5            literal §6.3
+         expr    2
+         store   [ℓ0 = ⊘ (moved out)]
+           →     [ℓ0 = ⊘ (moved out)]
+         result  value 2
+  [7]   d4          (D-Struct) §6.5
+         expr    RLinear { value: 2 }
+         store   [ℓ0 = ⊘ (moved out)]
+           →     [ℓ0 = ⊘ (moved out)]
+         result  value RLinear { 2 }
+  [8]   d3        (D-Assign) §6.8 (reinitialization, 3.8:55)
+         expr    { v0 = RLinear { value: 2 }; }
+         store   [ℓ0 = ⊘ (moved out)]
+           →     [ℓ0 = RLinear { 2 }]
+         result  value ()
+  [9]   d4          (D-Use-Move) §6.3
+         expr    v0
+         store   [ℓ0 = RLinear { 2 }]
+           →     [ℓ0 = ⊘ (moved out)]
+         result  value RLinear { 2 }
+  [10]  d3        (D-Call) §6.9
+         expr    consume_linear(v0)
+         store   [ℓ0 = RLinear { 2 }]
+           →     [ℓ0 = ⊘ (moved out)]
+         result  value 2
+  [11]  d2      (D-Seq) §6.7
+         expr    { { v0 = RLinear { value: 2 }; }; consume_linear(v0) }
+         store   [ℓ0 = ⊘ (moved out)]
+           →     [ℓ0 = ⊘ (moved out)]
+         result  value 2
+  [12]  d1    (D-Seq) §6.7
+         expr    { consume_linear(v0); { { v0 = RLinear { value: 2 }; }; consume_linear(v0) } }
+         store   [ℓ0 = RLinear { 1 }]
+           →     [ℓ0 = ⊘ (moved out)]
+         result  value 2
+  [13]  d0  (D-EndScope) §6.7 (retire the binding)
+         expr    { let mut v0: RLinear = RLinear { value: 1 }; { consume_linear(v0); { { v0 = RL…
+         store   [ℓ0 = ⊘ (moved out)]
+           →     [ℓ0 = † (retired)]
+         result  value 2
+
+────────────────────────────────────────────────────────────────────────────────
+Outcome: ok — value 2
+         drop trace: (no drops)
+

@@ -1,0 +1,83 @@
+════════════════════════════════════════════════════════════════════════════════
+ affine_temporary_discarded
+════════════════════════════════════════════════════════════════════════════════
+An affine value produced and discarded by a sequence: the machine drops the
+temporary at the end of the statement.
+
+Rules exercised: (Seq) §5.3 · §6.7 temporary drop
+
+── The program ─────────────────────────────────────────────────────────────────
+
+    {
+        RAffine { value: 3, live: true };
+        4
+    }
+
+── What the checker says (§5) ──────────────────────────────────────────────────
+
+Verdict: ACCEPTED by the checker (§5).
+         type i64, outgoing Γ;Σ (empty)
+
+         `check_sound` ties this acceptance to a real derivation, so the §7
+         safety theorems apply to this program.
+
+── The derivation (§5) ─────────────────────────────────────────────────────────
+
+Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
+fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
+premises are the nodes indented under it, in premise order.
+
+  (Seq) §5.3, 3.8:64
+    e       { RAffine { value: 3, live: true }; 4 }
+    Γ;Σ     (empty)
+    ⇒       i64  ⊣  (empty)
+      (Struct-Intro) §5.8
+        e       RAffine { value: 3, live: true }
+        Γ;Σ     (empty)
+        ⇒       RAffine  ⊣  (empty)
+          (Lit) §5.8
+            e       3
+            Γ;Σ     (empty)
+            ⇒       i64  ⊣  (empty)
+      (Lit) §5.8
+        e       4
+        Γ;Σ     (empty)
+        ⇒       i64  ⊣  (empty)
+
+── The run (§6) ────────────────────────────────────────────────────────────────
+
+One row per evaluated node, in execution order: a node's premises run before
+the node itself, so the table reads top to bottom as the machine ran. `d<n>`
+is the nesting depth and `>>` marks a drop event.
+
+  [1]   d2      literal §6.3
+         expr    3
+         store   (empty)
+           →     (empty)
+         result  value 3
+  [2]   d1    (D-Struct) §6.5
+         expr    RAffine { value: 3, live: true }
+         store   (empty)
+           →     (empty)
+         result  value RAffine { 3 }
+  [3]   d1    (D-Seq) §6.7 (drop the temporary)
+         expr    { RAffine { value: 3, live: true }; 4 }
+         store   (empty)
+           →     (empty)
+         events  >> drop temporary RAffine { 3 }
+         result  value ()
+  [4]   d1    literal §6.3
+         expr    4
+         store   (empty)
+           →     (empty)
+         result  value 4
+  [5]   d0  (D-Seq) §6.7
+         expr    { RAffine { value: 3, live: true }; 4 }
+         store   (empty)
+           →     (empty)
+         result  value 4
+
+────────────────────────────────────────────────────────────────────────────────
+Outcome: ok — value 4
+         drop trace: drop temporary RAffine { 3 }
+

@@ -777,6 +777,7 @@ lean_package(
     toolchain = "toolchains//:lean-distribution",
     module = "RueCore",
     corpus_exe = "ruecore-corpus",
+    extra_exes = ["ruecore-explain"],
     trust = [
         "RueCore.soundness",
         "RueCore.no_use_after_move",
@@ -785,6 +786,8 @@ lean_package(
         "RueCore.no_linear_overwrite",
         "RueCore.no_linear_discard",
         "RueCore.check_sound",
+        "RueCore.Explain.explain_result",
+        "RueCore.Explain.traceEval_res",
     ],
 )
 

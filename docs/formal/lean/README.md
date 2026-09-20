@@ -86,6 +86,47 @@ would not be told apart. Every printed program opens with a comment naming
 its case, the rules it exercises, and its expected outcome in words, so
 `corpus.json` doubles as a readable example set.
 
+## Explaining a program (RUE-2246)
+
+`lake exe ruecore-explain` turns any corpus case into a page a reader can
+follow without Lean: the program in Rue surface syntax, the verified
+checker's verdict, the §5 derivation as a tree with the fused `Γ;Σ` at every
+node, and the §6 run as a step table in execution order showing the store
+before and after each node and the drop events it emitted. When the checker
+rejects, the failing premise is stated first, in the calculus's own words,
+with its §-rule, its prose paragraph, and the compiler's diagnostic code.
+
+```bash
+lake exe ruecore-explain linear_overwrite   # one case, as text
+lake exe ruecore-explain --all              # every case, as text
+lake exe ruecore-explain --list             # the case names
+lake exe ruecore-explain --text explain     # regenerate explain/*.txt
+lake exe ruecore-explain --html /tmp/out    # a self-contained page per case
+```
+
+The text renderings are checked in under `explain/`, one file per corpus
+case; `--text explain` regenerates them, and they should be refreshed in the
+same change whenever the corpus, the printer, or the calculus citations
+move. The HTML is generated on demand and not checked in: each page is
+self-contained (inline CSS, no scripts, no external assets) and `--html`
+also writes an `index.html` listing every case with its verdict and outcome.
+
+The renderer is not a second opinion about the language. `Explain.lean`
+defines two instrumented mirrors — `explain`, which walks the §5 rules and
+returns a derivation, and `traceEval`, which walks the §6 machine and
+returns a step table — and proves they agree with the definitions the
+theorems are about:
+
+```
+theorem explain_result  : (explain Γ e).result   = check Γ e
+theorem traceEval_res   : (traceEval d Θ H ρ e).res = eval H ρ e
+```
+
+So a rendered page cannot claim an acceptance, a rejection, or an outcome
+that `check` and `eval` do not produce; a divergence would be a failed
+proof, not a rendering bug. Both lemmas are in the Buck target's `trust`
+list, so their axioms are checked with the safety theorems'.
+
 ## How to read this, with no Lean
 
 `GUIDE.md` is the full reader's guide: each Lean artifact in the calculus's
@@ -166,6 +207,8 @@ a slice author writes:
 | `RueCore/Examples.lean` | `#eval` demos; kernel-checked acceptance/rejection of example programs | — |
 | `RueCore/Print.lean` | core syntax → Rue source, and the observation channel (one printed line per drop event, per multiplicity class) | §2 elaboration inventory, 3.9 |
 | `RueCore/Corpus.lean` | the bridge corpus: each case's checker verdict and interpreter outcome, exported as JSON (`lake exe ruecore-corpus`) | §5, §6, §7 witnesses |
+| `RueCore/Explain.lean` | instrumented mirrors of `check` and `eval` — derivation trees with the failing premise named, and step tables with stores and drop events — with the lemmas tying both to the proved definitions | §5, §6 as an explanation |
+| `RueCore/Explain/Text.lean`, `RueCore/Explain/Html.lean` | the terminal and self-contained-page renderings (`lake exe ruecore-explain`); the checked-in text is in `explain/` | — |
 | `GUIDE.md`, `INDEX.md` | the reader's guide, and the generated rule ↔ declaration ↔ paragraph index (`scripts/validate-lean-xref-index.py`) | §5, §6 coverage |
 
 The fragment: scalars + an abstract resource type `res κ` carrying its

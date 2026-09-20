@@ -1,0 +1,131 @@
+════════════════════════════════════════════════════════════════════════════════
+ linear_overwrite
+════════════════════════════════════════════════════════════════════════════════
+Assigning over a live linear value: rejected statically (3.8:77, the RUE-387
+premise) and refused dynamically (linearOverwrite).
+
+Rules exercised: (Assign) §5.2 · 3.8:77
+
+── The program ─────────────────────────────────────────────────────────────────
+
+    {
+        let mut v0: RLinear = RLinear { value: 1 };
+        {
+            { v0 = RLinear { value: 2 }; };
+            consume_linear(v0)
+        }
+    }
+
+── What the checker says (§5) ──────────────────────────────────────────────────
+
+Verdict: REJECTED by the checker (§5).
+
+The premise that fails, at (Assign) §5.2, 3.8:77:
+
+    on  { v0 = RLinear { value: 2 }; }
+
+    overwrite of a live linear value: the target is still Owned after the
+    right-hand side and its type RLinear is Linear ((Assign) premise `Σ1(p) =
+    MovedOut ∨ ¬carries_linear(T)`, §5.2; 3.8:77; the compiler reports E0493)
+
+── The derivation (§5) ─────────────────────────────────────────────────────────
+
+Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
+fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
+premises are the nodes indented under it, in premise order.
+
+  (Let) §5.6 + scope-exit leak check
+    e       { let mut v0: RLinear = RLinear { value: 1 }; { { v0 = RLinear { value: 2 }; };…
+    Γ;Σ     (empty)
+    ✗       this premise fails:
+            a premise's own derivation failed — the reason is the rejected
+            premise nested under this rule
+      (Struct-Intro) §5.8
+        e       RLinear { value: 1 }
+        Γ;Σ     (empty)
+        ⇒       RLinear  ⊣  (empty)
+          (Lit) §5.8
+            e       1
+            Γ;Σ     (empty)
+            ⇒       i64  ⊣  (empty)
+      (Seq) §5.3, 3.8:64
+        e       { { v0 = RLinear { value: 2 }; }; consume_linear(v0) }
+        Γ;Σ     [v0: RLinear mut = Owned]
+        ✗       this premise fails:
+                a premise's own derivation failed — the reason is the rejected
+                premise nested under this rule
+          (Assign) §5.2, 3.8:77
+            e       { v0 = RLinear { value: 2 }; }
+            Γ;Σ     [v0: RLinear mut = Owned]
+            ✗       this premise fails:
+                    overwrite of a live linear value: the target is still Owned after
+                    the right-hand side and its type RLinear is Linear ((Assign) premise
+                    `Σ1(p) = MovedOut ∨ ¬carries_linear(T)`, §5.2; 3.8:77; the compiler
+                    reports E0493)
+              (Struct-Intro) §5.8
+                e       RLinear { value: 2 }
+                Γ;Σ     [v0: RLinear mut = Owned]
+                ⇒       RLinear  ⊣  [v0: RLinear mut = Owned]
+                  (Lit) §5.8
+                    e       2
+                    Γ;Σ     [v0: RLinear mut = Owned]
+                    ⇒       i64  ⊣  [v0: RLinear mut = Owned]
+
+── The run (§6) ────────────────────────────────────────────────────────────────
+
+One row per evaluated node, in execution order: a node's premises run before
+the node itself, so the table reads top to bottom as the machine ran. `d<n>`
+is the nesting depth and `>>` marks a drop event.
+
+  [1]   d2      literal §6.3
+         expr    1
+         store   (empty)
+           →     (empty)
+         result  value 1
+  [2]   d1    (D-Struct) §6.5
+         expr    RLinear { value: 1 }
+         store   (empty)
+           →     (empty)
+         result  value RLinear { 1 }
+  [3]   d1    (D-Let) §6.7 (mint the binding)
+         expr    { let mut v0: RLinear = RLinear { value: 1 }; { { v0 = RLinear { value: 2 }; };…
+         store   (empty)
+           →     [ℓ0 = RLinear { 1 }]
+         result  value RLinear { 1 }
+  [4]   d4          literal §6.3
+         expr    2
+         store   [ℓ0 = RLinear { 1 }]
+           →     [ℓ0 = RLinear { 1 }]
+         result  value 2
+  [5]   d3        (D-Struct) §6.5
+         expr    RLinear { value: 2 }
+         store   [ℓ0 = RLinear { 1 }]
+           →     [ℓ0 = RLinear { 1 }]
+         result  value RLinear { 2 }
+  [6]   d2      (D-Assign) §6.8
+         expr    { v0 = RLinear { value: 2 }; }
+         store   [ℓ0 = RLinear { 1 }]
+           →     [ℓ0 = RLinear { 1 }]
+         result  REFUSED (linearOverwrite)
+                 an overwrite-drop of a live linear value: the assignment would
+                 consume a linear value the program never consumed (§6.8; 3.8:77; §7)
+  [7]   d1    (D-Seq) §6.7 — a premise did not complete
+         expr    { { v0 = RLinear { value: 2 }; }; consume_linear(v0) }
+         store   [ℓ0 = RLinear { 1 }]
+           →     [ℓ0 = RLinear { 1 }]
+         result  REFUSED (linearOverwrite)
+                 an overwrite-drop of a live linear value: the assignment would
+                 consume a linear value the program never consumed (§6.8; 3.8:77; §7)
+  [8]   d0  (D-Let) §6.7 — a premise did not complete
+         expr    { let mut v0: RLinear = RLinear { value: 1 }; { { v0 = RLinear { value: 2 }; };…
+         store   (empty)
+           →     (empty)
+         result  REFUSED (linearOverwrite)
+                 an overwrite-drop of a live linear value: the assignment would
+                 consume a linear value the program never consumed (§6.8; 3.8:77; §7)
+
+────────────────────────────────────────────────────────────────────────────────
+Outcome: REFUSED (linearOverwrite)
+         an overwrite-drop of a live linear value: the assignment would
+         consume a linear value the program never consumed (§6.8; 3.8:77; §7)
+

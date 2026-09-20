@@ -1,0 +1,78 @@
+════════════════════════════════════════════════════════════════════════════════
+ linear_temporary_discarded
+════════════════════════════════════════════════════════════════════════════════
+A linear value produced and discarded by a sequence: rejected statically
+(3.8:64) and refused dynamically (linearDiscard).
+
+Rules exercised: (Seq) §5.3 · 3.8:64
+
+── The program ─────────────────────────────────────────────────────────────────
+
+    {
+        RLinear { value: 3 };
+        4
+    }
+
+── What the checker says (§5) ──────────────────────────────────────────────────
+
+Verdict: REJECTED by the checker (§5).
+
+The premise that fails, at (Seq) §5.3, 3.8:64:
+
+    on  { RLinear { value: 3 }; 4 }
+
+    the discarded value has type RLinear, which carries a linear value ((Seq)
+    premise `carries_linear(T1) = false`, §5.3; 3.8:64; the compiler reports
+    E0478)
+
+── The derivation (§5) ─────────────────────────────────────────────────────────
+
+Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
+fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
+premises are the nodes indented under it, in premise order.
+
+  (Seq) §5.3, 3.8:64
+    e       { RLinear { value: 3 }; 4 }
+    Γ;Σ     (empty)
+    ✗       this premise fails:
+            the discarded value has type RLinear, which carries a linear value
+            ((Seq) premise `carries_linear(T1) = false`, §5.3; 3.8:64; the
+            compiler reports E0478)
+      (Struct-Intro) §5.8
+        e       RLinear { value: 3 }
+        Γ;Σ     (empty)
+        ⇒       RLinear  ⊣  (empty)
+          (Lit) §5.8
+            e       3
+            Γ;Σ     (empty)
+            ⇒       i64  ⊣  (empty)
+
+── The run (§6) ────────────────────────────────────────────────────────────────
+
+One row per evaluated node, in execution order: a node's premises run before
+the node itself, so the table reads top to bottom as the machine ran. `d<n>`
+is the nesting depth and `>>` marks a drop event.
+
+  [1]   d2      literal §6.3
+         expr    3
+         store   (empty)
+           →     (empty)
+         result  value 3
+  [2]   d1    (D-Struct) §6.5
+         expr    RLinear { value: 3 }
+         store   (empty)
+           →     (empty)
+         result  value RLinear { 3 }
+  [3]   d0  (D-Seq) §6.7
+         expr    { RLinear { value: 3 }; 4 }
+         store   (empty)
+           →     (empty)
+         result  REFUSED (linearDiscard)
+                 a sequence discarded a linear value: the temporary's obligation was
+                 never discharged ((D-Seq) §6.7; 3.8:64; §7)
+
+────────────────────────────────────────────────────────────────────────────────
+Outcome: REFUSED (linearDiscard)
+         a sequence discarded a linear value: the temporary's obligation was
+         never discharged ((D-Seq) §6.7; 3.8:64; §7)
+
