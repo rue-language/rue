@@ -53,15 +53,30 @@
 //!
 //! - a later `Store`/`Alloc` to the slot replaces the entry;
 //! - a `PlaceWrite` whose base is that local (a partial write) kills it;
-//! - any call (including an `AccessorCall`) with a by-ref argument rooted at
-//!   that local kills it (the callee may write through the pointer). A by-ref
-//!   argument rooted at a shape this pass cannot identify as a specific local
-//!   or parameter clears the whole table conservatively.
+//! - a `PlaceWrite` through a pointer or an accessor-yielded place, an
+//!   `Intrinsic`, or a `Drop` clears the whole table: each writes memory this
+//!   pass cannot attribute to a slot.
 //!
-//! The table resets at each block boundary. Address-taken slots are excluded
-//! from it entirely: a raw pointer may alias them and store between a tracked
-//! write and a load (RUE-521 covers reads after an aliased write, not only
-//! place preservation).
+//! The table resets at each block boundary. Two kinds of slot are excluded
+//! from it for the whole function rather than killed at a point:
+//!
+//! - **Address-taken slots** (`@raw`/`@raw_mut`/`@field_ptr`, recorded by CFG
+//!   construction and carried across inlining): a raw pointer may alias them
+//!   and store between a tracked write and a load (RUE-521 covers reads after
+//!   an aliased write, not only place preservation).
+//! - **Escaped slots**: any local rooting a by-ref (`inout`/`borrow`)
+//!   argument of any call form. Handing a callee the slot's address is not a
+//!   one-instruction event — the callee may return or stash the pointer, and a
+//!   later write through it lands in the slot with no instruction here to
+//!   attribute it to. Killing the entry only at the call left the *following*
+//!   stores trackable, so a store, then a write through the escaped pointer,
+//!   then a load forwarded the stale store (RUE-2262). A by-ref argument whose
+//!   root this pass cannot resolve to a specific local excludes every slot,
+//!   matching [`super::slot_facts`].
+//!
+//! Both sets are whole-function because block index order is not execution
+//! order: a back edge can reach a block whose escaping call has not been
+//! scanned yet.
 //!
 //! A `Load` that is itself a by-ref call argument is never forwarded under
 //! either rule: the by-ref lowering requires that argument to remain a place.
@@ -149,8 +164,25 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
     // Precompute the set of values used as by-ref call arguments. Such a
     // value must stay a place (its address is taken by the callee), so it is
     // never forwarded regardless of rule.
+    //
+    // The same scan collects the slots whose address may have ESCAPED past
+    // this function's view (RUE-2262). Handing a slot's address to a callee
+    // is not a one-instruction event: the callee may keep the pointer (return
+    // it, stash it in a struct) and any later write through it lands in the
+    // slot without an instruction this pass can attribute to it. Killing the
+    // slot's entry only at the call therefore leaves the following stores
+    // trackable and forwardable, which is the miscompile. An escaped slot is
+    // excluded from Rule 2's table for the whole function instead, exactly as
+    // an address-taken one is, and the set is whole-function because block
+    // order is not execution order: a back edge can reach a block whose
+    // escaping call has not been scanned yet.
     // ------------------------------------------------------------------
     let mut byref_arg_values: AHashSet<CfgValue> = AHashSet::new();
+    // Slots that may be written through a pointer the optimizer cannot see:
+    // address-taken up front (RUE-521), plus every by-ref call-argument root.
+    let mut untracked_slot: Vec<bool> = (0..num_locals as u32)
+        .map(|slot| cfg.is_address_taken(slot))
+        .collect();
     for block in cfg.blocks() {
         for &value in &block.insts {
             if let CfgInstData::Call { args, .. }
@@ -158,8 +190,33 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
             | CfgInstData::CallIndirect { args, .. } = &cfg.get_inst(value).data
             {
                 for arg in cfg.call_args(args) {
-                    if arg.is_by_ref() {
-                        byref_arg_values.insert(arg.value);
+                    if !arg.is_by_ref() {
+                        continue;
+                    }
+                    byref_arg_values.insert(arg.value);
+                    match &cfg.get_inst(arg.value).data {
+                        CfgInstData::Load { slot } => {
+                            if let Some(flag) = untracked_slot.get_mut(*slot as usize) {
+                                *flag = true;
+                            }
+                        }
+                        CfgInstData::PlaceRead { place } => match place.base {
+                            PlaceBase::Local(slot) => {
+                                if let Some(flag) = untracked_slot.get_mut(slot as usize) {
+                                    *flag = true;
+                                }
+                            }
+                            // A parameter root hands over a parameter slot's
+                            // address, which cannot alias a local slot.
+                            PlaceBase::Param(_) => {}
+                            PlaceBase::Accessor(_) | PlaceBase::Indirect(_) => {
+                                untracked_slot.fill(true);
+                            }
+                        },
+                        // A by-ref root this scan cannot resolve to a slot:
+                        // assume every local's address may be the one handed
+                        // over, matching `slot_facts`.
+                        _ => untracked_slot.fill(true),
                     }
                 }
             }
@@ -205,9 +262,10 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
 
             match cfg.get_inst(value).data.duplicate_with_owner() {
                 CfgInstData::Alloc { slot, init } | CfgInstData::Store { slot, value: init } => {
-                    // Address-taken slots stay out of the block-local table;
-                    // ownership-boundary Loads are filtered by value below.
-                    if !cfg.is_address_taken(slot) && (slot as usize) < num_locals {
+                    // Address-taken and escaped slots stay out of the
+                    // block-local table; ownership-boundary Loads are filtered
+                    // by value below.
+                    if untracked_slot.get(slot as usize) == Some(&false) {
                         last_store[slot as usize] = Some(init);
                     }
                 }
@@ -242,7 +300,7 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
                         if write_block != block_id {
                             rule1_dominance_checks.insert((write_block, block_id));
                         }
-                    } else if !cfg.is_address_taken(slot) {
+                    } else if untracked_slot.get(slot as usize) == Some(&false) {
                         // Rule 2: block-local forwarding for multi-write slots.
                         if let Some(&Some(stored)) = last_store.get(slot as usize) {
                             // A zero-sized local shares its slot index with the
@@ -259,54 +317,39 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
                         }
                     }
                 }
-                CfgInstData::PlaceWrite { place, .. } => {
+                CfgInstData::PlaceWrite { place, .. } => match place.base {
                     // A partial write invalidates the whole-slot value.
-                    if let PlaceBase::Local(slot) = place.base {
+                    PlaceBase::Local(slot) => {
                         if (slot as usize) < num_locals {
                             last_store[slot as usize] = None;
                         }
                     }
-                }
-                // Both call forms can pass a place to code that writes through
-                // it, so a by-ref argument invalidates the tracked value.
-                CfgInstData::Call { args, .. }
-                | CfgInstData::AccessorCall { args, .. }
-                | CfgInstData::CallIndirect { args, .. } => {
-                    let mut clear_all = false;
-                    for arg in cfg.call_args(&args).to_vec() {
-                        if !arg.is_by_ref() {
-                            continue;
-                        }
-                        match &cfg.get_inst(arg.value).data {
-                            CfgInstData::Load { slot } => {
-                                if (*slot as usize) < num_locals {
-                                    last_store[*slot as usize] = None;
-                                }
-                            }
-                            CfgInstData::PlaceRead { place } => match place.base {
-                                // A local base: the callee may write that local.
-                                PlaceBase::Local(slot) => {
-                                    if (slot as usize) < num_locals {
-                                        last_store[slot as usize] = None;
-                                    }
-                                }
-                                // A parameter base writes through a parameter,
-                                // not a local slot: nothing to kill.
-                                PlaceBase::Param(_) => {}
-                                PlaceBase::Accessor(_) | PlaceBase::Indirect(_) => {
-                                    clear_all = true;
-                                }
-                            },
-                            // An unidentifiable by-ref root: be safe and clear
-                            // the whole table at this call.
-                            _ => clear_all = true,
-                        }
+                    // A projected write into a parameter's storage cannot
+                    // reach a local slot.
+                    PlaceBase::Param(_) => {}
+                    // A write through a pointer or an accessor-yielded place:
+                    // the target cannot be bounded here, so it is a barrier
+                    // for the whole table, the same rule
+                    // `slot_facts::classify_loop_slot_invariance` applies per
+                    // loop.
+                    PlaceBase::Accessor(_) | PlaceBase::Indirect(_) => {
+                        last_store.fill(None);
                     }
-                    if clear_all {
-                        for slot in last_store.iter_mut() {
-                            *slot = None;
-                        }
-                    }
+                },
+                // An intrinsic that stores through a pointer (`@ptr_write`,
+                // `@byte_copy`, `@byte_set`, …) and a destructor body both
+                // write memory this pass cannot attribute to a slot, so both
+                // are barriers for the whole table — the same barrier set
+                // `slot_facts::classify_loop_slot_invariance` uses per loop.
+                // A call needs no arm: the only way a callee can write a
+                // caller local is through the local's address, and both ways
+                // to produce one (an address-taking intrinsic here, a by-ref
+                // argument) already put the slot in `untracked_slot`. These
+                // two arms are the backstop that keeps the pass sound if an
+                // escape channel is ever added that the scan above does not
+                // model (RUE-2262).
+                CfgInstData::Intrinsic { .. } | CfgInstData::Drop { .. } => {
+                    last_store.fill(None);
                 }
                 _ => {}
             }
@@ -557,6 +600,133 @@ mod tests {
         assert!(matches!(
             cfg.get_inst(accessor).data,
             CfgInstData::AccessorCall { .. }
+        ));
+    }
+
+    #[test]
+    fn test_escaped_slot_stays_untracked_after_the_call() {
+        // let mut x = 1; f(inout x); x = 5; @ptr_write(p, 42); read = x;
+        // RUE-2262: the by-ref argument hands `f` the slot's ADDRESS, which it
+        // may keep. Killing the entry only AT the call let the FOLLOWING store
+        // re-enter the table, and the read after the pointer write forwarded
+        // that stale 5. An escaped slot is excluded for the whole function.
+        let mut cfg = make_cfg(1);
+        let c1 = push(&mut cfg, CfgInstData::Const(1), Type::I32);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc { slot: 0, init: c1 },
+            Type::UNIT,
+        );
+        let arg_load = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
+        let args = cfg
+            .push_call_args([CfgCallArg {
+                value: arg_load,
+                mode: CfgArgMode::Inout,
+            }])
+            .unwrap();
+        push(
+            &mut cfg,
+            CfgInstData::Call {
+                runtime: None,
+                name: Spur::try_from_usize(0).unwrap(),
+                args,
+            },
+            Type::UNIT,
+        );
+        let c5 = push(&mut cfg, CfgInstData::Const(5), Type::I32);
+        push(
+            &mut cfg,
+            CfgInstData::Store { slot: 0, value: c5 },
+            Type::UNIT,
+        );
+        let read = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
+        cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(read) });
+
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.loads_forwarded_single_write, 0);
+        assert_eq!(stats.loads_forwarded_block_local, 0);
+        assert!(matches!(
+            cfg.get_block(cfg.entry).terminator,
+            Terminator::Return { value: Some(v) } if v == read
+        ));
+    }
+
+    #[test]
+    fn test_intrinsic_kills_block_local_entries() {
+        // let mut x = 1; x = 5; @panic-shaped intrinsic; read = x;
+        // An intrinsic may store through a pointer, so it is a barrier for the
+        // whole table even though this slot never escaped (RUE-2262 backstop).
+        let mut cfg = make_cfg(1);
+        let c1 = push(&mut cfg, CfgInstData::Const(1), Type::I32);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc { slot: 0, init: c1 },
+            Type::UNIT,
+        );
+        let c5 = push(&mut cfg, CfgInstData::Const(5), Type::I32);
+        push(
+            &mut cfg,
+            CfgInstData::Store { slot: 0, value: c5 },
+            Type::UNIT,
+        );
+        let intrinsic_args = cfg.push_intrinsic_args(std::iter::empty()).unwrap();
+        push(
+            &mut cfg,
+            CfgInstData::Intrinsic {
+                operation: rue_air::IntrinsicOperation::PanicNoMessage,
+                name: Spur::try_from_usize(0).unwrap(),
+                args: intrinsic_args,
+            },
+            Type::UNIT,
+        );
+        let read = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
+        cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(read) });
+
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.loads_forwarded_block_local, 0);
+        assert!(matches!(
+            cfg.get_block(cfg.entry).terminator,
+            Terminator::Return { value: Some(v) } if v == read
+        ));
+    }
+
+    #[test]
+    fn test_indirect_place_write_kills_block_local_entries() {
+        // A `PlaceWrite` through a pointer base writes storage this pass
+        // cannot attribute to a slot, so it clears the whole table.
+        let mut cfg = make_cfg(1);
+        let c1 = push(&mut cfg, CfgInstData::Const(1), Type::I32);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc { slot: 0, init: c1 },
+            Type::UNIT,
+        );
+        let c5 = push(&mut cfg, CfgInstData::Const(5), Type::I32);
+        push(
+            &mut cfg,
+            CfgInstData::Store { slot: 0, value: c5 },
+            Type::UNIT,
+        );
+        let pointer = push(&mut cfg, CfgInstData::Const(0), Type::I64);
+        let projections = cfg.push_projections([]).unwrap();
+        let place = Place {
+            base: PlaceBase::Indirect(pointer),
+            base_type: Type::I32,
+            projections,
+        };
+        push(
+            &mut cfg,
+            CfgInstData::PlaceWrite { place, value: c1 },
+            Type::UNIT,
+        );
+        let read = push(&mut cfg, CfgInstData::Load { slot: 0 }, Type::I32);
+        cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(read) });
+
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.loads_forwarded_block_local, 0);
+        assert!(matches!(
+            cfg.get_block(cfg.entry).terminator,
+            Terminator::Return { value: Some(v) } if v == read
         ));
     }
 

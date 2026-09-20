@@ -1,0 +1,150 @@
+# A local whose address escaped through a callee keeps its raw-pointer writes
+# (RUE-2262).
+#
+# `-O2`/`-O3` value forwarding tracks the last whole-slot store per block and
+# rewrites a later `Load` of that slot into the stored value. The table
+# excluded address-taken slots, and killed a slot's entry at a call that took
+# the slot by reference — but only AT that call. Handing a callee the slot's
+# address is not a one-instruction event: the callee can return the pointer, so
+# every store AFTER the call went back into the table and the next load
+# forwarded it, ignoring the write that arrived through the escaped pointer.
+#
+#     let mut a = 0;              // slot $0
+#     let p = addr(inout a);      // $0's address escapes and is kept
+#     a = 5;                      // tracked again — the bug
+#     poke(p, 42);                // writes 42 into $0, invisible to the table
+#     a                           // forwarded to 5
+#
+# The `-O0`/`-O1` binaries returned 42 and the `-O2`/`-O3` ones returned 5.
+# A slot rooting a by-ref argument anywhere in the function is now excluded
+# from the table for the whole function, exactly as an address-taken slot is.
+#
+# All three shapes below are pinned across every optimization level, because
+# the point of each is that the answer does not depend on one.
+
+[section]
+id = "cli.escaped_local_store_forwarding"
+name = "Store-to-load forwarding over an escaped local"
+description = "A local whose address escaped through a callee's inout parameter observes writes made through the escaped raw pointer at every optimization level (RUE-2262)."
+
+# --- The issue's verbatim repro: the write lands in a second callee ---------
+[[case]]
+name = "escaped_pointer_written_by_callee"
+description = "RUE-2262 repro: `poke` receives the escaped pointer BY VALUE, so the call kills nothing in the block-local store table; the following read of the local must still observe 42."
+files = [{ path = "main.rue", source = """
+fn addr(inout x: i32) -> ptr mut i32 { checked { @raw_mut(x) } }
+fn poke(p: ptr mut i32, v: i32) { checked { @ptr_write(p, v) }; }
+fn main() -> i32 {
+    let mut a: i32 = 0;
+    let p: ptr mut i32 = addr(inout a);
+    a = 5;
+    poke(p, 42);
+    a
+}
+""" }]
+stdout = ""
+exit_code = 42
+differential_opt = true
+
+# --- The same escape with the write inlined in the caller ------------------
+[[case]]
+name = "escaped_pointer_written_in_caller"
+description = "The `@ptr_write` sits in `main` itself: an intrinsic is not a call, so nothing at all invalidated the tracked store."
+files = [{ path = "main.rue", source = """
+fn addr(inout x: i32) -> ptr mut i32 { checked { @raw_mut(x) } }
+fn main() -> i32 {
+    let mut a: i32 = 0;
+    let p: ptr mut i32 = addr(inout a);
+    a = 5;
+    checked { @ptr_write(p, 42) };
+    a
+}
+""" }]
+stdout = ""
+exit_code = 42
+differential_opt = true
+
+# --- A runtime-computed stored value, so constant folding is not the story --
+[[case]]
+name = "escaped_pointer_runtime_value"
+description = "The written value comes from a call rather than a literal, pinning that the fault was the forwarded LOAD and not constant propagation of the 42."
+files = [{ path = "main.rue", source = """
+fn addr(inout x: i32) -> ptr mut i32 { checked { @raw_mut(x) } }
+fn ident(v: i32) -> i32 { v }
+fn main() -> i32 {
+    let mut a: i32 = 0;
+    let p: ptr mut i32 = addr(inout a);
+    a = 5;
+    let v: i32 = ident(42);
+    checked { @ptr_write(p, v) };
+    a
+}
+""" }]
+stdout = ""
+exit_code = 42
+differential_opt = true
+
+# --- The escape through a struct field, and several stores after it --------
+[[case]]
+name = "escaped_pointer_survives_later_stores"
+description = "Two more whole-slot stores follow the escape before the pointer write; every one of them must stay untracked, not just the first."
+files = [{ path = "main.rue", source = """
+fn addr(inout x: i32) -> ptr mut i32 { checked { @raw_mut(x) } }
+fn main() -> i32 {
+    let mut a: i32 = 0;
+    let p: ptr mut i32 = addr(inout a);
+    a = 5;
+    a = 6;
+    a = 7;
+    checked { @ptr_write(p, 42) };
+    @dbg(a);
+    a
+}
+""" }]
+stdout = "42\n"
+exit_code = 42
+differential_opt = true
+
+# --- Control: the address is taken in `main` itself ------------------------
+#
+# This shape was already correct at every level — CFG construction records the
+# address-taken slot directly. It is kept so a regression that only re-breaks
+# the escaped case is distinguishable from one that breaks both.
+[[case]]
+name = "address_taken_in_the_same_function_control"
+description = "Control: `@raw_mut(a)` in `main` marks the slot address-taken at CFG construction, which already excluded it from the forwarding table."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut a: i32 = 0;
+    let p: ptr mut i32 = checked { @raw_mut(a) };
+    a = 5;
+    checked { @ptr_write(p, 42) };
+    a
+}
+""" }]
+stdout = ""
+exit_code = 42
+differential_opt = true
+
+# --- Control: a non-escaping local still forwards ---------------------------
+#
+# The fix excludes only slots that actually root a by-ref argument. A local
+# that never escapes keeps its block-local forwarding, which this case pins
+# behaviorally (the answer, not the rewrite).
+[[case]]
+name = "non_escaping_local_still_reads_its_last_store"
+description = "Control: a local that is never passed by reference is still tracked, and reads its own last store."
+files = [{ path = "main.rue", source = """
+fn ident(v: i32) -> i32 { v }
+fn main() -> i32 {
+    let mut a: i32 = 0;
+    a = 5;
+    let b: i32 = ident(1);
+    a = a + b;
+    @dbg(a);
+    a
+}
+""" }]
+stdout = "6\n"
+exit_code = 6
+differential_opt = true

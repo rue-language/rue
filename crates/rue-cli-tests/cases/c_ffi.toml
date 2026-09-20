@@ -1398,6 +1398,113 @@ fn main() -> i32 { 0 }""" },
 ]
 exit_code = 0
 
+# Each module's `extern "C"` block mints its own source symbol for the shared
+# foreign name, and all of them name one machine symbol. Inlining merges the
+# callee's source-to-machine map into the caller's, and that merge required the
+# machine symbol to have exactly ONE source symbol — a rule that belongs to
+# symbols the program DEFINES, since nothing emits a foreign one. Two modules
+# that each declare AND call the same foreign symbol therefore failed the merge
+# at `-O3` with an E9000 ICE, on both backends (RUE-2271). `-O0`..`-O2` never
+# reached the inliner's merge, so the shapes below pin the level that did.
+
+[[case]]
+name = "x86_64_extern_redeclared_and_called_in_two_modules_inlines_at_o3"
+description = "RUE-2271 repro: the root and an imported module each declare and call the same foreign symbol; `-O3` inlining must merge the two source symbols onto one foreign machine symbol instead of reporting a collision."
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "x86-64-linux", "-O3", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """const helper = @import("helper.rue");
+
+extern "C" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 {
+    let direct = checked { answer() };
+    @dbg(direct + helper.call_answer());
+    0
+}""" },
+  { path = "helper.rue", source = """extern "C" {
+    fn answer() -> i64;
+}
+
+pub fn call_answer() -> i64 {
+    checked { answer() }
+}""" },
+]
+ffi_answer_archive = true
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = "84\n"
+exit_code = 0
+
+[[case]]
+name = "aarch64_extern_redeclared_and_called_in_two_modules_inlines_at_o3"
+description = "The same shape on AArch64: the merge rule is target-independent, and the ICE reproduced on both backends."
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "aarch64-linux", "-O3", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """const helper = @import("helper.rue");
+
+extern "C" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 {
+    let direct = checked { answer() };
+    @dbg(direct + helper.call_answer());
+    0
+}""" },
+  { path = "helper.rue", source = """extern "C" {
+    fn answer() -> i64;
+}
+
+pub fn call_answer() -> i64 {
+    checked { answer() }
+}""" },
+]
+ffi_answer_archive = true
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = "84\n"
+exit_code = 0
+
+[[case]]
+name = "extern_redeclared_in_three_modules_inlines_at_o3"
+description = "A third declaring-and-calling module: the exemption admits any number of declarations of one foreign symbol, not just a pair."
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "x86-64-linux", "-O3", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """const a = @import("a.rue");
+const b = @import("b.rue");
+
+extern "C" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 {
+    let direct = checked { answer() };
+    @dbg(direct + a.call_answer() + b.call_answer());
+    0
+}""" },
+  { path = "a.rue", source = """extern "C" {
+    fn answer() -> i64;
+}
+
+pub fn call_answer() -> i64 {
+    checked { answer() }
+}""" },
+  { path = "b.rue", source = """extern "C" {
+    fn answer() -> i64;
+}
+
+pub fn call_answer() -> i64 {
+    checked { answer() } + 1
+}""" },
+]
+ffi_answer_archive = true
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = "127\n"
+exit_code = 0
+
 # --- Foreign declaration of the entry point (spec 9.3:6, RUE-1220) ----------
 # `main` is the program's own entry symbol, reserved for the runtime start glue
 # (spec 6.1:38). Because a foreign declaration names the C symbol it declares
