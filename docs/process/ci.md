@@ -45,10 +45,23 @@ silently is worth less than no safeguard, because its absence would be noticed
 while its presence is assumed.
 
 `scripts/check-scheduled-workflows.py` runs in the `CI contract` job on every
-pull request. It is deliberately **not** itself a scheduled workflow: the
-problem being solved is that unattended signals are not read, so reporting on
-another unattended timer would inherit the bug. Required CI is the one signal
-in this repository that provably reaches a human.
+pull request. The separate `scheduled-health.yml` daily/manual workflow runs
+that same discovery and classifier on trusted default-branch code with
+`--report-linear`. Persistent findings become a deduplicated open Todo in
+Linear, assigned to the `LINEAR_API_KEY` account owner. Continuing failures do
+not add daily comments; a recurrence after the issue closes creates a new
+issue. This makes the escalation visible in the work queue without changing
+which scheduled problems block a merge.
+
+The reporter escalates never-succeeded safeguards, last-success staleness past
+the existing advisory window, and disabled workflows. Single failed runs,
+new schedules, expired waivers, and unknown API history do not create issues.
+Known-broken waivers suppress filing because an issue already owns them;
+fuzzing keeps its intentional-red policy. Missing credentials, incomplete
+history, or an unconfirmed Linear write fail the reporter visibly. The
+required-CI check retains its existing availability policy. The reporting job
+has read-only GitHub permissions, exposes the Linear secret only to its
+reporting step, and serializes manual and scheduled runs for deduplication.
 
 ### What blocks, and what only warns
 
