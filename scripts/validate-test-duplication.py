@@ -60,6 +60,12 @@ CLI_SHARD_LABEL = "rue_cli_shard"
 DEDICATED_LANE_LABEL = "rue_ci_dedicated_lane"
 CLIPPY_LANE_LABEL = "rue_ci_clippy_lane"
 
+# The Linux premerge graph owns this target. A direct workflow invocation is a
+# second same-lane execution even though it cannot appear in the Buck-derived
+# lane inventory, so keep that narrow workflow check beside the duplication
+# model rather than changing Buck target-set semantics.
+PREMERGE_CROSS_BACKEND_TARGET = "//crates/rue-codegen:rue-codegen-test"
+
 PREMERGE_QUERY = (
     "attrfilter(labels, '" + TIER_PREMERGE + "', set(//... toolchains//...))"
 )
@@ -484,6 +490,25 @@ def review(
             )
 
     return errors
+
+
+def direct_test_invocation_errors(workflow: str, target: str) -> list[str]:
+    """Reject a direct workflow test of a target already owned by premerge.
+
+    Workflow steps are separate invocations, not Buck graph members. This is
+    deliberately a one-target check for the known cross-backend duplication;
+    it does not attempt to parse shell or maintain a second lane inventory.
+    """
+    pattern = re.compile(
+        rf"(?:\./)?buck2\s+test\b[^#\n]*{re.escape(target)}"
+    )
+    return [
+        "linux-premerge directly invokes "
+        f"{target}, which the broad premerge suite already owns; remove the "
+        "second same-lane execution"
+        for line in workflow.splitlines()
+        if not line.lstrip().startswith("#") and pattern.search(line.split("#", 1)[0])
+    ]
 
 
 # --------------------------------------------------------------------------
@@ -1116,33 +1141,9 @@ def lane_units(members: list[str], expansion: dict[str, list[str]]) -> list[str]
 
     A `test_suite` is not a unit of work: buck2 runs its members, and a member
     named both directly and through a suite still runs once. Counting the name
-    twice would be this gate inventing a duplication no runner performs. A
-    repeated direct member is different: it represents separate invocations in
-    one lane, so retain it for `duplicate_sets` to score.
+    twice would be this gate inventing a duplication no runner performs.
     """
-    units: list[str] = []
-    direct_members: set[str] = set()
-    covered_units: set[str] = set()
-    for member in members:
-        expanded = expansion.get(member)
-        if expanded is None:
-            # A second direct occurrence is a second invocation. The first
-            # direct occurrence still participates in `covered_units` so a
-            # direct member and a suite containing it collapse to one unit.
-            if member in covered_units:
-                if member in direct_members:
-                    units.append(member)
-                continue
-            direct_members.add(member)
-            covered_units.add(member)
-            units.append(member)
-            continue
-        for unit in expanded:
-            if unit in covered_units:
-                continue
-            covered_units.add(unit)
-            units.append(unit)
-    return sorted(units)
+    return sorted({unit for member in members for unit in expansion.get(member, [member])})
 
 
 def collect(buck: Buck, script: Path = AFFECTED_TARGETS) -> tuple[list[Scheduled], Lister, Inventory]:

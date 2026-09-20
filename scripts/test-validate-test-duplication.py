@@ -307,19 +307,6 @@ class InventoryTests(unittest.TestCase):
         )
         self.assertEqual(units, ["//:adr-registry-validation", "//:spec-traceability"])
 
-    def test_repeated_direct_members_are_separate_same_lane_invocations(self):
-        target = "//crates/rue-codegen:rue-codegen-test"
-        units = GATE.lane_units([target, target], {})
-        self.assertEqual(units, [target, target])
-        schedule = [
-            scheduled("linux-x64", "linux-premerge", unit, ["codegen::encodes"])
-            for unit in units
-        ]
-        duplicates = GATE.duplicate_sets(schedule)
-        self.assertEqual(len(duplicates), 1)
-        self.assertEqual(duplicates[0].targets, (target,))
-        self.assertEqual(duplicates[0].per_platform, (("linux-x64", 2),))
-
     def test_list_output_is_parsed_and_the_trailer_is_not_a_test(self):
         lines = [
             "pipeline_tests::tests::wide_batches: test",

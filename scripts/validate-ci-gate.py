@@ -451,6 +451,11 @@ def validate(
         errors.append("remote-execution must remain merge-group-only")
 
     linux = jobs.get("linux-premerge", "")
+    errors.extend(
+        DUPLICATION.direct_test_invocation_errors(
+            linux, DUPLICATION.PREMERGE_CROSS_BACKEND_TARGET
+        )
+    )
     for required in (
         "runs-on: ubuntu-latest",
         "Run complete target-independent premerge suite",
