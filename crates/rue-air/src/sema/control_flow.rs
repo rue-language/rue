@@ -2688,9 +2688,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Build the caller-owned source-location words carried by a failure record.
     ///
     /// Every producer of an ADR-0083 §5.1 report that names a site reaches
-    /// this: a test body's `?` failure arm, the assertion family, and — since
-    /// RUE-2019 — `@panic`, whose record the runtime writes from inside the
-    /// panic helper. The bounds checks are not among them. Each is a bare
+    /// this: a test body's `?` failure arm and the assertion family. The panic
+    /// helpers use `build_failure_site_inputs` directly because their runtime
+    /// ABI receives the static text and packed position as ordinary values.
+    /// The bounds checks are not among them. Each is a bare
     /// condition with no call beside it — the slice check is a `BoundsCheck`
     /// intrinsic, the fixed-array check is lowered below AIR, and `s[i]`'s is
     /// inside the runtime helper itself — and building a site for any of them
@@ -2712,21 +2713,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         str_ty: Type,
         span: Span,
     ) -> CompileResult<(AirRef, Vec<AirRef>)> {
-        let (path, line, column) = self
-            .body_source_coordinate(span)
-            .unwrap_or_else(|| (Arc::from(""), 0, 0));
-        let file = self.synthesized_string(air, ctx, &path, str_ty, span);
+        let (file, position) = self.build_failure_site_inputs(air, ctx, str_ty, span);
         let (file, mut prefix) = self.materialize_borrow_argument(air, file, str_ty, span, ctx)?;
-        let line = air.add_inst(AirInst {
-            data: AirInstData::Const(u64::from(line)),
-            ty: Type::U32,
-            span,
-        });
-        let column = air.add_inst(AirInst {
-            data: AirInstData::Const(u64::from(column)),
-            ty: Type::U32,
-            span,
-        });
         let ptr = self.project_addressable_component(
             air,
             file,
@@ -2760,43 +2748,37 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             Type::U64,
             span,
         )?;
-        let site_ty = Type::new_array(self.get_or_create_array_type(Type::U64, 3));
-        let line = air.add_inst(AirInst {
-            data: AirInstData::IntCast {
-                value: line,
-                from_ty: Type::U32,
-            },
-            ty: Type::U64,
-            span,
-        });
-        let shift = air.add_inst(AirInst {
-            data: AirInstData::Const(32),
-            ty: Type::U64,
-            span,
-        });
-        let line = air.add_inst(AirInst {
-            data: AirInstData::Shl(line, shift),
-            ty: Type::U64,
-            span,
-        });
-        let column = air.add_inst(AirInst {
-            data: AirInstData::IntCast {
-                value: column,
-                from_ty: Type::U32,
-            },
-            ty: Type::U64,
-            span,
-        });
-        let position = air.add_inst(AirInst {
-            data: AirInstData::BitOr(line, column),
-            ty: Type::U64,
-            span,
-        });
+        let site_ty = Type::new_array(
+            self.get_or_create_array_type(Type::U64, rue_runtime_abi::FAILURE_SITE_SLOTS as u64),
+        );
         let site = air.add_array_init(&[ptr, len, position], site_ty, span)?;
         let (site, site_prefix) =
             self.materialize_borrow_argument(air, site, site_ty, span, ctx)?;
         prefix.extend(site_prefix);
         Ok((site, prefix))
+    }
+
+    /// Build the static source inputs for a panic helper. The file is a
+    /// compiler-authored text constant and the packed position is a host-side
+    /// constant, so the panic ABI can pass them directly in registers without
+    /// materializing a borrowed FailureSite temporary in the caller frame.
+    pub(in crate::sema) fn build_failure_site_inputs(
+        &mut self,
+        air: &mut Air,
+        ctx: &mut AnalysisContext,
+        str_ty: Type,
+        span: Span,
+    ) -> (AirRef, AirRef) {
+        let (path, line, column) = self
+            .body_source_coordinate(span)
+            .unwrap_or_else(|| (Arc::from(""), 0, 0));
+        let file = self.synthesized_string(air, ctx, &path, str_ty, span);
+        let position = air.add_inst(AirInst {
+            data: AirInstData::Const((u64::from(line) << 32) | u64::from(column)),
+            ty: Type::U64,
+            span,
+        });
+        (file, position)
     }
 
     /// Build the canonical nine-word caller-owned failure descriptor. The
@@ -2892,7 +2874,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         words.extend([ptr_word(self, air, kind)?, len_word(self, air, kind)?]);
         words.extend([ptr_word(self, air, first)?, len_word(self, air, first)?]);
         words.extend([ptr_word(self, air, second)?, len_word(self, air, second)?]);
-        let report_ty = Type::new_array(self.get_or_create_array_type(Type::U64, 9));
+        let report_ty = Type::new_array(
+            self.get_or_create_array_type(Type::U64, rue_runtime_abi::FAILURE_REPORT_SLOTS as u64),
+        );
         let report = air.add_array_init(&words, report_ty, span)?;
         let (report, report_prefix) =
             self.materialize_borrow_argument(air, report, report_ty, span, ctx)?;

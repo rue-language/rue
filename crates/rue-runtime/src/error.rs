@@ -33,7 +33,7 @@ pub(crate) fn allocation_failure() -> ! {
     msg[12] = b'y';
     // SAFETY: `msg` is live for the non-returning call and describes exactly
     // 13 initialized bytes.
-    unsafe { __rue_panic(core::ptr::null(), msg.as_ptr(), msg.len() as u64) }
+    unsafe { __rue_panic(core::ptr::null(), 0, 0, msg.as_ptr(), msg.len() as u64) }
 }
 
 crate::define_runtime_implementation! {
@@ -343,7 +343,7 @@ crate::define_runtime_implementation! {
     ///
     /// Called by code generated for the `@panic("...")` intrinsic. Writes a
     /// `trap:panic` failure record on the ADR-0083 §5.1 channel carrying
-    /// the caller-owned site,
+    /// the caller-supplied source location,
     /// then `"panic: "`, the user-supplied message bytes, and a trailing
     /// newline to stderr, then exits with code 101 (the same abort path as the
     /// other runtime traps: division by zero, overflow, bounds, cast overflow).
@@ -352,9 +352,9 @@ crate::define_runtime_implementation! {
     /// is lost, and it carries the pinned stderr line as its message, so a test
     /// runner reading the channel and one reading stderr publish the same kind
     /// and the same text — the record adds only the site (RUE-2019). In an
-    /// ordinary executable there is no descriptor 3 and the record write fails
-    /// with `EBADF` as designed, which is why `@panic` lowers the same way in
-    /// every build.
+    /// ordinary executable the test channel is unarmed, so the record writer
+    /// returns without writing and the pinned stderr line is unchanged; this
+    /// is why `@panic` lowers the same way in every build.
     ///
     /// # Behavior
     ///
@@ -366,7 +366,8 @@ crate::define_runtime_implementation! {
     ///
     /// ```text
     /// unsafe extern "C" fn __rue_panic(
-    ///     site: *const FailureSite, ptr: *const u8, len: u64,
+    ///     file_ptr: *const u8, file_len: u64, position: u64,
+    ///     ptr: *const u8, len: u64,
     /// ) -> !
     /// ```
     ///
@@ -376,11 +377,13 @@ crate::define_runtime_implementation! {
     ///
     /// # Safety
     ///
-    /// When `len > 0`, `ptr` must be non-null and point to `len` valid,
-    /// initialized bytes that stay valid for the call. `ptr` may be null when
-    /// `len == 0`.
+    /// Each pointer/length pair must describe initialized bytes valid for the
+    /// call, or be null with a zero length. `position` packs the source line
+    /// and column in the high and low 32-bit halves respectively.
     pub unsafe extern "C" fn __rue_panic(
-        site: *const rue_runtime_abi::FailureSite,
+        file_ptr: *const u8,
+        file_len: u64,
+        position: u64,
         ptr: *const u8,
         len: u64,
     ) -> ! {
@@ -391,8 +394,14 @@ crate::define_runtime_implementation! {
         } else {
             &[]
         };
-        // SAFETY: inherited from this helper's ABI contract.
-        unsafe { crate::test_channel::report_panic(site, message) };
+        let site = rue_runtime_abi::FailureSite {
+            file_ptr,
+            file_len,
+            position,
+        };
+        // SAFETY: the caller guarantees the file view and the local site are
+        // readable for the duration of this non-returning call.
+        unsafe { crate::test_channel::report_panic(&site, message) };
         panic_stderr(message)
     }
 }
@@ -413,16 +422,26 @@ crate::define_runtime_implementation! {
     /// # ABI
     ///
     /// ```text
-    /// unsafe extern "C" fn __rue_panic_no_msg(site: *const FailureSite) -> !
+    /// unsafe extern "C" fn __rue_panic_no_msg(
+    ///     file_ptr: *const u8, file_len: u64, position: u64,
+    /// ) -> !
     /// ```
     ///
-    /// `site` may be null for runtime-generated failures. Otherwise it must
-    /// point to a readable caller-owned [`FailureSite`] for this call.
+    /// The file pointer may be null only when `file_len` is zero. `position`
+    /// packs the source line and column in the high and low 32-bit halves.
     pub unsafe extern "C" fn __rue_panic_no_msg(
-        site: *const rue_runtime_abi::FailureSite,
+        file_ptr: *const u8,
+        file_len: u64,
+        position: u64,
     ) -> ! {
-        // SAFETY: inherited from this helper's ABI contract.
-        unsafe { crate::test_channel::report_panic_no_message(site) };
+        let site = rue_runtime_abi::FailureSite {
+            file_ptr,
+            file_len,
+            position,
+        };
+        // SAFETY: the caller guarantees the file view and the local site are
+        // readable for the duration of this non-returning call.
+        unsafe { crate::test_channel::report_panic_no_message(&site) };
         let mut msg = [0u8; 6];
         msg[0] = b'p';
         msg[1] = b'a';

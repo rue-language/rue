@@ -870,6 +870,7 @@ fn abort_intrinsic_static_contracts_precede_unmodeled_operands() {
                     outer,
                     [
                         panic_args[0],
+                        panic_args[1],
                         CfgCallArg {
                             value: random,
                             mode: CfgArgMode::Normal,
@@ -923,7 +924,7 @@ fn abort_intrinsic_static_contracts_precede_unmodeled_operands() {
 fn abort_intrinsics_require_exact_runtime_value_shapes() {
     // The surviving `assert` intrinsic is the comptime-decidable comparison's,
     // whose only operand is the condition. The canonical panic runtime call
-    // carries a borrowed site record beside its text view.
+    // carries static source text and packed position beside its text view.
     let source = r#"fn main() -> i32 {
         let entropy: u32 = @random_u32();
         @assert_eq(1, 1);
@@ -969,6 +970,7 @@ fn abort_intrinsics_require_exact_runtime_value_shapes() {
                 call,
                 [
                     args[0],
+                    args[1],
                     CfgCallArg {
                         value: random,
                         mode: CfgArgMode::Normal,

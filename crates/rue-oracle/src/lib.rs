@@ -1732,7 +1732,7 @@ impl<'a> Interp<'a> {
     /// `@assert` lowers to one terminal report in every build, not only in a
     /// test image. The caller-owned descriptor is ordinary aggregate data and
     /// has no independent runtime effect here; the channel itself is invisible
-    /// to an ordinary process, so the frame write fails with `EBADF` by design.
+    /// to an ordinary process because it remains unarmed there.
     fn preflight_test_channel_call(
         &self,
         kind: RuntimeCallKind,
@@ -1777,8 +1777,9 @@ impl<'a> Interp<'a> {
         Ok(true)
     }
 
-    /// Validate the canonical runtime panic calls. Their source site is a
-    /// borrowed fixed array, while the message remains an ordinary text view.
+    /// Validate the canonical runtime panic calls. Source file and packed
+    /// position are ordinary values; the runtime builds its local FailureSite
+    /// before entering the canonical terminal reporter.
     fn preflight_panic_call(
         &self,
         kind: RuntimeCallKind,
@@ -1787,8 +1788,8 @@ impl<'a> Interp<'a> {
         result_ty: Type,
     ) -> Step<bool> {
         let expected = match kind {
-            RuntimeCallKind::PanicNoMessage => 1,
-            RuntimeCallKind::Panic => 2,
+            RuntimeCallKind::PanicNoMessage => 2,
+            RuntimeCallKind::Panic => 3,
             _ => return Ok(false),
         };
         if arg_types.len() != expected || arg_modes.len() != expected {
@@ -1797,20 +1798,16 @@ impl<'a> Interp<'a> {
                 format!("runtime call '{}' arity", kind.helper().symbol()),
             ));
         }
-        if arg_modes[0] != CfgArgMode::Borrow
-            || (expected == 2 && arg_modes[1] != CfgArgMode::Normal)
-        {
+        if !arg_modes.iter().all(|mode| *mode == CfgArgMode::Normal) {
             return Err(unsupported(
                 UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature),
                 format!("runtime call '{}' argument mode", kind.helper().symbol()),
             ));
         }
-        let site = matches!(arg_types[0].kind(), TypeKind::Array(id) if {
-            let (element, length) = self.type_pool().array_def(id);
-            element == Type::U64 && length == rue_runtime_abi::FAILURE_SITE_SLOTS as u64
-        });
-        let message = expected == 1 || self.is_text_type(arg_types[1]);
-        if !site || !message || result_ty != PANIC_CFG_RESULT_TYPE {
+        let file = self.is_text_type(arg_types[0]);
+        let position = arg_types[1] == Type::U64;
+        let message = expected == 2 || self.is_text_type(arg_types[2]);
+        if !file || !position || !message || result_ty != PANIC_CFG_RESULT_TYPE {
             return Err(unsupported(
                 UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature),
                 format!("runtime call '{}' signature", kind.helper().symbol()),
@@ -1829,7 +1826,7 @@ impl<'a> Interp<'a> {
             return self.abort_with_stderr(TrapKind::UserPanic, &[b"panic\n"]);
         }
         if kind == RuntimeCallKind::Panic {
-            let [_, message] = args else {
+            let [_, _, message] = args else {
                 unreachable!("preflight validated the panic call");
             };
             let bytes = self.text_bytes(message)?;
