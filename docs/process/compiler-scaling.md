@@ -27,6 +27,13 @@ or undeclared external link input. Filesystem and operating-system page-cache
 state are not reset, so the reports call this a **fresh-process compile**, not
 a cold compile.
 
+The boundary names link *implementations*, not driver request modes. `--linker`
+defaults to `auto`, which resolves to the internal linker for a freestanding
+program and to a system C driver only for one that reaches a hosted runtime
+helper, so the compiler resolves it before reporting evidence: a workload whose
+link resolved to anything but the internal linker is rejected as a different
+boundary, which is the point (RUE-2304).
+
 The compiler and measurement runner are built with the release target platform
 (`-Copt-level=3 -Clto=thin`). The compiler reports that profile in its benchmark
 metadata, and the scaling runner rejects a binary that does not match the

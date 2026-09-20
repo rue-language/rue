@@ -3,8 +3,8 @@ use std::time::Instant;
 
 use rue_compiler::unstable::{
     CancellableCompileOutcome, CancellableTestImageOutcome, CompilationCancellation,
-    OneShotMetrics, TestCandidateInventory, TestCompileFailure, TestImage, TestInventory,
-    UnimportedTestFile,
+    OneShotMetrics, ResolvedLink, TestCandidateInventory, TestCompileFailure, TestImage,
+    TestInventory, UnimportedTestFile,
 };
 use rue_compiler::{
     AcceptedReadManifest, CompileErrors, CompileOptions, CompileOutput, CompileWarning, LinkerMode,
@@ -27,6 +27,7 @@ struct LinkedExecutable {
     target: rue_target::Target,
     warnings: Vec<CompileWarning>,
     metrics: OneShotMetrics,
+    resolved_link: ResolvedLink,
     linked_bytes: Vec<u8>,
     destination: PublicationDestination,
     observation: PublicationObservation,
@@ -39,6 +40,7 @@ enum PublicationObservation {
 
 pub(crate) struct PublishedExecutable {
     metrics: OneShotMetrics,
+    resolved_link: ResolvedLink,
 }
 
 struct PublicationAttempt {
@@ -53,6 +55,7 @@ impl LinkedExecutable {
             target,
             warnings,
             metrics,
+            resolved_link,
             linked_bytes,
             destination,
             observation,
@@ -74,7 +77,10 @@ impl LinkedExecutable {
         };
         PublicationAttempt {
             warnings,
-            result: publication.map(|()| PublishedExecutable { metrics }),
+            result: publication.map(|()| PublishedExecutable {
+                metrics,
+                resolved_link,
+            }),
         }
     }
 }
@@ -82,6 +88,11 @@ impl LinkedExecutable {
 impl PublishedExecutable {
     pub(crate) fn unstable_metrics(&self) -> OneShotMetrics {
         self.metrics
+    }
+
+    /// The link implementation the compiler ran for these published bytes.
+    pub(crate) fn unstable_resolved_link(&self) -> ResolvedLink {
+        self.resolved_link
     }
 }
 
@@ -745,10 +756,12 @@ fn linked_executable(
     observation: PublicationObservation,
 ) -> LinkedExecutable {
     let metrics = output.unstable_metrics();
+    let resolved_link = output.unstable_resolved_link();
     LinkedExecutable {
         target: options.target,
         warnings: output.warnings,
         metrics,
+        resolved_link,
         linked_bytes: output.elf,
         destination,
         observation,
@@ -931,9 +944,13 @@ impl<Artifact: CycleArtifact> OwnedCycleResponse<Artifact> {
                     line(diagnostics.render_prepared_errors(errors));
                 }
                 let metrics = output.unstable_metrics();
+                let resolved_link = output.unstable_resolved_link();
                 let published = Artifact::published(
                     companion,
-                    PublishedExecutable { metrics },
+                    PublishedExecutable {
+                        metrics,
+                        resolved_link,
+                    },
                     unimported_test_files,
                     source_snapshot.clone(),
                     error_format,

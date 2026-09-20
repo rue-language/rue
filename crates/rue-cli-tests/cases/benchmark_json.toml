@@ -53,3 +53,23 @@ compile_stdout_contains = [
   '"validation":',
   '"retention_scan_entries":',
 ]
+
+# RUE-2304: the ADR-0071 build-boundary evidence names the link implementation
+# the compiler executed, not the mode the driver was asked for. `--linker auto`
+# is the default and resolves to the internal linker for a freestanding
+# program, so a default invocation must report `internal`; reporting the
+# request instead made every performance workload fail the boundary checker.
+[[case]]
+name = "boundary_evidence_names_the_executed_linker"
+files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }\n" }]
+args = ["--benchmark-json", "-j1", "main.rue", "-o", "prog"]
+compile_stdout_contains = ['"compiler_boundary":', '"linker":"internal"']
+compile_stdout_not_contains = ['"linker":"auto"']
+exit_code = 0
+
+[[case]]
+name = "boundary_evidence_matches_an_explicit_internal_request"
+files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }\n" }]
+args = ["--benchmark-json", "-j1", "--linker", "internal", "main.rue", "-o", "prog"]
+compile_stdout_contains = ['"linker":"internal"']
+exit_code = 0
