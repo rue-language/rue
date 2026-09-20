@@ -22,21 +22,25 @@ inductive OwnState where
 deriving DecidableEq, Repr
 
 /-- One context entry: the binding's declared type and `μ` mark (fixed at the
-binder) plus its current ownership state (flow-sensitive). -/
+binder: `Γ`'s part) plus its current ownership state (flow-sensitive: `Σ`'s
+part), one row of §5's fused `Γ ; Σ`. -/
 structure Entry where
   ty : Ty
   mu : Bool
   st : OwnState
 deriving DecidableEq, Repr
 
+/-- Re-mark an entry's ownership state (helper). -/
 def Entry.setSt (en : Entry) (s : OwnState) : Entry := { en with st := s }
 
-/-- The fused `Γ ; Σ` context, innermost binding first (de Bruijn). -/
+/-- The fused `Γ ; Σ` context of the judgment `Γ ; Σ ⊢ e ⇒ T ⊣ Σ'` (§5),
+innermost binding first (de Bruijn). -/
 abbrev Ctx := List Entry
 
-/-- The fixed part of an entry, preserved by every rule. -/
+/-- The fixed part of an entry, preserved by every rule (helper). -/
 def Entry.skel (en : Entry) : Ty × Bool := (en.ty, en.mu)
 
+/-- The skeleton of a whole context (helper). -/
 def Ctx.skel (Γ : Ctx) : List (Ty × Bool) := Γ.map Entry.skel
 
 /-- The §5.5 branch join, per entry. Agreeing states join to themselves. A
@@ -65,11 +69,15 @@ Rule names cite the calculus: `useCopy`/`useMove` are (Use-Copy)/(Use-Move)
 `3.8:77` linear-overwrite premise on the *post-RHS* state; `seq` is (Seq) with
 the `3.8:64` discard check; `ite` is (If) with the §5.5 join. -/
 inductive Typed : Ctx → Expr → Ty → Ctx → Prop where
+  /-- (Lit) §5.8: an integer literal of `int(64, signed)`, in range (the
+  fragment's fixing of `int(w,s)`; elaboration resolves the width, `4.1:2`). -/
   | intLit {Γ n} :
       InBounds n →
       Typed Γ (.intLit n) .int Γ
+  /-- (Lit) §5.8: a boolean literal. -/
   | boolLit {Γ b} :
       Typed Γ (.boolLit b) .bool Γ
+  /-- (Lit) §5.8: the unit literal. -/
   | unitLit {Γ} :
       Typed Γ .unitLit .unit Γ
   /-- (Use-Copy): a use of a `Copy` place copies; Σ unchanged. -/
@@ -80,15 +88,24 @@ inductive Typed : Ctx → Expr → Ty → Ctx → Prop where
   | useMove {Γ i en} :
       Γ[i]? = some en → en.st = .owned → en.ty.mult ≠ .copy →
       Typed Γ (.use i) en.ty (Γ.set i (en.setSt .movedOut))
+  /-- (Arith) §5.8 for `+`: both operands `int`, left to right, Σ threaded
+  (`4.2:1`). -/
   | add {Γ Γ₁ Γ₂ e₁ e₂} :
       Typed Γ e₁ .int Γ₁ → Typed Γ₁ e₂ .int Γ₂ →
       Typed Γ (.add e₁ e₂) .int Γ₂
+  /-- (Arith) §5.8 for `/`. -/
   | div {Γ Γ₁ Γ₂ e₁ e₂} :
       Typed Γ e₁ .int Γ₁ → Typed Γ₁ e₂ .int Γ₂ →
       Typed Γ (.div e₁ e₂) .int Γ₂
+  /-- (Ord) §5.8 for `<`: an ordering compare of two `int` operands yields
+  `bool`. -/
   | lt {Γ Γ₁ Γ₂ e₁ e₂} :
       Typed Γ e₁ .int Γ₁ → Typed Γ₁ e₂ .int Γ₂ →
       Typed Γ (.lt e₁ e₂) .bool Γ₂
+  /-- Abstract resource introduction: the shape of §5.8's aggregate
+  introduction with one integer payload and no fields, standing in for a
+  struct literal until structs land (RUE-2230). Not the calculus's
+  `Struct-Intro` rule itself. -/
   | mkres {Γ Γ' κ e} :
       Typed Γ e .int Γ' →
       Typed Γ (.mkres κ e) (.res κ) Γ'
@@ -139,6 +156,7 @@ inductive Typed : Ctx → Expr → Ty → Ctx → Prop where
 
 /-! ## Skeleton preservation -/
 
+/-- The §5.5 join preserves an entry's skeleton (helper). -/
 theorem Entry.join_skel {a b e : Entry} (h : a.join b = some e) :
     e.skel = a.skel := by
   unfold Entry.join at h
@@ -148,7 +166,7 @@ theorem Entry.join_skel {a b e : Entry} (h : a.join b = some e) :
     · cases h
     · cases h; rfl
 
-/-- Setting an index to the element already there is the identity. -/
+/-- Setting an index to the element already there is the identity (helper). -/
 theorem List.set_self_of_getElem? {α} : ∀ {l : List α} {i : Nat} {a : α},
     l[i]? = some a → l.set i a = l
   | [], i, a, h => by simp at h
@@ -157,13 +175,15 @@ theorem List.set_self_of_getElem? {α} : ∀ {l : List α} {i : Nat} {a : α},
       simp only [List.getElem?_cons_succ] at h
       simp [List.set_self_of_getElem? h]
 
-/-- Re-marking an entry's ownership state does not change the skeleton. -/
+/-- Re-marking an entry's ownership state does not change the skeleton
+(helper). -/
 theorem skel_set_setSt {Γ : Ctx} {i : Nat} {en : Entry} (h : Γ[i]? = some en)
     (s : OwnState) : Ctx.skel (Γ.set i (en.setSt s)) = Ctx.skel Γ := by
   unfold Ctx.skel
   rw [List.map_set]
   exact List.set_self_of_getElem? (by simp [h]; rfl)
 
+/-- The §5.5 join preserves the context skeleton (helper). -/
 theorem Ctx.join_skel : ∀ {Γ₁ Γ₂ Γ' : Ctx}, Ctx.join Γ₁ Γ₂ = some Γ' →
     Γ'.skel = Γ₁.skel
   | [], [], _, h => by cases h; rfl
@@ -176,7 +196,9 @@ theorem Ctx.join_skel : ∀ {Γ₁ Γ₂ Γ' : Ctx}, Ctx.join Γ₁ Γ₂ = some
           exact ⟨Entry.join_skel he, Ctx.join_skel hrest⟩
       · cases h
 
-/-- Every rule preserves the context skeleton: only ownership states flow. -/
+/-- Every rule preserves the context skeleton: only ownership states flow.
+This is the fused context's image of §5's convention that `Γ` is fixed while
+`Σ` is threaded through the judgment. -/
 theorem Typed.skel_preserved {Γ Γ' : Ctx} {e T} (h : Typed Γ e T Γ') :
     Γ'.skel = Γ.skel := by
   induction h with

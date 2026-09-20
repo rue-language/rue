@@ -101,6 +101,9 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 
 ## Traceability
 
-A generated paragraph↔theorem index in the `rue-spec` style is a deliverable
-of RUE-2245 and RUE-207; until then the doc-comments in `lean/RueCore/*.lean`
-carry the §-section and paragraph citations for every rule.
+`lean/INDEX.md` is the generated index (`scripts/validate-lean-xref-index.py`,
+held fresh by the premerge tier): every declaration with the calculus rules,
+sections, and prose paragraphs its doc-comment cites, and every labeled rule
+and section of §5 and §6 with the declaration that mechanizes it or *not yet
+mechanized*. The theorem side of the index, one row per §7 bullet naming its
+theorem, is this document; RUE-207 completes it.

@@ -16,6 +16,8 @@ deterministic, so it is expected to hold. The spike only needs soundness.)
 
 namespace RueCore
 
+/-- The §5 judgment as an algorithm: one case per `Typed` rule, in the same
+order, producing the type and outgoing context or rejecting. -/
 def check (Γ : Ctx) : Expr → Option (Ty × Ctx)
   | .intLit n => if InBounds n then some (.int, Γ) else none
   | .boolLit _ => some (.bool, Γ)
@@ -112,7 +114,8 @@ def check (Γ : Ctx) : Expr → Option (Ty × Ctx)
         | _, _ => none)
       | _ => none
 
-/-- Every `check` acceptance is a real derivation. -/
+/-- Every `check` acceptance is a real derivation of the §5 judgment, so the
+§7 theorems apply to whatever `check` accepts. -/
 theorem check_sound : ∀ {e : Expr} {Γ : Ctx} {T Γ'},
     check Γ e = some (T, Γ') → Typed Γ e T Γ' := by
   intro e

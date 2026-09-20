@@ -59,7 +59,7 @@ namespace RueCore
 
 namespace Print
 
-/-- The Rue type name of a core type. `int` is `int(64, signed)` in the
+/-- The Rue type name of a core type (§2). `int` is `int(64, signed)` in the
 fragment (`Syntax.lean`). -/
 def tyName : Ty → String
   | .int => "i64"
@@ -69,14 +69,15 @@ def tyName : Ty → String
   | .res .affine => "RAffine"
   | .res .linear => "RLinear"
 
-/-- The consumer function for a resource class (see the module docstring). -/
+/-- The consumer function for a resource class (see the module docstring)
+(helper). -/
 def consumeName : Mult → String
   | .copy => "consume_copy"
   | .affine => "consume_affine"
   | .linear => "consume_linear"
 
 /-- The prelude every printed program starts with. It is the same text for
-every case, so a reader learns it once. -/
+every case, so a reader learns it once (helper). -/
 def prelude : String :=
   "// Resource types standing in for the calculus's abstract `res κ` (§2): one\n" ++
   "// integer payload, one multiplicity class each. The observation channel is\n" ++
@@ -92,7 +93,8 @@ def prelude : String :=
 /-- Type inference without ownership: the fragment's types do not depend on
 Σ, so the printer can recover every subexpression's type from the binders
 alone. `Γ` lists binder types innermost first, exactly as `Ctx` does. A
-`none` means the program is ill-scoped, which elaborated programs never are. -/
+`none` means the program is ill-scoped, which elaborated programs never are
+(helper). -/
 def tyOf (Γ : List Ty) : Expr → Option Ty
   | .intLit _ => some .int
   | .boolLit _ => some .bool
@@ -112,12 +114,14 @@ def tyOf (Γ : List Ty) : Expr → Option Ty
   | .ite _ e₁ _ => tyOf Γ e₁
 
 /-- The binder introduced at nesting depth `d` is named `v<d>`; a de Bruijn
-index `i` under `n` binders names the binder at depth `n - 1 - i`. -/
+index `i` under `n` binders names the binder at depth `n - 1 - i` (helper). -/
 def binderName (depth : Nat) : String := "v" ++ toString depth
 
+/-- The name of the binder a de Bruijn index refers to (helper). -/
 def useName (Γ : List Ty) (i : Nat) : String :=
   binderName (Γ.length - 1 - i)
 
+/-- Four spaces per nesting level (helper). -/
 def indent (n : Nat) : String := "".pushn ' ' (4 * n)
 
 /-- The Rue struct literal for `mkres κ e` (§5.8 aggregate introduction). -/
@@ -177,7 +181,7 @@ partial def expr (Γ : List Ty) (lvl : Nat) : Expr → String
 /-- How `main` observes the program's value: an integer or boolean is
 printed as is; a resource is consumed and its payload printed (the
 interpreter reports the resource's payload as the value, and never drops a
-returned value); `()` prints nothing. -/
+returned value); `()` prints nothing (helper). -/
 def observeValue (T : Ty) : String :=
   match T with
   | .int | .bool => "    @dbg(result);\n"
@@ -185,12 +189,15 @@ def observeValue (T : Ty) : String :=
   | .res κ => "    @dbg(" ++ consumeName κ ++ "(result));\n"
 
 /-- A complete Rue program for a closed core expression, headed by a comment
-naming the case and what a reader should expect (the explainability tenet:
-`corpus.json` doubles as a readable example set). -/
-def program (name description outcome : String) (e : Expr) : String :=
+naming the case, the calculus rules it exercises, and what a reader should
+expect (the explainability tenet:
+`corpus.json` doubles as a readable example set) (helper). -/
+def program (name description : String) (rules : List String) (outcome : String)
+    (e : Expr) : String :=
   let T := (tyOf [] e).getD .int
   "// Case: " ++ name ++ "\n" ++
   "// " ++ description ++ "\n" ++
+  "// Rules: " ++ String.intercalate "; " rules ++ "\n" ++
   "// Expected: " ++ outcome ++ "\n" ++
   "// Printed from the RueCore fragment by docs/formal/lean/RueCore/Print.lean.\n" ++
   prelude ++

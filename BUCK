@@ -808,6 +808,28 @@ rue_tool_test(
     gatelib = False,
 )
 
+# RUE-2245: the mechanization's doc-comments cite the calculus, and
+# docs/formal/lean/INDEX.md is generated from them. The gate fails when a
+# rule-bearing declaration is uncited, cites a rule label the calculus does
+# not define, or the committed index is stale (`--write` regenerates it).
+rue_sh_test(
+    name = "lean-xref-index-validation",
+    test = "scripts/validate-lean-xref-index.py",
+    args = [
+        "--lean-dir",
+        "$(location //docs:formal-lean)",
+        "--calculus",
+        "$(location //docs:formal-core-calculus)",
+    ],
+    resources = [":gatelib-sources"],
+)
+
+rue_tool_test(
+    name = "lean-xref-index-tool-tests",
+    test = "scripts/test-validate-lean-xref-index.py",
+    resources = ["scripts/validate-lean-xref-index.py"],
+)
+
 rue_sh_test(
     name = "adr-registry-validation",
     test = "scripts/validate-adrs.py",

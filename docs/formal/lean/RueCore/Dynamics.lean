@@ -42,7 +42,7 @@ inductive Val where
   | res (κ : Mult) (n : Int)
 deriving DecidableEq, Repr
 
-/-- The dynamic image of `class(T)` on a value. -/
+/-- The dynamic image of `class(T)` (§3) on a value. -/
 def Val.mult : Val → Mult
   | .res κ _ => κ
   | _ => .copy
@@ -61,7 +61,9 @@ abbrev Store := List Cell
 /-- The environment `ρ` (§6.1), de Bruijn: index `i` ↦ its location. -/
 abbrev Env := List Nat
 
-/-- Observable drop events — the fragment's slice of the oracle `Outcome`. -/
+/-- Observable drop events, the fragment's slice of the oracle `Outcome`: a
+binding's drop (§6.11: at scope exit §6.7, at `@drop`, or at an overwrite
+§6.8) and a discarded temporary's drop ((D-Seq), §6.7). -/
 inductive Event where
   | drop (ℓ : Nat) (v : Val)
   | dropTemp (v : Val)
@@ -76,34 +78,45 @@ deriving DecidableEq, Repr
 /-- The named memory violations: the machine's refusals. §7's decomposed
 memory-safety bullets each forbid one of these. -/
 inductive Violation where
-  | useAfterMove      -- reading a `⊘` cell (§7: no use-after-move)
-  | useAfterDrop      -- touching a `†` cell (§7: no use-after-drop)
-  | linearLeak        -- scope exit on a live linear value (§7: consumed exactly once)
-  | linearOverwrite   -- overwrite-drop of a live linear value (`3.8:77`)
-  | linearDiscard     -- sequence-discard of a linear value (`3.8:64`)
-  | unbound           -- dangling index (impossible for elaborated programs)
-  | typeConfusion     -- operator on a wrong-shaped value
+  /-- Reading a `⊘` cell (§7: no use-after-move). -/
+  | useAfterMove
+  /-- Touching a `†` cell (§7: no use-after-drop). -/
+  | useAfterDrop
+  /-- Scope exit on a live linear value (§7: consumed exactly once; §5.6). -/
+  | linearLeak
+  /-- Overwrite-drop of a live linear value (§5.2, `3.8:77`). -/
+  | linearOverwrite
+  /-- Sequence-discard of a linear value (§5.3, `3.8:64`). -/
+  | linearDiscard
+  /-- A dangling index (impossible for elaborated programs; §2). -/
+  | unbound
+  /-- An operator on a wrong-shaped value (impossible for well-typed
+  programs; §5.8). -/
+  | typeConfusion
 deriving DecidableEq, Repr
 
-/-- Evaluation results: a value with the final store and trace, a defined
-panic, or a violation ("stuck"). -/
+/-- Evaluation results: a value with the final store and trace (§6.12's normal
+result), a defined panic (§6.12's `↯κ`), or a violation ("stuck": a
+configuration §6 leaves undefined, named). -/
 inductive EvalRes where
   | ok (H : Store) (v : Val) (tr : List Event)
   | panic (k : PanicKind)
   | stuck (why : Violation)
 deriving Repr
 
-/-- Prefix a trace onto a result's trace. -/
+/-- Prefix a trace onto a result's trace (helper). -/
 def EvalRes.withTrace (tr : List Event) : EvalRes → EvalRes
   | .ok H v tr' => .ok H v (tr ++ tr')
   | r => r
 
 /-- The interpreter. Rule correspondence, per case: `use` is
-(D-Use-Copy)/(D-Use-Move) (§6.3); `add`/`div`/`lt` are §6.4 with its traps;
-`drop` is §6.11's explicit `@drop`; `letIn` is (D-Let) + `endscope`'s
-drop-retire (§6.7); `assign` is §6.8's overwrite-drop / reinitialization;
-`seq` discards with a temporary drop (§6.7); `ite` is (D-If) (§6.2 search +
-branch). -/
+(D-Use-Copy)/(D-Use-Move) (§6.3); `add` is (D-Arith)/(D-Arith-Trap), `div` is
+(D-Div)/(D-Div-Zero)/(D-Div-Overflow), and `lt` is §6.4's ordering compare
+(`cmp`, unlabeled there); `drop` is §6.11's explicit `@drop`; `letIn` is
+(D-Let) + (D-EndScope)'s drop-retire (§6.7); `assign` is (D-Assign), §6.8's
+overwrite-drop / reinitialization; `seq` is (D-Seq), discarding with a
+temporary drop (§6.7); `ite` is (D-If-T)/(D-If-F) after the §6.2 search for
+the scrutinee. -/
 def eval (H : Store) (ρ : Env) : Expr → EvalRes
   | .intLit n => .ok H (.int n) []
   | .boolLit b => .ok H (.bool b) []
