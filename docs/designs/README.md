@@ -259,5 +259,6 @@ The table is generated from ADR frontmatter. Run
 | [0094](0094-no-default-arguments.md) | No default arguments: every call spells every argument | Accepted | language, syntax, semantics, principle |
 | [0095](0095-checked-block-reasons.md) | Checked block reasons: every checked site states the invariant it relies on | Accepted | language, syntax, semantics, unchecked, tooling |
 | [0096](0096-second-class-function-parameters.md) | Second-class function parameters: callbacks that are passed, called, and forwarded, never stored | Implemented | language, syntax, semantics, types, abi, ownership |
+| [0097](0097-mechanized-formal-core.md) | Mechanized formal core: a Lean 4 fourth view of the language, grown as a non-blocking experiment | Proposal | process, formal, testing, documentation |
 | [0098](0098-structured-concurrency.md) | Structured concurrency and thread transfer | Accepted | language, concurrency, runtime, ownership, abi |
 <!-- ADR-INDEX:END -->
