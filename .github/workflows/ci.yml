@@ -982,6 +982,16 @@ jobs:
         if: steps.sel.outputs.run == 'true'
         run: scripts/ci-timed "rue_program digests" -- ./scripts/check-rue-program-digests.sh
 
+      # ci-timed preserves the complete Buck/check-script output here; the
+      # Actions job log only retains a truncated tail after the run ages out.
+      - name: Upload digest-check diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: rue-program-digests-failure-logs
+          path: ${{ runner.temp }}/rue-ci-failed-logs
+          if-no-files-found: ignore
+
   # RUE-1119: on pull_request, select only the heavy corpus suites the diff
   # actually affects, using Meta's off-the-shelf Buck Target Determinator (BTD,
   # facebookincubator/buck2-change-detector) instead of a hand-rolled query.

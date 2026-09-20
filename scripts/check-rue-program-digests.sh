@@ -45,13 +45,28 @@ trap restore EXIT
 
 rue_actions_of_last_build() {
     # what-ran reports the latest invocation's executed actions; rue_scan /
-    # rue_derive_manifest / rue_compile are this rule's categories. grep -c
-    # prints 0 (and exits 1) on no match, hence the || true under pipefail.
-    "$BUCK2" log what-ran 2>/dev/null | grep -cE "rue_scan|rue_derive_manifest|rue_compile" || true
+    # rue_derive_manifest / rue_compile are this rule's categories. A failed
+    # log query is a failure of this check, not an empty action list: treating
+    # it as zero is a false pass for the undeclared-input control.
+    local output status=0
+    output="$("$BUCK2" log what-ran 2>&1)" || status=$?
+    if [[ "$status" -ne 0 ]]; then
+        printf '%s\n' "$output" >&2
+        return "$status"
+    fi
+    awk '/rue_scan|rue_derive_manifest|rue_compile/ { count += 1 }
+         END { print count + 0 }' <<<"$output"
 }
 
 build() {
-    "$BUCK2" build "$TARGET" >/dev/null 2>&1
+    # Keep successful probes quiet, but send a failed Buck diagnostic through to
+    # ci-timed so its preserved failure artifact contains the actionable error.
+    local output status=0
+    output="$("$BUCK2" build "$TARGET" 2>&1)" || status=$?
+    if [[ "$status" -ne 0 ]]; then
+        printf '%s\n' "$output" >&2
+        return "$status"
+    fi
 }
 
 # Build until an identical rebuild executes nothing, so later assertions start
@@ -59,8 +74,22 @@ build() {
 # digest-sensitivity failure.
 settle() {
     for _ in 1 2 3 4 5; do
-        build
-        if [[ "$(rue_actions_of_last_build)" -eq 0 ]]; then
+        if build; then
+            :
+        else
+            local status=$?
+            echo "FAIL: Buck build failed while settling the digest check" >&2
+            return "$status"
+        fi
+        local ran
+        if ran="$(rue_actions_of_last_build)"; then
+            :
+        else
+            local status=$?
+            echo "FAIL: could not read Buck's execution log while settling the digest check" >&2
+            return "$status"
+        fi
+        if [[ "$ran" -eq 0 ]]; then
             return 0
         fi
     done
@@ -82,8 +111,20 @@ ran=0
 for attempt in 1 2 3 4 5 6 7 8 9 10; do
     printf '\n// digest-sensitivity probe %s\n' "$attempt" >> "$DECLARED"
     sleep 1
-    build
-    ran="$(rue_actions_of_last_build)"
+    if build; then
+        :
+    else
+        status=$?
+        echo "FAIL: Buck build failed during the declared-source probe" >&2
+        exit "$status"
+    fi
+    if ran="$(rue_actions_of_last_build)"; then
+        :
+    else
+        status=$?
+        echo "FAIL: could not read Buck's execution log during the declared-source probe" >&2
+        exit "$status"
+    fi
     if [[ "$ran" -ge 1 ]]; then
         break
     fi
@@ -104,8 +145,20 @@ printf '\n// digest-sensitivity probe\n' >> "$UNDECLARED"
 # Give the watcher time to deliver the event we are asserting is IGNORED, so a
 # pass means "keyed by nothing", not "not seen yet".
 sleep 2
-build
-ran="$(rue_actions_of_last_build)"
+if build; then
+    :
+else
+    status=$?
+    echo "FAIL: Buck build failed during the undeclared-neighbour probe" >&2
+    exit "$status"
+fi
+if ran="$(rue_actions_of_last_build)"; then
+    :
+else
+    status=$?
+    echo "FAIL: could not read Buck's execution log during the undeclared-neighbour probe" >&2
+    exit "$status"
+fi
 if [[ "$ran" -ne 0 ]]; then
     echo "FAIL: undeclared-neighbour mutation re-executed $ran rue_* action(s)" >&2
     exit 1
