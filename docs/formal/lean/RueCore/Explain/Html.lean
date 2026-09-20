@@ -143,7 +143,7 @@ def stepRow (n : Nat) (s : Step) : String :=
   tag "td" (tagc "div" "rule" (esc s.rule) ++
             tagc "div" "expr mono"
               ("<span style=\"opacity:.45\">" ++ esc (bar' s.depth) ++ "</span>" ++
-               esc (exprLine s.binders s.expr))) ++
+               esc s.text)) ++
   tag "td" (storeTable s.storeBefore) ++
   tag "td" (storeTable s.storeAfter) ++
   tag "td" (if s.events.isEmpty then tagc "span" "none" "—"

@@ -31,7 +31,7 @@ premises are the nodes indented under it, in premise order.
     e       { RAffine { value: 3, live: true }; 4 }
     Γ;Σ     (empty)
     ⇒       i64  ⊣  (empty)
-      (Struct-Intro) §5.8
+      resource intro §5.8 (the shape of the aggregate-introduction rule; `res κ` has no fields)
         e       RAffine { value: 3, live: true }
         Γ;Σ     (empty)
         ⇒       RAffine  ⊣  (empty)
@@ -55,13 +55,13 @@ is the nesting depth and `>>` marks a drop event.
          store   (empty)
            →     (empty)
          result  value 3
-  [2]   d1    (D-Struct) §6.5
+  [2]   d1    resource intro §6.5
          expr    RAffine { value: 3, live: true }
          store   (empty)
            →     (empty)
          result  value RAffine { 3 }
   [3]   d1    (D-Seq) §6.7 (drop the temporary)
-         expr    { RAffine { value: 3, live: true }; 4 }
+         expr    drop(RAffine { 3 })
          store   (empty)
            →     (empty)
          events  >> drop temporary RAffine { 3 }

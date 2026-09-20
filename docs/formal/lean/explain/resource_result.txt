@@ -27,7 +27,7 @@ Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
 fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
 premises are the nodes indented under it, in premise order.
 
-  (Let) §5.6 + scope-exit leak check
+  (Let) §5.3 + the §5.6 scope-exit leak check
     e       { let v0: i64 = 4; RAffine { value: v0, live: true } }
     Γ;Σ     (empty)
     ⇒       RAffine  ⊣  (empty)
@@ -35,7 +35,7 @@ premises are the nodes indented under it, in premise order.
         e       4
         Γ;Σ     (empty)
         ⇒       i64  ⊣  (empty)
-      (Struct-Intro) §5.8
+      resource intro §5.8 (the shape of the aggregate-introduction rule; `res κ` has no fields)
         e       RAffine { value: v0, live: true }
         Γ;Σ     [v0: i64 = Owned]
         ⇒       RAffine  ⊣  [v0: i64 = Owned]
@@ -56,7 +56,7 @@ is the nesting depth and `>>` marks a drop event.
            →     (empty)
          result  value 4
   [2]   d1    (D-Let) §6.7 (mint the binding)
-         expr    { let v0: i64 = 4; RAffine { value: v0, live: true } }
+         expr    let v0 = 4 at ℓ0
          store   (empty)
            →     [ℓ0 = 4]
          result  value 4
@@ -65,13 +65,13 @@ is the nesting depth and `>>` marks a drop event.
          store   [ℓ0 = 4]
            →     [ℓ0 = 4]
          result  value 4
-  [4]   d1    (D-Struct) §6.5
+  [4]   d1    resource intro §6.5
          expr    RAffine { value: v0, live: true }
          store   [ℓ0 = 4]
            →     [ℓ0 = 4]
          result  value RAffine { 4 }
   [5]   d0  (D-EndScope) §6.7 (retire the binding)
-         expr    { let v0: i64 = 4; RAffine { value: v0, live: true } }
+         expr    endscope([ℓ0])
          store   [ℓ0 = 4]
            →     [ℓ0 = † (retired)]
          result  value RAffine { 4 }

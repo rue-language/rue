@@ -39,13 +39,13 @@ Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
 fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
 premises are the nodes indented under it, in premise order.
 
-  (Let) §5.6 + scope-exit leak check
+  (Let) §5.3 + the §5.6 scope-exit leak check
     e       { let v0: RLinear = RLinear { value: 9 }; { if false { consume_linear(v0) } els…
     Γ;Σ     (empty)
     ✗       this premise fails:
             a premise's own derivation failed — the reason is the rejected
             premise nested under this rule
-      (Struct-Intro) §5.8
+      resource intro §5.8 (the shape of the aggregate-introduction rule; `res κ` has no fields)
         e       RLinear { value: 9 }
         Γ;Σ     (empty)
         ⇒       RLinear  ⊣  (empty)
@@ -71,7 +71,7 @@ premises are the nodes indented under it, in premise order.
                 e       false
                 Γ;Σ     [v0: RLinear = Owned]
                 ⇒       bool  ⊣  [v0: RLinear = Owned]
-              (Call) §5.8
+              resource elimination §5.8/§4.2 (an abstract consuming elimination; the fragment has no calls)
                 e       consume_linear(v0)
                 Γ;Σ     [v0: RLinear = Owned]
                 ⇒       i64  ⊣  [v0: RLinear = MovedOut]
@@ -95,13 +95,13 @@ is the nesting depth and `>>` marks a drop event.
          store   (empty)
            →     (empty)
          result  value 9
-  [2]   d1    (D-Struct) §6.5
+  [2]   d1    resource intro §6.5
          expr    RLinear { value: 9 }
          store   (empty)
            →     (empty)
          result  value RLinear { 9 }
   [3]   d1    (D-Let) §6.7 (mint the binding)
-         expr    { let v0: RLinear = RLinear { value: 9 }; { if false { consume_linear(v0) } els…
+         expr    let v0 = RLinear { 9 } at ℓ0
          store   (empty)
            →     [ℓ0 = RLinear { 9 }]
          result  value RLinear { 9 }
@@ -131,7 +131,7 @@ is the nesting depth and `>>` marks a drop event.
            →     [ℓ0 = RLinear { 9 }]
          result  value 0
   [9]   d0  (D-EndScope) §6.7 (retire the binding)
-         expr    { let v0: RLinear = RLinear { value: 9 }; { if false { consume_linear(v0) } els…
+         expr    endscope([ℓ0])
          store   [ℓ0 = RLinear { 9 }]
            →     [ℓ0 = RLinear { 9 }]
          result  REFUSED (linearLeak)

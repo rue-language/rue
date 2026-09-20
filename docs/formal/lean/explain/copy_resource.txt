@@ -29,11 +29,11 @@ Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
 fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
 premises are the nodes indented under it, in premise order.
 
-  (Let) §5.6 + scope-exit leak check
+  (Let) §5.3 + the §5.6 scope-exit leak check
     e       { let v0: RCopy = RCopy { value: 5 }; { @drop(v0); (consume_copy(v0) + consume_…
     Γ;Σ     (empty)
     ⇒       i64  ⊣  (empty)
-      (Struct-Intro) §5.8
+      resource intro §5.8 (the shape of the aggregate-introduction rule; `res κ` has no fields)
         e       RCopy { value: 5 }
         Γ;Σ     (empty)
         ⇒       RCopy  ⊣  (empty)
@@ -53,7 +53,7 @@ premises are the nodes indented under it, in premise order.
             e       (consume_copy(v0) + consume_copy(v0))
             Γ;Σ     [v0: RCopy = Owned]
             ⇒       i64  ⊣  [v0: RCopy = Owned]
-              (Call) §5.8
+              resource elimination §5.8/§4.2 (an abstract consuming elimination; the fragment has no calls)
                 e       consume_copy(v0)
                 Γ;Σ     [v0: RCopy = Owned]
                 ⇒       i64  ⊣  [v0: RCopy = Owned]
@@ -61,7 +61,7 @@ premises are the nodes indented under it, in premise order.
                     e       v0
                     Γ;Σ     [v0: RCopy = Owned]
                     ⇒       RCopy  ⊣  [v0: RCopy = Owned]
-              (Call) §5.8
+              resource elimination §5.8/§4.2 (an abstract consuming elimination; the fragment has no calls)
                 e       consume_copy(v0)
                 Γ;Σ     [v0: RCopy = Owned]
                 ⇒       i64  ⊣  [v0: RCopy = Owned]
@@ -81,13 +81,13 @@ is the nesting depth and `>>` marks a drop event.
          store   (empty)
            →     (empty)
          result  value 5
-  [2]   d1    (D-Struct) §6.5
+  [2]   d1    resource intro §6.5
          expr    RCopy { value: 5 }
          store   (empty)
            →     (empty)
          result  value RCopy { 5 }
   [3]   d1    (D-Let) §6.7 (mint the binding)
-         expr    { let v0: RCopy = RCopy { value: 5 }; { @drop(v0); (consume_copy(v0) + consume_…
+         expr    let v0 = RCopy { 5 } at ℓ0
          store   (empty)
            →     [ℓ0 = RCopy { 5 }]
          result  value RCopy { 5 }
@@ -101,7 +101,7 @@ is the nesting depth and `>>` marks a drop event.
          store   [ℓ0 = RCopy { 5 }]
            →     [ℓ0 = RCopy { 5 }]
          result  value RCopy { 5 }
-  [6]   d3        (D-Call) §6.9
+  [6]   d3        resource elimination §6.5
          expr    consume_copy(v0)
          store   [ℓ0 = RCopy { 5 }]
            →     [ℓ0 = RCopy { 5 }]
@@ -111,7 +111,7 @@ is the nesting depth and `>>` marks a drop event.
          store   [ℓ0 = RCopy { 5 }]
            →     [ℓ0 = RCopy { 5 }]
          result  value RCopy { 5 }
-  [8]   d3        (D-Call) §6.9
+  [8]   d3        resource elimination §6.5
          expr    consume_copy(v0)
          store   [ℓ0 = RCopy { 5 }]
            →     [ℓ0 = RCopy { 5 }]
@@ -127,7 +127,7 @@ is the nesting depth and `>>` marks a drop event.
            →     [ℓ0 = RCopy { 5 }]
          result  value 10
   [11]  d0  (D-EndScope) §6.7 (retire the binding)
-         expr    { let v0: RCopy = RCopy { value: 5 }; { @drop(v0); (consume_copy(v0) + consume_…
+         expr    endscope([ℓ0])
          store   [ℓ0 = RCopy { 5 }]
            →     [ℓ0 = † (retired)]
          result  value 10

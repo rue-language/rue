@@ -31,11 +31,11 @@ Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
 fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
 premises are the nodes indented under it, in premise order.
 
-  (Let) §5.6 + scope-exit leak check
+  (Let) §5.3 + the §5.6 scope-exit leak check
     e       { let v0: RLinear = RLinear { value: 9 }; { @dbg(consume_linear(v0)); 3 } }
     Γ;Σ     (empty)
     ⇒       i64  ⊣  (empty)
-      (Struct-Intro) §5.8
+      resource intro §5.8 (the shape of the aggregate-introduction rule; `res κ` has no fields)
         e       RLinear { value: 9 }
         Γ;Σ     (empty)
         ⇒       RLinear  ⊣  (empty)
@@ -47,7 +47,7 @@ premises are the nodes indented under it, in premise order.
         e       { @dbg(consume_linear(v0)); 3 }
         Γ;Σ     [v0: RLinear = Owned]
         ⇒       i64  ⊣  [v0: RLinear = MovedOut]
-          (@Drop) §5.3
+          (@Drop) §5.3 (the printed program spells this as a consuming read; see the program)
             e       @dbg(consume_linear(v0))
             Γ;Σ     [v0: RLinear = Owned]
             ⇒       ()  ⊣  [v0: RLinear = MovedOut]
@@ -67,17 +67,17 @@ is the nesting depth and `>>` marks a drop event.
          store   (empty)
            →     (empty)
          result  value 9
-  [2]   d1    (D-Struct) §6.5
+  [2]   d1    resource intro §6.5
          expr    RLinear { value: 9 }
          store   (empty)
            →     (empty)
          result  value RLinear { 9 }
   [3]   d1    (D-Let) §6.7 (mint the binding)
-         expr    { let v0: RLinear = RLinear { value: 9 }; { @dbg(consume_linear(v0)); 3 } }
+         expr    let v0 = RLinear { 9 } at ℓ0
          store   (empty)
            →     [ℓ0 = RLinear { 9 }]
          result  value RLinear { 9 }
-  [4]   d2      @drop §6.11
+  [4]   d2      @drop §6.11 (the printed program spells this as a consuming read; see the program)
          expr    @dbg(consume_linear(v0))
          store   [ℓ0 = RLinear { 9 }]
            →     [ℓ0 = ⊘ (moved out)]
@@ -94,7 +94,7 @@ is the nesting depth and `>>` marks a drop event.
            →     [ℓ0 = ⊘ (moved out)]
          result  value 3
   [7]   d0  (D-EndScope) §6.7 (retire the binding)
-         expr    { let v0: RLinear = RLinear { value: 9 }; { @dbg(consume_linear(v0)); 3 } }
+         expr    endscope([ℓ0])
          store   [ℓ0 = ⊘ (moved out)]
            →     [ℓ0 = † (retired)]
          result  value 3

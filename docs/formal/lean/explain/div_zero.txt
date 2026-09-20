@@ -52,7 +52,7 @@ is the nesting depth and `>>` marks a drop event.
          store   (empty)
            →     (empty)
          result  value 0
-  [3]   d0  (D-Div) §6.4 (trap)
+  [3]   d0  (D-Div-Zero) §6.4
          expr    (1 / 0)
          store   (empty)
            →     (empty)
