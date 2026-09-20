@@ -26,7 +26,6 @@ pub enum RuntimeOperandOrigin {
     BytePointerArgument(u8),
     TextPointer(u8),
     TextLength(u8),
-    FailureSiteArgument(u8),
     FailureReportArgument(u8),
     ProjectedTextPointer(u8),
     ProjectedTextLength(u8),
@@ -57,7 +56,6 @@ pub enum RuntimeAirType {
     UnsignedInteger,
     Integer,
     Text,
-    FailureSite,
     FailureReport,
     BytePointer,
     ConstBytePointer,
@@ -87,10 +85,6 @@ impl RuntimeOperandOrigin {
             }
             Self::TextLength(_) | Self::ProjectedTextLength(_) | Self::OptionDiscriminant(_) => {
                 parameter.ty == AbiType::U64 && parameter.mode == ParameterMode::Value
-            }
-            Self::FailureSiteArgument(_) => {
-                parameter.ty == AbiType::FailureSite
-                    && parameter.mode == ParameterMode::ConstPointer
             }
             Self::FailureReportArgument(_) => {
                 parameter.ty == AbiType::FailureReport
@@ -352,15 +346,30 @@ const BYTE_SET: &[RuntimeOperandOrigin] = &[
     },
 ];
 
+// Panic helpers receive static source text, its packed position, and (for the
+// message form) a text view as ordinary ABI operands. The runtime constructs
+// its local FailureSite before entering the shared terminal reporter.
+const PANIC: &[RuntimeOperandOrigin] = &[
+    RuntimeOperandOrigin::TextPointer(0),
+    RuntimeOperandOrigin::TextLength(0),
+    RuntimeOperandOrigin::ValueArgument {
+        index: 1,
+        ty: AbiType::U64,
+    },
+    RuntimeOperandOrigin::TextPointer(2),
+    RuntimeOperandOrigin::TextLength(2),
+];
+const PANIC_NO_MESSAGE: &[RuntimeOperandOrigin] = &[
+    RuntimeOperandOrigin::TextPointer(0),
+    RuntimeOperandOrigin::TextLength(0),
+    RuntimeOperandOrigin::ValueArgument {
+        index: 1,
+        ty: AbiType::U64,
+    },
+];
 // The ADR-0083 §5.1 failure record is a caller-owned fixed array borrowed by
 // the terminal helper. `payload` remains the open, versioned field an
 // assertion library fills in.
-const PANIC: &[RuntimeOperandOrigin] = &[
-    RuntimeOperandOrigin::FailureSiteArgument(0),
-    RuntimeOperandOrigin::TextPointer(1),
-    RuntimeOperandOrigin::TextLength(1),
-];
-const PANIC_NO_MESSAGE: &[RuntimeOperandOrigin] = &[RuntimeOperandOrigin::FailureSiteArgument(0)];
 const TEST_FAILURE_REPORT: &[RuntimeOperandOrigin] =
     &[RuntimeOperandOrigin::FailureReportArgument(0)];
 // `__rue_test_fail_assert(report, with_message)`. The report owns the site and
@@ -702,9 +711,6 @@ impl RuntimeCallKind {
                 RuntimeOperandOrigin::ProjectedTextLength(index) => {
                     require(index, RuntimeAirType::U64)
                 }
-                RuntimeOperandOrigin::FailureSiteArgument(index) => {
-                    require(index, RuntimeAirType::FailureSite)
-                }
                 RuntimeOperandOrigin::FailureReportArgument(index) => {
                     require(index, RuntimeAirType::FailureReport)
                 }
@@ -729,9 +735,7 @@ impl RuntimeCallKind {
                     return false;
                 }
                 match expected {
-                    RuntimeAirType::FailureSite | RuntimeAirType::FailureReport => {
-                        actual.mode == crate::AirArgMode::Borrow
-                    }
+                    RuntimeAirType::FailureReport => actual.mode == crate::AirArgMode::Borrow,
                     _ => actual.mode == crate::AirArgMode::Normal,
                 }
             })
@@ -746,7 +750,6 @@ impl RuntimeCallKind {
             AbiType::BoolWordI64 => RuntimeAirType::Bool,
             AbiType::Byte => RuntimeAirType::UnsignedInteger,
             AbiType::MutBytePointer => RuntimeAirType::MutBytePointer,
-            AbiType::FailureSite => RuntimeAirType::FailureSite,
             AbiType::FailureReport => RuntimeAirType::FailureReport,
         }
     }
@@ -841,16 +844,6 @@ mod tests {
         ] {
             for (kind, ty, extra) in [
                 (
-                    RuntimeCallKind::PanicNoMessage,
-                    RuntimeAirType::FailureSite,
-                    None,
-                ),
-                (
-                    RuntimeCallKind::Panic,
-                    RuntimeAirType::FailureSite,
-                    Some(RuntimeAirType::Text),
-                ),
-                (
                     RuntimeCallKind::TestFail,
                     RuntimeAirType::FailureReport,
                     None,
@@ -877,6 +870,24 @@ mod tests {
                 );
             }
         }
+        assert!(
+            RuntimeCallKind::PanicNoMessage.validate_air_arguments(&[
+                normal(RuntimeAirType::Text),
+                normal(RuntimeAirType::U64),
+            ])
+        );
+        assert!(!RuntimeCallKind::PanicNoMessage.validate_air_arguments(&[
+            RuntimeAirArgument {
+                ty: RuntimeAirType::Text,
+                mode: crate::AirArgMode::Borrow,
+            },
+            normal(RuntimeAirType::U64),
+        ]));
+        assert!(RuntimeCallKind::Panic.validate_air_arguments(&[
+            normal(RuntimeAirType::Text),
+            normal(RuntimeAirType::U64),
+            normal(RuntimeAirType::Text),
+        ]));
     }
 
     #[test]

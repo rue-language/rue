@@ -291,28 +291,27 @@ Six helpers implement the ADR-0083 §3 and §5.1 channel. Three are dispatcher
 plumbing no source spelling selects; the reporting helpers are what a test
 body's `?`, the assertion family, and `@panic` lower to, in an ordinary
 executable as well as in a test image. Failure locations and reports are
-caller-owned `repr(C)` records. The compiler constructs their fixed-width
-`u64` storage and passes a borrow, so concurrent failures cannot share a
-process-global source slot.
+private `repr(C)` records. Assertion callers construct fixed-width `u64`
+storage and pass a borrow; panic helpers assemble their local site from scalar
+arguments. Concurrent failures never share a process-global source slot.
 
 - `__rue_test_normalize_process` narrows the captured argument count to one, so
   a test observes the pinned inventory rather than the selector it was
   dispatched by.
 - `__rue_test_complete` writes the terminal completion record.
 - `__rue_test_fail` reports one structured failure and aborts. Its one argument
-  is a borrowed `FailureReport`; the report contains a borrowed `FailureSite`
+  is a borrowed `FailureReport`; the report embeds a `FailureSite`
   plus the rendered kind and payload views. The compiler materializes the
   complete record before the call, so evaluation traps report their own source
   and there is no adjacent staging call or process-global source state.
 - `__rue_test_fail_comparison` is the same terminal call for a comparison
-  assertion (Phase 2.5, ABI version 3): it carries the two rendered operands as
+  assertion: it carries the two rendered operands as
   the record's `left` and `right` where `__rue_test_fail` carries a message
   and the open payload. Its message is not a parameter — it is pinned by the
   kind, `assertion failed: left == right` for `assert_eq` and
-  `assertion failed: left != right` for `assert_ne` — which is what keeps a
-  six-register call able to carry both operands.
+  `assertion failed: left != right` for `assert_ne`.
 - `__rue_test_fail_assert` is the same terminal call for `@assert`
-  (spec 4.13:5d, ABI version 5). It writes a record of kind `assert` that ends
+  (spec 4.13:5d). It writes a record of kind `assert` that ends
   at the location — no `payload`, and no operands — and then writes the one
   stderr line the assertion has always written. `@assert` has two pinned stderr
   forms rather than one, so the form is a parameter instead of a second symbol:
@@ -326,7 +325,8 @@ process-global source slot.
   because the dispatcher owns that case's exit status.
 
 `@assert_eq(l, r)` and `@assert_ne(l, r)` compile to the ordinary equality
-lowering plus, on the failing branch, the two rendering calls and this pair.
+lowering plus, on the failing branch, the two rendering calls and the
+appropriate terminal helper.
 `@assert(cond)` and `@assert(cond, msg)` compile to a branch on the negated
 condition whose only arm is `__rue_test_fail_assert`; the message is rendered
 before the report record is assembled, so an evaluation trap reports its own
@@ -337,11 +337,12 @@ synthesized dispatcher's prologue calls it, so in an ordinary process no frame
 is written at all and the pinned stderr message plus exit 101 is the whole
 report (RUE-2066).
 
-`@panic(msg)` and `@panic()` compile to a canonical borrowed `FailureSite`
-followed by the panic helper, under the same build-independent rule (RUE-2019).
-The panic helpers are not channel exports; `__rue_panic` and
-`__rue_panic_no_msg` receive the site directly and write a `trap:panic` record
-before their pinned stderr line, while `__rue_bounds_check` writes a
+`@panic(msg)` and `@panic()` compile to the canonical panic helper with the
+static file text, packed source position, and (when present) message text as
+ordinary register arguments, under the same build-independent rule (RUE-2019).
+The panic helpers construct their local `FailureSite` before entering the
+canonical terminal reporter; they write a `trap:panic` record before their
+pinned stderr line, while `__rue_bounds_check` writes a
 `trap:bounds_check` record with a null site. Each record's message is that
 helper's own stderr line without the newline, so nothing a consumer already
 read changes. Runtime failures that have no source site report the empty

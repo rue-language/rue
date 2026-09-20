@@ -22,7 +22,7 @@ struct failure_report {
 };
 _Static_assert(sizeof(struct failure_site) == 24, "failure site ABI");
 _Static_assert(sizeof(struct failure_report) == 72, "failure report ABI");
-extern _Noreturn void __rue_panic_no_msg(const struct failure_site *);
+extern _Noreturn void __rue_panic_no_msg(const unsigned char *, uint64_t, uint64_t);
 extern _Noreturn void __rue_test_fail_assert(const struct failure_report *, uint32_t);
 extern void __rue_test_normalize_process(void);
 extern void __rue_test_complete(void);
@@ -76,10 +76,9 @@ int run_hosted_reporting_probe(const char *mode) {
         if (write(3, sentinel, sizeof(sentinel) - 1) != sizeof(sentinel) - 1) {
             return 84;
         }
-        const struct failure_site site = {
-            left_file, sizeof(left_file) - 1, ((uint64_t)111 << 32) | 7,
-        };
-        __rue_panic_no_msg(&site);
+        __rue_panic_no_msg(
+            left_file, sizeof(left_file) - 1, ((uint64_t)111 << 32) | 7
+        );
     }
 
     /* Both messages cross the 4 KiB bound and expand further when escaped. */

@@ -212,17 +212,16 @@ assert_source_order_independent_ir() {
     # listed rather than one representative.
     #
     # `@assert` witnesses the runtime-call rule rather than the intrinsic one:
-    # since RUE-1953 it lowers to a branch around the ADR-0083 §5.1 staging and
-    # terminal calls instead of to a conditional `assert` intrinsic, so its
-    # resolved names are those two helpers. `@bitCast` carries the intrinsic
-    # rule in its place.
+    # since RUE-1953 it lowers to a branch around the canonical failure-report
+    # and terminal calls instead of to a conditional `assert` intrinsic, so its
+    # resolved terminal name is the assertion helper below. `@bitCast` carries
+    # the intrinsic rule in its place.
     local expected_symbol
     for expected_symbol in \
         '@__rue_fn_main_2erue__rotate(' \
         '@__rue_fn_main_2erue__finish(' \
         '@__rue_fn_main_2erue__identity.i32(' \
         '@bitCast(' \
-        '@__rue_test_failure_site(' \
         '@__rue_test_fail_assert('; do
         if ! grep -Fq "$expected_symbol" "$ir_a"; then
             printf 'FAIL: stable IR omitted resolved symbol %s\n' "$expected_symbol" >&2

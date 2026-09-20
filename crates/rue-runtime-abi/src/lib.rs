@@ -47,8 +47,6 @@ pub enum AbiType {
     Byte,
     /// A mutable opaque byte pointer returned in a scalar result or aggregate slot.
     MutBytePointer,
-    /// Pointee identity for the caller-owned three-word diagnostic site.
-    FailureSite,
     /// Pointee identity for the caller-owned nine-word diagnostic report.
     FailureReport,
     /// The target C ABI's `usize`, used only by compiler-built memory routines.
@@ -687,10 +685,18 @@ macro_rules! for_each_runtime_helper {
             safety: TERMINATES,
             returns: NEVER
         },
-        Panic => unsafe __rue_panic(site: *const FailureSite, ptr: *const u8, len: u64) -> ! {
+        Panic => unsafe __rue_panic(
+            file_ptr: *const u8,
+            file_len: u64,
+            position: u64,
+            ptr: *const u8,
+            len: u64,
+        ) -> ! {
             symbol: "__rue_panic",
             parameters: params![
-                AbiParameter::const_pointer(AbiType::FailureSite),
+                BYTE_VIEW,
+                U64_VALUE,
+                U64_VALUE,
                 BYTE_VIEW,
                 U64_VALUE,
             ],
@@ -698,9 +704,13 @@ macro_rules! for_each_runtime_helper {
             safety: READABLE.union(TERMINATES),
             returns: NEVER
         },
-        PanicNoMessage => unsafe __rue_panic_no_msg(site: *const FailureSite) -> ! {
+        PanicNoMessage => unsafe __rue_panic_no_msg(
+            file_ptr: *const u8,
+            file_len: u64,
+            position: u64,
+        ) -> ! {
             symbol: "__rue_panic_no_msg",
-            parameters: params![AbiParameter::const_pointer(AbiType::FailureSite)],
+            parameters: params![BYTE_VIEW, U64_VALUE, U64_VALUE],
             result: VOID,
             safety: READABLE.union(TERMINATES),
             returns: NEVER
@@ -1730,7 +1740,7 @@ mod tests {
         check(
             &mut visited,
             &[RuntimeHelperId::PanicNoMessage],
-            &[AbiParameter::const_pointer(AbiType::FailureSite)],
+            &[BYTE_VIEW, U64_VALUE, U64_VALUE],
             VOID,
             READABLE.union(TERMINATES),
             NEVER,
@@ -1738,11 +1748,7 @@ mod tests {
         check(
             &mut visited,
             &[RuntimeHelperId::Panic],
-            &[
-                AbiParameter::const_pointer(AbiType::FailureSite),
-                BYTE_VIEW,
-                U64_VALUE,
-            ],
+            &[BYTE_VIEW, U64_VALUE, U64_VALUE, BYTE_VIEW, U64_VALUE],
             VOID,
             READABLE.union(TERMINATES),
             NEVER,

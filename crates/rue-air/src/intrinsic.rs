@@ -146,9 +146,6 @@ fn runtime_air_type_in_pool(pool: &TypeInternPool, ty: Type) -> Option<RuntimeAi
     }
     if let TypeKind::Array(array) = ty.kind() {
         let (element, length) = pool.array_def(array);
-        if element == Type::U64 && length == rue_runtime_abi::FAILURE_SITE_SLOTS as u64 {
-            return Some(RuntimeAirType::FailureSite);
-        }
         if element == Type::U64 && length == rue_runtime_abi::FAILURE_REPORT_SLOTS as u64 {
             return Some(RuntimeAirType::FailureReport);
         }
@@ -300,9 +297,6 @@ impl RuntimeAirTypePool for FrozenTypeInternPool {
         }
         if let TypeKind::Array(array) = ty.kind() {
             let (element, length) = self.array_def(array);
-            if element == Type::U64 && length == rue_runtime_abi::FAILURE_SITE_SLOTS as u64 {
-                return Some(RuntimeAirType::FailureSite);
-            }
             if element == Type::U64 && length == rue_runtime_abi::FAILURE_REPORT_SLOTS as u64 {
                 return Some(RuntimeAirType::FailureReport);
             }

@@ -212,8 +212,8 @@ This is the defined asynchronous boundary; record fields remain bounded to
 **Producers in this version.** Records reach the channel by two routes, both
 the implementation's. Compiler-synthesized code writes them for `@assert`,
 `@assert_eq`, `@assert_ne`, the test-body `?` failure arm, and the dispatcher's
-`complete` epilogue; `@panic` passes its caller-owned site directly to the
-panic helper. The runtime writes records for itself from inside the trap
+`complete` epilogue; `@panic` passes its static source text and packed position
+to the panic helper, which constructs its local site. The runtime writes records for itself from inside the trap
 helpers, which is how a failure with no Rue call site at all still reports: an
 allocation failure reaches `__rue_panic`, an `s[i]` past the end reaches
 `__rue_bounds_check` from within `__rue_str_byte_at`, and a standard library

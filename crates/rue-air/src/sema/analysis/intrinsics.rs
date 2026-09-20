@@ -1540,21 +1540,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         // `@panic` reports its own site. The runtime writes the `trap:panic`
-        // record from inside the panic helper, so the caller-owned site is part
-        // of the same canonical call in a test image and in
-        // an ordinary executable: there is no descriptor 3 in the latter, the
-        // record write fails with `EBADF` as designed, and the pinned stderr
-        // line spec 4.13:5c fixes is the whole report (RUE-2019).
+        // record from inside the panic helper, while ordinary processes leave
+        // the test channel unarmed and therefore keep only the pinned stderr
+        // line (RUE-2019).
         let str_ty = self.get_or_create_str_struct(span)?;
 
         if args.is_empty() {
-            // Panic with no message: still a real trap (RUE-319). Emitting an
-            // Intrinsic with zero args (not a UnitConst) is what makes cfg_lower
-            // lower it to the `__rue_panic_no_msg` abort call instead of a
+            // Panic with no message: still a real trap (RUE-319). The typed
+            // runtime call below lowers to `__rue_panic_no_msg` instead of a
             // silent no-op. `@panic` has type `!` (never): it diverges and never
             // returns, so it participates in never coercion just like a `-> !`
             // call, `return`, or `break` (spec 3.4:2, 4.13:5c; RUE-512).
-            let (site, prefix) = self.build_failure_site(air, ctx, str_ty, span)?;
+            let (file, position) = self.build_failure_site_inputs(air, ctx, str_ty, span);
             let name = self.intern_body_symbol(
                 crate::RuntimeCallKind::PanicNoMessage
                     .helper()
@@ -1564,14 +1561,20 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let panic_ref = air.add_call(
                 Some(crate::RuntimeCallKind::PanicNoMessage),
                 name,
-                &[AirCallArg {
-                    value: site,
-                    mode: AirArgMode::Borrow,
-                }],
+                &[
+                    AirCallArg {
+                        value: file,
+                        mode: AirArgMode::Normal,
+                    },
+                    AirCallArg {
+                        value: position,
+                        mode: AirArgMode::Normal,
+                    },
+                ],
                 Type::NEVER,
                 span,
             )?;
-            let air_ref = air.add_block(&prefix, panic_ref, Type::NEVER, span)?;
+            let air_ref = air.add_block(&[], panic_ref, Type::NEVER, span)?;
             ctx.divergence_kinds
                 .insert(super::super::context::DivergenceKind::Panic);
             return Ok(AnalysisResult::diverged(air_ref, Type::NEVER));
@@ -1597,10 +1600,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         } else {
             (arg_result.air_ref, Vec::new())
         };
-        // Render the message before constructing the caller-owned site: a
+        // Render the message before constructing the source arguments: a
         // bounds check inside it traps with no report for this outer panic, so
         // it must never inherit the outer panic's source.
-        let (site, mut prefix) = self.build_failure_site(air, ctx, str_ty, span)?;
+        let (file, position) = self.build_failure_site_inputs(air, ctx, str_ty, span);
         let name =
             self.intern_body_symbol(crate::RuntimeCallKind::Panic.helper().helper().symbol)?;
         let intrinsic_ref = air.add_call(
@@ -1608,8 +1611,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             name,
             &[
                 AirCallArg {
-                    value: site,
-                    mode: AirArgMode::Borrow,
+                    value: file,
+                    mode: AirArgMode::Normal,
+                },
+                AirCallArg {
+                    value: position,
+                    mode: AirArgMode::Normal,
                 },
                 AirCallArg {
                     value: arg_ref,
@@ -1619,8 +1626,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             Type::NEVER,
             span,
         )?;
-        prefix.insert(0, arg_ref);
-        let reported = air.add_block(&prefix, intrinsic_ref, Type::NEVER, span)?;
+        let reported = air.add_block(&[arg_ref], intrinsic_ref, Type::NEVER, span)?;
         let air_ref =
             self.wrap_value_with_temp_scope(air, reported, Type::NEVER, span, temp_scope)?;
         // An operand that diverges prevents the explicit panic call from
@@ -1745,9 +1751,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ///
     /// The lowering is the same in a test image and in an ordinary executable
     /// (ADR-0083's rule for the assertion family). Only the outcome differs,
-    /// and only because the channel is a descriptor an ordinary process does
-    /// not have: the frame write fails with `EBADF` and the pinned stderr
-    /// message spec 4.13:5d fixes is the whole report.
+    /// because the channel remains unarmed in an ordinary process and the
+    /// pinned stderr message spec 4.13:5d fixes is the whole report.
     fn build_assert_report(
         &mut self,
         air: &mut Air,
@@ -1796,10 +1801,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// panic path.
     ///
     /// The lowering is the same in a test image and in an ordinary executable.
-    /// Only the outcome differs, and only because the channel is a descriptor
-    /// an ordinary process does not have: the frame write fails with `EBADF`
-    /// and the pinned stderr message is the whole report. A build-mode-sensitive
-    /// lowering would make the same source mean two different things.
+    /// Only the outcome differs, because the channel remains unarmed in an
+    /// ordinary process and the pinned stderr message is the whole report. A
+    /// build-mode-sensitive lowering would make the same source mean two
+    /// different things.
     fn analyze_assert_comparison_intrinsic(
         &mut self,
         air: &mut Air,

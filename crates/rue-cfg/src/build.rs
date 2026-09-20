@@ -5148,24 +5148,27 @@ mod tests {
             for operand in operands {
                 let value = match operand {
                     Operand::Diverge => {
-                        let word = fixture.inst(D::Const(0), ImportTy::U64);
-                        let site = fixture.inst(
-                            D::ArrayInit {
-                                elements: Arc::from([word, word, word]),
-                                shape: rue_air::ArrayInitShape::Elementwise,
-                            },
-                            ImportTy::Array {
-                                element: Arc::new(ImportTy::U64),
-                                len: 3,
+                        let file = fixture.inst(
+                            D::StringConst(0),
+                            ImportTy::BuiltinNominal {
+                                name: Arc::from("str"),
+                                kind: SemanticImportNominalKind::Struct,
                             },
                         );
+                        let position = fixture.inst(D::Const(0), ImportTy::U64);
                         fixture.inst(
                             D::RuntimeCall {
                                 runtime: rue_air::RuntimeCallKind::PanicNoMessage,
-                                args: Arc::from([SemanticBodyCallArg {
-                                    value: site,
-                                    mode: AirArgMode::Borrow,
-                                }]),
+                                args: Arc::from([
+                                    SemanticBodyCallArg {
+                                        value: file,
+                                        mode: AirArgMode::Normal,
+                                    },
+                                    SemanticBodyCallArg {
+                                        value: position,
+                                        mode: AirArgMode::Normal,
+                                    },
+                                ]),
                             },
                             ImportTy::Never,
                         )

@@ -69,6 +69,8 @@
 // documentation for readers of this source file.
 #![allow(unused_doc_comments)]
 
+use rue_runtime_abi::FailureReport;
+
 // Hosted archives use the vendored no_std libc bindings for pthreads and the
 // Linux loader handoff. Freestanding archives intentionally do not carry this
 // dependency or any libc-shaped imports.
@@ -117,8 +119,6 @@ use aarch64_macos as platform;
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 use aarch64_linux as platform;
-
-use rue_runtime_abi::{FailureReport, FailureSite};
 
 // Compile error for unsupported platforms
 #[cfg(not(any(
