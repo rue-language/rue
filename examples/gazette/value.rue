@@ -42,7 +42,7 @@ pub struct Entry { key: u64, value: u64 }
 // A parse or render failure, carried rather than thrown: Rue has no exceptions,
 // and a library that stopped at the first bad construct would hide the rest of
 // a document's problems from the person fixing it.
-pub struct Diag { code: u64, line: u64, detail: u64, subject: u64 }
+pub struct Diag { code: u64, line: u64, detail: u64, subject: u64, source: u64 }
 
 pub fn E_FRONT_MATTER() -> u64 { 1 }
 pub fn E_MARKDOWN() -> u64 { 2 }
@@ -61,7 +61,7 @@ pub const U64s = std.arraybuf.ArrayBuf(u64);
 
 pub fn empty_value() -> Value { Value { tag: V_NULL(), num: 0, start: 0, count: 0 } }
 pub fn empty_entry() -> Entry { Entry { key: NONE(), value: NONE() } }
-pub fn empty_diag() -> Diag { Diag { code: 0, line: 0, detail: NONE(), subject: NONE() } }
+pub fn empty_diag() -> Diag { Diag { code: 0, line: 0, detail: NONE(), subject: NONE(), source: NONE() } }
 
 pub struct Arena {
     strings: pool.Pool,
@@ -73,6 +73,11 @@ pub struct Arena {
     // constants cost no allocation and compare by index.
     null_index: u64,
     empty_string: u64,
+    // The source path active while a parser or evaluator reports a diagnostic.
+    // Keeping it in the shared arena means front matter, Markdown, and the
+    // template engine all attach the same identity without parallel error
+    // channels.
+    source: u64,
 
     fn new() -> Self {
         let mut a = Self {
@@ -83,6 +88,7 @@ pub struct Arena {
             diags: Diags.new(),
             null_index: 0,
             empty_string: 0,
+            source: NONE(),
         };
         a.values.push(Value { tag: V_NULL(), num: 0, start: 0, count: 0 });
         a.values.push(Value { tag: V_BOOL(), num: 0, start: 0, count: 0 });
@@ -261,9 +267,11 @@ pub struct Arena {
         va.num == vb.num
     }
 
+    fn set_source(inout self, source: u64) { self.source = source; }
+
     fn error(inout self, code: u64, line: u64, detail: StrBuf, subject: u64) {
         let detail_id = self.strings.intern(borrow detail);
-        self.diags.push(Diag { code: code, line: line, detail: detail_id, subject: subject });
+        self.diags.push(Diag { code: code, line: line, detail: detail_id, subject: subject, source: self.source });
     }
 
     fn error_count(borrow self) -> u64 { self.diags.len() }
@@ -283,6 +291,11 @@ pub struct Arena {
                 out.push_str(" (");
                 self.strings.append(d.subject, inout out);
                 out.push_str(")");
+            }
+            if d.source != NONE() {
+                out.push_str(" [");
+                self.strings.append(d.source, inout out);
+                out.push_str("]");
             }
             out.push_str("\n");
             i += 1;

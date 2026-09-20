@@ -313,9 +313,17 @@ def corpus_rules() -> peer_ports.CorpusRules:
 #   sidebar comments now document the production/benchmark distinction; their
 #   hashed bytes moved, so GAZETTE_PORT_REVISION advances to 4. Peer ports
 #   and fixture assembly are unchanged.
+#
+#   RUE-2296. Production templates consume rendered-body metadata for contents
+#   navigation and page descriptions, add canonical/social tags, and share a
+#   search widget across the documentation. The benchmark retains its declared
+#   rendering subset: content metadata and search are disabled, and navigation
+#   and head markup remain the versioned port rather than these production
+#   additions. No port follows, no port bytes change, and neither port revision
+#   advances. Native validation is also opt-in and outside the timed workload.
 PRODUCTION_TEMPLATE_ROOT = "website/templates"
 PRODUCTION_TEMPLATE_DIGEST = (
-    "c4f31c40d13b87fbc2d08aec9237bf995e4fdd4f66f209dcca0f800e9395b751"
+    "45846821ce8211e63863027e4b339a3f9a847b3c42ebf5d7ebc8d2676c200f7b"
 )
 
 # Pages Zola emits no rendered body for, so `body` mode has nothing to compare

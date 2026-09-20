@@ -4,7 +4,25 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}{{ config.title }}{% endblock %}</title>
-    <meta name="description" content="{{ config.description }}">
+    {% set document = page | default(value=section) %}
+    {% set document_title = document.title | default(value=config.title) %}
+    {% set document_url = current_url | default(value=document.permalink) | default(value=get_url(path='/')) %}
+    {% set document_description = document.description | default(value=document.plain_text) | default(value=config.description) | truncate(length=180) %}
+    {% set document_image = document.extra.social_image | default(value=config.extra.social_image) | default(value='brand/rue-avatar-1024.png') %}
+    <meta name="description" content="{{ document_description }}">
+    <link rel="canonical" href="{{ document_url }}">
+    <meta property="og:site_name" content="{{ config.title }}">
+    <meta property="og:title" content="{{ document_title }}">
+    <meta property="og:description" content="{{ document_description }}">
+    <meta property="og:url" content="{{ document_url }}">
+    <meta property="og:type" content="{% if page.date %}article{% else %}website{% endif %}">
+    <meta property="og:image" content="{{ get_url(path=document_image) }}">
+    <meta property="og:image:alt" content="{{ document.extra.social_image_alt | default(value=config.extra.social_image_alt) | default(value='Rue — a language experiment') }}">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="{{ document_title }}">
+    <meta name="twitter:description" content="{{ document_description }}">
+    <meta name="twitter:image" content="{{ get_url(path=document_image) }}">
+    {% if page.date %}<meta property="article:published_time" content="{{ page.date }}">{% endif %}
     <link rel="stylesheet" href="{{ get_url(path='style.css') }}">
     <link rel="icon" href="{{ get_url(path='favicon.svg') }}" type="image/svg+xml">
     <link rel="apple-touch-icon" href="{{ get_url(path='brand/apple-touch-icon.png') }}">
@@ -168,3 +186,28 @@
     <script src="{{ get_url(path='search.js') }}"></script>
 </body>
 </html>
+
+{% macro page_toc(headings) %}
+{% if headings %}
+<nav class="page-toc" aria-label="On this page">
+    <details open>
+        <summary>On this page</summary>
+        <ol>
+            {% for heading in headings %}
+            <li data-level="{{ heading.level }}"><a href="{{ heading.permalink }}">{{ heading.title }}</a></li>
+            {% endfor %}
+        </ol>
+    </details>
+</nav>
+{% endif %}
+{% endmacro %}
+
+{% macro search_box() %}
+<div class="spec-search">
+    <div class="spec-search-input-wrapper">
+        <input type="search" id="spec-search-input" placeholder="Search documentation…" aria-label="Search documentation" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="spec-search-results" autocomplete="off">
+        <kbd class="spec-search-shortcut"><span class="spec-search-shortcut-mod"></span>K</kbd>
+    </div>
+    <div id="spec-search-results" class="spec-search-results" role="listbox" aria-label="Search results"></div>
+</div>
+{% endmacro %}

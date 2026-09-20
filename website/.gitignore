@@ -8,3 +8,6 @@ static/performance-data.json
 
 # Atomic Gazette output staging.
 .public.*/
+.preview/
+.preview-stage-*/
+.preview-old-*/

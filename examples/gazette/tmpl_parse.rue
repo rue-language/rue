@@ -895,7 +895,7 @@ fn parse_macro(
     let body = parse_body(inout eng, borrow src, borrow chunks, inout cur, name);
     expect_terminator(inout eng, borrow chunks, inout cur, ast.KW_ENDMACRO(), c.line, name);
     eng.pending_macros.push(ast.MacroDef {
-        owner: NONE(), name: macro_name, params: params, body: body,
+        owner: NONE(), name: macro_name, params: params, body: body, line: c.line,
     });
     NONE()
 }
@@ -904,6 +904,7 @@ fn parse_macro(
 // Returns the template index.
 pub fn parse_template(inout eng: ast.Engine, name: StrBuf, borrow src: StrBuf) -> u64 {
     let name_id = eng.arena.strings.intern(borrow name);
+    let source = if eng.current_source() == NONE() { name_id } else { eng.current_source() };
     let chunks = lex(inout eng, borrow src, name_id);
 
     // `{% extends %}` must be read before the body so inheritance is known even
@@ -935,7 +936,7 @@ pub fn parse_template(inout eng: ast.Engine, name: StrBuf, borrow src: StrBuf) -
 
     let index = eng.templates.len();
     eng.templates.push(ast.Template {
-        name: name_id, body: body, base: base, node_start: node_start, node_end: node_end,
+        name: name_id, source: source, body: body, base: base, node_start: node_start, node_end: node_end,
     });
 
     // Every `{% block %}` in the template — including ones nested inside other
@@ -955,7 +956,7 @@ pub fn parse_template(inout eng: ast.Engine, name: StrBuf, borrow src: StrBuf) -
     while m < eng.pending_macros.len() {
         let pending = eng.pending_macros.get_or(m, ast.empty_macrodef());
         eng.macros.push(ast.MacroDef {
-            owner: index, name: pending.name, params: pending.params, body: pending.body,
+            owner: index, name: pending.name, params: pending.params, body: pending.body, line: pending.line,
         });
         m += 1;
     }

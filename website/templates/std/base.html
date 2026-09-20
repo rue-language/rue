@@ -10,6 +10,7 @@
             <div class="spec-sidebar-header">
                 <a href="{{ get_url(path='std') }}" class="spec-title">Standard Library</a>
             </div>
+            {{ self::search_box() }}
             <nav class="spec-nav">
                 {% set std_section = get_section(path="std/_index.md") %}
                 {% set current = page.permalink | default(value=section.permalink) | default(value="") %}
@@ -20,6 +21,7 @@
 
     {# Main content #}
     <div class="spec-main">
+        {{ self::page_toc(headings=page.toc | default(value=section.toc)) }}
         <article class="spec-content std-content">
             {% block std_content %}{% endblock %}
         </article>

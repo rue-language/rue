@@ -1113,6 +1113,13 @@ rue_sh_test(
     args = ["$(location //examples:gazette)"],
 )
 
+rue_tool_test(
+    name = "website-preview-tool-tests",
+    test = "scripts/test-serve-website.py",
+    resources = ["scripts/serve-website.py"],
+    gatelib = False,
+)
+
 # RUE-1194: the §11 tooltip needs a commit's subject and its distance from the
 # previous measurement, neither of which a run object carries. The ordinal
 # follows trunk's first parents, so these tests pin the one property that makes

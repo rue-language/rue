@@ -2,10 +2,33 @@
 set -euo pipefail
 
 # Build the Rue website
-# Usage: ./build.sh [serve]
+# Usage: ./build.sh [serve [--port PORT]]
 
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
+PREPARE=true
+BASE_URL=""
+SITE_OUTPUT="$ROOT/website/public"
+case "${1:-}" in
+    serve)
+        shift
+        exec python3 "$ROOT/scripts/serve-website.py" "$@"
+        ;;
+    --preview-build|--preview-render)
+        # The preview host owns these fresh output directories and promotes a
+        # successful build while holding its HTTP reader lock.
+        if [[ "$#" != 3 ]]; then exit 2; fi
+        if [[ "$1" == --preview-render ]]; then PREPARE=false; fi
+        BASE_URL="$2"
+        SITE_OUTPUT="$3"
+        ;;
+    "") ;;
+    *) echo "usage: website/build.sh [serve [--port PORT]]" >&2; exit 2 ;;
+esac
+
+# Content and template edits reuse the repository-derived inputs. The preview
+# host requests preparation again whenever their source inputs change.
+if $PREPARE; then
 SPEC_ROUTE_ROOT="$(tr -d '\r\n' < website/spec-route-root.txt)"
 SPEC_BUILD_OUTPUT=""
 if ! SPEC_BUILD_OUTPUT="$("$ROOT/buck2" build //crates/rue-spec:rue-spec --show-simple-output)"; then
@@ -139,6 +162,7 @@ echo "Extracting source excerpts..."
 python3 "$ROOT/scripts/extract-source-excerpts.py" \
     --repo "$ROOT" \
     --out "$ROOT/website/source-excerpts.json"
+fi
 
 # Compile the same maintained Rue program exercised by the CLI and benchmark
 # suites. The build job has no Zola rendering step.
@@ -164,17 +188,12 @@ cd website
 GAZETTE_OUTPUT="$(mktemp -d "$ROOT/website/.public.XXXXXX")"
 trap 'rm -rf "$GAZETTE_OUTPUT"' EXIT
 echo "Building website with Gazette..."
-if [[ "${1:-}" == "serve" ]]; then
-    "$GAZETTE_BIN" build "$ROOT/website" -o "$GAZETTE_OUTPUT" --base-url http://127.0.0.1:1111
+if [[ -n "$BASE_URL" ]]; then
+    "$GAZETTE_BIN" build "$ROOT/website" -o "$GAZETTE_OUTPUT" --base-url "$BASE_URL" --check
 else
-    "$GAZETTE_BIN" build "$ROOT/website" -o "$GAZETTE_OUTPUT"
+    "$GAZETTE_BIN" build "$ROOT/website" -o "$GAZETTE_OUTPUT" --check
 fi
-rm -rf "$ROOT/website/public"
-mv "$GAZETTE_OUTPUT" "$ROOT/website/public"
+rm -rf "$SITE_OUTPUT"
+mv "$GAZETTE_OUTPUT" "$SITE_OUTPUT"
 trap - EXIT
-echo "Done! Output in website/public/"
-
-if [[ "${1:-}" == "serve" ]]; then
-    echo "Serving at http://127.0.0.1:1111 (rebuild after source changes)"
-    python3 -m http.server 1111 --bind 127.0.0.1 --directory "$ROOT/website/public"
-fi
+echo "Done! Output in $SITE_OUTPUT/"

@@ -10,6 +10,7 @@
             <div class="spec-sidebar-header">
                 <a href="{{ get_url(path='tutorial') }}" class="spec-title">Learn Rue</a>
             </div>
+            {{ self::search_box() }}
             <nav class="spec-nav">
                 {% set tutorial_section = get_section(path="tutorial/_index.md") %}
                 {% set current = page.permalink | default(value=section.permalink) | default(value="") %}
@@ -20,6 +21,7 @@
 
     {# Main content #}
     <div class="spec-main">
+        {{ self::page_toc(headings=page.toc | default(value=section.toc)) }}
         <article class="spec-content tutorial-content">
             {% block tutorial_content %}{% endblock %}
         </article>
