@@ -305,4 +305,29 @@ mod tests {
         // SAFETY: null is explicitly accepted regardless of layout.
         unsafe { free(ptr::null_mut(), 0, 0) };
     }
+
+    #[cfg(rue_hosted_threads)]
+    #[test]
+    fn hosted_heap_allocations_can_cross_thread_boundaries() {
+        let parent_pointer = alloc(128, 8);
+        assert!(!parent_pointer.is_null());
+        let parent_address = parent_pointer as usize;
+        let parent_free = std::thread::spawn(move || {
+            // SAFETY: the parent transferred this live allocation and exact
+            // layout to this worker, which frees it exactly once.
+            unsafe { free(parent_address as *mut u8, 128, 8) };
+        });
+        parent_free.join().expect("cross-thread free panicked");
+
+        let child = std::thread::spawn(|| {
+            let pointer = alloc(256, 8);
+            assert!(!pointer.is_null());
+            unsafe { pointer.write(0x5a) };
+            pointer as usize
+        });
+        let child_address = child.join().expect("cross-thread allocation panicked");
+        // SAFETY: the worker transferred ownership and the exact layout back
+        // to this thread, which frees it exactly once.
+        unsafe { free(child_address as *mut u8, 256, 8) };
+    }
 }

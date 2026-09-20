@@ -18,6 +18,17 @@ N_PEXT = 0x10
 CHUNKED_SYMBOLS = ("memcpy", "memmove", "memset", "memcmp", "bcmp", "__rue_str_eq")
 RESERVED_SYMBOLS = ("memcpy", "memmove", "memset", "memcmp", "bcmp")
 FLOAT_FORMAT_SYMBOL = "__rue_to_string_float"
+# Hosted startup initializes the process-wide parked stdin mutex before
+# generated main runs, so these are the complete runtime-owned pthread imports
+# for the hosted archives. Freestanding archives retain the empty import set.
+HOSTED_PTHREAD_IMPORTS = (
+    "pthread_mutex_init",
+    "pthread_mutex_lock",
+    "pthread_mutex_unlock",
+    "pthread_mutexattr_destroy",
+    "pthread_mutexattr_init",
+    "pthread_mutexattr_settype",
+)
 ELF_SHT_RELA = 4
 ELF_SHT_REL = 9
 ELF_SHT_SYMTAB = 2
@@ -1023,15 +1034,20 @@ def main():
         Path(os.environ["RUNTIME_HOSTED_X86_64_LINUX"]),
         "elf",
         62,
-        required_undefined=("__libc_start_main",),
+        required_undefined=("__libc_start_main", *HOSTED_PTHREAD_IMPORTS),
     )
     validate_archive(
         Path(os.environ["RUNTIME_HOSTED_AARCH64_LINUX"]),
         "elf",
         183,
-        required_undefined=("__libc_start_main",),
+        required_undefined=("__libc_start_main", *HOSTED_PTHREAD_IMPORTS),
     )
-    validate_archive(Path(os.environ["RUNTIME_HOSTED_AARCH64_MACOS"]), "macho", 0x0100000C)
+    validate_archive(
+        Path(os.environ["RUNTIME_HOSTED_AARCH64_MACOS"]),
+        "macho",
+        0x0100000C,
+        required_undefined=HOSTED_PTHREAD_IMPORTS,
+    )
 
 
 if __name__ == "__main__":

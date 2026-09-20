@@ -7,9 +7,11 @@
 //! owned `StrBuf` copies on top of them.
 //!
 //! The vectors the loader supplies live above the initial stack and remain
-//! valid for the whole process, so storing the raw pointers is sound. Reads
-//! happen only after `capture` runs and Rue has no threads yet, so `Relaxed`
-//! ordering is sufficient; the atomics exist purely to avoid `static mut`.
+//! valid for the whole process, so storing the raw pointers is sound. Hosted
+//! startup publishes the captured vectors before generated `main` can create
+//! a worker, so a worker's first reads observe the immutable pointers and
+//! counts. `Relaxed` ordering is sufficient after that startup handoff; the
+//! atomics exist purely to avoid `static mut`.
 
 use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
@@ -181,6 +183,8 @@ pub fn __rue_test_normalize_process() {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use super::*;
 
     // A single test drives every accessor: the capture state is process-global,
@@ -221,6 +225,27 @@ mod tests {
             let ptr = __rue_env_ptr(0);
             assert!(!ptr.is_null());
             assert_eq!(core::slice::from_raw_parts(ptr, 19), b"RUE_ENV_TEST=marker");
+        }
+
+        #[cfg(rue_hosted_threads)]
+        {
+            let worker = std::thread::spawn(|| {
+                assert_eq!(__rue_arg_count(), 2);
+                assert_eq!(__rue_arg_len(1), 5);
+                assert_eq!(__rue_env_count(), 2);
+                // SAFETY: capture published the terminated vectors before
+                // this worker was created, and the vectors remain immutable.
+                unsafe {
+                    assert_eq!(core::slice::from_raw_parts(__rue_arg_ptr(1), 5), b"hello");
+                    assert_eq!(
+                        core::slice::from_raw_parts(__rue_env_ptr(0), 19),
+                        b"RUE_ENV_TEST=marker"
+                    );
+                }
+            });
+            worker
+                .join()
+                .expect("worker process inventory read panicked");
         }
         assert!(__rue_env_ptr(2).is_null());
         assert_eq!(__rue_env_len(2), 0);

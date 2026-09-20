@@ -409,6 +409,10 @@ const SYS_SIGACTION: u64 = 46;
 const SYS_SIGALTSTACK: u64 = 53;
 /// Segmentation-fault signal number (same value as Linux).
 const SIGSEGV: u64 = 11;
+/// Bus-error signal. Apple Silicon reports stack guard-page faults as SIGBUS
+/// on some pthread stack layouts, so hosted disposition covers both signals.
+#[cfg(rue_hosted_threads)]
+const SIGBUS: u64 = 10;
 /// Run the handler on the alternate signal stack. Darwin's value (0x0001)
 /// differs from Linux's (0x0800_0000).
 const SA_ONSTACK: i32 = 0x0001;
@@ -427,6 +431,9 @@ const RLIMIT_STACK: u64 = 3;
 
 /// Darwin's `RLIM_INFINITY`, which is `(1 << 63) - 1` rather than Linux's `~0`.
 const RLIM_INFINITY: u64 = (1 << 63) - 1;
+
+#[cfg(rue_hosted_threads)]
+const SYS_THREAD_SELFID: u64 = 372;
 
 // Darwin's `sigaction(2)` (SYS_sigaction = 46) takes a `struct __sigaction`
 // that, unlike Linux, carries a CALLER-SUPPLIED signal trampoline
@@ -562,6 +569,49 @@ pub fn stack_limit() -> Option<usize> {
     usize::try_from(limit.rlim_cur).ok()
 }
 
+#[cfg(rue_hosted_threads)]
+/// Return the current kernel thread identity without entering libc.
+pub fn thread_id() -> u64 {
+    let result: u64;
+    let err_flag: u64;
+    unsafe {
+        asm!(
+            "svc #0x80",
+            "cset {err}, cs",
+            inlateout("x16") SYS_THREAD_SELFID => _,
+            lateout("x0") result,
+            err = out(reg) err_flag,
+            out("x17") _,
+        );
+    }
+    if err_flag != 0 { 0 } else { result }
+}
+
+#[cfg(rue_hosted_threads)]
+/// Query the exact bounds of the current pthread's stack before user code.
+pub fn worker_stack_bounds() -> Result<(usize, usize), i32> {
+    let thread = unsafe { libc::pthread_self() };
+    let high = unsafe { libc::pthread_get_stackaddr_np(thread) } as usize;
+    let size = unsafe { libc::pthread_get_stacksize_np(thread) };
+    // `pthread_get_stackaddr_np`/`pthread_get_stacksize_np` describe the
+    // usable stack and omit the default pthread guard page. Keep the queried
+    // VM page below the usable range so a fault in that guard is classified as
+    // overflow. RUE-2287 must carry a custom pthread attribute's guard size if
+    // it stops using the default attributes.
+    let stack_guard = unsafe { libc::vm_page_size as usize };
+    if stack_guard == 0 {
+        return Err(libc::ERANGE);
+    }
+    let low = high
+        .checked_sub(size)
+        .and_then(|low| low.checked_sub(stack_guard))
+        .ok_or(libc::ERANGE)?;
+    if size == 0 || low >= high {
+        return Err(libc::ERANGE);
+    }
+    Ok((low, high))
+}
+
 /// Register `nss` as the alternate signal stack (`sigaltstack(2)`).
 ///
 /// # Safety
@@ -584,6 +634,23 @@ unsafe fn sigaltstack(nss: *const DarwinStackT) -> i64 {
         );
     }
     if err_flag != 0 { -result } else { result }
+}
+
+fn alt_stack_descriptor(pointer: *mut u8, size: usize) -> DarwinStackT {
+    DarwinStackT {
+        ss_sp: pointer,
+        ss_size: size,
+        ss_flags: 0,
+    }
+}
+
+fn sigaction_descriptor(handler: crate::fault::SegvHandler) -> DarwinSigaction {
+    DarwinSigaction {
+        sa_handler: handler as usize,
+        sa_tramp: rue_darwin_sigtramp as usize,
+        sa_mask: 0,
+        sa_flags: SA_ONSTACK | SA_SIGINFO,
+    }
 }
 
 /// Install `nsa` as the disposition for signal `sig` (`sigaction(2)`).
@@ -633,6 +700,7 @@ unsafe fn sigaction_syscall(sig: u64, nsa: *const DarwinSigaction) -> i64 {
 /// (LDR from the GOT slot -> ADD of the symbol address), so this reference
 /// links; behavioral verification is CI's macOS leg running the
 /// `stack_overflow.toml` CLI case.
+#[cfg(not(rue_hosted_threads))]
 pub fn install_segv_handler(handler: crate::fault::SegvHandler) {
     const ALT_STACK_SIZE: usize = 64 * 1024;
 
@@ -641,25 +709,92 @@ pub fn install_segv_handler(handler: crate::fault::SegvHandler) {
         return;
     }
 
-    let ss = DarwinStackT {
-        ss_sp: stack,
-        ss_size: ALT_STACK_SIZE,
-        ss_flags: 0,
-    };
+    let ss = alt_stack_descriptor(stack, ALT_STACK_SIZE);
     // SAFETY: `ss` describes the region just mmap'd, live for the process.
     if unsafe { sigaltstack(&ss) } < 0 {
         return;
     }
 
-    let act = DarwinSigaction {
-        sa_handler: handler as usize,
-        sa_tramp: rue_darwin_sigtramp as usize,
-        sa_mask: 0,
-        sa_flags: SA_ONSTACK | SA_SIGINFO,
-    };
+    let act = sigaction_descriptor(handler);
     // SAFETY: `act` is a valid `__sigaction` with a real trampoline; SIGSEGV
     // is a valid signal number.
     let _ = unsafe { sigaction_syscall(SIGSEGV, &act) };
+}
+
+#[cfg(rue_hosted_threads)]
+const WORKER_ALT_STACK_SIZE: usize = 64 * 1024;
+
+#[cfg(rue_hosted_threads)]
+pub fn allocate_thread_alt_stack() -> Result<crate::fault::AltSignalStack, i32> {
+    let pointer = mmap(WORKER_ALT_STACK_SIZE);
+    if pointer.is_null() {
+        return Err(libc::ENOMEM);
+    }
+    // SAFETY: mmap returned this live private mapping and ownership is handed
+    // to the AltSignalStack until the post-join destroy call.
+    Ok(unsafe { crate::fault::AltSignalStack::from_raw(pointer, WORKER_ALT_STACK_SIZE) })
+}
+
+#[cfg(rue_hosted_threads)]
+/// Install a dedicated alternate stack on the current pthread.
+///
+/// # Safety
+///
+/// `stack` must be dedicated to this pthread, remain mapped until it returns
+/// and is joined, and not be installed concurrently by another pthread.
+pub unsafe fn register_thread_alt_stack(stack: &crate::fault::AltSignalStack) -> Result<(), i32> {
+    let (pointer, size) = stack.raw_parts();
+    let descriptor = alt_stack_descriptor(pointer, size);
+    let result = unsafe { sigaltstack(&descriptor) };
+    if result < 0 {
+        Err((-result) as i32)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(rue_hosted_threads)]
+pub unsafe fn destroy_thread_alt_stack(stack: crate::fault::AltSignalStack) -> Result<(), i32> {
+    let (pointer, size) = stack.raw_parts();
+    let result = munmap(pointer, size);
+    if result < 0 {
+        Err((-result) as i32)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(rue_hosted_threads)]
+#[cfg_attr(test, allow(dead_code))]
+pub fn install_main_alt_stack() -> Result<(), i32> {
+    let stack = allocate_thread_alt_stack()?;
+    // SAFETY: this mapping is dedicated to the current pthread and remains
+    // mapped for the process lifetime after successful registration.
+    if let Err(error) = unsafe { register_thread_alt_stack(&stack) } {
+        // SAFETY: this stack was freshly mapped and has not been shared.
+        unsafe { destroy_thread_alt_stack(stack) }?;
+        return Err(error);
+    }
+    core::mem::forget(stack);
+    Ok(())
+}
+
+#[cfg(rue_hosted_threads)]
+#[cfg_attr(test, allow(dead_code))]
+pub fn install_segv_disposition(handler: crate::fault::SegvHandler) -> Result<(), i32> {
+    let act = sigaction_descriptor(handler);
+    for signal in [SIGSEGV, SIGBUS] {
+        let result = unsafe { sigaction_syscall(signal, &act) };
+        if result < 0 {
+            return Err((-result) as i32);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(rue_hosted_threads)]
+pub fn install_segv_handler(handler: crate::fault::SegvHandler) {
+    let _ = install_main_alt_stack().and_then(|()| install_segv_disposition(handler));
 }
 
 /// Exit the process with the given status code.

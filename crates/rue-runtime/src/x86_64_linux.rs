@@ -522,6 +522,9 @@ const SYS_PRLIMIT64: i64 = 302;
 /// `RLIMIT_STACK` resource number (`include/uapi/asm-generic/resource.h`).
 const RLIMIT_STACK: i64 = 3;
 
+#[cfg(rue_hosted_threads)]
+const SYS_GETTID: i64 = 186;
+
 /// `struct rlimit64`: the soft limit, then the hard limit.
 #[repr(C)]
 struct Rlimit64 {
@@ -562,6 +565,54 @@ pub fn stack_limit() -> Option<usize> {
     usize::try_from(limit.rlim_cur).ok()
 }
 
+#[cfg(rue_hosted_threads)]
+/// Return the current kernel thread identity without entering libc.
+pub fn thread_id() -> u64 {
+    let result: i64;
+    unsafe {
+        asm!(
+            "syscall",
+            in("rax") SYS_GETTID,
+            lateout("rax") result,
+            out("rcx") _,
+            out("r11") _,
+        );
+    }
+    u64::try_from(result).unwrap_or(0)
+}
+
+#[cfg(rue_hosted_threads)]
+/// Query the exact bounds of the current pthread's stack before user code.
+pub fn worker_stack_bounds() -> Result<(usize, usize), i32> {
+    let mut attributes = core::mem::MaybeUninit::<libc::pthread_attr_t>::uninit();
+    let result = unsafe { libc::pthread_getattr_np(libc::pthread_self(), attributes.as_mut_ptr()) };
+    if result != 0 {
+        return Err(result);
+    }
+    let mut address = core::ptr::null_mut();
+    let mut size = 0usize;
+    let mut guard = 0usize;
+    let stack_result =
+        unsafe { libc::pthread_attr_getstack(attributes.as_ptr(), &mut address, &mut size) };
+    let guard_result = unsafe { libc::pthread_attr_getguardsize(attributes.as_ptr(), &mut guard) };
+    let destroy_result = unsafe { libc::pthread_attr_destroy(attributes.as_mut_ptr()) };
+    if stack_result != 0 {
+        return Err(stack_result);
+    }
+    if guard_result != 0 {
+        return Err(guard_result);
+    }
+    if destroy_result != 0 {
+        return Err(destroy_result);
+    }
+    let low = (address as usize).checked_sub(guard).ok_or(libc::ERANGE)?;
+    let high = (address as usize).checked_add(size).ok_or(libc::ERANGE)?;
+    if size == 0 || low >= high {
+        return Err(libc::ERANGE);
+    }
+    Ok((low, high))
+}
+
 /// Register the alternate signal stack with `sigaltstack(2)`.
 ///
 /// Returns 0 on success or a negative errno on failure.
@@ -587,6 +638,23 @@ unsafe fn sigaltstack(ss: *const StackT) -> i64 {
         );
     }
     result
+}
+
+fn alt_stack_descriptor(pointer: *mut u8, size: usize) -> StackT {
+    StackT {
+        ss_sp: pointer,
+        ss_flags: 0,
+        ss_size: size,
+    }
+}
+
+fn sigaction_descriptor(handler: crate::fault::SegvHandler) -> KernelSigaction {
+    KernelSigaction {
+        sa_handler: handler as usize,
+        sa_flags: SA_ONSTACK | SA_RESTORER | SA_SIGINFO,
+        sa_restorer: crate::__rue_rt_sigreturn as usize,
+        sa_mask: 0,
+    }
 }
 
 /// Install a signal handler with `rt_sigaction(2)`.
@@ -623,7 +691,9 @@ unsafe fn rt_sigaction(sig: i32, act: *const KernelSigaction) -> i64 {
 /// without installing anything and the process keeps the default SIGSEGV
 /// disposition.
 ///
-/// `handler` never returns, so no `sa_restorer` is supplied.
+/// The raw x86-64 Linux action supplies Rue's explicit `SA_RESTORER` entry
+/// point even though this handler exits rather than returning normally.
+#[cfg(not(rue_hosted_threads))]
 pub fn install_segv_handler(handler: crate::fault::SegvHandler) {
     /// Size of the alternate signal stack (16 KiB — ample for the tiny handler).
     const ALT_STACK_SIZE: usize = 16 * 1024;
@@ -633,25 +703,91 @@ pub fn install_segv_handler(handler: crate::fault::SegvHandler) {
         return;
     }
 
-    let ss = StackT {
-        ss_sp: stack,
-        ss_flags: 0,
-        ss_size: ALT_STACK_SIZE,
-    };
+    let ss = alt_stack_descriptor(stack, ALT_STACK_SIZE);
     // SAFETY: `ss` describes the region just mmap'd, which stays mapped for the
     // remaining life of the process.
     if unsafe { sigaltstack(&ss) } < 0 {
         return;
     }
 
-    let act = KernelSigaction {
-        sa_handler: handler as usize,
-        sa_flags: SA_ONSTACK | SA_RESTORER | SA_SIGINFO,
-        sa_restorer: crate::__rue_rt_sigreturn as usize,
-        sa_mask: 0,
-    };
+    let act = sigaction_descriptor(handler);
     // SAFETY: `act` is a valid KernelSigaction; SIGSEGV is a valid signal.
     let _ = unsafe { rt_sigaction(SIGSEGV, &act) };
+}
+
+#[cfg(rue_hosted_threads)]
+const WORKER_ALT_STACK_SIZE: usize = 16 * 1024;
+
+#[cfg(rue_hosted_threads)]
+pub fn allocate_thread_alt_stack() -> Result<crate::fault::AltSignalStack, i32> {
+    let pointer = mmap(WORKER_ALT_STACK_SIZE);
+    if pointer.is_null() {
+        return Err(libc::ENOMEM);
+    }
+    // SAFETY: mmap returned this live private mapping and ownership is handed
+    // to the AltSignalStack until the post-join destroy call.
+    Ok(unsafe { crate::fault::AltSignalStack::from_raw(pointer, WORKER_ALT_STACK_SIZE) })
+}
+
+#[cfg(rue_hosted_threads)]
+/// Install a dedicated alternate stack on the current pthread.
+///
+/// # Safety
+///
+/// `stack` must be dedicated to this pthread, remain mapped until it returns
+/// and is joined, and not be installed concurrently by another pthread.
+pub unsafe fn register_thread_alt_stack(stack: &crate::fault::AltSignalStack) -> Result<(), i32> {
+    let (pointer, size) = stack.raw_parts();
+    let descriptor = alt_stack_descriptor(pointer, size);
+    let result = unsafe { sigaltstack(&descriptor) };
+    if result < 0 {
+        Err((-result) as i32)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(rue_hosted_threads)]
+pub unsafe fn destroy_thread_alt_stack(stack: crate::fault::AltSignalStack) -> Result<(), i32> {
+    let (pointer, size) = stack.raw_parts();
+    let result = munmap(pointer, size);
+    if result < 0 {
+        Err((-result) as i32)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(rue_hosted_threads)]
+#[cfg_attr(test, allow(dead_code))]
+pub fn install_main_alt_stack() -> Result<(), i32> {
+    let stack = allocate_thread_alt_stack()?;
+    // SAFETY: this mapping is dedicated to the current pthread and remains
+    // mapped for the process lifetime after successful registration.
+    if let Err(error) = unsafe { register_thread_alt_stack(&stack) } {
+        // SAFETY: this stack was freshly mapped and has not been shared.
+        unsafe { destroy_thread_alt_stack(stack) }?;
+        return Err(error);
+    }
+    core::mem::forget(stack);
+    Ok(())
+}
+
+#[cfg(rue_hosted_threads)]
+#[cfg_attr(test, allow(dead_code))]
+pub fn install_segv_disposition(handler: crate::fault::SegvHandler) -> Result<(), i32> {
+    let act = sigaction_descriptor(handler);
+    let result = unsafe { rt_sigaction(SIGSEGV, &act) };
+    if result < 0 {
+        Err((-result) as i32)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(rue_hosted_threads)]
+pub fn install_segv_handler(handler: crate::fault::SegvHandler) {
+    let _ = install_main_alt_stack().and_then(|()| install_segv_disposition(handler));
 }
 
 /// Exit the process and all of its threads with the given status code.
