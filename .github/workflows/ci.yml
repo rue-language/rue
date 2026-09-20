@@ -417,6 +417,16 @@ jobs:
             echo "no impacted //crates/... targets; this step has nothing to build"
           fi
 
+      - name: Assert broad premerge owns cross-backend coverage
+        # RUE-2299: rue-codegen's x86-64 and AArch64 encoding tests are part of
+        # the target-independent premerge graph. Keep this graph assertion next
+        # to the broad owner so a future label or tier change cannot silently
+        # remove that coverage while adding a second explicit invocation.
+        run: |
+          set -euo pipefail
+          ./buck2 uquery "attrfilter(labels, 'rue_test_tier_premerge', set(//crates/rue-codegen:rue-codegen-test))" \
+            | grep -Fxq 'root//crates/rue-codegen:rue-codegen-test'
+
       # ADR-0069 §2 / RUE-1265. Every other gate compares target lists; this one
       # compares test *contents*, so a target that is a strict superset of
       # another fails here instead of quietly costing a lane 223s (RUE-1262).
@@ -533,12 +543,6 @@ jobs:
         run: >-
           scripts/ci-timed "gazette peers" --
           scripts/gazette-corpus-diff.py peers --samples 2 --no-secondary --scale 2
-
-      - name: Run explicit cross-backend compilation and encoding coverage
-        # Both the x86-64 and AArch64 encoders are host-independent Rust tests.
-        # Keep this named step visible even though the broad suite also reaches
-        # the target, so platform responsibility cannot become implicit.
-        run: scripts/ci-timed "cross-backend codegen" -- ./buck2 test //crates/rue-codegen:rue-codegen-test
 
       # RUE-1258's two performance gates deliberately live in different jobs,
       # because they cost two orders of magnitude apart. This one is decidable

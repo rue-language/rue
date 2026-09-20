@@ -140,6 +140,18 @@ class GateValidatorTests(unittest.TestCase):
             "\n".join(self.validate_text(changed)),
         )
 
+    def test_cross_backend_coverage_stays_owned_by_broad_premerge(self):
+        source = SOURCE.read_text()
+        assertion = (
+            "      - name: Assert broad premerge owns cross-backend coverage\n"
+        )
+        changed = source.replace(assertion, "", 1)
+        self.assertNotEqual(changed, source, "splice anchor no longer matches ci.yml")
+        self.assertIn(
+            "linux-premerge responsibility missing 'Assert broad premerge owns cross-backend coverage'",
+            "\n".join(self.validate_text(changed)),
+        )
+
     def test_staleness_gate_contract_follows_its_job(self):
         source = SOURCE.read_text()
         anchor = "  performance-staleness:\n    runs-on: ubuntu-latest\n"

@@ -127,10 +127,9 @@ exists, not that every `ci-timed` job has its own.
 
 | Owner | Required responsibility |
 | --- | --- |
-| Linux x86-64 | Complete target-independent premerge suite, all CLI shards, specification corpus, scaling matrix, release smoke, reproducibility, lint/metadata gates, Valgrind, and ASan |
+| Linux x86-64 | Complete target-independent premerge suite, including cross-backend compilation and encoding coverage, all CLI shards, specification corpus, scaling matrix, release smoke, reproducibility, lint/metadata gates, Valgrind, and ASan |
 | Linux ARM64 | Native compiler/linker build; compiler, codegen, linker, runtime/archive, runtime ABI, allocator, and target unit tests; every applicable `only_on` spec/CLI case; real ABI, linker, and filesystem CLI programs |
 | macOS ARM64 | The same native responsibilities on Mach-O/macOS, including host-conditional compiler/archive tests, every applicable `only_on` case, native linker/runtime execution, and output publication |
-| Linux cross-backend step | Explicit host-independent x86-64 and AArch64 compilation/encoding unit coverage |
 
 Linux ARM64 and macOS ARM64 do not repeat the specification corpus. Through
 `scripts/run-native-platform-corpus.sh` they register only the `only_on` cases
@@ -144,10 +143,10 @@ developer entry point, which sets neither `RUE_CLI_CASE_TIER` nor
 case was an accidental substring match, while the other 61 ABI-named cases are
 the native responsibility. That is the responsibility matrix working as
 written, and the duplication gate scores it as a declared allowance rather
-than leaving it to this paragraph. Backend encoding logic is still tested
-explicitly for both architectures on Linux, while native ARM64 lanes prove the
-host ABI, object/linker path, runtime archive, syscalls, and platform behavior
-that cross-compilation cannot.
+than leaving it to this paragraph. The Linux premerge suite covers backend
+encoding logic for both architectures, while native ARM64 lanes prove the host
+ABI, object/linker path, runtime archive, syscalls, and platform behavior that
+cross-compilation cannot.
 
 They do not repeat the broad compiler test selection. Platform scope is a
 validated target label (`rue_platform_native`) attached by the shared Buck
