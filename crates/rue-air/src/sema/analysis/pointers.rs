@@ -8,6 +8,44 @@ use super::*;
 use rue_builtins::IntrinsicName;
 
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
+    /// Refuse a pointer intrinsic whose pointee type is, or structurally
+    /// contains, an opaque bounded type parameter (spec 6.8:20).
+    ///
+    /// The skolem standing for a bounded parameter supplies no source-visible
+    /// layout: a body may move, borrow, and drop values of `T` and call its
+    /// requirements, and nothing else. Addressing such a value and walking the
+    /// address hands the body exactly the size and field placement the bound
+    /// does not promise, since `@ptr_to_int(@ptr_offset(p, 1))` is a spelling
+    /// of `@size_of(T)` and that layout query is already refused. The walk is
+    /// the one `@size_of` uses, so an aggregate reaching a skolem is refused
+    /// with it.
+    ///
+    /// The trusted standard library is exempt, like the `@place` bridge it
+    /// uses next door: its generic containers ARE the representation layer,
+    /// and a bounded body reaches their element pointers only through their
+    /// safe API, which yields places and borrows rather than addresses. A
+    /// source program never gets a `ptr T` of its own that way.
+    fn reject_opaque_bounded_address(
+        &mut self,
+        pointee: Type,
+        intrinsic: &str,
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<()> {
+        if !self.type_contains_skolem(pointee)
+            || self.file_module_is_trusted_standard_library(ctx.current_file_id)
+        {
+            return Ok(());
+        }
+        Err(CompileError::new(
+            ErrorKind::OpaqueBoundedAddress {
+                intrinsic: format!("@{intrinsic}"),
+                ty: self.format_type_name(pointee),
+            },
+            span,
+        ))
+    }
+
     fn analyze_sequenced_pointer_operand(
         &mut self,
         air: &mut Air,
@@ -77,6 +115,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ));
             }
         };
+
+        self.reject_opaque_bounded_address(pointee_type, diag, span, ctx)?;
 
         // The result type is the pointee type. Inference modeled @ptr_read's
         // result as a fresh type variable (the pointee is only known here), so
@@ -174,6 +214,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ));
             }
         };
+
+        self.reject_opaque_bounded_address(pointee_type, diag, span, ctx)?;
 
         // Analyze the value argument, propagating the expected pointee type into
         // a bare integer literal so `@ptr_write(p_i64, 99)` unifies the literal
@@ -284,6 +326,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 })),
                 span,
             ));
+        }
+
+        // Offsetting a pointer scales by the pointee's size, so it is a
+        // layout query in disguise when the pointee is opaque (spec 6.8:20).
+        let offset_pointee = match ptr_type.kind() {
+            TypeKind::PtrConst(id) => Some(self.body_type_pool().ptr_const_def(id)),
+            TypeKind::PtrMut(id) => Some(self.body_type_pool().ptr_mut_def(id)),
+            _ => None,
+        };
+        if let Some(pointee) = offset_pointee {
+            self.reject_opaque_bounded_address(pointee, "ptr_offset", span, ctx)?;
         }
 
         // Create the intrinsic call instruction (returns same pointer type)
@@ -931,6 +984,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         let pointee_type = arg_result.ty;
+        let spelling = self.body_interner().resolve(&result_name).to_string();
+        self.reject_opaque_bounded_address(pointee_type, &spelling, span, ctx)?;
         self.restore_move_state_and_cancel(air, arg_result.air_ref, operand_move_state_before, ctx);
 
         // Create the pointer type
