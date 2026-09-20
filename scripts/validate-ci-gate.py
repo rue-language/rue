@@ -456,8 +456,11 @@ def validate(
         "Run complete target-independent premerge suite",
         "RUE_TEST_TIER: premerge",
         "./test.sh",
-        "Run explicit cross-backend compilation and encoding coverage",
-        "//crates/rue-codegen:rue-codegen-test",
+        # RUE-2299: this graph assertion keeps the cross-backend target owned by
+        # the broad premerge suite, so a second explicit invocation cannot hide
+        # a missing full-queue coverage path.
+        "Assert broad premerge owns cross-backend coverage",
+        "attrfilter(labels, 'rue_test_tier_premerge', set(//crates/rue-codegen:rue-codegen-test))",
         # RUE-1258: the pin gate; losing it restores the silence that let the
         # published series freeze for ten days while every job stayed green.
         "check-pins",
