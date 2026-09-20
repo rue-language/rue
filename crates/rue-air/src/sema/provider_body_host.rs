@@ -6439,7 +6439,7 @@ where
     fn transfer_requirements(&self) -> CompileResult<Vec<ProviderTransferRequirement>> {
         self.deferred_requirements
             .iter()
-            .filter(|gate| gate.kind == super::DeferredRequirementKind::RequireTransferable)
+            .filter(|gate| gate.kind == super::DeferredRequirementKind::Transferable)
             .map(|gate| {
                 Ok(ProviderTransferRequirement {
                     ty: self.export_body_type(gate.ty).map_err(|failure| {

@@ -153,9 +153,9 @@ use crate::types::Type;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeferredRequirementKind {
-    RequireDroppable,
-    RequireTransferable,
-    RequireTriviallyDroppable,
+    Droppable,
+    Transferable,
+    TriviallyDroppable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

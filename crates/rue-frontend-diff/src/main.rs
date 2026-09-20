@@ -6,8 +6,8 @@ mod corpus_manifest;
 
 use lasso::ThreadedRodeo;
 use rue_lexer::Lexer;
-use rue_parser::Parser;
 use rue_parser::ast::*;
+use rue_parser::{DirectiveArgValue, Parser};
 use std::collections::BTreeSet;
 use std::env;
 use std::fmt::Write as _;
@@ -33,6 +33,10 @@ const MAX_CAPTURE_BYTES: usize = 16 * 1024 * 1024;
 /// stopped, small enough not to bury a real diagnostic.
 const PROGRESS_INTERVAL: usize = 100;
 const SYNTAX_PROBES: &[(&str, &str)] = &[
+    (
+        "transfer-directives.rue",
+        "@thread_bound struct Local { value: i64 } fn Owner(comptime T: type) -> type { @unchecked_transfer(\"exclusive owned storage\") struct { value: ptr mut T } } fn LocalType() -> type { @thread_bound struct { value: i64 } }",
+    ),
     (
         "interface-requirements.rue",
         "pub interface Items: Parent + other.Base { const Element: type; fn next(inout self) -> Element; fn equals(borrow self, borrow other: Self) -> bool; fn take(self); fn new() -> Self; }",
@@ -103,7 +107,11 @@ impl Shapes<'_> {
             node(
                 "directive",
                 "",
-                list(d.args.iter().map(|_| self.ident())),
+                list(d.args.iter().map(|arg| match arg.value {
+                    DirectiveArgValue::KnownBugText
+                    | DirectiveArgValue::UncheckedTransferReason => leaf("string"),
+                    _ => self.ident(),
+                })),
                 "_".into(),
                 "_".into(),
                 "_".into(),
@@ -273,7 +281,10 @@ impl Shapes<'_> {
                 "_".into(),
             ),
             TypeExpr::AnonymousStruct {
-                fields, methods, ..
+                fields,
+                methods,
+                metadata,
+                ..
             } => {
                 let members = fields
                     .iter()
@@ -292,7 +303,7 @@ impl Shapes<'_> {
                     "anon-struct-type",
                     "",
                     list(members),
-                    "_".into(),
+                    self.directives(&metadata.directives),
                     "_".into(),
                     "_".into(),
                 )
@@ -1595,6 +1606,21 @@ mod tests {
             shape.contains("(directive"),
             "enum directive missing from normalized shape: {shape}"
         );
+    }
+
+    #[test]
+    fn normalization_retains_anonymous_transfer_directives_and_string_arguments() {
+        let plain = rust_shape("fn Local() -> type { struct { value: i64 } }").unwrap();
+        let bound =
+            rust_shape("fn Local() -> type { @thread_bound struct { value: i64 } }").unwrap();
+        let audited = rust_shape(
+            "fn Local() -> type { @unchecked_transfer(\"owned\") struct { value: i64 } }",
+        )
+        .unwrap();
+        assert_ne!(plain, bound);
+        assert_ne!(bound, audited);
+        assert!(bound.contains("(directive"), "{bound}");
+        assert!(audited.contains("(string"), "{audited}");
     }
 
     #[test]
