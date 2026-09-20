@@ -69,9 +69,14 @@ Three properties of the spike shape the decisions below.
   RUE-50 rather than a new architecture; AWS Cedar's
   verification-guided-development practice is the production precedent.
 - **Cheap to build and run.** Core Lean suffices; no Mathlib. A cold build
-  is seconds. The toolchain is user-local via `elan` and never enters the
-  Buck graph or the remote cache (the RUE-2003 lesson about toolchains in
-  the CAS applies).
+  is seconds. The toolchain is a per-platform, SHA-pinned release archive,
+  which is what `elan` downloads and also what the repository's
+  `toolchain_distribution` rule (`toolchains/distribution.bzl`, RUE-2003)
+  already fetches for Rust and Zig. One caveat shapes how it is declared:
+  an unpacked Lean toolchain is about 35,000 files and 2.7 GB, the same
+  many-small-files shape that RUE-2003 found BuildBuddy truncating, at
+  roughly twice the Zig distribution's file count. The rule's CAS opt-out
+  is therefore essential, not optional.
 - **Reviewable in an unusual way.** The kernel checks the proofs. What it
   cannot check is whether a theorem *statement* says what the calculus says,
   whether the fragment boundary is stated honestly, or whether a printer
@@ -86,12 +91,21 @@ across many sessions and several agents.
 
 ## Decision
 
-1. **Adopt the artifact.** `docs/formal/lean/` is the mechanization home:
-   Lean package `RueCore`, toolchain pinned by `lean-toolchain`, built with
-   `lake build`, zero dependencies beyond core Lean. `elan` is a user-local
-   install. Nothing touches the Buck graph, `scripts/rue`, or the remote
-   cache. The spike lands as the seed under RUE-2226 after this ADR is
-   accepted.
+1. **Adopt the artifact, with Buck managing the toolchain.**
+   `docs/formal/lean/` is the mechanization home: Lean package `RueCore`,
+   zero dependencies beyond core Lean, built with `lake build`. The Lean
+   toolchain is a Buck `toolchain_distribution` beside Rust and Zig: a
+   SHA-pinned per-platform archive fetched from its origin and extracted
+   with the CAS upload opt-out, so the tree never enters the remote cache.
+   The build is a Buck target (a genrule running `lake build` against that
+   toolchain, emitting a build stamp and the axioms report) that
+   `scripts/rue` exposes. The `lean-toolchain` file stays as the pin lake
+   and the editor extension read, and a validator asserts the Buck pin
+   matches it so the two cannot drift; `elan` remains an optional
+   developer convenience, never a CI dependency. Until decision 5's gate
+   is met, the target is build-only: it carries no test tier, so no CI
+   lane requests it. The spike lands as the seed under RUE-2226 after this
+   ADR is accepted.
 
 2. **Authority: four views, no precedence.** RUE-305 ratified that the
    prose, the core, and the compiler are three views of one language, and
@@ -129,11 +143,18 @@ across many sessions and several agents.
    full core dynamics for by-value programs (structs, paths, enums, calls,
    loops, drop order, no-double-free; RUE-2237 is the terminal issue) and
    (b) an independent review (decision 7, checkpoint C) confirms the proof
-   is established. The first CI leg is then a scheduled tier in the pattern
-   of `slow` (RUE-2241): `elan` bootstrap, `lake build`, `lean4checker`, an
-   axioms assertion, and the bridge corpus, registered with the
-   scheduled-workflow health check so a silently failing schedule turns
-   required CI red (RUE-1507). Promotion to a merge-queue gate is a separate
+   is established. The mechanism is the test-tier system: Rue's tiers are
+   exhaustive (every test target carries exactly one of `premerge`, `slow`,
+   `stress`, and every tier must be deliberately selected by a CI job), so
+   a Lean *test* target cannot exist without being scheduled somewhere.
+   Before the gate there is no test target, only the build target of
+   decision 1. At the gate, RUE-2241 wraps that target in a test (`lake
+   build`, `lean4checker`, the axioms assertion, the bridge corpus) and
+   picks its tier: `slow`, whose scheduled failures already surface through
+   the scheduled-workflow health check (RUE-1507), or a new tier reserved
+   for experimental work that a scheduled lane runs and the health check
+   exempts. That tier choice is RUE-2241's decision, made when the cost of
+   a red run is known. Promotion to a merge-queue gate is a separate
    decision this ADR names but does not make; it needs a track record from
    the scheduled tier first.
 
@@ -240,9 +261,13 @@ Tracked as milestones of the "Formal core mechanization" Linear project.
   so `check` grows cheaply and `check_sound` follows mechanically; rubric
   step 6 makes "file the gap" an honest exit, so the obligation is tracked
   rather than blocking.
-- A second toolchain in the repository, user-local and undeclared to Buck.
-  Accepted because nothing depends on it until the scheduled tier, and the
-  tier bootstraps it explicitly rather than caching it.
+- A third hermetic toolchain distribution in the Buck graph, and the
+  largest by file count. Because its extracted tree stays out of the CAS,
+  every lane with a fresh `buck-out` whose graph reaches the Lean target
+  fetches and extracts it from the origin. Accepted because only lanes
+  that request the target pay: before the gate none do, and after it only
+  the scheduled tier does. The pin validator is the price of keeping
+  `lean-toolchain` and the Buck archive in agreement.
 - Reviewer capacity. Four checkpoints, each a real review by a maintainer's
   agent fleet. Accepted because the alternative, same-family self-review of
   theorem statements, is the failure mode this ADR exists to avoid.
@@ -260,6 +285,11 @@ Tracked as milestones of the "Formal core mechanization" Linear project.
 - **Merge-queue gate.** Named in decision 5, deliberately not decided. The
   question returns when the scheduled tier has a track record and the
   proof-maintenance cost is measured rather than estimated.
+- **Which tier at the gate.** `slow` reuses existing scheduling and
+  monitoring but lets a red Lean run turn required CI red through the
+  health check; a dedicated experimental tier costs a tier-vocabulary
+  change and a health-check exemption. RUE-2241 decides with the measured
+  fetch and build cost in hand.
 - **Obligation proofs.** Whether to prove the §6.13.5 library obligations
   semantically, and with what logic, is deferred to Phase D's end.
 - **Reviewer rotation.** Decision 7 names Codex because that is the
