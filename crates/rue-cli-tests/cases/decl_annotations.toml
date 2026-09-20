@@ -250,3 +250,96 @@ fn main() -> i32 {
 """ }]
 compile_fail = true
 error_contains = ["undefined variable 'nope'"]
+
+# Semantic local annotation resolution (RUE-2209).
+
+[[case]]
+name = "local_annotation_qualified_primitive_mismatch"
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn main() -> i32 { let y: lib.I64 = "oops"; 0 }
+""" },
+    { path = "lib.rue", source = """
+pub const I64 = i64;
+""" },
+]
+
+[[case]]
+name = "local_annotation_qualified_nominal_mismatch"
+compile_fail = true
+error_contains = ["E0206"]
+files = [
+    { path = "main.rue", source = """
+const a = @import("a.rue");
+const b = @import("b.rue");
+fn main() -> i32 { let x: a.T = a.T { y: 100, x: 7 }; let y: b.T = x; 0 }
+""" },
+    { path = "a.rue", source = """
+pub struct T { y: i32, x: i32 }
+""" },
+    { path = "b.rue", source = """
+pub struct T { x: i32, y: i32 }
+""" },
+]
+
+[[case]]
+name = "local_annotation_qualified_literal_context"
+exit_code = 0
+stdout = "3000000001\n1.5\n3000000000\n"
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn main() -> i32 {
+    let n: lib.I64 = 3000000000 + 1;
+    let f: lib.F32 = 1.5;
+    let a: [lib.I64; 2] = [3000000000, 2];
+    @dbg(n);
+    @dbg(f);
+    @dbg(a[0]);
+    0
+}
+""" },
+    { path = "lib.rue", source = """
+pub const I64 = i64; pub const F32 = f32;
+""" },
+]
+
+[[case]]
+name = "local_annotation_nested_expression_context"
+exit_code = 0
+stdout = "3000000002\n3000000003\n3000000004\n3000000001\n"
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn identity(x: i32) -> i32 { x }
+fn returned() -> i32 {
+    return ({ let x: lib.I64 = 3000000000 + 1; @dbg(x); 0 });
+}
+fn main() -> i32 {
+    let ignored = { let x: lib.I64 = 3000000000 + 2; @dbg(x); 0 };
+    identity({ let x: lib.I64 = 3000000000 + 3; @dbg(x); 0 });
+    if { let x: lib.I64 = 3000000000 + 4; @dbg(x); true } { returned() } else { ignored }
+}
+""" },
+    { path = "lib.rue", source = """
+pub const I64 = i64;
+""" },
+]
+
+[[case]]
+name = "local_annotation_inline_constructor_context"
+exit_code = 0
+stdout = "3000000000\n"
+files = [
+    { path = "main.rue", source = """
+fn Box() -> type { struct { value: i64 } }
+fn main() -> i32 {
+    let value = Box() { value: 3000000000 };
+    @dbg(value.value);
+    0
+}
+""" },
+]

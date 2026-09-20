@@ -2062,9 +2062,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok((discovered, attribution))
     }
 
-    /// In-order walk over statement positions for
-    /// [`precompute_comptime_type_locals`]. Only containers that can hold
-    /// `let` statements are entered; everything else is left alone.
+    /// In-order walk over the current body's expressions for
+    /// [`precompute_comptime_type_locals`], stopping at declaration bodies.
     ///
     /// `frame` is the innermost enclosing block's undo list: each alias
     /// discovered in that block records the name's previous binding there,
@@ -2125,9 +2124,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     attribution.alias_allocations_examined += 1;
                 }
                 let (name, init, annotation) = (*name, *init, *ty);
-                if let Some(annotation) = annotation
-                    && self.type_syntax_names_fixed_string(annotation)
-                {
+                if let Some(annotation) = annotation {
                     // Resolved under the aliases and comptime values in
                     // scope at this statement, exactly as semantic analysis
                     // will resolve it again; an annotation that does not
@@ -2140,12 +2137,23 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             eval_values,
                             span,
                         )
+                        // A callback cannot annotate a local. Leave it to the
+                        // position check in analyze_alloc rather than masking
+                        // its E0214 with an initializer type mismatch.
+                        .filter(|resolved| !resolved.is_function())
                     {
-                        discovered
-                            .fixed_string_annotations
-                            .insert(inst_ref, resolved);
+                        discovered.local_annotations.insert(inst_ref, resolved);
                     }
                 }
+                self.walk_comptime_type_locals(
+                    init,
+                    discovered,
+                    eval_types,
+                    eval_values,
+                    runtime_bindings,
+                    frame,
+                    attribution,
+                )?;
                 if let Some(name) = name {
                     let alias = if initializer_may_evaluate_to_type_with_bindings(
                         self.body_rir_ref(),
@@ -2187,24 +2195,20 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     }
                 }
             }
-            InstData::Branch {
-                then_block,
-                else_block,
-                ..
-            } => {
-                let (then_block, else_block) = (*then_block, *else_block);
-                self.walk_comptime_type_locals(
-                    then_block,
-                    discovered,
-                    eval_types,
-                    eval_values,
-                    runtime_bindings,
-                    frame,
-                    attribution,
-                )?;
-                if let Some(else_block) = else_block {
+            // Each declaration body has its own inference pass and lexical
+            // environment; it must not inherit this body's local annotations.
+            InstData::FnDecl { .. } | InstData::DropFnDecl { .. } => {}
+            _ => {
+                // A block can occur in any expression position, including a
+                // call argument, a return value, or a loop condition. Use the
+                // canonical operand traversal so those annotations participate
+                // before literal types are defaulted by inference.
+                let mut children = Vec::new();
+                self.body_rir_ref()
+                    .child_instructions(inst_ref, &mut children);
+                for child in children {
                     self.walk_comptime_type_locals(
-                        else_block,
+                        child,
                         discovered,
                         eval_types,
                         eval_values,
@@ -2214,69 +2218,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     )?;
                 }
             }
-            InstData::Loop { body, .. } | InstData::InfiniteLoop { body, .. } => {
-                let body = *body;
-                self.walk_comptime_type_locals(
-                    body,
-                    discovered,
-                    eval_types,
-                    eval_values,
-                    runtime_bindings,
-                    frame,
-                    attribution,
-                )?;
-            }
-            InstData::Match { arms, .. } => {
-                let bodies: Vec<InstRef> = self
-                    .body_rir_ref()
-                    .match_arms(arms)
-                    .iter()
-                    .map(|(_, body)| body)
-                    .collect();
-                for body in bodies {
-                    self.walk_comptime_type_locals(
-                        body,
-                        discovered,
-                        eval_types,
-                        eval_values,
-                        runtime_bindings,
-                        frame,
-                        attribution,
-                    )?;
-                }
-            }
-            _ => {}
         }
         Ok(())
-    }
-
-    /// Whether a `let` annotation names the fixed string `Str(N)` at its root
-    /// or through array-element and pointee nesting. The name is reserved for
-    /// the builtin (6.0:3), so the spelling alone identifies it; a `Str(N)`
-    /// inside a user type constructor's arguments is that constructor's to
-    /// evaluate and is not searched.
-    fn type_syntax_names_fixed_string(&self, reference: rue_rir::RirTypeSyntaxRef) -> bool {
-        use rue_rir::RirTypeSyntaxNode;
-
-        let arena = self.body_rir_ref().type_syntax();
-        match arena.node(reference) {
-            Some(RirTypeSyntaxNode::TypeCall { path, .. }) => {
-                let Some([callee]) = arena.words(*path) else {
-                    return false;
-                };
-                arena
-                    .symbol(rue_rir::RirTypeSyntaxSymbol::from_u32(*callee))
-                    .is_some_and(|symbol| self.body_interner().resolve(symbol) == "Str")
-            }
-            Some(RirTypeSyntaxNode::Array { element, .. }) => {
-                self.type_syntax_names_fixed_string(*element)
-            }
-            Some(
-                RirTypeSyntaxNode::PointerConst { pointee }
-                | RirTypeSyntaxNode::PointerMut { pointee },
-            ) => self.type_syntax_names_fixed_string(*pointee),
-            _ => false,
-        }
     }
 
     /// Evaluate a `let` initializer as a compile-time type value, if it is
@@ -2409,9 +2352,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 pub(crate) struct PrecomputedTypeLocals {
     /// Comptime type aliases (`let P = F();`): the aliased concrete type.
     pub(crate) aliases: AHashMap<InstRef, Type>,
-    /// Annotations naming a fixed string `Str(N)` (`let s: Str(8) = ...`,
-    /// `let a: [Str(4); 2] = ...`): the annotation's concrete type.
-    pub(crate) fixed_string_annotations: AHashMap<InstRef, Type>,
+    /// Local annotations resolved in their lexical and specialization context:
+    /// the concrete expected type for the binding's initializer.
+    pub(crate) local_annotations: AHashMap<InstRef, Type>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]

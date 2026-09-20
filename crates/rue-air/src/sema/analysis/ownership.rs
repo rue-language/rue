@@ -2047,9 +2047,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // whose initializer is itself a first-class `str` slot, must not bind a
         // buffer (`StrBuf`/`Str(N)`) or a borrowed `str` view — either would let
         // the value escape past its backing storage as a first-class `str`. The
-        // check covers both an explicit `let s: str = <buffer>` (annotation is
-        // `str`; the annotation is otherwise unenforced here since `var_type`
-        // comes from the initializer) and `let s = <view>` (no annotation).
+        // check covers both an explicit `let s: str = <buffer>` and
+        // `let s = <view>` (no annotation), retaining the specific escape
+        // diagnostic before the general annotation compatibility check.
         if annotation_type.is_some_and(|a| self.is_str_struct(a)) || self.is_str_struct(var_type) {
             self.reject_non_first_class_str(init, var_type, FirstClassStrSite::Binding, span, ctx)?;
         }
@@ -2060,6 +2060,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // and is handled as an ordinary (rejected-if-owning) read above.
         if name.is_some() {
             self.reject_accessor_result_escape(init, AccessorEscapeSite::Let, span, ctx)?;
+        }
+        // Inference may defer an annotation or allow contextual
+        // materialization. Validate the actual value before registering the
+        // binding, including a wildcard or a comptime type-valued binding.
+        // A non-continuing initializer has no value to bind; aggregate
+        // construction can carry an array type even when an element diverges.
+        if let Some(annotation) = annotation_type
+            && init_result.continues
+            && !self.types_compatible(var_type, annotation)
+        {
+            return Err(self.type_mismatch_error(annotation, var_type, span));
         }
 
         // If name is None, this is a wildcard pattern `_` that discards the value.

@@ -157,3 +157,183 @@ fn main() -> i32 {
 }
 """
 exit_code = 0
+
+# Local annotations resolved by semantic analysis (RUE-2209).
+
+[[case]]
+name = "local_annotation_generic_move_mismatch"
+spec = ["3.11:8", "4.14:16"]
+compile_fail = true
+error_contains = ["E0206", "expected Val, found Other"]
+source = """
+struct Val { n: i64 }
+struct Other { m: i32 }
+
+fn f(comptime T: type, y: Other) -> i32 { let z: T = y; 0 }
+fn main() -> i32 { f(Val, Other { m: 2 }) }
+"""
+
+[[case]]
+name = "local_annotation_generic_temporary_mismatch"
+spec = ["3.11:8", "4.14:16"]
+compile_fail = true
+error_contains = ["E0206", "expected i64, found Other"]
+source = """
+struct Val { n: i64 }
+struct Other { m: i32 }
+
+fn f(comptime T: type) -> i32 { let z: T = Other { m: 2 }; 0 }
+fn main() -> i32 { f(i64) }
+"""
+
+[[case]]
+name = "local_annotation_generic_mut_call_mismatch"
+spec = ["3.11:8", "4.14:16"]
+compile_fail = true
+error_contains = ["E0206", "expected Val, found Other"]
+source = """
+struct Val { n: i64 }
+struct Other { m: i32 }
+
+fn make() -> Other { Other { m: 2 } }
+fn f(comptime T: type) -> i32 { let mut z: T = make(); 0 }
+fn main() -> i32 { f(Val) }
+"""
+
+[[case]]
+name = "local_annotation_generic_array_mismatch"
+spec = ["3.11:8", "4.14:16"]
+compile_fail = true
+error_contains = ["E0206"]
+source = """
+struct Val { n: i64 }
+struct Other { m: i32 }
+
+fn f(comptime T: type, y: [Other; 1]) -> i32 { let z: [T; 1] = y; 0 }
+fn main() -> i32 { f(Val, [Other { m: 2 }]) }
+"""
+
+[[case]]
+name = "local_annotation_wildcard_mismatch"
+spec = ["3.11:8", "4.14:16"]
+compile_fail = true
+error_contains = ["E0206", "expected Val, found Other"]
+source = """
+struct Val { n: i64 }
+struct Other { m: i32 }
+
+fn f(comptime T: type, y: Other) -> i32 { let _: T = y; 0 }
+fn main() -> i32 { f(Val, Other { m: 2 }) }
+"""
+
+[[case]]
+name = "local_annotation_constructor_enum_mismatch"
+spec = ["3.11:8", "4.14:21"]
+compile_fail = true
+error_contains = ["E0206"]
+source = """
+fn E1(comptime T: type) -> type { enum { A(T), B } }
+fn E2(comptime T: type) -> type { enum { A(T), B } }
+fn main() -> i32 {
+    let x = E1(i32).A(42);
+    let y: E2(i32) = x;
+    0
+}
+"""
+
+[[case]]
+name = "local_annotation_constructor_struct_mismatch"
+spec = ["3.11:8", "4.14:16"]
+compile_fail = true
+error_contains = ["E0206"]
+source = """
+fn S(comptime T: type) -> type { struct { v: T } }
+fn main() -> i32 {
+    let S32 = S(i32);
+    let x = S32 { v: 1 };
+    let y: S(i64) = x;
+    0
+}
+"""
+
+[[case]]
+name = "local_annotation_distinct_bounded_parameters"
+spec = ["3.11:8", "6.8:19"]
+preview = "interfaces"
+preview_should_pass = true
+compile_fail = true
+error_contains = ["E0206", "expected T, found U"]
+source = """
+interface Show { fn show(borrow self) -> i64; }
+struct Val is Show { n: i64, fn show(borrow self) -> i64 { self.n } }
+fn f(comptime T: Show, comptime U: Show, x: T, y: U) -> i64 {
+    let z: T = y;
+    z.show()
+}
+fn main() -> i32 { @intCast(f(Val, Val, Val { n: 1 }, Val { n: 2 })) }
+"""
+
+[[case]]
+name = "local_annotation_generic_literals_and_nested_scope"
+spec = ["3.11:6", "4.14:16"]
+expected_stdout = "3000000001\n"
+exit_code = 0
+source = """
+fn f(comptime T: type) -> i32 {
+    let result = {
+        let x: T = 3000000000 + 1;
+        @dbg(x);
+        0
+    };
+    result
+}
+fn main() -> i32 { f(i64) }
+"""
+
+[[case]]
+name = "local_annotation_constructor_diverging_initializer"
+spec = ["3.11:9", "4.14:16"]
+exit_code = 0
+source = """
+fn Box(comptime T: type) -> type { struct { value: T } }
+fn main() -> i32 {
+    let boxed: Box(i32) = { return 0; };
+    1
+}
+"""
+
+[[case]]
+name = "local_annotation_specialized_array_length_mismatch"
+spec = ["3.11:8", "4.14:16"]
+compile_fail = true
+error_contains = ["E0901", "expected array of 2 elements, found 3 elements"]
+source = """
+fn head(comptime N: i32) -> i32 {
+    let y: [i32; N] = [7, 7, 7];
+    y[0]
+}
+fn main() -> i32 { head(2) }
+"""
+
+[[case]]
+name = "local_annotation_alias_scope_is_restored"
+spec = ["3.11:6", "4.14:16"]
+source = """
+fn Box(comptime T: type) -> type { struct { value: T } }
+fn main() -> i32 {
+    let U = i64;
+    let ignored = {
+        let U = i32;
+        let inner: U = 7;
+        @dbg(inner);
+        0
+    };
+    let outer: U = 3000000000;
+    let boxed = Box(U) { value: 3000000000 };
+    @dbg(outer);
+    @dbg(boxed.value);
+    ignored
+}
+"""
+expected_stdout = "7\n3000000000\n3000000000\n"
+exit_code = 0

@@ -75,7 +75,7 @@ const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
     let s = "hello";
-    let _p: ptr const StrBuf = checked { @raw(s) };
+    let _p: ptr const str = checked { @raw(s) };
     @dbg(s.len());
     0
 }

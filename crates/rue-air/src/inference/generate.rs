@@ -467,15 +467,12 @@ pub struct ConstraintGenerator<'a> {
     /// (RUE-599). `None` only in unit tests; production passes the map via
     /// [`Self::with_inline_ctor_head_types`].
     inline_ctor_head_types: Option<&'a AHashMap<InstRef, Type>>,
-    /// Sema's pre-resolved `let` annotations naming a fixed string `Str(N)`
-    /// (binding-site Alloc `InstRef` -> concrete type). `Str(N)` is a
-    /// value-parameterized builtin that only semantic type resolution mints,
-    /// so the annotation is not a nominal fact this generator can look up;
-    /// without it the binding took its initializer's type and an annotated
-    /// string literal stayed an unbound literal variable (RUE-2211). `None`
-    /// only in unit tests; production passes the map via
-    /// [`Self::with_fixed_string_annotations`].
-    fixed_string_annotations: Option<&'a AHashMap<InstRef, Type>>,
+    /// Sema's pre-resolved local annotations (binding-site Alloc `InstRef`
+    /// -> concrete type). Qualified paths, type constructors, and specialized
+    /// parameters need semantic resolution before inference can constrain
+    /// their initializers. `None` only in unit tests; production passes the
+    /// map via [`Self::with_local_annotations`].
+    local_annotations: Option<&'a AHashMap<InstRef, Type>>,
     /// Method signatures registered after the shared `InferenceContext` was
     /// built: anonymous-struct methods are registered lazily during comptime
     /// evaluation, so they're absent from `methods`. Consulted when a method
@@ -697,7 +694,7 @@ impl<'a> ConstraintGenerator<'a> {
             comptime_alias_types: AHashMap::new(),
             alias_scope_stack: Vec::new(),
             inline_ctor_head_types: None,
-            fixed_string_annotations: None,
+            local_annotations: None,
             extra_method_sigs: None,
             const_values: None,
             const_function_aliases: None,
@@ -761,7 +758,7 @@ impl<'a> ConstraintGenerator<'a> {
             comptime_alias_types: AHashMap::new(),
             alias_scope_stack: Vec::new(),
             inline_ctor_head_types: None,
-            fixed_string_annotations: None,
+            local_annotations: None,
             extra_method_sigs: None,
             const_values: None,
             const_function_aliases: None,
@@ -1083,14 +1080,13 @@ impl<'a> ConstraintGenerator<'a> {
         self
     }
 
-    /// Provide sema's pre-resolved fixed-string `let` annotations (binding-site
-    /// Alloc `InstRef` -> concrete type). See the `fixed_string_annotations`
-    /// field (RUE-2211).
-    pub fn with_fixed_string_annotations(
+    /// Provide sema's pre-resolved local annotations (binding-site Alloc
+    /// `InstRef` -> concrete type). See the `local_annotations` field.
+    pub fn with_local_annotations(
         mut self,
-        fixed_string_annotations: &'a AHashMap<InstRef, Type>,
+        local_annotations: &'a AHashMap<InstRef, Type>,
     ) -> Self {
-        self.fixed_string_annotations = Some(fixed_string_annotations);
+        self.local_annotations = Some(local_annotations);
         self
     }
 
@@ -1893,25 +1889,12 @@ impl<'a> ConstraintGenerator<'a> {
                 continues &= init_info.continues;
 
                 let var_ty = if let Some(type_syntax) = type_annotation {
-                    // Explicit type annotation - use it and constrain init to
-                    // match. Comptime type aliases (`let P = F(); let p: P =
-                    // ...`) resolve first, mirroring sema's annotation
-                    // validation order (`comptime_type_vars` before the type
-                    // tables); without this the annotation was unenforced and
-                    // any value typechecked against it (RUE-170).
-                    // Preserve the established best-effort inference boundary:
-                    // a body-local annotation resolves file constants and
-                    // already-bound type aliases, but specialization values are
-                    // applied by the authoritative semantic pass. Eagerly
-                    // substituting them here makes inference reject programs
-                    // that the semantic annotation/coercion path accepts.
-                    //
-                    // A fixed-string annotation (`Str(N)`, alone or nested in
-                    // an array or pointer) is not a nominal fact this hint can
-                    // name; sema pre-resolved it by binding site, so the
-                    // binding is that concrete type here (RUE-2211).
+                    // Semantic resolution supplies the annotation in its
+                    // lexical and specialization context. Keep this generator
+                    // a consumer of those facts: qualified paths and comptime
+                    // constructors are not resolved by the best-effort hint.
                     let annotated = self
-                        .fixed_string_annotations
+                        .local_annotations
                         .and_then(|annotations| annotations.get(&inst_ref))
                         .map(|ty| self.type_to_infer(*ty))
                         .or_else(|| {
@@ -1939,9 +1922,9 @@ impl<'a> ConstraintGenerator<'a> {
                         }
                         annotated_ty
                     } else {
-                        // Unknown type name (e.g., struct/enum) - use init type for now.
-                        // Semantic analysis will catch undefined types and verify struct/enum
-                        // field types match the definition.
+                        // Leave unresolved or position-invalid annotations
+                        // to semantic analysis for the authoritative diagnostic.
+                        // It also checks the materialized initializer's type.
                         init_info.ty
                     }
                 } else if self
