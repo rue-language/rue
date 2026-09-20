@@ -152,6 +152,21 @@ class GateValidatorTests(unittest.TestCase):
             "\n".join(self.validate_text(changed)),
         )
 
+    def test_readding_old_cross_backend_step_fails_duplication_contract(self):
+        source = SOURCE.read_text()
+        old_step = (
+            "      - name: Run explicit cross-backend compilation and encoding coverage\n"
+            "        run: scripts/ci-timed \"cross-backend codegen\" -- ./buck2 test "
+            "//crates/rue-codegen:rue-codegen-test\n\n"
+        )
+        anchor = "      - name: Assert broad premerge owns cross-backend coverage\n"
+        changed = source.replace(anchor, old_step + anchor, 1)
+        self.assertNotEqual(changed, source, "splice anchor no longer matches ci.yml")
+        self.assertIn(
+            "linux-premerge directly invokes //crates/rue-codegen:rue-codegen-test",
+            "\n".join(self.validate_text(changed)),
+        )
+
     def test_staleness_gate_contract_follows_its_job(self):
         source = SOURCE.read_text()
         anchor = "  performance-staleness:\n    runs-on: ubuntu-latest\n"
