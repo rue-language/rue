@@ -35,6 +35,20 @@ fake() { # fake <path> <body...>: an executable stub
   chmod +x "$1"
 }
 
+# The fake graph below must stay coupled to the production rule declaration:
+# if the direct std edge is removed, this pinned test fails before its BTD
+# consumer check can pass. Buck materializes this file through the target's
+# resource input; the fallback keeps direct execution useful.
+RULES_FILE="${RUE_AFFECTED_RULES:-$REPO_ROOT/rue_rules.bzl}"
+TESTS=$((TESTS + 1))
+if [ -r "$RULES_FILE" ] &&
+    grep -Fq '"std": attrs.default_only(' "$RULES_FILE" &&
+    grep -Fq 'attrs.dep(default = "root//std:std")' "$RULES_FILE"; then
+  pass "production rule: _rue_test exposes std as a default-only direct dependency"
+else
+  fail "production rule: _rue_test std direct dependency is missing"
+fi
+
 # --- out-of-graph / graph-global changes MUST force a full run --------------
 for path in BUCK crates/rue-air/BUCK toolchains/rust/defs.bzl prelude/some.bzl .buckconfig \
     .buckconfig.local.example .buckroot .github/workflows/ci.yml toolchains/rust/BUCK platforms/BUCK \
