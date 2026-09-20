@@ -159,7 +159,8 @@ ALLOWANCES = (
             "//crates/rue-codegen:rue-codegen-test",
             "//crates/rue-linker:rue-linker-test",
             "//crates/rue-runtime-abi:rue-runtime-abi-test",
-            "//crates/rue-runtime:rue-runtime-test",
+            "//crates/rue-runtime:rue-runtime-hosted-test",
+            "//crates/rue-runtime:hosted-runtime-native-test",
             "//crates/rue-runtime:runtime-archives-test",
             "//crates/rue-target:rue-target-test",
             "//fixtures/rue-program:hello-runs-test",
@@ -181,6 +182,22 @@ ALLOWANCES = (
             "amendments — is proven only where that row is native. "
             "Each target here repeats on its own; an overlap BETWEEN any two of "
             "them is a different fact and is not covered by this entry."
+        ),
+    ),
+    Allowance(
+        targets=(
+            "//crates/rue-runtime:rue-runtime-hosted-test",
+            "//crates/rue-runtime:rue-runtime-test",
+        ),
+        platforms=("linux-arm64", "linux-x64", "macos-arm64"),
+        reason=(
+            "These targets compile the runtime under different cfg contracts: "
+            "the freestanding archive and the hosted pthread/libc archive. "
+            "Shared runtime behavior must remain correct in both configurations, "
+            "including process termination, traps, memory and I/O. Native "
+            "execution on all three targets proves the corresponding syscall "
+            "and libc ABI; one flavor or host cannot establish the other's "
+            "contract. The exact two-target overlap is intentional."
         ),
     ),
     Allowance(
