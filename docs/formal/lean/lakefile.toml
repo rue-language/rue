@@ -11,3 +11,8 @@ root = "RueCore.CorpusMain"
 [[lean_exe]]
 name = "ruecore-explain"
 root = "RueCore.ExplainMain"
+
+[[lean_exe]]
+name = "ruecore-digest"
+root = "RueCore.DigestMain"
+supportInterpreter = true

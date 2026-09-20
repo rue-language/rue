@@ -8,14 +8,18 @@ the calculus writes it (``(Use-Move)``, ``(D-Let)``, ``(@Drop)``), a section
 those doc-comments and the calculus and writes ``docs/formal/lean/INDEX.md``:
 every declaration with what it cites, and the inverse, every labeled rule and
 every section of the calculus's §5 and §6 with the declarations that mechanize
-it or *not yet mechanized*. The inverse is what makes the fragment boundary
-visible instead of inferred.
+it or *not yet mechanized*. A third inverse covers the calculus's §2 grammar:
+every alternative of the ``T``/``p``/``e`` productions with the constructor
+that mechanizes it, from the explicit table ``SYNTAX_FORMS`` below. The
+inverses are what make the fragment boundary visible instead of inferred.
 
 The index cannot rot silently because the gate fails when:
 
 * a declaration in a rule-bearing module has no doc-comment, or a doc-comment
   with no citation, unless the comment says ``(helper)``;
 * a doc-comment cites a rule label the calculus does not define;
+* the calculus grows or renames a §2 alternative ``SYNTAX_FORMS`` has no row
+  for, or a row names a Lean constructor the sources no longer declare;
 * the committed ``INDEX.md`` differs from what the sources generate (run
   ``--write`` to refresh it).
 
@@ -75,6 +79,146 @@ RULE_SHAPED = re.compile(r"^(?:D-)?@?[A-Z][a-z]*(?:-[A-Z@][A-Za-z]*)+$|^@[A-Z][A
 CALCULUS_HEADING = re.compile(r"^(?P<hashes>#{2,4})\s+(?P<number>\d+(?:\.\d+)*)\.?\s+(?P<title>.+?)\s*$")
 CALCULUS_RULE = re.compile(r"─+\s*\((?P<label>[^)\s]+)\)")
 
+# The §2 grammar block: ``T ::= first`` opens a production and each following
+# ``| alternative  -- comment`` line is one alternative of it. Only the three
+# productions a fragment of the core can mechanize are inventoried; ``D``,
+# ``pat``, ``a``, ``F``, ``b``, and ``P`` are declaration and call shapes the
+# fragment has no image of at all.
+SYNTAX_SECTION = "2"
+SYNTAX_PRODUCTION = re.compile(r"^\s*(?P<nt>[A-Za-z]+) ::= (?P<alt>.*)$")
+SYNTAX_ALTERNATIVE = re.compile(r"^\s*\|\s+(?P<alt>.*)$")
+SYNTAX_NONTERMINALS = ("T", "p", "e")
+SYNTAX_TITLES = {"T": "types", "p": "places", "e": "expressions"}
+ROOT_NAMESPACE = "RueCore"
+
+# What the mechanization does with each §2 alternative, keyed by the
+# alternative exactly as the calculus writes it. The status is one of:
+#
+# * ``"yes"`` — the fragment has this form, in the constructors named;
+# * ``"partial"`` — a restricted or abstract stand-in; the note says what is
+#   missing, so the row is never read as full coverage;
+# * ``"no"`` — not yet mechanized; the note says what it would need.
+#
+# The table is explicit rather than inferred because only a human can say
+# whether `mkres` really is a struct literal's image. It cannot rot: the gate
+# fails on an alternative with no row, on a row for an alternative the
+# calculus no longer has, and on a row naming a constructor the Lean sources
+# no longer declare.
+SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
+    ("T", "int(w, s)"): (
+        "partial",
+        ["Ty.int"],
+        "one width and signedness, `int(64, signed)`, which is what §6.4's traps "
+        "and `InBounds` are stated for",
+    ),
+    ("T", "float(w)"): ("no", [], "floats are in the core (§5.8, §6.4) and outside the fragment"),
+    ("T", "bool"): ("yes", ["Ty.bool"], ""),
+    ("T", "unit"): ("yes", ["Ty.unit"], ""),
+    ("T", "never"): (
+        "no",
+        [],
+        "the fragment has no divergence points (§5.7): no `@panic`, `return`, or `break`",
+    ),
+    ("T", "S"): (
+        "partial",
+        ["Ty.res"],
+        "`res κ` is an abstract resource carrying a struct's multiplicity class "
+        "(§3) and one integer payload; it has no fields, so no projection, no "
+        "partial move, and no per-field §5.6 drop",
+    ),
+    ("T", "E"): ("no", [], "enums and their variants are outside the fragment"),
+    ("T", "[T; n]"): ("no", [], "arrays and array indexing are outside the fragment"),
+    ("p", "x"): (
+        "yes",
+        ["Expr.use", "Expr.drop", "Expr.assign"],
+        "a place is a whole binding, written as a de Bruijn index rather than a "
+        "name (elaboration resolves names), so it has no constructor of its own: "
+        "it is the index argument of the three forms that take a place",
+    ),
+    ("p", "p . f"): (
+        "no",
+        [],
+        "no field projection, hence no partial move and no per-field drop obligation",
+    ),
+    ("p", "p [ e ]"): ("no", [], "no array indexing, hence no `3.8:73` element-wise form"),
+    ("e", "lit"): ("yes", ["Expr.intLit", "Expr.boolLit", "Expr.unitLit"], ""),
+    ("e", "p"): ("yes", ["Expr.use"], "the §4.2 use, typed by (Use-Copy)/(Use-Move)"),
+    ("e", "e1 ⊕ e2"): (
+        "partial",
+        ["Expr.add", "Expr.div"],
+        "two of the primitive binary operators, `+` and `/`, chosen because they "
+        "carry §6.4's two trap kinds; no other arithmetic and no bitwise operators",
+    ),
+    ("e", "⊖ e"): ("no", [], "no unary operators"),
+    ("e", "e1 ≟ e2"): (
+        "no",
+        [],
+        "equality compare borrows its operands (§4.1, `4.3:3f`) and the fragment has no loans",
+    ),
+    ("e", "e1 ⋚ e2"): (
+        "partial",
+        ["Expr.lt"],
+        "one of the four ordering compares, `<`",
+    ),
+    ("e", "S { f1: e1, ..., fk: ek }"): (
+        "partial",
+        ["Expr.mkres"],
+        "`mkres κ e` introduces the abstract resource of `res κ`: the ownership "
+        "shape of §5.8's aggregate introduction, with no fields to type",
+    ),
+    ("e", "E :: K ( e1, ..., em )"): ("no", [], "follows `E`: no enums, so no variant construction"),
+    ("e", "[ e1, ..., en ]"): ("no", [], "follows `[T; n]`: no arrays, so no array construction"),
+    ("e", "g ( a1, ..., am )"): (
+        "partial",
+        ["Expr.consume"],
+        "`consume e` takes a resource by value and returns its payload: the "
+        "ownership shape of one by-value argument, with no function definitions, "
+        "no `inout`/`borrow` modes, and no return",
+    ),
+    ("e", "p . f ( e1, ..., ek )"): (
+        "no",
+        [],
+        "an accessor (ADR-0062) yields a place and needs the loans §5.4 gives it",
+    ),
+    ("e", "@drop ( p )"): ("yes", ["Expr.drop"], "whole bindings only, as `p` above"),
+    ("e", "@panic ( s )"): (
+        "no",
+        [],
+        "needs `never` and a string-valued operand; the fragment's only §6.12 "
+        "traps are the arithmetic ones",
+    ),
+    ("e", "@dbg ( e )"): (
+        "no",
+        [],
+        "the fragment's observation channel is the drop trace (§6.11), not `@dbg`; "
+        "`Print.lean` does emit `@dbg` in the Rue source it prints, to make a drop "
+        "observable to the bridge, but that is a property of the printing rather "
+        "than a core form",
+    ),
+    ("e", "@f ( e1, ..., ek )"): ("no", [], "follows `float(w)`"),
+    ("e", "if e0 { e1 } else { e2 }"): ("yes", ["Expr.ite"], "with the §5.5 branch join"),
+    ("e", "match e0 { pat1 => e1, ..., patk => ek }"): ("no", [], "follows `E`: no enums, so no arms to match"),
+    ("e", "let μ x = e1 ; e2"): (
+        "yes",
+        ["Expr.letIn"],
+        "carrying the `μ ∈ {∅, mut}` mark, with §5.6's scope exit folded in",
+    ),
+    ("e", "e1 ; e2"): ("yes", ["Expr.seq"], "with the `3.8:64` discard check"),
+    ("e", "loop { e }"): (
+        "no",
+        [],
+        "no loops: the interpreter is structurally recursive, which is what makes "
+        "it total without a fuel parameter",
+    ),
+    ("e", "break"): ("no", [], "follows `loop { e }` and `never`"),
+    ("e", "return e"): ("no", [], "no function bodies to return from (§5.7)"),
+    ("e", "assign p = e"): (
+        "yes",
+        ["Expr.assign"],
+        "whole bindings only, with the `3.8:77` premise on the post-RHS state",
+    ),
+}
+
 
 class Declaration:
     """One indexed Lean declaration or constructor."""
@@ -106,6 +250,19 @@ class Module:
         self.module_citation: Optional[Declaration] = None
 
 
+class Form:
+    """One alternative of a §2 production: ``| p . f  -- field projection``."""
+
+    def __init__(self, nonterminal: str, text: str, comment: str) -> None:
+        self.nonterminal = nonterminal
+        self.text = text
+        self.comment = comment
+
+    @property
+    def key(self) -> Tuple[str, str]:
+        return (self.nonterminal, self.text)
+
+
 class Calculus:
     def __init__(self) -> None:
         # (number, title, level) in document order.
@@ -113,6 +270,8 @@ class Calculus:
         # label -> section number, first occurrence wins.
         self.rules: Dict[str, str] = {}
         self.rule_order: List[str] = []
+        # §2's T/p/e alternatives, in document order.
+        self.forms: List[Form] = []
 
 
 # --- Lean parsing -----------------------------------------------------------
@@ -334,14 +493,19 @@ def parse_calculus(path: Path) -> Calculus:
     """
     calculus = Calculus()
     current = ""
+    production: Optional[str] = None
     for line in path.read_text(encoding="utf-8").splitlines():
         heading = CALCULUS_HEADING.match(line)
         if heading is not None:
             number = heading.group("number")
             calculus.sections.append((number, heading.group("title"), len(heading.group("hashes"))))
             current = number
+            production = None
             continue
         top = current.split(".")[0] if current else ""
+        if top == SYNTAX_SECTION:
+            production = _read_syntax_line(calculus, line, production)
+            continue
         if top not in ("5", "6"):
             continue
         for match in CALCULUS_RULE.finditer(line):
@@ -350,6 +514,30 @@ def parse_calculus(path: Path) -> Calculus:
                 calculus.rules[label] = current
                 calculus.rule_order.append(label)
     return calculus
+
+
+def _read_syntax_line(calculus: Calculus, line: str, production: Optional[str]) -> Optional[str]:
+    """Read one line of §2's grammar block, returning the open production.
+
+    A production stays open across its ``|`` alternatives and across the
+    comment-only continuation lines that wrap a long ``--`` gloss; a blank
+    line or an unindented line closes it.
+    """
+    opener = SYNTAX_PRODUCTION.match(line)
+    if opener is not None:
+        production = opener.group("nt")
+        text = opener.group("alt")
+    else:
+        alternative = SYNTAX_ALTERNATIVE.match(line)
+        if alternative is None or production is None:
+            if not line.strip() or not line.startswith(" "):
+                return None
+            return production
+        text = alternative.group("alt")
+    if production in SYNTAX_NONTERMINALS:
+        head, _, comment = text.partition("--")
+        calculus.forms.append(Form(production, head.strip(), comment.strip()))
+    return production
 
 
 # --- Rendering --------------------------------------------------------------
@@ -368,6 +556,10 @@ def _cell(text: str) -> str:
     return text.replace("|", "\\|")
 
 
+def _are(count: int) -> str:
+    return "is" if count == 1 else "are"
+
+
 def render_index(modules: List[Module], calculus: Calculus) -> str:
     """The whole INDEX.md."""
     lines: List[str] = []
@@ -378,11 +570,12 @@ def render_index(modules: List[Module], calculus: Calculus) -> str:
     out("")
     out(
         "Every declaration of the mechanization with the calculus rules, sections, "
-        "and prose-specification paragraphs its doc-comment cites, and the inverse: "
-        "every labeled rule and every section of the calculus's §5 and §6 with the "
-        "declarations that mechanize it. A row reading *not yet mechanized* is the "
-        "fragment boundary, stated rather than inferred. Sections and rules are those "
-        "of `../01-core-calculus.md`; paragraphs are `docs/spec` paragraph IDs. "
+        "and prose-specification paragraphs its doc-comment cites, and the inverses: "
+        "every alternative of the calculus's §2 grammar, every labeled rule and every "
+        "section of its §5 and §6, with the declarations that mechanize them. A row "
+        "reading *not yet mechanized* is the fragment boundary, stated rather than "
+        "inferred. Sections, rules, and syntactic forms are those of "
+        "`../01-core-calculus.md`; paragraphs are `docs/spec` paragraph IDs. "
         "Regenerate with `scripts/validate-lean-xref-index.py --write`; the gate "
         "fails when this file is stale or a declaration lacks its citation "
         "(`GUIDE.md` and `README.md` say what to write)."
@@ -443,9 +636,53 @@ def render_index(modules: List[Module], calculus: Calculus) -> str:
             for ref in decl.paragraphs:
                 by_paragraph.setdefault(ref, []).append(display)
 
+    out("## Abstract syntax forms → declarations")
+    out("")
+    out(
+        "Every alternative of the calculus's §2 grammar for types (`T`), places "
+        "(`p`), and expressions (`e`), with the `Syntax.lean` constructors that "
+        "mechanize it. *partial* marks an abstract or restricted stand-in and says "
+        "in the same row what is missing, so no row reads as more coverage than "
+        "there is. With the rules table below, this is the whole fragment boundary: "
+        "a form is either here with a constructor, here as a stand-in, or *not yet "
+        "mechanized*."
+    )
+    out("")
+    statuses = [SYNTAX_FORMS[form.key][0] for form in calculus.forms if form.key in SYNTAX_FORMS]
+    with_image = sum(1 for status in statuses if status != "no")
+    partial = sum(1 for status in statuses if status == "partial")
+    out(
+        f"Coverage: {with_image} of {len(calculus.forms)} §2 forms have a core image "
+        f"({partial} of them partial); {len(calculus.forms) - with_image} "
+        f"{_are(len(calculus.forms) - with_image)} *not yet mechanized*."
+    )
+    out("")
+    out("| Production | Form | Mechanized by | Scope |")
+    out("| --- | --- | --- | --- |")
+    for form in calculus.forms:
+        status, constructors, note = SYNTAX_FORMS.get(form.key, ("no", [], ""))
+        if constructors:
+            cell = ", ".join(f"`{ROOT_NAMESPACE}.{name}`" for name in constructors)
+            if status == "partial":
+                cell += " *(partial)*"
+        else:
+            cell = "*not yet mechanized*"
+        out(
+            f"| `{form.nonterminal}` | `{_cell(form.text)}` | {_cell(cell)} | "
+            f"{_cell(note) or '—'} |"
+        )
+    out("")
+
     out("## Calculus rules → declarations")
     out("")
     out("Every labeled inference rule of §5 and §6, in the calculus's order.")
+    out("")
+    mechanized_rules = sum(1 for label in calculus.rule_order if by_rule.get(label))
+    out(
+        f"Coverage: {mechanized_rules} of {len(calculus.rule_order)} labeled §5/§6 rules are "
+        f"mechanized; {len(calculus.rule_order) - mechanized_rules} "
+        f"{_are(len(calculus.rule_order) - mechanized_rules)} *not yet mechanized*."
+    )
     out("")
     out("| Section | Rule | Mechanized by |")
     out("| --- | --- | --- |")
@@ -496,6 +733,47 @@ def render_index(modules: List[Module], calculus: Calculus) -> str:
 # --- The gate ---------------------------------------------------------------
 
 
+def check_syntax_forms(calculus: Calculus, modules: List[Module]) -> List[str]:
+    """Hold ``SYNTAX_FORMS`` against the calculus and the Lean sources.
+
+    A new or renamed §2 alternative has no row and is an error, a row for an
+    alternative the calculus no longer writes is an error, and a row naming a
+    constructor the sources no longer declare is an error — so the fragment
+    boundary this table states cannot quietly stop being true.
+    """
+    errors: List[str] = []
+    if not calculus.forms:
+        errors.append("found no §2 alternatives for `T`, `p`, or `e`; did the grammar block move?")
+        return errors
+    declared = {declaration.name for module in modules for declaration in module.declarations}
+    seen = set()
+    for form in calculus.forms:
+        if form.key in seen:
+            errors.append(
+                f"§2 lists `{form.text}` twice under `{form.nonterminal} ::=`; "
+                f"SYNTAX_FORMS is keyed by the alternative's text"
+            )
+        seen.add(form.key)
+        if form.key not in SYNTAX_FORMS:
+            errors.append(
+                f"§2 alternative `{form.nonterminal} ::= {form.text}` has no SYNTAX_FORMS row; "
+                f"add one saying which constructor mechanizes it, or that it is not yet mechanized"
+            )
+    for (nonterminal, text), (_, constructors, _) in sorted(SYNTAX_FORMS.items()):
+        if (nonterminal, text) not in seen:
+            errors.append(
+                f"SYNTAX_FORMS has a row for `{nonterminal} ::= {text}`, which §2 no longer writes"
+            )
+        for name in constructors:
+            qualified = f"{ROOT_NAMESPACE}.{name}"
+            if qualified not in declared:
+                errors.append(
+                    f"SYNTAX_FORMS maps `{nonterminal} ::= {text}` to `{qualified}`, "
+                    f"which the Lean sources do not declare"
+                )
+    return errors
+
+
 def collect(lean_dir: Path, calculus_path: Path) -> Tuple[List[Module], Calculus, List[str]]:
     calculus = parse_calculus(calculus_path)
     errors: List[str] = []
@@ -529,6 +807,7 @@ def collect(lean_dir: Path, calculus_path: Path) -> Tuple[List[Module], Calculus
                     f"citation, or say `(helper)`"
                 )
         modules.append(module)
+    errors.extend(check_syntax_forms(calculus, modules))
     return modules, calculus, errors
 
 

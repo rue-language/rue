@@ -58,11 +58,11 @@ def _lean_package_impl(ctx: AnalysisContext) -> list[Provider]:
     The package sources are copied into the action's scratch space, because
     `lake build` writes `.lake/` beside them and an action must not write to
     its inputs. The outputs are reports, not build products: a stamp, the
-    `#print axioms` listing for the theorems `trust` names, and the
-    toolchain's own `leanchecker` re-check of the compiled modules. The
-    action fails if any listed theorem depends on an axiom outside
-    `allowed_axioms`, so the trust boundary of the mechanization is a build
-    error, not a note.
+    `#print axioms` listing for the theorems `trust` names, the toolchain's
+    own `leanchecker` re-check of the compiled modules, and whatever
+    `corpus_exe` and `report_exes` print. The action fails if any listed
+    theorem depends on an axiom outside `allowed_axioms`, so the trust
+    boundary of the mechanization is a build error, not a note.
     """
     distribution = ctx.attrs.toolchain[DefaultInfo].default_outputs[0]
     sources = ctx.attrs.srcs[DefaultInfo].default_outputs[0]
@@ -77,6 +77,18 @@ def _lean_package_impl(ctx: AnalysisContext) -> list[Provider]:
     allowed = " ".join(ctx.attrs.allowed_axioms)
     corpus_exe = ctx.attrs.corpus_exe or ""
     extra_exes = " ".join(ctx.attrs.extra_exes)
+
+    # Reports the package generates about itself (the statement digest and the
+    # trust report, RUE-2247): built, run, and their stdout captured beside
+    # `corpus.json`. A report that exits non-zero fails the action, and the
+    # partial file it wrote stays in the output for the reader.
+    report_lines = []
+    for report, argv in ctx.attrs.report_exes.items():
+        report_lines.append('lake build "{}" >> "$out/build.log" 2>&1'.format(argv[0]))
+        report_lines.append('lake exe {} > "$out/{}"'.format(
+            " ".join(['"{}"'.format(arg) for arg in argv]),
+            report,
+        ))
 
     script = ctx.actions.write(
         "lean-package.sh",
@@ -113,6 +125,7 @@ def _lean_package_impl(ctx: AnalysisContext) -> list[Provider]:
             'for exe in $extra_exes; do',
             '  lake build "$exe" >> "$out/build.log" 2>&1',
             'done',
+        ] + report_lines + [
             # Every `#print axioms` line reads `'<theorem>' depends on axioms: [a, b]`
             # (or `does not depend on any axioms`); reject any axiom outside the
             # allowed set.
@@ -173,6 +186,14 @@ lean_package = rule(
             doc = "Further `lean_exe`s of the package to build (not run), so they keep compiling.",
         ),
         "module": attrs.string(doc = "Root module `lake build` and `leanchecker` are given."),
+        "report_exes": attrs.dict(
+            attrs.string(),
+            attrs.list(attrs.string()),
+            sorted = True,
+            default = {},
+            doc = "Output file name -> a `lean_exe` of the package and its arguments, run " +
+                  "with its stdout captured into that file beside the other reports.",
+        ),
         "srcs": attrs.dep(doc = "The Lake package directory (a dict-form filegroup)."),
         "toolchain": attrs.exec_dep(doc = "The Lean distribution for the execution platform."),
         "trust": attrs.list(
