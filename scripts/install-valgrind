@@ -54,13 +54,29 @@ trap on_signal INT TERM
 select_ubuntu_sources() {
     local deb822="$apt_etc_root/sources.list.d/ubuntu.sources"
     local classic="$apt_etc_root/sources.list"
+    local mirror_file="$apt_etc_root/apt-mirrors.txt"
+    local mirror_uri="mirror+file:/etc/apt/apt-mirrors.txt"
     source_temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/rue-apt-sources.XXXXXX")"
+
+    # Ubuntu 24.04 hosted images replace the Azure URI with apt's official
+    # mirror-list helper. Accept that exact runner path only when every mirror
+    # in the helper file is also an official Ubuntu mirror.
+    if [[ -r "$mirror_file" ]] && awk '
+        /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+        $1 !~ /^https?:\/\/(([[:alnum:]-]+\.)?archive|security|ports)\.ubuntu\.com(\/|$)/ { invalid = 1 }
+        { found = 1 }
+        END { exit(found && !invalid ? 0 : 1) }
+    ' "$mirror_file"; then
+        mirror_uri="mirror+file:/etc/apt/apt-mirrors.txt"
+    else
+        mirror_uri=""
+    fi
 
     # Keep only complete deb822 stanzas whose every URI is an official Ubuntu
     # mirror. This prevents a third-party stanza in the same file from joining
     # the update/install transaction.
     if [[ -r "$deb822" ]]; then
-        if awk '
+        if awk -v mirror_uri="$mirror_uri" '
             function reset() {
                 stanza = ""
                 has_deb = 0
@@ -78,7 +94,7 @@ select_ubuntu_sources() {
                 count = split(line, uris, /[[:space:]]+/)
                 saw_uris = 1
                 for (uri_index = 1; uri_index <= count; uri_index++) {
-                    if (uris[uri_index] !~ /^https?:\/\/(([[:alnum:]-]+\.)?archive|security|ports)\.ubuntu\.com(\/|$)/) {
+                    if (uris[uri_index] != mirror_uri && uris[uri_index] !~ /^https?:\/\/(([[:alnum:]-]+\.)?archive|security|ports)\.ubuntu\.com(\/|$)/) {
                         bad_uri = 1
                     }
                 }
@@ -134,7 +150,7 @@ select_ubuntu_sources() {
 
     # Older Ubuntu images use the classic one-line file. Filter it rather than
     # pointing apt at the whole file, which may also contain third-party repos.
-    if [[ -r "$classic" ]] && awk '
+    if [[ -r "$classic" ]] && awk -v mirror_uri="$mirror_uri" '
         $1 != "deb" { next }
         {
             uri_index = 2
@@ -144,7 +160,7 @@ select_ubuntu_sources() {
                 }
                 uri_index++
             }
-            if (uri_index <= NF && $uri_index ~ /^https?:\/\/(([[:alnum:]-]+\.)?archive|security|ports)\.ubuntu\.com(\/|$)/) {
+            if (uri_index <= NF && ($uri_index == mirror_uri || $uri_index ~ /^https?:\/\/(([[:alnum:]-]+\.)?archive|security|ports)\.ubuntu\.com(\/|$)/)) {
                 print
                 found = 1
             }
