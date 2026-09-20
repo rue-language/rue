@@ -24,8 +24,10 @@
 #   scripts/rue frontend-manifest  Refresh the audited frontend corpus manifest
 #   scripts/rue fmt                Format the code (./fmt.sh)
 #   scripts/rue lean               Build and check the Lean mechanization; print its axioms report
-#   scripts/rue lean-bridge [args] Run the Lean corpus against the compiler, oracle,
-#                                  and native binaries (ADR-0097's bridge)
+#   scripts/rue lean-bridge [-- args]
+#                                  Run the Lean corpus against the compiler, oracle,
+#                                  and native binaries (ADR-0097's bridge); a leading
+#                                  -- is optional
 #   scripts/rue storage [args...]  Inspect or reclaim Buck outputs across worktrees
 #                                  (status | plan [age] | clean [age] | reset ROOT ...)
 #   scripts/rue gc [age]           Compatibility alias for host-wide stale cleanup
@@ -254,6 +256,14 @@ case "$cmd" in
         # not a test tier: it is red today on cond_drop_affine (RUE-2290) and
         # RUE-2241 decides whether CI gates on it. The corpus is the Lean
         # package's own output, so no `lake` or `elan` is involved.
+        #
+        # The separator below is ours, so absorb one the caller typed: anyone
+        # coming from `./buck2 run //:lean-bridge -- --case X` writes it out of
+        # habit, and forwarding it verbatim would reach the harness as an
+        # unknown argument.
+        if [[ "${1:-}" == "--" ]]; then
+            shift
+        fi
         ./buck2 run root//:lean-bridge -- "$@"
         ;;
     fmt)

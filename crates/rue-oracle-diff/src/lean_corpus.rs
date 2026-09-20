@@ -28,13 +28,21 @@
 //! stops the bridge instead of being silently ignored (RUE-1987's rule for the
 //! other corpora).
 //!
-//! # Blind spots, inherited from the corpus contract
+//! # Blind spots
 //!
 //! * A Lean `panic` outcome carries no trace, so drops before a trap are not
 //!   compared — only the trap category is (RUE-2282 gives `.panic` its trace).
-//! * A Lean `reject` case's `stuck` violation is unobservable here: the
-//!   compiler rejects the program, so nothing runs. Only the rejection itself
-//!   is compared.
+//!   Inherited from the corpus contract.
+//! * When both views reject a program, the Lean machine's `stuck` violation is
+//!   not observable: nothing runs, so only the rejection and its diagnostic
+//!   codes are compared. (When the *compiler* accepts a program the checker
+//!   rejects, the program does run and the run itself is the finding.)
+//! * A drop line and the value line are both bare integers on the Lean side,
+//!   so a drop of `n` swapped with a value `n` is not told apart. Inherited
+//!   from the corpus contract.
+//! * `linear_explicit_drop` prints as `@dbg(consume_linear(x))`, so the
+//!   compiler's own `@drop`-on-linear path is not exercised by that case
+//!   (RUE-2227's mapping caveat).
 //!
 //! # `--report-json` schema
 //!
@@ -56,9 +64,15 @@
 //!   expected          object   {"kind": "ok"|"panic"|"stuck", ...} as exported
 //!   compiler          object   {"outcome": "accepted"|"rejected"|"internal_error"
 //!                               |"crashed"|"timed_out", "codes": [...],
-//!                               "detail": string}
-//!   unexpected_codes  array of string  rejection codes outside the seed set
-//!   oracle            object | null    {"observed": string}
+//!                               "detail": string}. `codes` carries every code
+//!                               the compiler cited, E9000 for an ICE included
+//!   notes             array of string  things a reviewer should see about an
+//!                               *agreed* rejection: a code the Lean refusal
+//!                               does not expect, no error-severity diagnostic
+//!                               at all, or a diagnostic stream that does not
+//!                               match the canonical JSON schema
+//!   oracle            object | null    {"observed": string}; null when both
+//!                               views rejected the program, so nothing ran
 //!   native            array    [{"optimization": "O1", "compiler": {...},
 //!                                "observed": string | null}]
 //!   agrees            boolean
@@ -89,11 +103,25 @@ const CORPUS_ENV: &str = "RUE_LEAN_CORPUS";
 const COMPILE_TIMEOUT: Duration = Duration::from_millis(rue_test_runner::DEFAULT_TIMEOUT_MS * 6);
 const RUNTIME_TIMEOUT: Duration = Duration::from_millis(rue_test_runner::DEFAULT_TIMEOUT_MS);
 
-/// The ownership diagnostics the seed corpus's rejected cases are expected to
-/// produce. A rejection carrying any other code still *agrees* with the Lean
-/// checker about accept/reject; the report prints it as unexpected so a
-/// reviewer sees that the compiler refused for a different stated reason.
-const EXPECTED_REJECTION_CODES: [&str; 5] = ["E0205", "E0406", "E0443", "E0478", "E0493"];
+/// The compiler diagnostics each Lean refusal is expected to be spelled as.
+///
+/// A rejection is an *agreement* with the checker whatever it cites — both
+/// views refuse the program — but the cited rule is part of the evidence, so a
+/// mismatch is printed. Keyed off the refusal rather than pooled into one flat
+/// allowlist, because `linear_overwrite` rejected as a use-after-move is a
+/// different statement about the language than `linear_overwrite` rejected as
+/// a linear overwrite, and a flat list cannot tell them apart.
+///
+/// A violation missing from this table is itself reported: the corpus growing
+/// a new refusal is a decision to make here, not a silent pass.
+const EXPECTED_REJECTION_CODES: [(&str, &[&str]); 4] = [
+    // §5.6's residual-linear leak check reaches the compiler either as the
+    // scope-exit leak or as the §5.5 join that loses the obligation.
+    ("linearLeak", &["E0406", "E0443"]),
+    ("useAfterMove", &["E0205"]),
+    ("linearDiscard", &["E0478"]),
+    ("linearOverwrite", &["E0493"]),
+];
 
 // ---------------------------------------------------------------------------
 // The corpus contract
@@ -195,7 +223,7 @@ impl Expectation {
             }
             Self::Panic { name, trap } => format!("traps with {name} ({trap:?})"),
             Self::Stuck { violation } => {
-                format!("refused by the machine with {violation} (not observable here)")
+                format!("is refused by the machine with {violation}")
             }
         }
     }
@@ -360,8 +388,15 @@ pub(crate) enum CompilerVerdict {
         exit: i32,
         codes: Vec<String>,
         detail: String,
+        /// Set when the canonical JSON diagnostic reader refused the stream.
+        /// The rejection still happened; what it cited is then unknown, which
+        /// the report says rather than printing an empty code list.
+        schema_error: Option<String>,
     },
-    InternalError(String),
+    InternalError {
+        codes: Vec<String>,
+        detail: String,
+    },
     Crashed {
         signal: i32,
         detail: String,
@@ -374,16 +409,18 @@ impl CompilerVerdict {
         match self {
             Self::Accepted => "accepted",
             Self::Rejected { .. } => "rejected",
-            Self::InternalError(_) => "internal_error",
+            Self::InternalError { .. } => "internal_error",
             Self::Crashed { .. } => "crashed",
             Self::TimedOut => "timed_out",
         }
     }
 
+    /// Every code the compiler cited, rejection or ICE alike, so a consumer
+    /// filtering on codes sees E9000 too.
     fn codes(&self) -> &[String] {
         match self {
-            Self::Rejected { codes, .. } => codes,
-            _ => &[],
+            Self::Rejected { codes, .. } | Self::InternalError { codes, .. } => codes,
+            Self::Accepted | Self::Crashed { .. } | Self::TimedOut => &[],
         }
     }
 
@@ -394,15 +431,18 @@ impl CompilerVerdict {
                 exit,
                 codes,
                 detail,
+                ..
             } => {
                 let codes = if codes.is_empty() {
-                    "no coded diagnostic".to_string()
+                    "no error-severity diagnostic".to_string()
                 } else {
                     codes.join(", ")
                 };
                 format!("rejected the program (exit {exit}, {codes}): {detail}")
             }
-            Self::InternalError(detail) => format!("reported an internal compiler error: {detail}"),
+            Self::InternalError { detail, .. } => {
+                format!("reported an internal compiler error: {detail}")
+            }
             Self::Crashed { signal, detail } => {
                 format!("was killed by signal {signal}: {detail}")
             }
@@ -411,70 +451,43 @@ impl CompilerVerdict {
     }
 }
 
-/// A diagnostic batch line of `--error-format json`, read for the two fields
-/// this bridge reports. The surface is versioned (docs/process/diagnostics.md);
-/// unknown keys are deliberately tolerated here, because a *new* diagnostic
-/// field is not a corpus-contract change.
-#[derive(Debug, Deserialize)]
-struct RawDiagnostic {
-    severity: String,
-    code: String,
-    message: String,
-}
-
-/// What a compiler stderr stream said, in emission order.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct Diagnostics {
-    /// Error codes, deduplicated. Warnings carry an empty `code` and are not
-    /// part of an accept/reject answer, so only `error` diagnostics count.
-    pub(crate) codes: Vec<String>,
-    /// The `message` of each error diagnostic.
-    pub(crate) messages: Vec<String>,
-    /// Lines that were not a diagnostic batch — a linker error, an ICE banner.
-    /// Kept rather than dropped: unreadable stderr is evidence too.
-    pub(crate) other: Vec<String>,
-}
-
-impl Diagnostics {
-    /// The readable half: the diagnostics when there are any, else whatever
-    /// else the compiler wrote.
-    fn detail(&self) -> String {
-        let text = if self.messages.is_empty() {
-            self.other.join("; ")
-        } else {
-            self.messages.join("; ")
-        };
-        if text.is_empty() {
-            "(no diagnostic text)".to_string()
-        } else {
-            text
-        }
-    }
-}
-
-pub(crate) fn parse_diagnostics(stderr: &str) -> Diagnostics {
-    let mut parsed = Diagnostics::default();
-    for line in stderr.lines() {
+/// The ICE banner `rue_test_runner::ice_message` builds is not a diagnostic
+/// stream: it wraps the compiler's stderr in its own prose. Pull the
+/// structured diagnostics out of whichever of its lines are batches, and keep
+/// the rest as the readable detail — this is the one place a line that is not
+/// a diagnostic batch is expected rather than a schema failure.
+fn parse_ice_banner(banner: &str) -> (Vec<String>, String) {
+    let mut codes = Vec::new();
+    let mut messages = Vec::new();
+    let mut other = Vec::new();
+    for line in banner.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        match serde_json::from_str::<Vec<RawDiagnostic>>(line) {
-            Ok(batch) => {
-                for diagnostic in batch {
-                    if diagnostic.severity != "error" {
-                        continue;
+        match rue_test_runner::parse_json_error_diagnostics(line) {
+            Ok(diagnostics) => {
+                for diagnostic in diagnostics {
+                    if !diagnostic.code.is_empty() && !codes.contains(&diagnostic.code) {
+                        codes.push(diagnostic.code);
                     }
-                    if !diagnostic.code.is_empty() && !parsed.codes.contains(&diagnostic.code) {
-                        parsed.codes.push(diagnostic.code);
-                    }
-                    parsed.messages.push(diagnostic.message);
+                    messages.push(diagnostic.message);
                 }
             }
-            Err(_) => parsed.other.push(line.to_string()),
+            Err(_) => other.push(line.to_string()),
         }
     }
-    parsed
+    let detail = if messages.is_empty() {
+        other.join("; ")
+    } else {
+        messages.join("; ")
+    };
+    let detail = if detail.is_empty() {
+        "(no diagnostic text)".to_string()
+    } else {
+        detail
+    };
+    (codes, detail)
 }
 
 /// Read the compiler's accept/reject answer out of a native compile-and-run.
@@ -484,31 +497,71 @@ pub(crate) fn parse_diagnostics(stderr: &str) -> Diagnostics {
 pub(crate) fn compiler_verdict(compiled: &Compiled) -> CompilerVerdict {
     match compiled {
         Compiled::Ran { .. } | Compiled::Crash(_) | Compiled::Timeout => CompilerVerdict::Accepted,
+        // The rejection's diagnostics come from the canonical reader of the
+        // versioned `--error-format json` surface, which fails closed: a line
+        // that is not a documented batch is schema drift, reported as such,
+        // never an empty code list that reads like a clean agreement.
         Compiled::CompileRejected { exit, stderr } => {
-            let parsed = parse_diagnostics(stderr);
-            CompilerVerdict::Rejected {
-                exit: *exit,
-                detail: parsed.detail(),
-                codes: parsed.codes,
+            match rue_test_runner::parse_json_error_diagnostics(stderr) {
+                Ok(diagnostics) => {
+                    let mut codes: Vec<String> = Vec::new();
+                    for diagnostic in &diagnostics {
+                        if !diagnostic.code.is_empty() && !codes.contains(&diagnostic.code) {
+                            codes.push(diagnostic.code.clone());
+                        }
+                    }
+                    let detail = if diagnostics.is_empty() {
+                        "(no error-severity diagnostic)".to_string()
+                    } else {
+                        diagnostics
+                            .iter()
+                            .map(|diagnostic| diagnostic.message.as_str())
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    };
+                    CompilerVerdict::Rejected {
+                        exit: *exit,
+                        codes,
+                        detail,
+                        schema_error: None,
+                    }
+                }
+                Err(error) => CompilerVerdict::Rejected {
+                    exit: *exit,
+                    codes: Vec::new(),
+                    detail: first_line(stderr),
+                    schema_error: Some(error),
+                },
             }
         }
-        // `rue_test_runner::ice_message` wraps the compiler's stderr in its own
-        // banner, so the structured E9000 diagnostic is in there too: report it
-        // rather than the banner.
-        Compiled::CompileIce(detail) => {
-            let parsed = parse_diagnostics(detail);
-            CompilerVerdict::InternalError(if parsed.codes.is_empty() {
-                parsed.detail()
-            } else {
-                format!("{} [{}]", parsed.detail(), parsed.codes.join(", "))
-            })
+        Compiled::CompileIce(banner) => {
+            let (codes, detail) = parse_ice_banner(banner);
+            CompilerVerdict::InternalError {
+                detail: if codes.is_empty() {
+                    detail
+                } else {
+                    format!("{detail} [{}]", codes.join(", "))
+                },
+                codes,
+            }
         }
         Compiled::CompileCrash { signal, stderr } => CompilerVerdict::Crashed {
             signal: *signal,
-            detail: parse_diagnostics(stderr).detail(),
+            detail: first_line(stderr),
         },
         Compiled::CompileTimeout => CompilerVerdict::TimedOut,
     }
+}
+
+/// The first non-empty line of a stderr stream, for a detail field that has no
+/// structured diagnostic to quote.
+fn first_line(stderr: &str) -> String {
+    stderr
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("(no diagnostic text)")
+        .to_string()
 }
 
 /// An executed program, as one view observed it.
@@ -656,7 +709,7 @@ pub(crate) fn checker_compiler_finding(
         (Verdict::Reject, CompilerVerdict::Accepted) => {
             Some("the checker rejects this program, and the compiler accepted it".to_string())
         }
-        (_, CompilerVerdict::InternalError(detail)) => Some(format!(
+        (_, CompilerVerdict::InternalError { detail, .. }) => Some(format!(
             "the checker reaches a verdict on this program, and the compiler reported an \
              internal compiler error instead: {detail}"
         )),
@@ -674,16 +727,60 @@ pub(crate) fn checker_compiler_finding(
     }
 }
 
-/// Rejection codes outside the seed corpus's expected ownership set. These are
-/// not disagreements — the two views agree the program is rejected — but a
-/// reviewer should see that the stated reason moved.
-pub(crate) fn unexpected_rejection_codes(compiler: &CompilerVerdict) -> Vec<String> {
-    compiler
-        .codes()
+/// What a reviewer should see about an *agreed* rejection: the two views both
+/// refuse the program, so none of this is a disagreement, but a rejection that
+/// cites a different rule than the Lean refusal names, one that cites nothing,
+/// or a diagnostic stream this consumer could not read at all would otherwise
+/// pass as a bare `agree`.
+pub(crate) fn rejection_notes(expected: &Expectation, compiler: &CompilerVerdict) -> Vec<String> {
+    let CompilerVerdict::Rejected {
+        codes,
+        schema_error,
+        ..
+    } = compiler
+    else {
+        return Vec::new();
+    };
+    let mut notes = Vec::new();
+    if let Some(error) = schema_error {
+        notes.push(format!(
+            "the rejection's diagnostics do not match the canonical JSON schema, so what it cited              is unknown: {error}"
+        ));
+        return notes;
+    }
+    if codes.is_empty() {
+        notes.push(
+            "rejected with no error-severity diagnostic, so no rule is cited for the refusal"
+                .to_string(),
+        );
+        return notes;
+    }
+    let Expectation::Stuck { violation } = expected else {
+        return notes;
+    };
+    let Some((_, allowed)) = EXPECTED_REJECTION_CODES
         .iter()
-        .filter(|code| !EXPECTED_REJECTION_CODES.contains(&code.as_str()))
-        .cloned()
-        .collect()
+        .find(|(name, _)| name == violation)
+    else {
+        notes.push(format!(
+            "the refusal {violation} has no expected diagnostic code in this consumer; the              compiler cited {}",
+            codes.join(", ")
+        ));
+        return notes;
+    };
+    let unexpected: Vec<&str> = codes
+        .iter()
+        .map(String::as_str)
+        .filter(|code| !allowed.contains(code))
+        .collect();
+    if !unexpected.is_empty() {
+        notes.push(format!(
+            "rejected with an unexpected code for {violation} (expected {}): {}",
+            allowed.join(" or "),
+            unexpected.join(", ")
+        ));
+    }
+    notes
 }
 
 /// Compare the Lean expectation with one executed view.
@@ -691,21 +788,33 @@ pub(crate) fn expectation_finding(
     expected: &Expectation,
     observed: &RunObservation,
 ) -> Option<String> {
-    let (exit, stdout, trap) = match observed {
-        RunObservation::Ran { exit, stdout, trap } => (*exit, stdout.as_slice(), *trap),
-        RunObservation::NotObserved(reason) => {
-            return Some(format!(
-                "the interpreter says the program {}, and the run produced no comparable \
-                 observation: {reason}",
-                expected.describe()
-            ));
-        }
+    let run = match observed {
+        RunObservation::Ran { exit, stdout, trap } => Some((*exit, stdout.as_slice(), *trap)),
+        RunObservation::NotObserved(_) => None,
     };
-    match expected {
-        Expectation::Ok {
-            stdout: lines,
-            exit: want_exit,
-        } => {
+    match (expected, run) {
+        // A `stuck` expectation is reached only when the compiler accepted a
+        // program the checker rejects: the machine refuses it, so any run at
+        // all — observed or not — is the finding, and there is nothing on the
+        // Lean side to compare an exit or a stdout with.
+        (Expectation::Stuck { violation }, _) => Some(format!(
+            "the checker rejects this program and the machine refuses it with {violation}, so \
+             nothing should have run; the run produced {}",
+            observed.describe()
+        )),
+        (expected, None) => Some(format!(
+            "the interpreter says the program {}, and the run produced no comparable \
+             observation: {}",
+            expected.describe(),
+            observed.describe()
+        )),
+        (
+            Expectation::Ok {
+                stdout: lines,
+                exit: want_exit,
+            },
+            Some((exit, stdout, trap)),
+        ) => {
             let want = Expectation::expected_stdout_bytes(lines);
             let mut reasons = Vec::new();
             if exit != *want_exit {
@@ -725,7 +834,7 @@ pub(crate) fn expectation_finding(
             }
             (!reasons.is_empty()).then(|| reasons.join("; "))
         }
-        Expectation::Panic { name, trap: want } => {
+        (Expectation::Panic { name, trap: want }, Some((exit, _, trap))) => {
             let mut reasons = Vec::new();
             if exit != rue_test_runner::RUNTIME_ERROR_EXIT_CODE {
                 reasons.push(format!(
@@ -744,10 +853,6 @@ pub(crate) fn expectation_finding(
             }
             (!reasons.is_empty()).then(|| reasons.join("; "))
         }
-        Expectation::Stuck { violation } => Some(format!(
-            "the checker rejects this program, so its {violation} refusal is not observable; \
-             a run of it is itself the disagreement"
-        )),
     }
 }
 
@@ -811,7 +916,7 @@ pub(crate) fn observation_findings(
 pub(crate) struct CaseReport {
     case: Case,
     compiler: CompilerVerdict,
-    unexpected_codes: Vec<String>,
+    notes: Vec<String>,
     oracle: Option<RunObservation>,
     native: Vec<(OptimizationLevel, CompilerVerdict, Option<RunObservation>)>,
     findings: Vec<Finding>,
@@ -870,11 +975,8 @@ pub(crate) fn render_report(report: &Report) -> String {
             if !case.compiler.codes().is_empty() {
                 status += &format!(" ({})", case.compiler.codes().join(", "));
             }
-            if !case.unexpected_codes.is_empty() {
-                status += &format!(
-                    " — rejected with an unexpected code: {}",
-                    case.unexpected_codes.join(", ")
-                );
+            for note in &case.notes {
+                status += &format!(" — {note}");
             }
             (case.case.name.clone(), verdict, status)
         })
@@ -910,12 +1012,20 @@ pub(crate) fn render_report(report: &Report) -> String {
         out += &format!("  compiler : {}\n", case.compiler.describe());
         out += &format!(
             "  oracle   : {}\n",
-            case.oracle
-                .as_ref()
-                .map_or_else(|| "not run".to_string(), RunObservation::describe)
+            case.oracle.as_ref().map_or_else(
+                || "not run (the compiler refused the program, as the checker does)".to_string(),
+                RunObservation::describe
+            )
         );
         if case.native.is_empty() {
-            out += "  native   : not run\n";
+            out += &format!(
+                "  native   : not run ({})\n",
+                if matches!(case.compiler, CompilerVerdict::Accepted) {
+                    "no optimization lane was selected"
+                } else {
+                    "the compiler produced no binary"
+                }
+            );
         } else {
             for (level, compiler, observed) in &case.native {
                 out += &format!(
@@ -973,7 +1083,7 @@ struct JsonCase<'a> {
     accepted_type: Option<&'a str>,
     expected: JsonExpected<'a>,
     compiler: JsonCompiler<'a>,
-    unexpected_codes: &'a [String],
+    notes: &'a [String],
     oracle: Option<JsonObserved>,
     native: Vec<JsonLane<'a>>,
     agrees: bool,
@@ -1079,7 +1189,7 @@ pub(crate) fn render_report_json(report: &Report) -> String {
                 },
                 expected: json_expected(&case.case.expected),
                 compiler: json_compiler(&case.compiler),
-                unexpected_codes: &case.unexpected_codes,
+                notes: &case.notes,
                 oracle: case.oracle.as_ref().map(|observed| JsonObserved {
                     observed: observed.describe(),
                 }),
@@ -1253,7 +1363,15 @@ pub(crate) fn run(args: &[String], configuration: CompilerSessionConfig) -> Exit
     };
 
     let mut report = Report {
-        corpus: config.corpus.display().to_string(),
+        // `$(location ...)` expands to a path with `..` segments in it; the
+        // header is for a reader, so print the normalized form when the file
+        // can be resolved and the literal argument when it cannot.
+        corpus: config
+            .corpus
+            .canonicalize()
+            .unwrap_or_else(|_| config.corpus.clone())
+            .display()
+            .to_string(),
         cases: Vec::with_capacity(cases.len()),
     };
     for case in cases {
@@ -1318,7 +1436,7 @@ fn evaluate_case(
     )
     .map_err(|error| format!("case {:?}: native harness error: {error}", case.name))?;
     let compiler = compiler_verdict(&probe);
-    let unexpected_codes = unexpected_rejection_codes(&compiler);
+    let notes = rejection_notes(&case.expected, &compiler);
 
     let mut findings = Vec::new();
     if let Some(detail) = checker_compiler_finding(&case.verdict, &compiler) {
@@ -1329,13 +1447,17 @@ fn evaluate_case(
         });
     }
 
-    // A rejected program has no behavior to compare: the Lean machine's
-    // `stuck` refusal is not observable through a compiler that refuses first.
-    if matches!(case.verdict, Verdict::Reject) {
+    // A program both views refuse has no behavior to compare: the Lean
+    // machine's `stuck` refusal is not observable through a compiler that
+    // refuses it too. When the compiler ACCEPTS a program the checker rejects,
+    // the premise fails — a binary exists — and what it does is the most
+    // interesting observation this bridge can make, so that path falls through
+    // and the `Stuck` arm of `expectation_finding` reports the run itself.
+    if matches!(case.verdict, Verdict::Reject) && compiler != CompilerVerdict::Accepted {
         return Ok(CaseReport {
             case,
             compiler,
-            unexpected_codes,
+            notes,
             oracle: None,
             native: Vec::new(),
             findings,
@@ -1407,7 +1529,7 @@ fn evaluate_case(
         oracle: Some(observed_oracle),
         case,
         compiler,
-        unexpected_codes,
+        notes,
         findings,
     })
 }
@@ -1677,21 +1799,71 @@ mod tests {
                       [{\"code\":\"E0406\",\"helps\":[],\"message\":\"linear value 'v0' must be \
                       consumed but was dropped\",\"notes\":[],\"severity\":\"error\",\
                       \"spans\":[],\"suggestions\":[]}]\n";
-        let parsed = parse_diagnostics(stderr);
-        assert_eq!(parsed.codes, vec!["E0406".to_string()]);
+        let rejected = compiler_verdict(&Compiled::CompileRejected {
+            exit: 1,
+            stderr: stderr.to_string(),
+        });
         assert_eq!(
-            parsed.messages,
-            vec!["linear value 'v0' must be consumed but was dropped".to_string()]
+            rejected,
+            CompilerVerdict::Rejected {
+                exit: 1,
+                codes: vec!["E0406".to_string()],
+                detail: "linear value 'v0' must be consumed but was dropped".to_string(),
+                schema_error: None,
+            },
+            "warnings carry no code and are not part of an accept/reject answer"
         );
-        assert!(parsed.other.is_empty());
 
-        // Stderr that is not a diagnostic batch is kept, not dropped, and the
-        // ICE banner around a structured E9000 does not become the detail.
-        let parsed = parse_diagnostics("ld: symbol not found\n");
-        assert!(parsed.codes.is_empty());
-        assert_eq!(parsed.other, vec!["ld: symbol not found".to_string()]);
-        assert_eq!(parsed.detail(), "ld: symbol not found");
+        // The canonical reader fails closed, so a rejection whose stderr is not
+        // a diagnostic stream cannot pass as a coded agreement.
+        let drifted = compiler_verdict(&Compiled::CompileRejected {
+            exit: 1,
+            stderr: "ld: symbol not found\n".to_string(),
+        });
+        let CompilerVerdict::Rejected {
+            codes,
+            detail,
+            schema_error,
+            ..
+        } = &drifted
+        else {
+            panic!("expected a rejection, got {drifted:?}");
+        };
+        assert!(codes.is_empty());
+        assert_eq!(detail, "ld: symbol not found");
+        assert!(schema_error.is_some(), "schema drift must be recorded");
+        let notes = rejection_notes(
+            &Expectation::Stuck {
+                violation: "linearLeak".to_string(),
+            },
+            &drifted,
+        );
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("canonical JSON schema"), "{notes:?}");
 
+        // A rejection with warnings only cites no rule; that is visible, not a
+        // bare `agree`.
+        let uncoded = compiler_verdict(&Compiled::CompileRejected {
+            exit: 1,
+            stderr: "[{\"code\":\"\",\"helps\":[],\"message\":\"unused function 'f'\",\
+                     \"notes\":[],\"severity\":\"warning\",\"spans\":[],\"suggestions\":[]}]"
+                .to_string(),
+        });
+        assert!(uncoded.codes().is_empty());
+        let notes = rejection_notes(
+            &Expectation::Stuck {
+                violation: "linearLeak".to_string(),
+            },
+            &uncoded,
+        );
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0].contains("no error-severity diagnostic"),
+            "{notes:?}"
+        );
+
+        // The ICE banner is the one place a non-batch line is expected; its
+        // E9000 reaches `codes()` so a JSON consumer can filter on it (N2).
         let ice = compiler_verdict(&Compiled::CompileIce(
             "INTERNAL COMPILER ERROR: compiler panicked\n--- compiler stderr ---\n\
              [{\"code\":\"E9000\",\"helps\":[],\"message\":\"internal compiler error: CFG \
@@ -1701,10 +1873,12 @@ mod tests {
         ));
         assert_eq!(
             ice,
-            CompilerVerdict::InternalError(
-                "internal compiler error: CFG verification failed [E9000]".to_string()
-            )
+            CompilerVerdict::InternalError {
+                codes: vec!["E9000".to_string()],
+                detail: "internal compiler error: CFG verification failed [E9000]".to_string(),
+            }
         );
+        assert_eq!(ice.codes(), ["E9000".to_string()]);
     }
 
     #[test]
@@ -1732,7 +1906,108 @@ mod tests {
                 .to_string(),
         });
         assert_eq!(rejected.codes(), ["E0205".to_string()]);
-        assert!(unexpected_rejection_codes(&rejected).is_empty());
+        assert!(
+            rejection_notes(
+                &Expectation::Stuck {
+                    violation: "useAfterMove".to_string()
+                },
+                &rejected
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_rejection_is_checked_against_the_refusal_the_machine_names() {
+        let rejected = |code: &str| CompilerVerdict::Rejected {
+            exit: 1,
+            codes: vec![code.to_string()],
+            detail: "detail".to_string(),
+            schema_error: None,
+        };
+        let stuck = |violation: &str| Expectation::Stuck {
+            violation: violation.to_string(),
+        };
+        // §5.6's leak reaches the compiler either way.
+        assert!(rejection_notes(&stuck("linearLeak"), &rejected("E0406")).is_empty());
+        assert!(rejection_notes(&stuck("linearLeak"), &rejected("E0443")).is_empty());
+        assert!(rejection_notes(&stuck("linearDiscard"), &rejected("E0478")).is_empty());
+        assert!(rejection_notes(&stuck("linearOverwrite"), &rejected("E0493")).is_empty());
+
+        // A code that is in the global ownership vocabulary but names a
+        // different rule than this refusal is still flagged (N1).
+        let notes = rejection_notes(&stuck("linearOverwrite"), &rejected("E0205"));
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("linearOverwrite"), "{notes:?}");
+        assert!(notes[0].contains("E0493"), "{notes:?}");
+        assert!(notes[0].contains("E0205"), "{notes:?}");
+
+        // A refusal this consumer has no table entry for is a decision to make,
+        // not a silent pass.
+        let notes = rejection_notes(&stuck("useAfterDrop"), &rejected("E0333"));
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0].contains("no expected diagnostic code"),
+            "{notes:?}"
+        );
+
+        // Nothing to say about an acceptance.
+        assert!(rejection_notes(&stuck("linearLeak"), &CompilerVerdict::Accepted).is_empty());
+    }
+
+    #[test]
+    fn a_truncated_or_abnormal_native_run_is_never_a_byte_comparison() {
+        let truncated_stdout = Compiled::Ran {
+            exit: 0,
+            stdout: b"7\n1\n".to_vec(),
+            stdout_truncated: true,
+            stderr: String::new(),
+            stderr_truncated: false,
+        };
+        let observed = native_observation(&truncated_stdout).expect("a binary ran");
+        assert!(
+            matches!(&observed, RunObservation::NotObserved(reason) if reason.contains("limit")),
+            "{observed:?}"
+        );
+        // The retained prefix equals what the interpreter expects, and it still
+        // does not prove agreement.
+        assert!(expectation_finding(&ok_expectation(), &observed).is_some());
+
+        let truncated_stderr = Compiled::Ran {
+            exit: 0,
+            stdout: b"7\n1\n".to_vec(),
+            stdout_truncated: false,
+            stderr: "error: integer overflow\n".to_string(),
+            stderr_truncated: true,
+        };
+        assert!(matches!(
+            native_observation(&truncated_stderr),
+            Some(RunObservation::NotObserved(_))
+        ));
+
+        let crashed = native_observation(&Compiled::Crash(11)).expect("a binary ran");
+        assert!(
+            matches!(&crashed, RunObservation::NotObserved(reason) if reason.contains("signal 11")),
+            "{crashed:?}"
+        );
+        let hung = native_observation(&Compiled::Timeout).expect("a binary ran");
+        assert!(
+            matches!(&hung, RunObservation::NotObserved(reason) if reason.contains("terminate")),
+            "{hung:?}"
+        );
+
+        // A clean run is still compared byte for byte.
+        assert_eq!(
+            native_observation(&ran(0, "7\n1\n", "")),
+            Some(RunObservation::Ran {
+                exit: 0,
+                stdout: b"7\n1\n".to_vec(),
+                trap: None,
+            })
+        );
+
+        // A compile-side failure has no run observation at all.
+        assert_eq!(native_observation(&Compiled::CompileTimeout), None);
     }
 
     #[test]
@@ -1751,6 +2026,7 @@ mod tests {
                     exit: 1,
                     codes: vec!["E0406".to_string()],
                     detail: "linear value leaked".to_string(),
+                    schema_error: None,
                 }
             ),
             None
@@ -1765,14 +2041,20 @@ mod tests {
 
         let ice = checker_compiler_finding(
             &accept,
-            &CompilerVerdict::InternalError("CFG verification failed".to_string()),
+            &CompilerVerdict::InternalError {
+                codes: vec!["E9000".to_string()],
+                detail: "CFG verification failed".to_string(),
+            },
         )
         .expect("an ICE is a disagreement on either verdict");
         assert!(ice.contains("internal compiler error"), "{ice}");
         assert!(
             checker_compiler_finding(
                 &Verdict::Reject,
-                &CompilerVerdict::InternalError("boom".to_string())
+                &CompilerVerdict::InternalError {
+                    codes: vec!["E9000".to_string()],
+                    detail: "boom".to_string(),
+                }
             )
             .is_some(),
             "an ICE on a reject case is still a disagreement"
@@ -1785,9 +2067,19 @@ mod tests {
             exit: 1,
             codes: vec!["E0406".to_string(), "E0999".to_string()],
             detail: "two diagnostics".to_string(),
+            schema_error: None,
         };
+        // Both views refuse the program, so they agree; the stray code is a
+        // note a reviewer sees, not a finding.
         assert_eq!(checker_compiler_finding(&Verdict::Reject, &rejected), None);
-        assert_eq!(unexpected_rejection_codes(&rejected), ["E0999".to_string()]);
+        let notes = rejection_notes(
+            &Expectation::Stuck {
+                violation: "linearLeak".to_string(),
+            },
+            &rejected,
+        );
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("E0999"), "{notes:?}");
     }
 
     #[test]
@@ -1851,6 +2143,57 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_program_the_checker_rejects_and_the_compiler_ran_is_reported_on_every_pair() {
+        // S1: when the compiler accepts a program the checker rejects, a binary
+        // exists and the bridge must say what it did — an unsound acceptance is
+        // the most interesting observation this corpus can produce.
+        let expected = Expectation::Stuck {
+            violation: "linearLeak".to_string(),
+        };
+        let ran_clean = ran(0, "1\n", "");
+        let lanes = [
+            (OptimizationLevel::O1, &ran_clean),
+            (OptimizationLevel::O2, &ran_clean),
+        ];
+        let oracle = outcome(0, "1\n", "", None);
+        let findings = observation_findings(&expected, Some(&oracle), &lanes);
+        assert_eq!(
+            findings
+                .iter()
+                .map(|finding| (finding.pair, finding.optimization))
+                .collect::<Vec<_>>(),
+            vec![
+                (Pair::LeanOracle, None),
+                (Pair::LeanNative, Some(OptimizationLevel::O1)),
+                (Pair::LeanNative, Some(OptimizationLevel::O2)),
+            ],
+            "the oracle and both lanes each ran a program that should not run"
+        );
+        for finding in &findings {
+            assert!(finding.detail.contains("linearLeak"), "{finding:?}");
+            assert!(
+                finding.detail.contains("nothing should have run"),
+                "{finding:?}"
+            );
+            assert!(finding.detail.contains("exit 0"), "{finding:?}");
+        }
+        // The oracle and the natives agree with each other, so that pair stays
+        // silent: the disagreement is with Lean, not between implementations.
+        assert!(
+            findings
+                .iter()
+                .all(|finding| finding.pair != Pair::OracleNative)
+        );
+
+        // A run that produced no observation at all is still the finding.
+        let crashed = Compiled::Crash(11);
+        let findings = observation_findings(&expected, None, &[(OptimizationLevel::O1, &crashed)]);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].pair, Pair::LeanNative);
+        assert!(findings[0].detail.contains("signal 11"), "{findings:?}");
+    }
+
     fn agreeing_report() -> Report {
         let case = parse_corpus(ONE_CASE).expect("valid corpus").remove(0);
         Report {
@@ -1858,7 +2201,7 @@ mod tests {
             cases: vec![CaseReport {
                 case,
                 compiler: CompilerVerdict::Accepted,
-                unexpected_codes: Vec::new(),
+                notes: Vec::new(),
                 oracle: Some(RunObservation::Ran {
                     exit: 0,
                     stdout: b"10\n".to_vec(),
@@ -1894,7 +2237,10 @@ mod tests {
     #[test]
     fn a_disagreeing_report_shows_the_program_the_views_and_the_pairs() {
         let mut report = agreeing_report();
-        report.cases[0].compiler = CompilerVerdict::InternalError("CFG verification".to_string());
+        report.cases[0].compiler = CompilerVerdict::InternalError {
+            codes: vec!["E9000".to_string()],
+            detail: "CFG verification".to_string(),
+        };
         report.cases[0].native.clear();
         report.cases[0].findings = vec![Finding {
             pair: Pair::CheckerCompiler,
@@ -1909,7 +2255,11 @@ mod tests {
         assert!(text.contains("Lean     : the checker accepts"), "{text}");
         assert!(text.contains("compiler : reported an internal"), "{text}");
         assert!(text.contains("oracle   : exit 0"), "{text}");
-        assert!(text.contains("native   : not run"), "{text}");
+        // The reader is told why nothing ran, not left to infer it (N3).
+        assert!(
+            text.contains("native   : not run (the compiler produced no binary)"),
+            "{text}"
+        );
         assert!(
             text.contains("checker <-> compiler: the checker accepts, the compiler ICEd"),
             "{text}"
@@ -1925,16 +2275,23 @@ mod tests {
             exit: 1,
             codes: vec!["E0406".to_string(), "E0999".to_string()],
             detail: "two diagnostics".to_string(),
+            schema_error: None,
         };
-        report.cases[0].unexpected_codes = unexpected_rejection_codes(&report.cases[0].compiler);
+        report.cases[0].notes = rejection_notes(
+            &Expectation::Stuck {
+                violation: "linearLeak".to_string(),
+            },
+            &report.cases[0].compiler,
+        );
         let text = render_report(&report);
         // An agreed rejection still shows its codes, and an unexpected one is
         // called out without being counted as a disagreement.
         assert!(text.contains("agree (E0406, E0999)"), "{text}");
         assert!(
-            text.contains("rejected with an unexpected code: E0999"),
+            text.contains("— rejected with an unexpected code"),
             "{text}"
         );
+        assert!(text.contains("E0999"), "{text}");
         assert!(!text.contains("DISAGREE"), "{text}");
     }
 
@@ -1957,6 +2314,7 @@ mod tests {
         assert_eq!(case["expected"]["stdout"][0], "10");
         assert_eq!(case["compiler"]["outcome"], "accepted");
         assert_eq!(case["native"][0]["optimization"], "O1");
+        assert_eq!(case["notes"].as_array().expect("array").len(), 0);
         assert_eq!(case["agrees"], true);
         assert_eq!(case["disagreements"].as_array().expect("array").len(), 0);
     }
