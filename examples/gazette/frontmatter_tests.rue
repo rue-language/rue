@@ -60,11 +60,21 @@ test "nested tables and arrays are reachable through the arena" {
     @assert_eq(arena.scalar(arena.item(authors, 1)), "claude");
 }
 
-test "out-of-subset constructs each produce a diagnostic, not a guess" {
+test "remaining out-of-subset constructs produce diagnostics" {
     let mut arena = value.Arena.new();
     let bad: StrBuf = "+++\na = 'literal'\nb = { x = 1 }\nc.d = 1\n[deep.table]\ne = -3\n+++\n";
     let _ = frontmatter.parse(inout arena, borrow bad);
-    @assert_eq(arena.error_count(), 5);
+    @assert_eq(arena.error_count(), 4);
+}
+
+test "inline tables and multiline arrays are preserved" {
+    let mut arena = value.Arena.new();
+    let page: StrBuf = "+++\nitems = [\n  { theme = \"dark\", filename = \"dark.css\" },\n  { theme = \"light\", filename = \"light.css\" }\n]\n+++\n";
+    let front = frontmatter.parse(inout arena, borrow page);
+    @assert(front.ok);
+    let items = arena.map_get_literal(front.root, "items");
+    @assert_eq(arena.length(items), 2);
+    @assert_eq(arena.scalar(arena.map_get_literal(arena.item(items, 1), "filename")), "light.css");
 }
 
 // --- probes of the runner itself ------------------------------------------

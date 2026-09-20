@@ -1,0 +1,30 @@
+{
+  "rue": {
+    "keywords": ["borrow", "break", "checked", "comptime", "const", "continue", "drop", "else", "enum", "extern", "fn", "for", "if", "impl", "in", "inout", "interface", "let", "linear", "loop", "match", "mut", "pub", "return", "struct", "unchecked", "while", "yield"],
+    "types": ["Self", "bool", "f32", "f64", "i16", "i32", "i64", "i8", "ptr", "type", "u16", "u32", "u64", "u8"],
+    "constants": ["false", "true"],
+    "special": ["self"],
+    "line_comment": "//",
+    "quotes": "\"",
+    "intrinsic_prefix": "@",
+    "operators": "=<>!+-*/%&|^~",
+    "punctuation": "{}()[],;:"
+  },
+  "ebnf": {
+    "definition_suffix": "=",
+    "block_start": "(*",
+    "block_end": "*)",
+    "quotes": "\"'",
+    "operators": "=|,.",
+    "punctuation": "{}()[];"
+  },
+  "bash": {
+    "keywords": ["case", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if", "in", "then", "until", "while"],
+    "types": ["export", "local", "readonly"],
+    "line_comment": "#",
+    "quotes": "\"'`",
+    "intrinsic_prefix": "$",
+    "operators": "=<>!+-*/%&|",
+    "punctuation": "{}()[];"
+  }
+}

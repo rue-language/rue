@@ -9,7 +9,7 @@
 // of them is a separate, later decision that nothing here presumes.
 //
 //   gazette                                     run the self-test
-//   gazette build SITE_DIR -o OUTPUT_DIR [--list]
+//   gazette build SITE_DIR -o OUTPUT_DIR [--base-url URL] [--list]
 //   gazette render [-t NAME=PATH]… [-u URL] [--template-out NAME] FILE.md
 //
 // `build` is the whole program: SITE_DIR holds `config.toml`, `content/`,
@@ -52,6 +52,7 @@ const value = @import("value.rue");
 const tests_text = @import("text_tests.rue");
 const tests_frontmatter = @import("frontmatter_tests.rue");
 const tests_markdown = @import("markdown_tests.rue");
+const tests_highlight = @import("highlight_tests.rue");
 const StrBuf = std.strbuf.StrBuf;
 const OptStr = std.option.Option(StrBuf);
 
@@ -198,6 +199,16 @@ fn self_test(inout report: StrBuf) -> u64 {
     summary.push_str(text.decimal(arena.error_count()));
     check(inout report, inout failures, "front-matter scalars, table, array, multi-line string",
         borrow summary, "Scope/12/true/2026-06-11/2/claude/18/0");
+    let mut config_arena = value.Arena.new();
+    let config_source: StrBuf = "highlight_themes_css = [\n  { theme = \"dark\", filename = \"dark.css\" },\n  { theme = \"light\", filename = \"light.css\" },\n]\n";
+    let config_front = frontmatter.parse_document(inout config_arena, borrow config_source);
+    let config_items = config_arena.map_get_literal(config_front.root, "highlight_themes_css");
+    check(inout report, inout failures, "config multiline array of inline tables",
+        borrow text.decimal(config_arena.length(config_items)), "2");
+    let mut inline_arena = value.Arena.new();
+    let inline_source: StrBuf = "x = { theme = \"dark\", filename = \"dark.css\" }\n";
+    let inline_doc = frontmatter.parse_document(inout inline_arena, borrow inline_source);
+    check(inout report, inout failures, "single inline table", borrow text.decimal(inline_arena.length(inline_doc.root)), "1");
 
     // Constructs outside the subset are diagnostics, not guesses.
     let mut rejected = value.Arena.new();
@@ -205,7 +216,7 @@ fn self_test(inout report: StrBuf) -> u64 {
     bad.push_str("+++\na = 'literal'\nb = { x = 1 }\nc.d = 1\n[deep.table]\ne = -3\n+++\n");
     let _ = frontmatter.parse(inout rejected, borrow bad);
     check(inout report, inout failures, "front-matter rejects out-of-subset constructs",
-        borrow text.decimal(rejected.error_count()), "5");
+        borrow text.decimal(rejected.error_count()), "4");
 
     // --- markdown -----------------------------------------------------------
     let mut eng = ast.Engine.new();
@@ -567,6 +578,12 @@ fn main() -> i32 {
                         OptStr.Some(dir) => { output = dir; have_output = true; },
                         OptStr.None => { return 2; },
                     }
+                } else if str_eq(borrow a, "--base-url") {
+                    i += 1;
+                    match std.env.arg(i) {
+                        OptStr.Some(url) => { eng.set_global(eng.key("__base_url_override"), eng.arena.string(borrow url)); },
+                        OptStr.None => { return 2; },
+                    }
                 } else if str_eq(borrow a, "-u") {
                     i += 1;
                     match std.env.arg(i) {
@@ -615,7 +632,7 @@ fn main() -> i32 {
 
     if mode_build {
         if !have_target || !have_output {
-            print("usage: gazette build SITE_DIR -o OUTPUT_DIR [--list]\n");
+            print("usage: gazette build SITE_DIR -o OUTPUT_DIR [--base-url URL] [--list]\n");
             return 2;
         }
         let mut report = StrBuf.new();
@@ -630,7 +647,7 @@ fn main() -> i32 {
     }
 
     if !mode_render || !have_target {
-        print("usage: gazette [build SITE_DIR -o OUTPUT_DIR [--list]] [render [-t NAME=PATH]... [-u URL] [--template-out NAME] FILE.md]\n");
+        print("usage: gazette [build SITE_DIR -o OUTPUT_DIR [--base-url URL] [--list]] [render [-t NAME=PATH]... [-u URL] [--template-out NAME] FILE.md]\n");
         return 2;
     }
 

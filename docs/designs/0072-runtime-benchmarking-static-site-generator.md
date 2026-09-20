@@ -151,6 +151,13 @@ runtime series begins in Phase 1 with a declared existing-example workload
 (see Implementation Phases), so measurement infrastructure exists before the
 workload that motivates it.
 
+Gazette also builds the production website (RUE-2253), using the production
+configuration and templates. That build enables JSON data loading, pagination,
+explicit routes and leaf bundles, syntax highlighting, search documents,
+minification, and site metadata. The benchmark continues using its versioned
+feature subset and template ports; enabling a production feature does not
+silently widen the measured workload. See `examples/gazette/README.md`.
+
 ### 2. Build the live corpus and record its identity per observation
 
 The runtime workload input is the live rue-lang.dev content, assembled at

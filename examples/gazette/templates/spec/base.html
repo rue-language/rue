@@ -16,9 +16,9 @@
       flattened nav emits the same link targets and the same visible text on
       every page.
 
-    * The macro's `depth` parameter is dropped. Gazette's expression grammar
-      has no arithmetic, so `depth=depth + 1` cannot be written, and the
-      parameter is never read for output in production either — the sibling
+    * The macro's `depth` parameter stays dropped in this versioned benchmark
+      port. Gazette supports `depth=depth + 1` in production; the parameter
+      is never read for output there either — the sibling
       `tutorial/base.html` and `std/base.html` macros declare no depth at all.
       Nothing rendered depends on it.
 #}

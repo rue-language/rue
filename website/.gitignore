@@ -5,3 +5,6 @@ content/spec/
 # Field Report came to report invented numbers (RUE-1261).
 static/status.json
 static/performance-data.json
+
+# Atomic Gazette output staging.
+.public.*/

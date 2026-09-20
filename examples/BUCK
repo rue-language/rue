@@ -76,6 +76,7 @@ filegroup(
         name = _name,
         root = "examples/{}.rue".format(_root),
         srcs = _srcs,
+        visibility = ["//:"] if _name == "gazette" else [],
     )
     for _name, _root, _srcs in [
         ("first-stats", "first/stats", ["first/stats.rue"]),

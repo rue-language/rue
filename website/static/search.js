@@ -14,7 +14,25 @@
         fetch('/search_index.en.json')
             .then(response => response.json())
             .then(data => {
-                searchIndex = elasticlunr.Index.load(data);
+                if (!Array.isArray(data.documents)) {
+                    throw new Error('Invalid Gazette search documents');
+                }
+                // Gazette publishes the content; Elasticlunr owns the same
+                // tokenization, stemming, ranking and prefix expansion used
+                // for queries. Keeping both sides here avoids a second search
+                // implementation in the site generator.
+                searchIndex = elasticlunr(function() {
+                    this.setRef('ref');
+                    this.addField('title');
+                    this.addField('description');
+                    this.addField('path');
+                    this.addField('body');
+                });
+                data.documents.forEach(doc => {
+                    const content = document.createElement('template');
+                    content.innerHTML = doc.body || '';
+                    searchIndex.addDoc({ ...doc, body: content.content.textContent || '' });
+                });
             })
             .catch(err => {
                 console.error('Failed to load search index:', err);
@@ -58,7 +76,7 @@
             }
             
             searchResults.innerHTML = results.map(result =>
-                '<a href="' + result.path + '" class="search-result-item">' +
+                '<a href="' + escapeHtml(result.path).replace(/"/g, '&quot;') + '" class="search-result-item">' +
                 '<div class="search-result-title">' + escapeHtml(result.title) + '</div>' +
                 '<div class="search-result-body">' + escapeHtml(result.body) + '</div>' +
                 '</a>'

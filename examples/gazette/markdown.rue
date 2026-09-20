@@ -7,7 +7,7 @@
 //
 //   blocks   ATX headings (h1–h6; the corpus uses h1–h3), paragraphs with soft
 //            and hard line breaks, fenced code with an info string, block
-//            quotes, tight unordered and ordered lists, thematic breaks, GFM
+//            quotes, tight and loose unordered/ordered lists, thematic breaks, GFM
 //            pipe tables, HTML blocks
 //   inline   code spans, `**strong**`, `*emphasis*`, `_emphasis_`, inline
 //            links, reference links with their definitions, images, URI
@@ -24,8 +24,7 @@
 // is measured against.
 //
 // REJECTED, loudly, each with the source line: setext headings under EITHER
-// marker (`===` and `---`), indented code blocks, nested lists, loose
-// (blank-line-separated) list items, table alignment colons, strikethrough,
+// marker (`===` and `---`), indented code blocks, nested lists, table alignment colons, strikethrough,
 // footnotes, email autolinks, reference links with no definition, block
 // shortcodes (`{% … %}`), unknown shortcode names, and nesting deeper than the
 // engine's depth guard. Per ADR-0072 Decision 3 that is deliberate — the
@@ -61,6 +60,7 @@
 // corpus is hard-wrapped prose, and joining its lines with spaces would change
 // the byte content of every paragraph relative to Zola's output.
 const std = @import("std");
+const highlight = @import("highlight.rue");
 const ast = @import("tmpl_ast.rue");
 const text = @import("text.rue");
 const tmpl_eval = @import("tmpl_eval.rue");
@@ -395,10 +395,12 @@ fn render_fence(
     let info_start = text.trim_start_at(borrow body, s + 3, end);
     let info_end = text.trim_end_at(borrow body, info_start, end);
 
-    out.push_str("<pre><code");
+    let language = text.slice(borrow body, info_start, info_end);
+    let syntax = highlight.syntax_for(inout eng, borrow language);
+    if syntax == NONE() { out.push_str("<pre><code"); }
+    else { out.push_str("<pre class=\"g-code\"><code"); }
     if info_end > info_start {
         out.push_str(" class=\"language-");
-        let language = text.slice(borrow body, info_start, info_end);
         text.append_escaped_attr(borrow language, inout out);
         out.push_str("\"");
     }
@@ -414,17 +416,19 @@ fn render_fence(
     // CommonMark.
     let mut at = text.next_line(borrow body, offset);
     let mut closed = false;
+    let mut code = StrBuf.new();
     while at < body.len() && !closed {
         let line_end = text.line_end(borrow body, at);
         let ls = text.trim_start_at(borrow body, at, line_end);
         if is_fence(borrow body, ls, line_end) {
             closed = true;
         } else {
-            text.append_escaped_text(borrow body, at, line_end, inout out);
-            out.push(10);
+            code.append_borrowed(borrow text.slice(borrow body, at, line_end));
+            code.push(10);
         }
         at = text.next_line(borrow body, at);
     }
+    highlight.render(inout eng, syntax, borrow code, inout out);
     out.push_str("</code></pre>\n");
     at
 }
@@ -535,6 +539,8 @@ fn render_list(
         out.push_str("<ul>\n");
     }
 
+    let mut items = std.arraybuf.ArrayBuf(u64).new();
+    let mut loose = false;
     let mut at = offset;
     let mut line = first_line;
     let mut running = true;
@@ -569,30 +575,35 @@ fn render_list(
             item_lines += 1;
         }
 
-        out.push_str("<li>");
-        render_inline(inout eng, borrow item, borrow refs, 0, item.len(), line, inout out);
-        out.push_str("</li>\n");
+        let mut item_html = StrBuf.new();
+        render_inline(inout eng, borrow item, borrow refs, 0, item.len(), line, inout item_html);
+        items.push(eng.arena.strings.intern(borrow item_html));
 
         line += item_lines;
         at = next;
 
-        // A blank line ENDS the list here rather than making it loose: every
-        // list in the corpus is tight, and a loose list renders each item
-        // wrapped in `<p>`, which would silently disagree with Zola.
-        if at < body.len() {
-            let peek_end = text.line_end(borrow body, at);
-            if text.blank_range(borrow body, at, peek_end) {
-                let after = text.next_line(borrow body, at);
-                if after < body.len() {
-                    let after_end = text.line_end(borrow body, after);
-                    let after_s = text.trim_start_at(borrow body, after, after_end);
-                    if list_marker(borrow body, after_s, after_end).width > 0 {
-                        fail(inout eng, line, "loose (blank-line-separated) lists are outside the subset", NONE());
-                    }
-                }
-                running = false;
-            }
+        // Blank-separated siblings form one loose list. Delay the wrappers
+        // until the entire list is known so its first item is loose too.
+        let mut after = at;
+        let mut blanks: u64 = 0;
+        while after < body.len() && text.blank_range(borrow body, after, text.line_end(borrow body, after)) {
+            after = text.next_line(borrow body, after); blanks += 1;
         }
+        if blanks > 0 {
+            let end = text.line_end(borrow body, after);
+            let start = text.trim_start_at(borrow body, after, end);
+            let sibling = list_marker(borrow body, start, end);
+            if after < body.len() && start == after && sibling.width > 0 && sibling.ordered == marker.ordered {
+                loose = true; at = after; line += blanks;
+            } else { running = false; }
+        }
+    }
+    let mut i: u64 = 0;
+    while i < items.len() {
+        out.push_str(if loose { "<li>\n<p>" } else { "<li>" });
+        eng.arena.strings.append(items.get_or(i, NONE()), inout out);
+        out.push_str(if loose { "</p>\n</li>\n" } else { "</li>\n" });
+        i += 1;
     }
 
     if marker.ordered { out.push_str("</ol>\n"); } else { out.push_str("</ul>\n"); }
@@ -930,7 +941,7 @@ fn render_inline_body(
                 text.append_escaped_prose(borrow src, literal, i, inout out);
                 out.push_str("<code>");
                 let cs = code_trim_start(borrow src, i + ticks, close);
-                let ce = code_trim_end(borrow src, cs, close);
+                let ce = if cs > i + ticks { close - 1 } else { close };
                 text.append_escaped_code_span(borrow src, cs, ce, inout out);
                 out.push_str("</code>");
                 i = close + ticks;
@@ -1114,13 +1125,17 @@ fn find_closing_ticks(borrow src: StrBuf, from: u64, end: u64, ticks: u64) -> u6
 // CommonMark strips one leading and trailing space from a code span when both
 // are present, so `` ` `` renders as a lone backtick.
 fn code_trim_start(borrow src: StrBuf, start: u64, end: u64) -> u64 {
-    if end > start + 1 && text.byte_of(borrow src, start) == 32
-        && text.byte_of(borrow src, end - 1) == 32 { start + 1 } else { start }
-}
-
-fn code_trim_end(borrow src: StrBuf, start: u64, end: u64) -> u64 {
-    if end > start && text.byte_of(borrow src, end - 1) == 32
-        && text.byte_of(borrow src, start) != 32 { end - 1 } else { end }
+    if end <= start + 1 { return start; }
+    let first = text.byte_of(borrow src, start);
+    let last = text.byte_of(borrow src, end - 1);
+    if !(first == 32 || first == 10 || first == 13) || !(last == 32 || last == 10 || last == 13) { return start; }
+    let mut i = start;
+    while i < end {
+        let b = text.byte_of(borrow src, i);
+        if b != 32 && b != 10 && b != 13 { return start + 1; }
+        i += 1;
+    }
+    start
 }
 
 // The length of a `*`/`_` run that can open emphasis. An `_` between word

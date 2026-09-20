@@ -2,7 +2,7 @@
 //
 // FILTERS — the set ADR-0072 Decision 3 names, which is the set the site's own
 // templates use: `safe`, `default`, `date`, `upper`, `lower`, `truncate`,
-// `striptags`, `pluralize`, `sort`, `slice`, `join`. Plus `starts_with`, which
+// `striptags`, `pluralize`, `sort`, `slice`, `join`, `get`. Plus `starts_with`, which
 // Decision 3 gained with the macro amendment: the production specification
 // sidebar gates its `active` class and its own recursion on Tera's
 // `x is starting_with(y)`, and the test has to be evaluated by the engine
@@ -17,7 +17,8 @@
 // only difference is that a macro's declared parameters supply defaults and
 // make an undeclared argument an error. Macro output is raw, as in Tera.
 //
-// FUNCTIONS — `get_url` and `get_section`, the URL and section lookups. Neither
+// FUNCTIONS — `load_data` parses site-relative JSON through std.json.
+// `get_url` and `get_section` are the URL and section lookups. Neither
 // knows anything about this corpus: `get_url` joins against the `__base_url`
 // global and resolves Zola's `@/…` internal-link form, and `get_section` is a
 // lookup in the `__sections` global map. The host supplies both globals, so the
@@ -34,6 +35,7 @@ const std = @import("std");
 const ast = @import("tmpl_ast.rue");
 const text = @import("text.rue");
 const tmpl_parse = @import("tmpl_parse.rue");
+const frontmatter = @import("frontmatter.rue");
 const value = @import("value.rue");
 const StrBuf = std.strbuf.StrBuf;
 
@@ -56,6 +58,7 @@ pub fn eval(inout eng: ast.Engine, index: u64, line: u64) -> u64 {
     if e.tag == ast.EX_STR() { return eng.arena.string_id(e.a); }
     if e.tag == ast.EX_INT() { return eng.arena.integer(e.a); }
     if e.tag == ast.EX_BOOL() { return eng.arena.boolean(e.a == 1); }
+    if e.tag == ast.EX_ARRAY() { return eval_array(inout eng, e.a, line); }
     if e.tag == ast.EX_PATH() { return eval_path(inout eng, e); }
     if e.tag == ast.EX_NOT() {
         let inner = eval(inout eng, e.a, line);
@@ -65,6 +68,17 @@ pub fn eval(inout eng: ast.Engine, index: u64, line: u64) -> u64 {
     if e.tag == ast.EX_CALL() { return eval_call(inout eng, e, line); }
     if e.tag == ast.EX_FILTER() { return eval_filter(inout eng, e, line); }
     eng.arena.null()
+}
+
+fn eval_array(inout eng: ast.Engine, head: u64, line: u64) -> u64 {
+    let mut values = value.U64s.new();
+    let mut current = head;
+    while current != NONE() {
+        let arg = eng.expr(current);
+        values.push(eval(inout eng, arg.b, line));
+        current = arg.next;
+    }
+    eng.arena.array(borrow values)
 }
 
 // A dotted path is a scope lookup followed by map descents. A missing root or
@@ -98,13 +112,45 @@ fn eval_binop(inout eng: ast.Engine, e: ast.Expr, line: u64) -> u64 {
     }
     let l = eval(inout eng, e.b, line);
     let r = eval(inout eng, e.c, line);
-    if e.a == ast.OP_EQ() { return eng.arena.boolean(eng.arena.equal(l, r)); }
-    if e.a == ast.OP_NE() { return eng.arena.boolean(!eng.arena.equal(l, r)); }
+    let numeric_pair = (eng.arena.tag(l) == value.V_INT() || eng.arena.tag(l) == value.V_NUM())
+        && (eng.arena.tag(r) == value.V_INT() || eng.arena.tag(r) == value.V_NUM());
+    if e.a == ast.OP_EQ() {
+        if numeric_pair { let order = compare_values(inout eng, l, r); return eng.arena.boolean(order == 1); }
+        return eng.arena.boolean(eng.arena.equal(l, r));
+    }
+    if e.a == ast.OP_NE() {
+        if numeric_pair { let order = compare_values(inout eng, l, r); return eng.arena.boolean(order != 1); }
+        return eng.arena.boolean(!eng.arena.equal(l, r));
+    }
     let order = compare_values(inout eng, l, r);
     if e.a == ast.OP_LT() { return eng.arena.boolean(order == 0); }
     if e.a == ast.OP_LE() { return eng.arena.boolean(order != 2); }
     if e.a == ast.OP_GT() { return eng.arena.boolean(order == 2); }
     if e.a == ast.OP_GE() { return eng.arena.boolean(order != 0); }
+    if e.a == ast.OP_ADD() || e.a == ast.OP_SUB() || e.a == ast.OP_MUL()
+        || e.a == ast.OP_DIV() || e.a == ast.OP_MOD() {
+        if eng.arena.tag(l) != value.V_INT() || eng.arena.tag(r) != value.V_INT() {
+            fail(inout eng, line, "arithmetic expects integer operands", NONE());
+            return eng.arena.null();
+        }
+        let x = eng.arena.at(l).num;
+        let y = eng.arena.at(r).num;
+        if (e.a == ast.OP_SUB() && x < y)
+            || (e.a == ast.OP_ADD() && x > 18446744073709551615 - y)
+            || (e.a == ast.OP_MUL() && y != 0 && x > 18446744073709551615 / y) {
+            fail(inout eng, line, "arithmetic result is outside the unsigned integer range", NONE());
+            return eng.arena.null();
+        }
+        if (e.a == ast.OP_DIV() || e.a == ast.OP_MOD()) && y == 0 {
+            fail(inout eng, line, "arithmetic division by zero", NONE());
+            return eng.arena.null();
+        }
+        if e.a == ast.OP_ADD() { return eng.arena.integer(x + y); }
+        if e.a == ast.OP_SUB() { return eng.arena.integer(x - y); }
+        if e.a == ast.OP_MUL() { return eng.arena.integer(x * y); }
+        if e.a == ast.OP_DIV() { return eng.arena.integer(x / y); }
+        return eng.arena.integer(x % y);
+    }
     fail(inout eng, line, "unrecognized comparison", NONE());
     eng.arena.boolean(false)
 }
@@ -113,16 +159,71 @@ fn eval_binop(inout eng: ast.Engine, e: ast.Expr, line: u64) -> u64 {
 // compares as its rendered bytes, which is what makes `| sort` over a list of
 // section paths agree with Zola's alphabetical ordering.
 fn compare_values(inout eng: ast.Engine, a: u64, b: u64) -> u64 {
-    if eng.arena.tag(a) == value.V_INT() && eng.arena.tag(b) == value.V_INT() {
-        let x = eng.arena.at(a).num;
-        let y = eng.arena.at(b).num;
-        if x < y { return 0; }
-        if x > y { return 2; }
-        return 1;
-    }
+    let an = eng.arena.tag(a) == value.V_INT() || eng.arena.tag(a) == value.V_NUM();
+    let bn = eng.arena.tag(b) == value.V_INT() || eng.arena.tag(b) == value.V_NUM();
+    if an && bn { return compare_number_text(borrow eng.arena.scalar(a), borrow eng.arena.scalar(b)); }
     let ia = eng.arena.scalar_id(a);
     let ib = eng.arena.scalar_id(b);
     eng.arena.strings.compare(ia, ib)
+}
+
+fn compare_number_text(borrow a: StrBuf, borrow b: StrBuf) -> u64 {
+    let mut na = split_number(borrow a); let mut nb = split_number(borrow b);
+    if na.neg != nb.neg { return if na.neg { 0 } else { 2 }; }
+    let mut order: u64 = 1;
+    while na.whole.len() > 1 && text.byte_of(borrow na.whole, 0) == 48 { na.whole = text.slice(borrow na.whole, 1, na.whole.len()); }
+    while nb.whole.len() > 1 && text.byte_of(borrow nb.whole, 0) == 48 { nb.whole = text.slice(borrow nb.whole, 1, nb.whole.len()); }
+    if na.whole.len() < nb.whole.len() { order = 0; } else if na.whole.len() > nb.whole.len() { order = 2; }
+    if order == 1 { let mut k: u64 = 0; while k < na.whole.len() { let x=text.byte_of(borrow na.whole,k); let y=text.byte_of(borrow nb.whole,k); if x<y { order=0; break; } if x>y { order=2; break; } k+=1; } }
+    let mut k: u64 = 0; while order == 1 && k < na.frac.len() || order == 1 && k < nb.frac.len() { let x=if k<na.frac.len(){text.byte_of(borrow na.frac,k)}else{48}; let y=if k<nb.frac.len(){text.byte_of(borrow nb.frac,k)}else{48}; if x<y {order=0;} else if x>y {order=2;} k+=1; }
+    if na.neg { if order == 0 { 2 } else if order == 2 { 0 } else { 1 } } else { order }
+}
+
+struct NumberParts { neg: bool, whole: StrBuf, frac: StrBuf }
+fn split_number(borrow s: StrBuf) -> NumberParts {
+    let mut i: u64 = 0;
+    let mut neg = s.len() > 0 && text.byte_of(borrow s, 0) == 45;
+    if neg { i = 1; }
+    let mut whole = StrBuf.new(); let mut frac = StrBuf.new(); let mut dot = false;
+    while i < s.len() {
+        let c = text.byte_of(borrow s, i);
+        if c == 46 { dot = true; }
+        else if c >= 48 && c <= 57 { if dot { frac.push(c); } else { whole.push(c); } }
+        else if c == 101 || c == 69 { break; }
+        i += 1;
+    }
+    if whole.len() == 0 { whole.push(48); }
+    let mut exponent: u64 = 0; let mut exponent_negative = false;
+    let e = text.find_byte(borrow s, 101, 0);
+    let upper = text.find_byte(borrow s, 69, 0);
+    let at = if e < upper { e } else { upper };
+    if at < s.len() {
+        let mut j = at + 1;
+        if j < s.len() && (text.byte_of(borrow s, j) == 45 || text.byte_of(borrow s, j) == 43) {
+            exponent_negative = text.byte_of(borrow s, j) == 45; j += 1;
+        }
+        while j < s.len() { let c = text.byte_of(borrow s, j); if c >= 48 && c <= 57 { exponent = exponent * 10 + @intCast(c - 48); } j += 1; }
+    }
+    let mut digits = whole.clone(); digits.append_borrowed(borrow frac);
+    if exponent > 0 {
+        if exponent_negative {
+            let decimal = whole.len();
+            if exponent >= decimal {
+                let mut moved = StrBuf.new(); let mut z: u64 = 0; while z < exponent - decimal { moved.push(48); z += 1; }
+                moved.append_borrowed(borrow digits); whole = StrBuf.new(); whole.push(48); frac = moved;
+            } else {
+                let split = decimal - exponent; whole = text.slice(borrow digits, 0, split); frac = text.slice(borrow digits, split, digits.len());
+            }
+        } else {
+            let decimal = whole.len() + exponent;
+            if decimal >= digits.len() { whole = digits.clone(); let mut z = digits.len(); while z < decimal { whole.push(48); z += 1; } frac = StrBuf.new(); }
+            else { whole = text.slice(borrow digits, 0, decimal); frac = text.slice(borrow digits, decimal, digits.len()); }
+        }
+    }
+    let mut nonzero = false; i = 0; while i < whole.len() { if text.byte_of(borrow whole, i) != 48 { nonzero = true; } i += 1; }
+    i = 0; while i < frac.len() { if text.byte_of(borrow frac, i) != 48 { nonzero = true; } i += 1; }
+    if !nonzero { neg = false; }
+    NumberParts{neg:neg,whole:whole,frac:frac}
 }
 
 // The value of a named argument, or NONE when it was not supplied.
@@ -142,6 +243,24 @@ fn arg_of(inout eng: ast.Engine, head: u64, name: StrBuf, line: u64) -> u64 {
 // ---------------------------------------------------------------------------
 
 fn eval_call(inout eng: ast.Engine, e: ast.Expr, line: u64) -> u64 {
+    if eng.arena.strings.equals_literal(e.a, "load_data") {
+        let path = arg_of(inout eng, e.b, "path", line);
+        if path == NONE() { fail(inout eng, line, "load_data requires a `path` argument", e.a); return eng.arena.null(); }
+        let format = arg_of(inout eng, e.b, "format", line);
+        if format != NONE() && !eng.arena.strings.equals_literal(eng.arena.scalar_id(format), "json") {
+            fail(inout eng, line, "load_data only supports JSON", e.a);
+            return eng.arena.null();
+        }
+        let root = eng.arena.scalar(eng.lookup(eng.key("__site_root")));
+        let relative = eng.arena.scalar(path);
+        let mut full = text.slice(borrow root, 0, root.len());
+        if full.len() > 0 && text.byte_of(borrow full, full.len() - 1) != 47 { full.push(47); }
+        full.append_borrowed(borrow relative);
+        let input = read_data_file(borrow full);
+        if !input.ok { fail(inout eng, line, "load_data cannot read the requested file", eng.arena.scalar_id(path)); return eng.arena.null(); }
+        let parsed = frontmatter.parse_json(inout eng.arena, borrow input.data);
+        return parsed.root;
+    }
     if eng.arena.strings.equals_literal(e.a, "get_url") {
         let path = arg_of(inout eng, e.b, "path", line);
         if path == NONE() {
@@ -173,6 +292,26 @@ fn eval_call(inout eng: ast.Engine, e: ast.Expr, line: u64) -> u64 {
     }
     fail(inout eng, line, "unknown template function", e.a);
     eng.arena.null()
+}
+
+struct DataInput { data: StrBuf, ok: bool }
+const FileRes = std.result.Result(std.fs.File, std.fs.FileError);
+const ReadRes = std.result.Result(u64, std.fs.FileError);
+
+fn read_data_file(borrow path: StrBuf) -> DataInput {
+    let mut raw = std.arraybuf.ArrayBuf(u8).new();
+    let mut file = match std.fs.File.open(borrow path) {
+        FileRes.Ok(f) => f,
+        FileRes.Err(_e) => return DataInput { data: StrBuf.new(), ok: false },
+    };
+    let mut ok = true;
+    loop {
+        raw.reserve(65536);
+        let n = match file.read(inout raw) { ReadRes.Ok(k) => k, ReadRes.Err(_e) => { ok = false; 0 } };
+        if n == 0 { break; }
+    }
+    let _ = file.close();
+    DataInput { data: StrBuf.from_bytes(borrow raw), ok: ok }
 }
 
 // Zola's `get_url`. An `@/…` argument is an internal content path — the same
@@ -258,6 +397,15 @@ fn has_scheme(borrow raw: StrBuf) -> bool {
 pub fn content_route(inout eng: ast.Engine, borrow raw: StrBuf, from: u64) -> StrBuf {
     let hash = text.find_byte(borrow raw, 35, from);
     let body = text.slice(borrow raw, from, hash);
+    let routes = eng.lookup(eng.key("__routes"));
+    let route_key = eng.arena.strings.intern(borrow body);
+    let explicit = eng.arena.map_get(routes, route_key);
+    if explicit != NONE() {
+        let mut routed = eng.arena.scalar(explicit);
+        let fragment = text.slice(borrow raw, hash, raw.len());
+        routed.append_borrowed(borrow fragment);
+        return routed;
+    }
     let mut end = hash;
     let mut add_slash = false;
     if body.ends_with(borrow "/_index.md") {
@@ -416,6 +564,12 @@ fn eval_filter(inout eng: ast.Engine, e: ast.Expr, line: u64) -> u64 {
     }
     if eng.arena.strings.equals_literal(name, "sort") {
         return filter_sort(inout eng, input, args, line);
+    }
+    if eng.arena.strings.equals_literal(name, "get") {
+        let key = arg_of(inout eng, args, "key", line);
+        if key == NONE() { fail(inout eng, line, "get requires a `key` argument", name); return eng.arena.null(); }
+        let found = eng.arena.map_get(input, eng.arena.scalar_id(key));
+        return if found == NONE() { eng.arena.null() } else { found };
     }
     // Tera spells this as the test `x is starting_with(y)`. A filter needs no
     // new grammar and reads the same way, and it must exist in the ENGINE: the

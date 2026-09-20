@@ -7,12 +7,10 @@
 # here moves the identity and therefore starts a new comparable segment in the
 # series rather than silently shifting an existing one.
 #
-# It holds only keys gazette reads. The features the equivalence subset excludes
-# — syntax highlighting, the search index, HTML minification, Sass, Tailwind,
-# image processing, taxonomies, and pagination — have no switches here because
-# gazette implements none of them; the peers' parity configurations are where
-# those are turned OFF, which is the asymmetry Decision 3's published caption
-# exists to disclose.
+# Production enables highlighting, search documents and HTML minification in
+# website/config.toml. They stay disabled here to preserve the benchmark's
+# versioned equivalence subset. Pagination is removed during corpus assembly;
+# Tailwind remains outside every tool's measured boundary.
 base_url = "https://rue-lang.dev"
 title = "Rue"
 description = "A systems programming language with memory safety and high-level ergonomics"

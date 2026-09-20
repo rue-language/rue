@@ -14,16 +14,15 @@
 //
 //   routes        `_index.md` is its directory's section; `<name>.md` becomes
 //                 `<name>/index.html`; the content root's `_index.md` is `/`
-//   sections      every content directory is a section and MUST carry an
-//                 `_index.md` — a directory without one is a diagnostic, not
-//                 an implicit section, for the same documented-subset reason
-//                 the libraries reject unknown Markdown
+//   sections      `_index.md` declares a section. Leaf `index.md` bundles
+//                 belong to their nearest enclosing section; a directory of
+//                 ordinary pages still needs a declared section.
 //   ordering      `sort_by = "weight" | "date"`, else content-path order
 //   templates     a page's own `template`, else its section's `page_template`,
 //                 else `page.html`; a section's own `template`, else
 //                 `section.html`
 //   feeds         a section with `generate_feeds = true` emits `rss.xml`
-//                 beside its index
+//                 beside its index; the site flag emits a root feed too
 //   redirects     a section with `redirect_to` emits Zola's redirect stub
 //                 instead of its own index page — see below
 //   static        everything under `static/` is copied to the output root
@@ -56,6 +55,7 @@ const std = @import("std");
 const ast = @import("tmpl_ast.rue");
 const frontmatter = @import("frontmatter.rue");
 const markdown = @import("markdown.rue");
+const highlight = @import("highlight.rue");
 const text = @import("text.rue");
 const tmpl_eval = @import("tmpl_eval.rue");
 const tmpl_parse = @import("tmpl_parse.rue");
@@ -148,6 +148,59 @@ fn write_output(borrow path: StrBuf, borrow body: StrBuf) -> bool {
     write_file(borrow path, borrow body)
 }
 
+fn tag_name(borrow source: StrBuf, start: u64) -> StrBuf {
+    let mut i = start + 1;
+    if text.byte_of(borrow source, i) == 47 { i += 1; }
+    let mut name = StrBuf.new();
+    while i < source.len() {
+        let b = text.lower_byte(text.byte_of(borrow source, i));
+        if b < 97 || b > 122 { break; }
+        name.push(b); i += 1;
+    }
+    name
+}
+
+fn minify_html(borrow source: StrBuf) -> StrBuf {
+    let mut out = StrBuf.new();
+    let mut raw = StrBuf.new();
+    let mut pending_space = false;
+    let mut i: u64 = 0;
+    while i < source.len() {
+        let b = text.byte_of(borrow source, i);
+        if raw.len() > 0 {
+            if b == 60 && text.byte_of(borrow source, i + 1) == 47
+                && StrBuf.equals_borrowed(borrow tag_name(borrow source, i), borrow raw) {
+                raw = StrBuf.new();
+            } else { out.push(b); i += 1; continue; }
+        }
+        if source.matches_at(i, borrow "<!--") {
+            let close = text.find_from(borrow source, borrow "-->", i + 4);
+            i = if close < source.len() { close + 3 } else { source.len() };
+            continue;
+        }
+        if text.is_blank_byte(b) || b == 10 || b == 13 {
+            pending_space = true; i += 1; continue;
+        }
+        if pending_space && out.len() > 0 { out.push(32); }
+        pending_space = false;
+        if b == 60 {
+            let name = tag_name(borrow source, i);
+            let opening = text.byte_of(borrow source, i + 1) != 47;
+            let mut quote: u8 = 0;
+            loop {
+                let c = text.byte_of(borrow source, i); out.push(c); i += 1;
+                if quote != 0 { if c == quote { quote = 0; } }
+                else if c == 34 || c == 39 { quote = c; }
+                else if c == 62 { break; }
+                if i >= source.len() { break; }
+            }
+            if opening && (text.equals_str(borrow name, "pre") || text.equals_str(borrow name, "script")
+                || text.equals_str(borrow name, "style") || text.equals_str(borrow name, "textarea")) { raw = name; }
+        } else { out.push(b); i += 1; }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // The model
 // ---------------------------------------------------------------------------
@@ -162,13 +215,14 @@ pub struct Keys {
     description: u64,
     extra: u64,
     template: u64,
+    path: u64,
     page_template: u64,
     sort_by: u64,
     generate_feeds: u64,
+    paginate_by: u64,
     redirect_to: u64,
     content: u64,
     permalink: u64,
-    path: u64,
     summary: u64,
     pages: u64,
     subsections: u64,
@@ -179,9 +233,14 @@ pub struct Keys {
     config: u64,
     url: u64,
     feed_url: u64,
+    paginator: u64,
+    previous: u64,
+    next: u64,
     sections_global: u64,
     page_url_global: u64,
     base_url_global: u64,
+    site_root_global: u64,
+    routes_global: u64,
 }
 
 fn intern_keys(inout eng: ast.Engine) -> Keys {
@@ -195,6 +254,7 @@ fn intern_keys(inout eng: ast.Engine) -> Keys {
         page_template: eng.key("page_template"),
         sort_by: eng.key("sort_by"),
         generate_feeds: eng.key("generate_feeds"),
+        paginate_by: eng.key("paginate_by"),
         redirect_to: eng.key("redirect_to"),
         content: eng.key("content"),
         permalink: eng.key("permalink"),
@@ -209,9 +269,14 @@ fn intern_keys(inout eng: ast.Engine) -> Keys {
         config: eng.key("config"),
         url: eng.key("url"),
         feed_url: eng.key("feed_url"),
+        paginator: eng.key("paginator"),
+        previous: eng.key("previous"),
+        next: eng.key("next"),
         sections_global: eng.key("__sections"),
         page_url_global: eng.key("__page_url"),
         base_url_global: eng.key("__base_url"),
+        site_root_global: eng.key("__site_root"),
+        routes_global: eng.key("__routes"),
     }
 }
 
@@ -229,6 +294,7 @@ pub struct Page {
     is_index: bool,
     weight: u64,
     template: u64,
+    path: u64,
     content: u64,
     summary: u64,
     entry: u64,
@@ -239,7 +305,7 @@ pub fn empty_page() -> Page {
     Page {
         rel: NONE(), route: NONE(), permalink: NONE(), source: NONE(), front: NONE(),
         body_start: 0, body_line: 1, section: NONE(), is_index: false, weight: NONE(),
-        template: NONE(), content: NONE(), summary: NONE(), entry: NONE(), object: NONE(),
+        template: NONE(), path: NONE(), content: NONE(), summary: NONE(), entry: NONE(), object: NONE(),
     }
 }
 
@@ -252,6 +318,7 @@ pub struct Section {
     parent: u64,
     sort_by: u64,
     generate_feeds: bool,
+    paginate_by: u64,
     redirect_to: u64,
     page_start: u64,
     page_count: u64,
@@ -263,7 +330,7 @@ pub struct Section {
 pub fn empty_section() -> Section {
     Section {
         page: NONE(), key: NONE(), dir: NONE(), parent: NONE(), sort_by: SORT_NONE(),
-        generate_feeds: false, redirect_to: NONE(), page_start: 0, page_count: 0,
+        generate_feeds: false, paginate_by: NONE(), redirect_to: NONE(), page_start: 0, page_count: 0,
         sub_start: 0, sub_count: 0, object: NONE(),
     }
 }
@@ -288,6 +355,12 @@ pub struct Site {
     root: StrBuf,
     content_root: StrBuf,
     output_root: StrBuf,
+    global_feeds: bool,
+    minify_html: bool,
+    highlight_code: bool,
+    metadata: bool,
+    highlight_themes: u64,
+    search_index: bool,
     pages_rendered: u64,
     files_written: u64,
     // `--list` records every emitted path, in emission order. Off by default:
@@ -301,11 +374,13 @@ pub struct Site {
         Self {
             keys: Keys {
                 title: 0, date: 0, weight: 0, description: 0, extra: 0, template: 0,
-                page_template: 0, sort_by: 0, generate_feeds: 0, redirect_to: 0,
+                page_template: 0, sort_by: 0, generate_feeds: 0, paginate_by: 0, redirect_to: 0,
                 content: 0, permalink: 0, path: 0, summary: 0, pages: 0,
                 subsections: 0, lower: 0, higher: 0, page: 0, section: 0, config: 0,
-                url: 0, feed_url: 0, sections_global: 0, page_url_global: 0,
+                url: 0, feed_url: 0, paginator: 0, previous: 0, next: 0, sections_global: 0, page_url_global: 0,
                 base_url_global: 0,
+                site_root_global: 0,
+                routes_global: 0,
             },
             pages: Pages.new(),
             sections: Sections.new(),
@@ -313,7 +388,7 @@ pub struct Site {
             section_subs: value.U64s.new(),
             dir_ids: value.U64s.new(),
             dir_index: value.U64s.new(),
-            config: 0,
+            config: 0, global_feeds: false, minify_html: false, highlight_code: false, metadata: false, highlight_themes: NONE(), search_index: false,
             root: StrBuf.new(),
             content_root: StrBuf.new(),
             output_root: StrBuf.new(),
@@ -358,10 +433,90 @@ fn load_config(inout site: Site, inout eng: ast.Engine) -> bool {
         fail(inout eng, "the site configuration has no `base_url` string", NONE());
         return false;
     }
-    let base_text = eng.arena.scalar(base);
+    let override = eng.lookup(eng.key("__base_url_override"));
+    let base_text = if eng.arena.tag(override) == value.V_STR()
+        && eng.arena.length(override) > 0 { eng.arena.scalar(override) }
+        else { eng.arena.scalar(base) };
     let base_value = eng.arena.string(borrow base_text);
+    if eng.arena.tag(override) == value.V_STR() && eng.arena.length(override) > 0 {
+        let mut fields = value.Entries.new();
+        let mut i: u64 = 0;
+        while i < eng.arena.length(site.config) {
+            let mut entry = eng.arena.entry_at(site.config, i);
+            if entry.key == base_url_key { entry.value = base_value; }
+            fields.push(entry); i += 1;
+        }
+        site.config = eng.arena.map(borrow fields);
+    }
     eng.set_global(site.keys.base_url_global, base_value);
+    let root_value = eng.arena.string(borrow site.root);
+    eng.set_global(site.keys.site_root_global, root_value);
     eng.set_global(site.keys.config, site.config);
+    site.global_feeds = eng.arena.truthy(eng.arena.map_get(site.config, site.keys.generate_feeds));
+    site.minify_html = eng.arena.truthy(eng.arena.map_get(site.config, eng.key("minify_html")));
+    site.metadata = eng.arena.truthy(eng.arena.map_get_literal(site.config, "generate_metadata"));
+    site.search_index = eng.arena.truthy(eng.arena.map_get(site.config, eng.key("build_search_index")));
+    let search = eng.arena.map_get_literal(site.config, "search");
+    let format = eng.arena.map_get_literal(search, "index_format");
+    if site.search_index && format != NONE() && !eng.arena.strings.equals_literal(eng.arena.scalar_id(format), "gazette_json") {
+        fail(inout eng, "search index_format must be gazette_json", NONE());
+        return false;
+    }
+    load_highlighting(inout site, inout eng)
+}
+
+// Configuration and emission share validated theme values. Generated CSS is
+// written after static assets so a previous build's stylesheet cannot win.
+fn load_highlighting(inout site: Site, inout eng: ast.Engine) -> bool {
+    let config = eng.arena.map_get_literal(site.config, "markdown");
+    site.highlight_code = eng.arena.truthy(eng.arena.map_get_literal(config, "highlight_code"));
+    eng.set_global(eng.key("__highlight_code"), eng.arena.boolean(site.highlight_code));
+    if !site.highlight_code { return true; }
+    let theme = eng.arena.map_get_literal(config, "highlight_theme");
+    if !eng.arena.strings.equals_literal(eng.arena.scalar_id(theme), "css") {
+        fail(inout eng, "highlight_theme must be css", NONE()); return false;
+    }
+    let definitions = eng.arena.map_get_literal(config, "syntax_definitions");
+    let relative = eng.arena.scalar(definitions);
+    if relative.len() == 0 || !valid_explicit_route(borrow relative) || relative.starts_with(borrow "/") {
+        fail(inout eng, "syntax_definitions must name a site-relative JSON file", NONE()); return false;
+    }
+    let path = join_path(borrow site.root, borrow relative);
+    let input = read_file(borrow path);
+    if !input.ok { fail(inout eng, "cannot read syntax definitions", eng.key(path)); return false; }
+    let parsed = frontmatter.parse_json(inout eng.arena, borrow input.data);
+    if !parsed.ok || !highlight.validate(inout eng, parsed.root) { return false; }
+    eng.set_global(eng.key("__highlight_syntaxes"), parsed.root);
+    site.highlight_themes = eng.arena.map_get_literal(config, "highlight_themes_css");
+    if eng.arena.tag(site.highlight_themes) != value.V_ARRAY() || eng.arena.length(site.highlight_themes) == 0 {
+        fail(inout eng, "highlight_themes_css must contain CSS theme declarations", NONE()); return false;
+    }
+    let mut i: u64 = 0;
+    while i < eng.arena.length(site.highlight_themes) {
+        let entry = eng.arena.item(site.highlight_themes, i);
+        let name = eng.arena.scalar(eng.arena.map_get_literal(entry, "theme"));
+        let file = eng.arena.scalar(eng.arena.map_get_literal(entry, "filename"));
+        if highlight.theme_css(borrow name).len() == 0 || file.len() == 0 || !file.ends_with(borrow ".css")
+            || file.starts_with(borrow "/") || !valid_explicit_route(borrow file) {
+            fail(inout eng, "invalid highlight theme or CSS filename", NONE()); return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+fn emit_highlighting(inout site: Site, inout eng: ast.Engine) -> bool {
+    let mut i: u64 = 0;
+    while i < eng.arena.length(site.highlight_themes) {
+        let entry = eng.arena.item(site.highlight_themes, i);
+        let name = eng.arena.scalar(eng.arena.map_get_literal(entry, "theme"));
+        let file = eng.arena.scalar(eng.arena.map_get_literal(entry, "filename"));
+        let css = highlight.theme_css(borrow name);
+        if !write_output(borrow join_path(borrow site.output_root, borrow file), borrow css) { return false; }
+        site.files_written += 1;
+        if site.list { site.listing.append_borrowed(borrow file); site.listing.push(10); }
+        i += 1;
+    }
     true
 }
 
@@ -454,13 +609,37 @@ fn discover(inout site: Site, inout eng: ast.Engine) -> bool {
 
 fn add_page(inout site: Site, inout eng: ast.Engine, borrow rel: StrBuf, borrow source: StrBuf) -> bool {
     let front = frontmatter.parse(inout eng.arena, borrow source);
-    let route = tmpl_eval.content_route(inout eng, borrow rel, 0);
+    let explicit = eng.arena.map_get(front.root, site.keys.path);
+    let mut route_valid = true;
+    let route = if eng.arena.tag(explicit) == value.V_STR() {
+        let mut chosen = eng.arena.scalar(explicit);
+        while chosen.len() > 0 && text.byte_of(borrow chosen, 0) == 47 { chosen = text.slice(borrow chosen, 1, chosen.len()); }
+        if chosen.len() == 0 || text.byte_of(borrow chosen, chosen.len() - 1) != 47 { chosen.push(47); }
+        if !valid_explicit_route(borrow chosen) {
+            fail(inout eng, "explicit content path may not escape the output root", explicit);
+            route_valid = false;
+        }
+        chosen
+    } else { tmpl_eval.content_route(inout eng, borrow rel, 0) };
     let permalink = tmpl_eval.join_base(inout eng, borrow route);
 
+    if !route_valid { return false; }
     let rel_id = eng.arena.strings.intern(borrow rel);
     let route_id = eng.arena.strings.intern(borrow route);
     let permalink_id = eng.arena.strings.intern(borrow permalink);
     let source_id = eng.arena.strings.intern(borrow source);
+
+    let mut duplicate = false;
+    let mut prior: u64 = 0;
+    while prior < site.pages.len() {
+        if site.page_at(prior).route == route_id { duplicate = true; }
+        prior += 1;
+    }
+    // A regular page may not claim the root output route. The root section is
+    // owned by content/_index.md when it exists; allowing another page to
+    // write `/` would otherwise silently overwrite that section's index.
+    if (route.len() == 0 || (route.len() == 1 && text.byte_of(borrow route, 0) == 47)) && !is_index_path(borrow rel) { duplicate = true; }
+    if duplicate { fail(inout eng, "two content files resolve to the same output route", route_id); }
 
     let is_index = rel.ends_with(borrow "_index.md");
     let weight_value = eng.arena.map_get(front.root, site.keys.weight);
@@ -484,12 +663,29 @@ fn add_page(inout site: Site, inout eng: ast.Engine, borrow rel: StrBuf, borrow 
         is_index: is_index,
         weight: weight,
         template: NONE(),
+        path: explicit,
         content: NONE(),
         summary: NONE(),
         entry: NONE(),
         object: NONE(),
     });
     front.ok
+}
+
+fn is_index_path(borrow rel: StrBuf) -> bool { rel.ends_with(borrow "_index.md") }
+
+fn valid_explicit_route(borrow route: StrBuf) -> bool {
+    let mut start: u64 = 0;
+    let mut i: u64 = 0;
+    while i <= route.len() {
+        if i == route.len() || text.byte_of(borrow route, i) == 47 {
+            let part = text.slice(borrow route, start, i);
+            if StrBuf.equals_borrowed(borrow part, borrow "..") || StrBuf.equals_borrowed(borrow part, borrow ".") { return false; }
+            start = i + 1;
+        }
+        i += 1;
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -529,6 +725,8 @@ fn build_sections(inout site: Site, inout eng: ast.Engine) -> bool {
             };
             let feeds_value = eng.arena.map_get(front, site.keys.generate_feeds);
             let feeds = eng.arena.truthy(feeds_value);
+            let paginate_value = eng.arena.map_get(front, site.keys.paginate_by);
+            let paginate = if eng.arena.tag(paginate_value) == value.V_INT() { eng.arena.at(paginate_value).num } else { NONE() };
             let kind = sort_kind(inout eng, front, site.keys.sort_by);
             site.sections.push(Section {
                 page: i,
@@ -537,6 +735,7 @@ fn build_sections(inout site: Site, inout eng: ast.Engine) -> bool {
                 parent: NONE(),
                 sort_by: kind,
                 generate_feeds: feeds,
+                paginate_by: paginate,
                 redirect_to: redirect,
                 page_start: 0, page_count: 0, sub_start: 0, sub_count: 0,
                 object: NONE(),
@@ -574,7 +773,8 @@ fn build_sections(inout site: Site, inout eng: ast.Engine) -> bool {
         let rel = eng.arena.strings.copy(page.rel);
         let dir = dir_of(borrow rel);
         let dir_id = eng.arena.strings.intern(borrow dir);
-        let owner = find_section_for_dir(borrow site, dir_id);
+        let mut owner = find_section_for_dir(borrow site, dir_id);
+        if owner == NONE() && page.path != NONE() { owner = find_nearest_section(borrow site, inout eng, borrow rel); }
         if owner == NONE() {
             fail(inout eng, "this content directory has no `_index.md`", page.rel);
             ok = false;
@@ -629,6 +829,18 @@ fn find_section_for_dir(borrow site: Site, dir_id: u64) -> u64 {
         let probe = site.dir_ids.get_or(mid, 0);
         if probe == dir_id { return site.dir_index.get_or(mid, NONE()); }
         if probe < dir_id { low = mid + 1; } else { high = mid; }
+    }
+    NONE()
+}
+
+fn find_nearest_section(borrow site: Site, inout eng: ast.Engine, borrow rel: StrBuf) -> u64 {
+    let mut dir = dir_of(borrow rel);
+    loop {
+        let id = eng.arena.strings.intern(borrow dir);
+        let found = find_section_for_dir(borrow site, id);
+        if found != NONE() { return found; }
+        if dir.len() == 0 { break; }
+        dir = parent_dir(borrow dir);
     }
     NONE()
 }
@@ -940,6 +1152,22 @@ fn build_objects(inout site: Site, inout eng: ast.Engine) {
     eng.set_global(site.keys.sections_global, sections_value);
 }
 
+// Resolve `@/…` links against the routes discovered from front matter before
+// Markdown expands them. This map must exist before render_bodies: generated
+// error bundles use explicit uppercase routes, and falling back to slugifying
+// their source path would produce a different URL.
+fn build_routes(inout site: Site, inout eng: ast.Engine) {
+    let mut routes_map = value.Entries.new();
+    let mut r: u64 = 0;
+    while r < site.pages.len() {
+        let page = site.page_at(r);
+        let key = eng.arena.strings.intern(borrow eng.arena.strings.copy(page.rel));
+        routes_map.push(value.Entry { key: key, value: eng.arena.string_id(page.route) });
+        r += 1;
+    }
+    eng.set_global(site.keys.routes_global, eng.arena.map(borrow routes_map));
+}
+
 fn build_section_object(borrow site: Site, inout eng: ast.Engine, index: u64) -> u64 {
     let section = site.section_at(index);
     let page = site.page_at(section.page);
@@ -1001,8 +1229,9 @@ fn render_named(inout site: Site, inout eng: ast.Engine, name: u64, route: u64, 
     // copy would be an allocation the measured build pays nine thousand times
     // for a flag it was not given.
     let listed = if site.list { file.clone() } else { StrBuf.new() };
+    let final_out = if site.minify_html && file.ends_with(borrow ".html") { minify_html(borrow out) } else { out };
     let path = output_path(borrow site, borrow eng, route, file);
-    if !write_output(borrow path, borrow out) {
+    if !write_output(borrow path, borrow final_out) {
         let subject = eng.arena.strings.intern(borrow path);
         fail(inout eng, "cannot write an output file", subject);
         return false;
@@ -1037,6 +1266,40 @@ fn bind_page(inout site: Site, inout eng: ast.Engine, page_value: u64, section_v
     eng.set_global(site.keys.page, page_value);
     eng.set_global(site.keys.section, section_value);
     eng.set_global(site.keys.page_url_global, url);
+}
+
+fn page_route_id(inout eng: ast.Engine, route: u64, number: u64) -> u64 {
+    let mut text_route = eng.arena.strings.copy(route);
+    if text_route.len() > 0 && text.byte_of(borrow text_route, text_route.len() - 1) != 47 { text_route.push(47); }
+    text_route.push_str("page/"); text_route.push_str(text.decimal(number)); text_route.push(47);
+    eng.arena.strings.intern(borrow text_route)
+}
+
+fn absolute_route(inout eng: ast.Engine, route: u64) -> u64 {
+    let relative = eng.arena.strings.copy(route);
+    let absolute = tmpl_eval.join_base(inout eng, borrow relative);
+    eng.arena.string(borrow absolute)
+}
+
+fn build_paginator(inout site: Site, inout eng: ast.Engine, borrow section: Section, number: u64) -> u64 {
+    let limit = section.paginate_by;
+    let total = if limit == 0 || section.page_count == 0 { 1 } else { (section.page_count + limit - 1) / limit };
+    let start = number * limit;
+    let stop = if start + limit < section.page_count { start + limit } else { section.page_count };
+    let mut listed = value.U64s.new();
+    let mut i = start;
+    while i < stop { listed.push(site.page_at(site.section_pages.get_or(section.page_start + i, NONE())).entry); i += 1; }
+    let mut fields = value.Entries.new();
+    fields.push(value.Entry { key: site.keys.pages, value: eng.arena.array(borrow listed) });
+    let previous = if number == 0 { eng.arena.null() } else if number == 1 {
+        eng.arena.string_id(site.page_at(section.page).permalink)
+    } else { absolute_route(inout eng, page_route_id(inout eng, site.page_at(section.page).route, number)) };
+    let next = if number + 1 >= total { eng.arena.null() } else {
+        absolute_route(inout eng, page_route_id(inout eng, site.page_at(section.page).route, number + 2))
+    };
+    fields.push(value.Entry { key: site.keys.previous, value: previous });
+    fields.push(value.Entry { key: site.keys.next, value: next });
+    eng.arena.map(borrow fields)
 }
 
 // Render every page and every section index, then every feed.
@@ -1074,9 +1337,24 @@ fn emit(inout site: Site, inout eng: ast.Engine) -> bool {
             if eng.find_template(name) == NONE() {
                 fail(inout eng, "a section names a template the site does not have", name);
                 ok = false;
-            } else {
+            } else if section.paginate_by == NONE() {
                 bind_page(inout site, inout eng, null, section.object, url);
                 if !render_named(inout site, inout eng, name, page.route, "index.html") { ok = false; }
+            } else {
+                let limit = section.paginate_by;
+                let total = if limit == 0 || section.page_count == 0 { 1 } else { (section.page_count + limit - 1) / limit };
+                let mut number: u64 = 0;
+                while number < total {
+                    let paginator = build_paginator(inout site, inout eng, borrow section, number);
+                    eng.push_scope(); eng.bind(site.keys.paginator, paginator);
+                    bind_page(inout site, inout eng, null, section.object, url);
+                    let route = if number == 0 { page.route } else { page_route_id(inout eng, page.route, number + 1) };
+                    if !render_named(inout site, inout eng, name, route, "index.html") { ok = false; }
+                    eng.pop_scope();
+                    number += 1;
+                }
+                let target = eng.arena.strings.copy(page.permalink);
+                if !emit_page_one_redirect(inout site, inout eng, page.route, borrow target) { ok = false; }
             }
         }
         if section.generate_feeds {
@@ -1085,6 +1363,23 @@ fn emit(inout site: Site, inout eng: ast.Engine) -> bool {
         s += 1;
     }
     ok
+}
+
+fn emit_page_one_redirect(inout site: Site, inout eng: ast.Engine, route: u64, borrow target: StrBuf) -> bool {
+    let mut route_text = eng.arena.strings.copy(route);
+    if route_text.len() > 0 && text.byte_of(borrow route_text, route_text.len() - 1) != 47 { route_text.push(47); }
+    route_text.push_str("page/1/");
+    let page_route = eng.arena.strings.intern(borrow route_text);
+    let mut body = StrBuf.new();
+    body.push_str("<!doctype html><meta http-equiv=\"refresh\" content=\"0; url=");
+    text.append_escaped_html(borrow target, inout body);
+    body.push_str("\"><link rel=\"canonical\" href=\"");
+    text.append_escaped_html(borrow target, inout body); body.push_str("\">");
+    let path = output_path(borrow site, borrow eng, page_route, "index.html");
+    if !write_output(borrow path, borrow body) { return false; }
+    site.files_written += 1;
+    if site.list { site.listing.append_borrowed(borrow route_text); site.listing.push_str("index.html\n"); }
+    true
 }
 
 // A `redirect_to` section emits Zola's redirect stub in place of its own index
@@ -1104,8 +1399,17 @@ fn emit_redirect(inout site: Site, inout eng: ast.Engine, index: u64) -> bool {
     let page = site.page_at(section.page);
     let name = eng.key("redirect.html");
     if eng.find_template(name) == NONE() {
-        fail(inout eng, "a section sets `redirect_to` but the site has no `redirect.html`", section.key);
-        return false;
+        let target = eng.arena.strings.copy(section.redirect_to);
+        let mut resolved = tmpl_eval.join_base(inout eng, borrow target);
+        if resolved.len() > 0 && text.byte_of(borrow resolved, resolved.len() - 1) != 47 { resolved.push(47); }
+        let mut body = StrBuf.new(); body.push_str("<!doctype html><meta http-equiv=\"refresh\" content=\"0; url=");
+        text.append_escaped_html(borrow resolved, inout body); body.push_str("\"><link rel=\"canonical\" href=\"");
+        text.append_escaped_html(borrow resolved, inout body); body.push_str("\">");
+        let path = output_path(borrow site, borrow eng, page.route, "index.html");
+        if !write_output(borrow path, borrow body) { return false; }
+        site.files_written += 1;
+        if site.list { site.listing.append_borrowed(borrow eng.arena.strings.copy(page.route)); site.listing.push_str("index.html\n"); }
+        return true;
     }
     let target = eng.arena.strings.copy(section.redirect_to);
     let mut resolved = tmpl_eval.join_base(inout eng, borrow target);
@@ -1118,37 +1422,123 @@ fn emit_redirect(inout site: Site, inout eng: ast.Engine, index: u64) -> bool {
     rendered
 }
 
-// A section's feed. The template is the port's `rss.xml`; nothing in it varies
-// with the clock, which is what lets ADR-0072 Decision 4's determinism check
-// hold byte-exactly over repeated samples. Gazette has no clock to read, so
-// this is a property of the port rather than a stripping step.
+// Root and section feeds share selection, ordering, template context and RSS
+// serialization. An optional rss.xml template replaces only presentation.
 fn emit_feed(inout site: Site, inout eng: ast.Engine, index: u64) -> bool {
-    let section = site.section_at(index);
-    let page = site.page_at(section.page);
+    let mut selected = value.U64s.new();
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let page = site.page_at(i);
+        let belongs = index == NONE() || page.section == index;
+        let date = eng.arena.map_get(page.front, site.keys.date);
+        if belongs && !page.is_index && eng.arena.tag(date) == value.V_STR() {
+            selected.push(i);
+        }
+        i += 1;
+    }
+    let mut k: u64 = 1;
+    while k < selected.len() {
+        let current = selected.get_or(k, 0);
+        let mut j = k;
+        while j > 0 {
+            let prior = selected.get_or(j - 1, 0);
+            let a = site.page_at(current); let b = site.page_at(prior);
+            let da = eng.arena.scalar_id(eng.arena.map_get(a.front, site.keys.date));
+            let db = eng.arena.scalar_id(eng.arena.map_get(b.front, site.keys.date));
+            let order = eng.arena.strings.compare(da, db);
+            if order == 0 || (order == 1 && eng.arena.strings.compare(a.rel, b.rel) != 0) { break; }
+            selected.set(j, prior); j -= 1;
+        }
+        selected.set(j, current); k += 1;
+    }
+    let root = index == NONE();
+    let route = if root { eng.key("") } else { site.page_at(site.section_at(index).page).route };
+    let url = absolute_route(inout eng, route);
+    let section_value = if root { eng.arena.null() } else { site.section_at(index).object };
     let name = eng.key("rss.xml");
-    if eng.find_template(name) == NONE() {
-        fail(inout eng, "a section sets `generate_feeds` but the site has no `rss.xml`", section.key);
-        return false;
+    if eng.find_template(name) != NONE() {
+        let mut listed = value.U64s.new(); i = 0;
+        while i < selected.len() { listed.push(site.page_at(selected.get_or(i, 0)).entry); i += 1; }
+        let pages_value = eng.arena.array(borrow listed);
+        let feed_url = output_feed_url(borrow site, inout eng, route);
+        bind_page(inout site, inout eng, eng.arena.null(), section_value, url);
+        eng.push_scope();
+        eng.bind(site.keys.pages, pages_value); eng.bind(site.keys.feed_url, feed_url);
+        let rendered = render_named(inout site, inout eng, name, route, "rss.xml");
+        eng.pop_scope();
+        return rendered;
     }
-    let mut listed = value.U64s.new();
-    let mut k: u64 = 0;
-    while k < section.page_count {
-        let child = site.section_pages.get_or(section.page_start + k, NONE());
-        listed.push(site.page_at(child).entry);
-        k += 1;
+    let mut out = StrBuf.new();
+    out.push_str("<?xml version=\"1.0\" encoding=\"utf-8\"?><rss version=\"2.0\"><channel><title>");
+    xml_escape(borrow eng.arena.scalar(eng.arena.map_get(site.config, site.keys.title)), inout out);
+    if !root {
+        out.push_str(" - ");
+        let front = site.page_at(site.section_at(index).page).front;
+        xml_escape(borrow eng.arena.scalar(eng.arena.map_get(front, site.keys.title)), inout out);
     }
-    let pages_value = eng.arena.array(borrow listed);
-    let feed_path = output_feed_url(borrow site, inout eng, page.route);
-    let null = eng.arena.null();
-    let url = eng.arena.string_id(page.permalink);
-    bind_page(inout site, inout eng, null, section.object, url);
-    eng.push_scope();
-    eng.bind(site.keys.pages, pages_value);
-    eng.bind(site.keys.feed_url, feed_path);
-    let rendered = render_named(inout site, inout eng, name, page.route, "rss.xml");
-    eng.pop_scope();
-    rendered
+    out.push_str("</title><description>");
+    xml_escape(borrow eng.arena.scalar(eng.arena.map_get(site.config, site.keys.description)), inout out);
+    out.push_str("</description><link>"); xml_escape(borrow eng.arena.scalar(url), inout out); out.push_str("</link>");
+    i = 0;
+    while i < selected.len() {
+        let page = site.page_at(selected.get_or(i, 0));
+        out.push_str("<item><title>"); xml_escape(borrow eng.arena.scalar(eng.arena.map_get(page.front, site.keys.title)), inout out);
+        out.push_str("</title><link>"); xml_escape(borrow eng.arena.strings.copy(page.permalink), inout out);
+        out.push_str("</link><guid>"); xml_escape(borrow eng.arena.strings.copy(page.permalink), inout out);
+        out.push_str("</guid><pubDate>");
+        let date = rss_date(borrow eng.arena.scalar(eng.arena.map_get(page.front, site.keys.date)));
+        xml_escape(borrow date, inout out); out.push_str("</pubDate><description>");
+        let content = if eng.arena.is_null(page.summary) { page.content } else { page.summary };
+        xml_escape(borrow eng.arena.scalar(content), inout out); out.push_str("</description></item>");
+        i += 1;
+    }
+    out.push_str("</channel></rss>");
+    if !write_output(borrow output_path(borrow site, borrow eng, route, "rss.xml"), borrow out) { return false; }
+    site.files_written += 1;
+    if site.list { site.listing.append_borrowed(borrow eng.arena.strings.copy(route)); site.listing.push_str("rss.xml\n"); }
+    true
 }
+
+fn xml_escape(borrow source: StrBuf, inout out: StrBuf) {
+    let mut i: u64 = 0;
+    while i < source.len() {
+        let b = text.byte_of(borrow source, i);
+        if b == 38 { out.push_str("&amp;"); }
+        else if b == 60 { out.push_str("&lt;"); }
+        else if b == 62 { out.push_str("&gt;"); }
+        else { out.push(b); }
+        i += 1;
+    }
+}
+
+// RSS dates use RFC 2822's textual form. Content front matter commonly uses
+// the site's ISO date spelling, so normalize that spelling at the feed edge
+// while leaving the stored value untouched for sorting and templates.
+fn rss_date(borrow source: StrBuf) -> StrBuf {
+    if source.len() < 10 { return source.clone(); }
+    let mut year: u64 = 0; let mut month: u64 = 0; let mut day: u64 = 0;
+    let mut i: u64 = 0;
+    while i < 4 { year = year * 10 + @intCast(text.byte_of(borrow source, i) - 48); i += 1; }
+    i = 5; while i < 7 { month = month * 10 + @intCast(text.byte_of(borrow source, i) - 48); i += 1; }
+    i = 8; while i < 10 { day = day * 10 + @intCast(text.byte_of(borrow source, i) - 48); i += 1; }
+    let month_name = if month == 1 { "Jan" } else if month == 2 { "Feb" } else if month == 3 { "Mar" }
+        else if month == 4 { "Apr" } else if month == 5 { "May" } else if month == 6 { "Jun" }
+        else if month == 7 { "Jul" } else if month == 8 { "Aug" } else if month == 9 { "Sep" }
+        else if month == 10 { "Oct" } else if month == 11 { "Nov" } else if month == 12 { "Dec" } else { "Jan" };
+    let offset = if month == 1 { 0 } else if month == 2 { 3 } else if month == 3 { 2 }
+        else if month == 4 { 5 } else if month == 5 { 0 } else if month == 6 { 3 }
+        else if month == 7 { 5 } else if month == 8 { 1 } else if month == 9 { 4 }
+        else if month == 10 { 6 } else if month == 11 { 2 } else { 4 };
+    let adjusted_year = if month < 3 { year - 1 } else { year };
+    let weekday = (adjusted_year + adjusted_year / 4 - adjusted_year / 100 + adjusted_year / 400 + offset + day) % 7;
+    let weekday_name = if weekday == 0 { "Sun" } else if weekday == 1 { "Mon" } else if weekday == 2 { "Tue" }
+        else if weekday == 3 { "Wed" } else if weekday == 4 { "Thu" } else if weekday == 5 { "Fri" } else { "Sat" };
+    let mut out = StrBuf.new(); out.push_str(weekday_name); out.push_str(", ");
+    if day < 10 { out.push(48); } out.push_str(text.decimal(day)); out.push(32);
+    out.push_str(month_name); out.push(32); out.push_str(text.decimal(year));
+    out.push_str(" 00:00:00 +0000"); out
+}
+
 
 fn output_feed_url(borrow site: Site, inout eng: ast.Engine, route_id: u64) -> u64 {
     let route = eng.arena.strings.copy(route_id);
@@ -1209,6 +1599,71 @@ fn copy_static(inout site: Site, inout eng: ast.Engine) -> bool {
         }
         i += 1;
     }
+    ok
+}
+
+fn emit_search_index(inout site: Site, inout eng: ast.Engine) -> bool {
+    let mut documents = std.arraybuf.ArrayBuf(std.json.Json).new();
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let page = site.page_at(i);
+        // Redirects carry no searchable document, matching the rendered site.
+        if eng.arena.map_get(page.front, site.keys.redirect_to) == NONE() {
+            let mut keys = std.arraybuf.ArrayBuf(StrBuf).new();
+            let mut values = std.arraybuf.ArrayBuf(std.json.Json).new();
+            keys.push("ref"); values.push(std.json.Json.String(eng.arena.strings.copy(page.permalink)));
+            keys.push("title"); values.push(std.json.Json.String(eng.arena.scalar(eng.arena.map_get(page.front, site.keys.title))));
+            keys.push("description"); values.push(std.json.Json.String(eng.arena.scalar(eng.arena.map_get(page.front, site.keys.description))));
+            keys.push("path"); values.push(std.json.Json.String(eng.arena.strings.copy(page.permalink)));
+            keys.push("body"); values.push(std.json.Json.String(eng.arena.scalar(page.content)));
+            documents.push(std.json.Json.Object(std.json.Object { keys: keys, values: values }));
+        }
+        i += 1;
+    }
+    let mut keys = std.arraybuf.ArrayBuf(StrBuf).new(); keys.push("documents");
+    let mut values = std.arraybuf.ArrayBuf(std.json.Json).new(); values.push(std.json.Json.Array(documents));
+    let out = std.json.to_string(std.json.Json.Object(std.json.Object { keys: keys, values: values }));
+    if !write_output(borrow join_path(borrow site.output_root, borrow "search_index.en.json"), borrow out) { return false; }
+    site.files_written += 1;
+    if site.list { site.listing.push_str("search_index.en.json\n"); }
+    true
+}
+
+fn emit_metadata(inout site: Site, inout eng: ast.Engine) -> bool {
+    let mut sitemap = StrBuf.new();
+    sitemap.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">");
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let page = site.page_at(i);
+        sitemap.push_str("<url><loc>"); xml_escape(borrow eng.arena.strings.copy(page.permalink), inout sitemap); sitemap.push_str("</loc></url>");
+        i += 1;
+    }
+    let mut s: u64 = 0;
+    while s < site.sections.len() {
+        let section = site.section_at(s);
+        if section.paginate_by != NONE() {
+            let limit = section.paginate_by;
+            let total = if limit == 0 || section.page_count == 0 { 1 } else { (section.page_count + limit - 1) / limit };
+            let mut number: u64 = 1;
+            while number <= total {
+                let route = page_route_id(inout eng, site.page_at(section.page).route, number);
+                let url = absolute_route(inout eng, route);
+                sitemap.push_str("<url><loc>"); xml_escape(borrow eng.arena.scalar(url), inout sitemap); sitemap.push_str("</loc></url>");
+                number += 1;
+            }
+        }
+        s += 1;
+    }
+    sitemap.push_str("</urlset>");
+    let mut ok = write_output(borrow join_path(borrow site.output_root, borrow "sitemap.xml"), borrow sitemap);
+    let mut robots = StrBuf.new(); robots.push_str("User-agent: *\nAllow: /\nSitemap: ");
+    robots.append_borrowed(borrow tmpl_eval.join_base(inout eng, borrow "sitemap.xml")); robots.push(10);
+    if !write_output(borrow join_path(borrow site.output_root, borrow "robots.txt"), borrow robots) { ok = false; }
+    let mut notfound = StrBuf.new(); notfound.push_str("<!doctype html><title>Not found</title><h1>Not found</h1>\n");
+    if !write_output(borrow join_path(borrow site.output_root, borrow "404.html"), borrow notfound) { ok = false; }
+    let empty = StrBuf.new(); if !write_output(borrow join_path(borrow site.output_root, borrow ".nojekyll"), borrow empty) { ok = false; }
+    site.files_written += 4;
+    if site.list { site.listing.push_str("sitemap.xml\nrobots.txt\n404.html\n.nojekyll\n"); }
     ok
 }
 
@@ -1274,13 +1729,19 @@ pub fn build(
 
     if !load_config(inout site, inout eng) { return false; }
     if !load_templates(inout site, inout eng) { return false; }
-    if !discover(inout site, inout eng) { return false; }
+    if !discover(inout site, inout eng) || eng.arena.error_count() > 0 { return false; }
     if !build_sections(inout site, inout eng) { return false; }
     order_sections(inout site, inout eng);
+    build_routes(inout site, inout eng);
     render_bodies(inout site, inout eng);
     build_objects(inout site, inout eng);
+    if eng.arena.error_count() > 0 { return false; }
     let emitted = emit(inout site, inout eng);
     let copied = copy_static(inout site, inout eng);
+    let highlighted = emit_highlighting(inout site, inout eng);
+    let searched = if site.search_index { emit_search_index(inout site, inout eng) } else { true };
+    let global_feed = if site.global_feeds { emit_feed(inout site, inout eng, NONE()) } else { true };
+    let metadata = if site.metadata { emit_metadata(inout site, inout eng) } else { true };
 
     if site.list { report.append_borrowed(borrow site.listing); }
     report.push_str("gazette: ");
@@ -1290,5 +1751,5 @@ pub fn build(
     report.push_str(" sections, ");
     report.push_str(text.decimal(site.files_written));
     report.push_str(" files written\n");
-    emitted && copied && eng.arena.error_count() == 0
+    emitted && copied && highlighted && searched && global_feed && metadata && eng.arena.error_count() == 0
 }

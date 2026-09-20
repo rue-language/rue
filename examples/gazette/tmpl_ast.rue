@@ -75,6 +75,7 @@ pub fn EX_FILTER() -> u64 { 6 }
 pub fn EX_BINOP() -> u64 { 7 }
 pub fn EX_NOT() -> u64 { 8 }
 pub fn EX_ARG() -> u64 { 9 }
+pub fn EX_ARRAY() -> u64 { 10 }
 
 pub fn OP_EQ() -> u64 { 1 }
 pub fn OP_NE() -> u64 { 2 }
@@ -84,6 +85,11 @@ pub fn OP_GT() -> u64 { 5 }
 pub fn OP_GE() -> u64 { 6 }
 pub fn OP_AND() -> u64 { 7 }
 pub fn OP_OR() -> u64 { 8 }
+pub fn OP_ADD() -> u64 { 9 }
+pub fn OP_SUB() -> u64 { 10 }
+pub fn OP_MUL() -> u64 { 11 }
+pub fn OP_DIV() -> u64 { 12 }
+pub fn OP_MOD() -> u64 { 13 }
 
 // EX_STR     a = pool id
 // EX_INT     a = magnitude

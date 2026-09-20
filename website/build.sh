@@ -29,7 +29,7 @@ case "$SPEC_ROUTE_ROOT" in
         ;;
 esac
 
-# Project the compiler-owned active error inventory into transient Zola
+# Project the compiler-owned active error inventory into transient website
 # content. The generator also owns reference validation and reuses rue-spec's
 # canonical website/spec route authority; this shell remains a thin consumer.
 echo "Generating compiler error pages..."
@@ -68,12 +68,10 @@ if git rev-parse --verify origin/performance-data-v1 >/dev/null 2>&1 \
     # nothing collected; once the branch exists, failing to read it and
     # publishing an empty dashboard would overwrite real measurements with a
     # claim that none were taken.
-    if ! git --work-tree="$PERF_DATA_ROOT" checkout origin/performance-data-v1 -- . 2>/dev/null; then
-        git reset >/dev/null 2>&1 || true
+    if ! git archive origin/performance-data-v1 | tar -x -C "$PERF_DATA_ROOT"; then
         echo "  error: performance-data-v1 exists but could not be read" >&2
         exit 1
     fi
-    git reset >/dev/null 2>&1 || true
     echo "  read $(find "$PERF_DATA_ROOT/runs" -name '*.json' 2>/dev/null | wc -l | tr -d ' ') run object(s)"
 else
     echo "  (no performance-data-v1 branch yet; the page will render empty)"
@@ -142,18 +140,41 @@ python3 "$ROOT/scripts/extract-source-excerpts.py" \
     --repo "$ROOT" \
     --out "$ROOT/website/source-excerpts.json"
 
-# Build Tailwind CSS
+# Compile the same maintained Rue program exercised by the CLI and benchmark
+# suites. The build job has no Zola rendering step.
+echo "Building Gazette..."
+GAZETTE_BUILD_OUTPUT="$("$ROOT/buck2" build //examples:gazette --show-simple-output)"
+GAZETTE_BIN="$(printf '%s\n' "$GAZETTE_BUILD_OUTPUT" | tail -1)"
+case "$GAZETTE_BIN" in
+    /*) ;;
+    *) GAZETTE_BIN="$ROOT/$GAZETTE_BIN" ;;
+esac
+if [ ! -x "$GAZETTE_BIN" ]; then
+    echo "error: Gazette build did not produce an executable" >&2
+    exit 1
+fi
+
+# Tailwind remains the CSS compiler; Gazette copies its output with the assets.
 echo "Building Tailwind CSS..."
 cd website
 "$ROOT/tailwindcss" -i css/input.css -o static/style.css --minify
 
-# Build or serve
+# Publish a complete fresh tree only after a successful render. Removed content
+# cannot leave stale routes behind, and a failed render preserves the last site.
+GAZETTE_OUTPUT="$(mktemp -d "$ROOT/website/.public.XXXXXX")"
+trap 'rm -rf "$GAZETTE_OUTPUT"' EXIT
+echo "Building website with Gazette..."
 if [[ "${1:-}" == "serve" ]]; then
-    echo "Starting dev server at http://127.0.0.1:1111"
-    echo "Note: CSS changes require rebuilding Tailwind manually"
-    "$ROOT/zola" serve
+    "$GAZETTE_BIN" build "$ROOT/website" -o "$GAZETTE_OUTPUT" --base-url http://127.0.0.1:1111
 else
-    echo "Building website..."
-    "$ROOT/zola" build
-    echo "Done! Output in website/public/"
+    "$GAZETTE_BIN" build "$ROOT/website" -o "$GAZETTE_OUTPUT"
+fi
+rm -rf "$ROOT/website/public"
+mv "$GAZETTE_OUTPUT" "$ROOT/website/public"
+trap - EXIT
+echo "Done! Output in website/public/"
+
+if [[ "${1:-}" == "serve" ]]; then
+    echo "Serving at http://127.0.0.1:1111 (rebuild after source changes)"
+    python3 -m http.server 1111 --bind 127.0.0.1 --directory "$ROOT/website/public"
 fi

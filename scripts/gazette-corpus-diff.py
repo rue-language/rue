@@ -56,7 +56,8 @@ DOCUMENTED DIVERGENCE CLASSES, all three from Zola's side of the comparison:
       `highlight_code = false`, as `<pre data-lang="X" class="language-X ">
       <code class="language-X" data-lang="X">` — note the duplicated language
       and the trailing space in the `class`. pulldown-cmark, and so gazette,
-      emit CommonMark's `<pre><code class="language-X">`. This applies to every
+      emit CommonMark's `<pre><code class="language-X">`. Zola may also omit
+      the class when the info string contains `=`. This applies to every
       info string uniformly, `rue` and `rue check` alike.
 
   zola-code-block-escaping
@@ -146,7 +147,7 @@ import gazette_peer_ports as peer_ports  # noqa: E402
 # and a label that advanced anyway would tell a reader diffing two observations
 # that the port moved when it did not. What changed is the COMPOSITION of the
 # identities, which `PREPARER_REVISION` records.
-GAZETTE_PORT_REVISION = 3
+GAZETTE_PORT_REVISION = 4
 
 # The revision of the FIXTURE ASSEMBLY this script implements, which
 # `performance/runtime.toml` pins for the gazette workloads. It is not a port
@@ -304,9 +305,17 @@ def corpus_rules() -> peer_ports.CorpusRules:
 #   struct patterns) exposed it: the semantic oracle rejected the Zola link.
 #   The Zola port now follows, and PEER_PORT_REVISION advances to 4 (argued
 #   beside it in `gazette_peer_ports.py`). GAZETTE_PORT_REVISION does not move.
+#
+#   RUE-2253. Production uses Gazette with data loading, highlighting, search,
+#   pagination and minification enabled. The runtime page explains that the
+#   benchmark retains its versioned equivalence subset; it remains excluded.
+#   Other production template changes are comments. Gazette's configuration and
+#   sidebar comments now document the production/benchmark distinction; their
+#   hashed bytes moved, so GAZETTE_PORT_REVISION advances to 4. Peer ports
+#   and fixture assembly are unchanged.
 PRODUCTION_TEMPLATE_ROOT = "website/templates"
 PRODUCTION_TEMPLATE_DIGEST = (
-    "803f829ddf0a9ccd6cf5f5b8c1bdf9f0d1a5904062865a8be63e98f445c63647"
+    "c4f31c40d13b87fbc2d08aec9237bf995e4fdd4f66f209dcca0f800e9395b751"
 )
 
 # Pages Zola emits no rendered body for, so `body` mode has nothing to compare
@@ -673,12 +682,10 @@ PRE_OPEN = re.compile(
 
 
 def normalize_code_wrapper(page: str) -> str:
-    return PRE_OPEN.sub(
-        lambda m: "<pre><code%s>" % (
-            ' class="language-%s"' % m.group(1) if m.group(1) else ""
-        ),
-        page,
-    )
+    # Zola also drops language classes for info strings containing `=` (Rue's
+    # executable examples use `exit=101`). Wrappers are presentation metadata;
+    # this class never changes the byte-for-byte code body comparison.
+    return PRE_OPEN.sub("<pre><code>", page)
 
 
 CODE_BLOCK = re.compile(r"(<pre><code[^>]*>)(.*?)(</code></pre>)", re.S)

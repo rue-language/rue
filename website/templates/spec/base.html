@@ -66,7 +66,7 @@
     </li>
     {% endfor %}
 
-    {# Subsections paths are already sorted alphabetically by Zola, which works for
+    {# Subsections paths are already sorted alphabetically by the site generator, which works for
        our numbered chapters (02-lexical-structure, 03-types, etc.) #}
     {% for sub_path in section.subsections | sort %}
         {% set sub = get_section(path=sub_path) %}

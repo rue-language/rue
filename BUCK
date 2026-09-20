@@ -1105,6 +1105,14 @@ rue_tool_test(
     resources = ["scripts/extract-source-excerpts.py"],
 )
 
+# Exercise the real Gazette executable against small production-shaped sites:
+# routing, template data, pagination, feeds, highlighting and minification.
+rue_sh_test(
+    name = "gazette-production-tests",
+    test = "scripts/test-gazette-production.py",
+    args = ["$(location //examples:gazette)"],
+)
+
 # RUE-1194: the §11 tooltip needs a commit's subject and its distance from the
 # previous measurement, neither of which a run object carries. The ordinal
 # follows trunk's first parents, so these tests pin the one property that makes
