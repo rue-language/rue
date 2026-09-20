@@ -126,6 +126,21 @@ def _zmij_runtime_sources():
         visibility = ["//crates/rue-runtime:"],
     )
 
+def _libc_runtime_sources():
+    # Hosted fixed-target runtime actions compile libc with their own target
+    # sysroot. Export the crate root and complete source tree so module
+    # resolution remains hermetic when the action runs on another host.
+    native.export_file(
+        name = "libc-0.2.178-lib.rs",
+        src = "vendor/libc-0.2.178/src/lib.rs",
+        visibility = ["//crates/rue-runtime:"],
+    )
+    native.filegroup(
+        name = "libc-0.2.178-sources",
+        srcs = glob(["vendor/libc-0.2.178/src/**/*.rs"]),
+        visibility = ["//crates/rue-runtime:"],
+    )
+
 def _is_linux_mimalloc_target(name):
     return name == "libmimalloc-sys" or name == "libmimalloc-sys-0.1.49" or name == "mimalloc" or name == "mimalloc-0.1.52"
 
@@ -149,3 +164,5 @@ def rue_rust_library(name, **kwargs):
         _libtest2_scheduler_test()
     elif name == "zmij-0.1.7":
         _zmij_runtime_sources()
+    elif name == "libc-0.2.178":
+        _libc_runtime_sources()

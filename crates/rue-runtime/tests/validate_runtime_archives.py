@@ -134,6 +134,74 @@ def macho_symbols(payload: bytes):
     return symbols
 
 
+def undefined_symbols(payload: bytes):
+    """Return externally unresolved symbols from one ELF or Mach-O member."""
+    if payload.startswith(ELF_MAGIC):
+        if len(payload) < 64 or payload[4] != 2:
+            raise AssertionError("runtime archive member is not ELF64")
+        endian = "<" if payload[5] == 1 else ">" if payload[5] == 2 else None
+        if endian is None:
+            raise AssertionError("ELF object has invalid endianness")
+        section_offset = struct.unpack_from(endian + "Q", payload, 40)[0]
+        section_entry_size, section_count, string_index = struct.unpack_from(
+            endian + "HHH", payload, 58
+        )
+        sections = []
+        for index in range(section_count):
+            base = section_offset + index * section_entry_size
+            values = struct.unpack_from(endian + "IIQQQQIIQQ", payload, base)
+            _, section_type, _, _, offset, size, link, _, _, entry_size = values
+            sections.append(
+                {
+                    "type": section_type,
+                    "offset": offset,
+                    "size": size,
+                    "link": link,
+                    "entry_size": entry_size,
+                }
+            )
+        result = set()
+        for section in sections:
+            if section["type"] != ELF_SHT_SYMTAB:
+                continue
+            strings = sections[section["link"]]
+            string_data = _bounded_slice(
+                payload, strings["offset"], strings["size"], "ELF symbol strings"
+            )
+            entry_size = section["entry_size"]
+            for index in range(section["size"] // entry_size):
+                base = section["offset"] + index * entry_size
+                name_offset, info, _, section_index, _, _ = struct.unpack_from(
+                    endian + "IBBHQQ", payload, base
+                )
+                if section_index != 0 or info >> 4 not in (1, 2):
+                    continue
+                end = string_data.find(b"\0", name_offset)
+                if end < 0:
+                    raise AssertionError("ELF undefined symbol has invalid name")
+                name = string_data[name_offset:end].decode("utf-8", errors="replace")
+                if name:
+                    result.add(name)
+        return result
+
+    if payload.startswith(MACHO_64_LE_MAGIC):
+        result = set()
+        for name, n_type, n_sect in macho_symbols(payload):
+            if n_sect == 0 and n_type & N_TYPE == 0 and name:
+                # Mach-O prefixes C/Rust external names with one underscore.
+                result.add(name[1:] if name.startswith("_") else name)
+        return result
+
+    return set()
+
+
+def archive_undefined_symbols(path: Path):
+    result = set()
+    for _, payload in archive_members(path):
+        result.update(undefined_symbols(payload))
+    return result
+
+
 def _bounded_slice(data: bytes, start: int, size: int, description: str) -> bytes:
     end = start + size
     if start < 0 or size < 0 or end > len(data):
@@ -861,7 +929,12 @@ def _collect_archive_definitions(path: Path, objects, expected_format: str):
     return definitions
 
 
-def validate_archive(path: Path, expected_format: str, expected_machine: int):
+def validate_archive(
+    path: Path,
+    expected_format: str,
+    expected_machine: int,
+    required_undefined=(),
+):
     object_count = 0
     for name, payload in archive_members(path):
         elf = elf_machine(payload)
@@ -886,6 +959,22 @@ def validate_archive(path: Path, expected_format: str, expected_machine: int):
 
     if object_count == 0:
         raise AssertionError(f"{path}: archive contains no recognized object members")
+
+    unresolved = archive_undefined_symbols(path)
+    missing = set(required_undefined) - unresolved
+    if missing:
+        raise AssertionError(f"{path}: missing required unresolved symbols {sorted(missing)}")
+    forbidden = {
+        symbol
+        for symbol in unresolved
+        if symbol == "__libc_start_main" or symbol.startswith("pthread_")
+    }
+    unexpected = forbidden - set(required_undefined)
+    if unexpected:
+        # The hosted Linux startup is the only supported runtime-side libc
+        # import in this tranche. All freestanding archives and hosted Darwin
+        # retain their existing loader contracts.
+        raise AssertionError(f"{path}: unexpected hosted imports {sorted(unexpected)}")
 
     if expected_format == "macho":
         trampoline_symbols = []
@@ -930,6 +1019,19 @@ def main():
     validate_archive(Path(os.environ["RUNTIME_X86_64_LINUX"]), "elf", 62)
     validate_archive(Path(os.environ["RUNTIME_AARCH64_LINUX"]), "elf", 183)
     validate_archive(Path(os.environ["RUNTIME_AARCH64_MACOS"]), "macho", 0x0100000C)
+    validate_archive(
+        Path(os.environ["RUNTIME_HOSTED_X86_64_LINUX"]),
+        "elf",
+        62,
+        required_undefined=("__libc_start_main",),
+    )
+    validate_archive(
+        Path(os.environ["RUNTIME_HOSTED_AARCH64_LINUX"]),
+        "elf",
+        183,
+        required_undefined=("__libc_start_main",),
+    )
+    validate_archive(Path(os.environ["RUNTIME_HOSTED_AARCH64_MACOS"]), "macho", 0x0100000C)
 
 
 if __name__ == "__main__":

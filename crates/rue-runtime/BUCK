@@ -55,6 +55,33 @@ runtime_staticlib(
     visibility = ["PUBLIC"],
 )
 
+# Hosted variants retain the same runtime source and ABI, but add the target's
+# pthread/libc imports and Linux loader startup. Keep these separate archives
+# so freestanding images never acquire hosted dependencies.
+runtime_staticlib(
+    name = "rue-runtime-hosted-x86_64-unknown-linux-gnu",
+    hosted_threads = True,
+    target_triple = "x86_64-unknown-linux-gnu",
+    target_std = "toolchains//rust:rust-std-x86_64-unknown-linux-gnu",
+    visibility = ["PUBLIC"],
+)
+
+runtime_staticlib(
+    name = "rue-runtime-hosted-aarch64-unknown-linux-gnu",
+    hosted_threads = True,
+    target_triple = "aarch64-unknown-linux-gnu",
+    target_std = "toolchains//rust:rust-std-aarch64-unknown-linux-gnu",
+    visibility = ["PUBLIC"],
+)
+
+runtime_staticlib(
+    name = "rue-runtime-hosted-aarch64-apple-darwin",
+    hosted_threads = True,
+    target_triple = "aarch64-apple-darwin",
+    target_std = "toolchains//rust:rust-std-aarch64-apple-darwin",
+    visibility = ["PUBLIC"],
+)
+
 export_file(
     name = "runtime-str-eq-source",
     src = "src/string.rs",
@@ -79,6 +106,9 @@ rue_sh_test(
         "RUNTIME_X86_64_LINUX": "$(location :rue-runtime-x86_64-unknown-linux-gnu)",
         "RUNTIME_AARCH64_LINUX": "$(location :rue-runtime-aarch64-unknown-linux-gnu)",
         "RUNTIME_AARCH64_MACOS": "$(location :rue-runtime-aarch64-apple-darwin)",
+        "RUNTIME_HOSTED_X86_64_LINUX": "$(location :rue-runtime-hosted-x86_64-unknown-linux-gnu)",
+        "RUNTIME_HOSTED_AARCH64_LINUX": "$(location :rue-runtime-hosted-aarch64-unknown-linux-gnu)",
+        "RUNTIME_HOSTED_AARCH64_MACOS": "$(location :rue-runtime-hosted-aarch64-apple-darwin)",
         "RUNTIME_BUILD_RULE_SOURCE": "$(location :runtime-build-rule-source)",
         "RUNTIME_STRING_SOURCE": "$(location :runtime-str-eq-source)",
     },
@@ -111,6 +141,23 @@ rue_rust_test(
     ],
 )
 
+# Hosted-only parking coverage uses the host libc target and libtest's real
+# worker threads. Production hosted archives compile the same module against
+# each fixed target through runtime.bzl above.
+rue_rust_test(
+    name = "rue-runtime-hosted-test",
+    platform = "native",
+    srcs = glob(["src/**/*.rs"]),
+    crate = "rue_runtime",
+    deps = [
+        "//crates/rue-allocator:rue-allocator",
+        "//crates/rue-runtime-abi:rue-runtime-abi",
+        "//third-party:libc",
+        "//third-party:zmij",
+    ],
+    rustc_flags = ["--cfg", "rue_hosted_threads"],
+)
+
 
 # The x86-64 Linux entry point is raw process-entry code and cannot be exercised
 # by libtest. Inspect the optimized staticlib and link a real Rue program through
@@ -122,6 +169,25 @@ rue_sh_test(
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
         "RUE_RUNTIME": "$(location :rue-runtime[staticlib])",
+    },
+    resources = glob(["tests/**"]),
+)
+
+rue_sh_test(
+    name = "hosted-runtime-native-test",
+    platform = "native",
+    labels = ["rue_not_quick"],
+    test = "tests/test-hosted-runtime.py",
+    env = {
+        "RUNTIME_HOSTED_NATIVE": select({
+            "prelude//os:linux": select({
+                "prelude//cpu:x86_64": "$(location :rue-runtime-hosted-x86_64-unknown-linux-gnu)",
+                "prelude//cpu:arm64": "$(location :rue-runtime-hosted-aarch64-unknown-linux-gnu)",
+            }),
+            "prelude//os:macos": select({
+                "prelude//cpu:arm64": "$(location :rue-runtime-hosted-aarch64-apple-darwin)",
+            }),
+        }),
     },
     resources = glob(["tests/**"]),
 )

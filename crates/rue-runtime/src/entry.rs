@@ -168,6 +168,130 @@ pub(crate) fn __rue_x86_64_linux_start(stack: *const usize) -> ! {
     platform::exit(exit_code)
 }
 
+/// The raw Linux entry saves the untouched stack before entering libc. Keep it
+/// in stable private startup state until this callback receives libc's fully
+/// initialized process, then perform the shared capture/fault setup immediately
+/// before generated `main`.
+#[cfg(all(
+    not(test),
+    rue_hosted_threads,
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+static HOSTED_START_STACK: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(all(
+    not(test),
+    rue_hosted_threads,
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+extern "C" fn __rue_hosted_main(
+    argc: i32,
+    argv: *mut *mut libc::c_char,
+    envp: *mut *mut libc::c_char,
+) -> i32 {
+    unsafe extern "C" {
+        fn main() -> i32;
+    }
+
+    // SAFETY: libc supplies the loader-owned vectors unchanged.
+    unsafe {
+        crate::process::capture(
+            argc as u64,
+            argv as *const *const u8,
+            envp as *const *const u8,
+        )
+    };
+    let stack = HOSTED_START_STACK.load(core::sync::atomic::Ordering::Acquire);
+    arm_segv_handler(stack);
+
+    // SAFETY: libc invokes this callback with the generated Rue `main`, which
+    // uses the runtime's native zero-argument C ABI.
+    let exit_code = unsafe { main() };
+    platform::exit(exit_code)
+}
+
+#[cfg(all(
+    not(test),
+    rue_hosted_threads,
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+unsafe extern "C" {
+    // glibc does not expose this private startup entry through libc's Rust
+    // bindings. Its C ABI is stable for the dynamic Linux startup contract.
+    fn __libc_start_main(
+        main: extern "C" fn(i32, *mut *mut libc::c_char, *mut *mut libc::c_char) -> i32,
+        argc: libc::c_int,
+        argv: *mut *mut libc::c_char,
+        init: Option<extern "C" fn()>,
+        fini: Option<extern "C" fn()>,
+        rtld_fini: Option<unsafe extern "C" fn()>,
+        stack_end: *mut libc::c_void,
+    ) -> libc::c_int;
+}
+
+#[cfg(all(
+    not(test),
+    rue_hosted_threads,
+    target_arch = "x86_64",
+    target_os = "linux"
+))]
+pub(crate) unsafe fn __rue_x86_64_linux_hosted_start(
+    stack: *const usize,
+    rtld_fini: *mut libc::c_void,
+) -> ! {
+    // SAFETY: the assembly shim passes the untouched startup stack and loader
+    // finalizer from their process-entry locations.
+    unsafe { __rue_linux_hosted_start(stack, rtld_fini) }
+}
+
+#[cfg(all(
+    not(test),
+    rue_hosted_threads,
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+unsafe fn __rue_linux_hosted_start(stack: *const usize, rtld_fini: *mut libc::c_void) -> ! {
+    HOSTED_START_STACK.store(stack as usize, core::sync::atomic::Ordering::Release);
+
+    // SAFETY: the dynamic loader supplies `rtld_fini` as a function pointer in
+    // the target's process-entry register, and the remaining arguments follow
+    // glibc's documented startup ABI.
+    let rtld_fini = unsafe {
+        core::mem::transmute::<*mut libc::c_void, Option<unsafe extern "C" fn()>>(rtld_fini)
+    };
+    let result = unsafe {
+        __libc_start_main(
+            __rue_hosted_main,
+            *stack as libc::c_int,
+            stack.add(1) as *mut *mut libc::c_char,
+            None,
+            None,
+            rtld_fini,
+            stack as *mut libc::c_void,
+        )
+    };
+    platform::exit(result)
+}
+
+#[cfg(all(
+    not(test),
+    rue_hosted_threads,
+    target_arch = "aarch64",
+    target_os = "linux"
+))]
+pub(crate) unsafe fn __rue_aarch64_linux_hosted_start(
+    stack: *const usize,
+    rtld_fini: *mut libc::c_void,
+) -> ! {
+    // SAFETY: the assembly shim passes the untouched startup stack and loader
+    // finalizer from their process-entry locations.
+    unsafe { __rue_linux_hosted_start(stack, rtld_fini) }
+}
+
 /// Program entry point for macOS aarch64.
 ///
 /// The Rue Mach-O executable is a dynamic executable (`LC_MAIN`), so dyld's
