@@ -45,7 +45,7 @@ impl Parser {
     pub(super) fn for_expr(&mut self) -> PResult<Expr> {
         let start = self.start();
         self.bump();
-        let binder = self.let_pattern(false)?;
+        let binder = self.for_binder()?;
         self.expect(TokenKind::In)?;
         let iterable = self.expr()?;
         let (iterable, body) = self.condition_body(iterable, "for", start)?;
@@ -307,6 +307,29 @@ impl Parser {
             return Ok(PatternElement::Nested(nested));
         }
         Ok(PatternElement::Binding(self.ident()?))
+    }
+
+    /// The binder of a `for` expression: `for_expr = "for" ( identifier |
+    /// "_" ) "in" ...` (spec 4.8, Appendix A). A struct pattern is a `let`
+    /// and match-arm form only (spec 5.1:18), so the shapes that start one —
+    /// `Point {`, `m.Point {`, `Pair(i32) {` — are rejected here at the
+    /// binder rather than reaching lowering, which has no element pattern to
+    /// destructure with (RUE-2254).
+    fn for_binder(&mut self) -> PResult<LetPattern> {
+        if matches!(self.kind(), TokenKind::Ident(_))
+            && matches!(
+                self.nth(1),
+                TokenKind::LBrace | TokenKind::Dot | TokenKind::LParen
+            )
+        {
+            self.error(
+                "a `for` binder is one identifier or `_`; a struct pattern belongs to \
+                 `let`, so destructure the element inside the body, as in \
+                 `for p in xs { let Point { x, y } = p; }`",
+            );
+            return Err(());
+        }
+        self.let_pattern(false)
     }
 
     fn let_pattern(&mut self, after_mut: bool) -> PResult<LetPattern> {

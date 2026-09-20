@@ -68,8 +68,10 @@ use crate::constants::{
     R_X86_64_PC32,
     R_X86_64_PLT32,
     R_X86_64_REX_GOTPCRELX,
+    SHN_COMMON,
     SHN_LORESERVE,
     SHN_UNDEF,
+    SHN_XINDEX,
     SHT_NULL,
     SHT_RELA,
     SHT_STRTAB,
@@ -387,6 +389,7 @@ impl StructuredObject {
             size: text_size,
             binding: SymbolBinding::Global,
             sym_type: SymbolType::Func,
+            common: None,
         }];
         let mut symbol_indices = AHashMap::new();
         let mut rodata_offset = 0_u64;
@@ -401,6 +404,7 @@ impl StructuredObject {
                     size: 0,
                     binding: SymbolBinding::Local,
                     sym_type: SymbolType::None,
+                    common: None,
                 });
             }
             rodata_offset += atom.len() as u64;
@@ -433,6 +437,7 @@ impl StructuredObject {
                         size: 0,
                         binding: SymbolBinding::Global,
                         sym_type: SymbolType::None,
+                        common: None,
                     });
                     index
                 };
@@ -495,6 +500,7 @@ impl StructuredObject {
             size,
             binding: SymbolBinding::Global,
             sym_type: SymbolType::Func,
+            common: None,
         });
         self
     }
@@ -557,6 +563,15 @@ pub struct Symbol {
     pub binding: SymbolBinding,
     /// Symbol type (function, object, etc.).
     pub sym_type: SymbolType,
+    /// The alignment a *tentative* definition needs, for an ELF `SHN_COMMON`
+    /// symbol; `None` for every ordinary symbol.
+    ///
+    /// A common symbol names storage no object has laid out yet: it belongs to
+    /// no section, so `section_index` is `None` and `value` is 0, while `size`
+    /// is the extent the linker must reserve. The linker places the surviving
+    /// one in the merged `.bss` (RUE-2257). Mach-O has no equivalent, so this
+    /// is always `None` there.
+    pub common: Option<u64>,
 }
 
 /// Symbol binding type.
@@ -1221,6 +1236,7 @@ impl ObjectFile {
                     size: 0, // Mach-O doesn't store symbol size
                     binding,
                     sym_type,
+                    common: None,
                 });
             }
         }
@@ -1345,6 +1361,7 @@ impl ObjectFile {
                             size: 0,
                             binding: SymbolBinding::Local,
                             sym_type: SymbolType::Section,
+                            common: None,
                         });
                         symbols.len() - 1
                     })
@@ -1759,8 +1776,24 @@ impl ObjectFile {
                     _ => SymbolType::None,
                 };
 
-                let section_index = if st_shndx == SHN_UNDEF || st_shndx >= SHN_LORESERVE {
-                    None
+                // The reserved indices are not section numbers. `SHN_COMMON` is
+                // a tentative definition, whose `st_value` is an alignment
+                // rather than an offset and which the linker allocates in .bss
+                // (RUE-2257). `SHN_XINDEX` means the real index lives in a
+                // `SHT_SYMTAB_SHNDX` table this linker does not read, so it is
+                // refused rather than silently read as undefined. Every other
+                // reserved index — `SHN_ABS` above all — carries no placeable
+                // section, so it stays unplaced exactly as before; a reference
+                // to one is reported as an undefined symbol rather than
+                // patched wrong.
+                let (section_index, common, value) = if st_shndx == SHN_COMMON {
+                    (None, Some(st_value.max(1)), 0)
+                } else if st_shndx == SHN_XINDEX {
+                    return Err(ParseError::NotImplemented(
+                        "extended section indices (SHN_XINDEX / SHT_SYMTAB_SHNDX)",
+                    ));
+                } else if st_shndx == SHN_UNDEF || st_shndx >= SHN_LORESERVE {
+                    (None, None, st_value)
                 } else {
                     let idx = st_shndx as usize;
                     if idx >= raw_sections.len() {
@@ -1770,16 +1803,17 @@ impl ObjectFile {
                             raw_sections.len()
                         )));
                     }
-                    Some(idx)
+                    (Some(idx), None, st_value)
                 };
 
                 symbols.push(Symbol {
                     name,
                     section_index,
-                    value: st_value,
+                    value,
                     size: st_size,
                     binding,
                     sym_type,
+                    common,
                 });
             }
         }
@@ -3251,5 +3285,96 @@ mod tests {
             matches!(&result, Err(ParseError::InvalidSymbol(msg)) if msg.contains("LC_SYMTAB")),
             "expected InvalidSymbol about LC_SYMTAB, got: {result:?}"
         );
+    }
+
+    /// File offset of symbol table entry `index`, for the reserved-index tests
+    /// below that rewrite one symbol of an otherwise valid object.
+    fn symtab_entry_offset(data: &[u8], index: usize) -> usize {
+        let header = shdr_offset(data, find_section_header(data, SHT_SYMTAB));
+        let symtab_offset =
+            u64::from_le_bytes(data[header + 24..header + 32].try_into().unwrap()) as usize;
+        symtab_offset + index * ELF64_SYM_SIZE
+    }
+
+    /// Rewrite symbol entry 1's `st_shndx`, `st_value`, and `st_size`.
+    fn set_symbol_shndx(data: &mut [u8], shndx: u16, value: u64, size: u64) {
+        let sym = symtab_entry_offset(data, 1);
+        data[sym + 6..sym + 8].copy_from_slice(&shndx.to_le_bytes());
+        data[sym + 8..sym + 16].copy_from_slice(&value.to_le_bytes());
+        data[sym + 16..sym + 24].copy_from_slice(&size.to_le_bytes());
+    }
+
+    /// `SHN_COMMON` is a tentative definition, not an undefined reference: its
+    /// `st_value` is the alignment it needs and its `st_size` the extent the
+    /// linker must reserve. Collapsing every reserved index to "undefined" made
+    /// a C `-fcommon` variable unresolvable (RUE-2257).
+    #[test]
+    fn common_symbol_parses_as_a_tentative_definition() {
+        let mut data = elf_object_bytes();
+        set_symbol_shndx(&mut data, crate::constants::SHN_COMMON, 16, 40);
+
+        let object = ObjectFile::parse(&data).expect("a common symbol is a valid symbol");
+        let symbol = &object.symbols[1];
+        assert_eq!(symbol.common, Some(16), "st_value is the alignment");
+        assert_eq!(symbol.size, 40, "st_size is the extent to reserve");
+        assert_eq!(symbol.value, 0, "a common symbol has no section offset");
+        assert_eq!(
+            symbol.section_index, None,
+            "a common symbol belongs to no section of its own"
+        );
+    }
+
+    /// The symbols a `SymbolsOnly` parse yields are the symbols a full parse
+    /// yields, tentative definitions included — archive member selection must
+    /// see a common definition the same way the link does.
+    #[test]
+    fn common_symbol_is_identical_at_both_parse_depths() {
+        let mut data = elf_object_bytes();
+        set_symbol_shndx(&mut data, crate::constants::SHN_COMMON, 8, 12);
+
+        let full = ObjectFile::parse(&data).unwrap();
+        let symbols_only = ObjectFile::parse_symbols_with_cancellation(&data, || false).unwrap();
+        assert_eq!(full.symbols.len(), symbols_only.symbols.len());
+        for (a, b) in full.symbols.iter().zip(symbols_only.symbols.iter()) {
+            assert_eq!(a.name, b.name);
+            assert_eq!(a.common, b.common);
+            assert_eq!(a.size, b.size);
+            assert_eq!(a.value, b.value);
+            assert_eq!(a.section_index, b.section_index);
+        }
+    }
+
+    /// `SHN_XINDEX` means the real index is in a `SHT_SYMTAB_SHNDX` table this
+    /// linker does not read. Reading it as "undefined" silently loses a
+    /// definition, so it is refused with a clear message instead (RUE-2257).
+    #[test]
+    fn extended_section_index_is_refused_rather_than_read_as_undefined() {
+        let mut data = elf_object_bytes();
+        set_symbol_shndx(&mut data, crate::constants::SHN_XINDEX, 0, 0);
+
+        let result = ObjectFile::parse(&data);
+        assert!(
+            matches!(
+                &result,
+                Err(ParseError::NotImplemented(feature))
+                    if feature.contains("extended section indices")
+            ),
+            "expected a NotImplemented error about extended section indices, got: {result:?}"
+        );
+    }
+
+    /// The other reserved indices keep their existing treatment: `SHN_ABS`
+    /// names an absolute value this linker does not place, so it stays
+    /// unplaced and is not mistaken for a tentative definition.
+    #[test]
+    fn absolute_symbol_stays_unplaced_and_is_not_a_common() {
+        let mut data = elf_object_bytes();
+        set_symbol_shndx(&mut data, crate::constants::SHN_ABS, 0x1000, 0);
+
+        let object = ObjectFile::parse(&data).expect("an absolute symbol is a valid symbol");
+        let symbol = &object.symbols[1];
+        assert_eq!(symbol.section_index, None);
+        assert_eq!(symbol.common, None);
+        assert_eq!(symbol.value, 0x1000, "an absolute value is preserved");
     }
 }

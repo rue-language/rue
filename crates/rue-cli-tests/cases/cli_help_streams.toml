@@ -26,6 +26,22 @@ compile_only = true
 compile_stdout_contains = ["Usage: rue [options]"]
 compile_stderr_not_contains = ["Usage: rue"]
 
+# RUE-2261: the --daemon paragraph describes the real support table of
+# `daemon_client::unsupported_reason` (mirrored in docs/development.md), so
+# --emit stages and --watch must not be listed as running directly. The
+# `cli.daemon` cases prove the behaviour this text claims.
+[[case]]
+name = "help_describes_the_real_daemon_support_table"
+files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }\n" }]
+args = ["--help"]
+compile_only = true
+compile_stdout_contains = [
+    "rue test, rue test --list, --watch, and any --emit",
+    "--linker, --module-manifest,",
+    "are refused under required",
+]
+compile_stdout_not_contains = ["--emit air alone"]
+
 # An unknown option is an ERROR: the message and usage go to stderr, and no
 # usage leaks to stdout.
 [[case]]

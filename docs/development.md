@@ -88,6 +88,7 @@ any failure is the invocation's failure and nothing is retried.
 | Any supported `--emit` stage or combination (presentation only; nothing is linked) | service | service |
 | Executable `--watch` and `rue test --watch` | service | service |
 | `--linker <cmd>` | direct | refused |
+| `--module-manifest <path>` | direct | refused |
 | `--time-passes`, `--benchmark-json` | direct | refused |
 | Tracing via `--log-level` or `RUST_LOG` | direct | refused |
 | `--help`, `--version`, `explain`, `rue daemon` | local | local |

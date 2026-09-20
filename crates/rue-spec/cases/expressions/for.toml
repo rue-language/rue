@@ -55,6 +55,24 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = "bare for iterable"
 
+# The binder side of the same ambiguity: `for_expr` (4.8:24) admits one
+# identifier or `_`, never the struct pattern of 5.1:18, so `for Point { x, y }
+# in ...` is a syntax error at the binder rather than an unlowerable loop
+# (RUE-2254).
+[[case]]
+name = "struct_pattern_for_binder_is_rejected"
+spec = ["4.8:24"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let arr = [Point { x: 1, y: 2 }];
+    for Point { x, y } in arr { return x + y; }
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0102", "a `for` binder is one identifier or `_`"]
+
 # Iteration is a shared read (4.8:26): a non-Copy element type is bound by
 # shared borrow, NOT moved out of the array, so the loop compiles and reads
 # fields fine (RUE-259 — previously wrongly rejected E0904 "cannot move out of

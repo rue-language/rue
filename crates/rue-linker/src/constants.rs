@@ -111,6 +111,12 @@ pub const SHN_UNDEF: u16 = 0;
 pub const SHN_LORESERVE: u16 = 0xff00;
 /// SHN_ABS: Absolute value (not relocated)
 pub const SHN_ABS: u16 = 0xfff1;
+/// SHN_COMMON: a tentative definition. `st_size` is the extent to allocate and
+/// `st_value` the alignment it needs, rather than an offset in a section.
+pub const SHN_COMMON: u16 = 0xfff2;
+/// SHN_XINDEX: the real section index lives in the object's `SHT_SYMTAB_SHNDX`
+/// table, which this linker does not read.
+pub const SHN_XINDEX: u16 = 0xffff;
 
 // Symbol binding (upper 4 bits of st_info)
 

@@ -2522,8 +2522,9 @@ fn transferability_enabled_for(
 /// 6.8:14): its interface bound when it names one or more interfaces, or
 /// empty when it is an ordinary comptime value parameter. A composed bound
 /// (`A + B`) is always a bound, so each name in it must be an interface; a
-/// single name is a bound only when it resolves to an interface, except that
-/// a struct name — never a comptime value type — is E0306 under the preview.
+/// single name is a bound only when it resolves to an interface, because
+/// `comptime p: P` is the comptime value parameter of 4.14:5 whenever `P`
+/// names a type, whether or not the preview is on (RUE-2242).
 /// A trusted standard-library module is exempt from the gate (spec 6.8:25),
 /// so std can declare bounds a program compiled without the preview calls.
 fn classify_interface_bounds(
@@ -2555,7 +2556,10 @@ fn classify_interface_bounds(
             )?);
             continue;
         }
-        // A single name: only an interface makes it a bound.
+        // A single name: only an interface makes it a bound. Every other
+        // name — a struct, an enum, an alias, a type constructor — is the
+        // annotation of a comptime value parameter (4.14:5), which the
+        // interfaces preview must read the same way it does without it.
         let Ok(crate::durable_semantics::DurableType::Nominal(key)) =
             resolve_signature_type_root(provider, module, syntax, root)
         else {
@@ -2563,10 +2567,6 @@ fn classify_interface_bounds(
         };
         if is_interface_shell(provider, &key)? {
             keys.push(key);
-        } else if preview && key.kind() == crate::StableDefinitionKind::Struct {
-            return Err(at_parameter(rue_error::ErrorKind::BoundIsNotAnInterface {
-                name: syntax.render_type(root).unwrap_or_default(),
-            }));
         } else {
             return Ok(Arc::from([]));
         }

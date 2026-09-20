@@ -165,3 +165,45 @@ fn main() -> i32 {
     if bytes == @intCast(s.len()) { @intCast(s.len()) * 10 + scalars + again + lossy } else { 1 }
 }
 """ }]
+
+# RUE-2254: the `for` binder is `identifier | "_"` (4.8:24). A struct pattern
+# is a `let` and match-arm form, and lowering has nowhere to put one, so the
+# parser rejects every shape that starts one instead of reaching an ICE.
+[[case]]
+name = "struct_pattern_for_binder_is_a_syntax_error"
+description = "`for Point { x, y } in arr` is rejected at the binder with a syntax error, not an internal compiler error."
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+files = [{ path = "main.rue", source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let arr = [Point { x: 1, y: 2 }];
+    for Point { x, y } in arr { return x + y; }
+    0
+}
+""" }]
+error_contains = [
+    "error: [E0102]: a `for` binder is one identifier or `_`",
+    "for p in xs { let Point { x, y } = p; }",
+    "main.rue:4:9",
+]
+compile_stderr_not_contains = ["internal compiler error"]
+
+[[case]]
+name = "type_constructor_for_binder_is_a_syntax_error"
+description = "The type-constructor head of a struct pattern is rejected at the `for` binder too, with the struct_patterns preview enabled."
+args = ["--preview", "struct_patterns", "main.rue", "-o", "prog"]
+compile_fail = true
+files = [{ path = "main.rue", source = """
+fn Pair(comptime T: type) -> type { struct { x: T, y: T } }
+fn main() -> i32 {
+    let arr = [Pair(i32) { x: 1, y: 2 }];
+    for Pair(i32) { x, y } in arr { return x + y; }
+    0
+}
+""" }]
+error_contains = [
+    "error: [E0102]: a `for` binder is one identifier or `_`",
+    "main.rue:4:9",
+]
+compile_stderr_not_contains = ["internal compiler error"]
