@@ -14,14 +14,15 @@
 //   integers    unsigned decimal (`weight`, `paginate_by`)
 //   booleans    `true` / `false` (`generate_feeds`)
 //   dates       bare `YYYY-MM-DD`, kept AS A STRING — see below
-//   arrays      single-line `[a, b]` of the scalar kinds above (`authors`)
+//   arrays      scalar arrays, including multiline arrays, and arrays of
+//               inline tables (`authors`, `highlight_themes_css`)
 //   comments    `#` to end of line — on its own line or trailing a value, as
 //               both TOML and Zola accept; a `#` inside a string is content
 //
 // REJECTED, loudly, with a diagnostic naming the line: dotted keys, nested or
-// array-of-tables headers (`[a.b]`, `[[a]]`), inline tables (`{ … }`), literal
-// `'…'` strings, floats, negative integers, offset/local datetimes, multi-line
-// arrays, and any escape outside the five listed above. ADR-0072 Decision 3
+// array-of-tables headers (`[a.b]`, `[[a]]`), literal `'…'` strings, floats,
+// negative integers, offset/local datetimes, and any escape outside the five
+// listed above. ADR-0072 Decision 3
 // makes that deliberate: the benchmark builds the LIVE corpus, so site content
 // that steps outside this subset must break the next collection run visibly
 // instead of publishing quietly wrong metadata.
@@ -119,16 +120,22 @@ fn parse_scalar(
             fail(inout arena, line, "unterminated string", value.NONE());
             return bad_scalar();
         }
+        let mut quote = start + 1;
+        while quote + 1 < end {
+            if text.byte_of(borrow source, quote) == 92 { quote += 2; continue; }
+            if text.byte_of(borrow source, quote) == 34 {
+                fail(inout arena, line, "trailing tokens after a string value", value.NONE());
+                return bad_scalar();
+            }
+            quote += 1;
+        }
         return decode_basic(inout arena, borrow source, start + 1, end - 1, line);
     }
     if first == 39 {
         fail(inout arena, line, "literal 'single-quoted' strings are outside the subset", value.NONE());
         return bad_scalar();
     }
-    if first == 123 {
-        fail(inout arena, line, "inline tables are outside the subset", value.NONE());
-        return bad_scalar();
-    }
+    if first == 123 { return parse_inline_table(inout arena, borrow source, start + 1, end - 1, line); }
     if first == 91 {
         if text.byte_of(borrow source, end - 1) != 93 {
             fail(inout arena, line, "multi-line arrays are outside the subset", value.NONE());
@@ -164,6 +171,58 @@ fn parse_scalar(
     let subject = arena.strings.intern_range(borrow source, start, end);
     fail(inout arena, line, "unrecognized value", subject);
     bad_scalar()
+}
+
+fn parse_inline_table(
+    inout arena: value.Arena,
+    borrow source: StrBuf,
+    start: u64,
+    end: u64,
+    line: u64,
+) -> Scalar {
+    let mut fields = value.Entries.new();
+    let mut piece = start;
+    let mut i = start;
+    let mut depth: u64 = 0;
+    let mut in_string = false;
+    let mut ok = true;
+    while i <= end {
+        let at_end = i == end;
+        let b = if at_end { 0 } else { text.byte_of(borrow source, i) };
+        if !at_end && in_string {
+            if b == 92 { i += 2; continue; }
+            if b == 34 { in_string = false; }
+            i += 1;
+            continue;
+        }
+        if !at_end && b == 34 { in_string = true; i += 1; continue; }
+        if !at_end && b == 123 { depth += 1; i += 1; continue; }
+        if !at_end && b == 125 && depth > 0 { depth -= 1; i += 1; continue; }
+        if at_end || (b == 44 && depth == 0) {
+            let s = text.trim_start_at(borrow source, piece, i);
+            let e = text.trim_end_at(borrow source, s, i);
+            let eq = text.find_byte(borrow source, 61, s);
+            if eq >= e {
+                fail(inout arena, line, "inline table entries require `key = value`", value.NONE());
+                ok = false;
+            } else {
+                let key_end = text.trim_end_at(borrow source, s, eq);
+                if !is_bare_key(borrow source, s, key_end) {
+                    fail(inout arena, line, "inline table keys must be bare", value.NONE());
+                    ok = false;
+                } else {
+                    let key = arena.strings.intern_range(borrow source, s, key_end);
+                    let vs = text.trim_start_at(borrow source, eq + 1, e);
+                    let parsed = parse_scalar(inout arena, borrow source, vs, e, line);
+                    if parsed.ok { fields.push(value.Entry { key: key, value: parsed.value }); }
+                    else { ok = false; }
+                }
+            }
+            piece = i + 1;
+        }
+        i += 1;
+    }
+    Scalar { value: arena.map(borrow fields), ok: ok }
 }
 
 // The end of a value, stopping at an unquoted `#` comment. A `#` inside a
@@ -202,10 +261,8 @@ fn is_bare_date(borrow source: StrBuf, start: u64, end: u64) -> bool {
     true
 }
 
-// Elements of a single-line array occupying `[start, end)` (the brackets have
-// already been stripped). Splitting on top-level commas is enough because the
-// subset has no inline tables and no nested arrays in the corpus; a nested
-// array still parses, since the bracket depth is tracked.
+// Elements of an array occupying `[start, end)` (the brackets have already
+// been stripped). Bracket and brace depth keep nested values intact.
 fn parse_array(
     inout arena: value.Arena,
     borrow source: StrBuf,
@@ -215,6 +272,7 @@ fn parse_array(
 ) -> Scalar {
     let mut elements = U64s.new();
     let mut depth: u64 = 0;
+    let mut table_depth: u64 = 0;
     let mut in_string = false;
     let mut piece = start;
     let mut i = start;
@@ -231,9 +289,11 @@ fn parse_array(
         if !at_end && b == 34 { in_string = true; i += 1; continue; }
         if !at_end && b == 91 { depth += 1; i += 1; continue; }
         if !at_end && b == 93 { if depth > 0 { depth -= 1; } i += 1; continue; }
-        if at_end || (b == 44 && depth == 0) {
-            let s = text.trim_start_at(borrow source, piece, i);
-            let e = text.trim_end_at(borrow source, s, i);
+        if !at_end && b == 123 { table_depth += 1; i += 1; continue; }
+        if !at_end && b == 125 { if table_depth > 0 { table_depth -= 1; } i += 1; continue; }
+        if at_end || (b == 44 && depth == 0 && table_depth == 0) {
+            let s = trim_value_start(borrow source, piece, i);
+            let e = trim_value_end(borrow source, s, i);
             if s < e {
                 let element = parse_scalar(inout arena, borrow source, s, e, line);
                 if element.ok { elements.push(element.value); } else { ok = false; }
@@ -250,6 +310,25 @@ fn parse_array(
         ok = false;
     }
     Scalar { value: arena.array(borrow elements), ok: ok }
+}
+
+fn trim_value_start(borrow source: StrBuf, start: u64, end: u64) -> u64 {
+    let mut i = start;
+    while i < end {
+        let b = text.byte_of(borrow source, i);
+        if b != 32 && b != 9 && b != 10 && b != 13 { break; }
+        i += 1;
+    }
+    i
+}
+
+fn trim_value_end(borrow source: StrBuf, start: u64, end: u64) -> u64 {
+    let mut i = end;
+    while i > start {
+        let b = text.byte_of(borrow source, i - 1);
+        if b == 32 || b == 9 || b == 10 || b == 13 { i -= 1; } else { break; }
+    }
+    i
 }
 
 // Whether `[start, end)` is a bare key: at least one byte of `A-Za-z0-9_-`.
@@ -330,6 +409,19 @@ fn scan_table(inout arena: value.Arena, borrow source: StrBuf, from: u64, first_
                     let key = arena.strings.intern_range(borrow source, s, key_end);
                     let vs = text.trim_start_at(borrow source, eq + 1, e);
                     let multiline = source.matches_at(vs, borrow "\"\"\"");
+                    let array_close = if vs < e && text.byte_of(borrow source, vs) == 91
+                        { find_array_close(borrow source, vs) } else { source.len() };
+                    if array_close < source.len() && array_close >= e {
+                        let parsed = parse_array(inout arena, borrow source, vs + 1, array_close, line);
+                        if parsed.ok {
+                            if table_key != value.NONE() { table.push(value.Entry { key: key, value: parsed.value }); }
+                            else { root.push(value.Entry { key: key, value: parsed.value }); }
+                        } else { ok = false; }
+                        line += text.count_byte_in(borrow source, 10, vs, array_close + 1);
+                        offset = text.next_line(borrow source, array_close + 1);
+                        line += 1;
+                        continue;
+                    }
                     // `weight = 3  # ordering` is ordinary TOML and Zola accepts
                     // it. Only a whole-line comment used to be handled, so a
                     // trailing one was read as part of the value and rejected
@@ -383,6 +475,26 @@ fn scan_table(inout arena: value.Arena, borrow source: StrBuf, from: u64, first_
     Scan { root: arena.map(borrow root), offset: offset, line: line, ok: ok, closed: closed }
 }
 
+fn find_array_close(borrow source: StrBuf, start: u64) -> u64 {
+    let mut depth: u64 = 0;
+    let mut in_string = false;
+    let mut i = start;
+    while i < source.len() {
+        let b = text.byte_of(borrow source, i);
+        if in_string {
+            if b == 92 { i += 2; continue; }
+            if b == 34 { in_string = false; }
+        } else if b == 34 { in_string = true; }
+        else if b == 91 { depth += 1; }
+        else if b == 93 {
+            if depth == 1 { return i; }
+            if depth > 0 { depth -= 1; }
+        }
+        i += 1;
+    }
+    source.len()
+}
+
 // Parse the front matter at the head of `source`.
 //
 // A document with no `+++` opener is REJECTED rather than treated as an
@@ -413,4 +525,52 @@ pub fn parse_document(inout arena: value.Arena, borrow source: StrBuf) -> Parsed
         ok = false;
     }
     Parsed { root: scan.root, body_start: scan.offset, body_line: scan.line, ok: ok }
+}
+
+// Decode generated JSON into the same arena used by TOML and templates. JSON
+// numbers that fit Rue's unsigned integer value remain integers; decimal,
+// exponent, and negative spellings use the V_NUM value while preserving the
+// producer's text for exact template rendering and comparison.
+fn json_value(inout arena: value.Arena, input: std.json.Json) -> u64 {
+    match input {
+        std.json.Json.Null => arena.null(),
+        std.json.Json.Bool(v) => arena.boolean(v),
+        std.json.Json.String(v) => arena.string(borrow v),
+        std.json.Json.Number(v) => {
+            let digits = if v.len() <= 19 { text.parse_digits(borrow v, 0, v.len()) } else { text.Digits { value: 0, count: 0 } };
+            if digits.count > 0 { arena.integer(digits.value) } else { arena.number(borrow v) }
+        },
+        std.json.Json.Array(items) => {
+            let mut values = U64s.new();
+            let mut owned = items;
+            while owned.len() > 0 { values.push(json_value(inout arena, owned.pop_or(std.json.Json.Null))); }
+            let mut i: u64 = 0;
+            while i < values.len() / 2 { let j = values.len() - 1 - i; let a = values.get_or(i, 0); values.set(i, values.get_or(j, 0)); values.set(j, a); i += 1; }
+            arena.array(borrow values)
+        },
+        std.json.Json.Object(object) => {
+            let mut fields = value.Entries.new();
+            let mut keys = object.keys;
+            let mut values = object.values;
+            while keys.len() > 0 && values.len() > 0 {
+                let key_text = keys.pop_or("");
+                let key = arena.strings.intern(borrow key_text);
+                fields.push(value.Entry { key: key, value: json_value(inout arena, values.pop_or(std.json.Json.Null)) });
+            }
+            let mut i: u64 = 0;
+            while i < fields.len() / 2 { let j = fields.len() - 1 - i; let a = fields.get_or(i, value.empty_entry()); fields.set(i, fields.get_or(j, value.empty_entry())); fields.set(j, a); i += 1; }
+            arena.map(borrow fields)
+        },
+    }
+}
+
+pub fn parse_json(inout arena: value.Arena, borrow source: StrBuf) -> Parsed {
+    let parsed = match std.json.parse(source.clone()) {
+        std.result.Result(std.json.Json, std.json.ParseError).Ok(v) => v,
+        std.result.Result(std.json.Json, std.json.ParseError).Err(_e) => {
+            fail(inout arena, 1, "invalid JSON data", value.NONE());
+            return Parsed { root: arena.null(), body_start: 0, body_line: 1, ok: false };
+        },
+    };
+    Parsed { root: json_value(inout arena, parsed), body_start: 0, body_line: 1, ok: true }
 }

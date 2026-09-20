@@ -2071,39 +2071,21 @@ mod tests {
         spellings
     }
 
-    /// Every word the website's syntax definition highlights as a keyword,
-    /// taken from the alternations of its `keywords` and `types` contexts.
+    /// Gazette's source-controlled Rue vocabulary follows the lexer authority.
     fn syntax_definition_keywords(path: &Path) -> Vec<String> {
         let text = fs::read_to_string(path)
             .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
-        let mut context = String::new();
+        let definitions: serde_json::Value = serde_json::from_str(&text).unwrap();
         let mut spellings = Vec::new();
-        for line in text.lines() {
-            if let Some(name) = line
-                .strip_prefix("  ")
-                .filter(|rest| !rest.starts_with([' ', '-', '#']))
-                .and_then(|rest| rest.strip_suffix(':'))
-            {
-                context = name.to_owned();
-                continue;
-            }
-            if context != "keywords" && context != "types" {
-                continue;
-            }
-            // Only word alternations (`\b(a|b)\b`) name keywords; the other
-            // matches in these contexts are literal syntax such as `\(\)`.
-            let Some(alternation) = line
-                .split_once("\\b(")
-                .and_then(|(_, rest)| rest.split_once(")\\b"))
-                .map(|(alternation, _)| alternation)
-            else {
-                continue;
-            };
-            spellings.extend(alternation.split('|').map(str::to_owned));
+        for category in ["keywords", "types", "constants", "special"] {
+            let words = definitions["rue"][category]
+                .as_array()
+                .unwrap_or_else(|| panic!("{} has no Rue {category} array", path.display()));
+            spellings.extend(words.iter().map(|word| word.as_str().unwrap().to_owned()));
         }
         assert!(
             !spellings.is_empty(),
-            "{} has no keyword alternation",
+            "{} has no keyword vocabulary",
             path.display()
         );
         spellings.sort();
@@ -2132,9 +2114,9 @@ mod tests {
     #[test]
     fn website_syntax_definition_highlights_every_keyword() {
         assert_eq!(
-            syntax_definition_keywords(Path::new("website/syntaxes/rue.sublime-syntax")),
+            syntax_definition_keywords(Path::new("website/syntaxes/gazette.json")),
             lexer_keywords(),
-            "website/syntaxes/rue.sublime-syntax and rue_lexer::KEYWORDS disagree"
+            "website/syntaxes/gazette.json and rue_lexer::KEYWORDS disagree"
         );
     }
 

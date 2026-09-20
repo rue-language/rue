@@ -83,3 +83,18 @@ test "the summary marker records where the summary ends" {
     @assert(doc.ok);
     @assert_eq(doc.summary_end, 13);
 }
+
+
+test "code spans preserve one-sided spaces and all-space contents" {
+    let mut eng = ast.Engine.new();
+    let source: StrBuf = "`left ` and ` right` and ` both ` and `   `\n";
+    let doc = markdown.render(inout eng, borrow source, 1);
+    @assert_eq(doc.html, "<p><code>left </code> and <code> right</code> and <code>both</code> and <code>   </code></p>\n");
+}
+
+
+test "blank-separated siblings form one loose list" {
+    let mut eng = engine();
+    @assert_eq(html(inout eng, "- One.\n\n- Two.\n"), "<ul>\n<li>\n<p>One.</p>\n</li>\n<li>\n<p>Two.</p>\n</li>\n</ul>\n");
+    @assert_eq(html(inout eng, "3. One.\n\n4. Two.\n"), "<ol start=\"3\">\n<li>\n<p>One.</p>\n</li>\n<li>\n<p>Two.</p>\n</li>\n</ol>\n");
+}

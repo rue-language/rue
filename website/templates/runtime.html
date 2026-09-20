@@ -291,7 +291,7 @@
         <p>
           <strong>This compares a corpus-specialized Rue program against
           general-purpose tools.</strong> Gazette implements the subset of
-          Markdown, shortcodes, and template features this corpus actually uses;
+          Markdown, shortcodes, and template features needed by this website;
           Zola and Hugo implement all of theirs. Gazette renders through its
           general engine paths — corpus-specific fast paths are out of bounds —
           but a subset engine is structurally leaner than a general one, and no
@@ -403,7 +403,7 @@
 
     The excerpts are cut from the checked-in files at build time by
     `scripts/extract-source-excerpts.py`, which `website/build.sh` runs before
-    Zola. `load_data` is a hard error on a missing file and the extractor is a
+    Gazette. `load_data` is a hard error on a missing file and the extractor is a
     hard error on a declaration that no longer describes its source, so the two
     failure modes that matter — an excerpt that drifted from the port, and a
     page built without extracting one — both fail the build instead of
@@ -426,9 +426,10 @@
     <p style="color: var(--color-muted); max-width: 42rem; margin-top: 0.75rem;">
       The three say it differently, which is the other reason to put them side
       by side. Zola runs the production template unchanged — that is what the
-      port is for. Gazette needs four substitutions to say the same thing in a
-      smaller dialect: it has no arithmetic, so the depth parameter goes, and
-      the prefix test is spelled as a filter rather than a test. Only Hugo
+      port is for. Gazette's benchmark port keeps its original smaller dialect:
+      the unused depth parameter is omitted and the prefix check is a filter.
+      The production site now uses Gazette's arithmetic and test expressions;
+      these benchmark templates retain their original spellings. Only Hugo
       restates the recursion outright — Go templates have no macros, so what
       Tera calls on itself as <code>self::render_nav</code> becomes a partial
       invoking itself with a <code>dict</code>.
@@ -467,9 +468,9 @@
     <h3 style="margin-top: 2.5rem;">And what reads them</h3>
     <p style="color: var(--color-muted); max-width: 42rem;">
       Zola and Hugo each arrive with a general-purpose template engine. Gazette
-      arrives with this. The prefix test the sidebar gates on is spelled as a
-      filter because gazette's grammar has no <code>is</code> tests, and it runs
-      where Tera's and Go's do — inside the program being measured. Computing
+      arrives with this. The benchmark port spells its prefix check as a filter;
+      Gazette also accepts <code>is starting_with</code> in the production
+      templates. Both spellings run inside the program being measured. Computing
       the open branch outside the template would move measured work out of the
       benchmark, and no output check would catch it: a flattened sidebar emits
       the same links and the same visible text on every page.

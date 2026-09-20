@@ -6,17 +6,12 @@
 // to keep in sync. Every value is an index into `values`; composite values name
 // contiguous ranges of `items` (arrays) or `entries` (maps).
 //
-// SUPPORTED VALUE KINDS: null, bool, unsigned integer, string, array, map.
+// SUPPORTED VALUE KINDS: null, bool, integer, JSON number, string, array, map.
 //
-// INTEGERS ARE UNSIGNED. The corpus's integers are `weight`, `paginate_by`, and
-// template literals like `slice(end=3)` — all non-negative. A negative integer
-// is REJECTED at its parse site rather than silently wrapped, which is the
-// documented-subset discipline ADR-0072 Decision 3 asks for: content that steps
-// outside the subset must fail the next benchmark run visibly.
-//
-// FLOATS ARE ABSENT because Rue has no floating-point types (ADR-0065 is
-// accepted but unimplemented). A fractional number is rejected at its parse
-// site for the same reason.
+// TOML integer fields used by configuration remain unsigned. JSON data loaded
+// by templates also carries signed, decimal, and exponent spellings as V_NUM;
+// retaining the authored spelling avoids lossy host conversion while the
+// template evaluator supplies numeric truthiness and comparisons.
 const std = @import("std");
 const pool = @import("pool.rue");
 const text = @import("text.rue");
@@ -30,6 +25,7 @@ pub fn V_INT() -> u64 { 2 }
 pub fn V_STR() -> u64 { 3 }
 pub fn V_ARRAY() -> u64 { 4 }
 pub fn V_MAP() -> u64 { 5 }
+pub fn V_NUM() -> u64 { 6 }
 
 pub struct Value {
     tag: u64,
@@ -113,6 +109,13 @@ pub struct Arena {
     fn string(inout self, borrow s: StrBuf) -> u64 {
         let id = self.strings.intern(borrow s);
         self.string_id(id)
+    }
+
+    fn number(inout self, borrow s: StrBuf) -> u64 {
+        let id = self.strings.intern(borrow s);
+        let index = self.values.len();
+        self.values.push(Value { tag: V_NUM(), num: id, start: 0, count: 0 });
+        index
     }
 
     fn literal(inout self, s: StrBuf) -> u64 { self.string(borrow s) }
@@ -209,6 +212,17 @@ pub struct Arena {
         if v.tag == V_BOOL() { return v.num == 1; }
         if v.tag == V_INT() { return v.num != 0; }
         if v.tag == V_STR() { return self.strings.string_len(v.num) > 0; }
+        if v.tag == V_NUM() {
+            let rendered = self.strings.copy(v.num);
+            let mut i: u64 = 0;
+            while i < rendered.len() {
+                let b = text.byte_of(borrow rendered, i);
+                if b == 101 || b == 69 { break; }
+                if b >= 49 && b <= 57 { return true; }
+                i += 1;
+            }
+            return false;
+        }
         v.count > 0
     }
 
@@ -217,7 +231,7 @@ pub struct Arena {
     // land in published HTML.
     fn append_scalar(borrow self, index: u64, inout out: StrBuf) {
         let v = self.at(index);
-        if v.tag == V_STR() { self.strings.append(v.num, inout out); }
+        if v.tag == V_STR() || v.tag == V_NUM() { self.strings.append(v.num, inout out); }
         else if v.tag == V_INT() { out.push_str(text.decimal(v.num)); }
         else if v.tag == V_BOOL() { if v.num == 1 { out.push_str("true"); } else { out.push_str("false"); } }
     }
@@ -232,7 +246,7 @@ pub struct Arena {
     // scalar kinds so comparison and sorting have one representation.
     fn scalar_id(inout self, index: u64) -> u64 {
         let v = self.at(index);
-        if v.tag == V_STR() { return v.num; }
+        if v.tag == V_STR() || v.tag == V_NUM() { return v.num; }
         let rendered = self.scalar(index);
         self.strings.intern(borrow rendered)
     }

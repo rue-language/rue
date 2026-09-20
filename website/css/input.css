@@ -239,7 +239,7 @@ pre {
   font-variant-numeric: lining-nums;
 }
 
-pre:not(.z-code) {
+pre:not(.g-code) {
   background-color: var(--color-code-bg);
 }
 

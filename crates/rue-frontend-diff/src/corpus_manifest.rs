@@ -835,6 +835,8 @@ pub(crate) const ROOTS: &[(&str, &[&str])] = &[
             "floats.rue",
             "gazette/frontmatter.rue",
             "gazette/frontmatter_tests.rue",
+            "gazette/highlight.rue",
+            "gazette/highlight_tests.rue",
             "gazette/main.rue",
             "gazette/markdown.rue",
             "gazette/markdown_tests.rue",

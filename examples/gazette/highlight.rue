@@ -1,0 +1,190 @@
+// Source-driven highlighting for fenced code. A site's JSON definitions name
+// its vocabulary and lexical delimiters; no language or site name is embedded
+// in the scanner. Unknown fence languages remain escaped plain text.
+const std = @import("std");
+const ast = @import("tmpl_ast.rue");
+const value = @import("value.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn field(inout eng: ast.Engine, syntax: u64, name: StrBuf) -> u64 {
+    eng.arena.map_get_literal(syntax, name)
+}
+
+fn field_text(inout eng: ast.Engine, syntax: u64, name: StrBuf) -> StrBuf {
+    let v = field(inout eng, syntax, name);
+    eng.arena.scalar(v)
+}
+
+fn has_word(borrow arena: value.Arena, words: u64, word: u64) -> bool {
+    let mut i: u64 = 0;
+    while i < arena.length(words) {
+        if arena.at(arena.item(words, i)).num == word { return true; }
+        i += 1;
+    }
+    false
+}
+
+fn span(borrow code: StrBuf, start: u64, end: u64, class: StrBuf, inout out: StrBuf) {
+    if class.len() > 0 {
+        out.push_str("<span class=\"g-");
+        text.append_escaped_attr(borrow class, inout out);
+        out.push_str("\">");
+    }
+    text.append_escaped_text(borrow code, start, end, inout out);
+    if class.len() > 0 { out.push_str("</span>"); }
+}
+
+pub fn validate(inout eng: ast.Engine, definitions: u64) -> bool {
+    let before = eng.arena.error_count();
+    if eng.arena.tag(definitions) != value.V_MAP() {
+        eng.error(value.E_MARKDOWN(), 0, "syntax definitions must be a JSON object", ast.NONE());
+        return false;
+    }
+    let mut i: u64 = 0;
+    while i < eng.arena.length(definitions) {
+        let entry = eng.arena.entry_at(definitions, i);
+        if eng.arena.tag(entry.value) != value.V_MAP() {
+            eng.error(value.E_MARKDOWN(), 0, "a syntax definition must be an object", entry.key);
+        }
+        let mut j: u64 = 0;
+        while j < eng.arena.length(entry.value) {
+            let property = eng.arena.entry_at(entry.value, j);
+            let name = eng.arena.strings.copy(property.key);
+            let vocabulary = text.equals_str(borrow name, "keywords")
+                || text.equals_str(borrow name, "types")
+                || text.equals_str(borrow name, "constants")
+                || text.equals_str(borrow name, "special");
+            let delimiters = text.equals_str(borrow name, "line_comment")
+                || text.equals_str(borrow name, "block_start")
+                || text.equals_str(borrow name, "block_end")
+                || text.equals_str(borrow name, "quotes")
+                || text.equals_str(borrow name, "operators")
+                || text.equals_str(borrow name, "punctuation")
+                || text.equals_str(borrow name, "intrinsic_prefix")
+                || text.equals_str(borrow name, "definition_suffix");
+            if vocabulary {
+                if eng.arena.tag(property.value) != value.V_ARRAY() {
+                    eng.error(value.E_MARKDOWN(), 0, "syntax vocabulary must be an array of strings", property.key);
+                }
+                let mut k: u64 = 0;
+                while k < eng.arena.length(property.value) {
+                    if eng.arena.tag(eng.arena.item(property.value, k)) != value.V_STR() {
+                        eng.error(value.E_MARKDOWN(), 0, "syntax vocabulary must contain strings", property.key);
+                    }
+                    k += 1;
+                }
+            } else if delimiters {
+                if eng.arena.tag(property.value) != value.V_STR() {
+                    eng.error(value.E_MARKDOWN(), 0, "syntax delimiter must be a string", property.key);
+                }
+            } else {
+                eng.error(value.E_MARKDOWN(), 0, "unknown syntax definition property", property.key);
+            }
+            j += 1;
+        }
+        let start = field_text(inout eng, entry.value, "block_start");
+        let end = field_text(inout eng, entry.value, "block_end");
+        if (start.len() == 0) != (end.len() == 0) {
+            eng.error(value.E_MARKDOWN(), 0, "block comments need both opening and closing delimiters", entry.key);
+        }
+        i += 1;
+    }
+    eng.arena.error_count() == before
+}
+
+pub fn syntax_for(inout eng: ast.Engine, borrow info: StrBuf) -> u64 {
+    let enabled_key = eng.key("__highlight_code");
+    let enabled = eng.lookup(enabled_key);
+    if !eng.arena.truthy(enabled) { return ast.NONE(); }
+    let definitions_key = eng.key("__highlight_syntaxes");
+    let definitions = eng.lookup(definitions_key);
+    let mut end: u64 = 0;
+    while end < info.len() && !text.is_blank_byte(text.byte_of(borrow info, end)) { end += 1; }
+    let key = eng.arena.strings.intern_range(borrow info, 0, end);
+    eng.arena.map_get(definitions, key)
+}
+
+pub fn render(inout eng: ast.Engine, syntax: u64, borrow code: StrBuf, inout out: StrBuf) {
+    if syntax == ast.NONE() {
+        text.append_escaped_text(borrow code, 0, code.len(), inout out);
+        return;
+    }
+    let keywords = field(inout eng, syntax, "keywords");
+    let types = field(inout eng, syntax, "types");
+    let constants = field(inout eng, syntax, "constants");
+    let special = field(inout eng, syntax, "special");
+    let line_comment = field_text(inout eng, syntax, "line_comment");
+    let block_start = field_text(inout eng, syntax, "block_start");
+    let block_end = field_text(inout eng, syntax, "block_end");
+    let quotes = field_text(inout eng, syntax, "quotes");
+    let operators = field_text(inout eng, syntax, "operators");
+    let punctuation = field_text(inout eng, syntax, "punctuation");
+    let intrinsic = field_text(inout eng, syntax, "intrinsic_prefix");
+    let definition_suffix = field_text(inout eng, syntax, "definition_suffix");
+    let mut i: u64 = 0;
+    while i < code.len() {
+        let start = i;
+        let b = text.byte_of(borrow code, i);
+        let mut class = StrBuf.new();
+        if line_comment.len() > 0 && code.matches_at(i, borrow line_comment) {
+            i = text.line_end(borrow code, i);
+            class.push_str("comment");
+        } else if block_start.len() > 0 && code.matches_at(i, borrow block_start) {
+            let end = text.find_from(borrow code, borrow block_end, i + block_start.len());
+            i = if end < code.len() { end + block_end.len() } else { code.len() };
+            class.push_str("comment");
+        } else if text.find_byte(borrow quotes, b, 0) < quotes.len() {
+            i += 1;
+            while i < code.len() {
+                let c = text.byte_of(borrow code, i);
+                i += 1;
+                if c == 92 && i < code.len() { i += 1; }
+                else if c == b { break; }
+            }
+            class.push_str("string");
+        } else if intrinsic.len() > 0 && code.matches_at(i, borrow intrinsic)
+            && text.is_ident(text.byte_of(borrow code, i + intrinsic.len())) {
+            i += intrinsic.len();
+            while i < code.len() && text.is_ident(text.byte_of(borrow code, i)) { i += 1; }
+            class.push_str("function");
+        } else if text.is_alpha(b) || b == 95 {
+            i += 1;
+            while i < code.len() && text.is_ident(text.byte_of(borrow code, i)) { i += 1; }
+            let word = eng.arena.strings.intern_range(borrow code, start, i);
+            if has_word(borrow eng.arena, keywords, word) { class.push_str("keyword"); }
+            else if has_word(borrow eng.arena, types, word) { class.push_str("type"); }
+            else if has_word(borrow eng.arena, constants, word) { class.push_str("constant"); }
+            else if has_word(borrow eng.arena, special, word) { class.push_str("variable"); }
+            else {
+                let next = text.trim_start_at(borrow code, i, code.len());
+                let following = text.byte_of(borrow code, next);
+                if following == 40 || text.find_byte(borrow definition_suffix, following, 0) < definition_suffix.len() { class.push_str("function"); }
+            }
+        } else if text.is_digit(b) {
+            i += 1;
+            while i < code.len() && (text.is_alnum(text.byte_of(borrow code, i))
+                || text.byte_of(borrow code, i) == 95 || text.byte_of(borrow code, i) == 46) { i += 1; }
+            class.push_str("number");
+        } else {
+            i += 1;
+            if text.find_byte(borrow operators, b, 0) < operators.len() { class.push_str("operator"); }
+            else if text.find_byte(borrow punctuation, b, 0) < punctuation.len() { class.push_str("punctuation"); }
+        }
+        span(borrow code, start, i, class, inout out);
+    }
+}
+
+// CSS themes use token categories, keeping the lexer independent of palettes.
+// Only the named themes implemented here are accepted by configuration.
+pub fn theme_css(borrow name: StrBuf) -> StrBuf {
+    let dark = text.equals_str(borrow name, "gruvbox-dark");
+    if !dark && !text.equals_str(borrow name, "gruvbox-light") { return StrBuf.new(); }
+    let mut css = StrBuf.new();
+    if dark {
+        css.push_str(".g-code{color:#ebdbb2;background:#282828}.g-comment{color:#928374}.g-keyword{color:#fb4934}.g-type{color:#fabd2f}.g-string{color:#b8bb26}.g-number,.g-constant{color:#d3869b}.g-function{color:#8ec07c}.g-operator{color:#fe8019}.g-variable{color:#83a598}.g-punctuation{color:#a89984}\n");
+    } else {
+        css.push_str(".g-code{color:#3c3836;background:#fbf1c7}.g-comment{color:#928374}.g-keyword{color:#9d0006}.g-type{color:#b57614}.g-string{color:#79740e}.g-number,.g-constant{color:#8f3f71}.g-function{color:#427b58}.g-operator{color:#af3a03}.g-variable{color:#076678}.g-punctuation{color:#7c6f64}\n");
+    }
+    css
+}

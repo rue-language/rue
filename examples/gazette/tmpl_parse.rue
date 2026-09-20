@@ -1,7 +1,7 @@
 // Lexer and parser for gazette's template language.
 //
-// The language is the subset of Tera (Zola's engine) that the benchmark's
-// template ports use, and no more:
+// The language covers the production website and its benchmark template port:
+
 //
 //   {{ expr }}                 interpolation, HTML-escaped unless `| safe`
 //   {% if c %}{% elif c %}{% else %}{% endif %}
@@ -14,7 +14,8 @@
 //
 // Expressions: string literals in either quote style, unsigned integers,
 // `true`/`false`, dotted paths, `and`/`or`/`not`, the six comparisons, named
-// function calls, and `|` filter chains with named arguments.
+// function calls, array literals, unsigned integer arithmetic with ordinary
+// precedence, `is starting_with`, and `|` filter chains with named arguments.
 //
 // MACROS ARE IN THE SUBSET because the production specification sidebar is
 // built from one: `spec/base.html` defines a `render_nav` macro that recurses
@@ -23,12 +24,12 @@
 // carries macros with named arguments, defaults, definition on a parent
 // template, and recursion — bounded by the shared depth guard, which reports a
 // located diagnostic instead of overflowing the stack. The prefix test is the
-// `starts_with` filter (see tmpl_eval.rue); Tera spells it `x is
-// starting_with(y)`, and a filter needs no new grammar to say the same thing.
+// `starts_with` filter in the benchmark port and the equivalent
+// `x is starting_with(y)` spelling in production (see tmpl_eval.rue).
 //
 // REJECTED, loudly: `{% include %}`, `{% filter %}`, `{% raw %}`, `{% import %}`
-// and namespaces other than `self::`, Tera's other `is` tests, array and map
-// literals, arithmetic, positional (unnamed) call arguments, and
+// and namespaces other than `self::`, Tera's other `is` tests, map literals,
+// positional (unnamed) call arguments, and
 // `{% for k, v in map %}`. Anything outside the subset is a diagnostic naming
 // the template and line, never a silent empty render.
 const std = @import("std");
@@ -274,7 +275,7 @@ fn parse_comparison(
     end: u64,
     line: u64,
 ) -> u64 {
-    let left = parse_filters(inout eng, borrow src, inout p, end, line);
+    let left = parse_additive(inout eng, borrow src, inout p, end, line);
     skip_spaces(borrow src, inout p, end);
     if p.at >= end { return left; }
     let b0 = text.byte_of(borrow src, p.at);
@@ -288,17 +289,64 @@ fn parse_comparison(
     else if b0 == 62 { op = ast.OP_GT(); width = 1; }
     else if b0 == 60 { op = ast.OP_LT(); width = 1; }
     if width == 0 {
-        // `is`-tests are Tera syntax the port does not use; naming them is far
-        // more useful than the "unexpected byte" the fallback would give.
+        // Tera's `is starting_with(prefix)` is used by the production sidebar.
         if peek_word_is(borrow src, p.at, end, borrow "is") {
-            fail(inout eng, line, "`is` tests are outside the template subset", NONE());
-            p.at = end;
+            take_word(borrow src, inout p, end, borrow "is");
+            if !take_word(borrow src, inout p, end, borrow "starting_with") {
+                fail(inout eng, line, "only the `starting_with` test is in the template subset", NONE());
+                p.at = end;
+                return left;
+            }
+            skip_spaces(borrow src, inout p, end);
+            if p.at >= end || text.byte_of(borrow src, p.at) != 40 {
+                fail(inout eng, line, "starting_with requires a prefix argument", NONE());
+                return left;
+            }
+            p.at += 1;
+            let prefix = parse_expr(inout eng, borrow src, inout p, end, line);
+            skip_spaces(borrow src, inout p, end);
+            if p.at < end && text.byte_of(borrow src, p.at) == 41 { p.at += 1; }
+            else { fail(inout eng, line, "starting_with requires a closing `)`", NONE()); }
+            let key = eng.arena.strings.intern_literal("prefix");
+            let name = eng.arena.strings.intern_literal("starts_with");
+            let arg = eng.add_expr(ast.Expr { tag: ast.EX_ARG(), a: key, b: prefix, c: NONE(), next: NONE() });
+            return eng.add_expr(ast.Expr { tag: ast.EX_FILTER(), a: left, b: name, c: arg, next: NONE() });
         }
         return left;
     }
     p.at += width;
-    let right = parse_filters(inout eng, borrow src, inout p, end, line);
+    let right = parse_additive(inout eng, borrow src, inout p, end, line);
     eng.add_expr(ast.Expr { tag: ast.EX_BINOP(), a: op, b: left, c: right, next: NONE() })
+}
+
+fn parse_additive(inout eng: ast.Engine, borrow src: StrBuf, inout p: Pos, end: u64, line: u64) -> u64 {
+    let mut left = parse_multiplicative(inout eng, borrow src, inout p, end, line);
+    loop {
+        skip_spaces(borrow src, inout p, end);
+        if p.at >= end { break; }
+        let b = text.byte_of(borrow src, p.at);
+        if b != 43 && b != 45 { break; }
+        p.at += 1;
+        let right = parse_multiplicative(inout eng, borrow src, inout p, end, line);
+        let op = if b == 43 { ast.OP_ADD() } else { ast.OP_SUB() };
+        left = eng.add_expr(ast.Expr { tag: ast.EX_BINOP(), a: op, b: left, c: right, next: NONE() });
+    }
+    left
+}
+
+fn parse_multiplicative(inout eng: ast.Engine, borrow src: StrBuf, inout p: Pos, end: u64, line: u64) -> u64 {
+    let mut left = parse_filters(inout eng, borrow src, inout p, end, line);
+    loop {
+        skip_spaces(borrow src, inout p, end);
+        if p.at >= end { break; }
+        let b = text.byte_of(borrow src, p.at);
+        if b != 42 && b != 47 && b != 37 { break; }
+        p.at += 1;
+        let right = parse_filters(inout eng, borrow src, inout p, end, line);
+        let op = if b == 42 { ast.OP_MUL() } else if b == 47 { ast.OP_DIV() } else { ast.OP_MOD() };
+        left = eng.add_expr(ast.Expr { tag: ast.EX_BINOP(), a: op, b: left, c: right, next: NONE() });
+    }
+    left
 }
 
 fn parse_filters(
@@ -480,8 +528,27 @@ fn parse_primary(
         return eng.add_expr(ast.Expr { tag: ast.EX_INT(), a: digits.value, b: NONE(), c: NONE(), next: NONE() });
     }
 
-    if b == 45 || b == 91 || b == 123 {
-        fail(inout eng, line, "negative numbers and array/map literals are outside the template subset", NONE());
+    if b == 91 {
+        p.at += 1;
+        let mut head = NONE();
+        let mut tail = NONE();
+        loop {
+            skip_spaces(borrow src, inout p, end);
+            if p.at >= end { fail(inout eng, line, "unterminated array literal", NONE()); break; }
+            if text.byte_of(borrow src, p.at) == 93 { p.at += 1; break; }
+            let item = parse_expr(inout eng, borrow src, inout p, end, line);
+            let arg = eng.add_expr(ast.Expr { tag: ast.EX_ARG(), a: NONE(), b: item, c: NONE(), next: NONE() });
+            if head == NONE() { head = arg; } else { let mut prev = eng.expr(tail); prev.next = arg; eng.exprs.set(tail, prev); }
+            tail = arg;
+            skip_spaces(borrow src, inout p, end);
+            if p.at < end && text.byte_of(borrow src, p.at) == 44 { p.at += 1; }
+            else if p.at >= end || text.byte_of(borrow src, p.at) != 93 { fail(inout eng, line, "array literal elements require commas", NONE()); p.at = end; break; }
+        }
+        return eng.add_expr(ast.Expr { tag: ast.EX_ARRAY(), a: head, b: NONE(), c: NONE(), next: NONE() });
+    }
+
+    if b == 45 || b == 123 {
+        fail(inout eng, line, "negative numbers and map literals are outside the template subset", NONE());
         p.at = end;
         let empty = eng.empty();
         return eng.add_expr(ast.Expr { tag: ast.EX_STR(), a: empty, b: NONE(), c: NONE(), next: NONE() });

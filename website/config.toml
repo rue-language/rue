@@ -5,11 +5,12 @@ description = "A systems programming language with memory safety and high-level 
 compile_sass = false
 minify_html = true
 generate_feeds = true
+generate_metadata = true
 feed_filenames = ["rss.xml"]
 build_search_index = true
 
 [search]
-index_format = "elasticlunr_json"
+index_format = "gazette_json"
 include_title = true
 include_description = true
 include_path = true
@@ -18,7 +19,7 @@ include_content = true
 [markdown]
 highlight_code = true
 highlight_theme = "css"
-extra_syntaxes_and_themes = ["syntaxes"]
+syntax_definitions = "syntaxes/gazette.json"
 highlight_themes_css = [
   { theme = "gruvbox-dark", filename = "syntax-dark.css" },
   { theme = "gruvbox-light", filename = "syntax-light.css" },

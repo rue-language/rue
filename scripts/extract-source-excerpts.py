@@ -6,7 +6,7 @@ site generators, and Decision 8 asks it to show "side-by-side source and
 template excerpts" so that "a corpus-specialized Rue program against
 general-purpose tools" is something a reader can look at rather than only read
 in a caption. This script produces those excerpts, and `website/build.sh` runs
-it before Zola so the page renders them server-side.
+it before Gazette so the page renders them server-side.
 
 WHY EXTRACTION RATHER THAN A PASTE
 ----------------------------------
@@ -60,7 +60,7 @@ partial panel:
     failure anchors alone cannot catch: the block keeps its name and loses its
     substance. Every entry below is a sentence the page actually says.
 
-The page reads the result through Zola's `load_data`, which is itself a hard
+The page reads the result through Gazette's `load_data`, which is itself a hard
 error when the file is missing, so a site built without this step fails too.
 """
 
@@ -84,9 +84,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # ports had to solve rather than transcribe, so the three genuinely correspond
 # and differ exactly where the languages do: a Tera macro recursing through
 # `self::`, a Go partial recursing through `partial`, and gazette's port of the
-# first. And it is where the subset shows: gazette has no `is` tests and no
-# arithmetic, so the same test is spelled as a filter and the macro's unused
-# `depth` parameter is gone.
+# first. The benchmark port retains its original filter spelling and omits the
+# unused `depth` parameter. Production Gazette additionally supports the test
+# and arithmetic forms; that does not change the measured benchmark port.
 #
 # The blog byline was the other candidate and was rejected: gazette's dialect is
 # close enough to Tera that its listing template is byte-identical to the Zola

@@ -1,0 +1,60 @@
+const std = @import("std");
+const ast = @import("tmpl_ast.rue");
+const frontmatter = @import("frontmatter.rue");
+const highlight = @import("highlight.rue");
+const markdown = @import("markdown.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn engine() -> ast.Engine {
+    let mut eng = ast.Engine.new();
+    let source: StrBuf = "{\"demo\":{\"keywords\":[\"begin\"],\"types\":[\"Number\"],\"line_comment\":\"//\",\"block_start\":\"(*\",\"block_end\":\"*)\",\"quotes\":\"\\\"\",\"intrinsic_prefix\":\"@\",\"operators\":\"+\",\"punctuation\":\"()\"}}";
+    let parsed = frontmatter.parse_json(inout eng.arena, borrow source);
+    @assert(parsed.ok);
+    @assert(highlight.validate(inout eng, parsed.root));
+    eng.set_global(eng.key("__highlight_syntaxes"), parsed.root);
+    eng.set_global(eng.key("__highlight_code"), eng.arena.boolean(true));
+    eng
+}
+
+test "highlighting reads vocabulary and delimiters from syntax data" {
+    let mut eng = engine();
+    let syntax = highlight.syntax_for(inout eng, borrow "demo run");
+    let mut out = StrBuf.new();
+    highlight.render(inout eng, syntax, borrow "begin Number @print(42) + \"<&\" // done\n(* two\nlines *)", inout out);
+    @assert(out.contains(borrow "<span class=\"g-keyword\">begin</span>"));
+    @assert(out.contains(borrow "<span class=\"g-type\">Number</span>"));
+    @assert(out.contains(borrow "<span class=\"g-function\">@print</span>"));
+    @assert(out.contains(borrow "<span class=\"g-number\">42</span>"));
+    @assert(out.contains(borrow "<span class=\"g-string\">\"&lt;&amp;\"</span>"));
+    @assert(out.contains(borrow "<span class=\"g-comment\">(* two\nlines *)</span>"));
+    @assert_eq(eng.arena.error_count(), 0);
+}
+
+test "highlighted markdown preserves every code byte and fence metadata" {
+    let mut eng = engine();
+    let source: StrBuf = "```demo run\nbegin café \"a  b\"\n\n```\n";
+    let doc = markdown.render(inout eng, borrow source, 1);
+    @assert(doc.html.contains(borrow "<pre class=\"g-code\"><code class=\"language-demo run\">"));
+    @assert_eq(text.strip_tags(borrow doc.html), "begin café \"a  b\"\n\n\n");
+}
+
+test "unknown languages and disabled highlighting stay escaped plain text" {
+    let mut eng = engine();
+    let source: StrBuf = "```text\nbegin <&\n```\n";
+    let doc = markdown.render(inout eng, borrow source, 1);
+    @assert_eq(doc.html, "<pre><code class=\"language-text\">begin &lt;&amp;\n</code></pre>\n");
+    eng.set_global(eng.key("__highlight_code"), eng.arena.boolean(false));
+    @assert_eq(highlight.syntax_for(inout eng, borrow "demo"), ast.NONE());
+}
+
+test "invalid syntax declarations and unknown palettes fail explicitly" {
+    let mut eng = ast.Engine.new();
+    let source: StrBuf = "{\"demo\":{\"keywords\":4,\"block_start\":\"/*\",\"ignored_option\":true}}";
+    let parsed = frontmatter.parse_json(inout eng.arena, borrow source);
+    @assert(!highlight.validate(inout eng, parsed.root));
+    @assert_eq(eng.arena.error_count(), 3);
+    @assert_eq(highlight.theme_css(borrow "unknown").len(), 0);
+    @assert(highlight.theme_css(borrow "gruvbox-dark").contains(borrow ".g-keyword"));
+    @assert(highlight.theme_css(borrow "gruvbox-light").contains(borrow "#fbf1c7"));
+}
