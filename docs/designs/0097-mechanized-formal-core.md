@@ -9,7 +9,7 @@ accepted:
 implemented:
 spec-sections: []
 superseded-by:
-relates: ["RUE-1882", "RUE-2226", "RUE-207", "RUE-206", "RUE-50", "RUE-305", "RUE-2227", "RUE-2228", "RUE-2233", "RUE-2237", "RUE-2241", "RUE-2245", "RUE-2247", "RUE-2249", "RUE-2251", "RUE-2282", "RUE-2283", "ADR-0082", "ADR-0083"]
+relates: ["RUE-1882", "RUE-2226", "RUE-207", "RUE-206", "RUE-50", "RUE-305", "RUE-2227", "RUE-2228", "RUE-2233", "RUE-2237", "RUE-2241", "RUE-2245", "RUE-2247", "RUE-2249", "RUE-2251", "RUE-2282", "RUE-2283", "RUE-2289", "ADR-0082", "ADR-0083"]
 ---
 
 # ADR-0097: Mechanized formal core
@@ -130,12 +130,16 @@ across many sessions and several agents.
    with "Σ faithfully tracks the store's initialization" (§7's phrase) as the
    preservation invariant. Named corollaries per §7 bullet are the
    deliverable the metatheory cites. §6 is written small-step, so `eval` is
-   a second presentation of the same dynamics: its adequacy to §6's
-   reduction is an owed lemma (RUE-207), and §6's heading and §7's first
-   bullet are reworded as a normal spec change (RUE-2226) so the views
-   agree. A refusal is a positive result in this form, so every `Violation`
-   and panic kind gets a kernel-checked witness per slice, and fuel, when it
-   lands, brings monotonicity and no-masking lemmas (RUE-2233).
+   a second presentation of the same dynamics, and a theorem about `eval`
+   is a theorem about §6 only once the two are proved to agree. That
+   adequacy (a mechanized §6 reduction relation, `eval` sound and complete
+   modulo fuel with respect to it) is therefore a Phase C deliverable
+   (RUE-2289) that checkpoint C requires, not a later promise; §6's heading
+   and §7's first bullet are reworded as a normal spec change (RUE-2226) so
+   the views agree. A refusal is a positive result in this form, so every
+   `Violation` and panic kind gets a kernel-checked witness per slice, and
+   fuel, when it lands, brings monotonicity and no-masking lemmas
+   (RUE-2233) so `outOfFuel` can never stand in for a violation.
    `03-metatheory.md` records the choice and the reason (same corollaries,
    far less overhead, shape-identity with the oracle).
 
@@ -151,9 +155,13 @@ across many sessions and several agents.
    non-blocking. Nothing runs in CI until (a) the safety theorem covers the
    full core dynamics for by-value programs (every Phase C slice: structs,
    paths, enums, arrays, declared-linear destructure, the leaf and float
-   inventory, calls, loops, drop order, no-double-free) and (b) an
-   independent review (decision 7, checkpoint C, RUE-2251) confirms the
-   proof is established. The mechanism is the test-tier system, read
+   inventory, calls, loops, drop order, no-double-free), (b) that theorem
+   is about §6 and not only about `eval`: the fuel lemmas (RUE-2233) and
+   the adequacy lemma (RUE-2289) are proved for the same fragment, and (c)
+   an independent review (decision 7, checkpoint C, RUE-2251) confirms the
+   proof is established. Promotion then certifies exactly that: §6's
+   dynamics are safe on the by-value fragment, with loans and buffers still
+   outside the claim. The mechanism is the test-tier system, read
    correctly: `premerge` and `slow` are both pre-merge selectors (`slow` is
    the oracle-diff corpus lane), `stress` runs in the nightly release sweep,
    that sweep runs `//...` and so reaches every tier not excluded by label,
@@ -241,7 +249,8 @@ Tracked as milestones of the "Formal core mechanization" Linear project.
 - [ ] **Phase B: Bridge at fragment scope** - RUE-2227, RUE-2228, RUE-2229,
       RUE-2250 (checkpoint B gates CI)
 - [ ] **Phase C: Grow the fragment** - RUE-2230 through RUE-2237, RUE-2282,
-      RUE-2251 (checkpoint C is the "established proof" gate)
+      RUE-2289 (adequacy), RUE-2251 (checkpoint C is the "established
+      proof" gate)
 - [ ] **Phase D: Loans and the store** - RUE-2283 (the §9 rulings),
       RUE-2238, RUE-2239, RUE-2240, RUE-2252 (checkpoint D gates the
       metatheory)
