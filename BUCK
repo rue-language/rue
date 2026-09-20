@@ -791,6 +791,31 @@ lean_package(
     ],
 )
 
+# ADR-0097's differential bridge (RUE-2228): the Lean corpus against the three
+# implementation views. `buck2 run //:lean-bridge -- [--case NAME]`.
+#
+# Deliberately NOT a test target, for the same reason //:lean-ruecore is not:
+# no tier applies until the ADR's gate is met (RUE-2241), and the bridge is red
+# today on `cond_drop_affine` (RUE-2290). The corpus arrives as the Lean
+# package's own output, so running it needs neither `lake` nor `elan`
+# (ADR-0097 decision 1). Inputs are declared here and absolutized by the
+# script, the way the cached corpus suites do it.
+sh_binary(
+    name = "lean-bridge-harness",
+    main = "scripts/lean-bridge.sh",
+)
+
+command_alias(
+    name = "lean-bridge",
+    exe = ":lean-bridge-harness",
+    env = {
+        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_LEAN_CORPUS": "$(location :lean-ruecore)/corpus.json",
+        "RUE_ORACLE_DIFF_BINARY": "$(exe_target //crates/rue-oracle-diff:rue-oracle-diff)",
+        "RUE_ORACLE_DIFF_STD": "$(location //std:std)",
+    },
+)
+
 # The Buck pin (toolchains/lean/defs.bzl) and the file `lake` and the editor
 # read (docs/formal/lean/lean-toolchain) name the same Lean release.
 rue_sh_test(

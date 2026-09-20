@@ -15,6 +15,11 @@ load("//:test_defs.bzl", "rue_sh_test")
 #    generated compile/Unsupported results as contract failures, all with
 #    seed-based repros. Driven by `.github/workflows/fuzz.yml` nightly; needs
 #    `RUE_BINARY`.
+#  * `lean-corpus`: ADR-0097's differential bridge (RUE-2228) — the Lean
+#    mechanization's exported corpus against the compiler's accept/reject
+#    decision, the oracle, and native binaries at O1/O2/O3. Its entry point is
+#    `//:lean-bridge` (`buck2 run`), deliberately not a test target: RUE-2241
+#    decides whether CI gates on it.
 # The harness driver itself has no #[test] functions — it IS the harness — but
 # the `generator` module carries unit tests (determinism + always-emits-main),
 # so the rust_test target (`:rue-oracle-diff-test`) is kept enabled.
@@ -35,6 +40,10 @@ rue_binary(
         # runtime's own contracted message prefix to do it (RUE-1994).
         "//crates/rue-query:rue-query",
         "//third-party:serde",
+        # The Lean bridge corpus (RUE-2228) and the compiler's
+        # `--error-format json` diagnostics are both JSON documents; the same
+        # crate rue-test-runner already uses reads and writes them here.
+        "//third-party:serde_json",
         # Generated native runs use a unique RAII work directory so every
         # normal exit path removes sources and binaries (RUE-589).
         "//third-party:tempfile",

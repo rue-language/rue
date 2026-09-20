@@ -29,6 +29,14 @@
 //!   Dir resolution mirrors corpus mode: argv; else `RUE_ORACLE_DIFF_SPEC_CASES`
 //!   (how the `buck2 test` sh_test feeds the rue-spec `cases` filegroup); else
 //!   `crates/rue-spec/cases`.
+//! - **lean-corpus** (`rue-oracle-diff lean-corpus --corpus <corpus.json>`):
+//!   ADR-0097's differential bridge (RUE-2228). Runs the Lean mechanization's
+//!   exported corpus — each case a small Rue program with the verified
+//!   checker's verdict and the verified interpreter's outcome — through the
+//!   compiler, the oracle, and native binaries at O1/O2/O3, and names every
+//!   pairwise disagreement among the four views. See [`lean_corpus`]. It is a
+//!   `buck2 run` entry point (`//:lean-bridge`), not a test tier: RUE-2241
+//!   decides whether CI gates on it.
 //! - **fuzz** (`rue-oracle-diff fuzz [...]`): the differential *fuzzer* of
 //!   RUE-247 — generate random valid programs and cross-check the oracle
 //!   against native binaries compiled at O0, O1, O2, and O3. See [`fuzz`]. A `dump <seed>`
@@ -52,6 +60,7 @@
 
 mod fuzz;
 mod generator;
+mod lean_corpus;
 mod model_gaps;
 mod trap;
 
@@ -268,6 +277,7 @@ impl NativeRunner {
                     std_path: real_std.then_some(self.std_path.as_path()),
                     compile_timeout,
                     runtime_timeout,
+                    error_format_json: false,
                 },
             ) {
                 Ok(compiled) => compiled,
@@ -498,6 +508,12 @@ fn run() -> ExitCode {
     // (templated cases expanded via rue-test-runner) instead of rue-cli-tests.
     if raw.first().map(String::as_str) == Some("spec") {
         return spec_mode_with_configuration(raw[1..].to_vec(), oracle_configuration);
+    }
+    // `lean-corpus [...]` runs ADR-0097's differential bridge: the Lean
+    // mechanization's exported corpus against the compiler, the oracle, and
+    // native binaries. See [`lean_corpus`].
+    if raw.first().map(String::as_str) == Some("lean-corpus") {
+        return lean_corpus::run(&raw[1..], oracle_configuration);
     }
     // `dump <seed>...` prints the generated program(s) — a debugging aid for
     // inspecting what a seed produces (and reducing a repro by hand).

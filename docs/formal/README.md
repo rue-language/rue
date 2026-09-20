@@ -134,6 +134,17 @@ This one artifact does three jobs at once:
 The interpreter is validated *against* the compiler and the compiler against
 *it*: neither is presumed correct; disagreement is the signal. (See RUE-50.)
 
+Since ADR-0097 there is a fourth view to cross-check: the Lean mechanization
+in [`lean/`](lean/README.md), which exports a corpus of small programs with the
+*verified* checker's accept/reject verdict and the *verified* interpreter's
+outcome for each. `./buck2 run //:lean-bridge` (or `scripts/rue lean-bridge`)
+runs that corpus through the compiler, the oracle, and native binaries at
+O1--O3, and names every pairwise disagreement: checker vs. compiler, Lean vs.
+oracle, Lean vs. native, oracle vs. native. It is deliberately not in any test
+tier — RUE-2241 decides whether CI gates on it — and it is red today on one
+case (RUE-2290), which is the point: the bridge reports the pair and leaves
+the judgment of which view is wrong to a human (RUE-305).
+
 ---
 
 ## The extension rubric
