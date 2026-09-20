@@ -1487,8 +1487,8 @@ rue_sh_test(
 )
 
 # The developer wrapper scripts. scripts/test-wrapper-scripts.sh (RUE-537,
-# RUE-549, RUE-550, RUE-590) runs copies of them against fake tools — no real
-# build — to pin that resolver failures are surfaced (not swallowed), that
+# RUE-549, RUE-550, RUE-590, RUE-2298) runs copies of them against fake tools —
+# no real build — to pin that resolver failures are surfaced (not swallowed), that
 # run/exec resolve relative paths from the caller's cwd, that filtered CLI
 # examples stay repository-anchored across per-case cwd changes, and that the
 # sanitizer gives examples the bundled standard library. The filegroup
@@ -1507,6 +1507,7 @@ filegroup(
         "scripts/ci-heavy-suite": "scripts/ci-heavy-suite",
         "scripts/ci-timed": "scripts/ci-timed",
         "scripts/check-cache-probe": "scripts/check-cache-probe",
+        "scripts/check-rue-program-digests.sh": "scripts/check-rue-program-digests.sh",
         "scripts/rue": "scripts/rue",
         "scripts/rue-bin": "scripts/rue-bin",
         "scripts/rue-storage": "scripts/rue-storage",

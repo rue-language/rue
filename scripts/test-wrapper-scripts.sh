@@ -1231,6 +1231,73 @@ EOF
   rm -rf "$sb"
 }
 
+# RUE-2298: a failed Buck build or execution-log query must remain a failed
+# digest check with its diagnostic visible to ci-timed. A missing log is not an
+# empty action list: the latter would falsely pass the undeclared-input probe.
+test_rue_program_digest_failures_are_loud() {
+  local sb; sb="$(mktemp -d)"
+  mkdir -p "$sb/scripts" "$sb/fixtures/rue-program/hello" "$sb/fixtures/rue-program/boundary"
+  cp "$SRC_ROOT/scripts/check-rue-program-digests.sh" "$sb/scripts/check-rue-program-digests.sh"
+  chmod +x "$sb/scripts/check-rue-program-digests.sh"
+  printf '%s\n' '// declared fixture' >"$sb/fixtures/rue-program/hello/shared.rue"
+  printf '%s\n' '// undeclared fixture' >"$sb/fixtures/rue-program/boundary/extra.rue"
+  ( cd "$sb" && git init -q && git add . &&
+    git -c user.name='wrapper test' -c user.email='wrapper@example.invalid' commit -qm fixtures )
+
+  cat >"$sb/buck2" <<'EOF'
+#!/usr/bin/env bash
+state="$PWD/fake-build-count"
+case "$1" in
+  build)
+    count=0
+    [ -f "$state" ] && count="$(cat "$state")"
+    count=$((count + 1))
+    printf '%s\n' "$count" >"$state"
+    if [ "${FAKE_MODE:-}" = build-fail ]; then
+      echo 'MOCK_BUILD_ERROR: controlled build failure' >&2
+      exit 7
+    fi
+    exit 0
+    ;;
+  log)
+    count=0
+    [ -f "$state" ] && count="$(cat "$state")"
+    if [ "${FAKE_MODE:-}" = log-fail-after-three ] && [ "$count" -eq 4 ]; then
+      echo 'MOCK_LOG_ERROR: cannot read execution log' >&2
+      exit 23
+    fi
+    if [ "$count" -eq 2 ]; then
+      echo 'rue_compile expected declared-source reexecution'
+    fi
+    exit 0
+    ;;
+esac
+echo "unexpected fake Buck command: $*" >&2
+exit 99
+EOF
+  chmod +x "$sb/buck2"
+
+  local rc=0 out
+  out="$(cd "$sb" && RUE_BUCK2="$sb/buck2" FAKE_MODE=build-fail \
+    ./scripts/check-rue-program-digests.sh 2>&1)" || rc=$?
+  check "digest check: Buck build failure exits non-zero" \
+    "$([ "$rc" -eq 7 ] && echo 0 || echo 1)"
+  check "digest check: Buck build diagnostic is surfaced" \
+    "$(grep -Fq 'MOCK_BUILD_ERROR' <<<"$out" && echo 0 || echo 1)"
+
+  rm -f "$sb/fake-build-count"
+  rc=0
+  out="$(cd "$sb" && RUE_BUCK2="$sb/buck2" FAKE_MODE=log-fail-after-three \
+    ./scripts/check-rue-program-digests.sh 2>&1)" || rc=$?
+  check "digest check: execution-log failure exits non-zero" \
+    "$([ "$rc" -eq 23 ] && echo 0 || echo 1)"
+  check "digest check: execution-log diagnostic is surfaced" \
+    "$(grep -Fq 'MOCK_LOG_ERROR' <<<"$out" && echo 0 || echo 1)"
+  check "digest check: execution-log failure cannot report PASS" \
+    "$(! grep -Fq 'digest-check: PASS' <<<"$out" && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
 # The cache probe must distinguish a genuine same-run cold-to-warm conversion
 # from an already-warm shared cache or a second build that did no better.
 test_cache_probe_counter_validation() {
@@ -1850,6 +1917,7 @@ test_rue_unit_failing_test_propagates_exit
 test_rue_unit_unknown_crate_errors_cleanly
 test_ci_timed_preserves_status_and_summarizes_actions
 test_ci_timed_reports_action_cache_state
+test_rue_program_digest_failures_are_loud
 test_cache_probe_counter_validation
 test_ci_heavy_suite_audits_its_target
 test_ci_corpus_inventory_is_graph_derived_and_fails_closed
