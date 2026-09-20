@@ -7,6 +7,9 @@ import RueCore.Checker
 exactly as `docs/formal/README.md` demands of the oracle. These examples show
 the machine's observable outcomes (value + drop trace + panics + refusals) and
 double as seed vectors for a future Lean↔`rue-oracle` differential harness.
+
+The declarations here are programs, not rules (`xref: examples` for
+`scripts/validate-lean-xref-index.py`).
 -/
 
 namespace RueCore.Examples

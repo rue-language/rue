@@ -35,6 +35,14 @@ filegroup(
     visibility = ["//:"],
 )
 
+# The core calculus, read by //:lean-xref-index-validation for its rule and
+# section inventory (RUE-2245).
+export_file(
+    name = "formal-core-calculus",
+    src = "formal/01-core-calculus.md",
+    visibility = ["//:"],
+)
+
 # ADR-0071 phase 3: the note //:compiler-allocator-policy-validation reads.
 export_file(
     name = "adr-0071-phase-3-note",

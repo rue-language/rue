@@ -23,40 +23,53 @@ namespace RueCore
 
 /-! ## Value typing -/
 
+/-- Value typing: §6.1's values against §2's types, with the `n_T` bounds and
+the resource's class. §7's preservation half is stated over this relation. -/
 inductive HasTy : Val → Ty → Prop where
   | int {n} : InBounds n → HasTy (.int n) .int
   | bool {b} : HasTy (.bool b) .bool
   | unit : HasTy .unit .unit
   | res {κ n} : InBounds n → HasTy (.res κ n) (.res κ)
 
+/-- A well-typed value has its type's class (helper). -/
 theorem HasTy.mult_eq {v T} (h : HasTy v T) : v.mult = T.mult := by
   cases h <;> rfl
 
+/-- Inversion of value typing at `int` (helper). -/
 theorem HasTy.int_inv {v} (h : HasTy v .int) : ∃ n, v = .int n ∧ InBounds n := by
   cases h; exact ⟨_, rfl, ‹_›⟩
 
+/-- Inversion of value typing at `bool` (helper). -/
 theorem HasTy.bool_inv {v} (h : HasTy v .bool) : ∃ b, v = .bool b := by
   cases h; exact ⟨_, rfl⟩
 
+/-- Inversion of value typing at a resource type (helper). -/
 theorem HasTy.res_inv {v κ} (h : HasTy v (.res κ)) : ∃ n, v = .res κ n ∧ InBounds n := by
   cases h; exact ⟨_, rfl, ‹_›⟩
 
 /-! ## The store–Σ agreement invariant -/
 
-/-- Per-cell agreement between the static entry and the dynamic cell. -/
+/-- Per-cell agreement between the static entry and the dynamic cell: §7's
+"Σ faithfully tracks the store's initialization", with the §5.5 join's
+asymmetry built in. A `MovedOut` entry may still hold a live *non-linear*
+value, which the machine drops path-specifically at scope exit (§5.6, §6.7;
+`3.8:73` is the array-element form of the same rule, cited by §5.5); it
+never holds a live linear one (`3.8:50`). -/
 def CellMatches (c : Cell) (en : Entry) : Prop :=
   match en.st with
   | .owned => ∃ v, c = .full v ∧ HasTy v en.ty
   | .movedOut => c = .moved ∨ ∃ v, c = .full v ∧ HasTy v en.ty ∧ v.mult ≠ .linear
 
 /-- `Matches Γ ρ H`: each binding's location holds a cell agreeing with its
-static entry; locations are live (in `H`) and pairwise distinct. -/
+static entry; locations are live (in `H`) and pairwise distinct. This is the
+§7 preservation invariant, over §6.1's environment `ρ` and store `H`. -/
 inductive Matches : Ctx → Env → Store → Prop where
   | nil {H} : Matches [] [] H
   | cons {en : Entry} {Γ : Ctx} {ℓ : Nat} {ρ : Env} {H : Store} {c : Cell} :
       H[ℓ]? = some c → CellMatches c en → ℓ ∉ ρ → Matches Γ ρ H →
       Matches (en :: Γ) (ℓ :: ρ) H
 
+/-- Every bound location is inside the store (helper). -/
 theorem Matches.mem_lt {Γ ρ H} (hm : Matches Γ ρ H) : ∀ ℓ ∈ ρ, ℓ < H.length := by
   induction hm with
   | nil => intro ℓ h; cases h
@@ -66,10 +79,12 @@ theorem Matches.mem_lt {Γ ρ H} (hm : Matches Γ ρ H) : ∀ ℓ ∈ ρ, ℓ < 
       | head => exact List.getElem?_eq_some_iff.mp hc |>.1
       | tail _ h => exact ih _ h
 
+/-- The next location to allocate is bound to nothing (helper). -/
 theorem Matches.fresh_not_mem {Γ ρ H} (hm : Matches Γ ρ H) : H.length ∉ ρ := by
   intro hmem
   exact absurd (hm.mem_lt _ hmem) (by omega)
 
+/-- Look a binding up through the invariant (helper). -/
 theorem Matches.lookup {Γ ρ H} (hm : Matches Γ ρ H) {i : Nat} {en}
     (hget : Γ[i]? = some en) :
     ∃ ℓ c, ρ[i]? = some ℓ ∧ H[ℓ]? = some c ∧ CellMatches c en := by
@@ -82,7 +97,7 @@ theorem Matches.lookup {Γ ρ H} (hm : Matches Γ ρ H) {i : Nat} {en}
           simp only [List.getElem?_cons_succ] at hget ⊢
           exact ih hget
 
-/-- Store growth by allocation preserves the invariant. -/
+/-- Store growth by allocation preserves the invariant (helper). -/
 theorem Matches.append {Γ ρ H} (hm : Matches Γ ρ H) (ext : Store) :
     Matches Γ ρ (H ++ ext) := by
   induction hm with
@@ -92,7 +107,7 @@ theorem Matches.append {Γ ρ H} (hm : Matches Γ ρ H) (ext : Store) :
       rw [List.getElem?_append_left (List.getElem?_eq_some_iff.mp hc |>.1)]
       exact hc
 
-/-- Writing a cell nobody in `ρ` points at preserves the invariant. -/
+/-- Writing a cell nobody in `ρ` points at preserves the invariant (helper). -/
 theorem Matches.set_outside : ∀ {Γ ρ H} {ℓ : Nat} {c : Cell},
     Matches Γ ρ H → ℓ ∉ ρ → Matches Γ ρ (H.set ℓ c)
   | _, _, _, _, _, .nil, _ => .nil
@@ -104,7 +119,7 @@ theorem Matches.set_outside : ∀ {Γ ρ H} {ℓ : Nat} {c : Cell},
       exact hc
 
 /-- Updating binding `i`'s cell together with its entry preserves the
-invariant, given the new cell matches the new entry. -/
+invariant, given the new cell matches the new entry (helper). -/
 theorem Matches.set : ∀ {Γ ρ H} {i ℓ : Nat} {en' : Entry} {c' : Cell},
     Matches Γ ρ H → ρ[i]? = some ℓ → CellMatches c' en' →
     Matches (Γ.set i en') ρ (H.set ℓ c')
@@ -126,6 +141,8 @@ theorem Matches.set : ∀ {Γ ρ H} {i ℓ : Nat} {en' : Entry} {c' : Cell},
 
 /-! ## Skeleton transport and join weakening -/
 
+/-- Two contexts with one skeleton agree on every entry's type and mark
+(helper). -/
 theorem skel_lookup {Γ Γ' : Ctx} (h : Ctx.skel Γ' = Ctx.skel Γ) {i : Nat} {en en'}
     (h1 : Γ[i]? = some en) (h2 : Γ'[i]? = some en') :
     en'.ty = en.ty ∧ en'.mu = en.mu := by
@@ -134,6 +151,9 @@ theorem skel_lookup {Γ Γ' : Ctx} (h : Ctx.skel Γ' = Ctx.skel Γ) {i : Nat} {e
     Option.some_inj] at hm
   exact ⟨congrArg Prod.fst hm, congrArg Prod.snd hm⟩
 
+/-- The §5.5 join weakens the left arm's per-cell agreement: a cell matching
+the left entry matches the joined entry (the conservative join; its
+array-element form is `3.8:73`). -/
 theorem Entry.join_matches_left {a b e' : Entry} (hj : a.join b = some e') {c : Cell}
     (hc : CellMatches c a) : CellMatches c e' := by
   unfold Entry.join at hj
@@ -153,6 +173,9 @@ theorem Entry.join_matches_left {a b e' : Entry} (hj : a.join b = some e') {c : 
           rw [hst] at hc
           exact hc
 
+/-- The §5.5 join weakens the right arm's per-cell agreement, given the two
+arms share a skeleton (the conservative join; its array-element form is
+`3.8:73`). -/
 theorem Entry.join_matches_right {a b e' : Entry} (hskel : a.skel = b.skel)
     (hj : a.join b = some e') {c : Cell} (hc : CellMatches c b) : CellMatches c e' := by
   have hty : a.ty = b.ty := congrArg Prod.fst hskel
@@ -181,6 +204,7 @@ theorem Entry.join_matches_right {a b e' : Entry} (hskel : a.skel = b.skel)
           · exact Or.inl h
           · exact Or.inr ⟨v, rfl, hty ▸ hv, hvm⟩
 
+/-- The invariant survives the §5.5 join from the left arm. -/
 theorem Matches.join_left : ∀ {Γ₁ Γ₂ Γ' : Ctx} {ρ H},
     Ctx.join Γ₁ Γ₂ = some Γ' → Matches Γ₁ ρ H → Matches Γ' ρ H := by
   intro Γ₁ Γ₂ Γ' ρ H hj hm
@@ -200,6 +224,7 @@ theorem Matches.join_left : ∀ {Γ₁ Γ₂ Γ' : Ctx} {ρ H},
             exact .cons hc (Entry.join_matches_left hje hcm) hnin (ih hjrest)
           · cases hj
 
+/-- The invariant survives the §5.5 join from the right arm. -/
 theorem Matches.join_right : ∀ {Γ₁ Γ₂ Γ' : Ctx} {ρ H},
     Ctx.skel Γ₁ = Ctx.skel Γ₂ →
     Ctx.join Γ₁ Γ₂ = some Γ' → Matches Γ₂ ρ H → Matches Γ' ρ H := by
@@ -472,7 +497,8 @@ theorem soundness {Γ Γ' : Ctx} {e : Expr} {T : Ty} (ht : Typed Γ e T Γ') :
 
 /-! ## §7 corollaries, named -/
 
-/-- A closed, well-typed program never reaches **any** memory violation. -/
+/-- A closed, well-typed program never reaches **any** memory violation: §7's
+bullets, conjoined, for this fragment. -/
 theorem no_violation {e T Γ'} (ht : Typed [] e T Γ') (w : Violation) :
     eval [] [] e ≠ .stuck w := by
   rcases soundness ht (ρ := []) (H := []) Matches.nil with ⟨k, hk⟩ | ⟨H', v, tr, he, _, _⟩ <;>

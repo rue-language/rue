@@ -30,8 +30,10 @@ lake build
 ```
 
 The two pins are held equal by `scripts/validate-lean-toolchain-pin.py`. The
-Buck target is build-only and carries no test tier: nothing in CI runs it
-until ADR-0097's gate is met (RUE-2241).
+Buck target is build-only and carries no test tier: nothing in CI runs the
+Lean build until ADR-0097's gate is met (RUE-2241). CI does read these
+sources: the premerge cross-reference gate below fails on an uncited
+declaration or a stale `INDEX.md`.
 
 ## The bridge corpus (ADR-0097, RUE-2227)
 
@@ -81,10 +83,17 @@ at fragment scope: a trap discards the Lean trace, so drops before a panic
 are not compared (RUE-2282 gives `.panic` its trace); and drop lines and the
 value line are both bare integers, so a drop of `n` swapped with a value `n`
 would not be told apart. Every printed program opens with a comment naming
-its case, its rules, and its expected outcome in words, so `corpus.json`
-doubles as a readable example set.
+its case, the rules it exercises, and its expected outcome in words, so
+`corpus.json` doubles as a readable example set.
 
 ## How to read this, with no Lean
+
+`GUIDE.md` is the full reader's guide: each Lean artifact in the calculus's
+own terms, one program worked from Rue source through the checker and the
+interpreter to the theorem that covers it, and how to run and trust things.
+`INDEX.md` (generated) maps every labeled rule and section of the calculus's
+§5 and §6 to the declaration that mechanizes it, or says *not yet
+mechanized*. The short version:
 
 - **A judgment is an inductive type.** The calculus writes
   `Γ; Σ ⊢ e ⇒ T ⊣ Σ'` (§5); `Statics.lean` writes `Typed Γ e T Γ'`. Each
@@ -109,6 +118,41 @@ doubles as a readable example set.
   `propext` and `Quot.sound`. `scripts/rue lean` prints that report and fails
   if anything else appears.
 
+## Doc-comment convention (what the index reads)
+
+`scripts/validate-lean-xref-index.py` generates `INDEX.md` from the
+doc-comments in `RueCore/*.lean` and fails the premerge tier when the index
+is stale or a declaration is uncited, so the index cannot rot silently. What
+a slice author writes:
+
+- Every top-level declaration in a rule-bearing module (every module except
+  those marked below) has a `/-- ... -/` doc-comment that cites what it
+  mechanizes, in one or more of three spellings the script recognizes:
+  - a rule label exactly as the calculus writes it, in parentheses:
+    `(Use-Move)`, `(D-Let)`, `(@Drop-Copy)`. The label must exist in
+    `../01-core-calculus.md` §5 or §6 (the script inventories the labels at
+    the ends of the rules' horizontal bars). A hyphenated label the calculus
+    does not define (`(D-If)`, `(Use-Bar)`) is an error; a one-word label it
+    does not define (`(Sequence)`) is ignored as prose, so one-word rule names
+    have no rename protection, and a one-word rule name written in prose,
+    `(Not)` or `(Panic)`, counts as a citation;
+  - a calculus section: `§5.5`, `§6.7`. Write each section; a range such as
+    `§5.1–§5.3` is read as its two endpoints only;
+  - a prose-specification paragraph: `3.8:73`.
+
+  Citations count only inside `/-- … -/` and `/-! … -/` comments, including
+  inside code spans there; a `--` line comment is invisible to the index.
+- A constructor of an inductive may carry its own doc-comment (the `Typed`
+  rules do; each cites its rule). One without inherits its type's row.
+- A declaration that mechanizes nothing on its own (an inversion lemma, a
+  list lemma, a printing helper) says `(helper)` in its doc-comment and is
+  listed under "Helpers" instead of failing the gate.
+- A module whose declarations are programs and their plumbing rather than
+  rules (`Examples.lean`, `Corpus.lean`) says `xref: examples` in its module
+  docstring; its declarations are indexed when they cite something and never
+  required to.
+- After editing doc-comments, run `scripts/validate-lean-xref-index.py
+  --write` and commit the regenerated `INDEX.md`.
 
 ## What is mechanized
 
@@ -122,6 +166,7 @@ doubles as a readable example set.
 | `RueCore/Examples.lean` | `#eval` demos; kernel-checked acceptance/rejection of example programs | — |
 | `RueCore/Print.lean` | core syntax → Rue source, and the observation channel (one printed line per drop event, per multiplicity class) | §2 elaboration inventory, 3.9 |
 | `RueCore/Corpus.lean` | the bridge corpus: each case's checker verdict and interpreter outcome, exported as JSON (`lake exe ruecore-corpus`) | §5, §6, §7 witnesses |
+| `GUIDE.md`, `INDEX.md` | the reader's guide, and the generated rule ↔ declaration ↔ paragraph index (`scripts/validate-lean-xref-index.py`) | §5, §6 coverage |
 
 The fragment: scalars + an abstract resource type `res κ` carrying its
 multiplicity class; use (copy/move), `@drop`, `let` scope exit with the

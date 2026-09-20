@@ -49,8 +49,11 @@ abbrev Ty.carriesLinear (T : Ty) : Prop := T.mult = .linear
 
 /-- `int(64, signed)` bounds. Arithmetic traps outside them (§6.4). -/
 def intMin : Int := -(2 ^ 63)
+/-- The upper `int(64, signed)` bound (§6.4). -/
 def intMax : Int := 2 ^ 63 - 1
 
+/-- `min_T ≤ n ≤ max_T` for `T = int(64, signed)`: the side condition of
+§6.1's `n_T` values, outside which §6.4's arithmetic traps. -/
 def InBounds (n : Int) : Prop := intMin ≤ n ∧ n ≤ intMax
 
 instance (n : Int) : Decidable (InBounds n) := by

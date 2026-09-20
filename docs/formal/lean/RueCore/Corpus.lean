@@ -41,6 +41,10 @@ One array of case objects. Fields:
 
 The output is deterministic: cases are listed in a fixed order and nothing
 depends on the environment.
+
+The declarations here are cases and their export, not rules (`xref: examples`
+for `scripts/validate-lean-xref-index.py`, which indexes a case's citations
+without requiring them).
 -/
 
 namespace RueCore.Corpus
@@ -62,11 +66,11 @@ covers and one per drop point of the machine. -/
 def cases : List Case := [
   { name := "scalars",
     description := "Well-typed scalar flow: a binding used twice by copy.",
-    rules := ["(Use-Copy) §5.1", "(Let) §5.6"],
+    rules := ["(Use-Copy) §5.1", "(Let) §5.3"],
     expr := Examples.scalars },
   { name := "affine_scope_drop",
     description := "An affine resource silently dropped at scope exit; the trace shows the drop before the value.",
-    rules := ["(Let) §5.6", "endscope §6.7"],
+    rules := ["(Let) §5.3", "§5.6 scope exit", "(D-EndScope) §6.7"],
     expr := Examples.affineDrop },
   { name := "linear_consumed",
     description := "A linear resource consumed exactly once; no drop event.",
@@ -134,7 +138,7 @@ def cases : List Case := [
       (ite (lt (intLit 1) (intLit 2)) (consume (use 0)) (add (consume (use 0)) (intLit 1))) },
   { name := "nested_scopes",
     description := "Two affine bindings in nested scopes drop innermost first, each at its own scope's close.",
-    rules := ["(Let) §5.6", "endscope §6.7", "3.9:2"],
+    rules := ["(Let) §5.3", "§5.6 scope exit", "(D-EndScope) §6.7", "3.9:2"],
     expr := letIn false (mkres .affine (intLit 1))
       (letIn false (mkres .affine (intLit 2)) (intLit 0)) },
   { name := "resource_result",
@@ -238,7 +242,7 @@ def caseJson (c : Case) : String :=
   "    \"name\": " ++ jsonString c.name ++ ",\n" ++
   "    \"description\": " ++ jsonString c.description ++ ",\n" ++
   "    \"rules\": " ++ jsonArray (c.rules.map jsonString) ++ ",\n" ++
-  "    \"source\": " ++ jsonString (Print.program c.name c.description (outcomeSummary c) c.expr) ++ ",\n" ++
+  "    \"source\": " ++ jsonString (Print.program c.name c.description c.rules (outcomeSummary c) c.expr) ++ ",\n" ++
   "    \"verdict\": " ++ verdictJson c ++ ",\n" ++
   "    \"expected\": " ++ expectedJson c ++ "\n" ++
   "  }"
