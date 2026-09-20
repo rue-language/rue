@@ -437,7 +437,15 @@ fn accepted_connections_have_a_hard_bound_and_a_retryable_rejection() {
         matches!(refused, Err(client::ConnectError::Rejected(ref reason)) if reason.contains("connections")),
         "a full service refuses before allocating another handler: {refused:?}"
     );
+    let mut control = held.pop().unwrap();
     drop(held);
+    assert!(
+        wait_until(Duration::from_secs(10), || {
+            control.status().unwrap().connections == 1
+        }),
+        "the released connection permits are observed before stopping the service"
+    );
+    drop(control);
     stop(fixture.scope(), &fixture.root, Duration::from_secs(10)).unwrap();
 }
 
