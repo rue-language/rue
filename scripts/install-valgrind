@@ -14,6 +14,13 @@ APT_RETRIES=2
 APT_LOCK_TIMEOUT_SECONDS=60
 
 child_pid=""
+source_temp_dir=""
+apt_source_list=""
+
+# GitHub's Ubuntu images currently provide this as a deb822 file. The override
+# is a test seam so the source-selection contract can be exercised without
+# touching the host's /etc/apt tree.
+apt_etc_root="${RUE_APT_ETC_DIR:-/etc/apt}"
 
 terminate_children() {
     if [[ -n "$child_pid" ]]; then
@@ -34,8 +41,118 @@ on_signal() {
     exit 143
 }
 
-trap terminate_children EXIT
+cleanup() {
+    terminate_children
+    if [[ -n "$source_temp_dir" ]]; then
+        rm -rf "$source_temp_dir"
+    fi
+}
+
+trap cleanup EXIT
 trap on_signal INT TERM
+
+select_ubuntu_sources() {
+    local deb822="$apt_etc_root/sources.list.d/ubuntu.sources"
+    local classic="$apt_etc_root/sources.list"
+    source_temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/rue-apt-sources.XXXXXX")"
+
+    # Keep only complete deb822 stanzas whose every URI is an official Ubuntu
+    # mirror. This prevents a third-party stanza in the same file from joining
+    # the update/install transaction.
+    if [[ -r "$deb822" ]]; then
+        if awk '
+            function reset() {
+                stanza = ""
+                has_deb = 0
+                saw_uris = 0
+                bad_uri = 0
+                in_uris = 0
+            }
+            function check_uris(line, is_field,   count, uri_index) {
+                if (is_field) {
+                    sub(/^[^:]*:[[:space:]]*/, "", line)
+                } else {
+                    sub(/^[[:space:]]+/, "", line)
+                }
+                count = split(line, uris, /[[:space:]]+/)
+                saw_uris = 1
+                for (uri_index = 1; uri_index <= count; uri_index++) {
+                    if (uris[uri_index] !~ /^https?:\/\/(([[:alnum:]-]+\.)?archive|security|ports)\.ubuntu\.com(\/|$)/) {
+                        bad_uri = 1
+                    }
+                }
+            }
+            function flush() {
+                if (has_deb && saw_uris && !bad_uri) {
+                    printf "%s", stanza
+                    wrote = 1
+                }
+                reset()
+            }
+            /^[[:space:]]*$/ {
+                stanza = stanza $0 ORS
+                flush()
+                next
+            }
+            {
+                stanza = stanza $0 ORS
+                if ($0 ~ /^Types:[[:space:]]*/) {
+                    types = $0
+                    sub(/^[^:]*:[[:space:]]*/, "", types)
+                    type_count = split(types, type_names, /[[:space:]]+/)
+                    for (type_index = 1; type_index <= type_count; type_index++) {
+                        if (type_names[type_index] == "deb") {
+                            has_deb = 1
+                        }
+                    }
+                }
+                if ($0 ~ /^URIs:[[:space:]]*/) {
+                    in_uris = 1
+                    check_uris($0, 1)
+                    next
+                }
+                if (in_uris && $0 ~ /^[[:space:]]+/) {
+                    check_uris($0, 0)
+                    next
+                }
+                in_uris = 0
+            }
+            END {
+                flush()
+                exit(wrote ? 0 : 1)
+            }
+        ' "$deb822" >"$source_temp_dir/ubuntu.sources"; then
+            apt_source_list="$source_temp_dir/ubuntu.sources"
+            return 0
+        fi
+    fi
+
+    # Older Ubuntu images use the classic one-line file. Filter it rather than
+    # pointing apt at the whole file, which may also contain third-party repos.
+    if [[ -r "$classic" ]] && awk '
+        $1 != "deb" { next }
+        {
+            uri_index = 2
+            if ($uri_index ~ /^\[/) {
+                while (uri_index <= NF && $uri_index !~ /\]$/) {
+                    uri_index++
+                }
+                uri_index++
+            }
+            if (uri_index <= NF && $uri_index ~ /^https?:\/\/(([[:alnum:]-]+\.)?archive|security|ports)\.ubuntu\.com(\/|$)/) {
+                print
+                found = 1
+            }
+        }
+        END { exit(found ? 0 : 1) }
+    ' "$classic" >"$source_temp_dir/ubuntu.list"; then
+        apt_source_list="$source_temp_dir/ubuntu.list"
+        return 0
+    fi
+
+    echo "install-valgrind: no official Ubuntu package source found under $apt_etc_root" >&2
+    return 1
+}
 
 run_apt() {
     local operation="$1"
@@ -52,6 +169,8 @@ run_apt() {
         -o "Acquire::Retries=${APT_RETRIES}" \
         -o "Acquire::http::Timeout=${APT_ACQUIRE_TIMEOUT_SECONDS}" \
         -o "Acquire::https::Timeout=${APT_ACQUIRE_TIMEOUT_SECONDS}" \
+        -o "Dir::Etc::sourcelist=${apt_source_list}" \
+        -o 'Dir::Etc::sourceparts=-' \
         "$@" &
     child_pid=$!
     local status=0
@@ -72,6 +191,8 @@ run_apt() {
             ;;
     esac
 }
+
+select_ubuntu_sources
 
 echo "install-valgrind: updating package indexes (bounded to ${APT_OPERATION_TIMEOUT_SECONDS}s)" >&2
 run_apt update update
