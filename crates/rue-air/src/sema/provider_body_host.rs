@@ -2494,7 +2494,13 @@ where
     /// The durable key of a registered named struct, for the interface facts
     /// that read its durable nominal (spec 6.8).
     fn durable_struct_key(&self, struct_id: StructId) -> Option<K> {
-        let ty = Type::new_struct(struct_id);
+        self.durable_nominal_key(Type::new_struct(struct_id))
+    }
+
+    /// The durable key of any registered named nominal type -- a struct or an
+    /// enum. Conformance is asserted about whole nominal subjects (spec
+    /// 6.8:9, 6.8:10), so an enum subject must be keyed like a struct one.
+    fn durable_nominal_key(&self, ty: Type) -> Option<K> {
         self.nominal_tokens
             .borrow()
             .get(&ty)
@@ -5725,9 +5731,10 @@ where
         }
         let mut assertions = Vec::new();
         // The subject's own header list (`struct S is I + J`, spec 6.8:9).
-        let subject_key = subject
-            .as_struct()
-            .and_then(|owner| self.durable_struct_key(owner));
+        // The key is taken for any named nominal subject, enums included, so
+        // a freestanding assertion about an enum is matched and verified
+        // rather than silently ignored.
+        let subject_key = self.durable_nominal_key(subject);
         if let Some(key) = &subject_key
             && let Some(nominal) = DurableNominalSource::nominal(&self.source, key)
             && let crate::DurableNominalBody::Struct { conformance, .. } = nominal.body
