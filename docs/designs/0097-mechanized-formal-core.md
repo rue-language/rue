@@ -1,11 +1,11 @@
 ---
 id: 0097
 title: "Mechanized formal core: a Lean 4 fourth view of the language, grown as a non-blocking experiment"
-status: proposal
+status: accepted
 tags: [process, formal, testing, documentation]
 feature-flag: null
 created: 2026-09-20
-accepted:
+accepted: 2026-09-20
 implemented:
 spec-sections: []
 superseded-by:
@@ -16,8 +16,9 @@ relates: ["RUE-1882", "RUE-2226", "RUE-207", "RUE-206", "RUE-50", "RUE-305", "RU
 
 ## Status
 
-Proposal, filed under RUE-1882. Acceptance ratifies the seven decisions in
-§Decision; it does not by itself land any Lean code. The spike that motivates
+Accepted under RUE-1882, 2026-09-20, after two independent adversarial
+reviews and a Codex review from the maintainers' fleet. Acceptance ratifies
+the seven decisions in §Decision; it does not by itself land any Lean code. The spike that motivates
 this record lands separately under RUE-2226 once this ADR is accepted, and
 the project that grows it is tracked in Linear as "Formal core mechanization"
 (RUE-1882 is its first issue). This ADR reaches `implemented` when
