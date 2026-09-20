@@ -35,6 +35,20 @@ use smallvec::SmallVec;
 /// Most items have 0-1 directives, so we inline capacity for 1.
 pub type Directives = SmallVec<[Directive; 1]>;
 
+/// Transferability metadata attached to an anonymous struct type.
+///
+/// Kept behind one allocation so adding the optional transfer annotations does
+/// not enlarge the recursive [`TypeExpr`] enum and its enclosing expressions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnonymousStructMetadata {
+    /// Directives written immediately before the anonymous struct.
+    pub directives: Directives,
+    /// Prevents values of this anonymous type from crossing a thread boundary.
+    pub thread_bound: bool,
+    /// Audited assertion permitting direct raw-pointer ownership transfer.
+    pub unchecked_transfer_reason: Option<Spur>,
+}
+
 /// A complete source file (list of items).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ast {
@@ -94,6 +108,7 @@ impl Directive {
             DirectiveArgValue::Repr(repr) => Some(repr),
             DirectiveArgValue::Warning(_)
             | DirectiveArgValue::KnownBugText
+            | DirectiveArgValue::UncheckedTransferReason
             | DirectiveArgValue::Unrecognized => None,
         })
     }
@@ -685,6 +700,8 @@ pub enum TypeExpr {
         fields: Vec<AnonStructField>,
         /// Method definitions inside the anonymous struct
         methods: Vec<Method>,
+        /// Transferability directives and their canonicalized facts.
+        metadata: Box<AnonymousStructMetadata>,
         span: Span,
     },
     /// Anonymous enum type: enum { Variant1, Variant2(T), ... }
@@ -1731,8 +1748,9 @@ pub struct CheckedBlockExpr {
 /// as an argument to a generic function with comptime parameters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeLitExpr {
-    /// The type being used as a value
-    pub type_expr: TypeExpr,
+    /// The type being used as a value. Boxed so type literals do not widen the
+    /// expression enum as type syntax gains optional metadata.
+    pub type_expr: Box<TypeExpr>,
     pub span: Span,
 }
 
@@ -2076,7 +2094,9 @@ fn rebind_type(ty: &mut TypeExpr, file_id: FileId) {
         TypeExpr::AnonymousStruct {
             fields,
             methods,
+            metadata,
             span,
+            ..
         } => {
             for field in fields {
                 rebind_ident(&mut field.name, file_id);
@@ -2085,6 +2105,13 @@ fn rebind_type(ty: &mut TypeExpr, file_id: FileId) {
             }
             for method in methods {
                 rebind_method(method, file_id);
+            }
+            for directive in &mut metadata.directives {
+                rebind_span(&mut directive.span, file_id);
+                rebind_ident(&mut directive.name, file_id);
+                for arg in &mut directive.args {
+                    rebind_ident(&mut arg.ident, file_id);
+                }
             }
             rebind_span(span, file_id);
         }

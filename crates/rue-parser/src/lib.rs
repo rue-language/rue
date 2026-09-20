@@ -21,6 +21,7 @@ pub use directives::{
 };
 
 pub use ast::{
+    AnonymousStructMetadata,
     ArgMode,
     ArrayLength,
     ArrayLitExpr,

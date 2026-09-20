@@ -1285,7 +1285,9 @@ pub(crate) fn materialize_semantic_body_with_indexes_in_space(
     }
     nominals.extend(anonymous_nominals.iter().map(|nominal| {
         let (kind, shape) = match &nominal.shape {
-            DurableAnonymousNominalShape::Struct { fields, methods } => {
+            DurableAnonymousNominalShape::Struct {
+                fields, methods, ..
+            } => {
                 let destructor = methods
                     .iter()
                     .find(|method| {
@@ -1833,7 +1835,9 @@ pub(crate) fn select_materialization_facts(
                             self.semantic_type(ty);
                         }
                         match &nominal.shape {
-                            DurableAnonymousNominalShape::Struct { fields, methods } => {
+                            DurableAnonymousNominalShape::Struct {
+                                fields, methods, ..
+                            } => {
                                 for (_, ty) in fields.iter() {
                                     self.semantic_type(ty);
                                 }
@@ -1892,6 +1896,8 @@ pub(crate) fn select_materialization_facts(
                                     fields: Arc::new([]),
                                     is_copy: false,
                                     is_linear: false,
+                                    thread_bound: false,
+                                    unchecked_transfer_reason: None,
                                     conformance:
                                         crate::durable_semantics::DurableConformanceFacts::default(),
                                 }
@@ -1924,13 +1930,17 @@ pub(crate) fn select_materialization_facts(
                                 .ok_or_else(|| {
                                     LocalFactSelectionFailure::MissingAnonymous((*key).clone())
                                 })?;
-                        let shape = match nominal.shape {
-                            DurableAnonymousNominalShape::Struct { .. } => {
-                                DurableAnonymousNominalShape::Struct {
-                                    fields: Arc::new([]),
-                                    methods: Arc::new([]),
-                                }
-                            }
+                        let shape = match &nominal.shape {
+                            DurableAnonymousNominalShape::Struct {
+                                thread_bound,
+                                unchecked_transfer_reason,
+                                ..
+                            } => DurableAnonymousNominalShape::Struct {
+                                fields: Arc::new([]),
+                                methods: Arc::new([]),
+                                thread_bound: *thread_bound,
+                                unchecked_transfer_reason: unchecked_transfer_reason.clone(),
+                            },
                             DurableAnonymousNominalShape::Enum { .. } => {
                                 DurableAnonymousNominalShape::Enum {
                                     variants: Arc::new([]),
@@ -2735,6 +2745,8 @@ mod tests {
                 fields: Arc::new([]),
                 is_copy: false,
                 is_linear: false,
+                thread_bound: false,
+                unchecked_transfer_reason: None,
                 conformance: crate::durable_semantics::DurableConformanceFacts::default(),
             },
         };
@@ -2814,6 +2826,8 @@ mod tests {
                     fields: Arc::new([]),
                     is_copy: false,
                     is_linear: false,
+                    thread_bound: false,
+                    unchecked_transfer_reason: None,
                     conformance: crate::durable_semantics::DurableConformanceFacts::default(),
                 },
             },
@@ -2874,6 +2888,8 @@ mod tests {
                     fields: Arc::new([]),
                     is_copy: false,
                     is_linear: false,
+                    thread_bound: false,
+                    unchecked_transfer_reason: None,
                     conformance: crate::durable_semantics::DurableConformanceFacts::default(),
                 },
             },
@@ -2946,6 +2962,9 @@ mod tests {
             DurableAnonymousNominalShape::Struct {
                 fields: Arc::from([(Arc::from("value"), rue_air::SemanticImportType::I32)]),
                 methods: Arc::from([]),
+
+                thread_bound: false,
+                unchecked_transfer_reason: None,
             },
             Arc::from([]),
             Arc::from([]),
@@ -2996,7 +3015,7 @@ mod tests {
         ));
         assert!(matches!(
             &opaque.anonymous_nominals[0].shape,
-            DurableAnonymousNominalShape::Struct { fields, methods }
+            DurableAnonymousNominalShape::Struct { fields, methods, .. }
                 if fields.is_empty() && methods.is_empty()
         ));
     }
@@ -3024,6 +3043,9 @@ mod tests {
             DurableAnonymousNominalShape::Struct {
                 fields: Arc::from([(Arc::from("value"), rue_air::SemanticImportType::I32)]),
                 methods: Arc::from([]),
+
+                thread_bound: false,
+                unchecked_transfer_reason: None,
             },
             Arc::from([]),
             Arc::from([]),
@@ -3031,6 +3053,9 @@ mod tests {
         let counterfeit = original.with_shape(DurableAnonymousNominalShape::Struct {
             fields: Arc::from([(Arc::from("counterfeit"), rue_air::SemanticImportType::I64)]),
             methods: Arc::from([]),
+
+            thread_bound: false,
+            unchecked_transfer_reason: None,
         });
         let shared = SharedDeclarationFactIndex::new(&[]);
         assert!(matches!(
@@ -3069,6 +3094,9 @@ mod tests {
             DurableAnonymousNominalShape::Struct {
                 fields: Arc::from([]),
                 methods: Arc::from([]),
+
+                thread_bound: false,
+                unchecked_transfer_reason: None,
             },
             Arc::from([]),
             Arc::from([]),

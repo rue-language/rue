@@ -243,6 +243,32 @@ fn main() -> i32 {
 
 See [Move Semantics](@/03-types/08-move-semantics.md#the-copy-directive) for the full semantics of `@copy` structs.
 
+## `@thread_bound` and `@unchecked_transfer`
+
+{{ rule(id="2.5:42", cat="normative") }}
+
+`@thread_bound` marks a struct as unsuitable for transfer across a concurrency
+thread boundary. It **MUST** appear immediately before a struct definition and
+takes no arguments.
+
+{{ rule(id="2.5:43", cat="normative") }}
+
+`@unchecked_transfer("reason")` records an audited assertion that a struct's
+representation and custom destruction are safe to transfer across a
+concurrency thread boundary. It **MUST** appear immediately before a struct
+definition, takes exactly one non-empty string argument, and **MUST NOT** be
+combined with `@thread_bound`. The directive and `@require_transferable` are
+preview-gated by `--preview concurrency`.
+
+{{ rule(id="2.5:44", cat="normative") }}
+
+Transferability is a transitive property of fields, array elements, and enum
+payloads. A raw pointer is rejected unless it is a direct field of a struct
+with `@unchecked_transfer`; the asserted pointee is then checked recursively,
+so an assertion does not admit a pointer-to-pointer. A user-defined destructor
+also requires `@unchecked_transfer`. Recursive type graphs are checked as one
+rooted graph and a reachable `@thread_bound` type always rejects the root.
+
 ## `@repr`
 
 {{ rule(id="2.5:33", cat="normative") }}

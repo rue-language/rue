@@ -494,6 +494,18 @@ pub(crate) trait AnonymousNominalLedger {
     fn anon_struct_type_subst(&self, struct_id: StructId) -> AHashMap<Spur, Type>;
 
     fn anon_struct_captured_values(&self, struct_id: StructId) -> AHashMap<Spur, ConstValue>;
+
+    fn set_anon_transfer_metadata(
+        &mut self,
+        _struct_id: StructId,
+        _thread_bound: bool,
+        _unchecked_transfer_reason: Option<Arc<str>>,
+    ) {
+    }
+
+    fn anon_transfer_metadata(&self, _struct_id: StructId) -> Option<(bool, Option<Arc<str>>)> {
+        None
+    }
 }
 
 /// Mutable per-body analysis ledgers: work records, recovered errors,
@@ -1616,15 +1628,6 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         }
     }
 
-    pub(crate) fn type_ownership_depends_on_nominal(&self, ty: Type) -> bool {
-        match ty.kind() {
-            crate::types::TypeKind::Struct(_) | crate::types::TypeKind::Enum(_) => true,
-            crate::types::TypeKind::Array(id) => {
-                self.type_ownership_depends_on_nominal(self.body_type_pool().array_def(id).0)
-            }
-            _ => false,
-        }
-    }
     /// The canonical producer identity of one function instance: the base
     /// definition when it takes no comptime arguments, and the specialization
     /// over those arguments when it does.
@@ -1692,6 +1695,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         identity: super::anon_structs::IssuedAnonymousNominalKey,
         fields: &[crate::types::StructField],
         sigs: &[super::AnonMethodSig],
+        thread_bound: bool,
+        unchecked_transfer_reason: Option<Arc<str>>,
         captured: &AHashMap<Spur, ConstValue>,
     ) -> CompileResult<(Type, bool)> {
         if let Some(id) = self
@@ -1703,6 +1708,29 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 )))
             })?
         {
+            // A canonical provider mint may have installed the pool identity
+            // before this ordinary body sees its source instruction. Preserve
+            // the instruction's transfer metadata on that existing type; the
+            // export path reads this ledger when it publishes the produced
+            // nominal. Conflicting metadata is a publication invariant failure
+            // rather than a reason to silently pick one projection.
+            let metadata = (thread_bound, unchecked_transfer_reason.clone());
+            if let Some(existing) = self.storage.anon_transfer_metadata(id) {
+                if existing != metadata {
+                    return Err(CompileError::without_span(
+                        rue_error::ErrorKind::OutputPublication(
+                            "anonymous struct transfer metadata disagrees with its existing identity"
+                                .to_owned(),
+                        ),
+                    ));
+                }
+            } else {
+                self.storage.set_anon_transfer_metadata(
+                    id,
+                    thread_bound,
+                    unchecked_transfer_reason,
+                );
+            }
             return Ok((Type::new_struct(id), false));
         }
         let digest = self.stable_anonymous_identity_digest(&identity);
@@ -1753,6 +1781,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         // CFG destructor discovery, drop glue), which cannot see the sema-side
         // registry (RUE-1050).
         self.storage.body_type_pool().mark_anonymous_struct(id);
+        self.storage
+            .set_anon_transfer_metadata(id, thread_bound, unchecked_transfer_reason);
         let ty = Type::new_struct(id);
         self.storage
             .anonymous_struct_identities_mut()

@@ -278,6 +278,8 @@ pub enum DurableAnonymousShape<K, M> {
         /// Source method names and receiver presence in declaration order
         /// (bodies excluded), sufficient to classify the reserved destructor.
         struct_methods: Vec<(Arc<str>, bool)>,
+        thread_bound: bool,
+        unchecked_transfer_reason: Option<Arc<str>>,
     },
     Enum {
         /// Variants in declaration order: source name and durable payload types.
@@ -1909,6 +1911,7 @@ where
             DurableAnonymousShape::Struct {
                 fields,
                 struct_methods,
+                ..
             } => self.mint_anon_struct(key, digest, &fields, &struct_methods),
             DurableAnonymousShape::Enum { variants } => self.mint_anon_enum(key, digest, &variants),
         };
@@ -3993,6 +3996,8 @@ mod tests {
                 DurableAnonymousShape::Struct {
                     fields: vec![(Arc::from("element"), DType::Nominal(0))],
                     struct_methods: Vec::new(),
+                    thread_bound: false,
+                    unchecked_transfer_reason: None,
                 },
             )],
             [],
@@ -5033,6 +5038,8 @@ mod tests {
                 DurableAnonymousShape::Struct {
                     fields: vec![(Arc::from("value"), DType::I32)],
                     struct_methods: Vec::new(),
+                    thread_bound: false,
+                    unchecked_transfer_reason: None,
                 },
             )
         });
@@ -5065,6 +5072,8 @@ mod tests {
                 DurableAnonymousShape::Struct {
                     fields: vec![(Arc::from("missing"), DType::AnonymousNominal(missing))],
                     struct_methods: Vec::new(),
+                    thread_bound: false,
+                    unchecked_transfer_reason: None,
                 },
             )],
             [],
@@ -5092,6 +5101,8 @@ mod tests {
         let shape = DurableAnonymousShape::Struct {
             fields: vec![(Arc::from("v"), DType::I32)],
             struct_methods: Vec::new(),
+            thread_bound: false,
+            unchecked_transfer_reason: None,
         };
         let mut pool = anon_pool([], [(key.clone(), shape)], []);
         let ty = pool.find_or_create_anon(&key).unwrap();
@@ -5117,6 +5128,8 @@ mod tests {
         let shape = DurableAnonymousShape::Struct {
             fields: vec![(Arc::from("value"), DType::I32)],
             struct_methods: Vec::new(),
+            thread_bound: false,
+            unchecked_transfer_reason: None,
         };
         let mut durable = source([]);
         durable.anonymous_shapes.insert(key.clone(), shape);
@@ -5143,6 +5156,8 @@ mod tests {
         let shape = DurableAnonymousShape::Struct {
             fields: vec![(Arc::from("a"), DType::I32), (Arc::from("b"), DType::Bool)],
             struct_methods: Vec::new(),
+            thread_bound: false,
+            unchecked_transfer_reason: None,
         };
         let mut pool = anon_pool([], [(key.clone(), shape)], []);
 
@@ -5183,6 +5198,8 @@ mod tests {
         let shape = DurableAnonymousShape::Struct {
             fields: vec![(Arc::from("v"), DType::I32)],
             struct_methods: vec![(Arc::from("__drop"), true), (Arc::from("len"), true)],
+            thread_bound: false,
+            unchecked_transfer_reason: None,
         };
         let mut pool = anon_pool([], [(key.clone(), shape)], []);
         let ty = pool.find_or_create_anon(&key).unwrap();
@@ -5200,6 +5217,8 @@ mod tests {
         let shape = DurableAnonymousShape::Struct {
             fields: vec![(Arc::from("v"), DType::I32)],
             struct_methods: vec![(Arc::from("__drop"), false)],
+            thread_bound: false,
+            unchecked_transfer_reason: None,
         };
         let mut pool = anon_pool([], [(key.clone(), shape)], []);
         let ty = pool.find_or_create_anon(&key).unwrap();
@@ -5255,6 +5274,8 @@ mod tests {
         let struct_shape = DurableAnonymousShape::Struct {
             fields: vec![(Arc::from("x"), DType::I32)],
             struct_methods: vec![(Arc::from("get"), true)],
+            thread_bound: false,
+            unchecked_transfer_reason: None,
         };
         let enum_shape = DurableAnonymousShape::Enum {
             variants: vec![(Arc::from("A"), vec![])],
@@ -5302,6 +5323,8 @@ mod tests {
         let shape = |()| DurableAnonymousShape::Struct {
             fields: vec![(Arc::from("v"), DType::I32)],
             struct_methods: Vec::new(),
+            thread_bound: false,
+            unchecked_transfer_reason: None,
         };
         let mut pool = anon_pool(
             [],
@@ -5341,6 +5364,8 @@ mod tests {
         let shape = || DurableAnonymousShape::Struct {
             fields: vec![(Arc::from("v"), DType::I32)],
             struct_methods: Vec::new(),
+            thread_bound: false,
+            unchecked_transfer_reason: None,
         };
         let mut pool = anon_pool([], [(key.clone(), shape()), (other.clone(), shape())], []);
         let minted = pool.find_or_create_anon(&key).unwrap();
@@ -5378,6 +5403,8 @@ mod tests {
         let shape = DurableAnonymousShape::Struct {
             fields: vec![(Arc::from("v"), DType::I32)],
             struct_methods: Vec::new(),
+            thread_bound: false,
+            unchecked_transfer_reason: None,
         };
         let mut pool = anon_pool([], [(collapsed.clone(), shape)], []);
         let minted = pool.find_or_create_anon(&collapsed).unwrap();
@@ -5426,6 +5453,8 @@ mod tests {
         let shape = DurableAnonymousShape::Struct {
             fields: vec![(Arc::from("v"), DType::I32)],
             struct_methods: Vec::new(),
+            thread_bound: false,
+            unchecked_transfer_reason: None,
         };
         let mut pool = anon_pool([], [(collapsed.clone(), shape)], []);
 
@@ -5585,6 +5614,8 @@ mod tests {
         let shape = DurableAnonymousShape::Struct {
             fields: vec![(Arc::from("v"), DType::I32)],
             struct_methods: Vec::new(),
+            thread_bound: false,
+            unchecked_transfer_reason: None,
         };
         let mut pool = anon_pool([], [(key.clone(), shape)], []);
         assert_eq!(
@@ -5635,6 +5666,8 @@ mod tests {
         let bad_shape = DurableAnonymousShape::Struct {
             fields: vec![(Arc::from("v"), DType::I32)],
             struct_methods: Vec::new(),
+            thread_bound: false,
+            unchecked_transfer_reason: None,
         };
         let mut pool = anon_pool(
             [],

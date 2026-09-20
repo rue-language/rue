@@ -119,6 +119,33 @@ $runtime
                                             shape: rue_error::ElementGateShape::Construction,
                                         }
                                     })),
+                                crate::semantic_query_nucleus::DeferredRequirementKind::RequireTransferable => {
+                                    let terminal = context.query_registered(
+                                        &type_facts,
+                                        crate::type_queries::TypeQueryKey {
+                                            ty: crate::semantic_identity::type_instance_from_semantic(&query.gate.ty),
+                                            configuration: configuration.clone(),
+                                        },
+                                    )?;
+                                    let facts = match crate::revisioned_query_database::semantic::type_facts_from_terminal(&terminal) {
+                                        Ok(facts) => facts,
+                                        Err(failure) => {
+                                            let detail = match failure {
+                                                crate::type_queries::TypeQueryFailure::Unavailable(detail)
+                                                | crate::type_queries::TypeQueryFailure::Invalid(detail) => detail.clone(),
+                                            };
+                                            return Ok(QueryOutput::success(Value::Failure(
+                                                Failure::Resolution(detail),
+                                            ))
+                                            .with_terminal_kind(QueryTerminalKind::Failure));
+                                        }
+                                    };
+                                    Ok((!facts.transferable).then(|| {
+                                        rue_error::ErrorKind::ComptimeEvaluationFailed {
+                                            reason: facts.transfer_failure.as_deref().unwrap_or("type is not transferable across a thread boundary").to_owned(),
+                                        }
+                                    }))
+                                }
                                 // Interface-bound requirements are checked by
                                 // the completed body consumer through the AIR
                                 // adapter.  The deferred projection remains a

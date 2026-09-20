@@ -257,6 +257,14 @@ impl Parser {
     }
 
     pub(super) fn anonymous_struct_type(&mut self, allow_methods: bool) -> PResult<TypeExpr> {
+        self.anonymous_struct_type_with_directives(allow_methods, &Directives::new())
+    }
+
+    pub(super) fn anonymous_struct_type_with_directives(
+        &mut self,
+        allow_methods: bool,
+        directives: &[Directive],
+    ) -> PResult<TypeExpr> {
         let start = self.start();
         self.expect(TokenKind::Struct)?;
         self.expect(TokenKind::LBrace)?;
@@ -304,11 +312,69 @@ impl Parser {
             }
         }
         self.expect(TokenKind::RBrace)?;
+        let thread_bound = directives
+            .iter()
+            .any(|directive| directive.kind == Some(DirectiveName::ThreadBound));
+        let unchecked_transfer_reason = directives.iter().find_map(|directive| {
+            (directive.kind == Some(DirectiveName::UncheckedTransfer))
+                .then(|| directive.args.first().map(|arg| arg.ident.name))
+                .flatten()
+        });
         Ok(TypeExpr::AnonymousStruct {
             fields,
             methods,
+            metadata: Box::new(AnonymousStructMetadata {
+                directives: directives.iter().cloned().collect(),
+                thread_bound,
+                unchecked_transfer_reason,
+            }),
             span: self.span_from(start),
         })
+    }
+
+    /// Recognize the two transferability directives when they prefix an
+    /// anonymous struct expression. Other `@` expressions remain intrinsics.
+    pub(super) fn starts_annotated_anonymous_struct(&self) -> bool {
+        let mut cursor = self.cursor;
+        let mut saw = false;
+        while self.tokens.get(cursor).map(|token| token.kind) == Some(TokenKind::At) {
+            cursor += 1;
+            let Some(Token {
+                kind: TokenKind::Ident(name),
+                ..
+            }) = self.tokens.get(cursor)
+            else {
+                return false;
+            };
+            let spelling = self.interner.resolve(name);
+            if spelling != "thread_bound" && spelling != "unchecked_transfer" {
+                return false;
+            }
+            saw = true;
+            cursor += 1;
+            if self.tokens.get(cursor).map(|token| token.kind) == Some(TokenKind::LParen) {
+                let mut depth = 0u32;
+                loop {
+                    let Some(token) = self.tokens.get(cursor) else {
+                        return false;
+                    };
+                    match token.kind {
+                        TokenKind::LParen => depth += 1,
+                        TokenKind::RParen => {
+                            depth = depth.saturating_sub(1);
+                            if depth == 0 {
+                                cursor += 1;
+                                break;
+                            }
+                        }
+                        TokenKind::Eof => return false,
+                        _ => {}
+                    }
+                    cursor += 1;
+                }
+            }
+        }
+        saw && self.tokens.get(cursor).map(|token| token.kind) == Some(TokenKind::Struct)
     }
 
     pub(super) fn method(&mut self) -> PResult<Method> {

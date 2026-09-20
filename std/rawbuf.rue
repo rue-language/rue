@@ -89,6 +89,7 @@ fn copy_nonoverlapping_bytes(
 }
 
 pub fn RawBuf(comptime T: type) -> type {
+    @unchecked_transfer("RawBuf solely owns its allocation, safe loans cannot escape, moving the owner preserves its allocation address, and its allocator and page mapper are callable from either thread; retained raw pointer aliases remain the caller's unchecked obligation")
     struct {
         buf: ptr mut T,
         cap: u64,

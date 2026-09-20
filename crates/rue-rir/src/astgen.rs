@@ -2007,9 +2007,12 @@ impl<'a> AstGen<'a> {
             }
             Expr::TypeLit(type_lit) => {
                 // Generate a type constant instruction for type-as-value expressions
-                match &type_lit.type_expr {
+                match type_lit.type_expr.as_ref() {
                     TypeExpr::AnonymousStruct {
-                        fields, methods, ..
+                        fields,
+                        methods,
+                        metadata,
+                        ..
                     } => {
                         let anchor = self.anonymous_type_anchor(
                             type_lit.type_expr.span(),
@@ -2041,7 +2044,16 @@ impl<'a> AstGen<'a> {
                             })
                             .collect();
                         self.rir
-                            .add_anon_struct_type(&field_decls, &method_refs, anchor, type_lit.span)
+                            .add_anon_struct_type_with_transfer_metadata(
+                                &field_decls,
+                                &method_refs,
+                                metadata.thread_bound,
+                                metadata
+                                    .unchecked_transfer_reason
+                                    .map(|reason| self.symbol(reason)),
+                                anchor,
+                                type_lit.span,
+                            )
                             .record_failure(&mut self.payload_error)
                     }
                     TypeExpr::AnonymousEnum { variants, .. } => {
@@ -3530,7 +3542,7 @@ impl SiteWalker {
             }
             Expr::Comptime(comptime) => self.operand(0, |this| this.walk_expr(&comptime.expr)),
             Expr::Checked(checked) => self.operand(0, |this| this.walk_expr(&checked.expr)),
-            Expr::TypeLit(type_lit) => match &type_lit.type_expr {
+            Expr::TypeLit(type_lit) => match type_lit.type_expr.as_ref() {
                 TypeExpr::AnonymousStruct { .. } => {
                     // Record the struct, but do not descend: its field types are
                     // annotation position (forbidden anonymous literals) and its
@@ -5597,7 +5609,7 @@ mod tests {
             name: ident,
             ty: None,
             init: Box::new(Expr::TypeLit(rue_parser::TypeLitExpr {
-                type_expr: array,
+                type_expr: Box::new(array),
                 span,
             })),
             // An array type literal, not a value-position anonymous

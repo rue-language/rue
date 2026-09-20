@@ -203,12 +203,17 @@ fn normalize_anonymous_shape(
     shape: &DurableAnonymousNominalShape,
 ) -> DurableAnonymousNominalShape {
     match shape {
-        DurableAnonymousNominalShape::Struct { fields, methods } => {
-            DurableAnonymousNominalShape::Struct {
-                fields: fields.clone(),
-                methods: normalize_anonymous_methods(owner, methods),
-            }
-        }
+        DurableAnonymousNominalShape::Struct {
+            fields,
+            methods,
+            thread_bound,
+            unchecked_transfer_reason,
+        } => DurableAnonymousNominalShape::Struct {
+            fields: fields.clone(),
+            methods: normalize_anonymous_methods(owner, methods),
+            thread_bound: *thread_bound,
+            unchecked_transfer_reason: unchecked_transfer_reason.clone(),
+        },
         DurableAnonymousNominalShape::Enum { variants } => DurableAnonymousNominalShape::Enum {
             variants: variants.clone(),
         },
@@ -218,13 +223,10 @@ fn normalize_anonymous_shape(
 /// Reconcile two transport projections of one durable anonymous fact.
 ///
 /// Producer evaluation and provider-local body analysis both carry the full
-/// materialized shape, but only the projection that needs an anonymous member
-/// environment is required to retain capture and method metadata. An empty
-/// metadata slice is therefore an admissible thin projection; a non-empty
-/// slice enriches it. Method projections may also spell the owner's type as
+/// materialized shape. Method projections may spell the owner's type as
 /// either `SelfType` or the full anonymous identity; those spellings normalize
-/// before comparison. The materialized fields/variants must always agree, and
-/// two non-empty normalized metadata projections must agree exactly.
+/// before comparison. Every materialized metadata field must agree exactly;
+/// an unmarked projection is not a wildcard for an annotated producer.
 pub(crate) fn reconcile_anonymous_nominals(
     left: &DurableAnonymousNominal,
     right: &DurableAnonymousNominal,
@@ -239,16 +241,32 @@ pub(crate) fn reconcile_anonymous_nominals(
             DurableAnonymousNominalShape::Struct {
                 fields: left_fields,
                 methods: left_methods,
+                thread_bound: left_thread_bound,
+                unchecked_transfer_reason: left_unchecked_transfer_reason,
             },
             DurableAnonymousNominalShape::Struct {
                 fields: right_fields,
                 methods: right_methods,
+                thread_bound: right_thread_bound,
+                unchecked_transfer_reason: right_unchecked_transfer_reason,
             },
-        ) if left_fields == right_fields => DurableAnonymousNominalShape::Struct {
-            fields: left_fields.clone(),
-            methods: reconcile_optional_projection(left_methods, right_methods)
-                .ok_or_else(|| left.identity.clone())?,
-        },
+        ) if left_fields == right_fields => {
+            let left_identity = left.identity.clone();
+            let metadata = match (
+                (*left_thread_bound, left_unchecked_transfer_reason),
+                (*right_thread_bound, right_unchecked_transfer_reason),
+            ) {
+                (left, right) if left == right => left,
+                _ => return Err(left_identity),
+            };
+            DurableAnonymousNominalShape::Struct {
+                fields: left_fields.clone(),
+                methods: reconcile_optional_projection(left_methods, right_methods)
+                    .ok_or_else(|| left.identity.clone())?,
+                thread_bound: metadata.0,
+                unchecked_transfer_reason: metadata.1.clone(),
+            }
+        }
         (
             DurableAnonymousNominalShape::Enum {
                 variants: left_variants,
@@ -358,6 +376,8 @@ pub enum DurableAnonymousNominalShape {
     Struct {
         fields: Arc<[(Arc<str>, DurableType)]>,
         methods: Arc<[DurableAnonymousMethodSignature]>,
+        thread_bound: bool,
+        unchecked_transfer_reason: Option<Arc<str>>,
     },
     Enum {
         variants: Arc<[(Arc<str>, Arc<[DurableType]>)]>,
@@ -410,6 +430,8 @@ pub enum DurableDeclarationPayload {
         fields: Arc<[(Arc<str>, DurableType)]>,
         is_copy: bool,
         is_linear: bool,
+        thread_bound: bool,
+        unchecked_transfer_reason: Option<Arc<str>>,
         conformance: DurableConformanceFacts,
     },
     Enum {
@@ -448,9 +470,15 @@ impl RetainedCharge for DurableAnonymousNominal {
 impl RetainedCharge for DurableAnonymousNominalShape {
     fn retained_charge(&self) -> u64 {
         match self {
-            Self::Struct { fields, methods } => fields
+            Self::Struct {
+                fields,
+                methods,
+                unchecked_transfer_reason,
+                ..
+            } => fields
                 .retained_charge()
-                .saturating_add(methods.retained_charge()),
+                .saturating_add(methods.retained_charge())
+                .saturating_add(unchecked_transfer_reason.retained_charge()),
             Self::Enum { variants, .. } => variants.retained_charge(),
         }
     }
@@ -577,6 +605,8 @@ mod tests {
         let shape = DurableAnonymousNominalShape::Struct {
             fields: Arc::from([]),
             methods: Arc::from([]),
+            thread_bound: false,
+            unchecked_transfer_reason: None,
         };
         let nominal = DurableAnonymousNominal::new(
             identity.clone(),
@@ -626,6 +656,9 @@ mod tests {
             DurableAnonymousNominalShape::Struct {
                 fields: fields.clone(),
                 methods: Arc::from([]),
+
+                thread_bound: false,
+                unchecked_transfer_reason: None,
             },
             Arc::from([]),
             Arc::from([]),
@@ -645,6 +678,9 @@ mod tests {
             DurableAnonymousNominalShape::Struct {
                 fields,
                 methods: Arc::from([method]),
+
+                thread_bound: false,
+                unchecked_transfer_reason: None,
             },
             Arc::from([(Arc::from("T"), DurableType::I32)]),
             Arc::from([]),
@@ -671,6 +707,45 @@ mod tests {
     }
 
     #[test]
+    fn anonymous_merge_rejects_conflicting_transfer_metadata_in_both_orders() {
+        let identity = identity();
+        let nominal = |thread_bound, reason: Option<&str>| {
+            DurableAnonymousNominal::new(
+                identity.clone(),
+                DurableAnonymousNominalShape::Struct {
+                    fields: Arc::from([]),
+                    methods: Arc::from([]),
+                    thread_bound,
+                    unchecked_transfer_reason: reason.map(Arc::from),
+                },
+                Arc::from([]),
+                Arc::from([]),
+            )
+        };
+        let plain = nominal(false, None);
+        let bound = nominal(true, None);
+        let audited = nominal(false, Some("exclusive owner"));
+        let other_audit = nominal(false, Some("different ownership contract"));
+        for [left, right] in [
+            [&plain, &bound],
+            [&plain, &audited],
+            [&bound, &audited],
+            [&audited, &other_audit],
+        ] {
+            for pair in [[left, right], [right, left]] {
+                let mut merged = std::collections::BTreeMap::new();
+                merge_anonymous_nominal(&mut merged, pair[0]).unwrap();
+                assert_eq!(
+                    merge_anonymous_nominal(&mut merged, pair[1]),
+                    Err(identity.clone()),
+                    "an explicit unmarked shape is not absent transfer metadata",
+                );
+                assert_eq!(merged.get(&identity), Some(pair[0]));
+            }
+        }
+    }
+
+    #[test]
     fn anonymous_merge_normalizes_self_method_type_spelling_in_both_orders() {
         let identity = identity();
         let method = |result| DurableAnonymousMethodSignature {
@@ -689,6 +764,9 @@ mod tests {
                 DurableAnonymousNominalShape::Struct {
                     fields: Arc::from([]),
                     methods: Arc::from([method(result)]),
+
+                    thread_bound: false,
+                    unchecked_transfer_reason: None,
                 },
                 Arc::from([]),
                 Arc::from([]),

@@ -258,9 +258,19 @@ fn main() -> i32 {
 A comptime function that returns `type` can construct an anonymous struct type using the following syntax:
 
 ```ebnf
-anon_struct_type = "struct" "{" struct_field { "," struct_field } "}" ;
+anon_struct_type = transfer_directives "struct" "{" struct_field { "," struct_field } "}" ;
+transfer_directives = { transfer_directive } ;
+transfer_directive = "@thread_bound"
+                   | "@unchecked_transfer" "(" STRING ")" ;
 struct_field = IDENT ":" type ;
 ```
+
+{{ rule(id="4.14:7a", cat="normative") }}
+
+The optional `@thread_bound` and `@unchecked_transfer("reason")` directives
+may prefix an anonymous struct declaration. They have the same validation and
+transferability semantics as the corresponding named-struct directives in
+rules 2.5:42–2.5:44 and require `--preview concurrency`.
 
 ```rue
 fn Point() -> type {

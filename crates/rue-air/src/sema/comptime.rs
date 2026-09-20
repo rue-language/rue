@@ -312,6 +312,8 @@ pub trait ComptimeTypeAlgebra: ComptimeDomain {
         identity: Self::AnonymousIdentity,
         fields: &[ComptimeField<Self::Name, Self::Type>],
         sigs: &[ComptimeMethodDescriptor<Self::Name, Self::Type>],
+        thread_bound: bool,
+        unchecked_transfer_reason: Option<Self::Name>,
         type_subst: &AHashMap<Self::Name, Self::Type>,
         value_subst: &AHashMap<Self::Name, Self::Value>,
     ) -> ComptimeHostResult<(Self::Type, bool), Self::Failure>;
@@ -324,6 +326,11 @@ pub trait ComptimeTypeAlgebra: ComptimeDomain {
         value_subst: &AHashMap<Self::Name, Self::Value>,
     ) -> ComptimeHostResult<Self::Type, Self::Failure>;
     fn check_require_droppable(
+        &mut self,
+        ty: Self::Type,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<(), Self::Failure>;
+    fn check_require_transferable(
         &mut self,
         ty: Self::Type,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
@@ -365,6 +372,10 @@ pub trait ComptimeTypeAlgebra: ComptimeDomain {
         match intrinsic {
             ComptimeTypeIntrinsic::RequireDroppable => {
                 self.check_require_droppable(ty, site)?;
+                Ok(Some(Self::Value::unit()))
+            }
+            ComptimeTypeIntrinsic::RequireTransferable => {
+                self.check_require_transferable(ty, site)?;
                 Ok(Some(Self::Value::unit()))
             }
             ComptimeTypeIntrinsic::RequireTriviallyDroppable => {
@@ -937,6 +948,19 @@ pub trait ComptimeRejections: ComptimeDomain {
         what: &str,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<(), Self::Failure>;
+    /// Admit a transfer marker at its defining program. Trusted standard-library
+    /// owners carry audited metadata even in programs without concurrency;
+    /// user declarations still require the preview.
+    fn require_transfer_marker_preview(
+        &self,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<(), Self::Failure> {
+        self.require_preview(
+            rue_error::PreviewFeature::Concurrency,
+            "a concurrency transferability marker",
+            site,
+        )
+    }
     /// Refuse a `fn` type as a field or payload of an anonymous nominal
     /// (ADR-0096, spec 6.1:47): a callback is second-class and is never
     /// stored, so no type constructor can build a type that holds one.
@@ -3502,7 +3526,15 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 fields,
                 methods,
                 anchor,
+                thread_bound,
+                unchecked_transfer_reason,
             } => {
+                if *thread_bound || unchecked_transfer_reason.is_some() {
+                    host_value!(
+                        self.host
+                            .require_transfer_marker_preview(&self.diagnostic_site(span))
+                    );
+                }
                 let field_decls = self.program_rir().anon_struct_fields(fields).to_vec();
 
                 // Comptime `let` locals in scope participate in field-type
@@ -3561,6 +3593,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     identity,
                     &struct_fields,
                     &method_sigs,
+                    *thread_bound,
+                    unchecked_transfer_reason.map(|reason| self.name_from_rir(reason.into())),
                     &local_type_subst,
                     &local_value_subst,
                 ));

@@ -61,9 +61,15 @@ fn type_charge(ty: &ast::TypeExpr) -> u64 {
                 .saturating_add(ret.as_ref().map_or(0, |ret| boxed_charge(ret, type_charge)))
         }
         TypeExpr::AnonymousStruct {
-            fields, methods, ..
+            fields,
+            methods,
+            metadata,
+            ..
         } => owned_slice_charge(fields, |field| type_charge(&field.ty))
-            .saturating_add(owned_slice_charge(methods, method_charge)),
+            .saturating_add(owned_slice_charge(methods, method_charge))
+            .saturating_add(boxed_charge(metadata, |metadata| {
+                directives_charge(&metadata.directives)
+            })),
         TypeExpr::AnonymousEnum { variants, .. } => {
             owned_slice_charge(variants, enum_variant_charge)
         }
@@ -244,7 +250,8 @@ fn expr_charge(expr: &ast::Expr) -> u64 {
             .saturating_add(boxed_charge(&value.index, expr_charge)),
         Expr::Comptime(value) => boxed_charge(&value.expr, expr_charge),
         Expr::Checked(value) => boxed_charge(&value.expr, expr_charge),
-        Expr::TypeLit(value) => type_charge(&value.type_expr),
+        Expr::TypeLit(value) => (std::mem::size_of::<ast::TypeExpr>() as u64)
+            .saturating_add(type_charge(&value.type_expr)),
     }
 }
 

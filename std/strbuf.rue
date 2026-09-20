@@ -36,6 +36,7 @@ fn write_packed_byte(destination: ptr mut u8, index: u64, byte: u8) {
     checked { @ptr_write(@ptr_offset(destination, index), byte); };
 }
 
+@unchecked_transfer("StrBuf has no thread-affine state beyond its solely owned RawBuf(u8) allocation, whose address remains stable when the owner moves; safe loans cannot escape and retained raw pointer aliases remain the caller's unchecked obligation")
 pub struct StrBuf {
     // The `{buf, cap}` allocation, shared with ArrayBuf via the RawBuf core.
     core: rawbuf.RawBuf(u8),

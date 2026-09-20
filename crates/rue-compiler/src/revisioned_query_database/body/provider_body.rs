@@ -889,7 +889,9 @@ impl SemanticNucleusTypeProvider<'_> {
                     )
                 })?;
                 match nominal.shape {
-                    S::Struct { fields, methods } => {
+                    S::Struct {
+                        fields, methods, ..
+                    } => {
                         if methods.iter().any(|method| {
                             rue_air::drop_glue::is_anonymous_destructor(
                                 method.name.as_ref(),
@@ -2497,6 +2499,25 @@ fn interfaces_enabled_for(provider: &SemanticNucleusTypeProvider<'_>, module: &M
         || module.is_trusted_standard_library()
 }
 
+/// The bundled standard library carries its own audited ownership markers so
+/// its public containers can provide transferability facts to ordinary users.
+/// The exemption is keyed by the compiler's trusted source provenance; a path
+/// or declaration name supplied by a program cannot opt into it.
+fn transferability_enabled_for(
+    provider: &SemanticNucleusTypeProvider<'_>,
+    module: &ModuleId,
+) -> bool {
+    provider
+        .configuration
+        .preview_features
+        .contains(rue_error::PreviewFeature::Concurrency)
+        || module.is_trusted_standard_library()
+        || provider
+            .dependency_source
+            .module()
+            .is_trusted_standard_library()
+}
+
 /// Classify a comptime parameter that is not declared `: type` (spec
 /// 6.8:14): its interface bound when it names one or more interfaces, or
 /// empty when it is an ordinary comptime value parameter. A composed bound
@@ -3487,9 +3508,19 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
             is_copy,
             is_linear,
             is_repr_c,
+            thread_bound,
+            unchecked_transfer_reason,
             conformance,
             ..
         } => {
+            if (*thread_bound || unchecked_transfer_reason.is_some())
+                && !transferability_enabled_for(provider, module)
+            {
+                return Err(diagnostic(rue_error::ErrorKind::PreviewFeatureRequired {
+                    feature: rue_error::PreviewFeature::Concurrency,
+                    what: "a concurrency transferability marker".to_owned(),
+                }));
+            }
             let conformance = resolve_conformance_facts(provider, module, syntax, conformance)?;
             if let Some(kind) = rue_air::declaration_validation::linear_copy_struct(
                 provider.dependency_source.name(),
@@ -3684,6 +3715,8 @@ pub(in crate::revisioned_query_database) fn resolve_parsed_semantic_signature(
                 is_copy: *is_copy,
                 is_linear: *is_linear,
                 is_repr_c: *is_repr_c,
+                thread_bound: *thread_bound,
+                unchecked_transfer_reason: unchecked_transfer_reason.clone(),
                 conformance,
             })
         }

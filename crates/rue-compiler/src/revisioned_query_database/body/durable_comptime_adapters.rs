@@ -191,7 +191,9 @@ pub(in crate::revisioned_query_database) fn collect_durable_anonymous_nominal_de
         collect_anonymous_nominal_value_dependencies(value, output);
     }
     match &nominal.shape {
-        S::Struct { fields, methods } => {
+        S::Struct {
+            fields, methods, ..
+        } => {
             for (_, ty) in fields.iter() {
                 collect_anonymous_nominal_type_dependencies(ty, output);
             }

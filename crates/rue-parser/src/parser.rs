@@ -995,6 +995,27 @@ mod tests {
     }
 
     #[test]
+    fn anonymous_struct_transfer_directives_use_struct_validation() {
+        for source in [
+            r#"fn f() -> type { @thread_bound(extra) struct {} }"#,
+            r#"fn f() -> type { @thread_bound @thread_bound struct {} }"#,
+            r#"fn f() -> type { @unchecked_transfer struct {} }"#,
+            r#"fn f() -> type { @unchecked_transfer(unquoted) struct {} }"#,
+            r#"fn f() -> type { @unchecked_transfer("") struct {} }"#,
+            r#"fn f() -> type { @thread_bound @unchecked_transfer("audit") struct {} }"#,
+        ] {
+            assert!(
+                parse_source(source).is_err(),
+                "accepted invalid anonymous transfer directive: {source}"
+            );
+        }
+
+        assert!(
+            parse_source(r#"fn f() -> type { @unchecked_transfer("audit") struct {} }"#).is_ok()
+        );
+    }
+
+    #[test]
     fn test_expectation_directives_reject_invalid_or_conflicting_metadata() {
         for source in [
             r#"@known_bug test "bad" {}"#,

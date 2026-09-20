@@ -599,6 +599,8 @@ pub enum SemanticProducedAnonymousNominalShape {
             )],
         >,
         methods: Arc<[SemanticProducedAnonymousMethodSignature]>,
+        thread_bound: bool,
+        unchecked_transfer_reason: Option<Arc<str>>,
     },
     Enum {
         variants: Arc<
@@ -652,6 +654,17 @@ pub struct ProviderOrdinaryBody<K, M> {
     pub interner: Arc<ThreadedRodeo>,
     pub definition_tokens: Vec<(SemanticDefinitionToken, K)>,
     pub module_tokens: Vec<(SemanticModuleToken, M)>,
+    pub transfer_requirements: Vec<ProviderTransferRequirement>,
+}
+
+/// A transfer gate observed while reducing a provider-backed body. The type is
+/// already in the issuer-stable semantic vocabulary; the compiler relocates
+/// its tokens before publishing the body transaction and checks it after the
+/// raw transaction has made anonymous producer facts available.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderTransferRequirement {
+    pub ty: crate::SemanticImportType<SemanticDefinitionToken, SemanticModuleToken>,
+    pub span: rue_span::Span,
 }
 
 /// Canonical result of one provider-backed specialization transaction.
@@ -673,6 +686,7 @@ pub struct ProviderSpecializedBody<K, M> {
         Vec<FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>>,
     pub definition_tokens: Vec<(SemanticDefinitionToken, K)>,
     pub module_tokens: Vec<(SemanticModuleToken, M)>,
+    pub transfer_requirements: Vec<ProviderTransferRequirement>,
 }
 
 /// Canonical result of one provider-backed anonymous member body.
@@ -699,6 +713,7 @@ pub struct ProviderAnonymousBody<K, M> {
         Vec<FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>>,
     pub definition_tokens: Vec<(SemanticDefinitionToken, K)>,
     pub module_tokens: Vec<(SemanticModuleToken, M)>,
+    pub transfer_requirements: Vec<ProviderTransferRequirement>,
 }
 
 /// Value-only structural work performed inside one provider-backed body
@@ -894,6 +909,18 @@ pub struct DurableComptimeDiagnostic {
     /// Exact producer-owned source anchor, when the semantic query identified
     /// one. Consumers use their call-site span only as a fallback.
     pub span: Option<Span>,
+    /// The remedy attached by the semantic authority, if present.
+    pub help: Option<Arc<str>>,
+}
+
+impl DurableComptimeDiagnostic {
+    fn into_compile_error(self, fallback: Span) -> CompileError {
+        let error = CompileError::new(self.kind, self.span.unwrap_or(fallback));
+        match self.help {
+            Some(help) => error.with_help(help.as_ref()),
+            None => error,
+        }
+    }
 }
 
 pub enum DurableComptimeCallOutcome<K, M> {
@@ -1079,7 +1106,7 @@ where
                 let def = self.type_pool.enum_def(id);
                 if let Some(identity) = self.issued_anonymous_identity_for_type(ty) {
                     T::AnonymousNominal(identity)
-                } else if crate::builtin_universe::BuiltinUniverse::builtin_enum_name(&def.name) {
+                } else if self.is_builtin_enum_id(id) {
                     T::BuiltinNominal {
                         name: def.name.clone(),
                         kind: crate::SemanticImportNominalKind::Enum,
@@ -1133,7 +1160,7 @@ where
     > {
         let ty = Type::new_enum(id);
         let def = self.type_pool.enum_def(id);
-        if crate::builtin_universe::BuiltinUniverse::builtin_enum_name(&def.name) {
+        if self.is_builtin_enum_id(id) {
             return Ok(crate::NominalInstanceKey::Builtin {
                 kind: crate::AnonymousNominalKind::Enum,
                 name: def.name.clone(),
@@ -1167,6 +1194,7 @@ where
             self.function_identity(symbol)?,
         ))
     }
+
     fn resolve_publication_symbol(&self, symbol: &Spur) -> &str {
         self.interner.resolve(symbol)
     }
@@ -1276,6 +1304,7 @@ struct ProviderBodyHost<'a, P, S, K, M> {
     anon_struct_method_sigs: AHashMap<StructId, Vec<super::AnonMethodSig>>,
     anon_struct_captured_values: AHashMap<StructId, AHashMap<Spur, ConstValue>>,
     anon_struct_type_subst: AHashMap<StructId, AHashMap<Spur, Type>>,
+    anon_transfer_metadata: AHashMap<StructId, (bool, Option<Arc<str>>)>,
     active_anonymous_producer: Option<super::anon_structs::IssuedStableProducerId>,
     body_work: BodyAnalysisWork,
     expression_breakdown: Option<ExpressionAnalysisBreakdown>,
@@ -1303,6 +1332,16 @@ where
     K: Clone + Eq + Hash + Ord,
     M: Clone + Eq + Hash + Ord,
 {
+    /// Builtin enum spelling is reserved, but spelling alone is not provenance:
+    /// a source declaration may use the same identifier in a body-local pool.
+    /// Export only the enum identity seeded by the builtin endpoint.
+    fn is_builtin_enum_id(&self, id: EnumId) -> bool {
+        let Some(symbol) = self.intern_name(self.type_pool.enum_def(id).name.as_ref()) else {
+            return false;
+        };
+        self.endpoint.endpoint_builtin_enum(symbol) == Some(id)
+    }
+
     fn intern_name(&self, name: impl AsRef<str>) -> Option<Spur> {
         self.state.symbol_space().try_intern(name).ok()
     }
@@ -1448,6 +1487,7 @@ where
             anon_struct_method_sigs: AHashMap::new(),
             anon_struct_captured_values: AHashMap::new(),
             anon_struct_type_subst: AHashMap::new(),
+            anon_transfer_metadata: AHashMap::new(),
             active_anonymous_producer: None,
             body_work: BodyAnalysisWork::default(),
             expression_breakdown: None,
@@ -1859,6 +1899,22 @@ where
         )
     }
 
+    fn install_anon_transfer_metadata(
+        &mut self,
+        struct_id: StructId,
+        identity: &crate::AnonymousNominalKey<K, M>,
+    ) {
+        if let Some(crate::DurableAnonymousShape::Struct {
+            thread_bound,
+            unchecked_transfer_reason,
+            ..
+        }) = self.source.anonymous_shape(identity)
+        {
+            self.anon_transfer_metadata
+                .insert(struct_id, (thread_bound, unchecked_transfer_reason));
+        }
+    }
+
     fn install_canonical_anonymous_identity(
         &mut self,
         durable: &crate::AnonymousNominalKey<K, M>,
@@ -1873,6 +1929,7 @@ where
             TypeKind::Struct(id) => {
                 self.anon_struct_identities.insert(issued.clone(), id);
                 self.anonymous_struct_ids.insert(id);
+                self.install_anon_transfer_metadata(id, durable);
             }
             TypeKind::Enum(id) => {
                 self.anon_enum_identities.insert(issued.clone(), id);
@@ -3368,10 +3425,28 @@ where
                         })
                         .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
                     value_captures.sort_by(|left, right| left.0.cmp(&right.0));
+                    let (thread_bound, unchecked_transfer_reason) = self
+                        .anon_transfer_metadata(struct_id)
+                        .or_else(|| {
+                            self.durable_anonymous_types
+                                .get(&ty)
+                                .and_then(|identity| self.source.anonymous_shape(identity))
+                                .and_then(|shape| match shape {
+                                    crate::DurableAnonymousShape::Struct {
+                                        thread_bound,
+                                        unchecked_transfer_reason,
+                                        ..
+                                    } => Some((thread_bound, unchecked_transfer_reason)),
+                                    crate::DurableAnonymousShape::Enum { .. } => None,
+                                })
+                        })
+                        .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
                     (
                         crate::SemanticProducedAnonymousNominalShape::Struct {
                             fields: fields.into(),
                             methods: methods.into(),
+                            thread_bound,
+                            unchecked_transfer_reason,
                         },
                         type_captures,
                         value_captures,
@@ -3436,6 +3511,9 @@ where
             .insert(owner_type, issued_identity.clone());
         self.durable_anonymous_types
             .insert(owner_type, identity.clone());
+        if let Some(struct_id) = owner_type.as_struct() {
+            self.install_anon_transfer_metadata(struct_id, identity);
+        }
         if let Some(enum_id) = owner_type.as_enum() {
             self.anon_enum_identities.insert(issued_identity, enum_id);
             return Some(());
@@ -4553,10 +4631,7 @@ where
                 DurableComptimeCallOutcome::Reduced(reduced) => reduced,
                 DurableComptimeCallOutcome::NotReduced => return Ok(None),
                 DurableComptimeCallOutcome::Diagnostic(diagnostic) => {
-                    return Err(CompileError::new(
-                        diagnostic.kind,
-                        diagnostic.span.unwrap_or(span),
-                    ));
+                    return Err(diagnostic.into_compile_error(span));
                 }
             };
         let value = match reduced.result {
@@ -5427,10 +5502,7 @@ where
                 DurableComptimeCallOutcome::NotReduced if value_self_call => return None,
                 DurableComptimeCallOutcome::NotReduced => return Some(Ok(None)),
                 DurableComptimeCallOutcome::Diagnostic(diagnostic) => {
-                    return Some(Err(CompileError::new(
-                        diagnostic.kind,
-                        diagnostic.span.unwrap_or(span),
-                    )));
+                    return Some(Err(diagnostic.into_compile_error(span)));
                 }
             };
         let producer = (|| {
@@ -6071,6 +6143,20 @@ where
         &mut self.anonymous_enum_ids
     }
 
+    fn set_anon_transfer_metadata(
+        &mut self,
+        struct_id: StructId,
+        thread_bound: bool,
+        unchecked_transfer_reason: Option<Arc<str>>,
+    ) {
+        self.anon_transfer_metadata
+            .insert(struct_id, (thread_bound, unchecked_transfer_reason));
+    }
+
+    fn anon_transfer_metadata(&self, struct_id: StructId) -> Option<(bool, Option<Arc<str>>)> {
+        self.anon_transfer_metadata.get(&struct_id).cloned()
+    }
+
     fn register_synthesized_callable(
         &self,
         symbol: Spur,
@@ -6339,6 +6425,35 @@ where
     }
 }
 
+impl<P, S, K, M> ProviderBodyHost<'_, P, S, K, M>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
+    fn transfer_requirements(&self) -> CompileResult<Vec<ProviderTransferRequirement>> {
+        self.deferred_requirements
+            .iter()
+            .filter(|gate| gate.kind == super::DeferredRequirementKind::RequireTransferable)
+            .map(|gate| {
+                Ok(ProviderTransferRequirement {
+                    ty: self.export_body_type(gate.ty).map_err(|failure| {
+                        CompileError::without_span(ErrorKind::OutputPublication(format!(
+                            "transfer gate type export failed: {failure:?}"
+                        )))
+                    })?,
+                    span: gate.span,
+                })
+            })
+            .collect()
+    }
+}
+
 impl<P, S, K, M> DiagnosticPresentation for ProviderBodyHost<'_, P, S, K, M>
 where
     P: BodyFactProvider,
@@ -6454,6 +6569,9 @@ where
         (second, "counterfeit_b", "b", Type::I64),
     ] {
         let id = ty.as_struct().expect("probe types are structs");
+        // Both counterfeit records are otherwise complete; this probe isolates
+        // conflicting identity/shape facts rather than missing transfer facts.
+        host.anon_transfer_metadata.insert(id, (false, None));
         let name_spur = host.intern_name(name).ok_or_else(|| {
             CompileError::without_span(ErrorKind::InvalidCompilerInput(
                 "conflict probe symbol could not be interned".into(),
@@ -6490,6 +6608,8 @@ where
         identity,
         &[],
         &[],
+        false,
+        None,
         &AHashMap::new(),
     );
     let export_result = host.produced_anonymous_nominals(&AHashSet::new());
@@ -6980,6 +7100,7 @@ where
             .provider_body_work
             .snapshot()
             .with_expression_breakdown(expression_breakdown);
+        let transfer_requirements = host.transfer_requirements()?;
         let definition_tokens = host
             .function_tokens
             .into_inner()
@@ -7019,6 +7140,7 @@ where
             interner: host.interner,
             definition_tokens,
             module_tokens,
+            transfer_requirements,
         })
     })();
     finish_provider_result(
@@ -7694,6 +7816,7 @@ where
             .provider_body_work
             .snapshot()
             .with_expression_breakdown(expression_breakdown);
+        let transfer_requirements = host.transfer_requirements()?;
         let definition_tokens = host
             .function_tokens
             .into_inner()
@@ -7732,6 +7855,7 @@ where
             referenced_specializations,
             definition_tokens,
             module_tokens,
+            transfer_requirements,
         })
     })();
     finish_provider_result(
@@ -7922,11 +8046,6 @@ where
         if let Some(declaration) = host.endpoint.first_free_function(name, owner_file) {
             host.reject_free_function_accessor(declaration)?;
         }
-        let initial_anonymous_identities = host
-            .canonical_anonymous_types
-            .values()
-            .cloned()
-            .collect::<AHashSet<_>>();
         let type_args = arguments
             .types
             .iter()
@@ -7962,6 +8081,16 @@ where
                     "provider specialization containment metadata is unavailable".into(),
                 ))
             })?;
+        // Type arguments may materialize anonymous producer identities while
+        // they are imported into the specialization. Snapshot after that
+        // import work so the export contains only identities produced by this
+        // body, with their canonical transfer metadata retained by the import
+        // registry.
+        let initial_anonymous_identities = host
+            .canonical_anonymous_types
+            .values()
+            .cloned()
+            .collect::<AHashSet<_>>();
         let infer = InferenceContext::new(&host);
         let host_setup_ns = elapsed_ns(host_setup_started);
         let expression_engine_started = Instant::now();
@@ -8059,6 +8188,7 @@ where
             .provider_body_work
             .snapshot()
             .with_expression_breakdown(expression_breakdown);
+        let transfer_requirements = host.transfer_requirements()?;
         let definition_tokens = host
             .function_tokens
             .into_inner()
@@ -8096,6 +8226,7 @@ where
             referenced_specializations,
             definition_tokens,
             module_tokens,
+            transfer_requirements,
         })
     })();
     finish_provider_result(

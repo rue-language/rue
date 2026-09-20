@@ -2754,6 +2754,8 @@ pub enum PreviewFeature {
     /// A stated reason on every `checked` block (ADR-0095, RUE-1887):
     /// `checked "index < len by the guard above" { ... }`.
     CheckedReasons,
+    /// Structured concurrency transferability contracts (ADR-0098).
+    Concurrency,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -2779,6 +2781,7 @@ impl PreviewFeature {
             PreviewFeature::Interfaces => "interfaces",
             PreviewFeature::StructPatterns => "struct_patterns",
             PreviewFeature::CheckedReasons => "checked_reasons",
+            PreviewFeature::Concurrency => "concurrency",
         }
     }
 
@@ -2792,6 +2795,7 @@ impl PreviewFeature {
             PreviewFeature::Interfaces => "ADR-0005",
             PreviewFeature::StructPatterns => "ADR-0091",
             PreviewFeature::CheckedReasons => "ADR-0095",
+            PreviewFeature::Concurrency => "ADR-0098",
         }
     }
 
@@ -2804,6 +2808,7 @@ impl PreviewFeature {
             PreviewFeature::Interfaces,
             PreviewFeature::StructPatterns,
             PreviewFeature::CheckedReasons,
+            PreviewFeature::Concurrency,
         ]
     }
 
@@ -2849,6 +2854,7 @@ impl std::str::FromStr for PreviewFeature {
             "interfaces" => Ok(PreviewFeature::Interfaces),
             "struct_patterns" => Ok(PreviewFeature::StructPatterns),
             "checked_reasons" => Ok(PreviewFeature::CheckedReasons),
+            "concurrency" => Ok(PreviewFeature::Concurrency),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -6410,7 +6416,7 @@ mod tests {
         let names = PreviewFeature::all_names();
         assert_eq!(
             names,
-            "test_infra, c_ffi, non_exhaustive_enums, interfaces, struct_patterns, checked_reasons"
+            "test_infra, c_ffi, non_exhaustive_enums, interfaces, struct_patterns, checked_reasons, concurrency"
         );
     }
 

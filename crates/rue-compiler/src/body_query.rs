@@ -61,28 +61,7 @@ pub(crate) fn relative_body_diagnostics(
 ) -> (crate::CompileErrors, BodyDiagnosticBasis) {
     let mut coordinates = Vec::new();
     let errors = errors.map_spans(|span| {
-        let coordinate = if span.file_id == source.file_id
-            && span.start >= source.declaration_start
-            && span.end <= source.body_end
-        {
-            let offset = |position| {
-                if position >= source.body_start {
-                    BodyDiagnosticOffset::Body(position - source.body_start)
-                } else {
-                    BodyDiagnosticOffset::Declaration(position - source.declaration_start)
-                }
-            };
-            BodyDiagnosticCoordinate::Relative {
-                start: offset(span.start),
-                end: offset(span.end),
-            }
-        } else {
-            BodyDiagnosticCoordinate::Preserved {
-                file_id: span.file_id,
-                start: span.start,
-                end: span.end,
-            }
-        };
+        let coordinate = body_diagnostic_coordinate(span.file_id, span.start, span.end, source);
         coordinates.push(coordinate);
 
         // The typed coordinate stream owns every location. Erasing the payload
@@ -100,6 +79,37 @@ pub(crate) fn relative_body_diagnostics(
             coordinates: coordinates.into(),
         },
     )
+}
+
+/// Convert a body diagnostic span into the stable coordinate carried by a
+/// semantic transaction. The absolute span remains available while the body
+/// is being analyzed, but equality and retained failures use this coordinate
+/// so a reused transaction can be projected into a relocated source body.
+pub(crate) fn body_diagnostic_coordinate(
+    file_id: rue_span::FileId,
+    start: u32,
+    end: u32,
+    source: &BodySourceLocator,
+) -> BodyDiagnosticCoordinate {
+    if file_id == source.file_id && start >= source.declaration_start && end <= source.body_end {
+        let offset = |position| {
+            if position >= source.body_start {
+                BodyDiagnosticOffset::Body(position - source.body_start)
+            } else {
+                BodyDiagnosticOffset::Declaration(position - source.declaration_start)
+            }
+        };
+        BodyDiagnosticCoordinate::Relative {
+            start: offset(start),
+            end: offset(end),
+        }
+    } else {
+        BodyDiagnosticCoordinate::Preserved {
+            file_id,
+            start,
+            end,
+        }
+    }
 }
 
 pub(crate) fn body_source_basis_equal(
@@ -799,6 +809,7 @@ pub(crate) enum BodyTransaction {
         produced_anonymous_nominals: BodyProducedAnonymousNominals,
         consulted_anonymous_nominals: BodyConsultedAnonymousNominals,
         lookup_observations: BodyLookupObservations,
+        transfer_requirements: Arc<[BodyTransferRequirement]>,
     },
     DeterministicFailure {
         errors: crate::CompileErrors,
@@ -807,6 +818,20 @@ pub(crate) enum BodyTransaction {
         lookup_observations: BodyLookupObservations,
     },
     Control(BodyTransactionControl),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BodyTransferRequirement {
+    pub(crate) ty: crate::durable_semantics::DurableType,
+    pub(crate) coordinate: BodyDiagnosticCoordinate,
+}
+
+impl RetainedCharge for BodyTransferRequirement {
+    fn retained_charge(&self) -> u64 {
+        self.ty
+            .retained_charge()
+            .saturating_add(std::mem::size_of::<Self>() as u64)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1137,12 +1162,14 @@ impl RetainedCharge for BodyTransaction {
                 references,
                 produced_anonymous_nominals,
                 consulted_anonymous_nominals,
+                transfer_requirements,
                 lookup_observations,
             } => body
                 .retained_charge()
                 .saturating_add(references.retained_charge())
                 .saturating_add(produced_anonymous_nominals.retained_charge())
                 .saturating_add(consulted_anonymous_nominals.retained_charge())
+                .saturating_add(transfer_requirements.retained_charge())
                 .saturating_add(lookup_observations.retained_charge()),
             Self::DeterministicFailure {
                 errors,
@@ -1531,6 +1558,7 @@ pub(crate) fn transaction_equal(left: &BodyTransaction, right: &BodyTransaction)
                 references: left_references,
                 produced_anonymous_nominals: left_produced,
                 consulted_anonymous_nominals: left_consulted,
+                transfer_requirements: left_transfer,
                 ..
             },
             BodyTransaction::Success {
@@ -1538,6 +1566,7 @@ pub(crate) fn transaction_equal(left: &BodyTransaction, right: &BodyTransaction)
                 references: right_references,
                 produced_anonymous_nominals: right_produced,
                 consulted_anonymous_nominals: right_consulted,
+                transfer_requirements: right_transfer,
                 ..
             },
         ) => {
@@ -1545,6 +1574,7 @@ pub(crate) fn transaction_equal(left: &BodyTransaction, right: &BodyTransaction)
                 && left_references == right_references
                 && left_produced == right_produced
                 && left_consulted == right_consulted
+                && transfer_requirements_equal(left_transfer, right_transfer)
         }
         (
             BodyTransaction::DeterministicFailure {
@@ -1578,4 +1608,15 @@ pub(crate) fn transaction_equal(left: &BodyTransaction, right: &BodyTransaction)
         ) => left == right,
         _ => false,
     }
+}
+
+fn transfer_requirements_equal(
+    left: &[BodyTransferRequirement],
+    right: &[BodyTransferRequirement],
+) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| left.ty == right.ty && left.coordinate == right.coordinate)
 }

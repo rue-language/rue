@@ -267,6 +267,7 @@ intrinsic_inventory! {
     SizeOf => { spelling: "size_of", grammar: Type, fallible: None },
     AlignOf => { spelling: "align_of", grammar: Type, fallible: None },
     RequireDroppable => { spelling: "require_droppable", grammar: Type, fallible: None },
+    RequireTransferable => { spelling: "require_transferable", grammar: Type, fallible: None },
     RequireTriviallyDroppable => {
         spelling: "require_trivially_droppable",
         grammar: Type,
@@ -337,6 +338,7 @@ mod tests {
                 "size_of",
                 "align_of",
                 "require_droppable",
+                "require_transferable",
                 "require_trivially_droppable",
                 "int_max",
                 "int_min",

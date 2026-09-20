@@ -107,6 +107,7 @@ impl Validator<'_> {
 
     fn check_directives(&mut self, directives: &[Directive], site: DirectiveSite) {
         self.check_known_bug_combinations(directives, site);
+        self.check_transfer_markers(directives, site);
         for directive in directives {
             let Some(kind) = directive.kind else {
                 self.errors.push(CompileError::new(
@@ -139,6 +140,43 @@ impl Validator<'_> {
             if placed && self.check_arity(directive, kind) {
                 self.check_args(directive, kind, site);
             }
+        }
+    }
+
+    fn check_transfer_markers(&mut self, directives: &[Directive], site: DirectiveSite) {
+        if site != DirectiveSite::Struct {
+            return;
+        }
+        let thread_bound = directives
+            .iter()
+            .filter(|directive| directive.kind == Some(DirectiveName::ThreadBound))
+            .collect::<Vec<_>>();
+        let unchecked = directives
+            .iter()
+            .filter(|directive| directive.kind == Some(DirectiveName::UncheckedTransfer))
+            .collect::<Vec<_>>();
+        for duplicate in thread_bound.iter().skip(1) {
+            self.errors.push(CompileError::new(
+                ErrorKind::ParseError("@thread_bound may appear only once on a struct".to_owned()),
+                duplicate.span,
+            ));
+        }
+        for duplicate in unchecked.iter().skip(1) {
+            self.errors.push(CompileError::new(
+                ErrorKind::ParseError(
+                    "@unchecked_transfer may appear only once on a struct".to_owned(),
+                ),
+                duplicate.span,
+            ));
+        }
+        if let (Some(thread_bound), Some(unchecked)) = (thread_bound.first(), unchecked.first()) {
+            self.errors.push(CompileError::new(
+                ErrorKind::ParseError(
+                    "@thread_bound and @unchecked_transfer cannot be combined".to_owned(),
+                ),
+                unchecked.span,
+            ));
+            let _ = thread_bound;
         }
     }
 
@@ -241,6 +279,7 @@ impl Validator<'_> {
                         }
                         DirectiveArgValue::Repr(_)
                         | DirectiveArgValue::KnownBugText
+                        | DirectiveArgValue::UncheckedTransferReason
                         | DirectiveArgValue::Unrecognized => {
                             self.errors.push(CompileError::new(
                                 ErrorKind::ParseError(format!(
@@ -265,6 +304,7 @@ impl Validator<'_> {
                         DirectiveArgValue::Repr(ReprArg::C) => {}
                         DirectiveArgValue::Warning(_)
                         | DirectiveArgValue::KnownBugText
+                        | DirectiveArgValue::UncheckedTransferReason
                         | DirectiveArgValue::Unrecognized => {
                             self.errors.push(CompileError::new(
                                 ErrorKind::ParseError(format!(
@@ -310,8 +350,19 @@ impl Validator<'_> {
                     ));
                 }
             }
+            DirectiveName::UncheckedTransfer => {
+                let arg = &directive.args[0];
+                if !matches!(arg.value, DirectiveArgValue::UncheckedTransferReason) {
+                    self.errors.push(CompileError::new(
+                        ErrorKind::ParseError(
+                            "@unchecked_transfer requires a non-empty quoted reason".to_owned(),
+                        ),
+                        arg.ident.span,
+                    ));
+                }
+            }
             // Arity already rejected any argument these carry.
-            DirectiveName::Copy | DirectiveName::NonExhaustive => {}
+            DirectiveName::Copy | DirectiveName::NonExhaustive | DirectiveName::ThreadBound => {}
         }
     }
 
@@ -578,7 +629,10 @@ impl Validator<'_> {
             | TypeExpr::Never(_) => {}
             TypeExpr::Array { element, .. } => self.check_type_expr(element),
             TypeExpr::Slice { element, .. } => self.check_type_expr(element),
-            TypeExpr::AnonymousStruct { methods, .. } => {
+            TypeExpr::AnonymousStruct {
+                methods, metadata, ..
+            } => {
+                self.check_directives(&metadata.directives, DirectiveSite::Struct);
                 for method in methods {
                     self.check_method(method);
                 }

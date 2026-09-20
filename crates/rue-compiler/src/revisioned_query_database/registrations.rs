@@ -827,10 +827,12 @@ impl RevisionedQueryDatabase {
         let inject_body_transaction_failure = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let transactions_for_analysis_bundle = body_transactions.clone();
         let produced_for_analysis_bundle = body_produced_anonymous.clone();
+        let type_facts_for_analysis_bundle = type_facts.clone();
         let body_analysis_bundles = register_body_body_analysis_bundles!(
             produced_for_analysis_bundle,
             runtime,
-            transactions_for_analysis_bundle
+            transactions_for_analysis_bundle,
+            type_facts_for_analysis_bundle
         );
         let toolchain_for_body_closure = body_toolchain_demands.clone();
         let transactions_for_body_reachability = body_transactions.clone();

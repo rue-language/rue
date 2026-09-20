@@ -15,6 +15,7 @@ use rue_builtins::IntrinsicName;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComptimeTypeIntrinsic {
     RequireDroppable,
+    RequireTransferable,
     RequireTriviallyDroppable,
     IntegerBound(ComptimeIntegerBound),
 }
@@ -50,6 +51,7 @@ impl ComptimeTypeIntrinsic {
     pub const fn from_intrinsic(name: IntrinsicName) -> Option<Self> {
         Some(match name {
             IntrinsicName::RequireDroppable => Self::RequireDroppable,
+            IntrinsicName::RequireTransferable => Self::RequireTransferable,
             IntrinsicName::RequireTriviallyDroppable => Self::RequireTriviallyDroppable,
             IntrinsicName::IntMin => Self::IntegerBound(ComptimeIntegerBound::Min),
             IntrinsicName::IntMax => Self::IntegerBound(ComptimeIntegerBound::Max),

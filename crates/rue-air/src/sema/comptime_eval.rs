@@ -47,7 +47,7 @@
 //!   defer to the runtime check.
 
 use ahash::{AHashMap, AHashSet};
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 use lasso::Spur;
 use rue_error::{CompileError, CompileResult, ElementGateShape, ErrorKind};
@@ -1267,6 +1267,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         self.check_require_droppable_finalized(ty, span)
     }
 
+    /// Defer every transferability requirement to the canonical TypeFacts query
+    /// after the body transaction and its anonymous type metadata are published.
+    pub(crate) fn check_require_transferable(&mut self, ty: Type, span: Span) -> CompileResult<()> {
+        self.require_preview(
+            rue_error::PreviewFeature::Concurrency,
+            "@require_transferable",
+            span,
+        )?;
+        self.defer_ownership_gate(DeferredRequirementKind::RequireTransferable, ty, span);
+        Ok(())
+    }
+
     fn check_require_droppable_finalized(&self, ty: Type, span: Span) -> CompileResult<()> {
         if self.type_carries_linear(ty) {
             return Err(self.require_droppable_error(ty, span));
@@ -1388,8 +1400,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 
     fn defer_ownership_gate(&mut self, kind: DeferredRequirementKind, ty: Type, span: Span) {
-        debug_assert!(self.declaration_binding_active());
-        debug_assert!(self.type_ownership_depends_on_nominal(ty));
         let gate = DeferredRequirement { kind, ty, span };
         if !self.deferred_requirements_gates_mut().contains(&gate) {
             self.deferred_requirements_gates_mut().push(gate);
@@ -2770,6 +2780,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeTypeAlgebra for OrdinaryBodyEngine
         identity: Self::AnonymousIdentity,
         fields: &[super::comptime::ComptimeField<Spur, Type>],
         sigs: &[ComptimeMethodDescriptor<Spur, Type>],
+        thread_bound: bool,
+        unchecked_transfer_reason: Option<Spur>,
         _type_subst: &AHashMap<Spur, Type>,
         value_subst: &AHashMap<Spur, ConstValue>,
     ) -> ComptimeHostResult<(Type, bool), Self::Failure> {
@@ -2826,8 +2838,17 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeTypeAlgebra for OrdinaryBodyEngine
                 },
             })
             .collect();
-        OrdinaryBodyEngine::find_or_create_anon_struct(self, identity, &fields, &sigs, value_subst)
-            .map_err(Into::into)
+        OrdinaryBodyEngine::find_or_create_anon_struct(
+            self,
+            identity,
+            &fields,
+            &sigs,
+            thread_bound,
+            unchecked_transfer_reason
+                .map(|reason| Arc::from(self.body_interner().resolve(&reason))),
+            value_subst,
+        )
+        .map_err(Into::into)
     }
     fn find_or_create_anon_enum(
         &mut self,
@@ -2846,6 +2867,13 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeTypeAlgebra for OrdinaryBodyEngine
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<(), Self::Failure> {
         OrdinaryBodyEngine::check_require_droppable(self, ty, site.span()).map_err(Into::into)
+    }
+    fn check_require_transferable(
+        &mut self,
+        ty: Type,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<(), Self::Failure> {
+        OrdinaryBodyEngine::check_require_transferable(self, ty, site.span()).map_err(Into::into)
     }
     fn check_trivially_droppable(
         &mut self,
@@ -3609,6 +3637,20 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeRejections for OrdinaryBodyEngine<
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
     ) -> ComptimeHostResult<(), Self::Failure> {
         OrdinaryBodyEngine::require_preview(self, feature, what, site.span()).map_err(Into::into)
+    }
+    fn require_transfer_marker_preview(
+        &self,
+        site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeHostResult<(), Self::Failure> {
+        if self.file_module_is_trusted_standard_library(site.span().file_id) {
+            return Ok(());
+        }
+        ComptimeRejections::require_preview(
+            self,
+            rue_error::PreviewFeature::Concurrency,
+            "a concurrency transferability marker",
+            site,
+        )
     }
     fn reject_callback_member(
         &self,

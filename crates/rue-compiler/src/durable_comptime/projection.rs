@@ -28,6 +28,8 @@ pub(crate) enum DurableAnonymousNominalDescriptorShape {
     Struct {
         fields: Arc<[rue_air::ComptimeField<Arc<str>, DurableType>]>,
         methods: Arc<[rue_air::ComptimeMethodDescriptor<Arc<str>, DurableType>]>,
+        thread_bound: bool,
+        unchecked_transfer_reason: Option<Arc<str>>,
     },
     Enum {
         variants: Arc<[(Arc<str>, Arc<[DurableType]>)]>,
@@ -56,7 +58,12 @@ pub(crate) fn project_durable_anonymous_nominal(
     let type_captures = canonicalize_captures(descriptor.type_captures, "type")?;
     let value_captures = canonicalize_captures(descriptor.value_captures, "value")?;
     let shape = match descriptor.shape {
-        DurableAnonymousNominalDescriptorShape::Struct { fields, methods } => {
+        DurableAnonymousNominalDescriptorShape::Struct {
+            fields,
+            methods,
+            thread_bound,
+            unchecked_transfer_reason,
+        } => {
             let method_type = |ty: rue_air::ComptimeMethodType<DurableType>| match ty {
                 rue_air::ComptimeMethodType::SelfType => {
                     Ok(crate::durable_semantics::DurableAnonymousMethodType::SelfType)
@@ -102,6 +109,8 @@ pub(crate) fn project_durable_anonymous_nominal(
                     .map(|field| (field.name.clone(), field.ty.clone()))
                     .collect(),
                 methods: methods.into(),
+                thread_bound,
+                unchecked_transfer_reason,
             }
         }
         DurableAnonymousNominalDescriptorShape::Enum { variants } => {

@@ -108,12 +108,19 @@ fn durable_anonymous_shape(
 ) -> rue_air::DurableAnonymousShape<StableDefinitionKey, ModuleId> {
     use crate::durable_semantics::DurableAnonymousNominalShape as S;
     match shape {
-        S::Struct { fields, methods } => rue_air::DurableAnonymousShape::Struct {
+        S::Struct {
+            fields,
+            methods,
+            thread_bound,
+            unchecked_transfer_reason,
+        } => rue_air::DurableAnonymousShape::Struct {
             fields: fields.iter().map(|(n, t)| (n.clone(), t.clone())).collect(),
             struct_methods: methods
                 .iter()
                 .map(|method| (method.name.clone(), method.has_self))
                 .collect(),
+            thread_bound: *thread_bound,
+            unchecked_transfer_reason: unchecked_transfer_reason.clone(),
         },
         S::Enum { variants } => rue_air::DurableAnonymousShape::Enum {
             variants: variants
@@ -174,6 +181,7 @@ impl rue_air::DurableNominalSource<StableDefinitionKey, ModuleId> for DurableDec
                 is_copy,
                 is_linear,
                 conformance,
+                ..
             } => rue_air::DurableNominalBody::Struct {
                 fields: fields.clone().into(),
                 is_copy: *is_copy,

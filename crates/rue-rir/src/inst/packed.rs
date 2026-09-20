@@ -1962,11 +1962,15 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
             InstData::AnonStructType {
                 fields,
                 methods,
+                thread_bound,
+                unchecked_transfer_reason,
                 anchor,
             } => {
                 self.byte(61)?;
                 self.fields(rir.anon_struct_fields(fields))?;
                 self.refs(rir.anon_struct_methods(methods))?;
+                self.boolean(*thread_bound)?;
+                self.optional_symbol(*unchecked_transfer_reason)?;
                 self.anchor(anchor)?;
             }
             InstData::AnonEnumType {
@@ -3523,9 +3527,18 @@ impl<
             61 => {
                 let fields = self.fields(reader)?;
                 let methods = self.refs(reader, "anonymous struct methods")?;
+                let thread_bound = reader.boolean("anonymous thread-bound marker")?;
+                let unchecked_transfer_reason = self.optional_symbol(reader)?;
                 let anchor = self.anchor(reader)?;
                 self.destination
-                    .add_anon_struct_type(&fields, &methods, anchor, span)?
+                    .add_anon_struct_type_with_transfer_metadata(
+                        &fields,
+                        &methods,
+                        thread_bound,
+                        unchecked_transfer_reason,
+                        anchor,
+                        span,
+                    )?
             }
             62 => {
                 let (variants, payloads) = self.enum_payload(reader)?;
