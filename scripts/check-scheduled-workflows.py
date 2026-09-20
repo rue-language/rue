@@ -10,9 +10,9 @@ The bug itself is small. What makes it worth a gate is that the workflow was
 believed: a safeguard that fails silently is worth less than no safeguard,
 because its absence is not noticed while its presence is assumed.
 
-This runs in required CI, on the pull-request path, because that is the one
-signal in this repository that provably reaches a human — reporting it on
-another unattended timer would inherit the very bug being fixed.
+This runs read-only in required CI. A separate trusted daily/manual workflow
+uses the same classifier to file persistent findings into the owner's Linear
+work queue, where an unattended failure can be assigned and repaired.
 
 **Exactly one condition blocks a merge**: a workflow that has run on its
 schedule at least twice and has never once succeeded. That signal is durable
@@ -20,9 +20,11 @@ schedule at least twice and has never once succeeded. That signal is durable
 protected), and self-clearing (one green run ends it forever). It is the
 RUE-1507 shape precisely.
 
-Everything else warns and exits 0. This gate runs on every pull request in the
-repository, so a false positive here blocks *all* work — strictly worse than
-the bug it is defending against. Staleness in particular is a heuristic built
+Everything else warns and exits 0 on the required-CI path. The separate trusted
+`--report-linear` mode assigns persistent findings to the API key owner in
+Linear, without changing the merge verdict. This gate runs on every pull
+request in the repository, so a false positive here blocks *all* work —
+strictly worse than the bug it is defending against. Staleness in particular is a heuristic built
 on cron cadence, and GitHub's scheduler jitter, queue delays, and a workflow's
 own designed red runs all move it; `fuzz.yml` is red on 67.7% of its 226
 retained scheduled runs, with a 75-day gap between successes, entirely by
@@ -37,6 +39,7 @@ capability is to say so and continue (see the BuildBuddy provisioning steps in
 Usage:
     scripts/check-scheduled-workflows.py --repo OWNER/NAME   # structure + history
     scripts/check-scheduled-workflows.py --offline           # structure only
+    scripts/check-scheduled-workflows.py --repo OWNER/NAME --report-linear
 """
 
 from __future__ import annotations
@@ -53,6 +56,12 @@ import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+
+from gatelib.ci_api import (
+    LinearClient,
+    TransportError as ReportingError,
+    UrllibTransport as ReportingTransport,
+)
 
 GITHUB_API_URL = "https://api.github.com"
 
@@ -94,15 +103,6 @@ class Policy:
 
 
 POLICIES: dict[str, Policy] = {
-    # RUE-1507's original finding, fixed by RUE-1222. Both scheduled runs it has
-    # ever had failed in 18s with `error: unexpected argument '--env' found`, so
-    # it has never once done the work it was added for. This is the one waiver
-    # that suppresses a *blocking* verdict, which is why it names the issue that
-    # removes it.
-    "correctness-repetitions.yml": Policy(
-        known_broken="RUE-1222",
-        note="never succeeded; `--env` argument bug fixed by RUE-1222",
-    ),
     # Nightly fuzzing is red *by design* whenever it finds a crash, and already
     # reports each one into the Rue Linear team (RUE-802,
     # scripts/fuzz-report-failure.py). Its full retained history — 226 scheduled
@@ -470,6 +470,7 @@ class Client:
 OK = "ok"
 WARN = "warn"
 BLOCK = "block"
+DISABLED_STATES = {"disabled_manually", "disabled_inactivity", "disabled_fork"}
 
 
 @dataclass
@@ -480,6 +481,7 @@ class Finding:
     severity: str
     summary: str
     detail: str = ""
+    escalate: bool = False
 
     @property
     def blocks(self) -> bool:
@@ -498,6 +500,9 @@ def classify(workflow: Scheduled, history: History | None, now: datetime) -> Fin
             "not yet registered with GitHub; will be checked once it reaches trunk",
         )
 
+    if history.state not in DISABLED_STATES | {"active"}:
+        return Finding(name, WARN, f"unknown workflow state: {history.state}")
+
     if history.state != "active":
         # Run history cannot see this: a disabled workflow stops producing runs
         # and its last one may well have been green. It is reported rather than
@@ -510,6 +515,7 @@ def classify(workflow: Scheduled, history: History | None, now: datetime) -> Fin
             "`disabled_inactivity` means 60 days passed with no repository "
             "activity. Re-enable it from the Actions tab or with `gh workflow "
             "enable` if it is still wanted.",
+            escalate=not policy.known_broken,
         )
 
     if history.scheduled_runs == 0:
@@ -542,6 +548,7 @@ def classify(workflow: Scheduled, history: History | None, now: datetime) -> Fin
                 "Every run it has ever had failed, so whatever it was added to "
                 "protect has never once been protected. This is RUE-1507's shape: "
                 "the workflow is believed while doing nothing.",
+                escalate=policy.stale_periods is not None,
             )
     elif policy.stale_periods is None or history.last_success is None:
         finding = Finding(
@@ -563,6 +570,7 @@ def classify(workflow: Scheduled, history: History | None, now: datetime) -> Fin
                 f"{budget / 24:.1f}-day advisory window",
                 f"cron {' / '.join(workflow.crons)} has fired repeatedly since "
                 "without a green run. Worth a look; not proof of breakage.",
+                escalate=True,
             )
         else:
             finding = Finding(
@@ -573,6 +581,7 @@ def classify(workflow: Scheduled, history: History | None, now: datetime) -> Fin
             )
 
     if policy.known_broken:
+        finding.escalate = False
         if finding.severity == BLOCK:
             return Finding(
                 name,
@@ -671,6 +680,83 @@ def policy_problems(scheduled: list[Scheduled]) -> list[str]:
     return problems
 
 
+class LinearReporter(LinearClient):
+    """One open Todo per repository/workflow, assigned to the credential owner.
+
+    Completed issues are not reopened automatically: a later recurrence gets
+    a fresh issue. A continuing outage emits no daily comments or duplicate
+    notifications. The workflow serializes calls across dispatch and schedule.
+    """
+
+    def __init__(self, transport, api_key: str, repo: str) -> None:
+        super().__init__(transport, api_key)
+        self.repo = repo
+        self.context: tuple[str, str, str] | None = None
+
+    def file(self, finding: Finding) -> str:
+        marker = f"Scheduled-Workflow: `{self.repo}/.github/workflows/{finding.workflow}`"
+        data = self._graphql("ScheduledDedup", """
+            query ScheduledDedup($marker: String!) {
+              issues(first: 1, filter: {
+                team: { key: { eq: "RUE" } }
+                state: { type: { nin: ["completed", "canceled"] } }
+                description: { contains: $marker }
+              }) { nodes { url } }
+            }
+        """, {"marker": marker})
+        nodes = data["issues"]["nodes"]
+        if not isinstance(nodes, list):
+            raise ReportingError("Linear dedup did not return an issue list")
+        if nodes:
+            return self.issue_url(nodes[0])
+        if self.context is None:
+            data = self._graphql("ScheduledOwner", """
+                query ScheduledOwner {
+                  viewer { id }
+                  teams(first: 1, filter: { key: { eq: "RUE" } }) {
+                    nodes { id states { nodes { id name type } } }
+                  }
+                }
+            """, {})
+            teams = data["teams"]["nodes"]
+            if len(teams) != 1:
+                raise ReportingError("Rue team could not be resolved")
+            states = [state for state in teams[0]["states"]["nodes"]
+                      if state["name"] == "Todo" and state["type"] == "unstarted"]
+            owner = data["viewer"]["id"]
+            if len(states) != 1 or not owner:
+                raise ReportingError("Todo state or issue owner could not be resolved")
+            self.context = teams[0]["id"], states[0]["id"], owner
+        team, state, owner = self.context
+        workflow_url = f"https://github.com/{self.repo}/actions/workflows/{finding.workflow}"
+        description = (
+            f"{marker}\n\n{finding.summary}.\n\n{finding.detail}\n\n"
+            f"[Scheduled run history]({workflow_url}?query=event%3Aschedule)\n\n"
+            "Investigate the run logs and restore the scheduled safeguard. "
+            "This escalation does not change the required merge checks."
+        )
+        data = self._graphql("ScheduledCreate", """
+            mutation ScheduledCreate($input: IssueCreateInput!) {
+              issueCreate(input: $input) { success issue { url } }
+            }
+        """, {"input": {
+            "teamId": team, "stateId": state, "assigneeId": owner,
+            "title": f"[CI] Restore scheduled workflow {finding.workflow}",
+            "description": description, "priority": 2,
+        }})
+        result = data["issueCreate"]
+        if result.get("success") is not True or not result.get("issue"):
+            raise ReportingError("Linear did not confirm scheduled issue creation")
+        return self.issue_url(result["issue"])
+
+    @staticmethod
+    def issue_url(issue: dict) -> str:
+        url = issue.get("url")
+        if not isinstance(url, str) or not url.strip():
+            raise ReportingError("Linear did not return an issue URL")
+        return url
+
+
 # --------------------------------------------------------------------------
 # Driver
 # --------------------------------------------------------------------------
@@ -709,6 +795,13 @@ def check(
             report.warnings.append(f"{workflow.name}: run history unavailable: {error}")
             continue
         try:
+            if history is not None and (
+                history.state not in DISABLED_STATES | {"active"}
+                or (history.successful_runs > 0 and history.last_success is None
+                    and workflow.policy.stale_periods is not None)
+            ):
+                report.warnings.append(f"{workflow.name}: incomplete run history")
+                continue
             report.findings.append(classify(workflow, history, now))
         except Exception as error:  # noqa: BLE001 - deliberately total
             # A shape the classifier does not expect is a bug in this file, and
@@ -734,6 +827,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="directory of workflow files to audit",
     )
     parser.add_argument(
+        "--report-linear", action="store_true",
+        help="file persistent findings into Linear (trusted scheduled reporter only)",
+    )
+    parser.add_argument(
         "--offline",
         action="store_true",
         help="run only the structural checks, which need no network",
@@ -743,6 +840,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.report_linear and (args.offline or not args.repo):
+        print("error: --report-linear requires --repo and live history", file=sys.stderr)
+        return 1
 
     discovered = discover(args.workflows)
     scheduled = discovered.scheduled
@@ -791,6 +891,24 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FAIL {problem}")
     for warning in report.warnings:
         print(f"warn {warning}")
+
+    if args.report_linear:
+        api_key = os.environ.get("LINEAR_API_KEY", "").strip()
+        if not api_key or report.warnings or report.problems:
+            print("error: escalation requires credentials and a complete audit", file=sys.stderr)
+            return 1
+        try:
+            reporter = LinearReporter(ReportingTransport(), api_key, args.repo)
+            for finding in report.findings:
+                if finding.escalate:
+                    print(f"tracked {finding.workflow}: {reporter.file(finding)}")
+        except (ReportingError, KeyError, TypeError, ValueError) as error:
+            print(f"error: scheduled escalation failed: {error}", file=sys.stderr)
+            return 1
+        # A reporter that delivered its findings is healthy even when a
+        # safeguard has never succeeded. Do not recursively report the
+        # reporter as broken for doing its job. Required CI keeps its verdict.
+        return 0
 
     if report.blocked:
         print(

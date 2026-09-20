@@ -20,6 +20,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -144,11 +145,19 @@ class RegressionTests(unittest.TestCase):
 
     def test_waiver_expiry_does_not_block(self):
         """When RUE-1222 lands, the green run must not stop every merge."""
-        finding = csw.classify(
-            workflow("correctness-repetitions.yml"), history(success_days_ago=1.0), NOW
-        )
+        with patch.dict(csw.POLICIES, {
+            "stub.yml": csw.Policy(known_broken="RUE-1222", note="fixed")
+        }):
+            finding = csw.classify(workflow("stub.yml"), history(), NOW)
         self.assertEqual(finding.severity, csw.WARN)
         self.assertIn("no longer needed", finding.summary)
+        self.assertFalse(finding.escalate)
+
+    def test_correctness_repetitions_has_no_obsolete_waiver(self):
+        finding = csw.classify(
+            workflow("correctness-repetitions.yml"), history(), NOW
+        )
+        self.assertEqual(finding.severity, csw.OK)
 
 
 class CronPeriodTests(unittest.TestCase):
@@ -572,6 +581,198 @@ class UrllibTransportTests(unittest.TestCase):
         transport = self._transport(lambda *a, **k: Response(b"<html>"))
         with self.assertRaises(csw.TransportError):
             transport.get("https://x/y")
+
+
+class EscalationTests(unittest.TestCase):
+    def test_persistent_findings_are_explicit_without_changing_merge_verdict(self):
+        stale = csw.classify(workflow("release.yml", DAILY), history(success_days_ago=22), NOW)
+        self.assertTrue(stale.escalate)
+        self.assertFalse(stale.blocks)
+        never = csw.classify(workflow("new.yml"), history(
+            scheduled_runs=2, successful_runs=0, success_days_ago=None), NOW)
+        self.assertTrue(never.escalate)
+        self.assertTrue(never.blocks)
+        disabled = csw.classify(workflow("old.yml"), history(state="disabled_inactivity"), NOW)
+        self.assertTrue(disabled.escalate)
+        self.assertFalse(disabled.blocks)
+
+    def test_transient_and_intentional_warnings_do_not_file(self):
+        for name, past in [
+            ("new.yml", history(scheduled_runs=0, successful_runs=0, success_days_ago=None)),
+            ("new.yml", history(scheduled_runs=1, successful_runs=0, success_days_ago=None)),
+            ("fuzz.yml", history(success_days_ago=75)),
+            ("fuzz.yml", history(scheduled_runs=200, successful_runs=0, success_days_ago=None)),
+            ("release.yml", history(success_days_ago=2)),
+        ]:
+            with self.subTest(name=name, past=past):
+                self.assertFalse(csw.classify(workflow(name, DAILY), past, NOW).escalate)
+        self.assertFalse(csw.classify(workflow("new.yml"), None, NOW).escalate)
+
+    def test_unknown_state_and_missing_timestamp_cannot_file(self):
+        unknown = csw.classify(workflow("release.yml"), history(state="unknown"), NOW)
+        self.assertFalse(unknown.escalate)
+        for past in [history(state="unknown"), history(success_days_ago=None)]:
+            class Partial(csw.Client):
+                def history(self, name):
+                    return past
+            report = csw.check([workflow("release.yml")], Partial(MockTransport({}), "r/r"), NOW)
+            self.assertTrue(any("incomplete" in warning for warning in report.warnings))
+            self.assertFalse(any(finding.escalate for finding in report.findings))
+            self.assertFalse(any(finding.blocks for finding in report.findings))
+
+    def test_a_waiver_keeps_the_existing_issue_as_owner(self):
+        with patch.dict(csw.POLICIES, {
+            "release.yml": csw.Policy(known_broken="RUE-2297", note="repair tracked")
+        }):
+            result = csw.classify(workflow("release.yml", DAILY), history(success_days_ago=22), NOW)
+        self.assertFalse(result.escalate)
+
+    def test_reporter_requires_live_history(self):
+        self.assertEqual(csw.main(["--report-linear", "--offline", "--repo", "r/r"]), 1)
+
+    def test_history_uncertainty_fails_only_the_reporting_mode(self):
+        report = csw.Report(warnings=["history unavailable"])
+        with patch.object(csw, "check", return_value=report), patch.dict(os.environ, {
+            "LINEAR_API_KEY": "key", "GITHUB_TOKEN": "token"
+        }):
+            self.assertEqual(csw.main(["--repo", "r/r", "--workflows", str(workflows_dir())]), 0)
+            self.assertEqual(csw.main(["--repo", "r/r", "--workflows", str(workflows_dir()),
+                                      "--report-linear"]), 1)
+
+    def test_successful_escalation_is_healthy_even_for_a_blocking_finding(self):
+        finding = csw.Finding("broken.yml", csw.BLOCK, "never succeeded", escalate=True)
+        with patch.object(csw, "check", return_value=csw.Report(findings=[finding])), \
+             patch.object(csw, "ReportingTransport", return_value=IssueTransport()), \
+             patch.dict(os.environ, {"LINEAR_API_KEY": "key"}):
+            argv = ["--repo", "r/r", "--workflows", str(workflows_dir())]
+            self.assertEqual(csw.main(argv), 1)
+            self.assertEqual(csw.main(argv + ["--report-linear"]), 0)
+
+    def test_missing_credentials_fail_reporting_even_without_findings(self):
+        with patch.object(csw, "check", return_value=csw.Report()), patch.dict(os.environ, {
+            "LINEAR_API_KEY": ""
+        }):
+            self.assertEqual(csw.main(["--repo", "r/r", "--workflows", str(workflows_dir()),
+                                      "--report-linear"]), 1)
+
+    def test_trusted_workflow_owns_the_secret_and_serializes_reporting(self):
+        source = (workflows_dir() / "scheduled-health.yml").read_text()
+        self.assertEqual(csw.schedule_expressions(source), ("23 10 * * *",))
+        self.assertNotIn("pull_request", source)
+        self.assertNotIn("workflow_run:", source)
+        self.assertIn("github.ref == format('refs/heads/{0}', github.event.repository.default_branch)", source)
+        self.assertIn("ref: ${{ github.event.repository.default_branch }}", source)
+        self.assertIn("persist-credentials: false", source)
+        self.assertIn("cancel-in-progress: false", source)
+        self.assertIn("LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}", source)
+        self.assertIn('--repo "$GITHUB_REPOSITORY" --report-linear', source)
+
+
+class IssueTransport:
+    def __init__(self, existing=False):
+        self.calls = []
+        self.existing = existing
+        self.owner = {"viewer": {"id": "owner"}, "teams": {"nodes": [{
+            "id": "team", "states": {"nodes": [{
+                "id": "todo", "name": "Todo", "type": "unstarted"
+            }]}
+        }]}}
+        self.created = {"success": True, "issue": {"url": "https://linear.app/issue/new"}}
+
+    def request(self, method, url, headers, payload):
+        self.calls.append(payload)
+        operation = payload["operationName"]
+        if operation == "ScheduledDedup":
+            return {"data": {"issues": {"nodes": [{"url": "existing"}] if self.existing else []}}}
+        if operation == "ScheduledOwner":
+            return {"data": self.owner}
+        if operation == "ScheduledCreate":
+            return {"data": {"issueCreate": self.created}}
+        raise AssertionError(operation)
+
+
+class LinearReporterTests(unittest.TestCase):
+    def finding(self):
+        return csw.classify(workflow("release.yml", DAILY), history(success_days_ago=22), NOW)
+
+    def test_new_issue_is_todo_owned_and_carries_evidence(self):
+        transport = IssueTransport()
+        reporter = csw.LinearReporter(transport, "key", "rue-language/rue")
+        self.assertEqual(reporter.file(self.finding()), "https://linear.app/issue/new")
+        payload = transport.calls[-1]["variables"]["input"]
+        self.assertEqual(payload["stateId"], "todo")
+        self.assertEqual(payload["assigneeId"], "owner")
+        self.assertEqual(payload["teamId"], "team")
+        self.assertEqual(payload["priority"], 2)
+        self.assertIn("22.0 days ago", payload["description"])
+        self.assertIn("event%3Aschedule", payload["description"])
+        self.assertIn("Scheduled-Workflow: `rue-language/rue/.github/workflows/release.yml`", payload["description"])
+
+    def test_existing_open_issue_does_not_create_or_comment(self):
+        transport = IssueTransport(existing=True)
+        reporter = csw.LinearReporter(transport, "key", "rue-language/rue")
+        for _ in range(2):
+            self.assertEqual(reporter.file(self.finding()), "existing")
+        self.assertEqual([call["operationName"] for call in transport.calls], ["ScheduledDedup"] * 2)
+        self.assertIn('nin: ["completed", "canceled"]', transport.calls[0]["query"])
+        self.assertIn('key: { eq: "RUE" }', transport.calls[0]["query"])
+
+    def test_repositories_have_distinct_dedup_keys(self):
+        markers = []
+        for repo in ["rue-language/rue", "fork/rue"]:
+            transport = IssueTransport(existing=True)
+            csw.LinearReporter(transport, "key", repo).file(self.finding())
+            markers.append(transport.calls[0]["variables"]["marker"])
+        self.assertNotEqual(*markers)
+
+    def test_owner_and_state_resolution_is_cached_for_multiple_findings(self):
+        transport = IssueTransport()
+        reporter = csw.LinearReporter(transport, "key", "rue-language/rue")
+        reporter.file(self.finding())
+        reporter.file(csw.Finding("other.yml", csw.WARN, "disabled", escalate=True))
+        self.assertEqual(sum(call["operationName"] == "ScheduledOwner" for call in transport.calls), 1)
+
+    def test_unknown_owner_or_todo_cannot_create_an_unowned_backlog_issue(self):
+        for field in ["owner", "state", "team"]:
+            transport = IssueTransport()
+            if field == "owner":
+                transport.owner["viewer"]["id"] = None
+            elif field == "state":
+                transport.owner["teams"]["nodes"][0]["states"]["nodes"] = []
+            else:
+                transport.owner["teams"]["nodes"] = []
+            with self.subTest(field=field), self.assertRaises(csw.ReportingError):
+                csw.LinearReporter(transport, "key", "r/r").file(self.finding())
+            self.assertFalse(any(call["operationName"] == "ScheduledCreate" for call in transport.calls))
+
+    def test_unconfirmed_create_is_an_error(self):
+        transport = IssueTransport()
+        transport.created = {"success": False}
+        with self.assertRaises(csw.ReportingError):
+            csw.LinearReporter(transport, "key", "r/r").file(self.finding())
+
+    def test_null_dedup_is_not_an_empty_search(self):
+        class Incomplete(IssueTransport):
+            def request(self, method, url, headers, payload):
+                if payload["operationName"] == "ScheduledDedup":
+                    return {"data": {"issues": {"nodes": None}}}
+                raise AssertionError("must not create after an incomplete search")
+        with self.assertRaises(csw.ReportingError):
+            csw.LinearReporter(Incomplete(), "key", "r/r").file(self.finding())
+
+    def test_unconfirmed_issue_url_is_an_error(self):
+        for url in [None, "", 42]:
+            transport = IssueTransport()
+            transport.created["issue"]["url"] = url
+            with self.subTest(url=url), self.assertRaises(csw.ReportingError):
+                csw.LinearReporter(transport, "key", "r/r").file(self.finding())
+
+    def test_dedup_error_is_not_an_empty_search(self):
+        class Broken(IssueTransport):
+            def request(self, *args):
+                return {"errors": [{"message": "unavailable"}]}
+        with self.assertRaises(csw.ReportingError):
+            csw.LinearReporter(Broken(), "key", "r/r").file(self.finding())
 
 
 if __name__ == "__main__":

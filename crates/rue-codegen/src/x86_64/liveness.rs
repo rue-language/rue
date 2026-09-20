@@ -607,19 +607,13 @@ mod tests {
         mir.push(div);
         mir.push(syscall);
         let info = analyze(&mir);
+        // Separately promoted literals need not share an address in optimized
+        // builds. The shared liveness test checks borrowing against a named
+        // static; this backend test checks the adapter's register contents.
         assert!(info.clobbers_at(0).is_empty());
-        assert!(std::ptr::eq(
-            info.clobbers_at(1),
-            mir.instructions()[1].clobbers()
-        ));
-        assert!(std::ptr::eq(
-            info.clobbers_at(2),
-            mir.instructions()[2].clobbers()
-        ));
-        assert!(std::ptr::eq(
-            info.clobbers_at(3),
-            mir.instructions()[3].clobbers()
-        ));
+        assert_eq!(info.clobbers_at(1), mir.instructions()[1].clobbers());
+        assert_eq!(info.clobbers_at(2), mir.instructions()[2].clobbers());
+        assert_eq!(info.clobbers_at(3), mir.instructions()[3].clobbers());
     }
 
     #[test]
