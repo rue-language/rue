@@ -1,0 +1,15 @@
+load(":defs.bzl", "lean_host_archive")
+
+# One official Lean release per supported host, SHA-pinned and kept out of
+# the remote CAS. `toolchains//:lean-distribution` selects among them by the
+# execution platform. See defs.bzl and ADR-0097.
+lean_host_archive("linux-x86_64", "linux")
+lean_host_archive("linux-aarch64", "linux_aarch64")
+lean_host_archive("macos-x86_64", "darwin")
+lean_host_archive("macos-aarch64", "darwin_aarch64")
+
+export_file(
+    name = "defs",
+    src = "defs.bzl",
+    visibility = ["root//:"],
+)

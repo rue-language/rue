@@ -483,8 +483,8 @@ theorem no_use_after_move {e T Γ'} (ht : Typed [] e T Γ') :
     eval [] [] e ≠ .stuck .useAfterMove := no_violation ht _
 
 /-- §7 "No use-after-drop": the machine never touches a retired (`†`) cell. -/
-theorem no_use_after_free {e T Γ'} (ht : Typed [] e T Γ') :
-    eval [] [] e ≠ .stuck .useAfterFree := no_violation ht _
+theorem no_use_after_drop {e T Γ'} (ht : Typed [] e T Γ') :
+    eval [] [] e ≠ .stuck .useAfterDrop := no_violation ht _
 
 /-- §7 "Linear values are consumed exactly once", leak half: scope exit never
 sees a live linear value. -/

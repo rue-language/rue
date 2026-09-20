@@ -14,7 +14,7 @@ A machine-checked mechanization of a fragment of the core calculus
 (`docs/formal/01-core-calculus.md`) with its slice of the §7 memory-safety
 theorems actually proved:
 
-- **Statics** (§4.2, §5.1–§5.6): the ownership-threading judgment
+- **Statics** (§4.2, §5.1–§5.3, §5.5–§5.6): the ownership-threading judgment
   `Γ;Σ ⊢ e ⇒ T ⊣ Σ'` as an inductive relation over a fused flow-sensitive
   context; (Use-Copy)/(Use-Move), (@Drop), (Assign) with the `3.8:77`
   linear-overwrite premise — the exact premise the RUE-387 hole demanded —
@@ -24,14 +24,14 @@ theorems actually proved:
   configuration shape (store of binding allocations with `⊘`/`†` markers,
   environment, drop trace), with §6.4's overflow/div-zero traps and §6.7's
   scope-exit drop-retire. Memory violations are *named refusals*
-  (`useAfterMove`, `useAfterFree`, `linearLeak`, `linearOverwrite`,
+  (`useAfterMove`, `useAfterDrop`, `linearLeak`, `linearOverwrite`,
   `linearDiscard`) rather than silent behavior — §7's falsifiability
   discipline, mechanized.
 - **The theorem** (§7): well-typed programs never reach a violation — they
   yield a well-typed value or a *defined* panic. Stated over the invariant
   `Matches` ("Σ faithfully tracks the store's initialization" — §7's own
   phrase), whose preservation is the substance of the proof. Corollaries are
-  named per §7 bullet: `no_use_after_move`, `no_use_after_free`,
+  named per §7 bullet: `no_use_after_move`, `no_use_after_drop`,
   `no_linear_leak`, `no_linear_overwrite`, `no_linear_discard`.
 - **A verified checker**: `check : Ctx → Expr → Option (Ty × Ctx)` with
   `check_sound` (every acceptance is a derivation). Example programs are

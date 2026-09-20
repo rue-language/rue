@@ -34,6 +34,7 @@
 load("//:test_defs.bzl", "rue_sh_test", "rue_test_suite", "rue_tool_test")
 
 load(":corpus.bzl", "cached_corpus_suite")
+load("@toolchains//lean:defs.bzl", "lean_package")
 
 rue_sh_test(
     name = "compiler-allocator-policy-validation",
@@ -761,6 +762,49 @@ rue_tool_test(
         "RUE_RUST_TOOLCHAIN_REGISTRATION": "$(location toolchains//:rust-toolchain-registration-source)",
         "RUE_RUST_TOOLCHAIN_RULE": "$(location toolchains//rust:rust-toolchain-rule-source)",
     },
+)
+
+# ADR-0097: the mechanized formal core builds against the SHA-pinned Lean
+# distribution (toolchains//:lean-distribution) and reports on itself: the
+# build log, the toolchain's own leanchecker re-check, and the `#print axioms`
+# listing for the theorems named in `trust`, which fails the build if any
+# theorem depends on an axiom beyond propext and Quot.sound. Deliberately not
+# a test target: no tier applies, so no CI lane requests it until the ADR's
+# gate is met (RUE-2241). `scripts/rue lean` builds it and prints the report.
+lean_package(
+    name = "lean-ruecore",
+    srcs = "//docs:formal-lean",
+    toolchain = "toolchains//:lean-distribution",
+    module = "RueCore",
+    trust = [
+        "RueCore.soundness",
+        "RueCore.no_use_after_move",
+        "RueCore.no_use_after_drop",
+        "RueCore.no_linear_leak",
+        "RueCore.no_linear_overwrite",
+        "RueCore.no_linear_discard",
+        "RueCore.check_sound",
+    ],
+)
+
+# The Buck pin (toolchains/lean/defs.bzl) and the file `lake` and the editor
+# read (docs/formal/lean/lean-toolchain) name the same Lean release.
+rue_sh_test(
+    name = "lean-toolchain-pin-validation",
+    test = "scripts/validate-lean-toolchain-pin.py",
+    args = [
+        "--lean-toolchain",
+        "$(location //docs:formal-lean)/lean-toolchain",
+        "--buck-defs",
+        "$(location toolchains//lean:defs)",
+    ],
+)
+
+rue_tool_test(
+    name = "lean-toolchain-pin-tool-tests",
+    test = "scripts/test-validate-lean-toolchain-pin.py",
+    resources = ["scripts/validate-lean-toolchain-pin.py"],
+    gatelib = False,
 )
 
 rue_sh_test(

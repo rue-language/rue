@@ -16,7 +16,7 @@ Design commitments carried over from §6:
   `Violation` — the fragment's stuck states. The §7 safety theorem
   (`Soundness.lean`) is exactly: well-typed programs never reach one.
 * Scope exit *retires* the binding's allocation (`drop-retire`, §6.1), so a
-  use after scope exit is `useAfterFree`, distinct from `useAfterMove`.
+  use after scope exit is `useAfterDrop`, distinct from `useAfterMove`.
 * `@drop` and overwrite-drop do **not** retire (§6.8/§6.11): the binding
   stays reinitializable.
 * Arithmetic overflow and division by zero are *panics* (`↯` in §6.12), a
@@ -77,7 +77,7 @@ deriving DecidableEq, Repr
 memory-safety bullets each forbid one of these. -/
 inductive Violation where
   | useAfterMove      -- reading a `⊘` cell (§7: no use-after-move)
-  | useAfterFree      -- touching a `†` cell (§7: no use-after-drop)
+  | useAfterDrop      -- touching a `†` cell (§7: no use-after-drop)
   | linearLeak        -- scope exit on a live linear value (§7: consumed exactly once)
   | linearOverwrite   -- overwrite-drop of a live linear value (`3.8:77`)
   | linearDiscard     -- sequence-discard of a linear value (`3.8:64`)
@@ -114,7 +114,7 @@ def eval (H : Store) (ρ : Env) : Expr → EvalRes
       | some ℓ =>
         match H[ℓ]? with
         | none => .stuck .unbound
-        | some .dead => .stuck .useAfterFree
+        | some .dead => .stuck .useAfterDrop
         | some .moved => .stuck .useAfterMove
         | some (.full v) =>
             if v.mult = .copy then .ok H v []
@@ -167,7 +167,7 @@ def eval (H : Store) (ρ : Env) : Expr → EvalRes
       | some ℓ =>
         match H[ℓ]? with
         | none => .stuck .unbound
-        | some .dead => .stuck .useAfterFree
+        | some .dead => .stuck .useAfterDrop
         | some .moved => .stuck .useAfterMove
         | some (.full v) =>
             if v.mult = .copy then .ok H .unit []
@@ -187,7 +187,7 @@ def eval (H : Store) (ρ : Env) : Expr → EvalRes
                       (tr₁ ++ tr₂ ++ [.drop H₁.length v'])
                   | .copy => .ok (H₂.set H₁.length .dead) v₂ (tr₁ ++ tr₂)
               | some .moved => .ok (H₂.set H₁.length .dead) v₂ (tr₁ ++ tr₂)
-              | some .dead => .stuck .useAfterFree
+              | some .dead => .stuck .useAfterDrop
               | none => .stuck .unbound)
           | r => r.withTrace tr₁)
       | r => r
@@ -199,7 +199,7 @@ def eval (H : Store) (ρ : Env) : Expr → EvalRes
           | some ℓ =>
             match H₁[ℓ]? with
             | none => .stuck .unbound
-            | some .dead => .stuck .useAfterFree
+            | some .dead => .stuck .useAfterDrop
             | some .moved => .ok (H₁.set ℓ (.full v)) .unit tr    -- reinit (3.8:55)
             | some (.full vOld) =>
                 match vOld.mult with

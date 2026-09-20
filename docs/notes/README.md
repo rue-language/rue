@@ -11,6 +11,7 @@ real.
 | File | Records | Status | Superseded by |
 | --- | --- | --- | --- |
 | [2026-09-20-buildbuddy-audit.md](2026-09-20-buildbuddy-audit.md) | Cache-health measurements, duplicate runtime toolchain extraction, and per-command cache controls from the September 20 BuildBuddy audit. | historical | [build-cache.md](../process/build-cache.md) describes the operating setup |
+| [lean-mechanization-spike.md](lean-mechanization-spike.md) | Findings of the 2026-08-28 Lean 4 mechanization spike of the core calculus (RueCore): what it proved, what it taught, and the milestone ladder ADR-0097 and the "Formal core mechanization" project grew from. | current | — |
 | [abstraction-design-survey.md](abstraction-design-survey.md) | Survey of abstraction mechanisms (traits, interfaces, comptime, dictionaries) across Carbon, Swift, Hylo, Zig, Go, Rust, Mojo, and Austral, with a corpus repetition census and a recommendation as input to the RUE-246 ruling. | current | — |
 | [adr-0076-symbol-handle-ordered-use-audit.md](adr-0076-symbol-handle-ordered-use-audit.md) | ADR-0076 Phase 1: the complete inventory of ordered and value-bearing symbol-handle uses, their conversions, and what a revision-shared interner still owes. | current | — |
 | [adr-0071-phase-1-reference-baseline.md](adr-0071-phase-1-reference-baseline.md) | The first complete `fresh_source_to_native_v1` reference measurements closing ADR-0071's measurement phase. | current | — |

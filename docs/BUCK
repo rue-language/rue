@@ -24,6 +24,17 @@ filegroup(
     visibility = ["//:", "//crates/rue-spec:"],
 )
 
+# The mechanized formal core's Lake package (ADR-0097), as one directory for
+# root//:lean-ruecore; a developer's local `.lake/` build tree is not source.
+filegroup(
+    name = "formal-lean",
+    srcs = dict([
+        (path[len("formal/lean/"):], path)
+        for path in glob(["formal/lean/**"], exclude = ["formal/lean/.lake/**"])
+    ]),
+    visibility = ["//:"],
+)
+
 # ADR-0071 phase 3: the note //:compiler-allocator-policy-validation reads.
 export_file(
     name = "adr-0071-phase-3-note",
