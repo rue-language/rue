@@ -18,7 +18,7 @@ use core::fmt;
 #[macro_export]
 macro_rules! runtime_abi_version {
     ($callback:ident) => {
-        $callback!(6, __rue_runtime_abi_v6);
+        $callback!(7, __rue_runtime_abi_v7);
     };
 }
 
@@ -51,6 +51,12 @@ pub enum AbiType {
     FailureReport,
     /// The target C ABI's `usize`, used only by compiler-built memory routines.
     Usize,
+    /// An opaque function pointer passed to a private hosted callback bridge.
+    ///
+    /// This remains distinct from an ordinary data pointer in the manifest so
+    /// the compiler's typed runtime-call layer cannot accidentally pass a
+    /// context pointer in a callback position.
+    CodePointer,
 }
 
 /// Width discriminants accepted by the float-consuming helpers,
@@ -186,6 +192,13 @@ impl AbiParameter {
         }
     }
 
+    pub const fn code_pointer() -> Self {
+        Self {
+            ty: AbiType::CodePointer,
+            mode: ParameterMode::Value,
+        }
+    }
+
     pub const fn out_pointer(shape: AggregateShapeId) -> Self {
         Self {
             ty: AbiType::Byte,
@@ -295,6 +308,9 @@ impl SafetyContract {
     pub const CONCRETE_DISCRIMINANTS: Self = Self(1 << 4);
     /// The operation unconditionally traps or terminates the process.
     pub const TERMINATES: Self = Self(1 << 5);
+    /// The caller supplies paired context and executable code pointers whose
+    /// lifetime and native callback ABI must be proven by the compiler.
+    pub const CALLBACK_CODE: Self = Self(1 << 6);
 
     pub const fn contains(self, requirement: Self) -> bool {
         self.0 & requirement.0 == requirement.0
@@ -309,6 +325,7 @@ impl SafetyContract {
         self.contains(Self::READABLE_BYTES)
             || self.contains(Self::WRITABLE_RESULT)
             || self.contains(Self::VALID_ALLOCATION)
+            || self.contains(Self::CALLBACK_CODE)
     }
 }
 
@@ -475,6 +492,7 @@ const U64_VALUE: AbiParameter = AbiParameter::value(AbiType::U64);
 const BOOL_WORD_VALUE: AbiParameter = AbiParameter::value(AbiType::BoolWordI64);
 const BYTE_VIEW: AbiParameter = AbiParameter::const_pointer(AbiType::Byte);
 const MUT_BYTE_POINTER: AbiParameter = AbiParameter::mut_pointer(AbiType::Byte);
+const CODE_POINTER: AbiParameter = AbiParameter::code_pointer();
 const STR_BUF_OUT: AbiParameter = AbiParameter::out_pointer(AggregateShapeId::StrBufResult);
 const OPTION_STR_BUF_OUT: AbiParameter =
     AbiParameter::out_pointer(AggregateShapeId::OptionStrBufResult);
@@ -501,6 +519,7 @@ const WRITABLE_DISCRIMINANTS: SafetyContract =
     SafetyContract::WRITABLE_RESULT.union(SafetyContract::CONCRETE_DISCRIMINANTS);
 const READABLE_WRITABLE_DISCRIMINANTS: SafetyContract =
     SafetyContract::READABLE_BYTES.union(WRITABLE_DISCRIMINANTS);
+const CALLBACK: SafetyContract = SafetyContract::CALLBACK_CODE;
 
 macro_rules! runtime_helpers {
     (
@@ -1156,6 +1175,19 @@ macro_rules! for_each_runtime_helper {
             // dispatcher can choose its own exit status.
             safety: SafetyContract::NONE,
             returns: RETURNS
+        },
+        JoinInout => unsafe __rue_join_inout(
+            left_context: *mut u8,
+            left_code: *mut u8,
+            right_context: *mut u8,
+            right_code: *mut u8,
+        ) -> u32 {
+            symbol: "__rue_join_inout",
+            parameters: params![MUT_BYTE_POINTER, CODE_POINTER, MUT_BYTE_POINTER, CODE_POINTER],
+            result: U32_RESULT,
+            safety: CALLBACK,
+            returns: RETURNS,
+            requirement: HostedThreads
         }
             }
     };
@@ -1512,10 +1544,12 @@ const fn starts_with(value: &str, prefix: &str) -> bool {
 const fn ends_with_decimal_version(symbol: &str, version: u32) -> bool {
     // Version 3 added the ADR-0083 §5.1 comparison failure channel; version 4
     // added width-explicit float formatting; version 5 added the channel's
-    // `@assert` form, `__rue_test_fail_assert`. This explicit check makes an
-    // ABI bump update both metadata values rather than silently retaining a
-    // stale symbol.
-    version == 6 && string_eq(symbol, "__rue_runtime_abi_v6")
+    // `@assert` form, `__rue_test_fail_assert`; version 6 added the atomic
+    // reporting contract. Version 7 adds the typed callback code-pointer
+    // contract. This
+    // explicit check makes an ABI bump update both metadata values rather than
+    // silently retaining a stale symbol.
+    version == 7 && string_eq(symbol, "__rue_runtime_abi_v7")
 }
 
 /// Validate all table ordering, uniqueness, classification, and layout invariants.
@@ -1601,7 +1635,7 @@ mod tests {
     #[test]
     fn manifest_is_const_valid_and_exhaustive() {
         assert_eq!(validate_manifest(), Ok(()));
-        assert_eq!(RuntimeHelperId::ALL.len(), 56);
+        assert_eq!(RuntimeHelperId::ALL.len(), 57);
         assert_eq!(RuntimeHelperId::ALL.len(), RUNTIME_HELPERS.len());
         for (index, id) in RuntimeHelperId::ALL.iter().copied().enumerate() {
             assert_eq!(id as usize, index);
@@ -1679,6 +1713,7 @@ mod tests {
             "__rue_test_fail_comparison",
             "__rue_test_fail_assert",
             "__rue_test_usage_error",
+            "__rue_join_inout",
         ];
         assert_eq!(
             RUNTIME_HELPERS.map(|helper| helper.symbol),
@@ -1690,7 +1725,7 @@ mod tests {
     #[test]
     fn every_helper_has_the_exact_accepted_signature_and_contract() {
         fn check(
-            visited: &mut [bool; 56],
+            visited: &mut [bool; 57],
             ids: &[RuntimeHelperId],
             parameters: &[AbiParameter],
             result: AbiResult,
@@ -1711,7 +1746,7 @@ mod tests {
             }
         }
 
-        let mut visited = [false; 56];
+        let mut visited = [false; 57];
         check(
             &mut visited,
             &[RuntimeHelperId::Exit],
@@ -2004,6 +2039,19 @@ mod tests {
             READABLE.union(TERMINATES),
             NEVER,
         );
+        check(
+            &mut visited,
+            &[RuntimeHelperId::JoinInout],
+            &[
+                MUT_BYTE_POINTER,
+                CODE_POINTER,
+                MUT_BYTE_POINTER,
+                CODE_POINTER,
+            ],
+            U32_RESULT,
+            CALLBACK,
+            RETURNS,
+        );
         assert!(visited.into_iter().all(|was_visited| was_visited));
     }
 
@@ -2204,7 +2252,7 @@ mod tests {
 
     #[test]
     fn abi_version_metadata_is_a_one_byte_data_export() {
-        assert_eq!(RUNTIME_ABI_VERSION, 6);
+        assert_eq!(RUNTIME_ABI_VERSION, 7);
         assert_eq!(
             RUNTIME_ABI_VERSION_SYMBOL,
             format!("__rue_runtime_abi_v{RUNTIME_ABI_VERSION}")

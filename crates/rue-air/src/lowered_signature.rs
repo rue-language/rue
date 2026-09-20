@@ -1639,6 +1639,47 @@ mod tests {
     }
 
     #[test]
+    fn an_inout_callback_has_one_gp_pointer_and_void_on_every_target() {
+        // The private callback bridge is exactly `fn(inout T) -> unit`: one
+        // target-width GP pointer and no result, regardless of whether its
+        // pointee is ZST, scalar, or aggregate.
+        for target in Target::all() {
+            for facts in [
+                CAbiTypeFacts::ZeroSized,
+                CAbiTypeFacts::Scalar {
+                    kind: CAbiScalarKind::RegisterWidth,
+                    class: CRegisterClass::Gp,
+                },
+                CAbiTypeFacts::integer_aggregate(4096, 8),
+            ] {
+                let parameters = [(facts, ArgConvention::ByReference)];
+                let c = lower_c_signature(
+                    target.c_calling_convention(),
+                    &parameters,
+                    CAbiTypeFacts::ZeroSized,
+                );
+                assert_eq!(c.ret(), LoweredReturn::Void, "{target:?}");
+                assert!(!c.sret_in_argument_register(), "{target:?}");
+                assert_eq!(c.stack_bytes(), 0, "{target:?}");
+                assert_eq!(c.arguments()[0].location, registers(0, 1), "{target:?}");
+                assert_eq!(
+                    c.arguments()[0].extension,
+                    ScalarAbiExtension::None,
+                    "{target:?}"
+                );
+
+                let native = lower_native_signature(
+                    ConventionSpec::native(*target),
+                    &parameters,
+                    LoweredReturn::Void,
+                );
+                assert_eq!(native.arguments(), c.arguments(), "{target:?}");
+                assert_eq!(native.stack_bytes(), c.stack_bytes(), "{target:?}");
+            }
+        }
+    }
+
+    #[test]
     fn every_eightbyte_of_the_integer_only_surface_is_the_integer_class() {
         let classes = EightbyteClasses::all_integer(2);
         assert_eq!(classes.len(), 2);

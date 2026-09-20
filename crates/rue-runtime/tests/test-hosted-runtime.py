@@ -66,6 +66,13 @@ def run():
             raise RuntimeError(
                 f"hosted runtime exited {completed.returncode}, expected 37"
             )
+        for mode in ["join-worker-trap", "join-parent-trap"]:
+            trapped = subprocess.run(
+                [str(executable), mode], capture_output=True,
+                env=child_environment, timeout=10,
+            )
+            if trapped.returncode != 101 or trapped.stdout or trapped.stderr != b"panic\n":
+                raise RuntimeError(f"{mode} did not terminate all threads: {trapped}")
         report_path = Path(directory) / "report.jsonl"
         child_environment["RUE_HOSTED_REPORT_FILE"] = str(report_path)
         unarmed = subprocess.run(

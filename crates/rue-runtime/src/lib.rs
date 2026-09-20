@@ -189,6 +189,9 @@ mod fault;
 #[cfg(rue_hosted_threads)]
 mod parking;
 
+#[cfg(rue_hosted_threads)]
+mod join;
+
 // Crate-internal: Unicode's well-formed-UTF-8 table, shared by the string
 // decoders and the test channel's JSON escaper. Not part of the runtime ABI.
 mod utf8;
@@ -261,6 +264,9 @@ macro_rules! call_runtime_helper_implementation {
     };
     (__rue_test_usage_error($($argument:expr),*)) => {
         crate::test_channel::__rue_test_usage_error($($argument),*)
+    };
+    (__rue_join_inout($($argument:expr),*)) => {
+        crate::join::__rue_join_inout($($argument),*)
     };
 }
 

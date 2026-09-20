@@ -12,6 +12,10 @@ pub enum RuntimeOperandOrigin {
         index: u8,
         ty: AbiType,
     },
+    /// A typed executable callback pointer. It is kept distinct from data
+    /// pointers so the hosted join bridge cannot receive a context in its
+    /// code-pointer slot.
+    CodePointerArgument(u8),
     SignExtendedArgument(u8),
     ZeroExtendedArgument(u8),
     BoolWordArgument(u8),
@@ -61,6 +65,7 @@ pub enum RuntimeAirType {
     ConstBytePointer,
     MutPointer,
     MutBytePointer,
+    CodePointer,
     StrBuf,
     OptionStrBuf,
     OptionI32,
@@ -92,6 +97,9 @@ impl RuntimeOperandOrigin {
             }
             Self::ValueArgument { ty, .. } => {
                 parameter.ty == ty && parameter.mode == ParameterMode::Value
+            }
+            Self::CodePointerArgument(_) => {
+                parameter.ty == AbiType::CodePointer && parameter.mode == ParameterMode::Value
             }
             Self::SignExtendedArgument(_) => {
                 parameter.ty == AbiType::I64 && parameter.mode == ParameterMode::Value
@@ -682,6 +690,9 @@ impl RuntimeCallKind {
                 RuntimeOperandOrigin::ValueArgument { index, ty } => {
                     require(index, Self::air_type_for_abi_value(ty))
                 }
+                RuntimeOperandOrigin::CodePointerArgument(index) => {
+                    require(index, RuntimeAirType::CodePointer)
+                }
                 RuntimeOperandOrigin::SignExtendedArgument(index) => {
                     require(index, RuntimeAirType::SignedInteger)
                 }
@@ -751,6 +762,7 @@ impl RuntimeCallKind {
             AbiType::Byte => RuntimeAirType::UnsignedInteger,
             AbiType::MutBytePointer => RuntimeAirType::MutBytePointer,
             AbiType::FailureReport => RuntimeAirType::FailureReport,
+            AbiType::CodePointer => RuntimeAirType::CodePointer,
         }
     }
 
