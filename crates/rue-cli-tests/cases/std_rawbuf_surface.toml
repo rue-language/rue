@@ -1,0 +1,71 @@
+# The RawBuf core is an implementation detail of the source-defined standard
+# containers. Raw cell reads and allocator release stay directory-private so a
+# public `value.core` projection cannot bypass wrapper bounds, move, or drop
+# discipline (RUE-2302).
+
+[section]
+id = "cli.std_rawbuf_surface"
+name = "RawBuf private borrowed operations"
+description = "RawBuf cell reads and allocation release are private implementation helpers; standard containers retain their checked ownership and read behavior."
+
+[[case]]
+name = "rawbuf_release_not_exposed_through_core"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "A borrowed public StrBuf core cannot release its allocation behind the owner."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn release_borrowed(borrow value: std.strbuf.StrBuf) {
+    value.core.release();
+}
+
+fn main() -> i32 {
+    let value = std.strbuf.StrBuf.from_str(borrow "hello");
+    release_borrowed(borrow value);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0411", "no method named 'release'"]
+
+[[case]]
+name = "rawbuf_read_not_exposed_through_core"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "A public ArrayBuf core cannot copy a cell out without its wrapper's read gate and bounds."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let V = std.arraybuf.ArrayBuf(i32);
+    let mut value = V.new();
+    value.push(7);
+    value.core.read_at(0)
+}
+""" }]
+compile_fail = true
+error_contains = ["E0411", "no method named 'read_at'"]
+
+[[case]]
+name = "rawbuf_std_owner_read_and_drop_still_work"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "ArrayBuf and StrBuf continue to read, explicitly free, and drop through their trusted wrapper paths."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let V = std.arraybuf.ArrayBuf(i32);
+    let mut values = V.new();
+    values.push(40);
+    values.push(2);
+    let answer = values.get_or(1, 0);
+    values.free();
+
+    let mut text = std.strbuf.StrBuf.from_str(borrow "ok");
+    text.push(b'!');
+    let length = text.len();
+    text.free();
+
+    if answer == 2 && length == 3 { 42 } else { 0 }
+}
+""" }]
+exit_code = 42

@@ -169,7 +169,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
             @require_trivially_droppable(T);
             let O = option.Option(T);
             if i < self.len {
-                O.Some(self.core.read_at(i))
+                O.Some(rawbuf.read_at(T, borrow self.core, i))
             } else {
                 O.None
             }
@@ -187,7 +187,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
             // out with `pop_or` instead.
             @require_trivially_droppable(T);
             if i < self.len {
-                self.core.read_at(i)
+                rawbuf.read_at(T, borrow self.core, i)
             } else {
                 default
             }
@@ -258,7 +258,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
             self.reserve(other.len);
             let mut i: u64 = 0;
             while i < other.len {
-                let value = other.core.read_at(i);
+                let value = rawbuf.read_at(T, borrow other.core, i);
                 self.core.write_at(self.len, value);
                 self.len += 1;
                 i += 1;
@@ -285,7 +285,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
                 O.None
             } else {
                 self.len -= 1;
-                O.Some(self.core.read_at(self.len))
+                O.Some(rawbuf.read_at(T, borrow self.core, self.len))
             }
         }
 
@@ -297,7 +297,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
                 default
             } else {
                 self.len -= 1;
-                self.core.read_at(self.len)
+                rawbuf.read_at(T, borrow self.core, self.len)
             }
         }
 
@@ -312,7 +312,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
             if i >= self.len {
                 @panic("index out of bounds");
             }
-            @drop(self.core.read_at(i));
+            @drop(rawbuf.read_at(T, borrow self.core, i));
             self.core.write_at(i, x);
         }
 
@@ -331,8 +331,8 @@ pub fn ArrayBuf(comptime T: type) -> type {
                 @panic("index out of bounds");
             }
             if i != j {
-                let a = self.core.read_at(i);
-                let b = self.core.read_at(j);
+                let a = rawbuf.read_at(T, borrow self.core, i);
+                let b = rawbuf.read_at(T, borrow self.core, j);
                 self.core.write_at(i, b);
                 self.core.write_at(j, a);
             }
@@ -377,7 +377,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
             let O = option.Option(u64);
             let mut i: u64 = 0;
             while i < self.len {
-                let e = self.core.read_at(i);
+                let e = rawbuf.read_at(T, borrow self.core, i);
                 if e == x {
                     return O.Some(i);
                 }
@@ -404,7 +404,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
         fn clear(inout self) {
             let mut i: u64 = 0;
             while i < self.len {
-                @drop(self.core.read_at(i));
+                @drop(rawbuf.read_at(T, borrow self.core, i));
                 i += 1;
             }
             self.len = 0;
@@ -419,7 +419,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
         fn free(inout self) {
             let mut i: u64 = 0;
             while i < self.len {
-                @drop(self.core.read_at(i));
+                @drop(rawbuf.read_at(T, borrow self.core, i));
                 i += 1;
             }
             self.core.free();
@@ -441,7 +441,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
         drop fn(self) {
             let mut i: u64 = 0;
             while i < self.len {
-                @drop(self.core.read_at(i));
+                @drop(rawbuf.read_at(T, borrow self.core, i));
                 i += 1;
             }
         }

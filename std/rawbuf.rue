@@ -5,7 +5,9 @@
 // Rust's `RawVec<T>`, which backs both `Vec<T>` and `String`. It owns nothing
 // but a heap allocation of `cap` elements addressed by a raw `ptr mut T`, and
 // confines every unchecked heap intrinsic (`@realloc`/`@ptr_read`/`@ptr_write`/
-// `@ptr_offset`/`@free`) behind a safe method API.
+// `@ptr_offset`/`@free`) behind the std implementation API. Borrowed cell
+// reads and allocation release use directory-private helpers; owner-mutating
+// growth, writes, and reset remain associated operations on RawBuf.
 //
 // TYPED ALLOCATION IS SOURCE-COMPUTED HERE. The allocator surface is byte- and
 // alignment-shaped (`@alloc(size, align)`, `@realloc(p, old_size, align,
@@ -131,16 +133,6 @@ pub fn RawBuf(comptime T: type) -> type {
             self.cap = new_cap;
         }
 
-        // Read cell `i` out by copy (`@ptr_read`). This is the raw byte move: it
-        // does NOT run drop glue and does not retire the cell, so the caller owns
-        // the drop discipline — a wrapper reads a cell out exactly once to move
-        // it (`pop`), or `@drop`s the copy after overwriting the cell (`set`).
-        // The bounds precondition (`i < len`) is the wrapper's; this never reads
-        // outside `0 .. cap`.
-        fn read_at(borrow self, i: u64) -> T {
-            checked { @ptr_read(@ptr_offset(self.buf, i)) }
-        }
-
         // Write `value` into cell `i` (`@ptr_write`), overwriting the raw bytes
         // without dropping whatever was there. The caller ensures the slot is
         // either uninitialized spare capacity or has already had its old value
@@ -152,31 +144,15 @@ pub fn RawBuf(comptime T: type) -> type {
         }
 
         // Release the allocation and reset to the empty state. Idempotent and
-        // safe on an empty buffer: `release` skips non-owning storage. Callers
-        // that have already moved/dropped the live cells use this for early
-        // release; the destructor calls the same path at scope exit.
+        // safe on an empty buffer: the private `release` helper skips non-owning
+        // storage. Callers that have already moved/dropped the live cells use
+        // this for early release; the destructor calls the same path at scope
+        // exit.
         fn free(inout self) {
-            self.release();
+            release(T, borrow self);
             let zero: u64 = 0;
             self.buf = checked { @int_to_ptr(zero) };
             self.cap = 0;
-        }
-
-        // Hand the block back to the allocator with exactly the `(size, align)`
-        // it was allocated with — the sizeless-allocator ABI's requirement.
-        // Zero capacity can carry a non-null static address for a literal-backed
-        // StrBuf. Neither that address nor zero-sized-element storage belongs
-        // to the allocator, so both are handled before the allocator call.
-        fn release(borrow self) {
-            let element_size: u64 = @intCast(@size_of(T));
-            if self.cap == 0 || element_size == 0 {
-                return;
-            }
-            let align: u64 = @intCast(@align_of(T));
-            checked {
-                let block: ptr mut u8 = @int_to_ptr(@ptr_to_int(self.buf));
-                @free(block, self.cap * element_size, align);
-            };
         }
 
         // Free the backing allocation when the buffer goes out of scope. The
@@ -185,9 +161,33 @@ pub fn RawBuf(comptime T: type) -> type {
         // has already run its elements' drop glue and this only reclaims storage.
         // After an explicit `free()` the pointer is null and this is a no-op.
         drop fn(self) {
-            self.release();
+            release(T, borrow self);
         }
     }
+}
+
+// RawBuf's unchecked cell move is directory-private. Keeping it out of the
+// public type prevents a borrowed public `value.core` projection from reading
+// an initialized cell without the owning wrapper's bounds and move discipline.
+fn read_at(comptime T: type, borrow buffer: RawBuf(T), i: u64) -> T {
+    checked { @ptr_read(@ptr_offset(buffer.buf, i)) }
+}
+
+// Return RawBuf's allocation to the allocator without changing its owner
+// header. Only the RawBuf destructor and its explicit owner-reset path call
+// this helper; borrowed wrapper projections cannot release storage behind the
+// owner's back. Zero capacity can carry a borrowed static address, and
+// zero-sized elements have no allocation, so neither is passed to @free.
+fn release(comptime T: type, borrow buffer: RawBuf(T)) {
+    let element_size: u64 = @intCast(@size_of(T));
+    if buffer.cap == 0 || element_size == 0 {
+        return;
+    }
+    let align: u64 = @intCast(@align_of(T));
+    checked {
+        let block: ptr mut u8 = @int_to_ptr(@ptr_to_int(buffer.buf));
+        @free(block, buffer.cap * element_size, align);
+    };
 }
 
 // Copy a checked range between RawBuf allocations. This is module-private
