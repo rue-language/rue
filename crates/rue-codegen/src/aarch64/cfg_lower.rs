@@ -2280,7 +2280,20 @@ impl<'a> CfgLower<'a> {
             | rue_air::IntrinsicOperation::PtrReadUnaligned => {
                 let ptr = plan.args[0].primary;
                 let count = plan.result_slots;
-                if let Some(map) = &plan.physical_slots {
+                if count == 0 {
+                    // A zero-sized pointee moves no bytes, so nothing is loaded
+                    // and the value has no slots — the read-side twin of the
+                    // `zero_sized_pointee_write` short circuit below (RUE-2243).
+                    //
+                    // The branches after this one all assume at least one slot:
+                    // an image map's first entry, or the typed multi-slot load.
+                    // A zero-sized aggregate reaches them whenever the compact
+                    // image is empty, and `slots[0]` then panicked in CFG
+                    // lowering. Consumers still need a primary vreg to name, so
+                    // one is allocated and left undefined, exactly as the
+                    // single-slot branch does when `count == 0`.
+                    self.mir.alloc_vreg()
+                } else if let Some(map) = &plan.physical_slots {
                     // A compact enum pointee: load each internal slot from its
                     // physical byte position, extended into the slot-shaped vreg
                     // (RUE-1000).
@@ -2306,39 +2319,38 @@ impl<'a> CfgLower<'a> {
                     } else {
                         crate::reg_class::RegClass::Gp
                     });
-                    if count != 0 {
-                        // A narrow scalar pointee reads 1/2/4 physical bytes and
-                        // extends into the slot-shaped vreg (RUE-989); a full-slot
-                        // pointee keeps the eight-byte load.
-                        if let Some(width) = float_width {
-                            self.mir.push(Aarch64Inst::MovRR {
-                                dst: Operand::Physical(Reg::X9),
-                                src: Operand::Virtual(ptr),
-                            });
-                            self.mir.push(Aarch64Inst::FloatLoad {
-                                dst: Operand::Virtual(dst),
-                                base: Reg::X9,
-                                offset: 0,
-                                width,
-                            });
-                        } else if let Some(narrow) = plan.narrow_access {
-                            self.mir.push(Aarch64Inst::NarrowLoadIndexed {
-                                dst: Operand::Virtual(dst),
-                                base: ptr,
-                                offset: 0,
-                                width: narrow.width,
-                                signed: narrow.signed,
-                            });
-                        } else {
-                            self.mir.push(Aarch64Inst::LdrIndexed {
-                                dst: Operand::Virtual(dst),
-                                base: ptr,
-                            });
-                        }
+                    // Exactly one slot reaches here: a zero-slot pointee took the
+                    // early branch above, a multi-slot one the typed load.
+                    //
+                    // A narrow scalar pointee reads 1/2/4 physical bytes and
+                    // extends into the slot-shaped vreg (RUE-989); a full-slot
+                    // pointee keeps the eight-byte load.
+                    if let Some(width) = float_width {
+                        self.mir.push(Aarch64Inst::MovRR {
+                            dst: Operand::Physical(Reg::X9),
+                            src: Operand::Virtual(ptr),
+                        });
+                        self.mir.push(Aarch64Inst::FloatLoad {
+                            dst: Operand::Virtual(dst),
+                            base: Reg::X9,
+                            offset: 0,
+                            width,
+                        });
+                    } else if let Some(narrow) = plan.narrow_access {
+                        self.mir.push(Aarch64Inst::NarrowLoadIndexed {
+                            dst: Operand::Virtual(dst),
+                            base: ptr,
+                            offset: 0,
+                            width: narrow.width,
+                            signed: narrow.signed,
+                        });
+                    } else {
+                        self.mir.push(Aarch64Inst::LdrIndexed {
+                            dst: Operand::Virtual(dst),
+                            base: ptr,
+                        });
                     }
-                    if count != 0 {
-                        slots.push(dst);
-                    }
+                    slots.push(dst);
                     dst
                 }
             }
@@ -7845,6 +7857,64 @@ mod tests {
             )),
             "a zero-sized declared pointee must store nothing even when the value \
              operand materialized a slot: {:?}",
+            mir.instructions()
+        );
+    }
+
+    /// The read-side twin of the guard above (RUE-2243).
+    ///
+    /// A zero-sized aggregate pointee whose compact image has no entries — a
+    /// zero-length array, or a struct holding only one — was planned as a
+    /// compact-image marshal, and the image-load branch then read `slots[0]`
+    /// out of the empty vector the load returned, panicking in CFG lowering.
+    /// `ArrayBuf([i32; 0]).push` produced exactly this plan. The plan is handed
+    /// to the backend directly because the layout predicate now classifies a
+    /// zero-length array as slot-identical, so no CFG built through
+    /// `Cfg::finish` reaches the image branch with an empty map any more; this
+    /// keeps the zero-slot diversion itself pinned.
+    #[test]
+    fn zero_slot_pointee_read_plan_loads_nothing_with_an_empty_image() {
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let empty_array_ty = Type::new_array(pool.intern_array_from_type(Type::I32, 0));
+        let pool = pool.freeze();
+        let mut fixture = FixtureCfg::new(
+            Type::UNIT,
+            0,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        fixture.ret(None);
+        let mir = fixture.lower_plan(|mir| {
+            let pointer = mir.alloc_vreg();
+            crate::value_plan::IntrinsicPlan {
+                operation: rue_air::IntrinsicOperation::PtrRead,
+                runtime_call: None,
+                option_discriminants: None,
+                bit_cast_form: None,
+                args: vec![arg_plan(pointer, 1, Type::I64)],
+                result_ty: empty_array_ty,
+                result_slots: 0,
+                scale: None,
+                narrow_access: None,
+                // The distinguishing shape: an image with no entries at all.
+                physical_slots: Some(Vec::new()),
+                dispatch_image: None,
+                image_padding: Vec::new(),
+                zero_sized_pointee_write: false,
+            }
+        });
+        assert!(
+            !mir.instructions().iter().any(|inst| matches!(
+                inst,
+                Aarch64Inst::LdrIndexed { .. }
+                    | Aarch64Inst::NarrowLoadIndexed { .. }
+                    | Aarch64Inst::FloatLoad { .. }
+            )),
+            "a zero-slot pointee read must load nothing: {:?}",
             mir.instructions()
         );
     }
