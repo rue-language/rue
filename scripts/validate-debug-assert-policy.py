@@ -59,7 +59,6 @@ ALLOWANCES = {
     "crates/rue-air/src/sema/body_identity.rs": Allowance(
         2, "redundant anonymous-identity publication and disjointness checks"
     ),
-    "crates/rue-air/src/sema/comptime_eval.rs": Allowance(2, "redundant semantic phase preconditions"),
     "crates/rue-air/src/sema/declaration_index.rs": Allowance(4, "redundant declaration indexing counters"),
     "crates/rue-air/src/sema/ordinary_engine.rs": Allowance(2, "redundant parameter-mode and ABI accounting checks"),
     "crates/rue-compiler/src/artifact_views.rs": Allowance(5, "redundant source/RIR view owner and bounds checks"),
