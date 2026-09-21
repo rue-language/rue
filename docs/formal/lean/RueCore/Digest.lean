@@ -793,15 +793,55 @@ def renderTrust (theorems : Array (Item × Array Name)) (declared : Array Item) 
     "What each axiom that appears above means:",
     ""] ++ (usedAxioms.qsort (fun a b => a.toString < b.toString)).toList.map (fun a =>
       s!"- `{a}` — {(axiomVerdict a).1}") ++ [""]
+  let interfaces :=
+    ["## Assumptions carried as interfaces",
+     "",
+     "An assumption this package makes about the world is a **field of a",
+     "structure**, never an `axiom`. The difference is the point: a theorem",
+     "that rests on one takes the structure as a parameter, so the assumption",
+     "is visible in its own statement and in `DIGEST.md`, and `#print axioms`",
+     "keeps meaning what it says.",
+     "",
+     "One interface exists today, `RueCore.FloatModel` (`RueCore/Float.lean`),",
+     "which is §7's \"totality of the float operations\" lemma — the one §7",
+     "itself says is \"discharged against the standard rather than against",
+     "Rue\". Its fields:",
+     "",
+     "- `arith_wf`, `sqrt_wf`, `ofLit_wf`, `ofInt_wf`, `narrow_wf` — the",
+     "  rounded operations of §6.4 land **in** `𝔽_w`. This is the float",
+     "  counterpart of `valOf_inBounds`, which *is* proved, because",
+     "  `val_{w,s}` is arithmetic while `rnd_w` is IEEE.",
+     "- `arith_nan`, `div_by_zero`, `zero_div_zero` — the three clauses §6.4",
+     "  spells out \"as consequences of `⊕_w`\" (`3.12:22`, `3.12:44`).",
+     "- `ofLit_zero`, `ofLit_one` — `3.12:9` at the two literals a witness",
+     "  needs: a decimal representable in the target type denotes exactly that",
+     "  value.",
+     "",
+     "What is **not** assumed, although §7 grouped it with the above:",
+     "totality as a function (every §6.4 float operation is a total Lean",
+     "function), the `(D-Float-To-Int)`/`(D-Float-To-Int-Trap)` partition",
+     "(`floatToInt_partition`), and closure of the *exact* operations",
+     "(`negate_wf`, `widen_wf`, `roundOp_wf`). §2's datum model is what makes",
+     "those provable.",
+     "",
+     "The executable instance `RueCore.Float.exactOps` is constructive integer",
+     "arithmetic, so nothing here touches Lean's `Float` — whose definition",
+     "over an `opaque` constant would put `Classical.choice` on every theorem",
+     "mentioning a value. That `exactOps` *satisfies* the laws is the residual",
+     "assumption: it is checked by running every float corpus case against the",
+     "compiler, not proved.",
+     ""]
   let assumptions :=
     if declared.isEmpty then
       ["## Declared assumptions",
        "",
        "None. The package declares no axiom of its own, so nothing here is",
-       "assumed beyond Lean's logic. When the project's obligation interfaces",
-       "arrive (the library obligations of §6.13.5, and the adequacy obligation",
-       "`../03-metatheory.md` records), each will appear in this section with",
-       "its doc-comment, which is where its source belongs.",
+       "assumed beyond Lean's logic — what it assumes about IEEE 754 is the",
+       "interface above instead. When the project's other obligation",
+       "interfaces arrive (the library obligations of §6.13.5, and the",
+       "adequacy obligation `../03-metatheory.md` records), each will appear",
+       "in this section with its doc-comment, which is where its source",
+       "belongs.",
        ""]
     else
       ["## Declared assumptions",
@@ -810,6 +850,7 @@ def renderTrust (theorems : Array (Item × Array Name)) (declared : Array Item) 
        "doc-comment states where the assumption comes from and who owes the",
        "proof.",
        ""] ++ declared.toList.flatMap renderItem
-  (String.intercalate "\n" (header ++ policy ++ table ++ legend ++ assumptions), flagged.isEmpty)
+  (String.intercalate "\n" (header ++ policy ++ table ++ legend ++ interfaces ++ assumptions),
+    flagged.isEmpty)
 
 end RueCore.Digest

@@ -1,0 +1,222 @@
+════════════════════════════════════════════════════════════════════════════════
+ total_cmp_order
+════════════════════════════════════════════════════════════════════════════════
+@total_cmp is a total order: -0.0 precedes +0.0, a datum equals itself, a
+larger value follows.
+
+Rules exercised: (Total-Cmp) §5.8 · (D-Total-Cmp) §6.4 · 3.12:31 · 3.12:32
+
+── The program ─────────────────────────────────────────────────────────────────
+
+fn f0() -> i64 {
+    {
+        { let t2g: i32 = { let t3a: f64 = (-0.0); let t3b: f64 = 0.0; @total_cmp(t3a, t3b) }; @dbg(t2g) };
+        {
+            { let t3g: i32 = { let t4a: f64 = 1.0; let t4b: f64 = 1.0; @total_cmp(t4a, t4b) }; @dbg(t3g) };
+            {
+                { let t4g: i32 = { let t5a: f64 = 1.0; let t5b: f64 = 0.0; @total_cmp(t5a, t5b) }; @dbg(t4g) };
+                0
+            }
+        }
+    }
+}
+
+
+
+── What the checker says (§5) ──────────────────────────────────────────────────
+
+Verdict: ACCEPTED by the checker (§5).
+         Every function is well-formed by (Fn) §5.8 and the entry point takes
+         no parameters, so `checkProgram_sound` ties the whole program to a
+         real derivation and the §7 safety theorems apply to it.
+
+         fn f0() -> i64  — body ⇒ i64, exit Σ (empty)
+
+── The derivations (§5) ────────────────────────────────────────────────────────
+
+Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
+fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
+premises are the nodes indented under it, in premise order. One tree per
+function body, checked from (Fn) §5.8's entry context.
+
+  fn f0() -> i64
+
+  (Seq) §5.3, 3.8:64
+    e       { @dbg(@total_cmp((-0.0), 0.0)); { @dbg(@total_cmp(1.0, 1.0)); { @dbg(@total_cm…
+    Γ;Σ     (empty)
+    ⇒       i64  ⊣  (empty)
+      (Dbg) §5.8
+        e       @dbg(@total_cmp((-0.0), 0.0))
+        Γ;Σ     (empty)
+        ⇒       ()  ⊣  (empty)
+          (Total-Cmp) §5.8
+            e       @total_cmp((-0.0), 0.0)
+            Γ;Σ     (empty)
+            ⇒       i32  ⊣  (empty)
+              (Float-Neg) §5.8
+                e       (-0.0)
+                Γ;Σ     (empty)
+                ⇒       f64  ⊣  (empty)
+                  (Lit) §5.8
+                    e       0.0
+                    Γ;Σ     (empty)
+                    ⇒       f64  ⊣  (empty)
+              (Lit) §5.8
+                e       0.0
+                Γ;Σ     (empty)
+                ⇒       f64  ⊣  (empty)
+      (Seq) §5.3, 3.8:64
+        e       { @dbg(@total_cmp(1.0, 1.0)); { @dbg(@total_cmp(1.0, 0.0)); 0 } }
+        Γ;Σ     (empty)
+        ⇒       i64  ⊣  (empty)
+          (Dbg) §5.8
+            e       @dbg(@total_cmp(1.0, 1.0))
+            Γ;Σ     (empty)
+            ⇒       ()  ⊣  (empty)
+              (Total-Cmp) §5.8
+                e       @total_cmp(1.0, 1.0)
+                Γ;Σ     (empty)
+                ⇒       i32  ⊣  (empty)
+                  (Lit) §5.8
+                    e       1.0
+                    Γ;Σ     (empty)
+                    ⇒       f64  ⊣  (empty)
+                  (Lit) §5.8
+                    e       1.0
+                    Γ;Σ     (empty)
+                    ⇒       f64  ⊣  (empty)
+          (Seq) §5.3, 3.8:64
+            e       { @dbg(@total_cmp(1.0, 0.0)); 0 }
+            Γ;Σ     (empty)
+            ⇒       i64  ⊣  (empty)
+              (Dbg) §5.8
+                e       @dbg(@total_cmp(1.0, 0.0))
+                Γ;Σ     (empty)
+                ⇒       ()  ⊣  (empty)
+                  (Total-Cmp) §5.8
+                    e       @total_cmp(1.0, 0.0)
+                    Γ;Σ     (empty)
+                    ⇒       i32  ⊣  (empty)
+                      (Lit) §5.8
+                        e       1.0
+                        Γ;Σ     (empty)
+                        ⇒       f64  ⊣  (empty)
+                      (Lit) §5.8
+                        e       0.0
+                        Γ;Σ     (empty)
+                        ⇒       f64  ⊣  (empty)
+              (Lit) §5.8
+                e       0
+                Γ;Σ     (empty)
+                ⇒       i64  ⊣  (empty)
+
+── The run (§6) ────────────────────────────────────────────────────────────────
+
+One row per evaluated node, in execution order: a node's premises run before
+the node itself, so the table reads top to bottom as the machine ran. `d<n>`
+is the nesting depth — a callee's rows are deeper than its call's — and `>>`
+marks a drop event. The run enters at f0(), as `Dynamics.run` does.
+
+  [1]   d1    (D-Call) §6.9 (push the frame)
+         expr    fn f0() -> i64  with []
+         store   (empty)
+           →     (empty)
+         result  value ()
+  [2]   d6              literal §6.3 (3.12:9 rounds the decimal)
+         expr    0.0
+         store   (empty)
+           →     (empty)
+         result  value 0.0
+  [3]   d5            (D-Arith) §6.4, the unary case (or (D-Float-Neg) at a float)
+         expr    (-0.0)
+         store   (empty)
+           →     (empty)
+         result  value -0.0
+  [4]   d5            literal §6.3 (3.12:9 rounds the decimal)
+         expr    0.0
+         store   (empty)
+           →     (empty)
+         result  value 0.0
+  [5]   d4          (D-Total-Cmp) §6.4
+         expr    @total_cmp((-0.0), 0.0)
+         store   (empty)
+           →     (empty)
+         result  value -1
+  [6]   d3        (Dbg) §5.8, the observable output of §6.12
+         expr    @dbg(@total_cmp((-0.0), 0.0))
+         store   (empty)
+           →     (empty)
+         events  >> @dbg prints -1
+         result  value ()
+  [7]   d6              literal §6.3 (3.12:9 rounds the decimal)
+         expr    1.0
+         store   (empty)
+           →     (empty)
+         result  value 1.0
+  [8]   d6              literal §6.3 (3.12:9 rounds the decimal)
+         expr    1.0
+         store   (empty)
+           →     (empty)
+         result  value 1.0
+  [9]   d5            (D-Total-Cmp) §6.4
+         expr    @total_cmp(1.0, 1.0)
+         store   (empty)
+           →     (empty)
+         result  value 0
+  [10]  d4          (Dbg) §5.8, the observable output of §6.12
+         expr    @dbg(@total_cmp(1.0, 1.0))
+         store   (empty)
+           →     (empty)
+         events  >> @dbg prints 0
+         result  value ()
+  [11]  d7                literal §6.3 (3.12:9 rounds the decimal)
+         expr    1.0
+         store   (empty)
+           →     (empty)
+         result  value 1.0
+  [12]  d7                literal §6.3 (3.12:9 rounds the decimal)
+         expr    0.0
+         store   (empty)
+           →     (empty)
+         result  value 0.0
+  [13]  d6              (D-Total-Cmp) §6.4
+         expr    @total_cmp(1.0, 0.0)
+         store   (empty)
+           →     (empty)
+         result  value 1
+  [14]  d5            (Dbg) §5.8, the observable output of §6.12
+         expr    @dbg(@total_cmp(1.0, 0.0))
+         store   (empty)
+           →     (empty)
+         events  >> @dbg prints 1
+         result  value ()
+  [15]  d5            literal §6.3
+         expr    0
+         store   (empty)
+           →     (empty)
+         result  value 0
+  [16]  d4          (D-Seq) §6.7
+         expr    { @dbg(@total_cmp(1.0, 0.0)); 0 }
+         store   (empty)
+           →     (empty)
+         result  value 0
+  [17]  d3        (D-Seq) §6.7
+         expr    { @dbg(@total_cmp(1.0, 1.0)); { @dbg(@total_cmp(1.0, 0.0)); 0 } }
+         store   (empty)
+           →     (empty)
+         result  value 0
+  [18]  d2      (D-Seq) §6.7
+         expr    { @dbg(@total_cmp((-0.0), 0.0)); { @dbg(@total_cmp(1.0, 1.0)); { @dbg(@total_cm…
+         store   (empty)
+           →     (empty)
+         result  value 0
+  [19]  d0  (D-Return-Value) §6.9 (pop the frame)
+         expr    run-all-scope-drops([])
+         store   (empty)
+           →     (empty)
+         result  value 0
+
+────────────────────────────────────────────────────────────────────────────────
+Outcome: ok — value 0
+         drop trace: @dbg prints -1; @dbg prints 0; @dbg prints 1
+

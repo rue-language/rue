@@ -1,15 +1,15 @@
 ════════════════════════════════════════════════════════════════════════════════
- negate_at_i16
+ float_sqrt
 ════════════════════════════════════════════════════════════════════════════════
--(3 * 7) at i16: multiplication and the unary negation (Neg) §5.8 admits on a
-signed type only.
+@sqrt is correctly rounded, so the square root of two prints every digit that
+identifies it.
 
-Rules exercised: (Arith) §5.8 · (Neg) §5.8 · (D-Arith) §6.4 · 4.2:6
+Rules exercised: (Float-Round) §5.8 · (D-Float-Round) §6.4 · 3.12:35
 
 ── The program ─────────────────────────────────────────────────────────────────
 
-fn f0() -> i16 {
-    (-(3 * 7))
+fn f0() -> f64 {
+    { let t1c: f64 = 2.0; let t1k: f64 = @sqrt(t1c); t1k }
 }
 
 
@@ -21,7 +21,7 @@ Verdict: ACCEPTED by the checker (§5).
          no parameters, so `checkProgram_sound` ties the whole program to a
          real derivation and the §7 safety theorems apply to it.
 
-         fn f0() -> i16  — body ⇒ i16, exit Σ (empty)
+         fn f0() -> f64  — body ⇒ f64, exit Σ (empty)
 
 ── The derivations (§5) ────────────────────────────────────────────────────────
 
@@ -30,24 +30,16 @@ fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
 premises are the nodes indented under it, in premise order. One tree per
 function body, checked from (Fn) §5.8's entry context.
 
-  fn f0() -> i16
+  fn f0() -> f64
 
-  (Neg) §5.8
-    e       (-(3 * 7))
+  (Float-Round) §5.8
+    e       @sqrt(2.0)
     Γ;Σ     (empty)
-    ⇒       i16  ⊣  (empty)
-      (Arith) §5.8
-        e       (3 * 7)
+    ⇒       f64  ⊣  (empty)
+      (Lit) §5.8
+        e       2.0
         Γ;Σ     (empty)
-        ⇒       i16  ⊣  (empty)
-          (Lit) §5.8
-            e       3
-            Γ;Σ     (empty)
-            ⇒       i16  ⊣  (empty)
-          (Lit) §5.8
-            e       7
-            Γ;Σ     (empty)
-            ⇒       i16  ⊣  (empty)
+        ⇒       f64  ⊣  (empty)
 
 ── The run (§6) ────────────────────────────────────────────────────────────────
 
@@ -57,37 +49,27 @@ is the nesting depth — a callee's rows are deeper than its call's — and `>>`
 marks a drop event. The run enters at f0(), as `Dynamics.run` does.
 
   [1]   d1    (D-Call) §6.9 (push the frame)
-         expr    fn f0() -> i16  with []
+         expr    fn f0() -> f64  with []
          store   (empty)
            →     (empty)
          result  value ()
-  [2]   d4          literal §6.3
-         expr    3
+  [2]   d3        literal §6.3 (3.12:9 rounds the decimal)
+         expr    2.0
          store   (empty)
            →     (empty)
-         result  value 3
-  [3]   d4          literal §6.3
-         expr    7
+         result  value 2.0
+  [3]   d2      (D-Float-Round) §6.4
+         expr    @sqrt(2.0)
          store   (empty)
            →     (empty)
-         result  value 7
-  [4]   d3        (D-Arith) §6.4
-         expr    (3 * 7)
-         store   (empty)
-           →     (empty)
-         result  value 21
-  [5]   d2      (D-Arith) §6.4, the unary case (or (D-Float-Neg) at a float)
-         expr    (-(3 * 7))
-         store   (empty)
-           →     (empty)
-         result  value -21
-  [6]   d0  (D-Return-Value) §6.9 (pop the frame)
+         result  value 1.4142135623730951
+  [4]   d0  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([])
          store   (empty)
            →     (empty)
-         result  value -21
+         result  value 1.4142135623730951
 
 ────────────────────────────────────────────────────────────────────────────────
-Outcome: ok — value -21
+Outcome: ok — value 1.4142135623730951
          drop trace: (no drops)
 

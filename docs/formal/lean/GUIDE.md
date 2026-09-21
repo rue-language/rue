@@ -700,6 +700,81 @@ work: a `return` in the same position would have unwound the frame and
 printed the line through `run-all-scope-drops`, which is the previous worked
 example.
 
+## 5e. A fifth worked example: a float conversion, and the one float trap
+
+Floats are in the core (§2, §5.8, §6.4), and they are the one construct whose
+IEEE side the mechanization *assumes* rather than proves. The corpus case
+`float_to_int_trap_inf` is where that boundary is easiest to see, because it
+is the only trap a float program can reach.
+
+### The program
+
+```lean
+fintrin (.floatToInt .w32 .signed) (binop .div (flE .w64 1 0) (flE .w64 0 0))
+```
+
+printed as
+
+```rue
+fn f0() -> i32 {
+    { let t1c: f64 = (1.0 / 0.0); let t1k: i32 = @float_to_int(t1c); t1k }
+}
+```
+
+The two binders are the printer supplying types nothing downstream names:
+`@float_to_int` takes its result type from the *use* site (`3.12:17`) and
+fixes nothing about its operand, exactly as `@intCast` does not
+(`Print.lean`, "Integer typing"). A float literal would otherwise default to
+`f64` (`3.12:8`) — which is what is wanted here, but not at `f32`.
+
+### What the checker demands
+
+| Node | Rule | Concludes |
+| --- | --- | --- |
+| `1.0`, `0.0` | (Lit) §5.8 at `float(64)` | `⇒ f64`. Unlike an integer literal there is **no** range premise: `3.12:9` *rounds* a float literal to the nearest value of its type rather than rejecting it, so every decimal denotes one |
+| `1.0 / 0.0` | (Float-Arith) §5.8 | `⇒ f64`. One `w` for both operands — `3.12:13` gives no implicit widening — and `BinOp.floatAdmits` is §5.8's "rejected by the absence of a rule" for `%` and the bitwise operators, written as a side condition because one constructor stands for (Float-Arith), (Float-Ord) and (Total-Cmp) |
+| `@float_to_int(…)` | (Float-To-Int) §5.8 | `⇒ i32`. Whether the value *survives* is dynamic, not a typing question (`3.12:18`) |
+
+### The run, step by step
+
+| Step | Rule | Effect |
+| --- | --- | --- |
+| 1–2 | (Lit) §6.3 | each literal becomes `M.ofLit`'s datum — `3.12:9`'s rounding, which is the **model's**, not this module's |
+| 3 | **`(D-Float-Arith) §6.4`** | `1.0 / 0.0 → +inf`. Not a trap: none of (D-Arith-Trap), (D-Div-Zero) or (D-Div-Overflow) is stated over a float redex, and `3.12:22` fixes the answer — a finite non-zero over a zero is the infinity of the xor sign |
+| 4 | **`(D-Float-To-Int-Trap) §6.4`** | `+inf` is neither truncatable nor in range, so the conversion traps. The category is `↯overflow`, the one §6.12 already lists (`8.1:7`), which is why the compiler reports `integer overflow` here and not a float-specific message |
+
+The exported expectation is
+
+```json
+{"kind": "panic", "panic": "overflow", "stdout": []}
+```
+
+and the compiled program exits 101 with `error: integer overflow` — checked
+case by case, like every other.
+
+### Where the assumption is, and where it is not
+
+Step 4 is a **theorem**: `floatToInt_partition` (`RueCore/Float.lean`) says
+the premises of `(D-Float-To-Int)` and `(D-Float-To-Int-Trap)` partition
+`𝔽_w`, which is what §7 asks for and what keeps progress intact. It is
+provable because §2 models a float as a *datum*, so truncation toward zero is
+exact integer arithmetic.
+
+Step 3 is an **assumption**: `FloatModel.div_by_zero`, `3.12:22` as §6.4
+quotes it. `Examples.floatDivZeroToInt_traps` is the two steps together,
+stated over an *arbitrary* `FloatModel` and proved from its laws — so the
+witness is a claim about IEEE 754 rather than about this package's instance,
+and it computes no float at all. That is also why it costs no axiom: Lean's
+own `Float` is defined over an `opaque` constant, and a theorem that so much
+as mentions one reports `Classical.choice`.
+
+The laws are **structure fields**, not `axiom` declarations, so a theorem
+that rests on one says so in its own statement and `TRUST.md` lists them in a
+section of their own. `Float.exactOps`, the instance the corpus runs, is
+constructive integer arithmetic; that it *satisfies* the laws is the residual
+assumption, and it is checked by running the float corpus against the
+compiler rather than proved.
+
 ### More worked examples
 
 Every corpus case is a smaller worked example: its printed source begins
