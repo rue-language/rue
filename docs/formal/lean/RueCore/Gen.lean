@@ -49,12 +49,13 @@ provenance.
 
 ## What it deliberately does not guarantee
 
-Ownership. Moves, drops, assignments and scope exits are chosen at random,
-so about half of the programs are rejected by the checker and refused by the
-machine. Both are recorded (`Corpus.caseJson` reads them off `checkProgram`
-and `run` as for any case), never filtered: a rejected program checks that the
-compiler rejects it too, an accepted one that the three implementations
-agree with the interpreter's trace.
+Ownership. Moves, drops, assignments and scope exits are chosen at random, so
+a large minority of the programs are rejected by the checker and refused by
+the machine — a quarter of them at `--gen 200 --seed 7`, the figure the
+weights below are tuned against. Both are recorded (`Corpus.caseJson` reads
+them off `checkProgram` and `run` as for any case), never filtered: a rejected
+program checks that the compiler rejects it too, an accepted one that the
+three implementations agree with the interpreter's trace.
 
 ## Bias
 
@@ -76,8 +77,22 @@ the weights can be read and changed:
   reinitialisation after a move and overwrite of a live value both arise)
   and `@drop` live; `@drop` prefers a struct binder but may name any
   binder, since the calculus allows `@drop` of a place of any class;
-* integer literals are small, `0` among them, with an occasional
-  `intMax`/`intMin`, so `/` and `+` can trap.
+* integer literals are small, `0` among them, with an occasional `min_T` or
+  `max_T` at the drawn type, so every arithmetic operator can trap — and the
+  narrow types make that likely rather than rare;
+* types are drawn from every width and both signednesses, `i64` a little more
+  often than the rest, and an operator's operands share the drawn type
+  (`4.2:1`, and `4.3a:9` for a shift's amount);
+* `@intCast` draws its *source* type independently of its target, so most
+  casts are between two different types and a good share of them trap;
+* `@dbg` is drawn in unit position, where it competes with `@drop` and
+  assignment, so a generated program's stdout usually interleaves the two
+  observation channels.
+
+`@panic` is **not** generated, for `return`'s reason: it is never-typed, so
+`check` has to pick a type for it (`Checker.lean`), and a generated `@panic`
+in a position whose type is not the enclosing return type would be a *false*
+`reject` verdict.
 
 Programs are fuel-bounded: a fuel of two or three is drawn per program and
 every compound form spends one unit on its operands, so the nesting a case

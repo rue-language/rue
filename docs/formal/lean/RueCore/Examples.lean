@@ -228,6 +228,96 @@ then `2`. -/
 def structFieldOrder : Expr :=
   letIn false (mkStruct sTwoAffine [resA (lit 1), resA (lit 2)]) (lit 0)
 
+/-! ## Widths, the operator set, and the intrinsics (RUE-2282)
+
+The cases above are about ownership and are written at `int(64, signed)`.
+These are about the leaves themselves: each §6.4 trap at the narrowest width
+that reaches it, the operators that never trap, `@intCast`, and the two
+intrinsics whose effect is on §6.12's observable outcome rather than on a
+value. -/
+
+/-- `max_T + 1` at `i8`: (D-Arith-Trap) §6.4 at the narrowest width, where the
+bound is 127 rather than `2^63 - 1`. -/
+def i8Overflow : Expr :=
+  binop .add (intLit .w8 .signed (intMax .w8 .signed)) (intLit .w8 .signed 1)
+
+/-- `0 - 1` at `u8`: the same trap reached downward. Rue has no wrapping
+subtraction outside the `@wrapping_*` intrinsics (`3.1:6`), so an unsigned
+type's own zero is a trap boundary. -/
+def u8Underflow : Expr :=
+  binop .sub (intLit .w8 .unsigned 0) (intLit .w8 .unsigned 1)
+
+/-- `min_T / -1` at `i8`: (D-Div-Overflow) §6.4, the quotient that is not
+representable. -/
+def i8DivMinByNegOne : Expr :=
+  binop .div (intLit .w8 .signed (intMin .w8 .signed)) (intLit .w8 .signed (-1))
+
+/-- `min_T % -1` at `i8`: §6.4 traps here too, although the mathematical
+remainder is `0` — the hardware `idiv` faults on it. -/
+def i8RemMinByNegOne : Expr :=
+  binop .rem (intLit .w8 .signed (intMin .w8 .signed)) (intLit .w8 .signed (-1))
+
+/-- `%` by zero: `↯rem-zero`, §6.12's own category beside `div-zero`. -/
+def i8RemZero : Expr :=
+  binop .rem (intLit .w8 .signed 5) (intLit .w8 .signed 0)
+
+/-- `@intCast` out of the target's range: `4.13:28`'s trap, §6.4's
+`(D-Int-Cast-Trap)`. -/
+def u8CastOutOfRange : Expr := intCast .w8 .unsigned (intLit .w32 .signed 300)
+
+/-- `@intCast` whose value fits: the conversion carries it across. -/
+def u8CastInRange : Expr := intCast .w8 .unsigned (intLit .w32 .signed 200)
+
+/-- `1 << 8` at `u8`: the shift amount is reduced modulo the width
+((D-Shl) §6.4, `4.3a:10`), so this shifts by zero and does **not** trap. -/
+def u8ShiftMasks : Expr :=
+  binop .shl (intLit .w8 .unsigned 1) (intLit .w8 .unsigned 8)
+
+/-- `(12 & 10) | ~240` at `u8`: (D-Bit) §6.4 over the `w`-bit pattern, which
+is `8 | 15 = 15`. The complement is the case that shows the width: `~240` is
+`15` at `u8` and a large negative number at any wider signed type. -/
+def u8Bitwise : Expr :=
+  binop .bitOr (binop .bitAnd (intLit .w8 .unsigned 12) (intLit .w8 .unsigned 10))
+    (unop .bitnot (intLit .w8 .unsigned 240))
+
+/-- `-(3 * 7)` at `i16`: (D-Arith)'s unary case on a signed type, which is the
+only type (Neg) §5.8 admits. -/
+def i16Negate : Expr :=
+  unop .neg (binop .mul (intLit .w16 .signed 3) (intLit .w16 .signed 7))
+
+/-- `max_T > 0` at `u64`: an *unsigned* compare of a value whose signed
+reading would be negative, so the case tells the two orderings apart. -/
+def u64Compare : Expr :=
+  binop .gt (intLit .w64 .unsigned (intMax .w64 .unsigned)) (intLit .w64 .unsigned 0)
+
+/-- `!(3 <= 3)`: (Not) §5.8 on `bool`, the one type it admits (`4.4:2`). -/
+def boolNegate : Expr := unop .not (binop .le (lit 3) (lit 3))
+
+/-- `@dbg` of each scalar the fragment renders (§5.8's (Dbg)): a negative
+`i8`, a large `u64`, and a `bool`. -/
+def dbgScalars : Expr :=
+  seq (dbg (intLit .w8 .signed (-5)))
+    (seq (dbg (intLit .w64 .unsigned 42))
+      (seq (dbg (boolLit true)) (lit 0)))
+
+/-- A `@dbg` between two drops: the two observation channels are one trace, so
+the line comes out where it happened (§6.12's observable output). -/
+def dbgBetweenDrops : Expr :=
+  letIn false (resA (lit 1))
+    (seq (drop 0) (seq (dbg (lit 2)) (letIn false (resA (lit 3)) (lit 0))))
+
+/-- A user `@panic` after an affine drop: the destructor has already run, so
+the trap carries it out. §5.7 exempts the `⊥_panic` edge from §5.6's
+obligation and §6.12 abandons the configuration, so the binding's own scope
+exit never happens — the drop that shows is the explicit one. -/
+def panicAfterDrop : Expr :=
+  letIn false (resA (lit 7)) (seq (drop 0) (panic "boom"))
+
+/-- A `@dbg` before a machine trap: the same claim for a trap the program did
+not ask for. -/
+def dbgBeforeTrap : Expr :=
+  seq (dbg (lit 1)) (binop .div (lit 1) (lit 0))
+
 /-! ## Calls, frames, and `return` (RUE-2233)
 
 Each of these needs more than one function, so it is written as a whole
@@ -338,6 +428,22 @@ def affineLostAtCallArg : Program :=
             { params := [⟨.struct sAffine, false⟩, ⟨tI64, false⟩], ret := tI64,
               body := seq (drop 1) (use 0) }] }
 
+#eval run (scalarProg (.int .w8 .signed) i8Overflow) demoFuel        -- panic: overflow
+#eval run (scalarProg (.int .w8 .unsigned) u8Underflow) demoFuel     -- panic: overflow
+#eval run (scalarProg (.int .w8 .signed) i8DivMinByNegOne) demoFuel  -- panic: overflow
+#eval run (scalarProg (.int .w8 .signed) i8RemMinByNegOne) demoFuel  -- panic: overflow
+#eval run (scalarProg (.int .w8 .signed) i8RemZero) demoFuel         -- panic: remZero
+#eval run (scalarProg (.int .w8 .unsigned) u8CastOutOfRange) demoFuel -- panic: castOverflow
+#eval run (scalarProg (.int .w8 .unsigned) u8CastInRange) demoFuel   -- ok: 200
+#eval run (scalarProg (.int .w8 .unsigned) u8ShiftMasks) demoFuel    -- ok: 1
+#eval run (scalarProg (.int .w8 .unsigned) u8Bitwise) demoFuel       -- ok: 15
+#eval run (scalarProg (.int .w16 .signed) i16Negate) demoFuel        -- ok: -21
+#eval run (scalarProg .bool u64Compare) demoFuel                     -- ok: true
+#eval run (scalarProg .bool boolNegate) demoFuel                     -- ok: false
+#eval run (scalarProg tI64 dbgScalars) demoFuel                      -- ok: 0, dbg -5, 42, true
+#eval run (prog tI64 dbgBetweenDrops) demoFuel                       -- ok: 0, dtor/dbg/dtor
+#eval run (prog tI64 panicAfterDrop) demoFuel                        -- panic: user, after dtor 7
+#eval run (scalarProg tI64 dbgBeforeTrap) demoFuel                   -- panic: divZero, after dbg 1
 #eval run (scalarProg tI64 scalars) demoFuel            -- ok: 10, trace: []
 #eval run (prog tI64 affineDrop) demoFuel               -- ok: 1, drop + dtor of S1{7}
 #eval run (prog tI64 linearConsumed) demoFuel           -- ok: 7, trace: []
@@ -407,6 +513,40 @@ example : run linearLostAtCallArg demoFuel = .ok [.dead] (v64 0) [] := by rfl
 have shown is absent. -/
 example : run affineLostAtCallArg demoFuel = .ok [.dead] (v64 0) [] := by rfl
 
+/-! The width, operator and intrinsic cases are accepted, so the §7 theorems
+apply to the traps they reach: a trap is a *defined* outcome. -/
+
+example : ProgramTyped (scalarProg (.int .w8 .signed) i8Overflow) := checkProgram_sound (by rfl)
+example : ProgramTyped (scalarProg (.int .w8 .unsigned) u8Underflow) :=
+  checkProgram_sound (by rfl)
+example : ProgramTyped (scalarProg (.int .w8 .signed) i8RemZero) := checkProgram_sound (by rfl)
+example : ProgramTyped (scalarProg (.int .w8 .unsigned) u8CastOutOfRange) :=
+  checkProgram_sound (by rfl)
+example : ProgramTyped (scalarProg tI64 dbgScalars) := checkProgram_sound (by rfl)
+example : ProgramTyped (prog tI64 panicAfterDrop) := checkProgram_sound (by rfl)
+
+/-- (Neg) §5.8 negates a signed operand only (`4.2:6`, `4.2:14`), so the
+checker rejects `neg` on an unsigned type — there is no value for it to
+produce. -/
+example : checkProgram (scalarProg (.int .w8 .unsigned)
+    (unop .neg (intLit .w8 .unsigned 1))) = false := by rfl
+
+/-- (Arith) §5.8 gives both operands **one** `int(w,s)`: Rue has no implicit
+widening, so a mixed-width operator has no derivation. -/
+example : checkProgram (scalarProg (.int .w8 .signed)
+    (binop .add (intLit .w8 .signed 1) (intLit .w16 .signed 1))) = false := by rfl
+
+/-- The bitwise operators take no `bool` (`4.3a:18`, `4.3a:19`), and (Not)
+§5.8 takes nothing else (`4.4:2`). -/
+example : checkProgram (scalarProg .bool
+    (binop .bitAnd (boolLit true) (boolLit false))) = false := by rfl
+example : checkProgram (scalarProg .bool (unop .not (lit 1))) = false := by rfl
+
+/-- (Dbg) §5.8 renders a scalar only; an aggregate operand is the compiler's
+E0702. -/
+example : checkProgram (prog tI64
+    (seq (dbg (resA (lit 1))) (lit 0))) = false := by rfl
+
 example : checkProgram (prog tI64 linearLeaked) = false := by rfl
 example : checkProgram (prog tI64 useAfterMove) = false := by rfl
 example : checkProgram (prog tI64 linearHalfConsumed) = false := by rfl
@@ -455,6 +595,49 @@ example : run (prog tI64 linearHalfConsumed) demoFuel = .stuck .linearLeak := by
 example : run (prog tI64 structLinearFieldLeaked) demoFuel = .stuck .linearLeak := by rfl
 example : run (prog tI64 structJoinDisagrees) demoFuel = .stuck .linearLeak := by rfl
 example : run (scalarProg tI64 overflow) demoFuel = .panic .overflow [] := by rfl
+example : run (scalarProg (.int .w8 .signed) i8Overflow) demoFuel
+    = .panic .overflow [] := by rfl
+example : run (scalarProg (.int .w8 .unsigned) u8Underflow) demoFuel
+    = .panic .overflow [] := by rfl
+example : run (scalarProg (.int .w8 .signed) i8DivMinByNegOne) demoFuel
+    = .panic .overflow [] := by rfl
+example : run (scalarProg (.int .w8 .signed) i8RemMinByNegOne) demoFuel
+    = .panic .overflow [] := by rfl
+example : run (scalarProg (.int .w8 .signed) i8RemZero) demoFuel
+    = .panic .remZero [] := by rfl
+example : run (scalarProg (.int .w8 .unsigned) u8CastOutOfRange) demoFuel
+    = .panic .castOverflow [] := by rfl
+
+/-- §6.4's bit rules are total: the shift amount is masked (`4.3a:10`) and the
+complement is read back at the operand's own width, so `1 << 8` at `u8` is `1`
+and `~240` is `15`. -/
+example : run (scalarProg (.int .w8 .unsigned) u8ShiftMasks) demoFuel
+    = .ok [] (.int .w8 .unsigned 1) [] := by rfl
+example : run (scalarProg (.int .w8 .unsigned) u8Bitwise) demoFuel
+    = .ok [] (.int .w8 .unsigned 15) [] := by rfl
+
+/-- An unsigned compare orders by the unsigned value: `max_T > 0` at `u64`,
+whose signed reading would be `-1`. -/
+example : run (scalarProg .bool u64Compare) demoFuel = .ok [] (.bool true) [] := by rfl
+
+/-- **A trap carries the observable output that ran before it.** The
+destructor has already printed when the `@panic` fires, and §6.12's outcome
+keeps it: the process prints what it printed and then exits 101. -/
+example : run (prog tI64 panicAfterDrop) demoFuel
+    = .panic .user
+        [.drop 0 (.struct sAffine [v64 7]), .dtor sAffine (.struct sAffine [v64 7])] := by rfl
+
+/-- The same for a trap the program did not ask for. -/
+example : run (scalarProg tI64 dbgBeforeTrap) demoFuel
+    = .panic .divZero [.dbg (v64 1)] := by rfl
+
+/-- The two observation channels are one trace, so a `@dbg` between two drops
+comes out between them (`Corpus.outLines` reads exactly this order). -/
+example : run (prog tI64 dbgBetweenDrops) demoFuel
+    = .ok [.dead, .dead] (v64 0)
+        [.drop 0 (.struct sAffine [v64 1]), .dtor sAffine (.struct sAffine [v64 1]),
+         .dbg (v64 2),
+         .drop 1 (.struct sAffine [v64 3]), .dtor sAffine (.struct sAffine [v64 3])] := by rfl
 example : run (scalarProg tI64 divZero) demoFuel = .panic .divZero [] := by rfl
 example : run (scalarProg tI64 (use 0)) demoFuel = .stuck .unbound := by rfl
 example : run (scalarProg tI64 (binop .add (boolLit true) (lit 1))) demoFuel
