@@ -2025,6 +2025,10 @@ impl<'a> ConstraintGenerator<'a> {
                     // A `str` target (ADR-0043 Phase 3, RUE-324) accepts a string
                     // literal (HM type `String`) by coercion; skip strict
                     // equality and let sema materialize the `str` on the store.
+                    // Skipping it here means sema owns the store's whole type
+                    // check: `analyze_assign` rejects a buffer or a view with
+                    // the escape diagnostic and any other incompatible value
+                    // with E0206 (RUE-2248).
                     if !self.is_slice_struct_type(target_ty.clone())
                         && value_info.continues
                         && !Self::is_never_concrete(&value_info.ty)
