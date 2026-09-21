@@ -188,7 +188,7 @@ def render (name description : String) (rules : List String) (P : Program) : Str
     para 0 78 description ++
     ["", "Rules exercised: " ++ String.intercalate " · " rules] ++
     section' "The program" ++
-    (Print.structItems 0 P.structs ++ Print.fnItems P 0 P.fns).splitOn "\n" ++
+    (Print.moduleItems P ++ Print.fnItems P 0 P.fns).splitOn "\n" ++
     section' "What the checker says (§5)" ++
     verdictSection P ds ++
     section' "The derivations (§5)" ++

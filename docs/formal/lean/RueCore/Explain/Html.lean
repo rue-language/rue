@@ -242,7 +242,7 @@ def render (name description : String) (rules : List String) (P : Program) : Str
      tagc "p" "lead" (esc description) ++
      tagc "p" "rules" (String.intercalate "" (rules.map (fun r => tag "span" (esc r)))) ++
      tag "h2" "The program" ++
-     tagc "pre" "program" (esc (Print.structItems 0 P.structs ++ Print.fnItems P 0 P.fns)) ++
+     tagc "pre" "program" (esc (Print.moduleItems P ++ Print.fnItems P 0 P.fns)) ++
      tag "h2" "What the checker says (§5)" ++
      verdictHtml P ds ++
      tag "h2" "The derivations (§5)" ++
