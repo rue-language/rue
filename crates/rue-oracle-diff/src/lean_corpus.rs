@@ -41,9 +41,14 @@
 //!   not observable: nothing runs, so only the rejection and its diagnostic
 //!   codes are compared. (When the *compiler* accepts a program the checker
 //!   rejects, the program does run and the run itself is the finding.)
-//! * Every stdout line is a bare integer or `true`/`false` on the Lean side,
-//!   so a destructor line `n` swapped with a `@dbg` line `n` or a value line
-//!   `n` is not told apart. Inherited from the corpus contract.
+//! * Every stdout line is a bare integer, a `true`/`false`, or a float
+//!   rendering on the Lean side, so a destructor line `n` swapped with a
+//!   `@dbg` line `n` or a value line `n` is not told apart. Inherited from the
+//!   corpus contract. A float line is compared as **exact bytes**, like every
+//!   other line: the Lean side renders `3.12:40`–`3.12:42`'s shortest
+//!   round-trip text and the run prints the same paragraphs through the
+//!   runtime's formatter, so a rounding or a layout difference is a finding
+//!   rather than something a tolerance absorbs.
 //! * A drop that runs no user destructor is unobservable in Rue and so
 //!   contributes no line, in either view: the bridge compares the destructors
 //!   a run executes, not every drop the machine performs. Inherited from the
@@ -197,7 +202,8 @@ pub(crate) enum Expectation {
     /// Normal completion: one stdout line per *observable event* the run
     /// executed, in trace order — a user destructor or a `@dbg` (the Lean
     /// side projects its `dtor` and `dbg` events and nothing else) — then the
-    /// lines `main` shows for the program's value.
+    /// lines `main` shows for the program's value. A line is compared as
+    /// exact bytes, floats included.
     Ok { stdout: Vec<String>, exit: i32 },
     /// A §6.12 trap. `name` is the Lean spelling, `trap` the modeled category
     /// both implementation views report, and `stdout` the observable output

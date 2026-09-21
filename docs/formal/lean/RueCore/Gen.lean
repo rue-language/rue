@@ -463,7 +463,7 @@ def expr (D : StructEnv) : Scope → Ty → Nat → G Expr
                 let b := Γ[i]?.getD ⟨.int .w64 .signed, true⟩
                 return assign i (← expr D Γ b.ty fuel)
               if ← chance 1 3 then
-                let To ← weighted (← intTy) [(3, ← intTy), (1, ← floatTy), (1, .bool)]
+                let To ← weighted (← intTy) [(3, ← intTy), (2, ← floatTy), (1, .bool)]
                 return dbg (← expr D Γ To fuel)
               if Γ.isEmpty && !D.isEmpty then
                 let T₁ ← binderTy D
@@ -529,13 +529,14 @@ def rulesOf (D : StructEnv) (e : Expr) : List String :=
   (go [] e).foldl (fun acc l => if acc.contains l then acc else acc ++ [l]) []
 
 /-- (helper) The result type of a generated program: mostly `int`, so the
-value line is usually present. -/
+value line is usually present, with a float often enough that `main` prints a
+shortest round-trip rendering (`3.12:40`) as well. -/
 def resultTy (D : StructEnv) : G Ty := do
   let k ← nat 1 10
   if k ≤ 3 && !D.isEmpty then
     let s ← nat 0 (D.length - 1)
     return .struct s
-  weighted (← intTy) [(5, ← intTy), (1, .bool), (1, .unit)]
+  weighted (← intTy) [(5, ← intTy), (3, ← floatTy), (1, .bool), (1, .unit)]
 
 /-- (helper) One generated case: a struct environment and a one-function
 program whose entry point takes no parameters and returns the drawn type. -/

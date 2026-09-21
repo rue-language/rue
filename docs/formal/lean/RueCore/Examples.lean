@@ -149,6 +149,147 @@ def prog (T : Ty) (e : Expr) : Program := Program.entry structEnv T e
 /-- A program with no struct declarations at all, for the scalar examples. -/
 def scalarProg (T : Ty) (e : Expr) : Program := Program.entry [] T e
 
+/-! ## The float vocabulary (§2's `float(w)`, §5.8, §6.4)
+
+A float literal carries a **decimal** rather than a datum (`Syntax.lean`):
+`3.12:9` makes the value the correctly-rounded reading of that decimal at the
+form's width, which is the model's `ofLit`. `fl w sig e` is the decimal
+`sig · 10^(-e)`, the shape every literal below is written in. A literal is
+non-negative, as Rue's grammar writes one; `-0.0` is `neg` applied to `0.0`,
+which `3.12:24` makes a sign flip. -/
+
+/-- `float(64)`, Rue's `f64` (helper). -/
+abbrev tF64 : Ty := .float .w64
+/-- `float(32)`, Rue's `f32` (helper). -/
+abbrev tF32 : Ty := .float .w32
+
+/-- The literal `sig · 10^(-e)` at `float(w)` (helper). -/
+abbrev fl (w : FloatWidth) (sig e : Nat) : Expr :=
+  .floatLit w { sig := sig, negExp := true, e := e }
+/-- The literal `sig · 10^e` at `float(w)` (helper). -/
+abbrev flE (w : FloatWidth) (sig e : Nat) : Expr :=
+  .floatLit w { sig := sig, negExp := false, e := e }
+
+/-- `+inf` as a core expression: `1.0 / 0.0`, which `3.12:22` makes the
+infinity of the xor sign. The fragment has no infinite literal — `3.12:10`
+rejects one at compile time — so an infinity is always computed. -/
+def posInf (w : FloatWidth) : Expr := binop .div (flE w 1 0) (flE w 0 0)
+/-- `-inf`, the same division with a negated numerator. -/
+def negInf (w : FloatWidth) : Expr := binop .div (unop .neg (flE w 1 0)) (flE w 0 0)
+/-- A NaN: `0.0 / 0.0` (`3.12:22`). Its *sign* is `σ_NaN`, a target parameter
+(§2), so no case reads it — `@dbg` renders a NaN as `NaN` whatever its sign
+(`3.12:42`) and only `@total_cmp` could tell them apart. -/
+def aNaN (w : FloatWidth) : Expr := binop .div (flE w 0 0) (flE w 0 0)
+
+/-- `(1.5 + 2.25) * 2.0` at `f64` — (Float-Arith) §5.8 with (D-Float-Arith)
+§6.4; every operand is exactly representable, so the answer is exact. -/
+def floatArith : Expr := binop .mul (binop .add (fl .w64 15 1) (fl .w64 225 2)) (flE .w64 2 0)
+
+/-- A float binding used twice: `class(float(w)) = Copy` (`3.12:2a`), so the
+second use copies and no drop is owed. -/
+def floatCopy : Expr := letIn false (fl .w64 15 1) (binop .add (use 0) (use 0))
+
+/-- `1.0 / 0.0` — a finite non-zero over a zero is the infinity of the xor
+sign (`3.12:22`), **not** a trap: no arithmetic trap rule is stated over a
+float redex (§6.4). -/
+def floatDivZero : Expr := posInf .w64
+
+/-- `0.0 / 0.0` is `NaN(σ_NaN)` (`3.12:22`), again without trapping. -/
+def floatZeroDivZero : Expr := aNaN .w64
+
+/-- Every ordering compare against a NaN is `false` — the two are *unordered*
+(`3.12:27`) — and that includes `nan <= nan`, which is why `≈` loses
+reflexivity (§6.4). -/
+def floatNanUnordered : Expr :=
+  seq (dbg (binop .lt (aNaN .w64) (flE .w64 1 0)))
+    (seq (dbg (binop .le (aNaN .w64) (aNaN .w64)))
+      (seq (dbg (binop .gt (aNaN .w64) (flE .w64 1 0))) (lit 0)))
+
+/-- `-0.0` and `+0.0` compare **equal** and neither is below the other
+(`3.12:28`), while `@total_cmp` orders `-0.0` first (`3.12:32`) and `@dbg`
+tells them apart (`3.12:42`). Three readings of one pair of data. -/
+def floatSignedZeros : Expr :=
+  seq (dbg (binop .lt (unop .neg (flE .w64 0 0)) (flE .w64 0 0)))
+    (seq (dbg (binop .le (unop .neg (flE .w64 0 0)) (flE .w64 0 0)))
+      (seq (dbg (unop .neg (flE .w64 0 0)))
+        (seq (dbg (binop .totalCmp (unop .neg (flE .w64 0 0)) (flE .w64 0 0))) (lit 0))))
+
+/-- The infinities sit at the ends of the ordering (`3.12:27`), and `@dbg`
+spells them `inf` and `-inf` (`3.12:42`). -/
+def floatInfinities : Expr :=
+  seq (dbg (binop .gt (posInf .w64) (flE .w64 1 0)))
+    (seq (dbg (binop .lt (negInf .w64) (flE .w64 0 0)))
+      (seq (dbg (posInf .w64)) (seq (dbg (negInf .w64)) (lit 0))))
+
+/-- `@float_to_int` truncates **toward zero** (`3.12:17`), on both signs. -/
+def floatToIntTrunc : Expr :=
+  seq (dbg (fintrin (.floatToInt .w32 .signed) (fl .w64 29 1)))
+    (seq (dbg (fintrin (.floatToInt .w32 .signed) (unop .neg (fl .w64 29 1)))) (lit 0))
+
+/-- `@float_to_int` of a NaN traps (`3.12:18`), with `↯overflow` — the same
+category §6.12 already lists, reported as `integer overflow` (`8.1:7`). The
+`@dbg` before it is what makes the stdout the trap carries comparable. -/
+def floatToIntTrapNan : Expr :=
+  seq (dbg (lit 1)) (fintrin (.floatToInt .w32 .signed) (aNaN .w64))
+
+/-- `@float_to_int` of `+inf` traps: `3.12:18`'s guard "admits both infinities
+as failures". -/
+def floatToIntTrapInf : Expr := fintrin (.floatToInt .w32 .signed) (posInf .w64)
+
+/-- `@float_to_int` of a value whose truncation leaves the target's range
+traps — the third arm of `3.12:18`'s premise, here at `i8`. -/
+def floatToIntTrapRange : Expr := fintrin (.floatToInt .w8 .signed) (flE .w64 1000 0)
+
+/-- `@int_to_float` rounds (`3.12:16`): `2^53 + 1` has no `f64`, so it lands
+on `2^53`, and the shortest round-trip rendering shows it. -/
+def intToFloatRounds : Expr :=
+  fintrin (.intToFloat .w64) (intLit .w64 .signed 9007199254740993)
+
+/-- `@float_cast` narrowing to `f32` rounds (`3.12:19`), and the `f32` prints
+the digits that identify it *as an `f32`* (`3.12:40`). -/
+def floatCastNarrow : Expr := fintrin (.floatCast .w32) (fl .w64 1 1)
+
+/-- `@float_cast` widening is **exact** (`3.12:19`), which is why the `f64`
+rendering of an `f32` `0.1` shows the whole of the `f32` value. -/
+def floatCastWiden : Expr := fintrin (.floatCast .w64) (fl .w32 1 1)
+
+/-- The four exact rounding intrinsics on a half-way value, and on both signs:
+`@round` rounds ties **away** from zero (`3.12:36`), which is where it parts
+from `rnd_w`'s ties-to-even. -/
+def floatRoundHalfway : Expr :=
+  seq (dbg (fintrin (.roundOp (.round .round)) (fl .w64 25 1)))
+    (seq (dbg (fintrin (.roundOp (.round .round)) (unop .neg (fl .w64 25 1))))
+      (seq (dbg (fintrin (.roundOp (.round .floor)) (unop .neg (fl .w64 15 1))))
+        (seq (dbg (fintrin (.roundOp (.round .ceil)) (unop .neg (fl .w64 15 1))))
+          (seq (dbg (fintrin (.roundOp (.round .trunc)) (unop .neg (fl .w64 15 1))))
+            (lit 0)))))
+
+/-- `@sqrt` is correctly rounded (`3.12:35`), so `√2` prints all seventeen
+digits that identify it. -/
+def floatSqrt : Expr := fintrin (.roundOp .sqrt) (flE .w64 2 0)
+
+/-- `@total_cmp` is a **total** order (`3.12:32`): `-0.0` precedes `+0.0`, a
+datum equals itself, and a larger value follows. No case reads it on a NaN:
+`σ_NaN` is a target parameter (§2), so the answer there would differ between
+x86-64 and AArch64. -/
+def totalCmpOrder : Expr :=
+  seq (dbg (binop .totalCmp (unop .neg (flE .w64 0 0)) (flE .w64 0 0)))
+    (seq (dbg (binop .totalCmp (flE .w64 1 0) (flE .w64 1 0)))
+      (seq (dbg (binop .totalCmp (flE .w64 1 0) (flE .w64 0 0))) (lit 0)))
+
+/-- `3.12:41`'s two layouts and the boundary between them: `1e15` is
+positional, `1e16` is scientific, and `1e-6` is just past the low end. -/
+def floatDbgLayouts : Expr :=
+  seq (dbg (flE .w64 1 15))
+    (seq (dbg (flE .w64 1 16))
+      (seq (dbg (fl .w64 1 6)) (seq (dbg (fl .w64 1 5)) (lit 0))))
+
+/-- `3.12:40`: an `f32` prints the digits that identify it as an `f32`, not
+the digits of the `f64` with the same numeric value. -/
+def f32Shortest : Expr :=
+  letIn false (binop .div (flE .w32 1 0) (flE .w32 3 0))
+    (seq (dbg (use 0)) (seq (dbg (fl .w32 1 1)) (lit 0)))
+
 /-! ## Scalars, resources, and the ownership discipline -/
 
 /-- `let x = 2 + 3; x + x` — well-typed scalar flow. -/
