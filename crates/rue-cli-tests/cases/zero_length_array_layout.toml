@@ -60,11 +60,11 @@ fn main() -> i32 {
     let shorts: [i16; 0] = [];
     let floats: [f32; 0] = [];
     let narrows: [Narrow; 0] = [];
-    let _b: [u8; 0] = checked { @ptr_read(@raw(bytes)) };
-    let _f: [bool; 0] = checked { @ptr_read(@raw(flags)) };
-    let _s: [i16; 0] = checked { @ptr_read(@raw(shorts)) };
-    let _l: [f32; 0] = checked { @ptr_read(@raw(floats)) };
-    let _n: [Narrow; 0] = checked { @ptr_read(@raw(narrows)) };
+    let _b: [u8; 0] = checked { let p: ptr const [u8; 0] = @raw(bytes); @ptr_read(p) };
+    let _f: [bool; 0] = checked { let p: ptr const [bool; 0] = @raw(flags); @ptr_read(p) };
+    let _s: [i16; 0] = checked { let p: ptr const [i16; 0] = @raw(shorts); @ptr_read(p) };
+    let _l: [f32; 0] = checked { let p: ptr const [f32; 0] = @raw(floats); @ptr_read(p) };
+    let _n: [Narrow; 0] = checked { let p: ptr const [Narrow; 0] = @raw(narrows); @ptr_read(p) };
     @dbg(@size_of([Narrow; 0]));
     0
 }

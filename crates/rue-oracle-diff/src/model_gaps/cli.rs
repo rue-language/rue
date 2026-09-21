@@ -525,6 +525,30 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::Reallocate),
         &[],
     ),
+    // Zero-length array layout (RUE-2256, RUE-2243). The container pair reaches
+    // the same `ArrayBuf.push` raw-pointer store as `arraybuf_zero_sized_element`
+    // above, and the coercion case builds an empty `[i32; 0]` view, which has no
+    // backing place to represent — the existing `cli.slices` empty-view debt.
+    // The raw-pointer round trips in the same section ARE modeled and are
+    // checked against the oracle.
+    Entry::new(
+        "cli.zero_length_array_layout",
+        "arraybuf_zero_length_array_element",
+        intrinsic(UnsupportedIntrinsicKind::PointerWrite),
+        &[],
+    ),
+    Entry::new(
+        "cli.zero_length_array_layout",
+        "arraybuf_struct_wrapping_zero_length_array_element",
+        intrinsic(UnsupportedIntrinsicKind::PointerWrite),
+        &[],
+    ),
+    Entry::new(
+        "cli.zero_length_array_layout",
+        "zero_length_narrow_array_slice_coercion_still_accepted",
+        intrinsic(UnsupportedIntrinsicKind::EmptySlicePointer),
+        &[],
+    ),
 ];
 
 pub(crate) fn audit(scope: InventoryScope) -> ModelGapAudit<CaseId> {
