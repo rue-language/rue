@@ -267,7 +267,7 @@ Every declaration of the mechanization with the calculus rules, sections, and pr
 | `RueCore.Statics` | `RueCore.fnCtx` | def | (Fn), §5.8 | — |
 | `RueCore.Statics` | `RueCore.Entry.join` | def | §5.5 | `3.8:50` |
 | `RueCore.Statics` | `RueCore.Ctx.join` | def | §5.5 | — |
-| `RueCore.Statics` | `RueCore.Typed` | inductive | (Use-Copy), (Use-Move), (@Drop-Copy), (@Drop), (Struct-Intro), (Assign), (Seq), (If), (Call), (Return-Value), (Sub-Never), §5, §5.1, §5.3, §5.5, §5.6, §5.7, §5.8 | `3.8:77`, `3.8:64` |
+| `RueCore.Statics` | `RueCore.Typed` | inductive | (Use-Copy), (Use-Move), (Arith), (Ord), (Neg), (Not), (BitNot), (Int-Cast), (Dbg), (@Drop-Copy), (@Drop), (Struct-Intro), (Assign), (Seq), (If), (Call), (Return-Value), (Panic), (Sub-Never), §5, §5.1, §5.3, §5.5, §5.6, §5.7, §5.8 | `3.8:77`, `3.8:64` |
 | `RueCore.Statics` | `RueCore.Typed.intLit` | constructor | (Lit), §5.8, §6.1 | `4.1:2` |
 | `RueCore.Statics` | `RueCore.Typed.boolLit` | constructor | (Lit), §5.8 | — |
 | `RueCore.Statics` | `RueCore.Typed.unitLit` | constructor | (Lit), §5.8 | — |
@@ -431,11 +431,11 @@ Coverage: 48 of 97 labeled §5/§6 rules are mechanized; 49 are *not yet mechani
 | §5.7 | `(Loop-Break)` | *not yet mechanized* |
 | §5.7 | `(Sub-Never)` | Checker.lean (module), Statics.lean (module), `RueCore.Typed`, `RueCore.Typed.panic`, `RueCore.Typed.ret` |
 | §5.8 | `(Lit)` | `RueCore.Typed.intLit`, `RueCore.Typed.boolLit`, `RueCore.Typed.unitLit` |
-| §5.8 | `(Arith)` | `RueCore.Explain.Premise.operandNotInt`, `RueCore.Explain.Premise.operandWidthMismatch`, `RueCore.Explain.binopRule`, `RueCore.Typed.binop`, `RueCore.BinOp`, `RueCore.BinOp.resultTy` |
-| §5.8 | `(Neg)` | `RueCore.Examples.i16Negate`, `RueCore.Explain.Premise.negNotSigned`, `RueCore.Typed.neg`, `RueCore.UnOp` |
-| §5.8 | `(Not)` | `RueCore.Examples.boolNegate`, `RueCore.Explain.Premise.notNotBool`, `RueCore.Typed.notOp`, `RueCore.UnOp` |
-| §5.8 | `(BitNot)` | `RueCore.Explain.Premise.bitnotNotInt`, `RueCore.Typed.bitnot`, `RueCore.UnOp` |
-| §5.8 | `(Ord)` | `RueCore.Explain.Premise.operandNotInt`, `RueCore.Explain.Premise.operandWidthMismatch`, `RueCore.Explain.binopRule`, `RueCore.Typed.binop`, `RueCore.BinOp`, `RueCore.BinOp.resultTy` |
+| §5.8 | `(Arith)` | `RueCore.Explain.Premise.operandNotInt`, `RueCore.Explain.Premise.operandWidthMismatch`, `RueCore.Explain.binopRule`, `RueCore.Typed`, `RueCore.Typed.binop`, `RueCore.BinOp`, `RueCore.BinOp.resultTy` |
+| §5.8 | `(Neg)` | `RueCore.Examples.i16Negate`, `RueCore.Explain.Premise.negNotSigned`, `RueCore.Typed`, `RueCore.Typed.neg`, `RueCore.UnOp` |
+| §5.8 | `(Not)` | `RueCore.Examples.boolNegate`, `RueCore.Explain.Premise.notNotBool`, `RueCore.Typed`, `RueCore.Typed.notOp`, `RueCore.UnOp` |
+| §5.8 | `(BitNot)` | `RueCore.Explain.Premise.bitnotNotInt`, `RueCore.Typed`, `RueCore.Typed.bitnot`, `RueCore.UnOp` |
+| §5.8 | `(Ord)` | `RueCore.Explain.Premise.operandNotInt`, `RueCore.Explain.Premise.operandWidthMismatch`, `RueCore.Explain.binopRule`, `RueCore.Typed`, `RueCore.Typed.binop`, `RueCore.BinOp`, `RueCore.BinOp.resultTy` |
 | §5.8 | `(Eq)` | *not yet mechanized* |
 | §5.8 | `(Float-Arith)` | *not yet mechanized* |
 | §5.8 | `(Float-Neg)` | *not yet mechanized* |
@@ -445,14 +445,14 @@ Coverage: 48 of 97 labeled §5/§6 rules are mechanized; 49 are *not yet mechani
 | §5.8 | `(Float-Cast)` | *not yet mechanized* |
 | §5.8 | `(Total-Cmp)` | *not yet mechanized* |
 | §5.8 | `(Float-Round)` | *not yet mechanized* |
-| §5.8 | `(Int-Cast)` | `RueCore.Typed.intCast` |
+| §5.8 | `(Int-Cast)` | `RueCore.Typed`, `RueCore.Typed.intCast` |
 | §5.8 | `(Struct-Intro)` | Explain.lean (module), `RueCore.Explain.Premise.unknownStruct`, `RueCore.Explain.Premise.fieldCountMismatch`, `RueCore.Explain.Premise.fieldTypeMismatch`, `RueCore.Explain.fieldsPremise`, Soundness.lean (module), `RueCore.HasTy`, Statics.lean (module), `RueCore.Typed`, `RueCore.Typed.mkStruct`, `RueCore.TypedArgs`, Syntax.lean (module), `RueCore.StructDecl`, `RueCore.Program` |
 | §5.8 | `(Array-Intro)` | *not yet mechanized* |
 | §5.8 | `(Call)` | `RueCore.check`, `RueCore.checkArgs`, `RueCore.checkArgs_sound`, `RueCore.Explain.Premise.unknownCallee`, `RueCore.Explain.Premise.argCountMismatch`, `RueCore.Explain.Premise.argTypeMismatch`, `RueCore.Explain.explainArgs`, `RueCore.Explain.argsPremise`, `RueCore.Explain.explainArgs_result`, `RueCore.HasTys`, `RueCore.ArgsOk`, `RueCore.args_sound`, `RueCore.entry_typed`, Statics.lean (module), `RueCore.Typed`, `RueCore.Typed.call`, `RueCore.TypedArgs`, `RueCore.WfProgram`, `RueCore.ProgramTyped`, Syntax.lean (module), `RueCore.Program` |
 | §5.8 | `(Call-Bottom)` | `RueCore.Typed.call` |
-| §5.8 | `(Panic)` | Checker.lean (module), `RueCore.Typed.panic`, Syntax.lean (module) |
+| §5.8 | `(Panic)` | Checker.lean (module), `RueCore.Typed`, `RueCore.Typed.panic`, Syntax.lean (module) |
 | §5.8 | `(Panic-Operand)` | `RueCore.Expr` |
-| §5.8 | `(Dbg)` | `RueCore.Corpus.dbgLine`, `RueCore.eval`, `RueCore.Examples.dbgScalars`, `RueCore.Explain.Premise.dbgNotObservable`, `RueCore.Typed.dbg`, Syntax.lean (module), `RueCore.Ty.observable` |
+| §5.8 | `(Dbg)` | `RueCore.Corpus.dbgLine`, `RueCore.eval`, `RueCore.Examples.dbgScalars`, `RueCore.Explain.Premise.dbgNotObservable`, `RueCore.Typed`, `RueCore.Typed.dbg`, Syntax.lean (module), `RueCore.Ty.observable` |
 | §5.8 | `(Accessor-Call)` | *not yet mechanized* |
 | §6.2 | `(Search)` | *not yet mechanized* |
 | §6.2 | `(Panic-Lift)` | *not yet mechanized* |
