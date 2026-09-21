@@ -110,7 +110,7 @@ def ctxHtml (Γ : Ctx) : String :=
 /-- One node of the §5 derivation: the rule, the expression, the incoming
 `Γ;Σ`, the conclusion `⇒ T ⊣ Σ'` or the premise that failed, and the
 premises as a nested list. -/
-partial def derivHtml : Deriv → String
+partial def derivHtml (P : Program) (R : Ty) : Deriv → String
   | .node r Γ e v kids =>
       let binders := binderTys Γ
       let concl := match v with
@@ -119,31 +119,38 @@ partial def derivHtml : Deriv → String
         | .reject why => tagc "div" "failed" ("✗ " ++ esc why)
       let children :=
         if kids.isEmpty then ""
-        else "<ul>" ++ String.intercalate "" (kids.map (fun k => tag "li" (derivHtml k))) ++ "</ul>"
+        else "<ul>" ++
+          String.intercalate "" (kids.map (fun k => tag "li" (derivHtml P R k))) ++ "</ul>"
       tagc "div" "node"
         (tagc "div" "rule" (esc r) ++
-         tagc "div" "expr mono" (esc (exprLine binders e)) ++
+         tagc "div" "expr mono" (esc (exprLine P R binders e)) ++
          tagc "div" "ctx mono" ("Γ;Σ " ++ ctxHtml Γ) ++
          concl) ++ children
 
 /-- (helper) What one step produced. -/
 def stepResHtml : StepRes → String
   | .value v => tagc "span" "ok" (esc ("value " ++ valLine v))
+  | .unwound v =>
+      tagc "span" "ok" (esc ("value " ++ valLine v)) ++
+        tagc "div" "ctx" "handed past this node by a `return` (§6.9)"
   | .panicked k => tagc "span" "bad" (esc ("panic: " ++ Corpus.panicName k))
   | .refuse w why =>
       tagc "span" "bad" (esc ("refused: " ++ Corpus.violationName w)) ++
         tagc "div" "ctx" (esc why)
+  | .exhausted =>
+      tagc "span" "bad" "out of fuel" ++
+        tagc "div" "ctx" "the interpreter stopped early; this is not a machine state"
 
 /-- One row of the §6 step table. A row whose node emitted a drop event is
 marked, so the drop points of a run stand out. -/
-def stepRow (n : Nat) (s : Step) : String :=
+def stepRow (P : Program) (n : Nat) (s : Step) : String :=
   let cls := if s.events.isEmpty then "" else " class=\"has-drop\""
   "<tr" ++ cls ++ ">" ++
   tag "td" (toString n) ++
   tag "td" (tagc "div" "rule" (esc s.rule) ++
             tagc "div" "expr mono"
               ("<span style=\"opacity:.45\">" ++ esc (bar' s.depth) ++ "</span>" ++
-               esc s.text)) ++
+               esc (s.text P))) ++
   tag "td" (storeTable s.storeBefore) ++
   tag "td" (storeTable s.storeAfter) ++
   tag "td" (if s.events.isEmpty then tagc "span" "none" "—"
@@ -158,26 +165,36 @@ where
 with the failing premise named prominently — the rule it belongs to, the
 subexpression it was checked on, and the premise in the calculus's own words
 with its citation. -/
-def verdictHtml (d : Deriv) : String :=
-  match d.result with
-  | some (T, Γ') =>
-      tagc "div" "verdict"
-        (tagc "div" "label" "ACCEPTED by the checker (§5)" ++
-         tagc "div" "" ("type " ++ tag "code" (esc (Print.tyName T)) ++
-           ", outgoing Γ;Σ " ++ ctxHtml Γ') ++
-         tagc "div" "ctx"
-           ("check_sound ties this acceptance to a real derivation, so the §7 safety " ++
-            "theorems apply to this program."))
-  | none =>
-      tagc "div" "verdict reject"
-        (tagc "div" "label" "REJECTED by the checker (§5)" ++
-         match deepestFailure d with
-         | some (r, e, binders, why) =>
-             tagc "div" "premise"
-               (tagc "div" "where" ("The premise that fails, at " ++ esc r ++ ", on " ++
-                  tagc "code" "mono" (esc (exprLine binders e)) ++ ":") ++
-                tag "div" (esc why))
-         | none => "")
+def verdictHtml (P : Program) (ds : List (Nat × FnDef × Deriv)) : String :=
+  let failing :=
+    (ds.map (fun t => (deepestFailure t.2.2).map (fun f => (t.1, t.2.1, f)))).reduceOption
+  if checkProgram P then
+    tagc "div" "verdict"
+      (tagc "div" "label" "ACCEPTED by the checker (§5)" ++
+       tagc "div" ""
+         ("Every function is well-formed by (Fn) §5.8 and the entry point takes no " ++
+          "parameters.") ++
+       tagc "div" "ctx"
+         ("checkProgram_sound ties this acceptance to a real derivation, so the §7 " ++
+          "safety theorems apply to this program."))
+  else
+    tagc "div" "verdict reject"
+      (tagc "div" "label" "REJECTED by the checker (§5)" ++
+       match failing.head? with
+       | some (i, fd, (r, e, binders, why)) =>
+           tagc "div" "premise"
+             (tagc "div" "where" ("The premise that fails, in " ++ esc (fnHeader i fd) ++
+                ", at " ++ esc r ++ ", on " ++
+                tagc "code" "mono" (esc (exprLine P fd.ret binders e)) ++ ":") ++
+              tag "div" (esc why))
+       | none =>
+           tagc "div" "premise"
+             (tag "div"
+               (esc ("No function body's derivation failed, so the rejection is the " ++
+                 "whole-program premise: a by-value parameter or a body-local binding " ++
+                 "is still Owned at a linear type where its function's body ends " ++
+                 "((Fn) §5.8's second clause, 3.8:62), or the entry point does not " ++
+                 "take an empty parameter list.")))) 
 
 /-- The §6 machine's outcome, in one line: a value with its drop trace, a
 defined trap (§6.12), or a refusal. -/
@@ -186,6 +203,16 @@ def outcomeHtml : EvalRes → String
       tagc "span" "ok" (esc ("ok — value " ++ valLine v)) ++
       tagc "div" "ctx" ("drop trace: " ++
         (if tr.isEmpty then "(no drops)" else esc (eventsLine tr)))
+  | .returned _ v tr =>
+      tagc "span" "ok" (esc ("ok — value " ++ valLine v ++ " (handed back by a `return`)")) ++
+      tagc "div" "ctx" ("drop trace: " ++
+        (if tr.isEmpty then "(no drops)" else esc (eventsLine tr)))
+  | .outOfFuel =>
+      tagc "span" "bad" "out of fuel" ++
+      tagc "div" "ctx"
+        ("the interpreter stopped before the program did; fuel_mono says a larger " ++
+         "bound never changes an answer, so this is a bound too small, not a claim " ++
+         "about the program")
   | .panic k =>
       tagc "span" "bad" (esc ("panic: " ++ Corpus.panicName k)) ++
       tagc "div" "ctx" "a defined trap (§6.12), not a violation"
@@ -207,44 +234,50 @@ def page (title body : String) : String :=
 
 /-- A complete, self-contained page explaining one fragment program: its
 §5 derivation and its §6 run. -/
-def render (name description : String) (rules : List String) (e : Expr) : String :=
-  let d := explain [] e
-  let t := traceEval 0 [] [] [] e
+def render (name description : String) (rules : List String) (P : Program) : String :=
+  let ds := programDerivs P 0 P
+  let t := runTrace P Corpus.exportFuel
   page name
     (tag "h1" (esc name) ++
      tagc "p" "lead" (esc description) ++
      tagc "p" "rules" (String.intercalate "" (rules.map (fun r => tag "span" (esc r)))) ++
      tag "h2" "The program" ++
-     tagc "pre" "program" (esc (Print.expr [] 0 e)) ++
+     tagc "pre" "program" (esc (Print.fnItems P 0 P)) ++
      tag "h2" "What the checker says (§5)" ++
-     verdictHtml d ++
-     tag "h2" "The derivation (§5)" ++
+     verdictHtml P ds ++
+     tag "h2" "The derivations (§5)" ++
      tagc "p" "lead"
-       ("Each node is one rule of §5: the expression it concludes about, the fused " ++
-        "Γ;Σ flowing into it, and its conclusion. A rule's premises are nested under it.") ++
-     "<ul class=\"deriv\">" ++ tag "li" (derivHtml d) ++ "</ul>" ++
+       ("One tree per function body, checked from (Fn) §5.8's entry context. Each node " ++
+        "is one rule of §5: the expression it concludes about, the fused Γ;Σ flowing " ++
+        "into it, and its conclusion. A rule's premises are nested under it.") ++
+     String.intercalate ""
+       (ds.map (fun p =>
+         tag "h3" (esc (fnHeader p.1 p.2.1)) ++
+         "<ul class=\"deriv\">" ++ tag "li" (derivHtml P p.2.1.ret p.2.2) ++ "</ul>")) ++
      tag "h2" "The run (§6)" ++
      tagc "p" "lead"
        ("One row per evaluated node, in execution order — a node's premises run before " ++
-        "the node itself, so the table reads top to bottom as the machine ran. Rows that " ++
-        "drop something are highlighted.") ++
+        "the node itself, so the table reads top to bottom as the machine ran. A " ++
+        "callee's rows are nested deeper than its call's. Rows that drop something are " ++
+        "highlighted.") ++
      "<table class=\"trace\"><thead><tr><th>#</th><th>node</th><th>store before</th>" ++
      "<th>store after</th><th>drop events</th><th>result</th></tr></thead><tbody>" ++
-     String.intercalate "" ((numbered 1 t.steps).map (fun p => stepRow p.1 p.2)) ++
+     String.intercalate "" ((numbered 1 t.steps).map (fun p => stepRow P p.1 p.2)) ++
      "</tbody></table>" ++
      tag "h2" "Outcome" ++
      tag "p" (outcomeHtml t.res))
 
 /-- (helper) The page for one bridge corpus case (`Corpus.lean`). -/
 def renderCase (c : Corpus.Case) : String :=
-  render c.name c.description c.rules c.expr
+  render c.name c.description c.rules c.prog
 
 /-- (helper) One row of the index: the case, its checker verdict, and the
 machine's outcome in words. -/
 def indexRow (c : Corpus.Case) : String :=
-  let verdict := match check [] c.expr with
-    | some (T, _) => tagc "span" "ok" ("accepted · " ++ esc (Print.tyName T))
-    | none => tagc "span" "bad" "rejected"
+  let verdict :=
+    if checkProgram c.prog then
+      tagc "span" "ok" ("accepted · " ++ esc (Corpus.resultTyName c))
+    else tagc "span" "bad" "rejected"
   "<tr>" ++
   tag "td" ("<a href=\"" ++ esc c.name ++ ".html\">" ++ esc c.name ++ "</a>") ++
   tag "td" verdict ++
