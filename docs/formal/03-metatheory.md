@@ -22,9 +22,22 @@ entry point for a reader with no Lean.
 an abstract resource type standing in for a monomorphic struct of each
 multiplicity class; use (copy/move), `@drop`, `let` with scope-exit drop,
 assignment with reinitialization, sequencing with the discard check, `if`
-with the §5.5 branch join, and `+`/`/`/`<` with the §6.4 traps. Whole
-bindings only. No structs with fields, paths, enums, arrays, calls, loops,
-loans, or buffers.
+with the §5.5 branch join, `+`/`/`/`<` with the §6.4 traps, and — with
+RUE-2233 — top-level function definitions, by-value calls with frames and
+scope records ((Fn)/(Call) §5.8, (D-Call)/(D-Return-Value) §6.9), and `return`
+with its σ unwind ((Return-Value) §5.7, (D-Return) §6.9). Whole bindings only.
+No structs with fields, paths, enums, arrays, `inout`/`borrow` parameters,
+accessor calls, loops, loans, or buffers.
+
+**Fuel.** Because a callee's body is not a subexpression of its call,
+recursion makes the interpreter's recursion unbounded, so `eval` takes a fuel
+bound and reports `outOfFuel` when it runs out. Every theorem below is
+quantified over the bound, and two lemmas say that quantification is not
+vacuous: `RueCore.fuel_mono` (a result other than `outOfFuel` is the result at
+every larger bound) and `RueCore.no_masking` (no bound turns a violation into
+exhaustion for a program some fuel completes). `outOfFuel` is the
+interpreter's admission that it stopped, not a state of §6's machine, and it
+is outside the adequacy correspondence for the same reason.
 
 **Axioms.** Every theorem below depends on `propext` and `Quot.sound` only;
 the build fails otherwise (`toolchains/lean/defs.bzl`).
@@ -33,19 +46,31 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 
 ## Type safety (progress + preservation)
 
-- **Theorem:** `RueCore.soundness`
-  (`lean/RueCore/Soundness.lean`).
-- **Statement, in words:** if `Typed [] e T Γ'` holds, then `eval [] [] e` is
-  either a defined panic or a well-typed value whose final store satisfies
-  `Matches Γ'`; it is never a `Violation`. Progress and preservation in one
-  statement, because the interpreter is total on this fragment.
-- **Invariant:** `Matches` — "Σ faithfully tracks the store's
-  initialization" (§7). Its `CellMatches` clause is deliberately asymmetric:
-  a statically `MovedOut` cell may still hold a live *non-linear* value (the
-  §5.5 conservative join, `3.8:73`), never a live linear one (`3.8:50`).
-- **Covers:** the fragment above. **Owed:** every Phase C slice re-establishes
-  this theorem for its forms (RUE-2230 through RUE-2237, RUE-2282); fuel
-  enters with calls (RUE-2233), with monotonicity and no-masking lemmas.
+- **Theorems:** `RueCore.soundness`, and `RueCore.run_safe` over a whole
+  program (`lean/RueCore/Soundness.lean`).
+- **Statement, in words:** if `Typed P R Γ e T Γ'` holds and the frame agrees
+  with `Γ`, then at every fuel bound `eval` yields a well-typed value with the
+  outgoing context's agreement restored, a value handed back by an unwinding
+  `return`, a defined panic, or `outOfFuel`; it is never a `Violation`.
+  `run_safe` reads it off for a whole program: a well-formed program either
+  exhausts its fuel, traps in a defined way, or produces a value of the entry
+  point's declared return type. Progress and preservation in one statement,
+  because the interpreter is total.
+- **Invariant:** `RueCore.FrameMatches`, in two halves. `Matches` — "Σ
+  faithfully tracks the store's initialization" (§7), whose `CellMatches`
+  clause is deliberately asymmetric: a statically `MovedOut` cell may still
+  hold a live *non-linear* value (the §5.5 conservative join, `3.8:73`), never
+  a live linear one (`3.8:50`). And the σ invariant: the frame's scope record,
+  read newest-first, *is* its environment — the RUE-1277 redundancy
+  discharged, and what makes `run-all-scope-drops` safe. `RueCore.Untouched`
+  carries frame locality across a call, so a caller's agreement survives a
+  callee's run.
+- **Hypothesis:** `RueCore.ProgramTyped` — (Fn) §5.8 for every function plus
+  an entry point taking no parameters — which `RueCore.checkProgram_sound`
+  decides.
+- **Covers:** the fragment above. **Owed:** every remaining Phase C slice
+  re-establishes this theorem for its forms (RUE-2230 through RUE-2237,
+  RUE-2282).
 
 ## No use-after-move
 
@@ -62,16 +87,18 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 ## No use-after-drop / no leak of drops
 
 - **Theorem:** `RueCore.no_use_after_drop` — the "never read afterward"
-  half: no evaluation touches a retired (`†`) cell. At fragment scope this
-  is structural rather than a consequence of typing: the interpreter
-  resumes a `let`'s caller with the original environment, so no closed
-  expression, well-typed or not, can name a retired cell. The guard itself
-  is witnessed from an open machine state (`Examples.lean`); the bullet
-  becomes falsifiable once scope records and unwind paths can retain a
-  retired location (RUE-2233).
-- **Owed:** the "exactly once, at the end of its scope" half needs the σ
-  scope records and the unwind paths (RUE-2233), then the trace theorem
-  `drop_exactly_once` (RUE-2237).
+  half: no evaluation touches a retired (`†`) cell. With frames this is a
+  consequence of the invariant rather than a structural fact about closed
+  expressions: `run-all-scope-drops` (§6.9) walks the frame's scope record at
+  every `return` and at every frame pop, and it is `FrameMatches` — the record
+  *is* the environment, whose cells `Matches` says are live or moved out and
+  pairwise distinct — that keeps those walks off a `†` cell and stops any cell
+  being retired twice. The guard is also witnessed directly from an open
+  machine state, including one whose scope record names a retired cell
+  (`Examples.lean`).
+- **Owed:** the "exactly once, at the end of its scope" half is the trace
+  theorem `drop_exactly_once` (RUE-2237); the σ records and unwind paths it
+  quantifies over are in place.
 
 ## No use-after-free
 
@@ -81,14 +108,18 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 
 ## Linear values are consumed exactly once
 
-- **Theorems:** `RueCore.no_linear_leak` (§5.6 scope exit),
+- **Theorems:** `RueCore.no_linear_leak` (§5.6 scope exit, and §6.9's frame
+  teardown at an early `return` or a frame pop),
   `RueCore.no_linear_overwrite` (§5.2, `3.8:77`),
   `RueCore.no_linear_discard` (§5.3, `3.8:64`).
-- **In words:** a well-typed program never reaches the refusal the machine
+- **In words:** a well-formed program never reaches the refusal the machine
   raises when a linear value would be leaked, overwritten while live, or
-  discarded.
-- **Covers:** whole bindings and the binary join. **Owed:** declared-linear
-  destructure and residue ordering (RUE-2236), enums (RUE-2232).
+  discarded. The leak half now covers three edges, not one: a `let`'s scope
+  exit, a frame's normal pop (a by-value parameter the callee never consumed —
+  (Fn) §5.8's second clause, `3.8:62`), and a `return`'s `⊥_exit` unwind.
+- **Covers:** whole bindings, the binary join, and by-value parameters.
+  **Owed:** declared-linear destructure and residue ordering (RUE-2236),
+  enums (RUE-2232).
 
 ## Exclusivity / no aliased mutation
 
@@ -103,7 +134,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 | Totality of the float operations | not yet stated; an assumption about IEEE 754, named as such (RUE-2282) |
 | Handle-uniqueness preservation (O1) | not yet mechanized (RUE-2240) |
 | Adequacy of `eval` to §6's reduction, and progress/preservation derived over the mechanized relation | not yet stated; a Phase C deliverable required at checkpoint C and the CI gate (RUE-2289). Its domain is the programs `check` accepts: there `eval`'s `ok`/`panic` outcomes must agree with §6's values and panics, and neither side gets stuck. `.stuck` is outside the correspondence, because three of `eval`'s refusals are monitors §6 does not have, and `eval` refuses on an operand's shape before evaluating the next operand where §6.2's `v ⊕ E` context reduces that operand first (`Dynamics.lean`, "the correspondence with §6") |
-| Fuel monotonicity and no masking | not yet stated; arrives with fuel (RUE-2233) |
+| Fuel monotonicity and no masking | `RueCore.fuel_mono` and `RueCore.no_masking` (`lean/RueCore/Soundness.lean`). A bound that produced a result other than `outOfFuel` produces that same result at every larger bound; a bound that reached a violation reaches that same violation at every bound that answers at all. Together they say the ∀-fuel form of the theorems above is a statement about one real outcome, and that no choice of fuel hides a violation behind exhaustion |
 
 ## Traceability
 

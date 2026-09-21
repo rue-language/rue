@@ -38,11 +38,15 @@ rule's name in parentheses.
 `Statics.lean` writes the same judgment as
 
 ```lean
-inductive Typed : Ctx → Expr → Ty → Ctx → Prop
+inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop
 ```
 
-Read `Typed Γ e T Γ'` as the judgment above. Three things are different in
-shape and identical in content:
+Read `Typed P R Γ e T Γ'` as the judgment above. `P` is the top-level function
+environment that §5.8's (Call) looks a callee's signature up in, and `R` is the
+enclosing function's declared return type, which §5.7's (Return-Value) checks a
+`return` operand against; the calculus fixes both for a function body, and the
+mechanization carries them as parameters of the whole judgment for the same
+reason. Four things are different in shape and identical in content:
 
 - **`Γ` and `Σ` are fused.** A `Ctx` is a list of entries, one per binding in
   scope, and each entry carries both the fixed part (`ty`, the `μ` mark) and
@@ -59,8 +63,15 @@ shape and identical in content:
 - **Each rule is a constructor.** `Typed.useMove` *is* `(Use-Move)`: its
   arguments are the rule's premises, its result is the rule's conclusion, and
   its doc-comment names the rule and the prose paragraph it encodes. A
-  program `e` is well-typed exactly when a value of type `Typed [] e T Γ'`
+  program `e` is well-typed exactly when a value of type `Typed P R [] e T Γ'`
   exists for some `T` and `Γ'`, which is what "there is a derivation" means.
+- **`never` is folded into one rule.** §5.7 types `return e` at `never` and
+  lets (Sub-Never) coerce it to whatever the context needs, with a divergent
+  outgoing state `⊥`. `Ty` has no `never`, because a `never` value does not
+  exist (`3.4:1`) and so nothing is ever typed at it dynamically; instead
+  `Typed.ret` concludes at *any* type and at *any* outgoing context of the
+  same skeleton, which is exactly what `never` and `⊥` license a context to
+  assume. `INDEX.md` records (Sub-Never) as mechanized at that one form.
 
 For example, `(Use-Move)` in the calculus (§5.1, whole bindings only) says: a
 use of an owned, non-`Copy` place has the place's type and marks the place
@@ -69,7 +80,7 @@ use of an owned, non-`Copy` place has the place's type and marks the place
 ```lean
 | useMove {Γ i en} :
     Γ[i]? = some en → en.st = .owned → en.ty.mult ≠ .copy →
-    Typed Γ (.use i) en.ty (Γ.set i (en.setSt .movedOut))
+    Typed P R Γ (.use i) en.ty (Γ.set i (en.setSt .movedOut))
 ```
 
 Premise by premise: binding `i` exists and is entry `en`; it is `Owned`; its
@@ -86,19 +97,25 @@ reduction relation between them. `Dynamics.lean` gives the same dynamics as
 a definitional interpreter:
 
 ```lean
-def eval (H : Store) (ρ : Env) : Expr → EvalRes
+def eval : Nat → Program → Store → Frame → Expr → EvalRes
+def run (P : Program) (fuel : Nat) : EvalRes := eval fuel P [] ⟨[], []⟩ (.call 0 [])
 ```
 
 `H` is §6.1's store (a list of cells: `full v`, the moved-out marker `moved`
-for `⊘`, or `dead` for a retired allocation `†`), and `ρ` is §6.1's
-environment (position `i` ↦ its location in `H`). Instead of stepping once,
-`eval` runs the program to the end and reports one of three outcomes:
+for `⊘`, or `dead` for a retired allocation `†`) and `φ` is §6.1's frame:
+the environment `ρ` (position `i` ↦ its location in `H`) and the scope record
+`σ` (the cells this frame owes a drop, in creation order). `run` is §6.12's
+top-level result: call the program's entry point, index `0`, with no
+arguments. Instead of stepping once, `eval` runs the program to the end and
+reports one of five outcomes:
 
 | `EvalRes` | Meaning in §6 |
 | --- | --- |
 | `.ok H' v tr` | the machine halted normally with value `v`, final store `H'`, and drop trace `tr` |
+| `.returned H' v tr` | an unwinding `return` handed `v` back (§6.9's (D-Return)); every enclosing form passes it on until a call boundary absorbs it |
 | `.panic k` | the machine halted in a defined trap `↯κ` (§6.12): `overflow` or `divZero` |
 | `.stuck w` | the machine refused: `w` names either a configuration §6 leaves undefined or a linear action the machine monitors (see below) |
+| `.outOfFuel` | not a machine state at all: the interpreter's admission that it stopped early (see below) |
 
 The drop trace `tr` is the list of every drop the machine performed, in
 order: `drop ℓ v` for a binding's drop (at scope exit, at `@drop`, or when
@@ -108,8 +125,9 @@ what the bridge compares against a native binary's stdout (`README.md`, "The
 bridge corpus").
 
 A `Violation` is a refusal: `useAfterMove` (reading a `⊘` cell),
-`useAfterDrop` (touching a `†` cell), `linearLeak` (scope exit on a live
-linear value), `linearOverwrite` (`3.8:77`), `linearDiscard` (`3.8:64`),
+`useAfterDrop` (touching a `†` cell), `linearLeak` (a scope exit or a frame
+unwind on a live linear value), `linearOverwrite` (`3.8:77`),
+`linearDiscard` (`3.8:64`),
 plus `unbound` and `typeConfusion` for ill-scoped or ill-typed input. §7's
 memory-safety bullets each say that one of these never happens. The three
 linear refusals are monitors the machine adds (§6's rules would drop the
@@ -119,19 +137,54 @@ accepts, and only there (`Dynamics.lean`).
 
 Why a function rather than the relation: a function can be *run*, so every
 semantic question about a fragment program is answerable by execution, and a
-total function always returns one of the three outcomes, so progress becomes
+total function always returns one of the outcomes above, so progress becomes
 the single statement "never `.stuck`", which is what the theorem in section 4
 proves. What the function owes the relation is an adequacy lemma (they agree
 on every program), owed by RUE-2289 and required before the mechanization
 gates anything (`../03-metatheory.md`, "How to read a theorem here").
 
+### What the fuel is, and why the theorem quantifies over it
+
+A function in Lean must terminate, and Lean must be able to see why. Before
+calls, it could: every recursive step of `eval` ran on a *subexpression*, and
+expressions are finite. A call breaks that. The body of the callee is not a
+subexpression of the call — and a recursive function calls itself, so no
+amount of looking at the program's syntax bounds how far the machine goes. A
+Rue program can loop forever, and `eval` must not.
+
+So `eval` carries a **fuel**: a number, one unit of which every step spends,
+and when it reaches zero the interpreter stops and says `.outOfFuel`. That is
+not a state of §6's machine and it is not a claim about the program; it is the
+interpreter reporting that *it* gave up. Unspent fuel costs nothing, so a
+bound far larger than any program needs is free (`Examples.lean` runs
+everything at 200, the corpus exporter at 100 000).
+
+The theorems then say: *for every* fuel bound, a well-typed program's result
+is a well-typed value, an unwinding return, a defined panic, or `outOfFuel` —
+never a violation. Read carelessly, the last disjunct looks like a loophole:
+an interpreter that answered `.outOfFuel` immediately would satisfy the
+theorem too, and say nothing. Two lemmas close it.
+
+- **`fuel_mono`**: if some bound produced an answer other than `outOfFuel`,
+  every larger bound produces *that same answer*. So raising the bound never
+  changes a result; there is one outcome, and a sufficient bound finds it.
+- **`no_masking`**: if some bound reached a violation, then every bound that
+  answers at all reaches that same violation. So no choice of fuel can hide a
+  violation behind exhaustion.
+
+Together: for a program that completes at some bound, "for every fuel" is a
+statement about that program's one real outcome, and a violation cannot be
+traded away by choosing the fuel badly. `Examples.lean` shows the two sides
+concretely — `run countdown 16` is `outOfFuel`, `run countdown 17` is the
+value, and `fuel_mono` proves every larger bound agrees.
+
 ## 3. What `Matches` says, and why it is asymmetric
 
 Every safety proof carries an invariant relating the static story to the
-dynamic one. Here it is `Matches Γ ρ H` (`Soundness.lean`): for each binding,
-the cell its location holds agrees with its context entry, locations are
-inside the store, and no two bindings share a location. Per cell, `CellMatches`
-says:
+dynamic one. Here it is `FrameMatches Γ φ H` (`Soundness.lean`), which has two
+halves. The first is `Matches Γ ρ H`: for each binding, the cell its location
+holds agrees with its context entry, locations are inside the store, and no
+two bindings share a location. Per cell, `CellMatches` says:
 
 - a statically `Owned` entry holds a live, well-typed value;
 - a statically `MovedOut` entry holds either the moved-out marker **or a live,
@@ -150,34 +203,72 @@ theorem would be false; for a linear `x` the join refuses outright (`3.8:50`,
 the corpus case `linear_half_consumed`), and `Matches` records that refusal
 as an invariant.
 
+The second half is about the frame's **scope record** σ, and it is one
+equation: σ read newest-first *is* the environment ρ. §6.1 keeps both books —
+ρ says where a binding lives, σ says it is owed a drop — and RUE-1277 is the
+observation that a `let` registers its cell in both: in σ, and in the
+administrative `endscope` the normal path runs. The equation is what makes
+that redundancy provably consistent. The body of a `let` runs under a frame
+whose σ holds the new cell; the frame the normal path *returns to* is the
+caller's, which never held it. So on the normal path the `endscope` drops it,
+on an early `return` the unwind drops it, and neither path can drop it twice.
+The same equation is why §7's no-use-after-drop bullet is now a consequence of
+the invariant rather than a fact about closed expressions: `run-all-scope-drops`
+walks σ, σ is ρ, and `Matches` says every cell of ρ is live or moved out and
+that no two bindings share one — so no unwind ever touches a `†` cell.
+
+A third piece, `Untouched ρ H H'`, carries frame *locality*: the store only
+grows, and every already-allocated cell that ρ does not name keeps its
+contents. A callee's parameter cells are minted above the caller's whole
+store, so the caller's bindings are outside the callee's ρ and its agreement
+survives the call untouched. That is what lets the proof step over a call
+without knowing anything about the callee but its signature.
+
 ## 4. The theorem, and what `check_sound` buys
 
 ```lean
-theorem soundness :
-  Typed Γ e T Γ' → Matches Γ ρ H →
-    (∃ k,        eval H ρ e = .panic k) ∨
-    (∃ H' v tr,  eval H ρ e = .ok H' v tr ∧ HasTy v T ∧ Matches Γ' ρ H')
+theorem soundness (hwf : WfProgram P) :
+  ∀ fuel, Typed P R Γ e T Γ' → FrameMatches Γ φ H →
+    EvalOk T R Γ' φ H (eval fuel P H φ e)
 ```
 
-In words: a well-typed expression, run in any store that agrees with its
-incoming context, either traps in a defined way or produces a well-typed
-value with the outgoing context's agreement restored. It never returns
-`.stuck`. That is progress and preservation in one statement (§7, first
-bullet), and the named corollaries (`no_use_after_move`, `no_linear_leak`,
-…) each restate "never `.stuck` with this particular violation" for one §7
-bullet.
+`EvalOk` is a predicate on the result rather than a disjunction of
+existentials, which is what lets the proof discharge §6.2's operand search
+once and reuse it at every form. Read out, it says: on `.ok`, the value has
+the expression's type, the outgoing context's agreement is restored, and the
+frame's neighbours are untouched; on `.returned`, the value has the enclosing
+function's return type and the neighbours are untouched; on `.panic` and
+`.outOfFuel`, nothing; and on `.stuck`, **`False`** — which is the whole
+point. That is progress and preservation in one statement (§7, first bullet).
+
+Over a whole program, `run_safe` says it in the shape a reader wants:
+
+```lean
+theorem run_safe (hwf : WfProgram P) (h0 : P[0]? = some fd) (hp : fd.params = []) :
+  ∀ fuel, run P fuel = .outOfFuel
+        ∨ (∃ k, run P fuel = .panic k)
+        ∨ (∃ H v tr, run P fuel = .ok H v tr ∧ HasTy v fd.ret)
+```
+
+and the named corollaries (`no_use_after_move`, `no_linear_leak`, …) each
+restate "never `.stuck` with this particular violation" for one §7 bullet.
 
 The theorem quantifies over derivations. To apply it to a *program* you need
-to know a derivation exists, and `Checker.lean` is how you find out:
-`check Γ e` is the §5 rules run as an algorithm, returning the type and
-outgoing context or rejecting. `check_sound` proves that every acceptance is
-backed by a real derivation. So the pipeline for any program is: run `check`;
-if it accepts, `soundness` applies and the §7 guarantees hold for it; if it
-rejects, the program is outside the theorem, and `eval` usually shows which
-refusal it would have reached (the corpus prints that when there is one; a
-rejection can also be a plain type error, such as an out-of-range literal,
-which `eval` runs without complaint). Completeness, that every derivable
-program is accepted, is expected but not yet proved (`Checker.lean`).
+to know a derivation exists, and `Checker.lean` is how you find out: `check P
+R Γ e` is the §5 rules run as an algorithm, returning the type and outgoing
+context or rejecting, and `checkProgram P` lifts that to (Fn) §5.8 for every
+function plus the entry point's empty parameter list. `check_sound` and
+`checkProgram_sound` prove that every acceptance is backed by a real
+derivation — the second produces exactly the `ProgramTyped` hypothesis the
+program theorems take. So the pipeline for any program is: run
+`checkProgram`; if it accepts, `run_safe` applies and the §7 guarantees hold
+for it; if it rejects, the program is outside the theorem, and `run` usually
+shows which refusal it would have reached (the corpus prints that when there
+is one; a rejection can also be a plain type error, such as an out-of-range
+literal, which `eval` runs without complaint). Completeness, that every
+derivable program is accepted, is expected but not yet proved
+(`Checker.lean`, which also says where `check` is deliberately narrower than
+the rule for `return`).
 
 ## 5. A worked example: `reinit`
 
@@ -197,12 +288,13 @@ letIn true (mkres .linear (intLit 1))
       (consume (use 0))))
 ```
 
-Printed as Rue source by the bridge (the prelude declaring `RLinear` and
-`consume_linear` is omitted here; `README.md` shows it):
+as the body of the entry function `f0`. Printed as Rue source by the bridge
+(the prelude declaring `RLinear` and `consume_linear` is omitted here;
+`README.md` shows it):
 
 ```rue
-fn main() -> i32 {
-    let result: i64 = {
+fn f0() -> i64 {
+    {
         let mut v0: RLinear = RLinear { value: 1 };
         {
             let t2: i64 = consume_linear(v0);
@@ -211,7 +303,11 @@ fn main() -> i32 {
                 consume_linear(v0)
             }
         }
-    };
+    }
+}
+
+fn main() -> i32 {
+    let result: i64 = f0();
     @dbg(result);
     0
 }
@@ -219,7 +315,8 @@ fn main() -> i32 {
 
 ### The checker's derivation
 
-`check [] reinit` accepts with type `int` and outgoing context `[]`. The
+`checkProgram` accepts, and `f0`'s body checks at `int` with outgoing context
+`[]`. The
 derivation it certifies, read from the outside in, with the fused context
 written as `[type, μ, state]` per binding (only one binding, `v0`):
 
@@ -246,7 +343,7 @@ which the compiler rejects with E0493 and the machine refuses with
 
 ### The interpreter's run
 
-`eval [] [] reinit` returns `.ok [dead] (.int 2) []`. Step by step, with the
+`run` returns `.ok [dead] (.int 2) []`. Step by step, with the
 store `H` as a list of cells indexed by location and `ρ` mapping position 0
 to its location:
 
@@ -274,16 +371,96 @@ Both tables above are generated for every corpus case: this one is
 
 ### The theorem that covers it
 
-`check` accepted, so by `check_sound` a derivation `Typed [] reinit .int []`
-exists, and `soundness` applies with the empty store (the invariant
-`Matches [] [] []` holds trivially). It promises: either a defined panic, or
-`.ok` with a value of type `int` and the invariant restored for the outgoing
-context `[]`. The run above is the second case; `HasTy (.int 2) .int` holds
-because `2` is in bounds. The corollary this program illustrates is
-`no_linear_overwrite`: the assignment in the middle is the very shape
-`3.8:77` guards, and the theorem says the guard is never needed at run time
-for a program `check` accepts, because the checker has already demanded the
-`MovedOut` state that makes the overwrite-drop a no-op.
+`checkProgram` accepted, so by `checkProgram_sound` the program is
+`ProgramTyped`, and `run_safe` applies (the initial frame invariant,
+`FrameMatches [] ⟨[], []⟩ []`, holds trivially: no bindings, no store, an
+empty scope record). It promises, at every fuel: `outOfFuel`, a defined
+panic, or `.ok` with a value of the entry function's declared return type.
+The run above is the last case; `HasTy (.int 2) .int` holds because `2` is in
+bounds. The corollary this program illustrates is `no_linear_overwrite`: the
+assignment in the middle is the very shape `3.8:77` guards, and the theorem
+says the guard is never needed at run time for a program the checker accepts,
+because the checker has already demanded the `MovedOut` state that makes the
+overwrite-drop a no-op.
+
+## 5b. A second worked example: an early `return` and its unwind
+
+The corpus case `return_past_affine` (`Corpus.lean`) is the shape RUE-1277
+added `(D-Return)`'s "in any evaluation context `E'`" for: a `return` under
+two open `let` scopes, each holding a live affine resource. It is the smallest
+program where the frame's **scope record** σ, rather than the pending
+`endscope` markers, is what runs the drops.
+
+### The program
+
+```lean
+letIn false (mkres .affine (intLit 3))
+  (letIn false (mkres .affine (intLit 4))
+    (ret (intLit 7)))
+```
+
+Printed (prelude omitted):
+
+```rue
+fn f0() -> i64 {
+    {
+        let v0: RAffine = RAffine { value: 3, live: true };
+        {
+            let v1: RAffine = RAffine { value: 4, live: true };
+            return 7
+        }
+    }
+}
+```
+
+### What the checker demands
+
+`Typed.ret` (`(Return-Value)` §5.7) has three premises. The operand is checked
+at the enclosing function's declared return type — `7 ⇒ i64`, and `i64` is
+`f0`'s return type. The outgoing state is free (that is `⊥`), restricted only
+to the same skeleton. And the third is the one that matters here:
+`NoOwnedLinear Γ₁` — **no binding of the frame is still `Owned` at a linear
+type**. That is §5.6's obligation, taken frame-wide because a `return` ends
+every open scope of the frame at once (`3.8:62`, and (Fn) §5.8's second
+clause).
+
+Here Γ₁ at the `return` is `[v1: RAffine = Owned, v0: RAffine = Owned]`. Both
+are *affine*, not linear, so the premise holds and the program is accepted:
+an affine value reaching an exit is dropped, which is legal and observable.
+Change either to `RLinear` and the premise fails — that is the corpus case
+`return_past_linear`, which the compiler rejects with E0406 and the machine
+refuses with `linearLeak`.
+
+### The unwind, step by step
+
+The frame at the `return` is `φ = ⟨ρ ; σ⟩` with `ρ = [ℓ1, ℓ0]` (innermost
+binder first) and `σ = [ℓ0, ℓ1]` (creation order). The `let` cases built σ by
+appending, so σ reversed is ρ — the invariant of section 3.
+
+| Step | Rule | Store before | Effect | Store after | Events |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `(D-Call) §6.9` (push the frame) | `[]` | `f0` takes no arguments, so no parameter cell is minted; `σ = []` | `[]` | |
+| 2–4 | literal, resource intro, `(D-Let) §6.7` | `[]` | mint `ℓ0 = RAffine { 3 }`; `ρ = [ℓ0]`, `σ = [ℓ0]` | `[ℓ0 = RAffine { 3 }]` | |
+| 5–7 | literal, resource intro, `(D-Let) §6.7` | `[ℓ0 = …]` | mint `ℓ1 = RAffine { 4 }`; `ρ = [ℓ1, ℓ0]`, `σ = [ℓ0, ℓ1]` | `[ℓ0 = RAffine { 3 }, ℓ1 = RAffine { 4 }]` | |
+| 8 | literal | | the operand `7` becomes a value | | |
+| **9** | **`(D-Return) §6.9` (unwind the frame)** | `[ℓ0 = RAffine { 3 }, ℓ1 = RAffine { 4 }]` | `run-all-scope-drops(H, φ)` walks `σ` **newest-first**: drop-retire `ℓ1`, then `ℓ0` | `[ℓ0 = †, ℓ1 = †]` | `drop ℓ1 = RAffine { 4 }`; `drop ℓ0 = RAffine { 3 }` |
+| 10 | inner `(D-EndScope)` — did not run | | the `return` discarded the evaluation context, the pending `endscope` markers with it; the result travels out unchanged | | |
+| 11 | outer `(D-EndScope)` — did not run | | same | | |
+| 12 | `(D-Return) §6.9` (absorb) | `[ℓ0 = †, ℓ1 = †]` | the call boundary turns the unwound `return` into the call's value | | |
+
+Two things are worth pausing on. **The drops run once, not twice.** Steps 10
+and 11 are the `endscope`s that the normal path would have run; they see a
+`.returned` result and pass it on, because `eval` sequences a `let` body with
+`andThen`, which only continues on a value. Their cells were already retired
+at step 9 — and if either had tried again, `drop-retire` would have found a
+`†` cell and the machine would have refused with `useAfterDrop`. The σ
+invariant is exactly what proves it cannot.
+
+**The order is newest-first, and it is observable.** The trace is
+`drop ℓ1` then `drop ℓ0`, so the printed program prints `4`, then `3`, then
+its value `7` — `3.9:18`'s order, compared against the real binary by the
+bridge. `explain/return_past_affine.txt` is this table generated, with the
+store at every row.
 
 ### More worked examples
 
@@ -299,15 +476,16 @@ worked example each to this section as they land.
   through Buck with the pinned toolchain, re-checks the compiled modules with
   `leanchecker`, and prints the axioms report. `lake build` in this directory
   does the build alone, with `elan` fetching the same pinned toolchain.
-- **Run a program.** Open `RueCore/Examples.lean`. Each `#eval eval [] [] p`
+- **Run a program.** Open `RueCore/Examples.lean`. Each `#eval run p demoFuel`
   line runs a program; `lake build`'s log prints the result next to the line
   number, and an editor with the Lean extension shows it inline. Change a
-  program, rebuild, and watch the outcome change. `#eval check [] p` runs the
-  checker the same way.
-- **Read a kernel-checked fact.** `example : eval [] [] linearLeaked = .stuck
-  .linearLeak := by rfl` is not a test that ran once; it is a statement the
-  kernel verified when the file compiled. Every refusal and trap the fragment
-  can reach has such a witness (`Examples.lean`, `Corpus.lean`).
+  program, rebuild, and watch the outcome change. `#eval checkProgram p` runs
+  the checker the same way.
+- **Read a kernel-checked fact.** `example : run returnPastLinear demoFuel =
+  .stuck .linearLeak := by rfl` is not a test that ran once; it is a statement
+  the kernel verified when the file compiled. Every refusal and trap the
+  fragment can reach has such a witness (`Examples.lean`, `Corpus.lean`), and
+  so does the fuel boundary (`run countdown 16` versus `17`).
 - **Read the reports.** `DIGEST.md` is every theorem's statement and every
   definition those statements are written in terms of; `TRUST.md` is every
   theorem's axioms. Both are committed and both are regenerated by `lake exe
@@ -316,7 +494,7 @@ worked example each to this section as they land.
 - **Read `#print axioms`.** The trust boundary of a Lean proof is the list of
   axioms it depends on, which is what `TRUST.md` tabulates. The Buck build
   also writes the raw listing (`axioms.txt` beside `trust.md`), for each of
-  the nine theorems the target trusts (`BUCK`, `root//:lean-ruecore`), a line
+  the theorems the target trusts (`BUCK`, `root//:lean-ruecore`), a line
   like
 
   ```
@@ -369,7 +547,7 @@ holds the two pins equal).
 `TRUST.md`, which `scripts/rue lean` just printed from the build's own output.
 It lists every theorem in the `RueCore` namespace with the axioms
 `Lean.collectAxioms` says its proof depends on, the number of proofs resting on
-`sorryAx`, and the axioms the package declares itself. Today: 31 theorems, no
+`sorryAx`, and the axioms the package declares itself. Today: 80 theorems, no
 axiom anywhere outside `propext` and `Quot.sound`, no `sorryAx`, no declared
 axiom. *A defect looks like:* a `sorryAx` (an unfinished proof), a `Lean.ofReduceBool` (a
 `native_decide` the kernel did not check), a `Classical.choice` (allowed by
@@ -410,9 +588,9 @@ corollary true and empty.
 
 The one place a soundness proof can quietly cheat is its invariant: an
 invariant strong enough to be unprovable is caught by the kernel, but one too
-weak to mean anything is not. `Matches` (in `DIGEST.md`, or `Soundness.lean`)
-is this proof's invariant, and §7's no-use-after-move bullet names it in
-words — "preservation maintains the invariant that Σ faithfully tracks the
+weak to mean anything is not. `FrameMatches` (in `DIGEST.md`, or
+`Soundness.lean`) is this proof's invariant, and its `Matches` half is what
+§7's no-use-after-move bullet names in words — "preservation maintains the invariant that Σ faithfully tracks the
 store's initialization". Check the two directions of `CellMatches` against that
 phrase, as section 3 above spells them out: an `Owned` entry holds a live
 well-typed value; a `MovedOut` entry holds the moved-out marker *or* a live
@@ -422,6 +600,19 @@ dropping the word `non-linear`. Then a live linear value could sit behind a
 `no_linear_leak` would be false — and the proof would still go through, because
 the invariant would no longer rule the case out. The asymmetry is deliberate
 and §5.5's join is why (section 3); the missing restriction would not be.
+
+Then read the other half, `FrameMatches.record`: the frame's scope record,
+reversed, *is* its environment. *A defect looks like:* that clause weakened to
+an inclusion, or dropped. Then a cell could sit in the record twice, or in the
+record after its `endscope` retired it, and a `return`'s unwind would
+drop-retire it a second time — the `useAfterDrop` that `no_use_after_drop` now
+rests on. Section 5b's step 9 is the walk that clause protects.
+
+Fuel is the other place to look. The theorems say "for every fuel", and
+`outOfFuel` satisfies them for free, so check that `fuel_mono` and
+`no_masking` are in `DIGEST.md` and say what section 2 says they say. *A
+defect looks like:* either one missing, or stated with a hypothesis that makes
+it vacuous — `no_masking` with `n = m`, say.
 
 **5. Run the three-way bridge (three minutes).**
 
@@ -439,10 +630,10 @@ It prints one line per case — the case's name, the verdict (`accept(i64)`,
 `reject`), and `agree` or `DISAGREE` with the number of disagreeing pairs,
 each carrying the diagnostic code where a program was refused — then, for
 every case that disagrees, the printed Rue program, the four views side by
-side, and the pairs that differ; last a tally. On the 21 seed cases it ends
+side, and the pairs that differ; last a tally. On the 28 seed cases it ends
 
 ```text
-  cases: 21 (21 agree, 0 disagree)
+  cases: 28 (28 agree, 0 disagree)
   checker <-> compiler: 0
   lean <-> oracle: 0
   lean <-> native: 0
@@ -472,6 +663,17 @@ two and read the calculus and the Lean side by side.
   `Γ₁[i]?` lookup — the post-RHS state — feeding the disjunction. *A defect
   looks like:* that lookup being `Γ[i]?`, the pre-RHS state, which would accept
   a program that overwrites a live linear value the RHS had not yet consumed.
+- `(D-Return)`, §6.9, against `eval`'s `ret` arm. The rule discards the
+  evaluation context `E'` — every pending `endscope` marker inside it
+  included — and runs `run-all-scope-drops(H, φ)` instead, newest-first. The
+  arm should evaluate the operand, then walk the frame's scope record, then
+  return `.returned`, which every enclosing form passes on until a `call`
+  absorbs it. *A defect looks like:* the arm running the *innermost* scope
+  only (then an early return two scopes deep would leak the outer binding), or
+  the record walked oldest-first (then `3.9:18`'s order is wrong, which the
+  bridge's stdout comparison in step 5 would catch on
+  `return_past_affine`), or `.returned` being absorbed somewhere other than a
+  call boundary (then a `return` would stop at the nearest `let`).
 - `(D-Let)`/`(D-EndScope)`, §6.7, against `eval`'s `letIn` arm. The machine
   mints a fresh cell for the binder, runs the body, then at scope exit inspects
   that cell: a live linear value is `linearLeak` and the machine stops there; a
@@ -487,14 +689,17 @@ two and read the calculus and the Lean side by side.
 
 What thirty minutes does **not** buy: the adequacy lemma tying this executable
 dynamics to §6's reduction relation is owed by RUE-2289 and not proved here
-(section 2), and the rules and forms marked *not yet mechanized* in `INDEX.md`
-are outside every theorem above. The fragment boundary in step 3 is not a
+(section 2); the fuel is this interpreter's device and has no counterpart in
+§6, so `fuel_mono`/`no_masking` are about `eval`, not about the paper machine;
+and the rules and forms marked *not yet mechanized* in `INDEX.md` are outside
+every theorem above. The fragment boundary in step 3 is not a
 formality; it is most of what the reports are for.
 
 ## 8. Writing a doc-comment that the index can read
 
 Every top-level declaration in a rule-bearing module (`Syntax`, `Statics`,
-`Dynamics`, `Soundness`, `Checker`, `Print`, `CorpusMain`, and any new module;
+`Dynamics`, `Soundness`, `Checker`, `Print`, `Explain`, `CorpusMain`, and any
+new module;
 `instance`s, `example`s, and constructors without a doc-comment of their own
 are exempt) has a doc-comment citing what it mechanizes: a rule label exactly as the calculus writes it
 (`(Use-Move)`, `(D-Let)`, `(@Drop)`), a section (`§5.5`), or a prose

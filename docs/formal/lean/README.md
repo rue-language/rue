@@ -6,7 +6,7 @@ memory-safety theorems in Lean 4. This is the spike for making mechanized
 proofs part of the formal core; the findings and project outline live in
 `../../notes/lean-mechanization-spike.md`.
 
-**Status: complete, zero `sorry`, axioms `propext`/`Quot.sound` only**
+**Status: zero `sorry`, axioms `propext`/`Quot.sound` only**
 (no `Classical.choice`, no `native_decide`; `TRUST.md` is the generated
 evidence, and `DIGEST.md` is every statement it is evidence for). Adopted as
 the fourth view of the language by ADR-0097
@@ -40,8 +40,10 @@ declaration or a stale `INDEX.md`.
 ## The bridge corpus (ADR-0097, RUE-2227)
 
 `lake exe ruecore-corpus` (or the `corpus.json` output of `scripts/rue lean`)
-prints every corpus case as JSON: the fragment program printed as a complete
-Rue module, the verified checker's verdict, and the interpreter's outcome.
+prints every corpus case as JSON: the fragment program — a list of function
+definitions — printed as a complete Rue module, the verified checker's
+verdict, and the interpreter's outcome at one fixed fuel bound (a case that
+bound does not complete is left out rather than given an outcome).
 `crates/rue-oracle-diff` consumes it (RUE-2228) and runs the compiler, the
 oracle, and the native binary on each source. Any pairwise disagreement is a
 defect in one of the four views (RUE-305).
@@ -135,12 +137,16 @@ its case, the rules it exercises, and its expected outcome in words, so
 ## Explaining a program (RUE-2246)
 
 `lake exe ruecore-explain` turns any corpus case into a page a reader can
-follow without Lean: the program in Rue surface syntax, the verified
-checker's verdict, the §5 derivation as a tree with the fused `Γ;Σ` at every
-node, and the §6 run as a step table in execution order showing the store
-before and after each node and the drop events it emitted. When the checker
-rejects, the failing premise is stated first, in the calculus's own words,
-with its §-rule, its prose paragraph, and the compiler's diagnostic code.
+follow without Lean: the program's `fn` items in Rue surface syntax, the
+verified checker's verdict, one §5 derivation per function body as a tree
+with the fused `Γ;Σ` at every node, and the §6 run as a single step table in
+execution order — across frames, with the store before and after each node
+and the drop events it emitted. Three administrative rows make the frames
+readable: the push with its minted parameter cells, the pop with the drops
+`run-all-scope-drops` ran, and the same walk taken early by a `return`. When
+the checker rejects, the failing premise is stated first, in the calculus's
+own words, with its §-rule, its prose paragraph, and the compiler's
+diagnostic code.
 
 ```bash
 lake exe ruecore-explain linear_overwrite   # one case, as text
@@ -164,8 +170,8 @@ returns a step table — and proves they agree with the definitions the
 theorems are about:
 
 ```
-theorem explain_result  : (explain Γ e).result   = check Γ e
-theorem traceEval_res   : (traceEval d Θ H ρ e).res = eval H ρ e
+theorem explain_result : (explain P R Γ e).result           = check P R Γ e
+theorem traceEval_res  : (traceEval P fuel d Θ R H φ e).res = eval fuel P H φ e
 ```
 
 So a rendered page cannot claim an acceptance, a rejection, or an outcome
@@ -242,13 +248,20 @@ interpreter to the theorem that covers it, and how to run and trust things.
 mechanized*. The short version:
 
 - **A judgment is an inductive type.** The calculus writes
-  `Γ; Σ ⊢ e ⇒ T ⊣ Σ'` (§5); `Statics.lean` writes `Typed Γ e T Γ'`. Each
+  `Γ; Σ ⊢ e ⇒ T ⊣ Σ'` (§5); `Statics.lean` writes `Typed P R Γ e T Γ'`, with
+  `P` the top-level function environment (Call) §5.8 reads and `R` the
+  enclosing function's declared return type (Return-Value) §5.7 checks
+  against — both fixed for a derivation, as the calculus fixes them for a
+  function body. Each
   constructor of `Typed` is one inference rule, its arguments are the rule's
   premises, and its doc-comment names the §5 rule and the prose paragraph it
   encodes. A program is well-typed when a value of `Typed [] e T Γ'` exists.
 - **The dynamics is a function.** `Dynamics.lean` defines `eval`, which runs
-  a program and returns `.ok store value trace`, `.panic kind` (a defined
-  trap, §6.12), or `.stuck violation`. A `Violation` is a named refusal.
+  an expression at a fuel bound and returns `.ok store value trace`,
+  `.returned …` (a value an unwinding `return` handed past it, §6.9),
+  `.panic kind` (a defined trap, §6.12), `.stuck violation`, or `.outOfFuel`;
+  `run P fuel` calls the program's entry point. A `Violation` is a named
+  refusal.
   Four of them (`useAfterMove`, `useAfterDrop`, `unbound`, `typeConfusion`)
   are the states §6 leaves stuck, made explicit; the other three
   (`linearLeak`, `linearOverwrite`, `linearDiscard`) are monitors the
@@ -258,18 +271,25 @@ mechanized*. The short version:
   can differ, and `Dynamics.lean` and `Examples.lean` say exactly how. The
   trace lists every drop in order.
 - **The theorem says stuck is unreachable.** `soundness` (`Soundness.lean`)
-  states: if `Typed [] e T Γ'` holds, then `eval` never returns `.stuck`.
-  The corollaries name one §7 bullet each; `no_use_after_drop` is the one
-  that holds structurally at fragment scope (no closed expression can name a
-  retired cell, typed or not), so the retired-cell guard is witnessed from
-  an open machine state in `Examples.lean` rather than from a program.
-  `Matches` is the invariant the proof carries: "Σ faithfully tracks the
-  store's initialization", with one deliberate asymmetry explained in its
-  doc-comment.
+  states: if `Typed P R Γ e T Γ'` holds and the frame agrees with `Γ`, then at
+  every fuel `eval` never returns `.stuck`. The corollaries name one §7 bullet
+  each, over a whole program (`run`). `FrameMatches` is the invariant the
+  proof carries: `Matches` — "Σ faithfully tracks the store's initialization",
+  with one deliberate asymmetry explained in its doc-comment — plus the σ
+  invariant, that the frame's scope record read newest-first *is* its
+  environment. `Untouched` is the frame-locality property that carries a
+  caller's agreement across a callee's run.
 - **Run something.** Open `RueCore/Examples.lean`; each `#eval` line runs a
-  program, and the editor (or `lake build`'s log) shows its result. Change a
-  program and watch the result change. Each `example : check ... = none := by
-  rfl` is a kernel-checked rejection.
+  program at a fuel bound, and the editor (or `lake build`'s log) shows its
+  result. Change a program and watch the result change. Each
+  `example : checkProgram ... = false := by rfl` is a kernel-checked
+  rejection.
+- **Fuel is not a loophole.** `eval` is fuel-indexed, because a recursive
+  callee's body is not a subexpression of the call, and the theorems quantify
+  over every fuel — which `outOfFuel` would satisfy for free. `fuel_mono` and
+  `no_masking` are why it is not free: raising the bound never changes an
+  answer, and no bound turns a violation into exhaustion for a program some
+  fuel completes.
 - **Check what is trusted.** `#print axioms RueCore.soundness` must list only
   `propext` and `Quot.sound`. `scripts/rue lean` prints `TRUST.md`, which says
   the same for every theorem, and fails if anything else appears.
@@ -331,10 +351,10 @@ a slice author writes:
 | File | Contents | Calculus |
 | --- | --- | --- |
 | `RueCore/Syntax.lean` | multiplicity lattice, types, `class(T)`, expressions | §2, §3 |
-| `RueCore/Statics.lean` | fused flow-sensitive `Γ;Σ` context, the ownership-threading judgment `Typed`, the §5.5 branch join, skeleton preservation | §4.2, §5.1–§5.3, §5.5–§5.6 |
-| `RueCore/Dynamics.lean` | store/env machine as a total definitional interpreter with drop traces; violations as named refusals; overflow/div-zero traps | §6.1–§6.12 |
-| `RueCore/Soundness.lean` | value typing, the store–Σ agreement invariant `Matches`, **the safety theorem** and per-§7-bullet corollaries | §7 |
-| `RueCore/Checker.lean` | decidable checker `check` + `check_sound` (every acceptance is a derivation) | §5 as an algorithm |
+| `RueCore/Statics.lean` | fused flow-sensitive `Γ;Σ` context, the ownership-threading judgment `Typed` (parameterized by the program and the enclosing return type), the §5.5 branch join, (Fn) and whole-program well-formedness, skeleton preservation | §4.2, §5.1–§5.3, §5.5–§5.8 |
+| `RueCore/Dynamics.lean` | store/frame machine as a fuel-indexed definitional interpreter with drop traces; frames with scope records and their unwinds; violations as named refusals; overflow/div-zero traps | §6.1–§6.12 |
+| `RueCore/Soundness.lean` | value typing, the per-frame agreement invariant `FrameMatches`, frame locality `Untouched`, **the safety theorem**, the fuel lemmas, and per-§7-bullet corollaries over a whole program | §7 |
+| `RueCore/Checker.lean` | decidable checker `check`/`checkProgram` + `check_sound`/`checkProgram_sound` (every acceptance is a derivation) | §5 as an algorithm |
 | `RueCore/Examples.lean` | `#eval` demos; kernel-checked acceptance/rejection of example programs | — |
 | `RueCore/Print.lean` | core syntax → Rue source, and the observation channel (one printed line per drop event, per multiplicity class) | §2 elaboration inventory, 3.9 |
 | `RueCore/Corpus.lean` | the bridge corpus: each case's checker verdict and interpreter outcome, exported as JSON (`lake exe ruecore-corpus`) | §5, §6, §7 witnesses |
@@ -349,29 +369,45 @@ The fragment: scalars + an abstract resource type `res κ` carrying its
 multiplicity class; use (copy/move), `@drop`, `let` scope exit with the
 residual-linear leak check, assignment with reinitialization and the
 `3.8:77` linear-overwrite premise, sequence discard, `if` with the
-conservative branch join, and `+`/`/`/`<` with the §6.4 traps. Whole
-bindings only — no projections/partial moves, no borrows, no calls, no
-loops (see the outline doc for the milestone ladder that adds them).
+conservative branch join, `+`/`/`/`<` with the §6.4 traps, and — with
+RUE-2233 — top-level functions, by-value calls with frames and scope
+records, and `return` with its σ unwind. Whole bindings only — no
+projections/partial moves, no borrows, no `inout`/`borrow` parameters, no
+accessor calls, no loops (see the outline doc for the milestone ladder that
+adds them).
 
 ## The main theorem
 
 ```
-theorem soundness :
-  Typed Γ e T Γ' → Matches Γ ρ H →
-    (∃ k,        eval H ρ e = .panic k) ∨
-    (∃ H' v tr,  eval H ρ e = .ok H' v tr ∧ HasTy v T ∧ Matches Γ' ρ H')
+theorem soundness (hwf : WfProgram P) :
+  ∀ fuel, Typed P R Γ e T Γ' → FrameMatches Γ φ H →
+    EvalOk T R Γ' φ H (eval fuel P H φ e)
 ```
 
-Type safety in definitional-interpreter form: a well-typed program either
-panics (a *defined* trap) or produces a well-typed value — never a
-`Violation` (`useAfterMove`, `useAfterDrop`, `linearLeak`,
-`linearOverwrite`, `linearDiscard`, …). The interpreter is total, so this
-is progress and preservation in one statement; `Matches` — "Σ faithfully
-tracks the store's initialization" — is the §7 preservation invariant, and
-its `CellMatches` clause encodes the deliberate asymmetry of the §5.5 join
-(a statically `MovedOut` entry may dynamically still hold a live
-*non-linear* value, which the machine then drops path-specifically,
-`3.8:73`; a live linear value is never statically lost).
+`EvalOk` is a predicate on the result: a well-typed value with the outgoing
+context's agreement restored and the frame's neighbours untouched; or a value
+an unwinding `return` handed back; or a *defined* panic; or `outOfFuel`. It is
+`False` on `.stuck`, which is the whole point — no `Violation`
+(`useAfterMove`, `useAfterDrop`, `linearLeak`, `linearOverwrite`,
+`linearDiscard`, …) is reachable. The interpreter is total, so this is
+progress and preservation in one statement; `run_safe` and the named §7
+corollaries restate it over a whole program.
+
+`FrameMatches` is the §7 preservation invariant, in two halves. `Matches` —
+"Σ faithfully tracks the store's initialization" — whose `CellMatches` clause
+encodes the deliberate asymmetry of the §5.5 join (a statically `MovedOut`
+entry may dynamically still hold a live *non-linear* value, which the machine
+then drops path-specifically, `3.8:73`; a live linear value is never
+statically lost). And the σ invariant: the frame's scope record, read
+newest-first, **is** its environment, which is what makes `let`'s double
+bookkeeping (RUE-1277) consistent and what keeps an unwind off a retired
+cell.
+
+Because a callee's body is not a subexpression of its call, `eval` is indexed
+by fuel and the theorem quantifies over every bound. `fuel_mono` and
+`no_masking` say that quantification is not vacuous: a bound that answered
+gives that same answer at every larger bound, and no bound turns a violation
+into exhaustion for a program some fuel completes.
 
 The dynamics deliberately mirror `crates/rue-oracle`: an interpreter
 producing a result plus a drop trace. `eval` runs under `#eval`, so every

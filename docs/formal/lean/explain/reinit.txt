@@ -8,6 +8,7 @@ Rules exercised: (Assign) §5.2 · 3.8:55
 
 ── The program ─────────────────────────────────────────────────────────────────
 
+fn f0() -> i64 {
     {
         let mut v0: RLinear = RLinear { value: 1 };
         {
@@ -18,20 +19,27 @@ Rules exercised: (Assign) §5.2 · 3.8:55
             }
         }
     }
+}
+
+
 
 ── What the checker says (§5) ──────────────────────────────────────────────────
 
 Verdict: ACCEPTED by the checker (§5).
-         type i64, outgoing Γ;Σ (empty)
+         Every function is well-formed by (Fn) §5.8 and the entry point takes
+         no parameters, so `checkProgram_sound` ties the whole program to a
+         real derivation and the §7 safety theorems apply to it.
 
-         `check_sound` ties this acceptance to a real derivation, so the §7
-         safety theorems apply to this program.
+         fn f0() -> i64  — body ⇒ i64, exit Σ (empty)
 
-── The derivation (§5) ─────────────────────────────────────────────────────────
+── The derivations (§5) ────────────────────────────────────────────────────────
 
 Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
 fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
-premises are the nodes indented under it, in premise order.
+premises are the nodes indented under it, in premise order. One tree per
+function body, checked from (Fn) §5.8's entry context.
+
+  fn f0() -> i64
 
   (Let) §5.3 + the §5.6 scope-exit leak check
     e       { let mut v0: RLinear = RLinear { value: 1 }; { consume_linear(v0); { { v0 = RL…
@@ -49,7 +57,7 @@ premises are the nodes indented under it, in premise order.
         e       { consume_linear(v0); { { v0 = RLinear { value: 2 }; }; consume_linear(v0) } }
         Γ;Σ     [v0: RLinear mut = Owned]
         ⇒       i64  ⊣  [v0: RLinear mut = MovedOut]
-          resource elimination §5.8/§4.2 (an abstract consuming elimination; the fragment has no calls)
+          resource elimination §5.8/§4.2 (an abstract consuming elimination)
             e       consume_linear(v0)
             Γ;Σ     [v0: RLinear mut = Owned]
             ⇒       i64  ⊣  [v0: RLinear mut = MovedOut]
@@ -73,7 +81,7 @@ premises are the nodes indented under it, in premise order.
                         e       2
                         Γ;Σ     [v0: RLinear mut = MovedOut]
                         ⇒       i64  ⊣  [v0: RLinear mut = MovedOut]
-              resource elimination §5.8/§4.2 (an abstract consuming elimination; the fragment has no calls)
+              resource elimination §5.8/§4.2 (an abstract consuming elimination)
                 e       consume_linear(v0)
                 Γ;Σ     [v0: RLinear mut = Owned]
                 ⇒       i64  ⊣  [v0: RLinear mut = MovedOut]
@@ -86,71 +94,82 @@ premises are the nodes indented under it, in premise order.
 
 One row per evaluated node, in execution order: a node's premises run before
 the node itself, so the table reads top to bottom as the machine ran. `d<n>`
-is the nesting depth and `>>` marks a drop event.
+is the nesting depth — a callee's rows are deeper than its call's — and `>>`
+marks a drop event. The run enters at f0(), as `Dynamics.run` does.
 
-  [1]   d2      literal §6.3
+  [1]   d1    (D-Call) §6.9 (push the frame)
+         expr    fn f0() -> i64  with []
+         store   (empty)
+           →     (empty)
+         result  value ()
+  [2]   d4          literal §6.3
          expr    1
          store   (empty)
            →     (empty)
          result  value 1
-  [2]   d1    resource intro §6.5
+  [3]   d3        resource intro §6.5
          expr    RLinear { value: 1 }
          store   (empty)
            →     (empty)
          result  value RLinear { 1 }
-  [3]   d1    (D-Let) §6.7 (mint the binding)
+  [4]   d3        (D-Let) §6.7 (mint the binding)
          expr    let mut v0 = RLinear { 1 } at ℓ0
          store   (empty)
            →     [ℓ0 = RLinear { 1 }]
          result  value RLinear { 1 }
-  [4]   d3        (D-Use-Move) §6.3
+  [5]   d5            (D-Use-Move) §6.3
          expr    v0
          store   [ℓ0 = RLinear { 1 }]
            →     [ℓ0 = ⊘ (moved out)]
          result  value RLinear { 1 }
-  [5]   d2      resource elimination §6.5
+  [6]   d4          resource elimination §6.5
          expr    consume_linear(v0)
          store   [ℓ0 = RLinear { 1 }]
            →     [ℓ0 = ⊘ (moved out)]
          result  value 1
-  [6]   d5            literal §6.3
+  [7]   d7                literal §6.3
          expr    2
          store   [ℓ0 = ⊘ (moved out)]
            →     [ℓ0 = ⊘ (moved out)]
          result  value 2
-  [7]   d4          resource intro §6.5
+  [8]   d6              resource intro §6.5
          expr    RLinear { value: 2 }
          store   [ℓ0 = ⊘ (moved out)]
            →     [ℓ0 = ⊘ (moved out)]
          result  value RLinear { 2 }
-  [8]   d3        (D-Assign) §6.8 (reinitialization, 3.8:55)
+  [9]   d5            (D-Assign) §6.8 (reinitialization, 3.8:55)
          expr    { v0 = RLinear { value: 2 }; }
          store   [ℓ0 = ⊘ (moved out)]
            →     [ℓ0 = RLinear { 2 }]
          result  value ()
-  [9]   d4          (D-Use-Move) §6.3
+  [10]  d6              (D-Use-Move) §6.3
          expr    v0
          store   [ℓ0 = RLinear { 2 }]
            →     [ℓ0 = ⊘ (moved out)]
          result  value RLinear { 2 }
-  [10]  d3        resource elimination §6.5
+  [11]  d5            resource elimination §6.5
          expr    consume_linear(v0)
          store   [ℓ0 = RLinear { 2 }]
            →     [ℓ0 = ⊘ (moved out)]
          result  value 2
-  [11]  d2      (D-Seq) §6.7
+  [12]  d4          (D-Seq) §6.7
          expr    { { v0 = RLinear { value: 2 }; }; consume_linear(v0) }
          store   [ℓ0 = ⊘ (moved out)]
            →     [ℓ0 = ⊘ (moved out)]
          result  value 2
-  [12]  d1    (D-Seq) §6.7
+  [13]  d3        (D-Seq) §6.7
          expr    { consume_linear(v0); { { v0 = RLinear { value: 2 }; }; consume_linear(v0) } }
          store   [ℓ0 = RLinear { 1 }]
            →     [ℓ0 = ⊘ (moved out)]
          result  value 2
-  [13]  d0  (D-EndScope) §6.7 (retire the binding)
+  [14]  d2      (D-EndScope) §6.7 (retire the binding)
          expr    endscope([ℓ0])
          store   [ℓ0 = ⊘ (moved out)]
+           →     [ℓ0 = † (retired)]
+         result  value 2
+  [15]  d0  (D-Return-Value) §6.9 (pop the frame)
+         expr    run-all-scope-drops([])
+         store   [ℓ0 = † (retired)]
            →     [ℓ0 = † (retired)]
          result  value 2
 

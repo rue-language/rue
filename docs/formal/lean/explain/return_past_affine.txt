@@ -1,19 +1,19 @@
 ════════════════════════════════════════════════════════════════════════════════
- nested_scopes
+ return_past_affine
 ════════════════════════════════════════════════════════════════════════════════
-Two affine bindings in nested scopes drop innermost first, each at its own
-scope's close.
+An early return past two live affine bindings: the frame unwinds newest-first,
+so the drops print 4 then 3, then the value 7.
 
-Rules exercised: (Let) §5.3 · §5.6 scope exit · (D-EndScope) §6.7 · 3.9:2
+Rules exercised: (Return-Value) §5.7 · (D-Return) §6.9 · 3.9:18
 
 ── The program ─────────────────────────────────────────────────────────────────
 
 fn f0() -> i64 {
     {
-        let v0: RAffine = RAffine { value: 1, live: true };
+        let v0: RAffine = RAffine { value: 3, live: true };
         {
-            let v1: RAffine = RAffine { value: 2, live: true };
-            0
+            let v1: RAffine = RAffine { value: 4, live: true };
+            return 7
         }
     }
 }
@@ -39,33 +39,37 @@ function body, checked from (Fn) §5.8's entry context.
   fn f0() -> i64
 
   (Let) §5.3 + the §5.6 scope-exit leak check
-    e       { let v0: RAffine = RAffine { value: 1, live: true }; { let v1: RAffine = RAffi…
+    e       { let v0: RAffine = RAffine { value: 3, live: true }; { let v1: RAffine = RAffi…
     Γ;Σ     (empty)
     ⇒       i64  ⊣  (empty)
       resource intro §5.8 (the shape of the aggregate-introduction rule; `res κ` has no fields)
-        e       RAffine { value: 1, live: true }
+        e       RAffine { value: 3, live: true }
         Γ;Σ     (empty)
         ⇒       RAffine  ⊣  (empty)
           (Lit) §5.8
-            e       1
+            e       3
             Γ;Σ     (empty)
             ⇒       i64  ⊣  (empty)
       (Let) §5.3 + the §5.6 scope-exit leak check
-        e       { let v1: RAffine = RAffine { value: 2, live: true }; 0 }
+        e       { let v1: RAffine = RAffine { value: 4, live: true }; return 7 }
         Γ;Σ     [v0: RAffine = Owned]
         ⇒       i64  ⊣  [v0: RAffine = Owned]
           resource intro §5.8 (the shape of the aggregate-introduction rule; `res κ` has no fields)
-            e       RAffine { value: 2, live: true }
+            e       RAffine { value: 4, live: true }
             Γ;Σ     [v0: RAffine = Owned]
             ⇒       RAffine  ⊣  [v0: RAffine = Owned]
               (Lit) §5.8
-                e       2
+                e       4
                 Γ;Σ     [v0: RAffine = Owned]
                 ⇒       i64  ⊣  [v0: RAffine = Owned]
-          (Lit) §5.8
-            e       0
+          (Return-Value) §5.7
+            e       return 7
             Γ;Σ     [v1: RAffine = Owned, v0: RAffine = Owned]
             ⇒       i64  ⊣  [v1: RAffine = Owned, v0: RAffine = Owned]
+              (Lit) §5.8
+                e       7
+                Γ;Σ     [v1: RAffine = Owned, v0: RAffine = Owned]
+                ⇒       i64  ⊣  [v1: RAffine = Owned, v0: RAffine = Owned]
 
 ── The run (§6) ────────────────────────────────────────────────────────────────
 
@@ -80,59 +84,63 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
            →     (empty)
          result  value ()
   [2]   d4          literal §6.3
-         expr    1
+         expr    3
          store   (empty)
            →     (empty)
-         result  value 1
+         result  value 3
   [3]   d3        resource intro §6.5
-         expr    RAffine { value: 1, live: true }
+         expr    RAffine { value: 3, live: true }
          store   (empty)
            →     (empty)
-         result  value RAffine { 1 }
+         result  value RAffine { 3 }
   [4]   d3        (D-Let) §6.7 (mint the binding)
-         expr    let v0 = RAffine { 1 } at ℓ0
+         expr    let v0 = RAffine { 3 } at ℓ0
          store   (empty)
-           →     [ℓ0 = RAffine { 1 }]
-         result  value RAffine { 1 }
+           →     [ℓ0 = RAffine { 3 }]
+         result  value RAffine { 3 }
   [5]   d5            literal §6.3
-         expr    2
-         store   [ℓ0 = RAffine { 1 }]
-           →     [ℓ0 = RAffine { 1 }]
-         result  value 2
+         expr    4
+         store   [ℓ0 = RAffine { 3 }]
+           →     [ℓ0 = RAffine { 3 }]
+         result  value 4
   [6]   d4          resource intro §6.5
-         expr    RAffine { value: 2, live: true }
-         store   [ℓ0 = RAffine { 1 }]
-           →     [ℓ0 = RAffine { 1 }]
-         result  value RAffine { 2 }
+         expr    RAffine { value: 4, live: true }
+         store   [ℓ0 = RAffine { 3 }]
+           →     [ℓ0 = RAffine { 3 }]
+         result  value RAffine { 4 }
   [7]   d4          (D-Let) §6.7 (mint the binding)
-         expr    let v1 = RAffine { 2 } at ℓ1
-         store   [ℓ0 = RAffine { 1 }]
-           →     [ℓ0 = RAffine { 1 }, ℓ1 = RAffine { 2 }]
-         result  value RAffine { 2 }
-  [8]   d4          literal §6.3
-         expr    0
-         store   [ℓ0 = RAffine { 1 }, ℓ1 = RAffine { 2 }]
-           →     [ℓ0 = RAffine { 1 }, ℓ1 = RAffine { 2 }]
-         result  value 0
-  [9]   d3        (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ1])
-         store   [ℓ0 = RAffine { 1 }, ℓ1 = RAffine { 2 }]
-           →     [ℓ0 = RAffine { 1 }, ℓ1 = † (retired)]
-         events  >> drop ℓ1 = RAffine { 2 }
-         result  value 0
-  [10]  d2      (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ0])
-         store   [ℓ0 = RAffine { 1 }, ℓ1 = † (retired)]
+         expr    let v1 = RAffine { 4 } at ℓ1
+         store   [ℓ0 = RAffine { 3 }]
+           →     [ℓ0 = RAffine { 3 }, ℓ1 = RAffine { 4 }]
+         result  value RAffine { 4 }
+  [8]   d5            literal §6.3
+         expr    7
+         store   [ℓ0 = RAffine { 3 }, ℓ1 = RAffine { 4 }]
+           →     [ℓ0 = RAffine { 3 }, ℓ1 = RAffine { 4 }]
+         result  value 7
+  [9]   d4          (D-Return) §6.9 (unwind the frame)
+         expr    run-all-scope-drops([ℓ1, ℓ0])
+         store   [ℓ0 = RAffine { 3 }, ℓ1 = RAffine { 4 }]
            →     [ℓ0 = † (retired), ℓ1 = † (retired)]
-         events  >> drop ℓ0 = RAffine { 1 }
-         result  value 0
-  [11]  d0  (D-Return-Value) §6.9 (pop the frame)
-         expr    run-all-scope-drops([])
+         events  >> drop ℓ1 = RAffine { 4 }; drop ℓ0 = RAffine { 3 }
+         result  value 7 — handed past this node by a `return` (§6.9)
+  [10]  d3        (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return runs the drop through the frame's scope record instead)
+         expr    { let v1: RAffine = RAffine { value: 4, live: true }; return 7 }
+         store   [ℓ0 = RAffine { 3 }]
+           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         result  value 7 — handed past this node by a `return` (§6.9)
+  [11]  d2      (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return runs the drop through the frame's scope record instead)
+         expr    { let v0: RAffine = RAffine { value: 3, live: true }; { let v1: RAffine = RAffi…
+         store   (empty)
+           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         result  value 7 — handed past this node by a `return` (§6.9)
+  [12]  d0  (D-Return) §6.9 (the callee's return is the call's value)
+         expr    absorb 7
          store   [ℓ0 = † (retired), ℓ1 = † (retired)]
            →     [ℓ0 = † (retired), ℓ1 = † (retired)]
-         result  value 0
+         result  value 7
 
 ────────────────────────────────────────────────────────────────────────────────
-Outcome: ok — value 0
-         drop trace: drop ℓ1 = RAffine { 2 }; drop ℓ0 = RAffine { 1 }
+Outcome: ok — value 7
+         drop trace: drop ℓ1 = RAffine { 4 }; drop ℓ0 = RAffine { 3 }
 
