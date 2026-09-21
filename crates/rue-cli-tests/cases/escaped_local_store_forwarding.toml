@@ -19,8 +19,8 @@
 # A slot rooting a by-ref argument anywhere in the function is now excluded
 # from the table for the whole function, exactly as an address-taken slot is.
 #
-# All three shapes below are pinned across every optimization level, because
-# the point of each is that the answer does not depend on one.
+# Every shape below is pinned across all four optimization levels, because the
+# point of each is that the answer does not depend on one.
 
 [section]
 id = "cli.escaped_local_store_forwarding"
@@ -123,6 +123,39 @@ fn main() -> i32 {
 }
 """ }]
 stdout = ""
+exit_code = 42
+differential_opt = true
+
+# --- The escaped root is an `inout` PARAMETER, not a local ------------------
+#
+# Handing a callee the address of the function's own `inout` parameter cannot
+# reach any of its locals: a bare scalar parameter has no backing local slot.
+# The escape scan says so explicitly, so `local` below keeps its block-local
+# forwarding while `n` still observes the write through the escaped pointer.
+# Without that arm every local in any function that forwards an `inout`
+# parameter would lose store-to-load forwarding entirely.
+
+[[case]]
+name = "escaped_inout_parameter_leaves_locals_forwardable"
+description = "The escaped root is the function's own `inout` parameter: the parameter observes the pointer write (42) and the untouched local still reads its last store (2)."
+files = [{ path = "main.rue", source = """
+fn addr(inout x: i32) -> ptr mut i32 { checked { @raw_mut(x) } }
+fn poke(p: ptr mut i32, v: i32) { checked { @ptr_write(p, v) }; }
+fn middle(inout n: i32) -> i32 {
+    let mut local: i32 = 1;
+    let p: ptr mut i32 = addr(inout n);
+    n = 5;
+    local = local + 1;
+    poke(p, 42);
+    @dbg(local);
+    n
+}
+fn main() -> i32 {
+    let mut a: i32 = 0;
+    middle(inout a)
+}
+""" }]
+stdout = "2\n"
 exit_code = 42
 differential_opt = true
 

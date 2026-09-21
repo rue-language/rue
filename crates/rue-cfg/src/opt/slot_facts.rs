@@ -57,9 +57,11 @@
 //! the list above rather than an accident: a pointer aimed at a local can only
 //! be produced by an address-taking intrinsic rooted at it or by handing the
 //! slot to a callee by reference, and both already disqualify the slot. (The
-//! block-local Rule 2 table in [`super::forward`] keeps those barriers anyway,
-//! as a backstop against a future escape channel; a whole-function
-//! classification cannot afford the same hammer.)
+//! block-local Rule 2 table in [`super::forward`] keeps the two cheapest of
+//! those barriers anyway — a pointer-taking intrinsic and an indirect write —
+//! as a backstop against a future escape channel. A whole-function
+//! classification cannot afford the same hammer: disqualifying every local at
+//! the first `@ptr_write` would cost far more than it insures.)
 //!
 //! ## Loop-scoped invariance
 //!
@@ -380,6 +382,12 @@ pub(super) fn classify_slot_writes(cfg: &Cfg, reachable: Option<&BitSet>) -> Vec
                                     slot_writes.fill(SlotWrites::Disqualified);
                                 }
                             },
+                            // A bare scalar parameter has no backing local, so
+                            // its ABI slot's address cannot alias one: this is
+                            // the mirror of the rule
+                            // `classify_never_written_params` states for a
+                            // local root handed to a callee.
+                            CfgInstData::Param { .. } => {}
                             // A by-ref root this scan cannot resolve to a
                             // specific slot: the address handed over may be
                             // any local's, so disqualify every one. This is
