@@ -403,6 +403,14 @@ pub(crate) trait AnonymousNominalLedger {
         &mut self,
     ) -> &mut AHashMap<super::anon_structs::IssuedAnonymousNominalKey, EnumId>;
 
+    /// Struct ids declared for anonymous nominals whose shape is still being
+    /// resolved. `Self` names the struct while its own field types resolve
+    /// (spec 6.4:18), so the nominal has to exist before its shape does; the
+    /// entry is consumed by the registration that completes it.
+    fn anonymous_struct_declarations_mut(
+        &mut self,
+    ) -> &mut AHashMap<super::anon_structs::IssuedAnonymousNominalKey, StructId>;
+
     fn anonymous_digest_owner(
         &self,
         digest: u128,
@@ -1810,6 +1818,68 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         };
         Ok(IssuedStableProducerId::Function(Node::new(function)))
     }
+    /// The type `Self` names inside the anonymous struct `identity` names
+    /// (spec 6.4:18). This is asked before the shape resolves, so an identity
+    /// with no registration yet is *declared* here -- an incomplete nominal
+    /// that may already be pointed at, exactly as a named struct's own
+    /// declaration is while its `ptr mut Self` field resolves -- and
+    /// [`Self::find_or_create_anon_struct`] completes that same declaration
+    /// (RUE-2223).
+    pub(crate) fn anonymous_struct_self_type(
+        &mut self,
+        identity: &super::anon_structs::IssuedAnonymousNominalKey,
+    ) -> CompileResult<Type> {
+        if let Some(id) = self
+            .storage
+            .anonymous_struct_id(identity)
+            .map_err(|failure| {
+                CompileError::without_span(rue_error::ErrorKind::OutputPublication(format!(
+                    "anonymous struct registry lookup failed: {failure:?}"
+                )))
+            })?
+        {
+            return Ok(Type::new_struct(id));
+        }
+        if let Some(id) = self
+            .storage
+            .anonymous_struct_declarations_mut()
+            .get(identity)
+            .copied()
+        {
+            return Ok(Type::new_struct(id));
+        }
+        let digest = self.stable_anonymous_identity_digest(identity);
+        self.guard_anonymous_digest_collision(digest, identity)?;
+        let name = super::anon_structs::anonymous_struct_name(digest);
+        let name_spur = self.intern_body_symbol(&name)?;
+        let (id, declared) = self.storage.body_type_pool().declare_struct(
+            name_spur,
+            crate::types::StructDef {
+                name: Arc::from(name.as_str()),
+                fields: Vec::new(),
+                is_copy: false,
+                is_linear: false,
+                declared_linear: false,
+                destructor: None,
+                is_builtin: false,
+                is_pub: false,
+                file_id: FileId::new(0),
+            },
+        );
+        if declared {
+            self.storage
+                .anonymous_struct_declarations_mut()
+                .insert(identity.clone(), id);
+        } else {
+            // The pool already held this nominal under its digest name, so it
+            // is registered rather than awaiting completion; record it as such
+            // so the registration below takes its already-present path.
+            self.storage
+                .anonymous_struct_identities_mut()
+                .insert(identity.clone(), id);
+        }
+        Ok(Type::new_struct(id))
+    }
     pub(crate) fn find_or_create_anon_struct(
         &mut self,
         identity: super::anon_structs::IssuedAnonymousNominalKey,
@@ -1855,7 +1925,15 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         }
         let digest = self.stable_anonymous_identity_digest(&identity);
         self.guard_anonymous_digest_collision(digest, &identity)?;
-        let id = self.storage.body_type_pool().reserve_struct_id();
+        // A `Self`-mentioning field already declared this identity before its
+        // shape could resolve; complete that declaration rather than
+        // registering a second nominal, so the struct the fields point at is
+        // the struct being registered (RUE-2223).
+        let declared = self
+            .storage
+            .anonymous_struct_declarations_mut()
+            .remove(&identity);
+        let id = declared.unwrap_or_else(|| self.storage.body_type_pool().reserve_struct_id());
         let name = super::anon_structs::anonymous_struct_name(digest);
         let name_spur = self.intern_body_symbol(&name)?;
         let has_destructor = sigs.iter().any(|sig| {
@@ -1882,9 +1960,15 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             is_pub: false,
             file_id: FileId::new(0),
         };
-        self.storage
-            .body_type_pool()
-            .complete_struct_registration(id, name_spur, def);
+        if declared.is_some() {
+            self.storage
+                .body_type_pool()
+                .complete_declared_struct(id, def);
+        } else {
+            self.storage
+                .body_type_pool()
+                .complete_struct_registration(id, name_spur, def);
+        }
         if !sigs.is_empty() {
             self.storage
                 .anonymous_struct_methods_mut()

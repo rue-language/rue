@@ -453,6 +453,25 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     return Err(CompileError::new(ErrorKind::EmptyStruct, inst.span));
                 }
 
+                // `Self` denotes the enclosing struct type wherever a type is
+                // expected (spec 6.4:18). An anonymous struct's identity is
+                // its producer and structural anchor, both settled before any
+                // field type resolves, so the struct id is issued first and
+                // `next: ptr mut Self` resolves through the same comptime
+                // substitution that carries `comptime T: type` (RUE-2223).
+                let self_identity = crate::AnonymousNominalKey {
+                    kind: crate::AnonymousNominalKind::Struct,
+                    producer: ctx.canonical_producer.clone(),
+                    anchor: anchor.clone(),
+                };
+                let self_name = ComptimeEngine::new(self)
+                    .self_type_name(&(), field_decls.iter().map(|(_, type_sym)| *type_sym));
+                let mut field_type_subst = std::borrow::Cow::Borrowed(&*ctx.comptime_type_vars);
+                if let Some(name) = self_name {
+                    let self_ty = self.anonymous_struct_self_type(&self_identity)?;
+                    field_type_subst.to_mut().insert(name, self_ty);
+                }
+
                 // Resolve each field type and build the struct fields
                 let mut struct_fields = Vec::with_capacity(field_decls.len());
                 for (name_sym, type_sym) in field_decls {
@@ -460,7 +479,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     let field_ty = self
                         .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
                             type_sym,
-                            &ctx.comptime_type_vars,
+                            field_type_subst.as_ref(),
                             &ctx.comptime_value_vars,
                             inst.span,
                         )
@@ -570,11 +589,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // This now compares fields, method signatures, AND captured comptime values
                 let (struct_ty, is_new) = self
                     .find_or_create_anon_struct(
-                        crate::AnonymousNominalKey {
-                            kind: crate::AnonymousNominalKind::Struct,
-                            producer: ctx.canonical_producer.clone(),
-                            anchor: anchor.clone(),
-                        },
+                        self_identity,
                         &struct_fields,
                         &method_sigs,
                         *thread_bound,

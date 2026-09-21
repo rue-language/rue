@@ -307,6 +307,18 @@ pub trait ComptimeTypeAlgebra: ComptimeDomain {
         syntax: rue_rir::RirTypeSyntaxRef,
     ) -> String;
     fn get_or_create_array_type(&mut self, element: Self::Type, length: u64) -> Self::Type;
+    /// The type `Self` denotes inside the anonymous nominal `identity` names
+    /// (spec 6.4:18). An anonymous nominal's identity is its producer and
+    /// structural anchor, both fixed before any field type resolves, so a
+    /// host can answer this without having seen the shape. `None` leaves
+    /// `Self` unbound, which is how a host that cannot name a nominal ahead
+    /// of registering it opts out.
+    fn anonymous_nominal_self_type(
+        &mut self,
+        _identity: &Self::AnonymousIdentity,
+    ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
+        Ok(None)
+    }
     fn find_or_create_anon_struct(
         &mut self,
         identity: Self::AnonymousIdentity,
@@ -1309,6 +1321,40 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             ComptimeOutcome::HostFailure(error) => ComptimeOutcome::HostFailure(error),
             ComptimeOutcome::Abort(error) => ComptimeOutcome::Abort(error),
         }
+    }
+
+    /// The host-side name for `Self` as `roots` spell it, or `None` when no
+    /// reachable type syntax names it. `Self` is a keyword rather than a
+    /// declared symbol, so no host interns it on its own; the anonymous
+    /// nominal arms recover the name from the owning program's type-syntax
+    /// arena, exactly as the substitution walk recovers every other named
+    /// type (RUE-2223).
+    pub(crate) fn self_type_name(
+        &self,
+        program: &H::ProgramKey,
+        roots: impl IntoIterator<Item = rue_rir::RirTypeSyntaxRef>,
+    ) -> Option<H::Name> {
+        let mut pending = roots.into_iter().collect::<Vec<_>>();
+        while let Some(reference) = pending.pop() {
+            let arena = self.host.program_rir(program).type_syntax();
+            if let Some(rue_rir::RirTypeSyntaxNode::Named(symbol)) = arena.node(reference)
+                && let Some(symbol) = arena.symbol(*symbol)
+            {
+                let name = self.host.name_from_symbol(program, (*symbol).into());
+                if self.host.display_name(&name) == "Self" {
+                    return Some(name);
+                }
+            }
+            if !self
+                .host
+                .program_rir(program)
+                .type_syntax()
+                .visit_child_references(reference, |child| pending.push(child))
+            {
+                return None;
+            }
+        }
+        None
     }
 
     /// Decode anonymous method signatures from RIR exactly once, at the AIR
@@ -3624,6 +3670,39 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 // RUE-575), alongside the enclosing parameters.
                 let (local_type_subst, local_value_subst) = env.substs_with_locals();
 
+                // `Self` denotes the enclosing struct type wherever a type is
+                // expected (spec 6.4:18). The anonymous nominal's identity is
+                // its producer and structural anchor, both settled before any
+                // field type resolves, so the binding is issued up front and
+                // `next: ptr mut Self` resolves through the same substitution
+                // that carries `comptime T: type` (RUE-2223). A named struct
+                // binds `Self` in its declaration signature instead.
+                let self_identity = env.canonical_identity.as_ref().map(|producer| {
+                    self.host.issue_anonymous_identity(
+                        &self.program_key(),
+                        ComptimeAnonymousKind::Struct,
+                        producer,
+                        anchor,
+                    )
+                });
+                let self_name = self_identity.as_ref().and_then(|_| {
+                    self.self_type_name(
+                        &self.program_key(),
+                        field_decls.iter().map(|(_, type_sym)| *type_sym),
+                    )
+                });
+                let mut field_type_subst = Cow::Borrowed(&local_type_subst);
+                if let Some(name) = self_name {
+                    let identity = self_identity
+                        .as_ref()
+                        .expect("a `Self` name is only sought once an identity is issued");
+                    if let Some(self_ty) =
+                        host_value!(self.host.anonymous_nominal_self_type(identity))
+                    {
+                        field_type_subst.to_mut().insert(name, self_ty);
+                    }
+                }
+
                 let mut struct_fields = Vec::with_capacity(field_decls.len());
                 for (name_sym, type_sym) in field_decls {
                     let field_name = self.name_from_rir(name_sym.into());
@@ -3635,7 +3714,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         &self.program_key(),
                         type_sym,
                         env,
-                        &local_type_subst,
+                        field_type_subst.as_ref(),
                         &local_value_subst,
                         span,
                     ));
@@ -3655,15 +3734,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     &local_value_subst,
                 ));
 
-                let Some(producer) = env.canonical_identity.clone() else {
+                let Some(identity) = self_identity else {
                     return ComptimeOutcome::RuntimeDependent;
                 };
-                let identity = self.host.issue_anonymous_identity(
-                    &self.program_key(),
-                    ComptimeAnonymousKind::Struct,
-                    &producer,
-                    anchor,
-                );
                 for field in &struct_fields {
                     host_value!(self.host.reject_callback_member(
                         &field.ty,
