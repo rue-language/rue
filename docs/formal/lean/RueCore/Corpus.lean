@@ -40,17 +40,20 @@ One array of case objects. Fields:
   it: the seed cases below use `return` only where `check` is complete, and
   `Gen.lean` emits no `ret` at all.
 * `expected` — the interpreter's outcome for an accepted program:
-  `{"kind": "ok", "stdout": [<line>...], "exit": 0}`, where each line is one
-  **user destructor** the run executed, in trace order, followed by the lines
-  `main` shows for the program's value (`Print.lean` documents the mapping: a
-  scalar prints itself, and a struct value is dropped, so its lines are the
-  ones its drop emits). A drop with no destructor anywhere in it is
-  unobservable in Rue and contributes no line; the interpreter's `drop ℓ v`
-  and `dropTemp v` events mark where a drop *starts* and are likewise not
-  lines. Or `{"kind": "panic", "panic":
-  "overflow" | "divZero"}` for a §6.12 trap, where the trace is not
-  observable (the machine discards it) and only the trap kind is compared.
-  For a rejected program `expected` is `{"kind": "stuck", "violation":
+  `{"kind": "ok", "stdout": [<line>...], "exit": 0}`, where the lines are the
+  run's **observable events** in trace order — one per user destructor and one
+  per `@dbg` — followed by the lines `main` shows for the program's value
+  (`Print.lean` documents the mapping: a scalar prints itself, and a struct
+  value is dropped, so its lines are the ones its drop emits). Both channels
+  come off the one trace, so a `@dbg` between two drops is between them here
+  too. A drop with no destructor anywhere in it is unobservable in Rue and
+  contributes no line; the interpreter's `drop ℓ v` and `dropTemp v` events
+  mark where a drop *starts* and are likewise not lines. Or
+  `{"kind": "panic", "panic": <name>, "stdout": [<line>...]}` for a §6.12
+  trap, where the lines are the ones the run produced **before** the trap:
+  §6.12's outcome keeps the observable output a trapping run emitted, and the
+  process prints what it printed and then exits 101. For a rejected program
+  `expected` is `{"kind": "stuck", "violation":
   <name>}`: the refusal the machine reaches, kernel-checked in
   `Examples.lean` and below, which the bridge cannot observe because the
   compiler rejects the program first. A rejected program whose executed path
@@ -59,12 +62,10 @@ One array of case objects. Fields:
   skips — carries the `ok` or `panic` outcome of the executed path instead,
   so a compiler that accepts it unsoundly is still compared against what the
   machine does. The seed corpus has no such case; the generator (`Gen.lean`)
-  produces them. A `panic` outcome carries no trace on
-  the Lean side (`EvalRes.panic` discards it), so drops before a trap are a
-  blind spot of the bridge at this fragment; RUE-2282 gives `.panic` its
-  trace. Every line is a bare integer, so the projection is not injective: a
-  destructor line `n` swapped with a value line `n` would not be told apart.
-  Accepted at fragment scope.
+  produces them. Every line is a bare integer or `true`/`false`, so the
+  projection is not injective: a destructor line `n` swapped with a `@dbg`
+  line `n` or a value line `n` would not be told apart. Accepted at fragment
+  scope.
 
 Every case is evaluated at one fixed bound, `exportFuel`, and a case the
 bound does not complete is **not exported**: `outOfFuel` is the interpreter
@@ -272,6 +273,86 @@ def cases : List Case := [
     description := "Recursion four frames deep, ending in a division by zero: a defined trap reached through a call chain.",
     rules := ["(Call) §5.8", "(D-Call) §6.9", "§6.4 arithmetic traps"],
     prog := Examples.recursionTrap },
+  { name := "i8_overflow",
+    description := "max_T + 1 at i8: the arithmetic trap at the narrowest width, where the bound is 127.",
+    rules := ["(Arith) §5.8", "(D-Arith-Trap) §6.4", "3.1:6"],
+    prog := Examples.scalarProg (.int .w8 .signed) Examples.i8Overflow
+    },
+  { name := "u8_underflow",
+    description := "0 - 1 at u8: the same trap reached downward, since Rue has no wrapping subtraction.",
+    rules := ["(Arith) §5.8", "(D-Arith-Trap) §6.4", "3.1:6"],
+    prog := Examples.scalarProg (.int .w8 .unsigned) Examples.u8Underflow
+    },
+  { name := "i8_div_min_by_neg_one",
+    description := "min_T / -1 at i8: the quotient that is not representable.",
+    rules := ["(Arith) §5.8", "(D-Div-Overflow) §6.4", "8.1:3"],
+    prog := Examples.scalarProg (.int .w8 .signed) Examples.i8DivMinByNegOne
+    },
+  { name := "i8_rem_min_by_neg_one",
+    description := "min_T % -1 at i8: §6.4 traps although the mathematical remainder is 0.",
+    rules := ["(Arith) §5.8", "(D-Div-Overflow) §6.4", "8.1:3"],
+    prog := Examples.scalarProg (.int .w8 .signed) Examples.i8RemMinByNegOne
+    },
+  { name := "i8_rem_zero",
+    description := "% by a zero divisor: the rem-zero trap, §6.12's own category beside div-zero.",
+    rules := ["(Arith) §5.8", "§6.4 arithmetic traps", "§6.12"],
+    prog := Examples.scalarProg (.int .w8 .signed) Examples.i8RemZero
+    },
+  { name := "int_cast_out_of_range",
+    description := "@intCast of 300 to u8: the value does not fit the target type, so the conversion traps.",
+    rules := ["(Int-Cast) §5.8", "(D-Int-Cast-Trap) §6.4", "4.13:28"],
+    prog := Examples.scalarProg (.int .w8 .unsigned) Examples.u8CastOutOfRange
+    },
+  { name := "int_cast_in_range",
+    description := "@intCast of 200 to u8: the value fits, so the conversion carries it across.",
+    rules := ["(Int-Cast) §5.8", "(D-Int-Cast) §6.4", "4.13:26"],
+    prog := Examples.scalarProg (.int .w8 .unsigned) Examples.u8CastInRange
+    },
+  { name := "shift_masks_width",
+    description := "1 << 8 at u8: the shift amount is reduced modulo the width, so this shifts by zero and prints 1. Shifting never traps.",
+    rules := ["(Arith) §5.8", "(D-Shl) §6.4", "4.3a:10"],
+    prog := Examples.scalarProg (.int .w8 .unsigned) Examples.u8ShiftMasks
+    },
+  { name := "bitwise_at_u8",
+    description := "(12 & 10) | ~240 at u8: the bit rules read the w-bit pattern back at the operand's width, so the complement is 15 and the result is 15.",
+    rules := ["(Arith) §5.8", "(BitNot) §5.8", "(D-Bit) §6.4", "4.3a:1"],
+    prog := Examples.scalarProg (.int .w8 .unsigned) Examples.u8Bitwise
+    },
+  { name := "negate_at_i16",
+    description := "-(3 * 7) at i16: multiplication and the unary negation (Neg) §5.8 admits on a signed type only.",
+    rules := ["(Arith) §5.8", "(Neg) §5.8", "(D-Arith) §6.4", "4.2:6"],
+    prog := Examples.scalarProg (.int .w16 .signed) Examples.i16Negate
+    },
+  { name := "unsigned_compare_at_u64",
+    description := "max_T > 0 at u64: an unsigned ordering of a value whose signed reading would be negative, so the case tells the two orderings apart.",
+    rules := ["(Ord) §5.8", "§6.4", "4.3:5"],
+    prog := Examples.scalarProg .bool Examples.u64Compare
+    },
+  { name := "bool_negate",
+    description := "!(3 <= 3): (Not) §5.8 on the one type it admits.",
+    rules := ["(Not) §5.8", "(Ord) §5.8", "4.4:2"],
+    prog := Examples.scalarProg .bool Examples.boolNegate
+    },
+  { name := "dbg_scalars",
+    description := "@dbg of a negative i8, a u64 and a bool: the observable output §6.12 compares, one line each.",
+    rules := ["(Dbg) §5.8", "§6.12"],
+    prog := Examples.scalarProg Examples.tI64 Examples.dbgScalars
+    },
+  { name := "dbg_between_drops",
+    description := "A @dbg between two destructors: the two observation channels are one trace, so the line comes out where it happened.",
+    rules := ["(Dbg) §5.8", "§6.11", "§6.12", "(@Drop) §5.3"],
+    prog := Examples.prog Examples.tI64 Examples.dbgBetweenDrops
+    },
+  { name := "panic_after_drop",
+    description := "A user @panic after an affine @drop: the destructor line survives the trap, and no scope exit runs after it (§5.7 exempts the panic edge).",
+    rules := ["(Panic) §5.8", "(D-Panic) §6.12", "(@Drop) §5.3", "§6.11"],
+    prog := Examples.prog Examples.tI64 Examples.panicAfterDrop
+    },
+  { name := "dbg_before_trap",
+    description := "A @dbg before a division by zero: the same claim for a trap the program did not ask for.",
+    rules := ["(Dbg) §5.8", "(D-Div-Zero) §6.4", "§6.12"],
+    prog := Examples.scalarProg Examples.tI64 Examples.dbgBeforeTrap
+    },
   { name := "countdown",
     description := "A recursive countdown summing 4+3+2+1+0: every frame pops normally and the value comes back through five call boundaries.",
     rules := ["(Call) §5.8", "(D-Call) §6.9", "(D-Return-Value) §6.9"],
