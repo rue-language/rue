@@ -2356,7 +2356,12 @@ other, and step 5 of the README's rubric is met for this construct. One thing
 the harness cannot compare away is `σ_NaN` (§2): it is fixed per target, so a
 case whose answer depends on it — only `@total_cmp` can see it — is a case the
 two views agree on per target and not across them. The float corpus therefore
-reads a NaN's sign nowhere.
+reads a NaN's sign nowhere, and that is **structural** rather than a property
+of the seed: no hand-written case applies `@total_cmp` to a NaN, and the
+generator cannot produce one, because it draws `@total_cmp`'s operands as float
+*literals* and a literal is finite (`3.12:10`) and so never a NaN
+(`RueCore.Gen`). A case that did read a sign would need the exporter to carry
+the target's `σ_NaN`.
 
 ### 6.5 Aggregate introduction and projection
 

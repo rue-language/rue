@@ -269,9 +269,13 @@ digits that identify it. -/
 def floatSqrt : Expr := fintrin (.roundOp .sqrt) (flE .w64 2 0)
 
 /-- `@total_cmp` is a **total** order (`3.12:32`): `-0.0` precedes `+0.0`, a
-datum equals itself, and a larger value follows. No case reads it on a NaN:
-`σ_NaN` is a target parameter (§2), so the answer there would differ between
-x86-64 and AArch64. -/
+datum equals itself, and a larger value follows. Every operand here is a float
+*literal*, so none of them is a NaN, and no other seed case applies
+`@total_cmp` at all; the generator draws its operands as literals too
+(`Gen.lean`), so it cannot produce a NaN operand either. That is what keeps the
+corpus target-independent: `@total_cmp` is the only form that can see a NaN's
+sign, and that sign is `σ_NaN`, a target parameter (§2), so the answer there
+would differ between x86-64 and AArch64. -/
 def totalCmpOrder : Expr :=
   seq (dbg (binop .totalCmp (unop .neg (flE .w64 0 0)) (flE .w64 0 0)))
     (seq (dbg (binop .totalCmp (flE .w64 1 0) (flE .w64 1 0)))

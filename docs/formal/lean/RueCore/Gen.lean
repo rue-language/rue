@@ -89,6 +89,18 @@ the weights can be read and changed:
   assignment, so a generated program's stdout usually interleaves the two
   observation channels.
 
+One draw is deliberately **narrower** than the type would allow, and it is not
+a bias but an invariant. `@total_cmp`'s two operands are drawn as float
+*literals* rather than as arbitrary float expressions, because `@total_cmp` is
+the only form in the fragment that can observe a NaN's *sign*, and that sign is
+`σ_NaN` — a target parameter (§2, `3.12:44`), negative on x86-64 and positive
+on AArch64. An exported expectation that read one would be right on one target
+and wrong on the other. `floatLiteral` draws only finite decimals, so no NaN
+can reach a `@total_cmp` operand *by construction*; NaNs are still generated
+freely everywhere else (a `0.0 / 0.0` draw does reach `@dbg`, which renders
+`NaN` sign-blind, `3.12:42`). Widening this draw means giving the exporter a
+`σ_NaN` that follows the target.
+
 `@panic` is **not** generated, for `return`'s reason: it is never-typed, so
 `check` has to pick a type for it (`Checker.lean`), and a generated `@panic`
 in a position whose type is not the enclosing return type would be a *false*
@@ -190,16 +202,21 @@ def intLiteral (w : IntWidth) (sg : Sign) : G Expr := do
     if k = 0 then intMax w sg else if k = 1 then intMin w sg else Int.ofNat (k % 10)
   return intLit w sg n
 
-/-- (helper) A float type: `f64` more often than `f32`, the way `3.12:8`
+/-- (helper) A float width: `f64` more often than `f32`, the way `3.12:8`
 defaults an unsuffixed literal. -/
+def floatWidth : G FloatWidth := weighted FloatWidth.w64 [(1, FloatWidth.w32), (2, FloatWidth.w64)]
+
+/-- (helper) A float type at a drawn width. -/
 def floatTy : G Ty := do
-  return .float (← weighted FloatWidth.w64 [(1, FloatWidth.w32), (2, FloatWidth.w64)])
+  return .float (← floatWidth)
 
 /-- (helper) A float literal (§2's decimal form): a small decimal, sometimes
 with a negative exponent so the value is inexact at both widths, and
 sometimes `0` so that a division can reach an infinity or a NaN (`3.12:22`).
 Every draw is finite and far inside both ranges, which is what `3.12:10`
-requires of a source literal. -/
+requires of a source literal — and, because it is finite, **never a NaN**,
+which is what makes a literal operand safe under `@total_cmp` (the
+`@total_cmp` arm of `expr`). -/
 def floatLiteral (w : FloatWidth) : G Expr := do
   let k ← nat 0 19
   let l : FloatLit :=
@@ -418,8 +435,16 @@ def expr (D : StructEnv) : Scope → Ty → Nat → G Expr
                   -- float — the one float form that can trap (`3.12:18`) —
                   -- or `@total_cmp`, whose result is `i32` (`3.12:31`).
                   if w == .w32 && sg == .signed && (← chance 1 3) then
-                    let Tf ← floatTy
-                    return binop .totalCmp (← expr D Γ Tf fuel) (← expr D Γ Tf fuel)
+                    -- Both operands are **float literals**, not arbitrary
+                    -- expressions. `@total_cmp` is the only form that can see
+                    -- a NaN's sign, and that sign is `σ_NaN`, a *target*
+                    -- parameter (§2, `3.12:44`) — so an expectation that read
+                    -- one would be right on one target and wrong on the other.
+                    -- `floatLiteral` draws only finite decimals, so no draw
+                    -- here can be a NaN, and the restriction is what makes
+                    -- that structural rather than a property of the seed.
+                    let wf ← floatWidth
+                    return binop .totalCmp (← floatLiteral wf) (← floatLiteral wf)
                   if ← chance 1 3 then
                     let Tf ← floatTy
                     return fintrin (.floatToInt w sg) (← expr D Γ Tf fuel)

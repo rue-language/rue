@@ -106,8 +106,10 @@ def exportFuel : Nat := 100000
 AArch64 choice of `3.12:44`, spelled `nanSign := false` because the field is
 the sign *bit* of `FloatDatum.nan`. `σ_NaN` is a target parameter (§2), so it would
 be a divergence if it reached an expectation; it does not, because `@dbg`
-renders a NaN as `NaN` whatever its sign (`3.12:42`) and no seed case reads
-one through `@total_cmp`, the only form that can see it. -/
+renders a NaN as `NaN` whatever its sign (`3.12:42`) and nothing reads one
+through `@total_cmp`, the only form that can see it — no seed case applies
+`@total_cmp` to anything but a float literal, and `Gen` draws its operands as
+literals, which are finite by construction. -/
 def exportOps : FloatOps := Float.exactOps
 
 /-! ## The seed corpus
