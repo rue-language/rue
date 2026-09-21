@@ -707,6 +707,65 @@ example : ProgramTyped (scalarProg (.int .w8 .unsigned) u8CastOutOfRange) :=
 example : ProgramTyped (scalarProg tI64 dbgScalars) := checkProgram_sound (by rfl)
 example : ProgramTyped (prog tI64 panicAfterDrop) := checkProgram_sound (by rfl)
 
+/-! ## The float programs, accepted and run
+
+The static side first: `checkProgram_sound` turns each acceptance into a §5
+derivation, so `soundness` applies to every one of them. The dynamic side is
+pinned at `demoOps`, the model the corpus runs; each expectation below is
+also checked against the compiler, case by case, by the corpus driver. -/
+
+example : ProgramTyped (scalarProg tF64 floatArith) := checkProgram_sound (by rfl)
+example : ProgramTyped (scalarProg tF64 floatCopy) := checkProgram_sound (by rfl)
+example : ProgramTyped (scalarProg tF64 floatDivZero) := checkProgram_sound (by rfl)
+example : ProgramTyped (scalarProg tI64 floatNanUnordered) := checkProgram_sound (by rfl)
+example : ProgramTyped (scalarProg tI64 floatSignedZeros) := checkProgram_sound (by rfl)
+example : ProgramTyped (scalarProg tI64 floatToIntTrunc) := checkProgram_sound (by rfl)
+example : ProgramTyped (scalarProg (.int .w32 .signed) floatToIntTrapInf) :=
+  checkProgram_sound (by rfl)
+example : ProgramTyped (scalarProg tF32 floatCastNarrow) := checkProgram_sound (by rfl)
+example : ProgramTyped (scalarProg tF64 floatSqrt) := checkProgram_sound (by rfl)
+example : ProgramTyped (scalarProg tI64 totalCmpOrder) := checkProgram_sound (by rfl)
+
+/-- `%` has no float rule — `(Float-Arith)` §5.8 omits it and `3.12:25` says
+why — so the checker rejects it, "by the absence of a rule" made a side
+condition (`BinOp.floatAdmits`). -/
+example : checkProgram (scalarProg tF64 (binop .rem (flE .w64 1 0) (flE .w64 2 0))) = false := by
+  rfl
+
+/-- Nor do the bitwise operators: a float is a datum rather than a bit
+pattern (§2), so `(Arith)`/`(BitNot)` never reach one. -/
+example : checkProgram (scalarProg tF64 (binop .bitAnd (flE .w64 1 0) (flE .w64 2 0))) = false := by
+  rfl
+example : checkProgram (scalarProg tF64 (unop .bitnot (flE .w64 1 0))) = false := by rfl
+
+/-- `3.12:13` gives no implicit widening, so an `f32`/`f64` mix has no
+derivation. -/
+example : checkProgram (scalarProg tF64 (binop .add (flE .w64 1 0) (flE .w32 1 0))) = false := by
+  rfl
+
+/-- `3.12:14` relates no float operand to an integer one either: the only
+bridges are the conversion intrinsics. -/
+example : checkProgram (scalarProg tF64 (binop .add (flE .w64 1 0) (lit 1))) = false := by rfl
+
+/-- `(Float-Cast)` carries `w' ≠ w` (`3.12:19`): `@float_cast` converts
+between the two widths and only between them. -/
+example : checkProgram (scalarProg tF64 (fintrin (.floatCast .w64) (flE .w64 1 0))) = false := by
+  rfl
+
+/-- `@total_cmp` has no integer rule (`3.12:31`), which `BinOp.intAdmits`
+carries on (Arith)/(Ord). -/
+example : checkProgram (scalarProg (.int .w32 .signed) (binop .totalCmp (lit 1) (lit 2)))
+    = false := by rfl
+
+/-! The float programs' **runs** are not pinned here. Reducing one in the
+kernel means reducing `Float.exactOps`'s exact rational arithmetic — `2^1074`
+and a correctly-rounded division — which exceeds the elaborator's recursion
+budget without buying anything: the run is checked where it means something,
+by *executing* it and comparing the printed program against the compiler, case
+by case (`Corpus.lean`; every float case agrees). What is kernel-checked here
+is the static side above, and the trap witnesses below, which quantify over
+every model and compute no float at all. -/
+
 /-- (Neg) §5.8 negates a signed operand only (`4.2:6`, `4.2:14`), so the
 checker rejects `neg` on an unsigned type — there is no value for it to
 produce. -/
@@ -955,6 +1014,53 @@ theorem countdown_at_17 :
 ∀-fuel shape of `soundness` is a statement about one outcome. -/
 example : run demoOps countdown demoFuel = run demoOps countdown 17 :=
   fuel_mono demoOps (by decide) (fun h => absurd (countdown_at_17.symm.trans h) (by simp))
+
+/-! ## The one float trap, witnessed under the model's laws
+
+§6.4 gives floats exactly one trapping form, `@float_to_int`, and §7 owes one
+lemma for them — "the premises of `(D-Float-To-Int)` and
+`(D-Float-To-Int-Trap)` partition `𝔽_w`". That partition is a *theorem* here
+(`floatToInt_partition`, `Float.lean`), because the datum model makes
+truncation exact integer arithmetic, so the witnesses below need no arithmetic
+of their own.
+
+What they do need is a way for a core program to *reach* an infinity, and
+that is a law: `3.12:22`'s "a finite non-zero over a zero is the infinity of
+the xor sign", which §6.4 quotes as a consequence of `⊕_w`. The witnesses are
+therefore stated over an **arbitrary** `FloatModel` and proved from its
+laws rather than by computing with `Float.exactOps` — which is what makes them
+claims about IEEE 754 instead of claims about this package's instance, and
+what keeps them (and everything above them) free of `Classical.choice`. The
+compiler agreement is checked the other way, case by case, by the corpus. -/
+
+/-- **`@float_to_int` of an infinity traps** — `3.12:18`'s guard "admits both
+infinities as failures" — and the category is `↯overflow`, the one §6.12
+already lists (`8.1:7`), not a new one. -/
+theorem floatToInt_inf_traps (M : FloatModel) (w : FloatWidth) (w' : IntWidth) (s' : Sign)
+    (b : Bool) :
+    evalFintrin M.toFloatOps (.floatToInt w' s') (.float w (.inf b)) = .trap .overflow := rfl
+
+/-- **`@float_to_int` of a NaN traps**, the other half of
+`(D-Float-To-Int-Trap)`'s premise (`3.12:18`). -/
+theorem floatToInt_nan_traps (M : FloatModel) (w : FloatWidth) (w' : IntWidth) (s' : Sign)
+    (b : Bool) :
+    evalFintrin M.toFloatOps (.floatToInt w' s') (.float w (.nan b)) = .trap .overflow := rfl
+
+/-- **A whole redex: `@float_to_int(1.0 / 0.0)` traps at every model.** The
+division is `3.12:22`'s (`FloatModel.div_by_zero`), the literals are
+`3.12:9`'s (`ofLit_one`, `ofLit_zero`), and the trap is the partition. No
+float arithmetic is computed anywhere in the proof, and the theorem holds for
+every model satisfying the laws — including, but not only, `Float.exactOps`,
+which the corpus runs and the compiler agrees with. -/
+theorem floatDivZeroToInt_traps (M : FloatModel) (P : Program) (H : Store) (φ : Frame)
+    (w : FloatWidth) (w' : IntWidth) (s' : Sign) :
+    eval M.toFloatOps 8 P H φ
+        (fintrin (.floatToInt w' s') (binop .div (flE w 1 0) (flE w 0 0)))
+      = .panic .overflow [] := by
+  have hdiv : M.toFloatOps.arith w .div (.num false 1 0) (.num false 0 0) = .inf false :=
+    M.div_by_zero w (.num false 1 0) false 1 0 (one_wf w) rfl (by decide) false
+  simp [eval, EvalRes.andThen, EvalRes.withTrace, evalBinOp, binOpFloat, evalFintrin,
+    OpRes.toRes, M.ofLit_one, M.ofLit_zero, hdiv, FloatDatum.toIntIn, FloatDatum.truncToInt]
 
 /-! ## Where `eval` and §6 part on invalid input
 
