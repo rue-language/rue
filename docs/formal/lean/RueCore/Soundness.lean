@@ -60,42 +60,110 @@ namespace RueCore
 
 /-! ## Value typing -/
 
-/-- Value typing: §6.1's values against §2's types, with the `n_T` bounds and
-the resource's class. §7's preservation half is stated over this relation. -/
-inductive HasTy : Val → Ty → Prop where
-  | int {n} : InBounds n → HasTy (.int n) .int
-  | bool {b} : HasTy (.bool b) .bool
-  | unit : HasTy .unit .unit
-  | res {κ n} : InBounds n → HasTy (.res κ n) (.res κ)
+mutual
+/-- Value typing: §6.1's values against §2's types, with the `n_T` bounds and,
+for a struct value, its declaration's field list — §6.1's `{ v1, …, vk }_S`
+well typed at `S` exactly when each field value is well typed at its declared
+type (§5.8's (Struct-Intro), read on values). §7's preservation half is stated
+over this relation. -/
+inductive HasTy (D : StructEnv) : Val → Ty → Prop where
+  | int {n} : InBounds n → HasTy D (.int n) .int
+  | bool {b} : HasTy D (.bool b) .bool
+  | unit : HasTy D .unit .unit
+  | struct {s sd vs} :
+      D[s]? = some sd → HasTys D vs sd.fields → HasTy D (.struct s vs) (.struct s)
 
-/-- Value typing for a call's argument list, pointwise against the callee's
-parameter types (§5.8's (Call), `4.10:4`). -/
-inductive HasTys : List Val → List Ty → Prop where
-  | nil : HasTys [] []
-  | cons {v vs T Ts} : HasTy v T → HasTys vs Ts → HasTys (v :: vs) (T :: Ts)
+/-- Value typing for a value list, pointwise against the expected types: a
+call's arguments against the callee's parameter types (§5.8's (Call),
+`4.10:4`) and a struct value's fields against its declared field list. -/
+inductive HasTys (D : StructEnv) : List Val → List Ty → Prop where
+  | nil : HasTys D [] []
+  | cons {v vs T Ts} : HasTy D v T → HasTys D vs Ts → HasTys D (v :: vs) (T :: Ts)
+end
 
-/-- An argument list has as many values as parameter types (`4.10:3`)
+/-- A value list has as many values as expected types (`4.10:3`, `3.6:5`)
 (helper). -/
-theorem HasTys.length_eq {vs Ts} (h : HasTys vs Ts) : vs.length = Ts.length := by
-  induction h with
-  | nil => rfl
-  | cons _ _ ih => simp [ih]
+theorem HasTys.length_eq : ∀ {D vs Ts}, HasTys D vs Ts → vs.length = Ts.length
+  | _, _, _, .nil => rfl
+  | _, _, _, .cons _ h => by simp [HasTys.length_eq h]
 
 /-- A well-typed value has its type's class (helper). -/
-theorem HasTy.mult_eq {v T} (h : HasTy v T) : v.mult = T.mult := by
+theorem HasTy.mult_eq {D v T} (h : HasTy D v T) : v.mult D = T.mult D := by
   cases h <;> rfl
 
 /-- Inversion of value typing at `int` (helper). -/
-theorem HasTy.int_inv {v} (h : HasTy v .int) : ∃ n, v = .int n ∧ InBounds n := by
+theorem HasTy.int_inv {D v} (h : HasTy D v .int) : ∃ n, v = .int n ∧ InBounds n := by
   cases h; exact ⟨_, rfl, ‹_›⟩
 
 /-- Inversion of value typing at `bool` (helper). -/
-theorem HasTy.bool_inv {v} (h : HasTy v .bool) : ∃ b, v = .bool b := by
+theorem HasTy.bool_inv {D v} (h : HasTy D v .bool) : ∃ b, v = .bool b := by
   cases h; exact ⟨_, rfl⟩
 
-/-- Inversion of value typing at a resource type (helper). -/
-theorem HasTy.res_inv {v κ} (h : HasTy v (.res κ)) : ∃ n, v = .res κ n ∧ InBounds n := by
-  cases h; exact ⟨_, rfl, ‹_›⟩
+/-- Inversion of value typing at a struct type (helper). -/
+theorem HasTy.struct_inv {D v s} (h : HasTy D v (.struct s)) :
+    ∃ sd vs, v = .struct s vs ∧ D[s]? = some sd ∧ HasTys D vs sd.fields := by
+  cases h; exact ⟨_, _, rfl, ‹_›, ‹_›⟩
+
+/-- The fields of a value at a `Consumable` declaration start with an `int`,
+which is the payload `Expr.consume` reads (`Syntax.lean`) (helper). -/
+theorem HasTys.head_int {D vs Ts} (h : HasTys D vs Ts) (hne : Ts ≠ [])
+    (hall : ∀ T ∈ Ts, T = .int) : ∃ n vs', vs = .int n :: vs' ∧ InBounds n := by
+  cases h with
+  | nil => exact absurd rfl hne
+  | @cons v vs' T Ts' hv _ =>
+      have hT : T = .int := hall T List.mem_cons_self
+      subst hT
+      obtain ⟨n, rfl, hb⟩ := hv.int_inv
+      exact ⟨n, vs', rfl, hb⟩
+
+/-! ## Dropping a value never refuses, and drops in §6.11's order -/
+
+/-- **A well-typed value's drop always runs.** `dropValue` (§6.11) refuses
+only where a struct value names a declaration the program does not have, and
+value typing rules that out. -/
+theorem dropValue_ok {D : StructEnv} {v : Val} {T : Ty} (h : HasTy D v T) :
+    ∃ evs, dropValue D v = .ok evs := by
+  induction h using HasTy.rec
+    (motive_2 := fun vs _ _ => ∃ evs, dropValues D vs = .ok evs) with
+  | int _ => exact ⟨[], rfl⟩
+  | bool => exact ⟨[], rfl⟩
+  | unit => exact ⟨[], rfl⟩
+  | @struct s sd vs hd _ ih =>
+      obtain ⟨evs, hevs⟩ := ih
+      exact ⟨(if sd.dtor then [Event.dtor s (.struct s vs)] else []) ++ evs, by
+        simp only [dropValue, hd, hevs]⟩
+  | nil => exact ⟨[], rfl⟩
+  | cons _ _ ih ihs =>
+      obtain ⟨e₁, h₁⟩ := ih
+      obtain ⟨e₂, h₂⟩ := ihs
+      exact ⟨e₁ ++ e₂, by simp only [dropValues, h₁, h₂]⟩
+
+/-- **§6.11's order, stated.** A struct value's drop emits its user
+destructor's event first — when its declaration has one — and then exactly the
+events its fields' drops emit, in declaration order. RUE-2237's
+"dropped exactly once" is the next statement over this walk. -/
+theorem dropValue_order {D : StructEnv} {s : Nat} {sd : StructDecl} {vs : List Val}
+    {evs : List Event} (hd : D[s]? = some sd) (h : dropValue D (.struct s vs) = .ok evs) :
+    ∃ fevs, dropValues D vs = .ok fevs ∧
+      evs = (if sd.dtor then [Event.dtor s (.struct s vs)] else []) ++ fevs := by
+  simp only [dropValue, hd] at h
+  cases hf : dropValues D vs with
+  | error w => rw [hf] at h; cases h
+  | ok fevs => rw [hf] at h; cases h; exact ⟨fevs, rfl, rfl⟩
+
+/-- **`drop*` is the fields in order** (§6.11): the events of a field list's
+drop are the head's followed by the tail's. -/
+theorem dropValues_order {D : StructEnv} {v : Val} {vs : List Val} {evs : List Event}
+    (h : dropValues D (v :: vs) = .ok evs) :
+    ∃ e₁ e₂, dropValue D v = .ok e₁ ∧ dropValues D vs = .ok e₂ ∧ evs = e₁ ++ e₂ := by
+  simp only [dropValues] at h
+  cases h₁ : dropValue D v with
+  | error w => rw [h₁] at h; cases h
+  | ok e₁ =>
+      rw [h₁] at h
+      cases h₂ : dropValues D vs with
+      | error w => rw [h₂] at h; cases h
+      | ok e₂ => rw [h₂] at h; cases h; exact ⟨e₁, e₂, rfl, rfl, rfl⟩
 
 /-! ## The store–Σ agreement invariant -/
 
@@ -105,22 +173,22 @@ asymmetry built in. A `MovedOut` entry may still hold a live *non-linear*
 value, which the machine drops path-specifically at scope exit (§5.6, §6.7;
 `3.8:73` is the array-element form of the same rule, cited by §5.5); it
 never holds a live linear one (`3.8:50`). -/
-def CellMatches (c : Cell) (en : Entry) : Prop :=
+def CellMatches (D : StructEnv) (c : Cell) (en : Entry) : Prop :=
   match en.st with
-  | .owned => ∃ v, c = .full v ∧ HasTy v en.ty
-  | .movedOut => c = .moved ∨ ∃ v, c = .full v ∧ HasTy v en.ty ∧ v.mult ≠ .linear
+  | .owned => ∃ v, c = .full v ∧ HasTy D v en.ty
+  | .movedOut => c = .moved ∨ ∃ v, c = .full v ∧ HasTy D v en.ty ∧ v.mult D ≠ .linear
 
 /-- `Matches Γ ρ H`: each binding's location holds a cell agreeing with its
 static entry; locations are live (in `H`) and pairwise distinct. This is the
 §7 preservation invariant, over §6.1's environment `ρ` and store `H`. -/
-inductive Matches : Ctx → Env → Store → Prop where
-  | nil {H} : Matches [] [] H
+inductive Matches (D : StructEnv) : Ctx → Env → Store → Prop where
+  | nil {H} : Matches D [] [] H
   | cons {en : Entry} {Γ : Ctx} {ℓ : Nat} {ρ : Env} {H : Store} {c : Cell} :
-      H[ℓ]? = some c → CellMatches c en → ℓ ∉ ρ → Matches Γ ρ H →
-      Matches (en :: Γ) (ℓ :: ρ) H
+      H[ℓ]? = some c → CellMatches D c en → ℓ ∉ ρ → Matches D Γ ρ H →
+      Matches D (en :: Γ) (ℓ :: ρ) H
 
 /-- Every bound location is inside the store (helper). -/
-theorem Matches.mem_lt {Γ ρ H} (hm : Matches Γ ρ H) : ∀ ℓ ∈ ρ, ℓ < H.length := by
+theorem Matches.mem_lt {D Γ ρ H} (hm : Matches D Γ ρ H) : ∀ ℓ ∈ ρ, ℓ < H.length := by
   induction hm with
   | nil => intro ℓ h; cases h
   | cons hc _ _ _ ih =>
@@ -130,14 +198,14 @@ theorem Matches.mem_lt {Γ ρ H} (hm : Matches Γ ρ H) : ∀ ℓ ∈ ρ, ℓ < 
       | tail _ h => exact ih _ h
 
 /-- The next location to allocate is bound to nothing (helper). -/
-theorem Matches.fresh_not_mem {Γ ρ H} (hm : Matches Γ ρ H) : H.length ∉ ρ := by
+theorem Matches.fresh_not_mem {D Γ ρ H} (hm : Matches D Γ ρ H) : H.length ∉ ρ := by
   intro hmem
   exact absurd (hm.mem_lt _ hmem) (by omega)
 
 /-- Look a binding up through the invariant (helper). -/
-theorem Matches.lookup {Γ ρ H} (hm : Matches Γ ρ H) {i : Nat} {en}
+theorem Matches.lookup {D Γ ρ H} (hm : Matches D Γ ρ H) {i : Nat} {en}
     (hget : Γ[i]? = some en) :
-    ∃ ℓ c, ρ[i]? = some ℓ ∧ H[ℓ]? = some c ∧ CellMatches c en := by
+    ∃ ℓ c, ρ[i]? = some ℓ ∧ H[ℓ]? = some c ∧ CellMatches D c en := by
   induction hm generalizing i with
   | nil => simp at hget
   | cons hc hcm _ _ ih =>
@@ -148,13 +216,13 @@ theorem Matches.lookup {Γ ρ H} (hm : Matches Γ ρ H) {i : Nat} {en}
           exact ih hget
 
 /-- Inversion at a non-empty context (helper). -/
-theorem Matches.cons_inv {en Γ ℓ ρ H} (h : Matches (en :: Γ) (ℓ :: ρ) H) :
-    ∃ c, H[ℓ]? = some c ∧ CellMatches c en ∧ ℓ ∉ ρ ∧ Matches Γ ρ H := by
+theorem Matches.cons_inv {D en Γ ℓ ρ H} (h : Matches D (en :: Γ) (ℓ :: ρ) H) :
+    ∃ c, H[ℓ]? = some c ∧ CellMatches D c en ∧ ℓ ∉ ρ ∧ Matches D Γ ρ H := by
   cases h; exact ⟨_, ‹_›, ‹_›, ‹_›, ‹_›⟩
 
 /-- Store growth by allocation preserves the invariant (helper). -/
-theorem Matches.append {Γ ρ H} (hm : Matches Γ ρ H) (ext : Store) :
-    Matches Γ ρ (H ++ ext) := by
+theorem Matches.append {D Γ ρ H} (hm : Matches D Γ ρ H) (ext : Store) :
+    Matches D Γ ρ (H ++ ext) := by
   induction hm with
   | nil => exact .nil
   | cons hc hcm hnin _ ih =>
@@ -163,10 +231,10 @@ theorem Matches.append {Γ ρ H} (hm : Matches Γ ρ H) (ext : Store) :
       exact hc
 
 /-- Writing a cell nobody in `ρ` points at preserves the invariant (helper). -/
-theorem Matches.set_outside : ∀ {Γ ρ H} {ℓ : Nat} {c : Cell},
-    Matches Γ ρ H → ℓ ∉ ρ → Matches Γ ρ (H.set ℓ c)
-  | _, _, _, _, _, .nil, _ => .nil
-  | _, _, _, ℓ, c, .cons (ℓ := ℓ') hc hcm hnin' hrest, hnin => by
+theorem Matches.set_outside : ∀ {D Γ ρ H} {ℓ : Nat} {c : Cell},
+    Matches D Γ ρ H → ℓ ∉ ρ → Matches D Γ ρ (H.set ℓ c)
+  | _, _, _, _, _, _, .nil, _ => .nil
+  | _, _, _, _, ℓ, c, .cons (ℓ := ℓ') hc hcm hnin' hrest, hnin => by
       have hne : ℓ ≠ ℓ' := fun h => hnin (by simp [h])
       refine .cons ?_ hcm hnin'
         (Matches.set_outside hrest (fun h => hnin (List.mem_cons_of_mem _ h)))
@@ -175,17 +243,17 @@ theorem Matches.set_outside : ∀ {Γ ρ H} {ℓ : Nat} {c : Cell},
 
 /-- Updating binding `i`'s cell together with its entry preserves the
 invariant, given the new cell matches the new entry (helper). -/
-theorem Matches.set : ∀ {Γ ρ H} {i ℓ : Nat} {en' : Entry} {c' : Cell},
-    Matches Γ ρ H → ρ[i]? = some ℓ → CellMatches c' en' →
-    Matches (Γ.set i en') ρ (H.set ℓ c')
-  | _, _, _, _, _, _, _, .nil, hρ, _ => by simp at hρ
-  | _, _, _, 0, ℓ, en', c', .cons (ℓ := ℓ') hc hcm hnin hrest, hρ, hc' => by
+theorem Matches.set : ∀ {D Γ ρ H} {i ℓ : Nat} {en' : Entry} {c' : Cell},
+    Matches D Γ ρ H → ρ[i]? = some ℓ → CellMatches D c' en' →
+    Matches D (Γ.set i en') ρ (H.set ℓ c')
+  | _, _, _, _, _, _, _, _, .nil, hρ, _ => by simp at hρ
+  | _, _, _, _, 0, ℓ, en', c', .cons (ℓ := ℓ') hc hcm hnin hrest, hρ, hc' => by
       simp only [List.getElem?_cons_zero, Option.some_inj] at hρ
       subst hρ
       have hlt : ℓ' < _ := List.getElem?_eq_some_iff.mp hc |>.1
       refine .cons ?_ hc' hnin (hrest.set_outside hnin)
       rw [List.getElem?_set_self hlt]
-  | _, _, _, (i + 1), ℓ, en', c', .cons (ℓ := ℓ') hc hcm hnin hrest, hρ, hc' => by
+  | _, _, _, _, (i + 1), ℓ, en', c', .cons (ℓ := ℓ') hc hcm hnin hrest, hρ, hc' => by
       simp only [List.getElem?_cons_succ] at hρ
       have hmem : ℓ ∈ _ := List.mem_of_getElem? hρ
       have hne : ℓ' ≠ ℓ := fun h => hnin (h ▸ hmem)
@@ -198,14 +266,14 @@ theorem Matches.set : ∀ {Γ ρ H} {i ℓ : Nat} {en' : Entry} {c' : Cell},
 is built in, since a signature names its parameters left to right while `Ctx`
 and `Env` list the innermost binder first (§5.8's (Fn), §6.9's (D-Call))
 (helper). -/
-theorem Matches.snoc : ∀ {Γ ρ H} {ℓ : Nat} {en : Entry} {c : Cell},
-    Matches Γ ρ H → H[ℓ]? = some c → CellMatches c en → ℓ ∉ ρ →
-    Matches (Γ ++ [en]) (ρ ++ [ℓ]) H
-  | _, _, _, ℓ, en, c, .nil, hc, hcm, _ => by
+theorem Matches.snoc : ∀ {D Γ ρ H} {ℓ : Nat} {en : Entry} {c : Cell},
+    Matches D Γ ρ H → H[ℓ]? = some c → CellMatches D c en → ℓ ∉ ρ →
+    Matches D (Γ ++ [en]) (ρ ++ [ℓ]) H
+  | _, _, _, _, ℓ, en, c, .nil, hc, hcm, _ => by
       simp only [List.nil_append]
       refine .cons hc hcm ?_ .nil
       simp
-  | _, _, _, ℓ, en, c, .cons (ℓ := ℓ') (ρ := ρ') hc' hcm' hnin' hrest, hc, hcm, hnin => by
+  | _, _, _, _, ℓ, en, c, .cons (ℓ := ℓ') (ρ := ρ') hc' hcm' hnin' hrest, hc, hcm, hnin => by
       have hne : ℓ ≠ ℓ' := by
         rintro rfl
         exact hnin List.mem_cons_self
@@ -291,8 +359,8 @@ theorem Untouched.under_binder {ρ : Env} {H₁ H₂ : Store} {c : Cell}
 
 /-- The invariant of a frame transports across a step local to a *disjoint*
 frame: the caller's bindings survive a callee's run (helper). -/
-theorem Matches.transport {Γ ρ₀ ρ H H'} (hm : Matches Γ ρ₀ H)
-    (hdisj : ∀ ℓ ∈ ρ₀, ℓ ∉ ρ) (hu : Untouched ρ H H') : Matches Γ ρ₀ H' := by
+theorem Matches.transport {D Γ ρ₀ ρ H H'} (hm : Matches D Γ ρ₀ H)
+    (hdisj : ∀ ℓ ∈ ρ₀, ℓ ∉ ρ) (hu : Untouched ρ H H') : Matches D Γ ρ₀ H' := by
   induction hm with
   | nil => exact .nil
   | cons hc hcm hnin hrest ih =>
@@ -308,9 +376,9 @@ newest-first, **is** that environment. The second clause is the RUE-1277
 redundancy discharged — every live binding of the frame is registered for a
 drop exactly once, which is what makes `run-all-scope-drops` (§6.9) safe at an
 early `return`. -/
-structure FrameMatches (Γ : Ctx) (φ : Frame) (H : Store) : Prop where
+structure FrameMatches (D : StructEnv) (Γ : Ctx) (φ : Frame) (H : Store) : Prop where
   /-- `Matches` through the frame's environment `ρ`. -/
-  store : Matches Γ φ.env H
+  store : Matches D Γ φ.env H
   /-- The scope record, newest-first, is the environment (`3.8:62`: every
   by-value binding is registered, and only those). In this fragment both are
   built from one list at every frame, so the equation holds definitionally;
@@ -323,33 +391,42 @@ structure FrameMatches (Γ : Ctx) (φ : Frame) (H : Store) : Prop where
 /-- A cell matching an entry that is not an owned linear one is a cell
 `drop-retire` can retire: either moved out, or holding a non-linear value
 (helper). -/
-theorem CellMatches.dropOk {c en} (hcm : CellMatches c en)
-    (h : ¬(en.st = .owned ∧ en.ty.mult = .linear)) :
-    c = .moved ∨ ∃ v, c = .full v ∧ v.mult ≠ .linear := by
+theorem CellMatches.dropOk {D c en} (hcm : CellMatches D c en)
+    (h : ¬(en.st = .owned ∧ en.ty.mult D = .linear)) :
+    c = .moved ∨ ∃ v T, c = .full v ∧ HasTy D v T ∧ v.mult D ≠ .linear := by
   unfold CellMatches at hcm
   cases hst : en.st with
   | owned =>
       rw [hst] at hcm
       obtain ⟨v, rfl, hv⟩ := hcm
-      exact Or.inr ⟨v, rfl, by rw [hv.mult_eq]; exact fun hl => h ⟨hst, hl⟩⟩
+      exact Or.inr ⟨v, en.ty, rfl, hv, by rw [hv.mult_eq]; exact fun hl => h ⟨hst, hl⟩⟩
   | movedOut =>
       rw [hst] at hcm
-      rcases hcm with rfl | ⟨v, rfl, _, hnl⟩
+      rcases hcm with rfl | ⟨v, rfl, hv, hnl⟩
       · exact Or.inl rfl
-      · exact Or.inr ⟨v, rfl, hnl⟩
+      · exact Or.inr ⟨v, en.ty, rfl, hv, hnl⟩
 
-/-- `drop-retire` (§6.1) succeeds on such a cell, retiring it (helper). -/
-theorem dropRetire_ok {H : Store} {ℓ : Nat} {c : Cell} (hc : H[ℓ]? = some c)
-    (h : c = .moved ∨ ∃ v, c = .full v ∧ v.mult ≠ .linear) :
-    ∃ evs, dropRetire H ℓ = .ok (H.set ℓ .dead, evs) := by
+/-- The drop of a well-typed value in a cell always runs (§6.11) (helper). -/
+theorem dropCell_ok {D : StructEnv} {ℓ : Nat} {v : Val} {T : Ty} (h : HasTy D v T) :
+    ∃ evs, dropCell D ℓ v = .ok evs := by
+  unfold dropCell
+  by_cases hcp : v.mult D = .copy
+  · exact ⟨[], by simp [hcp]⟩
+  · obtain ⟨evs, hevs⟩ := dropValue_ok h
+    exact ⟨.drop ℓ v :: evs, by simp [hcp, hevs]⟩
+
+/-- `drop-retire` (§6.1) succeeds on such a cell, retiring it: the value's own
+drop (§6.11) runs — `dropValue_ok` is why it never refuses — and the leak
+monitor lets it through because the value's class is not `Linear` (helper). -/
+theorem dropRetire_ok {D : StructEnv} {H : Store} {ℓ : Nat} {c : Cell} (hc : H[ℓ]? = some c)
+    (h : c = .moved ∨ ∃ v T, c = .full v ∧ HasTy D v T ∧ v.mult D ≠ .linear) :
+    ∃ evs, dropRetire D H ℓ = .ok (H.set ℓ .dead, evs) := by
   unfold dropRetire
   rw [hc]
-  rcases h with rfl | ⟨v, rfl, hnl⟩
+  rcases h with rfl | ⟨v, T, rfl, hv, hnl⟩
   · exact ⟨[], rfl⟩
-  · cases hml : v.mult with
-    | linear => exact absurd hml hnl
-    | affine => exact ⟨[.drop ℓ v], by simp [hml]⟩
-    | copy => exact ⟨[], by simp [hml]⟩
+  · obtain ⟨evs, hdc⟩ := dropCell_ok (ℓ := ℓ) hv
+    exact ⟨evs, by simp only [if_neg hnl, hdc]⟩
 
 /-- **Scope teardown never refuses on a frame the statics cleared.**
 `run-scope-drops` (§6.1) over a frame whose bindings carry no residual linear
@@ -357,9 +434,9 @@ value retires every one of them: none is already retired (`Matches` says every
 bound cell is live or moved out and that no two bindings share one — §7's
 no-use-after-drop at an unwinding edge), and none is a live linear value (the
 §5.6 obligation). -/
-theorem Matches.unwind : ∀ (Γ : Ctx) (ρ : Env) (H : Store), Matches Γ ρ H →
-    NoOwnedLinear Γ →
-    ∃ H' evs, unwindLocs H ρ = .ok (H', evs) ∧ H'.length = H.length ∧
+theorem Matches.unwind {D : StructEnv} : ∀ (Γ : Ctx) (ρ : Env) (H : Store), Matches D Γ ρ H →
+    NoOwnedLinear D Γ →
+    ∃ H' evs, unwindLocs D H ρ = .ok (H', evs) ∧ H'.length = H.length ∧
       ∀ ℓ, ℓ ∉ ρ → H'[ℓ]? = H[ℓ]?
   | [], _, H, hm, _ => by
       cases hm
@@ -367,8 +444,8 @@ theorem Matches.unwind : ∀ (Γ : Ctx) (ρ : Env) (H : Store), Matches Γ ρ H 
   | en :: Γ₀, _, H, hm, hnl => by
       cases hm with
       | @cons _ _ ℓ ρ₀ _ c hc hcm hnin hrest =>
-        have hhead : ¬(en.st = .owned ∧ en.ty.mult = .linear) := hnl en (by simp)
-        have hnl₀ : NoOwnedLinear Γ₀ := fun e he => hnl e (List.mem_cons_of_mem _ he)
+        have hhead : ¬(en.st = .owned ∧ en.ty.mult D = .linear) := hnl en (by simp)
+        have hnl₀ : NoOwnedLinear D Γ₀ := fun e he => hnl e (List.mem_cons_of_mem _ he)
         obtain ⟨evs₀, hdr⟩ := dropRetire_ok hc (hcm.dropOk hhead)
         obtain ⟨H', evs', hrec, hlen, hout⟩ :=
           Matches.unwind Γ₀ ρ₀ (H.set ℓ .dead) (hrest.set_outside hnin) hnl₀
@@ -383,8 +460,8 @@ theorem Matches.unwind : ∀ (Γ : Ctx) (ρ : Env) (H : Store), Matches Γ ρ H 
 /-- **A frame's whole teardown never refuses** (§6.9's `run-all-scope-drops`,
 run at (D-Return-Value) and at (D-Return)). The record is the environment
 reversed, so this is `Matches.unwind` read newest-first. -/
-theorem runAllScopeDrops_ok {Γ φ H} (hfm : FrameMatches Γ φ H) (hnl : NoOwnedLinear Γ) :
-    ∃ H' evs, runAllScopeDrops H φ = .ok (H', evs) ∧ H'.length = H.length ∧
+theorem runAllScopeDrops_ok {D Γ φ H} (hfm : FrameMatches D Γ φ H) (hnl : NoOwnedLinear D Γ) :
+    ∃ H' evs, runAllScopeDrops D H φ = .ok (H', evs) ∧ H'.length = H.length ∧
       ∀ ℓ, ℓ ∉ φ.env → H'[ℓ]? = H[ℓ]? := by
   unfold runAllScopeDrops
   rw [hfm.record]
@@ -405,8 +482,8 @@ theorem skel_lookup {Γ Γ' : Ctx} (h : Ctx.skel Γ' = Ctx.skel Γ) {i : Nat} {e
 /-- The §5.5 join weakens the left arm's per-cell agreement: a cell matching
 the left entry matches the joined entry (the conservative join; its
 array-element form is `3.8:73`). -/
-theorem Entry.join_matches_left {a b e' : Entry} (hj : a.join b = some e') {c : Cell}
-    (hc : CellMatches c a) : CellMatches c e' := by
+theorem Entry.join_matches_left {D : StructEnv} {a b e' : Entry} (hj : a.join D b = some e')
+    {c : Cell} (hc : CellMatches D c a) : CellMatches D c e' := by
   unfold Entry.join at hj
   split at hj
   · cases hj; exact hc
@@ -427,8 +504,8 @@ theorem Entry.join_matches_left {a b e' : Entry} (hj : a.join b = some e') {c : 
 /-- The §5.5 join weakens the right arm's per-cell agreement, given the two
 arms share a skeleton (the conservative join; its array-element form is
 `3.8:73`). -/
-theorem Entry.join_matches_right {a b e' : Entry} (hskel : a.skel = b.skel)
-    (hj : a.join b = some e') {c : Cell} (hc : CellMatches c b) : CellMatches c e' := by
+theorem Entry.join_matches_right {D : StructEnv} {a b e' : Entry} (hskel : a.skel = b.skel)
+    (hj : a.join D b = some e') {c : Cell} (hc : CellMatches D c b) : CellMatches D c e' := by
   have hty : a.ty = b.ty := congrArg Prod.fst hskel
   unfold Entry.join at hj
   split at hj
@@ -456,8 +533,8 @@ theorem Entry.join_matches_right {a b e' : Entry} (hskel : a.skel = b.skel)
           · exact Or.inr ⟨v, rfl, hty ▸ hv, hvm⟩
 
 /-- The invariant survives the §5.5 join from the left arm. -/
-theorem Matches.join_left : ∀ {Γ₁ Γ₂ Γ' : Ctx} {ρ H},
-    Ctx.join Γ₁ Γ₂ = some Γ' → Matches Γ₁ ρ H → Matches Γ' ρ H := by
+theorem Matches.join_left {D : StructEnv} : ∀ {Γ₁ Γ₂ Γ' : Ctx} {ρ H},
+    Ctx.join D Γ₁ Γ₂ = some Γ' → Matches D Γ₁ ρ H → Matches D Γ' ρ H := by
   intro Γ₁ Γ₂ Γ' ρ H hj hm
   induction hm generalizing Γ₂ Γ' with
   | nil =>
@@ -476,9 +553,9 @@ theorem Matches.join_left : ∀ {Γ₁ Γ₂ Γ' : Ctx} {ρ H},
           · cases hj
 
 /-- The invariant survives the §5.5 join from the right arm. -/
-theorem Matches.join_right : ∀ {Γ₁ Γ₂ Γ' : Ctx} {ρ H},
+theorem Matches.join_right {D : StructEnv} : ∀ {Γ₁ Γ₂ Γ' : Ctx} {ρ H},
     Ctx.skel Γ₁ = Ctx.skel Γ₂ →
-    Ctx.join Γ₁ Γ₂ = some Γ' → Matches Γ₂ ρ H → Matches Γ' ρ H := by
+    Ctx.join D Γ₁ Γ₂ = some Γ' → Matches D Γ₂ ρ H → Matches D Γ' ρ H := by
   intro Γ₁ Γ₂ Γ' ρ H hskel hj hm
   induction hm generalizing Γ₁ Γ' with
   | nil =>
@@ -526,15 +603,15 @@ cells hold the argument values, and (Fn) §5.8's entry context `Γ0;Σ0`
 (`fnCtx`) describes exactly them. The two `reverse`s are the same one: a
 signature lists parameters left to right while `Ctx` and `Env` list the
 innermost binder first. -/
-theorem matches_mintParams : ∀ (ps : List Param) (vs : List Val) (H : Store),
-    HasTys vs (ps.map Param.ty) →
-    Matches ((ps.map fun p => ({ ty := p.ty, mu := p.mu, st := .owned } : Entry)).reverse)
+theorem matches_mintParams {D : StructEnv} : ∀ (ps : List Param) (vs : List Val) (H : Store),
+    HasTys D vs (ps.map Param.ty) →
+    Matches D ((ps.map fun p => ({ ty := p.ty, mu := p.mu, st := .owned } : Entry)).reverse)
       (mintParams H vs).2.reverse (mintParams H vs).1
   | [], vs, H, h => by cases h; exact .nil
   | p :: ps, vs, H, h => by
       cases h with
       | @cons v vs' _ _ hv hvs =>
-          have ih := matches_mintParams ps vs' (H ++ [Cell.full v]) hvs
+          have ih := matches_mintParams (D := D) ps vs' (H ++ [Cell.full v]) hvs
           simp only [List.map_cons, List.reverse_cons, mintParams]
           refine Matches.snoc ih ?_ ⟨v, rfl, hv⟩ ?_
           · rw [mintParams_store]
@@ -552,9 +629,9 @@ unwinding `return` carries a value of the enclosing function's declared return
 type `R` and leaves the frame's neighbours alone; a trap and exhausted fuel
 promise nothing; a refusal is impossible, which is the whole theorem
 (helper). -/
-def AbortOk (R : Ty) (φ : Frame) (H : Store) : EvalRes → Prop
+def AbortOk (D : StructEnv) (R : Ty) (φ : Frame) (H : Store) : EvalRes → Prop
   | .ok _ _ _ => False
-  | .returned H' v _ => HasTy v R ∧ Untouched φ.env H H'
+  | .returned H' v _ => HasTy D v R ∧ Untouched φ.env H H'
   | .panic _ => True
   | .stuck _ => False
   | .outOfFuel => True
@@ -565,23 +642,24 @@ expression's type with the outgoing context's invariant restored
 Stating it as a predicate on the result, rather than as a disjunction of
 existentials, is what lets the operand combinators (`andThen`) be discharged
 once and reused at every form (helper). -/
-def EvalOk (T R : Ty) (Γ' : Ctx) (φ : Frame) (H : Store) : EvalRes → Prop
-  | .ok H' v _ => HasTy v T ∧ FrameMatches Γ' φ H' ∧ Untouched φ.env H H'
-  | .returned H' v _ => HasTy v R ∧ Untouched φ.env H H'
+def EvalOk (D : StructEnv) (T R : Ty) (Γ' : Ctx) (φ : Frame) (H : Store) : EvalRes → Prop
+  | .ok H' v _ => HasTy D v T ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
+  | .returned H' v _ => HasTy D v R ∧ Untouched φ.env H H'
   | .panic _ => True
   | .stuck _ => False
   | .outOfFuel => True
 
 /-- The promise for an argument list (§5.8's (Call), left to right with Σ
 threaded) (helper). -/
-def ArgsOk (R : Ty) (Ts : List Ty) (Γ' : Ctx) (φ : Frame) (H : Store) : ArgsRes → Prop
-  | .ok H' vs _ => HasTys vs Ts ∧ FrameMatches Γ' φ H' ∧ Untouched φ.env H H'
-  | .abort r => AbortOk R φ H r
+def ArgsOk (D : StructEnv) (R : Ty) (Ts : List Ty) (Γ' : Ctx) (φ : Frame) (H : Store) :
+    ArgsRes → Prop
+  | .ok H' vs _ => HasTys D vs Ts ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
+  | .abort r => AbortOk D R φ H r
 
 /-- A promise made from a later store is a promise from an earlier one, given
 the step between them was local to the frame (helper). -/
-theorem EvalOk.mono_store {T R Γ' φ H H₁ r} (hu : Untouched φ.env H H₁)
-    (h : EvalOk T R Γ' φ H₁ r) : EvalOk T R Γ' φ H r := by
+theorem EvalOk.mono_store {D T R Γ' φ H H₁ r} (hu : Untouched φ.env H H₁)
+    (h : EvalOk D T R Γ' φ H₁ r) : EvalOk D T R Γ' φ H r := by
   cases r with
   | ok H' v tr => exact ⟨h.1, h.2.1, hu.trans h.2.2⟩
   | returned H' v tr => exact ⟨h.1, hu.trans h.2⟩
@@ -590,8 +668,8 @@ theorem EvalOk.mono_store {T R Γ' φ H H₁ r} (hu : Untouched φ.env H H₁)
   | outOfFuel => trivial
 
 /-- The same, for a result that is not a value (helper). -/
-theorem AbortOk.mono_store {R φ H H₁ r} (hu : Untouched φ.env H H₁)
-    (h : AbortOk R φ H₁ r) : AbortOk R φ H r := by
+theorem AbortOk.mono_store {D R φ H H₁ r} (hu : Untouched φ.env H H₁)
+    (h : AbortOk D R φ H₁ r) : AbortOk D R φ H r := by
   cases r with
   | ok H' v tr => exact h.elim
   | returned H' v tr => exact ⟨h.1, hu.trans h.2⟩
@@ -601,25 +679,25 @@ theorem AbortOk.mono_store {R φ H H₁ r} (hu : Untouched φ.env H H₁)
 
 /-- Prefixing a trace changes no promise: the trace is an observation, not a
 state (helper). -/
-theorem EvalOk.withTrace {T R Γ' φ H r} (h : EvalOk T R Γ' φ H r) (tr : List Event) :
-    EvalOk T R Γ' φ H (r.withTrace tr) := by
+theorem EvalOk.withTrace {D T R Γ' φ H r} (h : EvalOk D T R Γ' φ H r) (tr : List Event) :
+    EvalOk D T R Γ' φ H (r.withTrace tr) := by
   cases r <;> simp_all [EvalRes.withTrace, EvalOk]
 
 /-- The same, for a result that is not a value (helper). -/
-theorem AbortOk.withTrace {R φ H r} (h : AbortOk R φ H r) (tr : List Event) :
-    AbortOk R φ H (r.withTrace tr) := by
+theorem AbortOk.withTrace {D R φ H r} (h : AbortOk D R φ H r) (tr : List Event) :
+    AbortOk D R φ H (r.withTrace tr) := by
   cases r <;> simp_all [EvalRes.withTrace, AbortOk]
 
 /-- A result that is not a value satisfies the full promise, whatever type and
 outgoing context the form claims — the promise is only about values there
 (helper). -/
-theorem EvalOk.of_abort {T R Γ' φ H r} (h : AbortOk R φ H r) : EvalOk T R Γ' φ H r := by
+theorem EvalOk.of_abort {D T R Γ' φ H r} (h : AbortOk D R φ H r) : EvalOk D T R Γ' φ H r := by
   cases r <;> simp_all [AbortOk, EvalOk]
 
 /-- An evaluation that produced no value only ever produced an `AbortOk`
 outcome (helper). -/
-theorem EvalOk.toAbort {T R Γ' φ H r} (h : EvalOk T R Γ' φ H r)
-    (hne : ∀ H' v tr, r ≠ .ok H' v tr) : AbortOk R φ H r := by
+theorem EvalOk.toAbort {D T R Γ' φ H r} (h : EvalOk D T R Γ' φ H r)
+    (hne : ∀ H' v tr, r ≠ .ok H' v tr) : AbortOk D R φ H r := by
   cases r with
   | ok H' v tr => exact absurd rfl (hne H' v tr)
   | returned H' v tr => exact h
@@ -631,12 +709,12 @@ theorem EvalOk.toAbort {T R Γ' φ H r} (h : EvalOk T R Γ' φ H r)
 outcome, sequenced into a context that promises the form's outcome from the
 operand's value, promises the form's outcome. Every operand of every form is
 discharged by this lemma (helper). -/
-theorem EvalOk.bind {T T₀ R : Ty} {Γ' Γ₀ : Ctx} {φ : Frame} {H : Store}
+theorem EvalOk.bind {D : StructEnv} {T T₀ R : Ty} {Γ' Γ₀ : Ctx} {φ : Frame} {H : Store}
     {r : EvalRes} {k : Store → Val → EvalRes}
-    (hr : EvalOk T₀ R Γ₀ φ H r)
-    (hk : ∀ H₁ v tr, r = .ok H₁ v tr → HasTy v T₀ → FrameMatches Γ₀ φ H₁ →
-            EvalOk T R Γ' φ H₁ (k H₁ v)) :
-    EvalOk T R Γ' φ H (r.andThen k) := by
+    (hr : EvalOk D T₀ R Γ₀ φ H r)
+    (hk : ∀ H₁ v tr, r = .ok H₁ v tr → HasTy D v T₀ → FrameMatches D Γ₀ φ H₁ →
+            EvalOk D T R Γ' φ H₁ (k H₁ v)) :
+    EvalOk D T R Γ' φ H (r.andThen k) := by
   cases r with
   | ok H₁ v tr =>
       obtain ⟨hty, hfm, hu⟩ := hr
@@ -650,9 +728,9 @@ theorem EvalOk.bind {T T₀ R : Ty} {Γ' Γ₀ : Ctx} {φ : Frame} {H : Store}
 
 /-- Weakening the outgoing context of a promise, which is what §5.5's join
 asks of an arm (helper). -/
-theorem EvalOk.weaken {T R Γ₁ Γ' φ H r}
-    (hw : ∀ H', FrameMatches Γ₁ φ H' → FrameMatches Γ' φ H')
-    (h : EvalOk T R Γ₁ φ H r) : EvalOk T R Γ' φ H r := by
+theorem EvalOk.weaken {D T R Γ₁ Γ' φ H r}
+    (hw : ∀ H', FrameMatches D Γ₁ φ H' → FrameMatches D Γ' φ H')
+    (h : EvalOk D T R Γ₁ φ H r) : EvalOk D T R Γ' φ H r := by
   cases r with
   | ok H' v tr => exact ⟨h.1, hw H' h.2.1, h.2.2⟩
   | returned H' v tr => exact h
@@ -669,11 +747,11 @@ hypothesis is `soundness` at the fuel the call has already spent one unit of,
 which is why this is a lemma rather than a case of the induction. -/
 theorem args_sound {P : Program} {fuel : Nat}
     (ih : ∀ {R : Ty} {Γ Γ' : Ctx} {e : Expr} {T : Ty}, Typed P R Γ e T Γ' →
-      ∀ {φ : Frame} {H : Store}, FrameMatches Γ φ H →
-        EvalOk T R Γ' φ H (eval fuel P H φ e)) :
+      ∀ {φ : Frame} {H : Store}, FrameMatches P.structs Γ φ H →
+        EvalOk P.structs T R Γ' φ H (eval fuel P H φ e)) :
     ∀ (es : List Expr) {R : Ty} {Γ Γ' : Ctx} {Ts : List Ty} {φ : Frame} {H : Store},
-      TypedArgs P R Γ es Ts Γ' → FrameMatches Γ φ H →
-        ArgsOk R Ts Γ' φ H (evalArgs (fun H' e => eval fuel P H' φ e) H es) := by
+      TypedArgs P R Γ es Ts Γ' → FrameMatches P.structs Γ φ H →
+        ArgsOk P.structs R Ts Γ' φ H (evalArgs (fun H' e => eval fuel P H' φ e) H es) := by
   intro es
   induction es with
   | nil =>
@@ -728,8 +806,8 @@ and every subexpression — a call's arguments and the callee's body alike —
 runs at one unit less. -/
 theorem soundness {P : Program} (hwf : WfProgram P) :
     ∀ (fuel : Nat) {R : Ty} {Γ Γ' : Ctx} {e : Expr} {T : Ty}, Typed P R Γ e T Γ' →
-      ∀ {φ : Frame} {H : Store}, FrameMatches Γ φ H →
-        EvalOk T R Γ' φ H (eval fuel P H φ e) := by
+      ∀ {φ : Frame} {H : Store}, FrameMatches P.structs Γ φ H →
+        EvalOk P.structs T R Γ' φ H (eval fuel P H φ e) := by
   intro fuel
   induction fuel with
   | zero =>
@@ -754,7 +832,7 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
           unfold CellMatches at hcm
           rw [hst] at hcm
           obtain ⟨v, rfl, hv⟩ := hcm
-          have hvm : v.mult = .copy := by rw [hv.mult_eq]; exact hcopy
+          have hvm : v.mult P.structs = .copy := by rw [hv.mult_eq]; exact hcopy
           have hev : eval (fuel + 1) P H φ (.use i) = .ok H v [] := by
             simp [eval, hρ, hc, hvm]
           rw [hev]
@@ -764,7 +842,7 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
           unfold CellMatches at hcm
           rw [hst] at hcm
           obtain ⟨v, rfl, hv⟩ := hcm
-          have hvm : v.mult ≠ .copy := by rw [hv.mult_eq]; exact hncopy
+          have hvm : v.mult P.structs ≠ .copy := by rw [hv.mult_eq]; exact hncopy
           have hev : eval (fuel + 1) P H φ (.use i) = .ok (H.set ℓ .moved) v [] := by
             simp [eval, hρ, hc, hvm]
           rw [hev]
@@ -810,18 +888,31 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
           obtain ⟨n₂, rfl, _⟩ := hty₂.int_inv
           dsimp only
           exact ⟨.bool, hfm₂, Untouched.refl⟩
-      | @mkres Γ Γ₀ κ e h =>
+      | @mkStruct Γ Γ' s args sd hget hta =>
+          -- (D-Struct) §6.5 over §6.2's left-to-right search: the same
+          -- argument-list lemma (Call) §5.8 uses, then the literal.
+          simp only [eval]
+          have ka := hargs args hta hfm
+          cases hra : evalArgs (fun H' e => eval fuel P H' φ e) H args with
+          | abort r =>
+              rw [hra] at ka
+              dsimp only
+              exact EvalOk.of_abort ka
+          | ok H₁ vs tr =>
+              rw [hra] at ka
+              obtain ⟨hvs, hfm₁, hu₁⟩ := ka
+              have hlen : sd.fields.length = vs.length := hvs.length_eq.symm
+              simp only [hget]
+              rw [if_pos hlen]
+              exact ⟨.struct hget hvs, hfm₁, hu₁⟩
+      | @consume Γ Γ' s sd e h hget hcons =>
           simp only [eval]
           refine EvalOk.bind (ih h hfm) ?_
           intro H' v tr _ hty hfm'
-          obtain ⟨n, rfl, hbn⟩ := hty.int_inv
-          dsimp only
-          exact ⟨.res hbn, hfm', Untouched.refl⟩
-      | @consume Γ Γ₀ κ e h =>
-          simp only [eval]
-          refine EvalOk.bind (ih h hfm) ?_
-          intro H' v tr _ hty hfm'
-          obtain ⟨n, rfl, hbn⟩ := hty.res_inv
+          obtain ⟨sd', vs, rfl, hget', hvs⟩ := hty.struct_inv
+          have hsd : sd' = sd := by rw [hget'] at hget; cases hget; rfl
+          subst hsd
+          obtain ⟨n, vs', rfl, hbn⟩ := hvs.head_int hcons.1 hcons.2.1
           dsimp only
           exact ⟨.int hbn, hfm', Untouched.refl⟩
       | @dropCopy Γ i en hget hst hcopy =>
@@ -829,9 +920,9 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
           unfold CellMatches at hcm
           rw [hst] at hcm
           obtain ⟨v, rfl, hv⟩ := hcm
-          have hvm : v.mult = .copy := by rw [hv.mult_eq]; exact hcopy
+          have hvm : v.mult P.structs = .copy := by rw [hv.mult_eq]; exact hcopy
           have hev : eval (fuel + 1) P H φ (.drop i) = .ok H .unit [] := by
-            simp [eval, hρ, hc, hvm]
+            simp [eval, hρ, hc, hvm, dropCell]
           rw [hev]
           exact ⟨.unit, hfm, Untouched.refl⟩
       | @dropRes Γ i en hget hst hncopy =>
@@ -839,10 +930,11 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
           unfold CellMatches at hcm
           rw [hst] at hcm
           obtain ⟨v, rfl, hv⟩ := hcm
-          have hvm : v.mult ≠ .copy := by rw [hv.mult_eq]; exact hncopy
+          have hvm : v.mult P.structs ≠ .copy := by rw [hv.mult_eq]; exact hncopy
+          obtain ⟨evs, hevs⟩ := dropValue_ok hv
           have hev : eval (fuel + 1) P H φ (.drop i)
-              = .ok (H.set ℓ .moved) .unit [.drop ℓ v] := by
-            simp [eval, hρ, hc, hvm]
+              = .ok (H.set ℓ .moved) .unit (.drop ℓ v :: evs) := by
+            simp [eval, hρ, hc, hvm, dropCell, hevs]
           rw [hev]
           exact ⟨.unit, ⟨hfm.store.set hρ (Or.inl rfl), hfm.record⟩,
             Untouched.trans_set Untouched.refl (Or.inr (List.mem_of_getElem? hρ))⟩
@@ -851,7 +943,7 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
           refine EvalOk.bind (ih h₁ hfm) ?_
           intro H₁ v₁ tr₁ _ hty₁ hfm₁
           have hfresh : H₁.length ∉ φ.env := hfm₁.store.fresh_not_mem
-          have hfm' : FrameMatches ({ ty := T₁, mu := m, st := .owned } :: Γ₁)
+          have hfm' : FrameMatches P.structs ({ ty := T₁, mu := m, st := .owned } :: Γ₁)
               { env := H₁.length :: φ.env, scope := φ.scope ++ [H₁.length] }
               (H₁ ++ [.full v₁]) := by
             constructor
@@ -869,7 +961,7 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
               rw [hrb] at kb
               obtain ⟨hty₂, hfm₂, hu₂⟩ := kb
               obtain ⟨c, hc, hcm, hnin, hrest⟩ := hfm₂.store.cons_inv
-              have hdrop : ¬(en'.st = .owned ∧ en'.ty.mult = .linear) := by
+              have hdrop : ¬(en'.st = .owned ∧ en'.ty.mult P.structs = .linear) := by
                 rw [hty_en']; exact hres
               obtain ⟨evs, hdr⟩ := dropRetire_ok hc (hcm.dropOk hdrop)
               simp only [EvalRes.andThen, hdr, EvalRes.withTrace]
@@ -889,45 +981,36 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
           obtain ⟨ℓ, c, hρ, hc, hcm⟩ := hfm₁.store.lookup hget₁
           have hskel := h.skel_preserved
           have htyeq : en₁.ty = en₀.ty := (skel_lookup hskel hget₀ hget₁).1
-          have hty' : HasTy v en₁.ty := htyeq ▸ hty
-          have hnewcm : CellMatches (.full v) (en₁.setSt .owned) := ⟨v, rfl, hty'⟩
+          have hty' : HasTy P.structs v en₁.ty := htyeq ▸ hty
+          have hnewcm : CellMatches P.structs (.full v) (en₁.setSt .owned) := ⟨v, rfl, hty'⟩
           have hmem : ℓ ∈ φ.env := List.mem_of_getElem? hρ
-          simp only [hρ, hc]
           have hres : ∀ (evs : List Event),
-              EvalOk .unit R (Γ₁.set i (en₁.setSt .owned)) φ H₁
+              EvalOk P.structs .unit R (Γ₁.set i (en₁.setSt .owned)) φ H₁
                 (EvalRes.ok (H₁.set ℓ (.full v)) .unit evs) :=
             fun evs => ⟨.unit, ⟨hfm₁.store.set hρ hnewcm, hfm₁.record⟩,
               Untouched.trans_set Untouched.refl (Or.inr hmem)⟩
-          unfold CellMatches at hcm
-          cases hstn : en₁.st with
-          | owned =>
-              rw [hstn] at hcm
-              obtain ⟨vOld, rfl, hvOld⟩ := hcm
-              have hnl : en₀.ty.mult ≠ .linear := by
-                rcases hpre with h' | h'
-                · rw [hstn] at h'; cases h'
-                · exact h'
-              have hvm : vOld.mult ≠ .linear := by rw [hvOld.mult_eq, htyeq]; exact hnl
-              cases hml : vOld.mult with
-              | linear => exact absurd hml hvm
-              | affine => simp only [hml]; exact hres _
-              | copy => simp only [hml]; exact hres _
-          | movedOut =>
-              rw [hstn] at hcm
-              rcases hcm with rfl | ⟨vOld, rfl, hvOld, hvnl⟩
-              · exact hres _
-              · cases hml : vOld.mult with
-                | linear => exact absurd hml hvnl
-                | affine => simp only [hml]; exact hres _
-                | copy => simp only [hml]; exact hres _
+          have hnotlin : ¬(en₁.st = .owned ∧ en₁.ty.mult P.structs = .linear) := by
+            rintro ⟨hown, hlin⟩
+            rcases hpre with h' | h'
+            · rw [hown] at h'; cases h'
+            · exact h' (htyeq ▸ hlin)
+          rcases hcm.dropOk hnotlin with rfl | ⟨vOld, T', rfl, hvOld, hnl⟩
+          · simp only [hρ, hc]
+            exact hres []
+          · obtain ⟨evs, hdc⟩ := dropCell_ok (ℓ := ℓ) hvOld
+            simp only [hρ, hc, if_neg hnl, hdc]
+            exact hres evs
       | @seq Γ Γ₁ Γ₂ e₁ e₂ T₁ T₂ h₁ hnl h₂ =>
           simp only [eval]
           refine EvalOk.bind (ih h₁ hfm) ?_
           intro H₁ v₁ tr₁ _ hty₁ hfm₁
-          have hvnl : v₁.mult ≠ .linear := by rw [hty₁.mult_eq]; exact hnl
-          cases hml : v₁.mult with
+          have hvnl : v₁.mult P.structs ≠ .linear := by rw [hty₁.mult_eq]; exact hnl
+          cases hml : v₁.mult P.structs with
           | linear => exact absurd hml hvnl
-          | affine => exact (ih h₂ hfm₁).withTrace _
+          | affine =>
+              obtain ⟨evs, hevs⟩ := dropValue_ok hty₁
+              simp only [hevs]
+              exact (ih h₂ hfm₁).withTrace _
           | copy => exact ih h₂ hfm₁
       | @ite Γ Γ₀ Γ₁ Γ₂ Γ' c e₁ e₂ T hc h₁ h₂ hjoin =>
           simp only [eval]
@@ -963,8 +1046,8 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
                 omega
               simp only [hget]
               rw [if_pos hlen]
-              obtain ⟨Γf, hbody, hnlf⟩ := hwf fd (List.mem_of_getElem? hget)
-              have hfmg : FrameMatches (fnCtx fd)
+              obtain ⟨Γf, hbody, hnlf⟩ := hwf.fns fd (List.mem_of_getElem? hget)
+              have hfmg : FrameMatches P.structs (fnCtx fd)
                   { env := (mintParams H₁ vs).2.reverse, scope := (mintParams H₁ vs).2 }
                   (mintParams H₁ vs).1 :=
                 ⟨matches_mintParams fd.params vs H₁ hvs, rfl⟩
@@ -979,7 +1062,7 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
               have hdisj : ∀ ℓ ∈ φ.env, ℓ ∉ (mintParams H₁ vs).2.reverse := by
                 intro ℓ hm hg
                 exact absurd (hfreshg ℓ hg) (by have := hfm₁.store.mem_lt ℓ hm; omega)
-              have hmint : Matches Γ' φ.env (mintParams H₁ vs).1 := by
+              have hmint : Matches P.structs Γ' φ.env (mintParams H₁ vs).1 := by
                 rw [mintParams_store]; exact hfm₁.store.append _
               have kb := ih hbody hfmg
               cases hrb : eval fuel P (mintParams H₁ vs).1
@@ -1120,7 +1203,7 @@ theorem eval_succ {P : Program} : ∀ (fuel : Nat) (H : Store) (φ : Frame) (e :
               rfl
           | bool b => rfl
           | unit => rfl
-          | res κ m => rfl
+          | struct s' vs => rfl
       | div e₁ e₂ =>
           simp only [eval] at h ⊢
           refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
@@ -1133,7 +1216,7 @@ theorem eval_succ {P : Program} : ∀ (fuel : Nat) (H : Store) (φ : Frame) (e :
               rfl
           | bool b => rfl
           | unit => rfl
-          | res κ m => rfl
+          | struct s' vs => rfl
       | lt e₁ e₂ =>
           simp only [eval] at h ⊢
           refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
@@ -1146,12 +1229,14 @@ theorem eval_succ {P : Program} : ∀ (fuel : Nat) (H : Store) (φ : Frame) (e :
               rfl
           | bool b => rfl
           | unit => rfl
-          | res κ m => rfl
-      | mkres κ e₁ =>
-          simp only [eval] at h ⊢
-          refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
-          intro H₁ v tr _ _
-          rfl
+          | struct s' vs => rfl
+      | mkStruct s' args =>
+          have hargs : evalArgs (fun H' e' => eval n P H' φ e') H args ≠ .abort .outOfFuel := by
+            intro hc
+            simp only [eval, hc] at h
+            exact h rfl
+          have heq := evalArgs_mono (fun H' e' hne => ih H' φ e' hne) H args hargs
+          simp only [eval, heq]
       | consume e₁ =>
           simp only [eval] at h ⊢
           refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
@@ -1173,11 +1258,15 @@ theorem eval_succ {P : Program} : ∀ (fuel : Nat) (H : Store) (φ : Frame) (e :
           simp only [eval] at h ⊢
           refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
           intro H₁ v tr _ hkne
-          cases hml : v.mult with
+          cases hml : v.mult P.structs with
           | linear => rfl
           | affine =>
-              simp only [hml] at hkne
-              rw [ih H₁ φ e₂ (fun hc => hkne (by rw [hc]; simp [EvalRes.withTrace]))]
+              simp only [hml] at hkne ⊢
+              cases hdv : dropValue P.structs v with
+              | error w => rfl
+              | ok evs =>
+                  simp only [hdv] at hkne ⊢
+                  rw [ih H₁ φ e₂ (fun hc => hkne (by rw [hc]; simp [EvalRes.withTrace]))]
           | copy =>
               simp only [hml] at hkne
               rw [ih H₁ φ e₂ hkne]
@@ -1195,7 +1284,7 @@ theorem eval_succ {P : Program} : ∀ (fuel : Nat) (H : Store) (φ : Frame) (e :
                 rw [ih H₀ φ e₂ hkne]
           | int n => rfl
           | unit => rfl
-          | res κ m => rfl
+          | struct s' vs => rfl
       | ret e₁ =>
           simp only [eval] at h ⊢
           refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
@@ -1213,7 +1302,7 @@ theorem eval_succ {P : Program} : ∀ (fuel : Nat) (H : Store) (φ : Frame) (e :
           | ok H₁ vs tr =>
               rw [hra] at h
               simp only [] at h ⊢
-              cases hf : P[f]? with
+              cases hf : P.fns[f]? with
               | none => rfl
               | some fd =>
                   rw [hf] at h
@@ -1223,7 +1312,7 @@ theorem eval_succ {P : Program} : ∀ (fuel : Nat) (H : Store) (φ : Frame) (e :
                     have h' : (eval n P (mintParams H₁ vs).1
                         { env := (mintParams H₁ vs).2.reverse, scope := (mintParams H₁ vs).2 }
                         fd.body).absorb (fun H₃ v =>
-                          match runAllScopeDrops H₃
+                          match runAllScopeDrops P.structs H₃
                               { env := (mintParams H₁ vs).2.reverse,
                                 scope := (mintParams H₁ vs).2 } with
                           | .error w => .stuck w
@@ -1274,7 +1363,7 @@ theorem no_masking {P : Program} {H : Store} {φ : Frame} {e : Expr} {n m : Nat}
 /-- The entry call `main()` is well typed under any enclosing return type: it
 reads only the callee's signature (§5.8's (Call)) and passes no arguments
 (helper). -/
-theorem entry_typed {P : Program} {fd : FnDef} (h0 : P[0]? = some fd)
+theorem entry_typed {P : Program} {fd : FnDef} (h0 : P.fns[0]? = some fd)
     (hp : fd.params = []) (R : Ty) : Typed P R [] (.call 0 []) fd.ret [] := by
   refine .call h0 ?_
   simp only [hp, List.map_nil]
@@ -1282,7 +1371,7 @@ theorem entry_typed {P : Program} {fd : FnDef} (h0 : P[0]? = some fd)
 
 /-- The machine's initial state satisfies the frame invariant: no bindings, no
 store, an empty scope record (helper). -/
-theorem frameMatches_empty : FrameMatches [] { env := [], scope := [] } [] :=
+theorem frameMatches_empty {D : StructEnv} : FrameMatches D [] { env := [], scope := [] } [] :=
   ⟨.nil, rfl⟩
 
 /-- Prefixing a trace cannot make a result an unwinding `return` that was not
@@ -1323,7 +1412,7 @@ theorem run_ne_returned {P : Program} {fuel : Nat} :
       simp only [eval, evalArgs]
       refine EvalRes.withTrace_ne_returned ?_ H v tr
       intro H' v' tr'
-      cases hf : P[0]? with
+      cases hf : P.fns[0]? with
       | none => simp
       | some fd =>
           simp only []
@@ -1338,10 +1427,10 @@ at any fuel, either exhausts its fuel, traps in a defined way (§6.12), or
 produces a value of the entry point's declared return type. It never reaches a
 `Violation`. -/
 theorem run_safe {P : Program} {fd : FnDef} (hwf : WfProgram P)
-    (h0 : P[0]? = some fd) (hp : fd.params = []) (fuel : Nat) :
+    (h0 : P.fns[0]? = some fd) (hp : fd.params = []) (fuel : Nat) :
     run P fuel = .outOfFuel ∨ (∃ k, run P fuel = .panic k) ∨
-      (∃ H v tr, run P fuel = .ok H v tr ∧ HasTy v fd.ret) := by
-  have hok : EvalOk fd.ret fd.ret [] { env := [], scope := [] } [] (run P fuel) :=
+      (∃ H v tr, run P fuel = .ok H v tr ∧ HasTy P.structs v fd.ret) := by
+  have hok : EvalOk P.structs fd.ret fd.ret [] { env := [], scope := [] } [] (run P fuel) :=
     soundness hwf fuel (entry_typed h0 hp fd.ret) frameMatches_empty
   cases hr : run P fuel with
   | ok H v tr =>
@@ -1358,12 +1447,12 @@ existentially quantified because `ProgramTyped` only says one exists; the
 value's type is still the one that function declares, so this form claims
 exactly what `run_safe` proves. -/
 theorem ProgramTyped.run_safe {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-    ∃ fd, P[0]? = some fd ∧
+    ∃ fd, P.fns[0]? = some fd ∧
       (run P fuel = .outOfFuel ∨ (∃ k, run P fuel = .panic k) ∨
-        (∃ H v tr, run P fuel = .ok H v tr ∧ HasTy v fd.ret)) := by
+        (∃ H v tr, run P fuel = .ok H v tr ∧ HasTy P.structs v fd.ret)) := by
   obtain ⟨fd, h0, hp⟩ := h.entry
   refine ⟨fd, h0, ?_⟩
-  rcases RueCore.run_safe h.fns h0 hp fuel with h₁ | ⟨k, h₂⟩ | ⟨H, v, tr, h₃, hty⟩
+  rcases RueCore.run_safe h.wf h0 hp fuel with h₁ | ⟨k, h₂⟩ | ⟨H, v, tr, h₃, hty⟩
   · exact Or.inl h₁
   · exact Or.inr (Or.inl ⟨k, h₂⟩)
   · exact Or.inr (Or.inr ⟨H, v, tr, h₃, hty⟩)
