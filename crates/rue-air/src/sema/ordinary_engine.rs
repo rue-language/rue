@@ -1144,19 +1144,35 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             .resolve_body_type_with_substitutions(syntax, span, Some(type_subst), Some(value_subst))
             .ok()
     }
+    /// Register the executable bodies of a freshly minted anonymous struct's
+    /// methods.
+    ///
+    /// Every refusal reports the rule it enforces at the method's own
+    /// declaration span. It used to answer `Option<()>`, and the one caller
+    /// turned every `None` into `E1200: comptime evaluation failed: anonymous
+    /// method registration failed` at the struct span, which named neither the
+    /// method nor the rule (RUE-2259).
     pub(crate) fn register_anon_struct_method_bodies(
         &mut self,
         struct_id: StructId,
         struct_type: Type,
         method_range: &rue_rir::RirAnonStructMethodsRange,
         methods: &[super::comptime::ComptimeMethodDescriptor<Spur, Type>],
-    ) -> Option<()> {
+        struct_span: Span,
+    ) -> CompileResult<()> {
         let method_refs = self
             .body_rir_ref()
             .anon_struct_methods(method_range)
             .to_vec();
         if method_refs.len() != methods.len() {
-            return None;
+            return Err(CompileError::new(
+                ErrorKind::InternalError(format!(
+                    "anonymous struct has {} method declarations but {} descriptors",
+                    method_refs.len(),
+                    methods.len()
+                )),
+                struct_span,
+            ));
         }
         let mut seen_methods = AHashSet::new();
         let mut staged = Vec::with_capacity(methods.len());
@@ -1165,39 +1181,75 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             // facts. Signature fields, parameter names, and type resolution
             // have already been decoded by the canonical AIR engine.
             let source = self.body_rir_ref().get(*method_ref);
+            let span = method.declaration_span;
+            let method_str = self.body_interner().resolve(&method.name).to_string();
             let (body, self_is_mut) = match &source.data {
                 rue_rir::InstData::FnDecl {
                     body, self_is_mut, ..
                 } => (*body, *self_is_mut),
-                _ => return None,
+                _ => {
+                    return Err(CompileError::new(
+                        ErrorKind::InternalError(format!(
+                            "anonymous struct member `{method_str}` is not a function declaration"
+                        )),
+                        span,
+                    ));
+                }
             };
             let method_name = method.name;
             let key = (struct_id, method_name);
-            // Anonymous accessors remain a user-language restriction. The
-            // trusted std source path is the deliberate exception required by
-            // generic `ArrayBuf(T)`/collection bodies (RUE-1017).
+            // Anonymous accessors remain a user-language restriction (spec
+            // 6.6:4). The trusted std source path is the deliberate exception
+            // required by generic `ArrayBuf(T)`/collection bodies (RUE-1017).
             let trusted_std_accessor = self
                 .file_module_is_trusted_standard_library(method.declaration_span.file_id)
                 && (method.returns_borrow || method.returns_inout);
-            if !seen_methods.insert(method_name)
-                || self.has_method(key)
-                || ((method.returns_borrow || method.returns_inout) && !trusted_std_accessor)
-            {
-                return None;
+            if (method.returns_borrow || method.returns_inout) && !trusted_std_accessor {
+                return Err(CompileError::new(
+                    ErrorKind::AnonymousStructAccessor {
+                        method: method_str,
+                        result: if method.returns_inout {
+                            "-> inout".to_owned()
+                        } else {
+                            "-> borrow".to_owned()
+                        },
+                    },
+                    span,
+                ));
             }
-            let parameter_types = method
-                .parameters
-                .iter()
-                .map(|parameter| match &parameter.ty {
-                    super::comptime::ComptimeMethodType::SelfType => Some(struct_type),
-                    super::comptime::ComptimeMethodType::Concrete(ty) => Some(*ty),
-                    super::comptime::ComptimeMethodType::Unsupported(_) => None,
-                })
-                .collect::<Option<Vec<_>>>()?;
+            // A duplicate member name is already reported by the comptime
+            // engine that built the descriptors; this is the backstop, so it
+            // names the member rather than the minted internal type.
+            if !seen_methods.insert(method_name) || self.has_method(key) {
+                return Err(CompileError::new(
+                    ErrorKind::ComptimeEvaluationFailed {
+                        reason: format!("duplicate method `{method_str}` in an anonymous struct"),
+                    },
+                    span,
+                ));
+            }
+            let mut parameter_types = Vec::with_capacity(method.parameters.len());
+            for parameter in method.parameters.iter() {
+                parameter_types.push(match &parameter.ty {
+                    super::comptime::ComptimeMethodType::SelfType => struct_type,
+                    super::comptime::ComptimeMethodType::Concrete(ty) => *ty,
+                    super::comptime::ComptimeMethodType::Unsupported(found) => {
+                        return Err(CompileError::new(
+                            ErrorKind::UnknownType(found.clone()),
+                            span,
+                        ));
+                    }
+                });
+            }
             let return_ty = match &method.result {
                 super::comptime::ComptimeMethodType::SelfType => struct_type,
                 super::comptime::ComptimeMethodType::Concrete(ty) => *ty,
-                super::comptime::ComptimeMethodType::Unsupported(_) => return None,
+                super::comptime::ComptimeMethodType::Unsupported(found) => {
+                    return Err(CompileError::new(
+                        ErrorKind::UnknownType(found.clone()),
+                        span,
+                    ));
+                }
             };
             let param_range = self.storage.allocate_method_params(
                 method.parameter_names.iter().copied(),
@@ -1227,7 +1279,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         for (key, info) in staged {
             self.storage.install_anonymous_method(key, info);
         }
-        Some(())
+        Ok(())
     }
 
     fn resolve_type_with_substitutions(

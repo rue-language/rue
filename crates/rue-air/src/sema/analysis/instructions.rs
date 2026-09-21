@@ -596,20 +596,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     let struct_id = struct_ty
                         .as_struct()
                         .expect("anonymous struct must have a StructId");
+                    // Registration reports the rule each member breaks at
+                    // that member's own declaration span (RUE-2259); the
+                    // struct span is only the fallback for a shape the
+                    // engine should never hand over.
                     self.register_anon_struct_method_bodies(
                         struct_id,
                         struct_ty,
                         methods,
                         &descriptors,
-                    )
-                    .ok_or_else(|| {
-                        CompileError::new(
-                            ErrorKind::ComptimeEvaluationFailed {
-                                reason: "anonymous method registration failed".to_owned(),
-                            },
-                            inst.span,
-                        )
-                    })?;
+                        inst.span,
+                    )?;
                     if !ctx.comptime_type_vars.is_empty() {
                         self.set_anon_struct_type_subst(
                             struct_id,
