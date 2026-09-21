@@ -192,21 +192,6 @@ def FloatDatum.isNaN : FloatDatum → Bool
   | .nan _ => true
   | _ => false
 
-/-- Whether the datum is an infinity (helper). -/
-def FloatDatum.isInf : FloatDatum → Bool
-  | .inf _ => true
-  | _ => false
-
-/-- Whether the datum is a zero, of either sign (helper). -/
-def FloatDatum.isZero : FloatDatum → Bool
-  | .num _ sig _ => sig = 0
-  | _ => false
-
-/-- The datum's sign bit. Every form carries one — that is what makes `-0.0`
-and `NaN(-)` data of their own (§2) (helper). -/
-def FloatDatum.neg : FloatDatum → Bool
-  | .nan b | .inf b | .num b _ _ => b
-
 /-- `(D-Float-Neg)` §6.4: negation is a **sign flip and nothing else**, on
 `-0.0` and on a NaN alike (`3.12:24`). It is exact, so it is a function here
 rather than a field of the model, and it is total — no float redex steps to a
@@ -285,14 +270,6 @@ and a NaN operand still yields `false` (`3.12:27`). -/
 def FloatDatum.le (a b : FloatDatum) : Bool :=
   if a.isNaN || b.isNaN then false else !b.lt a
 
-/-- `(D-Eq)`'s float leaf (§6.4): IEEE 754 equality — the same finite value
-(so `-0.0 ≈ +0.0`, `3.12:28`), or both the same infinity, and **never** when
-either is a NaN (`3.12:27`). The fragment has no `≟` form, so nothing calls
-this yet; it is here because the leaf is what makes `≈` a *partial*
-equivalence and the statement belongs with the datum (helper). -/
-def FloatDatum.ieeeEq (a b : FloatDatum) : Bool :=
-  if a.isNaN || b.isNaN then false else !a.lt b && !b.lt a
-
 /-- `≺_w`, the IEEE 754 `totalOrder` predicate of §6.4, as a rank: every
 negative NaN, then `-inf`, the negative finite values, `-0.0`, `+0.0`, the
 positive finite values, `+inf`, then every positive NaN (`3.12:32`). Within a
@@ -348,21 +325,6 @@ def FloatDatum.truncToInt : FloatDatum → Option Int
       let mag : Nat :=
         if 0 ≤ exp then sig * 2 ^ exp.toNat else sig / 2 ^ (-exp).toNat
       some (if neg then -(mag : Int) else (mag : Int))
-
-/-- The integral part of a datum, as a datum: the same truncation, rebuilt in
-`𝔽_w`. An integral value near `f` is always representable (`3.12:36`), so no
-rounding enters (helper). -/
-def FloatDatum.truncD : FloatDatum → FloatDatum
-  | .nan b => .nan b
-  | .inf b => .inf b
-  | .num neg sig exp =>
-      if 0 ≤ exp then .num neg sig exp
-      else canonNum neg (sig / 2 ^ (-exp).toNat) 0
-
-/-- Whether a finite datum has a non-zero fractional part (helper). -/
-def FloatDatum.hasFrac : FloatDatum → Bool
-  | .num _ sig exp => !(0 ≤ exp) && sig % 2 ^ (-exp).toNat ≠ 0
-  | _ => false
 
 /-- The five `(Float-Round)` intrinsics of `3.12:34`, minus `@sqrt`: rounding
 toward `-inf`, toward `+inf`, toward zero, and to nearest with ties **away**
