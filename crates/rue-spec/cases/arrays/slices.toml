@@ -897,3 +897,120 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# A fixed array as the element type (RUE-2270)
+# =============================================================================
+#
+# 7.2:2 puts no restriction on `T`, and 7.2:14 admits any aggregate built only
+# from slot-filling leaves — an array of them included. A slice over a fixed
+# array is therefore an ordinary slice: it coerces, it answers `.len()`, and
+# `s[i]` yields a place of the element array type that can be indexed again.
+# The compiler used to decide slice-ness from the nominal's spelling by
+# rejecting any name containing a `;`, so `[[i64; 2]]` — whose separator
+# belongs to the ELEMENT one bracket deeper — was treated as an unrelated
+# nominal: `.len()` was undefined on it, indexing it was indexing a non-array,
+# and the coercion never fired.
+
+[[case]]
+name = "slice_of_a_fixed_array_element_coerces_and_reads"
+spec = ["7.2:12", "7.2:14", "7.2:17", "7.2:20"]
+description = "RUE-2270: `[[i64; 2]]` views a `[[i64; 2]; 3]`, answers len(), and indexes twice."
+source = """
+fn sum(borrow s: [[i64; 2]]) -> i64 {
+    let mut t = 0;
+    let mut i: u64 = 0;
+    while i < s.len() {
+        t += s[i][0] + s[i][1];
+        i += 1;
+    }
+    t
+}
+fn main() -> i32 {
+    let m: [[i64; 2]; 3] = [[1, 2], [3, 4], [5, 6]];
+    @intCast(sum(borrow m))
+}
+"""
+exit_code = 21
+
+[[case]]
+name = "slice_of_a_fixed_array_element_constant_index_chain"
+spec = ["7.2:20"]
+description = "RUE-2270: `s[0][1]` projects the element array and then its element."
+source = """
+fn second(borrow s: [[i64; 2]]) -> i64 {
+    s[0][1]
+}
+fn main() -> i32 {
+    let m: [[i64; 2]; 3] = [[1, 2], [3, 4], [5, 6]];
+    @intCast(second(borrow m))
+}
+"""
+exit_code = 2
+
+[[case]]
+name = "slice_of_a_nested_fixed_array_element_coerces_and_reads"
+spec = ["7.2:14", "7.2:20"]
+description = "RUE-2270: the element may itself be an array of arrays; only the outer bracket pair decides slice-ness."
+source = """
+fn total(borrow s: [[[i64; 2]; 2]]) -> i64 {
+    let mut t = 0;
+    let mut i: u64 = 0;
+    while i < s.len() {
+        t += s[i][0][0] + s[i][1][1];
+        i += 1;
+    }
+    t
+}
+fn main() -> i32 {
+    let m: [[[i64; 2]; 2]; 2] = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]];
+    @intCast(total(borrow m))
+}
+"""
+exit_code = 18
+
+[[case]]
+name = "slice_of_a_narrow_fixed_array_element_is_rejected"
+spec = ["7.2:14"]
+description = "RUE-2270: recognizing `[[i32; 2]]` as a slice does not relax 7.2:14 — an array element whose leaf is narrower than a slot strides differently and is still refused, naming the element array."
+compile_fail = true
+error_contains = ["E0908", "non-slot-width", "[i32; 2]"]
+source = """
+fn ln(borrow s: [[i32; 2]]) -> i32 {
+    @intCast(s.len())
+}
+fn main() -> i32 {
+    let m: [[i32; 2]; 3] = [[1, 2], [3, 4], [5, 6]];
+    ln(borrow m)
+}
+"""
+
+[[case]]
+name = "slice_of_a_narrow_fixed_array_element_over_an_empty_array_coerces"
+spec = ["7.2:14", "7.2:17"]
+description = "RUE-2270: the empty-array exemption is element-type independent, so `[[i32; 2]; 0]` coerces where the non-empty array does not."
+source = """
+fn ln(borrow s: [[i32; 2]]) -> i32 {
+    @intCast(s.len())
+}
+fn main() -> i32 {
+    let m: [[i32; 2]; 0] = [];
+    ln(borrow m)
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "slice_of_a_fixed_array_element_over_an_empty_array_coerces"
+spec = ["7.2:14", "7.2:19"]
+description = "RUE-2270: the same exemption for a slot-filling element array."
+source = """
+fn ln(borrow s: [[i64; 2]]) -> i32 {
+    @intCast(s.len())
+}
+fn main() -> i32 {
+    let m: [[i64; 2]; 0] = [];
+    ln(borrow m)
+}
+"""
+exit_code = 0

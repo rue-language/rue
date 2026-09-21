@@ -886,3 +886,141 @@ fn main() -> i32 {
 """ }]
 args = ["main.rue", "-o", "prog"]
 exit_code = 0
+
+# --- fixed-array elements (RUE-2270) -----------------------------------------
+#
+# The element type of a slice may itself be a fixed array. `[i64; 2]` is an
+# aggregate of slot-filling leaves, so its own stride equals the frame's slot
+# stride and the view is exact, exactly as for `struct P { a: i64, b: i64 }`.
+# Slice-ness used to be read off the nominal's spelling by rejecting any name
+# containing `;`, and the synthetic nominal for this element is spelled
+# `[[i64; 2]]`, so the view was classified as an unrelated struct: `.len()` was
+# undefined, `s[i]` indexed a non-array, and the coercion never fired. The
+# classifier now reads the OUTER bracket pair only, so these cases run the whole
+# slice runtime over an array element at every optimization level.
+
+[[case]]
+name = "fixed_array_element_slice_sum_len_index"
+description = "RUE-2270: a `[[i64; 2]]` view of a frame array measures, indexes, and re-indexes its element arrays."
+files = [{ path = "main.rue", source = """
+fn sum(borrow s: [[i64; 2]]) -> i64 {
+    let mut t = 0;
+    let mut i: u64 = 0;
+    while i < s.len() {
+        t += s[i][0] + s[i][1];
+        i += 1;
+    }
+    t
+}
+fn main() -> i32 {
+    let m: [[i64; 2]; 3] = [[1, 2], [3, 4], [5, 6]];
+    @dbg(sum(borrow m));
+    0
+}
+""" }]
+stdout = "21\n"
+exit_code = 0
+differential_opt = true
+
+[[case]]
+name = "fixed_array_element_slice_constant_index_chain"
+description = "RUE-2270: `s[0][1]` projects the element array and then its element."
+files = [{ path = "main.rue", source = """
+fn second(borrow s: [[i64; 2]]) -> i64 { s[0][1] }
+fn main() -> i32 {
+    let m: [[i64; 2]; 3] = [[1, 2], [3, 4], [5, 6]];
+    @dbg(second(borrow m));
+    0
+}
+""" }]
+stdout = "2\n"
+exit_code = 0
+differential_opt = true
+
+[[case]]
+name = "nested_fixed_array_element_slice_reads"
+description = "RUE-2270: only the outer bracket pair decides slice-ness, so an element that is itself an array of arrays views the same way."
+files = [{ path = "main.rue", source = """
+fn total(borrow s: [[[i64; 2]; 2]]) -> i64 {
+    let mut t = 0;
+    let mut i: u64 = 0;
+    while i < s.len() {
+        t += s[i][0][0] + s[i][1][1];
+        i += 1;
+    }
+    t
+}
+fn main() -> i32 {
+    let m: [[[i64; 2]; 2]; 2] = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]];
+    @dbg(total(borrow m));
+    0
+}
+""" }]
+stdout = "18\n"
+exit_code = 0
+differential_opt = true
+
+[[case]]
+name = "fixed_array_element_slice_out_of_bounds_traps"
+description = "RUE-2270: a view over array elements keeps the ordinary runtime bounds discipline."
+files = [{ path = "main.rue", source = """
+fn get(borrow s: [[i64; 2]], i: u64) -> i64 { s[i][0] }
+fn main() -> i32 {
+    let m: [[i64; 2]; 2] = [[1, 2], [3, 4]];
+    @intCast(get(borrow m, 5))
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 101
+runtime_error_contains = ["index out of bounds"]
+
+[[case]]
+name = "narrow_fixed_array_element_slice_refused"
+description = "RUE-2270: recognizing the nominal does not relax the stride rule - a `[i32; 2]` element strides narrower than the frame slot and is still refused, naming the element array."
+files = [{ path = "main.rue", source = """
+fn ln(borrow s: [[i32; 2]]) -> i32 { @intCast(s.len()) }
+fn main() -> i32 {
+    let m: [[i32; 2]; 3] = [[1, 2], [3, 4], [5, 6]];
+    ln(borrow m)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0908", "non-slot-width", "[i32; 2]"]
+compile_stderr_not_contains = ["E9000", "internal compiler error"]
+
+[[case]]
+name = "narrow_fixed_array_element_slice_empty_view"
+description = "RUE-2270: the empty-array exemption is element-type independent, so the same `[[i32; 2]]` parameter takes a `[[i32; 2]; 0]`."
+files = [{ path = "main.rue", source = """
+fn ln(borrow s: [[i32; 2]]) -> i32 { @intCast(s.len()) }
+fn main() -> i32 {
+    let m: [[i32; 2]; 0] = [];
+    ln(borrow m)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
+
+[[case]]
+name = "fixed_array_element_slice_reads_on_aarch64"
+description = "RUE-2270: the two-dimensional view materializes and indexes on AArch64 too (compile-only; execution is CI's)."
+files = [{ path = "main.rue", source = """
+fn sum(borrow s: [[i64; 2]]) -> i64 {
+    let mut t = 0;
+    let mut i: u64 = 0;
+    while i < s.len() {
+        t += s[i][0] + s[i][1];
+        i += 1;
+    }
+    t
+}
+fn main() -> i32 {
+    let m: [[i64; 2]; 2] = [[1, 2], [3, 4]];
+    @intCast(sum(borrow m))
+}
+""" }]
+args = ["--emit", "asm", "--target", "aarch64-linux", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== Assembly (aarch64-linux) ===", "main:"]
+compile_stderr_not_contains = ["E0908", "E0411", "E9001", "internal codegen error"]

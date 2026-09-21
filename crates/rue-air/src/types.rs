@@ -37,8 +37,37 @@ pub(crate) fn fixed_string_struct_capacity(def: &StructDef) -> Option<u64> {
 }
 
 /// Whether `name` is the canonical spelling of a synthetic slice struct.
+///
+/// A slice spelling is one bracket pair around an element spelling, and an
+/// array spelling `[T; N]` is the same pair with a top-level `; N`. The
+/// separator therefore only disqualifies a name when it belongs to the OUTER
+/// pair: `[[i64; 2]]` is the slice over the element `[i64; 2]`, whose own
+/// separator sits one bracket deeper. Scanning for an unnested `;` (rather
+/// than for any `;` at all) is what keeps a slice whose element is a fixed
+/// array recognized as a slice, so `.len()`, indexing, and the
+/// fixed-array-to-slice coercion route it like every other slice (RUE-2270).
 pub fn is_slice_struct_name(name: &str) -> bool {
-    name.starts_with('[') && name.ends_with(']') && !name.contains(';')
+    let Some(element) = name
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+    else {
+        return false;
+    };
+    let mut depth = 0u32;
+    for byte in element.bytes() {
+        match byte {
+            b'[' => depth += 1,
+            // A `]` at depth zero would close the outer pair early, so the
+            // leading `[` and the trailing `]` are not one pair.
+            b']' => match depth.checked_sub(1) {
+                Some(next) => depth = next,
+                None => return false,
+            },
+            b';' if depth == 0 => return false,
+            _ => {}
+        }
+    }
+    depth == 0
 }
 
 /// The canonical name of the core `str` view.
@@ -1449,6 +1478,16 @@ mod tests {
         assert!(is_slice_struct_name("[u8]"));
         assert!(!is_slice_struct_name("[u8; 4]"));
         assert!(!is_slice_struct_name("u8"));
+        // Only an unnested separator marks an array spelling: a slice whose
+        // element is a fixed array carries the element's own `;` one bracket
+        // deeper and is still a slice (RUE-2270).
+        assert!(is_slice_struct_name("[[i64; 2]]"));
+        assert!(is_slice_struct_name("[[[i32; 2]; 3]]"));
+        assert!(!is_slice_struct_name("[[i64; 2]; 3]"));
+        // Unbalanced or non-enclosing brackets are not a slice spelling.
+        assert!(!is_slice_struct_name("[]]"));
+        assert!(!is_slice_struct_name("[[u8]"));
+        assert!(!is_slice_struct_name("[u8][u8]"));
         assert!(is_string_view_struct_name("str"));
         assert!(is_string_view_struct_name("Str(42)"));
         assert!(!is_string_view_struct_name("Str(042)"));
@@ -1462,10 +1501,19 @@ mod tests {
             assert!(is_string_view_struct_name(&name), "{name}");
         }
 
-        // The slice classifier reads the outer brackets and the absence of an
-        // array separator, so it round-trips a slice of any element spelling
-        // that is not itself an array.
-        for element in ["u8", "i32", "[u8]", "ptr const u8"] {
+        // The slice classifier reads the outer bracket pair and the absence
+        // of a separator at that pair's own depth, so it round-trips a slice
+        // of any element spelling, arrays included.
+        let fixed_array_element = array_type_name("i64", 2);
+        let nested_slice_element = slice_struct_name(&array_type_name("i32", 3));
+        for element in [
+            "u8",
+            "i32",
+            "[u8]",
+            "ptr const u8",
+            fixed_array_element.as_str(),
+            nested_slice_element.as_str(),
+        ] {
             let name = slice_struct_name(element);
             assert!(is_slice_struct_name(&name), "{name}");
         }

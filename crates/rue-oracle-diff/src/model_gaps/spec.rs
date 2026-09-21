@@ -87,6 +87,22 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::EmptySlicePointer),
         &[],
     ),
+    // The same empty-view debt where the element is itself a fixed array
+    // (RUE-2270). The element type decides nothing here: `[T; 0]` has no
+    // element 0 to address whatever `T` is, which is exactly why the
+    // coercion's stride rule exempts it.
+    Entry::new(
+        "arrays.slices",
+        "slice_of_a_fixed_array_element_over_an_empty_array_coerces",
+        intrinsic(UnsupportedIntrinsicKind::EmptySlicePointer),
+        &[],
+    ),
+    Entry::new(
+        "arrays.slices",
+        "slice_of_a_narrow_fixed_array_element_over_an_empty_array_coerces",
+        intrinsic(UnsupportedIntrinsicKind::EmptySlicePointer),
+        &[],
+    ),
     // A *failing* comparison assertion renders both operands first (spec
     // 4.13:5f), and the compiler-synthesized structural printer opens by taking
     // a bounded buffer from the allocation helper. The interpreter stops there;

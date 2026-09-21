@@ -404,6 +404,15 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::EmptySlicePointer),
         &[],
     ),
+    // The same empty-view debt for a fixed-array element type (RUE-2270): an
+    // empty `[[i32; 2]; 0]` view has no backing place to represent, exactly as
+    // the scalar, struct, and float empty views above.
+    Entry::new(
+        "cli.slices",
+        "narrow_fixed_array_element_slice_empty_view",
+        intrinsic(UnsupportedIntrinsicKind::EmptySlicePointer),
+        &[],
+    ),
     // std.env (RUE-935): argv/envp are captured process state, so the oracle
     // treats the `@arg_*`/`@env_*` reads as external dependencies (like
     // `@random_*`). Each case's first such read decides its registered kind.
