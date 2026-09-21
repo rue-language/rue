@@ -253,6 +253,7 @@ Every declaration of the mechanization with the calculus rules, sections, and pr
 | `RueCore.Float` | `RueCore.FloatUnIntrin` | inductive | (D-Float-Round), §6.4 | `3.12:34` |
 | `RueCore.Float` | `RueCore.FloatOps.roundIntrin` | def | (D-Float-Round) | `3.12:34`, `3.12:37` |
 | `RueCore.Float` | `RueCore.FloatModel` | structure | §6.4, §7 | `3.12:9`, `3.12:22`, `3.12:44` |
+| `RueCore.Float` | `RueCore.FloatModel.cast_nan` | theorem | (D-Float-Cast), §6.4 | `3.12:19` |
 | `RueCore.Float` | `RueCore.FloatDatum.toIntIn` | def | (D-Float-To-Int), §6.4 | `3.12:18` |
 | `RueCore.Float` | `RueCore.floatToInt_partition` | theorem | §7 | — |
 | `RueCore.Float` | `RueCore.toIntIn_mem` | theorem | (D-Float-To-Int) | — |
@@ -268,11 +269,12 @@ Every declaration of the mechanization with the calculus rules, sections, and pr
 | `RueCore.Float` | `RueCore.Float.addD` | def | (D-Float-Arith), §6.4 | — |
 | `RueCore.Float` | `RueCore.Float.mulD` | def | (D-Float-Arith) | — |
 | `RueCore.Float` | `RueCore.Float.divD` | def | (D-Float-Arith) | `3.12:22` |
-| `RueCore.Float` | `RueCore.Float.arith` | def | §6.4 | `3.12:24` |
+| `RueCore.Float` | `RueCore.Float.subD` | def | (D-Float-Arith) | `3.12:24` |
+| `RueCore.Float` | `RueCore.Float.arith` | def | §6.4 | — |
 | `RueCore.Float` | `RueCore.Float.sqrtD` | def | — | `3.12:35` |
 | `RueCore.Float` | `RueCore.Float.ofLit` | def | — | `3.12:9` |
 | `RueCore.Float` | `RueCore.Float.ofInt` | def | (D-Int-To-Float), §6.4 | `3.12:16` |
-| `RueCore.Float` | `RueCore.Float.narrow` | def | (D-Float-Cast) | `3.12:19`, `3.12:44` |
+| `RueCore.Float` | `RueCore.Float.narrow` | def | (D-Float-Cast) | `3.12:19` |
 | `RueCore.Float` | `RueCore.Float.exactOps` | def | — | `3.12:44` |
 | `RueCore.Gen` | Gen.lean (module) | module | §3, §5.5, §5.7 | `3.8:18`, `4.2:1`, `3.9:44`, `3.9:31` |
 | `RueCore.Gen` | `RueCore.Gen.intTy` | def | §2 | — |
@@ -586,7 +588,7 @@ Coverage: 66 of 97 labeled §5/§6 rules are mechanized; 31 are *not yet mechani
 | §6.4 | `(D-Div)` | `RueCore.binOpInt`, `RueCore.binOpInt_res` |
 | §6.4 | `(D-Div-Zero)` | `RueCore.binOpInt`, `RueCore.binOpFloat`, `RueCore.binOpInt_res` |
 | §6.4 | `(D-Div-Overflow)` | `RueCore.binOpInt`, `RueCore.binOpFloat`, `RueCore.Examples.i8DivMinByNegOne`, `RueCore.binOpInt_res` |
-| §6.4 | `(D-Float-Arith)` | `RueCore.binOpFloat`, `RueCore.Examples.floatArith`, `RueCore.FloatArith`, `RueCore.Float.addD`, `RueCore.Float.mulD`, `RueCore.Float.divD`, `RueCore.binOpFloat_res` |
+| §6.4 | `(D-Float-Arith)` | `RueCore.binOpFloat`, `RueCore.Examples.floatArith`, `RueCore.FloatArith`, `RueCore.Float.addD`, `RueCore.Float.mulD`, `RueCore.Float.divD`, `RueCore.Float.subD`, `RueCore.binOpFloat_res` |
 | §6.4 | `(D-Float-Neg)` | `RueCore.evalUnOp`, `RueCore.Explain.unopDynRule`, `RueCore.FloatDatum.negate`, `RueCore.negate_wf`, `RueCore.evalUnOp_float_res` |
 | §6.4 | `(D-Float-Ord)` | `RueCore.binOpFloat`, Float.lean (module), `RueCore.FloatDatum.lt`, `RueCore.FloatDatum.le`, `RueCore.binOpFloat_res` |
 | §6.4 | `(D-Eq)` | *not yet mechanized* |
@@ -596,7 +598,7 @@ Coverage: 66 of 97 labeled §5/§6 rules are mechanized; 31 are *not yet mechani
 | §6.4 | `(D-Int-To-Float)` | `RueCore.evalFintrin`, `RueCore.Float.ofInt`, `RueCore.evalFintrin_int_res` |
 | §6.4 | `(D-Float-To-Int)` | `RueCore.evalFintrin`, Examples.lean (module), Float.lean (module), `RueCore.FloatDatum.truncToInt`, `RueCore.FloatDatum.toIntIn`, `RueCore.toIntIn_mem` |
 | §6.4 | `(D-Float-To-Int-Trap)` | `RueCore.evalFintrin`, Examples.lean (module), `RueCore.Examples.floatToInt_nan_traps`, Float.lean (module), `RueCore.toIntIn_nan`, `RueCore.Typed.floatIntrin` |
-| §6.4 | `(D-Float-Cast)` | `RueCore.evalFintrin`, `RueCore.FloatDatum.widen`, `RueCore.widen_wf`, `RueCore.FloatOps.cast`, `RueCore.Float.narrow` |
+| §6.4 | `(D-Float-Cast)` | `RueCore.evalFintrin`, `RueCore.FloatDatum.widen`, `RueCore.widen_wf`, `RueCore.FloatOps.cast`, `RueCore.FloatModel.cast_nan`, `RueCore.Float.narrow` |
 | §6.4 | `(D-Total-Cmp)` | `RueCore.binOpFloat`, Float.lean (module), `RueCore.FloatDatum.totalCmp`, `RueCore.totalCmp_trichotomy`, `RueCore.binOpFloat_res` |
 | §6.4 | `(D-Float-Round)` | `RueCore.evalFintrin`, `RueCore.FloatDatum.roundOp`, `RueCore.FloatUnIntrin`, `RueCore.FloatOps.roundIntrin` |
 | §6.4 | `(D-Int-Cast)` | *not yet mechanized* |
@@ -650,7 +652,7 @@ Every heading of the calculus. A citation of a section counts for that section o
 | §6.1 | The machine configuration | Dynamics.lean (module), `RueCore.Val`, `RueCore.Cell`, `RueCore.Store`, `RueCore.Env`, `RueCore.Frame`, `RueCore.dropRetire`, `RueCore.unwindLocs`, `RueCore.runAllScopeDrops`, Examples.lean (module), `RueCore.Examples.v64`, `RueCore.Explain.valLine`, `RueCore.Explain.cellLine`, `RueCore.Explain.locName`, `RueCore.Explain.locsLine`, `RueCore.FloatDatum.Wf`, Soundness.lean (module), `RueCore.HasTy`, `RueCore.HasTy.float`, `RueCore.Matches`, `RueCore.FrameMatches`, `RueCore.dropRetire_ok`, `RueCore.Matches.unwind`, `RueCore.Typed.intLit`, Syntax.lean (module), `RueCore.intMin`, `RueCore.intMax`, `RueCore.InBounds` |
 | §6.2 | Evaluation order: contexts, search, and panic propagation | Dynamics.lean (module), `RueCore.EvalRes.andThen`, `RueCore.ArgsRes`, `RueCore.evalArgs`, `RueCore.eval`, Examples.lean (module), `RueCore.Explain.trapLiftsPastCall`, `RueCore.Explain.traceArgs`, `RueCore.EvalOk.bind`, `RueCore.EvalRes.andThen_mono` |
 | §6.3 | Literals and the use of a place (copy / move) | `RueCore.eval` |
-| §6.4 | Primitive operators | Dynamics.lean (module), `RueCore.intResult`, `RueCore.shiftAmount`, `RueCore.binOpInt`, `RueCore.binOpFloat`, `RueCore.evalBinOp`, `RueCore.evalUnOp`, `RueCore.evalFintrin`, `RueCore.eval`, Examples.lean (module), `RueCore.Examples.min64`, `RueCore.Examples.floatArith`, `RueCore.Examples.floatDivZero`, `RueCore.Examples.floatNanUnordered`, `RueCore.Examples.overflow`, `RueCore.Examples.i8Overflow`, `RueCore.Examples.i8DivMinByNegOne`, `RueCore.Examples.i64MinTimesNeg1`, `RueCore.Examples.i8RemMinByNegOne`, `RueCore.Examples.u8CastOutOfRange`, `RueCore.Examples.u8ShiftMasks`, `RueCore.Examples.u8Bitwise`, `RueCore.Explain.binopDynRule`, `RueCore.Explain.binopDynRuleAt`, `RueCore.Explain.fintrinDynRule`, `RueCore.Explain.unopDynRule`, `RueCore.Explain.unopDynRuleAt`, Float.lean (module), `RueCore.FloatDatum.Wf`, `RueCore.FloatDatum.negate`, `RueCore.FloatDatum.lt`, `RueCore.FloatDatum.totalRank`, `RueCore.FloatDatum.totalCmp`, `RueCore.FloatDatum.roundOp`, `RueCore.roundOp_wf`, `RueCore.FloatArith`, `RueCore.FloatOps`, `RueCore.FloatOps.cast`, `RueCore.FloatUnIntrin`, `RueCore.FloatModel`, `RueCore.FloatDatum.toIntIn`, `RueCore.Float.addD`, `RueCore.Float.arith`, `RueCore.Float.ofInt`, `RueCore.Gen.intLiteral`, Soundness.lean (module), `RueCore.intResult_res`, `RueCore.binOpInt_res`, `RueCore.binOpFloat_res`, `RueCore.evalUnOp_int_res`, `RueCore.evalUnOp_bool_res`, `RueCore.evalIntCast_res`, `RueCore.Typed.floatNeg`, `RueCore.Typed.intCast`, `RueCore.Typed.intToFloat`, `RueCore.Typed.floatIntrin`, Syntax.lean (module), `RueCore.IntWidth.modulus`, `RueCore.InBounds`, `RueCore.bitsOf`, `RueCore.valOf`, `RueCore.wrapInt`, `RueCore.valOf_inBounds`, `RueCore.UnOp` |
+| §6.4 | Primitive operators | Dynamics.lean (module), `RueCore.intResult`, `RueCore.shiftAmount`, `RueCore.binOpInt`, `RueCore.binOpFloat`, `RueCore.evalBinOp`, `RueCore.evalUnOp`, `RueCore.evalFintrin`, `RueCore.eval`, Examples.lean (module), `RueCore.Examples.min64`, `RueCore.Examples.floatArith`, `RueCore.Examples.floatDivZero`, `RueCore.Examples.floatNanUnordered`, `RueCore.Examples.overflow`, `RueCore.Examples.i8Overflow`, `RueCore.Examples.i8DivMinByNegOne`, `RueCore.Examples.i64MinTimesNeg1`, `RueCore.Examples.i8RemMinByNegOne`, `RueCore.Examples.u8CastOutOfRange`, `RueCore.Examples.u8ShiftMasks`, `RueCore.Examples.u8Bitwise`, `RueCore.Explain.binopDynRule`, `RueCore.Explain.binopDynRuleAt`, `RueCore.Explain.fintrinDynRule`, `RueCore.Explain.unopDynRule`, `RueCore.Explain.unopDynRuleAt`, Float.lean (module), `RueCore.FloatDatum.Wf`, `RueCore.FloatDatum.negate`, `RueCore.FloatDatum.lt`, `RueCore.FloatDatum.totalRank`, `RueCore.FloatDatum.totalCmp`, `RueCore.FloatDatum.roundOp`, `RueCore.roundOp_wf`, `RueCore.FloatArith`, `RueCore.FloatOps`, `RueCore.FloatOps.cast`, `RueCore.FloatUnIntrin`, `RueCore.FloatModel`, `RueCore.FloatModel.cast_nan`, `RueCore.FloatDatum.toIntIn`, `RueCore.Float.addD`, `RueCore.Float.arith`, `RueCore.Float.ofInt`, `RueCore.Gen.intLiteral`, Soundness.lean (module), `RueCore.intResult_res`, `RueCore.binOpInt_res`, `RueCore.binOpFloat_res`, `RueCore.evalUnOp_int_res`, `RueCore.evalUnOp_bool_res`, `RueCore.evalIntCast_res`, `RueCore.Typed.floatNeg`, `RueCore.Typed.intCast`, `RueCore.Typed.intToFloat`, `RueCore.Typed.floatIntrin`, Syntax.lean (module), `RueCore.IntWidth.modulus`, `RueCore.InBounds`, `RueCore.bitsOf`, `RueCore.valOf`, `RueCore.wrapInt`, `RueCore.valOf_inBounds`, `RueCore.UnOp` |
 | §6.5 | Aggregate introduction and projection | `RueCore.eval`, Explain.lean (module) |
 | §6.6 | Enum introduction and the `match` elimination | Dynamics.lean (module), Soundness.lean (module) |
 | §6.7 | `let`, sequencing, and scope-exit drop | `RueCore.Corpus.eventLine`, Dynamics.lean (module), `RueCore.Event`, `RueCore.Violation.linearLeak`, `RueCore.dropRetire`, `RueCore.eval`, `RueCore.Explain.eventLine`, `RueCore.Explain.Step`, `RueCore.Explain.scopeNeverClosed`, Print.lean (module), `RueCore.Print.expr`, `RueCore.CellMatches`, `RueCore.no_linear_leak`, `RueCore.StructDecl.Wf.field_not_linear`, `RueCore.Typed.letIn` |
@@ -718,11 +720,11 @@ Every heading of the calculus. A citation of a section counts for that section o
 | `3.12:16` | `RueCore.evalFintrin`, `RueCore.Examples.intToFloatRounds`, `RueCore.Explain.Premise.intToFloatNotInt`, `RueCore.Float.ofInt`, `RueCore.evalFintrin_int_res`, `RueCore.Typed.intToFloat`, `RueCore.FloatIntrin`, `RueCore.FloatIntrin.intToFloat` |
 | `3.12:17` | `RueCore.Examples.floatToIntTrunc`, `RueCore.FloatIntrin`, `RueCore.FloatIntrin.floatToInt` |
 | `3.12:18` | `RueCore.evalFintrin`, `RueCore.Examples.floatToIntTrapNan`, `RueCore.Examples.floatToIntTrapInf`, `RueCore.Examples.floatToIntTrapRange`, `RueCore.Examples.floatToInt_inf_traps`, `RueCore.Examples.floatToInt_nan_traps`, `RueCore.FloatDatum.toIntIn`, `RueCore.toIntIn_nan`, `RueCore.toIntIn_inf`, `RueCore.evalFintrin_float_res`, `RueCore.Typed.floatIntrin`, `RueCore.FloatIntrin.floatToInt` |
-| `3.12:19` | `RueCore.evalFintrin`, `RueCore.Examples.floatCastNarrow`, `RueCore.Examples.floatCastWiden`, `RueCore.Explain.Premise.floatCastSameWidth`, Float.lean (module), `RueCore.FloatDatum.widen`, `RueCore.widen_wf`, `RueCore.Float.narrow`, `RueCore.evalFintrin_float_res`, `RueCore.Typed.floatIntrin`, `RueCore.FloatIntrin`, `RueCore.FloatIntrin.floatCast`, `RueCore.FloatIntrin.floatSrc` |
+| `3.12:19` | `RueCore.evalFintrin`, `RueCore.Examples.floatCastNarrow`, `RueCore.Examples.floatCastWiden`, `RueCore.Explain.Premise.floatCastSameWidth`, Float.lean (module), `RueCore.FloatDatum.widen`, `RueCore.widen_wf`, `RueCore.FloatModel.cast_nan`, `RueCore.Float.narrow`, `RueCore.evalFintrin_float_res`, `RueCore.Typed.floatIntrin`, `RueCore.FloatIntrin`, `RueCore.FloatIntrin.floatCast`, `RueCore.FloatIntrin.floatSrc` |
 | `3.12:21` | `RueCore.binOpFloat`, Float.lean (module), `RueCore.binOpFloat_res` |
 | `3.12:22` | Examples.lean (module), `RueCore.Examples.posInf`, `RueCore.Examples.aNaN`, `RueCore.Examples.floatDivZero`, `RueCore.Examples.floatZeroDivZero`, `RueCore.Examples.floatDivZeroToInt_traps`, `RueCore.FloatModel`, `RueCore.Float.divD`, `RueCore.Gen.floatLiteral` |
 | `3.12:23` | `RueCore.roundRat` |
-| `3.12:24` | `RueCore.evalUnOp`, Examples.lean (module), `RueCore.Explain.unopDynRuleAt`, Float.lean (module), `RueCore.FloatDatum.negate`, `RueCore.negate_wf`, `RueCore.Float.arith`, `RueCore.evalUnOp_float_res`, `RueCore.Typed.floatNeg`, `RueCore.UnOp` |
+| `3.12:24` | `RueCore.evalUnOp`, Examples.lean (module), `RueCore.Explain.unopDynRuleAt`, Float.lean (module), `RueCore.FloatDatum.negate`, `RueCore.negate_wf`, `RueCore.Float.subD`, `RueCore.evalUnOp_float_res`, `RueCore.Typed.floatNeg`, `RueCore.UnOp` |
 | `3.12:25` | `RueCore.binOpFloat`, `RueCore.Explain.Premise.opNotOnFloat`, `RueCore.FloatArith`, `RueCore.Typed.floatBinop`, `RueCore.BinOp.floatAdmits` |
 | `3.12:27` | `RueCore.binOpFloat`, `RueCore.Examples.floatNanUnordered`, `RueCore.Examples.floatInfinities`, Float.lean (module), `RueCore.FloatDatum.isNaN`, `RueCore.FloatDatum.lt`, `RueCore.FloatDatum.le` |
 | `3.12:28` | `RueCore.binOpFloat`, `RueCore.Examples.floatSignedZeros`, Float.lean (module), `RueCore.FloatDatum.lt` |
@@ -736,7 +738,7 @@ Every heading of the calculus. A citation of a section counts for that section o
 | `3.12:40` | `RueCore.Corpus.dbgLine`, `RueCore.Examples.floatCastNarrow`, `RueCore.Examples.f32Shortest`, Float.lean (module), `RueCore.shortestDigits`, `RueCore.Gen.resultTy`, `RueCore.Ty.observable` |
 | `3.12:41` | `RueCore.Examples.floatDbgLayouts`, `RueCore.FloatWidth.fixedLo`, `RueCore.FloatWidth.fixedHi`, `RueCore.layout`, `RueCore.FloatDatum.render`, `RueCore.FloatLit.spell` |
 | `3.12:42` | `RueCore.Corpus.exportOps`, `RueCore.Corpus.dbgLine`, `RueCore.Examples.aNaN`, `RueCore.Examples.floatSignedZeros`, `RueCore.Examples.floatInfinities`, Float.lean (module), `RueCore.FloatDatum.render`, `RueCore.Ty.observable` |
-| `3.12:44` | `RueCore.Corpus.exportOps`, `RueCore.FloatModel`, `RueCore.Float.narrow`, `RueCore.Float.exactOps` |
+| `3.12:44` | `RueCore.Corpus.exportOps`, `RueCore.FloatModel`, `RueCore.Float.exactOps` |
 | `4.1:2` | `RueCore.Examples.lit`, `RueCore.Explain.Premise.litOutOfRange`, Float.lean (module), `RueCore.Typed.intLit`, Syntax.lean (module), `RueCore.Expr` |
 | `4.1:3` | `RueCore.Explain.Premise.litOutOfRange`, Print.lean (module), Syntax.lean (module) |
 | `4.2:1` | `RueCore.Explain.Premise.operandNotInt`, `RueCore.Explain.Premise.operandWidthMismatch`, Gen.lean (module), `RueCore.Typed.binop` |

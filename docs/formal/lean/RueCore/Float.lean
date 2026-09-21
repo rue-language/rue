@@ -553,7 +553,7 @@ inductive FloatArith where
 deriving DecidableEq, Repr
 
 /-- The operations of §6.4 whose result is `rnd_w` of a value that need not lie
-in `𝔽_w`, and the target parameter `σ_NaN` they produce NaNs at. §2 fixes both
+in `𝔽_w`, and the target parameter `σ_NaN` they *create* NaNs at. §2 fixes both
 per target rather than per rule, so they are the interface the development is
 parameterized over; every exact operation is a function of this module
 instead. -/
@@ -577,8 +577,11 @@ structure FloatOps where
   /-- `σ_NaN` (§2, `3.12:44`): the sign of a NaN the target's hardware
   produces — negative on x86-64, positive on AArch64 (Appendix B.1). It is the
   sign *bit*, the same `Bool` `FloatDatum.nan` carries, so `false` is the
-  AArch64 (positive) choice and `true` the x86-64 (negative) one. Every NaN
-  *produced* by a §6.4 float rule is `NaN(σ_NaN)`. -/
+  AArch64 (positive) choice and `true` the x86-64 (negative) one. It is the
+  sign of a NaN an operation **creates** — `0/0`, `inf - inf`, `0 · inf`,
+  `inf/inf`, `@sqrt` of a negative. A NaN that merely passes *through* an
+  operation is propagated with its own sign on both targets, so `σ_NaN` does
+  not reach it (`FloatModel.arith_nan`, `Float.addD`). -/
   nanSign : Bool
 
 /-- `(D-Float-Cast)` §6.4 at either direction, given the model's narrowing.
@@ -627,18 +630,30 @@ Mechanized, that lemma splits three ways.
   float counterpart of `valOf_inBounds` (`Syntax.lean`), which *is* proved,
   because `val_{w,s}` is arithmetic and `rnd_w` is IEEE.
 
-Two behavioural laws join them, both quoted from §6.4's own "spelled out, as
+Behavioural laws join them, quoted from §6.4's own "spelled out, as
 consequences of `⊕_w`" list: they are what a *witness* for the one float trap
-rests on, so that no witness has to compute with a concrete model. -/
+rests on, so that no witness has to compute with a concrete model.
+
+The two NaN laws are deliberately the **weak** ones: a NaN operand makes the
+result *a* NaN, and nothing is assumed about which NaN. IEEE 754 guarantees no
+more than that, and neither does any target Rue has: x86-64 and AArch64 both
+*propagate* a NaN operand, sign and all, and reserve `σ_NaN` for a NaN an
+invalid operation **creates**. A law that also fixed the sign of a propagated
+NaN would be false of the standard and false of the compiler — so the sign of
+a propagated NaN is a *model* choice, made in `Float.exactOps` (which
+propagates the first NaN operand's sign, as both targets do) and checked
+against the compiler case by case, never a theorem here. §9 item 5 (RUE-2283)
+is where the target-defined part is tracked. -/
 
 /-- **§7's "totality of the float operations", as an interface.** A
 `FloatOps` together with the laws §7 owes for floats and §6.4 quotes from
-`3.12:9`, `3.12:22` and `3.12:44`. The fields are assumptions this package
-makes about IEEE 754, and they are *fields* rather than `axiom` declarations
-so that every theorem resting on one carries it in its own statement
-(`TRUST.md`, "Assumptions carried as interfaces"). §7 says the lemma is
-"discharged against the standard rather than against Rue"; this is that
-sentence, mechanized. -/
+`3.12:9`, `3.12:22` and `3.12:44`. Every field is a statement that is true of
+IEEE 754 *and* of the compiler — which is why the NaN laws below say only that
+a NaN comes out, and leave its sign to the model (see the section note above).
+They are *fields* rather than `axiom` declarations so that every theorem
+resting on one carries it in its own statement (`TRUST.md`, "Assumptions
+carried as interfaces"). §7 says the lemma is "discharged against the standard
+rather than against Rue"; this is that sentence, mechanized. -/
 structure FloatModel extends FloatOps where
   /-- **Closure of `⊕_w`** (§7): the four arithmetic operators map `𝔽_w × 𝔽_w`
   into `𝔽_w`. With Lean totality this is §7's "`⊕_w` is a total function
@@ -654,10 +669,18 @@ structure FloatModel extends FloatOps where
   ofInt_wf : ∀ w n, (toFloatOps.ofInt w n).Wf w
   /-- **Closure of the narrowing cast** (`(D-Float-Cast)`, `3.12:19`). -/
   narrow_wf : ∀ f, f.Wf .w64 → (toFloatOps.narrow f).Wf .w32
-  /-- **A NaN operand yields `NaN(σ_NaN)`** (IEEE 754; `3.12:44` for the
-  sign). §6.4 lists it among the consequences of `⊕_w`. -/
+  /-- **A NaN operand yields a NaN** (IEEE 754, and §6.4 lists it among the
+  consequences of `⊕_w`). The *sign* is deliberately left open: IEEE 754 says
+  only that a NaN comes out, both of Rue's targets propagate the operand's
+  sign rather than substituting `σ_NaN`, and `3.12:44` fixes `σ_NaN` for a NaN
+  an invalid operation *creates* — which `zero_div_zero` below is. -/
   arith_nan : ∀ w op a b, (a.isNaN = true ∨ b.isNaN = true) →
-    toFloatOps.arith w op a b = .nan toFloatOps.nanSign
+    (toFloatOps.arith w op a b).isNaN = true
+  /-- **A cast of a NaN is a NaN** (`(D-Float-Cast)`, `3.12:19`): the sibling
+  of `arith_nan` at the narrowing half, again with the sign left open. The
+  widening half needs no law — it is `FloatDatum.widen`, the identity
+  (`cast_nan`). -/
+  narrow_nan : ∀ f, f.isNaN = true → (toFloatOps.narrow f).isNaN = true
   /-- **A finite non-zero divided by a zero is the infinity of the xor sign**
   (`3.12:22`, quoted in §6.4). This is the law a `@float_to_int` trap witness
   rests on: it is how a core program reaches an infinity at all. -/
@@ -674,6 +697,19 @@ structure FloatModel extends FloatOps where
   /-- **The decimal one is `1 · 2^0`** — the same sentence of `3.12:9` at the
   other literal this slice's witnesses need. -/
   ofLit_one : ∀ w, toFloatOps.ofLit w 1 false 0 = .num false 1 0
+
+/-- **`@float_cast` of a NaN is a NaN, in either direction** —
+`(D-Float-Cast)` §6.4 on a special (`3.12:19`). The narrowing half is
+`narrow_nan`; the widening half is `FloatDatum.widen`, the identity, so it is
+*proved* rather than assumed. As with `arith_nan`, the sign is not fixed: both
+targets keep the operand's. -/
+theorem FloatModel.cast_nan (M : FloatModel) (w w' : FloatWidth) {f : FloatDatum}
+    (h : f.isNaN = true) : (M.toFloatOps.cast w w' f).isNaN = true := by
+  cases w <;> cases w' <;>
+    simp only [FloatOps.cast, FloatDatum.widen] <;>
+    first
+      | exact h
+      | exact M.narrow_nan f h
 
 /-! ## The partition `(D-Float-To-Int)` / `(D-Float-To-Int-Trap)` -/
 
@@ -950,13 +986,27 @@ def ratAdd (n₁ : Bool) (a₁ b₁ : Nat) (n₂ : Bool) (a₂ b₂ : Nat) : Boo
   else if y ≤ x then (n₁, x - y, d)
   else (n₂, y - x, d)
 
+/-! ### NaN propagation, and what `σ` is for
+
+`σ` is `σ_NaN`, and it is the sign of a NaN these operations **create** — the
+invalid operations `inf - inf`, `0 · inf`, `0/0`, `inf/inf` and `@sqrt` of a
+negative. A NaN *operand* is **propagated**: the result is that same NaN, sign
+and all, and with two NaN operands the **first** one wins. That is what x86-64
+and AArch64 both do, and it is measured against the compiler (`x + (-NaN)` and
+`(-NaN) + x` both keep the negative sign at every operator), not inferred.
+
+It is a *model* choice all the same. `FloatModel.arith_nan` assumes only that
+*a* NaN comes out, because that is all IEEE 754 promises; which NaN is what
+this instance picks, and the corpus is what checks the pick. -/
+
 /-- `(D-Float-Arith)` at `+`: IEEE's special cases as §6.4 lists them, then
-the exact sum rounded by `rnd_w`. The zero cases are IEEE's for round to
-nearest: two zeros give `-0` only when both are, and a sum that is exactly
-zero is `+0` (helper). -/
+the exact sum rounded by `rnd_w`. A NaN operand is propagated (the first, when
+both are); `inf - inf` is a NaN this operation creates, so it gets `σ`. The
+zero cases are IEEE's for round to nearest: two zeros give `-0` only when both
+are, and a sum that is exactly zero is `+0` (helper). -/
 def addD (σ : Bool) (w : FloatWidth) : FloatDatum → FloatDatum → FloatDatum
-  | .nan _, _ => .nan σ
-  | _, .nan _ => .nan σ
+  | .nan b, _ => .nan b
+  | _, .nan b => .nan b
   | .inf x, .inf y => if x = y then .inf x else .nan σ
   | .inf x, .num _ _ _ => .inf x
   | .num _ _ _, .inf y => .inf y
@@ -969,11 +1019,12 @@ def addD (σ : Bool) (w : FloatWidth) : FloatDatum → FloatDatum → FloatDatum
         if num = 0 then .num false 0 0 else roundRat w sg num den
 
 /-- `(D-Float-Arith)` at `*`: `0 × inf` is a NaN, every other infinite case is
-the infinity of the xor sign, and a finite product is exact then rounded
+the infinity of the xor sign, and a finite product is exact then rounded. A NaN
+operand is propagated; `0 · inf` is a NaN this operation creates, so it gets `σ`
 (helper). -/
 def mulD (σ : Bool) (w : FloatWidth) : FloatDatum → FloatDatum → FloatDatum
-  | .nan _, _ => .nan σ
-  | _, .nan _ => .nan σ
+  | .nan b, _ => .nan b
+  | _, .nan b => .nan b
   | .inf x, .inf y => .inf (xor x y)
   | .inf x, .num n s _ => if s = 0 then .nan σ else .inf (xor x n)
   | .num n s _, .inf y => if s = 0 then .nan σ else .inf (xor n y)
@@ -987,10 +1038,12 @@ def mulD (σ : Bool) (w : FloatWidth) : FloatDatum → FloatDatum → FloatDatum
 
 /-- `(D-Float-Arith)` at `/`: `3.12:22`'s two clauses — a finite non-zero over
 a zero is the infinity of the xor sign, and `0/0` is a NaN — plus the infinite
-cases, and the exact quotient rounded otherwise (helper). -/
+cases, and the exact quotient rounded otherwise. A NaN operand is propagated;
+`0/0` and `inf/inf` are NaNs this operation creates, so they get `σ`
+(helper). -/
 def divD (σ : Bool) (w : FloatWidth) : FloatDatum → FloatDatum → FloatDatum
-  | .nan _, _ => .nan σ
-  | _, .nan _ => .nan σ
+  | .nan b, _ => .nan b
+  | _, .nan b => .nan b
   | .inf _, .inf _ => .nan σ
   | .inf x, .num n _ _ => .inf (xor x n)
   | .num n _ _, .inf y => .num (xor n y) 0 0
@@ -1003,16 +1056,27 @@ def divD (σ : Bool) (w : FloatWidth) : FloatDatum → FloatDatum → FloatDatum
         let (_, x₂, y₂) := ratOf false s₂ e₂
         roundRat w sg (x₁ * y₂) (y₁ * x₂)
 
-/-- §6.4's `f₁ ⊕_w f₂` over the four operators. Subtraction is addition of the
-negation, which `3.12:24` makes a sign flip and nothing else. -/
+/-- `(D-Float-Arith)` at `-`: addition of the negation, which `3.12:24` makes a
+sign flip and nothing else — **except** on a NaN operand, which is propagated
+unchanged rather than negated. `-` is one machine instruction, not a negation
+followed by an addition, so `1.0 - (-NaN)` is `-NaN` on both targets, and the
+compiler agrees (helper). -/
+def subD (σ : Bool) (w : FloatWidth) : FloatDatum → FloatDatum → FloatDatum
+  | .nan b, _ => .nan b
+  | _, .nan b => .nan b
+  | a, b => addD σ w a b.negate
+
+/-- §6.4's `f₁ ⊕_w f₂` over the four operators. -/
 def arith (σ : Bool) (w : FloatWidth) : FloatArith → FloatDatum → FloatDatum → FloatDatum
   | .add, a, b => addD σ w a b
-  | .sub, a, b => addD σ w a b.negate
+  | .sub, a, b => subD σ w a b
   | .mul, a, b => mulD σ w a b
   | .div, a, b => divD σ w a b
 
 /-- `rnd_w` of the exact square root (`3.12:35`), by an integer square root at
-enough extra bits that the sticky information the tie case needs survives. -/
+enough extra bits that the sticky information the tie case needs survives. A NaN
+operand is propagated; `@sqrt` of a negative (`-inf` included) creates a NaN, so
+that one gets `σ`. -/
 def sqrtD (σ : Bool) (w : FloatWidth) (f : FloatDatum) : FloatDatum :=
   match f with
   | .nan b => .nan b
@@ -1053,11 +1117,13 @@ def ofInt (w : FloatWidth) (n : Int) : FloatDatum :=
 
 /-- The narrowing half of `(D-Float-Cast)`: `rnd_32` of an `f64` datum
 (`3.12:19`), which yields `±inf` when the magnitude is too large for `𝔽_32`
-and carries a special across (a converted NaN is a NaN a floating-point
-operation produced, so its sign is the target's — `3.12:44`). -/
-def narrow (σ : Bool) (f : FloatDatum) : FloatDatum :=
+and carries a special across. A converted NaN is a *propagated* NaN, not one
+the conversion creates, so it keeps the operand's sign — measured against the
+compiler, which casts a negative `f64` NaN to a negative `f32` NaN. `σ_NaN`
+therefore never reaches this operation, and it takes no `σ` parameter. -/
+def narrow (f : FloatDatum) : FloatDatum :=
   match f with
-  | .nan _ => .nan σ
+  | .nan b => .nan b
   | .inf b => .inf b
   | .num neg sig exp =>
       if sig = 0 then .num neg 0 0
@@ -1077,7 +1143,7 @@ def exactOps : FloatOps where
   sqrt := sqrtD false
   ofLit := ofLit
   ofInt := ofInt
-  narrow := narrow false
+  narrow := narrow
   nanSign := false
 
 end Float

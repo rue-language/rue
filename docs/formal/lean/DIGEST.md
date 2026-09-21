@@ -123,6 +123,21 @@ theorem RueCore.roundOp_wf {w : FloatWidth} {op : FloatRoundOp} {f : FloatDatum}
   (h : FloatDatum.Wf w f) : FloatDatum.Wf w (FloatDatum.roundOp op f)
 ```
 
+### `FloatModel.cast_nan`
+
+*theorem* · module `RueCore.Float`
+
+**`@float_cast` of a NaN is a NaN, in either direction** —
+`(D-Float-Cast)` §6.4 on a special (`3.12:19`). The narrowing half is
+`narrow_nan`; the widening half is `FloatDatum.widen`, the identity, so it is
+*proved* rather than assumed. As with `arith_nan`, the sign is not fixed: both
+targets keep the operand's.
+
+```lean
+theorem RueCore.FloatModel.cast_nan (M : FloatModel) (w w' : FloatWidth)
+  {f : FloatDatum} (h : f.isNaN = true) : (M.cast w w' f).isNaN = true
+```
+
 ### `floatToInt_partition`
 
 *theorem* · module `RueCore.Float`
@@ -2755,9 +2770,10 @@ BinOp.ge.isCompare = true
 *def* · module `RueCore.Float`
 
 `(D-Float-Arith)` at `+`: IEEE's special cases as §6.4 lists them, then
-the exact sum rounded by `rnd_w`. The zero cases are IEEE's for round to
-nearest: two zeros give `-0` only when both are, and a sum that is exactly
-zero is `+0` (helper).
+the exact sum rounded by `rnd_w`. A NaN operand is propagated (the first, when
+both are); `inf - inf` is a NaN this operation creates, so it gets `σ`. The
+zero cases are IEEE's for round to nearest: two zeros give `-0` only when both
+are, and a sum that is exactly zero is `+0` (helper).
 
 ```lean
 def RueCore.Float.addD (σ : Bool) (w : FloatWidth) :
@@ -2770,7 +2786,9 @@ def RueCore.Float.addD (σ : Bool) (w : FloatWidth) :
 
 `(D-Float-Arith)` at `/`: `3.12:22`'s two clauses — a finite non-zero over
 a zero is the infinity of the xor sign, and `0/0` is a NaN — plus the infinite
-cases, and the exact quotient rounded otherwise (helper).
+cases, and the exact quotient rounded otherwise. A NaN operand is propagated;
+`0/0` and `inf/inf` are NaNs this operation creates, so they get `σ`
+(helper).
 
 ```lean
 def RueCore.Float.divD (σ : Bool) (w : FloatWidth) :
@@ -2782,7 +2800,8 @@ def RueCore.Float.divD (σ : Bool) (w : FloatWidth) :
 *def* · module `RueCore.Float`
 
 `(D-Float-Arith)` at `*`: `0 × inf` is a NaN, every other infinite case is
-the infinity of the xor sign, and a finite product is exact then rounded
+the infinity of the xor sign, and a finite product is exact then rounded. A NaN
+operand is propagated; `0 · inf` is a NaN this operation creates, so it gets `σ`
 (helper).
 
 ```lean
@@ -2795,7 +2814,9 @@ def RueCore.Float.mulD (σ : Bool) (w : FloatWidth) :
 *def* · module `RueCore.Float`
 
 `rnd_w` of the exact square root (`3.12:35`), by an integer square root at
-enough extra bits that the sticky information the tie case needs survives.
+enough extra bits that the sticky information the tie case needs survives. A NaN
+operand is propagated; `@sqrt` of a negative (`-inf` included) creates a NaN, so
+that one gets `σ`.
 
 ```lean
 def RueCore.Float.sqrtD (σ : Bool) (w : FloatWidth) (f : FloatDatum) : FloatDatum
@@ -2940,7 +2961,7 @@ Defining equations, as Lean derived them from the body:
 *inductive* · module `RueCore.Float`
 
 The operations of §6.4 whose result is `rnd_w` of a value that need not lie
-in `𝔽_w`, and the target parameter `σ_NaN` they produce NaNs at. §2 fixes both
+in `𝔽_w`, and the target parameter `σ_NaN` they *create* NaNs at. §2 fixes both
 per target rather than per rule, so they are the interface the development is
 parameterized over; every exact operation is a function of this module
 instead.
@@ -3442,51 +3463,28 @@ RueCore.Explain.StepRes.refuse (why : Violation) (premise : String) :
 RueCore.Explain.StepRes.exhausted : Explain.StepRes
 ```
 
-### `Float.arith`
-
-*def* · module `RueCore.Float`
-
-§6.4's `f₁ ⊕_w f₂` over the four operators. Subtraction is addition of the
-negation, which `3.12:24` makes a sign flip and nothing else.
-
-```lean
-def RueCore.Float.arith (σ : Bool) (w : FloatWidth) :
-  FloatArith → FloatDatum → FloatDatum → FloatDatum
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (σ : Bool) (w : FloatWidth) (x x_1 : FloatDatum),
-  Float.arith σ w FloatArith.add x x_1 = Float.addD σ w x x_1
-∀ (σ : Bool) (w : FloatWidth) (x x_1 : FloatDatum),
-  Float.arith σ w FloatArith.sub x x_1 = Float.addD σ w x x_1.negate
-∀ (σ : Bool) (w : FloatWidth) (x x_1 : FloatDatum),
-  Float.arith σ w FloatArith.mul x x_1 = Float.mulD σ w x x_1
-∀ (σ : Bool) (w : FloatWidth) (x x_1 : FloatDatum),
-  Float.arith σ w FloatArith.div x x_1 = Float.divD σ w x x_1
-```
-
 ### `Float.narrow`
 
 *def* · module `RueCore.Float`
 
 The narrowing half of `(D-Float-Cast)`: `rnd_32` of an `f64` datum
 (`3.12:19`), which yields `±inf` when the magnitude is too large for `𝔽_32`
-and carries a special across (a converted NaN is a NaN a floating-point
-operation produced, so its sign is the target's — `3.12:44`).
+and carries a special across. A converted NaN is a *propagated* NaN, not one
+the conversion creates, so it keeps the operand's sign — measured against the
+compiler, which casts a negative `f64` NaN to a negative `f32` NaN. `σ_NaN`
+therefore never reaches this operation, and it takes no `σ` parameter.
 
 ```lean
-def RueCore.Float.narrow (σ : Bool) (f : FloatDatum) : FloatDatum
+def RueCore.Float.narrow (f : FloatDatum) : FloatDatum
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (σ a : Bool), Float.narrow σ (FloatDatum.nan a) = FloatDatum.nan σ
-∀ (σ a : Bool), Float.narrow σ (FloatDatum.inf a) = FloatDatum.inf a
-∀ (σ a : Bool) (a_1 : Nat) (a_2 : Int),
-  Float.narrow σ (FloatDatum.num a a_1 a_2) =
+∀ (a : Bool), Float.narrow (FloatDatum.nan a) = FloatDatum.nan a
+∀ (a : Bool), Float.narrow (FloatDatum.inf a) = FloatDatum.inf a
+∀ (a : Bool) (a_1 : Nat) (a_2 : Int),
+  Float.narrow (FloatDatum.num a a_1 a_2) =
     if a_1 = 0 then FloatDatum.num a 0 0
     else
       match Float.ratOf false a_1 a_2 with
@@ -3528,6 +3526,35 @@ Defining equations, as Lean derived them from the body:
   Float.ofLit w sig negExp e =
     match { sig := sig, negExp := negExp, e := e }.exact with
     | (num, den) => roundRat w false num den
+```
+
+### `Float.subD`
+
+*def* · module `RueCore.Float`
+
+`(D-Float-Arith)` at `-`: addition of the negation, which `3.12:24` makes a
+sign flip and nothing else — **except** on a NaN operand, which is propagated
+unchanged rather than negated. `-` is one machine instruction, not a negation
+followed by an addition, so `1.0 - (-NaN)` is `-NaN` on both targets, and the
+compiler agrees (helper).
+
+```lean
+def RueCore.Float.subD (σ : Bool) (w : FloatWidth) :
+  FloatDatum → FloatDatum → FloatDatum
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (σ : Bool) (w : FloatWidth) (x : FloatDatum) (b : Bool),
+  Float.subD σ w (FloatDatum.nan b) x = FloatDatum.nan b
+∀ (σ : Bool) (w : FloatWidth) (x : FloatDatum) (b : Bool),
+  (∀ (b : Bool), x = FloatDatum.nan b → False) →
+    Float.subD σ w x (FloatDatum.nan b) = FloatDatum.nan b
+∀ (σ : Bool) (w : FloatWidth) (x x_1 : FloatDatum),
+  (∀ (b : Bool), x = FloatDatum.nan b → False) →
+    (∀ (b : Bool), x_1 = FloatDatum.nan b → False) →
+      Float.subD σ w x x_1 = Float.addD σ w x x_1.negate
 ```
 
 ### `FloatDatum.Wf`
@@ -3617,6 +3644,31 @@ RueCore.FloatIntrin.floatCast (w : FloatWidth) : FloatIntrin
 
 ```lean
 RueCore.FloatIntrin.roundOp (k : FloatUnIntrin) : FloatIntrin
+```
+
+### `FloatOps.cast`
+
+*def* · module `RueCore.Float`
+
+`(D-Float-Cast)` §6.4 at either direction, given the model's narrowing.
+`(Float-Cast)` §5.8 imposes `w' ≠ w`, so the equal-width case is unreachable
+from a well-typed program and is the identity here.
+
+```lean
+def RueCore.FloatOps.cast (M : FloatOps) (w w' : FloatWidth) (f : FloatDatum) :
+  FloatDatum
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (M : FloatOps) (f : FloatDatum),
+  M.cast FloatWidth.w64 FloatWidth.w32 f = M.narrow f
+∀ (M : FloatOps) (f : FloatDatum),
+  M.cast FloatWidth.w32 FloatWidth.w64 f = f.widen
+∀ (M : FloatOps) (w w' : FloatWidth) (f : FloatDatum),
+  (w = FloatWidth.w64 → w' = FloatWidth.w32 → False) →
+    (w = FloatWidth.w32 → w' = FloatWidth.w64 → False) → M.cast w w' f = f
 ```
 
 ### `IntWidth.modulus`
@@ -4185,25 +4237,28 @@ RueCore.Expr.call (f : Nat) (args : List Expr) : Expr
 RueCore.Expr.ret (e : Expr) : Expr
 ```
 
-### `Float.exactOps`
+### `Float.arith`
 
 *def* · module `RueCore.Float`
 
-The executable operations the corpus, the printer and the `#eval` demos
-run on: `σ_NaN` is **positive**, the AArch64 choice of `3.12:44` and Appendix
-B.1, which is the host this slice's corpus was checked against.
+§6.4's `f₁ ⊕_w f₂` over the four operators.
 
 ```lean
-def RueCore.Float.exactOps : FloatOps
+def RueCore.Float.arith (σ : Bool) (w : FloatWidth) :
+  FloatArith → FloatDatum → FloatDatum → FloatDatum
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-Float.exactOps =
-  { arith := Float.arith true, sqrt := Float.sqrtD true,
-    ofLit := Float.ofLit, ofInt := Float.ofInt,
-    narrow := Float.narrow true, nanSign := true }
+∀ (σ : Bool) (w : FloatWidth) (x x_1 : FloatDatum),
+  Float.arith σ w FloatArith.add x x_1 = Float.addD σ w x x_1
+∀ (σ : Bool) (w : FloatWidth) (x x_1 : FloatDatum),
+  Float.arith σ w FloatArith.sub x x_1 = Float.subD σ w x x_1
+∀ (σ : Bool) (w : FloatWidth) (x x_1 : FloatDatum),
+  Float.arith σ w FloatArith.mul x x_1 = Float.mulD σ w x x_1
+∀ (σ : Bool) (w : FloatWidth) (x x_1 : FloatDatum),
+  Float.arith σ w FloatArith.div x x_1 = Float.divD σ w x x_1
 ```
 
 ### `FloatIntrin.floatSrc`
@@ -4258,12 +4313,13 @@ Defining equations, as Lean derived them from the body:
 
 **§7's "totality of the float operations", as an interface.** A
 `FloatOps` together with the laws §7 owes for floats and §6.4 quotes from
-`3.12:9`, `3.12:22` and `3.12:44`. The fields are assumptions this package
-makes about IEEE 754, and they are *fields* rather than `axiom` declarations
-so that every theorem resting on one carries it in its own statement
-(`TRUST.md`, "Assumptions carried as interfaces"). §7 says the lemma is
-"discharged against the standard rather than against Rue"; this is that
-sentence, mechanized.
+`3.12:9`, `3.12:22` and `3.12:44`. Every field is a statement that is true of
+IEEE 754 *and* of the compiler — which is why the NaN laws below say only that
+a NaN comes out, and leave its sign to the model (see the section note above).
+They are *fields* rather than `axiom` declarations so that every theorem
+resting on one carries it in its own statement (`TRUST.md`, "Assumptions
+carried as interfaces"). §7 says the lemma is "discharged against the standard
+rather than against Rue"; this is that sentence, mechanized.
 
 ```lean
 inductive RueCore.FloatModel : Type
@@ -4294,7 +4350,9 @@ RueCore.FloatModel.mk (toFloatOps : FloatOps)
   (arith_nan :
     ∀ (w : FloatWidth) (op : FloatArith) (a b : FloatDatum),
       a.isNaN = true ∨ b.isNaN = true →
-        toFloatOps.arith w op a b = FloatDatum.nan toFloatOps.nanSign)
+        (toFloatOps.arith w op a b).isNaN = true)
+  (narrow_nan :
+    ∀ (f : FloatDatum), f.isNaN = true → (toFloatOps.narrow f).isNaN = true)
   (div_by_zero :
     ∀ (w : FloatWidth) (a : FloatDatum) (n : Bool) (s : Nat) (e : Int),
       FloatDatum.Wf w a →
@@ -4598,30 +4656,6 @@ RueCore.EvalRes.stuck (why : Violation) : EvalRes
 RueCore.EvalRes.outOfFuel : EvalRes
 ```
 
-### `Examples.demoOps`
-
-*def* · module `RueCore.Examples`
-
-The model every demo runs at: `Float.exactOps` (`Float.lean`), the
-constructive instance the corpus and the printer also use. The witnesses in
-this file are *executable* demos, so they are pinned at one model rather than
-quantified over all of them; because `exactOps` is built from `Nat`/`Int`
-arithmetic and never touches Lean's `Float`, pinning them costs no axiom
-(`TRUST.md`). The float **trap** witnesses at the bottom of the file are the
-exception: they are stated over an arbitrary `FloatModel` and proved from its
-laws, which is what makes them claims about IEEE 754 rather than about this
-instance.
-
-```lean
-def RueCore.Examples.demoOps : FloatOps
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-Examples.demoOps = Float.exactOps
-```
-
 ### `Examples.flE`
 
 *def* · module `RueCore.Examples`
@@ -4741,6 +4775,31 @@ RueCore.Explain.Verdict.accept (ty : Ty) (ctxOut : Ctx) : Explain.Verdict
 
 ```lean
 RueCore.Explain.Verdict.reject (premise : String) : Explain.Verdict
+```
+
+### `Float.exactOps`
+
+*def* · module `RueCore.Float`
+
+The executable operations the corpus, the printer and the `#eval` demos
+run on: `σ_NaN` is **positive**, the AArch64 choice of `3.12:44` and Appendix
+B.1, which is the host this slice's corpus was checked against. Positive is
+`false` here, because `FloatDatum.nan` carries the sign as `neg` — the field
+is the *sign bit*, so `nanSign := false` is `+NaN` and `true` is `-NaN`, and
+`FloatDatum.totalRank (.nan false) = 3`, the top of `≺_w`. Flipping this one
+`Bool` is the whole of retargeting the instance to x86-64.
+
+```lean
+def RueCore.Float.exactOps : FloatOps
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Float.exactOps =
+  { arith := Float.arith false, sqrt := Float.sqrtD false,
+    ofLit := Float.ofLit, ofInt := Float.ofInt, narrow := Float.narrow,
+    nanSign := false }
 ```
 
 ### `FnDef`
@@ -5025,6 +5084,30 @@ Defining equations, as Lean derived them from the body:
       (∀ (k : PanicKind) (tr' : List Event),
           x = EvalRes.panic k tr' → False) →
         EvalRes.withTrace tr x = x
+```
+
+### `Examples.demoOps`
+
+*def* · module `RueCore.Examples`
+
+The model every demo runs at: `Float.exactOps` (`Float.lean`), the
+constructive instance the corpus and the printer also use. The witnesses in
+this file are *executable* demos, so they are pinned at one model rather than
+quantified over all of them; because `exactOps` is built from `Nat`/`Int`
+arithmetic and never touches Lean's `Float`, pinning them costs no axiom
+(`TRUST.md`). The float **trap** witnesses at the bottom of the file are the
+exception: they are stated over an arbitrary `FloatModel` and proved from its
+laws, which is what makes them claims about IEEE 754 rather than about this
+instance.
+
+```lean
+def RueCore.Examples.demoOps : FloatOps
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.demoOps = Float.exactOps
 ```
 
 ### `Examples.panicPastLinear`

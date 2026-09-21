@@ -266,16 +266,19 @@ target, not chosen by a rule:
 
 ```
   σ_NaN ∈ { -, + }     -- the sign of a NaN the target's hardware produces (3.12:44, Appendix B.1: negative on
-                       --   x86-64, positive on AArch64). Every NaN PRODUCED by a §6.4 float rule is NaN(σ_NaN).
+                       --   x86-64, positive on AArch64). Every NaN a §6.4 float rule CREATES is NaN(σ_NaN); a
+                       --   NaN merely PROPAGATED from an operand keeps that operand's sign (§6.4).
   rnd_w                -- round to nearest, ties to even: the IEEE 754 default rounding attribute, which 3.12:9
                        --   fixes for literals and 3.12:21 for arithmetic. Rue has no dynamic rounding mode, so
                        --   no rule takes one as an argument.
 ```
 
-Reduction stays deterministic once `σ_NaN` is fixed, so §6.12's "total,
+Reduction stays deterministic once `σ_NaN` and the propagation choice — which
+operand's NaN comes out when both are NaNs — are fixed, so §6.12's "total,
 deterministic, and observable" claim survives unchanged: the differential
-oracle fixes `σ_NaN` to the target it is comparing against, exactly as
-`3.12:44` requires an implementation to document its choice.
+oracle fixes both to the target it is comparing against, exactly as `3.12:44`
+requires an implementation to document its choice. §9 item 5 carries the
+residual; x86-64 and AArch64 both take the first operand's.
 
 **[open]** Raw pointers and `unchecked` code (chapter 9) are
 initially *out* of the core and added as a distinguished, clearly-marked
@@ -2101,8 +2104,19 @@ extra rules:
   f1 = ±0  and  f2 = ±0           ⟹  f1 / f2 = NaN(σ_NaN)                           (3.12:22)
   exact result too large for 𝔽_w  ⟹  rnd_w yields ±inf of the exact result's sign   (3.12:23)
   exact result too small for 𝔽_w  ⟹  rnd_w yields ±0 of the exact result's sign     (3.12:23)
-  either operand a NaN            ⟹  the result is NaN(σ_NaN)                       (IEEE 754; 3.12:44 for the sign)
+  either operand a NaN            ⟹  the result is a NaN                            (IEEE 754)
 ```
+
+The last clause fixes only that a NaN comes out, because that is all IEEE 754
+promises. Which NaN splits two ways. A NaN an **invalid operation creates** —
+`0/0`, `inf - inf`, `0 · inf`, `inf/inf`, `@sqrt` of a negative — is
+`NaN(σ_NaN)` (`3.12:44`). A NaN that is merely **propagated** from an operand
+keeps *that operand's* sign, `σ_NaN` notwithstanding; and which operand wins
+when both are NaNs is target-defined (§9 item 5, RUE-2283 — x86-64 and AArch64
+both take the first). So a rule may not assume a propagated NaN's sign, and the
+mechanization does not: `RueCore.FloatModel.arith_nan` says `isNaN` and no
+more, and the propagation its executable instance implements is checked against
+the compiler rather than assumed.
 
 `neg` on a float is not the integer `neg` of `(D-Arith)`: "`neg (min_T)_T →
 ↯overflow`" is a statement about `int(w,signed)`, while `3.12:24` makes float
@@ -2289,8 +2303,11 @@ overflow` (`8.1:7`). Float *arithmetic* still never reaches it (`3.12:23`).
 value-preserving, `3.12:19`), rounds to nearest with ties to even when
 `w' < w`, and yields `±inf` when the operand's magnitude is too large for
 `𝔽_{w'}`; on a special it carries the class across, an infinity giving the same
-infinity and a NaN giving `NaN(σ_NaN)` (`3.12:44` — a converted NaN is a NaN
-produced by a floating-point operation, so its sign is the target's).
+infinity and a NaN giving a NaN. A converted NaN is a **propagated** NaN, not
+one the conversion creates, so it keeps the operand's sign rather than taking
+`σ_NaN` — the same split as the arithmetic clause above, and verified against
+the compiler, which casts a negative `f64` NaN to a negative `f32` NaN
+(`RueCore.FloatModel.narrow_nan`, `RueCore.FloatModel.cast_nan`).
 
 `≺_w` is the IEEE 754 `totalOrder` predicate on `𝔽_w` (`3.12:32`):
 
@@ -3375,10 +3392,10 @@ locked:
    (matching `3.8:68/70`); dynamic-index moves are forbidden. Confirm this stays
    as the core rule (it is what keeps the ownership analysis decidable without
    dependent types).
-5. **One float-side prose silence the RUE-2158 amendment could not close
-   itself (§2, §6.4).** Giving `f32`/`f64` their own place in the core forced a
-   question the prose does not answer. The core takes the conservative reading
-   rather than inventing one, and it is marked here rather than left implicit
+5. **Two float-side prose silences the RUE-2158 amendment could not close
+   itself (§2, §6.4).** Giving `f32`/`f64` their own place in the core forced
+   questions the prose does not answer. The core takes the conservative reading
+   rather than inventing one, and they are marked here rather than left implicit
    (the `Copy` classification, the other silence that amendment found, is now
    stated by `3.12:2a` and closed):
    - **NaN payloads.** `3.12:32` defines `@total_cmp`'s zero case as the
@@ -3393,4 +3410,14 @@ locked:
      might not. Confirm that reading — or, if a payload is meant to be
      observable, `𝔽_w` needs a payload component and `3.12:44` needs a
      companion paragraph fixing which payload an operation yields.
+   - **Which NaN an operation propagates.** `3.12:44` fixes the sign of a NaN a
+     float operation *creates*, and no paragraph says what happens to a NaN that
+     is only passed through. IEEE 754 leaves it to the implementation; every
+     target Rue has propagates the operand's NaN unchanged — sign and all, and
+     the *first* operand's when both are NaNs — which is observable through
+     `@total_cmp` and nowhere else. §6.4 therefore states the clause as "the
+     result is a NaN" and records the propagation as target-defined, and the
+     mechanization assumes no more than that
+     (`RueCore.FloatModel.arith_nan`/`narrow_nan`). Confirm the propagation as
+     normative, or `3.12:44` needs a companion sentence for it too.
 
