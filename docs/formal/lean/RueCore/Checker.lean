@@ -4,21 +4,48 @@ import RueCore.Soundness
 # RueCore.Checker — a decidable, verified checker for the §5 rules
 
 The `Typed` judgment is syntax-directed, so it has a computable image:
-`check Γ e` either produces `(T, Γ')` or rejects. `check_sound` proves every
-acceptance is backed by a real derivation — so the §7 safety theorems apply to
-anything `check` accepts. This is the seed of the "second, independent
-implementation" purpose of the formal core (`docs/formal/README.md`): a
-verified reference for what the compiler's semantic phase must accept.
+`check P R Γ e` either produces `(T, Γ')` or rejects. `check_sound` proves
+every acceptance is backed by a real derivation — so the §7 safety theorems
+apply to anything `check` accepts. This is the seed of the "second,
+independent implementation" purpose of the formal core
+(`docs/formal/README.md`): a verified reference for what the compiler's
+semantic phase must accept.
 
-(Completeness — `Typed` implies `check` succeeds — is deferred; the rules are
-deterministic, so it is expected to hold. The spike only needs soundness.)
+`checkProgram` lifts it to a whole program: every function body checks at its
+declared return type under (Fn) §5.8's entry context, its normal exit edge
+discharges §5.6's obligation, and the entry point takes no parameters. Its
+soundness lemma produces the `ProgramTyped` hypothesis `Soundness.lean`'s
+program theorems ask for.
+
+## `return`, algorithmically
+
+§5.7 types `return e` at `never` and (Sub-Never) coerces it to whatever the
+context needs, with a divergent outgoing state `⊥` that a join reads nothing
+from. `Typed.ret` folds both in by concluding at *any* type and *any*
+same-skeleton outgoing context, so an algorithm has to pick. `check` picks the
+enclosing function's return type `R` and the state in force after the operand
+— the choice that makes the two shapes the fragment writes go through: a body
+that ends in `return`, and an `if` whose arms are a `return` and a value of
+the function's return type.
+
+That choice is a *restriction* of the rule, so `check_sound` still holds; it
+is what completeness would cost. `1 + return true` inside a `bool`-returning
+function has a derivation and `check` rejects it, because the algorithm never
+re-types a `return` at the type its context wants. Completeness in general —
+`Typed` implies `check` succeeds — is deferred for the same reason it was
+before: the rules are otherwise deterministic, and the spike only needs
+soundness.
 -/
 
 namespace RueCore
 
+mutual
 /-- The §5 judgment as an algorithm: one case per `Typed` rule, in the same
-order, producing the type and outgoing context or rejecting. -/
-def check (Γ : Ctx) : Expr → Option (Ty × Ctx)
+order, producing the type and outgoing context or rejecting. `P` is the
+top-level function environment (Call) §5.8 looks a callee up in and `R` the
+enclosing function's declared return type (Return-Value) §5.7 checks a
+`return` operand against. -/
+def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
   | .intLit n => if InBounds n then some (.int, Γ) else none
   | .boolLit _ => some (.bool, Γ)
   | .unitLit => some (.unit, Γ)
@@ -32,32 +59,32 @@ def check (Γ : Ctx) : Expr → Option (Ty × Ctx)
           if en.ty.mult = .copy then some (en.ty, Γ)
           else some (en.ty, Γ.set i (en.setSt .movedOut))
   | .add e₁ e₂ =>
-      match check Γ e₁ with
+      match check P R Γ e₁ with
       | some (.int, Γ₁) =>
-        (match check Γ₁ e₂ with
+        (match check P R Γ₁ e₂ with
         | some (.int, Γ₂) => some (.int, Γ₂)
         | _ => none)
       | _ => none
   | .div e₁ e₂ =>
-      match check Γ e₁ with
+      match check P R Γ e₁ with
       | some (.int, Γ₁) =>
-        (match check Γ₁ e₂ with
+        (match check P R Γ₁ e₂ with
         | some (.int, Γ₂) => some (.int, Γ₂)
         | _ => none)
       | _ => none
   | .lt e₁ e₂ =>
-      match check Γ e₁ with
+      match check P R Γ e₁ with
       | some (.int, Γ₁) =>
-        (match check Γ₁ e₂ with
+        (match check P R Γ₁ e₂ with
         | some (.int, Γ₂) => some (.bool, Γ₂)
         | _ => none)
       | _ => none
   | .mkres κ e =>
-      match check Γ e with
+      match check P R Γ e with
       | some (.int, Γ') => some (.res κ, Γ')
       | _ => none
   | .consume e =>
-      match check Γ e with
+      match check P R Γ e with
       | some (.res _, Γ') => some (.int, Γ')
       | _ => none
   | .drop i =>
@@ -70,10 +97,10 @@ def check (Γ : Ctx) : Expr → Option (Ty × Ctx)
           if en.ty.mult = .copy then some (.unit, Γ)
           else some (.unit, Γ.set i (en.setSt .movedOut))
   | .letIn m e₁ e₂ =>
-      match check Γ e₁ with
+      match check P R Γ e₁ with
       | none => none
       | some (T₁, Γ₁) =>
-        match check ({ ty := T₁, mu := m, st := .owned } :: Γ₁) e₂ with
+        match check P R ({ ty := T₁, mu := m, st := .owned } :: Γ₁) e₂ with
         | some (T₂, en' :: Γ₂) =>
             if en'.st = .owned ∧ T₁.mult = .linear then none
             else some (T₂, Γ₂)
@@ -83,7 +110,7 @@ def check (Γ : Ctx) : Expr → Option (Ty × Ctx)
       | none => none
       | some en₀ =>
         if en₀.mu = true then
-          match check Γ e with
+          match check P R Γ e with
           | some (T, Γ₁) =>
             if T = en₀.ty then
               match Γ₁[i]? with
@@ -96,15 +123,15 @@ def check (Γ : Ctx) : Expr → Option (Ty × Ctx)
           | none => none
         else none
   | .seq e₁ e₂ =>
-      match check Γ e₁ with
+      match check P R Γ e₁ with
       | some (T₁, Γ₁) =>
           if T₁.mult = .linear then none
-          else check Γ₁ e₂
+          else check P R Γ₁ e₂
       | none => none
   | .ite c e₁ e₂ =>
-      match check Γ c with
+      match check P R Γ c with
       | some (.bool, Γ₀) =>
-        (match check Γ₀ e₁, check Γ₀ e₂ with
+        (match check P R Γ₀ e₁, check P R Γ₀ e₂ with
         | some (T₁, Γ₁), some (T₂, Γ₂) =>
             if T₁ = T₂ then
               match Ctx.join Γ₁ Γ₂ with
@@ -113,22 +140,47 @@ def check (Γ : Ctx) : Expr → Option (Ty × Ctx)
             else none
         | _, _ => none)
       | _ => none
+  | .call f args =>
+      match P[f]? with
+      | none => none
+      | some fd =>
+        match checkArgs P R Γ args (fd.params.map Param.ty) with
+        | some Γ' => some (fd.ret, Γ')
+        | none => none
+  | .ret e =>
+      match check P R Γ e with
+      | none => none
+      | some (T, Γ₁) =>
+          if T = R ∧ NoOwnedLinear Γ₁ then some (R, Γ₁) else none
 
+/-- (Call) §5.8's argument list as an algorithm: each argument is checked
+against its parameter's type with Σ threaded left to right, and the count must
+match (`4.10:3`, `4.10:4`). -/
+def checkArgs (P : Program) (R : Ty) : Ctx → List Expr → List Ty → Option Ctx
+  | Γ, [], [] => some Γ
+  | Γ, e :: es, T :: Ts =>
+      match check P R Γ e with
+      | some (T', Γ₁) => if T' = T then checkArgs P R Γ₁ es Ts else none
+      | none => none
+  | _, _, _ => none
+end
+
+mutual
 /-- Every `check` acceptance is a real derivation of the §5 judgment, so the
 §7 theorems apply to whatever `check` accepts. -/
-theorem check_sound : ∀ {e : Expr} {Γ : Ctx} {T Γ'},
-    check Γ e = some (T, Γ') → Typed Γ e T Γ' := by
-  intro e
-  induction e with
-    (intro Γ T Γ' h
-     simp only [check] at h)
-  | intLit n =>
+theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
+    check P R Γ e = some (T, Γ') → Typed P R Γ e T Γ'
+  | .intLit n, Γ, T, Γ', h => by
+      simp only [check] at h
       split at h
       · cases h; exact .intLit ‹_›
       · cases h
-  | boolLit b => cases h; exact .boolLit
-  | unitLit => cases h; exact .unitLit
-  | use i =>
+  | .boolLit b, Γ, T, Γ', h => by
+      simp only [check] at h; cases h; exact .boolLit
+  | .unitLit, Γ, T, Γ', h => by
+      simp only [check] at h; cases h; exact .unitLit
+  | .use i, Γ, T, Γ', h => by
+      simp only [check] at h
       split at h
       · cases h
       · split at h
@@ -136,33 +188,39 @@ theorem check_sound : ∀ {e : Expr} {Γ : Ctx} {T Γ'},
         · split at h
           · cases h; exact .useCopy ‹_› ‹_› ‹_›
           · cases h; exact .useMove ‹_› ‹_› ‹_›
-  | add e₁ e₂ ih₁ ih₂ =>
+  | .add e₁ e₂, Γ, T, Γ', h => by
+      simp only [check] at h
       split at h
       · split at h
-        · cases h; exact .add (ih₁ ‹_›) (ih₂ ‹_›)
+        · cases h; exact .add (check_sound e₁ ‹_›) (check_sound e₂ ‹_›)
         · cases h
       · cases h
-  | div e₁ e₂ ih₁ ih₂ =>
+  | .div e₁ e₂, Γ, T, Γ', h => by
+      simp only [check] at h
       split at h
       · split at h
-        · cases h; exact .div (ih₁ ‹_›) (ih₂ ‹_›)
+        · cases h; exact .div (check_sound e₁ ‹_›) (check_sound e₂ ‹_›)
         · cases h
       · cases h
-  | lt e₁ e₂ ih₁ ih₂ =>
+  | .lt e₁ e₂, Γ, T, Γ', h => by
+      simp only [check] at h
       split at h
       · split at h
-        · cases h; exact .lt (ih₁ ‹_›) (ih₂ ‹_›)
+        · cases h; exact .lt (check_sound e₁ ‹_›) (check_sound e₂ ‹_›)
         · cases h
       · cases h
-  | mkres κ e ih =>
+  | .mkres κ e, Γ, T, Γ', h => by
+      simp only [check] at h
       split at h
-      · cases h; exact .mkres (ih ‹_›)
+      · cases h; exact .mkres (check_sound e ‹_›)
       · cases h
-  | consume e ih =>
+  | .consume e, Γ, T, Γ', h => by
+      simp only [check] at h
       split at h
-      · cases h; exact .consume (ih ‹_›)
+      · cases h; exact .consume (check_sound e ‹_›)
       · cases h
-  | drop i =>
+  | .drop i, Γ, T, Γ', h => by
+      simp only [check] at h
       split at h
       · cases h
       · split at h
@@ -170,15 +228,17 @@ theorem check_sound : ∀ {e : Expr} {Γ : Ctx} {T Γ'},
         · split at h
           · cases h; exact .dropCopy ‹_› ‹_› ‹_›
           · cases h; exact .dropRes ‹_› ‹_› ‹_›
-  | letIn m e₁ e₂ ih₁ ih₂ =>
+  | .letIn m e₁ e₂, Γ, T, Γ', h => by
+      simp only [check] at h
       split at h
       · cases h
       · split at h
         · split at h
           · cases h
-          · cases h; exact .letIn (ih₁ ‹_›) (ih₂ ‹_›) ‹_›
+          · cases h; exact .letIn (check_sound e₁ ‹_›) (check_sound e₂ ‹_›) ‹_›
         · cases h
-  | assign i e ih =>
+  | .assign i e, Γ, T, Γ', h => by
+      simp only [check] at h
       split at h
       · cases h
       · rename_i en₀ hget₀
@@ -194,19 +254,21 @@ theorem check_sound : ∀ {e : Expr} {Γ : Ctx} {T Γ'},
                 · rename_i hpre
                   cases h
                   subst hT
-                  exact .assign hget₀ hmu (ih hchk) hget₁ hpre
+                  exact .assign hget₀ hmu (check_sound e hchk) hget₁ hpre
                 · cases h
               · cases h
             · cases h
           · cases h
         · cases h
-  | seq e₁ e₂ ih₁ ih₂ =>
+  | .seq e₁ e₂, Γ, T, Γ', h => by
+      simp only [check] at h
       split at h
       · split at h
         · cases h
-        · exact .seq (ih₁ ‹_›) ‹_› (ih₂ h)
+        · exact .seq (check_sound e₁ ‹_›) ‹_› (check_sound e₂ h)
       · cases h
-  | ite c e₁ e₂ ihc ih₁ ih₂ =>
+  | .ite c e₁ e₂, Γ, T, Γ', h => by
+      simp only [check] at h
       split at h
       · rename_i Γ₀ hcond
         split at h
@@ -217,10 +279,96 @@ theorem check_sound : ∀ {e : Expr} {Γ : Ctx} {T Γ'},
             · rename_i Γj hjoin
               cases h
               subst hT
-              exact .ite (ihc hcond) (ih₁ h₁) (ih₂ h₂) hjoin
+              exact .ite (check_sound c hcond) (check_sound e₁ h₁) (check_sound e₂ h₂) hjoin
             · cases h
           · cases h
         · cases h
       · cases h
+  | .call f args, Γ, T, Γ', h => by
+      simp only [check] at h
+      split at h
+      · cases h
+      · rename_i fd hfd
+        split at h
+        · rename_i Γ₁ hargs
+          cases h
+          exact .call hfd (checkArgs_sound args hargs)
+        · cases h
+  | .ret e, Γ, T, Γ', h => by
+      simp only [check] at h
+      split at h
+      · cases h
+      · rename_i T₁ Γ₁ hchk
+        split at h
+        · rename_i hcond
+          cases h
+          obtain ⟨hT, hnl⟩ := hcond
+          subst hT
+          exact .ret (check_sound e hchk) hnl rfl
+        · cases h
+
+/-- Every `checkArgs` acceptance is a real (Call) §5.8 argument-list
+derivation. -/
+theorem checkArgs_sound {P : Program} {R : Ty} : ∀ (es : List Expr) {Γ : Ctx} {Ts Γ'},
+    checkArgs P R Γ es Ts = some Γ' → TypedArgs P R Γ es Ts Γ'
+  | [], Γ, Ts, Γ', h => by
+      cases Ts with
+      | nil => simp only [checkArgs] at h; cases h; exact .nil
+      | cons _ _ => simp only [checkArgs] at h; simp at h
+  | e :: es, Γ, Ts, Γ', h => by
+      cases Ts with
+      | nil => simp only [checkArgs] at h; simp at h
+      | cons T Ts' =>
+          simp only [checkArgs] at h
+          split at h
+          · rename_i T'' Γ₁ hchk
+            split at h
+            · rename_i hT
+              subst hT
+              exact .cons (check_sound e hchk) (checkArgs_sound es h)
+            · cases h
+          · cases h
+end
+
+/-- (Fn) §5.8 as an algorithm: the body checks at the declared return type
+from the entry context `Γ0;Σ0` (`fnCtx`), and its normal exit edge discharges
+§5.6's residual-linear obligation for the by-value parameters and every
+still-open body-local binding (`3.8:62`). -/
+def checkFn (P : Program) (fd : FnDef) : Bool :=
+  match check P fd.ret (fnCtx fd) fd.body with
+  | some (T, Γf) => decide (T = fd.ret) && decide (NoOwnedLinear Γf)
+  | none => false
+
+/-- A whole program as an algorithm: (Fn) §5.8 for every function, plus the
+entry point's empty parameter list (§6.12's top-level result is `main()`). -/
+def checkProgram (P : Program) : Bool :=
+  P.all (checkFn P) &&
+    (match P[0]? with
+     | some fd => fd.params.isEmpty
+     | none => false)
+
+/-- Every `checkFn` acceptance is a real (Fn) §5.8 derivation. -/
+theorem checkFn_sound {P : Program} {fd : FnDef} (h : checkFn P fd = true) : WfFn P fd := by
+  unfold checkFn at h
+  split at h
+  · rename_i T Γf hchk
+    simp only [Bool.and_eq_true, decide_eq_true_eq] at h
+    obtain ⟨hT, hnl⟩ := h
+    subst hT
+    exact ⟨Γf, check_sound fd.body hchk, hnl⟩
+  · exact absurd h (by simp)
+
+/-- Every `checkProgram` acceptance is the `ProgramTyped` hypothesis the §7
+program theorems (`Soundness.lean`) take, so running the checker is enough to
+know the safety theorems apply to a program. -/
+theorem checkProgram_sound {P : Program} (h : checkProgram P = true) : ProgramTyped P := by
+  unfold checkProgram at h
+  simp only [Bool.and_eq_true, List.all_eq_true] at h
+  refine ⟨fun fd hmem => checkFn_sound (h.1 fd (by simpa using hmem)), ?_⟩
+  obtain ⟨hall, hentry⟩ := h
+  split at hentry
+  · rename_i fd hfd
+    exact ⟨fd, hfd, List.isEmpty_iff.mp hentry⟩
+  · exact absurd hentry (by simp)
 
 end RueCore
