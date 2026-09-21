@@ -25,12 +25,20 @@ rejects, it rejects for an ownership reason — a use after move, a linear
 leak, a linear discard or overwrite, a disagreeing join — which is what the
 bridge's refusal table covers.
 
+Calls and `return` are **not** generated yet: every generated case is a
+one-function program (`Program.entry`), so the shapes RUE-2233 added — a
+frame unwound by an early `return`, a by-value parameter dropped at a frame
+pop, recursion — are covered by the hand-written seed cases only. Generating
+them needs a signature environment to draw callees from and a fuel bound that
+recursion cannot escape; it is the follow-up this module's `expr` is shaped
+for (`Corpus.Case` already holds a whole `Program`).
+
 ## What it deliberately does not guarantee
 
 Ownership. Moves, drops, assignments and scope exits are chosen at random,
 so about half of the programs are rejected by the checker and refused by the
-machine. Both are recorded (`Corpus.caseJson` reads them off `check` and
-`eval` as for any case), never filtered: a rejected program checks that the
+machine. Both are recorded (`Corpus.caseJson` reads them off `checkProgram`
+and `run` as for any case), never filtered: a rejected program checks that the
 compiler rejects it too, an accepted one that the three implementations
 agree with the interpreter's trace.
 
@@ -252,7 +260,8 @@ def subexprs : Expr → List Expr
   | e@(add e₁ e₂) | e@(div e₁ e₂) | e@(lt e₁ e₂) | e@(seq e₁ e₂) | e@(letIn _ e₁ e₂) =>
       e :: subexprs e₁ ++ subexprs e₂
   | e@(.ite c e₁ e₂) => e :: subexprs c ++ subexprs e₁ ++ subexprs e₂
-  | e@(mkres _ e₁) | e@(consume e₁) | e@(assign _ e₁) => e :: subexprs e₁
+  | e@(mkres _ e₁) | e@(consume e₁) | e@(assign _ e₁) | e@(ret e₁) => e :: subexprs e₁
+  | e@(call _ args) => e :: (args.map subexprs).flatten
   | e => [e]
 
 /-- (helper) The number of nodes. -/
@@ -278,10 +287,12 @@ def rulesOf (e : Expr) : List String :=
         | none => []
     | letIn _ e₁ e₂ =>
         ["(Let) §5.3", "§5.6 scope exit", "(D-EndScope) §6.7"] ++ go Γ e₁ ++
-          go ((Print.tyOf Γ e₁).getD .int :: Γ) e₂
+          go ((Print.tyOf [] .int Γ e₁).getD .int :: Γ) e₂
     | assign _ e₁ => ["(Assign) §5.2", "§6.8 overwrite-drop"] ++ go Γ e₁
     | seq e₁ e₂ => ["(Seq) §5.3", "§6.7 temporary drop"] ++ go Γ e₁ ++ go Γ e₂
     | .ite c e₁ e₂ => ["(If) §5.5 join"] ++ go Γ c ++ go Γ e₁ ++ go Γ e₂
+    | call _ args => ["(Call) §5.8", "(D-Call) §6.9"] ++ (args.map (go Γ)).flatten
+    | ret e₁ => ["(Return-Value) §5.7", "(D-Return) §6.9"] ++ go Γ e₁
     | _ => []
   (go [] e).foldl (fun acc l => if acc.contains l then acc else acc ++ [l]) []
 
@@ -290,7 +301,8 @@ value line is usually present. -/
 def resultTy : G Ty :=
   weighted .int [(5, .int), (1, .bool), (1, .unit), (2, .res .affine), (1, .res .linear), (1, .res .copy)]
 
-/-- (helper) One generated case. -/
+/-- (helper) One generated case: a one-function program whose entry point
+takes no parameters and returns the drawn type. -/
 def genCase (seed i : Nat) : G Corpus.Case := do
   let depth ← weighted 3 [(4, 2), (3, 3)]
   let T ← resultTy
@@ -300,7 +312,7 @@ def genCase (seed i : Nat) : G Corpus.Case := do
     description := s!"Generated program {i} of seed {seed} ({size e} nodes); " ++
       s!"regenerate with `lake exe ruecore-corpus --gen N --seed {seed}` for any N > {i}.",
     rules := rulesOf e,
-    expr := e }
+    prog := Program.entry T e }
 
 /-- (helper) `n` generated cases from `seed`, in order; a pure function of
 its arguments. -/
