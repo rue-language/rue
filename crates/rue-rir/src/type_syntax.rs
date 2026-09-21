@@ -982,6 +982,21 @@ impl<S: Clone + Eq + Hash> RirTypeSyntaxBuilder<S> {
         self.push_node(RirTypeSyntaxNode::Integer(value))
     }
 
+    /// Construct one type-constructor call from already-tokenized path
+    /// segments and already-pushed argument nodes. A constructor call written
+    /// in *expression* position — a comptime type argument such as `Str(4)` —
+    /// carries no parser `TypeExpr`, so it is assembled here rather than
+    /// reparsed from a rendered spelling.
+    pub fn push_type_call(
+        &mut self,
+        segments: impl IntoIterator<Item = S>,
+        arguments: impl IntoIterator<Item = RirTypeSyntaxRef>,
+    ) -> Result<RirTypeSyntaxRef, RirTypeSyntaxBuildError> {
+        let path = self.symbol_path(segments)?;
+        let arguments = self.push_words(arguments.into_iter().map(RirTypeSyntaxRef::as_u32))?;
+        self.push_node(RirTypeSyntaxNode::TypeCall { path, arguments })
+    }
+
     pub fn push_array_type(
         &mut self,
         element: RirTypeSyntaxRef,

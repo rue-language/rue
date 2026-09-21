@@ -1574,6 +1574,74 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 )
             })
     }
+    /// Resolve a *builtin* type-constructor call — `Str(4)` — that was written
+    /// in expression position, from its callee name and its already-reduced
+    /// integer arguments (RUE-2266).
+    ///
+    /// The surface form is a call expression, not a `TypeExpr`, so no parser
+    /// type syntax exists for it. Assemble the equivalent type-call syntax and
+    /// hand it to the one structured type-syntax resolver, so an expression
+    /// `Str(4)` produces exactly the type the annotation `Str(4)` produces —
+    /// including registering the generated struct on first use. Answers `None`
+    /// when the name heads no builtin constructor or an argument is not an
+    /// integer, leaving the caller to treat the call as it would any other
+    /// non-evaluable expression.
+    pub(crate) fn resolve_builtin_type_call_in_file(
+        &mut self,
+        name: Spur,
+        arguments: &[ConstValue],
+        root_file: FileId,
+        span: Span,
+    ) -> CompileResult<Option<Type>> {
+        if !super::typeck::is_builtin_type_constructor(self.body_interner().resolve(&name)) {
+            return Ok(None);
+        }
+        let mut builder = rue_rir::RirTypeSyntaxBuilder::default();
+        let mut argument_refs = Vec::with_capacity(arguments.len());
+        for argument in arguments {
+            let Some(value) = argument.as_integer() else {
+                return Ok(None);
+            };
+            argument_refs.push(builder.push_integer(i128::from(value)).map_err(|failure| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "failed to preserve a builtin type-call argument: {failure:?}"
+                    )),
+                    span,
+                )
+            })?);
+        }
+        let root = builder
+            .push_type_call([name], argument_refs)
+            .map_err(|failure| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "failed to preserve a builtin type-call head: {failure:?}"
+                    )),
+                    span,
+                )
+            })?;
+        let syntax = StructuredTypeSyntax {
+            arena: builder.finish(),
+            root,
+        };
+        self.storage
+            .resolve_structured_type_syntax(StructuredTypeSyntaxRequest {
+                syntax: &syntax,
+                root_file,
+                span,
+                type_substitutions: None,
+                value_substitutions: None,
+            })
+            .map(Some)
+            .map_err(|failure| {
+                super::typeck::semantic_type_syntax_compile_error(
+                    self.body_interner(),
+                    failure,
+                    span,
+                )
+            })
+    }
     pub(crate) fn module_binding(&self, key: &(FileId, Spur)) -> Option<ConstInfo> {
         self.call_facts().call_module_binding(key.0, key.1)
     }

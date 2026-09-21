@@ -769,6 +769,35 @@ pub trait ComptimeCallProtocol: ComptimeDomain {
         Option<ComptimeCallAdmission<Self::CallAdmission, Self::Name>>,
         Self::Failure,
     >;
+    /// Does `name` head a *builtin type constructor* — a call that spells a
+    /// type, such as `Str(4)`, rather than naming a declared function
+    /// (RUE-2266)?
+    ///
+    /// Asked before any argument is reduced, and only for a call the host
+    /// admitted no callable for. Most such calls are ordinary runtime calls
+    /// whose arguments must stay unevaluated: reducing them speculatively
+    /// would surface a trap or a hard diagnostic for an expression the engine
+    /// has no reason to fold.
+    fn is_builtin_type_constructor(&self, _name: &Self::Name) -> bool {
+        false
+    }
+    /// Reduce a call to a builtin type constructor over its already-evaluated
+    /// arguments (RUE-2266).
+    ///
+    /// Such a call spells a type rather than naming a declared function, so it
+    /// never reaches admission; the engine consults this hook only after
+    /// `admit_comptime_call` answered `None`, which keeps a same-named
+    /// declaration winning where one could exist. `None` leaves the call
+    /// runtime-dependent.
+    fn reduce_builtin_type_call(
+        &mut self,
+        _file: Self::File,
+        _name: Self::Name,
+        _arguments: &[Self::Value],
+        _span: Span,
+    ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
+        Ok(None)
+    }
     fn begin_comptime_call_binding(
         &self,
         admission: &ComptimeCallAdmission<Self::CallAdmission, Self::Name>,
@@ -1700,13 +1729,15 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             .iter()
             .map(|arg| (arg.mode, self.program_rir().get(arg.value).span))
             .collect();
-        let admission =
-            host_value!(
-                self.host
-                    .admit_comptime_call(name, args.len(), &arg_modes, env, false)
-            );
+        let admission = host_value!(self.host.admit_comptime_call(
+            name.clone(),
+            args.len(),
+            &arg_modes,
+            env,
+            false
+        ));
         let Some(admission) = admission else {
-            return ComptimeOutcome::RuntimeDependent;
+            return self.evaluate_builtin_type_call(name, &args, env, span);
         };
         let mut binding = host_value!(self.host.begin_comptime_call_binding(
             &admission,
@@ -1728,6 +1759,57 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 self.enter_prepared_call(frame, ticket, span)
             }
         }
+    }
+
+    /// A call the host admitted no callable for may still be a *builtin type
+    /// constructor* call in expression position — `identity(Str(4), "hi")`,
+    /// `Option(Str(4))`, `let T = Str(4);` (RUE-2266). Reduce its arguments
+    /// the way any comptime call's arguments are reduced, then let the host
+    /// spell the type. Anything else stays runtime-dependent, exactly as an
+    /// unadmitted call was before.
+    #[inline(never)]
+    fn evaluate_builtin_type_call(
+        &mut self,
+        name: H::Name,
+        args: &[rue_rir::RirCallArg],
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+        span: Span,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let Some(file) = env.defining_file.clone() else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        // A local binding of the same name is the ordinary lexical answer and
+        // shadows the builtin spelling, as it does for a named type value.
+        if env.locals.contains_key(&name)
+            || env.type_subst.contains_key(&name)
+            || env.value_subst.contains_key(&name)
+        {
+            return ComptimeOutcome::RuntimeDependent;
+        }
+        // Classify before reducing anything. Most unadmitted calls are
+        // ordinary runtime calls, and their arguments must stay unevaluated:
+        // folding `f(1 / divisor)` here would raise this call's trap or
+        // diagnostic for an expression that only ever runs at run time.
+        if !self.host.is_builtin_type_constructor(&name) {
+            return ComptimeOutcome::RuntimeDependent;
+        }
+        let mut arguments = Vec::with_capacity(args.len());
+        for arg in args {
+            let previous_expected = env.expected_result.take();
+            let value = self.eval(arg.value, env);
+            env.expected_result = previous_expected;
+            match value {
+                ComptimeOutcome::Known(value) => arguments.push(value),
+                other => return Self::discard_rejection(other),
+            }
+        }
+        let Some(ty) = host_value!(
+            self.host
+                .reduce_builtin_type_call(file, name, &arguments, span)
+        ) else {
+            return ComptimeOutcome::RuntimeDependent;
+        };
+        ComptimeOutcome::Known(H::Value::type_value(ty))
     }
 
     /// Reduce call arguments in source order while retaining only the

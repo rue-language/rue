@@ -3388,6 +3388,19 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeCallProtocol for OrdinaryBodyEngin
         OrdinaryBodyEngine::admit_comptime_call(self, name, count, modes, env, resolved)
             .map_err(Into::into)
     }
+    fn is_builtin_type_constructor(&self, name: &Spur) -> bool {
+        super::typeck::is_builtin_type_constructor(self.body_interner().resolve(name))
+    }
+    fn reduce_builtin_type_call(
+        &mut self,
+        file: FileId,
+        name: Spur,
+        arguments: &[ConstValue],
+        span: Span,
+    ) -> ComptimeHostResult<Option<Type>, Self::Failure> {
+        OrdinaryBodyEngine::resolve_builtin_type_call_in_file(self, name, arguments, file, span)
+            .map_err(Into::into)
+    }
     fn begin_comptime_call_binding(
         &self,
         admission: &ComptimeCallAdmission<FunctionCallInfo, Spur>,

@@ -362,3 +362,108 @@ fn main() -> i32 {
 }
 """
 exit_code = 5
+
+# =============================================================================
+# `Str(N)` as a comptime type argument (RUE-2266)
+# =============================================================================
+#
+# `Str(N)` names a type wherever a type value is admitted, not only in an
+# annotation. 3.7:49 makes it a type parameterized by a comptime capacity, and
+# 4.14:22 admits any type value as a type-constructor argument, so the
+# expression `Str(4)` is a type argument exactly as `str` or `[i32; 4]` is.
+
+# 3.7:49 / 4.14:22 — `Str(N)` is a comptime `type` argument to a plain
+# comptime function.
+[[case]]
+name = "str_fixed_is_a_comptime_type_argument"
+spec = ["3.7:49", "4.14:22"]
+description = "A Str(N) spelling in expression position reduces to the fixed-string type, so it can be passed to a `comptime T: type` parameter."
+source = """
+fn identity(comptime T: type, x: T) -> T { x }
+fn main() -> i32 {
+    let s = identity(Str(4), "hi");
+    @intCast(s.len())
+}
+"""
+exit_code = 2
+
+# 4.14:23 — the reduced `Str(N)` is an ordinary compile-time type value in
+# value position, so a `let` binds it as a type alias usable as an annotation.
+[[case]]
+name = "str_fixed_binds_as_a_let_type_alias"
+spec = ["3.7:49", "4.14:23"]
+description = "`let T = Str(4);` binds a type alias, exactly as `let O = Option(i64);` does."
+source = """
+fn main() -> i32 {
+    let T = Str(4);
+    let s: T = "hi";
+    @intCast(s.len())
+}
+"""
+exit_code = 2
+
+# 4.14:22 — a user type constructor instantiated over `Str(N)`.
+[[case]]
+name = "str_fixed_instantiates_a_user_constructor"
+spec = ["3.7:49", "4.14:22"]
+description = "A user `-> type` constructor reduces over a Str(N) argument and its field holds a fixed string."
+source = """
+fn Box(comptime T: type) -> type { struct { v: T } }
+fn main() -> i32 {
+    let b = Box(Str(4)) { v: "hi" };
+    @intCast(b.v.len())
+}
+"""
+exit_code = 2
+
+# 4.14:22 — the standard library's generics accept `Str(N)` like any other
+# type argument: construct and match an `Option(Str(4))`.
+[[case]]
+name = "str_fixed_instantiates_std_option"
+spec = ["3.7:49", "4.14:22"]
+description = "std.option.Option(Str(4)) constructs and matches, carrying the fixed string as its payload."
+real_std = true
+source = """
+const std = @import("std");
+fn main() -> i32 {
+    let O = std.option.Option(Str(4));
+    let v: O = O.Some("hi");
+    match v { O.Some(x) => @intCast(x.len()), O.None => 0 }
+}
+"""
+exit_code = 2
+
+# 4.14:22 — an owning container over `Str(N)`: push values and read them back.
+[[case]]
+name = "str_fixed_instantiates_std_arraybuf"
+spec = ["3.7:49", "4.14:22"]
+description = "std.arraybuf.ArrayBuf(Str(4)) accepts pushes of fixed strings and reads their lengths back."
+real_std = true
+source = """
+const std = @import("std");
+fn main() -> i32 {
+    let mut buf = std.arraybuf.ArrayBuf(Str(4)).new();
+    buf.push("hi");
+    buf.push("abc");
+    let total = buf.get_ref(0).len() + buf.get_ref(1).len();
+    buf.free();
+    @intCast(total)
+}
+"""
+exit_code = 5
+
+# 4.14:22 — two type arguments, one of them `Str(N)`.
+[[case]]
+name = "str_fixed_instantiates_std_result"
+spec = ["3.7:49", "4.14:22"]
+description = "std.result.Result(Str(4), i32) reduces with the fixed string in the Ok position."
+real_std = true
+source = """
+const std = @import("std");
+fn main() -> i32 {
+    let R = std.result.Result(Str(4), i32);
+    let r: R = R.Ok("hey");
+    match r { R.Ok(v) => @intCast(v.len()), R.Err(e) => -e }
+}
+"""
+exit_code = 3
