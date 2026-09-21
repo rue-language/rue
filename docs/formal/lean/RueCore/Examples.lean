@@ -405,6 +405,13 @@ example : checkStructs (structEnv ++
 example : checkStructs [{ attr := .copy, fields := [.int], dtor := true, cls := .copy }]
     = false := by rfl
 
+/-- `3.9:44` (E0462): a declaration whose field carries a linear value may not
+declare a destructor — `3.9:34` forbids moving the field out, so the field's
+obligation could only ever be met by the glue that runs after the destructor.
+A *declared*-linear struct with no linear field may have one (`S3` above). -/
+example : checkStructs (structEnv ++
+    [{ attr := .none, fields := [.struct 2], dtor := true, cls := .linear }]) = false := by rfl
+
 /-- No recursive structs: a field may name only an earlier declaration, which
 is what makes §3's class equation solvable in one pass. -/
 example : checkStructs [{ attr := .none, fields := [.struct 0], dtor := false, cls := .affine }]

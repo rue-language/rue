@@ -169,8 +169,9 @@ def intLiteral : G Expr := do
 A generated program declares its own structs (`Syntax.lean`), and the
 declarations are drawn so that `WfStructs` holds by construction: a field
 names only an earlier declaration, the recorded class is §3's join lifted by
-the attribute, and a `@copy` draw is downgraded to no attribute when the join
-is not already `Copy` or the declaration has a destructor (`3.8:18`,
+the attribute, a destructor is dropped from the draw when a field carries a
+linear value (`3.9:44`), and a `@copy` draw is downgraded to no attribute when
+the join is not already `Copy` or the declaration has a destructor (`3.8:18`,
 `3.9:31`). So whatever the checker rejects, it rejects for an ownership
 reason, never for an ill-formed declaration. -/
 
@@ -196,9 +197,14 @@ def fieldTy (s : Nat) : G Ty := do
 def genDecl (D : StructEnv) (s : Nat) : G StructDecl := do
   let k ← nat 1 3
   let fields ← (List.range k).mapM (fun _ => fieldTy s)
-  let dtor ← chance 1 2
+  let drawnDtor ← chance 1 2
   let drawn ← weighted Attr.none [(4, Attr.none), (1, Attr.copy), (2, Attr.linear)]
   let base := fieldJoin D fields
+  -- `3.9:44` (E0462): a destructor is only legal when no field carries a
+  -- linear value; `3.8:18`/`3.9:31`: `@copy` needs a `Copy` join and no
+  -- destructor. A draw the rules forbid falls back rather than being retried,
+  -- so generation stays a pure function of the seed.
+  let dtor := drawnDtor && base != .linear
   let attr := match drawn with
     | .copy => if base = .copy && !dtor then Attr.copy else Attr.none
     | a => a

@@ -377,14 +377,16 @@ def checkFn (P : Program) (fd : FnDef) : Bool :=
 
 /-- §3's class assignment for one declaration, as an algorithm: the recorded
 class is the attribute's lifting of the field join, a `@copy` declaration's
-join is already `Copy` and it has no destructor (`3.8:18`, `3.9:31`), and
-every field names an earlier declaration. -/
+join is already `Copy` and it has no destructor (`3.8:18`, `3.9:31`), a
+destructor-bearing declaration carries no linear field (`3.9:44`), and every
+field names an earlier declaration. -/
 def checkStructDecl (D : StructEnv) (s : Nat) (sd : StructDecl) : Bool :=
   sd.fields.all (fun T => match T with | .struct s' => decide (s' < s) | _ => true) &&
     decide (sd.cls = sd.attr.lift (sd.baseOf D)) &&
     (match sd.attr with
      | .copy => decide (sd.baseOf D = .copy) && !sd.dtor
-     | _ => true)
+     | _ => true) &&
+    (!sd.dtor || !decide (sd.baseOf D = .linear))
 
 /-- The declarations from index `k` on (helper). -/
 def checkStructsFrom (D : StructEnv) : Nat → List StructDecl → Bool
@@ -421,8 +423,8 @@ theorem checkStructDecl_sound {D : StructEnv} {s : Nat} {sd : StructDecl}
     (h : checkStructDecl D s sd = true) : sd.Wf D s := by
   unfold checkStructDecl at h
   simp only [Bool.and_eq_true, List.all_eq_true, decide_eq_true_eq] at h
-  obtain ⟨⟨hfields, hcls⟩, hcopy⟩ := h
-  refine ⟨?_, hcls, ?_⟩
+  obtain ⟨⟨⟨hfields, hcls⟩, hcopy⟩, hdtor⟩ := h
+  refine ⟨?_, hcls, ?_, ?_⟩
   · intro s' hmem
     have := hfields _ hmem
     simpa using this
@@ -431,6 +433,10 @@ theorem checkStructDecl_sound {D : StructEnv} {s : Nat} {sd : StructDecl}
     simp only [Bool.and_eq_true, decide_eq_true_eq, Bool.not_eq_eq_eq_not,
       Bool.not_true] at hcopy
     exact ⟨hcopy.1, hcopy.2⟩
+  · intro hd
+    simp only [hd, Bool.not_true, Bool.false_or, Bool.not_eq_eq_eq_not, Bool.not_true,
+      decide_eq_false_iff_not] at hdtor
+    exact hdtor
 
 /-- `checkStructsFrom` checks the declaration at every offset (helper). -/
 theorem checkStructsFrom_sound : ∀ (D : StructEnv) (k : Nat) (L : List StructDecl),
