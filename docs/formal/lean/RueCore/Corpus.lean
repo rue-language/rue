@@ -152,7 +152,7 @@ def cases : List Case := [
     rules := ["§4.3 expression value"],
     expr := letIn false (intLit 4) (mkres .affine (use 0)) },
   { name := "cond_drop_affine",
-    description := "An affine resource dropped explicitly in one arm of an if and left to scope exit on the other: accepted (the join sends it to MovedOut), one drop line either way. The compiler ICEs on this today (RUE-2290); the bridge stays red here until it is fixed.",
+    description := "An affine resource dropped explicitly in one arm of an if and left to scope exit on the other: accepted (the join sends it to MovedOut), one drop line either way. The bridge found the compiler ICEing on this (RUE-2290, fixed); the case stays as the regression signal.",
     rules := ["(@Drop) §5.3", "(If) §5.5 join", "3.9:38"],
     expr := letIn false (mkres .affine (intLit 5))
       (seq (ite (boolLit true) (drop 0) unitLit) (intLit 9)) },

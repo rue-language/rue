@@ -141,9 +141,10 @@ outcome for each. `./buck2 run //:lean-bridge` (or `scripts/rue lean-bridge`)
 runs that corpus through the compiler, the oracle, and native binaries at
 O1--O3, and names every pairwise disagreement: checker vs. compiler, Lean vs.
 oracle, Lean vs. native, oracle vs. native. It is deliberately not in any test
-tier — RUE-2241 decides whether CI gates on it — and it is red today on one
-case (RUE-2290), which is the point: the bridge reports the pair and leaves
-the judgment of which view is wrong to a human (RUE-305).
+tier — RUE-2241 decides whether CI gates on it. Its first red case
+(`cond_drop_affine`, a compiler ICE fixed as RUE-2290) is what the bridge is
+for: it reports the disagreeing pair and leaves the judgment of which view is
+wrong to a human (RUE-305).
 
 ---
 

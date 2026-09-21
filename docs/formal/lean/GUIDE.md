@@ -439,25 +439,23 @@ It prints one line per case — the case's name, the verdict (`accept(i64)`,
 `reject`), and `agree` or `DISAGREE` with the number of disagreeing pairs,
 each carrying the diagnostic code where a program was refused — then, for
 every case that disagrees, the printed Rue program, the four views side by
-side, and the pairs that differ; last a tally. On the 21 seed cases today it
-ends
+side, and the pairs that differ; last a tally. On the 21 seed cases it ends
 
 ```text
-  cases: 21 (20 agree, 1 disagree)
-  checker <-> compiler: 1
-  lean <-> oracle: 1
+  cases: 21 (21 agree, 0 disagree)
+  checker <-> compiler: 0
+  lean <-> oracle: 0
   lean <-> native: 0
   oracle <-> native: 0
 ```
 
-and exits non-zero. The one red case is `cond_drop_affine`: the checker
-accepts it and the compiler reports an internal error instead of a verdict
-(`E9000`, a CFG-verification failure on the conditionally-dropped affine
-residue), so the oracle — which shares that frontend — cannot run it either
-and no binary exists to compare against. That is a real compiler defect,
-tracked as RUE-2290 and left visible rather than suppressed. *A defect looks
-like:* any *other* case disagreeing, or this one disagreeing differently. A
-disagreement is a defect in one of the four views — the mechanization, the
+and exits zero. It was not always green: `cond_drop_affine` first made the
+compiler report an internal error instead of a verdict (`E9000`, a
+CFG-verification failure on the conditionally dropped affine residue), so
+the oracle, which shares that frontend, could not run it either. That was a
+real compiler defect, RUE-2290, found by this bridge and fixed; the case
+stays as the regression signal. *A defect looks like:* any case disagreeing.
+A disagreement is a defect in one of the four views — the mechanization, the
 compiler, the oracle, or the printed program — and which one is a question the
 case's `explain/<case>.txt` rendering (section 5's tables, `lake exe
 ruecore-explain <case>`) is meant to answer.

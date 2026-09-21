@@ -78,10 +78,11 @@ the seed and the case name.
 It prints a line per case, then — for each disagreeing case — the printed
 program, the four views side by side, and the pair(s) that disagree, with a
 tally at the end; `--report-json` writes the same findings as JSON so two runs
-can be diffed. It exits non-zero when any disagreement exists, which it does
-today: `cond_drop_affine` ICEs the compiler (RUE-2290). The mode is a `buck2
-run` entry point and belongs to no test tier, so nothing in CI requests it
-until ADR-0097's gate is met (RUE-2241).
+can be diffed. It exits non-zero when any disagreement exists; the seed
+corpus runs green since the compiler ICE its `cond_drop_affine` case found
+was fixed (RUE-2290), and the case stays as the regression signal. The mode
+is a `buck2 run` entry point and belongs to no test tier, so nothing in CI
+requests it until ADR-0097's gate is met (RUE-2241).
 
 One case, abbreviated:
 

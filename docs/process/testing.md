@@ -60,8 +60,8 @@ ADR-0097's differential bridge is the other direction: a check no tier runs
 at all. It compares the Lean mechanization's exported corpus with the
 compiler, the oracle, and native binaries, and it is a `buck2 run` entry point
 rather than a test target, because RUE-2241 is the issue that decides whether
-CI gates on it — and because it is red today on one case (RUE-2290). Run it by
-hand when the mechanization, the corpus, or ownership checking changes:
+CI gates on it. Run it by hand when the mechanization, the corpus, or
+ownership checking changes:
 
 ```bash
 scripts/rue lean-bridge            # or: ./buck2 run //:lean-bridge
