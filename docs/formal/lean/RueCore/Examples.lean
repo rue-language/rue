@@ -325,6 +325,18 @@ that survives the trap there is the explicit drop's. -/
 def panicPastAffine : Expr :=
   letIn false (resA (lit 7)) (panic "boom")
 
+/-- The same past a live **linear** binding, which is the class where
+`Typed.panic` and `Typed.ret` actually differ: `ret` would need
+`NoOwnedLinear` here and `panic` does not, so the judgment derives this
+program (`panicPastLinear_typed`) and the machine runs it to a trap with an
+empty trace. `check` rejects it all the same — its state choice hands the
+`let`'s leak check the incoming `Owned` state — which is the third thing the
+algorithm's narrowness costs (`Checker.lean`). The compiler accepts and runs
+it: `panic: boom`, exit 101, nothing on stdout, so `S3`'s destructor does not
+run there either (verified by hand). -/
+def panicPastLinear : Expr :=
+  letIn false (resLD (lit 7)) (panic "boom")
+
 /-! ## Calls, frames, and `return` (RUE-2233)
 
 Each of these needs more than one function, so it is written as a whole
@@ -643,6 +655,35 @@ obligation and §6.12 abandons the configuration, so the live affine binding's
 destructor never fires and the trap carries an empty trace — where the very
 same program with an explicit `@drop` carries the destructor out. -/
 example : run (prog tI64 panicPastAffine) demoFuel = .panic .user [] := by rfl
+
+/-- **`Typed` derives a `@panic` past a live linear binding.** (Panic) §5.8
+imposes no residual-linear premise — §5.7 exempts the `⊥_panic` edge from
+§5.6's obligation — so the `let`'s own scope-exit check is discharged by the
+free outgoing context (Sub-Never) licenses, which the rule may take
+`MovedOut`. This is the one shape where `Typed.panic` and `Typed.ret` differ:
+at an affine binding `Typed.letIn`'s premise is vacuous, so there is nothing
+to drop. -/
+theorem panicPastLinear_typed :
+    Typed (prog tI64 panicPastLinear) tI64 [] panicPastLinear tI64 [] := by
+  refine .letIn (T₁ := .struct sLinearDtor) (Γ₁ := [])
+    (en' := { ty := .struct sLinearDtor, mu := false, st := .movedOut }) ?_ ?_ ?_
+  · exact .mkStruct (sd := dLinearDtor) rfl (.cons (.intLit (by decide)) .nil)
+  · exact .panic rfl
+  · decide
+
+/-- **And `check` rejects it**, which `check_sound` permits and completeness
+would not: the algorithm gives `@panic` the state in force at the form, so the
+`let` sees `v0` still `Owned` at a `Linear` type and refuses. The compiler
+accepts the same program. `Checker.lean`'s "what completeness costs" names
+this shape. -/
+example : checkProgram (prog tI64 panicPastLinear) = false := by rfl
+
+/-- **The linear value is consumed zero times, with no violation.** The trap
+carries an empty trace: `S3` declares a destructor and it does not run,
+because §6.12 abandons the configuration where a `return` would have unwound
+the frame. `no_violation` holds of this program and says nothing about it —
+the `@panic` exit its docstring now names. -/
+example : run (prog tI64 panicPastLinear) demoFuel = .panic .user [] := by rfl
 
 /-- The two observation channels are one trace, so a `@dbg` between two drops
 comes out between them (`Corpus.outLines` reads exactly this order). -/
