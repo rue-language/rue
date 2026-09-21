@@ -97,7 +97,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 0.0
-  [6]   d4          (D-Div) §6.4
+  [6]   d4          (D-Float-Arith) §6.4
          expr    (0.0 / 0.0)
          store   (empty)
            →     (empty)

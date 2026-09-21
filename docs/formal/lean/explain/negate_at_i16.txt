@@ -76,7 +76,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 21
-  [5]   d2      (D-Arith) §6.4, the unary case (or (D-Float-Neg) at a float)
+  [5]   d2      (D-Arith) §6.4, the unary case
          expr    (-(3 * 7))
          store   (empty)
            →     (empty)

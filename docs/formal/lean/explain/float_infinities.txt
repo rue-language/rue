@@ -174,7 +174,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 0.0
-  [4]   d5            (D-Div) §6.4
+  [4]   d5            (D-Float-Arith) §6.4
          expr    (1.0 / 0.0)
          store   (empty)
            →     (empty)
@@ -184,7 +184,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 1.0
-  [6]   d4          ordering compare §6.4
+  [6]   d4          (D-Float-Ord) §6.4
          expr    ((1.0 / 0.0) > 1.0)
          store   (empty)
            →     (empty)
@@ -200,7 +200,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 1.0
-  [9]   d7                (D-Arith) §6.4, the unary case (or (D-Float-Neg) at a float)
+  [9]   d7                (D-Float-Neg) §6.4
          expr    (-1.0)
          store   (empty)
            →     (empty)
@@ -210,7 +210,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 0.0
-  [11]  d6              (D-Div) §6.4
+  [11]  d6              (D-Float-Arith) §6.4
          expr    ((-1.0) / 0.0)
          store   (empty)
            →     (empty)
@@ -220,7 +220,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 0.0
-  [13]  d5            ordering compare §6.4
+  [13]  d5            (D-Float-Ord) §6.4
          expr    (((-1.0) / 0.0) < 0.0)
          store   (empty)
            →     (empty)
@@ -241,7 +241,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 0.0
-  [17]  d6              (D-Div) §6.4
+  [17]  d6              (D-Float-Arith) §6.4
          expr    (1.0 / 0.0)
          store   (empty)
            →     (empty)
@@ -257,7 +257,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 1.0
-  [20]  d8                  (D-Arith) §6.4, the unary case (or (D-Float-Neg) at a float)
+  [20]  d8                  (D-Float-Neg) §6.4
          expr    (-1.0)
          store   (empty)
            →     (empty)
@@ -267,7 +267,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 0.0
-  [22]  d7                (D-Div) §6.4
+  [22]  d7                (D-Float-Arith) §6.4
          expr    ((-1.0) / 0.0)
          store   (empty)
            →     (empty)
