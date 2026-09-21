@@ -575,7 +575,9 @@ structure FloatOps where
   (`3.12:19`). The widening half is exact and is `FloatDatum.widen`. -/
   narrow : FloatDatum → FloatDatum
   /-- `σ_NaN` (§2, `3.12:44`): the sign of a NaN the target's hardware
-  produces — negative on x86-64, positive on AArch64 (Appendix B.1). Every NaN
+  produces — negative on x86-64, positive on AArch64 (Appendix B.1). It is the
+  sign *bit*, the same `Bool` `FloatDatum.nan` carries, so `false` is the
+  AArch64 (positive) choice and `true` the x86-64 (negative) one. Every NaN
   *produced* by a §6.4 float rule is `NaN(σ_NaN)`. -/
   nanSign : Bool
 
@@ -1065,14 +1067,18 @@ def narrow (σ : Bool) (f : FloatDatum) : FloatDatum :=
 
 /-- The executable operations the corpus, the printer and the `#eval` demos
 run on: `σ_NaN` is **positive**, the AArch64 choice of `3.12:44` and Appendix
-B.1, which is the host this slice's corpus was checked against. -/
+B.1, which is the host this slice's corpus was checked against. Positive is
+`false` here, because `FloatDatum.nan` carries the sign as `neg` — the field
+is the *sign bit*, so `nanSign := false` is `+NaN` and `true` is `-NaN`, and
+`FloatDatum.totalRank (.nan false) = 3`, the top of `≺_w`. Flipping this one
+`Bool` is the whole of retargeting the instance to x86-64. -/
 def exactOps : FloatOps where
-  arith := arith true
-  sqrt := sqrtD true
+  arith := arith false
+  sqrt := sqrtD false
   ofLit := ofLit
   ofInt := ofInt
-  narrow := narrow true
-  nanSign := true
+  narrow := narrow false
+  nanSign := false
 
 end Float
 
