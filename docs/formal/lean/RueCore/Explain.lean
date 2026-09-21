@@ -84,16 +84,16 @@ partial def exprLine (P : Program) (R : Ty) : List Ty → Expr → String
   | Γ, .add e₁ e₂ => "(" ++ exprLine P R Γ e₁ ++ " + " ++ exprLine P R Γ e₂ ++ ")"
   | Γ, .div e₁ e₂ => "(" ++ exprLine P R Γ e₁ ++ " / " ++ exprLine P R Γ e₂ ++ ")"
   | Γ, .lt e₁ e₂ => "(" ++ exprLine P R Γ e₁ ++ " < " ++ exprLine P R Γ e₂ ++ ")"
-  | Γ, .mkres κ e => Print.resLit κ (exprLine P R Γ e)
+  | Γ, .mkStruct s args =>
+      Print.tyName (.struct s) ++ " { " ++
+        String.intercalate ", "
+          (Print.fieldInits 0 (args.map (fun a => exprLine P R Γ a))) ++ " }"
   | Γ, .consume e =>
-      let κ := match Print.tyOf P R Γ e with
-        | some (.res κ) => κ
-        | _ => .affine
-      Print.consumeName κ ++ "(" ++ exprLine P R Γ e ++ ")"
-  | Γ, .drop i =>
-      match Γ[i]? with
-      | some (.res .linear) => "@dbg(consume_linear(" ++ Print.useName Γ i ++ "))"
-      | _ => "@drop(" ++ Print.useName Γ i ++ ")"
+      let s := match Print.tyOf P R Γ e with
+        | some (.struct s) => s
+        | _ => 0
+      Print.consumeName s ++ "(" ++ exprLine P R Γ e ++ ")"
+  | Γ, .drop i => "@drop(" ++ Print.useName Γ i ++ ")"
   | Γ, .letIn m e₁ e₂ =>
       let T₁ := (Print.tyOf P R Γ e₁).getD .int
       "{ let " ++ (if m then "mut " else "") ++ Print.binderName Γ.length ++ ": " ++
@@ -126,15 +126,17 @@ def valTy : Val → Ty
   | .int _ => .int
   | .bool _ => .bool
   | .unit => .unit
-  | .res κ _ => .res κ
+  | .struct s _ => .struct s
 
-/-- (helper) A value, as the observation channel spells it (`Print.lean`):
-a scalar as itself, a resource as its type and payload. -/
-def valLine : Val → String
+/-- (helper) A value, as §6.1 writes it: a scalar as itself, a struct value
+as `{ v1, …, vk }_S` with its declaration's name. -/
+partial def valLine : Val → String
   | .int n => toString n
   | .bool b => if b then "true" else "false"
   | .unit => "()"
-  | .res κ n => Print.tyName (.res κ) ++ " { " ++ toString n ++ " }"
+  | .struct s vs =>
+      Print.tyName (.struct s) ++ " { " ++
+        String.intercalate ", " (vs.map valLine) ++ " }"
 
 /-- (helper) A store cell (§6.1's `c ::= v | ⊘`, plus the retired `†`). -/
 def cellLine : Cell → String
@@ -189,10 +191,13 @@ def fnHeader (i : Nat) (fd : FnDef) : String :=
     String.intercalate ", " (Print.paramList 0 fd.params) ++ ") -> " ++
     Print.tyName fd.ret
 
-/-- (helper) One observable drop event (§6.7/§6.8/§6.9/§6.11). -/
+/-- (helper) One drop event (§6.7/§6.8/§6.9/§6.11): where a drop starts, and
+each user destructor it runs — the one event a printed Rue program can
+observe (`Print.lean`). -/
 def eventLine : Event → String
   | .drop ℓ v => "drop " ++ locName ℓ ++ " = " ++ valLine v
   | .dropTemp v => "drop temporary " ++ valLine v
+  | .dtor s v => "run drop fn " ++ Print.tyName (.struct s) ++ "(" ++ valLine v ++ ")"
 
 /-- (helper) A node's events on one line; most nodes emit none. -/
 def eventsLine (evs : List Event) : String :=
@@ -245,21 +250,41 @@ def operandNotInt (T : Ty) : String :=
   "an operand has type " ++ Print.tyName T ++ ", but (Arith)/(Ord) require both operands " ++
   "to share one int(w,s), which the fragment fixes to int(64, signed) (§5.8; 4.2:1)"
 
-/-- Resource introduction, §5.8: `res κ` carries one `int` payload. The
-fragment's `res κ` is an abstract non-scalar with no declared fields and a
-declared class, so §5.8's aggregate-introduction premises — the struct
-declaration, one expression per field, the class as the field join — are
-not modelled here. -/
-def payloadNotInt (T : Ty) : String :=
-  "the resource payload has type " ++ Print.tyName T ++ ", but `res κ` carries an int " ++
-  "(resource intro §5.8 — the shape of the aggregate-introduction rule; `res κ` has no fields)"
+/-- (Struct-Intro) §5.8's first premise, `S = struct { f1: T1, …, fk: Tk }`:
+the program has no declaration at this index. Elaboration resolves a type's
+name before the core (§2), so no elaborated program reaches this. -/
+def unknownStruct : String :=
+  "the program has no struct declaration at this index ((Struct-Intro) premise " ++
+  "`S = struct { f1: T1, …, fk: Tk }`, §5.8; elaboration resolves a type name before " ++
+  "the core, §2, so no elaborated program reaches this premise)"
 
-/-- Resource elimination, §5.8/§4.2: the abstract consuming elimination
-takes a `res κ` by value, which is a §4.2 use of its operand's places. -/
-def consumeNotRes (T : Ty) : String :=
-  "the consumed operand has type " ++ Print.tyName T ++ ", but the consuming elimination " ++
-  "takes a resource `res κ` by value (resource elimination §5.8/§4.2 — an abstract " ++
-  "consuming elimination standing in for a one-argument by-value call)"
+/-- (Struct-Intro) §5.8's "all k fields supplied, each exactly once"
+(`3.6:5`, `3.6:6`). -/
+def fieldCountMismatch : String :=
+  "the literal does not supply exactly one initializer per declared field " ++
+  "((Struct-Intro) premise `all k fields supplied, each exactly once`, §5.8; 3.6:5, 3.6:6)"
+
+/-- (Struct-Intro) §5.8's per-field premise `Γ;Σ_{i-1};Λ ⊢ ei ⇒ Ti ⊣ Σi`. -/
+def fieldTypeMismatch (T field : Ty) : String :=
+  "a field initializer has type " ++ Print.tyName T ++ " but its field is declared " ++
+  Print.tyName field ++ " ((Struct-Intro) premise `Γ;Σ_{i-1};Λ ⊢ ei ⇒ Ti ⊣ Σi`, §5.8; 3.6:9)"
+
+/-- The fragment's whole-value elimination takes a struct by value, which is
+a §4.2 use of its operand's places. -/
+def consumeNotStruct (T : Ty) : String :=
+  "the eliminated operand has type " ++ Print.tyName T ++ ", but the fragment's " ++
+  "whole-value elimination takes a struct by value (§4.2; the calculus reads a field " ++
+  "through a projection, which is a place and so out of this fragment)"
+
+/-- The fragment's whole-value elimination is defined only on a declaration
+with an `int` first field, every field `int`, and no destructor — a
+destructor would make even the read a rejected projection (`3.9:34`,
+E0456). -/
+def notConsumable : String :=
+  "the eliminated struct is not one the fragment can take apart: it needs a first " ++
+  "field, every field an int, and no destructor — `3.9:34` (E0456) rejects every " ++
+  "projection out of a value whose type declares one (`StructDecl.Consumable`; the " ++
+  "calculus's own eliminator is a projection, which this fragment does not have)"
 
 /-- §5.6 scope exit, the residual-linear leak check; prose `3.8:32`. -/
 def letLeak (T : Ty) : String :=
@@ -357,22 +382,13 @@ end Premise
 
 /-- (helper) The first entry on which the §5.5 join fails, named as the
 source names it, so a join rejection can point at a binding. -/
-def joinConflictEntry : Ctx → Ctx → Option String
+def joinConflictEntry (D : StructEnv) : Ctx → Ctx → Option String
   | a :: as, b :: bs =>
-      if (a.join b).isNone then
+      if (a.join D b).isNone then
         some (Print.binderName as.length ++ ": " ++ Print.tyName a.ty ++ " is " ++
           ownStateName a.st ++ " in the then-arm and " ++ ownStateName b.st ++ " in the else-arm")
-      else joinConflictEntry as bs
+      else joinConflictEntry D as bs
   | _, _ => none
-
-/-- (helper) `@drop` discharges a linear obligation directly, and the
-printed Rue program spells that one case as a consuming read, because a
-declared-linear type cannot carry a destructor (`Print.lean`, 3.9:34). The
-node says so, since its expression column shows the printed form. -/
-def dropRule (label : String) (T : Ty) : String :=
-  if T.mult = .linear then
-    label ++ " (the printed program spells this as a consuming read; see the program)"
-  else label
 
 /-! ## Derivations -/
 
@@ -437,7 +453,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
         match en.st with
         | .movedOut => rejected "(Use-Copy)/(Use-Move) §5.1" Γ (.use i) Premise.useMovedOut []
         | .owned =>
-          if en.ty.mult = .copy then
+          if en.ty.mult P.structs = .copy then
             accepted "(Use-Copy) §5.1" Γ (.use i) en.ty Γ []
           else
             accepted "(Use-Move) §5.1" Γ (.use i) en.ty (Γ.set i (en.setSt .movedOut)) []
@@ -476,21 +492,34 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
          | none => rejected "(Ord) §5.8" Γ (.lt e₁ e₂) Premise.subDerivation [d₁, d₂])
       | some (T, _) => rejected "(Ord) §5.8" Γ (.lt e₁ e₂) (Premise.operandNotInt T) [d₁]
       | none => rejected "(Ord) §5.8" Γ (.lt e₁ e₂) Premise.subDerivation [d₁]
-  | .mkres κ e =>
-      let d := explain P R Γ e
-      match d.result with
-      | some (.int, Γ') => accepted "resource intro §5.8 (the shape of the aggregate-introduction rule; `res κ` has no fields)" Γ (.mkres κ e) (.res κ) Γ' [d]
-      | some (T, _) =>
-          rejected "resource intro §5.8 (the shape of the aggregate-introduction rule; `res κ` has no fields)" Γ (.mkres κ e) (Premise.payloadNotInt T) [d]
-      | none => rejected "resource intro §5.8 (the shape of the aggregate-introduction rule; `res κ` has no fields)" Γ (.mkres κ e) Premise.subDerivation [d]
+  | .mkStruct s args =>
+      match P.structs[s]? with
+      | none => rejected "(Struct-Intro) §5.8" Γ (.mkStruct s args) Premise.unknownStruct []
+      | some sd =>
+        (match explainArgs P R Γ args sd.fields with
+         | (some Γ', kids) =>
+             accepted "(Struct-Intro) §5.8" Γ (.mkStruct s args) (.struct s) Γ' kids
+         | (none, kids) =>
+             rejected "(Struct-Intro) §5.8" Γ (.mkStruct s args)
+               (fieldsPremise P R Γ args sd.fields) kids)
   | .consume e =>
       let d := explain P R Γ e
       match d.result with
-      | some (.res _, Γ') => accepted "resource elimination §5.8/§4.2 (an abstract consuming elimination)" Γ (.consume e) .int Γ' [d]
-      | some (.int, _) => rejected "resource elimination §5.8/§4.2 (an abstract consuming elimination)" Γ (.consume e) (Premise.consumeNotRes .int) [d]
-      | some (.bool, _) => rejected "resource elimination §5.8/§4.2 (an abstract consuming elimination)" Γ (.consume e) (Premise.consumeNotRes .bool) [d]
-      | some (.unit, _) => rejected "resource elimination §5.8/§4.2 (an abstract consuming elimination)" Γ (.consume e) (Premise.consumeNotRes .unit) [d]
-      | none => rejected "resource elimination §5.8/§4.2 (an abstract consuming elimination)" Γ (.consume e) Premise.subDerivation [d]
+      | some (.struct s, Γ') =>
+        (match P.structs[s]? with
+         | none =>
+             rejected "§5.8 whole-value elimination" Γ (.consume e) Premise.unknownStruct [d]
+         | some sd =>
+             if sd.Consumable then
+               accepted "§5.8 whole-value elimination" Γ (.consume e) .int Γ' [d]
+             else rejected "§5.8 whole-value elimination" Γ (.consume e) Premise.notConsumable [d])
+      | some (.int, _) =>
+          rejected "§5.8 whole-value elimination" Γ (.consume e) (Premise.consumeNotStruct .int) [d]
+      | some (.bool, _) =>
+          rejected "§5.8 whole-value elimination" Γ (.consume e) (Premise.consumeNotStruct .bool) [d]
+      | some (.unit, _) =>
+          rejected "§5.8 whole-value elimination" Γ (.consume e) (Premise.consumeNotStruct .unit) [d]
+      | none => rejected "§5.8 whole-value elimination" Γ (.consume e) Premise.subDerivation [d]
   | .drop i =>
       match Γ[i]? with
       | none => rejected "(@Drop-Copy)/(@Drop) §5.3" Γ (.drop i) Premise.unboundIndex []
@@ -498,11 +527,10 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
         match en.st with
         | .movedOut => rejected "(@Drop-Copy)/(@Drop) §5.3" Γ (.drop i) Premise.dropMovedOut []
         | .owned =>
-          if en.ty.mult = .copy then
+          if en.ty.mult P.structs = .copy then
             accepted "(@Drop-Copy) §5.3" Γ (.drop i) .unit Γ []
           else
-            accepted (dropRule "(@Drop) §5.3" en.ty) Γ (.drop i) .unit
-              (Γ.set i (en.setSt .movedOut)) []
+            accepted "(@Drop) §5.3" Γ (.drop i) .unit (Γ.set i (en.setSt .movedOut)) []
   | .letIn m e₁ e₂ =>
       let d₁ := explain P R Γ e₁
       match d₁.result with
@@ -512,7 +540,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
         let d₂ := explain P R ({ ty := T₁, mu := m, st := .owned } :: Γ₁) e₂
         (match d₂.result with
          | some (T₂, en' :: Γ₂) =>
-             if en'.st = .owned ∧ T₁.mult = .linear then
+             if en'.st = .owned ∧ T₁.mult P.structs = .linear then
                rejected "(Let) §5.3 + the §5.6 scope-exit leak check" Γ (.letIn m e₁ e₂)
                  (Premise.letLeak T₁) [d₁, d₂]
              else
@@ -534,7 +562,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
              if T = en₀.ty then
                match Γ₁[i]? with
                | some en₁ =>
-                   if en₁.st = .movedOut ∨ en₀.ty.mult ≠ .linear then
+                   if en₁.st = .movedOut ∨ en₀.ty.mult P.structs ≠ .linear then
                      accepted "(Assign) §5.2, 3.8:77" Γ (.assign i e) .unit
                        (Γ₁.set i (en₁.setSt .owned)) [d]
                    else
@@ -553,7 +581,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
       let d₁ := explain P R Γ e₁
       match d₁.result with
       | some (T₁, Γ₁) =>
-          if T₁.mult = .linear then
+          if T₁.mult P.structs = .linear then
             rejected "(Seq) §5.3, 3.8:64" Γ (.seq e₁ e₂) (Premise.discardsLinear T₁) [d₁]
           else
             let d₂ := explain P R Γ₁ e₂
@@ -570,11 +598,11 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
         (match d₁.result, d₂.result with
          | some (T₁, Γ₁), some (T₂, Γ₂) =>
              if T₁ = T₂ then
-               match Ctx.join Γ₁ Γ₂ with
+               match Ctx.join P.structs Γ₁ Γ₂ with
                | some Γ' => accepted "(If) §5.5 join" Γ (.ite c e₁ e₂) T₁ Γ' [dc, d₁, d₂]
                | none =>
                    rejected "(If) §5.5 join" Γ (.ite c e₁ e₂)
-                     (Premise.joinConflict (joinConflictEntry Γ₁ Γ₂)) [dc, d₁, d₂]
+                     (Premise.joinConflict (joinConflictEntry P.structs Γ₁ Γ₂)) [dc, d₁, d₂]
              else
                rejected "(If) §5.5 join" Γ (.ite c e₁ e₂)
                  (Premise.armTypeMismatch T₁ T₂) [dc, d₁, d₂]
@@ -583,7 +611,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
           rejected "(If) §5.5 join" Γ (.ite c e₁ e₂) (Premise.condNotBool T) [dc]
       | none => rejected "(If) §5.5 join" Γ (.ite c e₁ e₂) Premise.subDerivation [dc]
   | .call f args =>
-      match P[f]? with
+      match P.fns[f]? with
       | none => rejected "(Call) §5.8" Γ (.call f args) Premise.unknownCallee []
       | some fd =>
         (match explainArgs P R Γ args (fd.params.map Param.ty) with
@@ -596,7 +624,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
       match d.result with
       | none => rejected "(Return-Value) §5.7" Γ (.ret e) Premise.subDerivation [d]
       | some (T, Γ₁) =>
-          if T = R ∧ NoOwnedLinear Γ₁ then
+          if T = R ∧ NoOwnedLinear P.structs Γ₁ then
             accepted "(Return-Value) §5.7" Γ (.ret e) R Γ₁ [d]
           else if T = R then
             rejected "(Return-Value) §5.7" Γ (.ret e) Premise.returnLeak [d]
@@ -630,6 +658,18 @@ def argsPremise (P : Program) (R : Ty) : Ctx → List Expr → List Ty → Strin
            if T' = T then argsPremise P R Γ₁ es Ts else Premise.argTypeMismatch T' T
        | none => Premise.subDerivation)
   | _, _, _ => Premise.argCountMismatch
+
+/-- The premise a rejected field list failed: the wrong number of
+initializers (`3.6:5`, `3.6:6`), or the first one whose type is not its
+field's (`3.6:9`) — the two per-field premises of (Struct-Intro) §5.8. -/
+def fieldsPremise (P : Program) (R : Ty) : Ctx → List Expr → List Ty → String
+  | _, [], [] => Premise.fieldCountMismatch
+  | Γ, e :: es, T :: Ts =>
+      (match (explain P R Γ e).result with
+       | some (T', Γ₁) =>
+           if T' = T then fieldsPremise P R Γ₁ es Ts else Premise.fieldTypeMismatch T' T
+       | none => Premise.subDerivation)
+  | _, _, _ => Premise.fieldCountMismatch
 end
 
 mutual
@@ -655,12 +695,23 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
   | .lt e₁ e₂, Γ => by
       simp only [explain, check, explain_result e₁, explain_result e₂]
       (repeat' split) <;> first | rfl | simp_all [accepted, rejected, Deriv.result]
-  | .mkres κ e, Γ => by
-      simp only [explain, check, explain_result e]
-      (repeat' split) <;> first | rfl | simp_all [accepted, rejected, Deriv.result]
+  | .mkStruct s args, Γ => by
+      simp only [explain, check]
+      cases hs : P.structs[s]? with
+      | none => rfl
+      | some sd =>
+        dsimp only
+        have hargs := explainArgs_result (P := P) (R := R) args Γ sd.fields
+        revert hargs
+        cases explainArgs P R Γ args sd.fields with
+        | mk res kids =>
+          intro hargs
+          cases res with
+          | none => rw [← hargs]; rfl
+          | some Γ' => rw [← hargs]; rfl
   | .consume e, Γ => by
       simp only [explain, check, explain_result e]
-      (repeat' split) <;> first | rfl | simp_all [accepted, Deriv.result]
+      (repeat' split) <;> first | rfl | simp_all [accepted, rejected, Deriv.result]
   | .drop i, Γ => by
       simp only [explain, check]
       (repeat' split) <;> first | rfl | simp_all [accepted, Deriv.result]
@@ -682,7 +733,7 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
         cases T with
         | int => rfl
         | unit => rfl
-        | res κ => rfl
+        | struct s' => rfl
         | bool =>
             simp only [explain_result e₁, explain_result e₂]
             cases h₁ : check P R Γ₀ e₁ with
@@ -695,11 +746,11 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
                 obtain ⟨T₂, Γ₂⟩ := q₂
                 simp only []
                 split
-                · cases hj : Ctx.join Γ₁ Γ₂ <;> rfl
+                · cases hj : Ctx.join P.structs Γ₁ Γ₂ <;> rfl
                 · rfl
   | .call f args, Γ => by
       simp only [explain, check]
-      cases hf : P[f]? with
+      cases hf : P.fns[f]? with
       | none => rfl
       | some fd =>
         dsimp only
@@ -961,7 +1012,7 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
         | some .dead => refused [] d Θ R (.use i) "(D-Use-Copy)/(D-Use-Move) §6.3" H .useAfterDrop
         | some .moved => refused [] d Θ R (.use i) "(D-Use-Copy)/(D-Use-Move) §6.3" H .useAfterMove
         | some (.full v) =>
-            if v.mult = .copy then
+            if v.mult P.structs = .copy then
               traced [] d Θ R (.use i) "(D-Use-Copy) §6.3" H H [] (.value v) (.ok H v [])
             else
               traced [] d Θ R (.use i) "(D-Use-Move) §6.3" H (H.set ℓ .moved) []
@@ -975,12 +1026,15 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
         | some .dead => refused [] d Θ R (.drop i) "@drop §6.11" H .useAfterDrop
         | some .moved => refused [] d Θ R (.drop i) "@drop §6.11" H .useAfterMove
         | some (.full v) =>
-            if v.mult = .copy then
-              traced [] d Θ R (.drop i) "@drop §6.11 (Copy: no glue)" H H [] (.value .unit)
-                (.ok H .unit [])
-            else
-              traced [] d Θ R (.drop i) (dropRule "@drop §6.11" (valTy v)) H (H.set ℓ .moved)
-                [.drop ℓ v] (.value .unit) (.ok (H.set ℓ .moved) .unit [.drop ℓ v])
+            (match dropCell P.structs ℓ v with
+             | .error w => refused [] d Θ R (.drop i) "@drop §6.11" H w
+             | .ok evs =>
+                 if v.mult P.structs = .copy then
+                   traced [] d Θ R (.drop i) "@drop §6.11 (Copy: no glue)" H H [] (.value .unit)
+                     (.ok H .unit [])
+                 else
+                   traced [] d Θ R (.drop i) "@drop §6.11" H (H.set ℓ .moved)
+                     evs (.value .unit) (.ok (H.set ℓ .moved) .unit evs))
   | fuel + 1, d, Θ, R, H, φ, .add e₁ e₂ =>
       let t₁ := traceEval P fuel (d + 1) Θ R H φ e₁
       match t₁.res with
@@ -1035,22 +1089,26 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
                   (r.withTrace tr₁))
       | .ok _ _ _ => confused t₁.steps d Θ R (.lt e₁ e₂) "ordering compare §6.4" H
       | r => propagate t₁.steps d Θ R (.lt e₁ e₂) "ordering compare §6.4" H r
-  | fuel + 1, d, Θ, R, H, φ, .mkres κ e =>
-      let t := traceEval P fuel (d + 1) Θ R H φ e
-      match t.res with
-      | .ok H' (.int n) tr =>
-          traced t.steps d Θ R (.mkres κ e) "resource intro §6.5" H H' []
-            (.value (.res κ n)) (.ok H' (.res κ n) tr)
-      | .ok _ _ _ => confused t.steps d Θ R (.mkres κ e) "resource intro §6.5" H
-      | r => propagate t.steps d Θ R (.mkres κ e) "resource intro §6.5" H r
+  | fuel + 1, d, Θ, R, H, φ, .mkStruct s args =>
+      let ta := traceArgs (fun H' e' => traceEval P fuel (d + 1) Θ R H' φ e') H args
+      (match ta.res with
+       | .abort r => didNotRun ta.steps d Θ R (.mkStruct s args) "(D-Struct) §6.5" H r
+       | .ok H₁ vs tr =>
+         match P.structs[s]? with
+         | none => refused ta.steps d Θ R (.mkStruct s args) "(D-Struct) §6.5" H .unbound
+         | some sd =>
+             if sd.fields.length = vs.length then
+               traced ta.steps d Θ R (.mkStruct s args) "(D-Struct) §6.5" H H₁ []
+                 (.value (.struct s vs)) (.ok H₁ (.struct s vs) tr)
+             else refused ta.steps d Θ R (.mkStruct s args) "(D-Struct) §6.5" H .typeConfusion)
   | fuel + 1, d, Θ, R, H, φ, .consume e =>
       let t := traceEval P fuel (d + 1) Θ R H φ e
       match t.res with
-      | .ok H' (.res _ n) tr =>
-          traced t.steps d Θ R (.consume e) "resource elimination §6.5" H H' []
+      | .ok H' (.struct _ (.int n :: _)) tr =>
+          traced t.steps d Θ R (.consume e) "§6.5 whole-value elimination" H H' []
             (.value (.int n)) (.ok H' (.int n) tr)
-      | .ok _ _ _ => confused t.steps d Θ R (.consume e) "resource elimination §6.5" H
-      | r => propagate t.steps d Θ R (.consume e) "resource elimination §6.5" H r
+      | .ok _ _ _ => confused t.steps d Θ R (.consume e) "§6.5 whole-value elimination" H
+      | r => propagate t.steps d Θ R (.consume e) "§6.5 whole-value elimination" H r
   | fuel + 1, d, Θ, R, H, φ, .letIn m e₁ e₂ =>
       let t₁ := traceEval P fuel (d + 1) Θ R H φ e₁
       match t₁.res with
@@ -1063,7 +1121,7 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
             { env := H₁.length :: φ.env, scope := φ.scope ++ [H₁.length] } e₂
           (match t₂.res with
            | .ok H₂ v₂ tr₂ =>
-             (match dropRetire H₂ H₁.length with
+             (match dropRetire P.structs H₂ H₁.length with
               | .error w =>
                   refused (t₁.steps ++ [bind] ++ t₂.steps) d Θ R (.letIn m e₁ e₂)
                     "(D-EndScope) §6.7 (retire the binding)" H₂ w
@@ -1090,31 +1148,33 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
                  traced t.steps d Θ R (.assign i e) "(D-Assign) §6.8 (reinitialization, 3.8:55)"
                    H (H₁.set ℓ (.full v)) [] (.value .unit) (.ok (H₁.set ℓ (.full v)) .unit tr)
              | some (.full vOld) =>
-                 match vOld.mult with
-                 | .linear =>
-                     refused t.steps d Θ R (.assign i e) "(D-Assign) §6.8" H .linearOverwrite
-                 | .affine =>
-                     traced t.steps d Θ R (.assign i e) "(D-Assign) §6.8 (overwrite-drop)"
-                       H (H₁.set ℓ (.full v)) [.drop ℓ vOld] (.value .unit)
-                       (.ok (H₁.set ℓ (.full v)) .unit (tr ++ [.drop ℓ vOld]))
-                 | .copy =>
-                     traced t.steps d Θ R (.assign i e) "(D-Assign) §6.8" H (H₁.set ℓ (.full v)) []
-                       (.value .unit) (.ok (H₁.set ℓ (.full v)) .unit tr))
+                 if vOld.mult P.structs = .linear then
+                   refused t.steps d Θ R (.assign i e) "(D-Assign) §6.8" H .linearOverwrite
+                 else
+                   match dropCell P.structs ℓ vOld with
+                   | .error w => refused t.steps d Θ R (.assign i e) "(D-Assign) §6.8" H w
+                   | .ok evs =>
+                       traced t.steps d Θ R (.assign i e) "(D-Assign) §6.8 (overwrite-drop)"
+                         H (H₁.set ℓ (.full v)) evs (.value .unit)
+                         (.ok (H₁.set ℓ (.full v)) .unit (tr ++ evs)))
       | r => propagate t.steps d Θ R (.assign i e) "(D-Assign) §6.8" H r
   | fuel + 1, d, Θ, R, H, φ, .seq e₁ e₂ =>
       let t₁ := traceEval P fuel (d + 1) Θ R H φ e₁
       match t₁.res with
       | .ok H₁ v₁ tr₁ =>
-          (match v₁.mult with
+          (match v₁.mult P.structs with
            | .linear => refused t₁.steps d Θ R (.seq e₁ e₂) "(D-Seq) §6.7" H .linearDiscard
            | .affine =>
+               match dropValue P.structs v₁ with
+               | .error w => refused t₁.steps d Θ R (.seq e₁ e₂) "(D-Seq) §6.7" H w
+               | .ok evs =>
                let discard := adminStep (d + 1) Θ R (.seq e₁ e₂) "(D-Seq) §6.7 (drop the temporary)"
-                 ("drop(" ++ valLine v₁ ++ ")") H₁ H₁ [.dropTemp v₁] (.value .unit)
+                 ("drop(" ++ valLine v₁ ++ ")") H₁ H₁ (.dropTemp v₁ :: evs) (.value .unit)
                let t₂ := traceEval P fuel (d + 1) Θ R H₁ φ e₂
                traced (t₁.steps ++ [discard] ++ t₂.steps) d Θ R (.seq e₁ e₂) "(D-Seq) §6.7"
                  H (lastStore (t₁.steps ++ [discard] ++ t₂.steps) H₁) []
                  (StepRes.ofRes t₂.res)
-                 ((t₂.res.withTrace [.dropTemp v₁]).withTrace tr₁)
+                 ((t₂.res.withTrace (.dropTemp v₁ :: evs)).withTrace tr₁)
            | .copy =>
                let t₂ := traceEval P fuel (d + 1) Θ R H₁ φ e₂
                traced (t₁.steps ++ t₂.steps) d Θ R (.seq e₁ e₂) "(D-Seq) §6.7"
@@ -1141,7 +1201,7 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
       let t := traceEval P fuel (d + 1) Θ R H φ e
       match t.res with
       | .ok H₁ v tr =>
-          (match runAllScopeDrops H₁ φ with
+          (match runAllScopeDrops P.structs H₁ φ with
            | .error w =>
                refused t.steps d Θ R (.ret e) "(D-Return) §6.9 (unwind the frame)" H₁ w
            | .ok (H₂, evs) =>
@@ -1154,7 +1214,7 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
       match ta.res with
       | .abort r => didNotRun ta.steps d Θ R (.call f args) "(D-Call) §6.9" H r
       | .ok H₁ vs tr =>
-        match P[f]? with
+        match P.fns[f]? with
         | none => refused ta.steps d Θ R (.call f args) "(D-Call) §6.9" H .unbound
         | some fd =>
           if fd.params.length = vs.length then
@@ -1166,7 +1226,7 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
             let tb := traceEval P fuel (d + 2) (Print.bodyBinders fd) fd.ret minted.1 φg fd.body
             (match tb.res with
              | .ok H₃ v tr₃ =>
-               (match runAllScopeDrops H₃ φg with
+               (match runAllScopeDrops P.structs H₃ φg with
                 | .error w =>
                     refused (ta.steps ++ [push] ++ tb.steps) d Θ R (.call f args)
                       "(D-Return-Value) §6.9 (pop the frame)" H₃ w
@@ -1206,7 +1266,7 @@ theorem traceEval_res {P : Program} : ∀ (fuel : Nat) (d : Nat) (Θ : List Ty) 
           (repeat' split) <;> first | rfl | (simp_all [traced] <;> grind)
       | drop i =>
           simp only [traceEval, eval]
-          (repeat' split) <;> first | rfl | (simp_all [traced] <;> grind)
+          (repeat' split) <;> first | rfl | (simp_all [traced, refused] <;> grind)
       | add e₁ e₂ =>
           simp only [traceEval, eval, EvalRes.andThen, ih]
           (repeat' split) <;>
@@ -1222,11 +1282,11 @@ theorem traceEval_res {P : Program} : ∀ (fuel : Nat) (d : Nat) (Θ : List Ty) 
           (repeat' split) <;>
             first | rfl | (simp_all [traced, didNotRun, propagate, confused, refused,
               EvalRes.withTrace] <;> grind)
-      | mkres κ e₁ =>
-          simp only [traceEval, eval, EvalRes.andThen, ih]
+      | mkStruct s' args =>
+          simp only [traceEval, eval,
+            traceArgs_res (ev := fun H' e' => eval fuel P H' φ e') (fun H' e' => ih _ _ _ _ _ e')]
           (repeat' split) <;>
-            first | rfl | (simp_all [traced, confused, refused,
-              EvalRes.withTrace] <;> grind)
+            first | rfl | (simp_all [traced, didNotRun, EvalRes.withTrace] <;> grind)
       | consume e₁ =>
           simp only [traceEval, eval, EvalRes.andThen, ih]
           (repeat' split) <;>
@@ -1281,7 +1341,7 @@ def programDerivs (P : Program) : Nat → List FnDef → List (Nat × FnDef × D
 /-- The run of a whole program: the entry call, from the empty store and the
 empty frame (§6.12's top-level result). -/
 def runTrace (P : Program) (fuel : Nat) : Trace :=
-  let T := match P[0]? with
+  let T := match P.fns[0]? with
     | some fd => fd.ret
     | none => .int
   traceEval P fuel 0 [] T [] { env := [], scope := [] } (.call 0 [])

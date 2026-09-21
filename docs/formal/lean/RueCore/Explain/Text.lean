@@ -140,7 +140,7 @@ def fnVerdictLines (P : Program) : List (Nat × FnDef × Deriv) → List String
       let head := sp 9 ++ fnHeader i fd
       let tail := match d.result with
         | some (T, Γf) =>
-            if T = fd.ret ∧ NoOwnedLinear Γf then
+            if T = fd.ret ∧ NoOwnedLinear P.structs Γf then
               [head ++ "  — body ⇒ " ++ Print.tyName T ++ ", exit Σ " ++ clip 40 (ctxLine Γf)]
             else if T = fd.ret then
               [head ++ "  — REJECTED: a by-value parameter or a still-open binding is",
@@ -181,14 +181,14 @@ def verdictSection (P : Program) (ds : List (Nat × FnDef × Deriv)) : List Stri
 the checker's verdict and per-function derivations (§5), and the machine's
 run (§6). -/
 def render (name description : String) (rules : List String) (P : Program) : String :=
-  let ds := programDerivs P 0 P
+  let ds := programDerivs P 0 P.fns
   let t := runTrace P Corpus.exportFuel
   let lines :=
     [bar '═' 80, " " ++ name, bar '═' 80] ++
     para 0 78 description ++
     ["", "Rules exercised: " ++ String.intercalate " · " rules] ++
     section' "The program" ++
-    (Print.fnItems P 0 P).splitOn "\n" ++
+    (Print.structItems 0 P.structs ++ Print.fnItems P 0 P.fns).splitOn "\n" ++
     section' "What the checker says (§5)" ++
     verdictSection P ds ++
     section' "The derivations (§5)" ++
