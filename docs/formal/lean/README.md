@@ -122,18 +122,25 @@ else: a Rue program has no other way to observe a drop happening, so a
 declaration that declares one prints `drop fn S(self) { @dbg(self.x0); }` and
 the interpreter records the same drop as a `dtor` event; a declaration with
 no destructor drops silently in both. `RueCore/Print.lean`'s module docstring
-is the reference for the rest, all of it forced by the spec's destructor
-rules: a `@copy` type must declare no destructor (`3.9:31`), a value whose
-type declares one rejects every projection out of it (`3.9:34`), so the
-fragment's whole-value elimination is defined only where there is none, and a
-declaration that carries a linear value in a field may declare no destructor
-at all (`3.9:44`). `@drop` prints as `@drop(x)` at every class — the identity
-elaboration — and the two integer-typing images below `Print.lean`'s "Integer
-typing" heading are the only places the printed program is not one. Two
-limits, accepted at fragment scope: a trap discards the Lean trace, so drops
-before a panic are not compared (RUE-2282 gives `.panic` its trace); and
-every line is a bare integer, so a destructor line `n` swapped with a value
-line `n` would not be told apart. Every printed program opens with a comment naming
+is the reference for the rest. Two of the constraints are the spec's: a
+`@copy` type must declare no destructor (`3.9:31`), and a declaration that
+carries a linear value in a field may declare no destructor at all
+(`3.9:44`). The third is the fragment's own: `Expr.consume` reads a struct's
+first field and destroys the value *without running its drop glue*, so it is
+defined only on a declaration with no destructor — one there would be an
+event §6.11 owes and the interpreter never emits, while the printed consumer
+lets its parameter drop and so *would* print it. (`3.9:34` is not that
+reason: it forbids moving a field out and permits borrowing one, and the
+compiler accepts `fn consume_S(s: S) -> i64 { s.x0 }` on a destructor-bearing
+`S`.) `@drop` prints as `@drop(x)` at every class — the identity
+elaboration. Four images are *not* the identity elaboration: the two
+integer-typing ones below `Print.lean`'s "Integer typing" heading, the
+generated `consume_S<s>` helper a `consume` prints as a call to, and the
+invented `drop fn` body, which the core declaration does not carry and which
+is the whole observation channel. Two limits, accepted at fragment scope: a
+trap discards the Lean trace, so drops before a panic are not compared
+(RUE-2282 gives `.panic` its trace); and every line is a bare integer, so a
+destructor line `n` swapped with a value line `n` would not be told apart. Every printed program opens with a comment naming
 its case, the rules it exercises, and its expected outcome in words, so
 `corpus.json` doubles as a readable example set.
 

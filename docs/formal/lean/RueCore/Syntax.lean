@@ -94,17 +94,19 @@ deriving DecidableEq, Repr
 
 /-- A monomorphic struct declaration: §2's `S { f1: T1, …, fk: Tk }` with its
 declared attribute (§3), whether it declares a destructor (`3.9`), and the
-class §3 assigns it. Fields are listed in **declaration order** (`3.6:9`),
-which is the order §6.11 drops them in and the order (Struct-Intro) §5.8's
-initializers are presented in (`3.6:15`); they are named by position, as
-bindings are, because elaboration resolves field names. -/
+class §3 assigns it. Fields are listed in **declaration order**, which is the
+order §6.11 drops them in (`3.9:13`, after the user destructor — `3.9:28`) and
+the order (Struct-Intro) §5.8's initializers are presented in (`3.6:15`); they
+are named by position, as bindings are, because elaboration resolves field
+names. -/
 structure StructDecl where
   /-- `attr(S)` (§3): `none`, `@copy` (`3.8:18`) or `linear` (`3.8:57`). -/
   attr : Attr
-  /-- The field types, in declaration order (`3.6:9`). -/
+  /-- The field types, in declaration order: the order `3.9:13` drops them
+  in, and the order a literal's initializers are presented in (`3.6:15`). -/
   fields : List Ty
   /-- Whether `S` declares `drop fn S(self)` (`3.9`), which §6.11 runs before
-  the fields. -/
+  the fields (`3.9:28`). -/
   dtor : Bool
   /-- `class(S)` (§3), the field join lifted by `attr`; `WfStructs`
   (`Statics.lean`) is the equation that pins it. -/
@@ -178,11 +180,19 @@ deriving Repr
 /-- The fragment's whole-value struct elimination, as a side condition on a
 declaration: the struct has at least one field, every field is `int`, and it
 declares no destructor. `Expr.consume` reads the first field's payload and
-consumes the value; a field of any other type would be discarded without its
-drop glue, and a destructor would make even the read a rejected projection
-(`3.9:34`, E0456). This is **not** a calculus rule — the calculus eliminates a
-struct through a projection, which is RUE-2231 — so the restriction is the
-fragment's, stated here rather than cited. -/
+**destroys the value without running its drop glue** (`Dynamics.lean`'s
+`.consume` arm calls no `dropValue`), so each clause keeps that honest: a
+field of any other type would be discarded with its own drop glue unrun, and a
+declaration with a destructor would lose the `dtor` event §6.11 owes — while
+the printed program's consumer lets its by-value parameter drop at the
+function's end, so that destructor *would* print and the two views would
+disagree by a line. `3.9:34` is not the reason and does not forbid the read:
+it forbids *moving* a field out and permits borrowing one, and the compiler
+accepts `fn consume_S(s: S) -> i64 { s.x0 }` on a destructor-bearing `S`.
+
+This is **not** a calculus rule — the calculus eliminates a struct through a
+projection, which is RUE-2231 — so the restriction is the fragment's, stated
+here rather than cited. -/
 def StructDecl.Consumable (sd : StructDecl) : Prop :=
   sd.fields ≠ [] ∧ (∀ T ∈ sd.fields, T = .int) ∧ sd.dtor = false
 
