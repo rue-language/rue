@@ -429,10 +429,10 @@ exactly what `run_safe` proves.
 theorem RueCore.ProgramTyped.run_safe {P : Program} (h : ProgramTyped P)
   (fuel : Nat) :
   ∃ fd,
-    P[0]? = some fd ∧
+    P.fns[0]? = some fd ∧
       (run P fuel = EvalRes.outOfFuel ∨
         (∃ k, run P fuel = EvalRes.panic k) ∨
-          ∃ H v tr, run P fuel = EvalRes.ok H v tr ∧ HasTy v fd.ret)
+          ∃ H v tr, run P fuel = EvalRes.ok H v tr ∧ HasTy P.structs v fd.ret)
 ```
 
 ### `no_violation`
