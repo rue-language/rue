@@ -85,6 +85,12 @@ type (§5.8's (Struct-Intro), read on values). §7's preservation half is stated
 over this relation. -/
 inductive HasTy (D : StructEnv) : Val → Ty → Prop where
   | int {w s n} : InBounds w s n → HasTy D (.int w s n) (.int w s)
+  /-- §6.1's `f_T` at `T = float(w)`: the datum lies in `𝔽_w`, which is the
+  float counterpart of `n_T`'s `min_T ≤ n ≤ max_T` side condition. Keeping it
+  is what gives §7's "totality of the float operations" lemma something to
+  preserve: the model's closure laws (`FloatModel`, `Float.lean`) are exactly
+  what re-establishes it after a rounded operation. -/
+  | float {w f} : f.Wf w → HasTy D (.float w f) (.float w)
   | bool {b} : HasTy D (.bool b) .bool
   | unit : HasTy D .unit .unit
   | struct {s sd vs} :
@@ -113,6 +119,11 @@ theorem HasTy.int_inv {D v w s} (h : HasTy D v (.int w s)) :
     ∃ n, v = .int w s n ∧ InBounds w s n := by
   cases h; exact ⟨_, rfl, ‹_›⟩
 
+/-- Inversion of value typing at a float type (helper). -/
+theorem HasTy.float_inv {D v w} (h : HasTy D v (.float w)) :
+    ∃ f, v = .float w f ∧ f.Wf w := by
+  cases h; exact ⟨_, rfl, ‹_›⟩
+
 /-- Inversion of value typing at `bool` (helper). -/
 theorem HasTy.bool_inv {D v} (h : HasTy D v .bool) : ∃ b, v = .bool b := by
   cases h; exact ⟨_, rfl⟩
@@ -135,6 +146,7 @@ theorem HasTys.head_int {D vs Ts} (h : HasTys D vs Ts) (hne : Ts ≠ [])
       | int w s =>
           obtain ⟨n, rfl, hb⟩ := hv.int_inv
           exact ⟨w, s, n, vs', rfl, hb, rfl⟩
+      | float _ => cases hT
       | bool => cases hT
       | unit => cases hT
       | struct s' => cases hT
@@ -164,7 +176,8 @@ defined trap.** The value cases are (D-Arith), (D-Div), the remainder arm,
 (D-Bit), (D-Shl)/(D-Shr) and `cmp`; the trap cases are (D-Arith-Trap),
 (D-Div-Zero), (D-Div-Overflow) and the remainder's two. Nothing else is
 reachable, which is the operator half of progress. -/
-theorem binOpInt_res {D : StructEnv} (op : BinOp) (w : IntWidth) (s : Sign) (n₁ n₂ : Int) :
+theorem binOpInt_res {D : StructEnv} (op : BinOp) (w : IntWidth) (s : Sign) (n₁ n₂ : Int)
+    (hop : op.intAdmits = true) :
     (∃ v, binOpInt op w s n₁ n₂ = .val v ∧ HasTy D v (op.resultTy (.int w s))) ∨
       (∃ k, binOpInt op w s n₁ n₂ = .trap k) := by
   have bits : ∀ b : Nat, (∃ v, OpRes.val (Val.int w s (valOf w s b)) = .val v ∧
@@ -176,7 +189,8 @@ theorem binOpInt_res {D : StructEnv} (op : BinOp) (w : IntWidth) (s : Sign) (n�
       (∃ k, intResult w s n = .trap k) :=
     fun n => (intResult_res w s n).imp id (fun h => ⟨.overflow, h⟩)
   cases op <;>
-    simp only [binOpInt, BinOp.resultTy, BinOp.isCompare, if_true, if_false, Bool.false_eq_true]
+    simp only [binOpInt, BinOp.resultTy, BinOp.isCompare, BinOp.intAdmits, if_true, if_false,
+      Bool.false_eq_true] at hop ⊢
   case add => exact hint _
   case sub => exact hint _
   case mul => exact hint _
@@ -200,16 +214,57 @@ theorem binOpInt_res {D : StructEnv} (op : BinOp) (w : IntWidth) (s : Sign) (n�
   case le => exact Or.inl ⟨_, rfl, .bool⟩
   case gt => exact Or.inl ⟨_, rfl, .bool⟩
   case ge => exact Or.inl ⟨_, rfl, .bool⟩
+  -- `@total_cmp` has no integer arm: `3.12:31` gives it float operands, and
+  -- the `intAdmits` premise of (Arith)/(Ord) excludes it, so `hop` is false
+  -- there and `simp` has already closed that goal.
 
 /-- The same, over the two machine values §5.8's operator rules give one
 `int(w,s)`: the shape mismatch `evalBinOp` refuses is not reachable from
 them. -/
-theorem evalBinOp_res {D : StructEnv} (op : BinOp) (w : IntWidth) (s : Sign) (n₁ n₂ : Int) :
-    (∃ v, evalBinOp op (.int w s n₁) (.int w s n₂) = .val v ∧
+theorem evalBinOp_res {D : StructEnv} (M : FloatOps) (op : BinOp) (w : IntWidth) (s : Sign)
+    (n₁ n₂ : Int) (hop : op.intAdmits = true) :
+    (∃ v, evalBinOp M op (.int w s n₁) (.int w s n₂) = .val v ∧
         HasTy D v (op.resultTy (.int w s))) ∨
-      (∃ k, evalBinOp op (.int w s n₁) (.int w s n₂) = .trap k) := by
+      (∃ k, evalBinOp M op (.int w s n₁) (.int w s n₂) = .trap k) := by
   simp only [evalBinOp]
-  exact binOpInt_res op w s n₁ n₂
+  exact binOpInt_res op w s n₁ n₂ hop
+
+/-- **Every §6.4 float operator lands on a value of its rule's type, and never
+traps.** The value cases are (D-Float-Arith), (D-Float-Ord) and (D-Total-Cmp);
+there is no trap case at all, which is `3.12:21` and §6.4's note that no
+arithmetic trap rule is stated over a float redex. `M.arith_wf` is §7's
+closure law — the one thing about `⊕_w` that cannot be proved of an arbitrary
+`FloatOps` — and it is what re-establishes `HasTy` at the result. -/
+theorem binOpFloat_res {D : StructEnv} (M : FloatModel) (op : BinOp) (w : FloatWidth)
+    (a b : FloatDatum) (ha : a.Wf w) (hb : b.Wf w) (hop : op.floatAdmits = true) :
+    ∃ v, binOpFloat M.toFloatOps op w a b = .val v ∧ HasTy D v (op.resultTy (.float w)) := by
+  cases op <;>
+    simp only [binOpFloat, BinOp.resultTy, BinOp.isCompare, BinOp.floatAdmits, if_true, if_false,
+      Bool.false_eq_true] at hop ⊢
+  case add => exact ⟨_, rfl, .float (M.arith_wf w .add a b ha hb)⟩
+  case sub => exact ⟨_, rfl, .float (M.arith_wf w .sub a b ha hb)⟩
+  case mul => exact ⟨_, rfl, .float (M.arith_wf w .mul a b ha hb)⟩
+  case div => exact ⟨_, rfl, .float (M.arith_wf w .div a b ha hb)⟩
+  case lt => exact ⟨_, rfl, .bool⟩
+  case le => exact ⟨_, rfl, .bool⟩
+  case gt => exact ⟨_, rfl, .bool⟩
+  case ge => exact ⟨_, rfl, .bool⟩
+  -- `@total_cmp` concludes at `int(32, signed)`, and `totalCmp_trichotomy`
+  -- is why `-1`/`0`/`1` is a value of it.
+  case totalCmp =>
+      refine ⟨_, rfl, .int ?_⟩
+      rcases totalCmp_trichotomy a b with h | h | h <;>
+        simp only [InBounds, intMin, intMax, IntWidth.bits, h] <;> refine ⟨?_, ?_⟩ <;> decide
+
+/-- The same, over the two machine values (Float-Arith)/(Float-Ord)/
+(Total-Cmp) §5.8 give one `float(w)`: the shape mismatch `evalBinOp` refuses
+is not reachable from them. -/
+theorem evalBinOpFloat_res {D : StructEnv} (M : FloatModel) (op : BinOp) (w : FloatWidth)
+    (a b : FloatDatum) (ha : a.Wf w) (hb : b.Wf w) (hop : op.floatAdmits = true) :
+    ∃ v, evalBinOp M.toFloatOps op (.float w a) (.float w b) = .val v ∧
+      HasTy D v (op.resultTy (.float w)) := by
+  simp only [evalBinOp, if_pos rfl]
+  exact binOpFloat_res M op w a b ha hb hop
 
 /-- **`neg` and `bitnot` land on a value of the operand's type or on
 `↯overflow`** — that category and no other (§6.4; §5.8 restricts `neg` to a
@@ -241,6 +296,54 @@ theorem evalIntCast_res {D : StructEnv} (w : IntWidth) (s : Sign) (w' : IntWidth
   · exact Or.inl ⟨_, rfl, .int ‹_›⟩
   · exact Or.inr rfl
 
+/-- **`neg` on a float is total** ((D-Float-Neg), `3.12:24`): a sign flip,
+which `negate_wf` shows keeps the datum in `𝔽_w`. Unlike the integer `neg` it
+has no trap case at all. -/
+theorem evalUnOp_float_res {D : StructEnv} (w : FloatWidth) (f : FloatDatum) (hw : f.Wf w) :
+    ∃ v, evalUnOp .neg (.float w f) = .val v ∧ HasTy D v (.float w) :=
+  ⟨_, rfl, .float (negate_wf hw)⟩
+
+/-- **`@int_to_float` lands on a value of its result type and never traps**
+((D-Int-To-Float), `3.12:16`). -/
+theorem evalFintrin_int_res {D : StructEnv} (M : FloatModel) (w : FloatWidth) (w' : IntWidth)
+    (s' : Sign) (n : Int) :
+    ∃ v, evalFintrin M.toFloatOps (.intToFloat w) (.int w' s' n) = .val v ∧
+      HasTy D v (.float w) :=
+  ⟨_, rfl, .float (M.ofInt_wf w n)⟩
+
+/-- **Every one-operand float intrinsic on a `float(w)` operand lands on a
+value of its rule's type or on `↯overflow`** — that category and no other,
+and only `@float_to_int` reaches it (`3.12:18`, `8.1:7`). `@float_cast` and
+the five `3.12:34` intrinsics never trap (`3.12:19`, `3.12:37`), which is why
+the trap disjunct is `= .trap .overflow` rather than an existential. The
+`Wf` half of each value case is §7's closure obligation: proved here for the
+exact operations (`widen_wf`, `roundOp_wf`) and a law of the model for the
+rounded ones (`narrow_wf`, `sqrt_wf`). -/
+theorem evalFintrin_float_res {D : StructEnv} (M : FloatModel) (k : FloatIntrin)
+    (w : FloatWidth) (f : FloatDatum) (hw : f.Wf w) (hk : k.floatSrc w = true) :
+    (∃ v, evalFintrin M.toFloatOps k (.float w f) = .val v ∧ HasTy D v (k.resTy w)) ∨
+      evalFintrin M.toFloatOps k (.float w f) = .trap .overflow := by
+  cases k with
+  | intToFloat _ => simp [FloatIntrin.floatSrc] at hk
+  | floatToInt w' s' =>
+      simp only [evalFintrin, FloatIntrin.resTy]
+      split
+      · next t ht => exact Or.inl ⟨_, rfl, .int (toIntIn_mem ht)⟩
+      · exact Or.inr rfl
+  | floatCast w' =>
+      refine Or.inl ⟨_, rfl, .float ?_⟩
+      cases w <;> cases w' <;>
+        simp only [FloatOps.cast] <;>
+        first
+          | exact hw
+          | exact M.narrow_wf f hw
+          | exact widen_wf hw
+  | roundOp k₀ =>
+      refine Or.inl ⟨_, rfl, .float ?_⟩
+      cases k₀ with
+      | sqrt => exact M.sqrt_wf w f hw
+      | round op => exact roundOp_wf hw
+
 /-! ## Dropping a value never refuses, and drops in §6.11's order -/
 
 /-- **§6.11's order, in closed form.** For a well-typed value the walk's
@@ -253,6 +356,7 @@ theorem dropValue_events {D : StructEnv} {v : Val} {T : Ty} (h : HasTy D v T) :
   induction h using HasTy.rec
     (motive_2 := fun vs _ _ => dropValues D vs = .ok (dropEventsList D vs)) with
   | int _ => rfl
+  | float _ => rfl
   | bool => rfl
   | unit => rfl
   | @struct s sd vs hd _ ih => simp only [dropValue, dropEvents, hd, ih]
@@ -266,6 +370,7 @@ theorem dropValues_events {D : StructEnv} {vs : List Val} {Ts : List Ty}
   induction h using HasTys.rec
     (motive_1 := fun v _ _ => dropValue D v = .ok (dropEvents D v)) with
   | int _ => rfl
+  | float _ => rfl
   | bool => rfl
   | unit => rfl
   | @struct s sd vs hd _ ih => simp only [dropValue, dropEvents, hd, ih]
@@ -902,13 +1007,13 @@ or hands on the first argument's non-value outcome — an unwinding `return`
 among them, which aborts the call before any parameter cell is minted. The
 hypothesis is `soundness` at the fuel the call has already spent one unit of,
 which is why this is a lemma rather than a case of the induction. -/
-theorem args_sound {P : Program} {fuel : Nat}
+theorem args_sound (M : FloatModel) {P : Program} {fuel : Nat}
     (ih : ∀ {R : Ty} {Γ Γ' : Ctx} {e : Expr} {T : Ty}, Typed P R Γ e T Γ' →
       ∀ {φ : Frame} {H : Store}, FrameMatches P.structs Γ φ H →
-        EvalOk P.structs T R Γ' φ H (eval fuel P H φ e)) :
+        EvalOk P.structs T R Γ' φ H (eval M.toFloatOps fuel P H φ e)) :
     ∀ (es : List Expr) {R : Ty} {Γ Γ' : Ctx} {Ts : List Ty} {φ : Frame} {H : Store},
       TypedArgs P R Γ es Ts Γ' → FrameMatches P.structs Γ φ H →
-        ArgsOk P.structs R Ts Γ' φ H (evalArgs (fun H' e => eval fuel P H' φ e) H es) := by
+        ArgsOk P.structs R Ts Γ' φ H (evalArgs (fun H' e => eval M.toFloatOps fuel P H' φ e) H es) := by
   intro es
   induction es with
   | nil =>
@@ -921,13 +1026,13 @@ theorem args_sound {P : Program} {fuel : Nat}
       | @cons _ Γ₁ _ _ _ T Ts' h₁ h₂ =>
         have k₁ := ih h₁ hfm
         simp only [evalArgs]
-        cases hr : eval fuel P H φ e with
+        cases hr : eval M.toFloatOps fuel P H φ e with
         | ok H₁ v tr =>
             rw [hr] at k₁
             obtain ⟨hty, hfm₁, hu₁⟩ := k₁
             have k₂ := ihes h₂ hfm₁
             dsimp only
-            cases hr₂ : evalArgs (fun H' e => eval fuel P H' φ e) H₁ es with
+            cases hr₂ : evalArgs (fun H' e => eval M.toFloatOps fuel P H' φ e) H₁ es with
             | ok H₂ vs tr₂ =>
                 rw [hr₂] at k₂
                 dsimp only
@@ -961,10 +1066,10 @@ The induction is on the fuel, not on the derivation: a callee's body is not a
 subexpression of the call, so recursion is what the fuel is there to bound,
 and every subexpression — a call's arguments and the callee's body alike —
 runs at one unit less. -/
-theorem soundness {P : Program} (hwf : WfProgram P) :
+theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
     ∀ (fuel : Nat) {R : Ty} {Γ Γ' : Ctx} {e : Expr} {T : Ty}, Typed P R Γ e T Γ' →
       ∀ {φ : Frame} {H : Store}, FrameMatches P.structs Γ φ H →
-        EvalOk P.structs T R Γ' φ H (eval fuel P H φ e) := by
+        EvalOk P.structs T R Γ' φ H (eval M.toFloatOps fuel P H φ e) := by
   intro fuel
   induction fuel with
   | zero =>
@@ -972,7 +1077,7 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
       simp only [eval]
       trivial
   | succ fuel ih =>
-      have hargs := args_sound ih
+      have hargs := args_sound M ih
       intro R Γ Γ' e T ht φ H hfm
       cases ht with
       | @intLit Γ w sg n hb =>
@@ -990,7 +1095,7 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
           rw [hst] at hcm
           obtain ⟨v, rfl, hv⟩ := hcm
           have hvm : v.mult P.structs = .copy := by rw [hv.mult_eq]; exact hcopy
-          have hev : eval (fuel + 1) P H φ (.use i) = .ok H v [] := by
+          have hev : eval M.toFloatOps (fuel + 1) P H φ (.use i) = .ok H v [] := by
             simp [eval, hρ, hc, hvm]
           rw [hev]
           exact ⟨hv, hfm, Untouched.refl⟩
@@ -1000,12 +1105,12 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
           rw [hst] at hcm
           obtain ⟨v, rfl, hv⟩ := hcm
           have hvm : v.mult P.structs ≠ .copy := by rw [hv.mult_eq]; exact hncopy
-          have hev : eval (fuel + 1) P H φ (.use i) = .ok (H.set ℓ .moved) v [] := by
+          have hev : eval M.toFloatOps (fuel + 1) P H φ (.use i) = .ok (H.set ℓ .moved) v [] := by
             simp [eval, hρ, hc, hvm]
           rw [hev]
           exact ⟨hv, ⟨hfm.store.set hρ (Or.inl rfl), hfm.record⟩,
             Untouched.trans_set Untouched.refl (Or.inr (List.mem_of_getElem? hρ))⟩
-      | @binop Γ Γ₁ Γ₂ op e₁ e₂ w sg h₁ h₂ =>
+      | @binop Γ Γ₁ Γ₂ op e₁ e₂ w sg h₁ h₂ hop =>
           simp only [eval]
           refine EvalOk.bind (ih h₁ hfm) ?_
           intro H₁ v₁ tr₁ _ hty₁ hfm₁
@@ -1013,9 +1118,25 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
           refine EvalOk.bind (ih h₂ hfm₁) ?_
           intro H₂ v₂ tr₂ _ hty₂ hfm₂
           obtain ⟨n₂, rfl, _⟩ := hty₂.int_inv
-          rcases evalBinOp_res (D := P.structs) op w sg n₁ n₂ with ⟨v, hv, hty⟩ | ⟨k, hk⟩
+          rcases evalBinOp_res (D := P.structs) M.toFloatOps op w sg n₁ n₂ hop with
+            ⟨v, hv, hty⟩ | ⟨k, hk⟩
           · rw [hv]; exact ⟨hty, hfm₂, Untouched.refl⟩
           · rw [hk]; trivial
+      | @floatBinop Γ Γ₁ Γ₂ op e₁ e₂ w h₁ h₂ hop =>
+          -- (Float-Arith)/(Float-Ord)/(Total-Cmp) §5.8 with §6.4's dynamics:
+          -- the operands reduce left to right (§6.2) and the operator is
+          -- total, so unlike the integer arm there is no trap branch at all
+          -- (`3.12:21`).
+          simp only [eval]
+          refine EvalOk.bind (ih h₁ hfm) ?_
+          intro H₁ v₁ tr₁ _ hty₁ hfm₁
+          obtain ⟨f₁, rfl, hw₁⟩ := hty₁.float_inv
+          refine EvalOk.bind (ih h₂ hfm₁) ?_
+          intro H₂ v₂ tr₂ _ hty₂ hfm₂
+          obtain ⟨f₂, rfl, hw₂⟩ := hty₂.float_inv
+          obtain ⟨v, hv, hty⟩ := evalBinOpFloat_res (D := P.structs) M op w f₁ f₂ hw₁ hw₂ hop
+          rw [hv]
+          exact ⟨hty, hfm₂, Untouched.refl⟩
       | @neg Γ Γ' e w h =>
           simp only [eval]
           refine EvalOk.bind (ih h hfm) ?_
@@ -1025,6 +1146,16 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
             ⟨v', hv, hty'⟩ | hk
           · rw [hv]; exact ⟨hty', hfm', Untouched.refl⟩
           · rw [hk]; trivial
+      | @floatNeg Γ Γ' e w h =>
+          -- (Float-Neg) §5.8 with (D-Float-Neg) §6.4: total, so there is no
+          -- trap branch here at all (`3.12:24`).
+          simp only [eval]
+          refine EvalOk.bind (ih h hfm) ?_
+          intro H' v tr _ hty hfm'
+          obtain ⟨f, rfl, hwf'⟩ := hty.float_inv
+          obtain ⟨v', hv, hty'⟩ := evalUnOp_float_res (D := P.structs) w f hwf'
+          rw [hv]
+          exact ⟨hty', hfm', Untouched.refl⟩
       | @notOp Γ Γ' e h =>
           simp only [eval]
           refine EvalOk.bind (ih h hfm) ?_
@@ -1050,6 +1181,28 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
           rcases evalIntCast_res (D := P.structs) w sg w' s' n with ⟨v', hv, hty'⟩ | hk
           · rw [hv]; exact ⟨hty', hfm', Untouched.refl⟩
           · rw [hk]; trivial
+      | @floatLit Γ w l =>
+          -- (Lit) at `float(w)`: `3.12:9` rounds the literal's decimal into
+          -- `𝔽_w`, and `ofLit_wf` is the closure law that says so.
+          simp only [eval]
+          exact ⟨.float (M.ofLit_wf w l.sig l.negExp l.e), hfm, Untouched.refl⟩
+      | @intToFloat Γ Γ' w w' s' e h =>
+          simp only [eval]
+          refine EvalOk.bind (ih h hfm) ?_
+          intro H' v tr _ hty hfm'
+          obtain ⟨n, rfl, _⟩ := hty.int_inv
+          obtain ⟨v', hv, hty'⟩ := evalFintrin_int_res (D := P.structs) M w w' s' n
+          rw [hv]
+          exact ⟨hty', hfm', Untouched.refl⟩
+      | @floatIntrin Γ Γ' k w e h hk =>
+          simp only [eval]
+          refine EvalOk.bind (ih h hfm) ?_
+          intro H' v tr _ hty hfm'
+          obtain ⟨f, rfl, hwf'⟩ := hty.float_inv
+          rcases evalFintrin_float_res (D := P.structs) M k w f hwf' hk with
+            ⟨v', hv, hty'⟩ | hk'
+          · rw [hv]; exact ⟨hty', hfm', Untouched.refl⟩
+          · rw [hk']; trivial
       | @panic Γ Γ'' T msg hskel =>
           -- (D-Panic) §6.12 abandons the configuration, which is a defined
           -- trap and so one of `EvalOk`'s permitted outcomes; the rule's
@@ -1066,7 +1219,7 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
           -- argument-list lemma (Call) §5.8 uses, then the literal.
           simp only [eval]
           have ka := hargs args hta hfm
-          cases hra : evalArgs (fun H' e => eval fuel P H' φ e) H args with
+          cases hra : evalArgs (fun H' e => eval M.toFloatOps fuel P H' φ e) H args with
           | abort r =>
               rw [hra] at ka
               dsimp only
@@ -1095,7 +1248,7 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
           rw [hst] at hcm
           obtain ⟨v, rfl, hv⟩ := hcm
           have hvm : v.mult P.structs = .copy := by rw [hv.mult_eq]; exact hcopy
-          have hev : eval (fuel + 1) P H φ (.drop i) = .ok H .unit [] := by
+          have hev : eval M.toFloatOps (fuel + 1) P H φ (.drop i) = .ok H .unit [] := by
             simp [eval, hρ, hc, hvm, dropCell]
           rw [hev]
           exact ⟨.unit, hfm, Untouched.refl⟩
@@ -1106,7 +1259,7 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
           obtain ⟨v, rfl, hv⟩ := hcm
           have hvm : v.mult P.structs ≠ .copy := by rw [hv.mult_eq]; exact hncopy
           obtain ⟨evs, hevs⟩ := dropValue_ok hv
-          have hev : eval (fuel + 1) P H φ (.drop i)
+          have hev : eval M.toFloatOps (fuel + 1) P H φ (.drop i)
               = .ok (H.set ℓ .moved) .unit (.drop ℓ v :: evs) := by
             simp [eval, hρ, hc, hvm, dropCell, hevs]
           rw [hev]
@@ -1129,7 +1282,7 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
             have hskel := h₂.skel_preserved
             simp only [Ctx.skel, List.map_cons, List.cons.injEq] at hskel
             exact congrArg Prod.fst hskel.1
-          cases hrb : eval fuel P (H₁ ++ [.full v₁])
+          cases hrb : eval M.toFloatOps fuel P (H₁ ++ [.full v₁])
               { env := H₁.length :: φ.env, scope := φ.scope ++ [H₁.length] } e₂ with
           | ok H₂ v₂ tr₂ =>
               rw [hrb] at kb
@@ -1206,7 +1359,7 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
       | @call Γ Γ' f args fd hget hta =>
           simp only [eval]
           have ka := hargs args hta hfm
-          cases hra : evalArgs (fun H' e => eval fuel P H' φ e) H args with
+          cases hra : evalArgs (fun H' e => eval M.toFloatOps fuel P H' φ e) H args with
           | abort r =>
               rw [hra] at ka
               dsimp only
@@ -1239,7 +1392,7 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
               have hmint : Matches P.structs Γ' φ.env (mintParams H₁ vs).1 := by
                 rw [mintParams_store]; exact hfm₁.store.append _
               have kb := ih hbody hfmg
-              cases hrb : eval fuel P (mintParams H₁ vs).1
+              cases hrb : eval M.toFloatOps fuel P (mintParams H₁ vs).1
                   { env := (mintParams H₁ vs).2.reverse, scope := (mintParams H₁ vs).2 }
                   fd.body with
               | ok H₃ v tr₃ =>
@@ -1352,8 +1505,8 @@ theorem evalArgs_mono {ev ev' : Store → Expr → EvalRes}
 
 /-- One step of fuel monotonicity: a bound that answered answers the same at
 the next bound up (helper). -/
-theorem eval_succ {P : Program} : ∀ (fuel : Nat) (H : Store) (φ : Frame) (e : Expr),
-    eval fuel P H φ e ≠ .outOfFuel → eval (fuel + 1) P H φ e = eval fuel P H φ e := by
+theorem eval_succ (M : FloatOps) {P : Program} : ∀ (fuel : Nat) (H : Store) (φ : Frame) (e : Expr),
+    eval M fuel P H φ e ≠ .outOfFuel → eval M (fuel + 1) P H φ e = eval M fuel P H φ e := by
   intro fuel
   induction fuel with
   | zero => intro H φ e h; simp only [eval] at h; exact absurd rfl h
@@ -1361,6 +1514,7 @@ theorem eval_succ {P : Program} : ∀ (fuel : Nat) (H : Store) (φ : Frame) (e :
       intro H φ e h
       cases e with
       | intLit w sg m => rfl
+      | floatLit w l => rfl
       | boolLit b => rfl
       | unitLit => rfl
       | use i => rfl
@@ -1378,6 +1532,11 @@ theorem eval_succ {P : Program} : ∀ (fuel : Nat) (H : Store) (φ : Frame) (e :
           refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
           intro H₁ v tr _ _
           rfl
+      | fintrin k e₁ =>
+          simp only [eval] at h ⊢
+          refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
+          intro H₁ v tr _ _
+          rfl
       | intCast w sg e₁ =>
           simp only [eval] at h ⊢
           refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
@@ -1389,7 +1548,7 @@ theorem eval_succ {P : Program} : ∀ (fuel : Nat) (H : Store) (φ : Frame) (e :
           intro H₁ v tr _ _
           rfl
       | mkStruct s' args =>
-          have hargs : evalArgs (fun H' e' => eval n P H' φ e') H args ≠ .abort .outOfFuel := by
+          have hargs : evalArgs (fun H' e' => eval M n P H' φ e') H args ≠ .abort .outOfFuel := by
             intro hc
             simp only [eval, hc] at h
             exact h rfl
@@ -1433,6 +1592,7 @@ theorem eval_succ {P : Program} : ∀ (fuel : Nat) (H : Store) (φ : Frame) (e :
           refine EvalRes.andThen_mono (fun hne => ih H φ c hne) ?_ h
           intro H₀ v tr _ hkne
           cases v with
+          | float w f => rfl
           | bool b =>
               dsimp only at hkne ⊢
               by_cases hb : b = true
@@ -1449,13 +1609,13 @@ theorem eval_succ {P : Program} : ∀ (fuel : Nat) (H : Store) (φ : Frame) (e :
           intro H₁ v tr _ _
           rfl
       | call f args =>
-          have hargs : evalArgs (fun H' e' => eval n P H' φ e') H args ≠ .abort .outOfFuel := by
+          have hargs : evalArgs (fun H' e' => eval M n P H' φ e') H args ≠ .abort .outOfFuel := by
             intro hc
             simp only [eval, hc] at h
             exact h rfl
           have heq := evalArgs_mono (fun H' e' hne => ih H' φ e' hne) H args hargs
           simp only [eval, heq] at h ⊢
-          cases hra : evalArgs (fun H' e' => eval n P H' φ e') H args with
+          cases hra : evalArgs (fun H' e' => eval M n P H' φ e') H args with
           | abort r => rfl
           | ok H₁ vs tr =>
               rw [hra] at h
@@ -1467,7 +1627,7 @@ theorem eval_succ {P : Program} : ∀ (fuel : Nat) (H : Store) (φ : Frame) (e :
                   simp only [] at h ⊢
                   by_cases hlen : fd.params.length = vs.length
                   · simp only [if_pos hlen] at h ⊢
-                    have h' : (eval n P (mintParams H₁ vs).1
+                    have h' : (eval M n P (mintParams H₁ vs).1
                         { env := (mintParams H₁ vs).2.reverse, scope := (mintParams H₁ vs).2 }
                         fd.body).absorb (fun H₃ v =>
                           match runAllScopeDrops P.structs H₃
@@ -1488,9 +1648,9 @@ never changes an answer, so "the answer at some fuel" is well defined and the
 ∀-fuel form of `soundness` is a statement about it. The fuel is this
 interpreter's own device, not a §6 notion, so what this lemma is about is the
 claim `eval` makes on behalf of §6's machine. -/
-theorem fuel_mono {P : Program} {H : Store} {φ : Frame} {e : Expr} :
-    ∀ {n m : Nat}, n ≤ m → eval n P H φ e ≠ .outOfFuel →
-      eval m P H φ e = eval n P H φ e := by
+theorem fuel_mono (M : FloatOps) {P : Program} {H : Store} {φ : Frame} {e : Expr} :
+    ∀ {n m : Nat}, n ≤ m → eval M n P H φ e ≠ .outOfFuel →
+      eval M m P H φ e = eval M n P H φ e := by
   intro n m hle hne
   induction m with
   | zero =>
@@ -1502,19 +1662,19 @@ theorem fuel_mono {P : Program} {H : Store} {φ : Frame} {e : Expr} :
         subst hn; rfl
       · have hnm : n ≤ m := by omega
         have hrec := ihm hnm
-        rw [eval_succ m H φ e (by rw [hrec]; exact hne), hrec]
+        rw [eval_succ M m H φ e (by rw [hrec]; exact hne), hrec]
 
 /-- **No masking.** A fuel bound that reached a violation cannot be traded for
 one that hides it: at every bound that answers at all, the answer is that same
 violation. So no choice of fuel turns a violation into exhaustion for a
 program some fuel completes, and the `outOfFuel` escape hatch in the §7
 theorems (§6's machine has no such state) cannot be what makes them true. -/
-theorem no_masking {P : Program} {H : Store} {φ : Frame} {e : Expr} {n m : Nat}
-    {w : Violation} (hn : eval n P H φ e = .stuck w) (hm : eval m P H φ e ≠ .outOfFuel) :
-    eval m P H φ e = .stuck w := by
+theorem no_masking (M : FloatOps) {P : Program} {H : Store} {φ : Frame} {e : Expr} {n m : Nat}
+    {w : Violation} (hn : eval M n P H φ e = .stuck w) (hm : eval M m P H φ e ≠ .outOfFuel) :
+    eval M m P H φ e = .stuck w := by
   rcases Nat.le_total n m with hle | hle
-  · rw [fuel_mono hle (by rw [hn]; simp)]; exact hn
-  · rw [← fuel_mono hle hm]; exact hn
+  · rw [fuel_mono M hle (by rw [hn]; simp)]; exact hn
+  · rw [← fuel_mono M hle hm]; exact hn
 
 /-! ## §7, over a whole program -/
 
@@ -1560,8 +1720,8 @@ theorem EvalRes.absorb_ne_returned {r : EvalRes} {k : Store → Val → EvalRes}
 /-- (D-Return-Main) §6.9 needs no rule of its own here: the entry point is an
 ordinary call, and the call boundary absorbs an unwinding `return` exactly as
 it does anywhere, so a program's outcome is never a `returned` result. -/
-theorem run_ne_returned {P : Program} {fuel : Nat} :
-    ∀ H v tr, run P fuel ≠ .returned H v tr := by
+theorem run_ne_returned (M : FloatOps) {P : Program} {fuel : Nat} :
+    ∀ H v tr, run M P fuel ≠ .returned H v tr := by
   intro H v tr
   unfold run
   cases fuel with
@@ -1584,17 +1744,17 @@ theorem run_ne_returned {P : Program} {fuel : Nat} :
 at any fuel, either exhausts its fuel, traps in a defined way (§6.12), or
 produces a value of the entry point's declared return type. It never reaches a
 `Violation`. -/
-theorem run_safe {P : Program} {fd : FnDef} (hwf : WfProgram P)
+theorem run_safe (M : FloatModel) {P : Program} {fd : FnDef} (hwf : WfProgram P)
     (h0 : P.fns[0]? = some fd) (hp : fd.params = []) (fuel : Nat) :
-    run P fuel = .outOfFuel ∨ (∃ k tr, run P fuel = .panic k tr) ∨
-      (∃ H v tr, run P fuel = .ok H v tr ∧ HasTy P.structs v fd.ret) := by
-  have hok : EvalOk P.structs fd.ret fd.ret [] { env := [], scope := [] } [] (run P fuel) :=
-    soundness hwf fuel (entry_typed h0 hp fd.ret) frameMatches_empty
-  cases hr : run P fuel with
+    run M.toFloatOps P fuel = .outOfFuel ∨ (∃ k tr, run M.toFloatOps P fuel = .panic k tr) ∨
+      (∃ H v tr, run M.toFloatOps P fuel = .ok H v tr ∧ HasTy P.structs v fd.ret) := by
+  have hok : EvalOk P.structs fd.ret fd.ret [] { env := [], scope := [] } [] (run M.toFloatOps P fuel) :=
+    soundness M hwf fuel (entry_typed h0 hp fd.ret) frameMatches_empty
+  cases hr : run M.toFloatOps P fuel with
   | ok H v tr =>
       rw [hr] at hok
       exact Or.inr (Or.inr ⟨H, v, tr, rfl, hok.1⟩)
-  | returned H v tr => exact absurd hr (run_ne_returned H v tr)
+  | returned H v tr => exact absurd hr (run_ne_returned M.toFloatOps H v tr)
   | panic k tr => exact Or.inr (Or.inl ⟨k, tr, rfl⟩)
   | stuck w => rw [hr] at hok; exact hok.elim
   | outOfFuel => exact Or.inl rfl
@@ -1604,13 +1764,13 @@ theorem run_safe {P : Program} {fd : FnDef} (hwf : WfProgram P)
 existentially quantified because `ProgramTyped` only says one exists; the
 value's type is still the one that function declares, so this form claims
 exactly what `run_safe` proves. -/
-theorem ProgramTyped.run_safe {P : Program} (h : ProgramTyped P) (fuel : Nat) :
+theorem ProgramTyped.run_safe (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     ∃ fd, P.fns[0]? = some fd ∧
-      (run P fuel = .outOfFuel ∨ (∃ k tr, run P fuel = .panic k tr) ∨
-        (∃ H v tr, run P fuel = .ok H v tr ∧ HasTy P.structs v fd.ret)) := by
+      (run M.toFloatOps P fuel = .outOfFuel ∨ (∃ k tr, run M.toFloatOps P fuel = .panic k tr) ∨
+        (∃ H v tr, run M.toFloatOps P fuel = .ok H v tr ∧ HasTy P.structs v fd.ret)) := by
   obtain ⟨fd, h0, hp⟩ := h.entry
   refine ⟨fd, h0, ?_⟩
-  rcases RueCore.run_safe h.wf h0 hp fuel with h₁ | ⟨k, trk, h₂⟩ | ⟨H, v, tr, h₃, hty⟩
+  rcases RueCore.run_safe M h.wf h0 hp fuel with h₁ | ⟨k, trk, h₂⟩ | ⟨H, v, tr, h₃, hty⟩
   · exact Or.inl h₁
   · exact Or.inr (Or.inl ⟨k, trk, h₂⟩)
   · exact Or.inr (Or.inr ⟨H, v, tr, h₃, hty⟩)
@@ -1646,16 +1806,16 @@ calculus, the second is the calculus doing what it says.
 
 Every *other* edge — a `let`'s scope exit, a frame's normal pop, and a
 `return`'s unwind — is covered. -/
-theorem no_violation {P : Program} (h : ProgramTyped P) (fuel : Nat) (w : Violation) :
-    run P fuel ≠ .stuck w := by
-  obtain ⟨_, _, h₁ | ⟨k, trk, h₂⟩ | ⟨H, v, tr, h₃, _⟩⟩ := h.run_safe fuel
+theorem no_violation (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) (w : Violation) :
+    run M.toFloatOps P fuel ≠ .stuck w := by
+  obtain ⟨_, _, h₁ | ⟨k, trk, h₂⟩ | ⟨H, v, tr, h₃, _⟩⟩ := h.run_safe M fuel
   · rw [h₁]; simp
   · rw [h₂]; simp
   · rw [h₃]; simp
 
 /-- §7 "No use-after-move": the machine never reads a `⊘` cell. -/
-theorem no_use_after_move {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-    run P fuel ≠ .stuck .useAfterMove := no_violation h fuel _
+theorem no_use_after_move (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
+    run M.toFloatOps P fuel ≠ .stuck .useAfterMove := no_violation M h fuel _
 
 /-- §7 "No use-after-drop": the machine never touches a retired (`†`) cell.
 With frames, this is a consequence of the invariant rather than a structural
@@ -1664,20 +1824,20 @@ scope record at every `return` and at every frame pop, and it is
 `FrameMatches` — the record is the environment, whose cells `Matches` says are
 live or moved out and pairwise distinct — that keeps those walks off a `†`
 cell and stops any cell being retired twice. -/
-theorem no_use_after_drop {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-    run P fuel ≠ .stuck .useAfterDrop := no_violation h fuel _
+theorem no_use_after_drop (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
+    run M.toFloatOps P fuel ≠ .stuck .useAfterDrop := no_violation M h fuel _
 
 /-- §7 "Linear values are consumed exactly once", leak half: neither a scope
 exit (§6.7) nor a frame unwind (§6.9) ever sees a live linear value. -/
-theorem no_linear_leak {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-    run P fuel ≠ .stuck .linearLeak := no_violation h fuel _
+theorem no_linear_leak (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
+    run M.toFloatOps P fuel ≠ .stuck .linearLeak := no_violation M h fuel _
 
 /-- §7 linear bullet, overwrite half (`3.8:77`, the RUE-387 premise). -/
-theorem no_linear_overwrite {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-    run P fuel ≠ .stuck .linearOverwrite := no_violation h fuel _
+theorem no_linear_overwrite (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
+    run M.toFloatOps P fuel ≠ .stuck .linearOverwrite := no_violation M h fuel _
 
 /-- §7 linear bullet, discard half (`3.8:64`). -/
-theorem no_linear_discard {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-    run P fuel ≠ .stuck .linearDiscard := no_violation h fuel _
+theorem no_linear_discard (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
+    run M.toFloatOps P fuel ≠ .stuck .linearDiscard := no_violation M h fuel _
 
 end RueCore

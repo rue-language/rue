@@ -114,12 +114,28 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
       | some (.int w s, Γ₁) =>
         (match check P R Γ₁ e₂ with
         | some (.int w' s', Γ₂) =>
-            if w' = w ∧ s' = s then some (op.resultTy (.int w s), Γ₂) else none
+            if w' = w ∧ s' = s ∧ op.intAdmits = true then some (op.resultTy (.int w s), Γ₂)
+            else none
         | _ => none)
+      | some (.float w, Γ₁) =>
+        (match check P R Γ₁ e₂ with
+        | some (.float w', Γ₂) =>
+            if w' = w ∧ op.floatAdmits = true then some (op.resultTy (.float w), Γ₂) else none
+        | _ => none)
+      | _ => none
+  | .floatLit w _ => some (.float w, Γ)
+  | .fintrin (.intToFloat w) e =>
+      match check P R Γ e with
+      | some (.int _ _, Γ') => some (.float w, Γ')
+      | _ => none
+  | .fintrin k e =>
+      match check P R Γ e with
+      | some (.float w, Γ') => if k.floatSrc w then some (k.resTy w, Γ') else none
       | _ => none
   | .unop .neg e =>
       match check P R Γ e with
       | some (.int w .signed, Γ') => some (.int w .signed, Γ')
+      | some (.float w, Γ') => some (.float w, Γ')
       | _ => none
   | .unop .not e =>
       match check P R Γ e with
@@ -261,17 +277,57 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
         · rename_i w' s' Γ₂ h₂
           split at h
           · rename_i hws
-            obtain ⟨hw, hs⟩ := hws
+            obtain ⟨hw, hs, hadm⟩ := hws
             subst hw; subst hs
             cases h
-            exact .binop (check_sound e₁ h₁) (check_sound e₂ h₂)
+            exact .binop (check_sound e₁ h₁) (check_sound e₂ h₂) hadm
           · cases h
+        · cases h
+      · rename_i w Γ₁ h₁
+        split at h
+        · rename_i w' Γ₂ h₂
+          split at h
+          · rename_i hws
+            obtain ⟨hw, hadm⟩ := hws
+            subst hw
+            cases h
+            exact .floatBinop (check_sound e₁ h₁) (check_sound e₂ h₂) hadm
+          · cases h
+        · cases h
+      · cases h
+  | .floatLit w l, Γ, T, Γ', h => by
+      simp only [check] at h; cases h; exact .floatLit
+  | .fintrin (.intToFloat w) e, Γ, T, Γ', h => by
+      simp only [check] at h
+      split at h
+      · cases h; exact .intToFloat (check_sound e ‹_›)
+      · cases h
+  | .fintrin (.floatToInt w s) e, Γ, T, Γ', h => by
+      simp only [check] at h
+      split at h
+      · split at h
+        · cases h; exact .floatIntrin (check_sound e ‹_›) (by simpa using ‹_›)
+        · cases h
+      · cases h
+  | .fintrin (.floatCast w) e, Γ, T, Γ', h => by
+      simp only [check] at h
+      split at h
+      · split at h
+        · cases h; exact .floatIntrin (check_sound e ‹_›) (by simpa using ‹_›)
+        · cases h
+      · cases h
+  | .fintrin (.roundOp k) e, Γ, T, Γ', h => by
+      simp only [check] at h
+      split at h
+      · split at h
+        · cases h; exact .floatIntrin (check_sound e ‹_›) (by simpa using ‹_›)
         · cases h
       · cases h
   | .unop .neg e, Γ, T, Γ', h => by
       simp only [check] at h
       split at h
       · cases h; exact .neg (check_sound e ‹_›)
+      · cases h; exact .floatNeg (check_sound e ‹_›)
       · cases h
   | .unop .not e, Γ, T, Γ', h => by
       simp only [check] at h

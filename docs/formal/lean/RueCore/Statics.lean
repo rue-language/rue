@@ -402,12 +402,33 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   second operand type here. -/
   | binop {Γ Γ₁ Γ₂ op e₁ e₂ w s} :
       Typed P R Γ e₁ (.int w s) Γ₁ → Typed P R Γ₁ e₂ (.int w s) Γ₂ →
+      op.intAdmits = true →
       Typed P R Γ (.binop op e₁ e₂) (op.resultTy (.int w s)) Γ₂
+  /-- (Float-Arith), (Float-Ord) and (Total-Cmp) §5.8, in one rule for the
+  same reason `binop` fuses (Arith) and (Ord): they differ only in the type
+  they conclude at (`BinOp.resultTy` — `float(w)`, `bool`, `int(32,signed)`).
+  Both operands share **one** `float(w)`: `3.12:13` gives no implicit
+  widening, so an `f32`/`f64` mix has no derivation, and `3.12:14` relates no
+  float operand to an integer one — the only bridges are the intrinsics.
+  `BinOp.floatAdmits` is §5.8's "rejected by the absence of a rule" for `%`
+  (`3.12:25`) and for the bitwise and shift operators, written as a side
+  condition because one constructor stands for the three rule groups. -/
+  | floatBinop {Γ Γ₁ Γ₂ op e₁ e₂ w} :
+      Typed P R Γ e₁ (.float w) Γ₁ → Typed P R Γ₁ e₂ (.float w) Γ₂ →
+      op.floatAdmits = true →
+      Typed P R Γ (.binop op e₁ e₂) (op.resultTy (.float w)) Γ₂
   /-- (Neg) §5.8: negation demands a **signed** operand (`4.2:6`; rejecting it
   on an unsigned type is `4.2:14`) and concludes at that type. -/
   | neg {Γ Γ' e w} :
       Typed P R Γ e (.int w .signed) Γ' →
       Typed P R Γ (.unop .neg e) (.int w .signed) Γ'
+  /-- (Float-Neg) §5.8: float negation applies at **every** float type, where
+  (Neg) restricts the integer case to a signed one (`3.12:24`, `4.2:14`), and
+  §6.4 makes it total rather than trapping on a minimum — a sign flip, on
+  `-0.0` and on a NaN alike. -/
+  | floatNeg {Γ Γ' e w} :
+      Typed P R Γ e (.float w) Γ' →
+      Typed P R Γ (.unop .neg e) (.float w) Γ'
   /-- (Not) §5.8: logical negation demands `bool` (`4.4:2`). The bitwise
   operators do not accept `bool` at all (`4.3a:18`, `4.3a:19`), which is why
   `binop` above is stated only at `int(w,s)`. -/
@@ -426,6 +447,31 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   | intCast {Γ Γ' w s w' s' e} :
       Typed P R Γ e (.int w' s') Γ' →
       Typed P R Γ (.intCast w s e) (.int w s) Γ'
+  /-- (Lit) §5.8 for a float: the literal at the `float(w)` elaboration
+  resolved for it (`3.12:7`). Unlike `intLit` it carries no side condition
+  saying the literal denotes a value of the type — `3.12:9` *rounds* a float
+  literal to the nearest value of its type rather than rejecting it, so every
+  decimal denotes one, and the rounding is the model's `ofLit`. (The compiler
+  additionally rejects a source literal whose rounded value is infinite; that
+  is a surface rule, `finite_float_literal_bits`, not one §5.8 states.) -/
+  | floatLit {Γ w l} :
+      Typed P R Γ (.floatLit w l) (.float w) Γ
+  /-- (Int-To-Float) §5.8: the operand is an integer of any width and
+  signedness (`3.12:16`, `4.13:139`) and the result is the `float(w)`
+  elaboration took from the use site. It never traps (§6.4). -/
+  | intToFloat {Γ Γ' w w' s' e} :
+      Typed P R Γ e (.int w' s') Γ' →
+      Typed P R Γ (.fintrin (.intToFloat w) e) (.float w) Γ'
+  /-- (Float-To-Int), (Float-Cast) and (Float-Round) §5.8, in one rule: each
+  takes one `float(w)` operand and concludes at the type the form carries
+  (`FloatIntrin.resTy`). `FloatIntrin.floatSrc` carries (Float-Cast)'s
+  `w' ≠ w` side condition (`3.12:19`) and keeps `@int_to_float`, whose operand
+  is an integer, on its own rule above. Whether a `@float_to_int` *survives*
+  is dynamic, not a typing question: `3.12:18` and §6.4's
+  (D-Float-To-Int-Trap). -/
+  | floatIntrin {Γ Γ' k w e} :
+      Typed P R Γ e (.float w) Γ' → k.floatSrc w = true →
+      Typed P R Γ (.fintrin k e) (k.resTy w) Γ'
   /-- (Panic) §5.8 with (Sub-Never) folded in (§5.7), the same fold
   `Typed.ret` makes: `@panic` is `never`-typed, so the rule concludes at an
   arbitrary type and — since `⊥` contributes no state to a join — at an
@@ -645,11 +691,16 @@ theorem Typed.skel_preserved {P R} {Γ Γ' : Ctx} {e T} (h : Typed P R Γ e T Γ
   | unitLit => rfl
   | useCopy _ _ _ => rfl
   | useMove hget _ _ => exact skel_set_setSt hget _
-  | binop _ _ ih₁ ih₂ => exact ih₂.trans ih₁
+  | binop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
+  | floatBinop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
   | neg _ ih => exact ih
+  | floatNeg _ ih => exact ih
   | notOp _ ih => exact ih
   | bitnot _ ih => exact ih
   | intCast _ ih => exact ih
+  | floatLit => rfl
+  | intToFloat _ ih => exact ih
+  | floatIntrin _ _ ih => exact ih
   | panic hskel => exact hskel
   | dbg _ _ ih => exact ih
   | mkStruct _ _ ih => exact ih
@@ -678,11 +729,16 @@ theorem TypedArgs.skel_preserved {P R} {Γ Γ' : Ctx} {es Ts} (h : TypedArgs P R
   | unitLit => rfl
   | useCopy _ _ _ => rfl
   | useMove hget _ _ => exact skel_set_setSt hget _
-  | binop _ _ ih₁ ih₂ => exact ih₂.trans ih₁
+  | binop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
+  | floatBinop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
   | neg _ ih => exact ih
+  | floatNeg _ ih => exact ih
   | notOp _ ih => exact ih
   | bitnot _ ih => exact ih
   | intCast _ ih => exact ih
+  | floatLit => rfl
+  | intToFloat _ ih => exact ih
+  | floatIntrin _ _ ih => exact ih
   | panic hskel => exact hskel
   | dbg _ _ ih => exact ih
   | mkStruct _ _ ih => exact ih

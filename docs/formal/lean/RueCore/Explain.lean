@@ -77,14 +77,18 @@ block forms (`let`, assignment, sequencing, `if`) folded onto one line so a
 derivation node or a trace row stays one row. -/
 partial def exprLine (P : Program) (R : Ty) : List Ty → Expr → String
   | _, .intLit _ _ n => if n < 0 then "(" ++ toString n ++ ")" else toString n
+  | _, .floatLit _ l => l.spell
   | _, .boolLit b => if b then "true" else "false"
   | _, .unitLit => "()"
   | Γ, .use i => Print.useName Γ i
+  | Γ, .binop .totalCmp e₁ e₂ =>
+      "@total_cmp(" ++ exprLine P R Γ e₁ ++ ", " ++ exprLine P R Γ e₂ ++ ")"
   | Γ, .binop op e₁ e₂ =>
       "(" ++ exprLine P R Γ e₁ ++ " " ++ Print.binOpSym op ++ " " ++ exprLine P R Γ e₂ ++ ")"
   | Γ, .unop op e => "(" ++ Print.unOpSym op ++ exprLine P R Γ e ++ ")"
   | Γ, .intCast w s e =>
       "@intCast<" ++ Print.tyName (.int w s) ++ ">(" ++ exprLine P R Γ e ++ ")"
+  | Γ, .fintrin k e => Print.fintrinName k ++ "(" ++ exprLine P R Γ e ++ ")"
   | _, .panic msg => "@panic(" ++ Print.quoted msg ++ ")"
   | Γ, .dbg e => "@dbg(" ++ exprLine P R Γ e ++ ")"
   | Γ, .mkStruct s args =>
@@ -127,6 +131,7 @@ value determines its type (§7's `HasTy`, read as a function), which is what
 lets a trace name its binders the way the source does. -/
 def valTy : Val → Ty
   | .int w s _ => .int w s
+  | .float w _ => .float w
   | .bool _ => .bool
   | .unit => .unit
   | .struct s _ => .struct s
@@ -135,6 +140,7 @@ def valTy : Val → Ty
 as `{ v1, …, vk }_S` with its declaration's name. -/
 partial def valLine : Val → String
   | .int _ _ n => toString n
+  | .float w f => f.render w
   | .bool b => if b then "true" else "false"
   | .unit => "()"
   | .struct s vs =>
@@ -253,6 +259,42 @@ def operandNotInt (T : Ty) : String :=
   "an operand has type " ++ Print.tyName T ++ ", but (Arith)/(Ord) require both operands " ++
   "to share one int(w,s) (§5.8; 4.2:1; the bitwise and shift operators take no other " ++
   "type at all, 4.3a:18, 4.3a:19)"
+
+/-- (helper) The operand is not a scalar any binary rule of §5.8 admits. -/
+def operandNotScalar (T : Ty) : String :=
+  "the operand has type " ++ Print.tyName T ++
+    ", and §5.8 states the binary operators at int(w,s) ((Arith)/(Ord)) and at float(w) " ++
+    "((Float-Arith)/(Float-Ord)/(Total-Cmp)) only"
+
+/-- (helper) The operator has no rule at the operands' float type: `%` and
+the bitwise and shift operators are rejected on floats by the absence of a
+rule (`3.12:25`, §5.8). -/
+def opNotOnFloat (op : BinOp) (T : Ty) : String :=
+  "§5.8 gives `" ++ Print.binOpSym op ++ "` no rule at " ++ Print.tyName T ++
+    ": (Float-Arith) admits + - * / only (3.12:25), and the bitwise and shift operators " ++
+    "are stated at int(w,s), a float being a datum rather than a bit pattern"
+
+/-- (helper) `@total_cmp` has no integer rule (`3.12:31`). -/
+def opNotOnInt (op : BinOp) (T : Ty) : String :=
+  "§5.8 gives `@total_cmp` no rule at " ++ Print.tyName T ++
+    ": 3.12:31 gives it two operands of one floating-point type" ++
+    (if op = .totalCmp then "" else "")
+
+/-- (helper) A float intrinsic whose operand is not a float. -/
+def fintrinNotFloat (k : FloatIntrin) (T : Ty) : String :=
+  "§5.8's rule for `" ++ Print.fintrinName k ++ "` takes a float(w) operand; this one has type " ++
+    Print.tyName T
+
+/-- (helper) `@int_to_float` takes an integer operand (`3.12:16`). -/
+def intToFloatNotInt (T : Ty) : String :=
+  "(Int-To-Float) §5.8 takes an operand of an integer type (3.12:16); this one has type " ++
+    Print.tyName T
+
+/-- (helper) `@float_cast` converts between the two widths and only between
+them (`3.12:19`). -/
+def floatCastSameWidth (T : Ty) : String :=
+  "(Float-Cast) §5.8 carries the side condition w' ≠ w (3.12:19): @float_cast converts " ++
+    "between f32 and f64 and only between them, and both ends here are " ++ Print.tyName T
 
 /-- (Arith)/(Ord) premise: **one** `int(w,s)` for both operands (§5.8;
 `4.2:1`; there is no implicit widening). For a shift this is `4.3a:9`: the
@@ -426,6 +468,19 @@ ordering compares by (Ord) and everything else in the `⊕` set by (Arith). -/
 def binopRule (op : BinOp) : String :=
   if op.isCompare then "(Ord) §5.8" else "(Arith) §5.8"
 
+/-- (helper) The §5.8 rule a one-operand float intrinsic applies. -/
+def fintrinRule : FloatIntrin → String
+  | .intToFloat _ => "(Int-To-Float) §5.8"
+  | .floatToInt _ _ => "(Float-To-Int) §5.8"
+  | .floatCast _ => "(Float-Cast) §5.8"
+  | .roundOp _ => "(Float-Round) §5.8"
+
+/-- (helper) The §5.8 rule a binary operator applies at a float operand type:
+(Float-Arith), (Float-Ord) or (Total-Cmp). -/
+def floatBinopRule (op : BinOp) : String :=
+  if op = .totalCmp then "(Total-Cmp) §5.8"
+  else if op.isCompare then "(Float-Ord) §5.8" else "(Float-Arith) §5.8"
+
 /-- (helper) The first entry on which the §5.5 join fails, named as the
 source names it, so a join rejection can point at a binding. -/
 def joinConflictEntry (D : StructEnv) : Ctx → Ctx → Option String
@@ -505,26 +560,69 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
             accepted "(Use-Move) §5.1" Γ (.use i) en.ty (Γ.set i (en.setSt .movedOut)) []
   | .binop op e₁ e₂ =>
       let rule := binopRule op
+      let frule := floatBinopRule op
       let d₁ := explain P R Γ e₁
       match d₁.result with
       | some (.int w s, Γ₁) =>
         let d₂ := explain P R Γ₁ e₂
         (match d₂.result with
          | some (.int w' s', Γ₂) =>
-             if w' = w ∧ s' = s then
+             if w' = w ∧ s' = s ∧ op.intAdmits = true then
                accepted rule Γ (.binop op e₁ e₂) (op.resultTy (.int w s)) Γ₂ [d₁, d₂]
+             else if w' = w ∧ s' = s then
+               rejected rule Γ (.binop op e₁ e₂)
+                 (Premise.opNotOnInt op (.int w s)) [d₁, d₂]
              else
                rejected rule Γ (.binop op e₁ e₂)
                  (Premise.operandWidthMismatch (.int w s) (.int w' s')) [d₁, d₂]
          | some (T, _) => rejected rule Γ (.binop op e₁ e₂) (Premise.operandNotInt T) [d₁, d₂]
          | none => rejected rule Γ (.binop op e₁ e₂) Premise.subDerivation [d₁, d₂])
-      | some (T, _) => rejected rule Γ (.binop op e₁ e₂) (Premise.operandNotInt T) [d₁]
+      | some (.float w, Γ₁) =>
+        let d₂ := explain P R Γ₁ e₂
+        (match d₂.result with
+         | some (.float w', Γ₂) =>
+             if w' = w ∧ op.floatAdmits = true then
+               accepted frule Γ (.binop op e₁ e₂) (op.resultTy (.float w)) Γ₂ [d₁, d₂]
+             else if w' = w then
+               rejected frule Γ (.binop op e₁ e₂)
+                 (Premise.opNotOnFloat op (.float w)) [d₁, d₂]
+             else
+               rejected frule Γ (.binop op e₁ e₂)
+                 (Premise.operandWidthMismatch (.float w) (.float w')) [d₁, d₂]
+         | some (T, _) => rejected frule Γ (.binop op e₁ e₂) (Premise.operandNotScalar T) [d₁, d₂]
+         | none => rejected frule Γ (.binop op e₁ e₂) Premise.subDerivation [d₁, d₂])
+      | some (T, _) => rejected rule Γ (.binop op e₁ e₂) (Premise.operandNotScalar T) [d₁]
       | none => rejected rule Γ (.binop op e₁ e₂) Premise.subDerivation [d₁]
+  | .floatLit w l => accepted "(Lit) §5.8" Γ (.floatLit w l) (.float w) Γ []
+  | .fintrin (.intToFloat w) e =>
+      let d := explain P R Γ e
+      (match d.result with
+       | some (.int _ _, Γ') =>
+           accepted "(Int-To-Float) §5.8" Γ (.fintrin (.intToFloat w) e) (.float w) Γ' [d]
+       | some (T, _) =>
+           rejected "(Int-To-Float) §5.8" Γ (.fintrin (.intToFloat w) e)
+             (Premise.intToFloatNotInt T) [d]
+       | none =>
+           rejected "(Int-To-Float) §5.8" Γ (.fintrin (.intToFloat w) e)
+             Premise.subDerivation [d])
+  | .fintrin k e =>
+      let rule := fintrinRule k
+      let d := explain P R Γ e
+      (match d.result with
+       | some (.float w, Γ') =>
+           if k.floatSrc w then
+             accepted rule Γ (.fintrin k e) (k.resTy w) Γ' [d]
+           else
+             rejected rule Γ (.fintrin k e) (Premise.floatCastSameWidth (.float w)) [d]
+       | some (T, _) => rejected rule Γ (.fintrin k e) (Premise.fintrinNotFloat k T) [d]
+       | none => rejected rule Γ (.fintrin k e) Premise.subDerivation [d])
   | .unop .neg e =>
       let d := explain P R Γ e
       (match d.result with
        | some (.int w .signed, Γ') =>
            accepted "(Neg) §5.8" Γ (.unop .neg e) (.int w .signed) Γ' [d]
+       | some (.float w, Γ') =>
+           accepted "(Float-Neg) §5.8" Γ (.unop .neg e) (.float w) Γ' [d]
        | some (T, _) => rejected "(Neg) §5.8" Γ (.unop .neg e) (Premise.negNotSigned T) [d]
        | none => rejected "(Neg) §5.8" Γ (.unop .neg e) Premise.subDerivation [d])
   | .unop .not e =>
@@ -578,6 +676,9 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
              if sd.Consumable then
                accepted "§5.8 whole-value elimination" Γ (.consume e) sd.payloadTy Γ' [d]
              else rejected "§5.8 whole-value elimination" Γ (.consume e) Premise.notConsumable [d])
+      | some (.float w, _) =>
+          rejected "§5.8 whole-value elimination" Γ (.consume e)
+            (Premise.consumeNotStruct (.float w)) [d]
       | some (.int w s, _) =>
           rejected "§5.8 whole-value elimination" Γ (.consume e)
             (Premise.consumeNotStruct (.int w s)) [d]
@@ -748,6 +849,7 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
     (explain P R Γ e).result = check P R Γ e
   | .intLit w s n, Γ => by
       simp only [explain, check]; split <;> rfl
+  | .floatLit w l, Γ => rfl
   | .boolLit b, Γ => rfl
   | .unitLit, Γ => rfl
   | .use i, Γ => by
@@ -770,6 +872,22 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
       (repeat' split) <;>
         first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
   | .intCast w s e, Γ => by
+      simp only [explain, check, explain_result e]
+      (repeat' split) <;>
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+  | .fintrin (.intToFloat w) e, Γ => by
+      simp only [explain, check, explain_result e]
+      (repeat' split) <;>
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+  | .fintrin (.floatToInt w s) e, Γ => by
+      simp only [explain, check, explain_result e]
+      (repeat' split) <;>
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+  | .fintrin (.floatCast w) e, Γ => by
+      simp only [explain, check, explain_result e]
+      (repeat' split) <;>
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+  | .fintrin (.roundOp k) e, Γ => by
       simp only [explain, check, explain_result e]
       (repeat' split) <;>
         first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
@@ -819,6 +937,7 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
         obtain ⟨T, Γ₀⟩ := p
         cases T with
         | int => rfl
+        | float => rfl
         | unit => rfl
         | struct s' => rfl
         | bool =>
@@ -1053,7 +1172,9 @@ def confused (kids : List Step) (d : Nat) (Θ : List Ty) (R : Ty) (e : Expr) (ru
     (H : Store) : Trace :=
   refused kids d Θ R e rule H .typeConfusion
 
-/-- (helper) The §6.4 rule group a binary operator's row names. -/
+/-- (helper) The §6.4 rule group a binary operator's row names. The float
+rules are named by the operand type at the row (`binopDynRuleAt`); this is the
+integer reading, which is what a row without float operands shows. -/
 def binopDynRule : BinOp → String
   | .add | .sub | .mul => "(D-Arith) §6.4"
   | .div => "(D-Div) §6.4"
@@ -1062,11 +1183,19 @@ def binopDynRule : BinOp → String
   | .shl => "(D-Shl) §6.4"
   | .shr => "(D-Shr) §6.4"
   | .lt | .le | .gt | .ge => "ordering compare §6.4"
+  | .totalCmp => "(D-Total-Cmp) §6.4"
+
+/-- (helper) The §6.4 rule a one-operand float intrinsic's row names. -/
+def fintrinDynRule : FloatIntrin → String
+  | .intToFloat _ => "(D-Int-To-Float) §6.4"
+  | .floatToInt _ _ => "(D-Float-To-Int) §6.4"
+  | .floatCast _ => "(D-Float-Cast) §6.4"
+  | .roundOp _ => "(D-Float-Round) §6.4"
 
 /-- (helper) The §6.4 rule a unary operator's row names. `neg` is
 (D-Arith)'s unary case; `not` and `bitnot` are total. -/
 def unopDynRule : UnOp → String
-  | .neg => "(D-Arith) §6.4, the unary case"
+  | .neg => "(D-Arith) §6.4, the unary case (or (D-Float-Neg) at a float)"
   | .not => "§6.4's `not` on bool"
   | .bitnot => "(D-Bit) §6.4, the complement"
 
@@ -1109,13 +1238,18 @@ row per evaluated node. `traceEval_res` proves the two agree on the final
 result. `d` is the nesting depth, `Θ` the binder types in scope and `R` the
 enclosing function's return type, all of which travel with `φ` so each row
 prints its expression with the source's names. -/
-def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame → Expr → Trace
+def traceEval (M : FloatOps) (P : Program) :
+    Nat → Nat → List Ty → Ty → Store → Frame → Expr → Trace
   | 0, d, Θ, R, H, _, e =>
       traced [] d Θ R e "out of fuel — the interpreter stopped early (ADR-0097)" H H []
         .exhausted .outOfFuel
   | _ + 1, d, Θ, R, H, _, .intLit w s n =>
       traced [] d Θ R (.intLit w s n) "literal §6.3" H H []
         (.value (.int w s n)) (.ok H (.int w s n) [])
+  | _ + 1, d, Θ, R, H, _, .floatLit w l =>
+      traced [] d Θ R (.floatLit w l) "literal §6.3 (3.12:9 rounds the decimal)" H H []
+        (.value (.float w (M.ofLit w l.sig l.negExp l.e)))
+        (.ok H (.float w (M.ofLit w l.sig l.negExp l.e)) [])
   | _ + 1, d, Θ, R, H, _, .boolLit b =>
       traced [] d Θ R (.boolLit b) "literal §6.3" H H [] (.value (.bool b)) (.ok H (.bool b) [])
   | _ + 1, d, Θ, R, H, _, .unitLit =>
@@ -1154,13 +1288,13 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
                      evs (.value .unit) (.ok (H.set ℓ .moved) .unit evs))
   | fuel + 1, d, Θ, R, H, φ, .binop op e₁ e₂ =>
       let rule := binopDynRule op
-      let t₁ := traceEval P fuel (d + 1) Θ R H φ e₁
+      let t₁ := traceEval M P fuel (d + 1) Θ R H φ e₁
       match t₁.res with
       | .ok H₁ v₁ tr₁ =>
-        let t₂ := traceEval P fuel (d + 1) Θ R H₁ φ e₂
+        let t₂ := traceEval M P fuel (d + 1) Θ R H₁ φ e₂
         (match t₂.res with
          | .ok H₂ v₂ tr₂ =>
-             (match evalBinOp op v₁ v₂ with
+             (match evalBinOp M op v₁ v₂ with
               | .val v =>
                   traced (t₁.steps ++ t₂.steps) d Θ R (.binop op e₁ e₂) rule H H₂ []
                     (.value v) (.ok H₂ v (tr₁ ++ tr₂))
@@ -1173,7 +1307,7 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
       | r => propagate t₁.steps d Θ R (.binop op e₁ e₂) rule H r
   | fuel + 1, d, Θ, R, H, φ, .unop op e =>
       let rule := unopDynRule op
-      let t := traceEval P fuel (d + 1) Θ R H φ e
+      let t := traceEval M P fuel (d + 1) Θ R H φ e
       match t.res with
       | .ok H' v tr =>
           (match evalUnOp op v with
@@ -1184,7 +1318,7 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
            | .confused => confused t.steps d Θ R (.unop op e) rule H)
       | r => propagate t.steps d Θ R (.unop op e) rule H r
   | fuel + 1, d, Θ, R, H, φ, .intCast w s e =>
-      let t := traceEval P fuel (d + 1) Θ R H φ e
+      let t := traceEval M P fuel (d + 1) Θ R H φ e
       match t.res with
       | .ok H' v tr =>
           (match evalIntCast w s v with
@@ -1196,17 +1330,29 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
                  (.panicked k) (.panic k tr)
            | .confused => confused t.steps d Θ R (.intCast w s e) "(D-Int-Cast) §6.4" H)
       | r => propagate t.steps d Θ R (.intCast w s e) "(D-Int-Cast) §6.4" H r
+  | fuel + 1, d, Θ, R, H, φ, .fintrin k e =>
+      let rule := fintrinDynRule k
+      let t := traceEval M P fuel (d + 1) Θ R H φ e
+      match t.res with
+      | .ok H' v tr =>
+          (match evalFintrin M k v with
+           | .val v' => traced t.steps d Θ R (.fintrin k e) rule H H' [] (.value v') (.ok H' v' tr)
+           | .trap kk =>
+               traced t.steps d Θ R (.fintrin k e) "(D-Float-To-Int-Trap) §6.4" H H' []
+                 (.panicked kk) (.panic kk tr)
+           | .confused => confused t.steps d Θ R (.fintrin k e) rule H)
+      | r => propagate t.steps d Θ R (.fintrin k e) rule H r
   | _ + 1, d, Θ, R, H, _, .panic msg =>
       traced [] d Θ R (.panic msg) "(D-Panic) §6.12" H H [] (.panicked .user) (.panic .user [])
   | fuel + 1, d, Θ, R, H, φ, .dbg e =>
-      let t := traceEval P fuel (d + 1) Θ R H φ e
+      let t := traceEval M P fuel (d + 1) Θ R H φ e
       match t.res with
       | .ok H' v tr =>
           traced t.steps d Θ R (.dbg e) "(Dbg) §5.8, the observable output of §6.12" H H'
             [.dbg v] (.value .unit) (.ok H' .unit (tr ++ [.dbg v]))
       | r => propagate t.steps d Θ R (.dbg e) "(Dbg) §5.8, the observable output of §6.12" H r
   | fuel + 1, d, Θ, R, H, φ, .mkStruct s args =>
-      let ta := traceArgs (fun H' e' => traceEval P fuel (d + 1) Θ R H' φ e') H args
+      let ta := traceArgs (fun H' e' => traceEval M P fuel (d + 1) Θ R H' φ e') H args
       (match ta.res with
        | .abort r => didNotRun ta.steps d Θ R (.mkStruct s args) "(D-Struct) §6.5" H r
        | .ok H₁ vs tr =>
@@ -1218,7 +1364,7 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
                  (.value (.struct s vs)) (.ok H₁ (.struct s vs) tr)
              else refused ta.steps d Θ R (.mkStruct s args) "(D-Struct) §6.5" H .typeConfusion)
   | fuel + 1, d, Θ, R, H, φ, .consume e =>
-      let t := traceEval P fuel (d + 1) Θ R H φ e
+      let t := traceEval M P fuel (d + 1) Θ R H φ e
       match t.res with
       | .ok H' (.struct _ (.int w s n :: _)) tr =>
           traced t.steps d Θ R (.consume e) "§6.5 whole-value elimination" H H' []
@@ -1226,14 +1372,14 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
       | .ok _ _ _ => confused t.steps d Θ R (.consume e) "§6.5 whole-value elimination" H
       | r => propagate t.steps d Θ R (.consume e) "§6.5 whole-value elimination" H r
   | fuel + 1, d, Θ, R, H, φ, .letIn m e₁ e₂ =>
-      let t₁ := traceEval P fuel (d + 1) Θ R H φ e₁
+      let t₁ := traceEval M P fuel (d + 1) Θ R H φ e₁
       match t₁.res with
       | .ok H₁ v₁ tr₁ =>
           let bind := adminStep (d + 1) Θ R (.letIn m e₁ e₂) "(D-Let) §6.7 (mint the binding)"
             ("let " ++ (if m then "mut " else "") ++ Print.binderName Θ.length ++ " = " ++
               valLine v₁ ++ " at " ++ locName H₁.length)
             H₁ (H₁ ++ [.full v₁]) [] (.value v₁)
-          let t₂ := traceEval P fuel (d + 1) (valTy v₁ :: Θ) R (H₁ ++ [.full v₁])
+          let t₂ := traceEval M P fuel (d + 1) (valTy v₁ :: Θ) R (H₁ ++ [.full v₁])
             { env := H₁.length :: φ.env, scope := φ.scope ++ [H₁.length] } e₂
           (match t₂.res with
            | .ok H₂ v₂ tr₂ =>
@@ -1251,7 +1397,7 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
                  scopeNeverClosed H (r.withTrace tr₁))
       | r => propagate t₁.steps d Θ R (.letIn m e₁ e₂) "(D-Let) §6.7" H r
   | fuel + 1, d, Θ, R, H, φ, .assign i e =>
-      let t := traceEval P fuel (d + 1) Θ R H φ e
+      let t := traceEval M P fuel (d + 1) Θ R H φ e
       match t.res with
       | .ok H₁ v tr =>
           (match φ.env[i]? with
@@ -1275,7 +1421,7 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
                          (.ok (H₁.set ℓ (.full v)) .unit (tr ++ evs)))
       | r => propagate t.steps d Θ R (.assign i e) "(D-Assign) §6.8" H r
   | fuel + 1, d, Θ, R, H, φ, .seq e₁ e₂ =>
-      let t₁ := traceEval P fuel (d + 1) Θ R H φ e₁
+      let t₁ := traceEval M P fuel (d + 1) Θ R H φ e₁
       match t₁.res with
       | .ok H₁ v₁ tr₁ =>
           (match v₁.mult P.structs with
@@ -1286,35 +1432,35 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
                | .ok evs =>
                let discard := adminStep (d + 1) Θ R (.seq e₁ e₂) "(D-Seq) §6.7 (drop the temporary)"
                  ("drop(" ++ valLine v₁ ++ ")") H₁ H₁ (.dropTemp v₁ :: evs) (.value .unit)
-               let t₂ := traceEval P fuel (d + 1) Θ R H₁ φ e₂
+               let t₂ := traceEval M P fuel (d + 1) Θ R H₁ φ e₂
                traced (t₁.steps ++ [discard] ++ t₂.steps) d Θ R (.seq e₁ e₂) "(D-Seq) §6.7"
                  H (lastStore (t₁.steps ++ [discard] ++ t₂.steps) H₁) []
                  (StepRes.ofRes t₂.res)
                  ((t₂.res.withTrace (.dropTemp v₁ :: evs)).withTrace tr₁)
            | .copy =>
-               let t₂ := traceEval P fuel (d + 1) Θ R H₁ φ e₂
+               let t₂ := traceEval M P fuel (d + 1) Θ R H₁ φ e₂
                traced (t₁.steps ++ t₂.steps) d Θ R (.seq e₁ e₂) "(D-Seq) §6.7"
                  H (lastStore (t₁.steps ++ t₂.steps) H₁) [] (StepRes.ofRes t₂.res)
                  (t₂.res.withTrace tr₁))
       | r => propagate t₁.steps d Θ R (.seq e₁ e₂) "(D-Seq) §6.7" H r
   | fuel + 1, d, Θ, R, H, φ, .ite c e₁ e₂ =>
-      let t₀ := traceEval P fuel (d + 1) Θ R H φ c
+      let t₀ := traceEval M P fuel (d + 1) Θ R H φ c
       match t₀.res with
       | .ok H₀ (.bool b) tr₀ =>
           if b then
-            let t₁ := traceEval P fuel (d + 1) Θ R H₀ φ e₁
+            let t₁ := traceEval M P fuel (d + 1) Θ R H₀ φ e₁
             traced (t₀.steps ++ t₁.steps) d Θ R (.ite c e₁ e₂) "(D-If-T) §6.6"
               H (lastStore (t₀.steps ++ t₁.steps) H₀) [] (StepRes.ofRes t₁.res)
               (t₁.res.withTrace tr₀)
           else
-            let t₂ := traceEval P fuel (d + 1) Θ R H₀ φ e₂
+            let t₂ := traceEval M P fuel (d + 1) Θ R H₀ φ e₂
             traced (t₀.steps ++ t₂.steps) d Θ R (.ite c e₁ e₂) "(D-If-F) §6.6"
               H (lastStore (t₀.steps ++ t₂.steps) H₀) [] (StepRes.ofRes t₂.res)
               (t₂.res.withTrace tr₀)
       | .ok _ _ _ => confused t₀.steps d Θ R (.ite c e₁ e₂) "(D-If-T)/(D-If-F) §6.6" H
       | r => propagate t₀.steps d Θ R (.ite c e₁ e₂) "(D-If-T)/(D-If-F) §6.6" H r
   | fuel + 1, d, Θ, R, H, φ, .ret e =>
-      let t := traceEval P fuel (d + 1) Θ R H φ e
+      let t := traceEval M P fuel (d + 1) Θ R H φ e
       match t.res with
       | .ok H₁ v tr =>
           (match runAllScopeDrops P.structs H₁ φ with
@@ -1326,7 +1472,7 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
                  H₁ H₂ evs (.unwound v) (.returned H₂ v (tr ++ evs)))
       | r => propagate t.steps d Θ R (.ret e) "(D-Return) §6.9" H r
   | fuel + 1, d, Θ, R, H, φ, .call f args =>
-      let ta := traceArgs (fun H' e' => traceEval P fuel (d + 1) Θ R H' φ e') H args
+      let ta := traceArgs (fun H' e' => traceEval M P fuel (d + 1) Θ R H' φ e') H args
       match ta.res with
       | .abort r => didNotRun ta.steps d Θ R (.call f args) "(D-Call) §6.9" H r
       | .ok H₁ vs tr =>
@@ -1339,7 +1485,7 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
             let push := adminStep (d + 1) Θ R (.call f args) "(D-Call) §6.9 (push the frame)"
               (fnHeader f fd ++ "  with " ++ locsLine minted.2)
               H₁ minted.1 [] (.value .unit)
-            let tb := traceEval P fuel (d + 2) (Print.bodyBinders fd) fd.ret minted.1 φg fd.body
+            let tb := traceEval M P fuel (d + 2) (Print.bodyBinders fd) fd.ret minted.1 φg fd.body
             (match tb.res with
              | .ok H₃ v tr₃ =>
                (match runAllScopeDrops P.structs H₃ φg with
@@ -1368,9 +1514,9 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
 reproduces `eval fuel P H φ e` exactly, so a rendered step table can never
 report an outcome — a value, an unwinding `return`, a §6.12 trap, a refusal,
 or exhausted fuel — the interpreter does not produce. -/
-theorem traceEval_res {P : Program} : ∀ (fuel : Nat) (d : Nat) (Θ : List Ty) (R : Ty)
-    (H : Store) (φ : Frame) (e : Expr),
-    (traceEval P fuel d Θ R H φ e).res = eval fuel P H φ e := by
+theorem traceEval_res (M : FloatOps) {P : Program} : ∀ (fuel : Nat) (d : Nat) (Θ : List Ty)
+    (R : Ty) (H : Store) (φ : Frame) (e : Expr),
+    (traceEval M P fuel d Θ R H φ e).res = eval M fuel P H φ e := by
   intro fuel
   induction fuel with
   | zero => intro d Θ R H φ e; rfl
@@ -1378,6 +1524,7 @@ theorem traceEval_res {P : Program} : ∀ (fuel : Nat) (d : Nat) (Θ : List Ty) 
       intro d Θ R H φ e
       cases e with
       | intLit n => rfl
+      | floatLit w l => rfl
       | boolLit b => rfl
       | unitLit => rfl
       | use i =>
@@ -1396,6 +1543,11 @@ theorem traceEval_res {P : Program} : ∀ (fuel : Nat) (d : Nat) (Θ : List Ty) 
           (repeat' split) <;>
             first | rfl | (simp_all [traced, confused, refused,
               OpRes.toRes, EvalRes.withTrace] <;> grind)
+      | fintrin k e₁ =>
+          simp only [traceEval, eval, EvalRes.andThen, ih]
+          (repeat' split) <;>
+            first | rfl | (simp_all [traced, confused, refused,
+              OpRes.toRes, EvalRes.withTrace] <;> grind)
       | intCast w sg e₁ =>
           simp only [traceEval, eval, EvalRes.andThen, ih]
           (repeat' split) <;>
@@ -1409,7 +1561,7 @@ theorem traceEval_res {P : Program} : ∀ (fuel : Nat) (d : Nat) (Θ : List Ty) 
               EvalRes.withTrace] <;> grind)
       | mkStruct s' args =>
           simp only [traceEval, eval,
-            traceArgs_res (ev := fun H' e' => eval fuel P H' φ e') (fun H' e' => ih _ _ _ _ _ e')]
+            traceArgs_res (ev := fun H' e' => eval M fuel P H' φ e') (fun H' e' => ih _ _ _ _ _ e')]
           (repeat' split) <;>
             first | rfl | (simp_all [traced, didNotRun, EvalRes.withTrace] <;> grind)
       | consume e₁ =>
@@ -1444,7 +1596,7 @@ theorem traceEval_res {P : Program} : ∀ (fuel : Nat) (d : Nat) (Θ : List Ty) 
               EvalRes.withTrace] <;> grind)
       | call f args =>
           simp only [traceEval, eval,
-            traceArgs_res (ev := fun H' e' => eval fuel P H' φ e') (fun H' e' => ih _ _ _ _ _ e')]
+            traceArgs_res (ev := fun H' e' => eval M fuel P H' φ e') (fun H' e' => ih _ _ _ _ _ e')]
           (repeat' split) <;>
             first | rfl | (simp_all [traced, tracedAs, didNotRun, refused, EvalRes.absorb,
               EvalRes.withTrace] <;> grind)
@@ -1465,15 +1617,16 @@ def programDerivs (P : Program) : Nat → List FnDef → List (Nat × FnDef × D
 
 /-- The run of a whole program: the entry call, from the empty store and the
 empty frame (§6.12's top-level result). -/
-def runTrace (P : Program) (fuel : Nat) : Trace :=
+def runTrace (M : FloatOps) (P : Program) (fuel : Nat) : Trace :=
   let T := match P.fns[0]? with
     | some fd => fd.ret
     | none => .int .w64 .signed
-  traceEval P fuel 0 [] T [] { env := [], scope := [] } (.call 0 [])
+  traceEval M P fuel 0 [] T [] { env := [], scope := [] } (.call 0 [])
 
 /-- **The program's run is the program's outcome** (§6.12). -/
-theorem runTrace_res (P : Program) (fuel : Nat) : (runTrace P fuel).res = run P fuel :=
-  traceEval_res fuel 0 [] _ [] _ _
+theorem runTrace_res (M : FloatOps) (P : Program) (fuel : Nat) :
+    (runTrace M P fuel).res = run M P fuel :=
+  traceEval_res M fuel 0 [] _ [] _ _
 
 end Explain
 end RueCore

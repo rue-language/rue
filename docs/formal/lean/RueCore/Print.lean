@@ -146,6 +146,7 @@ and a struct type is named by its declaration's index, the way elaboration
 resolves the surface name. -/
 def tyName : Ty → String
   | .int w s => (match s with | .signed => "i" | .unsigned => "u") ++ toString w.bits
+  | .float w => "f" ++ toString w.bits
   | .bool => "bool"
   | .unit => "()"
   | .struct s => "S" ++ toString s
@@ -166,6 +167,10 @@ def binOpSym : BinOp → String
   | .le => "<="
   | .gt => ">"
   | .ge => ">="
+  -- `@total_cmp` is a `BinOp` in the core (`Syntax.lean`) but an *intrinsic*
+  -- on the surface, so it is printed by `Print.expr`'s own arm and this
+  -- spelling is never used for it.
+  | .totalCmp => "@total_cmp"
 
 /-- The Rue spelling of a unary operator (§2's `⊖`) (helper). -/
 def unOpSym : UnOp → String
@@ -180,6 +185,17 @@ def quoted (msg : String) : String :=
   "\"" ++ msg.foldl (fun acc c =>
     acc ++ (if c = '"' then "\\\"" else if c = '\\' then "\\\\" else String.singleton c)) ""
     ++ "\""
+
+/-- The Rue spelling of a one-operand float intrinsic (§2's `@f`) (helper). -/
+def fintrinName : FloatIntrin → String
+  | .intToFloat _ => "@int_to_float"
+  | .floatToInt _ _ => "@float_to_int"
+  | .floatCast _ => "@float_cast"
+  | .roundOp .sqrt => "@sqrt"
+  | .roundOp (.round .floor) => "@floor"
+  | .roundOp (.round .ceil) => "@ceil"
+  | .roundOp (.round .trunc) => "@trunc"
+  | .roundOp (.round .round) => "@round"
 
 /-- A synthetic binder the printer introduces to give an expression the type
 its core form carries (module docstring, "Integer typing"). `lvl` is the
@@ -247,10 +263,19 @@ def tyOf (P : Program) (R : Ty) (Γ : List Ty) : Expr → Option Ty
   | .boolLit _ => some .bool
   | .unitLit => some .unit
   | .use i => Γ[i]?
-  | .binop op e₁ _ => if op.isCompare then some .bool else tyOf P R Γ e₁
+  | .binop op e₁ _ =>
+      match tyOf P R Γ e₁ with
+      | some T => some (op.resultTy T)
+      | none => none
   | .unop .not _ => some .bool
   | .unop _ e => tyOf P R Γ e
   | .intCast w s _ => some (.int w s)
+  | .floatLit w _ => some (.float w)
+  | .fintrin (.intToFloat w) _ => some (.float w)
+  | .fintrin k e =>
+      match tyOf P R Γ e with
+      | some (.float w) => some (k.resTy w)
+      | _ => none
   | .panic _ => some R
   | .dbg _ => some .unit
   | .mkStruct s _ => some (.struct s)
@@ -308,17 +333,32 @@ partial def expr (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) : Expr → St
   | .unitLit => "()"
   | .use i => useName Γ i
   | .binop op e₁ e₂ =>
-      if op.isCompare then
-        -- An ordering compare yields `bool`, so nothing downstream names the
-        -- operand type: a typed block supplies it (module docstring).
+      if op.isCompare || op = .totalCmp then
+        -- An ordering compare yields `bool` and `@total_cmp` yields `i32`, so
+        -- nothing downstream names the operand type: a typed block supplies
+        -- it (module docstring). `@total_cmp` is a `BinOp` in the core but an
+        -- intrinsic on the surface, so its block ends in a call.
         let T := (tyOf P R Γ e₁).getD (.int .w64 .signed)
         let a := tmpName lvl "a"
         let b := tmpName lvl "b"
         "{ let " ++ a ++ ": " ++ tyName T ++ " = " ++ expr P R Γ (lvl + 1) e₁ ++ "; " ++
           "let " ++ b ++ ": " ++ tyName T ++ " = " ++ expr P R Γ (lvl + 1) e₂ ++ "; " ++
-          a ++ " " ++ binOpSym op ++ " " ++ b ++ " }"
+          (if op = .totalCmp then "@total_cmp(" ++ a ++ ", " ++ b ++ ")"
+           else a ++ " " ++ binOpSym op ++ " " ++ b) ++ " }"
       else
         "(" ++ expr P R Γ lvl e₁ ++ " " ++ binOpSym op ++ " " ++ expr P R Γ lvl e₂ ++ ")"
+  | .floatLit _ l => l.spell
+  | .fintrin k e =>
+      -- Each `@f` takes its result type from the *use* site (`3.12:16`,
+      -- `3.12:17`, `3.12:19`) and none of them fixes its operand's type
+      -- either, so both ends get a typed binder, exactly as `@intCast` does.
+      let T' := (tyOf P R Γ e).getD (.float .w64)
+      let T := (tyOf P R Γ (.fintrin k e)).getD (.float .w64)
+      let c := tmpName lvl "c"
+      let r := tmpName lvl "k"
+      "{ let " ++ c ++ ": " ++ tyName T' ++ " = " ++ expr P R Γ (lvl + 1) e ++ "; " ++
+        "let " ++ r ++ ": " ++ tyName T ++ " = " ++ fintrinName k ++ "(" ++ c ++ "); " ++
+        r ++ " }"
   | .unop op e => "(" ++ unOpSym op ++ expr P R Γ lvl e ++ ")"
   | .intCast w s e =>
       -- `4.13:26` takes the target from the use site and nothing fixes the
@@ -360,6 +400,9 @@ partial def expr (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) : Expr → St
         | some (.int w s) =>
             "let " ++ tmpName lvl "d" ++ ": " ++ tyName (.int w s) ++ " = " ++
               expr P R Γ (lvl + 1) e₁ ++ ";"
+        | some (.float w) =>
+            "let " ++ tmpName lvl "d" ++ ": " ++ tyName (.float w) ++ " = " ++
+              expr P R Γ (lvl + 1) e₁ ++ ";"
         | _ => expr P R Γ (lvl + 1) e₁ ++ ";"
       "{\n" ++
       indent (lvl + 1) ++ discard ++ "\n" ++
@@ -383,7 +426,7 @@ printed; `()` prints nothing; a struct value is dropped — implicitly at
 (helper). -/
 def observeValue (D : StructEnv) (T : Ty) : String :=
   match T with
-  | .int _ _ | .bool => "    @dbg(result);\n"
+  | .int _ _ | .float _ | .bool => "    @dbg(result);\n"
   | .unit => ""
   | .struct _ => if T.mult D = .linear then "    @drop(result);\n" else ""
 
@@ -415,7 +458,8 @@ partial def consumedIn (P : Program) (R : Ty) : List Ty → Expr → List Nat
         consumedIn P R ((tyOf P R Γ e₁).getD (.int .w64 .signed) :: Γ) e₂
   | Γ, .ite c e₁ e₂ => consumedIn P R Γ c ++ consumedIn P R Γ e₁ ++ consumedIn P R Γ e₂
   | Γ, .mkStruct _ args | Γ, .call _ args => (args.map (consumedIn P R Γ)).flatten
-  | Γ, .assign _ e | Γ, .ret e | Γ, .unop _ e | Γ, .intCast _ _ e | Γ, .dbg e =>
+  | Γ, .assign _ e | Γ, .ret e | Γ, .unop _ e | Γ, .intCast _ _ e | Γ, .fintrin _ e
+  | Γ, .dbg e =>
       consumedIn P R Γ e
   | _, _ => []
 

@@ -101,6 +101,14 @@ case by a wide margin; a case the bound does not complete is left out of the
 export rather than given an outcome (module docstring). -/
 def exportFuel : Nat := 100000
 
+/-- The model every exported case is evaluated at: `Float.exactOps`
+(`Float.lean`), the constructive instance whose `σ_NaN` is **positive** — the
+AArch64 choice of `3.12:44`. `σ_NaN` is a target parameter (§2), so it would
+be a divergence if it reached an expectation; it does not, because `@dbg`
+renders a NaN as `NaN` whatever its sign (`3.12:42`) and no seed case reads
+one through `@total_cmp`, the only form that can see it. -/
+def exportOps : FloatOps := Float.exactOps
+
 /-! ## The seed corpus
 
 `Examples.lean`'s programs, plus one witness per §7 bullet the fragment
@@ -366,10 +374,10 @@ def cases : List Case := [
 
 /-! ## Witnesses for the refusals no `Examples.lean` program reaches -/
 
-example : run (Examples.prog Examples.tI64 (letIn true (Examples.resL (Examples.lit 1))
+example : run exportOps (Examples.prog Examples.tI64 (letIn true (Examples.resL (Examples.lit 1))
     (seq (assign 0 (Examples.resL (Examples.lit 2))) (consume (use 0))))) exportFuel
     = .stuck .linearOverwrite := by rfl
-example : run (Examples.prog Examples.tI64 (seq (Examples.resL (Examples.lit 3)) (Examples.lit 4))) exportFuel
+example : run exportOps (Examples.prog Examples.tI64 (seq (Examples.resL (Examples.lit 3)) (Examples.lit 4))) exportFuel
     = .stuck .linearDiscard := by rfl
 example : checkProgram (Examples.prog Examples.tI64 (seq (Examples.resL (Examples.lit 3)) (Examples.lit 4)))
     = false := by rfl
@@ -379,10 +387,14 @@ example : checkProgram (Examples.prog Examples.tI64 (seq (Examples.resL (Example
 /-- How `@dbg` renders a value (§5.8's (Dbg); the compiler prints an integer
 as its decimal and a `bool` as `true`/`false`, one line each). The calculus
 fixes no rendering, so this is the compiler's, verified by hand and compared
-by the bridge. A type `@dbg` does not accept has no line, which the statics
+by the bridge. A float's text is `3.12:40`–`3.12:42`'s — the shortest decimal
+that round-trips at its own width, or `NaN`/`inf`/`-inf`/`-0.0`
+(`FloatDatum.render`, `Float.lean`); the compiler reaches the same text
+through the vendored `zmij` formatter. A type `@dbg` does not accept has no line, which the statics
 exclude (`Ty.observable`). -/
 def dbgLine : Val → Option String
   | .int _ _ n => some (toString n)
+  | .float w f => some (f.render w)
   | .bool b => some (if b then "true" else "false")
   | .unit | .struct _ _ => none
 
@@ -415,6 +427,7 @@ already rejects. -/
 def valueLines (D : StructEnv) (v : Val) : List String :=
   match v with
   | .int w s n => (dbgLine (.int w s n)).toList
+  | .float w f => (dbgLine (.float w f)).toList
   | .bool b => (dbgLine (.bool b)).toList
   | .unit => []
   | .struct _ _ =>
@@ -449,7 +462,7 @@ def outLines (D : StructEnv) (v : Val) (tr : List Event) : List String :=
 
 /-- A one-line reading of the outcome, for the program's header comment. -/
 def outcomeSummary (c : Case) : String :=
-  match checkProgram c.prog, run c.prog exportFuel with
+  match checkProgram c.prog, run exportOps c.prog exportFuel with
   | false, .stuck w => "rejected by the checker; the machine would refuse with " ++ violationName w
   | false, .ok _ v tr =>
       let lines := outLines c.prog.structs v tr
@@ -506,7 +519,7 @@ which the entry call's own frame boundary absorbs (`run_ne_returned`), and an
 `outOfFuel` one, which `jsonOf` filters out — the consumer knows only `ok`,
 `panic` and `stuck` (`crates/rue-oracle-diff/src/lean_corpus.rs`). -/
 def expectedJson (c : Case) : String :=
-  match run c.prog exportFuel with
+  match run exportOps c.prog exportFuel with
   | .ok _ v tr =>
       "{\"kind\": \"ok\", \"stdout\": " ++ jsonArray ((outLines c.prog.structs v tr).map jsonString) ++
         ", \"exit\": 0}"
@@ -523,7 +536,7 @@ def expectedJson (c : Case) : String :=
 out of the JSON: the interpreter has no outcome to claim for it (module
 docstring). -/
 def completed (c : Case) : Bool :=
-  match run c.prog exportFuel with
+  match run exportOps c.prog exportFuel with
   | .outOfFuel => false
   | _ => true
 

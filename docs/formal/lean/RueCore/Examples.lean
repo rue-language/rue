@@ -34,6 +34,17 @@ open Expr
 /-- The fuel every demo runs at: far more than the deepest of them spends. -/
 def demoFuel : Nat := 400
 
+/-- The model every demo runs at: `Float.exactOps` (`Float.lean`), the
+constructive instance the corpus and the printer also use. The witnesses in
+this file are *executable* demos, so they are pinned at one model rather than
+quantified over all of them; because `exactOps` is built from `Nat`/`Int`
+arithmetic and never touches Lean's `Float`, pinning them costs no axiom
+(`TRUST.md`). The float **trap** witnesses at the bottom of the file are the
+exception: they are stated over an arbitrary `FloatModel` and proved from its
+laws, which is what makes them claims about IEEE 754 rather than about this
+instance. -/
+abbrev demoOps : FloatOps := Float.exactOps
+
 /-! ## The fixture vocabulary
 
 Most of these programs are about ownership rather than about a width, so they
@@ -458,47 +469,47 @@ def affineLostAtCallArg : Program :=
             { params := [⟨.struct sAffine, false⟩, ⟨tI64, false⟩], ret := tI64,
               body := seq (drop 1) (use 0) }] }
 
-#eval run (scalarProg (.int .w8 .signed) i8Overflow) demoFuel        -- panic: overflow
-#eval run (scalarProg (.int .w8 .unsigned) u8Underflow) demoFuel     -- panic: overflow
-#eval run (scalarProg (.int .w8 .signed) i8DivMinByNegOne) demoFuel  -- panic: overflow
-#eval run (scalarProg (.int .w8 .signed) i8RemMinByNegOne) demoFuel  -- panic: overflow
-#eval run (scalarProg (.int .w8 .signed) i8RemZero) demoFuel         -- panic: remZero
-#eval run (scalarProg (.int .w8 .unsigned) u8CastOutOfRange) demoFuel -- panic: castOverflow
-#eval run (scalarProg (.int .w8 .unsigned) u8CastInRange) demoFuel   -- ok: 200
-#eval run (scalarProg (.int .w8 .unsigned) u8ShiftMasks) demoFuel    -- ok: 1
-#eval run (scalarProg (.int .w8 .unsigned) u8Bitwise) demoFuel       -- ok: 15
-#eval run (scalarProg (.int .w16 .signed) i16Negate) demoFuel        -- ok: -21
-#eval run (scalarProg .bool u64Compare) demoFuel                     -- ok: true
-#eval run (scalarProg .bool boolNegate) demoFuel                     -- ok: false
-#eval run (scalarProg tI64 dbgScalars) demoFuel                      -- ok: 0, dbg -5, 42, true
-#eval run (prog tI64 dbgBetweenDrops) demoFuel                       -- ok: 0, dtor/dbg/dtor
-#eval run (prog tI64 panicAfterDrop) demoFuel                        -- panic: user, after dtor 7
-#eval run (scalarProg tI64 dbgBeforeTrap) demoFuel                   -- panic: divZero, after dbg 1
-#eval run (scalarProg tI64 scalars) demoFuel            -- ok: 10, trace: []
-#eval run (prog tI64 affineDrop) demoFuel               -- ok: 1, drop + dtor of S1{7}
-#eval run (prog tI64 linearConsumed) demoFuel           -- ok: 7, trace: []
-#eval run (prog tI64 linearLeaked) demoFuel             -- STUCK: linearLeak
-#eval run (prog tI64 useAfterMove) demoFuel             -- STUCK: useAfterMove
-#eval run (prog tI64 reinit) demoFuel                   -- ok: 2, trace: []
-#eval run (prog tI64 linearHalfConsumed) demoFuel       -- STUCK: linearLeak
-#eval run (scalarProg tI64 overflow) demoFuel           -- panic: overflow
-#eval run (scalarProg tI64 divZero) demoFuel            -- panic: divZero
-#eval run (prog tI64 structLinearFieldLeaked) demoFuel  -- STUCK: linearLeak
-#eval run (prog tI64 structLinearFieldDropped) demoFuel -- ok: 0, dtor of S3{2}
-#eval run (prog tI64 structNestedDrop) demoFuel         -- ok: 9, dtors 1 then 2
-#eval run (prog tI64 structJoinDisagrees) demoFuel      -- STUCK: linearLeak
-#eval run (prog tI64 structCopyTwice) demoFuel          -- ok: 10, trace: []
-#eval run (prog tI64 structFieldOrder) demoFuel         -- ok: 0, dtors 1 then 2
-#eval run callPlain demoFuel                            -- ok: 5
-#eval run returnPastAffine demoFuel                     -- ok: 7, drops 4 then 3
-#eval run returnPastLinear demoFuel                     -- STUCK: linearLeak
-#eval run paramDroppedAtPop demoFuel                    -- ok: 1, dtor of S1{2}
-#eval run linearParamLeaked demoFuel                    -- STUCK: linearLeak
-#eval run recursionTrap demoFuel                        -- panic: divZero
-#eval run countdown demoFuel                            -- ok: 10
-#eval run countdown 12                                  -- outOfFuel
-#eval run linearLostAtCallArg demoFuel                  -- ok: 0, EMPTY trace
-#eval run affineLostAtCallArg demoFuel                  -- ok: 0, EMPTY trace
+#eval run demoOps (scalarProg (.int .w8 .signed) i8Overflow) demoFuel        -- panic: overflow
+#eval run demoOps (scalarProg (.int .w8 .unsigned) u8Underflow) demoFuel     -- panic: overflow
+#eval run demoOps (scalarProg (.int .w8 .signed) i8DivMinByNegOne) demoFuel  -- panic: overflow
+#eval run demoOps (scalarProg (.int .w8 .signed) i8RemMinByNegOne) demoFuel  -- panic: overflow
+#eval run demoOps (scalarProg (.int .w8 .signed) i8RemZero) demoFuel         -- panic: remZero
+#eval run demoOps (scalarProg (.int .w8 .unsigned) u8CastOutOfRange) demoFuel -- panic: castOverflow
+#eval run demoOps (scalarProg (.int .w8 .unsigned) u8CastInRange) demoFuel   -- ok: 200
+#eval run demoOps (scalarProg (.int .w8 .unsigned) u8ShiftMasks) demoFuel    -- ok: 1
+#eval run demoOps (scalarProg (.int .w8 .unsigned) u8Bitwise) demoFuel       -- ok: 15
+#eval run demoOps (scalarProg (.int .w16 .signed) i16Negate) demoFuel        -- ok: -21
+#eval run demoOps (scalarProg .bool u64Compare) demoFuel                     -- ok: true
+#eval run demoOps (scalarProg .bool boolNegate) demoFuel                     -- ok: false
+#eval run demoOps (scalarProg tI64 dbgScalars) demoFuel                      -- ok: 0, dbg -5, 42, true
+#eval run demoOps (prog tI64 dbgBetweenDrops) demoFuel                       -- ok: 0, dtor/dbg/dtor
+#eval run demoOps (prog tI64 panicAfterDrop) demoFuel                        -- panic: user, after dtor 7
+#eval run demoOps (scalarProg tI64 dbgBeforeTrap) demoFuel                   -- panic: divZero, after dbg 1
+#eval run demoOps (scalarProg tI64 scalars) demoFuel            -- ok: 10, trace: []
+#eval run demoOps (prog tI64 affineDrop) demoFuel               -- ok: 1, drop + dtor of S1{7}
+#eval run demoOps (prog tI64 linearConsumed) demoFuel           -- ok: 7, trace: []
+#eval run demoOps (prog tI64 linearLeaked) demoFuel             -- STUCK: linearLeak
+#eval run demoOps (prog tI64 useAfterMove) demoFuel             -- STUCK: useAfterMove
+#eval run demoOps (prog tI64 reinit) demoFuel                   -- ok: 2, trace: []
+#eval run demoOps (prog tI64 linearHalfConsumed) demoFuel       -- STUCK: linearLeak
+#eval run demoOps (scalarProg tI64 overflow) demoFuel           -- panic: overflow
+#eval run demoOps (scalarProg tI64 divZero) demoFuel            -- panic: divZero
+#eval run demoOps (prog tI64 structLinearFieldLeaked) demoFuel  -- STUCK: linearLeak
+#eval run demoOps (prog tI64 structLinearFieldDropped) demoFuel -- ok: 0, dtor of S3{2}
+#eval run demoOps (prog tI64 structNestedDrop) demoFuel         -- ok: 9, dtors 1 then 2
+#eval run demoOps (prog tI64 structJoinDisagrees) demoFuel      -- STUCK: linearLeak
+#eval run demoOps (prog tI64 structCopyTwice) demoFuel          -- ok: 10, trace: []
+#eval run demoOps (prog tI64 structFieldOrder) demoFuel         -- ok: 0, dtors 1 then 2
+#eval run demoOps callPlain demoFuel                            -- ok: 5
+#eval run demoOps returnPastAffine demoFuel                     -- ok: 7, drops 4 then 3
+#eval run demoOps returnPastLinear demoFuel                     -- STUCK: linearLeak
+#eval run demoOps paramDroppedAtPop demoFuel                    -- ok: 1, dtor of S1{2}
+#eval run demoOps linearParamLeaked demoFuel                    -- STUCK: linearLeak
+#eval run demoOps recursionTrap demoFuel                        -- panic: divZero
+#eval run demoOps countdown demoFuel                            -- ok: 10
+#eval run demoOps countdown 12                                  -- outOfFuel
+#eval run demoOps linearLostAtCallArg demoFuel                  -- ok: 0, EMPTY trace
+#eval run demoOps affineLostAtCallArg demoFuel                  -- ok: 0, EMPTY trace
 
 /-!
 ## Static acceptance and rejection, mechanically
@@ -537,11 +548,11 @@ example : ProgramTyped affineLostAtCallArg := checkProgram_sound (by rfl)
 /-- The linear value is destroyed with an empty trace: no `drop`, no
 `dropTemp`, no `dtor`, and no `Violation`. `no_linear_leak` holds of this
 program and says nothing about it. -/
-example : run linearLostAtCallArg demoFuel = .ok [.dead] (v64 0) [] := by rfl
+example : run demoOps linearLostAtCallArg demoFuel = .ok [.dead] (v64 0) [] := by rfl
 
 /-- The affine value likewise: the destructor line the printed program would
 have shown is absent. -/
-example : run affineLostAtCallArg demoFuel = .ok [.dead] (v64 0) [] := by rfl
+example : run demoOps affineLostAtCallArg demoFuel = .ok [.dead] (v64 0) [] := by rfl
 
 /-! The width, operator and intrinsic cases are accepted, so the §7 theorems
 apply to the traps they reach: a trap is a *defined* outcome. -/
@@ -619,60 +630,60 @@ by the kernel rather than observed by `#eval` (ADR-0097; the bridge cannot
 observe refusals, because the compiler rejects those programs first).
 -/
 
-example : run (prog tI64 linearLeaked) demoFuel = .stuck .linearLeak := by rfl
-example : run (prog tI64 useAfterMove) demoFuel = .stuck .useAfterMove := by rfl
-example : run (prog tI64 linearHalfConsumed) demoFuel = .stuck .linearLeak := by rfl
-example : run (prog tI64 structLinearFieldLeaked) demoFuel = .stuck .linearLeak := by rfl
-example : run (prog tI64 structJoinDisagrees) demoFuel = .stuck .linearLeak := by rfl
-example : run (scalarProg tI64 overflow) demoFuel = .panic .overflow [] := by rfl
-example : run (scalarProg (.int .w8 .signed) i8Overflow) demoFuel
+example : run demoOps (prog tI64 linearLeaked) demoFuel = .stuck .linearLeak := by rfl
+example : run demoOps (prog tI64 useAfterMove) demoFuel = .stuck .useAfterMove := by rfl
+example : run demoOps (prog tI64 linearHalfConsumed) demoFuel = .stuck .linearLeak := by rfl
+example : run demoOps (prog tI64 structLinearFieldLeaked) demoFuel = .stuck .linearLeak := by rfl
+example : run demoOps (prog tI64 structJoinDisagrees) demoFuel = .stuck .linearLeak := by rfl
+example : run demoOps (scalarProg tI64 overflow) demoFuel = .panic .overflow [] := by rfl
+example : run demoOps (scalarProg (.int .w8 .signed) i8Overflow) demoFuel
     = .panic .overflow [] := by rfl
-example : run (scalarProg (.int .w8 .unsigned) u8Underflow) demoFuel
+example : run demoOps (scalarProg (.int .w8 .unsigned) u8Underflow) demoFuel
     = .panic .overflow [] := by rfl
-example : run (scalarProg (.int .w8 .signed) i8DivMinByNegOne) demoFuel
+example : run demoOps (scalarProg (.int .w8 .signed) i8DivMinByNegOne) demoFuel
     = .panic .overflow [] := by rfl
-example : run (scalarProg (.int .w8 .signed) i8RemMinByNegOne) demoFuel
+example : run demoOps (scalarProg (.int .w8 .signed) i8RemMinByNegOne) demoFuel
     = .panic .overflow [] := by rfl
 
 /-- `min_T * -1` traps at `i64` as it does at every other signed width. The
 compiler's constant folder does not (RUE-2318); the model is not changed to
 match it, and `Corpus`'s `i64_min_times_neg1` is the case that says so to the
 bridge. -/
-example : run (scalarProg tI64 i64MinTimesNeg1) demoFuel
+example : run demoOps (scalarProg tI64 i64MinTimesNeg1) demoFuel
     = .panic .overflow [] := by rfl
-example : run (scalarProg (.int .w8 .signed) i8RemZero) demoFuel
+example : run demoOps (scalarProg (.int .w8 .signed) i8RemZero) demoFuel
     = .panic .remZero [] := by rfl
-example : run (scalarProg (.int .w8 .unsigned) u8CastOutOfRange) demoFuel
+example : run demoOps (scalarProg (.int .w8 .unsigned) u8CastOutOfRange) demoFuel
     = .panic .castOverflow [] := by rfl
 
 /-- §6.4's bit rules are total: the shift amount is masked (`4.3a:10`) and the
 complement is read back at the operand's own width, so `1 << 8` at `u8` is `1`
 and `~240` is `15`. -/
-example : run (scalarProg (.int .w8 .unsigned) u8ShiftMasks) demoFuel
+example : run demoOps (scalarProg (.int .w8 .unsigned) u8ShiftMasks) demoFuel
     = .ok [] (.int .w8 .unsigned 1) [] := by rfl
-example : run (scalarProg (.int .w8 .unsigned) u8Bitwise) demoFuel
+example : run demoOps (scalarProg (.int .w8 .unsigned) u8Bitwise) demoFuel
     = .ok [] (.int .w8 .unsigned 15) [] := by rfl
 
 /-- An unsigned compare orders by the unsigned value: `max_T > 0` at `u64`,
 whose signed reading would be `-1`. -/
-example : run (scalarProg .bool u64Compare) demoFuel = .ok [] (.bool true) [] := by rfl
+example : run demoOps (scalarProg .bool u64Compare) demoFuel = .ok [] (.bool true) [] := by rfl
 
 /-- **A trap carries the observable output that ran before it.** The
 destructor has already printed when the `@panic` fires, and §6.12's outcome
 keeps it: the process prints what it printed and then exits 101. -/
-example : run (prog tI64 panicAfterDrop) demoFuel
+example : run demoOps (prog tI64 panicAfterDrop) demoFuel
     = .panic .user
         [.drop 0 (.struct sAffine [v64 7]), .dtor sAffine (.struct sAffine [v64 7])] := by rfl
 
 /-- The same for a trap the program did not ask for. -/
-example : run (scalarProg tI64 dbgBeforeTrap) demoFuel
+example : run demoOps (scalarProg tI64 dbgBeforeTrap) demoFuel
     = .panic .divZero [.dbg (v64 1)] := by rfl
 
 /-- **A `@panic` runs no drop.** §5.7 exempts the `⊥_panic` edge from §5.6's
 obligation and §6.12 abandons the configuration, so the live affine binding's
 destructor never fires and the trap carries an empty trace — where the very
 same program with an explicit `@drop` carries the destructor out. -/
-example : run (prog tI64 panicPastAffine) demoFuel = .panic .user [] := by rfl
+example : run demoOps (prog tI64 panicPastAffine) demoFuel = .panic .user [] := by rfl
 
 /-- **`Typed` derives a `@panic` past a live linear binding.** (Panic) §5.8
 imposes no residual-linear premise — §5.7 exempts the `⊥_panic` edge from
@@ -701,42 +712,43 @@ carries an empty trace: `S3` declares a destructor and it does not run,
 because §6.12 abandons the configuration where a `return` would have unwound
 the frame. `no_violation` holds of this program and says nothing about it —
 the `@panic` exit its docstring now names. -/
-example : run (prog tI64 panicPastLinear) demoFuel = .panic .user [] := by rfl
+example : run demoOps (prog tI64 panicPastLinear) demoFuel = .panic .user [] := by rfl
 
 /-- The two observation channels are one trace, so a `@dbg` between two drops
 comes out between them (`Corpus.outLines` reads exactly this order). -/
-example : run (prog tI64 dbgBetweenDrops) demoFuel
+example : run demoOps (prog tI64 dbgBetweenDrops) demoFuel
     = .ok [.dead, .dead] (v64 0)
         [.drop 0 (.struct sAffine [v64 1]), .dtor sAffine (.struct sAffine [v64 1]),
          .dbg (v64 2),
          .drop 1 (.struct sAffine [v64 3]), .dtor sAffine (.struct sAffine [v64 3])] := by rfl
-example : run (scalarProg tI64 divZero) demoFuel = .panic .divZero [] := by rfl
-example : run (scalarProg tI64 (use 0)) demoFuel = .stuck .unbound := by rfl
-example : run (scalarProg tI64 (binop .add (boolLit true) (lit 1))) demoFuel
+example : run demoOps (scalarProg tI64 divZero) demoFuel = .panic .divZero [] := by rfl
+example : run demoOps (scalarProg tI64 (use 0)) demoFuel = .stuck .unbound := by rfl
+example : run demoOps (scalarProg tI64 (binop .add (boolLit true) (lit 1))) demoFuel
     = .stuck .typeConfusion := by rfl
-example : run returnPastLinear demoFuel = .stuck .linearLeak := by rfl
-example : run linearParamLeaked demoFuel = .stuck .linearLeak := by rfl
+example : run demoOps returnPastLinear demoFuel = .stuck .linearLeak := by rfl
+example : run demoOps linearParamLeaked demoFuel = .stuck .linearLeak := by rfl
 
 /-- A struct literal with the wrong number of initializers is `typeConfusion`
 ((Struct-Intro) §5.8's `3.6:5`/`3.6:6`; no well-typed program reaches it). -/
-example : run (prog tI64 (seq (mkStruct sPair [lit 1]) (lit 0))) demoFuel
+example : run demoOps (prog tI64 (seq (mkStruct sPair [lit 1]) (lit 0))) demoFuel
     = .stuck .typeConfusion := by rfl
 
 /-- A struct literal naming a declaration the program does not have is
 `unbound`; elaboration resolves every type name before the core (§2). -/
-example : run (prog tI64 (seq (mkStruct 99 []) (lit 0))) demoFuel
+example : run demoOps (prog tI64 (seq (mkStruct 99 []) (lit 0))) demoFuel
     = .stuck .unbound := by rfl
 
 /-- A call whose argument count does not match the callee's parameter list is
 `typeConfusion` (§5.8, `4.10:3`); no well-typed program reaches it. -/
-example : run { structs := [],
-                fns := [{ params := [], ret := tI64, body := call 1 [] },
-                        { params := [⟨tI64, false⟩], ret := tI64, body := lit 0 }] } demoFuel
+example : run M
+      { structs := [],
+        fns := [{ params := [], ret := tI64, body := call 1 [] },
+                { params := [⟨tI64, false⟩], ret := tI64, body := lit 0 }] } demoFuel
     = .stuck .typeConfusion := by rfl
 
 /-- A call of a function the program does not have is `unbound`; elaboration
 resolves every name before the core (§2). -/
-example : run (scalarProg tI64 (call 7 [])) demoFuel = .stuck .unbound := by rfl
+example : run demoOps (scalarProg tI64 (call 7 [])) demoFuel = .stuck .unbound := by rfl
 
 /-! ## Drop order, pinned
 
@@ -747,14 +759,14 @@ frame's teardown reads its scope record newest-first (§6.9). These pin both.
 
 /-- The unwind order: an early `return` past two live affine bindings drops
 the newer one first (§6.9's (D-Return); `3.9:18`). -/
-example : run returnPastAffine demoFuel
+example : run demoOps returnPastAffine demoFuel
     = .ok [.dead, .dead] (v64 7)
         [.drop 1 (.struct sAffine [v64 4]), .dtor sAffine (.struct sAffine [v64 4]),
          .drop 0 (.struct sAffine [v64 3]), .dtor sAffine (.struct sAffine [v64 3])] := by rfl
 
 /-- §6.11's order inside one value: the outer destructor, then the fields in
 declaration order — so the nested destructor runs **after** the outer one. -/
-example : run (prog tI64 structNestedDrop) demoFuel
+example : run demoOps (prog tI64 structNestedDrop) demoFuel
     = .ok [.dead] (v64 9)
         [.drop 0 (.struct sOuter [v64 1, .struct sAffine [v64 2]]),
          .dtor sOuter (.struct sOuter [v64 1, .struct sAffine [v64 2]]),
@@ -762,7 +774,7 @@ example : run (prog tI64 structNestedDrop) demoFuel
 
 /-- Fields drop in declaration order, not in reverse: the struct here has no
 destructor of its own, so its trace is exactly its two fields' (§6.11). -/
-example : run (prog tI64 structFieldOrder) demoFuel
+example : run demoOps (prog tI64 structFieldOrder) demoFuel
     = .ok [.dead] (v64 0)
         [.drop 0 (.struct sTwoAffine [.struct sAffine [v64 1], .struct sAffine [v64 2]]),
          .dtor sAffine (.struct sAffine [v64 1]),
@@ -770,14 +782,14 @@ example : run (prog tI64 structFieldOrder) demoFuel
 
 /-- `@drop` of a value that is linear only through a field runs the whole
 value's glue: the field's destructor is the one observable event. -/
-example : run (prog tI64 structLinearFieldDropped) demoFuel
+example : run demoOps (prog tI64 structLinearFieldDropped) demoFuel
     = .ok [.dead] (v64 0)
         [.drop 0 (.struct sCarry [v64 1, .struct sLinearDtor [v64 2]]),
          .dtor sLinearDtor (.struct sLinearDtor [v64 2])] := by rfl
 
 /-- A by-value parameter the callee never consumes is dropped at the frame
 pop ((D-Return-Value) §6.9), not at the caller. -/
-example : run paramDroppedAtPop demoFuel
+example : run demoOps paramDroppedAtPop demoFuel
     = .ok [.dead] (v64 1)
         [.drop 0 (.struct sAffine [v64 2]), .dtor sAffine (.struct sAffine [v64 2])] := by rfl
 
@@ -791,17 +803,17 @@ that is not. -/
 
 /-- Sixteen units of fuel is one too few for `countdown`: the interpreter
 stops early and says so. -/
-example : run countdown 16 = .outOfFuel := by rfl
+example : run demoOps countdown 16 = .outOfFuel := by rfl
 
 /-- Seventeen is enough, and the answer is a value with five retired
 parameter cells — one per frame the recursion pushed. -/
 theorem countdown_at_17 :
-    run countdown 17 = .ok [.dead, .dead, .dead, .dead, .dead] (v64 10) [] := by rfl
+    run demoOps countdown 17 = .ok [.dead, .dead, .dead, .dead, .dead] (v64 10) [] := by rfl
 
 /-- `fuel_mono` in use: every larger bound gives that same answer, so the
 ∀-fuel shape of `soundness` is a statement about one outcome. -/
-example : run countdown demoFuel = run countdown 17 :=
-  fuel_mono (by decide) (fun h => absurd (countdown_at_17.symm.trans h) (by simp))
+example : run demoOps countdown demoFuel = run demoOps countdown 17 :=
+  fuel_mono demoOps (by decide) (fun h => absurd (countdown_at_17.symm.trans h) (by simp))
 
 /-! ## Where `eval` and §6 part on invalid input
 
@@ -819,12 +831,12 @@ before it inspects either, which is §6.2's own order, so
 refused on the left operand's shape first.
 -/
 
-example : run (scalarProg tI64 (binop .add (boolLit true) (binop .div (lit 1) (lit 0)))) demoFuel
+example : run demoOps (scalarProg tI64 (binop .add (boolLit true) (binop .div (lit 1) (lit 0)))) demoFuel
     = .panic .divZero [] := by rfl
-example : run (scalarProg tI64
+example : run demoOps (scalarProg tI64
     (binop .add (lit 1) (.intLit .w8 .signed 1))) demoFuel
     = .stuck .typeConfusion := by rfl
-example : run (scalarProg tI64 (lit (2 ^ 64))) demoFuel
+example : run demoOps (scalarProg tI64 (lit (2 ^ 64))) demoFuel
     = .ok [] (v64 (2 ^ 64)) [] := by rfl
 example : checkProgram (scalarProg tI64 (lit (2 ^ 64))) = false := by rfl
 
@@ -843,17 +855,17 @@ open state — a store holding one retired cell and a frame naming it — which
 is the state the guard exists for.
 -/
 
-example : eval demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [] } (use 0)
+example : eval demoOps demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [] } (use 0)
     = .stuck .useAfterDrop := by rfl
-example : eval demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [] } (drop 0)
+example : eval demoOps demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [] } (drop 0)
     = .stuck .useAfterDrop := by rfl
-example : eval demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [] }
+example : eval demoOps demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [] }
     (assign 0 (lit 1)) = .stuck .useAfterDrop := by rfl
 
 /-- The same guard on the unwind path: a frame whose scope record names a
 retired cell refuses instead of retiring it twice (§6.9). `FrameMatches` is
 what excludes this state for a well-typed program. -/
-example : eval demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [0] }
+example : eval demoOps demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [0] }
     (ret (lit 1)) = .stuck .useAfterDrop := by rfl
 
 #eval checkProgram (scalarProg tI64 scalars)
