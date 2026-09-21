@@ -80,11 +80,20 @@ the seed and the case name.
 It prints a line per case, then — for each disagreeing case — the printed
 program, the four views side by side, and the pair(s) that disagree, with a
 tally at the end; `--report-json` writes the same findings as JSON so two runs
-can be diffed. It exits non-zero when any disagreement exists; the seed
-corpus runs green since the compiler ICE its `cond_drop_affine` case found
-was fixed (RUE-2290), and the case stays as the regression signal. The mode
-is a `buck2 run` entry point and belongs to no test tier, so nothing in CI
-requests it until ADR-0097's gate is met (RUE-2241).
+can be diffed. It exits non-zero when any disagreement exists.
+
+**The seed corpus is red on one case, and that is the bridge working.**
+`i64_min_times_neg1` is `min_T * -1` at `i64`, which §6.4's (D-Arith-Trap),
+`3.1:6` and `8.1:3` all make an overflow trap and which the model traps on.
+The compiler's constant folder wraps it instead and the program exits 0 —
+only at `i64`, only for `*`, and only when both operands are literals; every
+non-constant spelling of the same multiplication traps. That is a compiler
+defect, RUE-2318, and the case stays seeded until it is fixed, the way
+`cond_drop_affine` stayed after the ICE it found (RUE-2290) was. A red case
+is what the bridge is for; the model is not softened to match the compiler.
+
+The mode is a `buck2 run` entry point and belongs to no test tier, so nothing
+in CI requests it until ADR-0097's gate is met (RUE-2241).
 
 One case, abbreviated:
 

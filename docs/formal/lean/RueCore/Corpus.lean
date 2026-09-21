@@ -293,6 +293,11 @@ def cases : List Case := [
     rules := ["(Arith) §5.8", "(D-Div-Overflow) §6.4", "8.1:3"],
     prog := Examples.scalarProg (.int .w8 .signed) Examples.i8RemMinByNegOne
     },
+  { name := "i64_min_times_neg1",
+    description := "min_T * -1 at i64: an overflow trap, because -min_T is one past max_T. The bridge found the compiler's constant folder wrapping this one and exiting 0 where every non-constant spelling of it traps (RUE-2318); the case stays as the regression signal, so the seed run is red on it until that is fixed.",
+    rules := ["(Arith) §5.8", "(D-Arith-Trap) §6.4", "8.1:3"],
+    prog := Examples.scalarProg Examples.tI64 Examples.i64MinTimesNeg1
+    },
   { name := "i8_rem_zero",
     description := "% by a zero divisor: the rem-zero trap, §6.12's own category beside div-zero.",
     rules := ["(Arith) §5.8", "§6.4 arithmetic traps", "§6.12"],
