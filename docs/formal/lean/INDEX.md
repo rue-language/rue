@@ -12,7 +12,7 @@ Every declaration of the mechanization with the calculus rules, sections, and pr
 | `RueCore.Checker` | `RueCore.check` | def | §5 | — |
 | `RueCore.Checker` | `RueCore.check_sound` | theorem | §5, §7 | — |
 | `RueCore.Corpus` | Corpus.lean (module) | module | §5, §6, §6.12, §7 | — |
-| `RueCore.Dynamics` | Dynamics.lean (module) | module | §6, §6.1, §6.7, §6.8, §6.11, §6.12, §7 | — |
+| `RueCore.Dynamics` | Dynamics.lean (module) | module | §5, §6, §6.1, §6.2, §6.7, §6.8, §6.11, §6.12, §7 | `3.8:32`, `3.8:77`, `3.8:64` |
 | `RueCore.Dynamics` | `RueCore.Val` | inductive | §6.1, §7 | — |
 | `RueCore.Dynamics` | `RueCore.Val.mult` | def | §3 | — |
 | `RueCore.Dynamics` | `RueCore.Cell` | inductive | §6.1 | — |
@@ -30,7 +30,7 @@ Every declaration of the mechanization with the calculus rules, sections, and pr
 | `RueCore.Dynamics` | `RueCore.Violation.typeConfusion` | constructor | §5.8 | — |
 | `RueCore.Dynamics` | `RueCore.EvalRes` | inductive | §6, §6.12 | — |
 | `RueCore.Dynamics` | `RueCore.eval` | def | (D-Use-Copy), (D-Use-Move), (D-Arith), (D-Arith-Trap), (D-Div), (D-Div-Zero), (D-Div-Overflow), (D-Let), (D-EndScope), (D-Assign), (D-Seq), (D-If-T), (D-If-F), §6.2, §6.3, §6.4, §6.7, §6.8, §6.11 | — |
-| `RueCore.Examples` | Examples.lean (module) | module | §6.1, §6.7, §7 | — |
+| `RueCore.Examples` | Examples.lean (module) | module | §6, §6.1, §6.2, §6.7, §7 | — |
 | `RueCore.Examples` | `RueCore.Examples.reinit` | def | — | `3.8:55` |
 | `RueCore.Examples` | `RueCore.Examples.linearHalfConsumed` | def | §5.5 | — |
 | `RueCore.Examples` | `RueCore.Examples.overflow` | def | §6.4 | — |
@@ -270,7 +270,7 @@ Every heading of the calculus. A citation of a section counts for that section o
 | §4.1 | Place context vs. value context | — |
 | §4.2 | Definition: *use* | `RueCore.Explain.Premise.consumeNotRes`, `RueCore.Typed.consume`, Syntax.lean (module), `RueCore.Expr` |
 | §4.3 | The analogous fix for expression value (the "implicit return" item) | — |
-| §5 | Static semantics: typing with ownership | Checker.lean (module), `RueCore.check`, `RueCore.check_sound`, Corpus.lean (module), Html.lean (module), `RueCore.Explain.Html.derivHtml`, `RueCore.Explain.Html.verdictHtml`, `RueCore.Explain.Html.render`, Text.lean (module), `RueCore.Explain.Text.verdictLines`, `RueCore.Explain.Text.derivLines`, `RueCore.Explain.Text.verdictSection`, `RueCore.Explain.Text.render`, Explain.lean (module), `RueCore.Explain.ownStateName`, `RueCore.Explain.Verdict`, `RueCore.Explain.Deriv`, `RueCore.Explain.Deriv.result`, `RueCore.Explain.explain`, `RueCore.Explain.explain_result`, `RueCore.Explain.confused`, `main`, Statics.lean (module), `RueCore.OwnState`, `RueCore.Entry`, `RueCore.Ctx`, `RueCore.Typed`, `RueCore.Typed.skel_preserved`, Syntax.lean (module) |
+| §5 | Static semantics: typing with ownership | Checker.lean (module), `RueCore.check`, `RueCore.check_sound`, Corpus.lean (module), Dynamics.lean (module), Html.lean (module), `RueCore.Explain.Html.derivHtml`, `RueCore.Explain.Html.verdictHtml`, `RueCore.Explain.Html.render`, Text.lean (module), `RueCore.Explain.Text.verdictLines`, `RueCore.Explain.Text.derivLines`, `RueCore.Explain.Text.verdictSection`, `RueCore.Explain.Text.render`, Explain.lean (module), `RueCore.Explain.ownStateName`, `RueCore.Explain.Verdict`, `RueCore.Explain.Deriv`, `RueCore.Explain.Deriv.result`, `RueCore.Explain.explain`, `RueCore.Explain.explain_result`, `RueCore.Explain.confused`, `main`, Statics.lean (module), `RueCore.OwnState`, `RueCore.Entry`, `RueCore.Ctx`, `RueCore.Typed`, `RueCore.Typed.skel_preserved`, Syntax.lean (module) |
 | §5.1 | Use and copy (the keystone, as a rule) | `RueCore.Explain.Premise.useMovedOut`, `RueCore.Typed` |
 | §5.2 | Assignment and reinitialization | `RueCore.Violation.linearOverwrite`, `RueCore.Explain.Premise.notMutable`, `RueCore.Explain.Premise.assignTypeMismatch`, `RueCore.Explain.Premise.linearOverwrite`, Syntax.lean (module) |
 | §5.3 | Sequencing, discard, and the linear leak check | `RueCore.Violation.linearDiscard`, `RueCore.Explain.Premise.dropMovedOut`, `RueCore.Explain.Premise.discardsLinear`, `RueCore.Typed`, Syntax.lean (module), `RueCore.Ty.carriesLinear` |
@@ -279,9 +279,9 @@ Every heading of the calculus. A citation of a section counts for that section o
 | §5.6 | Scope exit: the drop obligation and the leak check | `RueCore.Violation.linearLeak`, `RueCore.Explain.Premise.letLeak`, `RueCore.CellMatches`, `RueCore.Typed`, `RueCore.Typed.letIn`, Syntax.lean (module) |
 | §5.7 | Divergence and never-coercion | *not cited* |
 | §5.8 | Leaf, operator, aggregate, and call forms | `RueCore.Violation.typeConfusion`, Explain.lean (module), `RueCore.Explain.Premise.operandNotInt`, `RueCore.Explain.Premise.payloadNotInt`, `RueCore.Explain.Premise.consumeNotRes`, `RueCore.Print.resLit`, `RueCore.Typed.intLit`, `RueCore.Typed.boolLit`, `RueCore.Typed.unitLit`, `RueCore.Typed.add`, `RueCore.Typed.div`, `RueCore.Typed.lt`, `RueCore.Typed.mkres`, Syntax.lean (module) |
-| §6 | Dynamic semantics (small-step, with an executable presentation) | Corpus.lean (module), Dynamics.lean (module), `RueCore.EvalRes`, Html.lean (module), `RueCore.Explain.Html.stepRow`, `RueCore.Explain.Html.outcomeHtml`, `RueCore.Explain.Html.render`, Text.lean (module), `RueCore.Explain.Text.stepResLines`, `RueCore.Explain.Text.stepLines`, `RueCore.Explain.Text.outcomeLines`, `RueCore.Explain.Text.render`, Explain.lean (module), `RueCore.Explain.violationPremise`, `RueCore.Explain.StepRes`, `RueCore.Explain.Step`, `RueCore.Explain.Trace`, `RueCore.Explain.lastStore`, `RueCore.Explain.refused`, `RueCore.Explain.traceEval`, `main` |
+| §6 | Dynamic semantics (small-step, with an executable presentation) | Corpus.lean (module), Dynamics.lean (module), `RueCore.EvalRes`, Examples.lean (module), Html.lean (module), `RueCore.Explain.Html.stepRow`, `RueCore.Explain.Html.outcomeHtml`, `RueCore.Explain.Html.render`, Text.lean (module), `RueCore.Explain.Text.stepResLines`, `RueCore.Explain.Text.stepLines`, `RueCore.Explain.Text.outcomeLines`, `RueCore.Explain.Text.render`, Explain.lean (module), `RueCore.Explain.violationPremise`, `RueCore.Explain.StepRes`, `RueCore.Explain.Step`, `RueCore.Explain.Trace`, `RueCore.Explain.lastStore`, `RueCore.Explain.refused`, `RueCore.Explain.traceEval`, `main` |
 | §6.1 | The machine configuration | Dynamics.lean (module), `RueCore.Val`, `RueCore.Cell`, `RueCore.Store`, `RueCore.Env`, Examples.lean (module), `RueCore.Explain.cellLine`, `RueCore.Explain.locName`, `RueCore.HasTy`, `RueCore.Matches`, `RueCore.InBounds` |
-| §6.2 | Evaluation order: contexts, search, and panic propagation | `RueCore.eval` |
+| §6.2 | Evaluation order: contexts, search, and panic propagation | Dynamics.lean (module), `RueCore.eval`, Examples.lean (module) |
 | §6.3 | Literals and the use of a place (copy / move) | `RueCore.eval` |
 | §6.4 | Primitive operators | `RueCore.eval`, `RueCore.Examples.overflow`, Syntax.lean (module), `RueCore.intMin`, `RueCore.intMax`, `RueCore.InBounds` |
 | §6.5 | Aggregate introduction and projection | *not cited* |
@@ -308,13 +308,13 @@ Every heading of the calculus. A citation of a section counts for that section o
 | Paragraph | Cited by |
 | --- | --- |
 | `3.8:5` | `RueCore.Explain.Premise.useMovedOut`, `RueCore.Explain.Premise.dropMovedOut` |
-| `3.8:32` | `RueCore.Explain.Premise.letLeak` |
+| `3.8:32` | Dynamics.lean (module), `RueCore.Explain.Premise.letLeak` |
 | `3.8:33` | Print.lean (module) |
 | `3.8:50` | `RueCore.Explain.Premise.joinConflict`, `RueCore.CellMatches`, `RueCore.Entry.join` |
 | `3.8:55` | `RueCore.Examples.reinit`, `RueCore.Typed.assign` |
-| `3.8:64` | `RueCore.Violation.linearDiscard`, `RueCore.Explain.Premise.discardsLinear`, `RueCore.no_linear_discard`, `RueCore.Typed`, `RueCore.Typed.seq` |
+| `3.8:64` | Dynamics.lean (module), `RueCore.Violation.linearDiscard`, `RueCore.Explain.Premise.discardsLinear`, `RueCore.no_linear_discard`, `RueCore.Typed`, `RueCore.Typed.seq` |
 | `3.8:73` | Soundness.lean (module), `RueCore.CellMatches`, `RueCore.Entry.join_matches_left`, `RueCore.Entry.join_matches_right` |
-| `3.8:77` | `RueCore.Violation.linearOverwrite`, `RueCore.Explain.Premise.linearOverwrite`, `RueCore.no_linear_overwrite`, `RueCore.Typed`, `RueCore.Typed.assign` |
+| `3.8:77` | Dynamics.lean (module), `RueCore.Violation.linearOverwrite`, `RueCore.Explain.Premise.linearOverwrite`, `RueCore.no_linear_overwrite`, `RueCore.Typed`, `RueCore.Typed.assign` |
 | `3.9:34` | `RueCore.Explain.dropRule`, Print.lean (module) |
 | `3.9:39` | Print.lean (module) |
 | `4.1:2` | `RueCore.Explain.Premise.litOutOfRange`, `RueCore.Typed.intLit` |

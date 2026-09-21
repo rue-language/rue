@@ -102,7 +102,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 |---|---|
 | Totality of the float operations | not yet stated; an assumption about IEEE 754, named as such (RUE-2282) |
 | Handle-uniqueness preservation (O1) | not yet mechanized (RUE-2240) |
-| Adequacy of `eval` to §6's reduction, and progress/preservation derived over the mechanized relation | not yet stated; a Phase C deliverable required at checkpoint C and the CI gate (RUE-2289) |
+| Adequacy of `eval` to §6's reduction, and progress/preservation derived over the mechanized relation | not yet stated; a Phase C deliverable required at checkpoint C and the CI gate (RUE-2289). Its domain is the programs `check` accepts: there `eval`'s `ok`/`panic` outcomes must agree with §6's values and panics, and neither side gets stuck. `.stuck` is outside the correspondence, because three of `eval`'s refusals are monitors §6 does not have, and `eval` refuses on an operand's shape before evaluating the next operand where §6.2's `v ⊕ E` context reduces that operand first (`Dynamics.lean`, "the correspondence with §6") |
 | Fuel monotonicity and no masking | not yet stated; arrives with fuel (RUE-2233) |
 
 ## Traceability

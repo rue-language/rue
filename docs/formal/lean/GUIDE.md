@@ -93,7 +93,7 @@ environment (position `i` ↦ its location in `H`). Instead of stepping once,
 | --- | --- |
 | `.ok H' v tr` | the machine halted normally with value `v`, final store `H'`, and drop trace `tr` |
 | `.panic k` | the machine halted in a defined trap `↯κ` (§6.12): `overflow` or `divZero` |
-| `.stuck w` | the machine reached a configuration §6 leaves undefined, named by the `Violation` `w` |
+| `.stuck w` | the machine refused: `w` names either a configuration §6 leaves undefined or a linear action the machine monitors (see below) |
 
 The drop trace `tr` is the list of every drop the machine performed, in
 order: `drop ℓ v` for a binding's drop (at scope exit, at `@drop`, or when
@@ -106,7 +106,11 @@ A `Violation` is a refusal: `useAfterMove` (reading a `⊘` cell),
 `useAfterDrop` (touching a `†` cell), `linearLeak` (scope exit on a live
 linear value), `linearOverwrite` (`3.8:77`), `linearDiscard` (`3.8:64`),
 plus `unbound` and `typeConfusion` for ill-scoped or ill-typed input. §7's
-memory-safety bullets each say that one of these never happens.
+memory-safety bullets each say that one of these never happens. The three
+linear refusals are monitors the machine adds (§6's rules would drop the
+value and rely on §5 to have forbidden it); the other four are §6's own
+stuck states. That is why `eval` is a model of §6 on the programs `check`
+accepts, and only there (`Dynamics.lean`).
 
 Why a function rather than the relation: a function can be *run*, so every
 semantic question about a fragment program is answerable by execution, and a

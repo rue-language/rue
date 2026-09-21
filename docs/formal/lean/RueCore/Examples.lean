@@ -111,6 +111,21 @@ example : eval [] [] divZero = .panic .divZero := by rfl
 example : eval [] [] (use 0) = .stuck .unbound := by rfl
 example : eval [] [] (add (boolLit true) (intLit 1)) = .stuck .typeConfusion := by rfl
 
+/-! ## Where `eval` and §6 part on invalid input
+
+`eval` is a model of §6 on the programs `check` accepts (`Dynamics.lean`,
+"the correspondence with §6"). Off that domain the two can differ, and
+these pin the ways they do, so nobody mistakes the machine for the paper
+relation on raw `Expr`: an ill-typed left operand is refused before the
+right operand runs, where §6.2's `v ⊕ E` context would reduce the right
+operand to its division-by-zero panic first; and an out-of-range literal
+is a value here, while §6's integers are bounded and `check` rejects it.
+-/
+
+example : eval [] [] (add (boolLit true) (div (intLit 1) (intLit 0))) = .stuck .typeConfusion := by rfl
+example : eval [] [] (intLit (2 ^ 64)) = .ok [] (.int (2 ^ 64)) [] := by rfl
+example : check [] (intLit (2 ^ 64)) = none := by rfl
+
 /-!
 ## The retired-cell refusal, witnessed from an open machine state
 
