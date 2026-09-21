@@ -53,9 +53,9 @@
 //!
 //! - a later `Store`/`Alloc` to the slot replaces the entry;
 //! - a `PlaceWrite` whose base is that local (a partial write) kills it;
-//! - a `PlaceWrite` through a pointer or an accessor-yielded place, an
-//!   `Intrinsic`, or a `Drop` clears the whole table: each writes memory this
-//!   pass cannot attribute to a slot.
+//! - a `PlaceWrite` through a pointer or an accessor-yielded place, and an
+//!   `Intrinsic` handed a pointer-typed argument, each clear the whole table:
+//!   both write memory this pass cannot attribute to a slot.
 //!
 //! The table resets at each block boundary. Two kinds of slot are excluded
 //! from it for the whole function rather than killed at a point:
@@ -144,6 +144,18 @@ pub struct Stats {
     pub loads_declined_type_mismatch: u64,
 }
 
+/// Whether `value`'s type is a raw pointer.
+///
+/// An intrinsic argument of pointer type is the channel through which a
+/// pointer-writing intrinsic reaches storage this pass cannot name, so it is
+/// what makes such an intrinsic a barrier for the block-local store table.
+fn is_pointer_typed(cfg: &Cfg, value: CfgValue) -> bool {
+    matches!(
+        cfg.get_inst(value).ty.kind(),
+        rue_air::TypeKind::PtrConst(_) | rue_air::TypeKind::PtrMut(_)
+    )
+}
+
 /// Run value forwarding. Call at `-O2`/`-O3` after simplification and before
 /// CSE. Ownership-boundary values are always preserved: they describe a
 /// semantic transfer across an inline boundary, not an optional optimization
@@ -213,6 +225,12 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
                                 untracked_slot.fill(true);
                             }
                         },
+                        // A bare scalar parameter has no backing local, so its
+                        // ABI slot's address cannot alias one either. This is
+                        // the mirror of the rule
+                        // `slot_facts::classify_never_written_params` states
+                        // for a local root handed to a callee.
+                        CfgInstData::Param { .. } => {}
                         // A by-ref root this scan cannot resolve to a slot:
                         // assume every local's address may be the one handed
                         // over, matching `slot_facts`.
@@ -336,19 +354,28 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
                         last_store.fill(None);
                     }
                 },
-                // An intrinsic that stores through a pointer (`@ptr_write`,
-                // `@byte_copy`, `@byte_set`, …) and a destructor body both
-                // write memory this pass cannot attribute to a slot, so both
-                // are barriers for the whole table — the same barrier set
-                // `slot_facts::classify_loop_slot_invariance` uses per loop.
-                // A call needs no arm: the only way a callee can write a
-                // caller local is through the local's address, and both ways
-                // to produce one (an address-taking intrinsic here, a by-ref
-                // argument) already put the slot in `untracked_slot`. These
-                // two arms are the backstop that keeps the pass sound if an
-                // escape channel is ever added that the scan above does not
-                // model (RUE-2262).
-                CfgInstData::Intrinsic { .. } | CfgInstData::Drop { .. } => {
+                // An intrinsic handed a POINTER can store through it
+                // (`@ptr_write`, `@byte_copy`, `@byte_set`, …), writing memory
+                // this pass cannot attribute to a slot, so it is a barrier for
+                // the whole table. One that receives no pointer — `@dbg`,
+                // `@size_of`, the arithmetic conversions — writes nothing
+                // reachable from a local and is not a barrier; making every
+                // intrinsic one costs block-local forwarding in every loop
+                // that prints.
+                //
+                // Calls and drops need no arm at all. The only way a callee
+                // body can write a caller local is through the local's
+                // address, and both ways to produce one (an address-taking
+                // intrinsic here, a by-ref argument) already put the slot in
+                // `untracked_slot`. This arm is the backstop that keeps the
+                // pass sound if an escape channel is ever added that the scan
+                // above does not model (RUE-2262).
+                CfgInstData::Intrinsic { args, .. }
+                    if cfg
+                        .intrinsic_args(&args)
+                        .iter()
+                        .any(|&arg| is_pointer_typed(cfg, arg)) =>
+                {
                     last_store.fill(None);
                 }
                 _ => {}
@@ -651,11 +678,9 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn test_intrinsic_kills_block_local_entries() {
-        // let mut x = 1; x = 5; @panic-shaped intrinsic; read = x;
-        // An intrinsic may store through a pointer, so it is a barrier for the
-        // whole table even though this slot never escaped (RUE-2262 backstop).
+    /// Build `let mut x = 1; x = 5; <intrinsic over `arg`>; read = x;` and
+    /// return the forwarding stats plus the load the return reads.
+    fn intrinsic_barrier_fixture(pointer_typed_argument: bool) -> (Stats, CfgValue, CfgValue) {
         let mut cfg = make_cfg(1);
         let c1 = push(&mut cfg, CfgInstData::Const(1), Type::I32);
         push(
@@ -669,11 +694,18 @@ mod tests {
             CfgInstData::Store { slot: 0, value: c5 },
             Type::UNIT,
         );
-        let intrinsic_args = cfg.push_intrinsic_args(std::iter::empty()).unwrap();
+        let pool = TypeInternPool::new();
+        let argument_type = if pointer_typed_argument {
+            Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::I32))
+        } else {
+            Type::I32
+        };
+        let argument = push(&mut cfg, CfgInstData::Const(0), argument_type);
+        let intrinsic_args = cfg.push_intrinsic_args([argument]).unwrap();
         push(
             &mut cfg,
             CfgInstData::Intrinsic {
-                operation: rue_air::IntrinsicOperation::PanicNoMessage,
+                operation: rue_air::IntrinsicOperation::DebugI64,
                 name: Spur::try_from_usize(0).unwrap(),
                 args: intrinsic_args,
             },
@@ -683,11 +715,31 @@ mod tests {
         cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(read) });
 
         let stats = run(&mut cfg).unwrap();
+        let returned = match cfg.get_block(cfg.entry).terminator {
+            Terminator::Return { value: Some(v) } => v,
+            _ => unreachable!("fixture returns a value"),
+        };
+        (stats, read, returned)
+    }
+
+    #[test]
+    fn test_pointer_taking_intrinsic_kills_block_local_entries() {
+        // An intrinsic handed a pointer may store through it, so it is a
+        // barrier for the whole table even though this slot never escaped
+        // (the RUE-2262 backstop).
+        let (stats, read, returned) = intrinsic_barrier_fixture(true);
         assert_eq!(stats.loads_forwarded_block_local, 0);
-        assert!(matches!(
-            cfg.get_block(cfg.entry).terminator,
-            Terminator::Return { value: Some(v) } if v == read
-        ));
+        assert_eq!(returned, read);
+    }
+
+    #[test]
+    fn test_intrinsic_without_a_pointer_argument_is_not_a_barrier() {
+        // `@dbg` and friends receive no pointer, so they cannot reach a local
+        // and must not cost the block its tracked store — an unconditional
+        // intrinsic barrier stopped forwarding in every loop that prints.
+        let (stats, read, returned) = intrinsic_barrier_fixture(false);
+        assert_eq!(stats.loads_forwarded_block_local, 1);
+        assert_ne!(returned, read);
     }
 
     #[test]
