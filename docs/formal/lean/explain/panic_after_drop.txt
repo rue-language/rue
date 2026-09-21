@@ -122,7 +122,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     [ℓ0 = ⊘ (moved out)]
          result  PANIC (user) — a defined trap, §6.12
-  [9]   d0  (D-Return-Value) §6.9 (pop the frame)
+  [9]   d0  (Panic-Lift) §6.2 — the callee trapped, so no frame is popped: §6.12 abandons the configuration and `run-all-scope-drops` never runs
          expr    f0()
          store   (empty)
            →     [ℓ0 = ⊘ (moved out)]
