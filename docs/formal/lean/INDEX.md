@@ -8,7 +8,7 @@ Every declaration of the mechanization with the calculus rules, sections, and pr
 
 | Module | Declaration | Kind | Calculus | Paragraphs |
 | --- | --- | --- | --- | --- |
-| `RueCore.Checker` | Checker.lean (module) | module | (Fn), (Sub-Never), §3, §5, §5.5, §5.6, §5.7, §5.8, §7 | `3.8:18`, `3.9:31`, `3.9:44` |
+| `RueCore.Checker` | Checker.lean (module) | module | (Fn), (Sub-Never), (Panic), §3, §5, §5.5, §5.6, §5.7, §5.8, §7 | `3.8:18`, `3.9:31`, `3.9:44` |
 | `RueCore.Checker` | `RueCore.check` | def | (Call), (Return-Value), §5, §5.7, §5.8 | — |
 | `RueCore.Checker` | `RueCore.checkArgs` | def | (Call), §5.8 | `4.10:3`, `4.10:4` |
 | `RueCore.Checker` | `RueCore.check_sound` | theorem | §5, §7 | — |
@@ -450,7 +450,7 @@ Coverage: 48 of 97 labeled §5/§6 rules are mechanized; 49 are *not yet mechani
 | §5.8 | `(Array-Intro)` | *not yet mechanized* |
 | §5.8 | `(Call)` | `RueCore.check`, `RueCore.checkArgs`, `RueCore.checkArgs_sound`, `RueCore.Explain.Premise.unknownCallee`, `RueCore.Explain.Premise.argCountMismatch`, `RueCore.Explain.Premise.argTypeMismatch`, `RueCore.Explain.explainArgs`, `RueCore.Explain.argsPremise`, `RueCore.Explain.explainArgs_result`, `RueCore.HasTys`, `RueCore.ArgsOk`, `RueCore.args_sound`, `RueCore.entry_typed`, Statics.lean (module), `RueCore.Typed`, `RueCore.Typed.call`, `RueCore.TypedArgs`, `RueCore.WfProgram`, `RueCore.ProgramTyped`, Syntax.lean (module), `RueCore.Program` |
 | §5.8 | `(Call-Bottom)` | `RueCore.Typed.call` |
-| §5.8 | `(Panic)` | `RueCore.Typed.panic`, Syntax.lean (module) |
+| §5.8 | `(Panic)` | Checker.lean (module), `RueCore.Typed.panic`, Syntax.lean (module) |
 | §5.8 | `(Panic-Operand)` | `RueCore.Expr` |
 | §5.8 | `(Dbg)` | `RueCore.Corpus.dbgLine`, `RueCore.eval`, `RueCore.Examples.dbgScalars`, `RueCore.Explain.Premise.dbgNotObservable`, `RueCore.Typed.dbg`, Syntax.lean (module), `RueCore.Ty.observable` |
 | §5.8 | `(Accessor-Call)` | *not yet mechanized* |

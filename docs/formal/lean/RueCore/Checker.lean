@@ -24,16 +24,25 @@ with `3.8:18`/`3.9:31`'s `@copy` restriction, `3.9:44`'s destructor
 restriction, and the acyclicity that makes the equation solvable in one pass
 (`struct_class_unique`).
 
-## `return`, algorithmically
+## `return` and `@panic`, algorithmically
 
 §5.7 types `return e` at `never` and (Sub-Never) coerces it to whatever the
 context needs, with a divergent outgoing state `⊥` that a join reads nothing
-from. `Typed.ret` folds both in by concluding at *any* type and *any*
+from; (Panic) §5.8 gives `@panic(s)` the same treatment. `Typed.ret` and
+`Typed.panic` fold both in by concluding at *any* type and *any*
 same-skeleton outgoing context, so an algorithm has to pick. `check` picks the
-enclosing function's return type `R` and the state in force after the operand
-— the choice that makes the two shapes the fragment writes go through: a body
-that ends in `return`, and an `if` whose arms are a `return` and a value of
-the function's return type.
+enclosing function's return type `R` and the state in force at the form — for
+`return`, after the operand; for `@panic`, the incoming state, since the
+message is a literal the form carries. That is the choice that makes the
+shapes the fragment writes go through: a body that ends in `return` or
+`@panic`, and an `if` whose arms are one of those and a value of the
+function's return type.
+
+The cost is the same for both, and the paragraphs below spell it out for
+`return`; read `@panic` alongside it everywhere. `1 + @panic("x")` inside a
+`bool`-returning function has a derivation and `check` rejects it, and a
+`@panic` arm of an `if` contributes its incoming state to §5.5's join where
+§5.7 excludes it. The generator therefore emits neither form (`Gen.lean`).
 
 That choice is a *restriction* of the rule, so `check_sound` still holds, and
 it is where completeness is lost. Both halves of the choice cost something,
