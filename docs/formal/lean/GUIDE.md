@@ -342,13 +342,16 @@ decide whether to believe the mechanization without trusting whoever wrote it.
 Six steps, each with what a defect would look like. Nothing here requires
 reading a proof.
 
-**1. Build it yourself (five minutes, most of it waiting).**
+**1. Build it yourself (five minutes warm; the first run downloads the
+toolchain).**
 
 ```bash
 scripts/rue lean
 ```
 
-Buck fetches the SHA-pinned Lean toolchain, builds the package, re-checks the
+Buck fetches the SHA-pinned Lean toolchain — about 17,500 files and 2.7 GB
+unpacked (`toolchains/lean/defs.bzl`), so the first run is a download and the
+five minutes are the ones after it — builds the package, re-checks the
 compiled modules with the toolchain's own `leanchecker` (an independent
 re-verification of the `.olean`s, not a replay of the build), runs the reports,
 and prints the trust report. *A defect looks like:* the build failing, which
@@ -377,17 +380,27 @@ reviewer is the gate.
 **3. Read the digest (ten minutes).**
 
 `DIGEST.md`, likewise generated (`lake exe ruecore-digest`) and likewise worth
-regenerating and diffing. It opens with the fragment boundary — how many of the
+regenerating and diffing — regenerating it also runs the two checks the file
+claims for itself, that every `RueCore` constant it prints has an entry of its
+own and that every declaration the generated `INDEX.md` names survived its
+filter, and a miss is a message on stderr and a non-zero exit rather than a
+quietly wrong file. It opens with the fragment boundary — how many of the
 calculus's §5/§6 rules and §2 syntactic forms have a core image at all, quoted
 from `INDEX.md` — then gives every theorem's statement as Lean elaborated it,
 then every definition those statements are written in terms of, in dependency
-order. Read `soundness` first and satisfy yourself you can state it in one
-sentence; then read the corollaries, which should say nothing `soundness` does
-not. *A defect looks like:* a theorem that quantifies over less than you
-expected (a hypothesis that makes it vacuous, a `Γ` fixed to `[]` where the
-claim should be general), a corollary that is not an instance of the main
-theorem, or a definition in the dependency list whose doc-comment describes
-something other than what its signature says.
+order — with its body where the body is short enough to read, so `Ty.mult`
+(which is `class(T)`, and so is what makes `res linear` linear) and
+`Ctx.join` (§5.5, a premise of `Typed.ite`) can be read rather than taken on
+their signatures. Read `soundness` first and satisfy yourself you can state it
+in one sentence; then read the corollaries, which should say nothing
+`soundness` does not. *A defect looks like:* a theorem that quantifies over
+less than you expected (a hypothesis that makes it vacuous, a `Γ` fixed to
+`[]` where the claim should be general), a corollary that is not an instance
+of the main theorem, a definition in the dependency list whose doc-comment
+describes something other than what its signature says, or a definition whose
+body makes the claims about it trivial — a `Ty.mult` that answered `.copy`
+everywhere, or a `Ctx.join` that answered `none`, would leave every linearity
+corollary true and empty.
 
 **4. Read `Matches`, and hold it against §7 (five minutes).**
 
@@ -412,20 +425,38 @@ The theorems are about `eval` and `check`, not about the compiler. What ties
 the two together is the bridge: every corpus case is printed as a Rue program,
 and the compiler, the reference oracle, and the native binary are run on it and
 compared against what the mechanization says (`README.md`, "The bridge
-corpus"). It lands with RUE-2228 (#3165) as
+corpus"). The consumer lands with RUE-2228.
 
 ```bash
 scripts/rue lean-bridge
 ```
 
-and is expected to report 20 of the 21 seed cases agreeing, with
-`cond_drop_affine` red: the compiler drops a conditionally-dropped affine
-residue on a path the calculus says it should not, which is a real compiler
-defect, tracked as RUE-2290 and left visible rather than suppressed. *A defect
-looks like:* any *other* case disagreeing. A disagreement is a defect in one of
-the four views — the mechanization, the compiler, the oracle, or the printed
-program — and which one is a question the case's `explain/<case>.txt` rendering
-(section 5's tables, `lake exe ruecore-explain <case>`) is meant to answer.
+It prints one line per case — the case's name, the verdict (`accept(i64)`,
+`reject`), and `agree` or `DISAGREE` with the number of disagreeing pairs,
+each carrying the diagnostic code where a program was refused — then, for
+every case that disagrees, the printed Rue program, the four views side by
+side, and the pairs that differ; last a tally. On the 21 seed cases today it
+ends
+
+```text
+  cases: 21 (20 agree, 1 disagree)
+  checker <-> compiler: 1
+  lean <-> oracle: 1
+  lean <-> native: 0
+  oracle <-> native: 0
+```
+
+and exits non-zero. The one red case is `cond_drop_affine`: the checker
+accepts it and the compiler reports an internal error instead of a verdict
+(`E9000`, a CFG-verification failure on the conditionally-dropped affine
+residue), so the oracle — which shares that frontend — cannot run it either
+and no binary exists to compare against. That is a real compiler defect,
+tracked as RUE-2290 and left visible rather than suppressed. *A defect looks
+like:* any *other* case disagreeing, or this one disagreeing differently. A
+disagreement is a defect in one of the four views — the mechanization, the
+compiler, the oracle, or the printed program — and which one is a question the
+case's `explain/<case>.txt` rendering (section 5's tables, `lake exe
+ruecore-explain <case>`) is meant to answer.
 
 **6. Spot-check two statements against the calculus (five minutes).**
 
@@ -441,13 +472,16 @@ two and read the calculus and the Lean side by side.
   a program that overwrites a live linear value the RHS had not yet consumed.
 - `(D-Let)`/`(D-EndScope)`, §6.7, against `eval`'s `letIn` arm. The machine
   mints a fresh cell for the binder, runs the body, then at scope exit inspects
-  that cell: a live linear value is `linearLeak`, a live affine value is dropped
-  and its event appended to the trace, a `⊘` or `†` cell drops nothing, and the
-  cell is retired (`dead`) either way. *A defect looks like:* the retire being
-  omitted (then a use after scope exit would read a stale value instead of
-  refusing), or the affine drop event being emitted in the wrong order relative
-  to the body's own trace, which is exactly what the bridge's stdout comparison
-  in step 5 would catch.
+  that cell: a live linear value is `linearLeak` and the machine stops there; a
+  live affine value is dropped, its event appended to the trace, and the cell
+  retired (`dead`); a live copy value or a `⊘` cell drops nothing and the cell
+  is retired just the same. A `†` cell cannot arise here — §6.7 mints the
+  binder's own cell and this arm is where it retires it — and the machine
+  refuses one (`useAfterDrop`), as it refuses an unbound index. *A defect looks
+  like:* the retire being omitted (then a use after scope exit would read a
+  stale value instead of refusing), or the affine drop event being emitted in
+  the wrong order relative to the body's own trace, which is exactly what the
+  bridge's stdout comparison in step 5 would catch.
 
 What thirty minutes does **not** buy: the adequacy lemma tying this executable
 dynamics to §6's reduction relation is owed by RUE-2289 and not proved here

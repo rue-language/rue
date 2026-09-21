@@ -16,7 +16,9 @@ for that diff; nothing in CI runs the Lean build yet).
 
 `--trust` exits non-zero when a proof depends on an axiom outside this
 project's policy, after writing the report, so a build step that redirects it
-to a file both keeps the evidence and fails.
+to a file both keeps the evidence and fails. The digest exits non-zero the
+same way when one of the two properties it states about itself — closure, and
+completeness against `INDEX.md` — does not hold, naming the miss on stderr.
 
 Importing an environment at run time needs `enableInitializersExecution`, so
 the entry point is the usual `unsafe`/`implemented_by` pair; nothing about
@@ -32,24 +34,30 @@ def usage : String :=
 /-- (helper) The statement digest: theorems, helper lemmas, and the
 definitions their statements are written in terms of. -/
 def digestReport (index : String) (env : Environment) : CoreM (String × UInt32) := do
-  let decls := Digest.declarations env
+  let authored ← Digest.authoredNames env
+  let decls := Digest.declarations env authored
   let mut theorems := #[]
   let mut helpers := #[]
   for (name, info) in decls do
     if info matches .thmInfo _ then
-      let item ← Digest.readItem env name info
+      let item ← Digest.readItem env authored name info
       if item.helper then helpers := helpers.push item else theorems := theorems.push item
   let seeds := (theorems ++ helpers).flatMap (·.deps)
-  let reachable := Digest.closureFrom env seeds.toList #[]
-  let mut definitions := #[]
-  for name in reachable do
-    if let some info := env.find? name then
-      if !(info matches .thmInfo _) then
-        definitions := definitions.push (← Digest.readItem env name info)
+  let reached ← Digest.itemClosure env authored seeds.toList #[]
+  let definitions := reached.filter fun it => it.kind != "theorem"
+  let rendered := theorems ++ helpers ++ definitions
+  let entries := rendered.foldl (init := NameSet.empty) fun acc it => acc.insert it.name
+  -- The two properties the file's own preamble states, checked before it is
+  -- printed: a report that cannot keep them should say so rather than assert
+  -- them (RUE-2247's review).
+  let problems := Digest.closureViolations env entries rendered
+    ++ Digest.indexCrossCheck env authored entries index
+  for problem in problems do
+    IO.eprintln s!"ruecore-digest: {problem}"
   match Digest.renderDigest index
       (theorems.qsort Digest.bySource) (helpers.qsort Digest.bySource)
       (Digest.topological definitions) with
-  | .ok text => return (text, 0)
+  | .ok text => return (text, if problems.isEmpty then 0 else 1)
   | .error why =>
       IO.eprintln s!"ruecore-digest: {why}"
       return ("", 1)
@@ -57,16 +65,17 @@ def digestReport (index : String) (env : Environment) : CoreM (String × UInt32)
 /-- (helper) The trust report: every theorem's axioms, the `sorry` count read
 from them, and the package's own declared assumptions. -/
 def trustReport (env : Environment) : CoreM (String × UInt32) := do
-  let decls := Digest.declarations env
+  let authored ← Digest.authoredNames env
+  let decls := Digest.declarations env authored
   let mut theorems := #[]
   let mut declared := #[]
   for (name, info) in decls do
     if info matches .thmInfo _ then
-      let item ← Digest.readItem env name info
+      let item ← Digest.readItem env authored name info
       let axioms ← collectAxioms name
       theorems := theorems.push (item, axioms.qsort (fun a b => a.toString < b.toString))
     else if info matches .axiomInfo _ then
-      declared := declared.push (← Digest.readItem env name info)
+      declared := declared.push (← Digest.readItem env authored name info)
   let ordered := theorems.qsort (fun a b => Digest.bySource a.1 b.1)
   let (text, clean) := Digest.renderTrust ordered (declared.qsort Digest.bySource)
   if !clean then

@@ -11,15 +11,26 @@ procedure that uses both.
 
 What is *not* here, deliberately: proof bodies. A proof is checked by the
 kernel, and `TRUST.md` reports the axioms that check appealed to; reading
-the tactic script is not how this is validated. Definition bodies are not
-here either, with one exception: a definition that **is** a type or a
-predicate (`Ctx`, `CellMatches`, `InBounds`) is part of what a statement
-says, so the constants its body mentions are included as entries of their
-own. A function definition (`eval`, `check`) appears by signature and
-doc-comment, and its body lives in the module named beside it.
+the tactic script is not how this is validated. A definition's body *is*
+here whenever it is a type or a predicate (`Ctx`, `CellMatches`,
+`InBounds`) or is short enough to read, because a signature alone cannot
+tell `Ty.mult` from `fun _ => .copy` or `Ctx.join` from `fun _ _ => none`,
+and under either of those the linearity claims below would be nearly
+vacuous. A long body (`eval`, `check`, `explain`) is left to the module
+named beside its signature. Where the compiled value is the elaborator's
+own output rather than what was written, the entry prints the defining
+equations Lean derived from it.
 
-That gives this file a property worth checking: every `RueCore` constant
-occurring in any signature printed below has an entry of its own below.
+Two properties of this file are checked by the generator, which exits
+non-zero and names the miss rather than printing a file whose preamble is
+false. First, closure: every `RueCore` constant occurring in a signature or
+a body printed below has an entry of its own below, or is a constructor
+listed under its type's entry. Second, completeness against `INDEX.md`,
+which a different tool generates by reading the sources rather than the
+compiled environment: every declaration it names in a module this file
+covers is a constant that survived the generated-declaration filter, and
+every theorem it names has an entry here.
+
 Doc-comments are reproduced verbatim from the sources, and cite the
 calculus rule, section, or specification paragraph the declaration
 mechanizes (`README.md`, "Doc-comment convention"); `INDEX.md` is the
@@ -33,7 +44,14 @@ rule by rule and form by form; its two coverage lines, quoted here so the
 boundary is visible before the statements are:
 
 - *Calculus rules → declarations*: 24 of 94 labeled §5/§6 rules are mechanized; 70 are *not yet mechanized*.
-- *Abstract syntax forms → declarations*: 16 of 34 §2 forms have a core image (6 of them partial); 18 are *not yet mechanized*.
+- *Abstract syntax forms → declarations*: 14 of 34 §2 forms have a core image (4 of them partial); 20 are *not yet mechanized*.
+
+The forms that count as partial are `int(w, s)`, `S`, `e1 ⊕ e2`,
+`e1 ⋚ e2`. Each is a restricted or abstract stand-in rather than the form
+itself, and `INDEX.md` says in the row what is missing. A form the
+fragment abstracts away rather than models reads *not yet mechanized*
+there even where a construct of the core stands in for part of its
+ownership shape, so this count is the generous reading of neither.
 
 A row reading *not yet mechanized* in those tables is a rule or a syntactic
 form no theorem below says anything about. Nothing in this file claims
@@ -41,8 +59,14 @@ otherwise, and nothing outside the fragment is proved by omission.
 
 ## Theorems
 
-In source order. These are the claims; a claim's meaning is its statement
-together with the definitions in the last section, not its doc-comment.
+In source order. What separates this section from the next is the
+`(helper)` marker in the doc-comment — the repository's cross-reference
+convention — and not a judgment about importance: a theorem whose
+doc-comment does not carry the marker is listed here even where it is a
+step of another proof (an inversion lemma about the join, say) rather than
+a claim about the language. Each statement and its doc-comment say which
+it is. A claim's meaning is its statement together with the definitions in
+the last section, not its doc-comment.
 
 ### `Typed.skel_preserved`
 
@@ -589,6 +613,12 @@ The upper `int(64, signed)` bound (§6.4).
 def RueCore.intMax : Int
 ```
 
+Defining equations, as Lean derived them from the body:
+
+```lean
+intMax = 2 ^ 63 - 1
+```
+
 ### `intMin`
 
 *def* · module `RueCore.Syntax`
@@ -597,6 +627,12 @@ def RueCore.intMax : Int
 
 ```lean
 def RueCore.intMin : Int
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+intMin = -2 ^ 63
 ```
 
 ### `Expr`
@@ -942,6 +978,15 @@ RueCore.HasTy.res {κ : Mult} {n : Int} :
 def RueCore.Ty.mult : Ty → Mult
 ```
 
+Defining equations, as Lean derived them from the body:
+
+```lean
+Ty.int.mult = Mult.copy
+Ty.bool.mult = Mult.copy
+Ty.unit.mult = Mult.copy
+∀ (a : Mult), (Ty.res a).mult = a
+```
+
 ### `Val.mult`
 
 *def* · module `RueCore.Dynamics`
@@ -950,6 +995,14 @@ The dynamic image of `class(T)` (§3) on a value.
 
 ```lean
 def RueCore.Val.mult : Val → Mult
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (κ : Mult) (n : Int), (Val.res κ n).mult = κ
+∀ (x : Val),
+  (∀ (κ : Mult) (n : Int), x = Val.res κ n → False) → x.mult = Mult.copy
 ```
 
 ### `CellMatches`
@@ -984,18 +1037,6 @@ abbrev RueCore.Ctx : Type :=
   List Entry
 ```
 
-### `Entry.join`
-
-*def* · module `RueCore.Statics`
-
-The §5.5 branch join, per entry. Agreeing states join to themselves. A
-disagreement on a linear-carrying entry is ill-formed (`3.8:50`); on any other
-entry it joins conservatively to `MovedOut`.
-
-```lean
-def RueCore.Entry.join (a b : Entry) : Option Entry
-```
-
 ### `Entry.setSt`
 
 *def* · module `RueCore.Statics`
@@ -1006,6 +1047,13 @@ Re-mark an entry's ownership state (helper).
 def RueCore.Entry.setSt (en : Entry) (s : OwnState) : Entry
 ```
 
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (en : Entry) (s : OwnState),
+  en.setSt s = { ty := en.ty, mu := en.mu, st := s }
+```
+
 ### `Entry.skel`
 
 *def* · module `RueCore.Statics`
@@ -1014,6 +1062,12 @@ The fixed part of an entry, preserved by every rule (helper).
 
 ```lean
 def RueCore.Entry.skel (en : Entry) : Ty × Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (en : Entry), en.skel = (en.ty, en.mu)
 ```
 
 ### `Store`
@@ -1028,17 +1082,6 @@ abbrev RueCore.Store : Type :=
   List Cell
 ```
 
-### `Ctx.join`
-
-*def* · module `RueCore.Statics`
-
-The §5.5 branch join, pointwise. Defined only on equal-length contexts
-(the two arms extend one incoming context, so lengths always agree).
-
-```lean
-def RueCore.Ctx.join : Ctx → Ctx → Option Ctx
-```
-
 ### `Ctx.skel`
 
 *def* · module `RueCore.Statics`
@@ -1047,6 +1090,35 @@ The skeleton of a whole context (helper).
 
 ```lean
 def RueCore.Ctx.skel (Γ : Ctx) : List (Ty × Bool)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (Γ : Ctx), Γ.skel = List.map Entry.skel Γ
+```
+
+### `Entry.join`
+
+*def* · module `RueCore.Statics`
+
+The §5.5 branch join, per entry. Agreeing states join to themselves. A
+disagreement on a linear-carrying entry is ill-formed (`3.8:50`); on any other
+entry it joins conservatively to `MovedOut`.
+
+```lean
+def RueCore.Entry.join (a b : Entry) : Option Entry
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (a b : Entry),
+  a.join b =
+    if a.st = b.st then some a
+    else
+      if a.ty.mult = Mult.linear then none
+      else some (a.setSt OwnState.movedOut)
 ```
 
 ### `EvalRes`
@@ -1169,6 +1241,33 @@ order, producing the type and outgoing context or rejecting.
 def RueCore.check (Γ : Ctx) : Expr → Option (Ty × Ctx)
 ```
 
+### `Ctx.join`
+
+*def* · module `RueCore.Statics`
+
+The §5.5 branch join, pointwise. Defined only on equal-length contexts
+(the two arms extend one incoming context, so lengths always agree).
+
+```lean
+def RueCore.Ctx.join : Ctx → Ctx → Option Ctx
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Ctx.join [] [] = some []
+∀ (a : Entry) (as : List Entry) (b : Entry) (bs : List Entry),
+  Ctx.join (a :: as) (b :: bs) =
+    match a.join b, Ctx.join as bs with
+    | some e, some rest => some (e :: rest)
+    | x, x_1 => none
+∀ (x x_1 : Ctx),
+  (x = [] → x_1 = [] → False) →
+    (∀ (a : Entry) (as : List Entry) (b : Entry) (bs : List Entry),
+        x = a :: as → x_1 = b :: bs → False) →
+      x.join x_1 = none
+```
+
 ### `Explain.Deriv`
 
 *inductive* · module `RueCore.Explain`
@@ -1210,6 +1309,76 @@ Constructors:
 ```lean
 RueCore.Explain.Trace.mk (steps : List Explain.Step) (res : EvalRes) :
   Explain.Trace
+```
+
+### `eval`
+
+*def* · module `RueCore.Dynamics`
+
+The interpreter. Rule correspondence, per case: `use` is
+(D-Use-Copy)/(D-Use-Move) (§6.3); `add` is (D-Arith)/(D-Arith-Trap), `div` is
+(D-Div)/(D-Div-Zero)/(D-Div-Overflow), and `lt` is §6.4's ordering compare
+(`cmp`, unlabeled there); `drop` is §6.11's explicit `@drop`; `letIn` is
+(D-Let) + (D-EndScope)'s drop-retire (§6.7); `assign` is (D-Assign), §6.8's
+overwrite-drop / reinitialization; `seq` is (D-Seq), discarding with a
+temporary drop (§6.7); `ite` is (D-If-T)/(D-If-F) after the §6.2 search for
+the scrutinee.
+
+```lean
+def RueCore.eval (H : Store) (ρ : Env) : Expr → EvalRes
+```
+
+### `Explain.Deriv.result`
+
+*def* · module `RueCore.Explain`
+
+The derivation's conclusion, in `check`'s shape: the type and outgoing
+`Σ` of an accepted node, nothing for a rejected one. `explain_result` is the
+proof that this projection is exactly `check` (§5 as an algorithm).
+
+```lean
+def RueCore.Explain.Deriv.result : Explain.Deriv → Option (Ty × Ctx)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (rule : String) (ctxIn : Ctx) (expr : Expr) (T : Ty) (Γ' : Ctx)
+  (kids : List Explain.Deriv),
+  (Explain.Deriv.node rule ctxIn expr (Explain.Verdict.accept T Γ')
+        kids).result =
+    some (T, Γ')
+∀ (rule : String) (ctxIn : Ctx) (expr : Expr) (premise : String)
+  (kids : List Explain.Deriv),
+  (Explain.Deriv.node rule ctxIn expr (Explain.Verdict.reject premise)
+        kids).result =
+    none
+```
+
+### `Explain.explain`
+
+*def* · module `RueCore.Explain`
+
+The instrumented mirror of `check` (§5): the same algorithm, recording
+the rule it applied at every node and, where it rejects, the premise that
+failed. `explain_result` proves the two agree.
+
+```lean
+def RueCore.Explain.explain (Γ : Ctx) : Expr → Explain.Deriv
+```
+
+### `Explain.traceEval`
+
+*def* · module `RueCore.Explain`
+
+The instrumented mirror of `eval` (§6): the same machine, recording one
+row per evaluated node. `traceEval_res` proves the two agree on the final
+result. `d` is the nesting depth and `Θ` the binder types in scope, which
+travel with `ρ` so each row prints its expression with the source's names.
+
+```lean
+def RueCore.Explain.traceEval (d : Nat) (Θ : List Ty) (H : Store) (ρ : Env) :
+  Expr → Explain.Trace
 ```
 
 ### `Typed`
@@ -1364,59 +1533,4 @@ RueCore.Typed.ite {Γ Γ₀ Γ₁ Γ₂ Γ' : Ctx} {c e₁ e₂ : Expr} {T : Ty}
   Typed Γ c Ty.bool Γ₀ →
     Typed Γ₀ e₁ T Γ₁ →
       Typed Γ₀ e₂ T Γ₂ → Γ₁.join Γ₂ = some Γ' → Typed Γ (c.ite e₁ e₂) T Γ'
-```
-
-### `eval`
-
-*def* · module `RueCore.Dynamics`
-
-The interpreter. Rule correspondence, per case: `use` is
-(D-Use-Copy)/(D-Use-Move) (§6.3); `add` is (D-Arith)/(D-Arith-Trap), `div` is
-(D-Div)/(D-Div-Zero)/(D-Div-Overflow), and `lt` is §6.4's ordering compare
-(`cmp`, unlabeled there); `drop` is §6.11's explicit `@drop`; `letIn` is
-(D-Let) + (D-EndScope)'s drop-retire (§6.7); `assign` is (D-Assign), §6.8's
-overwrite-drop / reinitialization; `seq` is (D-Seq), discarding with a
-temporary drop (§6.7); `ite` is (D-If-T)/(D-If-F) after the §6.2 search for
-the scrutinee.
-
-```lean
-def RueCore.eval (H : Store) (ρ : Env) : Expr → EvalRes
-```
-
-### `Explain.Deriv.result`
-
-*def* · module `RueCore.Explain`
-
-The derivation's conclusion, in `check`'s shape: the type and outgoing
-`Σ` of an accepted node, nothing for a rejected one. `explain_result` is the
-proof that this projection is exactly `check` (§5 as an algorithm).
-
-```lean
-def RueCore.Explain.Deriv.result : Explain.Deriv → Option (Ty × Ctx)
-```
-
-### `Explain.explain`
-
-*def* · module `RueCore.Explain`
-
-The instrumented mirror of `check` (§5): the same algorithm, recording
-the rule it applied at every node and, where it rejects, the premise that
-failed. `explain_result` proves the two agree.
-
-```lean
-def RueCore.Explain.explain (Γ : Ctx) : Expr → Explain.Deriv
-```
-
-### `Explain.traceEval`
-
-*def* · module `RueCore.Explain`
-
-The instrumented mirror of `eval` (§6): the same machine, recording one
-row per evaluated node. `traceEval_res` proves the two agree on the final
-result. `d` is the nesting depth and `Θ` the binder types in scope, which
-travel with `ρ` so each row prints its expression with the source's names.
-
-```lean
-def RueCore.Explain.traceEval (d : Nat) (Θ : List Ty) (H : Store) (ρ : Env) :
-  Expr → Explain.Trace
 ```

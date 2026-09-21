@@ -95,8 +95,15 @@ ROOT_NAMESPACE = "RueCore"
 # alternative exactly as the calculus writes it. The status is one of:
 #
 # * ``"yes"`` — the fragment has this form, in the constructors named;
-# * ``"partial"`` — a restricted or abstract stand-in; the note says what is
-#   missing, so the row is never read as full coverage;
+# * ``"partial"`` — a restricted or abstract stand-in for the form itself; the
+#   note says what is missing, so the row is never read as full coverage;
+# * ``"stand-in"`` — the fragment has no image of the form, but a construct of
+#   the core stands in for part of its ownership shape. The row reads *not yet
+#   mechanized* and the note names the stand-in, which is the rule
+#   ``docs/formal/lean/README.md`` already states for the rules table ("A label
+#   is a claim"): a stand-in is not coverage of the form it stands in for.
+#   The constructors are still listed here, so the gate still checks that they
+#   exist;
 # * ``"no"`` — not yet mechanized; the note says what it would need.
 #
 # The table is explicit rather than inferred because only a human can say
@@ -161,19 +168,22 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         "one of the four ordering compares, `<`",
     ),
     ("e", "S { f1: e1, ..., fk: ek }"): (
-        "partial",
+        "stand-in",
         ["Expr.mkres"],
-        "`mkres κ e` introduces the abstract resource of `res κ`: the ownership "
-        "shape of §5.8's aggregate introduction, with no fields to type",
+        "`RueCore.Expr.mkres` stands in: `mkres κ e` introduces the abstract "
+        "resource of `res κ`, the ownership shape of §5.8's aggregate "
+        "introduction, but the fragment has no fields, so there is no struct "
+        "literal to type",
     ),
     ("e", "E :: K ( e1, ..., em )"): ("no", [], "follows `E`: no enums, so no variant construction"),
     ("e", "[ e1, ..., en ]"): ("no", [], "follows `[T; n]`: no arrays, so no array construction"),
     ("e", "g ( a1, ..., am )"): (
-        "partial",
+        "stand-in",
         ["Expr.consume"],
-        "`consume e` takes a resource by value and returns its payload: the "
-        "ownership shape of one by-value argument, with no function definitions, "
-        "no `inout`/`borrow` modes, and no return",
+        "`RueCore.Expr.consume` stands in: `consume e` takes a resource by value "
+        "and returns its payload, the ownership shape of one by-value argument, "
+        "but the fragment has no function definitions, no `inout`/`borrow` modes, "
+        "and no return",
     ),
     ("e", "p . f ( e1, ..., ek )"): (
         "no",
@@ -641,15 +651,16 @@ def render_index(modules: List[Module], calculus: Calculus) -> str:
     out(
         "Every alternative of the calculus's §2 grammar for types (`T`), places "
         "(`p`), and expressions (`e`), with the `Syntax.lean` constructors that "
-        "mechanize it. *partial* marks an abstract or restricted stand-in and says "
-        "in the same row what is missing, so no row reads as more coverage than "
-        "there is. With the rules table below, this is the whole fragment boundary: "
-        "a form is either here with a constructor, here as a stand-in, or *not yet "
-        "mechanized*."
+        "mechanize it. *partial* marks a restricted or abstract version of the "
+        "form itself and says in the same row what is missing, so no row reads as "
+        "more coverage than there is. A form the fragment abstracts away rather "
+        "than models reads *not yet mechanized* even where a construct of the core "
+        "stands in for part of its ownership shape; the row names the stand-in. "
+        "With the rules table below, this is the whole fragment boundary."
     )
     out("")
     statuses = [SYNTAX_FORMS[form.key][0] for form in calculus.forms if form.key in SYNTAX_FORMS]
-    with_image = sum(1 for status in statuses if status != "no")
+    with_image = sum(1 for status in statuses if status in ("yes", "partial"))
     partial = sum(1 for status in statuses if status == "partial")
     out(
         f"Coverage: {with_image} of {len(calculus.forms)} §2 forms have a core image "
@@ -661,7 +672,7 @@ def render_index(modules: List[Module], calculus: Calculus) -> str:
     out("| --- | --- | --- | --- |")
     for form in calculus.forms:
         status, constructors, note = SYNTAX_FORMS.get(form.key, ("no", [], ""))
-        if constructors:
+        if constructors and status in ("yes", "partial"):
             cell = ", ".join(f"`{ROOT_NAMESPACE}.{name}`" for name in constructors)
             if status == "partial":
                 cell += " *(partial)*"

@@ -147,7 +147,7 @@ Every declaration of the mechanization with the calculus rules, sections, and pr
 Helpers, cited by nothing in the calculus and marked `(helper)`:
 
 - `RueCore.CorpusMain`: `main`
-- `RueCore.Digest`: `RueCore.Digest.root`, `RueCore.Digest.inRoot`, `RueCore.Digest.generatedComponents`, `RueCore.Digest.isFieldProjection`, `RueCore.Digest.isGenerated`, `RueCore.Digest.declarations`, `RueCore.Digest.trimmed`, `RueCore.Digest.isTypeLike`, `RueCore.Digest.statementDeps`, `RueCore.Digest.normalizeDep`, `RueCore.Digest.depsOf`, `RueCore.Digest.closureFrom`, `RueCore.Digest.Item`, `RueCore.Digest.kindOf`, `RueCore.Digest.ppDecl`, `RueCore.Digest.ppValue`, `RueCore.Digest.lineOf`, `RueCore.Digest.readItem`, `RueCore.Digest.bySource`, `RueCore.Digest.topological`, `RueCore.Digest.shortName`, `RueCore.Digest.oneLine`, `RueCore.Digest.renderItem`, `RueCore.Digest.coverageLine`, `RueCore.Digest.scopeSection`, `RueCore.Digest.renderDigest`, `RueCore.Digest.allowedAxioms`, `RueCore.Digest.axiomVerdict`, `RueCore.Digest.renderTrust`
+- `RueCore.Digest`: `RueCore.Digest.root`, `RueCore.Digest.inRoot`, `RueCore.Digest.isFieldProjection`, `RueCore.Digest.isDecEqEnumLemma`, `RueCore.Digest.isGenerated`, `RueCore.Digest.authoredNames`, `RueCore.Digest.declarations`, `RueCore.Digest.trimmed`, `RueCore.Digest.dedup`, `RueCore.Digest.isTypeLike`, `RueCore.Digest.maxBodyLines`, `RueCore.Digest.looksCompiled`, `RueCore.Digest.ppDecl`, `RueCore.Digest.ppValue`, `RueCore.Digest.ppEquations`, `RueCore.Digest.Body`, `RueCore.Digest.signatureOnly`, `RueCore.Digest.bodyOf`, `RueCore.Digest.statementDeps`, `RueCore.Digest.normalizeDep`, `RueCore.Digest.Item`, `RueCore.Digest.kindOf`, `RueCore.Digest.lineOf`, `RueCore.Digest.readItem`, `RueCore.Digest.itemClosure`, `RueCore.Digest.bySource`, `RueCore.Digest.topological`, `RueCore.Digest.printerHides`, `RueCore.Digest.closureViolations`, `RueCore.Digest.nameOf`, `RueCore.Digest.indexDeclarations`, `RueCore.Digest.importedModules`, `RueCore.Digest.indexCrossCheck`, `RueCore.Digest.shortName`, `RueCore.Digest.oneLine`, `RueCore.Digest.renderItem`, `RueCore.Digest.coverageLine`, `RueCore.Digest.sectionLines`, `RueCore.Digest.partialForms`, `RueCore.Digest.wrapWords`, `RueCore.Digest.scopeSection`, `RueCore.Digest.renderDigest`, `RueCore.Digest.allowedAxioms`, `RueCore.Digest.axiomVerdict`, `RueCore.Digest.renderTrust`
 - `RueCore.DigestMain`: `usage`, `digestReport`, `trustReport`, `withEnvironment`, `digestWithIndex`, `mainUnsafe`, `mainImpl`, `main`
 - `RueCore.Dynamics`: `RueCore.EvalRes.withTrace`
 - `RueCore.Explain.Html`: `RueCore.Explain.Html.esc`, `RueCore.Explain.Html.tag`, `RueCore.Explain.Html.tagc`, `RueCore.Explain.Html.style`, `RueCore.Explain.Html.storeTable`, `RueCore.Explain.Html.ctxHtml`, `RueCore.Explain.Html.stepResHtml`, `RueCore.Explain.Html.page`, `RueCore.Explain.Html.renderCase`, `RueCore.Explain.Html.indexRow`, `RueCore.Explain.Html.index`
@@ -160,9 +160,9 @@ Helpers, cited by nothing in the calculus and marked `(helper)`:
 
 ## Abstract syntax forms → declarations
 
-Every alternative of the calculus's §2 grammar for types (`T`), places (`p`), and expressions (`e`), with the `Syntax.lean` constructors that mechanize it. *partial* marks an abstract or restricted stand-in and says in the same row what is missing, so no row reads as more coverage than there is. With the rules table below, this is the whole fragment boundary: a form is either here with a constructor, here as a stand-in, or *not yet mechanized*.
+Every alternative of the calculus's §2 grammar for types (`T`), places (`p`), and expressions (`e`), with the `Syntax.lean` constructors that mechanize it. *partial* marks a restricted or abstract version of the form itself and says in the same row what is missing, so no row reads as more coverage than there is. A form the fragment abstracts away rather than models reads *not yet mechanized* even where a construct of the core stands in for part of its ownership shape; the row names the stand-in. With the rules table below, this is the whole fragment boundary.
 
-Coverage: 16 of 34 §2 forms have a core image (6 of them partial); 18 are *not yet mechanized*.
+Coverage: 14 of 34 §2 forms have a core image (4 of them partial); 20 are *not yet mechanized*.
 
 | Production | Form | Mechanized by | Scope |
 | --- | --- | --- | --- |
@@ -183,10 +183,10 @@ Coverage: 16 of 34 §2 forms have a core image (6 of them partial); 18 are *not 
 | `e` | `⊖ e` | *not yet mechanized* | no unary operators |
 | `e` | `e1 ≟ e2` | *not yet mechanized* | equality compare borrows its operands (§4.1, `4.3:3f`) and the fragment has no loans |
 | `e` | `e1 ⋚ e2` | `RueCore.Expr.lt` *(partial)* | one of the four ordering compares, `<` |
-| `e` | `S { f1: e1, ..., fk: ek }` | `RueCore.Expr.mkres` *(partial)* | `mkres κ e` introduces the abstract resource of `res κ`: the ownership shape of §5.8's aggregate introduction, with no fields to type |
+| `e` | `S { f1: e1, ..., fk: ek }` | *not yet mechanized* | `RueCore.Expr.mkres` stands in: `mkres κ e` introduces the abstract resource of `res κ`, the ownership shape of §5.8's aggregate introduction, but the fragment has no fields, so there is no struct literal to type |
 | `e` | `E :: K ( e1, ..., em )` | *not yet mechanized* | follows `E`: no enums, so no variant construction |
 | `e` | `[ e1, ..., en ]` | *not yet mechanized* | follows `[T; n]`: no arrays, so no array construction |
-| `e` | `g ( a1, ..., am )` | `RueCore.Expr.consume` *(partial)* | `consume e` takes a resource by value and returns its payload: the ownership shape of one by-value argument, with no function definitions, no `inout`/`borrow` modes, and no return |
+| `e` | `g ( a1, ..., am )` | *not yet mechanized* | `RueCore.Expr.consume` stands in: `consume e` takes a resource by value and returns its payload, the ownership shape of one by-value argument, but the fragment has no function definitions, no `inout`/`borrow` modes, and no return |
 | `e` | `p . f ( e1, ..., ek )` | *not yet mechanized* | an accessor (ADR-0062) yields a place and needs the loans §5.4 gives it |
 | `e` | `@drop ( p )` | `RueCore.Expr.drop` | whole bindings only, as `p` above |
 | `e` | `@panic ( s )` | *not yet mechanized* | needs `never` and a string-valued operand; the fragment's only §6.12 traps are the arithmetic ones |
