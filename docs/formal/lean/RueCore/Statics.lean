@@ -747,7 +747,12 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   §6.11's `⊘`-skip drops a partially moved value correctly. Its own last
   premise takes that strength's place: where a path under `p` has been moved
   out, no still-owned linear sub-place may remain below `p`
-  (`residualLinearBelow`). -/
+  (`residualLinearBelow`). That premise is a **statics-only** discipline: the
+  machine runs `@drop`'s glue over whatever the place holds, linear content
+  included — which is what makes `@drop` the one non-move discharge of a
+  linear obligation (`3.9:39`) — so no monitor refuses the state it forbids
+  and `soundness` does not consume it. It is here because the calculus has it
+  and the compiler enforces it (E0406). -/
   | dropRes {Γ p en u T} :
       Γ[p.root]? = some en →
       en.st.get p.path = some u → u.isOwned = true →

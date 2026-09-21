@@ -143,9 +143,9 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         ["Ty.struct", "StructDecl"],
         "a monomorphic struct declared by the program: named fields by position, "
         "the `@copy`/`linear` attribute, and whether it declares a destructor, with "
-        "`class(S)` the field join of §3 (`WfStructs` is the equation). No "
-        "projection and no partial move, so no per-field §5.6 drop obligation "
-        "(RUE-2231), and no generics",
+        "`class(S)` the field join of §3 (`WfStructs` is the equation). A field is "
+        "projected by its declaration slot (`p . f` below), so §5.6's obligation is "
+        "per-path; no generics",
     ),
     ("T", "E"): ("no", [], "enums and their variants are outside the fragment"),
     ("T", "[T; n]"): ("no", [], "arrays and array indexing are outside the fragment"),

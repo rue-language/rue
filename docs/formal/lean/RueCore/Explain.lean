@@ -35,11 +35,13 @@ and in the printed Rue program.
 
 Node labels name a calculus rule only where the node *is* an instance of
 it. A struct literal is one — it is labelled (Struct-Intro) §5.8 and
-(D-Struct) §6.5 — but the fragment's `consume` is not: the calculus takes a
-struct apart through a projection, which is a place and so RUE-2231's, so
-that node is labelled "whole-value elimination" with a section pointer and
-its rejections say what the restriction is, rather than claiming a rule the
-mechanization does not cover.
+(D-Struct) §6.5 — and so is a projection, which is a use of a place and
+carries (Use-Copy)/(Use-Move) §5.1. Where the fragment *restricts* a rule
+rather than modelling it, the label stays and the rejection says what the
+restriction is: a place whose path has a declared-`linear` proper prefix is
+rejected with §4.2's `Declared(d, π)` plan named, rather than claiming
+(Use-Declared-Linear-Destructure) §5.1, which the mechanization does not
+cover (RUE-2236).
 
 ## Frames in the step table
 

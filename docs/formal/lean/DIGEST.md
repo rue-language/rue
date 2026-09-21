@@ -3186,8 +3186,10 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Dynamics`
 
 `H[ℓ@π ↦ c']` (§6.3's (D-Use-Move), §6.8's `place_write`): replace the
-sub-position at a path. `none` is a step that is not a field of what is stored
-(helper).
+sub-position at a path. `none` is a step that is not a field of what is
+stored, which is the same navigation `readAt` refuses with `typeConfusion` —
+so every `eval` arm that writes has already read at the same path, and its
+`none` case is unreachable rather than a second refusal (helper).
 
 ```lean
 def RueCore.Contents.writeAt : Contents → List Nat → Contents → Option Contents
@@ -5882,7 +5884,7 @@ RueCore.Typed.dropCopy {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
               Typed P R Γ (Expr.drop p) Ty.unit Γ
 ```
 
-**`Typed.dropRes`** — (@Drop) §5.3: consumes the place and discharges its (affine or linear) obligation; the only non-move discharge of a linear obligation. At a projection it *is* a partial move, so it carries (Use-Move)'s `3.9:34` premise. What it does **not** carry is `fully-owned`: §5.3 states `Σ(p) = Owned` and says why — `@drop` hands the value to no new owner, and §6.11's `⊘`-skip drops a partially moved value correctly. Its own last premise takes that strength's place: where a path under `p` has been moved out, no still-owned linear sub-place may remain below `p` (`residualLinearBelow`).
+**`Typed.dropRes`** — (@Drop) §5.3: consumes the place and discharges its (affine or linear) obligation; the only non-move discharge of a linear obligation. At a projection it *is* a partial move, so it carries (Use-Move)'s `3.9:34` premise. What it does **not** carry is `fully-owned`: §5.3 states `Σ(p) = Owned` and says why — `@drop` hands the value to no new owner, and §6.11's `⊘`-skip drops a partially moved value correctly. Its own last premise takes that strength's place: where a path under `p` has been moved out, no still-owned linear sub-place may remain below `p` (`residualLinearBelow`). That premise is a **statics-only** discipline: the machine runs `@drop`'s glue over whatever the place holds, linear content included — which is what makes `@drop` the one non-move discharge of a linear obligation (`3.9:39`) — so no monitor refuses the state it forbids and `soundness` does not consume it. It is here because the calculus has it and the compiler enforces it (E0406).
 
 ```lean
 RueCore.Typed.dropRes {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
