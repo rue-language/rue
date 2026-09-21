@@ -60,7 +60,9 @@ filegroup(
 # and compiles in milliseconds), the repo-relative `source_path` fixture case
 # (whose subject IS the TOML resolution mechanism it would be leaving), the one
 # `differential_opt` calculator case (four compiles by design, at opt levels the
-# runner drives), and the one-scenario wordfreq root. The harness decides this
+# runner drives), the one-scenario wordfreq root, and Mosaic's concurrency
+# preview root (hosted linking; rue_program pins internal linking).
+# The harness decides this
 # structurally rather than from a list — see `case_runs_prebuilt_program`.
 #
 # The RUE-48 automatic example smokes are untouched: `run_example` still
@@ -91,14 +93,6 @@ filegroup(
     ]
 ]
 
-# The preview root shares Mosaic's complete pipeline through @import.
-rue_program(
-    name = "mosaic-parallel",
-    root = "examples/mosaic_parallel.rue",
-    srcs = ["mosaic_parallel.rue"] + glob(["mosaic/**/*.rue"]),
-    preview_features = ["concurrency"],
-)
-
 # ADR-0083 (RUE-2004): Gazette's own `test` declarations, run by `rue test`
 # under the declared candidate inventory. The glob is deliberately the same one
 # `:gazette` compiles from, because the inventory IS that srcs list: a fourth
@@ -113,13 +107,13 @@ rue_test(
     srcs = glob(["gazette/**/*.rue"]),
 )
 
-# The eleven artifacts as one directory keyed by root path, so a corpus action
+# The ten artifacts as one directory keyed by root path, so a corpus action
 # declares a single `$(location ...)` and the harness's lookup key is the
 # case's own `source_path` string. Consumed by //:cli-tests, //:cli-tests-slow
 # and the four shards in the root package.
 #
-# Every consumer declares all eleven even though no single corpus target runs
-# cases against all eleven — mosaic's section is slow-tier, so the premerge
+# Every consumer declares all ten even though no single corpus target runs
+# cases against all ten — mosaic's section is slow-tier, so the premerge
 # targets carry it for nothing. That is the simplest correct form ADR-0070
 # chose deliberately: it is a mild over-declaration of each action's key (an
 # edit to any root already re-runs every CLI corpus action today, since the
@@ -137,7 +131,6 @@ rue_program_staging(
         ":lattice",
         ":meridian",
         ":mosaic",
-        ":mosaic-parallel",
         ":rill",
         ":ruelex",
         ":second-calculator",
