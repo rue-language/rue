@@ -163,7 +163,7 @@ pub(crate) fn semantic_candidate_import_occurrences(
         let argument = arguments
             .get(0)
             .expect("validated intrinsic argument index");
-        let rue_rir::InstData::StringConst { content, .. } = &rir.get(argument).data else {
+        let rue_rir::InstData::StringConst { content, .. } = &rir.get(argument.value).data else {
             continue;
         };
         sites.push((

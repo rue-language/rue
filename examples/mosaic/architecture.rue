@@ -38,6 +38,9 @@ fn determinism(inout out: StrBuf) {
     out.push_str("  Hash-map probe order never appears in user-visible output.\n");
     out.push_str("  Each HTML page is rendered twice and compared before its first write.\n");
     out.push_str("  Stress mode fingerprints two complete renders of a generated site.\n");
+    out.push_str("  The maintained mosaic-parallel root runs two independent complete sites with\n");
+    out.push_str("  different page counts, then compares serial and joined counters and\n");
+    out.push_str("  output/model fingerprints.\n");
     out.push_str("  Build and check share one loader and graph validator.\n\n");
 }
 

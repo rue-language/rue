@@ -2124,6 +2124,7 @@ fn case_runs_prebuilt_program(case: &Case) -> bool {
         name: _,
         description: _,
         contract: _,
+        concurrency_observation: _,
         replay_repro,
         known_bug: _,
         known_bug_on: _,

@@ -61,6 +61,12 @@ contract = "heavyweight_long"
 tier = "slow"
 
 [[automatic_example]]
+path = "mosaic_parallel.rue"
+contract = "heavyweight_long"
+tier = "slow"
+preview = "concurrency"
+
+[[automatic_example]]
 path = "rill/main.rue"
 contract = "heavyweight"
 

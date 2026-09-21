@@ -137,6 +137,7 @@ enum IneligibleReason {
     RuntimeEnvironment,
     InheritedDescriptor,
     NamedExecutionContract,
+    ConcurrencyObservation(rue_test_runner::cli_corpus::ConcurrencyObservation),
     ExternalSourcePath,
     NoInlineSource,
     MultipleSourceFiles,
@@ -169,6 +170,9 @@ impl fmt::Display for IneligibleReason {
             Self::RuntimeEnvironment => f.write_str("runtime environment"),
             Self::InheritedDescriptor => f.write_str("inherited descriptor capture"),
             Self::NamedExecutionContract => f.write_str("named execution contract"),
+            Self::ConcurrencyObservation(observation) => {
+                write!(f, "native concurrency observation ({observation:?})")
+            }
             Self::ExternalSourcePath => f.write_str("external source path"),
             Self::NoInlineSource => f.write_str("no inline source"),
             Self::MultipleSourceFiles => f.write_str("multiple source files"),
@@ -1399,6 +1403,7 @@ fn unsupported_corpus_field(case: &Case) -> Option<IneligibleReason> {
         // wrapper order, so they classify with their established reasons.
         name: _,
         contract: _,
+        concurrency_observation: _,
         files: _,
         source_path: _,
         args: _,
@@ -1547,6 +1552,9 @@ fn check_case_with_native_with_configuration(
     }
     if case.contract.as_deref().or(section_contract).is_some() {
         return CaseOutcome::Ineligible(IneligibleReason::NamedExecutionContract);
+    }
+    if let Some(observation) = case.concurrency_observation {
+        return CaseOutcome::Ineligible(IneligibleReason::ConcurrencyObservation(observation));
     }
     // A watch case is an imperative sequence of filesystem edits and driver
     // publications, not one concrete source execution the in-process oracle
@@ -1957,6 +1965,68 @@ mod tests {
         BinaryFile, HardLinkFixture, SourceFile, SymlinkFixture, WatchScenario, WatchScenarioKind,
         WatchTestScenario, WatchTestScenarioKind,
     };
+
+    #[test]
+    fn serial_join_inout_preserves_forwarded_nested_and_accessor_contexts() {
+        let source = r#"
+            const std = @import("std");
+            struct Empty {}
+            struct Pair { a: i64, b: i64 }
+            struct Cell {
+                value: i64,
+                fn get(inout self) -> inout i64 { yield self.value; }
+            }
+            fn empty(inout x: Empty) {}
+            fn add(inout x: i64) { x += 1; }
+            fn relay(comptime A: type, comptime B: type, inout a: A, inout b: B,
+                     left: fn(inout A), right: fn(inout B)) {
+                let R = std.result.Result((), std.parallel.SpawnError);
+                match std.parallel.join_inout(A, B, inout a, inout b, left, right) {
+                    R.Ok(_) => (), R.Err(_) => @panic("launch failed"),
+                };
+            }
+            fn nested(inout x: Pair) {
+                let mut a = x.a;
+                let mut b = x.b;
+                relay(i64, i64, inout a, inout b, add, add);
+                x.a = a;
+                x.b = b;
+            }
+            fn main() -> i32 {
+                let mut pair = Pair { a: 19, b: 20 };
+                let mut unit = Empty {};
+                relay(Pair, Empty, inout pair, inout unit, nested, empty);
+                let mut a = Cell { value: pair.a };
+                let mut b = Cell { value: pair.b };
+                relay(i64, i64, inout a.get(), inout b.get(), add, add);
+                @intCast(a.value + b.value - 1)
+            }
+        "#;
+        let preview = PreviewFeatures::from([rue_compiler::PreviewFeature::Concurrency]);
+        let result = run_source_with_real_std(source, &preview)
+            .expect("real std is available")
+            .expect("serial joins must agree before and after CFG transformations");
+        assert_eq!(result.exit_code, 42);
+    }
+
+    #[test]
+    fn native_concurrency_observations_are_explicitly_ineligible() {
+        use rue_test_runner::cli_corpus::ConcurrencyObservation;
+        let mut case = corpus_case("fn main() -> i32 { 0 }", false);
+        for observation in [
+            ConcurrencyObservation::Progress,
+            ConcurrencyObservation::ResourceExhaustion,
+            ConcurrencyObservation::OutputInterleaving,
+        ] {
+            case.concurrency_observation = Some(observation);
+            assert_cli_ineligible(&case, IneligibleReason::ConcurrencyObservation(observation));
+        }
+        case.concurrency_observation = None;
+        assert_eq!(
+            check_case(Path::new("probe.toml"), &case),
+            CaseOutcome::Agree
+        );
+    }
 
     #[test]
     fn nested_grid_row_and_arraybuf_accessors_agree_at_cfg_boundaries() {

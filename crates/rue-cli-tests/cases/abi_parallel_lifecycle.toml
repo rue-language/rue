@@ -1,0 +1,337 @@
+# Generated Rue callbacks cross the hosted pthread boundary on every native
+# platform via the existing `scripts/rue cli abi` CI selection.
+
+[section]
+id = "cli.abi_parallel_lifecycle"
+name = "Structured join callback ABI and lifetime"
+description = "Real native callbacks preserve their context ABI, concurrent progress, and failure/cleanup contract."
+
+[[case]]
+name = "abi_parallel_generic_context_layouts"
+description = "Repeated forwarded joins retain narrow fields, mixed GP/FP aggregates, empty contexts, and caller-owned linear obligations."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["--preview", "concurrency", "-O3", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+struct Small { a: u8, b: u16, c: u32 }
+struct Wide { a: i64, b: f64, c: u8, d: [i64; 3] }
+struct Empty {}
+linear struct Ticket { n: i64 }
+
+fn small_step(inout value: Small) {
+    value.a += 1;
+    value.b += 2;
+    value.c += 3;
+}
+
+fn wide_step(inout value: Wide) {
+    value.a += 4;
+    value.b += 0.5;
+    value.c += 1;
+    value.d[2] += 1;
+}
+
+fn empty_step(inout value: Empty) {}
+fn ticket_step(inout value: Ticket) {}
+
+fn relay(comptime A: type, comptime B: type, inout left: A, inout right: B,
+         left_fn: fn(inout A), right_fn: fn(inout B))
+    -> std.result.Result((), std.parallel.SpawnError) {
+    std.parallel.join_inout(A, B, inout left, inout right, left_fn, right_fn)
+}
+
+fn require_ok(result: std.result.Result((), std.parallel.SpawnError)) {
+    let R = std.result.Result((), std.parallel.SpawnError);
+    match result {
+        R.Ok(_) => (),
+        R.Err(_) => @panic("unexpected launch failure"),
+    };
+}
+
+fn main() -> i32 {
+    let mut small = Small { a: 1, b: 2, c: 3 };
+    let mut wide = Wide { a: 10, b: 1.5, c: 0, d: [10, 20, 30] };
+    let mut i: u64 = 0;
+    while i < 10 {
+        require_ok(relay(Small, Wide, inout small, inout wide, small_step, wide_step));
+        @assert(small.a == @intCast(i + 2));
+        i += 1;
+    }
+    @assert(small.a == 11 && small.b == 22 && small.c == 33);
+    @assert(wide.a == 50 && wide.b == 6.5 && wide.c == 10 && wide.d[2] == 40);
+    let mut empty = Empty {};
+    let mut ticket = Ticket { n: 42 };
+    require_ok(relay(Empty, Ticket, inout empty, inout ticket, empty_step, ticket_step));
+    @intCast(ticket.n)
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "abi_parallel_callbacks_make_concurrent_progress"
+concurrency_observation = "progress"
+description = "Each callback publishes a directory then waits for its peer. A serial implementation cannot complete, and fresh case directories prevent stale markers from satisfying the rendezvous."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["--preview", "concurrency", "-O3", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+struct Work { own: StrBuf, peer: StrBuf, observed: bool }
+
+fn exists(borrow path: StrBuf) -> bool {
+    let R = std.result.Result(std.fs.Metadata, std.fs.FileError);
+    match std.fs.metadata(borrow path) {
+        R.Ok(_) => true,
+        R.Err(error) => match error {
+            std.fs.FileError.NotFound => false,
+            _ => @panic("metadata failed"),
+        },
+    }
+}
+
+fn rendezvous(inout work: Work) {
+    let R = std.result.Result((), std.fs.FileError);
+    match std.fs.create_dir(borrow work.own) {
+        R.Ok(_) => (),
+        R.Err(_) => @panic("publish failed"),
+    };
+    while !exists(borrow work.peer) {}
+    work.observed = true;
+}
+
+fn main() -> i32 {
+    let mut left = Work {
+        own: StrBuf.from_str(borrow "left-ready"),
+        peer: StrBuf.from_str(borrow "right-ready"),
+        observed: false,
+    };
+    let mut right = Work {
+        own: StrBuf.from_str(borrow "right-ready"),
+        peer: StrBuf.from_str(borrow "left-ready"),
+        observed: false,
+    };
+    let R = std.result.Result((), std.parallel.SpawnError);
+    match std.parallel.join_inout(Work, Work, inout left, inout right, rendezvous, rendezvous) {
+        R.Ok(_) => (),
+        R.Err(_) => @panic("launch failed"),
+    };
+    if left.observed && right.observed { 42 } else { 0 }
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "abi_parallel_resource_failure_preserves_contexts_and_recovers"
+concurrency_observation = "resource_exhaustion"
+description = "A worker-only recursion chain exhausts the worker registry, verifies unchanged contexts on launch failure, unwinds, and successfully starts a later join."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["--preview", "concurrency", "-O3", "main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+struct Work { depth: u32, entered: bool, exhausted: bool }
+
+fn parent_step(inout value: i32) { value += 1; }
+
+fn worker_step(inout work: Work) {
+    work.entered = true;
+    if work.depth == 0 { @panic("expected bounded worker exhaustion"); }
+    let depth = work.depth - 1;
+    let mut child = Work { depth: depth, entered: false, exhausted: false };
+    let mut parent: i32 = 17;
+    let R = std.result.Result((), std.parallel.SpawnError);
+    match std.parallel.join_inout(Work, i32, inout child, inout parent, worker_step, parent_step) {
+        R.Ok(_) => {
+            @assert(child.entered && child.exhausted && parent == 18);
+            work.exhausted = true;
+        },
+        R.Err(error) => match error {
+            std.parallel.SpawnError.ResourceExhausted => {
+                @assert(child.depth == depth && !child.entered && !child.exhausted && parent == 17);
+                work.exhausted = true;
+            },
+            _ => @panic("unexpected initialization failure"),
+        },
+    };
+}
+
+fn main() -> i32 {
+    let mut work = Work { depth: 70, entered: false, exhausted: false };
+    worker_step(inout work);
+    @assert(work.entered && work.exhausted);
+    let mut left: i32 = 20;
+    let mut right: i32 = 20;
+    let R = std.result.Result((), std.parallel.SpawnError);
+    match std.parallel.join_inout(i32, i32, inout left, inout right, parent_step, parent_step) {
+        R.Ok(_) => left + right,
+        R.Err(_) => @panic("worker registry did not recover"),
+    }
+}
+""" }]
+exit_code = 42
+
+[[case]]
+name = "abi_parallel_requires_preview"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E1100"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn step(inout value: i32) { value += 1; }
+fn main() -> i32 {
+    let mut a: i32 = 20;
+    let mut b: i32 = 20;
+    let result = std.parallel.join_inout(i32, i32, inout a, inout b, step, step);
+    0
+}
+""" }]
+
+[[case]]
+name = "abi_parallel_rejects_shared_root"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["--preview", "concurrency", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0426"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+struct Pair { left: i32, right: i32 }
+fn step(inout value: i32) { value += 1; }
+fn main() -> i32 {
+    let mut pair = Pair { left: 1, right: 2 };
+    let result = std.parallel.join_inout(i32, i32, inout pair.left, inout pair.right, step, step);
+    0
+}
+""" }]
+
+[[case]]
+name = "abi_parallel_rejects_thread_bound_right"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["--preview", "concurrency", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E1200"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+@thread_bound
+struct Local { value: i32 }
+fn local_step(inout value: Local) { value.value += 1; }
+fn step(inout value: i32) { value += 1; }
+fn main() -> i32 {
+    let mut local = Local { value: 41 };
+    let mut ordinary: i32 = 0;
+    let result = std.parallel.join_inout(i32, Local, inout ordinary, inout local, step, local_step);
+    0
+}
+""" }]
+
+[[case]]
+name = "abi_parallel_rejects_thread_bound_left"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["--preview", "concurrency", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E1200"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+@thread_bound
+struct Local { value: i32 }
+fn local_step(inout value: Local) { value.value += 1; }
+fn step(inout value: i32) { value += 1; }
+fn main() -> i32 {
+    let mut local = Local { value: 41 };
+    let mut ordinary: i32 = 0;
+    let result = std.parallel.join_inout(Local, i32, inout local, inout ordinary, local_step, step);
+    0
+}
+""" }]
+
+[[case]]
+name = "abi_parallel_private_intrinsic_cannot_be_called"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["--preview", "concurrency", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["unknown intrinsic"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn step(inout value: i32) { value += 1; }
+fn main() -> i32 {
+    let mut a: i32 = 20;
+    let mut b: i32 = 20;
+    let result = @join_inout( inout a, inout b, step, step);
+    0
+}
+""" }]
+
+[[case]]
+name = "abi_parallel_callback_mode_must_match"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["--preview", "concurrency", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["fn(inout i32)"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn step(borrow value: i32) {}
+fn main() -> i32 {
+    let mut a: i32 = 20;
+    let mut b: i32 = 20;
+    let result = std.parallel.join_inout(i32, i32, inout a, inout b, step, step);
+    0
+}
+""" }]
+
+[[case]]
+name = "abi_parallel_callback_result_must_be_unit"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["--preview", "concurrency", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["fn(inout i32)"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn step(inout value: i32) -> i32 { value }
+fn main() -> i32 {
+    let mut a: i32 = 20;
+    let mut b: i32 = 20;
+    let result = std.parallel.join_inout(i32, i32, inout a, inout b, step, step);
+    0
+}
+""" }]
+
+[[case]]
+name = "abi_parallel_accessor_contexts_and_nested_joins"
+description = "Exclusive accessor loans survive nested and forwarded joins, including zero-sized contexts."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["--preview", "concurrency", "-O3", "main.rue", "-o", "prog"]
+exit_code = 42
+files = [{ path = "main.rue", source = """
+            const std = @import("std");
+            struct Empty {}
+            struct Pair { a: i64, b: i64 }
+            struct Cell {
+                value: i64,
+                fn get(inout self) -> inout i64 { yield self.value; }
+            }
+            fn empty(inout x: Empty) {}
+            fn add(inout x: i64) { x += 1; }
+            fn relay(comptime A: type, comptime B: type, inout a: A, inout b: B,
+                     left: fn(inout A), right: fn(inout B)) {
+                let R = std.result.Result((), std.parallel.SpawnError);
+                match std.parallel.join_inout(A, B, inout a, inout b, left, right) {
+                    R.Ok(_) => (), R.Err(_) => @panic("launch failed"),
+                };
+            }
+            fn nested(inout x: Pair) {
+                let mut a = x.a;
+                let mut b = x.b;
+                relay(i64, i64, inout a, inout b, add, add);
+                x.a = a;
+                x.b = b;
+            }
+            fn main() -> i32 {
+                let mut pair = Pair { a: 19, b: 20 };
+                let mut unit = Empty {};
+                relay(Pair, Empty, inout pair, inout unit, nested, empty);
+                let mut a = Cell { value: pair.a };
+                let mut b = Cell { value: pair.b };
+                relay(i64, i64, inout a.get(), inout b.get(), add, add);
+                @intCast(a.value + b.value - 1)
+            }
+        """ }]

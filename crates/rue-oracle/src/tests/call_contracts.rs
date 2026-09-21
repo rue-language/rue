@@ -53,6 +53,82 @@ fn contract_interp(state: &CompileState) -> Interp<'_> {
     }
 }
 
+#[test]
+fn join_validates_both_callback_contracts_before_reading_contexts() {
+    let state = query_cfg_state(
+        r#"
+        fn apply(inout value: i32, callback: fn(inout i32)) { callback(inout value); }
+        fn step(inout value: i32) { value += 1; }
+        fn main() -> i32 { let mut value: i32 = 41; apply(inout value, step); value }
+    "#,
+    )
+    .expect("callback fixture compiles");
+    let (cfg, context, callback) = state
+        .functions
+        .iter()
+        .find_map(|function| {
+            function
+                .cfg
+                .blocks()
+                .iter()
+                .flat_map(|block| &block.insts)
+                .find_map(|value| {
+                    let data = &function.cfg.get_inst(*value).data;
+                    if let CfgInstData::CallIndirect { callee, .. } = data {
+                        Some((
+                            &*function.cfg,
+                            function.cfg.get_call_args(data)[0],
+                            CfgCallArg {
+                                value: *callee,
+                                mode: CfgArgMode::Normal,
+                            },
+                        ))
+                    } else {
+                        None
+                    }
+                })
+        })
+        .expect("fixture retains an indirect callback call");
+    let valid = vec![context, callback, context, callback];
+    let mut wrong_mode = valid.clone();
+    wrong_mode[2].mode = CfgArgMode::Normal;
+    let mut wrong_callback = valid.clone();
+    wrong_callback[3].value = context.value;
+    for (args, result, expected) in [
+        (vec![], Type::U32, ContractViolationKind::RuntimeCallArity),
+        (
+            valid,
+            Type::UNIT,
+            ContractViolationKind::RuntimeCallSignature,
+        ),
+        (
+            wrong_mode,
+            Type::U32,
+            ContractViolationKind::RuntimeCallSignature,
+        ),
+        (
+            wrong_callback,
+            Type::U32,
+            ContractViolationKind::RuntimeCallSignature,
+        ),
+    ] {
+        // No parameters are installed: an attempt to run the first callback
+        // or read either context would fail with a different contract error.
+        let mut frame = Frame {
+            params: Vec::new(),
+            locals: HashMap::new(),
+            cache: HashMap::new(),
+            promoted: HashMap::new(),
+            param_places: HashMap::new(),
+            place_return: false,
+        };
+        let mut interp = contract_interp(&state);
+        let failure =
+            expect_flow_unsupported(interp.eval_join_inout(cfg, &mut frame, &args, result));
+        assert_eq!(failure.kind, UnsupportedKind::ContractViolation(expected));
+    }
+}
+
 fn find_call_metadata(
     state: &CompileState,
     expected_name: &str,

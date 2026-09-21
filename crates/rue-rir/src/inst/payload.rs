@@ -198,11 +198,6 @@ payload_family!(RirDirectivesRange, DirectivesFamily, "directives");
 payload_family!(RirParamsRange, ParamsFamily, "parameters");
 payload_family!(RirCallArgsRange, CallArgsFamily, "call arguments");
 payload_family!(
-    RirIntrinsicArgsRange,
-    IntrinsicArgsFamily,
-    "intrinsic arguments"
-);
-payload_family!(
     RirInternalIntrinsicArgsRange,
     InternalIntrinsicArgsFamily,
     "internal intrinsic arguments"
@@ -251,12 +246,11 @@ payload_family!(RirAssocTypesRange, AssocTypesFamily, "associated types");
 /// Verification and benchmark tooling consumes this list so adding a schema
 /// family necessarily changes the cross-phase inventory rather than silently
 /// escaping its coverage.
-pub const RIR_PAYLOAD_FAMILY_NAMES: [&str; 20] = [
+pub const RIR_PAYLOAD_FAMILY_NAMES: [&str; 19] = [
     RirMatchArmsRange::FAMILY,
     RirDirectivesRange::FAMILY,
     RirParamsRange::FAMILY,
     RirCallArgsRange::FAMILY,
-    RirIntrinsicArgsRange::FAMILY,
     RirInternalIntrinsicArgsRange::FAMILY,
     RirBlockInstsRange::FAMILY,
     RirStructFieldsRange::FAMILY,
@@ -1445,13 +1439,9 @@ impl Rir {
 
     pub(crate) fn add_intrinsic_args(
         &mut self,
-        refs: &[InstRef],
-    ) -> Result<RirIntrinsicArgsRange, RirPayloadBuildError> {
-        self.add_ref_words(
-            RirIntrinsicArgsRange::FAMILY,
-            refs,
-            RirIntrinsicArgsRange::from_parts,
-        )
+        args: &[RirCallArg],
+    ) -> Result<RirCallArgsRange, RirPayloadBuildError> {
+        self.add_call_arg_words(RirCallArgsRange::FAMILY, args, RirCallArgsRange::from_parts)
     }
     pub(crate) fn add_internal_intrinsic_args(
         &mut self,
@@ -1529,10 +1519,8 @@ impl Rir {
             |record| InstRef::from_raw(record[0]),
         )
     }
-    pub fn intrinsic_args(&self, range: &RirIntrinsicArgsRange) -> RirSlice<'_, InstRef> {
-        self.ref_view(range, |r| {
-            (r.start(), r.extent(), RirIntrinsicArgsRange::FAMILY)
-        })
+    pub fn intrinsic_args(&self, range: &RirCallArgsRange) -> RirSlice<'_, RirCallArg> {
+        self.call_arg_view(range, |r| (r.start(), r.extent(), RirCallArgsRange::FAMILY))
     }
     pub fn internal_intrinsic_args(
         &self,

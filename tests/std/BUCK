@@ -10,4 +10,5 @@ rue_test(
     name = "std-tests",
     root = "tests/std/main.rue",
     srcs = glob(["**/*.rue"]),
+    preview_features = ["concurrency"],
 )

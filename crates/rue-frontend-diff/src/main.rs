@@ -54,6 +54,14 @@ const SYNTAX_PROBES: &[(&str, &str)] = &[
         "fn f(x: bool) { @probe(!, !x, (), [u8]); }",
     ),
     (
+        "intrinsic-argument-modes.rue",
+        "fn f(inout value: i64, borrow bytes: [u8]) { @probe(inout value, borrow bytes); }",
+    ),
+    (
+        "intrinsic-type-arguments.rue",
+        "fn f(comptime T: type) { @require_transferable(T); @size_of(T); }",
+    ),
+    (
         "slice-types.rue",
         "fn f(borrow bytes: [u8]) -> u64 { @size_of([u8]) }",
     ),
@@ -679,11 +687,18 @@ impl Shapes<'_> {
                 "intrinsic",
                 "",
                 list(v.args.iter().map(|a| {
-                    let value = match a {
-                        IntrinsicArg::Expr(e) => self.expr(e),
-                        IntrinsicArg::Type(t) => self.ty(t),
+                    let (value, mode) = match a {
+                        IntrinsicArg::Expr(arg) => (self.expr(&arg.expr), Self::arg_mode(arg.mode)),
+                        IntrinsicArg::Type(t) => (self.ty(t), 0),
                     };
-                    node("arg", " mode=0", value, "_".into(), "_".into(), "_".into())
+                    node(
+                        "arg",
+                        &format!(" mode={mode}"),
+                        value,
+                        "_".into(),
+                        "_".into(),
+                        "_".into(),
+                    )
                 })),
                 "_".into(),
                 "_".into(),

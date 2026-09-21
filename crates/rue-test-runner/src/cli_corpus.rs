@@ -409,6 +409,17 @@ fn one() -> usize {
     1
 }
 
+/// A native concurrency guarantee observed by a CLI case. A serial reference
+/// execution can compare independent callback results, but cannot judge these
+/// properties. The native CLI runner still executes every assertion normally.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum ConcurrencyObservation {
+    Progress,
+    ResourceExhaustion,
+    OutputInterleaving,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Case {
@@ -420,6 +431,10 @@ pub struct Case {
     /// Named execution contract. Overrides the section default.
     #[serde(default)]
     pub contract: Option<String>,
+    /// Explicit native-only concurrency observation, with its reason preserved
+    /// in the oracle corpus accounting. Ordinary joins leave this absent.
+    #[serde(default)]
+    pub concurrency_observation: Option<ConcurrencyObservation>,
     /// Files written to the temp directory before invoking the compiler.
     #[serde(default)]
     pub files: Vec<SourceFile>,

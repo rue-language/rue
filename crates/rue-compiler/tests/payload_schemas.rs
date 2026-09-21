@@ -11,12 +11,11 @@ use rue_cfg::CFG_PAYLOAD_FAMILY_NAMES;
 use rue_compiler::{CompileOptions, CompilerSession, SourceSnapshot};
 use rue_rir::RIR_PAYLOAD_FAMILY_NAMES;
 
-const EXPECTED_RIR: [&str; 20] = [
+const EXPECTED_RIR: [&str; 19] = [
     "match arms",
     "directives",
     "parameters",
     "call arguments",
-    "intrinsic arguments",
     "internal intrinsic arguments",
     "block instructions",
     "struct fields",
@@ -79,12 +78,11 @@ macro_rules! row {
 /// malformed-range and malformed-scalar probes below. Round-trip evidence is
 /// owner-local so it constructs the private descriptor types; production
 /// publication, clone/rewrite, and stable display are exercised below.
-const COVERAGE_MATRIX: [CoverageRow; 40] = [
+const COVERAGE_MATRIX: [CoverageRow; 39] = [
     row!("RIR", "match arms"),
     row!("RIR", "directives"),
     row!("RIR", "parameters"),
     row!("RIR", "call arguments"),
-    row!("RIR", "intrinsic arguments"),
     row!("RIR", "internal intrinsic arguments"),
     row!("RIR", "block instructions"),
     row!("RIR", "struct fields"),
@@ -131,9 +129,11 @@ fn owner_schema_inventories_are_complete_and_deliberate() {
         .iter()
         .map(|row| row.family)
         .collect::<Vec<_>>();
-    assert_eq!(&mapped[..20], EXPECTED_RIR);
-    assert_eq!(&mapped[20..30], EXPECTED_AIR);
-    assert_eq!(&mapped[30..], EXPECTED_CFG);
+    let air_start = EXPECTED_RIR.len();
+    let cfg_start = air_start + EXPECTED_AIR.len();
+    assert_eq!(&mapped[..air_start], EXPECTED_RIR);
+    assert_eq!(&mapped[air_start..cfg_start], EXPECTED_AIR);
+    assert_eq!(&mapped[cfg_start..], EXPECTED_CFG);
     for row in COVERAGE_MATRIX {
         let index = match row.phase {
             "RIR" => EXPECTED_RIR.iter().position(|family| *family == row.family),

@@ -83,6 +83,7 @@ const fn unchecked_operation_family(
         | I::RequireDroppable
         | I::RequireTransferable
         | I::RequireTriviallyDroppable
+        | I::JoinInout
         | I::IntMax
         | I::IntMin
         | I::OffsetOf => None,
@@ -528,7 +529,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         air: &mut Air,
         inst_ref: InstRef,
         name: Spur,
-        args: &rue_rir::RirIntrinsicArgsRange,
+        args: &rue_rir::RirCallArgsRange,
         span: Span,
         result_expected: Option<Type>,
         ctx: &mut AnalysisContext,
@@ -542,20 +543,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         air: &mut Air,
         inst_ref: InstRef,
         name: Spur,
-        args: &rue_rir::RirIntrinsicArgsRange,
+        args: &rue_rir::RirCallArgsRange,
         span: Span,
         result_expected: Option<Type>,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        // Intrinsic arguments are stored as plain InstRefs
-        let arg_refs = self.body_rir_ref().intrinsic_args(args);
-        let args: Vec<RirCallArg> = arg_refs
-            .into_iter()
-            .map(|value| RirCallArg {
-                value,
-                mode: RirArgMode::Normal,
-            })
-            .collect();
+        // Expression intrinsics preserve the ordinary call argument modes.
+        let args: Vec<RirCallArg> = self.body_rir_ref().intrinsic_args(args).values().collect();
         let known = *self.known_symbols();
         let Some(intrinsic) = known.classify_intrinsic(name) else {
             // A spelling that is not a row of the one intrinsic table is the
@@ -566,6 +560,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             ));
         };
+
+        use rue_builtins::IntrinsicName as I;
 
         // Raw-pointer, heap, and syscall intrinsics are unchecked operations:
         // they may only be used inside a `checked` block (spec 9.1:1, chapter
@@ -584,10 +580,25 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .with_help("wrap the operation in a `checked { ... }` block"));
         }
 
+        // Intrinsics use the ordinary expression representation, but a mode
+        // prefix has meaning only when the intrinsic explicitly owns a loan
+        // contract. Keep the rejection at this one dispatch boundary so a
+        // newly added intrinsic cannot silently treat `inout` or `borrow` as
+        // a by-value argument.
+        if intrinsic != I::JoinInout && args.iter().any(|arg| arg.mode != RirArgMode::Normal) {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: intrinsic.spelling().to_owned(),
+                    expected: "normal arguments".to_owned(),
+                    found: "an argument with an access mode".to_owned(),
+                })),
+                span,
+            ));
+        }
+
         // Dispatch on the typed row rather than on the symbol: an intrinsic
         // added to the table without an analyzer is a non-exhaustive-match
         // error here, not a program that silently reaches E0700.
-        use rue_builtins::IntrinsicName as I;
         match intrinsic {
             I::Dbg => self.analyze_dbg_intrinsic(air, inst_ref, &args, span, ctx),
             I::Drop => self.analyze_drop_intrinsic(air, &args, span, ctx),
@@ -808,6 +819,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             I::TargetArch => self.analyze_target_arch_intrinsic(air, &args, span),
             I::TargetOs => self.analyze_target_os_intrinsic(air, &args, span),
             I::TargetDataModel => self.analyze_target_data_model_intrinsic(air, &args, span),
+            I::JoinInout => self.analyze_join_inout_intrinsic(air, name, &args, span, ctx),
             // The type-position intrinsics lower to `TypeIntrinsic`/`OffsetOf`
             // at their documented argument shape (RUE-788). Reaching value
             // dispatch means the shape was wrong, and the call is rejected as
@@ -824,6 +836,118 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             )),
         }
+    }
+
+    /// Analyze the trusted std-only bridge for `std.parallel.join_inout`.
+    /// The two `inout` operands remain call arguments until CFG lowering
+    /// materializes their addresses; callback names use the existing callback
+    /// binder so their bodies and transitive runtime requirements remain live.
+    fn analyze_join_inout_intrinsic(
+        &mut self,
+        air: &mut Air,
+        _name: Spur,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        let spelling = rue_builtins::IntrinsicName::JoinInout.spelling();
+        if !self.file_module_is_trusted_standard_library(ctx.current_file_id) {
+            return Err(CompileError::new(
+                ErrorKind::UnknownIntrinsic(spelling.to_owned()),
+                span,
+            ));
+        }
+        self.require_preview(rue_error::PreviewFeature::Concurrency, spelling, span)?;
+        if args.len() != 4 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: spelling.to_owned(),
+                    expected: 4,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+        if args[0].mode != RirArgMode::Inout
+            || args[1].mode != RirArgMode::Inout
+            || args[2].mode != RirArgMode::Normal
+            || args[3].mode != RirArgMode::Normal
+        {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: spelling.to_owned(),
+                    expected: "inout left, inout right, and two named callbacks".to_owned(),
+                    found: "invalid argument modes".to_owned(),
+                })),
+                span,
+            ));
+        }
+        self.check_exclusive_access(args.iter(), span, ctx)?;
+        let left_ty = ctx.resolved_type_of(args[0].value).unwrap_or(Type::ERROR);
+        let right_ty = ctx.resolved_type_of(args[1].value).unwrap_or(Type::ERROR);
+        self.check_require_transferable(left_ty, span)?;
+        self.check_require_transferable(right_ty, span)?;
+        let callback_type = |ty| crate::types::FunctionTypeDef {
+            params: vec![crate::types::FunctionTypeParam {
+                mode: crate::types::FunctionParamMode::Inout,
+                ty,
+            }],
+            result: Type::UNIT,
+        };
+        let left_cb_ty = self
+            .body_type_pool()
+            .try_intern_function(callback_type(left_ty))
+            .map_err(|error| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!("join callback type: {error:?}")),
+                    span,
+                )
+            })?;
+        let right_cb_ty = self
+            .body_type_pool()
+            .try_intern_function(callback_type(right_ty))
+            .map_err(|error| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!("join callback type: {error:?}")),
+                    span,
+                )
+            })?;
+        let CallOperands {
+            args: operand_args,
+            temp_scope,
+            continues,
+        } = self.analyze_call_args_coerced(
+            air,
+            args.iter().copied(),
+            &[left_ty, right_ty, left_cb_ty, right_cb_ty],
+            &[
+                RirParamMode::Inout,
+                RirParamMode::Inout,
+                RirParamMode::Normal,
+                RirParamMode::Normal,
+            ],
+            true,
+            ctx,
+        )?;
+        let helper = crate::RuntimeCallKind::JoinInout.helper().helper();
+        let air_ref = air.add_call(
+            Some(crate::RuntimeCallKind::JoinInout),
+            self.intern_body_symbol(helper.symbol)?,
+            &[
+                operand_args[0].clone(),
+                operand_args[2].clone(),
+                operand_args[1].clone(),
+                operand_args[3].clone(),
+            ],
+            Type::U32,
+            span,
+        )?;
+        let air_ref = self.wrap_value_with_temp_scope(air, air_ref, Type::U32, span, temp_scope)?;
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            Type::U32,
+            continues,
+        ))
     }
 
     /// Validate the trusted std pointer-to-place bridge. The enclosing yield
@@ -892,7 +1016,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             {
                 let pointer_args = self.body_rir_ref().intrinsic_args(args);
                 (pointer_args.len() == 2)
-                    .then(|| pointer_args.values().next())
+                    .then(|| pointer_args.values().next().map(|arg| arg.value))
                     .flatten()
             }
             _ => None,

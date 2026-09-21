@@ -41,13 +41,13 @@ pub use inst::{
     RirAnonStructMethodsRange, RirArgMode, RirArrayElemsRange, RirBlockInstsRange, RirCallArg,
     RirCallArgsRange, RirDirective, RirDirectiveView, RirDirectivesRange, RirEditor,
     RirEnumPayloads, RirEnumPayloadsRange, RirEnumVariantsRange, RirFallibleIntrinsic,
-    RirFallibleIntrinsicSet, RirFieldInitsRange, RirInternalIntrinsicArgsRange,
-    RirIntrinsicArgsRange, RirMatchArmsRange, RirParam, RirParamMode, RirParamsRange, RirPattern,
-    RirPatternElement, RirPatternElementView, RirPatternElements, RirPatternFieldsRange,
-    RirPatternView, RirPayloadBuildError, RirPayloadError, RirPayloadStorageStats, RirPrinter,
-    RirSpanField, RirSpanRemapError, RirSpanSlot, RirSpanTraversalError, RirStructFieldsRange,
-    RirStructMethodsRange, RirStructuralAnchor, RirStructuralPathSegment, RirValidationContext,
-    ValidatedRir, directives_allow,
+    RirFallibleIntrinsicSet, RirFieldInitsRange, RirInternalIntrinsicArgsRange, RirMatchArmsRange,
+    RirParam, RirParamMode, RirParamsRange, RirPattern, RirPatternElement, RirPatternElementView,
+    RirPatternElements, RirPatternFieldsRange, RirPatternView, RirPayloadBuildError,
+    RirPayloadError, RirPayloadStorageStats, RirPrinter, RirSpanField, RirSpanRemapError,
+    RirSpanSlot, RirSpanTraversalError, RirStructFieldsRange, RirStructMethodsRange,
+    RirStructuralAnchor, RirStructuralPathSegment, RirValidationContext, ValidatedRir,
+    directives_allow,
 };
 pub use rue_parser::{DirectiveName, ReprArg, WarningName};
 pub use symbol::{SharedSymbolSpace, SymbolHandle, SymbolSpaceGenerations};

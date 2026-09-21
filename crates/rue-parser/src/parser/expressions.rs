@@ -644,7 +644,20 @@ impl Parser {
                     if is_unambiguous_ty {
                         args.push(IntrinsicArg::Type(self.ty()?));
                     } else {
-                        args.push(IntrinsicArg::Expr(self.expr()?));
+                        let start = self.start();
+                        let mode = if self.eat(TokenKind::Inout) {
+                            ArgMode::Inout
+                        } else if self.eat(TokenKind::Borrow) {
+                            ArgMode::Borrow
+                        } else {
+                            ArgMode::Normal
+                        };
+                        let expr = self.expr()?;
+                        args.push(IntrinsicArg::Expr(CallArg {
+                            mode,
+                            expr,
+                            span: self.span_from(start),
+                        }));
                     }
                 }
                 if !self.eat(TokenKind::Comma) {

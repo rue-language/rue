@@ -191,6 +191,9 @@ mechanism), so the `PreviewFeature` enum is not empty.
 
 ### Active preview features
 
+- `concurrency` — structural transferability facts and scoped
+  `std.parallel.join_inout` (ADR-0098, spec 6.9). Both callbacks finish before
+  return; launch failure runs neither callback and preserves both contexts.
 - `interfaces` — declared, structurally verified conformance and interface
   bounds on comptime type parameters (spec 6.8). The preview checks supported
   bounded function bodies at their definitions; generic type constructors,

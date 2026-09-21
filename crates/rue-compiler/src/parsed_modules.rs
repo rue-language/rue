@@ -2289,7 +2289,14 @@ impl<'a> ParsedBodyProjectionCollector<'a> {
         if self.spelling(import.name)? != "import" {
             return Ok(None);
         }
-        let [IntrinsicArg::Expr(Expr::String(literal))] = import.args.as_slice() else {
+        let [
+            IntrinsicArg::Expr(rue_parser::CallArg {
+                expr: Expr::String(literal),
+                mode: rue_parser::ArgMode::Normal,
+                ..
+            }),
+        ] = import.args.as_slice()
+        else {
             return Ok(None);
         };
         self.resolver.try_resolve(&literal.value).ok_or_else(|| {
@@ -2305,7 +2312,14 @@ impl<'a> ParsedBodyProjectionCollector<'a> {
         if self.spelling(value.name)? != "import" {
             return Ok(());
         }
-        if let [IntrinsicArg::Expr(Expr::String(literal))] = value.args.as_slice() {
+        if let [
+            IntrinsicArg::Expr(rue_parser::CallArg {
+                expr: Expr::String(literal),
+                mode: rue_parser::ArgMode::Normal,
+                ..
+            }),
+        ] = value.args.as_slice()
+        {
             let specifier = self.resolver.try_resolve(&literal.value).ok_or_else(|| {
                 invalid_input("import literal is absent from the module symbol universe")
             })?;
@@ -2325,7 +2339,7 @@ impl<'a> ParsedBodyProjectionCollector<'a> {
                 )
             } else {
                 let span = match &value.args[0] {
-                    IntrinsicArg::Expr(expr) => expr.span(),
+                    IntrinsicArg::Expr(expr) => expr.span,
                     IntrinsicArg::Type(ty) => ty.span(),
                 };
                 (span, InvalidImportShape::NonStringArgument)
@@ -2499,7 +2513,7 @@ impl<'a> ParsedBodyProjectionCollector<'a> {
                 self.collect_import(value)?;
                 for argument in &value.args {
                     match argument {
-                        IntrinsicArg::Expr(expr) => self.visit_expr(expr)?,
+                        IntrinsicArg::Expr(expr) => self.visit_expr(&expr.expr)?,
                         IntrinsicArg::Type(ty) => self.visit_type(ty)?,
                     }
                 }

@@ -364,6 +364,7 @@ pub(crate) const fn intrinsic_shape(name: IntrinsicName) -> IntrinsicShape {
         | I::RequireDroppable
         | I::RequireTransferable
         | I::RequireTriviallyDroppable
+        | I::JoinInout
         | I::IntMax
         | I::IntMin
         | I::OffsetOf => IntrinsicSignature::new(Uniform(Free), Fresh),

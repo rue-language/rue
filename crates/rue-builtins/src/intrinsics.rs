@@ -261,6 +261,7 @@ intrinsic_inventory! {
     ByteCopy => { spelling: "byte_copy", grammar: Value, fallible: None },
     ByteMove => { spelling: "byte_move", grammar: Value, fallible: None },
     ByteSet => { spelling: "byte_set", grammar: Value, fallible: None },
+    JoinInout => { spelling: "join_inout", grammar: Value, fallible: None },
     TargetArch => { spelling: "target_arch", grammar: Value, fallible: None },
     TargetOs => { spelling: "target_os", grammar: Value, fallible: None },
     TargetDataModel => { spelling: "target_data_model", grammar: Value, fallible: None },

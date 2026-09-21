@@ -126,6 +126,9 @@ fn is_text_view(kind: Option<crate::TextViewKind>) -> bool {
 /// runtime-call manifest.  This is shared by durable import and CFG so the
 /// manifest remains the sole authority for runtime intrinsic call shapes.
 fn runtime_air_type_in_pool(pool: &TypeInternPool, ty: Type) -> Option<RuntimeAirType> {
+    if ty.as_function().is_some() {
+        return Some(RuntimeAirType::CodePointer);
+    }
     if ty == Type::UNIT {
         return Some(RuntimeAirType::Unit);
     }
@@ -277,6 +280,9 @@ impl RuntimeAirTypePool for TypeInternPool {
 
 impl RuntimeAirTypePool for FrozenTypeInternPool {
     fn runtime_air_type(&self, ty: Type) -> Option<RuntimeAirType> {
+        if ty.as_function().is_some() {
+            return Some(RuntimeAirType::CodePointer);
+        }
         if ty == Type::UNIT {
             return Some(RuntimeAirType::Unit);
         }
@@ -614,6 +620,7 @@ impl IntrinsicOperation {
             RuntimeCallKind::ByteCopy => Self::ByteCopy,
             RuntimeCallKind::ByteMove => Self::ByteMove,
             RuntimeCallKind::ByteSet => Self::ByteSet,
+            RuntimeCallKind::JoinInout => return None,
             RuntimeCallKind::StrByteAt
             | RuntimeCallKind::StrCharScalar
             | RuntimeCallKind::StrCharNext
@@ -1009,7 +1016,8 @@ mod tests {
     // family, which sema selects from ordinary method calls, and the ADR-0083
     // test channel, which the synthesized dispatcher and the assertion sugar
     // emit as direct calls rather than through an `IntrinsicOperation`.
-    const ORDINARY_CALL_ONLY: [RuntimeCallKind; 24] = [
+    const ORDINARY_CALL_ONLY: [RuntimeCallKind; 25] = [
+        RuntimeCallKind::JoinInout,
         RuntimeCallKind::StrByteAt,
         RuntimeCallKind::StrCharScalar,
         RuntimeCallKind::StrCharNext,
@@ -1147,7 +1155,7 @@ mod tests {
             EXACT_RUNTIME_MAPPINGS.map(|(_, runtime)| runtime),
             "the exact intrinsic-to-runtime map drifted"
         );
-        assert_eq!(RuntimeCallKind::ALL.len(), 52);
+        assert_eq!(RuntimeCallKind::ALL.len(), 53);
 
         for kind in RuntimeCallKind::ALL {
             assert_eq!(
@@ -1671,6 +1679,28 @@ mod tests {
                 "counterfeit bottom/place call accepted: {operation:?} {args:?} -> {result:?}"
             );
         }
+    }
+
+    #[test]
+    fn runtime_function_addresses_are_code_pointers_in_both_pool_views() {
+        let pool = TypeInternPool::new();
+        let callback = pool
+            .try_intern_function(crate::FunctionTypeDef {
+                params: vec![crate::FunctionTypeParam {
+                    mode: crate::FunctionParamMode::Inout,
+                    ty: Type::I32,
+                }],
+                result: Type::UNIT,
+            })
+            .expect("intern callback type");
+        assert_eq!(
+            runtime_air_type(&pool, callback),
+            Some(RuntimeAirType::CodePointer)
+        );
+        assert_eq!(
+            runtime_air_type(&pool.freeze(), callback),
+            Some(RuntimeAirType::CodePointer)
+        );
     }
 
     #[test]

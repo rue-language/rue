@@ -34,6 +34,8 @@ The item kinds are:
   level rather than inside any enclosing block.
 - **Interfaces** (`interface`, 6.8) and conformance assertions (`is`), a
   preview feature.
+- **Structured concurrency** (`std.parallel.join_inout`, 6.9), a preview
+  feature.
 - **Tests** (`test "name" { … }`, 6.7), which are roots for a test request and
   are never part of an executable program.
 

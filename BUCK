@@ -464,8 +464,8 @@ _CLI_TEST_ABSOLUTIZE = _CLI_TEST_BASE_ABSOLUTIZE + ["RUE_CLI_STAGED_PROGRAMS"]
 # statement and a small margin buys nothing but churn. Keep each at least 25%
 # above the derived deadline the validator reports, and when it fails, raise
 # the bound to the next round number 25% above the new deadline rather than
-# restoring a fixed 100s. At 3903s and 1201s derived, that is 5000 and 1600.
-_CLI_TESTS_TIMEOUT_SECONDS = 5000
+# restoring a fixed 100s. At 5015s and 1201s derived, that is 6300 and 1600.
+_CLI_TESTS_TIMEOUT_SECONDS = 6300
 _CLI_SHARD_TIMEOUT_SECONDS = 1600
 
 # The bounded premerge CLI corpus in one invocation: the canonical target that a

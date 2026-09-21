@@ -91,6 +91,14 @@ filegroup(
     ]
 ]
 
+# The preview root shares Mosaic's complete pipeline through @import.
+rue_program(
+    name = "mosaic-parallel",
+    root = "examples/mosaic_parallel.rue",
+    srcs = ["mosaic_parallel.rue"] + glob(["mosaic/**/*.rue"]),
+    preview_features = ["concurrency"],
+)
+
 # ADR-0083 (RUE-2004): Gazette's own `test` declarations, run by `rue test`
 # under the declared candidate inventory. The glob is deliberately the same one
 # `:gazette` compiles from, because the inventory IS that srcs list: a fourth
@@ -105,13 +113,13 @@ rue_test(
     srcs = glob(["gazette/**/*.rue"]),
 )
 
-# The ten artifacts as one directory keyed by root path, so a corpus action
+# The eleven artifacts as one directory keyed by root path, so a corpus action
 # declares a single `$(location ...)` and the harness's lookup key is the
 # case's own `source_path` string. Consumed by //:cli-tests, //:cli-tests-slow
 # and the four shards in the root package.
 #
-# Every consumer declares all ten even though no single corpus target runs
-# cases against all ten — mosaic's section is slow-tier, so the premerge
+# Every consumer declares all eleven even though no single corpus target runs
+# cases against all eleven — mosaic's section is slow-tier, so the premerge
 # targets carry it for nothing. That is the simplest correct form ADR-0070
 # chose deliberately: it is a mild over-declaration of each action's key (an
 # edit to any root already re-runs every CLI corpus action today, since the
@@ -129,6 +137,7 @@ rue_program_staging(
         ":lattice",
         ":meridian",
         ":mosaic",
+        ":mosaic-parallel",
         ":rill",
         ":ruelex",
         ":second-calculator",

@@ -26,7 +26,7 @@ const MAGIC: &[u8; 4] = b"RIRP";
 // Packed RIR is a private, ephemeral compiler-cache format. The cache header
 // version is checked before decoding, so changing this byte invalidates every
 // prior representation instead of requiring compatibility decoding.
-const VERSION: u8 = 6;
+const VERSION: u8 = 7;
 const HEADER_LEN: usize = 64;
 
 /// The packed-RIR wire encoding of one fallible source intrinsic.
@@ -1749,7 +1749,7 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
                 {
                     self.fallible_intrinsics.insert(intrinsic);
                 }
-                self.refs(rir.intrinsic_args(args))?;
+                self.call_args(rir, args)?;
             }
             InstData::InternalIntrinsic { intrinsic, args } => {
                 self.byte(37)?;
@@ -3293,7 +3293,7 @@ impl<
             }
             36 => {
                 let name = self.symbol(reader)?;
-                let args = self.refs(reader, "intrinsic arguments")?;
+                let args = self.call_args(reader)?;
                 self.destination.add_intrinsic(name, &args, span)?
             }
             37 => {
@@ -5388,7 +5388,7 @@ mod tests {
             mode: RirArgMode::Inout,
         }];
         refs.push(editor.add_call(a, &args, span).unwrap());
-        refs.push(editor.add_intrinsic(a, &[unit], span).unwrap());
+        refs.push(editor.add_intrinsic(a, &args, span).unwrap());
         refs.push(
             editor
                 .add_internal_intrinsic(InternalIntrinsic::CharNextLossy, &[unit, unit], span)
@@ -5533,7 +5533,7 @@ mod tests {
             .collect::<ahash::AHashSet<_>>();
         assert_eq!(variants.len(), 66, "fixture duplicated an InstData variant");
         let payload_stats = editor.payload_storage_stats();
-        assert_eq!(RIR_PAYLOAD_FAMILY_NAMES.len(), 20);
+        assert_eq!(RIR_PAYLOAD_FAMILY_NAMES.len(), 19);
         assert!(
             payload_stats
                 .family_logical_bytes

@@ -241,7 +241,7 @@ fn expr_charge(expr: &ast::Expr) -> u64 {
             .saturating_add(owned_slice_charge(&value.args, call_arg_charge)),
         Expr::Try(value) => boxed_charge(&value.operand, expr_charge),
         Expr::IntrinsicCall(value) => owned_slice_charge(&value.args, |arg| match arg {
-            ast::IntrinsicArg::Expr(expr) => expr_charge(expr),
+            ast::IntrinsicArg::Expr(expr) => expr_charge(&expr.expr),
             ast::IntrinsicArg::Type(ty) => type_charge(ty),
         }),
         Expr::ArrayLit(value) => owned_slice_charge(&value.elements, expr_charge)

@@ -617,7 +617,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     let args = self.rir.intrinsic_args(args);
                     let args_str: Vec<String> = args
                         .values()
-                        .map(|a| self.display_ref(a).to_string())
+                        .map(|a| self.display_ref(a.value).to_string())
                         .collect();
                     writeln!(out, "intrinsic @{}({})", name_str, args_str.join(", ")).unwrap();
                 }

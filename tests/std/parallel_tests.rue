@@ -1,0 +1,29 @@
+const std = @import("std");
+
+struct Left { value: i64 }
+struct Right { value: i64 }
+
+fn add_left(inout value: Left) {
+    value.value += 3;
+}
+
+fn add_right(inout value: Right) {
+    value.value += 5;
+}
+
+test "join_inout runs both callbacks and returns after their mutations" {
+    let mut left = Left { value: 10 };
+    let mut right = Right { value: 20 };
+    let result = std.parallel.join_inout(
+        Left,
+        Right,
+        inout left,
+        inout right,
+        add_left,
+        add_right,
+    );
+    let R = std.result.Result((), std.parallel.SpawnError);
+    @assert_eq(result, R.Ok(()));
+    @assert_eq(left.value, 13);
+    @assert_eq(right.value, 25);
+}

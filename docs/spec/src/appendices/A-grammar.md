@@ -67,7 +67,7 @@ directive_args = directive_arg { "," directive_arg } [ "," ] ;
 directive_arg  = IDENT | STRING ;
 intrinsic      = "@" IDENT "(" [ intrinsic_args ] ")" ;
 intrinsic_args = intrinsic_arg { "," intrinsic_arg } [ "," ] ;
-intrinsic_arg  = type | expression ;
+intrinsic_arg  = type | [ "inout" | "borrow" ] expression ;
 
 (* Functions *)
 function       = directives [ "pub" ] [ "unchecked" ]

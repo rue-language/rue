@@ -1597,7 +1597,9 @@ fn expr_record(
             call.args
                 .iter()
                 .map(|argument| match argument {
-                    rue_parser::IntrinsicArg::Expr(expression) => expr_record(owner, expression),
+                    rue_parser::IntrinsicArg::Expr(expression) => {
+                        expr_record(owner, &expression.expr)
+                    }
                     rue_parser::IntrinsicArg::Type(ty) => type_record(owner, ty),
                 })
                 .collect(),
@@ -1927,7 +1929,7 @@ fn rir_operands(rir: &rue_rir::Rir, data: &rue_rir::InstData) -> Vec<RirOperandR
         }
         Intrinsic { args, .. } => {
             for argument in rir.intrinsic_args(args) {
-                push("argument", argument);
+                push("argument", argument.value);
             }
         }
         InternalIntrinsic { args, .. } => {

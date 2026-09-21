@@ -1025,7 +1025,14 @@ impl<'a> AstGen<'a> {
             let panic = this.intern_fixed_panic();
             let call = this
                 .rir
-                .add_intrinsic(panic, &[message], requirement.span)
+                .add_intrinsic(
+                    panic,
+                    &[RirCallArg {
+                        value: message,
+                        mode: RirArgMode::Normal,
+                    }],
+                    requirement.span,
+                )
                 .record_failure(&mut this.payload_error);
             let body = this
                 .rir
@@ -1828,8 +1835,14 @@ impl<'a> AstGen<'a> {
                 // the offset from the layout it assigns, rather than the user
                 // hardcoding a literal.
                 if intrinsic_name_str == OFFSET_OF_INTRINSIC && intrinsic.args.len() == 2 {
-                    if let (IntrinsicArg::Type(ty), IntrinsicArg::Expr(Expr::Ident(field))) =
-                        (&intrinsic.args[0], &intrinsic.args[1])
+                    if let (
+                        IntrinsicArg::Type(ty),
+                        IntrinsicArg::Expr(CallArg {
+                            expr: Expr::Ident(field),
+                            mode: ArgMode::Normal,
+                            ..
+                        }),
+                    ) = (&intrinsic.args[0], &intrinsic.args[1])
                     {
                         let type_arg = self.intern_type(ty);
                         return self.rir.add_inst(Inst {
@@ -1866,10 +1879,13 @@ impl<'a> AstGen<'a> {
                     .iter()
                     .enumerate()
                     .map(|(index, a)| match a {
-                        IntrinsicArg::Expr(expr) => self.gen_expr_at(
-                            crate::RirStructuralPathSegment::Operand(index as u32),
-                            expr,
-                        ),
+                        IntrinsicArg::Expr(arg) => RirCallArg {
+                            value: self.gen_expr_at(
+                                crate::RirStructuralPathSegment::Operand(index as u32),
+                                &arg.expr,
+                            ),
+                            mode: self.convert_arg_mode(arg.mode),
+                        },
                         // A type argument to an expression intrinsic (e.g. the
                         // `()` in `@syscall(a, (), b)`) is invalid, but it must
                         // NOT be dropped: that would shift the later arguments
@@ -1878,10 +1894,14 @@ impl<'a> AstGen<'a> {
                         // preserved and Sema reports a proper type error.
                         IntrinsicArg::Type(ty) => {
                             let type_name = self.intern_type(ty);
-                            self.rir.add_inst(Inst {
+                            let value = self.rir.add_inst(Inst {
                                 data: InstData::TypeConst { type_name },
                                 span: ty.span(),
-                            })
+                            });
+                            RirCallArg {
+                                value,
+                                mode: RirArgMode::Normal,
+                            }
                         }
                     })
                     .collect();
@@ -3525,7 +3545,7 @@ impl SiteWalker {
                 // arguments reproduces the anchor set exactly.
                 for (index, arg) in intrinsic.args.iter().enumerate() {
                     if let IntrinsicArg::Expr(inner) = arg {
-                        self.operand(index as u32, |this| this.walk_expr(inner));
+                        self.operand(index as u32, |this| this.walk_expr(&inner.expr));
                     }
                 }
             }
@@ -4543,7 +4563,7 @@ mod tests {
             assert_eq!(interner.resolve(name), "panic");
             let args: Vec<_> = rir.intrinsic_args(args).values().collect();
             assert_eq!(args.len(), 1);
-            let InstData::StringConst { content, .. } = &rir.get(args[0]).data else {
+            let InstData::StringConst { content, .. } = &rir.get(args[0].value).data else {
                 panic!("expected the panic message")
             };
             assert_eq!(

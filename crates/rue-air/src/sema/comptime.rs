@@ -6,7 +6,7 @@
 
 use ahash::{AHashMap, AHashSet};
 use rue_rir::{
-    InstData, InstRef, RepeatCount, Rir, RirIntrinsicArgsRange, RirMatchArmsRange, SymbolHandle,
+    InstData, InstRef, RepeatCount, Rir, RirCallArgsRange, RirMatchArmsRange, SymbolHandle,
     ValidatedRir,
 };
 use rue_span::Span;
@@ -1471,7 +1471,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     fn decode_expression_intrinsic(
         &self,
         name: H::Name,
-        args: &RirIntrinsicArgsRange,
+        args: &RirCallArgsRange,
     ) -> Result<DecodedComptimeExpressionIntrinsic<H::Name>, String> {
         let program = self.program_key();
         let arguments = self.program_rir().intrinsic_args(args).to_vec();
@@ -1482,7 +1482,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let request = match intrinsic {
             ComptimeExpressionIntrinsic::Import => {
                 let sole_string_literal = (arguments.len() == 1)
-                    .then(|| match self.program_rir().get(arguments[0]).data {
+                    .then(|| match self.program_rir().get(arguments[0].value).data {
                         InstData::StringConst { content, .. } => {
                             Some(self.host.name_from_symbol(&program, content.into()))
                         }

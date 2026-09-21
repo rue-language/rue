@@ -427,7 +427,9 @@ impl Rir {
                 InstData::ConstDecl { directives, .. } | InstData::Alloc { directives, .. } => {
                     self.validate_directive_range(directives)?
                 }
-                InstData::Call { args, .. } | InstData::MethodCall { args, .. } => {
+                InstData::Call { args, .. }
+                | InstData::MethodCall { args, .. }
+                | InstData::Intrinsic { args, .. } => {
                     self.validate_fixed(args, CALL_ARG_SCHEMA.width, |r| {
                         (r.start(), r.extent(), RirCallArgsRange::FAMILY)
                     })?;
@@ -448,11 +450,6 @@ impl Rir {
                             });
                         }
                     }
-                }
-                InstData::Intrinsic { args, .. } => {
-                    self.validate_fixed(args, REF_SCHEMA.width, |r| {
-                        (r.start(), r.extent(), RirIntrinsicArgsRange::FAMILY)
-                    })?
                 }
                 InstData::InternalIntrinsic { args, .. } => {
                     self.validate_fixed(args, REF_SCHEMA.width, |r| {
@@ -850,7 +847,7 @@ impl Rir {
                 InstData::Intrinsic { name, args } => {
                     symbols!(*name);
                     for reference in self.intrinsic_args(args) {
-                        refs!(reference);
+                        refs!(reference.value);
                     }
                 }
                 InstData::InternalIntrinsic { args, .. } => {
@@ -1158,7 +1155,9 @@ impl Rir {
                 out.push(*receiver);
                 out.extend(self.call_args(args).values().map(|arg| arg.value));
             }
-            InstData::Intrinsic { args, .. } => out.extend(self.intrinsic_args(args).values()),
+            InstData::Intrinsic { args, .. } => {
+                out.extend(self.intrinsic_args(args).values().map(|arg| arg.value))
+            }
             InstData::InternalIntrinsic { args, .. } => {
                 out.extend(self.internal_intrinsic_args(args).values())
             }

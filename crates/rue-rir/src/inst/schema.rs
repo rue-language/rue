@@ -700,7 +700,7 @@ pub enum InstData {
         /// Intrinsic name (without @)
         name: Spur,
         /// Index into extra data where args start
-        args: RirIntrinsicArgsRange,
+        args: RirCallArgsRange,
     },
 
     /// Compiler-internal intrinsic with expression arguments.

@@ -1,5 +1,6 @@
 // Test root for the Rue standard library. Not a program: `rue test
-// tests/std/main.rue` roots every `test` item in this import closure.
+// --preview concurrency tests/std/main.rue` roots every `test` item in this
+// import closure, including the preview parallel library.
 //
 // The tree lives beside std/, not inside it, because a test root may not sit
 // inside the configured standard-library tree. So these tests see exactly the
@@ -22,3 +23,4 @@ const buffers_tests = @import("buffers_tests.rue");
 const env_tests = @import("env_tests.rue");
 const fs_tests = @import("fs_tests.rue");
 const net_c_tests = @import("net_c_tests.rue");
+const parallel_tests = @import("parallel_tests.rue");
