@@ -7,7 +7,10 @@ set of axioms the kernel appealed to while checking it, which
 `Lean.collectAxioms` reads out of the compiled environment — so the `sorry`
 count below is taken from the axioms, not from grepping the sources, and a
 `sorry` hidden behind a macro or an unfinished helper would still appear.
-`DIGEST.md` says what the statements are.
+Which declarations are the package's own is asked of the environment too
+(`RueCore/Digest.lean`), not guessed from their names, so a theorem cannot
+leave this table by being called `Ty.congr`. `DIGEST.md` says what the
+statements are.
 
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by

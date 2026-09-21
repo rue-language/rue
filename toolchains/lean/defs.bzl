@@ -80,10 +80,13 @@ def _lean_package_impl(ctx: AnalysisContext) -> list[Provider]:
 
     # Reports the package generates about itself (the statement digest and the
     # trust report, RUE-2247): built, run, and their stdout captured beside
-    # `corpus.json`. A report that exits non-zero fails the action, and the
-    # partial file it wrote stays in the output for the reader.
+    # `corpus.json`. A report that exits non-zero fails the action, so the
+    # output directory is not produced at all; the report's own stderr is what
+    # says which check failed, and rerunning the exe by hand reproduces it.
     report_lines = []
     for report, argv in ctx.attrs.report_exes.items():
+        if not argv:
+            fail("lean_package: report_exes[\"{}\"] is empty; give the exe name first".format(report))
         report_lines.append('lake build "{}" >> "$out/build.log" 2>&1'.format(argv[0]))
         report_lines.append('lake exe {} > "$out/{}"'.format(
             " ".join(['"{}"'.format(arg) for arg in argv]),
@@ -192,7 +195,8 @@ lean_package = rule(
             sorted = True,
             default = {},
             doc = "Output file name -> a `lean_exe` of the package and its arguments, run " +
-                  "with its stdout captured into that file beside the other reports.",
+                  "with its stdout captured into that file beside the other reports. The " +
+                  "exe name comes first and the list is never empty.",
         ),
         "srcs": attrs.dep(doc = "The Lake package directory (a dict-form filegroup)."),
         "toolchain": attrs.exec_dep(doc = "The Lean distribution for the execution platform."),

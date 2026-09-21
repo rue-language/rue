@@ -342,6 +342,35 @@ end RueCore
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("`RueCore.Expr.intLit`, which the Lean sources do not declare", errors[0])
 
+    def test_stand_in_row_reads_not_yet_mechanized_and_still_checks_its_names(self) -> None:
+        # A stand-in is not coverage of the form it stands in for: the row
+        # names it in the note and still reads *not yet mechanized*, and the
+        # coverage line does not count it.
+        self.gate.SYNTAX_FORMS[("e", "lit")] = (
+            "stand-in",
+            ["Typed.intLit"],
+            "`RueCore.Typed.intLit` stands in for the literal's typing only",
+        )
+        modules, calculus, errors = self.collect()
+        self.assertEqual(errors, [])
+        text = self.gate.render_index(modules, calculus)
+        self.assertIn(
+            "| `e` | `lit` | *not yet mechanized* | "
+            "`RueCore.Typed.intLit` stands in for the literal's typing only |",
+            text,
+        )
+        self.assertIn(
+            "Coverage: 3 of 6 §2 forms have a core image (1 of them partial); "
+            "3 are *not yet mechanized*.",
+            text,
+        )
+
+    def test_stand_in_row_naming_an_undeclared_constructor_is_an_error(self) -> None:
+        self.gate.SYNTAX_FORMS[("e", "lit")] = ("stand-in", ["Expr.gone"], "stands in")
+        _, _, errors = self.collect()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("`RueCore.Expr.gone`, which the Lean sources do not declare", errors[0])
+
     def test_missing_syntax_block_is_an_error(self) -> None:
         self.calculus.write_text(CALCULUS.replace("## 2. Abstract syntax", "## 2b. Abstract syntax"))
         _, _, errors = self.collect()

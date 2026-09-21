@@ -8,8 +8,9 @@ proofs part of the formal core; the findings and project outline live in
 
 **Status: complete, zero `sorry`, axioms `propext`/`Quot.sound` only**
 (no `Classical.choice`, no `native_decide`; `TRUST.md` is the generated
-evidence, and `DIGEST.md` is every statement it is evidence for). Adopted as the fourth view of the
-language by ADR-0097 (`docs/designs/0097-mechanized-formal-core.md`), which
+evidence, and `DIGEST.md` is every statement it is evidence for). Adopted as
+the fourth view of the language by ADR-0097
+(`docs/designs/0097-mechanized-formal-core.md`), which
 fixes the theorem shape, the authority rule, and the non-blocking posture the
 project "Formal core mechanization" grows this seed under.
 
@@ -161,12 +162,27 @@ definition those statements are written in terms of, in dependency order. It
 opens with the fragment boundary, quoted from `INDEX.md`'s coverage lines, so
 the scope is visible before the claims are. Proof bodies are deliberately
 absent: a proof is checked by the kernel, and what the kernel appealed to is
-the other report. Definition bodies are absent too, with one exception — a
-definition that *is* a type or a predicate (`Ctx`, `CellMatches`, `InBounds`)
-is part of what a statement says, so its body is printed and the constants it
-mentions get entries of their own. That gives the file a property worth
-checking: every `RueCore` constant occurring in a signature it prints has an
-entry in it.
+the other report. A definition's body is printed when the definition *is* a
+type or a predicate (`Ctx`, `CellMatches`, `InBounds`) or when it is short
+enough to read: a signature alone cannot tell `Ty.mult` from `fun _ => .copy`
+or `Ctx.join` from `fun _ _ => none`, and the linearity theorems are about
+what those two decide. A long body (`eval`, `check`, `explain`) is left to
+the module named beside its signature, and where the compiled value is the
+elaborator's output rather than what was written, the entry prints the
+equations Lean derived from it.
+
+Two properties of the file are checked by the generator, which exits non-zero
+and names the miss rather than printing a file whose preamble is false. Every
+`RueCore` constant occurring in a signature or a printed body has an entry of
+its own, or is a constructor listed under its type's entry. And every
+declaration `INDEX.md` names — a file a different tool generates by reading
+the sources rather than the compiled environment — is a constant that
+survived the report's generated-declaration filter, with an entry of its own
+when it is a theorem. Which declarations are Lean's own auxiliaries is asked
+of the environment (`isAutoDeclOrPrivate_Internal`, the recursor, matcher,
+instance and projection tables), never guessed from a name, so a
+`theorem Ty.congr` with a `sorry` in it cannot leave the reports by being
+called that.
 
 `TRUST.md` is, for every theorem, the axioms `Lean.collectAxioms` reports for
 its proof — so the `sorry` count is read from the axioms rather than from a
