@@ -273,12 +273,17 @@ mechanized*. The short version:
 - **The theorem says stuck is unreachable.** `soundness` (`Soundness.lean`)
   states: if `Typed P R Γ e T Γ'` holds and the frame agrees with `Γ`, then at
   every fuel `eval` never returns `.stuck`. The corollaries name one §7 bullet
-  each, over a whole program (`run`). `FrameMatches` is the invariant the
-  proof carries: `Matches` — "Σ faithfully tracks the store's initialization",
-  with one deliberate asymmetry explained in its doc-comment — plus the σ
-  invariant, that the frame's scope record read newest-first *is* its
-  environment. `Untouched` is the frame-locality property that carries a
-  caller's agreement across a callee's run.
+  each, over a whole program (`run`) — with one carve-out, named in
+  `no_violation`'s doc-comment: a by-value argument destroyed by a sibling
+  argument's `return` is dropped by nobody and monitored by nobody, so the
+  linear bullet has an edge these refusals do not reach (the calculus as
+  written; RUE-2316). `FrameMatches` is the invariant the proof carries:
+  `Matches` — "Σ faithfully tracks the store's initialization", with one
+  deliberate asymmetry explained in its doc-comment — plus the σ invariant,
+  that the frame's scope record read newest-first *is* its environment (which
+  holds definitionally in this fragment, and becomes an obligation when
+  `Frame.scope` is §6.1's stack). `Untouched` is the frame-locality property
+  that carries a caller's agreement across a callee's run.
 - **Run something.** Open `RueCore/Examples.lean`; each `#eval` line runs a
   program at a fuel bound, and the editor (or `lake build`'s log) shows its
   result. Change a program and watch the result change. Each

@@ -54,17 +54,25 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   `return`, a defined panic, or `outOfFuel`; it is never a `Violation`.
   `run_safe` reads it off for a whole program: a well-formed program either
   exhausts its fuel, traps in a defined way, or produces a value of the entry
-  point's declared return type. Progress and preservation in one statement,
-  because the interpreter is total.
+  point's declared return type. `RueCore.ProgramTyped.run_safe` is the same
+  statement from the packaged hypothesis, with the entry function
+  existentially quantified (`∃ fd, P[0]? = some fd ∧ …`) because
+  `ProgramTyped` only says one exists; the value's type is still that
+  function's declared return type. Progress and preservation in one
+  statement, because the interpreter is total.
 - **Invariant:** `RueCore.FrameMatches`, in two halves. `Matches` — "Σ
   faithfully tracks the store's initialization" (§7), whose `CellMatches`
   clause is deliberately asymmetric: a statically `MovedOut` cell may still
   hold a live *non-linear* value (the §5.5 conservative join, `3.8:73`), never
   a live linear one (`3.8:50`). And the σ invariant: the frame's scope record,
-  read newest-first, *is* its environment — the RUE-1277 redundancy
-  discharged, and what makes `run-all-scope-drops` safe. `RueCore.Untouched`
-  carries frame locality across a call, so a caller's agreement survives a
-  callee's run.
+  read newest-first, *is* its environment, which is what lets `Matches` apply
+  to `run-all-scope-drops`'s walk. In this fragment that equation is
+  **definitional** — every frame the interpreter builds builds σ and ρ from
+  one list — so it is not yet evidence about the RUE-1277 redundancy, which
+  was raised for scopes pushed and popped independently of the binder chain
+  (§6.6's `match` arms, §6.10's loops). It becomes a real obligation when
+  `Frame.scope` is §6.1's stack. `RueCore.Untouched` carries frame locality
+  across a call, so a caller's agreement survives a callee's run.
 - **Hypothesis:** `RueCore.ProgramTyped` — (Fn) §5.8 for every function plus
   an entry point taking no parameters — which `RueCore.checkProgram_sound`
   decides.
@@ -114,12 +122,33 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   `RueCore.no_linear_discard` (§5.3, `3.8:64`).
 - **In words:** a well-formed program never reaches the refusal the machine
   raises when a linear value would be leaked, overwritten while live, or
-  discarded. The leak half now covers three edges, not one: a `let`'s scope
-  exit, a frame's normal pop (a by-value parameter the callee never consumed —
-  (Fn) §5.8's second clause, `3.8:62`), and a `return`'s `⊥_exit` unwind.
-- **Covers:** whole bindings, the binary join, and by-value parameters.
-  **Owed:** declared-linear destructure and residue ordering (RUE-2236),
-  enums (RUE-2232).
+  discarded. The leak half covers three edges: a `let`'s scope exit, a frame's
+  normal pop (a by-value parameter the callee never consumed — (Fn) §5.8's
+  second clause, `3.8:62`), and a `return`'s `⊥_exit` unwind. The frame-pop
+  edge is reached only through `Examples.lean`'s kernel-checked
+  `run linearParamLeaked … = .stuck .linearLeak`: the bridge cannot exercise
+  it, because the compiler rejects that program (E0406) before anything runs.
+- **Carve-out (RUE-2316), the one edge no refusal covers.** A by-value
+  argument's value is in no cell and no scope record between the `use` that
+  produced it and §6.9's `mintParams`. If a *later* argument of the same call
+  unwinds by `return`, (D-Return) discards the evaluation context with the
+  pending arguments in it and unwinds only σ, so that value's drop is neither
+  run nor monitored: a **linear value can be consumed zero times** with none
+  of the three refusals firing, and an affine one loses its drop event
+  silently. This is the calculus as written — (D-Return) §6.9 unwinds σ and
+  nothing else, and (Strict-Bottom) §5.7, the only bottom rule for an argument
+  position, imposes no §5.3 discard check on siblings already evaluated — so
+  the statics cannot reject it without ⊥ provenance they do not carry, and the
+  Rue compiler behaves the same way (the `RAffine` destructor does not run).
+  The mechanization models the calculus rather than patching it and states the
+  gap instead: `Dynamics.lean`'s "Pending arguments" section, the
+  `no_violation` docstring, and the kernel-checked witnesses
+  `RueCore.Examples.linearLostAtCallArg` and `affineLostAtCallArg`, both of
+  which `checkProgram` accepts and both of which end with an empty drop trace.
+  Closing it needs a rule, in §5.7 or §6.9, and is tracked as RUE-2316.
+- **Covers:** whole bindings, the binary join, and by-value parameters, on
+  every edge but the one above. **Owed:** RUE-2316; declared-linear
+  destructure and residue ordering (RUE-2236); enums (RUE-2232).
 
 ## Exclusivity / no aliased mutation
 
