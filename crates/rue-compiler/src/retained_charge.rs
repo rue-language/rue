@@ -1478,6 +1478,9 @@ impl RetainedCharge for rue_error::ErrorKind {
             | E::InternalCodegenError(value) => value.retained_charge(),
 
             E::AccessorRequiresBorrowSelf { found } => found.retained_charge(),
+            E::AnonymousStructAccessor { method, result } => method
+                .retained_charge()
+                .saturating_add(result.retained_charge()),
 
             E::InvalidArrayLength { reason: value }
             | E::DuplicatePatternBinding { name: value }

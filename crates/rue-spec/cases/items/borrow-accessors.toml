@@ -445,6 +445,31 @@ compile_fail = true
 error_contains = ["E0257", "an associated function with no receiver"]
 
 [[case]]
+name = "anonymous_struct_accessor_is_rejected_at_its_declaration"
+spec = ["6.6:4"]
+description = "A user-defined anonymous-struct accessor is rejected (E0257) at the member's own signature, not as a comptime-evaluation failure at the struct."
+source = """
+fn Cell(comptime T: type) -> type {
+    struct { v: T, fn get(borrow self) -> borrow T { yield self.v; } }
+}
+fn main() -> i32 { let c = Cell(i64) { v: 7 }; 0 }
+"""
+compile_fail = true
+error_contains = ["E0257", "anonymous struct", "accessor `get`"]
+
+[[case]]
+name = "anonymous_struct_plain_method_is_unaffected"
+spec = ["6.6:4"]
+description = "Only the accessor result forms are rejected on an anonymous struct; an ordinary method runs."
+source = """
+fn Cell(comptime T: type) -> type {
+    struct { v: T, fn get(borrow self) -> T { self.v } }
+}
+fn main() -> i32 { let c = Cell(i64) { v: 7 }; @intCast(c.get()) }
+"""
+exit_code = 7
+
+[[case]]
 name = "uncalled_accessor_params_are_by_value"
 spec = ["6.6:5"]
 description = "The parameter-mode rule holds on a declaration nothing calls (E0260)."

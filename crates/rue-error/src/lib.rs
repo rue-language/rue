@@ -814,7 +814,9 @@ define_error_codes! {
     /// accessor. `yield` is the accessor body's exit form (ADR-0062).
     YIELD_OUTSIDE_ACCESSOR = 256;
     /// An accessor result and receiver use different modes: `-> borrow T`
-    /// requires `borrow self`, while `-> inout T` requires `inout self`.
+    /// requires `borrow self`, while `-> inout T` requires `inout self`. The
+    /// same code reports a user-defined anonymous-struct accessor, which
+    /// 6.6:4 rejects outright.
     ACCESSOR_REQUIRES_BORROW_SELF = 257;
     /// A value with drop glue was read out of an accessor result by value.
     /// The result is a borrowed place, not an owner (ADR-0062); copying a
@@ -3845,6 +3847,13 @@ pub enum ErrorKind {
     /// An accessor result and receiver use different reference modes.
     #[error("accessor receiver/result modes do not match: {found}")]
     AccessorRequiresBorrowSelf { found: String },
+    /// A user-written anonymous struct declares a `-> borrow` or `-> inout`
+    /// accessor (spec 6.6:4). Only the trusted standard-library collection
+    /// path may declare one on an anonymous struct.
+    #[error(
+        "an anonymous struct may not declare the `{result}` accessor `{method}`: user-defined anonymous-struct accessors are not supported"
+    )]
+    AnonymousStructAccessor { method: String, result: String },
     /// A drop-glue value read out of an accessor result by value.
     #[error(
         "cannot copy a value of type `{ty}` out of an accessor result: it owns resources (has drop glue), and the result is a borrow, not an owner"
@@ -4557,9 +4566,8 @@ impl ErrorKind {
                 ErrorCode::ACCESSOR_YIELD_NOT_RECEIVER_ROOTED
             }
             ErrorKind::YieldOutsideAccessor => ErrorCode::YIELD_OUTSIDE_ACCESSOR,
-            ErrorKind::AccessorRequiresBorrowSelf { .. } => {
-                ErrorCode::ACCESSOR_REQUIRES_BORROW_SELF
-            }
+            ErrorKind::AccessorRequiresBorrowSelf { .. }
+            | ErrorKind::AnonymousStructAccessor { .. } => ErrorCode::ACCESSOR_REQUIRES_BORROW_SELF,
             ErrorKind::AccessorResultMoved { .. } => ErrorCode::ACCESSOR_RESULT_MOVED,
             ErrorKind::AccessorLoanConflict { .. } => ErrorCode::ACCESSOR_LOAN_CONFLICT,
             ErrorKind::AccessorParamModeUnsupported { .. } => {
