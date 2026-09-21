@@ -51,11 +51,14 @@ before it** — the user destructors and the `@dbg` lines — because §6.12's
 what it printed before exiting 101. `Examples.panicAfterDrop` and
 `Examples.dbgBeforeTrap` are the kernel-checked witnesses, one per trap
 source, and `crates/rue-oracle-diff` compares that output against the native
-binary's. The same section's `panicPastAffine` is the negative half: a
-`@panic` past a live affine binding carries an **empty** trace, because §5.7
+binary's. The same section's `panicPastAffine` and `panicPastLinear` are the negative
+half: a `@panic` past a live binding carries an **empty** trace, because §5.7
 exempts the `⊥_panic` edge from §5.6's obligation and §6.12 abandons the
 configuration rather than unwinding it — so a destructor that had not
-already run does not run.
+already run does not run. The linear one is the interesting case, because it
+is the only shape where (Panic) and (Return-Value) differ: the linear value
+is consumed zero times and no refusal fires, which is the second bullet of
+the linear theorem's carve-out below.
 
 **Fuel.** Because a callee's body is not a subexpression of its call,
 recursion makes the interpreter's recursion unbounded, so `eval` takes a fuel
@@ -172,30 +175,46 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   edge is reached only through `Examples.lean`'s kernel-checked
   `run linearParamLeaked … = .stuck .linearLeak`: the bridge cannot exercise
   it, because the compiler rejects that program (E0406) before anything runs.
-- **Carve-out (RUE-2316), the one edge no refusal covers.** A by-value
-  argument's value is in no cell and no scope record between the `use` that
-  produced it and §6.9's `mintParams`. If a *later* argument of the same call
-  unwinds by `return`, (D-Return) discards the evaluation context with the
-  pending arguments in it and unwinds only σ, so that value's drop is neither
-  run nor monitored: a **linear value can be consumed zero times** with none
-  of the three refusals firing, and a destructor-bearing one loses its
-  observable drop silently. This is the calculus as written — (D-Return) §6.9
-  unwinds σ and nothing else, and (Strict-Bottom) §5.7, the only bottom rule
-  for an argument position, imposes no §5.3 discard check on siblings already
-  evaluated — so the statics cannot reject it without ⊥ provenance they do not
-  carry, and the Rue compiler behaves the same way (the destructor does not
-  run). The mechanization models the calculus rather than patching it and
-  states the gap instead: `Dynamics.lean`'s "Pending arguments" section, the
-  `no_violation` docstring, and the kernel-checked witnesses
-  `RueCore.Examples.linearLostAtCallArg` and `affineLostAtCallArg`, both of
-  which `checkProgram` accepts and both of which end with an empty drop trace.
-  Closing it needs a rule, in §5.7 or §6.9, and is tracked as RUE-2316.
+- **Carve-out, the two edges no refusal covers.** On both a **linear value
+  can be consumed zero times** with none of the three refusals firing, and a
+  destructor-bearing one loses its observable drop silently. They are
+  different in kind, and only the first is a gap.
+  - **A pending argument (open, RUE-2316).** A by-value
+    argument's value is in no cell and no scope record between the `use` that
+    produced it and §6.9's `mintParams`. If a *later* argument of the same
+    call unwinds by `return`, (D-Return) discards the evaluation context with
+    the pending arguments in it and unwinds only σ, so that value's drop is
+    neither run nor monitored. This is the calculus as written — (D-Return)
+    §6.9 unwinds σ and nothing else, and (Strict-Bottom) §5.7, the only bottom
+    rule for an argument position, imposes no §5.3 discard check on siblings
+    already evaluated — so the statics cannot reject it without ⊥ provenance
+    they do not carry, and the Rue compiler behaves the same way (the
+    destructor does not run). The mechanization models the calculus rather
+    than patching it and states the gap instead: `Dynamics.lean`'s "Pending
+    arguments" section, the `no_violation` docstring, and the kernel-checked
+    witnesses `RueCore.Examples.linearLostAtCallArg` and
+    `affineLostAtCallArg`, both of which `checkProgram` accepts and both of
+    which end with an empty drop trace. Closing it needs a rule, in §5.7 or
+    §6.9, and is tracked as RUE-2316. A `@panic` *sibling* of a pending
+    argument reaches the identical state, by this route as well as the next.
+  - **A `@panic` (by design).** §6.12 abandons the configuration and §5.7
+    exempts the `⊥_panic` edge from §5.6's obligation, so a trap runs no
+    scope drop at all — where a `return` in the same position would have
+    unwound the frame and run every one. A live linear binding at a `@panic`
+    is therefore destroyed with no violation and an empty trace. That is
+    (Panic) as specified rather than a gap, and the Rue compiler agrees:
+    `RueCore.Examples.panicPastLinear` is the program, with its `Typed`
+    derivation (`panicPastLinear_typed`), `checkProgram = false`, and
+    `run … = .panic .user []` all kernel-checked; the compiled program prints
+    nothing, says `panic: boom` and exits 101 (verified by hand).
+    `panicPastAffine` is the same shape one class down, where the obligation
+    was never there to lose.
 - **Covers:** whole bindings, the binary join, by-value parameters, and struct
   values whose class is `Linear` through a field — §3's join, proved to be
   what a declaration records (`RueCore.struct_class_unique`) and to reach
   `Linear` exactly when the declaration says so or a field does
   (`RueCore.struct_carriesLinear_iff`, §5.3's `carries_linear` lifting) — on
-  every edge but the one above. **Owed:** RUE-2316; partial moves and
+  every edge but the two above. **Owed:** RUE-2316; partial moves and
   per-field obligations (RUE-2231); declared-linear destructure and residue
   ordering (RUE-2236); enums (RUE-2232).
 

@@ -1621,18 +1621,31 @@ theorem ProgramTyped.run_safe {P : Program} (h : ProgramTyped P) (fuel : Nat) :
 violations, at any fuel.
 
 Read as "§7's bullets, conjoined", this would overstate the linear bullet by
-one edge. A by-value argument value that a *later* argument of the same call
-destroys by `return` is in no cell and no scope record, so its drop is neither
-run nor monitored and none of the five violations fires — a linear value can
-be consumed zero times without this theorem noticing. That edge is the
-calculus as written — §6.9's unwinding rule walks only σ, and §5.7's
-strict-context bottom rule (`Strict-Bottom` there, which the fragment does not
-mechanize) imposes no discard check on siblings already evaluated — it is what
-the Rue compiler does, and closing it is an open spec decision (RUE-2316, the
-pending-argument decision). `Dynamics.lean`'s "Pending arguments" section
-states it in full and `Examples.lean`'s `linearLostAtCallArg` is the
-kernel-checked witness; every *other* edge — a `let`'s scope exit, a frame's
-normal pop, and a `return`'s unwind — is covered. -/
+**two** edges, on both of which a linear value is consumed zero times without
+this theorem noticing. They are different in kind: the first is a gap in the
+calculus, the second is the calculus doing what it says.
+
+* **A pending argument (open).** A by-value argument value that a *later*
+  argument of the same call destroys by `return` is in no cell and no scope
+  record, so its drop is neither run nor monitored and none of the five
+  violations fires. That edge is the calculus as written — §6.9's unwinding
+  rule walks only σ, and §5.7's strict-context bottom rule (`Strict-Bottom`
+  there, which the fragment does not mechanize) imposes no discard check on
+  siblings already evaluated — it is what the Rue compiler does, and closing
+  it is an open spec decision (RUE-2316, the pending-argument decision).
+  `Dynamics.lean`'s "Pending arguments" section states it in full and
+  `Examples.lean`'s `linearLostAtCallArg` is the kernel-checked witness.
+* **A `@panic` (by design).** §6.12 abandons the configuration, and §5.7
+  exempts the `⊥_panic` edge from §5.6's obligation, so a trap runs no scope
+  drop at all: a live linear binding at a `@panic` is destroyed with no
+  violation and an empty trace. That is not a gap — it is what (Panic) says,
+  and the Rue compiler agrees (`Examples.lean`'s `panicPastLinear`, whose
+  derivation, rejection by `check` and run are all pinned). A `@panic`
+  *sibling* of a pending argument reaches the identical state by the second
+  route as well as the first.
+
+Every *other* edge — a `let`'s scope exit, a frame's normal pop, and a
+`return`'s unwind — is covered. -/
 theorem no_violation {P : Program} (h : ProgramTyped P) (fuel : Nat) (w : Violation) :
     run P fuel ≠ .stuck w := by
   obtain ⟨_, _, h₁ | ⟨k, trk, h₂⟩ | ⟨H, v, tr, h₃, _⟩⟩ := h.run_safe fuel

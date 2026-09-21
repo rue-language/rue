@@ -38,11 +38,13 @@ shapes the fragment writes go through: a body that ends in `return` or
 `@panic`, and an `if` whose arms are one of those and a value of the
 function's return type.
 
-The cost is the same for both, and the paragraphs below spell it out for
-`return`; read `@panic` alongside it everywhere. `1 + @panic("x")` inside a
-`bool`-returning function has a derivation and `check` rejects it, and a
-`@panic` arm of an `if` contributes its incoming state to §5.5's join where
-§5.7 excludes it. The generator therefore emits neither form (`Gen.lean`).
+The paragraphs below spell the cost out for `return`, and `@panic` carries
+the same two: `1 + @panic("x")` inside a `bool`-returning function has a
+derivation and `check` rejects it, and a `@panic` arm of an `if` contributes
+its incoming state to §5.5's join where §5.7 excludes it. `@panic` carries a
+**third** that `return` does not, and it is the shape `Typed.panic`'s missing
+residual-linear premise exists for; the state paragraph below names it. The
+generator emits neither form (`Gen.lean`).
 
 That choice is a *restriction* of the rule, so `check_sound` still holds, and
 it is where completeness is lost. Both halves of the choice cost something,
@@ -65,8 +67,22 @@ is not merely incomplete — it is *wrong* about the program, and anything that
 reads a `reject` verdict as "the compiler must reject this too"
 (`Corpus.lean`'s verdict contract) must not be handed that shape.
 
+The state choice costs `@panic` one shape more, and it is the only one where
+(Panic) and (Return-Value) differ at all: a `@panic` past a **live linear**
+binding. `return` there would fail §5.6's frame-wide obligation, which
+`Typed.ret` carries as a premise; `@panic` carries `⊥_panic`, which §5.7
+exempts, so `Typed.panic` has no such premise and the judgment derives the
+program. `check` hands the enclosing `let` the state in force at the form
+instead of `⊥`, sees the binding still `Owned` at a `Linear` type, and
+refuses. The Rue compiler accepts it, runs it, and does not run the
+destructor either — `Examples.panicPastLinear` is the program, with the
+derivation, the rejection and the run all pinned. The same shape in one arm
+of an `if`, and as a sibling of a linear call argument, behave the same way.
+At an **affine** binding there is nothing to see: `Typed.letIn`'s premise is
+already vacuous at a non-linear type, so `panic` and `ret` agree.
+
 So completeness — `Typed` implies `check` succeeds — is not open here: it is
-**false**, and the two counterexamples above are why. What is deferred is a
+**false**, and the counterexamples above are why. What is deferred is a
 `check` that carries §5.7's ⊥ provenance (a `div` flag on the result, excluded
 from the join) and closes both; until then the fragment's corpus and generator
 stay off the shapes it gets wrong (`Corpus.lean`, `Gen.lean`).
