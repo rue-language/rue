@@ -43,7 +43,7 @@ The theorems below are about a *fragment* of the core calculus
 rule by rule and form by form; its two coverage lines, quoted here so the
 boundary is visible before the statements are:
 
-- *Calculus rules → declarations*: 50 of 97 labeled §5/§6 rules are mechanized; 47 are *not yet mechanized*.
+- *Calculus rules → declarations*: 51 of 97 labeled §5/§6 rules are mechanized; 46 are *not yet mechanized*.
 - *Abstract syntax forms → declarations*: 22 of 35 §2 forms have a core image (6 of them partial); 13 are *not yet mechanized*.
 
 The forms that count as partial are `S`, `e1 ⊕ e2`, `⊖ e`, `e1 ⋚ e2`,
@@ -294,14 +294,15 @@ theorem RueCore.evalBinOp_res {D : StructEnv} (op : BinOp) (w : IntWidth) (s : S
 *theorem* · module `RueCore.Soundness`
 
 **`neg` and `bitnot` land on a value of the operand's type or on
-`↯overflow`** (§6.4; §5.8 restricts `neg` to a signed operand, and the lemma
-here covers both signednesses because the range check is what decides).
+`↯overflow`** — that category and no other (§6.4; §5.8 restricts `neg` to a
+signed operand, and the lemma here covers both signednesses because the range
+check is what decides).
 
 ```lean
 theorem RueCore.evalUnOp_int_res {D : StructEnv} (op : UnOp) (w : IntWidth) (s : Sign)
   (n : Int) (hop : op ≠ UnOp.not) :
   (∃ v, evalUnOp op (Val.int w s n) = OpRes.val v ∧ HasTy D v (Ty.int w s)) ∨
-    ∃ k, evalUnOp op (Val.int w s n) = OpRes.trap k
+    evalUnOp op (Val.int w s n) = OpRes.trap PanicKind.overflow
 ```
 
 ### `evalUnOp_bool_res`
@@ -320,7 +321,8 @@ theorem RueCore.evalUnOp_bool_res {D : StructEnv} (b : Bool) :
 *theorem* · module `RueCore.Soundness`
 
 **`@intCast` lands on a value of its target type or on `↯cast-overflow`**
-(`4.13:28`).
+— that category and no other, which is what `4.13:28` and §6.4's
+(D-Int-Cast-Trap) say.
 
 ```lean
 theorem RueCore.evalIntCast_res {D : StructEnv} (w : IntWidth) (s : Sign)
@@ -328,7 +330,7 @@ theorem RueCore.evalIntCast_res {D : StructEnv} (w : IntWidth) (s : Sign)
   (∃ v,
       evalIntCast w s (Val.int w' s' n) = OpRes.val v ∧
         HasTy D v (Ty.int w s)) ∨
-    ∃ k, evalIntCast w s (Val.int w' s' n) = OpRes.trap k
+    evalIntCast w s (Val.int w' s' n) = OpRes.trap PanicKind.castOverflow
 ```
 
 ### `ContentsMatches.readAt`
@@ -685,18 +687,31 @@ A well-formed program never reaches any of the machine's **named**
 violations, at any fuel.
 
 Read as "§7's bullets, conjoined", this would overstate the linear bullet by
-one edge. A by-value argument value that a *later* argument of the same call
-destroys by `return` is in no cell and no scope record, so its drop is neither
-run nor monitored and none of the five violations fires — a linear value can
-be consumed zero times without this theorem noticing. That edge is the
-calculus as written — §6.9's unwinding rule walks only σ, and §5.7's
-strict-context bottom rule (`Strict-Bottom` there, which the fragment does not
-mechanize) imposes no discard check on siblings already evaluated — it is what
-the Rue compiler does, and closing it is an open spec decision (RUE-2316, the
-pending-argument decision). `Dynamics.lean`'s "Pending arguments" section
-states it in full and `Examples.lean`'s `linearLostAtCallArg` is the
-kernel-checked witness; every *other* edge — a `let`'s scope exit, a frame's
-normal pop, and a `return`'s unwind — is covered.
+**two** edges, on both of which a linear value is consumed zero times without
+this theorem noticing. They are different in kind: the first is a gap in the
+calculus, the second is the calculus doing what it says.
+
+* **A pending argument (open).** A by-value argument value that a *later*
+  argument of the same call destroys by `return` is in no cell and no scope
+  record, so its drop is neither run nor monitored and none of the five
+  violations fires. That edge is the calculus as written — §6.9's unwinding
+  rule walks only σ, and §5.7's strict-context bottom rule (`Strict-Bottom`
+  there, which the fragment does not mechanize) imposes no discard check on
+  siblings already evaluated — it is what the Rue compiler does, and closing
+  it is an open spec decision (RUE-2316, the pending-argument decision).
+  `Dynamics.lean`'s "Pending arguments" section states it in full and
+  `Examples.lean`'s `linearLostAtCallArg` is the kernel-checked witness.
+* **A `@panic` (by design).** §6.12 abandons the configuration, and §5.7
+  exempts the `⊥_panic` edge from §5.6's obligation, so a trap runs no scope
+  drop at all: a live linear binding at a `@panic` is destroyed with no
+  violation and an empty trace. That is not a gap — it is what (Panic) says,
+  and the Rue compiler agrees (`Examples.lean`'s `panicPastLinear`, whose
+  derivation, rejection by `check` and run are all pinned). A `@panic`
+  *sibling* of a pending argument reaches the identical state by the second
+  route as well as the first.
+
+Every *other* edge — a `let`'s scope exit, a frame's normal pop, and a
+`return`'s unwind — is covered.
 
 ```lean
 theorem RueCore.no_violation {P : Program} (h : ProgramTyped P) (fuel : Nat)
@@ -836,6 +851,24 @@ know the safety theorems apply to a program.
 ```lean
 theorem RueCore.checkProgram_sound {P : Program} (h : checkProgram P = true) :
   ProgramTyped P
+```
+
+### `Examples.panicPastLinear_typed`
+
+*theorem* · module `RueCore.Examples`
+
+**`Typed` derives a `@panic` past a live linear binding.** (Panic) §5.8
+imposes no residual-linear premise — §5.7 exempts the `⊥_panic` edge from
+§5.6's obligation — so the `let`'s own scope-exit check is discharged by the
+free outgoing context (Sub-Never) licenses, which the rule may take
+`MovedOut`. This is the one shape where `Typed.panic` and `Typed.ret` differ:
+at an affine binding `Typed.letIn`'s premise is vacuous, so there is nothing
+to drop.
+
+```lean
+theorem RueCore.Examples.panicPastLinear_typed :
+  Typed (Examples.prog Examples.tI64 Examples.panicPastLinear) Examples.tI64
+    [] Examples.panicPastLinear Examples.tI64 []
 ```
 
 ### `Examples.countdown_at_17`
@@ -1311,13 +1344,13 @@ theorem RueCore.ContentsTys.residualLinearList_false {D : StructEnv}
 
 *theorem* · module `RueCore.Soundness`
 
-`range_check` (§6.4) delivers a value of `int(w,s)` or `↯overflow`
-(helper).
+`range_check` (§6.4) delivers a value of `int(w,s)` or `↯overflow` — that
+category and no other, which is what (D-Arith-Trap) says (helper).
 
 ```lean
 theorem RueCore.intResult_res {D : StructEnv} (w : IntWidth) (s : Sign) (n : Int) :
   (∃ v, intResult w s n = OpRes.val v ∧ HasTy D v (Ty.int w s)) ∨
-    ∃ k, intResult w s n = OpRes.trap k
+    intResult w s n = OpRes.trap PanicKind.overflow
 ```
 
 ### `ContentsMatches.contentsTy`
@@ -2307,6 +2340,22 @@ abbrev RueCore.Env : Type :=
   List Nat
 ```
 
+### `Examples.sLinearDtor`
+
+*def* · module `RueCore.Examples`
+
+`S3`'s index in `structEnv`.
+
+```lean
+def RueCore.Examples.sLinearDtor : Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.sLinearDtor = 3
+```
+
 ### `IntWidth`
 
 *inductive* · module `RueCore.Syntax`
@@ -3293,6 +3342,22 @@ Defining equations, as Lean derived them from the body:
 ∀ (n : Int), Examples.lit n = Expr.intLit IntWidth.w64 Sign.signed n
 ```
 
+### `Examples.resLD`
+
+*def* · module `RueCore.Examples`
+
+A `Linear`, destructor-bearing struct literal.
+
+```lean
+def RueCore.Examples.resLD (e : Expr) : Expr
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (e : Expr), Examples.resLD e = Expr.mkStruct Examples.sLinearDtor [e]
+```
+
 ### `Examples.tI64`
 
 *def* · module `RueCore.Examples`
@@ -3640,6 +3705,248 @@ Defining equations, as Lean derived them from the body:
 ∀ (en : Entry), en.skel = (en.ty, en.mu)
 ```
 
+### `Examples.dAffine`
+
+*def* · module `RueCore.Examples`
+
+`S1`: `struct { x0: i64 }` with a destructor. Class `Affine`, and the
+destructor is what makes each of its drops observable.
+
+```lean
+def RueCore.Examples.dAffine : StructDecl
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.dAffine =
+  { attr := Attr.none, fields := [Examples.tI64], dtor := true,
+    cls := Mult.affine }
+```
+
+### `Examples.dAffineInt`
+
+*def* · module `RueCore.Examples`
+
+`S8`: `struct { x0: S1, x1: i64 }`, no destructor. Class `Affine`; its
+first field is droppable and its second is `Copy`, so it is the shape a partial
+move leaves a readable sibling in (`3.8:53` reads it through the hole).
+
+```lean
+def RueCore.Examples.dAffineInt : StructDecl
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.dAffineInt =
+  { attr := Attr.none, fields := [Ty.struct 1, Examples.tI64],
+    dtor := false, cls := Mult.affine }
+```
+
+### `Examples.dCarry`
+
+*def* · module `RueCore.Examples`
+
+`S4`: `struct { x0: i64, x1: S3 }`, no attribute and no destructor. Its
+class is `Linear` *through a field* — §3's join, `3.8:58`'s infectiousness —
+which is the shape the linear-carrying-struct cases are about.
+
+```lean
+def RueCore.Examples.dCarry : StructDecl
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.dCarry =
+  { attr := Attr.none, fields := [Examples.tI64, Ty.struct 3],
+    dtor := false, cls := Mult.linear }
+```
+
+### `Examples.dCarryAffine`
+
+*def* · module `RueCore.Examples`
+
+`S10`: `struct { x0: S3, x1: S1 }`, no destructor. Class `Linear` through
+its first field; its second is affine and destructor-bearing, so the two halves
+of §5.6's residual obligation are separable at a path.
+
+```lean
+def RueCore.Examples.dCarryAffine : StructDecl
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.dCarryAffine =
+  { attr := Attr.none, fields := [Ty.struct 3, Ty.struct 1],
+    dtor := false, cls := Mult.linear }
+```
+
+### `Examples.dCopy`
+
+*def* · module `RueCore.Examples`
+
+`S0`: `@copy struct { x0: i64 }`. Class `Copy`; a `@copy` type declares no
+destructor, so its drops are silent and its field is readable.
+
+```lean
+def RueCore.Examples.dCopy : StructDecl
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.dCopy =
+  { attr := Attr.copy, fields := [Examples.tI64], dtor := false,
+    cls := Mult.copy }
+```
+
+### `Examples.dLinear`
+
+*def* · module `RueCore.Examples`
+
+`S2`: `linear struct { x0: i64 }`, no destructor. Class `Linear`, drops
+silent. It is *declared* linear, so a projection out of it would select §4.2's
+`Declared(d, π)` plan — which this fragment rejects (RUE-2236) — and the
+obligation is discharged by a move of the whole value or by `@drop`.
+
+```lean
+def RueCore.Examples.dLinear : StructDecl
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.dLinear =
+  { attr := Attr.linear, fields := [Examples.tI64], dtor := false,
+    cls := Mult.linear }
+```
+
+### `Examples.dLinearDtor`
+
+*def* · module `RueCore.Examples`
+
+`S3`: `linear struct { x0: i64 }` with a destructor. Class `Linear`, drops
+observable; nothing may be moved out of it (`3.9:34`), so it is discharged by
+`@drop` or by a move of the whole value.
+
+```lean
+def RueCore.Examples.dLinearDtor : StructDecl
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.dLinearDtor =
+  { attr := Attr.linear, fields := [Examples.tI64], dtor := true,
+    cls := Mult.linear }
+```
+
+### `Examples.dNested`
+
+*def* · module `RueCore.Examples`
+
+`S9`: `struct { x0: S7, x1: i64 }`, no destructor. Class `Affine`; it
+nests `S7`, so a path into it is two field steps deep.
+
+```lean
+def RueCore.Examples.dNested : StructDecl
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.dNested =
+  { attr := Attr.none, fields := [Ty.struct 7, Examples.tI64],
+    dtor := false, cls := Mult.affine }
+```
+
+### `Examples.dOuter`
+
+*def* · module `RueCore.Examples`
+
+`S5`: `struct { x0: i64, x1: S1 }` with a destructor. Class `Affine`;
+dropping it runs its own destructor first and then its fields in declaration
+order (§6.11), so it is the nesting case.
+
+```lean
+def RueCore.Examples.dOuter : StructDecl
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.dOuter =
+  { attr := Attr.none, fields := [Examples.tI64, Ty.struct 1],
+    dtor := true, cls := Mult.affine }
+```
+
+### `Examples.dPair`
+
+*def* · module `RueCore.Examples`
+
+`S6`: `@copy struct { x0: i64, x1: i64 }`. Class `Copy`, two fields, so a
+use of it copies and a projection of either field is a `Copy` read that leaves
+the base `Owned`.
+
+```lean
+def RueCore.Examples.dPair : StructDecl
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.dPair =
+  { attr := Attr.copy, fields := [Examples.tI64, Examples.tI64],
+    dtor := false, cls := Mult.copy }
+```
+
+### `Examples.dTwoAffine`
+
+*def* · module `RueCore.Examples`
+
+`S7`: `struct { x0: S1, x1: S1 }`, no destructor. Class `Affine`; dropping
+it drops both fields in declaration order (§6.11) and nothing else.
+
+```lean
+def RueCore.Examples.dTwoAffine : StructDecl
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.dTwoAffine =
+  { attr := Attr.none, fields := [Ty.struct 1, Ty.struct 1],
+    dtor := false, cls := Mult.affine }
+```
+
+### `Examples.panicPastLinear`
+
+*def* · module `RueCore.Examples`
+
+The same past a live **linear** binding, which is the class where
+`Typed.panic` and `Typed.ret` actually differ: `ret` would need
+`NoOwnedLinear` here and `panic` does not, so the judgment derives this
+program (`panicPastLinear_typed`) and the machine runs it to a trap with an
+empty trace. `check` rejects it all the same — its state choice hands the
+`let`'s leak check the incoming `Owned` state — which is the third thing the
+algorithm's narrowness costs (`Checker.lean`). The compiler accepts and runs
+it: `panic: boom`, exit 101, nothing on stdout, so `S3`'s destructor does not
+run there either (verified by hand).
+
+```lean
+def RueCore.Examples.panicPastLinear : Expr
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.panicPastLinear =
+  Expr.letIn false (Examples.resLD (Examples.lit 7)) (Expr.panic "boom")
+```
+
 ### `FnDef`
 
 *inductive* · module `RueCore.Syntax`
@@ -3824,6 +4131,28 @@ RueCore.EvalRes.stuck (why : Violation) : EvalRes
 
 ```lean
 RueCore.EvalRes.outOfFuel : EvalRes
+```
+
+### `Examples.structEnv`
+
+*def* · module `RueCore.Examples`
+
+The fixture environment: every field type names an earlier declaration, so
+`WfStructs` holds (checked below) and §3's class assignment is the one
+recorded.
+
+```lean
+def RueCore.Examples.structEnv : StructEnv
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.structEnv =
+  [Examples.dCopy, Examples.dAffine, Examples.dLinear,
+    Examples.dLinearDtor, Examples.dCarry, Examples.dOuter,
+    Examples.dPair, Examples.dTwoAffine, Examples.dAffineInt,
+    Examples.dNested, Examples.dCarryAffine]
 ```
 
 ### `Explain.Step`
@@ -4343,6 +4672,27 @@ RueCore.Explain.Trace.mk (steps : List Explain.Step) (res : EvalRes) :
   Explain.Trace
 ```
 
+### `Program.entry`
+
+*def* · module `RueCore.Syntax`
+
+A one-function program over a struct environment: the entry point, with no
+parameters and declared return type `T`, whose body is `e`. This is the shape
+of every fragment program that calls nothing, which is how the pre-call corpus
+cases are read as programs (helper).
+
+```lean
+def RueCore.Program.entry (D : StructEnv) (T : Ty) (e : Expr) : Program
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : StructEnv) (T : Ty) (e : Expr),
+  Program.entry D T e =
+    { structs := D, fns := [{ params := [], ret := T, body := e }] }
+```
+
 ### `Ty.atPath`
 
 *def* · module `RueCore.Syntax`
@@ -4592,6 +4942,24 @@ Defining equations, as Lean derived them from the body:
   (∀ (H : Store) (v : Val) (tr : List Event),
       x = EvalRes.ok H v tr → False) →
     x.andThen x_1 = x
+```
+
+### `Examples.prog`
+
+*def* · module `RueCore.Examples`
+
+A program over the fixture declarations, entered at a no-parameter `main`
+returning `T`.
+
+```lean
+def RueCore.Examples.prog (T : Ty) (e : Expr) : Program
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (T : Ty) (e : Expr),
+  Examples.prog T e = Program.entry Examples.structEnv T e
 ```
 
 ### `Explain.ArgsTrace`
