@@ -453,6 +453,15 @@ theorem canonNum_wf {w : FloatWidth} {neg : Bool} {sig : Nat} {exp : Int}
       rw [heq]
       exact Or.inr ⟨h1, h2, h3, h4, h5⟩
 
+/-- `1 · 2^0` is a datum of every width — the one finite value the trap
+witnesses need to name (helper). -/
+theorem one_wf (w : FloatWidth) : (FloatDatum.num false 1 0).Wf w := by
+  refine Or.inr ⟨rfl, ?_, ?_, ?_, ?_⟩
+  · exact Nat.one_lt_two_pow_iff.mpr (by cases w <;> decide)
+  · cases w <;> decide
+  · cases w <;> decide
+  · exact Nat.one_lt_two_pow_iff.mpr (by cases w <;> decide)
+
 /-- **`neg` preserves `𝔽_w`** — it flips a sign bit and changes nothing else
 (`3.12:24`), so §7's totality obligation for `(D-Float-Neg)` is discharged
 here rather than assumed. -/
@@ -685,6 +694,13 @@ structure FloatModel extends FloatOps where
   §6.4). -/
   zero_div_zero : ∀ w n₁ n₂,
     toFloatOps.arith w .div (.num n₁ 0 0) (.num n₂ 0 0) = .nan toFloatOps.nanSign
+  /-- **The decimal zero is `+0`** — `3.12:9`'s last sentence, "a literal that
+  is representable in the target type denotes exactly that value", at the one
+  literal every width represents. -/
+  ofLit_zero : ∀ w ne e, toFloatOps.ofLit w 0 ne e = .num false 0 0
+  /-- **The decimal one is `1 · 2^0`** — the same sentence of `3.12:9` at the
+  other literal this slice's witnesses need. -/
+  ofLit_one : ∀ w, toFloatOps.ofLit w 1 false 0 = .num false 1 0
 
 /-! ## The partition `(D-Float-To-Int)` / `(D-Float-To-Int-Trap)` -/
 
