@@ -1092,11 +1092,8 @@ where
                 let def = self.type_pool.struct_def(id);
                 if let Some(identity) = self.issued_anonymous_identity_for_type(ty) {
                     T::AnonymousNominal(identity)
-                } else if def.is_builtin || &*def.name == "str" {
-                    T::BuiltinNominal {
-                        name: def.name.clone(),
-                        kind: crate::SemanticImportNominalKind::Struct,
-                    }
+                } else if let Some((name, kind)) = self.builtin_nominal_identity(ty) {
+                    T::BuiltinNominal { name, kind }
                 } else {
                     let (token, _) = self.ensure_named_nominal_identity(ty, &def.name)?;
                     T::Nominal(token)
@@ -1106,11 +1103,8 @@ where
                 let def = self.type_pool.enum_def(id);
                 if let Some(identity) = self.issued_anonymous_identity_for_type(ty) {
                     T::AnonymousNominal(identity)
-                } else if self.is_builtin_enum_id(id) {
-                    T::BuiltinNominal {
-                        name: def.name.clone(),
-                        kind: crate::SemanticImportNominalKind::Enum,
-                    }
+                } else if let Some((name, kind)) = self.builtin_nominal_identity(ty) {
+                    T::BuiltinNominal { name, kind }
                 } else {
                     let (token, _) = self.ensure_named_nominal_identity(ty, &def.name)?;
                     T::Nominal(token)
@@ -1295,6 +1289,10 @@ struct ProviderBodyHost<'a, P, S, K, M> {
     anonymous_enum_ids: AHashSet<EnumId>,
     anon_struct_identities: AHashMap<super::anon_structs::IssuedAnonymousNominalKey, StructId>,
     anon_enum_identities: AHashMap<super::anon_structs::IssuedAnonymousNominalKey, EnumId>,
+    /// Struct ids declared for anonymous nominals still resolving their own
+    /// shape, so a `Self`-mentioning field can name the struct it belongs to
+    /// (spec 6.4:18, RUE-2223).
+    anon_struct_declarations: AHashMap<super::anon_structs::IssuedAnonymousNominalKey, StructId>,
     anonymous_digest_owners: AHashMap<u128, super::anon_structs::IssuedAnonymousNominalKey>,
     canonical_anonymous_types:
         ahash::AHashMap<Type, super::anon_structs::IssuedAnonymousNominalKey>,
@@ -1479,6 +1477,7 @@ where
             anonymous_struct_ids: AHashSet::new(),
             anonymous_enum_ids: AHashSet::new(),
             anon_struct_identities: AHashMap::new(),
+            anon_struct_declarations: AHashMap::new(),
             anon_enum_identities: AHashMap::new(),
             anonymous_digest_owners: AHashMap::new(),
             canonical_anonymous_types: AHashMap::new(),
@@ -3096,6 +3095,34 @@ where
         })
     }
 
+    /// The canonical spelling and nominal kind of a builtin nominal, if `ty`
+    /// is one: the synthetic `str` struct, a compiler-generated `Str(N)` or
+    /// slice view, or a builtin enum.
+    ///
+    /// A builtin nominal has no source declaration to tokenize, so every
+    /// durable projection of it identifies it by this spelling. Both
+    /// projections — the body export and the type-constructor reduction seam
+    /// — read this one classification, so neither can disagree about which
+    /// types are builtin.
+    fn builtin_nominal_identity(
+        &self,
+        ty: Type,
+    ) -> Option<(Arc<str>, crate::SemanticImportNominalKind)> {
+        match ty.kind() {
+            TypeKind::Struct(id) => {
+                let def = self.type_pool.struct_def(id);
+                (def.is_builtin || &*def.name == "str")
+                    .then(|| (def.name.clone(), crate::SemanticImportNominalKind::Struct))
+            }
+            TypeKind::Enum(id) => {
+                let def = self.type_pool.enum_def(id);
+                self.is_builtin_enum_id(id)
+                    .then(|| (def.name.clone(), crate::SemanticImportNominalKind::Enum))
+            }
+            _ => None,
+        }
+    }
+
     fn durable_type_from_concrete(&self, ty: Type) -> Option<crate::SemanticImportType<K, M>> {
         use crate::SemanticImportType as T;
         Some(match ty.kind() {
@@ -3144,6 +3171,14 @@ where
                     T::AnonymousNominal(identity)
                 } else if let Some(identity) = self.endpoint.durable_anonymous_identity(ty) {
                     T::AnonymousNominal(identity)
+                } else if let Some((name, kind)) = self.builtin_nominal_identity(ty) {
+                    // A builtin nominal — `str`, a generated `Str(N)`, a
+                    // generated slice, a builtin enum — has no source
+                    // declaration to tokenize. Its durable identity IS its
+                    // canonical spelling, exactly as `export_body_type`
+                    // records it, so a type argument naming one reduces like
+                    // any other (RUE-2267).
+                    T::BuiltinNominal { name, kind }
                 } else {
                     let (_, definition) = self.nominal_tokens.borrow().get(&ty)?.clone();
                     T::Nominal(definition)
@@ -6097,6 +6132,12 @@ where
         &mut self,
     ) -> &mut AHashMap<super::anon_structs::IssuedAnonymousNominalKey, EnumId> {
         &mut self.anon_enum_identities
+    }
+
+    fn anonymous_struct_declarations_mut(
+        &mut self,
+    ) -> &mut AHashMap<super::anon_structs::IssuedAnonymousNominalKey, StructId> {
+        &mut self.anon_struct_declarations
     }
 
     fn anonymous_digest_owner(

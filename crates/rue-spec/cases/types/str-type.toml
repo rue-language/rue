@@ -476,3 +476,104 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "E0496"
+
+# =============================================================================
+# `str` as a comptime type argument (RUE-2267)
+# =============================================================================
+#
+# 3.7:44 makes a first-class `str` `@copy`, storable in a binding or a struct
+# field and passable as an argument — every property a generic's payload needs
+# — and 4.14:22 admits any type value as a type-constructor argument. `str` is
+# therefore a type argument like any nominal, in the standard library's
+# generics and in a program's own.
+
+# 3.7:44 / 4.14:22 — `Option(str)` reduces, constructs, and matches.
+[[case]]
+name = "str_instantiates_std_option"
+spec = ["3.7:44", "4.14:22", "4.14:23"]
+description = "std.option.Option(str) reduces to a concrete type, binds as a let alias, and carries a str payload through a match."
+real_std = true
+source = """
+const std = @import("std");
+fn main() -> i32 {
+    let O = std.option.Option(str);
+    let v: O = O.Some("yes");
+    match v { O.Some(x) => @intCast(x.len()), O.None => 0 }
+}
+"""
+exit_code = 3
+
+# 3.7:44 / 4.14:22 — a `str` type argument reduces in return-type position too,
+# so the constructor call is the same type in a signature and in a body.
+[[case]]
+name = "str_option_reduces_in_return_position"
+spec = ["3.7:44", "4.14:22"]
+description = "A function returning option.Option(str) reduces the constructor in its signature and in its body."
+real_std = true
+source = """
+const std = @import("std");
+const option = std.option;
+fn make(has: bool) -> option.Option(str) {
+    let O = option.Option(str);
+    if has { O.Some("ok") } else { O.None }
+}
+fn main() -> i32 {
+    let O = option.Option(str);
+    match make(true) { O.Some(x) => @intCast(x.len()), O.None => 0 }
+}
+"""
+exit_code = 2
+
+# 3.7:44 / 4.14:22 — two type arguments with `str` in the Ok position, carried
+# through the `?` operator.
+[[case]]
+name = "str_instantiates_std_result_with_try"
+spec = ["3.7:44", "4.14:22"]
+description = "Result(str, i32) reduces and propagates a str payload through `?`."
+real_std = true
+source = """
+const std = @import("std");
+const result = std.result;
+fn first(s: str) -> result.Result(str, i32) {
+    if s.len() == 0 { return result.Result(str, i32).Err(1); }
+    result.Result(str, i32).Ok(s)
+}
+fn run() -> result.Result(str, i32) {
+    let s = first("hello")?;
+    result.Result(str, i32).Ok(s)
+}
+fn main() -> i32 {
+    let R = result.Result(str, i32);
+    match run() { R.Ok(v) => @intCast(v.len()), R.Err(e) => -e }
+}
+"""
+exit_code = 5
+
+# 3.7:44 / 4.14:22 — a user struct constructor over `str`.
+[[case]]
+name = "str_instantiates_a_user_struct_constructor"
+spec = ["3.7:44", "4.14:22"]
+description = "A user `-> type` struct constructor reduces over a str argument and its field holds the view."
+source = """
+fn Box(comptime T: type) -> type { struct { v: T } }
+fn main() -> i32 {
+    let b = Box(str) { v: "hi" };
+    @intCast(b.v.len())
+}
+"""
+exit_code = 2
+
+# 3.7:44 / 4.14:22 — a user enum constructor over `str`, constructed and
+# matched through the inline constructor spelling.
+[[case]]
+name = "str_instantiates_a_user_enum_constructor"
+spec = ["3.7:44", "4.14:22"]
+description = "A user `-> type` enum constructor reduces over a str argument and carries it as a variant payload."
+source = """
+fn Opt(comptime T: type) -> type { enum { S(T), N } }
+fn main() -> i32 {
+    let v = Opt(str).S("hey");
+    match v { Opt(str).S(x) => @intCast(x.len()), Opt(str).N => 0 }
+}
+"""
+exit_code = 3
