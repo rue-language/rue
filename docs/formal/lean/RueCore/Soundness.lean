@@ -357,9 +357,15 @@ theorem dropContents_ok {D : StructEnv} {c : Contents} {T : Ty} (h : ContentsTy 
 well-typed struct's stored contents emits its user destructor's event — when
 its declaration has one (`3.9:28`) — followed by the **concatenation of its
 fields' drop events, in declaration order** (`3.9:13`), each field's events
-given by the same closed form, recursively, and a field that has been moved out
-contributing none (`3.8:60`). Nothing else, and nothing in another order; the
-whole list is determined by the contents and the declarations. -/
+given by the same closed form, recursively. Nothing else, and nothing in
+another order; the whole list is determined by the contents and the
+declarations.
+
+Be exact about the `⊘`-skip: this theorem states the **map**, `cs.map
+(dropEvents D)`, and a moved-out field contributes nothing because
+`dropEvents .hole = []` *by definition* (`Dynamics.lean`). So `3.8:60`'s skip
+is carried by the closed form's own leaf case, not concluded here; what the
+theorem adds is that the walk emits exactly that map, in that order. -/
 theorem dropContents_struct_events {D : StructEnv} {s : Nat} {sd : StructDecl}
     {cs : List Contents} (hd : D[s]? = some sd) (h : ContentsTy D (.struct s cs) (.struct s)) :
     dropContents D (.struct s cs)
