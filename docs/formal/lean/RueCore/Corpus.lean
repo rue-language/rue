@@ -32,7 +32,12 @@ One array of case objects. Fields:
   For a rejected program `expected` is `{"kind": "stuck", "violation":
   <name>}`: the refusal the machine reaches, kernel-checked in
   `Examples.lean` and below, which the bridge cannot observe because the
-  compiler rejects the program first. A `panic` outcome carries no trace on
+  compiler rejects the program first. A rejected program whose executed path
+  never reaches the violation — the §5.5 join rejects statically what the
+  machine refuses only on the branch not taken — carries the `ok` or `panic`
+  outcome of that path instead, so a compiler that accepts it unsoundly is
+  still compared against what the machine does. The seed corpus has no such
+  case; the generator (`Gen.lean`) produces them. A `panic` outcome carries no trace on
   the Lean side (`EvalRes.panic` discards it), so drops before a trap are a
   blind spot of the bridge at this fragment; RUE-2282 gives `.panic` its
   trace. Drop lines and the value line are both bare integers, so the
@@ -247,8 +252,11 @@ def caseJson (c : Case) : String :=
   "    \"expected\": " ++ expectedJson c ++ "\n" ++
   "  }"
 
-/-- The whole corpus as one JSON document. -/
-def json : String :=
-  "[\n" ++ String.intercalate ",\n" (cases.map caseJson) ++ "\n]\n"
+/-- A list of cases as one JSON document. -/
+def jsonOf (cs : List Case) : String :=
+  "[\n" ++ String.intercalate ",\n" (cs.map caseJson) ++ "\n]\n"
+
+/-- The seed corpus as one JSON document. -/
+def json : String := jsonOf cases
 
 end RueCore.Corpus
