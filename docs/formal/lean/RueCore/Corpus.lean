@@ -40,9 +40,14 @@ One array of case objects. Fields:
   it: the seed cases below use `return` only where `check` is complete, and
   `Gen.lean` emits no `ret` at all.
 * `expected` — the interpreter's outcome for an accepted program:
-  `{"kind": "ok", "stdout": [<line>...], "exit": 0}` where each line is one
-  drop event's payload in trace order followed by the program's value
-  (`Print.lean` documents the mapping), or `{"kind": "panic", "panic":
+  `{"kind": "ok", "stdout": [<line>...], "exit": 0}`, where each line is one
+  **user destructor** the run executed, in trace order, followed by the lines
+  `main` shows for the program's value (`Print.lean` documents the mapping: a
+  scalar prints itself, and a struct value is dropped, so its lines are the
+  ones its drop emits). A drop with no destructor anywhere in it is
+  unobservable in Rue and contributes no line; the interpreter's `drop ℓ v`
+  and `dropTemp v` events mark where a drop *starts* and are likewise not
+  lines. Or `{"kind": "panic", "panic":
   "overflow" | "divZero"}` for a §6.12 trap, where the trace is not
   observable (the machine discards it) and only the trap kind is compared.
   For a rejected program `expected` is `{"kind": "stuck", "violation":
@@ -57,9 +62,9 @@ One array of case objects. Fields:
   produces them. A `panic` outcome carries no trace on
   the Lean side (`EvalRes.panic` discards it), so drops before a trap are a
   blind spot of the bridge at this fragment; RUE-2282 gives `.panic` its
-  trace. Drop lines and the value line are both bare integers, so the
-  projection is not injective: a drop of payload `n` swapped with a value
-  `n` would not be told apart. Accepted at fragment scope.
+  trace. Every line is a bare integer, so the projection is not injective: a
+  destructor line `n` swapped with a value line `n` would not be told apart.
+  Accepted at fragment scope.
 
 Every case is evaluated at one fixed bound, `exportFuel`, and a case the
 bound does not complete is **not exported**: `outOfFuel` is the interpreter
@@ -82,7 +87,8 @@ namespace RueCore.Corpus
 open Expr
 
 /-- A corpus case: a closed fragment program with its documentation. A
-program is a list of function definitions, entered at index `0` (§6.12). -/
+program is a struct environment and a list of function definitions, entered at
+function index `0` (§6.12). -/
 structure Case where
   name : String
   description : String
@@ -103,120 +109,151 @@ def cases : List Case := [
   { name := "scalars",
     description := "Well-typed scalar flow: a binding used twice by copy.",
     rules := ["(Use-Copy) §5.1", "(Let) §5.3"],
-    prog := Program.entry .int <| Examples.scalars
+    prog := Examples.scalarProg .int Examples.scalars
     },
   { name := "affine_scope_drop",
-    description := "An affine resource silently dropped at scope exit; the trace shows the drop before the value.",
-    rules := ["(Let) §5.3", "§5.6 scope exit", "(D-EndScope) §6.7"],
-    prog := Program.entry .int <| Examples.affineDrop
+    description := "An affine resource silently dropped at scope exit; its destructor prints before the value.",
+    rules := ["(Let) §5.3", "§5.6 scope exit", "(D-EndScope) §6.7", "§6.11"],
+    prog := Examples.prog .int Examples.affineDrop
     },
   { name := "linear_consumed",
     description := "A linear resource consumed exactly once; no drop event.",
-    rules := ["(Use-Move) §5.1", "consume §5.1"],
-    prog := Program.entry .int <| Examples.linearConsumed
+    rules := ["(Use-Move) §5.1", "§5.8 whole-value elimination"],
+    prog := Examples.prog .int Examples.linearConsumed
     },
   { name := "linear_leaked",
     description := "A linear resource reaching scope exit unconsumed: rejected statically (E0406) and refused dynamically (linearLeak).",
     rules := ["§5.6 residual-linear leak check", "3.8:32"],
-    prog := Program.entry .int <| Examples.linearLeaked
+    prog := Examples.prog .int Examples.linearLeaked
     },
   { name := "use_after_move",
-    description := "A moved affine binding used again: rejected statically (E0205) and refused dynamically (useAfterMove).",
+    description := "A moved affine binding dropped again: rejected statically (E0205) and refused dynamically (useAfterMove).",
     rules := ["(Use-Move) §5.1", "3.8:5"],
-    prog := Program.entry .int <| Examples.useAfterMove
+    prog := Examples.prog .int Examples.useAfterMove
     },
   { name := "reinit",
     description := "Move a linear value out, assign a new one back in, consume it: legal reinitialization.",
     rules := ["(Assign) §5.2", "3.8:55"],
-    prog := Program.entry .int <| Examples.reinit
+    prog := Examples.prog .int Examples.reinit
     },
   { name := "linear_half_consumed",
     description := "A linear value consumed in one arm of an if only: the §5.5 join rejects it; dynamically it leaks on the other path.",
     rules := ["(If) §5.5 join", "3.8:50"],
-    prog := Program.entry .int <| Examples.linearHalfConsumed
+    prog := Examples.prog .int Examples.linearHalfConsumed
     },
   { name := "overflow",
     description := "intMax + 1 traps with a defined overflow panic.",
     rules := ["§6.4 arithmetic traps", "3.1:6"],
-    prog := Program.entry .int <| Examples.overflow
+    prog := Examples.scalarProg .int Examples.overflow
     },
   { name := "div_zero",
     description := "Division by zero traps with a defined panic.",
     rules := ["§6.4 arithmetic traps", "4.2:11"],
-    prog := Program.entry .int <| Examples.divZero
+    prog := Examples.scalarProg .int Examples.divZero
     },
   { name := "copy_resource",
-    description := "A copy resource: @drop is a no-op, uses copy, nothing is ever printed for it.",
-    rules := ["(Use-Copy) §5.1", "(@Drop-Copy) §5.3"],
-    prog := Program.entry .int <| letIn false (mkres .copy (intLit 5))
+    description := "A copy struct: @drop is a no-op, uses copy, nothing is ever printed for it.",
+    rules := ["(Use-Copy) §5.1", "(@Drop-Copy) §5.3", "3.9:31"],
+    prog := Examples.prog .int <| letIn false (Examples.resC (intLit 5))
       (seq (drop 0) (add (consume (use 0)) (consume (use 0))))
     },
   { name := "affine_explicit_drop",
-    description := "An affine resource dropped explicitly with @drop: one drop line, at the @drop site, nothing at scope exit.",
+    description := "An affine resource dropped explicitly with @drop: one destructor line, at the @drop site, nothing at scope exit.",
     rules := ["(@Drop) §5.3", "§6.11", "3.9:37"],
-    prog := Program.entry .int <| letIn false (mkres .affine (intLit 8)) (seq (drop 0) (intLit 2))
+    prog := Examples.prog .int <| letIn false (Examples.resA (intLit 8)) (seq (drop 0) (intLit 2))
     },
   { name := "linear_explicit_drop",
-    description := "A linear resource discharged by the core's @drop (the only non-move discharge of a linear obligation); printed as a consuming read, since RLinear cannot carry a destructor (Print.lean).",
-    rules := ["(@Drop) §5.3", "3.9:39"],
-    prog := Program.entry .int <| letIn false (mkres .linear (intLit 9)) (seq (drop 0) (intLit 3))
+    description := "A linear resource discharged by @drop (the only non-move discharge of a linear obligation); its destructor prints at the drop site.",
+    rules := ["(@Drop) §5.3", "3.9:39", "§6.11"],
+    prog := Examples.prog .int <| letIn false (Examples.resLD (intLit 9)) (seq (drop 0) (intLit 3))
     },
   { name := "affine_temporary_discarded",
     description := "An affine value produced and discarded by a sequence: the machine drops the temporary at the end of the statement.",
     rules := ["(Seq) §5.3", "§6.7 temporary drop"],
-    prog := Program.entry .int <| seq (mkres .affine (intLit 3)) (intLit 4)
+    prog := Examples.prog .int <| seq (Examples.resA (intLit 3)) (intLit 4)
     },
   { name := "linear_temporary_discarded",
     description := "A linear value produced and discarded by a sequence: rejected statically (3.8:64) and refused dynamically (linearDiscard).",
     rules := ["(Seq) §5.3", "3.8:64"],
-    prog := Program.entry .int <| seq (mkres .linear (intLit 3)) (intLit 4)
+    prog := Examples.prog .int <| seq (Examples.resL (intLit 3)) (intLit 4)
     },
   { name := "affine_overwrite",
     description := "Assigning over a live affine value drops the old value at the assignment, then the new one at scope exit.",
     rules := ["(Assign) §5.2", "§6.8 overwrite-drop", "3.9:18"],
-    prog := Program.entry .int <| letIn true (mkres .affine (intLit 1))
-      (seq (assign 0 (mkres .affine (intLit 2))) (intLit 9))
+    prog := Examples.prog .int <| letIn true (Examples.resA (intLit 1))
+      (seq (assign 0 (Examples.resA (intLit 2))) (intLit 9))
     },
   { name := "linear_overwrite",
     description := "Assigning over a live linear value: rejected statically (3.8:77, the RUE-387 premise) and refused dynamically (linearOverwrite).",
     rules := ["(Assign) §5.2", "3.8:77"],
-    prog := Program.entry .int <| letIn true (mkres .linear (intLit 1))
-      (seq (assign 0 (mkres .linear (intLit 2))) (consume (use 0)))
+    prog := Examples.prog .int <| letIn true (Examples.resL (intLit 1))
+      (seq (assign 0 (Examples.resL (intLit 2))) (consume (use 0)))
     },
   { name := "join_agrees",
     description := "A linear value consumed in both arms of an if: the join agrees, the program is accepted, and the value chosen is the taken arm's.",
     rules := ["(If) §5.5 join", "3.8:50"],
-    prog := Program.entry .int <| letIn false (mkres .linear (intLit 6))
+    prog := Examples.prog .int <| letIn false (Examples.resL (intLit 6))
       (ite (lt (intLit 1) (intLit 2)) (consume (use 0)) (add (consume (use 0)) (intLit 1)))
     },
   { name := "nested_scopes",
     description := "Two affine bindings in nested scopes drop innermost first, each at its own scope's close.",
     rules := ["(Let) §5.3", "§5.6 scope exit", "(D-EndScope) §6.7", "3.9:2"],
-    prog := Program.entry .int <| letIn false (mkres .affine (intLit 1))
-      (letIn false (mkres .affine (intLit 2)) (intLit 0))
+    prog := Examples.prog .int <| letIn false (Examples.resA (intLit 1))
+      (letIn false (Examples.resA (intLit 2)) (intLit 0))
     },
   { name := "resource_result",
-    description := "The program's value is a resource: main observes its payload and never drops it.",
-    rules := ["§4.3 expression value"],
-    prog := Program.entry (.res .affine) <| letIn false (intLit 4) (mkres .affine (use 0))
+    description := "The program's value is a struct: main lets it drop, so its destructor is the value line.",
+    rules := ["§4.3 expression value", "§6.11"],
+    prog := Examples.prog (.struct Examples.sAffine) <|
+      letIn false (intLit 4) (Examples.resA (use 0))
     },
   { name := "cond_drop_affine",
-    description := "An affine resource dropped explicitly in one arm of an if and left to scope exit on the other: accepted (the join sends it to MovedOut), one drop line either way. The bridge found the compiler ICEing on this (RUE-2290, fixed); the case stays as the regression signal.",
+    description := "An affine resource dropped explicitly in one arm of an if and left to scope exit on the other: accepted (the join sends it to MovedOut), one destructor line either way. The bridge found the compiler ICEing on this (RUE-2290, fixed); the case stays as the regression signal.",
     rules := ["(@Drop) §5.3", "(If) §5.5 join", "3.9:38"],
-    prog := Program.entry .int <| letIn false (mkres .affine (intLit 5))
+    prog := Examples.prog .int <| letIn false (Examples.resA (intLit 5))
       (seq (ite (boolLit true) (drop 0) unitLit) (intLit 9))
     },
   { name := "bool_result",
     description := "A boolean value from a comparison.",
     rules := ["§5.8 operator statics", "§6.4"],
-    prog := Program.entry .bool <| lt (intLit 3) (intLit 2)
+    prog := Examples.scalarProg .bool <| lt (intLit 3) (intLit 2)
+    },
+  { name := "struct_copy_twice",
+    description := "A @copy struct with two integer fields, used twice: contraction is legal at Copy and nothing is dropped.",
+    rules := ["(Struct-Intro) §5.8", "(Use-Copy) §5.1", "3.8:18"],
+    prog := Examples.prog .int Examples.structCopyTwice
+    },
+  { name := "struct_linear_field_leaked",
+    description := "An attribute-less struct holding a declared-linear field is Linear by §3's join: left to scope exit it is rejected (E0406) and refused (linearLeak).",
+    rules := ["(Struct-Intro) §5.8", "§5.6 residual-linear leak check", "3.8:58"],
+    prog := Examples.prog .int Examples.structLinearFieldLeaked
+    },
+  { name := "struct_linear_field_dropped",
+    description := "The same linear-carrying struct discharged by @drop: the whole value's glue runs, so the linear field's destructor prints.",
+    rules := ["(Struct-Intro) §5.8", "(@Drop) §5.3", "§6.11", "3.9:39"],
+    prog := Examples.prog .int Examples.structLinearFieldDropped
+    },
+  { name := "struct_nested_dtor_drop",
+    description := "A destructor-bearing struct holding a destructor-bearing struct, dropped at scope exit: the outer destructor runs first, then the fields in declaration order, so the trace is 1 then 2.",
+    rules := ["(Struct-Intro) §5.8", "§6.11", "§5.6 scope exit", "3.9:2"],
+    prog := Examples.prog .int Examples.structNestedDrop
+    },
+  { name := "struct_field_drop_order",
+    description := "A struct with no destructor of its own holding two destructor-bearing fields: scope exit drops them in declaration order, 1 then 2.",
+    rules := ["(Struct-Intro) §5.8", "§6.11", "3.9:2"],
+    prog := Examples.prog .int Examples.structFieldOrder
+    },
+  { name := "struct_join_disagrees",
+    description := "The §5.5 join on a linear-carrying struct entry: discharged in one arm only, which 3.8:50 makes ill-formed; on the path taken it leaks.",
+    rules := ["(If) §5.5 join", "3.8:50", "3.8:58"],
+    prog := Examples.prog .int Examples.structJoinDisagrees
     },
   { name := "call_plain",
     description := "A plain call by value: main calls a two-parameter function that adds its parameters.",
     rules := ["(Call) §5.8", "(D-Call) §6.9", "(D-Return-Value) §6.9"],
     prog := Examples.callPlain },
   { name := "return_past_affine",
-    description := "An early return past two live affine bindings: the frame unwinds newest-first, so the drops print 4 then 3, then the value 7.",
+    description := "An early return past two live affine bindings: the frame unwinds newest-first, so the destructors print 4 then 3, then the value 7.",
     rules := ["(Return-Value) §5.7", "(D-Return) §6.9", "3.9:18", "3.9:4"],
     prog := Examples.returnPastAffine },
   { name := "return_past_linear",
@@ -243,34 +280,48 @@ def cases : List Case := [
 
 /-! ## Witnesses for the refusals no `Examples.lean` program reaches -/
 
-example : run (Program.entry .int (letIn true (mkres .linear (intLit 1))
-    (seq (assign 0 (mkres .linear (intLit 2))) (consume (use 0))))) exportFuel
+example : run (Examples.prog .int (letIn true (Examples.resL (intLit 1))
+    (seq (assign 0 (Examples.resL (intLit 2))) (consume (use 0))))) exportFuel
     = .stuck .linearOverwrite := by rfl
-example : run (Program.entry .int (seq (mkres .linear (intLit 3)) (intLit 4))) exportFuel
+example : run (Examples.prog .int (seq (Examples.resL (intLit 3)) (intLit 4))) exportFuel
     = .stuck .linearDiscard := by rfl
-example : checkProgram (Program.entry .int (seq (mkres .linear (intLit 3)) (intLit 4)))
+example : checkProgram (Examples.prog .int (seq (Examples.resL (intLit 3)) (intLit 4)))
     = false := by rfl
 
 /-! ## Outcomes, from the mechanization -/
 
-/-- The printed line for a value the machine observes: a payload or a
-scalar (`Print.observeValue`). -/
-def valueLine : Val → Option String
-  | .int n => some (toString n)
-  | .bool b => some (if b then "true" else "false")
-  | .unit => none
-  | .res _ n => some (toString n)
+/-- The line a user destructor prints (`Print.structItem`): the struct's
+first field, when that field is an `int`. A declaration whose first field is
+not an `int` has nothing to print, in the printed Rue program and here
+alike. -/
+def dtorLine : Val → Option String
+  | .struct _ (.int n :: _) => some (toString n)
+  | _ => none
 
-/-- One stdout line per drop event: the dropped resource's payload. `eval`
-emits events only for resource values (`dropRetire` for an affine one, the
-`drop` and `seq` arms for any non-copy one), so the last case is unreachable.
-It is written as a line no binary can print rather than as a `panic!`, so a
-broken invariant fails the one case that has it — loudly, in the bridge's own
-comparison — instead of aborting the whole export. -/
-def eventLine : Event → String
-  | .drop _ (.res _ n) => toString n
-  | .dropTemp (.res _ n) => toString n
-  | ev => s!"<drop event of a non-resource value: {repr ev}>"
+/-- One stdout line per *observable* drop event. Only a user destructor is
+observable in Rue (`Print.lean`); `drop ℓ v` and `dropTemp v` mark where a
+drop starts (§6.11, §6.7) and a drop with no destructor inside it prints
+nothing. The projection is total and never panics — an event with no line is
+simply absent from stdout — so no export can be aborted by a shape this
+function did not expect. -/
+def eventLine : Event → Option String
+  | .dtor _ v => dtorLine v
+  | _ => none
+
+/-- The lines `main` shows for the program's value (`Print.observeValue`): a
+scalar prints itself, `()` prints nothing, and a struct value is dropped — so
+its lines are the ones its own drop emits, in §6.11's order. An `error` is a
+struct naming a declaration the program does not have, which the verdict
+already rejects. -/
+def valueLines (D : StructEnv) (v : Val) : List String :=
+  match v with
+  | .int n => [toString n]
+  | .bool b => [if b then "true" else "false"]
+  | .unit => []
+  | .struct _ _ =>
+      match dropValue D v with
+      | .ok evs => evs.filterMap eventLine
+      | .error _ => []
 
 def panicName : PanicKind → String
   | .overflow => "overflow"
@@ -285,22 +336,23 @@ def violationName : Violation → String
   | .unbound => "unbound"
   | .typeConfusion => "typeConfusion"
 
-/-- The stdout the bridge compares, for a completed run: one line per drop
-event in trace order, then the program's value. -/
-def outLines (v : Val) (tr : List Event) : List String :=
-  tr.map eventLine ++ (valueLine v).toList
+/-- The stdout the bridge compares, for a completed run: one line per user
+destructor the run executed, in trace order, then the lines `main` shows for
+the program's value. -/
+def outLines (D : StructEnv) (v : Val) (tr : List Event) : List String :=
+  tr.filterMap eventLine ++ valueLines D v
 
 /-- A one-line reading of the outcome, for the program's header comment. -/
 def outcomeSummary (c : Case) : String :=
   match checkProgram c.prog, run c.prog exportFuel with
   | false, .stuck w => "rejected by the checker; the machine would refuse with " ++ violationName w
   | false, .ok _ v tr =>
-      let lines := outLines v tr
+      let lines := outLines c.prog.structs v tr
       "rejected by the checker; the refusal lies on a path not taken, and the executed path prints " ++
         (if lines.isEmpty then "nothing" else String.intercalate ", " lines) ++ "; exit 0"
   | false, .panic k => "rejected by the checker; the refusal lies on a path not taken, and the executed path traps with " ++ panicName k
   | true, .ok _ v tr =>
-      let lines := outLines v tr
+      let lines := outLines c.prog.structs v tr
       "accepted; prints " ++ (if lines.isEmpty then "nothing" else String.intercalate ", " lines) ++ "; exit 0"
   | true, .panic k => "accepted; traps with " ++ panicName k
   | true, .stuck w => "accepted yet refused with " ++ violationName w ++ " (impossible by soundness)"
@@ -326,7 +378,7 @@ def jsonArray (items : List String) : String :=
 /-- The entry function's declared return type, which is the type the checker
 gives the whole program (helper). -/
 def resultTyName (c : Case) : String :=
-  match c.prog[0]? with
+  match c.prog.fns[0]? with
   | some fd => Print.tyName fd.ret
   | none => Print.tyName .int
 
@@ -343,10 +395,10 @@ which the entry call's own frame boundary absorbs (`run_ne_returned`), and an
 def expectedJson (c : Case) : String :=
   match run c.prog exportFuel with
   | .ok _ v tr =>
-      "{\"kind\": \"ok\", \"stdout\": " ++ jsonArray ((outLines v tr).map jsonString) ++
+      "{\"kind\": \"ok\", \"stdout\": " ++ jsonArray ((outLines c.prog.structs v tr).map jsonString) ++
         ", \"exit\": 0}"
   | .returned _ v tr =>
-      "{\"kind\": \"ok\", \"stdout\": " ++ jsonArray ((outLines v tr).map jsonString) ++
+      "{\"kind\": \"ok\", \"stdout\": " ++ jsonArray ((outLines c.prog.structs v tr).map jsonString) ++
         ", \"exit\": 0}"
   | .panic k => "{\"kind\": \"panic\", \"panic\": " ++ jsonString (panicName k) ++ "}"
   | .stuck w => "{\"kind\": \"stuck\", \"violation\": " ++ jsonString (violationName w) ++ "}"
