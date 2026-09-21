@@ -37,16 +37,13 @@
 //!
 //! # Blind spots
 //!
-//! * A Lean `panic` outcome carries no trace, so drops before a trap are not
-//!   compared — only the trap category is (RUE-2282 gives `.panic` its trace).
-//!   Inherited from the corpus contract.
 //! * When both views reject a program, the Lean machine's `stuck` violation is
 //!   not observable: nothing runs, so only the rejection and its diagnostic
 //!   codes are compared. (When the *compiler* accepts a program the checker
 //!   rejects, the program does run and the run itself is the finding.)
-//! * Every stdout line is a bare integer on the Lean side, so a destructor
-//!   line `n` swapped with a value line `n` is not told apart. Inherited
-//!   from the corpus contract.
+//! * Every stdout line is a bare integer or `true`/`false` on the Lean side,
+//!   so a destructor line `n` swapped with a `@dbg` line `n` or a value line
+//!   `n` is not told apart. Inherited from the corpus contract.
 //! * A drop that runs no user destructor is unobservable in Rue and so
 //!   contributes no line, in either view: the bridge compares the destructors
 //!   a run executes, not every drop the machine performs. Inherited from the
@@ -197,13 +194,20 @@ impl Verdict {
 /// What the verified interpreter says a case does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Expectation {
-    /// Normal completion: one stdout line per *user destructor* the run
-    /// executed, in trace order (the Lean side projects only its `dtor`
-    /// events), then the lines `main` shows for the program's value.
+    /// Normal completion: one stdout line per *observable event* the run
+    /// executed, in trace order — a user destructor or a `@dbg` (the Lean
+    /// side projects its `dtor` and `dbg` events and nothing else) — then the
+    /// lines `main` shows for the program's value.
     Ok { stdout: Vec<String>, exit: i32 },
     /// A §6.12 trap. `name` is the Lean spelling, `trap` the modeled category
-    /// both implementation views report.
-    Panic { name: String, trap: TrapKind },
+    /// both implementation views report, and `stdout` the observable output
+    /// the run produced *before* the trap — §6.12 keeps it, and a trapping
+    /// process prints what it printed and then exits 101.
+    Panic {
+        name: String,
+        trap: TrapKind,
+        stdout: Vec<String>,
+    },
     /// The machine's named refusal for a rejected program. Unobservable here.
     Stuck { violation: String },
 }
@@ -230,7 +234,14 @@ impl Expectation {
                 };
                 format!("runs, prints {printed}, exit {exit}")
             }
-            Self::Panic { name, trap } => format!("traps with {name} ({trap:?})"),
+            Self::Panic { name, trap, stdout } => {
+                let printed = if stdout.is_empty() {
+                    "nothing".to_string()
+                } else {
+                    stdout.join(", ")
+                };
+                format!("prints {printed}, then traps with {name} ({trap:?})")
+            }
             Self::Stuck { violation } => {
                 format!("is refused by the machine with {violation}")
             }
@@ -249,10 +260,18 @@ pub(crate) struct Case {
     expected: Expectation,
 }
 
+/// The modeled trap category each Lean panic kind names.
+///
+/// §6.12 keeps `div-zero` and `rem-zero` apart as categories; the compiler and
+/// the oracle report both as `division by zero`, so they map to one
+/// `TrapKind` here and the finer distinction stays on the Lean side, where it
+/// is a statement about the rules rather than about an observation.
 fn panic_trap_kind(name: &str) -> Option<TrapKind> {
     match name {
         "overflow" => Some(TrapKind::ArithmeticOverflow),
-        "divZero" => Some(TrapKind::DivisionByZero),
+        "divZero" | "remZero" => Some(TrapKind::DivisionByZero),
+        "castOverflow" => Some(TrapKind::IntegerCastOverflow),
+        "user" => Some(TrapKind::UserPanic),
         _ => None,
     }
 }
@@ -330,10 +349,9 @@ fn validate_expected(
             Ok(Expectation::Ok { stdout, exit })
         }
         "panic" => {
-            if raw.stdout.is_some() {
-                return reject("stdout");
-            }
             if raw.exit.is_some() {
+                // A trap's exit status is fixed at 101 by §6.12, so the
+                // corpus does not restate it.
                 return reject("exit");
             }
             if raw.violation.is_some() {
@@ -345,7 +363,14 @@ fn validate_expected(
             let trap = panic_trap_kind(&panic).ok_or_else(|| {
                 format!("case {name:?}: unknown panic kind {panic:?} in the corpus")
             })?;
-            Ok(Expectation::Panic { name: panic, trap })
+            let stdout = raw.stdout.ok_or_else(|| {
+                format!("case {name:?}: a \"panic\" expectation needs \"stdout\" — the output the run produced before the trap")
+            })?;
+            Ok(Expectation::Panic {
+                name: panic,
+                trap,
+                stdout,
+            })
         }
         "stuck" => {
             if raw.stdout.is_some() {
@@ -835,12 +860,27 @@ pub(crate) fn expectation_finding(
             }
             (!reasons.is_empty()).then(|| reasons.join("; "))
         }
-        (Expectation::Panic { name, trap: want }, Some((exit, _, trap))) => {
+        (
+            Expectation::Panic {
+                name,
+                trap: want,
+                stdout: lines,
+            },
+            Some((exit, stdout, trap)),
+        ) => {
             let mut reasons = Vec::new();
             if exit != rue_test_runner::RUNTIME_ERROR_EXIT_CODE {
                 reasons.push(format!(
                     "exit: a {name} trap exits {}, run {exit}",
                     rue_test_runner::RUNTIME_ERROR_EXIT_CODE
+                ));
+            }
+            let want_stdout = Expectation::expected_stdout_bytes(lines);
+            if stdout != want_stdout.as_slice() {
+                reasons.push(format!(
+                    "stdout before the trap: interpreter {:?}, run {:?}",
+                    String::from_utf8_lossy(&want_stdout),
+                    String::from_utf8_lossy(stdout)
                 ));
             }
             match trap {
@@ -1139,9 +1179,9 @@ fn json_expected(expected: &Expectation) -> JsonExpected<'_> {
             panic: None,
             violation: None,
         },
-        Expectation::Panic { name, .. } => JsonExpected {
+        Expectation::Panic { name, stdout, .. } => JsonExpected {
             kind: "panic",
-            stdout: None,
+            stdout: Some(stdout),
             exit: None,
             panic: Some(name),
             violation: None,
@@ -1605,7 +1645,7 @@ mod tests {
            "expected": {"kind": "stuck", "violation": "linearLeak"}},
           {"name": "overflow", "description": "", "rules": [], "source": "",
            "verdict": {"accept": {"type": "i64"}},
-           "expected": {"kind": "panic", "panic": "divZero"}}
+           "expected": {"kind": "panic", "panic": "divZero", "stdout": ["7"]}}
         ]"#;
         let cases = parse_corpus(document).expect("valid corpus");
         assert_eq!(cases[0].verdict, Verdict::Reject);
@@ -1620,8 +1660,34 @@ mod tests {
             Expectation::Panic {
                 name: "divZero".to_string(),
                 trap: TrapKind::DivisionByZero,
+                stdout: vec!["7".to_string()],
             }
         );
+    }
+
+    #[test]
+    fn a_panic_expectation_needs_the_output_that_ran_before_the_trap() {
+        let document = r#"[
+          {"name": "overflow", "description": "", "rules": [], "source": "",
+           "verdict": {"accept": {"type": "i64"}},
+           "expected": {"kind": "panic", "panic": "overflow"}}
+        ]"#;
+        let error = parse_corpus(document).expect_err("stdout is part of the contract");
+        assert!(error.contains("stdout"), "{error}");
+    }
+
+    #[test]
+    fn every_panic_kind_the_corpus_exports_has_a_trap_category() {
+        for (name, want) in [
+            ("overflow", TrapKind::ArithmeticOverflow),
+            ("divZero", TrapKind::DivisionByZero),
+            ("remZero", TrapKind::DivisionByZero),
+            ("castOverflow", TrapKind::IntegerCastOverflow),
+            ("user", TrapKind::UserPanic),
+        ] {
+            assert_eq!(panic_trap_kind(name), Some(want), "{name}");
+        }
+        assert_eq!(panic_trap_kind("bounds"), None);
     }
 
     #[test]
@@ -1754,28 +1820,38 @@ mod tests {
     }
 
     #[test]
-    fn panic_expectations_compare_the_trap_category_and_exit() {
+    fn panic_expectations_compare_the_trap_category_exit_and_output() {
         let expected = Expectation::Panic {
             name: "overflow".to_string(),
             trap: TrapKind::ArithmeticOverflow,
+            stdout: vec!["7".to_string()],
         };
         assert_eq!(
             expectation_finding(
                 &expected,
                 &RunObservation::Ran {
                     exit: 101,
-                    stdout: b"anything\n".to_vec(),
+                    stdout: b"7\n".to_vec(),
                     trap: Some(TrapKind::ArithmeticOverflow),
                 }
             ),
             None,
-            "a trap discards the Lean trace, so stdout is not compared"
         );
-        let wrong_kind = expectation_finding(
+        let lost_output = expectation_finding(
             &expected,
             &RunObservation::Ran {
                 exit: 101,
                 stdout: Vec::new(),
+                trap: Some(TrapKind::ArithmeticOverflow),
+            },
+        )
+        .expect("the output before the trap is compared");
+        assert!(lost_output.contains("before the trap"), "{lost_output}");
+        let wrong_kind = expectation_finding(
+            &expected,
+            &RunObservation::Ran {
+                exit: 101,
+                stdout: b"7\n".to_vec(),
                 trap: Some(TrapKind::DivisionByZero),
             },
         )
@@ -1786,7 +1862,7 @@ mod tests {
             &expected,
             &RunObservation::Ran {
                 exit: 101,
-                stdout: Vec::new(),
+                stdout: b"7\n".to_vec(),
                 trap: None,
             },
         )
