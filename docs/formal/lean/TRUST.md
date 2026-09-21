@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 98.
+- Theorems checked: 102.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -68,13 +68,17 @@ and diffs them against the committed copies.
 | `Ctx.join_self` | `RueCore.Statics` | `propext` |
 | `Typed.skel_preserved` | `RueCore.Statics` | `propext` |
 | `TypedArgs.skel_preserved` | `RueCore.Statics` | `propext` |
+| `dropEventsList_eq_flatten` | `RueCore.Dynamics` | `propext` |
 | `HasTys.length_eq` | `RueCore.Soundness` | `propext` |
 | `HasTy.mult_eq` | `RueCore.Soundness` | `propext` |
 | `HasTy.int_inv` | `RueCore.Soundness` | `propext` |
 | `HasTy.bool_inv` | `RueCore.Soundness` | `propext` |
 | `HasTy.struct_inv` | `RueCore.Soundness` | `propext` |
 | `HasTys.head_int` | `RueCore.Soundness` | `propext` |
+| `dropValue_events` | `RueCore.Soundness` | `propext` |
+| `dropValues_events` | `RueCore.Soundness` | `propext` |
 | `dropValue_ok` | `RueCore.Soundness` | `propext` |
+| `dropValue_struct_events` | `RueCore.Soundness` | `propext` |
 | `dropValue_order` | `RueCore.Soundness` | `propext` |
 | `dropValues_order` | `RueCore.Soundness` | `propext` |
 | `Matches.mem_lt` | `RueCore.Soundness` | `propext` |
