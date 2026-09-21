@@ -91,7 +91,7 @@ Every declaration of the mechanization with the calculus rules, sections, and pr
 | `RueCore.ExplainMain` | `main` | def | §5, §6 | — |
 | `RueCore.Gen` | Gen.lean (module) | module | §6.4, §7 | — |
 | `RueCore.Gen` | `RueCore.Gen.intLiteral` | def | §6.4 | — |
-| `RueCore.Print` | Print.lean (module) | module | §2, §6.12 | `4.13:6`, `3.9:34`, `3.8:33`, `3.9:39` |
+| `RueCore.Print` | Print.lean (module) | module | §2, §6.12 | `4.13:6`, `3.9:34`, `3.8:33`, `3.9:39`, `4.1:3`, `3.1:15` |
 | `RueCore.Print` | `RueCore.Print.tyName` | def | §2 | — |
 | `RueCore.Print` | `RueCore.Print.resLit` | def | §5.8 | — |
 | `RueCore.Print` | `RueCore.Print.expr` | def | §6.7, §6.8 | — |
@@ -357,6 +357,7 @@ Every heading of the calculus. A citation of a section counts for that section o
 
 | Paragraph | Cited by |
 | --- | --- |
+| `3.1:15` | Print.lean (module) |
 | `3.8:5` | `RueCore.Explain.Premise.useMovedOut`, `RueCore.Explain.Premise.dropMovedOut` |
 | `3.8:32` | Dynamics.lean (module), `RueCore.Explain.Premise.letLeak` |
 | `3.8:33` | Print.lean (module) |
@@ -368,7 +369,7 @@ Every heading of the calculus. A citation of a section counts for that section o
 | `3.9:34` | `RueCore.Explain.dropRule`, Print.lean (module) |
 | `3.9:39` | Print.lean (module) |
 | `4.1:2` | `RueCore.Explain.Premise.litOutOfRange`, `RueCore.Typed.intLit` |
-| `4.1:3` | `RueCore.Explain.Premise.litOutOfRange` |
+| `4.1:3` | `RueCore.Explain.Premise.litOutOfRange`, Print.lean (module) |
 | `4.2:1` | `RueCore.Explain.Premise.operandNotInt`, `RueCore.Typed.add` |
 | `4.13:6` | Print.lean (module) |
 | `5.1:3` | `RueCore.Explain.Premise.notMutable` |
