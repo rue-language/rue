@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 31.
+- Theorems checked: 30.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -79,7 +79,6 @@ and diffs them against the committed copies.
 | `no_linear_overwrite` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `no_linear_discard` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `check_sound` | `RueCore.Checker` | `propext` |
-| `Examples.useAfterDrop_unwitnessed_here` | `RueCore.Examples` | *none* |
 | `Explain.explain_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
 | `Explain.traceEval_res` | `RueCore.Explain` | `Quot.sound`, `propext` |
 

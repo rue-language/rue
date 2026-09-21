@@ -179,6 +179,13 @@ theorem RueCore.no_use_after_move {e : Expr} {T : Ty} {Γ' : Ctx}
 *theorem* · module `RueCore.Soundness`
 
 §7 "No use-after-drop": the machine never touches a retired (`†`) cell.
+For a closed expression this is structural rather than a consequence of
+typing: `eval` resumes a `letIn`'s caller with the original environment
+(§6.7), so no closed expression, well-typed or not, can name a retired cell.
+The guard itself is exercised from an open machine state in
+`Examples.lean`; the falsifiable form of the bullet, where scope records and
+unwind paths could retain a retired location, is owed to calls and frames
+(RUE-2233) and the drop trace theorem (RUE-2237).
 
 ```lean
 theorem RueCore.no_use_after_drop {e : Expr} {T : Ty} {Γ' : Ctx}
@@ -231,19 +238,6 @@ Every `check` acceptance is a real derivation of the §5 judgment, so the
 ```lean
 theorem RueCore.check_sound {e : Expr} {Γ : Ctx} {T : Ty} {Γ' : Ctx} :
   check Γ e = some (T, Γ') → Typed Γ e T Γ'
-```
-
-### `Examples.useAfterDrop_unwitnessed_here`
-
-*theorem* · module `RueCore.Examples`
-
-`useAfterDrop` has no closed witness: `endscope` retires a cell and pops
-its index from `ρ` in the same step (§6.7), so no fragment program can name
-a retired cell. The refusal exists for the §6.1 retire discipline, which
-calls and frames will exercise (RUE-2233).
-
-```lean
-theorem RueCore.Examples.useAfterDrop_unwitnessed_here : True
 ```
 
 ### `Explain.explain_result`
@@ -1126,8 +1120,9 @@ Defining equations, as Lean derived them from the body:
 *inductive* · module `RueCore.Dynamics`
 
 Evaluation results: a value with the final store and trace (§6.12's normal
-result), a defined panic (§6.12's `↯κ`), or a violation ("stuck": a
-configuration §6 leaves undefined, named).
+result), a defined panic (§6.12's `↯κ`), or a violation ("stuck": either a
+configuration §6 leaves undefined or a linear action one of the monitors
+refuses, named; the module docstring says which is which).
 
 ```lean
 inductive RueCore.EvalRes : Type
