@@ -361,6 +361,138 @@ fn main() -> i32 {
 """
 exit_code = 42
 
+[[case]]
+name = "self_type_in_field_position"
+spec = ["6.4:18"]
+description = "Self in a field type denotes the struct being declared (RUE-2223)"
+source = """
+struct Node {
+    v: i32,
+    next: ptr mut Self,
+
+    fn value(borrow self) -> i32 { self.v }
+}
+
+fn main() -> i32 {
+    let n = Node { v: 42, next: checked { @int_to_ptr(0) } };
+    n.value()
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "self_type_nested_in_a_field_type"
+spec = ["6.4:18"]
+description = "Self resolves inside an array element, a pointee, and a type-constructor argument in field position (RUE-2223)"
+source = """
+fn Boxed(comptime T: type) -> type { struct { p: ptr mut T } }
+
+struct Node {
+    v: i32,
+    kids: [ptr mut Self; 2],
+    back: ptr mut Self,
+    boxed: Boxed(Self),
+
+    fn value(borrow self) -> i32 { self.v }
+}
+
+fn main() -> i32 {
+    let null = checked { @int_to_ptr(0) };
+    let n = Node {
+        v: 42,
+        kids: [null, null],
+        back: null,
+        boxed: Boxed(Node) { p: null },
+    };
+    n.value()
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "self_type_in_anonymous_struct_field"
+spec = ["6.4:18"]
+description = "Self in an anonymous struct's field type denotes the struct the type constructor produces (RUE-2223)"
+source = """
+fn LinkedNode(comptime T: type) -> type {
+    struct {
+        v: T,
+        next: ptr mut Self,
+
+        fn value(borrow self) -> T { self.v }
+    }
+}
+
+fn main() -> i32 {
+    let N = LinkedNode(i32);
+    let n: N = N { v: 42, next: checked { @int_to_ptr(0) } };
+    n.value()
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "self_type_in_type_valued_associated_constant"
+spec = ["6.4:18"]
+preview = "interfaces"
+preview_should_pass = true
+description = "Self initializes a type-valued associated constant (RUE-2223)"
+source = """
+struct Node {
+    v: i64,
+    pub const Element = Self;
+
+    fn get(borrow self) -> i64 { self.v }
+}
+
+fn main() -> i32 {
+    let n = Node { v: 3 };
+    @intCast(n.get())
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "self_type_by_value_field_is_a_recursive_type"
+spec = ["6.4:18"]
+description = "Self in a field type is the struct itself, so a by-value field is the ordinary infinite-size error rather than an unknown type (RUE-2223)"
+source = """
+struct Node { v: i32, kids: [Self; 2] }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "infinite size"
+expected_error_code = "E0483"
+
+[[case]]
+name = "self_type_outside_a_struct_block_rejected"
+spec = ["6.4:18"]
+description = "Self names no type in a free function, where there is no enclosing struct (RUE-2223)"
+source = """
+struct Pair { a: i32, b: i32 }
+
+fn take(p: Self) -> i32 { p.a }
+
+fn main() -> i32 { take(Pair { a: 1, b: 2 }) }
+"""
+compile_fail = true
+error_contains = "unknown type 'Self'"
+expected_error_code = "E0204"
+
+[[case]]
+name = "self_type_at_module_scope_rejected"
+spec = ["6.4:18"]
+description = "Self names no type in a module-scope constant's declared type (RUE-2223)"
+source = """
+const K: Self = 1;
+
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = "unknown type 'Self'"
+expected_error_code = "E0204"
+
 # =============================================================================
 # Receiver Modes: borrow self / inout self (RUE-15)
 # =============================================================================

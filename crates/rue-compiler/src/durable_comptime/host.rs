@@ -559,6 +559,18 @@ impl<A: DurableComptimeHostAuthority + ?Sized> rue_air::ComptimeTypeAlgebra
         })
     }
 
+    fn anonymous_nominal_self_type(
+        &mut self,
+        identity: &Self::AnonymousIdentity,
+    ) -> rue_air::ComptimeHostResult<Option<Self::Type>, Self::Failure> {
+        // A durable anonymous nominal *is* its identity: the shape is
+        // observed beside it rather than carried in the type. `Self` can
+        // therefore name the nominal before its fields resolve (spec 6.4:18).
+        Ok(Some(DurableComptimeType(DurableType::AnonymousNominal(
+            identity.key().clone(),
+        ))))
+    }
+
     fn find_or_create_anon_struct(
         &mut self,
         identity: Self::AnonymousIdentity,

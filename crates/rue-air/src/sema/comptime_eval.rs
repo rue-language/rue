@@ -2775,6 +2775,14 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeTypeAlgebra for OrdinaryBodyEngine
             self, element, length,
         ))
     }
+    fn anonymous_nominal_self_type(
+        &mut self,
+        identity: &Self::AnonymousIdentity,
+    ) -> ComptimeHostResult<Option<Type>, Self::Failure> {
+        OrdinaryBodyEngine::anonymous_struct_self_type(self, identity)
+            .map(Some)
+            .map_err(Into::into)
+    }
     fn find_or_create_anon_struct(
         &mut self,
         identity: Self::AnonymousIdentity,

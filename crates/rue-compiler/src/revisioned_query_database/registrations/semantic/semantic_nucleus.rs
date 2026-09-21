@@ -556,6 +556,32 @@ $runtime
                                                 .with_terminal_kind(QueryTerminalKind::Failure));
                                             }
                                             let mut substitutions = BTreeMap::new();
+                                            // `Self` names the enclosing
+                                            // nominal wherever a type is
+                                            // expected (spec 6.4:18). A
+                                            // member declaration binds it to
+                                            // its owner below; a nominal's own
+                                            // signature -- its field and
+                                            // variant-payload types -- binds it
+                                            // to the nominal being declared, so
+                                            // `next: ptr mut Self` resolves
+                                            // through the same substitution
+                                            // hook as a method parameter
+                                            // (RUE-2223).
+                                            if query.declaration.owner.is_none()
+                                                && matches!(
+                                                    query.declaration.category,
+                                                    crate::declaration_candidate::DeclarationCandidateCategory::Struct
+                                                        | crate::declaration_candidate::DeclarationCandidateCategory::Enum
+                                                )
+                                                && let Some(identity) =
+                                                    crate::semantic_query_nucleus::direct_identity(shell)
+                                            {
+                                                substitutions.insert(
+                                                    Arc::from("Self"),
+                                                    crate::durable_semantics::DurableType::Nominal(identity.key),
+                                                );
+                                            }
                                             if let Some(owner) = &query.declaration.owner {
                                                 let owner_candidate = crate::declaration_candidate::DeclarationCandidateKey {
                                                     module: query.declaration.module.clone(),

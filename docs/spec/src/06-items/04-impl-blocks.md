@@ -139,9 +139,13 @@ fn main() -> i32 {
 {{ rule(id="6.4:18", cat="normative") }}
 
 Within a struct block, the type keyword `Self` denotes the enclosing struct
-type. It **MAY** be used wherever a type is expected — in a method's parameter
-types, in its return type, and in `Self { ... }` struct-literal expressions in
-the body — and is equivalent to writing the struct's name.
+type. It **MAY** be used wherever a type is expected — in a field's type, in a
+method's parameter types, in its return type, in the initializer of a
+type-valued associated constant, and in `Self { ... }` struct-literal
+expressions in the body — and is equivalent to writing the struct's name. This
+holds for an anonymous struct as well, where `Self` denotes the struct the
+enclosing type constructor produces. Naming `Self` where no struct block
+encloses it is an error.
 
 {{ rule(id="6.4:19", cat="example") }}
 
