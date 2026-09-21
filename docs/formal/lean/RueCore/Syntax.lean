@@ -325,15 +325,6 @@ def BinOp.floatAdmits : BinOp → Bool
   | .add | .sub | .mul | .div | .lt | .le | .gt | .ge | .totalCmp => true
   | .rem | .bitAnd | .bitOr | .bitXor | .shl | .shr => false
 
-/-- The four arithmetic operators of (Float-Arith) §5.8, as §6.4's `⊕_w`
-names them; the compares are not among them (helper). -/
-def BinOp.toFloatArith : BinOp → Option FloatArith
-  | .add => some .add
-  | .sub => some .sub
-  | .mul => some .mul
-  | .div => some .div
-  | _ => none
-
 /-- The type a binary operator concludes at, given its shared operand type:
 `bool` for an ordering compare ((Ord), (Float-Ord) §5.8), `int(32, signed)`
 for `@total_cmp` (`3.12:31`, (Total-Cmp) §5.8), and the operand type for
