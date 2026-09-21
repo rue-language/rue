@@ -19,7 +19,7 @@ every listed theorem depends on; the reading guide in `lean/README.md` is the
 entry point for a reader with no Lean.
 
 **Fragment today.** Scalars — `int(w, s)` at every width `w ∈ {8, 16, 32, 64}`
-and both signednesses, `bool`, `unit` — and
+and both signednesses, `float(w)` at both widths, `bool`, `unit` — and
 monomorphic struct types declared by the program — named fields by position,
 the `@copy`/`linear` attribute, whether the struct declares a destructor, and
 `class(S)` as §3's join of the field classes lifted by that attribute
@@ -32,20 +32,29 @@ join, §2's whole integer operator set — `+ - * / %`, `& | ^`, `<< >>`,
 `< <= > >=` and the three unary forms, by (Arith)/(Ord)/(Neg)/(Not)/(BitNot)
 §5.8 with §6.4's traps and its `val_{w,s}(β_w(·))` bit semantics — `@intCast`
 ((Int-Cast) §5.8, `(D-Int-Cast-Trap)` §6.4), `@panic` ((Panic) §5.8,
-(D-Panic) §6.12) and `@dbg` ((Dbg) §5.8), top-level function definitions,
+(D-Panic) §6.12) and `@dbg` ((Dbg) §5.8) — whose float rendering is
+`3.12:40`–`3.12:42`'s shortest round-trip text; §2's float operator set —
+`+ - * /`, `neg`, `< <= > >=` and `@total_cmp`, by
+(Float-Arith)/(Float-Neg)/(Float-Ord)/(Total-Cmp) §5.8 with §6.4's trap-free
+dynamics — and the one-operand float intrinsics `@int_to_float`,
+`@float_to_int` (the one float form that traps, `3.12:18`), `@float_cast` and
+the five of `3.12:34`; top-level function definitions,
 by-value calls with frames and scope records ((Fn)/(Call) §5.8,
 (D-Call)/(D-Return-Value) §6.9), and `return` with its σ unwind
 ((Return-Value) §5.7, (D-Return) §6.9). Whole bindings only. No paths or
 partial moves — the fragment's whole-value struct elimination stands in for a
-projection (RUE-2231) — no floats, no equality compare (it borrows its
-operands, `4.3:3f`), no enums, arrays, `inout`/`borrow` parameters,
+projection (RUE-2231) — no equality compare (it borrows its
+operands, `4.3:3f`, so `≈`'s float leaf has no instance here), no enums,
+arrays, `inout`/`borrow` parameters,
 accessor calls, loops, loans, or buffers.
 
 **The trap inventory, and what a trap carries.** Every §6.12 category the
 fragment reaches is a `PanicKind`: `overflow` (`+ - *`, `neg`, `min_T / -1`,
 `min_T % -1`), `divZero`, `remZero`, `castOverflow` (`@intCast`, `4.13:28`)
-and `user` (`@panic`). `bounds` follows the arrays, and the float producers
-follow `float(w)`. A trap result carries the **observable output that ran
+and `user` (`@panic`). The one float producer is `@float_to_int`, and it
+reaches `overflow` rather than a category of its own (`3.12:18`, `8.1:7`):
+float *arithmetic* never traps at all (`3.12:21`). `bounds` follows the
+arrays. A trap result carries the **observable output that ran
 before it** — the user destructors and the `@dbg` lines — because §6.12's
 `Outcome` is exit status and stdout together and a trapping process prints
 what it printed before exiting 101. `Examples.panicAfterDrop` and
@@ -228,7 +237,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 
 | Lemma | Status |
 |---|---|
-| Totality of the float operations | not yet stated; an assumption about IEEE 754, named as such. The float slice is the second half of RUE-2282 and the fragment has no `float(w)` yet, so nothing in the mechanization currently rests on it |
+| Totality of the float operations | **assumed, named** — and less of it assumed than §7 expected. The obligation splits three ways. (1) *Totality as a function* is free: every §6.4 float operation is a total Lean function, so no float redex is stuck for want of a result. (2) *The `(D-Float-To-Int)`/`(D-Float-To-Int-Trap)` partition* is a **theorem**, `RueCore.floatToInt_partition`, because §2's datum model makes truncation exact integer arithmetic; `RueCore.evalFintrin_float_res` is it at the machine, and `RueCore.binOpFloat_res` is the matching statement for the arithmetic and the compares — the latter with no trap disjunct at all (`3.12:21`). Closure of the *exact* operations in `𝔽_w` is proved too: `RueCore.negate_wf` (`(D-Float-Neg)`), `RueCore.widen_wf` (the widening half of `(D-Float-Cast)`) and `RueCore.roundOp_wf` (`@floor`/`@ceil`/`@trunc`/`@round`). (3) What is **assumed** is closure of the *rounded* operations, which is IEEE's and not the mechanization's: the fields `arith_wf`, `sqrt_wf`, `ofLit_wf`, `ofInt_wf` and `narrow_wf` of `RueCore.FloatModel`, together with the three behavioural laws §6.4 quotes from `3.12:22` and `3.12:44` (`arith_nan`, `div_by_zero`, `zero_div_zero`) and `3.12:9`'s `ofLit_zero`/`ofLit_one`. They are structure fields, not `axiom` declarations, so every theorem that uses one carries it in its statement and `TRUST.md` lists them apart from Lean's axioms (`lean/RueCore/Float.lean`) |
 | Totality of the **integer** operations | discharged where it is needed, by construction rather than as a lemma: `RueCore.valOf_inBounds` says every `w`-bit pattern read at a signedness denotes a value of that type, which is what makes §6.4's bitwise and shift rules total, and `RueCore.binOpInt_res`, `RueCore.evalUnOp_int_res` and `RueCore.evalIntCast_res` say every integer operator lands on a value of its rule's type or on a trap — the operator half of progress. The last two name the category: `neg` traps only as `overflow` and `@intCast` only as `castOverflow`. `binOpInt_res` ranges over §6.12's categories rather than naming one, because `/` and `%` add their own (`lean/RueCore/Soundness.lean`) |
 | Handle-uniqueness preservation (O1) | not yet mechanized (RUE-2240) |
 | Adequacy of `eval` to §6's reduction, and progress/preservation derived over the mechanized relation | not yet stated; a Phase C deliverable required at checkpoint C and the CI gate (RUE-2289). Its domain is the programs `check` accepts: there `eval`'s `ok`/`panic` outcomes must agree with §6's values and panics, and neither side gets stuck. `.stuck` is outside the correspondence, because three of `eval`'s refusals are monitors §6 does not have, and because `eval` names an operand-shape mismatch where §6 simply has no rule (`Dynamics.lean`, "the correspondence with §6"). A raw literal outside its type's `n_T` range is the other known difference, and `check` rejects it |

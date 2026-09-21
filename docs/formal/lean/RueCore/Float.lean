@@ -666,6 +666,15 @@ Mechanized, that lemma splits three ways.
 Two behavioural laws join them, both quoted from §6.4's own "spelled out, as
 consequences of `⊕_w`" list: they are what a *witness* for the one float trap
 rests on, so that no witness has to compute with a concrete model. -/
+
+/-- **§7's "totality of the float operations", as an interface.** A
+`FloatOps` together with the laws §7 owes for floats and §6.4 quotes from
+`3.12:9`, `3.12:22` and `3.12:44`. The fields are assumptions this package
+makes about IEEE 754, and they are *fields* rather than `axiom` declarations
+so that every theorem resting on one carries it in its own statement
+(`TRUST.md`, "Assumptions carried as interfaces"). §7 says the lemma is
+"discharged against the standard rather than against Rue"; this is that
+sentence, mechanized. -/
 structure FloatModel extends FloatOps where
   /-- **Closure of `⊕_w`** (§7): the four arithmetic operators map `𝔽_w × 𝔽_w`
   into `𝔽_w`. With Lean totality this is §7's "`⊕_w` is a total function
@@ -977,56 +986,66 @@ def ratAdd (n₁ : Bool) (a₁ b₁ : Nat) (n₂ : Bool) (a₂ b₂ : Nat) : Boo
   else if y ≤ x then (n₁, x - y, d)
   else (n₂, y - x, d)
 
-/-- `(D-Float-Arith)` §6.4 on two data, with IEEE's special cases written out
-as §6.4 lists them (`3.12:21`–`3.12:23`), and the finite case computed exactly
-and then rounded by `rnd_w`. -/
-def arith (σ : Bool) (w : FloatWidth) (op : FloatArith) (a b : FloatDatum) : FloatDatum :=
-  let b := match op with | .sub => b.negate | _ => b
-  let op : FloatArith := match op with | .sub => .add | o => o
-  if a.isNaN || b.isNaN then .nan σ
-  else
-    match op with
-    | .add =>
-        match a, b with
-        | .inf x, .inf y => if x = y then .inf x else .nan σ
-        | .inf x, _ => .inf x
-        | _, .inf y => .inf y
-        | .num n₁ s₁ e₁, .num n₂ s₂ e₂ =>
-            if s₁ = 0 && s₂ = 0 then .num (n₁ && n₂) 0 0      -- -0 + -0 = -0, else +0
-            else
-              let (r₁, x₁, y₁) := ratOf n₁ s₁ e₁
-              let (r₂, x₂, y₂) := ratOf n₂ s₂ e₂
-              let (sg, num, den) := ratAdd r₁ x₁ y₁ r₂ x₂ y₂
-              if num = 0 then .num false 0 0                  -- x + (-x) = +0
-              else roundRat w sg num den
-        | _, _ => .nan σ
-    | .mul =>
-        let sg := xor a.neg b.neg
-        match a, b with
-        | .inf _, x => if x.isZero then .nan σ else .inf sg
-        | x, .inf _ => if x.isZero then .nan σ else .inf sg
-        | .num _ s₁ e₁, .num _ s₂ e₂ =>
-            if s₁ = 0 || s₂ = 0 then .num sg 0 0
-            else
-              let (_, x₁, y₁) := ratOf false s₁ e₁
-              let (_, x₂, y₂) := ratOf false s₂ e₂
-              roundRat w sg (x₁ * x₂) (y₁ * y₂)
-        | _, _ => .nan σ
-    | .div =>
-        let sg := xor a.neg b.neg
-        match a, b with
-        | .inf _, .inf _ => .nan σ
-        | .inf _, _ => .inf sg
-        | _, .inf _ => .num sg 0 0
-        | .num _ s₁ e₁, .num _ s₂ e₂ =>
-            if s₂ = 0 then (if s₁ = 0 then .nan σ else .inf sg)
-            else if s₁ = 0 then .num sg 0 0
-            else
-              let (_, x₁, y₁) := ratOf false s₁ e₁
-              let (_, x₂, y₂) := ratOf false s₂ e₂
-              roundRat w sg (x₁ * y₂) (y₁ * x₂)
-        | _, _ => .nan σ
-    | .sub => .nan σ    -- rewritten to `add` above; unreachable
+/-- `(D-Float-Arith)` at `+`: IEEE's special cases as §6.4 lists them, then
+the exact sum rounded by `rnd_w`. The zero cases are IEEE's for round to
+nearest: two zeros give `-0` only when both are, and a sum that is exactly
+zero is `+0` (helper). -/
+def addD (σ : Bool) (w : FloatWidth) : FloatDatum → FloatDatum → FloatDatum
+  | .nan _, _ => .nan σ
+  | _, .nan _ => .nan σ
+  | .inf x, .inf y => if x = y then .inf x else .nan σ
+  | .inf x, .num _ _ _ => .inf x
+  | .num _ _ _, .inf y => .inf y
+  | .num n₁ s₁ e₁, .num n₂ s₂ e₂ =>
+      if s₁ = 0 && s₂ = 0 then .num (n₁ && n₂) 0 0
+      else
+        let (r₁, x₁, y₁) := ratOf n₁ s₁ e₁
+        let (r₂, x₂, y₂) := ratOf n₂ s₂ e₂
+        let (sg, num, den) := ratAdd r₁ x₁ y₁ r₂ x₂ y₂
+        if num = 0 then .num false 0 0 else roundRat w sg num den
+
+/-- `(D-Float-Arith)` at `*`: `0 × inf` is a NaN, every other infinite case is
+the infinity of the xor sign, and a finite product is exact then rounded
+(helper). -/
+def mulD (σ : Bool) (w : FloatWidth) : FloatDatum → FloatDatum → FloatDatum
+  | .nan _, _ => .nan σ
+  | _, .nan _ => .nan σ
+  | .inf x, .inf y => .inf (xor x y)
+  | .inf x, .num n s _ => if s = 0 then .nan σ else .inf (xor x n)
+  | .num n s _, .inf y => if s = 0 then .nan σ else .inf (xor n y)
+  | .num n₁ s₁ e₁, .num n₂ s₂ e₂ =>
+      let sg := xor n₁ n₂
+      if s₁ = 0 || s₂ = 0 then .num sg 0 0
+      else
+        let (_, x₁, y₁) := ratOf false s₁ e₁
+        let (_, x₂, y₂) := ratOf false s₂ e₂
+        roundRat w sg (x₁ * x₂) (y₁ * y₂)
+
+/-- `(D-Float-Arith)` at `/`: `3.12:22`'s two clauses — a finite non-zero over
+a zero is the infinity of the xor sign, and `0/0` is a NaN — plus the infinite
+cases, and the exact quotient rounded otherwise (helper). -/
+def divD (σ : Bool) (w : FloatWidth) : FloatDatum → FloatDatum → FloatDatum
+  | .nan _, _ => .nan σ
+  | _, .nan _ => .nan σ
+  | .inf _, .inf _ => .nan σ
+  | .inf x, .num n _ _ => .inf (xor x n)
+  | .num n _ _, .inf y => .num (xor n y) 0 0
+  | .num n₁ s₁ e₁, .num n₂ s₂ e₂ =>
+      let sg := xor n₁ n₂
+      if s₂ = 0 then (if s₁ = 0 then .nan σ else .inf sg)
+      else if s₁ = 0 then .num sg 0 0
+      else
+        let (_, x₁, y₁) := ratOf false s₁ e₁
+        let (_, x₂, y₂) := ratOf false s₂ e₂
+        roundRat w sg (x₁ * y₂) (y₁ * x₂)
+
+/-- §6.4's `f₁ ⊕_w f₂` over the four operators. Subtraction is addition of the
+negation, which `3.12:24` makes a sign flip and nothing else. -/
+def arith (σ : Bool) (w : FloatWidth) : FloatArith → FloatDatum → FloatDatum → FloatDatum
+  | .add, a, b => addD σ w a b
+  | .sub, a, b => addD σ w a b.negate
+  | .mul, a, b => mulD σ w a b
+  | .div, a, b => divD σ w a b
 
 /-- `rnd_w` of the exact square root (`3.12:35`), by an integer square root at
 enough extra bits that the sticky information the tie case needs survives. -/

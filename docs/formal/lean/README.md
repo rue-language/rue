@@ -243,9 +243,38 @@ called that.
 `TRUST.md` is, for every theorem, the axioms `Lean.collectAxioms` reports for
 its proof — so the `sorry` count is read from the axioms rather than from a
 grep, and a `sorry` behind a macro would still show — plus the axioms the
-package declares itself (none today; when the project's obligation interfaces
-arrive they appear there with their doc-comments, which is where an
-assumption's source belongs) and the pinned toolchain. `propext` and
+package declares itself (none today) and the pinned toolchain.
+
+**The float slice's assumptions live beside the axioms, not among them.**
+§7 owes one lemma for floats — "totality of the float operations", discharged
+"against the standard rather than against Rue" — and this package keeps that
+honest by making the IEEE side an *interface* rather than an `axiom`.
+`RueCore.FloatOps` (`RueCore/Float.lean`) is the operations §6.4 needs whose
+result is `rnd_w` of a value that need not lie in `𝔽_w`: the four arithmetic
+operators, `@sqrt`, a literal's conversion (`3.12:9`), `@int_to_float`, the
+narrowing half of `@float_cast`, and `σ_NaN`. `RueCore.FloatModel` adds the
+laws: closure in `𝔽_w` (`arith_wf`, `sqrt_wf`, `ofLit_wf`, `ofInt_wf`,
+`narrow_wf`), and the behavioural clauses §6.4 quotes from `3.12:22`,
+`3.12:44` and `3.12:9` (`arith_nan`, `div_by_zero`, `zero_div_zero`,
+`ofLit_zero`, `ofLit_one`). They are **structure fields**, so a theorem that
+rests on one carries it in its own statement — `#print axioms` on
+`RueCore.soundness` still shows `propext`/`Quot.sound` and nothing more — and
+`TRUST.md` names them in its own section rather than letting them hide inside
+a proof.
+
+Everything §6.4 does *not* round is a function of the module and a theorem
+rather than an assumption: `neg` (`negate_wf`), the ordering compares,
+`@total_cmp`, `@float_to_int` (whose `(D-Float-To-Int)`/
+`(D-Float-To-Int-Trap)` partition is `floatToInt_partition`), the four exact
+rounding intrinsics (`roundOp_wf`), and the widening half of `@float_cast`
+(`widen_wf`). The executable instance `RueCore.Float.exactOps` is
+constructive — `roundRat` rounds an exact rational into `𝔽_w` by integer
+arithmetic — so nothing in the package touches Lean's `Float`, whose
+definition over an `opaque` constant would otherwise put `Classical.choice` on
+every theorem that so much as mentions a value. What the package does **not**
+prove is that `exactOps` satisfies the laws; that is the residual assumption,
+and it is checked rather than proved, by running every float corpus case
+against the compiler. `propext` and
 `Quot.sound` are this project's policy; `Classical.choice` is kernel-checked
 but outside it; `sorryAx` and `Lean.ofReduceBool`/`ofReduceNat`
 (`native_decide`) are holes. The exe exits non-zero on anything outside the
@@ -379,6 +408,7 @@ a slice author writes:
 
 | File | Contents | Calculus |
 | --- | --- | --- |
+| `RueCore/Float.lean` | §2's datum set `𝔽_w` with the operations §6.4 computes exactly, `3.12:40`–`3.12:42`'s shortest round-trip rendering, the `FloatOps`/`FloatModel` interface and its named IEEE laws, and the constructive instance `Float.exactOps` | §2, §6.4, §7's float lemma |
 | `RueCore/Syntax.lean` | multiplicity lattice and its join, struct declarations with their attribute, fields and destructor, types, `class(T)`, expressions | §2, §3 |
 | `RueCore/Statics.lean` | §3's class assignment as a checked equation (`WfStructs`, `struct_class_unique`, `struct_carriesLinear_iff`), the fused flow-sensitive `Γ;Σ` context, the ownership-threading judgment `Typed` (parameterized by the program and the enclosing return type), the §5.5 branch join, (Fn) and whole-program well-formedness, skeleton preservation | §3, §4.2, §5.1–§5.3, §5.5–§5.8 |
 | `RueCore/Dynamics.lean` | store/frame machine as a fuel-indexed definitional interpreter with observation traces (drops, destructors, `@dbg`); struct values and §6.11's recursive drop (destructor, then fields in declaration order); frames with scope records and their unwinds; violations as named refusals; §6.4's operator rules and every §6.12 trap the fragment reaches, each carrying the trace up to it | §6.1–§6.12 |
@@ -394,7 +424,8 @@ a slice author writes:
 | `DIGEST.md`, `TRUST.md` | (generated) every theorem's statement with the definitions it is written in terms of; every theorem's axioms, `sorry` count, and declared assumptions | §7's claims, stated |
 | `GUIDE.md`, `INDEX.md` | the reader's guide, including the thirty-minute validation procedure, and the generated form ↔ rule ↔ declaration ↔ paragraph index (`scripts/validate-lean-xref-index.py`) | §2, §5, §6 coverage |
 
-The fragment: integers at every width and signedness, `bool`, `unit`, and
+The fragment: integers at every width and signedness, `float(w)` at both
+widths, `bool`, `unit`, and
 monomorphic struct types declared by the program, with §3's class as the join
 of the field classes lifted by the declared attribute; struct literals
 ((Struct-Intro) §5.8) and §6.11's drop order (destructor, then fields in
@@ -403,11 +434,15 @@ declaration order); use (copy/move), `@drop`,
 reinitialization and the `3.8:77` linear-overwrite premise, sequence discard,
 `if` with the conservative branch join, the whole §2 integer operator set
 (`+ - * / %`, `& | ^`, `<< >>`, `< <= > >=`, `neg`, `not`, `bitnot`) with
-§6.4's traps and bit semantics, `@intCast`, `@panic`, `@dbg`, and
+§6.4's traps and bit semantics, the §2 float operator set
+(`+ - * /`, `neg`, `< <= > >=`, `@total_cmp`) with §6.4's trap-free dynamics
+and the one-operand float intrinsics (`@int_to_float`, `@float_to_int`,
+`@float_cast`, and the five of `3.12:34`), `@intCast`, `@panic`, `@dbg`, and
 top-level functions, by-value calls with frames and scope records, and
 `return` with its σ unwind. Whole bindings only — no projections/partial
 moves (so the fragment's whole-value struct elimination stands in for one,
-RUE-2231), no floats, no equality compare (it borrows its operands), no
+RUE-2231), no equality compare (it borrows its operands, so `≈`'s float leaf
+has no instance here), no
 enums, no arrays, no borrows, no `inout`/`borrow` parameters,
 no accessor calls, no loops (see the outline doc for the milestone ladder
 that adds them).
