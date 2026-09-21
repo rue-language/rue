@@ -234,3 +234,60 @@ error_contains = [
     "specialization of 'same' depends on its own result: reducing this call with these compile-time arguments requires that same call, so the recursion has no base case to start from",
 ]
 compile_stderr_not_contains = ["exceeded the maximum nesting depth"]
+
+# RUE-2265: a float literal takes its width from the parameter it is bound to
+# (3.12:7), and that has to hold on the declaration-time const path as well as
+# in a body. It did not: the const path compared the literal's `comptime_float`
+# marker against the declared `comptime x: f64` and reported E0206, while the
+# identical call in a body accepted the same literal. The integer twin was the
+# control that made the asymmetry visible, so it is pinned beside it here.
+[[case]]
+name = "float_literal_argument_agrees_between_positions"
+description = "A fully-comptime call with a float literal argument reduces identically in a const initializer and in a body."
+files = [{ path = "main.rue", source = """
+fn ident_f(comptime x: f64) -> f64 { x }
+fn half(comptime x: f64) -> f64 { x / 2.0 }
+
+const R: f64 = ident_f(16.0);
+const H: f64 = half(9.0);
+
+fn main() -> i32 {
+    let body: f64 = ident_f(16.0);
+    if body != R { return 1; }
+    @dbg(R);
+    @dbg(H);
+    0
+}
+""" }]
+stdout = "16.0\n4.5\n"
+exit_code = 0
+
+[[case]]
+name = "float_literal_argument_agrees_between_positions_f32"
+description = "The same parity at binary32: the f32 parameter selects the literal's width in const position too."
+files = [{ path = "main.rue", source = """
+fn ident_f32(comptime x: f32) -> f32 { x }
+const R: f32 = ident_f32(8.5);
+fn main() -> i32 {
+    let body: f32 = ident_f32(8.5);
+    if body != R { return 1; }
+    @dbg(R);
+    0
+}
+""" }]
+stdout = "8.5\n"
+exit_code = 0
+
+# The control: only a float parameter contextualizes a float literal. An
+# integer comptime parameter still rejects one in const position, so the fix
+# widened the literal-typing rule and not the comptime argument check.
+[[case]]
+name = "float_literal_argument_to_an_integer_parameter_is_still_rejected"
+description = "A float literal bound to a `comptime x: i64` parameter is still E0206 in a const initializer."
+files = [{ path = "main.rue", source = """
+fn ident_i(comptime x: i64) -> i64 { x }
+const R: i64 = ident_i(16.0);
+fn main() -> i32 { @intCast(R) }
+""" }]
+compile_fail = true
+compile_stderr_contains = ["E0206", "expected i64", "found comptime_float"]
