@@ -55,6 +55,26 @@ scripts/rue lean-bridge -- --case overflow   # one case
 scripts/rue lean-bridge -- --report-json /tmp/bridge.json
 ```
 
+### Generated programs (RUE-2229)
+
+The seed cases are hand-written, so `RueCore/Gen.lean` also generates
+programs: closed, well-scoped, and simply typed by construction, with
+ownership left to chance, so the checker's verdict on each is recorded and
+never filtered (about half are rejected). The generator is a pure function
+of its seed, and a case named `gen_<seed>_<i>` is the same in every run with
+that seed and more than `i` cases. Its bias toward moves in one arm of an
+`if`, linear values reaching scope exit, and reassignment after a move is
+documented in the module.
+
+```bash
+lake exe ruecore-corpus --gen 1000 --seed 7 > /tmp/gen.json   # seed cases, then 1000 generated
+scripts/rue lean-bridge -- --corpus /tmp/gen.json               # the last --corpus wins
+```
+
+Without `--gen` the output is the seed corpus alone, which is what the Buck
+target's `corpus.json` holds. A finding filed from a generated run records
+the seed and the case name.
+
 It prints a line per case, then — for each disagreeing case — the printed
 program, the four views side by side, and the pair(s) that disagree, with a
 tally at the end; `--report-json` writes the same findings as JSON so two runs
@@ -86,7 +106,11 @@ or, for a rejected program, `stuck` with the refusal the machine would
 reach, which the bridge cannot observe because the compiler rejects the
 program first (the compiler's diagnostics for the seed cases: E0406 linear
 leak, E0205 use after move, E0443 join, E0493 linear overwrite, E0478
-linear discard).
+linear discard). A rejected program whose executed path never reaches the
+refusal (a join disagreement on the branch not taken) carries that path's
+`ok` or `panic` outcome instead, so a compiler that accepts it unsoundly is
+compared against what the machine does; generated programs (below) have
+such cases, the seed corpus does not.
 
 How a drop event becomes a printed line is decided per multiplicity class
 by the spec's destructor rules; `RueCore/Print.lean`'s module docstring is
@@ -311,6 +335,7 @@ a slice author writes:
 | `RueCore/Examples.lean` | `#eval` demos; kernel-checked acceptance/rejection of example programs | — |
 | `RueCore/Print.lean` | core syntax → Rue source, and the observation channel (one printed line per drop event, per multiplicity class) | §2 elaboration inventory, 3.9 |
 | `RueCore/Corpus.lean` | the bridge corpus: each case's checker verdict and interpreter outcome, exported as JSON (`lake exe ruecore-corpus`) | §5, §6, §7 witnesses |
+| `RueCore/Gen.lean` | a seeded, type-directed generator of fragment programs, appended to the corpus by `lake exe ruecore-corpus --gen N --seed S` | programs, not rules |
 | `RueCore/Explain.lean` | instrumented mirrors of `check` and `eval` — derivation trees with the failing premise named, and step tables with stores and drop events — with the lemmas tying both to the proved definitions | §5, §6 as an explanation |
 | `RueCore/Explain/Text.lean`, `RueCore/Explain/Html.lean` | the terminal and self-contained-page renderings (`lake exe ruecore-explain`); the checked-in text is in `explain/` | — |
 | `RueCore/Digest.lean`, `RueCore/DigestMain.lean` | the statement digest and the trust report, walked out of the compiled environment (`lake exe ruecore-digest`) | the claim inventory and its trust boundary |

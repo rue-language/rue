@@ -11,7 +11,7 @@ Every declaration of the mechanization with the calculus rules, sections, and pr
 | `RueCore.Checker` | Checker.lean (module) | module | §5, §7 | — |
 | `RueCore.Checker` | `RueCore.check` | def | §5 | — |
 | `RueCore.Checker` | `RueCore.check_sound` | theorem | §5, §7 | — |
-| `RueCore.Corpus` | Corpus.lean (module) | module | §5, §6, §6.12, §7 | — |
+| `RueCore.Corpus` | Corpus.lean (module) | module | §5, §5.5, §6, §6.12, §7 | — |
 | `RueCore.Dynamics` | Dynamics.lean (module) | module | §5, §6, §6.1, §6.2, §6.7, §6.8, §6.11, §6.12, §7 | `3.8:32`, `3.8:77`, `3.8:64` |
 | `RueCore.Dynamics` | `RueCore.Val` | inductive | §6.1, §7 | — |
 | `RueCore.Dynamics` | `RueCore.Val.mult` | def | §3 | — |
@@ -89,6 +89,8 @@ Every declaration of the mechanization with the calculus rules, sections, and pr
 | `RueCore.Explain` | `RueCore.Explain.traceEval` | def | §6 | — |
 | `RueCore.Explain` | `RueCore.Explain.traceEval_res` | theorem | §6.12 | — |
 | `RueCore.ExplainMain` | `main` | def | §5, §6 | — |
+| `RueCore.Gen` | Gen.lean (module) | module | §6.4, §7 | — |
+| `RueCore.Gen` | `RueCore.Gen.intLiteral` | def | §6.4 | — |
 | `RueCore.Print` | Print.lean (module) | module | §2, §6.12 | `4.13:6`, `3.9:34`, `3.8:33`, `3.9:39` |
 | `RueCore.Print` | `RueCore.Print.tyName` | def | §2 | — |
 | `RueCore.Print` | `RueCore.Print.resLit` | def | §5.8 | — |
@@ -146,7 +148,7 @@ Every declaration of the mechanization with the calculus rules, sections, and pr
 
 Helpers, cited by nothing in the calculus and marked `(helper)`:
 
-- `RueCore.CorpusMain`: `main`
+- `RueCore.CorpusMain`: `Options`, `usage`, `parseArgs`, `main`
 - `RueCore.Digest`: `RueCore.Digest.root`, `RueCore.Digest.inRoot`, `RueCore.Digest.isFieldProjection`, `RueCore.Digest.isDecEqEnumLemma`, `RueCore.Digest.isGenerated`, `RueCore.Digest.authoredNames`, `RueCore.Digest.declarations`, `RueCore.Digest.trimmed`, `RueCore.Digest.dedup`, `RueCore.Digest.isTypeLike`, `RueCore.Digest.maxBodyLines`, `RueCore.Digest.looksCompiled`, `RueCore.Digest.ppDecl`, `RueCore.Digest.ppValue`, `RueCore.Digest.ppEquations`, `RueCore.Digest.Body`, `RueCore.Digest.signatureOnly`, `RueCore.Digest.bodyOf`, `RueCore.Digest.statementDeps`, `RueCore.Digest.normalizeDep`, `RueCore.Digest.Item`, `RueCore.Digest.kindOf`, `RueCore.Digest.lineOf`, `RueCore.Digest.readItem`, `RueCore.Digest.itemClosure`, `RueCore.Digest.bySource`, `RueCore.Digest.topological`, `RueCore.Digest.printerHides`, `RueCore.Digest.closureViolations`, `RueCore.Digest.nameOf`, `RueCore.Digest.indexDeclarations`, `RueCore.Digest.importedModules`, `RueCore.Digest.indexCrossCheck`, `RueCore.Digest.shortName`, `RueCore.Digest.oneLine`, `RueCore.Digest.renderItem`, `RueCore.Digest.coverageLine`, `RueCore.Digest.sectionLines`, `RueCore.Digest.partialForms`, `RueCore.Digest.wrapWords`, `RueCore.Digest.scopeSection`, `RueCore.Digest.renderDigest`, `RueCore.Digest.allowedAxioms`, `RueCore.Digest.axiomVerdict`, `RueCore.Digest.renderTrust`
 - `RueCore.DigestMain`: `usage`, `digestReport`, `trustReport`, `withEnvironment`, `digestWithIndex`, `mainUnsafe`, `mainImpl`, `main`
 - `RueCore.Dynamics`: `RueCore.EvalRes.withTrace`
@@ -154,6 +156,7 @@ Helpers, cited by nothing in the calculus and marked `(helper)`:
 - `RueCore.Explain.Text`: `RueCore.Explain.Text.bar`, `RueCore.Explain.Text.sp`, `RueCore.Explain.Text.pad`, `RueCore.Explain.Text.wrap`, `RueCore.Explain.Text.para`, `RueCore.Explain.Text.section'`, `RueCore.Explain.Text.renderCase`
 - `RueCore.Explain`: `RueCore.Explain.exprLine`, `RueCore.Explain.clip`, `RueCore.Explain.binderTys`, `RueCore.Explain.valLine`, `RueCore.Explain.storeRows`, `RueCore.Explain.storeLine`, `RueCore.Explain.entryLine`, `RueCore.Explain.ctxEntryLines`, `RueCore.Explain.ctxLine`, `RueCore.Explain.eventsLine`, `RueCore.Explain.Premise.subDerivation`, `RueCore.Explain.Premise.letBinderLost`, `RueCore.Explain.Premise.assignTargetLost`, `RueCore.Explain.deepestFailure`, `RueCore.Explain.accepted`, `RueCore.Explain.rejected`, `RueCore.Explain.StepRes.ofRes`, `RueCore.Explain.mkStep`, `RueCore.Explain.Step.text`, `RueCore.Explain.numbered`, `RueCore.Explain.traced`, `RueCore.Explain.didNotRun`, `RueCore.Explain.propagate`
 - `RueCore.ExplainMain`: `usage`, `nameList`, `writeAll`
+- `RueCore.Gen`: `RueCore.Gen.Binder`, `RueCore.Gen.Scope`, `RueCore.Gen.G`, `RueCore.Gen.nat`, `RueCore.Gen.bool`, `RueCore.Gen.chance`, `RueCore.Gen.pick`, `RueCore.Gen.pickWeighted`, `RueCore.Gen.weighted`, `RueCore.Gen.indicesWhere`, `RueCore.Gen.isRes`, `RueCore.Gen.binderTy`, `RueCore.Gen.atom`, `RueCore.Gen.leaf`, `RueCore.Gen.resClass`, `RueCore.Gen.expr`, `RueCore.Gen.subexprs`, `RueCore.Gen.size`, `RueCore.Gen.labels`, `RueCore.Gen.rulesOf`, `RueCore.Gen.resultTy`, `RueCore.Gen.genCase`, `RueCore.Gen.generate`
 - `RueCore.Print`: `RueCore.Print.consumeName`, `RueCore.Print.prelude`, `RueCore.Print.tyOf`, `RueCore.Print.binderName`, `RueCore.Print.useName`, `RueCore.Print.indent`, `RueCore.Print.observeValue`, `RueCore.Print.program`
 - `RueCore.Soundness`: `RueCore.HasTy.mult_eq`, `RueCore.HasTy.int_inv`, `RueCore.HasTy.bool_inv`, `RueCore.HasTy.res_inv`, `RueCore.Matches.mem_lt`, `RueCore.Matches.fresh_not_mem`, `RueCore.Matches.lookup`, `RueCore.Matches.append`, `RueCore.Matches.set_outside`, `RueCore.Matches.set`, `RueCore.skel_lookup`
 - `RueCore.Statics`: `RueCore.Entry.setSt`, `RueCore.Entry.skel`, `RueCore.Ctx.skel`, `RueCore.List.set_self_of_getElem?`, `RueCore.skel_set_setSt`
@@ -322,7 +325,7 @@ Every heading of the calculus. A citation of a section counts for that section o
 | §5.2 | Assignment and reinitialization | `RueCore.Violation.linearOverwrite`, `RueCore.Explain.Premise.notMutable`, `RueCore.Explain.Premise.assignTypeMismatch`, `RueCore.Explain.Premise.linearOverwrite`, Syntax.lean (module) |
 | §5.3 | Sequencing, discard, and the linear leak check | `RueCore.Violation.linearDiscard`, `RueCore.Explain.Premise.dropMovedOut`, `RueCore.Explain.Premise.discardsLinear`, `RueCore.Typed`, Syntax.lean (module), `RueCore.Ty.carriesLinear` |
 | §5.4 | Borrows and the law of exclusivity | *not cited* |
-| §5.5 | Control flow and the branch join | `RueCore.Examples.linearHalfConsumed`, `RueCore.Explain.Premise.condNotBool`, `RueCore.Explain.Premise.armTypeMismatch`, `RueCore.Explain.Premise.joinConflict`, `RueCore.Explain.joinConflictEntry`, Soundness.lean (module), `RueCore.CellMatches`, `RueCore.Entry.join_matches_left`, `RueCore.Entry.join_matches_right`, `RueCore.Matches.join_left`, `RueCore.Matches.join_right`, `RueCore.Entry.join`, `RueCore.Ctx.join`, `RueCore.Typed`, `RueCore.Typed.ite`, `RueCore.Entry.join_skel`, `RueCore.Ctx.join_skel`, Syntax.lean (module) |
+| §5.5 | Control flow and the branch join | Corpus.lean (module), `RueCore.Examples.linearHalfConsumed`, `RueCore.Explain.Premise.condNotBool`, `RueCore.Explain.Premise.armTypeMismatch`, `RueCore.Explain.Premise.joinConflict`, `RueCore.Explain.joinConflictEntry`, Soundness.lean (module), `RueCore.CellMatches`, `RueCore.Entry.join_matches_left`, `RueCore.Entry.join_matches_right`, `RueCore.Matches.join_left`, `RueCore.Matches.join_right`, `RueCore.Entry.join`, `RueCore.Ctx.join`, `RueCore.Typed`, `RueCore.Typed.ite`, `RueCore.Entry.join_skel`, `RueCore.Ctx.join_skel`, Syntax.lean (module) |
 | §5.6 | Scope exit: the drop obligation and the leak check | `RueCore.Violation.linearLeak`, `RueCore.Explain.Premise.letLeak`, `RueCore.CellMatches`, `RueCore.Typed`, `RueCore.Typed.letIn`, Syntax.lean (module) |
 | §5.7 | Divergence and never-coercion | *not cited* |
 | §5.8 | Leaf, operator, aggregate, and call forms | `RueCore.Violation.typeConfusion`, Explain.lean (module), `RueCore.Explain.Premise.operandNotInt`, `RueCore.Explain.Premise.payloadNotInt`, `RueCore.Explain.Premise.consumeNotRes`, `RueCore.Print.resLit`, `RueCore.Typed.intLit`, `RueCore.Typed.boolLit`, `RueCore.Typed.unitLit`, `RueCore.Typed.add`, `RueCore.Typed.div`, `RueCore.Typed.lt`, `RueCore.Typed.mkres`, Syntax.lean (module) |
@@ -330,7 +333,7 @@ Every heading of the calculus. A citation of a section counts for that section o
 | §6.1 | The machine configuration | Dynamics.lean (module), `RueCore.Val`, `RueCore.Cell`, `RueCore.Store`, `RueCore.Env`, Examples.lean (module), `RueCore.Explain.cellLine`, `RueCore.Explain.locName`, `RueCore.HasTy`, `RueCore.Matches`, `RueCore.InBounds` |
 | §6.2 | Evaluation order: contexts, search, and panic propagation | Dynamics.lean (module), `RueCore.eval`, Examples.lean (module) |
 | §6.3 | Literals and the use of a place (copy / move) | `RueCore.eval` |
-| §6.4 | Primitive operators | `RueCore.eval`, `RueCore.Examples.overflow`, Syntax.lean (module), `RueCore.intMin`, `RueCore.intMax`, `RueCore.InBounds` |
+| §6.4 | Primitive operators | `RueCore.eval`, `RueCore.Examples.overflow`, Gen.lean (module), `RueCore.Gen.intLiteral`, Syntax.lean (module), `RueCore.intMin`, `RueCore.intMax`, `RueCore.InBounds` |
 | §6.5 | Aggregate introduction and projection | *not cited* |
 | §6.6 | Enum introduction and the `match` elimination | *not cited* |
 | §6.7 | `let`, sequencing, and scope-exit drop | Dynamics.lean (module), `RueCore.Event`, `RueCore.eval`, Examples.lean (module), `RueCore.Explain.eventLine`, `RueCore.Explain.Step`, `RueCore.Explain.adminStep`, `RueCore.Explain.Trace.showLast`, `RueCore.Explain.scopeNeverClosed`, `RueCore.Print.expr`, `RueCore.CellMatches`, `RueCore.no_use_after_drop`, `RueCore.Typed.letIn` |
@@ -346,7 +349,7 @@ Every heading of the calculus. A citation of a section counts for that section o
 | §6.13.4 | `StrBuf`, `Str(N)`, and `str` | *not cited* |
 | §6.13.5 | The library refinement obligation (RustBelt-style) | *not cited* |
 | §6.13.6 | Oracle correspondence and the differential obligation | *not cited* |
-| §7 | Soundness — what we get to state, and then prove | Checker.lean (module), `RueCore.check_sound`, Corpus.lean (module), Dynamics.lean (module), `RueCore.Val`, `RueCore.Violation`, `RueCore.Violation.useAfterMove`, `RueCore.Violation.useAfterDrop`, `RueCore.Violation.linearLeak`, Examples.lean (module), `RueCore.Explain.valTy`, `RueCore.Explain.violationPremise`, `RueCore.Explain.confused`, Soundness.lean (module), `RueCore.HasTy`, `RueCore.CellMatches`, `RueCore.Matches`, `RueCore.soundness`, `RueCore.no_violation`, `RueCore.no_use_after_move`, `RueCore.no_use_after_drop`, `RueCore.no_linear_leak`, `RueCore.no_linear_overwrite`, `RueCore.no_linear_discard` |
+| §7 | Soundness — what we get to state, and then prove | Checker.lean (module), `RueCore.check_sound`, Corpus.lean (module), Dynamics.lean (module), `RueCore.Val`, `RueCore.Violation`, `RueCore.Violation.useAfterMove`, `RueCore.Violation.useAfterDrop`, `RueCore.Violation.linearLeak`, Examples.lean (module), `RueCore.Explain.valTy`, `RueCore.Explain.violationPremise`, `RueCore.Explain.confused`, Gen.lean (module), Soundness.lean (module), `RueCore.HasTy`, `RueCore.CellMatches`, `RueCore.Matches`, `RueCore.soundness`, `RueCore.no_violation`, `RueCore.no_use_after_move`, `RueCore.no_use_after_drop`, `RueCore.no_linear_leak`, `RueCore.no_linear_overwrite`, `RueCore.no_linear_discard` |
 | §8 | Traceability: prose paragraphs this core subsumes | — |
 | §9 | Immediate open decisions for a maintainer | — |
 

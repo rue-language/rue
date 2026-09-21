@@ -2,9 +2,15 @@
 //!
 //! The Lean mechanization (`docs/formal/lean`) exports a corpus of small Rue
 //! programs, each carrying what the *verified* checker and interpreter say
-//! about it: an accept/reject verdict and, for an accepted program, the stdout
-//! and exit status (or the trap) its evaluation produces. `RueCore/Corpus.lean`
-//! owns that JSON contract; `docs/formal/lean/README.md` explains it in prose.
+//! about it: an accept/reject verdict and the outcome its evaluation produces:
+//! the stdout and exit status, the trap, or — for a rejected program whose
+//! executed path reaches the violation — the machine's refusal. A rejected
+//! program can also evaluate cleanly, when the refusal lies on a path the
+//! program does not take (the §5.5 join rejects statically what the machine
+//! refuses only on the other branch); its expectation is then the clean
+//! outcome, so that a compiler which accepts it unsoundly is still compared
+//! against what the machine does. `RueCore/Corpus.lean` owns that JSON
+//! contract; `docs/formal/lean/README.md` explains it in prose.
 //!
 //! This mode runs the three *implementation* views on the same source — the
 //! compiler's accept/reject decision, the `rue_oracle` reference interpreter,
@@ -312,11 +318,6 @@ fn validate_expected(
             if raw.violation.is_some() {
                 return reject("violation");
             }
-            if !matches!(verdict, Verdict::Accept { .. }) {
-                return Err(format!(
-                    "case {name:?}: an \"ok\" expectation needs an accept verdict"
-                ));
-            }
             let stdout = raw
                 .stdout
                 .ok_or_else(|| format!("case {name:?}: an \"ok\" expectation needs \"stdout\""))?;
@@ -334,11 +335,6 @@ fn validate_expected(
             }
             if raw.violation.is_some() {
                 return reject("violation");
-            }
-            if !matches!(verdict, Verdict::Accept { .. }) {
-                return Err(format!(
-                    "case {name:?}: a \"panic\" expectation needs an accept verdict"
-                ));
             }
             let panic = raw
                 .panic
@@ -1648,10 +1644,18 @@ mod tests {
         let error = parse_corpus(&stuck_on_accept).expect_err("stuck needs a reject verdict");
         assert!(error.contains("reject verdict"), "{error}");
 
+        // A rejected program may still evaluate cleanly when the refusal lies
+        // on a path it does not take (a §5.5 join disagreement); the contract
+        // records that outcome so an unsound acceptance is compared against it.
         let ok_on_reject =
             ONE_CASE.replace("{\"accept\": {\"type\": \"i64\"}}", "{\"reject\": {}}");
-        let error = parse_corpus(&ok_on_reject).expect_err("ok needs an accept verdict");
-        assert!(error.contains("accept verdict"), "{error}");
+        let cases = parse_corpus(&ok_on_reject).expect("ok on a reject verdict is allowed");
+        assert_eq!(cases[0].verdict, Verdict::Reject);
+        assert!(
+            matches!(cases[0].expected, Expectation::Ok { .. }),
+            "{:?}",
+            cases[0].expected
+        );
 
         let unknown_kind = ONE_CASE.replace("\"kind\": \"ok\"", "\"kind\": \"diverges\"");
         let error = parse_corpus(&unknown_kind).expect_err("unknown kind");
