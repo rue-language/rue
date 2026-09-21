@@ -143,9 +143,15 @@ mechanized*. The short version:
   encodes. A program is well-typed when a value of `Typed [] e T Γ'` exists.
 - **The dynamics is a function.** `Dynamics.lean` defines `eval`, which runs
   a program and returns `.ok store value trace`, `.panic kind` (a defined
-  trap, §6.12), or `.stuck violation`. A `Violation` is a named refusal
-  (`useAfterMove`, `useAfterDrop`, `linearLeak`, ...): the machine states
-  §6 leaves stuck, made explicit. The trace lists every drop in order.
+  trap, §6.12), or `.stuck violation`. A `Violation` is a named refusal.
+  Four of them (`useAfterMove`, `useAfterDrop`, `unbound`, `typeConfusion`)
+  are the states §6 leaves stuck, made explicit; the other three
+  (`linearLeak`, `linearOverwrite`, `linearDiscard`) are monitors the
+  machine adds for linear actions §6 would execute and §5 forbids, so a
+  linear violation is a positive result rather than a silent drop. On a
+  program `check` accepts, `eval` is a model of §6; on other input the two
+  can differ, and `Dynamics.lean` and `Examples.lean` say exactly how. The
+  trace lists every drop in order.
 - **The theorem says stuck is unreachable.** `soundness` (`Soundness.lean`)
   states: if `Typed [] e T Γ'` holds, then `eval` never returns `.stuck`.
   The corollaries name one §7 bullet each; `no_use_after_drop` is the one

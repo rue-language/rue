@@ -13,8 +13,30 @@ Design commitments carried over from §6:
 
 * **Memory violations are refusals, not silence.** Reading a `⊘`/`†` cell,
   implicitly dropping a linear value, or overwriting one, yields a named
-  `Violation` — the fragment's stuck states. The §7 safety theorem
-  (`Soundness.lean`) is exactly: well-typed programs never reach one.
+  `Violation`. The §7 safety theorem (`Soundness.lean`) is exactly:
+  well-typed programs never reach one. The refusals are of two kinds, and
+  the distinction matters for what `eval` is a model of:
+  - `useAfterMove`, `useAfterDrop`, `unbound`, and `typeConfusion` are
+    §6's own stuck states: no reduction rule applies to a read of a `⊘` or
+    `†` cell, an unbound index, or an operator on a value of the wrong
+    shape.
+  - `linearLeak`, `linearOverwrite`, and `linearDiscard` are **monitors**
+    the interpreter adds. §6.7's `endscope`, §6.8's overwrite-drop, and
+    §6.7's temporary discard execute the drop and rely on §5 (`3.8:32`,
+    `3.8:77`, `3.8:64`) to have excluded the linear case; on a program §5
+    rejects, the paper relation drops the value and this machine refuses.
+    The monitors make a linear violation observable as a positive result
+    (which is what `soundness` needs), at the price that `eval` and §6
+    differ on statically invalid input.
+* **The correspondence with §6 is claimed on the checker's input domain.**
+  On a program `check` accepts, `eval` and §6 agree (the adequacy lemma
+  owed in RUE-2289 is stated there); on other input they may not, and not
+  only through the monitors. `eval` inspects an operand's shape before
+  evaluating the next operand, where §6.2's `v ⊕ E` context reduces the
+  next operand first: `add (boolLit true) (div 1 0)` is `typeConfusion`
+  here and a division-by-zero panic under §6 (`Examples.lean` pins this).
+  A raw `intLit` outside `int(64, signed)` evaluates to its value here,
+  while §6's integer domain is bounded and `check` rejects the literal.
 * Scope exit *retires* the binding's allocation (`drop-retire`, §6.1), so a
   use after scope exit is `useAfterDrop`, distinct from `useAfterMove`.
 * `@drop` and overwrite-drop do **not** retire (§6.8/§6.11): the binding
@@ -96,8 +118,9 @@ inductive Violation where
 deriving DecidableEq, Repr
 
 /-- Evaluation results: a value with the final store and trace (§6.12's normal
-result), a defined panic (§6.12's `↯κ`), or a violation ("stuck": a
-configuration §6 leaves undefined, named). -/
+result), a defined panic (§6.12's `↯κ`), or a violation ("stuck": either a
+configuration §6 leaves undefined or a linear action one of the monitors
+refuses, named; the module docstring says which is which). -/
 inductive EvalRes where
   | ok (H : Store) (v : Val) (tr : List Event)
   | panic (k : PanicKind)
