@@ -11,7 +11,7 @@ Rules exercised: (If) §5.5 join · 3.8:50
     {
         let v0: RLinear = RLinear { value: 9 };
         {
-            if false {
+            let t2: i64 = if false {
                 consume_linear(v0)
             } else {
                 0

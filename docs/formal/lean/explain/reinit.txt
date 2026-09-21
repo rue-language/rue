@@ -11,7 +11,7 @@ Rules exercised: (Assign) §5.2 · 3.8:55
     {
         let mut v0: RLinear = RLinear { value: 1 };
         {
-            consume_linear(v0);
+            let t2: i64 = consume_linear(v0);
             {
                 { v0 = RLinear { value: 2 }; };
                 consume_linear(v0)

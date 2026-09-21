@@ -47,6 +47,21 @@ interpreter emits no events for some classes at all:
   own `@drop`-discharges-a-linear path (3.9:39) is not exercised by the
   bridge for linear values.
 
+## Integer typing
+
+The fragment's `int` is `int(64, signed)`, but a Rue integer literal has no
+type of its own: it unifies with its uses and, unconstrained at the end of
+the function body, defaults to `i32` (4.1:3, 3.1:15). Most printed contexts
+fix `i64` — a `let` binder's annotation, a resource's `value` field, an
+assignment target, `main`'s `result` — but two do not, and both were found
+by the generated corpus (RUE-2229): the operands of `<`, and an `int`
+expression discarded by a sequence. So `lt e₁ e₂` prints as a call to the
+prelude's `lt_i64`, whose parameters give both operands their type, and a
+discarded `int` prints as `let t<n>: i64 = e₁;` rather than `e₁;`. Neither
+changes evaluation order or a drop point (the operands and the discarded
+value are integers, which drop silently); they are, with the linear `drop`
+above, the places where the printed program is not the identity elaboration.
+
 Every printed program is a complete Rue module: a fixed prelude declaring
 the three resource types and their consumers, then `main`, which binds the
 program's value, prints it (through the class's consumer for a resource
@@ -88,7 +103,10 @@ def prelude : String :=
   "linear struct RLinear { value: i64 }\n" ++
   "fn consume_copy(r: RCopy) -> i64 { r.value }\n" ++
   "fn consume_affine(r: RAffine) -> i64 { let mut r = r; r.live = false; r.value }\n" ++
-  "fn consume_linear(r: RLinear) -> i64 { r.value }\n"
+  "fn consume_linear(r: RLinear) -> i64 { r.value }\n" ++
+  "// The core's `<` on int(64, signed): Rue literals default to i32 (4.1:3), so\n" ++
+  "// the parameters fix the operand type.\n" ++
+  "fn lt_i64(a: i64, b: i64) -> bool { a < b }\n"
 
 /-- Type inference without ownership: the fragment's types do not depend on
 Σ, so the printer can recover every subexpression's type from the binders
@@ -137,7 +155,9 @@ Rue spells as statements (`let`, assignment, sequencing) become blocks whose
 value is their tail expression, so the printed expression has the same value
 and the same drop points as the core form: a `let` binder is dropped at the
 close of its block (§6.7), a discarded operand at the end of its statement
-(§6.7), an overwritten value at the assignment (§6.8). -/
+(§6.7), an overwritten value at the assignment (§6.8). Integer operands of
+`<` and discarded integers are typed explicitly (module docstring, "Integer
+typing"). -/
 partial def expr (Γ : List Ty) (lvl : Nat) : Expr → String
   | .intLit n => if n < 0 then "(" ++ toString n ++ ")" else toString n
   | .boolLit b => if b then "true" else "false"
@@ -145,7 +165,7 @@ partial def expr (Γ : List Ty) (lvl : Nat) : Expr → String
   | .use i => useName Γ i
   | .add e₁ e₂ => "(" ++ expr Γ lvl e₁ ++ " + " ++ expr Γ lvl e₂ ++ ")"
   | .div e₁ e₂ => "(" ++ expr Γ lvl e₁ ++ " / " ++ expr Γ lvl e₂ ++ ")"
-  | .lt e₁ e₂ => "(" ++ expr Γ lvl e₁ ++ " < " ++ expr Γ lvl e₂ ++ ")"
+  | .lt e₁ e₂ => "lt_i64(" ++ expr Γ lvl e₁ ++ ", " ++ expr Γ lvl e₂ ++ ")"
   | .mkres κ e => resLit κ (expr Γ lvl e)
   | .consume e =>
       let κ := match tyOf Γ e with
@@ -167,8 +187,12 @@ partial def expr (Γ : List Ty) (lvl : Nat) : Expr → String
   | .assign i e =>
       "{ " ++ useName Γ i ++ " = " ++ expr Γ lvl e ++ "; }"
   | .seq e₁ e₂ =>
+      -- A discarded int must still be typed i64 (module docstring).
+      let discard := match tyOf Γ e₁ with
+        | some .int => "let t" ++ toString lvl ++ ": i64 = " ++ expr Γ (lvl + 1) e₁ ++ ";"
+        | _ => expr Γ (lvl + 1) e₁ ++ ";"
       "{\n" ++
-      indent (lvl + 1) ++ expr Γ (lvl + 1) e₁ ++ ";\n" ++
+      indent (lvl + 1) ++ discard ++ "\n" ++
       indent (lvl + 1) ++ expr Γ (lvl + 1) e₂ ++ "\n" ++
       indent lvl ++ "}"
   | .ite c e₁ e₂ =>
