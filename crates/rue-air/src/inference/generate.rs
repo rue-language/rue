@@ -2092,9 +2092,16 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::Yield(value) => {
                 let value_info = self.generate(*value, ctx);
                 continues &= value_info.continues;
+                // The declared result enters the constraint through
+                // `type_to_infer`, so an array result is the structural shape
+                // every other array position uses. An interned `[i64; 3]`
+                // never unifies with a structural one, so an accessor that
+                // yielded a whole fixed array was rejected as "expected
+                // [i64; 3], found [i64; 3]" (RUE-2255, as for array pointees
+                // in RUE-2212).
                 self.add_constraint(Constraint::contextual(
                     value_info.ty,
-                    InferType::Concrete(ctx.return_type),
+                    self.type_to_infer(ctx.return_type),
                     span,
                 ));
                 InferType::Concrete(Type::NEVER)
