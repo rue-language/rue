@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 135.
+- Theorems checked: 136.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -61,6 +61,7 @@ and diffs them against the committed copies.
 | `negate_wf` | `RueCore.Float` | *none* |
 | `widen_wf` | `RueCore.Float` | `Quot.sound`, `propext` |
 | `roundOp_wf` | `RueCore.Float` | `Quot.sound`, `propext` |
+| `FloatModel.cast_nan` | `RueCore.Float` | `propext` |
 | `floatToInt_partition` | `RueCore.Float` | *none* |
 | `toIntIn_mem` | `RueCore.Float` | *none* |
 | `toIntIn_nan` | `RueCore.Float` | *none* |
@@ -209,8 +210,14 @@ Rue". Its fields:
   rounded operations of §6.4 land **in** `𝔽_w`. This is the float
   counterpart of `valOf_inBounds`, which *is* proved, because
   `val_{w,s}` is arithmetic while `rnd_w` is IEEE.
-- `arith_nan`, `div_by_zero`, `zero_div_zero` — the three clauses §6.4
-  spells out "as consequences of `⊕_w`" (`3.12:22`, `3.12:44`).
+- `arith_nan`, `narrow_nan`, `div_by_zero`, `zero_div_zero` — the
+  behavioural clauses §6.4 spells out "as consequences of `⊕_w`"
+  (`3.12:22`, `3.12:19`). Each is true of IEEE 754 *and* of the
+  compiler, which is why the two NaN laws are the **weak** ones: a NaN
+  operand yields *a* NaN, sign unspecified. The standard promises no
+  more, and both of Rue's targets propagate an operand's NaN with its
+  own sign rather than substituting `σ_NaN` — `3.12:44` fixes `σ_NaN`
+  for a NaN an invalid operation *creates*, which `zero_div_zero` is.
 - `ofLit_zero`, `ofLit_one` — `3.12:9` at the two literals a witness
   needs: a decimal representable in the target type denotes exactly that
   value.
@@ -227,7 +234,10 @@ arithmetic, so nothing here touches Lean's `Float` — whose definition
 over an `opaque` constant would put `Classical.choice` on every theorem
 mentioning a value. That `exactOps` *satisfies* the laws is the residual
 assumption: it is checked by running every float corpus case against the
-compiler, not proved.
+compiler, not proved. So is everything `exactOps` decides that the laws
+leave open — which NaN a NaN-propagating operation returns, and `σ_NaN`
+itself (`false`, the AArch64/positive choice of `3.12:44`). Those are
+model choices, and retargeting the instance changes no theorem.
 
 ## Declared assumptions
 

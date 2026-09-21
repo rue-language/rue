@@ -810,6 +810,7 @@ lean_package(
         "RueCore.binOpFloat_res",
         "RueCore.evalFintrin_float_res",
         "RueCore.roundOp_wf",
+        "RueCore.FloatModel.cast_nan",
         "RueCore.Explain.explain_result",
         "RueCore.Explain.traceEval_res",
     ],

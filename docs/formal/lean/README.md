@@ -255,8 +255,16 @@ operators, `@sqrt`, a literal's conversion (`3.12:9`), `@int_to_float`, the
 narrowing half of `@float_cast`, and `σ_NaN`. `RueCore.FloatModel` adds the
 laws: closure in `𝔽_w` (`arith_wf`, `sqrt_wf`, `ofLit_wf`, `ofInt_wf`,
 `narrow_wf`), and the behavioural clauses §6.4 quotes from `3.12:22`,
-`3.12:44` and `3.12:9` (`arith_nan`, `div_by_zero`, `zero_div_zero`,
-`ofLit_zero`, `ofLit_one`). They are **structure fields**, so a theorem that
+`3.12:19` and `3.12:9` (`arith_nan`, `narrow_nan`, `div_by_zero`,
+`zero_div_zero`, `ofLit_zero`, `ofLit_one`). **Each law is one that is true of
+IEEE 754 and of the compiler** — which is why the two NaN laws are the weak
+ones: they say a NaN operand yields *a* NaN and leave its sign open, because
+that is all the standard promises and because both of Rue's targets *propagate*
+an operand's NaN rather than substituting `σ_NaN` (which `3.12:44` fixes for a
+NaN an invalid operation *creates*). The propagation `Float.exactOps`
+implements — the first NaN operand's sign — is a **model choice**, checked
+against the compiler case by case, not a theorem. They are **structure
+fields**, so a theorem that
 rests on one carries it in its own statement — `#print axioms` on
 `RueCore.soundness` still shows `propext`/`Quot.sound` and nothing more — and
 `TRUST.md` names them in its own section rather than letting them hide inside
