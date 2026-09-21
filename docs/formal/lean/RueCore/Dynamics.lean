@@ -54,12 +54,12 @@ Design commitments carried over from §6:
 
 A struct value is its declaration's index and one value per field
 (`Val.struct`), so the machine's drop walk is §6.11's own: the user
-destructor first, then the fields in declaration order, recursively
-(`dropValue`). Every path that drops a value — `@drop` (§6.11), scope exit
-(§6.7), the overwrite (§6.8), a discarded temporary (§6.7), and the frame
-teardown (§6.9) — routes through it, so a trace carries that order wherever
-a drop happens. `dropValue_order` and `dropValues_order` (`Soundness.lean`)
-state the order as a theorem.
+destructor first (`3.9:28`), then the fields in declaration order (`3.9:13`),
+recursively (`dropValue`). Every path that drops a value — `@drop` (§6.11),
+scope exit (§6.7), the overwrite (§6.8), a discarded temporary (§6.7), and the
+frame teardown (§6.9) — routes through it, so a trace carries that order
+wherever a drop happens. `dropValue_struct_events` (`Soundness.lean`) states
+the order as a theorem, in closed form.
 
 ## Pending arguments: the one edge no monitor covers
 
@@ -131,7 +131,7 @@ namespace RueCore
 
 /-- Machine values (§6.1's `v`), fragment forms only. `struct s vs` is §6.1's
 `{ v1, …, vk }_S`: the declaration's index and one value per field, in
-declaration order (`3.6:9`). A struct value names its declaration rather than
+declaration order — the order `3.9:13` drops them in. A struct value names its declaration rather than
 carrying its class, so the machine's drop decisions are value-driven — it
 reads the tag the value carries — while the class and the destructor come from
 the program's declarations, as the compiled program's drop glue does. -/
@@ -262,17 +262,34 @@ def EvalRes.absorb : EvalRes → (Store → Val → EvalRes) → EvalRes
 mutual
 /-- `drop(H, v)` (§6.11), on the fragment's values. A scalar drops nothing
 ("scalars are Copy: nothing to drop"). A struct runs its **user destructor
-first**, if its declaration has one, and then drops its fields in
-**declaration order** (`drop*`); the destructor is recorded as one `dtor`
-event rather than run as a nested machine, because the fragment has no
-destructor bodies — a program declares whether `S` has one, and the Rue
-program the printer emits reproduces the event with a `drop fn S(self)` that
-prints (`Print.lean`). A field is dropped whatever its class: an explicit
-`@drop` of a linear-carrying struct discharges the whole obligation, and a
-scope exit never reaches one, because a value the leak monitor lets through
-has no linear field (`StructDecl.Wf.field_not_linear`). The `⊘`-skip §6.11
-opens with is the *cell* case below: a moved-out field has no representation
-here, since the fragment has no partial moves (RUE-2231). -/
+first** (`3.9:28`), if its declaration has one, and then drops its fields in
+**declaration order** (`3.9:13`, §6.11's `drop*`). A field is dropped whatever
+its class: an explicit `@drop` of a linear-carrying struct discharges the
+whole obligation, and a scope exit never reaches one, because a value the leak
+monitor lets through has no linear field
+(`StructDecl.Wf.field_not_linear`). `dropValue_struct_events`
+(`Soundness.lean`) is this walk in closed form.
+
+Two things §6.11 writes out are elided here, both unobservably.
+
+* **The destructor is one `dtor` event, not a nested machine run.** The
+  fragment has no destructor bodies — a declaration says only *whether* `S`
+  has one — so there is nothing to step. The Rue program the printer emits
+  supplies a body that reproduces the event (`Print.lean`).
+* **The scratch cell is not minted.** §6.11 mints a fresh `ℓ` holding the
+  value, runs the destructor in a frame whose scope record is empty, drops
+  the *residual* fields `H1(ℓ)` leaves, and then retires `ℓ`. `dropValue`
+  mints nothing and drops the original `vs`. Neither difference is
+  observable: no `Event` corresponds to minting or retiring the scratch cell,
+  and the residual fields *are* the original ones, because `3.9:33` forbids
+  moving `self` out of a destructor and `3.9:34` forbids moving a field out
+  of a value whose type declares one, so a destructor body cannot change a
+  field. §6.11 says as much — it keeps the residual-versus-original
+  distinction only so the rule stays honest if `3.9:34` is ever relaxed.
+
+The `⊘`-skip §6.11 opens with is the *cell* case below: a moved-out field has
+no representation here, since the fragment has no partial moves
+(RUE-2231). -/
 def dropValue (D : StructEnv) : Val → Except Violation (List Event)
   | .int _ => .ok []
   | .bool _ => .ok []
@@ -287,7 +304,7 @@ def dropValue (D : StructEnv) : Val → Except Violation (List Event)
               .ok ((if sd.dtor then [Event.dtor s (.struct s vs)] else []) ++ evs)
 
 /-- `drop*(H, [v1,…,vk])` (§6.11): fold `drop` over the values left to right
-— for a struct's fields, declaration order. -/
+— for a struct's fields, declaration order (`3.9:13`). -/
 def dropValues (D : StructEnv) : List Val → Except Violation (List Event)
   | [] => .ok []
   | v :: vs =>
@@ -298,6 +315,38 @@ def dropValues (D : StructEnv) : List Val → Except Violation (List Event)
           | .error w => .error w
           | .ok evs' => .ok (evs ++ evs')
 end
+
+mutual
+/-- **§6.11's order, as a function**: the events dropping a value emits,
+written out rather than read off the walk. A scalar emits none; a struct emits
+its user destructor's event first when its declaration has one (`3.9:28`) and
+then its fields' events in declaration order (`3.9:13`), recursively. An index
+the environment does not have emits nothing, which the walk itself refuses
+instead — `dropValue_struct_events` (`Soundness.lean`) is the theorem that the
+two agree on every well-typed value, and it is the closed form RUE-2237's
+"dropped exactly once" quantifies over. -/
+def dropEvents (D : StructEnv) : Val → List Event
+  | .int _ => []
+  | .bool _ => []
+  | .unit => []
+  | .struct s vs =>
+      (match D[s]? with
+       | some sd => if sd.dtor then [Event.dtor s (.struct s vs)] else []
+       | none => []) ++ dropEventsList D vs
+
+/-- The same over a field list: the fields' events concatenated in
+declaration order (`3.9:13`), which is §6.11's `drop*`. -/
+def dropEventsList (D : StructEnv) : List Val → List Event
+  | [] => []
+  | v :: vs => dropEvents D v ++ dropEventsList D vs
+end
+
+/-- A field list's events are its fields' events concatenated, left to right:
+the flattening `dropValue_struct_events` states the order with (helper). -/
+theorem dropEventsList_eq_flatten (D : StructEnv) :
+    ∀ vs : List Val, dropEventsList D vs = (vs.map (dropEvents D)).flatten
+  | [] => rfl
+  | v :: vs => by simp [dropEventsList, dropEventsList_eq_flatten D vs]
 
 /-- The drop of the value in a binding's cell (§6.11), as the trace records
 it: a `drop ℓ v` marker naming the cell, then the events the value's own drop
