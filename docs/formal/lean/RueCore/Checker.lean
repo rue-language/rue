@@ -11,11 +11,18 @@ independent implementation" purpose of the formal core
 (`docs/formal/README.md`): a verified reference for what the compiler's
 semantic phase must accept.
 
-`checkProgram` lifts it to a whole program: every function body checks at its
+`checkProgram` lifts it to a whole program: §3's class assignment holds of
+every struct declaration (`checkStructs`), every function body checks at its
 declared return type under (Fn) §5.8's entry context, its normal exit edge
 discharges §5.6's obligation, and the entry point takes no parameters. Its
 soundness lemma produces the `ProgramTyped` hypothesis `Soundness.lean`'s
 program theorems ask for.
+
+`checkStructs` is what makes `Ty.mult`'s lookup honest: a declaration
+*records* `class(S)`, and this pass is the equation §3 writes for it, together
+with `3.8:18`/`3.9:31`'s `@copy` restriction, `3.9:44`'s destructor
+restriction, and the acyclicity that makes the equation solvable in one pass
+(`struct_class_unique`).
 
 ## `return`, algorithmically
 

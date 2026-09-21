@@ -3,8 +3,10 @@ import RueCore.Dynamics
 /-!
 # RueCore.Soundness — the §7 memory-safety theorem, fragment-sized
 
-The central invariant is `Matches Γ ρ H` — "Σ faithfully tracks the store's
-initialization", the load-bearing clause of §7's no-use-after-move bullet.
+The central invariant is `Matches D Γ ρ H` — "Σ faithfully tracks the store's
+initialization", the load-bearing clause of §7's no-use-after-move bullet. `D`
+is the program's struct declarations, which is what a type's class (§3) and a
+value's drop (§6.11) are read against; every predicate here carries it.
 `CellMatches` is deliberately asymmetric, mirroring §5.5: a *statically*
 `MovedOut` entry may still hold a live (non-linear!) value dynamically —
 that is exactly the state a conservative branch join produces, and the machine
@@ -45,6 +47,19 @@ only grows, and every cell below `|H|` that `ρ` does not name has the contents
 it had. Since a callee's parameter cells are minted above the caller's whole
 store, the caller's cells are outside the callee's `ρ`, and the caller's
 `Matches` transports across the call unchanged.
+
+## Structs: value typing, and the drop that never refuses
+
+`HasTy D` types a struct value against its declaration's field list, which is
+(Struct-Intro) §5.8 read on values. Three statements about §6.11's walk rest
+on it and are what the rest of the file uses: `dropValue_ok` (a well-typed
+value's drop always runs — it can only refuse on a declaration the program
+does not have), `dropValue_order` and `dropValues_order` (the events are the
+user destructor's followed by exactly the fields', in declaration order), and,
+from `Statics.lean`, `StructDecl.Wf.field_not_linear` (a value the leak
+monitor lets through carries no linear field, so the monitor reads the value's
+own class and never descends). RUE-2237's "dropped exactly once" is the next
+statement over the same walk.
 
 ## The theorem
 
