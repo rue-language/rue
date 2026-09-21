@@ -802,10 +802,10 @@ lean_package(
 # implementation views. `buck2 run //:lean-bridge -- [--case NAME]`.
 #
 # Deliberately NOT a test target, for the same reason //:lean-ruecore is not:
-# no tier applies until the ADR's gate is met (RUE-2241). The corpus arrives as the Lean
-# package's own output, so running it needs neither `lake` nor `elan`
-# (ADR-0097 decision 1). Inputs are declared here and absolutized by the
-# script, the way the cached corpus suites do it.
+# no tier applies until the ADR's gate is met (RUE-2241). The corpus arrives
+# as the Lean package's own output, so running it needs neither `lake` nor
+# `elan` (ADR-0097 decision 1). Inputs are declared here and absolutized by
+# the script, the way the cached corpus suites do it.
 sh_binary(
     name = "lean-bridge-harness",
     main = "scripts/lean-bridge.sh",

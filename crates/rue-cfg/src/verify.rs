@@ -1312,7 +1312,8 @@ impl<'a> Verifier<'a> {
     /// * each nonzero store to the slot happens where the target has been
     ///   whole-written on every reaching path with no drop of it since (a
     ///   by-value parameter counts as written at entry);
-    /// * nothing else writes the slot;
+    /// * nothing else writes the slot, through any channel (`Store`, `Alloc`,
+    ///   `PlaceWrite`), at any type;
     /// * after a guard-body drop the slot is not loaded again on any path
     ///   before it is written, so the stale flag proves nothing.
     ///
@@ -1348,24 +1349,40 @@ impl<'a> Verifier<'a> {
         }
         let block_count = self.cfg.block_count();
         let reachable = |block: BlockId| self.dominators().is_reachable(block);
+        let raw_slot_numbers: AHashSet<u32> = raw_slots.iter().map(|&(slot, _)| slot).collect();
+        // Every write to a compiler-owned slot, through any channel: a `Store`
+        // of a constant at the type the slot is loaded at is a clearing or an
+        // arming; a `Store` of anything else, or at another type, an `Alloc`,
+        // or a `PlaceWrite` based on the slot is a write the discipline does
+        // not allow, and the slot exempts nothing.
         let flag_write = |data: &CfgInstData| -> Option<(u32, Option<FlagWrite>)> {
-            let CfgInstData::Store {
-                slot,
-                value: stored,
-            } = data
-            else {
-                return None;
+            let (slot, write) = match data {
+                CfgInstData::Store {
+                    slot,
+                    value: stored,
+                } => {
+                    let stored = self.cfg.get_inst(*stored);
+                    let write = if raw_slots.contains(&(*slot, stored.ty)) {
+                        match stored.data {
+                            CfgInstData::Const(0) => Some(FlagWrite::Cleared),
+                            CfgInstData::Const(_) => Some(FlagWrite::Armed),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    (*slot, write)
+                }
+                CfgInstData::Alloc { slot, .. } => (*slot, None),
+                CfgInstData::PlaceWrite { place, .. } => match place.base {
+                    PlaceBase::Local(slot) => (slot, None),
+                    PlaceBase::Param(_) | PlaceBase::Accessor(_) | PlaceBase::Indirect(_) => {
+                        return None;
+                    }
+                },
+                _ => return None,
             };
-            let stored = self.cfg.get_inst(*stored);
-            if !raw_slots.contains(&(*slot, stored.ty)) {
-                return None;
-            }
-            let write = match stored.data {
-                CfgInstData::Const(0) => Some(FlagWrite::Cleared),
-                CfgInstData::Const(_) => Some(FlagWrite::Armed),
-                _ => None,
-            };
-            Some((*slot, write))
+            raw_slot_numbers.contains(&slot).then_some((slot, write))
         };
 
         // Candidates: every compiler-owned slot cleared before a drop of the
@@ -1420,7 +1437,7 @@ impl<'a> Verifier<'a> {
                 .iter()
                 .all(|&value| {
                     let data = &self.cfg.get_inst(value).data;
-                    !matches!(data, CfgInstData::Store { slot: written, .. } if *written == slot)
+                    flag_write(data).is_none_or(|(written, _)| written != slot)
                         && !drops_target(data)
                 })
                 .then_some(slot)
@@ -3219,13 +3236,32 @@ mod tests {
         guard_slot: u32,
         /// The skip arm also drops the root, without clearing the flag.
         skip_arm_drops: bool,
-        /// The join re-arms the flag without a whole write of the root.
-        rearm_in_join: bool,
+        /// The join re-arms the flag without a whole write of the root,
+        /// through the given channel.
+        rearm_in_join: Option<RearmChannel>,
         /// A second path (a goto from the skip arm) enters the guard body.
         extra_guard_entry: bool,
         /// After the guarded drop, the flag is tested again to guard a second
         /// read of the root.
         retest_after_exit_drop: bool,
+        /// After the guarded drop, a second branch on the join's own test
+        /// value (as common-subexpression elimination would leave it: no
+        /// second load of the flag) guards a second drop of the root.
+        rebranch_on_stale_test: bool,
+    }
+
+    /// A way the join can write the flag slot other than the builder's `Store`
+    /// of an `I32` constant.
+    #[derive(Clone, Copy)]
+    enum RearmChannel {
+        /// The builder's own channel.
+        StoreConst,
+        /// A `Store` of a constant at a type the flag is never loaded at.
+        StoreOtherType,
+        /// An `Alloc` of the slot.
+        Alloc,
+        /// A `PlaceWrite` based on the slot.
+        PlaceWrite,
     }
 
     fn conditional_explicit_drop_cfg(shape: ConditionalDropShape) -> (Cfg, FrozenTypeInternPool) {
@@ -3236,6 +3272,7 @@ mod tests {
             rearm_in_join,
             extra_guard_entry,
             retest_after_exit_drop,
+            rebranch_on_stale_test,
         } = shape;
         let guard_slot = if guard_slot == 0 { 1 } else { guard_slot };
         let pool = TypeInternPool::new();
@@ -3324,17 +3361,56 @@ mod tests {
         if read_in_join {
             push(&mut cfg, join, CfgInstData::Load { slot: 0 }, owner);
         }
-        if rearm_in_join {
-            let armed = push(&mut cfg, join, CfgInstData::Const(1), Type::I32);
-            push(
-                &mut cfg,
-                join,
-                CfgInstData::Store {
-                    slot: 1,
-                    value: armed,
-                },
-                Type::UNIT,
-            );
+        match rearm_in_join {
+            None => {}
+            Some(RearmChannel::StoreConst) => {
+                let armed = push(&mut cfg, join, CfgInstData::Const(1), Type::I32);
+                push(
+                    &mut cfg,
+                    join,
+                    CfgInstData::Store {
+                        slot: 1,
+                        value: armed,
+                    },
+                    Type::UNIT,
+                );
+            }
+            Some(RearmChannel::StoreOtherType) => {
+                let armed = push(&mut cfg, join, CfgInstData::Const(1), Type::BOOL);
+                push(
+                    &mut cfg,
+                    join,
+                    CfgInstData::Store {
+                        slot: 1,
+                        value: armed,
+                    },
+                    Type::UNIT,
+                );
+            }
+            Some(RearmChannel::Alloc) => {
+                let armed = push(&mut cfg, join, CfgInstData::Const(1), Type::I32);
+                push(
+                    &mut cfg,
+                    join,
+                    CfgInstData::Alloc {
+                        slot: 1,
+                        init: armed,
+                    },
+                    Type::UNIT,
+                );
+            }
+            Some(RearmChannel::PlaceWrite) => {
+                let armed = push(&mut cfg, join, CfgInstData::Const(1), Type::I32);
+                push(
+                    &mut cfg,
+                    join,
+                    CfgInstData::PlaceWrite {
+                        place: Place::local(1, Type::I32),
+                        value: armed,
+                    },
+                    Type::UNIT,
+                );
+            }
         }
         let flag = push(
             &mut cfg,
@@ -3353,7 +3429,25 @@ mod tests {
             CfgInstData::Drop { value: remaining },
             Type::UNIT,
         );
-        cfg.set_goto(exit_drop, exit, []);
+        if rebranch_on_stale_test {
+            // The join's test value, not a fresh load, guards a second drop:
+            // only the adjacency clause (the load must sit in the branching
+            // block) can see that the flag it read is stale here.
+            let second = cfg.new_block();
+            let again = cfg.new_block();
+            cfg.set_goto(exit_drop, second, []);
+            cfg.set_branch(second, live, again, [], exit, []);
+            let twice = push(&mut cfg, again, CfgInstData::Load { slot: 0 }, owner);
+            push(
+                &mut cfg,
+                again,
+                CfgInstData::Drop { value: twice },
+                Type::UNIT,
+            );
+            cfg.set_goto(again, exit, []);
+        } else {
+            cfg.set_goto(exit_drop, exit, []);
+        }
 
         if retest_after_exit_drop {
             let retest = cfg.new_block();
@@ -3485,6 +3579,10 @@ mod tests {
         (cfg, pool)
     }
 
+    /// A shape the flag must not exempt. Each rejection here would also be
+    /// rejected with the drop-flag exemption absent, so what a rejecting test
+    /// pins is that the clause it deviates on is load-bearing: stubbing that
+    /// clause out makes the shape verify.
     fn assert_consumed_root(shape: ConditionalDropShape) {
         let (cfg, pool) = conditional_explicit_drop_cfg(shape);
         let error = cfg.finish(&pool).unwrap_err();
@@ -3529,7 +3627,39 @@ mod tests {
     #[test]
     fn semantic_verifier_rejects_guarded_exit_drop_after_a_rearm_without_a_whole_write() {
         assert_consumed_root(ConditionalDropShape {
-            rearm_in_join: true,
+            rearm_in_join: Some(RearmChannel::StoreConst),
+            ..Default::default()
+        });
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_guarded_exit_drop_after_a_rearm_at_another_type() {
+        assert_consumed_root(ConditionalDropShape {
+            rearm_in_join: Some(RearmChannel::StoreOtherType),
+            ..Default::default()
+        });
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_guarded_exit_drop_after_an_alloc_rearm() {
+        assert_consumed_root(ConditionalDropShape {
+            rearm_in_join: Some(RearmChannel::Alloc),
+            ..Default::default()
+        });
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_guarded_exit_drop_after_a_place_write_rearm() {
+        assert_consumed_root(ConditionalDropShape {
+            rearm_in_join: Some(RearmChannel::PlaceWrite),
+            ..Default::default()
+        });
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_a_second_drop_guarded_by_the_stale_test_value() {
+        assert_consumed_root(ConditionalDropShape {
+            rebranch_on_stale_test: true,
             ..Default::default()
         });
     }
