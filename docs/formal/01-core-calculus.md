@@ -731,7 +731,14 @@ the E0904 rejection, while a path without one uses
 
 The `(Use-Copy)` and `(Use-Move)` rules are read only with an `Ordinary` plan;
 this prevents overlap when a selected leaf is Copy inside a declared-linear
-destructure or an ordinary untrackable dynamic read.
+destructure or an ordinary untrackable dynamic read. §5.3's `(@Drop)` and
+`(@Drop-Copy)` are read the same way: `@drop(p)` leaves `p` `MovedOut`, so
+where elaboration records `Declared(d,π)` for `p` the intrinsic consumes `d`
+and destroys its droppable residue exactly as a use does, rather than marking
+the projected leaf alone. Verified against the compiler: after
+`@drop(d.f)` on a `d` of declared-`linear` type — for a `Copy` field `f` as
+much as for a droppable one — a later use of `d` is E0205, so the whole of `d`
+was consumed.
 The rule is intentionally distinct from infectious linearity: a struct that is
 linear only because a field carries a linear value follows ordinary partial
 move and residual checking.
@@ -989,15 +996,29 @@ their outgoing states:
   Γ;Σ;Λ ⊢ if e0 { e1 } else { e2 } ⇒ T ⊣ Σ'
 ```
 
-`join` must agree on every path that *carries a linear value*: if a linear-
-carrying place is MovedOut on one branch and Owned on the other, the program is
-ill-formed (`3.8:50` — a linear value consumed on only some paths). For an
-affine, non-Copy move-type place, the join is `MovedOut` if either branch has
-that place `MovedOut`, conservatively treating the value as gone. Copy uses do
+`join` is taken path by path. Where the two branches agree it is that state.
+Where they disagree — the path is `MovedOut` on one branch and `Owned` on the
+other — the program is ill-formed exactly when the `Owned` side still has
+**residual linear content** at that path, `residual-linear(Σ_owned, p, T)` in
+§5.6's sense (`3.8:50` — a linear value consumed on only some paths); otherwise
+the join is `MovedOut`, conservatively treating the value as gone. Copy uses do
 not move their places, so Copy branches never produce `MovedOut` and a Copy
 place remains `Owned` at the join. The dynamic state retains the path-specific
 move state; the array-element drop behavior of `3.8:73` is the separate rule
 that says how a joined array's elements are dropped on paths where they remain.
+
+The disagreement test is the **residual** one for the same reason §5.6's
+scope-exit check is (RUE-526, RUE-1591): keyed on `carries_linear(T)` — the
+binding's *type* — it would reject the legal idiom of consuming exactly the
+linear part of an infectious carrier on one path and the whole carrier on the
+other. Verified against the compiler:
+`let h = Holder { t: token, n: 0 }; if c { @drop(h) } else { @drop(h.t) }` is
+accepted although `h` is a linear-carrying place that is `MovedOut` on one
+branch and `Owned` on the other, because the `Owned` branch has no linear
+content left at `h`; while consuming `h.t` on one branch only is E0443 ("linear
+value is not consumed on all paths"), which is the residual test firing one
+level down. On a whole binding with no partial move under it the two readings
+coincide, so nothing the type-level reading accepted is lost.
 A branch ending in any never-typed divergence has a divergent outgoing state
 (`⊥_exit`, `⊥_diverge`, or `⊥_panic`) and is excluded from the join (`3.8:51`);
 its *type* is `never`, which (Sub-Never), §5.7, coerces to the sibling arm's
@@ -3365,7 +3386,7 @@ as owed rather than discharged.
 | §5.6 enum drop (active payload) | 6.3:20 |
 | §4.3 expression/return value | 4.5:3 (→ value, not just type), 6.1:4/5, 4.9:1/7 |
 | §5.2 assignment / reinit | 3.8:55/56, 3.8:72, 3.8:77 |
-| §5.3 discard leak check / explicit `@drop` | 3.8:64/65, 3.9:37–39 |
+| §5.3 discard leak check / explicit `@drop` (including its reading of §4.2's use plan) | 3.8:64/65, 3.8:33, 3.9:37–39 |
 | §5.4 borrows / exclusivity | 6.1:14–35, 6.1:20, 6.1:30 |
 | §5.5 branch join | 3.8:50/51, 3.8:73 |
 | §5.6 scope exit: residual leak check + drop | 3.8:32/50/62/66/71/74, 3.9:1/2/4/13/15/18/28 |
