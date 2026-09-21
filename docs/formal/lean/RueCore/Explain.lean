@@ -1185,6 +1185,18 @@ def binopDynRule : BinOp → String
   | .lt | .le | .gt | .ge => "ordering compare §6.4"
   | .totalCmp => "(D-Total-Cmp) §6.4"
 
+/-- (helper) The same, read at the operand's *type*: §6.4 states the integer
+rules over `n_T` and the float ones over `f_T`, and no operator rule's premises
+are met by both, so a row's rule is decided by the value that reached it. -/
+def binopDynRuleAt (op : BinOp) : Val → String
+  | .float _ _ =>
+      match op with
+      | .add | .sub | .mul | .div => "(D-Float-Arith) §6.4"
+      | .lt | .le | .gt | .ge => "(D-Float-Ord) §6.4"
+      | .totalCmp => "(D-Total-Cmp) §6.4"
+      | _ => binopDynRule op
+  | _ => binopDynRule op
+
 /-- (helper) The §6.4 rule a one-operand float intrinsic's row names. -/
 def fintrinDynRule : FloatIntrin → String
   | .intToFloat _ => "(D-Int-To-Float) §6.4"
@@ -1193,11 +1205,20 @@ def fintrinDynRule : FloatIntrin → String
   | .roundOp _ => "(D-Float-Round) §6.4"
 
 /-- (helper) The §6.4 rule a unary operator's row names. `neg` is
-(D-Arith)'s unary case; `not` and `bitnot` are total. -/
+(D-Arith)'s unary case at an integer and `(D-Float-Neg)` at a float
+(`unopDynRuleAt`); `not` and `bitnot` are total. -/
 def unopDynRule : UnOp → String
-  | .neg => "(D-Arith) §6.4, the unary case (or (D-Float-Neg) at a float)"
+  | .neg => "(D-Arith) §6.4, the unary case"
   | .not => "§6.4's `not` on bool"
   | .bitnot => "(D-Bit) §6.4, the complement"
+
+/-- (helper) The same, read at the operand's type: `neg` is the one unary
+operator §6.4 states twice, and the float case is total (`3.12:24`). -/
+def unopDynRuleAt (op : UnOp) : Val → String
+  | .float _ _ => match op with
+    | .neg => "(D-Float-Neg) §6.4"
+    | _ => unopDynRule op
+  | _ => unopDynRule op
 
 /-- The rows and outcome of a call's argument list (helper). -/
 structure ArgsTrace where
@@ -1296,12 +1317,14 @@ def traceEval (M : FloatOps) (P : Program) :
          | .ok H₂ v₂ tr₂ =>
              (match evalBinOp M op v₁ v₂ with
               | .val v =>
-                  traced (t₁.steps ++ t₂.steps) d Θ R (.binop op e₁ e₂) rule H H₂ []
-                    (.value v) (.ok H₂ v (tr₁ ++ tr₂))
+                  traced (t₁.steps ++ t₂.steps) d Θ R (.binop op e₁ e₂)
+                    (binopDynRuleAt op v₁) H H₂ [] (.value v) (.ok H₂ v (tr₁ ++ tr₂))
               | .trap k =>
-                  traced (t₁.steps ++ t₂.steps) d Θ R (.binop op e₁ e₂) rule H H₂ []
-                    (.panicked k) (.panic k (tr₁ ++ tr₂))
-              | .confused => confused (t₁.steps ++ t₂.steps) d Θ R (.binop op e₁ e₂) rule H)
+                  traced (t₁.steps ++ t₂.steps) d Θ R (.binop op e₁ e₂)
+                    (binopDynRuleAt op v₁) H H₂ [] (.panicked k) (.panic k (tr₁ ++ tr₂))
+              | .confused =>
+                  confused (t₁.steps ++ t₂.steps) d Θ R (.binop op e₁ e₂)
+                    (binopDynRuleAt op v₁) H)
          | r => propagate (t₁.steps ++ t₂.steps) d Θ R (.binop op e₁ e₂) rule H
                   (r.withTrace tr₁))
       | r => propagate t₁.steps d Θ R (.binop op e₁ e₂) rule H r
@@ -1312,7 +1335,8 @@ def traceEval (M : FloatOps) (P : Program) :
       | .ok H' v tr =>
           (match evalUnOp op v with
            | .val v' =>
-               traced t.steps d Θ R (.unop op e) rule H H' [] (.value v') (.ok H' v' tr)
+               traced t.steps d Θ R (.unop op e) (unopDynRuleAt op v) H H' []
+                 (.value v') (.ok H' v' tr)
            | .trap k =>
                traced t.steps d Θ R (.unop op e) rule H H' [] (.panicked k) (.panic k tr)
            | .confused => confused t.steps d Θ R (.unop op e) rule H)

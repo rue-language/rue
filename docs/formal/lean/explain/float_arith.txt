@@ -75,7 +75,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 2.25
-  [4]   d3        (D-Arith) §6.4
+  [4]   d3        (D-Float-Arith) §6.4
          expr    (1.5 + 2.25)
          store   (empty)
            →     (empty)
@@ -85,7 +85,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 2.0
-  [6]   d2      (D-Arith) §6.4
+  [6]   d2      (D-Float-Arith) §6.4
          expr    ((1.5 + 2.25) * 2.0)
          store   (empty)
            →     (empty)
