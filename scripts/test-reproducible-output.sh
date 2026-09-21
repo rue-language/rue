@@ -162,8 +162,11 @@ assert_relocated_symbol_names() {
     # module component too, and a specialization appends its argument mangling
     # to that base. Each component is the module's logical path, never the
     # relocated physical root — which is what this assertion exists to pin.
+    # The StrBuf destructor also reaches the std-private allocation release
+    # helper, whose logical module identity must survive relocation as well.
     local expected actual
     expected="$(printf '%s\n' \
+        '__rue_fn__00rue_2dstd_2frawbuf_2erue__release.u8' \
         '__rue_fn_left_2fentry_2erue__compute' \
         '__rue_fn_left_2fshared_2erue__make' \
         '__rue_fn_right_2fentry_2erue__compute' \
