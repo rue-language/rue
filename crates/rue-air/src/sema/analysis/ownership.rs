@@ -3102,6 +3102,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
                 ctx,
             )?;
+            // Constraint generation deliberately imposes no equality on a
+            // `str` store, so the literal RHS above can materialize as a
+            // 2-word view instead of a `String`. That exemption also let a
+            // value of an unrelated type through: `let mut s: str = "hello";
+            // s = 5;` overwrote the view's pointer word and `s.len()` then
+            // read a corrupted length (RUE-2248). The store itself is a plain
+            // copy, so require the value to be a `str` here, after the escape
+            // diagnostics above have had their say.
+            if value_result.continues && !self.types_compatible(value_result.ty, local_ty) {
+                return Err(self.type_mismatch_error(local_ty, value_result.ty, span));
+            }
         }
 
         // Assignment to a mutable variable resets its move state.

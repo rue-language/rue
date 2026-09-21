@@ -244,6 +244,56 @@ fn main() -> i32 {
 """
 exit_code = 2
 
+# 3.7:44 / 5.2:4 — reassigning a first-class `str` local stores another
+# first-class `str`, so the value's type still has to be compatible with the
+# variable's. Constraint generation deliberately leaves a `str` store
+# unconstrained (a literal RHS materializes as a 2-word view there), and that
+# exemption once let an unrelated value reach the slot: `s = 5` overwrote the
+# view's pointer word and `s.len()` read a corrupted length (RUE-2248).
+[[case]]
+name = "str_reassignment_rejects_unrelated_type_{kind}"
+spec = ["3.7:44", "5.2:4"]
+description = "A first-class `str` variable rejects an assignment of an unrelated type"
+source = "{source}"
+compile_fail = true
+error_contains = "E0206"
+params = [
+  { kind = "integer", source = "fn main() -> i32 {\n    let mut s: str = \"hello\";\n    s = 5;\n    @intCast(s.len())\n}" },
+  { kind = "bool", source = "fn main() -> i32 {\n    let mut s: str = \"hello\";\n    s = true;\n    @intCast(s.len())\n}" },
+]
+
+# 3.7:44 — the control for the rule above: a first-class `str` produced by a
+# call is a legal reassignment source, and a buffer still gets the specific
+# escape diagnostic (E0495) rather than the general mismatch.
+[[case]]
+name = "str_reassignment_from_call_result"
+spec = ["3.7:44"]
+source = """
+fn pick(c: bool) -> str {
+    if c { "hello" } else { "hi" }
+}
+fn main() -> i32 {
+    let mut s: str = "hi";
+    s = pick(true);
+    @intCast(s.len())
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "str_reassignment_from_buffer_is_escape_error"
+spec = ["3.7:44"]
+source = """
+fn main() -> i32 {
+    let buffer: Str(8) = "hello";
+    let mut s: str = "hi";
+    s = buffer;
+    @intCast(s.len())
+}
+"""
+compile_fail = true
+error_contains = "E0495"
+
 # 3.7:10 / 4.3:3 — `str` equality is byte-content equality, not pointer+len
 # structural equality. The returned literal may occupy a distinct rodata slot.
 [[case]]
