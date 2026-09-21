@@ -24,7 +24,11 @@ in the current core (§5 preamble).
 attribute, and a declaration records that class (`Syntax.lean`). `WfStructs`
 is §3's equation, made a premise of a well-formed program: the recorded class
 *is* the lifted join, a `@copy` declaration's join is already `Copy` and it
-declares no destructor (`3.8:18`, `3.9:31`), and a field may name only an
+declares no destructor (`3.8:18`, `3.9:31`), a destructor-bearing declaration
+carries no linear field (`3.9:44`, E0462 — `3.9:34` forbids moving one out, so
+the obligation could only be met by the glue, which is the implicit discard
+§5.6 forbids; the core calculus states the field-move half at `3.9:34` and
+leaves this declaration-site half to the prose), and a field may name only an
 earlier declaration, so the equation is a definition rather than a fixpoint
 condition — `struct_class_unique` is that statement, proved.
 
@@ -112,10 +116,11 @@ theorem joinFold_linear_inv (D : StructEnv) : ∀ (Ts : List Ty) (acc : Mult),
         · exact Or.inl h''
       · exact Or.inr ⟨T', List.mem_cons_of_mem _ hmem, hT'⟩
 
-/-- One declaration's well-formedness (§3, `3.8:18`, `3.9:31`): its recorded
-class is §3's field join lifted by its attribute, a `@copy` declaration's join
-is already `Copy` and it declares no destructor, and a field names only an
-**earlier** declaration — so the class equation is solvable in one pass and
+/-- One declaration's well-formedness (§3, `3.8:18`, `3.9:31`, `3.9:44`): its
+recorded class is §3's field join lifted by its attribute, a `@copy`
+declaration's join is already `Copy` and it declares no destructor, a
+destructor-bearing declaration carries no linear field, and a field names only
+an **earlier** declaration — so the class equation is solvable in one pass and
 has one solution (`struct_class_unique`), and no struct contains itself. -/
 structure StructDecl.Wf (D : StructEnv) (s : Nat) (sd : StructDecl) : Prop where
   /-- No recursive struct: a field may name only an earlier declaration. -/
@@ -125,6 +130,13 @@ structure StructDecl.Wf (D : StructEnv) (s : Nat) (sd : StructDecl) : Prop where
   /-- `3.8:18` and `3.9:31`: `@copy` is well-formed only when every field is
   `Copy` and the struct declares no destructor. -/
   copyWf : sd.attr = .copy → sd.baseOf D = .copy ∧ sd.dtor = false
+  /-- `3.9:44` (E0462): a struct that declares a destructor must not carry a
+  linear value in a field. `3.9:34` forbids moving a field out of such a
+  value, so the field's obligation could only ever be met by the drop glue
+  §6.11 runs after the destructor — which is exactly the implicit discard
+  §5.6 forbids. A *declared*-`linear` struct may still have a destructor: the
+  condition is on the field join, not on the class. -/
+  dtorWf : sd.dtor = true → sd.baseOf D ≠ .linear
 
 /-- A well-formed struct environment: §3's class assignment holds of every
 declaration (`StructDecl.Wf`). This is the premise that makes `Ty.mult`'s
