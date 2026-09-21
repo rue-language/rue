@@ -103,7 +103,8 @@ def exportFuel : Nat := 100000
 
 /-- The model every exported case is evaluated at: `Float.exactOps`
 (`Float.lean`), the constructive instance whose `σ_NaN` is **positive** — the
-AArch64 choice of `3.12:44`. `σ_NaN` is a target parameter (§2), so it would
+AArch64 choice of `3.12:44`, spelled `nanSign := false` because the field is
+the sign *bit* of `FloatDatum.nan`. `σ_NaN` is a target parameter (§2), so it would
 be a divergence if it reached an expectation; it does not, because `@dbg`
 renders a NaN as `NaN` whatever its sign (`3.12:42`) and no seed case reads
 one through `@total_cmp`, the only form that can see it. -/
