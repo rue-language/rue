@@ -46,7 +46,20 @@ Design commitments carried over from §6:
 * Arithmetic overflow and division by zero are *panics* (`↯` in §6.12), a
   defined outcome permitted by the safety theorem, not a violation.
 * Traces record each drop (`drop ℓ v`) and each discarded temporary
-  (`dropTemp v`) — the §6.7 temporary-death analog.
+  (`dropTemp v`) — the §6.7 temporary-death analog — and, nested under
+  either, every user destructor §6.11 runs (`dtor s v`), which is the only
+  event a printed Rue program can observe.
+
+## Structs and §6.11's drop order
+
+A struct value is its declaration's index and one value per field
+(`Val.struct`), so the machine's drop walk is §6.11's own: the user
+destructor first, then the fields in declaration order, recursively
+(`dropValue`). Every path that drops a value — `@drop` (§6.11), scope exit
+(§6.7), the overwrite (§6.8), a discarded temporary (§6.7), and the frame
+teardown (§6.9) — routes through it, so a trace carries that order wherever
+a drop happens. `dropValue_order` and `dropValues_order` (`Soundness.lean`)
+state the order as a theorem.
 
 ## Pending arguments: the one edge no monitor covers
 
@@ -116,20 +129,23 @@ larger fuel) and `no_masking` (a refusal at one fuel is that same refusal, or
 
 namespace RueCore
 
-/-- Machine values (§6.1's `v`), fragment forms only. A resource value carries
-its class so the machine's drop decisions are value-driven, as the oracle's
-are (the compiled program's drop glue is type-driven; the §7 preservation
-invariant is exactly why the two agree). -/
+/-- Machine values (§6.1's `v`), fragment forms only. `struct s vs` is §6.1's
+`{ v1, …, vk }_S`: the declaration's index and one value per field, in
+declaration order (`3.6:9`). A struct value names its declaration rather than
+carrying its class, so the machine's drop decisions are value-driven — it
+reads the tag the value carries — while the class and the destructor come from
+the program's declarations, as the compiled program's drop glue does. -/
 inductive Val where
   | int (n : Int)
   | bool (b : Bool)
   | unit
-  | res (κ : Mult) (n : Int)
-deriving DecidableEq, Repr
+  | struct (s : Nat) (fields : List Val)
+deriving Repr
 
-/-- The dynamic image of `class(T)` (§3) on a value. -/
-def Val.mult : Val → Mult
-  | .res κ _ => κ
+/-- The dynamic image of `class(T)` (§3) on a value: scalars are `Copy`, a
+struct value has the class its declaration records. -/
+def Val.mult (D : StructEnv) : Val → Mult
+  | .struct s _ => D.classOf s
   | _ => .copy
 
 /-- Cell contents (§6.1's `c ::= v | ⊘`, plus the retired allocation `†`). -/
@@ -137,7 +153,7 @@ inductive Cell where
   | full (v : Val)
   | moved
   | dead
-deriving DecidableEq, Repr
+deriving Repr
 
 /-- The store `H` (§6.1): locations are indices; allocation appends. A dead
 cell keeps its index occupied — identities are never reused (§6.1). -/
@@ -157,14 +173,19 @@ structure Frame where
   scope : List Nat
 deriving DecidableEq, Repr
 
-/-- Observable drop events, the fragment's slice of the oracle `Outcome`: a
-binding's drop (§6.11: at scope exit §6.7, at an unwinding exit §6.9, at
-`@drop`, or at an overwrite §6.8) and a discarded temporary's drop ((D-Seq),
-§6.7). -/
+/-- Drop events, the fragment's slice of the oracle `Outcome`. `drop ℓ v` and
+`dropTemp v` mark *where* a drop starts — a binding's drop (§6.11: at scope
+exit §6.7, at an unwinding exit §6.9, at `@drop`, or at an overwrite §6.8) and
+a discarded temporary's drop ((D-Seq), §6.7) — and `dtor s v` is the one event
+a Rue program can *observe*: the user destructor `S` declares (`3.9`), which
+§6.11 runs before the value's fields. The events a value's drop emits follow
+each other in §6.11's order: the destructor, then the fields in declaration
+order, each recursively. -/
 inductive Event where
   | drop (ℓ : Nat) (v : Val)
   | dropTemp (v : Val)
-deriving DecidableEq, Repr
+  | dtor (s : Nat) (v : Val)
+deriving Repr
 
 /-- Defined traps (§6.12's `↯κ`), fragment categories. -/
 inductive PanicKind where
@@ -238,34 +259,89 @@ def EvalRes.absorb : EvalRes → (Store → Val → EvalRes) → EvalRes
   | .returned H v tr, _ => .ok H v tr
   | r, _ => r
 
+mutual
+/-- `drop(H, v)` (§6.11), on the fragment's values. A scalar drops nothing
+("scalars are Copy: nothing to drop"). A struct runs its **user destructor
+first**, if its declaration has one, and then drops its fields in
+**declaration order** (`drop*`); the destructor is recorded as one `dtor`
+event rather than run as a nested machine, because the fragment has no
+destructor bodies — a program declares whether `S` has one, and the Rue
+program the printer emits reproduces the event with a `drop fn S(self)` that
+prints (`Print.lean`). A field is dropped whatever its class: an explicit
+`@drop` of a linear-carrying struct discharges the whole obligation, and a
+scope exit never reaches one, because a value the leak monitor lets through
+has no linear field (`StructDecl.Wf.field_not_linear`). The `⊘`-skip §6.11
+opens with is the *cell* case below: a moved-out field has no representation
+here, since the fragment has no partial moves (RUE-2231). -/
+def dropValue (D : StructEnv) : Val → Except Violation (List Event)
+  | .int _ => .ok []
+  | .bool _ => .ok []
+  | .unit => .ok []
+  | .struct s vs =>
+      match D[s]? with
+      | none => .error .unbound
+      | some sd =>
+          match dropValues D vs with
+          | .error w => .error w
+          | .ok evs =>
+              .ok ((if sd.dtor then [Event.dtor s (.struct s vs)] else []) ++ evs)
+
+/-- `drop*(H, [v1,…,vk])` (§6.11): fold `drop` over the values left to right
+— for a struct's fields, declaration order. -/
+def dropValues (D : StructEnv) : List Val → Except Violation (List Event)
+  | [] => .ok []
+  | v :: vs =>
+      match dropValue D v with
+      | .error w => .error w
+      | .ok evs =>
+          match dropValues D vs with
+          | .error w => .error w
+          | .ok evs' => .ok (evs ++ evs')
+end
+
+/-- The drop of the value in a binding's cell (§6.11), as the trace records
+it: a `drop ℓ v` marker naming the cell, then the events the value's own drop
+emits. A `Copy` value has no drop glue at all (§6.11: `drop(H, n_T) = H`), so
+it records nothing — which is also why `@drop` of a `Copy` place leaves no
+trace (§5.3's (@Drop-Copy)) (helper). -/
+def dropCell (D : StructEnv) (ℓ : Nat) (v : Val) : Except Violation (List Event) :=
+  if v.mult D = .copy then .ok []
+  else
+    match dropValue D v with
+    | .error w => .error w
+    | .ok evs => .ok (.drop ℓ v :: evs)
+
 /-- `drop-retire(H, ℓ)` (§6.1): run the binding's drop (§6.11 — a no-op on a
 `⊘` or `Copy` cell), then retire the allocation, so any later access to it is
 `useAfterDrop` rather than silently readable (the RUE-390 change). A live
 linear value here is §5.6's leak: the scope ends with an obligation
-undischarged, and the machine refuses (`3.8:32`). This is the one
+undischarged, and the machine refuses (`3.8:32`). Reading the value's own
+class is enough, because §3's join makes a non-`Linear` struct one with no
+linear field (`StructDecl.Wf.field_not_linear`). This is the one
 scope-teardown path: `let`'s normal `endscope` (§6.7) and the frame unwind of
 `return` (§6.9) both run it. -/
-def dropRetire (H : Store) (ℓ : Nat) : Except Violation (Store × List Event) :=
+def dropRetire (D : StructEnv) (H : Store) (ℓ : Nat) : Except Violation (Store × List Event) :=
   match H[ℓ]? with
   | none => .error .unbound
   | some .dead => .error .useAfterDrop
   | some .moved => .ok (H.set ℓ .dead, [])
   | some (.full v) =>
-      match v.mult with
-      | .linear => .error .linearLeak
-      | .affine => .ok (H.set ℓ .dead, [.drop ℓ v])
-      | .copy => .ok (H.set ℓ .dead, [])
+      if v.mult D = .linear then .error .linearLeak
+      else
+        match dropCell D ℓ v with
+        | .error w => .error w
+        | .ok evs => .ok (H.set ℓ .dead, evs)
 
 /-- `run-scope-drops` (§6.1): drop-retire a scope's cells in the order given,
 accumulating the drop events. Callers pass the record newest-first, which is
 the order §6.1 fixes for a scope's teardown (RAII). -/
-def unwindLocs (H : Store) : List Nat → Except Violation (Store × List Event)
+def unwindLocs (D : StructEnv) (H : Store) : List Nat → Except Violation (Store × List Event)
   | [] => .ok (H, [])
   | ℓ :: rest =>
-      match dropRetire H ℓ with
+      match dropRetire D H ℓ with
       | .error w => .error w
       | .ok (H₁, evs) =>
-          match unwindLocs H₁ rest with
+          match unwindLocs D H₁ rest with
           | .error w => .error w
           | .ok (H₂, evs') => .ok (H₂, evs ++ evs')
 
@@ -273,8 +349,9 @@ def unwindLocs (H : Store) : List Nat → Except Violation (Store × List Event)
 when a frame is popped — at a normal (D-Return-Value) and at an unwinding
 (D-Return). The frame's record lists its cells in creation order, so the
 teardown reads it backwards: newest binding first. -/
-def runAllScopeDrops (H : Store) (φ : Frame) : Except Violation (Store × List Event) :=
-  unwindLocs H φ.scope.reverse
+def runAllScopeDrops (D : StructEnv) (H : Store) (φ : Frame) :
+    Except Violation (Store × List Event) :=
+  unwindLocs D H φ.scope.reverse
 
 /-- (D-Call) §6.9: mint one fresh single-cell binding allocation per by-value
 argument, left to right, each holding its argument's value. Returns the store
@@ -318,8 +395,9 @@ def evalArgs (ev : Store → Expr → EvalRes) : Store → List Expr → ArgsRes
 (`cmp`, unlabeled there); `drop` is §6.11's explicit `@drop`; `letIn` is
 (D-Let) + (D-EndScope)'s drop-retire (§6.7); `assign` is (D-Assign), §6.8's
 overwrite-drop / reinitialization; `seq` is (D-Seq), discarding with a
-temporary drop (§6.7); `ite` is (D-If-T)/(D-If-F) after the §6.2 search for
-the scrutinee; `call` is (D-Call) followed by (D-Return-Value) when the body
+temporary drop (§6.7); `mkStruct` is (D-Struct) §6.5 after §6.2's
+left-to-right search through its initializers; `ite` is
+(D-If-T)/(D-If-F) after the §6.2 search for the scrutinee; `call` is (D-Call) followed by (D-Return-Value) when the body
 completes normally, and by (D-Return)'s absorption when it does not; `ret` is
 (D-Return), which runs the frame's scope drops and hands the value past every
 enclosing form.
@@ -332,7 +410,7 @@ def eval : Nat → Program → Store → Frame → Expr → EvalRes
   | _ + 1, _, H, _, .intLit n => .ok H (.int n) []
   | _ + 1, _, H, _, .boolLit b => .ok H (.bool b) []
   | _ + 1, _, H, _, .unitLit => .ok H .unit []
-  | _ + 1, _, H, φ, .use i =>
+  | _ + 1, P, H, φ, .use i =>
       match φ.env[i]? with
       | none => .stuck .unbound
       | some ℓ =>
@@ -341,7 +419,7 @@ def eval : Nat → Program → Store → Frame → Expr → EvalRes
         | some .dead => .stuck .useAfterDrop
         | some .moved => .stuck .useAfterMove
         | some (.full v) =>
-            if v.mult = .copy then .ok H v []
+            if v.mult P.structs = .copy then .ok H v []
             else .ok (H.set ℓ .moved) v []
   | fuel + 1, P, H, φ, .add e₁ e₂ =>
       (eval fuel P H φ e₁).andThen fun H₁ v₁ =>
@@ -375,17 +453,25 @@ def eval : Nat → Program → Store → Frame → Expr → EvalRes
               | .int n₂ => .ok H₂ (.bool (decide (n₁ < n₂))) []
               | _ => .stuck .typeConfusion
         | _ => .stuck .typeConfusion
-  | fuel + 1, P, H, φ, .mkres κ e =>
-      (eval fuel P H φ e).andThen fun H' v =>
-        match v with
-        | .int n => .ok H' (.res κ n) []
-        | _ => .stuck .typeConfusion
+  | fuel + 1, P, H, φ, .mkStruct s args =>
+      -- (D-Struct) §6.5: a struct literal is a redex once every initializer
+      -- is a value; §6.2's contexts reduce them left to right, threading `H`,
+      -- exactly as a call's arguments are reduced (§6.9).
+      (match evalArgs (fun H' e => eval fuel P H' φ e) H args with
+       | .abort r => r
+       | .ok H₁ vs tr =>
+         EvalRes.withTrace tr <|
+           match P.structs[s]? with
+           | none => .stuck .unbound
+           | some sd =>
+               if sd.fields.length = vs.length then .ok H₁ (.struct s vs) []
+               else .stuck .typeConfusion)
   | fuel + 1, P, H, φ, .consume e =>
       (eval fuel P H φ e).andThen fun H' v =>
         match v with
-        | .res _ n => .ok H' (.int n) []
+        | .struct _ (.int n :: _) => .ok H' (.int n) []
         | _ => .stuck .typeConfusion
-  | _ + 1, _, H, φ, .drop i =>
+  | _ + 1, P, H, φ, .drop i =>
       match φ.env[i]? with
       | none => .stuck .unbound
       | some ℓ =>
@@ -394,8 +480,11 @@ def eval : Nat → Program → Store → Frame → Expr → EvalRes
         | some .dead => .stuck .useAfterDrop
         | some .moved => .stuck .useAfterMove
         | some (.full v) =>
-            if v.mult = .copy then .ok H .unit []
-            else .ok (H.set ℓ .moved) .unit [.drop ℓ v]
+            match dropCell P.structs ℓ v with
+            | .error w => .stuck w
+            | .ok evs =>
+                if v.mult P.structs = .copy then .ok H .unit []
+                else .ok (H.set ℓ .moved) .unit evs
   | fuel + 1, P, H, φ, .letIn _m e₁ e₂ =>
       (eval fuel P H φ e₁).andThen fun H₁ v₁ =>
         -- (D-Let): mint a fresh single-cell binding allocation, bind it, and
@@ -407,7 +496,7 @@ def eval : Nat → Program → Store → Frame → Expr → EvalRes
             -- (D-EndScope): §5.6's obligations, executed. The record this
             -- case returns to is the caller's, which never held the cell, so
             -- the two bookkeepings drop it exactly once between them.
-            match dropRetire H₂ H₁.length with
+            match dropRetire P.structs H₂ H₁.length with
             | .error w => .stuck w
             | .ok (H₃, evs) => .ok H₃ v₂ evs
   | fuel + 1, P, H, φ, .assign i e =>
@@ -420,15 +509,19 @@ def eval : Nat → Program → Store → Frame → Expr → EvalRes
           | some .dead => .stuck .useAfterDrop
           | some .moved => .ok (H₁.set ℓ (.full v)) .unit []      -- reinit (3.8:55)
           | some (.full vOld) =>
-              match vOld.mult with
-              | .linear => .stuck .linearOverwrite                 -- 3.8:77
-              | .affine => .ok (H₁.set ℓ (.full v)) .unit [.drop ℓ vOld]
-              | .copy => .ok (H₁.set ℓ (.full v)) .unit []
+              if vOld.mult P.structs = .linear then .stuck .linearOverwrite   -- 3.8:77
+              else
+                match dropCell P.structs ℓ vOld with
+                | .error w => .stuck w
+                | .ok evs => .ok (H₁.set ℓ (.full v)) .unit evs
   | fuel + 1, P, H, φ, .seq e₁ e₂ =>
       (eval fuel P H φ e₁).andThen fun H₁ v₁ =>
-        match v₁.mult with
+        match v₁.mult P.structs with
         | .linear => .stuck .linearDiscard                         -- 3.8:64
-        | .affine => (eval fuel P H₁ φ e₂).withTrace [.dropTemp v₁]
+        | .affine =>
+            (match dropValue P.structs v₁ with
+             | .error w => .stuck w
+             | .ok evs => (eval fuel P H₁ φ e₂).withTrace (.dropTemp v₁ :: evs))
         | .copy => eval fuel P H₁ φ e₂
   | fuel + 1, P, H, φ, .ite c e₁ e₂ =>
       (eval fuel P H φ c).andThen fun H₀ v₀ =>
@@ -440,7 +533,7 @@ def eval : Nat → Program → Store → Frame → Expr → EvalRes
       | .abort r => r
       | .ok H₁ vs tr =>
         EvalRes.withTrace tr <|
-          match P[f]? with
+          match P.fns[f]? with
           | none => .stuck .unbound
           | some fd =>
             if fd.params.length = vs.length then
@@ -453,7 +546,7 @@ def eval : Nat → Program → Store → Frame → Expr → EvalRes
                 -- running its open scopes' drops. (D-Return) needs no second
                 -- path: `absorb` took its value, and its unwind already ran
                 -- every one of those drops.
-                match runAllScopeDrops H₃ φg with
+                match runAllScopeDrops P.structs H₃ φg with
                 | .error w => .stuck w
                 | .ok (H₄, evs) => .ok H₄ v evs
             else .stuck .typeConfusion
@@ -462,7 +555,7 @@ def eval : Nat → Program → Store → Frame → Expr → EvalRes
         -- (D-Return) §6.9: discard the evaluation context, every pending
         -- `endscope` marker inside it included, and run the frame's scope
         -- record instead — newest binding first.
-        match runAllScopeDrops H₁ φ with
+        match runAllScopeDrops P.structs H₁ φ with
         | .error w => .stuck w
         | .ok (H₂, evs) => .returned H₂ v evs
 
