@@ -223,7 +223,8 @@ two bindings share a location.
 
 Per cell the agreement is now **recursive**, because both sides are trees. Σ's
 state for a binding is `OwnSt` — `owned`, `movedOut`, or `fields [t₁ … tₖ]`
-for a value some of whose fields have been moved out — and the cell holds
+for a value some of whose fields have been moved out, which `explain/` and
+§5e's drawing spell `Owned{ x0: MovedOut }` — and the cell holds
 `Contents`, the same shape with §6.1's `⊘` admitted at any node.
 `ContentsMatches` relates them path by path:
 
@@ -868,12 +869,13 @@ visible in three snapshots.
 
 ```
   Σ(v0)                      H(ℓ0)
-  owned                      S7 { S1 { 1 }, S1 { 2 } }
+  Owned                      S7 { S1 { 1 }, S1 { 2 } }
 ```
 
-`owned` is a claim about the whole subtree: `Σ(v0) = Owned` and no path under
-`v0` is `MovedOut`, which is `fully-owned(Σ, v0)` (§5 preamble). The cell holds
-the matching hole-free tree, which is `ContentsMatches`'s `owned` clause.
+`Owned` with nothing after it is a claim about the whole subtree: `Σ(v0) =
+Owned` and no path under `v0` is `MovedOut`, which is `fully-owned(Σ, v0)` (§5
+preamble). The cell holds the matching hole-free tree, which is
+`ContentsMatches`'s `owned` clause.
 
 ### After it
 
@@ -881,17 +883,23 @@ the matching hole-free tree, which is `ContentsMatches`'s `owned` clause.
 (D-Use-Move) writes `H[ℓ0@[0] ↦ ⊘]` at exactly the same position:
 
 ```
-  Σ(v0)                      H(ℓ0)
-  fields [                   S7 {
-    movedOut,      ← v0.x0        ⊘,
-    owned          ← v0.x1        S1 { 2 }
-  ]                          }
-                             H(ℓ1) = S1 { 1 }     ← v1, the moved value
+  Σ(v0)                           H(ℓ0)
+  Owned{ x0: MovedOut }           S7 {
+    ├─ x0  MovedOut   ← v0.x0         ⊘,
+    └─ x1  Owned      ← v0.x1         S1 { 2 }
+                                  }
+                                  H(ℓ1) = S1 { 1 }    ← v1, the moved value
 ```
+
+`Owned{ x0: MovedOut }` is one state written one way: it is exactly how
+`explain/partial_move_residue.txt` renders it, and `OwnSt.fields [.movedOut,
+.owned]` is how `Statics.lean` builds it — a node that still owns its storage,
+with one field taken out from under it. A slot the brace leaves out is `Owned`,
+which is why `x1` needs no mention there.
 
 Three things follow, and each is a premise somewhere:
 
-* `Σ(v0)` is still `Owned` — the node is `fields`, not `movedOut` — so
+* `Σ(v0)` is still `Owned` — the node is a field record, not `MovedOut` — so
   `v0.x1` is readable (`3.8:53`, the `copy_through_partial` case does exactly
   this with a `Copy` sibling) and `@drop(v0)` is legal (§5.3 asks only
   `Σ(p) = Owned`; the `drop_field_then_whole` case);
