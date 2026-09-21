@@ -113,21 +113,23 @@ ROOT_NAMESPACE = "RueCore"
 # no longer declare.
 SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
     ("T", "int(w, s)"): (
-        "partial",
-        ["Ty.int"],
-        "one width and signedness, `int(64, signed)`, which is what §6.4's traps "
-        "and `InBounds` are stated for",
+        "yes",
+        ["Ty.int", "IntWidth", "Sign"],
+        "every width and signedness, carried by the type, by the machine value "
+        "(§6.1's `n_T`) and by a literal (`4.1:2`); `InBounds` is the `min_T ≤ n ≤ "
+        "max_T` side condition and `valOf`/`wrapInt` are §6.4's `val_{w,s}(β_w(·))`",
     ),
     ("T", "float(w)"): ("no", [], "floats are in the core (§5.8, §6.4) and outside the fragment"),
     ("T", "bool"): ("yes", ["Ty.bool"], ""),
     ("T", "unit"): ("yes", ["Ty.unit"], ""),
     ("T", "never"): (
-        "no",
-        [],
-        "`return` is in the fragment (§5.7) but `never` is not a type here: "
-        "`RueCore.Typed.ret` folds (Sub-Never) into the rule by concluding at any "
-        "type, which is sound because `never` has no values (`3.4:1`); there is no "
-        "`@panic` and no `break`",
+        "stand-in",
+        ["Typed.ret", "Typed.panic"],
+        "`return` and `@panic` are in the fragment (§5.7, §5.8) but `never` is not "
+        "a type here: both rules fold (Sub-Never) in by concluding at any type, "
+        "which is sound because `never` has no values (`3.4:1`), and neither ever "
+        "needs a `HasTy` case. `break` and an infinite `loop` are the never-typed "
+        "forms the fragment still has no image of",
     ),
     ("T", "S"): (
         "partial",
@@ -153,15 +155,26 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         "no field projection, hence no partial move and no per-field drop obligation",
     ),
     ("p", "p [ e ]"): ("no", [], "no array indexing, hence no `3.8:73` element-wise form"),
-    ("e", "lit"): ("yes", ["Expr.intLit", "Expr.boolLit", "Expr.unitLit"], ""),
+    ("e", "lit"): (
+        "yes",
+        ["Expr.intLit", "Expr.boolLit", "Expr.unitLit"],
+        "an integer literal carries the `int(w,s)` elaboration resolved for it "
+        "(`4.1:2`); float literals follow `float(w)`",
+    ),
     ("e", "p"): ("yes", ["Expr.use"], "the §4.2 use, typed by (Use-Copy)/(Use-Move)"),
     ("e", "e1 ⊕ e2"): (
         "partial",
-        ["Expr.add", "Expr.div"],
-        "two of the primitive binary operators, `+` and `/`, chosen because they "
-        "carry §6.4's two trap kinds; no other arithmetic and no bitwise operators",
+        ["Expr.binop", "BinOp"],
+        "the whole integer operator set — `+ - * / %`, `& | ^`, `<< >>` — with "
+        "§6.4's traps and its `val_{w,s}(β_w(·))` bit semantics; the float "
+        "operators follow `float(w)`",
     ),
-    ("e", "⊖ e"): ("no", [], "no unary operators"),
+    ("e", "⊖ e"): (
+        "partial",
+        ["Expr.unop", "UnOp"],
+        "`neg` on a signed integer, `not` on `bool`, and `bitnot` on any integer, "
+        "by (Neg)/(Not)/(BitNot) §5.8; float negation follows `float(w)`",
+    ),
     ("e", "e1 ≟ e2"): (
         "no",
         [],
@@ -169,8 +182,9 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
     ),
     ("e", "e1 ⋚ e2"): (
         "partial",
-        ["Expr.lt"],
-        "one of the four ordering compares, `<`",
+        ["Expr.binop", "BinOp"],
+        "all four ordering compares on integers, by (Ord) §5.8; the float ordering "
+        "of (Float-Ord) follows `float(w)`",
     ),
     ("e", "S { f1: e1, ..., fk: ek }"): (
         "yes",
@@ -200,18 +214,26 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
     ),
     ("e", "@drop ( p )"): ("yes", ["Expr.drop"], "whole bindings only, as `p` above"),
     ("e", "@panic ( s )"): (
-        "no",
-        [],
-        "needs `never` and a string-valued operand; the fragment's only §6.12 "
-        "traps are the arithmetic ones",
+        "partial",
+        ["Expr.panic"],
+        "the message is a string *literal* carried by the form rather than an "
+        "operand expression, because the fragment has no string type — so "
+        "(Panic-Operand) §5.8 has no instance here. (Panic) itself is mechanized, "
+        "with (Sub-Never) folded in and no scope-exit obligation, which is §5.7's "
+        "`⊥_panic` exemption",
     ),
     ("e", "@dbg ( e )"): (
-        "no",
-        [],
-        "the fragment's observation channel is the drop trace (§6.11), not `@dbg`; "
-        "`Print.lean` does emit `@dbg` in the Rue source it prints, to make a drop "
-        "observable to the bridge, but that is a property of the printing rather "
-        "than a core form",
+        "yes",
+        ["Expr.dbg", "Event.dbg"],
+        "an `int(w,s)` or `bool` operand ((Dbg) §5.8; floats follow `float(w)`), "
+        "appending §6.12's observable output to the same trace the destructors "
+        "write to, so the two channels come out in the order they happened",
+    ),
+    ("e", "@intCast ( e )"): (
+        "yes",
+        ["Expr.intCast"],
+        "the target type is the one elaboration took from the use site "
+        "(`4.13:26`), and `4.13:28`'s trap is §6.4's `(D-Int-Cast-Trap)`",
     ),
     ("e", "@f ( e1, ..., ek )"): ("no", [], "follows `float(w)`"),
     ("e", "if e0 { e1 } else { e2 }"): ("yes", ["Expr.ite"], "with the §5.5 branch join"),

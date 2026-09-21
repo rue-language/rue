@@ -196,7 +196,7 @@ theorem binOpInt_res {D : StructEnv} (op : BinOp) (w : IntWidth) (s : Sign) (n�
   case gt => exact Or.inl ⟨_, rfl, .bool⟩
   case ge => exact Or.inl ⟨_, rfl, .bool⟩
 
-/-- The same, over the two machine values (Arith)/(Ord) §5.8 give one
+/-- The same, over the two machine values §5.8's operator rules give one
 `int(w,s)`: the shape mismatch `evalBinOp` refuses is not reachable from
 them. -/
 theorem evalBinOp_res {D : StructEnv} (op : BinOp) (w : IntWidth) (s : Sign) (n₁ n₂ : Int) :
@@ -207,7 +207,7 @@ theorem evalBinOp_res {D : StructEnv} (op : BinOp) (w : IntWidth) (s : Sign) (n�
   exact binOpInt_res op w s n₁ n₂
 
 /-- **`neg` and `bitnot` land on a value of the operand's type or on
-`↯overflow`** (§6.4; (Neg) restricts `neg` to a signed operand, and the rule
+`↯overflow`** (§6.4; §5.8 restricts `neg` to a signed operand, and the lemma
 here covers both signednesses because the range check is what decides). -/
 theorem evalUnOp_int_res {D : StructEnv} (op : UnOp) (w : IntWidth) (s : Sign) (n : Int)
     (hop : op ≠ .not) :
