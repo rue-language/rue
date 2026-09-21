@@ -32,23 +32,28 @@ Design commitments carried over from §6:
     differ on statically invalid input.
 * **The correspondence with §6 is claimed on the checker's input domain.**
   On a program `check` accepts, `eval` and §6 agree (the adequacy lemma
-  owed in RUE-2289 is stated there); on other input they may not, and not
-  only through the monitors. `eval` inspects an operand's shape before
-  evaluating the next operand, where §6.2's `v ⊕ E` context reduces the
-  next operand first: `add (boolLit true) (div 1 0)` is `typeConfusion`
-  here and a division-by-zero panic under §6 (`Examples.lean` pins this).
-  A raw `intLit` outside `int(64, signed)` evaluates to its value here,
-  while §6's integer domain is bounded and `check` rejects the literal.
+  owed in RUE-2289 is stated there); on other input they may not. An
+  operator reduces both its operands first, in §6.2's own left-to-right
+  order, and only then inspects their shapes, so a mismatch is named after
+  the operands have run; but a raw `intLit` outside its type's `n_T` range
+  evaluates to its value here, while §6's integer domain is bounded (§6.1)
+  and `check` rejects the literal (`Examples.lean` pins both).
 * Scope exit *retires* the binding's allocation (`drop-retire`, §6.1), so a
   use after scope exit is `useAfterDrop`, distinct from `useAfterMove`.
 * `@drop` and overwrite-drop do **not** retire (§6.8/§6.11): the binding
   stays reinitializable.
-* Arithmetic overflow and division by zero are *panics* (`↯` in §6.12), a
-  defined outcome permitted by the safety theorem, not a violation.
+* Arithmetic overflow, a zero divisor, an out-of-range `@intCast` and an
+  explicit `@panic` are *panics* (`↯` in §6.12), a defined outcome permitted
+  by the safety theorem, not a violation. A panic carries the trace the run
+  had already produced, because §6.12's observable output survives the trap
+  (the process prints what it printed and then exits 101), and because
+  §5.7's `⊥_panic` runs no further drop there is nothing to add to it.
 * Traces record each drop (`drop ℓ v`) and each discarded temporary
   (`dropTemp v`) — the §6.7 temporary-death analog — and, nested under
-  either, every user destructor §6.11 runs (`dtor s v`), which is the only
-  event a printed Rue program can observe.
+  either, every user destructor §6.11 runs (`dtor s v`). Beside them
+  `@dbg`'s own event (`dbg v`) is the other half of §6.12's observable
+  output; those two are what a printed Rue program can see, in the one
+  trace order they happened in.
 
 ## Structs and §6.11's drop order
 
@@ -136,7 +141,7 @@ carrying its class, so the machine's drop decisions are value-driven — it
 reads the tag the value carries — while the class and the destructor come from
 the program's declarations, as the compiled program's drop glue does. -/
 inductive Val where
-  | int (n : Int)
+  | int (w : IntWidth) (s : Sign) (n : Int)
   | bool (b : Bool)
   | unit
   | struct (s : Nat) (fields : List Val)
@@ -146,7 +151,7 @@ deriving Repr
 struct value has the class its declaration records. -/
 def Val.mult (D : StructEnv) : Val → Mult
   | .struct s _ => D.classOf s
-  | _ => .copy
+  | .int _ _ _ | .bool _ | .unit => .copy
 
 /-- Cell contents (§6.1's `c ::= v | ⊘`, plus the retired allocation `†`). -/
 inductive Cell where
@@ -185,12 +190,20 @@ inductive Event where
   | drop (ℓ : Nat) (v : Val)
   | dropTemp (v : Val)
   | dtor (s : Nat) (v : Val)
+  | dbg (v : Val)
 deriving Repr
 
-/-- Defined traps (§6.12's `↯κ`), fragment categories. -/
+/-- Defined traps (§6.12's `↯κ`), the categories the fragment reaches.
+`bounds` is the arrays', which are not here; `rem-zero` and `user` are §6.12's
+own spellings, and `cast-overflow` is the one §6.12 gains with `@intCast`
+(`4.13:28`) — the implementations report it as `integer cast overflow`,
+distinct from the arithmetic overflow, so the model keeps them apart. -/
 inductive PanicKind where
   | overflow
   | divZero
+  | remZero
+  | castOverflow
+  | user
 deriving DecidableEq, Repr
 
 /-- The named memory violations: the machine's refusals. §7's decomposed
@@ -226,7 +239,7 @@ state at all but this interpreter's admission that it stopped early. -/
 inductive EvalRes where
   | ok (H : Store) (v : Val) (tr : List Event)
   | returned (H : Store) (v : Val) (tr : List Event)
-  | panic (k : PanicKind)
+  | panic (k : PanicKind) (tr : List Event)
   | stuck (why : Violation)
   | outOfFuel
 deriving Repr
@@ -237,6 +250,7 @@ a normal result does (helper). -/
 def EvalRes.withTrace (tr : List Event) : EvalRes → EvalRes
   | .ok H v tr' => .ok H v (tr ++ tr')
   | .returned H v tr' => .returned H v (tr ++ tr')
+  | .panic k tr' => .panic k (tr ++ tr')
   | r => r
 
 /-- §6.2's evaluation-context search, as a combinator: run an operand, and if
@@ -291,7 +305,7 @@ The `⊘`-skip §6.11 opens with is the *cell* case below: a moved-out field has
 no representation here, since the fragment has no partial moves
 (RUE-2231). -/
 def dropValue (D : StructEnv) : Val → Except Violation (List Event)
-  | .int _ => .ok []
+  | .int _ _ _ => .ok []
   | .bool _ => .ok []
   | .unit => .ok []
   | .struct s vs =>
@@ -326,7 +340,7 @@ instead — `dropValue_struct_events` (`Soundness.lean`) is the theorem that the
 two agree on every well-typed value, and it is the closed form RUE-2237's
 "dropped exactly once" quantifies over. -/
 def dropEvents (D : StructEnv) : Val → List Event
-  | .int _ => []
+  | .int _ _ _ => []
   | .bool _ => []
   | .unit => []
   | .struct s vs =>
@@ -438,25 +452,131 @@ def evalArgs (ev : Store → Expr → EvalRes) : Store → List Expr → ArgsRes
            | .abort r => .abort (r.withTrace tr))
       | r => .abort r
 
+/-! ## §6.4's primitive operators
+
+Every rule of §6.4 the fragment reaches is here, computed over `Int` and
+range-checked against the operand type, which is what `arith + range_check`
+means: the exact result is formed first and the trap is the check on it
+(`3.1:6` — Rue arithmetic never wraps). The bitwise and shift rules compute
+over the `w`-bit pattern instead (`valOf`/`bitsOf`, `Syntax.lean`) and are
+total by construction.
+-/
+
+/-- What a primitive operator produced: a value, one of §6.12's traps, or a
+refusal because an operand was the wrong shape — which the statics exclude and
+`soundness` proves they do (helper). -/
+inductive OpRes where
+  | val (v : Val)
+  | trap (k : PanicKind)
+  | confused
+deriving Repr
+
+/-- `range_check` (§6.4): an exact integer result becomes a value of
+`int(w,s)` when it lies in `[min_T, max_T]` and `↯overflow` when it does not —
+(D-Arith) and (D-Arith-Trap) in one (helper). -/
+def intResult (w : IntWidth) (s : Sign) (n : Int) : OpRes :=
+  if InBounds w s n then .val (.int w s n) else .trap .overflow
+
+/-- The shift amount, reduced modulo the operand width (`k = amt mod w`,
+§6.4's (D-Shl)/(D-Shr), prose `4.3a:10`). Shifting never traps (helper). -/
+def shiftAmount (w : IntWidth) (n : Int) : Nat := (n % (w.bits : Int)).toNat
+
+/-- §6.4's binary integer rules at one `int(w,s)`, on the two operands'
+values:
+
+* `+ - *` are (D-Arith)/(D-Arith-Trap);
+* `/` is (D-Div)/(D-Div-Zero)/(D-Div-Overflow) — truncated toward zero, and
+  the `min_T / -1` case is exactly the one the range check rejects;
+* `%` is the remainder arm of the same group: `↯rem-zero` on a zero divisor
+  and `↯overflow` on `min_T % -1`, which §6.4 traps even though the
+  mathematical remainder is `0`, so the case is written out rather than left
+  to the range check;
+* `& | ^` are (D-Bit) and `<< >>` are (D-Shl)/(D-Shr), over the `w`-bit
+  pattern, with `>>` arithmetic on a signed type and logical on an unsigned
+  one; none of them traps;
+* `< <= > >=` are §6.4's `cmp`, on the integer value, which carries its own
+  sign. -/
+def binOpInt (op : BinOp) (w : IntWidth) (s : Sign) (n₁ n₂ : Int) : OpRes :=
+  match op with
+  | .add => intResult w s (n₁ + n₂)
+  | .sub => intResult w s (n₁ - n₂)
+  | .mul => intResult w s (n₁ * n₂)
+  | .div => if n₂ = 0 then .trap .divZero else intResult w s (n₁.tdiv n₂)
+  | .rem =>
+      if n₂ = 0 then .trap .remZero
+      else if s = .signed ∧ n₁ = intMin w s ∧ n₂ = -1 then .trap .overflow
+      else intResult w s (n₁.tmod n₂)
+  | .bitAnd => .val (.int w s (valOf w s (bitsOf w n₁ &&& bitsOf w n₂)))
+  | .bitOr => .val (.int w s (valOf w s (bitsOf w n₁ ||| bitsOf w n₂)))
+  | .bitXor => .val (.int w s (valOf w s (bitsOf w n₁ ^^^ bitsOf w n₂)))
+  | .shl => .val (.int w s (valOf w s (bitsOf w n₁ * 2 ^ shiftAmount w n₂)))
+  | .shr =>
+      match s with
+      | .unsigned => .val (.int w s (valOf w s (bitsOf w n₁ / 2 ^ shiftAmount w n₂)))
+      | .signed => .val (.int w s (wrapInt w s (Int.fdiv n₁ (2 ^ shiftAmount w n₂))))
+  | .lt => .val (.bool (decide (n₁ < n₂)))
+  | .le => .val (.bool (decide (n₁ ≤ n₂)))
+  | .gt => .val (.bool (decide (n₂ < n₁)))
+  | .ge => .val (.bool (decide (n₂ ≤ n₁)))
+
+/-- §6.4's binary operators on two machine values. (Arith) §5.8 gives both
+operands one `int(w,s)`, so operands of two different integer types are a
+shape no well-typed program produces and the machine refuses them. -/
+def evalBinOp (op : BinOp) : Val → Val → OpRes
+  | .int w₁ s₁ n₁, .int w₂ s₂ n₂ =>
+      if w₁ = w₂ ∧ s₁ = s₂ then binOpInt op w₁ s₁ n₁ n₂ else .confused
+  | _, _ => .confused
+
+/-- §6.4's unary operators. `neg` is (D-Arith)'s unary case, trapping on
+`min_T` because `-min_T > max_T`; `not` on `bool` is total (§6.4's `Not`);
+`bitnot` inverts the `w`-bit pattern ((D-Bit)'s complement arm) and is total
+too. (Neg) §5.8 restricts `neg` to a signed operand, so the unsigned case
+below is a shape no well-typed program produces; it is written as the same
+range check rather than as a refusal, because the exact result `-n` is what
+§6.4 computes and the check is what decides. -/
+def evalUnOp : UnOp → Val → OpRes
+  | .neg, .int w s n => intResult w s (-n)
+  | .not, .bool b => .val (.bool (!b))
+  | .bitnot, .int w s n => .val (.int w s (valOf w s (w.modulus - 1 - bitsOf w n)))
+  | _, _ => .confused
+
+/-- `@intCast` (`4.13:28`): the value survives when it denotes a value of the
+target type, and traps when it does not. The conversion is on the *value*, not
+on the bit pattern — `@bitCast` is the reinterpreting intrinsic and is not in
+the fragment. -/
+def evalIntCast (w : IntWidth) (s : Sign) : Val → OpRes
+  | .int _ _ n => if InBounds w s n then .val (.int w s n) else .trap .castOverflow
+  | _ => .confused
+
+/-- An operator's outcome as an evaluation result, at the store the operands
+left: a value carries no events, a trap carries none of its own (the events
+the operands emitted are prefixed by `andThen`), and a refusal is named
+(helper). -/
+def OpRes.toRes (H : Store) : OpRes → EvalRes
+  | .val v => .ok H v []
+  | .trap k => .panic k []
+  | .confused => .stuck .typeConfusion
+
 /-- The interpreter. Rule correspondence, per case: `use` is
-(D-Use-Copy)/(D-Use-Move) (§6.3); `add` is (D-Arith)/(D-Arith-Trap), `div` is
-(D-Div)/(D-Div-Zero)/(D-Div-Overflow), and `lt` is §6.4's ordering compare
-(`cmp`, unlabeled there); `drop` is §6.11's explicit `@drop`; `letIn` is
-(D-Let) + (D-EndScope)'s drop-retire (§6.7); `assign` is (D-Assign), §6.8's
-overwrite-drop / reinitialization; `seq` is (D-Seq), discarding with a
-temporary drop (§6.7); `mkStruct` is (D-Struct) §6.5 after §6.2's
-left-to-right search through its initializers; `ite` is
-(D-If-T)/(D-If-F) after the §6.2 search for the scrutinee; `call` is (D-Call) followed by (D-Return-Value) when the body
-completes normally, and by (D-Return)'s absorption when it does not; `ret` is
-(D-Return), which runs the frame's scope drops and hands the value past every
-enclosing form.
+(D-Use-Copy)/(D-Use-Move) (§6.3); `binop`, `unop` and `intCast` are §6.4's
+operator rules, computed by `evalBinOp`/`evalUnOp`/`evalIntCast` above;
+`panic` is (D-Panic) §6.12; `dbg` appends the operand's rendering to the
+observable output (§5.8's (Dbg), §6.12's `Outcome`); `drop` is §6.11's
+explicit `@drop`; `letIn` is (D-Let) + (D-EndScope)'s drop-retire (§6.7);
+`assign` is (D-Assign), §6.8's overwrite-drop / reinitialization; `seq` is
+(D-Seq), discarding with a temporary drop (§6.7); `mkStruct` is (D-Struct)
+§6.5 after §6.2's left-to-right search through its initializers; `ite` is
+(D-If-T)/(D-If-F) after the §6.2 search for the scrutinee; `call` is (D-Call)
+followed by (D-Return-Value) when the body completes normally, and by
+(D-Return)'s absorption when it does not; `ret` is (D-Return), which runs the
+frame's scope drops and hands the value past every enclosing form.
 
 Every operand is sequenced with `andThen`, which is §6.2's search through an
 evaluation context; the callee's body is sequenced with `absorb`, the one
 place a `return` stops travelling (§6.9). -/
 def eval : Nat → Program → Store → Frame → Expr → EvalRes
   | 0, _, _, _, _ => .outOfFuel
-  | _ + 1, _, H, _, .intLit n => .ok H (.int n) []
+  | _ + 1, _, H, _, .intLit w s n => .ok H (.int w s n) []
   | _ + 1, _, H, _, .boolLit b => .ok H (.bool b) []
   | _ + 1, _, H, _, .unitLit => .ok H .unit []
   | _ + 1, P, H, φ, .use i =>
@@ -470,38 +590,22 @@ def eval : Nat → Program → Store → Frame → Expr → EvalRes
         | some (.full v) =>
             if v.mult P.structs = .copy then .ok H v []
             else .ok (H.set ℓ .moved) v []
-  | fuel + 1, P, H, φ, .add e₁ e₂ =>
+  | fuel + 1, P, H, φ, .binop op e₁ e₂ =>
       (eval fuel P H φ e₁).andThen fun H₁ v₁ =>
-        match v₁ with
-        | .int n₁ =>
-            (eval fuel P H₁ φ e₂).andThen fun H₂ v₂ =>
-              match v₂ with
-              | .int n₂ =>
-                  if InBounds (n₁ + n₂) then .ok H₂ (.int (n₁ + n₂)) []
-                  else .panic .overflow
-              | _ => .stuck .typeConfusion
-        | _ => .stuck .typeConfusion
-  | fuel + 1, P, H, φ, .div e₁ e₂ =>
-      (eval fuel P H φ e₁).andThen fun H₁ v₁ =>
-        match v₁ with
-        | .int n₁ =>
-            (eval fuel P H₁ φ e₂).andThen fun H₂ v₂ =>
-              match v₂ with
-              | .int n₂ =>
-                  if n₂ = 0 then .panic .divZero
-                  else if InBounds (n₁.tdiv n₂) then .ok H₂ (.int (n₁.tdiv n₂)) []
-                  else .panic .overflow
-              | _ => .stuck .typeConfusion
-        | _ => .stuck .typeConfusion
-  | fuel + 1, P, H, φ, .lt e₁ e₂ =>
-      (eval fuel P H φ e₁).andThen fun H₁ v₁ =>
-        match v₁ with
-        | .int n₁ =>
-            (eval fuel P H₁ φ e₂).andThen fun H₂ v₂ =>
-              match v₂ with
-              | .int n₂ => .ok H₂ (.bool (decide (n₁ < n₂))) []
-              | _ => .stuck .typeConfusion
-        | _ => .stuck .typeConfusion
+        (eval fuel P H₁ φ e₂).andThen fun H₂ v₂ =>
+          (evalBinOp op v₁ v₂).toRes H₂
+  | fuel + 1, P, H, φ, .unop op e =>
+      (eval fuel P H φ e).andThen fun H' v => (evalUnOp op v).toRes H'
+  | fuel + 1, P, H, φ, .intCast w s e =>
+      (eval fuel P H φ e).andThen fun H' v => (evalIntCast w s v).toRes H'
+  | _ + 1, _, _, _, .panic _ =>
+      -- (D-Panic) §6.12: the message is emitted and the configuration is
+      -- abandoned. No scope drop runs — §5.7 exempts the `⊥_panic` edge from
+      -- §5.6's obligation — so the trace this trap carries is exactly the one
+      -- the evaluation had already produced, prefixed by `andThen`.
+      .panic .user []
+  | fuel + 1, P, H, φ, .dbg e =>
+      (eval fuel P H φ e).andThen fun H' v => .ok H' .unit [.dbg v]
   | fuel + 1, P, H, φ, .mkStruct s args =>
       -- (D-Struct) §6.5: a struct literal is a redex once every initializer
       -- is a value; §6.2's contexts reduce them left to right, threading `H`,
@@ -518,7 +622,7 @@ def eval : Nat → Program → Store → Frame → Expr → EvalRes
   | fuel + 1, P, H, φ, .consume e =>
       (eval fuel P H φ e).andThen fun H' v =>
         match v with
-        | .struct _ (.int n :: _) => .ok H' (.int n) []
+        | .struct _ (.int w s n :: _) => .ok H' (.int w s n) []
         | _ => .stuck .typeConfusion
   | _ + 1, P, H, φ, .drop i =>
       match φ.env[i]? with

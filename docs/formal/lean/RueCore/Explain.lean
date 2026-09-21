@@ -76,13 +76,17 @@ syntax of `Print.expr` and with its `v<depth>` binder names, but with the
 block forms (`let`, assignment, sequencing, `if`) folded onto one line so a
 derivation node or a trace row stays one row. -/
 partial def exprLine (P : Program) (R : Ty) : List Ty → Expr → String
-  | _, .intLit n => if n < 0 then "(" ++ toString n ++ ")" else toString n
+  | _, .intLit _ _ n => if n < 0 then "(" ++ toString n ++ ")" else toString n
   | _, .boolLit b => if b then "true" else "false"
   | _, .unitLit => "()"
   | Γ, .use i => Print.useName Γ i
-  | Γ, .add e₁ e₂ => "(" ++ exprLine P R Γ e₁ ++ " + " ++ exprLine P R Γ e₂ ++ ")"
-  | Γ, .div e₁ e₂ => "(" ++ exprLine P R Γ e₁ ++ " / " ++ exprLine P R Γ e₂ ++ ")"
-  | Γ, .lt e₁ e₂ => "(" ++ exprLine P R Γ e₁ ++ " < " ++ exprLine P R Γ e₂ ++ ")"
+  | Γ, .binop op e₁ e₂ =>
+      "(" ++ exprLine P R Γ e₁ ++ " " ++ Print.binOpSym op ++ " " ++ exprLine P R Γ e₂ ++ ")"
+  | Γ, .unop op e => "(" ++ Print.unOpSym op ++ exprLine P R Γ e ++ ")"
+  | Γ, .intCast w s e =>
+      "@intCast<" ++ Print.tyName (.int w s) ++ ">(" ++ exprLine P R Γ e ++ ")"
+  | _, .panic msg => "@panic(" ++ Print.quoted msg ++ ")"
+  | Γ, .dbg e => "@dbg(" ++ exprLine P R Γ e ++ ")"
   | Γ, .mkStruct s args =>
       Print.tyName (.struct s) ++ " { " ++
         String.intercalate ", "
@@ -94,7 +98,7 @@ partial def exprLine (P : Program) (R : Ty) : List Ty → Expr → String
       Print.consumeName s ++ "(" ++ exprLine P R Γ e ++ ")"
   | Γ, .drop i => "@drop(" ++ Print.useName Γ i ++ ")"
   | Γ, .letIn m e₁ e₂ =>
-      let T₁ := (Print.tyOf P R Γ e₁).getD .int
+      let T₁ := (Print.tyOf P R Γ e₁).getD (.int .w64 .signed)
       "{ let " ++ (if m then "mut " else "") ++ Print.binderName Γ.length ++ ": " ++
         Print.tyName T₁ ++ " = " ++ exprLine P R Γ e₁ ++ "; " ++
         exprLine P R (T₁ :: Γ) e₂ ++ " }"
@@ -122,7 +126,7 @@ def binderTys (Γ : Ctx) : List Ty := Γ.map Entry.ty
 value determines its type (§7's `HasTy`, read as a function), which is what
 lets a trace name its binders the way the source does. -/
 def valTy : Val → Ty
-  | .int _ => .int
+  | .int w s _ => .int w s
   | .bool _ => .bool
   | .unit => .unit
   | .struct s _ => .struct s
@@ -130,7 +134,7 @@ def valTy : Val → Ty
 /-- (helper) A value, as §6.1 writes it: a scalar as itself, a struct value
 as `{ v1, …, vk }_S` with its declaration's name. -/
 partial def valLine : Val → String
-  | .int n => toString n
+  | .int _ _ n => toString n
   | .bool b => if b then "true" else "false"
   | .unit => "()"
   | .struct s vs =>
@@ -197,6 +201,7 @@ def eventLine : Event → String
   | .drop ℓ v => "drop " ++ locName ℓ ++ " = " ++ valLine v
   | .dropTemp v => "drop temporary " ++ valLine v
   | .dtor s v => "run drop fn " ++ Print.tyName (.struct s) ++ "(" ++ valLine v ++ ")"
+  | .dbg v => "@dbg prints " ++ valLine v
 
 /-- (helper) A node's events on one line; most nodes emit none. -/
 def eventsLine (evs : List Event) : String :=
@@ -229,13 +234,11 @@ def unboundIndex : String :=
 
 /-- Elaboration resolves an integer literal to a concrete `int(w,s)` and
 rejects one that does not denote a value of it (`4.1:2`, `4.1:3`), so the
-core never sees an out-of-range literal; the fragment fixes `int(w,s)` to
-`int(64, signed)`, whose bounds are `intMin`/`intMax` in `Syntax.lean`. -/
-def litOutOfRange : String :=
-  "the integer literal does not denote a value of int(64, signed) — elaboration " ++
-  "resolves a literal to a concrete int(w,s) and rejects one out of its range " ++
-  "(4.1:2, 4.1:3); the fragment fixes int(w,s) to int(64, signed), whose bounds are " ++
-  "`intMin`/`intMax` in `Syntax.lean`"
+core never sees an out-of-range literal. -/
+def litOutOfRange (T : Ty) : String :=
+  "the integer literal does not denote a value of " ++ Print.tyName T ++
+  " — elaboration resolves a literal to a concrete int(w,s) and rejects one out of " ++
+  "its range (4.1:2, 4.1:3); the bounds are `intMin`/`intMax` in `Syntax.lean`"
 
 /-- (helper) A premise whose own derivation failed: the reason is the
 rejected sub-derivation nested under this rule, not this rule itself. -/
@@ -243,11 +246,49 @@ def subDerivation : String :=
   "a premise's own derivation failed — the reason is the rejected premise nested " ++
   "under this rule"
 
-/-- (Arith)/(Ord) premise: both operands share one `int(w,s)` (§5.8;
-`4.2:1`). The fragment fixes that type to `int(64, signed)`. -/
+/-- (Arith)/(Ord) premise: the left operand is an integer (§5.8; `4.2:1`).
+The bitwise and shift operators reject a `bool` operand for the same reason
+(`4.3a:18`, `4.3a:19`). -/
 def operandNotInt (T : Ty) : String :=
   "an operand has type " ++ Print.tyName T ++ ", but (Arith)/(Ord) require both operands " ++
-  "to share one int(w,s), which the fragment fixes to int(64, signed) (§5.8; 4.2:1)"
+  "to share one int(w,s) (§5.8; 4.2:1; the bitwise and shift operators take no other " ++
+  "type at all, 4.3a:18, 4.3a:19)"
+
+/-- (Arith)/(Ord) premise: **one** `int(w,s)` for both operands (§5.8;
+`4.2:1`; there is no implicit widening). For a shift this is `4.3a:9`: the
+amount has the shifted value's own type. -/
+def operandWidthMismatch (T₁ T₂ : Ty) : String :=
+  "the operands have types " ++ Print.tyName T₁ ++ " and " ++ Print.tyName T₂ ++
+  ", but (Arith)/(Ord) require one int(w,s) for both and Rue has no implicit " ++
+  "widening (§5.8; 4.2:1; for a shift the amount takes the shifted value's own " ++
+  "type, 4.3a:9)"
+
+/-- (Neg) §5.8's signed premise (`4.2:6`; rejecting `neg` on an unsigned type
+is `4.2:14`). -/
+def negNotSigned (T : Ty) : String :=
+  "the operand has type " ++ Print.tyName T ++ ", but (Neg) negates a signed integer " ++
+  "only — there is no value for it to produce on an unsigned type (§5.8; 4.2:6, 4.2:14)"
+
+/-- (Not) §5.8's `bool` premise (`4.4:2`). -/
+def notNotBool (T : Ty) : String :=
+  "the operand has type " ++ Print.tyName T ++ ", but (Not) demands bool (§5.8; 4.4:2)"
+
+/-- (BitNot) §5.8's integer premise (`4.3a:3`, `4.3a:4`, `4.3a:18`). -/
+def bitnotNotInt (T : Ty) : String :=
+  "the operand has type " ++ Print.tyName T ++ ", but the bitwise complement acts on an " ++
+  "integer's w-bit pattern (§5.8; 4.3a:3, 4.3a:4; 4.3a:18 restricts every bitwise " ++
+  "operator to the integer types)"
+
+/-- `@intCast`'s operand premise (`4.13:25`). -/
+def castNotInt (T : Ty) : String :=
+  "the operand has type " ++ Print.tyName T ++ ", but `@intCast` converts between the " ++
+  "integer types only (4.13:25; its target is likewise an integer type, 4.13:27)"
+
+/-- (Dbg) §5.8's operand restriction, which is the compiler's (E0702). -/
+def dbgNotObservable (T : Ty) : String :=
+  "the operand has type " ++ Print.tyName T ++ ", but `@dbg` renders a scalar — an " ++
+  "int(w,s), a float or a bool ((Dbg) §5.8; the compiler rejects an aggregate with " ++
+  "E0702), and the fragment has no floats"
 
 /-- (Struct-Intro) §5.8's first premise, `S = struct { f1: T1, …, fk: Tk }`:
 the program has no declaration at this index. Elaboration resolves a type's
@@ -380,6 +421,11 @@ def returnLeak : String :=
 
 end Premise
 
+/-- (helper) The rule name a binary operator's node carries: §5.8 types the
+ordering compares by (Ord) and everything else in the `⊕` set by (Arith). -/
+def binopRule (op : BinOp) : String :=
+  if op.isCompare then "(Ord) §5.8" else "(Arith) §5.8"
+
 /-- (helper) The first entry on which the §5.5 join fails, named as the
 source names it, so a join rejection can point at a binding. -/
 def joinConflictEntry (D : StructEnv) : Ctx → Ctx → Option String
@@ -441,9 +487,9 @@ mutual
 the rule it applied at every node and, where it rejects, the premise that
 failed. `explain_result` proves the two agree. -/
 def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
-  | .intLit n =>
-      if InBounds n then accepted "(Lit) §5.8" Γ (.intLit n) .int Γ []
-      else rejected "(Lit) §5.8" Γ (.intLit n) Premise.litOutOfRange []
+  | .intLit w s n =>
+      if InBounds w s n then accepted "(Lit) §5.8" Γ (.intLit w s n) (.int w s) Γ []
+      else rejected "(Lit) §5.8" Γ (.intLit w s n) (Premise.litOutOfRange (.int w s)) []
   | .boolLit b => accepted "(Lit) §5.8" Γ (.boolLit b) .bool Γ []
   | .unitLit => accepted "(Lit) §5.8" Γ .unitLit .unit Γ []
   | .use i =>
@@ -457,41 +503,60 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
             accepted "(Use-Copy) §5.1" Γ (.use i) en.ty Γ []
           else
             accepted "(Use-Move) §5.1" Γ (.use i) en.ty (Γ.set i (en.setSt .movedOut)) []
-  | .add e₁ e₂ =>
+  | .binop op e₁ e₂ =>
+      let rule := binopRule op
       let d₁ := explain P R Γ e₁
       match d₁.result with
-      | some (.int, Γ₁) =>
+      | some (.int w s, Γ₁) =>
         let d₂ := explain P R Γ₁ e₂
         (match d₂.result with
-         | some (.int, Γ₂) => accepted "(Arith) §5.8" Γ (.add e₁ e₂) .int Γ₂ [d₁, d₂]
-         | some (T, _) =>
-             rejected "(Arith) §5.8" Γ (.add e₁ e₂) (Premise.operandNotInt T) [d₁, d₂]
-         | none => rejected "(Arith) §5.8" Γ (.add e₁ e₂) Premise.subDerivation [d₁, d₂])
-      | some (T, _) => rejected "(Arith) §5.8" Γ (.add e₁ e₂) (Premise.operandNotInt T) [d₁]
-      | none => rejected "(Arith) §5.8" Γ (.add e₁ e₂) Premise.subDerivation [d₁]
-  | .div e₁ e₂ =>
-      let d₁ := explain P R Γ e₁
-      match d₁.result with
-      | some (.int, Γ₁) =>
-        let d₂ := explain P R Γ₁ e₂
-        (match d₂.result with
-         | some (.int, Γ₂) => accepted "(Arith) §5.8" Γ (.div e₁ e₂) .int Γ₂ [d₁, d₂]
-         | some (T, _) =>
-             rejected "(Arith) §5.8" Γ (.div e₁ e₂) (Premise.operandNotInt T) [d₁, d₂]
-         | none => rejected "(Arith) §5.8" Γ (.div e₁ e₂) Premise.subDerivation [d₁, d₂])
-      | some (T, _) => rejected "(Arith) §5.8" Γ (.div e₁ e₂) (Premise.operandNotInt T) [d₁]
-      | none => rejected "(Arith) §5.8" Γ (.div e₁ e₂) Premise.subDerivation [d₁]
-  | .lt e₁ e₂ =>
-      let d₁ := explain P R Γ e₁
-      match d₁.result with
-      | some (.int, Γ₁) =>
-        let d₂ := explain P R Γ₁ e₂
-        (match d₂.result with
-         | some (.int, Γ₂) => accepted "(Ord) §5.8" Γ (.lt e₁ e₂) .bool Γ₂ [d₁, d₂]
-         | some (T, _) => rejected "(Ord) §5.8" Γ (.lt e₁ e₂) (Premise.operandNotInt T) [d₁, d₂]
-         | none => rejected "(Ord) §5.8" Γ (.lt e₁ e₂) Premise.subDerivation [d₁, d₂])
-      | some (T, _) => rejected "(Ord) §5.8" Γ (.lt e₁ e₂) (Premise.operandNotInt T) [d₁]
-      | none => rejected "(Ord) §5.8" Γ (.lt e₁ e₂) Premise.subDerivation [d₁]
+         | some (.int w' s', Γ₂) =>
+             if w' = w ∧ s' = s then
+               accepted rule Γ (.binop op e₁ e₂) (op.resultTy (.int w s)) Γ₂ [d₁, d₂]
+             else
+               rejected rule Γ (.binop op e₁ e₂)
+                 (Premise.operandWidthMismatch (.int w s) (.int w' s')) [d₁, d₂]
+         | some (T, _) => rejected rule Γ (.binop op e₁ e₂) (Premise.operandNotInt T) [d₁, d₂]
+         | none => rejected rule Γ (.binop op e₁ e₂) Premise.subDerivation [d₁, d₂])
+      | some (T, _) => rejected rule Γ (.binop op e₁ e₂) (Premise.operandNotInt T) [d₁]
+      | none => rejected rule Γ (.binop op e₁ e₂) Premise.subDerivation [d₁]
+  | .unop .neg e =>
+      let d := explain P R Γ e
+      (match d.result with
+       | some (.int w .signed, Γ') =>
+           accepted "(Neg) §5.8" Γ (.unop .neg e) (.int w .signed) Γ' [d]
+       | some (T, _) => rejected "(Neg) §5.8" Γ (.unop .neg e) (Premise.negNotSigned T) [d]
+       | none => rejected "(Neg) §5.8" Γ (.unop .neg e) Premise.subDerivation [d])
+  | .unop .not e =>
+      let d := explain P R Γ e
+      (match d.result with
+       | some (.bool, Γ') => accepted "(Not) §5.8" Γ (.unop .not e) .bool Γ' [d]
+       | some (T, _) => rejected "(Not) §5.8" Γ (.unop .not e) (Premise.notNotBool T) [d]
+       | none => rejected "(Not) §5.8" Γ (.unop .not e) Premise.subDerivation [d])
+  | .unop .bitnot e =>
+      let d := explain P R Γ e
+      (match d.result with
+       | some (.int w s, Γ') =>
+           accepted "(BitNot) §5.8" Γ (.unop .bitnot e) (.int w s) Γ' [d]
+       | some (T, _) =>
+           rejected "(BitNot) §5.8" Γ (.unop .bitnot e) (Premise.bitnotNotInt T) [d]
+       | none => rejected "(BitNot) §5.8" Γ (.unop .bitnot e) Premise.subDerivation [d])
+  | .intCast w s e =>
+      let d := explain P R Γ e
+      (match d.result with
+       | some (.int _ _, Γ') =>
+           accepted "(Int-Cast) §5.8" Γ (.intCast w s e) (.int w s) Γ' [d]
+       | some (T, _) =>
+           rejected "(Int-Cast) §5.8" Γ (.intCast w s e) (Premise.castNotInt T) [d]
+       | none => rejected "(Int-Cast) §5.8" Γ (.intCast w s e) Premise.subDerivation [d])
+  | .panic msg => accepted "(Panic) §5.8 + (Sub-Never) §5.7" Γ (.panic msg) R Γ []
+  | .dbg e =>
+      let d := explain P R Γ e
+      (match d.result with
+       | some (T, Γ') =>
+           if T.observable then accepted "(Dbg) §5.8" Γ (.dbg e) .unit Γ' [d]
+           else rejected "(Dbg) §5.8" Γ (.dbg e) (Premise.dbgNotObservable T) [d]
+       | none => rejected "(Dbg) §5.8" Γ (.dbg e) Premise.subDerivation [d])
   | .mkStruct s args =>
       match P.structs[s]? with
       | none => rejected "(Struct-Intro) §5.8" Γ (.mkStruct s args) Premise.unknownStruct []
@@ -511,10 +576,11 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
              rejected "§5.8 whole-value elimination" Γ (.consume e) Premise.unknownStruct [d]
          | some sd =>
              if sd.Consumable then
-               accepted "§5.8 whole-value elimination" Γ (.consume e) .int Γ' [d]
+               accepted "§5.8 whole-value elimination" Γ (.consume e) sd.payloadTy Γ' [d]
              else rejected "§5.8 whole-value elimination" Γ (.consume e) Premise.notConsumable [d])
-      | some (.int, _) =>
-          rejected "§5.8 whole-value elimination" Γ (.consume e) (Premise.consumeNotStruct .int) [d]
+      | some (.int w s, _) =>
+          rejected "§5.8 whole-value elimination" Γ (.consume e)
+            (Premise.consumeNotStruct (.int w s)) [d]
       | some (.bool, _) =>
           rejected "§5.8 whole-value elimination" Γ (.consume e) (Premise.consumeNotStruct .bool) [d]
       | some (.unit, _) =>
@@ -680,22 +746,38 @@ never claim an acceptance or a rejection the verified checker (§5,
 `check_sound`) does not make. -/
 theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
     (explain P R Γ e).result = check P R Γ e
-  | .intLit n, Γ => by
+  | .intLit w s n, Γ => by
       simp only [explain, check]; split <;> rfl
   | .boolLit b, Γ => rfl
   | .unitLit, Γ => rfl
   | .use i, Γ => by
       simp only [explain, check]
       (repeat' split) <;> first | rfl | simp_all [accepted, Deriv.result]
-  | .add e₁ e₂, Γ => by
+  | .binop op e₁ e₂, Γ => by
       simp only [explain, check, explain_result e₁, explain_result e₂]
-      (repeat' split) <;> first | rfl | simp_all [accepted, rejected, Deriv.result]
-  | .div e₁ e₂, Γ => by
-      simp only [explain, check, explain_result e₁, explain_result e₂]
-      (repeat' split) <;> first | rfl | simp_all [accepted, rejected, Deriv.result]
-  | .lt e₁ e₂, Γ => by
-      simp only [explain, check, explain_result e₁, explain_result e₂]
-      (repeat' split) <;> first | rfl | simp_all [accepted, rejected, Deriv.result]
+      (repeat' split) <;>
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+  | .unop .neg e, Γ => by
+      simp only [explain, check, explain_result e]
+      (repeat' split) <;>
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+  | .unop .not e, Γ => by
+      simp only [explain, check, explain_result e]
+      (repeat' split) <;>
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+  | .unop .bitnot e, Γ => by
+      simp only [explain, check, explain_result e]
+      (repeat' split) <;>
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+  | .intCast w s e, Γ => by
+      simp only [explain, check, explain_result e]
+      (repeat' split) <;>
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+  | .panic msg, Γ => rfl
+  | .dbg e, Γ => by
+      simp only [explain, check, explain_result e]
+      (repeat' split) <;>
+        first | rfl | (simp_all [accepted, Deriv.result] <;> grind)
   | .mkStruct s args, Γ => by
       simp only [explain, check]
       cases hs : P.structs[s]? with
@@ -712,19 +794,23 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
           | some Γ' => rw [← hargs]; rfl
   | .consume e, Γ => by
       simp only [explain, check, explain_result e]
-      (repeat' split) <;> first | rfl | simp_all [accepted, rejected, Deriv.result]
+      (repeat' split) <;>
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
   | .drop i, Γ => by
       simp only [explain, check]
       (repeat' split) <;> first | rfl | simp_all [accepted, Deriv.result]
   | .letIn m e₁ e₂, Γ => by
       simp only [explain, check, explain_result e₁, explain_result e₂]
-      (repeat' split) <;> first | rfl | simp_all [accepted, rejected, Deriv.result]
+      (repeat' split) <;>
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
   | .assign i e, Γ => by
       simp only [explain, check, explain_result e]
-      (repeat' split) <;> first | rfl | simp_all [accepted, rejected, Deriv.result]
+      (repeat' split) <;>
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
   | .seq e₁ e₂, Γ => by
       simp only [explain, check, explain_result e₁, explain_result e₂]
-      (repeat' split) <;> first | rfl | simp_all [accepted, rejected, Deriv.result]
+      (repeat' split) <;>
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
   | .ite c e₁ e₂, Γ => by
       simp only [explain, check, explain_result c]
       cases hc : check P R Γ c with
@@ -836,7 +922,7 @@ inductive StepRes where
 def StepRes.ofRes : EvalRes → StepRes
   | .ok _ v _ => .value v
   | .returned _ v _ => .unwound v
-  | .panic k => .panicked k
+  | .panic k _ => .panicked k
   | .stuck w => .refuse w (violationPremise w)
   | .outOfFuel => .exhausted
 
@@ -955,6 +1041,23 @@ def confused (kids : List Step) (d : Nat) (Θ : List Ty) (R : Ty) (e : Expr) (ru
     (H : Store) : Trace :=
   refused kids d Θ R e rule H .typeConfusion
 
+/-- (helper) The §6.4 rule group a binary operator's row names. -/
+def binopDynRule : BinOp → String
+  | .add | .sub | .mul => "(D-Arith) §6.4"
+  | .div => "(D-Div) §6.4"
+  | .rem => "§6.4's remainder arm, beside (D-Div)"
+  | .bitAnd | .bitOr | .bitXor => "(D-Bit) §6.4"
+  | .shl => "(D-Shl) §6.4"
+  | .shr => "(D-Shr) §6.4"
+  | .lt | .le | .gt | .ge => "ordering compare §6.4"
+
+/-- (helper) The §6.4 rule a unary operator's row names. `neg` is
+(D-Arith)'s unary case; `not` and `bitnot` are total. -/
+def unopDynRule : UnOp → String
+  | .neg => "(D-Arith) §6.4, the unary case"
+  | .not => "§6.4's `not` on bool"
+  | .bitnot => "(D-Bit) §6.4, the complement"
+
 /-- The rows and outcome of a call's argument list (helper). -/
 structure ArgsTrace where
   steps : List Step
@@ -998,8 +1101,9 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
   | 0, d, Θ, R, H, _, e =>
       traced [] d Θ R e "out of fuel — the interpreter stopped early (ADR-0097)" H H []
         .exhausted .outOfFuel
-  | _ + 1, d, Θ, R, H, _, .intLit n =>
-      traced [] d Θ R (.intLit n) "literal §6.3" H H [] (.value (.int n)) (.ok H (.int n) [])
+  | _ + 1, d, Θ, R, H, _, .intLit w s n =>
+      traced [] d Θ R (.intLit w s n) "literal §6.3" H H []
+        (.value (.int w s n)) (.ok H (.int w s n) [])
   | _ + 1, d, Θ, R, H, _, .boolLit b =>
       traced [] d Θ R (.boolLit b) "literal §6.3" H H [] (.value (.bool b)) (.ok H (.bool b) [])
   | _ + 1, d, Θ, R, H, _, .unitLit =>
@@ -1036,60 +1140,59 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
                  else
                    traced [] d Θ R (.drop i) "@drop §6.11" H (H.set ℓ .moved)
                      evs (.value .unit) (.ok (H.set ℓ .moved) .unit evs))
-  | fuel + 1, d, Θ, R, H, φ, .add e₁ e₂ =>
+  | fuel + 1, d, Θ, R, H, φ, .binop op e₁ e₂ =>
+      let rule := binopDynRule op
       let t₁ := traceEval P fuel (d + 1) Θ R H φ e₁
       match t₁.res with
-      | .ok H₁ (.int n₁) tr₁ =>
+      | .ok H₁ v₁ tr₁ =>
         let t₂ := traceEval P fuel (d + 1) Θ R H₁ φ e₂
         (match t₂.res with
-         | .ok H₂ (.int n₂) tr₂ =>
-             if InBounds (n₁ + n₂) then
-               traced (t₁.steps ++ t₂.steps) d Θ R (.add e₁ e₂) "(D-Arith) §6.4" H H₂ []
-                 (.value (.int (n₁ + n₂))) (.ok H₂ (.int (n₁ + n₂)) (tr₁ ++ tr₂))
-             else
-               traced (t₁.steps ++ t₂.steps) d Θ R (.add e₁ e₂) "(D-Arith-Trap) §6.4" H H₂ []
-                 (.panicked .overflow) (.panic .overflow)
-         | .ok _ _ _ => confused (t₁.steps ++ t₂.steps) d Θ R (.add e₁ e₂) "(D-Arith) §6.4" H
-         | r => propagate (t₁.steps ++ t₂.steps) d Θ R (.add e₁ e₂) "(D-Arith) §6.4" H
+         | .ok H₂ v₂ tr₂ =>
+             (match evalBinOp op v₁ v₂ with
+              | .val v =>
+                  traced (t₁.steps ++ t₂.steps) d Θ R (.binop op e₁ e₂) rule H H₂ []
+                    (.value v) (.ok H₂ v (tr₁ ++ tr₂))
+              | .trap k =>
+                  traced (t₁.steps ++ t₂.steps) d Θ R (.binop op e₁ e₂) rule H H₂ []
+                    (.panicked k) (.panic k (tr₁ ++ tr₂))
+              | .confused => confused (t₁.steps ++ t₂.steps) d Θ R (.binop op e₁ e₂) rule H)
+         | r => propagate (t₁.steps ++ t₂.steps) d Θ R (.binop op e₁ e₂) rule H
                   (r.withTrace tr₁))
-      | .ok _ _ _ => confused t₁.steps d Θ R (.add e₁ e₂) "(D-Arith) §6.4" H
-      | r => propagate t₁.steps d Θ R (.add e₁ e₂) "(D-Arith) §6.4" H r
-  | fuel + 1, d, Θ, R, H, φ, .div e₁ e₂ =>
-      let t₁ := traceEval P fuel (d + 1) Θ R H φ e₁
-      match t₁.res with
-      | .ok H₁ (.int n₁) tr₁ =>
-        let t₂ := traceEval P fuel (d + 1) Θ R H₁ φ e₂
-        (match t₂.res with
-         | .ok H₂ (.int n₂) tr₂ =>
-             if n₂ = 0 then
-               traced (t₁.steps ++ t₂.steps) d Θ R (.div e₁ e₂) "(D-Div-Zero) §6.4" H H₂ []
-                 (.panicked .divZero) (.panic .divZero)
-             else if InBounds (n₁.tdiv n₂) then
-               traced (t₁.steps ++ t₂.steps) d Θ R (.div e₁ e₂) "(D-Div) §6.4" H H₂ []
-                 (.value (.int (n₁.tdiv n₂))) (.ok H₂ (.int (n₁.tdiv n₂)) (tr₁ ++ tr₂))
-             else
-               traced (t₁.steps ++ t₂.steps) d Θ R (.div e₁ e₂) "(D-Div-Overflow) §6.4" H H₂ []
-                 (.panicked .overflow) (.panic .overflow)
-         | .ok _ _ _ => confused (t₁.steps ++ t₂.steps) d Θ R (.div e₁ e₂) "(D-Div) §6.4" H
-         | r => propagate (t₁.steps ++ t₂.steps) d Θ R (.div e₁ e₂) "(D-Div) §6.4" H
-                  (r.withTrace tr₁))
-      | .ok _ _ _ => confused t₁.steps d Θ R (.div e₁ e₂) "(D-Div) §6.4" H
-      | r => propagate t₁.steps d Θ R (.div e₁ e₂) "(D-Div) §6.4" H r
-  | fuel + 1, d, Θ, R, H, φ, .lt e₁ e₂ =>
-      let t₁ := traceEval P fuel (d + 1) Θ R H φ e₁
-      match t₁.res with
-      | .ok H₁ (.int n₁) tr₁ =>
-        let t₂ := traceEval P fuel (d + 1) Θ R H₁ φ e₂
-        (match t₂.res with
-         | .ok H₂ (.int n₂) tr₂ =>
-             traced (t₁.steps ++ t₂.steps) d Θ R (.lt e₁ e₂) "ordering compare §6.4" H H₂ []
-               (.value (.bool (decide (n₁ < n₂)))) (.ok H₂ (.bool (decide (n₁ < n₂))) (tr₁ ++ tr₂))
-         | .ok _ _ _ =>
-             confused (t₁.steps ++ t₂.steps) d Θ R (.lt e₁ e₂) "ordering compare §6.4" H
-         | r => propagate (t₁.steps ++ t₂.steps) d Θ R (.lt e₁ e₂) "ordering compare §6.4" H
-                  (r.withTrace tr₁))
-      | .ok _ _ _ => confused t₁.steps d Θ R (.lt e₁ e₂) "ordering compare §6.4" H
-      | r => propagate t₁.steps d Θ R (.lt e₁ e₂) "ordering compare §6.4" H r
+      | r => propagate t₁.steps d Θ R (.binop op e₁ e₂) rule H r
+  | fuel + 1, d, Θ, R, H, φ, .unop op e =>
+      let rule := unopDynRule op
+      let t := traceEval P fuel (d + 1) Θ R H φ e
+      match t.res with
+      | .ok H' v tr =>
+          (match evalUnOp op v with
+           | .val v' =>
+               traced t.steps d Θ R (.unop op e) rule H H' [] (.value v') (.ok H' v' tr)
+           | .trap k =>
+               traced t.steps d Θ R (.unop op e) rule H H' [] (.panicked k) (.panic k tr)
+           | .confused => confused t.steps d Θ R (.unop op e) rule H)
+      | r => propagate t.steps d Θ R (.unop op e) rule H r
+  | fuel + 1, d, Θ, R, H, φ, .intCast w s e =>
+      let t := traceEval P fuel (d + 1) Θ R H φ e
+      match t.res with
+      | .ok H' v tr =>
+          (match evalIntCast w s v with
+           | .val v' =>
+               traced t.steps d Θ R (.intCast w s e) "(D-Int-Cast) §6.4" H H' []
+                 (.value v') (.ok H' v' tr)
+           | .trap k =>
+               traced t.steps d Θ R (.intCast w s e) "(D-Int-Cast-Trap) §6.4" H H' []
+                 (.panicked k) (.panic k tr)
+           | .confused => confused t.steps d Θ R (.intCast w s e) "(D-Int-Cast) §6.4" H)
+      | r => propagate t.steps d Θ R (.intCast w s e) "(D-Int-Cast) §6.4" H r
+  | _ + 1, d, Θ, R, H, _, .panic msg =>
+      traced [] d Θ R (.panic msg) "(D-Panic) §6.12" H H [] (.panicked .user) (.panic .user [])
+  | fuel + 1, d, Θ, R, H, φ, .dbg e =>
+      let t := traceEval P fuel (d + 1) Θ R H φ e
+      match t.res with
+      | .ok H' v tr =>
+          traced t.steps d Θ R (.dbg e) "(Dbg) §5.8, the observable output of §6.12" H H'
+            [.dbg v] (.value .unit) (.ok H' .unit (tr ++ [.dbg v]))
+      | r => propagate t.steps d Θ R (.dbg e) "(Dbg) §5.8, the observable output of §6.12" H r
   | fuel + 1, d, Θ, R, H, φ, .mkStruct s args =>
       let ta := traceArgs (fun H' e' => traceEval P fuel (d + 1) Θ R H' φ e') H args
       (match ta.res with
@@ -1105,9 +1208,9 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
   | fuel + 1, d, Θ, R, H, φ, .consume e =>
       let t := traceEval P fuel (d + 1) Θ R H φ e
       match t.res with
-      | .ok H' (.struct _ (.int n :: _)) tr =>
+      | .ok H' (.struct _ (.int w s n :: _)) tr =>
           traced t.steps d Θ R (.consume e) "§6.5 whole-value elimination" H H' []
-            (.value (.int n)) (.ok H' (.int n) tr)
+            (.value (.int w s n)) (.ok H' (.int w s n) tr)
       | .ok _ _ _ => confused t.steps d Θ R (.consume e) "§6.5 whole-value elimination" H
       | r => propagate t.steps d Θ R (.consume e) "§6.5 whole-value elimination" H r
   | fuel + 1, d, Θ, R, H, φ, .letIn m e₁ e₂ =>
@@ -1268,20 +1371,26 @@ theorem traceEval_res {P : Program} : ∀ (fuel : Nat) (d : Nat) (Θ : List Ty) 
       | drop i =>
           simp only [traceEval, eval]
           (repeat' split) <;> first | rfl | (simp_all [traced, refused] <;> grind)
-      | add e₁ e₂ =>
+      | binop op e₁ e₂ =>
           simp only [traceEval, eval, EvalRes.andThen, ih]
           (repeat' split) <;>
             first | rfl | (simp_all [traced, didNotRun, propagate, confused, refused,
-              EvalRes.withTrace] <;> grind)
-      | div e₁ e₂ =>
+              OpRes.toRes, EvalRes.withTrace] <;> grind)
+      | unop op e₁ =>
           simp only [traceEval, eval, EvalRes.andThen, ih]
           (repeat' split) <;>
-            first | rfl | (simp_all [traced, didNotRun, propagate, confused, refused,
-              EvalRes.withTrace] <;> grind)
-      | lt e₁ e₂ =>
+            first | rfl | (simp_all [traced, confused, refused,
+              OpRes.toRes, EvalRes.withTrace] <;> grind)
+      | intCast w sg e₁ =>
           simp only [traceEval, eval, EvalRes.andThen, ih]
           (repeat' split) <;>
-            first | rfl | (simp_all [traced, didNotRun, propagate, confused, refused,
+            first | rfl | (simp_all [traced, confused, refused,
+              OpRes.toRes, EvalRes.withTrace] <;> grind)
+      | panic msg => rfl
+      | dbg e₁ =>
+          simp only [traceEval, eval, EvalRes.andThen, ih]
+          (repeat' split) <;>
+            first | rfl | (simp_all [traced,
               EvalRes.withTrace] <;> grind)
       | mkStruct s' args =>
           simp only [traceEval, eval,
@@ -1344,7 +1453,7 @@ empty frame (§6.12's top-level result). -/
 def runTrace (P : Program) (fuel : Nat) : Trace :=
   let T := match P.fns[0]? with
     | some fd => fd.ret
-    | none => .int
+    | none => .int .w64 .signed
   traceEval P fuel 0 [] T [] { env := [], scope := [] } (.call 0 [])
 
 /-- **The program's run is the program's outcome** (§6.12). -/

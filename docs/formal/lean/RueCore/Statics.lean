@@ -51,19 +51,29 @@ linear value.
 
 §5.7 types `return e` at `never` and lets (Sub-Never) coerce it to any type,
 with a divergent outgoing state `⊥` that §5.5's join excludes. The fragment
-folds both into one rule: `Typed.ret` concludes at **any** type `T` and with
-**any** outgoing context of the same skeleton, which is exactly what a `never`
-value and a `⊥` state license a context to assume. `Ty` therefore has no
-`never` constructor and `HasTy` (`Soundness.lean`) needs no case for it — sound
-because `never` has no values (`3.4:1`), so nothing is ever typed at it
-dynamically. (Return-Bottom) needs no rule of its own for the same reason: a
-`return` whose operand itself diverges is typed by this rule with the operand
-at `R`. `INDEX.md` records (Sub-Never) as mechanized only at this one form,
-the only never-typed form the fragment has.
+folds both into one rule at each never-typed form: `Typed.ret` and
+`Typed.panic` conclude at **any** type `T` and with **any** outgoing context
+of the same skeleton, which is exactly what a `never` value and a `⊥` state
+license a context to assume. `Ty` therefore needs no `never` constructor and
+`HasTy` (`Soundness.lean`) no case for it — sound because `never` has no
+values (`3.4:1`), so nothing is ever typed at it dynamically. Adding the
+constructor would buy nothing here and cost something: every rule that demands
+two equal types (§5.5's arms, (Assign)'s target) would have to admit a
+subsumption it can never observe. (Return-Bottom) needs no rule of its own for
+the same reason: a `return` whose operand itself diverges is typed by this
+rule with the operand at `R`. `INDEX.md` records (Sub-Never) as mechanized at
+these two forms, the only never-typed forms the fragment has.
+
+The two differ in one premise, and the difference is §5.7's provenance.
+`return` carries `⊥_exit`, which is the §5.6 scope-exit obligation taken
+frame-wide, so `Typed.ret` demands `NoOwnedLinear`. `@panic` carries
+`⊥_panic`, which §5.7 exempts from that check — "§5.6 performs no scope-exit
+check or drop on that edge" — so `Typed.panic` demands nothing of the
+context, and §6.12's (D-Panic) runs no drop to match.
 
 An *algorithm* cannot leave a type and a state free, so `check`
 (`Checker.lean`) picks one of each — the enclosing return type and the state
-in force after the operand — and its module docstring says what completeness
+in force at the form — and its module docstring says what completeness
 that costs.
 -/
 
@@ -362,11 +372,11 @@ check; `assign` is (Assign) with the `3.8:77` linear-overwrite premise on the
 with the §5.5 join; `call` is (Call) by value (§5.8); `ret` is (Return-Value)
 with (Sub-Never) folded in (§5.7). -/
 inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop where
-  /-- (Lit) §5.8: an integer literal of `int(64, signed)`, in range (the
-  fragment's fixing of `int(w,s)`; elaboration resolves the width, `4.1:2`). -/
-  | intLit {Γ n} :
-      InBounds n →
-      Typed P R Γ (.intLit n) .int Γ
+  /-- (Lit) §5.8: an integer literal at the `int(w,s)` elaboration resolved
+  for it (`4.1:2`), denoting a value of that type (§6.1's `n_T` bound). -/
+  | intLit {Γ w s n} :
+      InBounds w s n →
+      Typed P R Γ (.intLit w s n) (.int w s) Γ
   /-- (Lit) §5.8: a boolean literal. -/
   | boolLit {Γ b} :
       Typed P R Γ (.boolLit b) .bool Γ
@@ -381,20 +391,56 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   | useMove {Γ i en} :
       Γ[i]? = some en → en.st = .owned → en.ty.mult P.structs ≠ .copy →
       Typed P R Γ (.use i) en.ty (Γ.set i (en.setSt .movedOut))
-  /-- (Arith) §5.8 for `+`: both operands `int`, left to right, Σ threaded
-  (`4.2:1`). -/
-  | add {Γ Γ₁ Γ₂ e₁ e₂} :
-      Typed P R Γ e₁ .int Γ₁ → Typed P R Γ₁ e₂ .int Γ₂ →
-      Typed P R Γ (.add e₁ e₂) .int Γ₂
-  /-- (Arith) §5.8 for `/`. -/
-  | div {Γ Γ₁ Γ₂ e₁ e₂} :
-      Typed P R Γ e₁ .int Γ₁ → Typed P R Γ₁ e₂ .int Γ₂ →
-      Typed P R Γ (.div e₁ e₂) .int Γ₂
-  /-- (Ord) §5.8 for `<`: an ordering compare of two `int` operands yields
-  `bool`. -/
-  | lt {Γ Γ₁ Γ₂ e₁ e₂} :
-      Typed P R Γ e₁ .int Γ₁ → Typed P R Γ₁ e₂ .int Γ₂ →
-      Typed P R Γ (.lt e₁ e₂) .bool Γ₂
+  /-- (Arith) and (Ord) §5.8, in one rule because they differ only in the
+  type they conclude at (`BinOp.resultTy`): both operands share one
+  `int(w,s)`, typed left to right with Σ threaded (`4.2:1`), and the result is
+  that same type for the arithmetic, bitwise and shift operators and `bool`
+  for the ordering compares (`4.3:1`). The shift operators take their amount
+  at the shifted operand's own type, which is `4.3a:9` and is why they need no
+  second operand type here. -/
+  | binop {Γ Γ₁ Γ₂ op e₁ e₂ w s} :
+      Typed P R Γ e₁ (.int w s) Γ₁ → Typed P R Γ₁ e₂ (.int w s) Γ₂ →
+      Typed P R Γ (.binop op e₁ e₂) (op.resultTy (.int w s)) Γ₂
+  /-- (Neg) §5.8: negation demands a **signed** operand (`4.2:6`; rejecting it
+  on an unsigned type is `4.2:14`) and concludes at that type. -/
+  | neg {Γ Γ' e w} :
+      Typed P R Γ e (.int w .signed) Γ' →
+      Typed P R Γ (.unop .neg e) (.int w .signed) Γ'
+  /-- (Not) §5.8: logical negation demands `bool` (`4.4:2`). The bitwise
+  operators do not accept `bool` at all (`4.3a:18`, `4.3a:19`), which is why
+  `binop` above is stated only at `int(w,s)`. -/
+  | notOp {Γ Γ' e} :
+      Typed P R Γ e .bool Γ' →
+      Typed P R Γ (.unop .not e) .bool Γ'
+  /-- (BitNot) §5.8: the bitwise complement takes any integer type
+  (`4.3a:3`, `4.3a:4`) and concludes at it. -/
+  | bitnot {Γ Γ' e w s} :
+      Typed P R Γ e (.int w s) Γ' →
+      Typed P R Γ (.unop .bitnot e) (.int w s) Γ'
+  /-- `@intCast` (`4.13:24`–`4.13:27`, and §5.8's (Int-Cast)): the operand is
+  any integer type and the result is the one elaboration took from the use
+  site, which the form carries. Whether the value survives the conversion is
+  dynamic (`4.13:28`, §6.4's (D-Int-Cast-Trap)), not a typing question. -/
+  | intCast {Γ Γ' w s w' s' e} :
+      Typed P R Γ e (.int w' s') Γ' →
+      Typed P R Γ (.intCast w s e) (.int w s) Γ'
+  /-- (Panic) §5.8 with (Sub-Never) folded in (§5.7), the same fold
+  `Typed.ret` makes: `@panic` is `never`-typed, so the rule concludes at an
+  arbitrary type and — since `⊥` contributes no state to a join — at an
+  arbitrary outgoing context of the same skeleton. Unlike `ret` it imposes no
+  residual-linear premise: §5.7 exempts the `⊥_panic` edge from §5.6's
+  scope-exit check, and §6.12's (D-Panic) runs no drop. The message is a
+  string literal the form carries rather than an operand, because the fragment
+  has no string type, which is also why (Panic-Operand) has no instance. -/
+  | panic {Γ Γ' T msg} :
+      Ctx.skel Γ' = Ctx.skel Γ →
+      Typed P R Γ (.panic msg) T Γ'
+  /-- (Dbg) §5.8: the operand is a value-context use of a type `@dbg` renders
+  — `int(w,s)` or `bool` in this fragment (`Ty.observable`; the compiler
+  rejects an aggregate with E0702) — and the form itself is `unit`. -/
+  | dbg {Γ Γ' e T} :
+      Typed P R Γ e T Γ' → T.observable = true →
+      Typed P R Γ (.dbg e) .unit Γ'
   /-- (Struct-Intro) §5.8: one initializer per declared field, typed in
   declaration order at its field's type with Σ threaded left to right
   (`3.6:5`, `3.6:6`, `3.6:15`), and the result owns every field — which is why
@@ -412,7 +458,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   | consume {Γ Γ' s sd e} :
       Typed P R Γ e (.struct s) Γ' →
       P.structs[s]? = some sd → sd.Consumable →
-      Typed P R Γ (.consume e) .int Γ'
+      Typed P R Γ (.consume e) sd.payloadTy Γ'
   /-- (@Drop-Copy): no drop glue, no ownership effect. -/
   | dropCopy {Γ i en} :
       Γ[i]? = some en → en.st = .owned → en.ty.mult P.structs = .copy →
@@ -596,9 +642,13 @@ theorem Typed.skel_preserved {P R} {Γ Γ' : Ctx} {e T} (h : Typed P R Γ e T Γ
   | unitLit => rfl
   | useCopy _ _ _ => rfl
   | useMove hget _ _ => exact skel_set_setSt hget _
-  | add _ _ ih₁ ih₂ => exact ih₂.trans ih₁
-  | div _ _ ih₁ ih₂ => exact ih₂.trans ih₁
-  | lt _ _ ih₁ ih₂ => exact ih₂.trans ih₁
+  | binop _ _ ih₁ ih₂ => exact ih₂.trans ih₁
+  | neg _ ih => exact ih
+  | notOp _ ih => exact ih
+  | bitnot _ ih => exact ih
+  | intCast _ ih => exact ih
+  | panic hskel => exact hskel
+  | dbg _ _ ih => exact ih
   | mkStruct _ _ ih => exact ih
   | consume _ _ _ ih => exact ih
   | dropCopy _ _ _ => rfl
@@ -625,9 +675,13 @@ theorem TypedArgs.skel_preserved {P R} {Γ Γ' : Ctx} {es Ts} (h : TypedArgs P R
   | unitLit => rfl
   | useCopy _ _ _ => rfl
   | useMove hget _ _ => exact skel_set_setSt hget _
-  | add _ _ ih₁ ih₂ => exact ih₂.trans ih₁
-  | div _ _ ih₁ ih₂ => exact ih₂.trans ih₁
-  | lt _ _ ih₁ ih₂ => exact ih₂.trans ih₁
+  | binop _ _ ih₁ ih₂ => exact ih₂.trans ih₁
+  | neg _ ih => exact ih
+  | notOp _ ih => exact ih
+  | bitnot _ ih => exact ih
+  | intCast _ ih => exact ih
+  | panic hskel => exact hskel
+  | dbg _ _ ih => exact ih
   | mkStruct _ _ ih => exact ih
   | consume _ _ _ ih => exact ih
   | dropCopy _ _ _ => rfl

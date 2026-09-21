@@ -72,7 +72,7 @@ top-level function environment (Call) §5.8 looks a callee up in and `R` the
 enclosing function's declared return type (Return-Value) §5.7 checks a
 `return` operand against. -/
 def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
-  | .intLit n => if InBounds n then some (.int, Γ) else none
+  | .intLit w s n => if InBounds w s n then some (.int w s, Γ) else none
   | .boolLit _ => some (.bool, Γ)
   | .unitLit => some (.unit, Γ)
   | .use i =>
@@ -84,27 +84,35 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
         | .owned =>
           if en.ty.mult P.structs = .copy then some (en.ty, Γ)
           else some (en.ty, Γ.set i (en.setSt .movedOut))
-  | .add e₁ e₂ =>
+  | .binop op e₁ e₂ =>
       match check P R Γ e₁ with
-      | some (.int, Γ₁) =>
+      | some (.int w s, Γ₁) =>
         (match check P R Γ₁ e₂ with
-        | some (.int, Γ₂) => some (.int, Γ₂)
+        | some (.int w' s', Γ₂) =>
+            if w' = w ∧ s' = s then some (op.resultTy (.int w s), Γ₂) else none
         | _ => none)
       | _ => none
-  | .div e₁ e₂ =>
-      match check P R Γ e₁ with
-      | some (.int, Γ₁) =>
-        (match check P R Γ₁ e₂ with
-        | some (.int, Γ₂) => some (.int, Γ₂)
-        | _ => none)
+  | .unop .neg e =>
+      match check P R Γ e with
+      | some (.int w .signed, Γ') => some (.int w .signed, Γ')
       | _ => none
-  | .lt e₁ e₂ =>
-      match check P R Γ e₁ with
-      | some (.int, Γ₁) =>
-        (match check P R Γ₁ e₂ with
-        | some (.int, Γ₂) => some (.bool, Γ₂)
-        | _ => none)
+  | .unop .not e =>
+      match check P R Γ e with
+      | some (.bool, Γ') => some (.bool, Γ')
       | _ => none
+  | .unop .bitnot e =>
+      match check P R Γ e with
+      | some (.int w s, Γ') => some (.int w s, Γ')
+      | _ => none
+  | .intCast w s e =>
+      match check P R Γ e with
+      | some (.int _ _, Γ') => some (.int w s, Γ')
+      | _ => none
+  | .panic _ => some (R, Γ)
+  | .dbg e =>
+      match check P R Γ e with
+      | some (T, Γ') => if T.observable then some (.unit, Γ') else none
+      | none => none
   | .mkStruct s args =>
       match P.structs[s]? with
       | none => none
@@ -117,7 +125,7 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
       | some (.struct s, Γ') =>
         (match P.structs[s]? with
          | none => none
-         | some sd => if sd.Consumable then some (.int, Γ') else none)
+         | some sd => if sd.Consumable then some (sd.payloadTy, Γ') else none)
       | _ => none
   | .drop i =>
       match Γ[i]? with
@@ -202,7 +210,7 @@ mutual
 §7 theorems apply to whatever `check` accepts. -/
 theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
     check P R Γ e = some (T, Γ') → Typed P R Γ e T Γ'
-  | .intLit n, Γ, T, Γ', h => by
+  | .intLit w s n, Γ, T, Γ', h => by
       simp only [check] at h
       split at h
       · cases h; exact .intLit ‹_›
@@ -220,25 +228,51 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
         · split at h
           · cases h; exact .useCopy ‹_› ‹_› ‹_›
           · cases h; exact .useMove ‹_› ‹_› ‹_›
-  | .add e₁ e₂, Γ, T, Γ', h => by
+  | .binop op e₁ e₂, Γ, T, Γ', h => by
       simp only [check] at h
       split at h
-      · split at h
-        · cases h; exact .add (check_sound e₁ ‹_›) (check_sound e₂ ‹_›)
+      · rename_i w s Γ₁ h₁
+        split at h
+        · rename_i w' s' Γ₂ h₂
+          split at h
+          · rename_i hws
+            obtain ⟨hw, hs⟩ := hws
+            subst hw; subst hs
+            cases h
+            exact .binop (check_sound e₁ h₁) (check_sound e₂ h₂)
+          · cases h
         · cases h
       · cases h
-  | .div e₁ e₂, Γ, T, Γ', h => by
+  | .unop .neg e, Γ, T, Γ', h => by
       simp only [check] at h
       split at h
-      · split at h
-        · cases h; exact .div (check_sound e₁ ‹_›) (check_sound e₂ ‹_›)
-        · cases h
+      · cases h; exact .neg (check_sound e ‹_›)
       · cases h
-  | .lt e₁ e₂, Γ, T, Γ', h => by
+  | .unop .not e, Γ, T, Γ', h => by
       simp only [check] at h
       split at h
-      · split at h
-        · cases h; exact .lt (check_sound e₁ ‹_›) (check_sound e₂ ‹_›)
+      · cases h; exact .notOp (check_sound e ‹_›)
+      · cases h
+  | .unop .bitnot e, Γ, T, Γ', h => by
+      simp only [check] at h
+      split at h
+      · cases h; exact .bitnot (check_sound e ‹_›)
+      · cases h
+  | .intCast w s e, Γ, T, Γ', h => by
+      simp only [check] at h
+      split at h
+      · cases h; exact .intCast (check_sound e ‹_›)
+      · cases h
+  | .panic msg, Γ, T, Γ', h => by
+      simp only [check] at h
+      cases h
+      exact .panic rfl
+  | .dbg e, Γ, T, Γ', h => by
+      simp only [check] at h
+      split at h
+      · rename_i T₁ Γ₁ h₁
+        split at h
+        · cases h; exact .dbg (check_sound e h₁) ‹_›
         · cases h
       · cases h
   | .mkStruct s args, Γ, T, Γ', h => by
