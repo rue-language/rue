@@ -1472,6 +1472,62 @@ exit_code = 0
 expected_stdout = "1\n10\n20\n3\n30\n2\n"
 
 [[case]]
+name = "drop_intrinsic_in_one_if_arm_suppresses_scope_exit_on_that_path_only_o2"
+spec = ["3.9:38"]
+description = "The conditional @drop at -O2, where store-to-load forwarding makes both drops name the value itself rather than its slot (RUE-2290)"
+source = """
+struct Guard { v: i32 }
+
+drop fn Guard(self) { @dbg(self.v); }
+
+fn pick(x: bool) -> bool { x }
+
+fn main() -> i32 {
+    let a = Guard { v: 1 };
+    if true { @drop(a); }       // dropped here: prints 1, nothing at scope exit
+    @dbg(10);
+    let b = Guard { v: 2 };
+    if false { @drop(b); }      // not dropped here: scope exit prints 2, last
+    @dbg(20);
+    let mut c = Guard { v: 3 };
+    if pick(false) { c = Guard { v: 4 }; } else { @drop(c); }   // runtime path: prints 3
+    @dbg(30);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n10\n20\n3\n30\n2\n"
+opt_level = 2
+
+[[case]]
+name = "drop_intrinsic_in_one_if_arm_suppresses_scope_exit_on_that_path_only_o3"
+spec = ["3.9:38"]
+description = "The conditional @drop at -O3, where store-to-load forwarding makes both drops name the value itself rather than its slot (RUE-2290)"
+source = """
+struct Guard { v: i32 }
+
+drop fn Guard(self) { @dbg(self.v); }
+
+fn pick(x: bool) -> bool { x }
+
+fn main() -> i32 {
+    let a = Guard { v: 1 };
+    if true { @drop(a); }       // dropped here: prints 1, nothing at scope exit
+    @dbg(10);
+    let b = Guard { v: 2 };
+    if false { @drop(b); }      // not dropped here: scope exit prints 2, last
+    @dbg(20);
+    let mut c = Guard { v: 3 };
+    if pick(false) { c = Guard { v: 4 }; } else { @drop(c); }   // runtime path: prints 3
+    @dbg(30);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n10\n20\n3\n30\n2\n"
+opt_level = 3
+
+[[case]]
 name = "drop_intrinsic_discharges_linear"
 spec = ["3.9:39"]
 description = "@drop satisfies a linear value's must-consume obligation: no E0406, program runs"
