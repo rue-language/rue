@@ -205,12 +205,12 @@ Every declaration of the mechanization with the calculus rules, sections, and pr
 | `RueCore.Soundness` | `RueCore.HasTy` | inductive | (Struct-Intro), §2, §5.8, §6.1, §7 | — |
 | `RueCore.Soundness` | `RueCore.HasTys` | inductive | (Call), §5.8 | `4.10:4` |
 | `RueCore.Soundness` | `RueCore.HasTys.length_eq` | theorem | — | `4.10:3`, `3.6:5` |
-| `RueCore.Soundness` | `RueCore.intResult_res` | theorem | §6.4 | — |
+| `RueCore.Soundness` | `RueCore.intResult_res` | theorem | (D-Arith-Trap), §6.4 | — |
 | `RueCore.Soundness` | `RueCore.binOpInt_res` | theorem | (D-Arith), (D-Div), (D-Bit), (D-Shl), (D-Shr), (D-Arith-Trap), (D-Div-Zero), (D-Div-Overflow), §6.4 | — |
 | `RueCore.Soundness` | `RueCore.evalBinOp_res` | theorem | §5.8 | — |
 | `RueCore.Soundness` | `RueCore.evalUnOp_int_res` | theorem | §5.8, §6.4 | — |
 | `RueCore.Soundness` | `RueCore.evalUnOp_bool_res` | theorem | §6.4 | — |
-| `RueCore.Soundness` | `RueCore.evalIntCast_res` | theorem | — | `4.13:28` |
+| `RueCore.Soundness` | `RueCore.evalIntCast_res` | theorem | (D-Int-Cast-Trap), §6.4 | `4.13:28` |
 | `RueCore.Soundness` | `RueCore.dropValue_events` | theorem | §6.11 | — |
 | `RueCore.Soundness` | `RueCore.dropValues_events` | theorem | — | `3.9:13` |
 | `RueCore.Soundness` | `RueCore.dropValue_ok` | theorem | §6.11 | — |
@@ -467,7 +467,7 @@ Coverage: 48 of 97 labeled §5/§6 rules are mechanized; 49 are *not yet mechani
 | §6.3 | `(D-Use-Move)` | `RueCore.eval` |
 | §6.3 | `(D-Use-Shared-Read)` | *not yet mechanized* |
 | §6.4 | `(D-Arith)` | `RueCore.intResult`, `RueCore.binOpInt`, `RueCore.evalUnOp`, `RueCore.Examples.i16Negate`, `RueCore.Explain.unopDynRule`, `RueCore.binOpInt_res` |
-| §6.4 | `(D-Arith-Trap)` | `RueCore.intResult`, `RueCore.binOpInt`, `RueCore.Examples.i8Overflow`, `RueCore.binOpInt_res` |
+| §6.4 | `(D-Arith-Trap)` | `RueCore.intResult`, `RueCore.binOpInt`, `RueCore.Examples.i8Overflow`, `RueCore.intResult_res`, `RueCore.binOpInt_res` |
 | §6.4 | `(D-Div)` | `RueCore.binOpInt`, `RueCore.binOpInt_res` |
 | §6.4 | `(D-Div-Zero)` | `RueCore.binOpInt`, `RueCore.binOpInt_res` |
 | §6.4 | `(D-Div-Overflow)` | `RueCore.binOpInt`, `RueCore.Examples.i8DivMinByNegOne`, `RueCore.binOpInt_res` |
@@ -485,7 +485,7 @@ Coverage: 48 of 97 labeled §5/§6 rules are mechanized; 49 are *not yet mechani
 | §6.4 | `(D-Total-Cmp)` | *not yet mechanized* |
 | §6.4 | `(D-Float-Round)` | *not yet mechanized* |
 | §6.4 | `(D-Int-Cast)` | *not yet mechanized* |
-| §6.4 | `(D-Int-Cast-Trap)` | `RueCore.Examples.u8CastOutOfRange` |
+| §6.4 | `(D-Int-Cast-Trap)` | `RueCore.Examples.u8CastOutOfRange`, `RueCore.evalIntCast_res` |
 | §6.5 | `(D-Struct)` | `RueCore.eval`, Explain.lean (module) |
 | §6.5 | `(D-Array)` | *not yet mechanized* |
 | §6.5 | `(D-Index)` | *not yet mechanized* |
@@ -535,7 +535,7 @@ Every heading of the calculus. A citation of a section counts for that section o
 | §6.1 | The machine configuration | Dynamics.lean (module), `RueCore.Val`, `RueCore.Cell`, `RueCore.Store`, `RueCore.Env`, `RueCore.Frame`, `RueCore.dropRetire`, `RueCore.unwindLocs`, `RueCore.runAllScopeDrops`, Examples.lean (module), `RueCore.Examples.v64`, `RueCore.Explain.valLine`, `RueCore.Explain.cellLine`, `RueCore.Explain.locName`, `RueCore.Explain.locsLine`, Soundness.lean (module), `RueCore.HasTy`, `RueCore.Matches`, `RueCore.FrameMatches`, `RueCore.dropRetire_ok`, `RueCore.Matches.unwind`, `RueCore.Typed.intLit`, Syntax.lean (module), `RueCore.intMin`, `RueCore.intMax`, `RueCore.InBounds` |
 | §6.2 | Evaluation order: contexts, search, and panic propagation | Dynamics.lean (module), `RueCore.EvalRes.andThen`, `RueCore.ArgsRes`, `RueCore.evalArgs`, `RueCore.eval`, Examples.lean (module), `RueCore.Explain.traceArgs`, `RueCore.EvalOk.bind`, `RueCore.EvalRes.andThen_mono` |
 | §6.3 | Literals and the use of a place (copy / move) | `RueCore.eval` |
-| §6.4 | Primitive operators | Dynamics.lean (module), `RueCore.intResult`, `RueCore.shiftAmount`, `RueCore.binOpInt`, `RueCore.evalBinOp`, `RueCore.evalUnOp`, `RueCore.eval`, Examples.lean (module), `RueCore.Examples.min64`, `RueCore.Examples.overflow`, `RueCore.Examples.i8Overflow`, `RueCore.Examples.i8DivMinByNegOne`, `RueCore.Examples.i8RemMinByNegOne`, `RueCore.Examples.u8CastOutOfRange`, `RueCore.Examples.u8ShiftMasks`, `RueCore.Examples.u8Bitwise`, `RueCore.Explain.binopDynRule`, `RueCore.Explain.unopDynRule`, `RueCore.Gen.intLiteral`, Soundness.lean (module), `RueCore.intResult_res`, `RueCore.binOpInt_res`, `RueCore.evalUnOp_int_res`, `RueCore.evalUnOp_bool_res`, `RueCore.Typed.intCast`, Syntax.lean (module), `RueCore.IntWidth.modulus`, `RueCore.InBounds`, `RueCore.bitsOf`, `RueCore.valOf`, `RueCore.wrapInt`, `RueCore.valOf_inBounds` |
+| §6.4 | Primitive operators | Dynamics.lean (module), `RueCore.intResult`, `RueCore.shiftAmount`, `RueCore.binOpInt`, `RueCore.evalBinOp`, `RueCore.evalUnOp`, `RueCore.eval`, Examples.lean (module), `RueCore.Examples.min64`, `RueCore.Examples.overflow`, `RueCore.Examples.i8Overflow`, `RueCore.Examples.i8DivMinByNegOne`, `RueCore.Examples.i8RemMinByNegOne`, `RueCore.Examples.u8CastOutOfRange`, `RueCore.Examples.u8ShiftMasks`, `RueCore.Examples.u8Bitwise`, `RueCore.Explain.binopDynRule`, `RueCore.Explain.unopDynRule`, `RueCore.Gen.intLiteral`, Soundness.lean (module), `RueCore.intResult_res`, `RueCore.binOpInt_res`, `RueCore.evalUnOp_int_res`, `RueCore.evalUnOp_bool_res`, `RueCore.evalIntCast_res`, `RueCore.Typed.intCast`, Syntax.lean (module), `RueCore.IntWidth.modulus`, `RueCore.InBounds`, `RueCore.bitsOf`, `RueCore.valOf`, `RueCore.wrapInt`, `RueCore.valOf_inBounds` |
 | §6.5 | Aggregate introduction and projection | `RueCore.eval`, Explain.lean (module) |
 | §6.6 | Enum introduction and the `match` elimination | Dynamics.lean (module), Soundness.lean (module) |
 | §6.7 | `let`, sequencing, and scope-exit drop | `RueCore.Corpus.eventLine`, Dynamics.lean (module), `RueCore.Event`, `RueCore.Violation.linearLeak`, `RueCore.dropRetire`, `RueCore.eval`, `RueCore.Explain.eventLine`, `RueCore.Explain.Step`, `RueCore.Explain.scopeNeverClosed`, Print.lean (module), `RueCore.Print.expr`, `RueCore.CellMatches`, `RueCore.no_linear_leak`, `RueCore.StructDecl.Wf.field_not_linear`, `RueCore.Typed.letIn` |

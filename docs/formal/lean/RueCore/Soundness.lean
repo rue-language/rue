@@ -149,15 +149,15 @@ type. Every trap it can produce instead is one of §6.12's, which the safety
 theorem permits.
 -/
 
-/-- `range_check` (§6.4) delivers a value of `int(w,s)` or `↯overflow`
-(helper). -/
+/-- `range_check` (§6.4) delivers a value of `int(w,s)` or `↯overflow` — that
+category and no other, which is what (D-Arith-Trap) says (helper). -/
 theorem intResult_res {D : StructEnv} (w : IntWidth) (s : Sign) (n : Int) :
     (∃ v, intResult w s n = .val v ∧ HasTy D v (.int w s)) ∨
-      (∃ k, intResult w s n = .trap k) := by
+      intResult w s n = .trap .overflow := by
   unfold intResult
   by_cases hb : InBounds w s n
   · exact Or.inl ⟨_, by rw [if_pos hb], .int hb⟩
-  · exact Or.inr ⟨_, by rw [if_neg hb]⟩
+  · exact Or.inr (by rw [if_neg hb])
 
 /-- **Every §6.4 integer operator lands on a value of its rule's type or on a
 defined trap.** The value cases are (D-Arith), (D-Div), the remainder arm,
@@ -170,22 +170,27 @@ theorem binOpInt_res {D : StructEnv} (op : BinOp) (w : IntWidth) (s : Sign) (n�
   have bits : ∀ b : Nat, (∃ v, OpRes.val (Val.int w s (valOf w s b)) = .val v ∧
       HasTy D v (.int w s)) ∨ (∃ k, OpRes.val (Val.int w s (valOf w s b)) = .trap k) :=
     fun b => Or.inl ⟨_, rfl, .int (valOf_inBounds w s b)⟩
+  -- The arithmetic arms trap in one category; this statement ranges over all
+  -- of §6.4's, because `/` and `%` add their own.
+  have hint : ∀ n : Int, (∃ v, intResult w s n = .val v ∧ HasTy D v (.int w s)) ∨
+      (∃ k, intResult w s n = .trap k) :=
+    fun n => (intResult_res w s n).imp id (fun h => ⟨.overflow, h⟩)
   cases op <;>
     simp only [binOpInt, BinOp.resultTy, BinOp.isCompare, if_true, if_false, Bool.false_eq_true]
-  case add => exact intResult_res w s _
-  case sub => exact intResult_res w s _
-  case mul => exact intResult_res w s _
+  case add => exact hint _
+  case sub => exact hint _
+  case mul => exact hint _
   case div =>
       by_cases hz : n₂ = 0
       · exact Or.inr ⟨.divZero, by rw [if_pos hz]⟩
-      · rw [if_neg hz]; exact intResult_res w s _
+      · rw [if_neg hz]; exact hint _
   case rem =>
       by_cases hz : n₂ = 0
       · exact Or.inr ⟨.remZero, by rw [if_pos hz]⟩
       · rw [if_neg hz]
         by_cases hm : s = .signed ∧ n₁ = intMin w s ∧ n₂ = -1
         · exact Or.inr ⟨.overflow, by rw [if_pos hm]⟩
-        · rw [if_neg hm]; exact intResult_res w s _
+        · rw [if_neg hm]; exact hint _
   case bitAnd => exact bits _
   case bitOr => exact bits _
   case bitXor => exact bits _
@@ -207,12 +212,13 @@ theorem evalBinOp_res {D : StructEnv} (op : BinOp) (w : IntWidth) (s : Sign) (n�
   exact binOpInt_res op w s n₁ n₂
 
 /-- **`neg` and `bitnot` land on a value of the operand's type or on
-`↯overflow`** (§6.4; §5.8 restricts `neg` to a signed operand, and the lemma
-here covers both signednesses because the range check is what decides). -/
+`↯overflow`** — that category and no other (§6.4; §5.8 restricts `neg` to a
+signed operand, and the lemma here covers both signednesses because the range
+check is what decides). -/
 theorem evalUnOp_int_res {D : StructEnv} (op : UnOp) (w : IntWidth) (s : Sign) (n : Int)
     (hop : op ≠ .not) :
     (∃ v, evalUnOp op (.int w s n) = .val v ∧ HasTy D v (.int w s)) ∨
-      (∃ k, evalUnOp op (.int w s n) = .trap k) := by
+      evalUnOp op (.int w s n) = .trap .overflow := by
   cases op with
   | neg => exact intResult_res w s _
   | not => exact absurd rfl hop
@@ -224,15 +230,16 @@ theorem evalUnOp_bool_res {D : StructEnv} (b : Bool) :
   ⟨_, rfl, .bool⟩
 
 /-- **`@intCast` lands on a value of its target type or on `↯cast-overflow`**
-(`4.13:28`). -/
+— that category and no other, which is what `4.13:28` and §6.4's
+(D-Int-Cast-Trap) say. -/
 theorem evalIntCast_res {D : StructEnv} (w : IntWidth) (s : Sign) (w' : IntWidth) (s' : Sign)
     (n : Int) :
     (∃ v, evalIntCast w s (.int w' s' n) = .val v ∧ HasTy D v (.int w s)) ∨
-      (∃ k, evalIntCast w s (.int w' s' n) = .trap k) := by
+      evalIntCast w s (.int w' s' n) = .trap .castOverflow := by
   simp only [evalIntCast]
   split
   · exact Or.inl ⟨_, rfl, .int ‹_›⟩
-  · exact Or.inr ⟨_, rfl⟩
+  · exact Or.inr rfl
 
 /-! ## Dropping a value never refuses, and drops in §6.11's order -/
 
@@ -1015,7 +1022,7 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
           intro H' v tr _ hty hfm'
           obtain ⟨n, rfl, _⟩ := hty.int_inv
           rcases evalUnOp_int_res (D := P.structs) .neg w .signed n (by simp) with
-            ⟨v', hv, hty'⟩ | ⟨k, hk⟩
+            ⟨v', hv, hty'⟩ | hk
           · rw [hv]; exact ⟨hty', hfm', Untouched.refl⟩
           · rw [hk]; trivial
       | @notOp Γ Γ' e h =>
@@ -1032,7 +1039,7 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
           intro H' v tr _ hty hfm'
           obtain ⟨n, rfl, _⟩ := hty.int_inv
           rcases evalUnOp_int_res (D := P.structs) .bitnot w sg n (by simp) with
-            ⟨v', hv, hty'⟩ | ⟨k, hk⟩
+            ⟨v', hv, hty'⟩ | hk
           · rw [hv]; exact ⟨hty', hfm', Untouched.refl⟩
           · rw [hk]; trivial
       | @intCast Γ Γ' w sg w' s' e h =>
@@ -1040,7 +1047,7 @@ theorem soundness {P : Program} (hwf : WfProgram P) :
           refine EvalOk.bind (ih h hfm) ?_
           intro H' v tr _ hty hfm'
           obtain ⟨n, rfl, _⟩ := hty.int_inv
-          rcases evalIntCast_res (D := P.structs) w sg w' s' n with ⟨v', hv, hty'⟩ | ⟨k, hk⟩
+          rcases evalIntCast_res (D := P.structs) w sg w' s' n with ⟨v', hv, hty'⟩ | hk
           · rw [hv]; exact ⟨hty', hfm', Untouched.refl⟩
           · rw [hk]; trivial
       | @panic Γ Γ'' T msg hskel =>
