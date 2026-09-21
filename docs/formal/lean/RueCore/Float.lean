@@ -956,6 +956,42 @@ def FloatLit.spell (l : FloatLit) : String :=
 def FloatLit.exact (l : FloatLit) : Nat × Nat :=
   if l.negExp then (l.sig, 10 ^ l.e) else (l.sig * 10 ^ l.e, 1)
 
+/-- **`rnd_w`'s overflow threshold**: `max_{𝔽_w}` plus half an ulp, which is
+`2^eTop - 2^(eTop - p - 1)` — `2^128 - 2^103` at `f32` and `2^1024 - 2^970` at
+`f64`. An exact magnitude strictly below it rounds to a finite datum; one at or
+above it rounds to `±inf`, because `rnd_w` is round-to-nearest ties-to-even and
+the tie at the threshold goes to the infinity (`3.12:23`). Both bounds were
+probed against the compiler, which accepts `2^128 - 2^103 - 1` at `f32` and
+rejects `2^128 - 2^103`. Written with `<<<` rather than `2 ^ ·` on purpose:
+`Nat.shiftLeft` reduces to a literal by GMP wherever a `check` is evaluated,
+while `2 ^ 1024` trips Lean's `exponentiation.threshold` and then exhausts the
+recursion budget of every `by rfl` pin that reaches a float literal
+(helper). -/
+def FloatWidth.overflowNum (w : FloatWidth) : Nat :=
+  (1 <<< w.eTop.toNat) - (1 <<< (w.eTop - (w.prec : Int) - 1).toNat)
+
+/-- **`3.12:10` as a premise of (Lit) §5.8 at a float literal.** `3.12:10` is a *legality* rule —
+"a float literal whose value rounds to an infinity in its target type MUST be
+rejected at compile time (`E0206`)" — and §5.8's own prose in the calculus
+cites it, so the statics owe it. It is stated here as an exact comparison of
+naturals against `overflowNum`, so it is decidable, needs no `FloatModel`, and
+pulls no axiom: `l.exact` is `num / den` and the premise is `num < threshold ·
+den`. *Underflow* needs no premise — `3.12:10` allows a literal to round to
+zero, and the model and the compiler agree that it does (`1e-400` is `0.0` in
+both).
+
+It is stated against the *threshold* rather than as
+`(M.ofLit w l).isFinite` deliberately: the statics then say what they say for
+every `FloatModel`, with no instance and no `FloatOps` argument in the typing
+judgment, and `check` decides it by comparing two naturals. A law tying the two
+together — `RoundsFinite w l → (ofLit w l).isFinite` — is not needed by
+anything here and is not assumed. -/
+def FloatLit.RoundsFinite (w : FloatWidth) (l : FloatLit) : Prop :=
+  l.exact.1 < w.overflowNum * l.exact.2
+
+instance (w : FloatWidth) (l : FloatLit) : Decidable (l.RoundsFinite w) := by
+  unfold FloatLit.RoundsFinite; infer_instance
+
 /-! ## `Float.exactOps` — the executable instance
 
 Constructive throughout: every rounded operation is an exact rational (or, for

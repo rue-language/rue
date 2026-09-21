@@ -448,13 +448,17 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       Typed P R Γ e (.int w' s') Γ' →
       Typed P R Γ (.intCast w s e) (.int w s) Γ'
   /-- (Lit) §5.8 for a float: the literal at the `float(w)` elaboration
-  resolved for it (`3.12:7`). Unlike `intLit` it carries no side condition
-  saying the literal denotes a value of the type — `3.12:9` *rounds* a float
-  literal to the nearest value of its type rather than rejecting it, so every
-  decimal denotes one, and the rounding is the model's `ofLit`. (The compiler
-  additionally rejects a source literal whose rounded value is infinite; that
-  is a surface rule, `finite_float_literal_bits`, not one §5.8 states.) -/
+  resolved for it (`3.12:7`), denoting a *finite* value of that type. The side
+  condition is `3.12:10`, a **legality** rule — "a float literal whose value
+  rounds to an infinity in its target type MUST be rejected at compile time
+  (`E0206`)" — which §5.8's own prose cites, so it belongs here rather than
+  being left to the surface; it is `intLit`'s range premise at the float
+  widths. What it does *not* say is that the decimal is representable:
+  `3.12:9` rounds, so `0.1` is fine and so is an underflow to zero. The
+  threshold is `FloatWidth.overflowNum`, half an ulp above `max_{𝔽_w}`, and it
+  is exact natural arithmetic rather than anything the model decides. -/
   | floatLit {Γ w l} :
+      l.RoundsFinite w →
       Typed P R Γ (.floatLit w l) (.float w) Γ
   /-- (Int-To-Float) §5.8: the operand is an integer of any width and
   signedness (`3.12:16`, `4.13:139`) and the result is the `float(w)`
@@ -698,7 +702,7 @@ theorem Typed.skel_preserved {P R} {Γ Γ' : Ctx} {e T} (h : Typed P R Γ e T Γ
   | notOp _ ih => exact ih
   | bitnot _ ih => exact ih
   | intCast _ ih => exact ih
-  | floatLit => rfl
+  | floatLit _ => rfl
   | intToFloat _ ih => exact ih
   | floatIntrin _ _ ih => exact ih
   | panic hskel => exact hskel
@@ -736,7 +740,7 @@ theorem TypedArgs.skel_preserved {P R} {Γ Γ' : Ctx} {es Ts} (h : TypedArgs P R
   | notOp _ ih => exact ih
   | bitnot _ ih => exact ih
   | intCast _ ih => exact ih
-  | floatLit => rfl
+  | floatLit _ => rfl
   | intToFloat _ ih => exact ih
   | floatIntrin _ _ ih => exact ih
   | panic hskel => exact hskel

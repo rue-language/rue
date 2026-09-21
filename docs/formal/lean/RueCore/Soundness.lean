@@ -1181,7 +1181,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           rcases evalIntCast_res (D := P.structs) w sg w' s' n with ⟨v', hv, hty'⟩ | hk
           · rw [hv]; exact ⟨hty', hfm', Untouched.refl⟩
           · rw [hk]; trivial
-      | @floatLit Γ w l =>
+      | @floatLit Γ w l _ =>
           -- (Lit) at `float(w)`: `3.12:9` rounds the literal's decimal into
           -- `𝔽_w`, and `ofLit_wf` is the closure law that says so.
           simp only [eval]

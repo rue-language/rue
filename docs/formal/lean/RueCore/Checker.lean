@@ -123,7 +123,7 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
             if w' = w ∧ op.floatAdmits = true then some (op.resultTy (.float w), Γ₂) else none
         | _ => none)
       | _ => none
-  | .floatLit w _ => some (.float w, Γ)
+  | .floatLit w l => if l.RoundsFinite w then some (.float w, Γ) else none
   | .fintrin (.intToFloat w) e =>
       match check P R Γ e with
       | some (.int _ _, Γ') => some (.float w, Γ')
@@ -296,7 +296,10 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
         · cases h
       · cases h
   | .floatLit w l, Γ, T, Γ', h => by
-      simp only [check] at h; cases h; exact .floatLit
+      simp only [check] at h
+      split at h
+      · cases h; exact .floatLit ‹_›
+      · cases h
   | .fintrin (.intToFloat w) e, Γ, T, Γ', h => by
       simp only [check] at h
       split at h

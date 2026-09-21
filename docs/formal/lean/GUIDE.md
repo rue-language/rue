@@ -731,7 +731,7 @@ fixes nothing about its operand, exactly as `@intCast` does not
 
 | Node | Rule | Concludes |
 | --- | --- | --- |
-| `1.0`, `0.0` | (Lit) §5.8 at `float(64)` | `⇒ f64`. Unlike an integer literal there is **no** range premise: `3.12:9` *rounds* a float literal to the nearest value of its type rather than rejecting it, so every decimal denotes one |
+| `1.0`, `0.0` | (Lit) §5.8 at `float(64)` | `⇒ f64`. `3.12:9` *rounds*, so an inexact decimal like `0.1` denotes the nearest `f64` rather than being rejected; the one premise is `3.12:10`, which refuses a literal whose value rounds to an **infinity** at the width (`E0206`) — `RueCore.FloatLit.RoundsFinite`, an exact comparison against `max_{𝔽_w}` plus half an ulp. An underflow to zero is legal |
 | `1.0 / 0.0` | (Float-Arith) §5.8 | `⇒ f64`. One `w` for both operands — `3.12:13` gives no implicit widening — and `BinOp.floatAdmits` is §5.8's "rejected by the absence of a rule" for `%` and the bitwise operators, written as a side condition because one constructor stands for (Float-Arith), (Float-Ord) and (Total-Cmp) |
 | `@float_to_int(…)` | (Float-To-Int) §5.8 | `⇒ i32`. Whether the value *survives* is dynamic, not a typing question (`3.12:18`) |
 

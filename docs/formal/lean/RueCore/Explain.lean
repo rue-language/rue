@@ -246,6 +246,16 @@ def litOutOfRange (T : Ty) : String :=
   " — elaboration resolves a literal to a concrete int(w,s) and rejects one out of " ++
   "its range (4.1:2, 4.1:3); the bounds are `intMin`/`intMax` in `Syntax.lean`"
 
+/-- (Lit) §5.8 premise at a float literal: `3.12:10` makes a float literal whose value rounds to
+an infinity at its width a **compile-time** rejection (`E0206`). `3.12:9`
+rounds, so an inexact decimal is fine and so is an underflow to zero; only
+overflow is refused. -/
+def floatLitInfinite (w : FloatWidth) : String :=
+  "the float literal's value rounds to an infinity at " ++ Print.tyName (.float w) ++
+  ", which 3.12:10 requires be rejected at compile time (E0206) — the threshold is " ++
+  "`FloatWidth.overflowNum`, half an ulp above the width's largest finite value; " ++
+  "3.12:9 rounds every smaller decimal, an underflow to zero included"
+
 /-- (helper) A premise whose own derivation failed: the reason is the
 rejected sub-derivation nested under this rule, not this rule itself. -/
 def subDerivation : String :=
@@ -593,7 +603,9 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
          | none => rejected frule Γ (.binop op e₁ e₂) Premise.subDerivation [d₁, d₂])
       | some (T, _) => rejected rule Γ (.binop op e₁ e₂) (Premise.operandNotScalar T) [d₁]
       | none => rejected rule Γ (.binop op e₁ e₂) Premise.subDerivation [d₁]
-  | .floatLit w l => accepted "(Lit) §5.8" Γ (.floatLit w l) (.float w) Γ []
+  | .floatLit w l =>
+      if l.RoundsFinite w then accepted "(Lit) §5.8" Γ (.floatLit w l) (.float w) Γ []
+      else rejected "(Lit) §5.8" Γ (.floatLit w l) (Premise.floatLitInfinite w) []
   | .fintrin (.intToFloat w) e =>
       let d := explain P R Γ e
       (match d.result with
@@ -849,7 +861,8 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
     (explain P R Γ e).result = check P R Γ e
   | .intLit w s n, Γ => by
       simp only [explain, check]; split <;> rfl
-  | .floatLit w l, Γ => rfl
+  | .floatLit w l, Γ => by
+      simp only [explain, check]; split <;> rfl
   | .boolLit b, Γ => rfl
   | .unitLit, Γ => rfl
   | .use i, Γ => by
