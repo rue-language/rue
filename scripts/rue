@@ -256,8 +256,8 @@ case "$cmd" in
     lean-bridge)
         # ADR-0097's differential bridge (RUE-2228). A `buck2 run` entry point,
         # not a test tier: RUE-2241 decides whether CI gates on it. The
-        # corpus is the Lean
-        # package's own output, so no `lake` or `elan` is involved.
+        # corpus is the Lean package's own output, so no `lake` or `elan` is
+        # involved.
         #
         # The separator below is ours, so absorb one the caller typed: anyone
         # coming from `./buck2 run //:lean-bridge -- --case X` writes it out of
