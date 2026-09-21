@@ -478,7 +478,12 @@ def intResult (w : IntWidth) (s : Sign) (n : Int) : OpRes :=
   if InBounds w s n then .val (.int w s n) else .trap .overflow
 
 /-- The shift amount, reduced modulo the operand width (`k = amt mod w`,
-§6.4's (D-Shl)/(D-Shr), prose `4.3a:10`). Shifting never traps (helper). -/
+§6.4's (D-Shl)/(D-Shr)). The reduction is **Euclidean** — `Int.emod` returns
+the representative in `[0, w)` — which is what §6.4 fixes `mod` to, and it is
+the clause that decides a *negative* amount. `4.3a:9` gives the amount the
+shifted value's own type, so on a signed type a negative one is writable, and
+`4.3a:10` covers only an amount "greater than or equal to the bit width": it
+is §6.4, not `4.3a:10`, that this reads. Shifting never traps (helper). -/
 def shiftAmount (w : IntWidth) (n : Int) : Nat := (n % (w.bits : Int)).toNat
 
 /-- §6.4's binary integer rules at one `int(w,s)`, on the two operands'

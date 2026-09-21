@@ -2200,14 +2200,24 @@ signed type is arithmetic (sign-replicating), on an unsigned type logical
 (`shift`):
 
 ```
-  k = amt mod w        β = β_w(n) shifted left by k, masked to w bits
+  k = amt mod w  (EUCLIDEAN: 0 ≤ k < w)        β = β_w(n) shifted left by k, masked to w bits
   ───────────────────────────────────────────────────────────────── (D-Shl)
   (n)_{int(w,s)} << (amt)_T → ( val_{w,s}(β) )_{int(w,s)}
 
-  k = amt mod w        β = ( arithmetic-if-signed / logical-if-unsigned ) right shift of β_w(n) by k
+  k = amt mod w  (EUCLIDEAN: 0 ≤ k < w)        β = ( arithmetic-if-signed / logical-if-unsigned ) right shift of β_w(n) by k
   ───────────────────────────────────────────────────────────────── (D-Shr)
   (n)_{int(w,s)} >> (amt)_T → ( val_{w,s}(β) )_{int(w,s)}
 ```
+
+`mod` above is fixed to the **Euclidean** remainder — the representative in
+`[0, w)` — because the amount can be negative and `4.3a:10` does not reach
+that case. `4.3a:9` gives the amount the shifted value's own type, so on a
+signed type `amt < 0` is writable, while `4.3a:10` speaks only of an amount
+"greater than or equal to the bit width". Under the Euclidean reading
+`1 << (-1)` at `int(8,signed)` shifts by 7 and yields `-128`, and
+`(-8) >> (-1)` shifts by 7 and yields `-1`; the compiler agrees at every
+width (verified by hand). The truncating reading, which would make `k`
+negative and the rules undefined there, is therefore not the one.
 
 `not` on `bool` is `not true → false`, `not false → true` (`Not`).
 
