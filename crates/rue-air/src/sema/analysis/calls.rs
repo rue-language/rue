@@ -298,6 +298,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             {
                 return self.analyze_print_builtin(air, source_name, args_range, span, ctx);
             }
+            // `Str(4)` in expression position spells a type, not a call to a
+            // declared function (RUE-2266). It reaches here for the same
+            // reason `print` does — the name heads no declaration — and, like
+            // a reduced `-> type` constructor call, it analyzes to a
+            // `TypeConst`.
+            if let Some(result) =
+                self.analyze_builtin_type_call(air, source_name, args_range, span, ctx)?
+            {
+                return Ok(result);
+            }
             let fn_name_str = self.body_interner().resolve(&source_name).to_string();
             return Err(CompileError::new(
                 ErrorKind::UndefinedFunction(fn_name_str),
@@ -332,6 +342,47 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .ok_or_compile_error(ErrorKind::UndefinedFunction(fn_name_str.clone()), span)?;
 
         self.analyze_resolved_function_call(air, name, fn_info, args_range, span, ctx, true)
+    }
+
+    /// Analyze a call whose callee names a *builtin type constructor* rather
+    /// than a declaration — `Str(4)` (RUE-2266).
+    ///
+    /// The result is the type the identical annotation spelling produces, so
+    /// `identity(Str(4), "hi")`, `Option(Str(4))` and `let T = Str(4);` all
+    /// see the same `Str(4)` a `let s: Str(4)` annotation sees. Answers `None`
+    /// for every other name, and for a builtin whose arguments are not
+    /// compile-time integers, so the caller still reports the ordinary
+    /// undefined-function error.
+    fn analyze_builtin_type_call(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        args_range: &rue_rir::RirCallArgsRange,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<Option<AnalysisResult>> {
+        if !crate::sema::typeck::is_builtin_type_constructor(self.body_interner().resolve(&name)) {
+            return Ok(None);
+        }
+        let args = self.body_rir_ref().call_args(args_range).to_vec();
+        let mut values = Vec::with_capacity(args.len());
+        for arg in &args {
+            let Some(value) = self.evaluate_const_in_fn(arg.value, ctx)? else {
+                return Ok(None);
+            };
+            values.push(value);
+        }
+        let Some(ty) =
+            self.resolve_builtin_type_call_in_file(name, &values, ctx.current_file_id, span)?
+        else {
+            return Ok(None);
+        };
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::TypeConst(ty),
+            ty: Type::COMPTIME_TYPE,
+            span,
+        });
+        Ok(Some(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE)))
     }
 
     /// Analyze a call after the source-level callee has already been resolved

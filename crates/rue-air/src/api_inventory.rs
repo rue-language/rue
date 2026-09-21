@@ -2367,8 +2367,8 @@ fn comptime_host_is_an_empty_umbrella_over_its_capabilities() {
         );
     }
 
-    // Every method sits in exactly one capability, and the total is unchanged
-    // from the single trait this replaced.
+    // Every method sits in exactly one capability, and the total is pinned so
+    // a new hook has to be placed on a capability trait deliberately.
     let mut owner: Vec<(&str, &str)> = Vec::new();
     let mut current = "";
     for line in contract.lines() {

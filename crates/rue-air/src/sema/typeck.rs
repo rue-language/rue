@@ -31,6 +31,20 @@ pub(crate) const MAX_TYPE_SLOTS: u64 = MAX_TYPE_SIZE_BYTES / 8;
 use crate::sema::ConstValue;
 use crate::types::{ArrayLen, TextViewKind, Type, TypeKind};
 
+/// Does `name` head a *builtin* type-constructor call — a call that spells a
+/// type rather than naming a declared function?
+///
+/// `Str` is the only one today (spec 3.7:49: `Str(N)` is the string analogue
+/// of `[T; N]`). The spelling is not reserved — 6.0:3 reserves `str` alone —
+/// so this answers a spelling question only, and every caller asks it after
+/// ordinary declaration lookup has already failed, which keeps a user
+/// declaration of the same name winning. Type-annotation syntax and comptime
+/// expression position ask this one question, so a builtin added here is a
+/// type argument in both positions at once (RUE-2266).
+pub(crate) fn is_builtin_type_constructor(name: &str) -> bool {
+    name == "Str"
+}
+
 /// The narrow semantic surface consumed by the canonical type-syntax
 /// evaluator.  This deliberately owns neither a declaration epoch nor a body
 /// analysis state: callers provide the host that owns the current facts.
@@ -512,7 +526,7 @@ impl<H: TypeSyntaxHost>
         name: &str,
         arguments: &[crate::SemanticValueSyntax<'_>],
     ) -> SemaProviderResult<Option<Type>> {
-        if name == "Str" {
+        if is_builtin_type_constructor(name) {
             let capacity = match arguments {
                 [crate::SemanticValueSyntax::Integer(value)] => {
                     u64::try_from(*value).map_err(|_| {

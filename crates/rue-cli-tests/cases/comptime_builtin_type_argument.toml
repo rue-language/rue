@@ -1,0 +1,142 @@
+# A comptime type argument may be spelled any way a type value can be spelled
+# (4.14:22): a nominal name, a composite (`[i32; 4]`, `ptr const T`), the
+# builtin `str`, or a builtin type-constructor call `Str(N)`. Two of those
+# spellings used to be rejected wherever a generic was instantiated.
+#
+# `Str(4)` in expression position parses as a call, not as type syntax, so it
+# reached ordinary callee resolution and was reported as an undefined function
+# or as a non-comptime argument (RUE-2266). `str` reduced fine in the body
+# engine but had no durable identity at the type-constructor reduction seam, so
+# any constructor call carrying it answered "did not reduce" (RUE-2267).
+#
+# The spec suite pins the semantics. These cases drive the real binary over the
+# shapes a program actually writes — std generics, a user constructor, a `let`
+# alias — so the reduced types are checked as bytes on stdout.
+
+[section]
+id = "cli.comptime_builtin_type_argument"
+name = "Builtin type arguments"
+description = "`Str(N)` and `str` instantiate comptime type parameters and type constructors like any other type argument."
+
+[[case]]
+name = "str_fixed_is_a_comptime_type_argument"
+description = "A `Str(N)` call in argument position reduces to the fixed-string type for a `comptime T: type` parameter."
+files = [{ path = "main.rue", source = """
+fn identity(comptime T: type, x: T) -> T { x }
+
+fn main() -> i32 {
+    let s = identity(Str(4), "hi");
+    @dbg(s.len());
+    0
+}
+""" }]
+stdout = "2\n"
+exit_code = 0
+
+[[case]]
+name = "str_fixed_binds_as_a_let_type_alias"
+description = "`let T = Str(4);` binds a type alias usable as an annotation, exactly as a user constructor call does."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let T = Str(4);
+    let s: T = "hey";
+    @dbg(s.len());
+    0
+}
+""" }]
+stdout = "3\n"
+exit_code = 0
+
+[[case]]
+name = "str_fixed_instantiates_std_generics"
+description = "Option(Str(4)) and ArrayBuf(Str(4)) construct, push, match, and read back."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let O = std.option.Option(Str(4));
+    let v: O = O.Some("hi");
+    @dbg(match v { O.Some(x) => x.len(), O.None => 0 });
+
+    let mut buf = std.arraybuf.ArrayBuf(Str(4)).new();
+    buf.push("abc");
+    buf.push("wxyz");
+    @dbg(buf.get_ref(0).len() + buf.get_ref(1).len());
+    buf.free();
+    0
+}
+""" }]
+stdout = "2\n7\n"
+exit_code = 0
+
+[[case]]
+name = "str_instantiates_std_generics"
+description = "Option(str) and Result(str, i32) reduce over the builtin `str` and carry its views."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let O = std.option.Option(str);
+    let v: O = O.Some("yes");
+    @dbg(match v { O.Some(x) => x.len(), O.None => 0 });
+
+    let R = std.result.Result(str, i32);
+    let r: R = R.Ok("hello");
+    @dbg(match r { R.Ok(x) => x.len(), R.Err(_) => 0 });
+    0
+}
+""" }]
+stdout = "3\n5\n"
+exit_code = 0
+
+[[case]]
+name = "user_constructors_take_str_and_str_fixed"
+description = "A user struct constructor and a user enum constructor both reduce over `str` and over `Str(N)`."
+files = [{ path = "main.rue", source = """
+fn Box(comptime T: type) -> type { struct { v: T } }
+fn Opt(comptime T: type) -> type { enum { S(T), N } }
+
+fn main() -> i32 {
+    let view = Box(str) { v: "hi" };
+    @dbg(view.v.len());
+
+    let fixed = Box(Str(4)) { v: "hey" };
+    @dbg(fixed.v.len());
+
+    let e = Opt(str).S("four");
+    @dbg(match e { Opt(str).S(x) => x.len(), Opt(str).N => 0 });
+    0
+}
+""" }]
+stdout = "2\n3\n4\n"
+exit_code = 0
+
+# The controls: only a builtin type-constructor name is read this way, so a
+# typo cannot be swallowed. In an ordinary initializer the callee is reported
+# as undefined at its own span; in comptime-argument position the argument is
+# reported as not compile-time known, which is the diagnostic that position has
+# always given a call it cannot reduce.
+[[case]]
+name = "an_unknown_callee_is_still_undefined"
+description = "A call to a name that heads neither a declaration nor a builtin type constructor still reports E0202."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let T = Stru(4);
+    let s: T = "hi";
+    @intCast(s.len())
+}
+""" }]
+compile_fail = true
+compile_stderr_contains = ["E0202", "undefined function 'Stru'"]
+
+[[case]]
+name = "an_unknown_callee_in_comptime_argument_position_is_not_reduced"
+description = "A non-builtin call in comptime-argument position keeps the E1201 not-compile-time-known diagnostic."
+files = [{ path = "main.rue", source = """
+fn identity(comptime T: type, x: T) -> T { x }
+fn main() -> i32 { let s = identity(Stru(4), "hi"); @intCast(s.len()) }
+""" }]
+compile_fail = true
+compile_stderr_contains = ["E1201", "requires a compile-time known value"]
