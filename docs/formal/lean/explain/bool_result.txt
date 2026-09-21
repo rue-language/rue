@@ -8,7 +8,7 @@ Rules exercised: §5.8 operator statics · §6.4
 ── The program ─────────────────────────────────────────────────────────────────
 
 fn f0() -> bool {
-    lt_i64(3, 2)
+    { let t1a: i64 = 3; let t1b: i64 = 2; t1a < t1b }
 }
 
 

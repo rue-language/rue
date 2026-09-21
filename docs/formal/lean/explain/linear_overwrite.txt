@@ -141,7 +141,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          result  REFUSED (linearOverwrite)
                  an overwrite-drop of a live linear value: the assignment would
                  consume a linear value the program never consumed (§6.8; 3.8:77; §7)
-  [9]   d2      (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return runs the drop through the frame's scope record instead)
+  [9]   d2      (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return runs the drop through the frame's scope record instead; a trap runs no drop at all)
          expr    { let mut v0: S2 = S2 { x0: 1 }; { { v0 = S2 { x0: 2 }; }; consume_S2(v0) } }
          store   (empty)
            →     [ℓ0 = S2 { 1 }]

@@ -13,7 +13,7 @@ fn f0() -> i64 {
 }
 
 fn f1(v0: i64) -> i64 {
-    if lt_i64(v0, 1) {
+    if { let t1a: i64 = v0; let t1b: i64 = 1; t1a < t1b } {
         0
     } else {
         (v0 + f1((v0 + (-1))))

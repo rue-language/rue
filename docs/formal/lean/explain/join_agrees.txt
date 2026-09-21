@@ -23,7 +23,7 @@ struct S7 { x0: S1, x1: S1 }
 fn f0() -> i64 {
     {
         let v0: S2 = S2 { x0: 6 };
-        if lt_i64(1, 2) {
+        if { let t2a: i64 = 1; let t2b: i64 = 2; t2a < t2b } {
             consume_S2(v0)
         } else {
             (consume_S2(v0) + 1)

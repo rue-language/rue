@@ -318,6 +318,14 @@ not ask for. -/
 def dbgBeforeTrap : Expr :=
   seq (dbg (lit 1)) (binop .div (lit 1) (lit 0))
 
+/-- The same `@panic` past a live affine binding, with no explicit `@drop`:
+§5.7 exempts the `⊥_panic` edge from §5.6's obligation, so the binding's
+scope exit never runs and its destructor never fires. The compiler agrees.
+This is the contrast `panicAfterDrop` is read against, and it is why the line
+that survives the trap there is the explicit drop's. -/
+def panicPastAffine : Expr :=
+  letIn false (resA (lit 7)) (panic "boom")
+
 /-! ## Calls, frames, and `return` (RUE-2233)
 
 Each of these needs more than one function, so it is written as a whole
@@ -630,6 +638,12 @@ example : run (prog tI64 panicAfterDrop) demoFuel
 /-- The same for a trap the program did not ask for. -/
 example : run (scalarProg tI64 dbgBeforeTrap) demoFuel
     = .panic .divZero [.dbg (v64 1)] := by rfl
+
+/-- **A `@panic` runs no drop.** §5.7 exempts the `⊥_panic` edge from §5.6's
+obligation and §6.12 abandons the configuration, so the live affine binding's
+destructor never fires and the trap carries an empty trace — where the very
+same program with an explicit `@drop` carries the destructor out. -/
+example : run (prog tI64 panicPastAffine) demoFuel = .panic .user [] := by rfl
 
 /-- The two observation channels are one trace, so a `@dbg` between two drops
 comes out between them (`Corpus.outLines` reads exactly this order). -/

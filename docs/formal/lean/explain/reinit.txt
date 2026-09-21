@@ -24,7 +24,7 @@ fn f0() -> i64 {
     {
         let mut v0: S2 = S2 { x0: 1 };
         {
-            let t2: i64 = consume_S2(v0);
+            let t2d: i64 = consume_S2(v0);
             {
                 { v0 = S2 { x0: 2 }; };
                 consume_S2(v0)

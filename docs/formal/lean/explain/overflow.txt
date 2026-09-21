@@ -66,7 +66,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 1
-  [4]   d2      (D-Arith-Trap) §6.4
+  [4]   d2      (D-Arith) §6.4
          expr    (9223372036854775807 + 1)
          store   (empty)
            →     (empty)
@@ -79,4 +79,5 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
 
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: PANIC (overflow) — a defined trap, §6.12
+         trace up to the trap: (nothing)
 

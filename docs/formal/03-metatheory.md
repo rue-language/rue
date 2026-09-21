@@ -18,7 +18,8 @@ the adequacy lemma owed in the last section, which ADR-0097 requires before any 
 every listed theorem depends on; the reading guide in `lean/README.md` is the
 entry point for a reader with no Lean.
 
-**Fragment today.** Scalars (`int` as `int(64, signed)`, `bool`, `unit`) and
+**Fragment today.** Scalars — `int(w, s)` at every width `w ∈ {8, 16, 32, 64}`
+and both signednesses, `bool`, `unit` — and
 monomorphic struct types declared by the program — named fields by position,
 the `@copy`/`linear` attribute, whether the struct declares a destructor, and
 `class(S)` as §3's join of the field classes lifted by that attribute
@@ -27,13 +28,34 @@ the `@copy`/`linear` attribute, whether the struct declares a destructor, and
 destructor, then its fields in declaration order, recursively; use
 (copy/move), `@drop`, `let` with scope-exit drop, assignment with
 reinitialization, sequencing with the discard check, `if` with the §5.5 branch
-join, `+`/`/`/`<` with the §6.4 traps, top-level function definitions,
+join, §2's whole integer operator set — `+ - * / %`, `& | ^`, `<< >>`,
+`< <= > >=` and the three unary forms, by (Arith)/(Ord)/(Neg)/(Not)/(BitNot)
+§5.8 with §6.4's traps and its `val_{w,s}(β_w(·))` bit semantics — `@intCast`
+((Int-Cast) §5.8, `(D-Int-Cast-Trap)` §6.4), `@panic` ((Panic) §5.8,
+(D-Panic) §6.12) and `@dbg` ((Dbg) §5.8), top-level function definitions,
 by-value calls with frames and scope records ((Fn)/(Call) §5.8,
 (D-Call)/(D-Return-Value) §6.9), and `return` with its σ unwind
 ((Return-Value) §5.7, (D-Return) §6.9). Whole bindings only. No paths or
 partial moves — the fragment's whole-value struct elimination stands in for a
-projection (RUE-2231) — no enums, arrays, `inout`/`borrow` parameters,
+projection (RUE-2231) — no floats, no equality compare (it borrows its
+operands, `4.3:3f`), no enums, arrays, `inout`/`borrow` parameters,
 accessor calls, loops, loans, or buffers.
+
+**The trap inventory, and what a trap carries.** Every §6.12 category the
+fragment reaches is a `PanicKind`: `overflow` (`+ - *`, `neg`, `min_T / -1`,
+`min_T % -1`), `divZero`, `remZero`, `castOverflow` (`@intCast`, `4.13:28`)
+and `user` (`@panic`). `bounds` follows the arrays, and the float producers
+follow `float(w)`. A trap result carries the **observable output that ran
+before it** — the user destructors and the `@dbg` lines — because §6.12's
+`Outcome` is exit status and stdout together and a trapping process prints
+what it printed before exiting 101. `Examples.panicAfterDrop` and
+`Examples.dbgBeforeTrap` are the kernel-checked witnesses, one per trap
+source, and `crates/rue-oracle-diff` compares that output against the native
+binary's. The same section's `panicPastAffine` is the negative half: a
+`@panic` past a live affine binding carries an **empty** trace, because §5.7
+exempts the `⊥_panic` edge from §5.6's obligation and §6.12 abandons the
+configuration rather than unwinding it — so a destructor that had not
+already run does not run.
 
 **Fuel.** Because a callee's body is not a subexpression of its call,
 recursion makes the interpreter's recursion unbounded, so `eval` takes a fuel
@@ -187,9 +209,10 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 
 | Lemma | Status |
 |---|---|
-| Totality of the float operations | not yet stated; an assumption about IEEE 754, named as such (RUE-2282) |
+| Totality of the float operations | not yet stated; an assumption about IEEE 754, named as such. The float slice is the second half of RUE-2282 and the fragment has no `float(w)` yet, so nothing in the mechanization currently rests on it |
+| Totality of the **integer** operations | discharged where it is needed, by construction rather than as a lemma: `RueCore.valOf_inBounds` says every `w`-bit pattern read at a signedness denotes a value of that type, which is what makes §6.4's bitwise and shift rules total, and `RueCore.binOpInt_res`, `RueCore.evalUnOp_int_res` and `RueCore.evalIntCast_res` say every integer operator lands on a value of its rule's type or on one of §6.12's traps — the operator half of progress (`lean/RueCore/Soundness.lean`) |
 | Handle-uniqueness preservation (O1) | not yet mechanized (RUE-2240) |
-| Adequacy of `eval` to §6's reduction, and progress/preservation derived over the mechanized relation | not yet stated; a Phase C deliverable required at checkpoint C and the CI gate (RUE-2289). Its domain is the programs `check` accepts: there `eval`'s `ok`/`panic` outcomes must agree with §6's values and panics, and neither side gets stuck. `.stuck` is outside the correspondence, because three of `eval`'s refusals are monitors §6 does not have, and `eval` refuses on an operand's shape before evaluating the next operand where §6.2's `v ⊕ E` context reduces that operand first (`Dynamics.lean`, "the correspondence with §6") |
+| Adequacy of `eval` to §6's reduction, and progress/preservation derived over the mechanized relation | not yet stated; a Phase C deliverable required at checkpoint C and the CI gate (RUE-2289). Its domain is the programs `check` accepts: there `eval`'s `ok`/`panic` outcomes must agree with §6's values and panics, and neither side gets stuck. `.stuck` is outside the correspondence, because three of `eval`'s refusals are monitors §6 does not have, and because `eval` names an operand-shape mismatch where §6 simply has no rule (`Dynamics.lean`, "the correspondence with §6"). A raw literal outside its type's `n_T` range is the other known difference, and `check` rejects it |
 | Fuel monotonicity and no masking | `RueCore.fuel_mono` and `RueCore.no_masking` (`lean/RueCore/Soundness.lean`). A bound that produced a result other than `outOfFuel` produces that same result at every larger bound; a bound that reached a violation reaches that same violation at every bound that answers at all. Together they say the ∀-fuel form of the theorems above is a statement about one real outcome, and that no choice of fuel hides a violation behind exhaustion |
 
 ## Traceability
