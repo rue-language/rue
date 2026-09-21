@@ -7,12 +7,16 @@ The central invariant is `Matches D Γ ρ H` — "Σ faithfully tracks the store
 initialization", the load-bearing clause of §7's no-use-after-move bullet. `D`
 is the program's struct declarations, which is what a type's class (§3) and a
 value's drop (§6.11) are read against; every predicate here carries it.
-`CellMatches` is deliberately asymmetric, mirroring §5.5: a *statically*
-`MovedOut` entry may still hold a live (non-linear!) value dynamically —
+
+With Σ keyed by path (`OwnSt`, `Statics.lean`) and a cell holding a tree with
+`⊘` at any node (`Contents`, `Dynamics.lean`), the per-cell clause is
+**recursive**: `ContentsMatches` relates the two trees at the path's declared
+type. It is deliberately asymmetric at its `movedOut` clause, mirroring §5.5:
+a *statically* `MovedOut` path may still hold live (non-linear!) contents —
 that is exactly the state a conservative branch join produces, and the machine
-drops such residues path-specifically (`3.8:73`); a statically `Owned` entry
-always holds a well-typed value; and a live **linear** value is never behind a
-`MovedOut` entry, which is what makes the leak/overwrite refusals unreachable.
+drops such residues path-specifically (`3.8:73`); a statically `Owned` path
+always holds a value; and a live **linear** sub-value is never behind a
+`MovedOut` node, which is what makes the leak/overwrite refusals unreachable.
 
 ## The frame invariant (§6.1, §6.9)
 
@@ -48,20 +52,29 @@ it had. Since a callee's parameter cells are minted above the caller's whole
 store, the caller's cells are outside the callee's `ρ`, and the caller's
 `Matches` transports across the call unchanged.
 
-## Structs: value typing, and the drop that never refuses
+## Values, contents, and the drop that never refuses
 
-`HasTy D` types a struct value against its declaration's field list, which is
-(Struct-Intro) §5.8 read on values. Statements about §6.11's walk rest on it
-and are what the rest of the file uses. `dropValue_events` and
-`dropValues_events` give the walk in **closed form** — for a well-typed value
-it emits exactly `dropEvents`, §6.11's order written as a function — and
-`dropValue_struct_events` is that read at a struct: the destructor's event
-(`3.9:28`) followed by the concatenation of the fields' events in declaration
-order (`3.9:13`), which is the shape RUE-2237's "dropped exactly once"
-quantifies over. `dropValue_order` and `dropValues_order` are the one-level
-induction steps, `dropValue_ok` the corollary that the walk never refuses, and
-`StructDecl.Wf.field_not_linear` (`Statics.lean`) the reason the leak monitor
-reads a value's own class and never descends into it.
+`HasTy D` types a *value* — the thing an expression evaluates to, which never
+has a hole in it — against §2's types, a struct against its declaration's
+field list ((Struct-Intro) §5.8 read on values). `ContentsTy D` is the same for
+what a cell holds, with §6.1's `⊘` admitted at every node and well typed at
+every type, because a moved-out position claims nothing about what used to be
+there. `Contents.holeFree` is what says a contents *is* a value, and
+`ContentsTy.toVal` is the bridge: that is the half (D-Use-Copy)/(D-Use-Move)
+§6.3 need, since they hand the context a value and `fully-owned(Σ, p)` §5.1 is
+what says the contents they read has no hole in it.
+
+Statements about §6.11's walk rest on `ContentsTy`. `dropContents_events` and
+`dropContentsList_events` give the walk in **closed form** — for well-typed
+contents it emits exactly `dropEvents`, §6.11's order written as a function —
+and `dropContents_struct_events` is that read at a struct: the destructor's
+event (`3.9:28`) followed by the concatenation of the fields' events in
+declaration order (`3.9:13`), with a field that has been **moved out**
+contributing none (`3.8:73`), which is the shape RUE-2237's "dropped exactly
+once" quantifies over. `dropContents_order` and `dropContentsList_order` are
+the one-level induction steps, `dropContents_ok` the corollary that the walk
+never refuses, and `ContentsMatches.residualLinear_false` the reason the leak
+monitor's reading of the residue is the one §5.6 computes.
 
 ## The theorem
 
