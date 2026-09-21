@@ -14,7 +14,9 @@ A fragment program carries its own struct declarations (`Syntax.lean`), so the
 printed module declares them: one `@copy struct` / `struct` / `linear struct`
 item per declaration, in program order, with fields named `x0 … xk` by
 position — elaboration resolves field names, so the core names fields by their
-declaration slot (`3.6:9`).
+declaration slot. Declaration order is what `3.9:13` drops them in; `3.6:9`,
+which says the stored value places each field in its declaration slot, is
+informative and about layout, so nothing here rests on it.
 
 ## The observation channel
 
@@ -35,12 +37,32 @@ The rest follows from the spec's constraints on destructors per class
   `09-destructors.md`); `WfStructs` (`Statics.lean`) enforces it, so a copy
   value's drop prints nothing and the interpreter emits no `dtor` event for
   it.
-* **Whole-value elimination.** `3.9:34` (E0456) rejects every projection out
-  of a value whose type declares a destructor, so `Expr.consume` — which
-  reads the first field — is defined only on a declaration with no destructor
-  (`StructDecl.Consumable`). Such a declaration prints a consumer
-  `fn consume_S(s: S) -> i64 { s.x0 }`; a copy field read through a by-value
-  parameter is legal at every class, the declared-linear one included.
+* **Whole-value elimination.** `Expr.consume` reads the first field and
+  destroys the value **without running its drop glue**, so it is defined only
+  on a declaration with no destructor (`StructDecl.Consumable`): a destructor
+  there would be an event §6.11 owes and the interpreter never emits, while
+  the printed consumer below lets its by-value parameter drop at the
+  function's end, where that destructor *would* run — a two-line
+  disagreement. That, not `3.9:34`, is the reason. `3.9:34` forbids *moving*
+  a field out of such a value and permits borrowing one; the compiler accepts
+  `fn consume_S(s: S) -> i64 { s.x0 }` on a destructor-bearing `S`.
+
+  Such a declaration prints that consumer, and the compiler accepts it at
+  every class — but for different reasons, and the declared-linear one is
+  worth naming. `Consumable` makes every field `int`, so `s.x0` is a `Copy`
+  read: on a `@copy` or attribute-less struct nothing is consumed by it and
+  the parameter simply drops at the function's end. On a **declared-linear**
+  one the parameter carries a must-consume obligation (`3.8:62`), and the
+  rule that a field access discharges it is `3.8:33`, the declared-linear
+  destructure: the access consumes the smallest enclosing declared-linear
+  place and destroys its droppable residue. That is what keeps `consume_S2`
+  from leaking at its own exit, and what makes `Expr.consume` a faithful
+  stand-in there. One fine point the spec does not spell out and this printer
+  leans on: `3.8:33` is written for *moving* a field out, and a `Copy` field
+  read is not a move — the compiler accepts `fn consume_S2(s: S2) -> i64
+  { s.x0 }` all the same (verified by hand). `3.8:22`'s partial move is the
+  rule for a **non-`Copy`** field, which `Consumable` excludes, so it governs
+  nothing the printer emits.
 * **`@drop`.** Every class prints `@drop(x)`, the identity elaboration of
   `Expr.drop`: it is legal on a declared-linear place and on a place whose
   type is linear through a field (`3.9:39`, verified against the compiler),
@@ -59,8 +81,16 @@ discarded by a sequence. So `lt e₁ e₂` prints as a call to the prelude's
 `lt_i64`, whose parameters give both operands their type, and a discarded
 `int` prints as `let t<n>: i64 = e₁;` rather than `e₁;`. Neither changes
 evaluation order or a drop point (the operands and the discarded value are
-integers, which drop silently); they are the two places where the printed
-program is not the identity elaboration.
+integers, which drop silently).
+
+Together with two forms the printer *supplies*, those are the places where the
+printed program is not the identity elaboration of the core: `Expr.consume`
+prints as a call to the generated `consume_S<s>` helper, which is one
+by-value call standing in for a form the core has no surface spelling for; and
+a destructor-bearing declaration prints an invented body
+`drop fn S(self) { @dbg(self.x0); }`, which the core declaration does not
+carry — the core records only *whether* `S` has a destructor, and that body is
+the whole observation channel (above).
 
 ## Functions, calls, and `return`
 
@@ -106,8 +136,10 @@ def tyName : Ty → String
   | .unit => "()"
   | .struct s => "S" ++ toString s
 
-/-- The name of a declaration's field at position `j` (`3.6:9`: the stored
-value places each field in its declaration slot) (helper). -/
+/-- The name of a declaration's field at position `j`. Fields are named by
+position because the core names them that way; `3.6:9` — informative, and
+about layout — says the stored value places each field in its declaration
+slot, which is why the position is a stable name for it (helper). -/
 def fieldName (j : Nat) : String := "x" ++ toString j
 
 /-- The generated whole-value eliminator for a `Consumable` declaration: it
@@ -135,12 +167,13 @@ def fieldDecls : Nat → List Ty → List String
 
 /-- One struct declaration as a Rue item (§2's `S { f1: T1, …, fk: Tk }` with
 its `3.8:18`/`3.8:57` attribute), followed by its `drop fn` when the
-declaration has a destructor (`3.9`). The destructor prints the first field
-when that field is an `int`, which is the observation channel the module
-docstring describes; a declaration whose first field is not an `int` has
-nothing to print, and the interpreter's `dtor` event for it is likewise
-silent. -/
-def structItem (s : Nat) (sd : StructDecl) : String :=
+declaration has a destructor (`3.9`), and by the generated consumer when some
+expression of the program eliminates a value of it (`consumed`). The
+destructor prints the first field when that field is an `int`, which is the
+observation channel the module docstring describes; a declaration whose first
+field is not an `int` has nothing to print, and the interpreter's `dtor` event
+for it is likewise silent. -/
+def structItem (consumed : List Nat) (s : Nat) (sd : StructDecl) : String :=
   attrPrefix sd.attr ++ "struct " ++ tyName (.struct s) ++ " { " ++
     String.intercalate ", " (fieldDecls 0 sd.fields) ++ " }\n" ++
   (if sd.dtor then
@@ -149,15 +182,15 @@ def structItem (s : Nat) (sd : StructDecl) : String :=
        | .int :: _ => "@dbg(self." ++ fieldName 0 ++ "); "
        | _ => "") ++ "}\n"
    else "") ++
-  (if sd.Consumable then
+  (if sd.Consumable && consumed.contains s then
     "fn " ++ consumeName s ++ "(s: " ++ tyName (.struct s) ++ ") -> i64 { s." ++
       fieldName 0 ++ " }\n"
    else "")
 
 /-- Every struct declaration of a program, in program order (helper). -/
-def structItems : Nat → StructEnv → String
+def structItems (consumed : List Nat) : Nat → StructEnv → String
   | _, [] => ""
-  | s, sd :: rest => structItem s sd ++ structItems (s + 1) rest
+  | s, sd :: rest => structItem consumed s sd ++ structItems consumed (s + 1) rest
 
 /-- Type inference without ownership: the fragment's types do not depend on
 Σ, so the printer can recover every subexpression's type from the binders
@@ -290,6 +323,35 @@ innermost binder first, exactly as (Fn) §5.8's `fnCtx` orders them
 (helper). -/
 def bodyBinders (fd : FnDef) : List Ty := (fd.params.map Param.ty).reverse
 
+/-- The declaration indices an expression eliminates, read the way
+`Print.expr` reads them — through `tyOf`, with the same index-`0` fallback on
+an operand whose type it cannot recover, so the helpers emitted are exactly
+the ones the printed calls name (helper). -/
+partial def consumedIn (P : Program) (R : Ty) : List Ty → Expr → List Nat
+  | Γ, .consume e =>
+      (match tyOf P R Γ e with
+       | some (.struct s) => [s]
+       | _ => [0]) ++ consumedIn P R Γ e
+  | Γ, .add e₁ e₂ | Γ, .div e₁ e₂ | Γ, .lt e₁ e₂ | Γ, .seq e₁ e₂ =>
+      consumedIn P R Γ e₁ ++ consumedIn P R Γ e₂
+  | Γ, .letIn _ e₁ e₂ =>
+      consumedIn P R Γ e₁ ++ consumedIn P R ((tyOf P R Γ e₁).getD .int :: Γ) e₂
+  | Γ, .ite c e₁ e₂ => consumedIn P R Γ c ++ consumedIn P R Γ e₁ ++ consumedIn P R Γ e₂
+  | Γ, .mkStruct _ args | Γ, .call _ args => (args.map (consumedIn P R Γ)).flatten
+  | Γ, .assign _ e | Γ, .ret e => consumedIn P R Γ e
+  | _, _ => []
+
+/-- The declaration indices the whole program eliminates, so a printed module
+declares a consumer for those and no others and carries no dead helper the
+compiler would warn about (helper). -/
+def consumedDecls (P : Program) : List Nat :=
+  (P.fns.map (fun fd => consumedIn P fd.ret (bodyBinders fd) fd.body)).flatten
+
+/-- Every struct declaration of a program as Rue items, with the consumers the
+program actually calls (helper). -/
+def moduleItems (P : Program) : String :=
+  structItems (consumedDecls P) 0 P.structs
+
 /-- One `fn` item: §2's `F` production for a by-value signature. -/
 def fnItem (P : Program) (idx : Nat) (fd : FnDef) : String :=
   "fn " ++ fnName idx ++ "(" ++ String.intercalate ", " (paramList 0 fd.params) ++
@@ -320,7 +382,7 @@ def program (name description : String) (rules : List String) (outcome : String)
   "// Printed from the RueCore fragment by docs/formal/lean/RueCore/Print.lean.\n" ++
   "// The struct declarations are the program's own (§2); a `drop fn` is how a\n" ++
   "// drop becomes observable (§6.11).\n" ++
-  structItems 0 P.structs ++
+  moduleItems P ++
   prelude ++
   "\n" ++
   fnItems P 0 P.fns ++
