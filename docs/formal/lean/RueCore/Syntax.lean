@@ -6,8 +6,8 @@ scoped for the mechanization spike:
 
 * Types: `int(w, s)` at every width `w ∈ {8, 16, 32, 64}` and both
   signednesses, `bool`, `unit`, and monomorphic struct types naming a
-  declaration of the program's struct environment. Floats are the core's
-  (§5.8's (Float-Arith) and friends, §6.4) and are the next slice's; enums and
+  declaration of the program's struct environment. Floats are in the core
+  (§5.8, §6.4) and are the next slice's; enums and
   arrays (and with them `match`, indexing, and the element-wise `3.8:73`
   forms) are out of the spike and tracked in the project outline; so are
   projections and partial moves, which are the paths RUE-2231 brings.

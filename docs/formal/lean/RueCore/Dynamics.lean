@@ -519,9 +519,9 @@ def binOpInt (op : BinOp) (w : IntWidth) (s : Sign) (n₁ n₂ : Int) : OpRes :=
   | .gt => .val (.bool (decide (n₂ < n₁)))
   | .ge => .val (.bool (decide (n₂ ≤ n₁)))
 
-/-- §6.4's binary operators on two machine values. (Arith) §5.8 gives both
-operands one `int(w,s)`, so operands of two different integer types are a
-shape no well-typed program produces and the machine refuses them. -/
+/-- §6.4's binary operators on two machine values. §5.8's arithmetic rule
+gives both operands one `int(w,s)`, so operands of two different integer types
+are a shape no well-typed program produces and the machine refuses them. -/
 def evalBinOp (op : BinOp) : Val → Val → OpRes
   | .int w₁ s₁ n₁, .int w₂ s₂ n₂ =>
       if w₁ = w₂ ∧ s₁ = s₂ then binOpInt op w₁ s₁ n₁ n₂ else .confused
@@ -530,10 +530,10 @@ def evalBinOp (op : BinOp) : Val → Val → OpRes
 /-- §6.4's unary operators. `neg` is (D-Arith)'s unary case, trapping on
 `min_T` because `-min_T > max_T`; `not` on `bool` is total (§6.4's `Not`);
 `bitnot` inverts the `w`-bit pattern ((D-Bit)'s complement arm) and is total
-too. (Neg) §5.8 restricts `neg` to a signed operand, so the unsigned case
-below is a shape no well-typed program produces; it is written as the same
-range check rather than as a refusal, because the exact result `-n` is what
-§6.4 computes and the check is what decides. -/
+too. §5.8 restricts `neg` to a signed operand, so the unsigned case below is a
+shape no well-typed program produces; it is written as the same range check
+rather than as a refusal, because the exact result `-n` is what §6.4 computes
+and the check is what decides. -/
 def evalUnOp : UnOp → Val → OpRes
   | .neg, .int w s n => intResult w s (-n)
   | .not, .bool b => .val (.bool (!b))

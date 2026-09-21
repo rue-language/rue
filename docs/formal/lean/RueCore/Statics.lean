@@ -69,7 +69,7 @@ The two differ in one premise, and the difference is §5.7's provenance.
 frame-wide, so `Typed.ret` demands `NoOwnedLinear`. `@panic` carries
 `⊥_panic`, which §5.7 exempts from that check — "§5.6 performs no scope-exit
 check or drop on that edge" — so `Typed.panic` demands nothing of the
-context, and §6.12's (D-Panic) runs no drop to match.
+context, and §6.12's dynamics run no drop to match.
 
 An *algorithm* cannot leave a type and a state free, so `check`
 (`Checker.lean`) picks one of each — the enclosing return type and the state
@@ -417,10 +417,10 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   | bitnot {Γ Γ' e w s} :
       Typed P R Γ e (.int w s) Γ' →
       Typed P R Γ (.unop .bitnot e) (.int w s) Γ'
-  /-- `@intCast` (`4.13:24`–`4.13:27`, and §5.8's (Int-Cast)): the operand is
-  any integer type and the result is the one elaboration took from the use
-  site, which the form carries. Whether the value survives the conversion is
-  dynamic (`4.13:28`, §6.4's (D-Int-Cast-Trap)), not a typing question. -/
+  /-- (Int-Cast) §5.8 (`4.13:24`–`4.13:27`): the operand is any integer type
+  and the result is the one elaboration took from the use site, which the form
+  carries. Whether the value survives the conversion is dynamic (`4.13:28`,
+  §6.4's own trap rule), not a typing question. -/
   | intCast {Γ Γ' w s w' s' e} :
       Typed P R Γ e (.int w' s') Γ' →
       Typed P R Γ (.intCast w s e) (.int w s) Γ'
@@ -429,9 +429,10 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   arbitrary type and — since `⊥` contributes no state to a join — at an
   arbitrary outgoing context of the same skeleton. Unlike `ret` it imposes no
   residual-linear premise: §5.7 exempts the `⊥_panic` edge from §5.6's
-  scope-exit check, and §6.12's (D-Panic) runs no drop. The message is a
-  string literal the form carries rather than an operand, because the fragment
-  has no string type, which is also why (Panic-Operand) has no instance. -/
+  scope-exit check, and §6.12's own rule runs no drop. The message is a string
+  literal the form carries rather than an operand, because the fragment has no
+  string type, which is also why §5.8's operand-diverging companion has no
+  instance. -/
   | panic {Γ Γ' T msg} :
       Ctx.skel Γ' = Ctx.skel Γ →
       Typed P R Γ (.panic msg) T Γ'

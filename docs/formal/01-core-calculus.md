@@ -64,6 +64,7 @@ Expressions
       | @drop ( p )            -- explicit drop of place p (§5.3 statics, §6.11 dynamics; 3.9:37-39)
       | @panic ( s )           -- diverging trap; s a string-valued operand (§5.8 (Panic), §5.7; §6.12, (D-Panic))
       | @dbg ( e )             -- append e's rendering to the observable output (§5.8 (Dbg); §6.9, §6.12)
+      | @intCast ( e )         -- integer-to-integer conversion; traps unless the value fits (§5.8 (Int-Cast); §6.4)
       | @f ( e1, ..., ek )     -- FLOAT INTRINSIC (§5.8, §6.4): @f ∈ { @int_to_float, @float_to_int, @float_cast,
                                --   @total_cmp, @sqrt, @floor, @ceil, @trunc, @round }; k = 1 except @total_cmp's k = 2
       | if e0 { e1 } else { e2 }
@@ -112,19 +113,26 @@ contract. So `p.f(ē)` is typed by (Accessor-Call) at the **place sort**
 `place(m, T)` (§5, §5.8) and reduced by inlining the accessor's body, not by
 `(D-Call)` (§5.8). The `yield` body form exists for the same reason: it is the
 only way to write "this function's result is that place", and it is confined to
-`b` — no `F` body and no expression position admits it. The three intrinsic
+`b` — no `F` body and no expression position admits it. The four intrinsic
 forms are likewise not instances of the `g(a1..am)` call production: `@drop`
 takes a *place* operand and both consumes it and runs its drop glue (§5.3,
 §6.11); `@panic` is `never`-typed and hands no value to its context (§5.7,
 §6.12); `@dbg`'s effect is on the observable output, which no user function has
-(§6.9). Their operand sorts are not the argument forms `a` either: a place; a
+(§6.9); and `@intCast` takes its **result** type from the use site rather than
+from a signature (`4.13:26`), which no monomorphic `F` signature in §2 can
+express, and it traps (`4.13:28`), which no user function does. Their operand
+sorts are not the argument forms `a` either: a place; a
 string-valued expression, whose type is one the core's `T` does not yet list —
 the string types arrive with the deferred slice statics (§5.7's `⊳` note,
 §6.13.4), and a literal one is an `H0` static allocation (§6.13.2), though the
 operand need not be a literal (verified: `@panic(m)` for a string binding `m`
-compiles); and a value expression of an integer or `bool` type (verified: the
+compiles); a value expression of an integer or `bool` type (verified: the
 compiler's `@dbg` accepts exactly integer, `bool`, and `String`, rejecting an
-aggregate with E0702 — the `String` case again riding with the slice statics).
+aggregate with E0702 — the `String` case again riding with the slice statics);
+and, for `@intCast`, a value expression of an integer type (`4.13:25`).
+Elaboration has already resolved `@intCast`'s result type, exactly as it
+resolves a literal's (§5.8), so the core sees the concrete `int(w,s)` in the
+form's own typing rule.
 The float intrinsics `@f` are not instances of `g(a1..am)` either, for a
 different reason: three of them take their **result** type from context rather
 than from a signature (`3.12:16`, `3.12:17`, `3.12:19`; `4.13:139`–`4.13:141`),
@@ -1519,13 +1527,27 @@ intrinsics of `3.12:34` / `4.13:143`. None of the five touches Σ beyond its
 operands' own uses, and a *diverging* operand needs no bottom rule here:
 (Strict-Bottom) (§5.7) already ranges over intrinsic operands.
 
-The integer-to-integer conversion `@intCast` is **not** a core form — §2 has no
-production for it and this document has never given it a rule — so the three
-float conversions arrive first. They are in the core because a float value is
-otherwise unreachable from every other type, and because `@float_to_int` is the
-one float operation that traps: leaving it out would make §6.12's trap
-inventory and §7's progress obligation incomplete. `@intCast` fits the same
-shape when it is written down (`4.13:26`–`4.13:28`).
+**The integer conversion `@intCast`.** The integer-to-integer conversion has
+the same shape as the float ones: elaboration has resolved the target type
+from the use site (`4.13:26`, `4.13:27` — an unresolved or non-integer target
+is a compile-time error, E0709), the operand is an integer of any width and
+signedness (`4.13:25`), and the operand is a `Copy` scalar used by value, so Σ
+threads through it and nothing more. Whether the value *survives* the
+conversion is dynamic, not a typing question: `4.13:28` traps when the source
+value cannot be represented exactly in the target type, and §6.4's
+`(D-Int-Cast-Trap)` is that trap.
+
+```
+  Γ;Σ;Λ ⊢ e ⇒ int(w',s') ⊣ Σ'
+  ────────────────────────────────────────────────── (Int-Cast)
+  Γ;Σ;Λ ⊢ @intCast(e) ⇒ int(w,s) ⊣ Σ'
+```
+
+Unlike `(Float-Cast)` there is no `w' ≠ w` side condition: `4.13:24`–`4.13:28`
+put none on the source, so a cast between two types that happen to coincide is
+well-formed and, dynamically, the identity. A *diverging* operand needs no
+bottom rule here either — (Strict-Bottom) (§5.7) already ranges over intrinsic
+operands.
 
 **Struct construction.** Each field initializer is a value-context use of the
 declared field type — a move for a non-`Copy` field, a copy for a `Copy` one
@@ -1783,7 +1805,7 @@ them is a bug (RUE-305) — that is the point of pinning both.
                      | ret(E, φ) · K           -- a caller suspended in evaluation context E (§6.2), frame φ, awaiting a callee's value
                      | loopβ(e_body, φ) · K    -- a loop boundary: its body e_body and the frame φ to resume; break unwinds to here
   Config         C ::= ⟨ H ; φ ; K ; e ⟩       -- active frame φ evaluating expression e
-                     | ↯κ                        -- halted in a trap of category κ ∈ { overflow, div-zero, rem-zero, bounds, user } (exit 101)
+                     | ↯κ                        -- halted in a trap of category κ ∈ { overflow, div-zero, rem-zero, bounds, cast-overflow, user } (exit 101)
                      | ✓n                        -- halted normally with process exit code n
 ```
 
@@ -2220,6 +2242,30 @@ the five groups are total; `@float_to_int` is the one float form that traps.
   ⊙( (f)_{float(w)} )  →  (f')_{float(w)}                         -- never traps (3.12:37)
 ```
 
+**The integer conversion `@intCast`** reduces by the same shape, and the
+same partition keeps progress intact: the value is carried across when it
+denotes a value of the target type and traps when it does not (`4.13:28`).
+The conversion is on the *value*, not on the bit pattern — reinterpretation is
+`@bitCast`'s job (`4.13:118`, `4.13:119`), which is a different intrinsic.
+
+```
+  T' = int(w,s)        min_{T'} ≤ n ≤ max_{T'}
+  ───────────────────────────────────────────────────────────────── (D-Int-Cast)
+  @intCast( (n)_{int(w',s')} )  →  (n)_{T'}
+
+  T' = int(w,s)        n < min_{T'}  or  n > max_{T'}
+  ───────────────────────────────────────────────────────────────── (D-Int-Cast-Trap)
+  @intCast( (n)_{int(w',s')} )  →  ↯cast-overflow          -- (4.13:28)
+```
+
+`↯cast-overflow` is §6.12's sixth category. It is kept apart from `↯overflow`
+because the two are distinguishable at the process boundary: the compiler and
+the oracle report `integer cast overflow` here and `integer overflow` for the
+arithmetic traps (verified against both), so a model that merged them would
+make a real difference invisible to the differential harness. `(D-Int-Cast)`
+covers the identity case `int(w,s) → int(w,s)` without a side condition, since
+`(Int-Cast)` imposes none.
+
 `(D-Float-To-Int)` and `(D-Float-To-Int-Trap)` **partition** `𝔽_w`, which is
 what keeps progress intact for the one trapping form. `3.12:18` states the
 guard both ways — the conversion succeeds exactly when `MIN - 1 < f < MAX + 1`
@@ -2633,10 +2679,13 @@ suppresses the later scope-exit drop through the original place.
 
 ### 6.12 Traps and the top-level result
 
-The five trap categories — `overflow` (integer arithmetic, integer `neg`,
+The six trap categories — `overflow` (integer arithmetic, integer `neg`,
 `min_T / -1`, and `@float_to_int` on a NaN or out of range — `3.12:18`,
 `8.1:7`), `div-zero`, `rem-zero`, `bounds` (a negative or out-of-range array
-index), and `user` (an explicit `@panic`) — each abandon the configuration to
+index), `cast-overflow` (an `@intCast` whose value does not fit the target
+type — `4.13:28`, §6.4's `(D-Int-Cast-Trap)`; reported as `integer cast
+overflow`, which is why it is a category of its own rather than a producer of
+`overflow`), and `user` (an explicit `@panic`) — each abandon the configuration to
 `↯κ` and halt the program with the panic exit code of Appendix B (101),
 regardless of surrounding context (§6.2, Panic-Lift). They are **total,
 deterministic, and observable**: an alternate compiler must reproduce the same
@@ -3255,6 +3304,7 @@ as owed rather than discharged.
 | §4.1/§5.4 equality borrows its operands | 4.3:3f |
 | §5.5 match / enum elim + intro | 6.3:17, 3.8:33 (destructure), 4.7 (match) |
 | §5.8 leaf/operator/aggregate/call statics | 4.1:2/5/7, 4.2:1/6/14, 4.3:1/2/5/6, 4.3a:3/4, 4.4:2, 3.6:5/6/15/16, 3.5:1/2, 4.10:3/4/5/7, 6.1:36 |
+| §5.8 (Int-Cast) + §6.4 `(D-Int-Cast)`/`(D-Int-Cast-Trap)` | 4.13:24–4.13:28 |
 | §5.8 (Accessor-Call) + accessor body WF (ADR-0062) | 6.6:2–6.6:17 |
 | §5.6 enum drop (active payload) | 6.3:20 |
 | §4.3 expression/return value | 4.5:3 (→ value, not just type), 6.1:4/5, 4.9:1/7 |
@@ -3278,7 +3328,7 @@ as owed rather than discharged.
 | §6.9 call / return / inout copy-out; nested-`return` unwind with scope drops | 6.1:4/5/18, 4.9:1/7, 3.4:5/6b, 3.9:18 |
 | §6.10 loop / break dynamics | 4.8:18/21/22, 3.4:2 |
 | §6.11 drop relation (active enum payload; skip moved; explicit `@drop`; residue order) | 3.9:1/2/4/13/15/18/28/37–39, 6.3:20 |
-| §6.12 overflow/bounds/div-zero/`@panic` traps + exit code | 3.1:6/13, 4.13:5c, 8.1, 8.2, 8.3, Appendix B |
+| §6.12 overflow/bounds/div-zero/cast-overflow/`@panic` traps + exit code | 3.1:6/13, 4.13:5c, 4.13:28, 8.1, 8.2, 8.3, Appendix B |
 | §6.13 allocation store: handles, views, container equations | 3.7, 3.9 (drop order), 4.3:2 (string content equality); design citations: the RUE-390 ruling, ADR-0035/0041/0043, the RUE-386 str ruling, the RUE-388 linear-element gate |
 | §7 soundness | the informal safety intent throughout ch. 3 and 8 |
 
