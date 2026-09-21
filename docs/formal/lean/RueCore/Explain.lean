@@ -1037,6 +1037,16 @@ def scopeNeverClosed : String :=
   "(an early return runs the drop through the frame's scope record instead; a " ++
   "trap runs no drop at all)"
 
+/-- (helper) The label for a call whose callee did not complete because it
+**trapped**. No frame is popped there: §6.2's (Panic-Lift) carries `↯κ` out
+of every evaluation context, the suspended caller's included, so
+`run-all-scope-drops` never runs and the callee's open scopes are abandoned
+with the configuration (§6.12). Saying "(D-Return-Value) (pop the frame)"
+here would name a rule that did not fire. -/
+def trapLiftsPastCall : String :=
+  "(Panic-Lift) §6.2 — the callee trapped, so no frame is popped: §6.12 " ++
+  "abandons the configuration and `run-all-scope-drops` never runs"
+
 /-- (helper) An operator that met a wrong-shaped value. §5 excludes it and
 `soundness` (§7) proves so; it is here because `eval` is total. -/
 def confused (kids : List Step) (d : Nat) (Θ : List Ty) (R : Ty) (e : Expr) (rule : String)
@@ -1348,7 +1358,10 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
                    H₃ H₃ [] (.value v) (.ok H₃ v (tr ++ tr₃))
              | r =>
                  didNotRun (ta.steps ++ [push] ++ tb.steps) d Θ R (.call f args)
-                   "(D-Return-Value) §6.9 (pop the frame)" H (r.withTrace tr))
+                   (match r with
+                    | .panic _ _ => trapLiftsPastCall
+                    | _ => "(D-Return-Value) §6.9 (pop the frame)")
+                   H (r.withTrace tr))
           else refused ta.steps d Θ R (.call f args) "(D-Call) §6.9" H .typeConfusion
 
 /-- **The trace is the machine.** Projecting a run to its final result

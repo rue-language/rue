@@ -2690,8 +2690,8 @@ suppresses the later scope-exit drop through the original place.
 ### 6.12 Traps and the top-level result
 
 The six trap categories — `overflow` (integer arithmetic, integer `neg`,
-`min_T / -1`, and `@float_to_int` on a NaN or out of range — `3.12:18`,
-`8.1:7`), `div-zero`, `rem-zero`, `bounds` (a negative or out-of-range array
+`min_T / -1`, `min_T % -1` (`8.1:3`), and `@float_to_int` on a NaN or out of
+range — `3.12:18`, `8.1:7`), `div-zero`, `rem-zero`, `bounds` (a negative or out-of-range array
 index), `cast-overflow` (an `@intCast` whose value does not fit the target
 type — `4.13:28`, §6.4's `(D-Int-Cast-Trap)`; reported as `integer cast
 overflow`, which is why it is a category of its own rather than a producer of

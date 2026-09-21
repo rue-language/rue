@@ -672,6 +672,7 @@ between an exit that unwinds and an exit that abandons.
 | 3 | `(D-Let) §6.7` | `[]` | mint `ℓ0` for `v0` | `[ℓ0 = S1 { 7 }]` | |
 | 4 | `@drop` §6.11 | `[ℓ0 = S1 { 7 }]` | the glue runs — the destructor is the observable half — and the cell is marked `⊘` rather than retired, so the binding stays reinitializable (§6.8/§6.11) | `[ℓ0 = ⊘]` | `drop ℓ0 = S1 { 7 }`; `run drop fn S1(S1 { 7 })` |
 | **5** | **`(D-Panic) §6.12`** | `[ℓ0 = ⊘]` | the configuration is abandoned: `↯user`. **No `endscope` runs** — the `let`'s (D-EndScope) never fires, and nothing unwinds σ, which is the dynamic face of §5.7's `⊥_panic` exemption | — | |
+| 6 | `(Panic-Lift) §6.2` | | the trap is carried out of the suspended `main() → f0()` context: **no frame is popped**, `run-all-scope-drops` never runs, and the callee's open scopes go with the configuration | — | |
 
 The result is `EvalRes.panic .user [drop ℓ0 …, dtor S1 …]` — the trap, and
 the two events that had already happened. `Corpus.outLines` projects the

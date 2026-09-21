@@ -438,9 +438,12 @@ def violationName : Violation → String
   | .unbound => "unbound"
   | .typeConfusion => "typeConfusion"
 
-/-- The stdout the bridge compares, for a completed run: one line per user
-destructor the run executed, in trace order, then the lines `main` shows for
-the program's value. -/
+/-- The stdout the bridge compares, for a completed run: one line per
+observable event the run executed — a user destructor or a `@dbg`
+(`eventLine`) — in trace order, then the lines `main` shows for the program's
+value. A trapping run has no value line, so the panic arms of
+`outcomeSummary` and `expectedJson` project the trace alone rather than
+calling this. -/
 def outLines (D : StructEnv) (v : Val) (tr : List Event) : List String :=
   tr.filterMap eventLine ++ valueLines D v
 

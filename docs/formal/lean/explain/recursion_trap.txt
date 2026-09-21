@@ -259,7 +259,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
            →     [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
          result  PANIC (divZero) — a defined trap, §6.12
-  [32]  d11                  (D-Return-Value) §6.9 (pop the frame)
+  [32]  d11                  (Panic-Lift) §6.2 — the callee trapped, so no frame is popped: §6.12 abandons the configuration and `run-all-scope-drops` never runs
          expr    f1((v0 + (-1)))
          store   [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1]
            →     [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
@@ -269,7 +269,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1]
            →     [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
          result  PANIC (divZero) — a defined trap, §6.12
-  [34]  d8                  (D-Return-Value) §6.9 (pop the frame)
+  [34]  d8                  (Panic-Lift) §6.2 — the callee trapped, so no frame is popped: §6.12 abandons the configuration and `run-all-scope-drops` never runs
          expr    f1((v0 + (-1)))
          store   [ℓ0 = 3, ℓ1 = 2]
            →     [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
@@ -279,7 +279,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   [ℓ0 = 3, ℓ1 = 2]
            →     [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
          result  PANIC (divZero) — a defined trap, §6.12
-  [36]  d5            (D-Return-Value) §6.9 (pop the frame)
+  [36]  d5            (Panic-Lift) §6.2 — the callee trapped, so no frame is popped: §6.12 abandons the configuration and `run-all-scope-drops` never runs
          expr    f1((v0 + (-1)))
          store   [ℓ0 = 3]
            →     [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
@@ -289,12 +289,12 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   [ℓ0 = 3]
            →     [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
          result  PANIC (divZero) — a defined trap, §6.12
-  [38]  d2      (D-Return-Value) §6.9 (pop the frame)
+  [38]  d2      (Panic-Lift) §6.2 — the callee trapped, so no frame is popped: §6.12 abandons the configuration and `run-all-scope-drops` never runs
          expr    f1(3)
          store   (empty)
            →     [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
          result  PANIC (divZero) — a defined trap, §6.12
-  [39]  d0  (D-Return-Value) §6.9 (pop the frame)
+  [39]  d0  (Panic-Lift) §6.2 — the callee trapped, so no frame is popped: §6.12 abandons the configuration and `run-all-scope-drops` never runs
          expr    f0()
          store   (empty)
            →     [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
