@@ -459,12 +459,12 @@ def assignTargetLost : String :=
   "preservation (`Typed.skel_preserved`) forbids it"
 
 /-- (Assign) premise `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` (§5.2);
-prose `3.8:77` (the RUE-387 premise). -/
+prose `3.8:77` (the RUE-387 premise), keyed on the destination's type. -/
 def linearOverwrite (T : Ty) : String :=
-  "overwrite of a live linear value: the place still carries linear content at type " ++
-  Print.tyName T ++ " after the right-hand side ((Assign) premise " ++
-  "`Σ1(p) = MovedOut ∨ ¬carries_linear(T)`, §5.2, read on the residue; 3.8:77; " ++
-  "the compiler reports E0493)"
+  "overwrite of a live linear value: the place is not MovedOut after the " ++
+  "right-hand side and its type " ++ Print.tyName T ++ " carries a linear value " ++
+  "((Assign) premise `Σ1(p) = MovedOut ∨ ¬carries_linear(T)`, §5.2, read on the " ++
+  "destination's type; 3.8:77; the compiler reports E0493)"
 
 /-- (Seq) premise `carries_linear(T1) = false` (§5.3); prose `3.8:64`. -/
 def discardsLinear (T : Ty) : String :=
@@ -797,12 +797,12 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                   | some en₁ =>
                     (match en₁.st.get pl.path with
                      | some u₁ =>
-                         if residualLinear P.structs u₁ T then
-                           rejected "(Assign) §5.2, 3.8:77" Γ (.assign pl e)
-                             (Premise.linearOverwrite T) [d]
-                         else
+                         if overwriteOk P.structs u₁ T then
                            accepted "(Assign) §5.2, 3.8:77" Γ (.assign pl e) .unit
                              (Γ₁.set pl.root (en₁.setSt (en₁.st.setAt pl.path .owned))) [d]
+                         else
+                           rejected "(Assign) §5.2, 3.8:77" Γ (.assign pl e)
+                             (Premise.linearOverwrite T) [d]
                      | none =>
                          rejected "(Assign) §5.2, 3.8:77" Γ (.assign pl e)
                            Premise.pathUnderMoved [d])

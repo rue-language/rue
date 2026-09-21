@@ -129,9 +129,10 @@ That happens two ways: the refusal lies on a path the program does not take (a
 join disagreement, or a refusal inside the arm the condition skips), which is
 what generated programs produce; or the rule has no dynamic counterpart at
 all — `3.9:34`'s restriction on moving a field out of a destructor-bearing
-value (E0456) and (@Drop) §5.3's residual side condition (E0406) are static
-disciplines the machine does not monitor, so a program they reject still
-runs.
+value (E0456), (@Drop) §5.3's residual side condition (E0406), and (Assign)
+§5.2's `3.8:77` premise, which is keyed on the destination's *type* where the
+machine's overwrite monitor reads the residue it is about to drop (E0493), are
+static disciplines no monitor enforces, so a program they reject still runs.
 
 How a *drop* becomes a printed line is the **user destructor**, and nothing
 else: a Rue program has no other way to observe a drop happening, so a

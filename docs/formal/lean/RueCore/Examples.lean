@@ -529,6 +529,49 @@ def joinLinearFieldOneArm : Expr :=
   letIn false (mkStruct sCarryAffine [resLD (lit 1), resA (lit 2)])
     (seq (ite (boolLit true) (drop (.proj (.var 0) 0)) unitLit) (lit 9))
 
+/-- (Assign)'s `3.8:77` premise at a **root** whose type carries a linear
+value, past a field `@drop` that already took the linear part out. §5.2 keys
+the premise on the destination's *type* — `Σ1(p) = MovedOut ∨
+¬carries_linear(T)`, `overwriteOk` — so the reassignment is ill-formed although
+the residue carries nothing, and the compiler agrees (E0493, "assignment would
+overwrite a live linear value"). The machine does **not** refuse: its
+`linearOverwrite` monitor reads the residue, because the residue is what the
+overwrite-drop is about to walk, and there is no live linear value in it. So
+this is a rejected program that runs to completion — the third shape of that
+kind in the corpus, beside `3.9:34`'s and (@Drop)'s statics-only premises. -/
+def overwritePastPartialLinear : Expr :=
+  letIn true (mkStruct sCarryAffine [resLD (lit 1), resA (lit 2)])
+    (seq (drop (.proj (.var 0) 0))
+      (seq (assign (.var 0) (mkStruct sCarryAffine [resLD (lit 5), resA (lit 6)]))
+        (seq (drop (.var 0)) (lit 9))))
+
+/-- `S11`: `struct { x0: S10, x1: i64 }`, no attribute and no destructor.
+Class `Linear` through `S10`, so a **field** of it is a linear-carrying place
+one field step down — which is where (Assign)'s type-keyed premise is tested
+below a root. Held out of `structEnv` so that only the one case that needs it
+prints it. -/
+def dNestCarry : StructDecl :=
+  { attr := .none, fields := [.struct 10, tI64], dtor := false, cls := .linear }
+
+/-- `S11`'s index in `structEnv ++ [dNestCarry]`. -/
+def sNestCarry : Nat := 11
+
+/-- A program over the fixture declarations plus `S11`. -/
+def nestCarryProg (T : Ty) (e : Expr) : Program :=
+  Program.entry (structEnv ++ [dNestCarry]) T e
+
+/-- The same divergence one field step down: `@drop(v.x0.x0)` takes the linear
+leaf out and `v.x0 = S10{…}` is still ill-formed, because `S10` — the
+*destination's* declared type, not its residue — carries a linear value. The
+compiler reports E0493 here too. -/
+def overwriteFieldPastPartialLinear : Expr :=
+  letIn true (mkStruct sNestCarry
+      [mkStruct sCarryAffine [resLD (lit 1), resA (lit 2)], lit 3])
+    (seq (drop (.proj (.proj (.var 0) 0) 0))
+      (seq (assign (.proj (.var 0) 0)
+            (mkStruct sCarryAffine [resLD (lit 5), resA (lit 6)]))
+        (seq (drop (.var 0)) (lit 9))))
+
 /-! ## Widths, the operator set, and the intrinsics (RUE-2282)
 
 The cases above are about ownership and are written at `int(64, signed)`.
@@ -1030,6 +1073,26 @@ example : checkProgram (prog tI64 structJoinDisagrees) = false := by rfl
 example : checkProgram returnPastLinear = false := by rfl
 example : checkProgram linearParamLeaked = false := by rfl
 
+/-- (Assign) §5.2's `3.8:77` premise, at the shape where the type-keyed
+reading and the residual one diverge: a root whose *type* carries a linear
+value, reassigned after a field `@drop` took the linear part out. `check`
+refuses, and so does the compiler (E0493). -/
+example : checkProgram (prog tI64 overwritePastPartialLinear) = false := by rfl
+
+/-- The same one field step down. `S11`'s presence is not the reason: the
+extended environment is well-formed. -/
+example : checkStructs (structEnv ++ [dNestCarry]) = true := by rfl
+example : checkProgram (nestCarryProg tI64 overwriteFieldPastPartialLinear) = false := by rfl
+
+/-- And the premise, not the program's shape, is what refuses them: discharge
+the **whole** carrier instead of one field and `Σ1(v0) = MovedOut` satisfies
+the first disjunct, so the very same assignment is accepted. -/
+example : checkProgram (prog tI64
+    (letIn true (mkStruct sCarryAffine [resLD (lit 1), resA (lit 2)])
+      (seq (drop (.var 0))
+        (seq (assign (.var 0) (mkStruct sCarryAffine [resLD (lit 5), resA (lit 6)]))
+          (seq (drop (.var 0)) (lit 9)))))) = true := by rfl
+
 /-- A declaration whose recorded class disagrees with §3's join is rejected by
 the same pass: `class(S)` is not a free parameter of the syntax. -/
 example : checkStructs [{ attr := .none, fields := [tI64], dtor := false, cls := .copy }]
@@ -1225,7 +1288,7 @@ example : run demoOps (prog tI64 structLinearFieldDropped) demoFuel
 the scope exit then drops the *residue* — the cell holds a struct with a hole
 where the moved field was, and §6.11's walk skips it, so the moved value is not
 dropped a second time (`3.8:73`). -/
-example : run (prog tI64 partialMoveResidue) demoFuel
+example : run demoOps (prog tI64 partialMoveResidue) demoFuel
     = .ok [.dead, .dead] (v64 9)
         [.drop 1 (.struct sAffine [c64 1]), .dtor sAffine (.struct sAffine [c64 1]),
          .drop 0 (.struct sTwoAffine [.hole, .struct sAffine [c64 2]]),
@@ -1234,7 +1297,7 @@ example : run (prog tI64 partialMoveResidue) demoFuel
 /-- The same at a path two field steps deep: `@drop(v.x0.x1)` writes `⊘` at
 exactly that leaf, and the scope exit drops the rest of the tree in
 declaration order (`3.9:13`). -/
-example : run (prog tI64 deepPath) demoFuel
+example : run demoOps (prog tI64 deepPath) demoFuel
     = .ok [.dead] (v64 9)
         [.drop 0 (.struct sAffine [c64 2]), .dtor sAffine (.struct sAffine [c64 2]),
          .drop 0 (.struct sNested
@@ -1378,24 +1441,24 @@ in an open state. -/
 
 /-- Reading through a `⊘`: the base was moved out as a whole, so the path has
 nowhere to go (`3.8:53`). -/
-example : eval demoFuel (prog tI64 unitLit) [.full .hole] { env := [0], scope := [] }
+example : eval demoOps demoFuel (prog tI64 unitLit) [.full .hole] { env := [0], scope := [] }
     (use (.proj (.var 0) 0)) = .stuck .useAfterMove := by rfl
 
 /-- Reading a value **with** a `⊘` in it: the place itself is there, but
 handing it on would hand on an aggregate with a hole, which `fully-owned`
 (§5.1, `3.8:26`) is exactly the premise against. -/
-example : eval demoFuel (prog tI64 unitLit)
+example : eval demoOps demoFuel (prog tI64 unitLit)
     [.full (.struct sTwoAffine [.hole, .struct sAffine [c64 2]])]
     { env := [0], scope := [] } (use (.var 0)) = .stuck .useAfterMove := by rfl
 
 /-- A path step that is not a field of what is stored: no elaborated program
 has one (§2 resolves field names to declaration slots, `3.6:15`). -/
-example : eval demoFuel (prog tI64 unitLit) [.full (c64 7)] { env := [0], scope := [] }
+example : eval demoOps demoFuel (prog tI64 unitLit) [.full (c64 7)] { env := [0], scope := [] }
     (use (.proj (.var 0) 0)) = .stuck .typeConfusion := by rfl
 
 /-- `@drop` of a place that is already `⊘`: §5.3 demands `Σ(p) = Owned`, so
 the machine refuses rather than treating the drop as a silent no-op. -/
-example : eval demoFuel (prog tI64 unitLit)
+example : eval demoOps demoFuel (prog tI64 unitLit)
     [.full (.struct sTwoAffine [.hole, .struct sAffine [c64 2]])]
     { env := [0], scope := [] } (drop (.proj (.var 0) 0)) = .stuck .useAfterMove := by rfl
 

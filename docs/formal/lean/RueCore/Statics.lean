@@ -428,6 +428,39 @@ def residualLinearBelow (D : StructEnv) : OwnSt → Ty → Bool
        | none => false)
   | _, _ => false
 
+/-- §5.2's (Assign) premise `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` (`3.8:77`),
+as a decidable test on the post-RHS state.
+
+This one is keyed on the destination's **type**, not on its residue, and
+deliberately so: `3.8:77` says the diagnostic "is determined by the
+destination's *type* together with the statically tracked move paths, never by
+a run-time drop flag", and the compiler agrees (E0493 fires on a root
+reassignment of a linear-carrying struct even when a field `@drop` has already
+taken the linear part out from under it). Reading it on the residue instead —
+`residualLinear D u T = false`, the shape §5.6's leak check and §5.5's join
+use — would accept that program, so this is the one place in the fragment
+where the residual reading is *not* the right one. §5.6 and §5.5 abandoned the
+type-level test because it over-rejects a **discharge**; (Assign) is not a
+discharge, and `3.8:77`'s point is that an overwrite never performs one.
+
+`residualLinear D u T = false` follows from either disjunct — `MovedOut`
+carries nothing, and a non-linear type has no linear content to carry
+(`ContentsTy.residualLinear_false`) — so this premise is strictly stronger
+than the residual one and the dynamic `linearOverwrite` monitor, which reads
+the residue because the residue is what the machine is about to drop, stays
+reachable only through a program `check` rejects. -/
+def overwriteOk (D : StructEnv) : OwnSt → Ty → Bool
+  | .movedOut, _ => true
+  | .owned, T => decide (T.mult D ≠ .linear)
+  | .fields _, T => decide (T.mult D ≠ .linear)
+
+/-- `overwriteOk` is §5.2's disjunction, spelled as the rule spells it: the
+`Prop` form is what `Typed.assign` carries, the `Bool` form what `check`
+decides. -/
+theorem overwriteOk_iff {D : StructEnv} {u : OwnSt} {T : Ty} :
+    overwriteOk D u T = true ↔ (u = .movedOut ∨ T.mult D ≠ .linear) := by
+  cases u <;> simp [overwriteOk]
+
 /-- One context entry: the binding's declared type and `μ` mark (fixed at the
 binder: `Γ`'s part) plus the ownership state of every path under it
 (flow-sensitive: `Σ`'s part), one row of §5's fused `Γ ; Σ`. -/
@@ -566,8 +599,8 @@ Rule names cite the calculus: `useCopy`/`useMove` are (Use-Copy)/(Use-Move)
 (Neg)/(Not)/(BitNot), `intCast` is (Int-Cast) and `dbg` is (Dbg), all §5.8;
 `dropCopy`/`dropRes` are (@Drop-Copy)/(@Drop) (§5.3); `mkStruct` is
 (Struct-Intro) (§5.8); `letIn` folds in §5.6's residual-linear scope-exit
-check; `assign` is (Assign) with the `3.8:77` linear-overwrite premise on the
-*post-RHS* state; `seq` is (Seq) with the `3.8:64` discard check; `ite` is (If)
+check; `assign` is (Assign) with the `3.8:77` linear-overwrite premise, keyed
+on the destination's type (`overwriteOk`), on the *post-RHS* state; `seq` is (Seq) with the `3.8:64` discard check; `ite` is (If)
 with the §5.5 join; `call` is (Call) by value (§5.8); `ret` is (Return-Value)
 and `panic` is (Panic), each with (Sub-Never) folded in (§5.7, §5.8). -/
 inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop where
@@ -777,9 +810,22 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   premise, and the `Σ1` reading that makes `p = f(p)` legal), and the subtree
   at `p` becomes `Owned` afterward (reinitialization, `3.8:55`). The `get`
   premises are `Owned-Base` (`3.8:53`) at both states: a path under a moved
-  prefix is not a path to assign to, which the compiler reports as E0205. The
-  `3.8:77` premise is read on the residual state for U1's reason, and on a
-  whole binding it is §5.2's own disjunction. -/
+  prefix is not a path to assign to, which the compiler reports as E0205.
+
+  The `3.8:77` premise is §5.2's disjunction **as written** —
+  `Σ1(p) = MovedOut ∨ ¬carries_linear(T)`, on the destination's declared type —
+  and not §5.6's residual reading. `overwriteOk`'s docstring says why: an
+  overwrite discharges nothing, so the argument that made §5.5 and §5.6
+  state-keyed (RUE-526, RUE-1591) does not transfer, and the compiler rejects
+  the shape the residual reading would accept (E0493 on
+  `@drop(v.linearField); v = …`; corpus case `overwrite_past_partial_linear`).
+
+  One **deviation** (N3): `Owned-Base` is demanded on the *incoming* state as
+  well as the post-RHS one, so this rule is one premise stricter than §5.2,
+  which states neither (U4 reads §5.1's "in any context" side condition for the
+  post-RHS lookup). Nothing a program can observe turns on it: only an RHS that
+  reinitialises the target's own moved-out prefix could make the incoming
+  lookup fail where the post-RHS one succeeds. -/
   | assign {Γ Γ₁ p e en₀ en₁ u₀ u₁ T} :
       Γ[p.root]? = some en₀ → en₀.mu = true →
       en₀.st.get p.path = some u₀ →
@@ -787,7 +833,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       Typed P R Γ e T Γ₁ →
       Γ₁[p.root]? = some en₁ →
       en₁.st.get p.path = some u₁ →
-      residualLinear P.structs u₁ T = false →
+      (u₁ = .movedOut ∨ T.mult P.structs ≠ .linear) →
       Typed P R Γ (.assign p e) .unit (Γ₁.set p.root (en₁.setSt (en₁.st.setAt p.path .owned)))
   /-- (Seq): the discarded value must not carry a linear value (`3.8:64`). -/
   | seq {Γ Γ₁ Γ₂ e₁ e₂ T₁ T₂} :

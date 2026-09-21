@@ -416,6 +416,25 @@ fail, and `check` would reject; that is the corpus case `linear_overwrite`,
 which the compiler rejects with E0493 and the machine refuses with
 `linearOverwrite`.
 
+That premise is keyed on the destination's **type**, exactly as §5.2 writes it
+and as `3.8:77` insists ("determined by the destination's *type* together with
+the statically tracked move paths, never by a run-time drop flag"). It is the
+one place in the fragment where the *residual* reading would be wrong. Where a
+partial move sits under the target — `@drop(v0.x0)` on a carrier whose only
+linear content is `x0`, then `v0 = S10{…}` — the residue carries nothing and
+yet the assignment is still ill-formed, because the type still carries a linear
+value; the compiler agrees (E0493), and the corpus case
+`overwrite_past_partial_linear` pins it, with
+`overwrite_field_past_partial_linear` the same shape one field step down.
+§5.5's join and §5.6's leak check *are* keyed on the residue, because they ask
+whether an obligation was **discharged** and the residue is the honest answer
+there (`ownedJoinOk`, `residualLinear`). An overwrite discharges nothing —
+that is precisely what `3.8:77` is about — so it reads the type
+(`overwriteOk`). The two are not in tension, and the model is strictly stricter
+than the residual reading at (Assign): both disjuncts of §5.2's premise imply
+`residual-linear = false`, which is what keeps the machine's
+`linearOverwrite` monitor unreachable from a program `check` accepts.
+
 ### The interpreter's run
 
 `run` returns `.ok [dead] (.int 2) []`. Step by step, with the
