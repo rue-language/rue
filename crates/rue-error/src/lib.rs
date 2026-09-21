@@ -918,7 +918,7 @@ define_error_codes! {
         explanation: "A conformance assertion, refinement, or interface bound names an entity that is not an interface. An ordinary concrete type cannot be used as an interface requirement.",
         likely_cause: "A struct, enum, or primitive type was supplied where an interface name is required. Use a declared interface, or use comptime T: type for an unbounded type parameter.",
         examples: [
-            ErrorCodeExample { title: "Concrete type used as a bound", source: "struct Concrete {}\nfn accept(comptime T: Concrete, borrow x: T) {}\nfn main() {}", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: ["interfaces"] },
+            ErrorCodeExample { title: "Concrete type used as a bound", source: "struct Concrete {}\ninterface Marker { fn mark(borrow self); }\nfn accept(comptime T: Concrete + Marker, borrow x: T) {}\nfn main() {}", outcome: ErrorCodeExampleOutcome::EmitsThisCode, preview: ["interfaces"] },
             ErrorCodeExample { title: "Use an interface bound", source: "interface Marker { fn mark(borrow self); }\nfn accept(comptime T: Marker, borrow x: T) {}\nfn main() {}", outcome: ErrorCodeExampleOutcome::Compiles, preview: ["interfaces"] },
         ],
         references: [ErrorCodeReference { title: "Bound declarations", path: "docs/spec/src/06-items/08-interfaces.md", rule: Some("6.8:14") }],
