@@ -70,10 +70,11 @@ One array of case objects. Fields:
   residue it is about to drop (E0493) — are static disciplines no monitor
   enforces, so a program they reject still runs. `partial_under_dtor`,
   `linear_field_stranded`, `overwrite_past_partial_linear` and
-  `overwrite_field_past_partial_linear` below are those cases. Every line is a bare integer or `true`/`false`, so the
-  projection is not injective: a destructor line `n` swapped with a `@dbg`
-  line `n` or a value line `n` would not be told apart. Accepted at fragment
-  scope.
+  `overwrite_field_past_partial_linear` below are those cases.
+
+  Every line is a bare integer or `true`/`false`, so the projection is not
+  injective: a destructor line `n` swapped with a `@dbg` line `n` or a value
+  line `n` would not be told apart. Accepted at fragment scope.
 
 Every case is evaluated at one fixed bound, `exportFuel`, and a case the
 bound does not complete is **not exported**: `outOfFuel` is the interpreter
