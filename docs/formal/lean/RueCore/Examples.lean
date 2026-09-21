@@ -140,8 +140,7 @@ def scalarProg (T : Ty) (e : Expr) : Program := Program.entry [] T e
 
 /-! ## Scalars, resources, and the ownership discipline -/
 
-/-- `let x = 2 + 3; x + x` — well-typed scalar flow (no `*` in the
-fragment; use `+`). -/
+/-- `let x = 2 + 3; x + x` — well-typed scalar flow. -/
 def scalars : Expr :=
   letIn false (binop .add (lit 2) (lit 3)) (binop .add (use 0) (use 0))
 

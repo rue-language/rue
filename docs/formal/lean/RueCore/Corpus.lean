@@ -31,14 +31,14 @@ One array of case objects. Fields:
   a compiler that rejects one is wrong. A `reject` verdict is **not**: it is
   the absence of an acceptance from an algorithm that is deliberately
   narrower than the rule, so it is only trustworthy on shapes where `check`
-  is complete. It is not complete on `return`: a `return` arm of an `if`
-  contributes its post-operand state to §5.5's join, where §5.7 excludes a
-  diverging arm's state entirely, so a binding that arm moved out is
-  unusable after the `if` and a program the calculus derives — and the
-  compiler accepts — is rejected here (`Checker.lean`, "what completeness
-  costs"). That shape would be a *false* bridge failure, so nothing produces
-  it: the seed cases below use `return` only where `check` is complete, and
-  `Gen.lean` emits no `ret` at all.
+  is complete. It is not complete on the two never-typed forms, `return` and
+  `@panic`: a diverging arm of an `if` contributes its own state to §5.5's
+  join, where §5.7 excludes a diverging arm's state entirely, so a binding
+  that arm moved out is unusable after the `if` and a program the calculus
+  derives — and the compiler accepts — is rejected here (`Checker.lean`,
+  "what completeness costs"). That shape would be a *false* bridge failure,
+  so nothing produces it: the seed cases below use `return` and `@panic` only
+  where `check` is complete, and `Gen.lean` emits neither.
 * `expected` — the interpreter's outcome for an accepted program:
   `{"kind": "ok", "stdout": [<line>...], "exit": 0}`, where the lines are the
   run's **observable events** in trace order — one per user destructor and one
