@@ -14,8 +14,10 @@ Design commitments carried over from §6:
 * **Memory violations are refusals, not silence.** Reading a `⊘`/`†` cell,
   implicitly dropping a linear value, or overwriting one, yields a named
   `Violation`. The §7 safety theorem (`Soundness.lean`) is exactly:
-  well-typed programs never reach one. The refusals are of two kinds, and
-  the distinction matters for what `eval` is a model of:
+  well-typed programs never reach one — which is a claim about the refusals
+  below, and the carve-out under "Pending arguments" names the one edge they
+  do not cover. The refusals are of two kinds, and the distinction matters
+  for what `eval` is a model of:
   - `useAfterMove`, `useAfterDrop`, `unbound`, and `typeConfusion` are
     §6's own stuck states: no reduction rule applies to a read of a `⊘` or
     `†` cell, an unbound index, or an operator on a value of the wrong
@@ -46,6 +48,39 @@ Design commitments carried over from §6:
 * Traces record each drop (`drop ℓ v`) and each discarded temporary
   (`dropTemp v`) — the §6.7 temporary-death analog.
 
+## Pending arguments: the one edge no monitor covers
+
+A by-value argument reduces to a value that lives in no cell and in no scope
+record between the `use` that produced it and the `mintParams` that gives it
+one (§6.9's (D-Call)). If a *later* argument of the same call unwinds by
+`return`, (D-Return) §6.9 discards the evaluation context — `g(v̄, …, E, …)`
+included — and runs `run-all-scope-drops` on the frame's records, which never
+named that value. Its drop is therefore neither run nor monitored, whatever
+its multiplicity class: an affine argument emits no `dropTemp`, and a linear
+one is destroyed without a `linearDiscard`.
+
+That is the calculus as written, not a modelling slip. (D-Return) unwinds σ
+and nothing else, and §5's only bottom rule for an argument position — §5.7's
+strict-context rule, `Strict-Bottom` there, which this fragment does not
+mechanize because it has no ⊥ provenance to propagate — carries `⊥;δ_e`
+outward without imposing §5.3's discard check on the siblings already
+evaluated; the statics cannot reject the program without provenance they do
+not have. §6.9's own justification for
+(D-Return) — "every bound cell is also registered in the frame's scope
+records" — is exactly true and exactly insufficient here, because an argument
+temporary is not a bound cell. The Rue compiler behaves the same way (an
+`RAffine` argument's destructor does not run), so the bridge cannot see it
+either.
+
+`eval` models the calculus rather than patching it, so no monitor is added:
+`evalArgs` passes a `returned` abort on untouched. Both shapes are pinned as
+kernel-checked witnesses in `Examples.lean`
+(`linearLostAtCallArg`, `affineLostAtCallArg`), the §7 claim is stated with
+the carve-out named (`Soundness.lean`'s `no_violation`,
+`docs/formal/03-metatheory.md`), and closing it is an open spec decision
+(RUE-2316, the pending-argument decision) — it needs a rule, in §5.7 or
+§6.9, before a monitor here would mean anything.
+
 ## Frames, scope records, and unwinding (§6.1, §6.9)
 
 §6.1's frame is `φ = ⟨ρ ; σ⟩` with `σ` a *stack* of open scope records. The
@@ -59,8 +94,9 @@ registers its cell **both** in the scope record and in the administrative
 `endscope` form that the normal path runs (modelled by the structure of
 `eval`'s `letIn` case). An early `return` throws the `endscope` markers away
 with the evaluation context, and `run-all-scope-drops` walks the record
-instead, so every live binding of the frame is still dropped, newest-first
-(§6.9's (D-Return); `3.9:18`).
+instead, so every live binding of the frame is still dropped (`3.9:18`, which
+lists a `return` among the points drops are inserted at), newest-first
+(`3.9:4`, reverse declaration order) — §6.9's (D-Return).
 
 ## Fuel (ADR-0097, RUE-2233)
 

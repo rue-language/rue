@@ -45,11 +45,14 @@ modelled, rather than claiming a rule the mechanization does not cover.
 ## Frames in the step table
 
 A run spans frames: a call pushes one and a `return` or a normal completion
-pops one. Three administrative rows make that visible, in the machine's own
+pops one. Four administrative rows make that visible, in the machine's own
 vocabulary rather than as the expression they belong to: `(D-Call) §6.9
 (push the frame)`, which shows the minted parameter cells; `(D-Return-Value)
-§6.9 (pop the frame)`, which shows the drops `run-all-scope-drops` ran; and
-`(D-Return) §6.9 (unwind the frame)`, which shows the same walk taken early.
+§6.9 (pop the frame)`, which shows the drops `run-all-scope-drops` ran;
+`(D-Return) §6.9 (unwind the frame)`, which shows the same walk taken early;
+and the row where a call takes an unwound `return` as its value, labelled
+`(D-Return)/(D-Return-Main)` because which of the two fired depends on
+whether the call is the bottom of the stack, and a single row cannot tell.
 A callee's rows are nested one depth further and spelled with the callee's
 own binder names.
 
@@ -1174,7 +1177,7 @@ def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame
                       H₃ H₄ evs (.value v) (.ok H₄ v (tr ++ (tr₃ ++ evs))))
              | .returned H₃ v tr₃ =>
                  tracedAs (ta.steps ++ [push] ++ tb.steps) d Θ R (.call f args)
-                   "(D-Return) §6.9 (the callee's return is the call's value)"
+                   "(D-Return)/(D-Return-Main) §6.9 (the callee's return is the call's value)"
                    ("absorb " ++ valLine v)
                    H₃ H₃ [] (.value v) (.ok H₃ v (tr ++ tr₃))
              | r =>
