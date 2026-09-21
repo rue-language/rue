@@ -1431,7 +1431,13 @@ mod tests {
                 matches!(&args[0], IntrinsicArg::Type(ty) if is_expected_variant(ty)),
                 "@offset_of({spelling}, x) parsed as {args:?}"
             );
-            assert!(matches!(&args[1], IntrinsicArg::Expr(Expr::Ident(_))));
+            assert!(matches!(
+                &args[1],
+                IntrinsicArg::Expr(CallArg {
+                    expr: Expr::Ident(_),
+                    ..
+                })
+            ));
         }
 
         // Anonymous type literals are creation sites, legal only in comptime
@@ -1478,11 +1484,35 @@ mod tests {
         // type while `!x` stays a prefix-not expression.
         let args = intrinsic_args("fn f() -> i32 { @probe(!, !x, a + 1, (), [1, 2], Point) }");
         assert!(matches!(&args[0], IntrinsicArg::Type(TypeExpr::Never(_))));
-        assert!(matches!(&args[1], IntrinsicArg::Expr(Expr::Unary(_))));
-        assert!(matches!(&args[2], IntrinsicArg::Expr(Expr::Binary(_))));
+        assert!(matches!(
+            &args[1],
+            IntrinsicArg::Expr(CallArg {
+                expr: Expr::Unary(_),
+                ..
+            })
+        ));
+        assert!(matches!(
+            &args[2],
+            IntrinsicArg::Expr(CallArg {
+                expr: Expr::Binary(_),
+                ..
+            })
+        ));
         assert!(matches!(&args[3], IntrinsicArg::Type(TypeExpr::Unit(_))));
-        assert!(matches!(&args[4], IntrinsicArg::Expr(Expr::ArrayLit(_))));
-        assert!(matches!(&args[5], IntrinsicArg::Expr(Expr::Ident(_))));
+        assert!(matches!(
+            &args[4],
+            IntrinsicArg::Expr(CallArg {
+                expr: Expr::ArrayLit(_),
+                ..
+            })
+        ));
+        assert!(matches!(
+            &args[5],
+            IntrinsicArg::Expr(CallArg {
+                expr: Expr::Ident(_),
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -1490,7 +1520,7 @@ mod tests {
         let args = intrinsic_args("fn f(n: i32) -> i32 { @drop(([1; 3])) }");
         assert!(matches!(
             &args[0],
-            IntrinsicArg::Expr(Expr::Paren(paren))
+            IntrinsicArg::Expr(CallArg { expr: Expr::Paren(paren), .. })
                 if matches!(&*paren.inner, Expr::ArrayLit(array) if array.repeat.is_some())
         ));
 
@@ -1498,17 +1528,17 @@ mod tests {
             intrinsic_args("fn f(n: i32, count: i32) -> i32 { @probe([n; count], [[1; 2]; 3]) }");
         assert!(matches!(
             &args[0],
-            IntrinsicArg::Expr(Expr::ArrayLit(array)) if array.repeat.is_some()
+            IntrinsicArg::Expr(CallArg { expr: Expr::ArrayLit(array), .. }) if array.repeat.is_some()
         ));
         assert!(matches!(
             &args[1],
-            IntrinsicArg::Expr(Expr::ArrayLit(array)) if array.repeat.is_some()
+            IntrinsicArg::Expr(CallArg { expr: Expr::ArrayLit(array), .. }) if array.repeat.is_some()
         ));
 
         let args = intrinsic_args("fn f() -> i32 { @probe([(); 3], [() == (); 3], [!false; 3]) }");
         assert!(args.iter().all(|arg| matches!(
             arg,
-            IntrinsicArg::Expr(Expr::ArrayLit(array)) if array.repeat.is_some()
+            IntrinsicArg::Expr(CallArg { expr: Expr::ArrayLit(array), .. }) if array.repeat.is_some()
         )));
     }
 

@@ -98,6 +98,24 @@ exit_code = 0
 stdout = "stress pages=400 blocks=4400 links=400 anchors=800\nexpected_links=400\ndeterministic=true\nvalid=true\nselftests=30 failures=0\n"
 
 [[case]]
+name = "mosaic_parallel_compares_complete_sites"
+description = "the preview workload joins two complete sites and compares serial and joined fingerprints and counters"
+source_path = "examples/mosaic_parallel.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["--preview", "concurrency", "${SOURCE}", "-o", "prog"]
+exit_code = 0
+stdout_contains = [
+  "parallel sites=2 page_counts=100,140",
+  "serial_left pages=100 blocks=1100 links=100 anchors=200",
+  "joined_left pages=100 blocks=1100 links=100 anchors=200",
+  "serial_right pages=140 blocks=1540 links=140 anchors=280",
+  "joined_right pages=140 blocks=1540 links=140 anchors=280",
+  "joined_status=ok",
+  "counters_match=true",
+  "valid=true",
+]
+
+[[case]]
 name = "mosaic_prints_reference"
 description = "help documents commands, formats, invariants, standard-library exercise, and limits"
 source_path = "examples/mosaic/main.rue"

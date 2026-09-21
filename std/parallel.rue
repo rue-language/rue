@@ -1,0 +1,34 @@
+// std.parallel — the first structured-concurrency operation.
+//
+// `join_inout` keeps both exclusive contexts borrowed by the caller while
+// the runtime starts and joins one worker.  The callbacks are second-class
+// named functions; they cannot escape the operation or be stored in a value.
+const result = @import("result.rue");
+
+pub enum SpawnError {
+    ResourceExhausted,
+    InitializationFailed,
+}
+
+// Run two callbacks with exclusive access to separate contexts. Both context
+// types must satisfy the canonical transferability fact because either one
+// may be accessed by the worker implementation.
+pub fn join_inout(
+    comptime A: type,
+    comptime B: type,
+    inout left: A,
+    inout right: B,
+    left_fn: fn(inout A),
+    right_fn: fn(inout B),
+) -> result.Result((), SpawnError) {
+    @require_transferable(A);
+    @require_transferable(B);
+    let R = result.Result((), SpawnError);
+    let status = @join_inout(inout left, inout right, left_fn, right_fn);
+    match status {
+        0 => R.Ok(()),
+        1 => R.Err(SpawnError.ResourceExhausted),
+        2 => R.Err(SpawnError.InitializationFailed),
+        _ => @panic("join_inout returned an invalid status"),
+    }
+}

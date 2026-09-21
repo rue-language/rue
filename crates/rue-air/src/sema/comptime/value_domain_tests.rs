@@ -1,6 +1,6 @@
 use super::*;
 use lasso::Key;
-use rue_rir::{Inst, RirEditor, RirValidationContext};
+use rue_rir::{Inst, InstRef, RirArgMode, RirCallArg, RirEditor, RirValidationContext};
 use std::cell::{Cell, RefCell};
 
 thread_local! {
@@ -74,6 +74,17 @@ thread_local! {
         const { RefCell::new(Vec::new()) };
     static EXPRESSION_INTRINSIC_OUTCOME: Cell<FakeExpressionIntrinsicOutcome> =
         const { Cell::new(FakeExpressionIntrinsicOutcome::RuntimeDependent) };
+}
+
+fn normal_intrinsic_args(values: &[InstRef]) -> Vec<RirCallArg> {
+    values
+        .iter()
+        .copied()
+        .map(|value| RirCallArg {
+            value,
+            mode: RirArgMode::Normal,
+        })
+        .collect()
 }
 
 #[test]
@@ -2505,7 +2516,11 @@ fn durable_only_instruction_forms_cross_the_semantic_host_boundary() {
         span: Span::new(6, 7),
     });
     let intrinsic = editor
-        .add_intrinsic(intrinsic_name, &[string, integer], Span::new(0, 7))
+        .add_intrinsic(
+            intrinsic_name,
+            &normal_intrinsic_args(&[string, integer]),
+            Span::new(0, 7),
+        )
         .unwrap();
     let checked = editor.add_inst(rue_rir::Inst {
         data: InstData::Checked {
@@ -2645,7 +2660,11 @@ fn semantic_sites_use_import_order_and_owning_program_identity() {
             span: Span::new(0, 3),
         });
         let _other = editor
-            .add_intrinsic(other_name, &[other_string], Span::new(0, 3))
+            .add_intrinsic(
+                other_name,
+                &normal_intrinsic_args(&[other_string]),
+                Span::new(0, 3),
+            )
             .unwrap();
         let first_string = editor.add_inst(rue_rir::Inst {
             data: InstData::StringConst {
@@ -2655,7 +2674,11 @@ fn semantic_sites_use_import_order_and_owning_program_identity() {
             span: Span::new(10, 13),
         });
         let first = editor
-            .add_intrinsic(import_name, &[first_string], Span::new(10, 13))
+            .add_intrinsic(
+                import_name,
+                &normal_intrinsic_args(&[first_string]),
+                Span::new(10, 13),
+            )
             .unwrap();
         let second_string = editor.add_inst(rue_rir::Inst {
             data: InstData::StringConst {
@@ -2665,7 +2688,11 @@ fn semantic_sites_use_import_order_and_owning_program_identity() {
             span: Span::new(10, 13),
         });
         let second = editor
-            .add_intrinsic(import_name, &[second_string], Span::new(10, 13))
+            .add_intrinsic(
+                import_name,
+                &normal_intrinsic_args(&[second_string]),
+                Span::new(10, 13),
+            )
             .unwrap();
         (editor.finish(), first, second)
     };
@@ -2732,19 +2759,31 @@ fn default_admission_does_not_evaluate_intrinsic_or_enum_children() {
         span: Span::new(0, 3),
     });
     let valid_import = editor
-        .add_intrinsic(import_name, &[valid_string], Span::new(0, 3))
+        .add_intrinsic(
+            import_name,
+            &normal_intrinsic_args(&[valid_string]),
+            Span::new(0, 3),
+        )
         .unwrap();
     let intrinsic = editor
-        .add_intrinsic(import_name, &[bad], Span::new(0, 3))
+        .add_intrinsic(import_name, &normal_intrinsic_args(&[bad]), Span::new(0, 3))
         .unwrap();
     let target_arch = editor
         .add_intrinsic(target_arch_name, &[], Span::new(0, 3))
         .unwrap();
     let malformed_target = editor
-        .add_intrinsic(target_os_name, &[bad], Span::new(0, 3))
+        .add_intrinsic(
+            target_os_name,
+            &normal_intrinsic_args(&[bad]),
+            Span::new(0, 3),
+        )
         .unwrap();
     let unknown_intrinsic = editor
-        .add_intrinsic(unknown_name, &[bad], Span::new(0, 3))
+        .add_intrinsic(
+            unknown_name,
+            &normal_intrinsic_args(&[bad]),
+            Span::new(0, 3),
+        )
         .unwrap();
     let enum_variant = editor.add_inst(rue_rir::Inst {
         data: InstData::EnumVariant {
@@ -2905,13 +2944,21 @@ fn expression_intrinsic_requests_preserve_terminals_without_evaluating_children(
         span: Span::new(0, 3),
     });
     let valid_import = editor
-        .add_intrinsic(import_name, &[string], Span::new(0, 3))
+        .add_intrinsic(
+            import_name,
+            &normal_intrinsic_args(&[string]),
+            Span::new(0, 3),
+        )
         .unwrap();
     let malformed_import = editor
-        .add_intrinsic(import_name, &[bad], Span::new(4, 7))
+        .add_intrinsic(import_name, &normal_intrinsic_args(&[bad]), Span::new(4, 7))
         .unwrap();
     let malformed_target = editor
-        .add_intrinsic(target_name, &[bad], Span::new(8, 11))
+        .add_intrinsic(
+            target_name,
+            &normal_intrinsic_args(&[bad]),
+            Span::new(8, 11),
+        )
         .unwrap();
     let mut host = FakeHost {
         programs: vec![editor.finish()],
@@ -3002,7 +3049,11 @@ fn unknown_expression_intrinsic_rejects_per_program_without_calling_the_hook() {
             span: Span::new(12, 15),
         });
         let unknown = editor
-            .add_intrinsic(unknown_name, &[bad], Span::new(12, 15))
+            .add_intrinsic(
+                unknown_name,
+                &normal_intrinsic_args(&[bad]),
+                Span::new(12, 15),
+            )
             .unwrap();
         (editor.finish(), unknown)
     };

@@ -592,7 +592,7 @@ impl Validator<'_> {
             Expr::IntrinsicCall(i) => {
                 for arg in &i.args {
                     match arg {
-                        IntrinsicArg::Expr(e) => self.check_expr(e),
+                        IntrinsicArg::Expr(e) => self.check_expr(&e.expr),
                         IntrinsicArg::Type(ty) => self.check_type_expr(ty),
                     }
                 }

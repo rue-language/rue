@@ -921,9 +921,10 @@ impl<'a> CfgBuilder<'a> {
     ) {
         let args = args
             .into_iter()
-            .map(|(value, mode)| {
-                self.runtime_air_type(self.air.get(value).ty)
-                    .map(|ty| rue_air::RuntimeAirArgument { ty, mode })
+            .enumerate()
+            .map(|(index, (value, mode))| {
+                let air_ty = self.air.get(value).ty;
+                runtime.classify_air_argument(index, self.runtime_air_type(air_ty), mode)
             })
             .collect::<Option<Vec<_>>>();
         let Some(args) = args else {

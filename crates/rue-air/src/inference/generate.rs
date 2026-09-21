@@ -22,6 +22,8 @@ use crate::types::ArrayLen;
 use crate::types::{ModuleId, StructId, TypeKind};
 use lasso::{Key, Spur, ThreadedRodeo};
 use rue_rir::{InstData, InstRef, RepeatCount, Rir, RirTypeSyntaxNode, RirTypeSyntaxRef};
+#[cfg(test)]
+use rue_rir::{RirArgMode, RirCallArg};
 use rue_span::{FileId, Span};
 
 use ahash::AHashMap;
@@ -2281,7 +2283,7 @@ impl<'a> ConstraintGenerator<'a> {
                 let intrinsic_ty = match shape {
                     None => {
                         for arg_ref in args.iter() {
-                            generate_intrinsic_arg!(*arg_ref);
+                            generate_intrinsic_arg!(arg_ref.value);
                         }
                         InferType::Var(self.fresh_var())
                     }
@@ -2296,7 +2298,7 @@ impl<'a> ConstraintGenerator<'a> {
                         });
                         if !matches!(signature.params, ParamShape::Ungenerated) {
                             for (index, arg_ref) in args.iter().enumerate() {
-                                let info = generate_intrinsic_arg!(*arg_ref);
+                                let info = generate_intrinsic_arg!(arg_ref.value);
                                 match signature.params.at(index) {
                                     ParamConstraint::Free => {}
                                     ParamConstraint::Common => {
@@ -2322,7 +2324,7 @@ impl<'a> ConstraintGenerator<'a> {
                                     }
                                     ParamConstraint::EqualIntLiteral(fixed) => {
                                         if matches!(
-                                            self.rir.get(*arg_ref).data,
+                                            self.rir.get(arg_ref.value).data,
                                             InstData::IntConst(_)
                                         ) {
                                             let expected = self.fixed_infer_type(fixed);
@@ -2379,7 +2381,7 @@ impl<'a> ConstraintGenerator<'a> {
                         let typed_shape = args.len() == 2;
                         let mut pointee = None;
                         for (index, arg_ref) in args.iter().enumerate() {
-                            let info = generate_intrinsic_arg!(*arg_ref);
+                            let info = generate_intrinsic_arg!(arg_ref.value);
                             if !typed_shape {
                                 continue;
                             }
@@ -2436,7 +2438,7 @@ impl<'a> ConstraintGenerator<'a> {
                         let typed_shape = args.len() == 1;
                         let mut pointee = None;
                         for (index, arg_ref) in args.iter().enumerate() {
-                            let info = generate_intrinsic_arg!(*arg_ref);
+                            let info = generate_intrinsic_arg!(arg_ref.value);
                             if typed_shape && index == 0 {
                                 pointee = self.concrete_pointee_type(&info.ty);
                             }
@@ -2464,7 +2466,7 @@ impl<'a> ConstraintGenerator<'a> {
                         let mut pointer_ty = None;
                         let mut offset_is_integer = false;
                         for (index, arg_ref) in args.iter().enumerate() {
-                            let info = generate_intrinsic_arg!(*arg_ref);
+                            let info = generate_intrinsic_arg!(arg_ref.value);
                             if typed_shape {
                                 match index {
                                     0 => {
@@ -2504,12 +2506,14 @@ impl<'a> ConstraintGenerator<'a> {
                         let typed_shape = args.len() == 1;
                         let mut pointee = None;
                         for (index, arg_ref) in args.iter().enumerate() {
-                            let info = generate_intrinsic_arg!(*arg_ref);
-                            let is_field_place =
-                                matches!(self.rir.get(*arg_ref).data, InstData::FieldGet { .. });
+                            let info = generate_intrinsic_arg!(arg_ref.value);
+                            let is_field_place = matches!(
+                                self.rir.get(arg_ref.value).data,
+                                InstData::FieldGet { .. }
+                            );
                             if typed_shape
                                 && index == 0
-                                && self.is_inference_place(*arg_ref, ctx)
+                                && self.is_inference_place(arg_ref.value, ctx)
                                 && (!field_ptr || is_field_place)
                             {
                                 pointee = self.concrete_type(&info.ty);
@@ -5251,7 +5255,14 @@ mod tests {
             span: Span::new(1, 6),
         });
         let raw = rir
-            .add_intrinsic(interner.get_or_intern("raw"), &[value], Span::new(0, 10))
+            .add_intrinsic(
+                interner.get_or_intern("raw"),
+                &[RirCallArg {
+                    value,
+                    mode: RirArgMode::Normal,
+                }],
+                Span::new(0, 10),
+            )
             .unwrap();
         let offset = rir.add_inst(rue_rir::Inst {
             data: InstData::IntConst(0),
@@ -5260,7 +5271,16 @@ mod tests {
         let moved = rir
             .add_intrinsic(
                 interner.get_or_intern("ptr_offset"),
-                &[raw, offset],
+                &[
+                    RirCallArg {
+                        value: raw,
+                        mode: RirArgMode::Normal,
+                    },
+                    RirCallArg {
+                        value: offset,
+                        mode: RirArgMode::Normal,
+                    },
+                ],
                 Span::new(0, 20),
             )
             .unwrap();
@@ -5312,7 +5332,13 @@ mod tests {
                     span: Span::new(1, 5),
                 })
             });
-            let arg_refs: Vec<_> = arg.into_iter().collect();
+            let arg_refs: Vec<_> = arg
+                .into_iter()
+                .map(|value| RirCallArg {
+                    value,
+                    mode: RirArgMode::Normal,
+                })
+                .collect();
             let name = interner.get_or_intern(name);
             let intrinsic = rir.add_intrinsic(name, &arg_refs, Span::new(0, 6)).unwrap();
 
@@ -5331,7 +5357,7 @@ mod tests {
             );
             if let Some(arg) = arg_refs.first() {
                 assert_eq!(
-                    cgen.expr_types().get(arg),
+                    cgen.expr_types().get(&arg.value),
                     Some(&InferType::Concrete(Type::BOOL)),
                     "@{} must still visit its operand",
                     interner.resolve(&name)
@@ -5363,7 +5389,20 @@ mod tests {
             });
             let name = interner.get_or_intern(name);
             let intrinsic = rir
-                .add_intrinsic(name, &[left, right], Span::new(0, 9))
+                .add_intrinsic(
+                    name,
+                    &[
+                        RirCallArg {
+                            value: left,
+                            mode: RirArgMode::Normal,
+                        },
+                        RirCallArg {
+                            value: right,
+                            mode: RirArgMode::Normal,
+                        },
+                    ],
+                    Span::new(0, 9),
+                )
                 .unwrap();
 
             let mut cgen = ConstraintGenerator::new(

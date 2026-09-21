@@ -342,6 +342,10 @@ pub struct Parser {
         let mut args: u64 = 0;
         let mut position: u64 = 0;
         while !self.at(token.RPAREN) && !self.eof() {
+            let start = self.current().start;
+            let mode: u64 = if self.eat(token.INOUT) { token.INOUT }
+                else if self.eat(token.BORROW) { token.BORROW }
+                else { 0 };
             let type_position = name.aux == 1 || (name.aux == 2 && position == 0);
             let placeholder_type = name.aux == 0 &&
                 ((self.at(token.LPAREN) && self.kind_at(self.pos + 1) == token.RPAREN) ||
@@ -352,7 +356,7 @@ pub struct Parser {
             } else {
                 self.parse_expr(0, true)
             };
-            args = self.append(args, self.add(ast.ARG, 0, self.arena.at(value).start, self.arena.at(value).end, value, 0, 0));
+            args = self.append(args, self.add(ast.ARG, mode, start, self.arena.at(value).end, value, 0, 0));
             position += 1;
             if !self.eat(token.COMMA) { break; }
         }

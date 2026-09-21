@@ -1,0 +1,10 @@
+// Maintained preview workload for std.parallel.join_inout. Each callback owns
+// one complete generated site; page-local graph identifiers never cross the
+// worker boundary.
+const stress = @import("mosaic/stress.rue");
+
+fn main() -> i32 {
+    let result = stress.run_parallel();
+    print(result.output);
+    if result.valid { 0 } else { 1 }
+}

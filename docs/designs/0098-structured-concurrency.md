@@ -7,7 +7,7 @@ feature-flag: concurrency
 created: 2026-09-20
 accepted: 2026-09-20
 implemented:
-spec-sections: []
+spec-sections: ["6.9"]
 superseded-by:
 relates: ["RUE-2272", "RUE-2274", "ADR-0037", "ADR-0084", "ADR-0088", "ADR-0096"]
 ---

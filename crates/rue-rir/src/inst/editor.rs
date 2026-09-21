@@ -222,7 +222,7 @@ impl RirEditor {
     pub fn add_intrinsic(
         &mut self,
         name: Spur,
-        args: &[InstRef],
+        args: &[RirCallArg],
         span: Span,
     ) -> Result<InstRef, RirPayloadBuildError> {
         self.atomic(|rir| {
@@ -1304,7 +1304,10 @@ impl RirEditor {
                         let args = source
                             .intrinsic_args(args)
                             .values()
-                            .map(remap_ref)
+                            .map(|arg| RirCallArg {
+                                value: remap_ref(arg.value),
+                                mode: arg.mode,
+                            })
                             .collect::<Vec<_>>();
                         self.add_intrinsic(symbol(*name), &args, span)?
                     }

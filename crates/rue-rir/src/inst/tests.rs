@@ -308,15 +308,28 @@ mod typed_payload_tests {
         let types = install_named_types(&mut rir, &[a, b]);
         let (type_a, type_b) = (types[0], types[1]);
 
-        let intrinsic = rir.add_intrinsic_args(&[r0, r1]).unwrap();
+        let intrinsic_args = [
+            RirCallArg {
+                value: r0,
+                mode: RirArgMode::Inout,
+            },
+            RirCallArg {
+                value: r1,
+                mode: RirArgMode::Borrow,
+            },
+        ];
+        let intrinsic = rir.add_intrinsic_args(&intrinsic_args).unwrap();
         let internal = rir.add_internal_intrinsic_args(&[r1]).unwrap();
         let block = rir.add_block_insts(&[r0, r1]).unwrap();
         let methods = rir.add_struct_methods(&[r0]).unwrap();
         let anon_methods = rir.add_anon_struct_methods(&[r1]).unwrap();
         let elements = rir.add_array_elements(&[r0, r1]).unwrap();
         assert_eq!(
-            rir.intrinsic_args(&intrinsic).values().collect::<Vec<_>>(),
-            [r0, r1]
+            rir.intrinsic_args(&intrinsic)
+                .values()
+                .map(|arg| (arg.value, arg.mode))
+                .collect::<Vec<_>>(),
+            [(r0, RirArgMode::Inout), (r1, RirArgMode::Borrow)]
         );
         assert_eq!(
             rir.internal_intrinsic_args(&internal)
@@ -482,7 +495,16 @@ mod typed_payload_tests {
             mode: RirArgMode::Borrow,
         }];
         editor.add_call(a, &arguments, span()).unwrap();
-        editor.add_intrinsic(a, &[value], span()).unwrap();
+        editor
+            .add_intrinsic(
+                a,
+                &[RirCallArg {
+                    value,
+                    mode: RirArgMode::Normal,
+                }],
+                span(),
+            )
+            .unwrap();
         editor
             .add_internal_intrinsic(InternalIntrinsic::IterLen, &[value], span())
             .unwrap();
@@ -2020,6 +2042,88 @@ mod typed_payload_tests {
         );
     }
 
+    #[test]
+    fn intrinsic_argument_modes_survive_astgen_remapping_and_packing() {
+        // Intrinsic-specific mode admission belongs to sema. The transport
+        // must preserve every parsed mode for that later check, including
+        // the exclusive contexts needed by the scoped join bridge.
+        let source = "fn f(inout left: i32, borrow right: i32, value: i32) { @probe(inout left, borrow right, value); }";
+        let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
+        let (ast, interner) = Parser::new(tokens, interner).parse().unwrap();
+        let mut astgen = crate::AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let context = RirValidationContext {
+            symbol_count: interner.len(),
+            source_lengths: &[(FileId::DEFAULT, source.len() as u32)],
+        };
+        let rir = ValidatedRir::finish(astgen.finish_editor(), &context).unwrap();
+        let check = |rir: &ValidatedRir| {
+            let intrinsic = rir
+                .iter()
+                .find_map(|(reference, instruction)| {
+                    matches!(instruction.data, InstData::Intrinsic { .. }).then_some(reference)
+                })
+                .unwrap();
+            let InstData::Intrinsic { args, .. } = &rir.get(intrinsic).data else {
+                unreachable!();
+            };
+            let args = rir.intrinsic_args(args).values().collect::<Vec<_>>();
+            assert_eq!(
+                args.iter().map(|arg| arg.mode).collect::<Vec<_>>(),
+                [RirArgMode::Inout, RirArgMode::Borrow, RirArgMode::Normal]
+            );
+            for arg in args {
+                assert!(matches!(rir.get(arg.value).data, InstData::VarRef { .. }));
+            }
+        };
+        check(&rir);
+
+        let mut destination = RirEditor::new();
+        destination.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::default(),
+        });
+        destination
+            .try_append_remapped_with_span_slots(
+                &rir,
+                std::convert::identity,
+                || Ok::<_, &'static str>(()),
+                |_slot, span| Ok(span),
+            )
+            .unwrap();
+        check(&ValidatedRir::finish(destination, &context).unwrap());
+
+        let root = rir
+            .iter()
+            .find_map(|(reference, instruction)| {
+                matches!(instruction.data, InstData::FnDecl { .. }).then_some(reference)
+            })
+            .unwrap();
+        let packed = rir
+            .try_pack_candidate(
+                &interner,
+                PackedRirMetadata {
+                    declaration: root,
+                    method_owner: None,
+                },
+                || Ok::<_, std::convert::Infallible>(()),
+                |_slot, span| Ok((span.start, span.end)),
+            )
+            .unwrap();
+        let (decoded, _) = packed
+            .try_decode_validated(
+                PackedRirProjection {
+                    symbol_count: packed.symbol_count(),
+                    file_id: FileId::DEFAULT,
+                    declaration_start: 0,
+                    source_length: source.len() as u32,
+                },
+                || Ok::<_, std::convert::Infallible>(()),
+            )
+            .unwrap();
+        check(&decoded);
+    }
+
     /// A struct pattern record (RUE-2175) — at arm position and nested in a
     /// payload position — decodes through the borrowing view, numbers its
     /// span slot in the arm's preorder, survives the slot-aware editor remap,
@@ -2327,7 +2431,12 @@ mod typed_payload_tests {
         let refs = rir
             .add_block_insts(&[InstRef::from_raw(0), InstRef::from_raw(1)])
             .unwrap();
-        let intrinsic = rir.add_intrinsic_args(&[InstRef::from_raw(0)]).unwrap();
+        let intrinsic = rir
+            .add_intrinsic_args(&[RirCallArg {
+                value: InstRef::from_raw(0),
+                mode: RirArgMode::Inout,
+            }])
+            .unwrap();
         let internal = rir
             .add_internal_intrinsic_args(&[InstRef::from_raw(0)])
             .unwrap();
@@ -2633,8 +2742,7 @@ mod typed_payload_tests {
                 let elements = consumed / TRAVERSALS;
                 let logical_bytes = rir.extra.len() * std::mem::size_of::<u32>();
                 let peak_staging_bytes = match $family {
-                    RirIntrinsicArgsRange::FAMILY
-                    | RirInternalIntrinsicArgsRange::FAMILY
+                    RirInternalIntrinsicArgsRange::FAMILY
                     | RirBlockInstsRange::FAMILY
                     | RirStructMethodsRange::FAMILY
                     | RirAnonStructMethodsRange::FAMILY
@@ -2665,11 +2773,6 @@ mod typed_payload_tests {
             }};
         }
         let evidence = [
-            evidence!(
-                RirIntrinsicArgsRange::FAMILY,
-                |rir: &mut Rir| { rir.add_intrinsic_args(&[r0, r1]).unwrap() },
-                |rir: &Rir, range| rir.intrinsic_args(range).len()
-            ),
             evidence!(
                 RirInternalIntrinsicArgsRange::FAMILY,
                 |rir: &mut Rir| { rir.add_internal_intrinsic_args(&[r0]).unwrap() },
@@ -2770,7 +2873,7 @@ mod typed_payload_tests {
                 |rir: &Rir, range| rir.assoc_types(range).len()
             ),
         ];
-        assert_eq!(evidence.len(), 19);
+        assert_eq!(evidence.len(), 18);
         for item in &evidence {
             let minimum_allocations = if item.peak_staging_bytes == 0 { 1 } else { 2 };
             assert!(

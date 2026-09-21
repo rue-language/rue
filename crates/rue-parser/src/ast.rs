@@ -1346,7 +1346,7 @@ pub struct CallExpr {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IntrinsicArg {
     /// An expression argument (e.g., `@dbg(42)`)
-    Expr(Expr),
+    Expr(CallArg),
     /// A type argument (e.g., `@size_of(i32)`)
     Type(TypeExpr),
 }
@@ -1881,7 +1881,7 @@ impl Expr {
             }
             Expr::Try(expr) => out.push(&expr.operand),
             Expr::IntrinsicCall(call) => out.extend(call.args.iter().filter_map(|arg| match arg {
-                IntrinsicArg::Expr(expr) => Some(expr),
+                IntrinsicArg::Expr(arg) => Some(&arg.expr),
                 IntrinsicArg::Type(_) => None,
             })),
             Expr::ArrayLit(literal) => out.extend(literal.elements.iter()),
@@ -2350,7 +2350,7 @@ fn rebind_expr(expr: &mut Expr, file_id: FileId) {
             rebind_ident(&mut call.name, file_id);
             for argument in &mut call.args {
                 match argument {
-                    IntrinsicArg::Expr(expr) => rebind_expr(expr, file_id),
+                    IntrinsicArg::Expr(arg) => rebind_call_arg(arg, file_id),
                     IntrinsicArg::Type(ty) => rebind_type(ty, file_id),
                 }
             }
@@ -2840,7 +2840,7 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
             writeln!(f, "Intrinsic @sym:{}", intrinsic.name.name.into_usize())?;
             for arg in &intrinsic.args {
                 match arg {
-                    IntrinsicArg::Expr(expr) => fmt_expr(f, expr, level + 1)?,
+                    IntrinsicArg::Expr(arg) => fmt_call_arg(f, arg, level + 1)?,
                     IntrinsicArg::Type(ty) => {
                         indent(f, level + 1)?;
                         writeln!(f, "Type {:?}", ty)?;

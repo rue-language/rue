@@ -31,6 +31,19 @@ fn main() -> i32 {
 exit_code = 4
 
 [[case]]
+name = "ordinary_intrinsics_reject_access_modes"
+spec = ["6.9:6"]
+error_contains = ["[E0702]", "expects normal arguments"]
+source = """
+fn main() -> i32 {
+    let value = 1;
+    @dbg(inout value);
+    0
+}
+"""
+compile_fail = true
+
+[[case]]
 name = "intrinsic_array_repeat_value_argument"
 spec = ["4.13:2", "7.1:39"]
 source = """

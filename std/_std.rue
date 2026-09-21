@@ -47,6 +47,7 @@ pub const option = @import("option.rue");
 pub const result = @import("result.rue");
 pub const strbuf = @import("strbuf.rue");
 pub const arraybuf = @import("arraybuf.rue");
+pub const parallel = @import("parallel.rue");
 
 // File IO (RUE-712, ADR-0057): pure-Rue std.fs over @syscall. v0 open/read/
 // write/close plus the v1 follow-ups seek/stat/rename/remove/directories

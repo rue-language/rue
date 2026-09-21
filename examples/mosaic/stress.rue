@@ -2,12 +2,34 @@
 // markup for every page, validates reachability and anchors, renders all pages
 // twice, and checks expected counts plus a stable fingerprint.
 const std = @import("std");
+const determinism = @import("determinism.rue");
 const graph = @import("graph.rue");
 const markup = @import("markup.rue");
 const model = @import("model.rue");
 const pipeline = @import("pipeline.rue");
 const selftest = @import("selftest.rue");
 const StrBuf = std.strbuf.StrBuf;
+
+struct StressReport {
+    pages: u64,
+    blocks: u64,
+    links: u64,
+    anchors: u64,
+    diagnostics: u64,
+    output_fingerprint: u64,
+    model_fingerprint: u64,
+    deterministic: bool,
+}
+
+struct SiteJob {
+    site: model.Site,
+    report: StressReport,
+}
+
+pub struct ParallelResult {
+    output: StrBuf,
+    valid: bool,
+}
 
 fn page_name(i: u64, extension: StrBuf) -> StrBuf {
     let mut out = StrBuf.new();
@@ -31,7 +53,7 @@ fn page_source(i: u64, count: u64) -> StrBuf {
     out
 }
 
-pub fn run(count: u64) -> StrBuf {
+fn make_site(count: u64) -> model.Site {
     let mut site = model.new_site();
     site.title_id = site.strings.intern_literal("Mosaic Stress");
     site.language_id = site.strings.intern_literal("en");
@@ -47,26 +69,143 @@ pub fn run(count: u64) -> StrBuf {
         site.pages.push(page);
         i += 1;
     }
-    i = 0;
-    while i < count {
-        let source = page_source(i, count);
+    site
+}
+
+fn process_site(inout site: model.Site) {
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let source = page_source(i, site.pages.len());
         markup.parse_page(inout site, i, source);
         i += 1;
     }
     graph.validate(inout site);
+}
+
+fn inspect(borrow site: model.Site) -> StressReport {
     let first = pipeline.output_fingerprint(borrow site);
     let second = pipeline.output_fingerprint(borrow site);
-    let expected_links = count;
+    StressReport {
+        pages: site.pages.len(),
+        blocks: site.blocks.len(),
+        links: site.links.len(),
+        anchors: site.anchors.len(),
+        diagnostics: site.diagnostics.len(),
+        output_fingerprint: first,
+        model_fingerprint: determinism.model_fingerprint(borrow site),
+        deterministic: first == second,
+    }
+}
+
+fn empty_report() -> StressReport {
+    StressReport {
+        pages: 0,
+        blocks: 0,
+        links: 0,
+        anchors: 0,
+        diagnostics: 0,
+        output_fingerprint: 0,
+        model_fingerprint: 0,
+        deterministic: false,
+    }
+}
+
+fn process_job(inout job: SiteJob) {
+    process_site(inout job.site);
+    job.report = inspect(borrow job.site);
+}
+
+fn report_is_valid(borrow value: StressReport, expected_pages: u64) -> bool {
+    value.pages == expected_pages
+        && value.blocks == expected_pages * 11
+        && value.links == expected_pages
+        && value.anchors == expected_pages * 2
+        && value.diagnostics == 0
+        && value.deterministic
+}
+
+fn reports_match(borrow left: StressReport, borrow right: StressReport) -> bool {
+    left.pages == right.pages
+        && left.blocks == right.blocks
+        && left.links == right.links
+        && left.anchors == right.anchors
+        && left.diagnostics == right.diagnostics
+        && left.output_fingerprint == right.output_fingerprint
+        && left.model_fingerprint == right.model_fingerprint
+        && left.deterministic == right.deterministic
+}
+
+fn append_report(inout out: StrBuf, label: StrBuf, borrow value: StressReport) {
+    out.push_str(label); out.push_str(" pages="); out.push_str(@to_string(value.pages));
+    out.push_str(" blocks="); out.push_str(@to_string(value.blocks));
+    out.push_str(" links="); out.push_str(@to_string(value.links));
+    out.push_str(" anchors="); out.push_str(@to_string(value.anchors));
+    out.push_str(" fingerprint="); out.push_str(@to_string(value.output_fingerprint));
+    out.push_str(" model_fingerprint="); out.push_str(@to_string(value.model_fingerprint));
+    out.push(10);
+}
+
+pub fn run(count: u64) -> StrBuf {
+    let mut site = make_site(count);
+    process_site(inout site);
+    let report = inspect(borrow site);
     let tests = selftest.run();
-    let ok = site.diagnostics.len() == 0 && site.pages.len() == count && site.links.len() == expected_links && first == second && tests.failures == 0;
+    let ok = report_is_valid(borrow report, count) && tests.failures == 0;
     let mut out = StrBuf.new();
-    out.push_str("stress pages="); out.push_str(@to_string(site.pages.len()));
-    out.push_str(" blocks="); out.push_str(@to_string(site.blocks.len()));
-    out.push_str(" links="); out.push_str(@to_string(site.links.len()));
-    out.push_str(" anchors="); out.push_str(@to_string(site.anchors.len())); out.push(10);
-    out.push_str("expected_links="); out.push_str(@to_string(expected_links)); out.push(10);
-    out.push_str("deterministic="); if first == second { out.push_str("true"); } else { out.push_str("false"); } out.push(10);
+    out.push_str("stress pages="); out.push_str(@to_string(report.pages));
+    out.push_str(" blocks="); out.push_str(@to_string(report.blocks));
+    out.push_str(" links="); out.push_str(@to_string(report.links));
+    out.push_str(" anchors="); out.push_str(@to_string(report.anchors)); out.push(10);
+    out.push_str("expected_links="); out.push_str(@to_string(count)); out.push(10);
+    out.push_str("deterministic="); if report.deterministic { out.push_str("true"); } else { out.push_str("false"); } out.push(10);
     out.push_str("valid="); if ok { out.push_str("true"); } else { out.push_str("false"); } out.push(10);
     out.push_str("selftests="); out.push_str(@to_string(tests.checks)); out.push_str(" failures="); out.push_str(@to_string(tests.failures)); out.push(10);
     out
+}
+
+// Compare two complete, independent generated sites. Each callback owns one
+// whole site, so page-local ids and cross-page links never cross a worker
+// boundary. The serial run is the reference; the joined run must produce the
+// same counters and fingerprints for both different page counts.
+pub fn run_parallel() -> ParallelResult {
+    let left_count: u64 = 100;
+    let right_count: u64 = 140;
+    let mut serial_left = SiteJob { site: make_site(left_count), report: empty_report() };
+    let mut serial_right = SiteJob { site: make_site(right_count), report: empty_report() };
+    process_job(inout serial_left);
+    process_job(inout serial_right);
+
+    let mut joined_left = SiteJob { site: make_site(left_count), report: empty_report() };
+    let mut joined_right = SiteJob { site: make_site(right_count), report: empty_report() };
+    let R = std.result.Result((), std.parallel.SpawnError);
+    let status = std.parallel.join_inout(
+        SiteJob,
+        SiteJob,
+        inout joined_left,
+        inout joined_right,
+        process_job,
+        process_job,
+    );
+    let joined_ok = match status {
+        R.Ok(_) => true,
+        R.Err(_) => false,
+    };
+    let counters_match = reports_match(borrow serial_left.report, borrow joined_left.report)
+        && reports_match(borrow serial_right.report, borrow joined_right.report);
+    let valid = joined_ok
+        && report_is_valid(borrow serial_left.report, left_count)
+        && report_is_valid(borrow serial_right.report, right_count)
+        && report_is_valid(borrow joined_left.report, left_count)
+        && report_is_valid(borrow joined_right.report, right_count)
+        && counters_match;
+    let mut out = StrBuf.new();
+    out.push_str("parallel sites=2 page_counts=100,140"); out.push(10);
+    append_report(inout out, "serial_left", borrow serial_left.report);
+    append_report(inout out, "joined_left", borrow joined_left.report);
+    append_report(inout out, "serial_right", borrow serial_right.report);
+    append_report(inout out, "joined_right", borrow joined_right.report);
+    out.push_str("joined_status="); if joined_ok { out.push_str("ok"); } else { out.push_str("error"); } out.push(10);
+    out.push_str("counters_match="); if counters_match { out.push_str("true"); } else { out.push_str("false"); } out.push(10);
+    out.push_str("valid="); if valid { out.push_str("true"); } else { out.push_str("false"); } out.push(10);
+    ParallelResult { output: out, valid: valid }
 }

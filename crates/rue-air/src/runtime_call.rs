@@ -172,6 +172,7 @@ pub enum RuntimeCallKind {
     ByteCopy,
     ByteMove,
     ByteSet,
+    JoinInout,
     /// Present the pinned test-visible process inventory (ADR-0083 §3).
     TestNormalizeProcess,
     /// Write the dispatcher's terminal completion frame (ADR-0083 §3).
@@ -353,6 +354,18 @@ const BYTE_SET: &[RuntimeOperandOrigin] = &[
         ty: AbiType::U64,
     },
 ];
+const JOIN_INOUT: &[RuntimeOperandOrigin] = &[
+    RuntimeOperandOrigin::MutablePointerArgument {
+        index: 0,
+        source: RuntimeAirType::MutPointer,
+    },
+    RuntimeOperandOrigin::CodePointerArgument(1),
+    RuntimeOperandOrigin::MutablePointerArgument {
+        index: 2,
+        source: RuntimeAirType::MutPointer,
+    },
+    RuntimeOperandOrigin::CodePointerArgument(3),
+];
 
 // Panic helpers receive static source text, its packed position, and (for the
 // message form) a text view as ordinary ABI operands. The runtime constructs
@@ -393,7 +406,7 @@ const TEST_FAIL_ASSERT: &[RuntimeOperandOrigin] = &[
 ];
 
 impl RuntimeCallKind {
-    pub const ALL: [Self; 52] = [
+    pub const ALL: [Self; 53] = [
         Self::StrByteAt,
         Self::StrCharScalar,
         Self::StrCharNext,
@@ -440,6 +453,7 @@ impl RuntimeCallKind {
         Self::ByteCopy,
         Self::ByteMove,
         Self::ByteSet,
+        Self::JoinInout,
         Self::TestNormalizeProcess,
         Self::TestComplete,
         Self::TestFail,
@@ -492,6 +506,7 @@ impl RuntimeCallKind {
             Self::ByteCopy => RuntimeHelperId::ByteCopy,
             Self::ByteMove => RuntimeHelperId::ByteMove,
             Self::ByteSet => RuntimeHelperId::ByteSet,
+            Self::JoinInout => RuntimeHelperId::JoinInout,
             Self::TestNormalizeProcess => RuntimeHelperId::TestNormalizeProcess,
             Self::TestComplete => RuntimeHelperId::TestComplete,
             Self::TestFail => RuntimeHelperId::TestFail,
@@ -544,6 +559,7 @@ impl RuntimeCallKind {
             Self::Realloc | Self::Resize => RESIZE_LAYOUT,
             Self::ByteCopy | Self::ByteMove => BYTE_COPY,
             Self::ByteSet => BYTE_SET,
+            Self::JoinInout => JOIN_INOUT,
             // The comparison form carries `kind`, `left`, and `right` where the
             // open form carries `kind`, `message`, and `payload`: three byte
             // views either way, so one operand plan serves both.
@@ -570,7 +586,50 @@ impl RuntimeCallKind {
     }
 
     pub fn validate_air_arguments(self, arguments: &[RuntimeAirArgument]) -> bool {
+        if self == Self::JoinInout {
+            return arguments.len() == 4
+                && matches!(arguments[0].mode, crate::AirArgMode::Inout)
+                && matches!(arguments[2].mode, crate::AirArgMode::Inout)
+                && matches!(arguments[1].mode, crate::AirArgMode::Normal)
+                && matches!(arguments[3].mode, crate::AirArgMode::Normal)
+                && matches!(
+                    arguments[0].ty,
+                    RuntimeAirType::MutPointer | RuntimeAirType::MutBytePointer
+                )
+                && arguments[1].ty == RuntimeAirType::CodePointer
+                && matches!(
+                    arguments[2].ty,
+                    RuntimeAirType::MutPointer | RuntimeAirType::MutBytePointer
+                )
+                && arguments[3].ty == RuntimeAirType::CodePointer;
+        }
         Self::validate_air_arguments_for_plan(self.operands(), self.activation(), arguments)
+    }
+
+    /// Classify one AIR argument at the runtime boundary.
+    ///
+    /// JoinInout's context values are arbitrary source types, so their ordinary
+    /// AIR type may have no scalar runtime classification. Their `inout` role
+    /// therefore supplies the mutable-pointer ABI type here. Callback slots
+    /// retain the source classification so malformed non-function values are
+    /// rejected by [`Self::validate_air_arguments`].
+    pub fn classify_air_argument(
+        self,
+        index: usize,
+        source: Option<RuntimeAirType>,
+        mode: crate::AirArgMode,
+    ) -> Option<RuntimeAirArgument> {
+        if self == Self::JoinInout {
+            return match index {
+                0 | 2 => Some(RuntimeAirArgument {
+                    ty: RuntimeAirType::MutPointer,
+                    mode,
+                }),
+                1 | 3 => source.map(|ty| RuntimeAirArgument { ty, mode }),
+                _ => None,
+            };
+        }
+        source.map(|ty| RuntimeAirArgument { ty, mode })
     }
 
     pub fn validate_air_call(
@@ -899,6 +958,66 @@ mod tests {
             normal(RuntimeAirType::Text),
             normal(RuntimeAirType::U64),
             normal(RuntimeAirType::Text),
+        ]));
+    }
+
+    #[test]
+    fn join_inout_classification_owns_roles_and_rejects_malformed_arguments() {
+        let normal = |ty| RuntimeAirArgument {
+            ty,
+            mode: crate::AirArgMode::Normal,
+        };
+        let inout = |ty| RuntimeAirArgument {
+            ty,
+            mode: crate::AirArgMode::Inout,
+        };
+
+        assert_eq!(
+            RuntimeCallKind::JoinInout.classify_air_argument(0, None, crate::AirArgMode::Inout),
+            Some(inout(RuntimeAirType::MutPointer))
+        );
+        assert_eq!(
+            RuntimeCallKind::JoinInout.classify_air_argument(
+                1,
+                Some(RuntimeAirType::CodePointer),
+                crate::AirArgMode::Normal,
+            ),
+            Some(normal(RuntimeAirType::CodePointer))
+        );
+        assert_eq!(
+            RuntimeCallKind::JoinInout.classify_air_argument(
+                1,
+                Some(RuntimeAirType::I64),
+                crate::AirArgMode::Normal,
+            ),
+            Some(normal(RuntimeAirType::I64))
+        );
+        assert_eq!(
+            RuntimeCallKind::JoinInout.classify_air_argument(
+                4,
+                Some(RuntimeAirType::CodePointer),
+                crate::AirArgMode::Normal,
+            ),
+            None
+        );
+
+        assert!(RuntimeCallKind::JoinInout.validate_air_arguments(&[
+            inout(RuntimeAirType::MutBytePointer),
+            normal(RuntimeAirType::CodePointer),
+            inout(RuntimeAirType::MutPointer),
+            normal(RuntimeAirType::CodePointer),
+        ]));
+        assert!(!RuntimeCallKind::JoinInout.validate_air_arguments(&[
+            normal(RuntimeAirType::MutPointer),
+            normal(RuntimeAirType::CodePointer),
+            inout(RuntimeAirType::MutPointer),
+            normal(RuntimeAirType::CodePointer),
+        ]));
+        assert!(!RuntimeCallKind::JoinInout.validate_air_arguments(&[
+            inout(RuntimeAirType::MutPointer),
+            normal(RuntimeAirType::I64),
+            inout(RuntimeAirType::MutPointer),
+            normal(RuntimeAirType::CodePointer),
         ]));
     }
 

@@ -38,6 +38,15 @@ corpus-affecting cases change, run the focused check:
 ./buck2 test //crates/rue-oracle-diff:oracle-diff-test
 ```
 
+The oracle executes structured joins serially through its ordinary call and
+exclusive-place writeback path. This compares order-independent callback
+results when launch resources are available. A CLI case that observes actual
+thread scheduling or availability declares `concurrency_observation` as
+`"progress"`, `"resource_exhaustion"`, or `"output_interleaving"`. The corpus
+report names that native-only observation explicitly; the native CLI suite
+still executes the case and checks all of its assertions. Ordinary join cases
+leave the field absent and remain eligible for differential testing.
+
 Adding a CLI or spec case is the ordinary way to land in that gap, not an edge
 case: the corpus audit classifies every case, and one reaching a construct the
 oracle does not model is a HARNESS FAILURE until its gap is registered in

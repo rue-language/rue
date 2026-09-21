@@ -1,0 +1,31 @@
+[section]
+id = "items.concurrency"
+spec_chapter = "6.9"
+name = "Structured concurrency"
+description = "Scoped callbacks use ordinary transfer, exclusivity, and lifetime rules."
+
+[[case]]
+name = "join_inout_preserves_both_contexts"
+spec = ["6.9:1", "6.9:2", "6.9:3", "6.9:4", "6.9:5"]
+preview = "concurrency"
+preview_should_pass = true
+real_std = true
+source = """
+const std = @import("std");
+struct Left { value: i64 }
+struct Right { value: i64 }
+fn add_left(inout value: Left) { value.value += 3; }
+fn add_right(inout value: Right) { value.value += 5; }
+fn main() -> i32 {
+    let mut left = Left { value: 10 };
+    let mut right = Right { value: 20 };
+    let R = std.result.Result((), std.parallel.SpawnError);
+    match std.parallel.join_inout(Left, Right, inout left, inout right, add_left, add_right) {
+        R.Ok(_) => {
+            if left.value == 13 && right.value == 25 { 0 } else { 1 }
+        },
+        R.Err(_) => 2,
+    }
+}
+"""
+exit_code = 0

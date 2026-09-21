@@ -45,6 +45,11 @@
 //! byte indexing, and `.chars()` become `Call`s; `@intCast` becomes `IntCast`.
 //! Those are all covered through the resulting instruction paths.
 //!
+//! Structured `join_inout` executes both callbacks serially through the same
+//! call and exclusive-place writeback path. This covers order-independent
+//! results with available launch resources; scheduling, interleaved output,
+//! and host thread exhaustion require native execution.
+//!
 //! ## Typed incomplete execution
 //!
 //! [`Unsupported`] is not an opaque skip: every producer supplies a closed
@@ -1327,7 +1332,8 @@ fn unsupported_runtime_call_kind(kind: RuntimeCallKind) -> Option<UnsupportedRun
         | RuntimeCallKind::TestFailAssert
         | RuntimeCallKind::TestUsageError
         | RuntimeCallKind::Panic
-        | RuntimeCallKind::PanicNoMessage => None,
+        | RuntimeCallKind::PanicNoMessage
+        | RuntimeCallKind::JoinInout => None,
     }
 }
 
@@ -3268,6 +3274,147 @@ impl<'a> Interp<'a> {
         result
     }
 
+    /// Invoke a source callback through the ordinary call contract and restore
+    /// its exclusive arguments to the caller's places.
+    fn call_with_writebacks(
+        &mut self,
+        cfg: &'a Cfg,
+        frame: &mut Frame,
+        name: &str,
+        args: &[(Value, Type, CfgArgMode)],
+        writebacks: Vec<(usize, WritebackPlace<'a>)>,
+    ) -> Step<Value> {
+        let (result, final_params) = self.call(name, args)?;
+        // Copy-out: write each inout parameter's final value back into
+        // the caller place it came from.
+        for (slot, place) in writebacks {
+            if let Some(val) = final_params.get(slot).and_then(|o| o.clone()) {
+                match place {
+                    WritebackPlace::Simple { base, base_type } => {
+                        let place = match base {
+                            PlaceBase::Local(slot) => Place::local(slot, base_type),
+                            PlaceBase::Param(slot) => Place::param(slot, base_type),
+                            PlaceBase::Accessor(_) => {
+                                return Err(unsupported(
+                                    UnsupportedKind::ContractViolation(
+                                        ContractViolationKind::UnsplicedAccessor,
+                                    ),
+                                    "accessor place reached call writeback",
+                                ));
+                            }
+                            PlaceBase::Indirect(_) => {
+                                return Err(unsupported(
+                                    unsupported_intrinsic_kind_for_operation(
+                                        rue_air::IntrinsicOperation::PtrWrite,
+                                    ),
+                                    "indirect place reached simple call writeback",
+                                ));
+                            }
+                        };
+                        self.place_write(cfg, frame, &place, val)?;
+                    }
+                    WritebackPlace::Stored(place) => {
+                        self.place_write(cfg, frame, place, val)?;
+                    }
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    /// Serial reference semantics for order-independent structured work. The
+    /// contexts remain exclusive, so the ordinary call/copy-out contract also
+    /// models their state after both callbacks finish. Native corpus cases
+    /// that observe scheduling or host thread availability declare that
+    /// observation explicitly and are outside this serial model.
+    fn eval_join_inout(
+        &mut self,
+        cfg: &'a Cfg,
+        frame: &mut Frame,
+        args: &[rue_cfg::CfgCallArg],
+        result_ty: Type,
+    ) -> Step<Value> {
+        if args.len() != 4 {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallArity),
+                "join_inout requires two context/callback pairs",
+            ));
+        }
+        let signature_error = || {
+            unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::RuntimeCallSignature),
+                "join_inout requires two exact fn(inout Context) callbacks and a u32 status",
+            )
+        };
+        if result_ty != Type::U32 {
+            return Err(signature_error());
+        }
+        // Validate both static signatures before evaluating either callback.
+        for pair in args.chunks_exact(2) {
+            if pair[0].mode != CfgArgMode::Inout || pair[1].mode != CfgArgMode::Normal {
+                return Err(signature_error());
+            }
+            let context_ty = cfg.get_inst(pair[0].value).ty;
+            let Some(id) = cfg.get_inst(pair[1].value).ty.as_function() else {
+                return Err(signature_error());
+            };
+            let def = self.type_pool().function_def(id);
+            if def.result != Type::UNIT
+                || def.params.len() != 1
+                || def.params[0].ty != context_ty
+                || def.params[0].mode != rue_air::FunctionParamMode::Inout
+            {
+                return Err(signature_error());
+            }
+        }
+        // Resolve and preflight both bodies before either enters. This keeps
+        // malformed callback metadata a contract failure, never a partial join.
+        let mut callbacks = Vec::with_capacity(2);
+        for pair in args.chunks_exact(2) {
+            let Value::Function(name) = self.eval(cfg, frame, pair[1].value)? else {
+                return Err(unsupported(
+                    UnsupportedKind::ContractViolation(
+                        ContractViolationKind::IndirectCalleeNotAFunction,
+                    ),
+                    "join callback operand is not a function address",
+                ));
+            };
+            let Some(index) = self.find_function(&name) else {
+                return Err(unsupported(
+                    UnsupportedKind::ContractViolation(ContractViolationKind::MissingFunctionBody),
+                    format!("join callback '{name}' has no CFG body"),
+                ));
+            };
+            let context_ty = cfg.get_inst(pair[0].value).ty;
+            self.preflight_call_layout(
+                &self.state.functions[index].cfg,
+                &name,
+                [(context_ty, CfgArgMode::Inout)],
+            )?;
+            callbacks.push(name);
+        }
+        for (pair, name) in args.chunks_exact(2).zip(callbacks) {
+            let context_ty = cfg.get_inst(pair[0].value).ty;
+            let context = self.reread_by_ref_operand(cfg, frame, pair[0].value)?;
+            let writebacks = if self.is_zero_sized(context_ty) {
+                Vec::new()
+            } else {
+                vec![(0, self.lvalue_of(cfg, pair[0].value)?)]
+            };
+            let result = self.call_with_writebacks(
+                cfg,
+                frame,
+                &name,
+                &[(context, context_ty, CfgArgMode::Inout)],
+                writebacks,
+            )?;
+            if !matches!(result, Value::Unit) {
+                return Err(signature_error());
+            }
+        }
+        Ok(Value::Int(0))
+    }
+
     fn call_accessor(
         &mut self,
         name: &str,
@@ -4357,6 +4504,13 @@ impl<'a> Interp<'a> {
             CfgInstData::FnAddr { name } => {
                 Value::Function(self.interner().resolve(name).to_string())
             }
+            CfgInstData::Call {
+                runtime: Some(RuntimeCallKind::JoinInout),
+                ..
+            } => {
+                let args = cfg.get_call_args(&inst.data).to_vec();
+                self.eval_join_inout(cfg, frame, &args, ty)?
+            }
             CfgInstData::Call { .. } | CfgInstData::CallIndirect { .. } => {
                 // A direct call names its callee; an indirect call evaluates
                 // the callback operand to the function address it carries
@@ -4515,42 +4669,7 @@ impl<'a> Interp<'a> {
                         .zip(arg_modes)
                         .map(|((value, ty), mode)| (value, ty, mode))
                         .collect();
-                    let (result, final_params) = self.call(&fname, &typed_args)?;
-                    // Copy-out: write each inout parameter's final value back into
-                    // the caller place it came from.
-                    for (slot, place) in writebacks {
-                        if let Some(val) = final_params.get(slot).and_then(|o| o.clone()) {
-                            match place {
-                                WritebackPlace::Simple { base, base_type } => {
-                                    let place = match base {
-                                        PlaceBase::Local(slot) => Place::local(slot, base_type),
-                                        PlaceBase::Param(slot) => Place::param(slot, base_type),
-                                        PlaceBase::Accessor(_) => {
-                                            return Err(unsupported(
-                                                UnsupportedKind::ContractViolation(
-                                                    ContractViolationKind::UnsplicedAccessor,
-                                                ),
-                                                "accessor place reached call writeback",
-                                            ));
-                                        }
-                                        PlaceBase::Indirect(_) => {
-                                            return Err(unsupported(
-                                                unsupported_intrinsic_kind_for_operation(
-                                                    rue_air::IntrinsicOperation::PtrWrite,
-                                                ),
-                                                "indirect place reached simple call writeback",
-                                            ));
-                                        }
-                                    };
-                                    self.place_write(cfg, frame, &place, val)?;
-                                }
-                                WritebackPlace::Stored(place) => {
-                                    self.place_write(cfg, frame, place, val)?;
-                                }
-                            }
-                        }
-                    }
-                    result
+                    self.call_with_writebacks(cfg, frame, &fname, &typed_args, writebacks)?
                 }
             }
 
