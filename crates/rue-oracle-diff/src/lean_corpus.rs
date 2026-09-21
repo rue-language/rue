@@ -6,11 +6,12 @@
 //! the stdout and exit status, the trap, or — for a rejected program whose
 //! executed path reaches the violation — the machine's refusal. A rejected
 //! program can also evaluate cleanly, when the refusal lies on a path the
-//! program does not take (the §5.5 join rejects statically what the machine
-//! refuses only on the other branch); its expectation is then the clean
-//! outcome, so that a compiler which accepts it unsoundly is still compared
-//! against what the machine does. `RueCore/Corpus.lean` owns that JSON
-//! contract; `docs/formal/lean/README.md` explains it in prose.
+//! program does not take (a §5.5 join disagreement, or a refusal inside the
+//! arm the condition skips); its expectation is then the clean outcome, so
+//! that a compiler which accepts it unsoundly is still compared against what
+//! the machine does, and there is no refusal to hold its diagnostic codes
+//! against. `RueCore/Corpus.lean` owns that JSON contract;
+//! `docs/formal/lean/README.md` explains it in prose.
 //!
 //! This mode runs the three *implementation* views on the same source — the
 //! compiler's accept/reject decision, the `rue_oracle` reference interpreter,
@@ -727,7 +728,9 @@ pub(crate) fn checker_compiler_finding(
 /// refuse the program, so none of this is a disagreement, but a rejection that
 /// cites a different rule than the Lean refusal names, one that cites nothing,
 /// or a diagnostic stream this consumer could not read at all would otherwise
-/// pass as a bare `agree`.
+/// pass as a bare `agree`. A rejected program whose expectation is `ok` or
+/// `panic` (its refusal lies on a path not taken) names no refusal, so its
+/// codes are not held against one.
 pub(crate) fn rejection_notes(expected: &Expectation, compiler: &CompilerVerdict) -> Vec<String> {
     let CompilerVerdict::Rejected {
         codes,

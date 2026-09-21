@@ -36,34 +36,35 @@ agree with the interpreter's trace.
 
 ## Bias
 
-The choices are weighted toward the shapes the §7 theorems are about, all in
-one place (`expr`, `leaf`, `atom`) so the weights can be read and changed:
+The choices are weighted toward the shapes the safety theorems
+(`Soundness.lean`) are about, all in one place (`expr`, `leaf`, `atom`) so
+the weights can be read and changed:
 
 * when a resource binder of the wanted type is in scope, using it (a move)
   is preferred to minting a fresh resource — including inside one arm of an
   `if`, which is how join disagreements arise;
-* `let` binders are mostly resources, so linear values reach scope exit;
-* `assign` targets a `mut` binder and its right-hand side may use that same
-  binder, so reinitialisation after a move and overwrite of a live value
-  both arise;
-* `@drop` targets resource binders only (its image on a scalar binder is
-  not a shape the seed corpus fixes, so a generated run would report it a
-  thousand times over rather than once);
-* integer literals are small, with an occasional `intMax`/`intMin` and a
-  zero divisor so the §6.4 traps appear.
+* `let` binders are mostly resources and mostly `mut`, so linear values
+  reach scope exit and assignments have targets;
+* a sequence's discarded statement is mostly unit-typed, where `assign`
+  (whose right-hand side may use the target binder itself, so
+  reinitialisation after a move and overwrite of a live value both arise)
+  and `@drop` live; `@drop` prefers a resource binder but may name any
+  binder, since the calculus allows `@drop` of a place of any class;
+* integer literals are small, `0` among them, with an occasional
+  `intMax`/`intMin`, so `/` and `+` can trap.
 
-Programs are depth-bounded (a target depth of two, three, or rarely four is
-drawn per program and every subexpression is one level shallower), so a
-generated case stays readable; shrinking is out of scope.
+Programs are fuel-bounded: a fuel of two or three is drawn per program and
+every compound form spends one unit on its operands, so the nesting a case
+reaches is a few levels and it stays readable; shrinking is out of scope.
 
 ## Determinism
 
-The generator is a pure function of `(n, seed)`: `StdGen` from `Init` is
-threaded through a `StateM`, and nothing reads the environment. The first
-`i` cases of a run are the same for every `n > i`, so a case named
-`gen_<seed>_<i>` can always be regenerated from its name alone. Case names
-carry the seed for that reason; a finding filed from a generated run must
-record the seed.
+The generator is a pure function of `(n, seed)` for the pinned toolchain:
+`StdGen` from `Init` is threaded through a `StateM`, and nothing reads the
+environment (a toolchain bump that changes `StdGen` changes every case, so
+a finding filed from a generated run records the seed and quotes the
+program). The first `i` cases of a run are the same for every `n > i`, so a
+case named `gen_<seed>_<i>` can always be regenerated from its name alone.
 -/
 
 namespace RueCore.Gen
@@ -169,9 +170,11 @@ def leaf (Γ : Scope) : Ty → G Expr
       let ress := indicesWhere Γ (fun b => isRes b.ty)
       let muts := indicesWhere Γ (fun b => b.mu)
       let form ← weighted 0
-        [(1, 0), (if ress.isEmpty then 0 else 6, 1), (if muts.isEmpty then 0 else 3, 2)]
+        [(1, 0), (if Γ.isEmpty then 0 else 6, 1), (if muts.isEmpty then 0 else 5, 2)]
       match form with
-      | 1 => return drop (← pick 0 ress)
+      | 1 =>
+          if !ress.isEmpty && (← chance 3 4) then return drop (← pick 0 ress)
+          return drop (← nat 0 (Γ.length - 1))
       | 2 =>
           let i ← pick 0 muts
           let b := Γ[i]?.getD ⟨.int, true⟩
@@ -201,12 +204,14 @@ def expr : Scope → Ty → Nat → G Expr
       match form with
       | 0 =>
           let T₁ ← binderTy
-          let m ← bool
+          let m ← chance 2 3
           let e₁ ← expr Γ T₁ fuel
           let e₂ ← expr ({ ty := T₁, mu := m } :: Γ) T fuel
           return letIn m e₁ e₂
       | 1 =>
-          let T₁ ← weighted .unit [(4, .unit), (1, .res .affine), (1, .res .linear), (2, .int)]
+          let muts := indicesWhere Γ (fun b => b.mu)
+          let T₁ ← weighted .unit
+            [(if muts.isEmpty then 4 else 7, .unit), (1, .res .affine), (1, .res .linear), (2, .int)]
           let e₁ ← expr Γ T₁ fuel
           let e₂ ← expr Γ T fuel
           return seq e₁ e₂
@@ -253,25 +258,32 @@ def subexprs : Expr → List Expr
 /-- (helper) The number of nodes. -/
 def size (e : Expr) : Nat := (subexprs e).length
 
-/-- (helper) The rule labels a node exercises, in the seed corpus's
-spelling, so a generated case's `rules` reads like a hand-written one. -/
-def labels : Expr → List String
-  | use _ => ["(Use-Copy)/(Use-Move) §5.1"]
-  | add _ _ | div _ _ | lt _ _ => ["§5.8 operator statics", "§6.4"]
-  | mkres _ _ => ["§5.8 aggregate introduction (mkres stand-in)"]
-  | consume _ => ["consume §5.1"]
-  | drop _ => ["(@Drop) §5.3", "§6.11"]
-  | letIn _ _ _ => ["(Let) §5.6", "endscope §6.7"]
-  | assign _ _ => ["(Assign) §5.2", "§6.8"]
-  | seq _ _ => ["(Seq) §5.3", "§6.7 temporary drop"]
-  | .ite _ _ _ => ["(If) §5.5 join"]
-  | _ => []
-
-/-- (helper) The rules a program exercises, deduplicated in traversal
-order. -/
+/-- (helper) The rule labels a program exercises, in the seed corpus's
+spellings where it has one, deduplicated in traversal order. `Γ` lists the
+binder types innermost first, as `Print.tyOf` reads them, so a use or a
+`@drop` is labeled copy or move by its binder's class. -/
 def rulesOf (e : Expr) : List String :=
-  (subexprs e).foldl (fun acc s =>
-    (labels s).foldl (fun acc l => if acc.contains l then acc else acc ++ [l]) acc) []
+  let rec go (Γ : List Ty) : Expr → List String
+    | use i =>
+        match Γ[i]? with
+        | some T => if T.mult == .copy then ["(Use-Copy) §5.1"] else ["(Use-Move) §5.1"]
+        | none => []
+    | add e₁ e₂ | div e₁ e₂ | lt e₁ e₂ =>
+        ["§5.8 operator statics", "§6.4 arithmetic traps"] ++ go Γ e₁ ++ go Γ e₂
+    | mkres _ e₁ => ["§5.8 aggregate introduction (mkres stand-in)"] ++ go Γ e₁
+    | consume e₁ => ["consume §5.1"] ++ go Γ e₁
+    | drop i =>
+        match Γ[i]? with
+        | some T => if T.mult == .copy then ["(@Drop-Copy) §5.3"] else ["(@Drop) §5.3", "§6.11"]
+        | none => []
+    | letIn _ e₁ e₂ =>
+        ["(Let) §5.3", "§5.6 scope exit", "(D-EndScope) §6.7"] ++ go Γ e₁ ++
+          go ((Print.tyOf Γ e₁).getD .int :: Γ) e₂
+    | assign _ e₁ => ["(Assign) §5.2", "§6.8 overwrite-drop"] ++ go Γ e₁
+    | seq e₁ e₂ => ["(Seq) §5.3", "§6.7 temporary drop"] ++ go Γ e₁ ++ go Γ e₂
+    | .ite c e₁ e₂ => ["(If) §5.5 join"] ++ go Γ c ++ go Γ e₁ ++ go Γ e₂
+    | _ => []
+  (go [] e).foldl (fun acc l => if acc.contains l then acc else acc ++ [l]) []
 
 /-- (helper) The result type of a generated program: mostly `int`, so the
 value line is usually present. -/
@@ -280,12 +292,12 @@ def resultTy : G Ty :=
 
 /-- (helper) One generated case. -/
 def genCase (seed i : Nat) : G Corpus.Case := do
-  let depth ← weighted 3 [(3, 2), (4, 3), (1, 4)]
+  let depth ← weighted 3 [(4, 2), (3, 3)]
   let T ← resultTy
   let e ← expr [] T depth
   return {
     name := s!"gen_{seed}_{i}",
-    description := s!"Generated program {i} of seed {seed} ({size e} nodes, depth ≤ {depth}); " ++
+    description := s!"Generated program {i} of seed {seed} ({size e} nodes); " ++
       s!"regenerate with `lake exe ruecore-corpus --gen N --seed {seed}` for any N > {i}.",
     rules := rulesOf e,
     expr := e }

@@ -33,11 +33,12 @@ One array of case objects. Fields:
   <name>}`: the refusal the machine reaches, kernel-checked in
   `Examples.lean` and below, which the bridge cannot observe because the
   compiler rejects the program first. A rejected program whose executed path
-  never reaches the violation — the §5.5 join rejects statically what the
-  machine refuses only on the branch not taken — carries the `ok` or `panic`
-  outcome of that path instead, so a compiler that accepts it unsoundly is
-  still compared against what the machine does. The seed corpus has no such
-  case; the generator (`Gen.lean`) produces them. A `panic` outcome carries no trace on
+  never reaches the refusal — it lies on a path the program does not take,
+  whether a §5.5 join disagreement or a refusal inside the arm the condition
+  skips — carries the `ok` or `panic` outcome of the executed path instead,
+  so a compiler that accepts it unsoundly is still compared against what the
+  machine does. The seed corpus has no such case; the generator (`Gen.lean`)
+  produces them. A `panic` outcome carries no trace on
   the Lean side (`EvalRes.panic` discards it), so drops before a trap are a
   blind spot of the bridge at this fragment; RUE-2282 gives `.panic` its
   trace. Drop lines and the value line are both bare integers, so the
@@ -206,7 +207,11 @@ def violationName : Violation → String
 def outcomeSummary (c : Case) : String :=
   match check [] c.expr, eval [] [] c.expr with
   | none, .stuck w => "rejected by the checker; the machine would refuse with " ++ violationName w
-  | none, _ => "rejected by the checker"
+  | none, .ok _ v tr =>
+      let lines := tr.map eventLine ++ (valueLine v).toList
+      "rejected by the checker; the refusal lies on a path not taken, and the executed path prints " ++
+        (if lines.isEmpty then "nothing" else String.intercalate ", " lines) ++ "; exit 0"
+  | none, .panic k => "rejected by the checker; the refusal lies on a path not taken, and the executed path traps with " ++ panicName k
   | some _, .ok _ v tr =>
       let lines := tr.map eventLine ++ (valueLine v).toList
       "accepted; prints " ++ (if lines.isEmpty then "nothing" else String.intercalate ", " lines) ++ "; exit 0"
