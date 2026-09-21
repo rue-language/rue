@@ -30,15 +30,29 @@ ownership reason — a use after move, a use of a partially moved value, a
 linear leak, a linear discard or overwrite, a disagreeing join, a move out of
 a destructor-bearing value — which is what the bridge's refusal table covers.
 
-Two shapes are deliberately **not** drawn, because on them a `reject` verdict
-would be a false bridge failure rather than a finding. A projection through a
-proper prefix of declared-`linear` struct type selects §4.2's `Declared(d, π)`
-plan, which the compiler applies and this fragment rejects instead
-(RUE-2236). And an assignment target is at most one field step deep: a
-reinitialising assignment at depth ≥ 2 is a compiler defect — it runs the
-overwrite-drop on the already moved-out position and then leaks the value it
-stored — so the model and the compiler disagree there for a reason that is
-not the model's.
+## How deep a place goes
+
+A **use** and a **`@drop`** are drawn at a path of one *or two* field steps —
+a field of a field — wherever the declarations reach that far and the place
+rules admit the path (`paths2`, `pathOk`, which is `projSlots`' legality test
+read at a whole path). Depth 2 is where the path machinery actually recurses:
+`OwnSt.get` and `setAt`'s padding, `ContentsMatches.readAt`/`.writeAt`, and
+§6.11's nested `⊘`-skip. One seed case (`deep_path`) is not coverage of it.
+
+An **assignment target** is at most **one** field step deep, and that is a
+deliberate exception: a reinitialising assignment at depth ≥ 2 is a compiler
+defect (RUE-2319) — it runs the overwrite-drop on the already moved-out
+position and then leaks the value it stored — so the model and the compiler
+disagree there for a reason that is not the model's, and a generated case with
+the shape would be a false bridge failure rather than a finding. Depth-2 uses
+and drops are unaffected by it: the defect is in the assignment path, and
+depth-2 use, `@drop` and assignment-under-a-live-value were all checked by
+hand against the compiler.
+
+One shape is not drawn at any depth, for the same "false failure" reason: a
+projection through a proper prefix of declared-`linear` struct type selects
+§4.2's `Declared(d, π)` plan, which the compiler applies and this fragment
+rejects instead (RUE-2236).
 
 Calls and `return` are **not** generated yet: every generated case is a
 one-function program (`Program.entry`), so the shapes RUE-2233 added — a
@@ -62,7 +76,7 @@ provenance.
 
 Ownership. Moves, drops, assignments and scope exits are chosen at random, so
 a large minority of the programs are rejected by the checker and refused by
-the machine — a quarter of them at `--gen 200 --seed 7`, the figure the
+the machine — 56 of 200 at `--gen 200 --seed 7`, the figure the
 weights below are tuned against. Both are recorded (`Corpus.caseJson` reads
 them off `checkProgram` and `run` as for any case), never filtered: a rejected
 program checks that the compiler rejects it too, an accepted one that the
@@ -306,34 +320,71 @@ def projSlots (D : StructEnv) (s : Nat) (T : Ty) : List Nat :=
       else if sd.dtor && T.mult D != .copy then []
       else (List.range sd.fields.length).filter (fun f => sd.fields[f]? == some T)
 
-/-- (helper) Every place of the wanted type one field step under a binder in
-scope: the projections a use or an assignment may name. -/
+/-- (helper) A place from a root binder and a path of field steps, read from
+the root outward — the inverse of `Place.path` (`Syntax.lean`). -/
+def placeOfPath (i : Nat) (π : List Nat) : Place :=
+  π.foldl (fun p f => Place.proj p f) (.var i)
+
+/-- (helper) The field slots a type has, as single steps. -/
+def fieldSlots (D : StructEnv) : Ty → List Nat
+  | .struct s =>
+      (match D[s]? with
+       | some sd => List.range sd.fields.length
+       | none => [])
+  | .int _ _ | .bool | .unit => []
+
+/-- (helper) Every path of **one or two** field steps under a binder's
+declared type. Depth 2 is where the path machinery actually recurses —
+`OwnSt.get`/`setAt`'s padding, `readAt`/`writeAt`, and §6.11's nested `⊘`-skip
+— and one seed case (`deep_path`) is not coverage of it. -/
+def paths2 (D : StructEnv) (T₀ : Ty) : List (List Nat) :=
+  (fieldSlots D T₀).flatMap fun f =>
+    [f] :: (match T₀.fieldAt D f with
+            | some T' => (fieldSlots D T').map (fun g => [f, g])
+            | none => [])
+
+/-- (helper) Whether the four place rules admit a path from a binder of type
+`T₀` to a leaf of type `T`: the path types (`atPath`), no **proper prefix** is a
+struct declared `linear` — the fragment's own restriction, standing in for
+§4.2's `Declared(d, π)` plan (RUE-2236) — and, where the leaf is not `Copy` and
+so the rule is (Use-Move) or (@Drop) rather than their `Copy` twins, no proper
+prefix declares a destructor (`3.9:34`). This is `projSlots`' test read at a
+whole path rather than at one step, so it stays right at depth 2. -/
+def pathOk (D : StructEnv) (T₀ : Ty) (π : List Nat) (T : Ty) : Bool :=
+  Ty.atPath D T₀ π == some T && noLinearPrefix D T₀ π &&
+    (T.mult D == .copy || noDtorPrefix D T₀ π)
+
+/-- (helper) Every place of the wanted type one **or two** field steps under a
+binder in scope: the projections a use may name. -/
 def projPlaces (D : StructEnv) (Γ : Scope) (T : Ty) : List Place :=
   ((List.range Γ.length).map (fun i =>
     match Γ[i]? with
     | some b =>
-        (match b.ty with
-         | .struct s => (projSlots D s T).map (fun f => Place.proj (.var i) f)
-         | _ => [])
+        ((paths2 D b.ty).filter (fun π => pathOk D b.ty π T)).map (placeOfPath i)
     | none => [])).flatten
 
-/-- (helper) Every place one field step under a binder in scope, whatever its
-type: the projections a `@drop` may name. -/
+/-- (helper) Draw a place, biased toward the **deeper** one: where the list
+offers a path of two field steps it is taken half the time. Without the bias
+depth 2 is in the tail — the default `--gen 200 --seed 7` draws none at all,
+because a two-step path needs a nesting declaration, a binder of the outer type
+in scope, and both prefixes free of a declared-`linear` attribute and of a
+destructor at once. With it that run draws six depth-2 places across three
+programs, and `--gen 300 --seed 23` eight across six. This is one of the
+module's weights; it lives here rather than at the six draw sites. -/
+def pickPlace (default : Place) (ps : List Place) : G Place := do
+  let deep := ps.filter (fun p => 2 ≤ p.path.length)
+  if !deep.isEmpty && (← chance 1 2) then pick default deep else pick default ps
+
+/-- (helper) Every place one **or two** field steps under a binder in scope,
+whatever its type: the projections a `@drop` may name. -/
 def dropPlaces (D : StructEnv) (Γ : Scope) : List Place :=
   ((List.range Γ.length).map (fun i =>
     match Γ[i]? with
     | some b =>
-        (match b.ty with
-         | .struct s =>
-             (match D[s]? with
-              | some sd =>
-                  ((List.range sd.fields.length).map (fun f =>
-                    match sd.fields[f]? with
-                    | some T => (projSlots D s T).filter (· == f) |>.map
-                        (fun _ => Place.proj (.var i) f)
-                    | none => [])).flatten
-              | none => [])
-         | _ => [])
+        (paths2 D b.ty).filterMap (fun π =>
+          match Ty.atPath D b.ty π with
+          | some T => if pathOk D b.ty π T then some (placeOfPath i π) else none
+          | none => none)
     | none => [])).flatten
 
 /-- (helper) The type of a fresh `let` binder: mostly structs, when the
@@ -356,7 +407,7 @@ of that type, or a struct literal with a leaf per field. -/
 def atom (D : StructEnv) (Γ : Scope) : Ty → Nat → G Expr
   | .int w sg, _ => do
       let projs := projPlaces D Γ (.int w sg)
-      if !projs.isEmpty && (← chance 1 2) then return use (← pick (.var 0) projs)
+      if !projs.isEmpty && (← chance 1 2) then return use (← pickPlace (.var 0) projs)
       let uses := indicesWhere Γ (fun b => b.ty == .int w sg)
       if !uses.isEmpty && (← chance 1 2) then return use (.var (← pick 0 uses))
       intLiteral w sg
@@ -371,7 +422,7 @@ def atom (D : StructEnv) (Γ : Scope) : Ty → Nat → G Expr
   | .unit, _ => return unitLit
   | .struct s, depth => do
       let projs := projPlaces D Γ (.struct s)
-      if !projs.isEmpty && (← chance 1 2) then return use (← pick (.var 0) projs)
+      if !projs.isEmpty && (← chance 1 2) then return use (← pickPlace (.var 0) projs)
       let uses := indicesWhere Γ (fun b => b.ty == .struct s)
       if !uses.isEmpty && (← chance 2 3) then return use (.var (← pick 0 uses))
       match D[s]?, depth with
@@ -389,7 +440,7 @@ def leaf (D : StructEnv) (Γ : Scope) : Ty → Nat → G Expr
         [(1, 0), (if Γ.isEmpty then 0 else 6, 1), (if muts.isEmpty then 0 else 5, 2)]
       match form with
       | 1 =>
-          if !drops.isEmpty && (← chance 1 2) then return drop (← pick (.var 0) drops)
+          if !drops.isEmpty && (← chance 1 2) then return drop (← pickPlace (.var 0) drops)
           if !structs.isEmpty && (← chance 3 4) then return drop (.var (← pick 0 structs))
           return drop (.var (← nat 0 (Γ.length - 1)))
       | 2 =>
@@ -455,7 +506,7 @@ def expr (D : StructEnv) : Scope → Ty → Nat → G Expr
                   return unop .bitnot (← self)
               | 3 =>
                   let projs := projPlaces D Γ (.int w sg)
-                  if !projs.isEmpty then return use (← pick (.var 0) projs)
+                  if !projs.isEmpty then return use (← pickPlace (.var 0) projs)
                   return binop .add (← self) (← self)
               | _ =>
                   -- `@intCast` from an integer, or `@float_to_int` from a
@@ -513,7 +564,7 @@ def expr (D : StructEnv) : Scope → Ty → Nat → G Expr
               let drops := dropPlaces D Γ
               -- A `@drop` or an assignment *at a projection* is the shape this
               -- slice is about (§4.2's partial move), so it is drawn first.
-              if !drops.isEmpty && (← chance 2 5) then return drop (← pick (.var 0) drops)
+              if !drops.isEmpty && (← chance 2 5) then return drop (← pickPlace (.var 0) drops)
               if !muts.isEmpty && (← chance 3 4) then
                 let i ← pick 0 muts
                 let b := Γ[i]?.getD ⟨.int .w64 .signed, true⟩
@@ -538,7 +589,7 @@ def expr (D : StructEnv) : Scope → Ty → Nat → G Expr
               let uses := indicesWhere Γ (fun b => b.ty == .struct s)
               if !uses.isEmpty && (← chance 1 2) then return use (.var (← pick 0 uses))
               let projs := projPlaces D Γ (.struct s)
-              if !projs.isEmpty && (← chance 1 3) then return use (← pick (.var 0) projs)
+              if !projs.isEmpty && (← chance 1 3) then return use (← pickPlace (.var 0) projs)
               match D[s]? with
               | some sd => return mkStruct s (← sd.fields.mapM (fun T' => expr D Γ T' fuel))
               | none => return mkStruct s []
