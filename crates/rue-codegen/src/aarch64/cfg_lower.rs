@@ -2290,8 +2290,8 @@ impl<'a> CfgLower<'a> {
                     // A zero-sized aggregate reaches them whenever the compact
                     // image is empty, and `slots[0]` then panicked in CFG
                     // lowering. Consumers still need a primary vreg to name, so
-                    // one is allocated and left undefined, exactly as the
-                    // single-slot branch does when `count == 0`.
+                    // one is allocated and left undefined; nothing reads it,
+                    // because a zero-slot value carries no slot at all.
                     self.mir.alloc_vreg()
                 } else if let Some(map) = &plan.physical_slots {
                     // A compact enum pointee: load each internal slot from its
