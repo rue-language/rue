@@ -5,7 +5,7 @@ A field dropped in one arm of an if only: the §5.5 join sends that path to
 MovedOut and the sibling stays Owned; the machine drops whatever the taken
 path left.
 
-Rules exercised: (If) §5.5 join · 3.8:73 · (@Drop) §5.3
+Rules exercised: (If) §5.5 join · 3.8:60 · (@Drop) §5.3
 
 ── The program ─────────────────────────────────────────────────────────────────
 

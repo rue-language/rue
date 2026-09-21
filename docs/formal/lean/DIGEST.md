@@ -120,6 +120,19 @@ theorem RueCore.struct_class_unique {D D' : StructEnv} (hwf : WfStructs D)
   (s : Nat) : D.classOf s = D'.classOf s
 ```
 
+### `overwriteOk_iff`
+
+*theorem* · module `RueCore.Statics`
+
+`overwriteOk` is §5.2's disjunction, spelled as the rule spells it: the
+`Prop` form is what `Typed.assign` carries, the `Bool` form what `check`
+decides.
+
+```lean
+theorem RueCore.overwriteOk_iff {D : StructEnv} {u : OwnSt} {T : Ty} :
+  overwriteOk D u T = true ↔ u = OwnSt.movedOut ∨ Ty.mult D T ≠ Mult.linear
+```
+
 ### `Typed.skel_preserved`
 
 *theorem* · module `RueCore.Statics`
@@ -142,7 +155,7 @@ theorem RueCore.Typed.skel_preserved {P : Program} {R : Ty} {Γ Γ' : Ctx} {e : 
 **§6.11's order, in closed form.** For well-typed contents the walk's
 result is exactly `dropEvents`, §6.11's order written out as a function
 (`Dynamics.lean`) — the destructor first (`3.9:28`), then the fields in
-declaration order (`3.9:13`), every `⊘` skipped (`3.8:73`).
+declaration order (`3.9:13`), every `⊘` skipped (`3.8:60`).
 
 ```lean
 theorem RueCore.dropContents_events {D : StructEnv} {c : Contents} {T : Ty}
@@ -183,9 +196,15 @@ theorem RueCore.dropContents_ok {D : StructEnv} {c : Contents} {T : Ty}
 well-typed struct's stored contents emits its user destructor's event — when
 its declaration has one (`3.9:28`) — followed by the **concatenation of its
 fields' drop events, in declaration order** (`3.9:13`), each field's events
-given by the same closed form, recursively, and a field that has been moved out
-contributing none (`3.8:73`). Nothing else, and nothing in another order; the
-whole list is determined by the contents and the declarations.
+given by the same closed form, recursively. Nothing else, and nothing in
+another order; the whole list is determined by the contents and the
+declarations.
+
+Be exact about the `⊘`-skip: this theorem states the **map**, `cs.map
+(dropEvents D)`, and a moved-out field contributes nothing because
+`dropEvents .hole = []` *by definition* (`Dynamics.lean`). So `3.8:60`'s skip
+is carried by the closed form's own leaf case, not concluded here; what the
+theorem adds is that the walk emits exactly that map, in that order.
 
 ```lean
 theorem RueCore.dropContents_struct_events {D : StructEnv} {s : Nat} {sd : StructDecl}
@@ -437,7 +456,7 @@ theorem RueCore.runAllScopeDrops_ok {D : StructEnv} {Γ : Ctx} {φ : Frame} {H :
 contents still matches it.** The `Owned` side never adds a move, so the only
 question the join asks is whether each path `t` has `MovedOut` may be lost —
 which `ownedJoinOk` has answered, and which the invariant's asymmetric
-`movedOut` clause then admits (`3.8:50`, `3.8:73`).
+`movedOut` clause then admits (`3.8:50`, `3.8:60`).
 
 ```lean
 theorem RueCore.ownedJoinOk_matches {D : StructEnv} (hwf : WfStructs D) (t : OwnSt)
@@ -455,7 +474,7 @@ arm's state at a path matches the joined state: where the two arms agree the
 join is that state, and where they disagree the join is `MovedOut`, which the
 invariant's asymmetric clause admits because the disagreement premise has
 already ruled out live linear content there (`3.8:50`). The machine then drops
-whatever residue the taken path left, path-specifically (`3.8:73`).
+whatever residue the taken path left, path-specifically (`3.8:60`).
 
 ```lean
 theorem RueCore.OwnSt.join_matches {D : StructEnv} (hwf : WfStructs D) (a b : OwnSt)
@@ -470,8 +489,9 @@ theorem RueCore.OwnSt.join_matches {D : StructEnv} (hwf : WfStructs D) (a b : Ow
 *theorem* · module `RueCore.Soundness`
 
 The §5.5 join weakens the left arm's per-cell agreement: a cell matching
-the left entry matches the joined entry (the conservative join; its
-array-element form is `3.8:73`).
+the left entry matches the joined entry (the conservative join, whose residue
+the machine drops path-specifically: `3.8:60` for a struct's fields, `3.8:73`
+the array-element form).
 
 ```lean
 theorem RueCore.Entry.join_matches_left {D : StructEnv} (hwf : WfStructs D)
@@ -484,8 +504,9 @@ theorem RueCore.Entry.join_matches_left {D : StructEnv} (hwf : WfStructs D)
 *theorem* · module `RueCore.Soundness`
 
 The §5.5 join weakens the right arm's per-cell agreement, given the two
-arms share a skeleton (the conservative join; its array-element form is
-`3.8:73`).
+arms share a skeleton (the conservative join, whose residue the machine drops
+path-specifically: `3.8:60` for a struct's fields, `3.8:73` the array-element
+form).
 
 ```lean
 theorem RueCore.Entry.join_matches_right {D : StructEnv} (hwf : WfStructs D)
@@ -762,7 +783,11 @@ theorem RueCore.no_linear_leak {P : Program} (h : ProgramTyped P) (fuel : Nat) :
 
 *theorem* · module `RueCore.Soundness`
 
-§7 linear bullet, overwrite half (`3.8:77`, the RUE-387 premise).
+§7 linear bullet, overwrite half (`3.8:77`, the RUE-387 premise). The
+monitor reads the residue the overwrite-drop is about to walk, and (Assign)
+§5.2's premise is keyed on the destination's *type*, which is the stronger of
+the two — so the residue is empty of linear content whenever the checker
+accepted.
 
 ```lean
 theorem RueCore.no_linear_overwrite {P : Program} (h : ProgramTyped P) (fuel : Nat) :
@@ -5156,6 +5181,46 @@ Defining equations, as Lean derived them from the body:
     | r => ArgsRes.abort r
 ```
 
+### `overwriteOk`
+
+*def* · module `RueCore.Statics`
+
+§5.2's (Assign) premise `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` (`3.8:77`),
+as a decidable test on the post-RHS state.
+
+This one is keyed on the destination's **type**, not on its residue, and
+deliberately so: `3.8:77` says the diagnostic "is determined by the
+destination's *type* together with the statically tracked move paths, never by
+a run-time drop flag", and the compiler agrees (E0493 fires on a root
+reassignment of a linear-carrying struct even when a field `@drop` has already
+taken the linear part out from under it). Reading it on the residue instead —
+`residualLinear D u T = false`, the shape §5.6's leak check and §5.5's join
+use — would accept that program, so this is the one place in the fragment
+where the residual reading is *not* the right one. §5.6 and §5.5 abandoned the
+type-level test because it over-rejects a **discharge**; (Assign) is not a
+discharge, and `3.8:77`'s point is that an overwrite never performs one.
+
+`residualLinear D u T = false` follows from either disjunct — `MovedOut`
+carries nothing, and a non-linear type has no linear content to carry
+(`ContentsTy.residualLinear_false`) — so this premise is strictly stronger
+than the residual one and the dynamic `linearOverwrite` monitor, which reads
+the residue because the residue is what the machine is about to drop, stays
+reachable only through a program `check` rejects.
+
+```lean
+def RueCore.overwriteOk (D : StructEnv) : OwnSt → Ty → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : StructEnv) (x : Ty), overwriteOk D OwnSt.movedOut x = true
+∀ (D : StructEnv) (x : Ty),
+  overwriteOk D OwnSt.owned x = decide (Ty.mult D x ≠ Mult.linear)
+∀ (D : StructEnv) (x : Ty) (ts : List OwnSt),
+  overwriteOk D (OwnSt.fields ts) x = decide (Ty.mult D x ≠ Mult.linear)
+```
+
 ### `run`
 
 *def* · module `RueCore.Dynamics`
@@ -5545,7 +5610,7 @@ Defining equations, as Lean derived them from the body:
 §5.6's `residual-linear`, read on the **contents** rather than on Σ: does a
 live sub-value of a declared-`linear` struct type remain? This is the leak
 monitor §6.7's `endscope` and §6.9's frame teardown consult, and the overwrite
-monitor of §6.8. A `⊘` carries nothing (`3.8:73`'s skip), a live
+monitor of §6.8. A `⊘` carries nothing (`3.8:60`'s skip), a live
 declared-`linear` struct carries the obligation itself (`3.8:74`), and
 otherwise the obligation is the disjunction over the live fields — exactly the
 recursion §5.6 writes for Σ, on the store's side of the invariant.
@@ -5729,7 +5794,7 @@ Per-node agreement between Σ's state for a path and the contents stored
 there, at the path's declared type (§7's "Σ faithfully tracks the store's
 initialization", section docstring): `owned` holds a value, `movedOut` holds
 contents with no live linear sub-value — the §5.5 join's asymmetry, whose
-residue the machine drops path-specifically (`3.8:73`) — and `fields` holds the
+residue the machine drops path-specifically (`3.8:60`) — and `fields` holds the
 struct its type names, matched field by field.
 
 ```lean
@@ -5745,7 +5810,7 @@ RueCore.ContentsMatches.owned {D : StructEnv} {c : Contents} {T : Ty} :
   ContentsTy D c T → c.holeFree = true → ContentsMatches D c OwnSt.owned T
 ```
 
-**`ContentsMatches.moved`** — A `MovedOut` path may still hold live contents — the §5.5 join's asymmetry (`3.8:73`) — but never a live linear sub-value (`3.8:50`).
+**`ContentsMatches.moved`** — A `MovedOut` path may still hold live contents — the §5.5 join's asymmetry (`3.8:60`) — but never a live linear sub-value (`3.8:50`).
 
 ```lean
 RueCore.ContentsMatches.moved {D : StructEnv} {c : Contents} {T : Ty} :
@@ -6106,8 +6171,8 @@ Rule names cite the calculus: `useCopy`/`useMove` are (Use-Copy)/(Use-Move)
 (Neg)/(Not)/(BitNot), `intCast` is (Int-Cast) and `dbg` is (Dbg), all §5.8;
 `dropCopy`/`dropRes` are (@Drop-Copy)/(@Drop) (§5.3); `mkStruct` is
 (Struct-Intro) (§5.8); `letIn` folds in §5.6's residual-linear scope-exit
-check; `assign` is (Assign) with the `3.8:77` linear-overwrite premise on the
-*post-RHS* state; `seq` is (Seq) with the `3.8:64` discard check; `ite` is (If)
+check; `assign` is (Assign) with the `3.8:77` linear-overwrite premise, keyed
+on the destination's type (`overwriteOk`), on the *post-RHS* state; `seq` is (Seq) with the `3.8:64` discard check; `ite` is (If)
 with the §5.5 join; `call` is (Call) by value (§5.8); `ret` is (Return-Value)
 and `panic` is (Panic), each with (Sub-Never) folded in (§5.7, §5.8).
 
@@ -6283,7 +6348,7 @@ RueCore.Typed.letIn {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Γ₂ : List Entry}
         Typed P R Γ (Expr.letIn m e₁ e₂) T₂ Γ₂
 ```
 
-**`Typed.assign`** — (Assign) §5.2, at a place: the root must be a `μ = mut` binding (§5 preamble), the RHS runs first, the overwrite of live linear content is ill-formed (`3.8:77`, checked on the **post-RHS** state — the RUE-387 premise, and the `Σ1` reading that makes `p = f(p)` legal), and the subtree at `p` becomes `Owned` afterward (reinitialization, `3.8:55`). The `get` premises are `Owned-Base` (`3.8:53`) at both states: a path under a moved prefix is not a path to assign to, which the compiler reports as E0205. The `3.8:77` premise is read on the residual state for U1's reason, and on a whole binding it is §5.2's own disjunction.
+**`Typed.assign`** — (Assign) §5.2, at a place: the root must be a `μ = mut` binding (§5 preamble), the RHS runs first, the overwrite of live linear content is ill-formed (`3.8:77`, checked on the **post-RHS** state — the RUE-387 premise, and the `Σ1` reading that makes `p = f(p)` legal), and the subtree at `p` becomes `Owned` afterward (reinitialization, `3.8:55`). The `get` premises are `Owned-Base` (`3.8:53`) at both states: a path under a moved prefix is not a path to assign to, which the compiler reports as E0205. The `3.8:77` premise is §5.2's disjunction **as written** — `Σ1(p) = MovedOut ∨ ¬carries_linear(T)`, on the destination's declared type — and not §5.6's residual reading. `overwriteOk`'s docstring says why: an overwrite discharges nothing, so the argument that made §5.5 and §5.6 state-keyed (RUE-526, RUE-1591) does not transfer, and the compiler rejects the shape the residual reading would accept (E0493 on `@drop(v.linearField); v = …`; corpus case `overwrite_past_partial_linear`). One **deviation** (N3): `Owned-Base` is demanded on the *incoming* state as well as the post-RHS one, so this rule is one premise stricter than §5.2, which states neither (U4 reads §5.1's "in any context" side condition for the post-RHS lookup). Nothing a program can observe turns on it: only an RHS that reinitialises the target's own moved-out prefix could make the incoming lookup fail where the post-RHS one succeeds.
 
 ```lean
 RueCore.Typed.assign {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {p : Place}
@@ -6295,7 +6360,7 @@ RueCore.Typed.assign {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {p : Place}
           Typed P R Γ e T Γ₁ →
             Γ₁[p.root]? = some en₁ →
               en₁.st.get p.path = some u₁ →
-                residualLinear P.structs u₁ T = false →
+                u₁ = OwnSt.movedOut ∨ Ty.mult P.structs T ≠ Mult.linear →
                   Typed P R Γ (Expr.assign p e) Ty.unit
                     (List.set Γ₁ p.root
                       (en₁.setSt (en₁.st.setAt p.path OwnSt.owned)))
