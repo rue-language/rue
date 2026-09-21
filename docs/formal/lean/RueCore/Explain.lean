@@ -34,13 +34,12 @@ naming, so a subexpression is spelled the same way here, in `corpus.json`,
 and in the printed Rue program.
 
 Node labels name a calculus rule only where the node *is* an instance of
-it. The fragment's `mkres`/`consume` are abstract resource introduction and
-elimination, not the aggregate-introduction and call forms of §5.8 —
-`res κ` has no declared fields — so those nodes are labelled "resource
-intro"/"resource elimination" with a section pointer and say what is not
-modelled, rather than claiming a rule the mechanization does not cover.
-`call` and `return`, which the fragment now does have, are labelled (Call)
-§5.8 and (Return-Value) §5.7.
+it. A struct literal is one — it is labelled (Struct-Intro) §5.8 and
+(D-Struct) §6.5 — but the fragment's `consume` is not: the calculus takes a
+struct apart through a projection, which is a place and so RUE-2231's, so
+that node is labelled "whole-value elimination" with a section pointer and
+its rejections say what the restriction is, rather than claiming a rule the
+mechanization does not cover.
 
 ## Frames in the step table
 
