@@ -509,7 +509,7 @@ Agreeing nodes join to themselves. Where the two branches disagree — one has
 the path `MovedOut` and the other `Owned` — the join is ill-formed exactly when
 the `Owned` side still has **residual linear content** there, and is `MovedOut`
 otherwise: the conservative reading, which the machine then makes good on by
-dropping the residue path-specifically (`3.8:73`). Two `Owned` nodes with
+dropping the residue path-specifically (`3.8:60`). Two `Owned` nodes with
 different partial moves under them join field by field.
 
 §5.5 writes the disagreement test as `carries_linear(T)` — on the binding's
