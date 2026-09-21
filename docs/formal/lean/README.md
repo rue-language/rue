@@ -148,9 +148,13 @@ mechanized*. The short version:
   §6 leaves stuck, made explicit. The trace lists every drop in order.
 - **The theorem says stuck is unreachable.** `soundness` (`Soundness.lean`)
   states: if `Typed [] e T Γ'` holds, then `eval` never returns `.stuck`.
-  The corollaries name one §7 bullet each. `Matches` is the invariant the
-  proof carries: "Σ faithfully tracks the store's initialization", with one
-  deliberate asymmetry explained in its doc-comment.
+  The corollaries name one §7 bullet each; `no_use_after_drop` is the one
+  that holds structurally at fragment scope (no closed expression can name a
+  retired cell, typed or not), so the retired-cell guard is witnessed from
+  an open machine state in `Examples.lean` rather than from a program.
+  `Matches` is the invariant the proof carries: "Σ faithfully tracks the
+  store's initialization", with one deliberate asymmetry explained in its
+  doc-comment.
 - **Run something.** Open `RueCore/Examples.lean`; each `#eval` line runs a
   program, and the editor (or `lake build`'s log) shows its result. Change a
   program and watch the result change. Each `example : check ... = none := by
