@@ -2312,23 +2312,34 @@ nearest with ties *away* from zero for `@floor`, `@ceil`, `@trunc`, and
 `@round` — each exact, since an integral value near `f` is always
 representable. `3.12:37` fixes the special cases and makes all five trap-free.
 
-**The oracle does not yet run the float rules.** Every other §6 rule group
-names the `crates/rue-oracle` function that realizes it; the float groups name
-none, because the interpreter reports floats as a *modeled gap* instead of
-evaluating them. A float arithmetic, negation, or comparison instruction — and
-any equality whose operand type reaches a float leaf at any depth — raises
-`SemanticGapKind::FloatArithmetic`, and `@int_to_float` / `@float_to_int` /
-`@float_cast` raise the matching `UnsupportedIntrinsicKind` (verified in
-`crates/rue-oracle/src/lib.rs`; the gaps are registered for the differential
-harness under `crates/rue-oracle-diff/src/model_gaps/`). The interpreter's own
-reason for the gap is the one §2's representation decision turns on: it stores
-scalars as integer bit patterns, so letting a float comparison through would
-model *bit* equality where `3.12:27` asks for IEEE equality. The rules above
-are therefore the paper semantics only, and the RUE-50 differential obligation
-on them is **owed, not discharged** — extending the interpreter to the datum
-model of §2 is step 5 of the README's rubric for this construct, and the rest
-of this section's "the thing that governs the spec is the thing we can run"
-claim does not yet extend to floats.
+**The oracle runs the float rules** (corrected 2026-09-21; this paragraph said
+the opposite). Every §6 rule group names the `crates/rue-oracle` function that
+realizes it, and the float groups are no exception: `(D-Float-Arith)`,
+`(D-Float-Neg)` and `(D-Float-Ord)` are `eval_float_operation`, and
+`(D-Int-To-Float)`, `(D-Float-To-Int)`, `(D-Float-Cast)`, `(D-Total-Cmp)` and
+`(D-Float-Round)` are `eval_float_intrinsic`. The interpreter decodes each
+operand's IEEE bit pattern at the instruction's width, performs the operation,
+and re-encodes — so no float operation traps but `@float_to_int`, a division
+by zero yields an infinity or a NaN, and comparison is the partial order
+`3.12:27` fixes.
+
+The earlier text claimed the interpreter reported floats as a *modeled gap*
+instead, on the ground that it stores scalars as integer bit patterns and
+would therefore model bit equality where `3.12:27` asks for IEEE equality.
+That is no longer true of the code, and the specific worry is answered:
+`nan == nan` is `false`, `nan != nan` is `true`, `-0.0 == 0.0` is `true`, every
+ordering compare against a NaN is `false`, an `f32` prints the digits that
+identify it as an `f32`, and `@float_to_int` of an infinity traps — each read
+off the interpreter itself. `SemanticGapKind::FloatArithmetic` survives in the
+enum with no site that raises it.
+
+So the RUE-50 differential obligation on the float rules is **live**: the
+Lean↔oracle pair of the ADR-0097 bridge compares the float corpus like any
+other, and step 5 of the README's rubric is met for this construct. One thing
+the harness cannot compare away is `σ_NaN` (§2): it is fixed per target, so a
+case whose answer depends on it — only `@total_cmp` can see it — is a case the
+two views agree on per target and not across them. The float corpus therefore
+reads a NaN's sign nowhere.
 
 ### 6.5 Aggregate introduction and projection
 
