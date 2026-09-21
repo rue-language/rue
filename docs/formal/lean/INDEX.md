@@ -480,12 +480,12 @@ Helpers, cited by nothing in the calculus and marked `(helper)`:
 
 Every alternative of the calculus's §2 grammar for types (`T`), places (`p`), and expressions (`e`), with the `Syntax.lean` constructors that mechanize it. *partial* marks a restricted or abstract version of the form itself and says in the same row what is missing, so no row reads as more coverage than there is. A form the fragment abstracts away rather than models reads *not yet mechanized* even where a construct of the core stands in for part of its ownership shape; the row names the stand-in. With the rules table below, this is the whole fragment boundary.
 
-Coverage: 21 of 35 §2 forms have a core image (6 of them partial); 14 are *not yet mechanized*.
+Coverage: 23 of 35 §2 forms have a core image (6 of them partial); 12 are *not yet mechanized*.
 
 | Production | Form | Mechanized by | Scope |
 | --- | --- | --- | --- |
 | `T` | `int(w, s)` | `RueCore.Ty.int`, `RueCore.IntWidth`, `RueCore.Sign` | every width and signedness, carried by the type, by the machine value (§6.1's `n_T`) and by a literal (`4.1:2`); `InBounds` is the `min_T ≤ n ≤ max_T` side condition and `valOf`/`wrapInt` are §6.4's `val_{w,s}(β_w(·))` |
-| `T` | `float(w)` | *not yet mechanized* | floats are in the core (§5.8, §6.4) and outside the fragment |
+| `T` | `float(w)` | `RueCore.Ty.float`, `RueCore.FloatWidth`, `RueCore.FloatDatum` | both widths, carried by the type, by the machine value (§6.1's `f_T`) and by a literal's own width (`3.12:7`); `FloatDatum` is §2's `𝔽_w` — an abstract IEEE datum with a sign-only NaN, not a bit pattern — and `FloatDatum.Wf` is the float counterpart of `InBounds` |
 | `T` | `bool` | `RueCore.Ty.bool` | — |
 | `T` | `unit` | `RueCore.Ty.unit` | — |
 | `T` | `never` | *not yet mechanized* | `return` and `@panic` are in the fragment (§5.7, §5.8) but `never` is not a type here: both rules fold (Sub-Never) in by concluding at any type, which is sound because `never` has no values (`3.4:1`), and neither ever needs a `HasTy` case. `break` and an infinite `loop` are the never-typed forms the fragment still has no image of |
@@ -497,10 +497,10 @@ Coverage: 21 of 35 §2 forms have a core image (6 of them partial); 14 are *not 
 | `p` | `p [ e ]` | *not yet mechanized* | no array indexing, hence no `3.8:73` element-wise form |
 | `e` | `lit` | `RueCore.Expr.intLit`, `RueCore.Expr.boolLit`, `RueCore.Expr.unitLit` | an integer literal carries the `int(w,s)` elaboration resolved for it (`4.1:2`); float literals follow `float(w)` |
 | `e` | `p` | `RueCore.Expr.use` | the §4.2 use, typed by (Use-Copy)/(Use-Move) |
-| `e` | `e1 ⊕ e2` | `RueCore.Expr.binop`, `RueCore.BinOp` *(partial)* | the whole integer operator set — `+ - * / %`, `& \| ^`, `<< >>` — with §6.4's traps and its `val_{w,s}(β_w(·))` bit semantics; the float operators follow `float(w)` |
-| `e` | `⊖ e` | `RueCore.Expr.unop`, `RueCore.UnOp` *(partial)* | `neg` on a signed integer, `not` on `bool`, and `bitnot` on any integer, by (Neg)/(Not)/(BitNot) §5.8; float negation follows `float(w)` |
+| `e` | `e1 ⊕ e2` | `RueCore.Expr.binop`, `RueCore.BinOp` *(partial)* | the whole integer operator set — `+ - * / %`, `& \| ^`, `<< >>` — with §6.4's traps and its `val_{w,s}(β_w(·))` bit semantics, and the four float operators of (Float-Arith) §5.8 with §6.4's trap-free dynamics; `%` and the bitwise operators have no float rule (`3.12:25`), which `BinOp.floatAdmits` carries |
+| `e` | `⊖ e` | `RueCore.Expr.unop`, `RueCore.UnOp` *(partial)* | `neg` on a signed integer or on any float (by (Neg)/(Float-Neg) §5.8; the float case is a sign flip and never traps, `3.12:24`), `not` on `bool`, and `bitnot` on any integer, by (Not)/(BitNot) §5.8 |
 | `e` | `e1 ≟ e2` | *not yet mechanized* | equality compare borrows its operands (§4.1, `4.3:3f`) and the fragment has no loans |
-| `e` | `e1 ⋚ e2` | `RueCore.Expr.binop`, `RueCore.BinOp` *(partial)* | all four ordering compares on integers, by (Ord) §5.8; the float ordering of (Float-Ord) follows `float(w)` |
+| `e` | `e1 ⋚ e2` | `RueCore.Expr.binop`, `RueCore.BinOp` *(partial)* | all four ordering compares, on integers by (Ord) §5.8 and on floats by (Float-Ord) §5.8 — where a NaN operand makes every one of them `false` (`3.12:27`) |
 | `e` | `S { f1: e1, ..., fk: ek }` | `RueCore.Expr.mkStruct` | one initializer per declared field, presented in declaration order (`3.6:15`: elaboration reorders a surface literal) and typed left to right with Σ threaded, by (Struct-Intro) §5.8 |
 | `e` | `E :: K ( e1, ..., em )` | *not yet mechanized* | follows `E`: no enums, so no variant construction |
 | `e` | `[ e1, ..., en ]` | *not yet mechanized* | follows `[T; n]`: no arrays, so no array construction |
@@ -510,7 +510,7 @@ Coverage: 21 of 35 §2 forms have a core image (6 of them partial); 14 are *not 
 | `e` | `@panic ( s )` | `RueCore.Expr.panic` *(partial)* | the message is a string *literal* carried by the form rather than an operand expression, because the fragment has no string type — so (Panic-Operand) §5.8 has no instance here. (Panic) itself is mechanized, with (Sub-Never) folded in and no scope-exit obligation, which is §5.7's `⊥_panic` exemption |
 | `e` | `@dbg ( e )` | `RueCore.Expr.dbg`, `RueCore.Event.dbg` | an `int(w,s)` or `bool` operand ((Dbg) §5.8; floats follow `float(w)`), appending §6.12's observable output to the same trace the destructors write to, so the two channels come out in the order they happened |
 | `e` | `@intCast ( e )` | `RueCore.Expr.intCast` | the target type is the one elaboration took from the use site (`4.13:26`), and `4.13:28`'s trap is §6.4's `(D-Int-Cast-Trap)` |
-| `e` | `@f ( e1, ..., ek )` | *not yet mechanized* | follows `float(w)` |
+| `e` | `@f ( e1, ..., ek )` | `RueCore.Expr.fintrin`, `RueCore.FloatIntrin`, `RueCore.BinOp.totalCmp` | all eight: `@int_to_float`, `@float_to_int` (the one float form that traps, `3.12:18`), `@float_cast` with its `w' ≠ w` side condition (`3.12:19`), the five of `3.12:34`, and `@total_cmp` — which is a `BinOp` rather than a `FloatIntrin` because it is the one `@f` with two operands of one type, the shape (Arith)/(Ord) already have |
 | `e` | `if e0 { e1 } else { e2 }` | `RueCore.Expr.ite` | with the §5.5 branch join |
 | `e` | `match e0 { pat1 => e1, ..., patk => ek }` | *not yet mechanized* | follows `E`: no enums, so no arms to match |
 | `e` | `let μ x = e1 ; e2` | `RueCore.Expr.letIn` | carrying the `μ ∈ {∅, mut}` mark, with §5.6's scope exit folded in |

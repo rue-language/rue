@@ -119,7 +119,14 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         "(§6.1's `n_T`) and by a literal (`4.1:2`); `InBounds` is the `min_T ≤ n ≤ "
         "max_T` side condition and `valOf`/`wrapInt` are §6.4's `val_{w,s}(β_w(·))`",
     ),
-    ("T", "float(w)"): ("no", [], "floats are in the core (§5.8, §6.4) and outside the fragment"),
+    ("T", "float(w)"): (
+        "yes",
+        ["Ty.float", "FloatWidth", "FloatDatum"],
+        "both widths, carried by the type, by the machine value (§6.1's `f_T`) "
+        "and by a literal's own width (`3.12:7`); `FloatDatum` is §2's `𝔽_w` — "
+        "an abstract IEEE datum with a sign-only NaN, not a bit pattern — and "
+        "`FloatDatum.Wf` is the float counterpart of `InBounds`",
+    ),
     ("T", "bool"): ("yes", ["Ty.bool"], ""),
     ("T", "unit"): ("yes", ["Ty.unit"], ""),
     ("T", "never"): (
@@ -166,14 +173,17 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         "partial",
         ["Expr.binop", "BinOp"],
         "the whole integer operator set — `+ - * / %`, `& | ^`, `<< >>` — with "
-        "§6.4's traps and its `val_{w,s}(β_w(·))` bit semantics; the float "
-        "operators follow `float(w)`",
+        "§6.4's traps and its `val_{w,s}(β_w(·))` bit semantics, and the four "
+        "float operators of (Float-Arith) §5.8 with §6.4's trap-free dynamics; "
+        "`%` and the bitwise operators have no float rule (`3.12:25`), which "
+        "`BinOp.floatAdmits` carries",
     ),
     ("e", "⊖ e"): (
         "partial",
         ["Expr.unop", "UnOp"],
-        "`neg` on a signed integer, `not` on `bool`, and `bitnot` on any integer, "
-        "by (Neg)/(Not)/(BitNot) §5.8; float negation follows `float(w)`",
+        "`neg` on a signed integer or on any float (by (Neg)/(Float-Neg) §5.8; "
+        "the float case is a sign flip and never traps, `3.12:24`), `not` on "
+        "`bool`, and `bitnot` on any integer, by (Not)/(BitNot) §5.8",
     ),
     ("e", "e1 ≟ e2"): (
         "no",
@@ -183,8 +193,9 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
     ("e", "e1 ⋚ e2"): (
         "partial",
         ["Expr.binop", "BinOp"],
-        "all four ordering compares on integers, by (Ord) §5.8; the float ordering "
-        "of (Float-Ord) follows `float(w)`",
+        "all four ordering compares, on integers by (Ord) §5.8 and on floats by "
+        "(Float-Ord) §5.8 — where a NaN operand makes every one of them `false` "
+        "(`3.12:27`)",
     ),
     ("e", "S { f1: e1, ..., fk: ek }"): (
         "yes",
@@ -235,7 +246,15 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         "the target type is the one elaboration took from the use site "
         "(`4.13:26`), and `4.13:28`'s trap is §6.4's `(D-Int-Cast-Trap)`",
     ),
-    ("e", "@f ( e1, ..., ek )"): ("no", [], "follows `float(w)`"),
+    ("e", "@f ( e1, ..., ek )"): (
+        "yes",
+        ["Expr.fintrin", "FloatIntrin", "BinOp.totalCmp"],
+        "all eight: `@int_to_float`, `@float_to_int` (the one float form that "
+        "traps, `3.12:18`), `@float_cast` with its `w' ≠ w` side condition "
+        "(`3.12:19`), the five of `3.12:34`, and `@total_cmp` — which is a "
+        "`BinOp` rather than a `FloatIntrin` because it is the one `@f` with two "
+        "operands of one type, the shape (Arith)/(Ord) already have",
+    ),
     ("e", "if e0 { e1 } else { e2 }"): ("yes", ["Expr.ite"], "with the §5.5 branch join"),
     ("e", "match e0 { pat1 => e1, ..., patk => ek }"): ("no", [], "follows `E`: no enums, so no arms to match"),
     ("e", "let μ x = e1 ; e2"): (

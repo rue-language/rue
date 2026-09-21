@@ -44,7 +44,7 @@ rule by rule and form by form; its two coverage lines, quoted here so the
 boundary is visible before the statements are:
 
 - *Calculus rules → declarations*: 67 of 97 labeled §5/§6 rules are mechanized; 30 are *not yet mechanized*.
-- *Abstract syntax forms → declarations*: 21 of 35 §2 forms have a core image (6 of them partial); 14 are *not yet mechanized*.
+- *Abstract syntax forms → declarations*: 23 of 35 §2 forms have a core image (6 of them partial); 12 are *not yet mechanized*.
 
 The forms that count as partial are `S`, `e1 ⊕ e2`, `⊖ e`, `e1 ⋚ e2`,
 `g ( a1, ..., am )`, `@panic ( s )`. Each is a restricted or abstract
