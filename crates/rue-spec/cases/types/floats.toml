@@ -1435,3 +1435,98 @@ NaN
 -0.0
 """
 exit_code = 0
+
+# =============================================================================
+# A float literal argument to a comptime parameter (RUE-2265)
+# =============================================================================
+#
+# 3.12:7 gives a float literal its concrete type from its context, and names
+# "the parameter type of a call it is an argument to" as one such context. A
+# `const` initializer that is a fully-comptime call (4.14:28, 6.5:2) is
+# evaluated on its own path; the literal takes the declared parameter's width
+# there exactly as it does in a function body, so the call's result is `f64`
+# and not the width-less `comptime_float`.
+
+[[case]]
+name = "comptime_float_argument_in_const_initializer"
+spec = ["3.12:7", "4.14:28", "6.5:2"]
+description = "A float literal passed to a `comptime x: f64` parameter takes f64 in a const initializer, exactly as its integer twin takes i64"
+source = """
+fn ident_f(comptime x: f64) -> f64 { x }
+const R: f64 = ident_f(16.0);
+fn main() -> i32 {
+    @dbg(R);
+    @float_to_int(R)
+}
+"""
+expected_stdout = """
+16.0
+"""
+exit_code = 16
+
+[[case]]
+name = "comptime_float_argument_in_const_initializer_f32"
+spec = ["3.12:7", "4.14:28", "6.5:2"]
+description = "The f32 parameter selects binary32 for the literal on the same const path"
+source = """
+fn ident_f32(comptime x: f32) -> f32 { x }
+const R: f32 = ident_f32(8.5);
+fn main() -> i32 {
+    @dbg(R);
+    @float_to_int(R)
+}
+"""
+expected_stdout = """
+8.5
+"""
+exit_code = 8
+
+[[case]]
+name = "comptime_float_argument_feeds_an_arithmetic_body"
+spec = ["3.12:7", "4.14:28", "6.5:2"]
+description = "The typed parameter carries into the callee's arithmetic, and through a re-annotated local"
+source = """
+fn half(comptime x: f64) -> f64 { x / 2.0 }
+fn relet(comptime x: f64) -> f64 { let y: f64 = x; y }
+const B: f64 = half(16.0);
+const C: f64 = relet(4.0);
+fn main() -> i32 {
+    @dbg(B);
+    @dbg(C);
+    @float_to_int(B) + @float_to_int(C)
+}
+"""
+expected_stdout = """
+8.0
+4.0
+"""
+exit_code = 12
+
+[[case]]
+name = "comptime_float_argument_inside_a_comptime_block_const"
+spec = ["3.12:7", "4.14:28", "6.5:2"]
+description = "Wrapping the fully-comptime call in a `comptime` block does not change which type the literal takes"
+source = """
+fn half(comptime x: f64) -> f64 { x / 2.0 }
+const E: f64 = comptime { half(64.0) };
+fn main() -> i32 {
+    @dbg(E);
+    @float_to_int(E)
+}
+"""
+expected_stdout = """
+32.0
+"""
+exit_code = 32
+
+[[case]]
+name = "comptime_float_argument_to_an_integer_parameter_rejected"
+spec = ["3.12:7", "6.5:2"]
+description = "Only a float parameter contextualizes a float literal: an integer comptime parameter still rejects one"
+source = """
+fn ident_i(comptime x: i64) -> i64 { x }
+const R: i64 = ident_i(16.0);
+fn main() -> i32 { @intCast(R) }
+"""
+compile_fail = true
+error_contains = ["E0206", "comptime_float"]

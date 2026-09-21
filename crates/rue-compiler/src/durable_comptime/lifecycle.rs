@@ -2247,8 +2247,24 @@ pub(crate) fn bind_durable_comptime_argument(
             .map(|(_, ty)| ty.clone())
             .collect::<Vec<_>>(),
     );
+    // An untyped `comptime_float` has no width of its own: it takes a concrete
+    // floating-point type from its context, and spec 3.12:7 names "the
+    // parameter type of a call it is an argument to" as one such context — a
+    // `comptime x: f64` parameter included. Admit it here — as the
+    // ordinary domain's argument validation already does — so the binding
+    // below finalizes the literal to `expected` instead of carrying the
+    // width-less marker out through the callee's result (RUE-2265). Only the
+    // marker is contextual; a literal already committed to f32 or f64 still
+    // has to match.
+    let contextual_float = matches!(&ty, Some(DurableType::ComptimeFloat))
+        && matches!(
+            &value,
+            crate::durable_semantics::DurableConstValue::Float(_)
+        )
+        && matches!(&expected, DurableType::F32 | DurableType::F64);
     if let Some(found) = ty
         && found != expected
+        && !contextual_float
         && !(matches!(
             &value,
             crate::durable_semantics::DurableConstValue::String(_)
