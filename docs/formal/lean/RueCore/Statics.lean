@@ -365,12 +365,14 @@ mutual
 and the enclosing function's return type `R`.
 
 Rule names cite the calculus: `useCopy`/`useMove` are (Use-Copy)/(Use-Move)
-(§5.1); `dropCopy`/`dropRes` are (@Drop-Copy)/(@Drop) (§5.3); `mkStruct` is
+(§5.1); `binop` is (Arith) and (Ord) at once, `neg`/`notOp`/`bitnot` are
+(Neg)/(Not)/(BitNot), `intCast` is (Int-Cast) and `dbg` is (Dbg), all §5.8;
+`dropCopy`/`dropRes` are (@Drop-Copy)/(@Drop) (§5.3); `mkStruct` is
 (Struct-Intro) (§5.8); `letIn` folds in §5.6's residual-linear scope-exit
 check; `assign` is (Assign) with the `3.8:77` linear-overwrite premise on the
 *post-RHS* state; `seq` is (Seq) with the `3.8:64` discard check; `ite` is (If)
 with the §5.5 join; `call` is (Call) by value (§5.8); `ret` is (Return-Value)
-with (Sub-Never) folded in (§5.7). -/
+and `panic` is (Panic), each with (Sub-Never) folded in (§5.7, §5.8). -/
 inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop where
   /-- (Lit) §5.8: an integer literal at the `int(w,s)` elaboration resolved
   for it (`4.1:2`), denoting a value of that type (§6.1's `n_T` bound). -/
