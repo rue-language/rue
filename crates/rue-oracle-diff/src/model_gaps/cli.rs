@@ -558,6 +558,38 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::EmptySlicePointer),
         &[],
     ),
+    // RUE-2262: every escaped-local forwarding case writes through a raw
+    // pointer obtained from a callee, which the oracle does not model.
+    Entry::new(
+        "cli.escaped_local_store_forwarding",
+        "escaped_inout_parameter_leaves_locals_forwardable",
+        intrinsic(UnsupportedIntrinsicKind::PointerWrite),
+        &[],
+    ),
+    Entry::new(
+        "cli.escaped_local_store_forwarding",
+        "escaped_pointer_runtime_value",
+        intrinsic(UnsupportedIntrinsicKind::PointerWrite),
+        &[],
+    ),
+    Entry::new(
+        "cli.escaped_local_store_forwarding",
+        "escaped_pointer_survives_later_stores",
+        intrinsic(UnsupportedIntrinsicKind::PointerWrite),
+        &[],
+    ),
+    Entry::new(
+        "cli.escaped_local_store_forwarding",
+        "escaped_pointer_written_by_callee",
+        intrinsic(UnsupportedIntrinsicKind::PointerWrite),
+        &[],
+    ),
+    Entry::new(
+        "cli.escaped_local_store_forwarding",
+        "escaped_pointer_written_in_caller",
+        intrinsic(UnsupportedIntrinsicKind::PointerWrite),
+        &[],
+    ),
 ];
 
 pub(crate) fn audit(scope: InventoryScope) -> ModelGapAudit<CaseId> {
