@@ -281,6 +281,20 @@ impl Unifier {
                 }
             }
 
+            // `!` and the recovery type inhabit every type, arrays included.
+            // Concrete-against-concrete admits them through `can_coerce_to`,
+            // but an array expectation is the structural shape, so the same
+            // admission has to be stated for that pair or a diverging tail in
+            // an array context reports "expected [T; N], found !" — which is
+            // what an accessor body whose only exit is its `yield` produced
+            // once the declared array result became structural (RUE-2255).
+            (InferType::Concrete(ty), InferType::Array { .. })
+            | (InferType::Array { .. }, InferType::Concrete(ty))
+                if ty.is_never() || ty.is_error() =>
+            {
+                UnifyResult::Ok
+            }
+
             // Array with non-array: type mismatch
             // Note: This also handles Array with IntLiteral since the IntLiteral
             // cases with Concrete and IntLiteral are already handled above.

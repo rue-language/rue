@@ -2310,3 +2310,133 @@ fn main() -> i32 {
 }
 """
 exit_code = 0
+
+# =============================================================================
+# An accessor result that is a whole fixed array (RUE-2255)
+# =============================================================================
+#
+# `[T; N]` is an ordinary result type for an accessor: the yielded place is the
+# receiver's array field itself, and the caller projects into it within the
+# calling expression. The declared result reaches constraint generation through
+# the same structural decomposition every other array position uses, so the
+# interned `[i64; 3]` of the signature and the structural shape of the yielded
+# field describe one type rather than two spellings that never met.
+
+[[case]]
+name = "shared_accessor_yields_a_whole_fixed_array"
+spec = ["6.6:4", "6.6:6", "6.6:7"]
+description = "A `-> borrow [T; N]` accessor yields the receiver's array field, and the caller indexes the result."
+source = """
+struct Grid {
+    cells: [i64; 3],
+
+    fn view(borrow self) -> borrow [i64; 3] {
+        yield self.cells;
+    }
+}
+fn main() -> i32 {
+    let g = Grid { cells: [1, 2, 3] };
+    @intCast(g.view()[1])
+}
+"""
+exit_code = 2
+
+[[case]]
+name = "exclusive_accessor_yields_a_whole_fixed_array"
+spec = ["6.6:4", "6.6:6"]
+description = "The `inout self` / `-> inout [T; N]` pairing yields the array field, and an element of the result is assignable."
+source = """
+struct Grid {
+    cells: [i64; 3],
+
+    fn view(inout self) -> inout [i64; 3] {
+        yield self.cells;
+    }
+}
+fn main() -> i32 {
+    let mut g = Grid { cells: [1, 2, 3] };
+    g.view()[0] = 9;
+    @intCast(g.cells[0])
+}
+"""
+exit_code = 9
+
+[[case]]
+name = "accessor_yields_a_row_of_a_two_dimensional_array"
+spec = ["6.6:6", "6.6:7"]
+description = "A row of a `[[T; M]; N]` field is a place of array type, so an index projection of the yield operand is a legal whole-array result."
+source = """
+struct M {
+    xs: [[i64; 2]; 2],
+
+    fn row(borrow self, i: u64) -> borrow [i64; 2] {
+        yield self.xs[i];
+    }
+}
+fn main() -> i32 {
+    let m = M { xs: [[1, 2], [3, 4]] };
+    @intCast(m.row(1)[0])
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "accessor_array_result_of_the_wrong_length_is_rejected"
+spec = ["6.6:6"]
+description = "The yielded place must have the declared result type: a length mismatch is still reported (E0901), not admitted by the structural comparison."
+source = """
+struct Grid {
+    cells: [i64; 3],
+
+    fn view(borrow self) -> borrow [i64; 2] {
+        yield self.cells;
+    }
+}
+fn main() -> i32 {
+    let g = Grid { cells: [1, 2, 3] };
+    @intCast(g.view()[1])
+}
+"""
+compile_fail = true
+error_contains = ["E0901", "2 elements", "3 elements"]
+
+[[case]]
+name = "accessor_array_result_of_the_wrong_element_is_rejected"
+spec = ["6.6:6"]
+description = "An element-type mismatch in an array result is still a type mismatch (E0206)."
+source = """
+struct Grid {
+    cells: [i64; 3],
+
+    fn view(borrow self) -> borrow [i32; 3] {
+        yield self.cells;
+    }
+}
+fn main() -> i32 {
+    let g = Grid { cells: [1, 2, 3] };
+    @intCast(g.view()[1])
+}
+"""
+compile_fail = true
+error_contains = ["E0206"]
+
+[[case]]
+name = "whole_array_accessor_result_still_cannot_be_bound"
+spec = ["6.6:9"]
+description = "An array result is a borrowed place like any other: binding it with `let` is still the second-class escape (E0252)."
+source = """
+struct Grid {
+    cells: [i64; 3],
+
+    fn view(borrow self) -> borrow [i64; 3] {
+        yield self.cells;
+    }
+}
+fn main() -> i32 {
+    let g = Grid { cells: [1, 2, 3] };
+    let a = g.view();
+    @intCast(a[0])
+}
+"""
+compile_fail = true
+error_contains = ["E0252"]

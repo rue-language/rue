@@ -919,3 +919,140 @@ env = { RUE_STD_PATH = "${REAL_STD}" }
 compile_only = true
 compile_stdout_contains = ["=== Assembly (aarch64-linux) ===", "main:"]
 compile_stdout_not_contains = [".last:", "get_ref:"]
+
+# --- whole-array accessor results (RUE-2255) ---------------------------------
+#
+# An accessor may yield a place of array type. The declared result and the
+# yielded field's inferred shape describe one type only if both are the
+# structural array shape; publishing the declared result as the interned `Type`
+# made an accessor over a whole fixed array report "expected [i64; 3], found
+# [i64; 3]" and never reach the CFG splice. These run the spliced place through
+# every optimization level, for a slot-filling element, a narrow element, and a
+# nested array.
+
+[[case]]
+name = "accessor_whole_array_result_indexes_at_the_call_site"
+description = "RUE-2255: a `-> borrow [i64; 3]` accessor's result is indexed inside the calling expression."
+files = [{ path = "main.rue", source = """
+struct Grid {
+    cells: [i64; 3],
+    fn view(borrow self) -> borrow [i64; 3] { yield self.cells; }
+}
+fn main() -> i32 {
+    let g = Grid { cells: [1, 2, 3] };
+    @dbg(g.view()[1]);
+    0
+}
+""" }]
+stdout = "2\n"
+exit_code = 0
+differential_opt = true
+
+[[case]]
+name = "accessor_whole_array_result_element_write"
+description = "RUE-2255: the `inout self` / `-> inout [i64; 3]` pairing writes an element of the yielded array in place."
+files = [{ path = "main.rue", source = """
+struct Grid {
+    cells: [i64; 3],
+    fn view(inout self) -> inout [i64; 3] { yield self.cells; }
+}
+fn main() -> i32 {
+    let mut g = Grid { cells: [1, 2, 3] };
+    g.view()[0] = 9;
+    @dbg(g.cells[0]);
+    0
+}
+""" }]
+stdout = "9\n"
+exit_code = 0
+differential_opt = true
+
+[[case]]
+name = "accessor_two_dimensional_row_result"
+description = "RUE-2255: a row of a `[[i64; 2]; 2]` field is a whole-array place, and the row's element is read at the call site."
+files = [{ path = "main.rue", source = """
+struct M {
+    xs: [[i64; 2]; 2],
+    fn row(borrow self, i: u64) -> borrow [i64; 2] { yield self.xs[i]; }
+}
+fn main() -> i32 {
+    let m = M { xs: [[1, 2], [3, 4]] };
+    @dbg(m.row(1)[0]);
+    0
+}
+""" }]
+stdout = "3\n"
+exit_code = 0
+differential_opt = true
+
+[[case]]
+name = "accessor_narrow_element_array_result"
+description = "RUE-2255: an array of a narrow element is spliced and indexed at its own element width."
+files = [{ path = "main.rue", source = """
+struct Grid {
+    cells: [i32; 3],
+    fn view(borrow self) -> borrow [i32; 3] { yield self.cells; }
+}
+fn main() -> i32 {
+    let g = Grid { cells: [4, 5, 6] };
+    @dbg(g.view()[2]);
+    0
+}
+""" }]
+stdout = "6\n"
+exit_code = 0
+differential_opt = true
+
+[[case]]
+name = "accessor_nested_array_result_indexes_twice"
+description = "RUE-2255: a whole `[[i64; 2]; 2]` result is indexed twice within the calling expression."
+files = [{ path = "main.rue", source = """
+struct M {
+    xs: [[i64; 2]; 2],
+    fn all(borrow self) -> borrow [[i64; 2]; 2] { yield self.xs; }
+}
+fn main() -> i32 {
+    let m = M { xs: [[1, 2], [3, 4]] };
+    @dbg(m.all()[1][1]);
+    0
+}
+""" }]
+stdout = "4\n"
+exit_code = 0
+differential_opt = true
+
+[[case]]
+name = "accessor_whole_array_result_lowers_on_aarch64"
+description = "RUE-2255: the spliced whole-array place lowers on AArch64 without publishing an accessor symbol."
+files = [{ path = "main.rue", source = """
+struct Grid {
+    cells: [i64; 3],
+    fn view(borrow self) -> borrow [i64; 3] { yield self.cells; }
+}
+fn main() -> i32 {
+    let g = Grid { cells: [1, 2, 3] };
+    @intCast(g.view()[1])
+}
+""" }]
+args = ["--emit", "asm", "--target", "aarch64-linux", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== Assembly (aarch64-linux) ===", "main:"]
+compile_stdout_not_contains = ["view:"]
+
+[[case]]
+name = "accessor_whole_array_result_cannot_be_bound"
+description = "RUE-2255: an array result is still a second-class borrowed place, so binding it with `let` remains E0252."
+files = [{ path = "main.rue", source = """
+struct Grid {
+    cells: [i64; 3],
+    fn view(borrow self) -> borrow [i64; 3] { yield self.cells; }
+}
+fn main() -> i32 {
+    let g = Grid { cells: [1, 2, 3] };
+    let a = g.view();
+    @intCast(a[0])
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0252"]
