@@ -868,22 +868,31 @@ It prints one line per case — the case's name, the verdict (`accept(i64)`,
 `reject`), and `agree` or `DISAGREE` with the number of disagreeing pairs,
 each carrying the diagnostic code where a program was refused — then, for
 every case that disagrees, the printed Rue program, the four views side by
-side, and the pairs that differ; last a tally. On the 34 seed cases it ends
+side, and the pairs that differ; last a tally of the shape
 
 ```text
-  cases: 34 (34 agree, 0 disagree)
-  checker <-> compiler: 0
-  lean <-> oracle: 0
-  lean <-> native: 0
-  oracle <-> native: 0
+  cases: <n> (<n-k> agree, <k> disagree)
+  checker <-> compiler: …
+  lean <-> oracle: …
+  lean <-> native: …
+  oracle <-> native: …
 ```
 
-and exits zero. It was not always green: `cond_drop_affine` first made the
+**Expect one disagreement, on `i64_min_times_neg1`, and expect a non-zero
+exit.** That case is `min_T * -1` at `i64`. §6.4's (D-Arith-Trap), `3.1:6`
+and `8.1:3` make it an overflow trap and the model traps; the compiler's
+constant folder wraps it and the program exits 0. It is narrow — only `i64`,
+only `*`, only with two literal operands; `{ let a: i64 = min; a * -1 }` and
+the same through two calls both trap — so it is the folder, and it is a
+compiler defect: RUE-2318. The case is seeded deliberately and stays until
+that is fixed. `cond_drop_affine` is the precedent: it first made the
 compiler report an internal error instead of a verdict (`E9000`, a
-CFG-verification failure on the conditionally dropped affine residue), so
-the oracle, which shares that frontend, could not run it either. That was a
-real compiler defect, RUE-2290, found by this bridge and fixed; the case
-stays as the regression signal. *A defect looks like:* any case disagreeing.
+CFG-verification failure on the conditionally dropped affine residue), so the
+oracle, which shares that frontend, could not run it either. That was
+RUE-2290, found by this bridge and fixed, and the case stays as the
+regression signal.
+
+*A defect looks like:* any **other** case disagreeing.
 A disagreement is a defect in one of the four views — the mechanization, the
 compiler, the oracle, or the printed program — and which one is a question the
 case's `explain/<case>.txt` rendering (section 5's tables, `lake exe

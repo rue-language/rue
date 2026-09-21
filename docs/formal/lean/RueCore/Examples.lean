@@ -251,6 +251,17 @@ representable. -/
 def i8DivMinByNegOne : Expr :=
   binop .div (intLit .w8 .signed (intMin .w8 .signed)) (intLit .w8 .signed (-1))
 
+/-- `min_T * -1` at `i64`: (D-Arith-Trap) §6.4 again, because `-min_T` is one
+past `max_T` at every signed width (`8.1:3` lists multiplication among the
+operations that may overflow).
+
+**The compiler disagrees with this one**, and the model is right: its
+constant folder wraps the product and the program prints `min_T` and exits 0,
+where every non-constant spelling of the same multiplication traps. RUE-2318.
+The corpus seeds the shape so the bridge is red on it until that is fixed. -/
+def i64MinTimesNeg1 : Expr :=
+  binop .mul (intLit .w64 .signed (intMin .w64 .signed)) (intLit .w64 .signed (-1))
+
 /-- `min_T % -1` at `i8`: §6.4 traps here too, although the mathematical
 remainder is `0` — the hardware `idiv` faults on it. -/
 def i8RemMinByNegOne : Expr :=
@@ -621,6 +632,13 @@ example : run (scalarProg (.int .w8 .unsigned) u8Underflow) demoFuel
 example : run (scalarProg (.int .w8 .signed) i8DivMinByNegOne) demoFuel
     = .panic .overflow [] := by rfl
 example : run (scalarProg (.int .w8 .signed) i8RemMinByNegOne) demoFuel
+    = .panic .overflow [] := by rfl
+
+/-- `min_T * -1` traps at `i64` as it does at every other signed width. The
+compiler's constant folder does not (RUE-2318); the model is not changed to
+match it, and `Corpus`'s `i64_min_times_neg1` is the case that says so to the
+bridge. -/
+example : run (scalarProg tI64 i64MinTimesNeg1) demoFuel
     = .panic .overflow [] := by rfl
 example : run (scalarProg (.int .w8 .signed) i8RemZero) demoFuel
     = .panic .remZero [] := by rfl
