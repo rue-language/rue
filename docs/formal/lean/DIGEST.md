@@ -3671,6 +3671,33 @@ Defining equations, as Lean derived them from the body:
     (w = FloatWidth.w32 → w' = FloatWidth.w64 → False) → M.cast w w' f = f
 ```
 
+### `FloatWidth.overflowNum`
+
+*def* · module `RueCore.Float`
+
+**`rnd_w`'s overflow threshold**: `max_{𝔽_w}` plus half an ulp, which is
+`2^eTop - 2^(eTop - p - 1)` — `2^128 - 2^103` at `f32` and `2^1024 - 2^970` at
+`f64`. An exact magnitude strictly below it rounds to a finite datum; one at or
+above it rounds to `±inf`, because `rnd_w` is round-to-nearest ties-to-even and
+the tie at the threshold goes to the infinity (`3.12:23`). Both bounds were
+probed against the compiler, which accepts `2^128 - 2^103 - 1` at `f32` and
+rejects `2^128 - 2^103`. Written with `<<<` rather than `2 ^ ·` on purpose:
+`Nat.shiftLeft` reduces to a literal by GMP wherever a `check` is evaluated,
+while `2 ^ 1024` trips Lean's `exponentiation.threshold` and then exhausts the
+recursion budget of every `by rfl` pin that reaches a float literal
+(helper).
+
+```lean
+def RueCore.FloatWidth.overflowNum (w : FloatWidth) : Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (w : FloatWidth),
+  w.overflowNum = 1 <<< w.eTop.toNat - 1 <<< (w.eTop - ↑w.prec - 1).toNat
+```
+
 ### `IntWidth.modulus`
 
 *def* · module `RueCore.Syntax`
@@ -4305,6 +4332,32 @@ Defining equations, as Lean derived them from the body:
 ∀ (x w' : FloatWidth), (FloatIntrin.floatCast w').resTy x = Ty.float w'
 ∀ (x : FloatWidth) (k : FloatUnIntrin),
   (FloatIntrin.roundOp k).resTy x = Ty.float x
+```
+
+### `FloatLit.RoundsFinite`
+
+*def* · module `RueCore.Float`
+
+**`3.12:10` as a premise of (Lit) §5.8 at a float literal.** `3.12:10` is a *legality* rule —
+"a float literal whose value rounds to an infinity in its target type MUST be
+rejected at compile time (`E0206`)" — and §5.8's own prose in the calculus
+cites it, so the statics owe it. It is stated here as an exact comparison of
+naturals against `overflowNum`, so it is decidable, needs no `FloatModel`, and
+pulls no axiom: `l.exact` is `num / den` and the premise is `num < threshold ·
+den`. *Underflow* needs no premise — `3.12:10` allows a literal to round to
+zero, and the model and the compiler agree that it does (`1e-400` is `0.0` in
+both).
+
+It is stated against the *threshold* rather than as
+`(M.ofLit w l).isFinite` deliberately: the statics then say what they say for
+every `FloatModel`, with no instance and no `FloatOps` argument in the typing
+judgment, and `check` decides it by comparing two naturals. A law tying the two
+together — `RoundsFinite w l → (ofLit w l).isFinite` — is not needed by
+anything here and is not assumed.
+
+```lean
+def RueCore.FloatLit.RoundsFinite (w : FloatWidth) (l : FloatLit) : Prop :=
+  l.exact.fst < w.overflowNum * l.exact.snd
 ```
 
 ### `FloatModel`
@@ -6394,11 +6447,12 @@ RueCore.Typed.intCast {P : Program} {R : Ty} {Γ Γ' : Ctx} {w : IntWidth}
     Typed P R Γ (Expr.intCast w s e) (Ty.int w s) Γ'
 ```
 
-**`Typed.floatLit`** — (Lit) §5.8 for a float: the literal at the `float(w)` elaboration resolved for it (`3.12:7`). Unlike `intLit` it carries no side condition saying the literal denotes a value of the type — `3.12:9` *rounds* a float literal to the nearest value of its type rather than rejecting it, so every decimal denotes one, and the rounding is the model's `ofLit`. (The compiler additionally rejects a source literal whose rounded value is infinite; that is a surface rule, `finite_float_literal_bits`, not one §5.8 states.)
+**`Typed.floatLit`** — (Lit) §5.8 for a float: the literal at the `float(w)` elaboration resolved for it (`3.12:7`), denoting a *finite* value of that type. The side condition is `3.12:10`, a **legality** rule — "a float literal whose value rounds to an infinity in its target type MUST be rejected at compile time (`E0206`)" — which §5.8's own prose cites, so it belongs here rather than being left to the surface; it is `intLit`'s range premise at the float widths. What it does *not* say is that the decimal is representable: `3.12:9` rounds, so `0.1` is fine and so is an underflow to zero. The threshold is `FloatWidth.overflowNum`, half an ulp above `max_{𝔽_w}`, and it is exact natural arithmetic rather than anything the model decides.
 
 ```lean
 RueCore.Typed.floatLit {P : Program} {R : Ty} {Γ : Ctx} {w : FloatWidth}
-  {l : FloatLit} : Typed P R Γ (Expr.floatLit w l) (Ty.float w) Γ
+  {l : FloatLit} :
+  FloatLit.RoundsFinite w l → Typed P R Γ (Expr.floatLit w l) (Ty.float w) Γ
 ```
 
 **`Typed.intToFloat`** — (Int-To-Float) §5.8: the operand is an integer of any width and signedness (`3.12:16`, `4.13:139`) and the result is the `float(w)` elaboration took from the use site. It never traps (§6.4).

@@ -761,6 +761,38 @@ carries on (Arith)/(Ord). -/
 example : checkProgram (scalarProg (.int .w32 .signed) (binop .totalCmp (lit 1) (lit 2)))
     = false := by rfl
 
+/-! `3.12:10`: a float literal whose value rounds to an **infinity** at its
+width is a compile-time rejection (`E0206`), which (Lit) §5.8 carries, on its float half, as
+`FloatLit.RoundsFinite`. `1e300` has an `f64` and no `f32`, so the same literal
+is accepted at one width and refused at the other — and the compiler agrees at
+both, on the printed program.
+
+The threshold is `max_{𝔽_w}` plus *half an ulp*, not `max_{𝔽_w}`: an exact
+value above the largest finite `f32` still rounds down to it while it stays
+below `2^128 - 2^103`, and `3.12:10` refuses it only from there up. Both sides
+of that boundary were probed against the compiler, which accepts `…447` and
+rejects `…448`. *Underflow* carries no premise at all — `3.12:10` speaks of an
+infinity only, and a literal too small for the width rounds to zero in the
+model and in the compiler alike.
+
+`exponentiation.threshold` is Lean's guard against folding a large `Nat` power
+in a simproc; `10 ^ 300` is exactly what the first pair of witnesses is about,
+so it is raised for them. -/
+
+section
+set_option exponentiation.threshold 400
+
+example : checkProgram (scalarProg tF32 (flE .w32 1 300)) = false := by rfl
+example : checkProgram (scalarProg tF64 (flE .w64 1 300)) = true := by rfl
+
+end
+
+example : checkProgram (scalarProg tF32
+    (flE .w32 340282356779733661637539395458142568447 0)) = true := by rfl
+example : checkProgram (scalarProg tF32
+    (flE .w32 340282356779733661637539395458142568448 0)) = false := by rfl
+example : checkProgram (scalarProg tF32 (fl .w32 1 49)) = true := by rfl
+
 /-! The float programs' **runs** are not pinned here. Reducing one in the
 kernel means reducing `Float.exactOps`'s exact rational arithmetic — `2^1074`
 and a correctly-rounded division — which exceeds the elaborator's recursion

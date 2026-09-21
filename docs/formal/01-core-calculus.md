@@ -1375,10 +1375,23 @@ rounds the exact written decimal to that type under `rnd_w` (§2 — nearest,
 ties to even), converting the text directly with no intermediate width;
 `3.12:10` rejects at compile time a literal that would round to an infinity;
 and `3.12:11` admits an *integer* literal wherever a float type is expected,
-where it denotes that same rounded value. All of this is `comptime_float`
+where it denotes that same rounded value. The *resolution* is `comptime_float`
 inference (`3.12:3`, `4.1:13`, `4.1:14`), which elaboration discharges, so the
 core sees a resolved `float(w)` literal and never a `comptime_float` — just as
 it never sees an unresolved integer literal.
+
+`3.12:10` is **not** discharged that way. It is a legality rule, and (Lit)
+carries it as a premise on a float literal exactly as the integer case carries
+§6.1's `n_T` bound: the written decimal's exact value must lie **below** the
+width's round-to-nearest overflow threshold, `max_{𝔽_w}` plus half an ulp
+(`2^128 - 2^103` at `f32`, `2^1024 - 2^970` at `f64`). Below it `3.12:9` rounds
+and the literal denotes a finite value; at or above it the rounding yields
+`±inf` and the program must be refused with `E0206`. The premise is exact
+arithmetic on the decimal, so it needs nothing of `rnd_w` beyond the threshold
+(`RueCore.FloatLit.RoundsFinite`, `RueCore.Typed.floatLit`; both sides of the
+boundary are pinned against the compiler). *Underflow* is not covered by it:
+`3.12:10` speaks of an infinity only, and a literal too small for the width
+rounds to `±0` and is legal.
 
 **Primitive arithmetic / bitwise `⊕`.** Both operands share one integer type and
 the result has that same type; the operands are `Copy` scalars, so each is an
