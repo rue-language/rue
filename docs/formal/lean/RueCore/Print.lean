@@ -20,15 +20,20 @@ informative and about layout, so nothing here rests on it.
 
 ## The observation channel
 
-The interpreter's observable outcome is a value plus a drop trace
+The interpreter's observable outcome is a value plus a trace
 (`Dynamics.lean`, `Event`). A native Rue binary's observable outcome is its
-stdout and exit status. **A user destructor is what makes the two agree**: a
-Rue program has no other way to see a drop happen, so a declaration that says
-`dtor` prints `drop fn S(self) { @dbg(self.x0); }`, one line per drop of a
-value of that type, and the interpreter records the same drop as a `dtor`
-event (§6.11 runs the destructor before the fields, and the compiler agrees —
-verified by hand on a nested pair of destructor-bearing structs). A
-declaration with no destructor drops silently in both.
+stdout and exit status. Two kinds of event bridge them, and they share one
+trace, so a line of either kind comes out where it happened.
+
+**A user destructor is what makes a *drop* observable**: a Rue program has no
+other way to see a drop happen, so a declaration that says `dtor` prints
+`drop fn S(self) { @dbg(self.x0); }`, one line per drop of a value of that
+type, and the interpreter records the same drop as a `dtor` event (§6.11 runs
+the destructor before the fields, and the compiler agrees — verified by hand
+on a nested pair of destructor-bearing structs). A declaration with no
+destructor drops silently in both. **`@dbg` is the other kind**, and it needs
+no bridging at all: the core form prints as itself and the interpreter emits
+a `dbg` event (§6.12's observable output).
 
 The rest follows from the spec's constraints on destructors per class
 (`3.9`):
@@ -49,8 +54,8 @@ The rest follows from the spec's constraints on destructors per class
 
   Such a declaration prints that consumer, and the compiler accepts it at
   every class — but for different reasons, and the declared-linear one is
-  worth naming. `Consumable` makes every field `int`, so `s.x0` is a `Copy`
-  read: on a `@copy` or attribute-less struct nothing is consumed by it and
+  worth naming. `Consumable` makes every field an integer type, so `s.x0` is
+  a `Copy` read: on a `@copy` or attribute-less struct nothing is consumed by it and
   the parameter simply drops at the function's end. On a **declared-linear**
   one the parameter carries a must-consume obligation (`3.8:62`), and the
   rule that a field access discharges it is `3.8:33`, the declared-linear
