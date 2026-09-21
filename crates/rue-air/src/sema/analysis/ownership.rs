@@ -6682,7 +6682,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// does not carry over: a write to a moved path reinitializes it (3.8:55),
     /// and the write paths reject a partially moved array with their own
     /// E0480 rule (3.8:72) instead.
-    fn check_traced_const_index_bounds(
+    ///
+    /// An accessor's trailing `yield` names a place rather than reading one,
+    /// and it calls this for the same reason: the element it hands the caller
+    /// must exist. Without it a constant index outside its array reached
+    /// codegen and trapped at run time instead of being rejected under
+    /// 7.1:9 (RUE-2263).
+    pub(crate) fn check_traced_const_index_bounds(
         &mut self,
         trace: &PlaceTrace,
         ctx: &mut AnalysisContext,

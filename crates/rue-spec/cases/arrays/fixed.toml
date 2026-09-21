@@ -238,6 +238,91 @@ fn main() -> i32 {
 """
 exit_code = 42
 
+# A constant index is checked wherever it appears, including in the operand of
+# an accessor's trailing `yield`. That operand is analysed as a place for
+# call-site splicing rather than through the expression index path, so it used
+# to reach code generation and trap at run time instead (RUE-2263).
+
+[[case]]
+name = "constant_index_out_of_bounds_in_a_shared_accessor_yield"
+spec = ["7.1:9", "6.6:7"]
+description = "RUE-2263: a constant out-of-range index in a `-> borrow` accessor's yield place is a compile-time error, not a runtime trap."
+source = """
+struct W {
+    xs: [i64; 2],
+
+    fn f(borrow self) -> borrow i64 {
+        yield self.xs[2];
+    }
+}
+fn main() -> i32 {
+    let w = W { xs: [1, 2] };
+    @intCast(w.f())
+}
+"""
+compile_fail = true
+error_contains = ["[E0902]", "the length is 2 but the index is 2"]
+
+[[case]]
+name = "constant_index_out_of_bounds_in_an_exclusive_accessor_yield"
+spec = ["7.1:9", "6.6:7"]
+description = "RUE-2263: the `inout` pairing is checked identically."
+source = """
+struct W {
+    xs: [i64; 2],
+
+    fn f(inout self) -> inout i64 {
+        yield self.xs[7];
+    }
+}
+fn main() -> i32 {
+    let mut w = W { xs: [1, 2] };
+    w.f() = 5;
+    @intCast(w.xs[0])
+}
+"""
+compile_fail = true
+error_contains = ["[E0902]", "the length is 2 but the index is 7"]
+
+[[case]]
+name = "constant_index_out_of_bounds_in_a_nested_accessor_yield"
+spec = ["7.1:9", "6.6:7"]
+description = "RUE-2263: every Index projection of the yield place is checked, not only the outermost one."
+source = """
+struct W {
+    xs: [[i64; 2]; 2],
+
+    fn f(borrow self) -> borrow i64 {
+        yield self.xs[1][5];
+    }
+}
+fn main() -> i32 {
+    let w = W { xs: [[1, 2], [3, 4]] };
+    @intCast(w.f())
+}
+"""
+compile_fail = true
+error_contains = ["[E0902]", "the length is 2 but the index is 5"]
+
+[[case]]
+name = "constant_index_in_bounds_in_an_accessor_yield_still_runs"
+spec = ["7.1:9", "6.6:7"]
+description = "Control for RUE-2263: an in-range constant index in a yield place still compiles and reads the element."
+source = """
+struct W {
+    xs: [i64; 3],
+
+    fn f(borrow self) -> borrow i64 {
+        yield self.xs[1];
+    }
+}
+fn main() -> i32 {
+    let w = W { xs: [1, 2, 3] };
+    @intCast(w.f())
+}
+"""
+exit_code = 2
+
 # =============================================================================
 # Runtime Bounds Checking
 # =============================================================================
