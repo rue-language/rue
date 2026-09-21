@@ -44,12 +44,13 @@
 //!   not observable: nothing runs, so only the rejection and its diagnostic
 //!   codes are compared. (When the *compiler* accepts a program the checker
 //!   rejects, the program does run and the run itself is the finding.)
-//! * A drop line and the value line are both bare integers on the Lean side,
-//!   so a drop of `n` swapped with a value `n` is not told apart. Inherited
+//! * Every stdout line is a bare integer on the Lean side, so a destructor
+//!   line `n` swapped with a value line `n` is not told apart. Inherited
 //!   from the corpus contract.
-//! * `linear_explicit_drop` prints as `@dbg(consume_linear(x))`, so the
-//!   compiler's own `@drop`-on-linear path is not exercised by that case
-//!   (RUE-2227's mapping caveat).
+//! * A drop that runs no user destructor is unobservable in Rue and so
+//!   contributes no line, in either view: the bridge compares the destructors
+//!   a run executes, not every drop the machine performs. Inherited from the
+//!   corpus contract.
 //!
 //! # `--report-json` schema
 //!
@@ -196,8 +197,9 @@ impl Verdict {
 /// What the verified interpreter says a case does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Expectation {
-    /// Normal completion: one stdout line per drop event in trace order, then
-    /// the program's value.
+    /// Normal completion: one stdout line per *user destructor* the run
+    /// executed, in trace order (the Lean side projects only its `dtor`
+    /// events), then the lines `main` shows for the program's value.
     Ok { stdout: Vec<String>, exit: i32 },
     /// A §6.12 trap. `name` is the Lean spelling, `trap` the modeled category
     /// both implementation views report.
@@ -1734,7 +1736,7 @@ mod tests {
         .expect("a trap is not a normal completion");
         assert!(trapped.contains("ArithmeticOverflow"), "{trapped}");
 
-        // No drop events and no value line is an empty stdout, not a newline.
+        // No destructor lines and no value line is an empty stdout, not a newline.
         assert_eq!(
             expectation_finding(
                 &Expectation::Ok {
