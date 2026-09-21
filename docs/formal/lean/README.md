@@ -120,13 +120,18 @@ compiler's runtime reports these as `error: integer overflow`,
 or, for a rejected program, `stuck` with the refusal the machine would
 reach, which the bridge cannot observe because the compiler rejects the
 program first (the compiler's diagnostics for the seed cases: E0406 linear
-leak, E0205 use after move, E0443 join, E0493 linear overwrite, E0478
-linear discard). A rejected program whose executed path never reaches the
-refusal, because it lies on a path the program does not take (a join
-disagreement, or a refusal inside the arm the condition skips), carries
+leak, E0205 use after move or use of a partially moved value, E0443 join,
+E0456 move out of a destructor-bearing value, E0493 linear overwrite, E0478
+linear discard). A rejected program the machine runs to completion carries
 that path's `ok` or `panic` outcome instead, and its header says so, so a
-compiler that accepts it unsoundly is compared against what the machine
-does; generated programs (below) have such cases, the seed corpus does not.
+compiler that accepts it unsoundly is compared against what the machine does.
+That happens two ways: the refusal lies on a path the program does not take (a
+join disagreement, or a refusal inside the arm the condition skips), which is
+what generated programs produce; or the rule has no dynamic counterpart at
+all — `3.9:34`'s restriction on moving a field out of a destructor-bearing
+value (E0456) and (@Drop) §5.3's residual side condition (E0406) are static
+disciplines the machine does not monitor, so a program they reject still
+runs.
 
 How a *drop* becomes a printed line is the **user destructor**, and nothing
 else: a Rue program has no other way to observe a drop happening, so a
@@ -138,17 +143,14 @@ between them. `RueCore/Print.lean`'s module docstring
 is the reference for the rest. Two of the constraints are the spec's: a
 `@copy` type must declare no destructor (`3.9:31`), and a declaration that
 carries a linear value in a field may declare no destructor at all
-(`3.9:44`). The third is the fragment's own: `Expr.consume` reads a struct's
-first field and destroys the value *without running its drop glue*, so it is
-defined only on a declaration with no destructor — one there would be an
-event §6.11 owes and the interpreter never emits, while the printed consumer
-lets its parameter drop and so *would* print it. (`3.9:34` is not that
-reason: it forbids moving a field out and permits borrowing one, and the
-compiler accepts `fn consume_S(s: S) -> i64 { s.x0 }` on a destructor-bearing
-`S`.) `@drop` prints as `@drop(x)` at every class — the identity
-elaboration. Six images are *not* the identity elaboration: the four typed
-blocks below `Print.lean`'s "Integer typing" heading, the generated
-`consume_S<s>` helper a `consume` prints as a call to, and the invented
+(`3.9:44`). The third is the fragment's own: a place whose path has a proper
+prefix of declared-`linear` struct type selects §4.2's `Declared(d, π)` use
+plan, which (Use-Declared-Linear-Destructure) §5.1 discharges and this
+fragment does not mechanize (RUE-2236) — the statics reject it, so nothing
+printed contains the shape. A projection prints as `x.f0`, an assignment to
+one as `x.f0 = e;`, and `@drop` as `@drop(p)` at every class: all the identity
+elaboration. Five images are *not* the identity elaboration: the four typed
+blocks below `Print.lean`'s "Integer typing" heading and the invented
 `drop fn` body, which the core declaration does not carry and which is the
 whole observation channel. One limit, accepted at fragment scope: every line
 is a bare integer or `true`/`false`, so a destructor line `n` swapped with a
@@ -387,10 +389,10 @@ a slice author writes:
 - A label is a claim: write `(Rule)` only where the declaration really is
   that rule's image, because the index's inverse table reads every label as
   "this rule is mechanized here". Where the fragment abstracts a rule away
-  rather than modelling it — `Expr.consume` stands in for the projection the
-  calculus eliminates a struct through, which is a place and so RUE-2231's —
-  name the form in prose with a section pointer and say what is not modelled,
-  so the rule keeps reading *not yet mechanized*.
+  rather than modelling it — `(Use-Declared-Linear-Destructure)` is rejected
+  by `noLinearPrefix` rather than mechanized, which is RUE-2236's — name the
+  form in prose with a section pointer and say what is not modelled, so the
+  rule keeps reading *not yet mechanized*.
 - A constructor of an inductive may carry its own doc-comment (the `Typed`
   rules do; each cites its rule). One without inherits its type's row.
 - A declaration that mechanizes nothing on its own (an inversion lemma, a
@@ -417,9 +419,9 @@ a slice author writes:
 | File | Contents | Calculus |
 | --- | --- | --- |
 | `RueCore/Float.lean` | §2's datum set `𝔽_w` with the operations §6.4 computes exactly, `3.12:40`–`3.12:42`'s shortest round-trip rendering, the `FloatOps`/`FloatModel` interface and its named IEEE laws, and the constructive instance `Float.exactOps` | §2, §6.4, §7's float lemma |
-| `RueCore/Syntax.lean` | multiplicity lattice and its join, struct declarations with their attribute, fields and destructor, types, `class(T)`, expressions | §2, §3 |
-| `RueCore/Statics.lean` | §3's class assignment as a checked equation (`WfStructs`, `struct_class_unique`, `struct_carriesLinear_iff`), the fused flow-sensitive `Γ;Σ` context, the ownership-threading judgment `Typed` (parameterized by the program and the enclosing return type), the §5.5 branch join, (Fn) and whole-program well-formedness, skeleton preservation | §3, §4.2, §5.1–§5.3, §5.5–§5.8 |
-| `RueCore/Dynamics.lean` | store/frame machine as a fuel-indexed definitional interpreter with observation traces (drops, destructors, `@dbg`); struct values and §6.11's recursive drop (destructor, then fields in declaration order); frames with scope records and their unwinds; violations as named refusals; §6.4's operator rules and every §6.12 trap the fragment reaches, each carrying the trace up to it | §6.1–§6.12 |
+| `RueCore/Syntax.lean` | multiplicity lattice and its join, struct declarations with their attribute, fields and destructor, types, `class(T)`, **places** (§5's `Path`) with the type a path reaches and §4.2's restrictions on which may be moved, expressions | §2, §3, §4.2 |
+| `RueCore/Statics.lean` | §3's class assignment as a checked equation (`WfStructs`, `struct_class_unique`, `struct_carriesLinear_iff`), the fused flow-sensitive `Γ;Σ` context with Σ **keyed by path** (`OwnSt`, `fullyOwned`, §5.6's recursive `residualLinear`), the ownership-threading judgment `Typed` (parameterized by the program and the enclosing return type), the §5.5 branch join over paths, (Fn) and whole-program well-formedness, skeleton preservation | §3, §4.2, §5.1–§5.3, §5.5–§5.8 |
+| `RueCore/Dynamics.lean` | store/frame machine as a fuel-indexed definitional interpreter with observation traces (drops, destructors, `@dbg`); cell **contents as a tree with `⊘` at any node**, navigated by a path (§6.3's `H(ℓ)@π` and `H[ℓ@π ↦ ⊘]`); §6.11's recursive drop (destructor, then fields in declaration order, every `⊘` skipped); frames with scope records and their unwinds; violations as named refusals; §6.4's operator rules and every §6.12 trap the fragment reaches, each carrying the trace up to it | §6.1–§6.12 |
 | `RueCore/Soundness.lean` | value typing, the per-frame agreement invariant `FrameMatches`, frame locality `Untouched`, **the safety theorem**, the fuel lemmas, and per-§7-bullet corollaries over a whole program | §7 |
 | `RueCore/Checker.lean` | decidable checker `check`/`checkProgram` + `check_sound`/`checkProgram_sound` (every acceptance is a derivation) | §5 as an algorithm |
 | `RueCore/Examples.lean` | `#eval` demos; kernel-checked acceptance/rejection of example programs | — |
@@ -437,23 +439,25 @@ widths, `bool`, `unit`, and
 monomorphic struct types declared by the program, with §3's class as the join
 of the field classes lifted by the declared attribute; struct literals
 ((Struct-Intro) §5.8) and §6.11's drop order (destructor, then fields in
-declaration order); use (copy/move), `@drop`,
-`let` scope exit with the residual-linear leak check, assignment with
-reinitialization and the `3.8:77` linear-overwrite premise, sequence discard,
-`if` with the conservative branch join, the whole §2 integer operator set
-(`+ - * / %`, `& | ^`, `<< >>`, `< <= > >=`, `neg`, `not`, `bitnot`) with
-§6.4's traps and bit semantics, the §2 float operator set
-(`+ - * /`, `neg`, `< <= > >=`, `@total_cmp`) with §6.4's trap-free dynamics
-and the one-operand float intrinsics (`@int_to_float`, `@float_to_int`,
-`@float_cast`, and the five of `3.12:34`), `@intCast`, `@panic`, `@dbg`, and
-top-level functions, by-value calls with frames and scope records, and
-`return` with its σ unwind. Whole bindings only — no projections/partial
-moves (so the fragment's whole-value struct elimination stands in for one,
-RUE-2231), no equality compare (it borrows its operands, so `≈`'s float leaf
-has no instance here), no
-enums, no arrays, no borrows, no `inout`/`borrow` parameters,
-no accessor calls, no loops (see the outline doc for the milestone ladder
-that adds them).
+declaration order, every `⊘` skipped); **places** `p ::= x | p.f`, so a use is
+a copy or a move at a path — the partial move of `3.8:22` — and a `@drop` and
+an assignment name one too; §5.6's leak check is the recursive
+`residual-linear` read on the residue, and §5.5's join is taken path by path;
+`let` scope exit, assignment with reinitialization and the `3.8:77`
+linear-overwrite premise, sequence discard, `if` with the conservative branch
+join, the whole §2 integer operator set (`+ - * / %`, `& | ^`, `<< >>`,
+`< <= > >=`, `neg`, `not`, `bitnot`) with §6.4's traps and bit semantics, the
+§2 float operator set (`+ - * /`, `neg`, `< <= > >=`, `@total_cmp`) with
+§6.4's trap-free dynamics and the one-operand float intrinsics
+(`@int_to_float`, `@float_to_int`, `@float_cast`, and the five of `3.12:34`),
+`@intCast`, `@panic`, `@dbg`, and top-level functions, by-value calls with
+frames and scope records, and `return` with its σ unwind. No declared-linear
+destructure (a path with a declared-`linear` proper prefix is rejected as a
+stated fragment restriction, RUE-2236), no equality compare (it borrows its
+operands, so `≈`'s float leaf has no instance here), no enums, no arrays — and
+so no element-wise `3.8:73` forms and no `3.8:68` root-index restriction — no
+borrows, no `inout`/`borrow` parameters, no accessor calls, no loops (see the
+outline doc for the milestone ladder that adds them).
 
 ## The main theorem
 
@@ -474,10 +478,11 @@ corollaries restate it over a whole program.
 
 `FrameMatches` is the §7 preservation invariant, in two halves. `Matches` —
 "Σ faithfully tracks the store's initialization" — whose `CellMatches` clause
-encodes the deliberate asymmetry of the §5.5 join (a statically `MovedOut`
-entry may dynamically still hold a live *non-linear* value, which the machine
-then drops path-specifically, `3.8:73`; a live linear value is never
-statically lost). And the σ invariant: the frame's scope record, read
+is the **recursive** `ContentsMatches`, relating the binding's ownership tree
+to the tree stored in its cell path by path and encoding the deliberate
+asymmetry of the §5.5 join (a statically `MovedOut` path may dynamically still
+hold live *non-linear* content, which the machine then drops path-specifically,
+`3.8:73`; a live linear value is never statically lost). And the σ invariant: the frame's scope record, read
 newest-first, **is** its environment, which is what makes `let`'s double
 bookkeeping (RUE-1277) consistent and what keeps an unwind off a retired
 cell.

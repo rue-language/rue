@@ -1,10 +1,10 @@
 ════════════════════════════════════════════════════════════════════════════════
- struct_field_drop_order
+ partial_move_other_arm
 ════════════════════════════════════════════════════════════════════════════════
-A struct with no destructor of its own holding two destructor-bearing fields:
-scope exit drops them in declaration order, 1 then 2.
+The same program on the path that does not move the field: the drop is
+path-specific, so the observable output is the same either way.
 
-Rules exercised: (Struct-Intro) §5.8 · §6.11 · 3.9:2
+Rules exercised: (If) §5.5 join · 3.8:73 · §6.11
 
 ── The program ─────────────────────────────────────────────────────────────────
 
@@ -25,7 +25,14 @@ struct S10 { x0: S3, x1: S1 }
 fn f0() -> i64 {
     {
         let v0: S7 = S7 { x0: S1 { x0: 1 }, x1: S1 { x0: 2 } };
-        0
+        {
+            if false {
+                @drop(v0.x0)
+            } else {
+                ()
+            };
+            9
+        }
     }
 }
 
@@ -50,7 +57,7 @@ function body, checked from (Fn) §5.8's entry context.
   fn f0() -> i64
 
   (Let) §5.3 + the §5.6 scope-exit leak check
-    e       { let v0: S7 = S7 { x0: S1 { x0: 1 }, x1: S1 { x0: 2 } }; 0 }
+    e       { let v0: S7 = S7 { x0: S1 { x0: 1 }, x1: S1 { x0: 2 } }; { if false { @drop(v0…
     Γ;Σ     (empty)
     ⇒       i64  ⊣  (empty)
       (Struct-Intro) §5.8
@@ -73,10 +80,30 @@ function body, checked from (Fn) §5.8's entry context.
                 e       2
                 Γ;Σ     (empty)
                 ⇒       i64  ⊣  (empty)
-      (Lit) §5.8
-        e       0
+      (Seq) §5.3, 3.8:64
+        e       { if false { @drop(v0.x0) } else { () }; 9 }
         Γ;Σ     [v0: S7 = Owned]
-        ⇒       i64  ⊣  [v0: S7 = Owned]
+        ⇒       i64  ⊣  [v0: S7 = Owned{ x0: MovedOut }]
+          (If) §5.5 join
+            e       if false { @drop(v0.x0) } else { () }
+            Γ;Σ     [v0: S7 = Owned]
+            ⇒       ()  ⊣  [v0: S7 = Owned{ x0: MovedOut }]
+              (Lit) §5.8
+                e       false
+                Γ;Σ     [v0: S7 = Owned]
+                ⇒       bool  ⊣  [v0: S7 = Owned]
+              (@Drop) §5.3
+                e       @drop(v0.x0)
+                Γ;Σ     [v0: S7 = Owned]
+                ⇒       ()  ⊣  [v0: S7 = Owned{ x0: MovedOut }]
+              (Lit) §5.8
+                e       ()
+                Γ;Σ     [v0: S7 = Owned]
+                ⇒       ()  ⊣  [v0: S7 = Owned]
+          (Lit) §5.8
+            e       9
+            Γ;Σ     [v0: S7 = Owned{ x0: MovedOut }]
+            ⇒       i64  ⊣  [v0: S7 = Owned{ x0: MovedOut }]
 
 ── The run (§6) ────────────────────────────────────────────────────────────────
 
@@ -120,24 +147,44 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     [ℓ0 = S7 { S1 { 1 }, S1 { 2 } }]
          result  value S7 { S1 { 1 }, S1 { 2 } }
-  [8]   d3        literal §6.3
-         expr    0
+  [8]   d5            literal §6.3
+         expr    false
          store   [ℓ0 = S7 { S1 { 1 }, S1 { 2 } }]
            →     [ℓ0 = S7 { S1 { 1 }, S1 { 2 } }]
-         result  value 0
-  [9]   d2      (D-EndScope) §6.7 (retire the binding)
+         result  value false
+  [9]   d5            literal §6.3
+         expr    ()
+         store   [ℓ0 = S7 { S1 { 1 }, S1 { 2 } }]
+           →     [ℓ0 = S7 { S1 { 1 }, S1 { 2 } }]
+         result  value ()
+  [10]  d4          (D-If-F) §6.6
+         expr    if false { @drop(v0.x0) } else { () }
+         store   [ℓ0 = S7 { S1 { 1 }, S1 { 2 } }]
+           →     [ℓ0 = S7 { S1 { 1 }, S1 { 2 } }]
+         result  value ()
+  [11]  d4          literal §6.3
+         expr    9
+         store   [ℓ0 = S7 { S1 { 1 }, S1 { 2 } }]
+           →     [ℓ0 = S7 { S1 { 1 }, S1 { 2 } }]
+         result  value 9
+  [12]  d3        (D-Seq) §6.7
+         expr    { if false { @drop(v0.x0) } else { () }; 9 }
+         store   [ℓ0 = S7 { S1 { 1 }, S1 { 2 } }]
+           →     [ℓ0 = S7 { S1 { 1 }, S1 { 2 } }]
+         result  value 9
+  [13]  d2      (D-EndScope) §6.7 (retire the binding)
          expr    endscope([ℓ0])
          store   [ℓ0 = S7 { S1 { 1 }, S1 { 2 } }]
            →     [ℓ0 = † (retired)]
          events  >> drop ℓ0 = S7 { S1 { 1 }, S1 { 2 } }; run drop fn S1(S1 { 1 }); run drop fn S1(S1 { 2 })
-         result  value 0
-  [10]  d0  (D-Return-Value) §6.9 (pop the frame)
+         result  value 9
+  [14]  d0  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([])
          store   [ℓ0 = † (retired)]
            →     [ℓ0 = † (retired)]
-         result  value 0
+         result  value 9
 
 ────────────────────────────────────────────────────────────────────────────────
-Outcome: ok — value 0
+Outcome: ok — value 9
          drop trace: drop ℓ0 = S7 { S1 { 1 }, S1 { 2 } }; run drop fn S1(S1 { 1 }); run drop fn S1(S1 { 2 })
 

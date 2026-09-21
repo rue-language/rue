@@ -42,32 +42,18 @@ The rest follows from the spec's constraints on destructors per class
   `09-destructors.md`); `WfStructs` (`Statics.lean`) enforces it, so a copy
   value's drop prints nothing and the interpreter emits no `dtor` event for
   it.
-* **Whole-value elimination.** `Expr.consume` reads the first field and
-  destroys the value **without running its drop glue**, so it is defined only
-  on a declaration with no destructor (`StructDecl.Consumable`): a destructor
-  there would be an event §6.11 owes and the interpreter never emits, while
-  the printed consumer below lets its by-value parameter drop at the
-  function's end, where that destructor *would* run — a two-line
-  disagreement. That, not `3.9:34`, is the reason. `3.9:34` forbids *moving*
-  a field out of such a value and permits borrowing one; the compiler accepts
-  `fn consume_S(s: S) -> i64 { s.x0 }` on a destructor-bearing `S`.
-
-  Such a declaration prints that consumer, and the compiler accepts it at
-  every class — but for different reasons, and the declared-linear one is
-  worth naming. `Consumable` makes every field an integer type, so `s.x0` is
-  a `Copy` read: on a `@copy` or attribute-less struct nothing is consumed by it and
-  the parameter simply drops at the function's end. On a **declared-linear**
-  one the parameter carries a must-consume obligation (`3.8:62`), and the
-  rule that a field access discharges it is `3.8:33`, the declared-linear
-  destructure: the access consumes the smallest enclosing declared-linear
-  place and destroys its droppable residue. That is what keeps `consume_S2`
-  from leaking at its own exit, and what makes `Expr.consume` a faithful
-  stand-in there. One fine point the spec does not spell out and this printer
-  leans on: `3.8:33` is written for *moving* a field out, and a `Copy` field
-  read is not a move — the compiler accepts `fn consume_S2(s: S2) -> i64
-  { s.x0 }` all the same (verified by hand). `3.8:22`'s partial move is the
-  rule for a **non-`Copy`** field, which `Consumable` excludes, so it governs
-  nothing the printer emits.
+* **Projections.** A place prints as `x.f0.f1`, the identity elaboration of
+  `Place.proj` (`3.6:15`: elaboration resolves the field name to its
+  declaration slot, and `structItem` below declares the slots under those
+  names). A projection in value context is a `Copy` read or a partial move by
+  its own type's class (`3.8:22`), an assignment target is `x.f0 = e;`, and a
+  `@drop` of one is `@drop(x.f0)` — each the surface form of the core place,
+  with no helper supplied. One shape the printer must never emit is a place
+  whose path has a proper prefix of declared-`linear` struct type: the
+  compiler applies `3.8:33`'s destructure there (verified: after
+  `@drop(d.f)` on such a `d`, a later use of `d` is E0205), which this
+  fragment does not mechanize, so the statics reject it and neither the corpus
+  nor the generator produces one (`Syntax.lean`, `Gen.lean`).
 * **`@drop`.** Every class prints `@drop(x)`, the identity elaboration of
   `Expr.drop`: it is legal on a declared-linear place and on a place whose
   type is linear through a field (`3.9:39`, verified against the compiler),
@@ -97,11 +83,9 @@ evaluation order and adds no drop point (§6.7 drops nothing for an integer).
 The synthetic names are `t<level><tag>`, distinct from the `v<depth>` a core
 binder gets, and Rue's surface permits shadowing in any case (`3.8:12`).
 
-Together with two forms the printer *supplies*, those four are the places
-where the printed program is not the identity elaboration of the core:
-`Expr.consume` prints as a call to the generated `consume_S<s>` helper, which
-is one by-value call standing in for a form the core has no surface spelling
-for; and a destructor-bearing declaration prints an invented body
+Together with one form the printer *supplies*, those four are the places where
+the printed program is not the identity elaboration of the core: a
+destructor-bearing declaration prints an invented body
 `drop fn S(self) { @dbg(self.x0); }`, which the core declaration does not
 carry — the core records only *whether* `S` has a destructor, and that body is
 the whole observation channel (above).

@@ -151,15 +151,20 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
     ("T", "[T; n]"): ("no", [], "arrays and array indexing are outside the fragment"),
     ("p", "x"): (
         "yes",
-        ["Expr.use", "Expr.drop", "Expr.assign"],
-        "a place is a whole binding, written as a de Bruijn index rather than a "
-        "name (elaboration resolves names), so it has no constructor of its own: "
-        "it is the index argument of the three forms that take a place",
+        ["Place.var"],
+        "the root of a place, written as a de Bruijn index rather than a name "
+        "(elaboration resolves names); `Place.root` and `Place.path` read a place "
+        "as §5's `Path`, which the three forms that take a place navigate",
     ),
     ("p", "p . f"): (
-        "no",
-        [],
-        "no field projection, hence no partial move and no per-field drop obligation",
+        "yes",
+        ["Place.proj"],
+        "field projection by declaration slot (`3.6:15`: elaboration resolves the "
+        "field name), so a use of it is §4.2's partial move (`3.8:22`), an "
+        "assignment reinitializes the subtree (`3.8:55`) and a `@drop` of it "
+        "leaves a hole §6.11's walk skips (`3.8:73`); the declared-linear "
+        "destructure plan `Declared(d, π)` (§5.1, `3.8:33`) is not mechanized and "
+        "a path with such a prefix is rejected instead (RUE-2236)",
     ),
     ("p", "p [ e ]"): ("no", [], "no array indexing, hence no `3.8:73` element-wise form"),
     ("e", "lit"): (
@@ -168,7 +173,12 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         "an integer literal carries the `int(w,s)` elaboration resolved for it "
         "(`4.1:2`); float literals follow `float(w)`",
     ),
-    ("e", "p"): ("yes", ["Expr.use"], "the §4.2 use, typed by (Use-Copy)/(Use-Move)"),
+    ("e", "p"): (
+        "yes",
+        ["Expr.use"],
+        "the §4.2 use, typed by (Use-Copy)/(Use-Move); at a projection it is the "
+        "partial move of `3.8:22`",
+    ),
     ("e", "e1 ⊕ e2"): (
         "partial",
         ["Expr.binop", "BinOp"],
@@ -211,19 +221,20 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         ["Expr.call"],
         "every argument by value: no `inout`/`borrow` argument forms, so no "
         "`Λ_call`, no law-of-exclusivity premise and no call-entry recheck, and no "
-        "(Call-Bottom) companion since the fragment has no `never` type. "
-        "`RueCore.Expr.consume` remains beside it as the fragment's whole-value "
-        "struct elimination: it reads the first field's payload and consumes the "
-        "value, which is the ownership shape of a one-argument by-value call and "
-        "the stand-in for the projection `p . f` the calculus eliminates a struct "
-        "through",
+        "(Call-Bottom) companion since the fragment has no `never` type",
     ),
     ("e", "p . f ( e1, ..., ek )"): (
         "no",
         [],
         "an accessor (ADR-0062) yields a place and needs the loans §5.4 gives it",
     ),
-    ("e", "@drop ( p )"): ("yes", ["Expr.drop"], "whole bindings only, as `p` above"),
+    ("e", "@drop ( p )"): (
+        "yes",
+        ["Expr.drop"],
+        "at any place `p` above, so a `@drop` of a projection is a partial move "
+        "with (Use-Move)'s `3.9:34` premise and (@Drop)'s own residual side "
+        "condition",
+    ),
     ("e", "@panic ( s )"): (
         "partial",
         ["Expr.panic"],

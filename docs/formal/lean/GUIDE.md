@@ -73,22 +73,34 @@ reason. Four things are different in shape and identical in content:
   same skeleton, which is exactly what `never` and `⊥` license a context to
   assume. `INDEX.md` records (Sub-Never) as mechanized at that one form.
 
-For example, `(Use-Move)` in the calculus (§5.1, whole bindings only) says: a
-use of an owned, non-`Copy` place has the place's type and marks the place
-`MovedOut`. In Lean:
+For example, `(Use-Move)` in the calculus (§5.1) says: a use of a
+`fully-owned`, non-`Copy` place has the place's type and marks the place
+`MovedOut`, removing every path under it. In Lean:
 
 ```lean
-| useMove {Γ i en} :
-    Γ[i]? = some en → en.st = .owned → en.ty.mult ≠ .copy →
-    Typed P R Γ (.use i) en.ty (Γ.set i (en.setSt .movedOut))
+| useMove {Γ p en u T} :
+    Γ[p.root]? = some en →
+    en.st.get p.path = some u → u.fullyOwned = true →
+    en.ty.atPath P.structs p.path = some T →
+    T.mult P.structs ≠ .copy →
+    noDtorPrefix P.structs en.ty p.path = true →
+    noLinearPrefix P.structs en.ty p.path = true →
+    Typed P R Γ (.use p) T (Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
 ```
 
-Premise by premise: binding `i` exists and is entry `en`; it is `Owned`; its
-class is not `Copy`; conclusion: the use has type `en.ty` and the outgoing
-context is `Γ` with binding `i` re-marked `MovedOut`. The calculus's other
-premises (`fully-owned`, the destructor-field and root-index restrictions, `p
-not loaned`) concern projections and loans, which are outside the current
-fragment; `INDEX.md` lists which rules and sections are in and which are not.
+Premise by premise: the place's root binding exists and is entry `en`; Σ has a
+state `u` for the path — which it has exactly when no *proper prefix* of the
+path is `MovedOut`, so the lookup is (Owned-Base) §5.1 (`3.8:53`); `u` is
+`fully-owned` (`3.8:26`: an aggregate with a hole may not be handed to a new
+owner); the path reaches a declared field at every step and lands at type `T`;
+`T`'s class is not `Copy`; no proper prefix of the path declares a destructor
+(`3.9:34`, E0456); and — this one is the fragment's, not the rule's — no
+proper prefix is a struct declared `linear`, whose destructure plan §4.2
+selects and (Use-Declared-Linear-Destructure) §5.1 discharges (RUE-2236). The
+conclusion marks exactly `p`. The calculus's remaining premises (`3.8:68`'s
+root-index restriction, `p not loaned`) concern arrays and loans, which are
+outside the current fragment; `INDEX.md` lists which rules and sections are in
+and which are not.
 
 ## 2. The dynamics is a function
 
@@ -101,8 +113,12 @@ def eval : Nat → Program → Store → Frame → Expr → EvalRes
 def run (P : Program) (fuel : Nat) : EvalRes := eval fuel P [] ⟨[], []⟩ (.call 0 [])
 ```
 
-`H` is §6.1's store (a list of cells: `full v`, the moved-out marker `moved`
-for `⊘`, or `dead` for a retired allocation `†`) and `φ` is §6.1's frame:
+`H` is §6.1's store — a list of cells, each `full c` for live contents or
+`dead` for a retired allocation `†`. The contents `c` is a **tree**, because
+§6.1's moved-out marker `⊘` may sit at any node of it and not only at the
+root: a partial move writes `H[ℓ@π ↦ ⊘]` at exactly the sub-position it takes
+(§6.3, §4.2), so a whole-place move is the special case `π = ε`. `φ` is §6.1's
+frame:
 the environment `ρ` (position `i` ↦ its location in `H`) and the scope record
 `σ` (the cells this frame owes a drop, in creation order). `run` is §6.12's
 top-level result: call the program's entry point, index `0`, with no
@@ -118,9 +134,11 @@ reports one of five outcomes:
 | `.outOfFuel` | not a machine state at all: the interpreter's admission that it stopped early (see below) |
 
 The trace `tr` is the list of everything the machine *did that a program can
-see*, in order: `drop ℓ v` for a binding's drop (at scope exit, at `@drop`, or
-when overwritten), `dropTemp v` for a discarded temporary, `dtor s v` for a
-user destructor §6.11 ran, and `dbg v` for a `@dbg` (§6.12's observable
+see*, in order: `drop ℓ c` for a binding's drop (at scope exit, at `@drop`, or
+when overwritten — it records the *contents* dropped, which after a partial
+move is a tree with holes in it), `dropTemp v` for a discarded temporary,
+`dtor s c` for a user destructor §6.11 ran, and `dbg v` for a `@dbg` (§6.12's
+observable
 output). The last two are the ones a Rue program prints; the first two mark
 where a drop *starts*. This is the
 fragment's image of the oracle interpreter's observable outcome, and it is
@@ -201,24 +219,43 @@ the program's struct declarations — what `class(T)` and a value's drop are
 read against. It has two
 halves. The first is `Matches D Γ ρ H`: for each binding, the cell its location
 holds agrees with its context entry, locations are inside the store, and no
-two bindings share a location. Per cell, `CellMatches` says:
+two bindings share a location.
 
-- a statically `Owned` entry holds a live, well-typed value;
-- a statically `MovedOut` entry holds either the moved-out marker **or a live,
-  well-typed, non-linear value**.
+Per cell the agreement is now **recursive**, because both sides are trees. Σ's
+state for a binding is `OwnSt` — `owned`, `movedOut`, or `fields [t₁ … tₖ]`
+for a value some of whose fields have been moved out — and the cell holds
+`Contents`, the same shape with §6.1's `⊘` admitted at any node.
+`ContentsMatches` relates them path by path:
+
+- an **`owned`** node holds a hole-free well-typed contents, i.e. a value;
+- a **`movedOut`** node holds well-typed contents with **no live linear
+  sub-value** in it — it need not hold `⊘`;
+- a **`fields`** node holds the struct its type names, matched field by field,
+  with a slot no partial move touched read as `owned`.
 
 The second clause is the asymmetry, and it is deliberate. For an *affine*
 `x`, after `if c { @drop(x) } else { () }` the §5.5 join marks `x` `MovedOut`
 on both paths even though on the `else` path it is still live: the static
 story is conservative, the dynamic story is exact, and the machine drops that
-residue path-specifically at scope exit (§5.6, §6.7; `3.8:73` is the
-array-element form of the same rule). The corpus case `cond_drop_affine` is
-exactly this program. The invariant must allow that gap. What it must never
-allow is a live *linear* value behind a `MovedOut` entry, because then the
+residue path-specifically at scope exit (§5.6, §6.7; `3.8:73`). The corpus
+case `cond_drop_affine` is exactly this program, and `partial_move_one_arm`
+is it one field down. The invariant must allow that gap. What it must never
+allow is a live *linear* value behind a `MovedOut` node, because then the
 static leak check could pass while the machine reached `linearLeak`, and the
-theorem would be false; for a linear `x` the join refuses outright (`3.8:50`,
-the corpus case `linear_half_consumed`), and `Matches` records that refusal
-as an invariant.
+theorem would be false; where the two arms disagree on a path whose residue
+still carries a linear value the join refuses outright (`3.8:50`, the corpus
+cases `linear_half_consumed` and `join_linear_field_one_arm`), and
+`ContentsMatches` records that refusal as an invariant.
+
+Two lemmas turn that clause into the ones the proof uses.
+`ContentsMatches.residualLinear_false` says the machine's leak monitor sees
+exactly what §5.6's `residual-linear` computes — so after a partial move the
+obligation is the *residue*'s on both sides, which is the RUE-1591 model and
+what the compiler does. And `ContentsMatches.readAt`/`.writeAt` say that
+navigating a path agrees on the two sides: wherever Σ has a state for the path
+— which is wherever no proper prefix of it is `MovedOut`, (Owned-Base) §5.1 —
+the store reaches a sub-position, and writing a new pair at that path leaves
+the cell matched.
 
 The second half is about the frame's **scope record** σ, and it is one
 equation: σ read newest-first *is* the environment ρ. §6.1 keeps both books —
@@ -296,18 +333,19 @@ completeness costs" gives the two counterexamples. One is contrived
 and the algorithm does not). The other is not: a `return` arm of an `if`
 contributes its post-operand state to §5.5's join, where §5.7 excludes a
 diverging arm's state entirely, so a binding that arm moved out is unusable
-after the `if` — and `main() -> int { let x = mk 5; (if c { @drop(x); return 0 } else { 5 }); consume(x) }`
-is derivable, runnable, accepted by the compiler, and rejected here. That is
+after the `if` — and `main() -> int { let x = mk 5; (if c { @drop(x); return 0 } else { 5 }); @drop(x) }`
+is derivable, runnable, accepted by the compiler, and rejected here (`mk 5`
+being a struct literal and `@drop(x)` the discharge). That is
 why a `reject` verdict in the bridge corpus is only trustworthy on shapes
 where `check` is complete, and why the generator emits no `return`
 (`Corpus.lean`, `Gen.lean`).
 
 ## 5. A worked example: `reinit`
 
-The corpus case `reinit` (`Corpus.lean`) moves a linear value out of a
-binding, assigns a new one back in, and consumes that. It exercises
-`(Use-Move)`, `(Assign)` with the `3.8:77` premise checked on the post-RHS
-state, reinitialization (`3.8:55`), and the scope-exit leak check (§5.6).
+The corpus case `reinit` (`Corpus.lean`) discharges a linear value, assigns a
+new one back in, and discharges that. It exercises `(@Drop)`, `(Assign)` with
+the `3.8:77` premise checked on the post-RHS state, reinitialization
+(`3.8:55`), and the scope-exit leak check (§5.6).
 
 ### The program
 
@@ -315,9 +353,9 @@ Core syntax, as `Examples.reinit` writes it:
 
 ```lean
 letIn true (resL (lit 1))
-  (seq (consume (use 0))
-    (seq (assign 0 (resL (lit 2)))
-      (consume (use 0))))
+  (seq (drop (.var 0))
+    (seq (assign (.var 0) (resL (lit 2)))
+      (seq (drop (.var 0)) (lit 2))))
 ```
 
 as the body of the entry function `f0`, over the fixture declarations
@@ -328,16 +366,18 @@ uses is shown here, `explain/reinit.txt` has them all:
 
 ```rue
 linear struct S2 { x0: i64 }
-fn consume_S2(s: S2) -> i64 { s.x0 }
 
 fn f0() -> i64 {
     {
         let mut v0: S2 = S2 { x0: 1 };
         {
-            let t2d: i64 = consume_S2(v0);
+            @drop(v0);
             {
                 { v0 = S2 { x0: 2 }; };
-                consume_S2(v0)
+                {
+                    @drop(v0);
+                    2
+                }
             }
         }
     }
@@ -361,18 +401,16 @@ written as `[type, μ, state]` per binding (only one binding, `v0`):
 | --- | --- | --- | --- |
 | `mkStruct sLinear [lit 1]` | `Typed.mkStruct`, (Struct-Intro) §5.8: one initializer per declared field, at the field's type | `[]` | `[]` |
 | enter the `let` body | `Typed.letIn`, `(Let)`: the binder enters `Owned` | `[]` | `[S2, mut, Owned]` |
-| `use 0` | `(Use-Move)`: `class(S2) = Linear` (§3: the declared attribute), so the use moves | `[S2, mut, Owned]` | `[S2, mut, MovedOut]` |
-| `consume (…)` | `Typed.consume`, the fragment's whole-value elimination | `[…, MovedOut]` | `[…, MovedOut]` |
-| `seq` discard | `(Seq)`: an `int` carries no linear value (`3.8:64`) | | |
+| `drop (.var 0)` | `(@Drop)` §5.3: `class(S2) = Linear` (§3: the declared attribute), and `@drop` is the one non-move discharge of a linear obligation (`3.9:39`) | `[S2, mut, Owned]` | `[S2, mut, MovedOut]` |
+| `seq` discard | `(Seq)`: `unit` carries no linear value (`3.8:64`) | | |
 | `mkStruct sLinear [lit 2]` | RHS of the assignment, typed first | `[…, MovedOut]` | `[…, MovedOut]` |
-| `assign 0 …` | `(Assign)`: `v0` is `mut`; on the post-RHS state `v0` is `MovedOut`, so the `3.8:77` premise holds; `v0` becomes `Owned` (`3.8:55`) | `[…, MovedOut]` | `[S2, mut, Owned]` |
+| `assign (.var 0) …` | `(Assign)`: `v0` is `mut`; on the post-RHS state `v0` is `MovedOut`, so the `3.8:77` premise holds; the subtree at the path becomes `Owned` (`3.8:55`) | `[…, MovedOut]` | `[S2, mut, Owned]` |
 | inner `seq` discard | `(Seq)`: the assignment's `unit` carries no linear value | | |
-| `use 0` | `(Use-Move)` again | `[…, Owned]` | `[…, MovedOut]` |
-| `consume (…)` | `Typed.consume`, type `int` | | |
-| leave the `let` body | §5.6's scope-exit check, folded into `Typed.letIn`: the residual state is `MovedOut`, so no linear value leaks | `[S2, mut, MovedOut]` | `[]` |
+| `drop (.var 0)` | `(@Drop)` again | `[…, Owned]` | `[…, MovedOut]` |
+| leave the `let` body | §5.6's scope-exit check, folded into `Typed.letIn`: `residual-linear(Σ, v0, S2)` is `false` because `Σ(v0) = MovedOut`, so no linear value leaks | `[S2, mut, MovedOut]` | `[]` |
 
 The premise that matters is in the `(Assign)` row. Had the first
-`consume_S2(v0)` been omitted, the post-RHS state of `v0` would be
+`@drop(v0)` been omitted, the post-RHS state of `v0` would be
 `Owned`, the `3.8:77` premise `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` would
 fail, and `check` would reject; that is the corpus case `linear_overwrite`,
 which the compiler rejects with E0493 and the machine refuses with
@@ -388,20 +426,19 @@ to its location:
 | --- | --- | --- | --- | --- |
 | `mkStruct sLinear [lit 1]`, (D-Struct) §6.5 | `[]` | a value `{ 1 }_S2`, no store effect | `[]` | |
 | `(D-Let)`: mint a cell for `v0` | `[]` | allocate location 0, `ρ = [0]` | `[full S2 { 1 }]` | |
-| `use 0`, `(D-Use-Move)` | `[full S2 { 1 }]` | the value moves out; the cell becomes `⊘` | `[moved]` | |
-| `consume` | | the first field, `1`, an `int` | `[moved]` | |
-| `(D-Seq)` discard | | an `int` is `Copy`: no drop | `[moved]` | |
-| `mkStruct sLinear [lit 2]` | | a value | `[moved]` | |
-| `assign 0`, `(D-Assign)` | `[moved]` | the cell is `⊘`, so nothing is dropped; reinitialize | `[full S2 { 2 }]` | |
+| `drop (.var 0)`, §6.11 | `[full S2 { 1 }]` | the glue runs — `S2` declares no destructor, so nothing is observable — and the cell's contents become `⊘` | `[full ⊘]` | `drop ℓ0 = S2 { 1 }` |
+| `(D-Seq)` discard | | `unit` is `Copy`: no drop | `[full ⊘]` | |
+| `mkStruct sLinear [lit 2]` | | a value | `[full ⊘]` | |
+| `assign (.var 0)`, `(D-Assign)` | `[full ⊘]` | the position is `⊘`, so nothing is dropped; reinitialize | `[full S2 { 2 }]` | |
 | inner `(D-Seq)` discard | | `unit` is `Copy`: no drop | `[full S2 { 2 }]` | |
-| `use 0`, `(D-Use-Move)` | `[full S2 { 2 }]` | move out again | `[moved]` | |
-| `consume` | | payload `2` | `[moved]` | |
-| `(D-EndScope)`: retire `v0` | `[moved]` | the cell is `⊘`, so nothing to drop; retire it | `[dead]` | |
+| `drop (.var 0)`, §6.11 | `[full S2 { 2 }]` | the glue runs again; the contents become `⊘` | `[full ⊘]` | `drop ℓ0 = S2 { 2 }` |
+| `(D-EndScope)`: retire `v0` | `[full ⊘]` | the contents are `⊘`, so nothing to drop; retire the cell | `[dead]` | |
 
-No drop event is ever emitted (both values were consumed, so every cell was
-`⊘` at every drop point), so the trace is empty and the printed program's only
-output line is the value, `2`. The bridge expectation in `corpus.json` is
-exactly that: `{"kind": "ok", "stdout": ["2"], "exit": 0}`.
+No **observable** event is emitted: `S2` declares no destructor, so the two
+`drop ℓ0` markers project to no stdout line (`Corpus.eventLine`), and the
+scope exit finds a `⊘`. The printed program's only output line is therefore
+the value, `2`, and the bridge expectation in `corpus.json` is exactly that:
+`{"kind": "ok", "stdout": ["2"], "exit": 0}`.
 
 Both tables above are generated for every corpus case: this one is
 `explain/reinit.txt`, printed by `lake exe ruecore-explain reinit`.
@@ -774,6 +811,111 @@ section of their own. `Float.exactOps`, the instance the corpus runs, is
 constructive integer arithmetic; that it *satisfies* the laws is the residual
 assumption, and it is checked by running the float corpus against the
 compiler rather than proved.
+
+## 5f. A sixth worked example: a partial move, drawn
+
+The slice RUE-2231 adds is the one where both sides of the invariant stop
+being flat, so this example draws them. The corpus case is
+`partial_move_residue`, over the fixture declarations
+
+```rue
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }     // the observation channel
+struct S7 { x0: S1, x1: S1 }             // no destructor of its own
+```
+
+### The program
+
+```rue
+fn f0() -> i64 {
+    {
+        let v0: S7 = S7 { x0: S1 { x0: 1 }, x1: S1 { x0: 2 } };
+        {
+            let v1: S1 = v0.x0;      // a PARTIAL move: 3.8:22
+            { @drop(v1); 9 }
+        }
+    }
+}
+```
+
+`v0.x0` is a place — `Place.proj (Place.var 0) 0` in the core — and using it
+in value context moves *exactly* that field. Everything the slice is about is
+visible in three snapshots.
+
+### Before the partial move
+
+Σ's state for `v0` and the contents of its cell, side by side:
+
+```
+  Σ(v0)                      H(ℓ0)
+  owned                      S7 { S1 { 1 }, S1 { 2 } }
+```
+
+`owned` is a claim about the whole subtree: `Σ(v0) = Owned` and no path under
+`v0` is `MovedOut`, which is `fully-owned(Σ, v0)` (§5 preamble). The cell holds
+the matching hole-free tree, which is `ContentsMatches`'s `owned` clause.
+
+### After it
+
+(Use-Move) §5.1 marks exactly `v0.x0` and removes every path under it; §6.3's
+(D-Use-Move) writes `H[ℓ0@[0] ↦ ⊘]` at exactly the same position:
+
+```
+  Σ(v0)                      H(ℓ0)
+  fields [                   S7 {
+    movedOut,      ← v0.x0        ⊘,
+    owned          ← v0.x1        S1 { 2 }
+  ]                          }
+                             H(ℓ1) = S1 { 1 }     ← v1, the moved value
+```
+
+Three things follow, and each is a premise somewhere:
+
+* `Σ(v0)` is still `Owned` — the node is `fields`, not `movedOut` — so
+  `v0.x1` is readable (`3.8:53`, the `copy_through_partial` case does exactly
+  this with a `Copy` sibling) and `@drop(v0)` is legal (§5.3 asks only
+  `Σ(p) = Owned`; the `drop_field_then_whole` case);
+* `fully-owned(Σ, v0)` is now **false**, so `let v2 = v0` has no derivation —
+  the aggregate has a hole and (Use-Move) may not hand it to a new owner
+  (`3.8:26`; the compiler's E0205, the `partial_then_whole` case);
+* had `S7` declared a destructor, the move would have been rejected before any
+  of this (`3.9:34`, E0456; the `partial_under_dtor` case), because a
+  destructor runs on the whole value and would meet the `⊘`.
+
+### At scope exit
+
+`v1`'s scope ends first: `@drop(v1)` already marked it, so its `endscope`
+drops nothing. Then `v0`'s scope ends, and §6.11's walk runs on the *cell
+contents*, skipping every `⊘`:
+
+```
+  drop(ℓ0) = drop(S7 { ⊘, S1 { 2 } })
+           = (S7 declares no destructor)
+             drop(⊘)  ++  drop(S1 { 2 })
+           = []       ++  [dtor S1 (S1 { 2 })]
+```
+
+So the trace is `1` (from the `@drop(v1)`) then `2` (from the residue), and
+the moved field is dropped **once**, by its new owner. That single skip is
+§7's double-free argument, and `dropContents_struct_events`
+(`Soundness.lean`) is it in closed form: the destructor's event, then the
+fields' events concatenated in declaration order, a moved-out field
+contributing none.
+
+### What the checker demanded
+
+`check` reads the same three snapshots: `en.st.get p.path` finds the state for
+`v0.x0` (and returns `none` — a rejection — when a *proper prefix* of the path
+is `MovedOut`, which is (Owned-Base) §5.1 in one lookup);
+`en.ty.atPath P.structs p.path` types the place; `u.fullyOwned` is `3.8:26`;
+`noDtorPrefix` is `3.9:34`. Its acceptance is a `Typed` derivation
+(`check_sound`), so `soundness` applies and `run` cannot reach a `Violation` —
+in particular not the `useAfterMove` a second drop of `S1 { 1 }` would be.
+
+`example : ProgramTyped (prog tI64 partialMoveResidue) := checkProgram_sound (by rfl)`
+and the pinned trace beside it in `Examples.lean` are the kernel-checked form
+of this paragraph, and `scripts/rue exec` on the printed program prints
+`1`, `2`, `9`.
 
 ### More worked examples
 

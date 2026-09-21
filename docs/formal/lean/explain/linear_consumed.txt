@@ -1,9 +1,11 @@
 ════════════════════════════════════════════════════════════════════════════════
  linear_consumed
 ════════════════════════════════════════════════════════════════════════════════
-A linear resource consumed exactly once; no drop event.
+A linear resource moved into a new binding and discharged there: the move
+transfers the obligation and @drop is what finally satisfies it; S2 declares
+no destructor, so nothing prints.
 
-Rules exercised: (Use-Move) §5.1 · §5.8 whole-value elimination
+Rules exercised: (Use-Move) §5.1 · (@Drop) §5.3 · 3.9:39
 
 ── The program ─────────────────────────────────────────────────────────────────
 
@@ -11,7 +13,6 @@ Rules exercised: (Use-Move) §5.1 · §5.8 whole-value elimination
 struct S1 { x0: i64 }
 drop fn S1(self) { @dbg(self.x0); }
 linear struct S2 { x0: i64 }
-fn consume_S2(s: S2) -> i64 { s.x0 }
 linear struct S3 { x0: i64 }
 drop fn S3(self) { @dbg(self.x0); }
 struct S4 { x0: i64, x1: S3 }
@@ -19,10 +20,19 @@ struct S5 { x0: i64, x1: S1 }
 drop fn S5(self) { @dbg(self.x0); }
 @copy struct S6 { x0: i64, x1: i64 }
 struct S7 { x0: S1, x1: S1 }
+struct S8 { x0: S1, x1: i64 }
+struct S9 { x0: S7, x1: i64 }
+struct S10 { x0: S3, x1: S1 }
 fn f0() -> i64 {
     {
         let v0: S2 = S2 { x0: 7 };
-        consume_S2(v0)
+        {
+            let v1: S2 = v0;
+            {
+                @drop(v1);
+                7
+            }
+        }
     }
 }
 
@@ -47,7 +57,7 @@ function body, checked from (Fn) §5.8's entry context.
   fn f0() -> i64
 
   (Let) §5.3 + the §5.6 scope-exit leak check
-    e       { let v0: S2 = S2 { x0: 7 }; consume_S2(v0) }
+    e       { let v0: S2 = S2 { x0: 7 }; { let v1: S2 = v0; { @drop(v1); 7 } } }
     Γ;Σ     (empty)
     ⇒       i64  ⊣  (empty)
       (Struct-Intro) §5.8
@@ -58,14 +68,26 @@ function body, checked from (Fn) §5.8's entry context.
             e       7
             Γ;Σ     (empty)
             ⇒       i64  ⊣  (empty)
-      §5.8 whole-value elimination
-        e       consume_S2(v0)
+      (Let) §5.3 + the §5.6 scope-exit leak check
+        e       { let v1: S2 = v0; { @drop(v1); 7 } }
         Γ;Σ     [v0: S2 = Owned]
         ⇒       i64  ⊣  [v0: S2 = MovedOut]
           (Use-Move) §5.1
             e       v0
             Γ;Σ     [v0: S2 = Owned]
             ⇒       S2  ⊣  [v0: S2 = MovedOut]
+          (Seq) §5.3, 3.8:64
+            e       { @drop(v1); 7 }
+            Γ;Σ     [v1: S2 = Owned, v0: S2 = MovedOut]
+            ⇒       i64  ⊣  [v1: S2 = MovedOut, v0: S2 = MovedOut]
+              (@Drop) §5.3
+                e       @drop(v1)
+                Γ;Σ     [v1: S2 = Owned, v0: S2 = MovedOut]
+                ⇒       ()  ⊣  [v1: S2 = MovedOut, v0: S2 = MovedOut]
+              (Lit) §5.8
+                e       7
+                Γ;Σ     [v1: S2 = MovedOut, v0: S2 = MovedOut]
+                ⇒       i64  ⊣  [v1: S2 = MovedOut, v0: S2 = MovedOut]
 
 ── The run (§6) ────────────────────────────────────────────────────────────────
 
@@ -97,25 +119,46 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
   [5]   d4          (D-Use-Move) §6.3
          expr    v0
          store   [ℓ0 = S2 { 7 }]
-           →     [ℓ0 = ⊘ (moved out)]
+           →     [ℓ0 = ⊘]
          result  value S2 { 7 }
-  [6]   d3        §6.5 whole-value elimination
-         expr    consume_S2(v0)
-         store   [ℓ0 = S2 { 7 }]
-           →     [ℓ0 = ⊘ (moved out)]
+  [6]   d4          (D-Let) §6.7 (mint the binding)
+         expr    let v1 = S2 { 7 } at ℓ1
+         store   [ℓ0 = ⊘]
+           →     [ℓ0 = ⊘, ℓ1 = S2 { 7 }]
+         result  value S2 { 7 }
+  [7]   d5            @drop §6.11
+         expr    @drop(v1)
+         store   [ℓ0 = ⊘, ℓ1 = S2 { 7 }]
+           →     [ℓ0 = ⊘, ℓ1 = ⊘]
+         events  >> drop ℓ1 = S2 { 7 }
+         result  value ()
+  [8]   d5            literal §6.3
+         expr    7
+         store   [ℓ0 = ⊘, ℓ1 = ⊘]
+           →     [ℓ0 = ⊘, ℓ1 = ⊘]
          result  value 7
-  [7]   d2      (D-EndScope) §6.7 (retire the binding)
+  [9]   d4          (D-Seq) §6.7
+         expr    { @drop(v1); 7 }
+         store   [ℓ0 = ⊘, ℓ1 = S2 { 7 }]
+           →     [ℓ0 = ⊘, ℓ1 = ⊘]
+         result  value 7
+  [10]  d3        (D-EndScope) §6.7 (retire the binding)
+         expr    endscope([ℓ1])
+         store   [ℓ0 = ⊘, ℓ1 = ⊘]
+           →     [ℓ0 = ⊘, ℓ1 = † (retired)]
+         result  value 7
+  [11]  d2      (D-EndScope) §6.7 (retire the binding)
          expr    endscope([ℓ0])
-         store   [ℓ0 = ⊘ (moved out)]
-           →     [ℓ0 = † (retired)]
+         store   [ℓ0 = ⊘, ℓ1 = † (retired)]
+           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
          result  value 7
-  [8]   d0  (D-Return-Value) §6.9 (pop the frame)
+  [12]  d0  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([])
-         store   [ℓ0 = † (retired)]
-           →     [ℓ0 = † (retired)]
+         store   [ℓ0 = † (retired), ℓ1 = † (retired)]
+           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
          result  value 7
 
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: ok — value 7
-         drop trace: (no drops)
+         drop trace: drop ℓ1 = S2 { 7 }
 
