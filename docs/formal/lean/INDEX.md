@@ -30,11 +30,10 @@ Every declaration of the mechanization with the calculus rules, sections, and pr
 | `RueCore.Dynamics` | `RueCore.Violation.typeConfusion` | constructor | §5.8 | — |
 | `RueCore.Dynamics` | `RueCore.EvalRes` | inductive | §6, §6.12 | — |
 | `RueCore.Dynamics` | `RueCore.eval` | def | (D-Use-Copy), (D-Use-Move), (D-Arith), (D-Arith-Trap), (D-Div), (D-Div-Zero), (D-Div-Overflow), (D-Let), (D-EndScope), (D-Assign), (D-Seq), (D-If-T), (D-If-F), §6.2, §6.3, §6.4, §6.7, §6.8, §6.11 | — |
-| `RueCore.Examples` | Examples.lean (module) | module | §7 | — |
+| `RueCore.Examples` | Examples.lean (module) | module | §6.1, §6.7, §7 | — |
 | `RueCore.Examples` | `RueCore.Examples.reinit` | def | — | `3.8:55` |
 | `RueCore.Examples` | `RueCore.Examples.linearHalfConsumed` | def | §5.5 | — |
 | `RueCore.Examples` | `RueCore.Examples.overflow` | def | §6.4 | — |
-| `RueCore.Examples` | `RueCore.Examples.useAfterDrop_unwitnessed_here` | theorem | §6.1, §6.7 | — |
 | `RueCore.Explain.Html` | Html.lean (module) | module | §5, §6 | — |
 | `RueCore.Explain.Html` | `RueCore.Explain.Html.derivHtml` | def | §5 | — |
 | `RueCore.Explain.Html` | `RueCore.Explain.Html.stepRow` | def | §6 | — |
@@ -105,7 +104,7 @@ Every declaration of the mechanization with the calculus rules, sections, and pr
 | `RueCore.Soundness` | `RueCore.soundness` | theorem | §7 | — |
 | `RueCore.Soundness` | `RueCore.no_violation` | theorem | §7 | — |
 | `RueCore.Soundness` | `RueCore.no_use_after_move` | theorem | §7 | — |
-| `RueCore.Soundness` | `RueCore.no_use_after_drop` | theorem | §7 | — |
+| `RueCore.Soundness` | `RueCore.no_use_after_drop` | theorem | §6.7, §7 | — |
 | `RueCore.Soundness` | `RueCore.no_linear_leak` | theorem | §7 | — |
 | `RueCore.Soundness` | `RueCore.no_linear_overwrite` | theorem | §7 | `3.8:77` |
 | `RueCore.Soundness` | `RueCore.no_linear_discard` | theorem | §7 | `3.8:64` |
@@ -281,13 +280,13 @@ Every heading of the calculus. A citation of a section counts for that section o
 | §5.7 | Divergence and never-coercion | *not cited* |
 | §5.8 | Leaf, operator, aggregate, and call forms | `RueCore.Violation.typeConfusion`, Explain.lean (module), `RueCore.Explain.Premise.operandNotInt`, `RueCore.Explain.Premise.payloadNotInt`, `RueCore.Explain.Premise.consumeNotRes`, `RueCore.Print.resLit`, `RueCore.Typed.intLit`, `RueCore.Typed.boolLit`, `RueCore.Typed.unitLit`, `RueCore.Typed.add`, `RueCore.Typed.div`, `RueCore.Typed.lt`, `RueCore.Typed.mkres`, Syntax.lean (module) |
 | §6 | Dynamic semantics (small-step, with an executable presentation) | Corpus.lean (module), Dynamics.lean (module), `RueCore.EvalRes`, Html.lean (module), `RueCore.Explain.Html.stepRow`, `RueCore.Explain.Html.outcomeHtml`, `RueCore.Explain.Html.render`, Text.lean (module), `RueCore.Explain.Text.stepResLines`, `RueCore.Explain.Text.stepLines`, `RueCore.Explain.Text.outcomeLines`, `RueCore.Explain.Text.render`, Explain.lean (module), `RueCore.Explain.violationPremise`, `RueCore.Explain.StepRes`, `RueCore.Explain.Step`, `RueCore.Explain.Trace`, `RueCore.Explain.lastStore`, `RueCore.Explain.refused`, `RueCore.Explain.traceEval`, `main` |
-| §6.1 | The machine configuration | Dynamics.lean (module), `RueCore.Val`, `RueCore.Cell`, `RueCore.Store`, `RueCore.Env`, `RueCore.Examples.useAfterDrop_unwitnessed_here`, `RueCore.Explain.cellLine`, `RueCore.Explain.locName`, `RueCore.HasTy`, `RueCore.Matches`, `RueCore.InBounds` |
+| §6.1 | The machine configuration | Dynamics.lean (module), `RueCore.Val`, `RueCore.Cell`, `RueCore.Store`, `RueCore.Env`, Examples.lean (module), `RueCore.Explain.cellLine`, `RueCore.Explain.locName`, `RueCore.HasTy`, `RueCore.Matches`, `RueCore.InBounds` |
 | §6.2 | Evaluation order: contexts, search, and panic propagation | `RueCore.eval` |
 | §6.3 | Literals and the use of a place (copy / move) | `RueCore.eval` |
 | §6.4 | Primitive operators | `RueCore.eval`, `RueCore.Examples.overflow`, Syntax.lean (module), `RueCore.intMin`, `RueCore.intMax`, `RueCore.InBounds` |
 | §6.5 | Aggregate introduction and projection | *not cited* |
 | §6.6 | Enum introduction and the `match` elimination | *not cited* |
-| §6.7 | `let`, sequencing, and scope-exit drop | Dynamics.lean (module), `RueCore.Event`, `RueCore.eval`, `RueCore.Examples.useAfterDrop_unwitnessed_here`, `RueCore.Explain.eventLine`, `RueCore.Explain.Step`, `RueCore.Explain.adminStep`, `RueCore.Explain.Trace.showLast`, `RueCore.Explain.scopeNeverClosed`, `RueCore.Print.expr`, `RueCore.CellMatches`, `RueCore.Typed.letIn` |
+| §6.7 | `let`, sequencing, and scope-exit drop | Dynamics.lean (module), `RueCore.Event`, `RueCore.eval`, Examples.lean (module), `RueCore.Explain.eventLine`, `RueCore.Explain.Step`, `RueCore.Explain.adminStep`, `RueCore.Explain.Trace.showLast`, `RueCore.Explain.scopeNeverClosed`, `RueCore.Print.expr`, `RueCore.CellMatches`, `RueCore.no_use_after_drop`, `RueCore.Typed.letIn` |
 | §6.8 | Assignment: overwrite-drop and reinitialisation | Dynamics.lean (module), `RueCore.Event`, `RueCore.eval`, `RueCore.Explain.eventLine`, `RueCore.Explain.Step`, `RueCore.Print.expr` |
 | §6.9 | Calls, parameters, and return | *not cited* |
 | §6.10 | `loop` and `break` | *not cited* |

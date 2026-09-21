@@ -98,9 +98,9 @@ example : check [] linearHalfConsumed = none := by rfl
 
 In interpreter form a violation is a positive result, so `soundness` is only
 as strong as `eval`'s refusal enumeration. These witnesses pin every refusal
-and trap a closed fragment program can reach to a program that reaches it, checked by the
-kernel rather than observed by `#eval` (ADR-0097; the bridge cannot observe
-refusals, because the compiler rejects those programs first).
+and trap to a program, or an open machine state, that reaches it, checked
+by the kernel rather than observed by `#eval` (ADR-0097; the bridge cannot
+observe refusals, because the compiler rejects those programs first).
 -/
 
 example : eval [] [] linearLeaked = .stuck .linearLeak := by rfl
@@ -111,11 +111,27 @@ example : eval [] [] divZero = .panic .divZero := by rfl
 example : eval [] [] (use 0) = .stuck .unbound := by rfl
 example : eval [] [] (add (boolLit true) (intLit 1)) = .stuck .typeConfusion := by rfl
 
-/-- `useAfterDrop` has no closed witness: `endscope` retires a cell and pops
-its index from `ρ` in the same step (§6.7), so no fragment program can name
-a retired cell. The refusal exists for the §6.1 retire discipline, which
-calls and frames will exercise (RUE-2233). -/
-theorem useAfterDrop_unwitnessed_here : True := trivial
+/-!
+## The retired-cell refusal, witnessed from an open machine state
+
+`useAfterDrop` is the machine's guard on a retired (`†`) cell (§6.1): a use,
+an explicit `@drop`, or an assignment through a binding whose cell has been
+retired is refused. No *closed* fragment expression reaches it: `eval` runs a
+`letIn` body with the extended environment and resumes its caller with the
+original one (§6.7's `endscope` image), so once a cell is retired nothing in
+the syntax can name it again. The witnesses below therefore start the
+machine in an open state — a store holding one retired cell and an
+environment naming it — which is the state the guard exists for. That
+closed expressions cannot produce it is a fact about the fragment's scoping,
+not something these witnesses or `no_use_after_drop` prove; the falsifiable
+form of §7's bullet, where scope records and unwind paths could retain a
+retired location, arrives with calls and frames (RUE-2233) and the drop
+trace theorem (RUE-2237).
+-/
+
+example : eval [.dead] [0] (use 0) = .stuck .useAfterDrop := by rfl
+example : eval [.dead] [0] (drop 0) = .stuck .useAfterDrop := by rfl
+example : eval [.dead] [0] (assign 0 (intLit 1)) = .stuck .useAfterDrop := by rfl
 
 #eval check [] scalars
 #eval check [] linearLeaked

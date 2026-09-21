@@ -508,7 +508,14 @@ theorem no_violation {e T Γ'} (ht : Typed [] e T Γ') (w : Violation) :
 theorem no_use_after_move {e T Γ'} (ht : Typed [] e T Γ') :
     eval [] [] e ≠ .stuck .useAfterMove := no_violation ht _
 
-/-- §7 "No use-after-drop": the machine never touches a retired (`†`) cell. -/
+/-- §7 "No use-after-drop": the machine never touches a retired (`†`) cell.
+For a closed expression this is structural rather than a consequence of
+typing: `eval` resumes a `letIn`'s caller with the original environment
+(§6.7), so no closed expression, well-typed or not, can name a retired cell.
+The guard itself is exercised from an open machine state in
+`Examples.lean`; the falsifiable form of the bullet, where scope records and
+unwind paths could retain a retired location, is owed to calls and frames
+(RUE-2233) and the drop trace theorem (RUE-2237). -/
 theorem no_use_after_drop {e T Γ'} (ht : Typed [] e T Γ') :
     eval [] [] e ≠ .stuck .useAfterDrop := no_violation ht _
 

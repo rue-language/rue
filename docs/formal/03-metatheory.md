@@ -62,7 +62,13 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 ## No use-after-drop / no leak of drops
 
 - **Theorem:** `RueCore.no_use_after_drop` — the "never read afterward"
-  half: no evaluation touches a retired (`†`) cell.
+  half: no evaluation touches a retired (`†`) cell. At fragment scope this
+  is structural rather than a consequence of typing: the interpreter
+  resumes a `let`'s caller with the original environment, so no closed
+  expression, well-typed or not, can name a retired cell. The guard itself
+  is witnessed from an open machine state (`Examples.lean`); the bullet
+  becomes falsifiable once scope records and unwind paths can retain a
+  retired location (RUE-2233).
 - **Owed:** the "exactly once, at the end of its scope" half needs the σ
   scope records and the unwind paths (RUE-2233), then the trace theorem
   `drop_exactly_once` (RUE-2237).
