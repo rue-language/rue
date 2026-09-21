@@ -21,6 +21,9 @@ struct S5 { x0: i64, x1: S1 }
 drop fn S5(self) { @dbg(self.x0); }
 @copy struct S6 { x0: i64, x1: i64 }
 struct S7 { x0: S1, x1: S1 }
+struct S8 { x0: S1, x1: i64 }
+struct S9 { x0: S7, x1: i64 }
+struct S10 { x0: S3, x1: S1 }
 fn f0() -> i64 {
     {
         let v0: S1 = S1 { x0: 5 };
@@ -127,27 +130,27 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
   [6]   d5            @drop §6.11
          expr    @drop(v0)
          store   [ℓ0 = S1 { 5 }]
-           →     [ℓ0 = ⊘ (moved out)]
+           →     [ℓ0 = ⊘]
          events  >> drop ℓ0 = S1 { 5 }; run drop fn S1(S1 { 5 })
          result  value ()
   [7]   d4          (D-If-T) §6.6
          expr    if true { @drop(v0) } else { () }
          store   [ℓ0 = S1 { 5 }]
-           →     [ℓ0 = ⊘ (moved out)]
+           →     [ℓ0 = ⊘]
          result  value ()
   [8]   d4          literal §6.3
          expr    9
-         store   [ℓ0 = ⊘ (moved out)]
-           →     [ℓ0 = ⊘ (moved out)]
+         store   [ℓ0 = ⊘]
+           →     [ℓ0 = ⊘]
          result  value 9
   [9]   d3        (D-Seq) §6.7
          expr    { if true { @drop(v0) } else { () }; 9 }
          store   [ℓ0 = S1 { 5 }]
-           →     [ℓ0 = ⊘ (moved out)]
+           →     [ℓ0 = ⊘]
          result  value 9
   [10]  d2      (D-EndScope) §6.7 (retire the binding)
          expr    endscope([ℓ0])
-         store   [ℓ0 = ⊘ (moved out)]
+         store   [ℓ0 = ⊘]
            →     [ℓ0 = † (retired)]
          result  value 9
   [11]  d0  (D-Return-Value) §6.9 (pop the frame)

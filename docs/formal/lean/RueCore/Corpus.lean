@@ -56,13 +56,18 @@ One array of case objects. Fields:
   `expected` is `{"kind": "stuck", "violation":
   <name>}`: the refusal the machine reaches, kernel-checked in
   `Examples.lean` and below, which the bridge cannot observe because the
-  compiler rejects the program first. A rejected program whose executed path
-  never reaches the refusal — it lies on a path the program does not take,
-  whether a §5.5 join disagreement or a refusal inside the arm the condition
-  skips — carries the `ok` or `panic` outcome of the executed path instead,
-  so a compiler that accepts it unsoundly is still compared against what the
-  machine does. The seed corpus has no such case; the generator (`Gen.lean`)
-  produces them. Every line is a bare integer or `true`/`false`, so the
+  compiler rejects the program first. A rejected program the machine
+  nonetheless runs to completion carries the `ok` or `panic` outcome of the
+  executed path instead, so a compiler that accepts it unsoundly is still
+  compared against what the machine does. There are two ways to be one. The
+  refusal can lie on a path the program does not take — a §5.5 join
+  disagreement, or a refusal inside the arm the condition skips — which is
+  what the generator (`Gen.lean`) produces. Or the rule the checker applies
+  can have **no dynamic counterpart at all**: `3.9:34`'s restriction on moving
+  a field out of a destructor-bearing value (E0456) and (@Drop) §5.3's
+  residual side condition (E0406) are static disciplines the machine does not
+  monitor, so a program they reject still runs — `partial_under_dtor` and
+  `linear_field_stranded` below are those cases. Every line is a bare integer or `true`/`false`, so the
   projection is not injective: a destructor line `n` swapped with a `@dbg`
   line `n` or a value line `n` would not be told apart. Accepted at fragment
   scope.
@@ -144,7 +149,7 @@ def cases : List Case := [
     prog := Examples.prog Examples.tI64 Examples.useAfterMove
     },
   { name := "reinit",
-    description := "Move a linear value out, assign a new one back in, consume it: legal reinitialization.",
+    description := "Discharge a linear value, assign a new one back in, discharge that: legal reinitialization.",
     rules := ["(Assign) §5.2", "3.8:55"],
     prog := Examples.prog Examples.tI64 Examples.reinit
     },
@@ -633,11 +638,11 @@ def outcomeSummary (c : Case) : String :=
   | false, .stuck w => "rejected by the checker; the machine would refuse with " ++ violationName w
   | false, .ok _ v tr =>
       let lines := outLines c.prog.structs v tr
-      "rejected by the checker; the refusal lies on a path not taken, and the executed path prints " ++
+      "rejected by the checker; the machine reaches no refusal on the executed path, which prints " ++
         (if lines.isEmpty then "nothing" else String.intercalate ", " lines) ++ "; exit 0"
   | false, .panic k tr =>
       let lines := tr.filterMap eventLine
-      "rejected by the checker; the refusal lies on a path not taken, and the executed path prints " ++
+      "rejected by the checker; the machine reaches no refusal on the executed path, which prints " ++
         (if lines.isEmpty then "nothing" else String.intercalate ", " lines) ++
         " and then traps with " ++ panicName k
   | true, .ok _ v tr =>

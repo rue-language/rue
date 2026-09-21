@@ -59,7 +59,7 @@ The **state** choice: §5.7 gives a diverging arm the outgoing state `⊥`, whic
 §5.5's join reads *nothing* from. `check` hands the join the state in force
 after the operand instead, so a `return` arm does contribute — conservatively
 — and a binding that arm moved out is `MovedOut` after the `if`, hence
-unusable. `main() -> int { let x = mk 5; (if c { @drop(x); return 0 } else { 5 }); consume(x) }`
+unusable. `main() -> int { let x = mk 5; (if c { @drop(x); return 0 } else { 5 }); @drop(x) }`
 is the shape: `Typed` derives it (the `ret` rule may take the other arm's
 outgoing context), the machine runs it, the Rue compiler accepts it, and
 `check` rejects it. That is a program a reader would write, so the rejection

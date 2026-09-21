@@ -1,7 +1,7 @@
 ════════════════════════════════════════════════════════════════════════════════
  reinit
 ════════════════════════════════════════════════════════════════════════════════
-Move a linear value out, assign a new one back in, consume it: legal
+Discharge a linear value, assign a new one back in, discharge that: legal
 reinitialization.
 
 Rules exercised: (Assign) §5.2 · 3.8:55
@@ -12,7 +12,6 @@ Rules exercised: (Assign) §5.2 · 3.8:55
 struct S1 { x0: i64 }
 drop fn S1(self) { @dbg(self.x0); }
 linear struct S2 { x0: i64 }
-fn consume_S2(s: S2) -> i64 { s.x0 }
 linear struct S3 { x0: i64 }
 drop fn S3(self) { @dbg(self.x0); }
 struct S4 { x0: i64, x1: S3 }
@@ -20,14 +19,20 @@ struct S5 { x0: i64, x1: S1 }
 drop fn S5(self) { @dbg(self.x0); }
 @copy struct S6 { x0: i64, x1: i64 }
 struct S7 { x0: S1, x1: S1 }
+struct S8 { x0: S1, x1: i64 }
+struct S9 { x0: S7, x1: i64 }
+struct S10 { x0: S3, x1: S1 }
 fn f0() -> i64 {
     {
         let mut v0: S2 = S2 { x0: 1 };
         {
-            let t2d: i64 = consume_S2(v0);
+            @drop(v0);
             {
                 { v0 = S2 { x0: 2 }; };
-                consume_S2(v0)
+                {
+                    @drop(v0);
+                    2
+                }
             }
         }
     }
@@ -54,7 +59,7 @@ function body, checked from (Fn) §5.8's entry context.
   fn f0() -> i64
 
   (Let) §5.3 + the §5.6 scope-exit leak check
-    e       { let mut v0: S2 = S2 { x0: 1 }; { consume_S2(v0); { { v0 = S2 { x0: 2 }; }; co…
+    e       { let mut v0: S2 = S2 { x0: 1 }; { @drop(v0); { { v0 = S2 { x0: 2 }; }; { @drop…
     Γ;Σ     (empty)
     ⇒       i64  ⊣  (empty)
       (Struct-Intro) §5.8
@@ -66,19 +71,15 @@ function body, checked from (Fn) §5.8's entry context.
             Γ;Σ     (empty)
             ⇒       i64  ⊣  (empty)
       (Seq) §5.3, 3.8:64
-        e       { consume_S2(v0); { { v0 = S2 { x0: 2 }; }; consume_S2(v0) } }
+        e       { @drop(v0); { { v0 = S2 { x0: 2 }; }; { @drop(v0); 2 } } }
         Γ;Σ     [v0: S2 mut = Owned]
         ⇒       i64  ⊣  [v0: S2 mut = MovedOut]
-          §5.8 whole-value elimination
-            e       consume_S2(v0)
+          (@Drop) §5.3
+            e       @drop(v0)
             Γ;Σ     [v0: S2 mut = Owned]
-            ⇒       i64  ⊣  [v0: S2 mut = MovedOut]
-              (Use-Move) §5.1
-                e       v0
-                Γ;Σ     [v0: S2 mut = Owned]
-                ⇒       S2  ⊣  [v0: S2 mut = MovedOut]
+            ⇒       ()  ⊣  [v0: S2 mut = MovedOut]
           (Seq) §5.3, 3.8:64
-            e       { { v0 = S2 { x0: 2 }; }; consume_S2(v0) }
+            e       { { v0 = S2 { x0: 2 }; }; { @drop(v0); 2 } }
             Γ;Σ     [v0: S2 mut = MovedOut]
             ⇒       i64  ⊣  [v0: S2 mut = MovedOut]
               (Assign) §5.2, 3.8:77
@@ -93,14 +94,18 @@ function body, checked from (Fn) §5.8's entry context.
                         e       2
                         Γ;Σ     [v0: S2 mut = MovedOut]
                         ⇒       i64  ⊣  [v0: S2 mut = MovedOut]
-              §5.8 whole-value elimination
-                e       consume_S2(v0)
+              (Seq) §5.3, 3.8:64
+                e       { @drop(v0); 2 }
                 Γ;Σ     [v0: S2 mut = Owned]
                 ⇒       i64  ⊣  [v0: S2 mut = MovedOut]
-                  (Use-Move) §5.1
-                    e       v0
+                  (@Drop) §5.3
+                    e       @drop(v0)
                     Γ;Σ     [v0: S2 mut = Owned]
-                    ⇒       S2  ⊣  [v0: S2 mut = MovedOut]
+                    ⇒       ()  ⊣  [v0: S2 mut = MovedOut]
+                  (Lit) §5.8
+                    e       2
+                    Γ;Σ     [v0: S2 mut = MovedOut]
+                    ⇒       i64  ⊣  [v0: S2 mut = MovedOut]
 
 ── The run (§6) ────────────────────────────────────────────────────────────────
 
@@ -129,54 +134,56 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     [ℓ0 = S2 { 1 }]
          result  value S2 { 1 }
-  [5]   d5            (D-Use-Move) §6.3
-         expr    v0
+  [5]   d4          @drop §6.11
+         expr    @drop(v0)
          store   [ℓ0 = S2 { 1 }]
-           →     [ℓ0 = ⊘ (moved out)]
-         result  value S2 { 1 }
-  [6]   d4          §6.5 whole-value elimination
-         expr    consume_S2(v0)
-         store   [ℓ0 = S2 { 1 }]
-           →     [ℓ0 = ⊘ (moved out)]
-         result  value 1
-  [7]   d7                literal §6.3
+           →     [ℓ0 = ⊘]
+         events  >> drop ℓ0 = S2 { 1 }
+         result  value ()
+  [6]   d7                literal §6.3
          expr    2
-         store   [ℓ0 = ⊘ (moved out)]
-           →     [ℓ0 = ⊘ (moved out)]
+         store   [ℓ0 = ⊘]
+           →     [ℓ0 = ⊘]
          result  value 2
-  [8]   d6              (D-Struct) §6.5
+  [7]   d6              (D-Struct) §6.5
          expr    S2 { x0: 2 }
-         store   [ℓ0 = ⊘ (moved out)]
-           →     [ℓ0 = ⊘ (moved out)]
+         store   [ℓ0 = ⊘]
+           →     [ℓ0 = ⊘]
          result  value S2 { 2 }
-  [9]   d5            (D-Assign) §6.8 (reinitialization, 3.8:55)
+  [8]   d5            (D-Assign) §6.8 (reinitialization, 3.8:55)
          expr    { v0 = S2 { x0: 2 }; }
-         store   [ℓ0 = ⊘ (moved out)]
+         store   [ℓ0 = ⊘]
            →     [ℓ0 = S2 { 2 }]
          result  value ()
-  [10]  d6              (D-Use-Move) §6.3
-         expr    v0
+  [9]   d6              @drop §6.11
+         expr    @drop(v0)
          store   [ℓ0 = S2 { 2 }]
-           →     [ℓ0 = ⊘ (moved out)]
-         result  value S2 { 2 }
-  [11]  d5            §6.5 whole-value elimination
-         expr    consume_S2(v0)
+           →     [ℓ0 = ⊘]
+         events  >> drop ℓ0 = S2 { 2 }
+         result  value ()
+  [10]  d6              literal §6.3
+         expr    2
+         store   [ℓ0 = ⊘]
+           →     [ℓ0 = ⊘]
+         result  value 2
+  [11]  d5            (D-Seq) §6.7
+         expr    { @drop(v0); 2 }
          store   [ℓ0 = S2 { 2 }]
-           →     [ℓ0 = ⊘ (moved out)]
+           →     [ℓ0 = ⊘]
          result  value 2
   [12]  d4          (D-Seq) §6.7
-         expr    { { v0 = S2 { x0: 2 }; }; consume_S2(v0) }
-         store   [ℓ0 = ⊘ (moved out)]
-           →     [ℓ0 = ⊘ (moved out)]
+         expr    { { v0 = S2 { x0: 2 }; }; { @drop(v0); 2 } }
+         store   [ℓ0 = ⊘]
+           →     [ℓ0 = ⊘]
          result  value 2
   [13]  d3        (D-Seq) §6.7
-         expr    { consume_S2(v0); { { v0 = S2 { x0: 2 }; }; consume_S2(v0) } }
+         expr    { @drop(v0); { { v0 = S2 { x0: 2 }; }; { @drop(v0); 2 } } }
          store   [ℓ0 = S2 { 1 }]
-           →     [ℓ0 = ⊘ (moved out)]
+           →     [ℓ0 = ⊘]
          result  value 2
   [14]  d2      (D-EndScope) §6.7 (retire the binding)
          expr    endscope([ℓ0])
-         store   [ℓ0 = ⊘ (moved out)]
+         store   [ℓ0 = ⊘]
            →     [ℓ0 = † (retired)]
          result  value 2
   [15]  d0  (D-Return-Value) §6.9 (pop the frame)
@@ -187,5 +194,5 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
 
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: ok — value 2
-         drop trace: (no drops)
+         drop trace: drop ℓ0 = S2 { 1 }; drop ℓ0 = S2 { 2 }
 

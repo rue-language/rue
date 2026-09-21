@@ -331,8 +331,10 @@ def OwnSt.setField : List OwnSt → Nat → OwnSt → List OwnSt
 
 /-- `Σ(p)` for a path under this binding: `some` the state recorded there, and
 `none` exactly when a **proper prefix** of the path is `MovedOut` — §5's
-absence, and therefore the `Owned-Base` side condition of §5.1 (`3.8:53`: the
-base of a projection must currently own its storage) in one lookup. -/
+absence. So the lookup *is* (Owned-Base) §5.1 (`3.8:53`: the base of a
+projection must currently own its storage, in any context), and every rule that
+names a place gets that side condition for free by asking for a state at all.
+The compiler reports the failure as E0205. -/
 def OwnSt.get : OwnSt → List Nat → Option OwnSt
   | t, [] => some t
   | .owned, _ :: π => OwnSt.get .owned π

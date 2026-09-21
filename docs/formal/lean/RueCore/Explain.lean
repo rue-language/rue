@@ -178,12 +178,23 @@ def storeLine (H : Store) : String :=
   else "[" ++ String.intercalate ", "
     ((storeRows 0 H).map (fun r => r.1 ++ " = " ++ r.2)) ++ "]"
 
+mutual
 /-- (helper) A `Σ` state, spelled as §5 spells it: `Owned` and `MovedOut` at
-a whole path, and the field-by-field record a partial move leaves. -/
+a whole path, and — for a path a partial move has opened up — `Owned` at the
+node itself with its fields' own states beside it, named by the declaration
+slots `Print.fieldName` gives them. A slot no partial move touched is `Owned`
+and is not listed. -/
 partial def ownStateName : OwnSt → String
   | .owned => "Owned"
   | .movedOut => "MovedOut"
-  | .fields ts => "{ " ++ String.intercalate ", " (ts.map ownStateName) ++ " }"
+  | .fields ts =>
+      "Owned{ " ++ String.intercalate ", " (ownStateFields 0 ts) ++ " }"
+
+/-- (helper) One entry per recorded field slot, `x<j>: state`. -/
+partial def ownStateFields : Nat → List OwnSt → List String
+  | _, [] => []
+  | j, t :: ts => (Print.fieldName j ++ ": " ++ ownStateName t) :: ownStateFields (j + 1) ts
+end
 
 /-- (helper) One fused `Γ;Σ` entry: the binder's name, its type and `μ`
 mark (the fixed skeleton) and its flowing ownership state. -/

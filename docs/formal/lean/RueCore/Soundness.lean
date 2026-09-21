@@ -175,7 +175,8 @@ inductive ContentsTy (D : StructEnv) : Contents → Ty → Prop where
   | struct {s sd cs} :
       D[s]? = some sd → ContentsTys D cs sd.fields → ContentsTy D (.struct s cs) (.struct s)
 
-/-- The same, pointwise against a declaration's field list. -/
+/-- The same, pointwise against a declaration's field list (§5.8's
+(Struct-Intro), read on stored contents). -/
 inductive ContentsTys (D : StructEnv) : List Contents → List Ty → Prop where
   | nil : ContentsTys D [] []
   | cons {c cs T Ts} : ContentsTy D c T → ContentsTys D cs Ts → ContentsTys D (c :: cs) (T :: Ts)
@@ -636,7 +637,11 @@ produces:
 
 mutual
 /-- Per-node agreement between Σ's state for a path and the contents stored
-there, at the path's declared type (section docstring). -/
+there, at the path's declared type (§7's "Σ faithfully tracks the store's
+initialization", section docstring): `owned` holds a value, `movedOut` holds
+contents with no live linear sub-value — the §5.5 join's asymmetry, whose
+residue the machine drops path-specifically (`3.8:73`) — and `fields` holds the
+struct its type names, matched field by field. -/
 inductive ContentsMatches (D : StructEnv) : Contents → OwnSt → Ty → Prop where
   /-- An `Owned` path holds a value: well-typed contents with no `⊘` in it. -/
   | owned {c T} : ContentsTy D c T → c.holeFree = true → ContentsMatches D c .owned T

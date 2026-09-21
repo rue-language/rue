@@ -19,6 +19,9 @@ struct S5 { x0: i64, x1: S1 }
 drop fn S5(self) { @dbg(self.x0); }
 @copy struct S6 { x0: i64, x1: i64 }
 struct S7 { x0: S1, x1: S1 }
+struct S8 { x0: S1, x1: i64 }
+struct S9 { x0: S7, x1: i64 }
+struct S10 { x0: S3, x1: S1 }
 fn f0() -> i64 {
     {
         let v0: S1 = S1 { x0: 1 };

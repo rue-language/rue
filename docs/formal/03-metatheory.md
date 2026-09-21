@@ -41,12 +41,18 @@ dynamics — and the one-operand float intrinsics `@int_to_float`,
 the five of `3.12:34`; top-level function definitions,
 by-value calls with frames and scope records ((Fn)/(Call) §5.8,
 (D-Call)/(D-Return-Value) §6.9), and `return` with its σ unwind
-((Return-Value) §5.7, (D-Return) §6.9). Whole bindings only. No paths or
-partial moves — the fragment's whole-value struct elimination stands in for a
-projection (RUE-2231) — no equality compare (it borrows its
+((Return-Value) §5.7, (D-Return) §6.9). **Places** are §5's
+`Path ::= x | Path.f`, so a use, a `@drop` and an assignment each name one:
+a projection in value context is the partial move of `3.8:22` (§4.2), the
+`fully-owned` and `3.9:34` premises of (Use-Move) §5.1 are checked, §5.6's
+leak check is the recursive `residual-linear` read on the residue, and §5.5's
+join is taken path by path. No declared-linear destructure — a path with a
+declared-`linear` proper prefix is rejected as a stated restriction of the
+fragment rather than given (Use-Declared-Linear-Destructure) §5.1 (RUE-2236) —
+no arrays and so no `Path[c]` step, no element-wise `3.8:73` form and no
+`3.8:68` root-index restriction, no equality compare (it borrows its
 operands, `4.3:3f`, so `≈`'s float leaf has no instance here), no enums,
-arrays, `inout`/`borrow` parameters,
-accessor calls, loops, loans, or buffers.
+`inout`/`borrow` parameters, accessor calls, loops, loans, or buffers.
 
 **The trap inventory, and what a trap carries.** Every §6.12 category the
 fragment reaches is a `PanicKind`: `overflow` (`+ - *`, `neg`, `min_T / -1`,
@@ -101,10 +107,19 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   function's declared return type. Progress and preservation in one
   statement, because the interpreter is total.
 - **Invariant:** `RueCore.FrameMatches`, in two halves. `Matches` — "Σ
-  faithfully tracks the store's initialization" (§7), whose `CellMatches`
-  clause is deliberately asymmetric: a statically `MovedOut` cell may still
-  hold a live *non-linear* value (the §5.5 conservative join, `3.8:73`), never
-  a live linear one (`3.8:50`). And the σ invariant: the frame's scope record,
+  faithfully tracks the store's initialization" (§7), whose per-cell clause is
+  the **recursive** `RueCore.ContentsMatches`: Σ's state for a binding is a
+  tree over its paths (`owned`, `movedOut`, or `fields` for a partially moved
+  value) and the cell holds the same shape with §6.1's `⊘` admitted at any
+  node, and the two are related path by path. It is deliberately asymmetric at
+  the `movedOut` clause: a statically `MovedOut` path may still hold live
+  *non-linear* content (the §5.5 conservative join, `3.8:73`), never a live
+  linear sub-value (`3.8:50`). Two lemmas turn that into what the proof uses:
+  `RueCore.ContentsMatches.residualLinear_false` says the machine's leak
+  monitor sees exactly what §5.6's `residual-linear` computes, and
+  `RueCore.ContentsMatches.readAt`/`.writeAt` say that navigating a path
+  agrees on the two sides wherever Σ has a state for it — which is wherever no
+  proper prefix is `MovedOut`, (Owned-Base) §5.1. And the σ invariant: the frame's scope record,
   read newest-first, *is* its environment, which is what lets `Matches` apply
   to `run-all-scope-drops`'s walk. In this fragment that equation is
   **definitional** — every frame the interpreter builds builds σ and ρ from
@@ -117,33 +132,44 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   struct declaration and (Fn) §5.8 for every function, plus an entry point
   taking no parameters — which `RueCore.checkProgram_sound` decides.
 - **Covers:** the fragment above. **Owed:** every remaining Phase C slice
-  re-establishes this theorem for its forms (RUE-2231 through RUE-2237,
-  RUE-2282).
+  re-establishes this theorem for its forms (RUE-2232 through RUE-2237).
 
 ## No use-after-move
 
 - **Theorem:** `RueCore.no_use_after_move`.
-- **In words:** no evaluation of a well-typed program touches a `⊘` cell.
-- **Covers:** whole bindings. **Owed:** paths make the invariant recursive
-  (RUE-2231).
+- **In words:** no evaluation of a well-typed program touches a `⊘` — at the
+  root of a cell, or at any node inside it.
+- **Covers:** whole bindings **and paths**. The premise that carries the
+  second is `fully-owned(Σ, p)` (§5.1, `3.8:26`): a read that reaches a hole
+  anywhere inside the aggregate it names is `useAfterMove`, and the rule
+  forbids handing such an aggregate to a new owner — which is the compiler's
+  E0205 "use of partially moved value" (`RueCore.Examples.partialThenWhole`).
+  Reading a *sibling* through a partially moved base stays legal
+  (`3.8:53`, (Owned-Base) §5.1, mechanized as `RueCore.OwnSt.get`).
+  **Owed:** array elements at constant indices (RUE-2235) and the
+  declared-linear destructure's selected leaf (RUE-2236).
 
 ## No double-free
 
 - **Not yet mechanized.** The drop trace makes double frees visible; the
   theorem over minted value identities is RUE-2237.
 - **Partial progress:** the walk it will quantify over now has a proved
-  shape, in closed form. `RueCore.dropValue_struct_events`
-  (`lean/RueCore/Soundness.lean`) says that for a well-typed struct value the
-  events its drop emits are its user destructor's event — when the
-  declaration has one (`3.9:28`) — followed by the concatenation of its
-  fields' drop events in **declaration order** (`3.9:13`), each field's given
-  by the same closed form recursively; `RueCore.dropValue_events` is the
-  value-level equation it reads off, and `RueCore.dropEvents`
-  (`lean/RueCore/Dynamics.lean`) is §6.11's order written as a function.
-  `RueCore.dropValue_ok` says the walk never refuses on a well-typed value,
-  and `RueCore.StructDecl.Wf.field_not_linear` says a value the leak monitor
-  lets through carries no linear field, which is why the monitor reads the
-  value's own class and never descends. What is still owed is the
+  shape, in closed form, **over cell contents rather than values** — which is
+  where the `⊘`-skip that makes double frees impossible lives.
+  `RueCore.dropContents_struct_events` (`lean/RueCore/Soundness.lean`) says
+  that for well-typed contents at a struct type the events its drop emits are
+  its user destructor's event — when the declaration has one (`3.9:28`) —
+  followed by the concatenation of its fields' drop events in **declaration
+  order** (`3.9:13`), each field's given by the same closed form recursively
+  and a field that has been **moved out contributing none** (`3.8:73`);
+  `RueCore.dropContents_events` is the equation it reads off, and
+  `RueCore.dropEvents` (`lean/RueCore/Dynamics.lean`) is §6.11's order written
+  as a function. `RueCore.dropContents_ok` says the walk never refuses on
+  well-typed contents, and
+  `RueCore.ContentsMatches.residualLinear_false` says contents the leak
+  monitor lets through holds no live declared-`linear` sub-value — the
+  residual reading §5.6 asks for, which is what makes a partially consumed
+  carrier's residue droppable. What is still owed is the
   identity-level statement: that each minted value appears in the trace
   exactly once.
 
@@ -162,7 +188,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 - **Owed:** the "exactly once, at the end of its scope" half is the trace
   theorem `drop_exactly_once` (RUE-2237); the σ records and unwind paths it
   quantifies over are in place, and so is the order *within* one value's drop
-  (`dropValue_struct_events`, above).
+  (`dropContents_struct_events`, above).
 
 ## No use-after-free
 
@@ -218,14 +244,19 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
     nothing, says `panic: boom` and exits 101 (verified by hand).
     `panicPastAffine` is the same shape one class down, where the obligation
     was never there to lose.
-- **Covers:** whole bindings, the binary join, by-value parameters, and struct
-  values whose class is `Linear` through a field — §3's join, proved to be
-  what a declaration records (`RueCore.struct_class_unique`) and to reach
-  `Linear` exactly when the declaration says so or a field does
-  (`RueCore.struct_carriesLinear_iff`, §5.3's `carries_linear` lifting) — on
-  every edge but the two above. **Owed:** RUE-2316; partial moves and
-  per-field obligations (RUE-2231); declared-linear destructure and residue
-  ordering (RUE-2236); enums (RUE-2232).
+- **Covers:** whole bindings, **paths and per-field obligations**, the binary
+  join, by-value parameters, and struct values whose class is `Linear` through
+  a field — §3's join, proved to be what a declaration records
+  (`RueCore.struct_class_unique`) and to reach `Linear` exactly when the
+  declaration says so or a field does (`RueCore.struct_carriesLinear_iff`,
+  §5.3's `carries_linear` lifting) — on every edge but the two above. The
+  per-field half is §5.6's `residual-linear` read on the residue
+  (`RueCore.residualLinear`), so consuming exactly the linear part of an
+  infectious carrier and letting the rest drop is accepted (the RUE-1591
+  model), while stranding a linear sub-place under a partially moved place is
+  rejected ((@Drop) §5.3's own side condition, E0406). **Owed:** RUE-2316;
+  declared-linear destructure and residue ordering (RUE-2236); arrays
+  (RUE-2235); enums (RUE-2232).
 
 ## Exclusivity / no aliased mutation
 
