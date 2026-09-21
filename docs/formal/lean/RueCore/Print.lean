@@ -62,12 +62,32 @@ changes evaluation order or a drop point (the operands and the discarded
 value are integers, which drop silently); they are, with the linear `drop`
 above, the places where the printed program is not the identity elaboration.
 
+## Functions, calls, and `return`
+
+A fragment *program* is a list of function definitions (`Syntax.lean`), and
+it prints as one `fn f<i>(...) -> T { ... }` item per definition, in program
+order, with parameter `j` named `v<j>` — the name the body's de Bruijn index
+`m-1-j` resolves to, so a parameter and a `let` binder are spelled the same
+way. `call f args` prints as `f<f>(a1, …, am)` and `ret e` as `return e`,
+in whatever expression position the core form occupies: `let v0: i64 = (1 +
+return 5); v0` is a program the compiler accepts, and it is the shape
+(D-Return) §6.9 fires in "any evaluation context `E'`" for.
+
+One §2 mark has no surface spelling: a by-value parameter may carry `μ = mut`
+(§2's `F` production; §5.2 then lets the body assign to it), and Rue's
+grammar has no `mut` parameter today (E0100). The printer prints the
+parameter without the mark, so a case whose signature used one would print a
+program the compiler rejects; the corpus and the generator declare
+`mu := false` on every parameter, and the core keeps the mark because (Fn)
+§5.8 and (Assign) §5.2 are stated with it.
+
 Every printed program is a complete Rue module: a fixed prelude declaring
-the three resource types and their consumers, then `main`, which binds the
-program's value, prints it (through the class's consumer for a resource
-result, so a resource returned by the program is observed as its payload
-rather than dropped at `main`'s end), and returns 0. Traps (§6.12) end the
-process before the value is printed; the bridge compares the trap kind.
+the three resource types and their consumers, then the program's functions,
+then `main`, which binds the entry function's value by calling `f0()`, prints
+it (through the class's consumer for a resource result, so a resource
+returned by the program is observed as its payload rather than dropped at
+`main`'s end), and returns 0. Traps (§6.12) end the process before the value
+is printed; the bridge compares the trap kind.
 -/
 
 namespace RueCore
@@ -110,10 +130,12 @@ def prelude : String :=
 
 /-- Type inference without ownership: the fragment's types do not depend on
 Σ, so the printer can recover every subexpression's type from the binders
-alone. `Γ` lists binder types innermost first, exactly as `Ctx` does. A
-`none` means the program is ill-scoped, which elaborated programs never are
+alone. `Γ` lists binder types innermost first, exactly as `Ctx` does; `P` is
+the program a call's callee is looked up in and `R` the enclosing function's
+return type, which is the type `Checker.lean` gives a `return`. A `none`
+means the program is ill-scoped, which elaborated programs never are
 (helper). -/
-def tyOf (Γ : List Ty) : Expr → Option Ty
+def tyOf (P : Program) (R : Ty) (Γ : List Ty) : Expr → Option Ty
   | .intLit _ => some .int
   | .boolLit _ => some .bool
   | .unitLit => some .unit
@@ -125,15 +147,21 @@ def tyOf (Γ : List Ty) : Expr → Option Ty
   | .consume _ => some .int
   | .drop _ => some .unit
   | .letIn _ e₁ e₂ => do
-      let T₁ ← tyOf Γ e₁
-      tyOf (T₁ :: Γ) e₂
+      let T₁ ← tyOf P R Γ e₁
+      tyOf P R (T₁ :: Γ) e₂
   | .assign _ _ => some .unit
-  | .seq _ e₂ => tyOf Γ e₂
-  | .ite _ e₁ _ => tyOf Γ e₁
+  | .seq _ e₂ => tyOf P R Γ e₂
+  | .ite _ e₁ _ => tyOf P R Γ e₁
+  | .call f _ => (P[f]?).map FnDef.ret
+  | .ret _ => some R
 
 /-- The binder introduced at nesting depth `d` is named `v<d>`; a de Bruijn
 index `i` under `n` binders names the binder at depth `n - 1 - i` (helper). -/
 def binderName (depth : Nat) : String := "v" ++ toString depth
+
+/-- The function at index `i` of the program is named `f<i>`; elaboration
+resolves a surface name to the index, as it does for a binding (helper). -/
+def fnName (i : Nat) : String := "f" ++ toString i
 
 /-- The name of the binder a de Bruijn index refers to (helper). -/
 def useName (Γ : List Ty) (i : Nat) : String :=
@@ -149,58 +177,64 @@ def resLit (κ : Mult) (payload : String) : String :=
   | .affine => "RAffine { value: " ++ payload ++ ", live: true }"
   | .linear => "RLinear { value: " ++ payload ++ " }"
 
-/-- Print an expression. `Γ` is the binder environment (innermost first)
-and `lvl` the indentation of the line the expression starts on. Forms that
-Rue spells as statements (`let`, assignment, sequencing) become blocks whose
-value is their tail expression, so the printed expression has the same value
-and the same drop points as the core form: a `let` binder is dropped at the
-close of its block (§6.7), a discarded operand at the end of its statement
-(§6.7), an overwritten value at the assignment (§6.8). Integer operands of
-`<` and discarded integers are typed explicitly (module docstring, "Integer
-typing"). -/
-partial def expr (Γ : List Ty) (lvl : Nat) : Expr → String
+/-- Print an expression. `Γ` is the binder environment (innermost first),
+`P` the program a call's callee is looked up in, `R` the enclosing function's
+return type, and `lvl` the indentation of the line the expression starts on.
+Forms that Rue spells as statements (`let`, assignment, sequencing) become
+blocks whose value is their tail expression, so the printed expression has the
+same value and the same drop points as the core form: a `let` binder is
+dropped at the close of its block (§6.7), a discarded operand at the end of
+its statement (§6.7), an overwritten value at the assignment (§6.8). Integer
+operands of `<` and discarded integers are typed explicitly (module docstring,
+"Integer typing"). A `return` prints in place, wherever its core form stands
+(§6.9's (D-Return) fires in any evaluation context). -/
+partial def expr (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) : Expr → String
   | .intLit n => if n < 0 then "(" ++ toString n ++ ")" else toString n
   | .boolLit b => if b then "true" else "false"
   | .unitLit => "()"
   | .use i => useName Γ i
-  | .add e₁ e₂ => "(" ++ expr Γ lvl e₁ ++ " + " ++ expr Γ lvl e₂ ++ ")"
-  | .div e₁ e₂ => "(" ++ expr Γ lvl e₁ ++ " / " ++ expr Γ lvl e₂ ++ ")"
-  | .lt e₁ e₂ => "lt_i64(" ++ expr Γ lvl e₁ ++ ", " ++ expr Γ lvl e₂ ++ ")"
-  | .mkres κ e => resLit κ (expr Γ lvl e)
+  | .add e₁ e₂ => "(" ++ expr P R Γ lvl e₁ ++ " + " ++ expr P R Γ lvl e₂ ++ ")"
+  | .div e₁ e₂ => "(" ++ expr P R Γ lvl e₁ ++ " / " ++ expr P R Γ lvl e₂ ++ ")"
+  | .lt e₁ e₂ => "lt_i64(" ++ expr P R Γ lvl e₁ ++ ", " ++ expr P R Γ lvl e₂ ++ ")"
+  | .mkres κ e => resLit κ (expr P R Γ lvl e)
   | .consume e =>
-      let κ := match tyOf Γ e with
+      let κ := match tyOf P R Γ e with
         | some (.res κ) => κ
         | _ => .affine   -- ill-typed input; the checker verdict says so
-      consumeName κ ++ "(" ++ expr Γ lvl e ++ ")"
+      consumeName κ ++ "(" ++ expr P R Γ lvl e ++ ")"
   | .drop i =>
       match Γ[i]? with
       | some (.res .linear) => "@dbg(consume_linear(" ++ useName Γ i ++ "))"
       | _ => "@drop(" ++ useName Γ i ++ ")"
   | .letIn m e₁ e₂ =>
-      let T₁ := (tyOf Γ e₁).getD .int
+      let T₁ := (tyOf P R Γ e₁).getD .int
       let name := binderName Γ.length
       "{\n" ++
       indent (lvl + 1) ++ "let " ++ (if m then "mut " else "") ++ name ++
-        ": " ++ tyName T₁ ++ " = " ++ expr Γ (lvl + 1) e₁ ++ ";\n" ++
-      indent (lvl + 1) ++ expr (T₁ :: Γ) (lvl + 1) e₂ ++ "\n" ++
+        ": " ++ tyName T₁ ++ " = " ++ expr P R Γ (lvl + 1) e₁ ++ ";\n" ++
+      indent (lvl + 1) ++ expr P R (T₁ :: Γ) (lvl + 1) e₂ ++ "\n" ++
       indent lvl ++ "}"
   | .assign i e =>
-      "{ " ++ useName Γ i ++ " = " ++ expr Γ lvl e ++ "; }"
+      "{ " ++ useName Γ i ++ " = " ++ expr P R Γ lvl e ++ "; }"
   | .seq e₁ e₂ =>
       -- A discarded int must still be typed i64 (module docstring).
-      let discard := match tyOf Γ e₁ with
-        | some .int => "let t" ++ toString lvl ++ ": i64 = " ++ expr Γ (lvl + 1) e₁ ++ ";"
-        | _ => expr Γ (lvl + 1) e₁ ++ ";"
+      let discard := match tyOf P R Γ e₁ with
+        | some .int => "let t" ++ toString lvl ++ ": i64 = " ++ expr P R Γ (lvl + 1) e₁ ++ ";"
+        | _ => expr P R Γ (lvl + 1) e₁ ++ ";"
       "{\n" ++
       indent (lvl + 1) ++ discard ++ "\n" ++
-      indent (lvl + 1) ++ expr Γ (lvl + 1) e₂ ++ "\n" ++
+      indent (lvl + 1) ++ expr P R Γ (lvl + 1) e₂ ++ "\n" ++
       indent lvl ++ "}"
   | .ite c e₁ e₂ =>
-      "if " ++ expr Γ lvl c ++ " {\n" ++
-      indent (lvl + 1) ++ expr Γ (lvl + 1) e₁ ++ "\n" ++
+      "if " ++ expr P R Γ lvl c ++ " {\n" ++
+      indent (lvl + 1) ++ expr P R Γ (lvl + 1) e₁ ++ "\n" ++
       indent lvl ++ "} else {\n" ++
-      indent (lvl + 1) ++ expr Γ (lvl + 1) e₂ ++ "\n" ++
+      indent (lvl + 1) ++ expr P R Γ (lvl + 1) e₂ ++ "\n" ++
       indent lvl ++ "}"
+  | .call f args =>
+      fnName f ++ "(" ++
+        String.intercalate ", " (args.map (fun a => expr P R Γ lvl a)) ++ ")"
+  | .ret e => "return " ++ expr P R Γ lvl e
 
 /-- How `main` observes the program's value: an integer or boolean is
 printed as is; a resource is consumed and its payload printed (the
@@ -212,13 +246,40 @@ def observeValue (T : Ty) : String :=
   | .unit => ""
   | .res κ => "    @dbg(" ++ consumeName κ ++ "(result));\n"
 
-/-- A complete Rue program for a closed core expression, headed by a comment
-naming the case, the calculus rules it exercises, and what a reader should
-expect (the explainability tenet:
-`corpus.json` doubles as a readable example set) (helper). -/
+/-- One parameter per line of a signature, named the way the body's de Bruijn
+indices resolve: the first parameter is the outermost binder, so it is `v0`.
+The `μ = mut` mark is not printed (module docstring) (helper). -/
+def paramList : Nat → List Param → List String
+  | _, [] => []
+  | i, p :: rest => (binderName i ++ ": " ++ tyName p.ty) :: paramList (i + 1) rest
+
+/-- The binder environment a function body starts in: its parameter types,
+innermost binder first, exactly as (Fn) §5.8's `fnCtx` orders them
+(helper). -/
+def bodyBinders (fd : FnDef) : List Ty := (fd.params.map Param.ty).reverse
+
+/-- One `fn` item: §2's `F` production for a by-value signature. -/
+def fnItem (P : Program) (idx : Nat) (fd : FnDef) : String :=
+  "fn " ++ fnName idx ++ "(" ++ String.intercalate ", " (paramList 0 fd.params) ++
+    ") -> " ++ tyName fd.ret ++ " {\n" ++
+  indent 1 ++ expr P fd.ret (bodyBinders fd) 1 fd.body ++ "\n" ++
+  "}\n"
+
+/-- Every `fn` item of a program, in program order (helper). -/
+def fnItems (P : Program) : Nat → List FnDef → String
+  | _, [] => ""
+  | i, fd :: rest => fnItem P i fd ++ "\n" ++ fnItems P (i + 1) rest
+
+/-- A complete Rue module for a fragment program, headed by a comment naming
+the case, the calculus rules it exercises, and what a reader should expect
+(the explainability tenet: `corpus.json` doubles as a readable example set).
+`main` calls the entry function `f0` and observes its value, so the program's
+own functions print exactly as §2 writes them (helper). -/
 def program (name description : String) (rules : List String) (outcome : String)
-    (e : Expr) : String :=
-  let T := (tyOf [] e).getD .int
+    (P : Program) : String :=
+  let T := match P[0]? with
+    | some fd => fd.ret
+    | none => .int
   "// Case: " ++ name ++ "\n" ++
   "// " ++ description ++ "\n" ++
   "// Rules: " ++ String.intercalate "; " rules ++ "\n" ++
@@ -226,8 +287,9 @@ def program (name description : String) (rules : List String) (outcome : String)
   "// Printed from the RueCore fragment by docs/formal/lean/RueCore/Print.lean.\n" ++
   prelude ++
   "\n" ++
+  fnItems P 0 P ++
   "fn main() -> i32 {\n" ++
-  "    let result: " ++ tyName T ++ " = " ++ expr [] 1 e ++ ";\n" ++
+  "    let result: " ++ tyName T ++ " = " ++ fnName 0 ++ "();\n" ++
   observeValue T ++
   "    0\n" ++
   "}\n"
