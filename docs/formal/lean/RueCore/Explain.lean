@@ -266,7 +266,8 @@ def fieldCountMismatch : String :=
 /-- (Struct-Intro) §5.8's per-field premise `Γ;Σ_{i-1};Λ ⊢ ei ⇒ Ti ⊣ Σi`. -/
 def fieldTypeMismatch (T field : Ty) : String :=
   "a field initializer has type " ++ Print.tyName T ++ " but its field is declared " ++
-  Print.tyName field ++ " ((Struct-Intro) premise `Γ;Σ_{i-1};Λ ⊢ ei ⇒ Ti ⊣ Σi`, §5.8; 3.6:9)"
+  Print.tyName field ++ " ((Struct-Intro) premise `Γ;Σ_{i-1};Λ ⊢ ei ⇒ Ti ⊣ Σi`, §5.8; " ++
+  "initializers are presented in declaration order, 3.6:15)"
 
 /-- The fragment's whole-value elimination takes a struct by value, which is
 a §4.2 use of its operand's places. -/
@@ -660,7 +661,8 @@ def argsPremise (P : Program) (R : Ty) : Ctx → List Expr → List Ty → Strin
 
 /-- The premise a rejected field list failed: the wrong number of
 initializers (`3.6:5`, `3.6:6`), or the first one whose type is not its
-field's (`3.6:9`) — the two per-field premises of (Struct-Intro) §5.8. -/
+field's (`3.6:15`: they are presented in declaration order) — the two
+per-field premises of (Struct-Intro) §5.8. -/
 def fieldsPremise (P : Program) (R : Ty) : Ctx → List Expr → List Ty → String
   | _, [], [] => Premise.fieldCountMismatch
   | Γ, e :: es, T :: Ts =>
