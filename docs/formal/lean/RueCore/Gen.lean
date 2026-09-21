@@ -33,6 +33,16 @@ them needs a signature environment to draw callees from and a fuel bound that
 recursion cannot escape; it is the follow-up this module's `expr` is shaped
 for (`Corpus.Case` already holds a whole `Program`).
 
+`return` also has to wait for a reason of its own. A generated case's
+`reject` verdict is only as good as `check`'s completeness, and `check` is
+not complete on `return`: a `return` arm of an `if` contributes its
+post-operand state to §5.5's join where §5.7 excludes it, so the first
+generated program with that shape would be a *false* bridge failure —
+rejected here, accepted by the calculus and by the compiler
+(`Checker.lean`, "what completeness costs"; `Corpus.lean`'s verdict
+contract). Emitting `ret` waits on a `check` that carries the ⊥
+provenance.
+
 ## What it deliberately does not guarantee
 
 Ownership. Moves, drops, assignments and scope exits are chosen at random,

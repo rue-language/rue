@@ -26,6 +26,19 @@ One array of case objects. Fields:
   to it and the compiler must accept it; or `{"reject": {}}` (the compiler
   must reject it with an ownership diagnostic). The type is the entry
   function's declared return type.
+
+  An `accept` verdict is backed by a proof (`checkProgram_sound` plus §7), so
+  a compiler that rejects one is wrong. A `reject` verdict is **not**: it is
+  the absence of an acceptance from an algorithm that is deliberately
+  narrower than the rule, so it is only trustworthy on shapes where `check`
+  is complete. It is not complete on `return`: a `return` arm of an `if`
+  contributes its post-operand state to §5.5's join, where §5.7 excludes a
+  diverging arm's state entirely, so a binding that arm moved out is
+  unusable after the `if` and a program the calculus derives — and the
+  compiler accepts — is rejected here (`Checker.lean`, "what completeness
+  costs"). That shape would be a *false* bridge failure, so nothing produces
+  it: the seed cases below use `return` only where `check` is complete, and
+  `Gen.lean` emits no `ret` at all.
 * `expected` — the interpreter's outcome for an accepted program:
   `{"kind": "ok", "stdout": [<line>...], "exit": 0}` where each line is one
   drop event's payload in trace order followed by the program's value
@@ -204,7 +217,7 @@ def cases : List Case := [
     prog := Examples.callPlain },
   { name := "return_past_affine",
     description := "An early return past two live affine bindings: the frame unwinds newest-first, so the drops print 4 then 3, then the value 7.",
-    rules := ["(Return-Value) §5.7", "(D-Return) §6.9", "3.9:18"],
+    rules := ["(Return-Value) §5.7", "(D-Return) §6.9", "3.9:18", "3.9:4"],
     prog := Examples.returnPastAffine },
   { name := "return_past_linear",
     description := "An early return past a live linear binding: rejected statically (E0406, the §5.6 obligation at the ⊥_exit edge) and refused dynamically (linearLeak).",
@@ -249,13 +262,15 @@ def valueLine : Val → Option String
   | .res _ n => some (toString n)
 
 /-- One stdout line per drop event: the dropped resource's payload. `eval`
-emits events only for affine and linear resources, so any other value here
-is a broken invariant, reported loudly rather than printed as an empty
-line. -/
+emits events only for resource values (`dropRetire` for an affine one, the
+`drop` and `seq` arms for any non-copy one), so the last case is unreachable.
+It is written as a line no binary can print rather than as a `panic!`, so a
+broken invariant fails the one case that has it — loudly, in the bridge's own
+comparison — instead of aborting the whole export. -/
 def eventLine : Event → String
   | .drop _ (.res _ n) => toString n
   | .dropTemp (.res _ n) => toString n
-  | ev => panic! s!"drop event of a non-resource value: {repr ev}"
+  | ev => s!"<drop event of a non-resource value: {repr ev}>"
 
 def panicName : PanicKind → String
   | .overflow => "overflow"

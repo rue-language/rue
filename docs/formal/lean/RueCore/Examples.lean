@@ -132,6 +132,52 @@ def countdown : Program :=
        (intLit 0)
        (add (use 0) (call 1 [add (use 0) (intLit (-1))])) }]
 
+/-! ## The one edge no monitor covers (RUE-2316)
+
+A by-value argument's value lives in no cell and in no scope record between
+the `use` that produced it and the `mintParams` that gives it one (§6.9's
+(D-Call)). If a *later* argument of the same call unwinds by `return`,
+(D-Return) §6.9 discards the evaluation context — the pending arguments with
+it — and runs `run-all-scope-drops` on the frame's records, which never named
+that value. Its drop is neither run nor monitored.
+
+`Dynamics.lean`'s "Pending arguments" section says why `eval` models it that
+way rather than patching it: the calculus has the gap — the unwinding rule
+walks only σ, and §5.7's strict-context bottom rule (`Strict-Bottom` there,
+which the fragment does not mechanize) imposes no discard check on the
+siblings already evaluated — and the Rue compiler behaves the same. Closing it
+is an open spec decision, RUE-2316. These two programs are the kernel-checked
+witnesses, and the reason `no_violation`'s docstring names the carve-out. -/
+
+/-- A **linear** value consumed *zero* times, with no refusal anywhere.
+
+`f1`'s first parameter is linear and its body consumes it, so (Fn) §5.8 is
+satisfied. `main` moves its linear binding into the first argument and then
+diverges in the second. (Return-Value) §5.7's frame-wide residual-linear
+premise holds at the `return`, because the move already marked the *context*
+`MovedOut` — the obligation has migrated to a value the context does not name.
+`checkProgram` accepts, so `checkProgram_sound`, `run_safe`, `no_violation`
+and `no_linear_leak` all apply to it, and the run destroys `res linear 7` with
+an empty drop trace. -/
+def linearLostAtCallArg : Program :=
+  [{ params := [], ret := .int,
+     body := letIn false (mkres .linear (intLit 7))
+       (call 1 [use 0, ret (intLit 0)]) },
+   { params := [⟨.res .linear, false⟩, ⟨.int, false⟩], ret := .int,
+     body := add (consume (use 1)) (use 0) }]
+
+/-- The affine twin, where the same loss is *observable*: an affine value's
+drop is the trace event the printed program turns into a destructor's output
+line, and here there is none. The Rue compiler agrees — the `RAffine`
+destructor does not run — which is why no bridge case could catch this and why
+none is added. -/
+def affineLostAtCallArg : Program :=
+  [{ params := [], ret := .int,
+     body := letIn false (mkres .affine (intLit 7))
+       (call 1 [use 0, ret (intLit 0)]) },
+   { params := [⟨.res .affine, false⟩, ⟨.int, false⟩], ret := .int,
+     body := add (consume (use 1)) (use 0) }]
+
 #eval run (Program.entry .int scalars) demoFuel            -- ok: 10, trace: []
 #eval run (Program.entry .int affineDrop) demoFuel         -- ok: 1, drop (res affine 7)
 #eval run (Program.entry .int linearConsumed) demoFuel     -- ok: 7, trace: []
@@ -149,6 +195,8 @@ def countdown : Program :=
 #eval run recursionTrap demoFuel                           -- panic: divZero
 #eval run countdown demoFuel                               -- ok: 10
 #eval run countdown 12                                     -- outOfFuel
+#eval run linearLostAtCallArg demoFuel                     -- ok: 0, EMPTY trace
+#eval run affineLostAtCallArg demoFuel                     -- ok: 0, EMPTY trace
 
 /-!
 ## Static acceptance and rejection, mechanically
@@ -169,6 +217,21 @@ example : ProgramTyped returnPastAffine := checkProgram_sound (by rfl)
 example : ProgramTyped paramDroppedAtPop := checkProgram_sound (by rfl)
 example : ProgramTyped recursionTrap := checkProgram_sound (by rfl)
 example : ProgramTyped countdown := checkProgram_sound (by rfl)
+
+/-! The two RUE-2316 witnesses are accepted — which is the point: the §7
+theorems apply to them, and the run below still loses the resource. -/
+
+example : ProgramTyped linearLostAtCallArg := checkProgram_sound (by rfl)
+example : ProgramTyped affineLostAtCallArg := checkProgram_sound (by rfl)
+
+/-- The linear value is destroyed with an empty trace: no `drop`, no
+`dropTemp`, and no `Violation`. `no_linear_leak` holds of this program and
+says nothing about it. -/
+example : run linearLostAtCallArg demoFuel = .ok [.dead] (.int 0) [] := by rfl
+
+/-- The affine value likewise: the trace a destructor would have printed is
+empty. -/
+example : run affineLostAtCallArg demoFuel = .ok [.dead] (.int 0) [] := by rfl
 
 example : checkProgram (Program.entry .int linearLeaked) = false := by rfl
 example : checkProgram (Program.entry .int useAfterMove) = false := by rfl

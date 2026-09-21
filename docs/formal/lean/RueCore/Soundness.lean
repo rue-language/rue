@@ -17,15 +17,25 @@ always holds a well-typed value; and a live **linear** value is never behind a
 A frame carries an environment `ρ` and a scope record `σ`, and the machine
 keeps two books on every live binding: `ρ` says where it is, `σ` says it is
 owed a drop. `FrameMatches` states both halves at once — `Matches Γ ρ H`, and
-`σ` reversed **is** `ρ`. The second conjunct is what makes the redundancy of
-RUE-1277 provably consistent: `let` registers its cell in the body frame's
-record and in the administrative `endscope` the normal path runs, and the
-caller's frame — the one the normal path returns to — never held that cell, so
-between them the cell is dropped exactly once. It is also what turns §7's
-no-use-after-drop bullet from a structural observation into a consequence of
-the invariant: `run-all-scope-drops` walks `σ`, `Matches` says every cell of
-`ρ` is live or moved-out and that no two bindings share one, so no unwind ever
-retires a cell twice or touches a `†` cell.
+`σ` reversed **is** `ρ`.
+
+The second conjunct is **definitional in this fragment**, and it is worth
+being plain about that. Every frame `eval` builds — the callee's frame at a
+call, the extended frame inside a `let` body — builds σ and ρ from the same
+list, so σ carries no information ρ does not and the equation cannot fail
+here. It is stated as an invariant because it is what the *teardown* proofs
+consume, and because it is the clause that stops being free the moment
+`Frame.scope` becomes the stack §6.1 actually specifies: §6.6's `match` arms
+and §6.10's loops push and pop scopes independently of the binder chain, and
+then σ and ρ are two different books that a slice has to keep in step. That
+is the shape the RUE-1277 redundancy was raised for, and this fragment does
+not have it.
+
+What the clause does buy, already: `run-all-scope-drops` walks σ, and because
+σ is ρ, `Matches` — every cell live or moved-out, no two bindings sharing one
+— applies to the walk. That is what turns §7's no-use-after-drop bullet from a
+structural observation into a consequence of the invariant, and what proves no
+unwind retires a cell twice or touches a `†` cell.
 
 ## Locality (`Untouched`)
 
@@ -302,7 +312,10 @@ structure FrameMatches (Γ : Ctx) (φ : Frame) (H : Store) : Prop where
   /-- `Matches` through the frame's environment `ρ`. -/
   store : Matches Γ φ.env H
   /-- The scope record, newest-first, is the environment (`3.8:62`: every
-  by-value binding is registered, and only those). -/
+  by-value binding is registered, and only those). In this fragment both are
+  built from one list at every frame, so the equation holds definitionally;
+  it becomes a real obligation when `Frame.scope` is §6.1's stack (§6.6,
+  §6.10). -/
   record : φ.scope.reverse = φ.env
 
 /-! ## Scope teardown never refuses -/
@@ -1340,23 +1353,42 @@ theorem run_safe {P : Program} {fd : FnDef} (hwf : WfProgram P)
   | outOfFuel => exact Or.inl rfl
 
 /-- The same, from the packaged well-formedness of a whole program: §7 over
-`ProgramTyped`, which is what `checkProgram` decides. -/
+`ProgramTyped`, which is what `checkProgram` decides. The entry function is
+existentially quantified because `ProgramTyped` only says one exists; the
+value's type is still the one that function declares, so this form claims
+exactly what `run_safe` proves. -/
 theorem ProgramTyped.run_safe {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-    run P fuel = .outOfFuel ∨ (∃ k, run P fuel = .panic k) ∨
-      (∃ H v tr, run P fuel = .ok H v tr) := by
+    ∃ fd, P[0]? = some fd ∧
+      (run P fuel = .outOfFuel ∨ (∃ k, run P fuel = .panic k) ∨
+        (∃ H v tr, run P fuel = .ok H v tr ∧ HasTy v fd.ret)) := by
   obtain ⟨fd, h0, hp⟩ := h.entry
-  rcases RueCore.run_safe h.fns h0 hp fuel with h₁ | ⟨k, h₂⟩ | ⟨H, v, tr, h₃, _⟩
+  refine ⟨fd, h0, ?_⟩
+  rcases RueCore.run_safe h.fns h0 hp fuel with h₁ | ⟨k, h₂⟩ | ⟨H, v, tr, h₃, hty⟩
   · exact Or.inl h₁
   · exact Or.inr (Or.inl ⟨k, h₂⟩)
-  · exact Or.inr (Or.inr ⟨H, v, tr, h₃⟩)
+  · exact Or.inr (Or.inr ⟨H, v, tr, h₃, hty⟩)
 
 /-! ## §7 corollaries, named -/
 
-/-- A well-formed program never reaches **any** memory violation, at any fuel:
-§7's bullets, conjoined, for this fragment. -/
+/-- A well-formed program never reaches any of the machine's **named**
+violations, at any fuel.
+
+Read as "§7's bullets, conjoined", this would overstate the linear bullet by
+one edge. A by-value argument value that a *later* argument of the same call
+destroys by `return` is in no cell and no scope record, so its drop is neither
+run nor monitored and none of the five violations fires — a linear value can
+be consumed zero times without this theorem noticing. That edge is the
+calculus as written — §6.9's unwinding rule walks only σ, and §5.7's
+strict-context bottom rule (`Strict-Bottom` there, which the fragment does not
+mechanize) imposes no discard check on siblings already evaluated — it is what
+the Rue compiler does, and closing it is an open spec decision (RUE-2316, the
+pending-argument decision). `Dynamics.lean`'s "Pending arguments" section
+states it in full and `Examples.lean`'s `linearLostAtCallArg` is the
+kernel-checked witness; every *other* edge — a `let`'s scope exit, a frame's
+normal pop, and a `return`'s unwind — is covered. -/
 theorem no_violation {P : Program} (h : ProgramTyped P) (fuel : Nat) (w : Violation) :
     run P fuel ≠ .stuck w := by
-  rcases h.run_safe fuel with h₁ | ⟨k, h₂⟩ | ⟨H, v, tr, h₃⟩
+  obtain ⟨_, _, h₁ | ⟨k, h₂⟩ | ⟨H, v, tr, h₃, _⟩⟩ := h.run_safe fuel
   · rw [h₁]; simp
   · rw [h₂]; simp
   · rw [h₃]; simp
