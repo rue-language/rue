@@ -4,28 +4,44 @@
 A fragment of the Rue core calculus (`docs/formal/01-core-calculus.md` §2–§3),
 scoped for the mechanization spike:
 
-* Types: `int` (modeled as `int(64, signed)`), `bool`, `unit`, and an abstract
-  resource type `res κ` standing in for a monomorphic struct whose multiplicity
-  class is `κ`. Structs-with-fields, enums, and arrays (and with them paths,
-  partial moves, and the declared-linear destructure) are out of the spike and
-  tracked in the project outline.
+* Types: `int` (modeled as `int(64, signed)`), `bool`, `unit`, and monomorphic
+  struct types naming a declaration of the program's struct environment.
+  Enums and arrays (and with them `match`, indexing, and the element-wise
+  `3.8:73` forms) are out of the spike and tracked in the project outline; so
+  are projections and partial moves, which are the paths RUE-2231 brings.
 * Expressions: literals, place use (§4.2), `+`/`/`/`<` primitives (§5.8 with
-  the §6.4 trap dynamics), resource intro/elim, `@drop` (§5.3), `let` (§5.6
+  the §6.4 trap dynamics), struct literals (§5.8's (Struct-Intro)), the
+  fragment's whole-value struct elimination, `@drop` (§5.3), `let` (§5.6
   scope exit), assignment with reinitialization (§5.2), sequencing with the
   discard check (§5.3), `if` with the branch join (§5.5), by-value calls
   (§5.8's (Call), §6.9), and `return` (§5.7's (Return-Value), §6.9).
 * Variables are de Bruijn indices: the calculus reaches the core only through
   elaboration, and name resolution is elaboration's job.
-* Functions are named by their index in the program (`Program`), the same way
-  bindings are named by their de Bruijn index: elaboration resolves the name.
+* Functions and struct declarations are likewise named by their index in the
+  program, the same way bindings are named by their de Bruijn index:
+  elaboration resolves the name and the field order (`3.6:15`).
 
 No borrows/loans (Λ is ambiently empty in the current core anyway — §5
 preamble), no by-reference parameters, no loops, no accessor calls: those are
 the next milestones, not this slice's scope.
 
-`Expr` derives `Repr` but not `DecidableEq`: `call` carries a `List Expr`, a
-nested inductive occurrence for which Lean's `DecidableEq` deriving handler has
-no instance, and nothing in the package compares expressions.
+## Where a struct's class lives
+
+§3 fixes `class(S)` as the join of the field classes lifted by the declared
+attribute. A declaration *records* that class, and the program well-formedness
+judgment `WfStructs` (`Statics.lean`) is §3's equation: the recorded class is
+the lifted join, a `@copy` declaration's fields are all `Copy` and it declares
+no destructor (`3.8:18`, `3.9:31`), and a field may name only an earlier
+declaration. Recording it is what lets `Ty.mult` be a lookup rather than a
+recursion over the environment, and `struct_class_unique` (`Statics.lean`) is
+the proof that the record is determined rather than free: on an environment
+whose fields name only earlier declarations, at most one assignment of classes
+satisfies §3's equation.
+
+`Expr` and `Val` derive `Repr` but not `DecidableEq`: both carry a nested
+inductive occurrence (`List Expr`, `List Val`), for which Lean's `DecidableEq`
+deriving handler has no instance, and nothing in the package compares
+expressions or values.
 -/
 
 namespace RueCore
@@ -37,23 +53,88 @@ inductive Mult where
   | linear
 deriving DecidableEq, Repr
 
-/-- Types (§2, fragment). `res κ` is an abstract non-scalar type of class `κ`
-carrying an integer payload — the smallest stand-in for a monomorphic struct
-that exercises the Affine/Linear discipline. -/
+/-- The lattice order as a number, `Copy ⊑ Affine ⊑ Linear` (§3) (helper). -/
+def Mult.rank : Mult → Nat
+  | .copy => 0
+  | .affine => 1
+  | .linear => 2
+
+/-- The join `⊔` of §3's lattice: the least upper bound, which is what makes a
+struct at least as restrictive as its most restrictive field ("infectiousness
+is just the join"). -/
+def Mult.join (a b : Mult) : Mult := if a.rank ≤ b.rank then b else a
+
+/-- A struct's declared attribute (§3's `attr(S)`): none, `@copy` (`3.8:18`),
+or `linear` (`3.8:57`). -/
+inductive Attr where
+  | none
+  | copy
+  | linear
+deriving DecidableEq, Repr
+
+/-- §3's lifting of the field join by the declared attribute: `linear` forces
+`Linear` (`3.8:58`, `3.8:57`), `@copy` forces `Copy` (well-formed only when
+the join is already `Copy` and the struct declares no destructor — `3.8:18`,
+`3.9:31`, which `WfStructs` requires), and a struct with no attribute is
+`Linear` when its fields join to `Linear` and `Affine` otherwise (`3.8:3`:
+structs are affine by default). -/
+def Attr.lift : Attr → Mult → Mult
+  | .linear, _ => .linear
+  | .copy, _ => .copy
+  | .none, base => if base = .linear then .linear else .affine
+
+/-- Types (§2, fragment). `struct s` names the declaration at index `s` of the
+program's struct environment; elaboration resolves the surface name. -/
 inductive Ty where
   | int
   | bool
   | unit
-  | res (κ : Mult)
+  | struct (s : Nat)
 deriving DecidableEq, Repr
 
-/-- `class(T)` (§3). Scalars are `Copy`; a resource has its declared class. -/
-def Ty.mult : Ty → Mult
-  | .int | .bool | .unit => .copy
-  | .res κ => κ
+/-- A monomorphic struct declaration: §2's `S { f1: T1, …, fk: Tk }` with its
+declared attribute (§3), whether it declares a destructor (`3.9`), and the
+class §3 assigns it. Fields are listed in **declaration order** (`3.6:9`),
+which is the order §6.11 drops them in and the order (Struct-Intro) §5.8's
+initializers are presented in (`3.6:15`); they are named by position, as
+bindings are, because elaboration resolves field names. -/
+structure StructDecl where
+  /-- `attr(S)` (§3): `none`, `@copy` (`3.8:18`) or `linear` (`3.8:57`). -/
+  attr : Attr
+  /-- The field types, in declaration order (`3.6:9`). -/
+  fields : List Ty
+  /-- Whether `S` declares `drop fn S(self)` (`3.9`), which §6.11 runs before
+  the fields. -/
+  dtor : Bool
+  /-- `class(S)` (§3), the field join lifted by `attr`; `WfStructs`
+  (`Statics.lean`) is the equation that pins it. -/
+  cls : Mult
+deriving DecidableEq, Repr
 
-/-- In the fragment, `carries_linear(T) ⟺ class(T) = Linear` (§5.3 note). -/
-abbrev Ty.carriesLinear (T : Ty) : Prop := T.mult = .linear
+/-- The program's struct environment: the declarations §2's type production
+`S` names, indexed the way `Ty.struct` names them. -/
+abbrev StructEnv := List StructDecl
+
+/-- `class(S)` for a declared struct type (§3), read off the declaration. An
+index the environment does not have is `Affine`, the class of a struct with no
+attribute and no linear field — the conservative reading of a program
+`WfStructs` rejects anyway (helper). -/
+def StructEnv.classOf (D : StructEnv) (s : Nat) : Mult :=
+  match D[s]? with
+  | some sd => sd.cls
+  | none => .affine
+
+/-- `class(T)` (§3), against the program's struct environment. Scalars are
+`Copy`; a struct type has the class its declaration records. -/
+def Ty.mult (D : StructEnv) : Ty → Mult
+  | .int | .bool | .unit => .copy
+  | .struct s => D.classOf s
+
+/-- `carries_linear(T)` (§5.3): `class(T) = Linear`, which §5.3 states is the
+same predicate as "Linear lifted through the aggregates" because `class` *is*
+that join (§3). `struct_carriesLinear_iff` (`Statics.lean`) is the lifting,
+proved through the field join. -/
+abbrev Ty.carriesLinear (D : StructEnv) (T : Ty) : Prop := T.mult D = .linear
 
 /-- `int(64, signed)` bounds. Arithmetic traps outside them (§6.4). -/
 def intMin : Int := -(2 ^ 63)
@@ -70,9 +151,11 @@ instance (n : Int) : Decidable (InBounds n) := by
 /-- Expressions (§2, fragment). `use i` is the `e ::= p` production — a place
 (here: a whole binding) appearing in value context, i.e. a *use* (§4.2).
 `drop i` is `@drop(p)`. `letIn` carries the binding's `μ ∈ {∅, mut}` mark.
-`call f args` is §2's `g(a1, …, am)` with every argument by value (§6.9's
-by-reference modes are not in the fragment), `f` the callee's index in the
-`Program`. `ret e` is §2's `return e`. -/
+`mkStruct s args` is §2's `S { f1: e1, …, fk: ek }`, presented in declaration
+order (`3.6:15`) with one initializer per field. `call f args` is §2's
+`g(a1, …, am)` with every argument by value (§6.9's by-reference modes are not
+in the fragment), `f` the callee's index in the `Program`. `ret e` is §2's
+`return e`. -/
 inductive Expr where
   | intLit (n : Int)
   | boolLit (b : Bool)
@@ -81,7 +164,7 @@ inductive Expr where
   | add (e₁ e₂ : Expr)
   | div (e₁ e₂ : Expr)
   | lt (e₁ e₂ : Expr)
-  | mkres (κ : Mult) (e : Expr)
+  | mkStruct (s : Nat) (args : List Expr)
   | consume (e : Expr)
   | drop (i : Nat)
   | letIn (m : Bool) (e₁ e₂ : Expr)
@@ -91,6 +174,20 @@ inductive Expr where
   | call (f : Nat) (args : List Expr)
   | ret (e : Expr)
 deriving Repr
+
+/-- The fragment's whole-value struct elimination, as a side condition on a
+declaration: the struct has at least one field, every field is `int`, and it
+declares no destructor. `Expr.consume` reads the first field's payload and
+consumes the value; a field of any other type would be discarded without its
+drop glue, and a destructor would make even the read a rejected projection
+(`3.9:34`, E0456). This is **not** a calculus rule — the calculus eliminates a
+struct through a projection, which is RUE-2231 — so the restriction is the
+fragment's, stated here rather than cited. -/
+def StructDecl.Consumable (sd : StructDecl) : Prop :=
+  sd.fields ≠ [] ∧ (∀ T ∈ sd.fields, T = .int) ∧ sd.dtor = false
+
+instance (sd : StructDecl) : Decidable sd.Consumable := by
+  unfold StructDecl.Consumable; infer_instance
 
 /-- A by-value parameter (§5.8's `mi = ∅` mode): its declared type and its `μ`
 mark, which is what lets a body assign to it (§5.2). `borrow`/`inout`
@@ -110,16 +207,22 @@ structure FnDef where
   body : Expr
 deriving Repr
 
-/-- A program: the top-level function environment §5.8's (Call) looks a callee
-up in, indexed the way `Expr.call` names it. Index `0` is the entry point,
-which `Dynamics.run` calls with no arguments. -/
-abbrev Program := List FnDef
+/-- A program: the struct environment §2's `S` and §5.8's (Struct-Intro) look
+a declaration up in, and the top-level function environment §5.8's (Call)
+looks a callee up in, each indexed the way the syntax names it. Function index
+`0` is the entry point, which `Dynamics.run` calls with no arguments. -/
+structure Program where
+  /-- The struct declarations, indexed by `Ty.struct` and `Expr.mkStruct`. -/
+  structs : StructEnv
+  /-- The function definitions, indexed by `Expr.call`; `0` is the entry
+  point. -/
+  fns : List FnDef
 
-/-- A one-function program: the entry point, with no parameters and declared
-return type `T`, whose body is `e`. This is the shape of every fragment
-program that calls nothing, which is how the pre-call corpus cases are read as
-programs (helper). -/
-def Program.entry (T : Ty) (e : Expr) : Program :=
-  [{ params := [], ret := T, body := e }]
+/-- A one-function program over a struct environment: the entry point, with no
+parameters and declared return type `T`, whose body is `e`. This is the shape
+of every fragment program that calls nothing, which is how the pre-call corpus
+cases are read as programs (helper). -/
+def Program.entry (D : StructEnv) (T : Ty) (e : Expr) : Program :=
+  { structs := D, fns := [{ params := [], ret := T, body := e }] }
 
 end RueCore
