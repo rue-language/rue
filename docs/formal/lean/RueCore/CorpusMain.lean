@@ -28,6 +28,8 @@ def parseArgs : List String → Options → Except String Options
       match s.toNat? with
       | some k => parseArgs rest { o with seed := k }
       | none => .error s!"--seed needs a natural number, got {s}\n{usage}"
+  | ["--gen"], _ => .error s!"--gen needs a count\n{usage}"
+  | ["--seed"], _ => .error s!"--seed needs a natural number\n{usage}"
   | arg :: _, _ => .error s!"unknown argument {arg}\n{usage}"
 
 /-- (helper) Print the corpus, with the generated cases when asked; exit 2 on

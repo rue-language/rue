@@ -205,7 +205,7 @@ fn main() -> i32 {
     let result: i64 = {
         let mut v0: RLinear = RLinear { value: 1 };
         {
-            consume_linear(v0);
+            let t2: i64 = consume_linear(v0);
             {
                 { v0 = RLinear { value: 2 }; };
                 consume_linear(v0)
