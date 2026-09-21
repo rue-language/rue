@@ -81,9 +81,9 @@ evaluated; the statics cannot reject the program without provenance they do
 not have. §6.9's own justification for
 (D-Return) — "every bound cell is also registered in the frame's scope
 records" — is exactly true and exactly insufficient here, because an argument
-temporary is not a bound cell. The Rue compiler behaves the same way (an
-`RAffine` argument's destructor does not run), so the bridge cannot see it
-either.
+temporary is not a bound cell. The Rue compiler behaves the same way (a
+destructor-bearing argument's destructor does not run), so the bridge cannot
+see it either.
 
 `eval` models the calculus rather than patching it, so no monitor is added:
 `evalArgs` passes a `returned` abort on untouched. Both shapes are pinned as
