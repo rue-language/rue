@@ -13,7 +13,7 @@ fn f0() -> i64 {
 }
 
 fn f1(v0: i64) -> i64 {
-    if lt_i64(v0, 1) {
+    if { let t1a: i64 = v0; let t1b: i64 = 1; t1a < t1b } {
         (1 / 0)
     } else {
         f1((v0 + (-1)))
@@ -249,7 +249,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
            →     [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
          result  value 0
-  [30]  d14                  (D-Div-Zero) §6.4
+  [30]  d14                  (D-Div) §6.4
          expr    (1 / 0)
          store   [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
            →     [ℓ0 = 3, ℓ1 = 2, ℓ2 = 1, ℓ3 = 0]
@@ -302,4 +302,5 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
 
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: PANIC (divZero) — a defined trap, §6.12
+         trace up to the trap: (nothing)
 

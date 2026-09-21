@@ -100,12 +100,14 @@ One case, abbreviated:
 ```
 
 `verdict` is `{"accept": {"type": T}}` or `{"reject": {}}`. `expected` is
-`ok` with the stdout lines the native binary must print (one line per user
-destructor the run executes, in trace order, then the lines `main` shows for
-the program's value) and exit 0; `panic` with
-`overflow` or `divZero` (the trap ends the process before the value prints,
-so only the trap kind is compared; the compiler's runtime reports these as
-`error: integer overflow` / `error: division by zero` with exit status 101);
+`ok` with the stdout lines the native binary must print (one line per
+observable event the run executes — a user destructor or a `@dbg` — in trace
+order, then the lines `main` shows for the program's value) and exit 0;
+`panic` with the trap kind and the stdout lines the run produced **before**
+the trap (`overflow`, `divZero`, `remZero`, `castOverflow` or `user`; the
+compiler's runtime reports these as `error: integer overflow`,
+`error: division by zero`, `error: integer cast overflow` and
+`panic: <message>`, each with exit status 101, and the value never prints);
 or, for a rejected program, `stuck` with the refusal the machine would
 reach, which the bridge cannot observe because the compiler rejects the
 program first (the compiler's diagnostics for the seed cases: E0406 linear
@@ -117,11 +119,13 @@ that path's `ok` or `panic` outcome instead, and its header says so, so a
 compiler that accepts it unsoundly is compared against what the machine
 does; generated programs (below) have such cases, the seed corpus does not.
 
-How a drop becomes a printed line is the **user destructor**, and nothing
+How a *drop* becomes a printed line is the **user destructor**, and nothing
 else: a Rue program has no other way to observe a drop happening, so a
 declaration that declares one prints `drop fn S(self) { @dbg(self.x0); }` and
 the interpreter records the same drop as a `dtor` event; a declaration with
-no destructor drops silently in both. `RueCore/Print.lean`'s module docstring
+no destructor drops silently in both. `@dbg` is the second channel, and the
+two share one trace, so a `@dbg` line between two destructor lines comes out
+between them. `RueCore/Print.lean`'s module docstring
 is the reference for the rest. Two of the constraints are the spec's: a
 `@copy` type must declare no destructor (`3.9:31`), and a declaration that
 carries a linear value in a field may declare no destructor at all
@@ -133,14 +137,14 @@ lets its parameter drop and so *would* print it. (`3.9:34` is not that
 reason: it forbids moving a field out and permits borrowing one, and the
 compiler accepts `fn consume_S(s: S) -> i64 { s.x0 }` on a destructor-bearing
 `S`.) `@drop` prints as `@drop(x)` at every class — the identity
-elaboration. Four images are *not* the identity elaboration: the two
-integer-typing ones below `Print.lean`'s "Integer typing" heading, the
-generated `consume_S<s>` helper a `consume` prints as a call to, and the
-invented `drop fn` body, which the core declaration does not carry and which
-is the whole observation channel. Two limits, accepted at fragment scope: a
-trap discards the Lean trace, so drops before a panic are not compared
-(RUE-2282 gives `.panic` its trace); and every line is a bare integer, so a
-destructor line `n` swapped with a value line `n` would not be told apart. Every printed program opens with a comment naming
+elaboration. Six images are *not* the identity elaboration: the four typed
+blocks below `Print.lean`'s "Integer typing" heading, the generated
+`consume_S<s>` helper a `consume` prints as a call to, and the invented
+`drop fn` body, which the core declaration does not carry and which is the
+whole observation channel. One limit, accepted at fragment scope: every line
+is a bare integer or `true`/`false`, so a destructor line `n` swapped with a
+`@dbg` line `n` or a value line `n` would not be told apart. Every printed
+program opens with a comment naming
 its case, the rules it exercises, and its expected outcome in words, so
 `corpus.json` doubles as a readable example set.
 
@@ -269,7 +273,8 @@ mechanized*. The short version:
 - **The dynamics is a function.** `Dynamics.lean` defines `eval`, which runs
   an expression at a fuel bound and returns `.ok store value trace`,
   `.returned …` (a value an unwinding `return` handed past it, §6.9),
-  `.panic kind` (a defined trap, §6.12), `.stuck violation`, or `.outOfFuel`;
+  `.panic kind trace` (a defined trap, §6.12, with the observable output that
+  ran before it), `.stuck violation`, or `.outOfFuel`;
   `run P fuel` calls the program's entry point. A `Violation` is a named
   refusal.
   Four of them (`useAfterMove`, `useAfterDrop`, `unbound`, `typeConfusion`)
@@ -367,7 +372,7 @@ a slice author writes:
 | --- | --- | --- |
 | `RueCore/Syntax.lean` | multiplicity lattice and its join, struct declarations with their attribute, fields and destructor, types, `class(T)`, expressions | §2, §3 |
 | `RueCore/Statics.lean` | §3's class assignment as a checked equation (`WfStructs`, `struct_class_unique`, `struct_carriesLinear_iff`), the fused flow-sensitive `Γ;Σ` context, the ownership-threading judgment `Typed` (parameterized by the program and the enclosing return type), the §5.5 branch join, (Fn) and whole-program well-formedness, skeleton preservation | §3, §4.2, §5.1–§5.3, §5.5–§5.8 |
-| `RueCore/Dynamics.lean` | store/frame machine as a fuel-indexed definitional interpreter with drop traces; struct values and §6.11's recursive drop (destructor, then fields in declaration order); frames with scope records and their unwinds; violations as named refusals; overflow/div-zero traps | §6.1–§6.12 |
+| `RueCore/Dynamics.lean` | store/frame machine as a fuel-indexed definitional interpreter with observation traces (drops, destructors, `@dbg`); struct values and §6.11's recursive drop (destructor, then fields in declaration order); frames with scope records and their unwinds; violations as named refusals; §6.4's operator rules and every §6.12 trap the fragment reaches, each carrying the trace up to it | §6.1–§6.12 |
 | `RueCore/Soundness.lean` | value typing, the per-frame agreement invariant `FrameMatches`, frame locality `Untouched`, **the safety theorem**, the fuel lemmas, and per-§7-bullet corollaries over a whole program | §7 |
 | `RueCore/Checker.lean` | decidable checker `check`/`checkProgram` + `check_sound`/`checkProgram_sound` (every acceptance is a derivation) | §5 as an algorithm |
 | `RueCore/Examples.lean` | `#eval` demos; kernel-checked acceptance/rejection of example programs | — |
@@ -380,17 +385,21 @@ a slice author writes:
 | `DIGEST.md`, `TRUST.md` | (generated) every theorem's statement with the definitions it is written in terms of; every theorem's axioms, `sorry` count, and declared assumptions | §7's claims, stated |
 | `GUIDE.md`, `INDEX.md` | the reader's guide, including the thirty-minute validation procedure, and the generated form ↔ rule ↔ declaration ↔ paragraph index (`scripts/validate-lean-xref-index.py`) | §2, §5, §6 coverage |
 
-The fragment: scalars + monomorphic struct types declared by the program,
-with §3's class as the join of the field classes lifted by the declared
-attribute; struct literals ((Struct-Intro) §5.8) and §6.11's drop order
-(destructor, then fields in declaration order); use (copy/move), `@drop`,
+The fragment: integers at every width and signedness, `bool`, `unit`, and
+monomorphic struct types declared by the program, with §3's class as the join
+of the field classes lifted by the declared attribute; struct literals
+((Struct-Intro) §5.8) and §6.11's drop order (destructor, then fields in
+declaration order); use (copy/move), `@drop`,
 `let` scope exit with the residual-linear leak check, assignment with
 reinitialization and the `3.8:77` linear-overwrite premise, sequence discard,
-`if` with the conservative branch join, `+`/`/`/`<` with the §6.4 traps, and
+`if` with the conservative branch join, the whole §2 integer operator set
+(`+ - * / %`, `& | ^`, `<< >>`, `< <= > >=`, `neg`, `not`, `bitnot`) with
+§6.4's traps and bit semantics, `@intCast`, `@panic`, `@dbg`, and
 top-level functions, by-value calls with frames and scope records, and
 `return` with its σ unwind. Whole bindings only — no projections/partial
 moves (so the fragment's whole-value struct elimination stands in for one,
-RUE-2231), no enums, no arrays, no borrows, no `inout`/`borrow` parameters,
+RUE-2231), no floats, no equality compare (it borrows its operands), no
+enums, no arrays, no borrows, no `inout`/`borrow` parameters,
 no accessor calls, no loops (see the outline doc for the milestone ladder
 that adds them).
 

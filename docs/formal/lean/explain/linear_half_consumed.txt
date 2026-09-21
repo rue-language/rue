@@ -24,7 +24,7 @@ fn f0() -> i64 {
     {
         let v0: S2 = S2 { x0: 9 };
         {
-            let t2: i64 = if false {
+            let t2d: i64 = if false {
                 consume_S2(v0)
             } else {
                 0

@@ -178,11 +178,14 @@ theorem valOf_inBounds (w : IntWidth) (s : Sign) (b : Nat) : InBounds w s (valOf
   have hmod : b % w.modulus < w.modulus := by
     refine Nat.mod_lt _ ?_
     cases w <;> simp [IntWidth.modulus, IntWidth.bits]
+  -- Each conjunct is discharged on its own: `omega` on a conjunction goal
+  -- reaches for `Classical.choice`, which this package does not allow itself
+  -- (`TRUST.md`), while the same arithmetic per conjunct is constructive.
   cases w <;> cases s <;>
     simp only [valOf, InBounds, intMin, intMax, IntWidth.modulus, IntWidth.bits] at hmod ⊢ <;>
     first
-      | omega
-      | (split <;> omega)
+      | (refine ⟨?_, ?_⟩ <;> omega)
+      | (split <;> refine ⟨?_, ?_⟩ <;> omega)
 
 /-- The same for `wrapInt` (helper). -/
 theorem wrapInt_inBounds (w : IntWidth) (s : Sign) (n : Int) : InBounds w s (wrapInt w s n) :=

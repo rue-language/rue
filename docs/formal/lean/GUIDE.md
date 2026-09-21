@@ -113,16 +113,20 @@ reports one of five outcomes:
 | --- | --- |
 | `.ok H' v tr` | the machine halted normally with value `v`, final store `H'`, and drop trace `tr` |
 | `.returned H' v tr` | an unwinding `return` handed `v` back (§6.9's (D-Return)); every enclosing form passes it on until a call boundary absorbs it |
-| `.panic k` | the machine halted in a defined trap `↯κ` (§6.12): `overflow` or `divZero` |
+| `.panic k tr` | the machine halted in a defined trap `↯κ` (§6.12) — `overflow`, `divZero`, `remZero`, `castOverflow` or `user` — carrying the observable output `tr` that ran before it |
 | `.stuck w` | the machine refused: `w` names either a configuration §6 leaves undefined or a linear action the machine monitors (see below) |
 | `.outOfFuel` | not a machine state at all: the interpreter's admission that it stopped early (see below) |
 
-The drop trace `tr` is the list of every drop the machine performed, in
-order: `drop ℓ v` for a binding's drop (at scope exit, at `@drop`, or when
-overwritten) and `dropTemp v` for a discarded temporary. This is the
+The trace `tr` is the list of everything the machine *did that a program can
+see*, in order: `drop ℓ v` for a binding's drop (at scope exit, at `@drop`, or
+when overwritten), `dropTemp v` for a discarded temporary, `dtor s v` for a
+user destructor §6.11 ran, and `dbg v` for a `@dbg` (§6.12's observable
+output). The last two are the ones a Rue program prints; the first two mark
+where a drop *starts*. This is the
 fragment's image of the oracle interpreter's observable outcome, and it is
 what the bridge compares against a native binary's stdout (`README.md`, "The
-bridge corpus").
+bridge corpus"). A trap carries it too, which is why `.panic` has a trace: a
+trapping process prints what it printed and then exits 101.
 
 A `Violation` is a refusal: `useAfterMove` (reading a `⊘` cell),
 `useAfterDrop` (touching a `†` cell), `linearLeak` (a scope exit or a frame
@@ -265,7 +269,7 @@ Over a whole program, `run_safe` says it in the shape a reader wants:
 ```lean
 theorem run_safe (hwf : WfProgram P) (h0 : P[0]? = some fd) (hp : fd.params = []) :
   ∀ fuel, run P fuel = .outOfFuel
-        ∨ (∃ k, run P fuel = .panic k)
+        ∨ (∃ k tr, run P fuel = .panic k tr)
         ∨ (∃ H v tr, run P fuel = .ok H v tr ∧ HasTy v fd.ret)
 ```
 
@@ -310,9 +314,9 @@ state, reinitialization (`3.8:55`), and the scope-exit leak check (§5.6).
 Core syntax, as `Examples.reinit` writes it:
 
 ```lean
-letIn true (resL (intLit 1))
+letIn true (resL (lit 1))
   (seq (consume (use 0))
-    (seq (assign 0 (resL (intLit 2)))
+    (seq (assign 0 (resL (lit 2)))
       (consume (use 0))))
 ```
 
@@ -330,7 +334,7 @@ fn f0() -> i64 {
     {
         let mut v0: S2 = S2 { x0: 1 };
         {
-            let t2: i64 = consume_S2(v0);
+            let t2d: i64 = consume_S2(v0);
             {
                 { v0 = S2 { x0: 2 }; };
                 consume_S2(v0)
@@ -348,19 +352,19 @@ fn main() -> i32 {
 
 ### The checker's derivation
 
-`checkProgram` accepts, and `f0`'s body checks at `int` with outgoing context
+`checkProgram` accepts, and `f0`'s body checks at `i64` with outgoing context
 `[]`. The
 derivation it certifies, read from the outside in, with the fused context
 written as `[type, μ, state]` per binding (only one binding, `v0`):
 
 | Step | Rule | Context in | Context out |
 | --- | --- | --- | --- |
-| `mkStruct sLinear [intLit 1]` | `Typed.mkStruct`, (Struct-Intro) §5.8: one initializer per declared field, at the field's type | `[]` | `[]` |
+| `mkStruct sLinear [lit 1]` | `Typed.mkStruct`, (Struct-Intro) §5.8: one initializer per declared field, at the field's type | `[]` | `[]` |
 | enter the `let` body | `Typed.letIn`, `(Let)`: the binder enters `Owned` | `[]` | `[S2, mut, Owned]` |
 | `use 0` | `(Use-Move)`: `class(S2) = Linear` (§3: the declared attribute), so the use moves | `[S2, mut, Owned]` | `[S2, mut, MovedOut]` |
 | `consume (…)` | `Typed.consume`, the fragment's whole-value elimination | `[…, MovedOut]` | `[…, MovedOut]` |
 | `seq` discard | `(Seq)`: an `int` carries no linear value (`3.8:64`) | | |
-| `mkStruct sLinear [intLit 2]` | RHS of the assignment, typed first | `[…, MovedOut]` | `[…, MovedOut]` |
+| `mkStruct sLinear [lit 2]` | RHS of the assignment, typed first | `[…, MovedOut]` | `[…, MovedOut]` |
 | `assign 0 …` | `(Assign)`: `v0` is `mut`; on the post-RHS state `v0` is `MovedOut`, so the `3.8:77` premise holds; `v0` becomes `Owned` (`3.8:55`) | `[…, MovedOut]` | `[S2, mut, Owned]` |
 | inner `seq` discard | `(Seq)`: the assignment's `unit` carries no linear value | | |
 | `use 0` | `(Use-Move)` again | `[…, Owned]` | `[…, MovedOut]` |
@@ -382,12 +386,12 @@ to its location:
 
 | Step | Store before | Effect | Store after | Trace |
 | --- | --- | --- | --- | --- |
-| `mkStruct sLinear [intLit 1]`, (D-Struct) §6.5 | `[]` | a value `{ 1 }_S2`, no store effect | `[]` | |
+| `mkStruct sLinear [lit 1]`, (D-Struct) §6.5 | `[]` | a value `{ 1 }_S2`, no store effect | `[]` | |
 | `(D-Let)`: mint a cell for `v0` | `[]` | allocate location 0, `ρ = [0]` | `[full S2 { 1 }]` | |
 | `use 0`, `(D-Use-Move)` | `[full S2 { 1 }]` | the value moves out; the cell becomes `⊘` | `[moved]` | |
 | `consume` | | the first field, `1`, an `int` | `[moved]` | |
 | `(D-Seq)` discard | | an `int` is `Copy`: no drop | `[moved]` | |
-| `mkStruct sLinear [intLit 2]` | | a value | `[moved]` | |
+| `mkStruct sLinear [lit 2]` | | a value | `[moved]` | |
 | `assign 0`, `(D-Assign)` | `[moved]` | the cell is `⊘`, so nothing is dropped; reinitialize | `[full S2 { 2 }]` | |
 | inner `(D-Seq)` discard | | `unit` is `Copy`: no drop | `[full S2 { 2 }]` | |
 | `use 0`, `(D-Use-Move)` | `[full S2 { 2 }]` | move out again | `[moved]` | |
@@ -409,8 +413,8 @@ Both tables above are generated for every corpus case: this one is
 `FrameMatches D [] ⟨[], []⟩ []`, holds trivially: no bindings, no store, an
 empty scope record). It promises, at every fuel: `outOfFuel`, a defined
 panic, or `.ok` with a value of the entry function's declared return type.
-The run above is the last case; `HasTy (.int 2) .int` holds because `2` is in
-bounds. The corollary this program illustrates is `no_linear_overwrite`: the
+The run above is the last case; `HasTy (.int .w64 .signed 2) (.int .w64
+.signed)` holds because `2` is in `i64`'s range. The corollary this program illustrates is `no_linear_overwrite`: the
 assignment in the middle is the very shape `3.8:77` guards, and the theorem
 says the guard is never needed at run time for a program the checker accepts,
 because the checker has already demanded the `MovedOut` state that makes the
@@ -427,12 +431,12 @@ program where the frame's **scope record** σ, rather than the pending
 ### The program
 
 ```lean
-letIn false (resA (intLit 3))
-  (letIn false (resA (intLit 4))
-    (ret (intLit 7)))
+letIn false (resA (lit 3))
+  (letIn false (resA (lit 4))
+    (ret (lit 7)))
 ```
 
-Printed (prelude omitted):
+Printed:
 
 ```rue
 fn f0() -> i64 {
@@ -539,7 +543,7 @@ assignment of classes satisfies §3's equation.
 ### The program, and what the checker demands
 
 ```lean
-letIn false (mkStruct sOuter [intLit 1, resA (intLit 2)]) (intLit 9)
+letIn false (mkStruct sOuter [lit 1, resA (lit 2)]) (lit 9)
 ```
 
 printed as
@@ -601,6 +605,99 @@ it.) `dropValue_ok` says the walk never refuses on a well-typed value. And
 `Linear` has no `Linear` field — which is why the leak monitor at step 7 can
 look at the value's own class and never inside it, and why RUE-2237's
 "dropped exactly once" has a walk of known shape to quantify over.
+
+## 5d. A fourth worked example: a trap, and the output that survives it
+
+The corpus case `panic_after_drop` is the smallest program where the
+*observable output* and the *trap* are both part of the answer. §6.12 halts
+the program at a trap, but the process has already printed whatever it
+printed, and `Outcome` — the thing the differential harness compares — is
+exit status **and** stdout. So the machine's `.panic` carries a trace, and
+the bridge compares it.
+
+### The program
+
+```lean
+letIn false (resA (lit 7)) (seq (drop 0) (panic "boom"))
+```
+
+printed as
+
+```rue
+fn f0() -> i64 {
+    {
+        let v0: S1 = S1 { x0: 7 };
+        {
+            @drop(v0);
+            @panic("boom")
+        }
+    }
+}
+```
+
+`S1` declares a destructor (`drop fn S1(self) { @dbg(self.x0); }`), so its
+drop is observable; the `@drop` discharges the binding explicitly, and the
+`@panic` then abandons the program.
+
+### What the checker demands, and what it does not
+
+`@panic` is `never`-typed (§5.7, `3.4:2`), and (Sub-Never) admits it wherever
+a value of any type is expected. `Typed.panic` folds both in exactly as
+`Typed.ret` does: it concludes at **any** type and at any outgoing context of
+the same skeleton, so `Ty` needs no `never` constructor and `HasTy` no case
+for it — sound because `never` has no values (`3.4:1`).
+
+The premise `Typed.ret` carries and `Typed.panic` does **not** is the
+interesting half. §5.7 gives `return` the provenance `⊥_exit`, which "carries
+the §5.6 scope-exit/drop obligation", so `Typed.ret` demands
+`NoOwnedLinear`: no binding of the frame may still be `Owned` at a linear
+type. `@panic` carries `⊥_panic`, which §5.7 exempts — "§5.6 performs no
+scope-exit check or drop on that edge" — so `Typed.panic` demands nothing.
+The two rules differ in one premise, and that premise is the whole difference
+between an exit that unwinds and an exit that abandons.
+
+| Node | Rule | Concludes |
+| --- | --- | --- |
+| `S1 { x0: 7 }` | (Struct-Intro) §5.8 | `⇒ S1` |
+| `@drop(v0)` | (@Drop) §5.3 | `⇒ unit`, and `v0` becomes `MovedOut` |
+| `@panic("boom")` | (Panic) §5.8 + (Sub-Never) §5.7 | `⇒ i64` — the type `check` picks is the enclosing return type, the same choice it makes for `return` (`Checker.lean`) |
+| `@drop(v0); @panic(…)` | (Seq) §5.3 | `⇒ i64`; the discarded `unit` carries no linear value |
+| `let v0 = …; …` | (Let) §5.3 + §5.6 | `⇒ i64`; `v0` is `MovedOut` at the body's end, so the leak check has nothing to ask |
+
+### The run, step by step
+
+| Step | Rule | Store before | Effect | Store after | Events |
+| --- | --- | --- | --- | --- | --- |
+| 1–2 | literal, (D-Struct) §6.5 | `[]` | the literal becomes `{ 7 }_S1` | `[]` | |
+| 3 | `(D-Let) §6.7` | `[]` | mint `ℓ0` for `v0` | `[ℓ0 = S1 { 7 }]` | |
+| 4 | `@drop` §6.11 | `[ℓ0 = S1 { 7 }]` | the glue runs — the destructor is the observable half — and the cell is marked `⊘` rather than retired, so the binding stays reinitializable (§6.8/§6.11) | `[ℓ0 = ⊘]` | `drop ℓ0 = S1 { 7 }`; `run drop fn S1(S1 { 7 })` |
+| **5** | **`(D-Panic) §6.12`** | `[ℓ0 = ⊘]` | the configuration is abandoned: `↯user`. **No `endscope` runs** — the `let`'s (D-EndScope) never fires, and nothing unwinds σ, which is the dynamic face of §5.7's `⊥_panic` exemption | — | |
+
+The result is `EvalRes.panic .user [drop ℓ0 …, dtor S1 …]` — the trap, and
+the two events that had already happened. `Corpus.outLines` projects the
+observable ones, so the exported expectation is
+
+```json
+{"kind": "panic", "panic": "user", "stdout": ["7"]}
+```
+
+and `crates/rue-oracle-diff` compares *both* halves: a native binary that
+trapped with the right category but lost the destructor line is a
+disagreement. Verified by hand before the expectation was written: the
+compiled program prints `7` on stdout, `panic: boom` on stderr, and exits
+101.
+
+### Why the drop is the explicit one
+
+Note which drop shows. The `@drop(v0)` at step 4 is the one that ran; the
+binding's *scope exit* never happened, because step 5 abandoned the
+configuration. Take the `@drop` away and the destructor never runs at all —
+`panicPastAffine` in `Examples.lean` is that program, kernel-checked to an
+empty trace, and the compiler does the same (a live destructor-bearing
+binding prints nothing at a `@panic`). That is §5.7's exemption doing visible
+work: a `return` in the same position would have unwound the frame and
+printed the line through `run-all-scope-drops`, which is the previous worked
+example.
 
 ### More worked examples
 
