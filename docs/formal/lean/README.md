@@ -483,7 +483,7 @@ is the **recursive** `ContentsMatches`, relating the binding's ownership tree
 to the tree stored in its cell path by path and encoding the deliberate
 asymmetry of the §5.5 join (a statically `MovedOut` path may dynamically still
 hold live *non-linear* content, which the machine then drops path-specifically,
-`3.8:73`; a live linear value is never statically lost). And the σ invariant: the frame's scope record, read
+`3.8:60`; a live linear value is never statically lost). And the σ invariant: the frame's scope record, read
 newest-first, **is** its environment, which is what makes `let`'s double
 bookkeeping (RUE-1277) consistent and what keeps an unwind off a retired
 cell.

@@ -383,7 +383,7 @@ def cases : List Case := [
     },
   { name := "partial_move_residue",
     description := "A field moved out of a two-field struct and discharged, the rest left to scope exit: the moved field's destructor prints at the @drop and the remaining one's at the scope exit, and the hole is skipped so nothing is dropped twice.",
-    rules := ["(Use-Move) §5.1", "§4.2 partial move", "3.8:22", "§6.11", "3.8:73"],
+    rules := ["(Use-Move) §5.1", "§4.2 partial move", "3.8:22", "§6.11", "3.8:60"],
     prog := Examples.prog Examples.tI64 Examples.partialMoveResidue
     },
   { name := "partial_then_whole",
@@ -403,7 +403,7 @@ def cases : List Case := [
     },
   { name := "drop_field_then_whole",
     description := "@drop at a field and then @drop of the whole: §5.3 asks only Σ(p) = Owned of the second, and §6.11's walk drops the owned residue and skips the hole.",
-    rules := ["(@Drop) §5.3", "§6.11", "3.8:73"],
+    rules := ["(@Drop) §5.3", "§6.11", "3.8:60"],
     prog := Examples.prog Examples.tI64 Examples.dropFieldThenWhole
     },
   { name := "reinit_field",
@@ -418,12 +418,12 @@ def cases : List Case := [
     },
   { name := "partial_move_one_arm",
     description := "A field dropped in one arm of an if only: the §5.5 join sends that path to MovedOut and the sibling stays Owned; the machine drops whatever the taken path left.",
-    rules := ["(If) §5.5 join", "3.8:73", "(@Drop) §5.3"],
+    rules := ["(If) §5.5 join", "3.8:60", "(@Drop) §5.3"],
     prog := Examples.prog Examples.tI64 Examples.partialMoveOneArm
     },
   { name := "partial_move_other_arm",
     description := "The same program on the path that does not move the field: the drop is path-specific, so the observable output is the same either way.",
-    rules := ["(If) §5.5 join", "3.8:73", "§6.11"],
+    rules := ["(If) §5.5 join", "3.8:60", "§6.11"],
     prog := Examples.prog Examples.tI64 Examples.partialMoveOtherArm
     },
   { name := "deep_path",
@@ -634,7 +634,7 @@ calling this. -/
 def outLines (D : StructEnv) (v : Val) (tr : List Event) : List String :=
   tr.filterMap eventLine ++ valueLines D v
 
-/-- **The residual drop is path-specific** (`3.8:73`). The §5.5 join marks a
+/-- **The residual drop is path-specific** (`3.8:60`). The §5.5 join marks a
 field `MovedOut` because one arm moved it; the machine keeps the path-specific
 state, so the arm that did *not* move it still drops it at scope exit. The two
 runs therefore print the same lines, which is what a conservatively joined Σ

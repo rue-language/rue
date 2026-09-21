@@ -68,8 +68,8 @@ and §6.3 navigates it into the stored contents: `H(ℓ)@π` is `readAt` and
 sub-position moved — the whole cell for a whole-place use, one field for a
 projection, which is the **partial move** of §4.2 — so the later scope-exit
 drop of `ℓ` skips it and cannot free it a second time. That skip is
-`dropContents`'s `⊘` case, and it is what makes the residual drop of `3.8:73`
-path-specific.
+`dropContents`'s `⊘` case, and it is what makes the residual drop of `3.8:60`
+path-specific (`3.8:73` is the array-element form of the same rule).
 
 A struct's contents is its declaration's index and one contents per field, so
 the drop walk is §6.11's own: the user destructor first (`3.9:28`), then the
@@ -246,7 +246,7 @@ mutual
 /-- §5.6's `residual-linear`, read on the **contents** rather than on Σ: does a
 live sub-value of a declared-`linear` struct type remain? This is the leak
 monitor §6.7's `endscope` and §6.9's frame teardown consult, and the overwrite
-monitor of §6.8. A `⊘` carries nothing (`3.8:73`'s skip), a live
+monitor of §6.8. A `⊘` carries nothing (`3.8:60`'s skip), a live
 declared-`linear` struct carries the obligation itself (`3.8:74`), and
 otherwise the obligation is the disjunction over the live fields — exactly the
 recursion §5.6 writes for Σ, on the store's side of the invariant. -/

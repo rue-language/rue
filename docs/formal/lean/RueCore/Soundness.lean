@@ -14,7 +14,7 @@ With Σ keyed by path (`OwnSt`, `Statics.lean`) and a cell holding a tree with
 type. It is deliberately asymmetric at its `movedOut` clause, mirroring §5.5:
 a *statically* `MovedOut` path may still hold live (non-linear!) contents —
 that is exactly the state a conservative branch join produces, and the machine
-drops such residues path-specifically (`3.8:73`); a statically `Owned` path
+drops such residues path-specifically (`3.8:60`); a statically `Owned` path
 always holds a value; and a live **linear** sub-value is never behind a
 `MovedOut` node, which is what makes the leak/overwrite refusals unreachable.
 
@@ -70,7 +70,7 @@ contents it emits exactly `dropEvents`, §6.11's order written as a function —
 and `dropContents_struct_events` is that read at a struct: the destructor's
 event (`3.9:28`) followed by the concatenation of the fields' events in
 declaration order (`3.9:13`), with a field that has been **moved out**
-contributing none (`3.8:73`), which is the shape RUE-2237's "dropped exactly
+contributing none (`3.8:60`), which is the shape RUE-2237's "dropped exactly
 once" quantifies over. `dropContents_order` and `dropContentsList_order` are
 the one-level induction steps, `dropContents_ok` the corollary that the walk
 never refuses, and `ContentsMatches.residualLinear_false` the reason the leak
@@ -323,7 +323,7 @@ mutual
 /-- **§6.11's order, in closed form.** For well-typed contents the walk's
 result is exactly `dropEvents`, §6.11's order written out as a function
 (`Dynamics.lean`) — the destructor first (`3.9:28`), then the fields in
-declaration order (`3.9:13`), every `⊘` skipped (`3.8:73`). -/
+declaration order (`3.9:13`), every `⊘` skipped (`3.8:60`). -/
 theorem dropContents_events {D : StructEnv} {c : Contents} {T : Ty} (h : ContentsTy D c T) :
     dropContents D c = .ok (dropEvents D c) := by
   cases h with
@@ -358,7 +358,7 @@ well-typed struct's stored contents emits its user destructor's event — when
 its declaration has one (`3.9:28`) — followed by the **concatenation of its
 fields' drop events, in declaration order** (`3.9:13`), each field's events
 given by the same closed form, recursively, and a field that has been moved out
-contributing none (`3.8:73`). Nothing else, and nothing in another order; the
+contributing none (`3.8:60`). Nothing else, and nothing in another order; the
 whole list is determined by the contents and the declarations. -/
 theorem dropContents_struct_events {D : StructEnv} {s : Nat} {sd : StructDecl}
     {cs : List Contents} (hd : D[s]? = some sd) (h : ContentsTy D (.struct s cs) (.struct s)) :
@@ -643,7 +643,7 @@ produces:
 * an **`owned`** node holds a hole-free well-typed contents — a value;
 * a **`movedOut`** node holds well-typed contents with **no live linear
   sub-value** in it. It need not hold `⊘`: a conservative join marks a node
-  moved on a path that still holds something (`3.8:73`), and the machine then
+  moved on a path that still holds something (`3.8:60`), and the machine then
   drops that residue path-specifically. What it may never hold is a live
   linear value, which is what makes the leak and overwrite refusals
   unreachable (`3.8:50`);
@@ -657,13 +657,13 @@ mutual
 there, at the path's declared type (§7's "Σ faithfully tracks the store's
 initialization", section docstring): `owned` holds a value, `movedOut` holds
 contents with no live linear sub-value — the §5.5 join's asymmetry, whose
-residue the machine drops path-specifically (`3.8:73`) — and `fields` holds the
+residue the machine drops path-specifically (`3.8:60`) — and `fields` holds the
 struct its type names, matched field by field. -/
 inductive ContentsMatches (D : StructEnv) : Contents → OwnSt → Ty → Prop where
   /-- An `Owned` path holds a value: well-typed contents with no `⊘` in it. -/
   | owned {c T} : ContentsTy D c T → c.holeFree = true → ContentsMatches D c .owned T
   /-- A `MovedOut` path may still hold live contents — the §5.5 join's
-  asymmetry (`3.8:73`) — but never a live linear sub-value (`3.8:50`). -/
+  asymmetry (`3.8:60`) — but never a live linear sub-value (`3.8:50`). -/
   | moved {c T} :
       ContentsTy D c T → c.residualLinear D = false → ContentsMatches D c .movedOut T
   /-- A partially moved path holds the struct its type names, field by
@@ -1349,7 +1349,7 @@ mutual
 contents still matches it.** The `Owned` side never adds a move, so the only
 question the join asks is whether each path `t` has `MovedOut` may be lost —
 which `ownedJoinOk` has answered, and which the invariant's asymmetric
-`movedOut` clause then admits (`3.8:50`, `3.8:73`). -/
+`movedOut` clause then admits (`3.8:50`, `3.8:60`). -/
 theorem ownedJoinOk_matches {D : StructEnv} (hwf : WfStructs D) :
     ∀ (t : OwnSt) {T : Ty} {c : Contents}, ownedJoinOk D t T = true →
       ContentsMatches D c .owned T → ContentsMatches D c t T
@@ -1395,7 +1395,7 @@ arm's state at a path matches the joined state: where the two arms agree the
 join is that state, and where they disagree the join is `MovedOut`, which the
 invariant's asymmetric clause admits because the disagreement premise has
 already ruled out live linear content there (`3.8:50`). The machine then drops
-whatever residue the taken path left, path-specifically (`3.8:73`). -/
+whatever residue the taken path left, path-specifically (`3.8:60`). -/
 theorem OwnSt.join_matches {D : StructEnv} (hwf : WfStructs D) :
     ∀ (a b : OwnSt) {e : OwnSt} {T : Ty} {c : Contents}, OwnSt.join D a b T = some e →
       (ContentsMatches D c a T ∨ ContentsMatches D c b T) → ContentsMatches D c e T
@@ -1527,8 +1527,9 @@ theorem OwnSt.joinList_matches {D : StructEnv} (hwf : WfStructs D) :
 end
 
 /-- The §5.5 join weakens the left arm's per-cell agreement: a cell matching
-the left entry matches the joined entry (the conservative join; its
-array-element form is `3.8:73`). -/
+the left entry matches the joined entry (the conservative join, whose residue
+the machine drops path-specifically: `3.8:60` for a struct's fields, `3.8:73`
+the array-element form). -/
 theorem Entry.join_matches_left {D : StructEnv} (hwf : WfStructs D) {a b e' : Entry}
     (hj : a.join D b = some e') {cell : Cell} (hc : CellMatches D cell a) :
     CellMatches D cell e' := by
@@ -1542,8 +1543,9 @@ theorem Entry.join_matches_left {D : StructEnv} (hwf : WfStructs D) {a b e' : En
       exact ⟨c, rfl, hj ▸ OwnSt.join_matches hwf a.st b.st hju (Or.inl hm)⟩
 
 /-- The §5.5 join weakens the right arm's per-cell agreement, given the two
-arms share a skeleton (the conservative join; its array-element form is
-`3.8:73`). -/
+arms share a skeleton (the conservative join, whose residue the machine drops
+path-specifically: `3.8:60` for a struct's fields, `3.8:73` the array-element
+form). -/
 theorem Entry.join_matches_right {D : StructEnv} (hwf : WfStructs D) {a b e' : Entry}
     (hskel : a.skel = b.skel) (hj : a.join D b = some e') {cell : Cell}
     (hc : CellMatches D cell b) : CellMatches D cell e' := by

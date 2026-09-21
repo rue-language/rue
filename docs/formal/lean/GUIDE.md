@@ -237,7 +237,8 @@ The second clause is the asymmetry, and it is deliberate. For an *affine*
 `x`, after `if c { @drop(x) } else { () }` the §5.5 join marks `x` `MovedOut`
 on both paths even though on the `else` path it is still live: the static
 story is conservative, the dynamic story is exact, and the machine drops that
-residue path-specifically at scope exit (§5.6, §6.7; `3.8:73`). The corpus
+residue path-specifically at scope exit (§5.6, §6.7; `3.8:60`, and `3.8:73` is
+the array-element form of the same rule). The corpus
 case `cond_drop_affine` is exactly this program, and `partial_move_one_arm`
 is it one field down. The invariant must allow that gap. What it must never
 allow is a live *linear* value behind a `MovedOut` node, because then the

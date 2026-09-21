@@ -422,7 +422,7 @@ def structFieldOrder : Expr :=
 /-! ## Paths, projections and partial moves (RUE-2231)
 
 Each of these is about a place that is not a whole binding: a field moved out
-on its own (`3.8:22`), the residue that then drops at scope exit (`3.8:73`),
+on its own (`3.8:22`), the residue that then drops at scope exit (`3.8:60`),
 and the premises §5.1 and §5.3 put on which projections may be moved. -/
 
 /-- Move one field out of a two-field struct, discharge it, and let the rest
@@ -481,7 +481,7 @@ def overwriteField : Expr :=
 
 /-- A field moved out in one arm of an `if` only: the §5.5 join sends that
 path to `MovedOut` while the sibling stays `Owned`, and the machine drops
-whatever the taken path left (`3.8:73`). -/
+whatever the taken path left (`3.8:60`). -/
 def partialMoveOneArm : Expr :=
   letIn false (mkStruct sTwoAffine [resA (lit 1), resA (lit 2)])
     (seq (ite (boolLit true) (drop (.proj (.var 0) 0)) unitLit) (lit 9))
@@ -1287,7 +1287,7 @@ example : run demoOps (prog tI64 structLinearFieldDropped) demoFuel
 /-- **The `⊘`-skip, pinned.** A field is moved out and discharged on its own;
 the scope exit then drops the *residue* — the cell holds a struct with a hole
 where the moved field was, and §6.11's walk skips it, so the moved value is not
-dropped a second time (`3.8:73`). -/
+dropped a second time (`3.8:60`). -/
 example : run demoOps (prog tI64 partialMoveResidue) demoFuel
     = .ok [.dead, .dead] (v64 9)
         [.drop 1 (.struct sAffine [c64 1]), .dtor sAffine (.struct sAffine [c64 1]),

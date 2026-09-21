@@ -1018,7 +1018,11 @@ branch and `Owned` on the other, because the `Owned` branch has no linear
 content left at `h`; while consuming `h.t` on one branch only is E0443 ("linear
 value is not consumed on all paths"), which is the residual test firing one
 level down. On a whole binding with no partial move under it the two readings
-coincide, so nothing the type-level reading accepted is lost.
+coincide, so nothing the type-level reading accepted is lost. `3.8:60` already
+states the sub-place keying normatively — an infectious carrier's must-consume
+obligation "attaches to its linear *sub-places* rather than to the carrier as a
+whole" — so this is a reading of an existing paragraph rather than an inference
+the compiler's behavior forced.
 A branch ending in any never-typed divergence has a divergent outgoing state
 (`⊥_exit`, `⊥_diverge`, or `⊥_panic`) and is excluded from the join (`3.8:51`);
 its *type* is `never`, which (Sub-Never), §5.7, coerces to the sibling arm's
