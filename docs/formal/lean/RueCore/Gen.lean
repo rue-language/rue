@@ -190,6 +190,25 @@ def intLiteral (w : IntWidth) (sg : Sign) : G Expr := do
     if k = 0 then intMax w sg else if k = 1 then intMin w sg else Int.ofNat (k % 10)
   return intLit w sg n
 
+/-- (helper) A float type: `f64` more often than `f32`, the way `3.12:8`
+defaults an unsuffixed literal. -/
+def floatTy : G Ty := do
+  return .float (← weighted FloatWidth.w64 [(1, FloatWidth.w32), (2, FloatWidth.w64)])
+
+/-- (helper) A float literal (§2's decimal form): a small decimal, sometimes
+with a negative exponent so the value is inexact at both widths, and
+sometimes `0` so that a division can reach an infinity or a NaN (`3.12:22`).
+Every draw is finite and far inside both ranges, which is what `3.12:10`
+requires of a source literal. -/
+def floatLiteral (w : FloatWidth) : G Expr := do
+  let k ← nat 0 19
+  let l : FloatLit :=
+    if k = 0 then { sig := 0, negExp := false, e := 0 }
+    else if k ≤ 6 then { sig := k, negExp := false, e := 0 }
+    else if k ≤ 13 then { sig := k, negExp := true, e := 1 }
+    else { sig := k, negExp := true, e := 2 }
+  return floatLit w l
+
 /-! ## Struct declarations
 
 A generated program declares its own structs (`Syntax.lean`), and the
@@ -265,7 +284,7 @@ def consumableFor (D : StructEnv) (T : Ty) : List Nat :=
 /-- (helper) The type of a fresh `let` binder: mostly structs, when the
 program has any. -/
 def binderTy (D : StructEnv) : G Ty := do
-  let scalar : G Ty := do weighted (← intTy) [(2, ← intTy), (1, .bool)]
+  let scalar : G Ty := do weighted (← intTy) [(2, ← intTy), (1, ← floatTy), (1, .bool)]
   if D.isEmpty then
     scalar
   else
@@ -284,6 +303,10 @@ def atom (D : StructEnv) (Γ : Scope) : Ty → Nat → G Expr
       let uses := indicesWhere Γ (fun b => b.ty == .int w sg)
       if !uses.isEmpty && (← chance 1 2) then return use (← pick 0 uses)
       intLiteral w sg
+  | .float w, _ => do
+      let uses := indicesWhere Γ (fun b => b.ty == .float w)
+      if !uses.isEmpty && (← chance 1 2) then return use (← pick 0 uses)
+      floatLiteral w
   | .bool, _ => do
       let uses := indicesWhere Γ (fun b => b.ty == .bool)
       if !uses.isEmpty && (← chance 1 2) then return use (← pick 0 uses)
@@ -391,11 +414,46 @@ def expr (D : StructEnv) : Scope → Ty → Nat → G Expr
                   | some s => return consume (← expr D Γ (.struct s) fuel)
                   | none => return binop .add (← self) (← self)
               | _ =>
+                  -- `@intCast` from an integer, or `@float_to_int` from a
+                  -- float — the one float form that can trap (`3.12:18`) —
+                  -- or `@total_cmp`, whose result is `i32` (`3.12:31`).
+                  if w == .w32 && sg == .signed && (← chance 1 3) then
+                    let Tf ← floatTy
+                    return binop .totalCmp (← expr D Γ Tf fuel) (← expr D Γ Tf fuel)
+                  if ← chance 1 3 then
+                    let Tf ← floatTy
+                    return fintrin (.floatToInt w sg) (← expr D Γ Tf fuel)
                   let src ← intTy
                   return intCast w sg (← expr D Γ src fuel)
+          | .float w =>
+              -- (Float-Arith), (Float-Neg), (Int-To-Float), (Float-Cast) and
+              -- (Float-Round) §5.8, with §6.4's trap-free dynamics.
+              let self := expr D Γ (.float w) fuel
+              let form ← weighted 0 [(5, 0), (2, 1), (2, 2), (2, 3), (2, 4)]
+              match form with
+              | 0 =>
+                  let op ← pick BinOp.add [BinOp.add, .sub, .mul, .div]
+                  return binop op (← self) (← self)
+              | 1 => return unop .neg (← self)
+              | 2 =>
+                  let src ← intTy
+                  return fintrin (.intToFloat w) (← expr D Γ src fuel)
+              | 3 =>
+                  -- `3.12:19` converts between the two widths and only
+                  -- between them, so the source is the other one.
+                  let src : FloatWidth := match w with | .w32 => .w64 | .w64 => .w32
+                  return fintrin (.floatCast w) (← expr D Γ (.float src) fuel)
+              | _ =>
+                  let k ← pick FloatUnIntrin.sqrt
+                    [FloatUnIntrin.sqrt, .round .floor, .round .ceil, .round .trunc,
+                      .round .round]
+                  return fintrin (.roundOp k) (← self)
           | .bool =>
               if ← chance 1 5 then return unop .not (← expr D Γ .bool fuel)
               let op ← pick BinOp.lt [BinOp.lt, .le, .gt, .ge]
+              if ← chance 1 3 then
+                let Tf ← floatTy
+                return binop op (← expr D Γ Tf fuel) (← expr D Γ Tf fuel)
               let Tc ← intTy
               return binop op (← expr D Γ Tc fuel) (← expr D Γ Tc fuel)
           | .unit =>
@@ -405,7 +463,7 @@ def expr (D : StructEnv) : Scope → Ty → Nat → G Expr
                 let b := Γ[i]?.getD ⟨.int .w64 .signed, true⟩
                 return assign i (← expr D Γ b.ty fuel)
               if ← chance 1 3 then
-                let To ← weighted (← intTy) [(3, ← intTy), (1, .bool)]
+                let To ← weighted (← intTy) [(3, ← intTy), (1, ← floatTy), (1, .bool)]
                 return dbg (← expr D Γ To fuel)
               if Γ.isEmpty && !D.isEmpty then
                 let T₁ ← binderTy D
@@ -424,7 +482,7 @@ def subexprs : Expr → List Expr
       e :: subexprs e₁ ++ subexprs e₂
   | e@(.ite c e₁ e₂) => e :: subexprs c ++ subexprs e₁ ++ subexprs e₂
   | e@(consume e₁) | e@(assign _ e₁) | e@(ret e₁) | e@(unop _ e₁) | e@(intCast _ _ e₁)
-  | e@(dbg e₁) => e :: subexprs e₁
+  | e@(fintrin _ e₁) | e@(dbg e₁) => e :: subexprs e₁
   | e@(call _ args) | e@(mkStruct _ args) => e :: (args.map subexprs).flatten
   | e => [e]
 

@@ -1,3 +1,5 @@
+import RueCore.Float
+
 /-!
 # RueCore.Syntax — abstract syntax of the spike fragment
 
@@ -5,16 +7,19 @@ A fragment of the Rue core calculus (`docs/formal/01-core-calculus.md` §2–§3
 scoped for the mechanization spike:
 
 * Types: `int(w, s)` at every width `w ∈ {8, 16, 32, 64}` and both
-  signednesses, `bool`, `unit`, and monomorphic struct types naming a
-  declaration of the program's struct environment. Floats are in the core
-  (§5.8, §6.4) and are the next slice's; enums and
+  signednesses, `float(w)` at both widths (§2's `𝔽_w`, mechanized in
+  `Float.lean`), `bool`, `unit`, and monomorphic struct types naming a
+  declaration of the program's struct environment. Enums and
   arrays (and with them `match`, indexing, and the element-wise `3.8:73`
   forms) are out of the spike and tracked in the project outline; so are
   projections and partial moves, which are the paths RUE-2231 brings.
 * Expressions: literals carrying their resolved type (`4.1:2`), place use
   (§4.2), the whole §2 `⊕`/`⋚` integer operator set and the `⊖` unary set
   (§5.8 with the §6.4 trap dynamics), `@intCast` (`4.13:24`–`4.13:28`),
-  `@panic` and `@dbg` (§5.8's (Panic) and (Dbg), §6.12), struct literals
+  `@panic` and `@dbg` (§5.8's (Panic) and (Dbg), §6.12), float literals and
+  the float intrinsics (§5.8's (Float-Arith), (Float-Neg), (Float-Ord),
+  (Total-Cmp), (Int-To-Float), (Float-To-Int), (Float-Cast), (Float-Round),
+  with the §6.4 dynamics), struct literals
   (§5.8's (Struct-Intro)), the fragment's whole-value struct elimination,
   `@drop` (§5.3), `let` (§5.6 scope exit), assignment with reinitialization
   (§5.2), sequencing with the discard check (§5.3), `if` with the branch join
@@ -198,6 +203,7 @@ declaration at index `s` of the program's struct environment, which
 elaboration resolves the surface name to. -/
 inductive Ty where
   | int (w : IntWidth) (s : Sign)
+  | float (w : FloatWidth)
   | bool
   | unit
   | struct (s : Nat)
@@ -206,14 +212,14 @@ deriving DecidableEq, Repr
 /-- Whether a type is an integer type (§2's `int(w, s)`) (helper). -/
 def Ty.isInt : Ty → Bool
   | .int _ _ => true
-  | .bool | .unit | .struct _ => false
+  | .float _ | .bool | .unit | .struct _ => false
 
 /-- Whether a type is one `@dbg` renders, which §5.8's (Dbg) restricts to
 `int(w,s)`, `float(w)` and `bool` — the compiler's own restriction (E0702).
-The fragment has no floats, so its two cases are the integers and `bool`
-(helper). -/
+The `float(w)` case is `3.12:39`, and the text it produces is `3.12:40`–
+`3.12:42` (`FloatDatum.render`, `Float.lean`) (helper). -/
 def Ty.observable : Ty → Bool
-  | .int _ _ | .bool => true
+  | .int _ _ | .float _ | .bool => true
   | .unit | .struct _ => false
 
 /-- A monomorphic struct declaration: §2's `S { f1: T1, …, fk: Tk }` with its
@@ -251,10 +257,11 @@ def StructEnv.classOf (D : StructEnv) (s : Nat) : Mult :=
   | none => .affine
 
 /-- `class(T)` (§3), against the program's struct environment. Scalars are
-`Copy` at every width and signedness; a struct type has the class its
-declaration records. -/
+`Copy` at every width and signedness, floats included (`3.12:2a` classifies
+both float types `Copy` and `3.8:2` lists them, so the core takes it
+directly); a struct type has the class its declaration records. -/
 def Ty.mult (D : StructEnv) : Ty → Mult
-  | .int _ _ | .bool | .unit => .copy
+  | .int _ _ | .float _ | .bool | .unit => .copy
   | .struct s => D.classOf s
 
 /-- `carries_linear(T)` (§5.3): `class(T) = Linear`, which §5.3 states is the
@@ -265,10 +272,17 @@ abbrev Ty.carriesLinear (D : StructEnv) (T : Ty) : Prop := T.mult D = .linear
 
 /-! ## Operators -/
 
-/-- §2's binary operator sets on integers: the arithmetic and bitwise `⊕`
-(`+ - * / %`, `& | ^`, `<< >>`) typed by (Arith) §5.8, and the ordering
-compares `⋚` (`< > <= >=`) typed by (Ord) §5.8. Equality `≟` is not here: it
-*borrows* its operands (`4.3:3f`), and the fragment has no loans. -/
+/-- §2's binary operator sets: the arithmetic and bitwise `⊕`
+(`+ - * / %`, `& | ^`, `<< >>`) typed by (Arith) §5.8, the ordering
+compares `⋚` (`< > <= >=`) typed by (Ord) and by (Float-Ord) §5.8, and
+`@total_cmp`. Equality `≟` is not here: it *borrows* its operands
+(`4.3:3f`), and the fragment has no loans.
+
+`@total_cmp` sits here rather than among the float intrinsics below because
+it is the one float intrinsic with **two operands of one type** — exactly the
+shape (Arith)/(Ord) already have — so it needs no second expression form and
+no second evaluation-context rule. Its surface spelling is still the
+intrinsic's (`Print.lean` writes `@total_cmp(a, b)`, not an infix). -/
 inductive BinOp where
   | add
   | sub
@@ -284,6 +298,7 @@ inductive BinOp where
   | le
   | gt
   | ge
+  | totalCmp
 deriving DecidableEq, Repr
 
 /-- Whether the operator is one of §2's ordering compares `⋚`, which yield
@@ -292,18 +307,93 @@ def BinOp.isCompare : BinOp → Bool
   | .lt | .le | .gt | .ge => true
   | _ => false
 
+/-- Which operators §5.8's (Arith)/(Ord) admit at an integer type: everything
+except `@total_cmp`, whose operands `3.12:31` makes floats (helper). -/
+def BinOp.intAdmits : BinOp → Bool
+  | .totalCmp => false
+  | _ => true
+
+/-- Which operators §5.8 admits at a float type: the four arithmetic
+operators of (Float-Arith), the four ordering compares of (Float-Ord), and
+`@total_cmp` (Total-Cmp). `%` is excluded by (Float-Arith)'s omission of it
+(`3.12:25`), and the bitwise and shift operators by (Arith)/(BitNot) being
+stated only at `int(w,s)` — a float is a datum rather than a bit pattern
+(§2). §5.8 calls this rejection "by the absence of a rule"; here it is a side
+condition, because one `Typed` constructor stands for the two rule groups
+(helper). -/
+def BinOp.floatAdmits : BinOp → Bool
+  | .add | .sub | .mul | .div | .lt | .le | .gt | .ge | .totalCmp => true
+  | .rem | .bitAnd | .bitOr | .bitXor | .shl | .shr => false
+
+/-- The four arithmetic operators of (Float-Arith) §5.8, as §6.4's `⊕_w`
+names them; the compares are not among them (helper). -/
+def BinOp.toFloatArith : BinOp → Option FloatArith
+  | .add => some .add
+  | .sub => some .sub
+  | .mul => some .mul
+  | .div => some .div
+  | _ => none
+
 /-- The type a binary operator concludes at, given its shared operand type:
-`bool` for an ordering compare ((Ord) §5.8), the operand type for every
-arithmetic and bitwise operator ((Arith) §5.8) (helper). -/
-def BinOp.resultTy (op : BinOp) (T : Ty) : Ty := if op.isCompare then .bool else T
+`bool` for an ordering compare ((Ord), (Float-Ord) §5.8), `int(32, signed)`
+for `@total_cmp` (`3.12:31`, (Total-Cmp) §5.8), and the operand type for
+every arithmetic and bitwise operator ((Arith), (Float-Arith) §5.8)
+(helper). -/
+def BinOp.resultTy (op : BinOp) (T : Ty) : Ty :=
+  match op with
+  | .totalCmp => .int .w32 .signed
+  | _ => if op.isCompare then .bool else T
 
 /-- §2's unary operator set `⊖`: `neg`, `not`, `bitnot`, typed by (Neg),
-(Not) and (BitNot) §5.8. -/
+(Float-Neg), (Not) and (BitNot) §5.8. `neg` is the one of the three that
+spans both scalar kinds: (Neg) restricts the integer case to a *signed* type
+and traps on `min_T`, while (Float-Neg) applies at every float type and
+§6.4 makes it total — a sign flip, on `-0.0` and on a NaN alike
+(`3.12:24`, `4.2:14`). -/
 inductive UnOp where
   | neg
   | not
   | bitnot
 deriving DecidableEq, Repr
+
+/-! ## The float intrinsics `@f` -/
+
+/-- §2's `@f` production, minus `@total_cmp` (which is a `BinOp`, above):
+the one-operand float intrinsics of §5.8's (Int-To-Float), (Float-To-Int),
+(Float-Cast) and (Float-Round). Each takes its **result** type from context
+(`3.12:16`, `3.12:17`, `3.12:19`), which elaboration has already resolved, so
+the form carries it; the operand's own type comes from the operand. -/
+inductive FloatIntrin where
+  /-- `@int_to_float(e)` at `float(w)`: the operand is an integer of any width
+  and signedness (`3.12:16`, `4.13:139`). -/
+  | intToFloat (w : FloatWidth)
+  /-- `@float_to_int(e)` at `int(w', s')`, signed or unsigned (`3.12:17`,
+  `4.13:140`). The one float form whose dynamics can trap (`3.12:18`). -/
+  | floatToInt (w : IntWidth) (s : Sign)
+  /-- `@float_cast(e)` at `float(w')`, `w' ≠ w` (`3.12:19`, `4.13:141`). -/
+  | floatCast (w : FloatWidth)
+  /-- `@sqrt`, `@floor`, `@ceil`, `@trunc`, `@round` (`3.12:34`), each at the
+  operand's own type. -/
+  | roundOp (k : FloatUnIntrin)
+deriving DecidableEq, Repr
+
+/-- The type §5.8's rule concludes at, given the *operand*'s float width —
+which is the only thing the form does not carry (helper). -/
+def FloatIntrin.resTy : FloatIntrin → FloatWidth → Ty
+  | .intToFloat w, _ => .float w
+  | .floatToInt w s, _ => .int w s
+  | .floatCast w', _ => .float w'
+  | .roundOp _, w => .float w
+
+/-- Whether the intrinsic's rule applies to a `float(w)` operand:
+`@int_to_float` takes an *integer* operand and so has its own rule, and
+(Float-Cast) carries `w' ≠ w` (`3.12:19`: `@float_cast` converts between the
+two widths and only between them) (helper). -/
+def FloatIntrin.floatSrc : FloatIntrin → FloatWidth → Bool
+  | .intToFloat _, _ => false
+  | .floatCast w', w => w' != w
+  | .floatToInt _ _, _ => true
+  | .roundOp _, _ => true
 
 /-! ## Expressions -/
 
@@ -316,7 +406,11 @@ order (`3.6:15`) with one initializer per field. `call f args` is §2's
 in the fragment), `f` the callee's index in the `Program`. `ret e` is §2's
 `return e`.
 
-`intLit w s n` carries the type elaboration resolved for it (`4.1:2`).
+`intLit w s n` carries the type elaboration resolved for it (`4.1:2`);
+`floatLit w l` carries the width the same way (`3.12:7`) and holds the
+literal's **decimal** rather than its datum, because `3.12:9` makes the value
+the correctly-rounded reading of that decimal — which is the model's
+(`Float.lean`). `fintrin k e` is §2's one-operand `@f` production.
 `binop`/`unop` are §2's `e1 ⊕ e2` / `e1 ⋚ e2` and `⊖ e`. `intCast w s e` is
 `@intCast(e)` with the target type elaboration took from the use site
 (`4.13:26`). `panic msg` is `@panic(s)` at a string-literal message: the
@@ -325,12 +419,14 @@ an operand expression, which is also why no `(Panic-Operand)` case is needed.
 `dbg e` is `@dbg(e)`. -/
 inductive Expr where
   | intLit (w : IntWidth) (s : Sign) (n : Int)
+  | floatLit (w : FloatWidth) (l : FloatLit)
   | boolLit (b : Bool)
   | unitLit
   | use (i : Nat)
   | binop (op : BinOp) (e₁ e₂ : Expr)
   | unop (op : UnOp) (e : Expr)
   | intCast (w : IntWidth) (s : Sign) (e : Expr)
+  | fintrin (k : FloatIntrin) (e : Expr)
   | panic (msg : String)
   | dbg (e : Expr)
   | mkStruct (s : Nat) (args : List Expr)

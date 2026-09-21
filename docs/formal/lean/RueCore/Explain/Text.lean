@@ -184,7 +184,7 @@ the checker's verdict and per-function derivations (§5), and the machine's
 run (§6). -/
 def render (name description : String) (rules : List String) (P : Program) : String :=
   let ds := programDerivs P 0 P.fns
-  let t := runTrace P Corpus.exportFuel
+  let t := runTrace Corpus.exportOps P Corpus.exportFuel
   let lines :=
     [bar '═' 80, " " ++ name, bar '═' 80] ++
     para 0 78 description ++

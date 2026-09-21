@@ -237,7 +237,7 @@ def page (title body : String) : String :=
 §5 derivation and its §6 run. -/
 def render (name description : String) (rules : List String) (P : Program) : String :=
   let ds := programDerivs P 0 P.fns
-  let t := runTrace P Corpus.exportFuel
+  let t := runTrace Corpus.exportOps P Corpus.exportFuel
   page name
     (tag "h1" (esc name) ++
      tagc "p" "lead" (esc description) ++

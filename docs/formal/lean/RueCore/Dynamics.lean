@@ -136,12 +136,14 @@ namespace RueCore
 
 /-- Machine values (§6.1's `v`), fragment forms only. `struct s vs` is §6.1's
 `{ v1, …, vk }_S`: the declaration's index and one value per field, in
-declaration order — the order `3.9:13` drops them in. A struct value names its declaration rather than
+declaration order — the order `3.9:13` drops them in. `float w f` is §6.1's `f_T` at `T = float(w)`: §2's
+datum, not a bit pattern (`Float.lean`). A struct value names its declaration rather than
 carrying its class, so the machine's drop decisions are value-driven — it
 reads the tag the value carries — while the class and the destructor come from
 the program's declarations, as the compiled program's drop glue does. -/
 inductive Val where
   | int (w : IntWidth) (s : Sign) (n : Int)
+  | float (w : FloatWidth) (f : FloatDatum)
   | bool (b : Bool)
   | unit
   | struct (s : Nat) (fields : List Val)
@@ -151,7 +153,7 @@ deriving Repr
 struct value has the class its declaration records. -/
 def Val.mult (D : StructEnv) : Val → Mult
   | .struct s _ => D.classOf s
-  | .int _ _ _ | .bool _ | .unit => .copy
+  | .int _ _ _ | .float _ _ | .bool _ | .unit => .copy
 
 /-- Cell contents (§6.1's `c ::= v | ⊘`, plus the retired allocation `†`). -/
 inductive Cell where
@@ -275,7 +277,9 @@ def EvalRes.absorb : EvalRes → (Store → Val → EvalRes) → EvalRes
 
 mutual
 /-- `drop(H, v)` (§6.11), on the fragment's values. A scalar drops nothing
-("scalars are Copy: nothing to drop"). A struct runs its **user destructor
+("scalars are Copy: nothing to drop"; §7 says the same of a float — it "has no
+drop glue, is never registered in a scope record, and never names an
+allocation"). A struct runs its **user destructor
 first** (`3.9:28`), if its declaration has one, and then drops its fields in
 **declaration order** (`3.9:13`, §6.11's `drop*`). A field is dropped whatever
 its class: an explicit `@drop` of a linear-carrying struct discharges the
@@ -306,6 +310,7 @@ no representation here, since the fragment has no partial moves
 (RUE-2231). -/
 def dropValue (D : StructEnv) : Val → Except Violation (List Event)
   | .int _ _ _ => .ok []
+  | .float _ _ => .ok []
   | .bool _ => .ok []
   | .unit => .ok []
   | .struct s vs =>
@@ -341,6 +346,7 @@ two agree on every well-typed value, and it is the closed form RUE-2237's
 "dropped exactly once" quantifies over. -/
 def dropEvents (D : StructEnv) : Val → List Event
   | .int _ _ _ => []
+  | .float _ _ => []
   | .bool _ => []
   | .unit => []
   | .struct s vs =>
@@ -523,26 +529,89 @@ def binOpInt (op : BinOp) (w : IntWidth) (s : Sign) (n₁ n₂ : Int) : OpRes :=
   | .le => .val (.bool (decide (n₁ ≤ n₂)))
   | .gt => .val (.bool (decide (n₂ < n₁)))
   | .ge => .val (.bool (decide (n₂ ≤ n₁)))
+  -- `@total_cmp` has no integer rule: `3.12:31` gives it two float operands,
+  -- and `BinOp.intAdmits` (§5.8) excludes it, so this arm is unreachable for
+  -- a well-typed program. The machine names the shape rather than inventing
+  -- an integer total order.
+  | .totalCmp => .confused
 
-/-- §6.4's binary operators on two machine values. §5.8's arithmetic rule
-gives both operands one `int(w,s)`, so operands of two different integer types
-are a shape no well-typed program produces and the machine refuses them. -/
-def evalBinOp (op : BinOp) : Val → Val → OpRes
+/-- §6.4's float rules at one `float(w)`, on the two operands' data.
+
+* `+ - * /` are `(D-Float-Arith)`: `f₁ ⊕_w f₂`, the model's, and **total** —
+  no float arithmetic redex steps to a panic (`3.12:21`, and §6.4's note that
+  none of (D-Arith-Trap), (D-Div-Zero) or (D-Div-Overflow) is stated over a
+  float redex);
+* `< <= > >=` are `(D-Float-Ord)`: the IEEE 754 predicate, `false` whenever
+  either operand is a NaN (`3.12:27`) and equal on the two zeros (`3.12:28`);
+* `@total_cmp` is `(D-Total-Cmp)`: `≺_w`, a **total** order, `0` exactly on
+  the same datum;
+* `%` and the bitwise and shift operators have no float rule at all — §5.8
+  rejects them by the absence of one (`3.12:25`) — so the machine refuses
+  them, as it does two operands of different types. -/
+def binOpFloat (M : FloatOps) (op : BinOp) (w : FloatWidth) (a b : FloatDatum) : OpRes :=
+  match op with
+  | .add => .val (.float w (M.arith w .add a b))
+  | .sub => .val (.float w (M.arith w .sub a b))
+  | .mul => .val (.float w (M.arith w .mul a b))
+  | .div => .val (.float w (M.arith w .div a b))
+  | .lt => .val (.bool (a.lt b))
+  | .le => .val (.bool (a.le b))
+  | .gt => .val (.bool (b.lt a))
+  | .ge => .val (.bool (b.le a))
+  | .totalCmp => .val (.int .w32 .signed (a.totalCmp b))
+  | .rem | .bitAnd | .bitOr | .bitXor | .shl | .shr => .confused
+
+/-- §6.4's binary operators on two machine values. §5.8's rules give both
+operands one `int(w,s)` or one `float(w)`, so operands of two different types
+— two integer types, two float widths (`3.12:13`: no implicit widening), or
+one of each (`3.12:14`) — are a shape no well-typed program produces and the
+machine refuses them. -/
+def evalBinOp (M : FloatOps) (op : BinOp) : Val → Val → OpRes
   | .int w₁ s₁ n₁, .int w₂ s₂ n₂ =>
       if w₁ = w₂ ∧ s₁ = s₂ then binOpInt op w₁ s₁ n₁ n₂ else .confused
+  | .float w₁ f₁, .float w₂ f₂ =>
+      if w₁ = w₂ then binOpFloat M op w₁ f₁ f₂ else .confused
   | _, _ => .confused
 
-/-- §6.4's unary operators. `neg` is (D-Arith)'s unary case, trapping on
-`min_T` because `-min_T > max_T`; `not` on `bool` is total (§6.4's `Not`);
-`bitnot` inverts the `w`-bit pattern ((D-Bit)'s complement arm) and is total
-too. §5.8 restricts `neg` to a signed operand, so the unsigned case below is a
-shape no well-typed program produces; it is written as the same range check
+/-- §6.4's unary operators. `neg` is (D-Arith)'s unary case on an integer,
+trapping on `min_T` because `-min_T > max_T`, and `(D-Float-Neg)` on a float,
+which is **total**: a sign flip and nothing else, on `-0.0` and on a NaN
+alike (`3.12:24`). `not` on `bool` is total (§6.4's `Not`); `bitnot` inverts
+the `w`-bit pattern ((D-Bit)'s complement arm) and is total too. §5.8
+restricts the integer `neg` to a signed operand, so the unsigned case below is
+a shape no well-typed program produces; it is written as the same range check
 rather than as a refusal, because the exact result `-n` is what §6.4 computes
 and the check is what decides. -/
 def evalUnOp : UnOp → Val → OpRes
   | .neg, .int w s n => intResult w s (-n)
+  | .neg, .float w f => .val (.float w f.negate)
   | .not, .bool b => .val (.bool (!b))
   | .bitnot, .int w s n => .val (.int w s (valOf w s (w.modulus - 1 - bitsOf w n)))
+  | _, _ => .confused
+
+/-- §6.4's one-operand float intrinsics.
+
+* `@int_to_float` is `(D-Int-To-Float)`: `rnd_w` of the operand's exact
+  integer value, the model's, and it never traps (`3.12:16`);
+* `@float_to_int` is `(D-Float-To-Int)` **and** `(D-Float-To-Int-Trap)`, the
+  one float form that traps: the operand truncated toward zero when that is
+  defined and in the target's range, and `↯overflow` otherwise — the same
+  category §6.12 already lists, not a new one (`3.12:18`, `8.1:7`), which is
+  why the compiler reports it as `integer overflow` (verified by hand). The
+  two arms **partition** `𝔽_w` (`floatToInt_partition`, `Float.lean`), which
+  is what keeps progress intact here;
+* `@float_cast` is `(D-Float-Cast)`: exact widening, the model's `rnd_32`
+  narrowing, never trapping (`3.12:19`);
+* the five `3.12:34` intrinsics are `(D-Float-Round)`: `@sqrt` is the model's,
+  the other four are exact, and none traps (`3.12:37`). -/
+def evalFintrin (M : FloatOps) : FloatIntrin → Val → OpRes
+  | .intToFloat w, .int _ _ n => .val (.float w (M.ofInt w n))
+  | .floatToInt w' s', .float _ f =>
+      match f.toIntIn (intMin w' s') (intMax w' s') with
+      | some t => .val (.int w' s' t)
+      | none => .trap .overflow
+  | .floatCast w', .float w f => .val (.float w' (M.cast w w' f))
+  | .roundOp k, .float w f => .val (.float w (M.roundIntrin w k f))
   | _, _ => .confused
 
 /-- `@intCast` (`4.13:28`): the value survives when it denotes a value of the
@@ -562,9 +631,14 @@ def OpRes.toRes (H : Store) : OpRes → EvalRes
   | .trap k => .panic k []
   | .confused => .stuck .typeConfusion
 
-/-- The interpreter. Rule correspondence, per case: `use` is
-(D-Use-Copy)/(D-Use-Move) (§6.3); `binop`, `unop` and `intCast` are §6.4's
-operator rules, computed by `evalBinOp`/`evalUnOp`/`evalIntCast` above;
+/-- The interpreter, over a `FloatOps` (`Float.lean`): §2 fixes `rnd_w` and
+`σ_NaN` per *target*, not per rule, so the machine takes them as a parameter
+and every theorem quantifies over a model that satisfies §7's laws. Rule
+correspondence, per case: `use` is
+(D-Use-Copy)/(D-Use-Move) (§6.3); `binop`, `unop`, `intCast` and
+`fintrin` are §6.4's operator and intrinsic rules, computed by
+`evalBinOp`/`evalUnOp`/`evalIntCast`/`evalFintrin` above, the float half of
+them through the model `M`;
 `panic` is (D-Panic) §6.12; `dbg` appends the operand's rendering to the
 observable output (§5.8's (Dbg), §6.12's `Outcome`); `drop` is §6.11's
 explicit `@drop`; `letIn` is (D-Let) + (D-EndScope)'s drop-retire (§6.7);
@@ -579,9 +653,13 @@ frame's scope drops and hands the value past every enclosing form.
 Every operand is sequenced with `andThen`, which is §6.2's search through an
 evaluation context; the callee's body is sequenced with `absorb`, the one
 place a `return` stops travelling (§6.9). -/
-def eval : Nat → Program → Store → Frame → Expr → EvalRes
+def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalRes
   | 0, _, _, _, _ => .outOfFuel
   | _ + 1, _, H, _, .intLit w s n => .ok H (.int w s n) []
+  | _ + 1, _, H, _, .floatLit w l =>
+      -- (Lit) at `float(w)`: `3.12:9` reads the literal's decimal at the
+      -- form's width, which is `rnd_w` — the model's.
+      .ok H (.float w (M.ofLit w l.sig l.negExp l.e)) []
   | _ + 1, _, H, _, .boolLit b => .ok H (.bool b) []
   | _ + 1, _, H, _, .unitLit => .ok H .unit []
   | _ + 1, P, H, φ, .use i =>
@@ -596,13 +674,15 @@ def eval : Nat → Program → Store → Frame → Expr → EvalRes
             if v.mult P.structs = .copy then .ok H v []
             else .ok (H.set ℓ .moved) v []
   | fuel + 1, P, H, φ, .binop op e₁ e₂ =>
-      (eval fuel P H φ e₁).andThen fun H₁ v₁ =>
-        (eval fuel P H₁ φ e₂).andThen fun H₂ v₂ =>
-          (evalBinOp op v₁ v₂).toRes H₂
+      (eval M fuel P H φ e₁).andThen fun H₁ v₁ =>
+        (eval M fuel P H₁ φ e₂).andThen fun H₂ v₂ =>
+          (evalBinOp M op v₁ v₂).toRes H₂
   | fuel + 1, P, H, φ, .unop op e =>
-      (eval fuel P H φ e).andThen fun H' v => (evalUnOp op v).toRes H'
+      (eval M fuel P H φ e).andThen fun H' v => (evalUnOp op v).toRes H'
   | fuel + 1, P, H, φ, .intCast w s e =>
-      (eval fuel P H φ e).andThen fun H' v => (evalIntCast w s v).toRes H'
+      (eval M fuel P H φ e).andThen fun H' v => (evalIntCast w s v).toRes H'
+  | fuel + 1, P, H, φ, .fintrin k e =>
+      (eval M fuel P H φ e).andThen fun H' v => (evalFintrin M k v).toRes H'
   | _ + 1, _, _, _, .panic _ =>
       -- (D-Panic) §6.12: the message is emitted and the configuration is
       -- abandoned. No scope drop runs — §5.7 exempts the `⊥_panic` edge from
@@ -610,12 +690,12 @@ def eval : Nat → Program → Store → Frame → Expr → EvalRes
       -- the evaluation had already produced, prefixed by `andThen`.
       .panic .user []
   | fuel + 1, P, H, φ, .dbg e =>
-      (eval fuel P H φ e).andThen fun H' v => .ok H' .unit [.dbg v]
+      (eval M fuel P H φ e).andThen fun H' v => .ok H' .unit [.dbg v]
   | fuel + 1, P, H, φ, .mkStruct s args =>
       -- (D-Struct) §6.5: a struct literal is a redex once every initializer
       -- is a value; §6.2's contexts reduce them left to right, threading `H`,
       -- exactly as a call's arguments are reduced (§6.9).
-      (match evalArgs (fun H' e => eval fuel P H' φ e) H args with
+      (match evalArgs (fun H' e => eval M fuel P H' φ e) H args with
        | .abort r => r
        | .ok H₁ vs tr =>
          EvalRes.withTrace tr <|
@@ -625,7 +705,7 @@ def eval : Nat → Program → Store → Frame → Expr → EvalRes
                if sd.fields.length = vs.length then .ok H₁ (.struct s vs) []
                else .stuck .typeConfusion)
   | fuel + 1, P, H, φ, .consume e =>
-      (eval fuel P H φ e).andThen fun H' v =>
+      (eval M fuel P H φ e).andThen fun H' v =>
         match v with
         | .struct _ (.int w s n :: _) => .ok H' (.int w s n) []
         | _ => .stuck .typeConfusion
@@ -644,11 +724,11 @@ def eval : Nat → Program → Store → Frame → Expr → EvalRes
                 if v.mult P.structs = .copy then .ok H .unit []
                 else .ok (H.set ℓ .moved) .unit evs
   | fuel + 1, P, H, φ, .letIn _m e₁ e₂ =>
-      (eval fuel P H φ e₁).andThen fun H₁ v₁ =>
+      (eval M fuel P H φ e₁).andThen fun H₁ v₁ =>
         -- (D-Let): mint a fresh single-cell binding allocation, bind it, and
         -- register it in the frame's scope record as well as in the
         -- administrative `endscope` the normal path below runs (RUE-1277).
-        (eval fuel P (H₁ ++ [.full v₁])
+        (eval M fuel P (H₁ ++ [.full v₁])
             { env := H₁.length :: φ.env, scope := φ.scope ++ [H₁.length] } e₂).andThen
           fun H₂ v₂ =>
             -- (D-EndScope): §5.6's obligations, executed. The record this
@@ -658,7 +738,7 @@ def eval : Nat → Program → Store → Frame → Expr → EvalRes
             | .error w => .stuck w
             | .ok (H₃, evs) => .ok H₃ v₂ evs
   | fuel + 1, P, H, φ, .assign i e =>
-      (eval fuel P H φ e).andThen fun H₁ v =>
+      (eval M fuel P H φ e).andThen fun H₁ v =>
         match φ.env[i]? with
         | none => .stuck .unbound
         | some ℓ =>
@@ -673,21 +753,21 @@ def eval : Nat → Program → Store → Frame → Expr → EvalRes
                 | .error w => .stuck w
                 | .ok evs => .ok (H₁.set ℓ (.full v)) .unit evs
   | fuel + 1, P, H, φ, .seq e₁ e₂ =>
-      (eval fuel P H φ e₁).andThen fun H₁ v₁ =>
+      (eval M fuel P H φ e₁).andThen fun H₁ v₁ =>
         match v₁.mult P.structs with
         | .linear => .stuck .linearDiscard                         -- 3.8:64
         | .affine =>
             (match dropValue P.structs v₁ with
              | .error w => .stuck w
-             | .ok evs => (eval fuel P H₁ φ e₂).withTrace (.dropTemp v₁ :: evs))
-        | .copy => eval fuel P H₁ φ e₂
+             | .ok evs => (eval M fuel P H₁ φ e₂).withTrace (.dropTemp v₁ :: evs))
+        | .copy => eval M fuel P H₁ φ e₂
   | fuel + 1, P, H, φ, .ite c e₁ e₂ =>
-      (eval fuel P H φ c).andThen fun H₀ v₀ =>
+      (eval M fuel P H φ c).andThen fun H₀ v₀ =>
         match v₀ with
-        | .bool b => if b then eval fuel P H₀ φ e₁ else eval fuel P H₀ φ e₂
+        | .bool b => if b then eval M fuel P H₀ φ e₁ else eval M fuel P H₀ φ e₂
         | _ => .stuck .typeConfusion
   | fuel + 1, P, H, φ, .call f args =>
-      match evalArgs (fun H' e => eval fuel P H' φ e) H args with
+      match evalArgs (fun H' e => eval M fuel P H' φ e) H args with
       | .abort r => r
       | .ok H₁ vs tr =>
         EvalRes.withTrace tr <|
@@ -699,7 +779,7 @@ def eval : Nat → Program → Store → Frame → Expr → EvalRes
               -- entry scope owes a drop for exactly those cells.
               let minted := mintParams H₁ vs
               let φg : Frame := { env := minted.2.reverse, scope := minted.2 }
-              (eval fuel P minted.1 φg fd.body).absorb fun H₃ v =>
+              (eval M fuel P minted.1 φg fd.body).absorb fun H₃ v =>
                 -- (D-Return-Value): the body became a value; pop the frame,
                 -- running its open scopes' drops. (D-Return) needs no second
                 -- path: `absorb` took its value, and its unwind already ran
@@ -709,7 +789,7 @@ def eval : Nat → Program → Store → Frame → Expr → EvalRes
                 | .ok (H₄, evs) => .ok H₄ v evs
             else .stuck .typeConfusion
   | fuel + 1, P, H, φ, .ret e =>
-      (eval fuel P H φ e).andThen fun H₁ v =>
+      (eval M fuel P H φ e).andThen fun H₁ v =>
         -- (D-Return) §6.9: discard the evaluation context, every pending
         -- `endscope` marker inside it included, and run the frame's scope
         -- record instead — newest binding first.
@@ -722,7 +802,7 @@ index `0`, with no arguments in an empty store and a frame with no bindings.
 (D-Return-Main) is the same rule as (D-Return-Value) at the bottom of the
 stack, so the entry point is an ordinary call and needs no second path: the
 call boundary absorbs an unwinding `return` exactly as it does anywhere. -/
-def run (P : Program) (fuel : Nat) : EvalRes :=
-  eval fuel P [] { env := [], scope := [] } (.call 0 [])
+def run (M : FloatOps) (P : Program) (fuel : Nat) : EvalRes :=
+  eval M fuel P [] { env := [], scope := [] } (.call 0 [])
 
 end RueCore
