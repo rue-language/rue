@@ -264,8 +264,10 @@ def Contents.residualLinearList (D : StructEnv) : List Contents → Bool
 end
 
 /-- `H[ℓ@π ↦ c']` (§6.3's (D-Use-Move), §6.8's `place_write`): replace the
-sub-position at a path. `none` is a step that is not a field of what is stored
-(helper). -/
+sub-position at a path. `none` is a step that is not a field of what is
+stored, which is the same navigation `readAt` refuses with `typeConfusion` —
+so every `eval` arm that writes has already read at the same path, and its
+`none` case is unreachable rather than a second refusal (helper). -/
 def Contents.writeAt : Contents → List Nat → Contents → Option Contents
   | _, [], new => some new
   | .struct s cs, f :: π, new =>

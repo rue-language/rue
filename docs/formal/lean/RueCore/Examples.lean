@@ -82,14 +82,15 @@ def dCopy : StructDecl := { attr := .copy, fields := [tI64], dtor := false, cls 
 destructor is what makes each of its drops observable. -/
 def dAffine : StructDecl := { attr := .none, fields := [tI64], dtor := true, cls := .affine }
 
-/-- `S2`: `linear struct { x0: i64 }`, no destructor. Class `Linear`; its
-field can be read out, so it is the linear type the fragment's whole-value
-elimination works on, and its drops are silent. -/
+/-- `S2`: `linear struct { x0: i64 }`, no destructor. Class `Linear`, drops
+silent. It is *declared* linear, so a projection out of it would select §4.2's
+`Declared(d, π)` plan — which this fragment rejects (RUE-2236) — and the
+obligation is discharged by a move of the whole value or by `@drop`. -/
 def dLinear : StructDecl := { attr := .linear, fields := [tI64], dtor := false, cls := .linear }
 
 /-- `S3`: `linear struct { x0: i64 }` with a destructor. Class `Linear`, drops
-observable; nothing may be read out of it (`3.9:34`), so it is discharged by
-`@drop` or by a move. -/
+observable; nothing may be moved out of it (`3.9:34`), so it is discharged by
+`@drop` or by a move of the whole value. -/
 def dLinearDtor : StructDecl :=
   { attr := .linear, fields := [tI64], dtor := true, cls := .linear }
 
@@ -106,7 +107,8 @@ def dOuter : StructDecl :=
   { attr := .none, fields := [tI64, .struct 1], dtor := true, cls := .affine }
 
 /-- `S6`: `@copy struct { x0: i64, x1: i64 }`. Class `Copy`, two fields, so a
-use of it copies and the whole-value elimination reads the first. -/
+use of it copies and a projection of either field is a `Copy` read that leaves
+the base `Owned`. -/
 def dPair : StructDecl :=
   { attr := .copy, fields := [tI64, tI64], dtor := false, cls := .copy }
 
@@ -353,14 +355,15 @@ def useAfterMove : Expr :=
   letIn false (resA (lit 1))
     (letIn false (use (.var 0)) (seq (drop (.var 1)) (lit 0)))
 
-/-- Reinitialization: move out, assign back in, consume — legal (`3.8:55`). -/
+/-- Reinitialization: discharge the value, assign a new one back in, discharge
+that — legal (`3.8:55`). -/
 def reinit : Expr :=
   letIn true (resL (lit 1))
     (seq (drop (.var 0))
       (seq (assign (.var 0) (resL (lit 2)))
         (seq (drop (.var 0)) (lit 2))))
 
-/-- Branch join: consume a linear value in only one arm — no typing
+/-- Branch join: discharge a linear value in only one arm — no typing
 derivation exists (the §5.5 join rejects it); dynamically it leaks on the
 `false` path. -/
 def linearHalfConsumed : Expr :=
@@ -1361,6 +1364,40 @@ example : eval demoOps demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], 
     = .stuck .useAfterDrop := by rfl
 example : eval demoOps demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [] }
     (assign (.var 0) (lit 1)) = .stuck .useAfterDrop := by rfl
+
+/-! ### The refusals a *path* reaches
+
+A use at a projection has three ways to fail that a whole-binding use does
+not, and each is a state the statics exclude: the path runs into a `⊘` on the
+way down (`3.8:53`, (Owned-Base) §5.1), the value it reaches has a `⊘`
+somewhere inside it (`3.8:26`, `fully-owned`), or a step of the path is not a
+field of what is stored (which elaboration resolves, §2). The first two are
+`useAfterMove`; the third is `typeConfusion`. As with the retired-cell guard,
+no *closed* fragment program reaches them, so the witnesses start the machine
+in an open state. -/
+
+/-- Reading through a `⊘`: the base was moved out as a whole, so the path has
+nowhere to go (`3.8:53`). -/
+example : eval demoFuel (prog tI64 unitLit) [.full .hole] { env := [0], scope := [] }
+    (use (.proj (.var 0) 0)) = .stuck .useAfterMove := by rfl
+
+/-- Reading a value **with** a `⊘` in it: the place itself is there, but
+handing it on would hand on an aggregate with a hole, which `fully-owned`
+(§5.1, `3.8:26`) is exactly the premise against. -/
+example : eval demoFuel (prog tI64 unitLit)
+    [.full (.struct sTwoAffine [.hole, .struct sAffine [c64 2]])]
+    { env := [0], scope := [] } (use (.var 0)) = .stuck .useAfterMove := by rfl
+
+/-- A path step that is not a field of what is stored: no elaborated program
+has one (§2 resolves field names to declaration slots, `3.6:15`). -/
+example : eval demoFuel (prog tI64 unitLit) [.full (c64 7)] { env := [0], scope := [] }
+    (use (.proj (.var 0) 0)) = .stuck .typeConfusion := by rfl
+
+/-- `@drop` of a place that is already `⊘`: §5.3 demands `Σ(p) = Owned`, so
+the machine refuses rather than treating the drop as a silent no-op. -/
+example : eval demoFuel (prog tI64 unitLit)
+    [.full (.struct sTwoAffine [.hole, .struct sAffine [c64 2]])]
+    { env := [0], scope := [] } (drop (.proj (.var 0) 0)) = .stuck .useAfterMove := by rfl
 
 /-- The same guard on the unwind path: a frame whose scope record names a
 retired cell refuses instead of retiring it twice (§6.9). `FrameMatches` is

@@ -16,18 +16,29 @@ model and the implementations, compare. `lake exe ruecore-corpus --gen N
 ## What a generated program is guaranteed to be
 
 Generation is type-directed under a scope of binders, so every program is
-closed, well-scoped, and simply typed by construction: every `use i` and
-`drop i` names a binder in scope, operator operands are `int`, both arms of
-an `if` have the wanted type, `assign i e` targets a `mut` binder and `e` has
-its type, and every literal is in bounds (`InBounds`). A program's struct
-declarations are drawn first and are well-formed by construction (§3's class
-equation, `3.8:18`'s `@copy` restriction, and fields naming only earlier
-declarations), a struct literal supplies one initializer per declared field,
-and the whole-value elimination is only applied to a `Consumable`
-declaration. So `Print.tyOf` succeeds on every generated program, and
-whatever the verified checker rejects, it rejects for an ownership reason — a
-use after move, a linear leak, a linear discard or overwrite, a disagreeing
-join — which is what the bridge's refusal table covers.
+closed, well-scoped, and simply typed by construction: every `use p` and
+`drop p` names a place rooted at a binder in scope, operator operands are
+`int`, both arms of an `if` have the wanted type, `assign p e` targets a place
+rooted at a `mut` binder and `e` has the place's type, and every literal is in
+bounds (`InBounds`). A program's struct declarations are drawn first and are
+well-formed by construction (§3's class equation, `3.8:18`'s `@copy`
+restriction, and fields naming only earlier declarations), a struct literal
+supplies one initializer per declared field, and a projection names a declared
+slot at the type it is asked for. So `Print.tyOf` succeeds on every generated
+program, and whatever the verified checker rejects, it rejects for an
+ownership reason — a use after move, a use of a partially moved value, a
+linear leak, a linear discard or overwrite, a disagreeing join, a move out of
+a destructor-bearing value — which is what the bridge's refusal table covers.
+
+Two shapes are deliberately **not** drawn, because on them a `reject` verdict
+would be a false bridge failure rather than a finding. A projection through a
+proper prefix of declared-`linear` struct type selects §4.2's `Declared(d, π)`
+plan, which the compiler applies and this fragment rejects instead
+(RUE-2236). And an assignment target is at most one field step deep: a
+reinitialising assignment at depth ≥ 2 is a compiler defect — it runs the
+overwrite-drop on the already moved-out position and then leaks the value it
+stored — so the model and the compiler disagree there for a reason that is
+not the model's.
 
 Calls and `return` are **not** generated yet: every generated case is a
 one-function program (`Program.entry`), so the shapes RUE-2233 added — a
