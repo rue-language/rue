@@ -5,7 +5,7 @@ A field moved out of a two-field struct and discharged, the rest left to scope
 exit: the moved field's destructor prints at the @drop and the remaining one's
 at the scope exit, and the hole is skipped so nothing is dropped twice.
 
-Rules exercised: (Use-Move) §5.1 · §4.2 partial move · 3.8:22 · §6.11 · 3.8:73
+Rules exercised: (Use-Move) §5.1 · §4.2 partial move · 3.8:22 · §6.11 · 3.8:60
 
 ── The program ─────────────────────────────────────────────────────────────────
 

@@ -4,7 +4,7 @@
 The same program on the path that does not move the field: the drop is
 path-specific, so the observable output is the same either way.
 
-Rules exercised: (If) §5.5 join · 3.8:73 · §6.11
+Rules exercised: (If) §5.5 join · 3.8:60 · §6.11
 
 ── The program ─────────────────────────────────────────────────────────────────
 

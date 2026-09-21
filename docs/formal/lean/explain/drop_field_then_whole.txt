@@ -4,7 +4,7 @@
 @drop at a field and then @drop of the whole: §5.3 asks only Σ(p) = Owned of
 the second, and §6.11's walk drops the owned residue and skips the hole.
 
-Rules exercised: (@Drop) §5.3 · §6.11 · 3.8:73
+Rules exercised: (@Drop) §5.3 · §6.11 · 3.8:60
 
 ── The program ─────────────────────────────────────────────────────────────────
 

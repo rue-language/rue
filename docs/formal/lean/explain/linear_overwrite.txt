@@ -45,10 +45,10 @@ The premise that fails, in fn f0() -> i64, at (Assign) §5.2, 3.8:77:
 
     on  { v0 = S2 { x0: 2 }; }
 
-    overwrite of a live linear value: the place still carries linear content
-    at type S2 after the right-hand side ((Assign) premise `Σ1(p) = MovedOut ∨
-    ¬carries_linear(T)`, §5.2, read on the residue; 3.8:77; the compiler
-    reports E0493)
+    overwrite of a live linear value: the place is not MovedOut after the
+    right-hand side and its type S2 carries a linear value ((Assign) premise
+    `Σ1(p) = MovedOut ∨ ¬carries_linear(T)`, §5.2, read on the destination's
+    type; 3.8:77; the compiler reports E0493)
 
 ── The derivations (§5) ────────────────────────────────────────────────────────
 
@@ -83,10 +83,10 @@ function body, checked from (Fn) §5.8's entry context.
             e       { v0 = S2 { x0: 2 }; }
             Γ;Σ     [v0: S2 mut = Owned]
             ✗       this premise fails:
-                    overwrite of a live linear value: the place still carries linear
-                    content at type S2 after the right-hand side ((Assign) premise
-                    `Σ1(p) = MovedOut ∨ ¬carries_linear(T)`, §5.2, read on the residue;
-                    3.8:77; the compiler reports E0493)
+                    overwrite of a live linear value: the place is not MovedOut after
+                    the right-hand side and its type S2 carries a linear value ((Assign)
+                    premise `Σ1(p) = MovedOut ∨ ¬carries_linear(T)`, §5.2, read on the
+                    destination's type; 3.8:77; the compiler reports E0493)
               (Struct-Intro) §5.8
                 e       S2 { x0: 2 }
                 Γ;Σ     [v0: S2 mut = Owned]
