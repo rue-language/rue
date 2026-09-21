@@ -292,7 +292,9 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
     ("e", "assign p = e"): (
         "yes",
         ["Expr.assign"],
-        "whole bindings only, with the `3.8:77` premise on the post-RHS state",
+        "at a place, so it reinitializes a subtree (`3.8:55`), with the "
+        "`3.8:77` premise on the post-RHS state and keyed on the destination's "
+        "type as §5.2 writes it",
     ),
 }
 

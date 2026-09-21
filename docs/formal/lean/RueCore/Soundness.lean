@@ -74,7 +74,11 @@ contributing none (`3.8:73`), which is the shape RUE-2237's "dropped exactly
 once" quantifies over. `dropContents_order` and `dropContentsList_order` are
 the one-level induction steps, `dropContents_ok` the corollary that the walk
 never refuses, and `ContentsMatches.residualLinear_false` the reason the leak
-monitor's reading of the residue is the one §5.6 computes.
+monitor's reading of the residue is the one §5.6 computes. The **overwrite**
+monitor reads the residue too, but (Assign) §5.2's premise is type-keyed
+(`overwriteOk`), so that case of `soundness` discharges it from either
+disjunct: `MovedOut` carries nothing, and `ContentsTy.residualLinear_false`
+settles a non-linear type.
 
 ## The theorem
 
@@ -2077,8 +2081,13 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           have htyeq : en₁.ty = en₀.ty := (skel_lookup hskel hget₀ hget₁).1
           obtain ⟨old, hread, hold⟩ :=
             ContentsMatches.readAt pl.path hmm hg₁ (htyeq ▸ hty₀)
-          have hnl : old.residualLinear P.structs = false :=
-            hold.residualLinear_false hwf.structs hover
+          -- §5.2's premise is the type-keyed disjunction; either disjunct gives
+          -- the residue the overwrite-drop is about to walk no linear content,
+          -- which is why `linearOverwrite` is unreachable from a typed program.
+          have hnl : old.residualLinear P.structs = false := by
+            rcases hover with rfl | hnlin
+            · exact hold.residualLinear_false hwf.structs rfl
+            · exact ContentsTy.residualLinear_false hwf.structs hold.contentsTy hnlin
           obtain ⟨evs, hdc⟩ := dropCell_ok (D := P.structs) (ℓ := ℓ) hold.contentsTy
           obtain ⟨cc', hw, hmm'⟩ := ContentsMatches.writeAt pl.path hmm hg₁
             (htyeq ▸ hty₀) (ContentsMatches.ofVal hty)
@@ -2590,7 +2599,11 @@ exit (§6.7) nor a frame unwind (§6.9) ever sees a live linear value. -/
 theorem no_linear_leak (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     run M.toFloatOps P fuel ≠ .stuck .linearLeak := no_violation M h fuel _
 
-/-- §7 linear bullet, overwrite half (`3.8:77`, the RUE-387 premise). -/
+/-- §7 linear bullet, overwrite half (`3.8:77`, the RUE-387 premise). The
+monitor reads the residue the overwrite-drop is about to walk, and (Assign)
+§5.2's premise is keyed on the destination's *type*, which is the stronger of
+the two — so the residue is empty of linear content whenever the checker
+accepted. -/
 theorem no_linear_overwrite (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     run M.toFloatOps P fuel ≠ .stuck .linearOverwrite := no_violation M h fuel _
 

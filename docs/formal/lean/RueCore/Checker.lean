@@ -205,9 +205,10 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
                   | some en₁ =>
                     (match en₁.st.get p.path with
                      | some u₁ =>
-                         if residualLinear P.structs u₁ T then none
-                         else some (.unit,
-                           Γ₁.set p.root (en₁.setSt (en₁.st.setAt p.path .owned)))
+                         if overwriteOk P.structs u₁ T then
+                           some (.unit,
+                             Γ₁.set p.root (en₁.setSt (en₁.st.setAt p.path .owned)))
+                         else none
                      | none => none)
                   | none => none)
                else none
@@ -449,11 +450,11 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
                   split at h
                   · rename_i u₁ hg₁
                     split at h
-                    · cases h
                     · rename_i hover
                       cases h
                       exact .assign hget₀ hmu hg₀ hty₀ (check_sound e hchk) hget₁ hg₁
-                        ((Bool.not_eq_true _).mp hover)
+                        (overwriteOk_iff.mp hover)
+                    · cases h
                   · cases h
                 · cases h
               · cases h

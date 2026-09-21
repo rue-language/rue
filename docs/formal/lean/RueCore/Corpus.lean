@@ -64,10 +64,13 @@ One array of case objects. Fields:
   disagreement, or a refusal inside the arm the condition skips — which is
   what the generator (`Gen.lean`) produces. Or the rule the checker applies
   can have **no dynamic counterpart at all**: `3.9:34`'s restriction on moving
-  a field out of a destructor-bearing value (E0456) and (@Drop) §5.3's
-  residual side condition (E0406) are static disciplines the machine does not
-  monitor, so a program they reject still runs — `partial_under_dtor` and
-  `linear_field_stranded` below are those cases. Every line is a bare integer or `true`/`false`, so the
+  a field out of a destructor-bearing value (E0456), (@Drop) §5.3's residual
+  side condition (E0406), and (Assign) §5.2's `3.8:77` premise — keyed on the
+  destination's *type*, where the machine's `linearOverwrite` monitor reads the
+  residue it is about to drop (E0493) — are static disciplines no monitor
+  enforces, so a program they reject still runs. `partial_under_dtor`,
+  `linear_field_stranded`, `overwrite_past_partial_linear` and
+  `overwrite_field_past_partial_linear` below are those cases. Every line is a bare integer or `true`/`false`, so the
   projection is not injective: a destructor line `n` swapped with a `@dbg`
   line `n` or a value line `n` would not be told apart. Accepted at fragment
   scope.
@@ -448,6 +451,16 @@ def cases : List Case := [
     rules := ["(If) §5.5 join", "3.8:50"],
     prog := Examples.prog Examples.tI64 Examples.joinLinearFieldOneArm
     },
+  { name := "overwrite_past_partial_linear",
+    description := "A root whose type carries a linear value, reassigned after a @drop took the linear field out: (Assign)'s 3.8:77 premise is keyed on the destination's type, so it is rejected (E0493) although the residue carries nothing and the machine runs it.",
+    rules := ["(Assign) §5.2", "3.8:77", "§6.8 overwrite-drop"],
+    prog := Examples.prog Examples.tI64 Examples.overwritePastPartialLinear
+    },
+  { name := "overwrite_field_past_partial_linear",
+    description := "The same divergence one field step down: the assignment target is a field whose own type carries a linear value, with that linear leaf already moved out — rejected on the type (E0493), and the machine runs it.",
+    rules := ["(Assign) §5.2", "3.8:77", "3.8:60"],
+    prog := Examples.nestCarryProg Examples.tI64 Examples.overwriteFieldPastPartialLinear
+    },
   { name := "countdown",
     description := "A recursive countdown summing 4+3+2+1+0: every frame pops normally and the value comes back through five call boundaries.",
     rules := ["(Call) §5.8", "(D-Call) §6.9", "(D-Return-Value) §6.9"],
@@ -627,9 +640,9 @@ state, so the arm that did *not* move it still drops it at scope exit. The two
 runs therefore print the same lines, which is what a conservatively joined Σ
 costs at the observable level: nothing. -/
 example :
-    (match run (Examples.prog Examples.tI64 Examples.partialMoveOneArm) exportFuel with
+    (match run exportOps (Examples.prog Examples.tI64 Examples.partialMoveOneArm) exportFuel with
      | .ok _ v tr => outLines Examples.structEnv v tr | _ => [])
-    = (match run (Examples.prog Examples.tI64 Examples.partialMoveOtherArm) exportFuel with
+    = (match run exportOps (Examples.prog Examples.tI64 Examples.partialMoveOtherArm) exportFuel with
        | .ok _ v tr => outLines Examples.structEnv v tr | _ => []) := by rfl
 
 /-- A one-line reading of the outcome, for the program's header comment. -/
