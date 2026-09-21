@@ -796,6 +796,16 @@ def affineLostAtCallArg : Program :=
 #eval run demoOps recursionTrap demoFuel                        -- panic: divZero
 #eval run demoOps countdown demoFuel                            -- ok: 10
 #eval run demoOps countdown 12                                  -- outOfFuel
+#eval run demoOps (prog tI64 partialMoveResidue) demoFuel       -- ok: 9, dtors 1 then 2
+#eval run demoOps (prog tI64 copyThroughPartial) demoFuel       -- ok: 7, dtor 1 only
+#eval run demoOps (prog tI64 dropFieldThenWhole) demoFuel       -- ok: 9, dtors 1 then 2
+#eval run demoOps (prog tI64 reinitField) demoFuel              -- ok: 9, dtors 1, 5, 2
+#eval run demoOps (prog tI64 overwriteField) demoFuel           -- ok: 9, dtors 1, 5, 2
+#eval run demoOps (prog tI64 partialMoveOneArm) demoFuel        -- ok: 9, dtors 1 then 2
+#eval run demoOps (prog tI64 partialMoveOtherArm) demoFuel      -- ok: 9, dtors 1 then 2
+#eval run demoOps (prog tI64 deepPath) demoFuel                 -- ok: 9, dtors 2 then 1
+#eval run demoOps (prog tI64 linearFieldResidue) demoFuel       -- ok: 9, dtors 1 then 2
+#eval run demoOps (prog tI64 joinWholeAgainstPartial) demoFuel  -- ok: 9, dtors 1 then 2
 #eval run demoOps linearLostAtCallArg demoFuel                  -- ok: 0, EMPTY trace
 #eval run demoOps affineLostAtCallArg demoFuel                  -- ok: 0, EMPTY trace
 
@@ -826,6 +836,48 @@ example : ProgramTyped returnPastAffine := checkProgram_sound (by rfl)
 example : ProgramTyped paramDroppedAtPop := checkProgram_sound (by rfl)
 example : ProgramTyped recursionTrap := checkProgram_sound (by rfl)
 example : ProgramTyped countdown := checkProgram_sound (by rfl)
+
+/-! The partial-move programs (RUE-2231): the accepted ones, so the §7
+theorems apply to a store whose cells hold trees with holes in them. -/
+
+example : ProgramTyped (prog tI64 partialMoveResidue) := checkProgram_sound (by rfl)
+example : ProgramTyped (prog tI64 copyThroughPartial) := checkProgram_sound (by rfl)
+example : ProgramTyped (prog tI64 dropFieldThenWhole) := checkProgram_sound (by rfl)
+example : ProgramTyped (prog tI64 reinitField) := checkProgram_sound (by rfl)
+example : ProgramTyped (prog tI64 overwriteField) := checkProgram_sound (by rfl)
+example : ProgramTyped (prog tI64 partialMoveOneArm) := checkProgram_sound (by rfl)
+example : ProgramTyped (prog tI64 partialMoveOtherArm) := checkProgram_sound (by rfl)
+example : ProgramTyped (prog tI64 deepPath) := checkProgram_sound (by rfl)
+example : ProgramTyped (prog tI64 linearFieldResidue) := checkProgram_sound (by rfl)
+example : ProgramTyped (prog tI64 joinWholeAgainstPartial) := checkProgram_sound (by rfl)
+
+/-- `fully-owned(Σ, p)` (§5.1): the whole value may not be moved once a path
+under it is `MovedOut` (`3.8:26`; the compiler reports E0205 "use of partially
+moved value"). -/
+example : checkProgram (prog tI64 partialThenWhole) = false := by rfl
+
+/-- `3.9:34` (E0456): no field may be moved out of a value whose type declares
+a destructor. -/
+example : checkProgram (prog tI64 partialUnderDtor) = false := by rfl
+
+/-- (@Drop) §5.3's residual side condition: a partially moved place may not be
+dropped whole while a **linear** sub-place under it is still `Owned`
+(E0406). -/
+example : checkProgram (prog tI64 linearFieldStranded) = false := by rfl
+
+/-- The §5.5 join with a linear sub-place consumed on one path only
+(`3.8:50`; the compiler reports E0443). -/
+example : checkProgram (prog tI64 joinLinearFieldOneArm) = false := by rfl
+
+/-- The fragment's own restriction: a path whose proper prefix is a struct
+declared `linear` selects §4.2's `Declared(d, π)` plan, whose rule
+(Use-Declared-Linear-Destructure) §5.1 is RUE-2236's. The *compiler* accepts
+this program, so nothing the corpus or the generator emits may have the shape
+(`Syntax.lean`, `Gen.lean`). -/
+example : checkProgram (prog tI64
+    (letIn false (resL (lit 7))
+      (letIn false (use (.proj (.var 0) 0)) (seq (drop (.var 1)) (use (.var 0)))))) = false := by
+  rfl
 
 /-! The two RUE-2316 witnesses are accepted — which is the point: the §7
 theorems apply to them, and the run below still loses the resource. -/
@@ -1165,6 +1217,26 @@ example : run demoOps (prog tI64 structLinearFieldDropped) demoFuel
     = .ok [.dead] (v64 0)
         [.drop 0 (.struct sCarry [c64 1, .struct sLinearDtor [c64 2]]),
          .dtor sLinearDtor (.struct sLinearDtor [c64 2])] := by rfl
+
+/-- **The `⊘`-skip, pinned.** A field is moved out and discharged on its own;
+the scope exit then drops the *residue* — the cell holds a struct with a hole
+where the moved field was, and §6.11's walk skips it, so the moved value is not
+dropped a second time (`3.8:73`). -/
+example : run (prog tI64 partialMoveResidue) demoFuel
+    = .ok [.dead, .dead] (v64 9)
+        [.drop 1 (.struct sAffine [c64 1]), .dtor sAffine (.struct sAffine [c64 1]),
+         .drop 0 (.struct sTwoAffine [.hole, .struct sAffine [c64 2]]),
+         .dtor sAffine (.struct sAffine [c64 2])] := by rfl
+
+/-- The same at a path two field steps deep: `@drop(v.x0.x1)` writes `⊘` at
+exactly that leaf, and the scope exit drops the rest of the tree in
+declaration order (`3.9:13`). -/
+example : run (prog tI64 deepPath) demoFuel
+    = .ok [.dead] (v64 9)
+        [.drop 0 (.struct sAffine [c64 2]), .dtor sAffine (.struct sAffine [c64 2]),
+         .drop 0 (.struct sNested
+             [.struct sTwoAffine [.struct sAffine [c64 1], .hole], c64 3]),
+         .dtor sAffine (.struct sAffine [c64 1])] := by rfl
 
 /-- A by-value parameter the callee never consumes is dropped at the frame
 pop ((D-Return-Value) §6.9), not at the caller. -/

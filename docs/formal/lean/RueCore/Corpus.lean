@@ -129,8 +129,8 @@ def cases : List Case := [
     prog := Examples.prog Examples.tI64 Examples.affineDrop
     },
   { name := "linear_consumed",
-    description := "A linear resource consumed exactly once; no drop event.",
-    rules := ["(Use-Move) §5.1", "§5.8 whole-value elimination"],
+    description := "A linear resource moved into a new binding and discharged there: the move transfers the obligation and @drop is what finally satisfies it; S2 declares no destructor, so nothing prints.",
+    rules := ["(Use-Move) §5.1", "(@Drop) §5.3", "3.9:39"],
     prog := Examples.prog Examples.tI64 Examples.linearConsumed
     },
   { name := "linear_leaked",
@@ -235,8 +235,8 @@ def cases : List Case := [
     prog := Examples.scalarProg .bool <| binop .lt (Examples.lit 3) (Examples.lit 2)
     },
   { name := "struct_copy_twice",
-    description := "A @copy struct with two integer fields, used twice: contraction is legal at Copy and nothing is dropped.",
-    rules := ["(Struct-Intro) §5.8", "(Use-Copy) §5.1", "3.8:18"],
+    description := "A @copy struct's field read twice through a projection: contraction is legal at Copy, the read leaves the base Owned, and nothing is dropped.",
+    rules := ["(Struct-Intro) §5.8", "(Use-Copy) §5.1", "3.8:18", "(Owned-Base) §5.1"],
     prog := Examples.prog Examples.tI64 Examples.structCopyTwice
     },
   { name := "struct_linear_field_leaked",
@@ -372,6 +372,76 @@ def cases : List Case := [
     description := "A @dbg before a division by zero: the same claim for a trap the program did not ask for.",
     rules := ["(Dbg) §5.8", "(D-Div-Zero) §6.4", "§6.12"],
     prog := Examples.scalarProg Examples.tI64 Examples.dbgBeforeTrap
+    },
+  { name := "partial_move_residue",
+    description := "A field moved out of a two-field struct and discharged, the rest left to scope exit: the moved field's destructor prints at the @drop and the remaining one's at the scope exit, and the hole is skipped so nothing is dropped twice.",
+    rules := ["(Use-Move) §5.1", "§4.2 partial move", "3.8:22", "§6.11", "3.8:73"],
+    prog := Examples.prog Examples.tI64 Examples.partialMoveResidue
+    },
+  { name := "partial_then_whole",
+    description := "A field moved out and then the whole value: fully-owned(Σ, p) fails at the whole place, so the use is rejected (E0205, use of partially moved value).",
+    rules := ["(Use-Move) §5.1", "3.8:26", "3.8:5"],
+    prog := Examples.prog Examples.tI64 Examples.partialThenWhole
+    },
+  { name := "partial_under_dtor",
+    description := "A field moved out of a value whose type declares a destructor: 3.9:34 forbids it (E0456), because the destructor runs on the whole value and would observe the hole.",
+    rules := ["(Use-Move) §5.1", "3.9:34"],
+    prog := Examples.prog Examples.tI64 Examples.partialUnderDtor
+    },
+  { name := "copy_through_partial",
+    description := "A Copy field read through a partially moved base: Σ(p) = Owned holds at the base although a path under it is MovedOut, so the read is legal.",
+    rules := ["(Use-Copy) §5.1", "(Owned-Base) §5.1", "3.8:53"],
+    prog := Examples.prog Examples.tI64 Examples.copyThroughPartial
+    },
+  { name := "drop_field_then_whole",
+    description := "@drop at a field and then @drop of the whole: §5.3 asks only Σ(p) = Owned of the second, and §6.11's walk drops the owned residue and skips the hole.",
+    rules := ["(@Drop) §5.3", "§6.11", "3.8:73"],
+    prog := Examples.prog Examples.tI64 Examples.dropFieldThenWhole
+    },
+  { name := "reinit_field",
+    description := "A moved-out field reinitialized by assignment and the whole value then moved: the subtree at the path is Owned again, so fully-owned holds.",
+    rules := ["(Assign) §5.2", "3.8:55", "(Use-Move) §5.1"],
+    prog := Examples.prog Examples.tI64 Examples.reinitField
+    },
+  { name := "overwrite_field",
+    description := "Assignment over a live affine field: §6.8's overwrite-drop runs the old field's destructor before the store, and the new one drops at scope exit.",
+    rules := ["(Assign) §5.2", "§6.8 overwrite-drop"],
+    prog := Examples.prog Examples.tI64 Examples.overwriteField
+    },
+  { name := "partial_move_one_arm",
+    description := "A field dropped in one arm of an if only: the §5.5 join sends that path to MovedOut and the sibling stays Owned; the machine drops whatever the taken path left.",
+    rules := ["(If) §5.5 join", "3.8:73", "(@Drop) §5.3"],
+    prog := Examples.prog Examples.tI64 Examples.partialMoveOneArm
+    },
+  { name := "partial_move_other_arm",
+    description := "The same program on the path that does not move the field: the drop is path-specific, so the observable output is the same either way.",
+    rules := ["(If) §5.5 join", "3.8:73", "§6.11"],
+    prog := Examples.prog Examples.tI64 Examples.partialMoveOtherArm
+    },
+  { name := "deep_path",
+    description := "A path two field steps deep: @drop(v.x0.x1) moves exactly that leaf, and the scope exit drops the rest of the tree in declaration order.",
+    rules := ["(@Drop) §5.3", "§4.2 partial move", "§6.11", "3.9:13"],
+    prog := Examples.prog Examples.tI64 Examples.deepPath
+    },
+  { name := "linear_field_residue",
+    description := "The RUE-1591 idiom at a path: consume exactly the linear field of an infectious carrier and let the non-linear residue drop — §5.6's obligation is keyed on the residual state, so the scope exit is legal.",
+    rules := ["(@Drop) §5.3", "§5.6 residual-linear leak check", "3.8:74"],
+    prog := Examples.prog Examples.tI64 Examples.linearFieldResidue
+    },
+  { name := "linear_field_stranded",
+    description := "The other order: @drop of the affine field first leaves a still-owned linear sub-place under a partially moved place, and (@Drop) §5.3's last premise rejects the whole-value drop (E0406).",
+    rules := ["(@Drop) §5.3", "3.8:32"],
+    prog := Examples.prog Examples.tI64 Examples.linearFieldStranded
+    },
+  { name := "join_whole_against_partial",
+    description := "The §5.5 join of a whole move against a partial one, on a carrier whose only linear content is the field the other arm consumed: both paths discharge the obligation, so the join is MovedOut rather than ill-formed.",
+    rules := ["(If) §5.5 join", "3.8:50", "§5.6 residual-linear leak check"],
+    prog := Examples.prog Examples.tI64 Examples.joinWholeAgainstPartial
+    },
+  { name := "join_linear_field_one_arm",
+    description := "The same shape where the linear field survives on one path: 3.8:50 makes the join ill-formed (E0443, not consumed on all paths).",
+    rules := ["(If) §5.5 join", "3.8:50"],
+    prog := Examples.prog Examples.tI64 Examples.joinLinearFieldOneArm
     },
   { name := "countdown",
     description := "A recursive countdown summing 4+3+2+1+0: every frame pops normally and the value comes back through five call boundaries.",
@@ -545,6 +615,17 @@ value. A trapping run has no value line, so the panic arms of
 calling this. -/
 def outLines (D : StructEnv) (v : Val) (tr : List Event) : List String :=
   tr.filterMap eventLine ++ valueLines D v
+
+/-- **The residual drop is path-specific** (`3.8:73`). The §5.5 join marks a
+field `MovedOut` because one arm moved it; the machine keeps the path-specific
+state, so the arm that did *not* move it still drops it at scope exit. The two
+runs therefore print the same lines, which is what a conservatively joined Σ
+costs at the observable level: nothing. -/
+example :
+    (match run (Examples.prog Examples.tI64 Examples.partialMoveOneArm) exportFuel with
+     | .ok _ v tr => outLines Examples.structEnv v tr | _ => [])
+    = (match run (Examples.prog Examples.tI64 Examples.partialMoveOtherArm) exportFuel with
+       | .ok _ v tr => outLines Examples.structEnv v tr | _ => []) := by rfl
 
 /-- A one-line reading of the outcome, for the program's header comment. -/
 def outcomeSummary (c : Case) : String :=

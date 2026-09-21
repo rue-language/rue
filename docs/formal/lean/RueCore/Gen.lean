@@ -344,10 +344,10 @@ mutual
 of that type, or a struct literal with a leaf per field. -/
 def atom (D : StructEnv) (Γ : Scope) : Ty → Nat → G Expr
   | .int w sg, _ => do
+      let projs := projPlaces D Γ (.int w sg)
+      if !projs.isEmpty && (← chance 1 2) then return use (← pick (.var 0) projs)
       let uses := indicesWhere Γ (fun b => b.ty == .int w sg)
       if !uses.isEmpty && (← chance 1 2) then return use (.var (← pick 0 uses))
-      let projs := projPlaces D Γ (.int w sg)
-      if !projs.isEmpty && (← chance 1 3) then return use (← pick (.var 0) projs)
       intLiteral w sg
   | .float w, _ => do
       let uses := indicesWhere Γ (fun b => b.ty == .float w)
@@ -359,10 +359,10 @@ def atom (D : StructEnv) (Γ : Scope) : Ty → Nat → G Expr
       return boolLit (← bool)
   | .unit, _ => return unitLit
   | .struct s, depth => do
+      let projs := projPlaces D Γ (.struct s)
+      if !projs.isEmpty && (← chance 1 2) then return use (← pick (.var 0) projs)
       let uses := indicesWhere Γ (fun b => b.ty == .struct s)
       if !uses.isEmpty && (← chance 2 3) then return use (.var (← pick 0 uses))
-      let projs := projPlaces D Γ (.struct s)
-      if !projs.isEmpty && (← chance 1 3) then return use (← pick (.var 0) projs)
       match D[s]?, depth with
       | some sd, d + 1 => return mkStruct s (← sd.fields.mapM (fun T => atom D Γ T d))
       | _, _ => return mkStruct s []
@@ -378,7 +378,7 @@ def leaf (D : StructEnv) (Γ : Scope) : Ty → Nat → G Expr
         [(1, 0), (if Γ.isEmpty then 0 else 6, 1), (if muts.isEmpty then 0 else 5, 2)]
       match form with
       | 1 =>
-          if !drops.isEmpty && (← chance 1 3) then return drop (← pick (.var 0) drops)
+          if !drops.isEmpty && (← chance 1 2) then return drop (← pick (.var 0) drops)
           if !structs.isEmpty && (← chance 3 4) then return drop (.var (← pick 0 structs))
           return drop (.var (← nat 0 (Γ.length - 1)))
       | 2 =>
@@ -388,7 +388,7 @@ def leaf (D : StructEnv) (Γ : Scope) : Ty → Nat → G Expr
           | .struct s =>
               let slots := (List.range ((D[s]?).map (·.fields.length) |>.getD 0)).filter
                 (fun f => (projSlots D s ((D[s]?).bind (·.fields[f]?) |>.getD .unit)).contains f)
-              if !slots.isEmpty && (← chance 1 3) then
+              if !slots.isEmpty && (← chance 1 2) then
                 let f ← pick 0 slots
                 let Tf := ((D[s]?).bind (·.fields[f]?)).getD (.int .w64 .signed)
                 return assign (.proj (.var i) f) (← atom D Γ Tf depth)
@@ -499,10 +499,23 @@ def expr (D : StructEnv) : Scope → Ty → Nat → G Expr
               return binop op (← expr D Γ Tc fuel) (← expr D Γ Tc fuel)
           | .unit =>
               let muts := indicesWhere Γ (fun b => b.mu)
+              let drops := dropPlaces D Γ
+              -- A `@drop` or an assignment *at a projection* is the shape this
+              -- slice is about (§4.2's partial move), so it is drawn first.
+              if !drops.isEmpty && (← chance 2 5) then return drop (← pick (.var 0) drops)
               if !muts.isEmpty && (← chance 3 4) then
                 let i ← pick 0 muts
                 let b := Γ[i]?.getD ⟨.int .w64 .signed, true⟩
-                return assign (.var i) (← expr D Γ b.ty fuel)
+                match b.ty with
+                | .struct s =>
+                    let slots := (List.range ((D[s]?).map (·.fields.length) |>.getD 0)).filter
+                      (fun f => (projSlots D s (((D[s]?).bind (·.fields[f]?)).getD .unit)).contains f)
+                    if !slots.isEmpty && (← chance 1 2) then
+                      let f ← pick 0 slots
+                      let Tf := ((D[s]?).bind (·.fields[f]?)).getD (.int .w64 .signed)
+                      return assign (.proj (.var i) f) (← expr D Γ Tf fuel)
+                    return assign (.var i) (← expr D Γ b.ty fuel)
+                | _ => return assign (.var i) (← expr D Γ b.ty fuel)
               if ← chance 1 3 then
                 let To ← weighted (← intTy) [(3, ← intTy), (2, ← floatTy), (1, .bool)]
                 return dbg (← expr D Γ To fuel)
@@ -514,7 +527,7 @@ def expr (D : StructEnv) : Scope → Ty → Nat → G Expr
               let uses := indicesWhere Γ (fun b => b.ty == .struct s)
               if !uses.isEmpty && (← chance 1 2) then return use (.var (← pick 0 uses))
               let projs := projPlaces D Γ (.struct s)
-              if !projs.isEmpty && (← chance 1 4) then return use (← pick (.var 0) projs)
+              if !projs.isEmpty && (← chance 1 3) then return use (← pick (.var 0) projs)
               match D[s]? with
               | some sd => return mkStruct s (← sd.fields.mapM (fun T' => expr D Γ T' fuel))
               | none => return mkStruct s []
