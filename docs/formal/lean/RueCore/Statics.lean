@@ -32,6 +32,15 @@ declaration, beside the `@copy` one), and a field may name only an
 earlier declaration, so the equation is a definition rather than a fixpoint
 condition — `struct_class_unique` is that statement, proved.
 
+`3.9:44` is stated "through any depth of struct nesting", and `dtorWf` looks
+one level down — at `sd.baseOf D`, the join of the *immediate* field classes.
+The two agree because `WfStructs` holds at every declaration, the fields'
+included: a field whose type is linear only by infection has `baseOf = Linear`
+at *its* declaration, and `Attr.lift` then forces its recorded class to
+`Linear` for every attribute `copyWf` permits. So a linear value at any depth
+has already reached the immediate field's class by the time `dtorWf` reads the
+join, and one level is the whole depth.
+
 `carries_linear(T) ⟺ class(T) = Linear` is §5.3's own reading, so it is a
 definition here (`Ty.carriesLinear`); what §5.3 asks to be checked is the
 *lifting*, and `struct_carriesLinear_iff` is it: a struct's class reaches
