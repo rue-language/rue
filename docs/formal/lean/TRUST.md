@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 30.
+- Theorems checked: 80.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -55,7 +55,10 @@ and diffs them against the committed copies.
 | `List.set_self_of_getElem?` | `RueCore.Statics` | `propext` |
 | `skel_set_setSt` | `RueCore.Statics` | `propext` |
 | `Ctx.join_skel` | `RueCore.Statics` | `propext` |
+| `Ctx.join_self` | `RueCore.Statics` | `propext` |
 | `Typed.skel_preserved` | `RueCore.Statics` | `propext` |
+| `TypedArgs.skel_preserved` | `RueCore.Statics` | `propext` |
+| `HasTys.length_eq` | `RueCore.Soundness` | `propext` |
 | `HasTy.mult_eq` | `RueCore.Soundness` | `propext` |
 | `HasTy.int_inv` | `RueCore.Soundness` | *none* |
 | `HasTy.bool_inv` | `RueCore.Soundness` | *none* |
@@ -63,15 +66,55 @@ and diffs them against the committed copies.
 | `Matches.mem_lt` | `RueCore.Soundness` | `propext` |
 | `Matches.fresh_not_mem` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `Matches.lookup` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `Matches.cons_inv` | `RueCore.Soundness` | `propext` |
 | `Matches.append` | `RueCore.Soundness` | `propext` |
 | `Matches.set_outside` | `RueCore.Soundness` | `propext` |
 | `Matches.set` | `RueCore.Soundness` | `propext` |
+| `Matches.snoc` | `RueCore.Soundness` | `propext` |
+| `Untouched.refl` | `RueCore.Soundness` | `propext` |
+| `Untouched.trans` | `RueCore.Soundness` | `propext` |
+| `Untouched.append` | `RueCore.Soundness` | `propext` |
+| `Untouched.set` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `Untouched.trans_set` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `Untouched.of_fresh` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `Untouched.under_binder` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `Matches.transport` | `RueCore.Soundness` | `propext` |
+| `CellMatches.dropOk` | `RueCore.Soundness` | `propext` |
+| `dropRetire_ok` | `RueCore.Soundness` | `propext` |
+| `Matches.unwind` | `RueCore.Soundness` | `propext` |
+| `runAllScopeDrops_ok` | `RueCore.Soundness` | `propext` |
 | `skel_lookup` | `RueCore.Soundness` | `propext` |
 | `Entry.join_matches_left` | `RueCore.Soundness` | `propext` |
 | `Entry.join_matches_right` | `RueCore.Soundness` | `propext` |
 | `Matches.join_left` | `RueCore.Soundness` | `propext` |
 | `Matches.join_right` | `RueCore.Soundness` | `propext` |
+| `mintParams_store` | `RueCore.Soundness` | `propext` |
+| `mintParams_fresh` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `matches_mintParams` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `EvalOk.mono_store` | `RueCore.Soundness` | `propext` |
+| `AbortOk.mono_store` | `RueCore.Soundness` | `propext` |
+| `EvalOk.withTrace` | `RueCore.Soundness` | `propext` |
+| `AbortOk.withTrace` | `RueCore.Soundness` | `propext` |
+| `EvalOk.of_abort` | `RueCore.Soundness` | `propext` |
+| `EvalOk.toAbort` | `RueCore.Soundness` | `propext` |
+| `EvalOk.bind` | `RueCore.Soundness` | `propext` |
+| `EvalOk.weaken` | `RueCore.Soundness` | `propext` |
+| `args_sound` | `RueCore.Soundness` | `propext` |
 | `soundness` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `EvalRes.withTrace_outOfFuel_iff` | `RueCore.Soundness` | `propext` |
+| `EvalRes.andThen_mono` | `RueCore.Soundness` | `propext` |
+| `EvalRes.absorb_mono` | `RueCore.Soundness` | `propext` |
+| `evalArgs_mono` | `RueCore.Soundness` | `propext` |
+| `eval_succ` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `fuel_mono` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `no_masking` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `entry_typed` | `RueCore.Soundness` | `propext` |
+| `frameMatches_empty` | `RueCore.Soundness` | `propext` |
+| `EvalRes.withTrace_ne_returned` | `RueCore.Soundness` | `propext` |
+| `EvalRes.absorb_ne_returned` | `RueCore.Soundness` | `propext` |
+| `run_ne_returned` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `run_safe` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `ProgramTyped.run_safe` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `no_violation` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `no_use_after_move` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `no_use_after_drop` | `RueCore.Soundness` | `Quot.sound`, `propext` |
@@ -79,8 +122,15 @@ and diffs them against the committed copies.
 | `no_linear_overwrite` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `no_linear_discard` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `check_sound` | `RueCore.Checker` | `propext` |
+| `checkArgs_sound` | `RueCore.Checker` | `propext` |
+| `checkFn_sound` | `RueCore.Checker` | `propext` |
+| `checkProgram_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
+| `Examples.countdown_at_17` | `RueCore.Examples` | `propext` |
 | `Explain.explain_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
+| `Explain.explainArgs_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
+| `Explain.traceArgs_res` | `RueCore.Explain` | `propext` |
 | `Explain.traceEval_res` | `RueCore.Explain` | `Quot.sound`, `propext` |
+| `Explain.runTrace_res` | `RueCore.Explain` | `Quot.sound`, `propext` |
 
 What each axiom that appears above means:
 

@@ -124,7 +124,10 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
     ("T", "never"): (
         "no",
         [],
-        "the fragment has no divergence points (§5.7): no `@panic`, `return`, or `break`",
+        "`return` is in the fragment (§5.7) but `never` is not a type here: "
+        "`RueCore.Typed.ret` folds (Sub-Never) into the rule by concluding at any "
+        "type, which is sound because `never` has no values (`3.4:1`); there is no "
+        "`@panic` and no `break`",
     ),
     ("T", "S"): (
         "partial",
@@ -178,12 +181,14 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
     ("e", "E :: K ( e1, ..., em )"): ("no", [], "follows `E`: no enums, so no variant construction"),
     ("e", "[ e1, ..., en ]"): ("no", [], "follows `[T; n]`: no arrays, so no array construction"),
     ("e", "g ( a1, ..., am )"): (
-        "stand-in",
-        ["Expr.consume"],
-        "`RueCore.Expr.consume` stands in: `consume e` takes a resource by value "
-        "and returns its payload, the ownership shape of one by-value argument, "
-        "but the fragment has no function definitions, no `inout`/`borrow` modes, "
-        "and no return",
+        "partial",
+        ["Expr.call"],
+        "every argument by value: no `inout`/`borrow` argument forms, so no "
+        "`Λ_call`, no law-of-exclusivity premise and no call-entry recheck, and no "
+        "(Call-Bottom) companion since the fragment has no `never` type. "
+        "`RueCore.Expr.consume` remains the abstract resource elimination beside "
+        "it, the ownership shape of a one-argument by-value call over a type with "
+        "no fields",
     ),
     ("e", "p . f ( e1, ..., ek )"): (
         "no",
@@ -217,11 +222,18 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
     ("e", "loop { e }"): (
         "no",
         [],
-        "no loops: the interpreter is structurally recursive, which is what makes "
-        "it total without a fuel parameter",
+        "no loops, so no `loopβ` boundary on the control stack and no back-edge "
+        "invariance premise; the interpreter is fuel-indexed (calls already make "
+        "its recursion unbounded), so a loop would not cost it its totality",
     ),
     ("e", "break"): ("no", [], "follows `loop { e }` and `never`"),
-    ("e", "return e"): ("no", [], "no function bodies to return from (§5.7)"),
+    ("e", "return e"): (
+        "yes",
+        ["Expr.ret"],
+        "(Return-Value) §5.7 with (Sub-Never) folded into the same rule, and "
+        "§5.6's obligation carried at the `⊥_exit` edge; (Return-Bottom) is "
+        "subsumed rather than separate",
+    ),
     ("e", "assign p = e"): (
         "yes",
         ["Expr.assign"],
