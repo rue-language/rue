@@ -36,10 +36,29 @@ and in the printed Rue program.
 Node labels name a calculus rule only where the node *is* an instance of
 it. The fragment's `mkres`/`consume` are abstract resource introduction and
 elimination, not the aggregate-introduction and call forms of §5.8 —
-`res κ` has no declared fields and the fragment has no functions
-(`Syntax.lean`) — so those nodes are labelled "resource intro"/"resource
-elimination" with a section pointer and say what is not modelled, rather
-than claiming a rule the mechanization does not cover.
+`res κ` has no declared fields — so those nodes are labelled "resource
+intro"/"resource elimination" with a section pointer and say what is not
+modelled, rather than claiming a rule the mechanization does not cover.
+`call` and `return`, which the fragment now does have, are labelled (Call)
+§5.8 and (Return-Value) §5.7.
+
+## Frames in the step table
+
+A run spans frames: a call pushes one and a `return` or a normal completion
+pops one. Three administrative rows make that visible, in the machine's own
+vocabulary rather than as the expression they belong to: `(D-Call) §6.9
+(push the frame)`, which shows the minted parameter cells; `(D-Return-Value)
+§6.9 (pop the frame)`, which shows the drops `run-all-scope-drops` ran; and
+`(D-Return) §6.9 (unwind the frame)`, which shows the same walk taken early.
+A callee's rows are nested one depth further and spelled with the callee's
+own binder names.
+
+## Fuel
+
+`traceEval` is indexed by the same fuel as `eval` and reports `outOfFuel` the
+same way: one row saying the interpreter stopped. `fuel_mono`
+(`Soundness.lean`) is why a rendering at a sufficient bound is *the*
+rendering.
 -/
 
 namespace RueCore
@@ -54,32 +73,38 @@ context entry, and a drop event are spelled. -/
 syntax of `Print.expr` and with its `v<depth>` binder names, but with the
 block forms (`let`, assignment, sequencing, `if`) folded onto one line so a
 derivation node or a trace row stays one row. -/
-def exprLine : List Ty → Expr → String
+partial def exprLine (P : Program) (R : Ty) : List Ty → Expr → String
   | _, .intLit n => if n < 0 then "(" ++ toString n ++ ")" else toString n
   | _, .boolLit b => if b then "true" else "false"
   | _, .unitLit => "()"
   | Γ, .use i => Print.useName Γ i
-  | Γ, .add e₁ e₂ => "(" ++ exprLine Γ e₁ ++ " + " ++ exprLine Γ e₂ ++ ")"
-  | Γ, .div e₁ e₂ => "(" ++ exprLine Γ e₁ ++ " / " ++ exprLine Γ e₂ ++ ")"
-  | Γ, .lt e₁ e₂ => "(" ++ exprLine Γ e₁ ++ " < " ++ exprLine Γ e₂ ++ ")"
-  | Γ, .mkres κ e => Print.resLit κ (exprLine Γ e)
+  | Γ, .add e₁ e₂ => "(" ++ exprLine P R Γ e₁ ++ " + " ++ exprLine P R Γ e₂ ++ ")"
+  | Γ, .div e₁ e₂ => "(" ++ exprLine P R Γ e₁ ++ " / " ++ exprLine P R Γ e₂ ++ ")"
+  | Γ, .lt e₁ e₂ => "(" ++ exprLine P R Γ e₁ ++ " < " ++ exprLine P R Γ e₂ ++ ")"
+  | Γ, .mkres κ e => Print.resLit κ (exprLine P R Γ e)
   | Γ, .consume e =>
-      let κ := match Print.tyOf Γ e with
+      let κ := match Print.tyOf P R Γ e with
         | some (.res κ) => κ
         | _ => .affine
-      Print.consumeName κ ++ "(" ++ exprLine Γ e ++ ")"
+      Print.consumeName κ ++ "(" ++ exprLine P R Γ e ++ ")"
   | Γ, .drop i =>
       match Γ[i]? with
       | some (.res .linear) => "@dbg(consume_linear(" ++ Print.useName Γ i ++ "))"
       | _ => "@drop(" ++ Print.useName Γ i ++ ")"
   | Γ, .letIn m e₁ e₂ =>
-      let T₁ := (Print.tyOf Γ e₁).getD .int
+      let T₁ := (Print.tyOf P R Γ e₁).getD .int
       "{ let " ++ (if m then "mut " else "") ++ Print.binderName Γ.length ++ ": " ++
-        Print.tyName T₁ ++ " = " ++ exprLine Γ e₁ ++ "; " ++ exprLine (T₁ :: Γ) e₂ ++ " }"
-  | Γ, .assign i e => "{ " ++ Print.useName Γ i ++ " = " ++ exprLine Γ e ++ "; }"
-  | Γ, .seq e₁ e₂ => "{ " ++ exprLine Γ e₁ ++ "; " ++ exprLine Γ e₂ ++ " }"
+        Print.tyName T₁ ++ " = " ++ exprLine P R Γ e₁ ++ "; " ++
+        exprLine P R (T₁ :: Γ) e₂ ++ " }"
+  | Γ, .assign i e => "{ " ++ Print.useName Γ i ++ " = " ++ exprLine P R Γ e ++ "; }"
+  | Γ, .seq e₁ e₂ => "{ " ++ exprLine P R Γ e₁ ++ "; " ++ exprLine P R Γ e₂ ++ " }"
   | Γ, .ite c e₁ e₂ =>
-      "if " ++ exprLine Γ c ++ " { " ++ exprLine Γ e₁ ++ " } else { " ++ exprLine Γ e₂ ++ " }"
+      "if " ++ exprLine P R Γ c ++ " { " ++ exprLine P R Γ e₁ ++ " } else { " ++
+        exprLine P R Γ e₂ ++ " }"
+  | Γ, .call f args =>
+      Print.fnName f ++ "(" ++
+        String.intercalate ", " (args.map (fun a => exprLine P R Γ a)) ++ ")"
+  | Γ, .ret e => "return " ++ exprLine P R Γ e
 
 /-- (helper) Clip a rendering so a tree keeps its shape in an 80-column
 terminal. Nothing is lost: every rendering prints the whole program, in
@@ -118,6 +143,10 @@ def cellLine : Cell → String
 (§6.1). -/
 def locName (ℓ : Nat) : String := "ℓ" ++ toString ℓ
 
+/-- (helper) A list of locations, as a scope record is written (§6.1). -/
+def locsLine (locs : List Nat) : String :=
+  "[" ++ String.intercalate ", " (locs.map locName) ++ "]"
+
 /-- (helper) The store as location/contents rows, oldest allocation first. -/
 def storeRows : Nat → Store → List (String × String)
   | _, [] => []
@@ -150,7 +179,14 @@ def ctxEntryLines : Ctx → List String
 def ctxLine (Γ : Ctx) : String :=
   if Γ.isEmpty then "(empty)" else "[" ++ String.intercalate ", " (ctxEntryLines Γ) ++ "]"
 
-/-- (helper) One observable drop event (§6.7/§6.8/§6.11). -/
+/-- (helper) A function's signature, as §2's `F` production writes it and as
+`Print.lean` prints it. -/
+def fnHeader (i : Nat) (fd : FnDef) : String :=
+  "fn " ++ Print.fnName i ++ "(" ++
+    String.intercalate ", " (Print.paramList 0 fd.params) ++ ") -> " ++
+    Print.tyName fd.ret
+
+/-- (helper) One observable drop event (§6.7/§6.8/§6.9/§6.11). -/
 def eventLine : Event → String
   | .drop ℓ v => "drop " ++ locName ℓ ++ " = " ++ valLine v
   | .dropTemp v => "drop temporary " ++ valLine v
@@ -216,14 +252,11 @@ def payloadNotInt (T : Ty) : String :=
   "(resource intro §5.8 — the shape of the aggregate-introduction rule; `res κ` has no fields)"
 
 /-- Resource elimination, §5.8/§4.2: the abstract consuming elimination
-takes a `res κ` by value, which is a §4.2 use of its operand's places. The
-fragment has no functions, so §5.8's call premises — the callee signature,
-the argument count and modes, the loan consistency, the entry recheck — are
-not modelled here. -/
+takes a `res κ` by value, which is a §4.2 use of its operand's places. -/
 def consumeNotRes (T : Ty) : String :=
   "the consumed operand has type " ++ Print.tyName T ++ ", but the consuming elimination " ++
   "takes a resource `res κ` by value (resource elimination §5.8/§4.2 — an abstract " ++
-  "consuming elimination; the fragment has no calls)"
+  "consuming elimination standing in for a one-argument by-value call)"
 
 /-- §5.6 scope exit, the residual-linear leak check; prose `3.8:32`. -/
 def letLeak (T : Ty) : String :=
@@ -281,6 +314,41 @@ def joinConflict (who : Option String) : String :=
   (match who with | some w => " — " ++ w | none => "") ++
   ", so a linear value is consumed on only some paths ((If) premise " ++
   "`Σ' = join(Σ1, Σ2)`, §5.5; 3.8:50; the compiler reports E0443)"
+
+/-- (Call) §5.8's first premise, `Γ ⊢ g : (T₁,…,Tₘ) → Tr`: the program has
+no function at this index. Elaboration resolves a callee's name before the
+core (§2), so no elaborated program reaches this. -/
+def unknownCallee : String :=
+  "the program has no function at this index ((Call) premise " ++
+  "`g : fn(m1 x1:T1, …) -> Tr`, §5.8; elaboration resolves a callee's name before " ++
+  "the core, §2, so no elaborated program reaches this premise)"
+
+/-- (Call) §5.8's arity premise (`4.10:3`). -/
+def argCountMismatch : String :=
+  "the argument list does not match the callee's parameter list in count " ++
+  "((Call) premise `the m argument forms a1..am match the m parameters in count and mode`, " ++
+  "§5.8; 4.10:3)"
+
+/-- (Call) §5.8's per-argument premise (`4.10:4`). -/
+def argTypeMismatch (T param : Ty) : String :=
+  "an argument has type " ++ Print.tyName T ++ " but its parameter is declared " ++
+  Print.tyName param ++ " ((Call) premise `Γ;Σ_{i-1};Λ ⊢ a_i ⇒ Ti ⊣ Σi`, §5.8; 4.10:4)"
+
+/-- (Return-Value) §5.7's premise `e ⇒ T_ret`: the operand is checked
+against the enclosing function's declared return type. -/
+def returnTypeMismatch (T R : Ty) : String :=
+  "the returned expression has type " ++ Print.tyName T ++ " but the function is " ++
+  "declared to return " ++ Print.tyName R ++ " ((Return-Value) premise " ++
+  "`Γ;Σ;Λ ⊢ e ⇒ T_ret ⊣ Σ_e`, §5.7; 4.10:5). The checker types a `return` at the " ++
+  "enclosing return type rather than at whatever its context wants, which is the " ++
+  "one place it is narrower than the rule (`Checker.lean`)"
+
+/-- (Return-Value) §5.7's `⊥_exit` obligation, which is §5.6's scope-exit
+check taken frame-wide (`3.8:62`, and (Fn) §5.8's second clause). -/
+def returnLeak : String :=
+  "a binding of this frame is still Owned at a linear type where the `return` ends " ++
+  "every open scope at once — the `⊥_exit` edge carries §5.6's obligation " ++
+  "((Return-Value) §5.7; (Fn) §5.8's second clause; 3.8:62; the compiler reports E0406)"
 
 end Premise
 
@@ -349,10 +417,11 @@ def rejected (rule : String) (Γ : Ctx) (e : Expr) (why : String)
     (kids : List Deriv) : Deriv :=
   .node rule Γ e (.reject why) kids
 
+mutual
 /-- The instrumented mirror of `check` (§5): the same algorithm, recording
 the rule it applied at every node and, where it rejects, the premise that
 failed. `explain_result` proves the two agree. -/
-def explain (Γ : Ctx) : Expr → Deriv
+def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
   | .intLit n =>
       if InBounds n then accepted "(Lit) §5.8" Γ (.intLit n) .int Γ []
       else rejected "(Lit) §5.8" Γ (.intLit n) Premise.litOutOfRange []
@@ -370,10 +439,10 @@ def explain (Γ : Ctx) : Expr → Deriv
           else
             accepted "(Use-Move) §5.1" Γ (.use i) en.ty (Γ.set i (en.setSt .movedOut)) []
   | .add e₁ e₂ =>
-      let d₁ := explain Γ e₁
+      let d₁ := explain P R Γ e₁
       match d₁.result with
       | some (.int, Γ₁) =>
-        let d₂ := explain Γ₁ e₂
+        let d₂ := explain P R Γ₁ e₂
         (match d₂.result with
          | some (.int, Γ₂) => accepted "(Arith) §5.8" Γ (.add e₁ e₂) .int Γ₂ [d₁, d₂]
          | some (T, _) =>
@@ -382,10 +451,10 @@ def explain (Γ : Ctx) : Expr → Deriv
       | some (T, _) => rejected "(Arith) §5.8" Γ (.add e₁ e₂) (Premise.operandNotInt T) [d₁]
       | none => rejected "(Arith) §5.8" Γ (.add e₁ e₂) Premise.subDerivation [d₁]
   | .div e₁ e₂ =>
-      let d₁ := explain Γ e₁
+      let d₁ := explain P R Γ e₁
       match d₁.result with
       | some (.int, Γ₁) =>
-        let d₂ := explain Γ₁ e₂
+        let d₂ := explain P R Γ₁ e₂
         (match d₂.result with
          | some (.int, Γ₂) => accepted "(Arith) §5.8" Γ (.div e₁ e₂) .int Γ₂ [d₁, d₂]
          | some (T, _) =>
@@ -394,10 +463,10 @@ def explain (Γ : Ctx) : Expr → Deriv
       | some (T, _) => rejected "(Arith) §5.8" Γ (.div e₁ e₂) (Premise.operandNotInt T) [d₁]
       | none => rejected "(Arith) §5.8" Γ (.div e₁ e₂) Premise.subDerivation [d₁]
   | .lt e₁ e₂ =>
-      let d₁ := explain Γ e₁
+      let d₁ := explain P R Γ e₁
       match d₁.result with
       | some (.int, Γ₁) =>
-        let d₂ := explain Γ₁ e₂
+        let d₂ := explain P R Γ₁ e₂
         (match d₂.result with
          | some (.int, Γ₂) => accepted "(Ord) §5.8" Γ (.lt e₁ e₂) .bool Γ₂ [d₁, d₂]
          | some (T, _) => rejected "(Ord) §5.8" Γ (.lt e₁ e₂) (Premise.operandNotInt T) [d₁, d₂]
@@ -405,20 +474,20 @@ def explain (Γ : Ctx) : Expr → Deriv
       | some (T, _) => rejected "(Ord) §5.8" Γ (.lt e₁ e₂) (Premise.operandNotInt T) [d₁]
       | none => rejected "(Ord) §5.8" Γ (.lt e₁ e₂) Premise.subDerivation [d₁]
   | .mkres κ e =>
-      let d := explain Γ e
+      let d := explain P R Γ e
       match d.result with
       | some (.int, Γ') => accepted "resource intro §5.8 (the shape of the aggregate-introduction rule; `res κ` has no fields)" Γ (.mkres κ e) (.res κ) Γ' [d]
       | some (T, _) =>
           rejected "resource intro §5.8 (the shape of the aggregate-introduction rule; `res κ` has no fields)" Γ (.mkres κ e) (Premise.payloadNotInt T) [d]
       | none => rejected "resource intro §5.8 (the shape of the aggregate-introduction rule; `res κ` has no fields)" Γ (.mkres κ e) Premise.subDerivation [d]
   | .consume e =>
-      let d := explain Γ e
+      let d := explain P R Γ e
       match d.result with
-      | some (.res _, Γ') => accepted "resource elimination §5.8/§4.2 (an abstract consuming elimination; the fragment has no calls)" Γ (.consume e) .int Γ' [d]
-      | some (.int, _) => rejected "resource elimination §5.8/§4.2 (an abstract consuming elimination; the fragment has no calls)" Γ (.consume e) (Premise.consumeNotRes .int) [d]
-      | some (.bool, _) => rejected "resource elimination §5.8/§4.2 (an abstract consuming elimination; the fragment has no calls)" Γ (.consume e) (Premise.consumeNotRes .bool) [d]
-      | some (.unit, _) => rejected "resource elimination §5.8/§4.2 (an abstract consuming elimination; the fragment has no calls)" Γ (.consume e) (Premise.consumeNotRes .unit) [d]
-      | none => rejected "resource elimination §5.8/§4.2 (an abstract consuming elimination; the fragment has no calls)" Γ (.consume e) Premise.subDerivation [d]
+      | some (.res _, Γ') => accepted "resource elimination §5.8/§4.2 (an abstract consuming elimination)" Γ (.consume e) .int Γ' [d]
+      | some (.int, _) => rejected "resource elimination §5.8/§4.2 (an abstract consuming elimination)" Γ (.consume e) (Premise.consumeNotRes .int) [d]
+      | some (.bool, _) => rejected "resource elimination §5.8/§4.2 (an abstract consuming elimination)" Γ (.consume e) (Premise.consumeNotRes .bool) [d]
+      | some (.unit, _) => rejected "resource elimination §5.8/§4.2 (an abstract consuming elimination)" Γ (.consume e) (Premise.consumeNotRes .unit) [d]
+      | none => rejected "resource elimination §5.8/§4.2 (an abstract consuming elimination)" Γ (.consume e) Premise.subDerivation [d]
   | .drop i =>
       match Γ[i]? with
       | none => rejected "(@Drop-Copy)/(@Drop) §5.3" Γ (.drop i) Premise.unboundIndex []
@@ -432,12 +501,12 @@ def explain (Γ : Ctx) : Expr → Deriv
             accepted (dropRule "(@Drop) §5.3" en.ty) Γ (.drop i) .unit
               (Γ.set i (en.setSt .movedOut)) []
   | .letIn m e₁ e₂ =>
-      let d₁ := explain Γ e₁
+      let d₁ := explain P R Γ e₁
       match d₁.result with
       | none => rejected "(Let) §5.3 + the §5.6 scope-exit leak check" Γ (.letIn m e₁ e₂)
                   Premise.subDerivation [d₁]
       | some (T₁, Γ₁) =>
-        let d₂ := explain ({ ty := T₁, mu := m, st := .owned } :: Γ₁) e₂
+        let d₂ := explain P R ({ ty := T₁, mu := m, st := .owned } :: Γ₁) e₂
         (match d₂.result with
          | some (T₂, en' :: Γ₂) =>
              if en'.st = .owned ∧ T₁.mult = .linear then
@@ -456,7 +525,7 @@ def explain (Γ : Ctx) : Expr → Deriv
       | none => rejected "(Assign) §5.2, 3.8:77" Γ (.assign i e) Premise.unboundIndex []
       | some en₀ =>
         if en₀.mu = true then
-          let d := explain Γ e
+          let d := explain P R Γ e
           (match d.result with
            | some (T, Γ₁) =>
              if T = en₀.ty then
@@ -478,23 +547,23 @@ def explain (Γ : Ctx) : Expr → Deriv
                rejected "(Assign) §5.2, 3.8:77" Γ (.assign i e) Premise.subDerivation [d])
         else rejected "(Assign) §5.2, 3.8:77" Γ (.assign i e) Premise.notMutable []
   | .seq e₁ e₂ =>
-      let d₁ := explain Γ e₁
+      let d₁ := explain P R Γ e₁
       match d₁.result with
       | some (T₁, Γ₁) =>
           if T₁.mult = .linear then
             rejected "(Seq) §5.3, 3.8:64" Γ (.seq e₁ e₂) (Premise.discardsLinear T₁) [d₁]
           else
-            let d₂ := explain Γ₁ e₂
+            let d₂ := explain P R Γ₁ e₂
             (match d₂.result with
              | some (T₂, Γ₂) => accepted "(Seq) §5.3, 3.8:64" Γ (.seq e₁ e₂) T₂ Γ₂ [d₁, d₂]
              | none => rejected "(Seq) §5.3, 3.8:64" Γ (.seq e₁ e₂) Premise.subDerivation [d₁, d₂])
       | none => rejected "(Seq) §5.3, 3.8:64" Γ (.seq e₁ e₂) Premise.subDerivation [d₁]
   | .ite c e₁ e₂ =>
-      let dc := explain Γ c
+      let dc := explain P R Γ c
       match dc.result with
       | some (.bool, Γ₀) =>
-        let d₁ := explain Γ₀ e₁
-        let d₂ := explain Γ₀ e₂
+        let d₁ := explain P R Γ₀ e₁
+        let d₂ := explain P R Γ₀ e₂
         (match d₁.result, d₂.result with
          | some (T₁, Γ₁), some (T₂, Γ₂) =>
              if T₁ = T₂ then
@@ -510,50 +579,100 @@ def explain (Γ : Ctx) : Expr → Deriv
       | some (T, _) =>
           rejected "(If) §5.5 join" Γ (.ite c e₁ e₂) (Premise.condNotBool T) [dc]
       | none => rejected "(If) §5.5 join" Γ (.ite c e₁ e₂) Premise.subDerivation [dc]
+  | .call f args =>
+      match P[f]? with
+      | none => rejected "(Call) §5.8" Γ (.call f args) Premise.unknownCallee []
+      | some fd =>
+        (match explainArgs P R Γ args (fd.params.map Param.ty) with
+         | (some Γ', kids) => accepted "(Call) §5.8" Γ (.call f args) fd.ret Γ' kids
+         | (none, kids) =>
+             rejected "(Call) §5.8" Γ (.call f args)
+               (argsPremise P R Γ args (fd.params.map Param.ty)) kids)
+  | .ret e =>
+      let d := explain P R Γ e
+      match d.result with
+      | none => rejected "(Return-Value) §5.7" Γ (.ret e) Premise.subDerivation [d]
+      | some (T, Γ₁) =>
+          if T = R ∧ NoOwnedLinear Γ₁ then
+            accepted "(Return-Value) §5.7" Γ (.ret e) R Γ₁ [d]
+          else if T = R then
+            rejected "(Return-Value) §5.7" Γ (.ret e) Premise.returnLeak [d]
+          else
+            rejected "(Return-Value) §5.7" Γ (.ret e) (Premise.returnTypeMismatch T R) [d]
 
+/-- The instrumented mirror of `checkArgs` (§5.8's (Call) argument list):
+the sub-derivations in argument order, and the outgoing `Σ` when every
+argument checked at its parameter's type. -/
+def explainArgs (P : Program) (R : Ty) : Ctx → List Expr → List Ty → Option Ctx × List Deriv
+  | Γ, [], [] => (some Γ, [])
+  | Γ, e :: es, T :: Ts =>
+      let d := explain P R Γ e
+      (match d.result with
+       | some (T', Γ₁) =>
+           if T' = T then
+             let rest := explainArgs P R Γ₁ es Ts
+             (rest.1, d :: rest.2)
+           else (none, [d])
+       | none => (none, [d]))
+  | _, _, _ => (none, [])
+
+/-- The premise a rejected argument list failed: a count mismatch (`4.10:3`),
+or the first argument whose type is not its parameter's (`4.10:4`) — the two
+per-argument premises of (Call) §5.8. -/
+def argsPremise (P : Program) (R : Ty) : Ctx → List Expr → List Ty → String
+  | _, [], [] => Premise.argCountMismatch
+  | Γ, e :: es, T :: Ts =>
+      (match (explain P R Γ e).result with
+       | some (T', Γ₁) =>
+           if T' = T then argsPremise P R Γ₁ es Ts else Premise.argTypeMismatch T' T
+       | none => Premise.subDerivation)
+  | _, _, _ => Premise.argCountMismatch
+end
+
+mutual
 /-- **The derivation is the checker.** Projecting a derivation to its
-conclusion reproduces `check Γ e` exactly, so a rendered derivation can
+conclusion reproduces `check P R Γ e` exactly, so a rendered derivation can
 never claim an acceptance or a rejection the verified checker (§5,
 `check_sound`) does not make. -/
-theorem explain_result : ∀ (e : Expr) (Γ : Ctx), (explain Γ e).result = check Γ e := by
-  intro e
-  induction e with
-    (intro Γ
-     simp only [explain, check])
-  | intLit n => split <;> rfl
-  | boolLit b => rfl
-  | unitLit => rfl
-  | use i =>
+theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
+    (explain P R Γ e).result = check P R Γ e
+  | .intLit n, Γ => by
+      simp only [explain, check]; split <;> rfl
+  | .boolLit b, Γ => rfl
+  | .unitLit, Γ => rfl
+  | .use i, Γ => by
+      simp only [explain, check]
       (repeat' split) <;> first | rfl | simp_all [accepted, Deriv.result]
-  | add e₁ e₂ ih₁ ih₂ =>
-      simp only [ih₁, ih₂]
+  | .add e₁ e₂, Γ => by
+      simp only [explain, check, explain_result e₁, explain_result e₂]
       (repeat' split) <;> first | rfl | simp_all [accepted, rejected, Deriv.result]
-  | div e₁ e₂ ih₁ ih₂ =>
-      simp only [ih₁, ih₂]
+  | .div e₁ e₂, Γ => by
+      simp only [explain, check, explain_result e₁, explain_result e₂]
       (repeat' split) <;> first | rfl | simp_all [accepted, rejected, Deriv.result]
-  | lt e₁ e₂ ih₁ ih₂ =>
-      simp only [ih₁, ih₂]
+  | .lt e₁ e₂, Γ => by
+      simp only [explain, check, explain_result e₁, explain_result e₂]
       (repeat' split) <;> first | rfl | simp_all [accepted, rejected, Deriv.result]
-  | mkres κ e ih =>
-      simp only [ih]
+  | .mkres κ e, Γ => by
+      simp only [explain, check, explain_result e]
       (repeat' split) <;> first | rfl | simp_all [accepted, rejected, Deriv.result]
-  | consume e ih =>
-      simp only [ih]
+  | .consume e, Γ => by
+      simp only [explain, check, explain_result e]
       (repeat' split) <;> first | rfl | simp_all [accepted, Deriv.result]
-  | drop i =>
+  | .drop i, Γ => by
+      simp only [explain, check]
       (repeat' split) <;> first | rfl | simp_all [accepted, Deriv.result]
-  | letIn m e₁ e₂ ih₁ ih₂ =>
-      simp only [ih₁, ih₂]
+  | .letIn m e₁ e₂, Γ => by
+      simp only [explain, check, explain_result e₁, explain_result e₂]
       (repeat' split) <;> first | rfl | simp_all [accepted, rejected, Deriv.result]
-  | assign i e ih =>
-      simp only [ih]
+  | .assign i e, Γ => by
+      simp only [explain, check, explain_result e]
       (repeat' split) <;> first | rfl | simp_all [accepted, rejected, Deriv.result]
-  | seq e₁ e₂ ih₁ ih₂ =>
-      simp only [ih₁, ih₂]
+  | .seq e₁ e₂, Γ => by
+      simp only [explain, check, explain_result e₁, explain_result e₂]
       (repeat' split) <;> first | rfl | simp_all [accepted, rejected, Deriv.result]
-  | ite c e₁ e₂ ihc ih₁ ih₂ =>
-      simp only [ihc]
-      cases hc : check Γ c with
+  | .ite c e₁ e₂, Γ => by
+      simp only [explain, check, explain_result c]
+      cases hc : check P R Γ c with
       | none => rfl
       | some p =>
         obtain ⟨T, Γ₀⟩ := p
@@ -562,11 +681,11 @@ theorem explain_result : ∀ (e : Expr) (Γ : Ctx), (explain Γ e).result = chec
         | unit => rfl
         | res κ => rfl
         | bool =>
-            simp only [ih₁, ih₂]
-            cases h₁ : check Γ₀ e₁ with
-            | none => cases h₂ : check Γ₀ e₂ <;> rfl
+            simp only [explain_result e₁, explain_result e₂]
+            cases h₁ : check P R Γ₀ e₁ with
+            | none => cases h₂ : check P R Γ₀ e₂ <;> rfl
             | some q₁ =>
-              cases h₂ : check Γ₀ e₂ with
+              cases h₂ : check P R Γ₀ e₂ with
               | none => rfl
               | some q₂ =>
                 obtain ⟨T₁, Γ₁⟩ := q₁
@@ -575,6 +694,41 @@ theorem explain_result : ∀ (e : Expr) (Γ : Ctx), (explain Γ e).result = chec
                 split
                 · cases hj : Ctx.join Γ₁ Γ₂ <;> rfl
                 · rfl
+  | .call f args, Γ => by
+      simp only [explain, check]
+      cases hf : P[f]? with
+      | none => rfl
+      | some fd =>
+        dsimp only
+        have hargs := explainArgs_result (P := P) (R := R) args Γ (fd.params.map Param.ty)
+        revert hargs
+        cases explainArgs P R Γ args (fd.params.map Param.ty) with
+        | mk res kids =>
+          intro hargs
+          cases res with
+          | none => rw [← hargs]; rfl
+          | some Γ' => rw [← hargs]; rfl
+  | .ret e, Γ => by
+      simp only [explain, check, explain_result e]
+      (repeat' split) <;> first | rfl | simp_all [accepted, Deriv.result]
+
+/-- **The argument-list derivations are the checker's** ((Call) §5.8). -/
+theorem explainArgs_result {P : Program} {R : Ty} : ∀ (es : List Expr) (Γ : Ctx) (Ts : List Ty),
+    (explainArgs P R Γ es Ts).1 = checkArgs P R Γ es Ts
+  | [], Γ, [] => rfl
+  | [], Γ, _ :: _ => rfl
+  | e :: es, Γ, [] => rfl
+  | e :: es, Γ, T :: Ts => by
+      simp only [explainArgs, checkArgs, explain_result e]
+      cases hr : check P R Γ e with
+      | none => rfl
+      | some p =>
+        obtain ⟨T', Γ₁⟩ := p
+        simp only []
+        split
+        · exact explainArgs_result es Γ₁ Ts
+        · rfl
+end
 
 /-! ## Runs
 
@@ -590,11 +744,13 @@ def violationPremise : Violation → String
       "a read of a cell holding ⊘: the value was already moved out of this place " ++
       "((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)"
   | .useAfterDrop =>
-      "a touch of a retired cell †: the binding's allocation was dropped and retired at " ++
-      "scope exit ((D-EndScope) §6.1/§6.7; §7 “no use after drop”)"
+      "a touch of a retired cell †: the binding's allocation was dropped and retired " ++
+      "at a scope exit or a frame teardown ((D-EndScope) §6.1/§6.7, " ++
+      "`run-all-scope-drops` §6.9; §7 “no use after drop”)"
   | .linearLeak =>
-      "scope exit reached a live linear value: a linear obligation was never discharged " ++
-      "(endscope §6.7, the §5.6 leak check executed; 3.8:32; §7 “consumed exactly once”)"
+      "a scope exit or a frame teardown reached a live linear value: a linear " ++
+      "obligation was never discharged (endscope §6.7 / `run-all-scope-drops` §6.9, " ++
+      "the §5.6 leak check executed; 3.8:32; §7 “consumed exactly once”)"
   | .linearOverwrite =>
       "an overwrite-drop of a live linear value: the assignment would consume a linear " ++
       "value the program never consumed (§6.8; 3.8:77; §7)"
@@ -603,37 +759,49 @@ def violationPremise : Violation → String
       "check (3.8:64) should have rejected the program, so the interpreter names the " ++
       "refusal instead, and §7 forbids it"
   | .unbound =>
-      "a dangling index: the environment has no location for this binding (elaboration " ++
-      "resolves names before the core, §2, so no elaborated program reaches this)"
+      "a dangling index or a callee the program does not have: elaboration resolves " ++
+      "names before the core (§2), so no elaborated program reaches this"
   | .typeConfusion =>
-      "an operator met a wrong-shaped value; the statics (§5) exclude it, and `soundness` " ++
+      "an operator met a wrong-shaped value, or a call's argument count did not match " ++
+      "its callee's parameter list; the statics (§5) exclude both, and `soundness` " ++
       "(§7) is the proof"
 
-/-- What one node produced: a value, a defined trap (§6.12), or a refusal
-(§6's stuck states) with the premise it broke. -/
+/-- What one node produced: a value, a value an unwinding `return` handed
+past it (§6.9), a defined trap (§6.12), a refusal (§6's stuck states) with
+the premise it broke, or the interpreter's admission that it ran out of
+fuel. -/
 inductive StepRes where
   | value (v : Val)
+  | unwound (v : Val)
   | panicked (k : PanicKind)
   | refuse (why : Violation) (premise : String)
+  | exhausted
 
 /-- (helper) How a node reports a sub-result it only passes on. -/
 def StepRes.ofRes : EvalRes → StepRes
   | .ok _ v _ => .value v
+  | .returned _ v _ => .unwound v
   | .panic k => .panicked k
   | .stuck w => .refuse w (violationPremise w)
+  | .outOfFuel => .exhausted
 
 /-- One row of the step table: the node's nesting depth, the §6 rule it
 took, the binder types in scope (so the expression prints with the source's
 names), the expression, the store before and after, the drop events this
-node emitted (§6.7/§6.8/§6.11), and what it produced. -/
+node emitted (§6.7/§6.8/§6.9/§6.11), and what it produced. -/
 structure Step where
   depth : Nat
   rule : String
   binders : List Ty
+  /-- The enclosing function's declared return type, which is the type
+  `Checker.lean` gives a `return` — so a row inside a callee renders its
+  expression with that callee's types, not the entry point's. -/
+  retTy : Ty
   expr : Expr
-  /-- What the expression column shows, when the row is one of §6.7's
-  administrative steps (`let`'s mint, `endscope`, a temporary's drop) and
-  the whole expression it belongs to would only repeat the row above. -/
+  /-- What the expression column shows, when the row is one of the machine's
+  administrative steps (`let`'s mint, `endscope`, a temporary's drop, a frame
+  push or pop) and the whole expression it belongs to would only repeat the
+  row above. -/
   shown : Option String
   storeBefore : Store
   storeAfter : Store
@@ -648,19 +816,23 @@ structure Trace where
   res : EvalRes
 
 /-- (helper) One row. -/
-def mkStep (d : Nat) (Θ : List Ty) (e : Expr) (rule : String) (H H' : Store)
+def mkStep (d : Nat) (Θ : List Ty) (R : Ty) (e : Expr) (rule : String) (H H' : Store)
     (evs : List Event) (sr : StepRes) : Step :=
-  { depth := d, rule := rule, binders := Θ, expr := e, shown := none,
+  { depth := d, rule := rule, binders := Θ, retTy := R, expr := e, shown := none,
     storeBefore := H, storeAfter := H', events := evs, res := sr }
 
-/-- (helper) One of §6.7's administrative rows, shown in the machine's own
-form rather than as the expression it belongs to. -/
-def adminStep (d : Nat) (Θ : List Ty) (e : Expr) (rule shown : String) (H H' : Store)
-    (evs : List Event) (sr : StepRes) : Step :=
-  { mkStep d Θ e rule H H' evs sr with shown := some shown }
+/-- (helper) One of the machine's administrative rows, shown in its own form
+rather than as the expression it belongs to. -/
+def adminStep (d : Nat) (Θ : List Ty) (R : Ty) (e : Expr) (rule shown : String)
+    (H H' : Store) (evs : List Event) (sr : StepRes) : Step :=
+  { mkStep d Θ R e rule H H' evs sr with shown := some shown }
 
-/-- (helper) What a row's expression column shows. -/
-def Step.text (s : Step) : String := s.shown.getD (exprLine s.binders s.expr)
+/-- (helper) What a row's expression column shows: the machine's own form
+for an administrative row, otherwise the node's expression in the surface
+syntax, with the binder names and the return type of the frame the row
+belongs to. -/
+def Step.text (P : Program) (s : Step) : String :=
+  s.shown.getD (exprLine P s.retTy s.binders s.expr)
 
 /-- (helper) The store the machine actually reached: the one the most
 recent recorded row left, or `fallback` when the node recorded none. No §6
@@ -670,12 +842,6 @@ def lastStore (kids : List Step) (fallback : Store) : Store :=
   match kids.getLast? with
   | some s => s.storeAfter
   | none => fallback
-
-/-- (helper) Show a node's own row in the machine's administrative form
-(§6.7's `endscope`) rather than as the whole expression it closes. -/
-def Trace.showLast (shown : String) (t : Trace) : Trace :=
-  ⟨t.steps.dropLast ++ (t.steps.getLast?.map (fun s => { s with shown := some shown })).toList,
-   t.res⟩
 
 /-- (helper) Number the steps of a run from 1, in execution order. -/
 def numbered : Nat → List Step → List (Nat × Step)
@@ -687,334 +853,439 @@ whose premises already contributed `kids`, whose own row runs `e` at depth
 `d` under `rule` with binders `Θ`, taking the store from `H` to `H'`,
 emitting `evs` and producing `sr`, and whose machine result is `r`. The own
 row comes last, so the table is in execution order. -/
-def traced (kids : List Step) (d : Nat) (Θ : List Ty) (e : Expr) (rule : String)
+def traced (kids : List Step) (d : Nat) (Θ : List Ty) (R : Ty) (e : Expr) (rule : String)
     (H H' : Store) (evs : List Event) (sr : StepRes) (r : EvalRes) : Trace :=
-  ⟨kids ++ [mkStep d Θ e rule H H' evs sr], r⟩
+  ⟨kids ++ [mkStep d Θ R e rule H H' evs sr], r⟩
+
+/-- (helper) The same, with the own row shown in the machine's
+administrative form. -/
+def tracedAs (kids : List Step) (d : Nat) (Θ : List Ty) (R : Ty) (e : Expr)
+    (rule shown : String) (H H' : Store) (evs : List Event) (sr : StepRes)
+    (r : EvalRes) : Trace :=
+  ⟨kids ++ [adminStep d Θ R e rule shown H H' evs sr], r⟩
 
 /-- (helper) A node whose own rule never fired, with the reason spelled
 out for that rule: the row's outgoing store is the last one the machine
 reached, never a store from before the rows that already ran. -/
-def didNotRun (kids : List Step) (d : Nat) (Θ : List Ty) (e : Expr) (rule : String)
+def didNotRun (kids : List Step) (d : Nat) (Θ : List Ty) (R : Ty) (e : Expr) (rule : String)
     (H : Store) (r : EvalRes) : Trace :=
-  traced kids d Θ e rule H (lastStore kids H) [] (StepRes.ofRes r) r
+  traced kids d Θ R e rule H (lastStore kids H) [] (StepRes.ofRes r) r
 
-/-- (helper) A node that never ran because one of its premises trapped or
-refused, so it only passes that outcome on. The row says so, because the
-same refusal then repeats up the spine of the run. -/
-def propagate (kids : List Step) (d : Nat) (Θ : List Ty) (e : Expr) (rule : String)
+/-- (helper) A node that never ran because one of its premises trapped,
+refused, unwound past it, or ran out of fuel, so it only passes that outcome
+on. The row says so, because the same outcome then repeats up the spine of
+the run. -/
+def propagate (kids : List Step) (d : Nat) (Θ : List Ty) (R : Ty) (e : Expr) (rule : String)
     (H : Store) (r : EvalRes) : Trace :=
-  didNotRun kids d Θ e (rule ++ " — a premise did not complete") H r
+  didNotRun kids d Θ R e (rule ++ " — a premise did not complete") H r
 
 /-- (helper) A node that refuses (§6's stuck states). Its outgoing store is
 the last one the machine reached, for the same reason as `didNotRun`'s. -/
-def refused (kids : List Step) (d : Nat) (Θ : List Ty) (e : Expr) (rule : String)
+def refused (kids : List Step) (d : Nat) (Θ : List Ty) (R : Ty) (e : Expr) (rule : String)
     (H : Store) (w : Violation) : Trace :=
-  traced kids d Θ e rule H (lastStore kids H) [] (.refuse w (violationPremise w)) (.stuck w)
+  traced kids d Θ R e rule H (lastStore kids H) [] (.refuse w (violationPremise w)) (.stuck w)
 
 /-- (helper) The label for a `let` whose body did not complete: `(D-Let)`
 has already fired — its own row is above — and `(D-EndScope)` never ran, so
-the binding's drop never ran either (§6.7). -/
+the binding's drop never ran either (§6.7). An early `return` is the one
+outcome where the drop still runs, because `run-all-scope-drops` (§6.9)
+walks the frame's record instead. -/
 def scopeNeverClosed : String :=
-  "(D-EndScope) §6.7 — the body did not complete, so the scope never closed " ++
-  "(and the binding's drop never ran)"
+  "(D-EndScope) §6.7 — the body did not complete, so this scope never closed " ++
+  "(an early return runs the drop through the frame's scope record instead)"
 
 /-- (helper) An operator that met a wrong-shaped value. §5 excludes it and
 `soundness` (§7) proves so; it is here because `eval` is total. -/
-def confused (kids : List Step) (d : Nat) (Θ : List Ty) (e : Expr) (rule : String)
+def confused (kids : List Step) (d : Nat) (Θ : List Ty) (R : Ty) (e : Expr) (rule : String)
     (H : Store) : Trace :=
-  refused kids d Θ e rule H .typeConfusion
+  refused kids d Θ R e rule H .typeConfusion
+
+/-- The rows and outcome of a call's argument list (helper). -/
+structure ArgsTrace where
+  steps : List Step
+  res : ArgsRes
+
+/-- The instrumented mirror of `evalArgs`: the arguments' rows in
+evaluation order (§6.2's left-to-right search through `g(v̄, …, E, …)`), and
+the same outcome (§6.9). -/
+def traceArgs (tev : Store → Expr → Trace) : Store → List Expr → ArgsTrace
+  | H, [] => ⟨[], .ok H [] []⟩
+  | H, e :: es =>
+      let t := tev H e
+      match t.res with
+      | .ok H₁ v tr =>
+          let ts := traceArgs tev H₁ es
+          (match ts.res with
+           | .ok H₂ vs tr₂ => ⟨t.steps ++ ts.steps, .ok H₂ (v :: vs) (tr ++ tr₂)⟩
+           | .abort r => ⟨t.steps ++ ts.steps, .abort (r.withTrace tr)⟩)
+      | r => ⟨t.steps, .abort r⟩
+
+/-- The argument rows report the machine's own argument outcome (§6.9). -/
+theorem traceArgs_res {tev : Store → Expr → Trace} {ev : Store → Expr → EvalRes}
+    (h : ∀ H e, (tev H e).res = ev H e) :
+    ∀ (H : Store) (es : List Expr), (traceArgs tev H es).res = evalArgs ev H es
+  | _, [] => rfl
+  | H, e :: es => by
+      simp only [traceArgs, evalArgs, ← h H e]
+      cases hr : (tev H e).res with
+      | ok H₁ v tr =>
+          simp only []
+          rw [traceArgs_res h H₁ es]
+          cases hr₂ : evalArgs ev H₁ es <;> rfl
+      | _ => rfl
 
 /-- The instrumented mirror of `eval` (§6): the same machine, recording one
 row per evaluated node. `traceEval_res` proves the two agree on the final
-result. `d` is the nesting depth and `Θ` the binder types in scope, which
-travel with `ρ` so each row prints its expression with the source's names. -/
-def traceEval (d : Nat) (Θ : List Ty) (H : Store) (ρ : Env) : Expr → Trace
-  | .intLit n =>
-      traced [] d Θ (.intLit n) "literal §6.3" H H [] (.value (.int n)) (.ok H (.int n) [])
-  | .boolLit b =>
-      traced [] d Θ (.boolLit b) "literal §6.3" H H [] (.value (.bool b)) (.ok H (.bool b) [])
-  | .unitLit =>
-      traced [] d Θ .unitLit "literal §6.3" H H [] (.value .unit) (.ok H .unit [])
-  | .use i =>
-      match ρ[i]? with
-      | none => refused [] d Θ (.use i) "(D-Use-Copy)/(D-Use-Move) §6.3" H .unbound
+result. `d` is the nesting depth, `Θ` the binder types in scope and `R` the
+enclosing function's return type, all of which travel with `φ` so each row
+prints its expression with the source's names. -/
+def traceEval (P : Program) : Nat → Nat → List Ty → Ty → Store → Frame → Expr → Trace
+  | 0, d, Θ, R, H, _, e =>
+      traced [] d Θ R e "out of fuel — the interpreter stopped early (ADR-0097)" H H []
+        .exhausted .outOfFuel
+  | _ + 1, d, Θ, R, H, _, .intLit n =>
+      traced [] d Θ R (.intLit n) "literal §6.3" H H [] (.value (.int n)) (.ok H (.int n) [])
+  | _ + 1, d, Θ, R, H, _, .boolLit b =>
+      traced [] d Θ R (.boolLit b) "literal §6.3" H H [] (.value (.bool b)) (.ok H (.bool b) [])
+  | _ + 1, d, Θ, R, H, _, .unitLit =>
+      traced [] d Θ R .unitLit "literal §6.3" H H [] (.value .unit) (.ok H .unit [])
+  | _ + 1, d, Θ, R, H, φ, .use i =>
+      match φ.env[i]? with
+      | none => refused [] d Θ R (.use i) "(D-Use-Copy)/(D-Use-Move) §6.3" H .unbound
       | some ℓ =>
         match H[ℓ]? with
-        | none => refused [] d Θ (.use i) "(D-Use-Copy)/(D-Use-Move) §6.3" H .unbound
-        | some .dead => refused [] d Θ (.use i) "(D-Use-Copy)/(D-Use-Move) §6.3" H .useAfterDrop
-        | some .moved => refused [] d Θ (.use i) "(D-Use-Copy)/(D-Use-Move) §6.3" H .useAfterMove
+        | none => refused [] d Θ R (.use i) "(D-Use-Copy)/(D-Use-Move) §6.3" H .unbound
+        | some .dead => refused [] d Θ R (.use i) "(D-Use-Copy)/(D-Use-Move) §6.3" H .useAfterDrop
+        | some .moved => refused [] d Θ R (.use i) "(D-Use-Copy)/(D-Use-Move) §6.3" H .useAfterMove
         | some (.full v) =>
             if v.mult = .copy then
-              traced [] d Θ (.use i) "(D-Use-Copy) §6.3" H H [] (.value v) (.ok H v [])
+              traced [] d Θ R (.use i) "(D-Use-Copy) §6.3" H H [] (.value v) (.ok H v [])
             else
-              traced [] d Θ (.use i) "(D-Use-Move) §6.3" H (H.set ℓ .moved) []
+              traced [] d Θ R (.use i) "(D-Use-Move) §6.3" H (H.set ℓ .moved) []
                 (.value v) (.ok (H.set ℓ .moved) v [])
-  | .add e₁ e₂ =>
-      let t₁ := traceEval (d + 1) Θ H ρ e₁
+  | _ + 1, d, Θ, R, H, φ, .drop i =>
+      match φ.env[i]? with
+      | none => refused [] d Θ R (.drop i) "@drop §6.11" H .unbound
+      | some ℓ =>
+        match H[ℓ]? with
+        | none => refused [] d Θ R (.drop i) "@drop §6.11" H .unbound
+        | some .dead => refused [] d Θ R (.drop i) "@drop §6.11" H .useAfterDrop
+        | some .moved => refused [] d Θ R (.drop i) "@drop §6.11" H .useAfterMove
+        | some (.full v) =>
+            if v.mult = .copy then
+              traced [] d Θ R (.drop i) "@drop §6.11 (Copy: no glue)" H H [] (.value .unit)
+                (.ok H .unit [])
+            else
+              traced [] d Θ R (.drop i) (dropRule "@drop §6.11" (valTy v)) H (H.set ℓ .moved)
+                [.drop ℓ v] (.value .unit) (.ok (H.set ℓ .moved) .unit [.drop ℓ v])
+  | fuel + 1, d, Θ, R, H, φ, .add e₁ e₂ =>
+      let t₁ := traceEval P fuel (d + 1) Θ R H φ e₁
       match t₁.res with
       | .ok H₁ (.int n₁) tr₁ =>
-        let t₂ := traceEval (d + 1) Θ H₁ ρ e₂
+        let t₂ := traceEval P fuel (d + 1) Θ R H₁ φ e₂
         (match t₂.res with
          | .ok H₂ (.int n₂) tr₂ =>
              if InBounds (n₁ + n₂) then
-               traced (t₁.steps ++ t₂.steps) d Θ (.add e₁ e₂) "(D-Arith) §6.4" H H₂ []
+               traced (t₁.steps ++ t₂.steps) d Θ R (.add e₁ e₂) "(D-Arith) §6.4" H H₂ []
                  (.value (.int (n₁ + n₂))) (.ok H₂ (.int (n₁ + n₂)) (tr₁ ++ tr₂))
              else
-               traced (t₁.steps ++ t₂.steps) d Θ (.add e₁ e₂) "(D-Arith-Trap) §6.4" H H₂ []
+               traced (t₁.steps ++ t₂.steps) d Θ R (.add e₁ e₂) "(D-Arith-Trap) §6.4" H H₂ []
                  (.panicked .overflow) (.panic .overflow)
-         | .ok _ (.bool _) _ => confused (t₁.steps ++ t₂.steps) d Θ (.add e₁ e₂) "(D-Arith) §6.4" H
-         | .ok _ .unit _ => confused (t₁.steps ++ t₂.steps) d Θ (.add e₁ e₂) "(D-Arith) §6.4" H
-         | .ok _ (.res _ _) _ =>
-             confused (t₁.steps ++ t₂.steps) d Θ (.add e₁ e₂) "(D-Arith) §6.4" H
-         | .panic k =>
-             propagate (t₁.steps ++ t₂.steps) d Θ (.add e₁ e₂) "(D-Arith) §6.4" H (.panic k)
-         | .stuck w =>
-             propagate (t₁.steps ++ t₂.steps) d Θ (.add e₁ e₂) "(D-Arith) §6.4" H (.stuck w))
-      | .ok _ (.bool _) _ => confused t₁.steps d Θ (.add e₁ e₂) "(D-Arith) §6.4" H
-      | .ok _ .unit _ => confused t₁.steps d Θ (.add e₁ e₂) "(D-Arith) §6.4" H
-      | .ok _ (.res _ _) _ => confused t₁.steps d Θ (.add e₁ e₂) "(D-Arith) §6.4" H
-      | .panic k => propagate t₁.steps d Θ (.add e₁ e₂) "(D-Arith) §6.4" H (.panic k)
-      | .stuck w => propagate t₁.steps d Θ (.add e₁ e₂) "(D-Arith) §6.4" H (.stuck w)
-  | .div e₁ e₂ =>
-      let t₁ := traceEval (d + 1) Θ H ρ e₁
+         | .ok _ _ _ => confused (t₁.steps ++ t₂.steps) d Θ R (.add e₁ e₂) "(D-Arith) §6.4" H
+         | r => propagate (t₁.steps ++ t₂.steps) d Θ R (.add e₁ e₂) "(D-Arith) §6.4" H
+                  (r.withTrace tr₁))
+      | .ok _ _ _ => confused t₁.steps d Θ R (.add e₁ e₂) "(D-Arith) §6.4" H
+      | r => propagate t₁.steps d Θ R (.add e₁ e₂) "(D-Arith) §6.4" H r
+  | fuel + 1, d, Θ, R, H, φ, .div e₁ e₂ =>
+      let t₁ := traceEval P fuel (d + 1) Θ R H φ e₁
       match t₁.res with
       | .ok H₁ (.int n₁) tr₁ =>
-        let t₂ := traceEval (d + 1) Θ H₁ ρ e₂
+        let t₂ := traceEval P fuel (d + 1) Θ R H₁ φ e₂
         (match t₂.res with
          | .ok H₂ (.int n₂) tr₂ =>
              if n₂ = 0 then
-               traced (t₁.steps ++ t₂.steps) d Θ (.div e₁ e₂) "(D-Div-Zero) §6.4" H H₂ []
+               traced (t₁.steps ++ t₂.steps) d Θ R (.div e₁ e₂) "(D-Div-Zero) §6.4" H H₂ []
                  (.panicked .divZero) (.panic .divZero)
              else if InBounds (n₁.tdiv n₂) then
-               traced (t₁.steps ++ t₂.steps) d Θ (.div e₁ e₂) "(D-Div) §6.4" H H₂ []
+               traced (t₁.steps ++ t₂.steps) d Θ R (.div e₁ e₂) "(D-Div) §6.4" H H₂ []
                  (.value (.int (n₁.tdiv n₂))) (.ok H₂ (.int (n₁.tdiv n₂)) (tr₁ ++ tr₂))
              else
-               traced (t₁.steps ++ t₂.steps) d Θ (.div e₁ e₂) "(D-Div-Overflow) §6.4" H H₂ []
+               traced (t₁.steps ++ t₂.steps) d Θ R (.div e₁ e₂) "(D-Div-Overflow) §6.4" H H₂ []
                  (.panicked .overflow) (.panic .overflow)
-         | .ok _ (.bool _) _ => confused (t₁.steps ++ t₂.steps) d Θ (.div e₁ e₂) "(D-Div) §6.4" H
-         | .ok _ .unit _ => confused (t₁.steps ++ t₂.steps) d Θ (.div e₁ e₂) "(D-Div) §6.4" H
-         | .ok _ (.res _ _) _ => confused (t₁.steps ++ t₂.steps) d Θ (.div e₁ e₂) "(D-Div) §6.4" H
-         | .panic k =>
-             propagate (t₁.steps ++ t₂.steps) d Θ (.div e₁ e₂) "(D-Div) §6.4" H (.panic k)
-         | .stuck w =>
-             propagate (t₁.steps ++ t₂.steps) d Θ (.div e₁ e₂) "(D-Div) §6.4" H (.stuck w))
-      | .ok _ (.bool _) _ => confused t₁.steps d Θ (.div e₁ e₂) "(D-Div) §6.4" H
-      | .ok _ .unit _ => confused t₁.steps d Θ (.div e₁ e₂) "(D-Div) §6.4" H
-      | .ok _ (.res _ _) _ => confused t₁.steps d Θ (.div e₁ e₂) "(D-Div) §6.4" H
-      | .panic k => propagate t₁.steps d Θ (.div e₁ e₂) "(D-Div) §6.4" H (.panic k)
-      | .stuck w => propagate t₁.steps d Θ (.div e₁ e₂) "(D-Div) §6.4" H (.stuck w)
-  | .lt e₁ e₂ =>
-      let t₁ := traceEval (d + 1) Θ H ρ e₁
+         | .ok _ _ _ => confused (t₁.steps ++ t₂.steps) d Θ R (.div e₁ e₂) "(D-Div) §6.4" H
+         | r => propagate (t₁.steps ++ t₂.steps) d Θ R (.div e₁ e₂) "(D-Div) §6.4" H
+                  (r.withTrace tr₁))
+      | .ok _ _ _ => confused t₁.steps d Θ R (.div e₁ e₂) "(D-Div) §6.4" H
+      | r => propagate t₁.steps d Θ R (.div e₁ e₂) "(D-Div) §6.4" H r
+  | fuel + 1, d, Θ, R, H, φ, .lt e₁ e₂ =>
+      let t₁ := traceEval P fuel (d + 1) Θ R H φ e₁
       match t₁.res with
       | .ok H₁ (.int n₁) tr₁ =>
-        let t₂ := traceEval (d + 1) Θ H₁ ρ e₂
+        let t₂ := traceEval P fuel (d + 1) Θ R H₁ φ e₂
         (match t₂.res with
          | .ok H₂ (.int n₂) tr₂ =>
-             traced (t₁.steps ++ t₂.steps) d Θ (.lt e₁ e₂) "ordering compare §6.4" H H₂ []
+             traced (t₁.steps ++ t₂.steps) d Θ R (.lt e₁ e₂) "ordering compare §6.4" H H₂ []
                (.value (.bool (decide (n₁ < n₂)))) (.ok H₂ (.bool (decide (n₁ < n₂))) (tr₁ ++ tr₂))
-         | .ok _ (.bool _) _ =>
-             confused (t₁.steps ++ t₂.steps) d Θ (.lt e₁ e₂) "ordering compare §6.4" H
-         | .ok _ .unit _ =>
-             confused (t₁.steps ++ t₂.steps) d Θ (.lt e₁ e₂) "ordering compare §6.4" H
-         | .ok _ (.res _ _) _ =>
-             confused (t₁.steps ++ t₂.steps) d Θ (.lt e₁ e₂) "ordering compare §6.4" H
-         | .panic k =>
-             propagate (t₁.steps ++ t₂.steps) d Θ (.lt e₁ e₂) "ordering compare §6.4" H (.panic k)
-         | .stuck w =>
-             propagate (t₁.steps ++ t₂.steps) d Θ (.lt e₁ e₂) "ordering compare §6.4" H (.stuck w))
-      | .ok _ (.bool _) _ => confused t₁.steps d Θ (.lt e₁ e₂) "ordering compare §6.4" H
-      | .ok _ .unit _ => confused t₁.steps d Θ (.lt e₁ e₂) "ordering compare §6.4" H
-      | .ok _ (.res _ _) _ => confused t₁.steps d Θ (.lt e₁ e₂) "ordering compare §6.4" H
-      | .panic k => propagate t₁.steps d Θ (.lt e₁ e₂) "ordering compare §6.4" H (.panic k)
-      | .stuck w => propagate t₁.steps d Θ (.lt e₁ e₂) "ordering compare §6.4" H (.stuck w)
-  | .mkres κ e =>
-      let t := traceEval (d + 1) Θ H ρ e
+         | .ok _ _ _ =>
+             confused (t₁.steps ++ t₂.steps) d Θ R (.lt e₁ e₂) "ordering compare §6.4" H
+         | r => propagate (t₁.steps ++ t₂.steps) d Θ R (.lt e₁ e₂) "ordering compare §6.4" H
+                  (r.withTrace tr₁))
+      | .ok _ _ _ => confused t₁.steps d Θ R (.lt e₁ e₂) "ordering compare §6.4" H
+      | r => propagate t₁.steps d Θ R (.lt e₁ e₂) "ordering compare §6.4" H r
+  | fuel + 1, d, Θ, R, H, φ, .mkres κ e =>
+      let t := traceEval P fuel (d + 1) Θ R H φ e
       match t.res with
       | .ok H' (.int n) tr =>
-          traced t.steps d Θ (.mkres κ e) "resource intro §6.5" H H' []
+          traced t.steps d Θ R (.mkres κ e) "resource intro §6.5" H H' []
             (.value (.res κ n)) (.ok H' (.res κ n) tr)
-      | .ok _ (.bool _) _ => confused t.steps d Θ (.mkres κ e) "resource intro §6.5" H
-      | .ok _ .unit _ => confused t.steps d Θ (.mkres κ e) "resource intro §6.5" H
-      | .ok _ (.res _ _) _ => confused t.steps d Θ (.mkres κ e) "resource intro §6.5" H
-      | .panic k => propagate t.steps d Θ (.mkres κ e) "resource intro §6.5" H (.panic k)
-      | .stuck w => propagate t.steps d Θ (.mkres κ e) "resource intro §6.5" H (.stuck w)
-  | .consume e =>
-      let t := traceEval (d + 1) Θ H ρ e
+      | .ok _ _ _ => confused t.steps d Θ R (.mkres κ e) "resource intro §6.5" H
+      | r => propagate t.steps d Θ R (.mkres κ e) "resource intro §6.5" H r
+  | fuel + 1, d, Θ, R, H, φ, .consume e =>
+      let t := traceEval P fuel (d + 1) Θ R H φ e
       match t.res with
       | .ok H' (.res _ n) tr =>
-          traced t.steps d Θ (.consume e) "resource elimination §6.5" H H' [] (.value (.int n)) (.ok H' (.int n) tr)
-      | .ok _ (.int _) _ => confused t.steps d Θ (.consume e) "resource elimination §6.5" H
-      | .ok _ (.bool _) _ => confused t.steps d Θ (.consume e) "resource elimination §6.5" H
-      | .ok _ .unit _ => confused t.steps d Θ (.consume e) "resource elimination §6.5" H
-      | .panic k => propagate t.steps d Θ (.consume e) "resource elimination §6.5" H (.panic k)
-      | .stuck w => propagate t.steps d Θ (.consume e) "resource elimination §6.5" H (.stuck w)
-  | .drop i =>
-      match ρ[i]? with
-      | none => refused [] d Θ (.drop i) "@drop §6.11" H .unbound
-      | some ℓ =>
-        match H[ℓ]? with
-        | none => refused [] d Θ (.drop i) "@drop §6.11" H .unbound
-        | some .dead => refused [] d Θ (.drop i) "@drop §6.11" H .useAfterDrop
-        | some .moved => refused [] d Θ (.drop i) "@drop §6.11" H .useAfterMove
-        | some (.full v) =>
-            if v.mult = .copy then
-              traced [] d Θ (.drop i) "@drop §6.11 (Copy: no glue)" H H [] (.value .unit) (.ok H .unit [])
-            else
-              traced [] d Θ (.drop i) (dropRule "@drop §6.11" (valTy v)) H (H.set ℓ .moved)
-                [.drop ℓ v] (.value .unit) (.ok (H.set ℓ .moved) .unit [.drop ℓ v])
-  | .letIn m e₁ e₂ =>
-      let t₁ := traceEval (d + 1) Θ H ρ e₁
+          traced t.steps d Θ R (.consume e) "resource elimination §6.5" H H' []
+            (.value (.int n)) (.ok H' (.int n) tr)
+      | .ok _ _ _ => confused t.steps d Θ R (.consume e) "resource elimination §6.5" H
+      | r => propagate t.steps d Θ R (.consume e) "resource elimination §6.5" H r
+  | fuel + 1, d, Θ, R, H, φ, .letIn m e₁ e₂ =>
+      let t₁ := traceEval P fuel (d + 1) Θ R H φ e₁
       match t₁.res with
       | .ok H₁ v₁ tr₁ =>
-          let bind := adminStep (d + 1) Θ (.letIn m e₁ e₂) "(D-Let) §6.7 (mint the binding)"
+          let bind := adminStep (d + 1) Θ R (.letIn m e₁ e₂) "(D-Let) §6.7 (mint the binding)"
             ("let " ++ (if m then "mut " else "") ++ Print.binderName Θ.length ++ " = " ++
               valLine v₁ ++ " at " ++ locName H₁.length)
             H₁ (H₁ ++ [.full v₁]) [] (.value v₁)
-          let t₂ := traceEval (d + 1) (valTy v₁ :: Θ) (H₁ ++ [.full v₁]) (H₁.length :: ρ) e₂
-          Trace.showLast ("endscope([" ++ locName H₁.length ++ "])")
+          let t₂ := traceEval P fuel (d + 1) (valTy v₁ :: Θ) R (H₁ ++ [.full v₁])
+            { env := H₁.length :: φ.env, scope := φ.scope ++ [H₁.length] } e₂
           (match t₂.res with
            | .ok H₂ v₂ tr₂ =>
-             (match H₂[H₁.length]? with
-              | some (.full v') =>
-                  match v'.mult with
-                  | .linear =>
-                      refused (t₁.steps ++ [bind] ++ t₂.steps) d Θ (.letIn m e₁ e₂)
-                        "(D-EndScope) §6.7 (retire the binding)" H₂ .linearLeak
-                  | .affine =>
-                      traced (t₁.steps ++ [bind] ++ t₂.steps) d Θ (.letIn m e₁ e₂)
-                        "(D-EndScope) §6.7 (retire the binding)" H₂ (H₂.set H₁.length .dead)
-                        [.drop H₁.length v']
-                        (.value v₂)
-                        (.ok (H₂.set H₁.length .dead) v₂ (tr₁ ++ tr₂ ++ [.drop H₁.length v']))
-                  | .copy =>
-                      traced (t₁.steps ++ [bind] ++ t₂.steps) d Θ (.letIn m e₁ e₂)
-                        "(D-EndScope) §6.7 (retire the binding)" H₂ (H₂.set H₁.length .dead) []
-                        (.value v₂) (.ok (H₂.set H₁.length .dead) v₂ (tr₁ ++ tr₂))
-              | some .moved =>
-                  traced (t₁.steps ++ [bind] ++ t₂.steps) d Θ (.letIn m e₁ e₂)
-                    "(D-EndScope) §6.7 (retire the binding)" H₂ (H₂.set H₁.length .dead) []
-                    (.value v₂) (.ok (H₂.set H₁.length .dead) v₂ (tr₁ ++ tr₂))
-              | some .dead =>
-                  refused (t₁.steps ++ [bind] ++ t₂.steps) d Θ (.letIn m e₁ e₂)
-                    "(D-EndScope) §6.7 (retire the binding)" H₂ .useAfterDrop
-              | none =>
-                  refused (t₁.steps ++ [bind] ++ t₂.steps) d Θ (.letIn m e₁ e₂)
-                    "(D-EndScope) §6.7 (retire the binding)" H₂ .unbound)
-           | .panic k =>
-               didNotRun (t₁.steps ++ [bind] ++ t₂.steps) d Θ (.letIn m e₁ e₂)
-                 scopeNeverClosed H (.panic k)
-           | .stuck w =>
-               didNotRun (t₁.steps ++ [bind] ++ t₂.steps) d Θ (.letIn m e₁ e₂)
-                 scopeNeverClosed H (.stuck w))
-      | .panic k => propagate t₁.steps d Θ (.letIn m e₁ e₂) "(D-Let) §6.7" H (.panic k)
-      | .stuck w => propagate t₁.steps d Θ (.letIn m e₁ e₂) "(D-Let) §6.7" H (.stuck w)
-  | .assign i e =>
-      let t := traceEval (d + 1) Θ H ρ e
+             (match dropRetire H₂ H₁.length with
+              | .error w =>
+                  refused (t₁.steps ++ [bind] ++ t₂.steps) d Θ R (.letIn m e₁ e₂)
+                    "(D-EndScope) §6.7 (retire the binding)" H₂ w
+              | .ok (H₃, evs) =>
+                  tracedAs (t₁.steps ++ [bind] ++ t₂.steps) d Θ R (.letIn m e₁ e₂)
+                    "(D-EndScope) §6.7 (retire the binding)"
+                    ("endscope(" ++ locsLine [H₁.length] ++ ")")
+                    H₂ H₃ evs (.value v₂) (.ok H₃ v₂ (tr₁ ++ (tr₂ ++ evs))))
+           | r =>
+               didNotRun (t₁.steps ++ [bind] ++ t₂.steps) d Θ R (.letIn m e₁ e₂)
+                 scopeNeverClosed H (r.withTrace tr₁))
+      | r => propagate t₁.steps d Θ R (.letIn m e₁ e₂) "(D-Let) §6.7" H r
+  | fuel + 1, d, Θ, R, H, φ, .assign i e =>
+      let t := traceEval P fuel (d + 1) Θ R H φ e
       match t.res with
       | .ok H₁ v tr =>
-          (match ρ[i]? with
-           | none => refused t.steps d Θ (.assign i e) "(D-Assign) §6.8" H .unbound
+          (match φ.env[i]? with
+           | none => refused t.steps d Θ R (.assign i e) "(D-Assign) §6.8" H .unbound
            | some ℓ =>
              match H₁[ℓ]? with
-             | none => refused t.steps d Θ (.assign i e) "(D-Assign) §6.8" H .unbound
-             | some .dead => refused t.steps d Θ (.assign i e) "(D-Assign) §6.8" H .useAfterDrop
+             | none => refused t.steps d Θ R (.assign i e) "(D-Assign) §6.8" H .unbound
+             | some .dead => refused t.steps d Θ R (.assign i e) "(D-Assign) §6.8" H .useAfterDrop
              | some .moved =>
-                 traced t.steps d Θ (.assign i e) "(D-Assign) §6.8 (reinitialization, 3.8:55)"
+                 traced t.steps d Θ R (.assign i e) "(D-Assign) §6.8 (reinitialization, 3.8:55)"
                    H (H₁.set ℓ (.full v)) [] (.value .unit) (.ok (H₁.set ℓ (.full v)) .unit tr)
              | some (.full vOld) =>
                  match vOld.mult with
                  | .linear =>
-                     refused t.steps d Θ (.assign i e) "(D-Assign) §6.8" H .linearOverwrite
+                     refused t.steps d Θ R (.assign i e) "(D-Assign) §6.8" H .linearOverwrite
                  | .affine =>
-                     traced t.steps d Θ (.assign i e) "(D-Assign) §6.8 (overwrite-drop)"
+                     traced t.steps d Θ R (.assign i e) "(D-Assign) §6.8 (overwrite-drop)"
                        H (H₁.set ℓ (.full v)) [.drop ℓ vOld] (.value .unit)
                        (.ok (H₁.set ℓ (.full v)) .unit (tr ++ [.drop ℓ vOld]))
                  | .copy =>
-                     traced t.steps d Θ (.assign i e) "(D-Assign) §6.8" H (H₁.set ℓ (.full v)) []
+                     traced t.steps d Θ R (.assign i e) "(D-Assign) §6.8" H (H₁.set ℓ (.full v)) []
                        (.value .unit) (.ok (H₁.set ℓ (.full v)) .unit tr))
-      | .panic k => propagate t.steps d Θ (.assign i e) "(D-Assign) §6.8" H (.panic k)
-      | .stuck w => propagate t.steps d Θ (.assign i e) "(D-Assign) §6.8" H (.stuck w)
-  | .seq e₁ e₂ =>
-      let t₁ := traceEval (d + 1) Θ H ρ e₁
+      | r => propagate t.steps d Θ R (.assign i e) "(D-Assign) §6.8" H r
+  | fuel + 1, d, Θ, R, H, φ, .seq e₁ e₂ =>
+      let t₁ := traceEval P fuel (d + 1) Θ R H φ e₁
       match t₁.res with
       | .ok H₁ v₁ tr₁ =>
           (match v₁.mult with
-           | .linear => refused t₁.steps d Θ (.seq e₁ e₂) "(D-Seq) §6.7" H .linearDiscard
+           | .linear => refused t₁.steps d Θ R (.seq e₁ e₂) "(D-Seq) §6.7" H .linearDiscard
            | .affine =>
-               let discard := adminStep (d + 1) Θ (.seq e₁ e₂) "(D-Seq) §6.7 (drop the temporary)"
+               let discard := adminStep (d + 1) Θ R (.seq e₁ e₂) "(D-Seq) §6.7 (drop the temporary)"
                  ("drop(" ++ valLine v₁ ++ ")") H₁ H₁ [.dropTemp v₁] (.value .unit)
-               let t₂ := traceEval (d + 1) Θ H₁ ρ e₂
-               traced (t₁.steps ++ [discard] ++ t₂.steps) d Θ (.seq e₁ e₂) "(D-Seq) §6.7"
-                 H (lastStore (t₁.steps ++ [discard] ++ t₂.steps) H₁) [] (StepRes.ofRes t₂.res)
-                 (t₂.res.withTrace (tr₁ ++ [.dropTemp v₁]))
+               let t₂ := traceEval P fuel (d + 1) Θ R H₁ φ e₂
+               traced (t₁.steps ++ [discard] ++ t₂.steps) d Θ R (.seq e₁ e₂) "(D-Seq) §6.7"
+                 H (lastStore (t₁.steps ++ [discard] ++ t₂.steps) H₁) []
+                 (StepRes.ofRes t₂.res)
+                 ((t₂.res.withTrace [.dropTemp v₁]).withTrace tr₁)
            | .copy =>
-               let t₂ := traceEval (d + 1) Θ H₁ ρ e₂
-               traced (t₁.steps ++ t₂.steps) d Θ (.seq e₁ e₂) "(D-Seq) §6.7"
-                 H (lastStore (t₁.steps ++ t₂.steps) H₁) [] (StepRes.ofRes t₂.res) (t₂.res.withTrace tr₁))
-      | .panic k => propagate t₁.steps d Θ (.seq e₁ e₂) "(D-Seq) §6.7" H (.panic k)
-      | .stuck w => propagate t₁.steps d Θ (.seq e₁ e₂) "(D-Seq) §6.7" H (.stuck w)
-  | .ite c e₁ e₂ =>
-      let t₀ := traceEval (d + 1) Θ H ρ c
+               let t₂ := traceEval P fuel (d + 1) Θ R H₁ φ e₂
+               traced (t₁.steps ++ t₂.steps) d Θ R (.seq e₁ e₂) "(D-Seq) §6.7"
+                 H (lastStore (t₁.steps ++ t₂.steps) H₁) [] (StepRes.ofRes t₂.res)
+                 (t₂.res.withTrace tr₁))
+      | r => propagate t₁.steps d Θ R (.seq e₁ e₂) "(D-Seq) §6.7" H r
+  | fuel + 1, d, Θ, R, H, φ, .ite c e₁ e₂ =>
+      let t₀ := traceEval P fuel (d + 1) Θ R H φ c
       match t₀.res with
       | .ok H₀ (.bool b) tr₀ =>
           if b then
-            let t₁ := traceEval (d + 1) Θ H₀ ρ e₁
-            traced (t₀.steps ++ t₁.steps) d Θ (.ite c e₁ e₂) "(D-If-T) §6.6"
-              H (lastStore (t₀.steps ++ t₁.steps) H₀) [] (StepRes.ofRes t₁.res) (t₁.res.withTrace tr₀)
+            let t₁ := traceEval P fuel (d + 1) Θ R H₀ φ e₁
+            traced (t₀.steps ++ t₁.steps) d Θ R (.ite c e₁ e₂) "(D-If-T) §6.6"
+              H (lastStore (t₀.steps ++ t₁.steps) H₀) [] (StepRes.ofRes t₁.res)
+              (t₁.res.withTrace tr₀)
           else
-            let t₂ := traceEval (d + 1) Θ H₀ ρ e₂
-            traced (t₀.steps ++ t₂.steps) d Θ (.ite c e₁ e₂) "(D-If-F) §6.6"
-              H (lastStore (t₀.steps ++ t₂.steps) H₀) [] (StepRes.ofRes t₂.res) (t₂.res.withTrace tr₀)
-      | .ok _ (.int _) _ => confused t₀.steps d Θ (.ite c e₁ e₂) "(D-If-T)/(D-If-F) §6.6" H
-      | .ok _ .unit _ => confused t₀.steps d Θ (.ite c e₁ e₂) "(D-If-T)/(D-If-F) §6.6" H
-      | .ok _ (.res _ _) _ => confused t₀.steps d Θ (.ite c e₁ e₂) "(D-If-T)/(D-If-F) §6.6" H
-      | .panic k => propagate t₀.steps d Θ (.ite c e₁ e₂) "(D-If-T)/(D-If-F) §6.6" H (.panic k)
-      | .stuck w => propagate t₀.steps d Θ (.ite c e₁ e₂) "(D-If-T)/(D-If-F) §6.6" H (.stuck w)
+            let t₂ := traceEval P fuel (d + 1) Θ R H₀ φ e₂
+            traced (t₀.steps ++ t₂.steps) d Θ R (.ite c e₁ e₂) "(D-If-F) §6.6"
+              H (lastStore (t₀.steps ++ t₂.steps) H₀) [] (StepRes.ofRes t₂.res)
+              (t₂.res.withTrace tr₀)
+      | .ok _ _ _ => confused t₀.steps d Θ R (.ite c e₁ e₂) "(D-If-T)/(D-If-F) §6.6" H
+      | r => propagate t₀.steps d Θ R (.ite c e₁ e₂) "(D-If-T)/(D-If-F) §6.6" H r
+  | fuel + 1, d, Θ, R, H, φ, .ret e =>
+      let t := traceEval P fuel (d + 1) Θ R H φ e
+      match t.res with
+      | .ok H₁ v tr =>
+          (match runAllScopeDrops H₁ φ with
+           | .error w =>
+               refused t.steps d Θ R (.ret e) "(D-Return) §6.9 (unwind the frame)" H₁ w
+           | .ok (H₂, evs) =>
+               tracedAs t.steps d Θ R (.ret e) "(D-Return) §6.9 (unwind the frame)"
+                 ("run-all-scope-drops(" ++ locsLine φ.scope.reverse ++ ")")
+                 H₁ H₂ evs (.unwound v) (.returned H₂ v (tr ++ evs)))
+      | r => propagate t.steps d Θ R (.ret e) "(D-Return) §6.9" H r
+  | fuel + 1, d, Θ, R, H, φ, .call f args =>
+      let ta := traceArgs (fun H' e' => traceEval P fuel (d + 1) Θ R H' φ e') H args
+      match ta.res with
+      | .abort r => didNotRun ta.steps d Θ R (.call f args) "(D-Call) §6.9" H r
+      | .ok H₁ vs tr =>
+        match P[f]? with
+        | none => refused ta.steps d Θ R (.call f args) "(D-Call) §6.9" H .unbound
+        | some fd =>
+          if fd.params.length = vs.length then
+            let minted := mintParams H₁ vs
+            let φg : Frame := { env := minted.2.reverse, scope := minted.2 }
+            let push := adminStep (d + 1) Θ R (.call f args) "(D-Call) §6.9 (push the frame)"
+              (fnHeader f fd ++ "  with " ++ locsLine minted.2)
+              H₁ minted.1 [] (.value .unit)
+            let tb := traceEval P fuel (d + 2) (Print.bodyBinders fd) fd.ret minted.1 φg fd.body
+            (match tb.res with
+             | .ok H₃ v tr₃ =>
+               (match runAllScopeDrops H₃ φg with
+                | .error w =>
+                    refused (ta.steps ++ [push] ++ tb.steps) d Θ R (.call f args)
+                      "(D-Return-Value) §6.9 (pop the frame)" H₃ w
+                | .ok (H₄, evs) =>
+                    tracedAs (ta.steps ++ [push] ++ tb.steps) d Θ R (.call f args)
+                      "(D-Return-Value) §6.9 (pop the frame)"
+                      ("run-all-scope-drops(" ++ locsLine minted.2.reverse ++ ")")
+                      H₃ H₄ evs (.value v) (.ok H₄ v (tr ++ (tr₃ ++ evs))))
+             | .returned H₃ v tr₃ =>
+                 tracedAs (ta.steps ++ [push] ++ tb.steps) d Θ R (.call f args)
+                   "(D-Return) §6.9 (the callee's return is the call's value)"
+                   ("absorb " ++ valLine v)
+                   H₃ H₃ [] (.value v) (.ok H₃ v (tr ++ tr₃))
+             | r =>
+                 didNotRun (ta.steps ++ [push] ++ tb.steps) d Θ R (.call f args)
+                   "(D-Return-Value) §6.9 (pop the frame)" H (r.withTrace tr))
+          else refused ta.steps d Θ R (.call f args) "(D-Call) §6.9" H .typeConfusion
 
 /-- **The trace is the machine.** Projecting a run to its final result
-reproduces `eval H ρ e` exactly, so a rendered step table can never report
-an outcome — a value, a §6.12 trap, or a refusal — the interpreter does not
-produce. -/
-theorem traceEval_res : ∀ (e : Expr) (d : Nat) (Θ : List Ty) (H : Store) (ρ : Env),
-    (traceEval d Θ H ρ e).res = eval H ρ e := by
-  intro e
-  induction e with
-    (intro d Θ H ρ
-     simp only [traceEval, eval])
-  | intLit n => rfl
-  | boolLit b => rfl
-  | unitLit => rfl
-  | use i =>
-      (repeat' split) <;> first | rfl | (simp_all [traced] <;> grind)
-  | add e₁ e₂ ih₁ ih₂ =>
-      simp only [ih₁, ih₂]
-      (repeat' split) <;> first | rfl | (simp_all [traced, didNotRun, propagate] <;> grind)
-  | div e₁ e₂ ih₁ ih₂ =>
-      simp only [ih₁, ih₂]
-      (repeat' split) <;> first | rfl | (simp_all [traced, didNotRun, propagate] <;> grind)
-  | lt e₁ e₂ ih₁ ih₂ =>
-      simp only [ih₁, ih₂]
-      (repeat' split) <;> first | rfl | (simp_all [traced, didNotRun, propagate] <;> grind)
-  | mkres κ e ih =>
-      simp only [ih]
-      (repeat' split) <;> first | rfl | (simp_all [traced, didNotRun, propagate] <;> grind)
-  | consume e ih =>
-      simp only [ih]
-      (repeat' split) <;> first | rfl | (simp_all [traced, didNotRun, propagate] <;> grind)
-  | drop i =>
-      (repeat' split) <;> first | rfl | (simp_all [traced] <;> grind)
-  | letIn m e₁ e₂ ih₁ ih₂ =>
-      simp only [ih₁, ih₂]
-      (repeat' split) <;> first | rfl | (simp_all [traced, didNotRun, Trace.showLast, refused, propagate, EvalRes.withTrace] <;> grind)
-  | assign i e ih =>
-      simp only [ih]
-      (repeat' split) <;> first | rfl | (simp_all [traced, didNotRun, refused, propagate] <;> grind)
-  | seq e₁ e₂ ih₁ ih₂ =>
-      simp only [ih₁, ih₂]
-      (repeat' split) <;> first | rfl | (simp_all [traced, didNotRun, propagate, EvalRes.withTrace] <;> grind)
-  | ite c e₁ e₂ ihc ih₁ ih₂ =>
-      simp only [ihc, ih₁, ih₂]
-      (repeat' split) <;> first | rfl | (simp_all [traced, didNotRun, propagate, EvalRes.withTrace] <;> grind)
+reproduces `eval fuel P H φ e` exactly, so a rendered step table can never
+report an outcome — a value, an unwinding `return`, a §6.12 trap, a refusal,
+or exhausted fuel — the interpreter does not produce. -/
+theorem traceEval_res {P : Program} : ∀ (fuel : Nat) (d : Nat) (Θ : List Ty) (R : Ty)
+    (H : Store) (φ : Frame) (e : Expr),
+    (traceEval P fuel d Θ R H φ e).res = eval fuel P H φ e := by
+  intro fuel
+  induction fuel with
+  | zero => intro d Θ R H φ e; rfl
+  | succ fuel ih =>
+      intro d Θ R H φ e
+      cases e with
+      | intLit n => rfl
+      | boolLit b => rfl
+      | unitLit => rfl
+      | use i =>
+          simp only [traceEval, eval]
+          (repeat' split) <;> first | rfl | (simp_all [traced] <;> grind)
+      | drop i =>
+          simp only [traceEval, eval]
+          (repeat' split) <;> first | rfl | (simp_all [traced] <;> grind)
+      | add e₁ e₂ =>
+          simp only [traceEval, eval, EvalRes.andThen, ih]
+          (repeat' split) <;>
+            first | rfl | (simp_all [traced, didNotRun, propagate, confused, refused,
+              EvalRes.withTrace] <;> grind)
+      | div e₁ e₂ =>
+          simp only [traceEval, eval, EvalRes.andThen, ih]
+          (repeat' split) <;>
+            first | rfl | (simp_all [traced, didNotRun, propagate, confused, refused,
+              EvalRes.withTrace] <;> grind)
+      | lt e₁ e₂ =>
+          simp only [traceEval, eval, EvalRes.andThen, ih]
+          (repeat' split) <;>
+            first | rfl | (simp_all [traced, didNotRun, propagate, confused, refused,
+              EvalRes.withTrace] <;> grind)
+      | mkres κ e₁ =>
+          simp only [traceEval, eval, EvalRes.andThen, ih]
+          (repeat' split) <;>
+            first | rfl | (simp_all [traced, confused, refused,
+              EvalRes.withTrace] <;> grind)
+      | consume e₁ =>
+          simp only [traceEval, eval, EvalRes.andThen, ih]
+          (repeat' split) <;>
+            first | rfl | (simp_all [traced, confused, refused,
+              EvalRes.withTrace] <;> grind)
+      | letIn m e₁ e₂ =>
+          simp only [traceEval, eval, EvalRes.andThen, ih]
+          (repeat' split) <;>
+            first | rfl | (simp_all [traced, tracedAs, didNotRun, refused,
+              EvalRes.withTrace] <;> grind)
+      | assign i e₁ =>
+          simp only [traceEval, eval, EvalRes.andThen, ih]
+          (repeat' split) <;>
+            first | rfl | (simp_all [traced, refused,
+              EvalRes.withTrace] <;> grind)
+      | seq e₁ e₂ =>
+          simp only [traceEval, eval, EvalRes.andThen, ih]
+          (repeat' split) <;>
+            first | rfl | (simp_all [traced, refused,
+              EvalRes.withTrace] <;> grind)
+      | ite c e₁ e₂ =>
+          simp only [traceEval, eval, EvalRes.andThen, ih]
+          (repeat' split) <;>
+            first | rfl | (simp_all [traced, confused, refused,
+              EvalRes.withTrace] <;> grind)
+      | ret e₁ =>
+          simp only [traceEval, eval, EvalRes.andThen, ih]
+          (repeat' split) <;>
+            first | rfl | (simp_all [traced, tracedAs, refused,
+              EvalRes.withTrace] <;> grind)
+      | call f args =>
+          simp only [traceEval, eval,
+            traceArgs_res (ev := fun H' e' => eval fuel P H' φ e') (fun H' e' => ih _ _ _ _ _ e')]
+          (repeat' split) <;>
+            first | rfl | (simp_all [traced, tracedAs, didNotRun, refused, EvalRes.absorb,
+              EvalRes.withTrace] <;> grind)
+
+/-! ## A whole program
+
+A page explains a *program*: one derivation per function body (§5.8's (Fn)
+checks each under its own entry context) and one run, entered at index `0`
+exactly as `Dynamics.run` enters it. -/
+
+/-- The derivation of every function body, with the function's index and
+definition, in program order — one per (Fn) §5.8 obligation, each checked
+from that function's own entry context. -/
+def programDerivs (P : Program) : Nat → List FnDef → List (Nat × FnDef × Deriv)
+  | _, [] => []
+  | i, fd :: rest =>
+      (i, fd, explain P fd.ret (fnCtx fd) fd.body) :: programDerivs P (i + 1) rest
+
+/-- The run of a whole program: the entry call, from the empty store and the
+empty frame (§6.12's top-level result). -/
+def runTrace (P : Program) (fuel : Nat) : Trace :=
+  let T := match P[0]? with
+    | some fd => fd.ret
+    | none => .int
+  traceEval P fuel 0 [] T [] { env := [], scope := [] } (.call 0 [])
+
+/-- **The program's run is the program's outcome** (§6.12). -/
+theorem runTrace_res (P : Program) (fuel : Nat) : (runTrace P fuel).res = run P fuel :=
+  traceEval_res fuel 0 [] _ [] _ _
 
 end Explain
 end RueCore
