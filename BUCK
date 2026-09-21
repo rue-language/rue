@@ -801,6 +801,7 @@ lean_package(
         "RueCore.struct_class_unique",
         "RueCore.struct_carriesLinear_iff",
         "RueCore.dropValue_order",
+        "RueCore.dropValue_struct_events",
         "RueCore.Explain.explain_result",
         "RueCore.Explain.traceEval_res",
     ],

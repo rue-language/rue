@@ -588,10 +588,15 @@ compiler does: this order was checked by hand against a native binary before
 the slice was written.
 
 Three claims in that row are theorems rather than observations.
-`dropValue_order` says a struct's drop emits its destructor's event followed
-by exactly its fields' events, and `dropValues_order` that a field list's
-events are the head's then the tail's — together, §6.11's order.
-`dropValue_ok` says the walk never refuses on a well-typed value. And
+`dropValue_struct_events` is §6.11's order in closed form: dropping a
+well-typed struct value emits its destructor's event, when its declaration
+has one (`3.9:28`), followed by the concatenation of its fields' events in
+declaration order (`3.9:13`), each field's given by the same form recursively
+— so "outer first, then the fields in order" is one equation rather than a
+reading of two induction steps. (`dropValue_order` and `dropValues_order` are
+those steps; `dropEvents` in `Dynamics.lean` is the order written as a
+function, and `dropValue_events` is the equation saying the machine's walk is
+it.) `dropValue_ok` says the walk never refuses on a well-typed value. And
 `StructDecl.Wf.field_not_linear` says a declaration whose class is not
 `Linear` has no `Linear` field — which is why the leak monitor at step 7 can
 look at the value's own class and never inside it, and why RUE-2237's

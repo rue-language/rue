@@ -98,15 +98,20 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 - **Not yet mechanized.** The drop trace makes double frees visible; the
   theorem over minted value identities is RUE-2237.
 - **Partial progress:** the walk it will quantify over now has a proved
-  shape. `RueCore.dropValue_order` and `RueCore.dropValues_order`
-  (`lean/RueCore/Dynamics.lean`, `lean/RueCore/Soundness.lean`) say the
-  events a value's drop emits are its user destructor's followed by exactly
-  its fields' drops, in declaration order (§6.11); `RueCore.dropValue_ok`
-  says the walk never refuses on a well-typed value; and
-  `RueCore.StructDecl.Wf.field_not_linear` says a value the leak monitor lets
-  through carries no linear field, which is why the monitor reads the value's
-  own class and never descends. What is still owed is the identity-level
-  statement: that each minted value appears in the trace exactly once.
+  shape, in closed form. `RueCore.dropValue_struct_events`
+  (`lean/RueCore/Soundness.lean`) says that for a well-typed struct value the
+  events its drop emits are its user destructor's event — when the
+  declaration has one (`3.9:28`) — followed by the concatenation of its
+  fields' drop events in **declaration order** (`3.9:13`), each field's given
+  by the same closed form recursively; `RueCore.dropValue_events` is the
+  value-level equation it reads off, and `RueCore.dropEvents`
+  (`lean/RueCore/Dynamics.lean`) is §6.11's order written as a function.
+  `RueCore.dropValue_ok` says the walk never refuses on a well-typed value,
+  and `RueCore.StructDecl.Wf.field_not_linear` says a value the leak monitor
+  lets through carries no linear field, which is why the monitor reads the
+  value's own class and never descends. What is still owed is the
+  identity-level statement: that each minted value appears in the trace
+  exactly once.
 
 ## No use-after-drop / no leak of drops
 
@@ -123,7 +128,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 - **Owed:** the "exactly once, at the end of its scope" half is the trace
   theorem `drop_exactly_once` (RUE-2237); the σ records and unwind paths it
   quantifies over are in place, and so is the order *within* one value's drop
-  (`dropValue_order`, above).
+  (`dropValue_struct_events`, above).
 
 ## No use-after-free
 
