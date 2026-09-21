@@ -4,7 +4,7 @@
 An early return past two live affine bindings: the frame unwinds newest-first,
 so the drops print 4 then 3, then the value 7.
 
-Rules exercised: (Return-Value) §5.7 · (D-Return) §6.9 · 3.9:18
+Rules exercised: (Return-Value) §5.7 · (D-Return) §6.9 · 3.9:18 · 3.9:4
 
 ── The program ─────────────────────────────────────────────────────────────────
 
@@ -134,7 +134,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     [ℓ0 = † (retired), ℓ1 = † (retired)]
          result  value 7 — handed past this node by a `return` (§6.9)
-  [12]  d0  (D-Return) §6.9 (the callee's return is the call's value)
+  [12]  d0  (D-Return)/(D-Return-Main) §6.9 (the callee's return is the call's value)
          expr    absorb 7
          store   [ℓ0 = † (retired), ℓ1 = † (retired)]
            →     [ℓ0 = † (retired), ℓ1 = † (retired)]

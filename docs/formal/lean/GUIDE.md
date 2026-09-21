@@ -178,6 +178,17 @@ traded away by choosing the fuel badly. `Examples.lean` shows the two sides
 concretely — `run countdown 16` is `outOfFuel`, `run countdown 17` is the
 value, and `fuel_mono` proves every larger bound agrees.
 
+One caveat belongs with `return` rather than with fuel, and it is the one
+place these theorems say less than "never a violation" sounds like. A
+by-value argument's value sits in no cell and no scope record until
+`mintParams` gives it one, so if a *later* argument of the same call unwinds
+by `return`, (D-Return) discards it with the evaluation context and no drop
+and no monitor fires — a linear value can be consumed zero times without any
+of the five violations. That is the calculus as written and what the compiler
+does, not a modelling slip; `Dynamics.lean`'s "Pending arguments" section
+states it, `Examples.lean`'s `linearLostAtCallArg` and `affineLostAtCallArg`
+are the kernel-checked witnesses, and closing it is RUE-2316.
+
 ## 3. What `Matches` says, and why it is asymmetric
 
 Every safety proof carries an invariant relating the static story to the
@@ -205,17 +216,23 @@ as an invariant.
 
 The second half is about the frame's **scope record** σ, and it is one
 equation: σ read newest-first *is* the environment ρ. §6.1 keeps both books —
-ρ says where a binding lives, σ says it is owed a drop — and RUE-1277 is the
-observation that a `let` registers its cell in both: in σ, and in the
-administrative `endscope` the normal path runs. The equation is what makes
-that redundancy provably consistent. The body of a `let` runs under a frame
-whose σ holds the new cell; the frame the normal path *returns to* is the
-caller's, which never held it. So on the normal path the `endscope` drops it,
-on an early `return` the unwind drops it, and neither path can drop it twice.
-The same equation is why §7's no-use-after-drop bullet is now a consequence of
-the invariant rather than a fact about closed expressions: `run-all-scope-drops`
-walks σ, σ is ρ, and `Matches` says every cell of ρ is live or moved out and
-that no two bindings share one — so no unwind ever touches a `†` cell.
+ρ says where a binding lives, σ says it is owed a drop.
+
+Be clear about what that equation costs to prove here: **nothing**. Every
+frame the interpreter builds — the callee's at a call, the extended one inside
+a `let` body — builds σ and ρ from the same list, so in this fragment σ holds
+no information ρ does not and the equation is definitional. It is stated as an
+invariant for two reasons. It is what the teardown proofs consume: `run-all-
+scope-drops` walks σ, and because σ is ρ, `Matches` (every cell live or moved
+out, no two bindings sharing one) applies to the walk — which is why §7's
+no-use-after-drop bullet is a consequence of the invariant here rather than a
+fact about closed expressions, and why no unwind touches a `†` cell or retires
+one twice. And it is the clause that stops being free when `Frame.scope`
+becomes the *stack* §6.1 actually specifies: §6.6's `match` arms and §6.10's
+loops push and pop scopes independently of the binder chain, and then σ and ρ
+are two books a slice has to keep in step. That is the shape the RUE-1277
+redundancy was raised for; this fragment does not have it, so nothing here
+should be read as having checked it.
 
 A third piece, `Untouched ρ H H'`, carries frame *locality*: the store only
 grows, and every already-allocated cell that ρ does not name keeps its
@@ -266,9 +283,18 @@ for it; if it rejects, the program is outside the theorem, and `run` usually
 shows which refusal it would have reached (the corpus prints that when there
 is one; a rejection can also be a plain type error, such as an out-of-range
 literal, which `eval` runs without complaint). Completeness, that every
-derivable program is accepted, is expected but not yet proved
-(`Checker.lean`, which also says where `check` is deliberately narrower than
-the rule for `return`).
+derivable program is accepted, is **false**, not open: `check` is
+deliberately narrower than the rule at `return`, and `Checker.lean`'s "what
+completeness costs" gives the two counterexamples. One is contrived
+(`1 + return true` in a `bool`-returning function, which the rule re-types
+and the algorithm does not). The other is not: a `return` arm of an `if`
+contributes its post-operand state to §5.5's join, where §5.7 excludes a
+diverging arm's state entirely, so a binding that arm moved out is unusable
+after the `if` — and `main() -> int { let x = mk 5; (if c { @drop(x); return 0 } else { 5 }); consume(x) }`
+is derivable, runnable, accepted by the compiler, and rejected here. That is
+why a `reject` verdict in the bridge corpus is only trustworthy on shapes
+where `check` is complete, and why the generator emits no `return`
+(`Corpus.lean`, `Gen.lean`).
 
 ## 5. A worked example: `reinit`
 
@@ -446,7 +472,7 @@ appending, so σ reversed is ρ — the invariant of section 3.
 | **9** | **`(D-Return) §6.9` (unwind the frame)** | `[ℓ0 = RAffine { 3 }, ℓ1 = RAffine { 4 }]` | `run-all-scope-drops(H, φ)` walks `σ` **newest-first**: drop-retire `ℓ1`, then `ℓ0` | `[ℓ0 = †, ℓ1 = †]` | `drop ℓ1 = RAffine { 4 }`; `drop ℓ0 = RAffine { 3 }` |
 | 10 | inner `(D-EndScope)` — did not run | | the `return` discarded the evaluation context, the pending `endscope` markers with it; the result travels out unchanged | | |
 | 11 | outer `(D-EndScope)` — did not run | | same | | |
-| 12 | `(D-Return) §6.9` (absorb) | `[ℓ0 = †, ℓ1 = †]` | the call boundary turns the unwound `return` into the call's value | | |
+| 12 | `(D-Return-Main) §6.9` (absorb) | `[ℓ0 = †, ℓ1 = †]` | the call boundary turns the unwound `return` into the call's value; `f0` is the bottom of the stack, so this firing is (D-Return-Main) — at an inner call the same row is (D-Return)'s hand-off, which is why the generated table labels it with both | | |
 
 Two things are worth pausing on. **The drops run once, not twice.** Steps 10
 and 11 are the `endscope`s that the normal path would have run; they see a
@@ -458,9 +484,12 @@ invariant is exactly what proves it cannot.
 
 **The order is newest-first, and it is observable.** The trace is
 `drop ℓ1` then `drop ℓ0`, so the printed program prints `4`, then `3`, then
-its value `7` — `3.9:18`'s order, compared against the real binary by the
-bridge. `explain/return_past_affine.txt` is this table generated, with the
-store at every row.
+its value `7`. Two spec rules are at work and it is worth keeping them apart:
+`3.9:18` says *that* a `return` drops every live binding of every enclosing
+scope, and `3.9:4` says *in what order* — "reverse declaration order (last
+declared, first dropped)". The bridge compares both against the real binary.
+`explain/return_past_affine.txt` is this table generated, with the store at
+every row.
 
 ### More worked examples
 
@@ -665,15 +694,19 @@ two and read the calculus and the Lean side by side.
   a program that overwrites a live linear value the RHS had not yet consumed.
 - `(D-Return)`, §6.9, against `eval`'s `ret` arm. The rule discards the
   evaluation context `E'` — every pending `endscope` marker inside it
-  included — and runs `run-all-scope-drops(H, φ)` instead, newest-first. The
-  arm should evaluate the operand, then walk the frame's scope record, then
-  return `.returned`, which every enclosing form passes on until a `call`
-  absorbs it. *A defect looks like:* the arm running the *innermost* scope
-  only (then an early return two scopes deep would leak the outer binding), or
-  the record walked oldest-first (then `3.9:18`'s order is wrong, which the
-  bridge's stdout comparison in step 5 would catch on
+  included — and runs `run-all-scope-drops(H, φ)` instead, over every live
+  binding of every enclosing scope (`3.9:18`) in reverse declaration order
+  (`3.9:4`). The arm should evaluate the operand, then walk the frame's scope
+  record, then return `.returned`, which every enclosing form passes on until
+  a `call` absorbs it. *A defect looks like:* the arm running the *innermost*
+  scope only (then an early return two scopes deep would leak the outer
+  binding, against `3.9:18`), or the record walked oldest-first (against
+  `3.9:4`, which the bridge's stdout comparison in step 5 would catch on
   `return_past_affine`), or `.returned` being absorbed somewhere other than a
-  call boundary (then a `return` would stop at the nearest `let`).
+  call boundary (then a `return` would stop at the nearest `let`). What the
+  rule does *not* cover is the value of an argument already evaluated when a
+  sibling argument returns; that is the RUE-2316 carve-out in section 2, and
+  `Examples.lean` has the witnesses.
 - `(D-Let)`/`(D-EndScope)`, §6.7, against `eval`'s `letIn` arm. The machine
   mints a fresh cell for the binder, runs the body, then at scope exit inspects
   that cell: a live linear value is `linearLeak` and the machine stops there; a

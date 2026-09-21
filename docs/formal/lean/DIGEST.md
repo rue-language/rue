@@ -313,22 +313,41 @@ theorem RueCore.run_safe {P : Program} {fd : FnDef} (hwf : WfProgram P)
 *theorem* · module `RueCore.Soundness`
 
 The same, from the packaged well-formedness of a whole program: §7 over
-`ProgramTyped`, which is what `checkProgram` decides.
+`ProgramTyped`, which is what `checkProgram` decides. The entry function is
+existentially quantified because `ProgramTyped` only says one exists; the
+value's type is still the one that function declares, so this form claims
+exactly what `run_safe` proves.
 
 ```lean
 theorem RueCore.ProgramTyped.run_safe {P : Program} (h : ProgramTyped P)
   (fuel : Nat) :
-  run P fuel = EvalRes.outOfFuel ∨
-    (∃ k, run P fuel = EvalRes.panic k) ∨
-      ∃ H v tr, run P fuel = EvalRes.ok H v tr
+  ∃ fd,
+    P[0]? = some fd ∧
+      (run P fuel = EvalRes.outOfFuel ∨
+        (∃ k, run P fuel = EvalRes.panic k) ∨
+          ∃ H v tr, run P fuel = EvalRes.ok H v tr ∧ HasTy v fd.ret)
 ```
 
 ### `no_violation`
 
 *theorem* · module `RueCore.Soundness`
 
-A well-formed program never reaches **any** memory violation, at any fuel:
-§7's bullets, conjoined, for this fragment.
+A well-formed program never reaches any of the machine's **named**
+violations, at any fuel.
+
+Read as "§7's bullets, conjoined", this would overstate the linear bullet by
+one edge. A by-value argument value that a *later* argument of the same call
+destroys by `return` is in no cell and no scope record, so its drop is neither
+run nor monitored and none of the five violations fires — a linear value can
+be consumed zero times without this theorem noticing. That edge is the
+calculus as written — §6.9's unwinding rule walks only σ, and §5.7's
+strict-context bottom rule (`Strict-Bottom` there, which the fragment does not
+mechanize) imposes no discard check on siblings already evaluated — it is what
+the Rue compiler does, and closing it is an open spec decision (RUE-2316, the
+pending-argument decision). `Dynamics.lean`'s "Pending arguments" section
+states it in full and `Examples.lean`'s `linearLostAtCallArg` is the
+kernel-checked witness; every *other* edge — a `let`'s scope exit, a frame's
+normal pop, and a `return`'s unwind — is covered.
 
 ```lean
 theorem RueCore.no_violation {P : Program} (h : ProgramTyped P) (fuel : Nat)
