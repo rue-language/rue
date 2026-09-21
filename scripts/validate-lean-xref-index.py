@@ -249,7 +249,7 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
     ("e", "@f ( e1, ..., ek )"): (
         "yes",
         ["Expr.fintrin", "FloatIntrin", "BinOp.totalCmp"],
-        "all eight: `@int_to_float`, `@float_to_int` (the one float form that "
+        "all nine: `@int_to_float`, `@float_to_int` (the one float form that "
         "traps, `3.12:18`), `@float_cast` with its `w' ≠ w` side condition "
         "(`3.12:19`), the five of `3.12:34`, and `@total_cmp` — which is a "
         "`BinOp` rather than a `FloatIntrin` because it is the one `@f` with two "
