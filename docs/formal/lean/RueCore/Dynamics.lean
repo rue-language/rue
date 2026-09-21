@@ -4,10 +4,11 @@ import RueCore.Statics
 # RueCore.Dynamics — the executable machine (§6)
 
 A definitional interpreter over the §6.1 configuration shape, restricted to
-the fragment: a store of single-cell binding allocations (`full v` / the
-moved-out marker `⊘` = `moved` / the retired marker `†` = `dead`), a frame
-holding the environment `ρ` and the scope record `σ`, and a drop trace — the
-fragment's image of the oracle's observable `Outcome` (drop trace + result).
+the fragment: a store of single-cell binding allocations (`full c`, whose
+contents is a tree with §6.1's moved-out marker `⊘` allowed at any node, or
+the retired marker `†` = `dead`), a frame holding the environment `ρ` and the
+scope record `σ`, and a drop trace — the fragment's image of the oracle's
+observable `Outcome` (drop trace + result).
 
 Design commitments carried over from §6:
 
@@ -40,6 +41,10 @@ Design commitments carried over from §6:
   and `check` rejects the literal (`Examples.lean` pins both).
 * Scope exit *retires* the binding's allocation (`drop-retire`, §6.1), so a
   use after scope exit is `useAfterDrop`, distinct from `useAfterMove`.
+* A read that reaches a `⊘` — at the place itself or anywhere inside the
+  aggregate it names — is `useAfterMove`. The second case is the one
+  `fully-owned(Σ, p)` (§5.1) excludes: handing an aggregate with a hole in it
+  to a new owner (`3.8:26`).
 * `@drop` and overwrite-drop do **not** retire (§6.8/§6.11): the binding
   stays reinitializable.
 * Arithmetic overflow, a zero divisor, an out-of-range `@intCast` and an
@@ -55,16 +60,33 @@ Design commitments carried over from §6:
   output; those two are what a printed Rue program can see, in the one
   trace order they happened in.
 
-## Structs and §6.11's drop order
+## Places, partial moves, and §6.11's drop order
 
-A struct value is its declaration's index and one value per field
-(`Val.struct`), so the machine's drop walk is §6.11's own: the user
-destructor first (`3.9:28`), then the fields in declaration order (`3.9:13`),
-recursively (`dropValue`). Every path that drops a value — `@drop` (§6.11),
-scope exit (§6.7), the overwrite (§6.8), a discarded temporary (§6.7), and the
-frame teardown (§6.9) — routes through it, so a trace carries that order
-wherever a drop happens. `dropValue_struct_events` (`Soundness.lean`) states
-the order as a theorem, in closed form.
+A place is a root binding and a path of field steps (`Place`, `Syntax.lean`),
+and §6.3 navigates it into the stored contents: `H(ℓ)@π` is `readAt` and
+`H[ℓ@π ↦ ⊘]` is `writeAt`. (D-Use-Move) writes `⊘` at exactly the
+sub-position moved — the whole cell for a whole-place use, one field for a
+projection, which is the **partial move** of §4.2 — so the later scope-exit
+drop of `ℓ` skips it and cannot free it a second time. That skip is
+`dropContents`'s `⊘` case, and it is what makes the residual drop of `3.8:73`
+path-specific.
+
+A struct's contents is its declaration's index and one contents per field, so
+the drop walk is §6.11's own: the user destructor first (`3.9:28`), then the
+fields in declaration order (`3.9:13`), recursively, skipping every `⊘`. Every
+path that drops — `@drop` (§6.11), scope exit (§6.7), the overwrite (§6.8), a
+discarded temporary (§6.7), and the frame teardown (§6.9) — routes through it,
+so a trace carries that order wherever a drop happens.
+`dropContents_struct_events` (`Soundness.lean`) states the order as a theorem,
+in closed form.
+
+Both linear monitors read the **residue** rather than a type. §6.7's and
+§6.9's leak monitor refuses when the contents a scope exit reaches still holds
+a live declared-`linear` sub-value (`Contents.residualLinear`, §5.6's own
+recursion), and §6.8's overwrite monitor refuses on the same reading of the
+position being written. A carrier whose linear field has been moved out
+therefore drops its remaining residue quietly, which is the RUE-1591 model and
+what the compiler does.
 
 ## Pending arguments: the one edge no monitor covers
 
@@ -155,14 +177,113 @@ def Val.mult (D : StructEnv) : Val → Mult
   | .struct s _ => D.classOf s
   | .int _ _ _ | .float _ _ | .bool _ | .unit => .copy
 
-/-- Cell contents (§6.1's `c ::= v | ⊘`, plus the retired allocation `†`). -/
+/-- Cell contents (§6.1's `c ::= v | ⊘`), as a **tree**: `⊘` may sit at any
+node, not only at the root, because (D-Use-Move) §6.3 writes `H[ℓ@π ↦ ⊘]` at
+exactly the sub-position a partial move takes (§4.2, `3.8:22`). A hole-free
+contents is a value (`toVal`), and a value written into a cell becomes the
+hole-free tree of the same shape (`ofVal`); the two are inverse, which is what
+lets §6.11's walk and §6.3's navigation share one representation. -/
+inductive Contents where
+  | hole
+  | int (w : IntWidth) (s : Sign) (n : Int)
+  | float (w : FloatWidth) (f : FloatDatum)
+  | bool (b : Bool)
+  | unit
+  | struct (s : Nat) (cs : List Contents)
+deriving Repr
+
+mutual
+/-- A value stored into a cell or a sub-position: the same tree with no `⊘` in
+it (§6.8's `H[ℓ@π ↦ v]`, §6.7's (D-Let)) (helper). -/
+def Contents.ofVal : Val → Contents
+  | .int w s n => .int w s n
+  | .float w f => .float w f
+  | .bool b => .bool b
+  | .unit => .unit
+  | .struct s vs => .struct s (Contents.ofVals vs)
+
+/-- `ofVal` over a field list (helper). -/
+def Contents.ofVals : List Val → List Contents
+  | [] => []
+  | v :: vs => Contents.ofVal v :: Contents.ofVals vs
+end
+
+mutual
+/-- The value a contents denotes, or `none` when a `⊘` sits somewhere in it —
+which is the read §6.3 leaves stuck and §7's no-use-after-move bullet forbids
+(helper). -/
+def Contents.toVal : Contents → Option Val
+  | .hole => none
+  | .int w s n => some (.int w s n)
+  | .float w f => some (.float w f)
+  | .bool b => some (.bool b)
+  | .unit => some .unit
+  | .struct s cs => (Contents.toVals cs).map (Val.struct s)
+
+/-- `toVal` over a field list (helper). -/
+def Contents.toVals : List Contents → Option (List Val)
+  | [] => some []
+  | c :: cs =>
+      match Contents.toVal c, Contents.toVals cs with
+      | some v, some vs => some (v :: vs)
+      | _, _ => none
+end
+
+/-- Whether a position holds §6.1's `⊘` — the test `@drop` makes before it
+runs a drop, so that dropping an already moved-out place is the refusal §7's
+no-use-after-move bullet forbids rather than a silent no-op (helper). -/
+def Contents.isHole : Contents → Bool
+  | .hole => true
+  | .int _ _ _ | .float _ _ | .bool _ | .unit | .struct _ _ => false
+
+/-- The dynamic image of `class(T)` (§3) on cell contents: a hole has nothing
+to drop, and a struct has the class its declaration records (helper). -/
+def Contents.mult (D : StructEnv) : Contents → Mult
+  | .struct s _ => D.classOf s
+  | .hole | .int _ _ _ | .float _ _ | .bool _ | .unit => .copy
+
+mutual
+/-- §5.6's `residual-linear`, read on the **contents** rather than on Σ: does a
+live sub-value of a declared-`linear` struct type remain? This is the leak
+monitor §6.7's `endscope` and §6.9's frame teardown consult, and the overwrite
+monitor of §6.8. A `⊘` carries nothing (`3.8:73`'s skip), a live
+declared-`linear` struct carries the obligation itself (`3.8:74`), and
+otherwise the obligation is the disjunction over the live fields — exactly the
+recursion §5.6 writes for Σ, on the store's side of the invariant. -/
+def Contents.residualLinear (D : StructEnv) : Contents → Bool
+  | .hole | .int _ _ _ | .float _ _ | .bool _ | .unit => false
+  | .struct s cs =>
+      (match D[s]? with
+       | some sd => sd.attr = .linear || Contents.residualLinearList D cs
+       | none => false)
+
+/-- The same over a field list (helper). -/
+def Contents.residualLinearList (D : StructEnv) : List Contents → Bool
+  | [] => false
+  | c :: cs => Contents.residualLinear D c || Contents.residualLinearList D cs
+end
+
+/-- `H[ℓ@π ↦ c']` (§6.3's (D-Use-Move), §6.8's `place_write`): replace the
+sub-position at a path. `none` is a step that is not a field of what is stored
+(helper). -/
+def Contents.writeAt : Contents → List Nat → Contents → Option Contents
+  | _, [], new => some new
+  | .struct s cs, f :: π, new =>
+      (match cs[f]? with
+       | some c => (Contents.writeAt c π new).map fun c' => .struct s (cs.set f c')
+       | none => none)
+  | _, _ :: _, _ => none
+
+/-- The store `H` (§6.1) holds one cell per binding allocation; the cell is
+live contents or the retired marker `†`. §6.1's whole-cell `⊘` is
+`full .hole` — a hole at the root of the tree, which is what a whole-place
+move writes. -/
 inductive Cell where
-  | full (v : Val)
-  | moved
+  | full (c : Contents)
   | dead
 deriving Repr
 
-/-- The store `H` (§6.1): locations are indices; allocation appends. A dead
+/-- The store (§6.1): locations are indices; allocation appends. A dead
 cell keeps its index occupied — identities are never reused (§6.1). -/
 abbrev Store := List Cell
 
@@ -180,18 +301,20 @@ structure Frame where
   scope : List Nat
 deriving DecidableEq, Repr
 
-/-- Drop events, the fragment's slice of the oracle `Outcome`. `drop ℓ v` and
+/-- Drop events, the fragment's slice of the oracle `Outcome`. `drop ℓ c` and
 `dropTemp v` mark *where* a drop starts — a binding's drop (§6.11: at scope
 exit §6.7, at an unwinding exit §6.9, at `@drop`, or at an overwrite §6.8) and
-a discarded temporary's drop ((D-Seq), §6.7) — and `dtor s v` is the one event
+a discarded temporary's drop ((D-Seq), §6.7) — and `dtor s c` is the one event
 a Rue program can *observe*: the user destructor `S` declares (`3.9`), which
-§6.11 runs before the value's fields. The events a value's drop emits follow
-each other in §6.11's order: the destructor, then the fields in declaration
-order, each recursively. -/
+§6.11 runs before the value's fields. The events a drop emits follow each other
+in §6.11's order: the destructor, then the fields in declaration order, each
+recursively, with every `⊘` skipped. A binding's drop carries the *contents*
+it ran on, because after a partial move what is dropped is a tree with holes in
+it rather than a value; a discarded temporary is always a whole value. -/
 inductive Event where
-  | drop (ℓ : Nat) (v : Val)
+  | drop (ℓ : Nat) (c : Contents)
   | dropTemp (v : Val)
-  | dtor (s : Nat) (v : Val)
+  | dtor (s : Nat) (c : Contents)
   | dbg (v : Val)
 deriving Repr
 
@@ -229,6 +352,19 @@ inductive Violation where
   programs; §5.8, `4.10:3`). -/
   | typeConfusion
 deriving DecidableEq, Repr
+
+/-- `H(ℓ)@π` (§6.3): follow a path into the stored contents. Reaching a `⊘`
+with path left to walk is the use of a moved-out place (§7's first bullet); a
+step that is not a field of what is stored is a shape no well-typed program
+produces (helper). -/
+def Contents.readAt : Contents → List Nat → Except Violation Contents
+  | c, [] => .ok c
+  | .hole, _ :: _ => .error .useAfterMove
+  | .struct _ cs, f :: π =>
+      (match cs[f]? with
+       | some c => Contents.readAt c π
+       | none => .error .typeConfusion)
+  | _, _ :: _ => .error .typeConfusion
 
 /-- Evaluation results: a value with the final store and trace (§6.12's normal
 result); a value handed back by an unwinding `return`, whose frame's scopes
@@ -276,16 +412,17 @@ def EvalRes.absorb : EvalRes → (Store → Val → EvalRes) → EvalRes
   | r, _ => r
 
 mutual
-/-- `drop(H, v)` (§6.11), on the fragment's values. A scalar drops nothing
-("scalars are Copy: nothing to drop"; §7 says the same of a float — it "has no
-drop glue, is never registered in a scope record, and never names an
-allocation"). A struct runs its **user destructor
-first** (`3.9:28`), if its declaration has one, and then drops its fields in
-**declaration order** (`3.9:13`, §6.11's `drop*`). A field is dropped whatever
-its class: an explicit `@drop` of a linear-carrying struct discharges the
-whole obligation, and a scope exit never reaches one, because a value the leak
-monitor lets through has no linear field
-(`StructDecl.Wf.field_not_linear`). `dropValue_struct_events`
+/-- `drop(H, c)` (§6.11), on the fragment's cell contents. A `⊘` drops
+**nothing** — "this single skip is what makes double-free impossible" — and a
+scalar drops nothing either ("scalars are Copy"; §7 says the same of a float —
+it "has no drop glue, is never registered in a scope record, and never names
+an allocation"). A struct runs its **user destructor first** (`3.9:28`), if its
+declaration has one, and then drops its fields in **declaration order**
+(`3.9:13`, §6.11's `drop*`), recursively. A field is dropped whatever its
+class: an explicit `@drop` of a linear-carrying struct discharges the whole
+obligation, and a scope exit never reaches a live linear sub-value, because the
+leak monitor (`dropRetire`) reads `Contents.residualLinear` first.
+`dropContents_struct_events`
 (`Soundness.lean`) is this walk in closed form.
 
 Two things §6.11 writes out are elided here, both unobservably.
@@ -296,8 +433,8 @@ Two things §6.11 writes out are elided here, both unobservably.
   supplies a body that reproduces the event (`Print.lean`).
 * **The scratch cell is not minted.** §6.11 mints a fresh `ℓ` holding the
   value, runs the destructor in a frame whose scope record is empty, drops
-  the *residual* fields `H1(ℓ)` leaves, and then retires `ℓ`. `dropValue`
-  mints nothing and drops the original `vs`. Neither difference is
+  the *residual* fields `H1(ℓ)` leaves, and then retires `ℓ`. `dropContents`
+  mints nothing and drops the original `cs`. Neither difference is
   observable: no `Event` corresponds to minting or retiring the scratch cell,
   and the residual fields *are* the original ones, because `3.9:33` forbids
   moving `self` out of a destructor and `3.9:34` forbids moving a field out
@@ -305,99 +442,107 @@ Two things §6.11 writes out are elided here, both unobservably.
   field. §6.11 says as much — it keeps the residual-versus-original
   distinction only so the rule stays honest if `3.9:34` is ever relaxed.
 
-The `⊘`-skip §6.11 opens with is the *cell* case below: a moved-out field has
-no representation here, since the fragment has no partial moves
-(RUE-2231). -/
-def dropValue (D : StructEnv) : Val → Except Violation (List Event)
+One thing §6.11 does **not** write out and this walk must: the destructor case
+is stated over a *value* `{v1,…,vk}_S`, so the calculus says nothing about a
+destructor-bearing struct one of whose fields is `⊘`. `3.9:34` is exactly what
+makes that state unreachable — no partial move may be taken under a
+destructor-bearing value — and the walk therefore runs the destructor on
+whatever the cell holds, hole or not, rather than refusing a state no rule
+excludes. `Soundness.lean` proves the state is never reached. -/
+def dropContents (D : StructEnv) : Contents → Except Violation (List Event)
+  | .hole => .ok []
   | .int _ _ _ => .ok []
   | .float _ _ => .ok []
   | .bool _ => .ok []
   | .unit => .ok []
-  | .struct s vs =>
+  | .struct s cs =>
       match D[s]? with
       | none => .error .unbound
       | some sd =>
-          match dropValues D vs with
+          match dropContentsList D cs with
           | .error w => .error w
           | .ok evs =>
-              .ok ((if sd.dtor then [Event.dtor s (.struct s vs)] else []) ++ evs)
+              .ok ((if sd.dtor then [Event.dtor s (.struct s cs)] else []) ++ evs)
 
-/-- `drop*(H, [v1,…,vk])` (§6.11): fold `drop` over the values left to right
+/-- `drop*(H, [c1,…,ck])` (§6.11): fold `drop` over the contents left to right
 — for a struct's fields, declaration order (`3.9:13`). -/
-def dropValues (D : StructEnv) : List Val → Except Violation (List Event)
+def dropContentsList (D : StructEnv) : List Contents → Except Violation (List Event)
   | [] => .ok []
-  | v :: vs =>
-      match dropValue D v with
+  | c :: cs =>
+      match dropContents D c with
       | .error w => .error w
       | .ok evs =>
-          match dropValues D vs with
+          match dropContentsList D cs with
           | .error w => .error w
           | .ok evs' => .ok (evs ++ evs')
 end
 
 mutual
-/-- **§6.11's order, as a function**: the events dropping a value emits,
-written out rather than read off the walk. A scalar emits none; a struct emits
-its user destructor's event first when its declaration has one (`3.9:28`) and
-then its fields' events in declaration order (`3.9:13`), recursively. An index
-the environment does not have emits nothing, which the walk itself refuses
-instead — `dropValue_struct_events` (`Soundness.lean`) is the theorem that the
-two agree on every well-typed value, and it is the closed form RUE-2237's
+/-- **§6.11's order, as a function**: the events dropping a cell's contents
+emits, written out rather than read off the walk. A `⊘` and a scalar emit none;
+a struct emits its user destructor's event first when its declaration has one
+(`3.9:28`) and then its fields' events in declaration order (`3.9:13`),
+recursively, every `⊘` skipped. An index the environment does not have emits
+nothing, which the walk itself refuses instead —
+`dropContents_struct_events` (`Soundness.lean`) is the theorem that the two
+agree on every well-typed contents, and it is the closed form RUE-2237's
 "dropped exactly once" quantifies over. -/
-def dropEvents (D : StructEnv) : Val → List Event
+def dropEvents (D : StructEnv) : Contents → List Event
+  | .hole => []
   | .int _ _ _ => []
   | .float _ _ => []
   | .bool _ => []
   | .unit => []
-  | .struct s vs =>
+  | .struct s cs =>
       (match D[s]? with
-       | some sd => if sd.dtor then [Event.dtor s (.struct s vs)] else []
-       | none => []) ++ dropEventsList D vs
+       | some sd => if sd.dtor then [Event.dtor s (.struct s cs)] else []
+       | none => []) ++ dropEventsList D cs
 
 /-- The same over a field list: the fields' events concatenated in
 declaration order (`3.9:13`), which is §6.11's `drop*`. -/
-def dropEventsList (D : StructEnv) : List Val → List Event
+def dropEventsList (D : StructEnv) : List Contents → List Event
   | [] => []
-  | v :: vs => dropEvents D v ++ dropEventsList D vs
+  | c :: cs => dropEvents D c ++ dropEventsList D cs
 end
 
 /-- A field list's events are its fields' events concatenated, left to right:
 the flattening `dropValue_struct_events` states the order with (helper). -/
 theorem dropEventsList_eq_flatten (D : StructEnv) :
-    ∀ vs : List Val, dropEventsList D vs = (vs.map (dropEvents D)).flatten
+    ∀ cs : List Contents, dropEventsList D cs = (cs.map (dropEvents D)).flatten
   | [] => rfl
-  | v :: vs => by simp [dropEventsList, dropEventsList_eq_flatten D vs]
+  | c :: cs => by simp [dropEventsList, dropEventsList_eq_flatten D cs]
 
-/-- The drop of the value in a binding's cell (§6.11), as the trace records
-it: a `drop ℓ v` marker naming the cell, then the events the value's own drop
-emits. A `Copy` value has no drop glue at all (§6.11: `drop(H, n_T) = H`), so
-it records nothing — which is also why `@drop` of a `Copy` place leaves no
-trace (§5.3's (@Drop-Copy)) (helper). -/
-def dropCell (D : StructEnv) (ℓ : Nat) (v : Val) : Except Violation (List Event) :=
-  if v.mult D = .copy then .ok []
+/-- The drop of a binding cell's contents (§6.11), as the trace records it: a
+`drop ℓ c` marker naming the cell, then the events the contents' own drop
+emits. `Copy` contents — a scalar, or a `⊘` with nothing left in it — has no
+drop glue at all (§6.11: `drop(H, n_T) = H`, `drop(H, ⊘) = H`), so it records
+nothing, which is also why `@drop` of a `Copy` place leaves no trace (§5.3's
+(@Drop-Copy)) (helper). -/
+def dropCell (D : StructEnv) (ℓ : Nat) (c : Contents) : Except Violation (List Event) :=
+  if c.mult D = .copy then .ok []
   else
-    match dropValue D v with
+    match dropContents D c with
     | .error w => .error w
-    | .ok evs => .ok (.drop ℓ v :: evs)
+    | .ok evs => .ok (.drop ℓ c :: evs)
 
 /-- `drop-retire(H, ℓ)` (§6.1): run the binding's drop (§6.11 — a no-op on a
 `⊘` or `Copy` cell), then retire the allocation, so any later access to it is
 `useAfterDrop` rather than silently readable (the RUE-390 change). A live
 linear value here is §5.6's leak: the scope ends with an obligation
-undischarged, and the machine refuses (`3.8:32`). Reading the value's own
-class is enough, because §3's join makes a non-`Linear` struct one with no
-linear field (`StructDecl.Wf.field_not_linear`). This is the one
+undischarged, and the machine refuses (`3.8:32`). The monitor reads
+`Contents.residualLinear`, §5.6's own recursion on the store's side, because
+after a partial move the obligation attaches to whatever linear content is
+still present rather than to the binding's type (RUE-1591). This is the one
 scope-teardown path: `let`'s normal `endscope` (§6.7) and the frame unwind of
 `return` (§6.9) both run it. -/
 def dropRetire (D : StructEnv) (H : Store) (ℓ : Nat) : Except Violation (Store × List Event) :=
   match H[ℓ]? with
   | none => .error .unbound
   | some .dead => .error .useAfterDrop
-  | some .moved => .ok (H.set ℓ .dead, [])
-  | some (.full v) =>
-      if v.mult D = .linear then .error .linearLeak
+  | some (.full c) =>
+      if c.residualLinear D then .error .linearLeak
       else
-        match dropCell D ℓ v with
+        match dropCell D ℓ c with
         | .error w => .error w
         | .ok evs => .ok (H.set ℓ .dead, evs)
 
@@ -431,7 +576,7 @@ parameter is the innermost. -/
 def mintParams : Store → List Val → Store × List Nat
   | H, [] => (H, [])
   | H, v :: vs =>
-      let (H', locs) := mintParams (H ++ [.full v]) vs
+      let (H', locs) := mintParams (H ++ [.full (Contents.ofVal v)]) vs
       (H', H.length :: locs)
 
 /-- The outcome of evaluating an argument list: the store, the argument values
@@ -662,17 +807,28 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
       .ok H (.float w (M.ofLit w l.sig l.negExp l.e)) []
   | _ + 1, _, H, _, .boolLit b => .ok H (.bool b) []
   | _ + 1, _, H, _, .unitLit => .ok H .unit []
-  | _ + 1, P, H, φ, .use i =>
-      match φ.env[i]? with
+  | _ + 1, P, H, φ, .use p =>
+      -- (D-Use-Copy)/(D-Use-Move) §6.3: resolve the root under ρ, navigate the
+      -- path into the stored aggregate, and — for a non-`Copy` place — write
+      -- `⊘` at exactly that sub-position, which is the partial move of §4.2.
+      match φ.env[p.root]? with
       | none => .stuck .unbound
       | some ℓ =>
         match H[ℓ]? with
         | none => .stuck .unbound
         | some .dead => .stuck .useAfterDrop
-        | some .moved => .stuck .useAfterMove
-        | some (.full v) =>
-            if v.mult P.structs = .copy then .ok H v []
-            else .ok (H.set ℓ .moved) v []
+        | some (.full c) =>
+          match c.readAt p.path with
+          | .error w => .stuck w
+          | .ok sub =>
+            match sub.toVal with
+            | none => .stuck .useAfterMove
+            | some v =>
+                if v.mult P.structs = .copy then .ok H v []
+                else
+                  match c.writeAt p.path .hole with
+                  | none => .stuck .typeConfusion
+                  | some c' => .ok (H.set ℓ (.full c')) v []
   | fuel + 1, P, H, φ, .binop op e₁ e₂ =>
       (eval M fuel P H φ e₁).andThen fun H₁ v₁ =>
         (eval M fuel P H₁ φ e₂).andThen fun H₂ v₂ =>
@@ -704,31 +860,36 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
            | some sd =>
                if sd.fields.length = vs.length then .ok H₁ (.struct s vs) []
                else .stuck .typeConfusion)
-  | fuel + 1, P, H, φ, .consume e =>
-      (eval M fuel P H φ e).andThen fun H' v =>
-        match v with
-        | .struct _ (.int w s n :: _) => .ok H' (.int w s n) []
-        | _ => .stuck .typeConfusion
-  | _ + 1, P, H, φ, .drop i =>
-      match φ.env[i]? with
+  | _ + 1, P, H, φ, .drop p =>
+      -- §6.11's explicit `@drop(p)`: run the drop of whatever the
+      -- sub-position holds — the walk skips every already-`⊘` sub-place — and
+      -- write `⊘` back at that position, which suppresses the later
+      -- scope-exit drop through it.
+      match φ.env[p.root]? with
       | none => .stuck .unbound
       | some ℓ =>
         match H[ℓ]? with
         | none => .stuck .unbound
         | some .dead => .stuck .useAfterDrop
-        | some .moved => .stuck .useAfterMove
-        | some (.full v) =>
-            match dropCell P.structs ℓ v with
+        | some (.full c) =>
+          match c.readAt p.path with
+          | .error w => .stuck w
+          | .ok sub =>
+            if sub.isHole then .stuck .useAfterMove else
+            match dropCell P.structs ℓ sub with
             | .error w => .stuck w
             | .ok evs =>
-                if v.mult P.structs = .copy then .ok H .unit []
-                else .ok (H.set ℓ .moved) .unit evs
+                if sub.mult P.structs = .copy then .ok H .unit []
+                else
+                  match c.writeAt p.path .hole with
+                  | none => .stuck .typeConfusion
+                  | some c' => .ok (H.set ℓ (.full c')) .unit evs
   | fuel + 1, P, H, φ, .letIn _m e₁ e₂ =>
       (eval M fuel P H φ e₁).andThen fun H₁ v₁ =>
         -- (D-Let): mint a fresh single-cell binding allocation, bind it, and
         -- register it in the frame's scope record as well as in the
         -- administrative `endscope` the normal path below runs (RUE-1277).
-        (eval M fuel P (H₁ ++ [.full v₁])
+        (eval M fuel P (H₁ ++ [.full (Contents.ofVal v₁)])
             { env := H₁.length :: φ.env, scope := φ.scope ++ [H₁.length] } e₂).andThen
           fun H₂ v₂ =>
             -- (D-EndScope): §5.6's obligations, executed. The record this
@@ -737,27 +898,34 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
             match dropRetire P.structs H₂ H₁.length with
             | .error w => .stuck w
             | .ok (H₃, evs) => .ok H₃ v₂ evs
-  | fuel + 1, P, H, φ, .assign i e =>
+  | fuel + 1, P, H, φ, .assign p e =>
       (eval M fuel P H φ e).andThen fun H₁ v =>
-        match φ.env[i]? with
+        -- (D-Assign) §6.8, at a sub-position: drop what is live there first
+        -- (a `⊘` drops nothing — reinitialization, `3.8:55`), then store.
+        match φ.env[p.root]? with
         | none => .stuck .unbound
         | some ℓ =>
           match H₁[ℓ]? with
           | none => .stuck .unbound
           | some .dead => .stuck .useAfterDrop
-          | some .moved => .ok (H₁.set ℓ (.full v)) .unit []      -- reinit (3.8:55)
-          | some (.full vOld) =>
-              if vOld.mult P.structs = .linear then .stuck .linearOverwrite   -- 3.8:77
-              else
-                match dropCell P.structs ℓ vOld with
-                | .error w => .stuck w
-                | .ok evs => .ok (H₁.set ℓ (.full v)) .unit evs
+          | some (.full c) =>
+            match c.readAt p.path with
+            | .error w => .stuck w
+            | .ok old =>
+                if old.residualLinear P.structs then .stuck .linearOverwrite   -- 3.8:77
+                else
+                  match dropCell P.structs ℓ old with
+                  | .error w => .stuck w
+                  | .ok evs =>
+                      match c.writeAt p.path (Contents.ofVal v) with
+                      | none => .stuck .typeConfusion
+                      | some c' => .ok (H₁.set ℓ (.full c')) .unit evs
   | fuel + 1, P, H, φ, .seq e₁ e₂ =>
       (eval M fuel P H φ e₁).andThen fun H₁ v₁ =>
         match v₁.mult P.structs with
         | .linear => .stuck .linearDiscard                         -- 3.8:64
         | .affine =>
-            (match dropValue P.structs v₁ with
+            (match dropContents P.structs (Contents.ofVal v₁) with
              | .error w => .stuck w
              | .ok evs => (eval M fuel P H₁ φ e₂).withTrace (.dropTemp v₁ :: evs))
         | .copy => eval M fuel P H₁ φ e₂

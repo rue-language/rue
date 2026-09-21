@@ -61,6 +61,11 @@ abbrev lit (n : Int) : Expr := .intLit .w64 .signed n
 /-- An `int(64, signed)` machine value (§6.1's `n_T`) (helper). -/
 abbrev v64 (n : Int) : Val := .int .w64 .signed n
 
+/-- The same as stored contents — what a cell holds and what a drop event
+records, now that a cell's contents is a tree with `⊘` at any node
+(helper). -/
+abbrev c64 (n : Int) : Contents := .int .w64 .signed n
+
 /-- `min_T` and `max_T` at `int(64, signed)`, the bounds §6.4's arithmetic
 traps outside of (helper). -/
 abbrev min64 : Int := intMin .w64 .signed
@@ -110,11 +115,29 @@ it drops both fields in declaration order (§6.11) and nothing else. -/
 def dTwoAffine : StructDecl :=
   { attr := .none, fields := [.struct 1, .struct 1], dtor := false, cls := .affine }
 
+/-- `S8`: `struct { x0: S1, x1: i64 }`, no destructor. Class `Affine`; its
+first field is droppable and its second is `Copy`, so it is the shape a partial
+move leaves a readable sibling in (`3.8:53` reads it through the hole). -/
+def dAffineInt : StructDecl :=
+  { attr := .none, fields := [.struct 1, tI64], dtor := false, cls := .affine }
+
+/-- `S9`: `struct { x0: S7, x1: i64 }`, no destructor. Class `Affine`; it
+nests `S7`, so a path into it is two field steps deep. -/
+def dNested : StructDecl :=
+  { attr := .none, fields := [.struct 7, tI64], dtor := false, cls := .affine }
+
+/-- `S10`: `struct { x0: S3, x1: S1 }`, no destructor. Class `Linear` through
+its first field; its second is affine and destructor-bearing, so the two halves
+of §5.6's residual obligation are separable at a path. -/
+def dCarryAffine : StructDecl :=
+  { attr := .none, fields := [.struct 3, .struct 1], dtor := false, cls := .linear }
+
 /-- The fixture environment: every field type names an earlier declaration, so
 `WfStructs` holds (checked below) and §3's class assignment is the one
 recorded. -/
 def structEnv : StructEnv :=
-  [dCopy, dAffine, dLinear, dLinearDtor, dCarry, dOuter, dPair, dTwoAffine]
+  [dCopy, dAffine, dLinear, dLinearDtor, dCarry, dOuter, dPair, dTwoAffine,
+   dAffineInt, dNested, dCarryAffine]
 
 /-- `S0`'s index in `structEnv`. -/
 def sCopy : Nat := 0
@@ -132,6 +155,12 @@ def sOuter : Nat := 5
 def sPair : Nat := 6
 /-- `S7`'s index in `structEnv`. -/
 def sTwoAffine : Nat := 7
+/-- `S8`'s index in `structEnv`. -/
+def sAffineInt : Nat := 8
+/-- `S9`'s index in `structEnv`. -/
+def sNested : Nat := 9
+/-- `S10`'s index in `structEnv`. -/
+def sCarryAffine : Nat := 10
 
 /-- A `Copy` struct literal with the given payload. -/
 def resC (e : Expr) : Expr := mkStruct sCopy [e]
@@ -187,7 +216,7 @@ def floatArith : Expr := binop .mul (binop .add (fl .w64 15 1) (fl .w64 225 2)) 
 
 /-- A float binding used twice: `class(float(w)) = Copy` (`3.12:2a`), so the
 second use copies and no drop is owed. -/
-def floatCopy : Expr := letIn false (fl .w64 15 1) (binop .add (use 0) (use 0))
+def floatCopy : Expr := letIn false (fl .w64 15 1) (binop .add (use (.var 0)) (use (.var 0)))
 
 /-- `1.0 / 0.0` — a finite non-zero over a zero is the infinity of the xor
 sign (`3.12:22`), **not** a trap: no arithmetic trap rule is stated over a
@@ -292,22 +321,26 @@ def floatDbgLayouts : Expr :=
 the digits of the `f64` with the same numeric value. -/
 def f32Shortest : Expr :=
   letIn false (binop .div (flE .w32 1 0) (flE .w32 3 0))
-    (seq (dbg (use 0)) (seq (dbg (fl .w32 1 1)) (lit 0)))
+    (seq (dbg (use (.var 0))) (seq (dbg (fl .w32 1 1)) (lit 0)))
 
 /-! ## Scalars, resources, and the ownership discipline -/
 
 /-- `let x = 2 + 3; x + x` — well-typed scalar flow. -/
 def scalars : Expr :=
-  letIn false (binop .add (lit 2) (lit 3)) (binop .add (use 0) (use 0))
+  letIn false (binop .add (lit 2) (lit 3)) (binop .add (use (.var 0)) (use (.var 0)))
 
 /-- An affine resource silently dropped at scope exit — legal, and the trace
 shows the drop (its destructor). -/
 def affineDrop : Expr :=
   letIn false (resA (lit 7)) (lit 1)
 
-/-- A linear resource, consumed exactly once — legal. -/
+/-- A linear resource moved exactly once and then discharged — legal. The
+move is (Use-Move) §5.1 at a whole place, which transfers the obligation to
+the new binding; `@drop` (§5.3) is what finally discharges it. `S2` declares no
+destructor, so nothing is observable. -/
 def linearConsumed : Expr :=
-  letIn false (resL (lit 7)) (consume (use 0))
+  letIn false (resL (lit 7))
+    (letIn false (use (.var 0)) (seq (drop (.var 0)) (lit 7)))
 
 /-- A linear resource leaked at scope exit — the machine REFUSES
 (`linearLeak`), and no typing derivation exists for it. -/
@@ -318,21 +351,21 @@ def linearLeaked : Expr :=
 dynamically, rejected statically. -/
 def useAfterMove : Expr :=
   letIn false (resA (lit 1))
-    (letIn false (use 0) (seq (drop 1) (lit 0)))
+    (letIn false (use (.var 0)) (seq (drop (.var 1)) (lit 0)))
 
 /-- Reinitialization: move out, assign back in, consume — legal (`3.8:55`). -/
 def reinit : Expr :=
   letIn true (resL (lit 1))
-    (seq (consume (use 0))
-      (seq (assign 0 (resL (lit 2)))
-        (consume (use 0))))
+    (seq (drop (.var 0))
+      (seq (assign (.var 0) (resL (lit 2)))
+        (seq (drop (.var 0)) (lit 2))))
 
 /-- Branch join: consume a linear value in only one arm — no typing
 derivation exists (the §5.5 join rejects it); dynamically it leaks on the
 `false` path. -/
 def linearHalfConsumed : Expr :=
   letIn false (resL (lit 9))
-    (seq (ite (boolLit false) (consume (use 0)) (lit 0))
+    (seq (ite (boolLit false) (seq (drop (.var 0)) (lit 0)) (lit 0))
       (lit 0))
 
 /-- Overflow trap (§6.4): `max_T + 1` panics. -/
@@ -357,7 +390,7 @@ def structLinearFieldLeaked : Expr :=
 linear obligation): the whole value's glue runs, so the linear field's
 destructor prints. -/
 def structLinearFieldDropped : Expr :=
-  letIn false (mkStruct sCarry [lit 1, resLD (lit 2)]) (seq (drop 0) (lit 0))
+  letIn false (mkStruct sCarry [lit 1, resLD (lit 2)]) (seq (drop (.var 0)) (lit 0))
 
 /-- A nested destructor-bearing struct at scope exit: §6.11 runs the outer
 destructor first and then the fields in declaration order, so the trace is
@@ -369,19 +402,129 @@ def structNestedDrop : Expr :=
 only, which `3.8:50` makes ill-formed; on the path taken it leaks. -/
 def structJoinDisagrees : Expr :=
   letIn false (mkStruct sCarry [lit 1, resLD (lit 2)])
-    (seq (ite (boolLit false) (drop 0) unitLit) (lit 0))
+    (seq (ite (boolLit false) (drop (.var 0)) unitLit) (lit 0))
 
 /-- A `@copy` struct used twice: contraction is legal at `Copy` (§3), and
 nothing is ever dropped. -/
 def structCopyTwice : Expr :=
   letIn false (mkStruct sPair [lit 5, lit 6])
-    (binop .add (consume (use 0)) (consume (use 0)))
+    (binop .add (use (.proj (.var 0) 0)) (use (.proj (.var 0) 0)))
 
 /-- Two destructor-bearing fields in one struct with no destructor of its own:
 scope exit drops them in **declaration** order (§6.11), so the trace is `1`
 then `2`. -/
 def structFieldOrder : Expr :=
   letIn false (mkStruct sTwoAffine [resA (lit 1), resA (lit 2)]) (lit 0)
+
+/-! ## Paths, projections and partial moves (RUE-2231)
+
+Each of these is about a place that is not a whole binding: a field moved out
+on its own (`3.8:22`), the residue that then drops at scope exit (`3.8:73`),
+and the premises §5.1 and §5.3 put on which projections may be moved. -/
+
+/-- Move one field out of a two-field struct, discharge it, and let the rest
+drop at scope exit: the trace shows the moved field's destructor at the
+`@drop` and the *remaining* field's at the scope exit — the `⊘`-skip of
+§6.11 means the moved one is not dropped twice. -/
+def partialMoveResidue : Expr :=
+  letIn false (mkStruct sTwoAffine [resA (lit 1), resA (lit 2)])
+    (letIn false (use (.proj (.var 0) 0)) (seq (drop (.var 0)) (lit 9)))
+
+/-- Move a field out and then the whole value: `fully-owned(Σ, p)` fails at
+the whole place, so (Use-Move) §5.1 has no derivation (`3.8:26`, the
+compiler's E0205 "use of partially moved value"). -/
+def partialThenWhole : Expr :=
+  letIn false (mkStruct sTwoAffine [resA (lit 1), resA (lit 2)])
+    (letIn false (use (.proj (.var 0) 0))
+      (seq (drop (.var 0)) (letIn false (use (.var 1)) (seq (drop (.var 0)) (lit 9)))))
+
+/-- Move a field out of a value whose type declares a destructor: `3.9:34`
+(E0456) forbids it, because the destructor runs on the whole value and would
+observe the hole. -/
+def partialUnderDtor : Expr :=
+  letIn false (mkStruct sOuter [lit 1, resA (lit 2)])
+    (letIn false (use (.proj (.var 0) 1)) (seq (drop (.var 0)) (lit 9)))
+
+/-- A `Copy` sibling read through a partially moved base: `Σ(p) = Owned` holds
+at the base although a path under it is `MovedOut` (§5 preamble), so the read
+is legal (`3.8:53`). -/
+def copyThroughPartial : Expr :=
+  letIn false (mkStruct sAffineInt [resA (lit 1), lit 7])
+    (letIn false (use (.proj (.var 0) 0))
+      (seq (drop (.var 0)) (use (.proj (.var 1) 1))))
+
+/-- `@drop` at a field, then `@drop` of the whole: §5.3 asks only
+`Σ(p) = Owned` of the second, and §6.11's walk drops the owned residue and
+skips the hole. -/
+def dropFieldThenWhole : Expr :=
+  letIn false (mkStruct sTwoAffine [resA (lit 1), resA (lit 2)])
+    (seq (drop (.proj (.var 0) 0)) (seq (drop (.var 0)) (lit 9)))
+
+/-- Reinitialize a moved-out field and then move the whole: assignment at a
+path restores the subtree to `Owned` (`3.8:55`), so `fully-owned` holds again
+and the whole value may be moved. -/
+def reinitField : Expr :=
+  letIn true (mkStruct sTwoAffine [resA (lit 1), resA (lit 2)])
+    (letIn false (use (.proj (.var 0) 0))
+      (seq (drop (.var 0))
+        (seq (assign (.proj (.var 1) 0) (resA (lit 5)))
+          (letIn false (use (.var 1)) (seq (drop (.var 0)) (lit 9))))))
+
+/-- Overwrite a live affine field: §6.8's overwrite-drop runs the old field's
+destructor before the store, and the new one drops at scope exit. -/
+def overwriteField : Expr :=
+  letIn true (mkStruct sTwoAffine [resA (lit 1), resA (lit 2)])
+    (seq (assign (.proj (.var 0) 0) (resA (lit 5))) (lit 9))
+
+/-- A field moved out in one arm of an `if` only: the §5.5 join sends that
+path to `MovedOut` while the sibling stays `Owned`, and the machine drops
+whatever the taken path left (`3.8:73`). -/
+def partialMoveOneArm : Expr :=
+  letIn false (mkStruct sTwoAffine [resA (lit 1), resA (lit 2)])
+    (seq (ite (boolLit true) (drop (.proj (.var 0) 0)) unitLit) (lit 9))
+
+/-- The same on the path that does **not** move the field: the drop is
+path-specific, so both fields drop at scope exit and the observable output is
+the same either way. -/
+def partialMoveOtherArm : Expr :=
+  letIn false (mkStruct sTwoAffine [resA (lit 1), resA (lit 2)])
+    (seq (ite (boolLit false) (drop (.proj (.var 0) 0)) unitLit) (lit 9))
+
+/-- A path two field steps deep: `@drop(v.x0.x1)` moves exactly that leaf, and
+the scope exit drops the rest of the tree in declaration order. -/
+def deepPath : Expr :=
+  letIn false (mkStruct sNested [mkStruct sTwoAffine [resA (lit 1), resA (lit 2)], lit 3])
+    (seq (drop (.proj (.proj (.var 0) 0) 1)) (lit 9))
+
+/-- The RUE-1591 idiom at a path: consume exactly the **linear** field of an
+infectious carrier and let the non-linear residue drop. §5.6's obligation is
+keyed on the residual state, so the scope exit is legal and the affine
+sibling's destructor prints. -/
+def linearFieldResidue : Expr :=
+  letIn false (mkStruct sCarryAffine [resLD (lit 1), resA (lit 2)])
+    (seq (drop (.proj (.var 0) 0)) (lit 9))
+
+/-- The premise that forbids the other order: `@drop` of the **affine** field
+first leaves a still-owned linear sub-place under a partially moved place, and
+(@Drop) §5.3's last premise rejects the whole-value drop that would silently
+destroy it (E0406). -/
+def linearFieldStranded : Expr :=
+  letIn false (mkStruct sCarryAffine [resLD (lit 1), resA (lit 2)])
+    (seq (drop (.proj (.var 0) 1)) (seq (drop (.var 0)) (lit 9)))
+
+/-- The §5.5 join of a whole move against a partial one, on a carrier whose
+only linear content is the field the other arm consumed: both paths leave the
+obligation discharged, so the join is `MovedOut` rather than ill-formed — the
+residual reading of `3.8:50`, which is what the compiler does. -/
+def joinWholeAgainstPartial : Expr :=
+  letIn false (mkStruct sCarryAffine [resLD (lit 1), resA (lit 2)])
+    (seq (ite (boolLit true) (drop (.var 0)) (drop (.proj (.var 0) 0))) (lit 9))
+
+/-- The same shape where the linear field survives on one path: `3.8:50` makes
+the join ill-formed (the compiler's E0443, "not consumed on all paths"). -/
+def joinLinearFieldOneArm : Expr :=
+  letIn false (mkStruct sCarryAffine [resLD (lit 1), resA (lit 2)])
+    (seq (ite (boolLit true) (drop (.proj (.var 0) 0)) unitLit) (lit 9))
 
 /-! ## Widths, the operator set, and the intrinsics (RUE-2282)
 
@@ -470,14 +613,14 @@ def dbgScalars : Expr :=
 the line comes out where it happened (§6.12's observable output). -/
 def dbgBetweenDrops : Expr :=
   letIn false (resA (lit 1))
-    (seq (drop 0) (seq (dbg (lit 2)) (letIn false (resA (lit 3)) (lit 0))))
+    (seq (drop (.var 0)) (seq (dbg (lit 2)) (letIn false (resA (lit 3)) (lit 0))))
 
 /-- A user `@panic` after an affine drop: the destructor has already run, so
 the trap carries it out. §5.7 exempts the `⊥_panic` edge from §5.6's
 obligation and §6.12 abandons the configuration, so the binding's own scope
 exit never happens — the drop that shows is the explicit one. -/
 def panicAfterDrop : Expr :=
-  letIn false (resA (lit 7)) (seq (drop 0) (panic "boom"))
+  letIn false (resA (lit 7)) (seq (drop (.var 0)) (panic "boom"))
 
 /-- A `@dbg` before a machine trap: the same claim for a trap the program did
 not ask for. -/
@@ -510,12 +653,12 @@ Each of these needs more than one function, so it is written as a whole
 `Program` rather than an `Expr`. Function index `0` is the entry point. -/
 
 /-- A plain call: `f0()` calls `f1(2, 3)`, which adds its parameters. The
-first parameter is the outermost binder, so it is `use 1` inside the body. -/
+first parameter is the outermost binder, so it is `use (.var 1)` inside the body. -/
 def callPlain : Program :=
   { structs := [],
     fns := [{ params := [], ret := tI64, body := call 1 [lit 2, lit 3] },
             { params := [⟨tI64, false⟩, ⟨tI64, false⟩], ret := tI64,
-              body := binop .add (use 1) (use 0) }] }
+              body := binop .add (use (.var 1)) (use (.var 0)) }] }
 
 /-- An early `return` past two live affine bindings: the frame unwinds
 newest-first (§6.9's (D-Return)), so the trace is `4` then `3`, then the
@@ -554,18 +697,18 @@ def recursionTrap : Program :=
   { structs := [],
     fns := [{ params := [], ret := tI64, body := call 1 [lit 3] },
             { params := [⟨tI64, false⟩], ret := tI64,
-              body := ite (binop .lt (use 0) (lit 1))
+              body := ite (binop .lt (use (.var 0)) (lit 1))
                 (binop .div (lit 1) (lit 0))
-                (call 1 [binop .add (use 0) (lit (-1))]) }] }
+                (call 1 [binop .add (use (.var 0)) (lit (-1))]) }] }
 
 /-- A recursive countdown: `4 + 3 + 2 + 1 + 0 = 10`. -/
 def countdown : Program :=
   { structs := [],
     fns := [{ params := [], ret := tI64, body := call 1 [lit 4] },
             { params := [⟨tI64, false⟩], ret := tI64,
-              body := ite (binop .lt (use 0) (lit 1))
+              body := ite (binop .lt (use (.var 0)) (lit 1))
                 (lit 0)
-                (binop .add (use 0) (call 1 [binop .add (use 0) (lit (-1))])) }] }
+                (binop .add (use (.var 0)) (call 1 [binop .add (use (.var 0)) (lit (-1))])) }] }
 
 /-! ## The one edge no monitor covers (RUE-2316)
 
@@ -597,9 +740,9 @@ apply to it, and the run destroys `S2 { 7 }` with an empty drop trace. -/
 def linearLostAtCallArg : Program :=
   { structs := structEnv,
     fns := [{ params := [], ret := tI64,
-              body := letIn false (resL (lit 7)) (call 1 [use 0, ret (lit 0)]) },
+              body := letIn false (resL (lit 7)) (call 1 [use (.var 0), ret (lit 0)]) },
             { params := [⟨.struct sLinear, false⟩, ⟨tI64, false⟩], ret := tI64,
-              body := binop .add (consume (use 1)) (use 0) }] }
+              body := seq (drop (.var 1)) (use (.var 0)) }] }
 
 /-- The affine twin, where the same loss is *observable*: `S1` declares a
 destructor, so a drop of it is the trace event the printed program turns into
@@ -610,9 +753,9 @@ could catch this and why none is added. -/
 def affineLostAtCallArg : Program :=
   { structs := structEnv,
     fns := [{ params := [], ret := tI64,
-              body := letIn false (resA (lit 7)) (call 1 [use 0, ret (lit 0)]) },
+              body := letIn false (resA (lit 7)) (call 1 [use (.var 0), ret (lit 0)]) },
             { params := [⟨.struct sAffine, false⟩, ⟨tI64, false⟩], ret := tI64,
-              body := seq (drop 1) (use 0) }] }
+              body := seq (drop (.var 1)) (use (.var 0)) }] }
 
 #eval run demoOps (scalarProg (.int .w8 .signed) i8Overflow) demoFuel        -- panic: overflow
 #eval run demoOps (scalarProg (.int .w8 .unsigned) u8Underflow) demoFuel     -- panic: overflow
@@ -909,7 +1052,7 @@ destructor has already printed when the `@panic` fires, and §6.12's outcome
 keeps it: the process prints what it printed and then exits 101. -/
 example : run demoOps (prog tI64 panicAfterDrop) demoFuel
     = .panic .user
-        [.drop 0 (.struct sAffine [v64 7]), .dtor sAffine (.struct sAffine [v64 7])] := by rfl
+        [.drop 0 (.struct sAffine [c64 7]), .dtor sAffine (.struct sAffine [c64 7])] := by rfl
 
 /-- The same for a trap the program did not ask for. -/
 example : run demoOps (scalarProg tI64 dbgBeforeTrap) demoFuel
@@ -954,11 +1097,11 @@ example : run demoOps (prog tI64 panicPastLinear) demoFuel = .panic .user [] := 
 comes out between them (`Corpus.outLines` reads exactly this order). -/
 example : run demoOps (prog tI64 dbgBetweenDrops) demoFuel
     = .ok [.dead, .dead] (v64 0)
-        [.drop 0 (.struct sAffine [v64 1]), .dtor sAffine (.struct sAffine [v64 1]),
+        [.drop 0 (.struct sAffine [c64 1]), .dtor sAffine (.struct sAffine [c64 1]),
          .dbg (v64 2),
-         .drop 1 (.struct sAffine [v64 3]), .dtor sAffine (.struct sAffine [v64 3])] := by rfl
+         .drop 1 (.struct sAffine [c64 3]), .dtor sAffine (.struct sAffine [c64 3])] := by rfl
 example : run demoOps (scalarProg tI64 divZero) demoFuel = .panic .divZero [] := by rfl
-example : run demoOps (scalarProg tI64 (use 0)) demoFuel = .stuck .unbound := by rfl
+example : run demoOps (scalarProg tI64 (use (.var 0))) demoFuel = .stuck .unbound := by rfl
 example : run demoOps (scalarProg tI64 (binop .add (boolLit true) (lit 1))) demoFuel
     = .stuck .typeConfusion := by rfl
 example : run demoOps returnPastLinear demoFuel = .stuck .linearLeak := by rfl
@@ -997,37 +1140,37 @@ frame's teardown reads its scope record newest-first (§6.9). These pin both.
 the newer one first (§6.9's (D-Return); `3.9:18`). -/
 example : run demoOps returnPastAffine demoFuel
     = .ok [.dead, .dead] (v64 7)
-        [.drop 1 (.struct sAffine [v64 4]), .dtor sAffine (.struct sAffine [v64 4]),
-         .drop 0 (.struct sAffine [v64 3]), .dtor sAffine (.struct sAffine [v64 3])] := by rfl
+        [.drop 1 (.struct sAffine [c64 4]), .dtor sAffine (.struct sAffine [c64 4]),
+         .drop 0 (.struct sAffine [c64 3]), .dtor sAffine (.struct sAffine [c64 3])] := by rfl
 
 /-- §6.11's order inside one value: the outer destructor, then the fields in
 declaration order — so the nested destructor runs **after** the outer one. -/
 example : run demoOps (prog tI64 structNestedDrop) demoFuel
     = .ok [.dead] (v64 9)
-        [.drop 0 (.struct sOuter [v64 1, .struct sAffine [v64 2]]),
-         .dtor sOuter (.struct sOuter [v64 1, .struct sAffine [v64 2]]),
-         .dtor sAffine (.struct sAffine [v64 2])] := by rfl
+        [.drop 0 (.struct sOuter [c64 1, .struct sAffine [c64 2]]),
+         .dtor sOuter (.struct sOuter [c64 1, .struct sAffine [c64 2]]),
+         .dtor sAffine (.struct sAffine [c64 2])] := by rfl
 
 /-- Fields drop in declaration order, not in reverse: the struct here has no
 destructor of its own, so its trace is exactly its two fields' (§6.11). -/
 example : run demoOps (prog tI64 structFieldOrder) demoFuel
     = .ok [.dead] (v64 0)
-        [.drop 0 (.struct sTwoAffine [.struct sAffine [v64 1], .struct sAffine [v64 2]]),
-         .dtor sAffine (.struct sAffine [v64 1]),
-         .dtor sAffine (.struct sAffine [v64 2])] := by rfl
+        [.drop 0 (.struct sTwoAffine [.struct sAffine [c64 1], .struct sAffine [c64 2]]),
+         .dtor sAffine (.struct sAffine [c64 1]),
+         .dtor sAffine (.struct sAffine [c64 2])] := by rfl
 
 /-- `@drop` of a value that is linear only through a field runs the whole
 value's glue: the field's destructor is the one observable event. -/
 example : run demoOps (prog tI64 structLinearFieldDropped) demoFuel
     = .ok [.dead] (v64 0)
-        [.drop 0 (.struct sCarry [v64 1, .struct sLinearDtor [v64 2]]),
-         .dtor sLinearDtor (.struct sLinearDtor [v64 2])] := by rfl
+        [.drop 0 (.struct sCarry [c64 1, .struct sLinearDtor [c64 2]]),
+         .dtor sLinearDtor (.struct sLinearDtor [c64 2])] := by rfl
 
 /-- A by-value parameter the callee never consumes is dropped at the frame
 pop ((D-Return-Value) §6.9), not at the caller. -/
 example : run demoOps paramDroppedAtPop demoFuel
     = .ok [.dead] (v64 1)
-        [.drop 0 (.struct sAffine [v64 2]), .dtor sAffine (.struct sAffine [v64 2])] := by rfl
+        [.drop 0 (.struct sAffine [c64 2]), .dtor sAffine (.struct sAffine [c64 2])] := by rfl
 
 /-! ## Fuel, as an outcome
 
@@ -1138,12 +1281,14 @@ open state — a store holding one retired cell and a frame naming it — which
 is the state the guard exists for.
 -/
 
-example : eval demoOps demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [] } (use 0)
-    = .stuck .useAfterDrop := by rfl
-example : eval demoOps demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [] } (drop 0)
+example : eval demoOps demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [] }
+    (use (.var 0))
     = .stuck .useAfterDrop := by rfl
 example : eval demoOps demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [] }
-    (assign 0 (lit 1)) = .stuck .useAfterDrop := by rfl
+    (drop (.var 0))
+    = .stuck .useAfterDrop := by rfl
+example : eval demoOps demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [] }
+    (assign (.var 0) (lit 1)) = .stuck .useAfterDrop := by rfl
 
 /-- The same guard on the unwind path: a frame whose scope record names a
 retired cell refuses instead of retiring it twice (§6.9). `FrameMatches` is

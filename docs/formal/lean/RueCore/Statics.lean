@@ -66,7 +66,7 @@ these two forms, the only never-typed forms the fragment has.
 
 The two differ in one premise, and the difference is §5.7's provenance.
 `return` carries `⊥_exit`, which is the §5.6 scope-exit obligation taken
-frame-wide, so `Typed.ret` demands `NoOwnedLinear`. `@panic` carries
+frame-wide, so `Typed.ret` demands `NoResidualLinear`. `@panic` carries
 `⊥_panic`, which §5.7 exempts from that check — "§5.6 performs no scope-exit
 check or drop on that edge" — so `Typed.panic` demands nothing of the
 context, and §6.12's dynamics run no drop to match.
@@ -289,26 +289,154 @@ theorem struct_class_unique {D D' : StructEnv} (hwf : WfStructs D) (hwf' : WfStr
         simp only [StructEnv.classOf, hd, hd']
         rw [hw.classIsJoin, hw'.classIsJoin, hattr, hbase]
 
-/-! ## The fused `Γ ; Σ` context -/
+/-! ## The fused `Γ ; Σ` context, keyed by path -/
 
-/-- `Σ`'s per-path state (§5): `Owned` or `MovedOut`. (`Uninit` is absence,
-which the fragment never observes: bindings are initialized at `let`.) -/
-inductive OwnState where
+/-- `Σ`'s state for one binding, as a tree over the paths under it (§5
+preamble: `Σ : Path ⇀ { Owned, MovedOut }`, where a path is *absent* once a
+prefix of it is `MovedOut`).
+
+* `owned` — this path and every path under it is `Owned`.
+* `movedOut` — this path is `MovedOut`; every path strictly under it is absent,
+  which is what (Use-Move) §5.1's "every path strictly under `p` removed" does.
+* `fields ts` — this path is `Owned` and its fields carry the states `ts`,
+  which is the state a **partial move** leaves (`3.8:22`). A field beyond
+  `ts`'s length is `owned`, so a partial move records only the fields it
+  touched.
+
+`Uninit` is still absence: bindings are initialized at their `let`, so the
+fragment never observes it at a root. -/
+inductive OwnSt where
   | owned
   | movedOut
-deriving DecidableEq, Repr
+  | fields (ts : List OwnSt)
+deriving Repr
+
+/-- The recorded states of a node's fields; a node with no record of its own
+has none, and every field of it is `owned` (helper). -/
+def OwnSt.fieldStates : OwnSt → List OwnSt
+  | .fields ts => ts
+  | .owned | .movedOut => []
+
+/-- The state recorded for a field slot, defaulting to `owned` for a slot no
+partial move has touched (helper). -/
+def OwnSt.fieldAt (ts : List OwnSt) (f : Nat) : OwnSt := (ts[f]?).getD .owned
+
+/-- Write a field slot's state, padding with `owned` for the untouched slots
+before it (helper). -/
+def OwnSt.setField : List OwnSt → Nat → OwnSt → List OwnSt
+  | [], 0, u => [u]
+  | [], f + 1, u => .owned :: OwnSt.setField [] f u
+  | _ :: ts, 0, u => u :: ts
+  | t :: ts, f + 1, u => t :: OwnSt.setField ts f u
+
+/-- `Σ(p)` for a path under this binding: `some` the state recorded there, and
+`none` exactly when a **proper prefix** of the path is `MovedOut` — §5's
+absence, and therefore the `Owned-Base` side condition of §5.1 (`3.8:53`: the
+base of a projection must currently own its storage) in one lookup. -/
+def OwnSt.get : OwnSt → List Nat → Option OwnSt
+  | t, [] => some t
+  | .owned, _ :: π => OwnSt.get .owned π
+  | .movedOut, _ :: _ => none
+  | .fields ts, f :: π => OwnSt.get (OwnSt.fieldAt ts f) π
+
+/-- `Σ[ p ↦ u, and every path strictly under p removed ]` (§5.1, §5.2, §5.3):
+write a state at a path, expanding the nodes above it into field records as it
+goes. A path under a `MovedOut` prefix is not a path `Σ` has, and the rules
+that write only ever do so at a path their own `get` premise found. -/
+def OwnSt.setAt : OwnSt → List Nat → OwnSt → OwnSt
+  | _, [], u => u
+  | .movedOut, _ :: _, _ => .movedOut
+  | .owned, f :: π, u => .fields (OwnSt.setField [] f (OwnSt.setAt .owned π u))
+  | .fields ts, f :: π, u =>
+      .fields (OwnSt.setField ts f (OwnSt.setAt (OwnSt.fieldAt ts f) π u))
+
+/-- `Σ(p) = Owned` (§5 preamble): the node itself owns its storage, whether or
+not a path under it has been moved out. This is (Use-Copy) §5.1's and (@Drop)
+§5.3's strength (helper). -/
+def OwnSt.isOwned : OwnSt → Bool
+  | .movedOut => false
+  | .owned | .fields _ => true
+
+mutual
+/-- `fully-owned(Σ, p)` (§5 preamble): `Σ(p) = Owned` **and** no path strictly
+under `p` is `MovedOut` — the no-use-after-move premise strengthened to the
+whole subtree (`3.8:5/24/26/53`), which is what (Use-Move) §5.1 demands because
+it hands the aggregate to a new owner (`3.8:26`, the compiler's E0205 "use of
+partially moved value"). -/
+def OwnSt.fullyOwned : OwnSt → Bool
+  | .owned => true
+  | .movedOut => false
+  | .fields ts => OwnSt.fullyOwnedList ts
+
+/-- `fully-owned` over a node's recorded field states; an untouched slot is
+`owned` and contributes nothing (helper). -/
+def OwnSt.fullyOwnedList : List OwnSt → Bool
+  | [] => true
+  | t :: ts => OwnSt.fullyOwned t && OwnSt.fullyOwnedList ts
+end
+
+mutual
+/-- `residual-linear(Σ, p, T)` (§5.6), on the state recorded at `p` and its
+declared type.
+
+* a `MovedOut` path carries nothing (`Σ(p) = MovedOut ⇒ false`);
+* a path that is wholly `Owned` carries a linear value exactly when
+  `class(T) = Linear`, because §3's class *is* the join that reaches `Linear`
+  through a declared-`linear` struct at some depth (`struct_carriesLinear_iff`)
+  — so the type-level test is the fixed point of §5.6's own recursion on a
+  subtree with no holes in it;
+* a **declared**-`linear` struct still `Owned` carries the obligation itself,
+  whatever its fields do (`3.8:74`; `3.8:75`'s empty `linear struct MustUse` is
+  the motivating case);
+* otherwise the obligation is the disjunction over the fields.
+
+Keying the leak check on the residual *state* rather than on the binding's type
+is the RUE-1591 model §5.6 states: after a partial move the obligation attaches
+to whatever linear content is still present, so consuming exactly the linear
+part of an infectious carrier and letting the rest drop is legal. -/
+def residualLinear (D : StructEnv) : OwnSt → Ty → Bool
+  | .movedOut, _ => false
+  | .owned, T => decide (T.mult D = .linear)
+  | .fields ts, .struct s =>
+      (match D[s]? with
+       | some sd => sd.attr = .linear || residualLinearFields D ts sd.fields
+       | none => false)
+  | .fields _, _ => false
+
+/-- §5.6's field disjunction: a field slot no partial move touched is `owned`,
+so its clause is the type-level test (helper). -/
+def residualLinearFields (D : StructEnv) : List OwnSt → List Ty → Bool
+  | [], Ts => Ts.any fun T => decide (T.mult D = .linear)
+  | _ :: _, [] => false
+  | t :: ts, T :: Ts => residualLinear D t T || residualLinearFields D ts Ts
+end
+
+/-- §5.6's obligation read over the paths **strictly under** `p`: (@Drop)
+§5.3's last premise, "if `p` has a `MovedOut` descendant, no still-owned linear
+sub-place remains below `p`". `@drop(p)` discharges `p`'s own obligation
+(`3.9:39`), so the root's declared linearity is deliberately not read here;
+what it may not do is silently destroy a linear sub-place that a partial move
+has separated from it. Verified against the compiler: `@drop(v.x1)` then
+`@drop(v)` on a carrier whose `x0` is a live linear field is E0406. -/
+def residualLinearBelow (D : StructEnv) : OwnSt → Ty → Bool
+  | .movedOut, _ => false
+  | t, .struct s =>
+      (match D[s]? with
+       | some sd => residualLinearFields D t.fieldStates sd.fields
+       | none => false)
+  | _, _ => false
 
 /-- One context entry: the binding's declared type and `μ` mark (fixed at the
-binder: `Γ`'s part) plus its current ownership state (flow-sensitive: `Σ`'s
-part), one row of §5's fused `Γ ; Σ`. -/
+binder: `Γ`'s part) plus the ownership state of every path under it
+(flow-sensitive: `Σ`'s part), one row of §5's fused `Γ ; Σ`. -/
 structure Entry where
   ty : Ty
   mu : Bool
-  st : OwnState
-deriving DecidableEq, Repr
+  st : OwnSt
+deriving Repr
 
 /-- Re-mark an entry's ownership state (helper). -/
-def Entry.setSt (en : Entry) (s : OwnState) : Entry := { en with st := s }
+def Entry.setSt (en : Entry) (s : OwnSt) : Entry := { en with st := s }
 
 /-- The fused `Γ ; Σ` context of the judgment `Γ ; Σ ⊢ e ⇒ T ⊣ Σ'` (§5),
 innermost binding first (de Bruijn). -/
@@ -320,19 +448,17 @@ def Entry.skel (en : Entry) : Ty × Bool := (en.ty, en.mu)
 /-- The skeleton of a whole context (helper). -/
 def Ctx.skel (Γ : Ctx) : List (Ty × Bool) := Γ.map Entry.skel
 
-/-- §5.6's residual-linear condition, read over a whole frame: no binding is
-still `Owned` at a linear-carrying type. This is the premise (Fn) §5.8 imposes
-on a function body's exit edges for its by-value parameters (`3.8:62`) and
-that §5.6's `⊥_exit` carries at an early `return`: at such an edge every open
-scope of the frame ends at once, so the check is frame-wide rather than
-per-binding. In the fragment `residual-linear(Σ, x, T)` collapses to
-`Σ(x) = Owned ∧ class(T) = Linear` (whole bindings, no paths: a partially
-moved struct is RUE-2231's). -/
-def NoOwnedLinear (D : StructEnv) (Γ : Ctx) : Prop :=
-  ∀ en ∈ Γ, ¬(en.st = .owned ∧ en.ty.mult D = .linear)
+/-- §5.6's residual-linear condition, read over a whole frame: no binding has
+residual linear content left. This is the premise (Fn) §5.8 imposes on a
+function body's exit edges for its by-value parameters (`3.8:62`) and that
+§5.6's `⊥_exit` carries at an early `return`: at such an edge every open scope
+of the frame ends at once, so the check is frame-wide rather than
+per-binding. -/
+def NoResidualLinear (D : StructEnv) (Γ : Ctx) : Prop :=
+  ∀ en ∈ Γ, residualLinear D en.st en.ty = false
 
-instance (D : StructEnv) (Γ : Ctx) : Decidable (NoOwnedLinear D Γ) := by
-  unfold NoOwnedLinear; infer_instance
+instance (D : StructEnv) (Γ : Ctx) : Decidable (NoResidualLinear D Γ) := by
+  unfold NoResidualLinear; infer_instance
 
 /-- (Fn) §5.8's entry context `Γ0;Σ0`: every by-value parameter enters the
 body `Owned` and subject to the ordinary use/drop rules. The list is reversed
@@ -342,13 +468,82 @@ gives it de Bruijn index `m-1` and the printed name `v0`. -/
 def fnCtx (fd : FnDef) : Ctx :=
   (fd.params.map fun p => { ty := p.ty, mu := p.mu, st := .owned }).reverse
 
-/-- The §5.5 branch join, per entry. Agreeing states join to themselves. A
-disagreement on a linear-carrying entry is ill-formed (`3.8:50`); on any other
-entry it joins conservatively to `MovedOut`. -/
+/-! ### The §5.5 join
+
+Agreeing nodes join to themselves. Where the two branches disagree — one has
+the path `MovedOut` and the other `Owned` — the join is ill-formed exactly when
+the `Owned` side still has **residual linear content** there, and is `MovedOut`
+otherwise: the conservative reading, which the machine then makes good on by
+dropping the residue path-specifically (`3.8:73`). Two `Owned` nodes with
+different partial moves under them join field by field.
+
+§5.5 writes the disagreement test as `carries_linear(T)` — on the binding's
+*type*. That over-rejects for the same reason §5.6 abandoned the type-level
+test (RUE-526, RUE-1591), and the compiler already uses the residual reading:
+`if c { @drop(v) } else { @drop(v.x0) }` on a carrier whose only linear content
+is `x0` is accepted, although `v` is a linear-carrying place that is `MovedOut`
+on one branch and `Owned` on the other. On whole bindings with no partial move
+the two readings coincide, so nothing §5.5 accepted becomes rejected.
+
+One arm being wholly `Owned` is the case worth naming, because it is what makes
+the join computable by structural recursion: joining `Owned` with `t` at every
+path under `p` yields `t` itself — the `Owned` side never *adds* a move — so
+the only question is whether `t`'s moves are admissible, which is what
+`ownedJoinOk` decides.
+-/
+
+mutual
+/-- Whether joining a wholly-`Owned` arm with `t` is well-formed: every path
+`t` has `MovedOut` must be one the `Owned` side may lose, which by §5.6 read on
+an `Owned` subtree is `class(T) ≠ Linear` at that path (`3.8:50`). -/
+def ownedJoinOk (D : StructEnv) : OwnSt → Ty → Bool
+  | .owned, _ => true
+  | .movedOut, T => decide (T.mult D ≠ .linear)
+  | .fields ts, .struct s =>
+      (match D[s]? with
+       | some sd => ownedJoinOkList D ts sd.fields
+       | none => false)
+  | .fields _, _ => false
+
+/-- The same over a declaration's fields; a slot no partial move touched is
+`owned` and always admissible (helper). -/
+def ownedJoinOkList (D : StructEnv) : List OwnSt → List Ty → Bool
+  | [], _ => true
+  | _ :: _, [] => true
+  | t :: ts, T :: Ts => ownedJoinOk D t T && ownedJoinOkList D ts Ts
+end
+
+mutual
+/-- The §5.5 branch join, at one path and its subtree (section docstring). -/
+def OwnSt.join (D : StructEnv) : OwnSt → OwnSt → Ty → Option OwnSt
+  | .owned, b, T => if ownedJoinOk D b T then some b else none
+  | a, .owned, T => if ownedJoinOk D a T then some a else none
+  | .movedOut, b, T => if residualLinear D b T then none else some .movedOut
+  | a, .movedOut, T => if residualLinear D a T then none else some .movedOut
+  | .fields as, .fields bs, T =>
+      (match T with
+       | .struct s =>
+           (match D[s]? with
+            | some sd => (OwnSt.joinList D as bs sd.fields).map OwnSt.fields
+            | none => none)
+       | _ => none)
+
+/-- The §5.5 join over a declaration's fields, slot by slot; where one arm has
+no record the other arm's is kept, subject to `ownedJoinOk` (helper). -/
+def OwnSt.joinList (D : StructEnv) : List OwnSt → List OwnSt → List Ty → Option (List OwnSt)
+  | _, _, [] => some []
+  | [], bs, Ts => if ownedJoinOkList D bs Ts then some bs else none
+  | as, [], Ts => if ownedJoinOkList D as Ts then some as else none
+  | a :: as, b :: bs, T :: Ts =>
+      (match OwnSt.join D a b T, OwnSt.joinList D as bs Ts with
+       | some e, some rest => some (e :: rest)
+       | _, _ => none)
+end
+
+/-- The §5.5 branch join, per entry: the two arms' states for the binding,
+joined over its paths at its declared type. -/
 def Entry.join (D : StructEnv) (a b : Entry) : Option Entry :=
-  if a.st = b.st then some a
-  else if a.ty.mult D = .linear then none
-  else some (a.setSt .movedOut)
+  (OwnSt.join D a.st b.st a.ty).map a.setSt
 
 /-- The §5.5 branch join, pointwise. Defined only on equal-length contexts
 (the two arms extend one incoming context, so lengths always agree). -/
@@ -385,14 +580,42 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   /-- (Lit) §5.8: the unit literal. -/
   | unitLit {Γ} :
       Typed P R Γ .unitLit .unit Γ
-  /-- (Use-Copy): a use of a `Copy` place copies; Σ unchanged. -/
-  | useCopy {Γ i en} :
-      Γ[i]? = some en → en.st = .owned → en.ty.mult P.structs = .copy →
-      Typed P R Γ (.use i) en.ty Γ
-  /-- (Use-Move): a use of an `Affine`/`Linear` place moves it out. -/
-  | useMove {Γ i en} :
-      Γ[i]? = some en → en.st = .owned → en.ty.mult P.structs ≠ .copy →
-      Typed P R Γ (.use i) en.ty (Γ.set i (en.setSt .movedOut))
+  /-- (Use-Copy) §5.1: a use of a `Copy` place copies; Σ unchanged. `get`
+  returning a state at all is `Owned-Base` for every proper prefix (`3.8:53`),
+  since a path under a `MovedOut` prefix is absent from Σ.
+
+  §5.1 states the node's own premise as `Σ(p) = Owned` and argues the subtree
+  condition away: "every sub-place of a `Copy` type is itself `Copy`, so no
+  descendant can be `MovedOut`, and the two premises coincide there". The rule
+  here makes the subtree condition a premise instead of carrying that argument
+  as an invariant of Σ. It restricts nothing a program can reach — no rule
+  ever marks a sub-place of a `Copy` type `MovedOut`, since (Use-Move) and
+  (@Drop) both demand a non-`Copy` type at the path they mark, and §3's
+  `3.8:18` makes every field of a `@copy` declaration `Copy` — so `check`
+  accepts the same programs either way. `noLinearPrefix` is the fragment's
+  restriction, not a §5.1 premise (`Syntax.lean`). -/
+  | useCopy {Γ p en u T} :
+      Γ[p.root]? = some en →
+      en.st.get p.path = some u → u.fullyOwned = true →
+      en.ty.atPath P.structs p.path = some T →
+      T.mult P.structs = .copy →
+      noLinearPrefix P.structs en.ty p.path = true →
+      Typed P R Γ (.use p) T Γ
+  /-- (Use-Move) §5.1: a use of an `Affine`/`Linear` place moves it out — at a
+  projection, the **partial move** of `3.8:22`, which marks exactly `p` and
+  removes every path under it while leaving `p`'s siblings alone.
+  `fully-owned(Σ, p)` is the premise (`3.8:26`: handing an aggregate with a
+  hole to a new owner is ill-formed), and `noDtorPrefix` is `3.9:34`'s
+  restriction (E0456). §4.2's third restriction, `3.8:68`'s root-index rule,
+  has no instance without arrays. -/
+  | useMove {Γ p en u T} :
+      Γ[p.root]? = some en →
+      en.st.get p.path = some u → u.fullyOwned = true →
+      en.ty.atPath P.structs p.path = some T →
+      T.mult P.structs ≠ .copy →
+      noDtorPrefix P.structs en.ty p.path = true →
+      noLinearPrefix P.structs en.ty p.path = true →
+      Typed P R Γ (.use p) T (Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
   /-- (Arith) and (Ord) §5.8, in one rule because they differ only in the
   type they conclude at (`BinOp.resultTy`): both operands share one
   `int(w,s)`, typed left to right with Σ threaded (`4.2:1`), and the result is
@@ -502,27 +725,36 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       P.structs[s]? = some sd →
       TypedArgs P R Γ args sd.fields Γ' →
       Typed P R Γ (.mkStruct s args) (.struct s) Γ'
-  /-- The fragment's whole-value struct elimination: it takes the struct by
-  value (a §4.2 use of its operand's places happens inside `e`'s own typing)
-  and yields the first field's payload. It is not a calculus rule — the
-  calculus reads a field through a projection, which is a place and therefore
-  RUE-2231's — so its side condition is the fragment's
-  (`StructDecl.Consumable`: every field `int`, no destructor). -/
-  | consume {Γ Γ' s sd e} :
-      Typed P R Γ e (.struct s) Γ' →
-      P.structs[s]? = some sd → sd.Consumable →
-      Typed P R Γ (.consume e) sd.payloadTy Γ'
-  /-- (@Drop-Copy): no drop glue, no ownership effect. -/
-  | dropCopy {Γ i en} :
-      Γ[i]? = some en → en.st = .owned → en.ty.mult P.structs = .copy →
-      Typed P R Γ (.drop i) .unit Γ
-  /-- (@Drop): consumes the operand and discharges its (affine or linear)
-  obligation; the only non-move discharge of a linear obligation. The
-  operand is a whole binding, so the rule's projection side conditions
-  (`3.9:34`, `3.8:68`) and its partial-move clause have no instance here. -/
-  | dropRes {Γ i en} :
-      Γ[i]? = some en → en.st = .owned → en.ty.mult P.structs ≠ .copy →
-      Typed P R Γ (.drop i) .unit (Γ.set i (en.setSt .movedOut))
+  /-- (@Drop-Copy) §5.3: no drop glue, no ownership effect. §5.3 gives it
+  neither of (@Drop)'s projection premises — a `Copy` place is moved by
+  nothing — so only `noLinearPrefix`, the fragment's own restriction, is
+  added. The subtree condition is read the way (Use-Copy) above reads it, for
+  the same reason and at the same cost (none). -/
+  | dropCopy {Γ p en u T} :
+      Γ[p.root]? = some en →
+      en.st.get p.path = some u → u.fullyOwned = true →
+      en.ty.atPath P.structs p.path = some T →
+      T.mult P.structs = .copy →
+      noLinearPrefix P.structs en.ty p.path = true →
+      Typed P R Γ (.drop p) .unit Γ
+  /-- (@Drop) §5.3: consumes the place and discharges its (affine or linear)
+  obligation; the only non-move discharge of a linear obligation. At a
+  projection it *is* a partial move, so it carries (Use-Move)'s `3.9:34`
+  premise. What it does **not** carry is `fully-owned`: §5.3 states
+  `Σ(p) = Owned` and says why — `@drop` hands the value to no new owner, and
+  §6.11's `⊘`-skip drops a partially moved value correctly. Its own last
+  premise takes that strength's place: where a path under `p` has been moved
+  out, no still-owned linear sub-place may remain below `p`
+  (`residualLinearBelow`). -/
+  | dropRes {Γ p en u T} :
+      Γ[p.root]? = some en →
+      en.st.get p.path = some u → u.isOwned = true →
+      en.ty.atPath P.structs p.path = some T →
+      T.mult P.structs ≠ .copy →
+      noDtorPrefix P.structs en.ty p.path = true →
+      noLinearPrefix P.structs en.ty p.path = true →
+      (u.fullyOwned = true ∨ residualLinearBelow P.structs u T = false) →
+      Typed P R Γ (.drop p) .unit (Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
   /-- (Let) + §5.6 scope exit: the binder enters `Owned`; at the body's end
   its residual state must not be an unconsumed linear value (the leak check).
   An `Owned` affine residue is dropped by the machine (§6.7); `MovedOut` needs
@@ -530,17 +762,26 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   | letIn {Γ Γ₁ Γ₂ m e₁ e₂ T₁ T₂ en'} :
       Typed P R Γ e₁ T₁ Γ₁ →
       Typed P R ({ ty := T₁, mu := m, st := .owned } :: Γ₁) e₂ T₂ (en' :: Γ₂) →
-      ¬(en'.st = .owned ∧ T₁.mult P.structs = .linear) →
+      residualLinear P.structs en'.st en'.ty = false →
       Typed P R Γ (.letIn m e₁ e₂) T₂ Γ₂
-  /-- (Assign): RHS first; overwrite of a live linear value is ill-formed
-  (`3.8:77`, checked on the post-RHS state — the RUE-387 premise); the target
-  is `Owned` afterward (reinitialization, `3.8:55`). -/
-  | assign {Γ Γ₁ i e en₀ en₁} :
-      Γ[i]? = some en₀ → en₀.mu = true →
-      Typed P R Γ e en₀.ty Γ₁ →
-      Γ₁[i]? = some en₁ →
-      (en₁.st = .movedOut ∨ en₀.ty.mult P.structs ≠ .linear) →
-      Typed P R Γ (.assign i e) .unit (Γ₁.set i (en₁.setSt .owned))
+  /-- (Assign) §5.2, at a place: the root must be a `μ = mut` binding (§5
+  preamble), the RHS runs first, the overwrite of live linear content is
+  ill-formed (`3.8:77`, checked on the **post-RHS** state — the RUE-387
+  premise, and the `Σ1` reading that makes `p = f(p)` legal), and the subtree
+  at `p` becomes `Owned` afterward (reinitialization, `3.8:55`). The `get`
+  premises are `Owned-Base` (`3.8:53`) at both states: a path under a moved
+  prefix is not a path to assign to, which the compiler reports as E0205. The
+  `3.8:77` premise is read on the residual state for U1's reason, and on a
+  whole binding it is §5.2's own disjunction. -/
+  | assign {Γ Γ₁ p e en₀ en₁ u₀ u₁ T} :
+      Γ[p.root]? = some en₀ → en₀.mu = true →
+      en₀.st.get p.path = some u₀ →
+      en₀.ty.atPath P.structs p.path = some T →
+      Typed P R Γ e T Γ₁ →
+      Γ₁[p.root]? = some en₁ →
+      en₁.st.get p.path = some u₁ →
+      residualLinear P.structs u₁ T = false →
+      Typed P R Γ (.assign p e) .unit (Γ₁.set p.root (en₁.setSt (en₁.st.setAt p.path .owned)))
   /-- (Seq): the discarded value must not carry a linear value (`3.8:64`). -/
   | seq {Γ Γ₁ Γ₂ e₁ e₂ T₁ T₂} :
       Typed P R Γ e₁ T₁ Γ₁ → T₁.mult P.structs ≠ .linear →
@@ -577,7 +818,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   the operand at `R`. -/
   | ret {Γ Γ₁ Γ' e T} :
       Typed P R Γ e R Γ₁ →
-      NoOwnedLinear P.structs Γ₁ →
+      NoResidualLinear P.structs Γ₁ →
       Ctx.skel Γ' = Ctx.skel Γ₁ →
       Typed P R Γ (.ret e) T Γ'
 
@@ -605,7 +846,7 @@ linear value must be consumed on every non-diverging path). The rule's early
 exits are covered by `Typed.ret`, which carries the same premise at the edge
 where the frame's scopes end (§5.7's `⊥_exit`). -/
 def WfFn (P : Program) (fd : FnDef) : Prop :=
-  ∃ Γf, Typed P fd.ret (fnCtx fd) fd.body fd.ret Γf ∧ NoOwnedLinear P.structs Γf
+  ∃ Γf, Typed P fd.ret (fnCtx fd) fd.body fd.ret Γf ∧ NoResidualLinear P.structs Γf
 
 /-- A well-formed program: §3's class assignment holds of every struct
 declaration and (Fn) §5.8 of every function. Recursion is ordinary — a body
@@ -631,15 +872,14 @@ structure ProgramTyped (P : Program) : Prop where
 
 /-! ## Skeleton preservation -/
 
-/-- The §5.5 join preserves an entry's skeleton (helper). -/
+/-- The §5.5 join preserves an entry's skeleton: it rewrites the entry's
+ownership state and nothing else (helper). -/
 theorem Entry.join_skel {D : StructEnv} {a b e : Entry} (h : a.join D b = some e) :
     e.skel = a.skel := by
   unfold Entry.join at h
-  split at h
-  · cases h; rfl
-  · split at h
-    · cases h
-    · cases h; rfl
+  cases hj : OwnSt.join D a.st b.st a.ty with
+  | none => rw [hj] at h; cases h
+  | some u => rw [hj] at h; cases h; rfl
 
 /-- Setting an index to the element already there is the identity (helper). -/
 theorem List.set_self_of_getElem? {α} : ∀ {l : List α} {i : Nat} {a : α},
@@ -653,7 +893,7 @@ theorem List.set_self_of_getElem? {α} : ∀ {l : List α} {i : Nat} {a : α},
 /-- Re-marking an entry's ownership state does not change the skeleton
 (helper). -/
 theorem skel_set_setSt {Γ : Ctx} {i : Nat} {en : Entry} (h : Γ[i]? = some en)
-    (s : OwnState) : Ctx.skel (Γ.set i (en.setSt s)) = Ctx.skel Γ := by
+    (s : OwnSt) : Ctx.skel (Γ.set i (en.setSt s)) = Ctx.skel Γ := by
   unfold Ctx.skel
   rw [List.map_set]
   exact List.set_self_of_getElem? (by simp [h]; rfl)
@@ -671,16 +911,6 @@ theorem Ctx.join_skel {D : StructEnv} : ∀ {Γ₁ Γ₂ Γ' : Ctx}, Ctx.join D 
           exact ⟨Entry.join_skel he, Ctx.join_skel hrest⟩
       · cases h
 
-/-- The §5.5 join of a context with itself is that context: two arms that
-deliver the same Σ agree everywhere, which is how a branch whose arms both
-diverge joins (§5.7: a diverging arm contributes no state, so the join reads
-the same context twice) (helper). -/
-theorem Ctx.join_self (D : StructEnv) : ∀ Γ : Ctx, Ctx.join D Γ Γ = some Γ
-  | [] => rfl
-  | a :: as => by
-      unfold Ctx.join Entry.join
-      simp [Ctx.join_self D as]
-
 /-- Every rule preserves the context skeleton: only ownership states flow.
 This is the fused context's image of §5's convention that `Γ` is fixed while
 `Σ` is threaded through the judgment. The `ret` rule's arbitrary outgoing
@@ -693,8 +923,8 @@ theorem Typed.skel_preserved {P R} {Γ Γ' : Ctx} {e T} (h : Typed P R Γ e T Γ
   | intLit _ => rfl
   | boolLit => rfl
   | unitLit => rfl
-  | useCopy _ _ _ => rfl
-  | useMove hget _ _ => exact skel_set_setSt hget _
+  | useCopy _ _ _ _ _ _ => rfl
+  | useMove hget _ _ _ _ _ _ => exact skel_set_setSt hget _
   | binop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
   | floatBinop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
   | neg _ ih => exact ih
@@ -708,14 +938,13 @@ theorem Typed.skel_preserved {P R} {Γ Γ' : Ctx} {e T} (h : Typed P R Γ e T Γ
   | panic hskel => exact hskel
   | dbg _ _ ih => exact ih
   | mkStruct _ _ ih => exact ih
-  | consume _ _ _ ih => exact ih
-  | dropCopy _ _ _ => rfl
-  | dropRes hget _ _ => exact skel_set_setSt hget _
+  | dropCopy _ _ _ _ _ _ => rfl
+  | dropRes hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
   | letIn _ _ _ ih₁ ih₂ =>
       have := ih₂
       simp [Ctx.skel, List.map_cons] at this
       exact this.2.trans ih₁
-  | assign _ _ _ hget₁ _ ih => exact (skel_set_setSt hget₁ _).trans ih
+  | assign _ _ _ _ _ hget₁ _ _ ih => exact (skel_set_setSt hget₁ _).trans ih
   | seq _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
   | ite _ _ _ hjoin ihc ih₁ _ => exact (Ctx.join_skel hjoin).trans (ih₁.trans ihc)
   | call _ _ ih => exact ih
@@ -731,8 +960,8 @@ theorem TypedArgs.skel_preserved {P R} {Γ Γ' : Ctx} {es Ts} (h : TypedArgs P R
   | intLit _ => rfl
   | boolLit => rfl
   | unitLit => rfl
-  | useCopy _ _ _ => rfl
-  | useMove hget _ _ => exact skel_set_setSt hget _
+  | useCopy _ _ _ _ _ _ => rfl
+  | useMove hget _ _ _ _ _ _ => exact skel_set_setSt hget _
   | binop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
   | floatBinop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
   | neg _ ih => exact ih
@@ -746,14 +975,13 @@ theorem TypedArgs.skel_preserved {P R} {Γ Γ' : Ctx} {es Ts} (h : TypedArgs P R
   | panic hskel => exact hskel
   | dbg _ _ ih => exact ih
   | mkStruct _ _ ih => exact ih
-  | consume _ _ _ ih => exact ih
-  | dropCopy _ _ _ => rfl
-  | dropRes hget _ _ => exact skel_set_setSt hget _
+  | dropCopy _ _ _ _ _ _ => rfl
+  | dropRes hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
   | letIn _ _ _ ih₁ ih₂ =>
       have := ih₂
       simp [Ctx.skel, List.map_cons] at this
       exact this.2.trans ih₁
-  | assign _ _ _ hget₁ _ ih => exact (skel_set_setSt hget₁ _).trans ih
+  | assign _ _ _ _ _ hget₁ _ _ ih => exact (skel_set_setSt hget₁ _).trans ih
   | seq _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
   | ite _ _ _ hjoin ihc ih₁ _ => exact (Ctx.join_skel hjoin).trans (ih₁.trans ihc)
   | call _ _ ih => exact ih
