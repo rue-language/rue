@@ -1056,3 +1056,81 @@ fn main() -> i32 {
 args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["E0252"]
+
+# --- constant indices in a yield place (RUE-2263) ----------------------------
+#
+# The yield operand is analysed as a place for call-site splicing, so it does
+# not travel the expression index path that carries the constant-index bounds
+# check. Without the check on the traced place, a constant index outside its
+# array compiled and trapped at run time (exit 101) instead of being rejected
+# under 7.1:9.
+
+[[case]]
+name = "accessor_yield_constant_index_out_of_bounds_rejected"
+description = "RUE-2263: a constant out-of-range index in a `-> borrow` accessor's yield place is a compile-time error."
+files = [{ path = "main.rue", source = """
+struct W {
+    xs: [i64; 2],
+    fn f(borrow self) -> borrow i64 { yield self.xs[2]; }
+}
+fn main() -> i32 {
+    let w = W { xs: [1, 2] };
+    @intCast(w.f())
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0902", "the length is 2 but the index is 2"]
+
+[[case]]
+name = "accessor_inout_yield_constant_index_out_of_bounds_rejected"
+description = "RUE-2263: the `inout` pairing is checked identically."
+files = [{ path = "main.rue", source = """
+struct W {
+    xs: [i64; 2],
+    fn f(inout self) -> inout i64 { yield self.xs[7]; }
+}
+fn main() -> i32 {
+    let mut w = W { xs: [1, 2] };
+    w.f() = 5;
+    @intCast(w.xs[0])
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0902", "the length is 2 but the index is 7"]
+
+[[case]]
+name = "accessor_nested_yield_constant_index_out_of_bounds_rejected"
+description = "RUE-2263: every Index projection of the yield place is checked, not only the outermost."
+files = [{ path = "main.rue", source = """
+struct W {
+    xs: [[i64; 2]; 2],
+    fn f(borrow self) -> borrow i64 { yield self.xs[1][5]; }
+}
+fn main() -> i32 {
+    let w = W { xs: [[1, 2], [3, 4]] };
+    @intCast(w.f())
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0902", "the length is 2 but the index is 5"]
+
+[[case]]
+name = "accessor_yield_constant_index_in_bounds_still_runs"
+description = "Control for RUE-2263: an in-range constant index in a yield place still splices and reads."
+files = [{ path = "main.rue", source = """
+struct W {
+    xs: [i64; 3],
+    fn f(borrow self) -> borrow i64 { yield self.xs[1]; }
+}
+fn main() -> i32 {
+    let w = W { xs: [1, 2, 3] };
+    @dbg(w.f());
+    0
+}
+""" }]
+stdout = "2\n"
+exit_code = 0
+differential_opt = true

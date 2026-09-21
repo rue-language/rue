@@ -4029,6 +4029,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             )
         })?;
+        // Naming an element is not reading it, but the element must exist:
+        // every constant `Index` projection of the yielded place is bounds
+        // checked here, as it is on every other traced place path. The yield
+        // operand does not go through the expression index path, so without
+        // this a constant out-of-range index in an accessor's yield place
+        // compiled and trapped at run time (7.1:9, RUE-2263).
+        self.check_traced_const_index_bounds(&trace, ctx)?;
+
         let ty = trace.result_type();
         let place = Self::build_place_ref(air, &trace)?;
         let read = AnalysisResult::new(
