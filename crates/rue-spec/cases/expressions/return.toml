@@ -154,3 +154,134 @@ fn test(x: i32) -> i32 {
 fn main() -> i32 { test(25) }
 """
 exit_code = 100
+
+# =============================================================================
+# Returning a Whole Fixed Array
+# =============================================================================
+# 4.9:4 checks the operand against the declared result type whatever that type
+# is. A fixed array is an ordinary result type (3.5:1), and the explicit
+# `return` form types exactly as the trailing-expression form does. The
+# returned value and the declared result met as two different inference
+# shapes of the same array type, and unification never related them, so an
+# explicit `return <array>` was rejected as "expected [i64; 3], found
+# [i64; 3]" while the trailing-expression form compiled (RUE-2305).
+
+[[case]]
+name = "return_whole_array_binding"
+spec = ["4.9:1", "4.9:4"]
+source = """
+fn mk() -> [i64; 3] {
+    let a: [i64; 3] = [1, 2, 3];
+    return a;
+}
+
+fn main() -> i32 {
+    let b = mk();
+    @intCast(b[1])
+}
+"""
+exit_code = 2
+
+# 7.1:4 — the literal's element count is checked against the declared result;
+# an integer literal element takes the result's element type, as it does in
+# `let a: [i64; 2] = [1, 2];`.
+[[case]]
+name = "return_array_literal_takes_result_element_type"
+spec = ["4.9:4", "7.1:4"]
+source = """
+fn make() -> [i64; 2] { return [1, 2]; }
+fn main() -> i32 { @intCast(make()[1]) }
+"""
+exit_code = 2
+
+[[case]]
+name = "return_array_from_inside_if"
+spec = ["4.9:4", "4.9:7"]
+source = """
+fn pick(flag: bool) -> [i64; 2] {
+    if flag {
+        return [10, 20];
+    }
+    let rest: [i64; 2] = [30, 40];
+    rest
+}
+
+fn main() -> i32 {
+    let a = pick(true);
+    let b = pick(false);
+    @intCast(a[1] + b[0])
+}
+"""
+exit_code = 50
+
+[[case]]
+name = "return_nested_array_binding"
+spec = ["4.9:4"]
+source = """
+fn grid() -> [[i64; 2]; 2] {
+    let g: [[i64; 2]; 2] = [[1, 2], [3, 4]];
+    return g;
+}
+
+fn main() -> i32 {
+    let g = grid();
+    @intCast(g[1][0])
+}
+"""
+exit_code = 3
+
+# 3.4:3 — a `return` whose operand itself diverges is still well-typed
+# against an array result: the never type coerces to `[i64; 3]`.
+[[case]]
+name = "return_array_operand_may_diverge"
+spec = ["4.9:4", "3.4:3"]
+source = """
+fn mk(flag: bool) -> [i64; 3] {
+    return if flag { [1, 2, 3] } else { return [4, 5, 6]; };
+}
+
+fn main() -> i32 {
+    @intCast(mk(true)[2] + mk(false)[2])
+}
+"""
+exit_code = 9
+
+# 4.9:4 — the check is still exact: the length and the element type of the
+# returned array must both equal the declared result's.
+[[case]]
+name = "return_array_wrong_length_rejected"
+error_contains = "[E0901]"
+spec = ["4.9:4"]
+source = """
+fn mk() -> [i64; 3] {
+    let a: [i64; 2] = [1, 2];
+    return a;
+}
+fn main() -> i32 { @intCast(mk()[1]) }
+"""
+compile_fail = true
+
+[[case]]
+name = "return_array_literal_wrong_length_rejected"
+error_contains = "[E0901]"
+spec = ["4.9:4", "7.1:4"]
+source = """
+fn mk() -> [i64; 3] {
+    return [1, 2];
+}
+fn main() -> i32 { @intCast(mk()[1]) }
+"""
+compile_fail = true
+
+[[case]]
+name = "return_array_wrong_element_type_rejected"
+error_contains = "[E0206]"
+spec = ["4.9:4"]
+source = """
+fn mk() -> [i64; 3] {
+    let a: [i32; 3] = [1, 2, 3];
+    return a;
+}
+fn main() -> i32 { @intCast(mk()[1]) }
+"""
+compile_fail = true

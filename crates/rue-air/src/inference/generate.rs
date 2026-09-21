@@ -2066,12 +2066,22 @@ impl<'a> ConstraintGenerator<'a> {
                     // `str` return (ADR-0043 Phase 3, RUE-324) accepts a string
                     // literal (HM type `String`) by coercion; skip strict
                     // equality there and let sema materialize the `str`.
+                    //
+                    // The declared result enters the constraint through
+                    // `type_to_infer`, so an array result is the structural
+                    // shape every other array position uses. An interned
+                    // `[i64; 3]` never unifies with a structural one, so an
+                    // explicit `return <array>` was rejected as "expected
+                    // [i64; 3], found [i64; 3]" and `return [1, 2]` never took
+                    // the result's element type, while the trailing-expression
+                    // form compiled (RUE-2305, as for array pointees in
+                    // RUE-2212).
                     if value_info.continues
                         && !self.is_slice_struct_type(InferType::Concrete(ctx.return_type))
                     {
                         self.add_constraint(Constraint::contextual(
                             value_info.ty,
-                            InferType::Concrete(ctx.return_type),
+                            self.type_to_infer(ctx.return_type),
                             span,
                         ));
                     }

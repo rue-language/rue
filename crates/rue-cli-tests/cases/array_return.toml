@@ -1,0 +1,60 @@
+# An explicit `return <fixed array>;` in an ordinary function (RUE-2305).
+#
+# The returned value and the function's declared result met inference as two
+# different shapes of the same array type, and unification never related
+# them, so `return a;` in a `-> [i64; 3]` function was rejected as "expected
+# [i64; 3], found [i64; 3]" while the trailing-expression form compiled. The
+# behaviour is runtime-visible (the returned array's contents), so each case
+# is checked across every optimization level.
+
+[section]
+id = "cli.array_return"
+name = "Explicit return of a fixed array"
+description = "`return <array>;` types exactly as the trailing-expression form and returns the whole array (RUE-2305)."
+
+[[case]]
+name = "return_whole_array_binding_across_opt_levels"
+description = "`return a;` in a `-> [i64; 3]` function compiles and the caller reads every element."
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn mk() -> [i64; 3] {
+    let a: [i64; 3] = [1, 2, 3];
+    return a;
+}
+
+fn main() -> i32 {
+    let b = mk();
+    @dbg(b[0]);
+    @dbg(b[1]);
+    @dbg(b[2]);
+    @intCast(b[1])
+}
+""" }]
+stdout = "1\n2\n3\n"
+exit_code = 2
+
+[[case]]
+name = "early_return_of_array_literal_across_opt_levels"
+description = "An early `return [..]` inside an `if` takes the declared element type; both the early and the trailing path return their array intact."
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn pick(flag: bool) -> [i64; 2] {
+    if flag {
+        return [10, 20];
+    }
+    let rest: [i64; 2] = [30, 40];
+    rest
+}
+
+fn main() -> i32 {
+    let a = pick(true);
+    let b = pick(false);
+    @dbg(a[0]);
+    @dbg(a[1]);
+    @dbg(b[0]);
+    @dbg(b[1]);
+    @intCast(a[1] + b[0])
+}
+""" }]
+stdout = "10\n20\n30\n40\n"
+exit_code = 50
