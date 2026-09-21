@@ -100,15 +100,21 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
   | .intLit w s n => if InBounds w s n then some (.int w s, Γ) else none
   | .boolLit _ => some (.bool, Γ)
   | .unitLit => some (.unit, Γ)
-  | .use i =>
-      match Γ[i]? with
+  | .use p =>
+      match Γ[p.root]? with
       | none => none
       | some en =>
-        match en.st with
-        | .movedOut => none
-        | .owned =>
-          if en.ty.mult P.structs = .copy then some (en.ty, Γ)
-          else some (en.ty, Γ.set i (en.setSt .movedOut))
+        match en.st.get p.path, en.ty.atPath P.structs p.path with
+        | some u, some T =>
+            if noLinearPrefix P.structs en.ty p.path then
+              if T.mult P.structs = .copy then
+                (if u.fullyOwned then some (T, Γ) else none)
+              else
+                (if u.fullyOwned ∧ noDtorPrefix P.structs en.ty p.path then
+                   some (T, Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
+                 else none)
+            else none
+        | _, _ => none
   | .binop op e₁ e₂ =>
       match check P R Γ e₁ with
       | some (.int w s, Γ₁) =>
@@ -161,47 +167,52 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
         match checkArgs P R Γ args sd.fields with
         | some Γ' => some (.struct s, Γ')
         | none => none
-  | .consume e =>
-      match check P R Γ e with
-      | some (.struct s, Γ') =>
-        (match P.structs[s]? with
-         | none => none
-         | some sd => if sd.Consumable then some (sd.payloadTy, Γ') else none)
-      | _ => none
-  | .drop i =>
-      match Γ[i]? with
+  | .drop p =>
+      match Γ[p.root]? with
       | none => none
       | some en =>
-        match en.st with
-        | .movedOut => none
-        | .owned =>
-          if en.ty.mult P.structs = .copy then some (.unit, Γ)
-          else some (.unit, Γ.set i (en.setSt .movedOut))
+        match en.st.get p.path, en.ty.atPath P.structs p.path with
+        | some u, some T =>
+            if noLinearPrefix P.structs en.ty p.path then
+              if T.mult P.structs = .copy then
+                (if u.fullyOwned then some (.unit, Γ) else none)
+              else
+                (if u.isOwned ∧ noDtorPrefix P.structs en.ty p.path ∧
+                    (u.fullyOwned = true ∨ residualLinearBelow P.structs u T = false) then
+                   some (.unit, Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
+                 else none)
+            else none
+        | _, _ => none
   | .letIn m e₁ e₂ =>
       match check P R Γ e₁ with
       | none => none
       | some (T₁, Γ₁) =>
         match check P R ({ ty := T₁, mu := m, st := .owned } :: Γ₁) e₂ with
         | some (T₂, en' :: Γ₂) =>
-            if en'.st = .owned ∧ T₁.mult P.structs = .linear then none
-            else some (T₂, Γ₂)
+            if residualLinear P.structs en'.st en'.ty then none else some (T₂, Γ₂)
         | _ => none
-  | .assign i e =>
-      match Γ[i]? with
+  | .assign p e =>
+      match Γ[p.root]? with
       | none => none
       | some en₀ =>
         if en₀.mu = true then
-          match check P R Γ e with
-          | some (T, Γ₁) =>
-            if T = en₀.ty then
-              match Γ₁[i]? with
-              | some en₁ =>
-                  if en₁.st = .movedOut ∨ en₀.ty.mult P.structs ≠ .linear then
-                    some (.unit, Γ₁.set i (en₁.setSt .owned))
-                  else none
-              | none => none
-            else none
-          | none => none
+          match en₀.st.get p.path, en₀.ty.atPath P.structs p.path with
+          | some _, some T =>
+            (match check P R Γ e with
+             | some (T', Γ₁) =>
+               if T' = T then
+                 (match Γ₁[p.root]? with
+                  | some en₁ =>
+                    (match en₁.st.get p.path with
+                     | some u₁ =>
+                         if residualLinear P.structs u₁ T then none
+                         else some (.unit,
+                           Γ₁.set p.root (en₁.setSt (en₁.st.setAt p.path .owned)))
+                     | none => none)
+                  | none => none)
+               else none
+             | none => none)
+          | _, _ => none
         else none
   | .seq e₁ e₂ =>
       match check P R Γ e₁ with
@@ -232,7 +243,7 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
       match check P R Γ e with
       | none => none
       | some (T, Γ₁) =>
-          if T = R ∧ NoOwnedLinear P.structs Γ₁ then some (R, Γ₁) else none
+          if T = R ∧ NoResidualLinear P.structs Γ₁ then some (R, Γ₁) else none
 
 /-- (Call) §5.8's argument list as an algorithm: each argument is checked
 against its parameter's type with Σ threaded left to right, and the count must
@@ -260,15 +271,30 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
       simp only [check] at h; cases h; exact .boolLit
   | .unitLit, Γ, T, Γ', h => by
       simp only [check] at h; cases h; exact .unitLit
-  | .use i, Γ, T, Γ', h => by
+  | .use pl, Γ, T, Γ', h => by
       simp only [check] at h
       split at h
       · cases h
-      · split at h
+      · rename_i en hen
+        split at h
+        · rename_i u T₀ hg hty
+          split at h
+          · rename_i hlin
+            split at h
+            · rename_i hcopy
+              split at h
+              · rename_i hfo
+                cases h
+                exact .useCopy hen hg hfo hty hcopy hlin
+              · cases h
+            · rename_i hncopy
+              split at h
+              · rename_i hprem
+                cases h
+                exact .useMove hen hg hprem.1 hty hncopy hprem.2 hlin
+              · cases h
+          · cases h
         · cases h
-        · split at h
-          · cases h; exact .useCopy ‹_› ‹_› ‹_›
-          · cases h; exact .useMove ‹_› ‹_› ‹_›
   | .binop op e₁ e₂, Γ, T, Γ', h => by
       simp only [check] at h
       split at h
@@ -369,26 +395,30 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
           cases h
           exact .mkStruct hsd (checkArgs_sound args hargs)
         · cases h
-  | .consume e, Γ, T, Γ', h => by
+  | .drop pl, Γ, T, Γ', h => by
       simp only [check] at h
       split at h
-      · rename_i s Γ₁ hchk
+      · cases h
+      · rename_i en hen
         split at h
-        · cases h
-        · rename_i sd hsd
+        · rename_i u T₀ hg hty
           split at h
-          · cases h; exact .consume (check_sound e hchk) hsd ‹_›
+          · rename_i hlin
+            split at h
+            · rename_i hcopy
+              split at h
+              · rename_i hfo
+                cases h
+                exact .dropCopy hen hg hfo hty hcopy hlin
+              · cases h
+            · rename_i hncopy
+              split at h
+              · rename_i hprem
+                cases h
+                exact .dropRes hen hg hprem.1 hty hncopy hprem.2.1 hlin hprem.2.2
+              · cases h
           · cases h
-      · cases h
-  | .drop i, Γ, T, Γ', h => by
-      simp only [check] at h
-      split at h
-      · cases h
-      · split at h
         · cases h
-        · split at h
-          · cases h; exact .dropCopy ‹_› ‹_› ‹_›
-          · cases h; exact .dropRes ‹_› ‹_› ‹_›
   | .letIn m e₁ e₂, Γ, T, Γ', h => by
       simp only [check] at h
       split at h
@@ -396,9 +426,11 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
       · split at h
         · split at h
           · cases h
-          · cases h; exact .letIn (check_sound e₁ ‹_›) (check_sound e₂ ‹_›) ‹_›
+          · cases h
+            exact .letIn (check_sound e₁ ‹_›) (check_sound e₂ ‹_›)
+              ((Bool.not_eq_true _).mp ‹_›)
         · cases h
-  | .assign i e, Γ, T, Γ', h => by
+  | .assign pl e, Γ, T, Γ', h => by
       simp only [check] at h
       split at h
       · cases h
@@ -406,16 +438,23 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
         split at h
         · rename_i hmu
           split at h
-          · rename_i T' Γ₁ hchk
+          · rename_i u₀ T₀ hg₀ hty₀
             split at h
-            · rename_i hT
+            · rename_i T' Γ₁ hchk
               split at h
-              · rename_i en₁ hget₁
+              · rename_i hT
+                subst hT
                 split at h
-                · rename_i hpre
-                  cases h
-                  subst hT
-                  exact .assign hget₀ hmu (check_sound e hchk) hget₁ hpre
+                · rename_i en₁ hget₁
+                  split at h
+                  · rename_i u₁ hg₁
+                    split at h
+                    · cases h
+                    · rename_i hover
+                      cases h
+                      exact .assign hget₀ hmu hg₀ hty₀ (check_sound e hchk) hget₁ hg₁
+                        ((Bool.not_eq_true _).mp hover)
+                  · cases h
                 · cases h
               · cases h
             · cases h
@@ -497,7 +536,7 @@ from the entry context `Γ0;Σ0` (`fnCtx`), and its normal exit edge discharges
 still-open body-local binding (`3.8:62`). -/
 def checkFn (P : Program) (fd : FnDef) : Bool :=
   match check P fd.ret (fnCtx fd) fd.body with
-  | some (T, Γf) => decide (T = fd.ret) && decide (NoOwnedLinear P.structs Γf)
+  | some (T, Γf) => decide (T = fd.ret) && decide (NoResidualLinear P.structs Γf)
   | none => false
 
 /-- §3's class assignment for one declaration, as an algorithm: the recorded

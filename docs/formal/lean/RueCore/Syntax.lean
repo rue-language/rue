@@ -11,8 +11,10 @@ scoped for the mechanization spike:
   `Float.lean`), `bool`, `unit`, and monomorphic struct types naming a
   declaration of the program's struct environment. Enums and
   arrays (and with them `match`, indexing, and the element-wise `3.8:73`
-  forms) are out of the spike and tracked in the project outline; so are
-  projections and partial moves, which are the paths RUE-2231 brings.
+  forms) are out of the spike and tracked in the project outline.
+* Places: §5's `Path ::= x | Path.f` — a root binding and a chain of field
+  projections (`Place`). Array index steps `Path[c]` are not in the fragment
+  (RUE-2235), so a place's every step is a field.
 * Expressions: literals carrying their resolved type (`4.1:2`), place use
   (§4.2), the whole §2 `⊕`/`⋚` integer operator set and the `⊖` unary set
   (§5.8 with the §6.4 trap dynamics), `@intCast` (`4.13:24`–`4.13:28`),
@@ -20,11 +22,11 @@ scoped for the mechanization spike:
   the float intrinsics (§5.8's (Float-Arith), (Float-Neg), (Float-Ord),
   (Total-Cmp), (Int-To-Float), (Float-To-Int), (Float-Cast), (Float-Round),
   with the §6.4 dynamics), struct literals
-  (§5.8's (Struct-Intro)), the fragment's whole-value struct elimination,
-  `@drop` (§5.3), `let` (§5.6 scope exit), assignment with reinitialization
-  (§5.2), sequencing with the discard check (§5.3), `if` with the branch join
-  (§5.5), by-value calls (§5.8's (Call), §6.9), and `return` (§5.7's
-  (Return-Value), §6.9).
+  (§5.8's (Struct-Intro)) and the projection that eliminates one,
+  `@drop` (§5.3), `let` (§5.6 scope exit), assignment at a place with
+  reinitialization (§5.2), sequencing with the discard check (§5.3), `if` with
+  the branch join (§5.5), by-value calls (§5.8's (Call), §6.9), and `return`
+  (§5.7's (Return-Value), §6.9).
 * Variables are de Bruijn indices: the calculus reaches the core only through
   elaboration, and name resolution is elaboration's job.
 * Functions and struct declarations are likewise named by their index in the
@@ -34,6 +36,20 @@ scoped for the mechanization spike:
 No borrows/loans (Λ is ambiently empty in the current core anyway — §5
 preamble), no by-reference parameters, no loops, no accessor calls: those are
 the next milestones, not this slice's scope.
+
+## Which projections this fragment may move
+
+§4.2 gives a projection in value context three plans, and the fragment
+mechanizes one of them. `Ordinary` — the partial move of `3.8:22` — is
+(Use-Copy)/(Use-Move) here. `Untrackable` needs an array index and so has no
+instance without arrays (RUE-2235). `Declared(d, π)`, the declared-linear
+destructure of `3.8:33`, needs `(Use-Declared-Linear-Destructure)` §5.1 and
+its residue traversal, which is RUE-2236; until then a place whose path has a
+**proper prefix** of declared-`linear` struct type is rejected here
+(`noLinearPrefix`), as a stated restriction of the fragment rather than as a
+rule of the calculus. A use of such a place *whole* is ordinary (the plan looks
+for a proper prefix), so a declared-linear struct is still moved, dropped and
+reinitialized by the rules below.
 
 ## An integer value carries its type
 
@@ -270,6 +286,87 @@ that join (§3). `struct_carriesLinear_iff` (`Statics.lean`) is the lifting,
 proved through the field join. -/
 abbrev Ty.carriesLinear (D : StructEnv) (T : Ty) : Prop := T.mult D = .linear
 
+/-! ## Places: §5's `Path`, and the type a path reaches -/
+
+/-- A place (§5's `Path ::= x | Path.f`, and §2's `p` production): a root
+binding named by its de Bruijn index, under a chain of field projections named
+by their declaration slot (`3.6:15` — elaboration resolves the surface field
+name to the slot). `Path[c]`, the array-element step, is not in the fragment
+(RUE-2235), so `3.8:68`'s root-index restriction has no instance here. -/
+inductive Place where
+  | var (i : Nat)
+  | proj (p : Place) (f : Nat)
+deriving DecidableEq, Repr
+
+/-- The binding a place is rooted at (§5's `root(p)`) (helper). -/
+def Place.root : Place → Nat
+  | .var i => i
+  | .proj p _ => p.root
+
+/-- The projection steps of a place, from the root outward — the `π` §6.3
+navigates a stored aggregate with (helper). -/
+def Place.path : Place → List Nat
+  | .var _ => []
+  | .proj p f => p.path ++ [f]
+
+/-- The type of a declaration's field at a slot, or `none` when the type is
+not a struct or the slot is not a field (helper). -/
+def Ty.fieldAt (D : StructEnv) : Ty → Nat → Option Ty
+  | .struct s, f =>
+      match D[s]? with
+      | some sd => sd.fields[f]?
+      | none => none
+  | .int _ _, _ | .float _, _ | .bool, _ | .unit, _ => none
+
+/-- `Γ ⊢ p : T` for a path read off the root's declared type: follow the field
+slots, failing where a step is not a field of the type reached so far. Types
+are not flow-sensitive, so this is the whole of the place's typing (§5
+preamble: `Γ` is fixed at the binder). -/
+def Ty.atPath (D : StructEnv) : Ty → List Nat → Option Ty
+  | T, [] => some T
+  | T, f :: π =>
+      match T.fieldAt D f with
+      | some T' => T'.atPath D π
+      | none => none
+
+/-- No **proper prefix** of the path names a value whose type declares a
+destructor: (Use-Move) §5.1's and (@Drop) §5.3's `3.9:34` premise (E0456).
+Moving or dropping the whole value is fine — the empty path has no proper
+prefix — because the restriction exists so that a destructor never observes a
+hole in the value it runs on. -/
+def noDtorPrefix (D : StructEnv) : Ty → List Nat → Bool
+  | _, [] => true
+  | T, f :: π =>
+      match T with
+      | .struct s =>
+          (match D[s]? with
+           | some sd =>
+               !sd.dtor &&
+                 (match sd.fields[f]? with
+                  | some T' => noDtorPrefix D T' π
+                  | none => true)
+           | none => true)
+      | .int _ _ | .float _ | .bool | .unit => true
+
+/-- No **proper prefix** of the path is a struct declared `linear`. This is not
+a premise of any §5 rule: it is the fragment's own restriction, standing in for
+the `Declared(d, π)` use plan §4.2 selects for such a path and
+(Use-Declared-Linear-Destructure) §5.1 discharges (RUE-2236, module
+docstring). -/
+def noLinearPrefix (D : StructEnv) : Ty → List Nat → Bool
+  | _, [] => true
+  | T, f :: π =>
+      match T with
+      | .struct s =>
+          (match D[s]? with
+           | some sd =>
+               decide (sd.attr ≠ .linear) &&
+                 (match sd.fields[f]? with
+                  | some T' => noLinearPrefix D T' π
+                  | none => true)
+           | none => true)
+      | .int _ _ | .float _ | .bool | .unit => true
+
 /-! ## Operators -/
 
 /-- §2's binary operator sets: the arithmetic and bitwise `⊕`
@@ -388,9 +485,11 @@ def FloatIntrin.floatSrc : FloatIntrin → FloatWidth → Bool
 
 /-! ## Expressions -/
 
-/-- Expressions (§2, fragment). `use i` is the `e ::= p` production — a place
-(here: a whole binding) appearing in value context, i.e. a *use* (§4.2).
-`drop i` is `@drop(p)`. `letIn` carries the binding's `μ ∈ {∅, mut}` mark.
+/-- Expressions (§2, fragment). `use p` is the `e ::= p` production — a place
+appearing in value context, i.e. a *use* (§4.2), which at a projection is the
+partial move of `3.8:22`. `drop p` is `@drop(p)` and `assign p e` is
+`assign p = e`, both at a place too (§5.2, §5.3). `letIn` carries the binding's
+`μ ∈ {∅, mut}` mark, which is what makes an assignment's root mutable.
 `mkStruct s args` is §2's `S { f1: e1, …, fk: ek }`, presented in declaration
 order (`3.6:15`) with one initializer per field. `call f args` is §2's
 `g(a1, …, am)` with every argument by value (§6.9's by-reference modes are not
@@ -413,7 +512,7 @@ inductive Expr where
   | floatLit (w : FloatWidth) (l : FloatLit)
   | boolLit (b : Bool)
   | unitLit
-  | use (i : Nat)
+  | use (p : Place)
   | binop (op : BinOp) (e₁ e₂ : Expr)
   | unop (op : UnOp) (e : Expr)
   | intCast (w : IntWidth) (s : Sign) (e : Expr)
@@ -421,56 +520,14 @@ inductive Expr where
   | panic (msg : String)
   | dbg (e : Expr)
   | mkStruct (s : Nat) (args : List Expr)
-  | consume (e : Expr)
-  | drop (i : Nat)
+  | drop (p : Place)
   | letIn (m : Bool) (e₁ e₂ : Expr)
-  | assign (i : Nat) (e : Expr)
+  | assign (p : Place) (e : Expr)
   | seq (e₁ e₂ : Expr)
   | ite (c e₁ e₂ : Expr)
   | call (f : Nat) (args : List Expr)
   | ret (e : Expr)
 deriving Repr
-
-/-- The fragment's whole-value struct elimination, as a side condition on a
-declaration: the struct has at least one field, every field is an integer
-type, and it declares no destructor. `Expr.consume` reads the first field's
-payload and **destroys the value without running its drop glue**
-(`Dynamics.lean`'s `.consume` arm calls no `dropValue`), so each clause keeps
-that honest: a field of any other type would be discarded with its own drop
-glue unrun, and a declaration with a destructor would lose the `dtor` event
-§6.11 owes — while the printed program's consumer lets its by-value parameter
-drop at the function's end, so that destructor *would* print and the two views
-would disagree by a line. `3.9:34` is not the reason and does not forbid the
-read: it forbids *moving* a field out and permits borrowing one, and the
-compiler accepts `fn consume_S(s: S) -> i64 { s.x0 }` on a destructor-bearing
-`S`.
-
-This is **not** a calculus rule — the calculus eliminates a struct through a
-projection, which is RUE-2231 — so the restriction is the fragment's, stated
-here rather than cited. -/
-def StructDecl.Consumable (sd : StructDecl) : Prop :=
-  sd.fields ≠ [] ∧ (∀ T ∈ sd.fields, T.isInt = true) ∧ sd.dtor = false
-
-instance (sd : StructDecl) : Decidable sd.Consumable := by
-  unfold StructDecl.Consumable; infer_instance
-
-/-- The first field's type of a `Consumable` declaration, which is the type
-`Expr.consume` yields. The default is `int(64, signed)`, which no `Consumable`
-declaration reaches — its field list is non-empty by definition (helper). -/
-def StructDecl.payloadTy (sd : StructDecl) : Ty :=
-  match sd.fields with
-  | T :: _ => T
-  | [] => .int .w64 .signed
-
-/-- The payload type is the first field's, whenever there is one — which is
-what makes `Typed.consume`'s conclusion readable off the declaration
-(helper). -/
-theorem StructDecl.payloadTy_of_head {sd : StructDecl} {T : Ty} (h : sd.fields.head? = some T) :
-    sd.payloadTy = T := by
-  simp only [StructDecl.payloadTy]
-  split
-  · next T' rest hf => rw [hf] at h; simp only [List.head?_cons, Option.some_inj] at h; exact h
-  · next hf => rw [hf] at h; cases h
 
 /-- A by-value parameter (§5.8's `mi = ∅` mode): its declared type and its `μ`
 mark, which is what lets a body assign to it (§5.2). `borrow`/`inout`

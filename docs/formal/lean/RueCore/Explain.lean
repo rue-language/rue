@@ -80,7 +80,7 @@ partial def exprLine (P : Program) (R : Ty) : List Ty → Expr → String
   | _, .floatLit _ l => l.spell
   | _, .boolLit b => if b then "true" else "false"
   | _, .unitLit => "()"
-  | Γ, .use i => Print.useName Γ i
+  | Γ, .use pl => Print.place Γ pl
   | Γ, .binop .totalCmp e₁ e₂ =>
       "@total_cmp(" ++ exprLine P R Γ e₁ ++ ", " ++ exprLine P R Γ e₂ ++ ")"
   | Γ, .binop op e₁ e₂ =>
@@ -95,18 +95,13 @@ partial def exprLine (P : Program) (R : Ty) : List Ty → Expr → String
       Print.tyName (.struct s) ++ " { " ++
         String.intercalate ", "
           (Print.fieldInits 0 (args.map (fun a => exprLine P R Γ a))) ++ " }"
-  | Γ, .consume e =>
-      let s := match Print.tyOf P R Γ e with
-        | some (.struct s) => s
-        | _ => 0
-      Print.consumeName s ++ "(" ++ exprLine P R Γ e ++ ")"
-  | Γ, .drop i => "@drop(" ++ Print.useName Γ i ++ ")"
+  | Γ, .drop pl => "@drop(" ++ Print.place Γ pl ++ ")"
   | Γ, .letIn m e₁ e₂ =>
       let T₁ := (Print.tyOf P R Γ e₁).getD (.int .w64 .signed)
       "{ let " ++ (if m then "mut " else "") ++ Print.binderName Γ.length ++ ": " ++
         Print.tyName T₁ ++ " = " ++ exprLine P R Γ e₁ ++ "; " ++
         exprLine P R (T₁ :: Γ) e₂ ++ " }"
-  | Γ, .assign i e => "{ " ++ Print.useName Γ i ++ " = " ++ exprLine P R Γ e ++ "; }"
+  | Γ, .assign pl e => "{ " ++ Print.place Γ pl ++ " = " ++ exprLine P R Γ e ++ "; }"
   | Γ, .seq e₁ e₂ => "{ " ++ exprLine P R Γ e₁ ++ "; " ++ exprLine P R Γ e₂ ++ " }"
   | Γ, .ite c e₁ e₂ =>
       "if " ++ exprLine P R Γ c ++ " { " ++ exprLine P R Γ e₁ ++ " } else { " ++
@@ -147,10 +142,21 @@ partial def valLine : Val → String
       Print.tyName (.struct s) ++ " { " ++
         String.intercalate ", " (vs.map valLine) ++ " }"
 
-/-- (helper) A store cell (§6.1's `c ::= v | ⊘`, plus the retired `†`). -/
+/-- (helper) Cell contents (§6.1's `c ::= v | ⊘`), as a tree: a `⊘` may sit
+at any node after a partial move (§4.2). -/
+partial def contentsLine : Contents → String
+  | .hole => "⊘"
+  | .int _ _ n => toString n
+  | .float w f => f.render w
+  | .bool b => if b then "true" else "false"
+  | .unit => "()"
+  | .struct s cs =>
+      Print.tyName (.struct s) ++ " { " ++
+        String.intercalate ", " (cs.map contentsLine) ++ " }"
+
+/-- (helper) A store cell: its contents, or the retired marker `†`. -/
 def cellLine : Cell → String
-  | .full v => valLine v
-  | .moved => "⊘ (moved out)"
+  | .full c => contentsLine c
   | .dead => "† (retired)"
 
 /-- (helper) A store location. Locations are indices and are never reused
@@ -172,10 +178,12 @@ def storeLine (H : Store) : String :=
   else "[" ++ String.intercalate ", "
     ((storeRows 0 H).map (fun r => r.1 ++ " = " ++ r.2)) ++ "]"
 
-/-- (helper) A `Σ` state, spelled as §5 spells it. -/
-def ownStateName : OwnState → String
+/-- (helper) A `Σ` state, spelled as §5 spells it: `Owned` and `MovedOut` at
+a whole path, and the field-by-field record a partial move leaves. -/
+partial def ownStateName : OwnSt → String
   | .owned => "Owned"
   | .movedOut => "MovedOut"
+  | .fields ts => "{ " ++ String.intercalate ", " (ts.map ownStateName) ++ " }"
 
 /-- (helper) One fused `Γ;Σ` entry: the binder's name, its type and `μ`
 mark (the fixed skeleton) and its flowing ownership state. -/
@@ -204,9 +212,9 @@ def fnHeader (i : Nat) (fd : FnDef) : String :=
 each user destructor it runs — the one event a printed Rue program can
 observe (`Print.lean`). -/
 def eventLine : Event → String
-  | .drop ℓ v => "drop " ++ locName ℓ ++ " = " ++ valLine v
+  | .drop ℓ c => "drop " ++ locName ℓ ++ " = " ++ contentsLine c
   | .dropTemp v => "drop temporary " ++ valLine v
-  | .dtor s v => "run drop fn " ++ Print.tyName (.struct s) ++ "(" ++ valLine v ++ ")"
+  | .dtor s c => "run drop fn " ++ Print.tyName (.struct s) ++ "(" ++ contentsLine c ++ ")"
   | .dbg v => "@dbg prints " ++ valLine v
 
 /-- (helper) A node's events on one line; most nodes emit none. -/
@@ -362,28 +370,58 @@ def fieldTypeMismatch (T field : Ty) : String :=
   Print.tyName field ++ " ((Struct-Intro) premise `Γ;Σ_{i-1};Λ ⊢ ei ⇒ Ti ⊣ Σi`, §5.8; " ++
   "initializers are presented in declaration order, 3.6:15)"
 
-/-- The fragment's whole-value elimination takes a struct by value, which is
-a §4.2 use of its operand's places. -/
-def consumeNotStruct (T : Ty) : String :=
-  "the eliminated operand has type " ++ Print.tyName T ++ ", but the fragment's " ++
-  "whole-value elimination takes a struct by value (§4.2; the calculus reads a field " ++
-  "through a projection, which is a place and so out of this fragment)"
+/-- `Owned-Base` (§5.1): the base of a projection must currently own its
+storage, so a path under a `MovedOut` prefix is one Σ does not have
+(`3.8:53`). -/
+def pathUnderMoved : String :=
+  "a proper prefix of the path is MovedOut, so Σ has no state for the place at all " ++
+  "((Owned-Base) §5.1, `Σ(p) = Owned` for the base; 3.8:53; the compiler reports E0205)"
 
-/-- The fragment's whole-value elimination is defined only on a declaration
-with an `int` first field, every field `int`, and no destructor — a
-destructor would make even the read a rejected projection (`3.9:34`,
-E0456). -/
-def notConsumable : String :=
-  "the eliminated struct is not one the fragment can take apart: it needs a first " ++
-  "field, every field an int, and no destructor — `3.9:34` (E0456) rejects every " ++
-  "projection out of a value whose type declares one (`StructDecl.Consumable`; the " ++
-  "calculus's own eliminator is a projection, which this fragment does not have)"
+/-- `Γ ⊢ p : T` (§5 preamble): the path must select a declared field at every
+step. Elaboration resolves a field name to its slot (`3.6:15`), so no
+elaborated program reaches this. -/
+def pathNotField : String :=
+  "a step of the path is not a declared field of the type it is taken from " ++
+  "((Γ ⊢ p : T), §5 preamble; elaboration resolves a field name to its declaration " ++
+  "slot, 3.6:15, so no elaborated program reaches this premise)"
+
+/-- (Use-Move) §5.1's `fully-owned(Σ, p)` premise (`3.8:26`). -/
+def usePartiallyMoved (T : Ty) : String :=
+  "the place is only partially owned: a path under it is MovedOut, and (Use-Move) " ++
+  "hands the whole value of type " ++ Print.tyName T ++ " to a new owner " ++
+  "((Use-Move) premise `fully-owned(Σ, p)`, §5.1; 3.8:5/24/26/53; the compiler " ++
+  "reports E0205 \"use of partially moved value\")"
+
+/-- (Use-Move) §5.1's and (@Drop) §5.3's `3.9:34` premise (E0456). -/
+def moveUnderDtor : String :=
+  "a proper prefix of the path has a type that declares a destructor, so the field " ++
+  "may not be moved out of it — the destructor runs on the whole value and would " ++
+  "observe the hole ((Use-Move)/(@Drop) premise, §5.1, §5.3; 3.9:34; the compiler " ++
+  "reports E0456)"
+
+/-- The fragment's own restriction: a path whose proper prefix is a struct
+declared `linear` selects §4.2's `Declared(d, π)` plan, whose rule
+(Use-Declared-Linear-Destructure) §5.1 this slice does not mechanize
+(RUE-2236). -/
+def declaredLinearPrefix : String :=
+  "a proper prefix of the path is a struct declared `linear`, which §4.2 gives the " ++
+  "`Declared(d, π)` use plan and (Use-Declared-Linear-Destructure) §5.1 discharges " ++
+  "(3.8:33) — a rule this fragment does not mechanize (RUE-2236), so it rejects the " ++
+  "place rather than claim one"
+
+/-- (@Drop) §5.3's last premise: a partially moved place may not be dropped
+whole while a linear sub-place under it is still owned. -/
+def dropStrandsLinear : String :=
+  "a path under the place is MovedOut while a linear sub-place below it is still " ++
+  "Owned, so the drop would destroy a linear value the program never consumed " ++
+  "((@Drop) §5.3's residual side condition; 3.8:32; the compiler reports E0406)"
 
 /-- §5.6 scope exit, the residual-linear leak check; prose `3.8:32`. -/
 def letLeak (T : Ty) : String :=
-  "the residual state of the `let` binder is Owned and its type " ++ Print.tyName T ++
-  " is Linear — a linear value reached end of scope unconsumed " ++
-  "(§5.6 leak check; 3.8:32; the compiler reports E0406)"
+  "the residual state of the `let` binder still carries a linear value at type " ++
+  Print.tyName T ++ " — a linear value reached end of scope unconsumed " ++
+  "(§5.6's `residual-linear(Σ, x, T)`, read on the residue after any partial move; " ++
+  "3.8:32; the compiler reports E0406)"
 
 /-- (helper) Unreachable: `Typed.skel_preserved` forbids a rule from
 changing the context skeleton, so a body cannot lose its own binder. -/
@@ -410,9 +448,10 @@ def assignTargetLost : String :=
 /-- (Assign) premise `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` (§5.2);
 prose `3.8:77` (the RUE-387 premise). -/
 def linearOverwrite (T : Ty) : String :=
-  "overwrite of a live linear value: the target is still Owned after the right-hand side " ++
-  "and its type " ++ Print.tyName T ++ " is Linear ((Assign) premise " ++
-  "`Σ1(p) = MovedOut ∨ ¬carries_linear(T)`, §5.2; 3.8:77; the compiler reports E0493)"
+  "overwrite of a live linear value: the place still carries linear content at type " ++
+  Print.tyName T ++ " after the right-hand side ((Assign) premise " ++
+  "`Σ1(p) = MovedOut ∨ ¬carries_linear(T)`, §5.2, read on the residue; 3.8:77; " ++
+  "the compiler reports E0493)"
 
 /-- (Seq) premise `carries_linear(T1) = false` (§5.3); prose `3.8:64`. -/
 def discardsLinear (T : Ty) : String :=
@@ -557,17 +596,26 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
       else rejected "(Lit) §5.8" Γ (.intLit w s n) (Premise.litOutOfRange (.int w s)) []
   | .boolLit b => accepted "(Lit) §5.8" Γ (.boolLit b) .bool Γ []
   | .unitLit => accepted "(Lit) §5.8" Γ .unitLit .unit Γ []
-  | .use i =>
-      match Γ[i]? with
-      | none => rejected "(Use-Copy)/(Use-Move) §5.1" Γ (.use i) Premise.unboundIndex []
+  | .use pl =>
+      match Γ[pl.root]? with
+      | none => rejected "(Use-Copy)/(Use-Move) §5.1" Γ (.use pl) Premise.unboundIndex []
       | some en =>
-        match en.st with
-        | .movedOut => rejected "(Use-Copy)/(Use-Move) §5.1" Γ (.use i) Premise.useMovedOut []
-        | .owned =>
-          if en.ty.mult P.structs = .copy then
-            accepted "(Use-Copy) §5.1" Γ (.use i) en.ty Γ []
-          else
-            accepted "(Use-Move) §5.1" Γ (.use i) en.ty (Γ.set i (en.setSt .movedOut)) []
+        match en.st.get pl.path, en.ty.atPath P.structs pl.path with
+        | some u, some T =>
+            if noLinearPrefix P.structs en.ty pl.path then
+              if T.mult P.structs = .copy then
+                (if u.fullyOwned then accepted "(Use-Copy) §5.1" Γ (.use pl) T Γ []
+                 else rejected "(Use-Copy) §5.1" Γ (.use pl) (Premise.usePartiallyMoved T) [])
+              else
+                (if u.fullyOwned ∧ noDtorPrefix P.structs en.ty pl.path then
+                   accepted "(Use-Move) §5.1" Γ (.use pl) T
+                     (Γ.set pl.root (en.setSt (en.st.setAt pl.path .movedOut))) []
+                 else if u.fullyOwned then
+                   rejected "(Use-Move) §5.1" Γ (.use pl) Premise.moveUnderDtor []
+                 else rejected "(Use-Move) §5.1" Γ (.use pl) (Premise.usePartiallyMoved T) [])
+            else rejected "(Use-Copy)/(Use-Move) §5.1" Γ (.use pl) Premise.declaredLinearPrefix []
+        | none, _ => rejected "(Use-Copy)/(Use-Move) §5.1" Γ (.use pl) Premise.pathUnderMoved []
+        | _, none => rejected "(Use-Copy)/(Use-Move) §5.1" Γ (.use pl) Premise.pathNotField []
   | .binop op e₁ e₂ =>
       let rule := binopRule op
       let frule := floatBinopRule op
@@ -677,39 +725,30 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
          | (none, kids) =>
              rejected "(Struct-Intro) §5.8" Γ (.mkStruct s args)
                (fieldsPremise P R Γ args sd.fields) kids)
-  | .consume e =>
-      let d := explain P R Γ e
-      match d.result with
-      | some (.struct s, Γ') =>
-        (match P.structs[s]? with
-         | none =>
-             rejected "§5.8 whole-value elimination" Γ (.consume e) Premise.unknownStruct [d]
-         | some sd =>
-             if sd.Consumable then
-               accepted "§5.8 whole-value elimination" Γ (.consume e) sd.payloadTy Γ' [d]
-             else rejected "§5.8 whole-value elimination" Γ (.consume e) Premise.notConsumable [d])
-      | some (.float w, _) =>
-          rejected "§5.8 whole-value elimination" Γ (.consume e)
-            (Premise.consumeNotStruct (.float w)) [d]
-      | some (.int w s, _) =>
-          rejected "§5.8 whole-value elimination" Γ (.consume e)
-            (Premise.consumeNotStruct (.int w s)) [d]
-      | some (.bool, _) =>
-          rejected "§5.8 whole-value elimination" Γ (.consume e) (Premise.consumeNotStruct .bool) [d]
-      | some (.unit, _) =>
-          rejected "§5.8 whole-value elimination" Γ (.consume e) (Premise.consumeNotStruct .unit) [d]
-      | none => rejected "§5.8 whole-value elimination" Γ (.consume e) Premise.subDerivation [d]
-  | .drop i =>
-      match Γ[i]? with
-      | none => rejected "(@Drop-Copy)/(@Drop) §5.3" Γ (.drop i) Premise.unboundIndex []
+  | .drop pl =>
+      match Γ[pl.root]? with
+      | none => rejected "(@Drop-Copy)/(@Drop) §5.3" Γ (.drop pl) Premise.unboundIndex []
       | some en =>
-        match en.st with
-        | .movedOut => rejected "(@Drop-Copy)/(@Drop) §5.3" Γ (.drop i) Premise.dropMovedOut []
-        | .owned =>
-          if en.ty.mult P.structs = .copy then
-            accepted "(@Drop-Copy) §5.3" Γ (.drop i) .unit Γ []
-          else
-            accepted "(@Drop) §5.3" Γ (.drop i) .unit (Γ.set i (en.setSt .movedOut)) []
+        match en.st.get pl.path, en.ty.atPath P.structs pl.path with
+        | some u, some T =>
+            if noLinearPrefix P.structs en.ty pl.path then
+              if T.mult P.structs = .copy then
+                (if u.fullyOwned then accepted "(@Drop-Copy) §5.3" Γ (.drop pl) .unit Γ []
+                 else rejected "(@Drop-Copy) §5.3" Γ (.drop pl) (Premise.usePartiallyMoved T) [])
+              else
+                (if u.isOwned ∧ noDtorPrefix P.structs en.ty pl.path ∧
+                    (u.fullyOwned = true ∨ residualLinearBelow P.structs u T = false) then
+                   accepted "(@Drop) §5.3" Γ (.drop pl) .unit
+                     (Γ.set pl.root (en.setSt (en.st.setAt pl.path .movedOut))) []
+                 else if !u.isOwned then
+                   rejected "(@Drop) §5.3" Γ (.drop pl) Premise.dropMovedOut []
+                 else if !noDtorPrefix P.structs en.ty pl.path then
+                   rejected "(@Drop) §5.3" Γ (.drop pl) Premise.moveUnderDtor []
+                 else rejected "(@Drop) §5.3" Γ (.drop pl) Premise.dropStrandsLinear [])
+            else
+              rejected "(@Drop-Copy)/(@Drop) §5.3" Γ (.drop pl) Premise.declaredLinearPrefix []
+        | none, _ => rejected "(@Drop-Copy)/(@Drop) §5.3" Γ (.drop pl) Premise.pathUnderMoved []
+        | _, none => rejected "(@Drop-Copy)/(@Drop) §5.3" Γ (.drop pl) Premise.pathNotField []
   | .letIn m e₁ e₂ =>
       let d₁ := explain P R Γ e₁
       match d₁.result with
@@ -719,7 +758,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
         let d₂ := explain P R ({ ty := T₁, mu := m, st := .owned } :: Γ₁) e₂
         (match d₂.result with
          | some (T₂, en' :: Γ₂) =>
-             if en'.st = .owned ∧ T₁.mult P.structs = .linear then
+             if residualLinear P.structs en'.st en'.ty then
                rejected "(Let) §5.3 + the §5.6 scope-exit leak check" Γ (.letIn m e₁ e₂)
                  (Premise.letLeak T₁) [d₁, d₂]
              else
@@ -730,32 +769,43 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
          | none =>
              rejected "(Let) §5.3 + the §5.6 scope-exit leak check" Γ (.letIn m e₁ e₂)
                Premise.subDerivation [d₁, d₂])
-  | .assign i e =>
-      match Γ[i]? with
-      | none => rejected "(Assign) §5.2, 3.8:77" Γ (.assign i e) Premise.unboundIndex []
+  | .assign pl e =>
+      match Γ[pl.root]? with
+      | none => rejected "(Assign) §5.2, 3.8:77" Γ (.assign pl e) Premise.unboundIndex []
       | some en₀ =>
         if en₀.mu = true then
-          let d := explain P R Γ e
-          (match d.result with
-           | some (T, Γ₁) =>
-             if T = en₀.ty then
-               match Γ₁[i]? with
-               | some en₁ =>
-                   if en₁.st = .movedOut ∨ en₀.ty.mult P.structs ≠ .linear then
-                     accepted "(Assign) §5.2, 3.8:77" Γ (.assign i e) .unit
-                       (Γ₁.set i (en₁.setSt .owned)) [d]
-                   else
-                     rejected "(Assign) §5.2, 3.8:77" Γ (.assign i e)
-                       (Premise.linearOverwrite en₀.ty) [d]
-               | none =>
-                   rejected "(Assign) §5.2, 3.8:77" Γ (.assign i e)
-                     Premise.assignTargetLost [d]
-             else
-               rejected "(Assign) §5.2, 3.8:77" Γ (.assign i e)
-                 (Premise.assignTypeMismatch T en₀.ty) [d]
-           | none =>
-               rejected "(Assign) §5.2, 3.8:77" Γ (.assign i e) Premise.subDerivation [d])
-        else rejected "(Assign) §5.2, 3.8:77" Γ (.assign i e) Premise.notMutable []
+          match en₀.st.get pl.path, en₀.ty.atPath P.structs pl.path with
+          | some _, some T =>
+            (let d := explain P R Γ e
+             match d.result with
+             | some (T', Γ₁) =>
+               if T' = T then
+                 (match Γ₁[pl.root]? with
+                  | some en₁ =>
+                    (match en₁.st.get pl.path with
+                     | some u₁ =>
+                         if residualLinear P.structs u₁ T then
+                           rejected "(Assign) §5.2, 3.8:77" Γ (.assign pl e)
+                             (Premise.linearOverwrite T) [d]
+                         else
+                           accepted "(Assign) §5.2, 3.8:77" Γ (.assign pl e) .unit
+                             (Γ₁.set pl.root (en₁.setSt (en₁.st.setAt pl.path .owned))) [d]
+                     | none =>
+                         rejected "(Assign) §5.2, 3.8:77" Γ (.assign pl e)
+                           Premise.pathUnderMoved [d])
+                  | none =>
+                      rejected "(Assign) §5.2, 3.8:77" Γ (.assign pl e)
+                        Premise.assignTargetLost [d])
+               else
+                 rejected "(Assign) §5.2, 3.8:77" Γ (.assign pl e)
+                   (Premise.assignTypeMismatch T' T) [d]
+             | none =>
+                 rejected "(Assign) §5.2, 3.8:77" Γ (.assign pl e) Premise.subDerivation [d])
+          | none, _ =>
+              rejected "(Assign) §5.2, 3.8:77" Γ (.assign pl e) Premise.pathUnderMoved []
+          | _, none =>
+              rejected "(Assign) §5.2, 3.8:77" Γ (.assign pl e) Premise.pathNotField []
+        else rejected "(Assign) §5.2, 3.8:77" Γ (.assign pl e) Premise.notMutable []
   | .seq e₁ e₂ =>
       let d₁ := explain P R Γ e₁
       match d₁.result with
@@ -803,7 +853,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
       match d.result with
       | none => rejected "(Return-Value) §5.7" Γ (.ret e) Premise.subDerivation [d]
       | some (T, Γ₁) =>
-          if T = R ∧ NoOwnedLinear P.structs Γ₁ then
+          if T = R ∧ NoResidualLinear P.structs Γ₁ then
             accepted "(Return-Value) §5.7" Γ (.ret e) R Γ₁ [d]
           else if T = R then
             rejected "(Return-Value) §5.7" Γ (.ret e) Premise.returnLeak [d]
@@ -865,9 +915,9 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
       simp only [explain, check]; split <;> rfl
   | .boolLit b, Γ => rfl
   | .unitLit, Γ => rfl
-  | .use i, Γ => by
+  | .use pl, Γ => by
       simp only [explain, check]
-      (repeat' split) <;> first | rfl | simp_all [accepted, Deriv.result]
+      (repeat' split) <;> first | rfl | simp_all [accepted, rejected, Deriv.result]
   | .binop op e₁ e₂, Γ => by
       simp only [explain, check, explain_result e₁, explain_result e₂]
       (repeat' split) <;>
@@ -923,18 +973,14 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
           cases res with
           | none => rw [← hargs]; rfl
           | some Γ' => rw [← hargs]; rfl
-  | .consume e, Γ => by
-      simp only [explain, check, explain_result e]
-      (repeat' split) <;>
-        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
-  | .drop i, Γ => by
+  | .drop pl, Γ => by
       simp only [explain, check]
-      (repeat' split) <;> first | rfl | simp_all [accepted, Deriv.result]
+      (repeat' split) <;> first | rfl | simp_all [accepted, rejected, Deriv.result]
   | .letIn m e₁ e₂, Γ => by
       simp only [explain, check, explain_result e₁, explain_result e₂]
       (repeat' split) <;>
         first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
-  | .assign i e, Γ => by
+  | .assign pl e, Γ => by
       simp only [explain, check, explain_result e]
       (repeat' split) <;>
         first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
@@ -1288,38 +1334,55 @@ def traceEval (M : FloatOps) (P : Program) :
       traced [] d Θ R (.boolLit b) "literal §6.3" H H [] (.value (.bool b)) (.ok H (.bool b) [])
   | _ + 1, d, Θ, R, H, _, .unitLit =>
       traced [] d Θ R .unitLit "literal §6.3" H H [] (.value .unit) (.ok H .unit [])
-  | _ + 1, d, Θ, R, H, φ, .use i =>
-      match φ.env[i]? with
-      | none => refused [] d Θ R (.use i) "(D-Use-Copy)/(D-Use-Move) §6.3" H .unbound
+  | _ + 1, d, Θ, R, H, φ, .use pl =>
+      match φ.env[pl.root]? with
+      | none => refused [] d Θ R (.use pl) "(D-Use-Copy)/(D-Use-Move) §6.3" H .unbound
       | some ℓ =>
         match H[ℓ]? with
-        | none => refused [] d Θ R (.use i) "(D-Use-Copy)/(D-Use-Move) §6.3" H .unbound
-        | some .dead => refused [] d Θ R (.use i) "(D-Use-Copy)/(D-Use-Move) §6.3" H .useAfterDrop
-        | some .moved => refused [] d Θ R (.use i) "(D-Use-Copy)/(D-Use-Move) §6.3" H .useAfterMove
-        | some (.full v) =>
-            if v.mult P.structs = .copy then
-              traced [] d Θ R (.use i) "(D-Use-Copy) §6.3" H H [] (.value v) (.ok H v [])
-            else
-              traced [] d Θ R (.use i) "(D-Use-Move) §6.3" H (H.set ℓ .moved) []
-                (.value v) (.ok (H.set ℓ .moved) v [])
-  | _ + 1, d, Θ, R, H, φ, .drop i =>
-      match φ.env[i]? with
-      | none => refused [] d Θ R (.drop i) "@drop §6.11" H .unbound
+        | none => refused [] d Θ R (.use pl) "(D-Use-Copy)/(D-Use-Move) §6.3" H .unbound
+        | some .dead =>
+            refused [] d Θ R (.use pl) "(D-Use-Copy)/(D-Use-Move) §6.3" H .useAfterDrop
+        | some (.full c) =>
+          match c.readAt pl.path with
+          | .error w => refused [] d Θ R (.use pl) "(D-Use-Copy)/(D-Use-Move) §6.3" H w
+          | .ok sub =>
+            match sub.toVal with
+            | none =>
+                refused [] d Θ R (.use pl) "(D-Use-Copy)/(D-Use-Move) §6.3" H .useAfterMove
+            | some v =>
+                if v.mult P.structs = .copy then
+                  traced [] d Θ R (.use pl) "(D-Use-Copy) §6.3" H H [] (.value v) (.ok H v [])
+                else
+                  match c.writeAt pl.path .hole with
+                  | none =>
+                      refused [] d Θ R (.use pl) "(D-Use-Move) §6.3" H .typeConfusion
+                  | some c' =>
+                      traced [] d Θ R (.use pl) "(D-Use-Move) §6.3" H (H.set ℓ (.full c')) []
+                        (.value v) (.ok (H.set ℓ (.full c')) v [])
+  | _ + 1, d, Θ, R, H, φ, .drop pl =>
+      match φ.env[pl.root]? with
+      | none => refused [] d Θ R (.drop pl) "@drop §6.11" H .unbound
       | some ℓ =>
         match H[ℓ]? with
-        | none => refused [] d Θ R (.drop i) "@drop §6.11" H .unbound
-        | some .dead => refused [] d Θ R (.drop i) "@drop §6.11" H .useAfterDrop
-        | some .moved => refused [] d Θ R (.drop i) "@drop §6.11" H .useAfterMove
-        | some (.full v) =>
-            (match dropCell P.structs ℓ v with
-             | .error w => refused [] d Θ R (.drop i) "@drop §6.11" H w
+        | none => refused [] d Θ R (.drop pl) "@drop §6.11" H .unbound
+        | some .dead => refused [] d Θ R (.drop pl) "@drop §6.11" H .useAfterDrop
+        | some (.full c) =>
+          match c.readAt pl.path with
+          | .error w => refused [] d Θ R (.drop pl) "@drop §6.11" H w
+          | .ok sub =>
+            if sub.isHole then refused [] d Θ R (.drop pl) "@drop §6.11" H .useAfterMove else
+            (match dropCell P.structs ℓ sub with
+             | .error w => refused [] d Θ R (.drop pl) "@drop §6.11" H w
              | .ok evs =>
-                 if v.mult P.structs = .copy then
-                   traced [] d Θ R (.drop i) "@drop §6.11 (Copy: no glue)" H H [] (.value .unit)
+                 if sub.mult P.structs = .copy then
+                   traced [] d Θ R (.drop pl) "@drop §6.11 (Copy: no glue)" H H [] (.value .unit)
                      (.ok H .unit [])
                  else
-                   traced [] d Θ R (.drop i) "@drop §6.11" H (H.set ℓ .moved)
-                     evs (.value .unit) (.ok (H.set ℓ .moved) .unit evs))
+                   match c.writeAt pl.path .hole with
+                   | none => refused [] d Θ R (.drop pl) "@drop §6.11" H .typeConfusion
+                   | some c' =>
+                       traced [] d Θ R (.drop pl) "@drop §6.11" H (H.set ℓ (.full c'))
+                         evs (.value .unit) (.ok (H.set ℓ (.full c')) .unit evs))
   | fuel + 1, d, Θ, R, H, φ, .binop op e₁ e₂ =>
       let rule := binopDynRule op
       let t₁ := traceEval M P fuel (d + 1) Θ R H φ e₁
@@ -1400,14 +1463,6 @@ def traceEval (M : FloatOps) (P : Program) :
                traced ta.steps d Θ R (.mkStruct s args) "(D-Struct) §6.5" H H₁ []
                  (.value (.struct s vs)) (.ok H₁ (.struct s vs) tr)
              else refused ta.steps d Θ R (.mkStruct s args) "(D-Struct) §6.5" H .typeConfusion)
-  | fuel + 1, d, Θ, R, H, φ, .consume e =>
-      let t := traceEval M P fuel (d + 1) Θ R H φ e
-      match t.res with
-      | .ok H' (.struct _ (.int w s n :: _)) tr =>
-          traced t.steps d Θ R (.consume e) "§6.5 whole-value elimination" H H' []
-            (.value (.int w s n)) (.ok H' (.int w s n) tr)
-      | .ok _ _ _ => confused t.steps d Θ R (.consume e) "§6.5 whole-value elimination" H
-      | r => propagate t.steps d Θ R (.consume e) "§6.5 whole-value elimination" H r
   | fuel + 1, d, Θ, R, H, φ, .letIn m e₁ e₂ =>
       let t₁ := traceEval M P fuel (d + 1) Θ R H φ e₁
       match t₁.res with
@@ -1415,8 +1470,9 @@ def traceEval (M : FloatOps) (P : Program) :
           let bind := adminStep (d + 1) Θ R (.letIn m e₁ e₂) "(D-Let) §6.7 (mint the binding)"
             ("let " ++ (if m then "mut " else "") ++ Print.binderName Θ.length ++ " = " ++
               valLine v₁ ++ " at " ++ locName H₁.length)
-            H₁ (H₁ ++ [.full v₁]) [] (.value v₁)
-          let t₂ := traceEval M P fuel (d + 1) (valTy v₁ :: Θ) R (H₁ ++ [.full v₁])
+            H₁ (H₁ ++ [.full (Contents.ofVal v₁)]) [] (.value v₁)
+          let t₂ := traceEval M P fuel (d + 1) (valTy v₁ :: Θ) R
+            (H₁ ++ [.full (Contents.ofVal v₁)])
             { env := H₁.length :: φ.env, scope := φ.scope ++ [H₁.length] } e₂
           (match t₂.res with
            | .ok H₂ v₂ tr₂ =>
@@ -1433,30 +1489,38 @@ def traceEval (M : FloatOps) (P : Program) :
                didNotRun (t₁.steps ++ [bind] ++ t₂.steps) d Θ R (.letIn m e₁ e₂)
                  scopeNeverClosed H (r.withTrace tr₁))
       | r => propagate t₁.steps d Θ R (.letIn m e₁ e₂) "(D-Let) §6.7" H r
-  | fuel + 1, d, Θ, R, H, φ, .assign i e =>
+  | fuel + 1, d, Θ, R, H, φ, .assign pl e =>
       let t := traceEval M P fuel (d + 1) Θ R H φ e
       match t.res with
       | .ok H₁ v tr =>
-          (match φ.env[i]? with
-           | none => refused t.steps d Θ R (.assign i e) "(D-Assign) §6.8" H .unbound
+          (match φ.env[pl.root]? with
+           | none => refused t.steps d Θ R (.assign pl e) "(D-Assign) §6.8" H .unbound
            | some ℓ =>
              match H₁[ℓ]? with
-             | none => refused t.steps d Θ R (.assign i e) "(D-Assign) §6.8" H .unbound
-             | some .dead => refused t.steps d Θ R (.assign i e) "(D-Assign) §6.8" H .useAfterDrop
-             | some .moved =>
-                 traced t.steps d Θ R (.assign i e) "(D-Assign) §6.8 (reinitialization, 3.8:55)"
-                   H (H₁.set ℓ (.full v)) [] (.value .unit) (.ok (H₁.set ℓ (.full v)) .unit tr)
-             | some (.full vOld) =>
-                 if vOld.mult P.structs = .linear then
-                   refused t.steps d Θ R (.assign i e) "(D-Assign) §6.8" H .linearOverwrite
-                 else
-                   match dropCell P.structs ℓ vOld with
-                   | .error w => refused t.steps d Θ R (.assign i e) "(D-Assign) §6.8" H w
-                   | .ok evs =>
-                       traced t.steps d Θ R (.assign i e) "(D-Assign) §6.8 (overwrite-drop)"
-                         H (H₁.set ℓ (.full v)) evs (.value .unit)
-                         (.ok (H₁.set ℓ (.full v)) .unit (tr ++ evs)))
-      | r => propagate t.steps d Θ R (.assign i e) "(D-Assign) §6.8" H r
+             | none => refused t.steps d Θ R (.assign pl e) "(D-Assign) §6.8" H .unbound
+             | some .dead =>
+                 refused t.steps d Θ R (.assign pl e) "(D-Assign) §6.8" H .useAfterDrop
+             | some (.full c) =>
+               match c.readAt pl.path with
+               | .error w => refused t.steps d Θ R (.assign pl e) "(D-Assign) §6.8" H w
+               | .ok old =>
+                   if old.residualLinear P.structs then
+                     refused t.steps d Θ R (.assign pl e) "(D-Assign) §6.8" H .linearOverwrite
+                   else
+                     match dropCell P.structs ℓ old with
+                     | .error w => refused t.steps d Θ R (.assign pl e) "(D-Assign) §6.8" H w
+                     | .ok evs =>
+                         match c.writeAt pl.path (Contents.ofVal v) with
+                         | none =>
+                             refused t.steps d Θ R (.assign pl e) "(D-Assign) §6.8" H
+                               .typeConfusion
+                         | some c' =>
+                             traced t.steps d Θ R (.assign pl e)
+                               (if old.isHole then "(D-Assign) §6.8 (reinitialization, 3.8:55)"
+                                else "(D-Assign) §6.8 (overwrite-drop)")
+                               H (H₁.set ℓ (.full c')) evs (.value .unit)
+                               (.ok (H₁.set ℓ (.full c')) .unit (tr ++ evs)))
+      | r => propagate t.steps d Θ R (.assign pl e) "(D-Assign) §6.8" H r
   | fuel + 1, d, Θ, R, H, φ, .seq e₁ e₂ =>
       let t₁ := traceEval M P fuel (d + 1) Θ R H φ e₁
       match t₁.res with
@@ -1464,7 +1528,7 @@ def traceEval (M : FloatOps) (P : Program) :
           (match v₁.mult P.structs with
            | .linear => refused t₁.steps d Θ R (.seq e₁ e₂) "(D-Seq) §6.7" H .linearDiscard
            | .affine =>
-               match dropValue P.structs v₁ with
+               match dropContents P.structs (Contents.ofVal v₁) with
                | .error w => refused t₁.steps d Θ R (.seq e₁ e₂) "(D-Seq) §6.7" H w
                | .ok evs =>
                let discard := adminStep (d + 1) Θ R (.seq e₁ e₂) "(D-Seq) §6.7 (drop the temporary)"
@@ -1564,10 +1628,10 @@ theorem traceEval_res (M : FloatOps) {P : Program} : ∀ (fuel : Nat) (d : Nat) 
       | floatLit w l => rfl
       | boolLit b => rfl
       | unitLit => rfl
-      | use i =>
+      | use pl =>
           simp only [traceEval, eval]
-          (repeat' split) <;> first | rfl | (simp_all [traced] <;> grind)
-      | drop i =>
+          (repeat' split) <;> first | rfl | (simp_all [traced, refused] <;> grind)
+      | drop pl =>
           simp only [traceEval, eval]
           (repeat' split) <;> first | rfl | (simp_all [traced, refused] <;> grind)
       | binop op e₁ e₂ =>
@@ -1601,11 +1665,6 @@ theorem traceEval_res (M : FloatOps) {P : Program} : ∀ (fuel : Nat) (d : Nat) 
             traceArgs_res (ev := fun H' e' => eval M fuel P H' φ e') (fun H' e' => ih _ _ _ _ _ e')]
           (repeat' split) <;>
             first | rfl | (simp_all [traced, didNotRun, EvalRes.withTrace] <;> grind)
-      | consume e₁ =>
-          simp only [traceEval, eval, EvalRes.andThen, ih]
-          (repeat' split) <;>
-            first | rfl | (simp_all [traced, confused, refused,
-              EvalRes.withTrace] <;> grind)
       | letIn m e₁ e₂ =>
           simp only [traceEval, eval, EvalRes.andThen, ih]
           (repeat' split) <;>

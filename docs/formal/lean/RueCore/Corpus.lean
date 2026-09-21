@@ -167,17 +167,18 @@ def cases : List Case := [
     description := "A copy struct: @drop is a no-op, uses copy, nothing is ever printed for it.",
     rules := ["(Use-Copy) §5.1", "(@Drop-Copy) §5.3", "3.9:31"],
     prog := Examples.prog Examples.tI64 <| letIn false (Examples.resC (Examples.lit 5))
-      (seq (drop 0) (binop .add (consume (use 0)) (consume (use 0))))
+      (seq (drop (.var 0))
+        (binop .add (use (.proj (.var 0) 0)) (use (.proj (.var 0) 0))))
     },
   { name := "affine_explicit_drop",
     description := "An affine resource dropped explicitly with @drop: one destructor line, at the @drop site, nothing at scope exit.",
     rules := ["(@Drop) §5.3", "§6.11", "3.9:37"],
-    prog := Examples.prog Examples.tI64 <| letIn false (Examples.resA (Examples.lit 8)) (seq (drop 0) (Examples.lit 2))
+    prog := Examples.prog Examples.tI64 <| letIn false (Examples.resA (Examples.lit 8)) (seq (drop (.var 0)) (Examples.lit 2))
     },
   { name := "linear_explicit_drop",
     description := "A linear resource discharged by @drop (the only non-move discharge of a linear obligation); its destructor prints at the drop site.",
     rules := ["(@Drop) §5.3", "3.9:39", "§6.11"],
-    prog := Examples.prog Examples.tI64 <| letIn false (Examples.resLD (Examples.lit 9)) (seq (drop 0) (Examples.lit 3))
+    prog := Examples.prog Examples.tI64 <| letIn false (Examples.resLD (Examples.lit 9)) (seq (drop (.var 0)) (Examples.lit 3))
     },
   { name := "affine_temporary_discarded",
     description := "An affine value produced and discarded by a sequence: the machine drops the temporary at the end of the statement.",
@@ -193,19 +194,22 @@ def cases : List Case := [
     description := "Assigning over a live affine value drops the old value at the assignment, then the new one at scope exit.",
     rules := ["(Assign) §5.2", "§6.8 overwrite-drop", "3.9:18"],
     prog := Examples.prog Examples.tI64 <| letIn true (Examples.resA (Examples.lit 1))
-      (seq (assign 0 (Examples.resA (Examples.lit 2))) (Examples.lit 9))
+      (seq (assign (.var 0) (Examples.resA (Examples.lit 2))) (Examples.lit 9))
     },
   { name := "linear_overwrite",
     description := "Assigning over a live linear value: rejected statically (3.8:77, the RUE-387 premise) and refused dynamically (linearOverwrite).",
     rules := ["(Assign) §5.2", "3.8:77"],
     prog := Examples.prog Examples.tI64 <| letIn true (Examples.resL (Examples.lit 1))
-      (seq (assign 0 (Examples.resL (Examples.lit 2))) (consume (use 0)))
+      (seq (assign (.var 0) (Examples.resL (Examples.lit 2)))
+        (seq (drop (.var 0)) (Examples.lit 0)))
     },
   { name := "join_agrees",
     description := "A linear value consumed in both arms of an if: the join agrees, the program is accepted, and the value chosen is the taken arm's.",
     rules := ["(If) §5.5 join", "3.8:50"],
     prog := Examples.prog Examples.tI64 <| letIn false (Examples.resL (Examples.lit 6))
-      (ite (binop .lt (Examples.lit 1) (Examples.lit 2)) (consume (use 0)) (binop .add (consume (use 0)) (Examples.lit 1)))
+      (ite (binop .lt (Examples.lit 1) (Examples.lit 2))
+        (seq (drop (.var 0)) (Examples.lit 6))
+        (seq (drop (.var 0)) (Examples.lit 7)))
     },
   { name := "nested_scopes",
     description := "Two affine bindings in nested scopes drop innermost first, each at its own scope's close.",
@@ -217,13 +221,13 @@ def cases : List Case := [
     description := "The program's value is a struct: main lets it drop, so its destructor is the value line.",
     rules := ["§4.3 expression value", "§6.11"],
     prog := Examples.prog (.struct Examples.sAffine) <|
-      letIn false (Examples.lit 4) (Examples.resA (use 0))
+      letIn false (Examples.lit 4) (Examples.resA (use (.var 0)))
     },
   { name := "cond_drop_affine",
     description := "An affine resource dropped explicitly in one arm of an if and left to scope exit on the other: accepted (the join sends it to MovedOut), one destructor line either way. The bridge found the compiler ICEing on this (RUE-2290, fixed); the case stays as the regression signal.",
     rules := ["(@Drop) §5.3", "(If) §5.5 join", "3.9:38"],
     prog := Examples.prog Examples.tI64 <| letIn false (Examples.resA (Examples.lit 5))
-      (seq (ite (boolLit true) (drop 0) unitLit) (Examples.lit 9))
+      (seq (ite (boolLit true) (drop (.var 0)) unitLit) (Examples.lit 9))
     },
   { name := "bool_result",
     description := "A boolean value from a comparison.",
@@ -454,7 +458,8 @@ def cases : List Case := [
 /-! ## Witnesses for the refusals no `Examples.lean` program reaches -/
 
 example : run exportOps (Examples.prog Examples.tI64 (letIn true (Examples.resL (Examples.lit 1))
-    (seq (assign 0 (Examples.resL (Examples.lit 2))) (consume (use 0))))) exportFuel
+    (seq (assign (.var 0) (Examples.resL (Examples.lit 2)))
+      (seq (drop (.var 0)) (Examples.lit 0))))) exportFuel
     = .stuck .linearOverwrite := by rfl
 example : run exportOps (Examples.prog Examples.tI64 (seq (Examples.resL (Examples.lit 3)) (Examples.lit 4))) exportFuel
     = .stuck .linearDiscard := by rfl
@@ -480,8 +485,10 @@ def dbgLine : Val → Option String
 /-- The line a user destructor prints (`Print.structItem`): the struct's
 first field, when that field is an integer. A declaration whose first field is
 not an integer has nothing to print, in the printed Rue program and here
-alike. -/
-def dtorLine : Val → Option String
+alike — and neither has one whose first field has been moved out, which
+`3.9:34` makes unreachable anyway (a destructor-bearing value has no partial
+moves). -/
+def dtorLine : Contents → Option String
   | .struct _ (.int w s n :: _) => dbgLine (.int w s n)
   | _ => none
 
@@ -510,7 +517,7 @@ def valueLines (D : StructEnv) (v : Val) : List String :=
   | .bool b => (dbgLine (.bool b)).toList
   | .unit => []
   | .struct _ _ =>
-      match dropValue D v with
+      match dropContents D (Contents.ofVal v) with
       | .ok evs => evs.filterMap eventLine
       | .error _ => []
 

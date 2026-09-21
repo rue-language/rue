@@ -281,22 +281,49 @@ def genEnv : Nat → StructEnv → G StructEnv
       let sd ← genDecl acc acc.length
       genEnv n (acc ++ [sd])
 
-/-- (helper) The declaration indices whose values the fragment's whole-value
-elimination can take apart (`StructDecl.Consumable`). -/
-def consumableIdxs (D : StructEnv) : List Nat :=
-  (List.range D.length).filter (fun s =>
-    match D[s]? with
-    | some sd => decide sd.Consumable
-    | none => false)
+/-- (helper) The field slots of a declaration whose type is `T` and which this
+fragment may project. A step is drawn only where §5.1 and §5.3 admit it: a
+path whose proper prefix is a struct declared `linear` is the declared-linear
+destructure this fragment does not mechanize (RUE-2236, `Syntax.lean`), and
+`3.9:34` forbids a *move* out of a value whose type declares a destructor — a
+`Copy` read of such a field stays legal. -/
+def projSlots (D : StructEnv) (s : Nat) (T : Ty) : List Nat :=
+  match D[s]? with
+  | none => []
+  | some sd =>
+      if sd.attr == .linear then []
+      else if sd.dtor && T.mult D != .copy then []
+      else (List.range sd.fields.length).filter (fun f => sd.fields[f]? == some T)
 
-/-- (helper) The consumable declarations whose payload has the wanted type, so
-that a whole-value elimination can stand where an expression of that type
-is asked for. -/
-def consumableFor (D : StructEnv) (T : Ty) : List Nat :=
-  (consumableIdxs D).filter (fun s =>
-    match D[s]? with
-    | some sd => sd.payloadTy == T
-    | none => false)
+/-- (helper) Every place of the wanted type one field step under a binder in
+scope: the projections a use or an assignment may name. -/
+def projPlaces (D : StructEnv) (Γ : Scope) (T : Ty) : List Place :=
+  ((List.range Γ.length).map (fun i =>
+    match Γ[i]? with
+    | some b =>
+        (match b.ty with
+         | .struct s => (projSlots D s T).map (fun f => Place.proj (.var i) f)
+         | _ => [])
+    | none => [])).flatten
+
+/-- (helper) Every place one field step under a binder in scope, whatever its
+type: the projections a `@drop` may name. -/
+def dropPlaces (D : StructEnv) (Γ : Scope) : List Place :=
+  ((List.range Γ.length).map (fun i =>
+    match Γ[i]? with
+    | some b =>
+        (match b.ty with
+         | .struct s =>
+             (match D[s]? with
+              | some sd =>
+                  ((List.range sd.fields.length).map (fun f =>
+                    match sd.fields[f]? with
+                    | some T => (projSlots D s T).filter (· == f) |>.map
+                        (fun _ => Place.proj (.var i) f)
+                    | none => [])).flatten
+              | none => [])
+         | _ => [])
+    | none => [])).flatten
 
 /-- (helper) The type of a fresh `let` binder: mostly structs, when the
 program has any. -/
@@ -318,69 +345,58 @@ of that type, or a struct literal with a leaf per field. -/
 def atom (D : StructEnv) (Γ : Scope) : Ty → Nat → G Expr
   | .int w sg, _ => do
       let uses := indicesWhere Γ (fun b => b.ty == .int w sg)
-      if !uses.isEmpty && (← chance 1 2) then return use (← pick 0 uses)
+      if !uses.isEmpty && (← chance 1 2) then return use (.var (← pick 0 uses))
+      let projs := projPlaces D Γ (.int w sg)
+      if !projs.isEmpty && (← chance 1 3) then return use (← pick (.var 0) projs)
       intLiteral w sg
   | .float w, _ => do
       let uses := indicesWhere Γ (fun b => b.ty == .float w)
-      if !uses.isEmpty && (← chance 1 2) then return use (← pick 0 uses)
+      if !uses.isEmpty && (← chance 1 2) then return use (.var (← pick 0 uses))
       floatLiteral w
   | .bool, _ => do
       let uses := indicesWhere Γ (fun b => b.ty == .bool)
-      if !uses.isEmpty && (← chance 1 2) then return use (← pick 0 uses)
+      if !uses.isEmpty && (← chance 1 2) then return use (.var (← pick 0 uses))
       return boolLit (← bool)
   | .unit, _ => return unitLit
   | .struct s, depth => do
       let uses := indicesWhere Γ (fun b => b.ty == .struct s)
-      if !uses.isEmpty && (← chance 2 3) then return use (← pick 0 uses)
+      if !uses.isEmpty && (← chance 2 3) then return use (.var (← pick 0 uses))
+      let projs := projPlaces D Γ (.struct s)
+      if !projs.isEmpty && (← chance 1 3) then return use (← pick (.var 0) projs)
       match D[s]?, depth with
       | some sd, d + 1 => return mkStruct s (← sd.fields.mapM (fun T => atom D Γ T d))
       | _, _ => return mkStruct s []
 
-/-- (helper) A leaf of the wanted type, one level at most: an atom, a
-whole-value elimination of a consumable struct binder, a `@drop`, or an
-assignment of an atom. -/
+/-- (helper) A leaf of the wanted type, one level at most: an atom, a `@drop`
+of a place, or an assignment of an atom to one. -/
 def leaf (D : StructEnv) (Γ : Scope) : Ty → Nat → G Expr
-  | .int w sg, depth => do
-      let cons := indicesWhere Γ (fun b =>
-        match b.ty with
-        | .struct s => (consumableFor D (.int w sg)).contains s
-        | _ => false)
-      if !cons.isEmpty && (← chance 1 2) then return consume (use (← pick 0 cons))
-      atom D Γ (.int w sg) depth
   | .unit, depth => do
       let structs := indicesWhere Γ (fun b => isStruct b.ty)
       let muts := indicesWhere Γ (fun b => b.mu)
+      let drops := dropPlaces D Γ
       let form ← weighted 0
         [(1, 0), (if Γ.isEmpty then 0 else 6, 1), (if muts.isEmpty then 0 else 5, 2)]
       match form with
       | 1 =>
-          if !structs.isEmpty && (← chance 3 4) then return drop (← pick 0 structs)
-          return drop (← nat 0 (Γ.length - 1))
+          if !drops.isEmpty && (← chance 1 3) then return drop (← pick (.var 0) drops)
+          if !structs.isEmpty && (← chance 3 4) then return drop (.var (← pick 0 structs))
+          return drop (.var (← nat 0 (Γ.length - 1)))
       | 2 =>
           let i ← pick 0 muts
           let b := Γ[i]?.getD ⟨.int .w64 .signed, true⟩
-          return assign i (← atom D Γ b.ty depth)
+          match b.ty with
+          | .struct s =>
+              let slots := (List.range ((D[s]?).map (·.fields.length) |>.getD 0)).filter
+                (fun f => (projSlots D s ((D[s]?).bind (·.fields[f]?) |>.getD .unit)).contains f)
+              if !slots.isEmpty && (← chance 1 3) then
+                let f ← pick 0 slots
+                let Tf := ((D[s]?).bind (·.fields[f]?)).getD (.int .w64 .signed)
+                return assign (.proj (.var i) f) (← atom D Γ Tf depth)
+              return assign (.var i) (← atom D Γ b.ty depth)
+          | _ => return assign (.var i) (← atom D Γ b.ty depth)
       | _ => return unitLit
   | T, depth => atom D Γ T depth
 end
-
-/-- (helper) A struct class to eliminate: a consumable declaration a binder in
-scope already has, when there is one, so the operand is usually a move. -/
-def consumeTarget (D : StructEnv) (Γ : Scope) (T : Ty) : G (Option Nat) := do
-  let wanted := consumableFor D T
-  let inScope := (indicesWhere Γ (fun b =>
-    match b.ty with
-    | .struct s => wanted.contains s
-    | _ => false)).filterMap (fun i =>
-      match Γ[i]? with
-      | some b => (match b.ty with | .struct s => some s | _ => none)
-      | none => none)
-  match inScope with
-  | [] =>
-      match wanted with
-      | [] => return none
-      | cs => return some (← pick 0 cs)
-  | _ => return some (← pick 0 inScope)
 
 /-- (helper) An expression of the wanted type under `Γ`, at most `fuel`
 levels deep. The weights here are the bias the module docstring
@@ -427,9 +443,9 @@ def expr (D : StructEnv) : Scope → Ty → Nat → G Expr
                   if sg == .signed && (← chance 1 2) then return unop .neg (← self)
                   return unop .bitnot (← self)
               | 3 =>
-                  match ← consumeTarget D Γ (.int w sg) with
-                  | some s => return consume (← expr D Γ (.struct s) fuel)
-                  | none => return binop .add (← self) (← self)
+                  let projs := projPlaces D Γ (.int w sg)
+                  if !projs.isEmpty then return use (← pick (.var 0) projs)
+                  return binop .add (← self) (← self)
               | _ =>
                   -- `@intCast` from an integer, or `@float_to_int` from a
                   -- float — the one float form that can trap (`3.12:18`) —
@@ -486,7 +502,7 @@ def expr (D : StructEnv) : Scope → Ty → Nat → G Expr
               if !muts.isEmpty && (← chance 3 4) then
                 let i ← pick 0 muts
                 let b := Γ[i]?.getD ⟨.int .w64 .signed, true⟩
-                return assign i (← expr D Γ b.ty fuel)
+                return assign (.var i) (← expr D Γ b.ty fuel)
               if ← chance 1 3 then
                 let To ← weighted (← intTy) [(3, ← intTy), (2, ← floatTy), (1, .bool)]
                 return dbg (← expr D Γ To fuel)
@@ -496,7 +512,9 @@ def expr (D : StructEnv) : Scope → Ty → Nat → G Expr
               leaf D Γ .unit 2
           | .struct s =>
               let uses := indicesWhere Γ (fun b => b.ty == .struct s)
-              if !uses.isEmpty && (← chance 1 2) then return use (← pick 0 uses)
+              if !uses.isEmpty && (← chance 1 2) then return use (.var (← pick 0 uses))
+              let projs := projPlaces D Γ (.struct s)
+              if !projs.isEmpty && (← chance 1 4) then return use (← pick (.var 0) projs)
               match D[s]? with
               | some sd => return mkStruct s (← sd.fields.mapM (fun T' => expr D Γ T' fuel))
               | none => return mkStruct s []
@@ -506,7 +524,7 @@ def subexprs : Expr → List Expr
   | e@(binop _ e₁ e₂) | e@(seq e₁ e₂) | e@(letIn _ e₁ e₂) =>
       e :: subexprs e₁ ++ subexprs e₂
   | e@(.ite c e₁ e₂) => e :: subexprs c ++ subexprs e₁ ++ subexprs e₂
-  | e@(consume e₁) | e@(assign _ e₁) | e@(ret e₁) | e@(unop _ e₁) | e@(intCast _ _ e₁)
+  | e@(assign _ e₁) | e@(ret e₁) | e@(unop _ e₁) | e@(intCast _ _ e₁)
   | e@(fintrin _ e₁) | e@(dbg e₁) => e :: subexprs e₁
   | e@(call _ args) | e@(mkStruct _ args) => e :: (args.map subexprs).flatten
   | e => [e]
@@ -521,10 +539,15 @@ binder types innermost first, as `Print.tyOf` reads them, so a use or a
 def rulesOf (D : StructEnv) (e : Expr) : List String :=
   let P : Program := { structs := D, fns := [] }
   let rec go (Γ : List Ty) : Expr → List String
-    | use i =>
-        match Γ[i]? with
-        | some T => if T.mult D == .copy then ["(Use-Copy) §5.1"] else ["(Use-Move) §5.1"]
-        | none => []
+    | use pl =>
+        (match Γ[pl.root]? with
+         | some T =>
+             (match T.atPath D pl.path with
+              | some T' =>
+                  (if T'.mult D == .copy then ["(Use-Copy) §5.1"] else ["(Use-Move) §5.1"]) ++
+                    (if pl.path.isEmpty then [] else ["§4.2 partial move", "3.8:22"])
+              | none => [])
+         | none => [])
     | binop op e₁ e₂ =>
         (if op.isCompare then ["(Ord) §5.8", "§6.4"]
          else ["(Arith) §5.8", "§6.4 arithmetic traps"]) ++ go Γ e₁ ++ go Γ e₂
@@ -537,11 +560,16 @@ def rulesOf (D : StructEnv) (e : Expr) : List String :=
     | Expr.panic _ => ["(Panic) §5.8", "(D-Panic) §6.12"]
     | dbg e₁ => ["(Dbg) §5.8"] ++ go Γ e₁
     | mkStruct _ args => ["(Struct-Intro) §5.8"] ++ (args.map (go Γ)).flatten
-    | consume e₁ => ["§5.8 whole-value elimination"] ++ go Γ e₁
-    | drop i =>
-        match Γ[i]? with
-        | some T => if T.mult D == .copy then ["(@Drop-Copy) §5.3"] else ["(@Drop) §5.3", "§6.11"]
-        | none => []
+    | drop pl =>
+        (match Γ[pl.root]? with
+         | some T =>
+             (match T.atPath D pl.path with
+              | some T' =>
+                  (if T'.mult D == .copy then ["(@Drop-Copy) §5.3"]
+                   else ["(@Drop) §5.3", "§6.11"]) ++
+                    (if pl.path.isEmpty then [] else ["§4.2 partial move", "3.8:22"])
+              | none => [])
+         | none => [])
     | letIn _ e₁ e₂ =>
         ["(Let) §5.3", "§5.6 scope exit", "(D-EndScope) §6.7"] ++ go Γ e₁ ++
           go ((Print.tyOf P (.int .w64 .signed) Γ e₁).getD (.int .w64 .signed) :: Γ) e₂

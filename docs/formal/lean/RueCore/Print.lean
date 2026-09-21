@@ -208,10 +208,6 @@ about layout — says the stored value places each field in its declaration
 slot, which is why the position is a stable name for it (helper). -/
 def fieldName (j : Nat) : String := "x" ++ toString j
 
-/-- The generated whole-value eliminator for a `Consumable` declaration: it
-reads the first field, which is the payload `Expr.consume` yields (helper). -/
-def consumeName (s : Nat) : String := "consume_S" ++ toString s
-
 /-- The declared attribute, as §3 and the surface grammar write it
 (helper). -/
 def attrPrefix : Attr → String
@@ -226,13 +222,12 @@ def fieldDecls : Nat → List Ty → List String
 
 /-- One struct declaration as a Rue item (§2's `S { f1: T1, …, fk: Tk }` with
 its `3.8:18`/`3.8:57` attribute), followed by its `drop fn` when the
-declaration has a destructor (`3.9`), and by the generated consumer when some
-expression of the program eliminates a value of it (`consumed`). The
-destructor prints the first field when that field is an `int`, which is the
-observation channel the module docstring describes; a declaration whose first
-field is not an `int` has nothing to print, and the interpreter's `dtor` event
-for it is likewise silent. -/
-def structItem (consumed : List Nat) (s : Nat) (sd : StructDecl) : String :=
+declaration has a destructor (`3.9`). The destructor prints the first field
+when that field is an `int`, which is the observation channel the module
+docstring describes; a declaration whose first field is not an `int` has
+nothing to print, and the interpreter's `dtor` event for it is likewise
+silent. -/
+def structItem (s : Nat) (sd : StructDecl) : String :=
   attrPrefix sd.attr ++ "struct " ++ tyName (.struct s) ++ " { " ++
     String.intercalate ", " (fieldDecls 0 sd.fields) ++ " }\n" ++
   (if sd.dtor then
@@ -240,16 +235,12 @@ def structItem (consumed : List Nat) (s : Nat) (sd : StructDecl) : String :=
       (match sd.fields with
        | T :: _ => if T.isInt then "@dbg(self." ++ fieldName 0 ++ "); " else ""
        | [] => "") ++ "}\n"
-   else "") ++
-  (if sd.Consumable && consumed.contains s then
-    "fn " ++ consumeName s ++ "(s: " ++ tyName (.struct s) ++ ") -> " ++
-      tyName sd.payloadTy ++ " { s." ++ fieldName 0 ++ " }\n"
    else "")
 
 /-- Every struct declaration of a program, in program order (helper). -/
-def structItems (consumed : List Nat) : Nat → StructEnv → String
+def structItems : Nat → StructEnv → String
   | _, [] => ""
-  | s, sd :: rest => structItem consumed s sd ++ structItems consumed (s + 1) rest
+  | s, sd :: rest => structItem s sd ++ structItems (s + 1) rest
 
 /-- Type inference without ownership: the fragment's types do not depend on
 Σ, so the printer can recover every subexpression's type from the binders
@@ -262,7 +253,10 @@ def tyOf (P : Program) (R : Ty) (Γ : List Ty) : Expr → Option Ty
   | .intLit w s _ => some (.int w s)
   | .boolLit _ => some .bool
   | .unitLit => some .unit
-  | .use i => Γ[i]?
+  | .use pl =>
+      match Γ[pl.root]? with
+      | some T => T.atPath P.structs pl.path
+      | none => none
   | .binop op e₁ _ =>
       match tyOf P R Γ e₁ with
       | some T => some (op.resultTy T)
@@ -279,10 +273,6 @@ def tyOf (P : Program) (R : Ty) (Γ : List Ty) : Expr → Option Ty
   | .panic _ => some R
   | .dbg _ => some .unit
   | .mkStruct s _ => some (.struct s)
-  | .consume e =>
-      match tyOf P R Γ e with
-      | some (.struct s) => (P.structs[s]?).map StructDecl.payloadTy
-      | _ => none
   | .drop _ => some .unit
   | .letIn _ e₁ e₂ => do
       let T₁ ← tyOf P R Γ e₁
@@ -304,6 +294,14 @@ def fnName (i : Nat) : String := "f" ++ toString i
 /-- The name of the binder a de Bruijn index refers to (helper). -/
 def useName (Γ : List Ty) (i : Nat) : String :=
   binderName (Γ.length - 1 - i)
+
+/-- A place as Rue source (§5's `Path`): the binder's name under a chain of
+field selections, each named by its declaration slot the way `structItem`
+declares it (`3.6:15`). This is the identity elaboration — `x.f0.f1` is the
+surface spelling of `Place.proj (Place.proj (Place.var i) 0) 1` (helper). -/
+def place (Γ : List Ty) : Place → String
+  | .var i => useName Γ i
+  | .proj q f => place Γ q ++ "." ++ fieldName f
 
 /-- Four spaces per nesting level (helper). -/
 def indent (n : Nat) : String := "".pushn ' ' (4 * n)
@@ -331,7 +329,7 @@ partial def expr (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) : Expr → St
   | .intLit _ _ n => if n < 0 then "(" ++ toString n ++ ")" else toString n
   | .boolLit b => if b then "true" else "false"
   | .unitLit => "()"
-  | .use i => useName Γ i
+  | .use pl => place Γ pl
   | .binop op e₁ e₂ =>
       if op.isCompare || op = .totalCmp then
         -- An ordering compare yields `bool` and `@total_cmp` yields `i32`, so
@@ -377,12 +375,7 @@ partial def expr (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) : Expr → St
   | .mkStruct s args =>
       tyName (.struct s) ++ " { " ++
         String.intercalate ", " (fieldInits 0 (args.map (fun a => expr P R Γ lvl a))) ++ " }"
-  | .consume e =>
-      let s := match tyOf P R Γ e with
-        | some (.struct s) => s
-        | _ => 0   -- ill-typed input; the checker verdict says so
-      consumeName s ++ "(" ++ expr P R Γ lvl e ++ ")"
-  | .drop i => "@drop(" ++ useName Γ i ++ ")"
+  | .drop pl => "@drop(" ++ place Γ pl ++ ")"
   | .letIn m e₁ e₂ =>
       let T₁ := (tyOf P R Γ e₁).getD (.int .w64 .signed)
       let name := binderName Γ.length
@@ -391,8 +384,8 @@ partial def expr (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) : Expr → St
         ": " ++ tyName T₁ ++ " = " ++ expr P R Γ (lvl + 1) e₁ ++ ";\n" ++
       indent (lvl + 1) ++ expr P R (T₁ :: Γ) (lvl + 1) e₂ ++ "\n" ++
       indent lvl ++ "}"
-  | .assign i e =>
-      "{ " ++ useName Γ i ++ " = " ++ expr P R Γ lvl e ++ "; }"
+  | .assign pl e =>
+      "{ " ++ place Γ pl ++ " = " ++ expr P R Γ lvl e ++ "; }"
   | .seq e₁ e₂ =>
       -- A discarded integer expression must still be typed (module
       -- docstring): nothing downstream of a statement names its type.
@@ -442,37 +435,9 @@ innermost binder first, exactly as (Fn) §5.8's `fnCtx` orders them
 (helper). -/
 def bodyBinders (fd : FnDef) : List Ty := (fd.params.map Param.ty).reverse
 
-/-- The declaration indices an expression eliminates, read the way
-`Print.expr` reads them — through `tyOf`, with the same index-`0` fallback on
-an operand whose type it cannot recover, so the helpers emitted are exactly
-the ones the printed calls name (helper). -/
-partial def consumedIn (P : Program) (R : Ty) : List Ty → Expr → List Nat
-  | Γ, .consume e =>
-      (match tyOf P R Γ e with
-       | some (.struct s) => [s]
-       | _ => [0]) ++ consumedIn P R Γ e
-  | Γ, .binop _ e₁ e₂ | Γ, .seq e₁ e₂ =>
-      consumedIn P R Γ e₁ ++ consumedIn P R Γ e₂
-  | Γ, .letIn _ e₁ e₂ =>
-      consumedIn P R Γ e₁ ++
-        consumedIn P R ((tyOf P R Γ e₁).getD (.int .w64 .signed) :: Γ) e₂
-  | Γ, .ite c e₁ e₂ => consumedIn P R Γ c ++ consumedIn P R Γ e₁ ++ consumedIn P R Γ e₂
-  | Γ, .mkStruct _ args | Γ, .call _ args => (args.map (consumedIn P R Γ)).flatten
-  | Γ, .assign _ e | Γ, .ret e | Γ, .unop _ e | Γ, .intCast _ _ e | Γ, .fintrin _ e
-  | Γ, .dbg e =>
-      consumedIn P R Γ e
-  | _, _ => []
-
-/-- The declaration indices the whole program eliminates, so a printed module
-declares a consumer for those and no others and carries no dead helper the
-compiler would warn about (helper). -/
-def consumedDecls (P : Program) : List Nat :=
-  (P.fns.map (fun fd => consumedIn P fd.ret (bodyBinders fd) fd.body)).flatten
-
-/-- Every struct declaration of a program as Rue items, with the consumers the
-program actually calls (helper). -/
+/-- Every struct declaration of a program as Rue items (helper). -/
 def moduleItems (P : Program) : String :=
-  structItems (consumedDecls P) 0 P.structs
+  structItems 0 P.structs
 
 /-- One `fn` item: §2's `F` production for a by-value signature. -/
 def fnItem (P : Program) (idx : Nat) (fd : FnDef) : String :=
