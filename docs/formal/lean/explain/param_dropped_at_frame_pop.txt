@@ -8,11 +8,25 @@ Rules exercised: (Call) §5.8 · (D-Call) §6.9 · (D-Return-Value) §6.9 · 3.8
 
 ── The program ─────────────────────────────────────────────────────────────────
 
+@copy struct S0 { x0: i64 }
+fn consume_S0(s: S0) -> i64 { s.x0 }
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+linear struct S2 { x0: i64 }
+fn consume_S2(s: S2) -> i64 { s.x0 }
+linear struct S3 { x0: i64 }
+drop fn S3(self) { @dbg(self.x0); }
+struct S4 { x0: i64, x1: S3 }
+struct S5 { x0: i64, x1: S1 }
+drop fn S5(self) { @dbg(self.x0); }
+@copy struct S6 { x0: i64, x1: i64 }
+fn consume_S6(s: S6) -> i64 { s.x0 }
+struct S7 { x0: S1, x1: S1 }
 fn f0() -> i64 {
-    f1(RAffine { value: 2, live: true })
+    f1(S1 { x0: 2 })
 }
 
-fn f1(v0: RAffine) -> i64 {
+fn f1(v0: S1) -> i64 {
     1
 }
 
@@ -26,7 +40,7 @@ Verdict: ACCEPTED by the checker (§5).
          real derivation and the §7 safety theorems apply to it.
 
          fn f0() -> i64  — body ⇒ i64, exit Σ (empty)
-         fn f1(v0: RAffine) -> i64  — body ⇒ i64, exit Σ [v0: RAffine = Owned]
+         fn f1(v0: S1) -> i64  — body ⇒ i64, exit Σ [v0: S1 = Owned]
 
 ── The derivations (§5) ────────────────────────────────────────────────────────
 
@@ -38,24 +52,24 @@ function body, checked from (Fn) §5.8's entry context.
   fn f0() -> i64
 
   (Call) §5.8
-    e       f1(RAffine { value: 2, live: true })
+    e       f1(S1 { x0: 2 })
     Γ;Σ     (empty)
     ⇒       i64  ⊣  (empty)
-      resource intro §5.8 (the shape of the aggregate-introduction rule; `res κ` has no fields)
-        e       RAffine { value: 2, live: true }
+      (Struct-Intro) §5.8
+        e       S1 { x0: 2 }
         Γ;Σ     (empty)
-        ⇒       RAffine  ⊣  (empty)
+        ⇒       S1  ⊣  (empty)
           (Lit) §5.8
             e       2
             Γ;Σ     (empty)
             ⇒       i64  ⊣  (empty)
 
-  fn f1(v0: RAffine) -> i64
+  fn f1(v0: S1) -> i64
 
   (Lit) §5.8
     e       1
-    Γ;Σ     [v0: RAffine = Owned]
-    ⇒       i64  ⊣  [v0: RAffine = Owned]
+    Γ;Σ     [v0: S1 = Owned]
+    ⇒       i64  ⊣  [v0: S1 = Owned]
 
 ── The run (§6) ────────────────────────────────────────────────────────────────
 
@@ -74,26 +88,26 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 2
-  [3]   d3        resource intro §6.5
-         expr    RAffine { value: 2, live: true }
+  [3]   d3        (D-Struct) §6.5
+         expr    S1 { x0: 2 }
          store   (empty)
            →     (empty)
-         result  value RAffine { 2 }
+         result  value S1 { 2 }
   [4]   d3        (D-Call) §6.9 (push the frame)
-         expr    fn f1(v0: RAffine) -> i64  with [ℓ0]
+         expr    fn f1(v0: S1) -> i64  with [ℓ0]
          store   (empty)
-           →     [ℓ0 = RAffine { 2 }]
+           →     [ℓ0 = S1 { 2 }]
          result  value ()
   [5]   d4          literal §6.3
          expr    1
-         store   [ℓ0 = RAffine { 2 }]
-           →     [ℓ0 = RAffine { 2 }]
+         store   [ℓ0 = S1 { 2 }]
+           →     [ℓ0 = S1 { 2 }]
          result  value 1
   [6]   d2      (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([ℓ0])
-         store   [ℓ0 = RAffine { 2 }]
+         store   [ℓ0 = S1 { 2 }]
            →     [ℓ0 = † (retired)]
-         events  >> drop ℓ0 = RAffine { 2 }
+         events  >> drop ℓ0 = S1 { 2 }; run drop fn S1(S1 { 2 })
          result  value 1
   [7]   d0  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([])
@@ -103,5 +117,5 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
 
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: ok — value 1
-         drop trace: drop ℓ0 = RAffine { 2 }
+         drop trace: drop ℓ0 = S1 { 2 }; run drop fn S1(S1 { 2 })
 

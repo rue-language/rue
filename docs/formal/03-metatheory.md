@@ -19,14 +19,20 @@ every listed theorem depends on; the reading guide in `lean/README.md` is the
 entry point for a reader with no Lean.
 
 **Fragment today.** Scalars (`int` as `int(64, signed)`, `bool`, `unit`) and
-an abstract resource type standing in for a monomorphic struct of each
-multiplicity class; use (copy/move), `@drop`, `let` with scope-exit drop,
-assignment with reinitialization, sequencing with the discard check, `if`
-with the §5.5 branch join, `+`/`/`/`<` with the §6.4 traps, and — with
-RUE-2233 — top-level function definitions, by-value calls with frames and
-scope records ((Fn)/(Call) §5.8, (D-Call)/(D-Return-Value) §6.9), and `return`
-with its σ unwind ((Return-Value) §5.7, (D-Return) §6.9). Whole bindings only.
-No structs with fields, paths, enums, arrays, `inout`/`borrow` parameters,
+monomorphic struct types declared by the program — named fields by position,
+the `@copy`/`linear` attribute, whether the struct declares a destructor, and
+`class(S)` as §3's join of the field classes lifted by that attribute
+(`WfStructs` is the equation, and `checkStructs` decides it); struct literals
+((Struct-Intro) §5.8, (D-Struct) §6.5) and §6.11's drop order — a value's user
+destructor, then its fields in declaration order, recursively; use
+(copy/move), `@drop`, `let` with scope-exit drop, assignment with
+reinitialization, sequencing with the discard check, `if` with the §5.5 branch
+join, `+`/`/`/`<` with the §6.4 traps, top-level function definitions,
+by-value calls with frames and scope records ((Fn)/(Call) §5.8,
+(D-Call)/(D-Return-Value) §6.9), and `return` with its σ unwind
+((Return-Value) §5.7, (D-Return) §6.9). Whole bindings only. No paths or
+partial moves — the fragment's whole-value struct elimination stands in for a
+projection (RUE-2231) — no enums, arrays, `inout`/`borrow` parameters,
 accessor calls, loops, loans, or buffers.
 
 **Fuel.** Because a callee's body is not a subexpression of its call,
@@ -73,11 +79,11 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   (§6.6's `match` arms, §6.10's loops). It becomes a real obligation when
   `Frame.scope` is §6.1's stack. `RueCore.Untouched` carries frame locality
   across a call, so a caller's agreement survives a callee's run.
-- **Hypothesis:** `RueCore.ProgramTyped` — (Fn) §5.8 for every function plus
-  an entry point taking no parameters — which `RueCore.checkProgram_sound`
-  decides.
+- **Hypothesis:** `RueCore.ProgramTyped` — §3's class assignment for every
+  struct declaration and (Fn) §5.8 for every function, plus an entry point
+  taking no parameters — which `RueCore.checkProgram_sound` decides.
 - **Covers:** the fragment above. **Owed:** every remaining Phase C slice
-  re-establishes this theorem for its forms (RUE-2230 through RUE-2237,
+  re-establishes this theorem for its forms (RUE-2231 through RUE-2237,
   RUE-2282).
 
 ## No use-after-move
@@ -91,6 +97,16 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 
 - **Not yet mechanized.** The drop trace makes double frees visible; the
   theorem over minted value identities is RUE-2237.
+- **Partial progress:** the walk it will quantify over now has a proved
+  shape. `RueCore.dropValue_order` and `RueCore.dropValues_order`
+  (`lean/RueCore/Dynamics.lean`, `lean/RueCore/Soundness.lean`) say the
+  events a value's drop emits are its user destructor's followed by exactly
+  its fields' drops, in declaration order (§6.11); `RueCore.dropValue_ok`
+  says the walk never refuses on a well-typed value; and
+  `RueCore.StructDecl.Wf.field_not_linear` says a value the leak monitor lets
+  through carries no linear field, which is why the monitor reads the value's
+  own class and never descends. What is still owed is the identity-level
+  statement: that each minted value appears in the trace exactly once.
 
 ## No use-after-drop / no leak of drops
 
@@ -106,7 +122,8 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   (`Examples.lean`).
 - **Owed:** the "exactly once, at the end of its scope" half is the trace
   theorem `drop_exactly_once` (RUE-2237); the σ records and unwind paths it
-  quantifies over are in place.
+  quantifies over are in place, and so is the order *within* one value's drop
+  (`dropValue_order`, above).
 
 ## No use-after-free
 
@@ -134,21 +151,26 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   unwinds by `return`, (D-Return) discards the evaluation context with the
   pending arguments in it and unwinds only σ, so that value's drop is neither
   run nor monitored: a **linear value can be consumed zero times** with none
-  of the three refusals firing, and an affine one loses its drop event
-  silently. This is the calculus as written — (D-Return) §6.9 unwinds σ and
-  nothing else, and (Strict-Bottom) §5.7, the only bottom rule for an argument
-  position, imposes no §5.3 discard check on siblings already evaluated — so
-  the statics cannot reject it without ⊥ provenance they do not carry, and the
-  Rue compiler behaves the same way (the `RAffine` destructor does not run).
-  The mechanization models the calculus rather than patching it and states the
-  gap instead: `Dynamics.lean`'s "Pending arguments" section, the
+  of the three refusals firing, and a destructor-bearing one loses its
+  observable drop silently. This is the calculus as written — (D-Return) §6.9
+  unwinds σ and nothing else, and (Strict-Bottom) §5.7, the only bottom rule
+  for an argument position, imposes no §5.3 discard check on siblings already
+  evaluated — so the statics cannot reject it without ⊥ provenance they do not
+  carry, and the Rue compiler behaves the same way (the destructor does not
+  run). The mechanization models the calculus rather than patching it and
+  states the gap instead: `Dynamics.lean`'s "Pending arguments" section, the
   `no_violation` docstring, and the kernel-checked witnesses
   `RueCore.Examples.linearLostAtCallArg` and `affineLostAtCallArg`, both of
   which `checkProgram` accepts and both of which end with an empty drop trace.
   Closing it needs a rule, in §5.7 or §6.9, and is tracked as RUE-2316.
-- **Covers:** whole bindings, the binary join, and by-value parameters, on
-  every edge but the one above. **Owed:** RUE-2316; declared-linear
-  destructure and residue ordering (RUE-2236); enums (RUE-2232).
+- **Covers:** whole bindings, the binary join, by-value parameters, and struct
+  values whose class is `Linear` through a field — §3's join, proved to be
+  what a declaration records (`RueCore.struct_class_unique`) and to reach
+  `Linear` exactly when the declaration says so or a field does
+  (`RueCore.struct_carriesLinear_iff`, §5.3's `carries_linear` lifting) — on
+  every edge but the one above. **Owed:** RUE-2316; partial moves and
+  per-field obligations (RUE-2231); declared-linear destructure and residue
+  ordering (RUE-2236); enums (RUE-2232).
 
 ## Exclusivity / no aliased mutation
 

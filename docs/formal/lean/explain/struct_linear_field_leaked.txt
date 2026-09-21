@@ -1,10 +1,10 @@
 ════════════════════════════════════════════════════════════════════════════════
- linear_leaked
+ struct_linear_field_leaked
 ════════════════════════════════════════════════════════════════════════════════
-A linear resource reaching scope exit unconsumed: rejected statically (E0406)
-and refused dynamically (linearLeak).
+An attribute-less struct holding a declared-linear field is Linear by §3's
+join: left to scope exit it is rejected (E0406) and refused (linearLeak).
 
-Rules exercised: §5.6 residual-linear leak check · 3.8:32
+Rules exercised: (Struct-Intro) §5.8 · §5.6 residual-linear leak check · 3.8:58
 
 ── The program ─────────────────────────────────────────────────────────────────
 
@@ -24,8 +24,8 @@ fn consume_S6(s: S6) -> i64 { s.x0 }
 struct S7 { x0: S1, x1: S1 }
 fn f0() -> i64 {
     {
-        let v0: S2 = S2 { x0: 7 };
-        1
+        let v0: S4 = S4 { x0: 1, x1: S3 { x0: 2 } };
+        0
     }
 }
 
@@ -37,9 +37,9 @@ Verdict: REJECTED by the checker (§5).
 
 The premise that fails, in fn f0() -> i64, at (Let) §5.3 + the §5.6 scope-exit leak check:
 
-    on  { let v0: S2 = S2 { x0: 7 }; 1 }
+    on  { let v0: S4 = S4 { x0: 1, x1: S3 { x0: 2 } }; 0 }
 
-    the residual state of the `let` binder is Owned and its type S2 is Linear
+    the residual state of the `let` binder is Owned and its type S4 is Linear
     — a linear value reached end of scope unconsumed (§5.6 leak check; 3.8:32;
     the compiler reports E0406)
 
@@ -53,24 +53,32 @@ function body, checked from (Fn) §5.8's entry context.
   fn f0() -> i64
 
   (Let) §5.3 + the §5.6 scope-exit leak check
-    e       { let v0: S2 = S2 { x0: 7 }; 1 }
+    e       { let v0: S4 = S4 { x0: 1, x1: S3 { x0: 2 } }; 0 }
     Γ;Σ     (empty)
     ✗       this premise fails:
-            the residual state of the `let` binder is Owned and its type S2 is
+            the residual state of the `let` binder is Owned and its type S4 is
             Linear — a linear value reached end of scope unconsumed (§5.6 leak
             check; 3.8:32; the compiler reports E0406)
       (Struct-Intro) §5.8
-        e       S2 { x0: 7 }
+        e       S4 { x0: 1, x1: S3 { x0: 2 } }
         Γ;Σ     (empty)
-        ⇒       S2  ⊣  (empty)
+        ⇒       S4  ⊣  (empty)
           (Lit) §5.8
-            e       7
+            e       1
             Γ;Σ     (empty)
             ⇒       i64  ⊣  (empty)
+          (Struct-Intro) §5.8
+            e       S3 { x0: 2 }
+            Γ;Σ     (empty)
+            ⇒       S3  ⊣  (empty)
+              (Lit) §5.8
+                e       2
+                Γ;Σ     (empty)
+                ⇒       i64  ⊣  (empty)
       (Lit) §5.8
-        e       1
-        Γ;Σ     [v0: S2 = Owned]
-        ⇒       i64  ⊣  [v0: S2 = Owned]
+        e       0
+        Γ;Σ     [v0: S4 = Owned]
+        ⇒       i64  ⊣  [v0: S4 = Owned]
 
 ── The run (§6) ────────────────────────────────────────────────────────────────
 
@@ -85,38 +93,48 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
            →     (empty)
          result  value ()
   [2]   d4          literal §6.3
-         expr    7
-         store   (empty)
-           →     (empty)
-         result  value 7
-  [3]   d3        (D-Struct) §6.5
-         expr    S2 { x0: 7 }
-         store   (empty)
-           →     (empty)
-         result  value S2 { 7 }
-  [4]   d3        (D-Let) §6.7 (mint the binding)
-         expr    let v0 = S2 { 7 } at ℓ0
-         store   (empty)
-           →     [ℓ0 = S2 { 7 }]
-         result  value S2 { 7 }
-  [5]   d3        literal §6.3
          expr    1
-         store   [ℓ0 = S2 { 7 }]
-           →     [ℓ0 = S2 { 7 }]
+         store   (empty)
+           →     (empty)
          result  value 1
-  [6]   d2      (D-EndScope) §6.7 (retire the binding)
-         expr    { let v0: S2 = S2 { x0: 7 }; 1 }
-         store   [ℓ0 = S2 { 7 }]
-           →     [ℓ0 = S2 { 7 }]
+  [3]   d5            literal §6.3
+         expr    2
+         store   (empty)
+           →     (empty)
+         result  value 2
+  [4]   d4          (D-Struct) §6.5
+         expr    S3 { x0: 2 }
+         store   (empty)
+           →     (empty)
+         result  value S3 { 2 }
+  [5]   d3        (D-Struct) §6.5
+         expr    S4 { x0: 1, x1: S3 { x0: 2 } }
+         store   (empty)
+           →     (empty)
+         result  value S4 { 1, S3 { 2 } }
+  [6]   d3        (D-Let) §6.7 (mint the binding)
+         expr    let v0 = S4 { 1, S3 { 2 } } at ℓ0
+         store   (empty)
+           →     [ℓ0 = S4 { 1, S3 { 2 } }]
+         result  value S4 { 1, S3 { 2 } }
+  [7]   d3        literal §6.3
+         expr    0
+         store   [ℓ0 = S4 { 1, S3 { 2 } }]
+           →     [ℓ0 = S4 { 1, S3 { 2 } }]
+         result  value 0
+  [8]   d2      (D-EndScope) §6.7 (retire the binding)
+         expr    { let v0: S4 = S4 { x0: 1, x1: S3 { x0: 2 } }; 0 }
+         store   [ℓ0 = S4 { 1, S3 { 2 } }]
+           →     [ℓ0 = S4 { 1, S3 { 2 } }]
          result  REFUSED (linearLeak)
                  a scope exit or a frame teardown reached a live linear value: a
                  linear obligation was never discharged (endscope §6.7 /
                  `run-all-scope-drops` §6.9, the §5.6 leak check executed; 3.8:32; §7
                  “consumed exactly once”)
-  [7]   d0  (D-Return-Value) §6.9 (pop the frame)
+  [9]   d0  (D-Return-Value) §6.9 (pop the frame)
          expr    f0()
          store   (empty)
-           →     [ℓ0 = S2 { 7 }]
+           →     [ℓ0 = S4 { 1, S3 { 2 } }]
          result  REFUSED (linearLeak)
                  a scope exit or a frame teardown reached a live linear value: a
                  linear obligation was never discharged (endscope §6.7 /

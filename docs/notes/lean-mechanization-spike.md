@@ -125,7 +125,7 @@ project of their own. Hence the milestone ladder below rather than a single
 | --- | --- | --- |
 | Type safety (progress + preservation) | **proved** (interpreter form) | Tractable through calls/loops; loops interact with 3.8:79 (below) |
 | No use-after-move | **proved** | Tractable; paths make the invariant recursive (`fully-owned`) |
-| No double-free | trace-visible, not yet a theorem | Statable over drop traces; needs value identity (mint ids at `mkres`) |
+| No double-free | trace-visible, not yet a theorem | Statable over drop traces; needs value identity (mint ids at a struct literal) |
 | No use-after-drop / no drop leak | **proved** (retire half) | "Exactly once at scope exit" needs the σ/endscope bookkeeping |
 | No use-after-free (buffers) | out of fragment | §6.13 machine ops + (O1) uniqueness; obligations as explicit interfaces — hardest milestone, but statable without Iris |
 | Linear consumed exactly once | **proved** (leak/overwrite/discard refusals) | Declared-linear destructure and residue ordering add real work |

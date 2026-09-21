@@ -100,8 +100,9 @@ One case, abbreviated:
 ```
 
 `verdict` is `{"accept": {"type": T}}` or `{"reject": {}}`. `expected` is
-`ok` with the stdout lines the native binary must print (one line per drop
-event in trace order, then the program's value) and exit 0; `panic` with
+`ok` with the stdout lines the native binary must print (one line per user
+destructor the run executes, in trace order, then the lines `main` shows for
+the program's value) and exit 0; `panic` with
 `overflow` or `divZero` (the trap ends the process before the value prints,
 so only the trap kind is compared; the compiler's runtime reports these as
 `error: integer overflow` / `error: division by zero` with exit status 101);
@@ -116,21 +117,23 @@ that path's `ok` or `panic` outcome instead, and its header says so, so a
 compiler that accepts it unsoundly is compared against what the machine
 does; generated programs (below) have such cases, the seed corpus does not.
 
-How a drop event becomes a printed line is decided per multiplicity class
-by the spec's destructor rules; `RueCore/Print.lean`'s module docstring is
-the reference. In short: a copy value has no destructor and no events; an
-affine resource's destructor prints its payload while a `live` flag holds,
-and `consume` disarms the husk first; a linear resource cannot carry a
-destructor (3.9:34 would forbid the projection `consume` needs), so its
-only observable event, an explicit `@drop`, is printed as
-`@dbg(consume_linear(x))`, which is not the identity elaboration (its core
-image is a consume, so the compiler's `@drop`-on-linear path is not
-exercised by the bridge); the two integer-typing images below `Print.lean`'s
-"Integer typing" heading are the other places. Two limits, accepted
-at fragment scope: a trap discards the Lean trace, so drops before a panic
-are not compared (RUE-2282 gives `.panic` its trace); and drop lines and the
-value line are both bare integers, so a drop of `n` swapped with a value `n`
-would not be told apart. Every printed program opens with a comment naming
+How a drop becomes a printed line is the **user destructor**, and nothing
+else: a Rue program has no other way to observe a drop happening, so a
+declaration that declares one prints `drop fn S(self) { @dbg(self.x0); }` and
+the interpreter records the same drop as a `dtor` event; a declaration with
+no destructor drops silently in both. `RueCore/Print.lean`'s module docstring
+is the reference for the rest, all of it forced by the spec's destructor
+rules: a `@copy` type must declare no destructor (`3.9:31`), a value whose
+type declares one rejects every projection out of it (`3.9:34`), so the
+fragment's whole-value elimination is defined only where there is none, and a
+declaration that carries a linear value in a field may declare no destructor
+at all (`3.9:44`). `@drop` prints as `@drop(x)` at every class — the identity
+elaboration — and the two integer-typing images below `Print.lean`'s "Integer
+typing" heading are the only places the printed program is not one. Two
+limits, accepted at fragment scope: a trap discards the Lean trace, so drops
+before a panic are not compared (RUE-2282 gives `.panic` its trace); and
+every line is a bare integer, so a destructor line `n` swapped with a value
+line `n` would not be told apart. Every printed program opens with a comment naming
 its case, the rules it exercises, and its expected outcome in words, so
 `corpus.json` doubles as a readable example set.
 
@@ -326,10 +329,10 @@ a slice author writes:
 - A label is a claim: write `(Rule)` only where the declaration really is
   that rule's image, because the index's inverse table reads every label as
   "this rule is mechanized here". Where the fragment abstracts a rule away
-  rather than modelling it — `mkres`/`consume` stand in for §5.8's aggregate
-  introduction and call forms, which the fragment has neither fields nor
-  functions for — name the form in prose with a section pointer and say what
-  is not modelled, so the rule keeps reading *not yet mechanized*.
+  rather than modelling it — `Expr.consume` stands in for the projection the
+  calculus eliminates a struct through, which is a place and so RUE-2231's —
+  name the form in prose with a section pointer and say what is not modelled,
+  so the rule keeps reading *not yet mechanized*.
 - A constructor of an inductive may carry its own doc-comment (the `Typed`
   rules do; each cites its rule). One without inherits its type's row.
 - A declaration that mechanizes nothing on its own (an inversion lemma, a
@@ -355,13 +358,13 @@ a slice author writes:
 
 | File | Contents | Calculus |
 | --- | --- | --- |
-| `RueCore/Syntax.lean` | multiplicity lattice, types, `class(T)`, expressions | §2, §3 |
-| `RueCore/Statics.lean` | fused flow-sensitive `Γ;Σ` context, the ownership-threading judgment `Typed` (parameterized by the program and the enclosing return type), the §5.5 branch join, (Fn) and whole-program well-formedness, skeleton preservation | §4.2, §5.1–§5.3, §5.5–§5.8 |
-| `RueCore/Dynamics.lean` | store/frame machine as a fuel-indexed definitional interpreter with drop traces; frames with scope records and their unwinds; violations as named refusals; overflow/div-zero traps | §6.1–§6.12 |
+| `RueCore/Syntax.lean` | multiplicity lattice and its join, struct declarations with their attribute, fields and destructor, types, `class(T)`, expressions | §2, §3 |
+| `RueCore/Statics.lean` | §3's class assignment as a checked equation (`WfStructs`, `struct_class_unique`, `struct_carriesLinear_iff`), the fused flow-sensitive `Γ;Σ` context, the ownership-threading judgment `Typed` (parameterized by the program and the enclosing return type), the §5.5 branch join, (Fn) and whole-program well-formedness, skeleton preservation | §3, §4.2, §5.1–§5.3, §5.5–§5.8 |
+| `RueCore/Dynamics.lean` | store/frame machine as a fuel-indexed definitional interpreter with drop traces; struct values and §6.11's recursive drop (destructor, then fields in declaration order); frames with scope records and their unwinds; violations as named refusals; overflow/div-zero traps | §6.1–§6.12 |
 | `RueCore/Soundness.lean` | value typing, the per-frame agreement invariant `FrameMatches`, frame locality `Untouched`, **the safety theorem**, the fuel lemmas, and per-§7-bullet corollaries over a whole program | §7 |
 | `RueCore/Checker.lean` | decidable checker `check`/`checkProgram` + `check_sound`/`checkProgram_sound` (every acceptance is a derivation) | §5 as an algorithm |
 | `RueCore/Examples.lean` | `#eval` demos; kernel-checked acceptance/rejection of example programs | — |
-| `RueCore/Print.lean` | core syntax → Rue source, and the observation channel (one printed line per drop event, per multiplicity class) | §2 elaboration inventory, 3.9 |
+| `RueCore/Print.lean` | core syntax → Rue source, the program's struct declarations included, and the observation channel (a `drop fn` per destructor-bearing declaration) | §2 elaboration inventory, 3.9 |
 | `RueCore/Corpus.lean` | the bridge corpus: each case's checker verdict and interpreter outcome, exported as JSON (`lake exe ruecore-corpus`) | §5, §6, §7 witnesses |
 | `RueCore/Gen.lean` | a seeded, type-directed generator of fragment programs, appended to the corpus by `lake exe ruecore-corpus --gen N --seed S` | programs, not rules |
 | `RueCore/Explain.lean` | instrumented mirrors of `check` and `eval` — derivation trees with the failing premise named, and step tables with stores and drop events — with the lemmas tying both to the proved definitions | §5, §6 as an explanation |
@@ -370,23 +373,26 @@ a slice author writes:
 | `DIGEST.md`, `TRUST.md` | (generated) every theorem's statement with the definitions it is written in terms of; every theorem's axioms, `sorry` count, and declared assumptions | §7's claims, stated |
 | `GUIDE.md`, `INDEX.md` | the reader's guide, including the thirty-minute validation procedure, and the generated form ↔ rule ↔ declaration ↔ paragraph index (`scripts/validate-lean-xref-index.py`) | §2, §5, §6 coverage |
 
-The fragment: scalars + an abstract resource type `res κ` carrying its
-multiplicity class; use (copy/move), `@drop`, `let` scope exit with the
-residual-linear leak check, assignment with reinitialization and the
-`3.8:77` linear-overwrite premise, sequence discard, `if` with the
-conservative branch join, `+`/`/`/`<` with the §6.4 traps, and — with
-RUE-2233 — top-level functions, by-value calls with frames and scope
-records, and `return` with its σ unwind. Whole bindings only — no
-projections/partial moves, no borrows, no `inout`/`borrow` parameters, no
-accessor calls, no loops (see the outline doc for the milestone ladder that
-adds them).
+The fragment: scalars + monomorphic struct types declared by the program,
+with §3's class as the join of the field classes lifted by the declared
+attribute; struct literals ((Struct-Intro) §5.8) and §6.11's drop order
+(destructor, then fields in declaration order); use (copy/move), `@drop`,
+`let` scope exit with the residual-linear leak check, assignment with
+reinitialization and the `3.8:77` linear-overwrite premise, sequence discard,
+`if` with the conservative branch join, `+`/`/`/`<` with the §6.4 traps, and
+top-level functions, by-value calls with frames and scope records, and
+`return` with its σ unwind. Whole bindings only — no projections/partial
+moves (so the fragment's whole-value struct elimination stands in for one,
+RUE-2231), no enums, no arrays, no borrows, no `inout`/`borrow` parameters,
+no accessor calls, no loops (see the outline doc for the milestone ladder
+that adds them).
 
 ## The main theorem
 
 ```
 theorem soundness (hwf : WfProgram P) :
-  ∀ fuel, Typed P R Γ e T Γ' → FrameMatches Γ φ H →
-    EvalOk T R Γ' φ H (eval fuel P H φ e)
+  ∀ fuel, Typed P R Γ e T Γ' → FrameMatches P.structs Γ φ H →
+    EvalOk P.structs T R Γ' φ H (eval fuel P H φ e)
 ```
 
 `EvalOk` is a predicate on the result: a well-typed value with the outgoing

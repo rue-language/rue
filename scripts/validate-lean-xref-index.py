@@ -131,10 +131,12 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
     ),
     ("T", "S"): (
         "partial",
-        ["Ty.res"],
-        "`res κ` is an abstract resource carrying a struct's multiplicity class "
-        "(§3) and one integer payload; it has no fields, so no projection, no "
-        "partial move, and no per-field §5.6 drop",
+        ["Ty.struct", "StructDecl"],
+        "a monomorphic struct declared by the program: named fields by position, "
+        "the `@copy`/`linear` attribute, and whether it declares a destructor, with "
+        "`class(S)` the field join of §3 (`WfStructs` is the equation). No "
+        "projection and no partial move, so no per-field §5.6 drop obligation "
+        "(RUE-2231), and no generics",
     ),
     ("T", "E"): ("no", [], "enums and their variants are outside the fragment"),
     ("T", "[T; n]"): ("no", [], "arrays and array indexing are outside the fragment"),
@@ -171,12 +173,11 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         "one of the four ordering compares, `<`",
     ),
     ("e", "S { f1: e1, ..., fk: ek }"): (
-        "stand-in",
-        ["Expr.mkres"],
-        "`RueCore.Expr.mkres` stands in: `mkres κ e` introduces the abstract "
-        "resource of `res κ`, the ownership shape of §5.8's aggregate "
-        "introduction, but the fragment has no fields, so there is no struct "
-        "literal to type",
+        "yes",
+        ["Expr.mkStruct"],
+        "one initializer per declared field, presented in declaration order "
+        "(`3.6:15`: elaboration reorders a surface literal) and typed left to "
+        "right with Σ threaded, by (Struct-Intro) §5.8",
     ),
     ("e", "E :: K ( e1, ..., em )"): ("no", [], "follows `E`: no enums, so no variant construction"),
     ("e", "[ e1, ..., en ]"): ("no", [], "follows `[T; n]`: no arrays, so no array construction"),
@@ -186,9 +187,11 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         "every argument by value: no `inout`/`borrow` argument forms, so no "
         "`Λ_call`, no law-of-exclusivity premise and no call-entry recheck, and no "
         "(Call-Bottom) companion since the fragment has no `never` type. "
-        "`RueCore.Expr.consume` remains the abstract resource elimination beside "
-        "it, the ownership shape of a one-argument by-value call over a type with "
-        "no fields",
+        "`RueCore.Expr.consume` remains beside it as the fragment's whole-value "
+        "struct elimination: it reads the first field's payload and consumes the "
+        "value, which is the ownership shape of a one-argument by-value call and "
+        "the stand-in for the projection `p . f` the calculus eliminates a struct "
+        "through",
     ),
     ("e", "p . f ( e1, ..., ek )"): (
         "no",

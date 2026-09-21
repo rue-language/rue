@@ -1,18 +1,32 @@
 ════════════════════════════════════════════════════════════════════════════════
  copy_resource
 ════════════════════════════════════════════════════════════════════════════════
-A copy resource: @drop is a no-op, uses copy, nothing is ever printed for it.
+A copy struct: @drop is a no-op, uses copy, nothing is ever printed for it.
 
-Rules exercised: (Use-Copy) §5.1 · (@Drop-Copy) §5.3
+Rules exercised: (Use-Copy) §5.1 · (@Drop-Copy) §5.3 · 3.9:31
 
 ── The program ─────────────────────────────────────────────────────────────────
 
+@copy struct S0 { x0: i64 }
+fn consume_S0(s: S0) -> i64 { s.x0 }
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+linear struct S2 { x0: i64 }
+fn consume_S2(s: S2) -> i64 { s.x0 }
+linear struct S3 { x0: i64 }
+drop fn S3(self) { @dbg(self.x0); }
+struct S4 { x0: i64, x1: S3 }
+struct S5 { x0: i64, x1: S1 }
+drop fn S5(self) { @dbg(self.x0); }
+@copy struct S6 { x0: i64, x1: i64 }
+fn consume_S6(s: S6) -> i64 { s.x0 }
+struct S7 { x0: S1, x1: S1 }
 fn f0() -> i64 {
     {
-        let v0: RCopy = RCopy { value: 5 };
+        let v0: S0 = S0 { x0: 5 };
         {
             @drop(v0);
-            (consume_copy(v0) + consume_copy(v0))
+            (consume_S0(v0) + consume_S0(v0))
         }
     }
 }
@@ -38,45 +52,45 @@ function body, checked from (Fn) §5.8's entry context.
   fn f0() -> i64
 
   (Let) §5.3 + the §5.6 scope-exit leak check
-    e       { let v0: RCopy = RCopy { value: 5 }; { @drop(v0); (consume_copy(v0) + consume_…
+    e       { let v0: S0 = S0 { x0: 5 }; { @drop(v0); (consume_S0(v0) + consume_S0(v0)) } }
     Γ;Σ     (empty)
     ⇒       i64  ⊣  (empty)
-      resource intro §5.8 (the shape of the aggregate-introduction rule; `res κ` has no fields)
-        e       RCopy { value: 5 }
+      (Struct-Intro) §5.8
+        e       S0 { x0: 5 }
         Γ;Σ     (empty)
-        ⇒       RCopy  ⊣  (empty)
+        ⇒       S0  ⊣  (empty)
           (Lit) §5.8
             e       5
             Γ;Σ     (empty)
             ⇒       i64  ⊣  (empty)
       (Seq) §5.3, 3.8:64
-        e       { @drop(v0); (consume_copy(v0) + consume_copy(v0)) }
-        Γ;Σ     [v0: RCopy = Owned]
-        ⇒       i64  ⊣  [v0: RCopy = Owned]
+        e       { @drop(v0); (consume_S0(v0) + consume_S0(v0)) }
+        Γ;Σ     [v0: S0 = Owned]
+        ⇒       i64  ⊣  [v0: S0 = Owned]
           (@Drop-Copy) §5.3
             e       @drop(v0)
-            Γ;Σ     [v0: RCopy = Owned]
-            ⇒       ()  ⊣  [v0: RCopy = Owned]
+            Γ;Σ     [v0: S0 = Owned]
+            ⇒       ()  ⊣  [v0: S0 = Owned]
           (Arith) §5.8
-            e       (consume_copy(v0) + consume_copy(v0))
-            Γ;Σ     [v0: RCopy = Owned]
-            ⇒       i64  ⊣  [v0: RCopy = Owned]
-              resource elimination §5.8/§4.2 (an abstract consuming elimination)
-                e       consume_copy(v0)
-                Γ;Σ     [v0: RCopy = Owned]
-                ⇒       i64  ⊣  [v0: RCopy = Owned]
+            e       (consume_S0(v0) + consume_S0(v0))
+            Γ;Σ     [v0: S0 = Owned]
+            ⇒       i64  ⊣  [v0: S0 = Owned]
+              §5.8 whole-value elimination
+                e       consume_S0(v0)
+                Γ;Σ     [v0: S0 = Owned]
+                ⇒       i64  ⊣  [v0: S0 = Owned]
                   (Use-Copy) §5.1
                     e       v0
-                    Γ;Σ     [v0: RCopy = Owned]
-                    ⇒       RCopy  ⊣  [v0: RCopy = Owned]
-              resource elimination §5.8/§4.2 (an abstract consuming elimination)
-                e       consume_copy(v0)
-                Γ;Σ     [v0: RCopy = Owned]
-                ⇒       i64  ⊣  [v0: RCopy = Owned]
+                    Γ;Σ     [v0: S0 = Owned]
+                    ⇒       S0  ⊣  [v0: S0 = Owned]
+              §5.8 whole-value elimination
+                e       consume_S0(v0)
+                Γ;Σ     [v0: S0 = Owned]
+                ⇒       i64  ⊣  [v0: S0 = Owned]
                   (Use-Copy) §5.1
                     e       v0
-                    Γ;Σ     [v0: RCopy = Owned]
-                    ⇒       RCopy  ⊣  [v0: RCopy = Owned]
+                    Γ;Σ     [v0: S0 = Owned]
+                    ⇒       S0  ⊣  [v0: S0 = Owned]
 
 ── The run (§6) ────────────────────────────────────────────────────────────────
 
@@ -95,54 +109,54 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 5
-  [3]   d3        resource intro §6.5
-         expr    RCopy { value: 5 }
+  [3]   d3        (D-Struct) §6.5
+         expr    S0 { x0: 5 }
          store   (empty)
            →     (empty)
-         result  value RCopy { 5 }
+         result  value S0 { 5 }
   [4]   d3        (D-Let) §6.7 (mint the binding)
-         expr    let v0 = RCopy { 5 } at ℓ0
+         expr    let v0 = S0 { 5 } at ℓ0
          store   (empty)
-           →     [ℓ0 = RCopy { 5 }]
-         result  value RCopy { 5 }
+           →     [ℓ0 = S0 { 5 }]
+         result  value S0 { 5 }
   [5]   d4          @drop §6.11 (Copy: no glue)
          expr    @drop(v0)
-         store   [ℓ0 = RCopy { 5 }]
-           →     [ℓ0 = RCopy { 5 }]
+         store   [ℓ0 = S0 { 5 }]
+           →     [ℓ0 = S0 { 5 }]
          result  value ()
   [6]   d6              (D-Use-Copy) §6.3
          expr    v0
-         store   [ℓ0 = RCopy { 5 }]
-           →     [ℓ0 = RCopy { 5 }]
-         result  value RCopy { 5 }
-  [7]   d5            resource elimination §6.5
-         expr    consume_copy(v0)
-         store   [ℓ0 = RCopy { 5 }]
-           →     [ℓ0 = RCopy { 5 }]
+         store   [ℓ0 = S0 { 5 }]
+           →     [ℓ0 = S0 { 5 }]
+         result  value S0 { 5 }
+  [7]   d5            §6.5 whole-value elimination
+         expr    consume_S0(v0)
+         store   [ℓ0 = S0 { 5 }]
+           →     [ℓ0 = S0 { 5 }]
          result  value 5
   [8]   d6              (D-Use-Copy) §6.3
          expr    v0
-         store   [ℓ0 = RCopy { 5 }]
-           →     [ℓ0 = RCopy { 5 }]
-         result  value RCopy { 5 }
-  [9]   d5            resource elimination §6.5
-         expr    consume_copy(v0)
-         store   [ℓ0 = RCopy { 5 }]
-           →     [ℓ0 = RCopy { 5 }]
+         store   [ℓ0 = S0 { 5 }]
+           →     [ℓ0 = S0 { 5 }]
+         result  value S0 { 5 }
+  [9]   d5            §6.5 whole-value elimination
+         expr    consume_S0(v0)
+         store   [ℓ0 = S0 { 5 }]
+           →     [ℓ0 = S0 { 5 }]
          result  value 5
   [10]  d4          (D-Arith) §6.4
-         expr    (consume_copy(v0) + consume_copy(v0))
-         store   [ℓ0 = RCopy { 5 }]
-           →     [ℓ0 = RCopy { 5 }]
+         expr    (consume_S0(v0) + consume_S0(v0))
+         store   [ℓ0 = S0 { 5 }]
+           →     [ℓ0 = S0 { 5 }]
          result  value 10
   [11]  d3        (D-Seq) §6.7
-         expr    { @drop(v0); (consume_copy(v0) + consume_copy(v0)) }
-         store   [ℓ0 = RCopy { 5 }]
-           →     [ℓ0 = RCopy { 5 }]
+         expr    { @drop(v0); (consume_S0(v0) + consume_S0(v0)) }
+         store   [ℓ0 = S0 { 5 }]
+           →     [ℓ0 = S0 { 5 }]
          result  value 10
   [12]  d2      (D-EndScope) §6.7 (retire the binding)
          expr    endscope([ℓ0])
-         store   [ℓ0 = RCopy { 5 }]
+         store   [ℓ0 = S0 { 5 }]
            →     [ℓ0 = † (retired)]
          result  value 10
   [13]  d0  (D-Return-Value) §6.9 (pop the frame)
