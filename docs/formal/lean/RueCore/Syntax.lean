@@ -12,12 +12,20 @@ scoped for the mechanization spike:
 * Expressions: literals, place use (§4.2), `+`/`/`/`<` primitives (§5.8 with
   the §6.4 trap dynamics), resource intro/elim, `@drop` (§5.3), `let` (§5.6
   scope exit), assignment with reinitialization (§5.2), sequencing with the
-  discard check (§5.3), and `if` with the branch join (§5.5).
+  discard check (§5.3), `if` with the branch join (§5.5), by-value calls
+  (§5.8's (Call), §6.9), and `return` (§5.7's (Return-Value), §6.9).
 * Variables are de Bruijn indices: the calculus reaches the core only through
   elaboration, and name resolution is elaboration's job.
+* Functions are named by their index in the program (`Program`), the same way
+  bindings are named by their de Bruijn index: elaboration resolves the name.
 
 No borrows/loans (Λ is ambiently empty in the current core anyway — §5
-preamble), no calls, no loops: those are the next milestones, not spike scope.
+preamble), no by-reference parameters, no loops, no accessor calls: those are
+the next milestones, not this slice's scope.
+
+`Expr` derives `Repr` but not `DecidableEq`: `call` carries a `List Expr`, a
+nested inductive occurrence for which Lean's `DecidableEq` deriving handler has
+no instance, and nothing in the package compares expressions.
 -/
 
 namespace RueCore
@@ -61,7 +69,10 @@ instance (n : Int) : Decidable (InBounds n) := by
 
 /-- Expressions (§2, fragment). `use i` is the `e ::= p` production — a place
 (here: a whole binding) appearing in value context, i.e. a *use* (§4.2).
-`drop i` is `@drop(p)`. `letIn` carries the binding's `μ ∈ {∅, mut}` mark. -/
+`drop i` is `@drop(p)`. `letIn` carries the binding's `μ ∈ {∅, mut}` mark.
+`call f args` is §2's `g(a1, …, am)` with every argument by value (§6.9's
+by-reference modes are not in the fragment), `f` the callee's index in the
+`Program`. `ret e` is §2's `return e`. -/
 inductive Expr where
   | intLit (n : Int)
   | boolLit (b : Bool)
@@ -77,6 +88,38 @@ inductive Expr where
   | assign (i : Nat) (e : Expr)
   | seq (e₁ e₂ : Expr)
   | ite (c e₁ e₂ : Expr)
+  | call (f : Nat) (args : List Expr)
+  | ret (e : Expr)
+deriving Repr
+
+/-- A by-value parameter (§5.8's `mi = ∅` mode): its declared type and its `μ`
+mark, which is what lets a body assign to it (§5.2). `borrow`/`inout`
+parameters, which the caller owns and which owe no drop (`3.8:62`, §6.9), are
+not in the fragment. -/
+structure Param where
+  ty : Ty
+  mu : Bool
 deriving DecidableEq, Repr
+
+/-- A function definition: §5.8's `fn g(m1 x1:T1, …, mm xm:Tm) -> Tr { e_body }`
+with every mode by value. Parameters are listed left to right, as the
+signature writes them. -/
+structure FnDef where
+  params : List Param
+  ret : Ty
+  body : Expr
+deriving Repr
+
+/-- A program: the top-level function environment §5.8's (Call) looks a callee
+up in, indexed the way `Expr.call` names it. Index `0` is the entry point,
+which `Dynamics.run` calls with no arguments. -/
+abbrev Program := List FnDef
+
+/-- A one-function program: the entry point, with no parameters and declared
+return type `T`, whose body is `e`. This is the shape of every fragment
+program that calls nothing, which is how the pre-call corpus cases are read as
+programs (helper). -/
+def Program.entry (T : Ty) (e : Expr) : Program :=
+  [{ params := [], ret := T, body := e }]
 
 end RueCore
