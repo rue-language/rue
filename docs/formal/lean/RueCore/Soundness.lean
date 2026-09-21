@@ -263,7 +263,7 @@ theorem evalBinOpFloat_res {D : StructEnv} (M : FloatModel) (op : BinOp) (w : Fl
     (a b : FloatDatum) (ha : a.Wf w) (hb : b.Wf w) (hop : op.floatAdmits = true) :
     ∃ v, evalBinOp M.toFloatOps op (.float w a) (.float w b) = .val v ∧
       HasTy D v (op.resultTy (.float w)) := by
-  simp only [evalBinOp, if_pos rfl]
+  simp only [evalBinOp]
   exact binOpFloat_res M op w a b ha hb hop
 
 /-- **`neg` and `bitnot` land on a value of the operand's type or on
