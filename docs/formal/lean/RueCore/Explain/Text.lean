@@ -122,7 +122,9 @@ def outcomeLines : EvalRes → List String
   | .returned _ v tr =>
       ["Outcome: ok — value " ++ valLine v ++ " (handed back by a `return`, §6.9)",
        "         drop trace: " ++ (if tr.isEmpty then "(no drops)" else eventsLine tr)]
-  | .panic k => ["Outcome: PANIC (" ++ Corpus.panicName k ++ ") — a defined trap, §6.12"]
+  | .panic k tr =>
+      ["Outcome: PANIC (" ++ Corpus.panicName k ++ ") — a defined trap, §6.12",
+       "         trace up to the trap: " ++ (if tr.isEmpty then "(nothing)" else eventsLine tr)]
   | .stuck w =>
       ("Outcome: REFUSED (" ++ Corpus.violationName w ++ ")") :: para 9 68 (violationPremise w)
   | .outOfFuel =>

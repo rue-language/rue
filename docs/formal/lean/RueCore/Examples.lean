@@ -34,43 +34,65 @@ open Expr
 /-- The fuel every demo runs at: far more than the deepest of them spends. -/
 def demoFuel : Nat := 400
 
+/-! ## The fixture vocabulary
+
+Most of these programs are about ownership rather than about a width, so they
+are written at one integer type, `int(64, signed)` — Rue's `i64`. The cases
+that *are* about a width name it themselves. -/
+
+/-- `int(64, signed)`, Rue's `i64` (helper). -/
+abbrev tI64 : Ty := .int .w64 .signed
+
+/-- An `int(64, signed)` literal. Elaboration resolves a literal's width
+before the core (`4.1:2`), so the core form carries it (helper). -/
+abbrev lit (n : Int) : Expr := .intLit .w64 .signed n
+
+/-- An `int(64, signed)` machine value (§6.1's `n_T`) (helper). -/
+abbrev v64 (n : Int) : Val := .int .w64 .signed n
+
+/-- `min_T` and `max_T` at `int(64, signed)`, the bounds §6.4's arithmetic
+traps outside of (helper). -/
+abbrev min64 : Int := intMin .w64 .signed
+/-- The upper `int(64, signed)` bound (helper). -/
+abbrev max64 : Int := intMax .w64 .signed
+
 /-! ## The fixture struct declarations -/
 
 /-- `S0`: `@copy struct { x0: i64 }`. Class `Copy`; a `@copy` type declares no
 destructor, so its drops are silent and its field is readable. -/
-def dCopy : StructDecl := { attr := .copy, fields := [.int], dtor := false, cls := .copy }
+def dCopy : StructDecl := { attr := .copy, fields := [tI64], dtor := false, cls := .copy }
 
 /-- `S1`: `struct { x0: i64 }` with a destructor. Class `Affine`, and the
 destructor is what makes each of its drops observable. -/
-def dAffine : StructDecl := { attr := .none, fields := [.int], dtor := true, cls := .affine }
+def dAffine : StructDecl := { attr := .none, fields := [tI64], dtor := true, cls := .affine }
 
 /-- `S2`: `linear struct { x0: i64 }`, no destructor. Class `Linear`; its
 field can be read out, so it is the linear type the fragment's whole-value
 elimination works on, and its drops are silent. -/
-def dLinear : StructDecl := { attr := .linear, fields := [.int], dtor := false, cls := .linear }
+def dLinear : StructDecl := { attr := .linear, fields := [tI64], dtor := false, cls := .linear }
 
 /-- `S3`: `linear struct { x0: i64 }` with a destructor. Class `Linear`, drops
 observable; nothing may be read out of it (`3.9:34`), so it is discharged by
 `@drop` or by a move. -/
 def dLinearDtor : StructDecl :=
-  { attr := .linear, fields := [.int], dtor := true, cls := .linear }
+  { attr := .linear, fields := [tI64], dtor := true, cls := .linear }
 
 /-- `S4`: `struct { x0: i64, x1: S3 }`, no attribute and no destructor. Its
 class is `Linear` *through a field* — §3's join, `3.8:58`'s infectiousness —
 which is the shape the linear-carrying-struct cases are about. -/
 def dCarry : StructDecl :=
-  { attr := .none, fields := [.int, .struct 3], dtor := false, cls := .linear }
+  { attr := .none, fields := [tI64, .struct 3], dtor := false, cls := .linear }
 
 /-- `S5`: `struct { x0: i64, x1: S1 }` with a destructor. Class `Affine`;
 dropping it runs its own destructor first and then its fields in declaration
 order (§6.11), so it is the nesting case. -/
 def dOuter : StructDecl :=
-  { attr := .none, fields := [.int, .struct 1], dtor := true, cls := .affine }
+  { attr := .none, fields := [tI64, .struct 1], dtor := true, cls := .affine }
 
 /-- `S6`: `@copy struct { x0: i64, x1: i64 }`. Class `Copy`, two fields, so a
 use of it copies and the whole-value elimination reads the first. -/
 def dPair : StructDecl :=
-  { attr := .copy, fields := [.int, .int], dtor := false, cls := .copy }
+  { attr := .copy, fields := [tI64, tI64], dtor := false, cls := .copy }
 
 /-- `S7`: `struct { x0: S1, x1: S1 }`, no destructor. Class `Affine`; dropping
 it drops both fields in declaration order (§6.11) and nothing else. -/
@@ -121,50 +143,50 @@ def scalarProg (T : Ty) (e : Expr) : Program := Program.entry [] T e
 /-- `let x = 2 + 3; x + x` — well-typed scalar flow (no `*` in the
 fragment; use `+`). -/
 def scalars : Expr :=
-  letIn false (add (intLit 2) (intLit 3)) (add (use 0) (use 0))
+  letIn false (binop .add (lit 2) (lit 3)) (binop .add (use 0) (use 0))
 
 /-- An affine resource silently dropped at scope exit — legal, and the trace
 shows the drop (its destructor). -/
 def affineDrop : Expr :=
-  letIn false (resA (intLit 7)) (intLit 1)
+  letIn false (resA (lit 7)) (lit 1)
 
 /-- A linear resource, consumed exactly once — legal. -/
 def linearConsumed : Expr :=
-  letIn false (resL (intLit 7)) (consume (use 0))
+  letIn false (resL (lit 7)) (consume (use 0))
 
 /-- A linear resource leaked at scope exit — the machine REFUSES
 (`linearLeak`), and no typing derivation exists for it. -/
 def linearLeaked : Expr :=
-  letIn false (resL (intLit 7)) (intLit 1)
+  letIn false (resL (lit 7)) (lit 1)
 
 /-- Use after move: `let r = S1{1}; let s = r; @drop(r)` — refused
 dynamically, rejected statically. -/
 def useAfterMove : Expr :=
-  letIn false (resA (intLit 1))
-    (letIn false (use 0) (seq (drop 1) (intLit 0)))
+  letIn false (resA (lit 1))
+    (letIn false (use 0) (seq (drop 1) (lit 0)))
 
 /-- Reinitialization: move out, assign back in, consume — legal (`3.8:55`). -/
 def reinit : Expr :=
-  letIn true (resL (intLit 1))
+  letIn true (resL (lit 1))
     (seq (consume (use 0))
-      (seq (assign 0 (resL (intLit 2)))
+      (seq (assign 0 (resL (lit 2)))
         (consume (use 0))))
 
 /-- Branch join: consume a linear value in only one arm — no typing
 derivation exists (the §5.5 join rejects it); dynamically it leaks on the
 `false` path. -/
 def linearHalfConsumed : Expr :=
-  letIn false (resL (intLit 9))
-    (seq (ite (boolLit false) (consume (use 0)) (intLit 0))
-      (intLit 0))
+  letIn false (resL (lit 9))
+    (seq (ite (boolLit false) (consume (use 0)) (lit 0))
+      (lit 0))
 
-/-- Overflow trap (§6.4): `intMax + 1` panics. -/
+/-- Overflow trap (§6.4): `max_T + 1` panics. -/
 def overflow : Expr :=
-  add (intLit intMax) (intLit 1)
+  binop .add (lit max64) (lit 1)
 
 /-- Division by zero panics. -/
 def divZero : Expr :=
-  div (intLit 1) (intLit 0)
+  binop .div (lit 1) (lit 0)
 
 /-! ## Structs with fields (RUE-2230)
 
@@ -174,37 +196,37 @@ so they are where §3's join and §6.11's order become visible. -/
 /-- A struct that is `Linear` only through a field (`S4`), left to scope exit:
 §5.6's obligation is undischarged, so the machine refuses. -/
 def structLinearFieldLeaked : Expr :=
-  letIn false (mkStruct sCarry [intLit 1, resLD (intLit 2)]) (intLit 0)
+  letIn false (mkStruct sCarry [lit 1, resLD (lit 2)]) (lit 0)
 
 /-- The same value discharged by `@drop` (§5.3's only non-move discharge of a
 linear obligation): the whole value's glue runs, so the linear field's
 destructor prints. -/
 def structLinearFieldDropped : Expr :=
-  letIn false (mkStruct sCarry [intLit 1, resLD (intLit 2)]) (seq (drop 0) (intLit 0))
+  letIn false (mkStruct sCarry [lit 1, resLD (lit 2)]) (seq (drop 0) (lit 0))
 
 /-- A nested destructor-bearing struct at scope exit: §6.11 runs the outer
 destructor first and then the fields in declaration order, so the trace is
 `1` then `2`. -/
 def structNestedDrop : Expr :=
-  letIn false (mkStruct sOuter [intLit 1, resA (intLit 2)]) (intLit 9)
+  letIn false (mkStruct sOuter [lit 1, resA (lit 2)]) (lit 9)
 
 /-- The §5.5 join on a linear-carrying struct entry: discharged in one arm
 only, which `3.8:50` makes ill-formed; on the path taken it leaks. -/
 def structJoinDisagrees : Expr :=
-  letIn false (mkStruct sCarry [intLit 1, resLD (intLit 2)])
-    (seq (ite (boolLit false) (drop 0) unitLit) (intLit 0))
+  letIn false (mkStruct sCarry [lit 1, resLD (lit 2)])
+    (seq (ite (boolLit false) (drop 0) unitLit) (lit 0))
 
 /-- A `@copy` struct used twice: contraction is legal at `Copy` (§3), and
 nothing is ever dropped. -/
 def structCopyTwice : Expr :=
-  letIn false (mkStruct sPair [intLit 5, intLit 6])
-    (add (consume (use 0)) (consume (use 0)))
+  letIn false (mkStruct sPair [lit 5, lit 6])
+    (binop .add (consume (use 0)) (consume (use 0)))
 
 /-- Two destructor-bearing fields in one struct with no destructor of its own:
 scope exit drops them in **declaration** order (§6.11), so the trace is `1`
 then `2`. -/
 def structFieldOrder : Expr :=
-  letIn false (mkStruct sTwoAffine [resA (intLit 1), resA (intLit 2)]) (intLit 0)
+  letIn false (mkStruct sTwoAffine [resA (lit 1), resA (lit 2)]) (lit 0)
 
 /-! ## Calls, frames, and `return` (RUE-2233)
 
@@ -215,59 +237,59 @@ Each of these needs more than one function, so it is written as a whole
 first parameter is the outermost binder, so it is `use 1` inside the body. -/
 def callPlain : Program :=
   { structs := [],
-    fns := [{ params := [], ret := .int, body := call 1 [intLit 2, intLit 3] },
-            { params := [⟨.int, false⟩, ⟨.int, false⟩], ret := .int,
-              body := add (use 1) (use 0) }] }
+    fns := [{ params := [], ret := tI64, body := call 1 [lit 2, lit 3] },
+            { params := [⟨tI64, false⟩, ⟨tI64, false⟩], ret := tI64,
+              body := binop .add (use 1) (use 0) }] }
 
 /-- An early `return` past two live affine bindings: the frame unwinds
 newest-first (§6.9's (D-Return)), so the trace is `4` then `3`, then the
 value `7`. -/
 def returnPastAffine : Program :=
-  prog .int
-    (letIn false (resA (intLit 3))
-      (letIn false (resA (intLit 4))
-        (ret (intLit 7))))
+  prog tI64
+    (letIn false (resA (lit 3))
+      (letIn false (resA (lit 4))
+        (ret (lit 7))))
 
 /-- An early `return` past a live **linear** binding: §5.6's obligation is
 undischarged at the `⊥_exit` edge, so (Return-Value) §5.7 rejects it, and the
 unwind refuses with `linearLeak`. -/
 def returnPastLinear : Program :=
-  prog .int (letIn false (resL (intLit 5)) (ret (intLit 1)))
+  prog tI64 (letIn false (resL (lit 5)) (ret (lit 1)))
 
 /-- A by-value affine argument the callee never consumes: the callee's frame
 owes its drop, and (D-Return-Value)'s `run-all-scope-drops` runs it at the
 frame pop — `2`, then the value `1`. -/
 def paramDroppedAtPop : Program :=
   { structs := structEnv,
-    fns := [{ params := [], ret := .int, body := call 1 [resA (intLit 2)] },
-            { params := [⟨.struct sAffine, false⟩], ret := .int, body := intLit 1 }] }
+    fns := [{ params := [], ret := tI64, body := call 1 [resA (lit 2)] },
+            { params := [⟨.struct sAffine, false⟩], ret := tI64, body := lit 1 }] }
 
 /-- A by-value **linear** parameter the callee never consumes: (Fn) §5.8's
 second clause rejects the callee (`3.8:62`), and the frame pop refuses with
 `linearLeak`. -/
 def linearParamLeaked : Program :=
   { structs := structEnv,
-    fns := [{ params := [], ret := .int, body := call 1 [resL (intLit 5)] },
-            { params := [⟨.struct sLinear, false⟩], ret := .int, body := intLit 1 }] }
+    fns := [{ params := [], ret := tI64, body := call 1 [resL (lit 5)] },
+            { params := [⟨.struct sLinear, false⟩], ret := tI64, body := lit 1 }] }
 
 /-- Recursion to a trap: `f1(3)` counts down and divides by zero at the
 bottom, four frames deep. -/
 def recursionTrap : Program :=
   { structs := [],
-    fns := [{ params := [], ret := .int, body := call 1 [intLit 3] },
-            { params := [⟨.int, false⟩], ret := .int,
-              body := ite (lt (use 0) (intLit 1))
-                (div (intLit 1) (intLit 0))
-                (call 1 [add (use 0) (intLit (-1))]) }] }
+    fns := [{ params := [], ret := tI64, body := call 1 [lit 3] },
+            { params := [⟨tI64, false⟩], ret := tI64,
+              body := ite (binop .lt (use 0) (lit 1))
+                (binop .div (lit 1) (lit 0))
+                (call 1 [binop .add (use 0) (lit (-1))]) }] }
 
 /-- A recursive countdown: `4 + 3 + 2 + 1 + 0 = 10`. -/
 def countdown : Program :=
   { structs := [],
-    fns := [{ params := [], ret := .int, body := call 1 [intLit 4] },
-            { params := [⟨.int, false⟩], ret := .int,
-              body := ite (lt (use 0) (intLit 1))
-                (intLit 0)
-                (add (use 0) (call 1 [add (use 0) (intLit (-1))])) }] }
+    fns := [{ params := [], ret := tI64, body := call 1 [lit 4] },
+            { params := [⟨tI64, false⟩], ret := tI64,
+              body := ite (binop .lt (use 0) (lit 1))
+                (lit 0)
+                (binop .add (use 0) (call 1 [binop .add (use 0) (lit (-1))])) }] }
 
 /-! ## The one edge no monitor covers (RUE-2316)
 
@@ -298,10 +320,10 @@ value the context does not name. `checkProgram` accepts, so
 apply to it, and the run destroys `S2 { 7 }` with an empty drop trace. -/
 def linearLostAtCallArg : Program :=
   { structs := structEnv,
-    fns := [{ params := [], ret := .int,
-              body := letIn false (resL (intLit 7)) (call 1 [use 0, ret (intLit 0)]) },
-            { params := [⟨.struct sLinear, false⟩, ⟨.int, false⟩], ret := .int,
-              body := add (consume (use 1)) (use 0) }] }
+    fns := [{ params := [], ret := tI64,
+              body := letIn false (resL (lit 7)) (call 1 [use 0, ret (lit 0)]) },
+            { params := [⟨.struct sLinear, false⟩, ⟨tI64, false⟩], ret := tI64,
+              body := binop .add (consume (use 1)) (use 0) }] }
 
 /-- The affine twin, where the same loss is *observable*: `S1` declares a
 destructor, so a drop of it is the trace event the printed program turns into
@@ -311,26 +333,26 @@ compiler agrees — `S1`'s destructor does not run — which is why no bridge ca
 could catch this and why none is added. -/
 def affineLostAtCallArg : Program :=
   { structs := structEnv,
-    fns := [{ params := [], ret := .int,
-              body := letIn false (resA (intLit 7)) (call 1 [use 0, ret (intLit 0)]) },
-            { params := [⟨.struct sAffine, false⟩, ⟨.int, false⟩], ret := .int,
+    fns := [{ params := [], ret := tI64,
+              body := letIn false (resA (lit 7)) (call 1 [use 0, ret (lit 0)]) },
+            { params := [⟨.struct sAffine, false⟩, ⟨tI64, false⟩], ret := tI64,
               body := seq (drop 1) (use 0) }] }
 
-#eval run (scalarProg .int scalars) demoFuel            -- ok: 10, trace: []
-#eval run (prog .int affineDrop) demoFuel               -- ok: 1, drop + dtor of S1{7}
-#eval run (prog .int linearConsumed) demoFuel           -- ok: 7, trace: []
-#eval run (prog .int linearLeaked) demoFuel             -- STUCK: linearLeak
-#eval run (prog .int useAfterMove) demoFuel             -- STUCK: useAfterMove
-#eval run (prog .int reinit) demoFuel                   -- ok: 2, trace: []
-#eval run (prog .int linearHalfConsumed) demoFuel       -- STUCK: linearLeak
-#eval run (scalarProg .int overflow) demoFuel           -- panic: overflow
-#eval run (scalarProg .int divZero) demoFuel            -- panic: divZero
-#eval run (prog .int structLinearFieldLeaked) demoFuel  -- STUCK: linearLeak
-#eval run (prog .int structLinearFieldDropped) demoFuel -- ok: 0, dtor of S3{2}
-#eval run (prog .int structNestedDrop) demoFuel         -- ok: 9, dtors 1 then 2
-#eval run (prog .int structJoinDisagrees) demoFuel      -- STUCK: linearLeak
-#eval run (prog .int structCopyTwice) demoFuel          -- ok: 10, trace: []
-#eval run (prog .int structFieldOrder) demoFuel         -- ok: 0, dtors 1 then 2
+#eval run (scalarProg tI64 scalars) demoFuel            -- ok: 10, trace: []
+#eval run (prog tI64 affineDrop) demoFuel               -- ok: 1, drop + dtor of S1{7}
+#eval run (prog tI64 linearConsumed) demoFuel           -- ok: 7, trace: []
+#eval run (prog tI64 linearLeaked) demoFuel             -- STUCK: linearLeak
+#eval run (prog tI64 useAfterMove) demoFuel             -- STUCK: useAfterMove
+#eval run (prog tI64 reinit) demoFuel                   -- ok: 2, trace: []
+#eval run (prog tI64 linearHalfConsumed) demoFuel       -- STUCK: linearLeak
+#eval run (scalarProg tI64 overflow) demoFuel           -- panic: overflow
+#eval run (scalarProg tI64 divZero) demoFuel            -- panic: divZero
+#eval run (prog tI64 structLinearFieldLeaked) demoFuel  -- STUCK: linearLeak
+#eval run (prog tI64 structLinearFieldDropped) demoFuel -- ok: 0, dtor of S3{2}
+#eval run (prog tI64 structNestedDrop) demoFuel         -- ok: 9, dtors 1 then 2
+#eval run (prog tI64 structJoinDisagrees) demoFuel      -- STUCK: linearLeak
+#eval run (prog tI64 structCopyTwice) demoFuel          -- ok: 10, trace: []
+#eval run (prog tI64 structFieldOrder) demoFuel         -- ok: 0, dtors 1 then 2
 #eval run callPlain demoFuel                            -- ok: 5
 #eval run returnPastAffine demoFuel                     -- ok: 7, drops 4 then 3
 #eval run returnPastLinear demoFuel                     -- STUCK: linearLeak
@@ -355,15 +377,15 @@ kernel-checked facts, not test assertions.
 lookup is the join §3 defines (`checkStructs_sound`). -/
 example : WfStructs structEnv := checkStructs_sound (by rfl)
 
-example : ProgramTyped (scalarProg .int scalars) := checkProgram_sound (by rfl)
-example : ProgramTyped (prog .int affineDrop) := checkProgram_sound (by rfl)
-example : ProgramTyped (prog .int linearConsumed) := checkProgram_sound (by rfl)
-example : ProgramTyped (prog .int reinit) := checkProgram_sound (by rfl)
-example : ProgramTyped (scalarProg .int overflow) := checkProgram_sound (by rfl)
-example : ProgramTyped (prog .int structLinearFieldDropped) := checkProgram_sound (by rfl)
-example : ProgramTyped (prog .int structNestedDrop) := checkProgram_sound (by rfl)
-example : ProgramTyped (prog .int structCopyTwice) := checkProgram_sound (by rfl)
-example : ProgramTyped (prog .int structFieldOrder) := checkProgram_sound (by rfl)
+example : ProgramTyped (scalarProg tI64 scalars) := checkProgram_sound (by rfl)
+example : ProgramTyped (prog tI64 affineDrop) := checkProgram_sound (by rfl)
+example : ProgramTyped (prog tI64 linearConsumed) := checkProgram_sound (by rfl)
+example : ProgramTyped (prog tI64 reinit) := checkProgram_sound (by rfl)
+example : ProgramTyped (scalarProg tI64 overflow) := checkProgram_sound (by rfl)
+example : ProgramTyped (prog tI64 structLinearFieldDropped) := checkProgram_sound (by rfl)
+example : ProgramTyped (prog tI64 structNestedDrop) := checkProgram_sound (by rfl)
+example : ProgramTyped (prog tI64 structCopyTwice) := checkProgram_sound (by rfl)
+example : ProgramTyped (prog tI64 structFieldOrder) := checkProgram_sound (by rfl)
 example : ProgramTyped callPlain := checkProgram_sound (by rfl)
 example : ProgramTyped returnPastAffine := checkProgram_sound (by rfl)
 example : ProgramTyped paramDroppedAtPop := checkProgram_sound (by rfl)
@@ -379,30 +401,30 @@ example : ProgramTyped affineLostAtCallArg := checkProgram_sound (by rfl)
 /-- The linear value is destroyed with an empty trace: no `drop`, no
 `dropTemp`, no `dtor`, and no `Violation`. `no_linear_leak` holds of this
 program and says nothing about it. -/
-example : run linearLostAtCallArg demoFuel = .ok [.dead] (.int 0) [] := by rfl
+example : run linearLostAtCallArg demoFuel = .ok [.dead] (v64 0) [] := by rfl
 
 /-- The affine value likewise: the destructor line the printed program would
 have shown is absent. -/
-example : run affineLostAtCallArg demoFuel = .ok [.dead] (.int 0) [] := by rfl
+example : run affineLostAtCallArg demoFuel = .ok [.dead] (v64 0) [] := by rfl
 
-example : checkProgram (prog .int linearLeaked) = false := by rfl
-example : checkProgram (prog .int useAfterMove) = false := by rfl
-example : checkProgram (prog .int linearHalfConsumed) = false := by rfl
-example : checkProgram (prog .int structLinearFieldLeaked) = false := by rfl
-example : checkProgram (prog .int structJoinDisagrees) = false := by rfl
+example : checkProgram (prog tI64 linearLeaked) = false := by rfl
+example : checkProgram (prog tI64 useAfterMove) = false := by rfl
+example : checkProgram (prog tI64 linearHalfConsumed) = false := by rfl
+example : checkProgram (prog tI64 structLinearFieldLeaked) = false := by rfl
+example : checkProgram (prog tI64 structJoinDisagrees) = false := by rfl
 example : checkProgram returnPastLinear = false := by rfl
 example : checkProgram linearParamLeaked = false := by rfl
 
 /-- A declaration whose recorded class disagrees with §3's join is rejected by
 the same pass: `class(S)` is not a free parameter of the syntax. -/
-example : checkStructs [{ attr := .none, fields := [.int], dtor := false, cls := .copy }]
+example : checkStructs [{ attr := .none, fields := [tI64], dtor := false, cls := .copy }]
     = false := by rfl
 
 /-- `3.8:18` and `3.9:31`: a `@copy` declaration whose field join is not
 `Copy`, or which declares a destructor, is ill-formed. -/
 example : checkStructs (structEnv ++
     [{ attr := .copy, fields := [.struct 1], dtor := false, cls := .copy }]) = false := by rfl
-example : checkStructs [{ attr := .copy, fields := [.int], dtor := true, cls := .copy }]
+example : checkStructs [{ attr := .copy, fields := [tI64], dtor := true, cls := .copy }]
     = false := by rfl
 
 /-- `3.9:44` (E0462): a declaration whose field carries a linear value may not
@@ -427,39 +449,39 @@ by the kernel rather than observed by `#eval` (ADR-0097; the bridge cannot
 observe refusals, because the compiler rejects those programs first).
 -/
 
-example : run (prog .int linearLeaked) demoFuel = .stuck .linearLeak := by rfl
-example : run (prog .int useAfterMove) demoFuel = .stuck .useAfterMove := by rfl
-example : run (prog .int linearHalfConsumed) demoFuel = .stuck .linearLeak := by rfl
-example : run (prog .int structLinearFieldLeaked) demoFuel = .stuck .linearLeak := by rfl
-example : run (prog .int structJoinDisagrees) demoFuel = .stuck .linearLeak := by rfl
-example : run (scalarProg .int overflow) demoFuel = .panic .overflow := by rfl
-example : run (scalarProg .int divZero) demoFuel = .panic .divZero := by rfl
-example : run (scalarProg .int (use 0)) demoFuel = .stuck .unbound := by rfl
-example : run (scalarProg .int (add (boolLit true) (intLit 1))) demoFuel
+example : run (prog tI64 linearLeaked) demoFuel = .stuck .linearLeak := by rfl
+example : run (prog tI64 useAfterMove) demoFuel = .stuck .useAfterMove := by rfl
+example : run (prog tI64 linearHalfConsumed) demoFuel = .stuck .linearLeak := by rfl
+example : run (prog tI64 structLinearFieldLeaked) demoFuel = .stuck .linearLeak := by rfl
+example : run (prog tI64 structJoinDisagrees) demoFuel = .stuck .linearLeak := by rfl
+example : run (scalarProg tI64 overflow) demoFuel = .panic .overflow [] := by rfl
+example : run (scalarProg tI64 divZero) demoFuel = .panic .divZero [] := by rfl
+example : run (scalarProg tI64 (use 0)) demoFuel = .stuck .unbound := by rfl
+example : run (scalarProg tI64 (binop .add (boolLit true) (lit 1))) demoFuel
     = .stuck .typeConfusion := by rfl
 example : run returnPastLinear demoFuel = .stuck .linearLeak := by rfl
 example : run linearParamLeaked demoFuel = .stuck .linearLeak := by rfl
 
 /-- A struct literal with the wrong number of initializers is `typeConfusion`
 ((Struct-Intro) §5.8's `3.6:5`/`3.6:6`; no well-typed program reaches it). -/
-example : run (prog .int (seq (mkStruct sPair [intLit 1]) (intLit 0))) demoFuel
+example : run (prog tI64 (seq (mkStruct sPair [lit 1]) (lit 0))) demoFuel
     = .stuck .typeConfusion := by rfl
 
 /-- A struct literal naming a declaration the program does not have is
 `unbound`; elaboration resolves every type name before the core (§2). -/
-example : run (prog .int (seq (mkStruct 99 []) (intLit 0))) demoFuel
+example : run (prog tI64 (seq (mkStruct 99 []) (lit 0))) demoFuel
     = .stuck .unbound := by rfl
 
 /-- A call whose argument count does not match the callee's parameter list is
 `typeConfusion` (§5.8, `4.10:3`); no well-typed program reaches it. -/
 example : run { structs := [],
-                fns := [{ params := [], ret := .int, body := call 1 [] },
-                        { params := [⟨.int, false⟩], ret := .int, body := intLit 0 }] } demoFuel
+                fns := [{ params := [], ret := tI64, body := call 1 [] },
+                        { params := [⟨tI64, false⟩], ret := tI64, body := lit 0 }] } demoFuel
     = .stuck .typeConfusion := by rfl
 
 /-- A call of a function the program does not have is `unbound`; elaboration
 resolves every name before the core (§2). -/
-example : run (scalarProg .int (call 7 [])) demoFuel = .stuck .unbound := by rfl
+example : run (scalarProg tI64 (call 7 [])) demoFuel = .stuck .unbound := by rfl
 
 /-! ## Drop order, pinned
 
@@ -471,38 +493,38 @@ frame's teardown reads its scope record newest-first (§6.9). These pin both.
 /-- The unwind order: an early `return` past two live affine bindings drops
 the newer one first (§6.9's (D-Return); `3.9:18`). -/
 example : run returnPastAffine demoFuel
-    = .ok [.dead, .dead] (.int 7)
-        [.drop 1 (.struct sAffine [.int 4]), .dtor sAffine (.struct sAffine [.int 4]),
-         .drop 0 (.struct sAffine [.int 3]), .dtor sAffine (.struct sAffine [.int 3])] := by rfl
+    = .ok [.dead, .dead] (v64 7)
+        [.drop 1 (.struct sAffine [v64 4]), .dtor sAffine (.struct sAffine [v64 4]),
+         .drop 0 (.struct sAffine [v64 3]), .dtor sAffine (.struct sAffine [v64 3])] := by rfl
 
 /-- §6.11's order inside one value: the outer destructor, then the fields in
 declaration order — so the nested destructor runs **after** the outer one. -/
-example : run (prog .int structNestedDrop) demoFuel
-    = .ok [.dead] (.int 9)
-        [.drop 0 (.struct sOuter [.int 1, .struct sAffine [.int 2]]),
-         .dtor sOuter (.struct sOuter [.int 1, .struct sAffine [.int 2]]),
-         .dtor sAffine (.struct sAffine [.int 2])] := by rfl
+example : run (prog tI64 structNestedDrop) demoFuel
+    = .ok [.dead] (v64 9)
+        [.drop 0 (.struct sOuter [v64 1, .struct sAffine [v64 2]]),
+         .dtor sOuter (.struct sOuter [v64 1, .struct sAffine [v64 2]]),
+         .dtor sAffine (.struct sAffine [v64 2])] := by rfl
 
 /-- Fields drop in declaration order, not in reverse: the struct here has no
 destructor of its own, so its trace is exactly its two fields' (§6.11). -/
-example : run (prog .int structFieldOrder) demoFuel
-    = .ok [.dead] (.int 0)
-        [.drop 0 (.struct sTwoAffine [.struct sAffine [.int 1], .struct sAffine [.int 2]]),
-         .dtor sAffine (.struct sAffine [.int 1]),
-         .dtor sAffine (.struct sAffine [.int 2])] := by rfl
+example : run (prog tI64 structFieldOrder) demoFuel
+    = .ok [.dead] (v64 0)
+        [.drop 0 (.struct sTwoAffine [.struct sAffine [v64 1], .struct sAffine [v64 2]]),
+         .dtor sAffine (.struct sAffine [v64 1]),
+         .dtor sAffine (.struct sAffine [v64 2])] := by rfl
 
 /-- `@drop` of a value that is linear only through a field runs the whole
 value's glue: the field's destructor is the one observable event. -/
-example : run (prog .int structLinearFieldDropped) demoFuel
-    = .ok [.dead] (.int 0)
-        [.drop 0 (.struct sCarry [.int 1, .struct sLinearDtor [.int 2]]),
-         .dtor sLinearDtor (.struct sLinearDtor [.int 2])] := by rfl
+example : run (prog tI64 structLinearFieldDropped) demoFuel
+    = .ok [.dead] (v64 0)
+        [.drop 0 (.struct sCarry [v64 1, .struct sLinearDtor [v64 2]]),
+         .dtor sLinearDtor (.struct sLinearDtor [v64 2])] := by rfl
 
 /-- A by-value parameter the callee never consumes is dropped at the frame
 pop ((D-Return-Value) §6.9), not at the caller. -/
 example : run paramDroppedAtPop demoFuel
-    = .ok [.dead] (.int 1)
-        [.drop 0 (.struct sAffine [.int 2]), .dtor sAffine (.struct sAffine [.int 2])] := by rfl
+    = .ok [.dead] (v64 1)
+        [.drop 0 (.struct sAffine [v64 2]), .dtor sAffine (.struct sAffine [v64 2])] := by rfl
 
 /-! ## Fuel, as an outcome
 
@@ -519,7 +541,7 @@ example : run countdown 16 = .outOfFuel := by rfl
 /-- Seventeen is enough, and the answer is a value with five retired
 parameter cells — one per frame the recursion pushed. -/
 theorem countdown_at_17 :
-    run countdown 17 = .ok [.dead, .dead, .dead, .dead, .dead] (.int 10) [] := by rfl
+    run countdown 17 = .ok [.dead, .dead, .dead, .dead, .dead] (v64 10) [] := by rfl
 
 /-- `fuel_mono` in use: every larger bound gives that same answer, so the
 ∀-fuel shape of `soundness` is a statement about one outcome. -/
@@ -531,17 +553,25 @@ example : run countdown demoFuel = run countdown 17 :=
 `eval` is a model of §6 on the programs `check` accepts (`Dynamics.lean`,
 "the correspondence with §6"). Off that domain the two can differ, and
 these pin the ways they do, so nobody mistakes the machine for the paper
-relation on raw `Expr`: an ill-typed left operand is refused before the
-right operand runs, where §6.2's `v ⊕ E` context would reduce the right
-operand to its division-by-zero panic first; and an out-of-range literal
-is a value here, while §6's integer domain is bounded and `check` rejects it.
+relation on raw `Expr`: an out-of-range literal is a value here, while §6's
+integer domain is bounded (§6.1's `n_T`) and `check` rejects the literal; and
+two operands of different integer types are a redex no §6.4 rule has, which
+the machine names rather than leaving stuck silently.
+
+A shape that *used* to part them no longer does. `eval` reduces both operands
+before it inspects either, which is §6.2's own order, so
+`true + (1 / 0)` traps with the division by zero §6 reaches rather than being
+refused on the left operand's shape first.
 -/
 
-example : run (scalarProg .int (add (boolLit true) (div (intLit 1) (intLit 0)))) demoFuel
+example : run (scalarProg tI64 (binop .add (boolLit true) (binop .div (lit 1) (lit 0)))) demoFuel
+    = .panic .divZero [] := by rfl
+example : run (scalarProg tI64
+    (binop .add (lit 1) (.intLit .w8 .signed 1))) demoFuel
     = .stuck .typeConfusion := by rfl
-example : run (scalarProg .int (intLit (2 ^ 64))) demoFuel
-    = .ok [] (.int (2 ^ 64)) [] := by rfl
-example : checkProgram (scalarProg .int (intLit (2 ^ 64))) = false := by rfl
+example : run (scalarProg tI64 (lit (2 ^ 64))) demoFuel
+    = .ok [] (v64 (2 ^ 64)) [] := by rfl
+example : checkProgram (scalarProg tI64 (lit (2 ^ 64))) = false := by rfl
 
 /-!
 ## The retired-cell refusal, witnessed from an open machine state
@@ -558,20 +588,20 @@ open state — a store holding one retired cell and a frame naming it — which
 is the state the guard exists for.
 -/
 
-example : eval demoFuel (scalarProg .int unitLit) [.dead] { env := [0], scope := [] } (use 0)
+example : eval demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [] } (use 0)
     = .stuck .useAfterDrop := by rfl
-example : eval demoFuel (scalarProg .int unitLit) [.dead] { env := [0], scope := [] } (drop 0)
+example : eval demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [] } (drop 0)
     = .stuck .useAfterDrop := by rfl
-example : eval demoFuel (scalarProg .int unitLit) [.dead] { env := [0], scope := [] }
-    (assign 0 (intLit 1)) = .stuck .useAfterDrop := by rfl
+example : eval demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [] }
+    (assign 0 (lit 1)) = .stuck .useAfterDrop := by rfl
 
 /-- The same guard on the unwind path: a frame whose scope record names a
 retired cell refuses instead of retiring it twice (§6.9). `FrameMatches` is
 what excludes this state for a well-typed program. -/
-example : eval demoFuel (scalarProg .int unitLit) [.dead] { env := [0], scope := [0] }
-    (ret (intLit 1)) = .stuck .useAfterDrop := by rfl
+example : eval demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [0] }
+    (ret (lit 1)) = .stuck .useAfterDrop := by rfl
 
-#eval checkProgram (scalarProg .int scalars)
-#eval checkProgram (prog .int linearLeaked)
+#eval checkProgram (scalarProg tI64 scalars)
+#eval checkProgram (prog tI64 linearLeaked)
 
 end RueCore.Examples

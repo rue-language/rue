@@ -213,9 +213,10 @@ def outcomeHtml : EvalRes → String
         ("the interpreter stopped before the program did; fuel_mono says a larger " ++
          "bound never changes an answer, so this is a bound too small, not a claim " ++
          "about the program")
-  | .panic k =>
+  | .panic k tr =>
       tagc "span" "bad" (esc ("panic: " ++ Corpus.panicName k)) ++
-      tagc "div" "ctx" "a defined trap (§6.12), not a violation"
+      tagc "div" "ctx" (esc ("a defined trap (§6.12), not a violation; the observable " ++
+        "output up to the trap is " ++ (if tr.isEmpty then "empty" else eventsLine tr)))
   | .stuck w =>
       tagc "span" "bad" (esc ("refused: " ++ Corpus.violationName w)) ++
       tagc "div" "ctx" (esc (violationPremise w))

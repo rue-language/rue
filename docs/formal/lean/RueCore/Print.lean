@@ -71,23 +71,32 @@ The rest follows from the spec's constraints on destructors per class
 
 ## Integer typing
 
-The fragment's `int` is `int(64, signed)`, but a Rue integer literal has no
-type of its own: it unifies with its uses and, unconstrained at the end of the
-function body, defaults to `i32` (4.1:3, 3.1:15). Most printed contexts fix
-`i64` — a `let` binder's annotation, an `i64` field's initializer, an
-assignment target, `main`'s `result` — but two do not, and both were found by
-the generated corpus (RUE-2229): the operands of `<`, and an `int` expression
-discarded by a sequence. So `lt e₁ e₂` prints as a call to the prelude's
-`lt_i64`, whose parameters give both operands their type, and a discarded
-`int` prints as `let t<n>: i64 = e₁;` rather than `e₁;`. Neither changes
-evaluation order or a drop point (the operands and the discarded value are
-integers, which drop silently).
+A core integer expression carries its `int(w, s)` (`Syntax.lean`), but a Rue
+integer literal has no type of its own: it unifies with its uses and,
+unconstrained at the end of the function body, defaults to `i32` (4.1:3,
+3.1:15). Most printed contexts fix the type — a `let` binder's annotation, a
+field's initializer, an assignment target, a parameter, a declared return type,
+`main`'s `result` — but four do not, because nothing downstream of them
+mentions the operand type at all:
 
-Together with two forms the printer *supplies*, those are the places where the
-printed program is not the identity elaboration of the core: `Expr.consume`
-prints as a call to the generated `consume_S<s>` helper, which is one
-by-value call standing in for a form the core has no surface spelling for; and
-a destructor-bearing declaration prints an invented body
+* the operands of an ordering compare, whose result is `bool`;
+* the operand and the result of `@intCast`, whose target type `4.13:26` takes
+  from the *use* site;
+* the operand of `@dbg`, which renders whatever it is given;
+* an integer expression discarded by a sequence.
+
+Each of those prints as a **typed block**: `{ let t<n>a: T = e₁; let t<n>b: T =
+e₂; t<n>a < t<n>b }` and its three siblings, where the annotation is the type
+the core form carries. A block binds `Copy` scalars only, so it changes no
+evaluation order and adds no drop point (§6.7 drops nothing for an integer).
+The synthetic names are `t<level><tag>`, distinct from the `v<depth>` a core
+binder gets, and Rue's surface permits shadowing in any case (`3.8:12`).
+
+Together with two forms the printer *supplies*, those four are the places
+where the printed program is not the identity elaboration of the core:
+`Expr.consume` prints as a call to the generated `consume_S<s>` helper, which
+is one by-value call standing in for a form the core has no surface spelling
+for; and a destructor-bearing declaration prints an invented body
 `drop fn S(self) { @dbg(self.x0); }`, which the core declaration does not
 carry — the core records only *whether* `S` has a destructor, and that body is
 the whole observation channel (above).
@@ -127,14 +136,50 @@ namespace RueCore
 
 namespace Print
 
-/-- The Rue type name of a core type (§2). `int` is `int(64, signed)` in the
-fragment (`Syntax.lean`); a struct type is named by its declaration's index,
-the way elaboration resolves the surface name. -/
+/-- The Rue type name of a core type (§2): `int(w, s)` is `i<w>` or `u<w>`,
+and a struct type is named by its declaration's index, the way elaboration
+resolves the surface name. -/
 def tyName : Ty → String
-  | .int => "i64"
+  | .int w s => (match s with | .signed => "i" | .unsigned => "u") ++ toString w.bits
   | .bool => "bool"
   | .unit => "()"
   | .struct s => "S" ++ toString s
+
+/-- The Rue spelling of a binary operator (§2's `⊕` and `⋚`) (helper). -/
+def binOpSym : BinOp → String
+  | .add => "+"
+  | .sub => "-"
+  | .mul => "*"
+  | .div => "/"
+  | .rem => "%"
+  | .bitAnd => "&"
+  | .bitOr => "|"
+  | .bitXor => "^"
+  | .shl => "<<"
+  | .shr => ">>"
+  | .lt => "<"
+  | .le => "<="
+  | .gt => ">"
+  | .ge => ">="
+
+/-- The Rue spelling of a unary operator (§2's `⊖`) (helper). -/
+def unOpSym : UnOp → String
+  | .neg => "-"
+  | .not => "!"
+  | .bitnot => "~"
+
+/-- A Rue string literal, for `@panic`'s message. The fragment's messages are
+plain words, and the two characters Rue's grammar would read specially are
+escaped so that no message can close the literal early (helper). -/
+def quoted (msg : String) : String :=
+  "\"" ++ msg.foldl (fun acc c =>
+    acc ++ (if c = '"' then "\\\"" else if c = '\\' then "\\\\" else String.singleton c)) ""
+    ++ "\""
+
+/-- A synthetic binder the printer introduces to give an expression the type
+its core form carries (module docstring, "Integer typing"). `lvl` is the
+nesting level and `tag` distinguishes the binders of one block (helper). -/
+def tmpName (lvl : Nat) (tag : String) : String := "t" ++ toString lvl ++ tag
 
 /-- The name of a declaration's field at position `j`. Fields are named by
 position because the core names them that way; `3.6:9` — informative, and
@@ -145,13 +190,6 @@ def fieldName (j : Nat) : String := "x" ++ toString j
 /-- The generated whole-value eliminator for a `Consumable` declaration: it
 reads the first field, which is the payload `Expr.consume` yields (helper). -/
 def consumeName (s : Nat) : String := "consume_S" ++ toString s
-
-/-- The prelude every printed program starts with: the one helper the core's
-`<` needs, since a Rue literal defaults to `i32` (module docstring) (helper). -/
-def prelude : String :=
-  "// The core's `<` on int(64, signed): Rue literals default to i32 (4.1:3), so\n" ++
-  "// the parameters fix the operand type.\n" ++
-  "fn lt_i64(a: i64, b: i64) -> bool { a < b }\n"
 
 /-- The declared attribute, as §3 and the surface grammar write it
 (helper). -/
@@ -179,12 +217,12 @@ def structItem (consumed : List Nat) (s : Nat) (sd : StructDecl) : String :=
   (if sd.dtor then
     "drop fn " ++ tyName (.struct s) ++ "(self) { " ++
       (match sd.fields with
-       | .int :: _ => "@dbg(self." ++ fieldName 0 ++ "); "
-       | _ => "") ++ "}\n"
+       | T :: _ => if T.isInt then "@dbg(self." ++ fieldName 0 ++ "); " else ""
+       | [] => "") ++ "}\n"
    else "") ++
   (if sd.Consumable && consumed.contains s then
-    "fn " ++ consumeName s ++ "(s: " ++ tyName (.struct s) ++ ") -> i64 { s." ++
-      fieldName 0 ++ " }\n"
+    "fn " ++ consumeName s ++ "(s: " ++ tyName (.struct s) ++ ") -> " ++
+      tyName sd.payloadTy ++ " { s." ++ fieldName 0 ++ " }\n"
    else "")
 
 /-- Every struct declaration of a program, in program order (helper). -/
@@ -200,15 +238,21 @@ return type, which is the type `Checker.lean` gives a `return`. A `none`
 means the program is ill-scoped, which elaborated programs never are
 (helper). -/
 def tyOf (P : Program) (R : Ty) (Γ : List Ty) : Expr → Option Ty
-  | .intLit _ => some .int
+  | .intLit w s _ => some (.int w s)
   | .boolLit _ => some .bool
   | .unitLit => some .unit
   | .use i => Γ[i]?
-  | .add _ _ => some .int
-  | .div _ _ => some .int
-  | .lt _ _ => some .bool
+  | .binop op e₁ _ => if op.isCompare then some .bool else tyOf P R Γ e₁
+  | .unop .not _ => some .bool
+  | .unop _ e => tyOf P R Γ e
+  | .intCast w s _ => some (.int w s)
+  | .panic _ => some R
+  | .dbg _ => some .unit
   | .mkStruct s _ => some (.struct s)
-  | .consume _ => some .int
+  | .consume e =>
+      match tyOf P R Γ e with
+      | some (.struct s) => (P.structs[s]?).map StructDecl.payloadTy
+      | _ => none
   | .drop _ => some .unit
   | .letIn _ e₁ e₂ => do
       let T₁ ← tyOf P R Γ e₁
@@ -254,13 +298,37 @@ explicitly (module docstring, "Integer typing"). A `return` prints in place,
 wherever its core form stands (§6.9's (D-Return) fires in any evaluation
 context). -/
 partial def expr (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) : Expr → String
-  | .intLit n => if n < 0 then "(" ++ toString n ++ ")" else toString n
+  | .intLit _ _ n => if n < 0 then "(" ++ toString n ++ ")" else toString n
   | .boolLit b => if b then "true" else "false"
   | .unitLit => "()"
   | .use i => useName Γ i
-  | .add e₁ e₂ => "(" ++ expr P R Γ lvl e₁ ++ " + " ++ expr P R Γ lvl e₂ ++ ")"
-  | .div e₁ e₂ => "(" ++ expr P R Γ lvl e₁ ++ " / " ++ expr P R Γ lvl e₂ ++ ")"
-  | .lt e₁ e₂ => "lt_i64(" ++ expr P R Γ lvl e₁ ++ ", " ++ expr P R Γ lvl e₂ ++ ")"
+  | .binop op e₁ e₂ =>
+      if op.isCompare then
+        -- An ordering compare yields `bool`, so nothing downstream names the
+        -- operand type: a typed block supplies it (module docstring).
+        let T := (tyOf P R Γ e₁).getD (.int .w64 .signed)
+        let a := tmpName lvl "a"
+        let b := tmpName lvl "b"
+        "{ let " ++ a ++ ": " ++ tyName T ++ " = " ++ expr P R Γ (lvl + 1) e₁ ++ "; " ++
+          "let " ++ b ++ ": " ++ tyName T ++ " = " ++ expr P R Γ (lvl + 1) e₂ ++ "; " ++
+          a ++ " " ++ binOpSym op ++ " " ++ b ++ " }"
+      else
+        "(" ++ expr P R Γ lvl e₁ ++ " " ++ binOpSym op ++ " " ++ expr P R Γ lvl e₂ ++ ")"
+  | .unop op e => "(" ++ unOpSym op ++ expr P R Γ lvl e ++ ")"
+  | .intCast w s e =>
+      -- `4.13:26` takes the target from the use site and nothing fixes the
+      -- operand's own type either, so both ends get a typed binder.
+      let T' := (tyOf P R Γ e).getD (.int .w64 .signed)
+      let c := tmpName lvl "c"
+      let k := tmpName lvl "k"
+      "{ let " ++ c ++ ": " ++ tyName T' ++ " = " ++ expr P R Γ (lvl + 1) e ++ "; " ++
+        "let " ++ k ++ ": " ++ tyName (.int w s) ++ " = @intCast(" ++ c ++ "); " ++ k ++ " }"
+  | .panic msg => "@panic(" ++ quoted msg ++ ")"
+  | .dbg e =>
+      let T := (tyOf P R Γ e).getD (.int .w64 .signed)
+      let g := tmpName lvl "g"
+      "{ let " ++ g ++ ": " ++ tyName T ++ " = " ++ expr P R Γ (lvl + 1) e ++ "; " ++
+        "@dbg(" ++ g ++ ") }"
   | .mkStruct s args =>
       tyName (.struct s) ++ " { " ++
         String.intercalate ", " (fieldInits 0 (args.map (fun a => expr P R Γ lvl a))) ++ " }"
@@ -271,7 +339,7 @@ partial def expr (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) : Expr → St
       consumeName s ++ "(" ++ expr P R Γ lvl e ++ ")"
   | .drop i => "@drop(" ++ useName Γ i ++ ")"
   | .letIn m e₁ e₂ =>
-      let T₁ := (tyOf P R Γ e₁).getD .int
+      let T₁ := (tyOf P R Γ e₁).getD (.int .w64 .signed)
       let name := binderName Γ.length
       "{\n" ++
       indent (lvl + 1) ++ "let " ++ (if m then "mut " else "") ++ name ++
@@ -281,9 +349,12 @@ partial def expr (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) : Expr → St
   | .assign i e =>
       "{ " ++ useName Γ i ++ " = " ++ expr P R Γ lvl e ++ "; }"
   | .seq e₁ e₂ =>
-      -- A discarded int must still be typed i64 (module docstring).
+      -- A discarded integer expression must still be typed (module
+      -- docstring): nothing downstream of a statement names its type.
       let discard := match tyOf P R Γ e₁ with
-        | some .int => "let t" ++ toString lvl ++ ": i64 = " ++ expr P R Γ (lvl + 1) e₁ ++ ";"
+        | some (.int w s) =>
+            "let " ++ tmpName lvl "d" ++ ": " ++ tyName (.int w s) ++ " = " ++
+              expr P R Γ (lvl + 1) e₁ ++ ";"
         | _ => expr P R Γ (lvl + 1) e₁ ++ ";"
       "{\n" ++
       indent (lvl + 1) ++ discard ++ "\n" ++
@@ -307,7 +378,7 @@ printed; `()` prints nothing; a struct value is dropped — implicitly at
 (helper). -/
 def observeValue (D : StructEnv) (T : Ty) : String :=
   match T with
-  | .int | .bool => "    @dbg(result);\n"
+  | .int _ _ | .bool => "    @dbg(result);\n"
   | .unit => ""
   | .struct _ => if T.mult D = .linear then "    @drop(result);\n" else ""
 
@@ -332,13 +403,15 @@ partial def consumedIn (P : Program) (R : Ty) : List Ty → Expr → List Nat
       (match tyOf P R Γ e with
        | some (.struct s) => [s]
        | _ => [0]) ++ consumedIn P R Γ e
-  | Γ, .add e₁ e₂ | Γ, .div e₁ e₂ | Γ, .lt e₁ e₂ | Γ, .seq e₁ e₂ =>
+  | Γ, .binop _ e₁ e₂ | Γ, .seq e₁ e₂ =>
       consumedIn P R Γ e₁ ++ consumedIn P R Γ e₂
   | Γ, .letIn _ e₁ e₂ =>
-      consumedIn P R Γ e₁ ++ consumedIn P R ((tyOf P R Γ e₁).getD .int :: Γ) e₂
+      consumedIn P R Γ e₁ ++
+        consumedIn P R ((tyOf P R Γ e₁).getD (.int .w64 .signed) :: Γ) e₂
   | Γ, .ite c e₁ e₂ => consumedIn P R Γ c ++ consumedIn P R Γ e₁ ++ consumedIn P R Γ e₂
   | Γ, .mkStruct _ args | Γ, .call _ args => (args.map (consumedIn P R Γ)).flatten
-  | Γ, .assign _ e | Γ, .ret e => consumedIn P R Γ e
+  | Γ, .assign _ e | Γ, .ret e | Γ, .unop _ e | Γ, .intCast _ _ e | Γ, .dbg e =>
+      consumedIn P R Γ e
   | _, _ => []
 
 /-- The declaration indices the whole program eliminates, so a printed module
@@ -367,14 +440,14 @@ def fnItems (P : Program) : Nat → List FnDef → String
 /-- A complete Rue module for a fragment program, headed by a comment naming
 the case, the calculus rules it exercises, and what a reader should expect
 (the explainability tenet: `corpus.json` doubles as a readable example set).
-The program's own struct declarations come first, then the prelude, then its
+The program's own struct declarations come first, then its
 functions as §2 writes them, then `main`, which calls the entry function `f0`
 and observes its value (helper). -/
 def program (name description : String) (rules : List String) (outcome : String)
     (P : Program) : String :=
   let T := match P.fns[0]? with
     | some fd => fd.ret
-    | none => .int
+    | none => .int .w64 .signed
   "// Case: " ++ name ++ "\n" ++
   "// " ++ description ++ "\n" ++
   "// Rules: " ++ String.intercalate "; " rules ++ "\n" ++
@@ -383,7 +456,6 @@ def program (name description : String) (rules : List String) (outcome : String)
   "// The struct declarations are the program's own (§2); a `drop fn` is how a\n" ++
   "// drop becomes observable (§6.11).\n" ++
   moduleItems P ++
-  prelude ++
   "\n" ++
   fnItems P 0 P.fns ++
   "fn main() -> i32 {\n" ++

@@ -158,11 +158,22 @@ def isStruct : Ty → Bool
   | .struct _ => true
   | _ => false
 
-/-- (helper) An integer literal: small, with an occasional bound so that
-`+` and `/` can trap (§6.4). -/
-def intLiteral : G Expr := do
+/-- (helper) An integer type: every width and signedness of §2's `int(w, s)`,
+with `i64` a little more likely so most cases stay at the width a reader
+expects. -/
+def intTy : G Ty := do
+  let w ← weighted IntWidth.w64 [(1, IntWidth.w8), (1, .w16), (1, .w32), (2, .w64)]
+  let sg ← weighted Sign.signed [(2, Sign.signed), (1, .unsigned)]
+  return .int w sg
+
+/-- (helper) An integer literal of the wanted type: small, with an occasional
+`min_T`/`max_T` so that `+ - * /` can trap (§6.4). A small value is in range
+at every width, so the draw needs no per-width case. -/
+def intLiteral (w : IntWidth) (sg : Sign) : G Expr := do
   let k ← nat 0 39
-  return intLit (if k = 0 then intMax else if k = 1 then intMin else Int.ofNat (k % 10))
+  let n : Int :=
+    if k = 0 then intMax w sg else if k = 1 then intMin w sg else Int.ofNat (k % 10)
+  return intLit w sg n
 
 /-! ## Struct declarations
 
@@ -183,15 +194,16 @@ def fieldJoin (D : StructEnv) (fields : List Ty) : Mult :=
 declaration — never `s` itself or a later one, so the environment is
 acyclic. -/
 def fieldTy (s : Nat) : G Ty := do
+  let scalar : G Ty := do weighted (← intTy) [(4, ← intTy), (1, .bool), (1, .unit)]
   if s = 0 then
-    weighted .int [(4, .int), (1, .bool), (1, .unit)]
+    scalar
   else
     let k ← nat 1 10
     if k ≤ 4 then
       let j ← nat 0 (s - 1)
       return .struct j
     else
-      weighted .int [(4, .int), (1, .bool), (1, .unit)]
+      scalar
 
 /-- (helper) One declaration, well-formed by construction. -/
 def genDecl (D : StructEnv) (s : Nat) : G StructDecl := do
@@ -226,27 +238,37 @@ def consumableIdxs (D : StructEnv) : List Nat :=
     | some sd => decide sd.Consumable
     | none => false)
 
+/-- (helper) The consumable declarations whose payload has the wanted type, so
+that a whole-value elimination can stand where an expression of that type
+is asked for. -/
+def consumableFor (D : StructEnv) (T : Ty) : List Nat :=
+  (consumableIdxs D).filter (fun s =>
+    match D[s]? with
+    | some sd => sd.payloadTy == T
+    | none => false)
+
 /-- (helper) The type of a fresh `let` binder: mostly structs, when the
 program has any. -/
 def binderTy (D : StructEnv) : G Ty := do
+  let scalar : G Ty := do weighted (← intTy) [(2, ← intTy), (1, .bool)]
   if D.isEmpty then
-    weighted .int [(2, .int), (1, .bool)]
+    scalar
   else
     let k ← nat 1 10
     if k ≤ 6 then
       let s ← nat 0 (D.length - 1)
       return .struct s
     else
-      weighted .int [(2, .int), (1, .bool)]
+      scalar
 
 mutual
 /-- (helper) The smallest expression of a type: a literal, a use of a binder
 of that type, or a struct literal with a leaf per field. -/
 def atom (D : StructEnv) (Γ : Scope) : Ty → Nat → G Expr
-  | .int, _ => do
-      let uses := indicesWhere Γ (fun b => b.ty == .int)
+  | .int w sg, _ => do
+      let uses := indicesWhere Γ (fun b => b.ty == .int w sg)
       if !uses.isEmpty && (← chance 1 2) then return use (← pick 0 uses)
-      intLiteral
+      intLiteral w sg
   | .bool, _ => do
       let uses := indicesWhere Γ (fun b => b.ty == .bool)
       if !uses.isEmpty && (← chance 1 2) then return use (← pick 0 uses)
@@ -263,13 +285,13 @@ def atom (D : StructEnv) (Γ : Scope) : Ty → Nat → G Expr
 whole-value elimination of a consumable struct binder, a `@drop`, or an
 assignment of an atom. -/
 def leaf (D : StructEnv) (Γ : Scope) : Ty → Nat → G Expr
-  | .int, depth => do
+  | .int w sg, depth => do
       let cons := indicesWhere Γ (fun b =>
         match b.ty with
-        | .struct s => (consumableIdxs D).contains s
+        | .struct s => (consumableFor D (.int w sg)).contains s
         | _ => false)
       if !cons.isEmpty && (← chance 1 2) then return consume (use (← pick 0 cons))
-      atom D Γ .int depth
+      atom D Γ (.int w sg) depth
   | .unit, depth => do
       let structs := indicesWhere Γ (fun b => isStruct b.ty)
       let muts := indicesWhere Γ (fun b => b.mu)
@@ -281,7 +303,7 @@ def leaf (D : StructEnv) (Γ : Scope) : Ty → Nat → G Expr
           return drop (← nat 0 (Γ.length - 1))
       | 2 =>
           let i ← pick 0 muts
-          let b := Γ[i]?.getD ⟨.int, true⟩
+          let b := Γ[i]?.getD ⟨.int .w64 .signed, true⟩
           return assign i (← atom D Γ b.ty depth)
       | _ => return unitLit
   | T, depth => atom D Γ T depth
@@ -289,17 +311,18 @@ end
 
 /-- (helper) A struct class to eliminate: a consumable declaration a binder in
 scope already has, when there is one, so the operand is usually a move. -/
-def consumeTarget (D : StructEnv) (Γ : Scope) : G (Option Nat) := do
+def consumeTarget (D : StructEnv) (Γ : Scope) (T : Ty) : G (Option Nat) := do
+  let wanted := consumableFor D T
   let inScope := (indicesWhere Γ (fun b =>
     match b.ty with
-    | .struct s => (consumableIdxs D).contains s
+    | .struct s => wanted.contains s
     | _ => false)).filterMap (fun i =>
       match Γ[i]? with
       | some b => (match b.ty with | .struct s => some s | _ => none)
       | none => none)
   match inScope with
   | [] =>
-      match consumableIdxs D with
+      match wanted with
       | [] => return none
       | cs => return some (← pick 0 cs)
   | _ => return some (← pick 0 inScope)
@@ -322,7 +345,7 @@ def expr (D : StructEnv) : Scope → Ty → Nat → G Expr
       | 1 =>
           let muts := indicesWhere Γ (fun b => b.mu)
           let T₁ ← weighted .unit
-            [(if muts.isEmpty then 4 else 7, .unit), (2, ← binderTy D), (2, .int)]
+            [(if muts.isEmpty then 4 else 7, .unit), (2, ← binderTy D), (2, ← intTy)]
           let e₁ ← expr D Γ T₁ fuel
           let e₂ ← expr D Γ T fuel
           return seq e₁ e₂
@@ -333,22 +356,42 @@ def expr (D : StructEnv) : Scope → Ty → Nat → G Expr
           return ite c e₁ e₂
       | _ =>
           match T with
-          | .int =>
-              let op ← weighted 0 [(2, 0), (1, 1), (3, 2)]
-              match op with
-              | 0 => return add (← expr D Γ .int fuel) (← expr D Γ .int fuel)
-              | 1 => return div (← expr D Γ .int fuel) (← expr D Γ .int fuel)
-              | _ =>
-                  match ← consumeTarget D Γ with
+          | .int w sg =>
+              let self := expr D Γ (.int w sg) fuel
+              let form ← weighted 0 [(5, 0), (3, 1), (2, 2), (3, 3), (2, 4)]
+              match form with
+              | 0 =>
+                  let op ← pick BinOp.add [BinOp.add, .sub, .mul, .div, .rem]
+                  return binop op (← self) (← self)
+              | 1 =>
+                  let op ← pick BinOp.bitAnd [BinOp.bitAnd, .bitOr, .bitXor, .shl, .shr]
+                  return binop op (← self) (← self)
+              | 2 =>
+                  -- (Neg) §5.8 takes a signed operand only (`4.2:6`), so the
+                  -- unsigned draw falls back to the complement.
+                  if sg == .signed && (← chance 1 2) then return unop .neg (← self)
+                  return unop .bitnot (← self)
+              | 3 =>
+                  match ← consumeTarget D Γ (.int w sg) with
                   | some s => return consume (← expr D Γ (.struct s) fuel)
-                  | none => return add (← expr D Γ .int fuel) (← expr D Γ .int fuel)
-          | .bool => return lt (← expr D Γ .int fuel) (← expr D Γ .int fuel)
+                  | none => return binop .add (← self) (← self)
+              | _ =>
+                  let src ← intTy
+                  return intCast w sg (← expr D Γ src fuel)
+          | .bool =>
+              if ← chance 1 5 then return unop .not (← expr D Γ .bool fuel)
+              let op ← pick BinOp.lt [BinOp.lt, .le, .gt, .ge]
+              let Tc ← intTy
+              return binop op (← expr D Γ Tc fuel) (← expr D Γ Tc fuel)
           | .unit =>
               let muts := indicesWhere Γ (fun b => b.mu)
               if !muts.isEmpty && (← chance 3 4) then
                 let i ← pick 0 muts
-                let b := Γ[i]?.getD ⟨.int, true⟩
+                let b := Γ[i]?.getD ⟨.int .w64 .signed, true⟩
                 return assign i (← expr D Γ b.ty fuel)
+              if ← chance 1 3 then
+                let To ← weighted (← intTy) [(3, ← intTy), (1, .bool)]
+                return dbg (← expr D Γ To fuel)
               if Γ.isEmpty && !D.isEmpty then
                 let T₁ ← binderTy D
                 return seq (← expr D Γ T₁ fuel) unitLit
@@ -362,10 +405,11 @@ def expr (D : StructEnv) : Scope → Ty → Nat → G Expr
 
 /-- (helper) Every subexpression, the expression itself first. -/
 def subexprs : Expr → List Expr
-  | e@(add e₁ e₂) | e@(div e₁ e₂) | e@(lt e₁ e₂) | e@(seq e₁ e₂) | e@(letIn _ e₁ e₂) =>
+  | e@(binop _ e₁ e₂) | e@(seq e₁ e₂) | e@(letIn _ e₁ e₂) =>
       e :: subexprs e₁ ++ subexprs e₂
   | e@(.ite c e₁ e₂) => e :: subexprs c ++ subexprs e₁ ++ subexprs e₂
-  | e@(consume e₁) | e@(assign _ e₁) | e@(ret e₁) => e :: subexprs e₁
+  | e@(consume e₁) | e@(assign _ e₁) | e@(ret e₁) | e@(unop _ e₁) | e@(intCast _ _ e₁)
+  | e@(dbg e₁) => e :: subexprs e₁
   | e@(call _ args) | e@(mkStruct _ args) => e :: (args.map subexprs).flatten
   | e => [e]
 
@@ -383,8 +427,17 @@ def rulesOf (D : StructEnv) (e : Expr) : List String :=
         match Γ[i]? with
         | some T => if T.mult D == .copy then ["(Use-Copy) §5.1"] else ["(Use-Move) §5.1"]
         | none => []
-    | add e₁ e₂ | div e₁ e₂ | lt e₁ e₂ =>
-        ["§5.8 operator statics", "§6.4 arithmetic traps"] ++ go Γ e₁ ++ go Γ e₂
+    | binop op e₁ e₂ =>
+        (if op.isCompare then ["(Ord) §5.8", "§6.4"]
+         else ["(Arith) §5.8", "§6.4 arithmetic traps"]) ++ go Γ e₁ ++ go Γ e₂
+    | unop op e₁ =>
+        (match op with
+         | .neg => ["(Neg) §5.8", "§6.4 arithmetic traps"]
+         | .not => ["(Not) §5.8"]
+         | .bitnot => ["(BitNot) §5.8"]) ++ go Γ e₁
+    | intCast _ _ e₁ => ["(Int-Cast) §5.8", "(D-Int-Cast-Trap) §6.4"] ++ go Γ e₁
+    | Expr.panic _ => ["(Panic) §5.8", "(D-Panic) §6.12"]
+    | dbg e₁ => ["(Dbg) §5.8"] ++ go Γ e₁
     | mkStruct _ args => ["(Struct-Intro) §5.8"] ++ (args.map (go Γ)).flatten
     | consume e₁ => ["§5.8 whole-value elimination"] ++ go Γ e₁
     | drop i =>
@@ -393,7 +446,7 @@ def rulesOf (D : StructEnv) (e : Expr) : List String :=
         | none => []
     | letIn _ e₁ e₂ =>
         ["(Let) §5.3", "§5.6 scope exit", "(D-EndScope) §6.7"] ++ go Γ e₁ ++
-          go ((Print.tyOf P .int Γ e₁).getD .int :: Γ) e₂
+          go ((Print.tyOf P (.int .w64 .signed) Γ e₁).getD (.int .w64 .signed) :: Γ) e₂
     | assign _ e₁ => ["(Assign) §5.2", "§6.8 overwrite-drop"] ++ go Γ e₁
     | seq e₁ e₂ => ["(Seq) §5.3", "§6.7 temporary drop"] ++ go Γ e₁ ++ go Γ e₂
     | .ite c e₁ e₂ => ["(If) §5.5 join"] ++ go Γ c ++ go Γ e₁ ++ go Γ e₂
@@ -409,7 +462,7 @@ def resultTy (D : StructEnv) : G Ty := do
   if k ≤ 3 && !D.isEmpty then
     let s ← nat 0 (D.length - 1)
     return .struct s
-  weighted .int [(5, .int), (1, .bool), (1, .unit)]
+  weighted (← intTy) [(5, ← intTy), (1, .bool), (1, .unit)]
 
 /-- (helper) One generated case: a struct environment and a one-function
 program whose entry point takes no parameters and returns the drawn type. -/
