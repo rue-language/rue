@@ -213,6 +213,33 @@ theorem RueCore.evalIntCast_res {D : StructEnv} (w : IntWidth) (s : Sign)
     ∃ k, evalIntCast w s (Val.int w' s' n) = OpRes.trap k
 ```
 
+### `dropValue_events`
+
+*theorem* · module `RueCore.Soundness`
+
+**§6.11's order, in closed form.** For a well-typed value the walk's
+result is not just "the destructor then the fields" one level at a time: it is
+exactly `dropEvents`, the order written out as a function (`Dynamics.lean`).
+Together with `dropValues_events` this is the statement the per-level lemmas
+below are the induction steps of.
+
+```lean
+theorem RueCore.dropValue_events {D : StructEnv} {v : Val} {T : Ty}
+  (h : HasTy D v T) : dropValue D v = Except.ok (dropEvents D v)
+```
+
+### `dropValues_events`
+
+*theorem* · module `RueCore.Soundness`
+
+The same over a field list: `drop*` emits exactly the fields' events, in
+declaration order (`3.9:13`).
+
+```lean
+theorem RueCore.dropValues_events {D : StructEnv} {vs : List Val} {Ts : List Ty}
+  (h : HasTys D vs Ts) : dropValues D vs = Except.ok (dropEventsList D vs)
+```
+
 ### `dropValue_ok`
 
 *theorem* · module `RueCore.Soundness`
@@ -226,14 +253,36 @@ theorem RueCore.dropValue_ok {D : StructEnv} {v : Val} {T : Ty} (h : HasTy D v T
   ∃ evs, dropValue D v = Except.ok evs
 ```
 
+### `dropValue_struct_events`
+
+*theorem* · module `RueCore.Soundness`
+
+**The drop-order theorem, in the shape RUE-2237 needs.** Dropping a
+well-typed struct value emits its user destructor's event — when its
+declaration has one (`3.9:28`) — followed by the **concatenation of its
+fields' drop events, in declaration order** (`3.9:13`), each field's events
+given by the same closed form, recursively. Nothing else, and nothing in
+another order; the whole list is determined by the value and the
+declarations.
+
+```lean
+theorem RueCore.dropValue_struct_events {D : StructEnv} {s : Nat} {sd : StructDecl}
+  {vs : List Val} (hd : D[s]? = some sd)
+  (h : HasTy D (Val.struct s vs) (Ty.struct s)) :
+  dropValue D (Val.struct s vs) =
+    Except.ok
+      ((if sd.dtor = true then [Event.dtor s (Val.struct s vs)] else []) ++
+        (List.map (dropEvents D) vs).flatten)
+```
+
 ### `dropValue_order`
 
 *theorem* · module `RueCore.Soundness`
 
-**§6.11's order, stated.** A struct value's drop emits its user
+**§6.11's order, one level.** A struct value's drop emits its user
 destructor's event first — when its declaration has one — and then exactly the
-events its fields' drops emit, in declaration order. RUE-2237's
-"dropped exactly once" is the next statement over this walk.
+events its fields' drops emit, in declaration order. This is the induction
+step; `dropValue_struct_events` is the closed form.
 
 ```lean
 theorem RueCore.dropValue_order {D : StructEnv} {s : Nat} {sd : StructDecl}
@@ -251,7 +300,8 @@ theorem RueCore.dropValue_order {D : StructEnv} {s : Nat} {sd : StructDecl}
 *theorem* · module `RueCore.Soundness`
 
 **`drop*` is the fields in order** (§6.11): the events of a field list's
-drop are the head's followed by the tail's.
+drop are the head's followed by the tail's. This is the induction step;
+`dropValues_events` is the closed form.
 
 ```lean
 theorem RueCore.dropValues_order {D : StructEnv} {v : Val} {vs : List Val}
@@ -948,6 +998,18 @@ A typed expression list preserves the context skeleton too (helper).
 theorem RueCore.TypedArgs.skel_preserved {P : Program} {R : Ty} {Γ Γ' : Ctx}
   {es : List Expr} {Ts : List Ty} (h : TypedArgs P R Γ es Ts Γ') :
   Γ'.skel = Γ.skel
+```
+
+### `dropEventsList_eq_flatten`
+
+*theorem* · module `RueCore.Dynamics`
+
+A field list's events are its fields' events concatenated, left to right:
+the flattening `dropValue_struct_events` states the order with (helper).
+
+```lean
+theorem RueCore.dropEventsList_eq_flatten (D : StructEnv) (vs : List Val) :
+  dropEventsList D vs = (List.map (dropEvents D) vs).flatten
 ```
 
 ### `HasTys.length_eq`
@@ -2254,7 +2316,7 @@ RueCore.Ty.struct (s : Nat) : Ty
 
 Machine values (§6.1's `v`), fragment forms only. `struct s vs` is §6.1's
 `{ v1, …, vk }_S`: the declaration's index and one value per field, in
-declaration order (`3.6:9`). A struct value names its declaration rather than
+declaration order — the order `3.9:13` drops them in. A struct value names its declaration rather than
 carrying its class, so the machine's drop decisions are value-driven — it
 reads the tag the value carries — while the class and the destructor come from
 the program's declarations, as the compiled program's drop glue does.
@@ -2590,10 +2652,11 @@ RueCore.Param.mk (ty : Ty) (mu : Bool) : Param
 
 A monomorphic struct declaration: §2's `S { f1: T1, …, fk: Tk }` with its
 declared attribute (§3), whether it declares a destructor (`3.9`), and the
-class §3 assigns it. Fields are listed in **declaration order** (`3.6:9`),
-which is the order §6.11 drops them in and the order (Struct-Intro) §5.8's
-initializers are presented in (`3.6:15`); they are named by position, as
-bindings are, because elaboration resolves field names.
+class §3 assigns it. Fields are listed in **declaration order**, which is the
+order §6.11 drops them in (`3.9:13`, after the user destructor — `3.9:28`) and
+the order (Struct-Intro) §5.8's initializers are presented in (`3.6:15`); they
+are named by position, as bindings are, because elaboration resolves field
+names.
 
 ```lean
 inductive RueCore.StructDecl : Type
@@ -2782,11 +2845,20 @@ abbrev RueCore.Store : Type :=
 The fragment's whole-value struct elimination, as a side condition on a
 declaration: the struct has at least one field, every field is an integer
 type, and it declares no destructor. `Expr.consume` reads the first field's
-payload and consumes the value; a field of any other type would be discarded
-without its drop glue, and a destructor would make even the read a rejected
-projection (`3.9:34`, E0456). This is **not** a calculus rule — the calculus
-eliminates a struct through a projection, which is RUE-2231 — so the
-restriction is the fragment's, stated here rather than cited.
+payload and **destroys the value without running its drop glue**
+(`Dynamics.lean`'s `.consume` arm calls no `dropValue`), so each clause keeps
+that honest: a field of any other type would be discarded with its own drop
+glue unrun, and a declaration with a destructor would lose the `dtor` event
+§6.11 owes — while the printed program's consumer lets its by-value parameter
+drop at the function's end, so that destructor *would* print and the two views
+would disagree by a line. `3.9:34` is not the reason and does not forbid the
+read: it forbids *moving* a field out and permits borrowing one, and the
+compiler accepts `fn consume_S(s: S) -> i64 { s.x0 }` on a destructor-bearing
+`S`.
+
+This is **not** a calculus rule — the calculus eliminates a struct through a
+projection, which is RUE-2231 — so the restriction is the fragment's, stated
+here rather than cited.
 
 ```lean
 def RueCore.StructDecl.Consumable (sd : StructDecl) : Prop :=
@@ -3072,17 +3144,34 @@ def RueCore.Untouched (ρ : Env) (H H' : Store) : Prop :=
 
 `drop(H, v)` (§6.11), on the fragment's values. A scalar drops nothing
 ("scalars are Copy: nothing to drop"). A struct runs its **user destructor
-first**, if its declaration has one, and then drops its fields in
-**declaration order** (`drop*`); the destructor is recorded as one `dtor`
-event rather than run as a nested machine, because the fragment has no
-destructor bodies — a program declares whether `S` has one, and the Rue
-program the printer emits reproduces the event with a `drop fn S(self)` that
-prints (`Print.lean`). A field is dropped whatever its class: an explicit
-`@drop` of a linear-carrying struct discharges the whole obligation, and a
-scope exit never reaches one, because a value the leak monitor lets through
-has no linear field (`StructDecl.Wf.field_not_linear`). The `⊘`-skip §6.11
-opens with is the *cell* case below: a moved-out field has no representation
-here, since the fragment has no partial moves (RUE-2231).
+first** (`3.9:28`), if its declaration has one, and then drops its fields in
+**declaration order** (`3.9:13`, §6.11's `drop*`). A field is dropped whatever
+its class: an explicit `@drop` of a linear-carrying struct discharges the
+whole obligation, and a scope exit never reaches one, because a value the leak
+monitor lets through has no linear field
+(`StructDecl.Wf.field_not_linear`). `dropValue_struct_events`
+(`Soundness.lean`) is this walk in closed form.
+
+Two things §6.11 writes out are elided here, both unobservably.
+
+* **The destructor is one `dtor` event, not a nested machine run.** The
+  fragment has no destructor bodies — a declaration says only *whether* `S`
+  has one — so there is nothing to step. The Rue program the printer emits
+  supplies a body that reproduces the event (`Print.lean`).
+* **The scratch cell is not minted.** §6.11 mints a fresh `ℓ` holding the
+  value, runs the destructor in a frame whose scope record is empty, drops
+  the *residual* fields `H1(ℓ)` leaves, and then retires `ℓ`. `dropValue`
+  mints nothing and drops the original `vs`. Neither difference is
+  observable: no `Event` corresponds to minting or retiring the scratch cell,
+  and the residual fields *are* the original ones, because `3.9:33` forbids
+  moving `self` out of a destructor and `3.9:34` forbids moving a field out
+  of a value whose type declares one, so a destructor body cannot change a
+  field. §6.11 says as much — it keeps the residual-versus-original
+  distinction only so the rule stays honest if `3.9:34` is ever relaxed.
+
+The `⊘`-skip §6.11 opens with is the *cell* case below: a moved-out field has
+no representation here, since the fragment has no partial moves
+(RUE-2231).
 
 ```lean
 def RueCore.dropValue (D : StructEnv) : Val → Except Violation (List Event)
@@ -3421,7 +3510,7 @@ def RueCore.check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx
 *def* · module `RueCore.Dynamics`
 
 `drop*(H, [v1,…,vk])` (§6.11): fold `drop` over the values left to right
-— for a struct's fields, declaration order.
+— for a struct's fields, declaration order (`3.9:13`).
 
 ```lean
 def RueCore.dropValues (D : StructEnv) : List Val → Except Violation (List Event)
@@ -4653,4 +4742,56 @@ Constructors:
 ```lean
 RueCore.WfProgram.mk {P : Program} (structs : WfStructs P.structs)
   (fns : ∀ (fd : FnDef), fd ∈ P.fns → WfFn P fd) : WfProgram P
+```
+
+### `dropEvents`
+
+*def* · module `RueCore.Dynamics`
+
+**§6.11's order, as a function**: the events dropping a value emits,
+written out rather than read off the walk. A scalar emits none; a struct emits
+its user destructor's event first when its declaration has one (`3.9:28`) and
+then its fields' events in declaration order (`3.9:13`), recursively. An index
+the environment does not have emits nothing, which the walk itself refuses
+instead — `dropValue_struct_events` (`Soundness.lean`) is the theorem that the
+two agree on every well-typed value, and it is the closed form RUE-2237's
+"dropped exactly once" quantifies over.
+
+```lean
+def RueCore.dropEvents (D : StructEnv) : Val → List Event
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : StructEnv) (a : IntWidth) (a_1 : Sign) (a_2 : Int),
+  dropEvents D (Val.int a a_1 a_2) = []
+∀ (D : StructEnv) (a : Bool), dropEvents D (Val.bool a) = []
+∀ (D : StructEnv), dropEvents D Val.unit = []
+∀ (D : StructEnv) (a : Nat) (a_1 : List Val),
+  dropEvents D (Val.struct a a_1) =
+    (match D[a]? with
+      | some sd =>
+        if sd.dtor = true then [Event.dtor a (Val.struct a a_1)] else []
+      | none => []) ++
+      dropEventsList D a_1
+```
+
+### `dropEventsList`
+
+*def* · module `RueCore.Dynamics`
+
+The same over a field list: the fields' events concatenated in
+declaration order (`3.9:13`), which is §6.11's `drop*`.
+
+```lean
+def RueCore.dropEventsList (D : StructEnv) : List Val → List Event
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : StructEnv), dropEventsList D [] = []
+∀ (D : StructEnv) (v : Val) (vs : List Val),
+  dropEventsList D (v :: vs) = dropEvents D v ++ dropEventsList D vs
 ```
