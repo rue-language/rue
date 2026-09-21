@@ -346,6 +346,21 @@ well-formed only when the field join is already `Copy` (`3.8:18`) and the struct
 declares no destructor (`3.9:31`); a `linear` declaration forces `Linear`
 regardless of fields.
 
+A struct that declares a **destructor** must not declare a field whose type
+carries a linear value (`3.9:44`) — neither a field of a `linear` struct type
+nor one that is linear by infection, at any depth. `3.9:34` forbids moving a
+field out of a value whose type declares a destructor, so such a field could
+be discharged only by the drop glue §6.11 runs *after* the destructor, which
+is exactly the implicit discard of a linear value §5.6 forbids. This is the
+declaration-site half of the same destructor/linear separation whose
+field-move half is `3.9:34`, and it is a well-formedness condition on the
+declaration rather than a clause of `class(S)`: the assignment above is stated
+for declarations that already satisfy it, and a violation is rejected where
+the struct is declared (E0462) rather than at a use. A *declared*-`linear`
+struct may still have a destructor when none of its fields carries a linear
+value, and a struct with no destructor may carry linear fields freely — which
+is how a `Linear`-by-infection struct reaches §5.3's `@drop` at all.
+
 A zero-length array of a non-`Copy` element type is `Affine`, not `Copy`:
 prose `3.8:74` grants it *droppability* only — its must-consume obligation is
 vacuously satisfied because it holds no values — and says nothing about
@@ -3234,7 +3249,7 @@ as owed rather than discharged.
 | §2 elaboration inventory — *recorded as deferred, not subsumed* | 4.8:23–29 (`for`), 4.8:8/9/10/13, 4.8:27 (`continue`) |
 | §2 reachability-pruning assumption (+ §7's quantification) | 10.5:4, 6.3:12 |
 | §5.8 (Panic)/(Dbg) intrinsic statics | 3.4:2, 8.1–8.3 (`@panic`); 3.12:39 (`@dbg`'s float operand) |
-| §3 multiplicity lattice | 3.8:1–3, 3.8:14/16/18/20, 3.8:30/32/37, 3.8:57/58, 3.8:74, 3.9:31, 6.3:19 |
+| §3 multiplicity lattice (with the destructor/linear-field well-formedness condition on declarations) | 3.8:1–3, 3.8:14/16/18/20, 3.8:30/32/37, 3.8:57/58, 3.8:74, 3.9:31, 3.9:44, 6.3:19 |
 | §4.2 definition of *use* (+ §5.1 premises) | 3.8:5, 3.8:7, 3.8:9, 3.8:11, 3.8:22, 3.8:26, 3.8:33, 3.8:53, 3.8:68, 3.9:34 |
 | §5.1 declared-linear projection destructure (smallest place, residue gate, and ownership transition) | 3.8:33, 3.8:60, 3.8:74, 3.9:34 |
 | §4.1/§5.4 equality borrows its operands | 4.3:3f |

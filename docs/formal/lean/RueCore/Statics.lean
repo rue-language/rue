@@ -27,8 +27,8 @@ is §3's equation, made a premise of a well-formed program: the recorded class
 declares no destructor (`3.8:18`, `3.9:31`), a destructor-bearing declaration
 carries no linear field (`3.9:44`, E0462 — `3.9:34` forbids moving one out, so
 the obligation could only be met by the glue, which is the implicit discard
-§5.6 forbids; the core calculus states the field-move half at `3.9:34` and
-leaves this declaration-site half to the prose), and a field may name only an
+§5.6 forbids; §3 states this as a well-formedness condition on the
+declaration, beside the `@copy` one), and a field may name only an
 earlier declaration, so the equation is a definition rather than a fixpoint
 condition — `struct_class_unique` is that statement, proved.
 
