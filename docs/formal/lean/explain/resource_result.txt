@@ -1,17 +1,31 @@
 ════════════════════════════════════════════════════════════════════════════════
  resource_result
 ════════════════════════════════════════════════════════════════════════════════
-The program's value is a resource: main observes its payload and never drops
-it.
+The program's value is a struct: main lets it drop, so its destructor is the
+value line.
 
-Rules exercised: §4.3 expression value
+Rules exercised: §4.3 expression value · §6.11
 
 ── The program ─────────────────────────────────────────────────────────────────
 
-fn f0() -> RAffine {
+@copy struct S0 { x0: i64 }
+fn consume_S0(s: S0) -> i64 { s.x0 }
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+linear struct S2 { x0: i64 }
+fn consume_S2(s: S2) -> i64 { s.x0 }
+linear struct S3 { x0: i64 }
+drop fn S3(self) { @dbg(self.x0); }
+struct S4 { x0: i64, x1: S3 }
+struct S5 { x0: i64, x1: S1 }
+drop fn S5(self) { @dbg(self.x0); }
+@copy struct S6 { x0: i64, x1: i64 }
+fn consume_S6(s: S6) -> i64 { s.x0 }
+struct S7 { x0: S1, x1: S1 }
+fn f0() -> S1 {
     {
         let v0: i64 = 4;
-        RAffine { value: v0, live: true }
+        S1 { x0: v0 }
     }
 }
 
@@ -24,7 +38,7 @@ Verdict: ACCEPTED by the checker (§5).
          no parameters, so `checkProgram_sound` ties the whole program to a
          real derivation and the §7 safety theorems apply to it.
 
-         fn f0() -> RAffine  — body ⇒ RAffine, exit Σ (empty)
+         fn f0() -> S1  — body ⇒ S1, exit Σ (empty)
 
 ── The derivations (§5) ────────────────────────────────────────────────────────
 
@@ -33,20 +47,20 @@ fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
 premises are the nodes indented under it, in premise order. One tree per
 function body, checked from (Fn) §5.8's entry context.
 
-  fn f0() -> RAffine
+  fn f0() -> S1
 
   (Let) §5.3 + the §5.6 scope-exit leak check
-    e       { let v0: i64 = 4; RAffine { value: v0, live: true } }
+    e       { let v0: i64 = 4; S1 { x0: v0 } }
     Γ;Σ     (empty)
-    ⇒       RAffine  ⊣  (empty)
+    ⇒       S1  ⊣  (empty)
       (Lit) §5.8
         e       4
         Γ;Σ     (empty)
         ⇒       i64  ⊣  (empty)
-      resource intro §5.8 (the shape of the aggregate-introduction rule; `res κ` has no fields)
-        e       RAffine { value: v0, live: true }
+      (Struct-Intro) §5.8
+        e       S1 { x0: v0 }
         Γ;Σ     [v0: i64 = Owned]
-        ⇒       RAffine  ⊣  [v0: i64 = Owned]
+        ⇒       S1  ⊣  [v0: i64 = Owned]
           (Use-Copy) §5.1
             e       v0
             Γ;Σ     [v0: i64 = Owned]
@@ -60,7 +74,7 @@ is the nesting depth — a callee's rows are deeper than its call's — and `>>`
 marks a drop event. The run enters at f0(), as `Dynamics.run` does.
 
   [1]   d1    (D-Call) §6.9 (push the frame)
-         expr    fn f0() -> RAffine  with []
+         expr    fn f0() -> S1  with []
          store   (empty)
            →     (empty)
          result  value ()
@@ -79,23 +93,23 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   [ℓ0 = 4]
            →     [ℓ0 = 4]
          result  value 4
-  [5]   d3        resource intro §6.5
-         expr    RAffine { value: v0, live: true }
+  [5]   d3        (D-Struct) §6.5
+         expr    S1 { x0: v0 }
          store   [ℓ0 = 4]
            →     [ℓ0 = 4]
-         result  value RAffine { 4 }
+         result  value S1 { 4 }
   [6]   d2      (D-EndScope) §6.7 (retire the binding)
          expr    endscope([ℓ0])
          store   [ℓ0 = 4]
            →     [ℓ0 = † (retired)]
-         result  value RAffine { 4 }
+         result  value S1 { 4 }
   [7]   d0  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([])
          store   [ℓ0 = † (retired)]
            →     [ℓ0 = † (retired)]
-         result  value RAffine { 4 }
+         result  value S1 { 4 }
 
 ────────────────────────────────────────────────────────────────────────────────
-Outcome: ok — value RAffine { 4 }
+Outcome: ok — value S1 { 4 }
          drop trace: (no drops)
 

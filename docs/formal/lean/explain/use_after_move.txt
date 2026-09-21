@@ -1,19 +1,36 @@
 ════════════════════════════════════════════════════════════════════════════════
  use_after_move
 ════════════════════════════════════════════════════════════════════════════════
-A moved affine binding used again: rejected statically (E0205) and refused
+A moved affine binding dropped again: rejected statically (E0205) and refused
 dynamically (useAfterMove).
 
 Rules exercised: (Use-Move) §5.1 · 3.8:5
 
 ── The program ─────────────────────────────────────────────────────────────────
 
+@copy struct S0 { x0: i64 }
+fn consume_S0(s: S0) -> i64 { s.x0 }
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+linear struct S2 { x0: i64 }
+fn consume_S2(s: S2) -> i64 { s.x0 }
+linear struct S3 { x0: i64 }
+drop fn S3(self) { @dbg(self.x0); }
+struct S4 { x0: i64, x1: S3 }
+struct S5 { x0: i64, x1: S1 }
+drop fn S5(self) { @dbg(self.x0); }
+@copy struct S6 { x0: i64, x1: i64 }
+fn consume_S6(s: S6) -> i64 { s.x0 }
+struct S7 { x0: S1, x1: S1 }
 fn f0() -> i64 {
     {
-        let v0: RAffine = RAffine { value: 1, live: true };
+        let v0: S1 = S1 { x0: 1 };
         {
-            let v1: RAffine = v0;
-            consume_affine(v0)
+            let v1: S1 = v0;
+            {
+                @drop(v0);
+                0
+            }
         }
     }
 }
@@ -24,13 +41,12 @@ fn f0() -> i64 {
 
 Verdict: REJECTED by the checker (§5).
 
-The premise that fails, in fn f0() -> i64, at (Use-Copy)/(Use-Move) §5.1:
+The premise that fails, in fn f0() -> i64, at (@Drop-Copy)/(@Drop) §5.3:
 
-    on  v0
+    on  @drop(v0)
 
-    a use of a place whose Σ state is MovedOut — the value was already moved
-    out ((Use-Copy)/(Use-Move) premise `Σ(p) = Owned`, §5.1; 3.8:5; the
-    compiler reports E0205)
+    @drop of a place whose Σ state is MovedOut — the obligation was already
+    discharged ((@Drop-Copy)/(@Drop) premise `Σ(p) = Owned`, §5.3; 3.8:5)
 
 ── The derivations (§5) ────────────────────────────────────────────────────────
 
@@ -42,42 +58,42 @@ function body, checked from (Fn) §5.8's entry context.
   fn f0() -> i64
 
   (Let) §5.3 + the §5.6 scope-exit leak check
-    e       { let v0: RAffine = RAffine { value: 1, live: true }; { let v1: RAffine = v0; c…
+    e       { let v0: S1 = S1 { x0: 1 }; { let v1: S1 = v0; { @drop(v0); 0 } } }
     Γ;Σ     (empty)
     ✗       this premise fails:
             a premise's own derivation failed — the reason is the rejected
             premise nested under this rule
-      resource intro §5.8 (the shape of the aggregate-introduction rule; `res κ` has no fields)
-        e       RAffine { value: 1, live: true }
+      (Struct-Intro) §5.8
+        e       S1 { x0: 1 }
         Γ;Σ     (empty)
-        ⇒       RAffine  ⊣  (empty)
+        ⇒       S1  ⊣  (empty)
           (Lit) §5.8
             e       1
             Γ;Σ     (empty)
             ⇒       i64  ⊣  (empty)
       (Let) §5.3 + the §5.6 scope-exit leak check
-        e       { let v1: RAffine = v0; consume_affine(v0) }
-        Γ;Σ     [v0: RAffine = Owned]
+        e       { let v1: S1 = v0; { @drop(v0); 0 } }
+        Γ;Σ     [v0: S1 = Owned]
         ✗       this premise fails:
                 a premise's own derivation failed — the reason is the rejected
                 premise nested under this rule
           (Use-Move) §5.1
             e       v0
-            Γ;Σ     [v0: RAffine = Owned]
-            ⇒       RAffine  ⊣  [v0: RAffine = MovedOut]
-          resource elimination §5.8/§4.2 (an abstract consuming elimination)
-            e       consume_affine(v0)
-            Γ;Σ     [v1: RAffine = Owned, v0: RAffine = MovedOut]
+            Γ;Σ     [v0: S1 = Owned]
+            ⇒       S1  ⊣  [v0: S1 = MovedOut]
+          (Seq) §5.3, 3.8:64
+            e       { @drop(v0); 0 }
+            Γ;Σ     [v1: S1 = Owned, v0: S1 = MovedOut]
             ✗       this premise fails:
                     a premise's own derivation failed — the reason is the rejected
                     premise nested under this rule
-              (Use-Copy)/(Use-Move) §5.1
-                e       v0
-                Γ;Σ     [v1: RAffine = Owned, v0: RAffine = MovedOut]
+              (@Drop-Copy)/(@Drop) §5.3
+                e       @drop(v0)
+                Γ;Σ     [v1: S1 = Owned, v0: S1 = MovedOut]
                 ✗       this premise fails:
-                        a use of a place whose Σ state is MovedOut — the value was already
-                        moved out ((Use-Copy)/(Use-Move) premise `Σ(p) = Owned`, §5.1;
-                        3.8:5; the compiler reports E0205)
+                        @drop of a place whose Σ state is MovedOut — the obligation was
+                        already discharged ((@Drop-Copy)/(@Drop) premise `Σ(p) = Owned`,
+                        §5.3; 3.8:5)
 
 ── The run (§6) ────────────────────────────────────────────────────────────────
 
@@ -96,58 +112,58 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 1
-  [3]   d3        resource intro §6.5
-         expr    RAffine { value: 1, live: true }
+  [3]   d3        (D-Struct) §6.5
+         expr    S1 { x0: 1 }
          store   (empty)
            →     (empty)
-         result  value RAffine { 1 }
+         result  value S1 { 1 }
   [4]   d3        (D-Let) §6.7 (mint the binding)
-         expr    let v0 = RAffine { 1 } at ℓ0
+         expr    let v0 = S1 { 1 } at ℓ0
          store   (empty)
-           →     [ℓ0 = RAffine { 1 }]
-         result  value RAffine { 1 }
+           →     [ℓ0 = S1 { 1 }]
+         result  value S1 { 1 }
   [5]   d4          (D-Use-Move) §6.3
          expr    v0
-         store   [ℓ0 = RAffine { 1 }]
+         store   [ℓ0 = S1 { 1 }]
            →     [ℓ0 = ⊘ (moved out)]
-         result  value RAffine { 1 }
+         result  value S1 { 1 }
   [6]   d4          (D-Let) §6.7 (mint the binding)
-         expr    let v1 = RAffine { 1 } at ℓ1
+         expr    let v1 = S1 { 1 } at ℓ1
          store   [ℓ0 = ⊘ (moved out)]
-           →     [ℓ0 = ⊘ (moved out), ℓ1 = RAffine { 1 }]
-         result  value RAffine { 1 }
-  [7]   d5            (D-Use-Copy)/(D-Use-Move) §6.3
-         expr    v0
-         store   [ℓ0 = ⊘ (moved out), ℓ1 = RAffine { 1 }]
-           →     [ℓ0 = ⊘ (moved out), ℓ1 = RAffine { 1 }]
+           →     [ℓ0 = ⊘ (moved out), ℓ1 = S1 { 1 }]
+         result  value S1 { 1 }
+  [7]   d5            @drop §6.11
+         expr    @drop(v0)
+         store   [ℓ0 = ⊘ (moved out), ℓ1 = S1 { 1 }]
+           →     [ℓ0 = ⊘ (moved out), ℓ1 = S1 { 1 }]
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
-  [8]   d4          resource elimination §6.5 — a premise did not complete
-         expr    consume_affine(v0)
-         store   [ℓ0 = ⊘ (moved out), ℓ1 = RAffine { 1 }]
-           →     [ℓ0 = ⊘ (moved out), ℓ1 = RAffine { 1 }]
+  [8]   d4          (D-Seq) §6.7 — a premise did not complete
+         expr    { @drop(v0); 0 }
+         store   [ℓ0 = ⊘ (moved out), ℓ1 = S1 { 1 }]
+           →     [ℓ0 = ⊘ (moved out), ℓ1 = S1 { 1 }]
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
   [9]   d3        (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return runs the drop through the frame's scope record instead)
-         expr    { let v1: RAffine = v0; consume_affine(v0) }
-         store   [ℓ0 = RAffine { 1 }]
-           →     [ℓ0 = ⊘ (moved out), ℓ1 = RAffine { 1 }]
+         expr    { let v1: S1 = v0; { @drop(v0); 0 } }
+         store   [ℓ0 = S1 { 1 }]
+           →     [ℓ0 = ⊘ (moved out), ℓ1 = S1 { 1 }]
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
   [10]  d2      (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return runs the drop through the frame's scope record instead)
-         expr    { let v0: RAffine = RAffine { value: 1, live: true }; { let v1: RAffine = v0; c…
+         expr    { let v0: S1 = S1 { x0: 1 }; { let v1: S1 = v0; { @drop(v0); 0 } } }
          store   (empty)
-           →     [ℓ0 = ⊘ (moved out), ℓ1 = RAffine { 1 }]
+           →     [ℓ0 = ⊘ (moved out), ℓ1 = S1 { 1 }]
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
   [11]  d0  (D-Return-Value) §6.9 (pop the frame)
          expr    f0()
          store   (empty)
-           →     [ℓ0 = ⊘ (moved out), ℓ1 = RAffine { 1 }]
+           →     [ℓ0 = ⊘ (moved out), ℓ1 = S1 { 1 }]
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)

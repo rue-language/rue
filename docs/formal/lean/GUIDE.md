@@ -192,8 +192,10 @@ are the kernel-checked witnesses, and closing it is RUE-2316.
 ## 3. What `Matches` says, and why it is asymmetric
 
 Every safety proof carries an invariant relating the static story to the
-dynamic one. Here it is `FrameMatches Γ φ H` (`Soundness.lean`), which has two
-halves. The first is `Matches Γ ρ H`: for each binding, the cell its location
+dynamic one. Here it is `FrameMatches D Γ φ H` (`Soundness.lean`), with `D`
+the program's struct declarations — what `class(T)` and a value's drop are
+read against. It has two
+halves. The first is `Matches D Γ ρ H`: for each binding, the cell its location
 holds agrees with its context entry, locations are inside the store, and no
 two bindings share a location. Per cell, `CellMatches` says:
 
@@ -245,7 +247,7 @@ without knowing anything about the callee but its signature.
 
 ```lean
 theorem soundness (hwf : WfProgram P) :
-  ∀ fuel, Typed P R Γ e T Γ' → FrameMatches Γ φ H →
+  ∀ fuel, Typed P R Γ e T Γ' → FrameMatches P.structs Γ φ H →
     EvalOk T R Γ' φ H (eval fuel P H φ e)
 ```
 
@@ -308,25 +310,30 @@ state, reinitialization (`3.8:55`), and the scope-exit leak check (§5.6).
 Core syntax, as `Examples.reinit` writes it:
 
 ```lean
-letIn true (mkres .linear (intLit 1))
+letIn true (resL (intLit 1))
   (seq (consume (use 0))
-    (seq (assign 0 (mkres .linear (intLit 2)))
+    (seq (assign 0 (resL (intLit 2)))
       (consume (use 0))))
 ```
 
-as the body of the entry function `f0`. Printed as Rue source by the bridge
-(the prelude declaring `RLinear` and `consume_linear` is omitted here;
-`README.md` shows it):
+as the body of the entry function `f0`, over the fixture declarations
+`Examples.structEnv` (`resL` is `mkStruct sLinear [·]`, the declared-`linear`
+struct with one `i64` field and no destructor). Printed as Rue source by the
+bridge — the program's struct declarations come first; only the one this case
+uses is shown here, `explain/reinit.txt` has them all:
 
 ```rue
+linear struct S2 { x0: i64 }
+fn consume_S2(s: S2) -> i64 { s.x0 }
+
 fn f0() -> i64 {
     {
-        let mut v0: RLinear = RLinear { value: 1 };
+        let mut v0: S2 = S2 { x0: 1 };
         {
-            let t2: i64 = consume_linear(v0);
+            let t2: i64 = consume_S2(v0);
             {
-                { v0 = RLinear { value: 2 }; };
-                consume_linear(v0)
+                { v0 = S2 { x0: 2 }; };
+                consume_S2(v0)
             }
         }
     }
@@ -348,20 +355,20 @@ written as `[type, μ, state]` per binding (only one binding, `v0`):
 
 | Step | Rule | Context in | Context out |
 | --- | --- | --- | --- |
-| `mkres .linear (intLit 1)` | `Typed.mkres`: the abstract resource introduction, the shape of §5.8's aggregate intro without fields | `[]` | `[]` |
-| enter the `let` body | `Typed.letIn`, `(Let)`: the binder enters `Owned` | `[]` | `[RLinear, mut, Owned]` |
-| `use 0` | `(Use-Move)`: linear, so the use moves | `[RLinear, mut, Owned]` | `[RLinear, mut, MovedOut]` |
-| `consume (…)` | `Typed.consume` | `[…, MovedOut]` | `[…, MovedOut]` |
+| `mkStruct sLinear [intLit 1]` | `Typed.mkStruct`, (Struct-Intro) §5.8: one initializer per declared field, at the field's type | `[]` | `[]` |
+| enter the `let` body | `Typed.letIn`, `(Let)`: the binder enters `Owned` | `[]` | `[S2, mut, Owned]` |
+| `use 0` | `(Use-Move)`: `class(S2) = Linear` (§3: the declared attribute), so the use moves | `[S2, mut, Owned]` | `[S2, mut, MovedOut]` |
+| `consume (…)` | `Typed.consume`, the fragment's whole-value elimination | `[…, MovedOut]` | `[…, MovedOut]` |
 | `seq` discard | `(Seq)`: an `int` carries no linear value (`3.8:64`) | | |
-| `mkres .linear (intLit 2)` | RHS of the assignment, typed first | `[…, MovedOut]` | `[…, MovedOut]` |
-| `assign 0 …` | `(Assign)`: `v0` is `mut`; on the post-RHS state `v0` is `MovedOut`, so the `3.8:77` premise holds; `v0` becomes `Owned` (`3.8:55`) | `[…, MovedOut]` | `[RLinear, mut, Owned]` |
+| `mkStruct sLinear [intLit 2]` | RHS of the assignment, typed first | `[…, MovedOut]` | `[…, MovedOut]` |
+| `assign 0 …` | `(Assign)`: `v0` is `mut`; on the post-RHS state `v0` is `MovedOut`, so the `3.8:77` premise holds; `v0` becomes `Owned` (`3.8:55`) | `[…, MovedOut]` | `[S2, mut, Owned]` |
 | inner `seq` discard | `(Seq)`: the assignment's `unit` carries no linear value | | |
 | `use 0` | `(Use-Move)` again | `[…, Owned]` | `[…, MovedOut]` |
 | `consume (…)` | `Typed.consume`, type `int` | | |
-| leave the `let` body | §5.6's scope-exit check, folded into `Typed.letIn`: the residual state is `MovedOut`, so no linear value leaks | `[RLinear, mut, MovedOut]` | `[]` |
+| leave the `let` body | §5.6's scope-exit check, folded into `Typed.letIn`: the residual state is `MovedOut`, so no linear value leaks | `[S2, mut, MovedOut]` | `[]` |
 
 The premise that matters is in the `(Assign)` row. Had the first
-`consume_linear(v0)` been omitted, the post-RHS state of `v0` would be
+`consume_S2(v0)` been omitted, the post-RHS state of `v0` would be
 `Owned`, the `3.8:77` premise `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` would
 fail, and `check` would reject; that is the corpus case `linear_overwrite`,
 which the compiler rejects with E0493 and the machine refuses with
@@ -375,15 +382,15 @@ to its location:
 
 | Step | Store before | Effect | Store after | Trace |
 | --- | --- | --- | --- | --- |
-| `mkres .linear (intLit 1)` | `[]` | a value, no store effect | `[]` | |
-| `(D-Let)`: mint a cell for `v0` | `[]` | allocate location 0, `ρ = [0]` | `[full (res linear 1)]` | |
-| `use 0`, `(D-Use-Move)` | `[full (res linear 1)]` | the value moves out; the cell becomes `⊘` | `[moved]` | |
-| `consume` | | payload `1`, an `int` | `[moved]` | |
+| `mkStruct sLinear [intLit 1]`, (D-Struct) §6.5 | `[]` | a value `{ 1 }_S2`, no store effect | `[]` | |
+| `(D-Let)`: mint a cell for `v0` | `[]` | allocate location 0, `ρ = [0]` | `[full S2 { 1 }]` | |
+| `use 0`, `(D-Use-Move)` | `[full S2 { 1 }]` | the value moves out; the cell becomes `⊘` | `[moved]` | |
+| `consume` | | the first field, `1`, an `int` | `[moved]` | |
 | `(D-Seq)` discard | | an `int` is `Copy`: no drop | `[moved]` | |
-| `mkres .linear (intLit 2)` | | a value | `[moved]` | |
-| `assign 0`, `(D-Assign)` | `[moved]` | the cell is `⊘`, so nothing is dropped; reinitialize | `[full (res linear 2)]` | |
-| inner `(D-Seq)` discard | | `unit` is `Copy`: no drop | `[full (res linear 2)]` | |
-| `use 0`, `(D-Use-Move)` | `[full (res linear 2)]` | move out again | `[moved]` | |
+| `mkStruct sLinear [intLit 2]` | | a value | `[moved]` | |
+| `assign 0`, `(D-Assign)` | `[moved]` | the cell is `⊘`, so nothing is dropped; reinitialize | `[full S2 { 2 }]` | |
+| inner `(D-Seq)` discard | | `unit` is `Copy`: no drop | `[full S2 { 2 }]` | |
+| `use 0`, `(D-Use-Move)` | `[full S2 { 2 }]` | move out again | `[moved]` | |
 | `consume` | | payload `2` | `[moved]` | |
 | `(D-EndScope)`: retire `v0` | `[moved]` | the cell is `⊘`, so nothing to drop; retire it | `[dead]` | |
 
@@ -399,7 +406,7 @@ Both tables above are generated for every corpus case: this one is
 
 `checkProgram` accepted, so by `checkProgram_sound` the program is
 `ProgramTyped`, and `run_safe` applies (the initial frame invariant,
-`FrameMatches [] ⟨[], []⟩ []`, holds trivially: no bindings, no store, an
+`FrameMatches D [] ⟨[], []⟩ []`, holds trivially: no bindings, no store, an
 empty scope record). It promises, at every fuel: `outOfFuel`, a defined
 panic, or `.ok` with a value of the entry function's declared return type.
 The run above is the last case; `HasTy (.int 2) .int` holds because `2` is in
@@ -420,8 +427,8 @@ program where the frame's **scope record** σ, rather than the pending
 ### The program
 
 ```lean
-letIn false (mkres .affine (intLit 3))
-  (letIn false (mkres .affine (intLit 4))
+letIn false (resA (intLit 3))
+  (letIn false (resA (intLit 4))
     (ret (intLit 7)))
 ```
 
@@ -430,9 +437,9 @@ Printed (prelude omitted):
 ```rue
 fn f0() -> i64 {
     {
-        let v0: RAffine = RAffine { value: 3, live: true };
+        let v0: S1 = S1 { x0: 3 };
         {
-            let v1: RAffine = RAffine { value: 4, live: true };
+            let v1: S1 = S1 { x0: 4 };
             return 7
         }
     }
@@ -450,10 +457,10 @@ type**. That is §5.6's obligation, taken frame-wide because a `return` ends
 every open scope of the frame at once (`3.8:62`, and (Fn) §5.8's second
 clause).
 
-Here Γ₁ at the `return` is `[v1: RAffine = Owned, v0: RAffine = Owned]`. Both
+Here Γ₁ at the `return` is `[v1: S1 = Owned, v0: S1 = Owned]`. Both
 are *affine*, not linear, so the premise holds and the program is accepted:
 an affine value reaching an exit is dropped, which is legal and observable.
-Change either to `RLinear` and the premise fails — that is the corpus case
+Change either to `S2` and the premise fails — that is the corpus case
 `return_past_linear`, which the compiler rejects with E0406 and the machine
 refuses with `linearLeak`.
 
@@ -466,10 +473,10 @@ appending, so σ reversed is ρ — the invariant of section 3.
 | Step | Rule | Store before | Effect | Store after | Events |
 | --- | --- | --- | --- | --- | --- |
 | 1 | `(D-Call) §6.9` (push the frame) | `[]` | `f0` takes no arguments, so no parameter cell is minted; `σ = []` | `[]` | |
-| 2–4 | literal, resource intro, `(D-Let) §6.7` | `[]` | mint `ℓ0 = RAffine { 3 }`; `ρ = [ℓ0]`, `σ = [ℓ0]` | `[ℓ0 = RAffine { 3 }]` | |
-| 5–7 | literal, resource intro, `(D-Let) §6.7` | `[ℓ0 = …]` | mint `ℓ1 = RAffine { 4 }`; `ρ = [ℓ1, ℓ0]`, `σ = [ℓ0, ℓ1]` | `[ℓ0 = RAffine { 3 }, ℓ1 = RAffine { 4 }]` | |
+| 2–4 | literal, (D-Struct) §6.5, `(D-Let) §6.7` | `[]` | mint `ℓ0 = S1 { 3 }`; `ρ = [ℓ0]`, `σ = [ℓ0]` | `[ℓ0 = S1 { 3 }]` | |
+| 5–7 | literal, (D-Struct) §6.5, `(D-Let) §6.7` | `[ℓ0 = …]` | mint `ℓ1 = S1 { 4 }`; `ρ = [ℓ1, ℓ0]`, `σ = [ℓ0, ℓ1]` | `[ℓ0 = S1 { 3 }, ℓ1 = S1 { 4 }]` | |
 | 8 | literal | | the operand `7` becomes a value | | |
-| **9** | **`(D-Return) §6.9` (unwind the frame)** | `[ℓ0 = RAffine { 3 }, ℓ1 = RAffine { 4 }]` | `run-all-scope-drops(H, φ)` walks `σ` **newest-first**: drop-retire `ℓ1`, then `ℓ0` | `[ℓ0 = †, ℓ1 = †]` | `drop ℓ1 = RAffine { 4 }`; `drop ℓ0 = RAffine { 3 }` |
+| **9** | **`(D-Return) §6.9` (unwind the frame)** | `[ℓ0 = S1 { 3 }, ℓ1 = S1 { 4 }]` | `run-all-scope-drops(H, φ)` walks `σ` **newest-first**: drop-retire `ℓ1`, then `ℓ0` | `[ℓ0 = †, ℓ1 = †]` | `drop ℓ1 = S1 { 4 }`; `run drop fn S1(S1 { 4 })`; `drop ℓ0 = S1 { 3 }`; `run drop fn S1(S1 { 3 })` |
 | 10 | inner `(D-EndScope)` — did not run | | the `return` discarded the evaluation context, the pending `endscope` markers with it; the result travels out unchanged | | |
 | 11 | outer `(D-EndScope)` — did not run | | same | | |
 | 12 | `(D-Return-Main) §6.9` (absorb) | `[ℓ0 = †, ℓ1 = †]` | the call boundary turns the unwound `return` into the call's value; `f0` is the bottom of the stack, so this firing is (D-Return-Main) — at an inner call the same row is (D-Return)'s hand-off, which is why the generated table labels it with both | | |
@@ -483,13 +490,112 @@ at step 9 — and if either had tried again, `drop-retire` would have found a
 invariant is exactly what proves it cannot.
 
 **The order is newest-first, and it is observable.** The trace is
-`drop ℓ1` then `drop ℓ0`, so the printed program prints `4`, then `3`, then
-its value `7`. Two spec rules are at work and it is worth keeping them apart:
-`3.9:18` says *that* a `return` drops every live binding of every enclosing
-scope, and `3.9:4` says *in what order* — "reverse declaration order (last
-declared, first dropped)". The bridge compares both against the real binary.
+`drop ℓ1` then `drop ℓ0`, each followed by the destructor `S1` declares, so
+the printed program prints `4`, then `3`, then its value `7`. Two spec rules
+are at work and it is worth keeping them apart: `3.9:18` says *that* a
+`return` drops every live binding of every enclosing scope, and `3.9:4` says
+*in what order* — "reverse declaration order (last declared, first dropped)".
+The bridge compares both against the real binary.
 `explain/return_past_affine.txt` is this table generated, with the store at
 every row.
+
+## 5c. A third worked example: a struct, its class, and §6.11's drop order
+
+The corpus case `struct_nested_dtor_drop` is the smallest program where a
+struct's *fields* matter: a destructor-bearing struct holding a
+destructor-bearing struct, dropped at scope exit. It is where (Struct-Intro)
+§5.8, §3's join, and §6.11's order are all visible at once.
+
+### The declarations
+
+Two of the fixture declarations (`Examples.structEnv`) are in play. As the
+printer writes them:
+
+```rue
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct S5 { x0: i64, x1: S1 }
+drop fn S5(self) { @dbg(self.x0); }
+```
+
+In the core they are `StructDecl` records: `S1` has no attribute, one `int`
+field, a destructor, and records `class(S1) = Affine`; `S5` has no attribute,
+fields `[int, S1]`, a destructor, and records `class(S5) = Affine`.
+
+**Why `Affine`, and why that is checked rather than asserted.** §3 says
+`class(S)` is the join of the field classes lifted by the declared attribute.
+For `S5` the field join is `Copy ⊔ class(S1) = Copy ⊔ Affine = Affine`, and
+no attribute lifts `Affine` to `Affine` (`3.8:3`: structs are affine by
+default). `WfStructs` (`Statics.lean`) is that equation, one conjunct per
+declaration, and `checkStructs` decides it — so the class a declaration
+*records* is never taken on trust. Two more conjuncts matter here:
+`3.8:18`/`3.9:31` would reject `@copy` on either of these (their joins are
+not `Copy`, and they have destructors), and `3.9:44` would reject the
+destructor if either carried a *linear* field. `struct_class_unique` is the
+statement that the recorded class is determined rather than free: on an
+environment whose fields name only earlier declarations, at most one
+assignment of classes satisfies §3's equation.
+
+### The program, and what the checker demands
+
+```lean
+letIn false (mkStruct sOuter [intLit 1, resA (intLit 2)]) (intLit 9)
+```
+
+printed as
+
+```rue
+fn f0() -> i64 {
+    {
+        let v0: S5 = S5 { x0: 1, x1: S1 { x0: 2 } };
+        9
+    }
+}
+```
+
+(Struct-Intro) §5.8 types the initializers **in declaration order**, threading
+Σ left to right, each at its declared field type — which is the same
+`TypedArgs` judgment (Call) §5.8 uses for an argument list, because the two
+rules impose the same left-to-right discipline. `S1 { x0: 2 }` is itself a
+(Struct-Intro) node, so the derivation nests:
+
+| Node | Rule | Concludes |
+| --- | --- | --- |
+| `S5 { x0: 1, x1: S1 { x0: 2 } }` | (Struct-Intro) §5.8 | `⇒ S5` |
+| ⟶ `1` | (Lit) §5.8 | `⇒ i64`, at field `x0`'s declared type |
+| ⟶ `S1 { x0: 2 }` | (Struct-Intro) §5.8 | `⇒ S1`, at field `x1`'s declared type |
+| ⟶ ⟶ `2` | (Lit) §5.8 | `⇒ i64` |
+| `let v0 = …; 9` | (Let) §5.3 + §5.6 | `⇒ i64`, and the leak check passes: `class(S5) = Affine`, not `Linear` |
+
+The leak check is the one place the class is read: §5.6 rejects a binding
+still `Owned` at a `Linear` type. `S5` is `Affine`, so scope exit may drop it
+— and the machine then has to.
+
+### The drop, step by step
+
+| Step | Rule | Store before | Effect | Store after | Events |
+| --- | --- | --- | --- | --- | --- |
+| 1–4 | literals, (D-Struct) §6.5 | `[]` | the inner literal becomes `{ 2 }_S1`, then the outer `{ 1, { 2 }_S1 }_S5` — a redex only once **all** its components are values | `[]` | |
+| 5 | `(D-Let) §6.7` | `[]` | mint `ℓ0` for `v0` | `[ℓ0 = S5 { 1, S1 { 2 } }]` | |
+| 6 | literal | | the body's `9` | | |
+| **7** | **`(D-EndScope) §6.7` → `drop-retire` → §6.11** | `[ℓ0 = S5 { 1, S1 { 2 } }]` | the cell holds a live non-`Linear` value, so the monitor lets it through and §6.11's walk runs: **the user destructor of `S5` first**, then the fields in **declaration order** — `x0` is an `int` and drops nothing, `x1` is an `S1` and runs *its* destructor | `[ℓ0 = †]` | `drop ℓ0 = S5 { 1, S1 { 2 } }`; `run drop fn S5(…)`; `run drop fn S1(S1 { 2 })` |
+| 8 | `(D-Return-Value) §6.9` | | the frame pops with an empty record | | |
+
+So the printed program prints `1` (the outer destructor), then `2` (the
+inner), then its value `9` — and that is the bridge expectation
+`{"kind": "ok", "stdout": ["1", "2", "9"], "exit": 0}`. It is also what the
+compiler does: this order was checked by hand against a native binary before
+the slice was written.
+
+Three claims in that row are theorems rather than observations.
+`dropValue_order` says a struct's drop emits its destructor's event followed
+by exactly its fields' events, and `dropValues_order` that a field list's
+events are the head's then the tail's — together, §6.11's order.
+`dropValue_ok` says the walk never refuses on a well-typed value. And
+`StructDecl.Wf.field_not_linear` says a declaration whose class is not
+`Linear` has no `Linear` field — which is why the leak monitor at step 7 can
+look at the value's own class and never inside it, and why RUE-2237's
+"dropped exactly once" has a walk of known shape to quantify over.
 
 ### More worked examples
 
@@ -539,7 +645,8 @@ worked example each to this section as they land.
   any axiom the package declared itself would be an assumption to review.
   The Buck build fails on anything outside its allowed set
   (`toolchains/lean/defs.bzl`), and so does `ruecore-digest --trust`, which
-  applies the same policy to *every* theorem rather than to the trusted nine.
+  applies the same policy to *every* theorem rather than to the ones `trust`
+  names.
 - **Find the rule.** `INDEX.md` lists every labeled rule of the calculus's
   §5 and §6, and every alternative of its §2 grammar, with the declaration
   that mechanizes it or *not yet mechanized*. Start there when the question is
@@ -576,7 +683,7 @@ holds the two pins equal).
 `TRUST.md`, which `scripts/rue lean` just printed from the build's own output.
 It lists every theorem in the `RueCore` namespace with the axioms
 `Lean.collectAxioms` says its proof depends on, the number of proofs resting on
-`sorryAx`, and the axioms the package declares itself. Today: 80 theorems, no
+`sorryAx`, and the axioms the package declares itself. Today: 98 theorems, no
 axiom anywhere outside `propext` and `Quot.sound`, no `sorryAx`, no declared
 axiom. *A defect looks like:* a `sorryAx` (an unfinished proof), a `Lean.ofReduceBool` (a
 `native_decide` the kernel did not check), a `Classical.choice` (allowed by
@@ -659,10 +766,10 @@ It prints one line per case — the case's name, the verdict (`accept(i64)`,
 `reject`), and `agree` or `DISAGREE` with the number of disagreeing pairs,
 each carrying the diagnostic code where a program was refused — then, for
 every case that disagrees, the printed Rue program, the four views side by
-side, and the pairs that differ; last a tally. On the 28 seed cases it ends
+side, and the pairs that differ; last a tally. On the 34 seed cases it ends
 
 ```text
-  cases: 28 (28 agree, 0 disagree)
+  cases: 34 (34 agree, 0 disagree)
   checker <-> compiler: 0
   lean <-> oracle: 0
   lean <-> native: 0

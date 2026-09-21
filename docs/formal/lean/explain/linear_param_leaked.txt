@@ -8,11 +8,25 @@ Rules exercised: (Fn) §5.8 · 3.8:62
 
 ── The program ─────────────────────────────────────────────────────────────────
 
+@copy struct S0 { x0: i64 }
+fn consume_S0(s: S0) -> i64 { s.x0 }
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+linear struct S2 { x0: i64 }
+fn consume_S2(s: S2) -> i64 { s.x0 }
+linear struct S3 { x0: i64 }
+drop fn S3(self) { @dbg(self.x0); }
+struct S4 { x0: i64, x1: S3 }
+struct S5 { x0: i64, x1: S1 }
+drop fn S5(self) { @dbg(self.x0); }
+@copy struct S6 { x0: i64, x1: i64 }
+fn consume_S6(s: S6) -> i64 { s.x0 }
+struct S7 { x0: S1, x1: S1 }
 fn f0() -> i64 {
-    f1(RLinear { value: 5 })
+    f1(S2 { x0: 5 })
 }
 
-fn f1(v0: RLinear) -> i64 {
+fn f1(v0: S2) -> i64 {
     1
 }
 
@@ -28,7 +42,7 @@ at a linear type where its function's body ends ((Fn) §5.8's second clause,
 3.8:62), or the entry point does not take an empty parameter list.
 
          fn f0() -> i64  — body ⇒ i64, exit Σ (empty)
-         fn f1(v0: RLinear) -> i64  — REJECTED: a by-value parameter or a still-open binding is
+         fn f1(v0: S2) -> i64  — REJECTED: a by-value parameter or a still-open binding is
            still Owned at a linear type where the body ends ((Fn) §5.8's
            second clause; 3.8:62; the compiler reports E0406)
 
@@ -42,24 +56,24 @@ function body, checked from (Fn) §5.8's entry context.
   fn f0() -> i64
 
   (Call) §5.8
-    e       f1(RLinear { value: 5 })
+    e       f1(S2 { x0: 5 })
     Γ;Σ     (empty)
     ⇒       i64  ⊣  (empty)
-      resource intro §5.8 (the shape of the aggregate-introduction rule; `res κ` has no fields)
-        e       RLinear { value: 5 }
+      (Struct-Intro) §5.8
+        e       S2 { x0: 5 }
         Γ;Σ     (empty)
-        ⇒       RLinear  ⊣  (empty)
+        ⇒       S2  ⊣  (empty)
           (Lit) §5.8
             e       5
             Γ;Σ     (empty)
             ⇒       i64  ⊣  (empty)
 
-  fn f1(v0: RLinear) -> i64
+  fn f1(v0: S2) -> i64
 
   (Lit) §5.8
     e       1
-    Γ;Σ     [v0: RLinear = Owned]
-    ⇒       i64  ⊣  [v0: RLinear = Owned]
+    Γ;Σ     [v0: S2 = Owned]
+    ⇒       i64  ⊣  [v0: S2 = Owned]
 
 ── The run (§6) ────────────────────────────────────────────────────────────────
 
@@ -78,25 +92,25 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 5
-  [3]   d3        resource intro §6.5
-         expr    RLinear { value: 5 }
+  [3]   d3        (D-Struct) §6.5
+         expr    S2 { x0: 5 }
          store   (empty)
            →     (empty)
-         result  value RLinear { 5 }
+         result  value S2 { 5 }
   [4]   d3        (D-Call) §6.9 (push the frame)
-         expr    fn f1(v0: RLinear) -> i64  with [ℓ0]
+         expr    fn f1(v0: S2) -> i64  with [ℓ0]
          store   (empty)
-           →     [ℓ0 = RLinear { 5 }]
+           →     [ℓ0 = S2 { 5 }]
          result  value ()
   [5]   d4          literal §6.3
          expr    1
-         store   [ℓ0 = RLinear { 5 }]
-           →     [ℓ0 = RLinear { 5 }]
+         store   [ℓ0 = S2 { 5 }]
+           →     [ℓ0 = S2 { 5 }]
          result  value 1
   [6]   d2      (D-Return-Value) §6.9 (pop the frame)
-         expr    f1(RLinear { value: 5 })
-         store   [ℓ0 = RLinear { 5 }]
-           →     [ℓ0 = RLinear { 5 }]
+         expr    f1(S2 { x0: 5 })
+         store   [ℓ0 = S2 { 5 }]
+           →     [ℓ0 = S2 { 5 }]
          result  REFUSED (linearLeak)
                  a scope exit or a frame teardown reached a live linear value: a
                  linear obligation was never discharged (endscope §6.7 /
@@ -105,7 +119,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
   [7]   d0  (D-Return-Value) §6.9 (pop the frame)
          expr    f0()
          store   (empty)
-           →     [ℓ0 = RLinear { 5 }]
+           →     [ℓ0 = S2 { 5 }]
          result  REFUSED (linearLeak)
                  a scope exit or a frame teardown reached a live linear value: a
                  linear obligation was never discharged (endscope §6.7 /

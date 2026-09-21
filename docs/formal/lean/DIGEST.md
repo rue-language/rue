@@ -43,8 +43,8 @@ The theorems below are about a *fragment* of the core calculus
 rule by rule and form by form; its two coverage lines, quoted here so the
 boundary is visible before the statements are:
 
-- *Calculus rules → declarations*: 34 of 94 labeled §5/§6 rules are mechanized; 60 are *not yet mechanized*.
-- *Abstract syntax forms → declarations*: 16 of 34 §2 forms have a core image (5 of them partial); 18 are *not yet mechanized*.
+- *Calculus rules → declarations*: 36 of 94 labeled §5/§6 rules are mechanized; 58 are *not yet mechanized*.
+- *Abstract syntax forms → declarations*: 17 of 34 §2 forms have a core image (5 of them partial); 17 are *not yet mechanized*.
 
 The forms that count as partial are `int(w, s)`, `S`, `e1 ⊕ e2`,
 `e1 ⋚ e2`, `g ( a1, ..., am )`. Each is a restricted or abstract stand-in
@@ -69,6 +69,57 @@ a claim about the language. Each statement and its doc-comment say which
 it is. A claim's meaning is its statement together with the definitions in
 the last section, not its doc-comment.
 
+### `StructDecl.Wf.field_not_linear`
+
+*theorem* · module `RueCore.Statics`
+
+**A droppable struct carries no linear field.** If a declaration's class
+is not `Linear`, no field's class is — which is why the machine's leak monitor
+(§6.7's `endscope`, §6.9's frame teardown) needs to look only at the value's
+own class and never inside it. This is §3's infectiousness, used.
+
+```lean
+theorem RueCore.StructDecl.Wf.field_not_linear {D : StructEnv} {s : Nat}
+  {sd : StructDecl} (h : StructDecl.Wf D s sd) (hcls : sd.cls ≠ Mult.linear)
+  (T : Ty) : T ∈ sd.fields → Ty.mult D T ≠ Mult.linear
+```
+
+### `struct_carriesLinear_iff`
+
+*theorem* · module `RueCore.Statics`
+
+**`carries_linear` lifts through the fields** (§5.3). A struct's class
+reaches `Linear` exactly when its declaration says `linear` (`3.8:57`) or some
+field carries a linear value (`3.8:58` — infectiousness is the join). Together
+with `Ty.carriesLinear`'s definition this is §5.3's sentence, mechanized.
+
+```lean
+theorem RueCore.struct_carriesLinear_iff {D : StructEnv} {s : Nat} {sd : StructDecl}
+  (hd : D[s]? = some sd) (h : StructDecl.Wf D s sd) :
+  Ty.mult D (Ty.struct s) = Mult.linear ↔
+    sd.attr = Attr.linear ∨ ∃ T, T ∈ sd.fields ∧ Ty.mult D T = Mult.linear
+```
+
+### `struct_class_unique`
+
+*theorem* · module `RueCore.Statics`
+
+**§3's class assignment has one solution.** Two well-formed environments
+of the same length whose declarations agree on their attributes and field
+lists agree on every class. So recording `class(S)` in the declaration
+(`Syntax.lean`) records a determined value rather than a free parameter: it is
+§3's join, and `WfStructs` is the equation that says so.
+
+```lean
+theorem RueCore.struct_class_unique {D D' : StructEnv} (hwf : WfStructs D)
+  (hwf' : WfStructs D') (hlen : List.length D = List.length D')
+  (hshape :
+    ∀ (s : Nat) (sd sd' : StructDecl),
+      D[s]? = some sd →
+        D'[s]? = some sd' → sd.attr = sd'.attr ∧ sd.fields = sd'.fields)
+  (s : Nat) : D.classOf s = D'.classOf s
+```
+
 ### `Typed.skel_preserved`
 
 *theorem* · module `RueCore.Statics`
@@ -84,6 +135,54 @@ theorem RueCore.Typed.skel_preserved {P : Program} {R : Ty} {Γ Γ' : Ctx} {e : 
   {T : Ty} (h : Typed P R Γ e T Γ') : Γ'.skel = Γ.skel
 ```
 
+### `dropValue_ok`
+
+*theorem* · module `RueCore.Soundness`
+
+**A well-typed value's drop always runs.** `dropValue` (§6.11) refuses
+only where a struct value names a declaration the program does not have, and
+value typing rules that out.
+
+```lean
+theorem RueCore.dropValue_ok {D : StructEnv} {v : Val} {T : Ty} (h : HasTy D v T) :
+  ∃ evs, dropValue D v = Except.ok evs
+```
+
+### `dropValue_order`
+
+*theorem* · module `RueCore.Soundness`
+
+**§6.11's order, stated.** A struct value's drop emits its user
+destructor's event first — when its declaration has one — and then exactly the
+events its fields' drops emit, in declaration order. RUE-2237's
+"dropped exactly once" is the next statement over this walk.
+
+```lean
+theorem RueCore.dropValue_order {D : StructEnv} {s : Nat} {sd : StructDecl}
+  {vs : List Val} {evs : List Event} (hd : D[s]? = some sd)
+  (h : dropValue D (Val.struct s vs) = Except.ok evs) :
+  ∃ fevs,
+    dropValues D vs = Except.ok fevs ∧
+      evs =
+        (if sd.dtor = true then [Event.dtor s (Val.struct s vs)] else []) ++
+          fevs
+```
+
+### `dropValues_order`
+
+*theorem* · module `RueCore.Soundness`
+
+**`drop*` is the fields in order** (§6.11): the events of a field list's
+drop are the head's followed by the tail's.
+
+```lean
+theorem RueCore.dropValues_order {D : StructEnv} {v : Val} {vs : List Val}
+  {evs : List Event} (h : dropValues D (v :: vs) = Except.ok evs) :
+  ∃ e₁ e₂,
+    dropValue D v = Except.ok e₁ ∧
+      dropValues D vs = Except.ok e₂ ∧ evs = e₁ ++ e₂
+```
+
 ### `Matches.unwind`
 
 *theorem* · module `RueCore.Soundness`
@@ -96,11 +195,11 @@ no-use-after-drop at an unwinding edge), and none is a live linear value (the
 §5.6 obligation).
 
 ```lean
-theorem RueCore.Matches.unwind (Γ : Ctx) (ρ : Env) (H : Store) :
-  Matches Γ ρ H →
-    NoOwnedLinear Γ →
+theorem RueCore.Matches.unwind {D : StructEnv} (Γ : Ctx) (ρ : Env) (H : Store) :
+  Matches D Γ ρ H →
+    NoOwnedLinear D Γ →
       ∃ H' evs,
-        unwindLocs H ρ = Except.ok (H', evs) ∧
+        unwindLocs D H ρ = Except.ok (H', evs) ∧
           List.length H' = List.length H ∧
             ∀ (ℓ : Nat), ¬ℓ ∈ ρ → H'[ℓ]? = H[ℓ]?
 ```
@@ -114,10 +213,10 @@ run at (D-Return-Value) and at (D-Return)). The record is the environment
 reversed, so this is `Matches.unwind` read newest-first.
 
 ```lean
-theorem RueCore.runAllScopeDrops_ok {Γ : Ctx} {φ : Frame} {H : Store}
-  (hfm : FrameMatches Γ φ H) (hnl : NoOwnedLinear Γ) :
+theorem RueCore.runAllScopeDrops_ok {D : StructEnv} {Γ : Ctx} {φ : Frame} {H : Store}
+  (hfm : FrameMatches D Γ φ H) (hnl : NoOwnedLinear D Γ) :
   ∃ H' evs,
-    runAllScopeDrops H φ = Except.ok (H', evs) ∧
+    runAllScopeDrops D H φ = Except.ok (H', evs) ∧
       List.length H' = List.length H ∧
         ∀ (ℓ : Nat), ¬ℓ ∈ φ.env → H'[ℓ]? = H[ℓ]?
 ```
@@ -131,8 +230,9 @@ the left entry matches the joined entry (the conservative join; its
 array-element form is `3.8:73`).
 
 ```lean
-theorem RueCore.Entry.join_matches_left {a b e' : Entry} (hj : a.join b = some e')
-  {c : Cell} (hc : CellMatches c a) : CellMatches c e'
+theorem RueCore.Entry.join_matches_left {D : StructEnv} {a b e' : Entry}
+  (hj : Entry.join D a b = some e') {c : Cell} (hc : CellMatches D c a) :
+  CellMatches D c e'
 ```
 
 ### `Entry.join_matches_right`
@@ -144,9 +244,9 @@ arms share a skeleton (the conservative join; its array-element form is
 `3.8:73`).
 
 ```lean
-theorem RueCore.Entry.join_matches_right {a b e' : Entry} (hskel : a.skel = b.skel)
-  (hj : a.join b = some e') {c : Cell} (hc : CellMatches c b) :
-  CellMatches c e'
+theorem RueCore.Entry.join_matches_right {D : StructEnv} {a b e' : Entry}
+  (hskel : a.skel = b.skel) (hj : Entry.join D a b = some e') {c : Cell}
+  (hc : CellMatches D c b) : CellMatches D c e'
 ```
 
 ### `Matches.join_left`
@@ -156,8 +256,9 @@ theorem RueCore.Entry.join_matches_right {a b e' : Entry} (hskel : a.skel = b.sk
 The invariant survives the §5.5 join from the left arm.
 
 ```lean
-theorem RueCore.Matches.join_left {Γ₁ Γ₂ Γ' : Ctx} {ρ : Env} {H : Store} :
-  Γ₁.join Γ₂ = some Γ' → Matches Γ₁ ρ H → Matches Γ' ρ H
+theorem RueCore.Matches.join_left {D : StructEnv} {Γ₁ Γ₂ Γ' : Ctx} {ρ : Env}
+  {H : Store} :
+  Ctx.join D Γ₁ Γ₂ = some Γ' → Matches D Γ₁ ρ H → Matches D Γ' ρ H
 ```
 
 ### `Matches.join_right`
@@ -167,8 +268,10 @@ theorem RueCore.Matches.join_left {Γ₁ Γ₂ Γ' : Ctx} {ρ : Env} {H : Store}
 The invariant survives the §5.5 join from the right arm.
 
 ```lean
-theorem RueCore.Matches.join_right {Γ₁ Γ₂ Γ' : Ctx} {ρ : Env} {H : Store} :
-  Γ₁.skel = Γ₂.skel → Γ₁.join Γ₂ = some Γ' → Matches Γ₂ ρ H → Matches Γ' ρ H
+theorem RueCore.Matches.join_right {D : StructEnv} {Γ₁ Γ₂ Γ' : Ctx} {ρ : Env}
+  {H : Store} :
+  Γ₁.skel = Γ₂.skel →
+    Ctx.join D Γ₁ Γ₂ = some Γ' → Matches D Γ₂ ρ H → Matches D Γ' ρ H
 ```
 
 ### `matches_mintParams`
@@ -182,9 +285,10 @@ signature lists parameters left to right while `Ctx` and `Env` list the
 innermost binder first.
 
 ```lean
-theorem RueCore.matches_mintParams (ps : List Param) (vs : List Val) (H : Store) :
-  HasTys vs (List.map Param.ty ps) →
-    Matches
+theorem RueCore.matches_mintParams {D : StructEnv} (ps : List Param) (vs : List Val)
+  (H : Store) :
+  HasTys D vs (List.map Param.ty ps) →
+    Matches D
       (List.map (fun p => { ty := p.ty, mu := p.mu, st := OwnState.owned })
           ps).reverse
       (mintParams H vs).snd.reverse (mintParams H vs).fst
@@ -208,12 +312,14 @@ theorem RueCore.args_sound {P : Program} {fuel : Nat}
     ∀ {R : Ty} {Γ Γ' : Ctx} {e : Expr} {T : Ty},
       Typed P R Γ e T Γ' →
         ∀ {φ : Frame} {H : Store},
-          FrameMatches Γ φ H → EvalOk T R Γ' φ H (eval fuel P H φ e))
+          FrameMatches P.structs Γ φ H →
+            EvalOk P.structs T R Γ' φ H (eval fuel P H φ e))
   (es : List Expr) {R : Ty} {Γ Γ' : Ctx} {Ts : List Ty} {φ : Frame}
   {H : Store} :
   TypedArgs P R Γ es Ts Γ' →
-    FrameMatches Γ φ H →
-      ArgsOk R Ts Γ' φ H (evalArgs (fun H' e => eval fuel P H' φ e) H es)
+    FrameMatches P.structs Γ φ H →
+      ArgsOk P.structs R Ts Γ' φ H
+        (evalArgs (fun H' e => eval fuel P H' φ e) H es)
 ```
 
 ### `soundness`
@@ -242,7 +348,8 @@ theorem RueCore.soundness {P : Program} (hwf : WfProgram P) (fuel : Nat) {R : Ty
   {Γ Γ' : Ctx} {e : Expr} {T : Ty} :
   Typed P R Γ e T Γ' →
     ∀ {φ : Frame} {H : Store},
-      FrameMatches Γ φ H → EvalOk T R Γ' φ H (eval fuel P H φ e)
+      FrameMatches P.structs Γ φ H →
+        EvalOk P.structs T R Γ' φ H (eval fuel P H φ e)
 ```
 
 ### `fuel_mono`
@@ -302,10 +409,10 @@ produces a value of the entry point's declared return type. It never reaches a
 
 ```lean
 theorem RueCore.run_safe {P : Program} {fd : FnDef} (hwf : WfProgram P)
-  (h0 : P[0]? = some fd) (hp : fd.params = []) (fuel : Nat) :
+  (h0 : P.fns[0]? = some fd) (hp : fd.params = []) (fuel : Nat) :
   run P fuel = EvalRes.outOfFuel ∨
     (∃ k, run P fuel = EvalRes.panic k) ∨
-      ∃ H v tr, run P fuel = EvalRes.ok H v tr ∧ HasTy v fd.ret
+      ∃ H v tr, run P fuel = EvalRes.ok H v tr ∧ HasTy P.structs v fd.ret
 ```
 
 ### `ProgramTyped.run_safe`
@@ -452,6 +559,30 @@ theorem RueCore.checkFn_sound {P : Program} {fd : FnDef} (h : checkFn P fd = tru
   WfFn P fd
 ```
 
+### `checkStructDecl_sound`
+
+*theorem* · module `RueCore.Checker`
+
+Every `checkStructDecl` acceptance is §3's class assignment for that
+declaration.
+
+```lean
+theorem RueCore.checkStructDecl_sound {D : StructEnv} {s : Nat} {sd : StructDecl}
+  (h : checkStructDecl D s sd = true) : StructDecl.Wf D s sd
+```
+
+### `checkStructs_sound`
+
+*theorem* · module `RueCore.Checker`
+
+Every `checkStructs` acceptance is §3's class assignment for the whole
+environment (`WfStructs`).
+
+```lean
+theorem RueCore.checkStructs_sound {D : StructEnv} (h : checkStructs D = true) :
+  WfStructs D
+```
+
 ### `checkProgram_sound`
 
 *theorem* · module `RueCore.Checker`
@@ -551,6 +682,89 @@ step of another proof rather than a claim about the language: these are
 the declarations whose doc-comment marks them `(helper)` under the
 repository's cross-reference convention.
 
+### `Mult.rank_le_join_left`
+
+*theorem* · module `RueCore.Statics`
+
+The join is an upper bound of its left argument (§3) (helper).
+
+```lean
+theorem RueCore.Mult.rank_le_join_left (a b : Mult) : a.rank ≤ (a.join b).rank
+```
+
+### `Mult.rank_le_join_right`
+
+*theorem* · module `RueCore.Statics`
+
+The join is an upper bound of its right argument (§3) (helper).
+
+```lean
+theorem RueCore.Mult.rank_le_join_right (a b : Mult) : b.rank ≤ (a.join b).rank
+```
+
+### `Mult.eq_linear_of_rank`
+
+*theorem* · module `RueCore.Statics`
+
+`Linear` is the top of §3's lattice, so nothing outranks it (helper).
+
+```lean
+theorem RueCore.Mult.eq_linear_of_rank {m : Mult} (h : 2 ≤ m.rank) : m = Mult.linear
+```
+
+### `rank_le_joinFold`
+
+*theorem* · module `RueCore.Statics`
+
+The accumulator of §3's join is a lower bound of the result (helper).
+
+```lean
+theorem RueCore.rank_le_joinFold (D : StructEnv) (Ts : List Ty) (acc : Mult) :
+  acc.rank ≤ (List.foldl (fun m T => m.join (Ty.mult D T)) acc Ts).rank
+```
+
+### `rank_le_joinFold_of_mem`
+
+*theorem* · module `RueCore.Statics`
+
+Every field's class is below §3's join of them (helper).
+
+```lean
+theorem RueCore.rank_le_joinFold_of_mem (D : StructEnv) (Ts : List Ty) (acc : Mult)
+  (T : Ty) :
+  T ∈ Ts →
+    (Ty.mult D T).rank ≤
+      (List.foldl (fun m T => m.join (Ty.mult D T)) acc Ts).rank
+```
+
+### `joinFold_linear_inv`
+
+*theorem* · module `RueCore.Statics`
+
+§3's join reaches `Linear` only through a field that does (helper).
+
+```lean
+theorem RueCore.joinFold_linear_inv (D : StructEnv) (Ts : List Ty) (acc : Mult) :
+  List.foldl (fun m T => m.join (Ty.mult D T)) acc Ts = Mult.linear →
+    acc = Mult.linear ∨ ∃ T, T ∈ Ts ∧ Ty.mult D T = Mult.linear
+```
+
+### `joinFold_congr`
+
+*theorem* · module `RueCore.Statics`
+
+Two environments that agree on every class below `n` give the same §3 join
+to a field list that names only declarations below `n` (helper).
+
+```lean
+theorem RueCore.joinFold_congr {D D' : StructEnv} {n : Nat}
+  (hcls : ∀ (s' : Nat), s' < n → D.classOf s' = D'.classOf s') (Ts : List Ty)
+  (acc : Mult) :
+  (∀ (s' : Nat), Ty.struct s' ∈ Ts → s' < n) →
+    List.foldl (fun m T => m.join (Ty.mult D T)) acc Ts =
+      List.foldl (fun m T => m.join (Ty.mult D' T)) acc Ts
+```
+
 ### `Entry.join_skel`
 
 *theorem* · module `RueCore.Statics`
@@ -558,8 +772,8 @@ repository's cross-reference convention.
 The §5.5 join preserves an entry's skeleton (helper).
 
 ```lean
-theorem RueCore.Entry.join_skel {a b e : Entry} (h : a.join b = some e) :
-  e.skel = a.skel
+theorem RueCore.Entry.join_skel {D : StructEnv} {a b e : Entry}
+  (h : Entry.join D a b = some e) : e.skel = a.skel
 ```
 
 ### `List.set_self_of_getElem?`
@@ -592,8 +806,8 @@ theorem RueCore.skel_set_setSt {Γ : Ctx} {i : Nat} {en : Entry} (h : Γ[i]? = s
 The §5.5 join preserves the context skeleton (helper).
 
 ```lean
-theorem RueCore.Ctx.join_skel {Γ₁ Γ₂ Γ' : Ctx} :
-  Γ₁.join Γ₂ = some Γ' → Γ'.skel = Γ₁.skel
+theorem RueCore.Ctx.join_skel {D : StructEnv} {Γ₁ Γ₂ Γ' : Ctx} :
+  Ctx.join D Γ₁ Γ₂ = some Γ' → Γ'.skel = Γ₁.skel
 ```
 
 ### `Ctx.join_self`
@@ -606,14 +820,14 @@ diverge joins (§5.7: a diverging arm contributes no state, so the join reads
 the same context twice) (helper).
 
 ```lean
-theorem RueCore.Ctx.join_self (Γ : Ctx) : Γ.join Γ = some Γ
+theorem RueCore.Ctx.join_self (D : StructEnv) (Γ : Ctx) : Ctx.join D Γ Γ = some Γ
 ```
 
 ### `TypedArgs.skel_preserved`
 
 *theorem* · module `RueCore.Statics`
 
-The argument list preserves the context skeleton too (helper).
+A typed expression list preserves the context skeleton too (helper).
 
 ```lean
 theorem RueCore.TypedArgs.skel_preserved {P : Program} {R : Ty} {Γ Γ' : Ctx}
@@ -625,12 +839,12 @@ theorem RueCore.TypedArgs.skel_preserved {P : Program} {R : Ty} {Γ Γ' : Ctx}
 
 *theorem* · module `RueCore.Soundness`
 
-An argument list has as many values as parameter types (`4.10:3`)
+A value list has as many values as expected types (`4.10:3`, `3.6:5`)
 (helper).
 
 ```lean
-theorem RueCore.HasTys.length_eq {vs : List Val} {Ts : List Ty} (h : HasTys vs Ts) :
-  vs.length = Ts.length
+theorem RueCore.HasTys.length_eq {D : StructEnv} {vs : List Val} {Ts : List Ty} :
+  HasTys D vs Ts → vs.length = Ts.length
 ```
 
 ### `HasTy.mult_eq`
@@ -640,7 +854,8 @@ theorem RueCore.HasTys.length_eq {vs : List Val} {Ts : List Ty} (h : HasTys vs T
 A well-typed value has its type's class (helper).
 
 ```lean
-theorem RueCore.HasTy.mult_eq {v : Val} {T : Ty} (h : HasTy v T) : v.mult = T.mult
+theorem RueCore.HasTy.mult_eq {D : StructEnv} {v : Val} {T : Ty} (h : HasTy D v T) :
+  Val.mult D v = Ty.mult D T
 ```
 
 ### `HasTy.int_inv`
@@ -650,7 +865,7 @@ theorem RueCore.HasTy.mult_eq {v : Val} {T : Ty} (h : HasTy v T) : v.mult = T.mu
 Inversion of value typing at `int` (helper).
 
 ```lean
-theorem RueCore.HasTy.int_inv {v : Val} (h : HasTy v Ty.int) :
+theorem RueCore.HasTy.int_inv {D : StructEnv} {v : Val} (h : HasTy D v Ty.int) :
   ∃ n, v = Val.int n ∧ InBounds n
 ```
 
@@ -661,18 +876,34 @@ theorem RueCore.HasTy.int_inv {v : Val} (h : HasTy v Ty.int) :
 Inversion of value typing at `bool` (helper).
 
 ```lean
-theorem RueCore.HasTy.bool_inv {v : Val} (h : HasTy v Ty.bool) : ∃ b, v = Val.bool b
+theorem RueCore.HasTy.bool_inv {D : StructEnv} {v : Val} (h : HasTy D v Ty.bool) :
+  ∃ b, v = Val.bool b
 ```
 
-### `HasTy.res_inv`
+### `HasTy.struct_inv`
 
 *theorem* · module `RueCore.Soundness`
 
-Inversion of value typing at a resource type (helper).
+Inversion of value typing at a struct type (helper).
 
 ```lean
-theorem RueCore.HasTy.res_inv {v : Val} {κ : Mult} (h : HasTy v (Ty.res κ)) :
-  ∃ n, v = Val.res κ n ∧ InBounds n
+theorem RueCore.HasTy.struct_inv {D : StructEnv} {v : Val} {s : Nat}
+  (h : HasTy D v (Ty.struct s)) :
+  ∃ sd vs, v = Val.struct s vs ∧ D[s]? = some sd ∧ HasTys D vs sd.fields
+```
+
+### `HasTys.head_int`
+
+*theorem* · module `RueCore.Soundness`
+
+The fields of a value at a `Consumable` declaration start with an `int`,
+which is the payload `Expr.consume` reads (`Syntax.lean`) (helper).
+
+```lean
+theorem RueCore.HasTys.head_int {D : StructEnv} {vs : List Val} {Ts : List Ty}
+  (h : HasTys D vs Ts) (hne : Ts ≠ [])
+  (hall : ∀ (T : Ty), T ∈ Ts → T = Ty.int) :
+  ∃ n vs', vs = Val.int n :: vs' ∧ InBounds n
 ```
 
 ### `Matches.mem_lt`
@@ -682,8 +913,8 @@ theorem RueCore.HasTy.res_inv {v : Val} {κ : Mult} (h : HasTy v (Ty.res κ)) :
 Every bound location is inside the store (helper).
 
 ```lean
-theorem RueCore.Matches.mem_lt {Γ : Ctx} {ρ : Env} {H : Store} (hm : Matches Γ ρ H)
-  (ℓ : Nat) : ℓ ∈ ρ → ℓ < List.length H
+theorem RueCore.Matches.mem_lt {D : StructEnv} {Γ : Ctx} {ρ : Env} {H : Store}
+  (hm : Matches D Γ ρ H) (ℓ : Nat) : ℓ ∈ ρ → ℓ < List.length H
 ```
 
 ### `Matches.fresh_not_mem`
@@ -693,8 +924,8 @@ theorem RueCore.Matches.mem_lt {Γ : Ctx} {ρ : Env} {H : Store} (hm : Matches �
 The next location to allocate is bound to nothing (helper).
 
 ```lean
-theorem RueCore.Matches.fresh_not_mem {Γ : Ctx} {ρ : Env} {H : Store}
-  (hm : Matches Γ ρ H) : ¬List.length H ∈ ρ
+theorem RueCore.Matches.fresh_not_mem {D : StructEnv} {Γ : Ctx} {ρ : Env} {H : Store}
+  (hm : Matches D Γ ρ H) : ¬List.length H ∈ ρ
 ```
 
 ### `Matches.lookup`
@@ -704,9 +935,9 @@ theorem RueCore.Matches.fresh_not_mem {Γ : Ctx} {ρ : Env} {H : Store}
 Look a binding up through the invariant (helper).
 
 ```lean
-theorem RueCore.Matches.lookup {Γ : Ctx} {ρ : Env} {H : Store} (hm : Matches Γ ρ H)
-  {i : Nat} {en : Entry} (hget : Γ[i]? = some en) :
-  ∃ ℓ c, ρ[i]? = some ℓ ∧ H[ℓ]? = some c ∧ CellMatches c en
+theorem RueCore.Matches.lookup {D : StructEnv} {Γ : Ctx} {ρ : Env} {H : Store}
+  (hm : Matches D Γ ρ H) {i : Nat} {en : Entry} (hget : Γ[i]? = some en) :
+  ∃ ℓ c, ρ[i]? = some ℓ ∧ H[ℓ]? = some c ∧ CellMatches D c en
 ```
 
 ### `Matches.cons_inv`
@@ -716,9 +947,9 @@ theorem RueCore.Matches.lookup {Γ : Ctx} {ρ : Env} {H : Store} (hm : Matches �
 Inversion at a non-empty context (helper).
 
 ```lean
-theorem RueCore.Matches.cons_inv {en : Entry} {Γ : List Entry} {ℓ : Nat}
-  {ρ : List Nat} {H : Store} (h : Matches (en :: Γ) (ℓ :: ρ) H) :
-  ∃ c, H[ℓ]? = some c ∧ CellMatches c en ∧ ¬ℓ ∈ ρ ∧ Matches Γ ρ H
+theorem RueCore.Matches.cons_inv {D : StructEnv} {en : Entry} {Γ : List Entry}
+  {ℓ : Nat} {ρ : List Nat} {H : Store} (h : Matches D (en :: Γ) (ℓ :: ρ) H) :
+  ∃ c, H[ℓ]? = some c ∧ CellMatches D c en ∧ ¬ℓ ∈ ρ ∧ Matches D Γ ρ H
 ```
 
 ### `Matches.append`
@@ -728,8 +959,8 @@ theorem RueCore.Matches.cons_inv {en : Entry} {Γ : List Entry} {ℓ : Nat}
 Store growth by allocation preserves the invariant (helper).
 
 ```lean
-theorem RueCore.Matches.append {Γ : Ctx} {ρ : Env} {H : Store} (hm : Matches Γ ρ H)
-  (ext : Store) : Matches Γ ρ (H ++ ext)
+theorem RueCore.Matches.append {D : StructEnv} {Γ : Ctx} {ρ : Env} {H : Store}
+  (hm : Matches D Γ ρ H) (ext : Store) : Matches D Γ ρ (H ++ ext)
 ```
 
 ### `Matches.set_outside`
@@ -739,8 +970,9 @@ theorem RueCore.Matches.append {Γ : Ctx} {ρ : Env} {H : Store} (hm : Matches �
 Writing a cell nobody in `ρ` points at preserves the invariant (helper).
 
 ```lean
-theorem RueCore.Matches.set_outside {Γ : Ctx} {ρ : Env} {H : Store} {ℓ : Nat}
-  {c : Cell} : Matches Γ ρ H → ¬ℓ ∈ ρ → Matches Γ ρ (List.set H ℓ c)
+theorem RueCore.Matches.set_outside {D : StructEnv} {Γ : Ctx} {ρ : Env} {H : Store}
+  {ℓ : Nat} {c : Cell} :
+  Matches D Γ ρ H → ¬ℓ ∈ ρ → Matches D Γ ρ (List.set H ℓ c)
 ```
 
 ### `Matches.set`
@@ -751,11 +983,11 @@ Updating binding `i`'s cell together with its entry preserves the
 invariant, given the new cell matches the new entry (helper).
 
 ```lean
-theorem RueCore.Matches.set {Γ : Ctx} {ρ : Env} {H : Store} {i ℓ : Nat} {en' : Entry}
-  {c' : Cell} :
-  Matches Γ ρ H →
+theorem RueCore.Matches.set {D : StructEnv} {Γ : Ctx} {ρ : Env} {H : Store}
+  {i ℓ : Nat} {en' : Entry} {c' : Cell} :
+  Matches D Γ ρ H →
     ρ[i]? = some ℓ →
-      CellMatches c' en' → Matches (List.set Γ i en') ρ (List.set H ℓ c')
+      CellMatches D c' en' → Matches D (List.set Γ i en') ρ (List.set H ℓ c')
 ```
 
 ### `Matches.snoc`
@@ -768,11 +1000,11 @@ and `Env` list the innermost binder first (§5.8's (Fn), §6.9's (D-Call))
 (helper).
 
 ```lean
-theorem RueCore.Matches.snoc {Γ : Ctx} {ρ : Env} {H : Store} {ℓ : Nat} {en : Entry}
-  {c : Cell} :
-  Matches Γ ρ H →
+theorem RueCore.Matches.snoc {D : StructEnv} {Γ : Ctx} {ρ : Env} {H : Store} {ℓ : Nat}
+  {en : Entry} {c : Cell} :
+  Matches D Γ ρ H →
     H[ℓ]? = some c →
-      CellMatches c en → ¬ℓ ∈ ρ → Matches (Γ ++ [en]) (ρ ++ [ℓ]) H
+      CellMatches D c en → ¬ℓ ∈ ρ → Matches D (Γ ++ [en]) (ρ ++ [ℓ]) H
 ```
 
 ### `Untouched.refl`
@@ -868,9 +1100,10 @@ The invariant of a frame transports across a step local to a *disjoint*
 frame: the caller's bindings survive a callee's run (helper).
 
 ```lean
-theorem RueCore.Matches.transport {Γ : Ctx} {ρ₀ ρ : Env} {H H' : Store}
-  (hm : Matches Γ ρ₀ H) (hdisj : ∀ (ℓ : Nat), ℓ ∈ ρ₀ → ¬ℓ ∈ ρ)
-  (hu : Untouched ρ H H') : Matches Γ ρ₀ H'
+theorem RueCore.Matches.transport {D : StructEnv} {Γ : Ctx} {ρ₀ ρ : Env}
+  {H H' : Store} (hm : Matches D Γ ρ₀ H)
+  (hdisj : ∀ (ℓ : Nat), ℓ ∈ ρ₀ → ¬ℓ ∈ ρ) (hu : Untouched ρ H H') :
+  Matches D Γ ρ₀ H'
 ```
 
 ### `CellMatches.dropOk`
@@ -882,21 +1115,39 @@ A cell matching an entry that is not an owned linear one is a cell
 (helper).
 
 ```lean
-theorem RueCore.CellMatches.dropOk {c : Cell} {en : Entry} (hcm : CellMatches c en)
-  (h : ¬(en.st = OwnState.owned ∧ en.ty.mult = Mult.linear)) :
-  c = Cell.moved ∨ ∃ v, c = Cell.full v ∧ v.mult ≠ Mult.linear
+theorem RueCore.CellMatches.dropOk {D : StructEnv} {c : Cell} {en : Entry}
+  (hcm : CellMatches D c en)
+  (h : ¬(en.st = OwnState.owned ∧ Ty.mult D en.ty = Mult.linear)) :
+  c = Cell.moved ∨
+    ∃ v T, c = Cell.full v ∧ HasTy D v T ∧ Val.mult D v ≠ Mult.linear
+```
+
+### `dropCell_ok`
+
+*theorem* · module `RueCore.Soundness`
+
+The drop of a well-typed value in a cell always runs (§6.11) (helper).
+
+```lean
+theorem RueCore.dropCell_ok {D : StructEnv} {ℓ : Nat} {v : Val} {T : Ty}
+  (h : HasTy D v T) : ∃ evs, dropCell D ℓ v = Except.ok evs
 ```
 
 ### `dropRetire_ok`
 
 *theorem* · module `RueCore.Soundness`
 
-`drop-retire` (§6.1) succeeds on such a cell, retiring it (helper).
+`drop-retire` (§6.1) succeeds on such a cell, retiring it: the value's own
+drop (§6.11) runs — `dropValue_ok` is why it never refuses — and the leak
+monitor lets it through because the value's class is not `Linear` (helper).
 
 ```lean
-theorem RueCore.dropRetire_ok {H : Store} {ℓ : Nat} {c : Cell} (hc : H[ℓ]? = some c)
-  (h : c = Cell.moved ∨ ∃ v, c = Cell.full v ∧ v.mult ≠ Mult.linear) :
-  ∃ evs, dropRetire H ℓ = Except.ok (List.set H ℓ Cell.dead, evs)
+theorem RueCore.dropRetire_ok {D : StructEnv} {H : Store} {ℓ : Nat} {c : Cell}
+  (hc : H[ℓ]? = some c)
+  (h :
+    c = Cell.moved ∨
+      ∃ v T, c = Cell.full v ∧ HasTy D v T ∧ Val.mult D v ≠ Mult.linear) :
+  ∃ evs, dropRetire D H ℓ = Except.ok (List.set H ℓ Cell.dead, evs)
 ```
 
 ### `skel_lookup`
@@ -944,9 +1195,9 @@ A promise made from a later store is a promise from an earlier one, given
 the step between them was local to the frame (helper).
 
 ```lean
-theorem RueCore.EvalOk.mono_store {T R : Ty} {Γ' : Ctx} {φ : Frame} {H H₁ : Store}
-  {r : EvalRes} (hu : Untouched φ.env H H₁) (h : EvalOk T R Γ' φ H₁ r) :
-  EvalOk T R Γ' φ H r
+theorem RueCore.EvalOk.mono_store {D : StructEnv} {T R : Ty} {Γ' : Ctx} {φ : Frame}
+  {H H₁ : Store} {r : EvalRes} (hu : Untouched φ.env H H₁)
+  (h : EvalOk D T R Γ' φ H₁ r) : EvalOk D T R Γ' φ H r
 ```
 
 ### `AbortOk.mono_store`
@@ -956,8 +1207,9 @@ theorem RueCore.EvalOk.mono_store {T R : Ty} {Γ' : Ctx} {φ : Frame} {H H₁ : 
 The same, for a result that is not a value (helper).
 
 ```lean
-theorem RueCore.AbortOk.mono_store {R : Ty} {φ : Frame} {H H₁ : Store} {r : EvalRes}
-  (hu : Untouched φ.env H H₁) (h : AbortOk R φ H₁ r) : AbortOk R φ H r
+theorem RueCore.AbortOk.mono_store {D : StructEnv} {R : Ty} {φ : Frame} {H H₁ : Store}
+  {r : EvalRes} (hu : Untouched φ.env H H₁) (h : AbortOk D R φ H₁ r) :
+  AbortOk D R φ H r
 ```
 
 ### `EvalOk.withTrace`
@@ -968,9 +1220,9 @@ Prefixing a trace changes no promise: the trace is an observation, not a
 state (helper).
 
 ```lean
-theorem RueCore.EvalOk.withTrace {T R : Ty} {Γ' : Ctx} {φ : Frame} {H : Store}
-  {r : EvalRes} (h : EvalOk T R Γ' φ H r) (tr : List Event) :
-  EvalOk T R Γ' φ H (EvalRes.withTrace tr r)
+theorem RueCore.EvalOk.withTrace {D : StructEnv} {T R : Ty} {Γ' : Ctx} {φ : Frame}
+  {H : Store} {r : EvalRes} (h : EvalOk D T R Γ' φ H r) (tr : List Event) :
+  EvalOk D T R Γ' φ H (EvalRes.withTrace tr r)
 ```
 
 ### `AbortOk.withTrace`
@@ -980,9 +1232,9 @@ theorem RueCore.EvalOk.withTrace {T R : Ty} {Γ' : Ctx} {φ : Frame} {H : Store}
 The same, for a result that is not a value (helper).
 
 ```lean
-theorem RueCore.AbortOk.withTrace {R : Ty} {φ : Frame} {H : Store} {r : EvalRes}
-  (h : AbortOk R φ H r) (tr : List Event) :
-  AbortOk R φ H (EvalRes.withTrace tr r)
+theorem RueCore.AbortOk.withTrace {D : StructEnv} {R : Ty} {φ : Frame} {H : Store}
+  {r : EvalRes} (h : AbortOk D R φ H r) (tr : List Event) :
+  AbortOk D R φ H (EvalRes.withTrace tr r)
 ```
 
 ### `EvalOk.of_abort`
@@ -994,8 +1246,8 @@ outgoing context the form claims — the promise is only about values there
 (helper).
 
 ```lean
-theorem RueCore.EvalOk.of_abort {T R : Ty} {Γ' : Ctx} {φ : Frame} {H : Store}
-  {r : EvalRes} (h : AbortOk R φ H r) : EvalOk T R Γ' φ H r
+theorem RueCore.EvalOk.of_abort {D : StructEnv} {T R : Ty} {Γ' : Ctx} {φ : Frame}
+  {H : Store} {r : EvalRes} (h : AbortOk D R φ H r) : EvalOk D T R Γ' φ H r
 ```
 
 ### `EvalOk.toAbort`
@@ -1006,10 +1258,10 @@ An evaluation that produced no value only ever produced an `AbortOk`
 outcome (helper).
 
 ```lean
-theorem RueCore.EvalOk.toAbort {T R : Ty} {Γ' : Ctx} {φ : Frame} {H : Store}
-  {r : EvalRes} (h : EvalOk T R Γ' φ H r)
+theorem RueCore.EvalOk.toAbort {D : StructEnv} {T R : Ty} {Γ' : Ctx} {φ : Frame}
+  {H : Store} {r : EvalRes} (h : EvalOk D T R Γ' φ H r)
   (hne : ∀ (H' : Store) (v : Val) (tr : List Event), r ≠ EvalRes.ok H' v tr) :
-  AbortOk R φ H r
+  AbortOk D R φ H r
 ```
 
 ### `EvalOk.bind`
@@ -1022,13 +1274,15 @@ operand's value, promises the form's outcome. Every operand of every form is
 discharged by this lemma (helper).
 
 ```lean
-theorem RueCore.EvalOk.bind {T T₀ R : Ty} {Γ' Γ₀ : Ctx} {φ : Frame} {H : Store}
-  {r : EvalRes} {k : Store → Val → EvalRes} (hr : EvalOk T₀ R Γ₀ φ H r)
+theorem RueCore.EvalOk.bind {D : StructEnv} {T T₀ R : Ty} {Γ' Γ₀ : Ctx} {φ : Frame}
+  {H : Store} {r : EvalRes} {k : Store → Val → EvalRes}
+  (hr : EvalOk D T₀ R Γ₀ φ H r)
   (hk :
     ∀ (H₁ : Store) (v : Val) (tr : List Event),
       r = EvalRes.ok H₁ v tr →
-        HasTy v T₀ → FrameMatches Γ₀ φ H₁ → EvalOk T R Γ' φ H₁ (k H₁ v)) :
-  EvalOk T R Γ' φ H (r.andThen k)
+        HasTy D v T₀ →
+          FrameMatches D Γ₀ φ H₁ → EvalOk D T R Γ' φ H₁ (k H₁ v)) :
+  EvalOk D T R Γ' φ H (r.andThen k)
 ```
 
 ### `EvalOk.weaken`
@@ -1039,10 +1293,10 @@ Weakening the outgoing context of a promise, which is what §5.5's join
 asks of an arm (helper).
 
 ```lean
-theorem RueCore.EvalOk.weaken {T R : Ty} {Γ₁ Γ' : Ctx} {φ : Frame} {H : Store}
-  {r : EvalRes}
-  (hw : ∀ (H' : Store), FrameMatches Γ₁ φ H' → FrameMatches Γ' φ H')
-  (h : EvalOk T R Γ₁ φ H r) : EvalOk T R Γ' φ H r
+theorem RueCore.EvalOk.weaken {D : StructEnv} {T R : Ty} {Γ₁ Γ' : Ctx} {φ : Frame}
+  {H : Store} {r : EvalRes}
+  (hw : ∀ (H' : Store), FrameMatches D Γ₁ φ H' → FrameMatches D Γ' φ H')
+  (h : EvalOk D T R Γ₁ φ H r) : EvalOk D T R Γ' φ H r
 ```
 
 ### `EvalRes.withTrace_outOfFuel_iff`
@@ -1128,7 +1382,7 @@ reads only the callee's signature (§5.8's (Call)) and passes no arguments
 (helper).
 
 ```lean
-theorem RueCore.entry_typed {P : Program} {fd : FnDef} (h0 : P[0]? = some fd)
+theorem RueCore.entry_typed {P : Program} {fd : FnDef} (h0 : P.fns[0]? = some fd)
   (hp : fd.params = []) (R : Ty) : Typed P R [] (Expr.call 0 []) fd.ret []
 ```
 
@@ -1140,7 +1394,8 @@ The machine's initial state satisfies the frame invariant: no bindings, no
 store, an empty scope record (helper).
 
 ```lean
-theorem RueCore.frameMatches_empty : FrameMatches [] { env := [], scope := [] } []
+theorem RueCore.frameMatches_empty {D : StructEnv} :
+  FrameMatches D [] { env := [], scope := [] } []
 ```
 
 ### `EvalRes.withTrace_ne_returned`
@@ -1174,11 +1429,56 @@ theorem RueCore.EvalRes.absorb_ne_returned {r : EvalRes} {k : Store → Val → 
   r.absorb k ≠ EvalRes.returned H v tr
 ```
 
+### `checkStructsFrom_sound`
+
+*theorem* · module `RueCore.Checker`
+
+`checkStructsFrom` checks the declaration at every offset (helper).
+
+```lean
+theorem RueCore.checkStructsFrom_sound (D : StructEnv) (k : Nat)
+  (L : List StructDecl) :
+  checkStructsFrom D k L = true →
+    ∀ (i : Nat) (sd : StructDecl),
+      L[i]? = some sd → checkStructDecl D (k + i) sd = true
+```
+
 ## Definitions the statements depend on
 
 In dependency order — every definition appears after everything its own
 statement mentions — with ties broken by name, so this file changes only
 when the mechanization does.
+
+### `Attr`
+
+*inductive* · module `RueCore.Syntax`
+
+A struct's declared attribute (§3's `attr(S)`): none, `@copy` (`3.8:18`),
+or `linear` (`3.8:57`).
+
+```lean
+inductive RueCore.Attr : Type
+```
+
+Constructors:
+
+**`Attr.none`**
+
+```lean
+RueCore.Attr.none : Attr
+```
+
+**`Attr.copy`**
+
+```lean
+RueCore.Attr.copy : Attr
+```
+
+**`Attr.linear`**
+
+```lean
+RueCore.Attr.linear : Attr
+```
 
 ### `Env`
 
@@ -1189,6 +1489,121 @@ The environment `ρ` (§6.1), de Bruijn: index `i` ↦ its location.
 ```lean
 abbrev RueCore.Env : Type :=
   List Nat
+```
+
+### `Expr`
+
+*inductive* · module `RueCore.Syntax`
+
+Expressions (§2, fragment). `use i` is the `e ::= p` production — a place
+(here: a whole binding) appearing in value context, i.e. a *use* (§4.2).
+`drop i` is `@drop(p)`. `letIn` carries the binding's `μ ∈ {∅, mut}` mark.
+`mkStruct s args` is §2's `S { f1: e1, …, fk: ek }`, presented in declaration
+order (`3.6:15`) with one initializer per field. `call f args` is §2's
+`g(a1, …, am)` with every argument by value (§6.9's by-reference modes are not
+in the fragment), `f` the callee's index in the `Program`. `ret e` is §2's
+`return e`.
+
+```lean
+inductive RueCore.Expr : Type
+```
+
+Constructors:
+
+**`Expr.intLit`**
+
+```lean
+RueCore.Expr.intLit (n : Int) : Expr
+```
+
+**`Expr.boolLit`**
+
+```lean
+RueCore.Expr.boolLit (b : Bool) : Expr
+```
+
+**`Expr.unitLit`**
+
+```lean
+RueCore.Expr.unitLit : Expr
+```
+
+**`Expr.use`**
+
+```lean
+RueCore.Expr.use (i : Nat) : Expr
+```
+
+**`Expr.add`**
+
+```lean
+RueCore.Expr.add (e₁ e₂ : Expr) : Expr
+```
+
+**`Expr.div`**
+
+```lean
+RueCore.Expr.div (e₁ e₂ : Expr) : Expr
+```
+
+**`Expr.lt`**
+
+```lean
+RueCore.Expr.lt (e₁ e₂ : Expr) : Expr
+```
+
+**`Expr.mkStruct`**
+
+```lean
+RueCore.Expr.mkStruct (s : Nat) (args : List Expr) : Expr
+```
+
+**`Expr.consume`**
+
+```lean
+RueCore.Expr.consume (e : Expr) : Expr
+```
+
+**`Expr.drop`**
+
+```lean
+RueCore.Expr.drop (i : Nat) : Expr
+```
+
+**`Expr.letIn`**
+
+```lean
+RueCore.Expr.letIn (m : Bool) (e₁ e₂ : Expr) : Expr
+```
+
+**`Expr.assign`**
+
+```lean
+RueCore.Expr.assign (i : Nat) (e : Expr) : Expr
+```
+
+**`Expr.seq`**
+
+```lean
+RueCore.Expr.seq (e₁ e₂ : Expr) : Expr
+```
+
+**`Expr.ite`**
+
+```lean
+RueCore.Expr.ite (c e₁ e₂ : Expr) : Expr
+```
+
+**`Expr.call`**
+
+```lean
+RueCore.Expr.call (f : Nat) (args : List Expr) : Expr
+```
+
+**`Expr.ret`**
+
+```lean
+RueCore.Expr.ret (e : Expr) : Expr
 ```
 
 ### `Mult`
@@ -1268,6 +1683,84 @@ RueCore.PanicKind.overflow : PanicKind
 
 ```lean
 RueCore.PanicKind.divZero : PanicKind
+```
+
+### `Ty`
+
+*inductive* · module `RueCore.Syntax`
+
+Types (§2, fragment). `struct s` names the declaration at index `s` of the
+program's struct environment; elaboration resolves the surface name.
+
+```lean
+inductive RueCore.Ty : Type
+```
+
+Constructors:
+
+**`Ty.int`**
+
+```lean
+RueCore.Ty.int : Ty
+```
+
+**`Ty.bool`**
+
+```lean
+RueCore.Ty.bool : Ty
+```
+
+**`Ty.unit`**
+
+```lean
+RueCore.Ty.unit : Ty
+```
+
+**`Ty.struct`**
+
+```lean
+RueCore.Ty.struct (s : Nat) : Ty
+```
+
+### `Val`
+
+*inductive* · module `RueCore.Dynamics`
+
+Machine values (§6.1's `v`), fragment forms only. `struct s vs` is §6.1's
+`{ v1, …, vk }_S`: the declaration's index and one value per field, in
+declaration order (`3.6:9`). A struct value names its declaration rather than
+carrying its class, so the machine's drop decisions are value-driven — it
+reads the tag the value carries — while the class and the destructor come from
+the program's declarations, as the compiled program's drop glue does.
+
+```lean
+inductive RueCore.Val : Type
+```
+
+Constructors:
+
+**`Val.int`**
+
+```lean
+RueCore.Val.int (n : Int) : Val
+```
+
+**`Val.bool`**
+
+```lean
+RueCore.Val.bool (b : Bool) : Val
+```
+
+**`Val.unit`**
+
+```lean
+RueCore.Val.unit : Val
+```
+
+**`Val.struct`**
+
+```lean
+RueCore.Val.struct (s : Nat) (fields : List Val) : Val
 ```
 
 ### `Violation`
@@ -1357,229 +1850,28 @@ Defining equations, as Lean derived them from the body:
 intMin = -2 ^ 63
 ```
 
-### `Expr`
-
-*inductive* · module `RueCore.Syntax`
-
-Expressions (§2, fragment). `use i` is the `e ::= p` production — a place
-(here: a whole binding) appearing in value context, i.e. a *use* (§4.2).
-`drop i` is `@drop(p)`. `letIn` carries the binding's `μ ∈ {∅, mut}` mark.
-`call f args` is §2's `g(a1, …, am)` with every argument by value (§6.9's
-by-reference modes are not in the fragment), `f` the callee's index in the
-`Program`. `ret e` is §2's `return e`.
-
-```lean
-inductive RueCore.Expr : Type
-```
-
-Constructors:
-
-**`Expr.intLit`**
-
-```lean
-RueCore.Expr.intLit (n : Int) : Expr
-```
-
-**`Expr.boolLit`**
-
-```lean
-RueCore.Expr.boolLit (b : Bool) : Expr
-```
-
-**`Expr.unitLit`**
-
-```lean
-RueCore.Expr.unitLit : Expr
-```
-
-**`Expr.use`**
-
-```lean
-RueCore.Expr.use (i : Nat) : Expr
-```
-
-**`Expr.add`**
-
-```lean
-RueCore.Expr.add (e₁ e₂ : Expr) : Expr
-```
-
-**`Expr.div`**
-
-```lean
-RueCore.Expr.div (e₁ e₂ : Expr) : Expr
-```
-
-**`Expr.lt`**
-
-```lean
-RueCore.Expr.lt (e₁ e₂ : Expr) : Expr
-```
-
-**`Expr.mkres`**
-
-```lean
-RueCore.Expr.mkres (κ : Mult) (e : Expr) : Expr
-```
-
-**`Expr.consume`**
-
-```lean
-RueCore.Expr.consume (e : Expr) : Expr
-```
-
-**`Expr.drop`**
-
-```lean
-RueCore.Expr.drop (i : Nat) : Expr
-```
-
-**`Expr.letIn`**
-
-```lean
-RueCore.Expr.letIn (m : Bool) (e₁ e₂ : Expr) : Expr
-```
-
-**`Expr.assign`**
-
-```lean
-RueCore.Expr.assign (i : Nat) (e : Expr) : Expr
-```
-
-**`Expr.seq`**
-
-```lean
-RueCore.Expr.seq (e₁ e₂ : Expr) : Expr
-```
-
-**`Expr.ite`**
-
-```lean
-RueCore.Expr.ite (c e₁ e₂ : Expr) : Expr
-```
-
-**`Expr.call`**
-
-```lean
-RueCore.Expr.call (f : Nat) (args : List Expr) : Expr
-```
-
-**`Expr.ret`**
-
-```lean
-RueCore.Expr.ret (e : Expr) : Expr
-```
-
-### `Frame`
-
-*inductive* · module `RueCore.Dynamics`
-
-§6.1's frame `φ = ⟨ρ ; σ⟩`: the environment and the frame's open scope
-record — the cells owed a drop when the frame's scopes end, in creation order
-(dropped newest-first). Every binding of the fragment is a `let` binding or a
-by-value parameter, and both are registered; `borrow`/`inout` parameters,
-which are deliberately never registered (§6.9, `3.8:62`), are not in the
-fragment.
-
-```lean
-inductive RueCore.Frame : Type
-```
-
-Constructors:
-
-**`Frame.mk`**
-
-```lean
-RueCore.Frame.mk (env : Env) (scope : List Nat) : Frame
-```
-
-### `InBounds`
+### `Attr.lift`
 
 *def* · module `RueCore.Syntax`
 
-`min_T ≤ n ≤ max_T` for `T = int(64, signed)`: the side condition of
-§6.1's `n_T` values, outside which §6.4's arithmetic traps.
+§3's lifting of the field join by the declared attribute: `linear` forces
+`Linear` (`3.8:58`, `3.8:57`), `@copy` forces `Copy` (well-formed only when
+the join is already `Copy` and the struct declares no destructor — `3.8:18`,
+`3.9:31`, which `WfStructs` requires), and a struct with no attribute is
+`Linear` when its fields join to `Linear` and `Affine` otherwise (`3.8:3`:
+structs are affine by default).
 
 ```lean
-def RueCore.InBounds (n : Int) : Prop :=
-  intMin ≤ n ∧ n ≤ intMax
+def RueCore.Attr.lift : Attr → Mult → Mult
 ```
 
-### `Ty`
-
-*inductive* · module `RueCore.Syntax`
-
-Types (§2, fragment). `res κ` is an abstract non-scalar type of class `κ`
-carrying an integer payload — the smallest stand-in for a monomorphic struct
-that exercises the Affine/Linear discipline.
+Defining equations, as Lean derived them from the body:
 
 ```lean
-inductive RueCore.Ty : Type
-```
-
-Constructors:
-
-**`Ty.int`**
-
-```lean
-RueCore.Ty.int : Ty
-```
-
-**`Ty.bool`**
-
-```lean
-RueCore.Ty.bool : Ty
-```
-
-**`Ty.unit`**
-
-```lean
-RueCore.Ty.unit : Ty
-```
-
-**`Ty.res`**
-
-```lean
-RueCore.Ty.res (κ : Mult) : Ty
-```
-
-### `Val`
-
-*inductive* · module `RueCore.Dynamics`
-
-Machine values (§6.1's `v`), fragment forms only. A resource value carries
-its class so the machine's drop decisions are value-driven, as the oracle's
-are (the compiled program's drop glue is type-driven; the §7 preservation
-invariant is exactly why the two agree).
-
-```lean
-inductive RueCore.Val : Type
-```
-
-Constructors:
-
-**`Val.int`**
-
-```lean
-RueCore.Val.int (n : Int) : Val
-```
-
-**`Val.bool`**
-
-```lean
-RueCore.Val.bool (b : Bool) : Val
-```
-
-**`Val.unit`**
-
-```lean
-RueCore.Val.unit : Val
-```
-
-**`Val.res`**
-
-```lean
-RueCore.Val.res (κ : Mult) (n : Int) : Val
+∀ (x : Mult), Attr.linear.lift x = Mult.linear
+∀ (x : Mult), Attr.copy.lift x = Mult.copy
+∀ (x : Mult),
+  Attr.none.lift x = if x = Mult.linear then Mult.linear else Mult.affine
 ```
 
 ### `Cell`
@@ -1636,10 +1928,14 @@ RueCore.Entry.mk (ty : Ty) (mu : Bool) (st : OwnState) : Entry
 
 *inductive* · module `RueCore.Dynamics`
 
-Observable drop events, the fragment's slice of the oracle `Outcome`: a
-binding's drop (§6.11: at scope exit §6.7, at an unwinding exit §6.9, at
-`@drop`, or at an overwrite §6.8) and a discarded temporary's drop ((D-Seq),
-§6.7).
+Drop events, the fragment's slice of the oracle `Outcome`. `drop ℓ v` and
+`dropTemp v` mark *where* a drop starts — a binding's drop (§6.11: at scope
+exit §6.7, at an unwinding exit §6.9, at `@drop`, or at an overwrite §6.8) and
+a discarded temporary's drop ((D-Seq), §6.7) — and `dtor s v` is the one event
+a Rue program can *observe*: the user destructor `S` declares (`3.9`), which
+§6.11 runs before the value's fields. The events a value's drop emits follow
+each other in §6.11's order: the destructor, then the fields in declaration
+order, each recursively.
 
 ```lean
 inductive RueCore.Event : Type
@@ -1657,6 +1953,12 @@ RueCore.Event.drop (ℓ : Nat) (v : Val) : Event
 
 ```lean
 RueCore.Event.dropTemp (v : Val) : Event
+```
+
+**`Event.dtor`**
+
+```lean
+RueCore.Event.dtor (s : Nat) (v : Val) : Event
 ```
 
 ### `Explain.StepRes`
@@ -1705,42 +2007,57 @@ RueCore.Explain.StepRes.refuse (why : Violation) (premise : String) :
 RueCore.Explain.StepRes.exhausted : Explain.StepRes
 ```
 
-### `HasTy`
+### `Frame`
 
-*inductive* · module `RueCore.Soundness`
+*inductive* · module `RueCore.Dynamics`
 
-Value typing: §6.1's values against §2's types, with the `n_T` bounds and
-the resource's class. §7's preservation half is stated over this relation.
+§6.1's frame `φ = ⟨ρ ; σ⟩`: the environment and the frame's open scope
+record — the cells owed a drop when the frame's scopes end, in creation order
+(dropped newest-first). Every binding of the fragment is a `let` binding or a
+by-value parameter, and both are registered; `borrow`/`inout` parameters,
+which are deliberately never registered (§6.9, `3.8:62`), are not in the
+fragment.
 
 ```lean
-inductive RueCore.HasTy : Val → Ty → Prop
+inductive RueCore.Frame : Type
 ```
 
 Constructors:
 
-**`HasTy.int`**
+**`Frame.mk`**
 
 ```lean
-RueCore.HasTy.int {n : Int} : InBounds n → HasTy (Val.int n) Ty.int
+RueCore.Frame.mk (env : Env) (scope : List Nat) : Frame
 ```
 
-**`HasTy.bool`**
+### `InBounds`
+
+*def* · module `RueCore.Syntax`
+
+`min_T ≤ n ≤ max_T` for `T = int(64, signed)`: the side condition of
+§6.1's `n_T` values, outside which §6.4's arithmetic traps.
 
 ```lean
-RueCore.HasTy.bool {b : Bool} : HasTy (Val.bool b) Ty.bool
+def RueCore.InBounds (n : Int) : Prop :=
+  intMin ≤ n ∧ n ≤ intMax
 ```
 
-**`HasTy.unit`**
+### `Mult.rank`
+
+*def* · module `RueCore.Syntax`
+
+The lattice order as a number, `Copy ⊑ Affine ⊑ Linear` (§3) (helper).
 
 ```lean
-RueCore.HasTy.unit : HasTy Val.unit Ty.unit
+def RueCore.Mult.rank : Mult → Nat
 ```
 
-**`HasTy.res`**
+Defining equations, as Lean derived them from the body:
 
 ```lean
-RueCore.HasTy.res {κ : Mult} {n : Int} :
-  InBounds n → HasTy (Val.res κ n) (Ty.res κ)
+Mult.copy.rank = 0
+Mult.affine.rank = 1
+Mult.linear.rank = 2
 ```
 
 ### `Param`
@@ -1764,61 +2081,28 @@ Constructors:
 RueCore.Param.mk (ty : Ty) (mu : Bool) : Param
 ```
 
-### `Ty.mult`
+### `StructDecl`
 
-*def* · module `RueCore.Syntax`
+*inductive* · module `RueCore.Syntax`
 
-`class(T)` (§3). Scalars are `Copy`; a resource has its declared class.
+A monomorphic struct declaration: §2's `S { f1: T1, …, fk: Tk }` with its
+declared attribute (§3), whether it declares a destructor (`3.9`), and the
+class §3 assigns it. Fields are listed in **declaration order** (`3.6:9`),
+which is the order §6.11 drops them in and the order (Struct-Intro) §5.8's
+initializers are presented in (`3.6:15`); they are named by position, as
+bindings are, because elaboration resolves field names.
 
 ```lean
-def RueCore.Ty.mult : Ty → Mult
+inductive RueCore.StructDecl : Type
 ```
 
-Defining equations, as Lean derived them from the body:
+Constructors:
+
+**`StructDecl.mk`**
 
 ```lean
-Ty.int.mult = Mult.copy
-Ty.bool.mult = Mult.copy
-Ty.unit.mult = Mult.copy
-∀ (a : Mult), (Ty.res a).mult = a
-```
-
-### `Val.mult`
-
-*def* · module `RueCore.Dynamics`
-
-The dynamic image of `class(T)` (§3) on a value.
-
-```lean
-def RueCore.Val.mult : Val → Mult
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (κ : Mult) (n : Int), (Val.res κ n).mult = κ
-∀ (x : Val),
-  (∀ (κ : Mult) (n : Int), x = Val.res κ n → False) → x.mult = Mult.copy
-```
-
-### `CellMatches`
-
-*def* · module `RueCore.Soundness`
-
-Per-cell agreement between the static entry and the dynamic cell: §7's
-"Σ faithfully tracks the store's initialization", with the §5.5 join's
-asymmetry built in. A `MovedOut` entry may still hold a live *non-linear*
-value, which the machine drops path-specifically at scope exit (§5.6, §6.7;
-`3.8:73` is the array-element form of the same rule, cited by §5.5); it
-never holds a live linear one (`3.8:50`).
-
-```lean
-def RueCore.CellMatches (c : Cell) (en : Entry) : Prop :=
-  match en.st with
-  | OwnState.owned => ∃ v, c = Cell.full v ∧ HasTy v en.ty
-  | OwnState.movedOut =>
-    c = Cell.moved ∨
-      ∃ v, c = Cell.full v ∧ HasTy v en.ty ∧ v.mult ≠ Mult.linear
+RueCore.StructDecl.mk (attr : Attr) (fields : List Ty) (dtor : Bool)
+  (cls : Mult) : StructDecl
 ```
 
 ### `Ctx`
@@ -1886,30 +2170,22 @@ Constructors:
 RueCore.FnDef.mk (params : List Param) (ret : Ty) (body : Expr) : FnDef
 ```
 
-### `HasTys`
+### `Mult.join`
 
-*inductive* · module `RueCore.Soundness`
+*def* · module `RueCore.Syntax`
 
-Value typing for a call's argument list, pointwise against the callee's
-parameter types (§5.8's (Call), `4.10:4`).
+The join `⊔` of §3's lattice: the least upper bound, which is what makes a
+struct at least as restrictive as its most restrictive field ("infectiousness
+is just the join").
 
 ```lean
-inductive RueCore.HasTys : List Val → List Ty → Prop
+def RueCore.Mult.join (a b : Mult) : Mult
 ```
 
-Constructors:
-
-**`HasTys.nil`**
+Defining equations, as Lean derived them from the body:
 
 ```lean
-RueCore.HasTys.nil : HasTys [] []
-```
-
-**`HasTys.cons`**
-
-```lean
-RueCore.HasTys.cons {v : Val} {vs : List Val} {T : Ty} {Ts : List Ty} :
-  HasTy v T → HasTys vs Ts → HasTys (v :: vs) (T :: Ts)
+∀ (a b : Mult), a.join b = if a.rank ≤ b.rank then b else a
 ```
 
 ### `Store`
@@ -1922,6 +2198,37 @@ cell keeps its index occupied — identities are never reused (§6.1).
 ```lean
 abbrev RueCore.Store : Type :=
   List Cell
+```
+
+### `StructDecl.Consumable`
+
+*def* · module `RueCore.Syntax`
+
+The fragment's whole-value struct elimination, as a side condition on a
+declaration: the struct has at least one field, every field is `int`, and it
+declares no destructor. `Expr.consume` reads the first field's payload and
+consumes the value; a field of any other type would be discarded without its
+drop glue, and a destructor would make even the read a rejected projection
+(`3.9:34`, E0456). This is **not** a calculus rule — the calculus eliminates a
+struct through a projection, which is RUE-2231 — so the restriction is the
+fragment's, stated here rather than cited.
+
+```lean
+def RueCore.StructDecl.Consumable (sd : StructDecl) : Prop :=
+  sd.fields ≠ [] ∧
+    (∀ (T : Ty), T ∈ sd.fields → T = Ty.int) ∧ sd.dtor = false
+```
+
+### `StructEnv`
+
+*abbrev* · module `RueCore.Syntax`
+
+The program's struct environment: the declarations §2's type production
+`S` names, indexed the way `Ty.struct` names them.
+
+```lean
+abbrev RueCore.StructEnv : Type :=
+  List StructDecl
 ```
 
 ### `Ctx.skel`
@@ -1938,29 +2245,6 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (Γ : Ctx), Γ.skel = List.map Entry.skel Γ
-```
-
-### `Entry.join`
-
-*def* · module `RueCore.Statics`
-
-The §5.5 branch join, per entry. Agreeing states join to themselves. A
-disagreement on a linear-carrying entry is ill-formed (`3.8:50`); on any other
-entry it joins conservatively to `MovedOut`.
-
-```lean
-def RueCore.Entry.join (a b : Entry) : Option Entry
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (a b : Entry),
-  a.join b =
-    if a.st = b.st then some a
-    else
-      if a.ty.mult = Mult.linear then none
-      else some (a.setSt OwnState.movedOut)
 ```
 
 ### `EvalRes`
@@ -2061,64 +2345,48 @@ RueCore.Explain.Verdict.accept (ty : Ty) (ctxOut : Ctx) : Explain.Verdict
 RueCore.Explain.Verdict.reject (premise : String) : Explain.Verdict
 ```
 
-### `Matches`
+### `Program`
 
-*inductive* · module `RueCore.Soundness`
+*inductive* · module `RueCore.Syntax`
 
-`Matches Γ ρ H`: each binding's location holds a cell agreeing with its
-static entry; locations are live (in `H`) and pairwise distinct. This is the
-§7 preservation invariant, over §6.1's environment `ρ` and store `H`.
+A program: the struct environment §2's `S` and §5.8's (Struct-Intro) look
+a declaration up in, and the top-level function environment §5.8's (Call)
+looks a callee up in, each indexed the way the syntax names it. Function index
+`0` is the entry point, which `Dynamics.run` calls with no arguments.
 
 ```lean
-inductive RueCore.Matches : Ctx → Env → Store → Prop
+inductive RueCore.Program : Type
 ```
 
 Constructors:
 
-**`Matches.nil`**
+**`Program.mk`**
 
 ```lean
-RueCore.Matches.nil {H : Store} : Matches [] [] H
+RueCore.Program.mk (structs : StructEnv) (fns : List FnDef) : Program
 ```
 
-**`Matches.cons`**
+### `StructEnv.classOf`
+
+*def* · module `RueCore.Syntax`
+
+`class(S)` for a declared struct type (§3), read off the declaration. An
+index the environment does not have is `Affine`, the class of a struct with no
+attribute and no linear field — the conservative reading of a program
+`WfStructs` rejects anyway (helper).
 
 ```lean
-RueCore.Matches.cons {en : Entry} {Γ : Ctx} {ℓ : Nat} {ρ : Env} {H : Store}
-  {c : Cell} :
-  H[ℓ]? = some c →
-    CellMatches c en → ¬ℓ ∈ ρ → Matches Γ ρ H → Matches (en :: Γ) (ℓ :: ρ) H
+def RueCore.StructEnv.classOf (D : StructEnv) (s : Nat) : Mult
 ```
 
-### `NoOwnedLinear`
-
-*def* · module `RueCore.Statics`
-
-§5.6's residual-linear condition, read over a whole frame: no binding is
-still `Owned` at a linear-carrying type. This is the premise (Fn) §5.8 imposes
-on a function body's exit edges for its by-value parameters (`3.8:62`) and
-that §5.6's `⊥_exit` carries at an early `return`: at such an edge every open
-scope of the frame ends at once, so the check is frame-wide rather than
-per-binding. In the fragment `residual-linear(Σ, x, T)` collapses to
-`Σ(x) = Owned ∧ class(T) = Linear` (whole bindings, no paths).
+Defining equations, as Lean derived them from the body:
 
 ```lean
-def RueCore.NoOwnedLinear (Γ : Ctx) : Prop :=
-  ∀ (en : Entry),
-    en ∈ Γ → ¬(en.st = OwnState.owned ∧ en.ty.mult = Mult.linear)
-```
-
-### `Program`
-
-*abbrev* · module `RueCore.Syntax`
-
-A program: the top-level function environment §5.8's (Call) looks a callee
-up in, indexed the way `Expr.call` names it. Index `0` is the entry point,
-which `Dynamics.run` calls with no arguments.
-
-```lean
-abbrev RueCore.Program : Type :=
-  List FnDef
+∀ (D : StructEnv) (s : Nat),
+  D.classOf s =
+    match D[s]? with
+    | some sd => sd.cls
+    | none => Mult.affine
 ```
 
 ### `Untouched`
@@ -2135,40 +2403,6 @@ the callee's `ρ` and survive the call untouched.
 def RueCore.Untouched (ρ : Env) (H H' : Store) : Prop :=
   List.length H ≤ List.length H' ∧
     ∀ (ℓ : Nat), ℓ < List.length H → ¬ℓ ∈ ρ → H'[ℓ]? = H[ℓ]?
-```
-
-### `dropRetire`
-
-*def* · module `RueCore.Dynamics`
-
-`drop-retire(H, ℓ)` (§6.1): run the binding's drop (§6.11 — a no-op on a
-`⊘` or `Copy` cell), then retire the allocation, so any later access to it is
-`useAfterDrop` rather than silently readable (the RUE-390 change). A live
-linear value here is §5.6's leak: the scope ends with an obligation
-undischarged, and the machine refuses (`3.8:32`). This is the one
-scope-teardown path: `let`'s normal `endscope` (§6.7) and the frame unwind of
-`return` (§6.9) both run it.
-
-```lean
-def RueCore.dropRetire (H : Store) (ℓ : Nat) :
-  Except Violation (Store × List Event)
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (H : Store) (ℓ : Nat),
-  dropRetire H ℓ =
-    match H[ℓ]? with
-    | none => Except.error Violation.unbound
-    | some Cell.dead => Except.error Violation.useAfterDrop
-    | some Cell.moved => Except.ok (List.set H ℓ Cell.dead, [])
-    | some (Cell.full v) =>
-      match v.mult with
-      | Mult.linear => Except.error Violation.linearLeak
-      | Mult.affine =>
-        Except.ok (List.set H ℓ Cell.dead, [Event.drop ℓ v])
-      | Mult.copy => Except.ok (List.set H ℓ Cell.dead, [])
 ```
 
 ### `fnCtx`
@@ -2219,26 +2453,6 @@ Defining equations, as Lean derived them from the body:
     | (H', locs) => (H', List.length x :: locs)
 ```
 
-### `AbortOk`
-
-*def* · module `RueCore.Soundness`
-
-The promise for an evaluation that does **not** produce a value here: an
-unwinding `return` carries a value of the enclosing function's declared return
-type `R` and leaves the frame's neighbours alone; a trap and exhausted fuel
-promise nothing; a refusal is impossible, which is the whole theorem
-(helper).
-
-```lean
-def RueCore.AbortOk (R : Ty) (φ : Frame) (H : Store) : EvalRes → Prop :=
-  match x✝ with
-  | EvalRes.ok H v tr => False
-  | EvalRes.returned H' v tr => HasTy v R ∧ Untouched φ.env H H'
-  | EvalRes.panic k => True
-  | EvalRes.stuck why => False
-  | EvalRes.outOfFuel => True
-```
-
 ### `ArgsRes`
 
 *inductive* · module `RueCore.Dynamics`
@@ -2264,33 +2478,6 @@ RueCore.ArgsRes.ok (H : Store) (vs : List Val) (tr : List Event) : ArgsRes
 
 ```lean
 RueCore.ArgsRes.abort (r : EvalRes) : ArgsRes
-```
-
-### `Ctx.join`
-
-*def* · module `RueCore.Statics`
-
-The §5.5 branch join, pointwise. Defined only on equal-length contexts
-(the two arms extend one incoming context, so lengths always agree).
-
-```lean
-def RueCore.Ctx.join : Ctx → Ctx → Option Ctx
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-Ctx.join [] [] = some []
-∀ (a : Entry) (as : List Entry) (b : Entry) (bs : List Entry),
-  Ctx.join (a :: as) (b :: bs) =
-    match a.join b, Ctx.join as bs with
-    | some e, some rest => some (e :: rest)
-    | x, x_1 => none
-∀ (x x_1 : Ctx),
-  (x = [] → x_1 = [] → False) →
-    (∀ (a : Entry) (as : List Entry) (b : Entry) (bs : List Entry),
-        x = a :: as → x_1 = b :: bs → False) →
-      x.join x_1 = none
 ```
 
 ### `EvalRes.withTrace`
@@ -2335,12 +2522,15 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 Examples.countdown =
-  [{ params := [], ret := Ty.int, body := Expr.call 1 [Expr.intLit 4] },
-    { params := [{ ty := Ty.int, mu := false }], ret := Ty.int,
-      body :=
-        ((Expr.use 0).lt (Expr.intLit 1)).ite (Expr.intLit 0)
-          ((Expr.use 0).add
-            (Expr.call 1 [(Expr.use 0).add (Expr.intLit (-1))])) }]
+  { structs := [],
+    fns :=
+      [{ params := [], ret := Ty.int,
+          body := Expr.call 1 [Expr.intLit 4] },
+        { params := [{ ty := Ty.int, mu := false }], ret := Ty.int,
+          body :=
+            ((Expr.use 0).lt (Expr.intLit 1)).ite (Expr.intLit 0)
+              ((Expr.use 0).add
+                (Expr.call 1 [(Expr.use 0).add (Expr.intLit (-1))])) }] }
 ```
 
 ### `Explain.Deriv`
@@ -2386,29 +2576,45 @@ RueCore.Explain.Trace.mk (steps : List Explain.Step) (res : EvalRes) :
   Explain.Trace
 ```
 
-### `FrameMatches`
+### `Ty.mult`
 
-*inductive* · module `RueCore.Soundness`
+*def* · module `RueCore.Syntax`
 
-The per-frame invariant (§6.1): the fused context agrees with the store
-through the frame's environment, and the frame's scope record, read
-newest-first, **is** that environment. The second clause is the RUE-1277
-redundancy discharged — every live binding of the frame is registered for a
-drop exactly once, which is what makes `run-all-scope-drops` (§6.9) safe at an
-early `return`.
+`class(T)` (§3), against the program's struct environment. Scalars are
+`Copy`; a struct type has the class its declaration records.
 
 ```lean
-inductive RueCore.FrameMatches (Γ : Ctx) (φ : Frame) (H : Store) : Prop
+def RueCore.Ty.mult (D : StructEnv) : Ty → Mult
 ```
 
-Constructors:
-
-**`FrameMatches.mk`**
+Defining equations, as Lean derived them from the body:
 
 ```lean
-RueCore.FrameMatches.mk {Γ : Ctx} {φ : Frame} {H : Store}
-  (store : Matches Γ φ.env H) (record : φ.scope.reverse = φ.env) :
-  FrameMatches Γ φ H
+∀ (D : StructEnv), Ty.mult D Ty.int = Mult.copy
+∀ (D : StructEnv), Ty.mult D Ty.bool = Mult.copy
+∀ (D : StructEnv), Ty.mult D Ty.unit = Mult.copy
+∀ (D : StructEnv) (a : Nat), Ty.mult D (Ty.struct a) = D.classOf a
+```
+
+### `Val.mult`
+
+*def* · module `RueCore.Dynamics`
+
+The dynamic image of `class(T)` (§3) on a value: scalars are `Copy`, a
+struct value has the class its declaration records.
+
+```lean
+def RueCore.Val.mult (D : StructEnv) : Val → Mult
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : StructEnv) (s : Nat) (fields : List Val),
+  Val.mult D (Val.struct s fields) = D.classOf s
+∀ (D : StructEnv) (x : Val),
+  (∀ (s : Nat) (fields : List Val), x = Val.struct s fields → False) →
+    Val.mult D x = Mult.copy
 ```
 
 ### `check`
@@ -2435,8 +2641,9 @@ The interpreter. Rule correspondence, per case: `use` is
 (`cmp`, unlabeled there); `drop` is §6.11's explicit `@drop`; `letIn` is
 (D-Let) + (D-EndScope)'s drop-retire (§6.7); `assign` is (D-Assign), §6.8's
 overwrite-drop / reinitialization; `seq` is (D-Seq), discarding with a
-temporary drop (§6.7); `ite` is (D-If-T)/(D-If-F) after the §6.2 search for
-the scrutinee; `call` is (D-Call) followed by (D-Return-Value) when the body
+temporary drop (§6.7); `mkStruct` is (D-Struct) §6.5 after §6.2's
+left-to-right search through its initializers; `ite` is
+(D-If-T)/(D-If-F) after the §6.2 search for the scrutinee; `call` is (D-Call) followed by (D-Return-Value) when the body
 completes normally, and by (D-Return)'s absorption when it does not; `ret` is
 (D-Return), which runs the frame's scope drops and hands the value past every
 enclosing form.
@@ -2449,69 +2656,27 @@ place a `return` stops travelling (§6.9).
 def RueCore.eval : Nat → Program → Store → Frame → Expr → EvalRes
 ```
 
-### `unwindLocs`
+### `Entry.join`
 
-*def* · module `RueCore.Dynamics`
+*def* · module `RueCore.Statics`
 
-`run-scope-drops` (§6.1): drop-retire a scope's cells in the order given,
-accumulating the drop events. Callers pass the record newest-first, which is
-the order §6.1 fixes for a scope's teardown (RAII).
+The §5.5 branch join, per entry. Agreeing states join to themselves. A
+disagreement on a linear-carrying entry is ill-formed (`3.8:50`); on any other
+entry it joins conservatively to `MovedOut`.
 
 ```lean
-def RueCore.unwindLocs (H : Store) :
-  List Nat → Except Violation (Store × List Event)
+def RueCore.Entry.join (D : StructEnv) (a b : Entry) : Option Entry
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (H : Store), unwindLocs H [] = Except.ok (H, [])
-∀ (H : Store) (ℓ : Nat) (rest : List Nat),
-  unwindLocs H (ℓ :: rest) =
-    match dropRetire H ℓ with
-    | Except.error w => Except.error w
-    | Except.ok (H₁, evs) =>
-      match unwindLocs H₁ rest with
-      | Except.error w => Except.error w
-      | Except.ok (H₂, evs') => Except.ok (H₂, evs ++ evs')
-```
-
-### `ArgsOk`
-
-*def* · module `RueCore.Soundness`
-
-The promise for an argument list (§5.8's (Call), left to right with Σ
-threaded) (helper).
-
-```lean
-def RueCore.ArgsOk (R : Ty) (Ts : List Ty) (Γ' : Ctx) (φ : Frame) (H : Store) :
-  ArgsRes → Prop :=
-  match x✝ with
-  | ArgsRes.ok H' vs tr =>
-    HasTys vs Ts ∧ FrameMatches Γ' φ H' ∧ Untouched φ.env H H'
-  | ArgsRes.abort r => AbortOk R φ H r
-```
-
-### `EvalOk`
-
-*def* · module `RueCore.Soundness`
-
-The promise `soundness` makes about `eval`'s result: a value of the
-expression's type with the outgoing context's invariant restored
-(preservation), or one of `AbortOk`'s outcomes — never `.stuck` (progress).
-Stating it as a predicate on the result, rather than as a disjunction of
-existentials, is what lets the operand combinators (`andThen`) be discharged
-once and reused at every form (helper).
-
-```lean
-def RueCore.EvalOk (T R : Ty) (Γ' : Ctx) (φ : Frame) (H : Store) : EvalRes → Prop :=
-  match x✝ with
-  | EvalRes.ok H' v tr =>
-    HasTy v T ∧ FrameMatches Γ' φ H' ∧ Untouched φ.env H H'
-  | EvalRes.returned H' v tr => HasTy v R ∧ Untouched φ.env H H'
-  | EvalRes.panic k => True
-  | EvalRes.stuck why => False
-  | EvalRes.outOfFuel => True
+∀ (D : StructEnv) (a b : Entry),
+  Entry.join D a b =
+    if a.st = b.st then some a
+    else
+      if Ty.mult D a.ty = Mult.linear then none
+      else some (a.setSt OwnState.movedOut)
 ```
 
 ### `EvalRes.absorb`
@@ -2656,6 +2821,44 @@ def RueCore.Explain.traceEval (P : Program) :
   Nat → Nat → List Ty → Ty → Store → Frame → Expr → Explain.Trace
 ```
 
+### `NoOwnedLinear`
+
+*def* · module `RueCore.Statics`
+
+§5.6's residual-linear condition, read over a whole frame: no binding is
+still `Owned` at a linear-carrying type. This is the premise (Fn) §5.8 imposes
+on a function body's exit edges for its by-value parameters (`3.8:62`) and
+that §5.6's `⊥_exit` carries at an early `return`: at such an edge every open
+scope of the frame ends at once, so the check is frame-wide rather than
+per-binding. In the fragment `residual-linear(Σ, x, T)` collapses to
+`Σ(x) = Owned ∧ class(T) = Linear` (whole bindings, no paths: a partially
+moved struct is RUE-2231's).
+
+```lean
+def RueCore.NoOwnedLinear (D : StructEnv) (Γ : Ctx) : Prop :=
+  ∀ (en : Entry),
+    en ∈ Γ → ¬(en.st = OwnState.owned ∧ Ty.mult D en.ty = Mult.linear)
+```
+
+### `StructDecl.baseOf`
+
+*def* · module `RueCore.Statics`
+
+§3's field join, over the field types of one declaration: `⊔ { class(Ti) }`
+read left to right. `Attr.lift` then lifts it by the declared attribute.
+
+```lean
+def RueCore.StructDecl.baseOf (D : StructEnv) (sd : StructDecl) : Mult
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : StructEnv) (sd : StructDecl),
+  StructDecl.baseOf D sd =
+    List.foldl (fun m T => m.join (Ty.mult D T)) Mult.copy sd.fields
+```
+
 ### `checkArgs`
 
 *def* · module `RueCore.Checker`
@@ -2684,29 +2887,6 @@ Defining equations, as Lean derived them from the body:
     (∀ (e : Expr) (es : List Expr) (T : Ty) (Ts : List Ty),
         x_1 = e :: es → x_2 = T :: Ts → False) →
       checkArgs P R x x_1 x_2 = none
-```
-
-### `checkFn`
-
-*def* · module `RueCore.Checker`
-
-(Fn) §5.8 as an algorithm: the body checks at the declared return type
-from the entry context `Γ0;Σ0` (`fnCtx`), and its normal exit edge discharges
-§5.6's residual-linear obligation for the by-value parameters and every
-still-open body-local binding (`3.8:62`).
-
-```lean
-def RueCore.checkFn (P : Program) (fd : FnDef) : Bool
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (P : Program) (fd : FnDef),
-  checkFn P fd =
-    match check P fd.ret (fnCtx fd) fd.body with
-    | some (T, Γf) => decide (T = fd.ret) && decide (NoOwnedLinear Γf)
-    | none => false
 ```
 
 ### `evalArgs`
@@ -2760,25 +2940,32 @@ Defining equations, as Lean derived them from the body:
   run P fuel = eval fuel P [] { env := [], scope := [] } (Expr.call 0 [])
 ```
 
-### `runAllScopeDrops`
+### `Ctx.join`
 
-*def* · module `RueCore.Dynamics`
+*def* · module `RueCore.Statics`
 
-`run-all-scope-drops(H, φ)` (§6.1, §6.9): the whole-frame teardown, run
-when a frame is popped — at a normal (D-Return-Value) and at an unwinding
-(D-Return). The frame's record lists its cells in creation order, so the
-teardown reads it backwards: newest binding first.
+The §5.5 branch join, pointwise. Defined only on equal-length contexts
+(the two arms extend one incoming context, so lengths always agree).
 
 ```lean
-def RueCore.runAllScopeDrops (H : Store) (φ : Frame) :
-  Except Violation (Store × List Event)
+def RueCore.Ctx.join (D : StructEnv) : Ctx → Ctx → Option Ctx
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (H : Store) (φ : Frame),
-  runAllScopeDrops H φ = unwindLocs H φ.scope.reverse
+∀ (D : StructEnv), Ctx.join D [] [] = some []
+∀ (D : StructEnv) (a : Entry) (as : List Entry) (b : Entry)
+  (bs : List Entry),
+  Ctx.join D (a :: as) (b :: bs) =
+    match Entry.join D a b, Ctx.join D as bs with
+    | some e, some rest => some (e :: rest)
+    | x, x_1 => none
+∀ (D : StructEnv) (x x_1 : Ctx),
+  (x = [] → x_1 = [] → False) →
+    (∀ (a : Entry) (as : List Entry) (b : Entry) (bs : List Entry),
+        x = a :: as → x_1 = b :: bs → False) →
+      Ctx.join D x x_1 = none
 ```
 
 ### `Explain.runTrace`
@@ -2798,7 +2985,7 @@ Defining equations, as Lean derived them from the body:
 ∀ (P : Program) (fuel : Nat),
   Explain.runTrace P fuel =
     Explain.traceEval P fuel 0 []
-      (match P[0]? with
+      (match P.fns[0]? with
       | some fd => fd.ret
       | none => Ty.int)
       [] { env := [], scope := [] } (Expr.call 0 [])
@@ -2817,6 +3004,141 @@ def RueCore.Explain.traceArgs (tev : Store → Expr → Explain.Trace) :
   Store → List Expr → Explain.ArgsTrace
 ```
 
+### `StructDecl.Wf`
+
+*inductive* · module `RueCore.Statics`
+
+One declaration's well-formedness (§3, `3.8:18`, `3.9:31`, `3.9:44`): its
+recorded class is §3's field join lifted by its attribute, a `@copy`
+declaration's join is already `Copy` and it declares no destructor, a
+destructor-bearing declaration carries no linear field, and a field names only
+an **earlier** declaration — so the class equation is solvable in one pass and
+has one solution (`struct_class_unique`), and no struct contains itself.
+
+```lean
+inductive RueCore.StructDecl.Wf (D : StructEnv) (s : Nat) (sd : StructDecl) : Prop
+```
+
+Constructors:
+
+**`StructDecl.Wf.mk`**
+
+```lean
+RueCore.StructDecl.Wf.mk {D : StructEnv} {s : Nat} {sd : StructDecl}
+  (fieldsEarlier : ∀ (s' : Nat), Ty.struct s' ∈ sd.fields → s' < s)
+  (classIsJoin : sd.cls = sd.attr.lift (StructDecl.baseOf D sd))
+  (copyWf :
+    sd.attr = Attr.copy →
+      StructDecl.baseOf D sd = Mult.copy ∧ sd.dtor = false)
+  (dtorWf : sd.dtor = true → StructDecl.baseOf D sd ≠ Mult.linear) :
+  StructDecl.Wf D s sd
+```
+
+### `checkFn`
+
+*def* · module `RueCore.Checker`
+
+(Fn) §5.8 as an algorithm: the body checks at the declared return type
+from the entry context `Γ0;Σ0` (`fnCtx`), and its normal exit edge discharges
+§5.6's residual-linear obligation for the by-value parameters and every
+still-open body-local binding (`3.8:62`).
+
+```lean
+def RueCore.checkFn (P : Program) (fd : FnDef) : Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (P : Program) (fd : FnDef),
+  checkFn P fd =
+    match check P fd.ret (fnCtx fd) fd.body with
+    | some (T, Γf) =>
+      decide (T = fd.ret) && decide (NoOwnedLinear P.structs Γf)
+    | none => false
+```
+
+### `checkStructDecl`
+
+*def* · module `RueCore.Checker`
+
+§3's class assignment for one declaration, as an algorithm: the recorded
+class is the attribute's lifting of the field join, a `@copy` declaration's
+join is already `Copy` and it has no destructor (`3.8:18`, `3.9:31`), a
+destructor-bearing declaration carries no linear field (`3.9:44`), and every
+field names an earlier declaration.
+
+```lean
+def RueCore.checkStructDecl (D : StructEnv) (s : Nat) (sd : StructDecl) : Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : StructEnv) (s : Nat) (sd : StructDecl),
+  checkStructDecl D s sd =
+    (((sd.fields.all fun T =>
+            match T with
+            | Ty.struct s' => decide (s' < s)
+            | x => true) &&
+          decide (sd.cls = sd.attr.lift (StructDecl.baseOf D sd)) &&
+        match sd.attr with
+        | Attr.copy =>
+          decide (StructDecl.baseOf D sd = Mult.copy) && !sd.dtor
+        | x => true) &&
+      (!sd.dtor || !decide (StructDecl.baseOf D sd = Mult.linear)))
+```
+
+### `WfStructs`
+
+*def* · module `RueCore.Statics`
+
+A well-formed struct environment: §3's class assignment holds of every
+declaration (`StructDecl.Wf`). This is the premise that makes `Ty.mult`'s
+lookup §3's join, and it is what `checkStructs` (`Checker.lean`) decides.
+
+```lean
+def RueCore.WfStructs (D : StructEnv) : Prop :=
+  ∀ (s : Nat) (sd : StructDecl), D[s]? = some sd → StructDecl.Wf D s sd
+```
+
+### `checkStructsFrom`
+
+*def* · module `RueCore.Checker`
+
+The declarations from index `k` on (helper).
+
+```lean
+def RueCore.checkStructsFrom (D : StructEnv) : Nat → List StructDecl → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : StructEnv) (x : Nat), checkStructsFrom D x [] = true
+∀ (D : StructEnv) (x : Nat) (sd : StructDecl) (rest : List StructDecl),
+  checkStructsFrom D x (sd :: rest) =
+    (checkStructDecl D x sd && checkStructsFrom D (x + 1) rest)
+```
+
+### `checkStructs`
+
+*def* · module `RueCore.Checker`
+
+§3's class assignment for a whole struct environment, as an algorithm.
+`WfStructs` is what it decides, and that is the premise `Ty.mult`'s lookup
+needs to be §3's join.
+
+```lean
+def RueCore.checkStructs (D : StructEnv) : Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : StructEnv), checkStructs D = checkStructsFrom D 0 D
+```
+
 ### `checkProgram`
 
 *def* · module `RueCore.Checker`
@@ -2833,10 +3155,216 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (P : Program),
   checkProgram P =
-    (List.all P (checkFn P) &&
-      match P[0]? with
+    (checkStructs P.structs && P.fns.all (checkFn P) &&
+      match P.fns[0]? with
       | some fd => fd.params.isEmpty
       | none => false)
+```
+
+### `AbortOk`
+
+*def* · module `RueCore.Soundness`
+
+The promise for an evaluation that does **not** produce a value here: an
+unwinding `return` carries a value of the enclosing function's declared return
+type `R` and leaves the frame's neighbours alone; a trap and exhausted fuel
+promise nothing; a refusal is impossible, which is the whole theorem
+(helper).
+
+```lean
+def RueCore.AbortOk (D : StructEnv) (R : Ty) (φ : Frame) (H : Store) :
+  EvalRes → Prop :=
+  match x✝ with
+  | EvalRes.ok H v tr => False
+  | EvalRes.returned H' v tr => HasTy D v R ∧ Untouched φ.env H H'
+  | EvalRes.panic k => True
+  | EvalRes.stuck why => False
+  | EvalRes.outOfFuel => True
+```
+
+### `ArgsOk`
+
+*def* · module `RueCore.Soundness`
+
+The promise for an argument list (§5.8's (Call), left to right with Σ
+threaded) (helper).
+
+```lean
+def RueCore.ArgsOk (D : StructEnv) (R : Ty) (Ts : List Ty) (Γ' : Ctx) (φ : Frame)
+  (H : Store) : ArgsRes → Prop :=
+  match x✝ with
+  | ArgsRes.ok H' vs tr =>
+    HasTys D vs Ts ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
+  | ArgsRes.abort r => AbortOk D R φ H r
+```
+
+### `CellMatches`
+
+*def* · module `RueCore.Soundness`
+
+Per-cell agreement between the static entry and the dynamic cell: §7's
+"Σ faithfully tracks the store's initialization", with the §5.5 join's
+asymmetry built in. A `MovedOut` entry may still hold a live *non-linear*
+value, which the machine drops path-specifically at scope exit (§5.6, §6.7;
+`3.8:73` is the array-element form of the same rule, cited by §5.5); it
+never holds a live linear one (`3.8:50`).
+
+```lean
+def RueCore.CellMatches (D : StructEnv) (c : Cell) (en : Entry) : Prop :=
+  match en.st with
+  | OwnState.owned => ∃ v, c = Cell.full v ∧ HasTy D v en.ty
+  | OwnState.movedOut =>
+    c = Cell.moved ∨
+      ∃ v, c = Cell.full v ∧ HasTy D v en.ty ∧ Val.mult D v ≠ Mult.linear
+```
+
+### `Matches`
+
+*inductive* · module `RueCore.Soundness`
+
+`Matches Γ ρ H`: each binding's location holds a cell agreeing with its
+static entry; locations are live (in `H`) and pairwise distinct. This is the
+§7 preservation invariant, over §6.1's environment `ρ` and store `H`.
+
+```lean
+inductive RueCore.Matches (D : StructEnv) : Ctx → Env → Store → Prop
+```
+
+Constructors:
+
+**`Matches.nil`**
+
+```lean
+RueCore.Matches.nil {D : StructEnv} {H : Store} : Matches D [] [] H
+```
+
+**`Matches.cons`**
+
+```lean
+RueCore.Matches.cons {D : StructEnv} {en : Entry} {Γ : Ctx} {ℓ : Nat}
+  {ρ : Env} {H : Store} {c : Cell} :
+  H[ℓ]? = some c →
+    CellMatches D c en →
+      ¬ℓ ∈ ρ → Matches D Γ ρ H → Matches D (en :: Γ) (ℓ :: ρ) H
+```
+
+### `FrameMatches`
+
+*inductive* · module `RueCore.Soundness`
+
+The per-frame invariant (§6.1): the fused context agrees with the store
+through the frame's environment, and the frame's scope record, read
+newest-first, **is** that environment. The second clause is the RUE-1277
+redundancy discharged — every live binding of the frame is registered for a
+drop exactly once, which is what makes `run-all-scope-drops` (§6.9) safe at an
+early `return`.
+
+```lean
+inductive RueCore.FrameMatches (D : StructEnv) (Γ : Ctx) (φ : Frame) (H : Store) : Prop
+```
+
+Constructors:
+
+**`FrameMatches.mk`**
+
+```lean
+RueCore.FrameMatches.mk {D : StructEnv} {Γ : Ctx} {φ : Frame} {H : Store}
+  (store : Matches D Γ φ.env H) (record : φ.scope.reverse = φ.env) :
+  FrameMatches D Γ φ H
+```
+
+### `EvalOk`
+
+*def* · module `RueCore.Soundness`
+
+The promise `soundness` makes about `eval`'s result: a value of the
+expression's type with the outgoing context's invariant restored
+(preservation), or one of `AbortOk`'s outcomes — never `.stuck` (progress).
+Stating it as a predicate on the result, rather than as a disjunction of
+existentials, is what lets the operand combinators (`andThen`) be discharged
+once and reused at every form (helper).
+
+```lean
+def RueCore.EvalOk (D : StructEnv) (T R : Ty) (Γ' : Ctx) (φ : Frame) (H : Store) :
+  EvalRes → Prop :=
+  match x✝ with
+  | EvalRes.ok H' v tr =>
+    HasTy D v T ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
+  | EvalRes.returned H' v tr => HasTy D v R ∧ Untouched φ.env H H'
+  | EvalRes.panic k => True
+  | EvalRes.stuck why => False
+  | EvalRes.outOfFuel => True
+```
+
+### `HasTy`
+
+*inductive* · module `RueCore.Soundness`
+
+Value typing: §6.1's values against §2's types, with the `n_T` bounds and,
+for a struct value, its declaration's field list — §6.1's `{ v1, …, vk }_S`
+well typed at `S` exactly when each field value is well typed at its declared
+type (§5.8's (Struct-Intro), read on values). §7's preservation half is stated
+over this relation.
+
+```lean
+inductive RueCore.HasTy (D : StructEnv) : Val → Ty → Prop
+```
+
+Constructors:
+
+**`HasTy.int`**
+
+```lean
+RueCore.HasTy.int {D : StructEnv} {n : Int} :
+  InBounds n → HasTy D (Val.int n) Ty.int
+```
+
+**`HasTy.bool`**
+
+```lean
+RueCore.HasTy.bool {D : StructEnv} {b : Bool} : HasTy D (Val.bool b) Ty.bool
+```
+
+**`HasTy.unit`**
+
+```lean
+RueCore.HasTy.unit {D : StructEnv} : HasTy D Val.unit Ty.unit
+```
+
+**`HasTy.struct`**
+
+```lean
+RueCore.HasTy.struct {D : StructEnv} {s : Nat} {sd : StructDecl}
+  {vs : List Val} :
+  D[s]? = some sd →
+    HasTys D vs sd.fields → HasTy D (Val.struct s vs) (Ty.struct s)
+```
+
+### `HasTys`
+
+*inductive* · module `RueCore.Soundness`
+
+Value typing for a value list, pointwise against the expected types: a
+call's arguments against the callee's parameter types (§5.8's (Call),
+`4.10:4`) and a struct value's fields against its declared field list.
+
+```lean
+inductive RueCore.HasTys (D : StructEnv) : List Val → List Ty → Prop
+```
+
+Constructors:
+
+**`HasTys.nil`**
+
+```lean
+RueCore.HasTys.nil {D : StructEnv} : HasTys D [] []
+```
+
+**`HasTys.cons`**
+
+```lean
+RueCore.HasTys.cons {D : StructEnv} {v : Val} {vs : List Val} {T : Ty}
+  {Ts : List Ty} : HasTy D v T → HasTys D vs Ts → HasTys D (v :: vs) (T :: Ts)
 ```
 
 ### `ProgramTyped`
@@ -2844,9 +3372,10 @@ Defining equations, as Lean derived them from the body:
 *inductive* · module `RueCore.Statics`
 
 A whole program, ready to run (§6.12's top-level result): every function
-is well-formed by (Fn) §5.8, and the entry point — index `0`, the function
-`Dynamics.run` calls — takes no parameters, so `main()` is a call (Call) §5.8
-accepts with an empty argument list.
+is well-formed by (Fn) §5.8, every struct declaration by §3, and the entry
+point — function index `0`, the one `Dynamics.run` calls — takes no
+parameters, so `main()` is a call (Call) §5.8 accepts with an empty argument
+list.
 
 ```lean
 inductive RueCore.ProgramTyped (P : Program) : Prop
@@ -2857,8 +3386,8 @@ Constructors:
 **`ProgramTyped.mk`**
 
 ```lean
-RueCore.ProgramTyped.mk {P : Program} (fns : WfProgram P)
-  (entry : ∃ fd, P[0]? = some fd ∧ fd.params = []) : ProgramTyped P
+RueCore.ProgramTyped.mk {P : Program} (wf : WfProgram P)
+  (entry : ∃ fd, P.fns[0]? = some fd ∧ fd.params = []) : ProgramTyped P
 ```
 
 ### `Typed`
@@ -2869,11 +3398,12 @@ RueCore.ProgramTyped.mk {P : Program} (fns : WfProgram P)
 and the enclosing function's return type `R`.
 
 Rule names cite the calculus: `useCopy`/`useMove` are (Use-Copy)/(Use-Move)
-(§5.1); `dropCopy`/`dropRes` are (@Drop-Copy)/(@Drop) (§5.3); `letIn` folds in
-§5.6's residual-linear scope-exit check; `assign` is (Assign) with the
-`3.8:77` linear-overwrite premise on the *post-RHS* state; `seq` is (Seq) with
-the `3.8:64` discard check; `ite` is (If) with the §5.5 join; `call` is (Call)
-by value (§5.8); `ret` is (Return-Value) with (Sub-Never) folded in (§5.7).
+(§5.1); `dropCopy`/`dropRes` are (@Drop-Copy)/(@Drop) (§5.3); `mkStruct` is
+(Struct-Intro) (§5.8); `letIn` folds in §5.6's residual-linear scope-exit
+check; `assign` is (Assign) with the `3.8:77` linear-overwrite premise on the
+*post-RHS* state; `seq` is (Seq) with the `3.8:64` discard check; `ite` is (If)
+with the §5.5 join; `call` is (Call) by value (§5.8); `ret` is (Return-Value)
+with (Sub-Never) folded in (§5.7).
 
 ```lean
 inductive RueCore.Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop
@@ -2909,7 +3439,7 @@ RueCore.Typed.useCopy {P : Program} {R : Ty} {Γ : Ctx} {i : Nat}
   {en : Entry} :
   Γ[i]? = some en →
     en.st = OwnState.owned →
-      en.ty.mult = Mult.copy → Typed P R Γ (Expr.use i) en.ty Γ
+      Ty.mult P.structs en.ty = Mult.copy → Typed P R Γ (Expr.use i) en.ty Γ
 ```
 
 **`Typed.useMove`** — (Use-Move): a use of an `Affine`/`Linear` place moves it out.
@@ -2919,7 +3449,7 @@ RueCore.Typed.useMove {P : Program} {R : Ty} {Γ : Ctx} {i : Nat}
   {en : Entry} :
   Γ[i]? = some en →
     en.st = OwnState.owned →
-      en.ty.mult ≠ Mult.copy →
+      Ty.mult P.structs en.ty ≠ Mult.copy →
         Typed P R Γ (Expr.use i) en.ty
           (List.set Γ i (en.setSt OwnState.movedOut))
 ```
@@ -2948,19 +3478,23 @@ RueCore.Typed.lt {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx} {e₁ e₂ : Expr
     Typed P R Γ₁ e₂ Ty.int Γ₂ → Typed P R Γ (e₁.lt e₂) Ty.bool Γ₂
 ```
 
-**`Typed.mkres`** — Abstract resource introduction: the shape of §5.8's aggregate introduction with one integer payload and no fields, standing in for a struct literal until structs land (RUE-2230). Not the calculus's `Struct-Intro` rule itself.
+**`Typed.mkStruct`** — (Struct-Intro) §5.8: one initializer per declared field, typed in declaration order at its field's type with Σ threaded left to right (`3.6:5`, `3.6:6`, `3.6:15`), and the result owns every field — which is why `class(S)` is the field join of §3.
 
 ```lean
-RueCore.Typed.mkres {P : Program} {R : Ty} {Γ Γ' : Ctx} {κ : Mult}
-  {e : Expr} :
-  Typed P R Γ e Ty.int Γ' → Typed P R Γ (Expr.mkres κ e) (Ty.res κ) Γ'
+RueCore.Typed.mkStruct {P : Program} {R : Ty} {Γ Γ' : Ctx} {s : Nat}
+  {args : List Expr} {sd : StructDecl} :
+  P.structs[s]? = some sd →
+    TypedArgs P R Γ args sd.fields Γ' →
+      Typed P R Γ (Expr.mkStruct s args) (Ty.struct s) Γ'
 ```
 
-**`Typed.consume`** — Consuming elimination: takes the resource by value (a §4.2 use of its operand's places happens inside `e`'s own typing).
+**`Typed.consume`** — The fragment's whole-value struct elimination: it takes the struct by value (a §4.2 use of its operand's places happens inside `e`'s own typing) and yields the first field's payload. It is not a calculus rule — the calculus reads a field through a projection, which is a place and therefore RUE-2231's — so its side condition is the fragment's (`StructDecl.Consumable`: every field `int`, no destructor).
 
 ```lean
-RueCore.Typed.consume {P : Program} {R : Ty} {Γ Γ' : Ctx} {κ : Mult}
-  {e : Expr} : Typed P R Γ e (Ty.res κ) Γ' → Typed P R Γ e.consume Ty.int Γ'
+RueCore.Typed.consume {P : Program} {R : Ty} {Γ Γ' : Ctx} {s : Nat}
+  {sd : StructDecl} {e : Expr} :
+  Typed P R Γ e (Ty.struct s) Γ' →
+    P.structs[s]? = some sd → sd.Consumable → Typed P R Γ e.consume Ty.int Γ'
 ```
 
 **`Typed.dropCopy`** — (@Drop-Copy): no drop glue, no ownership effect.
@@ -2970,17 +3504,18 @@ RueCore.Typed.dropCopy {P : Program} {R : Ty} {Γ : Ctx} {i : Nat}
   {en : Entry} :
   Γ[i]? = some en →
     en.st = OwnState.owned →
-      en.ty.mult = Mult.copy → Typed P R Γ (Expr.drop i) Ty.unit Γ
+      Ty.mult P.structs en.ty = Mult.copy →
+        Typed P R Γ (Expr.drop i) Ty.unit Γ
 ```
 
-**`Typed.dropRes`** — (@Drop): consumes the operand and discharges its (affine or linear) obligation; the only non-move discharge of a linear obligation.
+**`Typed.dropRes`** — (@Drop): consumes the operand and discharges its (affine or linear) obligation; the only non-move discharge of a linear obligation. The operand is a whole binding, so the rule's projection side conditions (`3.9:34`, `3.8:68`) and its partial-move clause have no instance here.
 
 ```lean
 RueCore.Typed.dropRes {P : Program} {R : Ty} {Γ : Ctx} {i : Nat}
   {en : Entry} :
   Γ[i]? = some en →
     en.st = OwnState.owned →
-      en.ty.mult ≠ Mult.copy →
+      Ty.mult P.structs en.ty ≠ Mult.copy →
         Typed P R Γ (Expr.drop i) Ty.unit
           (List.set Γ i (en.setSt OwnState.movedOut))
 ```
@@ -2993,7 +3528,7 @@ RueCore.Typed.letIn {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Γ₂ : List Entry}
   Typed P R Γ e₁ T₁ Γ₁ →
     Typed P R ({ ty := T₁, mu := m, st := OwnState.owned } :: Γ₁) e₂ T₂
         (en' :: Γ₂) →
-      ¬(en'.st = OwnState.owned ∧ T₁.mult = Mult.linear) →
+      ¬(en'.st = OwnState.owned ∧ Ty.mult P.structs T₁ = Mult.linear) →
         Typed P R Γ (Expr.letIn m e₁ e₂) T₂ Γ₂
 ```
 
@@ -3006,7 +3541,8 @@ RueCore.Typed.assign {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {i : Nat} {e : Expr
     en₀.mu = true →
       Typed P R Γ e en₀.ty Γ₁ →
         Γ₁[i]? = some en₁ →
-          en₁.st = OwnState.movedOut ∨ en₀.ty.mult ≠ Mult.linear →
+          en₁.st = OwnState.movedOut ∨
+              Ty.mult P.structs en₀.ty ≠ Mult.linear →
             Typed P R Γ (Expr.assign i e) Ty.unit
               (List.set Γ₁ i (en₁.setSt OwnState.owned))
 ```
@@ -3017,7 +3553,7 @@ RueCore.Typed.assign {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {i : Nat} {e : Expr
 RueCore.Typed.seq {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx} {e₁ e₂ : Expr}
   {T₁ T₂ : Ty} :
   Typed P R Γ e₁ T₁ Γ₁ →
-    T₁.mult ≠ Mult.linear →
+    Ty.mult P.structs T₁ ≠ Mult.linear →
       Typed P R Γ₁ e₂ T₂ Γ₂ → Typed P R Γ (e₁.seq e₂) T₂ Γ₂
 ```
 
@@ -3029,7 +3565,7 @@ RueCore.Typed.ite {P : Program} {R : Ty} {Γ Γ₀ Γ₁ Γ₂ Γ' : Ctx}
   Typed P R Γ c Ty.bool Γ₀ →
     Typed P R Γ₀ e₁ T Γ₁ →
       Typed P R Γ₀ e₂ T Γ₂ →
-        Γ₁.join Γ₂ = some Γ' → Typed P R Γ (c.ite e₁ e₂) T Γ'
+        Ctx.join P.structs Γ₁ Γ₂ = some Γ' → Typed P R Γ (c.ite e₁ e₂) T Γ'
 ```
 
 **`Typed.call`** — (Call) §5.8, by value: the callee's signature is looked up in the program, the arguments are checked against the parameter list in order with Σ threaded left to right, and the call's type is the callee's return type (`4.10:5`, `4.10:3`, `4.10:4`). The rule's by-reference clauses, `Λ_call` and its consistency and entry-recheck premises (§5.4), and the `Tr ≠ never` side condition with its (Call-Bottom) companion are not modelled: the fragment has no borrows and no `never` type.
@@ -3037,7 +3573,7 @@ RueCore.Typed.ite {P : Program} {R : Ty} {Γ Γ₀ Γ₁ Γ₂ Γ' : Ctx}
 ```lean
 RueCore.Typed.call {P : Program} {R : Ty} {Γ Γ' : Ctx} {f : Nat}
   {args : List Expr} {fd : FnDef} :
-  P[f]? = some fd →
+  P.fns[f]? = some fd →
     TypedArgs P R Γ args (List.map Param.ty fd.params) Γ' →
       Typed P R Γ (Expr.call f args) fd.ret Γ'
 ```
@@ -3047,17 +3583,19 @@ RueCore.Typed.call {P : Program} {R : Ty} {Γ Γ' : Ctx} {f : Nat}
 ```lean
 RueCore.Typed.ret {P : Program} {R : Ty} {Γ Γ₁ Γ' : Ctx} {e : Expr} {T : Ty} :
   Typed P R Γ e R Γ₁ →
-    NoOwnedLinear Γ₁ → Γ'.skel = Γ₁.skel → Typed P R Γ e.ret T Γ'
+    NoOwnedLinear P.structs Γ₁ → Γ'.skel = Γ₁.skel → Typed P R Γ e.ret T Γ'
 ```
 
 ### `TypedArgs`
 
 *inductive* · module `RueCore.Statics`
 
-The argument list of §5.8's (Call), typed left to right with Σ threaded
-(`Σ0 = Σ`, then `Γ;Σ_{i-1};Λ ⊢ e ⇒ Ti ⊣ Σi` for each `i`), every argument by
-value. The by-reference argument forms, and with them `Λ_call`, its
-consistency premise and the call-entry recheck, are not in the fragment.
+An expression list typed left to right against a list of expected types
+with Σ threaded (`Σ0 = Σ`, then `Γ;Σ_{i-1};Λ ⊢ e ⇒ Ti ⊣ Σi` for each `i`).
+Both §5.8 forms that take one use it: (Call)'s by-value argument list and
+(Struct-Intro)'s field initializers. (Call)'s by-reference argument forms, and
+with them `Λ_call`, its consistency premise and the call-entry recheck, are
+not in the fragment.
 
 ```lean
 inductive RueCore.TypedArgs (P : Program) (R : Ty) :
@@ -3066,14 +3604,14 @@ inductive RueCore.TypedArgs (P : Program) (R : Ty) :
 
 Constructors:
 
-**`TypedArgs.nil`** — The empty argument list leaves Σ alone (`Σ0 = Σ`, §5.8).
+**`TypedArgs.nil`** — The empty list leaves Σ alone (`Σ0 = Σ`, §5.8).
 
 ```lean
 RueCore.TypedArgs.nil {P : Program} {R : Ty} {Γ : Ctx} :
   TypedArgs P R Γ [] [] Γ
 ```
 
-**`TypedArgs.cons`** — One by-value argument is a value-context use at its parameter's type (§4.2), threading Σ into the rest of the list (§5.8).
+**`TypedArgs.cons`** — One member is a value-context use at its expected type (§4.2), threading Σ into the rest of the list (§5.8).
 
 ```lean
 RueCore.TypedArgs.cons {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx} {e : Expr}
@@ -3096,19 +3634,207 @@ where the frame's scopes end (§5.7's `⊥_exit`).
 
 ```lean
 def RueCore.WfFn (P : Program) (fd : FnDef) : Prop :=
-  ∃ Γf, Typed P fd.ret (fnCtx fd) fd.body fd.ret Γf ∧ NoOwnedLinear Γf
+  ∃ Γf,
+    Typed P fd.ret (fnCtx fd) fd.body fd.ret Γf ∧ NoOwnedLinear P.structs Γf
 ```
 
 ### `WfProgram`
 
-*def* · module `RueCore.Statics`
+*inductive* · module `RueCore.Statics`
 
-A well-formed program: every function satisfies (Fn) §5.8. Recursion is
-ordinary — a body may call any function of the program, itself included, since
-(Call) reads only the callee's signature (§5.8, "the core is fully
-monomorphic").
+A well-formed program: §3's class assignment holds of every struct
+declaration and (Fn) §5.8 of every function. Recursion is ordinary — a body
+may call any function of the program, itself included, since (Call) reads only
+the callee's signature (§5.8, "the core is fully monomorphic") — while struct
+declarations are *not* recursive (`StructDecl.Wf.fieldsEarlier`).
 
 ```lean
-def RueCore.WfProgram (P : Program) : Prop :=
-  ∀ (fd : FnDef), fd ∈ P → WfFn P fd
+inductive RueCore.WfProgram (P : Program) : Prop
+```
+
+Constructors:
+
+**`WfProgram.mk`**
+
+```lean
+RueCore.WfProgram.mk {P : Program} (structs : WfStructs P.structs)
+  (fns : ∀ (fd : FnDef), fd ∈ P.fns → WfFn P fd) : WfProgram P
+```
+
+### `dropCell`
+
+*def* · module `RueCore.Dynamics`
+
+The drop of the value in a binding's cell (§6.11), as the trace records
+it: a `drop ℓ v` marker naming the cell, then the events the value's own drop
+emits. A `Copy` value has no drop glue at all (§6.11: `drop(H, n_T) = H`), so
+it records nothing — which is also why `@drop` of a `Copy` place leaves no
+trace (§5.3's (@Drop-Copy)) (helper).
+
+```lean
+def RueCore.dropCell (D : StructEnv) (ℓ : Nat) (v : Val) :
+  Except Violation (List Event)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : StructEnv) (ℓ : Nat) (v : Val),
+  dropCell D ℓ v =
+    if Val.mult D v = Mult.copy then Except.ok []
+    else
+      match dropValue D v with
+      | Except.error w => Except.error w
+      | Except.ok evs => Except.ok (Event.drop ℓ v :: evs)
+```
+
+### `dropRetire`
+
+*def* · module `RueCore.Dynamics`
+
+`drop-retire(H, ℓ)` (§6.1): run the binding's drop (§6.11 — a no-op on a
+`⊘` or `Copy` cell), then retire the allocation, so any later access to it is
+`useAfterDrop` rather than silently readable (the RUE-390 change). A live
+linear value here is §5.6's leak: the scope ends with an obligation
+undischarged, and the machine refuses (`3.8:32`). Reading the value's own
+class is enough, because §3's join makes a non-`Linear` struct one with no
+linear field (`StructDecl.Wf.field_not_linear`). This is the one
+scope-teardown path: `let`'s normal `endscope` (§6.7) and the frame unwind of
+`return` (§6.9) both run it.
+
+```lean
+def RueCore.dropRetire (D : StructEnv) (H : Store) (ℓ : Nat) :
+  Except Violation (Store × List Event)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : StructEnv) (H : Store) (ℓ : Nat),
+  dropRetire D H ℓ =
+    match H[ℓ]? with
+    | none => Except.error Violation.unbound
+    | some Cell.dead => Except.error Violation.useAfterDrop
+    | some Cell.moved => Except.ok (List.set H ℓ Cell.dead, [])
+    | some (Cell.full v) =>
+      if Val.mult D v = Mult.linear then Except.error Violation.linearLeak
+      else
+        match dropCell D ℓ v with
+        | Except.error w => Except.error w
+        | Except.ok evs => Except.ok (List.set H ℓ Cell.dead, evs)
+```
+
+### `unwindLocs`
+
+*def* · module `RueCore.Dynamics`
+
+`run-scope-drops` (§6.1): drop-retire a scope's cells in the order given,
+accumulating the drop events. Callers pass the record newest-first, which is
+the order §6.1 fixes for a scope's teardown (RAII).
+
+```lean
+def RueCore.unwindLocs (D : StructEnv) (H : Store) :
+  List Nat → Except Violation (Store × List Event)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : StructEnv) (H : Store), unwindLocs D H [] = Except.ok (H, [])
+∀ (D : StructEnv) (H : Store) (ℓ : Nat) (rest : List Nat),
+  unwindLocs D H (ℓ :: rest) =
+    match dropRetire D H ℓ with
+    | Except.error w => Except.error w
+    | Except.ok (H₁, evs) =>
+      match unwindLocs D H₁ rest with
+      | Except.error w => Except.error w
+      | Except.ok (H₂, evs') => Except.ok (H₂, evs ++ evs')
+```
+
+### `runAllScopeDrops`
+
+*def* · module `RueCore.Dynamics`
+
+`run-all-scope-drops(H, φ)` (§6.1, §6.9): the whole-frame teardown, run
+when a frame is popped — at a normal (D-Return-Value) and at an unwinding
+(D-Return). The frame's record lists its cells in creation order, so the
+teardown reads it backwards: newest binding first.
+
+```lean
+def RueCore.runAllScopeDrops (D : StructEnv) (H : Store) (φ : Frame) :
+  Except Violation (Store × List Event)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : StructEnv) (H : Store) (φ : Frame),
+  runAllScopeDrops D H φ = unwindLocs D H φ.scope.reverse
+```
+
+### `dropValue`
+
+*def* · module `RueCore.Dynamics`
+
+`drop(H, v)` (§6.11), on the fragment's values. A scalar drops nothing
+("scalars are Copy: nothing to drop"). A struct runs its **user destructor
+first**, if its declaration has one, and then drops its fields in
+**declaration order** (`drop*`); the destructor is recorded as one `dtor`
+event rather than run as a nested machine, because the fragment has no
+destructor bodies — a program declares whether `S` has one, and the Rue
+program the printer emits reproduces the event with a `drop fn S(self)` that
+prints (`Print.lean`). A field is dropped whatever its class: an explicit
+`@drop` of a linear-carrying struct discharges the whole obligation, and a
+scope exit never reaches one, because a value the leak monitor lets through
+has no linear field (`StructDecl.Wf.field_not_linear`). The `⊘`-skip §6.11
+opens with is the *cell* case below: a moved-out field has no representation
+here, since the fragment has no partial moves (RUE-2231).
+
+```lean
+def RueCore.dropValue (D : StructEnv) : Val → Except Violation (List Event)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : StructEnv) (a : Int), dropValue D (Val.int a) = Except.ok []
+∀ (D : StructEnv) (a : Bool), dropValue D (Val.bool a) = Except.ok []
+∀ (D : StructEnv), dropValue D Val.unit = Except.ok []
+∀ (D : StructEnv) (a : Nat) (a_1 : List Val),
+  dropValue D (Val.struct a a_1) =
+    match D[a]? with
+    | none => Except.error Violation.unbound
+    | some sd =>
+      match dropValues D a_1 with
+      | Except.error w => Except.error w
+      | Except.ok evs =>
+        Except.ok
+          ((if sd.dtor = true then [Event.dtor a (Val.struct a a_1)]
+            else []) ++
+            evs)
+```
+
+### `dropValues`
+
+*def* · module `RueCore.Dynamics`
+
+`drop*(H, [v1,…,vk])` (§6.11): fold `drop` over the values left to right
+— for a struct's fields, declaration order.
+
+```lean
+def RueCore.dropValues (D : StructEnv) : List Val → Except Violation (List Event)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : StructEnv), dropValues D [] = Except.ok []
+∀ (D : StructEnv) (v : Val) (vs : List Val),
+  dropValues D (v :: vs) =
+    match dropValue D v with
+    | Except.error w => Except.error w
+    | Except.ok evs =>
+      match dropValues D vs with
+      | Except.error w => Except.error w
+      | Except.ok evs' => Except.ok (evs ++ evs')
 ```
