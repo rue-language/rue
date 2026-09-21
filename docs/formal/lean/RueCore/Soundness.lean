@@ -51,15 +51,17 @@ store, the caller's cells are outside the callee's `ρ`, and the caller's
 ## Structs: value typing, and the drop that never refuses
 
 `HasTy D` types a struct value against its declaration's field list, which is
-(Struct-Intro) §5.8 read on values. Three statements about §6.11's walk rest
-on it and are what the rest of the file uses: `dropValue_ok` (a well-typed
-value's drop always runs — it can only refuse on a declaration the program
-does not have), `dropValue_order` and `dropValues_order` (the events are the
-user destructor's followed by exactly the fields', in declaration order), and,
-from `Statics.lean`, `StructDecl.Wf.field_not_linear` (a value the leak
-monitor lets through carries no linear field, so the monitor reads the value's
-own class and never descends). RUE-2237's "dropped exactly once" is the next
-statement over the same walk.
+(Struct-Intro) §5.8 read on values. Statements about §6.11's walk rest on it
+and are what the rest of the file uses. `dropValue_events` and
+`dropValues_events` give the walk in **closed form** — for a well-typed value
+it emits exactly `dropEvents`, §6.11's order written as a function — and
+`dropValue_struct_events` is that read at a struct: the destructor's event
+(`3.9:28`) followed by the concatenation of the fields' events in declaration
+order (`3.9:13`), which is the shape RUE-2237's "dropped exactly once"
+quantifies over. `dropValue_order` and `dropValues_order` are the one-level
+induction steps, `dropValue_ok` the corollary that the walk never refuses, and
+`StructDecl.Wf.field_not_linear` (`Statics.lean`) the reason the leak monitor
+reads a value's own class and never descends into it.
 
 ## The theorem
 
@@ -133,30 +135,61 @@ theorem HasTys.head_int {D vs Ts} (h : HasTys D vs Ts) (hne : Ts ≠ [])
 
 /-! ## Dropping a value never refuses, and drops in §6.11's order -/
 
+/-- **§6.11's order, in closed form.** For a well-typed value the walk's
+result is not just "the destructor then the fields" one level at a time: it is
+exactly `dropEvents`, the order written out as a function (`Dynamics.lean`).
+Together with `dropValues_events` this is the statement the per-level lemmas
+below are the induction steps of. -/
+theorem dropValue_events {D : StructEnv} {v : Val} {T : Ty} (h : HasTy D v T) :
+    dropValue D v = .ok (dropEvents D v) := by
+  induction h using HasTy.rec
+    (motive_2 := fun vs _ _ => dropValues D vs = .ok (dropEventsList D vs)) with
+  | int _ => rfl
+  | bool => rfl
+  | unit => rfl
+  | @struct s sd vs hd _ ih => simp only [dropValue, dropEvents, hd, ih]
+  | nil => rfl
+  | cons _ _ ih ihs => simp only [dropValues, dropEventsList, ih, ihs]
+
+/-- The same over a field list: `drop*` emits exactly the fields' events, in
+declaration order (`3.9:13`). -/
+theorem dropValues_events {D : StructEnv} {vs : List Val} {Ts : List Ty}
+    (h : HasTys D vs Ts) : dropValues D vs = .ok (dropEventsList D vs) := by
+  induction h using HasTys.rec
+    (motive_1 := fun v _ _ => dropValue D v = .ok (dropEvents D v)) with
+  | int _ => rfl
+  | bool => rfl
+  | unit => rfl
+  | @struct s sd vs hd _ ih => simp only [dropValue, dropEvents, hd, ih]
+  | nil => rfl
+  | cons _ _ ih ihs => simp only [dropValues, dropEventsList, ih, ihs]
+
 /-- **A well-typed value's drop always runs.** `dropValue` (§6.11) refuses
 only where a struct value names a declaration the program does not have, and
 value typing rules that out. -/
 theorem dropValue_ok {D : StructEnv} {v : Val} {T : Ty} (h : HasTy D v T) :
-    ∃ evs, dropValue D v = .ok evs := by
-  induction h using HasTy.rec
-    (motive_2 := fun vs _ _ => ∃ evs, dropValues D vs = .ok evs) with
-  | int _ => exact ⟨[], rfl⟩
-  | bool => exact ⟨[], rfl⟩
-  | unit => exact ⟨[], rfl⟩
-  | @struct s sd vs hd _ ih =>
-      obtain ⟨evs, hevs⟩ := ih
-      exact ⟨(if sd.dtor then [Event.dtor s (.struct s vs)] else []) ++ evs, by
-        simp only [dropValue, hd, hevs]⟩
-  | nil => exact ⟨[], rfl⟩
-  | cons _ _ ih ihs =>
-      obtain ⟨e₁, h₁⟩ := ih
-      obtain ⟨e₂, h₂⟩ := ihs
-      exact ⟨e₁ ++ e₂, by simp only [dropValues, h₁, h₂]⟩
+    ∃ evs, dropValue D v = .ok evs :=
+  ⟨dropEvents D v, dropValue_events h⟩
 
-/-- **§6.11's order, stated.** A struct value's drop emits its user
+/-- **The drop-order theorem, in the shape RUE-2237 needs.** Dropping a
+well-typed struct value emits its user destructor's event — when its
+declaration has one (`3.9:28`) — followed by the **concatenation of its
+fields' drop events, in declaration order** (`3.9:13`), each field's events
+given by the same closed form, recursively. Nothing else, and nothing in
+another order; the whole list is determined by the value and the
+declarations. -/
+theorem dropValue_struct_events {D : StructEnv} {s : Nat} {sd : StructDecl} {vs : List Val}
+    (hd : D[s]? = some sd) (h : HasTy D (.struct s vs) (.struct s)) :
+    dropValue D (.struct s vs)
+      = .ok ((if sd.dtor then [Event.dtor s (.struct s vs)] else [])
+              ++ (vs.map (dropEvents D)).flatten) := by
+  rw [dropValue_events h]
+  simp only [dropEvents, hd, dropEventsList_eq_flatten]
+
+/-- **§6.11's order, one level.** A struct value's drop emits its user
 destructor's event first — when its declaration has one — and then exactly the
-events its fields' drops emit, in declaration order. RUE-2237's
-"dropped exactly once" is the next statement over this walk. -/
+events its fields' drops emit, in declaration order. This is the induction
+step; `dropValue_struct_events` is the closed form. -/
 theorem dropValue_order {D : StructEnv} {s : Nat} {sd : StructDecl} {vs : List Val}
     {evs : List Event} (hd : D[s]? = some sd) (h : dropValue D (.struct s vs) = .ok evs) :
     ∃ fevs, dropValues D vs = .ok fevs ∧
@@ -167,7 +200,8 @@ theorem dropValue_order {D : StructEnv} {s : Nat} {sd : StructDecl} {vs : List V
   | ok fevs => rw [hf] at h; cases h; exact ⟨fevs, rfl, rfl⟩
 
 /-- **`drop*` is the fields in order** (§6.11): the events of a field list's
-drop are the head's followed by the tail's. -/
+drop are the head's followed by the tail's. This is the induction step;
+`dropValues_events` is the closed form. -/
 theorem dropValues_order {D : StructEnv} {v : Val} {vs : List Val} {evs : List Event}
     (h : dropValues D (v :: vs) = .ok evs) :
     ∃ e₁ e₂, dropValue D v = .ok e₁ ∧ dropValues D vs = .ok e₂ ∧ evs = e₁ ++ e₂ := by
