@@ -85,6 +85,7 @@ For example, `(Use-Move)` in the calculus (§5.1) says: a use of a
     T.mult P.decls ≠ .copy →
     noDtorPrefix P.decls en.ty p.path = true →
     declaredPrefix P.decls en.ty p.path = none →
+    p.noIdx = true →
     Typed P R Γ (.use p) T (Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
 ```
 
@@ -96,10 +97,12 @@ owner); the path reaches a declared field at every step and lands at type `T`;
 `T`'s class is not `Copy`; no proper prefix of the path declares a destructor
 (`3.9:34`, E0456); and the use plan §4.2 records for the place is `Ordinary`,
 which is `declaredPrefix … = none` — §5.1's "the (Use-Copy) and (Use-Move)
-rules are read only with an `Ordinary` plan". The conclusion marks exactly
-`p`. The calculus's remaining premises (`3.8:68`'s root-index restriction,
-`p not loaned`) concern arrays and loans, which are outside the current
-fragment; `INDEX.md` lists which rules and sections are in and which are not.
+rules are read only with an `Ordinary` plan"; and `p.noIdx` is the
+fragment's own stand-in for `3.8:68`'s root-index restriction — no element is
+moved out of an array at all in this part, which RUE-2327 lifts. The
+conclusion marks exactly `p`. The calculus's one remaining premise, `p not
+loaned`, concerns loans, which are outside the current fragment; `INDEX.md`
+lists which rules and sections are in and which are not.
 
 ## 2. The dynamics is a function
 

@@ -120,8 +120,8 @@ store-side plan is the type-side `declaredPrefix` (`Syntax.lean`) at every
 place a matched cell answers for, so the redex that fires is the one
 elaboration would have annotated. Every index a `Place` carries here is a
 **constant** step (`Place.idx`), so the stored aggregate answers for the whole
-path; carrying `μ` on the syntax is what RUE-2327 needs, where a place may
-hold a dynamic index and the plan stops being a function of the stored shape
+path; carrying `μ` on the syntax is what RUE-2327 may need, where an index
+step may be selected and the plan is no longer decided by the struct steps
 alone.
 
 **The residue monitor.** §6.3 excludes a linear residue by the
@@ -737,9 +737,9 @@ An empty path selects the whole aggregate and retains nothing: the leaf "is not
 residue". A `⊘` with path left to walk is `useAfterMove`, as `readAt`'s is; a
 step that is not a field of what is stored is a shape no well-typed program
 produces. An **array** step of the selected path is refused here for the same
-reason: `Place.noIdx` (`Syntax.lean`) keeps this part from moving out of an
-element at all, so no accepted program navigates one. §5.1's array clause —
-retained elements in ascending index order — is stated in the next slice. -/
+reason: `linearResidue`'s array arm (`Syntax.lean`) has already refused the
+plan, so no accepted program navigates one. §5.1's array clause — retained
+elements in ascending index order — is stated in the next slice (RUE-2327). -/
 def Contents.splitResidue (D : Decls) :
     Contents → List Nat → Except Violation (Contents × List Contents)
   | c, [] => .ok (c, [])

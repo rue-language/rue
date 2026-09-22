@@ -396,10 +396,10 @@ a slice author writes:
 - A label is a claim: write `(Rule)` only where the declaration really is
   that rule's image, because the index's inverse table reads every label as
   "this rule is mechanized here". Where the fragment abstracts a rule away
-  rather than modelling it — `(Use-Untrackable-Dynamic-Copy)` has no instance
-  without array indices, which is RUE-2235's — name the form in prose with a
-  section pointer and say what is not modelled, so the rule keeps reading
-  *not yet mechanized*.
+  rather than modelling it — (Call) §5.8's by-reference clauses and §5.4's
+  `Λ` have no instance without loans, which are Phase D's — name the form in
+  prose with a section pointer and say what is not modelled, so the rule keeps
+  reading *not yet mechanized*.
 - A constructor of an inductive may carry its own doc-comment (the `Typed`
   rules do; each cites its rule). One without inherits its type's row.
 - A declaration that mechanizes nothing on its own (an inversion lemma, a

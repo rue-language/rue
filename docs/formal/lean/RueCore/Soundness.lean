@@ -2879,7 +2879,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
                 exact ⟨htyv, hfm₁, Untouched.refl⟩
           · simp only [if_neg hb]
             trivial
-      | @indexWrite Γ Γ₁ Γ₂ p e₁ e₂ en₀ en₁ u₀ u₁ T n w sg hget₀ hmut hg₀ hty₀ _
+      | @indexWrite Γ Γ₁ Γ₂ p e₁ e₂ en₀ en₁ u₀ u₁ T n w sg hget₀ hmut hg₀ hty₀
           h₁ h₂ hget₁ hg₁ hfo hover =>
           -- (D-Assign) §6.8 at a dynamic index: index, then right-hand side
           -- (§6.2), then the bounds check where the path is navigated. The

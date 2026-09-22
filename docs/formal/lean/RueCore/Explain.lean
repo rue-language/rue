@@ -531,16 +531,17 @@ def indexPartiallyMoved : String :=
   "moved-out element — which the compiler cannot decide (3.8:70, 7.1:45)"
 
 /-- §4.2's `Untrackable(DeclaredLinearDynamic)`, which the calculus declares
-ill-formed: a **dynamic** index taken at a place whose path already has a
+ill-formed: a **dynamic** index *read* at a place whose path already has a
 proper prefix of declared-`linear` struct type. (Use-Untrackable-Dynamic-Copy)
-§5.1 and (Assign) §5.2's dynamic-index clause carry
-`declaredPrefix … = none` to keep it without an instance. -/
+§5.1 carries `declaredPrefix … = none` to keep it without an instance. A
+dynamic-index *write* is not a use and carries no plan premise
+(`Typed.indexWrite`). -/
 def declaredLinearPrefix : String :=
   "a proper prefix of the base place is a struct declared `linear`, so a dynamic index " ++
-  "taken here would be §4.2's `Untrackable(DeclaredLinearDynamic)` plan — which the " ++
+  "read here would be §4.2's `Untrackable(DeclaredLinearDynamic)` plan — which the " ++
   "calculus declares ill-formed, because no static rule can know whether the runtime " ++
   "index names a place the destructure of 3.8:33 already consumed (3.8:33, 3.8:70; " ++
-  "the compiler reports E0904)"
+  "the compiler reports E0904 on the read)"
 
 /-- (@Drop) §5.3's last premise: a partially moved place may not be dropped
 whole while a linear sub-place under it is still owned. -/
@@ -1046,7 +1047,6 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
          if en₀.mu = true then
            match en₀.st.get pl.path, en₀.ty.atPath P.decls pl.path with
            | some _, some (.array T _) =>
-             if declaredPrefix P.decls en₀.ty pl.path = none then
                (let d₁ := explain P R Γ e₁
                 match d₁.result with
                 | some (.int _ _, Γ₁) =>
@@ -1082,7 +1082,6 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                 | some (T', _) =>
                     rejected rule Γ (.indexWrite pl e₁ e₂) (Premise.indexNotInt T') [d₁]
                 | none => rejected rule Γ (.indexWrite pl e₁ e₂) Premise.subDerivation [d₁])
-             else rejected rule Γ (.indexWrite pl e₁ e₂) Premise.declaredLinearPrefix []
            | some _, some T => rejected rule Γ (.indexWrite pl e₁ e₂) (Premise.notAnArray T) []
            | none, _ => rejected rule Γ (.indexWrite pl e₁ e₂) Premise.pathUnderMoved []
            | _, none => rejected rule Γ (.indexWrite pl e₁ e₂) Premise.pathNotField []
@@ -2335,10 +2334,11 @@ def traceEval (M : FloatOps) (P : Program) :
                    H (r.withTrace tr))
           else refused ta.steps d Θ R (.call f args) "(D-Call) §6.9" H .typeConfusion
 
--- The `letIn` arm's split tree grew past the default budget once `eval`'s
--- `use`/`drop` arms gained the declared-linear redex (§6.3) on top of the
--- array forms; the proof is unchanged, it only needs the room.
-set_option maxHeartbeats 1600000 in
+-- The budget is per declaration, and the `use` and `drop` arms are where it
+-- goes (about 2.5 s and 3.7 s of the whole, measured arm by arm): `eval`'s two
+-- place arms gained the declared-linear redex (§6.3) on top of the array
+-- forms. The default fails and 250000 passes; the proof is unchanged.
+set_option maxHeartbeats 400000 in
 /-- **The trace is the machine.** Projecting a run to its final result
 reproduces `eval fuel P H φ e` exactly, so a rendered step table can never
 report an outcome — a value, an unwinding `return`, a §6.12 trap, a refusal,
