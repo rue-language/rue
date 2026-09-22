@@ -385,6 +385,291 @@ theorem RueCore.Ctx.join_comm {D : Decls} (Γ₁ Γ₂ : Ctx) :
   Γ₁.skel = Γ₂.skel → Ctx.join D Γ₁ Γ₂ = Ctx.join D Γ₂ Γ₁
 ```
 
+### `residualLinear_mult_linear`
+
+*theorem* · module `RueCore.Statics`
+
+**Residue is only ever found where §3's class puts it.** §5.6's
+`residual-linear` is read on the state, not on the type, but it can report an
+obligation only at a path whose type carries one, so a state with residue is a
+state of a `Linear` type (`3.8:58`, through `struct_carriesLinear_iff`). This
+is one half of the correspondence §5.5's `Owned` arm turns on.
+
+```lean
+theorem RueCore.residualLinear_mult_linear {D : Decls} (hD : WfStructs D) (t : OwnSt)
+  (T : Ty) : residualLinear D t T = true → Ty.mult D T = Mult.linear
+```
+
+### `ownedJoinOk_residualLinear`
+
+*theorem* · module `RueCore.Statics`
+
+**The other half: what an `Owned` arm may absorb still carries the type's
+obligation.** `ownedJoinOk` admits exactly the `MovedOut` paths whose type is
+not `Linear` (`3.8:50`), so a state it admits at a `Linear` type still has
+residue somewhere — a wholly moved-out linear subtree is what it refuses.
+
+```lean
+theorem RueCore.ownedJoinOk_residualLinear {D : Decls} (hD : WfStructs D) (t : OwnSt)
+  (T : Ty) :
+  ownedJoinOk D t T = true →
+    Ty.mult D T = Mult.linear → residualLinear D t T = true
+```
+
+### `ownedJoinOk_of_residualLinear_false`
+
+*theorem* · module `RueCore.Statics`
+
+**A residue-free state answers `ownedJoinOk` exactly as `MovedOut` does**:
+joining it with a wholly `Owned` arm is admissible exactly when `class(T)` is
+not `Linear`, which is the same test §5.5 applies at the `MovedOut`/`Owned`
+disagreement (`3.8:50`). This is the step that needs `OwnSt.wf`: at a type with
+no slots, `.fields` is a state `ownedJoinOk` refuses and `residualLinear`
+cannot see, and that gap is `Examples.lean`'s counterexample to associativity
+without the invariant.
+
+```lean
+theorem RueCore.ownedJoinOk_of_residualLinear_false {D : Decls} (hD : WfStructs D)
+  (t : OwnSt) (T : Ty) :
+  OwnSt.wf D t T = true →
+    residualLinear D t T = false →
+      ownedJoinOk D t T = decide (Ty.mult D T ≠ Mult.linear)
+```
+
+### `OwnSt.join_ownedJoinOk`
+
+*theorem* · module `RueCore.Statics`
+
+**A successful §5.5 join neither adds nor removes an inadmissible
+`MovedOut`**: both arms and the result answer `ownedJoinOk` alike, so joining a
+third, wholly `Owned` arm before or after asks the same question (`3.8:50`).
+One of the two facts `OwnSt.join_assoc` turns on.
+
+```lean
+theorem RueCore.OwnSt.join_ownedJoinOk {D : Decls} (hD : WfStructs D) (b c : OwnSt)
+  (T : Ty) (r : OwnSt) :
+  OwnSt.wf D b T = true →
+    OwnSt.wf D c T = true →
+      OwnSt.join D b c T = some r →
+        ownedJoinOk D b T = ownedJoinOk D r T ∧
+          ownedJoinOk D c T = ownedJoinOk D r T
+```
+
+### `OwnSt.join_residualLinear`
+
+*theorem* · module `RueCore.Statics`
+
+**A successful §5.5 join is between arms carrying the same residue, and the
+result carries the same.** The disagreement clause refuses `MovedOut` against
+residual linear content and the `Owned` clause refuses a moved-out linear path,
+so a join that succeeds has already equated the two arms' §5.6 obligations
+(`3.8:50`, `3.8:60`). The other fact `OwnSt.join_assoc` turns on.
+
+```lean
+theorem RueCore.OwnSt.join_residualLinear {D : Decls} (hD : WfStructs D) (b c : OwnSt)
+  (T : Ty) (r : OwnSt) :
+  OwnSt.join D b c T = some r →
+    residualLinear D b T = residualLinear D c T ∧
+      residualLinear D r T = residualLinear D b T
+```
+
+### `OwnSt.join_exists`
+
+*theorem* · module `RueCore.Statics`
+
+**Two residue-free states always join**, the converse of
+`OwnSt.join_residualLinear` and what makes §5.5's `MovedOut` cases associate:
+re-bracketing cannot turn a join that succeeds into one that fails.
+
+```lean
+theorem RueCore.OwnSt.join_exists {D : Decls} (hD : WfStructs D) (b c : OwnSt)
+  (T : Ty) :
+  OwnSt.wf D b T = true →
+    OwnSt.wf D c T = true →
+      residualLinear D b T = false →
+        residualLinear D c T = false → ∃ r, OwnSt.join D b c T = some r
+```
+
+### `OwnSt.join_wf`
+
+*theorem* · module `RueCore.Statics`
+
+**§5.5's join stays inside the shapes of the type**: joining two states of
+`T` yields a state of `T`, so the invariant associativity is stated over
+survives the n-way fold (`Ctx.joinAll_perm`).
+
+```lean
+theorem RueCore.OwnSt.join_wf {D : Decls} (b c : OwnSt) (T : Ty) (r : OwnSt) :
+  OwnSt.wf D b T = true →
+    OwnSt.wf D c T = true →
+      OwnSt.join D b c T = some r → OwnSt.wf D r T = true
+```
+
+### `OwnSt.join_assoc`
+
+*theorem* · module `RueCore.Statics`
+
+**The §5.5 join is associative**, at one path and its subtree, over states
+that are shapes of their type (`OwnSt.wf`) and under §3's class assignment for
+the struct layer (`WfStructs`). Both premises are needed and the section
+docstring above says which counterexample each rules out; `WfStructs` is one a
+well-formed program already carries (`checkStructs_sound`).
+
+The nine outer cases reduce to three shapes. Where an arm is wholly `Owned` the
+join is the other arm subject to `ownedJoinOk`, and `OwnSt.join_ownedJoinOk`
+says the result answers that test as its operands do. Where an arm is
+`MovedOut` the join is `MovedOut` subject to the other's residue, and
+`OwnSt.join_residualLinear` with `OwnSt.join_exists` says the two bracketings
+fail on exactly the same residue. Two field records join slot by slot, which is
+the induction.
+
+```lean
+theorem RueCore.OwnSt.join_assoc {D : Decls} (hD : WfStructs D) (a b c : OwnSt)
+  (T : Ty) :
+  OwnSt.wf D a T = true →
+    OwnSt.wf D b T = true →
+      OwnSt.wf D c T = true →
+        ((OwnSt.join D a b T).bind fun x => OwnSt.join D x c T) =
+          (OwnSt.join D b c T).bind fun y => OwnSt.join D a y T
+```
+
+### `Entry.join_assoc`
+
+*theorem* · module `RueCore.Statics`
+
+**The §5.5 join is associative on one entry**, whose skeleton the three arms
+share — the declared type and `mut` mark come from the incoming context, so
+only the state differs, and the state's associativity is `OwnSt.join_assoc`.
+
+```lean
+theorem RueCore.Entry.join_assoc {D : Decls} (hD : WfStructs D) {a b c : Entry}
+  (hab : a.skel = b.skel) (hbc : b.skel = c.skel) (ha : Entry.wf D a = true)
+  (hb : Entry.wf D b = true) (hc : Entry.wf D c = true) :
+  ((Entry.join D a b).bind fun x => Entry.join D x c) =
+    (Entry.join D b c).bind fun y => Entry.join D a y
+```
+
+### `Entry.join_wf`
+
+*theorem* · module `RueCore.Statics`
+
+**The §5.5 join of two well-formed entries is well formed**, `OwnSt.join_wf`
+read at the entry's declared type.
+
+```lean
+theorem RueCore.Entry.join_wf {D : Decls} {a b e : Entry} (hab : a.skel = b.skel)
+  (ha : Entry.wf D a = true) (hb : Entry.wf D b = true)
+  (h : Entry.join D a b = some e) : Entry.wf D e = true
+```
+
+### `Ctx.join_assoc`
+
+*theorem* · module `RueCore.Statics`
+
+**The §5.5 join is associative on a whole context**, pointwise, whenever the
+three arms carry the same skeleton and every entry is a shape of its declared
+type — which `Typed.skel_preserved` and `Ctx.Wf` give of the outgoing contexts
+of one incoming one. So the bracketing of (Match) §5.5's `join(Σ1, …, Σn)` is
+immaterial, which with `Ctx.join_comm` is what `Ctx.joinAll_perm` needs.
+
+```lean
+theorem RueCore.Ctx.join_assoc {D : Decls} (hD : WfStructs D) (Γ₁ Γ₂ Γ₃ : Ctx) :
+  Γ₁.skel = Γ₂.skel →
+    Γ₂.skel = Γ₃.skel →
+      Ctx.Wf D Γ₁ →
+        Ctx.Wf D Γ₂ →
+          Ctx.Wf D Γ₃ →
+            ((Ctx.join D Γ₁ Γ₂).bind fun Γ => Ctx.join D Γ Γ₃) =
+              (Ctx.join D Γ₂ Γ₃).bind fun Γ => Ctx.join D Γ₁ Γ
+```
+
+### `Ctx.join_wf`
+
+*theorem* · module `RueCore.Statics`
+
+**The §5.5 join of two well-formed contexts is well formed**, so the
+accumulator of the n-way fold keeps the invariant associativity is stated
+over.
+
+```lean
+theorem RueCore.Ctx.join_wf {D : Decls} (Γ₁ Γ₂ Γ' : Ctx) :
+  Γ₁.skel = Γ₂.skel →
+    Ctx.Wf D Γ₁ → Ctx.Wf D Γ₂ → Ctx.join D Γ₁ Γ₂ = some Γ' → Ctx.Wf D Γ'
+```
+
+### `OwnSt.setAt_wf`
+
+*theorem* · module `RueCore.Statics`
+
+**§5's `Σ[ p ↦ u ]` stays inside the shapes of the type.** Writing a state of
+`p`'s own type at a path the root's declared type has (`Ty.atPath`, §5
+preamble's `Γ ⊢ p : T`) leaves a state of the root's type, the `owned` padding
+`OwnSt.setField` inserts included. This is what makes `OwnSt.wf` an invariant
+of the rules that write — (Use-Move) §5.1, (@Drop) §5.3 and (Assign) §5.2 all
+write at a path their own `Ty.atPath` premise typed — rather than a condition
+they would have to carry.
+
+```lean
+theorem RueCore.OwnSt.setAt_wf {D : Decls} (T' : Ty) (u : OwnSt)
+  (hu : OwnSt.wf D u T' = true) (π : List Nat) (t : OwnSt) (T : Ty) :
+  OwnSt.wf D t T = true →
+    Ty.atPath D T π = some T' → OwnSt.wf D (t.setAt π u) T = true
+```
+
+### `Ctx.joinFold_perm`
+
+*theorem* · module `RueCore.Statics`
+
+(Match) §5.5's fold over the remaining arms **does not depend on their
+order**, whatever the accumulator: joining two arms in either order is
+`Ctx.join_comm`, and moving one past the accumulator is `Ctx.join_assoc`. The
+premise is the one the two lemmas need — one skeleton, every entry a shape of
+its declared type — and `Ctx.join_skel`/`Ctx.join_wf` carry it to the next
+accumulator.
+
+```lean
+theorem RueCore.Ctx.joinFold_perm {D : Decls} (hD : WfStructs D)
+  {sk : List (Ty × Bool)} {Γs Γs' : List Ctx} :
+  Γs.Perm Γs' →
+    (∀ (Γ : Ctx), Γ ∈ Γs → Γ.skel = sk ∧ Ctx.Wf D Γ) →
+      ∀ (o : Option Ctx),
+        (∀ (Γ : Ctx), o = some Γ → Γ.skel = sk ∧ Ctx.Wf D Γ) →
+          (o.bind fun a => Ctx.joinFold D a Γs) =
+            o.bind fun a => Ctx.joinFold D a Γs'
+```
+
+### `Ctx.joinAll_perm`
+
+*theorem* · module `RueCore.Statics`
+
+**(Match) §5.5's `join(Σ1, …, Σn)` is invariant under a permutation of the
+arms**, over arms that share a skeleton and whose entries are shapes of their
+declared types. §5.5 writes the n-way join with no order and no bracketing and
+the mechanization computes it as a left fold; this is the theorem that says the
+two readings agree, so `Ctx.joinAll` may be read as the calculus writes it.
+
+```lean
+theorem RueCore.Ctx.joinAll_perm {D : Decls} (hD : WfStructs D)
+  {sk : List (Ty × Bool)} {Γs Γs' : List Ctx} :
+  Γs.Perm Γs' →
+    (∀ (Γ : Ctx), Γ ∈ Γs → Γ.skel = sk ∧ Ctx.Wf D Γ) →
+      Ctx.joinAll D Γs = Ctx.joinAll D Γs'
+```
+
+### `Ctx.joinAll_wf`
+
+*theorem* · module `RueCore.Statics`
+
+**(Match) §5.5's n-way join of well-formed arms is well formed**, so a joined
+context may be joined again — which is what makes `Ctx.joinAll_perm`'s premise
+composable across nested `match`es.
+
+```lean
+theorem RueCore.Ctx.joinAll_wf {D : Decls} {sk : List (Ty × Bool)} {Γs : List Ctx}
+  {Γ' : Ctx} (hinv : ∀ (Γ : Ctx), Γ ∈ Γs → Γ.skel = sk ∧ Ctx.Wf D Γ)
+  (h : Ctx.joinAll D Γs = some Γ') : Ctx.Wf D Γ'
+```
+
 ### `Typed.skel_preserved`
 
 *theorem* · module `RueCore.Statics`
@@ -2013,6 +2298,591 @@ theorem RueCore.OwnSt.joinList_comm (D : Decls) (as bs : List OwnSt) (Ts : List 
   OwnSt.joinList D as bs Ts = OwnSt.joinList D bs as Ts
 ```
 
+### `Ty.array_mult_linear`
+
+*theorem* · module `RueCore.Statics`
+
+§3's class of an array type reaches `Linear` exactly through a nonempty
+array of a `Linear` element type — `Ty.mult`'s own four-line table read as the
+biconditional the join proofs need (`3.8:74`; the zero-length reading is
+RUE-526's) (helper).
+
+```lean
+theorem RueCore.Ty.array_mult_linear (D : Decls) (T : Ty) (n : Nat) :
+  Ty.mult D (T.array n) = Mult.linear ↔ n ≠ 0 ∧ Ty.mult D T = Mult.linear
+```
+
+### `Ty.any_replicate_mult_linear`
+
+*theorem* · module `RueCore.Statics`
+
+The same fact in the shape §5.5's array clauses use it: an array node's slot
+types are `List.replicate n T`, so asking whether any slot carries a linear
+value is asking `class([T; n]) = Linear` (helper).
+
+```lean
+theorem RueCore.Ty.any_replicate_mult_linear (D : Decls) (T : Ty) (n : Nat) :
+  ((List.replicate n T).any fun U => decide (Ty.mult D U = Mult.linear)) =
+    decide (Ty.mult D (T.array n) = Mult.linear)
+```
+
+### `residualLinearFields_mult_linear`
+
+*theorem* · module `RueCore.Statics`
+
+The same over a declaration's slots (helper).
+
+```lean
+theorem RueCore.residualLinearFields_mult_linear {D : Decls} (hD : WfStructs D)
+  (ts : List OwnSt) (Ts : List Ty) :
+  residualLinearFields D ts Ts = true →
+    (Ts.any fun U => decide (Ty.mult D U = Mult.linear)) = true
+```
+
+### `ownedJoinOkList_residualLinearFields`
+
+*theorem* · module `RueCore.Statics`
+
+The same over a declaration's slots (helper).
+
+```lean
+theorem RueCore.ownedJoinOkList_residualLinearFields {D : Decls} (hD : WfStructs D)
+  (ts : List OwnSt) (Ts : List Ty) :
+  ownedJoinOkList D ts Ts = true →
+    (Ts.any fun U => decide (Ty.mult D U = Mult.linear)) = true →
+      residualLinearFields D ts Ts = true
+```
+
+### `ownedJoinOkList_of_residualLinearFields_false`
+
+*theorem* · module `RueCore.Statics`
+
+The same over a declaration's slots (helper).
+
+```lean
+theorem RueCore.ownedJoinOkList_of_residualLinearFields_false {D : Decls}
+  (hD : WfStructs D) (ts : List OwnSt) (Ts : List Ty) :
+  OwnSt.wfList D ts Ts = true →
+    residualLinearFields D ts Ts = false →
+      ownedJoinOkList D ts Ts =
+        !Ts.any fun U => decide (Ty.mult D U = Mult.linear)
+```
+
+### `OwnSt.join_owned_left`
+
+*theorem* · module `RueCore.Statics`
+
+§5.5's wholly-`Owned` arm on the left, as one equation over every state of
+the other arm (helper).
+
+```lean
+theorem RueCore.OwnSt.join_owned_left (D : Decls) (b : OwnSt) (T : Ty) :
+  OwnSt.join D OwnSt.owned b T =
+    if ownedJoinOk D b T = true then some b else none
+```
+
+### `OwnSt.join_owned_right`
+
+*theorem* · module `RueCore.Statics`
+
+§5.5's wholly-`Owned` arm on the right; the join reads the same from either
+side (`OwnSt.join_comm`) (helper).
+
+```lean
+theorem RueCore.OwnSt.join_owned_right (D : Decls) (a : OwnSt) (T : Ty) :
+  OwnSt.join D a OwnSt.owned T =
+    if ownedJoinOk D a T = true then some a else none
+```
+
+### `OwnSt.join_movedOut_owned_eq`
+
+*theorem* · module `RueCore.Statics`
+
+The one clause the two readings share: joining `MovedOut` with a wholly
+`Owned` arm is admissible exactly when the arm has no residue, because
+`ownedJoinOk` at `MovedOut` and `residualLinear` at `Owned` are complementary
+tests of `class(T)` (helper).
+
+```lean
+theorem RueCore.OwnSt.join_movedOut_owned_eq (D : Decls) (T : Ty) :
+  (if ownedJoinOk D OwnSt.movedOut T = true then some OwnSt.movedOut
+    else none) =
+    if residualLinear D OwnSt.owned T = true then none
+    else some OwnSt.movedOut
+```
+
+### `OwnSt.join_movedOut_left`
+
+*theorem* · module `RueCore.Statics`
+
+§5.5's `MovedOut` arm on the left, as one equation over every state of the
+other arm — including the `Owned` one, by the clause above (helper).
+
+```lean
+theorem RueCore.OwnSt.join_movedOut_left (D : Decls) (b : OwnSt) (T : Ty) :
+  OwnSt.join D OwnSt.movedOut b T =
+    if residualLinear D b T = true then none else some OwnSt.movedOut
+```
+
+### `OwnSt.join_movedOut_right`
+
+*theorem* · module `RueCore.Statics`
+
+§5.5's `MovedOut` arm on the right (helper).
+
+```lean
+theorem RueCore.OwnSt.join_movedOut_right (D : Decls) (a : OwnSt) (T : Ty) :
+  OwnSt.join D a OwnSt.movedOut T =
+    if residualLinear D a T = true then none else some OwnSt.movedOut
+```
+
+### `OwnSt.joinList_nil_left`
+
+*theorem* · module `RueCore.Statics`
+
+§5.5's slot join where the left arm records no slot: the other arm's record
+survives subject to `ownedJoinOk` (helper).
+
+```lean
+theorem RueCore.OwnSt.joinList_nil_left (D : Decls) (bs : List OwnSt) (T : Ty)
+  (Ts : List Ty) :
+  OwnSt.joinList D [] bs (T :: Ts) =
+    if ownedJoinOkList D bs (T :: Ts) = true then some bs else none
+```
+
+### `OwnSt.joinList_nil_right`
+
+*theorem* · module `RueCore.Statics`
+
+The same where the right arm records no slot (helper).
+
+```lean
+theorem RueCore.OwnSt.joinList_nil_right (D : Decls) (as : List OwnSt) (T : Ty)
+  (Ts : List Ty) :
+  OwnSt.joinList D as [] (T :: Ts) =
+    if ownedJoinOkList D as (T :: Ts) = true then some as else none
+```
+
+### `OwnSt.join_fields_bind_left`
+
+*theorem* · module `RueCore.Statics`
+
+Joining a third field record after two is joining their slot lists after two
+(helper).
+
+```lean
+theorem RueCore.OwnSt.join_fields_bind_left (D : Decls) (as bs cs : List OwnSt)
+  (Ts : List Ty) (T : Ty)
+  (hj :
+    ∀ (xs ys : List OwnSt),
+      OwnSt.join D (OwnSt.fields xs) (OwnSt.fields ys) T =
+        Option.map OwnSt.fields (OwnSt.joinList D xs ys Ts)) :
+  ((OwnSt.join D (OwnSt.fields as) (OwnSt.fields bs) T).bind fun x =>
+      OwnSt.join D x (OwnSt.fields cs) T) =
+    Option.map OwnSt.fields
+      ((OwnSt.joinList D as bs Ts).bind fun rs => OwnSt.joinList D rs cs Ts)
+```
+
+### `OwnSt.join_fields_bind_right`
+
+*theorem* · module `RueCore.Statics`
+
+The same for the other bracketing (helper).
+
+```lean
+theorem RueCore.OwnSt.join_fields_bind_right (D : Decls) (as bs cs : List OwnSt)
+  (Ts : List Ty) (T : Ty)
+  (hj :
+    ∀ (xs ys : List OwnSt),
+      OwnSt.join D (OwnSt.fields xs) (OwnSt.fields ys) T =
+        Option.map OwnSt.fields (OwnSt.joinList D xs ys Ts)) :
+  ((OwnSt.join D (OwnSt.fields bs) (OwnSt.fields cs) T).bind fun y =>
+      OwnSt.join D (OwnSt.fields as) y T) =
+    Option.map OwnSt.fields
+      ((OwnSt.joinList D bs cs Ts).bind fun rs => OwnSt.joinList D as rs Ts)
+```
+
+### `OwnSt.joinList_cons_bind_left`
+
+*theorem* · module `RueCore.Statics`
+
+A slot list joins slot by slot, so one bracketing of three lists factors into
+that bracketing of the heads and of the tails — which is what carries the
+induction in `OwnSt.joinList_assoc` (helper).
+
+```lean
+theorem RueCore.OwnSt.joinList_cons_bind_left (D : Decls) (a b c : OwnSt)
+  (as bs cs : List OwnSt) (T : Ty) (Ts : List Ty) :
+  ((OwnSt.joinList D (a :: as) (b :: bs) (T :: Ts)).bind fun xs =>
+      OwnSt.joinList D xs (c :: cs) (T :: Ts)) =
+    match (OwnSt.join D a b T).bind fun x => OwnSt.join D x c T,
+      (OwnSt.joinList D as bs Ts).bind fun xs =>
+        OwnSt.joinList D xs cs Ts with
+    | some x, some xs => some (x :: xs)
+    | x, x_1 => none
+```
+
+### `OwnSt.joinList_cons_bind_right`
+
+*theorem* · module `RueCore.Statics`
+
+The same for the other bracketing (helper).
+
+```lean
+theorem RueCore.OwnSt.joinList_cons_bind_right (D : Decls) (a b c : OwnSt)
+  (as bs cs : List OwnSt) (T : Ty) (Ts : List Ty) :
+  ((OwnSt.joinList D (b :: bs) (c :: cs) (T :: Ts)).bind fun ys =>
+      OwnSt.joinList D (a :: as) ys (T :: Ts)) =
+    match (OwnSt.join D b c T).bind fun y => OwnSt.join D a y T,
+      (OwnSt.joinList D bs cs Ts).bind fun ys =>
+        OwnSt.joinList D as ys Ts with
+    | some x, some xs => some (x :: xs)
+    | x, x_1 => none
+```
+
+### `residualLinear_of_ownedJoinOk`
+
+*theorem* · module `RueCore.Statics`
+
+§5.6's residue of a state a wholly `Owned` arm may absorb *is* `class(T) =
+Linear`: the two halves above, taken together (helper).
+
+```lean
+theorem RueCore.residualLinear_of_ownedJoinOk {D : Decls} (hD : WfStructs D)
+  (t : OwnSt) (T : Ty) (h : ownedJoinOk D t T = true) :
+  residualLinear D t T = decide (Ty.mult D T = Mult.linear)
+```
+
+### `residualLinearFields_of_ownedJoinOkList`
+
+*theorem* · module `RueCore.Statics`
+
+The same over a declaration's slots (helper).
+
+```lean
+theorem RueCore.residualLinearFields_of_ownedJoinOkList {D : Decls} (hD : WfStructs D)
+  (ts : List OwnSt) (Ts : List Ty) (h : ownedJoinOkList D ts Ts = true) :
+  residualLinearFields D ts Ts =
+    Ts.any fun U => decide (Ty.mult D U = Mult.linear)
+```
+
+### `OwnSt.joinList_ownedJoinOkList`
+
+*theorem* · module `RueCore.Statics`
+
+The same over a declaration's slots (helper).
+
+```lean
+theorem RueCore.OwnSt.joinList_ownedJoinOkList {D : Decls} (hD : WfStructs D)
+  (bs cs : List OwnSt) (Ts : List Ty) (rs : List OwnSt) :
+  OwnSt.wfList D bs Ts = true →
+    OwnSt.wfList D cs Ts = true →
+      OwnSt.joinList D bs cs Ts = some rs →
+        ownedJoinOkList D bs Ts = ownedJoinOkList D rs Ts ∧
+          ownedJoinOkList D cs Ts = ownedJoinOkList D rs Ts
+```
+
+### `OwnSt.joinList_residualLinearFields`
+
+*theorem* · module `RueCore.Statics`
+
+The same over a declaration's slots (helper).
+
+```lean
+theorem RueCore.OwnSt.joinList_residualLinearFields {D : Decls} (hD : WfStructs D)
+  (bs cs : List OwnSt) (Ts : List Ty) (rs : List OwnSt) :
+  OwnSt.joinList D bs cs Ts = some rs →
+    residualLinearFields D bs Ts = residualLinearFields D cs Ts ∧
+      residualLinearFields D rs Ts = residualLinearFields D bs Ts
+```
+
+### `OwnSt.joinList_exists`
+
+*theorem* · module `RueCore.Statics`
+
+The same over a declaration's slots (helper).
+
+```lean
+theorem RueCore.OwnSt.joinList_exists {D : Decls} (hD : WfStructs D)
+  (bs cs : List OwnSt) (Ts : List Ty) :
+  OwnSt.wfList D bs Ts = true →
+    OwnSt.wfList D cs Ts = true →
+      residualLinearFields D bs Ts = false →
+        residualLinearFields D cs Ts = false →
+          ∃ rs, OwnSt.joinList D bs cs Ts = some rs
+```
+
+### `OwnSt.joinList_wf`
+
+*theorem* · module `RueCore.Statics`
+
+The same over a declaration's slots (helper).
+
+```lean
+theorem RueCore.OwnSt.joinList_wf {D : Decls} (bs cs : List OwnSt) (Ts : List Ty)
+  (rs : List OwnSt) :
+  OwnSt.wfList D bs Ts = true →
+    OwnSt.wfList D cs Ts = true →
+      OwnSt.joinList D bs cs Ts = some rs → OwnSt.wfList D rs Ts = true
+```
+
+### `OwnSt.join_fields_struct`
+
+*theorem* · module `RueCore.Statics`
+
+§5.5's join of two field records at a declared struct type (helper).
+
+```lean
+theorem RueCore.OwnSt.join_fields_struct (D : Decls) (s : Nat) (sd : StructDecl)
+  (hd : D.structs[s]? = some sd) (xs ys : List OwnSt) :
+  OwnSt.join D (OwnSt.fields xs) (OwnSt.fields ys) (Ty.struct s) =
+    Option.map OwnSt.fields (OwnSt.joinList D xs ys sd.fields)
+```
+
+### `OwnSt.join_fields_array`
+
+*theorem* · module `RueCore.Statics`
+
+§5.5's join of two field records at an array type, element by element
+(`3.8:73`) (helper).
+
+```lean
+theorem RueCore.OwnSt.join_fields_array (D : Decls) (T' : Ty) (n : Nat)
+  (xs ys : List OwnSt) :
+  OwnSt.join D (OwnSt.fields xs) (OwnSt.fields ys) (T'.array n) =
+    Option.map OwnSt.fields (OwnSt.joinList D xs ys (List.replicate n T'))
+```
+
+### `OwnSt.wf_fields_struct`
+
+*theorem* · module `RueCore.Statics`
+
+A field record is a shape of a declared struct type exactly when its slots
+are shapes of the fields (helper).
+
+```lean
+theorem RueCore.OwnSt.wf_fields_struct (D : Decls) (s : Nat) (sd : StructDecl)
+  (hd : D.structs[s]? = some sd) (xs : List OwnSt) :
+  OwnSt.wf D (OwnSt.fields xs) (Ty.struct s) = OwnSt.wfList D xs sd.fields
+```
+
+### `OwnSt.wf_fields_array`
+
+*theorem* · module `RueCore.Statics`
+
+The array form of the same (helper).
+
+```lean
+theorem RueCore.OwnSt.wf_fields_array (D : Decls) (T' : Ty) (n : Nat)
+  (xs : List OwnSt) :
+  OwnSt.wf D (OwnSt.fields xs) (T'.array n) =
+    OwnSt.wfList D xs (List.replicate n T')
+```
+
+### `OwnSt.joinList_assoc`
+
+*theorem* · module `RueCore.Statics`
+
+The same over a declaration's slots (helper).
+
+```lean
+theorem RueCore.OwnSt.joinList_assoc {D : Decls} (hD : WfStructs D)
+  (as bs cs : List OwnSt) (Ts : List Ty) :
+  OwnSt.wfList D as Ts = true →
+    OwnSt.wfList D bs Ts = true →
+      OwnSt.wfList D cs Ts = true →
+        ((OwnSt.joinList D as bs Ts).bind fun xs =>
+            OwnSt.joinList D xs cs Ts) =
+          (OwnSt.joinList D bs cs Ts).bind fun ys => OwnSt.joinList D as ys Ts
+```
+
+### `optionMapBind`
+
+*theorem* · module `RueCore.Statics`
+
+Renaming the result of a partial computation before continuing is renaming
+after it (helper).
+
+```lean
+theorem RueCore.optionMapBind {α β γ : Type} (o : Option α) (f : α → β)
+  (g : β → Option γ) : (Option.map f o).bind g = o.bind fun x => g (f x)
+```
+
+### `optionBindMap`
+
+*theorem* · module `RueCore.Statics`
+
+The same on the other side of the bind (helper).
+
+```lean
+theorem RueCore.optionBindMap {α β γ : Type} (o : Option α) (f : α → Option β)
+  (g : β → γ) : (o.bind fun x => Option.map g (f x)) = Option.map g (o.bind f)
+```
+
+### `Entry.setSt_st`
+
+*theorem* · module `RueCore.Statics`
+
+Re-marking an entry records the state it was given (helper).
+
+```lean
+theorem RueCore.Entry.setSt_st (en : Entry) (u : OwnSt) : (en.setSt u).st = u
+```
+
+### `Entry.setSt_ty`
+
+*theorem* · module `RueCore.Statics`
+
+Re-marking an entry leaves its declared type alone (helper).
+
+```lean
+theorem RueCore.Entry.setSt_ty (en : Entry) (u : OwnSt) : (en.setSt u).ty = en.ty
+```
+
+### `Entry.setSt_setSt`
+
+*theorem* · module `RueCore.Statics`
+
+Re-marking twice is re-marking once: `Entry.setSt` writes the whole `Σ` part
+of the row (helper).
+
+```lean
+theorem RueCore.Entry.setSt_setSt (en : Entry) (u : OwnSt) :
+  (en.setSt u).setSt = en.setSt
+```
+
+### `Entry.ty_of_skel`
+
+*theorem* · module `RueCore.Statics`
+
+Two entries with one skeleton have one declared type (helper).
+
+```lean
+theorem RueCore.Entry.ty_of_skel {a b : Entry} (h : a.skel = b.skel) : b.ty = a.ty
+```
+
+### `Ctx.join_cons_bind_left`
+
+*theorem* · module `RueCore.Statics`
+
+A context joins entry by entry, so one bracketing of three contexts factors
+into that bracketing of the heads and of the tails (helper).
+
+```lean
+theorem RueCore.Ctx.join_cons_bind_left (D : Decls) (a b c : Entry) (as bs cs : Ctx) :
+  ((Ctx.join D (a :: as) (b :: bs)).bind fun xs => Ctx.join D xs (c :: cs)) =
+    match (Entry.join D a b).bind fun x => Entry.join D x c,
+      (Ctx.join D as bs).bind fun xs => Ctx.join D xs cs with
+    | some x, some xs => some (x :: xs)
+    | x, x_1 => none
+```
+
+### `Ctx.join_cons_bind_right`
+
+*theorem* · module `RueCore.Statics`
+
+The same for the other bracketing (helper).
+
+```lean
+theorem RueCore.Ctx.join_cons_bind_right (D : Decls) (a b c : Entry)
+  (as bs cs : Ctx) :
+  ((Ctx.join D (b :: bs) (c :: cs)).bind fun ys => Ctx.join D (a :: as) ys) =
+    match (Entry.join D b c).bind fun y => Entry.join D a y,
+      (Ctx.join D bs cs).bind fun ys => Ctx.join D as ys with
+    | some x, some xs => some (x :: xs)
+    | x, x_1 => none
+```
+
+### `OwnSt.setField_wf`
+
+*theorem* · module `RueCore.Statics`
+
+Writing a state of a slot's own type into a record leaves the record a shape
+of its type: the `owned` padding `OwnSt.setField` inserts before the slot is a
+state of every type it passes (helper).
+
+```lean
+theorem RueCore.OwnSt.setField_wf {D : Decls} (ts : List OwnSt) (f : Nat) (v : OwnSt)
+  (Ts : List Ty) (T' : Ty) :
+  OwnSt.wfList D ts Ts = true →
+    Ts[f]? = some T' →
+      OwnSt.wf D v T' = true →
+        OwnSt.wfList D (OwnSt.setField ts f v) Ts = true
+```
+
+### `OwnSt.fieldAt_wf`
+
+*theorem* · module `RueCore.Statics`
+
+Reading a slot of a well-formed record gives a state of that slot's type; a
+slot no partial move has touched reads as `owned`, which is a state of every
+type (helper).
+
+```lean
+theorem RueCore.OwnSt.fieldAt_wf {D : Decls} (ts : List OwnSt) (f : Nat)
+  (Ts : List Ty) (T' : Ty) :
+  OwnSt.wfList D ts Ts = true →
+    Ts[f]? = some T' → OwnSt.wf D (OwnSt.fieldAt ts f) T' = true
+```
+
+### `OwnSt.setAt_cons_owned`
+
+*theorem* · module `RueCore.Statics`
+
+`OwnSt.setAt` takes its first step the same way from a wholly `Owned` node as
+from a field record, because a node with no record of its own has every field
+`owned` (helper).
+
+```lean
+theorem RueCore.OwnSt.setAt_cons_owned (f : Nat) (π : List Nat) (u : OwnSt) :
+  OwnSt.owned.setAt (f :: π) u =
+    OwnSt.fields
+      (OwnSt.setField OwnSt.owned.fieldStates f
+        ((OwnSt.fieldAt OwnSt.owned.fieldStates f).setAt π u))
+```
+
+### `OwnSt.setAt_cons_fields`
+
+*theorem* · module `RueCore.Statics`
+
+The field-record form of the same step (helper).
+
+```lean
+theorem RueCore.OwnSt.setAt_cons_fields (ts : List OwnSt) (f : Nat) (π : List Nat)
+  (u : OwnSt) :
+  (OwnSt.fields ts).setAt (f :: π) u =
+    OwnSt.fields
+      (OwnSt.setField (OwnSt.fields ts).fieldStates f
+        ((OwnSt.fieldAt (OwnSt.fields ts).fieldStates f).setAt π u))
+```
+
+### `OwnSt.wfList_fieldStates_struct`
+
+*theorem* · module `RueCore.Statics`
+
+The recorded slots of a state well formed at a declared struct type are
+themselves well formed at the field types — trivially so for a node with no
+record of its own (helper).
+
+```lean
+theorem RueCore.OwnSt.wfList_fieldStates_struct {D : Decls} {t : OwnSt} {s : Nat}
+  {sd : StructDecl} (hd : D.structs[s]? = some sd)
+  (h : OwnSt.wf D t (Ty.struct s) = true) :
+  OwnSt.wfList D t.fieldStates sd.fields = true
+```
+
+### `OwnSt.wfList_fieldStates_array`
+
+*theorem* · module `RueCore.Statics`
+
+The array form of the same (helper).
+
+```lean
+theorem RueCore.OwnSt.wfList_fieldStates_array {D : Decls} {t : OwnSt} {T₁ : Ty}
+  {n : Nat} (h : OwnSt.wf D t (T₁.array n) = true) :
+  OwnSt.wfList D t.fieldStates (List.replicate n T₁) = true
+```
+
 ### `TypedArms.at_index`
 
 *theorem* · module `RueCore.Statics`
@@ -2173,6 +3043,35 @@ enum has at least one variant (§5.5) — and preserves the first arm's skeleton
 theorem RueCore.Ctx.joinAll_skel {D : Decls} {Γs : List Ctx} {Γ' : Ctx} :
   Ctx.joinAll D Γs = some Γ' →
     ∃ Γ₁ Γrest, Γs = Γ₁ :: Γrest ∧ Γ'.skel = Γ₁.skel
+```
+
+### `Ctx.joinFold_bind_cons`
+
+*theorem* · module `RueCore.Statics`
+
+One step of (Match) §5.5's fold, with the accumulator allowed to have failed
+already: taking the next arm in is joining it into the accumulator (helper).
+
+```lean
+theorem RueCore.Ctx.joinFold_bind_cons (D : Decls) (o : Option Ctx) (Γ : Ctx)
+  (Γs : List Ctx) :
+  (o.bind fun a => Ctx.joinFold D a (Γ :: Γs)) =
+    (o.bind fun a => Ctx.join D a Γ).bind fun a => Ctx.joinFold D a Γs
+```
+
+### `Ctx.joinFold_wf`
+
+*theorem* · module `RueCore.Statics`
+
+(Match) §5.5's fold keeps the invariant: joined into a well-formed
+accumulator, a well-formed arm leaves a well-formed accumulator (helper).
+
+```lean
+theorem RueCore.Ctx.joinFold_wf {D : Decls} {sk : List (Ty × Bool)} (Γs : List Ctx)
+  (acc Γ' : Ctx) :
+  (∀ (Γ : Ctx), Γ ∈ Γs → Γ.skel = sk ∧ Ctx.Wf D Γ) →
+    acc.skel = sk →
+      Ctx.Wf D acc → Ctx.joinFold D acc Γs = some Γ' → Ctx.Wf D Γ'
 ```
 
 ### `TypedArgs.skel_preserved`
@@ -9896,6 +10795,36 @@ def RueCore.ResidueOk (D : Decls) (rs : List Contents) : Prop :=
     r ∈ rs → ∃ Tr, ContentsTy D r Tr ∧ Ty.mult D Tr ≠ Mult.linear
 ```
 
+### `Ctx.Wf`
+
+*def* · module `RueCore.Statics`
+
+§5.5's join is associative over contexts whose every entry is a shape of
+its declared type; `Ctx.Wf` reads that invariant over a whole frame, the way
+`NoResidualLinear` reads §5.6's.
+
+```lean
+def RueCore.Ctx.Wf (D : Decls) (Γ : Ctx) : Prop :=
+  ∀ (en : Entry), en ∈ Γ → Entry.wf D en = true
+```
+
+### `Entry.wf`
+
+*def* · module `RueCore.Statics`
+
+One entry of §5's fused context is well formed when its state is a shape of
+its declared type (helper).
+
+```lean
+def RueCore.Entry.wf (D : Decls) (en : Entry) : Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (en : Entry), Entry.wf D en = OwnSt.wf D en.st en.ty
+```
+
 ### `EvalOk`
 
 *def* · module `RueCore.Soundness`
@@ -10248,6 +11177,61 @@ Defining equations, as Lean derived them from the body:
     match OwnSt.join D a b T, OwnSt.joinList D as bs Ts with
     | some e, some rest => some (e :: rest)
     | x, x_1 => none
+```
+
+### `OwnSt.wf`
+
+*def* · module `RueCore.Statics`
+
+Whether an ownership state is a shape of the type it is recorded at (§5
+preamble): `Owned` and `MovedOut` at every type, a field record only at a
+declared `struct` or an `array`, no longer than that type's slots and with
+every recorded slot a state of its own type. This is the invariant §5.5's
+associativity is stated over (`OwnSt.join_assoc`).
+
+```lean
+def RueCore.OwnSt.wf (D : Decls) : OwnSt → Ty → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (x : Ty), OwnSt.wf D OwnSt.owned x = true
+∀ (D : Decls) (x : Ty), OwnSt.wf D OwnSt.movedOut x = true
+∀ (D : Decls) (ts : List OwnSt) (s : Nat),
+  OwnSt.wf D (OwnSt.fields ts) (Ty.struct s) =
+    match D.structs[s]? with
+    | some sd => OwnSt.wfList D ts sd.fields
+    | none => false
+∀ (D : Decls) (ts : List OwnSt) (T : Ty) (n : Nat),
+  OwnSt.wf D (OwnSt.fields ts) (T.array n) =
+    OwnSt.wfList D ts (List.replicate n T)
+∀ (D : Decls) (x : Ty) (ts : List OwnSt),
+  (∀ (s : Nat), x = Ty.struct s → False) →
+    (∀ (T : Ty) (n : Nat), x = T.array n → False) →
+      OwnSt.wf D (OwnSt.fields ts) x = false
+```
+
+### `OwnSt.wfList`
+
+*def* · module `RueCore.Statics`
+
+The same over a declaration's slots: a record no longer than the slot list,
+each recorded slot a state of its slot's type (helper).
+
+```lean
+def RueCore.OwnSt.wfList (D : Decls) : List OwnSt → List Ty → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (x : List Ty), OwnSt.wfList D [] x = true
+∀ (D : Decls) (head : OwnSt) (tail : List OwnSt),
+  OwnSt.wfList D (head :: tail) [] = false
+∀ (D : Decls) (t : OwnSt) (ts : List OwnSt) (T : Ty) (Ts : List Ty),
+  OwnSt.wfList D (t :: ts) (T :: Ts) =
+    (OwnSt.wf D t T && OwnSt.wfList D ts Ts)
 ```
 
 ### `ProgramTyped`

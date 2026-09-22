@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 236.
+- Theorems checked: 295.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -98,6 +98,60 @@ and diffs them against the committed copies.
 | `OwnSt.joinList_comm` | `RueCore.Statics` | `propext` |
 | `Entry.join_comm` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `Ctx.join_comm` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `Ty.array_mult_linear` | `RueCore.Statics` | `propext` |
+| `Ty.any_replicate_mult_linear` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `residualLinear_mult_linear` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `residualLinearFields_mult_linear` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `ownedJoinOk_residualLinear` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `ownedJoinOkList_residualLinearFields` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `ownedJoinOk_of_residualLinear_false` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `ownedJoinOkList_of_residualLinearFields_false` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `OwnSt.join_owned_left` | `RueCore.Statics` | `propext` |
+| `OwnSt.join_owned_right` | `RueCore.Statics` | `propext` |
+| `OwnSt.join_movedOut_owned_eq` | `RueCore.Statics` | `propext` |
+| `OwnSt.join_movedOut_left` | `RueCore.Statics` | `propext` |
+| `OwnSt.join_movedOut_right` | `RueCore.Statics` | `propext` |
+| `OwnSt.joinList_nil_left` | `RueCore.Statics` | `propext` |
+| `OwnSt.joinList_nil_right` | `RueCore.Statics` | `propext` |
+| `OwnSt.join_fields_bind_left` | `RueCore.Statics` | `propext` |
+| `OwnSt.join_fields_bind_right` | `RueCore.Statics` | `propext` |
+| `OwnSt.joinList_cons_bind_left` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `OwnSt.joinList_cons_bind_right` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `residualLinear_of_ownedJoinOk` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `residualLinearFields_of_ownedJoinOkList` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `OwnSt.join_ownedJoinOk` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `OwnSt.joinList_ownedJoinOkList` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `OwnSt.join_residualLinear` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `OwnSt.joinList_residualLinearFields` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `OwnSt.join_exists` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `OwnSt.joinList_exists` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `OwnSt.join_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `OwnSt.joinList_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `OwnSt.join_fields_struct` | `RueCore.Statics` | `propext` |
+| `OwnSt.join_fields_array` | `RueCore.Statics` | `propext` |
+| `OwnSt.wf_fields_struct` | `RueCore.Statics` | `propext` |
+| `OwnSt.wf_fields_array` | `RueCore.Statics` | `propext` |
+| `OwnSt.join_assoc` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `OwnSt.joinList_assoc` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `optionMapBind` | `RueCore.Statics` | *none* |
+| `optionBindMap` | `RueCore.Statics` | *none* |
+| `Entry.setSt_st` | `RueCore.Statics` | *none* |
+| `Entry.setSt_ty` | `RueCore.Statics` | *none* |
+| `Entry.setSt_setSt` | `RueCore.Statics` | `Quot.sound` |
+| `Entry.ty_of_skel` | `RueCore.Statics` | `propext` |
+| `Entry.join_assoc` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `Entry.join_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `Ctx.join_cons_bind_left` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `Ctx.join_cons_bind_right` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `Ctx.join_assoc` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `Ctx.join_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `OwnSt.setField_wf` | `RueCore.Statics` | `propext` |
+| `OwnSt.fieldAt_wf` | `RueCore.Statics` | `propext` |
+| `OwnSt.setAt_cons_owned` | `RueCore.Statics` | `propext` |
+| `OwnSt.setAt_cons_fields` | `RueCore.Statics` | `propext` |
+| `OwnSt.wfList_fieldStates_struct` | `RueCore.Statics` | `propext` |
+| `OwnSt.wfList_fieldStates_array` | `RueCore.Statics` | `propext` |
+| `OwnSt.setAt_wf` | `RueCore.Statics` | `propext` |
 | `TypedArms.at_index` | `RueCore.Statics` | `propext` |
 | `exhaustive_arm_exists` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `Entry.join_skel` | `RueCore.Statics` | `propext` |
@@ -110,6 +164,11 @@ and diffs them against the committed copies.
 | `Ctx.SameSkel.mem` | `RueCore.Statics` | *none* |
 | `Ctx.joinFold_skel` | `RueCore.Statics` | `propext` |
 | `Ctx.joinAll_skel` | `RueCore.Statics` | `propext` |
+| `Ctx.joinFold_bind_cons` | `RueCore.Statics` | `propext` |
+| `Ctx.joinFold_perm` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `Ctx.joinAll_perm` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `Ctx.joinFold_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `Ctx.joinAll_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `Typed.skel_preserved` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `TypedArgs.skel_preserved` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `TypedArms.arm_skel` | `RueCore.Statics` | `Quot.sound`, `propext` |
