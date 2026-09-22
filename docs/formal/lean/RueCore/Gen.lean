@@ -20,15 +20,27 @@ closed, well-scoped, and simply typed by construction: every `use p` and
 `drop p` names a place rooted at a binder in scope, operator operands are
 `int`, both arms of an `if` have the wanted type, `assign p e` targets a place
 rooted at a `mut` binder and `e` has the place's type, and every literal is in
-bounds (`InBounds`). A program's struct declarations are drawn first and are
-well-formed by construction (§3's class equation, `3.8:18`'s `@copy`
-restriction, and fields naming only earlier declarations), a struct literal
-supplies one initializer per declared field, and a projection names a declared
-slot at the type it is asked for. So `Print.tyOf` succeeds on every generated
-program, and whatever the verified checker rejects, it rejects for an
-ownership reason — a use after move, a use of a partially moved value, a
-linear leak, a linear discard or overwrite, a disagreeing join, a move out of
-a destructor-bearing value — which is what the bridge's refusal table covers.
+bounds (`InBounds`). A program's struct **and enum** declarations are drawn
+first and are well-formed by construction (§3's class equation and `6.3:19`'s
+payload join, `3.8:18`'s `@copy` restriction, and fields and payload
+components naming only declarations drawn earlier, which is `3.0:5`'s
+acyclicity); a struct literal supplies one initializer per declared field, an
+enum literal one argument per declared payload component of the variant its
+tag names (`6.3:16`), a `match` has **exactly one arm per variant in
+declaration order** typed under that variant's payload locals, and a
+projection names a declared slot at the type it is asked for. So `Print.tyOf`
+succeeds on every generated program, and whatever the verified checker
+rejects, it rejects for an ownership reason — a use after move, a use of a
+partially moved value, a linear leak, a linear discard or overwrite, a
+disagreeing join, a move out of a destructor-bearing value — which is what the
+bridge's refusal table covers.
+
+Exhaustiveness is a property of the *draw* rather than a premise the draw
+might miss: `expr` builds the arm list by mapping over the declaration's own
+variant list, so the arm count and the arm order are the declaration's by
+construction and (Match) §5.5's `arms.length = ed.variants.length` cannot
+fail. All arms are drawn at the `match`'s own type, so `firstArmTy`'s choice
+(`Checker.lean`) is never the reason a generated case is refused.
 
 ## How deep a place goes
 
@@ -73,15 +85,30 @@ rejected here, accepted by the calculus and by the compiler
 contract). Emitting `ret` waits on a `check` that carries the ⊥
 provenance.
 
+That is why a `match` **arm** does not draw one either, although a diverging
+arm is otherwise the obvious shape to generate: an arm is a branch like an
+`if`'s, so a `return` or a `@panic` in one costs §5.5's join the same two
+things — the arm's *type* choice, which `firstArmTy` fixes from whichever arm
+`check` reads first, and the arm's *state*, which `Ctx.joinAll` folds in where
+§5.7 contributes `⊥`. Both were measured against the compiler on RUE-2320 (a
+diverging arm in first, middle and last position, and a linear binding a
+diverging arm discharged): the compiler accepts every one of them and this
+fragment rejects them, so a drawn one would be a false bridge failure rather
+than a finding. The seed corpus carries `ret_past_payload` instead, which is
+the `return`-past-payload-locals shape at a position where `check` *is*
+complete.
+
 ## What it deliberately does not guarantee
 
-Ownership. Moves, drops, assignments and scope exits are chosen at random, so
-a large minority of the programs are rejected by the checker and refused by
-the machine — 56 of 200 at `--gen 200 --seed 7`, the figure the
-weights below are tuned against. Both are recorded (`Corpus.caseJson` reads
-them off `checkProgram` and `run` as for any case), never filtered: a rejected
-program checks that the compiler rejects it too, an accepted one that the
-three implementations agree with the interpreter's trace.
+Ownership. Moves, drops, assignments, `match` arms and scope exits are chosen
+at random, so a large minority of the programs are rejected by the checker and
+refused by the machine — 61 of 200 at `--gen 200 --seed 7` and 341 of 1,000 at
+`--gen 1000 --seed 23`, the figures the weights below are tuned against. Both
+are recorded (`Corpus.caseJson` reads them off `checkProgram` and `run` as for
+any case), never filtered: a rejected program checks that the compiler rejects
+it too, an accepted one that the three implementations agree with the
+interpreter's trace. At those two settings 90 of 200 and 441 of 1,000 programs
+contain a `match`.
 
 ## Bias
 
@@ -101,8 +128,9 @@ the weights can be read and changed:
 * a sequence's discarded statement is mostly unit-typed, where `assign`
   (whose right-hand side may use the target binder itself, so
   reinitialisation after a move and overwrite of a live value both arise)
-  and `@drop` live; `@drop` prefers a struct binder but may name any
-  binder, since the calculus allows `@drop` of a place of any class;
+  and `@drop` live; `@drop` prefers a binder §6.11 walks into — a struct or an
+  enum — but may name any binder, since the calculus allows `@drop` of a place
+  of any class;
 * integer literals are small, `0` among them, with an occasional `min_T` or
   `max_T` at the drawn type, so every arithmetic operator can trap — and the
   narrow types make that likely rather than rare;
@@ -113,7 +141,25 @@ the weights can be read and changed:
   casts are between two different types and a good share of them trap;
 * `@dbg` is drawn in unit position, where it competes with `@drop` and
   assignment, so a generated program's stdout usually interleaves the two
-  observation channels.
+  observation channels;
+* an enum's payload components are mostly **struct** types, because a struct
+  is what carries a destructor and a declared attribute — so the payload
+  classes span `Copy`, `Affine` and `Linear`, `6.3:19`'s join has something to
+  say, and an enum one of whose variants carries a `linear` payload is itself
+  `Linear` whichever variant a value holds;
+* a `match` is weighted up sharply when the scope already holds a place of
+  enum type, and its scrutinee is then that place rather than a fresh
+  temporary: a projection first (`3.8:22`'s partial move at a field, whose
+  sibling fields still drop at scope exit) and a binder next (the move that
+  makes a second `match` on the same place the E0205 the compiler reports).
+  A `let` binder is likewise biased toward a declaration that holds an enum in
+  a field, which is what puts such a projection in scope at all;
+* an arm's body is an ordinary drawn expression over the payload locals, so
+  what the arm does with a payload is whatever the existing weights do with
+  any binder: move it into an outer `mut` binding or into a fresh aggregate,
+  `@drop` it, read a `Copy` one twice, or leave it — which at an `Affine`
+  payload is the drop `6.3:17` times at the arm's end and at a `Linear` one is
+  the leak §5.6 rejects (E0406).
 
 One draw is deliberately **narrower** than the type would allow, and it is not
 a bias but an invariant. `@total_cmp`'s two operands are drawn as float
@@ -211,6 +257,17 @@ def isStruct : Ty → Bool
   | .struct _ => true
   | _ => false
 
+/-- (helper) Whether a type is an enum type. -/
+def isEnum : Ty → Bool
+  | .enum _ => true
+  | _ => false
+
+/-- (helper) Whether a type is one §6.11 drops by walking into it: a struct,
+whose droppable fields go in declaration order (`3.9:13`), or an enum, whose
+**active** variant's payload goes and nothing else (`6.3:20`). This is the set
+a drawn `@drop` prefers, because a drop of a scalar observes nothing. -/
+def isAggregate (T : Ty) : Bool := isStruct T || isEnum T
+
 /-- (helper) An integer type: every width and signedness of §2's `int(w, s)`,
 with `i64` a little more likely so most cases stay at the width a reader
 expects. -/
@@ -252,40 +309,55 @@ def floatLiteral (w : FloatWidth) : G Expr := do
     else { sig := k, negExp := true, e := 2 }
   return floatLit w l
 
-/-! ## Struct declarations
+/-! ## Struct and enum declarations
 
-A generated program declares its own structs (`Syntax.lean`), and the
-declarations are drawn so that `WfStructs` holds by construction: a field
-names only an earlier declaration, the recorded class is §3's join lifted by
-the attribute, a destructor is dropped from the draw when a field carries a
-linear value (`3.9:44`), and a `@copy` draw is downgraded to no attribute when
-the join is not already `Copy` or the declaration has a destructor (`3.8:18`,
-`3.9:31`). So whatever the checker rejects, it rejects for an ownership
-reason, never for an ill-formed declaration. -/
+A generated program declares its own structs and enums (`Syntax.lean`), and the
+declarations are drawn so that `WfDecls` holds by construction: a field or a
+payload component names only a declaration drawn **before** it, which is
+`3.0:5`'s acyclicity (E0483) restricted to the draw order; a struct's recorded
+class is §3's join lifted by the attribute and an enum's is `6.3:19`'s payload
+join over every variant, with no attribute to lift; a destructor is dropped
+from the draw when a field carries a linear value (`3.9:44`), and a `@copy`
+draw is downgraded to no attribute when the join is not already `Copy` or the
+declaration has a destructor (`3.8:18`, `3.9:31`). So whatever the checker
+rejects, it rejects for an ownership reason, never for an ill-formed
+declaration.
+
+The draw order is structs, then enums, then a few more structs — `genCase`. A
+first-round struct names only earlier structs, an enum names any of those and
+any earlier enum, and a last-round struct may also name an enum, which is what
+puts an enum in a **field** and so makes a `match` scrutinee a projection. No
+cycle is expressible, because every one of those relations points strictly
+backwards in one global order. -/
 
 /-- (helper) §3's field join, for a field list read against `D`. -/
 def fieldJoin (D : Decls) (fields : List Ty) : Mult :=
   fields.foldl (fun m T => m.join (Ty.mult D T)) .copy
 
-/-- (helper) One field type of declaration `s`: a scalar, or an earlier
-declaration — never `s` itself or a later one, so the environment is
-acyclic. -/
-def fieldTy (s : Nat) : G Ty := do
+/-- (helper) One field type of declaration `s`, drawn against the `nEnums`
+enums already in the environment: a scalar, an earlier struct declaration, or
+one of those enums — never `s` itself, a later struct, or a later enum, so the
+environment stays acyclic (`3.0:5`). The enum share is `0` for the structs
+drawn before any enum exists, which is every first-round declaration. -/
+def fieldTy (s nEnums : Nat) : G Ty := do
   let scalar : G Ty := do weighted (← intTy) [(4, ← intTy), (1, .bool), (1, .unit)]
-  if s = 0 then
+  if s = 0 && nEnums = 0 then
     scalar
   else
     let k ← nat 1 10
-    if k ≤ 4 then
+    if k ≤ 4 && s ≠ 0 then
       let j ← nat 0 (s - 1)
       return .struct j
+    else if k ≤ 8 && nEnums ≠ 0 then
+      let j ← nat 0 (nEnums - 1)
+      return .enum j
     else
       scalar
 
-/-- (helper) One declaration, well-formed by construction. -/
-def genDecl (D : Decls) (s : Nat) : G StructDecl := do
+/-- (helper) One struct declaration, well-formed by construction. -/
+def genDecl (D : Decls) (s nEnums : Nat) : G StructDecl := do
   let k ← nat 1 3
-  let fields ← (List.range k).mapM (fun _ => fieldTy s)
+  let fields ← (List.range k).mapM (fun _ => fieldTy s nEnums)
   let drawnDtor ← chance 1 2
   let drawn ← weighted Attr.none [(4, Attr.none), (1, Attr.copy), (2, Attr.linear)]
   let base := fieldJoin D fields
@@ -299,13 +371,94 @@ def genDecl (D : Decls) (s : Nat) : G StructDecl := do
     | a => a
   return { attr := attr, fields := fields, dtor := dtor, cls := attr.lift base }
 
-/-- (helper) A struct environment of `n` declarations, built left to right so
-each one sees the ones before it. -/
-def genEnv : Nat → Decls → G Decls
+/-- (helper) `n` more struct declarations, built left to right so each one sees
+the ones before it, and drawn against the `nEnums` enums already in the
+environment. -/
+def genEnv (nEnums : Nat) : Nat → Decls → G Decls
   | 0, acc => return acc
   | n + 1, acc => do
-      let sd ← genDecl acc acc.structs.length
-      genEnv n { acc with structs := acc.structs ++ [sd] }
+      let sd ← genDecl acc acc.structs.length nEnums
+      genEnv nEnums n { acc with structs := acc.structs ++ [sd] }
+
+/-- (helper) One payload component type of enum declaration `e`: a scalar, any
+of the `nStructs` struct declarations — none of which names an enum, since they
+are drawn first — or an **earlier** enum. Struct components are the common draw
+because they are what carries a destructor and a declared attribute, so the
+payload classes span `Copy`, `Affine` and `Linear` and `6.3:19`'s join has
+something to say. -/
+def payloadTy (nStructs e : Nat) : G Ty := do
+  let scalar : G Ty := do weighted (← intTy) [(3, ← intTy), (1, .bool), (1, .unit)]
+  let k ← nat 1 10
+  if k ≤ 6 && nStructs ≠ 0 then
+    let j ← nat 0 (nStructs - 1)
+    return .struct j
+  else if k ≤ 8 && e ≠ 0 then
+    let j ← nat 0 (e - 1)
+    return .enum j
+  else
+    scalar
+
+/-- (helper) One enum declaration, well-formed by construction: two or three
+variants in declaration order — the order a tag indexes and (Match) §5.5's arms
+are presented in — each carrying `0`–`2` payload components, and the recorded
+class exactly `6.3:19`'s join over every component of every variant, which is
+what `checkEnumDecl` pins. An arity-`0` variant is `6.3:14`'s
+discriminant-only case, and a declaration all of whose variants are arity `0`
+is the duplicable tag enum of `3.8:2`. There is no attribute to draw and no
+destructor: §3 gives an enum neither (E0417). -/
+def genEnumDecl (D : Decls) (e : Nat) : G EnumDecl := do
+  let nv ← weighted 2 [(5, 2), (2, 3)]
+  let variants ← (List.range nv).mapM (fun _ => do
+    let a ← weighted 1 [(3, 0), (5, 1), (2, 2)]
+    (List.range a).mapM (fun _ => payloadTy D.structs.length e))
+  let ed : EnumDecl := { variants := variants, cls := .copy }
+  return { ed with cls := ed.payloadJoin D }
+
+/-- (helper) An enum environment of `n` declarations, built left to right so
+each one sees every struct and the enums before it — which is what keeps
+`3.0:5`'s cycle out of the draw. -/
+def genEnums : Nat → Decls → G Decls
+  | 0, acc => return acc
+  | n + 1, acc => do
+      let ed ← genEnumDecl acc acc.enums.length
+      genEnums n { acc with enums := acc.enums ++ [ed] }
+
+/-- (helper) A canonical value of any type, for the one place a type-directed
+draw can run out of depth and still owe a well-typed expression: a literal at a
+scalar (§5.8's (Lit)), one initializer per **declared** field at a struct
+(`3.6:15`, (Struct-Intro) §5.8), and the first variant applied to its own
+payload at an enum (`6.3:16`, (Enum-Intro) §5.5). The fuel is
+`|structs| + |enums|`, which `3.0:5`'s acyclicity makes enough — the same bound
+`checkNoCycle` peels with — because a component names a declaration strictly
+earlier in the draw order.
+
+Before this existed the depth-exhausted fallback was `mkStruct s []`, which is
+a struct literal missing its initializers: an **ill-typed** program, rejected
+by the checker for a reason that is not ownership and by the compiler for a
+field-count error rather than the ownership diagnostic the bridge's refusal
+table covers (two of the 200 cases at `--gen 200 --seed 7` were that shape). -/
+def leastValue (D : Decls) : Nat → Ty → Expr
+  | _, .int w sg => intLit w sg 0
+  | _, .float w => floatLit w { sig := 0, negExp := false, e := 0 }
+  | _, .bool => boolLit false
+  | _, .unit => unitLit
+  | 0, .struct s => mkStruct s []
+  | fuel + 1, .struct s =>
+      match D.structs[s]? with
+      | some sd => mkStruct s (sd.fields.map (leastValue D fuel))
+      | none => mkStruct s []
+  | 0, .enum e => mkEnum e 0 []
+  | fuel + 1, .enum e =>
+      match D.enums[e]? with
+      | some ed => mkEnum e 0 (((ed.variants[0]?).getD []).map (leastValue D fuel))
+      | none => mkEnum e 0 []
+  -- Unreachable: no array type is drawn (RUE-2331). (Array-Intro) §5.8's own
+  -- literal would be `n` copies of the element's least value.
+  | _, .array T _ => mkArray T []
+
+/-- (helper) The fuel `leastValue` is called at: one round per declaration, the
+bound `3.0:5`'s acyclicity makes sufficient. -/
+def declFuel (D : Decls) : Nat := D.structs.length + D.enums.length
 
 /-- (helper) The field slots of a declaration whose type is `T` and which this
 fragment may project. A step is drawn only where §5.1 and §5.3 admit it: a
@@ -337,6 +490,10 @@ def fieldSlots (D : Decls) : Ty → List Nat
   -- steps are deliberately not offered here: `placeOfPath` builds `Place.proj`
   -- steps, and an index step is `Place.idx`.
   | .array _ _ => []
+  -- An **enum** has no step either, and that one is the fragment's shape
+  -- rather than a gap: §5.6 tracks no path into a payload, `Ty.fieldAt` is
+  -- `none` at an enum type, and the only way to a payload component is a
+  -- `match` arm's binding (`Syntax.lean`, `6.3:17`).
   | .int _ _ | .float _ | .bool | .unit | .enum _ => []
 
 /-- (helper) Every path of **one or two** field steps under a binder's
@@ -399,19 +556,64 @@ def dropPlaces (D : Decls) (Γ : Scope) : List Place :=
           | none => none)
     | none => [])).flatten
 
-/-- (helper) The type of a fresh `let` binder: mostly structs, when the
-program has any. -/
+/-- (helper) The binders an arm's body is drawn under: (Match) §5.5's payload
+locals on top of the enclosing scope, in `armCtx`'s order — the tuple
+**reversed**, so component `ai` has de Bruijn index `0` — and unmarked, because
+§2 gives a pattern binding no `μ` (the compiler's parser rejects `mut` there,
+which is what makes `armCtx`'s `mu := false` faithful). -/
+def armScope (Ts : List Ty) (Γ : Scope) : Scope :=
+  (Ts.map (fun T => ({ ty := T, mu := false } : Binder))).reverse ++ Γ
+
+/-- (helper) Which enum a drawn `match` scrutinizes: one a binder or a
+projection in scope already holds, where there is one, so the scrutinee is a
+**place** and typing it is (Use-Move)/(Use-Copy) §5.1 at that place — a move
+for a non-`Copy` enum, which is `3.8:33`'s destructured consumption and what
+makes a second `match` on it the E0205 the compiler reports. Otherwise any
+declared enum, which the draw then builds as a temporary. -/
+def pickEnumIdx (D : Decls) (Γ : Scope) : G Nat := do
+  let inScope := (List.range D.enums.length).filter (fun e =>
+    !(indicesWhere Γ (fun b => b.ty == .enum e)).isEmpty ||
+      !(projPlaces D Γ (.enum e)).isEmpty)
+  if !inScope.isEmpty && (← chance 3 4) then pick 0 inScope
+  else pick 0 (List.range D.enums.length)
+
+/-- (helper) Whether the scope already holds a place of enum type — a binder,
+or a field of a binder. Where it does, a drawn `match` is weighted up, because
+a `match` on a **place** is where the interesting ownership lives: the move
+that consumes the binding (`3.8:33`, `6.3:17`), the partial move at a field
+(`3.8:22`), and the E0205 a second `match` on the same place is. A `match` on
+a temporary exercises (D-Match) §6.6 and the arm teardown but leaves no state
+behind for the join to read. -/
+def enumPlaceInScope (D : Decls) (Γ : Scope) : Bool :=
+  (List.range D.enums.length).any (fun e =>
+    !(indicesWhere Γ (fun b => b.ty == .enum e)).isEmpty ||
+      !(projPlaces D Γ (.enum e)).isEmpty)
+
+/-- (helper) The type of a fresh `let` binder: mostly aggregates, when the
+program declares any — structs a little more often than enums, since a struct
+is also what an enum's payload is usually made of. -/
 def binderTy (D : Decls) : G Ty := do
   let scalar : G Ty := do weighted (← intTy) [(2, ← intTy), (1, ← floatTy), (1, .bool)]
-  if D.structs.isEmpty then
+  let structTy : G Ty := do
+    if D.structs.isEmpty then scalar
+    else
+      -- A declaration that holds an enum in a field is preferred, because a
+      -- binder of that type is what makes a drawn `match` scrutinize a
+      -- **projection** — `3.8:22`'s partial move at a field, whose residue
+      -- the sibling fields still drop at scope exit (§6.11).
+      let holders := (List.range D.structs.length).filter (fun s =>
+        ((D.structs[s]?).map (fun sd => sd.fields.any isEnum)).getD false)
+      if !holders.isEmpty && (← chance 1 2) then return .struct (← pick 0 holders)
+      return .struct (← nat 0 (D.structs.length - 1))
+  let enumTy : G Ty := do
+    if D.enums.isEmpty then structTy else return .enum (← nat 0 (D.enums.length - 1))
+  if D.structs.isEmpty && D.enums.isEmpty then
     scalar
   else
     let k ← nat 1 10
-    if k ≤ 6 then
-      let s ← nat 0 (D.structs.length - 1)
-      return .struct s
-    else
-      scalar
+    if k ≤ 4 then structTy
+    else if k ≤ 7 then enumTy
+    else scalar
 
 mutual
 /-- (helper) The smallest expression of a type: a literal, a use of a binder
@@ -439,10 +641,21 @@ def atom (D : Decls) (Γ : Scope) : Ty → Nat → G Expr
       if !uses.isEmpty && (← chance 2 3) then return use (.var (← pick 0 uses))
       match D.structs[s]?, depth with
       | some sd, d + 1 => return mkStruct s (← sd.fields.mapM (fun T => atom D Γ T d))
-      | _, _ => return mkStruct s []
-  -- The generator draws no enum type (`binderTy`, `resultTy`), so no enum ever
-  -- reaches this function; drawing `match` and enum construction is RUE-2325.
-  | .enum _, _ => return unitLit
+      | _, _ => return leastValue D (declFuel D) (.struct s)
+  | .enum e, depth => do
+      -- (Enum-Intro) §5.5, or a use of an enum already in scope. The tag is
+      -- drawn uniformly over the declared variants, so a discriminant-only one
+      -- (`6.3:14`) is as likely as a payload-carrying one at the same
+      -- declaration.
+      let projs := projPlaces D Γ (.enum e)
+      if !projs.isEmpty && (← chance 1 2) then return use (← pickPlace (.var 0) projs)
+      let uses := indicesWhere Γ (fun b => b.ty == .enum e)
+      if !uses.isEmpty && (← chance 2 3) then return use (.var (← pick 0 uses))
+      match D.enums[e]?, depth with
+      | some ed, d + 1 =>
+          let k ← nat 0 (ed.variants.length - 1)
+          return mkEnum e k (← ((ed.variants[k]?).getD []).mapM (fun T => atom D Γ T d))
+      | _, _ => return leastValue D (declFuel D) (.enum e)
   -- Unreachable: no array type is drawn (RUE-2331). The arm is still the
   -- literal (Array-Intro) §5.8 concludes `[T; n]` at, one atom per element,
   -- with the same depth-exhausted fallback the struct arm above has.
@@ -455,7 +668,7 @@ def atom (D : Decls) (Γ : Scope) : Ty → Nat → G Expr
 of a place, or an assignment of an atom to one. -/
 def leaf (D : Decls) (Γ : Scope) : Ty → Nat → G Expr
   | .unit, depth => do
-      let structs := indicesWhere Γ (fun b => isStruct b.ty)
+      let aggregates := indicesWhere Γ (fun b => isAggregate b.ty)
       let muts := indicesWhere Γ (fun b => b.mu)
       let drops := dropPlaces D Γ
       let form ← weighted 0
@@ -463,7 +676,7 @@ def leaf (D : Decls) (Γ : Scope) : Ty → Nat → G Expr
       match form with
       | 1 =>
           if !drops.isEmpty && (← chance 1 2) then return drop (← pickPlace (.var 0) drops)
-          if !structs.isEmpty && (← chance 3 4) then return drop (.var (← pick 0 structs))
+          if !aggregates.isEmpty && (← chance 3 4) then return drop (.var (← pick 0 aggregates))
           return drop (.var (← nat 0 (Γ.length - 1)))
       | 2 =>
           let i ← pick 0 muts
@@ -489,7 +702,9 @@ def expr (D : Decls) : Scope → Ty → Nat → G Expr
   | Γ, T, 0 => leaf D Γ T 2
   | Γ, T, fuel + 1 => do
       if !Γ.isEmpty && (← chance 1 6) then return (← leaf D Γ T 2)
-      let form ← weighted 3 [(4, 0), (3, 1), (3, 2), (4, 3)]
+      let form ← weighted 3
+        [(4, 0), (3, 1), (3, 2), (4, 3),
+          (if D.enums.isEmpty then 0 else if enumPlaceInScope D Γ then 14 else 3, 4)]
       match form with
       | 0 =>
           let T₁ ← binderTy D
@@ -509,10 +724,53 @@ def expr (D : Decls) : Scope → Ty → Nat → G Expr
           let e₁ ← expr D Γ T fuel
           let e₂ ← expr D Γ T fuel
           return ite c e₁ e₂
+      | 4 =>
+          -- (Match) §5.5 in expression position: the scrutinee at the drawn
+          -- enum type, then **exactly one arm per variant in declaration
+          -- order**, each drawn at the `match`'s own type `T` under that
+          -- variant's payload locals (`armScope`). Exhaustiveness is the arm
+          -- list's shape, so it is a property of the draw rather than a
+          -- premise the draw could miss; what the arm does with its payload
+          -- is left to chance, exactly as every other ownership choice is.
+          let e ← pickEnumIdx D Γ
+          match D.enums[e]? with
+          | some ed =>
+              -- The scrutinee is a **place** wherever the scope offers one, so
+              -- that typing it is the (Use-Move)/(Use-Copy) §5.1 read at that
+              -- place rather than the construction of a fresh temporary: a
+              -- projection is `3.8:22`'s partial move out of a struct field,
+              -- and a binder is what makes a second `match` on it the E0205
+              -- use of a moved-out place. A temporary is the remaining draw,
+              -- and the one the empty scope always takes.
+              let projs := projPlaces D Γ (.enum e)
+              let uses := indicesWhere Γ (fun b => b.ty == .enum e)
+              let scrut ←
+                if !projs.isEmpty && (← chance 3 5) then
+                  pure (use (← pickPlace (.var 0) projs))
+                else if !uses.isEmpty && (← chance 4 5) then
+                  pure (use (.var (← pick 0 uses)))
+                else
+                  expr D Γ (.enum e) fuel
+              let arms ← ed.variants.mapM (fun Ts => expr D (armScope Ts Γ) T fuel)
+              return «match» scrut arms
+          | none => leaf D Γ T 2
       | _ =>
           match T with
-          -- No enum is ever drawn (`binderTy`, `resultTy`); RUE-2325 adds them.
-          | .enum _ => atom D Γ T fuel
+          | .enum e =>
+              -- The same (Enum-Intro) §5.5 draw `atom` makes, one level up: a
+              -- use of an enum in scope, a projection of one out of a struct
+              -- field, or a fresh tagged value whose payload arguments are
+              -- themselves drawn expressions (§6.2's left-to-right order).
+              let uses := indicesWhere Γ (fun b => b.ty == .enum e)
+              if !uses.isEmpty && (← chance 1 2) then return use (.var (← pick 0 uses))
+              let projs := projPlaces D Γ (.enum e)
+              if !projs.isEmpty && (← chance 1 3) then return use (← pickPlace (.var 0) projs)
+              match D.enums[e]? with
+              | some ed =>
+                  let k ← nat 0 (ed.variants.length - 1)
+                  return mkEnum e k
+                    (← ((ed.variants[k]?).getD []).mapM (fun T' => expr D Γ T' fuel))
+              | none => return leastValue D (declFuel D) (.enum e)
           | .int w sg =>
               let self := expr D Γ (.int w sg) fuel
               let form ← weighted 0 [(5, 0), (3, 1), (2, 2), (3, 3), (2, 4)]
@@ -627,83 +885,128 @@ def subexprs : Expr → List Expr
   | e@(.ite c e₁ e₂) => e :: subexprs c ++ subexprs e₁ ++ subexprs e₂
   | e@(assign _ e₁) | e@(ret e₁) | e@(unop _ e₁) | e@(intCast _ _ e₁)
   | e@(fintrin _ e₁) | e@(dbg e₁) => e :: subexprs e₁
-  | e@(call _ args) | e@(mkStruct _ args) => e :: (args.map subexprs).flatten
+  | e@(call _ args) | e@(mkStruct _ args) | e@(mkEnum _ _ args) =>
+      e :: (args.map subexprs).flatten
+  | e@(.«match» scrut arms) => e :: subexprs scrut ++ (arms.map subexprs).flatten
   | e => [e]
 
 /-- (helper) The number of nodes. -/
 def size (e : Expr) : Nat := (subexprs e).length
 
-/-- (helper) The rule labels a program exercises, in the seed corpus's
-spellings where it has one, deduplicated in traversal order. `Γ` lists the
-binder types innermost first, as `Print.tyOf` reads them, so a use or a
-`@drop` is labeled copy or move by its binder's class. -/
+mutual
+/-- (helper) The rule labels one expression exercises, in the seed corpus's
+spellings where it has one and in traversal order. `Γ` lists the binder types
+innermost first, as `Print.tyOf` reads them, so a use or a `@drop` is labeled
+copy or move by the class of the type its place reaches. -/
+def rulesIn (D : Decls) (Γ : List Ty) : Expr → List String
+  | use pl =>
+      (match Γ[pl.root]? with
+       | some T =>
+           (match T.atPath D pl.path with
+            | some T' =>
+                (if T'.mult D == .copy then ["(Use-Copy) §5.1"] else ["(Use-Move) §5.1"]) ++
+                  (if pl.path.isEmpty then [] else ["§4.2 partial move", "3.8:22"])
+            | none => [])
+       | none => [])
+  | binop op e₁ e₂ =>
+      (if op.isCompare then ["(Ord) §5.8", "§6.4"]
+       else ["(Arith) §5.8", "§6.4 arithmetic traps"]) ++ rulesIn D Γ e₁ ++ rulesIn D Γ e₂
+  | unop op e₁ =>
+      (match op with
+       | .neg => ["(Neg) §5.8", "§6.4 arithmetic traps"]
+       | .not => ["(Not) §5.8"]
+       | .bitnot => ["(BitNot) §5.8"]) ++ rulesIn D Γ e₁
+  | intCast _ _ e₁ => ["(Int-Cast) §5.8", "(D-Int-Cast-Trap) §6.4"] ++ rulesIn D Γ e₁
+  | Expr.panic _ => ["(Panic) §5.8", "(D-Panic) §6.12"]
+  | dbg e₁ => ["(Dbg) §5.8"] ++ rulesIn D Γ e₁
+  | mkStruct _ args => ["(Struct-Intro) §5.8"] ++ (args.map (rulesIn D Γ)).flatten
+  | mkEnum _ _ args =>
+      ["(Enum-Intro) §5.5", "(D-Enum-Intro) §6.6"] ++ (args.map (rulesIn D Γ)).flatten
+  | .«match» scrut arms =>
+      -- The arms are read under their own payload locals, which is what makes
+      -- a use of one labeled by the payload's class rather than by whatever
+      -- binder happens to sit at that index outside the arm.
+      let P : Program := { decls := D, fns := [] }
+      let variants := match Print.tyOf P (.int .w64 .signed) Γ scrut with
+        | some (.enum e) => ((D.enums[e]?).map EnumDecl.variants).getD []
+        | _ => []
+      ["(Match) §5.5", "(D-Match) §6.6", "6.3:17", "§5.6 scope exit"] ++
+        rulesIn D Γ scrut ++ rulesArms D Γ arms variants
+  | drop pl =>
+      (match Γ[pl.root]? with
+       | some T =>
+           (match T.atPath D pl.path with
+            | some T' =>
+                (if T'.mult D == .copy then ["(@Drop-Copy) §5.3"]
+                 else ["(@Drop) §5.3", "§6.11"]) ++
+                  (if pl.path.isEmpty then [] else ["§4.2 partial move", "3.8:22"])
+            | none => [])
+       | none => [])
+  | letIn _ e₁ e₂ =>
+      let P : Program := { decls := D, fns := [] }
+      ["(Let) §5.3", "§5.6 scope exit", "(D-EndScope) §6.7"] ++ rulesIn D Γ e₁ ++
+        rulesIn D ((Print.tyOf P (.int .w64 .signed) Γ e₁).getD (.int .w64 .signed) :: Γ) e₂
+  | assign _ e₁ => ["(Assign) §5.2", "§6.8 overwrite-drop"] ++ rulesIn D Γ e₁
+  | seq e₁ e₂ => ["(Seq) §5.3", "§6.7 temporary drop"] ++ rulesIn D Γ e₁ ++ rulesIn D Γ e₂
+  | .ite c e₁ e₂ =>
+      ["(If) §5.5 join"] ++ rulesIn D Γ c ++ rulesIn D Γ e₁ ++ rulesIn D Γ e₂
+  | call _ args => ["(Call) §5.8", "(D-Call) §6.9"] ++ (args.map (rulesIn D Γ)).flatten
+  | ret e₁ => ["(Return-Value) §5.7", "(D-Return) §6.9"] ++ rulesIn D Γ e₁
+  | _ => []
+
+/-- (helper) The labels a `match`'s arms exercise, walked alongside the
+declaration's variant list: arm `j` is read under variant `j`'s payload locals
+(`armScope`'s order, which is `armCtx`'s). A `match` whose scrutinee
+`Print.tyOf` could not type has no variant list, and its arms are then read
+under the enclosing binders alone. -/
+def rulesArms (D : Decls) (Γ₀ : List Ty) : List Expr → List (List Ty) → List String
+  | [], _ => []
+  | a :: rest, [] => rulesIn D Γ₀ a ++ rulesArms D Γ₀ rest []
+  | a :: rest, Ts :: Tss => rulesIn D (Ts.reverse ++ Γ₀) a ++ rulesArms D Γ₀ rest Tss
+end
+
+/-- (helper) The rule labels a program exercises, deduplicated in traversal
+order: `rulesIn` under the empty scope of a no-parameter entry point. -/
 def rulesOf (D : Decls) (e : Expr) : List String :=
-  let P : Program := { decls := D, fns := [] }
-  let rec go (Γ : List Ty) : Expr → List String
-    | use pl =>
-        (match Γ[pl.root]? with
-         | some T =>
-             (match T.atPath D pl.path with
-              | some T' =>
-                  (if T'.mult D == .copy then ["(Use-Copy) §5.1"] else ["(Use-Move) §5.1"]) ++
-                    (if pl.path.isEmpty then [] else ["§4.2 partial move", "3.8:22"])
-              | none => [])
-         | none => [])
-    | binop op e₁ e₂ =>
-        (if op.isCompare then ["(Ord) §5.8", "§6.4"]
-         else ["(Arith) §5.8", "§6.4 arithmetic traps"]) ++ go Γ e₁ ++ go Γ e₂
-    | unop op e₁ =>
-        (match op with
-         | .neg => ["(Neg) §5.8", "§6.4 arithmetic traps"]
-         | .not => ["(Not) §5.8"]
-         | .bitnot => ["(BitNot) §5.8"]) ++ go Γ e₁
-    | intCast _ _ e₁ => ["(Int-Cast) §5.8", "(D-Int-Cast-Trap) §6.4"] ++ go Γ e₁
-    | Expr.panic _ => ["(Panic) §5.8", "(D-Panic) §6.12"]
-    | dbg e₁ => ["(Dbg) §5.8"] ++ go Γ e₁
-    | mkStruct _ args => ["(Struct-Intro) §5.8"] ++ (args.map (go Γ)).flatten
-    | drop pl =>
-        (match Γ[pl.root]? with
-         | some T =>
-             (match T.atPath D pl.path with
-              | some T' =>
-                  (if T'.mult D == .copy then ["(@Drop-Copy) §5.3"]
-                   else ["(@Drop) §5.3", "§6.11"]) ++
-                    (if pl.path.isEmpty then [] else ["§4.2 partial move", "3.8:22"])
-              | none => [])
-         | none => [])
-    | letIn _ e₁ e₂ =>
-        ["(Let) §5.3", "§5.6 scope exit", "(D-EndScope) §6.7"] ++ go Γ e₁ ++
-          go ((Print.tyOf P (.int .w64 .signed) Γ e₁).getD (.int .w64 .signed) :: Γ) e₂
-    | assign _ e₁ => ["(Assign) §5.2", "§6.8 overwrite-drop"] ++ go Γ e₁
-    | seq e₁ e₂ => ["(Seq) §5.3", "§6.7 temporary drop"] ++ go Γ e₁ ++ go Γ e₂
-    | .ite c e₁ e₂ => ["(If) §5.5 join"] ++ go Γ c ++ go Γ e₁ ++ go Γ e₂
-    | call _ args => ["(Call) §5.8", "(D-Call) §6.9"] ++ (args.map (go Γ)).flatten
-    | ret e₁ => ["(Return-Value) §5.7", "(D-Return) §6.9"] ++ go Γ e₁
-    | _ => []
-  (go [] e).foldl (fun acc l => if acc.contains l then acc else acc ++ [l]) []
+  (rulesIn D [] e).foldl (fun acc l => if acc.contains l then acc else acc ++ [l]) []
 
 /-- (helper) The result type of a generated program: mostly `int`, so the
 value line is usually present, with a float often enough that `main` prints a
-shortest round-trip rendering (`3.12:40`) as well. -/
+shortest round-trip rendering (`3.12:40`) as well, and an aggregate often
+enough that `main`'s own observation of the value is exercised — for an enum
+that is §6.11's tag read, dropping the **active** variant's payload only
+(`6.3:20`), or, where `class(E)` is `Linear`, the explicit `@drop`
+`Print.observeValue` emits instead. -/
 def resultTy (D : Decls) : G Ty := do
   let k ← nat 1 10
-  if k ≤ 3 && !D.structs.isEmpty then
+  if k ≤ 2 && !D.structs.isEmpty then
     let s ← nat 0 (D.structs.length - 1)
     return .struct s
+  if k ≤ 4 && !D.enums.isEmpty then
+    let e ← nat 0 (D.enums.length - 1)
+    return .enum e
   weighted (← intTy) [(5, ← intTy), (3, ← floatTy), (1, .bool), (1, .unit)]
 
-/-- (helper) One generated case: a struct environment and a one-function
-program whose entry point takes no parameters and returns the drawn type. -/
+/-- (helper) One generated case: a declaration environment and a one-function
+program whose entry point takes no parameters and returns the drawn type. The
+environment is drawn in three rounds — structs, then enums over them, then a
+few more structs that may hold an enum in a field — which is the order the
+declarations section describes and the reason no draw can build `3.0:5`'s
+cycle. -/
 def genCase (seed i : Nat) : G Corpus.Case := do
   let nDecls ← weighted 2 [(2, 1), (4, 2), (3, 3)]
-  let D ← genEnv nDecls (Decls.ofStructs [])
+  let D₀ ← genEnv 0 nDecls (Decls.ofStructs [])
+  let nEnums ← weighted 1 [(2, 0), (4, 1), (3, 2)]
+  let D₁ ← genEnums nEnums D₀
+  let nHolders ← weighted 0 [(2, 0), (3, 1)]
+  let D ← genEnv D₁.enums.length nHolders D₁
   let depth ← weighted 3 [(4, 2), (3, 3)]
   let T ← resultTy D
   let e ← expr D [] T depth
   return {
     name := s!"gen_{seed}_{i}",
     description := s!"Generated program {i} of seed {seed} ({D.structs.length} struct " ++
-      s!"declarations, {size e} nodes); " ++
+      s!"and {D.enums.length} enum declarations, {size e} nodes); " ++
       s!"regenerate with `lake exe ruecore-corpus --gen N --seed {seed}` for any N > {i}.",
     rules := rulesOf D e,
     prog := Program.entry D T e }
