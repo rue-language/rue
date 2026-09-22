@@ -95,6 +95,45 @@ position being written. A carrier whose linear field has been moved out
 therefore drops its remaining residue quietly, which is the RUE-1591 model and
 what the compiler does.
 
+## The declared-linear destructure (§6.3)
+
+(D-Use-Declared-Linear) §6.3 is a **distinct redex**, and `eval`'s `use`/`drop`
+cases branch on it before anything else: where the path has a proper prefix `d`
+of declared-`linear` struct type, `split(H(ℓ)@π_d, π_s)` exposes the selected
+leaf and the ordered residue, `drop*` destroys the residue left to right, and
+only then does `ℓ@π_d` — the *consumed place*, not the leaf's position — become
+`⊘`. `Contents.splitResidue`/`Contents.splitFields` are `split`, walking fields
+in declaration order, recursing at the selected step and appending the whole
+subtree at every unselected one, so nested residue is visited before a later
+sibling (probe d14). `dropResidue` is the `drop*`, and `Contents.destructure`
+is §6.3's composition of the two.
+
+**Where the plan comes from.** §6.3 says the machine consumes a closed
+elaboration annotation `μ` and "never consults `Γ`, recompute[s] a
+declared-linear prefix, or recover[s] constant-index provenance after
+reduction". This fragment's `Expr.use`/`Expr.drop` carry no annotation — they
+carry a `Place`, and the machine has no type environment — so `eval` recovers
+the plan from the **store** instead (`Contents.declaredPlan`), which it can do
+because §6.1's struct value names its declaration. That is a deviation in
+*form* only: `ContentsMatches.declaredPlan_eq` (`Soundness.lean`) proves the
+store-side plan is the type-side `declaredPrefix` (`Syntax.lean`) at every
+place a matched cell answers for, so the redex that fires is the one
+elaboration would have annotated. Every index a `Place` carries here is a
+**constant** step (`Place.idx`), so the stored aggregate answers for the whole
+path; carrying `μ` on the syntax is what RUE-2327 needs, where a place may
+hold a dynamic index and the plan stops being a function of the stored shape
+alone.
+
+**The residue monitor.** §6.3 excludes a linear residue by the
+(Use-Declared-Linear-Destructure) premise "before this redex can fire", so the
+paper machine has nothing to check. `dropResidue` checks anyway, refusing with
+`linearLeak` where a retained subtree still holds a live declared-`linear`
+value: the same monitors-not-silence commitment §6.7's `endscope` and §6.8's
+overwrite already make. `ContentsMatches.destructure_ok` (`Soundness.lean`) is
+the proof that a program `check` accepts never reaches it.
+
+## Pending arguments: the one edge no monitor covers
+
 ## The bounds trap (§6.5, §6.12)
 
 §6.5 bounds-checks an array index "at the moment the path is navigated"
@@ -418,7 +457,10 @@ inductive Violation where
   /-- Touching a `†` cell (§7: no use-after-drop). -/
   | useAfterDrop
   /-- A scope exit — at a `let`'s end (§6.7) or on a frame's unwind (§6.9) —
-  reaching a live linear value (§7: consumed exactly once; §5.6). -/
+  reaching a live linear value (§7: consumed exactly once; §5.6); or a
+  declared-linear destructure whose residue holds one, which §5.1's
+  `¬ linear-residue(S, π_s)` premise forbids (`3.8:60`, E0474) and which §6.3
+  therefore leaves unchecked. -/
   | linearLeak
   /-- Overwrite-drop of a live linear value (§5.2, `3.8:77`). -/
   | linearOverwrite
@@ -467,6 +509,54 @@ def inBoundsIdx (i : Int) (n : Nat) : Bool := decide (0 ≤ i) && decide (i < (n
 theorem inBoundsIdx_eq_true {i : Int} {n : Nat} :
     inBoundsIdx i n = true ↔ (0 ≤ i ∧ i < (n : Int)) := by
   simp [inBoundsIdx]
+
+/-- Whether the contents stored at a position is a struct **declared**
+`linear`: the same mark `Ty.declaredLinear` (`Syntax.lean`) reads, read off the
+declaration index §6.1's `{ v1, …, vk }_S` carries rather than off a type
+(helper). -/
+def Contents.declaredLinear (D : Decls) : Contents → Bool
+  | .struct s _ =>
+      (match D.structs[s]? with
+       | some sd => sd.attr = .linear
+       | none => false)
+  | .hole | .array _ _ | .int _ _ _ | .float _ _ | .bool _ | .unit
+  | .enum _ _ _ => false
+
+/-- §6.3's use-plan annotation `μ`, recovered from the store: `some (π_d, π_s)`
+where the path has a proper prefix of declared-`linear` struct type — §4.2's
+`dl`, read on the stored aggregate — and `none` where it has none, which is the
+`Ordinary` annotation the rules below fall to.
+
+This is `declaredPrefix` (`Syntax.lean`) with the declaration index taken from
+the value rather than from the type, clause for clause, and
+`ContentsMatches.declaredPlan_eq` (`Soundness.lean`) is the proof that the two
+agree wherever the store and Σ agree. The module docstring says why the plan is
+recovered here rather than carried on the syntax as §6.3 writes it.
+
+An **array** node is not a struct declared `linear`, so it offers no split of
+its own and the walk continues into the element — the array clause of
+`Ty.declaredLinear` (`Syntax.lean`), read on the value. -/
+def Contents.declaredPlan (D : Decls) : Contents → List Nat → Option (List Nat × List Nat)
+  | _, [] => none
+  | .struct s cs, f :: π =>
+      (match cs[f]? with
+       | some cf =>
+           (match Contents.declaredPlan D cf π with
+            | some r => some (f :: r.1, r.2)
+            | none =>
+                if (Contents.struct s cs).declaredLinear D then some ([], f :: π) else none)
+       | none =>
+           if (Contents.struct s cs).declaredLinear D then some ([], f :: π) else none)
+  | .array _ cs, c :: π =>
+      (match cs[c]? with
+       | some ce =>
+           (match Contents.declaredPlan D ce π with
+            | some r => some (c :: r.1, r.2)
+            | none => none)
+       | none => none)
+  | .hole, _ :: _ => none
+  | .int _ _ _, _ :: _ | .float _ _, _ :: _ | .bool _, _ :: _ | .unit, _ :: _
+  | .enum _ _ _, _ :: _ => none
 
 /-- Evaluation results: a value with the final store and trace (§6.12's normal
 result); a value handed back by an unwinding `return`, whose frame's scopes
@@ -629,6 +719,92 @@ def dropEventsList (D : Decls) : List Contents → List Event
   | [] => []
   | c :: cs => dropEvents D c ++ dropEventsList D cs
 end
+
+mutual
+/-- **§6.3's `split(H(ℓ)@π_d, π_s) = (v, [r_1, …, r_m])`**: expose the selected
+leaf and the ordered unselected residue. "`split` walks structs in declaration
+order[…]; at each selected step it recurses, and at each unselected step it
+appends the whole value", so the residue of a step is *the fields before the
+selected one*, then *whatever the recursion into it retained*, then *the fields
+after it* — nested residue before a later sibling (probe d14), and plain
+declaration order where the leaf is a direct field (probe d13).
+
+An empty path selects the whole aggregate and retains nothing: the leaf "is not
+residue". A `⊘` with path left to walk is `useAfterMove`, as `readAt`'s is; a
+step that is not a field of what is stored is a shape no well-typed program
+produces. An **array** step of the selected path is refused here for the same
+reason: `Place.noIdx` (`Syntax.lean`) keeps this part from moving out of an
+element at all, so no accepted program navigates one. §5.1's array clause —
+retained elements in ascending index order — is stated in the next slice. -/
+def Contents.splitResidue (D : Decls) :
+    Contents → List Nat → Except Violation (Contents × List Contents)
+  | c, [] => .ok (c, [])
+  | .struct _ cs, f :: π => Contents.splitFields D cs f π
+  | .hole, _ :: _ => .error .useAfterMove
+  | .array _ _, _ :: _
+  | .int _ _ _, _ :: _ | .float _ _, _ :: _ | .bool _, _ :: _ | .unit, _ :: _
+  | .enum _ _ _, _ :: _ => .error .typeConfusion
+
+/-- `split`'s struct step, over one declaration's stored fields: retain the
+fields before the selected slot, recurse into it, and retain the fields after
+— which is §6.3's "visit fields in declaration order" written as a structural
+recursion rather than as a `take`/`drop` (helper). -/
+def Contents.splitFields (D : Decls) :
+    List Contents → Nat → List Nat → Except Violation (Contents × List Contents)
+  | [], _, _ => .error .typeConfusion
+  | c :: cs, 0, π =>
+      (match Contents.splitResidue D c π with
+       | .error w => .error w
+       | .ok (leaf, inner) => .ok (leaf, inner ++ cs))
+  | c :: cs, f + 1, π =>
+      (match Contents.splitFields D cs f π with
+       | .error w => .error w
+       | .ok (leaf, rest) => .ok (leaf, c :: rest))
+end
+
+/-- §6.3's `drop*` applied to `[r_1, …, r_m]` **left to right**, so "each
+legally droppable residue is destroyed immediately and exactly once".
+
+The `residualLinear` test is the monitor this machine adds and §6.3 does not
+need: §5.1's `¬ linear-residue(S, π_s)` premise has already excluded a linear
+residue before the redex fires, so on a program `check` accepts the branch is
+unreachable (`ContentsMatches.destructure_ok`, `Soundness.lean`). On a program
+`check` rejects it turns the silent destruction of a linear value into a named
+refusal, which is what `3.8:60` (E0474) is about. -/
+def dropResidue (D : Decls) : List Contents → Except Violation (List Event)
+  | [] => .ok []
+  | r :: rs =>
+      if r.residualLinear D then .error .linearLeak
+      else
+        match dropContents D r with
+        | .error w => .error w
+        | .ok evs =>
+            match dropResidue D rs with
+            | .error w => .error w
+            | .ok evs' => .ok (evs ++ evs')
+
+/-- **§6.3's `destructure(H, ℓ@π_d, π_s)`**, on the contents stored at the
+consumed place: `split` the aggregate, then apply `drop*` to the residue. The
+result is the selected leaf — "the result transferred to the context, not a
+value dropped by `destructure`" — and the residue's drop events. Writing `⊘`
+at `ℓ@π_d` is the caller's step, because §6.3 puts it *after* the residue's
+drops. -/
+def Contents.destructure (D : Decls) (c : Contents) (πs : List Nat) :
+    Except Violation (Contents × List Event) :=
+  match Contents.splitResidue D c πs with
+  | .error w => .error w
+  | .ok (leaf, rs) =>
+      match dropResidue D rs with
+      | .error w => .error w
+      | .ok evs => .ok (leaf, evs)
+
+/-- **The residue's trace, in closed form**: the concatenation of §6.11's
+events over the retained subtrees, in the traversal's own order.
+`dropResidue_events` (`Soundness.lean`) is the theorem that `dropResidue` emits
+exactly this on well-typed residue, which is what keeps the drop-order
+statements closed under the new redex. -/
+def dropResidueEvents (D : Decls) (rs : List Contents) : List Event :=
+  (rs.map (dropEvents D)).flatten
 
 /-- A field list's events are its fields' events concatenated, left to right:
 the flattening `dropValue_struct_events` states the order with (helper). -/
@@ -905,7 +1081,8 @@ def OpRes.toRes (H : Store) : OpRes → EvalRes
 `σ_NaN` per *target*, not per rule, so the machine takes them as a parameter
 and every theorem quantifies over a model that satisfies §7's laws. Rule
 correspondence, per case: `use` is
-(D-Use-Copy)/(D-Use-Move) (§6.3); `binop`, `unop`, `intCast` and
+(D-Use-Declared-Linear)/(D-Use-Copy)/(D-Use-Move) (§6.3), branching on the use
+plan before anything else; `binop`, `unop`, `intCast` and
 `fintrin` are §6.4's operator and intrinsic rules, computed by
 `evalBinOp`/`evalUnOp`/`evalIntCast`/`evalFintrin` above, the float half of
 them through the model `M`;
@@ -940,9 +1117,12 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
   | _ + 1, _, H, _, .boolLit b => .ok H (.bool b) []
   | _ + 1, _, H, _, .unitLit => .ok H .unit []
   | _ + 1, P, H, φ, .use p =>
-      -- (D-Use-Copy)/(D-Use-Move) §6.3: resolve the root under ρ, navigate the
-      -- path into the stored aggregate, and — for a non-`Copy` place — write
-      -- `⊘` at exactly that sub-position, which is the partial move of §4.2.
+      -- (D-Use-Declared-Linear)/(D-Use-Copy)/(D-Use-Move) §6.3: resolve the
+      -- root under ρ, then branch on the use plan. With a `Declared(d, π_s)`
+      -- plan the destructure is its own redex — split, drop the residue, and
+      -- write `⊘` at the *consumed place* `ℓ@π_d`; otherwise navigate the path
+      -- and, for a non-`Copy` place, write `⊘` at exactly that sub-position,
+      -- which is the partial move of §4.2.
       match φ.env[p.root]? with
       | none => .stuck .unbound
       | some ℓ =>
@@ -950,17 +1130,32 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
         | none => .stuck .unbound
         | some .dead => .stuck .useAfterDrop
         | some (.full c) =>
-          match c.readAt p.path with
-          | .error w => .stuck w
-          | .ok sub =>
-            match sub.toVal with
-            | none => .stuck .useAfterMove
-            | some v =>
-                if v.mult P.decls = .copy then .ok H v []
-                else
-                  match c.writeAt p.path .hole with
-                  | none => .stuck .typeConfusion
-                  | some c' => .ok (H.set ℓ (.full c')) v []
+          match c.declaredPlan P.decls p.path with
+          | some (πd, πs) =>
+            (match c.readAt πd with
+             | .error w => .stuck w
+             | .ok cd =>
+               match cd.destructure P.decls πs with
+               | .error w => .stuck w
+               | .ok (leaf, evs) =>
+                 match leaf.toVal with
+                 | none => .stuck .useAfterMove
+                 | some v =>
+                   match c.writeAt πd .hole with
+                   | none => .stuck .typeConfusion
+                   | some c' => .ok (H.set ℓ (.full c')) v evs)
+          | none =>
+            match c.readAt p.path with
+            | .error w => .stuck w
+            | .ok sub =>
+              match sub.toVal with
+              | none => .stuck .useAfterMove
+              | some v =>
+                  if v.mult P.decls = .copy then .ok H v []
+                  else
+                    match c.writeAt p.path .hole with
+                    | none => .stuck .typeConfusion
+                    | some c' => .ok (H.set ℓ (.full c')) v []
   | fuel + 1, P, H, φ, .binop op e₁ e₂ =>
       (eval M fuel P H φ e₁).andThen fun H₁ v₁ =>
         (eval M fuel P H₁ φ e₂).andThen fun H₂ v₂ =>
@@ -1141,10 +1336,13 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
                    | _ => .stuck .typeConfusion)
           | _ => .stuck .typeConfusion
   | _ + 1, P, H, φ, .drop p =>
-      -- §6.11's explicit `@drop(p)`: run the drop of whatever the
-      -- sub-position holds — the walk skips every already-`⊘` sub-place — and
-      -- write `⊘` back at that position, which suppresses the later
-      -- scope-exit drop through it.
+      -- §6.11's explicit `@drop(p)`: at a `Declared(d, π_s)` plan it is the
+      -- §6.3 destructure with the selected leaf dropped too — residue first,
+      -- leaf second (probe d6c) — and the *consumed place* `ℓ@π_d` becomes
+      -- `⊘`, whatever the leaf's class (§5.3, probe d6). Otherwise it runs the
+      -- drop of whatever the sub-position holds — the walk skips every
+      -- already-`⊘` sub-place — and writes `⊘` back at that position, which
+      -- suppresses the later scope-exit drop through it.
       match φ.env[p.root]? with
       | none => .stuck .unbound
       | some ℓ =>
@@ -1152,18 +1350,33 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
         | none => .stuck .unbound
         | some .dead => .stuck .useAfterDrop
         | some (.full c) =>
-          match c.readAt p.path with
-          | .error w => .stuck w
-          | .ok sub =>
-            if sub.isHole then .stuck .useAfterMove else
-            match dropCell P.decls ℓ sub with
+          match c.declaredPlan P.decls p.path with
+          | some (πd, πs) =>
+            (match c.readAt πd with
+             | .error w => .stuck w
+             | .ok cd =>
+               match cd.destructure P.decls πs with
+               | .error w => .stuck w
+               | .ok (leaf, evs) =>
+                 match dropCell P.decls ℓ leaf with
+                 | .error w => .stuck w
+                 | .ok levs =>
+                   match c.writeAt πd .hole with
+                   | none => .stuck .typeConfusion
+                   | some c' => .ok (H.set ℓ (.full c')) .unit (evs ++ levs))
+          | none =>
+            match c.readAt p.path with
             | .error w => .stuck w
-            | .ok evs =>
-                if sub.mult P.decls = .copy then .ok H .unit []
-                else
-                  match c.writeAt p.path .hole with
-                  | none => .stuck .typeConfusion
-                  | some c' => .ok (H.set ℓ (.full c')) .unit evs
+            | .ok sub =>
+              if sub.isHole then .stuck .useAfterMove else
+              match dropCell P.decls ℓ sub with
+              | .error w => .stuck w
+              | .ok evs =>
+                  if sub.mult P.decls = .copy then .ok H .unit []
+                  else
+                    match c.writeAt p.path .hole with
+                    | none => .stuck .typeConfusion
+                    | some c' => .ok (H.set ℓ (.full c')) .unit evs
   | fuel + 1, P, H, φ, .letIn _m e₁ e₂ =>
       (eval M fuel P H φ e₁).andThen fun H₁ v₁ =>
         -- (D-Let): mint a fresh single-cell binding allocation, bind it, and
