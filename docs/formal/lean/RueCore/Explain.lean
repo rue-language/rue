@@ -451,15 +451,25 @@ def moveUnderDtor : String :=
   "observe the hole ((Use-Move)/(@Drop) premise, §5.1, §5.3; 3.9:34; the compiler " ++
   "reports E0456)"
 
-/-- The fragment's own restriction: a path whose proper prefix is a struct
-declared `linear` selects §4.2's `Declared(d, π)` plan, whose rule
-(Use-Declared-Linear-Destructure) §5.1 this slice does not mechanize
-(RUE-2236). -/
-def declaredLinearPrefix : String :=
-  "a proper prefix of the path is a struct declared `linear`, which §4.2 gives the " ++
-  "`Declared(d, π)` use plan and (Use-Declared-Linear-Destructure) §5.1 discharges " ++
-  "(3.8:33) — a rule this fragment does not mechanize (RUE-2236), so it rejects the " ++
-  "place rather than claim one"
+/-- (Use-Declared-Linear-Destructure) §5.1's `fully-owned(Σ, d)` premise,
+which the rule reads at the **consumed place** `d` — the smallest enclosing
+declared-`linear` place — rather than at the projected leaf (`3.8:26`). -/
+def destructurePartiallyMoved (Td : Ty) : String :=
+  "the smallest enclosing declared-`linear` place, of type " ++ Print.tyName Td ++
+  ", is not fully owned: a path under it is MovedOut, and the destructure hands the " ++
+  "selected leaf to a new owner while destroying the rest " ++
+  "((Use-Declared-Linear-Destructure) premise `fully-owned(Σ, d)`, §5.1; 3.8:26; " ++
+  "the compiler reports E0205)"
+
+/-- (Use-Declared-Linear-Destructure) §5.1's `¬ linear-residue(S, π_s)`
+premise: the destructure destroys its residue at once, so a retained place of
+linear type would be dropped unconsumed (`3.8:60`, E0474). -/
+def residueCarriesLinear (Td : Ty) : String :=
+  "the residue of the destructure carries a linear value: a field access that " ++
+  "destructures " ++ Print.tyName Td ++ " extracts the selected leaf and destroys " ++
+  "every retained place immediately, so a linear one would be dropped without ever " ++
+  "being consumed ((Use-Declared-Linear-Destructure) premise " ++
+  "`¬ linear-residue(S, π_s)`, §5.1; 3.8:60; the compiler reports E0474)"
 
 /-- This part's own restriction: a move or a `@drop` at a path with an array
 index step is refused. It stands in for `3.8:68`'s root-index premise on
@@ -508,6 +518,18 @@ one. -/
 def indexPartiallyMoved : String :=
   "a path under the array is MovedOut, so a non-constant index may denote a " ++
   "moved-out element — which the compiler cannot decide (3.8:70, 7.1:45)"
+
+/-- §4.2's `Untrackable(DeclaredLinearDynamic)`, which the calculus declares
+ill-formed: a **dynamic** index taken at a place whose path already has a
+proper prefix of declared-`linear` struct type. (Use-Untrackable-Dynamic-Copy)
+§5.1 and (Assign) §5.2's dynamic-index clause carry
+`declaredPrefix … = none` to keep it without an instance. -/
+def declaredLinearPrefix : String :=
+  "a proper prefix of the base place is a struct declared `linear`, so a dynamic index " ++
+  "taken here would be §4.2's `Untrackable(DeclaredLinearDynamic)` plan — which the " ++
+  "calculus declares ill-formed, because no static rule can know whether the runtime " ++
+  "index names a place the destructure of 3.8:33 already consumed (3.8:33, 3.8:70; " ++
+  "the compiler reports E0904)"
 
 /-- (@Drop) §5.3's last premise: a partially moved place may not be dropped
 whole while a linear sub-place under it is still owned. -/
@@ -765,24 +787,49 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
       match Γ[pl.root]? with
       | none => rejected "(Use-Copy)/(Use-Move) §5.1" Γ (.use pl) Premise.unboundIndex []
       | some en =>
-        match en.st.get pl.path, en.ty.atPath P.decls pl.path with
-        | some u, some T =>
-            if noLinearPrefix P.decls en.ty pl.path then
-              if T.mult P.decls = .copy then
-                (if u.fullyOwned then accepted "(Use-Copy) §5.1" Γ (.use pl) T Γ []
-                 else rejected "(Use-Copy) §5.1" Γ (.use pl) (Premise.usePartiallyMoved T) [])
-              else
-                (if u.fullyOwned ∧ noDtorPrefix P.decls en.ty pl.path ∧ pl.noIdx then
-                   accepted "(Use-Move) §5.1" Γ (.use pl) T
-                     (Γ.set pl.root (en.setSt (en.st.setAt pl.path .movedOut))) []
+        match declaredPrefix P.decls en.ty pl.path with
+        | some (πd, πs) =>
+            (match en.st.get πd, en.ty.atPath P.decls πd, en.ty.atPath P.decls pl.path with
+             | some u, some Td, some T =>
+                 if u.fullyOwned ∧ linearResidue P.decls Td πs = false ∧
+                     noDtorPrefix P.decls en.ty pl.path ∧ pl.noIdx then
+                   accepted "(Use-Declared-Linear-Destructure) §5.1" Γ (.use pl) T
+                     (Γ.set pl.root (en.setSt (en.st.setAt πd .movedOut))) []
                  else if !pl.noIdx then
-                   rejected "(Use-Move) §5.1" Γ (.use pl) Premise.moveAtIndex []
-                 else if u.fullyOwned then
-                   rejected "(Use-Move) §5.1" Γ (.use pl) Premise.moveUnderDtor []
-                 else rejected "(Use-Move) §5.1" Γ (.use pl) (Premise.usePartiallyMoved T) [])
-            else rejected "(Use-Copy)/(Use-Move) §5.1" Γ (.use pl) Premise.declaredLinearPrefix []
-        | none, _ => rejected "(Use-Copy)/(Use-Move) §5.1" Γ (.use pl) Premise.pathUnderMoved []
-        | _, none => rejected "(Use-Copy)/(Use-Move) §5.1" Γ (.use pl) Premise.pathNotField []
+                   rejected "(Use-Declared-Linear-Destructure) §5.1" Γ (.use pl)
+                     Premise.moveAtIndex []
+                 else if !u.fullyOwned then
+                   rejected "(Use-Declared-Linear-Destructure) §5.1" Γ (.use pl)
+                     (Premise.destructurePartiallyMoved Td) []
+                 else if linearResidue P.decls Td πs then
+                   rejected "(Use-Declared-Linear-Destructure) §5.1" Γ (.use pl)
+                     (Premise.residueCarriesLinear Td) []
+                 else
+                   rejected "(Use-Declared-Linear-Destructure) §5.1" Γ (.use pl)
+                     Premise.moveUnderDtor []
+             | none, _, _ =>
+                 rejected "(Use-Declared-Linear-Destructure) §5.1" Γ (.use pl)
+                   Premise.pathUnderMoved []
+             | _, _, _ =>
+                 rejected "(Use-Declared-Linear-Destructure) §5.1" Γ (.use pl)
+                   Premise.pathNotField [])
+        | none =>
+          (match en.st.get pl.path, en.ty.atPath P.decls pl.path with
+           | some u, some T =>
+               if T.mult P.decls = .copy then
+                 (if u.fullyOwned then accepted "(Use-Copy) §5.1" Γ (.use pl) T Γ []
+                  else rejected "(Use-Copy) §5.1" Γ (.use pl) (Premise.usePartiallyMoved T) [])
+               else
+                 (if u.fullyOwned ∧ noDtorPrefix P.decls en.ty pl.path ∧ pl.noIdx then
+                    accepted "(Use-Move) §5.1" Γ (.use pl) T
+                      (Γ.set pl.root (en.setSt (en.st.setAt pl.path .movedOut))) []
+                  else if !pl.noIdx then
+                    rejected "(Use-Move) §5.1" Γ (.use pl) Premise.moveAtIndex []
+                  else if u.fullyOwned then
+                    rejected "(Use-Move) §5.1" Γ (.use pl) Premise.moveUnderDtor []
+                  else rejected "(Use-Move) §5.1" Γ (.use pl) (Premise.usePartiallyMoved T) [])
+           | none, _ => rejected "(Use-Copy)/(Use-Move) §5.1" Γ (.use pl) Premise.pathUnderMoved []
+           | _, none => rejected "(Use-Copy)/(Use-Move) §5.1" Γ (.use pl) Premise.pathNotField [])
   | .binop op e₁ e₂ =>
       let rule := binopRule op
       let frule := floatBinopRule op
@@ -968,9 +1015,9 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
             match en.st.get pl.path, en.ty.atPath P.decls pl.path with
             | some u, some (.array T _) =>
                 if u.fullyOwned ∧ T.mult P.decls = .copy ∧
-                    noLinearPrefix P.decls en.ty pl.path then
+                    declaredPrefix P.decls en.ty pl.path = none then
                   accepted rule Γ (.indexRead pl e) T Γ₁ [d]
-                else if !noLinearPrefix P.decls en.ty pl.path then
+                else if declaredPrefix P.decls en.ty pl.path ≠ none then
                   rejected rule Γ (.indexRead pl e) Premise.declaredLinearPrefix [d]
                 else if !u.fullyOwned then
                   rejected rule Γ (.indexRead pl e) Premise.indexPartiallyMoved [d]
@@ -988,7 +1035,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
          if en₀.mu = true then
            match en₀.st.get pl.path, en₀.ty.atPath P.decls pl.path with
            | some _, some (.array T _) =>
-             if noLinearPrefix P.decls en₀.ty pl.path then
+             if declaredPrefix P.decls en₀.ty pl.path = none then
                (let d₁ := explain P R Γ e₁
                 match d₁.result with
                 | some (.int _ _, Γ₁) =>
@@ -1033,29 +1080,53 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
       match Γ[pl.root]? with
       | none => rejected "(@Drop-Copy)/(@Drop) §5.3" Γ (.drop pl) Premise.unboundIndex []
       | some en =>
-        match en.st.get pl.path, en.ty.atPath P.decls pl.path with
-        | some u, some T =>
-            if noLinearPrefix P.decls en.ty pl.path then
-              if T.mult P.decls = .copy then
-                (if u.fullyOwned then accepted "(@Drop-Copy) §5.3" Γ (.drop pl) .unit Γ []
-                 else rejected "(@Drop-Copy) §5.3" Γ (.drop pl) (Premise.usePartiallyMoved T) [])
-              else
-                (if u.isOwned ∧ noDtorPrefix P.decls en.ty pl.path ∧
-                    (u.fullyOwned = true ∨ residualLinearBelow P.decls u T = false) ∧
-                    pl.noIdx then
-                   accepted "(@Drop) §5.3" Γ (.drop pl) .unit
-                     (Γ.set pl.root (en.setSt (en.st.setAt pl.path .movedOut))) []
+        match declaredPrefix P.decls en.ty pl.path with
+        | some (πd, πs) =>
+            (match en.st.get πd, en.ty.atPath P.decls πd, en.ty.atPath P.decls pl.path with
+             | some u, some Td, some _T =>
+                 if u.fullyOwned ∧ linearResidue P.decls Td πs = false ∧
+                     noDtorPrefix P.decls en.ty pl.path ∧ pl.noIdx then
+                   accepted "(@Drop) §5.3 at a declared-linear plan" Γ (.drop pl) .unit
+                     (Γ.set pl.root (en.setSt (en.st.setAt πd .movedOut))) []
                  else if !pl.noIdx then
-                   rejected "(@Drop) §5.3" Γ (.drop pl) Premise.moveAtIndex []
-                 else if !u.isOwned then
-                   rejected "(@Drop) §5.3" Γ (.drop pl) Premise.dropMovedOut []
-                 else if !noDtorPrefix P.decls en.ty pl.path then
-                   rejected "(@Drop) §5.3" Γ (.drop pl) Premise.moveUnderDtor []
-                 else rejected "(@Drop) §5.3" Γ (.drop pl) Premise.dropStrandsLinear [])
-            else
-              rejected "(@Drop-Copy)/(@Drop) §5.3" Γ (.drop pl) Premise.declaredLinearPrefix []
-        | none, _ => rejected "(@Drop-Copy)/(@Drop) §5.3" Γ (.drop pl) Premise.pathUnderMoved []
-        | _, none => rejected "(@Drop-Copy)/(@Drop) §5.3" Γ (.drop pl) Premise.pathNotField []
+                   rejected "(@Drop) §5.3 at a declared-linear plan" Γ (.drop pl)
+                     Premise.moveAtIndex []
+                 else if !u.fullyOwned then
+                   rejected "(@Drop) §5.3 at a declared-linear plan" Γ (.drop pl)
+                     (Premise.destructurePartiallyMoved Td) []
+                 else if linearResidue P.decls Td πs then
+                   rejected "(@Drop) §5.3 at a declared-linear plan" Γ (.drop pl)
+                     (Premise.residueCarriesLinear Td) []
+                 else
+                   rejected "(@Drop) §5.3 at a declared-linear plan" Γ (.drop pl)
+                     Premise.moveUnderDtor []
+             | none, _, _ =>
+                 rejected "(@Drop) §5.3 at a declared-linear plan" Γ (.drop pl)
+                   Premise.pathUnderMoved []
+             | _, _, _ =>
+                 rejected "(@Drop) §5.3 at a declared-linear plan" Γ (.drop pl)
+                   Premise.pathNotField [])
+        | none =>
+          (match en.st.get pl.path, en.ty.atPath P.decls pl.path with
+           | some u, some T =>
+               if T.mult P.decls = .copy then
+                 (if u.fullyOwned then accepted "(@Drop-Copy) §5.3" Γ (.drop pl) .unit Γ []
+                  else rejected "(@Drop-Copy) §5.3" Γ (.drop pl) (Premise.usePartiallyMoved T) [])
+               else
+                 (if u.isOwned ∧ noDtorPrefix P.decls en.ty pl.path ∧
+                     (u.fullyOwned = true ∨ residualLinearBelow P.decls u T = false) ∧
+                     pl.noIdx then
+                    accepted "(@Drop) §5.3" Γ (.drop pl) .unit
+                      (Γ.set pl.root (en.setSt (en.st.setAt pl.path .movedOut))) []
+                  else if !pl.noIdx then
+                    rejected "(@Drop) §5.3" Γ (.drop pl) Premise.moveAtIndex []
+                  else if !u.isOwned then
+                    rejected "(@Drop) §5.3" Γ (.drop pl) Premise.dropMovedOut []
+                  else if !noDtorPrefix P.decls en.ty pl.path then
+                    rejected "(@Drop) §5.3" Γ (.drop pl) Premise.moveUnderDtor []
+                  else rejected "(@Drop) §5.3" Γ (.drop pl) Premise.dropStrandsLinear [])
+           | none, _ => rejected "(@Drop-Copy)/(@Drop) §5.3" Γ (.drop pl) Premise.pathUnderMoved []
+           | _, none => rejected "(@Drop-Copy)/(@Drop) §5.3" Γ (.drop pl) Premise.pathNotField [])
   | .letIn m e₁ e₂ =>
       let d₁ := explain P R Γ e₁
       match d₁.result with
@@ -1769,22 +1840,41 @@ def traceEval (M : FloatOps) (P : Program) :
         | some .dead =>
             refused [] d Θ R (.use pl) "(D-Use-Copy)/(D-Use-Move) §6.3" H .useAfterDrop
         | some (.full c) =>
-          match c.readAt pl.path with
-          | .error w => refused [] d Θ R (.use pl) "(D-Use-Copy)/(D-Use-Move) §6.3" H w
-          | .ok sub =>
-            match sub.toVal with
-            | none =>
-                refused [] d Θ R (.use pl) "(D-Use-Copy)/(D-Use-Move) §6.3" H .useAfterMove
-            | some v =>
-                if v.mult P.decls = .copy then
-                  traced [] d Θ R (.use pl) "(D-Use-Copy) §6.3" H H [] (.value v) (.ok H v [])
-                else
-                  match c.writeAt pl.path .hole with
-                  | none =>
-                      refused [] d Θ R (.use pl) "(D-Use-Move) §6.3" H .typeConfusion
-                  | some c' =>
-                      traced [] d Θ R (.use pl) "(D-Use-Move) §6.3" H (H.set ℓ (.full c')) []
-                        (.value v) (.ok (H.set ℓ (.full c')) v [])
+          match c.declaredPlan P.decls pl.path with
+          | some (πd, πs) =>
+            (match c.readAt πd with
+             | .error w => refused [] d Θ R (.use pl) "(D-Use-Declared-Linear) §6.3" H w
+             | .ok cd =>
+               match cd.destructure P.decls πs with
+               | .error w => refused [] d Θ R (.use pl) "(D-Use-Declared-Linear) §6.3" H w
+               | .ok (leaf, evs) =>
+                 match leaf.toVal with
+                 | none =>
+                     refused [] d Θ R (.use pl) "(D-Use-Declared-Linear) §6.3" H .useAfterMove
+                 | some v =>
+                   match c.writeAt πd .hole with
+                   | none =>
+                       refused [] d Θ R (.use pl) "(D-Use-Declared-Linear) §6.3" H .typeConfusion
+                   | some c' =>
+                       traced [] d Θ R (.use pl) "(D-Use-Declared-Linear) §6.3" H
+                         (H.set ℓ (.full c')) evs (.value v) (.ok (H.set ℓ (.full c')) v evs))
+          | none =>
+            match c.readAt pl.path with
+            | .error w => refused [] d Θ R (.use pl) "(D-Use-Copy)/(D-Use-Move) §6.3" H w
+            | .ok sub =>
+              match sub.toVal with
+              | none =>
+                  refused [] d Θ R (.use pl) "(D-Use-Copy)/(D-Use-Move) §6.3" H .useAfterMove
+              | some v =>
+                  if v.mult P.decls = .copy then
+                    traced [] d Θ R (.use pl) "(D-Use-Copy) §6.3" H H [] (.value v) (.ok H v [])
+                  else
+                    match c.writeAt pl.path .hole with
+                    | none =>
+                        refused [] d Θ R (.use pl) "(D-Use-Move) §6.3" H .typeConfusion
+                    | some c' =>
+                        traced [] d Θ R (.use pl) "(D-Use-Move) §6.3" H (H.set ℓ (.full c')) []
+                          (.value v) (.ok (H.set ℓ (.full c')) v [])
   | _ + 1, d, Θ, R, H, φ, .drop pl =>
       match φ.env[pl.root]? with
       | none => refused [] d Θ R (.drop pl) "@drop §6.11" H .unbound
@@ -1793,22 +1883,45 @@ def traceEval (M : FloatOps) (P : Program) :
         | none => refused [] d Θ R (.drop pl) "@drop §6.11" H .unbound
         | some .dead => refused [] d Θ R (.drop pl) "@drop §6.11" H .useAfterDrop
         | some (.full c) =>
-          match c.readAt pl.path with
-          | .error w => refused [] d Θ R (.drop pl) "@drop §6.11" H w
-          | .ok sub =>
-            if sub.isHole then refused [] d Θ R (.drop pl) "@drop §6.11" H .useAfterMove else
-            (match dropCell P.decls ℓ sub with
-             | .error w => refused [] d Θ R (.drop pl) "@drop §6.11" H w
-             | .ok evs =>
-                 if sub.mult P.decls = .copy then
-                   traced [] d Θ R (.drop pl) "@drop §6.11 (Copy: no glue)" H H [] (.value .unit)
-                     (.ok H .unit [])
-                 else
-                   match c.writeAt pl.path .hole with
-                   | none => refused [] d Θ R (.drop pl) "@drop §6.11" H .typeConfusion
+          match c.declaredPlan P.decls pl.path with
+          | some (πd, πs) =>
+            (match c.readAt πd with
+             | .error w =>
+                 refused [] d Θ R (.drop pl) "@drop §6.11 at a declared-linear plan (§6.3)" H w
+             | .ok cd =>
+               match cd.destructure P.decls πs with
+               | .error w =>
+                   refused [] d Θ R (.drop pl) "@drop §6.11 at a declared-linear plan (§6.3)" H w
+               | .ok (leaf, evs) =>
+                 match dropCell P.decls ℓ leaf with
+                 | .error w =>
+                     refused [] d Θ R (.drop pl) "@drop §6.11 at a declared-linear plan (§6.3)" H w
+                 | .ok levs =>
+                   match c.writeAt πd .hole with
+                   | none =>
+                       refused [] d Θ R (.drop pl) "@drop §6.11 at a declared-linear plan (§6.3)"
+                         H .typeConfusion
                    | some c' =>
-                       traced [] d Θ R (.drop pl) "@drop §6.11" H (H.set ℓ (.full c'))
-                         evs (.value .unit) (.ok (H.set ℓ (.full c')) .unit evs))
+                       traced [] d Θ R (.drop pl) "@drop §6.11 at a declared-linear plan (§6.3)"
+                         H (H.set ℓ (.full c')) (evs ++ levs) (.value .unit)
+                         (.ok (H.set ℓ (.full c')) .unit (evs ++ levs)))
+          | none =>
+            match c.readAt pl.path with
+            | .error w => refused [] d Θ R (.drop pl) "@drop §6.11" H w
+            | .ok sub =>
+              if sub.isHole then refused [] d Θ R (.drop pl) "@drop §6.11" H .useAfterMove else
+              (match dropCell P.decls ℓ sub with
+               | .error w => refused [] d Θ R (.drop pl) "@drop §6.11" H w
+               | .ok evs =>
+                   if sub.mult P.decls = .copy then
+                     traced [] d Θ R (.drop pl) "@drop §6.11 (Copy: no glue)" H H [] (.value .unit)
+                       (.ok H .unit [])
+                   else
+                     match c.writeAt pl.path .hole with
+                     | none => refused [] d Θ R (.drop pl) "@drop §6.11" H .typeConfusion
+                     | some c' =>
+                         traced [] d Θ R (.drop pl) "@drop §6.11" H (H.set ℓ (.full c'))
+                           evs (.value .unit) (.ok (H.set ℓ (.full c')) .unit evs))
   | fuel + 1, d, Θ, R, H, φ, .binop op e₁ e₂ =>
       let rule := binopDynRule op
       let t₁ := traceEval M P fuel (d + 1) Θ R H φ e₁

@@ -146,17 +146,25 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
       match Γ[p.root]? with
       | none => none
       | some en =>
-        match en.st.get p.path, en.ty.atPath P.decls p.path with
-        | some u, some T =>
-            if noLinearPrefix P.decls en.ty p.path then
-              if T.mult P.decls = .copy then
-                (if u.fullyOwned then some (T, Γ) else none)
-              else
-                (if u.fullyOwned ∧ noDtorPrefix P.decls en.ty p.path ∧ p.noIdx then
-                   some (T, Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
-                 else none)
-            else none
-        | _, _ => none
+        match declaredPrefix P.decls en.ty p.path with
+        | some (πd, πs) =>
+            (match en.st.get πd, en.ty.atPath P.decls πd, en.ty.atPath P.decls p.path with
+             | some u, some Td, some T =>
+                 if u.fullyOwned ∧ linearResidue P.decls Td πs = false ∧
+                     noDtorPrefix P.decls en.ty p.path ∧ p.noIdx then
+                   some (T, Γ.set p.root (en.setSt (en.st.setAt πd .movedOut)))
+                 else none
+             | _, _, _ => none)
+        | none =>
+            (match en.st.get p.path, en.ty.atPath P.decls p.path with
+             | some u, some T =>
+                 if T.mult P.decls = .copy then
+                   (if u.fullyOwned then some (T, Γ) else none)
+                 else
+                   (if u.fullyOwned ∧ noDtorPrefix P.decls en.ty p.path ∧ p.noIdx then
+                      some (T, Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
+                    else none)
+             | _, _ => none)
   | .binop op e₁ e₂ =>
       match check P R Γ e₁ with
       | some (.int w s, Γ₁) =>
@@ -255,7 +263,7 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
            match en.st.get p.path, en.ty.atPath P.decls p.path with
            | some u, some (.array T _) =>
                if u.fullyOwned ∧ T.mult P.decls = .copy ∧
-                   noLinearPrefix P.decls en.ty p.path then some (T, Γ₁)
+                   declaredPrefix P.decls en.ty p.path = none then some (T, Γ₁)
                else none
            | _, _ => none)
       | _ => none
@@ -266,7 +274,7 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
         if en₀.mu = true then
           match en₀.st.get p.path, en₀.ty.atPath P.decls p.path with
           | some _, some (.array T _) =>
-            if noLinearPrefix P.decls en₀.ty p.path then
+            if declaredPrefix P.decls en₀.ty p.path = none then
               (match check P R Γ e₁ with
                | some (.int _ _, Γ₁) =>
                  (match check P R Γ₁ e₂ with
@@ -292,19 +300,27 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
       match Γ[p.root]? with
       | none => none
       | some en =>
-        match en.st.get p.path, en.ty.atPath P.decls p.path with
-        | some u, some T =>
-            if noLinearPrefix P.decls en.ty p.path then
-              if T.mult P.decls = .copy then
-                (if u.fullyOwned then some (.unit, Γ) else none)
-              else
-                (if u.isOwned ∧ noDtorPrefix P.decls en.ty p.path ∧
-                    (u.fullyOwned = true ∨ residualLinearBelow P.decls u T = false) ∧
-                    p.noIdx then
-                   some (.unit, Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
-                 else none)
-            else none
-        | _, _ => none
+        match declaredPrefix P.decls en.ty p.path with
+        | some (πd, πs) =>
+            (match en.st.get πd, en.ty.atPath P.decls πd, en.ty.atPath P.decls p.path with
+             | some u, some Td, some _T =>
+                 if u.fullyOwned ∧ linearResidue P.decls Td πs = false ∧
+                     noDtorPrefix P.decls en.ty p.path ∧ p.noIdx then
+                   some (.unit, Γ.set p.root (en.setSt (en.st.setAt πd .movedOut)))
+                 else none
+             | _, _, _ => none)
+        | none =>
+            (match en.st.get p.path, en.ty.atPath P.decls p.path with
+             | some u, some T =>
+                 if T.mult P.decls = .copy then
+                   (if u.fullyOwned then some (.unit, Γ) else none)
+                 else
+                   (if u.isOwned ∧ noDtorPrefix P.decls en.ty p.path ∧
+                       (u.fullyOwned = true ∨ residualLinearBelow P.decls u T = false) ∧
+                       p.noIdx then
+                      some (.unit, Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
+                    else none)
+             | _, _ => none)
   | .letIn m e₁ e₂ =>
       match check P R Γ e₁ with
       | none => none
@@ -439,25 +455,37 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
       split at h
       · cases h
       · rename_i en hen
-        split at h
-        · rename_i u T₀ hg hty
-          split at h
-          · rename_i hlin
+        cases hplan : declaredPrefix P.decls en.ty pl.path with
+        | some r =>
+            obtain ⟨πd, πs⟩ := r
+            simp only [hplan] at h
             split at h
-            · rename_i hcopy
-              split at h
-              · rename_i hfo
-                cases h
-                exact .useCopy hen hg hfo hty hcopy hlin
-              · cases h
-            · rename_i hncopy
+            · rename_i u Td T₀ hgd htd hty
               split at h
               · rename_i hprem
                 cases h
-                exact .useMove hen hg hprem.1 hty hncopy hprem.2.1 hlin hprem.2.2
+                exact .useDeclared hen hplan hgd hprem.1 htd hprem.2.1 hty hprem.2.2.1
+                  hprem.2.2.2
               · cases h
-          · cases h
-        · cases h
+            · cases h
+        | none =>
+            simp only [hplan] at h
+            split at h
+            · rename_i u T₀ hg hty
+              split at h
+              · rename_i hcopy
+                split at h
+                · rename_i hfo
+                  cases h
+                  exact .useCopy hen hg hfo hty hcopy hplan
+                · cases h
+              · rename_i hncopy
+                split at h
+                · rename_i hprem
+                  cases h
+                  exact .useMove hen hg hprem.1 hty hncopy hprem.2.1 hplan hprem.2.2
+                · cases h
+            · cases h
   | .binop op e₁ e₂, Γ, T, Γ', h => by
       simp only [check] at h
       split at h
@@ -689,26 +717,38 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
       split at h
       · cases h
       · rename_i en hen
-        split at h
-        · rename_i u T₀ hg hty
-          split at h
-          · rename_i hlin
+        cases hplan : declaredPrefix P.decls en.ty pl.path with
+        | some r =>
+            obtain ⟨πd, πs⟩ := r
+            simp only [hplan] at h
             split at h
-            · rename_i hcopy
-              split at h
-              · rename_i hfo
-                cases h
-                exact .dropCopy hen hg hfo hty hcopy hlin
-              · cases h
-            · rename_i hncopy
+            · rename_i u Td T₀ hgd htd hty
               split at h
               · rename_i hprem
                 cases h
-                exact .dropRes hen hg hprem.1 hty hncopy hprem.2.1 hlin hprem.2.2.1
+                exact .dropDeclared hen hplan hgd hprem.1 htd hprem.2.1 hty hprem.2.2.1
                   hprem.2.2.2
               · cases h
-          · cases h
-        · cases h
+            · cases h
+        | none =>
+            simp only [hplan] at h
+            split at h
+            · rename_i u T₀ hg hty
+              split at h
+              · rename_i hcopy
+                split at h
+                · rename_i hfo
+                  cases h
+                  exact .dropCopy hen hg hfo hty hcopy hplan
+                · cases h
+              · rename_i hncopy
+                split at h
+                · rename_i hprem
+                  cases h
+                  exact .dropRes hen hg hprem.1 hty hncopy hprem.2.1 hplan hprem.2.2.1
+                    hprem.2.2.2
+                · cases h
+            · cases h
   | .letIn m e₁ e₂, Γ, T, Γ', h => by
       simp only [check] at h
       split at h
