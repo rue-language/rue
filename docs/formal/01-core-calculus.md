@@ -2696,33 +2696,52 @@ drop in `3.9` order (`run_drop`):
 ```
   drop(H, ⊘)                       = H                                   -- moved-out / uninitialised: skip
   drop(H, n_T) = drop(H, f_T) = drop(H, b) = drop(H, ⟨⟩) = H             -- scalars are Copy: nothing to drop
-  drop(H, { v1,…,vk }_S)           = drop*( H , [v1,…,vk] )              -- S declares NO destructor: fields in DECLARATION order
-  drop(H, { v1,…,vk }_S)           = drop*( H1[ℓ↦†] , [c1,…,ck] )        -- S declares a destructor: see the construction below
-  drop(H, [ v1,…,vn ])             = drop*( H , [v1,…,vn] )              -- elements in ASCENDING index order
-  drop(H, Kj⟨ v1,…,va ⟩)           = drop*( H , [v1,…,va] )              -- ONLY the ACTIVE variant Kj's payload (6.3:20)
+  drop(H, { c1,…,ck }_S)           = drop*( H , [c1,…,ck] )              -- S declares NO destructor: fields in DECLARATION order
+  drop(H, { c1,…,ck }_S)           = drop*( H1[ℓ↦†] , [c1',…,ck'] )      -- S declares a destructor: see the construction below
+  drop(H, [ c1,…,cn ])             = drop*( H , [c1,…,cn] )              -- elements in ASCENDING index order
+  drop(H, Kj⟨ c1,…,ca ⟩)           = drop*( H , [c1,…,ca] )              -- ONLY the ACTIVE variant Kj's payload (6.3:20)
 ```
 
-where `drop*(H, [c1,…,cm])` folds `drop` over the list left-to-right. The
-destructor case is a **nested machine run** — the formal shape of "the
+where `drop*(H, [c1,…,cm])` folds `drop` over the list left-to-right.
+
+The aggregate rules are stated over **cell contents** rather than over values,
+and that is load-bearing. §6.1's value forms write an aggregate's members as
+values `v_i`, but what a cell holds after a partial move is a tree with holes
+in it: the `⊘` a (D-Use-Move) writes at `ℓ@π` sits at a field slot or an array
+element, not only at the root of the cell. So the members range over
+
+```
+  c ::= v | ⊘ | { c1,…,ck }_S | [ c1,…,cn ] | Kj⟨ c1,…,ca ⟩
+```
+
+and the first rule's skip is therefore reached at **every** depth:
+`drop(H, [ v1, ⊘, v3 ])` drops `v1` and then `v3` and nothing else, which is
+`3.8:73`'s "elements that were moved out … are not dropped; … untouched
+elements are dropped, in ascending index order". Read over values alone the
+rules would have no clause at all for what a constant-index element move
+(`3.8:68`) leaves behind, and the `⊘`-skip that makes §7's double-free argument
+work would apply only to a whole cell.
+
+The destructor case is a **nested machine run** — the formal shape of "the
 destructor runs as an ordinary call" (RUE-1279; earlier drafts typed `dtor_S`
 as a store function `H → H` while *saying* it could step and trap, with no
 definition connecting the two):
 
 ```
   S declares  drop fn S(self) { e_dtor }        ℓ fresh
-  ⟨ H[ℓ ↦ {v1,…,vk}_S] ; ⟨ [self↦(ℓ,ε)] ; [[]] ⟩ ; halt ; e_dtor ⟩  →*  ⟨ H1 ; _ ; halt ; ⟨⟩ ⟩
-  H1(ℓ) = { c1, …, ck }_S               -- the residual fields; no ci can be ⊘ (see the vacuity note below)
+  ⟨ H[ℓ ↦ {c1,…,ck}_S] ; ⟨ [self↦(ℓ,ε)] ; [[]] ⟩ ; halt ; e_dtor ⟩  →*  ⟨ H1 ; _ ; halt ; ⟨⟩ ⟩
+  H1(ℓ) = { c1', …, ck' }_S             -- the residual fields; no ci' can be ⊘ (see the vacuity note below)
 ```
 
 The destructor body runs in its own frame whose single scope record is
 **empty**: `self` is exempt from the drop obligation (§5.6 — otherwise
 dropping `self` would re-run the destructor, an infinite regress), so the
 nested run's frame pop drops only the destructor's own locals. Afterward the
-cell contents `c1,…,ck` as the nested run left them — not the original
-`v1,…,vk` — drop in declaration order; the scratch cell `ℓ` is then retired.
+cell contents `c1',…,ck'` as the nested run left them — not the original
+`c1,…,ck` — drop in declaration order; the scratch cell `ℓ` is then retired.
 
 **The `⊘` case here is vacuous for well-formed programs** (RUE-1600), and the
-rule is written this way only so it stays honest if that ever changes. No `ci`
+rule is written this way only so it stays honest if that ever changes. No `ci'`
 can be `⊘`: reaching this rule means `S` declares a destructor, and `3.9:34`
 forbids moving a field out of *any* value whose type declares one, `self`
 inside that type's own destructor included, while `3.9:33` forbids moving
