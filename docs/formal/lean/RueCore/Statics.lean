@@ -1183,7 +1183,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   **strengthened** here to `Place.noIdx`: this part moves no array element at
   all, which is a restriction of the fragment and not of the calculus
   (RUE-2327; `Syntax.lean`, "Arrays"). `declaredPrefix … = none` is §5.1's
-  `Ordinary` plan premise, as in (Use-Copy) above. -/
+  `Ordinary` plan premise, exactly as the `Copy` rule above carries it. -/
   | useMove {Γ p en u T} :
       Γ[p.root]? = some en →
       en.st.get p.path = some u → u.fullyOwned = true →
@@ -1220,8 +1220,8 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   accepts it. A retained *array* in the residue needs nothing of the sort
   (probe d9).
 
-  The Σ effect is (Use-Move)'s, taken at `d`: `Σ[ d ↦ MovedOut, and every path
-  strictly under d removed ]`. Nothing else in the context moves, so a
+  The Σ effect is §5.1's move effect, taken at `d`: `Σ[ d ↦ MovedOut, and
+  every path strictly under d removed ]`. Nothing else in the context moves, so a
   declared-linear **ancestor** of `d` stays `Owned` and keeps its own
   obligation (§5.6's declared clause), and a sibling of `d` keeps its own
   state — which is what makes `h.l.a` consume `h.l` alone (probe d4). Because
@@ -1490,10 +1490,10 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
         (Γ₂.set p.root (en₁.setSt (en₁.st.setAt p.path .owned)))
   /-- (@Drop-Copy) §5.3: no drop glue, no ownership effect. §5.3 gives it
   neither of (@Drop)'s projection premises — a `Copy` place is moved by
-  nothing — so only the `Ordinary` plan premise is added: §5.3 says (@Drop)
-  and (@Drop-Copy) "are read the same way" as (Use-Copy)/(Use-Move), which is
-  `declaredPrefix … = none`. The subtree condition is read the way (Use-Copy)
-  above reads it, for the same reason and at the same cost (none). -/
+  nothing — so only the `Ordinary` plan premise is added: §5.3 says the two
+  `@drop` rules "are read the same way" as §5.1's two use rules, which is
+  `declaredPrefix … = none`. The subtree condition is read the way the `Copy`
+  use rule above reads it, for the same reason and at the same cost (none). -/
   | dropCopy {Γ p en u T} :
       Γ[p.root]? = some en →
       en.st.get p.path = some u → u.fullyOwned = true →
@@ -1528,17 +1528,18 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       (u.fullyOwned = true ∨ residualLinearBelow P.decls u T = false) →
       p.noIdx = true →
       Typed P R Γ (.drop p) .unit (Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
-  /-- **(@Drop) §5.3 at a declared-linear plan**, the `@drop` half of
-  (Use-Declared-Linear-Destructure) §5.1. §5.3 states it in prose rather than
-  as a fourth rule: "(@Drop) and (@Drop-Copy) are read the same way [as
-  (Use-Copy)/(Use-Move)]: `@drop(p)` leaves `p` `MovedOut`, so where
-  elaboration records `Declared(d, π)` for `p` the intrinsic consumes `d` and
-  destroys its droppable residue exactly as a use does, rather than marking the
-  projected leaf alone."
+  /-- **(@Drop) §5.3 at a declared-linear plan**, the `@drop` half of the
+  destructure. §5.3 states it in prose rather than as a fourth rule: the two
+  `@drop` rules "are read the same way" as §5.1's two use rules, so
+  "`@drop(p)` leaves `p` `MovedOut`, so where elaboration records
+  `Declared(d, π)` for `p` the intrinsic consumes `d` and destroys its
+  droppable residue exactly as a use does, rather than marking the projected
+  leaf alone."
 
-  So the premises are `useDeclared`'s, verbatim, and there is **no premise on
-  the leaf's class**: §5.3 is explicit that the whole of `d` is consumed "for a
-  `Copy` field `f` as much as for a droppable one", and the compiler agrees —
+  So the premises are `Typed.useDeclared`'s, verbatim, and there is **no
+  premise on the leaf's class**: §5.3 is explicit that the whole of `d` is
+  consumed "for a `Copy` field `f` as much as for a droppable one", and the
+  compiler agrees —
   after `@drop(d.f)` at a `Copy` field, a later use of `d` is E0205 (probe
   d6/d6b). That is the one place where `@drop` at a `Copy` place is not a
   no-op, and it is why this rule is not folded into `dropCopy`.

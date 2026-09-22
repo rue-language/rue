@@ -36,12 +36,13 @@ and in the printed Rue program.
 Node labels name a calculus rule only where the node *is* an instance of
 it. A struct literal is one — it is labelled (Struct-Intro) §5.8 and
 (D-Struct) §6.5 — and so is a projection, which is a use of a place and
-carries (Use-Copy)/(Use-Move) §5.1. Where the fragment *restricts* a rule
-rather than modelling it, the label stays and the rejection says what the
-restriction is: a place whose path has a declared-`linear` proper prefix is
-rejected with §4.2's `Declared(d, π)` plan named, rather than claiming
-(Use-Declared-Linear-Destructure) §5.1, which the mechanization does not
-cover (RUE-2236).
+carries (Use-Copy)/(Use-Move) §5.1, or, where its path has a
+declared-`linear` proper prefix, (Use-Declared-Linear-Destructure) §5.1 with
+(D-Use-Declared-Linear) §6.3 under it. Its rejections name that rule's own
+premises: `fully-owned(Σ, d)` read at the **consumed** place, and
+`¬ linear-residue(S, π_s)`, which is what the compiler reports as E0474. A
+node whose rule the fragment restricts rather than models carries the
+restriction in the rejection text instead of a label it cannot claim.
 
 ## Frames in the step table
 
