@@ -263,7 +263,7 @@ the join is not already `Copy` or the declaration has a destructor (`3.8:18`,
 reason, never for an ill-formed declaration. -/
 
 /-- (helper) §3's field join, for a field list read against `D`. -/
-def fieldJoin (D : StructEnv) (fields : List Ty) : Mult :=
+def fieldJoin (D : List StructDecl) (fields : List Ty) : Mult :=
   fields.foldl (fun m T => m.join (Ty.mult D T)) .copy
 
 /-- (helper) One field type of declaration `s`: a scalar, or an earlier
@@ -282,7 +282,7 @@ def fieldTy (s : Nat) : G Ty := do
       scalar
 
 /-- (helper) One declaration, well-formed by construction. -/
-def genDecl (D : StructEnv) (s : Nat) : G StructDecl := do
+def genDecl (D : List StructDecl) (s : Nat) : G StructDecl := do
   let k ← nat 1 3
   let fields ← (List.range k).mapM (fun _ => fieldTy s)
   let drawnDtor ← chance 1 2
@@ -300,7 +300,7 @@ def genDecl (D : StructEnv) (s : Nat) : G StructDecl := do
 
 /-- (helper) A struct environment of `n` declarations, built left to right so
 each one sees the ones before it. -/
-def genEnv : Nat → StructEnv → G StructEnv
+def genEnv : Nat → List StructDecl → G List StructDecl
   | 0, acc => return acc
   | n + 1, acc => do
       let sd ← genDecl acc acc.length
@@ -312,7 +312,7 @@ path whose proper prefix is a struct declared `linear` is the declared-linear
 destructure this fragment does not mechanize (RUE-2236, `Syntax.lean`), and
 `3.9:34` forbids a *move* out of a value whose type declares a destructor — a
 `Copy` read of such a field stays legal. -/
-def projSlots (D : StructEnv) (s : Nat) (T : Ty) : List Nat :=
+def projSlots (D : List StructDecl) (s : Nat) (T : Ty) : List Nat :=
   match D[s]? with
   | none => []
   | some sd =>
@@ -326,7 +326,7 @@ def placeOfPath (i : Nat) (π : List Nat) : Place :=
   π.foldl (fun p f => Place.proj p f) (.var i)
 
 /-- (helper) The field slots a type has, as single steps. -/
-def fieldSlots (D : StructEnv) : Ty → List Nat
+def fieldSlots (D : List StructDecl) : Ty → List Nat
   | .struct s =>
       (match D[s]? with
        | some sd => List.range sd.fields.length
@@ -337,7 +337,7 @@ def fieldSlots (D : StructEnv) : Ty → List Nat
 declared type. Depth 2 is where the path machinery actually recurses —
 `OwnSt.get`/`setAt`'s padding, `readAt`/`writeAt`, and §6.11's nested `⊘`-skip
 — and one seed case (`deep_path`) is not coverage of it. -/
-def paths2 (D : StructEnv) (T₀ : Ty) : List (List Nat) :=
+def paths2 (D : List StructDecl) (T₀ : Ty) : List (List Nat) :=
   (fieldSlots D T₀).flatMap fun f =>
     [f] :: (match T₀.fieldAt D f with
             | some T' => (fieldSlots D T').map (fun g => [f, g])
@@ -350,13 +350,13 @@ struct declared `linear` — the fragment's own restriction, standing in for
 so the rule is (Use-Move) or (@Drop) rather than their `Copy` twins, no proper
 prefix declares a destructor (`3.9:34`). This is `projSlots`' test read at a
 whole path rather than at one step, so it stays right at depth 2. -/
-def pathOk (D : StructEnv) (T₀ : Ty) (π : List Nat) (T : Ty) : Bool :=
+def pathOk (D : List StructDecl) (T₀ : Ty) (π : List Nat) (T : Ty) : Bool :=
   Ty.atPath D T₀ π == some T && noLinearPrefix D T₀ π &&
     (T.mult D == .copy || noDtorPrefix D T₀ π)
 
 /-- (helper) Every place of the wanted type one **or two** field steps under a
 binder in scope: the projections a use may name. -/
-def projPlaces (D : StructEnv) (Γ : Scope) (T : Ty) : List Place :=
+def projPlaces (D : List StructDecl) (Γ : Scope) (T : Ty) : List Place :=
   ((List.range Γ.length).map (fun i =>
     match Γ[i]? with
     | some b =>
@@ -377,7 +377,7 @@ def pickPlace (default : Place) (ps : List Place) : G Place := do
 
 /-- (helper) Every place one **or two** field steps under a binder in scope,
 whatever its type: the projections a `@drop` may name. -/
-def dropPlaces (D : StructEnv) (Γ : Scope) : List Place :=
+def dropPlaces (D : List StructDecl) (Γ : Scope) : List Place :=
   ((List.range Γ.length).map (fun i =>
     match Γ[i]? with
     | some b =>
@@ -389,7 +389,7 @@ def dropPlaces (D : StructEnv) (Γ : Scope) : List Place :=
 
 /-- (helper) The type of a fresh `let` binder: mostly structs, when the
 program has any. -/
-def binderTy (D : StructEnv) : G Ty := do
+def binderTy (D : List StructDecl) : G Ty := do
   let scalar : G Ty := do weighted (← intTy) [(2, ← intTy), (1, ← floatTy), (1, .bool)]
   if D.isEmpty then
     scalar
@@ -404,7 +404,7 @@ def binderTy (D : StructEnv) : G Ty := do
 mutual
 /-- (helper) The smallest expression of a type: a literal, a use of a binder
 of that type, or a struct literal with a leaf per field. -/
-def atom (D : StructEnv) (Γ : Scope) : Ty → Nat → G Expr
+def atom (D : List StructDecl) (Γ : Scope) : Ty → Nat → G Expr
   | .int w sg, _ => do
       let projs := projPlaces D Γ (.int w sg)
       if !projs.isEmpty && (← chance 1 2) then return use (← pickPlace (.var 0) projs)
@@ -431,7 +431,7 @@ def atom (D : StructEnv) (Γ : Scope) : Ty → Nat → G Expr
 
 /-- (helper) A leaf of the wanted type, one level at most: an atom, a `@drop`
 of a place, or an assignment of an atom to one. -/
-def leaf (D : StructEnv) (Γ : Scope) : Ty → Nat → G Expr
+def leaf (D : List StructDecl) (Γ : Scope) : Ty → Nat → G Expr
   | .unit, depth => do
       let structs := indicesWhere Γ (fun b => isStruct b.ty)
       let muts := indicesWhere Γ (fun b => b.mu)
@@ -463,7 +463,7 @@ end
 /-- (helper) An expression of the wanted type under `Γ`, at most `fuel`
 levels deep. The weights here are the bias the module docstring
 describes. -/
-def expr (D : StructEnv) : Scope → Ty → Nat → G Expr
+def expr (D : List StructDecl) : Scope → Ty → Nat → G Expr
   | Γ, T, 0 => leaf D Γ T 2
   | Γ, T, fuel + 1 => do
       if !Γ.isEmpty && (← chance 1 6) then return (← leaf D Γ T 2)
@@ -611,7 +611,7 @@ def size (e : Expr) : Nat := (subexprs e).length
 spellings where it has one, deduplicated in traversal order. `Γ` lists the
 binder types innermost first, as `Print.tyOf` reads them, so a use or a
 `@drop` is labeled copy or move by its binder's class. -/
-def rulesOf (D : StructEnv) (e : Expr) : List String :=
+def rulesOf (D : List StructDecl) (e : Expr) : List String :=
   let P : Program := { structs := D, fns := [] }
   let rec go (Γ : List Ty) : Expr → List String
     | use pl =>
@@ -659,7 +659,7 @@ def rulesOf (D : StructEnv) (e : Expr) : List String :=
 /-- (helper) The result type of a generated program: mostly `int`, so the
 value line is usually present, with a float often enough that `main` prints a
 shortest round-trip rendering (`3.12:40`) as well. -/
-def resultTy (D : StructEnv) : G Ty := do
+def resultTy (D : List StructDecl) : G Ty := do
   let k ← nat 1 10
   if k ≤ 3 && !D.isEmpty then
     let s ← nat 0 (D.length - 1)

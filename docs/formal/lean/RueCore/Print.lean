@@ -222,7 +222,7 @@ def structItem (s : Nat) (sd : StructDecl) : String :=
    else "")
 
 /-- Every struct declaration of a program, in program order (helper). -/
-def structItems : Nat → StructEnv → String
+def structItems : Nat → List StructDecl → String
   | _, [] => ""
   | s, sd :: rest => structItem s sd ++ structItems (s + 1) rest
 
@@ -239,7 +239,7 @@ def tyOf (P : Program) (R : Ty) (Γ : List Ty) : Expr → Option Ty
   | .unitLit => some .unit
   | .use pl =>
       match Γ[pl.root]? with
-      | some T => T.atPath P.structs pl.path
+      | some T => T.atPath P.decls pl.path
       | none => none
   | .binop op e₁ _ =>
       match tyOf P R Γ e₁ with
@@ -401,7 +401,7 @@ printed; `()` prints nothing; a struct value is dropped — implicitly at
 `main`'s end, or, when its class is `Linear` and an implicit drop would be
 §5.6's leak, by an explicit `@drop`, which runs the same glue (§5.3)
 (helper). -/
-def observeValue (D : StructEnv) (T : Ty) : String :=
+def observeValue (D : Decls) (T : Ty) : String :=
   match T with
   | .int _ _ | .float _ | .bool => "    @dbg(result);\n"
   | .unit => ""
@@ -421,7 +421,7 @@ def bodyBinders (fd : FnDef) : List Ty := (fd.params.map Param.ty).reverse
 
 /-- Every struct declaration of a program as Rue items (helper). -/
 def moduleItems (P : Program) : String :=
-  structItems 0 P.structs
+  structItems 0 P.decls
 
 /-- One `fn` item: §2's `F` production for a by-value signature. -/
 def fnItem (P : Program) (idx : Nat) (fd : FnDef) : String :=
@@ -458,7 +458,7 @@ def program (name description : String) (rules : List String) (outcome : String)
   fnItems P 0 P.fns ++
   "fn main() -> i32 {\n" ++
   "    let result: " ++ tyName T ++ " = " ++ fnName 0 ++ "();\n" ++
-  observeValue P.structs T ++
+  observeValue P.decls T ++
   "    0\n" ++
   "}\n"
 

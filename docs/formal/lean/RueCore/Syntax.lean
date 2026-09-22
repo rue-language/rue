@@ -8,13 +8,16 @@ scoped for the mechanization spike:
 
 * Types: `int(w, s)` at every width `w ∈ {8, 16, 32, 64}` and both
   signednesses, `float(w)` at both widths (§2's `𝔽_w`, mechanized in
-  `Float.lean`), `bool`, `unit`, and monomorphic struct types naming a
-  declaration of the program's struct environment. Enums and
-  arrays (and with them `match`, indexing, and the element-wise `3.8:73`
-  forms) are out of the spike and tracked in the project outline.
+  `Float.lean`), `bool`, `unit`, and the monomorphic struct and **enum** types
+  a declaration of the program's declaration environment names. Arrays (and
+  with them indexing and the element-wise `3.8:73` forms) are out of the
+  fragment and tracked in the project outline.
 * Places: §5's `Path ::= x | Path.f` — a root binding and a chain of field
   projections (`Place`). Array index steps `Path[c]` are not in the fragment
-  (RUE-2235), so a place's every step is a field.
+  (RUE-2235), so a place's every step is a field. An enum's payload is **not**
+  a path: §5.6 says outright that payload paths are not statically tracked, and
+  the only way into a payload is a `match` arm's binding, so `Place` gains no
+  enum step and `Ty.fieldAt` is `none` at an enum type.
 * Expressions: literals carrying their resolved type (`4.1:2`), place use
   (§4.2), the whole §2 `⊕`/`⋚` integer operator set and the `⊖` unary set
   (§5.8 with the §6.4 trap dynamics), `@intCast` (`4.13:24`–`4.13:28`),
@@ -25,8 +28,9 @@ scoped for the mechanization spike:
   (§5.8's (Struct-Intro)) and the projection that eliminates one,
   `@drop` (§5.3), `let` (§5.6 scope exit), assignment at a place with
   reinitialization (§5.2), sequencing with the discard check (§5.3), `if` with
-  the branch join (§5.5), by-value calls (§5.8's (Call), §6.9), and `return`
-  (§5.7's (Return-Value), §6.9).
+  the branch join (§5.5), enum construction and the `match` that eliminates it
+  (§5.5's (Enum-Intro) and (Match), §6.6), by-value calls (§5.8's (Call),
+  §6.9), and `return` (§5.7's (Return-Value), §6.9).
 * Variables are de Bruijn indices: the calculus reaches the core only through
   elaboration, and name resolution is elaboration's job.
 * Functions and struct declarations are likewise named by their index in the
@@ -66,7 +70,7 @@ a concrete `int(w,s)` and never an unresolved one.
 compute in and what makes their results total. Arithmetic does **not** wrap —
 `3.1:6` traps instead — so `wrapInt` is used by (D-Bit)/(D-Shl)/(D-Shr) only.
 
-## Where a struct's class lives
+## Where a type's class lives
 
 §3 fixes `class(S)` as the join of the field classes lifted by the declared
 attribute. A declaration *records* that class, and the program well-formedness
@@ -78,6 +82,14 @@ recursion over the environment, and `struct_class_unique` (`Statics.lean`) is
 the proof that the record is determined rather than free: on an environment
 whose fields name only earlier declarations, at most one assignment of classes
 satisfies §3's equation.
+
+An enum declaration records its class the same way, and §3 gives it a simpler
+equation: no attribute to lift and no destructor to declare, just the join over
+**every** payload component of **every** variant (`6.3:19`), because the active
+variant is a run-time fact. `WfEnums` is that equation and
+`enum_carriesLinear_iff` is the biconditional it buys — which is why an enum one
+of whose variants carries a `linear` payload must be consumed even when the
+value in hand is the other variant.
 
 `Expr` and `Val` derive `Repr` but not `DecidableEq`: both carry a nested
 inductive occurrence (`List Expr`, `List Val`), for which Lean's `DecidableEq`
@@ -215,20 +227,22 @@ theorem wrapInt_inBounds (w : IntWidth) (s : Sign) (n : Int) : InBounds w s (wra
 /-! ## Types -/
 
 /-- Types (§2, fragment). `int w s` is §2's `int(w, s)`; `struct s` names the
-declaration at index `s` of the program's struct environment, which
-elaboration resolves the surface name to. -/
+declaration at index `s` of the program's struct environment and `enum e` the
+declaration at index `e` of its enum environment, which elaboration resolves
+the surface names to. -/
 inductive Ty where
   | int (w : IntWidth) (s : Sign)
   | float (w : FloatWidth)
   | bool
   | unit
   | struct (s : Nat)
+  | enum (e : Nat)
 deriving DecidableEq, Repr
 
 /-- Whether a type is an integer type (§2's `int(w, s)`) (helper). -/
 def Ty.isInt : Ty → Bool
   | .int _ _ => true
-  | .float _ | .bool | .unit | .struct _ => false
+  | .float _ | .bool | .unit | .struct _ | .enum _ => false
 
 /-- Whether a type is one `@dbg` renders, which §5.8's (Dbg) restricts to
 `int(w,s)`, `float(w)` and `bool` — the compiler's own restriction (E0702).
@@ -236,7 +250,7 @@ The `float(w)` case is `3.12:39`, and the text it produces is `3.12:40`–
 `3.12:42` (`FloatDatum.render`, `Float.lean`) (helper). -/
 def Ty.observable : Ty → Bool
   | .int _ _ | .float _ | .bool => true
-  | .unit | .struct _ => false
+  | .unit | .struct _ | .enum _ => false
 
 /-- A monomorphic struct declaration: §2's `S { f1: T1, …, fk: Tk }` with its
 declared attribute (§3), whether it declares a destructor (`3.9`), and the
@@ -259,32 +273,75 @@ structure StructDecl where
   cls : Mult
 deriving DecidableEq, Repr
 
-/-- The program's struct environment: the declarations §2's type production
-`S` names, indexed the way `Ty.struct` names them. -/
-abbrev StructEnv := List StructDecl
+/-- A monomorphic enum declaration: §2's `enum E { K1(T̄1), …, Kn(T̄n) }`, one
+payload tuple per variant in **declaration order** — the order a tag `Kj`
+indexes and the order (Match) §5.5's arms are presented in — together with the
+class §3 assigns it. A variant with an empty tuple is §2's discriminant-only
+case (`ai = 0`, `6.3:14`). An enum declares **no attribute** and **no
+destructor**: §3 gives it no `@copy`/`linear` mark, its class is exactly the
+payload join (`6.3:19`), and the compiler rejects `drop fn E(self)` outright
+(E0417), so there is nothing here for §6.11 to run before the payload. -/
+structure EnumDecl where
+  /-- The payload types of each variant, in declaration order; variant `j`'s
+  tuple is `variants[j]`, and `[]` is the discriminant-only case (`6.3:14`). -/
+  variants : List (List Ty)
+  /-- `class(E)` (§3, `6.3:19`), the join over **every** payload component of
+  **every** variant; `WfEnums` (`Statics.lean`) is the equation that pins it,
+  and `enum_carriesLinear_iff` is `6.3:19` read as a biconditional. -/
+  cls : Mult
+deriving DecidableEq, Repr
+
+/-- The program's declaration environment: §2's type-declaration production
+`D ::= struct S { … } | enum E { … }`, one list per kind, each indexed the way
+`Ty.struct`/`Ty.enum` names it. The two layers are separate lists rather than
+one list of a sum because a type names one or the other and never both, and
+because §3 assigns their classes by two different equations. -/
+structure Decls where
+  /-- The struct declarations §2's `S` names, indexed by `Ty.struct`. -/
+  structs : List StructDecl
+  /-- The enum declarations §2's `E` names, indexed by `Ty.enum`. -/
+  enums : List EnumDecl
+deriving DecidableEq, Repr
+
+/-- A declaration environment with no enum in it: the shape every program of
+the fragment had before enums, and the one a generated program still has
+(`Gen.lean`) (helper). -/
+def Decls.ofStructs (D : List StructDecl) : Decls := { structs := D, enums := [] }
 
 /-- `class(S)` for a declared struct type (§3), read off the declaration. An
 index the environment does not have is `Affine`, the class of a struct with no
 attribute and no linear field — the conservative reading of a program
 `WfStructs` rejects anyway (helper). -/
-def StructEnv.classOf (D : StructEnv) (s : Nat) : Mult :=
-  match D[s]? with
+def Decls.classOf (D : Decls) (s : Nat) : Mult :=
+  match D.structs[s]? with
   | some sd => sd.cls
   | none => .affine
 
-/-- `class(T)` (§3), against the program's struct environment. Scalars are
+/-- `class(E)` for a declared enum type (§3, `6.3:19`), read off the
+declaration. An index the environment does not have is `Affine`, the
+conservative reading of a program `WfEnums` rejects anyway — `Copy` would let
+such a type be duplicated (helper). -/
+def Decls.enumClassOf (D : Decls) (e : Nat) : Mult :=
+  match D.enums[e]? with
+  | some ed => ed.cls
+  | none => .affine
+
+/-- `class(T)` (§3), against the program's declaration environment. Scalars are
 `Copy` at every width and signedness, floats included (`3.12:2a` classifies
 both float types `Copy` and `3.8:2` lists them, so the core takes it
-directly); a struct type has the class its declaration records. -/
-def Ty.mult (D : StructEnv) : Ty → Mult
+directly); a struct type has the class its declaration records, and so does an
+enum type — whose record is the payload join over every variant (`6.3:19`),
+because the active variant is not a static fact. -/
+def Ty.mult (D : Decls) : Ty → Mult
   | .int _ _ | .float _ | .bool | .unit => .copy
   | .struct s => D.classOf s
+  | .enum e => D.enumClassOf e
 
 /-- `carries_linear(T)` (§5.3): `class(T) = Linear`, which §5.3 states is the
 same predicate as "Linear lifted through the aggregates" because `class` *is*
 that join (§3). `struct_carriesLinear_iff` (`Statics.lean`) is the lifting,
 proved through the field join. -/
-abbrev Ty.carriesLinear (D : StructEnv) (T : Ty) : Prop := T.mult D = .linear
+abbrev Ty.carriesLinear (D : Decls) (T : Ty) : Prop := T.mult D = .linear
 
 /-! ## Places: §5's `Path`, and the type a path reaches -/
 
@@ -311,18 +368,18 @@ def Place.path : Place → List Nat
 
 /-- The type of a declaration's field at a slot, or `none` when the type is
 not a struct or the slot is not a field (helper). -/
-def Ty.fieldAt (D : StructEnv) : Ty → Nat → Option Ty
+def Ty.fieldAt (D : Decls) : Ty → Nat → Option Ty
   | .struct s, f =>
-      match D[s]? with
+      match D.structs[s]? with
       | some sd => sd.fields[f]?
       | none => none
-  | .int _ _, _ | .float _, _ | .bool, _ | .unit, _ => none
+  | .int _ _, _ | .float _, _ | .bool, _ | .unit, _ | .enum _, _ => none
 
 /-- `Γ ⊢ p : T` for a path read off the root's declared type: follow the field
 slots, failing where a step is not a field of the type reached so far. Types
 are not flow-sensitive, so this is the whole of the place's typing (§5
 preamble: `Γ` is fixed at the binder). -/
-def Ty.atPath (D : StructEnv) : Ty → List Nat → Option Ty
+def Ty.atPath (D : Decls) : Ty → List Nat → Option Ty
   | T, [] => some T
   | T, f :: π =>
       match T.fieldAt D f with
@@ -334,38 +391,38 @@ destructor: (Use-Move) §5.1's and (@Drop) §5.3's `3.9:34` premise (E0456).
 Moving or dropping the whole value is fine — the empty path has no proper
 prefix — because the restriction exists so that a destructor never observes a
 hole in the value it runs on. -/
-def noDtorPrefix (D : StructEnv) : Ty → List Nat → Bool
+def noDtorPrefix (D : Decls) : Ty → List Nat → Bool
   | _, [] => true
   | T, f :: π =>
       match T with
       | .struct s =>
-          (match D[s]? with
+          (match D.structs[s]? with
            | some sd =>
                !sd.dtor &&
                  (match sd.fields[f]? with
                   | some T' => noDtorPrefix D T' π
                   | none => true)
            | none => true)
-      | .int _ _ | .float _ | .bool | .unit => true
+      | .int _ _ | .float _ | .bool | .unit | .enum _ => true
 
 /-- No **proper prefix** of the path is a struct declared `linear`. This is not
 a premise of any §5 rule: it is the fragment's own restriction, standing in for
 the `Declared(d, π)` use plan §4.2 selects for such a path and
 (Use-Declared-Linear-Destructure) §5.1 discharges (RUE-2236, module
 docstring). -/
-def noLinearPrefix (D : StructEnv) : Ty → List Nat → Bool
+def noLinearPrefix (D : Decls) : Ty → List Nat → Bool
   | _, [] => true
   | T, f :: π =>
       match T with
       | .struct s =>
-          (match D[s]? with
+          (match D.structs[s]? with
            | some sd =>
                decide (sd.attr ≠ .linear) &&
                  (match sd.fields[f]? with
                   | some T' => noLinearPrefix D T' π
                   | none => true)
            | none => true)
-      | .int _ _ | .float _ | .bool | .unit => true
+      | .int _ _ | .float _ | .bool | .unit | .enum _ => true
 
 /-! ## Operators -/
 
@@ -506,7 +563,20 @@ the correctly-rounded reading of that decimal — which is the model's
 (`4.13:26`). `panic msg` is `@panic(s)` at a string-literal message: the
 fragment has no string type, so the message is a field of the form rather than
 an operand expression, which is also why no `(Panic-Operand)` case is needed.
-`dbg e` is `@dbg(e)`. -/
+`dbg e` is `@dbg(e)`.
+
+`mkEnum e k args` is §2's `E::Kj(e1, …, e_{aj})`, the introduction form
+(Enum-Intro) §5.5 types: the enum's index, the variant's **0-based tag** (the
+`Kj` of §6.1's value form, which is the variant's declaration slot) and one
+payload argument per declared component, presented left to right. `match scrut
+arms` is §2's `match e0 { pat1 => e1, … }` in the canonical form §5.5 fixes:
+**exactly one arm per variant, in declaration order**, so the patterns are not
+represented at all — arm `j` is the arm for variant `j`, and the `a_j` payload
+locals it binds are de Bruijn binders of its body, bound the way `letIn` binds
+its one binder (payload component 1 outermost, component `a_j` innermost, which
+is `fnCtx`'s order for a parameter list). No wildcard, no guard, no ordering:
+§5.5 makes each of those an elaboration obligation. Lean spells the
+constructor `«match»` because `match` is one of its own keywords. -/
 inductive Expr where
   | intLit (w : IntWidth) (s : Sign) (n : Int)
   | floatLit (w : FloatWidth) (l : FloatLit)
@@ -520,6 +590,8 @@ inductive Expr where
   | panic (msg : String)
   | dbg (e : Expr)
   | mkStruct (s : Nat) (args : List Expr)
+  | mkEnum (e : Nat) (k : Nat) (args : List Expr)
+  | «match» (scrut : Expr) (arms : List Expr)
   | drop (p : Place)
   | letIn (m : Bool) (e₁ e₂ : Expr)
   | assign (p : Place) (e : Expr)
@@ -547,22 +619,24 @@ structure FnDef where
   body : Expr
 deriving Repr
 
-/-- A program: the struct environment §2's `S` and §5.8's (Struct-Intro) look
-a declaration up in, and the top-level function environment §5.8's (Call)
-looks a callee up in, each indexed the way the syntax names it. Function index
-`0` is the entry point, which `Dynamics.run` calls with no arguments. -/
+/-- A program: the declaration environment §2's `S` and `E` — and with them
+§5.8's (Struct-Intro), §5.5's (Enum-Intro) and (Match) — look a declaration up
+in, and the top-level function environment §5.8's (Call) looks a callee up in,
+each indexed the way the syntax names it. Function index `0` is the entry
+point, which `Dynamics.run` calls with no arguments. -/
 structure Program where
-  /-- The struct declarations, indexed by `Ty.struct` and `Expr.mkStruct`. -/
-  structs : StructEnv
+  /-- The type declarations: structs indexed by `Ty.struct`/`Expr.mkStruct`,
+  enums by `Ty.enum`/`Expr.mkEnum`. -/
+  decls : Decls
   /-- The function definitions, indexed by `Expr.call`; `0` is the entry
   point. -/
   fns : List FnDef
 
-/-- A one-function program over a struct environment: the entry point, with no
-parameters and declared return type `T`, whose body is `e`. This is the shape
-of every fragment program that calls nothing, which is how the pre-call corpus
-cases are read as programs (helper). -/
-def Program.entry (D : StructEnv) (T : Ty) (e : Expr) : Program :=
-  { structs := D, fns := [{ params := [], ret := T, body := e }] }
+/-- A one-function program over a declaration environment: the entry point,
+with no parameters and declared return type `T`, whose body is `e`. This is the
+shape of every fragment program that calls nothing, which is how the pre-call
+corpus cases are read as programs (helper). -/
+def Program.entry (D : Decls) (T : Ty) (e : Expr) : Program :=
+  { decls := D, fns := [{ params := [], ret := T, body := e }] }
 
 end RueCore
