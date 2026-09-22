@@ -4,7 +4,7 @@
 An array held as a struct field, read through a projection, an index and a
 projection again: h.a[1].x0 + h.a[0].x1 = 5.
 
-Rules exercised: (Struct-Intro) §5.8 · (Array-Intro) §5.8 · (Use-Copy) §5.1 · 3.8:68
+Rules exercised: (Struct-Intro) §5.8 · (Array-Intro) §5.8 · (Use-Copy) §5.1 · 3.8:53 · 7.1:9
 
 ── The program ─────────────────────────────────────────────────────────────────
 
