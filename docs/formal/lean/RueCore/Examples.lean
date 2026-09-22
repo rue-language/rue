@@ -137,7 +137,7 @@ def dCarryAffine : StructDecl :=
 /-- The fixture environment: every field type names an earlier declaration, so
 `WfStructs` holds (checked below) and §3's class assignment is the one
 recorded. -/
-def structEnv : Decls :=
+def structEnv : List StructDecl :=
   [dCopy, dAffine, dLinear, dLinearDtor, dCarry, dOuter, dPair, dTwoAffine,
    dAffineInt, dNested, dCarryAffine]
 
@@ -175,10 +175,10 @@ def resLD (e : Expr) : Expr := mkStruct sLinearDtor [e]
 
 /-- A program over the fixture declarations, entered at a no-parameter `main`
 returning `T`. -/
-def prog (T : Ty) (e : Expr) : Program := Program.entry structEnv T e
+def prog (T : Ty) (e : Expr) : Program := Program.entry (Decls.ofStructs structEnv) T e
 
 /-- A program with no struct declarations at all, for the scalar examples. -/
-def scalarProg (T : Ty) (e : Expr) : Program := Program.entry [] T e
+def scalarProg (T : Ty) (e : Expr) : Program := Program.entry (Decls.ofStructs []) T e
 
 /-! ## The float vocabulary (§2's `float(w)`, §5.8, §6.4)
 
@@ -558,7 +558,7 @@ def sNestCarry : Nat := 11
 
 /-- A program over the fixture declarations plus `S11`. -/
 def nestCarryProg (T : Ty) (e : Expr) : Program :=
-  Program.entry (structEnv ++ [dNestCarry]) T e
+  Program.entry (Decls.ofStructs (structEnv ++ [dNestCarry])) T e
 
 /-- The same divergence one field step down: `@drop(v.x0.x0)` takes the linear
 leaf out and `v.x0 = S10{…}` is still ill-formed, because `S10` — the
@@ -701,7 +701,7 @@ Each of these needs more than one function, so it is written as a whole
 /-- A plain call: `f0()` calls `f1(2, 3)`, which adds its parameters. The
 first parameter is the outermost binder, so it is `use (.var 1)` inside the body. -/
 def callPlain : Program :=
-  { structs := [],
+  { decls := Decls.ofStructs [],
     fns := [{ params := [], ret := tI64, body := call 1 [lit 2, lit 3] },
             { params := [⟨tI64, false⟩, ⟨tI64, false⟩], ret := tI64,
               body := binop .add (use (.var 1)) (use (.var 0)) }] }
@@ -725,7 +725,7 @@ def returnPastLinear : Program :=
 owes its drop, and (D-Return-Value)'s `run-all-scope-drops` runs it at the
 frame pop — `2`, then the value `1`. -/
 def paramDroppedAtPop : Program :=
-  { structs := structEnv,
+  { decls := Decls.ofStructs structEnv,
     fns := [{ params := [], ret := tI64, body := call 1 [resA (lit 2)] },
             { params := [⟨.struct sAffine, false⟩], ret := tI64, body := lit 1 }] }
 
@@ -733,14 +733,14 @@ def paramDroppedAtPop : Program :=
 second clause rejects the callee (`3.8:62`), and the frame pop refuses with
 `linearLeak`. -/
 def linearParamLeaked : Program :=
-  { structs := structEnv,
+  { decls := Decls.ofStructs structEnv,
     fns := [{ params := [], ret := tI64, body := call 1 [resL (lit 5)] },
             { params := [⟨.struct sLinear, false⟩], ret := tI64, body := lit 1 }] }
 
 /-- Recursion to a trap: `f1(3)` counts down and divides by zero at the
 bottom, four frames deep. -/
 def recursionTrap : Program :=
-  { structs := [],
+  { decls := Decls.ofStructs [],
     fns := [{ params := [], ret := tI64, body := call 1 [lit 3] },
             { params := [⟨tI64, false⟩], ret := tI64,
               body := ite (binop .lt (use (.var 0)) (lit 1))
@@ -749,7 +749,7 @@ def recursionTrap : Program :=
 
 /-- A recursive countdown: `4 + 3 + 2 + 1 + 0 = 10`. -/
 def countdown : Program :=
-  { structs := [],
+  { decls := Decls.ofStructs [],
     fns := [{ params := [], ret := tI64, body := call 1 [lit 4] },
             { params := [⟨tI64, false⟩], ret := tI64,
               body := ite (binop .lt (use (.var 0)) (lit 1))
@@ -784,7 +784,7 @@ value the context does not name. `checkProgram` accepts, so
 `checkProgram_sound`, `run_safe`, `no_violation` and `no_linear_leak` all
 apply to it, and the run destroys `S2 { 7 }` with an empty drop trace. -/
 def linearLostAtCallArg : Program :=
-  { structs := structEnv,
+  { decls := Decls.ofStructs structEnv,
     fns := [{ params := [], ret := tI64,
               body := letIn false (resL (lit 7)) (call 1 [use (.var 0), ret (lit 0)]) },
             { params := [⟨.struct sLinear, false⟩, ⟨tI64, false⟩], ret := tI64,
@@ -797,7 +797,7 @@ with `@drop`, which would print; the value never reaches the callee. The Rue
 compiler agrees — `S1`'s destructor does not run — which is why no bridge case
 could catch this and why none is added. -/
 def affineLostAtCallArg : Program :=
-  { structs := structEnv,
+  { decls := Decls.ofStructs structEnv,
     fns := [{ params := [], ret := tI64,
               body := letIn false (resA (lit 7)) (call 1 [use (.var 0), ret (lit 0)]) },
             { params := [⟨.struct sAffine, false⟩, ⟨tI64, false⟩], ret := tI64,
@@ -866,7 +866,7 @@ kernel-checked facts, not test assertions.
 
 /-- §3's class assignment holds of the fixture declarations, so `Ty.mult`'s
 lookup is the join §3 defines (`checkStructs_sound`). -/
-example : WfStructs structEnv := checkStructs_sound (by rfl)
+example : WfStructs (Decls.ofStructs structEnv) := checkStructs_sound (by rfl)
 
 example : ProgramTyped (scalarProg tI64 scalars) := checkProgram_sound (by rfl)
 example : ProgramTyped (prog tI64 affineDrop) := checkProgram_sound (by rfl)
@@ -1081,7 +1081,7 @@ example : checkProgram (prog tI64 overwritePastPartialLinear) = false := by rfl
 
 /-- The same one field step down. `S11`'s presence is not the reason: the
 extended environment is well-formed. -/
-example : checkStructs (structEnv ++ [dNestCarry]) = true := by rfl
+example : checkStructs (Decls.ofStructs (structEnv ++ [dNestCarry])) = true := by rfl
 example : checkProgram (nestCarryProg tI64 overwriteFieldPastPartialLinear) = false := by rfl
 
 /-- And the premise, not the program's shape, is what refuses them: discharge
@@ -1095,27 +1095,27 @@ example : checkProgram (prog tI64
 
 /-- A declaration whose recorded class disagrees with §3's join is rejected by
 the same pass: `class(S)` is not a free parameter of the syntax. -/
-example : checkStructs [{ attr := .none, fields := [tI64], dtor := false, cls := .copy }]
-    = false := by rfl
+example : checkStructs (Decls.ofStructs
+    [{ attr := .none, fields := [tI64], dtor := false, cls := .copy }]) = false := by rfl
 
 /-- `3.8:18` and `3.9:31`: a `@copy` declaration whose field join is not
 `Copy`, or which declares a destructor, is ill-formed. -/
-example : checkStructs (structEnv ++
-    [{ attr := .copy, fields := [.struct 1], dtor := false, cls := .copy }]) = false := by rfl
-example : checkStructs [{ attr := .copy, fields := [tI64], dtor := true, cls := .copy }]
-    = false := by rfl
+example : checkStructs (Decls.ofStructs (structEnv ++
+    [{ attr := .copy, fields := [.struct 1], dtor := false, cls := .copy }])) = false := by rfl
+example : checkStructs (Decls.ofStructs
+    [{ attr := .copy, fields := [tI64], dtor := true, cls := .copy }]) = false := by rfl
 
 /-- `3.9:44` (E0462): a declaration whose field carries a linear value may not
 declare a destructor — `3.9:34` forbids moving the field out, so the field's
 obligation could only ever be met by the glue that runs after the destructor.
 A *declared*-linear struct with no linear field may have one (`S3` above). -/
-example : checkStructs (structEnv ++
-    [{ attr := .none, fields := [.struct 2], dtor := true, cls := .linear }]) = false := by rfl
+example : checkStructs (Decls.ofStructs (structEnv ++
+    [{ attr := .none, fields := [.struct 2], dtor := true, cls := .linear }])) = false := by rfl
 
 /-- No recursive structs: a field may name only an earlier declaration, which
 is what makes §3's class equation solvable in one pass. -/
-example : checkStructs [{ attr := .none, fields := [.struct 0], dtor := false, cls := .affine }]
-    = false := by rfl
+example : checkStructs (Decls.ofStructs
+    [{ attr := .none, fields := [.struct 0], dtor := false, cls := .affine }]) = false := by rfl
 
 /-!
 ## Refusals and traps, kernel-checked
@@ -1238,7 +1238,7 @@ example : run demoOps (prog tI64 (seq (mkStruct 99 []) (lit 0))) demoFuel
 /-- A call whose argument count does not match the callee's parameter list is
 `typeConfusion` (§5.8, `4.10:3`); no well-typed program reaches it. -/
 example : run M
-      { structs := [],
+      { decls := Decls.ofStructs [],
         fns := [{ params := [], ret := tI64, body := call 1 [] },
                 { params := [⟨tI64, false⟩], ret := tI64, body := lit 0 }] } demoFuel
     = .stuck .typeConfusion := by rfl

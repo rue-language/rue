@@ -97,6 +97,27 @@ partial def exprLine (P : Program) (R : Ty) : List Ty → Expr → String
       Print.tyName (.struct s) ++ " { " ++
         String.intercalate ", "
           (Print.fieldInits 0 (args.map (fun a => exprLine P R Γ a))) ++ " }"
+  | Γ, .mkEnum e k args =>
+      Print.tyName (.enum e) ++ "." ++ Print.variantName k ++
+        (if args.isEmpty then ""
+         else "(" ++ String.intercalate ", " (args.map (fun a => exprLine P R Γ a)) ++ ")")
+  | Γ, .«match» scrut arms =>
+      -- One line, with each arm's payload binders named the way `Print` names
+      -- them, so a derivation node reads like the printed program.
+      let variants := match Print.tyOf P R Γ scrut with
+        | some (.enum e) => ((P.decls.enums[e]?).map EnumDecl.variants).getD []
+        | _ => []
+      let name := match Print.tyOf P R Γ scrut with
+        | some (.enum e) => Print.tyName (.enum e)
+        | _ => "E0"
+      "match " ++ exprLine P R Γ scrut ++ " { " ++
+        String.intercalate ", "
+          ((arms.zipIdx).map (fun (a, k) =>
+            let Ts := ((variants[k]?).getD [])
+            let binders := (List.range Ts.length).map (fun j => Print.binderName (Γ.length + j))
+            name ++ "." ++ Print.variantName k ++
+              (if binders.isEmpty then "" else "(" ++ String.intercalate ", " binders ++ ")") ++
+              " => " ++ exprLine P R (Ts.reverse ++ Γ) a)) ++ " }"
   | Γ, .drop pl => "@drop(" ++ Print.place Γ pl ++ ")"
   | Γ, .letIn m e₁ e₂ =>
       let T₁ := (Print.tyOf P R Γ e₁).getD (.int .w64 .signed)
@@ -132,6 +153,7 @@ def valTy : Val → Ty
   | .bool _ => .bool
   | .unit => .unit
   | .struct s _ => .struct s
+  | .enum e _ _ => .enum e
 
 /-- (helper) A value, as §6.1 writes it: a scalar as itself, a struct value
 as `{ v1, …, vk }_S` with its declaration's name. -/
@@ -143,6 +165,10 @@ partial def valLine : Val → String
   | .struct s vs =>
       Print.tyName (.struct s) ++ " { " ++
         String.intercalate ", " (vs.map valLine) ++ " }"
+  | .enum e k vs =>
+      -- §6.1's `Kj⟨ v1, …, va ⟩`: the tag, and the payload when there is one.
+      Print.tyName (.enum e) ++ "." ++ Print.variantName k ++
+        (if vs.isEmpty then "⟨⟩" else "⟨" ++ String.intercalate ", " (vs.map valLine) ++ "⟩")
 
 /-- (helper) Cell contents (§6.1's `c ::= v | ⊘`), as a tree: a `⊘` may sit
 at any node after a partial move (§4.2). -/
@@ -155,6 +181,9 @@ partial def contentsLine : Contents → String
   | .struct s cs =>
       Print.tyName (.struct s) ++ " { " ++
         String.intercalate ", " (cs.map contentsLine) ++ " }"
+  | .enum e k cs =>
+      Print.tyName (.enum e) ++ "." ++ Print.variantName k ++
+        (if cs.isEmpty then "⟨⟩" else "⟨" ++ String.intercalate ", " (cs.map contentsLine) ++ "⟩")
 
 /-- (helper) A store cell: its contents, or the retired marker `†`. -/
 def cellLine : Cell → String
@@ -523,6 +552,53 @@ def returnLeak : String :=
   "every open scope at once — the `⊥_exit` edge carries §5.6's obligation " ++
   "((Return-Value) §5.7; (Fn) §5.8's second clause; 3.8:62; the compiler reports E0406)"
 
+/-- (Enum-Intro)/(Match) §5.5's first premise, `E = enum { K1(T̄1), …, Kn(T̄n) }`:
+the program has no enum declaration at this index. Elaboration resolves a type's
+name before the core (§2), so no elaborated program reaches this. -/
+def unknownEnum : String :=
+  "the program has no enum declaration at this index ((Enum-Intro)/(Match) premise " ++
+  "`E = enum { K1(T̄1), …, Kn(T̄n) }`, §5.5; elaboration resolves a type name before " ++
+  "the core, §2, so no elaborated program reaches this premise)"
+
+/-- (Enum-Intro) §5.5's premise that the tag names a variant of `E`
+(`6.3:16`; the compiler reports E0420). -/
+def unknownVariant : String :=
+  "the enum has no variant at this tag ((Enum-Intro) premise `E = enum { …, Kj(T̄j), … }`, " ++
+  "§5.5; 6.3:5, 6.3:16; the compiler reports E0420)"
+
+/-- (Enum-Intro) §5.5's payload arity premise (`6.3:16`). -/
+def payloadCountMismatch : String :=
+  "the construction does not supply exactly one argument per declared payload component " ++
+  "((Enum-Intro) premise `Γ;Σ_{i-1};Λ ⊢ ei ⇒ Tji ⊣ Σi` over the whole tuple, §5.5; 6.3:16)"
+
+/-- (Enum-Intro) §5.5's per-component premise (`6.3:16`). -/
+def payloadTypeMismatch (T comp : Ty) : String :=
+  "a payload argument has type " ++ Print.tyName T ++ " but its component is declared " ++
+  Print.tyName comp ++ " ((Enum-Intro) premise `Γ;Σ_{i-1};Λ ⊢ ei ⇒ Tji ⊣ Σi`, §5.5; 6.3:16)"
+
+/-- (Match) §5.5's premise `Γ;Σ;Λ ⊢ e0 ⇒ E ⊣ Σ0`: the scrutinee is an enum.
+The core `match` is the enum elimination only — a bool or integer scrutinee is
+an elaboration obligation §5.5 states, not a core form. -/
+def scrutNotEnum (T : Ty) : String :=
+  "the scrutinee has type " ++ Print.tyName T ++ ", but the core `match` eliminates an " ++
+  "enum ((Match) premise `Γ;Σ;Λ ⊢ e0 ⇒ E ⊣ Σ0`, §5.5; a bool or integer scrutinee " ++
+  "elaborates to nested `if`s, which is an elaboration obligation §5.5 states)"
+
+/-- (Match) §5.5's exhaustiveness premise: exactly one arm per variant, in
+declaration order (`4.7:9`, `4.7:10`). -/
+def armCountMismatch (arms variants : Nat) : String :=
+  "the match has " ++ toString arms ++ " arm(s) for an enum with " ++ toString variants ++
+  " variant(s); (Match) requires exactly one arm per variant, in declaration order " ++
+  "((Match) premise `arms are exhaustive: exactly the variants K1..Kn`, §5.5; 4.7:9, 4.7:10)"
+
+/-- (Match) §5.5's per-arm §5.6 obligation: a payload local the arm neither
+moves nor consumes is a leak (`6.3:17`; the compiler reports E0406). -/
+def armLeak : String :=
+  "an arm leaves one of its payload locals Owned at a linear type where the arm ends its " ++
+  "scope, which is §5.6's leak check on the payload binding ((Match) premise " ++
+  "`each pattern local x_{ij} leaves scope at arm end`, §5.5; 6.3:17, 3.8:32; the " ++
+  "compiler reports E0406)"
+
 end Premise
 
 /-- (helper) The rule name a binary operator's node carries: §5.8 types the
@@ -552,6 +628,21 @@ def joinConflictEntry (D : Decls) : Ctx → Ctx → Option String
           ownStateName a.st ++ " in the then-arm and " ++ ownStateName b.st ++ " in the else-arm")
       else joinConflictEntry D as bs
   | _, _ => none
+
+/-- (helper) The first arm at which (Match) §5.5's folded join fails, named the
+way `joinConflictEntry` names the two-arm case. -/
+def joinFoldConflict (D : Decls) : Ctx → List Ctx → Option String
+  | _, [] => none
+  | acc, Γ :: Γs =>
+      match Ctx.join D acc Γ with
+      | some acc' => joinFoldConflict D acc' Γs
+      | none => joinConflictEntry D acc Γ
+
+/-- (helper) The same over the whole arm list, which is the fold `Ctx.joinAll`
+takes (helper). -/
+def joinAllConflict (D : Decls) : List Ctx → Option String
+  | [] => none
+  | Γ :: Γs => joinFoldConflict D Γ Γs
 
 /-! ## Derivations -/
 
@@ -738,6 +829,53 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
          | (none, kids) =>
              rejected "(Struct-Intro) §5.8" Γ (.mkStruct s args)
                (fieldsPremise P R Γ args sd.fields) kids)
+  | .mkEnum e k args =>
+      match P.decls.enums[e]? with
+      | none => rejected "(Enum-Intro) §5.5" Γ (.mkEnum e k args) Premise.unknownEnum []
+      | some ed =>
+        (match ed.variants[k]? with
+         | none =>
+             rejected "(Enum-Intro) §5.5" Γ (.mkEnum e k args) Premise.unknownVariant []
+         | some Ts =>
+           (match explainArgs P R Γ args Ts with
+            | (some Γ', kids) =>
+                accepted "(Enum-Intro) §5.5" Γ (.mkEnum e k args) (.enum e) Γ' kids
+            | (none, kids) =>
+                rejected "(Enum-Intro) §5.5" Γ (.mkEnum e k args)
+                  (payloadPremise P R Γ args Ts) kids))
+  | .«match» scrut arms =>
+      let ds := explain P R Γ scrut
+      match ds.result with
+      | some (.enum e, Γ₀) =>
+        (match P.decls.enums[e]? with
+         | none => rejected "(Match) §5.5" Γ (.«match» scrut arms) Premise.unknownEnum [ds]
+         | some ed =>
+           if arms.length = ed.variants.length then
+             (match firstArmTy P R Γ₀ arms ed.variants with
+              | none =>
+                  rejected "(Match) §5.5" Γ (.«match» scrut arms) Premise.subDerivation
+                    (ds :: explainArms P R Γ₀ arms ed.variants)
+              | some T =>
+                (match checkArms P R Γ₀ T arms ed.variants with
+                 | none =>
+                     rejected "(Match) §5.5" Γ (.«match» scrut arms)
+                       (armsPremise P R Γ₀ T arms ed.variants)
+                       (ds :: explainArms P R Γ₀ arms ed.variants)
+                 | some Γs =>
+                   (match Ctx.joinAll P.decls Γs with
+                    | some Γ' =>
+                        accepted "(Match) §5.5 join" Γ (.«match» scrut arms) T Γ'
+                          (ds :: explainArms P R Γ₀ arms ed.variants)
+                    | none =>
+                        rejected "(Match) §5.5 join" Γ (.«match» scrut arms)
+                          (Premise.joinConflict (joinAllConflict P.decls Γs))
+                          (ds :: explainArms P R Γ₀ arms ed.variants))))
+           else
+             rejected "(Match) §5.5" Γ (.«match» scrut arms)
+               (Premise.armCountMismatch arms.length ed.variants.length) [ds])
+      | some (T, _) =>
+          rejected "(Match) §5.5" Γ (.«match» scrut arms) (Premise.scrutNotEnum T) [ds]
+      | none => rejected "(Match) §5.5" Γ (.«match» scrut arms) Premise.subDerivation [ds]
   | .drop pl =>
       match Γ[pl.root]? with
       | none => rejected "(@Drop-Copy)/(@Drop) §5.3" Γ (.drop pl) Premise.unboundIndex []
@@ -913,6 +1051,41 @@ def fieldsPremise (P : Program) (R : Ty) : Ctx → List Expr → List Ty → Str
            if T' = T then fieldsPremise P R Γ₁ es Ts else Premise.fieldTypeMismatch T' T
        | none => Premise.subDerivation)
   | _, _, _ => Premise.fieldCountMismatch
+
+/-- The premise a rejected payload list failed: the wrong arity, or the first
+component whose type is not its declared one — the per-component premises of
+(Enum-Intro) §5.5 (`6.3:16`). -/
+def payloadPremise (P : Program) (R : Ty) : Ctx → List Expr → List Ty → String
+  | _, [], [] => Premise.payloadCountMismatch
+  | Γ, e :: es, T :: Ts =>
+      (match (explain P R Γ e).result with
+       | some (T', Γ₁) =>
+           if T' = T then payloadPremise P R Γ₁ es Ts else Premise.payloadTypeMismatch T' T
+       | none => Premise.subDerivation)
+  | _, _, _ => Premise.payloadCountMismatch
+
+/-- The sub-derivations of (Match) §5.5's arm premises: one per arm, each under
+that variant's payload locals (`armCtx`), all from the same post-scrutinee
+state. -/
+def explainArms (P : Program) (R : Ty) (Γ₀ : Ctx) : List Expr → List (List Ty) → List Deriv
+  | [], _ => []
+  | _, [] => []
+  | e :: es, Ts :: Tss => explain P R (armCtx Ts Γ₀) e :: explainArms P R Γ₀ es Tss
+
+/-- The premise a rejected arm list failed: the first arm whose body does not
+check, whose type is not the one the first arm fixed, or which leaves a payload
+local unconsumed at the arm's end (§5.6). -/
+def armsPremise (P : Program) (R : Ty) (Γ₀ : Ctx) (T : Ty) :
+    List Expr → List (List Ty) → String
+  | [], [] => Premise.subDerivation
+  | e :: es, Ts :: Tss =>
+      (match (explain P R (armCtx Ts Γ₀) e).result with
+       | some (T', Γb) =>
+           if T' ≠ T then Premise.armTypeMismatch T' T
+           else if !decide (NoResidualLinear P.decls (Γb.take Ts.length)) then Premise.armLeak
+           else armsPremise P R Γ₀ T es Tss
+       | none => Premise.subDerivation)
+  | _, _ => Premise.subDerivation
 end
 
 mutual
@@ -986,6 +1159,54 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
           cases res with
           | none => rw [← hargs]; rfl
           | some Γ' => rw [← hargs]; rfl
+  | .mkEnum e k args, Γ => by
+      simp only [explain, check]
+      cases hed : P.decls.enums[e]? with
+      | none => rfl
+      | some ed =>
+        dsimp only
+        cases hv : ed.variants[k]? with
+        | none => rfl
+        | some Ts =>
+          dsimp only
+          have hargs := explainArgs_result (P := P) (R := R) args Γ Ts
+          revert hargs
+          cases explainArgs P R Γ args Ts with
+          | mk res kids =>
+            intro hargs
+            cases res with
+            | none => rw [← hargs]; rfl
+            | some Γ' => rw [← hargs]; rfl
+  | .«match» scrut arms, Γ => by
+      simp only [explain, check, explain_result scrut]
+      cases hs : check P R Γ scrut with
+      | none => rfl
+      | some p =>
+        obtain ⟨Tsc, Γ₀⟩ := p
+        cases Tsc with
+        | int => rfl
+        | float => rfl
+        | bool => rfl
+        | unit => rfl
+        | struct s' => rfl
+        | enum e =>
+          dsimp only
+          cases hed : P.decls.enums[e]? with
+          | none => rfl
+          | some ed =>
+            dsimp only
+            by_cases hlen : arms.length = ed.variants.length
+            · simp only [if_pos hlen]
+              cases hf : firstArmTy P R Γ₀ arms ed.variants with
+              | none => rfl
+              | some T =>
+                dsimp only
+                cases hc : checkArms P R Γ₀ T arms ed.variants with
+                | none => rfl
+                | some Γs =>
+                    dsimp only
+                    cases hj : Ctx.joinAll P.decls Γs <;> rfl
+            · simp only [if_neg hlen]; rfl
   | .drop pl, Γ => by
       simp only [explain, check]
       (repeat' split) <;> first | rfl | simp_all [accepted, rejected, Deriv.result]
@@ -1012,6 +1233,7 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
         | float => rfl
         | unit => rfl
         | struct s' => rfl
+        | enum e' => rfl
         | bool =>
             simp only [explain_result e₁, explain_result e₂]
             cases h₁ : check P R Γ₀ e₁ with
@@ -1476,6 +1698,58 @@ def traceEval (M : FloatOps) (P : Program) :
                traced ta.steps d Θ R (.mkStruct s args) "(D-Struct) §6.5" H H₁ []
                  (.value (.struct s vs)) (.ok H₁ (.struct s vs) tr)
              else refused ta.steps d Θ R (.mkStruct s args) "(D-Struct) §6.5" H .typeConfusion)
+  | fuel + 1, d, Θ, R, H, φ, .mkEnum e k args =>
+      let ta := traceArgs (fun H' e' => traceEval M P fuel (d + 1) Θ R H' φ e') H args
+      (match ta.res with
+       | .abort r => didNotRun ta.steps d Θ R (.mkEnum e k args) "(D-Enum-Intro) §6.6" H r
+       | .ok H₁ vs tr =>
+         match P.decls.enums[e]? with
+         | none => refused ta.steps d Θ R (.mkEnum e k args) "(D-Enum-Intro) §6.6" H .unbound
+         | some ed =>
+           match ed.variants[k]? with
+           | none =>
+               refused ta.steps d Θ R (.mkEnum e k args) "(D-Enum-Intro) §6.6" H .typeConfusion
+           | some Ts =>
+               if Ts.length = vs.length then
+                 traced ta.steps d Θ R (.mkEnum e k args) "(D-Enum-Intro) §6.6" H H₁ []
+                   (.value (.enum e k vs)) (.ok H₁ (.enum e k vs) tr)
+               else
+                 refused ta.steps d Θ R (.mkEnum e k args) "(D-Enum-Intro) §6.6" H
+                   .typeConfusion)
+  | fuel + 1, d, Θ, R, H, φ, .«match» scrut arms =>
+      let t₀ := traceEval M P fuel (d + 1) Θ R H φ scrut
+      (match t₀.res with
+       | .ok H₀ v tr₀ =>
+         (match v with
+          | .enum e k vs =>
+            (match arms[k]? with
+             | none =>
+                 refused t₀.steps d Θ R (.«match» scrut arms) "(D-Match) §6.6" H .typeConfusion
+             | some body =>
+               let minted := mintParams H₀ vs
+               let bind := adminStep (d + 1) Θ R (.«match» scrut arms)
+                 "(D-Match) §6.6 (bind the arm's payload)"
+                 ("bind " ++ Print.tyName (.enum e) ++ "." ++ Print.variantName k ++
+                   "'s payload to " ++ locsLine minted.2)
+                 H₀ minted.1 [] (.value v)
+               let t₁ := traceEval M P fuel (d + 1) ((vs.map valTy).reverse ++ Θ) R minted.1
+                 { env := minted.2.reverse ++ φ.env, scope := φ.scope ++ minted.2 } body
+               (match t₁.res with
+                | .ok H₂ v₂ tr₂ =>
+                  (match unwindLocs P.decls H₂ minted.2.reverse with
+                   | .error w =>
+                       refused (t₀.steps ++ [bind] ++ t₁.steps) d Θ R (.«match» scrut arms)
+                         "(D-EndScope) §6.6 (end the arm)" H₂ w
+                   | .ok (H₃, evs) =>
+                       tracedAs (t₀.steps ++ [bind] ++ t₁.steps) d Θ R (.«match» scrut arms)
+                         "(D-EndScope) §6.6 (end the arm)"
+                         ("endscope(" ++ locsLine minted.2.reverse ++ ")")
+                         H₂ H₃ evs (.value v₂) (.ok H₃ v₂ (tr₀ ++ (tr₂ ++ evs))))
+                | r =>
+                    didNotRun (t₀.steps ++ [bind] ++ t₁.steps) d Θ R (.«match» scrut arms)
+                      scopeNeverClosed H (r.withTrace tr₀)))
+          | _ => confused t₀.steps d Θ R (.«match» scrut arms) "(D-Match) §6.6" H)
+       | r => propagate t₀.steps d Θ R (.«match» scrut arms) "(D-Match) §6.6" H r)
   | fuel + 1, d, Θ, R, H, φ, .letIn m e₁ e₂ =>
       let t₁ := traceEval M P fuel (d + 1) Θ R H φ e₁
       match t₁.res with
@@ -1678,6 +1952,16 @@ theorem traceEval_res (M : FloatOps) {P : Program} : ∀ (fuel : Nat) (d : Nat) 
             traceArgs_res (ev := fun H' e' => eval M fuel P H' φ e') (fun H' e' => ih _ _ _ _ _ e')]
           (repeat' split) <;>
             first | rfl | (simp_all [traced, didNotRun, EvalRes.withTrace] <;> grind)
+      | mkEnum e' k args =>
+          simp only [traceEval, eval,
+            traceArgs_res (ev := fun H' e'' => eval M fuel P H' φ e'') (fun H' e'' => ih _ _ _ _ _ e'')]
+          (repeat' split) <;>
+            first | rfl | (simp_all [traced, didNotRun, refused, EvalRes.withTrace] <;> grind)
+      | «match» scrut arms =>
+          simp only [traceEval, eval, EvalRes.andThen, ih]
+          (repeat' split) <;>
+            first | rfl | (simp_all [traced, tracedAs, didNotRun, refused, confused,
+              EvalRes.withTrace] <;> grind)
       | letIn m e₁ e₂ =>
           simp only [traceEval, eval, EvalRes.andThen, ih]
           (repeat' split) <;>
