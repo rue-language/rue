@@ -84,10 +84,11 @@ def dAffine : StructDecl := { attr := .none, fields := [tI64], dtor := true, cls
 
 /-- `S2`: `linear struct { x0: i64 }`, no destructor. Class `Linear`, drops
 silent. It is *declared* linear, so a projection out of it selects §4.2's
-`Declared(d, π_s)` plan and (Use-Declared-Linear-Destructure) §5.1 consumes the
-whole value for the leaf; the obligation is otherwise discharged by a move of
-the whole value or by `@drop`. The destructure cases have their own
-declarations (`destrDecls`, below). -/
+`Declared(d, π_s)` plan and §5.1's declared-linear destructure rule consumes
+the whole value for the leaf; the obligation is otherwise discharged by a move
+of the whole value or by `@drop`. This is a fixture declaration and not that
+rule's image, so it carries the section pointer rather than the label. The
+destructure cases have their own declarations (`destrDecls`, below). -/
 def dLinear : StructDecl := { attr := .linear, fields := [tI64], dtor := false, cls := .linear }
 
 /-- `S3`: `linear struct { x0: i64 }` with a destructor. Class `Linear`, drops
@@ -1742,6 +1743,15 @@ example : checkProgram (destrProg tI64 destructureLinearResidue) = false := by r
 to recurse to see it (`3.8:60`, "checked recursively through nested fields" —
 probe d22). -/
 example : checkProgram (destrProg tI64 destructureNestedLinearResidue) = false := by rfl
+
+/-- `fully-owned(Σ, d)` failing at a **hole strictly under** `d`: `y.x0.x0`
+destructures the inner declared-`linear` `y.x0`, so a later `y.x1` — whose plan
+is `([], [1])` at `y` itself — reads an `S13` that is no longer whole. The
+compiler refuses it too, naming the retained inner place: E0474 on `x0`. -/
+example : checkProgram (destrProg tI64
+    (letIn false (mkStruct sDestrOuter [mkStruct sDestrPair [lit 1, resA (lit 2)], resA (lit 3)])
+      (letIn false (use (.proj (.proj (.var 0) 0) 0))
+        (letIn false (use (.proj (.var 1) 1)) (lit 7))))) = false := by rfl
 
 /-- `3.9:34` at the consumed place itself (E0456, probe d7): the rule's
 "every enclosing value, including `d`" is `noDtorPrefix` read over the whole

@@ -774,7 +774,14 @@ need: §5.1's `¬ linear-residue(S, π_s)` premise has already excluded a linear
 residue before the redex fires, so on a program `check` accepts the branch is
 unreachable (`ContentsMatches.destructure_ok`, `Soundness.lean`). On a program
 `check` rejects it turns the silent destruction of a linear value into a named
-refusal, which is what `3.8:60` (E0474) is about. -/
+refusal, which is what `3.8:60` (E0474) is about.
+
+The test is per element, immediately before that element's own drop, which is
+`unwindLocs`' shape at a scope record rather than `dropRetire`'s at one cell.
+Nothing is destroyed early by it: `dropContents` writes no store, the `⊘` at
+`ℓ@π_d` is the caller's step *after* `destructure` returns `.ok`, and a
+refusal discards the events, so an earlier residue's drop leaves no trace and
+no heap effect behind. -/
 def dropResidue (D : Decls) : List Contents → Except Violation (List Event)
   | [] => .ok []
   | r :: rs =>
