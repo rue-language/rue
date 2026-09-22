@@ -2602,8 +2602,9 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           have hlen : cs.length = n := by
             simpa only [List.length_replicate] using hcts.length_eq
           simp only [hρ, hc, hread]
-          by_cases hb : 0 ≤ i ∧ i < (cs.length : Int)
-          · simp only [if_pos hb]
+          by_cases hb : inBoundsIdx i cs.length = true
+          · obtain ⟨hi0, hin⟩ := inBoundsIdx_eq_true.mp hb
+            simp only [if_pos hb]
             cases hec : cs[i.toNat]? with
             | none => exact absurd (List.getElem?_eq_none_iff.mp hec) (by omega)
             | some ec =>
@@ -2643,8 +2644,9 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
             simpa only [List.length_replicate] using hcts.length_eq
           have hmem : ℓ ∈ φ.env := List.mem_of_getElem? hρ
           simp only [hρ, hc, hread]
-          by_cases hb : 0 ≤ i ∧ i < (cs.length : Int)
-          · simp only [if_pos hb]
+          by_cases hb : inBoundsIdx i cs.length = true
+          · obtain ⟨hi0, hin⟩ := inBoundsIdx_eq_true.mp hb
+            simp only [if_pos hb]
             cases hec : cs[i.toNat]? with
             | none => exact absurd (List.getElem?_eq_none_iff.mp hec) (by omega)
             | some old =>
