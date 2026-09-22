@@ -1,0 +1,245 @@
+════════════════════════════════════════════════════════════════════════════════
+ array_bounds_trap
+════════════════════════════════════════════════════════════════════════════════
+A dynamic-index read in bounds and then past the end: the bounds trap of
+(D-Index-Trap) §6.5 is a defined outcome, and §6.12 keeps the output the run
+produced before it, so the 20 prints and the process then exits 101.
+
+Rules exercised: (Use-Untrackable-Dynamic-Copy) §5.1 · (D-Index) §6.5 · (D-Index-Trap) §6.5 · §6.12 · 7.1:10
+
+── The program ─────────────────────────────────────────────────────────────────
+
+fn f0() -> i64 {
+    {
+        { let t2g: i64 = f1(1); @dbg(t2g) };
+        f1(5)
+    }
+}
+
+fn f1(v0: i64) -> i64 {
+    {
+        let v1: [i64; 3] = [10, 20, 30];
+        { let t2i: i64 = v0; v1[t2i] }
+    }
+}
+
+
+
+── What the checker says (§5) ──────────────────────────────────────────────────
+
+Verdict: ACCEPTED by the checker (§5).
+         Every function is well-formed by (Fn) §5.8 and the entry point takes
+         no parameters, so `checkProgram_sound` ties the whole program to a
+         real derivation and the §7 safety theorems apply to it.
+
+         fn f0() -> i64  — body ⇒ i64, exit Σ (empty)
+         fn f1(v0: i64) -> i64  — body ⇒ i64, exit Σ [v0: i64 = Owned]
+
+── The derivations (§5) ────────────────────────────────────────────────────────
+
+Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
+fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
+premises are the nodes indented under it, in premise order. One tree per
+function body, checked from (Fn) §5.8's entry context.
+
+  fn f0() -> i64
+
+  (Seq) §5.3, 3.8:64
+    e       { @dbg(f1(1)); f1(5) }
+    Γ;Σ     (empty)
+    ⇒       i64  ⊣  (empty)
+      (Dbg) §5.8
+        e       @dbg(f1(1))
+        Γ;Σ     (empty)
+        ⇒       ()  ⊣  (empty)
+          (Call) §5.8
+            e       f1(1)
+            Γ;Σ     (empty)
+            ⇒       i64  ⊣  (empty)
+              (Lit) §5.8
+                e       1
+                Γ;Σ     (empty)
+                ⇒       i64  ⊣  (empty)
+      (Call) §5.8
+        e       f1(5)
+        Γ;Σ     (empty)
+        ⇒       i64  ⊣  (empty)
+          (Lit) §5.8
+            e       5
+            Γ;Σ     (empty)
+            ⇒       i64  ⊣  (empty)
+
+  fn f1(v0: i64) -> i64
+
+  (Let) §5.3 + the §5.6 scope-exit leak check
+    e       { let v1: [i64; 3] = [10, 20, 30]; v1[v0] }
+    Γ;Σ     [v0: i64 = Owned]
+    ⇒       i64  ⊣  [v0: i64 = Owned]
+      (Array-Intro) §5.8
+        e       [10, 20, 30]
+        Γ;Σ     [v0: i64 = Owned]
+        ⇒       [i64; 3]  ⊣  [v0: i64 = Owned]
+          (Lit) §5.8
+            e       10
+            Γ;Σ     [v0: i64 = Owned]
+            ⇒       i64  ⊣  [v0: i64 = Owned]
+          (Lit) §5.8
+            e       20
+            Γ;Σ     [v0: i64 = Owned]
+            ⇒       i64  ⊣  [v0: i64 = Owned]
+          (Lit) §5.8
+            e       30
+            Γ;Σ     [v0: i64 = Owned]
+            ⇒       i64  ⊣  [v0: i64 = Owned]
+      (Use-Untrackable-Dynamic-Copy) §5.1
+        e       v1[v0]
+        Γ;Σ     [v1: [i64; 3] = Owned, v0: i64 = Owned]
+        ⇒       i64  ⊣  [v1: [i64; 3] = Owned, v0: i64 = Owned]
+          (Use-Copy) §5.1
+            e       v0
+            Γ;Σ     [v1: [i64; 3] = Owned, v0: i64 = Owned]
+            ⇒       i64  ⊣  [v1: [i64; 3] = Owned, v0: i64 = Owned]
+
+── The run (§6) ────────────────────────────────────────────────────────────────
+
+One row per evaluated node, in execution order: a node's premises run before
+the node itself, so the table reads top to bottom as the machine ran. `d<n>`
+is the nesting depth — a callee's rows are deeper than its call's — and `>>`
+marks a drop event. The run enters at f0(), as `Dynamics.run` does.
+
+  [1]   d1    (D-Call) §6.9 (push the frame)
+         expr    fn f0() -> i64  with []
+         store   (empty)
+           →     (empty)
+         result  value ()
+  [2]   d5            literal §6.3
+         expr    1
+         store   (empty)
+           →     (empty)
+         result  value 1
+  [3]   d5            (D-Call) §6.9 (push the frame)
+         expr    fn f1(v0: i64) -> i64  with [ℓ0]
+         store   (empty)
+           →     [ℓ0 = 1]
+         result  value ()
+  [4]   d8                  literal §6.3
+         expr    10
+         store   [ℓ0 = 1]
+           →     [ℓ0 = 1]
+         result  value 10
+  [5]   d8                  literal §6.3
+         expr    20
+         store   [ℓ0 = 1]
+           →     [ℓ0 = 1]
+         result  value 20
+  [6]   d8                  literal §6.3
+         expr    30
+         store   [ℓ0 = 1]
+           →     [ℓ0 = 1]
+         result  value 30
+  [7]   d7                (D-Array) §6.5
+         expr    [10, 20, 30]
+         store   [ℓ0 = 1]
+           →     [ℓ0 = 1]
+         result  value [10, 20, 30]
+  [8]   d7                (D-Let) §6.7 (mint the binding)
+         expr    let v1 = [10, 20, 30] at ℓ1
+         store   [ℓ0 = 1]
+           →     [ℓ0 = 1, ℓ1 = [10, 20, 30]]
+         result  value [10, 20, 30]
+  [9]   d8                  (D-Use-Copy) §6.3
+         expr    v0
+         store   [ℓ0 = 1, ℓ1 = [10, 20, 30]]
+           →     [ℓ0 = 1, ℓ1 = [10, 20, 30]]
+         result  value 1
+  [10]  d7                (D-Index) §6.5
+         expr    v1[v0]
+         store   [ℓ0 = 1, ℓ1 = [10, 20, 30]]
+           →     [ℓ0 = 1, ℓ1 = [10, 20, 30]]
+         result  value 20
+  [11]  d6              (D-EndScope) §6.7 (retire the binding)
+         expr    endscope([ℓ1])
+         store   [ℓ0 = 1, ℓ1 = [10, 20, 30]]
+           →     [ℓ0 = 1, ℓ1 = † (retired)]
+         result  value 20
+  [12]  d4          (D-Return-Value) §6.9 (pop the frame)
+         expr    run-all-scope-drops([ℓ0])
+         store   [ℓ0 = 1, ℓ1 = † (retired)]
+           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         result  value 20
+  [13]  d3        (Dbg) §5.8, the observable output of §6.12
+         expr    @dbg(f1(1))
+         store   (empty)
+           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         events  >> @dbg prints 20
+         result  value ()
+  [14]  d4          literal §6.3
+         expr    5
+         store   [ℓ0 = † (retired), ℓ1 = † (retired)]
+           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         result  value 5
+  [15]  d4          (D-Call) §6.9 (push the frame)
+         expr    fn f1(v0: i64) -> i64  with [ℓ2]
+         store   [ℓ0 = † (retired), ℓ1 = † (retired)]
+           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5]
+         result  value ()
+  [16]  d7                literal §6.3
+         expr    10
+         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5]
+           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5]
+         result  value 10
+  [17]  d7                literal §6.3
+         expr    20
+         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5]
+           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5]
+         result  value 20
+  [18]  d7                literal §6.3
+         expr    30
+         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5]
+           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5]
+         result  value 30
+  [19]  d6              (D-Array) §6.5
+         expr    [10, 20, 30]
+         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5]
+           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5]
+         result  value [10, 20, 30]
+  [20]  d6              (D-Let) §6.7 (mint the binding)
+         expr    let v1 = [10, 20, 30] at ℓ3
+         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5]
+           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5, ℓ3 = [10, 20, 30]]
+         result  value [10, 20, 30]
+  [21]  d7                (D-Use-Copy) §6.3
+         expr    v0
+         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5, ℓ3 = [10, 20, 30]]
+           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5, ℓ3 = [10, 20, 30]]
+         result  value 5
+  [22]  d6              (D-Index-Trap) §6.5 — the bounds trap of §6.12
+         expr    v1[v0]
+         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5, ℓ3 = [10, 20, 30]]
+           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5, ℓ3 = [10, 20, 30]]
+         result  PANIC (bounds) — a defined trap, §6.12
+  [23]  d5            (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return runs the drop through the frame's scope record instead; a trap runs no drop at all)
+         expr    { let v1: [i64; 3] = [10, 20, 30]; v1[v0] }
+         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5]
+           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5, ℓ3 = [10, 20, 30]]
+         result  PANIC (bounds) — a defined trap, §6.12
+  [24]  d3        (Panic-Lift) §6.2 — the callee trapped, so no frame is popped: §6.12 abandons the configuration and `run-all-scope-drops` never runs
+         expr    f1(5)
+         store   [ℓ0 = † (retired), ℓ1 = † (retired)]
+           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5, ℓ3 = [10, 20, 30]]
+         result  PANIC (bounds) — a defined trap, §6.12
+  [25]  d2      (D-Seq) §6.7
+         expr    { @dbg(f1(1)); f1(5) }
+         store   (empty)
+           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5, ℓ3 = [10, 20, 30]]
+         result  PANIC (bounds) — a defined trap, §6.12
+  [26]  d0  (Panic-Lift) §6.2 — the callee trapped, so no frame is popped: §6.12 abandons the configuration and `run-all-scope-drops` never runs
+         expr    f0()
+         store   (empty)
+           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5, ℓ3 = [10, 20, 30]]
+         result  PANIC (bounds) — a defined trap, §6.12
+
+────────────────────────────────────────────────────────────────────────────────
+Outcome: PANIC (bounds) — a defined trap, §6.12
+         trace up to the trap: @dbg prints 20
+
