@@ -502,6 +502,66 @@ def cases : List Case := [
     rules := ["(Match) §5.5", "(D-Match) §6.6", "(D-EndScope) §6.7", "3.9:4"],
     prog := Examples.enumProg Examples.tI64 Examples.enumTwoPayloadBindings
     },
+  { name := "destructure_copy_leaf",
+    description := "A Copy field read out of a declared-linear struct: §4.2's central override consumes the whole struct for a Copy leaf, and the affine residue drops at the access rather than at scope exit.",
+    rules := ["(Use-Declared-Linear-Destructure) §5.1", "(D-Use-Declared-Linear) §6.3", "3.8:33"],
+    prog := Examples.destrProg Examples.tI64 Examples.destructureCopyLeaf
+    },
+  { name := "destructure_affine_leaf",
+    description := "The other half of the same struct: the selected leaf is the droppable field, so it lives on in its own binding and drops at that binding's scope exit, while the Copy residue is destroyed silently at the access.",
+    rules := ["(Use-Declared-Linear-Destructure) §5.1", "§6.3 split", "3.8:33"],
+    prog := Examples.destrProg Examples.tI64 Examples.destructureAffineLeaf
+    },
+  { name := "destructure_through_plain",
+    description := "The plan consumes the smallest enclosing declared-linear place: h.x0.x0 destructures h.x0 only, so h.x1 is still readable afterwards and drops at scope exit.",
+    rules := ["(Use-Declared-Linear-Destructure) §5.1", "§4.2 dl(Γ,p)", "3.8:33"],
+    prog := Examples.destrProg Examples.tI64 Examples.destructureThroughPlain
+    },
+  { name := "destructure_two_levels",
+    description := "Two declared-linear levels, selected one at a time: the outer destructure hands on the inner struct whole and destroys the outer residue, and the inner one then takes a Copy leaf.",
+    rules := ["(Use-Declared-Linear-Destructure) §5.1", "§4.2 dl(Γ,p)", "3.8:33"],
+    prog := Examples.destrProg Examples.tI64 Examples.destructureTwoLevels
+    },
+  { name := "drop_declared_copy_leaf",
+    description := "@drop at a declared-linear plan consumes the whole place even at a Copy leaf: the residue is destroyed at the @drop and nothing is left to drop at scope exit.",
+    rules := ["(@Drop) §5.3", "(D-Use-Declared-Linear) §6.3", "3.8:33", "3.9:38"],
+    prog := Examples.destrProg Examples.tI64 Examples.dropDeclaredCopyLeaf
+    },
+  { name := "drop_declared_residue_first",
+    description := "The order §6.3 fixes: drop* destroys the residue first and §6.11 then drops the selected leaf, so the earlier field's destructor prints before the selected field's.",
+    rules := ["(@Drop) §5.3", "§6.3 destructure", "§6.11", "3.8:33"],
+    prog := Examples.destrProg Examples.tI64 Examples.dropDeclaredResidueFirst
+    },
+  { name := "destructure_residue_order",
+    description := "The residue drops in declaration order around the selected leaf: the field before it, then the field after it.",
+    rules := ["(Use-Declared-Linear-Destructure) §5.1", "§6.3 split", "3.8:33"],
+    prog := Examples.destrProg Examples.tI64 Examples.destructureResidueOrder
+    },
+  { name := "destructure_nested_residue",
+    description := "The residue traversal recurses into the selected field before it reaches the later sibling, so nested residue is destroyed first.",
+    rules := ["(Use-Declared-Linear-Destructure) §5.1", "§6.3 split", "3.8:33"],
+    prog := Examples.destrProg Examples.tI64 Examples.destructureNestedResidue
+    },
+  { name := "destructure_linear_residue",
+    description := "A destructure whose residue carries a linear value: rejected statically (3.8:60, E0474) and refused dynamically by the residue monitor (linearLeak).",
+    rules := ["(Use-Declared-Linear-Destructure) §5.1", "3.8:60"],
+    prog := Examples.destrProg Examples.tI64 Examples.destructureLinearResidue
+    },
+  { name := "destructure_under_dtor",
+    description := "A destructure out of a value whose type declares a destructor: 3.9:34 forbids it at every enclosing value, d included (E0456), and no monitor enforces it, so the machine runs the program.",
+    rules := ["(Use-Declared-Linear-Destructure) §5.1", "3.9:34"],
+    prog := Examples.destrProg Examples.tI64 Examples.destructureUnderDtor
+    },
+  { name := "destructure_one_arm",
+    description := "A destructure in one arm of an if only: the §5.5 join meets MovedOut against Owned at a declared-linear place and is ill-formed (E0443); the taken path runs.",
+    rules := ["(Use-Declared-Linear-Destructure) §5.1", "(If) §5.5 join", "3.8:50"],
+    prog := Examples.destrProg Examples.tI64 Examples.destructureOneArm
+    },
+  { name := "destructure_ancestor_dropped",
+    description := "After an inner declared-linear place is destructured, @drop of the declared-linear ancestor discharges it and §6.11 drops exactly the ancestor's own residue. The bridge is red on this one: the compiler rejects it with E0406, and which of the two is right is RUE-2335. The case stays seeded until that is decided.",
+    rules := ["(Use-Declared-Linear-Destructure) §5.1", "(@Drop) §5.3", "§5.6 declared clause", "3.8:74"],
+    prog := Examples.destrProg Examples.tI64 Examples.destructureAncestorDropped
+    },
   { name := "countdown",
     description := "A recursive countdown summing 4+3+2+1+0: every frame pops normally and the value comes back through five call boundaries.",
     rules := ["(Call) §5.8", "(D-Call) §6.9", "(D-Return-Value) §6.9"],
@@ -626,6 +686,13 @@ example : run exportOps (Examples.prog Examples.tI64 (seq (Examples.resL (Exampl
     = .stuck .linearDiscard := by rfl
 example : checkProgram (Examples.prog Examples.tI64 (seq (Examples.resL (Examples.lit 3)) (Examples.lit 4)))
     = false := by rfl
+
+/-- §6.3's residue monitor, as a refusal: a destructure whose residue holds a
+live declared-`linear` value is `linearLeak` rather than a silent drop
+(`3.8:60`, E0474). §5.1's `¬ linear-residue(S, π_s)` premise is what makes it
+unreachable for a program the checker accepts. -/
+example : run exportOps (Examples.destrProg Examples.tI64 Examples.destructureLinearResidue)
+    exportFuel = .stuck .linearLeak := by rfl
 
 /-! ## Outcomes, from the mechanization -/
 

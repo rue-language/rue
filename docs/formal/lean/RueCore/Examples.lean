@@ -83,9 +83,11 @@ destructor is what makes each of its drops observable. -/
 def dAffine : StructDecl := { attr := .none, fields := [tI64], dtor := true, cls := .affine }
 
 /-- `S2`: `linear struct { x0: i64 }`, no destructor. Class `Linear`, drops
-silent. It is *declared* linear, so a projection out of it would select §4.2's
-`Declared(d, π)` plan — which this fragment rejects (RUE-2236) — and the
-obligation is discharged by a move of the whole value or by `@drop`. -/
+silent. It is *declared* linear, so a projection out of it selects §4.2's
+`Declared(d, π_s)` plan and (Use-Declared-Linear-Destructure) §5.1 consumes the
+whole value for the leaf; the obligation is otherwise discharged by a move of
+the whole value or by `@drop`. The destructure cases have their own
+declarations (`destrDecls`, below). -/
 def dLinear : StructDecl := { attr := .linear, fields := [tI64], dtor := false, cls := .linear }
 
 /-- `S3`: `linear struct { x0: i64 }` with a destructor. Class `Linear`, drops
@@ -1131,6 +1133,245 @@ def enumTwoPayloadBindings : Expr :=
       («match» (use (.var 0)) [seq (dbg (lit 10)) (lit 5), lit 6])
       (seq (dbg (lit 20)) (use (.var 0))))
 
+/-! ## The declared-linear destructure (RUE-2236)
+
+§4.2's `Declared(d, π_s)` plan and the rule that discharges it,
+(Use-Declared-Linear-Destructure) §5.1, with §6.3's `split`/`destructure` under
+them. The eight accepted programs below are the probe table's d1, d2, d4, d5f,
+d6, d6c, d13 and d14; the three rejections are d3, d7 and d12; and
+`destructureAncestorDropped` is d5b, **seeded red** — the model accepts it and
+the compiler does not (RUE-2335). Every one was run against the compiler before
+it was committed, and the probe it reproduces is named in its doc-comment.
+
+The declarations live in their own environment rather than in `structEnv`, so
+the programs that do not destructure keep printing the declaration list they
+always had. `S12` is the one with no `linear` attribute: it is `Linear` by
+infection (`3.8:58`), which is exactly the ancestor whose projection is *not* a
+destructure. -/
+
+/-- `S11`: `linear struct { x0: i64, x1: S1 }`. A `Copy` field and a
+destructor-bearing affine one, which is the pair that makes both halves of a
+destructure observable: select `x0` and `x1` drops, select `x1` and nothing
+does. -/
+def dDestrPair : StructDecl :=
+  { attr := .linear, fields := [tI64, .struct 1], dtor := false, cls := .linear }
+
+/-- `S12`: `struct { x0: S11, x1: S1 }`, no attribute. `Linear` **by
+infection** through `S11`, so a projection through it is not a destructure: the
+plan's `d` is the `S11` field, and the `S1` sibling of the binding survives to
+scope exit (probe d4). -/
+def dDestrHolder : StructDecl :=
+  { attr := .none, fields := [.struct 11, .struct 1], dtor := false, cls := .linear }
+
+/-- `S13`: `linear struct { x0: S11, x1: S1 }`. Two declared-`linear` levels,
+which is where §4.2's "smallest (innermost) one is destructured" has an
+instance (probes d5f, d5b). -/
+def dDestrOuter : StructDecl :=
+  { attr := .linear, fields := [.struct 11, .struct 1], dtor := false, cls := .linear }
+
+/-- `S14`: `linear struct { x0: S1, x1: S1 }`. Two droppable fields, so a
+`@drop` at the second one shows the residue's drop and the leaf's in the order
+§6.3 fixes (probe d6c). -/
+def dDestrTwoAff : StructDecl :=
+  { attr := .linear, fields := [.struct 1, .struct 1], dtor := false, cls := .linear }
+
+/-- `S15`: `linear struct { x0: S1, x1: i64, x2: S1 }`. A droppable field on
+each side of the selected leaf, which pins the residue's declaration order
+(probe d13). -/
+def dDestrThree : StructDecl :=
+  { attr := .linear, fields := [.struct 1, tI64, .struct 1], dtor := false, cls := .linear }
+
+/-- `S16`: `linear struct { x0: S8, x1: S1 }`. The selected path runs through
+the plain struct `S8`, so the residue traversal recurses before it reaches the
+later sibling (probe d14). -/
+def dDestrNested : StructDecl :=
+  { attr := .linear, fields := [.struct 8, .struct 1], dtor := false, cls := .linear }
+
+/-- `S17`: `linear struct { x0: i64, x1: S2 }`. The residue is a declared-linear
+field, which `¬ linear-residue(S, π_s)` refuses (`3.8:60`, E0474 — probe d3). -/
+def dDestrLinRes : StructDecl :=
+  { attr := .linear, fields := [tI64, .struct 2], dtor := false, cls := .linear }
+
+/-- `S18`: `linear struct { x0: i64, x1: S1 }` **with a destructor**. `3.9:34`
+forbids the destructure at every enclosing value, `d` included, because the
+destructor would never run at all (E0456 — probe d7). Its field join is
+`Affine`, so `3.9:44` permits the declaration. -/
+def dDestrDtor : StructDecl :=
+  { attr := .linear, fields := [tI64, .struct 1], dtor := true, cls := .linear }
+
+/-- `S19`: `struct { x0: i64, x1: S2 }`, no attribute. `Linear` by infection,
+and the *plain* struct step the selected path passes through in `S20` — which
+is where `linear-residue`'s recursion has to look (probe d22). -/
+def dDestrNestLinM : StructDecl :=
+  { attr := .none, fields := [tI64, .struct 2], dtor := false, cls := .linear }
+
+/-- `S20`: `linear struct { x0: S19, x1: S1 }`. Selecting `x0.x0` retains
+`x0.x1`, a declared-linear place one step *below* the selected field, so the
+residue test must recurse to find it (`3.8:60`, "checked recursively through
+nested fields" — probe d22). -/
+def dDestrNestLin : StructDecl :=
+  { attr := .linear, fields := [.struct 19, .struct 1], dtor := false, cls := .linear }
+
+/-- The declaration environment the destructure cases run in: the fixture
+structs, then the ten above. -/
+def destrDecls : Decls :=
+  { structs := structEnv ++
+      [dDestrPair, dDestrHolder, dDestrOuter, dDestrTwoAff, dDestrThree, dDestrNested,
+       dDestrLinRes, dDestrDtor, dDestrNestLinM, dDestrNestLin],
+    enums := [] }
+
+/-- `S11`'s index. -/
+def sDestrPair : Nat := 11
+/-- `S12`'s index. -/
+def sDestrHolder : Nat := 12
+/-- `S13`'s index. -/
+def sDestrOuter : Nat := 13
+/-- `S14`'s index. -/
+def sDestrTwoAff : Nat := 14
+/-- `S15`'s index. -/
+def sDestrThree : Nat := 15
+/-- `S16`'s index. -/
+def sDestrNested : Nat := 16
+/-- `S17`'s index. -/
+def sDestrLinRes : Nat := 17
+/-- `S18`'s index. -/
+def sDestrDtor : Nat := 18
+/-- `S19`'s index. -/
+def sDestrNestLinM : Nat := 19
+/-- `S20`'s index. -/
+def sDestrNestLin : Nat := 20
+
+/-- A program over the destructure declarations, entered at a no-parameter
+`main` returning `T`. -/
+def destrProg (T : Ty) (e : Expr) : Program := Program.entry destrDecls T e
+
+/-- **A `Copy` leaf out of a declared-`linear` struct** (probe d1): §4.2's
+"central override" — the plan consumes the enclosing place even though the leaf
+is `Copy`. The affine residue drops **at the access**, so `10`, the residue's
+`2`, `20`, then the value `1`. -/
+def destructureCopyLeaf : Expr :=
+  letIn false (mkStruct sDestrPair [lit 1, resA (lit 2)])
+    (seq (dbg (lit 10))
+      (letIn false (use (.proj (.var 0) 0))
+        (seq (dbg (lit 20)) (use (.var 0)))))
+
+/-- **An affine leaf with a `Copy` residue** (probe d2): the selected value
+lives on in its own binding and drops at *its* scope exit, while the residue —
+an `i64` — drops silently at the access. `10`, `20`, the leaf's `2`, then the
+value `3`. -/
+def destructureAffineLeaf : Expr :=
+  letIn false (mkStruct sDestrPair [lit 1, resA (lit 2)])
+    (seq (dbg (lit 10))
+      (letIn false (use (.proj (.var 0) 1))
+        (seq (dbg (lit 20)) (lit 3))))
+
+/-- **Only the smallest enclosing declared-`linear` place is consumed** (probe
+d4): `h.x0.x0` destructures `h.x0`, and `h.x1` stays readable and drops at
+scope exit. `10`, the residue's `2`, the `Copy` read `3`, `20`, the sibling's
+`3` at scope exit, then the value `1`. -/
+def destructureThroughPlain : Expr :=
+  letIn false (mkStruct sDestrHolder [mkStruct sDestrPair [lit 1, resA (lit 2)], resA (lit 3)])
+    (seq (dbg (lit 10))
+      (letIn false (use (.proj (.proj (.var 0) 0) 0))
+        (seq (dbg (use (.proj (.proj (.var 1) 1) 0)))
+          (seq (dbg (lit 20)) (use (.var 0))))))
+
+/-- **Two declared-`linear` levels, selected one at a time** (probe d5f): the
+outer destructure takes the inner struct whole — its residue `3` drops at once
+— and the inner one then takes a `Copy` leaf, dropping `2`. `10`, `3`, `20`,
+`2`, `30`, then the value `1`. -/
+def destructureTwoLevels : Expr :=
+  letIn false (mkStruct sDestrOuter [mkStruct sDestrPair [lit 1, resA (lit 2)], resA (lit 3)])
+    (seq (dbg (lit 10))
+      (letIn false (use (.proj (.var 0) 0))
+        (seq (dbg (lit 20))
+          (letIn false (use (.proj (.var 0) 0))
+            (seq (dbg (lit 30)) (use (.var 0)))))))
+
+/-- **`@drop` at a declared plan consumes the whole place** (probe d6), even at
+a `Copy` leaf: `@drop(x.x0)` destroys the residue `2` and leaves `x` `MovedOut`,
+so nothing drops at scope exit. `10`, `2`, `20`, then the value `3`. -/
+def dropDeclaredCopyLeaf : Expr :=
+  letIn false (mkStruct sDestrPair [lit 1, resA (lit 2)])
+    (seq (dbg (lit 10))
+      (seq (drop (.proj (.var 0) 0))
+        (seq (dbg (lit 20)) (lit 3))))
+
+/-- **The residue drops before the selected leaf** (probe d6c): §6.3 applies
+`drop*` to the residue and only then does §6.11 reach the leaf, so the earlier
+field's `1` comes out before the selected field's `2`. `10`, `1`, `2`, `20`,
+then the value `3`. -/
+def dropDeclaredResidueFirst : Expr :=
+  letIn false (mkStruct sDestrTwoAff [resA (lit 1), resA (lit 2)])
+    (seq (dbg (lit 10))
+      (seq (drop (.proj (.var 0) 1))
+        (seq (dbg (lit 20)) (lit 3))))
+
+/-- **The residue drops in declaration order** (probe d13): the field before the
+selected leaf and the field after it, `1` then `2`, around a leaf that drops
+nothing. `10`, `1`, `2`, `20`, then the value `5`. -/
+def destructureResidueOrder : Expr :=
+  letIn false (mkStruct sDestrThree [resA (lit 1), lit 5, resA (lit 2)])
+    (seq (dbg (lit 10))
+      (letIn false (use (.proj (.var 0) 1))
+        (seq (dbg (lit 20)) (use (.var 0)))))
+
+/-- **Nested residue before a later sibling** (probe d14): the traversal
+recurses into the selected field `x0` — retaining `x0.x0` there — before it
+reaches the retained sibling `x1`, so `1` comes out before `2`. `10`, `1`, `2`,
+`20`, then the value `5`. -/
+def destructureNestedResidue : Expr :=
+  letIn false (mkStruct sDestrNested
+      [mkStruct sAffineInt [resA (lit 1), lit 5], resA (lit 2)])
+    (seq (dbg (lit 10))
+      (letIn false (use (.proj (.proj (.var 0) 0) 1))
+        (seq (dbg (lit 20)) (use (.var 0)))))
+
+/-- **A residue that carries a linear value** (probe d3): the destructure would
+destroy `x1` without the program ever consuming it, which
+`¬ linear-residue(S, π_s)` refuses (`3.8:60`; the compiler reports E0474). The
+machine's own residue monitor refuses it with `linearLeak`. -/
+def destructureLinearResidue : Expr :=
+  letIn false (mkStruct sDestrLinRes [lit 1, resL (lit 2)])
+    (letIn false (use (.proj (.var 0) 0)) (use (.var 0)))
+
+/-- **A destructure out of a destructor-bearing value** (probe d7): `3.9:34`
+forbids it at every enclosing value, `d` included, because the destructor would
+observe a hole — here it would not run at all. The compiler reports E0456. No
+monitor enforces it, so the machine runs the program and prints the residue's
+`2` and then the value `1`. -/
+def destructureUnderDtor : Expr :=
+  letIn false (mkStruct sDestrDtor [lit 1, resA (lit 2)])
+    (letIn false (use (.proj (.var 0) 0)) (use (.var 0)))
+
+/-- **A destructure in one arm of an `if` only** (probe d12): the arm leaves the
+declared-`linear` binding `MovedOut` and the other leaves it `Owned`, which
+`3.8:50` makes ill-formed (the compiler reports E0443). The taken path runs, so
+the machine prints the residue's `2` and then the value `1`. -/
+def destructureOneArm : Expr :=
+  letIn false (mkStruct sDestrPair [lit 1, resA (lit 2)])
+    (letIn false (ite (boolLit true) (use (.proj (.var 0) 0)) (lit 0))
+      (use (.var 0)))
+
+/-- **The red case** (probe d5b, RUE-2335). After `y.x0.x0` destructures `y.x0`,
+the ancestor `y` is still `Owned` with its own residue, and §5.3's (@Drop)
+discharges it: `Σ(y) = Owned` holds, no still-owned linear sub-place remains
+below it, and §6.11's `⊘`-skip drops exactly `y.x1`. The model therefore accepts
+the program and runs it to `10`, `2`, `20`, `3`, `30`, `1`.
+
+**The compiler rejects it** with E0406, "linear value 'y' must be consumed but
+was dropped" — it treats the ancestor's obligation as undischargeable by
+`@drop` once an inner declared-linear place has been destructured out of it.
+One of the two is wrong and the calculus is what says which; the case is seeded
+red exactly as `i64_min_times_neg1` is, and RUE-2335 is the decision. -/
+def destructureAncestorDropped : Expr :=
+  letIn false (mkStruct sDestrOuter [mkStruct sDestrPair [lit 1, resA (lit 2)], resA (lit 3)])
+    (seq (dbg (lit 10))
+      (letIn false (use (.proj (.proj (.var 0) 0) 0))
+        (seq (dbg (lit 20))
+          (seq (drop (.var 1))
+            (seq (dbg (lit 30)) (use (.var 0)))))))
+
 /-! ## Calls, frames, and `return` (RUE-2233)
 
 Each of these needs more than one function, so it is written as a whole
@@ -1446,15 +1687,77 @@ the binding — probe e3c). -/
 example : checkProgram (enumProg tI64
     (letIn false (mkEnum eLinearIdx 0 [resLD (lit 1)]) (lit 7))) = false := by rfl
 
-/-- The fragment's own restriction: a path whose proper prefix is a struct
-declared `linear` selects §4.2's `Declared(d, π)` plan, whose rule
-(Use-Declared-Linear-Destructure) §5.1 is RUE-2236's. The *compiler* accepts
-this program, so nothing the corpus or the generator emits may have the shape
-(`Syntax.lean`, `Gen.lean`). -/
-example : checkProgram (prog tI64
-    (letIn false (resL (lit 7))
-      (letIn false (use (.proj (.var 0) 0)) (seq (drop (.var 1)) (use (.var 0)))))) = false := by
-  rfl
+/-! ### The declared-linear destructure witnesses (RUE-2236)
+
+(Use-Declared-Linear-Destructure) §5.1 accepted, and each of its premises
+refused, kernel-checked. The probe each one reproduces is named; the compiler's
+own diagnostic is the one the probe table records. -/
+
+/-- The eight accepted destructure programs: `checkProgram_sound` turns each
+acceptance into a §5 derivation, so `soundness` and the §7 corollaries apply to
+every one of them. -/
+example : ProgramTyped (destrProg tI64 destructureCopyLeaf) := checkProgram_sound (by rfl)
+example : ProgramTyped (destrProg tI64 destructureAffineLeaf) := checkProgram_sound (by rfl)
+example : ProgramTyped (destrProg tI64 destructureThroughPlain) := checkProgram_sound (by rfl)
+example : ProgramTyped (destrProg tI64 destructureTwoLevels) := checkProgram_sound (by rfl)
+example : ProgramTyped (destrProg tI64 dropDeclaredCopyLeaf) := checkProgram_sound (by rfl)
+example : ProgramTyped (destrProg tI64 dropDeclaredResidueFirst) := checkProgram_sound (by rfl)
+example : ProgramTyped (destrProg tI64 destructureResidueOrder) := checkProgram_sound (by rfl)
+example : ProgramTyped (destrProg tI64 destructureNestedResidue) := checkProgram_sound (by rfl)
+
+/-- The red case is accepted too, which is what makes it red: the §7 theorems
+apply to it and the compiler refuses it (RUE-2335, `destructureAncestorDropped`). -/
+example : ProgramTyped (destrProg tI64 destructureAncestorDropped) := checkProgram_sound (by rfl)
+
+/-- `¬ linear-residue(S, π_s)` (§5.1, `3.8:60`, E0474): the residue is a
+declared-`linear` field the destructure would destroy unconsumed (probe d3). -/
+example : checkProgram (destrProg tI64 destructureLinearResidue) = false := by rfl
+
+/-- The same premise reached through a **nested plain-struct step**: selecting
+`x.x0.x0` retains `x.x0.x1`, which is declared `linear`, so the residue test has
+to recurse to see it (`3.8:60`, "checked recursively through nested fields" —
+probe d22). -/
+example : checkProgram (destrProg tI64
+    (letIn false (mkStruct sDestrNestLin
+        [mkStruct sDestrNestLinM [lit 5, resL (lit 2)], resA (lit 3)])
+      (letIn false (use (.proj (.proj (.var 0) 0) 0)) (use (.var 0))))) = false := by rfl
+
+/-- `3.9:34` at the consumed place itself (E0456, probe d7): the rule's
+"every enclosing value, including `d`" is `noDtorPrefix` read over the whole
+path. -/
+example : checkProgram (destrProg tI64 destructureUnderDtor) = false := by rfl
+
+/-- The §5.5 join (`3.8:50`, E0443, probe d12): the destructure leaves the
+declared-`linear` binding `MovedOut` on one path and `Owned` on the other. -/
+example : checkProgram (destrProg tI64 destructureOneArm) = false := by rfl
+
+/-- **A declared-linear place is consumed by its first destructure** (probes
+d1b, d8): the second read of `x.x0` is the use of a moved-out place, because
+the first one consumed `x` and not just the leaf (E0205). -/
+example : checkProgram (destrProg tI64
+    (letIn false (mkStruct sDestrPair [lit 1, resA (lit 2)])
+      (binop .add (use (.proj (.var 0) 0)) (use (.proj (.var 0) 0))))) = false := by rfl
+
+/-- The same at **two different leaves** (probe d15): `x.x0` consumes the whole
+of `x`, so `x.x2` afterwards is E0205 rather than a second partial move. -/
+example : checkProgram (destrProg tI64
+    (letIn false (mkStruct sDestrThree [resA (lit 1), lit 5, resA (lit 2)])
+      (seq (use (.proj (.var 0) 0)) (use (.proj (.var 0) 2))))) = false := by rfl
+
+/-- **The declared-linear ancestor keeps its own obligation** (§5.6's declared
+clause, `3.8:74`; probe d5, E0406): destructuring `y.x0` leaves `y` `Owned`, and
+a declared-`linear` struct still `Owned` at scope exit is a leak whatever its
+fields hold. -/
+example : checkProgram (destrProg tI64
+    (letIn false (mkStruct sDestrOuter [mkStruct sDestrPair [lit 1, resA (lit 2)], resA (lit 3)])
+      (letIn false (use (.proj (.proj (.var 0) 0) 0)) (use (.var 0))))) = false := by rfl
+
+/-- The machine's own residue monitor: a linear residue is a **positive
+refusal**, not a silent drop (`Dynamics.lean`'s `dropResidue`; probe d3). §6.3
+leaves the case unchecked because §5.1's premise has excluded it, and this is
+the state that premise excludes. -/
+example : run demoOps (destrProg tI64 destructureLinearResidue) demoFuel
+    = .stuck .linearLeak := by rfl
 
 /-! The two RUE-2316 witnesses are accepted — which is the point: the §7
 theorems apply to them, and the run below still loses the resource. -/
