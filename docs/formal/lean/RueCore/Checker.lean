@@ -152,7 +152,7 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
               if T.mult P.decls = .copy then
                 (if u.fullyOwned then some (T, Γ) else none)
               else
-                (if u.fullyOwned ∧ noDtorPrefix P.decls en.ty p.path then
+                (if u.fullyOwned ∧ noDtorPrefix P.decls en.ty p.path ∧ p.noIdx then
                    some (T, Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
                  else none)
             else none
@@ -237,6 +237,57 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
                     | none => none)))
            else none)
       | _ => none
+  | .mkArray T args =>
+      match checkArgs P R Γ args (List.replicate args.length T) with
+      | some Γ' => some (.array T args.length, Γ')
+      | none => none
+  | .repeatArray T e n =>
+      match check P R Γ e with
+      | some (T', Γ') =>
+          if T' = T ∧ T.mult P.decls = .copy then some (.array T n, Γ') else none
+      | none => none
+  | .indexRead p e =>
+      match check P R Γ e with
+      | some (.int _ _, Γ₁) =>
+        (match Γ₁[p.root]? with
+         | none => none
+         | some en =>
+           match en.st.get p.path, en.ty.atPath P.decls p.path with
+           | some u, some (.array T _) =>
+               if u.fullyOwned ∧ T.mult P.decls = .copy ∧
+                   noLinearPrefix P.decls en.ty p.path then some (T, Γ₁)
+               else none
+           | _, _ => none)
+      | _ => none
+  | .indexWrite p e₁ e₂ =>
+      match Γ[p.root]? with
+      | none => none
+      | some en₀ =>
+        if en₀.mu = true then
+          match en₀.st.get p.path, en₀.ty.atPath P.decls p.path with
+          | some _, some (.array T _) =>
+            if T.mult P.decls = .copy ∧ noLinearPrefix P.decls en₀.ty p.path then
+              (match check P R Γ e₁ with
+               | some (.int _ _, Γ₁) =>
+                 (match check P R Γ₁ e₂ with
+                  | some (T', Γ₂) =>
+                    if T' = T then
+                      (match Γ₂[p.root]? with
+                       | some en₁ =>
+                         (match en₁.st.get p.path with
+                          | some u₁ =>
+                              if u₁.fullyOwned then
+                                some (.unit,
+                                  Γ₂.set p.root (en₁.setSt (en₁.st.setAt p.path .owned)))
+                              else none
+                          | none => none)
+                       | none => none)
+                    else none
+                  | none => none)
+               | _ => none)
+            else none
+          | _, _ => none
+        else none
   | .drop p =>
       match Γ[p.root]? with
       | none => none
@@ -248,7 +299,8 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
                 (if u.fullyOwned then some (.unit, Γ) else none)
               else
                 (if u.isOwned ∧ noDtorPrefix P.decls en.ty p.path ∧
-                    (u.fullyOwned = true ∨ residualLinearBelow P.decls u T = false) then
+                    (u.fullyOwned = true ∨ residualLinearBelow P.decls u T = false) ∧
+                    p.noIdx then
                    some (.unit, Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
                  else none)
             else none
@@ -402,7 +454,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
               split at h
               · rename_i hprem
                 cases h
-                exact .useMove hen hg hprem.1 hty hncopy hprem.2 hlin
+                exact .useMove hen hg hprem.1 hty hncopy hprem.2.1 hlin hprem.2.2
               · cases h
           · cases h
         · cases h
@@ -535,6 +587,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
         | bool => simp at h
         | unit => simp at h
         | struct s' => simp at h
+        | array Te n => simp at h
         | enum e =>
           simp only [] at h
           cases hed : P.decls.enums[e]? with
@@ -559,6 +612,78 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
                       exact .«match» (check_sound scrut hscrut) hed hlen
                         (checkArms_sound arms harms) hjoin
             · simp only [if_neg hlen] at h; cases h
+  | .mkArray Te args, Γ, T, Γ', h => by
+      simp only [check] at h
+      split at h
+      · rename_i Γ₁ hargs
+        cases h
+        exact .mkArray (checkArgs_sound args hargs)
+      · cases h
+  | .repeatArray Te e n, Γ, T, Γ', h => by
+      simp only [check] at h
+      split at h
+      · rename_i T' Γ₁ hchk
+        split at h
+        · rename_i hprem
+          obtain ⟨hT, hcopy⟩ := hprem
+          subst hT
+          cases h
+          exact .repeatArray (check_sound e hchk) hcopy
+        · cases h
+      · cases h
+  | .indexRead pl e, Γ, T, Γ', h => by
+      simp only [check] at h
+      split at h
+      · rename_i w sg Γ₁ hchk
+        split at h
+        · cases h
+        · rename_i en hen
+          split at h
+          · rename_i u Te n hg hty
+            split at h
+            · rename_i hprem
+              cases h
+              exact .indexRead (check_sound e hchk) hen hg hprem.1 hty hprem.2.1 hprem.2.2
+            · cases h
+          · cases h
+      · cases h
+  | .indexWrite pl e₁ e₂, Γ, T, Γ', h => by
+      simp only [check] at h
+      split at h
+      · cases h
+      · rename_i en₀ hget₀
+        split at h
+        · rename_i hmu
+          split at h
+          · rename_i u₀ Te n hg₀ hty₀
+            split at h
+            · rename_i hpre
+              obtain ⟨hcopy, hlin⟩ := hpre
+              split at h
+              · rename_i w sg Γ₁ hchk₁
+                split at h
+                · rename_i T' Γ₂ hchk₂
+                  split at h
+                  · rename_i hT
+                    subst hT
+                    split at h
+                    · rename_i en₁ hget₁
+                      split at h
+                      · rename_i u₁ hg₁
+                        split at h
+                        · rename_i hfo
+                          cases h
+                          exact .indexWrite hget₀ hmu hg₀ hty₀ hcopy hlin
+                            (check_sound e₁ hchk₁) (check_sound e₂ hchk₂) hget₁ hg₁ hfo
+                        · cases h
+                      · cases h
+                    · cases h
+                  · cases h
+                · cases h
+              · cases h
+            · cases h
+          · cases h
+        · cases h
   | .drop pl, Γ, T, Γ', h => by
       simp only [check] at h
       split at h
@@ -579,7 +704,8 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
               split at h
               · rename_i hprem
                 cases h
-                exact .dropRes hen hg hprem.1 hty hncopy hprem.2.1 hlin hprem.2.2
+                exact .dropRes hen hg hprem.1 hty hncopy hprem.2.1 hlin hprem.2.2.1
+                  hprem.2.2.2
               · cases h
           · cases h
         · cases h
@@ -780,12 +906,32 @@ the corpus JSON shape and the seed cases unchanged — and the one rule covers
 both layers, as `3.0:5` writes it (E0483).
 -/
 
-/-- Whether a type's declaration is already grounded. A scalar names no
-declaration, so it always is (helper). -/
+/-- Whether a type's declaration is already grounded. An array is grounded
+exactly when its element type is — `3.0:5` names array elements beside struct
+fields and enum payloads, so `struct S { x0: [S; 1] }` must peel no further
+than `struct S { x0: S }` does (E0483). A scalar names no declaration, so it
+always is (helper). -/
 def Ty.grounded (st : List Bool × List Bool) : Ty → Bool
   | .struct s => (st.1[s]?).getD false
   | .enum e => (st.2[e]?).getD false
+  | .array T _ => Ty.grounded st T
   | .int _ _ | .float _ | .bool | .unit => true
+
+/-- A grounded type's every named declaration is grounded: `Ty.declIds` peels
+exactly the array wrappers `Ty.grounded` walks through (helper). -/
+theorem Ty.grounded_declIds {st : List Bool × List Bool} :
+    ∀ {T : Ty} {d : DeclId}, Ty.grounded st T = true → d ∈ T.declIds →
+      Ty.grounded st d.ty = true
+  | .struct _, _, h, hm => by
+      simp only [Ty.declIds, List.mem_singleton] at hm; subst hm; exact h
+  | .enum _, _, h, hm => by
+      simp only [Ty.declIds, List.mem_singleton] at hm; subst hm; exact h
+  | .array T _, _, h, hm =>
+      Ty.grounded_declIds (T := T) h (by simpa only [Ty.declIds] using hm)
+  | .int _ _, _, _, hm => by simp [Ty.declIds] at hm
+  | .float _, _, _, hm => by simp [Ty.declIds] at hm
+  | .bool, _, _, hm => by simp [Ty.declIds] at hm
+  | .unit, _, _, hm => by simp [Ty.declIds] at hm
 
 /-- One peel round: a declaration is grounded when every type it contains by
 value is — a struct's fields, an enum's payload components over every variant
@@ -910,7 +1056,8 @@ theorem Decls.grounded_pred {D : Decls} {n : Nat} {d d' : DeclId}
           rw [hd] at h
           simp only [Option.map_some, Option.getD_some, List.all_eq_true] at h
           simp only [Decls.Names, Decls.byValue, hd] at hn
-          exact h d'.ty hn
+          obtain ⟨T, hT, hd'⟩ := hn
+          exact Ty.grounded_declIds (h T hT) hd'
   | enum e =>
       simp only [DeclId.ty, Ty.grounded, Decls.peel, Decls.peelStep, List.getElem?_map] at h
       cases hd : D.enums[e]? with
@@ -919,8 +1066,9 @@ theorem Decls.grounded_pred {D : Decls} {n : Nat} {d d' : DeclId}
           rw [hd] at h
           simp only [Option.map_some, Option.getD_some, List.all_eq_true] at h
           simp only [Decls.Names, Decls.byValue, hd] at hn
-          obtain ⟨Ts, hTs, hT⟩ := List.mem_flatten.mp hn
-          exact h Ts hTs d'.ty hT
+          obtain ⟨T, hTmem, hd'⟩ := hn
+          obtain ⟨Ts, hTs, hT⟩ := List.mem_flatten.mp hTmem
+          exact Ty.grounded_declIds (h Ts hTs T hT) hd'
 
 /-- A declaration grounded at some round is accessible in the by-value
 relation (helper). -/
