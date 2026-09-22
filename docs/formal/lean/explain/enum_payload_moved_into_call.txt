@@ -1,11 +1,11 @@
 ════════════════════════════════════════════════════════════════════════════════
- enum_match_one_arm
+ enum_payload_moved_into_call
 ════════════════════════════════════════════════════════════════════════════════
-A linear-payload enum consumed by a match in one arm of an if only: class(E)
-is the payload join over every variant, so the Owned side is residual and the
-§5.5 join rejects it (E0443); the executed path runs.
+A Linear payload moved into a call in the one arm of an if that matches: the
+other path leaves the enum Owned, so the §5.5 join is ill-formed (E0443); the
+executed path runs and the callee's @drop prints.
 
-Rules exercised: (Match) §5.5 · (If) §5.5 join · 3.8:50 · 6.3:19
+Rules exercised: (Match) §5.5 · (If) §5.5 join · (Call) §5.8 · 3.8:50 · 6.3:19
 
 ── The program ─────────────────────────────────────────────────────────────────
 
@@ -34,20 +34,27 @@ fn f0() -> i64 {
     {
         let v0: E1 = E1.K0(S3 { x0: 1 });
         {
-            if true {
+            let v1: i64 = if true {
                 match v0 {
                     E1.K0(v1) => {
-                        @drop(v1)
+                        f1(v1)
                     },
                     E1.K1 => {
-                        ()
+                        6
                     },
                 }
             } else {
-                ()
+                0
             };
-            7
+            v1
         }
+    }
+}
+
+fn f1(v0: S3) -> i64 {
+    {
+        @drop(v0);
+        5
     }
 }
 
@@ -59,7 +66,7 @@ Verdict: REJECTED by the checker (§5).
 
 The premise that fails, in fn f0() -> i64, at (If) §5.5 join:
 
-    on  if true { match v0 { E1.K0(v1) => @drop(v1), E1.K1 => () } } else { () }
+    on  if true { match v0 { E1.K0(v1) => f1(v1), E1.K1 => 6 } } else { 0 }
 
     the two arms disagree on a linear-carrying entry — v0: E1 is MovedOut in
     the then-arm and Owned in the else-arm, so a linear value is consumed on
@@ -76,7 +83,7 @@ function body, checked from (Fn) §5.8's entry context.
   fn f0() -> i64
 
   (Let) §5.3 + the §5.6 scope-exit leak check
-    e       { let v0: E1 = E1.K0(S3 { x0: 1 }); { if true { match v0 { E1.K0(v1) => @drop(v…
+    e       { let v0: E1 = E1.K0(S3 { x0: 1 }); { let v1: i64 = if true { match v0 { E1.K0(…
     Γ;Σ     (empty)
     ✗       this premise fails:
             a premise's own derivation failed — the reason is the rejected
@@ -93,14 +100,14 @@ function body, checked from (Fn) §5.8's entry context.
                 e       1
                 Γ;Σ     (empty)
                 ⇒       i64  ⊣  (empty)
-      (Seq) §5.3, 3.8:64
-        e       { if true { match v0 { E1.K0(v1) => @drop(v1), E1.K1 => () } } else { () }; 7 }
+      (Let) §5.3 + the §5.6 scope-exit leak check
+        e       { let v1: i64 = if true { match v0 { E1.K0(v1) => f1(v1), E1.K1 => 6 } } else {…
         Γ;Σ     [v0: E1 = Owned]
         ✗       this premise fails:
                 a premise's own derivation failed — the reason is the rejected
                 premise nested under this rule
           (If) §5.5 join
-            e       if true { match v0 { E1.K0(v1) => @drop(v1), E1.K1 => () } } else { () }
+            e       if true { match v0 { E1.K0(v1) => f1(v1), E1.K1 => 6 } } else { 0 }
             Γ;Σ     [v0: E1 = Owned]
             ✗       this premise fails:
                     the two arms disagree on a linear-carrying entry — v0: E1 is
@@ -112,25 +119,44 @@ function body, checked from (Fn) §5.8's entry context.
                 Γ;Σ     [v0: E1 = Owned]
                 ⇒       bool  ⊣  [v0: E1 = Owned]
               (Match) §5.5 join
-                e       match v0 { E1.K0(v1) => @drop(v1), E1.K1 => () }
+                e       match v0 { E1.K0(v1) => f1(v1), E1.K1 => 6 }
                 Γ;Σ     [v0: E1 = Owned]
-                ⇒       ()  ⊣  [v0: E1 = MovedOut]
+                ⇒       i64  ⊣  [v0: E1 = MovedOut]
                   (Use-Move) §5.1
                     e       v0
                     Γ;Σ     [v0: E1 = Owned]
                     ⇒       E1  ⊣  [v0: E1 = MovedOut]
-                  (@Drop) §5.3
-                    e       @drop(v1)
+                  (Call) §5.8
+                    e       f1(v1)
                     Γ;Σ     [v1: S3 = Owned, v0: E1 = MovedOut]
-                    ⇒       ()  ⊣  [v1: S3 = MovedOut, v0: E1 = MovedOut]
+                    ⇒       i64  ⊣  [v1: S3 = MovedOut, v0: E1 = MovedOut]
+                      (Use-Move) §5.1
+                        e       v1
+                        Γ;Σ     [v1: S3 = Owned, v0: E1 = MovedOut]
+                        ⇒       S3  ⊣  [v1: S3 = MovedOut, v0: E1 = MovedOut]
                   (Lit) §5.8
-                    e       ()
+                    e       6
                     Γ;Σ     [v0: E1 = MovedOut]
-                    ⇒       ()  ⊣  [v0: E1 = MovedOut]
+                    ⇒       i64  ⊣  [v0: E1 = MovedOut]
               (Lit) §5.8
-                e       ()
+                e       0
                 Γ;Σ     [v0: E1 = Owned]
-                ⇒       ()  ⊣  [v0: E1 = Owned]
+                ⇒       i64  ⊣  [v0: E1 = Owned]
+
+  fn f1(v0: S3) -> i64
+
+  (Seq) §5.3, 3.8:64
+    e       { @drop(v0); 5 }
+    Γ;Σ     [v0: S3 = Owned]
+    ⇒       i64  ⊣  [v0: S3 = MovedOut]
+      (@Drop) §5.3
+        e       @drop(v0)
+        Γ;Σ     [v0: S3 = Owned]
+        ⇒       ()  ⊣  [v0: S3 = MovedOut]
+      (Lit) §5.8
+        e       5
+        Γ;Σ     [v0: S3 = MovedOut]
+        ⇒       i64  ⊣  [v0: S3 = MovedOut]
 
 ── The run (§6) ────────────────────────────────────────────────────────────────
 
@@ -179,44 +205,74 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   [ℓ0 = ⊘]
            →     [ℓ0 = ⊘, ℓ1 = S3 { 1 }]
          result  value E1.K0⟨S3 { 1 }⟩
-  [9]   d6              @drop §6.11
-         expr    @drop(v1)
+  [9]   d7                (D-Use-Move) §6.3
+         expr    v1
          store   [ℓ0 = ⊘, ℓ1 = S3 { 1 }]
            →     [ℓ0 = ⊘, ℓ1 = ⊘]
-         events  >> drop ℓ1 = S3 { 1 }; run drop fn S3(S3 { 1 })
-         result  value ()
-  [10]  d5            (D-EndScope) §6.6 (end the arm)
-         expr    endscope([ℓ1])
+         result  value S3 { 1 }
+  [10]  d7                (D-Call) §6.9 (push the frame)
+         expr    fn f1(v0: S3) -> i64  with [ℓ2]
          store   [ℓ0 = ⊘, ℓ1 = ⊘]
-           →     [ℓ0 = ⊘, ℓ1 = † (retired)]
+           →     [ℓ0 = ⊘, ℓ1 = ⊘, ℓ2 = S3 { 1 }]
          result  value ()
-  [11]  d4          (D-If-T) §6.6
-         expr    if true { match v0 { E1.K0(v1) => @drop(v1), E1.K1 => () } } else { () }
-         store   [ℓ0 = E1.K0⟨S3 { 1 }⟩]
-           →     [ℓ0 = ⊘, ℓ1 = † (retired)]
+  [11]  d9                  @drop §6.11
+         expr    @drop(v0)
+         store   [ℓ0 = ⊘, ℓ1 = ⊘, ℓ2 = S3 { 1 }]
+           →     [ℓ0 = ⊘, ℓ1 = ⊘, ℓ2 = ⊘]
+         events  >> drop ℓ2 = S3 { 1 }; run drop fn S3(S3 { 1 })
          result  value ()
-  [12]  d4          literal §6.3
-         expr    7
-         store   [ℓ0 = ⊘, ℓ1 = † (retired)]
-           →     [ℓ0 = ⊘, ℓ1 = † (retired)]
-         result  value 7
-  [13]  d3        (D-Seq) §6.7
-         expr    { if true { match v0 { E1.K0(v1) => @drop(v1), E1.K1 => () } } else { () }; 7 }
+  [12]  d9                  literal §6.3
+         expr    5
+         store   [ℓ0 = ⊘, ℓ1 = ⊘, ℓ2 = ⊘]
+           →     [ℓ0 = ⊘, ℓ1 = ⊘, ℓ2 = ⊘]
+         result  value 5
+  [13]  d8                  (D-Seq) §6.7
+         expr    { @drop(v0); 5 }
+         store   [ℓ0 = ⊘, ℓ1 = ⊘, ℓ2 = S3 { 1 }]
+           →     [ℓ0 = ⊘, ℓ1 = ⊘, ℓ2 = ⊘]
+         result  value 5
+  [14]  d6              (D-Return-Value) §6.9 (pop the frame)
+         expr    run-all-scope-drops([ℓ2])
+         store   [ℓ0 = ⊘, ℓ1 = ⊘, ℓ2 = ⊘]
+           →     [ℓ0 = ⊘, ℓ1 = ⊘, ℓ2 = † (retired)]
+         result  value 5
+  [15]  d5            (D-EndScope) §6.6 (end the arm)
+         expr    endscope([ℓ1])
+         store   [ℓ0 = ⊘, ℓ1 = ⊘, ℓ2 = † (retired)]
+           →     [ℓ0 = ⊘, ℓ1 = † (retired), ℓ2 = † (retired)]
+         result  value 5
+  [16]  d4          (D-If-T) §6.6
+         expr    if true { match v0 { E1.K0(v1) => f1(v1), E1.K1 => 6 } } else { 0 }
          store   [ℓ0 = E1.K0⟨S3 { 1 }⟩]
-           →     [ℓ0 = ⊘, ℓ1 = † (retired)]
-         result  value 7
-  [14]  d2      (D-EndScope) §6.7 (retire the binding)
+           →     [ℓ0 = ⊘, ℓ1 = † (retired), ℓ2 = † (retired)]
+         result  value 5
+  [17]  d4          (D-Let) §6.7 (mint the binding)
+         expr    let v1 = 5 at ℓ3
+         store   [ℓ0 = ⊘, ℓ1 = † (retired), ℓ2 = † (retired)]
+           →     [ℓ0 = ⊘, ℓ1 = † (retired), ℓ2 = † (retired), ℓ3 = 5]
+         result  value 5
+  [18]  d4          (D-Use-Copy) §6.3
+         expr    v1
+         store   [ℓ0 = ⊘, ℓ1 = † (retired), ℓ2 = † (retired), ℓ3 = 5]
+           →     [ℓ0 = ⊘, ℓ1 = † (retired), ℓ2 = † (retired), ℓ3 = 5]
+         result  value 5
+  [19]  d3        (D-EndScope) §6.7 (retire the binding)
+         expr    endscope([ℓ3])
+         store   [ℓ0 = ⊘, ℓ1 = † (retired), ℓ2 = † (retired), ℓ3 = 5]
+           →     [ℓ0 = ⊘, ℓ1 = † (retired), ℓ2 = † (retired), ℓ3 = † (retired)]
+         result  value 5
+  [20]  d2      (D-EndScope) §6.7 (retire the binding)
          expr    endscope([ℓ0])
-         store   [ℓ0 = ⊘, ℓ1 = † (retired)]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
-         result  value 7
-  [15]  d0  (D-Return-Value) §6.9 (pop the frame)
+         store   [ℓ0 = ⊘, ℓ1 = † (retired), ℓ2 = † (retired), ℓ3 = † (retired)]
+           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = † (retired), ℓ3 = † (retired)]
+         result  value 5
+  [21]  d0  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([])
-         store   [ℓ0 = † (retired), ℓ1 = † (retired)]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
-         result  value 7
+         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = † (retired), ℓ3 = † (retired)]
+           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = † (retired), ℓ3 = † (retired)]
+         result  value 5
 
 ────────────────────────────────────────────────────────────────────────────────
-Outcome: ok — value 7
-         drop trace: drop ℓ1 = S3 { 1 }; run drop fn S3(S3 { 1 })
+Outcome: ok — value 5
+         drop trace: drop ℓ2 = S3 { 1 }; run drop fn S3(S3 { 1 })
 

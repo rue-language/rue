@@ -2215,7 +2215,7 @@ So at `int` the two associations of `MovedOut`, `Owned`, `fields [Owned]`
 disagree — one is `MovedOut`, the other ill-formed. Over states well formed at
 their type the property holds and was checked exhaustively; proving it needs a
 state-against-type invariant the fragment does not carry (`Statics.lean`'s join
-section, RUE-2325). -/
+section, RUE-2337). -/
 example :
     (OwnSt.join (Decls.ofStructs []) .movedOut .owned tI64).bind
         (fun t => OwnSt.join (Decls.ofStructs []) t (.fields [.owned]) tI64)

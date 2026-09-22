@@ -62,11 +62,20 @@ scripts/rue lean-bridge -- --report-json /tmp/bridge.json
 The seed cases are hand-written, so `RueCore/Gen.lean` also generates
 programs: closed, well-scoped, and simply typed by construction, with
 ownership left to chance, so the checker's verdict on each is recorded and
-never filtered (about half are rejected). The generator is a pure function
+never filtered (about a third are rejected). The generator is a pure function
 of its seed, and a case named `gen_<seed>_<i>` is the same in every run with
 that seed and more than `i` cases. Its bias toward moves in one arm of an
 `if`, linear values reaching scope exit, and reassignment after a move is
 documented in the module.
+
+A generated program declares its own **enums** as well as its own structs, and
+draws enum construction and `match` — one arm per variant in declaration
+order, each arm a block over that variant's payload locals, which it may move,
+`@drop`, read or leave. About half the cases contain a `match` (90 of 200 at
+`--gen 200 --seed 7`, 441 of 1,000 at `--gen 1000 --seed 23`). Two shapes are
+deliberately absent and the module says why: a `return` or `@panic` **inside an
+arm**, which `check` is incomplete on exactly as it is inside an `if` arm, and
+a path through a declared-`linear` prefix (RUE-2236).
 
 ```bash
 lake exe ruecore-corpus --gen 1000 --seed 7 > /tmp/gen.json   # seed cases, then 1000 generated
@@ -434,7 +443,7 @@ a slice author writes:
 | `RueCore/Examples.lean` | `#eval` demos; kernel-checked acceptance/rejection of example programs | — |
 | `RueCore/Print.lean` | core syntax → Rue source, the program's struct and enum declarations included, and the observation channel (a `drop fn` per destructor-bearing declaration) | §2 elaboration inventory, 3.9 |
 | `RueCore/Corpus.lean` | the bridge corpus: each case's checker verdict and interpreter outcome, exported as JSON (`lake exe ruecore-corpus`) | §5, §6, §7 witnesses |
-| `RueCore/Gen.lean` | a seeded, type-directed generator of fragment programs, appended to the corpus by `lake exe ruecore-corpus --gen N --seed S` | programs, not rules |
+| `RueCore/Gen.lean` | a seeded, type-directed generator of fragment programs — struct **and enum** declarations, enum construction, and `match` in §5.5's canonical form — appended to the corpus by `lake exe ruecore-corpus --gen N --seed S` | programs, not rules |
 | `RueCore/Explain.lean` | instrumented mirrors of `check` and `eval` — derivation trees with the failing premise named, and step tables with stores and drop events — with the lemmas tying both to the proved definitions | §5, §6 as an explanation |
 | `RueCore/Explain/Text.lean`, `RueCore/Explain/Html.lean` | the terminal and self-contained-page renderings (`lake exe ruecore-explain`); the checked-in text is in `explain/` | — |
 | `RueCore/Digest.lean`, `RueCore/DigestMain.lean` | the statement digest and the trust report, walked out of the compiled environment (`lake exe ruecore-digest`) | the claim inventory and its trust boundary |

@@ -1075,6 +1075,163 @@ subtree is non-`Linear`; and `dropResidue_events`, that the residue's trace is
 §6.11's events concatenated in the traversal's order. The `⊘` at `π_d` is then
 re-established exactly as (Use-Move)'s is.
 
+## 5h. An eighth worked example: a `match`, and the two drops it does not do
+
+Enums are the slice RUE-2320 adds and RUE-2325 generates, and the thing to
+watch is not the branch — that is `if` again — but the *payload*. The corpus
+case is `enum_match_affine`, over
+
+```rue
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }     // the observation channel
+enum E0 { K0(S1), K1 }                   // class(E0) = Affine, through S1
+```
+
+`class(E0)` is the join over **every** payload component of **every** variant
+(`6.3:19`), not over the variant a value happens to hold: the active variant is
+a run-time fact, so §3 cannot read it. Here the join is `class(S1) = Affine`,
+so `E0` is `Affine` and a use of an `E0` place is a move.
+
+### The program
+
+```rue
+fn f0() -> i64 {
+    {
+        let v0: E0 = E0.K0(S1 { x0: 1 });
+        {
+            let v1: i64 = match v0 {
+                E0.K0(v1) => { @dbg(10); 5 },
+                E0.K1     => { 6 },
+            };
+            { @dbg(20); v1 }
+        }
+    }
+}
+```
+
+That is the core form; the printed program is the same with `@dbg`'s operand
+bound to a `let` (`Print.lean`'s typed blocks, and RUE-2336). It prints `10`,
+`1`, `20`, then the value `5`. The `1` is `S1`'s destructor, and **where** it
+falls is the whole example: between the `10` and the `20`, at the *arm's* end,
+not at `v0`'s scope exit and not twice.
+
+### What (Match) demands
+
+(Match) §5.5 has four premises, and the mechanization is each of them
+literally:
+
+* the scrutinee is typed first, at the enum type, and whatever typing it did to
+  Σ is what the arms start from. `class(E0)` is not `Copy`, so `v0` is typed by
+  (Use-Move) §5.1 — the `match` **consumes** it (`3.8:33`, `6.3:17`);
+* exhaustiveness is `arms.length = ed.variants.length`, with arm `j` the arm
+  for variant `j`. There is no coverage search and no ordering side condition,
+  because the core form has no wildcards and no guards — those are elaboration
+  obligations §5.5 states (`4.7:9`, `4.7:10`). `exhaustive_arm_exists`
+  (`Soundness.lean`) is the one line progress needs: a variant index the
+  declaration has is an index the arm list has;
+* every arm is typed from the **same** post-scrutinee state, under its own
+  variant's payload locals (`armCtx`), and all arms at one type. An arm is a
+  branch, not a step in a sequence, so Σ is not threaded from arm to arm;
+* at the arm's end the payload locals leave scope under §5.6, and what is left
+  after popping them is that arm's contribution to `Σ' = join(Σ1, …, Σn)`.
+
+### Σ, at the four points that matter
+
+`Σ` is read here exactly as `explain/enum_match_affine.txt` renders it — a
+binder, its type, and its ownership state.
+
+```
+  before the match         [v0: E0 = Owned]
+  Σ0, after the scrutinee  [v0: E0 = MovedOut]          ← (Use-Move) §5.1
+  inside arm K0            [v1: S1 = Owned, v0: E0 = MovedOut]
+  inside arm K1            [v0: E0 = MovedOut]           ← no payload to bind
+```
+
+The payload local enters `Owned` and **unmarked**: §2 gives a pattern binding
+no `μ`, so nothing may assign to one, and the compiler's parser rejects `mut`
+there. Arm `K0` pops its one local at its end, arm `K1` pops none, and the two
+outgoing states are then joined:
+
+```
+  Σ1 = [v0: E0 = MovedOut]        (arm K0, after popping v1)
+  Σ2 = [v0: E0 = MovedOut]        (arm K1)
+  Σ' = join(Σ1, Σ2) = [v0: E0 = MovedOut]
+```
+
+`join(Σ1, …, Σn)` is unordered in the calculus and a **left fold** of the
+binary join here (`Ctx.joinAll`): the arms in declaration order, starting from
+the first arm's state. The binary join is proved commutative
+(`OwnSt.join_comm`), so which of two arms goes first does not matter;
+associativity is checked exhaustively over a fixture rather than proved, and
+`Statics.lean`'s join section says exactly why (RUE-2337 owes the proof).
+
+### The run, step by step
+
+The row numbers are `explain/enum_match_affine.txt`'s.
+
+```
+  [5]  (D-Let) §6.7        let v0 = E0.K0⟨S1 { 1 }⟩ at ℓ0
+                           store  [ℓ0 = E0.K0⟨S1 { 1 }⟩]
+  [6]  (D-Use-Move) §6.3   v0
+                           store  [ℓ0 = ⊘]                        ← the scrutinee moved out
+  [7]  (D-Match) §6.6      bind E0.K0's payload to [ℓ1]
+                           store  [ℓ0 = ⊘, ℓ1 = S1 { 1 }]
+  [9]  (Dbg)               @dbg prints 10
+  [12] (D-EndScope) §6.6   endscope([ℓ1])
+                           events >> drop ℓ1 = S1 { 1 }; run drop fn S1(S1 { 1 })
+  [15] (Dbg)               @dbg prints 20
+  [19] (D-EndScope) §6.7   endscope([ℓ0])                          ← ℓ0 is ⊘: nothing drops
+```
+
+Row [7] is (D-Match): the tag `K0` selects the one covering arm, the payload
+components are bound to **fresh cells**, and those cells are appended to the
+innermost scope record *and* owed to an `endscope` marker around the arm's
+body — exactly as (D-Let) §6.7 binds one. That is why row [12] falls where it
+does: the drops run when the arm's body becomes a value, which is `6.3:17`'s
+timing, and not at some later frame pop. It is also why an unwinding `return`
+inside an arm still finds them in σ (`enum_return_past_payload`).
+
+### The two drops that do not happen
+
+Row [19] is the point. `v0`'s scope ends with its cell at `⊘`, so
+(D-EndScope) drops **nothing** there — and that is not an optimization, it is
+what keeps the payload from being dropped twice:
+
+* §6.11's enum case reads the run-time tag and recurses into the **active**
+  variant's payload only (`6.3:20`). An inactive variant's payload has no
+  storage, and a discriminant-only active variant drops nothing at all
+  (`enum_drop_unmatched` is that case, with the payload still in place);
+* a payload a `match` binding already moved out left the enum place `⊘`, and
+  the walk skips every `⊘`. So the destructor at row [12] is the only one, and
+  `S1 { 1 }` is destroyed exactly once, by the owner the arm gave it.
+
+An enum has no destructor of its own to run before either (§3 gives it no
+`drop fn`; the compiler reports E0417 where one is written), so the payload's
+destructor is the entire observation channel at an enum drop.
+
+### What the checker demanded
+
+`check` reads the same four premises: `check` on the scrutinee, which yields
+the enum type and `Σ0`; `arms.length = ed.variants.length`; `checkArms`, which
+runs every arm from `Γ₀` under `armCtx` at the type `firstArmTy` fixed and
+requires `NoResidualLinear` over the entries the arm pops; and `Ctx.joinAll`.
+Its acceptance is a `Typed` derivation (`check_sound`), so `soundness` applies
+and `run` cannot reach a `Violation`.
+
+Change one thing and each premise answers in turn. Make the payload `linear`
+and leave it, and the §5.6 check at the arm's end is the leak
+(`enum_arm_leaks_payload`, E0406). Consume the enum in one arm of an `if`
+only, and the join has `MovedOut` against `Owned` at a `Linear` type
+(`enum_match_one_arm`, E0443). Match it twice, and the second scrutinee is the
+use of a moved-out place (`enum_matched_twice_moving`, E0205). Make the
+scrutinee a field of a struct, and the move is `3.8:22`'s partial one, whose
+sibling still drops at scope exit (`enum_match_projection`, and
+`enum_holder_partial_then_drop` for the explicit drop of the residue).
+
+`example : ProgramTyped (enumProg tI64 enumMatchAffine) := checkProgram_sound (by rfl)`
+in `Examples.lean` is the kernel-checked form of this paragraph, and
+`scripts/rue exec` on the printed program prints `10`, `1`, `20`, `5`.
+
 ### More worked examples
 
 Every corpus case is a smaller worked example: its printed source begins

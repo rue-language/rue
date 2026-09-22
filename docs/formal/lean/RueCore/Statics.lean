@@ -1003,7 +1003,7 @@ and ill-formed respectively (`Examples.lean` pins the pair). Over states that
 associativity, and all six orders of three states, with no counterexample.
 Proving it needs a state-against-type well-formedness invariant the fragment
 does not carry today; that, and the permutation corollary for `Ctx.joinAll`
-that would follow from it, are owed on RUE-2325.
+that would follow from it, are owed on RUE-2337.
 -/
 
 mutual
@@ -1088,7 +1088,7 @@ proved (`OwnSt.join_comm`, `Ctx.join_comm`), so which of two arms is taken
 first does not matter; **associativity**, which is what would make the
 bracketing immaterial and `Ctx.joinAll` invariant under a permutation of the
 arms, is checked exhaustively over a fixture rather than proved, and is false
-of states no rule can produce. The section above states both and RUE-2325 owes
+of states no rule can produce. The section above states both and RUE-2337 owes
 the proof.
 -/
 
