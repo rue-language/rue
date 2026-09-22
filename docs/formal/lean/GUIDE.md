@@ -1122,7 +1122,10 @@ literally:
 
 * the scrutinee is typed first, at the enum type, and whatever typing it did to
   Σ is what the arms start from. `class(E0)` is not `Copy`, so `v0` is typed by
-  (Use-Move) §5.1 — the `match` **consumes** it (`3.8:33`, `6.3:17`);
+  (Use-Move) §5.1 — the `match` **consumes** it, because a scrutinee is a
+  value context and a use of a move-type place there moves it (`3.8:7`,
+  `3.8:76`, `6.3:17`; the declared-`linear` destructure of `3.8:33` is a
+  different rule, and `E0`'s class here is `Affine`);
 * exhaustiveness is `arms.length = ed.variants.length`, with arm `j` the arm
   for variant `j`. There is no coverage search and no ordering side condition,
   because the core form has no wildcards and no guards — those are elaboration

@@ -1226,10 +1226,13 @@ def enumCallScrutinee : Program :=
      { params := [], ret := .enum eAffineIdx,
        body := mkEnum eAffineIdx 0 [resA (lit 1)] }]
 
-/-- Two `match`es on the same non-`Copy` binding, each **moving** it: the first
-leaves the place `MovedOut` (`3.8:33`'s destructured consumption), so the second
-is the use of a moved-out place (`3.8:5`; the compiler reports E0205) and the
-machine refuses with `useAfterMove`. -/
+/-- Two `match`es on the same non-`Copy` binding, each **moving** it. A `match`
+scrutinee is a value context, so a use of a move-type place there moves it
+(`3.8:7`, `3.8:76`, and `6.3:17` for the payload the arm binds out of it — the
+enum here is `Affine`, so this is the ordinary move and not `3.8:33`'s
+declared-`linear` destructure): the first `match` leaves the place `MovedOut`,
+so the second is the use of a moved-out place (`3.8:5`; the compiler reports
+E0205) and the machine refuses with `useAfterMove`. -/
 def enumMatchedTwiceMoving : Expr :=
   letIn false (mkEnum eAffineIdx 0 [resA (lit 1)])
     (letIn false («match» (use (.var 0)) [lit 5, lit 6])
