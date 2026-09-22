@@ -130,7 +130,11 @@ paper machine has nothing to check. `dropResidue` checks anyway, refusing with
 `linearLeak` where a retained subtree still holds a live declared-`linear`
 value: the same monitors-not-silence commitment §6.7's `endscope` and §6.8's
 overwrite already make. `ContentsMatches.destructure_ok` (`Soundness.lean`) is
-the proof that a program `check` accepts never reaches it.
+the proof that a program `check` accepts never reaches it. `@drop` at a
+declared plan makes the same commitment at the selected **leaf**: a `⊘` there
+refuses with `useAfterMove` rather than dropping nothing, because
+`Contents.mult ⊘ = .copy` would otherwise make the redex succeed in silence
+(`Examples.dropDeclaredHoleLeaf`).
 
 ## Pending arguments: the one edge no monitor covers
 
@@ -1339,10 +1343,17 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
       -- §6.11's explicit `@drop(p)`: at a `Declared(d, π_s)` plan it is the
       -- §6.3 destructure with the selected leaf dropped too — residue first,
       -- leaf second (probe d6c) — and the *consumed place* `ℓ@π_d` becomes
-      -- `⊘`, whatever the leaf's class (§5.3, probe d6). Otherwise it runs the
-      -- drop of whatever the sub-position holds — the walk skips every
-      -- already-`⊘` sub-place — and writes `⊘` back at that position, which
-      -- suppresses the later scope-exit drop through it.
+      -- `⊘`, whatever the leaf's class (§5.3, probe d6). A `⊘` at the selected
+      -- leaf refuses with `useAfterMove`, exactly as the ordinary branch below
+      -- refuses a `⊘` at the named place and as the declared `.use` branch
+      -- refuses through `toVal`: `Contents.mult ⊘ = .copy`, so without the
+      -- guard `dropCell` would report `.ok []` and the redex would complete in
+      -- silence. Unreachable for a checked program — `fully-owned(Σ, d)` makes
+      -- the whole of `d` hole-free — which is why `soundness`'s `dropDeclared`
+      -- case discharges it from `destructure_ok`'s `leaf.holeFree`. Otherwise
+      -- it runs the drop of whatever the sub-position holds — the walk skips
+      -- every already-`⊘` sub-place — and writes `⊘` back at that position,
+      -- which suppresses the later scope-exit drop through it.
       match φ.env[p.root]? with
       | none => .stuck .unbound
       | some ℓ =>
@@ -1358,6 +1369,7 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
                match cd.destructure P.decls πs with
                | .error w => .stuck w
                | .ok (leaf, evs) =>
+                 if leaf.isHole then .stuck .useAfterMove else
                  match dropCell P.decls ℓ leaf with
                  | .error w => .stuck w
                  | .ok levs =>
