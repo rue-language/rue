@@ -76,7 +76,8 @@ variant's payload locals, which it may move, `@drop`, read or leave. A little
 under half the cases contain a `match` (94 of 200 and 465 of 1,000 at those two
 settings), and a `match` whose scrutinee is a **place** rather than a temporary
 is the majority of them (111 of 185 sites and 533 of 895), because a drawn
-`match` binds its scrutinee where the scope holds no enum place. Two shapes are
+`match` half the time binds its scrutinee to a `let` first where the scope
+holds no enum place. Two shapes are
 deliberately absent and the module says why: a `return` or `@panic` **inside an
 arm**, which `check` is incomplete on exactly as it is inside an `if` arm, and
 a path through a declared-`linear` prefix (RUE-2236, whose landing is what
