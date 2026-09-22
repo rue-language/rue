@@ -331,6 +331,10 @@ def fieldSlots (D : Decls) : Ty → List Nat
       (match D.structs[s]? with
        | some sd => List.range sd.fields.length
        | none => [])
+  -- The generator draws no array types yet (RUE-2331), so an array's index
+  -- steps are deliberately not offered here: `placeOfPath` builds `Place.proj`
+  -- steps, and an index step is `Place.idx`.
+  | .array _ _ => []
   | .int _ _ | .float _ | .bool | .unit | .enum _ => []
 
 /-- (helper) Every path of **one or two** field steps under a binder's
@@ -431,6 +435,13 @@ def atom (D : Decls) (Γ : Scope) : Ty → Nat → G Expr
   -- The generator draws no enum type (`binderTy`, `resultTy`), so no enum ever
   -- reaches this function; drawing `match` and enum construction is RUE-2325.
   | .enum _, _ => return unitLit
+  -- Unreachable: no array type is drawn (RUE-2331). The arm is still the
+  -- literal (Array-Intro) §5.8 concludes `[T; n]` at, one atom per element,
+  -- with the same depth-exhausted fallback the struct arm above has.
+  | .array T n, depth => do
+      match depth with
+      | d + 1 => return mkArray T (← (List.replicate n T).mapM (fun T' => atom D Γ T' d))
+      | 0 => return mkArray T []
 
 /-- (helper) A leaf of the wanted type, one level at most: an atom, a `@drop`
 of a place, or an assignment of an atom to one. -/
@@ -598,6 +609,8 @@ def expr (D : Decls) : Scope → Ty → Nat → G Expr
               match D.structs[s]? with
               | some sd => return mkStruct s (← sd.fields.mapM (fun T' => expr D Γ T' fuel))
               | none => return mkStruct s []
+          -- Unreachable for the same reason `atom`'s array arm is (RUE-2331).
+          | .array _ _ => leaf D Γ T 2
 
 /-- (helper) Every subexpression, the expression itself first. -/
 def subexprs : Expr → List Expr
