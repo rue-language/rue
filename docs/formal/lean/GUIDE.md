@@ -1202,14 +1202,18 @@ what keeps the payload from being dropped twice:
 
 * §6.11's enum case reads the run-time tag and recurses into the **active**
   variant's payload only (`6.3:20`). An inactive variant's payload has no
-  storage, and a discriminant-only active variant drops nothing at all
-  (`enum_drop_unmatched` is that case, with the payload still in place);
+  storage, and a discriminant-only active variant drops nothing at all.
+  `enum_drop_unmatched` holds one of each: the `K0` value's active payload
+  does drop, and prints its `1`, while the `K1` binding beside it drops
+  nothing;
 * a payload a `match` binding already moved out left the enum place `⊘`, and
   the walk skips every `⊘`. So the destructor at row [12] is the only one, and
   `S1 { 1 }` is destroyed exactly once, by the owner the arm gave it.
 
 An enum has no destructor of its own to run before either (§3 gives it no
-`drop fn`; the compiler reports E0417 where one is written), so the payload's
+`drop fn`; where one is written the compiler reports `[E0417]: unknown type
+'E0' in destructor` — destructor lookup does not see enums at all, so the
+diagnostic is about the name rather than about enums), so the payload's
 destructor is the entire observation channel at an enum drop.
 
 ### What the checker demanded
