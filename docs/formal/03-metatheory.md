@@ -66,8 +66,12 @@ and **no element move**: an array is owned whole here, so `3.8:68`'s
 constant-index element move, the `MovedOut` element state it leaves and
 `3.8:73`'s path-specific element drop are refused by a premise of the
 fragment's own (`RueCore.Place.noIdx`) rather than by a rule of the calculus,
-which the compiler's acceptance of `let s: S = a[1];` shows — RUE-2327 lifts
-it. No equality compare (it borrows its
+which the compiler's acceptance of `let s: S = a[1];` shows. Nor is there any
+step **below** a dynamic index: §2's place grammar has `p [ e ]`, so `a[i].x0`
+is a place of the calculus and the compiler reads and writes it, but
+`RueCore.Expr.indexRead` yields the element *value* and a dynamic index is not
+a `RueCore.Place` step, so neither the read nor the write has a form here.
+RUE-2327 lifts both. No equality compare (it borrows its
 operands, `4.3:3f`, so `≈`'s float leaf has no instance here), no payload path
 into an enum (§5.6 tracks none, so `Place` has no enum step), no wildcard,
 repeated or guarded `match` pattern and no bool or integer scrutinee (all
@@ -193,8 +197,9 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   §5.1's (Use-Untrackable-Dynamic-Copy) asks `fully-owned(Σ, p)` of the whole
   array for exactly that reason (`3.8:70`, `7.1:45`).
   **Owed:** the constant-index element **move** and the `MovedOut` element
-  state it leaves (RUE-2327), and the declared-linear destructure's selected
-  leaf (RUE-2236).
+  state it leaves, and any step below a dynamic index — `a[i].x0`, which the
+  compiler reads and writes and which has no form here (RUE-2327) — and the
+  declared-linear destructure's selected leaf (RUE-2236).
 
 ## No double-free
 
@@ -325,7 +330,8 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   consuming the payload, and the arm's own §5.6 check is what makes "consuming"
   mean it (`6.3:17`). **Owed:** RUE-2316;
   declared-linear destructure and residue ordering (RUE-2236); the element
-  move and `3.8:70`'s untracked-residue disjunct (RUE-2327).
+  move, any step below a dynamic index, and `3.8:70`'s untracked-residue
+  disjunct (RUE-2327).
 
 ## Exclusivity / no aliased mutation
 
