@@ -86,6 +86,13 @@ read at a constant index, a write at one, and a `@drop` or a move of the
 **whole** array are all in, so the class §3 gives `[T; n]` is exercised at
 every value it takes.
 
+Nor is there any step **below** a dynamic index. §2's place grammar has
+`p [ e ]`, so `a[i].x0` is a place of the calculus and the compiler reads and
+writes it; here `Expr.indexRead` yields the element *value* and a dynamic
+index is not a `Place` step, so neither `a[i].x0` nor `a[i].x0 = 50` has a
+form at all. That is the same debt as the element move, and RUE-2327 owes
+both.
+
 An array's ownership state is still a `Path ⇀ {Owned, MovedOut}` tree, and a
 constant-index **write** does reach an element path (`a[0] = …` records
 `OwnSt.fields [Owned]` at the array's node), so every §5 predicate that

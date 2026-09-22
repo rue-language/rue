@@ -202,7 +202,10 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         "**move** of `3.8:68` and the `MovedOut` element state it leaves, so "
         "`3.8:73`'s path-specific element drop has no instance yet — "
         "`Place.noIdx` refuses a move or a `@drop` at an index path as a stated "
-        "restriction of the fragment (RUE-2327)",
+        "restriction of the fragment — and any step **below** a dynamic index "
+        "(`a[i].x0`, read or written), which the compiler accepts and which has "
+        "no form here because `Expr.indexRead` yields the element value rather "
+        "than a place (RUE-2327 owes both)",
     ),
     ("e", "lit"): (
         "yes",

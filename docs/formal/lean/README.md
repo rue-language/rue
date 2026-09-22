@@ -468,7 +468,10 @@ stated fragment restriction, RUE-2236), no **array element move** — an array
 is held whole here, so `3.8:68`'s constant-index element move, the `MovedOut`
 element state it leaves and `3.8:73`'s path-specific element drop are refused
 by a premise of the fragment's own (`Place.noIdx`) and not by a rule of the
-calculus, which is RUE-2327 — no equality compare (it borrows its
+calculus — and no step **below** a dynamic index: `a[i].x0` is a place of §2's
+grammar that the compiler reads and writes, and it has no form here because
+`Expr.indexRead` yields the element value and a dynamic index is not a
+`Place` step; RUE-2327 owes both — no equality compare (it borrows its
 operands, so `≈`'s float leaf has no instance here), no path into an enum's
 payload (§5.6 tracks none) and none of the `match` shapes §5.5 makes
 elaboration obligations (wildcard, repeated or guarded patterns, a bool or
