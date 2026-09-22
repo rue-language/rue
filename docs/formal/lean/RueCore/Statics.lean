@@ -2149,6 +2149,167 @@ theorem Ctx.join_wf {D : Decls} : ∀ (Γ₁ Γ₂ Γ' : Ctx), Γ₁.skel = Γ�
               exact ⟨Entry.join_wf h₁.1 w₁.1 w₂.1 he,
                      Ctx.join_wf as bs rest h₁.2 w₁.2 w₂.2 hr⟩
 
+/-- Writing a state of a slot's own type into a record leaves the record a shape
+of its type: the `owned` padding `OwnSt.setField` inserts before the slot is a
+state of every type it passes (helper). -/
+theorem OwnSt.setField_wf {D : Decls} : ∀ (ts : List OwnSt) (f : Nat) (v : OwnSt)
+    (Ts : List Ty) (T' : Ty), OwnSt.wfList D ts Ts = true → Ts[f]? = some T' →
+    OwnSt.wf D v T' = true → OwnSt.wfList D (OwnSt.setField ts f v) Ts = true
+  | [], 0, v, Ts, T', _, hf, hv => by
+      cases Ts with
+      | nil => simp at hf
+      | cons T₀ Ts =>
+          simp only [List.getElem?_cons_zero, Option.some.injEq] at hf
+          subst hf
+          simp only [OwnSt.setField, OwnSt.wfList, Bool.and_eq_true]
+          exact ⟨hv, trivial⟩
+  | [], f + 1, v, Ts, T', _, hf, hv => by
+      cases Ts with
+      | nil => simp at hf
+      | cons T₀ Ts =>
+          simp only [List.getElem?_cons_succ] at hf
+          simp only [OwnSt.setField, OwnSt.wfList, Bool.and_eq_true]
+          exact ⟨rfl, OwnSt.setField_wf [] f v Ts T' rfl hf hv⟩
+  | t :: ts, 0, v, Ts, T', ht, hf, hv => by
+      cases Ts with
+      | nil => simp at hf
+      | cons T₀ Ts =>
+          simp only [List.getElem?_cons_zero, Option.some.injEq] at hf
+          subst hf
+          simp only [OwnSt.wfList, Bool.and_eq_true] at ht
+          simp only [OwnSt.setField, OwnSt.wfList, Bool.and_eq_true]
+          exact ⟨hv, ht.2⟩
+  | t :: ts, f + 1, v, Ts, T', ht, hf, hv => by
+      cases Ts with
+      | nil => simp at hf
+      | cons T₀ Ts =>
+          simp only [List.getElem?_cons_succ] at hf
+          simp only [OwnSt.wfList, Bool.and_eq_true] at ht
+          simp only [OwnSt.setField, OwnSt.wfList, Bool.and_eq_true]
+          exact ⟨ht.1, OwnSt.setField_wf ts f v Ts T' ht.2 hf hv⟩
+
+/-- Reading a slot of a well-formed record gives a state of that slot's type; a
+slot no partial move has touched reads as `owned`, which is a state of every
+type (helper). -/
+theorem OwnSt.fieldAt_wf {D : Decls} : ∀ (ts : List OwnSt) (f : Nat) (Ts : List Ty) (T' : Ty),
+    OwnSt.wfList D ts Ts = true → Ts[f]? = some T' →
+    OwnSt.wf D (OwnSt.fieldAt ts f) T' = true
+  | [], _, _, _, _, _ => rfl
+  | t :: ts, 0, Ts, T', ht, hf => by
+      cases Ts with
+      | nil => simp at hf
+      | cons T₀ Ts =>
+          simp only [List.getElem?_cons_zero, Option.some.injEq] at hf
+          subst hf
+          simp only [OwnSt.wfList, Bool.and_eq_true] at ht
+          exact ht.1
+  | t :: ts, f + 1, Ts, T', ht, hf => by
+      cases Ts with
+      | nil => simp at hf
+      | cons T₀ Ts =>
+          simp only [List.getElem?_cons_succ] at hf
+          simp only [OwnSt.wfList, Bool.and_eq_true] at ht
+          exact OwnSt.fieldAt_wf ts f Ts T' ht.2 hf
+
+/-- `OwnSt.setAt` takes its first step the same way from a wholly `Owned` node as
+from a field record, because a node with no record of its own has every field
+`owned` (helper). -/
+theorem OwnSt.setAt_cons_owned (f : Nat) (π : List Nat) (u : OwnSt) :
+    OwnSt.setAt .owned (f :: π) u
+      = .fields (OwnSt.setField (OwnSt.fieldStates .owned) f
+          ((OwnSt.fieldAt (OwnSt.fieldStates .owned) f).setAt π u)) := rfl
+
+/-- The field-record form of the same step (helper). -/
+theorem OwnSt.setAt_cons_fields (ts : List OwnSt) (f : Nat) (π : List Nat) (u : OwnSt) :
+    OwnSt.setAt (.fields ts) (f :: π) u
+      = .fields (OwnSt.setField (OwnSt.fieldStates (.fields ts)) f
+          ((OwnSt.fieldAt (OwnSt.fieldStates (.fields ts)) f).setAt π u)) := rfl
+
+/-- The recorded slots of a state well formed at a declared struct type are
+themselves well formed at the field types — trivially so for a node with no
+record of its own (helper). -/
+theorem OwnSt.wfList_fieldStates_struct {D : Decls} {t : OwnSt} {s : Nat} {sd : StructDecl}
+    (hd : D.structs[s]? = some sd) (h : OwnSt.wf D t (Ty.struct s) = true) :
+    OwnSt.wfList D t.fieldStates sd.fields = true := by
+  cases t with
+  | owned => rfl
+  | movedOut => rfl
+  | fields ts => rw [OwnSt.wf_fields_struct D s sd hd] at h; exact h
+
+/-- The array form of the same (helper). -/
+theorem OwnSt.wfList_fieldStates_array {D : Decls} {t : OwnSt} {T₁ : Ty} {n : Nat}
+    (h : OwnSt.wf D t (Ty.array T₁ n) = true) :
+    OwnSt.wfList D t.fieldStates (List.replicate n T₁) = true := by
+  cases t with
+  | owned => rfl
+  | movedOut => rfl
+  | fields ts => rw [OwnSt.wf_fields_array D T₁ n] at h; exact h
+
+/-- **§5's `Σ[ p ↦ u ]` stays inside the shapes of the type.** Writing a state of
+`p`'s own type at a path the root's declared type has (`Ty.atPath`, §5
+preamble's `Γ ⊢ p : T`) leaves a state of the root's type, the `owned` padding
+`OwnSt.setField` inserts included. This is what makes `OwnSt.wf` an invariant
+of the rules that write — (Use-Move) §5.1, (@Drop) §5.3 and (Assign) §5.2 all
+write at a path their own `Ty.atPath` premise typed — rather than a condition
+they would have to carry. -/
+theorem OwnSt.setAt_wf {D : Decls} (T' : Ty) (u : OwnSt) (hu : OwnSt.wf D u T' = true) :
+    ∀ (π : List Nat) (t : OwnSt) (T : Ty), OwnSt.wf D t T = true →
+      T.atPath D π = some T' → OwnSt.wf D (t.setAt π u) T = true := by
+  intro π
+  induction π with
+  | nil =>
+      intro t T _ hp
+      simp only [Ty.atPath, Option.some.injEq] at hp
+      subst hp
+      exact hu
+  | cons f π ih =>
+      intro t T ht hp
+      have key : ∀ (Ts : List Ty) (T₁ : Ty), OwnSt.wfList D t.fieldStates Ts = true →
+          Ts[f]? = some T₁ → T₁.atPath D π = some T' →
+          OwnSt.wfList D (OwnSt.setField t.fieldStates f
+            ((OwnSt.fieldAt t.fieldStates f).setAt π u)) Ts = true := by
+        intro Ts T₁ hts hf hpp
+        exact OwnSt.setField_wf t.fieldStates f _ Ts T₁ hts hf
+          (ih _ T₁ (OwnSt.fieldAt_wf t.fieldStates f Ts T₁ hts hf) hpp)
+      cases T with
+      | struct s =>
+          cases hd : D.structs[s]? with
+          | none => simp [Ty.atPath, Ty.fieldAt, hd] at hp
+          | some sd =>
+              simp only [Ty.atPath, Ty.fieldAt, hd] at hp
+              split at hp
+              · rename_i T₁ hf
+                have hts := OwnSt.wfList_fieldStates_struct hd ht
+                cases t with
+                | movedOut => rfl
+                | owned =>
+                    rw [OwnSt.setAt_cons_owned, OwnSt.wf_fields_struct D s sd hd]
+                    exact key sd.fields T₁ hts hf hp
+                | fields ts =>
+                    rw [OwnSt.setAt_cons_fields, OwnSt.wf_fields_struct D s sd hd]
+                    exact key sd.fields T₁ hts hf hp
+              · exact absurd hp (by simp)
+      | array T₁ n =>
+          by_cases hlt : f < n
+          · simp only [Ty.atPath, Ty.fieldAt, if_pos hlt] at hp
+            have hts := OwnSt.wfList_fieldStates_array ht
+            have hf : (List.replicate n T₁)[f]? = some T₁ := by
+              simp [hlt]
+            cases t with
+            | movedOut => rfl
+            | owned =>
+                rw [OwnSt.setAt_cons_owned, OwnSt.wf_fields_array D T₁ n]
+                exact key (List.replicate n T₁) T₁ hts hf hp
+            | fields ts =>
+                rw [OwnSt.setAt_cons_fields, OwnSt.wf_fields_array D T₁ n]
+                exact key (List.replicate n T₁) T₁ hts hf hp
+          · simp [Ty.atPath, Ty.fieldAt, hlt] at hp
+      | int _ _ => simp [Ty.atPath, Ty.fieldAt] at hp
+      | float _ => simp [Ty.atPath, Ty.fieldAt] at hp
+      | bool => simp [Ty.atPath, Ty.fieldAt] at hp
+      | unit => simp [Ty.atPath, Ty.fieldAt] at hp
+      | enum _ => simp [Ty.atPath, Ty.fieldAt] at hp
+
 /-! ### The n-way §5.5 join, and a `match` arm's own binders
 
 (Match) §5.5 writes `Σ' = join(Σ1, …, Σn)` over one outgoing state per arm.
@@ -2164,13 +2325,23 @@ a surface form elaboration never brings here (§2's reachability pruning,
 
 The fold is the *computation* §5.5's unordered `join(Σ1, …, Σn)` is read as,
 and it is what `Matches.joinFold` (`Soundness.lean`) consumes. That reading is
-exact in one half and checked in the other: the binary join is **commutative**,
-proved (`OwnSt.join_comm`, `Ctx.join_comm`), so which of two arms is taken
-first does not matter; **associativity**, which is what would make the
-bracketing immaterial and `Ctx.joinAll` invariant under a permutation of the
-arms, is checked exhaustively over a fixture rather than proved, and is false
-of states no rule can produce. The section above states both and RUE-2337 owes
-the proof.
+exact, in both halves: the binary join is **commutative** (`OwnSt.join_comm`,
+`Ctx.join_comm`), so which of two arms is taken first does not matter, and it
+is **associative** over states that are shapes of their type
+(`OwnSt.join_assoc`, `Ctx.join_assoc`), so the bracketing does not either.
+`Ctx.joinAll_perm` below is the two together: the fold is invariant under a
+permutation of the arms, which is what licenses reading `Ctx.joinAll` as the
+unordered `join(Σ1, …, Σn)` the calculus writes.
+
+Its premise — every arm's outgoing context a shape of its declared types
+(`Ctx.Wf`) — is one the rules that *write* keep: `OwnSt.setAt_wf` for (Use-Move)
+§5.1, (@Drop) §5.3 and (Assign) §5.2, `Ctx.joinAll_wf` for a nested (Match), and
+`fnCtx`/`armCtx` push `Owned`. What does not keep it is §5.7's `⊥`: (Return) and
+(Panic) conclude at *any* context with the incoming skeleton, so a judgment-wide
+`Ctx.Wf` preservation theorem is false as those rules stand, and the invariant
+stays an explicit premise here. Constraining the two `⊥` contexts — or proving
+that a derivation may always be rebuilt to pick a well-formed one — is owed on
+RUE-2337.
 -/
 
 /-- One arm's entry context: (Match) §5.5's `Γ, x_{i1}:Ti1, …, x_{i,ai}:Ti_{ai} ;
@@ -3051,6 +3222,39 @@ theorem Ctx.joinAll_perm {D : Decls} (hD : WfStructs D) {sk : List (Ty × Bool)}
   | trans hp₁ _ ih₁ ih₂ =>
       intro hinv
       rw [ih₁ hinv, ih₂ (fun Δ hΔ => hinv Δ (hp₁.mem_iff.2 hΔ))]
+
+/-- (Match) §5.5's fold keeps the invariant: joined into a well-formed
+accumulator, a well-formed arm leaves a well-formed accumulator (helper). -/
+theorem Ctx.joinFold_wf {D : Decls} {sk : List (Ty × Bool)} :
+    ∀ (Γs : List Ctx) (acc Γ' : Ctx), (∀ Γ ∈ Γs, Γ.skel = sk ∧ Ctx.Wf D Γ) →
+      acc.skel = sk → Ctx.Wf D acc → Ctx.joinFold D acc Γs = some Γ' → Ctx.Wf D Γ'
+  | [], acc, Γ', _, _, hacc, h => by
+      simp only [Ctx.joinFold, Option.some.injEq] at h
+      subst h
+      exact hacc
+  | Γ :: Γs, acc, Γ', hinv, hsk, hacc, h => by
+      simp only [Ctx.joinFold] at h
+      cases hj : Ctx.join D acc Γ with
+      | none => rw [hj] at h; exact absurd h (by simp)
+      | some acc' =>
+          rw [hj] at h
+          obtain ⟨hskΓ, hwfΓ⟩ := hinv Γ List.mem_cons_self
+          exact Ctx.joinFold_wf Γs acc' Γ'
+            (fun Δ hΔ => hinv Δ (List.mem_cons_of_mem _ hΔ))
+            ((Ctx.join_skel hj).trans hsk)
+            (Ctx.join_wf acc Γ acc' (hsk.trans hskΓ.symm) hacc hwfΓ hj) h
+
+/-- **(Match) §5.5's n-way join of well-formed arms is well formed**, so a joined
+context may be joined again — which is what makes `Ctx.joinAll_perm`'s premise
+composable across nested `match`es. -/
+theorem Ctx.joinAll_wf {D : Decls} {sk : List (Ty × Bool)} {Γs : List Ctx} {Γ' : Ctx}
+    (hinv : ∀ Γ ∈ Γs, Γ.skel = sk ∧ Ctx.Wf D Γ) (h : Ctx.joinAll D Γs = some Γ') :
+    Ctx.Wf D Γ' := by
+  cases Γs with
+  | nil => simp [Ctx.joinAll] at h
+  | cons Γ Γs =>
+      obtain ⟨hsk, hwf⟩ := hinv Γ List.mem_cons_self
+      exact Ctx.joinFold_wf Γs Γ Γ' (fun Δ hΔ => hinv Δ (List.mem_cons_of_mem _ hΔ)) hsk hwf h
 
 /-- Every rule preserves the context skeleton: only ownership states flow.
 This is the fused context's image of §5's convention that `Γ` is fixed while
