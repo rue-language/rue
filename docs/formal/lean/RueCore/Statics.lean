@@ -814,6 +814,39 @@ def residualLinearBelow (D : Decls) : OwnSt → Ty → Bool
   | t, .array T n => residualLinearFields D t.fieldStates (List.replicate n T)
   | _, _ => false
 
+/-- **(Assign) §5.2's array side condition** (`3.8:72`, `7.1:46`, E0480): a
+write whose destination steps *into* an array demands that the array be
+`fully-owned`. §5.2 states it in prose — "writing *into* an array while any
+element is moved out is rejected by a side condition (`3.8:72`)" — and
+`arrayPrefix` (`Syntax.lean`) is the path to the array it speaks of.
+
+This is **one premise stricter** than §5.2's own disjunction read at the
+element. `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` at `a[c]` would admit
+reinitializing exactly the element that was moved out; the spec forbids it
+outright — "assigning into the array — to an element or through an element — is
+itself an error … including at the exact constant index that was moved out"
+(`3.8:77`, and `7.1:46`'s "an element write does not reinstate per-element
+ownership") — and the compiler agrees: `a[0] = …` after `a[0]` moved is E0480
+(probe a5), and so is `a[1].x0 = …` after `a[0]` moved (probe b1) and
+`a[0].s = …` after `a[0].s` moved (probe b10). The model follows the spec; the
+deviation from the calculus as written is recorded in §5.2 itself.
+
+Three things it deliberately does **not** forbid. Whole-array reassignment
+`a = […]` is (Assign)'s ordinary case and is the spec's own recovery path
+(`7.1:46`; probes b8, c3). An element write reached through a projection is
+fine as long as the array is whole (`h.a[0] = …`, probe b6; `a[1][0] = …`,
+probe c6) — a destination is not a move, so `rootIdxOnly` does not apply to it.
+And the check is on the **post-RHS** state, like (Assign)'s other premises: the
+compiler refuses `a[0] = g(a[0])` and `a[0] = g(a[1])`, whose only move is in
+the right-hand side (probes c1, c2). -/
+def assignArrayOk (D : Decls) (t : OwnSt) (T : Ty) (π : List Nat) : Bool :=
+  match arrayPrefix D T π with
+  | none => true
+  | some πa =>
+      match t.get πa with
+      | some ua => ua.fullyOwned
+      | none => false
+
 /-- §5.2's (Assign) premise `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` (`3.8:77`),
 as a decidable test on the post-RHS state.
 
@@ -1482,7 +1515,9 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   Two more of (Assign)'s clauses are discharged rather than restated.
   `3.8:72`/`7.1:46` — "while one or more elements of an array are moved out, it
   is a compile-time error to assign into the array" — is `fully-owned(Σ, p)` on
-  the post-RHS state. And `3.8:55`'s reinitialization is (Assign)'s own
+  the post-RHS state at the array being written, and `assignArrayOk` at any
+  array the path stepped through to reach it (`a[1][i] = …` after a move of
+  `a[0]` is E0480, probe c8). And `3.8:55`'s reinitialization is (Assign)'s own
   `Σ1[p ↦ Owned]`, taken at the **whole array** rather than at the element:
   `7.1:46` says an element write "does not reinstate per-element ownership",
   and on the `fully-owned` premise there is nothing to reinstate, so writing
@@ -1501,6 +1536,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       Typed P R Γ₁ e₂ T Γ₂ →
       Γ₂[p.root]? = some en₁ →
       en₁.st.get p.path = some u₁ → u₁.fullyOwned = true →
+      assignArrayOk P.decls en₁.st en₁.ty p.path = true →
       (u₁ = .movedOut ∨ T.mult P.decls ≠ .linear) →
       Typed P R Γ (.indexWrite p e₁ e₂) .unit
         (Γ₂.set p.root (en₁.setSt (en₁.st.setAt p.path .owned)))
@@ -1605,6 +1641,13 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   the shape the residual reading would accept (E0493 on
   `@drop(v.linearField); v = …`; corpus case `overwrite_past_partial_linear`).
 
+  `assignArrayOk` is §5.2's own array side condition (`3.8:72`, E0480), read
+  on the post-RHS state like the `3.8:77` premise beside it: a destination that
+  steps into an array demands the whole array, so an element is never
+  reinitialized and the whole-array reassignment is the only recovery
+  (`7.1:46`). Its docstring records the deviation from §5.2's disjunction as
+  written.
+
   One **deviation** (N3): `Owned-Base` is demanded on the *incoming* state as
   well as the post-RHS one, so this rule is one premise stricter than §5.2,
   which states neither (U4 reads §5.1's "in any context" side condition for the
@@ -1618,6 +1661,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       Typed P R Γ e T Γ₁ →
       Γ₁[p.root]? = some en₁ →
       en₁.st.get p.path = some u₁ →
+      assignArrayOk P.decls en₁.st en₁.ty p.path = true →
       (u₁ = .movedOut ∨ T.mult P.decls ≠ .linear) →
       Typed P R Γ (.assign p e) .unit (Γ₁.set p.root (en₁.setSt (en₁.st.setAt p.path .owned)))
   /-- (Seq): the discarded value must not carry a linear value (`3.8:64`). -/
@@ -1904,7 +1948,7 @@ theorem Typed.skel_preserved {P R} {Γ Γ' : Ctx} {e T} (h : Typed P R Γ e T Γ
   | mkArray _ ih => exact ih
   | repeatArray _ _ ih => exact ih
   | indexRead _ _ _ _ _ _ _ ih => exact ih
-  | indexWrite _ _ _ _ _ _ hget₁ _ _ _ ih₁ ih₂ =>
+  | indexWrite _ _ _ _ _ _ hget₁ _ _ _ _ ih₁ ih₂ =>
       exact (skel_set_setSt hget₁ _).trans (ih₂.trans ih₁)
   | mkEnum _ _ _ ih => exact ih
   | «match» _ _ _ _ hjoin ihs iharms =>
@@ -1919,7 +1963,7 @@ theorem Typed.skel_preserved {P R} {Γ Γ' : Ctx} {e T} (h : Typed P R Γ e T Γ
       have := ih₂
       simp [Ctx.skel, List.map_cons] at this
       exact this.2.trans ih₁
-  | assign _ _ _ _ _ hget₁ _ _ ih => exact (skel_set_setSt hget₁ _).trans ih
+  | assign _ _ _ _ _ hget₁ _ _ _ ih => exact (skel_set_setSt hget₁ _).trans ih
   | seq _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
   | ite _ _ _ hjoin ihc ih₁ _ => exact (Ctx.join_skel hjoin).trans (ih₁.trans ihc)
   | call _ _ ih => exact ih
@@ -1955,7 +1999,7 @@ theorem TypedArgs.skel_preserved {P R} {Γ Γ' : Ctx} {es Ts} (h : TypedArgs P R
   | mkArray _ ih => exact ih
   | repeatArray _ _ ih => exact ih
   | indexRead _ _ _ _ _ _ _ ih => exact ih
-  | indexWrite _ _ _ _ _ _ hget₁ _ _ _ ih₁ ih₂ =>
+  | indexWrite _ _ _ _ _ _ hget₁ _ _ _ _ ih₁ ih₂ =>
       exact (skel_set_setSt hget₁ _).trans (ih₂.trans ih₁)
   | mkEnum _ _ _ ih => exact ih
   | «match» _ _ _ _ hjoin ihs iharms =>
@@ -1970,7 +2014,7 @@ theorem TypedArgs.skel_preserved {P R} {Γ Γ' : Ctx} {es Ts} (h : TypedArgs P R
       have := ih₂
       simp [Ctx.skel, List.map_cons] at this
       exact this.2.trans ih₁
-  | assign _ _ _ _ _ hget₁ _ _ ih => exact (skel_set_setSt hget₁ _).trans ih
+  | assign _ _ _ _ _ hget₁ _ _ _ ih => exact (skel_set_setSt hget₁ _).trans ih
   | seq _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
   | ite _ _ _ hjoin ihc ih₁ _ => exact (Ctx.join_skel hjoin).trans (ih₁.trans ihc)
   | call _ _ ih => exact ih
@@ -2010,7 +2054,7 @@ theorem TypedArms.arm_skel {P R} {Γ₀ : Ctx} {arms Tss T} {Γs : List Ctx}
   | mkArray _ ih => exact ih
   | repeatArray _ _ ih => exact ih
   | indexRead _ _ _ _ _ _ _ ih => exact ih
-  | indexWrite _ _ _ _ _ _ hget₁ _ _ _ ih₁ ih₂ =>
+  | indexWrite _ _ _ _ _ _ hget₁ _ _ _ _ ih₁ ih₂ =>
       exact (skel_set_setSt hget₁ _).trans (ih₂.trans ih₁)
   | mkEnum _ _ _ ih => exact ih
   | «match» _ _ _ _ hjoin ihs iharms =>
@@ -2025,7 +2069,7 @@ theorem TypedArms.arm_skel {P R} {Γ₀ : Ctx} {arms Tss T} {Γs : List Ctx}
       have := ih₂
       simp [Ctx.skel, List.map_cons] at this
       exact this.2.trans ih₁
-  | assign _ _ _ _ _ hget₁ _ _ ih => exact (skel_set_setSt hget₁ _).trans ih
+  | assign _ _ _ _ _ hget₁ _ _ _ ih => exact (skel_set_setSt hget₁ _).trans ih
   | seq _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
   | ite _ _ _ hjoin ihc ih₁ _ => exact (Ctx.join_skel hjoin).trans (ih₁.trans ihc)
   | call _ _ ih => exact ih

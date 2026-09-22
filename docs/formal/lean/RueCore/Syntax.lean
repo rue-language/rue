@@ -134,6 +134,12 @@ the element type `n` times (`List.replicate n T`). Part 1 wrote them out
 before any of them could see a `MovedOut` element; this part is where they
 all can.
 
+**(Assign) is not a move**, and its destination is bounded differently: an
+element write may be reached through any projection (`h.a[0] = …`, probe `b6`;
+`a[1][0] = …`, probe `c6`), but `3.8:72`/`7.1:46` forbid *any* write into an
+array one of whose elements has been moved out, at the moved index as much as
+at a sibling. `assignArrayOk` (`Statics.lean`) is that side condition, E0480.
+
 ## An array value carries its element type
 
 `Val.array` and `Contents.array` carry `T`, for the reason `Val.int` carries
@@ -577,6 +583,29 @@ def rootIdxOnly (D : Decls) : Ty → List Nat → Bool
       match T.fieldAt D f with
       | some T' => noArrayStep D T' π
       | none => true
+
+/-- **The array an assignment destination steps *into***, as a prefix of the
+path: `some π_a` where `π_a` is the outermost prefix whose type is an array
+node the path then takes a step at, and `none` where the path reaches no array
+node with a step left to take (the whole-array destination `a = …` among
+them). `3.8:72`/`7.1:46` speak of "the array" an element write goes into, and
+this is the path to it.
+
+The outermost such array is enough for `assignArrayOk`, because
+`fully-owned` at a node is `fully-owned` at everything under it: a write at
+`a[1][0]` that demands the whole of `a` has demanded the whole of `a[1]` too
+(probe `c8`). A step that is not a step of the type reached so far ends the
+walk at `none`, as `rootIdxOnly` ends at `true`: the path is untypeable there
+and the rule has already failed `Γ ⊢ p : T` (helper). -/
+def arrayPrefix (D : Decls) : Ty → List Nat → Option (List Nat)
+  | _, [] => none
+  | T, f :: π =>
+      match T with
+      | .array _ _ => some []
+      | .struct _ | .int _ _ | .float _ | .bool | .unit | .enum _ =>
+        (match T.fieldAt D f with
+         | some T' => (arrayPrefix D T' π).map (fun πa => f :: πa)
+         | none => none)
 
 /-- No **proper prefix** of the path names a value whose type declares a
 destructor: (Use-Move) §5.1's and (@Drop) §5.3's `3.9:34` premise (E0456).
