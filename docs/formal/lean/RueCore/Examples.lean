@@ -1306,6 +1306,24 @@ A *declared*-linear struct with no linear field may have one (`S3` above). -/
 example : checkStructs (Decls.ofStructs (structEnv ++
     [{ attr := .none, fields := [.struct 2], dtor := true, cls := .linear }])) = false := by rfl
 
+/-- **Why §5.5's join is proved commutative but only checked associative.**
+Associativity is false of states no rule can write: `.fields` at a scalar type
+is one, and `ownedJoinOk` refuses it while `residualLinear` sees nothing in it.
+So at `int` the two associations of `MovedOut`, `Owned`, `fields [Owned]`
+disagree — one is `MovedOut`, the other ill-formed. Over states well formed at
+their type the property holds and was checked exhaustively; proving it needs a
+state-against-type invariant the fragment does not carry (`Statics.lean`'s join
+section, RUE-2325). -/
+example :
+    (OwnSt.join (Decls.ofStructs []) .movedOut .owned tI64).bind
+        (fun t => OwnSt.join (Decls.ofStructs []) t (.fields [.owned]) tI64)
+      = some .movedOut := by rfl
+
+example :
+    (OwnSt.join (Decls.ofStructs []) .owned (.fields [.owned]) tI64).bind
+        (fun t => OwnSt.join (Decls.ofStructs []) .movedOut t tI64)
+      = none := by rfl
+
 /-! ### `3.0:5` (E0483): no declaration contains itself by value
 
 The rule is **joint** over the two layers, and the cross-layer shape is why.
