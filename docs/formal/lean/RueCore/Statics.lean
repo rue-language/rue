@@ -1363,9 +1363,12 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
 
   The scrutinee is typed first, at the enum type, and its Σ effect is whatever
   typing it did: at a place that is (Use-Copy)/(Use-Move) §5.1 by `class(E)` —
-  a non-`Copy` enum is *consumed* by the match (`3.8:33`'s destructured
-  consumption, `6.3:17`), and a second `match` on it is then the use of a
-  moved-out place the compiler reports as E0205.
+  a non-`Copy` enum is *consumed* by the match, because a scrutinee is a value
+  context and a use of a move-type place there moves it (`3.8:7`, `3.8:76`;
+  `6.3:17` for the payload the arm binds out of it, and not `3.8:33`'s
+  declared-`linear` destructure, which is a rule this fragment does not
+  mechanize), and a second `match` on it is then the use of a moved-out place
+  the compiler reports as E0205 (`3.8:5`).
 
   Exhaustiveness is the arm list's **shape**: `arms.length =
   ed.variants.length`, with arm `j` the arm for variant `j`, so §5.5's "exactly

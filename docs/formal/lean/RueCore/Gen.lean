@@ -582,9 +582,10 @@ def armScope (Ts : List Ty) (Γ : Scope) : Scope :=
 /-- (helper) Which enum a drawn `match` scrutinizes: one a binder or a
 projection in scope already holds, where there is one, so the scrutinee is a
 **place** and typing it is (Use-Move)/(Use-Copy) §5.1 at that place — a move
-for a non-`Copy` enum, which is `3.8:33`'s destructured consumption and what
-makes a second `match` on it the E0205 the compiler reports. Otherwise any
-declared enum, which the draw then builds as a temporary. -/
+for a non-`Copy` enum, because a scrutinee is a value context (`3.8:7`,
+`3.8:76`; `6.3:17` for the payload the arm binds out of it), and what makes a
+second `match` on it the E0205 the compiler reports. Otherwise any declared
+enum, which the draw then builds as a temporary. -/
 def pickEnumIdx (D : Decls) (Γ : Scope) : G Nat := do
   let inScope := (List.range D.enums.length).filter (fun e =>
     !(indicesWhere Γ (fun b => b.ty == .enum e)).isEmpty ||
@@ -595,8 +596,8 @@ def pickEnumIdx (D : Decls) (Γ : Scope) : G Nat := do
 /-- (helper) Whether the scope already holds a place of enum type — a binder,
 or a field of a binder. Where it does, a drawn `match` is weighted up, because
 a `match` on a **place** is where the interesting ownership lives: the move
-that consumes the binding (`3.8:33`, `6.3:17`), the partial move at a field
-(`3.8:22`), and the E0205 a second `match` on the same place is. A `match` on
+that consumes the binding (`3.8:7`, `3.8:76`, `6.3:17`), the partial move at a
+field (`3.8:22`), and the E0205 a second `match` on the same place is. A `match` on
 a temporary exercises (D-Match) §6.6 and the arm teardown but leaves no state
 behind for the join to read. -/
 def enumPlaceInScope (D : Decls) (Γ : Scope) : Bool :=

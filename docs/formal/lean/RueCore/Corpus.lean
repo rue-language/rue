@@ -528,8 +528,8 @@ def cases : List Case := [
     prog := Examples.enumCallScrutinee
     },
   { name := "enum_matched_twice_moving",
-    description := "Two matches on the same non-Copy binding: the first moved it out (3.8:33's destructured consumption), so the second is the use of a moved-out place (E0205) and the machine refuses with useAfterMove.",
-    rules := ["(Match) §5.5", "(Use-Move) §5.1", "3.8:33", "3.8:5"],
+    description := "Two matches on the same non-Copy binding: a match scrutinee is a value context, so the first match moves the binding out (3.8:7, 3.8:76; 6.3:17 for the payload it binds out of it), and the second is the use of a moved-out place (E0205) and the machine refuses with useAfterMove.",
+    rules := ["(Match) §5.5", "(Use-Move) §5.1", "3.8:7", "6.3:17", "3.8:5"],
     prog := Examples.enumProg Examples.tI64 Examples.enumMatchedTwiceMoving
     },
   { name := "enum_two_linear_values",
