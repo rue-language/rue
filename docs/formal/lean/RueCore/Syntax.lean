@@ -546,11 +546,10 @@ hole in the value it runs on.
 An **array** step declares no destructor of its own: `3.9:14` gives `[T; n]` a
 destructor exactly when `T` has one, and `3.9:34` speaks of a type that
 *declares* one, so the array node imposes nothing and the walk continues into
-the element. Verified: probe `a7` moves an element out of an `[S1; 3]` whose
-`S1` declares a destructor and the compiler accepts it. Nothing in this part
-reaches that arm — `Place.noIdx` refuses an index step on both rules that
-consult this predicate — and it is written out so RUE-2327 inherits the right
-answer rather than a placeholder. -/
+the element. Verified twice over: probe `a1` moves an element out of an
+`[S1; 3]` whose `S1` declares a destructor and the compiler accepts it, and
+probe `b3b` refuses `x.arr[0].x0` with E0456 because the element's *own* type
+declares one. -/
 def noDtorPrefix (D : Decls) : Ty → List Nat → Bool
   | _, [] => true
   | T, f :: π =>
@@ -698,10 +697,21 @@ It is keyed on the retained field's **type**, not on Σ: the compiler reads the
 declared type of a sibling that has itself already been moved out (probe d5c,
 E0474 on a moved-out linear sibling), and `3.8:60` states the check
 "recursively through nested fields" of the declared-linear place, which is this
-recursion. An array step of the selected path refuses outright here — this
-arm is the gate for such a plan, since `Place.noIdx` reads a place's spelling
-and not its type — and §5.1's array clause — retained elements in ascending
-index order — is stated in the next slice (RUE-2327).
+recursion.
+
+**The array step** is §5.1's own clause, "at an array step, visit elements in
+ascending constant-index order, recurse into the selected element, and retain
+every unselected element", and it is the same sentence as the struct step's
+with `n` copies of the element type in place of the declaration's fields
+(`List.replicate n T`, the shape `Ty.fieldAt_inv` hands every array arm in this
+package). An out-of-range index retains nothing and recurses nowhere: the path
+is untypeable there (`7.1:9`, E0902), so no derivation reaches it. Verified
+against the compiler in both directions: probe `b9` — `x.arr[0]` on
+`linear struct L4 { arr: [T0; 2], k: i64 }` — is E0474 "would implicitly drop
+linear field 'array element [1]'", and probe `b3`, the same shape with an
+affine element type, compiles and drops the residue in the traversal's order
+(`arr[1]` before the later sibling `k`, probe `b20` at three elements and two
+siblings).
 
 This is the premise that rejects a destructure before it can silently drop a
 linear sibling; the compiler reports E0474. -/
@@ -717,7 +727,11 @@ def linearResidue (D : Decls) : Ty → List Nat → Bool
                   | some Tf => linearResidue D Tf π
                   | none => false)
            | none => false)
-      | .array _ _ => true
+      | .array Te n =>
+          anyLinearOther D (List.replicate n Te) f ||
+            (match (List.replicate n Te)[f]? with
+             | some Tf => linearResidue D Tf π
+             | none => false)
       | .int _ _ | .float _ | .bool | .unit | .enum _ => false
 
 /-! ## Operators -/

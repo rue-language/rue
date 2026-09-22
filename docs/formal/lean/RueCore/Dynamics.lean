@@ -736,22 +736,25 @@ declaration order where the leaf is a direct field (probe d13).
 An empty path selects the whole aggregate and retains nothing: the leaf "is not
 residue". A `⊘` with path left to walk is `useAfterMove`, as `readAt`'s is; a
 step that is not a field of what is stored is a shape no well-typed program
-produces. An **array** step of the selected path is refused here for the same
-reason: `linearResidue`'s array arm (`Syntax.lean`) has already refused the
-plan, so no accepted program navigates one. §5.1's array clause — retained
-elements in ascending index order — is stated in the next slice (RUE-2327). -/
+produces. An **array** step is §5.1's own clause — "at an array step, visit
+elements in ascending constant-index order, recurse into the selected element,
+and retain every unselected element" — and it is the struct step's walk over a
+different list, so it runs the same `splitFields`. Probe `b20` pins the order
+on the compiler: a declared-`linear` `{ p, arr: [S1; 3], q }` destructured at
+`x.arr[1]` drops `p`, `arr[0]`, `arr[2]`, `q`, in that order. -/
 def Contents.splitResidue (D : Decls) :
     Contents → List Nat → Except Violation (Contents × List Contents)
   | c, [] => .ok (c, [])
   | .struct _ cs, f :: π => Contents.splitFields D cs f π
+  | .array _ cs, c :: π => Contents.splitFields D cs c π
   | .hole, _ :: _ => .error .useAfterMove
-  | .array _ _, _ :: _
   | .int _ _ _, _ :: _ | .float _ _, _ :: _ | .bool _, _ :: _ | .unit, _ :: _
   | .enum _ _ _, _ :: _ => .error .typeConfusion
 
-/-- `split`'s struct step, over one declaration's stored fields: retain the
-fields before the selected slot, recurse into it, and retain the fields after
-— which is §6.3's "visit fields in declaration order" written as a structural
+/-- `split`'s step over one node's stored members — a declaration's fields, or
+an array's elements: retain the members before the selected slot, recurse into
+it, and retain the members after — which is §6.3's "visit fields in declaration
+order" (and §5.1's ascending-index order at an array) written as a structural
 recursion rather than as a `take`/`drop` (helper). -/
 def Contents.splitFields (D : Decls) :
     List Contents → Nat → List Nat → Except Violation (Contents × List Contents)
