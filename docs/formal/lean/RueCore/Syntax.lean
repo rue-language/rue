@@ -49,8 +49,12 @@ the next milestones, not this slice's scope.
 
 §4.2 gives a projection in value context three plans, and the fragment
 mechanizes two of them. `Ordinary` — the partial move of `3.8:22` — is
-(Use-Copy)/(Use-Move) here. `Untrackable(OrdinaryDynamic)` is the dynamic
-index *read*, whose one successful rule is
+(Use-Copy)/(Use-Move) here. `Declared(d, π_s)`, the declared-linear
+destructure of `3.8:33`, is `declaredPrefix` below: §4.2's `dl(Γ, p) =
+(d, π_s)`, the split of the path at its **longest proper prefix** of
+declared-`linear` struct type, which (Use-Declared-Linear-Destructure) §5.1 and
+(D-Use-Declared-Linear) §6.3 then discharge. `Untrackable(OrdinaryDynamic)` is
+the dynamic index *read*, whose one successful rule is
 (Use-Untrackable-Dynamic-Copy) §5.1: `Expr.indexRead` carries its
 `class(T) = Copy` premise, and §4.2's "there is no
 successful static rule … when `class(T) ∈ {Affine,Linear}`" is that premise's
@@ -59,16 +63,33 @@ a use at all — §4.2 classifies value-context uses, and an assignment
 destination is neither — so `Expr.indexWrite` carries (Assign) §5.2's own
 `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` at the element type instead
 (`3.8:77`, E0493), and an affine element is written in place.
-`Untrackable(DeclaredLinearDynamic)` is ill-formed by §4.2 and is refused here
-as part of the fragment's own `noLinearPrefix` restriction.
-`Declared(d, π)`, the declared-linear
-destructure of `3.8:33`, needs `(Use-Declared-Linear-Destructure)` §5.1 and
-its residue traversal, which is RUE-2236; until then a place whose path has a
-**proper prefix** of declared-`linear` struct type is rejected here
-(`noLinearPrefix`), as a stated restriction of the fragment rather than as a
-rule of the calculus. A use of such a place *whole* is ordinary (the plan looks
-for a proper prefix), so a declared-linear struct is still moved, dropped and
-reinitialized by the rules below.
+`Untrackable(DeclaredLinearDynamic)` is ill-formed by §4.2 and has no form
+here at all, because a dynamic index is not a `Place` step.
+
+The plan is therefore a **function of the type and the path**, and the four
+Ordinary rules ((Use-Copy), (Use-Move), (@Drop), (@Drop-Copy)) carry
+`declaredPrefix … = none` as a premise — §5.1's "read only with an `Ordinary`
+plan", which is what keeps the two groups from overlapping when the selected
+leaf is `Copy`. A use of a declared-`linear` place *whole* is ordinary (the
+plan looks for a **proper** prefix), so such a struct is still moved, dropped
+and reinitialized by the ordinary rules; and linearity *by infection*
+(`3.8:58`) draws no plan at all, because `Ty.declaredLinear` reads the declared
+attribute rather than the class (`3.8:60`'s second paragraph).
+
+`linearResidue` is §5.1's `linear-residue(S, π_s)` on the same split: the
+ordered residue traversal's retained places, tested at their **types**. It is
+type-level rather than Σ-level deliberately — the compiler reads the type of a
+sibling that has itself been moved out (probe d5c) — and it is what rejects
+a destructure that would silently drop a linear sibling (`3.8:60`, E0474).
+
+A destructure whose *selected path* passes through an **index** step —
+`x.arr[0]`, probe d9b — is refused here all the same, by `Place.noIdx`: the
+array part's own restriction on moving out of an element, which
+(Use-Declared-Linear-Destructure) carries with (Use-Move) and (@Drop) and
+which RUE-2327 lifts. The residue traversal's array clause is written out
+anyway, for the reason the array clauses of §5.5 and §5.6 are (below); a
+retained *array* is an ordinary residue place and needs nothing extra
+(probe d9).
 
 ## Arrays: this slice holds the array whole (RUE-2322, part 1)
 
@@ -495,6 +516,18 @@ def Ty.atPath (D : Decls) : Ty → List Nat → Option Ty
       | some T' => T'.atPath D π
       | none => none
 
+/-- Navigating a concatenated path is navigating the two halves in turn. This
+is what lets §5.1's premises at `d` — reached by `π_d` — and the leaf's type —
+reached by `π_d · π_s` — be read off one another (helper). -/
+theorem Ty.atPath_append (D : Decls) : ∀ (T : Ty) (π ρ : List Nat),
+    T.atPath D (π ++ ρ) = (T.atPath D π).bind fun T' => T'.atPath D ρ
+  | _, [], _ => by simp [Ty.atPath]
+  | T, f :: π, ρ => by
+      simp only [List.cons_append, Ty.atPath]
+      cases T.fieldAt D f with
+      | none => simp
+      | some T' => exact Ty.atPath_append D T' π ρ
+
 /-- No **proper prefix** of the path names a value whose type declares a
 destructor: (Use-Move) §5.1's and (@Drop) §5.3's `3.9:34` premise (E0456).
 Moving or dropping the whole value is fine — the empty path has no proper
@@ -524,29 +557,158 @@ def noDtorPrefix (D : Decls) : Ty → List Nat → Bool
       | .array T' _ => noDtorPrefix D T' π
       | .int _ _ | .float _ | .bool | .unit | .enum _ => true
 
-/-- No **proper prefix** of the path is a struct declared `linear`. This is not
-a premise of any §5 rule: it is the fragment's own restriction, standing in for
-the `Declared(d, π)` use plan §4.2 selects for such a path and
-(Use-Declared-Linear-Destructure) §5.1 discharges (RUE-2236, module
-docstring). An array is not a struct declared `linear`, so an array step
-imposes nothing and the walk continues into the element — but a
-declared-`linear` struct *above* an array step is still caught, which is what
-also gives §4.2's `Untrackable(DeclaredLinearDynamic)` (ill-formed there, E0904
-in the compiler) no instance at `Expr.indexRead`/`Expr.indexWrite`. -/
-def noLinearPrefix (D : Decls) : Ty → List Nat → Bool
-  | _, [] => true
+/-! ## §4.2's use plan, as a function of the type and the path -/
+
+/-- Whether a type is a struct **declared** `linear` (`3.8:57`) — the mark
+§4.2's `dl` looks for along a path and §5.6's `3.8:74` clause reads at a
+binding. Linearity *by infection* (`3.8:58`) is deliberately **not** this
+predicate: a carrier reaches `Linear` through a field, its projections stay
+ordinary partial moves, and `3.8:60`'s second paragraph says so (helper). -/
+def Ty.declaredLinear (D : Decls) : Ty → Bool
+  | .struct s =>
+      (match D.structs[s]? with
+       | some sd => sd.attr = .linear
+       | none => false)
+  | .array _ _ | .int _ _ | .float _ | .bool | .unit | .enum _ => false
+
+/-- **§4.2's `dl(Γ, p) = (d, π_s)`**: the declared-linear use plan, computed
+from the root's declared type and the path. `declaredPrefix D T π` is
+`some (π_d, π_s)` when `π_d` is the **longest proper prefix** of `π` whose type
+is a struct declared `linear` and `π_s` — nonempty, which is what makes the
+prefix proper — is the path from `d` to the selected leaf; it is `none` exactly
+when no such prefix exists, which is §4.2's `Ordinary` plan and the premise the
+four ordinary place rules carry (§5.1: they "are read only with an `Ordinary`
+plan").
+
+"Longest" is the recursion's shape: the deeper split wins, and the split at
+this node is the fallback. So `d` is the **smallest enclosing** declared-linear
+place, not necessarily the root binding (`3.8:33`: "when the access chain
+passes through several declared-`linear` levels, the smallest (innermost) one
+is destructured"), and a declared-linear ancestor above it keeps its own
+obligation (§5.6). A step that is not a field of the type reached so far makes
+the whole path untypeable (`Ty.atPath` is `none` there), so the fallback at
+such a node is harmless.
+
+§4.2's `dl` is "defined only when every index in the complete path is a
+compile-time constant". Every index a `Place` can carry here *is* a constant
+(`Place.idx`), and a dynamic index is not a path step at all
+(`Expr.indexRead`/`Expr.indexWrite`), so the side condition holds of every
+path this walks. An array step is not a struct declared `linear`, so it
+imposes no split of its own and the walk continues into the element — a
+declared-`linear` struct *above* an array step is still found, which is what
+leaves §4.2's `Untrackable(DeclaredLinearDynamic)` (ill-formed there, E0904 in
+the compiler) no instance at a dynamic index. -/
+def declaredPrefix (D : Decls) : Ty → List Nat → Option (List Nat × List Nat)
+  | _, [] => none
+  | T, f :: π =>
+      match T.fieldAt D f with
+      | some T' =>
+          (match declaredPrefix D T' π with
+           | some r => some (f :: r.1, r.2)
+           | none => if T.declaredLinear D then some ([], f :: π) else none)
+      | none => if T.declaredLinear D then some ([], f :: π) else none
+
+/-- **The plan really splits the path** (§4.2): `π = π_d · π_s` with `π_s`
+nonempty, so `d` is a *proper* prefix of `p` and the leaf really is under it.
+This is what lets §5.1's premises at `d` and §6.3's traversal from `d` be read
+against the one place the program wrote (helper). -/
+theorem declaredPrefix_split (D : Decls) : ∀ (T : Ty) (π πd πs : List Nat),
+    declaredPrefix D T π = some (πd, πs) → π = πd ++ πs ∧ πs ≠ []
+  | _, [], _, _, h => by simp [declaredPrefix] at h
+  | T, f :: π, πd, πs, h => by
+      have hfall : ∀ a b : List Nat,
+          (if T.declaredLinear D then some (([] : List Nat), f :: π) else none) = some (a, b) →
+            f :: π = a ++ b ∧ b ≠ [] := by
+        intro a b hh
+        split at hh
+        · simp only [Option.some.injEq, Prod.mk.injEq] at hh
+          obtain ⟨rfl, rfl⟩ := hh
+          exact ⟨rfl, by simp⟩
+        · exact absurd hh (by simp)
+      rw [declaredPrefix] at h
+      cases hfa : T.fieldAt D f with
+      | none => simp only [hfa] at h; exact hfall _ _ h
+      | some T' =>
+          simp only [hfa] at h
+          cases hrec : declaredPrefix D T' π with
+          | none => simp only [hrec] at h; exact hfall _ _ h
+          | some r =>
+              obtain ⟨πd', πs'⟩ := r
+              simp only [hrec, Option.some.injEq, Prod.mk.injEq] at h
+              obtain ⟨rfl, rfl⟩ := h
+              obtain ⟨heq, hne⟩ := declaredPrefix_split D T' π πd' πs' hrec
+              exact ⟨by simp [heq], hne⟩
+
+/-- **The consumed place is a declared-`linear` struct** (§5.1's
+`Γ ⊢ d : S`, `S` declared `linear`). The rule states it as a premise; here it
+is a *consequence* of the plan, so `Typed.useDeclared`/`Typed.dropDeclared`
+need not carry it (helper). -/
+theorem declaredPrefix_declaredLinear (D : Decls) : ∀ (T : Ty) (π πd πs : List Nat),
+    declaredPrefix D T π = some (πd, πs) →
+      ∃ Td, T.atPath D πd = some Td ∧ Td.declaredLinear D = true
+  | _, [], _, _, h => by simp [declaredPrefix] at h
+  | T, f :: π, πd, πs, h => by
+      have hfall : ∀ a b : List Nat,
+          (if T.declaredLinear D then some (([] : List Nat), f :: π) else none) = some (a, b) →
+            ∃ Td, T.atPath D a = some Td ∧ Td.declaredLinear D = true := by
+        intro a b hh
+        split at hh
+        · simp only [Option.some.injEq, Prod.mk.injEq] at hh
+          obtain ⟨rfl, rfl⟩ := hh
+          exact ⟨T, rfl, ‹_›⟩
+        · exact absurd hh (by simp)
+      rw [declaredPrefix] at h
+      cases hfa : T.fieldAt D f with
+      | none => simp only [hfa] at h; exact hfall _ _ h
+      | some T' =>
+          simp only [hfa] at h
+          cases hrec : declaredPrefix D T' π with
+          | none => simp only [hrec] at h; exact hfall _ _ h
+          | some r =>
+              obtain ⟨πd', πs'⟩ := r
+              simp only [hrec, Option.some.injEq, Prod.mk.injEq] at h
+              obtain ⟨rfl, rfl⟩ := h
+              obtain ⟨Td, hpath, hdl⟩ := declaredPrefix_declaredLinear D T' π πd' πs' hrec
+              exact ⟨Td, by simp only [Ty.atPath, hfa]; exact hpath, hdl⟩
+
+/-- §5.1's residue traversal at one struct step, read on the **retained**
+fields: every field but the selected one, tested at its declared type
+(helper). -/
+def anyLinearOther (D : Decls) : List Ty → Nat → Bool
+  | [], _ => false
+  | _ :: Ts, 0 => Ts.any fun T => decide (T.mult D = .linear)
+  | T :: Ts, f + 1 => decide (T.mult D = .linear) || anyLinearOther D Ts f
+
+/-- **§5.1's `linear-residue(S, π_s)`**: the ordered residue traversal of
+`residue(S, π_s)` — "at a struct step, visit fields in declaration order,
+recurse into the selected field, and retain every unselected field" — asking
+whether one of the *retained* places carries a linear value. The traversal ends
+at the selected leaf, which is not residue, so the empty path is `false`.
+
+It is keyed on the retained field's **type**, not on Σ: the compiler reads the
+declared type of a sibling that has itself already been moved out (probe d5c,
+E0474 on a moved-out linear sibling), and `3.8:60` states the check
+"recursively through nested fields" of the declared-linear place, which is this
+recursion. An array step of the selected path refuses outright here, because
+`Place.noIdx` has already refused the place: §5.1's array clause — retained
+elements in ascending index order — is stated in the next slice.
+
+This is the premise that rejects a destructure before it can silently drop a
+linear sibling; the compiler reports E0474. -/
+def linearResidue (D : Decls) : Ty → List Nat → Bool
+  | _, [] => false
   | T, f :: π =>
       match T with
       | .struct s =>
           (match D.structs[s]? with
            | some sd =>
-               decide (sd.attr ≠ .linear) &&
+               anyLinearOther D sd.fields f ||
                  (match sd.fields[f]? with
-                  | some T' => noLinearPrefix D T' π
-                  | none => true)
-           | none => true)
-      | .array T' _ => noLinearPrefix D T' π
-      | .int _ _ | .float _ | .bool | .unit | .enum _ => true
+                  | some Tf => linearResidue D Tf π
+                  | none => false)
+           | none => false)
+      | .array _ _ => true
+      | .int _ _ | .float _ | .bool | .unit | .enum _ => false
 
 /-! ## Operators -/
 
