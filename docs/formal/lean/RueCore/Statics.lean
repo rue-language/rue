@@ -2340,8 +2340,8 @@ Its premise — every arm's outgoing context a shape of its declared types
 (Panic) conclude at *any* context with the incoming skeleton, so a judgment-wide
 `Ctx.Wf` preservation theorem is false as those rules stand, and the invariant
 stays an explicit premise here. Constraining the two `⊥` contexts — or proving
-that a derivation may always be rebuilt to pick a well-formed one — is owed on
-RUE-2337.
+that a derivation may always be rebuilt to pick a well-formed one — is a rule
+decision, RUE-2340.
 -/
 
 /-- One arm's entry context: (Match) §5.5's `Γ, x_{i1}:Ti1, …, x_{i,ai}:Ti_{ai} ;
