@@ -1,0 +1,221 @@
+════════════════════════════════════════════════════════════════════════════════
+ enum_match_one_arm
+════════════════════════════════════════════════════════════════════════════════
+A linear-payload enum consumed by a match in one arm of an if only: class(E)
+is the payload join over every variant, so the Owned side is residual and the
+§5.5 join rejects it (E0443); the executed path runs.
+
+Rules exercised: (Match) §5.5 · (If) §5.5 join · 3.8:50 · 6.3:19
+
+── The program ─────────────────────────────────────────────────────────────────
+
+@copy struct S0 { x0: i64 }
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+linear struct S2 { x0: i64 }
+linear struct S3 { x0: i64 }
+drop fn S3(self) { @dbg(self.x0); }
+struct S4 { x0: i64, x1: S3 }
+struct S5 { x0: i64, x1: S1 }
+drop fn S5(self) { @dbg(self.x0); }
+@copy struct S6 { x0: i64, x1: i64 }
+struct S7 { x0: S1, x1: S1 }
+struct S8 { x0: S1, x1: i64 }
+struct S9 { x0: S7, x1: i64 }
+struct S10 { x0: S3, x1: S1 }
+struct S11 { x0: E0, x1: S1 }
+enum E0 { K0(S1), K1 }
+enum E1 { K0(S3), K1 }
+enum E2 { K0(S1, S1), K1 }
+enum E3 { K0, K1 }
+enum E4 { K0(i64), K1 }
+fn f0() -> i64 {
+    {
+        let v0: E1 = E1.K0(S3 { x0: 1 });
+        {
+            if true {
+                match v0 {
+                    E1.K0(v1) => {
+                        @drop(v1)
+                    },
+                    E1.K1 => {
+                        ()
+                    },
+                }
+            } else {
+                ()
+            };
+            7
+        }
+    }
+}
+
+
+
+── What the checker says (§5) ──────────────────────────────────────────────────
+
+Verdict: REJECTED by the checker (§5).
+
+The premise that fails, in fn f0() -> i64, at (If) §5.5 join:
+
+    on  if true { match v0 { E1.K0(v1) => @drop(v1), E1.K1 => () } } else { () }
+
+    the two arms disagree on a linear-carrying entry — v0: E1 is MovedOut in
+    the then-arm and Owned in the else-arm, so a linear value is consumed on
+    only some paths ((If) premise `Σ' = join(Σ1, Σ2)`, §5.5; 3.8:50; the
+    compiler reports E0443)
+
+── The derivations (§5) ────────────────────────────────────────────────────────
+
+Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
+fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
+premises are the nodes indented under it, in premise order. One tree per
+function body, checked from (Fn) §5.8's entry context.
+
+  fn f0() -> i64
+
+  (Let) §5.3 + the §5.6 scope-exit leak check
+    e       { let v0: E1 = E1.K0(S3 { x0: 1 }); { if true { match v0 { E1.K0(v1) => @drop(v…
+    Γ;Σ     (empty)
+    ✗       this premise fails:
+            a premise's own derivation failed — the reason is the rejected
+            premise nested under this rule
+      (Enum-Intro) §5.5
+        e       E1.K0(S3 { x0: 1 })
+        Γ;Σ     (empty)
+        ⇒       E1  ⊣  (empty)
+          (Struct-Intro) §5.8
+            e       S3 { x0: 1 }
+            Γ;Σ     (empty)
+            ⇒       S3  ⊣  (empty)
+              (Lit) §5.8
+                e       1
+                Γ;Σ     (empty)
+                ⇒       i64  ⊣  (empty)
+      (Seq) §5.3, 3.8:64
+        e       { if true { match v0 { E1.K0(v1) => @drop(v1), E1.K1 => () } } else { () }; 7 }
+        Γ;Σ     [v0: E1 = Owned]
+        ✗       this premise fails:
+                a premise's own derivation failed — the reason is the rejected
+                premise nested under this rule
+          (If) §5.5 join
+            e       if true { match v0 { E1.K0(v1) => @drop(v1), E1.K1 => () } } else { () }
+            Γ;Σ     [v0: E1 = Owned]
+            ✗       this premise fails:
+                    the two arms disagree on a linear-carrying entry — v0: E1 is
+                    MovedOut in the then-arm and Owned in the else-arm, so a linear
+                    value is consumed on only some paths ((If) premise `Σ' = join(Σ1,
+                    Σ2)`, §5.5; 3.8:50; the compiler reports E0443)
+              (Lit) §5.8
+                e       true
+                Γ;Σ     [v0: E1 = Owned]
+                ⇒       bool  ⊣  [v0: E1 = Owned]
+              (Match) §5.5 join
+                e       match v0 { E1.K0(v1) => @drop(v1), E1.K1 => () }
+                Γ;Σ     [v0: E1 = Owned]
+                ⇒       ()  ⊣  [v0: E1 = MovedOut]
+                  (Use-Move) §5.1
+                    e       v0
+                    Γ;Σ     [v0: E1 = Owned]
+                    ⇒       E1  ⊣  [v0: E1 = MovedOut]
+                  (@Drop) §5.3
+                    e       @drop(v1)
+                    Γ;Σ     [v1: S3 = Owned, v0: E1 = MovedOut]
+                    ⇒       ()  ⊣  [v1: S3 = MovedOut, v0: E1 = MovedOut]
+                  (Lit) §5.8
+                    e       ()
+                    Γ;Σ     [v0: E1 = MovedOut]
+                    ⇒       ()  ⊣  [v0: E1 = MovedOut]
+              (Lit) §5.8
+                e       ()
+                Γ;Σ     [v0: E1 = Owned]
+                ⇒       ()  ⊣  [v0: E1 = Owned]
+
+── The run (§6) ────────────────────────────────────────────────────────────────
+
+One row per evaluated node, in execution order: a node's premises run before
+the node itself, so the table reads top to bottom as the machine ran. `d<n>`
+is the nesting depth — a callee's rows are deeper than its call's — and `>>`
+marks a drop event. The run enters at f0(), as `Dynamics.run` does.
+
+  [1]   d1    (D-Call) §6.9 (push the frame)
+         expr    fn f0() -> i64  with []
+         store   (empty)
+           →     (empty)
+         result  value ()
+  [2]   d5            literal §6.3
+         expr    1
+         store   (empty)
+           →     (empty)
+         result  value 1
+  [3]   d4          (D-Struct) §6.5
+         expr    S3 { x0: 1 }
+         store   (empty)
+           →     (empty)
+         result  value S3 { 1 }
+  [4]   d3        (D-Enum-Intro) §6.6
+         expr    E1.K0(S3 { x0: 1 })
+         store   (empty)
+           →     (empty)
+         result  value E1.K0⟨S3 { 1 }⟩
+  [5]   d3        (D-Let) §6.7 (mint the binding)
+         expr    let v0 = E1.K0⟨S3 { 1 }⟩ at ℓ0
+         store   (empty)
+           →     [ℓ0 = E1.K0⟨S3 { 1 }⟩]
+         result  value E1.K0⟨S3 { 1 }⟩
+  [6]   d5            literal §6.3
+         expr    true
+         store   [ℓ0 = E1.K0⟨S3 { 1 }⟩]
+           →     [ℓ0 = E1.K0⟨S3 { 1 }⟩]
+         result  value true
+  [7]   d6              (D-Use-Move) §6.3
+         expr    v0
+         store   [ℓ0 = E1.K0⟨S3 { 1 }⟩]
+           →     [ℓ0 = ⊘]
+         result  value E1.K0⟨S3 { 1 }⟩
+  [8]   d6              (D-Match) §6.6 (bind the arm's payload)
+         expr    bind E1.K0's payload to [ℓ1]
+         store   [ℓ0 = ⊘]
+           →     [ℓ0 = ⊘, ℓ1 = S3 { 1 }]
+         result  value E1.K0⟨S3 { 1 }⟩
+  [9]   d6              @drop §6.11
+         expr    @drop(v1)
+         store   [ℓ0 = ⊘, ℓ1 = S3 { 1 }]
+           →     [ℓ0 = ⊘, ℓ1 = ⊘]
+         events  >> drop ℓ1 = S3 { 1 }; run drop fn S3(S3 { 1 })
+         result  value ()
+  [10]  d5            (D-EndScope) §6.6 (end the arm)
+         expr    endscope([ℓ1])
+         store   [ℓ0 = ⊘, ℓ1 = ⊘]
+           →     [ℓ0 = ⊘, ℓ1 = † (retired)]
+         result  value ()
+  [11]  d4          (D-If-T) §6.6
+         expr    if true { match v0 { E1.K0(v1) => @drop(v1), E1.K1 => () } } else { () }
+         store   [ℓ0 = E1.K0⟨S3 { 1 }⟩]
+           →     [ℓ0 = ⊘, ℓ1 = † (retired)]
+         result  value ()
+  [12]  d4          literal §6.3
+         expr    7
+         store   [ℓ0 = ⊘, ℓ1 = † (retired)]
+           →     [ℓ0 = ⊘, ℓ1 = † (retired)]
+         result  value 7
+  [13]  d3        (D-Seq) §6.7
+         expr    { if true { match v0 { E1.K0(v1) => @drop(v1), E1.K1 => () } } else { () }; 7 }
+         store   [ℓ0 = E1.K0⟨S3 { 1 }⟩]
+           →     [ℓ0 = ⊘, ℓ1 = † (retired)]
+         result  value 7
+  [14]  d2      (D-EndScope) §6.7 (retire the binding)
+         expr    endscope([ℓ0])
+         store   [ℓ0 = ⊘, ℓ1 = † (retired)]
+           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         result  value 7
+  [15]  d0  (D-Return-Value) §6.9 (pop the frame)
+         expr    run-all-scope-drops([])
+         store   [ℓ0 = † (retired), ℓ1 = † (retired)]
+           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         result  value 7
+
+────────────────────────────────────────────────────────────────────────────────
+Outcome: ok — value 7
+         drop trace: drop ℓ1 = S3 { 1 }; run drop fn S3(S3 { 1 })
+

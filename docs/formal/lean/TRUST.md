@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 175.
+- Theorems checked: 204.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -76,15 +76,32 @@ and diffs them against the committed copies.
 | `joinFold_linear_inv` | `RueCore.Statics` | `propext` |
 | `StructDecl.Wf.field_not_linear` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `struct_carriesLinear_iff` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `rank_le_payloadFold` | `RueCore.Statics` | `propext` |
+| `rank_le_payloadFold_of_mem` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `payloadFold_linear_inv` | `RueCore.Statics` | `propext` |
+| `EnumDecl.Wf.payload_not_linear` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `enum_carriesLinear_iff` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `joinFold_congr` | `RueCore.Statics` | `propext` |
+| `joinFold_congr_enum` | `RueCore.Statics` | `propext` |
+| `payloadFold_congr` | `RueCore.Statics` | `propext` |
 | `struct_class_unique` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `enum_class_unique` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `overwriteOk_iff` | `RueCore.Statics` | `propext` |
+| `TypedArms.at_index` | `RueCore.Statics` | `propext` |
+| `exhaustive_arm_exists` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `Entry.join_skel` | `RueCore.Statics` | `propext` |
 | `List.set_self_of_getElem?` | `RueCore.Statics` | `propext` |
 | `skel_set_setSt` | `RueCore.Statics` | `propext` |
+| `Ctx.skel_armCtx` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `skel_drop_armCtx` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `Ctx.join_skel` | `RueCore.Statics` | `propext` |
-| `Typed.skel_preserved` | `RueCore.Statics` | `propext` |
-| `TypedArgs.skel_preserved` | `RueCore.Statics` | `propext` |
+| `Ctx.SameSkel.transport` | `RueCore.Statics` | *none* |
+| `Ctx.SameSkel.mem` | `RueCore.Statics` | *none* |
+| `Ctx.joinFold_skel` | `RueCore.Statics` | `propext` |
+| `Ctx.joinAll_skel` | `RueCore.Statics` | `propext` |
+| `Typed.skel_preserved` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `TypedArgs.skel_preserved` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `TypedArms.arm_skel` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `dropEventsList_eq_flatten` | `RueCore.Dynamics` | `propext` |
 | `HasTys.length_eq` | `RueCore.Soundness` | `propext` |
 | `HasTy.mult_eq` | `RueCore.Soundness` | `propext` |
@@ -92,6 +109,7 @@ and diffs them against the committed copies.
 | `HasTy.float_inv` | `RueCore.Soundness` | `propext` |
 | `HasTy.bool_inv` | `RueCore.Soundness` | `propext` |
 | `HasTy.struct_inv` | `RueCore.Soundness` | `propext` |
+| `HasTy.enum_inv` | `RueCore.Soundness` | `propext` |
 | `ContentsTys.length_eq` | `RueCore.Soundness` | `propext` |
 | `ContentsTy.struct_inv` | `RueCore.Soundness` | `propext` |
 | `ContentsTys.index` | `RueCore.Soundness` | `propext` |
@@ -107,6 +125,7 @@ and diffs them against the committed copies.
 | `dropContentsList_events` | `RueCore.Soundness` | `propext` |
 | `dropContents_ok` | `RueCore.Soundness` | `propext` |
 | `dropContents_struct_events` | `RueCore.Soundness` | `propext` |
+| `dropContents_enum_events` | `RueCore.Soundness` | `propext` |
 | `dropContents_order` | `RueCore.Soundness` | `propext` |
 | `dropContentsList_order` | `RueCore.Soundness` | `propext` |
 | `ContentsTy.residualLinear_false` | `RueCore.Soundness` | `Quot.sound`, `propext` |
@@ -160,12 +179,14 @@ and diffs them against the committed copies.
 | `Untouched.set` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `Untouched.trans_set` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `Untouched.of_fresh` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `Untouched.under_binders` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `Untouched.under_binder` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `Matches.transport` | `RueCore.Soundness` | `propext` |
 | `CellMatches.dropOk` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `dropCell_ok` | `RueCore.Soundness` | `propext` |
 | `dropRetire_ok` | `RueCore.Soundness` | `propext` |
 | `Matches.unwind` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `Matches.unwindPrefix` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `runAllScopeDrops_ok` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `skel_lookup` | `RueCore.Soundness` | `propext` |
 | `ownedJoinOk_matches` | `RueCore.Soundness` | `Quot.sound`, `propext` |
@@ -176,9 +197,13 @@ and diffs them against the committed copies.
 | `Entry.join_matches_right` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `Matches.join_left` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `Matches.join_right` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `Matches.joinFold` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `Matches.joinAll` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `mintParams_store` | `RueCore.Soundness` | `propext` |
 | `mintParams_fresh` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `matches_mintParams` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `mintParams_locs_length` | `RueCore.Soundness` | `propext` |
+| `matches_mintParams_app` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `EvalOk.mono_store` | `RueCore.Soundness` | `propext` |
 | `AbortOk.mono_store` | `RueCore.Soundness` | `propext` |
 | `EvalOk.withTrace` | `RueCore.Soundness` | `propext` |
@@ -210,11 +235,15 @@ and diffs them against the committed copies.
 | `no_linear_overwrite` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `no_linear_discard` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `check_sound` | `RueCore.Checker` | `propext` |
+| `checkArms_sound` | `RueCore.Checker` | `propext` |
 | `checkArgs_sound` | `RueCore.Checker` | `propext` |
 | `checkFn_sound` | `RueCore.Checker` | `propext` |
 | `checkStructDecl_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
 | `checkStructsFrom_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
 | `checkStructs_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
+| `checkEnumDecl_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
+| `checkEnumsFrom_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
+| `checkEnums_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
 | `checkProgram_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
 | `Examples.panicPastLinear_typed` | `RueCore.Examples` | `propext` |
 | `Examples.countdown_at_17` | `RueCore.Examples` | `propext` |

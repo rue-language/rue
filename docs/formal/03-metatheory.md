@@ -23,9 +23,16 @@ and both signednesses, `float(w)` at both widths, `bool`, `unit` — and
 monomorphic struct types declared by the program — named fields by position,
 the `@copy`/`linear` attribute, whether the struct declares a destructor, and
 `class(S)` as §3's join of the field classes lifted by that attribute
-(`WfStructs` is the equation, and `checkStructs` decides it); struct literals
-((Struct-Intro) §5.8, (D-Struct) §6.5) and §6.11's drop order — a value's user
-destructor, then its fields in declaration order, recursively; use
+(`WfStructs` is the equation, and `checkStructs` decides it) — and monomorphic
+**enum** types, one payload tuple per variant with `class(E)` the payload join
+over every variant (`6.3:19`; `WfEnums` is the equation and `checkEnums`
+decides it); struct literals ((Struct-Intro) §5.8, (D-Struct) §6.5), enum
+construction and the `match` that eliminates it in §5.5's canonical form —
+one arm per variant, binding that variant's payload as fresh `Owned` locals
+that leave scope at the arm's end ((Enum-Intro)/(Match) §5.5,
+(D-Enum-Intro)/(D-Match) §6.6, `6.3:17`) — and §6.11's drop order — a value's user
+destructor, then its fields in declaration order, recursively, or an enum's
+**active** variant's payload only (`6.3:20`); use
 (copy/move), `@drop`, `let` with scope-exit drop, assignment with
 reinitialization, sequencing with the discard check, `if` with the §5.5 branch
 join, §2's whole integer operator set — `+ - * / %`, `& | ^`, `<< >>`,
@@ -51,7 +58,10 @@ declared-`linear` proper prefix is rejected as a stated restriction of the
 fragment rather than given (Use-Declared-Linear-Destructure) §5.1 (RUE-2236) —
 no arrays and so no `Path[c]` step, no element-wise `3.8:73` form and no
 `3.8:68` root-index restriction, no equality compare (it borrows its
-operands, `4.3:3f`, so `≈`'s float leaf has no instance here), no enums,
+operands, `4.3:3f`, so `≈`'s float leaf has no instance here), no payload path
+into an enum (§5.6 tracks none, so `Place` has no enum step), no wildcard,
+repeated or guarded `match` pattern and no bool or integer scrutinee (all
+elaboration obligations §5.5 states), no
 `inout`/`borrow` parameters, accessor calls, loops, loans, or buffers.
 
 **The trap inventory, and what a trap carries.** Every §6.12 category the
@@ -125,14 +135,20 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   **definitional** — every frame the interpreter builds builds σ and ρ from
   one list — so it is not yet evidence about the RUE-1277 redundancy, which
   was raised for scopes pushed and popped independently of the binder chain
-  (§6.6's `match` arms, §6.10's loops). It becomes a real obligation when
-  `Frame.scope` is §6.1's stack. `RueCore.Untouched` carries frame locality
+  (§6.10's loops; §6.6's `match` arm **appends** its payload cells to the
+  innermost record, as (D-Let) §6.7 does, so it keeps the equation
+  definitional too). It becomes a real obligation when `Frame.scope` is
+  §6.1's stack. `RueCore.Untouched` carries frame locality
   across a call, so a caller's agreement survives a callee's run.
 - **Hypothesis:** `RueCore.ProgramTyped` — §3's class assignment for every
   struct declaration and (Fn) §5.8 for every function, plus an entry point
   taking no parameters — which `RueCore.checkProgram_sound` decides.
 - **Covers:** the fragment above. **Owed:** every remaining Phase C slice
-  re-establishes this theorem for its forms (RUE-2232 through RUE-2237). The
+  re-establishes this theorem for its forms (RUE-2233 through RUE-2237). The
+  enum slice (RUE-2320) has done so: progress at a `match` is exhaustiveness
+  (`RueCore.exhaustive_arm_exists` — a well-typed tag is an index the arm list
+  has), and preservation over the n-way join is the fold of the binary one
+  (`RueCore.Matches.joinAll`). The
   float slice (RUE-2282) has done so: `soundness` is stated over a
   `RueCore.FloatModel`, so the float forms carry their own re-establishment in
   the theorem's statement.
@@ -165,6 +181,10 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   followed by the concatenation of its fields' drop events in **declaration
   order** (`3.9:13`), each field's given by the same closed form recursively
   and a field that has been **moved out contributing none** (`3.8:73`);
+  `RueCore.dropContents_enum_events` is the same reading at an enum — the
+  **active** variant's payload only, in payload order, no destructor event
+  because §3 lets an enum declare none, and nothing at all for a
+  discriminant-only variant (`6.3:20`);
   `RueCore.dropContents_events` is the equation it reads off, and
   `RueCore.dropEvents` (`lean/RueCore/Dynamics.lean`) is §6.11's order written
   as a function. `RueCore.dropContents_ok` says the walk never refuses on
@@ -259,7 +279,12 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   model), while stranding a linear sub-place under a partially moved place is
   rejected ((@Drop) §5.3's own side condition, E0406). **Owed:** RUE-2316;
   declared-linear destructure and residue ordering (RUE-2236); arrays
-  (RUE-2235); enums (RUE-2232).
+  (RUE-2235). For an **enum** the obligation is the type's, over every variant
+  (`6.3:19`, `RueCore.enum_carriesLinear_iff`), because the active variant is
+  not a static fact: a value of the other variant is still must-consume, which
+  is what the compiler reports as E0406. A `match` discharges it by binding and
+  consuming the payload, and the arm's own §5.6 check is what makes "consuming"
+  mean it (`6.3:17`).
 
 ## Exclusivity / no aliased mutation
 

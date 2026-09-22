@@ -59,6 +59,10 @@ DECL_LINE = re.compile(
     r"(?P<name>[^\s:({\[]+)"
 )
 CONSTRUCTOR_LINE = re.compile(r"^\s+\|\s+(?P<name>[^\s:({\[]+)")
+# Lean's guillemets quote a name whose spelling is one of its own keywords
+# (`«match»`); the constant they declare is the bare name, which is what the
+# environment and the digest see.
+GUILLEMETS = str.maketrans("", "", "\u00ab\u00bb")
 ATTRIBUTE_PREFIX = re.compile(r"^(?:@\[[^\]]*\]\s*)+")
 NAMESPACE_LINE = re.compile(r"^namespace\s+(?P<name>\S+)")
 # `section`, `noncomputable section`, `mutual`: blocks that `end` closes
@@ -147,7 +151,15 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         "projected by its declaration slot (`p . f` below), so §5.6's obligation is "
         "per-path; no generics",
     ),
-    ("T", "E"): ("no", [], "enums and their variants are outside the fragment"),
+    ("T", "E"): (
+        "partial",
+        ["Ty.enum", "EnumDecl"],
+        "a monomorphic enum declared by the program: one payload tuple per variant "
+        "in declaration order, with `class(E)` the payload join over every variant "
+        "(`6.3:19`; `WfEnums` is the equation). An enum declares no attribute and no "
+        "destructor, and its payload is reached only by a `match` arm's binding, never "
+        "by a path — §5.6 tracks no path into one; no generics",
+    ),
     ("T", "[T; n]"): ("no", [], "arrays and array indexing are outside the fragment"),
     ("p", "x"): (
         "yes",
@@ -215,7 +227,13 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         "(`3.6:15`: elaboration reorders a surface literal) and typed left to "
         "right with Σ threaded, by (Struct-Intro) §5.8",
     ),
-    ("e", "E :: K ( e1, ..., em )"): ("no", [], "follows `E`: no enums, so no variant construction"),
+    ("e", "E :: K ( e1, ..., em )"): (
+        "yes",
+        ["Expr.mkEnum"],
+        "the variant's 0-based tag and one argument per declared payload component, "
+        "typed left to right by (Enum-Intro) §5.5 and built by (D-Enum-Intro) §6.6; "
+        "`args = []` is §2's discriminant-only case",
+    ),
     ("e", "[ e1, ..., en ]"): ("no", [], "follows `[T; n]`: no arrays, so no array construction"),
     ("e", "g ( a1, ..., am )"): (
         "partial",
@@ -268,7 +286,16 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         "operands of one type, the shape (Arith)/(Ord) already have",
     ),
     ("e", "if e0 { e1 } else { e2 }"): ("yes", ["Expr.ite"], "with the §5.5 branch join"),
-    ("e", "match e0 { pat1 => e1, ..., patk => ek }"): ("no", [], "follows `E`: no enums, so no arms to match"),
+    ("e", "match e0 { pat1 => e1, ..., patk => ek }"): (
+        "partial",
+        ["Expr.match"],
+        "§5.5's canonical form only: an enum scrutinee and exactly one arm per "
+        "variant in declaration order, so the patterns are not represented — arm `j` "
+        "is variant `j`'s and binds its payload as de Bruijn binders of its body. "
+        "(Match) §5.5 and (D-Match) §6.6 are the rules; the wildcard, the repeated "
+        "pattern, the guard, the bool/integer scrutinee and the zero-arm `match` are "
+        "the elaboration obligations §5.5 states",
+    ),
     ("e", "let μ x = e1 ; e2"): (
         "yes",
         ["Expr.letIn"],
@@ -479,7 +506,7 @@ def _process_code(
             module.declarations.append(
                 Declaration(
                     module.name,
-                    f"{current_inductive.name}.{ctor.group('name')}",
+                    f"{current_inductive.name}.{ctor.group('name').translate(GUILLEMETS)}",
                     "constructor",
                     number,
                     pending_doc,
@@ -526,7 +553,7 @@ def _process_code(
         pending_doc_ref[0] = None
         return
     kind = decl_match.group("kw")
-    name = decl_match.group("name")
+    name = decl_match.group("name").translate(GUILLEMETS)
     prefix = ".".join(frame_name for frame_kind, frame_name in frames if frame_kind == "ns" and frame_name)
     qualified = f"{prefix}.{name}" if prefix else name
     decl = Declaration(module.name, qualified, kind, number, pending_doc)
