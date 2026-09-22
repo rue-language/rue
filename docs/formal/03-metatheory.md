@@ -187,12 +187,13 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   (`RueCore.exhaustive_arm_exists` — a well-typed tag is an index the arm list
   has), and preservation over the n-way join is the fold of the binary one
   (`RueCore.Matches.joinAll`); RUE-2325 then put the enum forms under the
-  differential bridge's *generated* programs, so the re-establishment is
-  checked against the compiler on programs nobody wrote and not only on the
-  seed cases. The
-  float slice (RUE-2282) has done so: `soundness` is stated over a
-  `RueCore.FloatModel`, so the float forms carry their own re-establishment in
-  the theorem's statement.
+  generator, and at `--gen 200 --seed 7` and `--gen 1000 --seed 23` the
+  model's verdicts and traces were compared against the compiler by hand and
+  agree. That is a differential check of `check`/`eval` against the
+  implementation, not part of the theorem, and nothing in CI runs it yet
+  (RUE-2241). The float slice (RUE-2282) has done so: `soundness` is stated
+  over a `RueCore.FloatModel`, so the float forms carry their own
+  re-establishment in the theorem's statement.
 
 ## No use-after-move
 
