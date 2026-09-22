@@ -183,9 +183,10 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         "field name), so a use of it is §4.2's partial move (`3.8:22`), an "
         "assignment reinitializes the subtree (`3.8:55`) and a `@drop` of it "
         "leaves a hole §6.11's walk skips (`3.8:60`; `3.8:73` is the "
-        "array-element form of the same rule); the declared-linear "
-        "destructure plan `Declared(d, π)` (§5.1, `3.8:33`) is not mechanized and "
-        "a path with such a prefix is rejected instead (RUE-2236)",
+        "array-element form of the same rule); where the path has a proper "
+        "prefix of declared-`linear` struct type, §4.2's `Declared(d, π_s)` "
+        "plan applies instead (`declaredPrefix`) and "
+        "(Use-Declared-Linear-Destructure) §5.1 consumes that prefix (`3.8:33`)",
     ),
     ("p", "p [ e ]"): (
         "partial",

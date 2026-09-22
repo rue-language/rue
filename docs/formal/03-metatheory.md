@@ -62,19 +62,23 @@ name one:
 a projection in value context is the partial move of `3.8:22` (§4.2), the
 `fully-owned` and `3.9:34` premises of (Use-Move) §5.1 are checked, §5.6's
 leak check is the recursive `residual-linear` read on the residue, and §5.5's
-join is taken path by path. No declared-linear destructure — a path with a
-declared-`linear` proper prefix is rejected as a stated restriction of the
-fragment rather than given (Use-Declared-Linear-Destructure) §5.1 (RUE-2236) —
-and **no element move**: an array is owned whole here, so `3.8:68`'s
-constant-index element move, the `MovedOut` element state it leaves and
-`3.8:73`'s path-specific element drop are refused by a premise of the
-fragment's own (`RueCore.Place.noIdx`) rather than by a rule of the calculus,
-which the compiler's acceptance of `let s: S = a[1];` shows. Nor is there any
-step **below** a dynamic index: §2's place grammar has `p [ e ]`, so `a[i].x0`
-is a place of the calculus and the compiler reads and writes it, but
-`RueCore.Expr.indexRead` yields the element *value* and a dynamic index is not
-a `RueCore.Place` step, so neither the read nor the write has a form here.
-RUE-2327 lifts both. No equality compare (it borrows its
+join is taken path by path. A path with a declared-`linear` **proper prefix**
+takes §4.2's `Declared(d, π_s)` plan instead, and
+(Use-Declared-Linear-Destructure) §5.1 discharges it: the smallest enclosing
+declared-`linear` place is consumed, §5.1's `linear-residue` gate rejects a
+residue that carries a linear value (`3.8:60`), and §6.3's `split`/`drop*`
+destroys the droppable residue in the traversal's order before the consumed
+place becomes `⊘`. There is **no element move**: an array is owned whole here,
+so `3.8:68`'s constant-index element move, the `MovedOut` element state it
+leaves and `3.8:73`'s path-specific element drop are refused by a premise of
+the fragment's own (`RueCore.Place.noIdx`) rather than by a rule of the
+calculus, which the compiler's acceptance of `let s: S = a[1];` shows, and
+which is also what keeps a destructure whose selected path runs through an
+index step out. Nor is there any step **below** a dynamic index: §2's place
+grammar has `p [ e ]`, so `a[i].x0` is a place of the calculus and the compiler
+reads and writes it, but `RueCore.Expr.indexRead` yields the element *value*
+and a dynamic index is not a `RueCore.Place` step, so neither the read nor the
+write has a form here. RUE-2327 lifts both. No equality compare (it borrows its
 operands, `4.3:3f`, so `≈`'s float leaf has no instance here), no payload path
 into an enum (§5.6 tracks none, so `Place` has no enum step), no wildcard,
 repeated or guarded `match` pattern and no bool or integer scrutinee (all
@@ -203,10 +207,13 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   covered; a *dynamic* index cannot be tracked as a path at all, and
   §5.1's (Use-Untrackable-Dynamic-Copy) asks `fully-owned(Σ, p)` of the whole
   array for exactly that reason (`3.8:70`, `7.1:45`).
+  A declared-linear destructure reads the same way, one place up: the rule's
+  `fully-owned(Σ, d)` is asked of the **consumed** place, so the leaf it hands
+  on and the residue it destroys are both hole-free
+  (`RueCore.splitResidue_ok`).
   **Owed:** the constant-index element **move** and the `MovedOut` element
   state it leaves, and any step below a dynamic index — `a[i].x0`, which the
-  compiler reads and writes and which has no form here (RUE-2327) — and the
-  declared-linear destructure's selected leaf (RUE-2236).
+  compiler reads and writes and which has no form here (RUE-2327).
 
 ## No double-free
 
@@ -329,8 +336,17 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   obligation of its own — it declares no attribute, and `3.8:74` makes a
   zero-length one vacuous — so `residual-linear` reads it as the disjunction
   over its `n` elements at the element type, which is what makes an `[L; n]`
-  left to scope exit the leak E0406 reports. For an **enum** the obligation is
-  the type's, over every variant
+  left to scope exit the leak E0406 reports. A **declared-linear destructure**
+  consumes the smallest enclosing declared-`linear` place once and destroys its
+  droppable residue exactly once, in the traversal's order
+  (`RueCore.dropResidue_events`); §5.1's `linear-residue` premise is what
+  keeps a *linear* residue out of that destruction, and the machine's own
+  residue monitor makes the excluded state a named refusal rather than a
+  silent drop. A declared-linear **ancestor** keeps its own obligation, which
+  §5.6's declared clause checks — the one place the model and the compiler
+  currently disagree (RUE-2335, the seeded-red corpus case
+  `destructure_ancestor_dropped`). **Owed:** RUE-2316; element moves
+  (RUE-2327). For an **enum** the obligation is the type's, over every variant
   (`6.3:19`, `RueCore.enum_carriesLinear_iff`), because the active variant is
   not a static fact: a value of the other variant is still must-consume, which
   is what the compiler reports as E0406. A `match` discharges it by binding and

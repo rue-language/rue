@@ -84,7 +84,7 @@ For example, `(Use-Move)` in the calculus (§5.1) says: a use of a
     en.ty.atPath P.decls p.path = some T →
     T.mult P.decls ≠ .copy →
     noDtorPrefix P.decls en.ty p.path = true →
-    noLinearPrefix P.decls en.ty p.path = true →
+    declaredPrefix P.decls en.ty p.path = none →
     Typed P R Γ (.use p) T (Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
 ```
 
@@ -94,13 +94,12 @@ path is `MovedOut`, so the lookup is (Owned-Base) §5.1 (`3.8:53`); `u` is
 `fully-owned` (`3.8:26`: an aggregate with a hole may not be handed to a new
 owner); the path reaches a declared field at every step and lands at type `T`;
 `T`'s class is not `Copy`; no proper prefix of the path declares a destructor
-(`3.9:34`, E0456); and — this one is the fragment's, not the rule's — no
-proper prefix is a struct declared `linear`, whose destructure plan §4.2
-selects and (Use-Declared-Linear-Destructure) §5.1 discharges (RUE-2236). The
-conclusion marks exactly `p`. The calculus's remaining premises (`3.8:68`'s
-root-index restriction, `p not loaned`) concern arrays and loans, which are
-outside the current fragment; `INDEX.md` lists which rules and sections are in
-and which are not.
+(`3.9:34`, E0456); and the use plan §4.2 records for the place is `Ordinary`,
+which is `declaredPrefix … = none` — §5.1's "the (Use-Copy) and (Use-Move)
+rules are read only with an `Ordinary` plan". The conclusion marks exactly
+`p`. The calculus's remaining premises (`3.8:68`'s root-index restriction,
+`p not loaned`) concern arrays and loans, which are outside the current
+fragment; `INDEX.md` lists which rules and sections are in and which are not.
 
 ## 2. The dynamics is a function
 
@@ -947,6 +946,128 @@ in particular not the `useAfterMove` a second drop of `S1 { 1 }` would be.
 and the pinned trace beside it in `Examples.lean` are the kernel-checked form
 of this paragraph, and `scripts/rue exec` on the printed program prints
 `1`, `2`, `9`.
+
+## 5g. A seventh worked example: a declared-linear destructure, drawn
+
+The slice RUE-2236 adds is the one where a use of a *field* consumes something
+other than that field, so this example draws the transition. The corpus case is
+`destructure_residue_order`, over
+
+```rue
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }        // the observation channel
+linear struct S15 { x0: S1, x1: i64, x2: S1 }
+```
+
+### The program
+
+```rue
+fn f0() -> i64 {
+    {
+        let v0: S15 = S15 { x0: S1 { x0: 1 }, x1: 5, x2: S1 { x0: 2 } };
+        {
+            @dbg(10);
+            { let v1: i64 = v0.x1;       // a DESTRUCTURE: 3.8:33
+              { @dbg(20); v1 } }
+        }
+    }
+}
+```
+
+`v0.x1` is an `i64` — a `Copy` place. An ordinary use of it would copy and
+change nothing. It does neither, and §4.2 says why: "a declared-linear
+destructure plan is the central override; it consumes the selected enclosing
+place even when `T` is `Copy`".
+
+### Selecting the plan
+
+Elaboration computes §4.2's `dl(Γ, p)` from the root's declared type and the
+path, and `declaredPrefix` (`Syntax.lean`) is that function:
+
+```
+  declaredPrefix D S15 [1]
+    = some ([], [1])          -- π_d = ε,  π_s = [x1]
+```
+
+`π_d` is the **longest proper prefix** whose type is a struct declared
+`linear`. Here that is the empty path — `v0` itself — so the consumed place `d`
+*is* the binding. Where the chain runs deeper the answer is the innermost one:
+`declaredPrefix D S13 [0, 0]` is `some ([0], [0])`, so `y.x0.x0` consumes
+`y.x0` and leaves `y` alone (`3.8:33`, the `destructure_two_levels` case). And
+where no prefix carries the attribute the answer is `none`, which is §5.1's
+`Ordinary` plan and the premise (Use-Copy)/(Use-Move) carry.
+
+### The residue gate
+
+Before anything can be destroyed, §5.1 asks `¬ linear-residue(S, π_s)`:
+
+```
+  residue(S15, [1])          = [ x0 : S1,  x2 : S1 ]      -- declaration order
+  linear-residue(S15, [1])   = false                       -- neither is Linear
+```
+
+`linearResidue` (`Syntax.lean`) computes it on the **types**, one struct step
+at a time: every unselected field is retained, the selected one is recursed
+into. Had `x2` been declared `linear`, the access itself would be the error —
+"the `linear-residue` premise rejects the access before any residue can be
+silently dropped" — which is `3.8:60` and the compiler's E0474
+(`destructure_linear_residue`). Had the recursion needed to go a level deeper
+to find it, it would have: `destructure_nested_residue`'s sibling case pins
+that (probe d22).
+
+### The ownership transition
+
+The rule's Σ effect is (Use-Move)'s, taken at `d` rather than at `p`:
+
+```
+  before                              after
+  Σ(v0)   Owned                       Σ(v0)   MovedOut
+  H(ℓ0)   S15 {                       H(ℓ0)   ⊘
+            S1 { 1 },                         (and ℓ1 = 5, the selected leaf,
+            5,          ← v0.x1                once (D-Let) mints it)
+            S1 { 2 }
+          }
+```
+
+The two sides move together, which is `ContentsMatches`: `MovedOut` on the Σ
+side, `⊘` on the store side, at the one path `π_d`. Nothing marks `v0.x1`,
+because `v0.x1` is not what was consumed.
+
+### The residue's drops, in order
+
+§6.3 runs `split` and then `drop*`, and the order is the traversal's:
+
+```
+  split(S15 { S1 { 1 }, 5, S1 { 2 } }, [1]) = ( 5 , [ S1 { 1 }, S1 { 2 } ] )
+  drop*(H, [ S1 { 1 }, S1 { 2 } ])          = [ dtor S1 (S1 { 1 })
+                                              , dtor S1 (S1 { 2 }) ]
+  then H[ℓ0 ↦ ⊘]
+```
+
+so the trace is `1` then `2`, **at the access** rather than at scope exit, and
+the run table in `explain/destructure_residue_order.txt` shows both events on
+the one `(D-Use-Declared-Linear) §6.3` row. Where the selected path passes
+through a nested struct, the recursion appends the nested residue before the
+later sibling (`destructure_nested_residue`); where the form is `@drop` rather
+than a use, §6.11 then drops the selected leaf *after* the residue
+(`drop_declared_residue_first`).
+
+### What the checker demanded, and what the proof gives back
+
+`check` computes `declaredPrefix` first and only then looks anything up:
+`en.st.get π_d` and `u.fullyOwned` are `fully-owned(Σ, d)` at the *consumed*
+place (`3.8:26`), `linearResidue` is the gate above, `noDtorPrefix` over the
+**whole** path is `3.9:34` read at "every enclosing value, including `d`"
+(E0456, `destructure_under_dtor`), and `en.ty.atPath … p.path` is the leaf's
+type, which is what the rule concludes at.
+
+On the proof side the case is `useDeclared` in `soundness`, and it rests on
+three lemmas: `ContentsMatches.declaredPlan_eq`, that the plan the machine
+reads off the store is the plan the rule selected; `splitResidue_ok`, that
+`split` never fails on a hole-free well-typed aggregate and that every retained
+subtree is non-`Linear`; and `dropResidue_events`, that the residue's trace is
+§6.11's events concatenated in the traversal's order. The `⊘` at `π_d` is then
+re-established exactly as (Use-Move)'s is.
 
 ### More worked examples
 

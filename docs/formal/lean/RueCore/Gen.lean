@@ -52,9 +52,8 @@ hand against the compiler.
 One shape is not drawn at any depth, and it is a gap rather than a guard now
 that RUE-2236 has landed: a projection through a proper prefix of
 declared-`linear` struct type selects §4.2's `Declared(d, π_s)` plan, which
-(Use-Declared-Linear-Destructure) §5.1 and (D-Use-Declared-Linear) §6.3
-discharge — `projSlots` and `pathOk` simply never draw one. The seed cases
-cover the shape; drawing it is a follow-up.
+§5.1 and §6.3 now discharge — `projSlots` and `pathOk` simply never draw one.
+The seed cases cover the shape; drawing it is a follow-up.
 
 Calls and `return` are **not** generated yet: every generated case is a
 one-function program (`Program.entry`), so the shapes RUE-2233 added — a
@@ -359,11 +358,10 @@ twins, no proper prefix declares a destructor (`3.9:34`). This is `projSlots`'
 test read at a whole path rather than at one step, so it stays right at depth
 2.
 
-The generator therefore draws **no** declared-linear destructure, although
-(Use-Declared-Linear-Destructure) §5.1 is now mechanized: `projSlots` already
-refuses to step into a declared-`linear` struct, so the shape is out of the
-grammar it draws from rather than filtered out of it. Drawing destructures is a
-follow-up. -/
+The generator therefore draws **no** declared-linear destructure, although the
+rule §5.1 gives one is now mechanized: `projSlots` already refuses to step into
+a declared-`linear` struct, so the shape is out of the grammar it draws from
+rather than filtered out of it. Drawing destructures is a follow-up. -/
 def pathOk (D : Decls) (T₀ : Ty) (π : List Nat) (T : Ty) : Bool :=
   Ty.atPath D T₀ π == some T && (declaredPrefix D T₀ π).isNone &&
     (T.mult D == .copy || noDtorPrefix D T₀ π)

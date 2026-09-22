@@ -1,0 +1,234 @@
+════════════════════════════════════════════════════════════════════════════════
+ destructure_affine_leaf
+════════════════════════════════════════════════════════════════════════════════
+The other half of the same struct: the selected leaf is the droppable field,
+so it lives on in its own binding and drops at that binding's scope exit,
+while the Copy residue is destroyed silently at the access.
+
+Rules exercised: (Use-Declared-Linear-Destructure) §5.1 · §6.3 split · 3.8:33
+
+── The program ─────────────────────────────────────────────────────────────────
+
+@copy struct S0 { x0: i64 }
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+linear struct S2 { x0: i64 }
+linear struct S3 { x0: i64 }
+drop fn S3(self) { @dbg(self.x0); }
+struct S4 { x0: i64, x1: S3 }
+struct S5 { x0: i64, x1: S1 }
+drop fn S5(self) { @dbg(self.x0); }
+@copy struct S6 { x0: i64, x1: i64 }
+struct S7 { x0: S1, x1: S1 }
+struct S8 { x0: S1, x1: i64 }
+struct S9 { x0: S7, x1: i64 }
+struct S10 { x0: S3, x1: S1 }
+linear struct S11 { x0: i64, x1: S1 }
+struct S12 { x0: S11, x1: S1 }
+linear struct S13 { x0: S11, x1: S1 }
+linear struct S14 { x0: S1, x1: S1 }
+linear struct S15 { x0: S1, x1: i64, x2: S1 }
+linear struct S16 { x0: S8, x1: S1 }
+linear struct S17 { x0: i64, x1: S2 }
+linear struct S18 { x0: i64, x1: S1 }
+drop fn S18(self) { @dbg(self.x0); }
+struct S19 { x0: i64, x1: S2 }
+linear struct S20 { x0: S19, x1: S1 }
+fn f0() -> i64 {
+    {
+        let v0: S11 = S11 { x0: 1, x1: S1 { x0: 2 } };
+        {
+            { let t3g: i64 = 10; @dbg(t3g) };
+            {
+                let v1: S1 = v0.x1;
+                {
+                    { let t5g: i64 = 20; @dbg(t5g) };
+                    3
+                }
+            }
+        }
+    }
+}
+
+
+
+── What the checker says (§5) ──────────────────────────────────────────────────
+
+Verdict: ACCEPTED by the checker (§5).
+         Every function is well-formed by (Fn) §5.8 and the entry point takes
+         no parameters, so `checkProgram_sound` ties the whole program to a
+         real derivation and the §7 safety theorems apply to it.
+
+         fn f0() -> i64  — body ⇒ i64, exit Σ (empty)
+
+── The derivations (§5) ────────────────────────────────────────────────────────
+
+Each node is one rule; `e` is the expression it concludes about, `Γ;Σ` the
+fused context flowing into it, and `⇒ T ⊣ Σ'` its conclusion. A rule's
+premises are the nodes indented under it, in premise order. One tree per
+function body, checked from (Fn) §5.8's entry context.
+
+  fn f0() -> i64
+
+  (Let) §5.3 + the §5.6 scope-exit leak check
+    e       { let v0: S11 = S11 { x0: 1, x1: S1 { x0: 2 } }; { @dbg(10); { let v1: S1 = v0.…
+    Γ;Σ     (empty)
+    ⇒       i64  ⊣  (empty)
+      (Struct-Intro) §5.8
+        e       S11 { x0: 1, x1: S1 { x0: 2 } }
+        Γ;Σ     (empty)
+        ⇒       S11  ⊣  (empty)
+          (Lit) §5.8
+            e       1
+            Γ;Σ     (empty)
+            ⇒       i64  ⊣  (empty)
+          (Struct-Intro) §5.8
+            e       S1 { x0: 2 }
+            Γ;Σ     (empty)
+            ⇒       S1  ⊣  (empty)
+              (Lit) §5.8
+                e       2
+                Γ;Σ     (empty)
+                ⇒       i64  ⊣  (empty)
+      (Seq) §5.3, 3.8:64
+        e       { @dbg(10); { let v1: S1 = v0.x1; { @dbg(20); 3 } } }
+        Γ;Σ     [v0: S11 = Owned]
+        ⇒       i64  ⊣  [v0: S11 = MovedOut]
+          (Dbg) §5.8
+            e       @dbg(10)
+            Γ;Σ     [v0: S11 = Owned]
+            ⇒       ()  ⊣  [v0: S11 = Owned]
+              (Lit) §5.8
+                e       10
+                Γ;Σ     [v0: S11 = Owned]
+                ⇒       i64  ⊣  [v0: S11 = Owned]
+          (Let) §5.3 + the §5.6 scope-exit leak check
+            e       { let v1: S1 = v0.x1; { @dbg(20); 3 } }
+            Γ;Σ     [v0: S11 = Owned]
+            ⇒       i64  ⊣  [v0: S11 = MovedOut]
+              (Use-Declared-Linear-Destructure) §5.1
+                e       v0.x1
+                Γ;Σ     [v0: S11 = Owned]
+                ⇒       S1  ⊣  [v0: S11 = MovedOut]
+              (Seq) §5.3, 3.8:64
+                e       { @dbg(20); 3 }
+                Γ;Σ     [v1: S1 = Owned, v0: S11 = MovedOut]
+                ⇒       i64  ⊣  [v1: S1 = Owned, v0: S11 = MovedOut]
+                  (Dbg) §5.8
+                    e       @dbg(20)
+                    Γ;Σ     [v1: S1 = Owned, v0: S11 = MovedOut]
+                    ⇒       ()  ⊣  [v1: S1 = Owned, v0: S11 = MovedOut]
+                      (Lit) §5.8
+                        e       20
+                        Γ;Σ     [v1: S1 = Owned, v0: S11 = MovedOut]
+                        ⇒       i64  ⊣  [v1: S1 = Owned, v0: S11 = MovedOut]
+                  (Lit) §5.8
+                    e       3
+                    Γ;Σ     [v1: S1 = Owned, v0: S11 = MovedOut]
+                    ⇒       i64  ⊣  [v1: S1 = Owned, v0: S11 = MovedOut]
+
+── The run (§6) ────────────────────────────────────────────────────────────────
+
+One row per evaluated node, in execution order: a node's premises run before
+the node itself, so the table reads top to bottom as the machine ran. `d<n>`
+is the nesting depth — a callee's rows are deeper than its call's — and `>>`
+marks a drop event. The run enters at f0(), as `Dynamics.run` does.
+
+  [1]   d1    (D-Call) §6.9 (push the frame)
+         expr    fn f0() -> i64  with []
+         store   (empty)
+           →     (empty)
+         result  value ()
+  [2]   d4          literal §6.3
+         expr    1
+         store   (empty)
+           →     (empty)
+         result  value 1
+  [3]   d5            literal §6.3
+         expr    2
+         store   (empty)
+           →     (empty)
+         result  value 2
+  [4]   d4          (D-Struct) §6.5
+         expr    S1 { x0: 2 }
+         store   (empty)
+           →     (empty)
+         result  value S1 { 2 }
+  [5]   d3        (D-Struct) §6.5
+         expr    S11 { x0: 1, x1: S1 { x0: 2 } }
+         store   (empty)
+           →     (empty)
+         result  value S11 { 1, S1 { 2 } }
+  [6]   d3        (D-Let) §6.7 (mint the binding)
+         expr    let v0 = S11 { 1, S1 { 2 } } at ℓ0
+         store   (empty)
+           →     [ℓ0 = S11 { 1, S1 { 2 } }]
+         result  value S11 { 1, S1 { 2 } }
+  [7]   d5            literal §6.3
+         expr    10
+         store   [ℓ0 = S11 { 1, S1 { 2 } }]
+           →     [ℓ0 = S11 { 1, S1 { 2 } }]
+         result  value 10
+  [8]   d4          (Dbg) §5.8, the observable output of §6.12
+         expr    @dbg(10)
+         store   [ℓ0 = S11 { 1, S1 { 2 } }]
+           →     [ℓ0 = S11 { 1, S1 { 2 } }]
+         events  >> @dbg prints 10
+         result  value ()
+  [9]   d5            (D-Use-Declared-Linear) §6.3
+         expr    v0.x1
+         store   [ℓ0 = S11 { 1, S1 { 2 } }]
+           →     [ℓ0 = ⊘]
+         result  value S1 { 2 }
+  [10]  d5            (D-Let) §6.7 (mint the binding)
+         expr    let v1 = S1 { 2 } at ℓ1
+         store   [ℓ0 = ⊘]
+           →     [ℓ0 = ⊘, ℓ1 = S1 { 2 }]
+         result  value S1 { 2 }
+  [11]  d7                literal §6.3
+         expr    20
+         store   [ℓ0 = ⊘, ℓ1 = S1 { 2 }]
+           →     [ℓ0 = ⊘, ℓ1 = S1 { 2 }]
+         result  value 20
+  [12]  d6              (Dbg) §5.8, the observable output of §6.12
+         expr    @dbg(20)
+         store   [ℓ0 = ⊘, ℓ1 = S1 { 2 }]
+           →     [ℓ0 = ⊘, ℓ1 = S1 { 2 }]
+         events  >> @dbg prints 20
+         result  value ()
+  [13]  d6              literal §6.3
+         expr    3
+         store   [ℓ0 = ⊘, ℓ1 = S1 { 2 }]
+           →     [ℓ0 = ⊘, ℓ1 = S1 { 2 }]
+         result  value 3
+  [14]  d5            (D-Seq) §6.7
+         expr    { @dbg(20); 3 }
+         store   [ℓ0 = ⊘, ℓ1 = S1 { 2 }]
+           →     [ℓ0 = ⊘, ℓ1 = S1 { 2 }]
+         result  value 3
+  [15]  d4          (D-EndScope) §6.7 (retire the binding)
+         expr    endscope([ℓ1])
+         store   [ℓ0 = ⊘, ℓ1 = S1 { 2 }]
+           →     [ℓ0 = ⊘, ℓ1 = † (retired)]
+         events  >> drop ℓ1 = S1 { 2 }; run drop fn S1(S1 { 2 })
+         result  value 3
+  [16]  d3        (D-Seq) §6.7
+         expr    { @dbg(10); { let v1: S1 = v0.x1; { @dbg(20); 3 } } }
+         store   [ℓ0 = S11 { 1, S1 { 2 } }]
+           →     [ℓ0 = ⊘, ℓ1 = † (retired)]
+         result  value 3
+  [17]  d2      (D-EndScope) §6.7 (retire the binding)
+         expr    endscope([ℓ0])
+         store   [ℓ0 = ⊘, ℓ1 = † (retired)]
+           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         result  value 3
+  [18]  d0  (D-Return-Value) §6.9 (pop the frame)
+         expr    run-all-scope-drops([])
+         store   [ℓ0 = † (retired), ℓ1 = † (retired)]
+           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         result  value 3
+
+────────────────────────────────────────────────────────────────────────────────
+Outcome: ok — value 3
+         drop trace: @dbg prints 10; @dbg prints 20; drop ℓ1 = S1 { 2 }; run drop fn S1(S1 { 2 })
+
