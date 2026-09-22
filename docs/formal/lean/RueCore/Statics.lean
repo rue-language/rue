@@ -1471,6 +1471,364 @@ theorem residualLinearFields_of_ownedJoinOkList {D : Decls} (hD : WfStructs D) (
       | false => rfl
       | true => exact absurd (residualLinearFields_mult_linear hD ts Ts hr) (by simp [hany])
 
+mutual
+/-- **A successful §5.5 join neither adds nor removes an inadmissible
+`MovedOut`**: both arms and the result answer `ownedJoinOk` alike, so joining a
+third, wholly `Owned` arm before or after asks the same question (`3.8:50`).
+One of the two facts `OwnSt.join_assoc` turns on. -/
+theorem OwnSt.join_ownedJoinOk {D : Decls} (hD : WfStructs D) :
+    ∀ (b c : OwnSt) (T : Ty) (r : OwnSt), OwnSt.wf D b T = true → OwnSt.wf D c T = true →
+      OwnSt.join D b c T = some r →
+      ownedJoinOk D b T = ownedJoinOk D r T ∧ ownedJoinOk D c T = ownedJoinOk D r T
+  | .owned, _, _, _, _, _, hj => by
+      rw [OwnSt.join_owned_left] at hj
+      split at hj
+      · rename_i hok
+        obtain rfl := Option.some.inj hj
+        exact ⟨hok.symm, rfl⟩
+      · exact absurd hj (by simp)
+  | _, .owned, _, _, _, _, hj => by
+      rw [OwnSt.join_owned_right] at hj
+      split at hj
+      · rename_i hok
+        obtain rfl := Option.some.inj hj
+        exact ⟨rfl, hok.symm⟩
+      · exact absurd hj (by simp)
+  | .movedOut, c, T, _, _, hc, hj => by
+      rw [OwnSt.join_movedOut_left] at hj
+      split at hj
+      · exact absurd hj (by simp)
+      · rename_i hres
+        obtain rfl := Option.some.inj hj
+        exact ⟨rfl, ownedJoinOk_of_residualLinear_false hD c T hc (by simpa using hres)⟩
+  | b, .movedOut, T, _, hb, _, hj => by
+      rw [OwnSt.join_movedOut_right] at hj
+      split at hj
+      · exact absurd hj (by simp)
+      · rename_i hres
+        obtain rfl := Option.some.inj hj
+        exact ⟨ownedJoinOk_of_residualLinear_false hD b T hb (by simpa using hres), rfl⟩
+  | .fields bs, .fields cs, T, _, hb, hc, hj => by
+      cases T with
+      | struct s =>
+          cases hd : D.structs[s]? with
+          | none => simp [OwnSt.join, hd] at hj
+          | some sd =>
+              simp only [OwnSt.join, hd, Option.map_eq_some_iff] at hj
+              obtain ⟨rs, hjl, rfl⟩ := hj
+              simp only [OwnSt.wf, hd] at hb hc
+              simp only [ownedJoinOk, hd]
+              exact OwnSt.joinList_ownedJoinOkList hD bs cs sd.fields rs hb hc hjl
+      | array T' n =>
+          simp only [OwnSt.join, Option.map_eq_some_iff] at hj
+          obtain ⟨rs, hjl, rfl⟩ := hj
+          simp only [OwnSt.wf] at hb hc
+          simp only [ownedJoinOk]
+          exact OwnSt.joinList_ownedJoinOkList hD bs cs (List.replicate n T') rs hb hc hjl
+      | int _ _ => simp [OwnSt.join] at hj
+      | float _ => simp [OwnSt.join] at hj
+      | bool => simp [OwnSt.join] at hj
+      | unit => simp [OwnSt.join] at hj
+      | enum _ => simp [OwnSt.join] at hj
+
+/-- The same over a declaration's slots (helper). -/
+theorem OwnSt.joinList_ownedJoinOkList {D : Decls} (hD : WfStructs D) :
+    ∀ (bs cs : List OwnSt) (Ts : List Ty) (rs : List OwnSt),
+      OwnSt.wfList D bs Ts = true → OwnSt.wfList D cs Ts = true →
+      OwnSt.joinList D bs cs Ts = some rs →
+      ownedJoinOkList D bs Ts = ownedJoinOkList D rs Ts ∧
+        ownedJoinOkList D cs Ts = ownedJoinOkList D rs Ts
+  | bs, cs, [], _, _, _, hj => by
+      simp only [OwnSt.joinList] at hj
+      obtain rfl := Option.some.inj hj
+      exact ⟨by cases bs <;> rfl, by cases cs <;> rfl⟩
+  | [], _, _ :: _, _, _, _, hj => by
+      rw [OwnSt.joinList_nil_left] at hj
+      split at hj
+      · rename_i hok
+        obtain rfl := Option.some.inj hj
+        exact ⟨hok.symm, rfl⟩
+      · exact absurd hj (by simp)
+  | _, [], _ :: _, _, _, _, hj => by
+      rw [OwnSt.joinList_nil_right] at hj
+      split at hj
+      · rename_i hok
+        obtain rfl := Option.some.inj hj
+        exact ⟨rfl, hok.symm⟩
+      · exact absurd hj (by simp)
+  | b :: bs, c :: cs, T :: Ts, _, hb, hc, hj => by
+      simp only [OwnSt.wfList, Bool.and_eq_true] at hb hc
+      cases he : OwnSt.join D b c T with
+      | none => simp [OwnSt.joinList, he] at hj
+      | some e =>
+          cases hr : OwnSt.joinList D bs cs Ts with
+          | none => simp [OwnSt.joinList, he, hr] at hj
+          | some rest =>
+              simp only [OwnSt.joinList, he, hr, Option.some.injEq] at hj
+              subst hj
+              obtain ⟨h1, h2⟩ := OwnSt.join_ownedJoinOk hD b c T e hb.1 hc.1 he
+              obtain ⟨h3, h4⟩ := OwnSt.joinList_ownedJoinOkList hD bs cs Ts rest hb.2 hc.2 hr
+              exact ⟨by simp only [ownedJoinOkList, h1, h3],
+                     by simp only [ownedJoinOkList, h2, h4]⟩
+end
+
+mutual
+/-- **A successful §5.5 join is between arms carrying the same residue, and the
+result carries the same.** The disagreement clause refuses `MovedOut` against
+residual linear content and the `Owned` clause refuses a moved-out linear path,
+so a join that succeeds has already equated the two arms' §5.6 obligations
+(`3.8:50`, `3.8:60`). The other fact `OwnSt.join_assoc` turns on. -/
+theorem OwnSt.join_residualLinear {D : Decls} (hD : WfStructs D) :
+    ∀ (b c : OwnSt) (T : Ty) (r : OwnSt), OwnSt.join D b c T = some r →
+      residualLinear D b T = residualLinear D c T ∧
+        residualLinear D r T = residualLinear D b T
+  | .owned, c, T, _, hj => by
+      rw [OwnSt.join_owned_left] at hj
+      split at hj
+      · rename_i hok
+        obtain rfl := Option.some.inj hj
+        have h := residualLinear_of_ownedJoinOk hD c T hok
+        exact ⟨h.symm, h⟩
+      · exact absurd hj (by simp)
+  | b, .owned, T, _, hj => by
+      rw [OwnSt.join_owned_right] at hj
+      split at hj
+      · rename_i hok
+        obtain rfl := Option.some.inj hj
+        exact ⟨residualLinear_of_ownedJoinOk hD b T hok, rfl⟩
+      · exact absurd hj (by simp)
+  | .movedOut, c, T, _, hj => by
+      rw [OwnSt.join_movedOut_left] at hj
+      split at hj
+      · exact absurd hj (by simp)
+      · rename_i hres
+        obtain rfl := Option.some.inj hj
+        have h : residualLinear D c T = false := by simpa using hres
+        exact ⟨h.symm, rfl⟩
+  | b, .movedOut, T, _, hj => by
+      rw [OwnSt.join_movedOut_right] at hj
+      split at hj
+      · exact absurd hj (by simp)
+      · rename_i hres
+        obtain rfl := Option.some.inj hj
+        have h : residualLinear D b T = false := by simpa using hres
+        exact ⟨h, h.symm⟩
+  | .fields bs, .fields cs, T, _, hj => by
+      cases T with
+      | struct s =>
+          cases hd : D.structs[s]? with
+          | none => simp [OwnSt.join, hd] at hj
+          | some sd =>
+              simp only [OwnSt.join, hd, Option.map_eq_some_iff] at hj
+              obtain ⟨rs, hjl, rfl⟩ := hj
+              obtain ⟨h1, h2⟩ := OwnSt.joinList_residualLinearFields hD bs cs sd.fields rs hjl
+              simp only [residualLinear, hd, h1, h2]
+              exact ⟨trivial, trivial⟩
+      | array T' n =>
+          simp only [OwnSt.join, Option.map_eq_some_iff] at hj
+          obtain ⟨rs, hjl, rfl⟩ := hj
+          obtain ⟨h1, h2⟩ := OwnSt.joinList_residualLinearFields hD bs cs (List.replicate n T') rs hjl
+          simp only [residualLinear, h1, h2]
+          exact ⟨trivial, trivial⟩
+      | int _ _ => simp [OwnSt.join] at hj
+      | float _ => simp [OwnSt.join] at hj
+      | bool => simp [OwnSt.join] at hj
+      | unit => simp [OwnSt.join] at hj
+      | enum _ => simp [OwnSt.join] at hj
+
+/-- The same over a declaration's slots (helper). -/
+theorem OwnSt.joinList_residualLinearFields {D : Decls} (hD : WfStructs D) :
+    ∀ (bs cs : List OwnSt) (Ts : List Ty) (rs : List OwnSt),
+      OwnSt.joinList D bs cs Ts = some rs →
+      residualLinearFields D bs Ts = residualLinearFields D cs Ts ∧
+        residualLinearFields D rs Ts = residualLinearFields D bs Ts
+  | bs, cs, [], _, hj => by
+      simp only [OwnSt.joinList] at hj
+      obtain rfl := Option.some.inj hj
+      exact ⟨by cases bs <;> cases cs <;> rfl, by cases bs <;> rfl⟩
+  | [], cs, T :: Ts, _, hj => by
+      rw [OwnSt.joinList_nil_left] at hj
+      split at hj
+      · rename_i hok
+        obtain rfl := Option.some.inj hj
+        have h := residualLinearFields_of_ownedJoinOkList hD cs (T :: Ts) hok
+        exact ⟨h.symm, h⟩
+      · exact absurd hj (by simp)
+  | bs, [], T :: Ts, _, hj => by
+      rw [OwnSt.joinList_nil_right] at hj
+      split at hj
+      · rename_i hok
+        obtain rfl := Option.some.inj hj
+        exact ⟨residualLinearFields_of_ownedJoinOkList hD bs (T :: Ts) hok, rfl⟩
+      · exact absurd hj (by simp)
+  | b :: bs, c :: cs, T :: Ts, _, hj => by
+      cases he : OwnSt.join D b c T with
+      | none => simp [OwnSt.joinList, he] at hj
+      | some e =>
+          cases hr : OwnSt.joinList D bs cs Ts with
+          | none => simp [OwnSt.joinList, he, hr] at hj
+          | some rest =>
+              simp only [OwnSt.joinList, he, hr, Option.some.injEq] at hj
+              subst hj
+              obtain ⟨h1, h2⟩ := OwnSt.join_residualLinear hD b c T e he
+              obtain ⟨h3, h4⟩ := OwnSt.joinList_residualLinearFields hD bs cs Ts rest hr
+              simp only [residualLinearFields, h1, h2, h3, h4]
+              exact ⟨trivial, trivial⟩
+end
+
+mutual
+/-- **Two residue-free states always join**, the converse of
+`OwnSt.join_residualLinear` and what makes §5.5's `MovedOut` cases associate:
+re-bracketing cannot turn a join that succeeds into one that fails. -/
+theorem OwnSt.join_exists {D : Decls} (hD : WfStructs D) :
+    ∀ (b c : OwnSt) (T : Ty), OwnSt.wf D b T = true → OwnSt.wf D c T = true →
+      residualLinear D b T = false → residualLinear D c T = false →
+      ∃ r, OwnSt.join D b c T = some r
+  | .owned, c, T, _, hc, hb0, hc0 => by
+      have hlin : Ty.mult D T ≠ .linear := by
+        simpa [residualLinear] using hb0
+      have h : ownedJoinOk D c T = true := by
+        rw [ownedJoinOk_of_residualLinear_false hD c T hc hc0]; exact decide_eq_true hlin
+      exact ⟨c, by rw [OwnSt.join_owned_left, if_pos h]⟩
+  | b, .owned, T, hb, _, hb0, hc0 => by
+      have hlin : Ty.mult D T ≠ .linear := by
+        simpa [residualLinear] using hc0
+      have h : ownedJoinOk D b T = true := by
+        rw [ownedJoinOk_of_residualLinear_false hD b T hb hb0]; exact decide_eq_true hlin
+      exact ⟨b, by rw [OwnSt.join_owned_right, if_pos h]⟩
+  | .movedOut, c, T, _, _, _, hc0 =>
+      ⟨.movedOut, by rw [OwnSt.join_movedOut_left, if_neg (by simp [hc0])]⟩
+  | b, .movedOut, T, _, _, hb0, _ =>
+      ⟨.movedOut, by rw [OwnSt.join_movedOut_right, if_neg (by simp [hb0])]⟩
+  | .fields bs, .fields cs, T, hb, hc, hb0, hc0 => by
+      cases T with
+      | struct s =>
+          cases hd : D.structs[s]? with
+          | none => simp [OwnSt.wf, hd] at hb
+          | some sd =>
+              simp only [OwnSt.wf, hd] at hb hc
+              simp only [residualLinear, hd, Bool.or_eq_false_iff] at hb0 hc0
+              obtain ⟨rs, hrs⟩ := OwnSt.joinList_exists hD bs cs sd.fields hb hc hb0.2 hc0.2
+              exact ⟨.fields rs, by simp [OwnSt.join, hd, hrs]⟩
+      | array T' n =>
+          simp only [OwnSt.wf] at hb hc
+          simp only [residualLinear] at hb0 hc0
+          obtain ⟨rs, hrs⟩ := OwnSt.joinList_exists hD bs cs (List.replicate n T') hb hc hb0 hc0
+          exact ⟨.fields rs, by simp [OwnSt.join, hrs]⟩
+      | int _ _ => simp [OwnSt.wf] at hb
+      | float _ => simp [OwnSt.wf] at hb
+      | bool => simp [OwnSt.wf] at hb
+      | unit => simp [OwnSt.wf] at hb
+      | enum _ => simp [OwnSt.wf] at hb
+
+/-- The same over a declaration's slots (helper). -/
+theorem OwnSt.joinList_exists {D : Decls} (hD : WfStructs D) :
+    ∀ (bs cs : List OwnSt) (Ts : List Ty), OwnSt.wfList D bs Ts = true →
+      OwnSt.wfList D cs Ts = true → residualLinearFields D bs Ts = false →
+      residualLinearFields D cs Ts = false →
+      ∃ rs, OwnSt.joinList D bs cs Ts = some rs
+  | _, _, [], _, _, _, _ => ⟨[], by simp [OwnSt.joinList]⟩
+  | [], cs, T :: Ts, _, hc, hb0, hc0 => by
+      have hany : ((T :: Ts).any fun U => decide (U.mult D = .linear)) = false := by
+        simpa [residualLinearFields] using hb0
+      have h : ownedJoinOkList D cs (T :: Ts) = true := by
+        rw [ownedJoinOkList_of_residualLinearFields_false hD cs (T :: Ts) hc hc0, hany]; rfl
+      exact ⟨cs, by rw [OwnSt.joinList_nil_left, if_pos h]⟩
+  | bs, [], T :: Ts, hb, _, hb0, hc0 => by
+      have hany : ((T :: Ts).any fun U => decide (U.mult D = .linear)) = false := by
+        simpa [residualLinearFields] using hc0
+      have h : ownedJoinOkList D bs (T :: Ts) = true := by
+        rw [ownedJoinOkList_of_residualLinearFields_false hD bs (T :: Ts) hb hb0, hany]; rfl
+      exact ⟨bs, by rw [OwnSt.joinList_nil_right, if_pos h]⟩
+  | b :: bs, c :: cs, T :: Ts, hb, hc, hb0, hc0 => by
+      simp only [OwnSt.wfList, Bool.and_eq_true] at hb hc
+      simp only [residualLinearFields, Bool.or_eq_false_iff] at hb0 hc0
+      obtain ⟨e, he⟩ := OwnSt.join_exists hD b c T hb.1 hc.1 hb0.1 hc0.1
+      obtain ⟨rest, hr⟩ := OwnSt.joinList_exists hD bs cs Ts hb.2 hc.2 hb0.2 hc0.2
+      exact ⟨e :: rest, by simp [OwnSt.joinList, he, hr]⟩
+end
+
+mutual
+/-- **§5.5's join stays inside the shapes of the type**: joining two states of
+`T` yields a state of `T`, so the invariant associativity is stated over
+survives the n-way fold (`Ctx.joinAll_perm`). -/
+theorem OwnSt.join_wf {D : Decls} :
+    ∀ (b c : OwnSt) (T : Ty) (r : OwnSt), OwnSt.wf D b T = true → OwnSt.wf D c T = true →
+      OwnSt.join D b c T = some r → OwnSt.wf D r T = true
+  | .owned, _, _, _, _, hc, hj => by
+      rw [OwnSt.join_owned_left] at hj
+      split at hj
+      · obtain rfl := Option.some.inj hj; exact hc
+      · exact absurd hj (by simp)
+  | _, .owned, _, _, hb, _, hj => by
+      rw [OwnSt.join_owned_right] at hj
+      split at hj
+      · obtain rfl := Option.some.inj hj; exact hb
+      · exact absurd hj (by simp)
+  | .movedOut, _, _, _, _, _, hj => by
+      rw [OwnSt.join_movedOut_left] at hj
+      split at hj
+      · exact absurd hj (by simp)
+      · obtain rfl := Option.some.inj hj; rfl
+  | _, .movedOut, _, _, _, _, hj => by
+      rw [OwnSt.join_movedOut_right] at hj
+      split at hj
+      · exact absurd hj (by simp)
+      · obtain rfl := Option.some.inj hj; rfl
+  | .fields bs, .fields cs, T, _, hb, hc, hj => by
+      cases T with
+      | struct s =>
+          cases hd : D.structs[s]? with
+          | none => simp [OwnSt.join, hd] at hj
+          | some sd =>
+              simp only [OwnSt.join, hd, Option.map_eq_some_iff] at hj
+              obtain ⟨rs, hjl, rfl⟩ := hj
+              simp only [OwnSt.wf, hd] at hb hc ⊢
+              exact OwnSt.joinList_wf bs cs sd.fields rs hb hc hjl
+      | array T' n =>
+          simp only [OwnSt.join, Option.map_eq_some_iff] at hj
+          obtain ⟨rs, hjl, rfl⟩ := hj
+          simp only [OwnSt.wf] at hb hc ⊢
+          exact OwnSt.joinList_wf bs cs (List.replicate n T') rs hb hc hjl
+      | int _ _ => simp [OwnSt.join] at hj
+      | float _ => simp [OwnSt.join] at hj
+      | bool => simp [OwnSt.join] at hj
+      | unit => simp [OwnSt.join] at hj
+      | enum _ => simp [OwnSt.join] at hj
+
+/-- The same over a declaration's slots (helper). -/
+theorem OwnSt.joinList_wf {D : Decls} :
+    ∀ (bs cs : List OwnSt) (Ts : List Ty) (rs : List OwnSt),
+      OwnSt.wfList D bs Ts = true → OwnSt.wfList D cs Ts = true →
+      OwnSt.joinList D bs cs Ts = some rs → OwnSt.wfList D rs Ts = true
+  | _, _, [], _, _, _, hj => by
+      simp only [OwnSt.joinList] at hj
+      obtain rfl := Option.some.inj hj
+      rfl
+  | [], _, _ :: _, _, _, hc, hj => by
+      rw [OwnSt.joinList_nil_left] at hj
+      split at hj
+      · obtain rfl := Option.some.inj hj; exact hc
+      · exact absurd hj (by simp)
+  | _, [], _ :: _, _, hb, _, hj => by
+      rw [OwnSt.joinList_nil_right] at hj
+      split at hj
+      · obtain rfl := Option.some.inj hj; exact hb
+      · exact absurd hj (by simp)
+  | b :: bs, c :: cs, T :: Ts, _, hb, hc, hj => by
+      simp only [OwnSt.wfList, Bool.and_eq_true] at hb hc
+      cases he : OwnSt.join D b c T with
+      | none => simp [OwnSt.joinList, he] at hj
+      | some e =>
+          cases hr : OwnSt.joinList D bs cs Ts with
+          | none => simp [OwnSt.joinList, he, hr] at hj
+          | some rest =>
+              simp only [OwnSt.joinList, he, hr, Option.some.injEq] at hj
+              subst hj
+              simp only [OwnSt.wfList, Bool.and_eq_true]
+              exact ⟨OwnSt.join_wf b c T e hb.1 hc.1 he, OwnSt.joinList_wf bs cs Ts rest hb.2 hc.2 hr⟩
+end
+
 /-! ### The n-way §5.5 join, and a `match` arm's own binders
 
 (Match) §5.5 writes `Σ' = join(Σ1, …, Σn)` over one outgoing state per arm.
