@@ -81,10 +81,10 @@ For example, `(Use-Move)` in the calculus (§5.1) says: a use of a
 | useMove {Γ p en u T} :
     Γ[p.root]? = some en →
     en.st.get p.path = some u → u.fullyOwned = true →
-    en.ty.atPath P.structs p.path = some T →
-    T.mult P.structs ≠ .copy →
-    noDtorPrefix P.structs en.ty p.path = true →
-    noLinearPrefix P.structs en.ty p.path = true →
+    en.ty.atPath P.decls p.path = some T →
+    T.mult P.decls ≠ .copy →
+    noDtorPrefix P.decls en.ty p.path = true →
+    noLinearPrefix P.decls en.ty p.path = true →
     Typed P R Γ (.use p) T (Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
 ```
 
@@ -290,7 +290,7 @@ without knowing anything about the callee but its signature.
 
 ```lean
 theorem soundness (hwf : WfProgram P) :
-  ∀ fuel, Typed P R Γ e T Γ' → FrameMatches P.structs Γ φ H →
+  ∀ fuel, Typed P R Γ e T Γ' → FrameMatches P.decls Γ φ H →
     EvalOk T R Γ' φ H (eval fuel P H φ e)
 ```
 
@@ -935,7 +935,7 @@ contributing none.
 `check` reads the same three snapshots: `en.st.get p.path` finds the state for
 `v0.x0` (and returns `none` — a rejection — when a *proper prefix* of the path
 is `MovedOut`, which is (Owned-Base) §5.1 in one lookup);
-`en.ty.atPath P.structs p.path` types the place; `u.fullyOwned` is `3.8:26`;
+`en.ty.atPath P.decls p.path` types the place; `u.fullyOwned` is `3.8:26`;
 `noDtorPrefix` is `3.9:34`. Its acceptance is a `Typed` derivation
 (`check_sound`), so `soundness` applies and `run` cannot reach a `Violation` —
 in particular not the `useAfterMove` a second drop of `S1 { 1 }` would be.

@@ -420,13 +420,13 @@ a slice author writes:
 | File | Contents | Calculus |
 | --- | --- | --- |
 | `RueCore/Float.lean` | §2's datum set `𝔽_w` with the operations §6.4 computes exactly, `3.12:40`–`3.12:42`'s shortest round-trip rendering, the `FloatOps`/`FloatModel` interface and its named IEEE laws, and the constructive instance `Float.exactOps` | §2, §6.4, §7's float lemma |
-| `RueCore/Syntax.lean` | multiplicity lattice and its join, struct declarations with their attribute, fields and destructor, types, `class(T)`, **places** (§5's `Path`) with the type a path reaches and §4.2's restrictions on which may be moved, expressions | §2, §3, §4.2 |
-| `RueCore/Statics.lean` | §3's class assignment as a checked equation (`WfStructs`, `struct_class_unique`, `struct_carriesLinear_iff`), the fused flow-sensitive `Γ;Σ` context with Σ **keyed by path** (`OwnSt`, `fullyOwned`, §5.6's recursive `residualLinear`), the ownership-threading judgment `Typed` (parameterized by the program and the enclosing return type), the §5.5 branch join over paths, (Fn) and whole-program well-formedness, skeleton preservation | §3, §4.2, §5.1–§5.3, §5.5–§5.8 |
-| `RueCore/Dynamics.lean` | store/frame machine as a fuel-indexed definitional interpreter with observation traces (drops, destructors, `@dbg`); cell **contents as a tree with `⊘` at any node**, navigated by a path (§6.3's `H(ℓ)@π` and `H[ℓ@π ↦ ⊘]`); §6.11's recursive drop (destructor, then fields in declaration order, every `⊘` skipped); frames with scope records and their unwinds; violations as named refusals; §6.4's operator rules and every §6.12 trap the fragment reaches, each carrying the trace up to it | §6.1–§6.12 |
-| `RueCore/Soundness.lean` | value typing, the per-frame agreement invariant `FrameMatches`, frame locality `Untouched`, **the safety theorem**, the fuel lemmas, and per-§7-bullet corollaries over a whole program | §7 |
+| `RueCore/Syntax.lean` | multiplicity lattice and its join, §2's declaration environment `D` — struct declarations with their attribute, fields and destructor, and **enum** declarations with one payload tuple per variant — types, `class(T)`, **places** (§5's `Path`) with the type a path reaches and §4.2's restrictions on which may be moved, expressions | §2, §3, §4.2 |
+| `RueCore/Statics.lean` | §3's class assignment as a checked equation, for both layers (`WfStructs`/`WfEnums`, `struct_class_unique`/`enum_class_unique`, `struct_carriesLinear_iff`/`enum_carriesLinear_iff`), the fused flow-sensitive `Γ;Σ` context with Σ **keyed by path** (`OwnSt`, `fullyOwned`, §5.6's recursive `residualLinear`), the ownership-threading judgment `Typed` (parameterized by the program and the enclosing return type), the §5.5 branch join over paths and its n-way fold at a `match`, (Fn) and whole-program well-formedness, skeleton preservation | §3, §4.2, §5.1–§5.3, §5.5–§5.8 |
+| `RueCore/Dynamics.lean` | store/frame machine as a fuel-indexed definitional interpreter with observation traces (drops, destructors, `@dbg`); cell **contents as a tree with `⊘` at any node**, navigated by a path (§6.3's `H(ℓ)@π` and `H[ℓ@π ↦ ⊘]`); §6.11's recursive drop (destructor, then fields in declaration order, or an enum's active variant's payload, every `⊘` skipped); frames with scope records and their unwinds; violations as named refusals; §6.4's operator rules and every §6.12 trap the fragment reaches, each carrying the trace up to it | §6.1–§6.12 |
+| `RueCore/Soundness.lean` | value typing, the per-frame agreement invariant `FrameMatches`, frame locality `Untouched`, **the safety theorem** — with progress at a `match` resting on exhaustiveness and preservation on the folded join — the fuel lemmas, and per-§7-bullet corollaries over a whole program | §7 |
 | `RueCore/Checker.lean` | decidable checker `check`/`checkProgram` + `check_sound`/`checkProgram_sound` (every acceptance is a derivation) | §5 as an algorithm |
 | `RueCore/Examples.lean` | `#eval` demos; kernel-checked acceptance/rejection of example programs | — |
-| `RueCore/Print.lean` | core syntax → Rue source, the program's struct declarations included, and the observation channel (a `drop fn` per destructor-bearing declaration) | §2 elaboration inventory, 3.9 |
+| `RueCore/Print.lean` | core syntax → Rue source, the program's struct and enum declarations included, and the observation channel (a `drop fn` per destructor-bearing declaration) | §2 elaboration inventory, 3.9 |
 | `RueCore/Corpus.lean` | the bridge corpus: each case's checker verdict and interpreter outcome, exported as JSON (`lake exe ruecore-corpus`) | §5, §6, §7 witnesses |
 | `RueCore/Gen.lean` | a seeded, type-directed generator of fragment programs, appended to the corpus by `lake exe ruecore-corpus --gen N --seed S` | programs, not rules |
 | `RueCore/Explain.lean` | instrumented mirrors of `check` and `eval` — derivation trees with the failing premise named, and step tables with stores and drop events — with the lemmas tying both to the proved definitions | §5, §6 as an explanation |
@@ -436,11 +436,15 @@ a slice author writes:
 | `GUIDE.md`, `INDEX.md` | the reader's guide, including the thirty-minute validation procedure, and the generated form ↔ rule ↔ declaration ↔ paragraph index (`scripts/validate-lean-xref-index.py`) | §2, §5, §6 coverage |
 
 The fragment: integers at every width and signedness, `float(w)` at both
-widths, `bool`, `unit`, and
+widths, `bool`, `unit`,
 monomorphic struct types declared by the program, with §3's class as the join
-of the field classes lifted by the declared attribute; struct literals
-((Struct-Intro) §5.8) and §6.11's drop order (destructor, then fields in
-declaration order, every `⊘` skipped); **places** `p ::= x | p.f`, so a use is
+of the field classes lifted by the declared attribute, and monomorphic **enum**
+types, with §3's class the payload join over every variant (`6.3:19`); struct
+literals ((Struct-Intro) §5.8), enum construction and the `match` that
+eliminates it in §5.5's canonical form — one arm per variant, binding that
+variant's payload as locals that leave scope at the arm's end — and §6.11's
+drop order (destructor, then fields in declaration order, or an enum's
+**active** variant's payload, every `⊘` skipped); **places** `p ::= x | p.f`, so a use is
 a copy or a move at a path — the partial move of `3.8:22` — and a `@drop` and
 an assignment name one too; §5.6's leak check is the recursive
 `residual-linear` read on the residue, and §5.5's join is taken path by path;
@@ -455,7 +459,10 @@ join, the whole §2 integer operator set (`+ - * / %`, `& | ^`, `<< >>`,
 frames and scope records, and `return` with its σ unwind. No declared-linear
 destructure (a path with a declared-`linear` proper prefix is rejected as a
 stated fragment restriction, RUE-2236), no equality compare (it borrows its
-operands, so `≈`'s float leaf has no instance here), no enums, no arrays — and
+operands, so `≈`'s float leaf has no instance here), no path into an enum's
+payload (§5.6 tracks none) and none of the `match` shapes §5.5 makes
+elaboration obligations (wildcard, repeated or guarded patterns, a bool or
+integer scrutinee, a zero-arm `match`), no arrays — and
 so no element-wise `3.8:73` forms and no `3.8:68` root-index restriction — no
 borrows, no `inout`/`borrow` parameters, no accessor calls, no loops (see the
 outline doc for the milestone ladder that adds them).
@@ -464,8 +471,8 @@ outline doc for the milestone ladder that adds them).
 
 ```
 theorem soundness (hwf : WfProgram P) :
-  ∀ fuel, Typed P R Γ e T Γ' → FrameMatches P.structs Γ φ H →
-    EvalOk P.structs T R Γ' φ H (eval fuel P H φ e)
+  ∀ fuel, Typed P R Γ e T Γ' → FrameMatches P.decls Γ φ H →
+    EvalOk P.decls T R Γ' φ H (eval fuel P H φ e)
 ```
 
 `EvalOk` is a predicate on the result: a well-typed value with the outgoing

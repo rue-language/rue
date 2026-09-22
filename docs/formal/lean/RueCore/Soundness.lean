@@ -59,7 +59,7 @@ has a hole in it — against §2's types, a struct against its declaration's
 field list ((Struct-Intro) §5.8 read on values) and an enum value against the
 **one variant its tag names** ((Enum-Intro) §5.5 read on values). That tag
 premise is what progress at a `match` consumes: the tag is a variant the
-declaration has, `match_arm_exists` turns that into an arm, and (D-Match) §6.6
+declaration has, `exhaustive_arm_exists` turns that into an arm, and (D-Match) §6.6
 fires (§7's exhaustiveness bullet). `ContentsTy D` is the same for
 what a cell holds, with §6.1's `⊘` admitted at every node and well typed at
 every type, because a moved-out position claims nothing about what used to be
@@ -87,7 +87,7 @@ settles a non-linear type.
 ## Enums: exhaustiveness, and the payload that drops exactly once
 
 §7 names two mechanisms for an enum, and both are here. **Exhaustiveness** is
-progress at a `match`: `match_arm_exists` (`Statics.lean`) says a well-typed tag
+progress at a `match`: `exhaustive_arm_exists` (`Statics.lean`) says a well-typed tag
 is an index the arm list has, so the machine is never stuck on an uncovered tag.
 **Dropped exactly once** is the pair of `⊘`s: a `match` on a non-`Copy` enum
 moves the scrutinee out, so §6.11's later walk through that place finds a hole
@@ -130,7 +130,7 @@ inductive HasTy (D : Decls) : Val → Ty → Prop where
   | struct {s sd vs} :
       D.structs[s]? = some sd → HasTys D vs sd.fields → HasTy D (.struct s vs) (.struct s)
   /-- §6.1's `Kj⟨ v1, …, va ⟩` at `E`: the tag names a variant of the
-  declaration — which is what progress at a `match` reads (`match_arm_exists`)
+  declaration — which is what progress at a `match` reads (`exhaustive_arm_exists`)
   — and the payload is well typed at that variant's declared component types
   ((Enum-Intro) §5.5, read on values). Nothing relates the value to the *other*
   variants: `class(E)` does (§3), and that is a fact about the type. -/
@@ -2265,7 +2265,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           have hed : ed' = ed := by rw [hd] at hd'; exact (Option.some_inj.mp hd').symm
           subst hed
           -- Progress at a `match` is exhaustiveness: the tag has an arm.
-          obtain ⟨body, harm⟩ := match_arm_exists hlen hv
+          obtain ⟨body, harm⟩ := exhaustive_arm_exists hlen hv
           obtain ⟨Γb, hbody, hres, hmemΓ⟩ := harms.at_index k harm hv
           have hlenvs : vs.length = Ts.length := hvs.length_eq
           have hlocs : ((mintParams H₀ vs).2.reverse).length = Ts.length := by

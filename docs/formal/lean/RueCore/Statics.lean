@@ -1056,7 +1056,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   the variants K1..Kn" needs no coverage search and no ordering side condition
   (`4.7:9`, `4.7:10`'s enum clause; the wildcard, the repeated pattern and the
   first-match order are elaboration obligations §5.5 states). Progress rests on
-  it: `match_arm_exists` (`Soundness.lean`) is that a well-typed tag has an arm.
+  it: `exhaustive_arm_exists` (`Soundness.lean`) is that a well-typed tag has an arm.
 
   Each arm is typed from the **same** post-scrutinee state `Σ0` under its
   payload locals (`armCtx`), all arms at one type `T` — the premise a diverging
@@ -1254,8 +1254,11 @@ theorem TypedArms.at_index {P : Program} {R : Ty} {Γ₀ : Ctx} {T : Ty} :
 arm per variant, so a variant index the declaration has is an index the arm list
 has. This is what progress at a `match` rests on — §7's own words: "a well-typed
 enum value carries one of the declared tags, and the arm list covers every one,
-so a `match` is never stuck on an uncovered tag" (`4.7:9`, `4.7:10`) (helper). -/
-theorem match_arm_exists {arms : List Expr} {Tss : List (List Ty)} {k : Nat} {Ts : List Ty}
+so a `match` is never stuck on an uncovered tag" (`4.7:9`, `4.7:10`). Named for
+what it says rather than for the form it is about, because Lean reserves the
+`match_` prefix for the declarations its own `match` elaborator generates
+(helper). -/
+theorem exhaustive_arm_exists {arms : List Expr} {Tss : List (List Ty)} {k : Nat} {Ts : List Ty}
     (hlen : arms.length = Tss.length) (hv : Tss[k]? = some Ts) :
     ∃ body, arms[k]? = some body := by
   have hk : k < Tss.length := (List.getElem?_eq_some_iff.mp hv).1

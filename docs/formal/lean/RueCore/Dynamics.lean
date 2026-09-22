@@ -933,7 +933,7 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
       -- place, so a non-`Copy` enum's cell became `⊘` by §6.3 and a `Copy` one
       -- was read — then read the tag, which selects the one covering arm
       -- (exhaustiveness, §5.5, makes `arms[k]?` succeed for a well-typed value:
-      -- `match_arm_exists`, `Soundness.lean`).
+      -- `exhaustive_arm_exists`, `Soundness.lean`).
       (eval M fuel P H φ scrut).andThen fun H₀ v =>
         match v with
         | .enum _ k vs =>
