@@ -345,16 +345,14 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   silent drop. A declared-linear **ancestor** keeps its own obligation, which
   §5.6's declared clause checks — the one place the model and the compiler
   currently disagree (RUE-2335, the seeded-red corpus case
-  `destructure_ancestor_dropped`). **Owed:** RUE-2316; element moves
-  (RUE-2327). For an **enum** the obligation is the type's, over every variant
-  (`6.3:19`, `RueCore.enum_carriesLinear_iff`), because the active variant is
-  not a static fact: a value of the other variant is still must-consume, which
-  is what the compiler reports as E0406. A `match` discharges it by binding and
-  consuming the payload, and the arm's own §5.6 check is what makes "consuming"
-  mean it (`6.3:17`). **Owed:** RUE-2316;
-  declared-linear destructure and residue ordering (RUE-2236); the element
-  move, any step below a dynamic index, and `3.8:70`'s untracked-residue
-  disjunct (RUE-2327).
+  `destructure_ancestor_dropped`). For an **enum** the obligation is the
+  type's, over every variant (`6.3:19`, `RueCore.enum_carriesLinear_iff`),
+  because the active variant is not a static fact: a value of the other
+  variant is still must-consume, which is what the compiler reports as
+  E0406. A `match` discharges it by binding and consuming the payload, and
+  the arm's own §5.6 check is what makes "consuming" mean it (`6.3:17`).
+  **Owed:** RUE-2316; the element move, any step below a dynamic index,
+  and `3.8:70`'s untracked-residue disjunct (RUE-2327).
 
 ## Exclusivity / no aliased mutation
 

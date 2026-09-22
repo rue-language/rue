@@ -149,22 +149,22 @@ between them. `RueCore/Print.lean`'s module docstring
 is the reference for the rest. Two of the constraints are the spec's: a
 `@copy` type must declare no destructor (`3.9:31`), and a declaration that
 carries a linear value in a field may declare no destructor at all
-(`3.9:44`). A projection prints as `x.f0`, an assignment to
-one as `x.f0 = e;`, and `@drop` as `@drop(p)` at every class: all the identity
-elaboration — including a place whose path has a proper prefix of
-declared-`linear` struct type, where the compiler and the core both select
-§4.2's `Declared(d, π_s)` plan and destructure. The one context where they
-disagree about *whether* a place is used, `@dbg`'s operand — a borrow in the
-compiler, an ordinary use in (Dbg) §5.8 — the printer already binds to a `let`
-first, which is a value context in both (`Print.lean`'s module docstring). Five images are *not* the identity elaboration: the four typed
-blocks below `Print.lean`'s "Integer typing" heading and the invented
-`drop fn` body, which the core declaration does not carry and which is the
-whole observation channel. One limit, accepted at fragment scope: every line
-is a bare integer or `true`/`false`, so a destructor line `n` swapped with a
-`@dbg` line `n` or a value line `n` would not be told apart. Every printed
-program opens with a comment naming
-its case, the rules it exercises, and its expected outcome in words, so
-`corpus.json` doubles as a readable example set.
+(`3.9:44`). A projection prints as `x.f0`, an assignment to one as `x.f0 =
+e;`, and `@drop` as `@drop(p)` at every class: all the identity elaboration
+— including a place whose path has a proper prefix of declared-`linear`
+struct type, where the compiler and the core both select §4.2's `Declared(d,
+π_s)` plan and destructure. The one context where they disagree about
+*whether* a place is used, `@dbg`'s operand — a borrow in the compiler, an
+ordinary use in (Dbg) §5.8 — the printer already binds to a `let` first,
+which is a value context in both (`Print.lean`'s module docstring). Five
+images are *not* the identity elaboration: the four typed blocks below
+`Print.lean`'s "Integer typing" heading and the invented `drop fn` body,
+which the core declaration does not carry and which is the whole observation
+channel. One limit, accepted at fragment scope: every line is a bare integer
+or `true`/`false`, so a destructor line `n` swapped with a `@dbg` line `n`
+or a value line `n` would not be told apart. Every printed program opens
+with a comment naming its case, the rules it exercises, and its expected
+outcome in words, so `corpus.json` doubles as a readable example set.
 
 ## Explaining a program (RUE-2246)
 
