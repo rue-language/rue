@@ -27,7 +27,10 @@ the `@copy`/`linear` attribute, whether the struct declares a destructor, and
 **enum** types, one payload tuple per variant with `class(E)` the payload join
 over every variant (`6.3:19`; `WfEnums` is the equation and `checkEnums`
 decides it), the two layers grounded by `3.0:5`'s joint acyclicity (`WfNames`,
-decided by `checkNoCycle`, which is what makes either equation a definition); struct literals ((Struct-Intro) §5.8, (D-Struct) §6.5), enum
+decided by `checkNoCycle`, which is what makes either equation a definition —
+and which sees **through an array element**, since `3.0:5` names array
+elements beside fields and payloads: `struct S { x0: [S; 1] }` is E0483 for
+the compiler and fails `RueCore.checkDecls` here); struct literals ((Struct-Intro) §5.8, (D-Struct) §6.5), enum
 construction and the `match` that eliminates it in §5.5's canonical form —
 one arm per variant, binding that variant's payload as fresh `Owned` locals
 that leave scope at the arm's end ((Enum-Intro)/(Match) §5.5,
@@ -172,6 +175,10 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   taking no parameters — which `RueCore.checkProgram_sound` decides.
 - **Covers:** the fragment above. **Owed:** every remaining Phase C slice
   re-establishes this theorem for its forms (RUE-2233 through RUE-2237). The
+  array slice (RUE-2322) has done so, and it also widened `3.0:5`'s own
+  relation: `RueCore.Decls.Names` reaches a declaration through
+  `RueCore.Ty.declIds`, which peels array wrappers, so a struct that names
+  itself through an array element is refused rather than grounded. The
   enum slice (RUE-2320) has done so: progress at a `match` is exhaustiveness
   (`RueCore.exhaustive_arm_exists` — a well-typed tag is an index the arm list
   has), and preservation over the n-way join is the fold of the binary one

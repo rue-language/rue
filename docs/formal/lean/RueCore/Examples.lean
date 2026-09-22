@@ -1713,6 +1713,37 @@ example : checkStructs (Decls.ofStructs
 example : checkDecls (Decls.ofStructs
     [{ attr := .none, fields := [.struct 0], dtor := false, cls := .affine }]) = false := by rfl
 
+/-- The same rule **through an array element**. `3.0:5` names array elements
+beside struct fields and enum payloads, and `[S; 1]` occupies its element's
+storage (`3.5:4`), so `struct S { x0: [S; 1] }` contains itself by value
+exactly as `struct S { x0: S }` does — the compiler reports E0483 for both
+(`rev2322/p/cyc1.rue`). `Decls.Names` reaches the declaration through
+`Ty.declIds`, which peels the array wrappers, and `Ty.grounded` peels the same
+ones; without that peel the per-layer join check would accept this shape and
+`3.0:5` would not refuse it. -/
+example : checkStructs (Decls.ofStructs
+    [{ attr := .none, fields := [.array (.struct 0) 1], dtor := false, cls := .affine }])
+    = true := by rfl
+example : checkDecls (Decls.ofStructs
+    [{ attr := .none, fields := [.array (.struct 0) 1], dtor := false, cls := .affine }])
+    = false := by rfl
+
+/-- And through an array element **across the two layers**, which is the joint
+rule's own shape: `struct S { x0: [E; 2] }` / `enum E { K0(S), K1 }`, E0483
+"contains itself by value: S -> E -> S" (`rev2322/p/cyc2.rue`). -/
+example : checkStructs
+    { structs := [{ attr := .none, fields := [.array (.enum 0) 2], dtor := false,
+                    cls := .affine }],
+      enums := [{ variants := [[Ty.struct 0], []], cls := .affine }] } = true := by rfl
+example : checkEnums
+    { structs := [{ attr := .none, fields := [.array (.enum 0) 2], dtor := false,
+                    cls := .affine }],
+      enums := [{ variants := [[Ty.struct 0], []], cls := .affine }] } = true := by rfl
+example : checkDecls
+    { structs := [{ attr := .none, fields := [.array (.enum 0) 2], dtor := false,
+                    cls := .affine }],
+      enums := [{ variants := [[Ty.struct 0], []], cls := .affine }] } = false := by rfl
+
 /-!
 ## Refusals and traps, kernel-checked
 
