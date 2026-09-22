@@ -188,8 +188,8 @@ is not `Linear`, no field's class is — which is why the machine's leak monitor
 own class and never inside it. This is §3's infectiousness, used.
 
 ```lean
-theorem RueCore.StructDecl.Wf.field_not_linear {D : Decls} {s : Nat} {sd : StructDecl}
-  (h : StructDecl.Wf D s sd) (hcls : sd.cls ≠ Mult.linear) (T : Ty) :
+theorem RueCore.StructDecl.Wf.field_not_linear {D : Decls} {sd : StructDecl}
+  (h : StructDecl.Wf D sd) (hcls : sd.cls ≠ Mult.linear) (T : Ty) :
   T ∈ sd.fields → Ty.mult D T ≠ Mult.linear
 ```
 
@@ -204,7 +204,7 @@ with `Ty.carriesLinear`'s definition this is §5.3's sentence, mechanized.
 
 ```lean
 theorem RueCore.struct_carriesLinear_iff {D : Decls} {s : Nat} {sd : StructDecl}
-  (hd : D.structs[s]? = some sd) (h : StructDecl.Wf D s sd) :
+  (hd : D.structs[s]? = some sd) (h : StructDecl.Wf D sd) :
   Ty.mult D (Ty.struct s) = Mult.linear ↔
     sd.attr = Attr.linear ∨ ∃ T, T ∈ sd.fields ∧ Ty.mult D T = Mult.linear
 ```
@@ -219,8 +219,8 @@ machine's leak monitor need only read the payload it finds under the active tag
 (§6.11) and never the declaration. This is `6.3:19`'s join, used.
 
 ```lean
-theorem RueCore.EnumDecl.Wf.payload_not_linear {D : Decls} {e : Nat} {ed : EnumDecl}
-  (h : EnumDecl.Wf D e ed) (hcls : ed.cls ≠ Mult.linear) (Ts : List Ty) :
+theorem RueCore.EnumDecl.Wf.payload_not_linear {D : Decls} {ed : EnumDecl}
+  (h : EnumDecl.Wf D ed) (hcls : ed.cls ≠ Mult.linear) (Ts : List Ty) :
   Ts ∈ ed.variants → ∀ (T : Ty), T ∈ Ts → Ty.mult D T ≠ Mult.linear
 ```
 
@@ -237,34 +237,70 @@ value even though the value it holds carries nothing (probe e11, E0406).
 
 ```lean
 theorem RueCore.enum_carriesLinear_iff {D : Decls} {e : Nat} {ed : EnumDecl}
-  (hd : D.enums[e]? = some ed) (h : EnumDecl.Wf D e ed) :
+  (hd : D.enums[e]? = some ed) (h : EnumDecl.Wf D ed) :
   Ty.mult D (Ty.enum e) = Mult.linear ↔
     ∃ Ts, Ts ∈ ed.variants ∧ ∃ T, T ∈ Ts ∧ Ty.mult D T = Mult.linear
+```
+
+### `class_unique`
+
+*theorem* · module `RueCore.Statics`
+
+**§3's class assignment has exactly one solution** (`3.0:5`, `6.3:19`).
+Two declaration environments of the same *shapes* — the same number of struct
+and of enum declarations, the same attribute and field list at every struct
+index, the same variant payloads at every enum index — that each satisfy
+`WfDecls` assign the same class to **every** type: every struct, every enum,
+and every scalar. So recording `class(S)`/`class(E)` in the declaration
+(`Syntax.lean`) records a determined value rather than a free parameter, and a
+`checkProgram = true` verdict is a verdict about the declarations the compiler
+would compute the same classes for.
+
+The theorem takes no hypothesis about the other layer's classes, which is what
+`3.0:5`'s joint well-foundedness buys: the induction is over the by-value
+"contains" relation rather than over a declaration index, so a field naming an
+enum and a payload naming a struct are the same step. `dtor` does not appear,
+because §3's equations do not read it.
+
+```lean
+theorem RueCore.class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
+  (hslen : D.structs.length = D'.structs.length)
+  (helen : D.enums.length = D'.enums.length)
+  (hsshape :
+    ∀ (s : Nat) (sd sd' : StructDecl),
+      D.structs[s]? = some sd →
+        D'.structs[s]? = some sd' →
+          sd.attr = sd'.attr ∧ sd.fields = sd'.fields)
+  (heshape :
+    ∀ (e : Nat) (ed ed' : EnumDecl),
+      D.enums[e]? = some ed →
+        D'.enums[e]? = some ed' → ed.variants = ed'.variants)
+  (T : Ty) : Ty.mult D T = Ty.mult D' T
 ```
 
 ### `struct_class_unique`
 
 *theorem* · module `RueCore.Statics`
 
-**§3's class assignment for the struct layer has one solution, given the
-enum layer's.** Two well-formed environments of the same struct length whose
-declarations agree on their attributes and field lists, and which assign every
-*enum* the same class, agree on every struct class. So recording `class(S)` in
-the declaration (`Syntax.lean`) records a determined value rather than a free
-parameter: it is §3's join, and `WfStructs` is the equation that says so. The
-enum hypothesis is the mutual half the section docstring leaves open — a field
-may name an enum, and §3 fixes no order between the layers.
+**§3's class assignment for the struct layer has one solution**, the
+projection of `class_unique` §3's own sentence asks for. It needs the enum
+layer's shapes as well as the struct layer's, because a field may name an enum
+— that is the mutual recursion `3.0:5` grounds, not a weakness of the
+statement.
 
 ```lean
-theorem RueCore.struct_class_unique {D D' : Decls} (hwf : WfStructs D)
-  (hwf' : WfStructs D')
-  (henum : ∀ (e' : Nat), D.enumClassOf e' = D'.enumClassOf e')
-  (hlen : D.structs.length = D'.structs.length)
-  (hshape :
+theorem RueCore.struct_class_unique {D D' : Decls} (hwf : WfDecls D)
+  (hwf' : WfDecls D') (hslen : D.structs.length = D'.structs.length)
+  (helen : D.enums.length = D'.enums.length)
+  (hsshape :
     ∀ (s : Nat) (sd sd' : StructDecl),
       D.structs[s]? = some sd →
         D'.structs[s]? = some sd' →
           sd.attr = sd'.attr ∧ sd.fields = sd'.fields)
+  (heshape :
+    ∀ (e : Nat) (ed ed' : EnumDecl),
+      D.enums[e]? = some ed →
+        D'.enums[e]? = some ed' → ed.variants = ed'.variants)
   (s : Nat) : D.classOf s = D'.classOf s
 ```
 
@@ -272,16 +308,21 @@ theorem RueCore.struct_class_unique {D D' : Decls} (hwf : WfStructs D)
 
 *theorem* · module `RueCore.Statics`
 
-**§3's class assignment for the enum layer has one solution, given the
-struct layer's** (`6.3:19`). The dual of `struct_class_unique`, and simpler:
-an enum records no attribute, so its class *is* the payload join, with no
-lifting to undo.
+**§3's class assignment for the enum layer has one solution** (`6.3:19`),
+the other projection of `class_unique`. Simpler than the struct one in its own
+layer — an enum records no attribute, so its class *is* the payload join — and
+mutual in the same way: a payload may name a struct.
 
 ```lean
-theorem RueCore.enum_class_unique {D D' : Decls} (hwf : WfEnums D) (hwf' : WfEnums D')
-  (hcls : ∀ (s' : Nat), D.classOf s' = D'.classOf s')
-  (hlen : D.enums.length = D'.enums.length)
-  (hshape :
+theorem RueCore.enum_class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
+  (hslen : D.structs.length = D'.structs.length)
+  (helen : D.enums.length = D'.enums.length)
+  (hsshape :
+    ∀ (s : Nat) (sd sd' : StructDecl),
+      D.structs[s]? = some sd →
+        D'.structs[s]? = some sd' →
+          sd.attr = sd'.attr ∧ sd.fields = sd'.fields)
+  (heshape :
     ∀ (e : Nat) (ed ed' : EnumDecl),
       D.enums[e]? = some ed →
         D'.enums[e]? = some ed' → ed.variants = ed'.variants)
@@ -299,6 +340,49 @@ decides.
 ```lean
 theorem RueCore.overwriteOk_iff {D : Decls} {u : OwnSt} {T : Ty} :
   overwriteOk D u T = true ↔ u = OwnSt.movedOut ∨ Ty.mult D T ≠ Mult.linear
+```
+
+### `OwnSt.join_comm`
+
+*theorem* · module `RueCore.Statics`
+
+**The §5.5 join is commutative**, at one path and its subtree. Joining is
+symmetric in the two arms: where one side is wholly `Owned` the result is the
+other side subject to `ownedJoinOk`, where one side is `MovedOut` the result is
+`MovedOut` subject to the other's residue, and two field records join slot by
+slot — each of which reads the same from either side.
+
+```lean
+theorem RueCore.OwnSt.join_comm (D : Decls) (a b : OwnSt) (T : Ty) :
+  OwnSt.join D a b T = OwnSt.join D b a T
+```
+
+### `Entry.join_comm`
+
+*theorem* · module `RueCore.Statics`
+
+**The §5.5 join is commutative on one entry**, whose skeleton the two arms
+share — the entry's declared type and `mut` mark come from the incoming
+context, so only the state differs.
+
+```lean
+theorem RueCore.Entry.join_comm {D : Decls} {a b : Entry} (hsk : a.skel = b.skel) :
+  Entry.join D a b = Entry.join D b a
+```
+
+### `Ctx.join_comm`
+
+*theorem* · module `RueCore.Statics`
+
+**The §5.5 join is commutative on a whole context**, pointwise, whenever
+the two arms carry the same skeleton — which `skel_preserved` guarantees of any
+two outgoing contexts of one incoming one (`Typed.skel_preserved`). So which
+arm the algorithm reads
+first is immaterial; what is not proved is the bracketing (section docstring).
+
+```lean
+theorem RueCore.Ctx.join_comm {D : Decls} (Γ₁ Γ₂ : Ctx) :
+  Γ₁.skel = Γ₂.skel → Ctx.join D Γ₁ Γ₂ = Ctx.join D Γ₂ Γ₁
 ```
 
 ### `Typed.skel_preserved`
@@ -1073,8 +1157,9 @@ calculus, the second is the calculus doing what it says.
   *sibling* of a pending argument reaches the identical state by the second
   route as well as the first.
 
-Every *other* edge — a `let`'s scope exit, a frame's normal pop, and a
-`return`'s unwind — is covered.
+Every *other* edge — a `let`'s scope exit, a `match` arm's `endscope` over its
+payload locals (`Matches.unwindPrefix`), a frame's normal pop, and a `return`'s
+unwind — is covered.
 
 ```lean
 theorem RueCore.no_violation (M : FloatModel) {P : Program} (h : ProgramTyped P)
@@ -1207,8 +1292,8 @@ Every `checkStructDecl` acceptance is §3's class assignment for that
 declaration.
 
 ```lean
-theorem RueCore.checkStructDecl_sound {D : Decls} {s : Nat} {sd : StructDecl}
-  (h : checkStructDecl D s sd = true) : StructDecl.Wf D s sd
+theorem RueCore.checkStructDecl_sound {D : Decls} {sd : StructDecl}
+  (h : checkStructDecl D sd = true) : StructDecl.Wf D sd
 ```
 
 ### `checkStructs_sound`
@@ -1231,8 +1316,8 @@ Every `checkEnumDecl` acceptance is §3's class assignment for that
 declaration (`6.3:19`).
 
 ```lean
-theorem RueCore.checkEnumDecl_sound {D : Decls} {e : Nat} {ed : EnumDecl}
-  (h : checkEnumDecl D e ed = true) : EnumDecl.Wf D e ed
+theorem RueCore.checkEnumDecl_sound {D : Decls} {ed : EnumDecl}
+  (h : checkEnumDecl D ed = true) : EnumDecl.Wf D ed
 ```
 
 ### `checkEnums_sound`
@@ -1244,6 +1329,30 @@ environment (`WfEnums`).
 
 ```lean
 theorem RueCore.checkEnums_sound {D : Decls} (h : checkEnums D = true) : WfEnums D
+```
+
+### `checkNoCycle_sound`
+
+*theorem* · module `RueCore.Checker`
+
+**Every `checkNoCycle` acceptance is `3.0:5`** (`WfNames`): the by-value
+"contains" relation over the declarations is well-founded, so no struct or enum
+contains itself by value through any cycle of fields and payloads. This is the
+premise `class_unique` turns into "§3's class assignment has one solution".
+
+```lean
+theorem RueCore.checkNoCycle_sound {D : Decls} (h : checkNoCycle D = true) : WfNames D
+```
+
+### `checkDecls_sound`
+
+*theorem* · module `RueCore.Checker`
+
+Every `checkDecls` acceptance is a well-formed declaration environment:
+§3's class assignment in both layers and `3.0:5`'s acyclicity.
+
+```lean
+theorem RueCore.checkDecls_sound {D : Decls} (h : checkDecls D = true) : WfDecls D
 ```
 
 ### `checkProgram_sound`
@@ -1655,35 +1764,12 @@ theorem RueCore.payloadFold_linear_inv (D : Decls) (Tss : List (List Ty))
 
 *theorem* · module `RueCore.Statics`
 
-Two environments that agree on every struct class below `n` and on every
-enum class give the same §3 join to a field list that names only struct
-declarations below `n` (helper).
+Two environments that give every type of a field list the same class give
+that list the same §3 join (helper).
 
 ```lean
-theorem RueCore.joinFold_congr {D D' : Decls} {n : Nat}
-  (hcls : ∀ (s' : Nat), s' < n → D.classOf s' = D'.classOf s')
-  (henum : ∀ (e' : Nat), D.enumClassOf e' = D'.enumClassOf e') (Ts : List Ty)
-  (acc : Mult) :
-  (∀ (s' : Nat), Ty.struct s' ∈ Ts → s' < n) →
-    List.foldl (fun m T => m.join (Ty.mult D T)) acc Ts =
-      List.foldl (fun m T => m.join (Ty.mult D' T)) acc Ts
-```
-
-### `joinFold_congr_enum`
-
-*theorem* · module `RueCore.Statics`
-
-The inner fold of an enum's payload join, over one variant's components:
-two environments agreeing on every struct class and on every enum class below
-`n` give it the same value when the components name only enums below `n`
-(helper).
-
-```lean
-theorem RueCore.joinFold_congr_enum {D D' : Decls} {n : Nat}
-  (hcls : ∀ (s' : Nat), D.classOf s' = D'.classOf s')
-  (henum : ∀ (e' : Nat), e' < n → D.enumClassOf e' = D'.enumClassOf e')
-  (Ts : List Ty) (acc : Mult) :
-  (∀ (e' : Nat), Ty.enum e' ∈ Ts → e' < n) →
+theorem RueCore.joinFold_congr {D D' : Decls} (Ts : List Ty) (acc : Mult) :
+  (∀ (T : Ty), T ∈ Ts → Ty.mult D T = Ty.mult D' T) →
     List.foldl (fun m T => m.join (Ty.mult D T)) acc Ts =
       List.foldl (fun m T => m.join (Ty.mult D' T)) acc Ts
 ```
@@ -1692,22 +1778,30 @@ theorem RueCore.joinFold_congr_enum {D D' : Decls} {n : Nat}
 
 *theorem* · module `RueCore.Statics`
 
-The same for an enum's payload join: two environments agreeing on every
-struct class and on every enum class below `n` give the same `6.3:19` join to a
-variant list whose payloads name only enums below `n` (helper).
+The same for `6.3:19`'s payload join, over every component of every variant
+(helper).
 
 ```lean
-theorem RueCore.payloadFold_congr {D D' : Decls} {n : Nat}
-  (hcls : ∀ (s' : Nat), D.classOf s' = D'.classOf s')
-  (henum : ∀ (e' : Nat), e' < n → D.enumClassOf e' = D'.enumClassOf e')
-  (Tss : List (List Ty)) (acc : Mult) :
-  (∀ (e' : Nat) (Ts : List Ty), Ts ∈ Tss → Ty.enum e' ∈ Ts → e' < n) →
+theorem RueCore.payloadFold_congr {D D' : Decls} (Tss : List (List Ty)) (acc : Mult) :
+  (∀ (Ts : List Ty),
+      Ts ∈ Tss → ∀ (T : Ty), T ∈ Ts → Ty.mult D T = Ty.mult D' T) →
     List.foldl
         (fun m Ts => List.foldl (fun m' T => m'.join (Ty.mult D T)) m Ts) acc
         Tss =
       List.foldl
         (fun m Ts => List.foldl (fun m' T => m'.join (Ty.mult D' T)) m Ts) acc
         Tss
+```
+
+### `OwnSt.joinList_comm`
+
+*theorem* · module `RueCore.Statics`
+
+The same over a declaration's fields, slot by slot (helper).
+
+```lean
+theorem RueCore.OwnSt.joinList_comm (D : Decls) (as bs : List OwnSt) (Ts : List Ty) :
+  OwnSt.joinList D as bs Ts = OwnSt.joinList D bs as Ts
 ```
 
 ### `TypedArms.at_index`
@@ -3035,30 +3129,66 @@ theorem RueCore.EvalRes.absorb_ne_returned {r : EvalRes} {k : Store → Val → 
   r.absorb k ≠ EvalRes.returned H v tr
 ```
 
-### `checkStructsFrom_sound`
+### `Decls.peel_length`
 
 *theorem* · module `RueCore.Checker`
 
-`checkStructsFrom` checks the declaration at every offset (helper).
+The grounded flags have one entry per declaration at every round
+(helper).
 
 ```lean
-theorem RueCore.checkStructsFrom_sound (D : Decls) (k : Nat) (L : List StructDecl) :
-  checkStructsFrom D k L = true →
-    ∀ (i : Nat) (sd : StructDecl),
-      L[i]? = some sd → checkStructDecl D (k + i) sd = true
+theorem RueCore.Decls.peel_length (D : Decls) (n : Nat) :
+  (D.peel n).fst.length = D.structs.length ∧
+    (D.peel n).snd.length = D.enums.length
 ```
 
-### `checkEnumsFrom_sound`
+### `Decls.grounded_peel_zero`
 
 *theorem* · module `RueCore.Checker`
 
-`checkEnumsFrom` checks the declaration at every offset (helper).
+Nothing is grounded at round `0` (helper).
 
 ```lean
-theorem RueCore.checkEnumsFrom_sound (D : Decls) (k : Nat) (L : List EnumDecl) :
-  checkEnumsFrom D k L = true →
-    ∀ (i : Nat) (ed : EnumDecl),
-      L[i]? = some ed → checkEnumDecl D (k + i) ed = true
+theorem RueCore.Decls.grounded_peel_zero (D : Decls) (d : DeclId) :
+  Ty.grounded (D.peel 0) d.ty = false
+```
+
+### `Decls.grounded_pred`
+
+*theorem* · module `RueCore.Checker`
+
+A declaration grounded at round `n+1` contains only declarations grounded
+at round `n`. This is the peel read backwards, and it is what turns an
+acceptance into well-foundedness (helper).
+
+```lean
+theorem RueCore.Decls.grounded_pred {D : Decls} {n : Nat} {d d' : DeclId}
+  (h : Ty.grounded (D.peel (n + 1)) d.ty = true) (hn : D.Names d d') :
+  Ty.grounded (D.peel n) d'.ty = true
+```
+
+### `Decls.acc_of_grounded`
+
+*theorem* · module `RueCore.Checker`
+
+A declaration grounded at some round is accessible in the by-value
+relation (helper).
+
+```lean
+theorem RueCore.Decls.acc_of_grounded (D : Decls) (n : Nat) (d : DeclId) :
+  Ty.grounded (D.peel n) d.ty = true → Acc (fun a b => D.Names b a) d
+```
+
+### `Decls.acc_of_empty`
+
+*theorem* · module `RueCore.Checker`
+
+A declaration index the environment does not have contains nothing, so it
+is accessible outright (helper).
+
+```lean
+theorem RueCore.Decls.acc_of_empty {D : Decls} {d : DeclId} (h : D.byValue d = []) :
+  Acc (fun a b => D.Names b a) d
 ```
 
 ## Definitions the statements depend on
@@ -3208,6 +3338,31 @@ RueCore.BinOp.ge : BinOp
 
 ```lean
 RueCore.BinOp.totalCmp : BinOp
+```
+
+### `DeclId`
+
+*inductive* · module `RueCore.Statics`
+
+A declaration of either kind, named the way a type names it: the domain of
+`3.0:5`'s "contains by value" relation.
+
+```lean
+inductive RueCore.DeclId : Type
+```
+
+Constructors:
+
+**`DeclId.struct`** — The struct declaration `Ty.struct s` names.
+
+```lean
+RueCore.DeclId.struct (s : Nat) : DeclId
+```
+
+**`DeclId.enum`** — The enum declaration `Ty.enum e` names.
+
+```lean
+RueCore.DeclId.enum (e : Nat) : DeclId
 ```
 
 ### `Env`
@@ -4673,6 +4828,23 @@ Defining equations, as Lean derived them from the body:
     x.writeAt (head :: tail) x_1 = none
 ```
 
+### `DeclId.ty`
+
+*def* · module `RueCore.Statics`
+
+The type that names this declaration (helper).
+
+```lean
+def RueCore.DeclId.ty : DeclId → Ty
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (a : Nat), (DeclId.struct a).ty = Ty.struct a
+∀ (a : Nat), (DeclId.enum a).ty = Ty.enum a
+```
+
 ### `Entry`
 
 *inductive* · module `RueCore.Statics`
@@ -5241,6 +5413,32 @@ Constructors:
 ```lean
 RueCore.StructDecl.mk (attr : Attr) (fields : List Ty) (dtor : Bool)
   (cls : Mult) : StructDecl
+```
+
+### `Ty.grounded`
+
+*def* · module `RueCore.Checker`
+
+Whether a type's declaration is already grounded. A scalar names no
+declaration, so it always is (helper).
+
+```lean
+def RueCore.Ty.grounded (st : List Bool × List Bool) : Ty → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (st : List Bool × List Bool) (s : Nat),
+  Ty.grounded st (Ty.struct s) = st.fst[s]?.getD false
+∀ (st : List Bool × List Bool) (e : Nat),
+  Ty.grounded st (Ty.enum e) = st.snd[e]?.getD false
+∀ (st : List Bool × List Bool) (w : IntWidth) (s : Sign),
+  Ty.grounded st (Ty.int w s) = true
+∀ (st : List Bool × List Bool) (w : FloatWidth),
+  Ty.grounded st (Ty.float w) = true
+∀ (st : List Bool × List Bool), Ty.grounded st Ty.bool = true
+∀ (st : List Bool × List Bool), Ty.grounded st Ty.unit = true
 ```
 
 ### `Ty.observable`
@@ -6155,6 +6353,33 @@ Defining equations, as Lean derived them from the body:
 ∀ (Γ : Ctx), Γ.skel = List.map Entry.skel Γ
 ```
 
+### `Decls.byValue`
+
+*def* · module `RueCore.Statics`
+
+The types a declaration contains **by value** (`3.0:5`): a struct's fields
+and an enum's payload components, over every variant. An index the environment
+does not have contains nothing.
+
+```lean
+def RueCore.Decls.byValue (D : Decls) : DeclId → List Ty
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (a : Nat),
+  D.byValue (DeclId.struct a) =
+    match D.structs[a]? with
+    | some sd => sd.fields
+    | none => []
+∀ (D : Decls) (a : Nat),
+  D.byValue (DeclId.enum a) =
+    match D.enums[a]? with
+    | some ed => ed.variants.flatten
+    | none => []
+```
+
 ### `Decls.classOf`
 
 *def* · module `RueCore.Syntax`
@@ -6217,6 +6442,30 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (D : List StructDecl), Decls.ofStructs D = { structs := D, enums := [] }
+```
+
+### `Decls.peelStep`
+
+*def* · module `RueCore.Checker`
+
+One peel round: a declaration is grounded when every type it contains by
+value is — a struct's fields, an enum's payload components over every variant
+(helper).
+
+```lean
+def RueCore.Decls.peelStep (D : Decls) (st : List Bool × List Bool) :
+  List Bool × List Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (st : List Bool × List Bool),
+  D.peelStep st =
+    (List.map (fun sd => sd.fields.all (Ty.grounded st)) D.structs,
+      List.map
+        (fun ed => ed.variants.all fun Ts => Ts.all (Ty.grounded st))
+        D.enums)
 ```
 
 ### `EvalRes`
@@ -6575,7 +6824,9 @@ payload has no storage, and a discriminant-only active variant drops nothing
 because its payload list is empty (probe e1b). An enum runs no destructor of its
 own — §3 gives it none to declare (E0417) — so, unlike the struct case, there is
 no event before the payload's and no declaration to look up, which is why this
-arm cannot refuse. A payload already moved out by a `match` binding left the enum
+arm cannot refuse and why the value's enum **index** is not read: there is
+nothing to look it up for. Under `Typed` it is pinned anyway
+(`HasTy.enum_inv`). A payload already moved out by a `match` binding left the enum
 place `⊘` and is skipped by the `⊘` case above, never dropped twice.
 
 ```lean
@@ -6801,6 +7052,38 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls) (c : Contents) (cs : List Contents),
   Contents.residualLinearList D (c :: cs) =
     (Contents.residualLinear D c || Contents.residualLinearList D cs)
+```
+
+### `Decls.Names`
+
+*def* · module `RueCore.Statics`
+
+`3.0:5`'s relation, one step: `d` contains `d'` by value.
+
+```lean
+def RueCore.Decls.Names (D : Decls) (d d' : DeclId) : Prop :=
+  d'.ty ∈ D.byValue d
+```
+
+### `Decls.peel`
+
+*def* · module `RueCore.Checker`
+
+The grounded flags after `n` peel rounds, one per declaration of each
+layer; nothing is grounded at round `0` (helper).
+
+```lean
+def RueCore.Decls.peel (D : Decls) : Nat → List Bool × List Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls),
+  D.peel 0 =
+    (List.map (fun x => false) D.structs,
+      List.map (fun x => false) D.enums)
+∀ (D : Decls) (n : Nat), D.peel n.succ = D.peelStep (D.peel n)
 ```
 
 ### `Entry.join`
@@ -7373,6 +7656,21 @@ Defining equations, as Lean derived them from the body:
     List.foldl (fun m T => m.join (Ty.mult D T)) Mult.copy sd.fields
 ```
 
+### `WfNames`
+
+*def* · module `RueCore.Statics`
+
+**`3.0:5` (E0483), mechanized**: the by-value "contains" relation over the
+declarations is well-founded, so no declaration reaches itself through a cycle
+of struct fields and enum payloads. This is the one premise that makes §3's
+struct and enum equations a *definition* — `class_unique` is the induction it
+licenses — and it is joint over the two layers because `3.0:5` is.
+
+```lean
+def RueCore.WfNames (D : Decls) : Prop :=
+  WellFounded fun d' d => D.Names d d'
+```
+
 ### `check`
 
 *def* · module `RueCore.Checker`
@@ -7402,6 +7700,29 @@ counts to agree, so no program reaches it.
 ```lean
 def RueCore.checkArms (P : Program) (R : Ty) (Γ₀ : Ctx) (T : Ty) :
   List Expr → List (List Ty) → Option (List Ctx)
+```
+
+### `checkNoCycle`
+
+*def* · module `RueCore.Checker`
+
+**`3.0:5` (E0483) as an algorithm**: every declaration is grounded after
+`|structs| + |enums|` peel rounds, which is "no struct or enum contains itself
+by value, either directly or through a cycle of struct fields and enum
+payloads". `checkNoCycle_sound` turns an acceptance into `WfNames`, the premise
+that makes §3's two class equations a definition.
+
+```lean
+def RueCore.checkNoCycle (D : Decls) : Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls),
+  checkNoCycle D =
+    ((D.peel (D.structs.length + D.enums.length)).fst.all id &&
+      (D.peel (D.structs.length + D.enums.length)).snd.all id)
 ```
 
 ### `dropCell`
@@ -7563,9 +7884,9 @@ Defining equations, as Lean derived them from the body:
 *inductive* · module `RueCore.Statics`
 
 One enum declaration's well-formedness (§3, `6.3:19`): its recorded class
-is the payload join, and a payload may name only an **earlier** enum — so the
-equation is solvable in one pass over the enum layer and no enum contains
-itself.
+is the payload join. As for a struct this is the equation only, and `WfNames`
+is what makes it solvable (`3.0:5` forbids an enum to contain itself by value
+through any cycle of fields and payloads).
 
 There is no attribute clause and no destructor clause, because §3 gives an enum
 neither: `6.3:19` fixes its class as the join with no `@copy`/`linear` mark to
@@ -7573,7 +7894,7 @@ lift, and the compiler rejects `drop fn E(self)` where it is declared (E0417),
 which is why `EnumDecl` records no `dtor` field for §6.11 to read.
 
 ```lean
-inductive RueCore.EnumDecl.Wf (D : Decls) (e : Nat) (ed : EnumDecl) : Prop
+inductive RueCore.EnumDecl.Wf (D : Decls) (ed : EnumDecl) : Prop
 ```
 
 Constructors:
@@ -7581,10 +7902,8 @@ Constructors:
 **`EnumDecl.Wf.mk`**
 
 ```lean
-RueCore.EnumDecl.Wf.mk {D : Decls} {e : Nat} {ed : EnumDecl}
-  (payloadsEarlier :
-    ∀ (e' : Nat) (Ts : List Ty), Ts ∈ ed.variants → Ty.enum e' ∈ Ts → e' < e)
-  (classIsJoin : ed.cls = EnumDecl.payloadJoin D ed) : EnumDecl.Wf D e ed
+RueCore.EnumDecl.Wf.mk {D : Decls} {ed : EnumDecl}
+  (classIsJoin : ed.cls = EnumDecl.payloadJoin D ed) : EnumDecl.Wf D ed
 ```
 
 ### `Examples.prog`
@@ -7649,13 +7968,16 @@ def RueCore.Explain.traceArgs (tev : Store → Expr → Explain.Trace) :
 
 One declaration's well-formedness (§3, `3.8:18`, `3.9:31`, `3.9:44`): its
 recorded class is §3's field join lifted by its attribute, a `@copy`
-declaration's join is already `Copy` and it declares no destructor, a
-destructor-bearing declaration carries no linear field, and a field names only
-an **earlier** declaration — so the class equation is solvable in one pass and
-has one solution (`struct_class_unique`), and no struct contains itself.
+declaration's join is already `Copy` and it declares no destructor, and a
+destructor-bearing declaration carries no linear field.
+
+This is the *equation* only. What makes it solvable — that no declaration
+contains itself by value, directly or through a cycle (`3.0:5`, E0483) — is
+`WfNames`, stated jointly over both layers below, because a field may name an
+enum and a payload may name a struct.
 
 ```lean
-inductive RueCore.StructDecl.Wf (D : Decls) (s : Nat) (sd : StructDecl) : Prop
+inductive RueCore.StructDecl.Wf (D : Decls) (sd : StructDecl) : Prop
 ```
 
 Constructors:
@@ -7663,14 +7985,13 @@ Constructors:
 **`StructDecl.Wf.mk`**
 
 ```lean
-RueCore.StructDecl.Wf.mk {D : Decls} {s : Nat} {sd : StructDecl}
-  (fieldsEarlier : ∀ (s' : Nat), Ty.struct s' ∈ sd.fields → s' < s)
+RueCore.StructDecl.Wf.mk {D : Decls} {sd : StructDecl}
   (classIsJoin : sd.cls = sd.attr.lift (StructDecl.baseOf D sd))
   (copyWf :
     sd.attr = Attr.copy →
       StructDecl.baseOf D sd = Mult.copy ∧ sd.dtor = false)
   (dtorWf : sd.dtor = true → StructDecl.baseOf D sd ≠ Mult.linear) :
-  StructDecl.Wf D s sd
+  StructDecl.Wf D sd
 ```
 
 ### `checkArgs`
@@ -7708,51 +8029,45 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Checker`
 
 §3's class assignment for one enum declaration, as an algorithm (`6.3:19`):
-every payload component names only an earlier enum, and the recorded class is the
-payload join over every variant. There is no attribute clause and no destructor
-clause — §3 gives an enum neither.
+the recorded class is the payload join over every variant. There is no attribute
+clause, no destructor clause and no acyclicity clause — §3 gives an enum neither
+of the first two, and the third is `checkNoCycle`'s.
 
 ```lean
-def RueCore.checkEnumDecl (D : Decls) (e : Nat) (ed : EnumDecl) : Bool
+def RueCore.checkEnumDecl (D : Decls) (ed : EnumDecl) : Bool
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (D : Decls) (e : Nat) (ed : EnumDecl),
-  checkEnumDecl D e ed =
-    ((ed.variants.all fun Ts =>
-        Ts.all fun T =>
-          match T with
-          | Ty.enum e' => decide (e' < e)
-          | x => true) &&
-      decide (ed.cls = EnumDecl.payloadJoin D ed))
+∀ (D : Decls) (ed : EnumDecl),
+  checkEnumDecl D ed = decide (ed.cls = EnumDecl.payloadJoin D ed)
 ```
 
 ### `checkStructDecl`
 
 *def* · module `RueCore.Checker`
 
-§3's class assignment for one declaration, as an algorithm: the recorded
-class is the attribute's lifting of the field join, a `@copy` declaration's
-join is already `Copy` and it has no destructor (`3.8:18`, `3.9:31`), a
-destructor-bearing declaration carries no linear field (`3.9:44`), and every
-field names an earlier declaration.
+§3's class assignment for one struct declaration, as an algorithm: the
+recorded class is the attribute's lifting of the field join, a `@copy`
+declaration's join is already `Copy` and it has no destructor (`3.8:18`,
+`3.9:31`), and a destructor-bearing declaration carries no linear field
+(`3.9:44`).
+
+Acyclicity is deliberately **not** here. `3.0:5` is one rule over both layers,
+so `checkNoCycle` decides it for the whole environment at once and no
+per-declaration clause can stand in for it.
 
 ```lean
-def RueCore.checkStructDecl (D : Decls) (s : Nat) (sd : StructDecl) : Bool
+def RueCore.checkStructDecl (D : Decls) (sd : StructDecl) : Bool
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (D : Decls) (s : Nat) (sd : StructDecl),
-  checkStructDecl D s sd =
-    (((sd.fields.all fun T =>
-            match T with
-            | Ty.struct s' => decide (s' < s)
-            | x => true) &&
-          decide (sd.cls = sd.attr.lift (StructDecl.baseOf D sd)) &&
+∀ (D : Decls) (sd : StructDecl),
+  checkStructDecl D sd =
+    ((decide (sd.cls = sd.attr.lift (StructDecl.baseOf D sd)) &&
         match sd.attr with
         | Attr.copy =>
           decide (StructDecl.baseOf D sd = Mult.copy) && !sd.dtor
@@ -7849,7 +8164,7 @@ makes `Ty.mult`'s lookup §3's join at every type, and it is what `checkEnums`
 
 ```lean
 def RueCore.WfEnums (D : Decls) : Prop :=
-  ∀ (e : Nat) (ed : EnumDecl), D.enums[e]? = some ed → EnumDecl.Wf D e ed
+  ∀ (e : Nat) (ed : EnumDecl), D.enums[e]? = some ed → EnumDecl.Wf D ed
 ```
 
 ### `WfStructs`
@@ -7863,45 +8178,43 @@ lookup §3's join, and it is what `checkStructs` (`Checker.lean`) decides.
 ```lean
 def RueCore.WfStructs (D : Decls) : Prop :=
   ∀ (s : Nat) (sd : StructDecl),
-    D.structs[s]? = some sd → StructDecl.Wf D s sd
+    D.structs[s]? = some sd → StructDecl.Wf D sd
 ```
 
-### `checkEnumsFrom`
+### `checkEnums`
 
 *def* · module `RueCore.Checker`
 
-The enum declarations from index `k` on (helper).
+§3's class assignment for a whole enum environment, as an algorithm.
+`WfEnums` is what it decides, and that is the premise `Ty.mult`'s lookup needs to
+be `6.3:19`'s join at an enum type.
 
 ```lean
-def RueCore.checkEnumsFrom (D : Decls) : Nat → List EnumDecl → Bool
+def RueCore.checkEnums (D : Decls) : Bool
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (D : Decls) (x : Nat), checkEnumsFrom D x [] = true
-∀ (D : Decls) (x : Nat) (ed : EnumDecl) (rest : List EnumDecl),
-  checkEnumsFrom D x (ed :: rest) =
-    (checkEnumDecl D x ed && checkEnumsFrom D (x + 1) rest)
+∀ (D : Decls), checkEnums D = D.enums.all (checkEnumDecl D)
 ```
 
-### `checkStructsFrom`
+### `checkStructs`
 
 *def* · module `RueCore.Checker`
 
-The declarations from index `k` on (helper).
+§3's class assignment for a whole struct environment, as an algorithm.
+`WfStructs` is what it decides, and that is the premise `Ty.mult`'s lookup
+needs to be §3's join.
 
 ```lean
-def RueCore.checkStructsFrom (D : Decls) : Nat → List StructDecl → Bool
+def RueCore.checkStructs (D : Decls) : Bool
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (D : Decls) (x : Nat), checkStructsFrom D x [] = true
-∀ (D : Decls) (x : Nat) (sd : StructDecl) (rest : List StructDecl),
-  checkStructsFrom D x (sd :: rest) =
-    (checkStructDecl D x sd && checkStructsFrom D (x + 1) rest)
+∀ (D : Decls), checkStructs D = D.structs.all (checkStructDecl D)
 ```
 
 ### `unwindLocs`
@@ -7935,10 +8248,11 @@ Defining equations, as Lean derived them from the body:
 
 *inductive* · module `RueCore.Statics`
 
-A well-formed declaration environment: §3's class assignment holds of every
-struct declaration (`WfStructs`) and of every enum declaration (`WfEnums`).
-This is the premise every theorem that reads a recorded class through `Ty.mult`
-carries, and it is what `checkStructs`/`checkEnums` (`Checker.lean`) decide.
+A well-formed declaration environment: `3.0:5`'s acyclicity (`WfNames`),
+§3's class assignment for every struct declaration (`WfStructs`) and for every
+enum declaration (`WfEnums`). This is the premise every theorem that reads a
+recorded class through `Ty.mult` carries, and it is what `checkDecls`
+(`Checker.lean`) decides.
 
 ```lean
 inductive RueCore.WfDecls (D : Decls) : Prop
@@ -7949,44 +8263,28 @@ Constructors:
 **`WfDecls.mk`**
 
 ```lean
-RueCore.WfDecls.mk {D : Decls} (structs : WfStructs D) (enums : WfEnums D) :
-  WfDecls D
+RueCore.WfDecls.mk {D : Decls} (names : WfNames D) (structs : WfStructs D)
+  (enums : WfEnums D) : WfDecls D
 ```
 
-### `checkEnums`
+### `checkDecls`
 
 *def* · module `RueCore.Checker`
 
-§3's class assignment for a whole enum environment, as an algorithm.
-`WfEnums` is what it decides, and that is the premise `Ty.mult`'s lookup needs to
-be `6.3:19`'s join at an enum type.
+A whole declaration environment as an algorithm: §3's equation for every
+struct (`checkStructs`), `6.3:19`'s for every enum (`checkEnums`), and
+`3.0:5`'s acyclicity once, jointly (`checkNoCycle`). `WfDecls` is what it
+decides.
 
 ```lean
-def RueCore.checkEnums (D : Decls) : Bool
+def RueCore.checkDecls (D : Decls) : Bool
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (D : Decls), checkEnums D = checkEnumsFrom D 0 D.enums
-```
-
-### `checkStructs`
-
-*def* · module `RueCore.Checker`
-
-§3's class assignment for a whole struct environment, as an algorithm.
-`WfStructs` is what it decides, and that is the premise `Ty.mult`'s lookup
-needs to be §3's join.
-
-```lean
-def RueCore.checkStructs (D : Decls) : Bool
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (D : Decls), checkStructs D = checkStructsFrom D 0 D.structs
+∀ (D : Decls),
+  checkDecls D = (checkStructs D && checkEnums D && checkNoCycle D)
 ```
 
 ### `runAllScopeDrops`
@@ -8604,8 +8902,9 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Checker`
 
-A whole program as an algorithm: (Fn) §5.8 for every function, plus the
-entry point's empty parameter list (§6.12's top-level result is `main()`).
+A whole program as an algorithm: §3 and `3.0:5` for the declarations, (Fn)
+§5.8 for every function, plus the entry point's empty parameter list (§6.12's
+top-level result is `main()`).
 
 ```lean
 def RueCore.checkProgram (P : Program) : Bool
@@ -8616,8 +8915,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (P : Program),
   checkProgram P =
-    (checkStructs P.decls && checkEnums P.decls &&
-        P.fns.all (checkFn P) &&
+    (checkDecls P.decls && P.fns.all (checkFn P) &&
       match P.fns[0]? with
       | some fd => fd.params.isEmpty
       | none => false)
@@ -9106,11 +9404,11 @@ def RueCore.WfFn (P : Program) (fd : FnDef) : Prop :=
 
 *inductive* · module `RueCore.Statics`
 
-A well-formed program: §3's class assignment holds of every struct
-declaration and (Fn) §5.8 of every function. Recursion is ordinary — a body
-may call any function of the program, itself included, since (Call) reads only
-the callee's signature (§5.8, "the core is fully monomorphic") — while struct
-declarations are *not* recursive (`StructDecl.Wf.fieldsEarlier`).
+A well-formed program: §3's class assignment holds of every declaration and
+(Fn) §5.8 of every function. Recursion is ordinary — a body may call any
+function of the program, itself included, since (Call) reads only the callee's
+signature (§5.8, "the core is fully monomorphic") — while *declarations* are
+not recursive at all (`3.0:5`, `WfNames`).
 
 ```lean
 inductive RueCore.WfProgram (P : Program) : Prop
