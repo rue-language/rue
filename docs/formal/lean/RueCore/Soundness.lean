@@ -2918,8 +2918,9 @@ calculus, the second is the calculus doing what it says.
   *sibling* of a pending argument reaches the identical state by the second
   route as well as the first.
 
-Every *other* edge — a `let`'s scope exit, a frame's normal pop, and a
-`return`'s unwind — is covered. -/
+Every *other* edge — a `let`'s scope exit, a `match` arm's `endscope` over its
+payload locals (`Matches.unwindPrefix`), a frame's normal pop, and a `return`'s
+unwind — is covered. -/
 theorem no_violation (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) (w : Violation) :
     run M.toFloatOps P fuel ≠ .stuck w := by
   obtain ⟨_, _, h₁ | ⟨k, trk, h₂⟩ | ⟨H, v, tr, h₃, _⟩⟩ := h.run_safe M fuel

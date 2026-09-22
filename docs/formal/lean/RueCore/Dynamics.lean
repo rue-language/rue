@@ -490,7 +490,9 @@ payload has no storage, and a discriminant-only active variant drops nothing
 because its payload list is empty (probe e1b). An enum runs no destructor of its
 own — §3 gives it none to declare (E0417) — so, unlike the struct case, there is
 no event before the payload's and no declaration to look up, which is why this
-arm cannot refuse. A payload already moved out by a `match` binding left the enum
+arm cannot refuse and why the value's enum **index** is not read: there is
+nothing to look it up for. Under `Typed` it is pinned anyway
+(`HasTy.enum_inv`). A payload already moved out by a `match` binding left the enum
 place `⊘` and is skipped by the `⊘` case above, never dropped twice. -/
 def dropContents (D : Decls) : Contents → Except Violation (List Event)
   | .hole => .ok []
@@ -933,7 +935,12 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
       -- place, so a non-`Copy` enum's cell became `⊘` by §6.3 and a `Copy` one
       -- was read — then read the tag, which selects the one covering arm
       -- (exhaustiveness, §5.5, makes `arms[k]?` succeed for a well-typed value:
-      -- `exhaustive_arm_exists`, `Soundness.lean`).
+      -- `exhaustive_arm_exists`, `Soundness.lean`). The value's enum **index**
+      -- is dropped, as it is in §6.11's drop case and for the same reason:
+      -- nothing here looks a declaration up, the arms come from the `match`
+      -- form, and under `Typed` the index is the scrutinee's own
+      -- (`HasTy.enum_inv`), so reading it could only re-derive what the
+      -- judgment already pins.
       (eval M fuel P H φ scrut).andThen fun H₀ v =>
         match v with
         | .enum _ k vs =>

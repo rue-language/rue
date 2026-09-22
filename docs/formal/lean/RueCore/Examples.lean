@@ -1058,6 +1058,19 @@ example : checkProgram (prog tI64 linearFieldStranded) = false := by rfl
 (`3.8:50`; the compiler reports E0443). -/
 example : checkProgram (prog tI64 joinLinearFieldOneArm) = false := by rfl
 
+/-! ### The enum witnesses, and what a refusal witness claims
+
+Each `checkProgram … = false` below is a program the **judgment** cannot derive
+either, not merely one `check` is incomplete on — each was checked by hand
+against `Typed`, and each is a shape where the two coincide, with no diverging
+arm and no type choice for `check` to get wrong. The distinction is real and
+has a name: an arm that drops a linear binding and returns, beside arms that
+leave it, is `checkProgram = false` and *is* `Typed`-derivable, because
+`Typed.ret` may pick the outgoing context the join needs and `Ctx.join Γ Γ` is
+`Γ` (`Checker.lean`'s state-cost paragraph — the Rue compiler accepts that
+program and prints `1 2`). No witness here has that shape.
+-/
+
 /-- §3's class assignment holds of the enum declarations too (`6.3:19`), so
 `Ty.mult`'s lookup is the payload join at an enum type (`checkEnums_sound`). -/
 example : WfEnums enumDecls := checkEnums_sound (by rfl)
@@ -1108,6 +1121,13 @@ variant, so the obligation is the type's and the value's own emptiness does not
 discharge it (`6.3:19`; the compiler reports E0406 — probe e11). -/
 example : checkProgram (enumProg tI64
     (letIn false (mkEnum eLinearIdx 1 []) (lit 7))) = false := by rfl
+
+/-- The same enum constructed as the variant that *does* carry the linear
+payload, never matched and left to scope exit: §5.6's obligation on the binding
+is unmet whichever variant is in hand (`3.8:32`; the compiler reports E0406 on
+the binding — probe e3c). -/
+example : checkProgram (enumProg tI64
+    (letIn false (mkEnum eLinearIdx 0 [resLD (lit 1)]) (lit 7))) = false := by rfl
 
 /-- The fragment's own restriction: a path whose proper prefix is a struct
 declared `linear` selects §4.2's `Declared(d, π)` plan, whose rule
