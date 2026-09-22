@@ -735,10 +735,14 @@ destructure or an ordinary untrackable dynamic read. §5.3's `(@Drop)` and
 `(@Drop-Copy)` are read the same way: `@drop(p)` leaves `p` `MovedOut`, so
 where elaboration records `Declared(d,π)` for `p` the intrinsic consumes `d`
 and destroys its droppable residue exactly as a use does, rather than marking
-the projected leaf alone. Verified against the compiler: after
+the projected leaf alone. It then runs the **selected leaf's** own drop glue
+(§6.11) — the one step a use does not take, because a use hands that leaf to
+its context instead — so the residue's drops precede the leaf's. Verified
+against the compiler: after
 `@drop(d.f)` on a `d` of declared-`linear` type — for a `Copy` field `f` as
 much as for a droppable one — a later use of `d` is E0205, so the whole of `d`
-was consumed.
+was consumed; and `@drop(x.b)` on `linear struct L { p: S1, b: S2 }` runs
+`p`'s destructor before `b`'s.
 The rule is intentionally distinct from infectious linearity: a struct that is
 linear only because a field carries a linear value follows ordinary partial
 move and residual checking.
