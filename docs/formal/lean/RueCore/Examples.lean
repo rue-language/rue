@@ -1335,6 +1335,16 @@ def destructureLinearResidue : Expr :=
   letIn false (mkStruct sDestrLinRes [lit 1, resL (lit 2)])
     (letIn false (use (.proj (.var 0) 0)) (use (.var 0)))
 
+/-- **A linear residue one plain-struct step below the selected field** (probe
+d22): selecting `x.x0.x0` retains `x.x0.x1`, which is declared `linear`, so
+`linear-residue(S, π_s)` only sees it by recursing through the nested step
+(`3.8:60`, "checked recursively through nested fields"; the compiler reports
+E0474). -/
+def destructureNestedLinearResidue : Expr :=
+  letIn false (mkStruct sDestrNestLin
+      [mkStruct sDestrNestLinM [lit 5, resL (lit 2)], resA (lit 3)])
+    (letIn false (use (.proj (.proj (.var 0) 0) 0)) (use (.var 0)))
+
 /-- **A destructure out of a destructor-bearing value** (probe d7): `3.9:34`
 forbids it at every enclosing value, `d` included, because the destructor would
 observe a hole — here it would not run at all. The compiler reports E0456. No
@@ -1731,10 +1741,7 @@ example : checkProgram (destrProg tI64 destructureLinearResidue) = false := by r
 `x.x0.x0` retains `x.x0.x1`, which is declared `linear`, so the residue test has
 to recurse to see it (`3.8:60`, "checked recursively through nested fields" —
 probe d22). -/
-example : checkProgram (destrProg tI64
-    (letIn false (mkStruct sDestrNestLin
-        [mkStruct sDestrNestLinM [lit 5, resL (lit 2)], resA (lit 3)])
-      (letIn false (use (.proj (.proj (.var 0) 0) 0)) (use (.var 0))))) = false := by rfl
+example : checkProgram (destrProg tI64 destructureNestedLinearResidue) = false := by rfl
 
 /-- `3.9:34` at the consumed place itself (E0456, probe d7): the rule's
 "every enclosing value, including `d`" is `noDtorPrefix` read over the whole
