@@ -68,17 +68,19 @@ takes §4.2's `Declared(d, π_s)` plan instead, and
 declared-`linear` place is consumed, §5.1's `linear-residue` gate rejects a
 residue that carries a linear value (`3.8:60`), and §6.3's `split`/`drop*`
 destroys the droppable residue in the traversal's order before the consumed
-place becomes `⊘`. There is **no element move**: an array is owned whole here,
-so `3.8:68`'s constant-index element move, the `MovedOut` element state it
-leaves and `3.8:73`'s path-specific element drop are refused by a premise of
-the fragment's own (`RueCore.Place.noIdx`) rather than by a rule of the
-calculus, which the compiler's acceptance of `let s: S = a[1];` shows, and
-which is also what keeps a destructure whose selected path runs through an
-index step out. Nor is there any step **below** a dynamic index: §2's place
+place becomes `⊘`. An **array element** is such a path: `3.8:68`'s
+constant-index element move, the `MovedOut` element state it leaves and
+`3.8:73`'s path-specific element drop are in, bounded by §4.2's "element moves
+only at the root" (`RueCore.rootIdxOnly`, E0904) on the two rules that move a
+path out and by nothing at all on the declared-linear destructure, which
+`3.8:71` admits at an array anywhere in a place tree. Writing into an array
+that has a moved-out element is refused as `3.8:72`/`7.1:46` refuse it
+(`RueCore.assignArrayOk`, E0480). What is still owed is any step **below** a
+dynamic index: §2's place
 grammar has `p [ e ]`, so `a[i].x0` is a place of the calculus and the compiler
 reads and writes it, but `RueCore.Expr.indexRead` yields the element *value*
 and a dynamic index is not a `RueCore.Place` step, so neither the read nor the
-write has a form here. RUE-2327 lifts both. No equality compare (it borrows its
+write has a form here (RUE-2331). No equality compare (it borrows its
 operands, `4.3:3f`, so `≈`'s float leaf has no instance here), no payload path
 into an enum (§5.6 tracks none, so `Place` has no enum step), no wildcard,
 repeated or guarded `match` pattern and no bool or integer scrutinee (all
@@ -215,9 +217,12 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   `fully-owned(Σ, d)` is asked of the **consumed** place, so the leaf it hands
   on and the residue it destroys are both hole-free
   (`RueCore.splitResidue_ok`).
-  **Owed:** the constant-index element **move** and the `MovedOut` element
-  state it leaves, and any step below a dynamic index — `a[i].x0`, which the
-  compiler reads and writes and which has no form here (RUE-2327).
+  The constant-index element **move** is in, with the `MovedOut` element state
+  it leaves (`RueCore.Examples.arrayElemMove`), so a use of the array as a
+  whole or a read through a moved element is `fully-owned`/(Owned-Base) again
+  (`3.8:70`, `7.1:45`, E0205).
+  **Owed:** any step below a dynamic index — `a[i].x0`, which the
+  compiler reads and writes and which has no form here (RUE-2331).
 
 ## No double-free
 
@@ -355,8 +360,12 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   variant is still must-consume, which is what the compiler reports as
   E0406. A `match` discharges it by binding and consuming the payload, and
   the arm's own §5.6 check is what makes "consuming" mean it (`6.3:17`).
-  **Owed:** RUE-2316; the element move, any step below a dynamic index,
-  and `3.8:70`'s untracked-residue disjunct (RUE-2327).
+  An **array of linear elements** is consumed element-wise (`3.8:71`): each
+  element move discharges that element's share, the §5.5 join refuses where an
+  element is consumed on one path only (E0443), and §5.6's element-wise reading
+  is what reports the ones left over (E0406). **Owed:** RUE-2316; any step
+  below a dynamic index, and `3.8:70`'s untracked-residue disjunct
+  (RUE-2331).
 
 ## Exclusivity / no aliased mutation
 
