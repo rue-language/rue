@@ -604,13 +604,21 @@ def armTypeMismatch (T₁ T₂ : Ty) : String :=
   "the arms have types " ++ Print.tyName T₁ ++ " and " ++ Print.tyName T₂ ++
   "; (If) requires one type T for both (§5.5)"
 
-/-- (If) premise `Σ' = join(Σ1, Σ2)` (§5.5); prose `3.8:50`. `who` names
-the entry the two arms disagree on, when one can be named. -/
-def joinConflict (who : Option String) : String :=
-  "the two arms disagree on a linear-carrying entry" ++
+/-- (If) premise `Σ' = join(Σ1, Σ2)` (§5.5) and (Match) §5.5's n-way join,
+which is that same join folded over the arms (`Ctx.joinAll`); prose `3.8:50`.
+`who` names the entry the arms disagree on, when one can be named; at a
+`match` it names them by arm index, since there is no then- or else-arm and
+there may be more than two. -/
+def joinConflict (atMatch : Bool) (who : Option String) : String :=
+  (if atMatch then "the arms" else "the two arms") ++
+  " disagree on a linear-carrying entry" ++
   (match who with | some w => " — " ++ w | none => "") ++
-  ", so a linear value is consumed on only some paths ((If) premise " ++
-  "`Σ' = join(Σ1, Σ2)`, §5.5; 3.8:50; the compiler reports E0443)"
+  ", so a linear value is consumed on only some paths (" ++
+  (if atMatch then
+     "(Match) premise `Σ' = joinAll(Σ1, …, Σn)`, §5.5 — (If)'s binary join " ++
+     "`Σ' = join(Σ1, Σ2)`, §5.5, folded over the arms"
+   else "(If) premise `Σ' = join(Σ1, Σ2)`, §5.5") ++
+  "; 3.8:50; the compiler reports E0443)"
 
 /-- (Call) §5.8's first premise, `Γ ⊢ g : (T₁,…,Tₘ) → Tr`: the program has
 no function at this index. Elaboration resolves a callee's name before the
@@ -715,29 +723,37 @@ def floatBinopRule (op : BinOp) : String :=
   else if op.isCompare then "(Float-Ord) §5.8" else "(Float-Arith) §5.8"
 
 /-- (helper) The first entry on which the §5.5 join fails, named as the
-source names it, so a join rejection can point at a binding. -/
-def joinConflictEntry (D : Decls) : Ctx → Ctx → Option String
+source names it, so a join rejection can point at a binding. `lhs` and `rhs`
+name the two states being joined: (If)'s then- and else-arm, or, at a `match`,
+the arms the fold has already joined and the arm it failed on. -/
+def joinConflictEntry (D : Decls) (lhs rhs : String) : Ctx → Ctx → Option String
   | a :: as, b :: bs =>
       if (a.join D b).isNone then
         some (Print.binderName as.length ++ ": " ++ Print.tyName a.ty ++ " is " ++
-          ownStateName a.st ++ " in the then-arm and " ++ ownStateName b.st ++ " in the else-arm")
-      else joinConflictEntry D as bs
+          ownStateName a.st ++ " in " ++ lhs ++ " and " ++ ownStateName b.st ++ " in " ++ rhs)
+      else joinConflictEntry D lhs rhs as bs
   | _, _ => none
 
 /-- (helper) The first arm at which (Match) §5.5's folded join fails, named the
-way `joinConflictEntry` names the two-arm case. -/
-def joinFoldConflict (D : Decls) : Ctx → List Ctx → Option String
-  | _, [] => none
-  | acc, Γ :: Γs =>
+way `joinConflictEntry` names the two-arm case — by **index**, because a
+`match` has n arms and no then- or else-arm. `j` is the index of the arm the
+fold is about to join, so the accumulator is arm `0` alone at `j = 1` and the
+join of arms `0`–`j-1` above it. -/
+def joinFoldConflict (D : Decls) : Nat → Ctx → List Ctx → Option String
+  | _, _, [] => none
+  | j, acc, Γ :: Γs =>
       match Ctx.join D acc Γ with
-      | some acc' => joinFoldConflict D acc' Γs
-      | none => joinConflictEntry D acc Γ
+      | some acc' => joinFoldConflict D (j + 1) acc' Γs
+      | none =>
+          joinConflictEntry D
+            (if j == 1 then "arm 0" else "arms 0–" ++ toString (j - 1))
+            ("arm " ++ toString j) acc Γ
 
 /-- (helper) The same over the whole arm list, which is the fold `Ctx.joinAll`
 takes (helper). -/
 def joinAllConflict (D : Decls) : List Ctx → Option String
   | [] => none
-  | Γ :: Γs => joinFoldConflict D Γ Γs
+  | Γ :: Γs => joinFoldConflict D 1 Γ Γs
 
 /-! ## Derivations -/
 
@@ -990,7 +1006,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                           (ds :: explainArms P R Γ₀ arms ed.variants)
                     | none =>
                         rejected "(Match) §5.5 join" Γ (.«match» scrut arms)
-                          (Premise.joinConflict (joinAllConflict P.decls Γs))
+                          (Premise.joinConflict true (joinAllConflict P.decls Γs))
                           (ds :: explainArms P R Γ₀ arms ed.variants))))
            else
              rejected "(Match) §5.5" Γ (.«match» scrut arms)
@@ -1219,7 +1235,9 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                | some Γ' => accepted "(If) §5.5 join" Γ (.ite c e₁ e₂) T₁ Γ' [dc, d₁, d₂]
                | none =>
                    rejected "(If) §5.5 join" Γ (.ite c e₁ e₂)
-                     (Premise.joinConflict (joinConflictEntry P.decls Γ₁ Γ₂)) [dc, d₁, d₂]
+                     (Premise.joinConflict false
+                       (joinConflictEntry P.decls "the then-arm" "the else-arm" Γ₁ Γ₂))
+                       [dc, d₁, d₂]
              else
                rejected "(If) §5.5 join" Γ (.ite c e₁ e₂)
                  (Premise.armTypeMismatch T₁ T₂) [dc, d₁, d₂]
