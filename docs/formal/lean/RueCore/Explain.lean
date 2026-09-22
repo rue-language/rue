@@ -1970,7 +1970,7 @@ def traceEval (M : FloatOps) (P : Program) :
                  | .ok sub =>
                    match sub with
                    | .array _ cs =>
-                       if 0 ≤ i ∧ i < (cs.length : Int) then
+                       if inBoundsIdx i cs.length then
                          (match cs[i.toNat]? with
                           | none =>
                               refused t.steps d Θ R (.indexRead pl e) rule H .typeConfusion
@@ -2015,7 +2015,7 @@ def traceEval (M : FloatOps) (P : Program) :
                     | .ok sub =>
                       match sub with
                       | .array T' cs =>
-                          if 0 ≤ i ∧ i < (cs.length : Int) then
+                          if inBoundsIdx i cs.length then
                             (match cs[i.toNat]? with
                              | none =>
                                  refused (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂)

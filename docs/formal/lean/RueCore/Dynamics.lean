@@ -446,6 +446,20 @@ def Contents.readAt : Contents → List Nat → Except Violation Contents
        | none => .error .typeConfusion)
   | _, _ :: _ => .error .typeConfusion
 
+/-- §6.5's bounds check on a **dynamic** index: `0 ≤ i < n`, the premise that
+separates (D-Index) from (D-Index-Trap). A negative index is out of range
+exactly as an oversized one is (`7.1:11`, `4.11:9`), which is why the test is
+stated over `Int` rather than over `Nat`, and it is checked "at the moment the
+path is navigated" (`7.1:10`). It is a named function rather than an inline
+condition because the machine and its instrumented mirror (`Explain.lean`)
+must test the same thing, and because §7's proof reads it twice. -/
+def inBoundsIdx (i : Int) (n : Nat) : Bool := decide (0 ≤ i) && decide (i < (n : Int))
+
+/-- The bounds test, read as §6.5 states it (helper). -/
+theorem inBoundsIdx_eq_true {i : Int} {n : Nat} :
+    inBoundsIdx i n = true ↔ (0 ≤ i ∧ i < (n : Int)) := by
+  simp [inBoundsIdx]
+
 /-- Evaluation results: a value with the final store and trace (§6.12's normal
 result); a value handed back by an unwinding `return`, whose frame's scopes
 have already been dropped (§6.9's (D-Return)) and which every enclosing form
@@ -1067,7 +1081,7 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
                | .ok sub =>
                  match sub with
                  | .array _ cs =>
-                     if 0 ≤ i ∧ i < (cs.length : Int) then
+                     if inBoundsIdx i cs.length then
                        (match cs[i.toNat]? with
                         | none => .stuck .typeConfusion
                         | some ec =>
@@ -1101,7 +1115,7 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
                  | .ok sub =>
                    match sub with
                    | .array T' cs =>
-                       if 0 ≤ i ∧ i < (cs.length : Int) then
+                       if inBoundsIdx i cs.length then
                          (match cs[i.toNat]? with
                           | none => .stuck .typeConfusion
                           | some old =>
