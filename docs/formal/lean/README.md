@@ -113,10 +113,10 @@ One case, abbreviated:
 observable event the run executes — a user destructor or a `@dbg` — in trace
 order, then the lines `main` shows for the program's value) and exit 0;
 `panic` with the trap kind and the stdout lines the run produced **before**
-the trap (`overflow`, `divZero`, `remZero`, `castOverflow` or `user`; the
-compiler's runtime reports these as `error: integer overflow`,
-`error: division by zero`, `error: integer cast overflow` and
-`panic: <message>`, each with exit status 101, and the value never prints);
+the trap (`overflow`, `divZero`, `remZero`, `castOverflow`, `bounds` or `user`;
+the compiler's runtime reports these as `error: integer overflow`,
+`error: division by zero`, `error: integer cast overflow`,
+`error: index out of bounds` and `panic: <message>`, each with exit status 101, and the value never prints);
 or, for a rejected program, `stuck` with the refusal the machine would
 reach, which the bridge cannot observe because the compiler rejects the
 program first (the compiler's diagnostics for the seed cases: E0406 linear

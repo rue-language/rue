@@ -277,6 +277,7 @@ fn panic_trap_kind(name: &str) -> Option<TrapKind> {
         "overflow" => Some(TrapKind::ArithmeticOverflow),
         "divZero" | "remZero" => Some(TrapKind::DivisionByZero),
         "castOverflow" => Some(TrapKind::IntegerCastOverflow),
+        "bounds" => Some(TrapKind::IndexOutOfBounds),
         "user" => Some(TrapKind::UserPanic),
         _ => None,
     }
@@ -1689,11 +1690,12 @@ mod tests {
             ("divZero", TrapKind::DivisionByZero),
             ("remZero", TrapKind::DivisionByZero),
             ("castOverflow", TrapKind::IntegerCastOverflow),
+            ("bounds", TrapKind::IndexOutOfBounds),
             ("user", TrapKind::UserPanic),
         ] {
             assert_eq!(panic_trap_kind(name), Some(want), "{name}");
         }
-        assert_eq!(panic_trap_kind("bounds"), None);
+        assert_eq!(panic_trap_kind("stack"), None);
     }
 
     #[test]
