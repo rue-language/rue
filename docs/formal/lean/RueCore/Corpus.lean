@@ -462,6 +462,46 @@ def cases : List Case := [
     rules := ["(Assign) §5.2", "3.8:77", "3.8:60"],
     prog := Examples.nestCarryProg Examples.tI64 Examples.overwriteFieldPastPartialLinear
     },
+  { name := "enum_match_affine",
+    description := "An affine payload with a destructor, matched and bound: the binding drops at the arm's end (6.3:17's timing), and the enum the match moved out drops nothing at scope exit.",
+    rules := ["(Match) §5.5", "(D-Match) §6.6", "(D-EndScope) §6.7", "6.3:17"],
+    prog := Examples.enumProg Examples.tI64 Examples.enumMatchAffine
+    },
+  { name := "enum_drop_unmatched",
+    description := "The same enum never matched, dropped at scope exit beside a discriminant-only value: §6.11 reads the tag and drops the active variant's payload only, and nothing at all for the tag-only one.",
+    rules := ["§5.6 scope exit", "§6.11", "6.3:20"],
+    prog := Examples.enumProg Examples.tI64 Examples.enumDropUnmatched
+    },
+  { name := "enum_match_one_arm",
+    description := "A linear-payload enum consumed by a match in one arm of an if only: class(E) is the payload join over every variant, so the Owned side is residual and the §5.5 join rejects it (E0443); the executed path runs.",
+    rules := ["(Match) §5.5", "(If) §5.5 join", "3.8:50", "6.3:19"],
+    prog := Examples.enumProg Examples.tI64 Examples.enumMatchOneArm
+    },
+  { name := "enum_arm_leaks_payload",
+    description := "An arm binds a linear payload and leaves it: §5.6's check at the arm's end is the leak (E0406 on the binding), and the machine refuses with linearLeak.",
+    rules := ["(Match) §5.5", "§5.6 residual-linear leak check", "6.3:17", "3.8:32"],
+    prog := Examples.enumProg Examples.tI64 Examples.enumArmLeaksPayload
+    },
+  { name := "enum_arm_drops_payload",
+    description := "The same arm with the payload discharged by @drop: consuming the payload discharges the enum's own obligation, and the destructor prints before the value.",
+    rules := ["(Match) §5.5", "(@Drop) §5.3", "6.3:19"],
+    prog := Examples.enumProg Examples.tI64 Examples.enumArmDropsPayload
+    },
+  { name := "enum_copy_matched_twice",
+    description := "A discriminant-only enum and a Copy-payload one, each matched twice: the empty and the scalar join are Copy (6.3:19), so the scrutinee is a copy that leaves the binding Owned and the payload binding drops nothing.",
+    rules := ["(Match) §5.5", "(Use-Copy) §5.1", "6.3:19"],
+    prog := Examples.enumProg Examples.tI64 Examples.enumCopyMatchedTwice
+    },
+  { name := "enum_match_projection",
+    description := "The scrutinee is a projection of a struct holding the enum beside an affine sibling: the match takes the partial move of 3.8:22 at that path, and the scope exit drops the fields in declaration order with the moved one skipped.",
+    rules := ["(Match) §5.5", "(Use-Move) §5.1", "3.8:22", "§6.11", "3.9:13"],
+    prog := Examples.enumProg Examples.tI64 Examples.enumMatchProjection
+    },
+  { name := "enum_two_payload_bindings",
+    description := "Two payload bindings, both affine with destructors: at the arm's end they drop newest-first, so the second component goes before the first (3.9:4).",
+    rules := ["(Match) §5.5", "(D-Match) §6.6", "(D-EndScope) §6.7", "3.9:4"],
+    prog := Examples.enumProg Examples.tI64 Examples.enumTwoPayloadBindings
+    },
   { name := "countdown",
     description := "A recursive countdown summing 4+3+2+1+0: every frame pops normally and the value comes back through five call boundaries.",
     rules := ["(Call) §5.8", "(D-Call) §6.9", "(D-Return-Value) §6.9"],

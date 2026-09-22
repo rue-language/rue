@@ -279,8 +279,9 @@ indexes and the order (Match) §5.5's arms are presented in — together with th
 class §3 assigns it. A variant with an empty tuple is §2's discriminant-only
 case (`ai = 0`, `6.3:14`). An enum declares **no attribute** and **no
 destructor**: §3 gives it no `@copy`/`linear` mark, its class is exactly the
-payload join (`6.3:19`), and the compiler rejects `drop fn E(self)` outright
-(E0417), so there is nothing here for §6.11 to run before the payload. -/
+payload join (`6.3:19`), and the compiler rejects `drop fn E(self)` because a destructor names a
+struct type (E0417), so there is nothing here for §6.11 to run before the
+payload. -/
 structure EnumDecl where
   /-- The payload types of each variant, in declaration order; variant `j`'s
   tuple is `variants[j]`, and `[]` is the discriminant-only case (`6.3:14`). -/
