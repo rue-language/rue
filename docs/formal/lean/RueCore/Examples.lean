@@ -762,6 +762,19 @@ def arrayLinearElemOnePath : Expr :=
             (seq (dbg (lit 30)) (lit 0)))
       (letIn false (use (.idx (.var 0) 1)) (seq (drop (.var 0)) (lit 7))))
 
+/-- **The two mechanisms at once** (probe `b4`): an array of declared-`linear`
+elements, with `a[0].x0` selected. §4.2's `dl` puts the plan at
+`([0], [x0])` — the **consumed** place `d` is the array *element*, not the
+binding — so the destructure's own Σ effect is an element-wise partial move,
+and the residue traversal runs inside the element (`S2` has one field, so there
+is none). The sibling element is then consumed by an ordinary element move, and
+`3.8:71`'s "every element consumed" is satisfied. -/
+def arrayDeclaredElemDestructure : Expr :=
+  letIn false (mkArray (.struct sLinear) [resL (lit 1), resL (lit 2)])
+    (seq (dbg (lit 10))
+      (seq (dbg (use (.proj (.idx (.var 0) 0) 0)))
+        (letIn false (use (.idx (.var 0) 1)) (seq (drop (.var 0)) (lit 7)))))
+
 /-- **Reinitializing a moved element is refused** (probe `a5`, E0480): after
 `a[0]` is moved out and dropped, `a[0] = S1 { 9 }` writes into an array with a
 hole in it. `3.8:72`/`7.1:46` forbid that "to an element, or through an
@@ -1000,6 +1013,16 @@ example : run demoOps (prog tI64 arrayElemMove) demoFuel
         [.drop 1 (cA 2), .dtor sAffine (cA 2), .dbg (v64 20),
          .drop 0 (.array (.struct sAffine) [cA 1, .hole, cA 3]),
          .dtor sAffine (cA 1), .dtor sAffine (cA 3)] := by rfl
+
+/-- **A destructure whose consumed place is an array element** (probe `b4`):
+the plan is `([0], [x0])`, the element becomes `MovedOut`, and the sibling is
+still there to move out ordinarily. -/
+example : checkProgram (prog tI64 arrayDeclaredElemDestructure) = true := by rfl
+example : run demoOps (prog tI64 arrayDeclaredElemDestructure) demoFuel
+    = .ok [.dead, .dead] (v64 7)
+        [.dbg (v64 10), .dbg (v64 1),
+         .drop 1 (.struct sLinear [c64 2]),
+         .drop 0 (.array (.struct sLinear) [.hole, .hole])] := by rfl
 
 /-- **The element move in one arm** (probe `a4`): the join leaves the element
 `MovedOut`, and the scope exit drops only the sibling. -/
