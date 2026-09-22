@@ -715,6 +715,53 @@ def arrayElemMove : Expr :=
     (letIn false (use (.idx (.var 0) 1))
       (seq (drop (.var 0)) (seq (dbg (lit 20)) (lit 7))))
 
+/-- **The element move in one arm of an `if`** (probe `a4`/`a4b`): the §5.5
+join meets `MovedOut` at the element against `Owned`, and `ownedJoinOk`'s array
+clause admits it because `S1` is not `Linear` (`3.8:50`). The outgoing state has
+the element `MovedOut`, so the scope exit drops only `a[1]` — which is what the
+compiler prints on the taken path, and `3.8:73`'s "elements moved out on only
+some paths are dropped exactly when the executed path did not move them" is
+what the machine does on the other (probe `a4b`). -/
+def arrayElemMoveOneArm : Expr :=
+  letIn false (mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)])
+    (seq (ite (boolLit true)
+            (letIn false (use (.idx (.var 0) 0)) (seq (drop (.var 0)) (lit 0)))
+            (seq (dbg (lit 30)) (lit 0)))
+      (seq (dbg (lit 20)) (lit 7)))
+
+/-- **`@drop` at a constant index** (probe `a8`): `3.8:73`'s path-specific
+element drop. (@Drop) §5.3 runs §6.11 on exactly `a[1]`, writes `⊘` back there,
+and the scope exit then walks `1`, skip, `3`. -/
+def arrayElemDrop : Expr :=
+  letIn false (mkArray (.struct sAffine) [resA (lit 1), resA (lit 2), resA (lit 3)])
+    (seq (dbg (lit 10))
+      (seq (drop (.idx (.var 0) 1))
+        (seq (dbg (lit 20)) (lit 7))))
+
+/-- **A move at a path *below* a constant index** (probe `a10`): `a[0].x0` is
+`3.8:68`'s "`x[c].f…` moves are legal" — the index step is the first step off
+the root and the field step below it is an ordinary partial move. The element
+keeps its `Copy` sibling `x1`, and the scope exit drops `a[0]`'s remaining
+field record and `a[1]` whole. -/
+def arrayElemFieldMove : Expr :=
+  letIn false (mkArray (.struct sAffineInt)
+      [mkStruct sAffineInt [resA (lit 1), lit 5], mkStruct sAffineInt [resA (lit 2), lit 6]])
+    (seq (dbg (lit 10))
+      (letIn false (use (.proj (.idx (.var 0) 0) 0))
+        (seq (drop (.var 0)) (seq (dbg (lit 20)) (lit 7)))))
+
+/-- **A linear element consumed on one path only** (probe `a7`, E0443): the
+§5.5 join meets `MovedOut` against `Owned` at an element whose type is declared
+`linear`, and `ownedJoinOk`'s array clause refuses (`3.8:50`) — `3.8:71` wants
+every element consumed "on every non-diverging path". The compiler names the
+element: "element(s) [0] of 'a' are not consumed on every path". -/
+def arrayLinearElemOnePath : Expr :=
+  letIn false (mkArray (.struct sLinear) [resL (lit 1), resL (lit 2)])
+    (seq (ite (boolLit true)
+            (letIn false (use (.idx (.var 0) 0)) (seq (drop (.var 0)) (lit 0)))
+            (seq (dbg (lit 30)) (lit 0)))
+      (letIn false (use (.idx (.var 0) 1)) (seq (drop (.var 0)) (lit 7))))
+
 /-- **Reinitializing a moved element is refused** (probe `a5`, E0480): after
 `a[0]` is moved out and dropped, `a[0] = S1 { 9 }` writes into an array with a
 hole in it. `3.8:72`/`7.1:46` forbid that "to an element, or through an
@@ -741,6 +788,80 @@ def arrayWholeReinit : Expr :=
       (seq (drop (.var 0))
         (seq (assign (.var 1) (mkArray (.struct sAffine) [resA (lit 8), resA (lit 9)]))
           (seq (dbg (lit 20)) (lit 7)))))
+
+/-- `S11'`: `struct { x0: [S1; 2] }`, an array of **affine** elements held as a
+struct field. Held out of `structEnv` alongside `dArrHolder`, which holds a
+`Copy` element array instead; this one is what makes an element move through a
+projection expressible at all. -/
+def dArrHolderA : StructDecl :=
+  { attr := .none, fields := [.array (.struct sAffine) 2], dtor := false, cls := .affine }
+
+/-- `S11'`'s index in `structEnv ++ [dArrHolderA]`. -/
+def sArrHolderA : Nat := 11
+
+/-- A program over the fixture declarations plus `S11'`. -/
+def arrHolderAProg (T : Ty) (e : Expr) : Program :=
+  Program.entry (Decls.ofStructs (structEnv ++ [dArrHolderA])) T e
+
+/-- Probe `a6`/`a6b`/`e4`, refused: an element move through a field, `h.a[0]`.
+`3.8:68` tracks element moves "only for indexing applied directly to an array
+variable", so an array reached through a projection cannot be moved out of;
+`rootIdxOnly` is that premise and the compiler reports E0904. The refusal does
+not depend on the holder declaring a destructor (probe `a6b` has none). -/
+def arrayElemMoveThroughField : Expr :=
+  letIn false (mkStruct sArrHolderA [mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)]])
+    (letIn false (use (.idx (.proj (.var 0) 0) 0))
+      (seq (drop (.var 0)) (lit 7)))
+
+/-- Probe `a9`/`e1`/`e2`, refused: an element move at a **nested** index,
+`a[1][0]`. The second index step is taken at the array `a[1]` rather than at the
+root binding, which is the same clause of `3.8:68` (E0904). -/
+def arrayElemMoveNestedIndex : Expr :=
+  letIn false (mkArray (.array (.struct sAffine) 2)
+      [mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)],
+       mkArray (.struct sAffine) [resA (lit 3), resA (lit 4)]])
+    (letIn false (use (.idx (.idx (.var 0) 1) 0))
+      (seq (drop (.var 0)) (lit 7)))
+
+/-- Probe `a3`, refused: the whole array used after an element move. `3.8:70`
+and `7.1:45` forbid using the array as a whole value while an element is moved
+out, which is (Use-Move)'s `fully-owned(Σ, p)` (`3.8:26`, E0205). -/
+def arrayWholeAfterElemMove : Expr :=
+  letIn false (mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)])
+    (letIn false (use (.idx (.var 0) 0))
+      (seq (drop (.var 0))
+        (letIn false (use (.var 1)) (seq (drop (.var 0)) (lit 7)))))
+
+/-- Probe `a11`, refused: a `Copy` field read *through* a moved-out element,
+`a[0].x0`. `3.8:70`'s "including reading a field through it" is `OwnSt.get`
+answering `none` under a `MovedOut` prefix — (Owned-Base) §5.1, E0205. -/
+def arrayMovedElemRead : Expr :=
+  letIn false (mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)])
+    (letIn false (use (.idx (.var 0) 0))
+      (seq (drop (.var 0))
+        (seq (dbg (use (.proj (.idx (.var 1) 0) 0))) (lit 7))))
+
+/-- Probe `a7c`, refused: a linear element left in the array at scope exit
+(E0406). §5.6's residual reading walks the array node element by element, and
+`3.8:71` is explicit that consuming only some elements is an error. -/
+def arrayLinearElemStranded : Expr :=
+  letIn false (mkArray (.struct sLinear) [resL (lit 1), resL (lit 2)])
+    (letIn false (use (.idx (.var 0) 0)) (seq (drop (.var 0)) (lit 7)))
+
+/-- Probe `a12`/`c4`, refused: a **dynamic**-index write after an element move.
+`3.8:70`/`7.1:45` forbid indexing an array with a non-constant index while an
+element is moved out — "the compiler cannot know at compile time which element
+was moved" — which is (Assign) §5.2's `fully-owned(Σ, p)` at the array on the
+post-RHS state. The compiler reports E0480 here and E0205 at a dynamic
+*read*. -/
+def arrayDynWriteAfterElemMove : Program :=
+  { decls := Decls.ofStructs structEnv,
+    fns := [{ params := [], ret := tI64, body := call 1 [lit 0] },
+            { params := [⟨tI64, false⟩], ret := tI64,
+              body := letIn true (mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)])
+                (letIn false (use (.idx (.var 0) 0))
+                  (seq (drop (.var 0))
+                    (seq (indexWrite (.var 1) (use (.var 2)) (resA (lit 9))) (lit 7)))) }] }
 
 /-- Probe `a2b`: the repeat form at an affine element type. `7.1:38`
 restricts `[e; n]` to a `Copy` element, because the form materializes `n`
@@ -880,6 +1001,39 @@ example : run demoOps (prog tI64 arrayElemMove) demoFuel
          .drop 0 (.array (.struct sAffine) [cA 1, .hole, cA 3]),
          .dtor sAffine (cA 1), .dtor sAffine (cA 3)] := by rfl
 
+/-- **The element move in one arm** (probe `a4`): the join leaves the element
+`MovedOut`, and the scope exit drops only the sibling. -/
+example : checkProgram (prog tI64 arrayElemMoveOneArm) = true := by rfl
+example : run demoOps (prog tI64 arrayElemMoveOneArm) demoFuel
+    = .ok [.dead, .dead] (v64 7)
+        [.drop 1 (cA 1), .dtor sAffine (cA 1), .dbg (v64 20),
+         .drop 0 (.array (.struct sAffine) [.hole, cA 2]),
+         .dtor sAffine (cA 2)] := by rfl
+
+/-- **`@drop` at a constant index** (probe `a8`): the element's destructor runs
+where the `@drop` is, and the scope exit skips it. -/
+example : checkProgram (prog tI64 arrayElemDrop) = true := by rfl
+example : run demoOps (prog tI64 arrayElemDrop) demoFuel
+    = .ok [.dead] (v64 7)
+        [.dbg (v64 10), .drop 0 (cA 2), .dtor sAffine (cA 2), .dbg (v64 20),
+         .drop 0 (.array (.struct sAffine) [cA 1, .hole, cA 3]),
+         .dtor sAffine (cA 1), .dtor sAffine (cA 3)] := by rfl
+
+/-- **A move below a constant index** (probe `a10`): the hole is at `a[0].x0`,
+so the scope exit's walk reaches `a[0]`'s `Copy` sibling, skips the hole, and
+drops `a[1]` whole. -/
+example : checkProgram (prog tI64 arrayElemFieldMove) = true := by rfl
+example : run demoOps (prog tI64 arrayElemFieldMove) demoFuel
+    = .ok [.dead, .dead] (v64 7)
+        [.dbg (v64 10), .drop 1 (cA 1), .dtor sAffine (cA 1), .dbg (v64 20),
+         .drop 0 (.array (.struct sAffineInt)
+           [.struct sAffineInt [.hole, c64 5], .struct sAffineInt [cA 2, c64 6]]),
+         .dtor sAffine (cA 2)] := by rfl
+
+/-- **A linear element consumed on one path only** (probe `a7`, E0443): the
+§5.5 join refuses at the element, which is `ownedJoinOk`'s array clause. -/
+example : checkProgram (prog tI64 arrayLinearElemOnePath) = false := by rfl
+
 /-- **The array side condition of (Assign)** (`3.8:72`, E0480): the element
 reinitialization is refused (probe `a5`) and the whole-array one is accepted
 (probe `b8`), with §6.8's overwrite-drop skipping the `⊘` in the old
@@ -893,6 +1047,19 @@ example : run demoOps (prog tI64 arrayWholeReinit) demoFuel
          .dbg (v64 20),
          .drop 0 (.array (.struct sAffine) [cA 8, cA 9]),
          .dtor sAffine (cA 8), .dtor sAffine (cA 9)] := by rfl
+
+/-- **The six refusals the element move brings with it**, each one the
+compiler's too: `3.8:68`'s root-index rule through a field (probe `a6`) and at
+a nested index (probe `a9`), both E0904; `3.8:70`'s whole-array use (probe
+`a3`) and field read through a moved element (probe `a11`), both E0205;
+`3.8:71`'s linear element left at scope exit (probe `a7c`, E0406); and
+`3.8:70`'s dynamic index over a partially moved array (probe `c4`, E0480). -/
+example : checkProgram (arrHolderAProg tI64 arrayElemMoveThroughField) = false := by rfl
+example : checkProgram (prog tI64 arrayElemMoveNestedIndex) = false := by rfl
+example : checkProgram (prog tI64 arrayWholeAfterElemMove) = false := by rfl
+example : checkProgram (prog tI64 arrayMovedElemRead) = false := by rfl
+example : checkProgram (prog tI64 arrayLinearElemStranded) = false := by rfl
+example : checkProgram arrayDynWriteAfterElemMove = false := by rfl
 
 /-- The five refusals the compiler makes too — `7.1:38`'s `Copy` repeat
 element (E0905), §5.1's missing rule for a non-`Copy` dynamic index (E0904),
