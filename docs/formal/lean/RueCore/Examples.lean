@@ -1138,8 +1138,9 @@ def enumTwoPayloadBindings : Expr :=
 
 §4.2's `Declared(d, π_s)` plan and the rule that discharges it,
 (Use-Declared-Linear-Destructure) §5.1, with §6.3's `split`/`destructure` under
-them. The eight accepted programs below are the probe table's d1, d2, d4, d5f,
-d6, d6c, d13 and d14; the three rejections are d3, d7 and d12; and
+them. The nine accepted programs below are the probe table's d1, d2, d4, d5f,
+d6, d6c, d9, d13 and d14; the three rejections are d3, d7 and d12; d9b is the
+fragment's own refusal, a selected path through an index step (RUE-2327); and
 `destructureAncestorDropped` is d5b, **seeded red** — the model accepts it and
 the compiler does not (RUE-2335). Every one was run against the compiler before
 it was committed, and the probe it reproduces is named in its doc-comment.
@@ -1213,12 +1214,24 @@ nested fields" — probe d22). -/
 def dDestrNestLin : StructDecl :=
   { attr := .linear, fields := [.struct 19, .struct 1], dtor := false, cls := .linear }
 
+/-- `S21`: `linear struct { arr: [S1; 2], v: i64 }`. Selecting `v` retains
+`arr`, an **array** of affine elements: a retained place like any other, which
+§6.11's array rule destroys elements-ascending at the access (probe d9). -/
+def dDestrArr : StructDecl :=
+  { attr := .linear, fields := [.array (.struct 1) 2, tI64], dtor := false, cls := .linear }
+
+/-- `S22`: `linear struct { arr: [S1; 2], v: S1 }` — the declared-`linear`
+struct probe d9b selects *through*, at `x.arr[0]`, which this part refuses
+(`destructureThroughIndex`). -/
+def dDestrArrIdx : StructDecl :=
+  { attr := .linear, fields := [.array (.struct 1) 2, .struct 1], dtor := false, cls := .linear }
+
 /-- The declaration environment the destructure cases run in: the fixture
-structs, then the ten above. -/
+structs, then the twelve above. -/
 def destrDecls : Decls :=
   { structs := structEnv ++
       [dDestrPair, dDestrHolder, dDestrOuter, dDestrTwoAff, dDestrThree, dDestrNested,
-       dDestrLinRes, dDestrDtor, dDestrNestLinM, dDestrNestLin],
+       dDestrLinRes, dDestrDtor, dDestrNestLinM, dDestrNestLin, dDestrArr, dDestrArrIdx],
     enums := [] }
 
 /-- `S11`'s index. -/
@@ -1241,6 +1254,10 @@ def sDestrDtor : Nat := 18
 def sDestrNestLinM : Nat := 19
 /-- `S20`'s index. -/
 def sDestrNestLin : Nat := 20
+/-- `S21`'s index. -/
+def sDestrArr : Nat := 21
+/-- `S22`'s index. -/
+def sDestrArrIdx : Nat := 22
 
 /-- A program over the destructure declarations, entered at a no-parameter
 `main` returning `T`. -/
@@ -1363,6 +1380,34 @@ def destructureOneArm : Expr :=
   letIn false (mkStruct sDestrPair [lit 1, resA (lit 2)])
     (letIn false (ite (boolLit true) (use (.proj (.var 0) 0)) (lit 0))
       (use (.var 0)))
+
+/-- **An array in the residue** (probe d9): `x.v` selects past `arr`, a
+`[S1; 2]` of affine elements, which `split` retains whole and `drop*` destroys
+at the access by §6.11's array rule — the elements in ascending index order.
+`10`, the elements' `1`, `2`, `20`, then the value `7`. Nothing in the residue
+traversal looks *inside* the array: a retained array is an ordinary residue
+place (`linearResidue` reads its class, `dropContents` walks it), and only a
+selected path *through* an index step would need §5.1's array clause, which
+`Place.noIdx` keeps out of this part (`destructureThroughIndex`, RUE-2327). -/
+def destructureArrayResidue : Expr :=
+  letIn false (mkStruct sDestrArr [mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)], lit 7])
+    (seq (dbg (lit 10))
+      (letIn false (use (.proj (.var 0) 1))
+        (seq (dbg (lit 20)) (use (.var 0)))))
+
+/-- Probe d9b, refused here: a destructure whose selected path passes
+**through an index step**, `x.arr[0]`. The plan is `([], [0, 0])` at `x`, and
+§5.1's array clause would retain `arr[1]` and then `v`; the compiler accepts
+the program and prints `10`, `2`, `3`, `20`, the leaf's `1` at its scope exit,
+then `4`. The refusal is `Place.noIdx`, which
+(Use-Declared-Linear-Destructure) carries with (Use-Move) in this part
+(RUE-2327), and not a rule of the calculus. -/
+def destructureThroughIndex : Expr :=
+  letIn false (mkStruct sDestrArrIdx
+      [mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)], resA (lit 3)])
+    (seq (dbg (lit 10))
+      (letIn false (use (.idx (.proj (.var 0) 0) 0))
+        (seq (dbg (lit 20)) (lit 4))))
 
 /-- **The red case** (probe d5b, RUE-2335). After `y.x0.x0` destructures `y.x0`,
 the ancestor `y` is still `Owned` with its own residue, and §5.3's (@Drop)
@@ -1718,7 +1763,7 @@ example : checkProgram (enumProg tI64
 refused, kernel-checked. The probe each one reproduces is named; the compiler's
 own diagnostic is the one the probe table records. -/
 
-/-- The eight accepted destructure programs: `checkProgram_sound` turns each
+/-- The nine accepted destructure programs: `checkProgram_sound` turns each
 acceptance into a §5 derivation, so `soundness` and the §7 corollaries apply to
 every one of them. -/
 example : ProgramTyped (destrProg tI64 destructureCopyLeaf) := checkProgram_sound (by rfl)
@@ -1729,6 +1774,7 @@ example : ProgramTyped (destrProg tI64 dropDeclaredCopyLeaf) := checkProgram_sou
 example : ProgramTyped (destrProg tI64 dropDeclaredResidueFirst) := checkProgram_sound (by rfl)
 example : ProgramTyped (destrProg tI64 destructureResidueOrder) := checkProgram_sound (by rfl)
 example : ProgramTyped (destrProg tI64 destructureNestedResidue) := checkProgram_sound (by rfl)
+example : ProgramTyped (destrProg tI64 destructureArrayResidue) := checkProgram_sound (by rfl)
 
 /-- The red case is accepted too, which is what makes it red: the §7 theorems
 apply to it and the compiler refuses it (RUE-2335, `destructureAncestorDropped`). -/
@@ -1761,6 +1807,11 @@ example : checkProgram (destrProg tI64 destructureUnderDtor) = false := by rfl
 /-- The §5.5 join (`3.8:50`, E0443, probe d12): the destructure leaves the
 declared-`linear` binding `MovedOut` on one path and `Owned` on the other. -/
 example : checkProgram (destrProg tI64 destructureOneArm) = false := by rfl
+
+/-- **This part's own boundary** (probe d9b, RUE-2327): the selected path
+`x.arr[0]` passes through an index step, and `Place.noIdx` refuses it before
+§5.1's array clause is reached. The compiler accepts the program. -/
+example : checkProgram (destrProg tI64 destructureThroughIndex) = false := by rfl
 
 /-- **A declared-linear place is consumed by its first destructure** (probes
 d1b, d8): the second read of `x.x0` is the use of a moved-out place, because

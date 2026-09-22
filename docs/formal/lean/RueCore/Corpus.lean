@@ -542,6 +542,11 @@ def cases : List Case := [
     rules := ["(Use-Declared-Linear-Destructure) §5.1", "§6.3 split", "3.8:33"],
     prog := Examples.destrProg Examples.tI64 Examples.destructureNestedResidue
     },
+  { name := "destructure_array_residue",
+    description := "An array in the residue: x.v selects past arr: [S1; 2], which split retains whole and drop* destroys at the access by §6.11's array rule, elements in ascending index order (3.8:73). A retained array is an ordinary residue place; only a selected path through an index step would need §5.1's array clause, and Place.noIdx keeps that out of this part (RUE-2327).",
+    rules := ["(Use-Declared-Linear-Destructure) §5.1", "§6.3 split", "§6.11", "3.8:73"],
+    prog := Examples.destrProg Examples.tI64 Examples.destructureArrayResidue
+    },
   { name := "destructure_linear_residue",
     description := "A destructure whose residue carries a linear value: rejected statically (3.8:60, E0474) and refused dynamically by the residue monitor (linearLeak).",
     rules := ["(Use-Declared-Linear-Destructure) §5.1", "3.8:60"],
