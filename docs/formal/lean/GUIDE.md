@@ -1012,8 +1012,11 @@ into. Had `x2` been declared `linear`, the access itself would be the error —
 "the `linear-residue` premise rejects the access before any residue can be
 silently dropped" — which is `3.8:60` and the compiler's E0474
 (`destructure_linear_residue`). Had the recursion needed to go a level deeper
-to find it, it would have: `destructure_nested_residue`'s sibling case pins
-that (probe d22).
+to find it, it would have: `Examples.destructureNestedLinearResidue` puts the
+`linear` field one plain-struct step below the selected one, and the
+`checkProgram … = false` example over it in `Examples.lean` pins that (probe
+d22). It is a kernel-checked witness rather than a corpus case, so it has no
+`explain/` file.
 
 ### The ownership transition
 
