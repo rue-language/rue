@@ -268,11 +268,13 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   can be consumed zero times** with none of the three refusals firing, and a
   destructor-bearing one loses its observable drop silently. They are
   different in kind, and only the first is a gap.
-  - **A pending argument (open, RUE-2316).** A by-value
-    argument's value is in no cell and no scope record between the `use` that
-    produced it and §6.9's `mintParams`. If a *later* argument of the same
-    call unwinds by `return`, (D-Return) discards the evaluation context with
-    the pending arguments in it and unwinds only σ, so that value's drop is
+  - **A pending value (open, RUE-2316).** A value already built for a
+    **sibling position** — a call's argument, a struct literal's initializer,
+    an array literal's element — is in no cell and no scope record between the
+    subexpression that produced it and the aggregation that would have taken
+    it (§6.9's `mintParams` for an argument). If a *later* sibling
+    unwinds by `return`, (D-Return) discards the evaluation context with
+    the pending values in it and unwinds only σ, so that value's drop is
     neither run nor monitored. This is the calculus as written — (D-Return)
     §6.9 unwinds σ and nothing else, and (Strict-Bottom) §5.7, the only bottom
     rule for an argument position, imposes no §5.3 discard check on siblings
@@ -280,12 +282,14 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
     they do not carry, and the Rue compiler behaves the same way (the
     destructor does not run). The mechanization models the calculus rather
     than patching it and states the gap instead: `Dynamics.lean`'s "Pending
-    arguments" section, the `no_violation` docstring, and the kernel-checked
-    witnesses `RueCore.Examples.linearLostAtCallArg` and
-    `affineLostAtCallArg`, both of which `checkProgram` accepts and both of
-    which end with an empty drop trace. Closing it needs a rule, in §5.7 or
-    §6.9, and is tracked as RUE-2316. A `@panic` *sibling* of a pending
-    argument reaches the identical state, by this route as well as the next.
+    values" section, the `no_violation` docstring, and the kernel-checked
+    witnesses `RueCore.Examples.linearLostAtCallArg`,
+    `affineLostAtCallArg` and `linearLostAtArrayElem` — the last at an array
+    element rather than an argument — all of which `checkProgram` accepts and
+    all of which end with an empty drop trace. Closing it needs a rule, in
+    §5.7 or §6.9, and is tracked as RUE-2316. A `@panic` *sibling* of a
+    pending value reaches the identical state, by this route as well as the
+    next.
   - **A `@panic` (by design).** §6.12 abandons the configuration and §5.7
     exempts the `⊥_panic` edge from §5.6's obligation, so a trap runs no
     scope drop at all — where a `return` in the same position would have
