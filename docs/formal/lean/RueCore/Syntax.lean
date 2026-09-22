@@ -87,46 +87,52 @@ sibling that has itself been moved out (probe d5c) — and it is what rejects
 a destructure that would silently drop a linear sibling (`3.8:60`, E0474).
 
 A destructure whose *selected path* passes through an **index** step —
-`x.arr[0]`, probe d9b — is refused here all the same, by `Place.noIdx`: the
-array part's own restriction on moving out of an element, which
-(Use-Declared-Linear-Destructure) carries with (Use-Move) and (@Drop) and
-which RUE-2327 lifts. The residue traversal's array clause is written out
-anyway, for the reason the array clauses of §5.5 and §5.6 are (below); a
+`x.arr[0]` on a declared-`linear` `x` — is admitted: §4.2's `dl` says "the
+selected path may pass through nested structs and constant-index arrays",
+`3.8:71` says consuming the linear sub-places of an array reached through a
+field projection discharges the array field's obligation, and the compiler
+accepts both that shape (probe `b3`) and the one whose *consumed* place is an
+element (`a[0].x0` on `[T0; 2]`, probe `b4`; `h.arr[0].x0` through a field,
+probe `d1b`; `a[0][0].x0` at a nested index, probe `d2b`). So neither
+destructure rule carries the root-index restriction, and the residue
+traversal's array clause — retained elements in ascending index order — is
+reached (`linearResidue`; probe `b9` is its E0474, probe `b20` its order). A
 retained *array* is an ordinary residue place and needs nothing extra
 (probe d9).
 
-## Arrays: this slice holds the array whole (RUE-2322, part 1)
+## Arrays, part 2: element-wise partial moves at constant-index paths
 
-`[T; n]` is a value, a literal, a constant-index path step, and a
-dynamic-index read or write. What it is **not**, in this part, is a place a
-move or an `@drop` may take an element out of: `3.8:68`'s constant-index
-element move, the `MovedOut` element state it leaves, and `3.8:73`'s
-path-specific element drop are part 2 (RUE-2327). `Place.noIdx` is that
-restriction — a premise of (Use-Move) §5.1 and of (@Drop) §5.3 here and of
-neither in the calculus. It stands in for `3.8:68`'s own premise ("any index
-step in `p` is a constant `[c]` applied directly to the root binding"), which
-it implies, and the compiler accepts what it refuses: probe `a7`,
-`let s: S1 = a[1];`, compiles and drops the elements `2, 20, 1, 3`. A `Copy`
-read at a constant index, a write at one, and a `@drop` or a move of the
-**whole** array are all in, so the class §3 gives `[T; n]` is exercised at
-every value it takes.
+`[T; n]` is a value, a literal, a constant-index path step, a dynamic-index
+read or write, **and** a place a move or an `@drop` may take one element out
+of: `3.8:68`'s constant-index element move, the `MovedOut` element state it
+leaves, and `3.8:73`'s path-specific element drop (RUE-2327; part 1,
+RUE-2322, held the array whole). `rootIdxOnly` is §4.2's own bound on that
+move — "an index step `[c]` may appear in a moved path only applied directly
+to the root binding" — carried by (Use-Move) §5.1 and (@Drop) §5.3, the two
+rules that move a path out, and computed from the **type** the path reaches
+rather than from the place's spelling (its docstring says why). The compiler
+reports its failures as E0904 (probes `a6`, `a6b`, `a9`, `e1`, `e2`, `e4`).
 
-Nor is there any step **below** a dynamic index. §2's place grammar has
-`p [ e ]`, so `a[i].x0` is a place of the calculus and the compiler reads and
-writes it; here `Expr.indexRead` yields the element *value* and a dynamic
-index is not a `Place` step, so neither `a[i].x0` nor `a[i].x0 = 50` has a
-form at all. That is the same debt as the element move, and RUE-2327 owes
-both.
+Nothing new is needed of the dynamics. A constant index is a step of `π` like
+a field slot, so `readAt`/`writeAt` already navigate it, the `⊘` (D-Use-Move)
+writes at the element *is* `3.8:73`'s per-path drop flag, and §6.11's
+`⊘`-skip over an array's elements is the element-wise drop (probes `a1`,
+`a4`/`a4b`, `a8`, `b19`).
 
-An array's ownership state is still a `Path ⇀ {Owned, MovedOut}` tree, and a
-constant-index **write** does reach an element path (`a[0] = …` records
-`OwnSt.fields [Owned]` at the array's node), so every §5 predicate that
-recurses into a node's children — §5.6's `residual-linear`, §5.5's join and
-`ownedJoinOk`, and `Soundness.lean`'s `ContentsMatches` — carries an array
-clause that reads the element type `n` times (`List.replicate n T`). None of
-them can see a `MovedOut` element in this part; they are written out rather
-than left to a permissive default, because a default answering "no
-obligation" would be the wrong answer the moment RUE-2327 lands.
+What a **dynamic** index still cannot reach is any step below it. §2's place
+grammar has `p [ e ]`, so `a[i].x0` is a place of the calculus and the
+compiler reads and writes it; here `Expr.indexRead` yields the element *value*
+and a dynamic index is not a `Place` step, so neither `a[i].x0` nor
+`a[i].x0 = 50` has a form at all. That debt is RUE-2331's, with the
+generator's array draws.
+
+An array's ownership state is a `Path ⇀ {Owned, MovedOut}` tree like a
+struct's, so every §5 predicate that recurses into a node's children — §5.6's
+`residual-linear`, §5.5's join and `ownedJoinOk`, §5.1's residue traversal,
+and `Soundness.lean`'s `ContentsMatches` — carries an array clause that reads
+the element type `n` times (`List.replicate n T`). Part 1 wrote them out
+before any of them could see a `MovedOut` element; this part is where they
+all can.
 
 ## An array value carries its element type
 
@@ -482,20 +488,6 @@ def Place.path : Place → List Nat
   | .proj p f => p.path ++ [f]
   | .idx p c => p.path ++ [c]
 
-/-- Whether a place's path has **no** index step. This is not a premise of any
-§5 rule: it is this part's own restriction, standing in for `3.8:68`'s
-root-index premise on (Use-Move) §5.1 and (@Drop) §5.3, and lifted by RUE-2327
-(module docstring, "Arrays"). It reads the place's **constructors**, not the
-type each step is taken at, while `Place.path` and `Ty.fieldAt` are
-constructor-blind: a step spelled `.proj` at an array-typed node passes it, so
-it implies `3.8:68` only for places spelled with `.idx` — which is every place
-the printer and the generator produce, and the reason RUE-2327's replacement
-is keyed on the type. -/
-def Place.noIdx : Place → Bool
-  | .var _ => true
-  | .proj p _ => p.noIdx
-  | .idx _ _ => false
-
 /-- The type one **step** of a path reaches: a declaration's field at a slot,
 or an array's element at a constant index within its length (`7.1:9` — a
 constant index is bounds-checked at compile time, so an out-of-range one has
@@ -536,6 +528,55 @@ theorem Ty.atPath_append (D : Decls) : ∀ (T : Ty) (π ρ : List Nat),
       cases T.fieldAt D f with
       | none => simp
       | some T' => exact Ty.atPath_append D T' π ρ
+
+/-- Whether the path takes **no** step at an array node — the tail of
+`3.8:68`'s root-index rule, read from the type the walk has reached. A step
+whose type is not a step of what has been reached so far ends the walk at
+`true`: the path is untypeable there (`Ty.atPath` is `none`) and the rule that
+consults this has already failed its `Γ ⊢ p : T` premise (helper). -/
+def noArrayStep (D : Decls) : Ty → List Nat → Bool
+  | _, [] => true
+  | T, f :: π =>
+      match T with
+      | .array _ _ => false
+      | .struct _ | .int _ _ | .float _ | .bool | .unit | .enum _ =>
+        (match T.fieldAt D f with
+         | some T' => noArrayStep D T' π
+         | none => true)
+
+/-- **§4.2's "element moves only at the root"** (`3.8:68`, E0904): "an index
+step `[c]` may appear in a moved path only applied directly to the root
+binding — `x[c]` or `x[c].f…` moves are legal (for constant `c`), but an array
+reached through any projection (`x.f[c]`) … cannot be moved out of". Read as a
+walk: no step is taken at an `.array` node **except** the first step off the
+root, whatever that first step is. A nested index (`x[c][c']`) is refused by
+the same reading, because its second index is taken at the array `x[c]` rather
+than at the root binding; the spec states it as "an array reached through
+another projection … cannot be moved out of" and the compiler agrees (probes
+`a9`, `e1`, `e2`: E0904).
+
+The test is keyed on the **type**, not on the place's spelling. `Place.path`
+and `Ty.fieldAt` are constructor-blind — a field slot and a constant index are
+one production of §5's `Path` and one function here — so reading `.idx` vs
+`.proj` off the place would answer for `h.a[0]` spelled with `Place.idx` and
+not for the same place spelled with `Place.proj`, and would accept an element
+move the compiler rejects (probes `a6`/`a6b`, E0904). It is the type at the
+node that makes a step an index step, so that is what this reads.
+
+The premise is (Use-Move) §5.1's and (@Drop) §5.3's, the two rules that move a
+path out. It is **not** carried by the declared-linear destructure: §4.2's `dl`
+"may pass through nested structs and constant-index arrays", `3.8:71` says
+outright that consuming the linear sub-places of an array reached through a
+field projection discharges the array's obligation, and the compiler accepts
+both (`h.arr[0].x0`, probe `d1b`; `a[0][0].x0` at a nested index, probe `d2b`).
+Nor is it carried by (Assign) §5.2, whose destination is not a move at all
+(`h.a[0] = …` and `a[1][0] = …` both compile; probes `b6`, `c6`). -/
+def rootIdxOnly (D : Decls) : Ty → List Nat → Bool
+  | _, [] => true
+  | T, f :: π =>
+      match T.fieldAt D f with
+      | some T' => noArrayStep D T' π
+      | none => true
 
 /-- No **proper prefix** of the path names a value whose type declares a
 destructor: (Use-Move) §5.1's and (@Drop) §5.3's `3.9:34` premise (E0456).

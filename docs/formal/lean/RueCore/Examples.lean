@@ -575,17 +575,16 @@ def overwriteFieldPastPartialLinear : Expr :=
             (mkStruct sCarryAffine [resLD (lit 5), resA (lit 6)]))
         (seq (drop (.var 0)) (lit 9))))
 
-/-! ## Arrays, held whole (RUE-2322)
+/-! ## Arrays (RUE-2322, RUE-2322 part 2 in RUE-2327)
 
-`[T; n]` is a value, a literal, a constant-index path step, and a
-dynamic-index read or write. These programs are part 1's whole-array
-fragment: the array is owned whole, an element is read by copy or written in
-place, §6.11 drops the elements in **ascending index order**, and the
-dynamic-index forms carry §6.5's bounds trap. What no accepted program here
-does is *move* an element out or `@drop` one — `Place.noIdx` refuses both,
-which is this part's own restriction and RUE-2327's debt (`Syntax.lean`,
-"Arrays"). The probe names in the doc-comments (`a1`…`a11`, `n4`, `n5`) are
-the hand-run programs each case was checked against on the compiler. -/
+`[T; n]` is a value, a literal, a constant-index path step, a dynamic-index
+read or write, and — since RUE-2327 — a place a move or an `@drop` takes one
+**element** out of. These programs are the whole-array fragment: the array is
+owned whole, an element is read by copy or written in place, §6.11 drops the
+elements in **ascending index order**, and the dynamic-index forms carry
+§6.5's bounds trap. The element-wise partial move has its own group below.
+The probe names in the doc-comments (`a1`…`a11`, `n4`, `n5`) are the hand-run
+programs each case was checked against on the compiler. -/
 
 /-- `[i64; n]`, the `Copy` array the index programs read and write
 (helper). -/
@@ -698,19 +697,19 @@ def arrayDynWriteAffine : Program :=
               body := letIn true (mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)])
                 (seq (indexWrite (.var 0) (use (.var 1)) (resA (lit 9))) (lit 7)) }] }
 
-/-! ### What part 1 refuses
+/-! ### The element-wise partial move, and what the array fragment refuses
 
-Five of these are refusals the compiler makes too, at the code the probe
-table records. The sixth, `arrayElemMove`, is **this part's own**: the
-compiler accepts it and drops the untouched elements ascending (probe `a7`),
-and RUE-2327 is the issue that lifts `Place.noIdx`. It is a witness that the
-fragment boundary is where the module docstring says it is, not a claim about
-the language. -/
+`arrayElemMove` is RUE-2327's headline: `3.8:68`'s constant-index element
+move at the root binding, the `⊘` it leaves at exactly that element, and
+§6.11's ascending walk skipping it at scope exit. The five refusals below are
+refusals the compiler makes too, at the code the probe table records. -/
 
-/-- Probe `a7`, refused here: a move at a constant index. `3.8:68` admits it
-when the index is applied directly to the root binding, and the compiler
-accepts this program, so the refusal is `Place.noIdx` — part 1's restriction
-(RUE-2327). -/
+/-- **The element move** (probe `a1`): `a[1]` is moved out of an `[S1; 3]`
+whose `S1` declares a destructor. `3.8:68` admits the move — the index is a
+constant applied directly to the root binding — `rootIdxOnly` is that premise,
+and the `⊘` (D-Use-Move) writes at the element is `3.8:73`'s per-path drop
+flag: the bound element's own `@drop` runs `2`, and the array's scope exit
+then walks `1`, skip, `3` in ascending order. The compiler prints the same. -/
 def arrayElemMove : Expr :=
   letIn false (mkArray (.struct sAffine) [resA (lit 1), resA (lit 2), resA (lit 3)])
     (letIn false (use (.idx (.var 0) 1))
@@ -844,19 +843,26 @@ example : run demoOps arrayDynWriteAffine demoFuel
          .drop 1 (.array (.struct sAffine) [cA 9, cA 2]),
          .dtor sAffine (cA 9), .dtor sAffine (cA 2)] := by rfl
 
+/-- **The element move is accepted, and the rest drops ascending** (probe
+`a1`): the trace is the moved element's own drop, then `20`, then the array's
+scope exit over `[1, ⊘, 3]`. -/
+example : checkProgram (prog tI64 arrayElemMove) = true := by rfl
+example : run demoOps (prog tI64 arrayElemMove) demoFuel
+    = .ok [.dead, .dead] (v64 7)
+        [.drop 1 (cA 2), .dtor sAffine (cA 2), .dbg (v64 20),
+         .drop 0 (.array (.struct sAffine) [cA 1, .hole, cA 3]),
+         .dtor sAffine (cA 1), .dtor sAffine (cA 3)] := by rfl
+
 /-- The five refusals the compiler makes too — `7.1:38`'s `Copy` repeat
 element (E0905), §5.1's missing rule for a non-`Copy` dynamic index (E0904),
 `7.1:9`'s compile-time constant-index bounds check (E0902), §5.6's leak
 check reading the array node element by element (E0406), and `3.8:77`'s
-linear-overwrite premise at a dynamic-index write (E0493, probe `n5`) — and
-the one this part makes alone: `Place.noIdx` on a constant-index move, which
-the compiler accepts (probe `a7`, RUE-2327). -/
+linear-overwrite premise at a dynamic-index write (E0493, probe `n5`). -/
 example : checkProgram (prog tI64 arrayRepeatAffine) = false := by rfl
 example : checkProgram arrayDynIndexAffine = false := by rfl
 example : checkProgram (prog tI64 arrayConstIndexOutOfRange) = false := by rfl
 example : checkProgram (prog tI64 arrayLinearElemLeaked) = false := by rfl
 example : checkProgram arrayDynWriteLinearElem = false := by rfl
-example : checkProgram (prog tI64 arrayElemMove) = false := by rfl
 
 /-- The linear-overwrite refusal is the machine's too: `eval`'s
 `indexWrite` arm reads the residue of the element it is about to drop and
@@ -1513,22 +1519,20 @@ def destructureOneArm : Expr :=
 at the access by §6.11's array rule — the elements in ascending index order.
 `10`, the elements' `1`, `2`, `20`, then the value `7`. Nothing in the residue
 traversal looks *inside* the array: a retained array is an ordinary residue
-place (`linearResidue` reads its class, `dropContents` walks it), and only a
-selected path *through* an index step would need §5.1's array clause, which
-`Place.noIdx` keeps out of this part (`destructureThroughIndex`, RUE-2327). -/
+place (`linearResidue` reads its class, `dropContents` walks it). A selected
+path *through* an index step is the case that needs §5.1's array clause, and
+that is `destructureThroughIndex` below. -/
 def destructureArrayResidue : Expr :=
   letIn false (mkStruct sDestrArr [mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)], lit 7])
     (seq (dbg (lit 10))
       (letIn false (use (.proj (.var 0) 1))
         (seq (dbg (lit 20)) (use (.var 0)))))
 
-/-- Probe d9b, refused here: a destructure whose selected path passes
-**through an index step**, `x.arr[0]`. The plan is `([], [0, 0])` at `x`, and
-§5.1's array clause would retain `arr[1]` and then `v`; the compiler accepts
-the program and prints `10`, `2`, `3`, `20`, the leaf's `1` at its scope exit,
-then `4`. The refusal is `Place.noIdx`, which
-(Use-Declared-Linear-Destructure) carries with (Use-Move) in this part
-(RUE-2327), and not a rule of the calculus. -/
+/-- **A destructure whose selected path passes through an index step**
+(probe d9b/`b3`), `x.arr[0]`. The plan is `([], [0, 0])` at `x`, and §5.1's
+array clause is what retains `arr[1]` and then `v` — nested residue before the
+later sibling. The trace is `10`, the residue's `2` and `3`, `20`, the leaf's
+`1` at its own scope exit, then `4`; the compiler prints exactly that. -/
 def destructureThroughIndex : Expr :=
   letIn false (mkStruct sDestrArrIdx
       [mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)], resA (lit 3)])
@@ -1961,11 +1965,15 @@ example : checkProgram (destrProg tI64 destructureUnderDtor) = false := by rfl
 declared-`linear` binding `MovedOut` on one path and `Owned` on the other. -/
 example : checkProgram (destrProg tI64 destructureOneArm) = false := by rfl
 
-/-- **This part's own boundary** (probe d9b, RUE-2327): the selected path
-`x.arr[0]` passes through an index step, and `linearResidue`'s array arm
-refuses the plan before §5.1's array clause is reached (`Place.noIdx` refuses
-the spelling too). The compiler accepts the program. -/
-example : checkProgram (destrProg tI64 destructureThroughIndex) = false := by rfl
+/-- **§5.1's array clause in the residue traversal** (probe d9b/`b3`,
+RUE-2327): the selected path `x.arr[0]` passes through an index step, the
+traversal retains `arr[1]` and then `v`, and `drop*` destroys them in that
+order. -/
+example : checkProgram (destrProg tI64 destructureThroughIndex) = true := by rfl
+example : run demoOps (destrProg tI64 destructureThroughIndex) demoFuel
+    = .ok [.dead, .dead] (v64 4)
+        [.dbg (v64 10), .dtor sAffine (cA 2), .dtor sAffine (cA 3), .dbg (v64 20),
+         .drop 1 (cA 1), .dtor sAffine (cA 1)] := by rfl
 
 /-- **A dynamic-index write under a declared-`linear` prefix is admitted**
 (second-review probe c3): `v0.x0[i] = 9` on `S21`'s array field is an

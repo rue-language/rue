@@ -482,14 +482,14 @@ def residueCarriesLinear (Td : Ty) : String :=
   "being consumed ((Use-Declared-Linear-Destructure) premise " ++
   "`¬ linear-residue(S, π_s)`, §5.1; 3.8:60; the compiler reports E0474)"
 
-/-- This part's own restriction: a move or a `@drop` at a path with an array
-index step is refused. It stands in for `3.8:68`'s root-index premise on
-(Use-Move) §5.1 and (@Drop) §5.3, which it implies, and RUE-2327 lifts it. -/
+/-- §4.2's "element moves only at the root" (`3.8:68`, E0904): a move or a
+`@drop` may take an element out of the root binding's array and of no array
+reached through a further step (`rootIdxOnly`, `Syntax.lean`). -/
 def moveAtIndex : String :=
-  "the path has an array index step, and this part of the mechanization moves no " ++
-  "array element: `3.8:68` admits a constant-index move applied directly to the root " ++
-  "binding and the compiler accepts one, so this refusal is the fragment's own " ++
-  "restriction (RUE-2327) rather than a rule of the calculus"
+  "the move takes a step at an array that is not the root binding — a nested index " ++
+  "(`a[c][c']`) or an array reached through a field (`h.a[c]`) — and `3.8:68` admits " ++
+  "an element move only \"applied directly to the root binding\"; the compiler reports " ++
+  "E0904 \"cannot move out of indexed position\""
 
 /-- `7.1:38`: the element type of a repeat literal must be `Copy` (E0905). -/
 def repeatNotCopy (T : Ty) : String :=
@@ -820,12 +820,9 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
             (match en.st.get πd, en.ty.atPath P.decls πd, en.ty.atPath P.decls pl.path with
              | some u, some Td, some T =>
                  if u.fullyOwned ∧ linearResidue P.decls Td πs = false ∧
-                     noDtorPrefix P.decls en.ty pl.path ∧ pl.noIdx then
+                     noDtorPrefix P.decls en.ty pl.path then
                    accepted "(Use-Declared-Linear-Destructure) §5.1" Γ (.use pl) T
                      (Γ.set pl.root (en.setSt (en.st.setAt πd .movedOut))) []
-                 else if !pl.noIdx then
-                   rejected "(Use-Declared-Linear-Destructure) §5.1" Γ (.use pl)
-                     Premise.moveAtIndex []
                  else if !u.fullyOwned then
                    rejected "(Use-Declared-Linear-Destructure) §5.1" Γ (.use pl)
                      (Premise.destructurePartiallyMoved Td) []
@@ -848,10 +845,11 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                  (if u.fullyOwned then accepted "(Use-Copy) §5.1" Γ (.use pl) T Γ []
                   else rejected "(Use-Copy) §5.1" Γ (.use pl) (Premise.usePartiallyMoved T) [])
                else
-                 (if u.fullyOwned ∧ noDtorPrefix P.decls en.ty pl.path ∧ pl.noIdx then
+                 (if u.fullyOwned ∧ noDtorPrefix P.decls en.ty pl.path ∧
+                      rootIdxOnly P.decls en.ty pl.path then
                     accepted "(Use-Move) §5.1" Γ (.use pl) T
                       (Γ.set pl.root (en.setSt (en.st.setAt pl.path .movedOut))) []
-                  else if !pl.noIdx then
+                  else if !rootIdxOnly P.decls en.ty pl.path then
                     rejected "(Use-Move) §5.1" Γ (.use pl) Premise.moveAtIndex []
                   else if u.fullyOwned then
                     rejected "(Use-Move) §5.1" Γ (.use pl) Premise.moveUnderDtor []
@@ -1111,12 +1109,9 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
             (match en.st.get πd, en.ty.atPath P.decls πd, en.ty.atPath P.decls pl.path with
              | some u, some Td, some _T =>
                  if u.fullyOwned ∧ linearResidue P.decls Td πs = false ∧
-                     noDtorPrefix P.decls en.ty pl.path ∧ pl.noIdx then
+                     noDtorPrefix P.decls en.ty pl.path then
                    accepted "(@Drop) §5.3 at a declared-linear plan" Γ (.drop pl) .unit
                      (Γ.set pl.root (en.setSt (en.st.setAt πd .movedOut))) []
-                 else if !pl.noIdx then
-                   rejected "(@Drop) §5.3 at a declared-linear plan" Γ (.drop pl)
-                     Premise.moveAtIndex []
                  else if !u.fullyOwned then
                    rejected "(@Drop) §5.3 at a declared-linear plan" Γ (.drop pl)
                      (Premise.destructurePartiallyMoved Td) []
@@ -1141,10 +1136,10 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                else
                  (if u.isOwned ∧ noDtorPrefix P.decls en.ty pl.path ∧
                      (u.fullyOwned = true ∨ residualLinearBelow P.decls u T = false) ∧
-                     pl.noIdx then
+                     rootIdxOnly P.decls en.ty pl.path then
                     accepted "(@Drop) §5.3" Γ (.drop pl) .unit
                       (Γ.set pl.root (en.setSt (en.st.setAt pl.path .movedOut))) []
-                  else if !pl.noIdx then
+                  else if !rootIdxOnly P.decls en.ty pl.path then
                     rejected "(@Drop) §5.3" Γ (.drop pl) Premise.moveAtIndex []
                   else if !u.isOwned then
                     rejected "(@Drop) §5.3" Γ (.drop pl) Premise.dropMovedOut []
