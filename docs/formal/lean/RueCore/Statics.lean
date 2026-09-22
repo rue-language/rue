@@ -28,9 +28,10 @@ declares no destructor (`3.8:18`, `3.9:31`), a destructor-bearing declaration
 carries no linear field (`3.9:44`, E0462 — `3.9:34` forbids moving one out, so
 the obligation could only be met by the glue, which is the implicit discard
 §5.6 forbids; §3 states this as a well-formedness condition on the
-declaration, beside the `@copy` one), and a field may name only an
-earlier declaration, so the equation is a definition rather than a fixpoint
-condition — `struct_class_unique` is that statement, proved.
+declaration, beside the `@copy` one). The equation is a definition rather than
+a fixpoint condition because `3.0:5` (E0483) forbids a declaration to contain
+itself by value, directly or through a cycle — `WfNames` is that rule, joint
+over both layers, and `class_unique` is the statement it buys, proved.
 
 `3.9:44` is stated "through any depth of struct nesting", and `dtorWf` looks
 one level down — at `sd.baseOf D`, the join of the *immediate* field classes.
@@ -145,13 +146,14 @@ theorem joinFold_linear_inv (D : Decls) : ∀ (Ts : List Ty) (acc : Mult),
 
 /-- One declaration's well-formedness (§3, `3.8:18`, `3.9:31`, `3.9:44`): its
 recorded class is §3's field join lifted by its attribute, a `@copy`
-declaration's join is already `Copy` and it declares no destructor, a
-destructor-bearing declaration carries no linear field, and a field names only
-an **earlier** declaration — so the class equation is solvable in one pass and
-has one solution (`struct_class_unique`), and no struct contains itself. -/
-structure StructDecl.Wf (D : Decls) (s : Nat) (sd : StructDecl) : Prop where
-  /-- No recursive struct: a field may name only an earlier declaration. -/
-  fieldsEarlier : ∀ s', Ty.struct s' ∈ sd.fields → s' < s
+declaration's join is already `Copy` and it declares no destructor, and a
+destructor-bearing declaration carries no linear field.
+
+This is the *equation* only. What makes it solvable — that no declaration
+contains itself by value, directly or through a cycle (`3.0:5`, E0483) — is
+`WfNames`, stated jointly over both layers below, because a field may name an
+enum and a payload may name a struct. -/
+structure StructDecl.Wf (D : Decls) (sd : StructDecl) : Prop where
   /-- §3's assignment: `class(S) = attr(S) lifted over ⊔ { class(Ti) }`. -/
   classIsJoin : sd.cls = sd.attr.lift (sd.baseOf D)
   /-- `3.8:18` and `3.9:31`: `@copy` is well-formed only when every field is
@@ -168,14 +170,15 @@ structure StructDecl.Wf (D : Decls) (s : Nat) (sd : StructDecl) : Prop where
 /-- A well-formed struct environment: §3's class assignment holds of every
 declaration (`StructDecl.Wf`). This is the premise that makes `Ty.mult`'s
 lookup §3's join, and it is what `checkStructs` (`Checker.lean`) decides. -/
-def WfStructs (D : Decls) : Prop := ∀ s sd, D.structs[s]? = some sd → StructDecl.Wf D s sd
+def WfStructs (D : Decls) : Prop :=
+  ∀ (s : Nat) (sd : StructDecl), D.structs[s]? = some sd → StructDecl.Wf D sd
 
 /-- **A droppable struct carries no linear field.** If a declaration's class
 is not `Linear`, no field's class is — which is why the machine's leak monitor
 (§6.7's `endscope`, §6.9's frame teardown) needs to look only at the value's
 own class and never inside it. This is §3's infectiousness, used. -/
-theorem StructDecl.Wf.field_not_linear {D : Decls} {s : Nat} {sd : StructDecl}
-    (h : sd.Wf D s) (hcls : sd.cls ≠ .linear) : ∀ T ∈ sd.fields, T.mult D ≠ .linear := by
+theorem StructDecl.Wf.field_not_linear {D : Decls} {sd : StructDecl}
+    (h : sd.Wf D) (hcls : sd.cls ≠ .linear) : ∀ T ∈ sd.fields, T.mult D ≠ .linear := by
   intro T hmem hlin
   have hbase : sd.baseOf D = .linear := by
     refine Mult.eq_linear_of_rank ?_
@@ -197,7 +200,7 @@ reaches `Linear` exactly when its declaration says `linear` (`3.8:57`) or some
 field carries a linear value (`3.8:58` — infectiousness is the join). Together
 with `Ty.carriesLinear`'s definition this is §5.3's sentence, mechanized. -/
 theorem struct_carriesLinear_iff {D : Decls} {s : Nat} {sd : StructDecl}
-    (hd : D.structs[s]? = some sd) (h : sd.Wf D s) :
+    (hd : D.structs[s]? = some sd) (h : sd.Wf D) :
     (Ty.struct s).mult D = .linear ↔
       (sd.attr = .linear ∨ ∃ T ∈ sd.fields, T.mult D = .linear) := by
   have hlookup : (Ty.struct s).mult D = sd.cls := by
@@ -243,9 +246,10 @@ component of **every** variant, because the active variant is not a static
 fact. A discriminant-only enum's join is empty and so `Copy` (`6.3:19`,
 `3.8:2`), which is what makes `enum C { A, B }` a duplicable tag.
 
-`EnumDecl.Wf` is that equation, made a premise of a well-formed program, plus
-the acyclicity `StructDecl.Wf` already carries in its own layer: a payload may
-name only an **earlier** enum. `enum_carriesLinear_iff` is `6.3:19`'s
+`EnumDecl.Wf` is that equation, made a premise of a well-formed program; what
+makes it solvable is `3.0:5`'s acyclicity (`WfNames`), which is joint over the
+two layers because a payload may name a struct and a field may name an enum.
+`enum_carriesLinear_iff` is `6.3:19`'s
 must-consume sentence as a biconditional — an enum is `Linear` exactly when some
 variant's payload carries a linear value, whatever variant a particular value
 holds — and `EnumDecl.Wf.payload_not_linear` is the direction the machine needs:
@@ -259,17 +263,15 @@ def EnumDecl.payloadJoin (D : Decls) (ed : EnumDecl) : Mult :=
   ed.variants.foldl (fun m Ts => Ts.foldl (fun m' T => m'.join (Ty.mult D T)) m) .copy
 
 /-- One enum declaration's well-formedness (§3, `6.3:19`): its recorded class
-is the payload join, and a payload may name only an **earlier** enum — so the
-equation is solvable in one pass over the enum layer and no enum contains
-itself.
+is the payload join. As for a struct this is the equation only, and `WfNames`
+is what makes it solvable (`3.0:5` forbids an enum to contain itself by value
+through any cycle of fields and payloads).
 
 There is no attribute clause and no destructor clause, because §3 gives an enum
 neither: `6.3:19` fixes its class as the join with no `@copy`/`linear` mark to
 lift, and the compiler rejects `drop fn E(self)` where it is declared (E0417),
 which is why `EnumDecl` records no `dtor` field for §6.11 to read. -/
-structure EnumDecl.Wf (D : Decls) (e : Nat) (ed : EnumDecl) : Prop where
-  /-- No recursive enum: a payload component may name only an earlier enum. -/
-  payloadsEarlier : ∀ e' Ts, Ts ∈ ed.variants → Ty.enum e' ∈ Ts → e' < e
+structure EnumDecl.Wf (D : Decls) (ed : EnumDecl) : Prop where
   /-- §3's assignment: `class(E) = ⊔ { class(Tij) }` (`6.3:19`). -/
   classIsJoin : ed.cls = ed.payloadJoin D
 
@@ -277,7 +279,75 @@ structure EnumDecl.Wf (D : Decls) (e : Nat) (ed : EnumDecl) : Prop where
 declaration (`EnumDecl.Wf`). Together with `WfStructs` this is the premise that
 makes `Ty.mult`'s lookup §3's join at every type, and it is what `checkEnums`
 (`Checker.lean`) decides. -/
-def WfEnums (D : Decls) : Prop := ∀ e ed, D.enums[e]? = some ed → EnumDecl.Wf D e ed
+def WfEnums (D : Decls) : Prop :=
+  ∀ (e : Nat) (ed : EnumDecl), D.enums[e]? = some ed → EnumDecl.Wf D ed
+
+/-! ### `3.0:5`: no declaration contains itself by value
+
+`3.0:5` (E0483) is the rule that makes §3's two class equations a definition:
+"A struct or enum **MUST NOT** contain itself by value, either directly or
+through a cycle of struct fields, enum payloads, or array elements." It is one
+rule over **both** layers, and it has to be: a field may name an enum
+(`struct H0 { x0: E0, x1: S1 }`) and a payload may name a struct
+(`enum E0 { K0(S1), K1 }`), so the two equations are mutually recursive and a
+per-layer order does not exclude `struct S { x0: E } / enum E { K(S) }` — a
+shape both equations solve at more than one assignment
+(`Examples.lean`'s cycle witnesses; the compiler reports E0483).
+
+`Decls.Names` is `3.0:5`'s "contains by value" relation, one step, and
+`WfNames` is the rule itself: the relation is **well-founded**, so each
+declaration's class is the unique solution of its equation (`class_unique`).
+The calculus states the equations but not this side condition; §3 gains the
+paragraph in RUE-2334, and `3.0:5` is the normative form it mechanizes.
+`checkNoCycle` (`Checker.lean`) decides it by peeling. -/
+
+/-- A declaration of either kind, named the way a type names it: the domain of
+`3.0:5`'s "contains by value" relation. -/
+inductive DeclId where
+  /-- The struct declaration `Ty.struct s` names. -/
+  | struct (s : Nat)
+  /-- The enum declaration `Ty.enum e` names. -/
+  | enum (e : Nat)
+deriving DecidableEq, Repr
+
+/-- The type that names this declaration (helper). -/
+def DeclId.ty : DeclId → Ty
+  | .struct s => .struct s
+  | .enum e => .enum e
+
+/-- The types a declaration contains **by value** (`3.0:5`): a struct's fields
+and an enum's payload components, over every variant. An index the environment
+does not have contains nothing. -/
+def Decls.byValue (D : Decls) : DeclId → List Ty
+  | .struct s => match D.structs[s]? with
+                 | some sd => sd.fields
+                 | none => []
+  | .enum e => match D.enums[e]? with
+               | some ed => ed.variants.flatten
+               | none => []
+
+/-- `3.0:5`'s relation, one step: `d` contains `d'` by value. -/
+def Decls.Names (D : Decls) (d d' : DeclId) : Prop := d'.ty ∈ D.byValue d
+
+/-- **`3.0:5` (E0483), mechanized**: the by-value "contains" relation over the
+declarations is well-founded, so no declaration reaches itself through a cycle
+of struct fields and enum payloads. This is the one premise that makes §3's
+struct and enum equations a *definition* — `class_unique` is the induction it
+licenses — and it is joint over the two layers because `3.0:5` is. -/
+def WfNames (D : Decls) : Prop := WellFounded (fun d' d => D.Names d d')
+
+/-- A well-formed declaration environment: `3.0:5`'s acyclicity (`WfNames`),
+§3's class assignment for every struct declaration (`WfStructs`) and for every
+enum declaration (`WfEnums`). This is the premise every theorem that reads a
+recorded class through `Ty.mult` carries, and it is what `checkDecls`
+(`Checker.lean`) decides. -/
+structure WfDecls (D : Decls) : Prop where
+  /-- `3.0:5` (E0483): no declaration contains itself by value. -/
+  names : WfNames D
+  /-- §3's class assignment for the struct layer (`3.8:18`, `3.9:31`, `3.9:44`). -/
+  structs : WfStructs D
+  /-- §3's class assignment for the enum layer (`6.3:19`). -/
+  enums : WfEnums D
 
 /-- The accumulator of the payload join is a lower bound of the result
 (helper). -/
@@ -318,8 +388,8 @@ theorem payloadFold_linear_inv (D : Decls) : ∀ (Tss : List (List Ty)) (acc : M
 not `Linear`, no payload component of any variant is — which is why the
 machine's leak monitor need only read the payload it finds under the active tag
 (§6.11) and never the declaration. This is `6.3:19`'s join, used. -/
-theorem EnumDecl.Wf.payload_not_linear {D : Decls} {e : Nat} {ed : EnumDecl}
-    (h : ed.Wf D e) (hcls : ed.cls ≠ .linear) :
+theorem EnumDecl.Wf.payload_not_linear {D : Decls} {ed : EnumDecl}
+    (h : ed.Wf D) (hcls : ed.cls ≠ .linear) :
     ∀ Ts ∈ ed.variants, ∀ T ∈ Ts, T.mult D ≠ .linear := by
   intro Ts hTs T hT hlin
   refine hcls ?_
@@ -336,7 +406,7 @@ is a dynamic fact and the class is the type's worst case. This is what makes
 `E0.K1` of `enum E0 { K0(T0), K1 }` with `T0` declared `linear` a must-consume
 value even though the value it holds carries nothing (probe e11, E0406). -/
 theorem enum_carriesLinear_iff {D : Decls} {e : Nat} {ed : EnumDecl}
-    (hd : D.enums[e]? = some ed) (h : ed.Wf D e) :
+    (hd : D.enums[e]? = some ed) (h : ed.Wf D) :
     (Ty.enum e).mult D = .linear ↔ ∃ Ts ∈ ed.variants, ∃ T ∈ Ts, T.mult D = .linear := by
   have hlookup : (Ty.enum e).mult D = ed.cls := by
     simp [Ty.mult, Decls.enumClassOf, hd]
@@ -356,162 +426,185 @@ theorem enum_carriesLinear_iff {D : Decls} {e : Nat} {ed : EnumDecl}
 /-! ## The class a declaration records is determined, not free
 
 A declaration carries `class(S)`/`class(E)` so that `Ty.mult` is a lookup. That
-is only honest if §3's equations have one solution, which is what acyclicity
-buys: read left to right, declaration `s`'s class is fixed by the classes of the
-declarations before it.
+is only honest if §3's equations have one solution, which is what `3.0:5`
+buys: no declaration contains itself by value, so the by-value relation is
+well-founded (`WfNames`) and each declaration's class is fixed by the classes
+of the declarations it names.
 
-Each layer is pinned **given the other**, and that is as far as this fragment
-takes it. A struct field may name any enum (`struct H0 { x0: E0, x1: S1 }`) and
-an enum payload may name any struct (`enum E0 { K0(S1), K1 }`) — the fragment
-needs both, and the compiler accepts both — so the two equations are a *mutual*
-recursion, and neither `StructDecl.Wf` nor `EnumDecl.Wf` orders the layers
-against each other. §3 states no acyclicity condition at all (both
-`fieldsEarlier` and `payloadsEarlier` are this mechanization's own addition), so
-there is nothing to read off the calculus here; what the two theorems below say
-is that within a layer the record is determined once the other layer's records
-are, and a joint order for `struct S { x0: E }` / `enum E { K(S) }` is left
-open (reported with RUE-2320). Nothing rests on it: the recorded classes are
-*constraints* that `WfStructs`/`WfEnums` impose, and every theorem reads the
-record rather than recomputing the join. -/
+The condition has to be **joint**, because the recursion is. A field may name
+an enum and a payload may name a struct, so `struct S { x0: E }` /
+`enum E { K(S) }` satisfies §3's struct equation *and* `6.3:19`'s enum equation
+at more than one assignment, and only a cross-layer condition excludes it
+(`Examples.lean` pins that shape as a refusal witness; the compiler reports
+E0483). `class_unique` is therefore **one** theorem over both layers, assuming
+nothing about the other layer's classes, and
+`struct_class_unique`/`enum_class_unique` are its two projections.
 
-/-- Two environments that agree on every struct class below `n` and on every
-enum class give the same §3 join to a field list that names only struct
-declarations below `n` (helper). -/
-theorem joinFold_congr {D D' : Decls} {n : Nat}
-    (hcls : ∀ s', s' < n → D.classOf s' = D'.classOf s')
-    (henum : ∀ e', D.enumClassOf e' = D'.enumClassOf e') :
-    ∀ (Ts : List Ty) (acc : Mult), (∀ s', Ty.struct s' ∈ Ts → s' < n) →
+The specification states the rule normatively and across both layers — `3.0:5`,
+"A struct or enum MUST NOT contain itself by value, either directly or through
+a cycle of struct fields, enum payloads, or array elements" (E0483) — and that
+is the citation this fragment mechanizes. The *calculus* states §3's equations
+without the side condition; the paragraph that adds it is §3 (RUE-2334). -/
+
+/-- Two environments that give every type of a field list the same class give
+that list the same §3 join (helper). -/
+theorem joinFold_congr {D D' : Decls} :
+    ∀ (Ts : List Ty) (acc : Mult), (∀ T ∈ Ts, T.mult D = T.mult D') →
       Ts.foldl (fun m T => m.join (Ty.mult D T)) acc
         = Ts.foldl (fun m T => m.join (Ty.mult D' T)) acc
   | [], _, _ => rfl
-  | T :: Ts, acc, hearly => by
-      have hT : T.mult D = T.mult D' := by
-        cases T with
-        | struct s' => exact hcls s' (hearly s' List.mem_cons_self)
-        | enum e' => exact henum e'
-        | _ => rfl
-      simp only [List.foldl_cons, hT]
-      exact joinFold_congr hcls henum Ts _ (fun s' hm => hearly s' (List.mem_cons_of_mem _ hm))
+  | T :: Ts, acc, h => by
+      simp only [List.foldl_cons, h T List.mem_cons_self]
+      exact joinFold_congr Ts _ (fun T' hm => h T' (List.mem_cons_of_mem _ hm))
 
-/-- The inner fold of an enum's payload join, over one variant's components:
-two environments agreeing on every struct class and on every enum class below
-`n` give it the same value when the components name only enums below `n`
+/-- The same for `6.3:19`'s payload join, over every component of every variant
 (helper). -/
-theorem joinFold_congr_enum {D D' : Decls} {n : Nat}
-    (hcls : ∀ s', D.classOf s' = D'.classOf s')
-    (henum : ∀ e', e' < n → D.enumClassOf e' = D'.enumClassOf e') :
-    ∀ (Ts : List Ty) (acc : Mult), (∀ e', Ty.enum e' ∈ Ts → e' < n) →
-      Ts.foldl (fun m T => m.join (Ty.mult D T)) acc
-        = Ts.foldl (fun m T => m.join (Ty.mult D' T)) acc
-  | [], _, _ => rfl
-  | T :: Ts, acc, hearly => by
-      have hT : T.mult D = T.mult D' := by
-        cases T with
-        | struct s' => exact hcls s'
-        | enum e' => exact henum e' (hearly e' List.mem_cons_self)
-        | _ => rfl
-      simp only [List.foldl_cons, hT]
-      exact joinFold_congr_enum hcls henum Ts _
-        (fun e' hm => hearly e' (List.mem_cons_of_mem _ hm))
-
-/-- The same for an enum's payload join: two environments agreeing on every
-struct class and on every enum class below `n` give the same `6.3:19` join to a
-variant list whose payloads name only enums below `n` (helper). -/
-theorem payloadFold_congr {D D' : Decls} {n : Nat}
-    (hcls : ∀ s', D.classOf s' = D'.classOf s')
-    (henum : ∀ e', e' < n → D.enumClassOf e' = D'.enumClassOf e') :
-    ∀ (Tss : List (List Ty)) (acc : Mult), (∀ e' Ts, Ts ∈ Tss → Ty.enum e' ∈ Ts → e' < n) →
+theorem payloadFold_congr {D D' : Decls} :
+    ∀ (Tss : List (List Ty)) (acc : Mult),
+      (∀ Ts ∈ Tss, ∀ T ∈ Ts, T.mult D = T.mult D') →
       Tss.foldl (fun m Ts => Ts.foldl (fun m' T => m'.join (Ty.mult D T)) m) acc
         = Tss.foldl (fun m Ts => Ts.foldl (fun m' T => m'.join (Ty.mult D' T)) m) acc
   | [], _, _ => rfl
-  | Ts :: Tss, acc, hearly => by
-      have hhead := joinFold_congr_enum hcls henum Ts acc
-        (fun e' hm => hearly e' Ts List.mem_cons_self hm)
+  | Ts :: Tss, acc, h => by
+      have hhead := joinFold_congr (D := D) (D' := D') Ts acc (h Ts List.mem_cons_self)
       simp only [List.foldl_cons, hhead]
-      exact payloadFold_congr hcls henum Tss _
-        (fun e' Ts' hTs' hm => hearly e' Ts' (List.mem_cons_of_mem _ hTs') hm)
+      exact payloadFold_congr Tss _ (fun Ts' hm => h Ts' (List.mem_cons_of_mem _ hm))
 
-/-- **§3's class assignment for the struct layer has one solution, given the
-enum layer's.** Two well-formed environments of the same struct length whose
-declarations agree on their attributes and field lists, and which assign every
-*enum* the same class, agree on every struct class. So recording `class(S)` in
-the declaration (`Syntax.lean`) records a determined value rather than a free
-parameter: it is §3's join, and `WfStructs` is the equation that says so. The
-enum hypothesis is the mutual half the section docstring leaves open — a field
-may name an enum, and §3 fixes no order between the layers. -/
-theorem struct_class_unique {D D' : Decls} (hwf : WfStructs D) (hwf' : WfStructs D')
-    (henum : ∀ e', D.enumClassOf e' = D'.enumClassOf e')
-    (hlen : D.structs.length = D'.structs.length)
-    (hshape : ∀ (s : Nat) (sd sd' : StructDecl), D.structs[s]? = some sd → D'.structs[s]? = some sd' →
-      sd.attr = sd'.attr ∧ sd.fields = sd'.fields) :
-    ∀ s, D.classOf s = D'.classOf s := by
-  intro s
-  induction s using Nat.strongRecOn with
-  | _ s ih =>
-    cases hd : D.structs[s]? with
-    | none =>
-        have : D'.structs[s]? = none := by
-          rcases hd' : D'.structs[s]? with _ | sd'
-          · rfl
-          · exact absurd (List.getElem?_eq_some_iff.mp hd' |>.1)
-              (by have := List.getElem?_eq_none_iff.mp hd; omega)
-        simp [Decls.classOf, hd, this]
-    | some sd =>
-        have hlt : s < D'.structs.length := by
-          have := List.getElem?_eq_some_iff.mp hd |>.1; omega
-        obtain ⟨sd', hd'⟩ : ∃ sd', D'.structs[s]? = some sd' := by
-          rcases hd' : D'.structs[s]? with _ | sd'
-          · exact absurd (List.getElem?_eq_none_iff.mp hd') (by omega)
-          · exact ⟨sd', rfl⟩
-        obtain ⟨hattr, hfields⟩ := hshape s sd sd' hd hd'
-        have hw := hwf s sd hd
-        have hw' := hwf' s sd' hd'
-        have hbase : sd.baseOf D = sd'.baseOf D' := by
-          unfold StructDecl.baseOf
-          rw [← hfields]
-          exact joinFold_congr (fun s' hs' => ih s' hs') henum sd.fields .copy
-            (fun s' hm => hw.fieldsEarlier s' hm)
-        simp only [Decls.classOf, hd, hd']
-        rw [hw.classIsJoin, hw'.classIsJoin, hattr, hbase]
+/-- **§3's class assignment has exactly one solution** (`3.0:5`, `6.3:19`).
+Two declaration environments of the same *shapes* — the same number of struct
+and of enum declarations, the same attribute and field list at every struct
+index, the same variant payloads at every enum index — that each satisfy
+`WfDecls` assign the same class to **every** type: every struct, every enum,
+and every scalar. So recording `class(S)`/`class(E)` in the declaration
+(`Syntax.lean`) records a determined value rather than a free parameter, and a
+`checkProgram = true` verdict is a verdict about the declarations the compiler
+would compute the same classes for.
 
-/-- **§3's class assignment for the enum layer has one solution, given the
-struct layer's** (`6.3:19`). The dual of `struct_class_unique`, and simpler:
-an enum records no attribute, so its class *is* the payload join, with no
-lifting to undo. -/
-theorem enum_class_unique {D D' : Decls} (hwf : WfEnums D) (hwf' : WfEnums D')
-    (hcls : ∀ s', D.classOf s' = D'.classOf s')
-    (hlen : D.enums.length = D'.enums.length)
-    (hshape : ∀ (e : Nat) (ed ed' : EnumDecl), D.enums[e]? = some ed → D'.enums[e]? = some ed' →
-      ed.variants = ed'.variants) :
-    ∀ e, D.enumClassOf e = D'.enumClassOf e := by
-  intro e
-  induction e using Nat.strongRecOn with
-  | _ e ih =>
-    cases hd : D.enums[e]? with
-    | none =>
-        have : D'.enums[e]? = none := by
-          rcases hd' : D'.enums[e]? with _ | ed'
-          · rfl
-          · exact absurd (List.getElem?_eq_some_iff.mp hd' |>.1)
-              (by have := List.getElem?_eq_none_iff.mp hd; omega)
-        simp [Decls.enumClassOf, hd, this]
-    | some ed =>
-        have hlt : e < D'.enums.length := by
-          have := List.getElem?_eq_some_iff.mp hd |>.1; omega
-        obtain ⟨ed', hd'⟩ : ∃ ed', D'.enums[e]? = some ed' := by
-          rcases hd' : D'.enums[e]? with _ | ed'
-          · exact absurd (List.getElem?_eq_none_iff.mp hd') (by omega)
-          · exact ⟨ed', rfl⟩
-        have hvar := hshape e ed ed' hd hd'
-        have hw := hwf e ed hd
-        have hw' := hwf' e ed' hd'
-        have hjoin : ed.payloadJoin D = ed'.payloadJoin D' := by
-          unfold EnumDecl.payloadJoin
-          rw [← hvar]
-          exact payloadFold_congr hcls (fun e' he' => ih e' he') ed.variants .copy
-            (fun e' Ts hTs hm => hw.payloadsEarlier e' Ts hTs hm)
-        simp only [Decls.enumClassOf, hd, hd']
-        rw [hw.classIsJoin, hw'.classIsJoin, hjoin]
+The theorem takes no hypothesis about the other layer's classes, which is what
+`3.0:5`'s joint well-foundedness buys: the induction is over the by-value
+"contains" relation rather than over a declaration index, so a field naming an
+enum and a payload naming a struct are the same step. `dtor` does not appear,
+because §3's equations do not read it. -/
+theorem class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
+    (hslen : D.structs.length = D'.structs.length)
+    (helen : D.enums.length = D'.enums.length)
+    (hsshape : ∀ (s : Nat) (sd sd' : StructDecl),
+      D.structs[s]? = some sd → D'.structs[s]? = some sd' →
+        sd.attr = sd'.attr ∧ sd.fields = sd'.fields)
+    (heshape : ∀ (e : Nat) (ed ed' : EnumDecl),
+      D.enums[e]? = some ed → D'.enums[e]? = some ed' → ed.variants = ed'.variants) :
+    ∀ T : Ty, T.mult D = T.mult D' := by
+  have key : ∀ d : DeclId, d.ty.mult D = d.ty.mult D' := by
+    intro d
+    refine WellFounded.induction (C := fun d => d.ty.mult D = d.ty.mult D') hwf.names d ?_
+    clear d
+    intro d ih
+    have hmem : ∀ T ∈ D.byValue d, T.mult D = T.mult D' := by
+      intro T hT
+      cases T with
+      | struct s' => exact ih (.struct s') hT
+      | enum e' => exact ih (.enum e') hT
+      | int _ _ => rfl
+      | float _ => rfl
+      | bool => rfl
+      | unit => rfl
+    cases d with
+    | struct s =>
+        show D.classOf s = D'.classOf s
+        cases hd : D.structs[s]? with
+        | none =>
+            have : D'.structs[s]? = none := by
+              rcases hd' : D'.structs[s]? with _ | sd'
+              · rfl
+              · exact absurd (List.getElem?_eq_some_iff.mp hd' |>.1)
+                  (by have := List.getElem?_eq_none_iff.mp hd; omega)
+            simp [Decls.classOf, hd, this]
+        | some sd =>
+            have hlt : s < D'.structs.length := by
+              have := List.getElem?_eq_some_iff.mp hd |>.1; omega
+            obtain ⟨sd', hd'⟩ : ∃ sd', D'.structs[s]? = some sd' := by
+              rcases hd' : D'.structs[s]? with _ | sd'
+              · exact absurd (List.getElem?_eq_none_iff.mp hd') (by omega)
+              · exact ⟨sd', rfl⟩
+            obtain ⟨hattr, hfields⟩ := hsshape s sd sd' hd hd'
+            have hfmem : ∀ T ∈ sd.fields, T.mult D = T.mult D' := by
+              intro T hT
+              exact hmem T (by simp only [Decls.byValue, hd]; exact hT)
+            have hbase : sd.baseOf D = sd'.baseOf D' := by
+              unfold StructDecl.baseOf
+              rw [← hfields]
+              exact joinFold_congr sd.fields .copy hfmem
+            simp only [Decls.classOf, hd, hd']
+            rw [(hwf.structs s sd hd).classIsJoin, (hwf'.structs s sd' hd').classIsJoin,
+              hattr, hbase]
+    | enum e =>
+        show D.enumClassOf e = D'.enumClassOf e
+        cases hd : D.enums[e]? with
+        | none =>
+            have : D'.enums[e]? = none := by
+              rcases hd' : D'.enums[e]? with _ | ed'
+              · rfl
+              · exact absurd (List.getElem?_eq_some_iff.mp hd' |>.1)
+                  (by have := List.getElem?_eq_none_iff.mp hd; omega)
+            simp [Decls.enumClassOf, hd, this]
+        | some ed =>
+            have hlt : e < D'.enums.length := by
+              have := List.getElem?_eq_some_iff.mp hd |>.1; omega
+            obtain ⟨ed', hd'⟩ : ∃ ed', D'.enums[e]? = some ed' := by
+              rcases hd' : D'.enums[e]? with _ | ed'
+              · exact absurd (List.getElem?_eq_none_iff.mp hd') (by omega)
+              · exact ⟨ed', rfl⟩
+            have hvar := heshape e ed ed' hd hd'
+            have hpmem : ∀ Ts ∈ ed.variants, ∀ T ∈ Ts, T.mult D = T.mult D' := by
+              intro Ts hTs T hT
+              refine hmem T ?_
+              simp only [Decls.byValue, hd]
+              exact List.mem_flatten.mpr ⟨Ts, hTs, hT⟩
+            have hjoin : ed.payloadJoin D = ed'.payloadJoin D' := by
+              unfold EnumDecl.payloadJoin
+              rw [← hvar]
+              exact payloadFold_congr ed.variants .copy hpmem
+            simp only [Decls.enumClassOf, hd, hd']
+            rw [(hwf.enums e ed hd).classIsJoin, (hwf'.enums e ed' hd').classIsJoin, hjoin]
+  intro T
+  cases T with
+  | struct s => exact key (.struct s)
+  | enum e => exact key (.enum e)
+  | int _ _ => rfl
+  | float _ => rfl
+  | bool => rfl
+  | unit => rfl
+
+/-- **§3's class assignment for the struct layer has one solution**, the
+projection of `class_unique` §3's own sentence asks for. It needs the enum
+layer's shapes as well as the struct layer's, because a field may name an enum
+— that is the mutual recursion `3.0:5` grounds, not a weakness of the
+statement. -/
+theorem struct_class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
+    (hslen : D.structs.length = D'.structs.length)
+    (helen : D.enums.length = D'.enums.length)
+    (hsshape : ∀ (s : Nat) (sd sd' : StructDecl),
+      D.structs[s]? = some sd → D'.structs[s]? = some sd' →
+        sd.attr = sd'.attr ∧ sd.fields = sd'.fields)
+    (heshape : ∀ (e : Nat) (ed ed' : EnumDecl),
+      D.enums[e]? = some ed → D'.enums[e]? = some ed' → ed.variants = ed'.variants) :
+    ∀ s, D.classOf s = D'.classOf s :=
+  fun s => class_unique hwf hwf' hslen helen hsshape heshape (.struct s)
+
+/-- **§3's class assignment for the enum layer has one solution** (`6.3:19`),
+the other projection of `class_unique`. Simpler than the struct one in its own
+layer — an enum records no attribute, so its class *is* the payload join — and
+mutual in the same way: a payload may name a struct. -/
+theorem enum_class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
+    (hslen : D.structs.length = D'.structs.length)
+    (helen : D.enums.length = D'.enums.length)
+    (hsshape : ∀ (s : Nat) (sd sd' : StructDecl),
+      D.structs[s]? = some sd → D'.structs[s]? = some sd' →
+        sd.attr = sd'.attr ∧ sd.fields = sd'.fields)
+    (heshape : ∀ (e : Nat) (ed ed' : EnumDecl),
+      D.enums[e]? = some ed → D'.enums[e]? = some ed' → ed.variants = ed'.variants) :
+    ∀ e, D.enumClassOf e = D'.enumClassOf e :=
+  fun e => class_unique hwf hwf' hslen helen hsshape heshape (.enum e)
 
 /-! ## The fused `Γ ; Σ` context, keyed by path -/
 
@@ -1275,21 +1368,11 @@ where the frame's scopes end (§5.7's `⊥_exit`). -/
 def WfFn (P : Program) (fd : FnDef) : Prop :=
   ∃ Γf, Typed P fd.ret (fnCtx fd) fd.body fd.ret Γf ∧ NoResidualLinear P.decls Γf
 
-/-- A well-formed declaration environment: §3's class assignment holds of every
-struct declaration (`WfStructs`) and of every enum declaration (`WfEnums`).
-This is the premise every theorem that reads a recorded class through `Ty.mult`
-carries, and it is what `checkStructs`/`checkEnums` (`Checker.lean`) decide. -/
-structure WfDecls (D : Decls) : Prop where
-  /-- §3's class assignment for the struct layer (`3.8:18`, `3.9:31`, `3.9:44`). -/
-  structs : WfStructs D
-  /-- §3's class assignment for the enum layer (`6.3:19`). -/
-  enums : WfEnums D
-
-/-- A well-formed program: §3's class assignment holds of every struct
-declaration and (Fn) §5.8 of every function. Recursion is ordinary — a body
-may call any function of the program, itself included, since (Call) reads only
-the callee's signature (§5.8, "the core is fully monomorphic") — while struct
-declarations are *not* recursive (`StructDecl.Wf.fieldsEarlier`). -/
+/-- A well-formed program: §3's class assignment holds of every declaration and
+(Fn) §5.8 of every function. Recursion is ordinary — a body may call any
+function of the program, itself included, since (Call) reads only the callee's
+signature (§5.8, "the core is fully monomorphic") — while *declarations* are
+not recursive at all (`3.0:5`, `WfNames`). -/
 structure WfProgram (P : Program) : Prop where
   /-- §3's class assignment, for every declaration of either kind. -/
   decls : WfDecls P.decls

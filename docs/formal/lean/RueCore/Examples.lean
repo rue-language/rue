@@ -1062,6 +1062,7 @@ example : checkProgram (prog tI64 joinLinearFieldOneArm) = false := by rfl
 `Ty.mult`'s lookup is the payload join at an enum type (`checkEnums_sound`). -/
 example : WfEnums enumDecls := checkEnums_sound (by rfl)
 example : WfStructs enumDecls := checkStructs_sound (by rfl)
+example : WfDecls enumDecls := checkDecls_sound (by rfl)
 
 /-- The accepted enum programs (RUE-2320's probes e1, e1b, e3b, e4, e5, e7),
 each run against the compiler before it was committed. -/
@@ -1305,9 +1306,48 @@ A *declared*-linear struct with no linear field may have one (`S3` above). -/
 example : checkStructs (Decls.ofStructs (structEnv ++
     [{ attr := .none, fields := [.struct 2], dtor := true, cls := .linear }])) = false := by rfl
 
-/-- No recursive structs: a field may name only an earlier declaration, which
-is what makes §3's class equation solvable in one pass. -/
+/-! ### `3.0:5` (E0483): no declaration contains itself by value
+
+The rule is **joint** over the two layers, and the cross-layer shape is why.
+`struct S { x0: E }` / `enum E { K(S), L }` satisfies §3's struct equation and
+`6.3:19`'s enum equation at *more than one* assignment — `Affine` in both
+layers and `Linear` in both layers each check out — so without `3.0:5` the
+recorded class would be a free parameter, and the same source program would be
+accepted under one reading and rejected under the other. `checkNoCycle` refuses
+the shape under both, which is what makes `class_unique` unconditional. The
+compiler refuses the declaration outright: E0483, "recursive type 'S' has
+infinite size (contains itself by value: S -> E -> S)".
+-/
+
+/-- The cross-layer cycle with `Affine` recorded in both layers; §3's two class
+equations hold of it. -/
+def cycAffine : Decls :=
+  { structs := [{ attr := .none, fields := [Ty.enum 0], dtor := false, cls := .affine }],
+    enums := [{ variants := [[Ty.struct 0], []], cls := .affine }] }
+
+/-- The same shapes with `Linear` recorded in both layers; §3's two class
+equations hold of this one too, and it gives `class(S)` a different value. -/
+def cycLinear : Decls :=
+  { structs := [{ attr := .none, fields := [Ty.enum 0], dtor := false, cls := .linear }],
+    enums := [{ variants := [[Ty.struct 0], []], cls := .linear }] }
+
+example : checkStructs cycAffine = true ∧ checkEnums cycAffine = true := ⟨by rfl, by rfl⟩
+example : checkStructs cycLinear = true ∧ checkEnums cycLinear = true := ⟨by rfl, by rfl⟩
+example : Ty.mult cycAffine (.struct 0) ≠ Ty.mult cycLinear (.struct 0) := by decide
+
+/-- `3.0:5` refuses both, so neither is a `WfDecls` environment and
+`class_unique` is never handed two solutions (E0483; the compiler probe is
+`p2320/cyc1.rue`). -/
+example : checkDecls cycAffine = false := by rfl
+example : checkDecls cycLinear = false := by rfl
+
+/-- The one-layer shape the same rule covers: a struct that names itself
+(E0483, "contains itself by value: S -> S"). Its class equation is solved by
+`Affine` as readily as by `Linear`, so the per-layer join check accepts it and
+only `3.0:5` refuses it. -/
 example : checkStructs (Decls.ofStructs
+    [{ attr := .none, fields := [.struct 0], dtor := false, cls := .affine }]) = true := by rfl
+example : checkDecls (Decls.ofStructs
     [{ attr := .none, fields := [.struct 0], dtor := false, cls := .affine }]) = false := by rfl
 
 /-!

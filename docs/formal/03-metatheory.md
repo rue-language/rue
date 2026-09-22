@@ -26,7 +26,8 @@ the `@copy`/`linear` attribute, whether the struct declares a destructor, and
 (`WfStructs` is the equation, and `checkStructs` decides it) — and monomorphic
 **enum** types, one payload tuple per variant with `class(E)` the payload join
 over every variant (`6.3:19`; `WfEnums` is the equation and `checkEnums`
-decides it); struct literals ((Struct-Intro) §5.8, (D-Struct) §6.5), enum
+decides it), the two layers grounded by `3.0:5`'s joint acyclicity (`WfNames`,
+decided by `checkNoCycle`, which is what makes either equation a definition); struct literals ((Struct-Intro) §5.8, (D-Struct) §6.5), enum
 construction and the `match` that eliminates it in §5.5's canonical form —
 one arm per variant, binding that variant's payload as fresh `Owned` locals
 that leave scope at the arm's end ((Enum-Intro)/(Match) §5.5,
@@ -141,7 +142,8 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   §6.1's stack. `RueCore.Untouched` carries frame locality
   across a call, so a caller's agreement survives a callee's run.
 - **Hypothesis:** `RueCore.ProgramTyped` — §3's class assignment for every
-  struct declaration and (Fn) §5.8 for every function, plus an entry point
+  struct **and enum** declaration together with `3.0:5`'s acyclicity
+  (`RueCore.WfDecls`) and (Fn) §5.8 for every function, plus an entry point
   taking no parameters — which `RueCore.checkProgram_sound` decides.
 - **Covers:** the fragment above. **Owed:** every remaining Phase C slice
   re-establishes this theorem for its forms (RUE-2233 through RUE-2237). The
@@ -270,8 +272,9 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 - **Covers:** whole bindings, **paths and per-field obligations**, the binary
   join, by-value parameters, and struct values whose class is `Linear` through
   a field — §3's join, proved to be what a declaration records
-  (`RueCore.struct_class_unique`) and to reach `Linear` exactly when the
-  declaration says so or a field does (`RueCore.struct_carriesLinear_iff`,
+  (`RueCore.class_unique`, one unconditional statement over both layers, with
+  `RueCore.struct_class_unique` its struct projection) and to reach `Linear`
+  exactly when the declaration says so or a field does (`RueCore.struct_carriesLinear_iff`,
   §5.3's `carries_linear` lifting) — on every edge but the two above. The
   per-field half is §5.6's `residual-linear` read on the residue
   (`RueCore.residualLinear`), so consuming exactly the linear part of an
