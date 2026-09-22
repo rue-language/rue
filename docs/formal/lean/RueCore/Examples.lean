@@ -1260,6 +1260,7 @@ def enumHolderPartialThenDrop : Expr :=
   letIn false (mkStruct sHolder [mkEnum eAffineIdx 0 [resA (lit 1)], resA (lit 2)])
     (letIn false («match» (use (.proj (.var 0) 0)) [lit 5, lit 6])
       (seq (drop (.var 1)) (lit 7)))
+
 /-! ## The declared-linear destructure (RUE-2236)
 
 §4.2's `Declared(d, π_s)` plan and the rule that discharges it,

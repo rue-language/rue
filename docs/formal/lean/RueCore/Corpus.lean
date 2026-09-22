@@ -541,6 +541,7 @@ def cases : List Case := [
     description := "The carrier a match partially moved, dropped explicitly: (@Drop) §5.3 asks only that the place be Owned, and §6.11's walk skips the ⊘ the match left at the enum field.",
     rules := ["(Match) §5.5", "(@Drop) §5.3", "3.8:22", "§6.11", "3.9:13"],
     prog := Examples.enumProg Examples.tI64 Examples.enumHolderPartialThenDrop
+    },
   { name := "destructure_copy_leaf",
     description := "A Copy field read out of a declared-linear struct: §4.2's central override consumes the whole struct for a Copy leaf, and the affine residue drops at the access rather than at scope exit.",
     rules := ["(Use-Declared-Linear-Destructure) §5.1", "(D-Use-Declared-Linear) §6.3", "3.8:33"],
