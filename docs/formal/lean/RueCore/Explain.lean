@@ -1894,6 +1894,10 @@ def traceEval (M : FloatOps) (P : Program) :
                | .error w =>
                    refused [] d Θ R (.drop pl) "@drop §6.11 at a declared-linear plan (§6.3)" H w
                | .ok (leaf, evs) =>
+                 if leaf.isHole then
+                   refused [] d Θ R (.drop pl) "@drop §6.11 at a declared-linear plan (§6.3)"
+                     H .useAfterMove
+                 else
                  match dropCell P.decls ℓ leaf with
                  | .error w =>
                      refused [] d Θ R (.drop pl) "@drop §6.11 at a declared-linear plan (§6.3)" H w

@@ -1372,6 +1372,20 @@ def destructureAncestorDropped : Expr :=
           (seq (drop (.var 1))
             (seq (dbg (lit 30)) (use (.var 0)))))))
 
+/-- **A `⊘` at the selected leaf**: `y.x0.x0` destructures `y.x0`, so `y.x0` is
+already a hole when `@drop(y.x0)` reaches it at the plan `([], [0])`. The
+checker refuses the program (the second read of `y.x0` is E0205), and the
+machine refuses the redex with `useAfterMove` — the guard the ordinary `@drop`
+branch makes at the named place, made here at the leaf. Without it
+`Contents.mult ⊘ = .copy` would let the drop complete in silence. -/
+def dropDeclaredHoleLeaf : Expr :=
+  letIn false (mkStruct sDestrOuter [mkStruct sDestrPair [lit 1, resA (lit 2)], resA (lit 3)])
+    (seq (dbg (lit 10))
+      (letIn false (use (.proj (.proj (.var 0) 0) 0))
+        (seq (dbg (lit 20))
+          (seq (drop (.proj (.var 1) 0))
+            (seq (dbg (lit 30)) (use (.var 0)))))))
+
 /-! ## Calls, frames, and `return` (RUE-2233)
 
 Each of these needs more than one function, so it is written as a whole
@@ -1758,6 +1772,16 @@ leaves the case unchecked because §5.1's premise has excluded it, and this is
 the state that premise excludes. -/
 example : run demoOps (destrProg tI64 destructureLinearResidue) demoFuel
     = .stuck .linearLeak := by rfl
+
+/-- The machine's hole guard at the **selected leaf** of a declared plan: an
+already-`⊘` leaf is a refusal, not a silent no-op, exactly as it is at the named
+place of an ordinary `@drop` (`dropDeclaredHoleLeaf`). The checker refuses the
+program too, so the state is unreachable from a §5 derivation; the monitor is
+what makes that visible rather than assumed. -/
+example : checkProgram (destrProg tI64 dropDeclaredHoleLeaf) = false := by rfl
+
+example : run demoOps (destrProg tI64 dropDeclaredHoleLeaf) demoFuel
+    = .stuck .useAfterMove := by rfl
 
 /-! The two RUE-2316 witnesses are accepted — which is the point: the §7
 theorems apply to them, and the run below still loses the resource. -/

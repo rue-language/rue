@@ -2961,14 +2961,20 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           have hpl : cc.declaredPlan P.decls pl.path = some (πd, πs) := by
             rw [ContentsMatches.declaredPlan_eq pl.path hmm hgfull hty]; exact hplan
           obtain ⟨cd, hread, hsub⟩ := ContentsMatches.readAt πd hmm hgd htd
-          obtain ⟨leaf, rs, hdest, hlty, _⟩ :=
+          obtain ⟨leaf, rs, hdest, hlty, hlhf⟩ :=
             destructure_ok hwf.decls hsub.contentsTy (hsub.holeFree hfo) hleaf hres
+          -- The machine's hole guard on the leaf (`Dynamics.lean`) is the one
+          -- the ordinary `.drop` branch makes; here it is dead, because
+          -- `fully-owned(Σ, d)` left the whole of `d` hole-free and `split`
+          -- carries that to the leaf.
+          have hnh : leaf.isHole = false := by
+            cases leaf <;> simp_all [Contents.isHole, Contents.holeFree]
           obtain ⟨levs, hdc⟩ := dropCell_ok (D := P.decls) (ℓ := ℓ) hlty
           obtain ⟨cc', hw, hmm'⟩ :=
             ContentsMatches.writeAt πd hmm hgd htd (ContentsMatches.hole (T := Td))
           have hev : eval M.toFloatOps (fuel + 1) P H φ (.drop pl)
               = .ok (H.set ℓ (.full cc')) .unit (dropResidueEvents P.decls rs ++ levs) := by
-            simp [eval, hρ, hc, hpl, hread, hdest, hdc, hw]
+            simp [eval, hρ, hc, hpl, hread, hdest, hnh, hdc, hw]
           rw [hev]
           exact ⟨.unit, ⟨hfm.store.set hρ ⟨cc', rfl, hmm'⟩, hfm.record⟩,
             Untouched.trans_set Untouched.refl (Or.inr (List.mem_of_getElem? hρ))⟩
