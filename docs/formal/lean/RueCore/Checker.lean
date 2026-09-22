@@ -11,20 +11,22 @@ independent implementation" purpose of the formal core
 (`docs/formal/README.md`): a verified reference for what the compiler's
 semantic phase must accept.
 
-`checkProgram` lifts it to a whole program: §3's class assignment holds of
-every struct declaration (`checkStructs`), every function body checks at its
-declared return type under (Fn) §5.8's entry context, its normal exit edge
-discharges §5.6's obligation, and the entry point takes no parameters. Its
-soundness lemma produces the `ProgramTyped` hypothesis `Soundness.lean`'s
-program theorems ask for.
+`checkProgram` lifts it to a whole program: the declarations are well-formed
+(`checkDecls`), every function body checks at its declared return type under
+(Fn) §5.8's entry context, its normal exit edge discharges §5.6's obligation,
+and the entry point takes no parameters. Its soundness lemma produces the
+`ProgramTyped` hypothesis `Soundness.lean`'s program theorems ask for.
 
-`checkStructs` is what makes `Ty.mult`'s lookup honest: a declaration
-*records* `class(S)`, and this pass is the equation §3 writes for it, together
-with `3.8:18`/`3.9:31`'s `@copy` restriction, `3.9:44`'s destructor
-restriction, and the acyclicity that makes the equation solvable in one pass
-(`struct_class_unique`). `checkEnums` is the same for the enum layer, where §3
-writes one equation and no restriction: `class(E)` is the payload join over
-every variant (`6.3:19`).
+`checkDecls` is what makes `Ty.mult`'s lookup honest, in three parts. A
+declaration *records* `class(S)`, and `checkStructs` is the equation §3 writes
+for it, together with `3.8:18`/`3.9:31`'s `@copy` restriction and `3.9:44`'s
+destructor restriction; `checkEnums` is the enum layer's one equation, the
+payload join over every variant (`6.3:19`). What makes either equation a
+*definition* rather than a fixpoint condition is `3.0:5` (E0483): no
+declaration contains itself by value, directly or through a cycle. That rule is
+joint over the two layers — a field may name an enum and a payload may name a
+struct — so `checkNoCycle` decides it once, for the whole environment, and
+`class_unique` is the unconditional uniqueness statement it buys.
 
 ## `match`, algorithmically
 
@@ -702,52 +704,96 @@ def checkFn (P : Program) (fd : FnDef) : Bool :=
   | some (T, Γf) => decide (T = fd.ret) && decide (NoResidualLinear P.decls Γf)
   | none => false
 
-/-- §3's class assignment for one declaration, as an algorithm: the recorded
-class is the attribute's lifting of the field join, a `@copy` declaration's
-join is already `Copy` and it has no destructor (`3.8:18`, `3.9:31`), a
-destructor-bearing declaration carries no linear field (`3.9:44`), and every
-field names an earlier declaration. -/
-def checkStructDecl (D : Decls) (s : Nat) (sd : StructDecl) : Bool :=
-  sd.fields.all (fun T => match T with | .struct s' => decide (s' < s) | _ => true) &&
-    decide (sd.cls = sd.attr.lift (sd.baseOf D)) &&
+/-- §3's class assignment for one struct declaration, as an algorithm: the
+recorded class is the attribute's lifting of the field join, a `@copy`
+declaration's join is already `Copy` and it has no destructor (`3.8:18`,
+`3.9:31`), and a destructor-bearing declaration carries no linear field
+(`3.9:44`).
+
+Acyclicity is deliberately **not** here. `3.0:5` is one rule over both layers,
+so `checkNoCycle` decides it for the whole environment at once and no
+per-declaration clause can stand in for it. -/
+def checkStructDecl (D : Decls) (sd : StructDecl) : Bool :=
+  decide (sd.cls = sd.attr.lift (sd.baseOf D)) &&
     (match sd.attr with
      | .copy => decide (sd.baseOf D = .copy) && !sd.dtor
      | _ => true) &&
     (!sd.dtor || !decide (sd.baseOf D = .linear))
 
-/-- The declarations from index `k` on (helper). -/
-def checkStructsFrom (D : Decls) : Nat → List StructDecl → Bool
-  | _, [] => true
-  | s, sd :: rest => checkStructDecl D s sd && checkStructsFrom D (s + 1) rest
-
 /-- §3's class assignment for a whole struct environment, as an algorithm.
 `WfStructs` is what it decides, and that is the premise `Ty.mult`'s lookup
 needs to be §3's join. -/
-def checkStructs (D : Decls) : Bool := checkStructsFrom D 0 D.structs
+def checkStructs (D : Decls) : Bool := D.structs.all (checkStructDecl D)
 
 /-- §3's class assignment for one enum declaration, as an algorithm (`6.3:19`):
-every payload component names only an earlier enum, and the recorded class is the
-payload join over every variant. There is no attribute clause and no destructor
-clause — §3 gives an enum neither. -/
-def checkEnumDecl (D : Decls) (e : Nat) (ed : EnumDecl) : Bool :=
-  ed.variants.all
-      (fun Ts => Ts.all (fun T => match T with | .enum e' => decide (e' < e) | _ => true)) &&
-    decide (ed.cls = ed.payloadJoin D)
-
-/-- The enum declarations from index `k` on (helper). -/
-def checkEnumsFrom (D : Decls) : Nat → List EnumDecl → Bool
-  | _, [] => true
-  | e, ed :: rest => checkEnumDecl D e ed && checkEnumsFrom D (e + 1) rest
+the recorded class is the payload join over every variant. There is no attribute
+clause, no destructor clause and no acyclicity clause — §3 gives an enum neither
+of the first two, and the third is `checkNoCycle`'s. -/
+def checkEnumDecl (D : Decls) (ed : EnumDecl) : Bool :=
+  decide (ed.cls = ed.payloadJoin D)
 
 /-- §3's class assignment for a whole enum environment, as an algorithm.
 `WfEnums` is what it decides, and that is the premise `Ty.mult`'s lookup needs to
 be `6.3:19`'s join at an enum type. -/
-def checkEnums (D : Decls) : Bool := checkEnumsFrom D 0 D.enums
+def checkEnums (D : Decls) : Bool := D.enums.all (checkEnumDecl D)
 
-/-- A whole program as an algorithm: (Fn) §5.8 for every function, plus the
-entry point's empty parameter list (§6.12's top-level result is `main()`). -/
+/-! ### `3.0:5`, decided by peeling
+
+`WfNames` (`Statics.lean`) says the by-value "contains" relation over the
+declarations is well-founded. On a finite environment that is decidable by
+**peeling**: a declaration is *grounded* at round `n+1` when every declaration
+it contains by value is grounded at round `n`, and nothing is grounded at round
+`0`. Grounding is monotone in the round, and while any declaration is
+ungrounded but has all its dependencies grounded, the next round grounds it —
+so `|structs| + |enums|` rounds settle the question, and an environment all of
+whose declarations are grounded by then has no cycle.
+
+The order is **computed and thrown away**. Nothing is stored in `Decls`, so a
+declaration environment is the same data it always was — which is what keeps
+the corpus JSON shape and the seed cases unchanged — and the one rule covers
+both layers, as `3.0:5` writes it (E0483).
+-/
+
+/-- Whether a type's declaration is already grounded. A scalar names no
+declaration, so it always is (helper). -/
+def Ty.grounded (st : List Bool × List Bool) : Ty → Bool
+  | .struct s => (st.1[s]?).getD false
+  | .enum e => (st.2[e]?).getD false
+  | .int _ _ | .float _ | .bool | .unit => true
+
+/-- One peel round: a declaration is grounded when every type it contains by
+value is — a struct's fields, an enum's payload components over every variant
+(helper). -/
+def Decls.peelStep (D : Decls) (st : List Bool × List Bool) : List Bool × List Bool :=
+  (D.structs.map (fun sd => sd.fields.all (Ty.grounded st)),
+   D.enums.map (fun ed => ed.variants.all (fun Ts => Ts.all (Ty.grounded st))))
+
+/-- The grounded flags after `n` peel rounds, one per declaration of each
+layer; nothing is grounded at round `0` (helper). -/
+def Decls.peel (D : Decls) : Nat → List Bool × List Bool
+  | 0 => (D.structs.map (fun _ => false), D.enums.map (fun _ => false))
+  | n + 1 => D.peelStep (D.peel n)
+
+/-- **`3.0:5` (E0483) as an algorithm**: every declaration is grounded after
+`|structs| + |enums|` peel rounds, which is "no struct or enum contains itself
+by value, either directly or through a cycle of struct fields and enum
+payloads". `checkNoCycle_sound` turns an acceptance into `WfNames`, the premise
+that makes §3's two class equations a definition. -/
+def checkNoCycle (D : Decls) : Bool :=
+  let st := D.peel (D.structs.length + D.enums.length)
+  st.1.all id && st.2.all id
+
+/-- A whole declaration environment as an algorithm: §3's equation for every
+struct (`checkStructs`), `6.3:19`'s for every enum (`checkEnums`), and
+`3.0:5`'s acyclicity once, jointly (`checkNoCycle`). `WfDecls` is what it
+decides. -/
+def checkDecls (D : Decls) : Bool := checkStructs D && checkEnums D && checkNoCycle D
+
+/-- A whole program as an algorithm: §3 and `3.0:5` for the declarations, (Fn)
+§5.8 for every function, plus the entry point's empty parameter list (§6.12's
+top-level result is `main()`). -/
 def checkProgram (P : Program) : Bool :=
-  checkStructs P.decls && checkEnums P.decls && P.fns.all (checkFn P) &&
+  checkDecls P.decls && P.fns.all (checkFn P) &&
     (match P.fns[0]? with
      | some fd => fd.params.isEmpty
      | none => false)
@@ -765,15 +811,12 @@ theorem checkFn_sound {P : Program} {fd : FnDef} (h : checkFn P fd = true) : WfF
 
 /-- Every `checkStructDecl` acceptance is §3's class assignment for that
 declaration. -/
-theorem checkStructDecl_sound {D : Decls} {s : Nat} {sd : StructDecl}
-    (h : checkStructDecl D s sd = true) : sd.Wf D s := by
+theorem checkStructDecl_sound {D : Decls} {sd : StructDecl}
+    (h : checkStructDecl D sd = true) : sd.Wf D := by
   unfold checkStructDecl at h
-  simp only [Bool.and_eq_true, List.all_eq_true, decide_eq_true_eq] at h
-  obtain ⟨⟨⟨hfields, hcls⟩, hcopy⟩, hdtor⟩ := h
-  refine ⟨?_, hcls, ?_, ?_⟩
-  · intro s' hmem
-    have := hfields _ hmem
-    simpa using this
+  simp only [Bool.and_eq_true, decide_eq_true_eq] at h
+  obtain ⟨⟨hcls, hcopy⟩, hdtor⟩ := h
+  refine ⟨hcls, ?_, ?_⟩
   · intro hattr
     rw [hattr] at hcopy
     simp only [Bool.and_eq_true, decide_eq_true_eq, Bool.not_eq_eq_eq_not,
@@ -784,67 +827,132 @@ theorem checkStructDecl_sound {D : Decls} {s : Nat} {sd : StructDecl}
       decide_eq_false_iff_not] at hdtor
     exact hdtor
 
-/-- `checkStructsFrom` checks the declaration at every offset (helper). -/
-theorem checkStructsFrom_sound : ∀ (D : Decls) (k : Nat) (L : List StructDecl),
-    checkStructsFrom D k L = true → ∀ (i : Nat) (sd : StructDecl), L[i]? = some sd →
-      checkStructDecl D (k + i) sd = true
-  | _, _, [], _, i, sd, hget => by simp at hget
-  | D, k, sd₀ :: rest, h, i, sd, hget => by
-      simp only [checkStructsFrom, Bool.and_eq_true] at h
-      cases i with
-      | zero =>
-          simp only [List.getElem?_cons_zero, Option.some_inj] at hget
-          subst hget
-          simpa using h.1
-      | succ j =>
-          simp only [List.getElem?_cons_succ] at hget
-          have hk := checkStructsFrom_sound D (k + 1) rest h.2 j sd hget
-          have heq : k + 1 + j = k + (j + 1) := by omega
-          rwa [heq] at hk
-
 /-- Every `checkStructs` acceptance is §3's class assignment for the whole
 environment (`WfStructs`). -/
 theorem checkStructs_sound {D : Decls} (h : checkStructs D = true) : WfStructs D := by
   intro s sd hget
-  have := checkStructsFrom_sound D 0 D.structs h s sd hget
-  simpa using checkStructDecl_sound this
+  simp only [checkStructs, List.all_eq_true] at h
+  obtain ⟨hlt, hs⟩ := List.getElem?_eq_some_iff.mp hget
+  exact checkStructDecl_sound (h sd (hs ▸ List.getElem_mem hlt))
 
 /-- Every `checkEnumDecl` acceptance is §3's class assignment for that
 declaration (`6.3:19`). -/
-theorem checkEnumDecl_sound {D : Decls} {e : Nat} {ed : EnumDecl}
-    (h : checkEnumDecl D e ed = true) : ed.Wf D e := by
+theorem checkEnumDecl_sound {D : Decls} {ed : EnumDecl}
+    (h : checkEnumDecl D ed = true) : ed.Wf D := by
   unfold checkEnumDecl at h
-  simp only [Bool.and_eq_true, List.all_eq_true, decide_eq_true_eq] at h
-  obtain ⟨hpayloads, hcls⟩ := h
-  refine ⟨?_, hcls⟩
-  intro e' Ts hTs hmem
-  have := hpayloads Ts hTs (Ty.enum e') hmem
-  simpa using this
-
-/-- `checkEnumsFrom` checks the declaration at every offset (helper). -/
-theorem checkEnumsFrom_sound : ∀ (D : Decls) (k : Nat) (L : List EnumDecl),
-    checkEnumsFrom D k L = true → ∀ (i : Nat) (ed : EnumDecl), L[i]? = some ed →
-      checkEnumDecl D (k + i) ed = true
-  | _, _, [], _, i, ed, hget => by simp at hget
-  | D, k, ed₀ :: rest, h, i, ed, hget => by
-      simp only [checkEnumsFrom, Bool.and_eq_true] at h
-      cases i with
-      | zero =>
-          simp only [List.getElem?_cons_zero, Option.some_inj] at hget
-          subst hget
-          simpa using h.1
-      | succ j =>
-          simp only [List.getElem?_cons_succ] at hget
-          have hk := checkEnumsFrom_sound D (k + 1) rest h.2 j ed hget
-          have heq : k + 1 + j = k + (j + 1) := by omega
-          rwa [heq] at hk
+  simp only [decide_eq_true_eq] at h
+  exact ⟨h⟩
 
 /-- Every `checkEnums` acceptance is §3's class assignment for the whole enum
 environment (`WfEnums`). -/
 theorem checkEnums_sound {D : Decls} (h : checkEnums D = true) : WfEnums D := by
   intro e ed hget
-  have := checkEnumsFrom_sound D 0 D.enums h e ed hget
-  simpa using checkEnumDecl_sound this
+  simp only [checkEnums, List.all_eq_true] at h
+  obtain ⟨hlt, he⟩ := List.getElem?_eq_some_iff.mp hget
+  exact checkEnumDecl_sound (h ed (he ▸ List.getElem_mem hlt))
+
+/-- The grounded flags have one entry per declaration at every round
+(helper). -/
+theorem Decls.peel_length (D : Decls) : ∀ n : Nat,
+    (D.peel n).1.length = D.structs.length ∧ (D.peel n).2.length = D.enums.length
+  | 0 => ⟨by simp [Decls.peel], by simp [Decls.peel]⟩
+  | _ + 1 => ⟨by simp [Decls.peel, Decls.peelStep], by simp [Decls.peel, Decls.peelStep]⟩
+
+/-- Nothing is grounded at round `0` (helper). -/
+theorem Decls.grounded_peel_zero (D : Decls) (d : DeclId) :
+    Ty.grounded (D.peel 0) d.ty = false := by
+  cases d with
+  | struct s =>
+      simp only [DeclId.ty, Ty.grounded, Decls.peel, List.getElem?_map]
+      cases D.structs[s]? <;> rfl
+  | enum e =>
+      simp only [DeclId.ty, Ty.grounded, Decls.peel, List.getElem?_map]
+      cases D.enums[e]? <;> rfl
+
+/-- A declaration grounded at round `n+1` contains only declarations grounded
+at round `n`. This is the peel read backwards, and it is what turns an
+acceptance into well-foundedness (helper). -/
+theorem Decls.grounded_pred {D : Decls} {n : Nat} {d d' : DeclId}
+    (h : Ty.grounded (D.peel (n + 1)) d.ty = true) (hn : D.Names d d') :
+    Ty.grounded (D.peel n) d'.ty = true := by
+  cases d with
+  | struct s =>
+      simp only [DeclId.ty, Ty.grounded, Decls.peel, Decls.peelStep, List.getElem?_map] at h
+      cases hd : D.structs[s]? with
+      | none => rw [hd] at h; exact absurd h (by simp)
+      | some sd =>
+          rw [hd] at h
+          simp only [Option.map_some, Option.getD_some, List.all_eq_true] at h
+          simp only [Decls.Names, Decls.byValue, hd] at hn
+          exact h d'.ty hn
+  | enum e =>
+      simp only [DeclId.ty, Ty.grounded, Decls.peel, Decls.peelStep, List.getElem?_map] at h
+      cases hd : D.enums[e]? with
+      | none => rw [hd] at h; exact absurd h (by simp)
+      | some ed =>
+          rw [hd] at h
+          simp only [Option.map_some, Option.getD_some, List.all_eq_true] at h
+          simp only [Decls.Names, Decls.byValue, hd] at hn
+          obtain ⟨Ts, hTs, hT⟩ := List.mem_flatten.mp hn
+          exact h Ts hTs d'.ty hT
+
+/-- A declaration grounded at some round is accessible in the by-value
+relation (helper). -/
+theorem Decls.acc_of_grounded (D : Decls) : ∀ (n : Nat) (d : DeclId),
+    Ty.grounded (D.peel n) d.ty = true → Acc (fun a b => D.Names b a) d
+  | 0, d, h => absurd h (by rw [D.grounded_peel_zero d]; simp)
+  | n + 1, d, h =>
+      Acc.intro d (fun d' hd' => D.acc_of_grounded n d' (Decls.grounded_pred h hd'))
+
+/-- A declaration index the environment does not have contains nothing, so it
+is accessible outright (helper). -/
+theorem Decls.acc_of_empty {D : Decls} {d : DeclId} (h : D.byValue d = []) :
+    Acc (fun a b => D.Names b a) d :=
+  Acc.intro d (fun _ hd' => absurd hd' (by simp [Decls.Names, h]))
+
+/-- **Every `checkNoCycle` acceptance is `3.0:5`** (`WfNames`): the by-value
+"contains" relation over the declarations is well-founded, so no struct or enum
+contains itself by value through any cycle of fields and payloads. This is the
+premise `class_unique` turns into "§3's class assignment has one solution". -/
+theorem checkNoCycle_sound {D : Decls} (h : checkNoCycle D = true) : WfNames D := by
+  have key : ∀ (l : List Bool) (i : Nat) (b : Bool), l.all id = true → l[i]? = some b →
+      b = true := by
+    intro l i b hall hb
+    simp only [List.all_eq_true, id] at hall
+    obtain ⟨hlt, hget⟩ := List.getElem?_eq_some_iff.mp hb
+    exact hall b (hget ▸ List.getElem_mem hlt)
+  simp only [checkNoCycle, Bool.and_eq_true] at h
+  obtain ⟨hs, he⟩ := h
+  refine WellFounded.intro (fun d => ?_)
+  cases d with
+  | struct s =>
+      cases hd : D.structs[s]? with
+      | none => exact Decls.acc_of_empty (by simp [Decls.byValue, hd])
+      | some sd =>
+          refine D.acc_of_grounded (D.structs.length + D.enums.length) (.struct s) ?_
+          have hlt : s < (D.peel (D.structs.length + D.enums.length)).1.length := by
+            rw [(D.peel_length _).1]
+            exact (List.getElem?_eq_some_iff.mp hd).1
+          have hb := List.getElem?_eq_getElem hlt
+          simp only [DeclId.ty, Ty.grounded, hb, Option.getD_some]
+          exact key _ s _ hs hb
+  | enum e =>
+      cases hd : D.enums[e]? with
+      | none => exact Decls.acc_of_empty (by simp [Decls.byValue, hd])
+      | some ed =>
+          refine D.acc_of_grounded (D.structs.length + D.enums.length) (.enum e) ?_
+          have hlt : e < (D.peel (D.structs.length + D.enums.length)).2.length := by
+            rw [(D.peel_length _).2]
+            exact (List.getElem?_eq_some_iff.mp hd).1
+          have hb := List.getElem?_eq_getElem hlt
+          simp only [DeclId.ty, Ty.grounded, hb, Option.getD_some]
+          exact key _ e _ he hb
+
+/-- Every `checkDecls` acceptance is a well-formed declaration environment:
+§3's class assignment in both layers and `3.0:5`'s acyclicity. -/
+theorem checkDecls_sound {D : Decls} (h : checkDecls D = true) : WfDecls D := by
+  simp only [checkDecls, Bool.and_eq_true] at h
+  exact ⟨checkNoCycle_sound h.2, checkStructs_sound h.1.1, checkEnums_sound h.1.2⟩
 
 /-- Every `checkProgram` acceptance is the `ProgramTyped` hypothesis the §7
 program theorems (`Soundness.lean`) take, so running the checker is enough to
@@ -852,8 +960,8 @@ know the safety theorems apply to a program. -/
 theorem checkProgram_sound {P : Program} (h : checkProgram P = true) : ProgramTyped P := by
   unfold checkProgram at h
   simp only [Bool.and_eq_true, List.all_eq_true] at h
-  obtain ⟨⟨⟨hstructs, henums⟩, hall⟩, hentry⟩ := h
-  refine ⟨⟨⟨checkStructs_sound hstructs, checkEnums_sound henums⟩,
+  obtain ⟨⟨hdecls, hall⟩, hentry⟩ := h
+  refine ⟨⟨checkDecls_sound hdecls,
     fun fd hmem => checkFn_sound (hall fd (by simpa using hmem))⟩, ?_⟩
   split at hentry
   · rename_i fd hfd

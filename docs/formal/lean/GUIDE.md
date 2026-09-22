@@ -593,10 +593,13 @@ declaration, and `checkStructs` decides it — so the class a declaration
 *records* is never taken on trust. Two more conjuncts matter here:
 `3.8:18`/`3.9:31` would reject `@copy` on either of these (their joins are
 not `Copy`, and they have destructors), and `3.9:44` would reject the
-destructor if either carried a *linear* field. `struct_class_unique` is the
-statement that the recorded class is determined rather than free: on an
-environment whose fields name only earlier declarations, at most one
-assignment of classes satisfies §3's equation.
+destructor if either carried a *linear* field. A third check sits beside them
+rather than inside them: `3.0:5` (E0483) forbids a declaration to contain
+itself by value through any cycle of struct fields and enum payloads, and
+`checkNoCycle` decides it for both layers at once. `class_unique` is the
+statement those three buy — that the recorded class is determined rather than
+free: on well-formed declarations of the same shapes, exactly one assignment
+of classes satisfies §3's equations.
 
 ### The program, and what the checker demands
 

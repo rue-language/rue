@@ -75,13 +75,9 @@ compute in and what makes their results total. Arithmetic does **not** wrap —
 §3 fixes `class(S)` as the join of the field classes lifted by the declared
 attribute. A declaration *records* that class, and the program well-formedness
 judgment `WfStructs` (`Statics.lean`) is §3's equation: the recorded class is
-the lifted join, a `@copy` declaration's fields are all `Copy` and it declares
-no destructor (`3.8:18`, `3.9:31`), and a field may name only an earlier
-declaration. Recording it is what lets `Ty.mult` be a lookup rather than a
-recursion over the environment, and `struct_class_unique` (`Statics.lean`) is
-the proof that the record is determined rather than free: on an environment
-whose fields name only earlier declarations, at most one assignment of classes
-satisfies §3's equation.
+the lifted join, and a `@copy` declaration's fields are all `Copy` and it
+declares no destructor (`3.8:18`, `3.9:31`). Recording it is what lets
+`Ty.mult` be a lookup rather than a recursion over the environment.
 
 An enum declaration records its class the same way, and §3 gives it a simpler
 equation: no attribute to lift and no destructor to declare, just the join over
@@ -90,6 +86,14 @@ variant is a run-time fact. `WfEnums` is that equation and
 `enum_carriesLinear_iff` is the biconditional it buys — which is why an enum one
 of whose variants carries a `linear` payload must be consumed even when the
 value in hand is the other variant.
+
+What makes both equations definitions rather than fixpoint conditions is
+`3.0:5` (E0483): no struct or enum contains itself by value, directly or
+through a cycle of struct fields and enum payloads. The condition is joint over
+the two layers because the recursion is — a field may name an enum and a
+payload may name a struct — and `class_unique` (`Statics.lean`) is the proof it
+buys, unconditionally: on declarations of the same shapes, at most one
+assignment of classes satisfies §3's equations.
 
 `Expr` and `Val` derive `Repr` but not `DecidableEq`: both carry a nested
 inductive occurrence (`List Expr`, `List Val`), for which Lean's `DecidableEq`
