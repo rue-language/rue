@@ -33,7 +33,11 @@ one arm per variant, binding that variant's payload as fresh `Owned` locals
 that leave scope at the arm's end ((Enum-Intro)/(Match) §5.5,
 (D-Enum-Intro)/(D-Match) §6.6, `6.3:17`) — and §6.11's drop order — a value's user
 destructor, then its fields in declaration order, recursively, or an enum's
-**active** variant's payload only (`6.3:20`); use
+**active** variant's payload only (`6.3:20`); the
+fixed-length array `[T; n]` ((Array-Intro) §5.8, (D-Array) §6.5) with `class`
+as §3's four-line lift of `class(T)`, §6.11's **ascending** element order, the
+surface repeat form `[e; n]` at `7.1:38`'s `Copy` element type, and the
+dynamic-index read and write with (D-Index-Trap) §6.5's `bounds` trap; use
 (copy/move), `@drop`, `let` with scope-exit drop, assignment with
 reinitialization, sequencing with the discard check, `if` with the §5.5 branch
 join, §2's whole integer operator set — `+ - * / %`, `& | ^`, `<< >>`,
@@ -50,28 +54,45 @@ the five of `3.12:34`; top-level function definitions,
 by-value calls with frames and scope records ((Fn)/(Call) §5.8,
 (D-Call)/(D-Return-Value) §6.9), and `return` with its σ unwind
 ((Return-Value) §5.7, (D-Return) §6.9). **Places** are §5's
-`Path ::= x | Path.f`, so a use, a `@drop` and an assignment each name one:
+`Path ::= x | Path.f | Path[c]`, so a use, a `@drop` and an assignment each
+name one:
 a projection in value context is the partial move of `3.8:22` (§4.2), the
 `fully-owned` and `3.9:34` premises of (Use-Move) §5.1 are checked, §5.6's
 leak check is the recursive `residual-linear` read on the residue, and §5.5's
 join is taken path by path. No declared-linear destructure — a path with a
 declared-`linear` proper prefix is rejected as a stated restriction of the
 fragment rather than given (Use-Declared-Linear-Destructure) §5.1 (RUE-2236) —
-no arrays and so no `Path[c]` step, no element-wise `3.8:73` form and no
-`3.8:68` root-index restriction, no equality compare (it borrows its
+and **no element move**: an array is owned whole here, so `3.8:68`'s
+constant-index element move, the `MovedOut` element state it leaves and
+`3.8:73`'s path-specific element drop are refused by a premise of the
+fragment's own (`RueCore.Place.noIdx`) rather than by a rule of the calculus,
+which the compiler's acceptance of `let s: S = a[1];` shows — RUE-2327 lifts
+it. No equality compare (it borrows its
 operands, `4.3:3f`, so `≈`'s float leaf has no instance here), no payload path
 into an enum (§5.6 tracks none, so `Place` has no enum step), no wildcard,
 repeated or guarded `match` pattern and no bool or integer scrutinee (all
 elaboration obligations §5.5 states), no
 `inout`/`borrow` parameters, accessor calls, loops, loans, or buffers.
 
+**One form with no core image.** §2's elaboration inventory gives the repeat
+literal `[e; n]` no core form: it elaborates to `let t = e; [t, …, t]`, one
+evaluation of the operand and then `n` value-context copies, which `7.1:38`'s
+`Copy` restriction makes free. The mechanization keeps it as a rule
+(`RueCore.Typed.repeatArray`) and a machine arm of its own, so that the
+printer can emit the surface spelling the compiler's E0905 is about and the
+bridge exercises it. Its premise and its dynamics *are* that elaboration's,
+but that they are is by construction and not by a theorem: this is the one
+place where the mechanization has a form the calculus's core does not.
+
 **The trap inventory, and what a trap carries.** Every §6.12 category the
 fragment reaches is a `PanicKind`: `overflow` (`+ - *`, `neg`, `min_T / -1`,
 `min_T % -1`), `divZero`, `remZero`, `castOverflow` (`@intCast`, `4.13:28`)
 and `user` (`@panic`). The one float producer is `@float_to_int`, and it
 reaches `overflow` rather than a category of its own (`3.12:18`, `8.1:7`):
-float *arithmetic* never traps at all (`3.12:21`). `bounds` follows the
-arrays. A trap result carries the **observable output that ran
+float *arithmetic* never traps at all (`3.12:21`). `bounds` is the array
+index's, and only a **dynamic** one reaches it: a constant index is
+bounds-checked where the place is typed (`7.1:9`, the compiler's E0902), so it
+is the one index error that is never a trap. A trap result carries the **observable output that ran
 before it** — the user destructors and the `@dbg` lines — because §6.12's
 `Outcome` is exit status and stdout together and a trapping process prints
 what it printed before exiting 101. `Examples.panicAfterDrop` and
@@ -166,9 +187,14 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   forbids handing such an aggregate to a new owner — which is the compiler's
   E0205 "use of partially moved value" (`RueCore.Examples.partialThenWhole`).
   Reading a *sibling* through a partially moved base stays legal
-  (`3.8:53`, (Owned-Base) §5.1, mechanized as `RueCore.OwnSt.get`).
-  **Owed:** array elements at constant indices (RUE-2235) and the
-  declared-linear destructure's selected leaf (RUE-2236).
+  (`3.8:53`, (Owned-Base) §5.1, mechanized as `RueCore.OwnSt.get`). An array
+  element at a constant index is a path like any other, so a read of one is
+  covered; a *dynamic* index cannot be tracked as a path at all, and
+  §5.1's (Use-Untrackable-Dynamic-Copy) asks `fully-owned(Σ, p)` of the whole
+  array for exactly that reason (`3.8:70`, `7.1:45`).
+  **Owed:** the constant-index element **move** and the `MovedOut` element
+  state it leaves (RUE-2327), and the declared-linear destructure's selected
+  leaf (RUE-2236).
 
 ## No double-free
 
@@ -189,7 +215,10 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   discriminant-only variant (`6.3:20`);
   `RueCore.dropContents_events` is the equation it reads off, and
   `RueCore.dropEvents` (`lean/RueCore/Dynamics.lean`) is §6.11's order written
-  as a function. `RueCore.dropContents_ok` says the walk never refuses on
+  as a function. `RueCore.dropContents_array_events` is the same closed form
+  at an array type: no destructor event of the array's own (`3.9:14` gives
+  `[T; n]` a destructor exactly when `T` has one) and the elements'
+  events concatenated in **ascending index order** (`3.9:15`, `3.8:73`). `RueCore.dropContents_ok` says the walk never refuses on
   well-typed contents, and
   `RueCore.ContentsMatches.residualLinear_false` says contents the leak
   monitor lets through holds no live declared-`linear` sub-value — the
@@ -280,14 +309,19 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   (`RueCore.residualLinear`), so consuming exactly the linear part of an
   infectious carrier and letting the rest drop is accepted (the RUE-1591
   model), while stranding a linear sub-place under a partially moved place is
-  rejected ((@Drop) §5.3's own side condition, E0406). **Owed:** RUE-2316;
-  declared-linear destructure and residue ordering (RUE-2236); arrays
-  (RUE-2235). For an **enum** the obligation is the type's, over every variant
+  rejected ((@Drop) §5.3's own side condition, E0406). An array node carries no
+  obligation of its own — it declares no attribute, and `3.8:74` makes a
+  zero-length one vacuous — so `residual-linear` reads it as the disjunction
+  over its `n` elements at the element type, which is what makes an `[L; n]`
+  left to scope exit the leak E0406 reports. For an **enum** the obligation is
+  the type's, over every variant
   (`6.3:19`, `RueCore.enum_carriesLinear_iff`), because the active variant is
   not a static fact: a value of the other variant is still must-consume, which
   is what the compiler reports as E0406. A `match` discharges it by binding and
   consuming the payload, and the arm's own §5.6 check is what makes "consuming"
-  mean it (`6.3:17`).
+  mean it (`6.3:17`). **Owed:** RUE-2316;
+  declared-linear destructure and residue ordering (RUE-2236); the element
+  move and `3.8:70`'s untracked-residue disjunct (RUE-2327).
 
 ## Exclusivity / no aliased mutation
 

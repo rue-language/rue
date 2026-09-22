@@ -420,9 +420,9 @@ a slice author writes:
 | File | Contents | Calculus |
 | --- | --- | --- |
 | `RueCore/Float.lean` | §2's datum set `𝔽_w` with the operations §6.4 computes exactly, `3.12:40`–`3.12:42`'s shortest round-trip rendering, the `FloatOps`/`FloatModel` interface and its named IEEE laws, and the constructive instance `Float.exactOps` | §2, §6.4, §7's float lemma |
-| `RueCore/Syntax.lean` | multiplicity lattice and its join, §2's declaration environment `D` — struct declarations with their attribute, fields and destructor, and **enum** declarations with one payload tuple per variant — types, `class(T)`, **places** (§5's `Path`) with the type a path reaches and §4.2's restrictions on which may be moved, expressions | §2, §3, §4.2 |
-| `RueCore/Statics.lean` | §3's class assignment as a checked equation, for both layers, grounded by `3.0:5`'s joint acyclicity (`WfStructs`/`WfEnums`/`WfNames`, the unconditional `class_unique` and its two projections, `struct_carriesLinear_iff`/`enum_carriesLinear_iff`), the fused flow-sensitive `Γ;Σ` context with Σ **keyed by path** (`OwnSt`, `fullyOwned`, §5.6's recursive `residualLinear`), the ownership-threading judgment `Typed` (parameterized by the program and the enclosing return type), the §5.5 branch join over paths and its n-way fold at a `match`, (Fn) and whole-program well-formedness, skeleton preservation | §3, §4.2, §5.1–§5.3, §5.5–§5.8 |
-| `RueCore/Dynamics.lean` | store/frame machine as a fuel-indexed definitional interpreter with observation traces (drops, destructors, `@dbg`); cell **contents as a tree with `⊘` at any node**, navigated by a path (§6.3's `H(ℓ)@π` and `H[ℓ@π ↦ ⊘]`); §6.11's recursive drop (destructor, then fields in declaration order, or an enum's active variant's payload, every `⊘` skipped); frames with scope records and their unwinds; violations as named refusals; §6.4's operator rules and every §6.12 trap the fragment reaches, each carrying the trace up to it | §6.1–§6.12 |
+| `RueCore/Syntax.lean` | multiplicity lattice and its join, §2's declaration environment `D` — struct declarations with their attribute, fields and destructor, and **enum** declarations with one payload tuple per variant — types including `[T; n]`, `class(T)` with §3's four-line array table (`3.8:74`), **places** (§5's `Path`, field steps and **constant** index steps) with the type a path reaches and §4.2's restrictions on which may be moved, expressions | §2, §3, §4.2 |
+| `RueCore/Statics.lean` | §3's class assignment as a checked equation, for both layers, grounded by `3.0:5`'s joint acyclicity (`WfStructs`/`WfEnums`/`WfNames`, the unconditional `class_unique` and its two projections, `struct_carriesLinear_iff`/`enum_carriesLinear_iff`), the fused flow-sensitive `Γ;Σ` context with Σ **keyed by path** (`OwnSt`, `fullyOwned`, §5.6's recursive `residualLinear`, whose array clause reads the element type `n` times), the ownership-threading judgment `Typed` (parameterized by the program and the enclosing return type), the §5.5 branch join over paths and its n-way fold at a `match`, (Fn) and whole-program well-formedness, skeleton preservation | §3, §4.2, §5.1–§5.3, §5.5–§5.8 |
+| `RueCore/Dynamics.lean` | store/frame machine as a fuel-indexed definitional interpreter with observation traces (drops, destructors, `@dbg`); cell **contents as a tree with `⊘` at any node**, navigated by a path (§6.3's `H(ℓ)@π` and `H[ℓ@π ↦ ⊘]`, a constant index being a step like a field slot); §6.11's recursive drop (destructor, then fields in declaration order, an enum's active variant's payload, and an array's elements in ascending index order, every `⊘` skipped); frames with scope records and their unwinds; violations as named refusals; §6.4's operator rules, §6.5's bounds trap at a dynamic index, and every §6.12 trap the fragment reaches, each carrying the trace up to it | §6.1–§6.12 |
 | `RueCore/Soundness.lean` | value typing, the per-frame agreement invariant `FrameMatches`, frame locality `Untouched`, **the safety theorem** — with progress at a `match` resting on exhaustiveness and preservation on the folded join — the fuel lemmas, and per-§7-bullet corollaries over a whole program | §7 |
 | `RueCore/Checker.lean` | decidable checker `check`/`checkProgram` + `check_sound`/`checkProgram_sound` (every acceptance is a derivation), and `checkDecls` — §3's two class equations plus `3.0:5`'s acyclicity, decided by peeling the declarations | §3, §5 as an algorithm |
 | `RueCore/Examples.lean` | `#eval` demos; kernel-checked acceptance/rejection of example programs | — |
@@ -438,13 +438,16 @@ a slice author writes:
 The fragment: integers at every width and signedness, `float(w)` at both
 widths, `bool`, `unit`,
 monomorphic struct types declared by the program, with §3's class as the join
-of the field classes lifted by the declared attribute, and monomorphic **enum**
-types, with §3's class the payload join over every variant (`6.3:19`); struct
-literals ((Struct-Intro) §5.8), enum construction and the `match` that
-eliminates it in §5.5's canonical form — one arm per variant, binding that
-variant's payload as locals that leave scope at the arm's end — and §6.11's
-drop order (destructor, then fields in declaration order, or an enum's
-**active** variant's payload, every `⊘` skipped); **places** `p ::= x | p.f`, so a use is
+of the field classes lifted by the declared attribute, monomorphic **enum**
+types, with §3's class the payload join over every variant (`6.3:19`), and the
+fixed-length array `[T; n]`, whose class is §3's lift of `class(T)` (`3.8:74`'s
+zero-length array of a non-`Copy` element is `Affine`, not `Copy`); struct and
+array literals ((Struct-Intro)/(Array-Intro) §5.8), enum construction and the
+`match` that eliminates it in §5.5's canonical form — one arm per variant,
+binding that variant's payload as locals that leave scope at the arm's end —
+and §6.11's drop order (destructor, then fields in declaration order, an
+enum's **active** variant's payload, and an array's elements in ascending
+index order, every `⊘` skipped); **places** `p ::= x | p.f | p[c]`, so a use is
 a copy or a move at a path — the partial move of `3.8:22` — and a `@drop` and
 an assignment name one too; §5.6's leak check is the recursive
 `residual-linear` read on the residue, and §5.5's join is taken path by path;
@@ -455,15 +458,20 @@ join, the whole §2 integer operator set (`+ - * / %`, `& | ^`, `<< >>`,
 §2 float operator set (`+ - * /`, `neg`, `< <= > >=`, `@total_cmp`) with
 §6.4's trap-free dynamics and the one-operand float intrinsics
 (`@int_to_float`, `@float_to_int`, `@float_cast`, and the five of `3.12:34`),
-`@intCast`, `@panic`, `@dbg`, and top-level functions, by-value calls with
+`@intCast`, `@panic`, `@dbg`, the surface repeat form `[e; n]` at `7.1:38`'s
+`Copy` element type and the dynamic-index read and write with §6.5's bounds
+trap, and top-level functions, by-value calls with
 frames and scope records, and `return` with its σ unwind. No declared-linear
 destructure (a path with a declared-`linear` proper prefix is rejected as a
-stated fragment restriction, RUE-2236), no equality compare (it borrows its
+stated fragment restriction, RUE-2236), no **array element move** — an array
+is held whole here, so `3.8:68`'s constant-index element move, the `MovedOut`
+element state it leaves and `3.8:73`'s path-specific element drop are refused
+by a premise of the fragment's own (`Place.noIdx`) and not by a rule of the
+calculus, which is RUE-2327 — no equality compare (it borrows its
 operands, so `≈`'s float leaf has no instance here), no path into an enum's
 payload (§5.6 tracks none) and none of the `match` shapes §5.5 makes
 elaboration obligations (wildcard, repeated or guarded patterns, a bool or
-integer scrutinee, a zero-arm `match`), no arrays — and
-so no element-wise `3.8:73` forms and no `3.8:68` root-index restriction — no
+integer scrutinee, a zero-arm `match`), no
 borrows, no `inout`/`borrow` parameters, no accessor calls, no loops (see the
 outline doc for the milestone ladder that adds them).
 

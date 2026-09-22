@@ -813,6 +813,8 @@ lean_package(
         "RueCore.dropContents_enum_events",
         "RueCore.Matches.joinAll",
         "RueCore.Matches.unwindPrefix",
+        "RueCore.dropContents_array_events",
+        "RueCore.ContentsTy.array_shape",
         "RueCore.ContentsMatches.residualLinear_false",
         "RueCore.ContentsMatches.readAt",
         "RueCore.ContentsMatches.writeAt",

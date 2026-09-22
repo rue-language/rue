@@ -160,7 +160,15 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         "destructor, and its payload is reached only by a `match` arm's binding, never "
         "by a path — §5.6 tracks no path into one; no generics",
     ),
-    ("T", "[T; n]"): ("no", [], "arrays and array indexing are outside the fragment"),
+    ("T", "[T; n]"): (
+        "yes",
+        ["Ty.array"],
+        "the fixed-length array, whose length elaboration has already folded to a "
+        "constant (`7.1:14`), with §3's four-line class table as `Ty.mult`'s array "
+        "arm — `Copy` whenever `class(T)` is, and `Affine` for a zero-length array "
+        "of a non-`Copy` element (`3.8:74`, RUE-526); `Ty.declIds` is what makes an "
+        "`[S; k]` field name `S` for `3.0:5`'s acyclicity condition",
+    ),
     ("p", "x"): (
         "yes",
         ["Place.var"],
@@ -179,7 +187,20 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         "destructure plan `Declared(d, π)` (§5.1, `3.8:33`) is not mechanized and "
         "a path with such a prefix is rejected instead (RUE-2236)",
     ),
-    ("p", "p [ e ]"): ("no", [], "no array indexing, hence no `3.8:73` element-wise form"),
+    ("p", "p [ e ]"): (
+        "partial",
+        ["Place.idx", "Expr.indexRead", "Expr.indexWrite"],
+        "a **constant** index only, which is the whole of §5's `Path[c]` and of §9's "
+        "item 4; a dynamic index is not a path and has its own expression forms "
+        "(`Expr.indexRead`/`Expr.indexWrite`, restricted to a `Copy` element type by "
+        "§5.1's (Use-Untrackable-Dynamic-Copy) and bounds-checked at run time by "
+        "§6.5's (D-Index-Trap)). A constant-index read, write and "
+        "`@drop` of the whole array are in; what is missing is the element "
+        "**move** of `3.8:68` and the `MovedOut` element state it leaves, so "
+        "`3.8:73`'s path-specific element drop has no instance yet — "
+        "`Place.noIdx` refuses a move or a `@drop` at an index path as a stated "
+        "restriction of the fragment (RUE-2327)",
+    ),
     ("e", "lit"): (
         "yes",
         ["Expr.intLit", "Expr.boolLit", "Expr.unitLit"],
@@ -234,7 +255,16 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         "typed left to right by (Enum-Intro) §5.5 and built by (D-Enum-Intro) §6.6; "
         "`args = []` is §2's discriminant-only case",
     ),
-    ("e", "[ e1, ..., en ]"): ("no", [], "follows `[T; n]`: no arrays, so no array construction"),
+    ("e", "[ e1, ..., en ]"): (
+        "yes",
+        ["Expr.mkArray"],
+        "(Array-Intro) §5.8's literal, carrying its element type because `n = 0` "
+        "leaves no element to read one off; `Expr.repeatArray` is the surface "
+        "repeat form `[e; n]` (`7.1:36`–`7.1:39`), which §2's elaboration "
+        "inventory gives no core form of its own — it is kept as a rule here so "
+        "the printer can emit the spelling `7.1:38`'s `Copy` restriction is about "
+        "(`../03-metatheory.md`)",
+    ),
     ("e", "g ( a1, ..., am )"): (
         "partial",
         ["Expr.call"],
