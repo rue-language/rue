@@ -102,12 +102,12 @@ complete.
 
 Ownership. Moves, drops, assignments, `match` arms and scope exits are chosen
 at random, so a large minority of the programs are rejected by the checker and
-refused by the machine — 61 of 200 at `--gen 200 --seed 7` and 341 of 1,000 at
+refused by the machine — 86 of 200 at `--gen 200 --seed 7` and 411 of 1,000 at
 `--gen 1000 --seed 23`, the figures the weights below are tuned against. Both
 are recorded (`Corpus.caseJson` reads them off `checkProgram` and `run` as for
 any case), never filtered: a rejected program checks that the compiler rejects
 it too, an accepted one that the three implementations agree with the
-interpreter's trace. At those two settings 90 of 200 and 441 of 1,000 programs
+interpreter's trace. At those two settings 94 of 200 and 465 of 1,000 programs
 contain a `match`.
 
 ## Bias
@@ -152,8 +152,22 @@ the weights can be read and changed:
   temporary: a projection first (`3.8:22`'s partial move at a field, whose
   sibling fields still drop at scope exit) and a binder next (the move that
   makes a second `match` on the same place the E0205 the compiler reports).
-  A `let` binder is likewise biased toward a declaration that holds an enum in
-  a field, which is what puts such a projection in scope at all;
+  That weight on its own starved the shape it is for, because the branch it
+  fires on is the rarer one: a `match` is drawn far more often where the scope
+  holds no enum place than where it holds one. So where the scope offers no
+  place of the drawn enum's type the draw **makes** one half the time —
+  `let v = <the temporary> in match v`, sometimes with one statement in
+  between — instead of matching a temporary. Measured: 111 of 185 `match` sites
+  at `--gen 200 --seed 7` and 533 of 895 at `--gen 1000 --seed 23` scrutinize a
+  place, where the weight alone reached 21 of 171 and 60 of 754; and the E0205
+  a second `match` on the same place is becomes the *deepest* refusal of 13 of
+  200 and 108 of 1,000 cases, where the weight alone reached 2 and 12. The
+  n-way **join** conflict stays rare at either setting — 1 case in 1,000 at
+  seed 23, the same order as the binary (If) join's — because it needs two arms
+  to disagree about an entry that carries a linear value and outlives the
+  `match`, which random arms seldom do;
+* a `let` binder is biased toward a declaration that holds an enum in
+  a field, which is what puts a projection of enum type in scope at all;
 * an arm's body is an ordinary drawn expression over the payload locals, so
   what the arm does with a payload is whatever the existing weights do with
   any binder: move it into an outer `mut` binding or into a fresh aggregate,
@@ -533,13 +547,14 @@ def projPlaces (D : Decls) (Γ : Scope) (T : Ty) : List Place :=
     | none => [])).flatten
 
 /-- (helper) Draw a place, biased toward the **deeper** one: where the list
-offers a path of two field steps it is taken half the time. Without the bias
-depth 2 is in the tail — the default `--gen 200 --seed 7` draws none at all,
-because a two-step path needs a nesting declaration, a binder of the outer type
-in scope, and both prefixes free of a declared-`linear` attribute and of a
-destructor at once. With it that run draws six depth-2 places across three
-programs, and `--gen 300 --seed 23` eight across six. This is one of the
-module's weights; it lives here rather than at the six draw sites. -/
+offers a path of two field steps it is taken half the time. Depth 2 is in the
+tail without it, because a two-step path needs a nesting declaration, a binder
+of the outer type in scope, and both prefixes free of a declared-`linear`
+attribute and of a destructor at once. Measured on the current draws, `--gen 200
+--seed 7` reaches 4 depth-2 places across 3 programs with the bias and 3 across
+3 without it, and `--gen 300 --seed 23` 13 across 8 with and 11 across 6
+without. This is one of the module's weights; it lives here rather than at the
+six draw sites. -/
 def pickPlace (default : Place) (ps : List Place) : G Place := do
   let deep := ps.filter (fun p => 2 ≤ p.path.length)
   if !deep.isEmpty && (← chance 1 2) then pick default deep else pick default ps
@@ -744,6 +759,24 @@ def expr (D : Decls) : Scope → Ty → Nat → G Expr
               -- and the one the empty scope always takes.
               let projs := projPlaces D Γ (.enum e)
               let uses := indicesWhere Γ (fun b => b.ty == .enum e)
+              if projs.isEmpty && uses.isEmpty && (← chance 1 2) then
+                -- The scope offers no place of this type, so half the time the
+                -- draw **makes** one: `let v = <the temporary> in match v`,
+                -- sometimes with one statement in between. Without this the
+                -- place-scrutinee shapes are starved — a `match` is drawn far
+                -- more often where no enum place is in scope than where one is
+                -- — and with it the arms are typed under a scope that still
+                -- holds the consumed binding, which is what a nested `match` on
+                -- `v` (E0205) and the join over an entry an arm moved need.
+                let m ← chance 1 3
+                let init ← expr D Γ (.enum e) fuel
+                let Γ' : Scope := { ty := .enum e, mu := m } :: Γ
+                let arms ← ed.variants.mapM (fun Ts => expr D (armScope Ts Γ') T fuel)
+                let m' := «match» (use (.var 0)) arms
+                let body ← if ← chance 1 3 then
+                    pure (seq (← leaf D Γ' .unit 2) m')
+                  else pure m'
+                return letIn m init body
               let scrut ←
                 if !projs.isEmpty && (← chance 3 5) then
                   pure (use (← pickPlace (.var 0) projs))
