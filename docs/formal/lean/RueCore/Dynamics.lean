@@ -16,7 +16,7 @@ Design commitments carried over from §6:
   implicitly dropping a linear value, or overwriting one, yields a named
   `Violation`. The §7 safety theorem (`Soundness.lean`) is exactly:
   well-typed programs never reach one — which is a claim about the refusals
-  below, and the carve-out under "Pending arguments" names the one edge they
+  below, and the carve-out under "Pending values" names the one edge they
   do not cover. The refusals are of two kinds, and the distinction matters
   for what `eval` is a model of:
   - `useAfterMove`, `useAfterDrop`, `unbound`, and `typeConfusion` are
@@ -107,16 +107,21 @@ exactly as it permits an overflow. Only `Expr.indexRead`/`Expr.indexWrite`
 can reach it — a constant index is checked by `Ty.atPath` at compile time
 (`7.1:9`), so `Place.idx` never traps.
 
-## Pending arguments: the one edge no monitor covers
+## Pending values: the one edge no monitor covers
 
-A by-value argument reduces to a value that lives in no cell and in no scope
-record between the `use` that produced it and the `mintParams` that gives it
-one (§6.9's (D-Call)). If a *later* argument of the same call unwinds by
-`return`, (D-Return) §6.9 discards the evaluation context — `g(v̄, …, E, …)`
-included — and runs `run-all-scope-drops` on the frame's records, which never
-named that value. Its drop is therefore neither run nor monitored, whatever
-its multiplicity class: an affine argument emits no `dropTemp`, and a linear
-one is destroyed without a `linearDiscard`.
+The general shape is a value already built for a **sibling position** that a
+later sibling destroys by `return`. Every list of subexpressions `evalArgs`
+walks has it: a call's argument list, a struct literal's initializers, and an
+array literal's elements. Such a value lives in no cell and in no scope
+record — between the `use` that produced it and the `mintParams` that gives a
+by-value argument one (§6.9's (D-Call)), or between an initializer and the
+`mkStruct`/`mkArray` that would have aggregated it. If a later sibling unwinds
+by `return`, (D-Return) §6.9 discards the evaluation context — `g(v̄, …, E, …)`
+and the aggregate contexts `S { v̄, …, E, … }` and `[ v̄, …, E, … ]` with it —
+and runs `run-all-scope-drops` on the frame's records, which never named that
+value. Its drop is therefore neither run nor monitored, whatever its
+multiplicity class: an affine sibling emits no `dropTemp`, and a linear one is
+destroyed without a `linearDiscard`.
 
 That is the calculus as written, not a modelling slip. (D-Return) unwinds σ
 and nothing else, and §5's only bottom rule for an argument position — §5.7's
@@ -126,15 +131,18 @@ outward without imposing §5.3's discard check on the siblings already
 evaluated; the statics cannot reject the program without provenance they do
 not have. §6.9's own justification for
 (D-Return) — "every bound cell is also registered in the frame's scope
-records" — is exactly true and exactly insufficient here, because an argument
+records" — is exactly true and exactly insufficient here, because a sibling
 temporary is not a bound cell. The Rue compiler behaves the same way (a
-destructor-bearing argument's destructor does not run), so the bridge cannot
-see it either.
+destructor-bearing sibling's destructor does not run, at an argument, a
+struct initializer and an array element alike), so the bridge cannot see it
+either.
 
 `eval` models the calculus rather than patching it, so no monitor is added:
-`evalArgs` passes a `returned` abort on untouched. Both shapes are pinned as
-kernel-checked witnesses in `Examples.lean`
-(`linearLostAtCallArg`, `affineLostAtCallArg`), the §7 claim is stated with
+`evalArgs` passes a `returned` abort on untouched — and because all three
+forms share that one function, all three share the edge. The shapes are
+pinned as kernel-checked witnesses in `Examples.lean`
+(`linearLostAtCallArg`, `affineLostAtCallArg`, `linearLostAtArrayElem`), the
+§7 claim is stated with
 the carve-out named (`Soundness.lean`'s `no_violation`,
 `docs/formal/03-metatheory.md`), and closing it is an open spec decision
 (RUE-2316, the pending-argument decision) — it needs a rule, in §5.7 or

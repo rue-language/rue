@@ -1196,20 +1196,25 @@ def countdown : Program :=
 
 /-! ## The one edge no monitor covers (RUE-2316)
 
-A by-value argument's value lives in no cell and in no scope record between
-the `use` that produced it and the `mintParams` that gives it one (§6.9's
-(D-Call)). If a *later* argument of the same call unwinds by `return`,
-(D-Return) §6.9 discards the evaluation context — the pending arguments with
-it — and runs `run-all-scope-drops` on the frame's records, which never named
-that value. Its drop is neither run nor monitored.
+The shape is a value already built for a **sibling position** that a later
+sibling destroys by `return`. The sibling positions are every list `evalArgs`
+walks: a call's argument list, a struct literal's initializers, an array
+literal's elements. Such a value lives in no cell and in no scope record
+between the subexpression that produced it and the aggregation that would
+have taken it — for an argument, the `mintParams` of §6.9's (D-Call). If a
+later sibling unwinds by `return`, (D-Return) §6.9 discards the evaluation
+context — the pending values with it — and runs `run-all-scope-drops` on the
+frame's records, which never named that value. Its drop is neither run nor
+monitored.
 
-`Dynamics.lean`'s "Pending arguments" section says why `eval` models it that
+`Dynamics.lean`'s "Pending values" section says why `eval` models it that
 way rather than patching it: the calculus has the gap — the unwinding rule
 walks only σ, and §5.7's strict-context bottom rule (`Strict-Bottom` there,
 which the fragment does not mechanize) imposes no discard check on the
 siblings already evaluated — and the Rue compiler behaves the same. Closing it
-is an open spec decision, RUE-2316. These two programs are the kernel-checked
-witnesses, and the reason `no_violation`'s docstring names the carve-out. -/
+is an open spec decision, RUE-2316. These three programs are the
+kernel-checked witnesses, and the reason `no_violation`'s docstring names the
+carve-out. -/
 
 /-- A **linear** value consumed *zero* times, with no refusal anywhere.
 
@@ -1240,6 +1245,23 @@ def affineLostAtCallArg : Program :=
               body := letIn false (resA (lit 7)) (call 1 [use (.var 0), ret (lit 0)]) },
             { params := [⟨.struct sAffine, false⟩, ⟨tI64, false⟩], ret := tI64,
               body := seq (drop (.var 1)) (use (.var 0)) }] }
+
+/-- The same loss at an **array element**: the literal's element 0 is a linear
+value, and element 1 unwinds by `return` before `mkArray` aggregates either.
+`evalArgs` is the one function all three sibling lists share, so the array
+literal inherits the edge from the argument list rather than adding a second
+one. The compiler behaves the same way — with a destructor-bearing element
+type, `[S { x0: 1 }, if c { return 42; } else { … }]` prints only the `42`
+and no destructor line — and RUE-2316 is the decision issue for all of
+them. -/
+def linearLostAtArrayElem : Program :=
+  { structs := structEnv,
+    fns := [{ params := [], ret := .struct sLinearDtor,
+              body := call 1 [mkArray (.struct sLinearDtor)
+                                [resLD (lit 1), ret (resLD (lit 2))]] },
+            { params := [⟨.array (.struct sLinearDtor) 2, false⟩],
+              ret := .struct sLinearDtor,
+              body := seq (drop (.var 0)) (resLD (lit 9)) }] }
 
 #eval run demoOps (scalarProg (.int .w8 .signed) i8Overflow) demoFuel        -- panic: overflow
 #eval run demoOps (scalarProg (.int .w8 .unsigned) u8Underflow) demoFuel     -- panic: overflow
@@ -1439,6 +1461,7 @@ theorems apply to them, and the run below still loses the resource. -/
 
 example : ProgramTyped linearLostAtCallArg := checkProgram_sound (by rfl)
 example : ProgramTyped affineLostAtCallArg := checkProgram_sound (by rfl)
+example : ProgramTyped linearLostAtArrayElem := checkProgram_sound (by rfl)
 
 /-- The linear value is destroyed with an empty trace: no `drop`, no
 `dropTemp`, no `dtor`, and no `Violation`. `no_linear_leak` holds of this
@@ -1448,6 +1471,13 @@ example : run demoOps linearLostAtCallArg demoFuel = .ok [.dead] (v64 0) [] := b
 /-- The affine value likewise: the destructor line the printed program would
 have shown is absent. -/
 example : run demoOps affineLostAtCallArg demoFuel = .ok [.dead] (v64 0) [] := by rfl
+
+/-- And at an array element: the run ends at the `return`'s own value
+`S3 { 2 }` with the **empty** trace, so element 0's `S3 { 1 }` is destroyed
+without a `drop`, a `dtor` or a `Violation` — the array literal's instance of
+the same carve-out. -/
+example : run demoOps linearLostAtArrayElem demoFuel
+    = .ok [] (.struct sLinearDtor [v64 2]) [] := by rfl
 
 /-! The width, operator and intrinsic cases are accepted, so the §7 theorems
 apply to the traps they reach: a trap is a *defined* outcome. -/
