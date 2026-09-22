@@ -469,8 +469,9 @@ binding that variant's payload as locals that leave scope at the arm's end —
 and §6.11's drop order (destructor, then fields in declaration order, an
 enum's **active** variant's payload, and an array's elements in ascending
 index order, every `⊘` skipped); **places** `p ::= x | p.f | p[c]`, so a use is
-a copy or a move at a path — the partial move of `3.8:22` — and a `@drop` and
-an assignment name one too; §5.6's leak check is the recursive
+a copy or a move at a path — the partial move of `3.8:22`, and `3.8:68`'s
+element move where that path's first step off the root is a constant index —
+and a `@drop` and an assignment name one too; §5.6's leak check is the recursive
 `residual-linear` read on the residue, and §5.5's join is taken path by path;
 the **declared-linear destructure** of `3.8:33` — §4.2's `Declared(d, π_s)`
 plan, §5.1's residue gate and §6.3's ordered `split`/`drop*` — so a projection
@@ -486,17 +487,16 @@ join, the whole §2 integer operator set (`+ - * / %`, `& | ^`, `<< >>`,
 `@intCast`, `@panic`, `@dbg`, the surface repeat form `[e; n]` at `7.1:38`'s
 `Copy` element type, the dynamic-index read at a `Copy` element type and the
 dynamic-index write at any element type §5.2's linear-overwrite premise admits,
-both with §6.5's bounds trap, and top-level functions, by-value calls with
-frames and scope records, and `return` with its σ unwind. No **array element
-move** — an array is held whole here, so `3.8:68`'s constant-index element
-move, the `MovedOut` element state it leaves and `3.8:73`'s path-specific
-element drop are refused by a premise of the fragment's own (`Place.noIdx`)
-and not by a rule of the calculus, which is also what keeps a declared-linear
-destructure whose *selected path* runs through an index step out — and no step
+both with §6.5's bounds trap, the **element-wise partial move** of `3.8:68` at
+a constant-index path — with `rootIdxOnly` for §4.2's "element moves only at
+the root", the `MovedOut` element state the move leaves, `3.8:73`'s
+path-specific element drop, and `3.8:72`'s refusal to assign into an array that
+has one — and top-level functions, by-value calls with
+frames and scope records, and `return` with its σ unwind. No step
 **below** a dynamic index: `a[i].x0` is a place of §2's grammar that the
 compiler reads and writes, and it has no form here because `Expr.indexRead`
-yields the element value and a dynamic index is not a `Place` step; RUE-2327
-owes both — no equality compare (it borrows its
+yields the element value and a dynamic index is not a `Place` step (RUE-2331,
+with the generator's array draws) — no equality compare (it borrows its
 operands, so `≈`'s float leaf has no instance here), no path into an enum's
 payload (§5.6 tracks none) and none of the `match` shapes §5.5 makes
 elaboration obligations (wildcard, repeated or guarded patterns, a bool or

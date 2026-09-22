@@ -95,14 +95,15 @@ path is `MovedOut`, so the lookup is (Owned-Base) §5.1 (`3.8:53`); `u` is
 `fully-owned` (`3.8:26`: an aggregate with a hole may not be handed to a new
 owner); the path reaches a declared field at every step and lands at type `T`;
 `T`'s class is not `Copy`; no proper prefix of the path declares a destructor
-(`3.9:34`, E0456); and the use plan §4.2 records for the place is `Ordinary`,
+(`3.9:34`, E0456); the use plan §4.2 records for the place is `Ordinary`,
 which is `declaredPrefix … = none` — §5.1's "the (Use-Copy) and (Use-Move)
-rules are read only with an `Ordinary` plan"; and `p.noIdx` is the
-fragment's own stand-in for `3.8:68`'s root-index restriction — no element is
-moved out of an array at all in this part, which RUE-2327 lifts. The
-conclusion marks exactly `p`. The calculus's one remaining premise, `p not
-loaned`, concerns loans, which are outside the current fragment; `INDEX.md`
-lists which rules and sections are in and which are not.
+rules are read only with an `Ordinary` plan"; and `rootIdxOnly` is `3.8:68`'s
+"element moves only at the root", read by walking `Ty.fieldAt` from the root's
+declared type rather than by reading `.idx` versus `.proj` off the place, since
+it is the type at a node that makes a step an index step. The conclusion marks
+exactly `p`. The calculus's one remaining premise (`p not loaned`) concerns
+loans, which are outside the current
+fragment; `INDEX.md` lists which rules and sections are in and which are not.
 
 ## 2. The dynamics is a function
 
@@ -1009,9 +1010,13 @@ Before anything can be destroyed, §5.1 asks `¬ linear-residue(S, π_s)`:
   linear-residue(S15, [1])   = false                       -- neither is Linear
 ```
 
-`linearResidue` (`Syntax.lean`) computes it on the **types**, one struct step
-at a time: every unselected field is retained, the selected one is recursed
-into. Had `x2` been declared `linear`, the access itself would be the error —
+`linearResidue` (`Syntax.lean`) computes it on the **types**, one step at a
+time: every unselected member is retained, the selected one is recursed into.
+At an **array** step the members are the `n` elements in ascending index order
+(§5.1 states the two clauses together), so a destructure at `x.arr[0]` retains
+`arr[1]`, then whatever follows `arr` in the declaration — which is the order
+`drop*` then destroys them in (`Examples.destructureThroughIndex`). Had `x2`
+been declared `linear`, the access itself would be the error —
 "the `linear-residue` premise rejects the access before any residue can be
 silently dropped" — which is `3.8:60` and the compiler's E0474
 (`destructure_linear_residue`). Had the recursion needed to go a level deeper
