@@ -454,13 +454,23 @@ def moveUnderDtor : String :=
 
 /-- (Use-Declared-Linear-Destructure) §5.1's `fully-owned(Σ, d)` premise,
 which the rule reads at the **consumed place** `d` — the smallest enclosing
-declared-`linear` place — rather than at the projected leaf (`3.8:26`). -/
+declared-`linear` place — rather than at the projected leaf (`3.8:26`).
+
+Two states fail it and both are reachable. `Σ(d) = MovedOut` is the second
+read of a place its own first destructure consumed, and the compiler reports
+E0205 there. A hole *strictly under* `d` needs an inner declared-`linear`
+place `d'`, because that is the only thing a destructure writes `⊘` at below
+`d`; a later access at `d` then also retains `d'`, so the compiler reaches the
+program through its residue check and reports E0474 on that field instead.
+The order of `explain`'s tests, not a difference of opinion, is what decides
+which premise is named. -/
 def destructurePartiallyMoved (Td : Ty) : String :=
   "the smallest enclosing declared-`linear` place, of type " ++ Print.tyName Td ++
-  ", is not fully owned: a path under it is MovedOut, and the destructure hands the " ++
-  "selected leaf to a new owner while destroying the rest " ++
+  ", is not fully owned: the place itself or a path under it is MovedOut, and the " ++
+  "destructure hands the selected leaf to a new owner while destroying the rest " ++
   "((Use-Declared-Linear-Destructure) premise `fully-owned(Σ, d)`, §5.1; 3.8:26; " ++
-  "the compiler reports E0205)"
+  "the compiler reports E0205 where the place itself was consumed, and E0474 on the " ++
+  "retained inner declared-`linear` place where a path under it was)"
 
 /-- (Use-Declared-Linear-Destructure) §5.1's `¬ linear-residue(S, π_s)`
 premise: the destructure destroys its residue at once, so a retained place of
