@@ -65,7 +65,7 @@ One shape is not drawn at any depth, and it is a gap rather than a guard now
 that RUE-2236 has landed: a projection through a proper prefix of
 declared-`linear` struct type selects §4.2's `Declared(d, π_s)` plan, which
 §5.1 and §6.3 now discharge — `projSlots` and `pathOk` simply never draw one.
-The seed cases cover the shape; drawing it is a follow-up.
+The seed cases cover the shape; drawing it is RUE-2339.
 
 Calls and `return` are **not** generated yet: every generated case is a
 one-function program (`Program.entry`), so the shapes RUE-2233 added — a
@@ -478,7 +478,7 @@ def declFuel (D : Decls) : Nat := D.structs.length + D.enums.length
 fragment may project. A step is drawn only where §5.1 and §5.3 admit it: a
 path whose proper prefix is a struct declared `linear` is the declared-linear
 destructure of §4.2's `Declared(d, π_s)` plan (`Syntax.lean`), which the
-generator does not draw, and
+generator does not draw (RUE-2339), and
 `3.9:34` forbids a *move* out of a value whose type declares a destructor — a
 `Copy` read of such a field stays legal. -/
 def projSlots (D : Decls) (s : Nat) (T : Ty) : List Nat :=
@@ -532,7 +532,7 @@ test read at a whole path rather than at one step, so it stays right at depth
 The generator therefore draws **no** declared-linear destructure, although the
 rule §5.1 gives one is now mechanized: `projSlots` already refuses to step into
 a declared-`linear` struct, so the shape is out of the grammar it draws from
-rather than filtered out of it. Drawing destructures is a follow-up. -/
+rather than filtered out of it. Drawing destructures is RUE-2339. -/
 def pathOk (D : Decls) (T₀ : Ty) (π : List Nat) (T : Ty) : Bool :=
   Ty.atPath D T₀ π == some T && (declaredPrefix D T₀ π).isNone &&
     (T.mult D == .copy || noDtorPrefix D T₀ π)

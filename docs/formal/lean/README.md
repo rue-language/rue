@@ -79,7 +79,8 @@ is the majority of them (111 of 185 sites and 533 of 895), because a drawn
 `match` binds its scrutinee where the scope holds no enum place. Two shapes are
 deliberately absent and the module says why: a `return` or `@panic` **inside an
 arm**, which `check` is incomplete on exactly as it is inside an `if` arm, and
-a path through a declared-`linear` prefix (RUE-2236).
+a path through a declared-`linear` prefix (RUE-2236, whose landing is what
+RUE-2339 re-enables the draw against).
 
 ```bash
 lake exe ruecore-corpus --gen 1000 --seed 7 > /tmp/gen.json   # seed cases, then 1000 generated
