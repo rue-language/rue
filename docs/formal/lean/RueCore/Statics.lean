@@ -1074,29 +1074,43 @@ def Ctx.join (D : Decls) : Ctx → Ctx → Option Ctx
       | _, _ => none
   | _, _ => none
 
-/-! ### The join is symmetric; bracketing is not proved
+/-! ### The join is symmetric, and associative over well-formed states
 
 §5.5 writes `join(Σ1, …, Σn)` with no order and no bracketing, and the
 mechanization computes it as a left fold (below), so the two readings agree
-only to the extent that the binary join is commutative and associative.
+exactly to the extent that the binary join is commutative and associative.
+Both are proved.
 
-**Commutativity is proved.** `OwnSt.join_comm` holds of arbitrary states, and
+**Commutativity.** `OwnSt.join_comm` holds of arbitrary states, and
 `Entry.join_comm`/`Ctx.join_comm` lift it to same-skeleton entries and contexts
 — which is every pair the rule joins, since the arms of a `match` or an `if`
 extend one incoming context and `Typed.skel_preserved` keeps their skeletons
 equal.
 
-**Associativity is not proved, and is false in the generality the statement
-would need.** `.fields` at a scalar type is a state no rule can write;
+**Associativity.** `OwnSt.join_assoc` holds of states that are shapes of their
+type (`OwnSt.wf`) under §3's class assignment for the struct layer
+(`WfStructs`), and `Entry.join_assoc`/`Ctx.join_assoc` lift it the same way.
+Both hypotheses are needed, and `Examples.lean` pins a counterexample to each.
+Drop `OwnSt.wf` and `.fields` at a scalar type is a state no rule can write:
 `ownedJoinOk` refuses it while `residualLinear` sees nothing in it, so at `int`
 the two associations of `MovedOut`, `Owned`, `fields [Owned]` are `MovedOut`
-and ill-formed respectively (`Examples.lean` pins the pair). Over states that
-*are* well formed at their type it holds: it was checked exhaustively over a
-13-declaration fixture and every well-formed `OwnSt` to depth 3 — commutativity,
-associativity, and all six orders of three states, with no counterexample.
-Proving it needs a state-against-type well-formedness invariant the fragment
-does not carry today; that, and the permutation corollary for `Ctx.joinAll`
-that would follow from it, are owed on RUE-2337.
+and ill-formed respectively. Drop `WfStructs` and a declaration whose recorded
+class is `Affine` over a `Linear` field separates the two associations of
+`MovedOut`, `Owned`, `fields [MovedOut]` the same way — which is the
+declaration `checkStructs` rejects, so the premise is one a well-formed program
+already carries.
+
+Two facts about a successful join carry the proof, and both are §5.5's reading
+of §5.6 made precise. `OwnSt.join_ownedJoinOk`: a join neither adds nor removes
+an inadmissible `MovedOut`, so both operands and the result answer
+`ownedJoinOk` alike — which is what makes the `Owned` cases associate.
+`OwnSt.join_residualLinear`: a join succeeds only between operands carrying the
+same residual linear content, and the result carries the same; with
+`OwnSt.join_exists`, its converse (two residue-free states always join), that
+is what makes the `MovedOut` cases associate.
+
+`Ctx.joinAll_perm` (the n-way section below) is the corollary §5.5's unordered
+notation needs: the fold is invariant under a permutation of the arms.
 -/
 
 mutual
@@ -1828,6 +1842,312 @@ theorem OwnSt.joinList_wf {D : Decls} :
               simp only [OwnSt.wfList, Bool.and_eq_true]
               exact ⟨OwnSt.join_wf b c T e hb.1 hc.1 he, OwnSt.joinList_wf bs cs Ts rest hb.2 hc.2 hr⟩
 end
+
+/-- §5.5's join of two field records at a declared struct type (helper). -/
+theorem OwnSt.join_fields_struct (D : Decls) (s : Nat) (sd : StructDecl) (hd : D.structs[s]? = some sd)
+    (xs ys : List OwnSt) :
+    OwnSt.join D (.fields xs) (.fields ys) (Ty.struct s)
+      = (OwnSt.joinList D xs ys sd.fields).map OwnSt.fields := by
+  simp [OwnSt.join, hd]
+
+/-- §5.5's join of two field records at an array type, element by element
+(`3.8:73`) (helper). -/
+theorem OwnSt.join_fields_array (D : Decls) (T' : Ty) (n : Nat) (xs ys : List OwnSt) :
+    OwnSt.join D (.fields xs) (.fields ys) (Ty.array T' n)
+      = (OwnSt.joinList D xs ys (List.replicate n T')).map OwnSt.fields := by
+  simp [OwnSt.join]
+
+/-- A field record is a shape of a declared struct type exactly when its slots
+are shapes of the fields (helper). -/
+theorem OwnSt.wf_fields_struct (D : Decls) (s : Nat) (sd : StructDecl) (hd : D.structs[s]? = some sd)
+    (xs : List OwnSt) :
+    OwnSt.wf D (.fields xs) (Ty.struct s) = OwnSt.wfList D xs sd.fields := by
+  simp [OwnSt.wf, hd]
+
+/-- The array form of the same (helper). -/
+theorem OwnSt.wf_fields_array (D : Decls) (T' : Ty) (n : Nat) (xs : List OwnSt) :
+    OwnSt.wf D (.fields xs) (Ty.array T' n) = OwnSt.wfList D xs (List.replicate n T') := by
+  simp [OwnSt.wf]
+
+mutual
+/-- **The §5.5 join is associative**, at one path and its subtree, over states
+that are shapes of their type (`OwnSt.wf`) and under §3's class assignment for
+the struct layer (`WfStructs`). Both premises are needed and the section
+docstring above says which counterexample each rules out; `WfStructs` is one a
+well-formed program already carries (`checkStructs_sound`).
+
+The nine outer cases reduce to three shapes. Where an arm is wholly `Owned` the
+join is the other arm subject to `ownedJoinOk`, and `OwnSt.join_ownedJoinOk`
+says the result answers that test as its operands do. Where an arm is
+`MovedOut` the join is `MovedOut` subject to the other's residue, and
+`OwnSt.join_residualLinear` with `OwnSt.join_exists` says the two bracketings
+fail on exactly the same residue. Two field records join slot by slot, which is
+the induction. -/
+theorem OwnSt.join_assoc {D : Decls} (hD : WfStructs D) :
+    ∀ (a b c : OwnSt) (T : Ty), OwnSt.wf D a T = true → OwnSt.wf D b T = true →
+      OwnSt.wf D c T = true →
+      (OwnSt.join D a b T).bind (fun x => OwnSt.join D x c T)
+        = (OwnSt.join D b c T).bind (fun y => OwnSt.join D a y T)
+  | .owned, b, c, T, _, hb, hc => by
+      simp only [OwnSt.join_owned_left]
+      cases hbc : OwnSt.join D b c T with
+      | none => cases hob : ownedJoinOk D b T <;> simp [hbc]
+      | some r =>
+          obtain ⟨h1, _⟩ := OwnSt.join_ownedJoinOk hD b c T r hb hc hbc
+          rw [h1]
+          cases hor : ownedJoinOk D r T <;> simp [hor, hbc]
+  | .movedOut, b, c, T, _, hb, hc => by
+      simp only [OwnSt.join_movedOut_left]
+      cases hbc : OwnSt.join D b c T with
+      | none =>
+          cases hrb : residualLinear D b T with
+          | true => simp
+          | false =>
+              cases hrc : residualLinear D c T with
+              | true => simp [hrc, OwnSt.join_movedOut_left]
+              | false =>
+                  obtain ⟨r, hr⟩ := OwnSt.join_exists hD b c T hb hc hrb hrc
+                  rw [hr] at hbc
+                  exact absurd hbc (by simp)
+      | some r =>
+          obtain ⟨h1, h2⟩ := OwnSt.join_residualLinear hD b c T r hbc
+          simp only [Option.bind_some, h2, h1]
+          cases hrc : residualLinear D c T with
+          | true => simp
+          | false => simp [hrc, OwnSt.join_movedOut_left]
+  | a, b, .movedOut, T, ha, hb, _ => by
+      simp only [OwnSt.join_movedOut_right]
+      cases hab : OwnSt.join D a b T with
+      | none =>
+          cases hrb : residualLinear D b T with
+          | true => simp
+          | false =>
+              cases hra : residualLinear D a T with
+              | true => simp [hra, OwnSt.join_movedOut_right]
+              | false =>
+                  obtain ⟨r, hr⟩ := OwnSt.join_exists hD a b T ha hb hra hrb
+                  rw [hr] at hab
+                  exact absurd hab (by simp)
+      | some r =>
+          obtain ⟨h1, h2⟩ := OwnSt.join_residualLinear hD a b T r hab
+          simp only [Option.bind_some, h2, h1]
+          cases hrb : residualLinear D b T with
+          | true => simp
+          | false => simp [hrb, h1, OwnSt.join_movedOut_right]
+  | a, .movedOut, c, T, _, _, _ => by
+      cases hra : residualLinear D a T <;> cases hrc : residualLinear D c T <;>
+        simp [OwnSt.join_movedOut_left, OwnSt.join_movedOut_right, hra, hrc]
+  | a, .owned, c, T, ha, _, hc => by
+      simp only [OwnSt.join_owned_right, OwnSt.join_owned_left]
+      cases hac : OwnSt.join D a c T with
+      | none =>
+          cases hoa : ownedJoinOk D a T <;> cases hoc : ownedJoinOk D c T <;> simp [hac]
+      | some r =>
+          obtain ⟨h1, h2⟩ := OwnSt.join_ownedJoinOk hD a c T r ha hc hac
+          rw [h1, h2]
+          cases hor : ownedJoinOk D r T <;> simp [hac]
+  | a, b, .owned, T, ha, hb, _ => by
+      simp only [OwnSt.join_owned_right]
+      cases hab : OwnSt.join D a b T with
+      | none => cases hob : ownedJoinOk D b T <;> simp [hab]
+      | some r =>
+          obtain ⟨_, h2⟩ := OwnSt.join_ownedJoinOk hD a b T r ha hb hab
+          rw [h2]
+          cases hor : ownedJoinOk D r T <;> simp [hor, hab]
+  | .fields as, .fields bs, .fields cs, T, ha, hb, hc => by
+      cases T with
+      | struct s =>
+          cases hd : D.structs[s]? with
+          | none => simp [OwnSt.wf, hd] at ha
+          | some sd =>
+              rw [OwnSt.wf_fields_struct D s sd hd] at ha hb hc
+              rw [OwnSt.join_fields_bind_left D as bs cs sd.fields _ (OwnSt.join_fields_struct D s sd hd),
+                  OwnSt.join_fields_bind_right D as bs cs sd.fields _ (OwnSt.join_fields_struct D s sd hd),
+                  OwnSt.joinList_assoc hD as bs cs sd.fields ha hb hc]
+      | array T' n =>
+          rw [OwnSt.wf_fields_array D T' n] at ha hb hc
+          rw [OwnSt.join_fields_bind_left D as bs cs (List.replicate n T') _ (OwnSt.join_fields_array D T' n),
+              OwnSt.join_fields_bind_right D as bs cs (List.replicate n T') _ (OwnSt.join_fields_array D T' n),
+              OwnSt.joinList_assoc hD as bs cs (List.replicate n T') ha hb hc]
+      | int _ _ => simp [OwnSt.wf] at ha
+      | float _ => simp [OwnSt.wf] at ha
+      | bool => simp [OwnSt.wf] at ha
+      | unit => simp [OwnSt.wf] at ha
+      | enum _ => simp [OwnSt.wf] at ha
+
+/-- The same over a declaration's slots (helper). -/
+theorem OwnSt.joinList_assoc {D : Decls} (hD : WfStructs D) :
+    ∀ (as bs cs : List OwnSt) (Ts : List Ty), OwnSt.wfList D as Ts = true →
+      OwnSt.wfList D bs Ts = true → OwnSt.wfList D cs Ts = true →
+      (OwnSt.joinList D as bs Ts).bind (fun xs => OwnSt.joinList D xs cs Ts)
+        = (OwnSt.joinList D bs cs Ts).bind (fun ys => OwnSt.joinList D as ys Ts)
+  | _, _, _, [], _, _, _ => by simp [OwnSt.joinList]
+  | [], bs, cs, T :: Ts, _, hb, hc => by
+      simp only [OwnSt.joinList_nil_left]
+      cases hbc : OwnSt.joinList D bs cs (T :: Ts) with
+      | none => cases hob : ownedJoinOkList D bs (T :: Ts) <;> simp [hbc]
+      | some rs =>
+          obtain ⟨h1, _⟩ := OwnSt.joinList_ownedJoinOkList hD bs cs (T :: Ts) rs hb hc hbc
+          rw [h1]
+          cases hor : ownedJoinOkList D rs (T :: Ts) <;> simp [hor, hbc]
+  | as, [], cs, T :: Ts, ha, _, hc => by
+      simp only [OwnSt.joinList_nil_right, OwnSt.joinList_nil_left]
+      cases hac : OwnSt.joinList D as cs (T :: Ts) with
+      | none =>
+          cases hoa : ownedJoinOkList D as (T :: Ts) <;>
+            cases hoc : ownedJoinOkList D cs (T :: Ts) <;> simp [hac]
+      | some rs =>
+          obtain ⟨h1, h2⟩ := OwnSt.joinList_ownedJoinOkList hD as cs (T :: Ts) rs ha hc hac
+          rw [h1, h2]
+          cases hor : ownedJoinOkList D rs (T :: Ts) <;> simp [hac]
+  | as, bs, [], T :: Ts, ha, hb, _ => by
+      simp only [OwnSt.joinList_nil_right]
+      cases hab : OwnSt.joinList D as bs (T :: Ts) with
+      | none => cases hob : ownedJoinOkList D bs (T :: Ts) <;> simp [hab]
+      | some rs =>
+          obtain ⟨_, h2⟩ := OwnSt.joinList_ownedJoinOkList hD as bs (T :: Ts) rs ha hb hab
+          rw [h2]
+          cases hor : ownedJoinOkList D rs (T :: Ts) <;> simp [hor, hab]
+  | a :: as, b :: bs, c :: cs, T :: Ts, ha, hb, hc => by
+      simp only [OwnSt.wfList, Bool.and_eq_true] at ha hb hc
+      rw [OwnSt.joinList_cons_bind_left, OwnSt.joinList_cons_bind_right, OwnSt.join_assoc hD a b c T ha.1 hb.1 hc.1,
+          OwnSt.joinList_assoc hD as bs cs Ts ha.2 hb.2 hc.2]
+end
+
+/-- Renaming the result of a partial computation before continuing is renaming
+after it (helper). -/
+theorem optionMapBind {α β γ : Type} (o : Option α) (f : α → β) (g : β → Option γ) :
+    (o.map f).bind g = o.bind (fun x => g (f x)) := by cases o <;> rfl
+
+/-- The same on the other side of the bind (helper). -/
+theorem optionBindMap {α β γ : Type} (o : Option α) (f : α → Option β) (g : β → γ) :
+    (o.bind fun x => (f x).map g) = (o.bind f).map g := by
+  cases o with
+  | none => rfl
+  | some x => cases f x <;> rfl
+
+/-- Re-marking an entry records the state it was given (helper). -/
+theorem Entry.setSt_st (en : Entry) (u : OwnSt) : (en.setSt u).st = u := rfl
+
+/-- Re-marking an entry leaves its declared type alone (helper). -/
+theorem Entry.setSt_ty (en : Entry) (u : OwnSt) : (en.setSt u).ty = en.ty := rfl
+
+/-- Re-marking twice is re-marking once: `Entry.setSt` writes the whole `Σ` part
+of the row (helper). -/
+theorem Entry.setSt_setSt (en : Entry) (u : OwnSt) : (en.setSt u).setSt = en.setSt := by
+  funext v; rfl
+
+/-- Two entries with one skeleton have one declared type (helper). -/
+theorem Entry.ty_of_skel {a b : Entry} (h : a.skel = b.skel) : b.ty = a.ty := by
+  simp only [Entry.skel, Prod.mk.injEq] at h
+  exact h.1.symm
+
+/-- **The §5.5 join is associative on one entry**, whose skeleton the three arms
+share — the declared type and `mut` mark come from the incoming context, so
+only the state differs, and the state's associativity is `OwnSt.join_assoc`. -/
+theorem Entry.join_assoc {D : Decls} (hD : WfStructs D) {a b c : Entry}
+    (hab : a.skel = b.skel) (hbc : b.skel = c.skel)
+    (ha : Entry.wf D a = true) (hb : Entry.wf D b = true) (hc : Entry.wf D c = true) :
+    (Entry.join D a b).bind (fun x => Entry.join D x c)
+      = (Entry.join D b c).bind (fun y => Entry.join D a y) := by
+  have hbty : b.ty = a.ty := Entry.ty_of_skel hab
+  have hcty : c.ty = a.ty := (Entry.ty_of_skel hbc).trans hbty
+  have hwa : OwnSt.wf D a.st a.ty = true := ha
+  have hwb : OwnSt.wf D b.st a.ty = true := by rw [← hbty]; exact hb
+  have hwc : OwnSt.wf D c.st a.ty = true := by rw [← hcty]; exact hc
+  simp only [Entry.join, optionMapBind, Entry.setSt_st, Entry.setSt_ty, Entry.setSt_setSt,
+    optionBindMap, hbty]
+  rw [OwnSt.join_assoc hD a.st b.st c.st a.ty hwa hwb hwc]
+
+/-- **The §5.5 join of two well-formed entries is well formed**, `OwnSt.join_wf`
+read at the entry's declared type. -/
+theorem Entry.join_wf {D : Decls} {a b e : Entry} (hab : a.skel = b.skel)
+    (ha : Entry.wf D a = true) (hb : Entry.wf D b = true) (h : Entry.join D a b = some e) :
+    Entry.wf D e = true := by
+  have hbty : b.ty = a.ty := Entry.ty_of_skel hab
+  simp only [Entry.join, Option.map_eq_some_iff] at h
+  obtain ⟨u, hu, rfl⟩ := h
+  have hwb : OwnSt.wf D b.st a.ty = true := by rw [← hbty]; exact hb
+  exact OwnSt.join_wf a.st b.st a.ty u ha hwb hu
+
+/-- A context joins entry by entry, so one bracketing of three contexts factors
+into that bracketing of the heads and of the tails (helper). -/
+theorem Ctx.join_cons_bind_left (D : Decls) (a b c : Entry) (as bs cs : Ctx) :
+    (Ctx.join D (a :: as) (b :: bs)).bind (fun xs => Ctx.join D xs (c :: cs))
+      = (match (Entry.join D a b).bind (fun x => Entry.join D x c),
+               (Ctx.join D as bs).bind (fun xs => Ctx.join D xs cs) with
+         | some x, some xs => some (x :: xs)
+         | _, _ => none) := by
+  cases hab : Entry.join D a b with
+  | none => simp [Ctx.join, hab]
+  | some e =>
+      cases hl : Ctx.join D as bs with
+      | none => simp [Ctx.join, hab, hl]
+      | some rest =>
+          simp [Ctx.join, hab, hl]
+
+/-- The same for the other bracketing (helper). -/
+theorem Ctx.join_cons_bind_right (D : Decls) (a b c : Entry) (as bs cs : Ctx) :
+    (Ctx.join D (b :: bs) (c :: cs)).bind (fun ys => Ctx.join D (a :: as) ys)
+      = (match (Entry.join D b c).bind (fun y => Entry.join D a y),
+               (Ctx.join D bs cs).bind (fun ys => Ctx.join D as ys) with
+         | some x, some xs => some (x :: xs)
+         | _, _ => none) := by
+  cases hbc : Entry.join D b c with
+  | none => simp [Ctx.join, hbc]
+  | some e =>
+      cases hl : Ctx.join D bs cs with
+      | none => simp [Ctx.join, hbc, hl]
+      | some rest =>
+          simp [Ctx.join, hbc, hl]
+
+/-- **The §5.5 join is associative on a whole context**, pointwise, whenever the
+three arms carry the same skeleton and every entry is a shape of its declared
+type — which `Typed.skel_preserved` and `Ctx.Wf` give of the outgoing contexts
+of one incoming one. So the bracketing of (Match) §5.5's `join(Σ1, …, Σn)` is
+immaterial, which with `Ctx.join_comm` is what `Ctx.joinAll_perm` needs. -/
+theorem Ctx.join_assoc {D : Decls} (hD : WfStructs D) :
+    ∀ (Γ₁ Γ₂ Γ₃ : Ctx), Γ₁.skel = Γ₂.skel → Γ₂.skel = Γ₃.skel →
+      Ctx.Wf D Γ₁ → Ctx.Wf D Γ₂ → Ctx.Wf D Γ₃ →
+      (Ctx.join D Γ₁ Γ₂).bind (fun Γ => Ctx.join D Γ Γ₃)
+        = (Ctx.join D Γ₂ Γ₃).bind (fun Γ => Ctx.join D Γ₁ Γ)
+  | [], [], [], _, _, _, _, _ => rfl
+  | [], [], _ :: _, _, h, _, _, _ => by simp [Ctx.skel] at h
+  | [], _ :: _, _, h, _, _, _, _ => by simp [Ctx.skel] at h
+  | _ :: _, [], _, h, _, _, _, _ => by simp [Ctx.skel] at h
+  | _ :: _, _ :: _, [], _, h, _, _, _ => by simp [Ctx.skel] at h
+  | a :: as, b :: bs, c :: cs, h₁, h₂, w₁, w₂, w₃ => by
+      simp only [Ctx.skel, List.map_cons, List.cons.injEq] at h₁ h₂
+      simp only [Ctx.Wf, List.mem_cons, forall_eq_or_imp] at w₁ w₂ w₃
+      rw [Ctx.join_cons_bind_left, Ctx.join_cons_bind_right,
+          Entry.join_assoc hD h₁.1 h₂.1 w₁.1 w₂.1 w₃.1,
+          Ctx.join_assoc hD as bs cs h₁.2 h₂.2 w₁.2 w₂.2 w₃.2]
+
+/-- **The §5.5 join of two well-formed contexts is well formed**, so the
+accumulator of the n-way fold keeps the invariant associativity is stated
+over. -/
+theorem Ctx.join_wf {D : Decls} : ∀ (Γ₁ Γ₂ Γ' : Ctx), Γ₁.skel = Γ₂.skel →
+    Ctx.Wf D Γ₁ → Ctx.Wf D Γ₂ → Ctx.join D Γ₁ Γ₂ = some Γ' → Ctx.Wf D Γ'
+  | [], [], Γ', _, _, _, h => by
+      simp only [Ctx.join, Option.some.injEq] at h
+      subst h
+      simp [Ctx.Wf]
+  | [], _ :: _, _, h, _, _, _ => by simp [Ctx.skel] at h
+  | _ :: _, [], _, h, _, _, _ => by simp [Ctx.skel] at h
+  | a :: as, b :: bs, Γ', h₁, w₁, w₂, h => by
+      simp only [Ctx.skel, List.map_cons, List.cons.injEq] at h₁
+      simp only [Ctx.Wf, List.mem_cons, forall_eq_or_imp] at w₁ w₂
+      cases he : Entry.join D a b with
+      | none => simp [Ctx.join, he] at h
+      | some e =>
+          cases hr : Ctx.join D as bs with
+          | none => simp [Ctx.join, he, hr] at h
+          | some rest =>
+              simp only [Ctx.join, he, hr, Option.some.injEq] at h
+              subst h
+              simp only [Ctx.Wf, List.mem_cons, forall_eq_or_imp]
+              exact ⟨Entry.join_wf h₁.1 w₁.1 w₂.1 he,
+                     Ctx.join_wf as bs rest h₁.2 w₁.2 w₂.2 hr⟩
 
 /-! ### The n-way §5.5 join, and a `match` arm's own binders
 
@@ -2643,6 +2963,94 @@ theorem Ctx.joinAll_skel {D : Decls} : ∀ {Γs : List Ctx} {Γ' : Ctx},
     Ctx.joinAll D Γs = some Γ' → ∃ Γ₁ Γrest, Γs = Γ₁ :: Γrest ∧ Γ'.skel = Γ₁.skel
   | [], Γ', h => by simp [Ctx.joinAll] at h
   | Γ₁ :: Γrest, Γ', h => ⟨Γ₁, Γrest, rfl, Ctx.joinFold_skel Γrest h⟩
+
+/-- One step of (Match) §5.5's fold, with the accumulator allowed to have failed
+already: taking the next arm in is joining it into the accumulator (helper). -/
+theorem Ctx.joinFold_bind_cons (D : Decls) (o : Option Ctx) (Γ : Ctx) (Γs : List Ctx) :
+    (o.bind fun a => Ctx.joinFold D a (Γ :: Γs))
+      = ((o.bind fun a => Ctx.join D a Γ).bind fun a => Ctx.joinFold D a Γs) := by
+  cases o with
+  | none => rfl
+  | some a =>
+      simp only [Option.bind_some, Ctx.joinFold]
+      cases Ctx.join D a Γ with
+      | none => rfl
+      | some a' => rfl
+
+/-- (Match) §5.5's fold over the remaining arms **does not depend on their
+order**, whatever the accumulator: joining two arms in either order is
+`Ctx.join_comm`, and moving one past the accumulator is `Ctx.join_assoc`. The
+premise is the one the two lemmas need — one skeleton, every entry a shape of
+its declared type — and `Ctx.join_skel`/`Ctx.join_wf` carry it to the next
+accumulator. -/
+theorem Ctx.joinFold_perm {D : Decls} (hD : WfStructs D) {sk : List (Ty × Bool)} :
+    ∀ {Γs Γs' : List Ctx}, Γs.Perm Γs' →
+      (∀ Γ ∈ Γs, Γ.skel = sk ∧ Ctx.Wf D Γ) →
+      ∀ o : Option Ctx, (∀ Γ, o = some Γ → Γ.skel = sk ∧ Ctx.Wf D Γ) →
+        (o.bind fun a => Ctx.joinFold D a Γs) = (o.bind fun a => Ctx.joinFold D a Γs') := by
+  intro Γs Γs' hperm
+  induction hperm with
+  | nil => intro _ o _; rfl
+  | cons Γ _ ih =>
+      intro hinv o ho
+      rw [Ctx.joinFold_bind_cons, Ctx.joinFold_bind_cons]
+      refine ih (fun Δ hΔ => hinv Δ (List.mem_cons_of_mem _ hΔ)) _ ?_
+      intro Δ hΔ
+      cases o with
+      | none => simp at hΔ
+      | some a =>
+          simp only [Option.bind_some] at hΔ
+          obtain ⟨hsk, hwf⟩ := ho a rfl
+          obtain ⟨hsk', hwf'⟩ := hinv Γ List.mem_cons_self
+          exact ⟨(Ctx.join_skel hΔ).trans hsk,
+                 Ctx.join_wf a Γ Δ (hsk.trans hsk'.symm) hwf hwf' hΔ⟩
+  | swap x y l =>
+      intro hinv o ho
+      obtain ⟨hsky, hwfy⟩ := hinv y List.mem_cons_self
+      obtain ⟨hskx, hwfx⟩ := hinv x (List.mem_cons_of_mem _ List.mem_cons_self)
+      simp only [Ctx.joinFold_bind_cons]
+      have key : ((o.bind fun a => Ctx.join D a y).bind fun a => Ctx.join D a x)
+          = ((o.bind fun a => Ctx.join D a x).bind fun a => Ctx.join D a y) := by
+        cases o with
+        | none => rfl
+        | some a =>
+            obtain ⟨hska, hwfa⟩ := ho a rfl
+            simp only [Option.bind_some]
+            rw [Ctx.join_assoc hD a y x (hska.trans hsky.symm) (hsky.trans hskx.symm)
+                  hwfa hwfy hwfx,
+                Ctx.join_comm y x (hsky.trans hskx.symm),
+                Ctx.join_assoc hD a x y (hska.trans hskx.symm) (hskx.trans hsky.symm)
+                  hwfa hwfx hwfy]
+      rw [key]
+  | trans hp₁ _ ih₁ ih₂ =>
+      intro hinv o ho
+      rw [ih₁ hinv o ho, ih₂ (fun Δ hΔ => hinv Δ (hp₁.mem_iff.2 hΔ)) o ho]
+
+/-- **(Match) §5.5's `join(Σ1, …, Σn)` is invariant under a permutation of the
+arms**, over arms that share a skeleton and whose entries are shapes of their
+declared types. §5.5 writes the n-way join with no order and no bracketing and
+the mechanization computes it as a left fold; this is the theorem that says the
+two readings agree, so `Ctx.joinAll` may be read as the calculus writes it. -/
+theorem Ctx.joinAll_perm {D : Decls} (hD : WfStructs D) {sk : List (Ty × Bool)} :
+    ∀ {Γs Γs' : List Ctx}, Γs.Perm Γs' → (∀ Γ ∈ Γs, Γ.skel = sk ∧ Ctx.Wf D Γ) →
+      Ctx.joinAll D Γs = Ctx.joinAll D Γs' := by
+  intro Γs Γs' hperm
+  induction hperm with
+  | nil => intro _; rfl
+  | cons Γ hp _ =>
+      intro hinv
+      have h := Ctx.joinFold_perm hD hp (fun Δ hΔ => hinv Δ (List.mem_cons_of_mem _ hΔ)) (some Γ)
+        (fun Δ hΔ => by cases hΔ; exact hinv Γ List.mem_cons_self)
+      simpa [Ctx.joinAll] using h
+  | swap x y l =>
+      intro hinv
+      obtain ⟨hsky, _⟩ := hinv y List.mem_cons_self
+      obtain ⟨hskx, _⟩ := hinv x (List.mem_cons_of_mem _ List.mem_cons_self)
+      show Ctx.joinFold D y (x :: l) = Ctx.joinFold D x (y :: l)
+      simp only [Ctx.joinFold, Ctx.join_comm y x (hsky.trans hskx.symm)]
+  | trans hp₁ _ ih₁ ih₂ =>
+      intro hinv
+      rw [ih₁ hinv, ih₂ (fun Δ hΔ => hinv Δ (hp₁.mem_iff.2 hΔ))]
 
 /-- Every rule preserves the context skeleton: only ownership states flow.
 This is the fused context's image of §5's convention that `Γ` is fixed while

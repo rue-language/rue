@@ -2524,14 +2524,13 @@ A *declared*-linear struct with no linear field may have one (`S3` above). -/
 example : checkStructs (Decls.ofStructs (structEnv ++
     [{ attr := .none, fields := [.struct 2], dtor := true, cls := .linear }])) = false := by rfl
 
-/-- **Why §5.5's join is proved commutative but only checked associative.**
-Associativity is false of states no rule can write: `.fields` at a scalar type
-is one, and `ownedJoinOk` refuses it while `residualLinear` sees nothing in it.
-So at `int` the two associations of `MovedOut`, `Owned`, `fields [Owned]`
-disagree — one is `MovedOut`, the other ill-formed. Over states well formed at
-their type the property holds and was checked exhaustively; proving it needs a
-state-against-type invariant the fragment does not carry (`Statics.lean`'s join
-section, RUE-2337). -/
+/-- **Why §5.5's associativity is stated over `OwnSt.wf`.** It is false of
+states no rule can write: `.fields` at a scalar type is one, and `ownedJoinOk`
+refuses it while `residualLinear` sees nothing in it. So at `int` the two
+associations of `MovedOut`, `Owned`, `fields [Owned]` disagree — one is
+`MovedOut`, the other ill-formed — and `OwnSt.wf` is exactly the invariant that
+rules the third state out (`OwnSt.join_assoc`, `Statics.lean`'s join
+section). -/
 example :
     (OwnSt.join (Decls.ofStructs []) .movedOut .owned tI64).bind
         (fun t => OwnSt.join (Decls.ofStructs []) t (.fields [.owned]) tI64)
@@ -2540,6 +2539,39 @@ example :
 example :
     (OwnSt.join (Decls.ofStructs []) .owned (.fields [.owned]) tI64).bind
         (fun t => OwnSt.join (Decls.ofStructs []) .movedOut t tI64)
+      = none := by rfl
+
+/-- The state the pair turns on is the one `OwnSt.wf` refuses: `int` has no
+slots for a field record to record. -/
+example : OwnSt.wf (Decls.ofStructs []) (.fields [.owned]) tI64 = false := by rfl
+
+/-- A declaration whose recorded class is `Affine` over a `Linear` field: §3's
+equation fails, so `checkStructs` rejects it (`WfStructs`), and it is what the
+second associativity counterexample is built on. -/
+def joinAssocBadDecls : Decls :=
+  Decls.ofStructs
+    [ { attr := .linear, fields := [], dtor := false, cls := .linear },
+      { attr := .none, fields := [.struct 0], dtor := false, cls := .affine } ]
+
+example : checkStructs joinAssocBadDecls = false := by rfl
+
+/-- **Why it also needs `WfStructs`.** Over `joinAssocBadDecls` the two
+associations of `MovedOut`, `Owned`, `fields [MovedOut]` disagree the same way,
+although every one of the three states *is* a shape of its type: `ownedJoinOk`
+reads the moved-out field's own class and `residualLinear` reads the struct's,
+and §3's assignment (`3.8:58`) is what keeps the two answers in step. So
+`OwnSt.join_assoc` carries `WfStructs` as well — a premise every well-formed
+program already has (`checkStructs_sound`). -/
+example : OwnSt.wf joinAssocBadDecls (.fields [.movedOut]) (.struct 1) = true := by rfl
+
+example :
+    (OwnSt.join joinAssocBadDecls .movedOut .owned (.struct 1)).bind
+        (fun t => OwnSt.join joinAssocBadDecls t (.fields [.movedOut]) (.struct 1))
+      = some .movedOut := by rfl
+
+example :
+    (OwnSt.join joinAssocBadDecls .owned (.fields [.movedOut]) (.struct 1)).bind
+        (fun t => OwnSt.join joinAssocBadDecls .movedOut t (.struct 1))
       = none := by rfl
 
 /-! ### `3.0:5` (E0483): no declaration contains itself by value
