@@ -134,6 +134,7 @@ def tyName : Ty → String
   | .bool => "bool"
   | .unit => "()"
   | .struct s => "S" ++ toString s
+  | .enum e => "E" ++ toString e
 
 /-- The Rue spelling of a binary operator (§2's `⊕` and `⋚`) (helper). -/
 def binOpSym : BinOp → String
@@ -226,6 +227,37 @@ def structItems : Nat → List StructDecl → String
   | _, [] => ""
   | s, sd :: rest => structItem s sd ++ structItems (s + 1) rest
 
+/-- The name of a variant at declaration slot `k`. Variants are named by
+position for the reason fields are: the core names them by their slot, which is
+the 0-based tag §6.1's value form carries and the index (D-Match) §6.6 switches
+on (helper). -/
+def variantName (k : Nat) : String := "K" ++ toString k
+
+/-- One variant of a declaration, as `6.3:14` writes it: `K<k>(T, …)` for a
+payload-carrying variant and the bare `K<k>` for a discriminant-only one — the
+surface spells the empty payload by omitting the list, and `6.3:16` makes using a
+payload-carrying variant as a bare path an error (helper). -/
+def variantDecls : Nat → List (List Ty) → List String
+  | _, [] => []
+  | k, Ts :: rest =>
+      (variantName k ++
+        (if Ts.isEmpty then ""
+         else "(" ++ String.intercalate ", " (Ts.map tyName) ++ ")")) :: variantDecls (k + 1) rest
+
+/-- One enum declaration as a Rue item (§2's `enum E { K1(T̄1), …, Kn(T̄n) }`),
+variants in declaration order. There is no attribute to print — §3 gives an enum
+none — and no `drop fn`: an enum declares no destructor (E0417), so the
+observation channel for an enum's drop is the destructor of whatever its payload
+holds. -/
+def enumItem (e : Nat) (ed : EnumDecl) : String :=
+  "enum " ++ tyName (.enum e) ++ " { " ++
+    String.intercalate ", " (variantDecls 0 ed.variants) ++ " }\n"
+
+/-- Every enum declaration of a program, in program order (helper). -/
+def enumItems : Nat → List EnumDecl → String
+  | _, [] => ""
+  | e, ed :: rest => enumItem e ed ++ enumItems (e + 1) rest
+
 /-- Type inference without ownership: the fragment's types do not depend on
 Σ, so the printer can recover every subexpression's type from the binders
 alone. `Γ` lists binder types innermost first, exactly as `Ctx` does; `P` is
@@ -257,6 +289,19 @@ def tyOf (P : Program) (R : Ty) (Γ : List Ty) : Expr → Option Ty
   | .panic _ => some R
   | .dbg _ => some .unit
   | .mkStruct s _ => some (.struct s)
+  | .mkEnum e _ _ => some (.enum e)
+  | .«match» scrut arms =>
+      -- Every arm has the `match`'s own type, so the first one answers; it is
+      -- read under that arm's payload locals, innermost binder first.
+      (match tyOf P R Γ scrut with
+       | some (.enum e) =>
+         (match P.decls.enums[e]?, arms with
+          | some ed, a₀ :: _ =>
+            (match ed.variants with
+             | Ts :: _ => tyOf P R (Ts.reverse ++ Γ) a₀
+             | [] => none)
+          | _, _ => none)
+       | _ => none)
   | .drop _ => some .unit
   | .letIn _ e₁ e₂ => do
       let T₁ ← tyOf P R Γ e₁
@@ -297,6 +342,7 @@ def fieldInits : Nat → List String → List String
   | _, [] => []
   | j, a :: rest => (fieldName j ++ ": " ++ a) :: fieldInits (j + 1) rest
 
+mutual
 /-- Print an expression. `Γ` is the binder environment (innermost first),
 `P` the program a call's callee and a literal's declaration are looked up in,
 `R` the enclosing function's return type, and `lvl` the indentation of the
@@ -359,6 +405,25 @@ partial def expr (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) : Expr → St
   | .mkStruct s args =>
       tyName (.struct s) ++ " { " ++
         String.intercalate ", " (fieldInits 0 (args.map (fun a => expr P R Γ lvl a))) ++ " }"
+  | .mkEnum e k args =>
+      -- `6.3:16`: the variant path applied to the payload arguments, and the
+      -- bare path for a discriminant-only variant.
+      tyName (.enum e) ++ "." ++ variantName k ++
+        (if args.isEmpty then ""
+         else "(" ++ String.intercalate ", " (args.map (fun a => expr P R Γ lvl a)) ++ ")")
+  | .«match» scrut arms =>
+      -- One arm per variant, in declaration order, each binding the variant's
+      -- payload to fresh `v<depth>` names — the identity elaboration of the core
+      -- form (§5.5's canonical `match`: no wildcard, no guard, no repetition).
+      let variants := match tyOf P R Γ scrut with
+        | some (.enum e) => ((P.decls.enums[e]?).map EnumDecl.variants).getD []
+        | _ => []
+      let name := match tyOf P R Γ scrut with
+        | some (.enum e) => tyName (.enum e)
+        | _ => "E0"
+      "match " ++ expr P R Γ lvl scrut ++ " {\n" ++
+        String.join (matchArms P R Γ lvl name 0 arms variants) ++
+      indent lvl ++ "}"
   | .drop pl => "@drop(" ++ place Γ pl ++ ")"
   | .letIn m e₁ e₂ =>
       let T₁ := (tyOf P R Γ e₁).getD (.int .w64 .signed)
@@ -396,6 +461,24 @@ partial def expr (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) : Expr → St
         String.intercalate ", " (args.map (fun a => expr P R Γ lvl a)) ++ ")"
   | .ret e => "return " ++ expr P R Γ lvl e
 
+/-- One printed arm per variant: the variant path with its payload binders, then
+the arm body as a block. The binder for payload component `j` is `v<|Γ| + j>`,
+which is the name the body's de Bruijn index resolves to under
+`Ts.reverse ++ Γ` — the same order `armCtx` (`Statics.lean`) builds (helper). -/
+partial def matchArms (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) (name : String) :
+    Nat → List Expr → List (List Ty) → List String
+  | _, [], _ => []
+  | k, a :: rest, variants =>
+      let Ts := (variants[k]?).getD []
+      let binders := (List.range Ts.length).map (fun j => binderName (Γ.length + j))
+      (indent (lvl + 1) ++ name ++ "." ++ variantName k ++
+        (if binders.isEmpty then "" else "(" ++ String.intercalate ", " binders ++ ")") ++
+        " => {\n" ++
+        indent (lvl + 2) ++ expr P R (Ts.reverse ++ Γ) (lvl + 2) a ++ "\n" ++
+        indent (lvl + 1) ++ "},\n") ::
+      matchArms P R Γ lvl name (k + 1) rest variants
+end
+
 /-- How `main` observes the program's value (module docstring): a scalar is
 printed; `()` prints nothing; a struct value is dropped — implicitly at
 `main`'s end, or, when its class is `Linear` and an implicit drop would be
@@ -405,7 +488,7 @@ def observeValue (D : Decls) (T : Ty) : String :=
   match T with
   | .int _ _ | .float _ | .bool => "    @dbg(result);\n"
   | .unit => ""
-  | .struct _ => if T.mult D = .linear then "    @drop(result);\n" else ""
+  | .struct _ | .enum _ => if T.mult D = .linear then "    @drop(result);\n" else ""
 
 /-- One parameter per line of a signature, named the way the body's de Bruijn
 indices resolve: the first parameter is the outermost binder, so it is `v0`.
@@ -421,7 +504,7 @@ def bodyBinders (fd : FnDef) : List Ty := (fd.params.map Param.ty).reverse
 
 /-- Every struct declaration of a program as Rue items (helper). -/
 def moduleItems (P : Program) : String :=
-  structItems 0 P.decls
+  structItems 0 P.decls.structs ++ enumItems 0 P.decls.enums
 
 /-- One `fn` item: §2's `F` production for a by-value signature. -/
 def fnItem (P : Program) (idx : Nat) (fd : FnDef) : String :=

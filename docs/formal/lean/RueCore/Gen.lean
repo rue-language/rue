@@ -263,7 +263,7 @@ the join is not already `Copy` or the declaration has a destructor (`3.8:18`,
 reason, never for an ill-formed declaration. -/
 
 /-- (helper) §3's field join, for a field list read against `D`. -/
-def fieldJoin (D : List StructDecl) (fields : List Ty) : Mult :=
+def fieldJoin (D : Decls) (fields : List Ty) : Mult :=
   fields.foldl (fun m T => m.join (Ty.mult D T)) .copy
 
 /-- (helper) One field type of declaration `s`: a scalar, or an earlier
@@ -282,7 +282,7 @@ def fieldTy (s : Nat) : G Ty := do
       scalar
 
 /-- (helper) One declaration, well-formed by construction. -/
-def genDecl (D : List StructDecl) (s : Nat) : G StructDecl := do
+def genDecl (D : Decls) (s : Nat) : G StructDecl := do
   let k ← nat 1 3
   let fields ← (List.range k).mapM (fun _ => fieldTy s)
   let drawnDtor ← chance 1 2
@@ -300,11 +300,11 @@ def genDecl (D : List StructDecl) (s : Nat) : G StructDecl := do
 
 /-- (helper) A struct environment of `n` declarations, built left to right so
 each one sees the ones before it. -/
-def genEnv : Nat → List StructDecl → G List StructDecl
+def genEnv : Nat → Decls → G Decls
   | 0, acc => return acc
   | n + 1, acc => do
-      let sd ← genDecl acc acc.length
-      genEnv n (acc ++ [sd])
+      let sd ← genDecl acc acc.structs.length
+      genEnv n { acc with structs := acc.structs ++ [sd] }
 
 /-- (helper) The field slots of a declaration whose type is `T` and which this
 fragment may project. A step is drawn only where §5.1 and §5.3 admit it: a
@@ -312,8 +312,8 @@ path whose proper prefix is a struct declared `linear` is the declared-linear
 destructure this fragment does not mechanize (RUE-2236, `Syntax.lean`), and
 `3.9:34` forbids a *move* out of a value whose type declares a destructor — a
 `Copy` read of such a field stays legal. -/
-def projSlots (D : List StructDecl) (s : Nat) (T : Ty) : List Nat :=
-  match D[s]? with
+def projSlots (D : Decls) (s : Nat) (T : Ty) : List Nat :=
+  match D.structs[s]? with
   | none => []
   | some sd =>
       if sd.attr == .linear then []
@@ -326,18 +326,18 @@ def placeOfPath (i : Nat) (π : List Nat) : Place :=
   π.foldl (fun p f => Place.proj p f) (.var i)
 
 /-- (helper) The field slots a type has, as single steps. -/
-def fieldSlots (D : List StructDecl) : Ty → List Nat
+def fieldSlots (D : Decls) : Ty → List Nat
   | .struct s =>
-      (match D[s]? with
+      (match D.structs[s]? with
        | some sd => List.range sd.fields.length
        | none => [])
-  | .int _ _ | .float _ | .bool | .unit => []
+  | .int _ _ | .float _ | .bool | .unit | .enum _ => []
 
 /-- (helper) Every path of **one or two** field steps under a binder's
 declared type. Depth 2 is where the path machinery actually recurses —
 `OwnSt.get`/`setAt`'s padding, `readAt`/`writeAt`, and §6.11's nested `⊘`-skip
 — and one seed case (`deep_path`) is not coverage of it. -/
-def paths2 (D : List StructDecl) (T₀ : Ty) : List (List Nat) :=
+def paths2 (D : Decls) (T₀ : Ty) : List (List Nat) :=
   (fieldSlots D T₀).flatMap fun f =>
     [f] :: (match T₀.fieldAt D f with
             | some T' => (fieldSlots D T').map (fun g => [f, g])
@@ -350,13 +350,13 @@ struct declared `linear` — the fragment's own restriction, standing in for
 so the rule is (Use-Move) or (@Drop) rather than their `Copy` twins, no proper
 prefix declares a destructor (`3.9:34`). This is `projSlots`' test read at a
 whole path rather than at one step, so it stays right at depth 2. -/
-def pathOk (D : List StructDecl) (T₀ : Ty) (π : List Nat) (T : Ty) : Bool :=
+def pathOk (D : Decls) (T₀ : Ty) (π : List Nat) (T : Ty) : Bool :=
   Ty.atPath D T₀ π == some T && noLinearPrefix D T₀ π &&
     (T.mult D == .copy || noDtorPrefix D T₀ π)
 
 /-- (helper) Every place of the wanted type one **or two** field steps under a
 binder in scope: the projections a use may name. -/
-def projPlaces (D : List StructDecl) (Γ : Scope) (T : Ty) : List Place :=
+def projPlaces (D : Decls) (Γ : Scope) (T : Ty) : List Place :=
   ((List.range Γ.length).map (fun i =>
     match Γ[i]? with
     | some b =>
@@ -377,7 +377,7 @@ def pickPlace (default : Place) (ps : List Place) : G Place := do
 
 /-- (helper) Every place one **or two** field steps under a binder in scope,
 whatever its type: the projections a `@drop` may name. -/
-def dropPlaces (D : List StructDecl) (Γ : Scope) : List Place :=
+def dropPlaces (D : Decls) (Γ : Scope) : List Place :=
   ((List.range Γ.length).map (fun i =>
     match Γ[i]? with
     | some b =>
@@ -389,14 +389,14 @@ def dropPlaces (D : List StructDecl) (Γ : Scope) : List Place :=
 
 /-- (helper) The type of a fresh `let` binder: mostly structs, when the
 program has any. -/
-def binderTy (D : List StructDecl) : G Ty := do
+def binderTy (D : Decls) : G Ty := do
   let scalar : G Ty := do weighted (← intTy) [(2, ← intTy), (1, ← floatTy), (1, .bool)]
-  if D.isEmpty then
+  if D.structs.isEmpty then
     scalar
   else
     let k ← nat 1 10
     if k ≤ 6 then
-      let s ← nat 0 (D.length - 1)
+      let s ← nat 0 (D.structs.length - 1)
       return .struct s
     else
       scalar
@@ -404,7 +404,7 @@ def binderTy (D : List StructDecl) : G Ty := do
 mutual
 /-- (helper) The smallest expression of a type: a literal, a use of a binder
 of that type, or a struct literal with a leaf per field. -/
-def atom (D : List StructDecl) (Γ : Scope) : Ty → Nat → G Expr
+def atom (D : Decls) (Γ : Scope) : Ty → Nat → G Expr
   | .int w sg, _ => do
       let projs := projPlaces D Γ (.int w sg)
       if !projs.isEmpty && (← chance 1 2) then return use (← pickPlace (.var 0) projs)
@@ -425,13 +425,16 @@ def atom (D : List StructDecl) (Γ : Scope) : Ty → Nat → G Expr
       if !projs.isEmpty && (← chance 1 2) then return use (← pickPlace (.var 0) projs)
       let uses := indicesWhere Γ (fun b => b.ty == .struct s)
       if !uses.isEmpty && (← chance 2 3) then return use (.var (← pick 0 uses))
-      match D[s]?, depth with
+      match D.structs[s]?, depth with
       | some sd, d + 1 => return mkStruct s (← sd.fields.mapM (fun T => atom D Γ T d))
       | _, _ => return mkStruct s []
+  -- The generator draws no enum type (`binderTy`, `resultTy`), so no enum ever
+  -- reaches this function; drawing `match` and enum construction is RUE-2325.
+  | .enum _, _ => return unitLit
 
 /-- (helper) A leaf of the wanted type, one level at most: an atom, a `@drop`
 of a place, or an assignment of an atom to one. -/
-def leaf (D : List StructDecl) (Γ : Scope) : Ty → Nat → G Expr
+def leaf (D : Decls) (Γ : Scope) : Ty → Nat → G Expr
   | .unit, depth => do
       let structs := indicesWhere Γ (fun b => isStruct b.ty)
       let muts := indicesWhere Γ (fun b => b.mu)
@@ -448,11 +451,11 @@ def leaf (D : List StructDecl) (Γ : Scope) : Ty → Nat → G Expr
           let b := Γ[i]?.getD ⟨.int .w64 .signed, true⟩
           match b.ty with
           | .struct s =>
-              let slots := (List.range ((D[s]?).map (·.fields.length) |>.getD 0)).filter
-                (fun f => (projSlots D s ((D[s]?).bind (·.fields[f]?) |>.getD .unit)).contains f)
+              let slots := (List.range ((D.structs[s]?).map (·.fields.length) |>.getD 0)).filter
+                (fun f => (projSlots D s ((D.structs[s]?).bind (·.fields[f]?) |>.getD .unit)).contains f)
               if !slots.isEmpty && (← chance 1 2) then
                 let f ← pick 0 slots
-                let Tf := ((D[s]?).bind (·.fields[f]?)).getD (.int .w64 .signed)
+                let Tf := ((D.structs[s]?).bind (·.fields[f]?)).getD (.int .w64 .signed)
                 return assign (.proj (.var i) f) (← atom D Γ Tf depth)
               return assign (.var i) (← atom D Γ b.ty depth)
           | _ => return assign (.var i) (← atom D Γ b.ty depth)
@@ -463,7 +466,7 @@ end
 /-- (helper) An expression of the wanted type under `Γ`, at most `fuel`
 levels deep. The weights here are the bias the module docstring
 describes. -/
-def expr (D : List StructDecl) : Scope → Ty → Nat → G Expr
+def expr (D : Decls) : Scope → Ty → Nat → G Expr
   | Γ, T, 0 => leaf D Γ T 2
   | Γ, T, fuel + 1 => do
       if !Γ.isEmpty && (← chance 1 6) then return (← leaf D Γ T 2)
@@ -489,6 +492,8 @@ def expr (D : List StructDecl) : Scope → Ty → Nat → G Expr
           return ite c e₁ e₂
       | _ =>
           match T with
+          -- No enum is ever drawn (`binderTy`, `resultTy`); RUE-2325 adds them.
+          | .enum _ => atom D Γ T fuel
           | .int w sg =>
               let self := expr D Γ (.int w sg) fuel
               let form ← weighted 0 [(5, 0), (3, 1), (2, 2), (3, 3), (2, 4)]
@@ -570,18 +575,18 @@ def expr (D : List StructDecl) : Scope → Ty → Nat → G Expr
                 let b := Γ[i]?.getD ⟨.int .w64 .signed, true⟩
                 match b.ty with
                 | .struct s =>
-                    let slots := (List.range ((D[s]?).map (·.fields.length) |>.getD 0)).filter
-                      (fun f => (projSlots D s (((D[s]?).bind (·.fields[f]?)).getD .unit)).contains f)
+                    let slots := (List.range ((D.structs[s]?).map (·.fields.length) |>.getD 0)).filter
+                      (fun f => (projSlots D s (((D.structs[s]?).bind (·.fields[f]?)).getD .unit)).contains f)
                     if !slots.isEmpty && (← chance 1 2) then
                       let f ← pick 0 slots
-                      let Tf := ((D[s]?).bind (·.fields[f]?)).getD (.int .w64 .signed)
+                      let Tf := ((D.structs[s]?).bind (·.fields[f]?)).getD (.int .w64 .signed)
                       return assign (.proj (.var i) f) (← expr D Γ Tf fuel)
                     return assign (.var i) (← expr D Γ b.ty fuel)
                 | _ => return assign (.var i) (← expr D Γ b.ty fuel)
               if ← chance 1 3 then
                 let To ← weighted (← intTy) [(3, ← intTy), (2, ← floatTy), (1, .bool)]
                 return dbg (← expr D Γ To fuel)
-              if Γ.isEmpty && !D.isEmpty then
+              if Γ.isEmpty && !D.structs.isEmpty then
                 let T₁ ← binderTy D
                 return seq (← expr D Γ T₁ fuel) unitLit
               leaf D Γ .unit 2
@@ -590,7 +595,7 @@ def expr (D : List StructDecl) : Scope → Ty → Nat → G Expr
               if !uses.isEmpty && (← chance 1 2) then return use (.var (← pick 0 uses))
               let projs := projPlaces D Γ (.struct s)
               if !projs.isEmpty && (← chance 1 3) then return use (← pickPlace (.var 0) projs)
-              match D[s]? with
+              match D.structs[s]? with
               | some sd => return mkStruct s (← sd.fields.mapM (fun T' => expr D Γ T' fuel))
               | none => return mkStruct s []
 
@@ -611,8 +616,8 @@ def size (e : Expr) : Nat := (subexprs e).length
 spellings where it has one, deduplicated in traversal order. `Γ` lists the
 binder types innermost first, as `Print.tyOf` reads them, so a use or a
 `@drop` is labeled copy or move by its binder's class. -/
-def rulesOf (D : List StructDecl) (e : Expr) : List String :=
-  let P : Program := { structs := D, fns := [] }
+def rulesOf (D : Decls) (e : Expr) : List String :=
+  let P : Program := { decls := D, fns := [] }
   let rec go (Γ : List Ty) : Expr → List String
     | use pl =>
         (match Γ[pl.root]? with
@@ -659,10 +664,10 @@ def rulesOf (D : List StructDecl) (e : Expr) : List String :=
 /-- (helper) The result type of a generated program: mostly `int`, so the
 value line is usually present, with a float often enough that `main` prints a
 shortest round-trip rendering (`3.12:40`) as well. -/
-def resultTy (D : List StructDecl) : G Ty := do
+def resultTy (D : Decls) : G Ty := do
   let k ← nat 1 10
-  if k ≤ 3 && !D.isEmpty then
-    let s ← nat 0 (D.length - 1)
+  if k ≤ 3 && !D.structs.isEmpty then
+    let s ← nat 0 (D.structs.length - 1)
     return .struct s
   weighted (← intTy) [(5, ← intTy), (3, ← floatTy), (1, .bool), (1, .unit)]
 
@@ -670,13 +675,13 @@ def resultTy (D : List StructDecl) : G Ty := do
 program whose entry point takes no parameters and returns the drawn type. -/
 def genCase (seed i : Nat) : G Corpus.Case := do
   let nDecls ← weighted 2 [(2, 1), (4, 2), (3, 3)]
-  let D ← genEnv nDecls []
+  let D ← genEnv nDecls (Decls.ofStructs [])
   let depth ← weighted 3 [(4, 2), (3, 3)]
   let T ← resultTy D
   let e ← expr D [] T depth
   return {
     name := s!"gen_{seed}_{i}",
-    description := s!"Generated program {i} of seed {seed} ({D.length} struct " ++
+    description := s!"Generated program {i} of seed {seed} ({D.structs.length} struct " ++
       s!"declarations, {size e} nodes); " ++
       s!"regenerate with `lake exe ruecore-corpus --gen N --seed {seed}` for any N > {i}.",
     rules := rulesOf D e,

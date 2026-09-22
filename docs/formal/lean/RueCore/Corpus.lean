@@ -569,7 +569,7 @@ def dbgLine : Val → Option String
   | .int _ _ n => some (toString n)
   | .float w f => some (f.render w)
   | .bool b => some (if b then "true" else "false")
-  | .unit | .struct _ _ => none
+  | .unit | .struct _ _ | .enum _ _ _ => none
 
 /-- The line a user destructor prints (`Print.structItem`): the struct's
 first field, when that field is an integer. A declaration whose first field is
@@ -595,17 +595,18 @@ def eventLine : Event → Option String
   | .drop _ _ | .dropTemp _ => none
 
 /-- The lines `main` shows for the program's value (`Print.observeValue`): a
-scalar prints itself, `()` prints nothing, and a struct value is dropped — so
-its lines are the ones its own drop emits, in §6.11's order. An `error` is a
-struct naming a declaration the program does not have, which the verdict
-already rejects. -/
+scalar prints itself, `()` prints nothing, and a struct or enum value is dropped
+— so its lines are the ones its own drop emits, in §6.11's order, which for an
+enum is its **active** variant's payload's (`6.3:20`). An `error` is a struct
+naming a declaration the program does not have, which the verdict already
+rejects. -/
 def valueLines (D : Decls) (v : Val) : List String :=
   match v with
   | .int w s n => (dbgLine (.int w s n)).toList
   | .float w f => (dbgLine (.float w f)).toList
   | .bool b => (dbgLine (.bool b)).toList
   | .unit => []
-  | .struct _ _ =>
+  | .struct _ _ | .enum _ _ _ =>
       match dropContents D (Contents.ofVal v) with
       | .ok evs => evs.filterMap eventLine
       | .error _ => []
@@ -642,9 +643,9 @@ runs therefore print the same lines, which is what a conservatively joined Σ
 costs at the observable level: nothing. -/
 example :
     (match run exportOps (Examples.prog Examples.tI64 Examples.partialMoveOneArm) exportFuel with
-     | .ok _ v tr => outLines Examples.structEnv v tr | _ => [])
+     | .ok _ v tr => outLines (Decls.ofStructs Examples.structEnv) v tr | _ => [])
     = (match run exportOps (Examples.prog Examples.tI64 Examples.partialMoveOtherArm) exportFuel with
-       | .ok _ v tr => outLines Examples.structEnv v tr | _ => []) := by rfl
+       | .ok _ v tr => outLines (Decls.ofStructs Examples.structEnv) v tr | _ => []) := by rfl
 
 /-- A one-line reading of the outcome, for the program's header comment. -/
 def outcomeSummary (c : Case) : String :=
