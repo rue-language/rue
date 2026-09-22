@@ -132,8 +132,10 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   struct declaration and (Fn) §5.8 for every function, plus an entry point
   taking no parameters — which `RueCore.checkProgram_sound` decides.
 - **Covers:** the fragment above. **Owed:** every remaining Phase C slice
-  re-establishes this theorem for its forms (RUE-2232 through RUE-2237,
-  RUE-2282).
+  re-establishes this theorem for its forms (RUE-2232 through RUE-2237). The
+  float slice (RUE-2282) has done so: `soundness` is stated over a
+  `RueCore.FloatModel`, so the float forms carry their own re-establishment in
+  the theorem's statement.
 
 ## No use-after-move
 

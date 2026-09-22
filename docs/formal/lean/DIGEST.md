@@ -43,8 +43,8 @@ The theorems below are about a *fragment* of the core calculus
 rule by rule and form by form; its two coverage lines, quoted here so the
 boundary is visible before the statements are:
 
-- *Calculus rules → declarations*: 51 of 97 labeled §5/§6 rules are mechanized; 46 are *not yet mechanized*.
-- *Abstract syntax forms → declarations*: 22 of 35 §2 forms have a core image (6 of them partial); 13 are *not yet mechanized*.
+- *Calculus rules → declarations*: 68 of 97 labeled §5/§6 rules are mechanized; 29 are *not yet mechanized*.
+- *Abstract syntax forms → declarations*: 24 of 35 §2 forms have a core image (6 of them partial); 11 are *not yet mechanized*.
 
 The forms that count as partial are `S`, `e1 ⊕ e2`, `⊖ e`, `e1 ⋚ e2`,
 `g ( a1, ..., am )`, `@panic ( s )`. Each is a restricted or abstract
@@ -68,6 +68,114 @@ step of another proof (an inversion lemma about the join, say) rather than
 a claim about the language. Each statement and its doc-comment say which
 it is. A claim's meaning is its statement together with the definitions in
 the last section, not its doc-comment.
+
+### `totalCmp_trichotomy`
+
+*theorem* · module `RueCore.Float`
+
+`(D-Total-Cmp)` yields one of `-1`, `0`, `1` — which is what makes its
+result a value of `int(32, signed)` whatever the operands are. `3.12:32` fixes
+only the *sign*; this is the witness the implementations agree on.
+
+```lean
+theorem RueCore.totalCmp_trichotomy (a b : FloatDatum) :
+  a.totalCmp b = -1 ∨ a.totalCmp b = 0 ∨ a.totalCmp b = 1
+```
+
+### `negate_wf`
+
+*theorem* · module `RueCore.Float`
+
+**`neg` preserves `𝔽_w`** — it flips a sign bit and changes nothing else
+(`3.12:24`), so §7's totality obligation for `(D-Float-Neg)` is discharged
+here rather than assumed.
+
+```lean
+theorem RueCore.negate_wf {w : FloatWidth} {f : FloatDatum} (h : FloatDatum.Wf w f) :
+  FloatDatum.Wf w f.negate
+```
+
+### `widen_wf`
+
+*theorem* · module `RueCore.Float`
+
+**Widening preserves representability** (`3.12:19`: widening `f32` to
+`f64` is value-preserving), which is why the widening half of
+`(D-Float-Cast)` is the identity on the datum and needs no law.
+
+```lean
+theorem RueCore.widen_wf {f : FloatDatum} (h : FloatDatum.Wf FloatWidth.w32 f) :
+  FloatDatum.Wf FloatWidth.w64 f.widen
+```
+
+### `roundOp_wf`
+
+*theorem* · module `RueCore.Float`
+
+**The four exact rounding intrinsics preserve `𝔽_w`** (`3.12:36`: "each
+result is exact — an integral value near `x` is always representable"). With
+`negate_wf` and `widen_wf` this discharges §7's "each `⊙_w` of §6.4 is total
+on `𝔽_w`" for every float operation this module defines; `@sqrt`, the one that
+rounds, is `FloatModel.sqrt_wf`.
+
+```lean
+theorem RueCore.roundOp_wf {w : FloatWidth} {op : FloatRoundOp} {f : FloatDatum}
+  (h : FloatDatum.Wf w f) : FloatDatum.Wf w (FloatDatum.roundOp op f)
+```
+
+### `FloatModel.cast_nan`
+
+*theorem* · module `RueCore.Float`
+
+**`@float_cast` of a NaN is a NaN, in either direction** —
+`(D-Float-Cast)` §6.4 on a special (`3.12:19`). The narrowing half is
+`narrow_nan`; the widening half is `FloatDatum.widen`, the identity, so it is
+*proved* rather than assumed. As with `arith_nan`, the sign is not fixed: both
+targets keep the operand's.
+
+```lean
+theorem RueCore.FloatModel.cast_nan (M : FloatModel) (w w' : FloatWidth)
+  {f : FloatDatum} (h : f.isNaN = true) : (M.cast w w' f).isNaN = true
+```
+
+### `floatToInt_partition`
+
+*theorem* · module `RueCore.Float`
+
+**The two premises partition `𝔽_w`** — §7's obligation for the one float
+form that traps, and a *theorem* here rather than an assumption, because the
+datum model makes truncation exact integer arithmetic. Progress for
+`@float_to_int` is exactly this: every datum either converts or traps, and
+never both.
+
+```lean
+theorem RueCore.floatToInt_partition (f : FloatDatum) (lo hi : Int) :
+  (∃ t, f.toIntIn lo hi = some t ∧ lo ≤ t ∧ t ≤ hi) ∨ f.toIntIn lo hi = none
+```
+
+### `toIntIn_nan`
+
+*theorem* · module `RueCore.Float`
+
+A NaN never converts: the first half of `(D-Float-To-Int-Trap)`'s premise
+(`3.12:18`).
+
+```lean
+theorem RueCore.toIntIn_nan (b : Bool) (lo hi : Int) :
+  (FloatDatum.nan b).toIntIn lo hi = none
+```
+
+### `toIntIn_inf`
+
+*theorem* · module `RueCore.Float`
+
+An infinity never converts: `3.12:18`'s "admits both infinities as
+failures". This and `toIntIn_nan` are what a float trap witness appeals to.
+
+```lean
+theorem RueCore.toIntIn_inf (b : Bool) (lo hi : Int) :
+  (FloatDatum.inf b).toIntIn lo hi = none
+```
 
 ### `StructDecl.Wf.field_not_linear`
 
@@ -284,7 +392,7 @@ reachable, which is the operator half of progress.
 
 ```lean
 theorem RueCore.binOpInt_res {D : StructEnv} (op : BinOp) (w : IntWidth) (s : Sign)
-  (n₁ n₂ : Int) :
+  (n₁ n₂ : Int) (hop : op.intAdmits = true) :
   (∃ v,
       binOpInt op w s n₁ n₂ = OpRes.val v ∧
         HasTy D v (op.resultTy (Ty.int w s))) ∨
@@ -300,12 +408,49 @@ The same, over the two machine values §5.8's operator rules give one
 them.
 
 ```lean
-theorem RueCore.evalBinOp_res {D : StructEnv} (op : BinOp) (w : IntWidth) (s : Sign)
-  (n₁ n₂ : Int) :
+theorem RueCore.evalBinOp_res {D : StructEnv} (M : FloatOps) (op : BinOp)
+  (w : IntWidth) (s : Sign) (n₁ n₂ : Int) (hop : op.intAdmits = true) :
   (∃ v,
-      evalBinOp op (Val.int w s n₁) (Val.int w s n₂) = OpRes.val v ∧
+      evalBinOp M op (Val.int w s n₁) (Val.int w s n₂) = OpRes.val v ∧
         HasTy D v (op.resultTy (Ty.int w s))) ∨
-    ∃ k, evalBinOp op (Val.int w s n₁) (Val.int w s n₂) = OpRes.trap k
+    ∃ k, evalBinOp M op (Val.int w s n₁) (Val.int w s n₂) = OpRes.trap k
+```
+
+### `binOpFloat_res`
+
+*theorem* · module `RueCore.Soundness`
+
+**Every §6.4 float operator lands on a value of its rule's type, and never
+traps.** The value cases are (D-Float-Arith), (D-Float-Ord) and (D-Total-Cmp);
+there is no trap case at all, which is `3.12:21` and §6.4's note that no
+arithmetic trap rule is stated over a float redex. `M.arith_wf` is §7's
+closure law — the one thing about `⊕_w` that cannot be proved of an arbitrary
+`FloatOps` — and it is what re-establishes `HasTy` at the result.
+
+```lean
+theorem RueCore.binOpFloat_res {D : StructEnv} (M : FloatModel) (op : BinOp)
+  (w : FloatWidth) (a b : FloatDatum) (ha : FloatDatum.Wf w a)
+  (hb : FloatDatum.Wf w b) (hop : op.floatAdmits = true) :
+  ∃ v,
+    binOpFloat M.toFloatOps op w a b = OpRes.val v ∧
+      HasTy D v (op.resultTy (Ty.float w))
+```
+
+### `evalBinOpFloat_res`
+
+*theorem* · module `RueCore.Soundness`
+
+The same, over the two machine values (Float-Arith)/(Float-Ord)/
+(Total-Cmp) §5.8 give one `float(w)`: the shape mismatch `evalBinOp` refuses
+is not reachable from them.
+
+```lean
+theorem RueCore.evalBinOpFloat_res {D : StructEnv} (M : FloatModel) (op : BinOp)
+  (w : FloatWidth) (a b : FloatDatum) (ha : FloatDatum.Wf w a)
+  (hb : FloatDatum.Wf w b) (hop : op.floatAdmits = true) :
+  ∃ v,
+    evalBinOp M.toFloatOps op (Val.float w a) (Val.float w b) = OpRes.val v ∧
+      HasTy D v (op.resultTy (Ty.float w))
 ```
 
 ### `evalUnOp_int_res`
@@ -350,6 +495,60 @@ theorem RueCore.evalIntCast_res {D : StructEnv} (w : IntWidth) (s : Sign)
       evalIntCast w s (Val.int w' s' n) = OpRes.val v ∧
         HasTy D v (Ty.int w s)) ∨
     evalIntCast w s (Val.int w' s' n) = OpRes.trap PanicKind.castOverflow
+```
+
+### `evalUnOp_float_res`
+
+*theorem* · module `RueCore.Soundness`
+
+**`neg` on a float is total** ((D-Float-Neg), `3.12:24`): a sign flip,
+which `negate_wf` shows keeps the datum in `𝔽_w`. Unlike the integer `neg` it
+has no trap case at all.
+
+```lean
+theorem RueCore.evalUnOp_float_res {D : StructEnv} (w : FloatWidth) (f : FloatDatum)
+  (hw : FloatDatum.Wf w f) :
+  ∃ v,
+    evalUnOp UnOp.neg (Val.float w f) = OpRes.val v ∧ HasTy D v (Ty.float w)
+```
+
+### `evalFintrin_int_res`
+
+*theorem* · module `RueCore.Soundness`
+
+**`@int_to_float` lands on a value of its result type and never traps**
+((D-Int-To-Float), `3.12:16`).
+
+```lean
+theorem RueCore.evalFintrin_int_res {D : StructEnv} (M : FloatModel) (w : FloatWidth)
+  (w' : IntWidth) (s' : Sign) (n : Int) :
+  ∃ v,
+    evalFintrin M.toFloatOps (FloatIntrin.intToFloat w) (Val.int w' s' n) =
+        OpRes.val v ∧
+      HasTy D v (Ty.float w)
+```
+
+### `evalFintrin_float_res`
+
+*theorem* · module `RueCore.Soundness`
+
+**Every one-operand float intrinsic on a `float(w)` operand lands on a
+value of its rule's type or on `↯overflow`** — that category and no other,
+and only `@float_to_int` reaches it (`3.12:18`, `8.1:7`). `@float_cast` and
+the five `3.12:34` intrinsics never trap (`3.12:19`, `3.12:37`), which is why
+the trap disjunct is `= .trap .overflow` rather than an existential. The
+`Wf` half of each value case is §7's closure obligation: proved here for the
+exact operations (`widen_wf`, `roundOp_wf`) and a law of the model for the
+rounded ones (`narrow_wf`, `sqrt_wf`).
+
+```lean
+theorem RueCore.evalFintrin_float_res {D : StructEnv} (M : FloatModel)
+  (k : FloatIntrin) (w : FloatWidth) (f : FloatDatum) (hw : FloatDatum.Wf w f)
+  (hk : k.floatSrc w = true) :
+  (∃ v,
+      evalFintrin M.toFloatOps k (Val.float w f) = OpRes.val v ∧
+        HasTy D v (k.resTy w)) ∨
+    evalFintrin M.toFloatOps k (Val.float w f) = OpRes.trap PanicKind.overflow
 ```
 
 ### `ContentsMatches.readAt`
@@ -572,19 +771,19 @@ hypothesis is `soundness` at the fuel the call has already spent one unit of,
 which is why this is a lemma rather than a case of the induction.
 
 ```lean
-theorem RueCore.args_sound {P : Program} {fuel : Nat}
+theorem RueCore.args_sound (M : FloatModel) {P : Program} {fuel : Nat}
   (ih :
     ∀ {R : Ty} {Γ Γ' : Ctx} {e : Expr} {T : Ty},
       Typed P R Γ e T Γ' →
         ∀ {φ : Frame} {H : Store},
           FrameMatches P.structs Γ φ H →
-            EvalOk P.structs T R Γ' φ H (eval fuel P H φ e))
+            EvalOk P.structs T R Γ' φ H (eval M.toFloatOps fuel P H φ e))
   (es : List Expr) {R : Ty} {Γ Γ' : Ctx} {Ts : List Ty} {φ : Frame}
   {H : Store} :
   TypedArgs P R Γ es Ts Γ' →
     FrameMatches P.structs Γ φ H →
       ArgsOk P.structs R Ts Γ' φ H
-        (evalArgs (fun H' e => eval fuel P H' φ e) H es)
+        (evalArgs (fun H' e => eval M.toFloatOps fuel P H' φ e) H es)
 ```
 
 ### `soundness`
@@ -609,12 +808,12 @@ and every subexpression — a call's arguments and the callee's body alike —
 runs at one unit less.
 
 ```lean
-theorem RueCore.soundness {P : Program} (hwf : WfProgram P) (fuel : Nat) {R : Ty}
-  {Γ Γ' : Ctx} {e : Expr} {T : Ty} :
+theorem RueCore.soundness (M : FloatModel) {P : Program} (hwf : WfProgram P)
+  (fuel : Nat) {R : Ty} {Γ Γ' : Ctx} {e : Expr} {T : Ty} :
   Typed P R Γ e T Γ' →
     ∀ {φ : Frame} {H : Store},
       FrameMatches P.structs Γ φ H →
-        EvalOk P.structs T R Γ' φ H (eval fuel P H φ e)
+        EvalOk P.structs T R Γ' φ H (eval M.toFloatOps fuel P H φ e)
 ```
 
 ### `fuel_mono`
@@ -629,9 +828,10 @@ interpreter's own device, not a §6 notion, so what this lemma is about is the
 claim `eval` makes on behalf of §6's machine.
 
 ```lean
-theorem RueCore.fuel_mono {P : Program} {H : Store} {φ : Frame} {e : Expr}
-  {n m : Nat} :
-  n ≤ m → eval n P H φ e ≠ EvalRes.outOfFuel → eval m P H φ e = eval n P H φ e
+theorem RueCore.fuel_mono (M : FloatOps) {P : Program} {H : Store} {φ : Frame}
+  {e : Expr} {n m : Nat} :
+  n ≤ m →
+    eval M n P H φ e ≠ EvalRes.outOfFuel → eval M m P H φ e = eval M n P H φ e
 ```
 
 ### `no_masking`
@@ -645,9 +845,11 @@ program some fuel completes, and the `outOfFuel` escape hatch in the §7
 theorems (§6's machine has no such state) cannot be what makes them true.
 
 ```lean
-theorem RueCore.no_masking {P : Program} {H : Store} {φ : Frame} {e : Expr}
-  {n m : Nat} {w : Violation} (hn : eval n P H φ e = EvalRes.stuck w)
-  (hm : eval m P H φ e ≠ EvalRes.outOfFuel) : eval m P H φ e = EvalRes.stuck w
+theorem RueCore.no_masking (M : FloatOps) {P : Program} {H : Store} {φ : Frame}
+  {e : Expr} {n m : Nat} {w : Violation}
+  (hn : eval M n P H φ e = EvalRes.stuck w)
+  (hm : eval M m P H φ e ≠ EvalRes.outOfFuel) :
+  eval M m P H φ e = EvalRes.stuck w
 ```
 
 ### `run_ne_returned`
@@ -659,8 +861,8 @@ ordinary call, and the call boundary absorbs an unwinding `return` exactly as
 it does anywhere, so a program's outcome is never a `returned` result.
 
 ```lean
-theorem RueCore.run_ne_returned {P : Program} {fuel : Nat} (H : Store) (v : Val)
-  (tr : List Event) : run P fuel ≠ EvalRes.returned H v tr
+theorem RueCore.run_ne_returned (M : FloatOps) {P : Program} {fuel : Nat} (H : Store)
+  (v : Val) (tr : List Event) : run M P fuel ≠ EvalRes.returned H v tr
 ```
 
 ### `run_safe`
@@ -673,11 +875,13 @@ produces a value of the entry point's declared return type. It never reaches a
 `Violation`.
 
 ```lean
-theorem RueCore.run_safe {P : Program} {fd : FnDef} (hwf : WfProgram P)
-  (h0 : P.fns[0]? = some fd) (hp : fd.params = []) (fuel : Nat) :
-  run P fuel = EvalRes.outOfFuel ∨
-    (∃ k tr, run P fuel = EvalRes.panic k tr) ∨
-      ∃ H v tr, run P fuel = EvalRes.ok H v tr ∧ HasTy P.structs v fd.ret
+theorem RueCore.run_safe (M : FloatModel) {P : Program} {fd : FnDef}
+  (hwf : WfProgram P) (h0 : P.fns[0]? = some fd) (hp : fd.params = [])
+  (fuel : Nat) :
+  run M.toFloatOps P fuel = EvalRes.outOfFuel ∨
+    (∃ k tr, run M.toFloatOps P fuel = EvalRes.panic k tr) ∨
+      ∃ H v tr,
+        run M.toFloatOps P fuel = EvalRes.ok H v tr ∧ HasTy P.structs v fd.ret
 ```
 
 ### `ProgramTyped.run_safe`
@@ -691,13 +895,15 @@ value's type is still the one that function declares, so this form claims
 exactly what `run_safe` proves.
 
 ```lean
-theorem RueCore.ProgramTyped.run_safe {P : Program} (h : ProgramTyped P)
-  (fuel : Nat) :
+theorem RueCore.ProgramTyped.run_safe (M : FloatModel) {P : Program}
+  (h : ProgramTyped P) (fuel : Nat) :
   ∃ fd,
     P.fns[0]? = some fd ∧
-      (run P fuel = EvalRes.outOfFuel ∨
-        (∃ k tr, run P fuel = EvalRes.panic k tr) ∨
-          ∃ H v tr, run P fuel = EvalRes.ok H v tr ∧ HasTy P.structs v fd.ret)
+      (run M.toFloatOps P fuel = EvalRes.outOfFuel ∨
+        (∃ k tr, run M.toFloatOps P fuel = EvalRes.panic k tr) ∨
+          ∃ H v tr,
+            run M.toFloatOps P fuel = EvalRes.ok H v tr ∧
+              HasTy P.structs v fd.ret)
 ```
 
 ### `no_violation`
@@ -735,8 +941,8 @@ Every *other* edge — a `let`'s scope exit, a frame's normal pop, and a
 `return`'s unwind — is covered.
 
 ```lean
-theorem RueCore.no_violation {P : Program} (h : ProgramTyped P) (fuel : Nat)
-  (w : Violation) : run P fuel ≠ EvalRes.stuck w
+theorem RueCore.no_violation (M : FloatModel) {P : Program} (h : ProgramTyped P)
+  (fuel : Nat) (w : Violation) : run M.toFloatOps P fuel ≠ EvalRes.stuck w
 ```
 
 ### `no_use_after_move`
@@ -746,8 +952,9 @@ theorem RueCore.no_violation {P : Program} (h : ProgramTyped P) (fuel : Nat)
 §7 "No use-after-move": the machine never reads a `⊘` cell.
 
 ```lean
-theorem RueCore.no_use_after_move {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-  run P fuel ≠ EvalRes.stuck Violation.useAfterMove
+theorem RueCore.no_use_after_move (M : FloatModel) {P : Program} (h : ProgramTyped P)
+  (fuel : Nat) :
+  run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.useAfterMove
 ```
 
 ### `no_use_after_drop`
@@ -763,8 +970,9 @@ live or moved out and pairwise distinct — that keeps those walks off a `†`
 cell and stops any cell being retired twice.
 
 ```lean
-theorem RueCore.no_use_after_drop {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-  run P fuel ≠ EvalRes.stuck Violation.useAfterDrop
+theorem RueCore.no_use_after_drop (M : FloatModel) {P : Program} (h : ProgramTyped P)
+  (fuel : Nat) :
+  run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.useAfterDrop
 ```
 
 ### `no_linear_leak`
@@ -775,8 +983,8 @@ theorem RueCore.no_use_after_drop {P : Program} (h : ProgramTyped P) (fuel : Nat
 exit (§6.7) nor a frame unwind (§6.9) ever sees a live linear value.
 
 ```lean
-theorem RueCore.no_linear_leak {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-  run P fuel ≠ EvalRes.stuck Violation.linearLeak
+theorem RueCore.no_linear_leak (M : FloatModel) {P : Program} (h : ProgramTyped P)
+  (fuel : Nat) : run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearLeak
 ```
 
 ### `no_linear_overwrite`
@@ -790,8 +998,9 @@ the two — so the residue is empty of linear content whenever the checker
 accepted.
 
 ```lean
-theorem RueCore.no_linear_overwrite {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-  run P fuel ≠ EvalRes.stuck Violation.linearOverwrite
+theorem RueCore.no_linear_overwrite (M : FloatModel) {P : Program}
+  (h : ProgramTyped P) (fuel : Nat) :
+  run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearOverwrite
 ```
 
 ### `no_linear_discard`
@@ -801,8 +1010,9 @@ theorem RueCore.no_linear_overwrite {P : Program} (h : ProgramTyped P) (fuel : N
 §7 linear bullet, discard half (`3.8:64`).
 
 ```lean
-theorem RueCore.no_linear_discard {P : Program} (h : ProgramTyped P) (fuel : Nat) :
-  run P fuel ≠ EvalRes.stuck Violation.linearDiscard
+theorem RueCore.no_linear_discard (M : FloatModel) {P : Program} (h : ProgramTyped P)
+  (fuel : Nat) :
+  run M.toFloatOps P fuel ≠ EvalRes.stuck Violation.linearDiscard
 ```
 
 ### `check_sound`
@@ -905,9 +1115,60 @@ parameter cells — one per frame the recursion pushed.
 
 ```lean
 theorem RueCore.Examples.countdown_at_17 :
-  run Examples.countdown 17 =
+  run Examples.demoOps Examples.countdown 17 =
     EvalRes.ok [Cell.dead, Cell.dead, Cell.dead, Cell.dead, Cell.dead]
       (Examples.v64 10) []
+```
+
+### `Examples.floatToInt_inf_traps`
+
+*theorem* · module `RueCore.Examples`
+
+**`@float_to_int` of an infinity traps** — `3.12:18`'s guard "admits both
+infinities as failures" — and the category is `↯overflow`, the one §6.12
+already lists (`8.1:7`), not a new one.
+
+```lean
+theorem RueCore.Examples.floatToInt_inf_traps (M : FloatModel) (w : FloatWidth)
+  (w' : IntWidth) (s' : Sign) (b : Bool) :
+  evalFintrin M.toFloatOps (FloatIntrin.floatToInt w' s')
+      (Val.float w (FloatDatum.inf b)) =
+    OpRes.trap PanicKind.overflow
+```
+
+### `Examples.floatToInt_nan_traps`
+
+*theorem* · module `RueCore.Examples`
+
+**`@float_to_int` of a NaN traps**, the other half of
+`(D-Float-To-Int-Trap)`'s premise (`3.12:18`).
+
+```lean
+theorem RueCore.Examples.floatToInt_nan_traps (M : FloatModel) (w : FloatWidth)
+  (w' : IntWidth) (s' : Sign) (b : Bool) :
+  evalFintrin M.toFloatOps (FloatIntrin.floatToInt w' s')
+      (Val.float w (FloatDatum.nan b)) =
+    OpRes.trap PanicKind.overflow
+```
+
+### `Examples.floatDivZeroToInt_traps`
+
+*theorem* · module `RueCore.Examples`
+
+**A whole redex: `@float_to_int(1.0 / 0.0)` traps at every model.** The
+division is `3.12:22`'s (`FloatModel.div_by_zero`), the literals are
+`3.12:9`'s (`ofLit_one`, `ofLit_zero`), and the trap is the partition. No
+float arithmetic is computed anywhere in the proof, and the theorem holds for
+every model satisfying the laws — including, but not only, `Float.exactOps`,
+which the corpus runs and the compiler agrees with.
+
+```lean
+theorem RueCore.Examples.floatDivZeroToInt_traps (M : FloatModel) (P : Program)
+  (H : Store) (φ : Frame) (w : FloatWidth) (w' : IntWidth) (s' : Sign) :
+  eval M.toFloatOps 8 P H φ
+      (Expr.fintrin (FloatIntrin.floatToInt w' s')
+        (Expr.binop BinOp.div (Examples.flE w 1 0) (Examples.flE w 0 0))) =
+    EvalRes.panic PanicKind.overflow []
 ```
 
 ### `Explain.explain_result`
@@ -959,9 +1220,9 @@ report an outcome — a value, an unwinding `return`, a §6.12 trap, a refusal,
 or exhausted fuel — the interpreter does not produce.
 
 ```lean
-theorem RueCore.Explain.traceEval_res {P : Program} (fuel d : Nat) (Θ : List Ty)
-  (R : Ty) (H : Store) (φ : Frame) (e : Expr) :
-  (Explain.traceEval P fuel d Θ R H φ e).res = eval fuel P H φ e
+theorem RueCore.Explain.traceEval_res (M : FloatOps) {P : Program} (fuel d : Nat)
+  (Θ : List Ty) (R : Ty) (H : Store) (φ : Frame) (e : Expr) :
+  (Explain.traceEval M P fuel d Θ R H φ e).res = eval M fuel P H φ e
 ```
 
 ### `Explain.runTrace_res`
@@ -971,8 +1232,8 @@ theorem RueCore.Explain.traceEval_res {P : Program} (fuel d : Nat) (Θ : List Ty
 **The program's run is the program's outcome** (§6.12).
 
 ```lean
-theorem RueCore.Explain.runTrace_res (P : Program) (fuel : Nat) :
-  (Explain.runTrace P fuel).res = run P fuel
+theorem RueCore.Explain.runTrace_res (M : FloatOps) (P : Program) (fuel : Nat) :
+  (Explain.runTrace M P fuel).res = run M P fuel
 ```
 
 ## Helper lemmas
@@ -981,6 +1242,101 @@ Also proved, and listed so that nothing proved is hidden, but each is a
 step of another proof rather than a claim about the language: these are
 the declarations whose doc-comment marks them `(helper)` under the
 repository's cross-reference convention.
+
+### `cmpScaled_trichotomy`
+
+*theorem* · module `RueCore.Float`
+
+An exact magnitude comparison is one of `-1`, `0`, `1` (helper).
+
+```lean
+theorem RueCore.cmpScaled_trichotomy (a : Nat) (i : Int) (b : Nat) (j : Int) :
+  cmpScaled a i b j = -1 ∨ cmpScaled a i b j = 0 ∨ cmpScaled a i b j = 1
+```
+
+### `magCmp_trichotomy`
+
+*theorem* · module `RueCore.Float`
+
+A magnitude comparison is one of `-1`, `0`, `1` (helper).
+
+```lean
+theorem RueCore.magCmp_trichotomy (s₁ : Nat) (e₁ : Int) (s₂ : Nat) (e₂ : Int) :
+  magCmp s₁ e₁ s₂ e₂ = -1 ∨ magCmp s₁ e₁ s₂ e₂ = 0 ∨ magCmp s₁ e₁ s₂ e₂ = 1
+```
+
+### `negIf_trichotomy`
+
+*theorem* · module `RueCore.Float`
+
+Reversing a trichotomous comparison keeps it trichotomous, which is what
+the negative half of `≺_w` does (helper).
+
+```lean
+theorem RueCore.negIf_trichotomy {c : Int} (h : c = -1 ∨ c = 0 ∨ c = 1) (n : Bool) :
+  (if n = true then -c else c) = -1 ∨
+    (if n = true then -c else c) = 0 ∨ (if n = true then -c else c) = 1
+```
+
+### `canonAux_ok`
+
+*theorem* · module `RueCore.Float`
+
+The canonicalization loop lands in `𝔽_w` whenever the number it is handed
+does: stripping a factor of two halves the significand and raises the
+exponent, which preserves every clause of `Wf` (helper).
+
+```lean
+theorem RueCore.canonAux_ok (k : Nat) (neg : Bool) (sig : Nat) (exp : Int) (P : Nat)
+  (L T : Int) :
+  sig ≠ 0 →
+    sig < 2 ^ k →
+      sig < 2 ^ P →
+        L ≤ exp →
+          exp ≤ T →
+            sig < 2 ^ (T - exp).toNat →
+              ∃ s' e',
+                canonAux k neg sig exp = FloatDatum.num neg s' e' ∧
+                  s' % 2 = 1 ∧
+                    s' < 2 ^ P ∧ L ≤ e' ∧ e' ≤ T ∧ s' < 2 ^ (T - e').toNat
+```
+
+### `canonNum_wf`
+
+*theorem* · module `RueCore.Float`
+
+`canonNum` lands in `𝔽_w` whenever the number it is handed does
+(helper).
+
+```lean
+theorem RueCore.canonNum_wf {w : FloatWidth} {neg : Bool} {sig : Nat} {exp : Int}
+  (hp : sig < 2 ^ w.prec) (hlo : w.eMin ≤ exp) (hhi : exp ≤ w.eTop)
+  (htop : sig < 2 ^ (w.eTop - exp).toNat) :
+  FloatDatum.Wf w (canonNum neg sig exp)
+```
+
+### `one_wf`
+
+*theorem* · module `RueCore.Float`
+
+`1 · 2^0` is a datum of every width — the one finite value the trap
+witnesses need to name (helper).
+
+```lean
+theorem RueCore.one_wf (w : FloatWidth) : FloatDatum.Wf w (FloatDatum.num false 1 0)
+```
+
+### `toIntIn_mem`
+
+*theorem* · module `RueCore.Float`
+
+A converted value lies in the target's range, which is the half of
+`(D-Float-To-Int)`'s premise the result type needs (helper).
+
+```lean
+theorem RueCore.toIntIn_mem {f : FloatDatum} {lo hi t : Int}
+  (h : f.toIntIn lo hi = some t) : lo ≤ t ∧ t ≤ hi
+```
 
 ### `valOf_inBounds`
 
@@ -1191,6 +1547,17 @@ Inversion of value typing at an integer type (helper).
 ```lean
 theorem RueCore.HasTy.int_inv {D : StructEnv} {v : Val} {w : IntWidth} {s : Sign}
   (h : HasTy D v (Ty.int w s)) : ∃ n, v = Val.int w s n ∧ InBounds w s n
+```
+
+### `HasTy.float_inv`
+
+*theorem* · module `RueCore.Soundness`
+
+Inversion of value typing at a float type (helper).
+
+```lean
+theorem RueCore.HasTy.float_inv {D : StructEnv} {v : Val} {w : FloatWidth}
+  (h : HasTy D v (Ty.float w)) : ∃ f, v = Val.float w f ∧ FloatDatum.Wf w f
 ```
 
 ### `HasTy.bool_inv`
@@ -2142,10 +2509,10 @@ One step of fuel monotonicity: a bound that answered answers the same at
 the next bound up (helper).
 
 ```lean
-theorem RueCore.eval_succ {P : Program} (fuel : Nat) (H : Store) (φ : Frame)
-  (e : Expr) :
-  eval fuel P H φ e ≠ EvalRes.outOfFuel →
-    eval (fuel + 1) P H φ e = eval fuel P H φ e
+theorem RueCore.eval_succ (M : FloatOps) {P : Program} (fuel : Nat) (H : Store)
+  (φ : Frame) (e : Expr) :
+  eval M fuel P H φ e ≠ EvalRes.outOfFuel →
+    eval M (fuel + 1) P H φ e = eval M fuel P H φ e
 ```
 
 ### `entry_typed`
@@ -2259,10 +2626,17 @@ RueCore.Attr.linear : Attr
 
 *inductive* · module `RueCore.Syntax`
 
-§2's binary operator sets on integers: the arithmetic and bitwise `⊕`
-(`+ - * / %`, `& | ^`, `<< >>`) typed by (Arith) §5.8, and the ordering
-compares `⋚` (`< > <= >=`) typed by (Ord) §5.8. Equality `≟` is not here: it
-*borrows* its operands (`4.3:3f`), and the fragment has no loans.
+§2's binary operator sets: the arithmetic and bitwise `⊕`
+(`+ - * / %`, `& | ^`, `<< >>`) typed by (Arith) §5.8, the ordering
+compares `⋚` (`< > <= >=`) typed by (Ord) and by (Float-Ord) §5.8, and
+`@total_cmp`. Equality `≟` is not here: it *borrows* its operands
+(`4.3:3f`), and the fragment has no loans.
+
+`@total_cmp` sits here rather than among the float intrinsics below because
+it is the one float intrinsic with **two operands of one type** — exactly the
+shape (Arith)/(Ord) already have — so it needs no second expression form and
+no second evaluation-context rule. Its surface spelling is still the
+intrinsic's (`Print.lean` writes `@total_cmp(a, b)`, not an infix).
 
 ```lean
 inductive RueCore.BinOp : Type
@@ -2354,6 +2728,12 @@ RueCore.BinOp.gt : BinOp
 RueCore.BinOp.ge : BinOp
 ```
 
+**`BinOp.totalCmp`**
+
+```lean
+RueCore.BinOp.totalCmp : BinOp
+```
+
 ### `Env`
 
 *abbrev* · module `RueCore.Dynamics`
@@ -2379,6 +2759,182 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 Examples.sLinearDtor = 3
+```
+
+### `Float.ratOf`
+
+*def* · module `RueCore.Float`
+
+The exact value of a finite datum as a signed rational `(neg, num, den)`
+(helper).
+
+```lean
+def RueCore.Float.ratOf (neg : Bool) (sig : Nat) (exp : Int) : Bool × Nat × Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (neg : Bool) (sig : Nat) (exp : Int),
+  Float.ratOf neg sig exp =
+    (neg, sig * 2 ^ (max 0 exp).toNat, 2 ^ (max 0 (-exp)).toNat)
+```
+
+### `FloatArith`
+
+*inductive* · module `RueCore.Float`
+
+§6.4's four float arithmetic operators (`(D-Float-Arith)`). They are
+listed apart from `BinOp` because the model's field is indexed by them and
+because `%` is **not** among them: `(Float-Arith)` §5.8 omits it and
+`3.12:25` says why.
+
+```lean
+inductive RueCore.FloatArith : Type
+```
+
+Constructors:
+
+**`FloatArith.add`**
+
+```lean
+RueCore.FloatArith.add : FloatArith
+```
+
+**`FloatArith.sub`**
+
+```lean
+RueCore.FloatArith.sub : FloatArith
+```
+
+**`FloatArith.mul`**
+
+```lean
+RueCore.FloatArith.mul : FloatArith
+```
+
+**`FloatArith.div`**
+
+```lean
+RueCore.FloatArith.div : FloatArith
+```
+
+### `FloatDatum`
+
+*inductive* · module `RueCore.Float`
+
+§2's `𝔽_w`. `num neg sig exp` is the number `(-1)^neg · sig · 2^exp`;
+`inf neg` are the two infinities; `nan neg` is `NaN(σ)`, which carries a sign
+and no payload (§2, §9 item 5). Canonical data — what every operation here
+produces and `Wf` requires — have `sig = 0 → exp = 0` (so `±0` are exactly two
+data) and `sig ≠ 0 → sig` odd (so each non-zero number has one
+representation).
+
+```lean
+inductive RueCore.FloatDatum : Type
+```
+
+Constructors:
+
+**`FloatDatum.nan`**
+
+```lean
+RueCore.FloatDatum.nan (neg : Bool) : FloatDatum
+```
+
+**`FloatDatum.inf`**
+
+```lean
+RueCore.FloatDatum.inf (neg : Bool) : FloatDatum
+```
+
+**`FloatDatum.num`**
+
+```lean
+RueCore.FloatDatum.num (neg : Bool) (sig : Nat) (exp : Int) : FloatDatum
+```
+
+### `FloatLit`
+
+*inductive* · module `RueCore.Float`
+
+A core float literal: the decimal `sig · 10^e` (`negExp` flips the
+exponent's sign), which `3.12:9` reads at the form's width.
+
+```lean
+inductive RueCore.FloatLit : Type
+```
+
+Constructors:
+
+**`FloatLit.mk`**
+
+```lean
+RueCore.FloatLit.mk (sig : Nat) (negExp : Bool) (e : Nat) : FloatLit
+```
+
+### `FloatRoundOp`
+
+*inductive* · module `RueCore.Float`
+
+The five `(Float-Round)` intrinsics of `3.12:34`, minus `@sqrt`: rounding
+toward `-inf`, toward `+inf`, toward zero, and to nearest with ties **away**
+from zero (`3.12:36`). Each is exact, none traps (`3.12:37`), and a NaN, an
+infinity, and a zero each come back unchanged (a zero keeps its sign).
+
+```lean
+inductive RueCore.FloatRoundOp : Type
+```
+
+Constructors:
+
+**`FloatRoundOp.floor`**
+
+```lean
+RueCore.FloatRoundOp.floor : FloatRoundOp
+```
+
+**`FloatRoundOp.ceil`**
+
+```lean
+RueCore.FloatRoundOp.ceil : FloatRoundOp
+```
+
+**`FloatRoundOp.trunc`**
+
+```lean
+RueCore.FloatRoundOp.trunc : FloatRoundOp
+```
+
+**`FloatRoundOp.round`**
+
+```lean
+RueCore.FloatRoundOp.round : FloatRoundOp
+```
+
+### `FloatWidth`
+
+*inductive* · module `RueCore.Float`
+
+The float widths §2's `float(w)` ranges over: `w ∈ {32, 64}`, the surface
+`f32` and `f64` (`3.12:1`).
+
+```lean
+inductive RueCore.FloatWidth : Type
+```
+
+Constructors:
+
+**`FloatWidth.w32`**
+
+```lean
+RueCore.FloatWidth.w32 : FloatWidth
+```
+
+**`FloatWidth.w64`**
+
+```lean
+RueCore.FloatWidth.w64 : FloatWidth
 ```
 
 ### `IntWidth`
@@ -2593,7 +3149,11 @@ RueCore.Sign.unsigned : Sign
 *inductive* · module `RueCore.Syntax`
 
 §2's unary operator set `⊖`: `neg`, `not`, `bitnot`, typed by (Neg),
-(Not) and (BitNot) §5.8.
+(Float-Neg), (Not) and (BitNot) §5.8. `neg` is the one of the three that
+spans both scalar kinds: (Neg) restricts the integer case to a *signed* type
+and traps on `min_T`, while (Float-Neg) applies at every float type and
+§6.4 makes it total — a sign flip, on `-0.0` and on a NaN alike
+(`3.12:24`, `4.2:14`).
 
 ```lean
 inductive RueCore.UnOp : Type
@@ -2674,6 +3234,30 @@ RueCore.Violation.unbound : Violation
 RueCore.Violation.typeConfusion : Violation
 ```
 
+### `cmpScaled`
+
+*def* · module `RueCore.Float`
+
+`a · 2^i` compared with `b · 2^j`, as `-1 / 0 / 1`, by scaling both to the
+smaller exponent (helper).
+
+```lean
+def RueCore.cmpScaled (a : Nat) (i : Int) (b : Nat) (j : Int) : Int
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (a : Nat) (i : Int) (b : Nat) (j : Int),
+  cmpScaled a i b j =
+    match
+      compare (a * 2 ^ (i - min i j).toNat)
+        (b * 2 ^ (j - min i j).toNat) with
+    | Ordering.lt => -1
+    | Ordering.eq => 0
+    | Ordering.gt => 1
+```
+
 ### `Attr.lift`
 
 *def* · module `RueCore.Syntax`
@@ -2696,6 +3280,61 @@ Defining equations, as Lean derived them from the body:
 ∀ (x : Mult), Attr.copy.lift x = Mult.copy
 ∀ (x : Mult),
   Attr.none.lift x = if x = Mult.linear then Mult.linear else Mult.affine
+```
+
+### `BinOp.floatAdmits`
+
+*def* · module `RueCore.Syntax`
+
+Which operators §5.8 admits at a float type: the four arithmetic
+operators of (Float-Arith), the four ordering compares of (Float-Ord), and
+`@total_cmp` (Total-Cmp). `%` is excluded by (Float-Arith)'s omission of it
+(`3.12:25`), and the bitwise and shift operators by (Arith)/(BitNot) being
+stated only at `int(w,s)` — a float is a datum rather than a bit pattern
+(§2). §5.8 calls this rejection "by the absence of a rule"; here it is a side
+condition, because one `Typed` constructor stands for the two rule groups
+(helper).
+
+```lean
+def RueCore.BinOp.floatAdmits : BinOp → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+BinOp.add.floatAdmits = true
+BinOp.sub.floatAdmits = true
+BinOp.mul.floatAdmits = true
+BinOp.div.floatAdmits = true
+BinOp.lt.floatAdmits = true
+BinOp.le.floatAdmits = true
+BinOp.gt.floatAdmits = true
+BinOp.ge.floatAdmits = true
+BinOp.totalCmp.floatAdmits = true
+BinOp.rem.floatAdmits = false
+BinOp.bitAnd.floatAdmits = false
+BinOp.bitOr.floatAdmits = false
+BinOp.bitXor.floatAdmits = false
+BinOp.shl.floatAdmits = false
+BinOp.shr.floatAdmits = false
+```
+
+### `BinOp.intAdmits`
+
+*def* · module `RueCore.Syntax`
+
+Which operators §5.8's (Arith)/(Ord) admit at an integer type: everything
+except `@total_cmp`, whose operands `3.12:31` makes floats (helper).
+
+```lean
+def RueCore.BinOp.intAdmits : BinOp → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+BinOp.totalCmp.intAdmits = false
+∀ (x : BinOp), (x = BinOp.totalCmp → False) → x.intAdmits = true
 ```
 
 ### `BinOp.isCompare`
@@ -2752,6 +3391,12 @@ RueCore.Contents.hole : Contents
 RueCore.Contents.int (w : IntWidth) (s : Sign) (n : Int) : Contents
 ```
 
+**`Contents.float`**
+
+```lean
+RueCore.Contents.float (w : FloatWidth) (f : FloatDatum) : Contents
+```
+
 **`Contents.bool`**
 
 ```lean
@@ -2770,135 +3415,302 @@ RueCore.Contents.unit : Contents
 RueCore.Contents.struct (s : Nat) (cs : List Contents) : Contents
 ```
 
-### `Expr`
+### `Float.addD`
 
-*inductive* · module `RueCore.Syntax`
+*def* · module `RueCore.Float`
 
-Expressions (§2, fragment). `use p` is the `e ::= p` production — a place
-appearing in value context, i.e. a *use* (§4.2), which at a projection is the
-partial move of `3.8:22`. `drop p` is `@drop(p)` and `assign p e` is
-`assign p = e`, both at a place too (§5.2, §5.3). `letIn` carries the binding's
-`μ ∈ {∅, mut}` mark, which is what makes an assignment's root mutable.
-`mkStruct s args` is §2's `S { f1: e1, …, fk: ek }`, presented in declaration
-order (`3.6:15`) with one initializer per field. `call f args` is §2's
-`g(a1, …, am)` with every argument by value (§6.9's by-reference modes are not
-in the fragment), `f` the callee's index in the `Program`. `ret e` is §2's
-`return e`.
-
-`intLit w s n` carries the type elaboration resolved for it (`4.1:2`).
-`binop`/`unop` are §2's `e1 ⊕ e2` / `e1 ⋚ e2` and `⊖ e`. `intCast w s e` is
-`@intCast(e)` with the target type elaboration took from the use site
-(`4.13:26`). `panic msg` is `@panic(s)` at a string-literal message: the
-fragment has no string type, so the message is a field of the form rather than
-an operand expression, which is also why no `(Panic-Operand)` case is needed.
-`dbg e` is `@dbg(e)`.
+`(D-Float-Arith)` at `+`: IEEE's special cases as §6.4 lists them, then
+the exact sum rounded by `rnd_w`. A NaN operand is propagated (the first, when
+both are); `inf - inf` is a NaN this operation creates, so it gets `σ`. The
+zero cases are IEEE's for round to nearest: two zeros give `-0` only when both
+are, and a sum that is exactly zero is `+0` (helper).
 
 ```lean
-inductive RueCore.Expr : Type
+def RueCore.Float.addD (σ : Bool) (w : FloatWidth) :
+  FloatDatum → FloatDatum → FloatDatum
+```
+
+### `Float.divD`
+
+*def* · module `RueCore.Float`
+
+`(D-Float-Arith)` at `/`: `3.12:22`'s two clauses — a finite non-zero over
+a zero is the infinity of the xor sign, and `0/0` is a NaN — plus the infinite
+cases, and the exact quotient rounded otherwise. A NaN operand is propagated;
+`0/0` and `inf/inf` are NaNs this operation creates, so they get `σ`
+(helper).
+
+```lean
+def RueCore.Float.divD (σ : Bool) (w : FloatWidth) :
+  FloatDatum → FloatDatum → FloatDatum
+```
+
+### `Float.mulD`
+
+*def* · module `RueCore.Float`
+
+`(D-Float-Arith)` at `*`: `0 × inf` is a NaN, every other infinite case is
+the infinity of the xor sign, and a finite product is exact then rounded. A NaN
+operand is propagated; `0 · inf` is a NaN this operation creates, so it gets `σ`
+(helper).
+
+```lean
+def RueCore.Float.mulD (σ : Bool) (w : FloatWidth) :
+  FloatDatum → FloatDatum → FloatDatum
+```
+
+### `Float.sqrtD`
+
+*def* · module `RueCore.Float`
+
+`rnd_w` of the exact square root (`3.12:35`), by an integer square root at
+enough extra bits that the sticky information the tie case needs survives. A NaN
+operand is propagated; `@sqrt` of a negative (`-inf` included) creates a NaN, so
+that one gets `σ`.
+
+```lean
+def RueCore.Float.sqrtD (σ : Bool) (w : FloatWidth) (f : FloatDatum) : FloatDatum
+```
+
+### `FloatDatum.isNaN`
+
+*def* · module `RueCore.Float`
+
+Whether the datum is a NaN (`3.12:27`'s unordered case) (helper).
+
+```lean
+def RueCore.FloatDatum.isNaN : FloatDatum → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (neg : Bool), (FloatDatum.nan neg).isNaN = true
+∀ (x : FloatDatum),
+  (∀ (neg : Bool), x = FloatDatum.nan neg → False) → x.isNaN = false
+```
+
+### `FloatDatum.negate`
+
+*def* · module `RueCore.Float`
+
+`(D-Float-Neg)` §6.4: negation is a **sign flip and nothing else**, on
+`-0.0` and on a NaN alike (`3.12:24`). It is exact, so it is a function here
+rather than a field of the model, and it is total — no float redex steps to a
+panic.
+
+```lean
+def RueCore.FloatDatum.negate : FloatDatum → FloatDatum
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (a : Bool), (FloatDatum.nan a).negate = FloatDatum.nan !a
+∀ (a : Bool), (FloatDatum.inf a).negate = FloatDatum.inf !a
+∀ (a : Bool) (a_1 : Nat) (a_2 : Int),
+  (FloatDatum.num a a_1 a_2).negate = FloatDatum.num (!a) a_1 a_2
+```
+
+### `FloatDatum.roundOp`
+
+*def* · module `RueCore.Float`
+
+`(D-Float-Round)` §6.4 for the four exact intrinsics (`3.12:36`). A datum
+with no fractional part — an infinity, a NaN, a zero, or any value whose
+exponent is non-negative — comes back unchanged; otherwise the integral part
+`m` and the remainder `r` decide, and the value is below `2^p`, so `m` and
+`m + 1` are both representable.
+
+```lean
+def RueCore.FloatDatum.roundOp (op : FloatRoundOp) (f : FloatDatum) : FloatDatum
+```
+
+### `FloatDatum.totalCmp`
+
+*def* · module `RueCore.Float`
+
+`(D-Total-Cmp)` §6.4: `-1`, `0`, `1` under `≺_w`. `k = 0` holds exactly
+when the two operands are the **same datum** — which is why `FloatDatum` is
+kept canonical — and that is total precisely where `≈` is not:
+`totalCmp f f = 0` for every `f`, a NaN included. `3.12:32` fixes only the
+*sign* of a non-zero result; the implementations return `-1`/`0`/`1`
+(verified against the compiler), and the model returns the same so that a
+printed `@total_cmp` has a comparable value.
+
+```lean
+def RueCore.FloatDatum.totalCmp (a b : FloatDatum) : Int
+```
+
+### `FloatDatum.truncToInt`
+
+*def* · module `RueCore.Float`
+
+The datum truncated toward zero, as an exact integer: `none` for a NaN and
+for `±inf`, which is the half of `(D-Float-To-Int)`'s premise that has nothing
+to do with the target's range (helper).
+
+```lean
+def RueCore.FloatDatum.truncToInt : FloatDatum → Option Int
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (a : Bool), (FloatDatum.nan a).truncToInt = none
+∀ (a : Bool), (FloatDatum.inf a).truncToInt = none
+∀ (a : Bool) (a_1 : Nat) (a_2 : Int),
+  (FloatDatum.num a a_1 a_2).truncToInt =
+    some
+      (if a = true then
+        -↑(if 0 ≤ a_2 then a_1 * 2 ^ a_2.toNat
+            else a_1 / 2 ^ (-a_2).toNat)
+      else
+        ↑(if 0 ≤ a_2 then a_1 * 2 ^ a_2.toNat
+          else a_1 / 2 ^ (-a_2).toNat))
+```
+
+### `FloatDatum.widen`
+
+*def* · module `RueCore.Float`
+
+The widening half of `(D-Float-Cast)`: exact, hence the identity on the
+datum (`3.12:19`: widening `f32` to `f64` is value-preserving).
+
+```lean
+def RueCore.FloatDatum.widen (f : FloatDatum) : FloatDatum
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (f : FloatDatum), f.widen = f
+```
+
+### `FloatLit.exact`
+
+*def* · module `RueCore.Float`
+
+The literal's exact decimal value as a rational `num / den`, which
+`3.12:9`'s rounding is applied to (helper).
+
+```lean
+def RueCore.FloatLit.exact (l : FloatLit) : Nat × Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (l : FloatLit),
+  l.exact =
+    if l.negExp = true then (l.sig, 10 ^ l.e) else (l.sig * 10 ^ l.e, 1)
+```
+
+### `FloatOps`
+
+*inductive* · module `RueCore.Float`
+
+The operations of §6.4 whose result is `rnd_w` of a value that need not lie
+in `𝔽_w`, and the target parameter `σ_NaN` they *create* NaNs at. §2 fixes both
+per target rather than per rule, so they are the interface the development is
+parameterized over; every exact operation is a function of this module
+instead.
+
+```lean
+inductive RueCore.FloatOps : Type
 ```
 
 Constructors:
 
-**`Expr.intLit`**
+**`FloatOps.mk`**
 
 ```lean
-RueCore.Expr.intLit (w : IntWidth) (s : Sign) (n : Int) : Expr
+RueCore.FloatOps.mk
+  (arith : FloatWidth → FloatArith → FloatDatum → FloatDatum → FloatDatum)
+  (sqrt : FloatWidth → FloatDatum → FloatDatum)
+  (ofLit : FloatWidth → Nat → Bool → Nat → FloatDatum)
+  (ofInt : FloatWidth → Int → FloatDatum) (narrow : FloatDatum → FloatDatum)
+  (nanSign : Bool) : FloatOps
 ```
 
-**`Expr.boolLit`**
+### `FloatUnIntrin`
+
+*inductive* · module `RueCore.Float`
+
+`(D-Float-Round)` §6.4 over all five intrinsics of `3.12:34`: `@sqrt` is
+the model's, the other four are exact.
 
 ```lean
-RueCore.Expr.boolLit (b : Bool) : Expr
+inductive RueCore.FloatUnIntrin : Type
 ```
 
-**`Expr.unitLit`**
+Constructors:
+
+**`FloatUnIntrin.sqrt`**
 
 ```lean
-RueCore.Expr.unitLit : Expr
+RueCore.FloatUnIntrin.sqrt : FloatUnIntrin
 ```
 
-**`Expr.use`**
+**`FloatUnIntrin.round`**
 
 ```lean
-RueCore.Expr.use (p : Place) : Expr
+RueCore.FloatUnIntrin.round (op : FloatRoundOp) : FloatUnIntrin
 ```
 
-**`Expr.binop`**
+### `FloatWidth.eMin`
+
+*def* · module `RueCore.Float`
+
+The least exponent a value of `𝔽_w` can be written `m · 2^e` with: the
+subnormal floor, `-149` for `f32` and `-1074` for `f64` (helper).
 
 ```lean
-RueCore.Expr.binop (op : BinOp) (e₁ e₂ : Expr) : Expr
+def RueCore.FloatWidth.eMin : FloatWidth → Int
 ```
 
-**`Expr.unop`**
+Defining equations, as Lean derived them from the body:
 
 ```lean
-RueCore.Expr.unop (op : UnOp) (e : Expr) : Expr
+FloatWidth.w32.eMin = -149
+FloatWidth.w64.eMin = -1074
 ```
 
-**`Expr.intCast`**
+### `FloatWidth.eTop`
+
+*def* · module `RueCore.Float`
+
+One past the binary exponent of the largest finite magnitude: `max_{𝔽_w}`
+is `(2^p - 1) · 2^(eTop - p)`, so a canonical `sig · 2^exp` is finite exactly
+when `exp + bitLen sig ≤ eTop` (helper).
 
 ```lean
-RueCore.Expr.intCast (w : IntWidth) (s : Sign) (e : Expr) : Expr
+def RueCore.FloatWidth.eTop : FloatWidth → Int
 ```
 
-**`Expr.panic`**
+Defining equations, as Lean derived them from the body:
 
 ```lean
-RueCore.Expr.panic (msg : String) : Expr
+FloatWidth.w32.eTop = 128
+FloatWidth.w64.eTop = 1024
 ```
 
-**`Expr.dbg`**
+### `FloatWidth.prec`
+
+*def* · module `RueCore.Float`
+
+The significand precision `p` of binary-`w`: 24 bits for `f32`, 53 for
+`f64` (IEEE 754) (helper).
 
 ```lean
-RueCore.Expr.dbg (e : Expr) : Expr
+def RueCore.FloatWidth.prec : FloatWidth → Nat
 ```
 
-**`Expr.mkStruct`**
+Defining equations, as Lean derived them from the body:
 
 ```lean
-RueCore.Expr.mkStruct (s : Nat) (args : List Expr) : Expr
-```
-
-**`Expr.drop`**
-
-```lean
-RueCore.Expr.drop (p : Place) : Expr
-```
-
-**`Expr.letIn`**
-
-```lean
-RueCore.Expr.letIn (m : Bool) (e₁ e₂ : Expr) : Expr
-```
-
-**`Expr.assign`**
-
-```lean
-RueCore.Expr.assign (p : Place) (e : Expr) : Expr
-```
-
-**`Expr.seq`**
-
-```lean
-RueCore.Expr.seq (e₁ e₂ : Expr) : Expr
-```
-
-**`Expr.ite`**
-
-```lean
-RueCore.Expr.ite (c e₁ e₂ : Expr) : Expr
-```
-
-**`Expr.call`**
-
-```lean
-RueCore.Expr.call (f : Nat) (args : List Expr) : Expr
-```
-
-**`Expr.ret`**
-
-```lean
-RueCore.Expr.ret (e : Expr) : Expr
+FloatWidth.w32.prec = 24
+FloatWidth.w64.prec = 53
 ```
 
 ### `Frame`
@@ -3096,6 +3908,12 @@ Constructors:
 RueCore.Ty.int (w : IntWidth) (s : Sign) : Ty
 ```
 
+**`Ty.float`**
+
+```lean
+RueCore.Ty.float (w : FloatWidth) : Ty
+```
+
 **`Ty.bool`**
 
 ```lean
@@ -3120,7 +3938,8 @@ RueCore.Ty.struct (s : Nat) : Ty
 
 Machine values (§6.1's `v`), fragment forms only. `struct s vs` is §6.1's
 `{ v1, …, vk }_S`: the declaration's index and one value per field, in
-declaration order — the order `3.9:13` drops them in. A struct value names its declaration rather than
+declaration order — the order `3.9:13` drops them in. `float w f` is §6.1's `f_T` at `T = float(w)`: §2's
+datum, not a bit pattern (`Float.lean`). A struct value names its declaration rather than
 carrying its class, so the machine's drop decisions are value-driven — it
 reads the tag the value carries — while the class and the destructor come from
 the program's declarations, as the compiled program's drop glue does.
@@ -3135,6 +3954,12 @@ Constructors:
 
 ```lean
 RueCore.Val.int (w : IntWidth) (s : Sign) (n : Int) : Val
+```
+
+**`Val.float`**
+
+```lean
+RueCore.Val.float (w : FloatWidth) (f : FloatDatum) : Val
 ```
 
 **`Val.bool`**
@@ -3155,13 +3980,69 @@ RueCore.Val.unit : Val
 RueCore.Val.struct (s : Nat) (fields : List Val) : Val
 ```
 
+### `canonAux`
+
+*def* · module `RueCore.Float`
+
+The canonicalization loop, structural on a budget: a significand below
+`2^k` loses at most `k` factors of two (helper).
+
+```lean
+def RueCore.canonAux : Nat → Bool → Nat → Int → FloatDatum
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (x : Bool) (x_1 : Nat) (x_2 : Int),
+  canonAux 0 x x_1 x_2 = FloatDatum.num x x_1 x_2
+∀ (x : Bool) (x_1 : Nat) (x_2 : Int) (n : Nat),
+  canonAux n.succ x x_1 x_2 =
+    if x_1 % 2 = 0 then canonAux n x (x_1 / 2) (x_2 + 1)
+    else FloatDatum.num x x_1 x_2
+```
+
+### `magCmp`
+
+*def* · module `RueCore.Float`
+
+The magnitudes of two finite data compared, ignoring their signs
+(helper).
+
+```lean
+def RueCore.magCmp (s₁ : Nat) (e₁ : Int) (s₂ : Nat) (e₂ : Int) : Int
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (s₁ : Nat) (e₁ : Int) (s₂ : Nat) (e₂ : Int),
+  magCmp s₁ e₁ s₂ e₂ = cmpScaled s₁ e₁ s₂ e₂
+```
+
+### `roundRat`
+
+*def* · module `RueCore.Float`
+
+`rnd_w` of the exact rational `(-1)^neg · num/den`: the nearest datum of
+`𝔽_w`, ties to even, with an exact zero (and an underflowing one) giving the
+zero of the sign asked for and an overflowing magnitude giving `±inf`
+(`3.12:23`: "the exact result too large for `𝔽_w` yields `±inf` of the exact
+result's sign"). `den` is assumed non-zero by every caller.
+
+```lean
+def RueCore.roundRat (w : FloatWidth) (neg : Bool) (num den : Nat) : FloatDatum
+```
+
 ### `BinOp.resultTy`
 
 *def* · module `RueCore.Syntax`
 
 The type a binary operator concludes at, given its shared operand type:
-`bool` for an ordering compare ((Ord) §5.8), the operand type for every
-arithmetic and bitwise operator ((Arith) §5.8) (helper).
+`bool` for an ordering compare ((Ord), (Float-Ord) §5.8), `int(32, signed)`
+for `@total_cmp` (`3.12:31`, (Total-Cmp) §5.8), and the operand type for
+every arithmetic and bitwise operator ((Arith), (Float-Arith) §5.8)
+(helper).
 
 ```lean
 def RueCore.BinOp.resultTy (op : BinOp) (T : Ty) : Ty
@@ -3170,8 +4051,10 @@ def RueCore.BinOp.resultTy (op : BinOp) (T : Ty) : Ty
 Defining equations, as Lean derived them from the body:
 
 ```lean
+∀ (T : Ty), BinOp.totalCmp.resultTy T = Ty.int IntWidth.w32 Sign.signed
 ∀ (op : BinOp) (T : Ty),
-  op.resultTy T = if op.isCompare = true then Ty.bool else T
+  (op = BinOp.totalCmp → False) →
+    op.resultTy T = if op.isCompare = true then Ty.bool else T
 ```
 
 ### `Cell`
@@ -3219,6 +4102,8 @@ Defining equations, as Lean derived them from the body:
 Contents.hole.isHole = true
 ∀ (a : IntWidth) (a_1 : Sign) (a_2 : Int),
   (Contents.int a a_1 a_2).isHole = false
+∀ (a : FloatWidth) (a_1 : FloatDatum),
+  (Contents.float a a_1).isHole = false
 ∀ (a : Bool), (Contents.bool a).isHole = false
 Contents.unit.isHole = false
 ∀ (a : Nat) (a_1 : List Contents), (Contents.struct a a_1).isHole = false
@@ -3350,39 +4235,6 @@ RueCore.Event.dtor (s : Nat) (c : Contents) : Event
 RueCore.Event.dbg (v : Val) : Event
 ```
 
-### `Examples.lit`
-
-*def* · module `RueCore.Examples`
-
-An `int(64, signed)` literal. Elaboration resolves a literal's width
-before the core (`4.1:2`), so the core form carries it (helper).
-
-```lean
-def RueCore.Examples.lit (n : Int) : Expr
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (n : Int), Examples.lit n = Expr.intLit IntWidth.w64 Sign.signed n
-```
-
-### `Examples.resLD`
-
-*def* · module `RueCore.Examples`
-
-A `Linear`, destructor-bearing struct literal.
-
-```lean
-def RueCore.Examples.resLD (e : Expr) : Expr
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (e : Expr), Examples.resLD e = Expr.mkStruct Examples.sLinearDtor [e]
-```
-
 ### `Examples.tI64`
 
 *def* · module `RueCore.Examples`
@@ -3459,6 +4311,241 @@ RueCore.Explain.StepRes.refuse (why : Violation) (premise : String) :
 
 ```lean
 RueCore.Explain.StepRes.exhausted : Explain.StepRes
+```
+
+### `Float.narrow`
+
+*def* · module `RueCore.Float`
+
+The narrowing half of `(D-Float-Cast)`: `rnd_32` of an `f64` datum
+(`3.12:19`), which yields `±inf` when the magnitude is too large for `𝔽_32`
+and carries a special across. A converted NaN is a *propagated* NaN, not one
+the conversion creates, so it keeps the operand's sign — measured against the
+compiler, which casts a negative `f64` NaN to a negative `f32` NaN. `σ_NaN`
+therefore never reaches this operation, and it takes no `σ` parameter.
+
+```lean
+def RueCore.Float.narrow (f : FloatDatum) : FloatDatum
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (a : Bool), Float.narrow (FloatDatum.nan a) = FloatDatum.nan a
+∀ (a : Bool), Float.narrow (FloatDatum.inf a) = FloatDatum.inf a
+∀ (a : Bool) (a_1 : Nat) (a_2 : Int),
+  Float.narrow (FloatDatum.num a a_1 a_2) =
+    if a_1 = 0 then FloatDatum.num a 0 0
+    else
+      match Float.ratOf false a_1 a_2 with
+      | (fst, num, den) => roundRat FloatWidth.w32 a num den
+```
+
+### `Float.ofInt`
+
+*def* · module `RueCore.Float`
+
+`(D-Int-To-Float)` §6.4: `rnd_w` of an exact integer (`3.12:16`).
+
+```lean
+def RueCore.Float.ofInt (w : FloatWidth) (n : Int) : FloatDatum
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (w : FloatWidth) (n : Int),
+  Float.ofInt w n = roundRat w (decide (n < 0)) n.natAbs 1
+```
+
+### `Float.ofLit`
+
+*def* · module `RueCore.Float`
+
+`3.12:9` on a literal: `rnd_w` of its exact decimal.
+
+```lean
+def RueCore.Float.ofLit (w : FloatWidth) (sig : Nat) (negExp : Bool) (e : Nat) :
+  FloatDatum
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (w : FloatWidth) (sig : Nat) (negExp : Bool) (e : Nat),
+  Float.ofLit w sig negExp e =
+    match { sig := sig, negExp := negExp, e := e }.exact with
+    | (num, den) => roundRat w false num den
+```
+
+### `Float.subD`
+
+*def* · module `RueCore.Float`
+
+`(D-Float-Arith)` at `-`: addition of the negation, which `3.12:24` makes a
+sign flip and nothing else — **except** on a NaN operand, which is propagated
+unchanged rather than negated. `-` is one machine instruction, not a negation
+followed by an addition, so `1.0 - (-NaN)` is `-NaN` on both targets, and the
+compiler agrees (helper).
+
+```lean
+def RueCore.Float.subD (σ : Bool) (w : FloatWidth) :
+  FloatDatum → FloatDatum → FloatDatum
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (σ : Bool) (w : FloatWidth) (x : FloatDatum) (b : Bool),
+  Float.subD σ w (FloatDatum.nan b) x = FloatDatum.nan b
+∀ (σ : Bool) (w : FloatWidth) (x : FloatDatum) (b : Bool),
+  (∀ (b : Bool), x = FloatDatum.nan b → False) →
+    Float.subD σ w x (FloatDatum.nan b) = FloatDatum.nan b
+∀ (σ : Bool) (w : FloatWidth) (x x_1 : FloatDatum),
+  (∀ (b : Bool), x = FloatDatum.nan b → False) →
+    (∀ (b : Bool), x_1 = FloatDatum.nan b → False) →
+      Float.subD σ w x x_1 = Float.addD σ w x x_1.negate
+```
+
+### `FloatDatum.Wf`
+
+*def* · module `RueCore.Float`
+
+A datum of `𝔽_w`: canonical, and — for a finite one — representable at the
+width. `sig < 2^p` is the significand bound, `eMin ≤ exp` the subnormal
+floor, and `sig < 2^(eTop - exp)` says the magnitude stays below `2^eTop`,
+which is the finite range. The specials belong to every width. This is the
+float counterpart of `InBounds` (`Syntax.lean`): the side condition §6.1
+states on a value form, and the property §7's totality lemma says every §6.4
+float rule preserves.
+
+```lean
+def RueCore.FloatDatum.Wf (w : FloatWidth) : FloatDatum → Prop :=
+  match x✝ with
+  | FloatDatum.nan neg => True
+  | FloatDatum.inf neg => True
+  | FloatDatum.num neg sig exp =>
+    sig = 0 ∧ exp = 0 ∨
+      sig % 2 = 1 ∧
+        sig < 2 ^ w.prec ∧
+          w.eMin ≤ exp ∧ exp ≤ w.eTop ∧ sig < 2 ^ (w.eTop - exp).toNat
+```
+
+### `FloatDatum.toIntIn`
+
+*def* · module `RueCore.Float`
+
+`(D-Float-To-Int)` §6.4: the operand truncated toward zero when that is
+defined and lands in the target's range, and `none` — which the machine turns
+into `↯overflow` — when it does not. `3.12:18` states the guard both ways and
+§6.4 notes the two readings agree, with both infinities failing under either;
+this is the "`f` is neither a NaN nor `±inf`, and `t ∈ [min_{T'}, max_{T'}]`"
+reading.
+
+```lean
+def RueCore.FloatDatum.toIntIn (f : FloatDatum) (lo hi : Int) : Option Int
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (f : FloatDatum) (lo hi : Int),
+  f.toIntIn lo hi =
+    match f.truncToInt with
+    | none => none
+    | some t => if lo ≤ t ∧ t ≤ hi then some t else none
+```
+
+### `FloatIntrin`
+
+*inductive* · module `RueCore.Syntax`
+
+§2's `@f` production, minus `@total_cmp` (which is a `BinOp`, above):
+the one-operand float intrinsics of §5.8's (Int-To-Float), (Float-To-Int),
+(Float-Cast) and (Float-Round). Each takes its **result** type from context
+(`3.12:16`, `3.12:17`, `3.12:19`), which elaboration has already resolved, so
+the form carries it; the operand's own type comes from the operand.
+
+```lean
+inductive RueCore.FloatIntrin : Type
+```
+
+Constructors:
+
+**`FloatIntrin.intToFloat`** — `@int_to_float(e)` at `float(w)`: the operand is an integer of any width and signedness (`3.12:16`, `4.13:139`).
+
+```lean
+RueCore.FloatIntrin.intToFloat (w : FloatWidth) : FloatIntrin
+```
+
+**`FloatIntrin.floatToInt`** — `@float_to_int(e)` at `int(w', s')`, signed or unsigned (`3.12:17`, `4.13:140`). The one float form whose dynamics can trap (`3.12:18`).
+
+```lean
+RueCore.FloatIntrin.floatToInt (w : IntWidth) (s : Sign) : FloatIntrin
+```
+
+**`FloatIntrin.floatCast`** — `@float_cast(e)` at `float(w')`, `w' ≠ w` (`3.12:19`, `4.13:141`).
+
+```lean
+RueCore.FloatIntrin.floatCast (w : FloatWidth) : FloatIntrin
+```
+
+**`FloatIntrin.roundOp`** — `@sqrt`, `@floor`, `@ceil`, `@trunc`, `@round` (`3.12:34`), each at the operand's own type.
+
+```lean
+RueCore.FloatIntrin.roundOp (k : FloatUnIntrin) : FloatIntrin
+```
+
+### `FloatOps.cast`
+
+*def* · module `RueCore.Float`
+
+`(D-Float-Cast)` §6.4 at either direction, given the model's narrowing.
+`(Float-Cast)` §5.8 imposes `w' ≠ w`, so the equal-width case is unreachable
+from a well-typed program and is the identity here.
+
+```lean
+def RueCore.FloatOps.cast (M : FloatOps) (w w' : FloatWidth) (f : FloatDatum) :
+  FloatDatum
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (M : FloatOps) (f : FloatDatum),
+  M.cast FloatWidth.w64 FloatWidth.w32 f = M.narrow f
+∀ (M : FloatOps) (f : FloatDatum),
+  M.cast FloatWidth.w32 FloatWidth.w64 f = f.widen
+∀ (M : FloatOps) (w w' : FloatWidth) (f : FloatDatum),
+  (w = FloatWidth.w64 → w' = FloatWidth.w32 → False) →
+    (w = FloatWidth.w32 → w' = FloatWidth.w64 → False) → M.cast w w' f = f
+```
+
+### `FloatWidth.overflowNum`
+
+*def* · module `RueCore.Float`
+
+**`rnd_w`'s overflow threshold**: `max_{𝔽_w}` plus half an ulp, which is
+`2^eTop - 2^(eTop - p - 1)` — `2^128 - 2^103` at `f32` and `2^1024 - 2^970` at
+`f64`. An exact magnitude strictly below it rounds to a finite datum; one at or
+above it rounds to `±inf`, because `rnd_w` is round-to-nearest ties-to-even and
+the tie at the threshold goes to the infinity (`3.12:23`). Both bounds were
+probed against the compiler, which accepts `2^128 - 2^103 - 1` at `f32` and
+rejects `2^128 - 2^103`. Written with `<<<` rather than `2 ^ ·` on purpose:
+`Nat.shiftLeft` reduces to a literal by GMP wherever a `check` is evaluated,
+while `2 ^ 1024` trips Lean's `exponentiation.threshold` and then exhausts the
+recursion budget of every `by rfl` pin that reaches a float literal
+(helper).
+
+```lean
+def RueCore.FloatWidth.overflowNum (w : FloatWidth) : Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (w : FloatWidth),
+  w.overflowNum = 1 <<< w.eTop.toNat - 1 <<< (w.eTop - ↑w.prec - 1).toNat
 ```
 
 ### `IntWidth.modulus`
@@ -3633,8 +4720,8 @@ RueCore.StructDecl.mk (attr : Attr) (fields : List Ty) (dtor : Bool)
 
 Whether a type is one `@dbg` renders, which §5.8's (Dbg) restricts to
 `int(w,s)`, `float(w)` and `bool` — the compiler's own restriction (E0702).
-The fragment has no floats, so its two cases are the integers and `bool`
-(helper).
+The `float(w)` case is `3.12:39`, and the text it produces is `3.12:40`–
+`3.12:42` (`FloatDatum.render`, `Float.lean`) (helper).
 
 ```lean
 def RueCore.Ty.observable : Ty → Bool
@@ -3644,9 +4731,32 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (a : IntWidth) (a_1 : Sign), (Ty.int a a_1).observable = true
+∀ (a : FloatWidth), (Ty.float a).observable = true
 Ty.bool.observable = true
 Ty.unit.observable = false
 ∀ (a : Nat), (Ty.struct a).observable = false
+```
+
+### `canonNum`
+
+*def* · module `RueCore.Float`
+
+Strip the factors of two out of `sig`, moving them into `exp`, and send a
+zero significand to the one `±0` of its sign: the canonical form of
+`(-1)^neg · sig · 2^exp`. The budget is `sig` itself, which is more than
+enough (`Nat.lt_two_pow_self`) and costs nothing, since the loop stops at the
+first odd significand (helper).
+
+```lean
+def RueCore.canonNum (neg : Bool) (sig : Nat) (exp : Int) : FloatDatum
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (neg : Bool) (sig : Nat) (exp : Int),
+  canonNum neg sig exp =
+    if sig = 0 then FloatDatum.num neg 0 0 else canonAux sig neg sig exp
 ```
 
 ### `intMax`
@@ -3947,49 +5057,315 @@ Examples.dTwoAffine =
     dtor := false, cls := Mult.affine }
 ```
 
-### `Examples.panicPastLinear`
+### `Expr`
 
-*def* · module `RueCore.Examples`
+*inductive* · module `RueCore.Syntax`
 
-The same past a live **linear** binding, which is the class where
-`Typed.panic` and `Typed.ret` actually differ: `ret` would need
-`NoOwnedLinear` here and `panic` does not, so the judgment derives this
-program (`panicPastLinear_typed`) and the machine runs it to a trap with an
-empty trace. `check` rejects it all the same — its state choice hands the
-`let`'s leak check the incoming `Owned` state — which is the third thing the
-algorithm's narrowness costs (`Checker.lean`). The compiler accepts and runs
-it: `panic: boom`, exit 101, nothing on stdout, so `S3`'s destructor does not
-run there either (verified by hand).
+Expressions (§2, fragment). `use p` is the `e ::= p` production — a place
+appearing in value context, i.e. a *use* (§4.2), which at a projection is the
+partial move of `3.8:22`. `drop p` is `@drop(p)` and `assign p e` is
+`assign p = e`, both at a place too (§5.2, §5.3). `letIn` carries the binding's
+`μ ∈ {∅, mut}` mark, which is what makes an assignment's root mutable.
+`mkStruct s args` is §2's `S { f1: e1, …, fk: ek }`, presented in declaration
+order (`3.6:15`) with one initializer per field. `call f args` is §2's
+`g(a1, …, am)` with every argument by value (§6.9's by-reference modes are not
+in the fragment), `f` the callee's index in the `Program`. `ret e` is §2's
+`return e`.
+
+`intLit w s n` carries the type elaboration resolved for it (`4.1:2`);
+`floatLit w l` carries the width the same way (`3.12:7`) and holds the
+literal's **decimal** rather than its datum, because `3.12:9` makes the value
+the correctly-rounded reading of that decimal — which is the model's
+(`Float.lean`). `fintrin k e` is §2's one-operand `@f` production.
+`binop`/`unop` are §2's `e1 ⊕ e2` / `e1 ⋚ e2` and `⊖ e`. `intCast w s e` is
+`@intCast(e)` with the target type elaboration took from the use site
+(`4.13:26`). `panic msg` is `@panic(s)` at a string-literal message: the
+fragment has no string type, so the message is a field of the form rather than
+an operand expression, which is also why no `(Panic-Operand)` case is needed.
+`dbg e` is `@dbg(e)`.
 
 ```lean
-def RueCore.Examples.panicPastLinear : Expr
+inductive RueCore.Expr : Type
+```
+
+Constructors:
+
+**`Expr.intLit`**
+
+```lean
+RueCore.Expr.intLit (w : IntWidth) (s : Sign) (n : Int) : Expr
+```
+
+**`Expr.floatLit`**
+
+```lean
+RueCore.Expr.floatLit (w : FloatWidth) (l : FloatLit) : Expr
+```
+
+**`Expr.boolLit`**
+
+```lean
+RueCore.Expr.boolLit (b : Bool) : Expr
+```
+
+**`Expr.unitLit`**
+
+```lean
+RueCore.Expr.unitLit : Expr
+```
+
+**`Expr.use`**
+
+```lean
+RueCore.Expr.use (p : Place) : Expr
+```
+
+**`Expr.binop`**
+
+```lean
+RueCore.Expr.binop (op : BinOp) (e₁ e₂ : Expr) : Expr
+```
+
+**`Expr.unop`**
+
+```lean
+RueCore.Expr.unop (op : UnOp) (e : Expr) : Expr
+```
+
+**`Expr.intCast`**
+
+```lean
+RueCore.Expr.intCast (w : IntWidth) (s : Sign) (e : Expr) : Expr
+```
+
+**`Expr.fintrin`**
+
+```lean
+RueCore.Expr.fintrin (k : FloatIntrin) (e : Expr) : Expr
+```
+
+**`Expr.panic`**
+
+```lean
+RueCore.Expr.panic (msg : String) : Expr
+```
+
+**`Expr.dbg`**
+
+```lean
+RueCore.Expr.dbg (e : Expr) : Expr
+```
+
+**`Expr.mkStruct`**
+
+```lean
+RueCore.Expr.mkStruct (s : Nat) (args : List Expr) : Expr
+```
+
+**`Expr.drop`**
+
+```lean
+RueCore.Expr.drop (p : Place) : Expr
+```
+
+**`Expr.letIn`**
+
+```lean
+RueCore.Expr.letIn (m : Bool) (e₁ e₂ : Expr) : Expr
+```
+
+**`Expr.assign`**
+
+```lean
+RueCore.Expr.assign (p : Place) (e : Expr) : Expr
+```
+
+**`Expr.seq`**
+
+```lean
+RueCore.Expr.seq (e₁ e₂ : Expr) : Expr
+```
+
+**`Expr.ite`**
+
+```lean
+RueCore.Expr.ite (c e₁ e₂ : Expr) : Expr
+```
+
+**`Expr.call`**
+
+```lean
+RueCore.Expr.call (f : Nat) (args : List Expr) : Expr
+```
+
+**`Expr.ret`**
+
+```lean
+RueCore.Expr.ret (e : Expr) : Expr
+```
+
+### `Float.arith`
+
+*def* · module `RueCore.Float`
+
+§6.4's `f₁ ⊕_w f₂` over the four operators.
+
+```lean
+def RueCore.Float.arith (σ : Bool) (w : FloatWidth) :
+  FloatArith → FloatDatum → FloatDatum → FloatDatum
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-Examples.panicPastLinear =
-  Expr.letIn false (Examples.resLD (Examples.lit 7)) (Expr.panic "boom")
+∀ (σ : Bool) (w : FloatWidth) (x x_1 : FloatDatum),
+  Float.arith σ w FloatArith.add x x_1 = Float.addD σ w x x_1
+∀ (σ : Bool) (w : FloatWidth) (x x_1 : FloatDatum),
+  Float.arith σ w FloatArith.sub x x_1 = Float.subD σ w x x_1
+∀ (σ : Bool) (w : FloatWidth) (x x_1 : FloatDatum),
+  Float.arith σ w FloatArith.mul x x_1 = Float.mulD σ w x x_1
+∀ (σ : Bool) (w : FloatWidth) (x x_1 : FloatDatum),
+  Float.arith σ w FloatArith.div x x_1 = Float.divD σ w x x_1
 ```
 
-### `FnDef`
+### `FloatIntrin.floatSrc`
 
-*inductive* · module `RueCore.Syntax`
+*def* · module `RueCore.Syntax`
 
-A function definition: §5.8's `fn g(m1 x1:T1, …, mm xm:Tm) -> Tr { e_body }`
-with every mode by value. Parameters are listed left to right, as the
-signature writes them.
+Whether the intrinsic's rule applies to a `float(w)` operand:
+`@int_to_float` takes an *integer* operand and so has its own rule, and
+(Float-Cast) carries `w' ≠ w` (`3.12:19`: `@float_cast` converts between the
+two widths and only between them) (helper).
 
 ```lean
-inductive RueCore.FnDef : Type
+def RueCore.FloatIntrin.floatSrc : FloatIntrin → FloatWidth → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (x w : FloatWidth), (FloatIntrin.intToFloat w).floatSrc x = false
+∀ (x w' : FloatWidth), (FloatIntrin.floatCast w').floatSrc x = (w' != x)
+∀ (x : FloatWidth) (w : IntWidth) (s : Sign),
+  (FloatIntrin.floatToInt w s).floatSrc x = true
+∀ (x : FloatWidth) (k : FloatUnIntrin),
+  (FloatIntrin.roundOp k).floatSrc x = true
+```
+
+### `FloatIntrin.resTy`
+
+*def* · module `RueCore.Syntax`
+
+The type §5.8's rule concludes at, given the *operand*'s float width —
+which is the only thing the form does not carry (helper).
+
+```lean
+def RueCore.FloatIntrin.resTy : FloatIntrin → FloatWidth → Ty
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (x w : FloatWidth), (FloatIntrin.intToFloat w).resTy x = Ty.float w
+∀ (x : FloatWidth) (w : IntWidth) (s : Sign),
+  (FloatIntrin.floatToInt w s).resTy x = Ty.int w s
+∀ (x w' : FloatWidth), (FloatIntrin.floatCast w').resTy x = Ty.float w'
+∀ (x : FloatWidth) (k : FloatUnIntrin),
+  (FloatIntrin.roundOp k).resTy x = Ty.float x
+```
+
+### `FloatLit.RoundsFinite`
+
+*def* · module `RueCore.Float`
+
+**`3.12:10` as a premise of (Lit) §5.8 at a float literal.** `3.12:10` is a *legality* rule —
+"a float literal whose value rounds to an infinity in its target type MUST be
+rejected at compile time (`E0206`)" — and §5.8's own prose in the calculus
+cites it, so the statics owe it. It is stated here as an exact comparison of
+naturals against `overflowNum`, so it is decidable, needs no `FloatModel`, and
+pulls no axiom: `l.exact` is `num / den` and the premise is `num < threshold ·
+den`. *Underflow* needs no premise — `3.12:10` allows a literal to round to
+zero, and the model and the compiler agree that it does (`1e-400` is `0.0` in
+both).
+
+It is stated against the *threshold* rather than as
+`(M.ofLit w l).isFinite` deliberately: the statics then say what they say for
+every `FloatModel`, with no instance and no `FloatOps` argument in the typing
+judgment, and `check` decides it by comparing two naturals. A law tying the two
+together — `RoundsFinite w l → (ofLit w l).isFinite` — is not needed by
+anything here and is not assumed.
+
+```lean
+def RueCore.FloatLit.RoundsFinite (w : FloatWidth) (l : FloatLit) : Prop :=
+  l.exact.fst < w.overflowNum * l.exact.snd
+```
+
+### `FloatModel`
+
+*inductive* · module `RueCore.Float`
+
+**§7's "totality of the float operations", as an interface.** A
+`FloatOps` together with the laws §7 owes for floats and §6.4 quotes from
+`3.12:9`, `3.12:22` and `3.12:44`. Every field is a statement that is true of
+IEEE 754 *and* of the compiler — which is why the NaN laws below say only that
+a NaN comes out, and leave its sign to the model (see the section note above).
+They are *fields* rather than `axiom` declarations so that every theorem
+resting on one carries it in its own statement (`TRUST.md`, "Assumptions
+carried as interfaces"). §7 says the lemma is "discharged against the standard
+rather than against Rue"; this is that sentence, mechanized.
+
+```lean
+inductive RueCore.FloatModel : Type
 ```
 
 Constructors:
 
-**`FnDef.mk`**
+**`FloatModel.mk`**
 
 ```lean
-RueCore.FnDef.mk (params : List Param) (ret : Ty) (body : Expr) : FnDef
+RueCore.FloatModel.mk (toFloatOps : FloatOps)
+  (arith_wf :
+    ∀ (w : FloatWidth) (op : FloatArith) (a b : FloatDatum),
+      FloatDatum.Wf w a →
+        FloatDatum.Wf w b → FloatDatum.Wf w (toFloatOps.arith w op a b))
+  (sqrt_wf :
+    ∀ (w : FloatWidth) (f : FloatDatum),
+      FloatDatum.Wf w f → FloatDatum.Wf w (toFloatOps.sqrt w f))
+  (ofLit_wf :
+    ∀ (w : FloatWidth) (m : Nat) (ne : Bool) (e : Nat),
+      FloatDatum.Wf w (toFloatOps.ofLit w m ne e))
+  (ofInt_wf :
+    ∀ (w : FloatWidth) (n : Int), FloatDatum.Wf w (toFloatOps.ofInt w n))
+  (narrow_wf :
+    ∀ (f : FloatDatum),
+      FloatDatum.Wf FloatWidth.w64 f →
+        FloatDatum.Wf FloatWidth.w32 (toFloatOps.narrow f))
+  (arith_nan :
+    ∀ (w : FloatWidth) (op : FloatArith) (a b : FloatDatum),
+      a.isNaN = true ∨ b.isNaN = true →
+        (toFloatOps.arith w op a b).isNaN = true)
+  (narrow_nan :
+    ∀ (f : FloatDatum), f.isNaN = true → (toFloatOps.narrow f).isNaN = true)
+  (div_by_zero :
+    ∀ (w : FloatWidth) (a : FloatDatum) (n : Bool) (s : Nat) (e : Int),
+      FloatDatum.Wf w a →
+        a = FloatDatum.num n s e →
+          s ≠ 0 →
+            ∀ (n₂ : Bool),
+              toFloatOps.arith w FloatArith.div a (FloatDatum.num n₂ 0 0) =
+                FloatDatum.inf (n ^^ n₂))
+  (zero_div_zero :
+    ∀ (w : FloatWidth) (n₁ n₂ : Bool),
+      toFloatOps.arith w FloatArith.div (FloatDatum.num n₁ 0 0)
+          (FloatDatum.num n₂ 0 0) =
+        FloatDatum.nan toFloatOps.nanSign)
+  (ofLit_zero :
+    ∀ (w : FloatWidth) (ne : Bool) (e : Nat),
+      toFloatOps.ofLit w 0 ne e = FloatDatum.num false 0 0)
+  (ofLit_one :
+    ∀ (w : FloatWidth),
+      toFloatOps.ofLit w 1 false 0 = FloatDatum.num false 1 0) :
+  FloatModel
 ```
 
 ### `InBounds`
@@ -4027,6 +5403,29 @@ The program's struct environment: the declarations §2's type production
 ```lean
 abbrev RueCore.StructEnv : Type :=
   List StructDecl
+```
+
+### `binOpFloat`
+
+*def* · module `RueCore.Dynamics`
+
+§6.4's float rules at one `float(w)`, on the two operands' data.
+
+* `+ - * /` are `(D-Float-Arith)`: `f₁ ⊕_w f₂`, the model's, and **total** —
+  no float arithmetic redex steps to a panic (`3.12:21`, and §6.4's note that
+  none of (D-Arith-Trap), (D-Div-Zero) or (D-Div-Overflow) is stated over a
+  float redex);
+* `< <= > >=` are `(D-Float-Ord)`: the IEEE 754 predicate, `false` whenever
+  either operand is a NaN (`3.12:27`) and equal on the two zeros (`3.12:28`);
+* `@total_cmp` is `(D-Total-Cmp)`: `≺_w`, a **total** order, `0` exactly on
+  the same datum;
+* `%` and the bitwise and shift operators have no float rule at all — §5.8
+  rejects them by the absence of one (`3.12:25`) — so the machine refuses
+  them, as it does two operands of different types.
+
+```lean
+def RueCore.binOpFloat (M : FloatOps) (op : BinOp) (w : FloatWidth)
+  (a b : FloatDatum) : OpRes
 ```
 
 ### `binOpInt`
@@ -4068,6 +5467,48 @@ Defining equations, as Lean derived them from the body:
 
 ```lean
 ∀ (w : IntWidth) (n : Int), bitsOf w n = (n % ↑w.modulus).toNat
+```
+
+### `evalFintrin`
+
+*def* · module `RueCore.Dynamics`
+
+§6.4's one-operand float intrinsics.
+
+* `@int_to_float` is `(D-Int-To-Float)`: `rnd_w` of the operand's exact
+  integer value, the model's, and it never traps (`3.12:16`);
+* `@float_to_int` is `(D-Float-To-Int)` **and** `(D-Float-To-Int-Trap)`, the
+  one float form that traps: the operand truncated toward zero when that is
+  defined and in the target's range, and `↯overflow` otherwise — the same
+  category §6.12 already lists, not a new one (`3.12:18`, `8.1:7`), which is
+  why the compiler reports it as `integer overflow` (verified by hand). The
+  two arms **partition** `𝔽_w` (`floatToInt_partition`, `Float.lean`), which
+  is what keeps progress intact here;
+* `@float_cast` is `(D-Float-Cast)`: exact widening, the model's `rnd_32`
+  narrowing, never trapping (`3.12:19`);
+* the five `3.12:34` intrinsics are `(D-Float-Round)`: `@sqrt` is the model's,
+  the other four are exact, and none traps (`3.12:37`).
+
+```lean
+def RueCore.evalFintrin (M : FloatOps) : FloatIntrin → Val → OpRes
+```
+
+### `evalUnOp`
+
+*def* · module `RueCore.Dynamics`
+
+§6.4's unary operators. `neg` is (D-Arith)'s unary case on an integer,
+trapping on `min_T` because `-min_T > max_T`, and `(D-Float-Neg)` on a float,
+which is **total**: a sign flip and nothing else, on `-0.0` and on a NaN
+alike (`3.12:24`). `not` on `bool` is total (§6.4's `Not`); `bitnot` inverts
+the `w`-bit pattern ((D-Bit)'s complement arm) and is total too. §5.8
+restricts the integer `neg` to a signed operand, so the unsigned case below is
+a shape no well-typed program produces; it is written as the same range check
+rather than as a refusal, because the exact result `-n` is what §6.4 computes
+and the check is what decides.
+
+```lean
+def RueCore.evalUnOp : UnOp → Val → OpRes
 ```
 
 ### `valOf`
@@ -4158,6 +5599,57 @@ RueCore.EvalRes.stuck (why : Violation) : EvalRes
 RueCore.EvalRes.outOfFuel : EvalRes
 ```
 
+### `Examples.flE`
+
+*def* · module `RueCore.Examples`
+
+The literal `sig · 10^e` at `float(w)` (helper).
+
+```lean
+def RueCore.Examples.flE (w : FloatWidth) (sig e : Nat) : Expr
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (w : FloatWidth) (sig e : Nat),
+  Examples.flE w sig e =
+    Expr.floatLit w { sig := sig, negExp := false, e := e }
+```
+
+### `Examples.lit`
+
+*def* · module `RueCore.Examples`
+
+An `int(64, signed)` literal. Elaboration resolves a literal's width
+before the core (`4.1:2`), so the core form carries it (helper).
+
+```lean
+def RueCore.Examples.lit (n : Int) : Expr
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (n : Int), Examples.lit n = Expr.intLit IntWidth.w64 Sign.signed n
+```
+
+### `Examples.resLD`
+
+*def* · module `RueCore.Examples`
+
+A `Linear`, destructor-bearing struct literal.
+
+```lean
+def RueCore.Examples.resLD (e : Expr) : Expr
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (e : Expr), Examples.resLD e = Expr.mkStruct Examples.sLinearDtor [e]
+```
+
 ### `Examples.structEnv`
 
 *def* · module `RueCore.Examples`
@@ -4229,6 +5721,51 @@ RueCore.Explain.Verdict.accept (ty : Ty) (ctxOut : Ctx) : Explain.Verdict
 RueCore.Explain.Verdict.reject (premise : String) : Explain.Verdict
 ```
 
+### `Float.exactOps`
+
+*def* · module `RueCore.Float`
+
+The executable operations the corpus, the printer and the `#eval` demos
+run on: `σ_NaN` is **positive**, the AArch64 choice of `3.12:44` and Appendix
+B.1, which is the host this slice's corpus was checked against. Positive is
+`false` here, because `FloatDatum.nan` carries the sign as `neg` — the field
+is the *sign bit*, so `nanSign := false` is `+NaN` and `true` is `-NaN`, and
+`FloatDatum.totalRank (.nan false) = 3`, the top of `≺_w`. Flipping this one
+`Bool` is the whole of retargeting the instance to x86-64.
+
+```lean
+def RueCore.Float.exactOps : FloatOps
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Float.exactOps =
+  { arith := Float.arith false, sqrt := Float.sqrtD false,
+    ofLit := Float.ofLit, ofInt := Float.ofInt, narrow := Float.narrow,
+    nanSign := false }
+```
+
+### `FnDef`
+
+*inductive* · module `RueCore.Syntax`
+
+A function definition: §5.8's `fn g(m1 x1:T1, …, mm xm:Tm) -> Tr { e_body }`
+with every mode by value. Parameters are listed left to right, as the
+signature writes them.
+
+```lean
+inductive RueCore.FnDef : Type
+```
+
+Constructors:
+
+**`FnDef.mk`**
+
+```lean
+RueCore.FnDef.mk (params : List Param) (ret : Ty) (body : Expr) : FnDef
+```
+
 ### `OwnSt.join`
 
 *def* · module `RueCore.Statics`
@@ -4249,27 +5786,6 @@ no record the other arm's is kept, subject to `ownedJoinOk` (helper).
 ```lean
 def RueCore.OwnSt.joinList (D : StructEnv) :
   List OwnSt → List OwnSt → List Ty → Option (List OwnSt)
-```
-
-### `Program`
-
-*inductive* · module `RueCore.Syntax`
-
-A program: the struct environment §2's `S` and §5.8's (Struct-Intro) look
-a declaration up in, and the top-level function environment §5.8's (Call)
-looks a callee up in, each indexed the way the syntax names it. Function index
-`0` is the entry point, which `Dynamics.run` calls with no arguments.
-
-```lean
-inductive RueCore.Program : Type
-```
-
-Constructors:
-
-**`Program.mk`**
-
-```lean
-RueCore.Program.mk (structs : StructEnv) (fns : List FnDef) : Program
 ```
 
 ### `StructEnv.classOf`
@@ -4316,6 +5832,8 @@ Defining equations, as Lean derived them from the body:
     | none => none
 ∀ (D : StructEnv) (x : Nat) (w : IntWidth) (s : Sign),
   Ty.fieldAt D (Ty.int w s) x = none
+∀ (D : StructEnv) (x : Nat) (w : FloatWidth),
+  Ty.fieldAt D (Ty.float w) x = none
 ∀ (D : StructEnv) (x : Nat), Ty.fieldAt D Ty.bool x = none
 ∀ (D : StructEnv) (x : Nat), Ty.fieldAt D Ty.unit x = none
 ```
@@ -4342,13 +5860,15 @@ def RueCore.Untouched (ρ : Env) (H H' : Store) : Prop :=
 
 `drop(H, c)` (§6.11), on the fragment's cell contents. A `⊘` drops
 **nothing** — "this single skip is what makes double-free impossible" — and a
-scalar drops nothing either ("scalars are Copy"). A struct runs its **user
-destructor first** (`3.9:28`), if its declaration has one, and then drops its
-fields in **declaration order** (`3.9:13`, §6.11's `drop*`), recursively. A
-field is dropped whatever its class: an explicit `@drop` of a linear-carrying
-struct discharges the whole obligation, and a scope exit never reaches a live
-linear sub-value, because the leak monitor (`dropRetire`) reads
-`Contents.residualLinear` first. `dropContents_struct_events`
+scalar drops nothing either ("scalars are Copy"; §7 says the same of a float —
+it "has no drop glue, is never registered in a scope record, and never names
+an allocation"). A struct runs its **user destructor first** (`3.9:28`), if its
+declaration has one, and then drops its fields in **declaration order**
+(`3.9:13`, §6.11's `drop*`), recursively. A field is dropped whatever its
+class: an explicit `@drop` of a linear-carrying struct discharges the whole
+obligation, and a scope exit never reaches a live linear sub-value, because the
+leak monitor (`dropRetire`) reads `Contents.residualLinear` first.
+`dropContents_struct_events`
 (`Soundness.lean`) is this walk in closed form.
 
 Two things §6.11 writes out are elided here, both unobservably.
@@ -4385,25 +5905,34 @@ def RueCore.dropContents (D : StructEnv) :
 
 *def* · module `RueCore.Dynamics`
 
-§6.4's binary operators on two machine values. §5.8's arithmetic rule
-gives both operands one `int(w,s)`, so operands of two different integer types
-are a shape no well-typed program produces and the machine refuses them.
+§6.4's binary operators on two machine values. §5.8's rules give both
+operands one `int(w,s)` or one `float(w)`, so operands of two different types
+— two integer types, two float widths (`3.12:13`: no implicit widening), or
+one of each (`3.12:14`) — are a shape no well-typed program produces and the
+machine refuses them.
 
 ```lean
-def RueCore.evalBinOp (op : BinOp) : Val → Val → OpRes
+def RueCore.evalBinOp (M : FloatOps) (op : BinOp) : Val → Val → OpRes
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (op : BinOp) (w₁ : IntWidth) (s₁ : Sign) (n₁ : Int) (w₂ : IntWidth)
-  (s₂ : Sign) (n₂ : Int),
-  evalBinOp op (Val.int w₁ s₁ n₁) (Val.int w₂ s₂ n₂) =
+∀ (M : FloatOps) (op : BinOp) (w₁ : IntWidth) (s₁ : Sign) (n₁ : Int)
+  (w₂ : IntWidth) (s₂ : Sign) (n₂ : Int),
+  evalBinOp M op (Val.int w₁ s₁ n₁) (Val.int w₂ s₂ n₂) =
     if w₁ = w₂ ∧ s₁ = s₂ then binOpInt op w₁ s₁ n₁ n₂ else OpRes.confused
-∀ (op : BinOp) (x x_1 : Val),
+∀ (M : FloatOps) (op : BinOp) (w₁ : FloatWidth) (f₁ : FloatDatum)
+  (w₂ : FloatWidth) (f₂ : FloatDatum),
+  evalBinOp M op (Val.float w₁ f₁) (Val.float w₂ f₂) =
+    if w₁ = w₂ then binOpFloat M op w₁ f₁ f₂ else OpRes.confused
+∀ (M : FloatOps) (op : BinOp) (x x_1 : Val),
   (∀ (w₁ : IntWidth) (s₁ : Sign) (n₁ : Int) (w₂ : IntWidth) (s₂ : Sign)
       (n₂ : Int), x = Val.int w₁ s₁ n₁ → x_1 = Val.int w₂ s₂ n₂ → False) →
-    evalBinOp op x x_1 = OpRes.confused
+    (∀ (w₁ : FloatWidth) (f₁ : FloatDatum) (w₂ : FloatWidth)
+        (f₂ : FloatDatum),
+        x = Val.float w₁ f₁ → x_1 = Val.float w₂ f₂ → False) →
+      evalBinOp M op x x_1 = OpRes.confused
 ```
 
 ### `evalIntCast`
@@ -4429,29 +5958,6 @@ Defining equations, as Lean derived them from the body:
 ∀ (w : IntWidth) (s : Sign) (x : Val),
   (∀ (w : IntWidth) (s : Sign) (n : Int), x = Val.int w s n → False) →
     evalIntCast w s x = OpRes.confused
-```
-
-### `fnCtx`
-
-*def* · module `RueCore.Statics`
-
-(Fn) §5.8's entry context `Γ0;Σ0`: every by-value parameter enters the
-body `Owned` and subject to the ordinary use/drop rules. The list is reversed
-because `Ctx` is innermost-binder-first while a signature lists parameters
-left to right, so the first parameter is the outermost binder — which is what
-gives it de Bruijn index `m-1` and the printed name `v0`.
-
-```lean
-def RueCore.fnCtx (fd : FnDef) : Ctx
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (fd : FnDef),
-  fnCtx fd =
-    (List.map (fun p => { ty := p.ty, mu := p.mu, st := OwnSt.owned })
-        fd.params).reverse
 ```
 
 ### `intResult`
@@ -4569,6 +6075,8 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : StructEnv), Contents.mult D Contents.hole = Mult.copy
 ∀ (D : StructEnv) (w : IntWidth) (s : Sign) (n : Int),
   Contents.mult D (Contents.int w s n) = Mult.copy
+∀ (D : StructEnv) (w : FloatWidth) (f : FloatDatum),
+  Contents.mult D (Contents.float w f) = Mult.copy
 ∀ (D : StructEnv) (b : Bool),
   Contents.mult D (Contents.bool b) = Mult.copy
 ∀ (D : StructEnv), Contents.mult D Contents.unit = Mult.copy
@@ -4624,34 +6132,53 @@ Defining equations, as Lean derived them from the body:
         EvalRes.withTrace tr x = x
 ```
 
-### `Examples.countdown`
+### `Examples.demoOps`
 
 *def* · module `RueCore.Examples`
 
-A recursive countdown: `4 + 3 + 2 + 1 + 0 = 10`.
+The model every demo runs at: `Float.exactOps` (`Float.lean`), the
+constructive instance the corpus and the printer also use. The witnesses in
+this file are *executable* demos, so they are pinned at one model rather than
+quantified over all of them; because `exactOps` is built from `Nat`/`Int`
+arithmetic and never touches Lean's `Float`, pinning them costs no axiom
+(`TRUST.md`). The float **trap** witnesses at the bottom of the file are the
+exception: they are stated over an arbitrary `FloatModel` and proved from its
+laws, which is what makes them claims about IEEE 754 rather than about this
+instance.
 
 ```lean
-def RueCore.Examples.countdown : Program
+def RueCore.Examples.demoOps : FloatOps
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-Examples.countdown =
-  { structs := [],
-    fns :=
-      [{ params := [], ret := Examples.tI64,
-          body := Expr.call 1 [Examples.lit 4] },
-        { params := [{ ty := Examples.tI64, mu := false }],
-          ret := Examples.tI64,
-          body :=
-            (Expr.binop BinOp.lt (Expr.use (Place.var 0))
-                  (Examples.lit 1)).ite
-              (Examples.lit 0)
-              (Expr.binop BinOp.add (Expr.use (Place.var 0))
-                (Expr.call 1
-                  [Expr.binop BinOp.add (Expr.use (Place.var 0))
-                      (Examples.lit (-1))])) }] }
+Examples.demoOps = Float.exactOps
+```
+
+### `Examples.panicPastLinear`
+
+*def* · module `RueCore.Examples`
+
+The same past a live **linear** binding, which is the class where
+`Typed.panic` and `Typed.ret` actually differ: `ret` would need
+`NoOwnedLinear` here and `panic` does not, so the judgment derives this
+program (`panicPastLinear_typed`) and the machine runs it to a trap with an
+empty trace. `check` rejects it all the same — its state choice hands the
+`let`'s leak check the incoming `Owned` state — which is the third thing the
+algorithm's narrowness costs (`Checker.lean`). The compiler accepts and runs
+it: `panic: boom`, exit 101, nothing on stdout, so `S3`'s destructor does not
+run there either (verified by hand).
+
+```lean
+def RueCore.Examples.panicPastLinear : Expr
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.panicPastLinear =
+  Expr.letIn false (Examples.resLD (Examples.lit 7)) (Expr.panic "boom")
 ```
 
 ### `Explain.Deriv`
@@ -4697,25 +6224,25 @@ RueCore.Explain.Trace.mk (steps : List Explain.Step) (res : EvalRes) :
   Explain.Trace
 ```
 
-### `Program.entry`
+### `Program`
 
-*def* · module `RueCore.Syntax`
+*inductive* · module `RueCore.Syntax`
 
-A one-function program over a struct environment: the entry point, with no
-parameters and declared return type `T`, whose body is `e`. This is the shape
-of every fragment program that calls nothing, which is how the pre-call corpus
-cases are read as programs (helper).
+A program: the struct environment §2's `S` and §5.8's (Struct-Intro) look
+a declaration up in, and the top-level function environment §5.8's (Call)
+looks a callee up in, each indexed the way the syntax names it. Function index
+`0` is the entry point, which `Dynamics.run` calls with no arguments.
 
 ```lean
-def RueCore.Program.entry (D : StructEnv) (T : Ty) (e : Expr) : Program
+inductive RueCore.Program : Type
 ```
 
-Defining equations, as Lean derived them from the body:
+Constructors:
+
+**`Program.mk`**
 
 ```lean
-∀ (D : StructEnv) (T : Ty) (e : Expr),
-  Program.entry D T e =
-    { structs := D, fns := [{ params := [], ret := T, body := e }] }
+RueCore.Program.mk (structs : StructEnv) (fns : List FnDef) : Program
 ```
 
 ### `Ty.atPath`
@@ -4747,8 +6274,9 @@ Defining equations, as Lean derived them from the body:
 *def* · module `RueCore.Syntax`
 
 `class(T)` (§3), against the program's struct environment. Scalars are
-`Copy` at every width and signedness; a struct type has the class its
-declaration records.
+`Copy` at every width and signedness, floats included (`3.12:2a` classifies
+both float types `Copy` and `3.8:2` lists them, so the core takes it
+directly); a struct type has the class its declaration records.
 
 ```lean
 def RueCore.Ty.mult (D : StructEnv) : Ty → Mult
@@ -4759,6 +6287,7 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (D : StructEnv) (a : IntWidth) (a_1 : Sign),
   Ty.mult D (Ty.int a a_1) = Mult.copy
+∀ (D : StructEnv) (a : FloatWidth), Ty.mult D (Ty.float a) = Mult.copy
 ∀ (D : StructEnv), Ty.mult D Ty.bool = Mult.copy
 ∀ (D : StructEnv), Ty.mult D Ty.unit = Mult.copy
 ∀ (D : StructEnv) (a : Nat), Ty.mult D (Ty.struct a) = D.classOf a
@@ -4782,22 +6311,10 @@ Defining equations, as Lean derived them from the body:
   Val.mult D (Val.struct s fields) = D.classOf s
 ∀ (D : StructEnv) (w : IntWidth) (s : Sign) (n : Int),
   Val.mult D (Val.int w s n) = Mult.copy
+∀ (D : StructEnv) (w : FloatWidth) (f : FloatDatum),
+  Val.mult D (Val.float w f) = Mult.copy
 ∀ (D : StructEnv) (b : Bool), Val.mult D (Val.bool b) = Mult.copy
 ∀ (D : StructEnv), Val.mult D Val.unit = Mult.copy
-```
-
-### `check`
-
-*def* · module `RueCore.Checker`
-
-The §5 judgment as an algorithm: one case per `Typed` rule, in the same
-order, producing the type and outgoing context or rejecting. `P` is the
-top-level function environment (Call) §5.8 looks a callee up in and `R` the
-enclosing function's declared return type (Return-Value) §5.7 checks a
-`return` operand against.
-
-```lean
-def RueCore.check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
 ```
 
 ### `dropContentsList`
@@ -4826,64 +6343,27 @@ Defining equations, as Lean derived them from the body:
       | Except.ok evs' => Except.ok (evs ++ evs')
 ```
 
-### `eval`
+### `fnCtx`
 
-*def* · module `RueCore.Dynamics`
+*def* · module `RueCore.Statics`
 
-The interpreter. Rule correspondence, per case: `use` is
-(D-Use-Copy)/(D-Use-Move) (§6.3); `binop`, `unop` and `intCast` are §6.4's
-operator rules, computed by `evalBinOp`/`evalUnOp`/`evalIntCast` above;
-`panic` is (D-Panic) §6.12; `dbg` appends the operand's rendering to the
-observable output (§5.8's (Dbg), §6.12's `Outcome`); `drop` is §6.11's
-explicit `@drop`; `letIn` is (D-Let) + (D-EndScope)'s drop-retire (§6.7);
-`assign` is (D-Assign), §6.8's overwrite-drop / reinitialization; `seq` is
-(D-Seq), discarding with a temporary drop (§6.7); `mkStruct` is (D-Struct)
-§6.5 after §6.2's left-to-right search through its initializers; `ite` is
-(D-If-T)/(D-If-F) after the §6.2 search for the scrutinee; `call` is (D-Call)
-followed by (D-Return-Value) when the body completes normally, and by
-(D-Return)'s absorption when it does not; `ret` is (D-Return), which runs the
-frame's scope drops and hands the value past every enclosing form.
-
-Every operand is sequenced with `andThen`, which is §6.2's search through an
-evaluation context; the callee's body is sequenced with `absorb`, the one
-place a `return` stops travelling (§6.9).
+(Fn) §5.8's entry context `Γ0;Σ0`: every by-value parameter enters the
+body `Owned` and subject to the ordinary use/drop rules. The list is reversed
+because `Ctx` is innermost-binder-first while a signature lists parameters
+left to right, so the first parameter is the outermost binder — which is what
+gives it de Bruijn index `m-1` and the printed name `v0`.
 
 ```lean
-def RueCore.eval : Nat → Program → Store → Frame → Expr → EvalRes
-```
-
-### `evalUnOp`
-
-*def* · module `RueCore.Dynamics`
-
-§6.4's unary operators. `neg` is (D-Arith)'s unary case, trapping on
-`min_T` because `-min_T > max_T`; `not` on `bool` is total (§6.4's `Not`);
-`bitnot` inverts the `w`-bit pattern ((D-Bit)'s complement arm) and is total
-too. §5.8 restricts `neg` to a signed operand, so the unsigned case below is a
-shape no well-typed program produces; it is written as the same range check
-rather than as a refusal, because the exact result `-n` is what §6.4 computes
-and the check is what decides.
-
-```lean
-def RueCore.evalUnOp : UnOp → Val → OpRes
+def RueCore.fnCtx (fd : FnDef) : Ctx
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (w : IntWidth) (s : Sign) (n : Int),
-  evalUnOp UnOp.neg (Val.int w s n) = intResult w s (-n)
-∀ (b : Bool), evalUnOp UnOp.not (Val.bool b) = OpRes.val (Val.bool !b)
-∀ (w : IntWidth) (s : Sign) (n : Int),
-  evalUnOp UnOp.bitnot (Val.int w s n) =
-    OpRes.val (Val.int w s (valOf w s (w.modulus - 1 - bitsOf w n)))
-∀ (x : UnOp) (x_1 : Val),
-  (∀ (w : IntWidth) (s : Sign) (n : Int),
-      x = UnOp.neg → x_1 = Val.int w s n → False) →
-    (∀ (b : Bool), x = UnOp.not → x_1 = Val.bool b → False) →
-      (∀ (w : IntWidth) (s : Sign) (n : Int),
-          x = UnOp.bitnot → x_1 = Val.int w s n → False) →
-        evalUnOp x x_1 = OpRes.confused
+∀ (fd : FnDef),
+  fnCtx fd =
+    (List.map (fun p => { ty := p.ty, mu := p.mu, st := OwnSt.owned })
+        fd.params).reverse
 ```
 
 ### `Ctx.join`
@@ -4969,22 +6449,34 @@ Defining equations, as Lean derived them from the body:
     x.andThen x_1 = x
 ```
 
-### `Examples.prog`
+### `Examples.countdown`
 
 *def* · module `RueCore.Examples`
 
-A program over the fixture declarations, entered at a no-parameter `main`
-returning `T`.
+A recursive countdown: `4 + 3 + 2 + 1 + 0 = 10`.
 
 ```lean
-def RueCore.Examples.prog (T : Ty) (e : Expr) : Program
+def RueCore.Examples.countdown : Program
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (T : Ty) (e : Expr),
-  Examples.prog T e = Program.entry Examples.structEnv T e
+Examples.countdown =
+  { structs := [],
+    fns :=
+      [{ params := [], ret := Examples.tI64,
+          body := Expr.call 1 [Examples.lit 4] },
+        { params := [{ ty := Examples.tI64, mu := false }],
+          ret := Examples.tI64,
+          body :=
+            (Expr.binop BinOp.lt (Expr.use (Place.var 0))
+                  (Examples.lit 1)).ite
+              (Examples.lit 0)
+              (Expr.binop BinOp.add (Expr.use (Place.var 0))
+                (Expr.call 1
+                  [Expr.binop BinOp.add (Expr.use (Place.var 0))
+                      (Examples.lit (-1))])) }] }
 ```
 
 ### `Explain.ArgsTrace`
@@ -5070,8 +6562,29 @@ enclosing function's return type, all of which travel with `φ` so each row
 prints its expression with the source's names.
 
 ```lean
-def RueCore.Explain.traceEval (P : Program) :
+def RueCore.Explain.traceEval (M : FloatOps) (P : Program) :
   Nat → Nat → List Ty → Ty → Store → Frame → Expr → Explain.Trace
+```
+
+### `Program.entry`
+
+*def* · module `RueCore.Syntax`
+
+A one-function program over a struct environment: the entry point, with no
+parameters and declared return type `T`, whose body is `e`. This is the shape
+of every fragment program that calls nothing, which is how the pre-call corpus
+cases are read as programs (helper).
+
+```lean
+def RueCore.Program.entry (D : StructEnv) (T : Ty) (e : Expr) : Program
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : StructEnv) (T : Ty) (e : Expr),
+  Program.entry D T e =
+    { structs := D, fns := [{ params := [], ret := T, body := e }] }
 ```
 
 ### `StructDecl.baseOf`
@@ -5093,34 +6606,18 @@ Defining equations, as Lean derived them from the body:
     List.foldl (fun m T => m.join (Ty.mult D T)) Mult.copy sd.fields
 ```
 
-### `checkArgs`
+### `check`
 
 *def* · module `RueCore.Checker`
 
-(Call) §5.8's argument list as an algorithm: each argument is checked
-against its parameter's type with Σ threaded left to right, and the count must
-match (`4.10:3`, `4.10:4`).
+The §5 judgment as an algorithm: one case per `Typed` rule, in the same
+order, producing the type and outgoing context or rejecting. `P` is the
+top-level function environment (Call) §5.8 looks a callee up in and `R` the
+enclosing function's declared return type (Return-Value) §5.7 checks a
+`return` operand against.
 
 ```lean
-def RueCore.checkArgs (P : Program) (R : Ty) :
-  Ctx → List Expr → List Ty → Option Ctx
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (P : Program) (R : Ty) (x : Ctx), checkArgs P R x [] [] = some x
-∀ (P : Program) (R : Ty) (x : Ctx) (e : Expr) (es : List Expr) (T : Ty)
-  (Ts : List Ty),
-  checkArgs P R x (e :: es) (T :: Ts) =
-    match check P R x e with
-    | some (T', Γ₁) => if T' = T then checkArgs P R Γ₁ es Ts else none
-    | none => none
-∀ (P : Program) (R : Ty) (x : Ctx) (x_1 : List Expr) (x_2 : List Ty),
-  (x_1 = [] → x_2 = [] → False) →
-    (∀ (e : Expr) (es : List Expr) (T : Ty) (Ts : List Ty),
-        x_1 = e :: es → x_2 = T :: Ts → False) →
-      checkArgs P R x x_1 x_2 = none
+def RueCore.check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
 ```
 
 ### `dropCell`
@@ -5149,6 +6646,37 @@ Defining equations, as Lean derived them from the body:
       match dropContents D c with
       | Except.error w => Except.error w
       | Except.ok evs => Except.ok (Event.drop ℓ c :: evs)
+```
+
+### `eval`
+
+*def* · module `RueCore.Dynamics`
+
+The interpreter, over a `FloatOps` (`Float.lean`): §2 fixes `rnd_w` and
+`σ_NaN` per *target*, not per rule, so the machine takes them as a parameter
+and every theorem quantifies over a model that satisfies §7's laws. Rule
+correspondence, per case: `use` is
+(D-Use-Copy)/(D-Use-Move) (§6.3); `binop`, `unop`, `intCast` and
+`fintrin` are §6.4's operator and intrinsic rules, computed by
+`evalBinOp`/`evalUnOp`/`evalIntCast`/`evalFintrin` above, the float half of
+them through the model `M`;
+`panic` is (D-Panic) §6.12; `dbg` appends the operand's rendering to the
+observable output (§5.8's (Dbg), §6.12's `Outcome`); `drop` is §6.11's
+explicit `@drop`; `letIn` is (D-Let) + (D-EndScope)'s drop-retire (§6.7);
+`assign` is (D-Assign), §6.8's overwrite-drop / reinitialization; `seq` is
+(D-Seq), discarding with a temporary drop (§6.7); `mkStruct` is (D-Struct)
+§6.5 after §6.2's left-to-right search through its initializers; `ite` is
+(D-If-T)/(D-If-F) after the §6.2 search for the scrutinee; `call` is (D-Call)
+followed by (D-Return-Value) when the body completes normally, and by
+(D-Return)'s absorption when it does not; `ret` is (D-Return), which runs the
+frame's scope drops and hands the value past every enclosing form.
+
+Every operand is sequenced with `andThen`, which is §6.2's search through an
+evaluation context; the callee's body is sequenced with `absorb`, the one
+place a `return` stops travelling (§6.9).
+
+```lean
+def RueCore.eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalRes
 ```
 
 ### `evalArgs`
@@ -5221,25 +6749,22 @@ Defining equations, as Lean derived them from the body:
   overwriteOk D (OwnSt.fields ts) x = decide (Ty.mult D x ≠ Mult.linear)
 ```
 
-### `run`
+### `Examples.prog`
 
-*def* · module `RueCore.Dynamics`
+*def* · module `RueCore.Examples`
 
-A program's outcome (§6.12's top-level result): call the entry function,
-index `0`, with no arguments in an empty store and a frame with no bindings.
-(D-Return-Main) is the same rule as (D-Return-Value) at the bottom of the
-stack, so the entry point is an ordinary call and needs no second path: the
-call boundary absorbs an unwinding `return` exactly as it does anywhere.
+A program over the fixture declarations, entered at a no-parameter `main`
+returning `T`.
 
 ```lean
-def RueCore.run (P : Program) (fuel : Nat) : EvalRes
+def RueCore.Examples.prog (T : Ty) (e : Expr) : Program
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (P : Program) (fuel : Nat),
-  run P fuel = eval fuel P [] { env := [], scope := [] } (Expr.call 0 [])
+∀ (T : Ty) (e : Expr),
+  Examples.prog T e = Program.entry Examples.structEnv T e
 ```
 
 ### `Explain.runTrace`
@@ -5250,15 +6775,16 @@ The run of a whole program: the entry call, from the empty store and the
 empty frame (§6.12's top-level result).
 
 ```lean
-def RueCore.Explain.runTrace (P : Program) (fuel : Nat) : Explain.Trace
+def RueCore.Explain.runTrace (M : FloatOps) (P : Program) (fuel : Nat) :
+  Explain.Trace
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (P : Program) (fuel : Nat),
-  Explain.runTrace P fuel =
-    Explain.traceEval P fuel 0 []
+∀ (M : FloatOps) (P : Program) (fuel : Nat),
+  Explain.runTrace M P fuel =
+    Explain.traceEval M P fuel 0 []
       (match P.fns[0]? with
       | some fd => fd.ret
       | none => Ty.int IntWidth.w64 Sign.signed)
@@ -5308,6 +6834,36 @@ RueCore.StructDecl.Wf.mk {D : StructEnv} {s : Nat} {sd : StructDecl}
   StructDecl.Wf D s sd
 ```
 
+### `checkArgs`
+
+*def* · module `RueCore.Checker`
+
+(Call) §5.8's argument list as an algorithm: each argument is checked
+against its parameter's type with Σ threaded left to right, and the count must
+match (`4.10:3`, `4.10:4`).
+
+```lean
+def RueCore.checkArgs (P : Program) (R : Ty) :
+  Ctx → List Expr → List Ty → Option Ctx
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (P : Program) (R : Ty) (x : Ctx), checkArgs P R x [] [] = some x
+∀ (P : Program) (R : Ty) (x : Ctx) (e : Expr) (es : List Expr) (T : Ty)
+  (Ts : List Ty),
+  checkArgs P R x (e :: es) (T :: Ts) =
+    match check P R x e with
+    | some (T', Γ₁) => if T' = T then checkArgs P R Γ₁ es Ts else none
+    | none => none
+∀ (P : Program) (R : Ty) (x : Ctx) (x_1 : List Expr) (x_2 : List Ty),
+  (x_1 = [] → x_2 = [] → False) →
+    (∀ (e : Expr) (es : List Expr) (T : Ty) (Ts : List Ty),
+        x_1 = e :: es → x_2 = T :: Ts → False) →
+      checkArgs P R x x_1 x_2 = none
+```
+
 ### `checkStructDecl`
 
 *def* · module `RueCore.Checker`
@@ -5337,6 +6893,28 @@ Defining equations, as Lean derived them from the body:
           decide (StructDecl.baseOf D sd = Mult.copy) && !sd.dtor
         | x => true) &&
       (!sd.dtor || !decide (StructDecl.baseOf D sd = Mult.linear)))
+```
+
+### `run`
+
+*def* · module `RueCore.Dynamics`
+
+A program's outcome (§6.12's top-level result): call the entry function,
+index `0`, with no arguments in an empty store and a frame with no bindings.
+(D-Return-Main) is the same rule as (D-Return-Value) at the bottom of the
+stack, so the entry point is an ordinary call and needs no second path: the
+call boundary absorbs an unwinding `return` exactly as it does anywhere.
+
+```lean
+def RueCore.run (M : FloatOps) (P : Program) (fuel : Nat) : EvalRes
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (M : FloatOps) (P : Program) (fuel : Nat),
+  run M P fuel =
+    eval M fuel P [] { env := [], scope := [] } (Expr.call 0 [])
 ```
 
 ### `WfStructs`
@@ -5512,6 +7090,7 @@ Defining equations, as Lean derived them from the body:
 Contents.hole.holeFree = false
 ∀ (w : IntWidth) (s : Sign) (n : Int),
   (Contents.int w s n).holeFree = true
+∀ (w : FloatWidth) (f : FloatDatum), (Contents.float w f).holeFree = true
 ∀ (b : Bool), (Contents.bool b).holeFree = true
 Contents.unit.holeFree = true
 ∀ (s : Nat) (cs : List Contents),
@@ -5553,6 +7132,8 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (a : IntWidth) (a_1 : Sign) (a_2 : Int),
   Contents.ofVal (Val.int a a_1 a_2) = Contents.int a a_1 a_2
+∀ (a : FloatWidth) (a_1 : FloatDatum),
+  Contents.ofVal (Val.float a a_1) = Contents.float a a_1
 ∀ (a : Bool), Contents.ofVal (Val.bool a) = Contents.bool a
 Contents.ofVal Val.unit = Contents.unit
 ∀ (a : Nat) (a_1 : List Val),
@@ -5625,6 +7206,8 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : StructEnv), Contents.residualLinear D Contents.hole = false
 ∀ (D : StructEnv) (a : IntWidth) (a_1 : Sign) (a_2 : Int),
   Contents.residualLinear D (Contents.int a a_1 a_2) = false
+∀ (D : StructEnv) (a : FloatWidth) (a_1 : FloatDatum),
+  Contents.residualLinear D (Contents.float a a_1) = false
 ∀ (D : StructEnv) (a : Bool),
   Contents.residualLinear D (Contents.bool a) = false
 ∀ (D : StructEnv), Contents.residualLinear D Contents.unit = false
@@ -5758,6 +7341,8 @@ Defining equations, as Lean derived them from the body:
 Contents.hole.toVal = none
 ∀ (a : IntWidth) (a_1 : Sign) (a_2 : Int),
   (Contents.int a a_1 a_2).toVal = some (Val.int a a_1 a_2)
+∀ (a : FloatWidth) (a_1 : FloatDatum),
+  (Contents.float a a_1).toVal = some (Val.float a a_1)
 ∀ (a : Bool), (Contents.bool a).toVal = some (Val.bool a)
 Contents.unit.toVal = some Val.unit
 ∀ (a : Nat) (a_1 : List Contents),
@@ -5888,6 +7473,13 @@ RueCore.ContentsTy.int {D : StructEnv} {w : IntWidth} {s : Sign} {n : Int} :
   InBounds w s n → ContentsTy D (Contents.int w s n) (Ty.int w s)
 ```
 
+**`ContentsTy.float`** — §6.1's `f_T` stored in a cell, with the same `𝔽_w` side condition `HasTy.float` carries.
+
+```lean
+RueCore.ContentsTy.float {D : StructEnv} {w : FloatWidth} {f : FloatDatum} :
+  FloatDatum.Wf w f → ContentsTy D (Contents.float w f) (Ty.float w)
+```
+
 **`ContentsTy.bool`**
 
 ```lean
@@ -5982,6 +7574,13 @@ Constructors:
 ```lean
 RueCore.HasTy.int {D : StructEnv} {w : IntWidth} {s : Sign} {n : Int} :
   InBounds w s n → HasTy D (Val.int w s n) (Ty.int w s)
+```
+
+**`HasTy.float`** — §6.1's `f_T` at `T = float(w)`: the datum lies in `𝔽_w`, which is the float counterpart of `n_T`'s `min_T ≤ n ≤ max_T` side condition. Keeping it is what gives §7's "totality of the float operations" lemma something to preserve: the model's closure laws (`FloatModel`, `Float.lean`) are exactly what re-establishes it after a rounded operation.
+
+```lean
+RueCore.HasTy.float {D : StructEnv} {w : FloatWidth} {f : FloatDatum} :
+  FloatDatum.Wf w f → HasTy D (Val.float w f) (Ty.float w)
 ```
 
 **`HasTy.bool`**
@@ -6242,7 +7841,19 @@ RueCore.Typed.binop {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx} {op : BinOp}
   {e₁ e₂ : Expr} {w : IntWidth} {s : Sign} :
   Typed P R Γ e₁ (Ty.int w s) Γ₁ →
     Typed P R Γ₁ e₂ (Ty.int w s) Γ₂ →
-      Typed P R Γ (Expr.binop op e₁ e₂) (op.resultTy (Ty.int w s)) Γ₂
+      op.intAdmits = true →
+        Typed P R Γ (Expr.binop op e₁ e₂) (op.resultTy (Ty.int w s)) Γ₂
+```
+
+**`Typed.floatBinop`** — (Float-Arith), (Float-Ord) and (Total-Cmp) §5.8, in one rule for the same reason `binop` fuses (Arith) and (Ord): they differ only in the type they conclude at (`BinOp.resultTy` — `float(w)`, `bool`, `int(32,signed)`). Both operands share **one** `float(w)`: `3.12:13` gives no implicit widening, so an `f32`/`f64` mix has no derivation, and `3.12:14` relates no float operand to an integer one — the only bridges are the intrinsics. `BinOp.floatAdmits` is §5.8's "rejected by the absence of a rule" for `%` (`3.12:25`) and for the bitwise and shift operators, written as a side condition because one constructor stands for the three rule groups.
+
+```lean
+RueCore.Typed.floatBinop {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx} {op : BinOp}
+  {e₁ e₂ : Expr} {w : FloatWidth} :
+  Typed P R Γ e₁ (Ty.float w) Γ₁ →
+    Typed P R Γ₁ e₂ (Ty.float w) Γ₂ →
+      op.floatAdmits = true →
+        Typed P R Γ (Expr.binop op e₁ e₂) (op.resultTy (Ty.float w)) Γ₂
 ```
 
 **`Typed.neg`** — (Neg) §5.8: negation demands a **signed** operand (`4.2:6`; rejecting it on an unsigned type is `4.2:14`) and concludes at that type.
@@ -6252,6 +7863,15 @@ RueCore.Typed.neg {P : Program} {R : Ty} {Γ Γ' : Ctx} {e : Expr}
   {w : IntWidth} :
   Typed P R Γ e (Ty.int w Sign.signed) Γ' →
     Typed P R Γ (Expr.unop UnOp.neg e) (Ty.int w Sign.signed) Γ'
+```
+
+**`Typed.floatNeg`** — (Float-Neg) §5.8: float negation applies at **every** float type, where (Neg) restricts the integer case to a signed one (`3.12:24`, `4.2:14`), and §6.4 makes it total rather than trapping on a minimum — a sign flip, on `-0.0` and on a NaN alike.
+
+```lean
+RueCore.Typed.floatNeg {P : Program} {R : Ty} {Γ Γ' : Ctx} {e : Expr}
+  {w : FloatWidth} :
+  Typed P R Γ e (Ty.float w) Γ' →
+    Typed P R Γ (Expr.unop UnOp.neg e) (Ty.float w) Γ'
 ```
 
 **`Typed.notOp`** — (Not) §5.8: logical negation demands `bool` (`4.4:2`). The bitwise operators do not accept `bool` at all (`4.3a:18`, `4.3a:19`), which is why `binop` above is stated only at `int(w,s)`.
@@ -6277,6 +7897,32 @@ RueCore.Typed.intCast {P : Program} {R : Ty} {Γ Γ' : Ctx} {w : IntWidth}
   {s : Sign} {w' : IntWidth} {s' : Sign} {e : Expr} :
   Typed P R Γ e (Ty.int w' s') Γ' →
     Typed P R Γ (Expr.intCast w s e) (Ty.int w s) Γ'
+```
+
+**`Typed.floatLit`** — (Lit) §5.8 for a float: the literal at the `float(w)` elaboration resolved for it (`3.12:7`), denoting a *finite* value of that type. The side condition is `3.12:10`, a **legality** rule — "a float literal whose value rounds to an infinity in its target type MUST be rejected at compile time (`E0206`)" — which §5.8's own prose cites, so it belongs here rather than being left to the surface; it is `intLit`'s range premise at the float widths. What it does *not* say is that the decimal is representable: `3.12:9` rounds, so `0.1` is fine and so is an underflow to zero. The threshold is `FloatWidth.overflowNum`, half an ulp above `max_{𝔽_w}`, and it is exact natural arithmetic rather than anything the model decides.
+
+```lean
+RueCore.Typed.floatLit {P : Program} {R : Ty} {Γ : Ctx} {w : FloatWidth}
+  {l : FloatLit} :
+  FloatLit.RoundsFinite w l → Typed P R Γ (Expr.floatLit w l) (Ty.float w) Γ
+```
+
+**`Typed.intToFloat`** — (Int-To-Float) §5.8: the operand is an integer of any width and signedness (`3.12:16`, `4.13:139`) and the result is the `float(w)` elaboration took from the use site. It never traps (§6.4).
+
+```lean
+RueCore.Typed.intToFloat {P : Program} {R : Ty} {Γ Γ' : Ctx} {w : FloatWidth}
+  {w' : IntWidth} {s' : Sign} {e : Expr} :
+  Typed P R Γ e (Ty.int w' s') Γ' →
+    Typed P R Γ (Expr.fintrin (FloatIntrin.intToFloat w) e) (Ty.float w) Γ'
+```
+
+**`Typed.floatIntrin`** — (Float-To-Int), (Float-Cast) and (Float-Round) §5.8, in one rule: each takes one `float(w)` operand and concludes at the type the form carries (`FloatIntrin.resTy`). `FloatIntrin.floatSrc` carries (Float-Cast)'s `w' ≠ w` side condition (`3.12:19`) and keeps `@int_to_float`, whose operand is an integer, on its own rule above. Whether a `@float_to_int` *survives* is dynamic, not a typing question: `3.12:18` and §6.4's (D-Float-To-Int-Trap).
+
+```lean
+RueCore.Typed.floatIntrin {P : Program} {R : Ty} {Γ Γ' : Ctx}
+  {k : FloatIntrin} {w : FloatWidth} {e : Expr} :
+  Typed P R Γ e (Ty.float w) Γ' →
+    k.floatSrc w = true → Typed P R Γ (Expr.fintrin k e) (k.resTy w) Γ'
 ```
 
 **`Typed.panic`** — (Panic) §5.8 with (Sub-Never) folded in (§5.7), the same fold `Typed.ret` makes: `@panic` is `never`-typed, so the rule concludes at an arbitrary type and — since `⊥` contributes no state to a join — at an arbitrary outgoing context of the same skeleton. Unlike `ret` it imposes no residual-linear premise: §5.7 exempts the `⊥_panic` edge from §5.6's scope-exit check, and §6.12's own rule runs no drop. The message is a string literal the form carries rather than an operand, because the fragment has no string type, which is also why §5.8's operand-diverging companion has no instance.
@@ -6505,6 +8151,8 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : StructEnv), dropEvents D Contents.hole = []
 ∀ (D : StructEnv) (a : IntWidth) (a_1 : Sign) (a_2 : Int),
   dropEvents D (Contents.int a a_1 a_2) = []
+∀ (D : StructEnv) (a : FloatWidth) (a_1 : FloatDatum),
+  dropEvents D (Contents.float a a_1) = []
 ∀ (D : StructEnv) (a : Bool), dropEvents D (Contents.bool a) = []
 ∀ (D : StructEnv), dropEvents D Contents.unit = []
 ∀ (D : StructEnv) (a : Nat) (a_1 : List Contents),
