@@ -599,7 +599,7 @@ scalar prints itself, `()` prints nothing, and a struct value is dropped — so
 its lines are the ones its own drop emits, in §6.11's order. An `error` is a
 struct naming a declaration the program does not have, which the verdict
 already rejects. -/
-def valueLines (D : StructEnv) (v : Val) : List String :=
+def valueLines (D : Decls) (v : Val) : List String :=
   match v with
   | .int w s n => (dbgLine (.int w s n)).toList
   | .float w f => (dbgLine (.float w f)).toList
@@ -632,7 +632,7 @@ observable event the run executed — a user destructor or a `@dbg`
 value. A trapping run has no value line, so the panic arms of
 `outcomeSummary` and `expectedJson` project the trace alone rather than
 calling this. -/
-def outLines (D : StructEnv) (v : Val) (tr : List Event) : List String :=
+def outLines (D : Decls) (v : Val) (tr : List Event) : List String :=
   tr.filterMap eventLine ++ valueLines D v
 
 /-- **The residual drop is path-specific** (`3.8:60`). The §5.5 join marks a
@@ -651,7 +651,7 @@ def outcomeSummary (c : Case) : String :=
   match checkProgram c.prog, run exportOps c.prog exportFuel with
   | false, .stuck w => "rejected by the checker; the machine would refuse with " ++ violationName w
   | false, .ok _ v tr =>
-      let lines := outLines c.prog.structs v tr
+      let lines := outLines c.prog.decls v tr
       "rejected by the checker; the machine reaches no refusal on the executed path, which prints " ++
         (if lines.isEmpty then "nothing" else String.intercalate ", " lines) ++ "; exit 0"
   | false, .panic k tr =>
@@ -660,7 +660,7 @@ def outcomeSummary (c : Case) : String :=
         (if lines.isEmpty then "nothing" else String.intercalate ", " lines) ++
         " and then traps with " ++ panicName k
   | true, .ok _ v tr =>
-      let lines := outLines c.prog.structs v tr
+      let lines := outLines c.prog.decls v tr
       "accepted; prints " ++ (if lines.isEmpty then "nothing" else String.intercalate ", " lines) ++ "; exit 0"
   | true, .panic k tr =>
       let lines := tr.filterMap eventLine
@@ -707,10 +707,10 @@ which the entry call's own frame boundary absorbs (`run_ne_returned`), and an
 def expectedJson (c : Case) : String :=
   match run exportOps c.prog exportFuel with
   | .ok _ v tr =>
-      "{\"kind\": \"ok\", \"stdout\": " ++ jsonArray ((outLines c.prog.structs v tr).map jsonString) ++
+      "{\"kind\": \"ok\", \"stdout\": " ++ jsonArray ((outLines c.prog.decls v tr).map jsonString) ++
         ", \"exit\": 0}"
   | .returned _ v tr =>
-      "{\"kind\": \"ok\", \"stdout\": " ++ jsonArray ((outLines c.prog.structs v tr).map jsonString) ++
+      "{\"kind\": \"ok\", \"stdout\": " ++ jsonArray ((outLines c.prog.decls v tr).map jsonString) ++
         ", \"exit\": 0}"
   | .panic k tr =>
       "{\"kind\": \"panic\", \"panic\": " ++ jsonString (panicName k) ++

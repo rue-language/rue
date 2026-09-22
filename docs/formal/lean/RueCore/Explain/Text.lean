@@ -142,7 +142,7 @@ def fnVerdictLines (P : Program) : List (Nat × FnDef × Deriv) → List String
       let head := sp 9 ++ fnHeader i fd
       let tail := match d.result with
         | some (T, Γf) =>
-            if T = fd.ret ∧ NoResidualLinear P.structs Γf then
+            if T = fd.ret ∧ NoResidualLinear P.decls Γf then
               [head ++ "  — body ⇒ " ++ Print.tyName T ++ ", exit Σ " ++ clip 40 (ctxLine Γf)]
             else if T = fd.ret then
               [head ++ "  — REJECTED: a by-value parameter or a still-open binding is",

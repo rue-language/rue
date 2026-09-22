@@ -137,7 +137,7 @@ def dCarryAffine : StructDecl :=
 /-- The fixture environment: every field type names an earlier declaration, so
 `WfStructs` holds (checked below) and §3's class assignment is the one
 recorded. -/
-def structEnv : StructEnv :=
+def structEnv : Decls :=
   [dCopy, dAffine, dLinear, dLinearDtor, dCarry, dOuter, dPair, dTwoAffine,
    dAffineInt, dNested, dCarryAffine]
 

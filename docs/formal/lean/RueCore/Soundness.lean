@@ -100,7 +100,7 @@ for a struct value, its declaration's field list — §6.1's `{ v1, …, vk }_S`
 well typed at `S` exactly when each field value is well typed at its declared
 type (§5.8's (Struct-Intro), read on values). §7's preservation half is stated
 over this relation. -/
-inductive HasTy (D : StructEnv) : Val → Ty → Prop where
+inductive HasTy (D : Decls) : Val → Ty → Prop where
   | int {w s n} : InBounds w s n → HasTy D (.int w s n) (.int w s)
   /-- §6.1's `f_T` at `T = float(w)`: the datum lies in `𝔽_w`, which is the
   float counterpart of `n_T`'s `min_T ≤ n ≤ max_T` side condition. Keeping it
@@ -111,12 +111,12 @@ inductive HasTy (D : StructEnv) : Val → Ty → Prop where
   | bool {b} : HasTy D (.bool b) .bool
   | unit : HasTy D .unit .unit
   | struct {s sd vs} :
-      D[s]? = some sd → HasTys D vs sd.fields → HasTy D (.struct s vs) (.struct s)
+      D.structs[s]? = some sd → HasTys D vs sd.fields → HasTy D (.struct s vs) (.struct s)
 
 /-- Value typing for a value list, pointwise against the expected types: a
 call's arguments against the callee's parameter types (§5.8's (Call),
 `4.10:4`) and a struct value's fields against its declared field list. -/
-inductive HasTys (D : StructEnv) : List Val → List Ty → Prop where
+inductive HasTys (D : Decls) : List Val → List Ty → Prop where
   | nil : HasTys D [] []
   | cons {v vs T Ts} : HasTy D v T → HasTys D vs Ts → HasTys D (v :: vs) (T :: Ts)
 end
@@ -147,7 +147,7 @@ theorem HasTy.bool_inv {D v} (h : HasTy D v .bool) : ∃ b, v = .bool b := by
 
 /-- Inversion of value typing at a struct type (helper). -/
 theorem HasTy.struct_inv {D v s} (h : HasTy D v (.struct s)) :
-    ∃ sd vs, v = .struct s vs ∧ D[s]? = some sd ∧ HasTys D vs sd.fields := by
+    ∃ sd vs, v = .struct s vs ∧ D.structs[s]? = some sd ∧ HasTys D vs sd.fields := by
   cases h; exact ⟨_, _, rfl, ‹_›, ‹_›⟩
 
 /-! ## Typing the contents of a cell
@@ -181,7 +181,7 @@ mutual
 node. A moved-out position claims nothing, so it is well typed at every type;
 every other node types as the corresponding value form does (§5.8's
 (Struct-Intro), read on stored contents). -/
-inductive ContentsTy (D : StructEnv) : Contents → Ty → Prop where
+inductive ContentsTy (D : Decls) : Contents → Ty → Prop where
   | hole {T} : ContentsTy D .hole T
   | int {w s n} : InBounds w s n → ContentsTy D (.int w s n) (.int w s)
   /-- §6.1's `f_T` stored in a cell, with the same `𝔽_w` side condition
@@ -190,11 +190,11 @@ inductive ContentsTy (D : StructEnv) : Contents → Ty → Prop where
   | bool {b} : ContentsTy D (.bool b) .bool
   | unit : ContentsTy D .unit .unit
   | struct {s sd cs} :
-      D[s]? = some sd → ContentsTys D cs sd.fields → ContentsTy D (.struct s cs) (.struct s)
+      D.structs[s]? = some sd → ContentsTys D cs sd.fields → ContentsTy D (.struct s cs) (.struct s)
 
 /-- The same, pointwise against a declaration's field list (§5.8's
 (Struct-Intro), read on stored contents). -/
-inductive ContentsTys (D : StructEnv) : List Contents → List Ty → Prop where
+inductive ContentsTys (D : Decls) : List Contents → List Ty → Prop where
   | nil : ContentsTys D [] []
   | cons {c cs T Ts} : ContentsTy D c T → ContentsTys D cs Ts → ContentsTys D (c :: cs) (T :: Ts)
 end
@@ -207,12 +207,12 @@ theorem ContentsTys.length_eq : ∀ {D cs Ts}, ContentsTys D cs Ts → cs.length
 /-- Inversion of contents typing at a struct type, for a contents that is not
 a hole (helper). -/
 theorem ContentsTy.struct_inv {D s cs T} (h : ContentsTy D (.struct s cs) T) :
-    ∃ sd, T = .struct s ∧ D[s]? = some sd ∧ ContentsTys D cs sd.fields := by
+    ∃ sd, T = .struct s ∧ D.structs[s]? = some sd ∧ ContentsTys D cs sd.fields := by
   cases h; exact ⟨_, rfl, ‹_›, ‹_›⟩
 
 /-- A field of a well-typed contents is well typed at its declared type
 (helper). -/
-theorem ContentsTys.index : ∀ {D : StructEnv} {cs : List Contents} {Ts : List Ty}
+theorem ContentsTys.index : ∀ {D : Decls} {cs : List Contents} {Ts : List Ty}
     (f : Nat) {Tf : Ty}, ContentsTys D cs Ts → Ts[f]? = some Tf →
     ∃ cf, cs[f]? = some cf ∧ ContentsTy D cf Tf
   | _, _, _, _, _, .nil, h => by simp at h
@@ -225,7 +225,7 @@ theorem ContentsTys.index : ∀ {D : StructEnv} {cs : List Contents} {Ts : List 
 
 /-- Writing a well-typed contents into a field slot keeps the list well typed
 (helper). -/
-theorem ContentsTys.set : ∀ {D : StructEnv} {cs : List Contents} {Ts : List Ty}
+theorem ContentsTys.set : ∀ {D : Decls} {cs : List Contents} {Ts : List Ty}
     (f : Nat) {Tf : Ty} {cf' : Contents}, ContentsTys D cs Ts → Ts[f]? = some Tf →
     ContentsTy D cf' Tf → ContentsTys D (cs.set f cf') Ts
   | _, _, _, _, _, _, .nil, h, _ => by simp at h
@@ -315,7 +315,7 @@ theorem ContentsTy.mult_eq {D c T} (h : ContentsTy D c T) (hf : c.holeFree = tru
   | float => rfl
   | bool => rfl
   | unit => rfl
-  | struct hd _ => simp [Contents.mult, Ty.mult, StructEnv.classOf, hd]
+  | struct hd _ => simp [Contents.mult, Ty.mult, Decls.classOf, hd]
 
 /-! ## §6.11's walk over contents: it never refuses, and it drops in order -/
 
@@ -324,7 +324,7 @@ mutual
 result is exactly `dropEvents`, §6.11's order written out as a function
 (`Dynamics.lean`) — the destructor first (`3.9:28`), then the fields in
 declaration order (`3.9:13`), every `⊘` skipped (`3.8:60`). -/
-theorem dropContents_events {D : StructEnv} {c : Contents} {T : Ty} (h : ContentsTy D c T) :
+theorem dropContents_events {D : Decls} {c : Contents} {T : Ty} (h : ContentsTy D c T) :
     dropContents D c = .ok (dropEvents D c) := by
   cases h with
   | hole => rfl
@@ -337,7 +337,7 @@ theorem dropContents_events {D : StructEnv} {c : Contents} {T : Ty} (h : Content
 
 /-- The same over a field list: `drop*` emits exactly the fields' events, in
 declaration order (`3.9:13`). -/
-theorem dropContentsList_events {D : StructEnv} {cs : List Contents} {Ts : List Ty}
+theorem dropContentsList_events {D : Decls} {cs : List Contents} {Ts : List Ty}
     (h : ContentsTys D cs Ts) : dropContentsList D cs = .ok (dropEventsList D cs) := by
   cases h with
   | nil => rfl
@@ -349,7 +349,7 @@ end
 /-- **A well-typed cell's drop always runs.** `dropContents` (§6.11) refuses
 only where a struct names a declaration the program does not have, and contents
 typing rules that out. -/
-theorem dropContents_ok {D : StructEnv} {c : Contents} {T : Ty} (h : ContentsTy D c T) :
+theorem dropContents_ok {D : Decls} {c : Contents} {T : Ty} (h : ContentsTy D c T) :
     ∃ evs, dropContents D c = .ok evs :=
   ⟨dropEvents D c, dropContents_events h⟩
 
@@ -366,8 +366,8 @@ Be exact about the `⊘`-skip: this theorem states the **map**, `cs.map
 `dropEvents .hole = []` *by definition* (`Dynamics.lean`). So `3.8:60`'s skip
 is carried by the closed form's own leaf case, not concluded here; what the
 theorem adds is that the walk emits exactly that map, in that order. -/
-theorem dropContents_struct_events {D : StructEnv} {s : Nat} {sd : StructDecl}
-    {cs : List Contents} (hd : D[s]? = some sd) (h : ContentsTy D (.struct s cs) (.struct s)) :
+theorem dropContents_struct_events {D : Decls} {s : Nat} {sd : StructDecl}
+    {cs : List Contents} (hd : D.structs[s]? = some sd) (h : ContentsTy D (.struct s cs) (.struct s)) :
     dropContents D (.struct s cs)
       = .ok ((if sd.dtor then [Event.dtor s (.struct s cs)] else [])
               ++ (cs.map (dropEvents D)).flatten) := by
@@ -378,8 +378,8 @@ theorem dropContents_struct_events {D : StructEnv} {s : Nat} {sd : StructDecl}
 event first — when its declaration has one — and then exactly the events its
 fields' drops emit, in declaration order. This is the induction step;
 `dropContents_struct_events` is the closed form. -/
-theorem dropContents_order {D : StructEnv} {s : Nat} {sd : StructDecl} {cs : List Contents}
-    {evs : List Event} (hd : D[s]? = some sd) (h : dropContents D (.struct s cs) = .ok evs) :
+theorem dropContents_order {D : Decls} {s : Nat} {sd : StructDecl} {cs : List Contents}
+    {evs : List Event} (hd : D.structs[s]? = some sd) (h : dropContents D (.struct s cs) = .ok evs) :
     ∃ fevs, dropContentsList D cs = .ok fevs ∧
       evs = (if sd.dtor then [Event.dtor s (.struct s cs)] else []) ++ fevs := by
   simp only [dropContents, hd] at h
@@ -390,7 +390,7 @@ theorem dropContents_order {D : StructEnv} {s : Nat} {sd : StructDecl} {cs : Lis
 /-- **`drop*` is the fields in order** (§6.11): the events of a field list's
 drop are the head's followed by the tail's. This is the induction step;
 `dropContentsList_events` is the closed form. -/
-theorem dropContentsList_order {D : StructEnv} {c : Contents} {cs : List Contents}
+theorem dropContentsList_order {D : Decls} {c : Contents} {cs : List Contents}
     {evs : List Event} (h : dropContentsList D (c :: cs) = .ok evs) :
     ∃ e₁ e₂, dropContents D c = .ok e₁ ∧ dropContentsList D cs = .ok e₂ ∧ evs = e₁ ++ e₂ := by
   simp only [dropContentsList] at h
@@ -411,7 +411,7 @@ a struct whose class is not `Linear` one with no linear field at any depth
 stored contents looking for a live declared-`linear` struct — finds none. A
 `⊘` contributes nothing whatever its type, so the statement needs no
 hole-freeness. -/
-theorem ContentsTy.residualLinear_false {D : StructEnv} {c : Contents} {T : Ty}
+theorem ContentsTy.residualLinear_false {D : Decls} {c : Contents} {T : Ty}
     (hwf : WfStructs D) (h : ContentsTy D c T) (hnl : T.mult D ≠ .linear) :
     c.residualLinear D = false := by
   cases h with
@@ -422,7 +422,7 @@ theorem ContentsTy.residualLinear_false {D : StructEnv} {c : Contents} {T : Ty}
   | unit => rfl
   | @struct s sd cs hd hcs =>
       have hcls : sd.cls ≠ .linear := by
-        simpa only [Ty.mult, StructEnv.classOf, hd] using hnl
+        simpa only [Ty.mult, Decls.classOf, hd] using hnl
       have hw := hwf s sd hd
       have hattr : ¬ (sd.attr = .linear) := by
         intro ha
@@ -431,7 +431,7 @@ theorem ContentsTy.residualLinear_false {D : StructEnv} {c : Contents} {T : Ty}
       exact ContentsTys.residualLinearList_false hwf hcs (hw.field_not_linear hcls)
 
 /-- The same over a field list (helper). -/
-theorem ContentsTys.residualLinearList_false {D : StructEnv} {cs : List Contents} {Ts : List Ty}
+theorem ContentsTys.residualLinearList_false {D : Decls} {cs : List Contents} {Ts : List Ty}
     (hwf : WfStructs D) (h : ContentsTys D cs Ts) (hnl : ∀ T ∈ Ts, T.mult D ≠ .linear) :
     Contents.residualLinearList D cs = false := by
   cases h with
@@ -455,7 +455,7 @@ theorem permits.
 
 /-- `range_check` (§6.4) delivers a value of `int(w,s)` or `↯overflow` — that
 category and no other, which is what (D-Arith-Trap) says (helper). -/
-theorem intResult_res {D : StructEnv} (w : IntWidth) (s : Sign) (n : Int) :
+theorem intResult_res {D : Decls} (w : IntWidth) (s : Sign) (n : Int) :
     (∃ v, intResult w s n = .val v ∧ HasTy D v (.int w s)) ∨
       intResult w s n = .trap .overflow := by
   unfold intResult
@@ -468,7 +468,7 @@ defined trap.** The value cases are (D-Arith), (D-Div), the remainder arm,
 (D-Bit), (D-Shl)/(D-Shr) and `cmp`; the trap cases are (D-Arith-Trap),
 (D-Div-Zero), (D-Div-Overflow) and the remainder's two. Nothing else is
 reachable, which is the operator half of progress. -/
-theorem binOpInt_res {D : StructEnv} (op : BinOp) (w : IntWidth) (s : Sign) (n₁ n₂ : Int)
+theorem binOpInt_res {D : Decls} (op : BinOp) (w : IntWidth) (s : Sign) (n₁ n₂ : Int)
     (hop : op.intAdmits = true) :
     (∃ v, binOpInt op w s n₁ n₂ = .val v ∧ HasTy D v (op.resultTy (.int w s))) ∨
       (∃ k, binOpInt op w s n₁ n₂ = .trap k) := by
@@ -513,7 +513,7 @@ theorem binOpInt_res {D : StructEnv} (op : BinOp) (w : IntWidth) (s : Sign) (n�
 /-- The same, over the two machine values §5.8's operator rules give one
 `int(w,s)`: the shape mismatch `evalBinOp` refuses is not reachable from
 them. -/
-theorem evalBinOp_res {D : StructEnv} (M : FloatOps) (op : BinOp) (w : IntWidth) (s : Sign)
+theorem evalBinOp_res {D : Decls} (M : FloatOps) (op : BinOp) (w : IntWidth) (s : Sign)
     (n₁ n₂ : Int) (hop : op.intAdmits = true) :
     (∃ v, evalBinOp M op (.int w s n₁) (.int w s n₂) = .val v ∧
         HasTy D v (op.resultTy (.int w s))) ∨
@@ -527,7 +527,7 @@ there is no trap case at all, which is `3.12:21` and §6.4's note that no
 arithmetic trap rule is stated over a float redex. `M.arith_wf` is §7's
 closure law — the one thing about `⊕_w` that cannot be proved of an arbitrary
 `FloatOps` — and it is what re-establishes `HasTy` at the result. -/
-theorem binOpFloat_res {D : StructEnv} (M : FloatModel) (op : BinOp) (w : FloatWidth)
+theorem binOpFloat_res {D : Decls} (M : FloatModel) (op : BinOp) (w : FloatWidth)
     (a b : FloatDatum) (ha : a.Wf w) (hb : b.Wf w) (hop : op.floatAdmits = true) :
     ∃ v, binOpFloat M.toFloatOps op w a b = .val v ∧ HasTy D v (op.resultTy (.float w)) := by
   cases op <;>
@@ -551,7 +551,7 @@ theorem binOpFloat_res {D : StructEnv} (M : FloatModel) (op : BinOp) (w : FloatW
 /-- The same, over the two machine values (Float-Arith)/(Float-Ord)/
 (Total-Cmp) §5.8 give one `float(w)`: the shape mismatch `evalBinOp` refuses
 is not reachable from them. -/
-theorem evalBinOpFloat_res {D : StructEnv} (M : FloatModel) (op : BinOp) (w : FloatWidth)
+theorem evalBinOpFloat_res {D : Decls} (M : FloatModel) (op : BinOp) (w : FloatWidth)
     (a b : FloatDatum) (ha : a.Wf w) (hb : b.Wf w) (hop : op.floatAdmits = true) :
     ∃ v, evalBinOp M.toFloatOps op (.float w a) (.float w b) = .val v ∧
       HasTy D v (op.resultTy (.float w)) := by
@@ -562,7 +562,7 @@ theorem evalBinOpFloat_res {D : StructEnv} (M : FloatModel) (op : BinOp) (w : Fl
 `↯overflow`** — that category and no other (§6.4; §5.8 restricts `neg` to a
 signed operand, and the lemma here covers both signednesses because the range
 check is what decides). -/
-theorem evalUnOp_int_res {D : StructEnv} (op : UnOp) (w : IntWidth) (s : Sign) (n : Int)
+theorem evalUnOp_int_res {D : Decls} (op : UnOp) (w : IntWidth) (s : Sign) (n : Int)
     (hop : op ≠ .not) :
     (∃ v, evalUnOp op (.int w s n) = .val v ∧ HasTy D v (.int w s)) ∨
       evalUnOp op (.int w s n) = .trap .overflow := by
@@ -572,14 +572,14 @@ theorem evalUnOp_int_res {D : StructEnv} (op : UnOp) (w : IntWidth) (s : Sign) (
   | bitnot => exact Or.inl ⟨_, rfl, .int (valOf_inBounds w s _)⟩
 
 /-- **`not` on a `bool` is total** (§6.4's `Not`). -/
-theorem evalUnOp_bool_res {D : StructEnv} (b : Bool) :
+theorem evalUnOp_bool_res {D : Decls} (b : Bool) :
     ∃ v, evalUnOp .not (.bool b) = .val v ∧ HasTy D v .bool :=
   ⟨_, rfl, .bool⟩
 
 /-- **`@intCast` lands on a value of its target type or on `↯cast-overflow`**
 — that category and no other, which is what `4.13:28` and §6.4's
 (D-Int-Cast-Trap) say. -/
-theorem evalIntCast_res {D : StructEnv} (w : IntWidth) (s : Sign) (w' : IntWidth) (s' : Sign)
+theorem evalIntCast_res {D : Decls} (w : IntWidth) (s : Sign) (w' : IntWidth) (s' : Sign)
     (n : Int) :
     (∃ v, evalIntCast w s (.int w' s' n) = .val v ∧ HasTy D v (.int w s)) ∨
       evalIntCast w s (.int w' s' n) = .trap .castOverflow := by
@@ -591,13 +591,13 @@ theorem evalIntCast_res {D : StructEnv} (w : IntWidth) (s : Sign) (w' : IntWidth
 /-- **`neg` on a float is total** ((D-Float-Neg), `3.12:24`): a sign flip,
 which `negate_wf` shows keeps the datum in `𝔽_w`. Unlike the integer `neg` it
 has no trap case at all. -/
-theorem evalUnOp_float_res {D : StructEnv} (w : FloatWidth) (f : FloatDatum) (hw : f.Wf w) :
+theorem evalUnOp_float_res {D : Decls} (w : FloatWidth) (f : FloatDatum) (hw : f.Wf w) :
     ∃ v, evalUnOp .neg (.float w f) = .val v ∧ HasTy D v (.float w) :=
   ⟨_, rfl, .float (negate_wf hw)⟩
 
 /-- **`@int_to_float` lands on a value of its result type and never traps**
 ((D-Int-To-Float), `3.12:16`). -/
-theorem evalFintrin_int_res {D : StructEnv} (M : FloatModel) (w : FloatWidth) (w' : IntWidth)
+theorem evalFintrin_int_res {D : Decls} (M : FloatModel) (w : FloatWidth) (w' : IntWidth)
     (s' : Sign) (n : Int) :
     ∃ v, evalFintrin M.toFloatOps (.intToFloat w) (.int w' s' n) = .val v ∧
       HasTy D v (.float w) :=
@@ -611,7 +611,7 @@ the trap disjunct is `= .trap .overflow` rather than an existential. The
 `Wf` half of each value case is §7's closure obligation: proved here for the
 exact operations (`widen_wf`, `roundOp_wf`) and a law of the model for the
 rounded ones (`narrow_wf`, `sqrt_wf`). -/
-theorem evalFintrin_float_res {D : StructEnv} (M : FloatModel) (k : FloatIntrin)
+theorem evalFintrin_float_res {D : Decls} (M : FloatModel) (k : FloatIntrin)
     (w : FloatWidth) (f : FloatDatum) (hw : f.Wf w) (hk : k.floatSrc w = true) :
     (∃ v, evalFintrin M.toFloatOps k (.float w f) = .val v ∧ HasTy D v (k.resTy w)) ∨
       evalFintrin M.toFloatOps k (.float w f) = .trap .overflow := by
@@ -665,7 +665,7 @@ initialization", section docstring): `owned` holds a value, `movedOut` holds
 contents with no live linear sub-value — the §5.5 join's asymmetry, whose
 residue the machine drops path-specifically (`3.8:60`) — and `fields` holds the
 struct its type names, matched field by field. -/
-inductive ContentsMatches (D : StructEnv) : Contents → OwnSt → Ty → Prop where
+inductive ContentsMatches (D : Decls) : Contents → OwnSt → Ty → Prop where
   /-- An `Owned` path holds a value: well-typed contents with no `⊘` in it. -/
   | owned {c T} : ContentsTy D c T → c.holeFree = true → ContentsMatches D c .owned T
   /-- A `MovedOut` path may still hold live contents — the §5.5 join's
@@ -675,12 +675,12 @@ inductive ContentsMatches (D : StructEnv) : Contents → OwnSt → Ty → Prop w
   /-- A partially moved path holds the struct its type names, field by
   field. -/
   | fields {s sd cs ts} :
-      D[s]? = some sd → ContentsMatchesList D cs ts sd.fields →
+      D.structs[s]? = some sd → ContentsMatchesList D cs ts sd.fields →
       ContentsMatches D (.struct s cs) (.fields ts) (.struct s)
 
 /-- The same over a declaration's fields, slot by slot; a slot Σ has no record
 for is `owned` (`OwnSt.fieldAt`) (helper). -/
-inductive ContentsMatchesList (D : StructEnv) : List Contents → List OwnSt → List Ty → Prop where
+inductive ContentsMatchesList (D : Decls) : List Contents → List OwnSt → List Ty → Prop where
   /-- No fields left to match. -/
   | nil {ts} : ContentsMatchesList D [] ts []
   /-- The first field matches its own slot's state; the rest match the tail of
@@ -728,7 +728,7 @@ theorem OwnSt.setField_succ : ∀ (ts : List OwnSt) (f : Nat) (u : OwnSt),
   | _ :: _, _, _ => rfl
 
 /-- A field of a matched aggregate matches its own slot's state (helper). -/
-theorem ContentsMatchesList.index : ∀ {D : StructEnv} {cs : List Contents} {ts : List OwnSt}
+theorem ContentsMatchesList.index : ∀ {D : Decls} {cs : List Contents} {ts : List OwnSt}
     {Ts : List Ty} (f : Nat) {Tf : Ty}, ContentsMatchesList D cs ts Ts → Ts[f]? = some Tf →
     ∃ cf, cs[f]? = some cf ∧ ContentsMatches D cf (OwnSt.fieldAt ts f) Tf
   | _, _, _, _, _, _, .nil, hT => by simp at hT
@@ -744,7 +744,7 @@ theorem ContentsMatchesList.index : ∀ {D : StructEnv} {cs : List Contents} {ts
 aggregate matched.** This is the list half of the partial move: (Use-Move)
 §5.1 marks exactly one slot and writes `⊘` into exactly the corresponding
 position (helper). -/
-theorem ContentsMatchesList.set : ∀ {D : StructEnv} {cs : List Contents} {ts : List OwnSt}
+theorem ContentsMatchesList.set : ∀ {D : Decls} {cs : List Contents} {ts : List OwnSt}
     {Ts : List Ty} (f : Nat) {Tf : Ty} {cf' : Contents} {u' : OwnSt},
     ContentsMatchesList D cs ts Ts → Ts[f]? = some Tf → ContentsMatches D cf' u' Tf →
     ContentsMatchesList D (cs.set f cf') (OwnSt.setField ts f u') Ts
@@ -766,7 +766,7 @@ theorem ContentsMatchesList.set : ∀ {D : StructEnv} {cs : List Contents} {ts :
 /-- A hole-free well-typed struct is a matched aggregate whose every slot is
 `owned` — which is what lets the §5.5 join read an `Owned` arm field by field
 against a partially moved one (helper). -/
-theorem ContentsMatchesList.of_owned : ∀ {D : StructEnv} {cs : List Contents} {Ts : List Ty},
+theorem ContentsMatchesList.of_owned : ∀ {D : Decls} {cs : List Contents} {Ts : List Ty},
     ContentsTys D cs Ts → Contents.holeFreeList cs = true → ContentsMatchesList D cs [] Ts
   | _, _, _, .nil, _ => .nil
   | D, _, _, @ContentsTys.cons _ c cs T Ts hc hcs, hf => by
@@ -779,8 +779,8 @@ theorem ContentsMatchesList.of_owned : ∀ {D : StructEnv} {cs : List Contents} 
 
 /-- Inversion of an `Owned` match at a struct type: the cell holds that
 struct, and every slot of it is `owned` (helper). -/
-theorem ContentsMatches.owned_struct {D : StructEnv} {c : Contents} {s : Nat}
-    {sd : StructDecl} (hd : D[s]? = some sd) (h : ContentsMatches D c .owned (.struct s)) :
+theorem ContentsMatches.owned_struct {D : Decls} {c : Contents} {s : Nat}
+    {sd : StructDecl} (hd : D.structs[s]? = some sd) (h : ContentsMatches D c .owned (.struct s)) :
     ∃ cs, c = .struct s cs ∧ ContentsMatchesList D cs [] sd.fields := by
   cases h with
   | owned hty hf =>
@@ -793,8 +793,8 @@ theorem ContentsMatches.owned_struct {D : StructEnv} {c : Contents} {s : Nat}
             (by simpa only [Contents.holeFree] using hf)⟩
 
 /-- Inversion of a field step (helper). -/
-theorem Ty.fieldAt_inv {D : StructEnv} {T Tf : Ty} {f : Nat} (h : T.fieldAt D f = some Tf) :
-    ∃ s sd, T = .struct s ∧ D[s]? = some sd ∧ sd.fields[f]? = some Tf := by
+theorem Ty.fieldAt_inv {D : Decls} {T Tf : Ty} {f : Nat} (h : T.fieldAt D f = some Tf) :
+    ∃ s sd, T = .struct s ∧ D.structs[s]? = some sd ∧ sd.fields[f]? = some Tf := by
   cases T with
   | int w sg => simp [Ty.fieldAt] at h
   | float w => simp [Ty.fieldAt] at h
@@ -864,7 +864,7 @@ theorem ContentsMatches.mult_eq {D c t T} (h : ContentsMatches D c t T)
   cases h with
   | owned hc hh => exact hc.mult_eq hh
   | moved _ _ => simp [OwnSt.isOwned] at ho
-  | fields hd _ => simp [Contents.mult, Ty.mult, StructEnv.classOf, hd]
+  | fields hd _ => simp [Contents.mult, Ty.mult, Decls.classOf, hd]
 
 /-- The contents of a value written into a cell matches the `owned` state
 (§6.7's (D-Let), §6.8's store) (helper). -/
@@ -892,7 +892,7 @@ has a state for the path — which is where no proper prefix of it is `MovedOut`
 (§5.1's `Owned-Base`, `3.8:53`) — the store's `H(ℓ)@π` (§6.3) reaches a
 sub-position, and the two match at the path's declared type. This is what makes
 every place rule's premises enough for its dynamic rule to fire. -/
-theorem ContentsMatches.readAt {D : StructEnv} : ∀ (π : List Nat) {c : Contents}
+theorem ContentsMatches.readAt {D : Decls} : ∀ (π : List Nat) {c : Contents}
     {t u : OwnSt} {T T' : Ty}, ContentsMatches D c t T → t.get π = some u →
     T.atPath D π = some T' → ∃ sub, c.readAt π = .ok sub ∧ ContentsMatches D sub u T'
   | [], c, t, u, T, T', hm, hg, hty => by
@@ -928,7 +928,7 @@ theorem ContentsMatches.readAt {D : StructEnv} : ∀ (π : List Nat) {c : Conten
 matched.** (Use-Move) §6.3's `H[ℓ@π ↦ ⊘]`, `@drop`'s write-back (§6.11) and
 (D-Assign)'s store (§6.8) are all this lemma, with a different pair written in
 at the path. -/
-theorem ContentsMatches.writeAt {D : StructEnv} : ∀ (π : List Nat) {c sub' : Contents}
+theorem ContentsMatches.writeAt {D : Decls} : ∀ (π : List Nat) {c sub' : Contents}
     {t u u' : OwnSt} {T T' : Ty}, ContentsMatches D c t T → t.get π = some u →
     T.atPath D π = some T' → ContentsMatches D sub' u' T' →
     ∃ c', c.writeAt π sub' = some c' ∧ ContentsMatches D c' (t.setAt π u') T
@@ -975,7 +975,7 @@ theorem ContentsMatches.hole {D T} : ContentsMatches D (.hole : Contents) .moved
 /-! ### §5.6's obligation, read on Σ and read on the store, agree -/
 
 /-- §5.6's field disjunction, read at one slot (helper). -/
-theorem residualLinearFields_false {D : StructEnv} : ∀ {ts : List OwnSt} {Ts : List Ty}
+theorem residualLinearFields_false {D : Decls} : ∀ {ts : List OwnSt} {Ts : List Ty}
     (f : Nat) {Tf : Ty}, residualLinearFields D ts Ts = false → Ts[f]? = some Tf →
     residualLinear D (OwnSt.fieldAt ts f) Tf = false
   | [], Ts, f, Tf, h, hT => by
@@ -1051,13 +1051,13 @@ end
 "Σ faithfully tracks the store's initialization", with the §5.5 join's
 asymmetry built into `ContentsMatches`. A retired (`†`) cell matches no entry
 at all, which is what keeps the unwind off one. -/
-def CellMatches (D : StructEnv) (cell : Cell) (en : Entry) : Prop :=
+def CellMatches (D : Decls) (cell : Cell) (en : Entry) : Prop :=
   ∃ c, cell = .full c ∧ ContentsMatches D c en.st en.ty
 
 /-- `Matches Γ ρ H`: each binding's location holds a cell agreeing with its
 static entry; locations are live (in `H`) and pairwise distinct. This is the
 §7 preservation invariant, over §6.1's environment `ρ` and store `H`. -/
-inductive Matches (D : StructEnv) : Ctx → Env → Store → Prop where
+inductive Matches (D : Decls) : Ctx → Env → Store → Prop where
   | nil {H} : Matches D [] [] H
   | cons {en : Entry} {Γ : Ctx} {ℓ : Nat} {ρ : Env} {H : Store} {c : Cell} :
       H[ℓ]? = some c → CellMatches D c en → ℓ ∉ ρ → Matches D Γ ρ H →
@@ -1252,7 +1252,7 @@ newest-first, **is** that environment. The second clause is the RUE-1277
 redundancy discharged — every live binding of the frame is registered for a
 drop exactly once, which is what makes `run-all-scope-drops` (§6.9) safe at an
 early `return`. -/
-structure FrameMatches (D : StructEnv) (Γ : Ctx) (φ : Frame) (H : Store) : Prop where
+structure FrameMatches (D : Decls) (Γ : Ctx) (φ : Frame) (H : Store) : Prop where
   /-- `Matches` through the frame's environment `ρ`. -/
   store : Matches D Γ φ.env H
   /-- The scope record, newest-first, is the environment (`3.8:62`: every
@@ -1276,7 +1276,7 @@ theorem CellMatches.dropOk {D cell en} (hwf : WfStructs D) (hcm : CellMatches D 
   exact ⟨c, rfl, hm.contentsTy, hm.residualLinear_false hwf h⟩
 
 /-- The drop of a well-typed cell's contents always runs (§6.11) (helper). -/
-theorem dropCell_ok {D : StructEnv} {ℓ : Nat} {c : Contents} {T : Ty} (h : ContentsTy D c T) :
+theorem dropCell_ok {D : Decls} {ℓ : Nat} {c : Contents} {T : Ty} (h : ContentsTy D c T) :
     ∃ evs, dropCell D ℓ c = .ok evs := by
   unfold dropCell
   by_cases hcp : c.mult D = .copy
@@ -1288,7 +1288,7 @@ theorem dropCell_ok {D : StructEnv} {ℓ : Nat} {c : Contents} {T : Ty} (h : Con
 own drop (§6.11) runs — `dropContents_ok` is why it never refuses — and the
 leak monitor lets it through because no live linear sub-value is left in it
 (helper). -/
-theorem dropRetire_ok {D : StructEnv} {H : Store} {ℓ : Nat} {cell : Cell} {c : Contents}
+theorem dropRetire_ok {D : Decls} {H : Store} {ℓ : Nat} {cell : Cell} {c : Contents}
     {T : Ty} (hc : H[ℓ]? = some cell) (hcell : cell = .full c) (hty : ContentsTy D c T)
     (hnl : c.residualLinear D = false) :
     ∃ evs, dropRetire D H ℓ = .ok (H.set ℓ .dead, evs) := by
@@ -1303,7 +1303,7 @@ content retires every one of them: none is already retired (`Matches` says
 every bound cell is live and that no two bindings share one — §7's
 no-use-after-drop at an unwinding edge), and none holds a live linear
 sub-value (the §5.6 obligation, read on the residue). -/
-theorem Matches.unwind {D : StructEnv} (hwf : WfStructs D) :
+theorem Matches.unwind {D : Decls} (hwf : WfStructs D) :
     ∀ (Γ : Ctx) (ρ : Env) (H : Store), Matches D Γ ρ H → NoResidualLinear D Γ →
     ∃ H' evs, unwindLocs D H ρ = .ok (H', evs) ∧ H'.length = H.length ∧
       ∀ ℓ, ℓ ∉ ρ → H'[ℓ]? = H[ℓ]?
@@ -1356,7 +1356,7 @@ contents still matches it.** The `Owned` side never adds a move, so the only
 question the join asks is whether each path `t` has `MovedOut` may be lost —
 which `ownedJoinOk` has answered, and which the invariant's asymmetric
 `movedOut` clause then admits (`3.8:50`, `3.8:60`). -/
-theorem ownedJoinOk_matches {D : StructEnv} (hwf : WfStructs D) :
+theorem ownedJoinOk_matches {D : Decls} (hwf : WfStructs D) :
     ∀ (t : OwnSt) {T : Ty} {c : Contents}, ownedJoinOk D t T = true →
       ContentsMatches D c .owned T → ContentsMatches D c t T
   | .owned, _, _, _, h => h
@@ -1378,7 +1378,7 @@ theorem ownedJoinOk_matches {D : StructEnv} (hwf : WfStructs D) :
         · simp at hok
 
 /-- The same over a declaration's fields (helper). -/
-theorem ownedJoinOkList_matches {D : StructEnv} (hwf : WfStructs D) :
+theorem ownedJoinOkList_matches {D : Decls} (hwf : WfStructs D) :
     ∀ (ts : List OwnSt) {Ts : List Ty} {cs : List Contents}, ownedJoinOkList D ts Ts = true →
       ContentsMatchesList D cs [] Ts → ContentsMatchesList D cs ts Ts
   | [], _, _, _, h => h
@@ -1402,7 +1402,7 @@ join is that state, and where they disagree the join is `MovedOut`, which the
 invariant's asymmetric clause admits because the disagreement premise has
 already ruled out live linear content there (`3.8:50`). The machine then drops
 whatever residue the taken path left, path-specifically (`3.8:60`). -/
-theorem OwnSt.join_matches {D : StructEnv} (hwf : WfStructs D) :
+theorem OwnSt.join_matches {D : Decls} (hwf : WfStructs D) :
     ∀ (a b : OwnSt) {e : OwnSt} {T : Ty} {c : Contents}, OwnSt.join D a b T = some e →
       (ContentsMatches D c a T ∨ ContentsMatches D c b T) → ContentsMatches D c e T
   | .owned, b, e, T, c, hj, hc => by
@@ -1482,7 +1482,7 @@ theorem OwnSt.join_matches {D : StructEnv} (hwf : WfStructs D) :
         · cases hj
 
 /-- The same over a declaration's field slots (helper). -/
-theorem OwnSt.joinList_matches {D : StructEnv} (hwf : WfStructs D) :
+theorem OwnSt.joinList_matches {D : Decls} (hwf : WfStructs D) :
     ∀ (as bs : List OwnSt) (Ts : List Ty) {es : List OwnSt} {cs : List Contents},
       OwnSt.joinList D as bs Ts = some es →
       (ContentsMatchesList D cs as Ts ∨ ContentsMatchesList D cs bs Ts) →
@@ -1536,7 +1536,7 @@ end
 the left entry matches the joined entry (the conservative join, whose residue
 the machine drops path-specifically: `3.8:60` for a struct's fields, `3.8:73`
 the array-element form). -/
-theorem Entry.join_matches_left {D : StructEnv} (hwf : WfStructs D) {a b e' : Entry}
+theorem Entry.join_matches_left {D : Decls} (hwf : WfStructs D) {a b e' : Entry}
     (hj : a.join D b = some e') {cell : Cell} (hc : CellMatches D cell a) :
     CellMatches D cell e' := by
   unfold Entry.join at hj
@@ -1552,7 +1552,7 @@ theorem Entry.join_matches_left {D : StructEnv} (hwf : WfStructs D) {a b e' : En
 arms share a skeleton (the conservative join, whose residue the machine drops
 path-specifically: `3.8:60` for a struct's fields, `3.8:73` the array-element
 form). -/
-theorem Entry.join_matches_right {D : StructEnv} (hwf : WfStructs D) {a b e' : Entry}
+theorem Entry.join_matches_right {D : Decls} (hwf : WfStructs D) {a b e' : Entry}
     (hskel : a.skel = b.skel) (hj : a.join D b = some e') {cell : Cell}
     (hc : CellMatches D cell b) : CellMatches D cell e' := by
   have hty : a.ty = b.ty := congrArg Prod.fst hskel
@@ -1566,7 +1566,7 @@ theorem Entry.join_matches_right {D : StructEnv} (hwf : WfStructs D) {a b e' : E
       exact ⟨c, rfl, hj ▸ OwnSt.join_matches hwf a.st b.st hju (Or.inr (hty ▸ hm))⟩
 
 /-- The invariant survives the §5.5 join from the left arm. -/
-theorem Matches.join_left {D : StructEnv} (hwf : WfStructs D) :
+theorem Matches.join_left {D : Decls} (hwf : WfStructs D) :
     ∀ {Γ₁ Γ₂ Γ' : Ctx} {ρ H},
     Ctx.join D Γ₁ Γ₂ = some Γ' → Matches D Γ₁ ρ H → Matches D Γ' ρ H := by
   intro Γ₁ Γ₂ Γ' ρ H hj hm
@@ -1587,7 +1587,7 @@ theorem Matches.join_left {D : StructEnv} (hwf : WfStructs D) :
           · cases hj
 
 /-- The invariant survives the §5.5 join from the right arm. -/
-theorem Matches.join_right {D : StructEnv} (hwf : WfStructs D) :
+theorem Matches.join_right {D : Decls} (hwf : WfStructs D) :
     ∀ {Γ₁ Γ₂ Γ' : Ctx} {ρ H},
     Ctx.skel Γ₁ = Ctx.skel Γ₂ →
     Ctx.join D Γ₁ Γ₂ = some Γ' → Matches D Γ₂ ρ H → Matches D Γ' ρ H := by
@@ -1638,7 +1638,7 @@ cells hold the argument values, and (Fn) §5.8's entry context `Γ0;Σ0`
 (`fnCtx`) describes exactly them. The two `reverse`s are the same one: a
 signature lists parameters left to right while `Ctx` and `Env` list the
 innermost binder first. -/
-theorem matches_mintParams {D : StructEnv} : ∀ (ps : List Param) (vs : List Val) (H : Store),
+theorem matches_mintParams {D : Decls} : ∀ (ps : List Param) (vs : List Val) (H : Store),
     HasTys D vs (ps.map Param.ty) →
     Matches D ((ps.map fun p => ({ ty := p.ty, mu := p.mu, st := .owned } : Entry)).reverse)
       (mintParams H vs).2.reverse (mintParams H vs).1
@@ -1665,7 +1665,7 @@ unwinding `return` carries a value of the enclosing function's declared return
 type `R` and leaves the frame's neighbours alone; a trap and exhausted fuel
 promise nothing; a refusal is impossible, which is the whole theorem
 (helper). -/
-def AbortOk (D : StructEnv) (R : Ty) (φ : Frame) (H : Store) : EvalRes → Prop
+def AbortOk (D : Decls) (R : Ty) (φ : Frame) (H : Store) : EvalRes → Prop
   | .ok _ _ _ => False
   | .returned H' v _ => HasTy D v R ∧ Untouched φ.env H H'
   | .panic _ _ => True
@@ -1678,7 +1678,7 @@ expression's type with the outgoing context's invariant restored
 Stating it as a predicate on the result, rather than as a disjunction of
 existentials, is what lets the operand combinators (`andThen`) be discharged
 once and reused at every form (helper). -/
-def EvalOk (D : StructEnv) (T R : Ty) (Γ' : Ctx) (φ : Frame) (H : Store) : EvalRes → Prop
+def EvalOk (D : Decls) (T R : Ty) (Γ' : Ctx) (φ : Frame) (H : Store) : EvalRes → Prop
   | .ok H' v _ => HasTy D v T ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
   | .returned H' v _ => HasTy D v R ∧ Untouched φ.env H H'
   | .panic _ _ => True
@@ -1687,7 +1687,7 @@ def EvalOk (D : StructEnv) (T R : Ty) (Γ' : Ctx) (φ : Frame) (H : Store) : Eva
 
 /-- The promise for an argument list (§5.8's (Call), left to right with Σ
 threaded) (helper). -/
-def ArgsOk (D : StructEnv) (R : Ty) (Ts : List Ty) (Γ' : Ctx) (φ : Frame) (H : Store) :
+def ArgsOk (D : Decls) (R : Ty) (Ts : List Ty) (Γ' : Ctx) (φ : Frame) (H : Store) :
     ArgsRes → Prop
   | .ok H' vs _ => HasTys D vs Ts ∧ FrameMatches D Γ' φ H' ∧ Untouched φ.env H H'
   | .abort r => AbortOk D R φ H r
@@ -1745,7 +1745,7 @@ theorem EvalOk.toAbort {D T R Γ' φ H r} (h : EvalOk D T R Γ' φ H r)
 outcome, sequenced into a context that promises the form's outcome from the
 operand's value, promises the form's outcome. Every operand of every form is
 discharged by this lemma (helper). -/
-theorem EvalOk.bind {D : StructEnv} {T T₀ R : Ty} {Γ' Γ₀ : Ctx} {φ : Frame} {H : Store}
+theorem EvalOk.bind {D : Decls} {T T₀ R : Ty} {Γ' Γ₀ : Ctx} {φ : Frame} {H : Store}
     {r : EvalRes} {k : Store → Val → EvalRes}
     (hr : EvalOk D T₀ R Γ₀ φ H r)
     (hk : ∀ H₁ v tr, r = .ok H₁ v tr → HasTy D v T₀ → FrameMatches D Γ₀ φ H₁ →
@@ -1783,11 +1783,11 @@ hypothesis is `soundness` at the fuel the call has already spent one unit of,
 which is why this is a lemma rather than a case of the induction. -/
 theorem args_sound (M : FloatModel) {P : Program} {fuel : Nat}
     (ih : ∀ {R : Ty} {Γ Γ' : Ctx} {e : Expr} {T : Ty}, Typed P R Γ e T Γ' →
-      ∀ {φ : Frame} {H : Store}, FrameMatches P.structs Γ φ H →
-        EvalOk P.structs T R Γ' φ H (eval M.toFloatOps fuel P H φ e)) :
+      ∀ {φ : Frame} {H : Store}, FrameMatches P.decls Γ φ H →
+        EvalOk P.decls T R Γ' φ H (eval M.toFloatOps fuel P H φ e)) :
     ∀ (es : List Expr) {R : Ty} {Γ Γ' : Ctx} {Ts : List Ty} {φ : Frame} {H : Store},
-      TypedArgs P R Γ es Ts Γ' → FrameMatches P.structs Γ φ H →
-        ArgsOk P.structs R Ts Γ' φ H (evalArgs (fun H' e => eval M.toFloatOps fuel P H' φ e) H es) := by
+      TypedArgs P R Γ es Ts Γ' → FrameMatches P.decls Γ φ H →
+        ArgsOk P.decls R Ts Γ' φ H (evalArgs (fun H' e => eval M.toFloatOps fuel P H' φ e) H es) := by
   intro es
   induction es with
   | nil =>
@@ -1842,8 +1842,8 @@ and every subexpression — a call's arguments and the callee's body alike —
 runs at one unit less. -/
 theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
     ∀ (fuel : Nat) {R : Ty} {Γ Γ' : Ctx} {e : Expr} {T : Ty}, Typed P R Γ e T Γ' →
-      ∀ {φ : Frame} {H : Store}, FrameMatches P.structs Γ φ H →
-        EvalOk P.structs T R Γ' φ H (eval M.toFloatOps fuel P H φ e) := by
+      ∀ {φ : Frame} {H : Store}, FrameMatches P.decls Γ φ H →
+        EvalOk P.decls T R Γ' φ H (eval M.toFloatOps fuel P H φ e) := by
   intro fuel
   induction fuel with
   | zero =>
@@ -1870,7 +1870,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           obtain ⟨cc, rfl, hmm⟩ := hcm
           obtain ⟨sub, hread, hsub⟩ := ContentsMatches.readAt pl.path hmm hg hty
           obtain ⟨v, hv, htyv⟩ := hsub.toVal hfo
-          have hvm : v.mult P.structs = .copy := by rw [htyv.mult_eq]; exact hcopy
+          have hvm : v.mult P.decls = .copy := by rw [htyv.mult_eq]; exact hcopy
           have hev : eval M.toFloatOps (fuel + 1) P H φ (.use pl) = .ok H v [] := by
             simp [eval, hρ, hc, hread, hv, hvm]
           rw [hev]
@@ -1882,7 +1882,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           obtain ⟨cc, rfl, hmm⟩ := hcm
           obtain ⟨sub, hread, hsub⟩ := ContentsMatches.readAt pl.path hmm hg hty
           obtain ⟨v, hv, htyv⟩ := hsub.toVal hfo
-          have hvm : v.mult P.structs ≠ .copy := by rw [htyv.mult_eq]; exact hncopy
+          have hvm : v.mult P.decls ≠ .copy := by rw [htyv.mult_eq]; exact hncopy
           obtain ⟨cc', hw, hmm'⟩ :=
             ContentsMatches.writeAt pl.path hmm hg hty (ContentsMatches.hole (T := T))
           have hev : eval M.toFloatOps (fuel + 1) P H φ (.use pl) = .ok (H.set ℓ (.full cc')) v [] := by
@@ -1898,7 +1898,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           refine EvalOk.bind (ih h₂ hfm₁) ?_
           intro H₂ v₂ tr₂ _ hty₂ hfm₂
           obtain ⟨n₂, rfl, _⟩ := hty₂.int_inv
-          rcases evalBinOp_res (D := P.structs) M.toFloatOps op w sg n₁ n₂ hop with
+          rcases evalBinOp_res (D := P.decls) M.toFloatOps op w sg n₁ n₂ hop with
             ⟨v, hv, hty⟩ | ⟨k, hk⟩
           · rw [hv]; exact ⟨hty, hfm₂, Untouched.refl⟩
           · rw [hk]; trivial
@@ -1914,7 +1914,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           refine EvalOk.bind (ih h₂ hfm₁) ?_
           intro H₂ v₂ tr₂ _ hty₂ hfm₂
           obtain ⟨f₂, rfl, hw₂⟩ := hty₂.float_inv
-          obtain ⟨v, hv, hty⟩ := evalBinOpFloat_res (D := P.structs) M op w f₁ f₂ hw₁ hw₂ hop
+          obtain ⟨v, hv, hty⟩ := evalBinOpFloat_res (D := P.decls) M op w f₁ f₂ hw₁ hw₂ hop
           rw [hv]
           exact ⟨hty, hfm₂, Untouched.refl⟩
       | @neg Γ Γ' e w h =>
@@ -1922,7 +1922,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           refine EvalOk.bind (ih h hfm) ?_
           intro H' v tr _ hty hfm'
           obtain ⟨n, rfl, _⟩ := hty.int_inv
-          rcases evalUnOp_int_res (D := P.structs) .neg w .signed n (by simp) with
+          rcases evalUnOp_int_res (D := P.decls) .neg w .signed n (by simp) with
             ⟨v', hv, hty'⟩ | hk
           · rw [hv]; exact ⟨hty', hfm', Untouched.refl⟩
           · rw [hk]; trivial
@@ -1933,7 +1933,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           refine EvalOk.bind (ih h hfm) ?_
           intro H' v tr _ hty hfm'
           obtain ⟨f, rfl, hwf'⟩ := hty.float_inv
-          obtain ⟨v', hv, hty'⟩ := evalUnOp_float_res (D := P.structs) w f hwf'
+          obtain ⟨v', hv, hty'⟩ := evalUnOp_float_res (D := P.decls) w f hwf'
           rw [hv]
           exact ⟨hty', hfm', Untouched.refl⟩
       | @notOp Γ Γ' e h =>
@@ -1941,7 +1941,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           refine EvalOk.bind (ih h hfm) ?_
           intro H' v tr _ hty hfm'
           obtain ⟨b, rfl⟩ := hty.bool_inv
-          obtain ⟨v', hv, hty'⟩ := evalUnOp_bool_res (D := P.structs) b
+          obtain ⟨v', hv, hty'⟩ := evalUnOp_bool_res (D := P.decls) b
           rw [hv]
           exact ⟨hty', hfm', Untouched.refl⟩
       | @bitnot Γ Γ' e w sg h =>
@@ -1949,7 +1949,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           refine EvalOk.bind (ih h hfm) ?_
           intro H' v tr _ hty hfm'
           obtain ⟨n, rfl, _⟩ := hty.int_inv
-          rcases evalUnOp_int_res (D := P.structs) .bitnot w sg n (by simp) with
+          rcases evalUnOp_int_res (D := P.decls) .bitnot w sg n (by simp) with
             ⟨v', hv, hty'⟩ | hk
           · rw [hv]; exact ⟨hty', hfm', Untouched.refl⟩
           · rw [hk]; trivial
@@ -1958,7 +1958,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           refine EvalOk.bind (ih h hfm) ?_
           intro H' v tr _ hty hfm'
           obtain ⟨n, rfl, _⟩ := hty.int_inv
-          rcases evalIntCast_res (D := P.structs) w sg w' s' n with ⟨v', hv, hty'⟩ | hk
+          rcases evalIntCast_res (D := P.decls) w sg w' s' n with ⟨v', hv, hty'⟩ | hk
           · rw [hv]; exact ⟨hty', hfm', Untouched.refl⟩
           · rw [hk]; trivial
       | @floatLit Γ w l _ =>
@@ -1971,7 +1971,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           refine EvalOk.bind (ih h hfm) ?_
           intro H' v tr _ hty hfm'
           obtain ⟨n, rfl, _⟩ := hty.int_inv
-          obtain ⟨v', hv, hty'⟩ := evalFintrin_int_res (D := P.structs) M w w' s' n
+          obtain ⟨v', hv, hty'⟩ := evalFintrin_int_res (D := P.decls) M w w' s' n
           rw [hv]
           exact ⟨hty', hfm', Untouched.refl⟩
       | @floatIntrin Γ Γ' k w e h hk =>
@@ -1979,7 +1979,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           refine EvalOk.bind (ih h hfm) ?_
           intro H' v tr _ hty hfm'
           obtain ⟨f, rfl, hwf'⟩ := hty.float_inv
-          rcases evalFintrin_float_res (D := P.structs) M k w f hwf' hk with
+          rcases evalFintrin_float_res (D := P.decls) M k w f hwf' hk with
             ⟨v', hv, hty'⟩ | hk'
           · rw [hv]; exact ⟨hty', hfm', Untouched.refl⟩
           · rw [hk']; trivial
@@ -2017,7 +2017,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           obtain ⟨sub, hread, hsub⟩ := ContentsMatches.readAt pl.path hmm hg hty
           have hnh : sub.isHole = false :=
             Contents.isHole_eq_false (hsub.ne_hole (OwnSt.isOwned_of_fullyOwned hfo))
-          have hvm : sub.mult P.structs = .copy := by
+          have hvm : sub.mult P.decls = .copy := by
             rw [hsub.mult_eq (OwnSt.isOwned_of_fullyOwned hfo)]; exact hcopy
           have hev : eval M.toFloatOps (fuel + 1) P H φ (.drop pl) = .ok H .unit [] := by
             simp [eval, hρ, hc, hread, hnh, hvm, dropCell]
@@ -2030,8 +2030,8 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           obtain ⟨cc, rfl, hmm⟩ := hcm
           obtain ⟨sub, hread, hsub⟩ := ContentsMatches.readAt pl.path hmm hg hty
           have hnh : sub.isHole = false := Contents.isHole_eq_false (hsub.ne_hole ho)
-          have hvm : sub.mult P.structs ≠ .copy := by rw [hsub.mult_eq ho]; exact hncopy
-          obtain ⟨evs, hdc⟩ := dropCell_ok (D := P.structs) (ℓ := ℓ) hsub.contentsTy
+          have hvm : sub.mult P.decls ≠ .copy := by rw [hsub.mult_eq ho]; exact hncopy
+          obtain ⟨evs, hdc⟩ := dropCell_ok (D := P.decls) (ℓ := ℓ) hsub.contentsTy
           obtain ⟨cc', hw, hmm'⟩ :=
             ContentsMatches.writeAt pl.path hmm hg hty (ContentsMatches.hole (T := T))
           have hev : eval M.toFloatOps (fuel + 1) P H φ (.drop pl)
@@ -2045,7 +2045,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           refine EvalOk.bind (ih h₁ hfm) ?_
           intro H₁ v₁ tr₁ _ hty₁ hfm₁
           have hfresh : H₁.length ∉ φ.env := hfm₁.store.fresh_not_mem
-          have hfm' : FrameMatches P.structs ({ ty := T₁, mu := m, st := .owned } :: Γ₁)
+          have hfm' : FrameMatches P.decls ({ ty := T₁, mu := m, st := .owned } :: Γ₁)
               { env := H₁.length :: φ.env, scope := φ.scope ++ [H₁.length] }
               (H₁ ++ [.full (Contents.ofVal v₁)]) := by
             constructor
@@ -2064,7 +2064,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               rw [hrb] at kb
               obtain ⟨hty₂, hfm₂, hu₂⟩ := kb
               obtain ⟨c, hc, hcm, hnin, hrest⟩ := hfm₂.store.cons_inv
-              have hdrop : residualLinear P.structs en'.st en'.ty = false := hres
+              have hdrop : residualLinear P.decls en'.st en'.ty = false := hres
               obtain ⟨c', hcell, hty', hres'⟩ := hcm.dropOk hwf.structs hdrop
               obtain ⟨evs, hdr⟩ := dropRetire_ok hc hcell hty' hres'
               simp only [EvalRes.andThen, hdr, EvalRes.withTrace]
@@ -2092,11 +2092,11 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           -- §5.2's premise is the type-keyed disjunction; either disjunct gives
           -- the residue the overwrite-drop is about to walk no linear content,
           -- which is why `linearOverwrite` is unreachable from a typed program.
-          have hnl : old.residualLinear P.structs = false := by
+          have hnl : old.residualLinear P.decls = false := by
             rcases hover with rfl | hnlin
             · exact hold.residualLinear_false hwf.structs rfl
             · exact ContentsTy.residualLinear_false hwf.structs hold.contentsTy hnlin
-          obtain ⟨evs, hdc⟩ := dropCell_ok (D := P.structs) (ℓ := ℓ) hold.contentsTy
+          obtain ⟨evs, hdc⟩ := dropCell_ok (D := P.decls) (ℓ := ℓ) hold.contentsTy
           obtain ⟨cc', hw, hmm'⟩ := ContentsMatches.writeAt pl.path hmm hg₁
             (htyeq ▸ hty₀) (ContentsMatches.ofVal hty)
           have hmem : ℓ ∈ φ.env := List.mem_of_getElem? hρ
@@ -2108,11 +2108,11 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           simp only [eval]
           refine EvalOk.bind (ih h₁ hfm) ?_
           intro H₁ v₁ tr₁ _ hty₁ hfm₁
-          have hvnl : v₁.mult P.structs ≠ .linear := by rw [hty₁.mult_eq]; exact hnl
-          cases hml : v₁.mult P.structs with
+          have hvnl : v₁.mult P.decls ≠ .linear := by rw [hty₁.mult_eq]; exact hnl
+          cases hml : v₁.mult P.decls with
           | linear => exact absurd hml hvnl
           | affine =>
-              obtain ⟨evs, hevs⟩ := dropContents_ok (D := P.structs) hty₁.contentsTy
+              obtain ⟨evs, hevs⟩ := dropContents_ok (D := P.decls) hty₁.contentsTy
               simp only [hevs]
               exact (ih h₂ hfm₁).withTrace _
           | copy => exact ih h₂ hfm₁
@@ -2153,7 +2153,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               simp only [hget]
               rw [if_pos hlen]
               obtain ⟨Γf, hbody, hnlf⟩ := hwf.fns fd (List.mem_of_getElem? hget)
-              have hfmg : FrameMatches P.structs (fnCtx fd)
+              have hfmg : FrameMatches P.decls (fnCtx fd)
                   { env := (mintParams H₁ vs).2.reverse, scope := (mintParams H₁ vs).2 }
                   (mintParams H₁ vs).1 :=
                 ⟨matches_mintParams fd.params vs H₁ hvs, rfl⟩
@@ -2168,7 +2168,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
               have hdisj : ∀ ℓ ∈ φ.env, ℓ ∉ (mintParams H₁ vs).2.reverse := by
                 intro ℓ hm hg
                 exact absurd (hfreshg ℓ hg) (by have := hfm₁.store.mem_lt ℓ hm; omega)
-              have hmint : Matches P.structs Γ' φ.env (mintParams H₁ vs).1 := by
+              have hmint : Matches P.decls Γ' φ.env (mintParams H₁ vs).1 := by
                 rw [mintParams_store]; exact hfm₁.store.append _
               have kb := ih hbody hfmg
               cases hrb : eval M.toFloatOps fuel P (mintParams H₁ vs).1
@@ -2350,11 +2350,11 @@ theorem eval_succ (M : FloatOps) {P : Program} : ∀ (fuel : Nat) (H : Store) (�
           simp only [eval] at h ⊢
           refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
           intro H₁ v tr _ hkne
-          cases hml : v.mult P.structs with
+          cases hml : v.mult P.decls with
           | linear => rfl
           | affine =>
               simp only [hml] at hkne ⊢
-              cases hdv : dropContents P.structs (Contents.ofVal v) with
+              cases hdv : dropContents P.decls (Contents.ofVal v) with
               | error w => rfl
               | ok evs =>
                   simp only [hdv] at hkne ⊢
@@ -2405,7 +2405,7 @@ theorem eval_succ (M : FloatOps) {P : Program} : ∀ (fuel : Nat) (H : Store) (�
                     have h' : (eval M n P (mintParams H₁ vs).1
                         { env := (mintParams H₁ vs).2.reverse, scope := (mintParams H₁ vs).2 }
                         fd.body).absorb (fun H₃ v =>
-                          match runAllScopeDrops P.structs H₃
+                          match runAllScopeDrops P.decls H₃
                               { env := (mintParams H₁ vs).2.reverse,
                                 scope := (mintParams H₁ vs).2 } with
                           | .error w => .stuck w
@@ -2464,7 +2464,7 @@ theorem entry_typed {P : Program} {fd : FnDef} (h0 : P.fns[0]? = some fd)
 
 /-- The machine's initial state satisfies the frame invariant: no bindings, no
 store, an empty scope record (helper). -/
-theorem frameMatches_empty {D : StructEnv} : FrameMatches D [] { env := [], scope := [] } [] :=
+theorem frameMatches_empty {D : Decls} : FrameMatches D [] { env := [], scope := [] } [] :=
   ⟨.nil, rfl⟩
 
 /-- Prefixing a trace cannot make a result an unwinding `return` that was not
@@ -2522,8 +2522,8 @@ produces a value of the entry point's declared return type. It never reaches a
 theorem run_safe (M : FloatModel) {P : Program} {fd : FnDef} (hwf : WfProgram P)
     (h0 : P.fns[0]? = some fd) (hp : fd.params = []) (fuel : Nat) :
     run M.toFloatOps P fuel = .outOfFuel ∨ (∃ k tr, run M.toFloatOps P fuel = .panic k tr) ∨
-      (∃ H v tr, run M.toFloatOps P fuel = .ok H v tr ∧ HasTy P.structs v fd.ret) := by
-  have hok : EvalOk P.structs fd.ret fd.ret [] { env := [], scope := [] } [] (run M.toFloatOps P fuel) :=
+      (∃ H v tr, run M.toFloatOps P fuel = .ok H v tr ∧ HasTy P.decls v fd.ret) := by
+  have hok : EvalOk P.decls fd.ret fd.ret [] { env := [], scope := [] } [] (run M.toFloatOps P fuel) :=
     soundness M hwf fuel (entry_typed h0 hp fd.ret) frameMatches_empty
   cases hr : run M.toFloatOps P fuel with
   | ok H v tr =>
@@ -2542,7 +2542,7 @@ exactly what `run_safe` proves. -/
 theorem ProgramTyped.run_safe (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
     ∃ fd, P.fns[0]? = some fd ∧
       (run M.toFloatOps P fuel = .outOfFuel ∨ (∃ k tr, run M.toFloatOps P fuel = .panic k tr) ∨
-        (∃ H v tr, run M.toFloatOps P fuel = .ok H v tr ∧ HasTy P.structs v fd.ret)) := by
+        (∃ H v tr, run M.toFloatOps P fuel = .ok H v tr ∧ HasTy P.decls v fd.ret)) := by
   obtain ⟨fd, h0, hp⟩ := h.entry
   refine ⟨fd, h0, ?_⟩
   rcases RueCore.run_safe M h.wf h0 hp fuel with h₁ | ⟨k, trk, h₂⟩ | ⟨H, v, tr, h₃, hty⟩

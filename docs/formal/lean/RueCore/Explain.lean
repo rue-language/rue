@@ -545,7 +545,7 @@ def floatBinopRule (op : BinOp) : String :=
 
 /-- (helper) The first entry on which the §5.5 join fails, named as the
 source names it, so a join rejection can point at a binding. -/
-def joinConflictEntry (D : StructEnv) : Ctx → Ctx → Option String
+def joinConflictEntry (D : Decls) : Ctx → Ctx → Option String
   | a :: as, b :: bs =>
       if (a.join D b).isNone then
         some (Print.binderName as.length ++ ": " ++ Print.tyName a.ty ++ " is " ++
@@ -613,14 +613,14 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
       match Γ[pl.root]? with
       | none => rejected "(Use-Copy)/(Use-Move) §5.1" Γ (.use pl) Premise.unboundIndex []
       | some en =>
-        match en.st.get pl.path, en.ty.atPath P.structs pl.path with
+        match en.st.get pl.path, en.ty.atPath P.decls pl.path with
         | some u, some T =>
-            if noLinearPrefix P.structs en.ty pl.path then
-              if T.mult P.structs = .copy then
+            if noLinearPrefix P.decls en.ty pl.path then
+              if T.mult P.decls = .copy then
                 (if u.fullyOwned then accepted "(Use-Copy) §5.1" Γ (.use pl) T Γ []
                  else rejected "(Use-Copy) §5.1" Γ (.use pl) (Premise.usePartiallyMoved T) [])
               else
-                (if u.fullyOwned ∧ noDtorPrefix P.structs en.ty pl.path then
+                (if u.fullyOwned ∧ noDtorPrefix P.decls en.ty pl.path then
                    accepted "(Use-Move) §5.1" Γ (.use pl) T
                      (Γ.set pl.root (en.setSt (en.st.setAt pl.path .movedOut))) []
                  else if u.fullyOwned then
@@ -729,7 +729,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
            else rejected "(Dbg) §5.8" Γ (.dbg e) (Premise.dbgNotObservable T) [d]
        | none => rejected "(Dbg) §5.8" Γ (.dbg e) Premise.subDerivation [d])
   | .mkStruct s args =>
-      match P.structs[s]? with
+      match P.decls.structs[s]? with
       | none => rejected "(Struct-Intro) §5.8" Γ (.mkStruct s args) Premise.unknownStruct []
       | some sd =>
         (match explainArgs P R Γ args sd.fields with
@@ -742,20 +742,20 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
       match Γ[pl.root]? with
       | none => rejected "(@Drop-Copy)/(@Drop) §5.3" Γ (.drop pl) Premise.unboundIndex []
       | some en =>
-        match en.st.get pl.path, en.ty.atPath P.structs pl.path with
+        match en.st.get pl.path, en.ty.atPath P.decls pl.path with
         | some u, some T =>
-            if noLinearPrefix P.structs en.ty pl.path then
-              if T.mult P.structs = .copy then
+            if noLinearPrefix P.decls en.ty pl.path then
+              if T.mult P.decls = .copy then
                 (if u.fullyOwned then accepted "(@Drop-Copy) §5.3" Γ (.drop pl) .unit Γ []
                  else rejected "(@Drop-Copy) §5.3" Γ (.drop pl) (Premise.usePartiallyMoved T) [])
               else
-                (if u.isOwned ∧ noDtorPrefix P.structs en.ty pl.path ∧
-                    (u.fullyOwned = true ∨ residualLinearBelow P.structs u T = false) then
+                (if u.isOwned ∧ noDtorPrefix P.decls en.ty pl.path ∧
+                    (u.fullyOwned = true ∨ residualLinearBelow P.decls u T = false) then
                    accepted "(@Drop) §5.3" Γ (.drop pl) .unit
                      (Γ.set pl.root (en.setSt (en.st.setAt pl.path .movedOut))) []
                  else if !u.isOwned then
                    rejected "(@Drop) §5.3" Γ (.drop pl) Premise.dropMovedOut []
-                 else if !noDtorPrefix P.structs en.ty pl.path then
+                 else if !noDtorPrefix P.decls en.ty pl.path then
                    rejected "(@Drop) §5.3" Γ (.drop pl) Premise.moveUnderDtor []
                  else rejected "(@Drop) §5.3" Γ (.drop pl) Premise.dropStrandsLinear [])
             else
@@ -771,7 +771,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
         let d₂ := explain P R ({ ty := T₁, mu := m, st := .owned } :: Γ₁) e₂
         (match d₂.result with
          | some (T₂, en' :: Γ₂) =>
-             if residualLinear P.structs en'.st en'.ty then
+             if residualLinear P.decls en'.st en'.ty then
                rejected "(Let) §5.3 + the §5.6 scope-exit leak check" Γ (.letIn m e₁ e₂)
                  (Premise.letLeak T₁) [d₁, d₂]
              else
@@ -787,7 +787,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
       | none => rejected "(Assign) §5.2, 3.8:77" Γ (.assign pl e) Premise.unboundIndex []
       | some en₀ =>
         if en₀.mu = true then
-          match en₀.st.get pl.path, en₀.ty.atPath P.structs pl.path with
+          match en₀.st.get pl.path, en₀.ty.atPath P.decls pl.path with
           | some _, some T =>
             (let d := explain P R Γ e
              match d.result with
@@ -797,7 +797,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                   | some en₁ =>
                     (match en₁.st.get pl.path with
                      | some u₁ =>
-                         if overwriteOk P.structs u₁ T then
+                         if overwriteOk P.decls u₁ T then
                            accepted "(Assign) §5.2, 3.8:77" Γ (.assign pl e) .unit
                              (Γ₁.set pl.root (en₁.setSt (en₁.st.setAt pl.path .owned))) [d]
                          else
@@ -823,7 +823,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
       let d₁ := explain P R Γ e₁
       match d₁.result with
       | some (T₁, Γ₁) =>
-          if T₁.mult P.structs = .linear then
+          if T₁.mult P.decls = .linear then
             rejected "(Seq) §5.3, 3.8:64" Γ (.seq e₁ e₂) (Premise.discardsLinear T₁) [d₁]
           else
             let d₂ := explain P R Γ₁ e₂
@@ -840,11 +840,11 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
         (match d₁.result, d₂.result with
          | some (T₁, Γ₁), some (T₂, Γ₂) =>
              if T₁ = T₂ then
-               match Ctx.join P.structs Γ₁ Γ₂ with
+               match Ctx.join P.decls Γ₁ Γ₂ with
                | some Γ' => accepted "(If) §5.5 join" Γ (.ite c e₁ e₂) T₁ Γ' [dc, d₁, d₂]
                | none =>
                    rejected "(If) §5.5 join" Γ (.ite c e₁ e₂)
-                     (Premise.joinConflict (joinConflictEntry P.structs Γ₁ Γ₂)) [dc, d₁, d₂]
+                     (Premise.joinConflict (joinConflictEntry P.decls Γ₁ Γ₂)) [dc, d₁, d₂]
              else
                rejected "(If) §5.5 join" Γ (.ite c e₁ e₂)
                  (Premise.armTypeMismatch T₁ T₂) [dc, d₁, d₂]
@@ -866,7 +866,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
       match d.result with
       | none => rejected "(Return-Value) §5.7" Γ (.ret e) Premise.subDerivation [d]
       | some (T, Γ₁) =>
-          if T = R ∧ NoResidualLinear P.structs Γ₁ then
+          if T = R ∧ NoResidualLinear P.decls Γ₁ then
             accepted "(Return-Value) §5.7" Γ (.ret e) R Γ₁ [d]
           else if T = R then
             rejected "(Return-Value) §5.7" Γ (.ret e) Premise.returnLeak [d]
@@ -974,7 +974,7 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
         first | rfl | (simp_all [accepted, Deriv.result] <;> grind)
   | .mkStruct s args, Γ => by
       simp only [explain, check]
-      cases hs : P.structs[s]? with
+      cases hs : P.decls.structs[s]? with
       | none => rfl
       | some sd =>
         dsimp only
@@ -1024,7 +1024,7 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
                 obtain ⟨T₂, Γ₂⟩ := q₂
                 simp only []
                 split
-                · cases hj : Ctx.join P.structs Γ₁ Γ₂ <;> rfl
+                · cases hj : Ctx.join P.decls Γ₁ Γ₂ <;> rfl
                 · rfl
   | .call f args, Γ => by
       simp only [explain, check]
@@ -1363,7 +1363,7 @@ def traceEval (M : FloatOps) (P : Program) :
             | none =>
                 refused [] d Θ R (.use pl) "(D-Use-Copy)/(D-Use-Move) §6.3" H .useAfterMove
             | some v =>
-                if v.mult P.structs = .copy then
+                if v.mult P.decls = .copy then
                   traced [] d Θ R (.use pl) "(D-Use-Copy) §6.3" H H [] (.value v) (.ok H v [])
                 else
                   match c.writeAt pl.path .hole with
@@ -1384,10 +1384,10 @@ def traceEval (M : FloatOps) (P : Program) :
           | .error w => refused [] d Θ R (.drop pl) "@drop §6.11" H w
           | .ok sub =>
             if sub.isHole then refused [] d Θ R (.drop pl) "@drop §6.11" H .useAfterMove else
-            (match dropCell P.structs ℓ sub with
+            (match dropCell P.decls ℓ sub with
              | .error w => refused [] d Θ R (.drop pl) "@drop §6.11" H w
              | .ok evs =>
-                 if sub.mult P.structs = .copy then
+                 if sub.mult P.decls = .copy then
                    traced [] d Θ R (.drop pl) "@drop §6.11 (Copy: no glue)" H H [] (.value .unit)
                      (.ok H .unit [])
                  else
@@ -1469,7 +1469,7 @@ def traceEval (M : FloatOps) (P : Program) :
       (match ta.res with
        | .abort r => didNotRun ta.steps d Θ R (.mkStruct s args) "(D-Struct) §6.5" H r
        | .ok H₁ vs tr =>
-         match P.structs[s]? with
+         match P.decls.structs[s]? with
          | none => refused ta.steps d Θ R (.mkStruct s args) "(D-Struct) §6.5" H .unbound
          | some sd =>
              if sd.fields.length = vs.length then
@@ -1489,7 +1489,7 @@ def traceEval (M : FloatOps) (P : Program) :
             { env := H₁.length :: φ.env, scope := φ.scope ++ [H₁.length] } e₂
           (match t₂.res with
            | .ok H₂ v₂ tr₂ =>
-             (match dropRetire P.structs H₂ H₁.length with
+             (match dropRetire P.decls H₂ H₁.length with
               | .error w =>
                   refused (t₁.steps ++ [bind] ++ t₂.steps) d Θ R (.letIn m e₁ e₂)
                     "(D-EndScope) §6.7 (retire the binding)" H₂ w
@@ -1517,10 +1517,10 @@ def traceEval (M : FloatOps) (P : Program) :
                match c.readAt pl.path with
                | .error w => refused t.steps d Θ R (.assign pl e) "(D-Assign) §6.8" H w
                | .ok old =>
-                   if old.residualLinear P.structs then
+                   if old.residualLinear P.decls then
                      refused t.steps d Θ R (.assign pl e) "(D-Assign) §6.8" H .linearOverwrite
                    else
-                     match dropCell P.structs ℓ old with
+                     match dropCell P.decls ℓ old with
                      | .error w => refused t.steps d Θ R (.assign pl e) "(D-Assign) §6.8" H w
                      | .ok evs =>
                          match c.writeAt pl.path (Contents.ofVal v) with
@@ -1538,10 +1538,10 @@ def traceEval (M : FloatOps) (P : Program) :
       let t₁ := traceEval M P fuel (d + 1) Θ R H φ e₁
       match t₁.res with
       | .ok H₁ v₁ tr₁ =>
-          (match v₁.mult P.structs with
+          (match v₁.mult P.decls with
            | .linear => refused t₁.steps d Θ R (.seq e₁ e₂) "(D-Seq) §6.7" H .linearDiscard
            | .affine =>
-               match dropContents P.structs (Contents.ofVal v₁) with
+               match dropContents P.decls (Contents.ofVal v₁) with
                | .error w => refused t₁.steps d Θ R (.seq e₁ e₂) "(D-Seq) §6.7" H w
                | .ok evs =>
                let discard := adminStep (d + 1) Θ R (.seq e₁ e₂) "(D-Seq) §6.7 (drop the temporary)"
@@ -1577,7 +1577,7 @@ def traceEval (M : FloatOps) (P : Program) :
       let t := traceEval M P fuel (d + 1) Θ R H φ e
       match t.res with
       | .ok H₁ v tr =>
-          (match runAllScopeDrops P.structs H₁ φ with
+          (match runAllScopeDrops P.decls H₁ φ with
            | .error w =>
                refused t.steps d Θ R (.ret e) "(D-Return) §6.9 (unwind the frame)" H₁ w
            | .ok (H₂, evs) =>
@@ -1602,7 +1602,7 @@ def traceEval (M : FloatOps) (P : Program) :
             let tb := traceEval M P fuel (d + 2) (Print.bodyBinders fd) fd.ret minted.1 φg fd.body
             (match tb.res with
              | .ok H₃ v tr₃ =>
-               (match runAllScopeDrops P.structs H₃ φg with
+               (match runAllScopeDrops P.decls H₃ φg with
                 | .error w =>
                     refused (ta.steps ++ [push] ++ tb.steps) d Θ R (.call f args)
                       "(D-Return-Value) §6.9 (pop the frame)" H₃ w
