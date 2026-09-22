@@ -1295,7 +1295,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       Ctx.joinAll P.decls Γs = some Γ' →
       Typed P R Γ (.«match» scrut arms) T Γ'
   /-- (Array-Intro) §5.8: all `n` elements share one element type `T`
-  (`3.5:2`, `7.1:3`), are typed left to right with Σ threaded, and the array
+  (`3.5:3`, `7.1:3`), are typed left to right with Σ threaded, and the array
   owns all of them — which is why `class([T; n])` is §3's lift of `class(T)`.
   `n` is the literal's own length (`7.1:4` — the declared size must match), and
   `n = 0` is admitted: `[]` is the zero-sized `[T; 0]` and uses nothing. The

@@ -293,9 +293,10 @@ theorem wrapInt_inBounds (w : IntWidth) (s : Sign) (n : Int) : InBounds w s (wra
 declaration at index `s` of the program's struct environment and `enum e` the
 declaration at index `e` of its enum environment, which elaboration resolves
 the surface names to; `array T n` is §2's `[T; n]`, the
-fixed-length array of `n ≥ 0` elements of one type (`3.5:1`, `7.1:14` — the
-length is a compile-time constant, which elaboration has already folded, so
-the core sees a `Nat`). -/
+fixed-length array of `n ≥ 0` elements of one type (`3.5:1`, `3.5:3`,
+`7.1:3`); `3.5:2` is the premise that lets the core see a `Nat` — the length
+is a non-negative integer known at compile time, which elaboration has already
+folded (`7.1:14`'s `array_length` is the grammar it folds). -/
 inductive Ty where
   | int (w : IntWidth) (s : Sign)
   | float (w : FloatWidth)

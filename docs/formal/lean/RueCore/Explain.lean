@@ -476,11 +476,11 @@ def repeatNotCopy (T : Ty) : String :=
   "at a `Copy` element type, and " ++ Print.tyName T ++ " is not one (7.1:38; the " ++
   "compiler reports E0905)"
 
-/-- (Array-Intro) §5.8: every element shares the one element type (`3.5:2`,
+/-- (Array-Intro) §5.8: every element shares the one element type (`3.5:3`,
 `7.1:3`). -/
 def elemTypeMismatch (T elem : Ty) : String :=
   "an element has type " ++ Print.tyName T ++ " where the array's element type is " ++
-  Print.tyName elem ++ " — all elements share one type ((Array-Intro) §5.8; 3.5:2, 7.1:3)"
+  Print.tyName elem ++ " — all elements share one type ((Array-Intro) §5.8; 3.5:3, 7.1:3)"
 
 /-- `4.11:3`: the base of an index expression must have an array type. -/
 def notAnArray (T : Ty) : String :=
@@ -1243,7 +1243,7 @@ def armsPremise (P : Program) (R : Ty) (Γ₀ : Ctx) (T : Ty) :
        | none => Premise.subDerivation)
   | _, _ => Premise.subDerivation
 /-- The premise a rejected element list failed: the first element whose type is
-not the array's element type (`3.5:2`, `7.1:3`) — (Array-Intro) §5.8's only
+not the array's element type (`3.5:3`, `7.1:3`) — (Array-Intro) §5.8's only
 per-element premise, since the length is the literal's own. -/
 def elemsPremise (P : Program) (R : Ty) : Ctx → List Expr → List Ty → String
   | _, [], [] => Premise.subDerivation
