@@ -572,6 +572,250 @@ def overwriteFieldPastPartialLinear : Expr :=
             (mkStruct sCarryAffine [resLD (lit 5), resA (lit 6)]))
         (seq (drop (.var 0)) (lit 9))))
 
+/-! ## Arrays, held whole (RUE-2322)
+
+`[T; n]` is a value, a literal, a constant-index path step, and a
+dynamic-index read or write. These programs are part 1's whole-array
+fragment: the array is owned whole, an element is read by copy or written in
+place, §6.11 drops the elements in **ascending index order**, and the
+dynamic-index forms carry §6.5's bounds trap. What no accepted program here
+does is *move* an element out or `@drop` one — `Place.noIdx` refuses both,
+which is this part's own restriction and RUE-2327's debt (`Syntax.lean`,
+"Arrays"). The probe names in the doc-comments (`a1`…`a11`) are the hand-run
+programs each case was checked against on the compiler. -/
+
+/-- `[i64; n]`, the `Copy` array the index programs read and write
+(helper). -/
+abbrev tArrI64 (n : Nat) : Ty := .array tI64 n
+
+/-- `[S1; n]`, the affine array whose elements' destructors make §6.11's
+ascending order observable (helper). -/
+abbrev tArrA (n : Nat) : Ty := .array (.struct sAffine) n
+
+/-- Probe `a1`: an array literal and the repeat form at `i64`, read at three
+constant indices — `a[0] + a[2] + b[1] = 1 + 3 + 7 = 11`. `Place.idx` is a
+path step like a field slot, so each read is (Use-Copy) §5.1 at the element
+type. -/
+def arrayCopyReads : Expr :=
+  letIn false (mkArray tI64 [lit 1, lit 2, lit 3])
+    (letIn false (repeatArray tI64 (lit 7) 2)
+      (binop .add
+        (binop .add (use (.idx (.var 1) 0)) (use (.idx (.var 1) 2)))
+        (use (.idx (.var 0) 1))))
+
+/-- Probe `a2`: an array of destructor-bearing elements left to scope exit.
+§6.11 drops them in ascending index order (`3.9:15`, `3.8:73`) with no
+destructor of the array's own (`3.9:14`), so the trace is `20`, then `1`,
+`2`, `3`, then the value `7`. -/
+def arrayAffineDropOrder : Expr :=
+  letIn false (mkArray (.struct sAffine) [resA (lit 1), resA (lit 2), resA (lit 3)])
+    (seq (dbg (lit 20)) (lit 7))
+
+/-- Probe `a3`: a write at a **constant** index over a live affine element.
+(Assign) §5.2 reuses the path rules at `a[0]` with the element type, and
+§6.8's overwrite-drop runs the old element's destructor where the assignment
+is — `1`, then `20`, then the scope exit's `9`, `2`, then the value `7`. It is
+also the one program in this part that leaves an array node an `OwnSt.fields`
+tree, which is why §5.5's join and §5.6's leak check carry array clauses. -/
+def arrayElemOverwrite : Expr :=
+  letIn true (mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)])
+    (seq (assign (.idx (.var 0) 0) (resA (lit 9)))
+      (seq (dbg (lit 20)) (lit 7)))
+
+/-- Probe `a6`: `@drop` of a whole affine array. The walk is §6.11's own —
+the elements ascending — so the trace is `1`, `2`, then `20`, then `7`, and
+the scope exit finds a hole and drops nothing. -/
+def arrayWholeDrop : Expr :=
+  letIn false (mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)])
+    (seq (drop (.var 0)) (seq (dbg (lit 20)) (lit 7)))
+
+/-- `S11`: `struct { x0: [S6; 2] }`, no attribute and no destructor — an
+array held as a struct **field**, so a path into an element is a projection
+and then an index and then a projection again. Class `Affine`: `class([S6;2])`
+is `Copy` because `S6` is, and an attribute-less declaration is `Affine`
+otherwise. Held out of `structEnv` so only the case that needs it prints
+it. -/
+def dArrHolder : StructDecl :=
+  { attr := .none, fields := [.array (.struct sPair) 2], dtor := false, cls := .affine }
+
+/-- `S11`'s index in `structEnv ++ [dArrHolder]`. -/
+def sArrHolder : Nat := 11
+
+/-- A program over the fixture declarations plus `S11`. -/
+def arrHolderProg (T : Ty) (e : Expr) : Program :=
+  Program.entry (Decls.ofStructs (structEnv ++ [dArrHolder])) T e
+
+/-- Probe `a8`: `h.a[1].x0 + h.a[0].x1 = 3 + 2 = 5`. An index step composes
+with a projection in both directions — a projection reaches the array, and a
+projection reaches into the element — which is what puts field slots and
+constant indices on one `Place.path` (`Syntax.lean`). -/
+def arrayInStruct : Expr :=
+  letIn false (mkStruct sArrHolder
+      [mkArray (.struct sPair) [mkStruct sPair [lit 1, lit 2], mkStruct sPair [lit 3, lit 4]]])
+    (binop .add
+      (use (.proj (.idx (.proj (.var 0) 0) 1) 0))
+      (use (.proj (.idx (.proj (.var 0) 0) 0) 1)))
+
+/-- Probe `a4`: a **dynamic**-index read, in bounds and then out. `f1(i)`
+builds `[10, 20, 30]` and reads `a[i]`; the entry point prints `f1(1)` and
+then evaluates `f1(5)`, which (D-Index-Trap) §6.5 abandons to `↯bounds`
+(§6.12). The trace before the trap survives it, so the run is `20` and then
+the trap. -/
+def arrayBoundsTrap : Program :=
+  { decls := Decls.ofStructs [],
+    fns := [{ params := [], ret := tI64, body := seq (dbg (call 1 [lit 1])) (call 1 [lit 5]) },
+            { params := [⟨tI64, false⟩], ret := tI64,
+              body := letIn false (mkArray tI64 [lit 10, lit 20, lit 30])
+                (indexRead (.var 0) (use (.var 1))) }] }
+
+/-- Probe `a10`: a **dynamic**-index write, then the same write at `-1`.
+(Assign) §6.8 at a dynamic index overwrite-drops the old element — nothing,
+at a `Copy` element type — and writes the slot back; a negative index is out
+of range exactly as an oversized one is (`7.1:11`, `4.11:9`), so the second
+call traps. The run is `10` and then the trap. -/
+def arrayDynWriteTrap : Program :=
+  { decls := Decls.ofStructs [],
+    fns := [{ params := [], ret := tI64, body := seq (dbg (call 1 [lit 1])) (call 1 [lit (-1)]) },
+            { params := [⟨tI64, false⟩], ret := tI64,
+              body := letIn true (mkArray tI64 [lit 1, lit 2])
+                (seq (indexWrite (.var 0) (use (.var 1)) (lit 9))
+                  (binop .add (use (.idx (.var 0) 0)) (use (.idx (.var 0) 1)))) }] }
+
+/-! ### What part 1 refuses
+
+Four of these are refusals the compiler makes too, at the code the probe
+table records. The fifth, `arrayElemMove`, is **this part's own**: the
+compiler accepts it and drops the untouched elements ascending (probe `a7`),
+and RUE-2327 is the issue that lifts `Place.noIdx`. It is a witness that the
+fragment boundary is where the module docstring says it is, not a claim about
+the language. -/
+
+/-- Probe `a7`, refused here: a move at a constant index. `3.8:68` admits it
+when the index is applied directly to the root binding, and the compiler
+accepts this program, so the refusal is `Place.noIdx` — part 1's restriction
+(RUE-2327). -/
+def arrayElemMove : Expr :=
+  letIn false (mkArray (.struct sAffine) [resA (lit 1), resA (lit 2), resA (lit 3)])
+    (letIn false (use (.idx (.var 0) 1))
+      (seq (drop (.var 0)) (seq (dbg (lit 20)) (lit 7))))
+
+/-- Probe `a2b`: the repeat form at an affine element type. `7.1:38`
+restricts `[e; n]` to a `Copy` element, because the form materializes `n`
+copies of one value; the compiler reports E0905. -/
+def arrayRepeatAffine : Expr :=
+  letIn false (repeatArray (.struct sAffine) (resA (lit 4)) 2)
+    (seq (dbg (lit 20)) (lit 7))
+
+/-- Probe `a5`: a dynamic-index read of a non-`Copy` element.
+(Use-Untrackable-Dynamic-Copy) §5.1 is the only successful rule for §4.2's
+`Untrackable(OrdinaryDynamic)` plan and it wants `class(T) = Copy`; there is
+no rule at `Affine` or `Linear`, because the compiler cannot know which
+element a runtime index moved (E0904). -/
+def arrayDynIndexAffine : Program :=
+  { decls := Decls.ofStructs structEnv,
+    fns := [{ params := [], ret := tI64, body := call 1 [lit 0] },
+            { params := [⟨tI64, false⟩], ret := tI64,
+              body := letIn false (mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)])
+                (letIn false (indexRead (.var 0) (use (.var 1)))
+                  (seq (drop (.var 0)) (lit 0))) }] }
+
+/-- Probe `a9`: a constant index out of range. `7.1:9` bounds-checks a
+constant index at compile time, which here is `Ty.atPath` having no type for
+the step at all, so the place has no typing and no rule applies (E0902). It
+is the one index error that is never a trap. -/
+def arrayConstIndexOutOfRange : Expr :=
+  letIn false (mkArray tI64 [lit 1, lit 2]) (use (.idx (.var 0) 2))
+
+/-- Probe `a11`: an array of a **linear** element type left to scope exit.
+§5.6's `residual-linear` reads the array node as the disjunction over its `n`
+elements at the element type, so the obligation is live and the scope exit is
+a leak (E0406); the machine's monitor refuses it too. -/
+def arrayLinearElemLeaked : Expr :=
+  letIn false (mkArray (.struct sLinearDtor) [resLD (lit 1)]) (lit 7)
+
+/-! ### The array programs, checked and run
+
+Each acceptance is `check`'s, so `checkProgram_sound` turns it into a §5
+derivation and §7 covers the run; each refusal and each outcome below is
+checked by the kernel. `cA n` abbreviates the stored `S1 { x0: n }` these
+traces are full of. -/
+
+/-- `S1 { x0: n }` as stored contents — the shape an array element's drop
+event carries (helper). -/
+abbrev cA (n : Int) : Contents := .struct sAffine [c64 n]
+
+/-- Probe `a1`: constant-index reads at a `Copy` element type, accepted, and
+`1 + 3 + 7`. -/
+example : checkProgram (prog tI64 arrayCopyReads) = true := by rfl
+example : run demoOps (prog tI64 arrayCopyReads) demoFuel
+    = .ok [.dead, .dead] (v64 11) [] := by rfl
+
+/-- **Ascending element order, pinned** (probe `a2`): the array has no
+destructor of its own (`3.9:14`), and its elements' destructors come out
+`1`, `2`, `3` — index order, not reverse (`3.9:15`, `3.8:73`). -/
+example : checkProgram (prog tI64 arrayAffineDropOrder) = true := by rfl
+example : run demoOps (prog tI64 arrayAffineDropOrder) demoFuel
+    = .ok [.dead] (v64 7)
+        [.dbg (v64 20),
+         .drop 0 (.array (.struct sAffine) [cA 1, cA 2, cA 3]),
+         .dtor sAffine (cA 1), .dtor sAffine (cA 2), .dtor sAffine (cA 3)] := by rfl
+
+/-- Probe `a3`: the constant-index write's overwrite-drop runs where the
+assignment is, and the scope exit then drops the new element and the
+untouched one, ascending. -/
+example : checkProgram (prog tI64 arrayElemOverwrite) = true := by rfl
+example : run demoOps (prog tI64 arrayElemOverwrite) demoFuel
+    = .ok [.dead] (v64 7)
+        [.drop 0 (cA 1), .dtor sAffine (cA 1), .dbg (v64 20),
+         .drop 0 (.array (.struct sAffine) [cA 9, cA 2]),
+         .dtor sAffine (cA 9), .dtor sAffine (cA 2)] := by rfl
+
+/-- Probe `a6`: `@drop` of the whole array runs the same walk scope exit
+would, and leaves a hole the scope exit skips. -/
+example : checkProgram (prog tI64 arrayWholeDrop) = true := by rfl
+example : run demoOps (prog tI64 arrayWholeDrop) demoFuel
+    = .ok [.dead] (v64 7)
+        [.drop 0 (.array (.struct sAffine) [cA 1, cA 2]),
+         .dtor sAffine (cA 1), .dtor sAffine (cA 2), .dbg (v64 20)] := by rfl
+
+/-- Probe `a8`: an index step between two projections. -/
+example : checkStructs (Decls.ofStructs (structEnv ++ [dArrHolder])) = true := by rfl
+example : checkProgram (arrHolderProg tI64 arrayInStruct) = true := by rfl
+example : run demoOps (arrHolderProg tI64 arrayInStruct) demoFuel
+    = .ok [.dead] (v64 5)
+        [.drop 0 (.struct sArrHolder
+            [.array (.struct sPair)
+              [.struct sPair [c64 1, c64 2], .struct sPair [c64 3, c64 4]]])] := by rfl
+
+/-- **The bounds trap, pinned** (probe `a4`): a dynamic index past the end
+is (D-Index-Trap) §6.5's `↯bounds`, a *defined* outcome §7 permits exactly as
+it permits an overflow — and §6.12 keeps the output the run had already
+produced, so the `20` survives the trap. -/
+example : checkProgram arrayBoundsTrap = true := by rfl
+example : run demoOps arrayBoundsTrap demoFuel = .panic .bounds [.dbg (v64 20)] := by rfl
+
+/-- The same at a dynamic-index **write**, with a negative index (probe
+`a10`): `i < 0` is out of range exactly as `i ≥ n` is. -/
+example : checkProgram arrayDynWriteTrap = true := by rfl
+example : run demoOps arrayDynWriteTrap demoFuel = .panic .bounds [.dbg (v64 10)] := by rfl
+
+/-- The four refusals the compiler makes too — `7.1:38`'s `Copy` repeat
+element (E0905), §5.1's missing rule for a non-`Copy` dynamic index (E0904),
+`7.1:9`'s compile-time constant-index bounds check (E0902), and §5.6's leak
+check reading the array node element by element (E0406) — and the one this
+part makes alone: `Place.noIdx` on a constant-index move, which the compiler
+accepts (probe `a7`, RUE-2327). -/
+example : checkProgram (prog tI64 arrayRepeatAffine) = false := by rfl
+example : checkProgram arrayDynIndexAffine = false := by rfl
+example : checkProgram (prog tI64 arrayConstIndexOutOfRange) = false := by rfl
+example : checkProgram (prog tI64 arrayLinearElemLeaked) = false := by rfl
+example : checkProgram (prog tI64 arrayElemMove) = false := by rfl
+
+/-- The linear-element leak is refused dynamically too: the monitor reads the
+residue the scope exit is about to drop and finds a live linear value. -/
+example : run demoOps (prog tI64 arrayLinearElemLeaked) demoFuel
+    = .stuck .linearLeak := by rfl
+
 /-! ## Widths, the operator set, and the intrinsics (RUE-2282)
 
 The cases above are about ownership and are written at `int(64, signed)`.
