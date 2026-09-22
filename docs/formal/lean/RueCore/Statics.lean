@@ -1542,7 +1542,12 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   compiler agrees —
   after `@drop(d.f)` at a `Copy` field, a later use of `d` is E0205 (probe
   d6/d6b). That is the one place where `@drop` at a `Copy` place is not a
-  no-op, and it is why this rule is not folded into `dropCopy`.
+  no-op, and it is why this rule is not folded into `dropCopy`. The **prose
+  spec** does not say it yet: `3.9:37-39` describe `@drop` at the named place
+  only, and `3.9:39`'s "applied to a `@copy` value, it is a no-op" is about
+  that place, not about a `Copy` leaf reached through a declared-`linear`
+  prefix. The rule follows the calculus §5.3 and `3.8:33`'s destructure, which
+  the compiler matches; RUE-2338 is the spec paragraph that is owed.
 
   What the dynamics adds over a use is only the leaf: §6.3's `destructure`
   runs the residue's drops, and then §6.11 drops the selected leaf itself
