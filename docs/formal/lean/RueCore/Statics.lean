@@ -1229,6 +1229,39 @@ inductive TypedArms (P : Program) (R : Ty) : Ctx → List Expr → List (List Ty
       TypedArms P R Γ₀ (e :: es) (Ts :: Tss) T (Γb.drop Ts.length :: Γs)
 end
 
+/-- **(Match) §5.5's premises for the arm a tag selects.** Read at the variant
+index `k`: the arm's body is typed under that variant's payload locals, its
+locals are discharged by §5.6 at the arm's end, and what it contributes to the
+n-way join is one of the states the join was taken over. This is the inversion
+`soundness` performs once (D-Match) §6.6 has read the tag (helper). -/
+theorem TypedArms.at_index {P : Program} {R : Ty} {Γ₀ : Ctx} {T : Ty} :
+    ∀ {arms : List Expr} {Tss : List (List Ty)} {Γs : List Ctx},
+      TypedArms P R Γ₀ arms Tss T Γs →
+      ∀ (k : Nat) {body : Expr} {Ts : List Ty}, arms[k]? = some body → Tss[k]? = some Ts →
+        ∃ Γb, Typed P R (armCtx Ts Γ₀) body T Γb ∧
+          NoResidualLinear P.decls (Γb.take Ts.length) ∧ (Γb.drop Ts.length) ∈ Γs
+  | _, _, _, .noArms, _, _, _, ha, _ => by simp at ha
+  | _, _, _, .arm hbody hres _, 0, _, _, ha, ht => by
+      simp only [List.getElem?_cons_zero, Option.some_inj] at ha ht
+      subst ha; subst ht
+      exact ⟨_, hbody, hres, List.mem_cons_self⟩
+  | _, _, _, .arm _ _ hrest, (k + 1), _, _, ha, ht => by
+      simp only [List.getElem?_cons_succ] at ha ht
+      obtain ⟨Γb, h₁, h₂, h₃⟩ := TypedArms.at_index hrest k ha ht
+      exact ⟨Γb, h₁, h₂, List.mem_cons_of_mem _ h₃⟩
+
+/-- **Exhaustiveness gives the tag an arm** (§5.5): a `match` has exactly one
+arm per variant, so a variant index the declaration has is an index the arm list
+has. This is what progress at a `match` rests on — §7's own words: "a well-typed
+enum value carries one of the declared tags, and the arm list covers every one,
+so a `match` is never stuck on an uncovered tag" (`4.7:9`, `4.7:10`) (helper). -/
+theorem match_arm_exists {arms : List Expr} {Tss : List (List Ty)} {k : Nat} {Ts : List Ty}
+    (hlen : arms.length = Tss.length) (hv : Tss[k]? = some Ts) :
+    ∃ body, arms[k]? = some body := by
+  have hk : k < Tss.length := (List.getElem?_eq_some_iff.mp hv).1
+  have hk' : k < arms.length := by omega
+  exact ⟨arms[k], List.getElem?_eq_getElem hk'⟩
+
 /-- (Fn) §5.8: a function is well-formed when its body checks at its declared
 return type from the entry context `Γ0;Σ0` (`fnCtx`), and the body's normal
 exit edge discharges §5.6's obligation for every by-value parameter and every
@@ -1239,14 +1272,24 @@ where the frame's scopes end (§5.7's `⊥_exit`). -/
 def WfFn (P : Program) (fd : FnDef) : Prop :=
   ∃ Γf, Typed P fd.ret (fnCtx fd) fd.body fd.ret Γf ∧ NoResidualLinear P.decls Γf
 
+/-- A well-formed declaration environment: §3's class assignment holds of every
+struct declaration (`WfStructs`) and of every enum declaration (`WfEnums`).
+This is the premise every theorem that reads a recorded class through `Ty.mult`
+carries, and it is what `checkStructs`/`checkEnums` (`Checker.lean`) decide. -/
+structure WfDecls (D : Decls) : Prop where
+  /-- §3's class assignment for the struct layer (`3.8:18`, `3.9:31`, `3.9:44`). -/
+  structs : WfStructs D
+  /-- §3's class assignment for the enum layer (`6.3:19`). -/
+  enums : WfEnums D
+
 /-- A well-formed program: §3's class assignment holds of every struct
 declaration and (Fn) §5.8 of every function. Recursion is ordinary — a body
 may call any function of the program, itself included, since (Call) reads only
 the callee's signature (§5.8, "the core is fully monomorphic") — while struct
 declarations are *not* recursive (`StructDecl.Wf.fieldsEarlier`). -/
 structure WfProgram (P : Program) : Prop where
-  /-- §3's class assignment, for every declaration. -/
-  structs : WfStructs P.decls
+  /-- §3's class assignment, for every declaration of either kind. -/
+  decls : WfDecls P.decls
   /-- (Fn) §5.8, for every function. -/
   fns : ∀ fd ∈ P.fns, WfFn P fd
 
@@ -1326,6 +1369,13 @@ it as a conjunction (helper). -/
 def Ctx.SameSkel (Γ₀ : Ctx) : List Ctx → Prop
   | [] => True
   | Γ :: Γs => Ctx.skel Γ = Ctx.skel Γ₀ ∧ Ctx.SameSkel Γ₀ Γs
+
+/-- `Ctx.SameSkel` read against another context of the same skeleton — which is
+what lets the n-way join's accumulator stand in for `Σ0` (helper). -/
+theorem Ctx.SameSkel.transport {Γ₀ Γ₁ : Ctx} (h : Ctx.skel Γ₁ = Ctx.skel Γ₀) :
+    ∀ {Γs : List Ctx}, Ctx.SameSkel Γ₀ Γs → Ctx.SameSkel Γ₁ Γs
+  | [], _ => trivial
+  | _ :: _, hs => ⟨hs.1.trans h.symm, Ctx.SameSkel.transport h hs.2⟩
 
 /-- `Ctx.SameSkel`, read at a member of the list (helper). -/
 theorem Ctx.SameSkel.mem {Γ₀ : Ctx} : ∀ {Γs : List Ctx}, Ctx.SameSkel Γ₀ Γs →
