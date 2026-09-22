@@ -134,10 +134,16 @@ def tyName : Ty → String
   | .bool => "bool"
   | .unit => "()"
   | .struct s => "S" ++ toString s
+<<<<<<< HEAD
   | .enum e => "E" ++ toString e
   -- `7.1:14`'s `array_type`: the length is a compile-time constant, and
   -- elaboration has already folded it, so the core's `Nat` prints as a
   -- literal.
+=======
+  -- `7.1:14`'s `array_type` grammar. The length is a compile-time constant
+  -- (`3.5:2`) and elaboration has already folded it, so the core's `Nat`
+  -- prints as a literal.
+>>>>>>> 064f1df22 (RUE-2322: resolve the adversarial review: cite the paragraph that says one shared element type)
   | .array T n => "[" ++ tyName T ++ "; " ++ toString n ++ "]"
 
 /-- The Rue spelling of a binary operator (§2's `⊕` and `⋚`) (helper). -/
