@@ -125,9 +125,15 @@ the carve-out named (`Soundness.lean`'s `no_violation`,
 
 §6.1's frame is `φ = ⟨ρ ; σ⟩` with `σ` a *stack* of open scope records. The
 fragment's forms open exactly one scope per frame — `push-scope` belongs to
-§6.6's `match` arms and §6.10's loops, neither of which is here, while
-(D-Let) appends its cell to the innermost record rather than pushing a new
-one — so `Frame` carries that one record. The stack returns with loops.
+§6.10's loops, which are not here, while (D-Let) §6.7 and (D-Match) §6.6 both
+**append** their cells to the innermost record rather than pushing a new one —
+so `Frame` carries that one record. The stack returns with loops.
+
+A `match` arm's payload cells are registered exactly as a `let`'s cell is, in
+both books: appended to the record *and* owed to the arm's `endscope` marker
+(§6.6). So the arm's normal path drops them when its body becomes a value —
+`6.3:17`'s timing, newest-first — and an early `return` finds them in σ
+instead, which is the same RUE-1277 redundancy read at a second binder form.
 
 The record is the RUE-1277 redundancy, and it is load-bearing here: a `let`
 registers its cell **both** in the scope record and in the administrative
@@ -162,19 +168,27 @@ declaration order — the order `3.9:13` drops them in. `float w f` is §6.1's `
 datum, not a bit pattern (`Float.lean`). A struct value names its declaration rather than
 carrying its class, so the machine's drop decisions are value-driven — it
 reads the tag the value carries — while the class and the destructor come from
-the program's declarations, as the compiled program's drop glue does. -/
+the program's declarations, as the compiled program's drop glue does.
+
+`enum e k vs` is §6.1's `Kj⟨ v1, …, va ⟩`: the declaration's index, the
+**0-based variant tag** `Kj`, and the active variant's payload. `vs = []` is
+§6.1's bare tag, the discriminant-only case, which `6.3:15` lets an
+implementation store as a plain discriminant. The tag is what §6.6's (D-Match)
+switches on and what §6.11's enum case reads to find the one payload to drop. -/
 inductive Val where
   | int (w : IntWidth) (s : Sign) (n : Int)
   | float (w : FloatWidth) (f : FloatDatum)
   | bool (b : Bool)
   | unit
   | struct (s : Nat) (fields : List Val)
+  | enum (e : Nat) (k : Nat) (payload : List Val)
 deriving Repr
 
 /-- The dynamic image of `class(T)` (§3) on a value: scalars are `Copy`, a
 struct value has the class its declaration records. -/
 def Val.mult (D : Decls) : Val → Mult
   | .struct s _ => D.classOf s
+  | .enum e _ _ => D.enumClassOf e
   | .int _ _ _ | .float _ _ | .bool _ | .unit => .copy
 
 /-- Cell contents (§6.1's `c ::= v | ⊘`), as a **tree**: `⊘` may sit at any
@@ -190,6 +204,7 @@ inductive Contents where
   | bool (b : Bool)
   | unit
   | struct (s : Nat) (cs : List Contents)
+  | enum (e : Nat) (k : Nat) (cs : List Contents)
 deriving Repr
 
 mutual
@@ -201,6 +216,7 @@ def Contents.ofVal : Val → Contents
   | .bool b => .bool b
   | .unit => .unit
   | .struct s vs => .struct s (Contents.ofVals vs)
+  | .enum e k vs => .enum e k (Contents.ofVals vs)
 
 /-- `ofVal` over a field list (helper). -/
 def Contents.ofVals : List Val → List Contents
@@ -219,6 +235,7 @@ def Contents.toVal : Contents → Option Val
   | .bool b => some (.bool b)
   | .unit => some .unit
   | .struct s cs => (Contents.toVals cs).map (Val.struct s)
+  | .enum e k cs => (Contents.toVals cs).map (Val.enum e k)
 
 /-- `toVal` over a field list (helper). -/
 def Contents.toVals : List Contents → Option (List Val)
@@ -234,12 +251,13 @@ runs a drop, so that dropping an already moved-out place is the refusal §7's
 no-use-after-move bullet forbids rather than a silent no-op (helper). -/
 def Contents.isHole : Contents → Bool
   | .hole => true
-  | .int _ _ _ | .float _ _ | .bool _ | .unit | .struct _ _ => false
+  | .int _ _ _ | .float _ _ | .bool _ | .unit | .struct _ _ | .enum _ _ _ => false
 
 /-- The dynamic image of `class(T)` (§3) on cell contents: a hole has nothing
 to drop, and a struct has the class its declaration records (helper). -/
 def Contents.mult (D : Decls) : Contents → Mult
   | .struct s _ => D.classOf s
+  | .enum e _ _ => D.enumClassOf e
   | .hole | .int _ _ _ | .float _ _ | .bool _ | .unit => .copy
 
 mutual
@@ -249,13 +267,24 @@ monitor §6.7's `endscope` and §6.9's frame teardown consult, and the overwrite
 monitor of §6.8. A `⊘` carries nothing (`3.8:60`'s skip), a live
 declared-`linear` struct carries the obligation itself (`3.8:74`), and
 otherwise the obligation is the disjunction over the live fields — exactly the
-recursion §5.6 writes for Σ, on the store's side of the invariant. -/
+recursion §5.6 writes for Σ, on the store's side of the invariant.
+
+At an **enum** the residue is the **active** variant's payload and nothing else:
+an enum declares no attribute to carry an obligation of its own, and the
+inactive variants have no storage (§6.11). That is weaker than §5.6's Σ-side
+clause, which reads `class(E) = Linear` over *every* variant because the tag is
+not a static fact — and weaker in the safe direction: a program the statics
+accept has no linear payload in any variant, so the monitor finds none under the
+tag either (`ContentsTy.residualLinear_false`, `Soundness.lean`). The gap is
+exactly probe e11, which the statics reject (E0406) and which this monitor would
+let run. -/
 def Contents.residualLinear (D : Decls) : Contents → Bool
   | .hole | .int _ _ _ | .float _ _ | .bool _ | .unit => false
   | .struct s cs =>
       (match D.structs[s]? with
        | some sd => sd.attr = .linear || Contents.residualLinearList D cs
        | none => false)
+  | .enum _ _ cs => Contents.residualLinearList D cs
 
 /-- The same over a field list (helper). -/
 def Contents.residualLinearList (D : Decls) : List Contents → Bool
@@ -275,6 +304,9 @@ def Contents.writeAt : Contents → List Nat → Contents → Option Contents
        | some c => (Contents.writeAt c π new).map fun c' => .struct s (cs.set f c')
        | none => none)
   | _, _ :: _, _ => none
+  -- An enum node has no field step: a payload is reached by a `match` arm's
+  -- binding, never by a path (§5.6, `Syntax.lean`), so this falls to the
+  -- catch-all above with every other non-struct node.
 
 /-- The store `H` (§6.1) holds one cell per binding allocation; the cell is
 live contents or the retired marker `†`. §6.1's whole-cell `⊘` is
@@ -450,7 +482,16 @@ destructor-bearing struct one of whose fields is `⊘`. `3.9:34` is exactly what
 makes that state unreachable — no partial move may be taken under a
 destructor-bearing value — and the walk therefore runs the destructor on
 whatever the cell holds, hole or not, rather than refusing a state no rule
-excludes. `Soundness.lean` proves the state is never reached. -/
+excludes. `Soundness.lean` proves the state is never reached.
+
+§6.11's **enum** case (`6.3:20`) reads the stored tag and recurses into the
+**active** variant's payload only, in payload order: an inactive variant's
+payload has no storage, and a discriminant-only active variant drops nothing
+because its payload list is empty (probe e1b). An enum runs no destructor of its
+own — §3 gives it none to declare (E0417) — so, unlike the struct case, there is
+no event before the payload's and no declaration to look up, which is why this
+arm cannot refuse. A payload already moved out by a `match` binding left the enum
+place `⊘` and is skipped by the `⊘` case above, never dropped twice. -/
 def dropContents (D : Decls) : Contents → Except Violation (List Event)
   | .hole => .ok []
   | .int _ _ _ => .ok []
@@ -465,6 +506,7 @@ def dropContents (D : Decls) : Contents → Except Violation (List Event)
           | .error w => .error w
           | .ok evs =>
               .ok ((if sd.dtor then [Event.dtor s (.struct s cs)] else []) ++ evs)
+  | .enum _ _ cs => dropContentsList D cs
 
 /-- `drop*(H, [c1,…,ck])` (§6.11): fold `drop` over the contents left to right
 — for a struct's fields, declaration order (`3.9:13`). -/
@@ -484,7 +526,9 @@ mutual
 emits, written out rather than read off the walk. A `⊘` and a scalar emit none;
 a struct emits its user destructor's event first when its declaration has one
 (`3.9:28`) and then its fields' events in declaration order (`3.9:13`),
-recursively, every `⊘` skipped. An index the environment does not have emits
+recursively, every `⊘` skipped; an enum emits exactly its **active** variant's
+payload's events, in payload order, and none at all for a discriminant-only
+variant (`6.3:20`). An index the environment does not have emits
 nothing, which the walk itself refuses instead —
 `dropContents_struct_events` (`Soundness.lean`) is the theorem that the two
 agree on every well-typed contents, and it is the closed form RUE-2237's
@@ -499,6 +543,7 @@ def dropEvents (D : Decls) : Contents → List Event
       (match D.structs[s]? with
        | some sd => if sd.dtor then [Event.dtor s (.struct s cs)] else []
        | none => []) ++ dropEventsList D cs
+  | .enum _ _ cs => dropEventsList D cs
 
 /-- The same over a field list: the fields' events concatenated in
 declaration order (`3.9:13`), which is §6.11's `drop*`. -/
@@ -791,8 +836,11 @@ observable output (§5.8's (Dbg), §6.12's `Outcome`); `drop` is §6.11's
 explicit `@drop`; `letIn` is (D-Let) + (D-EndScope)'s drop-retire (§6.7);
 `assign` is (D-Assign), §6.8's overwrite-drop / reinitialization; `seq` is
 (D-Seq), discarding with a temporary drop (§6.7); `mkStruct` is (D-Struct)
-§6.5 after §6.2's left-to-right search through its initializers; `ite` is
-(D-If-T)/(D-If-F) after the §6.2 search for the scrutinee; `call` is (D-Call)
+§6.5 after §6.2's left-to-right search through its initializers; `mkEnum` is
+(D-Enum-Intro) §6.6 after the same search, and `«match»` is (D-Match) §6.6 —
+the tag switch, the payload cells bound as (D-Let) binds one, and their
+newest-first drop at the arm's end; `ite` is (D-If-T)/(D-If-F) after the §6.2
+search for the scrutinee; `call` is (D-Call)
 followed by (D-Return-Value) when the body completes normally, and by
 (D-Return)'s absorption when it does not; `ret` is (D-Return), which runs the
 frame's scope drops and hands the value past every enclosing form.
@@ -862,6 +910,60 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
            | some sd =>
                if sd.fields.length = vs.length then .ok H₁ (.struct s vs) []
                else .stuck .typeConfusion)
+  | fuel + 1, P, H, φ, .mkEnum e k args =>
+      -- (D-Enum-Intro) §6.6: an enum literal is a redex once every payload
+      -- component is a value; §6.2's contexts reduce them left to right
+      -- (`Kj( v1, …, E, … )`), exactly as a struct literal's fields are, and
+      -- the result is §6.1's tagged value `Kj⟨v1,…,va⟩` — the bare tag when the
+      -- variant is discriminant-only.
+      (match evalArgs (fun H' e' => eval M fuel P H' φ e') H args with
+       | .abort r => r
+       | .ok H₁ vs tr =>
+         EvalRes.withTrace tr <|
+           match P.decls.enums[e]? with
+           | none => .stuck .unbound
+           | some ed =>
+             match ed.variants[k]? with
+             | none => .stuck .typeConfusion
+             | some Ts =>
+                 if Ts.length = vs.length then .ok H₁ (.enum e k vs) []
+                 else .stuck .typeConfusion)
+  | fuel + 1, P, H, φ, .«match» scrut arms =>
+      -- (D-Match) §6.6: reduce the scrutinee to an enum value — a *use* of its
+      -- place, so a non-`Copy` enum's cell became `⊘` by §6.3 and a `Copy` one
+      -- was read — then read the tag, which selects the one covering arm
+      -- (exhaustiveness, §5.5, makes `arms[k]?` succeed for a well-typed value:
+      -- `match_arm_exists`, `Soundness.lean`).
+      (eval M fuel P H φ scrut).andThen fun H₀ v =>
+        match v with
+        | .enum _ k vs =>
+          (match arms[k]? with
+           | none => .stuck .typeConfusion
+           | some body =>
+             -- The payload components are bound to fresh cells exactly as
+             -- (D-Let) §6.7 binds one: appended to the frame's innermost scope
+             -- record *and* owed to the arm's `endscope([ℓ1,…,ℓa])` marker,
+             -- which the arm's normal path below runs. `mintParams` is the same
+             -- minting (D-Call) §6.9 performs, and the two `reverse`s are the
+             -- same one it needs: a payload tuple is written left to right while
+             -- `Env` lists the innermost binder first.
+             let minted := mintParams H₀ vs
+             (eval M fuel P minted.1
+                 { env := minted.2.reverse ++ φ.env, scope := φ.scope ++ minted.2 }
+                 body).andThen
+               fun H₂ v₂ =>
+                 -- (D-EndScope) at the arm's end (`6.3:17`'s timing): the
+                 -- payload cells drop-retire **newest-first**, so the last
+                 -- component goes first (probe e7). The scrutinee value is
+                 -- consumed by the match — its payload lives in these cells now
+                 -- — so nothing drops it a second time. An unwinding `return`
+                 -- inside the arm never reaches here: it discarded this marker
+                 -- with the evaluation context and found the same cells in σ
+                 -- instead (§6.9, probe e8).
+                 match unwindLocs P.decls H₂ minted.2.reverse with
+                 | .error w => .stuck w
+                 | .ok (H₃, evs) => .ok H₃ v₂ evs)
+        | _ => .stuck .typeConfusion
   | _ + 1, P, H, φ, .drop p =>
       -- §6.11's explicit `@drop(p)`: run the drop of whatever the
       -- sub-position holds — the walk skips every already-`⊘` sub-place — and
