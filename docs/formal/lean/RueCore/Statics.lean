@@ -1341,9 +1341,16 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   element is moved out, "because the compiler cannot know at compile time
   whether a runtime index denotes a moved-out element". `noLinearPrefix` keeps
   §4.2's `Untrackable(DeclaredLinearDynamic)` — ill-formed there — without an
-  instance. The index is typed first and Σ threaded through it (§6.2's
-  `E[e]`/`v[E]` contexts reduce the base and then the index), and the read
-  copies, so the outgoing state is the index's. Whether the index is *in range*
+  instance. The index is typed **first** and Σ threaded through it, and the
+  base place is read on the resulting context; `eval` runs the two in the same
+  order. `4.11:14` states the opposite for a full index *expression* — "the
+  base expression is evaluated before the index expression" — and §6.2's
+  `E[e]`/`v[E]` contexts are that order. It is unobservable here because the
+  base is a `Place`, not an expression: reading a place runs nothing, allocates
+  nothing and threads no Σ of its own, so the two orders agree on every
+  program. The order becomes observable only when a base expression can have
+  an effect, which is a form this fragment does not have. The read copies, so
+  the outgoing state is the index's. Whether the index is *in range*
   is dynamic (`7.1:10`, §6.5's (D-Index-Trap)), not a typing question. -/
   | indexRead {Γ Γ₁ p e en u T n w s} :
       Typed P R Γ e (.int w s) Γ₁ →

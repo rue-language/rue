@@ -134,16 +134,10 @@ def tyName : Ty → String
   | .bool => "bool"
   | .unit => "()"
   | .struct s => "S" ++ toString s
-<<<<<<< HEAD
   | .enum e => "E" ++ toString e
-  -- `7.1:14`'s `array_type`: the length is a compile-time constant, and
-  -- elaboration has already folded it, so the core's `Nat` prints as a
-  -- literal.
-=======
   -- `7.1:14`'s `array_type` grammar. The length is a compile-time constant
   -- (`3.5:2`) and elaboration has already folded it, so the core's `Nat`
   -- prints as a literal.
->>>>>>> 064f1df22 (RUE-2322: resolve the adversarial review: cite the paragraph that says one shared element type)
   | .array T n => "[" ++ tyName T ++ "; " ++ toString n ++ "]"
 
 /-- The Rue spelling of a binary operator (§2's `⊕` and `⋚`) (helper). -/
@@ -536,6 +530,26 @@ def observeValue (D : Decls) (T : Ty) : String :=
   | .unit => ""
   | .struct _ | .enum _ | .array _ _ =>
       if T.mult D = .linear then "    @drop(result);\n" else ""
+
+/-! The array arm of `observeValue` at both of its answers. No corpus program
+and no `Examples.lean` witness returns an aggregate from `f0`, so these two
+lines are what exercise it: an array whose class is not `Linear` is left to
+`main`'s implicit drop, and a linear-carrying one takes the explicit `@drop`
+§5.3 runs the same glue for. -/
+
+/-- A `Copy` array result needs no observation line. -/
+example : observeValue (Decls.ofStructs []) (.array (.int .w64 .signed) 2) = "" := by rfl
+
+/-- A `[L; n]` result is `Linear` (`3.8:74`), so `main` discharges it. -/
+example :
+    observeValue (Decls.ofStructs [{ attr := .linear, fields := [], dtor := false, cls := .linear }])
+      (.array (.struct 0) 2) = "    @drop(result);\n" := by rfl
+
+/-- `[L; 0]` is `Affine`, not `Linear` (`3.8:74`, RUE-526), so it takes the
+implicit drop like any other affine value. -/
+example :
+    observeValue (Decls.ofStructs [{ attr := .linear, fields := [], dtor := false, cls := .linear }])
+      (.array (.struct 0) 0) = "" := by rfl
 
 /-- One parameter per line of a signature, named the way the body's de Bruijn
 indices resolve: the first parameter is the outermost binder, so it is `v0`.
