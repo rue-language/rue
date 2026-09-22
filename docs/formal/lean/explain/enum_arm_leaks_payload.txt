@@ -28,6 +28,7 @@ enum E1 { K0(S3), K1 }
 enum E2 { K0(S1, S1), K1 }
 enum E3 { K0, K1 }
 enum E4 { K0(i64), K1 }
+enum E5 { K0(S1, S3), K1 }
 fn f0() -> i64 {
     {
         let v0: E1 = E1.K0(S3 { x0: 1 });
