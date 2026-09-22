@@ -459,8 +459,9 @@ join, the whole §2 integer operator set (`+ - * / %`, `& | ^`, `<< >>`,
 §6.4's trap-free dynamics and the one-operand float intrinsics
 (`@int_to_float`, `@float_to_int`, `@float_cast`, and the five of `3.12:34`),
 `@intCast`, `@panic`, `@dbg`, the surface repeat form `[e; n]` at `7.1:38`'s
-`Copy` element type and the dynamic-index read and write with §6.5's bounds
-trap, and top-level functions, by-value calls with
+`Copy` element type, the dynamic-index read at a `Copy` element type and the
+dynamic-index write at any element type §5.2's linear-overwrite premise admits,
+both with §6.5's bounds trap, and top-level functions, by-value calls with
 frames and scope records, and `return` with its σ unwind. No declared-linear
 destructure (a path with a declared-`linear` proper prefix is rejected as a
 stated fragment restriction, RUE-2236), no **array element move** — an array

@@ -2619,12 +2619,18 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
                 exact ⟨htyv, hfm₁, Untouched.refl⟩
           · simp only [if_neg hb]
             trivial
-      | @indexWrite Γ Γ₁ Γ₂ p e₁ e₂ en₀ en₁ u₀ u₁ T n w sg hget₀ hmut hg₀ hty₀ hcopy _
-          h₁ h₂ hget₁ hg₁ hfo =>
+      | @indexWrite Γ Γ₁ Γ₂ p e₁ e₂ en₀ en₁ u₀ u₁ T n w sg hget₀ hmut hg₀ hty₀ _
+          h₁ h₂ hget₁ hg₁ hfo hover =>
           -- (D-Assign) §6.8 at a dynamic index: index, then right-hand side
           -- (§6.2), then the bounds check where the path is navigated. The
-          -- overwrite-drop of the old element emits nothing and the monitor
-          -- lets it through, both because `class(T) = Copy`.
+          -- overwrite-drop of the old element runs its glue, and the
+          -- `linearOverwrite` monitor lets it through because (Assign)'s own
+          -- `overwriteOk` premise says the element type carries no linear
+          -- value — `fully-owned(Σ, p)` rules the `MovedOut` disjunct out.
+          have hnlin : T.mult P.decls ≠ .linear := by
+            rcases hover with rfl | hnl
+            · simp [OwnSt.fullyOwned] at hfo
+            · exact hnl
           simp only [eval]
           refine EvalOk.bind (ih h₁ hfm) ?_
           intro H₁ iv tr₁ _ htyi hfm₁
@@ -2657,7 +2663,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
                 have hsame : old' = old := by rw [hold'] at hec; cases hec; rfl
                 subst hsame
                 have hnl : Contents.residualLinear P.decls old' = false :=
-                  ContentsTy.residualLinear_false hwf.decls hocty (by rw [hcopy]; simp)
+                  ContentsTy.residualLinear_false hwf.decls hocty hnlin
                 obtain ⟨evs, hdc⟩ := dropCell_ok (D := P.decls) (ℓ := ℓ) hocty
                 obtain ⟨cc', hw, hmm'⟩ := ContentsMatches.writeAt p.path hmm hg₁
                   (htyeq ▸ hty₀)

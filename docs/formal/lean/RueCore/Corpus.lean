@@ -605,7 +605,15 @@ def cases : List Case := [
   { name := "array_in_struct",
     description := "An array held as a struct field, read through a projection, an index and a projection again: h.a[1].x0 + h.a[0].x1 = 5.",
     rules := ["(Struct-Intro) §5.8", "(Array-Intro) §5.8", "(Use-Copy) §5.1", "3.8:68"],
-    prog := Examples.arrHolderProg Examples.tI64 Examples.arrayInStruct }
+    prog := Examples.arrHolderProg Examples.tI64 Examples.arrayInStruct },
+  { name := "array_dyn_write_affine",
+    description := "A write at a dynamic index over a live affine element: the destination of an assignment is not a use, so (Assign)'s own linear-overwrite premise admits it, and §6.8's overwrite-drop runs the old element's destructor at the assignment — 1, then the scope exit's 9 and 2, then 7.",
+    rules := ["(Assign) §5.2", "(D-Assign) §6.8", "§6.11", "3.8:77"],
+    prog := Examples.arrayDynWriteAffine },
+  { name := "array_dyn_write_trap",
+    description := "A write at a dynamic index, then the same write at -1: a negative index is out of range exactly as an oversized one is, so the second call takes (D-Index-Trap) §6.5's bounds trap and the process exits 101 after printing the 10.",
+    rules := ["(Assign) §5.2", "(D-Assign) §6.8", "(D-Index-Trap) §6.5", "§6.12", "7.1:11", "4.11:9"],
+    prog := Examples.arrayDynWriteTrap }
 ]
 
 /-! ## Witnesses for the refusals no `Examples.lean` program reaches -/

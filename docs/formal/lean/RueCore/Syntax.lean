@@ -50,11 +50,15 @@ the next milestones, not this slice's scope.
 §4.2 gives a projection in value context three plans, and the fragment
 mechanizes two of them. `Ordinary` — the partial move of `3.8:22` — is
 (Use-Copy)/(Use-Move) here. `Untrackable(OrdinaryDynamic)` is the dynamic
-index, whose one successful rule is
-(Use-Untrackable-Dynamic-Copy) §5.1: `Expr.indexRead` and
-`Expr.indexWrite` carry its `class(T) = Copy` premise, and §4.2's "there is no
+index *read*, whose one successful rule is
+(Use-Untrackable-Dynamic-Copy) §5.1: `Expr.indexRead` carries its
+`class(T) = Copy` premise, and §4.2's "there is no
 successful static rule … when `class(T) ∈ {Affine,Linear}`" is that premise's
-absence rather than a rule of its own (E0904).
+absence rather than a rule of its own (E0904). A dynamic-index *write* is not
+a use at all — §4.2 classifies value-context uses, and an assignment
+destination is neither — so `Expr.indexWrite` carries (Assign) §5.2's own
+`Σ1(p) = MovedOut ∨ ¬carries_linear(T)` at the element type instead
+(`3.8:77`, E0493), and an affine element is written in place.
 `Untrackable(DeclaredLinearDynamic)` is ill-formed by §4.2 and is refused here
 as part of the fragment's own `noLinearPrefix` restriction.
 `Declared(d, π)`, the declared-linear
@@ -698,9 +702,10 @@ the surface's repeat form `[e; n]` (`7.1:36`–`7.1:39`). `indexRead p e` and
 `indexWrite p e₁ e₂` are the **dynamic**-index read `p[e]` and write
 `p[e₁] = e₂`: a constant index is a step of the place (`Place.idx`), so these
 two forms exist for the index §5's `Path` cannot track — §4.2's
-`Untrackable(OrdinaryDynamic)` plan, restricted to `class(T) = Copy` by §5.1's
-only successful rule for it and bounds-checked at run time by §6.5's
-(D-Index)/(D-Index-Trap). -/
+`Untrackable(OrdinaryDynamic)` plan for the read, restricted to
+`class(T) = Copy` by §5.1's only successful rule for it, and (Assign) §5.2's
+linear-overwrite premise for the write — both bounds-checked at run time by
+§6.5's (D-Index)/(D-Index-Trap). -/
 inductive Expr where
   | intLit (w : IntWidth) (s : Sign) (n : Int)
   | floatLit (w : FloatWidth) (l : FloatLit)
