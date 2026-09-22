@@ -62,17 +62,21 @@ scripts/rue lean-bridge -- --report-json /tmp/bridge.json
 The seed cases are hand-written, so `RueCore/Gen.lean` also generates
 programs: closed, well-scoped, and simply typed by construction, with
 ownership left to chance, so the checker's verdict on each is recorded and
-never filtered (about a third are rejected). The generator is a pure function
+never filtered (two in five are rejected). The generator is a pure function
 of its seed, and a case named `gen_<seed>_<i>` is the same in every run with
 that seed and more than `i` cases. Its bias toward moves in one arm of an
 `if`, linear values reaching scope exit, and reassignment after a move is
 documented in the module.
 
-A generated program declares its own **enums** as well as its own structs, and
-draws enum construction and `match` — one arm per variant in declaration
-order, each arm a block over that variant's payload locals, which it may move,
-`@drop`, read or leave. About half the cases contain a `match` (90 of 200 at
-`--gen 200 --seed 7`, 441 of 1,000 at `--gen 1000 --seed 23`). Two shapes are
+A generated program may declare its own **enums** as well as its own structs,
+and four in five do (161 of 200 at `--gen 200 --seed 7`, 787 of 1,000 at
+`--gen 1000 --seed 23`); such a program also draws enum construction and
+`match` — one arm per variant in declaration order, each arm a block over that
+variant's payload locals, which it may move, `@drop`, read or leave. A little
+under half the cases contain a `match` (94 of 200 and 465 of 1,000 at those two
+settings), and a `match` whose scrutinee is a **place** rather than a temporary
+is the majority of them (111 of 185 sites and 533 of 895), because a drawn
+`match` binds its scrutinee where the scope holds no enum place. Two shapes are
 deliberately absent and the module says why: a `return` or `@panic` **inside an
 arm**, which `check` is incomplete on exactly as it is inside an `if` arm, and
 a path through a declared-`linear` prefix (RUE-2236).
