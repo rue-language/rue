@@ -274,7 +274,6 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
         if en₀.mu = true then
           match en₀.st.get p.path, en₀.ty.atPath P.decls p.path with
           | some _, some (.array T _) =>
-            if declaredPrefix P.decls en₀.ty p.path = none then
               (match check P R Γ e₁ with
                | some (.int _ _, Γ₁) =>
                  (match check P R Γ₁ e₂ with
@@ -293,7 +292,6 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
                     else none
                   | none => none)
                | _ => none)
-            else none
           | _, _ => none
         else none
   | .drop p =>
@@ -685,25 +683,22 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
           split at h
           · rename_i u₀ Te n hg₀ hty₀
             split at h
-            · rename_i hlin
+            · rename_i w sg Γ₁ hchk₁
               split at h
-              · rename_i w sg Γ₁ hchk₁
+              · rename_i T' Γ₂ hchk₂
                 split at h
-                · rename_i T' Γ₂ hchk₂
+                · rename_i hT
+                  subst hT
                   split at h
-                  · rename_i hT
-                    subst hT
+                  · rename_i en₁ hget₁
                     split at h
-                    · rename_i en₁ hget₁
+                    · rename_i u₁ hg₁
                       split at h
-                      · rename_i u₁ hg₁
-                        split at h
-                        · rename_i hpost
-                          cases h
-                          exact .indexWrite hget₀ hmu hg₀ hty₀ hlin
-                            (check_sound e₁ hchk₁) (check_sound e₂ hchk₂) hget₁ hg₁
-                            hpost.1 (overwriteOk_iff.mp hpost.2)
-                        · cases h
+                      · rename_i hpost
+                        cases h
+                        exact .indexWrite hget₀ hmu hg₀ hty₀
+                          (check_sound e₁ hchk₁) (check_sound e₂ hchk₂) hget₁ hg₁
+                          hpost.1 (overwriteOk_iff.mp hpost.2)
                       · cases h
                     · cases h
                   · cases h

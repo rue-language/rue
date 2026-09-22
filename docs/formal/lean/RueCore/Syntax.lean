@@ -63,8 +63,12 @@ a use at all — §4.2 classifies value-context uses, and an assignment
 destination is neither — so `Expr.indexWrite` carries (Assign) §5.2's own
 `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` at the element type instead
 (`3.8:77`, E0493), and an affine element is written in place.
-`Untrackable(DeclaredLinearDynamic)` is ill-formed by §4.2 and has no form
-here at all, because a dynamic index is not a `Place` step.
+`Untrackable(DeclaredLinearDynamic)` is ill-formed by §4.2, and its one
+instance here is the dynamic *read* under a declared-`linear` prefix, which
+(Use-Untrackable-Dynamic-Copy) refuses through `declaredPrefix … = none`
+(E0904); the dynamic *write* under such a prefix is not a use and is admitted,
+as the compiler admits it. A dynamic index is never a `Place` step, so no
+plan is ever computed through one.
 
 The plan is therefore a **function of the type and the path**, and the four
 Ordinary rules ((Use-Copy), (Use-Move), (@Drop), (@Drop-Copy)) carry
@@ -480,8 +484,13 @@ def Place.path : Place → List Nat
 
 /-- Whether a place's path has **no** index step. This is not a premise of any
 §5 rule: it is this part's own restriction, standing in for `3.8:68`'s
-root-index premise on (Use-Move) §5.1 and (@Drop) §5.3, which it implies, and
-lifted by RUE-2327 (module docstring, "Arrays"). -/
+root-index premise on (Use-Move) §5.1 and (@Drop) §5.3, and lifted by RUE-2327
+(module docstring, "Arrays"). It reads the place's **constructors**, not the
+type each step is taken at, while `Place.path` and `Ty.fieldAt` are
+constructor-blind: a step spelled `.proj` at an array-typed node passes it, so
+it implies `3.8:68` only for places spelled with `.idx` — which is every place
+the printer and the generator produce, and the reason RUE-2327's replacement
+is keyed on the type. -/
 def Place.noIdx : Place → Bool
   | .var _ => true
   | .proj p _ => p.noIdx
@@ -689,9 +698,10 @@ It is keyed on the retained field's **type**, not on Σ: the compiler reads the
 declared type of a sibling that has itself already been moved out (probe d5c,
 E0474 on a moved-out linear sibling), and `3.8:60` states the check
 "recursively through nested fields" of the declared-linear place, which is this
-recursion. An array step of the selected path refuses outright here, because
-`Place.noIdx` has already refused the place: §5.1's array clause — retained
-elements in ascending index order — is stated in the next slice.
+recursion. An array step of the selected path refuses outright here — this
+arm is the gate for such a plan, since `Place.noIdx` reads a place's spelling
+and not its type — and §5.1's array clause — retained elements in ascending
+index order — is stated in the next slice (RUE-2327).
 
 This is the premise that rejects a destructure before it can silently drop a
 linear sibling; the compiler reports E0474. -/

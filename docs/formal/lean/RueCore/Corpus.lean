@@ -543,7 +543,7 @@ def cases : List Case := [
     prog := Examples.destrProg Examples.tI64 Examples.destructureNestedResidue
     },
   { name := "destructure_array_residue",
-    description := "An array in the residue: x.v selects past arr: [S1; 2], which split retains whole and drop* destroys at the access by §6.11's array rule, elements in ascending index order (3.8:73). A retained array is an ordinary residue place; only a selected path through an index step would need §5.1's array clause, and Place.noIdx keeps that out of this part (RUE-2327).",
+    description := "An array in the residue: x.v selects past arr: [S1; 2], which split retains whole and drop* destroys at the access by §6.11's array rule, elements in ascending index order (3.8:73). A retained array is an ordinary residue place; only a selected path through an index step would need §5.1's array clause, which this part does not state (RUE-2327).",
     rules := ["(Use-Declared-Linear-Destructure) §5.1", "§6.3 split", "§6.11", "3.8:73"],
     prog := Examples.destrProg Examples.tI64 Examples.destructureArrayResidue
     },

@@ -1809,9 +1809,22 @@ declared-`linear` binding `MovedOut` on one path and `Owned` on the other. -/
 example : checkProgram (destrProg tI64 destructureOneArm) = false := by rfl
 
 /-- **This part's own boundary** (probe d9b, RUE-2327): the selected path
-`x.arr[0]` passes through an index step, and `Place.noIdx` refuses it before
-§5.1's array clause is reached. The compiler accepts the program. -/
+`x.arr[0]` passes through an index step, and `linearResidue`'s array arm
+refuses the plan before §5.1's array clause is reached (`Place.noIdx` refuses
+the spelling too). The compiler accepts the program. -/
 example : checkProgram (destrProg tI64 destructureThroughIndex) = false := by rfl
+
+/-- **A dynamic-index write under a declared-`linear` prefix is admitted**
+(second-review probe c3): `v0.x0[i] = 9` on `S21`'s array field is an
+assignment destination, not a use, so no plan is computed for it, and the
+compiler agrees (it prints `1 9 2 7`). The dynamic *read* of the same place is
+what (Use-Untrackable-Dynamic-Copy) refuses. -/
+def dynWriteUnderDeclared : Expr :=
+  letIn true (mkStruct sDestrArr [mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)], lit 7])
+    (seq (indexWrite (.proj (.var 0) 0) (lit 0) (resA (lit 9)))
+      (use (.proj (.var 0) 1)))
+
+example : checkProgram (destrProg tI64 dynWriteUnderDeclared) = true := by rfl
 
 /-- **A declared-linear place is consumed by its first destructure** (probes
 d1b, d8): the second read of `x.x0` is the use of a moved-out place, because

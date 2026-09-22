@@ -1462,6 +1462,17 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   element type is admitted (and the machine's overwrite-drop below runs its
   glue), while a linear-carrying one is refused, which is the compiler's E0493.
 
+  There is **no plan premise**: §4.2's plans classify value-context uses,
+  and an assignment destination is not one, so a dynamic-index write into an
+  array field of a declared-`linear` struct (`v0.x0[i] = 9`) is admitted here
+  exactly as the compiler admits it (second-review probe c3, which prints
+  `1 9 2 7`). The write lands on an element the declared-`linear` place still
+  owns whole — `fully-owned` below is what guards that — and consumes nothing,
+  so `Untrackable(DeclaredLinearDynamic)` has no instance at a write; its one
+  instance is the dynamic *read*, which `indexRead` refuses. The arrays part
+  carried `declaredPrefix … = none` here as a restriction of its own; it is
+  dropped with the destructure mechanized.
+
   Two more of (Assign)'s clauses are discharged rather than restated.
   `3.8:72`/`7.1:46` — "while one or more elements of an array are moved out, it
   is a compile-time error to assign into the array" — is `fully-owned(Σ, p)` on
@@ -1480,7 +1491,6 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       Γ[p.root]? = some en₀ → en₀.mu = true →
       en₀.st.get p.path = some u₀ →
       en₀.ty.atPath P.decls p.path = some (.array T n) →
-      declaredPrefix P.decls en₀.ty p.path = none →
       Typed P R Γ e₁ (.int w s) Γ₁ →
       Typed P R Γ₁ e₂ T Γ₂ →
       Γ₂[p.root]? = some en₁ →
@@ -1888,7 +1898,7 @@ theorem Typed.skel_preserved {P R} {Γ Γ' : Ctx} {e T} (h : Typed P R Γ e T Γ
   | mkArray _ ih => exact ih
   | repeatArray _ _ ih => exact ih
   | indexRead _ _ _ _ _ _ _ ih => exact ih
-  | indexWrite _ _ _ _ _ _ _ hget₁ _ _ _ ih₁ ih₂ =>
+  | indexWrite _ _ _ _ _ _ hget₁ _ _ _ ih₁ ih₂ =>
       exact (skel_set_setSt hget₁ _).trans (ih₂.trans ih₁)
   | mkEnum _ _ _ ih => exact ih
   | «match» _ _ _ _ hjoin ihs iharms =>
@@ -1939,7 +1949,7 @@ theorem TypedArgs.skel_preserved {P R} {Γ Γ' : Ctx} {es Ts} (h : TypedArgs P R
   | mkArray _ ih => exact ih
   | repeatArray _ _ ih => exact ih
   | indexRead _ _ _ _ _ _ _ ih => exact ih
-  | indexWrite _ _ _ _ _ _ _ hget₁ _ _ _ ih₁ ih₂ =>
+  | indexWrite _ _ _ _ _ _ hget₁ _ _ _ ih₁ ih₂ =>
       exact (skel_set_setSt hget₁ _).trans (ih₂.trans ih₁)
   | mkEnum _ _ _ ih => exact ih
   | «match» _ _ _ _ hjoin ihs iharms =>
@@ -1994,7 +2004,7 @@ theorem TypedArms.arm_skel {P R} {Γ₀ : Ctx} {arms Tss T} {Γs : List Ctx}
   | mkArray _ ih => exact ih
   | repeatArray _ _ ih => exact ih
   | indexRead _ _ _ _ _ _ _ ih => exact ih
-  | indexWrite _ _ _ _ _ _ _ hget₁ _ _ _ ih₁ ih₂ =>
+  | indexWrite _ _ _ _ _ _ hget₁ _ _ _ ih₁ ih₂ =>
       exact (skel_set_setSt hget₁ _).trans (ih₂.trans ih₁)
   | mkEnum _ _ _ ih => exact ih
   | «match» _ _ _ _ hjoin ihs iharms =>
