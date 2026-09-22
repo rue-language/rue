@@ -45,15 +45,26 @@ The rest follows from the spec's constraints on destructors per class
 * **Projections.** A place prints as `x.f0.f1`, the identity elaboration of
   `Place.proj` (`3.6:15`: elaboration resolves the field name to its
   declaration slot, and `structItem` below declares the slots under those
-  names). A projection in value context is a `Copy` read or a partial move by
-  its own type's class (`3.8:22`), an assignment target is `x.f0 = e;`, and a
-  `@drop` of one is `@drop(x.f0)` — each the surface form of the core place,
-  with no helper supplied. One shape the printer must never emit is a place
-  whose path has a proper prefix of declared-`linear` struct type: the
-  compiler applies `3.8:33`'s destructure there (verified: after
-  `@drop(d.f)` on such a `d`, a later use of `d` is E0205), which this
-  fragment does not mechanize, so the statics reject it and neither the corpus
-  nor the generator produces one (`Syntax.lean`, `Gen.lean`).
+  names). A projection in value context is a `Copy` read, a partial move by its
+  own type's class (`3.8:22`), or — where the path has a proper prefix of
+  declared-`linear` struct type — the destructure of `3.8:33`; an assignment
+  target is `x.f0 = e;`, and a `@drop` of one is `@drop(x.f0)`. Each is the
+  surface form of the core place, with no helper supplied, because the
+  compiler selects the plan from the same types the core does.
+* **The destructure needs a value context, and every printed one is.** §4.2
+  makes a use a destructure only in *value* context, and the compiler agrees
+  with the core on which contexts those are — with one exception the printer
+  already covers. `@dbg`'s operand is a **borrow** in the compiler (verified:
+  `@dbg(x.a)` on a declared-`linear` `x` leaves `x` whole), while (Dbg) §5.8
+  types it as an ordinary use. The printer never emits that shape: the "Integer
+  typing" section below binds every `@dbg` operand to a `let` first, and a
+  `let` initializer *is* a value context in both books (verified by hand: after
+  `let g: i64 = x.a;` inside a nested block, a later use of `x` is E0205). The
+  same binding covers the ordering compares, `@intCast`, the float intrinsics
+  and a discarded sequence operand, and every other printed context — an
+  operator operand, a field initializer, a call argument, a `return` operand,
+  an `if` condition, an assignment right-hand side, a block tail — is a value
+  context outright.
 * **`@drop`.** Every class prints `@drop(x)`, the identity elaboration of
   `Expr.drop`: it is legal on a declared-linear place and on a place whose
   type is linear through a field (`3.9:39`, verified against the compiler),
