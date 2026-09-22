@@ -1093,12 +1093,13 @@ theorem residueOk_of_tys {D : Decls} : ∀ {cs : List Contents} {Ts : List Ty},
       | tail _ hrest =>
           exact residueOk_of_tys hcs (fun T hm => h T (List.mem_cons_of_mem _ hm)) r hrest
 
-/-- **`split`'s struct step never fails, and its residue is droppable.** The
-fields before the selected slot and the fields after it are retained whole, and
-`anyLinearOther = false` — §5.1's residue test at this step — is what makes
+/-- **`split`'s member step never fails, and its residue is droppable.** The
+members before the selected slot and the members after it are retained whole,
+and `anyLinearOther = false` — §5.1's residue test at this step — is what makes
 each of them non-`Linear`; the selected slot's own outcome is the hypothesis,
 which is `splitResidue_ok`'s induction step handed in rather than a mutual
-recursion (helper). -/
+recursion. The struct step and the array step both consume it, with the
+declaration's fields or `List.replicate n T` for `Ts` (helper). -/
 theorem splitFields_ok {D : Decls} {πs : List Nat} {T' : Ty} :
     ∀ (f : Nat) {cs : List Contents} {Ts : List Ty} {Tf : Ty},
       ContentsTys D cs Ts → Contents.holeFreeList cs = true →
@@ -1159,19 +1160,26 @@ theorem splitResidue_ok {D : Decls} : ∀ (πs : List Nat) {c : Contents} {T T' 
       | none => simp [Ty.atPath, hfa] at hpath
       | some Tf =>
         simp only [Ty.atPath, hfa] at hpath
-        -- An array step of the selected path is refused by `linearResidue` (its
-        -- array arm is `true`), so the array arm of `fieldAt_inv` is empty here.
-        rcases Ty.fieldAt_inv hfa with ⟨s, sd, rfl, hd, hf⟩ | ⟨n, rfl, _⟩
-        case inr => simp [linearResidue] at hres
-        simp only [linearResidue, hd, hf, Bool.or_eq_false_iff] at hres
-        cases hty with
-        | hole => simp [Contents.holeFree] at hhf
-        | @struct s' sd' cs hd' hcs =>
-            have heq : sd' = sd := by rw [hd'] at hd; cases hd; rfl
-            subst heq
-            refine splitFields_ok f hcs (by simpa only [Contents.holeFree] using hhf)
-              hf hres.1 (fun cf hcf hhf' => splitResidue_ok π hcf hhf' hpath ?_)
-            simpa only [hf] using hres.2
+        -- A step is a field slot or a constant index, and `splitFields` walks
+        -- both: `Ty.fieldAt_inv` says which, and the member list is the
+        -- declaration's fields or `n` copies of the element type.
+        rcases Ty.fieldAt_inv hfa with ⟨s, sd, rfl, hd, hf⟩ | ⟨n, rfl, hf⟩
+        · simp only [linearResidue, hd, hf, Bool.or_eq_false_iff] at hres
+          cases hty with
+          | hole => simp [Contents.holeFree] at hhf
+          | @struct s' sd' cs hd' hcs =>
+              have heq : sd' = sd := by rw [hd'] at hd; cases hd; rfl
+              subst heq
+              refine splitFields_ok f hcs (by simpa only [Contents.holeFree] using hhf)
+                hf hres.1 (fun cf hcf hhf' => splitResidue_ok π hcf hhf' hpath ?_)
+              simpa only [hf] using hres.2
+        · simp only [linearResidue, hf, Bool.or_eq_false_iff] at hres
+          cases hty with
+          | hole => simp [Contents.holeFree] at hhf
+          | @array T'' n' cs hcs =>
+              refine splitFields_ok f hcs (by simpa only [Contents.holeFree] using hhf)
+                hf hres.1 (fun cf hcf hhf' => splitResidue_ok π hcf hhf' hpath ?_)
+              simpa only [hf] using hres.2
 
 /-- **The residue's drop never refuses, and emits §6.11's events in the
 traversal's order.** `dropResidue`'s linear monitor is unreachable on droppable
