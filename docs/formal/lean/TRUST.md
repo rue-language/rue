@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 151.
+- Theorems checked: 175.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -51,6 +51,21 @@ and diffs them against the committed copies.
 
 | Theorem | Module | Axioms |
 | --- | --- | --- |
+| `cmpScaled_trichotomy` | `RueCore.Float` | *none* |
+| `magCmp_trichotomy` | `RueCore.Float` | *none* |
+| `negIf_trichotomy` | `RueCore.Float` | `propext` |
+| `totalCmp_trichotomy` | `RueCore.Float` | `propext` |
+| `canonAux_ok` | `RueCore.Float` | `Quot.sound`, `propext` |
+| `canonNum_wf` | `RueCore.Float` | `Quot.sound`, `propext` |
+| `one_wf` | `RueCore.Float` | `propext` |
+| `negate_wf` | `RueCore.Float` | *none* |
+| `widen_wf` | `RueCore.Float` | `Quot.sound`, `propext` |
+| `roundOp_wf` | `RueCore.Float` | `Quot.sound`, `propext` |
+| `FloatModel.cast_nan` | `RueCore.Float` | `propext` |
+| `floatToInt_partition` | `RueCore.Float` | *none* |
+| `toIntIn_mem` | `RueCore.Float` | *none* |
+| `toIntIn_nan` | `RueCore.Float` | *none* |
+| `toIntIn_inf` | `RueCore.Float` | *none* |
 | `valOf_inBounds` | `RueCore.Syntax` | `Quot.sound`, `propext` |
 | `wrapInt_inBounds` | `RueCore.Syntax` | `Quot.sound`, `propext` |
 | `Mult.rank_le_join_left` | `RueCore.Statics` | *none* |
@@ -74,6 +89,7 @@ and diffs them against the committed copies.
 | `HasTys.length_eq` | `RueCore.Soundness` | `propext` |
 | `HasTy.mult_eq` | `RueCore.Soundness` | `propext` |
 | `HasTy.int_inv` | `RueCore.Soundness` | `propext` |
+| `HasTy.float_inv` | `RueCore.Soundness` | `propext` |
 | `HasTy.bool_inv` | `RueCore.Soundness` | `propext` |
 | `HasTy.struct_inv` | `RueCore.Soundness` | `propext` |
 | `ContentsTys.length_eq` | `RueCore.Soundness` | `propext` |
@@ -98,9 +114,14 @@ and diffs them against the committed copies.
 | `intResult_res` | `RueCore.Soundness` | `propext` |
 | `binOpInt_res` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `evalBinOp_res` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `binOpFloat_res` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `evalBinOpFloat_res` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `evalUnOp_int_res` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `evalUnOp_bool_res` | `RueCore.Soundness` | `propext` |
 | `evalIntCast_res` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `evalUnOp_float_res` | `RueCore.Soundness` | `propext` |
+| `evalFintrin_int_res` | `RueCore.Soundness` | `propext` |
+| `evalFintrin_float_res` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `ContentsMatches.contentsTy` | `RueCore.Soundness` | `propext` |
 | `ContentsMatchesList.contentsTys` | `RueCore.Soundness` | `propext` |
 | `OwnSt.fieldAt_succ` | `RueCore.Soundness` | `propext` |
@@ -197,6 +218,9 @@ and diffs them against the committed copies.
 | `checkProgram_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
 | `Examples.panicPastLinear_typed` | `RueCore.Examples` | `propext` |
 | `Examples.countdown_at_17` | `RueCore.Examples` | `propext` |
+| `Examples.floatToInt_inf_traps` | `RueCore.Examples` | `propext` |
+| `Examples.floatToInt_nan_traps` | `RueCore.Examples` | `propext` |
+| `Examples.floatDivZeroToInt_traps` | `RueCore.Examples` | `Quot.sound`, `propext` |
 | `Explain.explain_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
 | `Explain.explainArgs_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
 | `Explain.traceArgs_res` | `RueCore.Explain` | `propext` |
@@ -208,10 +232,58 @@ What each axiom that appears above means:
 - `Quot.sound` — standard, allowed by this project's policy
 - `propext` — standard, allowed by this project's policy
 
+## Assumptions carried as interfaces
+
+An assumption this package makes about the world is a **field of a
+structure**, never an `axiom`. The difference is the point: a theorem
+that rests on one takes the structure as a parameter, so the assumption
+is visible in its own statement and in `DIGEST.md`, and `#print axioms`
+keeps meaning what it says.
+
+One interface exists today, `RueCore.FloatModel` (`RueCore/Float.lean`),
+which is §7's "totality of the float operations" lemma — the one §7
+itself says is "discharged against the standard rather than against
+Rue". Its fields:
+
+- `arith_wf`, `sqrt_wf`, `ofLit_wf`, `ofInt_wf`, `narrow_wf` — the
+  rounded operations of §6.4 land **in** `𝔽_w`. This is the float
+  counterpart of `valOf_inBounds`, which *is* proved, because
+  `val_{w,s}` is arithmetic while `rnd_w` is IEEE.
+- `arith_nan`, `narrow_nan`, `div_by_zero`, `zero_div_zero` — the
+  behavioural clauses §6.4 spells out "as consequences of `⊕_w`"
+  (`3.12:22`, `3.12:19`). Each is true of IEEE 754 *and* of the
+  compiler, which is why the two NaN laws are the **weak** ones: a NaN
+  operand yields *a* NaN, sign unspecified. The standard promises no
+  more, and both of Rue's targets propagate an operand's NaN with its
+  own sign rather than substituting `σ_NaN` — `3.12:44` fixes `σ_NaN`
+  for a NaN an invalid operation *creates*, which `zero_div_zero` is.
+- `ofLit_zero`, `ofLit_one` — `3.12:9` at the two literals a witness
+  needs: a decimal representable in the target type denotes exactly that
+  value.
+
+What is **not** assumed, although §7 grouped it with the above:
+totality as a function (every §6.4 float operation is a total Lean
+function), the `(D-Float-To-Int)`/`(D-Float-To-Int-Trap)` partition
+(`floatToInt_partition`), and closure of the *exact* operations
+(`negate_wf`, `widen_wf`, `roundOp_wf`). §2's datum model is what makes
+those provable.
+
+The executable instance `RueCore.Float.exactOps` is constructive integer
+arithmetic, so nothing here touches Lean's `Float` — whose definition
+over an `opaque` constant would put `Classical.choice` on every theorem
+mentioning a value. That `exactOps` *satisfies* the laws is the residual
+assumption: it is checked by running every float corpus case against the
+compiler, not proved. So is everything `exactOps` decides that the laws
+leave open — which NaN a NaN-propagating operation returns, and `σ_NaN`
+itself (`false`, the AArch64/positive choice of `3.12:44`). Those are
+model choices, and retargeting the instance changes no theorem.
+
 ## Declared assumptions
 
 None. The package declares no axiom of its own, so nothing here is
-assumed beyond Lean's logic. When the project's obligation interfaces
-arrive (the library obligations of §6.13.5, and the adequacy obligation
-`../03-metatheory.md` records), each will appear in this section with
-its doc-comment, which is where its source belongs.
+assumed beyond Lean's logic — what it assumes about IEEE 754 is the
+interface above instead. When the project's other obligation
+interfaces arrive (the library obligations of §6.13.5, and the
+adequacy obligation `../03-metatheory.md` records), each will appear
+in this section with its doc-comment, which is where its source
+belongs.

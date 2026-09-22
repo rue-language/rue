@@ -331,7 +331,7 @@ def fieldSlots (D : StructEnv) : Ty → List Nat
       (match D[s]? with
        | some sd => List.range sd.fields.length
        | none => [])
-  | .int _ _ | .bool | .unit => []
+  | .int _ _ | .float _ | .bool | .unit => []
 
 /-- (helper) Every path of **one or two** field steps under a binder's
 declared type. Depth 2 is where the path machinery actually recurses —
