@@ -1618,7 +1618,8 @@ result has type `[T; n]`.
   Γ;Σ;Λ ⊢ [ e1, ..., en ] ⇒ [T; n] ⊣ Σn
 ```
 
-Every element is a value-context use of `T` (`3.5:2` — one shared element type),
+Every element is a value-context use of `T` (`3.5:3`, `7.1:3` — one shared
+element type),
 typed left-to-right with Σ threaded, and the array owns all `n` elements;
 `class([T; n])` is given by §3 (`3.5:1` for the type form). The empty array `[]`
 (`n = 0`) is the zero-sized `[T; 0]` and uses nothing; §3's table classes it
