@@ -1063,6 +1063,145 @@ theorem Ty.fieldAt_inv {D : Decls} {T Tf : Ty} {f : Nat} (h : T.fieldAt D f = so
             simp⟩
       · cases h
 
+/-! ### §6.3's `split` and `drop*`: the residue is droppable, and drops in order
+
+(D-Use-Declared-Linear) §6.3 runs `drop*` over the residue `split` exposed, and
+§5.1's `¬ linear-residue(S, π_s)` premise is what makes that safe. These are the
+three statements the two new `soundness` cases consume: `split` never fails on a
+hole-free well-typed aggregate and hands back a leaf that is itself a value;
+every retained subtree is well typed at a **non-linear** type, so the residue
+monitor lets it through; and the events the residue emits are the concatenation
+of §6.11's own, in the traversal's order.
+-/
+
+/-- The residue `split` exposes is droppable: every retained subtree is well
+typed at a type whose class is not `Linear`. This is §5.1's
+`¬ linear-residue(S, π_s)` premise, read on the store side — and it is exactly
+what `dropResidue`'s monitor asks for (helper). -/
+def ResidueOk (D : Decls) (rs : List Contents) : Prop :=
+  ∀ r ∈ rs, ∃ Tr, ContentsTy D r Tr ∧ Tr.mult D ≠ .linear
+
+/-- A contents list well typed against types none of which is `Linear` is
+droppable residue (helper). -/
+theorem residueOk_of_tys {D : Decls} : ∀ {cs : List Contents} {Ts : List Ty},
+    ContentsTys D cs Ts → (∀ T ∈ Ts, T.mult D ≠ .linear) → ResidueOk D cs
+  | _, _, .nil, _ => by intro r hr; cases hr
+  | _, _, .cons hc hcs, h => by
+      intro r hr
+      cases hr with
+      | head => exact ⟨_, hc, h _ List.mem_cons_self⟩
+      | tail _ hrest =>
+          exact residueOk_of_tys hcs (fun T hm => h T (List.mem_cons_of_mem _ hm)) r hrest
+
+/-- **`split`'s struct step never fails, and its residue is droppable.** The
+fields before the selected slot and the fields after it are retained whole, and
+`anyLinearOther = false` — §5.1's residue test at this step — is what makes
+each of them non-`Linear`; the selected slot's own outcome is the hypothesis,
+which is `splitResidue_ok`'s induction step handed in rather than a mutual
+recursion (helper). -/
+theorem splitFields_ok {D : Decls} {πs : List Nat} {T' : Ty} :
+    ∀ (f : Nat) {cs : List Contents} {Ts : List Ty} {Tf : Ty},
+      ContentsTys D cs Ts → Contents.holeFreeList cs = true →
+      Ts[f]? = some Tf → anyLinearOther D Ts f = false →
+      (∀ cf, ContentsTy D cf Tf → cf.holeFree = true →
+        ∃ leaf rs, Contents.splitResidue D cf πs = .ok (leaf, rs) ∧
+          ContentsTy D leaf T' ∧ leaf.holeFree = true ∧ ResidueOk D rs) →
+      ∃ leaf rs, Contents.splitFields D cs f πs = .ok (leaf, rs) ∧
+        ContentsTy D leaf T' ∧ leaf.holeFree = true ∧ ResidueOk D rs
+  | 0, _, _, _, hcs, hhf, hf, hlin, hrec => by
+      cases hcs with
+      | nil => simp at hf
+      | @cons c cs T₀ Ts hc hcs' =>
+          simp only [List.getElem?_cons_zero, Option.some.injEq] at hf
+          subst hf
+          simp only [Contents.holeFreeList, Bool.and_eq_true] at hhf
+          obtain ⟨leaf, inner, hsp, hlt, hlhf, hro⟩ := hrec c hc hhf.1
+          refine ⟨leaf, inner ++ cs, by simp only [Contents.splitFields, hsp], hlt, hlhf, ?_⟩
+          intro r hr
+          rcases List.mem_append.mp hr with h | h
+          · exact hro r h
+          · refine residueOk_of_tys hcs' (fun T hm => ?_) r h
+            simp only [anyLinearOther, List.any_eq_false, decide_eq_true_eq] at hlin
+            exact hlin T hm
+  | f + 1, _, _, _, hcs, hhf, hf, hlin, hrec => by
+      cases hcs with
+      | nil => simp at hf
+      | @cons c cs T₀ Ts hc hcs' =>
+          simp only [List.getElem?_cons_succ] at hf
+          simp only [Contents.holeFreeList, Bool.and_eq_true] at hhf
+          simp only [anyLinearOther, Bool.or_eq_false_iff, decide_eq_false_iff_not] at hlin
+          obtain ⟨leaf, rest, hsp, hlt, hlhf, hro⟩ :=
+            splitFields_ok f hcs' hhf.2 hf hlin.2 hrec
+          refine ⟨leaf, c :: rest, by simp only [Contents.splitFields, hsp], hlt, hlhf, ?_⟩
+          intro r hr
+          cases hr with
+          | head => exact ⟨T₀, hc, hlin.1⟩
+          | tail _ h => exact hro r h
+
+/-- **`split` never fails on a hole-free well-typed aggregate, and the leaf it
+exposes is a value.** §6.3's `split(H(ℓ)@π_d, π_s)` is total wherever
+(Use-Declared-Linear-Destructure) §5.1's premises hold: `fully-owned(Σ, d)` is
+what says the aggregate has no hole in it, `Γ ⊢ p : T` is what says every step
+of `π_s` is a field, and `¬ linear-residue(S, π_s)` is what makes every
+retained subtree droppable. The leaf is hole-free because the whole subtree
+was, which is what lets the use hand the context a `Val` (`ContentsTy.toVal`). -/
+theorem splitResidue_ok {D : Decls} : ∀ (πs : List Nat) {c : Contents} {T T' : Ty},
+    ContentsTy D c T → c.holeFree = true → T.atPath D πs = some T' →
+    linearResidue D T πs = false →
+    ∃ leaf rs, Contents.splitResidue D c πs = .ok (leaf, rs) ∧
+      ContentsTy D leaf T' ∧ leaf.holeFree = true ∧ ResidueOk D rs
+  | [], c, _, _, hty, hhf, hpath, _ => by
+      simp only [Ty.atPath, Option.some.injEq] at hpath
+      subst hpath
+      exact ⟨c, [], by rw [Contents.splitResidue], hty, hhf, by intro r hr; cases hr⟩
+  | f :: π, c, T, T', hty, hhf, hpath, hres => by
+      cases hfa : T.fieldAt D f with
+      | none => simp [Ty.atPath, hfa] at hpath
+      | some Tf =>
+        simp only [Ty.atPath, hfa] at hpath
+        obtain ⟨s, sd, rfl, hd, hf⟩ := Ty.fieldAt_inv hfa
+        simp only [linearResidue, hd, hf, Bool.or_eq_false_iff] at hres
+        cases hty with
+        | hole => simp [Contents.holeFree] at hhf
+        | @struct s' sd' cs hd' hcs =>
+            have heq : sd' = sd := by rw [hd'] at hd; cases hd; rfl
+            subst heq
+            refine splitFields_ok f hcs (by simpa only [Contents.holeFree] using hhf)
+              hf hres.1 (fun cf hcf hhf' => splitResidue_ok π hcf hhf' hpath ?_)
+            simpa only [hf] using hres.2
+
+/-- **The residue's drop never refuses, and emits §6.11's events in the
+traversal's order.** `dropResidue`'s linear monitor is unreachable on droppable
+residue (`ContentsTy.residualLinear_false`), and each subtree's own walk is the
+closed form `dropEvents` — so §6.3's `drop*` over `[r_1, …, r_m]` is exactly
+`dropResidueEvents`, which is the concatenation `3.8:33` asks for ("all
+droppable residue in that place is destroyed immediately, exactly once, in
+declaration/ascending-index order"). -/
+theorem dropResidue_events {D : Decls} (hwf : WfDecls D) : ∀ {rs : List Contents},
+    ResidueOk D rs → dropResidue D rs = .ok (dropResidueEvents D rs)
+  | [], _ => rfl
+  | r :: rs, h => by
+      obtain ⟨Tr, hty, hnl⟩ := h r List.mem_cons_self
+      have hnres : r.residualLinear D = false := hty.residualLinear_false hwf hnl
+      simp only [dropResidue, hnres, Bool.false_eq_true, if_neg, not_false_eq_true,
+        dropContents_events hty,
+        dropResidue_events hwf (fun r' hr' => h r' (List.mem_cons_of_mem _ hr')),
+        dropResidueEvents, List.map_cons, List.flatten_cons]
+
+/-- **§6.3's `destructure` is total where §5.1 admits the redex**, and its
+trace is the residue's in closed form. This is the statement the two
+declared-linear `soundness` cases consume: the selected leaf comes back well
+typed at `Γ ⊢ p : T`'s type and hole-free — so a use hands on a `Val` and a
+`@drop` can run §6.11 on it — and the events are `dropResidueEvents`, with no
+`linearLeak` reachable. -/
+theorem destructure_ok {D : Decls} (hwf : WfDecls D) {c : Contents} {T T' : Ty}
+    {πs : List Nat} (hty : ContentsTy D c T) (hhf : c.holeFree = true)
+    (hpath : T.atPath D πs = some T') (hres : linearResidue D T πs = false) :
+    ∃ leaf rs, Contents.destructure D c πs = .ok (leaf, dropResidueEvents D rs) ∧
+      ContentsTy D leaf T' ∧ leaf.holeFree = true := by
+  obtain ⟨leaf, rs, hsp, hlt, hlhf, hro⟩ := splitResidue_ok πs hty hhf hpath hres
+  exact ⟨leaf, rs, by simp only [Contents.destructure, hsp, dropResidue_events hwf hro], hlt, hlhf⟩
+
 mutual
 /-- A fully-owned node holds a hole-free contents: `fully-owned(Σ, p)` (§5.1)
 is exactly what says the aggregate a use hands on has no hole in it
@@ -1273,6 +1412,53 @@ theorem ContentsMatches.writeAt {D : Decls} : ∀ (π : List Nat) {c sub' : Cont
                 Option.map_some], ?_⟩
               simp only [OwnSt.setAt]
               exact .elems (ContentsMatchesList.set f hl hf hmf')
+
+/-- **The store's use plan is the type's use plan.** §6.3 has the machine
+consume a closed elaboration annotation `μ`; this fragment's `eval` recovers it
+from the stored aggregate instead (`Contents.declaredPlan`, `Dynamics.lean`),
+and this is the theorem that the two are the same wherever Σ and the store
+agree: at every path Σ has a state for, the declaration index the stored value
+carries is the one the declared type names, so the `Declared(d, π_s)` split the
+machine takes is `declaredPrefix`'s (`Syntax.lean`).
+
+It is what makes the six place cases of `soundness` fire the rule their
+`Typed` premise selected — the four ordinary ones because the plan is `none`
+on both sides, and the two declared ones because it is the same
+`some (π_d, π_s)`. -/
+theorem ContentsMatches.declaredPlan_eq {D : Decls} : ∀ (π : List Nat) {c : Contents}
+    {t u : OwnSt} {T T' : Ty}, ContentsMatches D c t T → t.get π = some u →
+    T.atPath D π = some T' → c.declaredPlan D π = declaredPrefix D T π
+  | [], _, _, _, _, _, _, _, _ => rfl
+  | f :: π, c, t, u, T, T', hm, hg, hty => by
+      cases hfa : T.fieldAt D f with
+      | none => simp [Ty.atPath, hfa] at hty
+      | some Tf =>
+        simp only [Ty.atPath, hfa] at hty
+        obtain ⟨s, sd, rfl, hd, hf⟩ := Ty.fieldAt_inv hfa
+        have hdl : ∀ cs : List Contents,
+            (Contents.struct s cs).declaredLinear D = (Ty.struct s).declaredLinear D :=
+          fun _ => rfl
+        cases hm with
+        | owned hcty hhf =>
+            obtain ⟨cs, rfl, hl⟩ := ContentsMatches.owned_struct hd (.owned hcty hhf)
+            obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
+            simp only [OwnSt.get] at hg
+            have ih := ContentsMatches.declaredPlan_eq π
+              (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hmf)
+              hg hty
+            cases hrec : declaredPrefix D Tf π with
+            | none => simp only [Contents.declaredPlan, declaredPrefix, hcf, hfa, ih, hrec, hdl]
+            | some r => simp only [Contents.declaredPlan, declaredPrefix, hcf, hfa, ih, hrec]
+        | moved _ _ => simp [OwnSt.get] at hg
+        | @fields s' sd' cs ts hd' hl =>
+            have heq : sd' = sd := by rw [hd'] at hd; cases hd; rfl
+            subst heq
+            obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
+            simp only [OwnSt.get] at hg
+            have ih := ContentsMatches.declaredPlan_eq π hmf hg hty
+            cases hrec : declaredPrefix D Tf π with
+            | none => simp only [Contents.declaredPlan, declaredPrefix, hcf, hfa, ih, hrec, hdl]
+            | some r => simp only [Contents.declaredPlan, declaredPrefix, hcf, hfa, ih, hrec]
 
 /-- A `⊘` matches a `MovedOut` state at every type: nothing is stored, so
 nothing is claimed (helper). -/
@@ -2332,30 +2518,69 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
       | @unitLit Γ =>
           simp only [eval]
           exact ⟨.unit, hfm, Untouched.refl⟩
-      | @useCopy Γ pl en u T hget hg hfo hty hcopy _ =>
-          -- (D-Use-Copy) §6.3: navigate the path and hand the value on; the
-          -- cell is left untouched.
+      | @useCopy Γ pl en u T hget hg hfo hty hcopy hplan =>
+          -- (D-Use-Copy) §6.3: the plan is `Ordinary` on both sides
+          -- (`declaredPlan_eq`), so the destructure redex does not fire;
+          -- navigate the path and hand the value on, leaving the cell
+          -- untouched.
           obtain ⟨ℓ, cell, hρ, hc, hcm⟩ := hfm.store.lookup hget
           obtain ⟨cc, rfl, hmm⟩ := hcm
+          have hpl : cc.declaredPlan P.decls pl.path = none := by
+            rw [ContentsMatches.declaredPlan_eq pl.path hmm hg hty]; exact hplan
           obtain ⟨sub, hread, hsub⟩ := ContentsMatches.readAt pl.path hmm hg hty
           obtain ⟨v, hv, htyv⟩ := hsub.toVal hfo
           have hvm : v.mult P.decls = .copy := by rw [htyv.mult_eq]; exact hcopy
           have hev : eval M.toFloatOps (fuel + 1) P H φ (.use pl) = .ok H v [] := by
-            simp [eval, hρ, hc, hread, hv, hvm]
+            simp [eval, hρ, hc, hpl, hread, hv, hvm]
           rw [hev]
           exact ⟨htyv, hfm, Untouched.refl⟩
-      | @useMove Γ pl en u T hget hg hfo hty hncopy _ _ =>
+      | @useMove Γ pl en u T hget hg hfo hty hncopy _ hplan =>
           -- (D-Use-Move) §6.3: read the sub-position, then write `⊘` at
           -- exactly it — the partial move of §4.2.
           obtain ⟨ℓ, cell, hρ, hc, hcm⟩ := hfm.store.lookup hget
           obtain ⟨cc, rfl, hmm⟩ := hcm
+          have hpl : cc.declaredPlan P.decls pl.path = none := by
+            rw [ContentsMatches.declaredPlan_eq pl.path hmm hg hty]; exact hplan
           obtain ⟨sub, hread, hsub⟩ := ContentsMatches.readAt pl.path hmm hg hty
           obtain ⟨v, hv, htyv⟩ := hsub.toVal hfo
           have hvm : v.mult P.decls ≠ .copy := by rw [htyv.mult_eq]; exact hncopy
           obtain ⟨cc', hw, hmm'⟩ :=
             ContentsMatches.writeAt pl.path hmm hg hty (ContentsMatches.hole (T := T))
           have hev : eval M.toFloatOps (fuel + 1) P H φ (.use pl) = .ok (H.set ℓ (.full cc')) v [] := by
-            simp [eval, hρ, hc, hread, hv, hvm, hw]
+            simp [eval, hρ, hc, hpl, hread, hv, hvm, hw]
+          rw [hev]
+          exact ⟨htyv, ⟨hfm.store.set hρ ⟨cc', rfl, hmm'⟩, hfm.record⟩,
+            Untouched.trans_set Untouched.refl (Or.inr (List.mem_of_getElem? hρ))⟩
+      | @useDeclared Γ pl en u πd πs Td T hget hplan hgd hfo htd hres hty hdtor =>
+          -- **(D-Use-Declared-Linear) §6.3.** The plan the machine reads off
+          -- the store is the one the rule selected (`declaredPlan_eq`), so the
+          -- destructure redex fires at `ℓ@π_d`: `split` exposes the leaf and
+          -- the residue (`splitResidue_ok`), `drop*` destroys the residue
+          -- (`dropResidue_events` — no `linearLeak`, because §5.1's residue
+          -- premise held), and only then does the **consumed place** become
+          -- `⊘`. That last write is (Use-Move)'s at `π_d`, so the invariant is
+          -- re-established exactly as the `useMove` case above re-establishes
+          -- it, with `ContentsMatches.hole` at `d`'s own type.
+          obtain ⟨ℓ, cell, hρ, hc, hcm⟩ := hfm.store.lookup hget
+          obtain ⟨cc, rfl, hmm⟩ := hcm
+          obtain ⟨hsplit, _⟩ := declaredPrefix_split P.decls en.ty pl.path πd πs hplan
+          -- `π_s` reaches the leaf from `d`, and Σ has a fully-owned state there.
+          have hleaf : Td.atPath P.decls πs = some T := by
+            rw [hsplit, Ty.atPath_append, htd] at hty; exact hty
+          obtain ⟨u', hgu, _⟩ := OwnSt.fullyOwned_get (t := u) πs hfo
+          have hgfull : en.st.get pl.path = some u' := by
+            rw [hsplit, OwnSt.get_append, hgd]; exact hgu
+          have hpl : cc.declaredPlan P.decls pl.path = some (πd, πs) := by
+            rw [ContentsMatches.declaredPlan_eq pl.path hmm hgfull hty]; exact hplan
+          obtain ⟨cd, hread, hsub⟩ := ContentsMatches.readAt πd hmm hgd htd
+          obtain ⟨leaf, rs, hdest, hlty, hlhf⟩ :=
+            destructure_ok hwf.decls hsub.contentsTy (hsub.holeFree hfo) hleaf hres
+          obtain ⟨v, hv, htyv⟩ := hlty.toVal hlhf
+          obtain ⟨cc', hw, hmm'⟩ :=
+            ContentsMatches.writeAt πd hmm hgd htd (ContentsMatches.hole (T := Td))
+          have hev : eval M.toFloatOps (fuel + 1) P H φ (.use pl)
+              = .ok (H.set ℓ (.full cc')) v (dropResidueEvents P.decls rs) := by
+            simp [eval, hρ, hc, hpl, hread, hdest, hv, hw]
           rw [hev]
           exact ⟨htyv, ⟨hfm.store.set hρ ⟨cc', rfl, hmm'⟩, hfm.record⟩,
             Untouched.trans_set Untouched.refl (Or.inr (List.mem_of_getElem? hρ))⟩
@@ -2687,23 +2912,27 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
                   Untouched.trans_set Untouched.refl (Or.inr hmem)⟩
           · simp only [if_neg hb]
             trivial
-      | @dropCopy Γ pl en u T hget hg hfo hty hcopy _ =>
+      | @dropCopy Γ pl en u T hget hg hfo hty hcopy hplan =>
           obtain ⟨ℓ, cell, hρ, hc, hcm⟩ := hfm.store.lookup hget
           obtain ⟨cc, rfl, hmm⟩ := hcm
+          have hpl : cc.declaredPlan P.decls pl.path = none := by
+            rw [ContentsMatches.declaredPlan_eq pl.path hmm hg hty]; exact hplan
           obtain ⟨sub, hread, hsub⟩ := ContentsMatches.readAt pl.path hmm hg hty
           have hnh : sub.isHole = false :=
             Contents.isHole_eq_false (hsub.ne_hole (OwnSt.isOwned_of_fullyOwned hfo))
           have hvm : sub.mult P.decls = .copy := by
             rw [hsub.mult_eq (OwnSt.isOwned_of_fullyOwned hfo)]; exact hcopy
           have hev : eval M.toFloatOps (fuel + 1) P H φ (.drop pl) = .ok H .unit [] := by
-            simp [eval, hρ, hc, hread, hnh, hvm, dropCell]
+            simp [eval, hρ, hc, hpl, hread, hnh, hvm, dropCell]
           rw [hev]
           exact ⟨.unit, hfm, Untouched.refl⟩
-      | @dropRes Γ pl en u T hget hg ho hty hncopy _ _ _ =>
+      | @dropRes Γ pl en u T hget hg ho hty hncopy _ hplan _ =>
           -- §6.11's explicit `@drop`: the walk skips every `⊘` already under
           -- the place, and the place itself becomes `⊘`.
           obtain ⟨ℓ, cell, hρ, hc, hcm⟩ := hfm.store.lookup hget
           obtain ⟨cc, rfl, hmm⟩ := hcm
+          have hpl : cc.declaredPlan P.decls pl.path = none := by
+            rw [ContentsMatches.declaredPlan_eq pl.path hmm hg hty]; exact hplan
           obtain ⟨sub, hread, hsub⟩ := ContentsMatches.readAt pl.path hmm hg hty
           have hnh : sub.isHole = false := Contents.isHole_eq_false (hsub.ne_hole ho)
           have hvm : sub.mult P.decls ≠ .copy := by rw [hsub.mult_eq ho]; exact hncopy
@@ -2712,7 +2941,34 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
             ContentsMatches.writeAt pl.path hmm hg hty (ContentsMatches.hole (T := T))
           have hev : eval M.toFloatOps (fuel + 1) P H φ (.drop pl)
               = .ok (H.set ℓ (.full cc')) .unit evs := by
-            simp [eval, hρ, hc, hread, hnh, hvm, hdc, hw]
+            simp [eval, hρ, hc, hpl, hread, hnh, hvm, hdc, hw]
+          rw [hev]
+          exact ⟨.unit, ⟨hfm.store.set hρ ⟨cc', rfl, hmm'⟩, hfm.record⟩,
+            Untouched.trans_set Untouched.refl (Or.inr (List.mem_of_getElem? hρ))⟩
+      | @dropDeclared Γ pl en u πd πs Td T hget hplan hgd hfo htd hres hty hdtor =>
+          -- **(@Drop) §5.3 at a declared plan**, whose dynamics is §6.3's
+          -- destructure followed by §6.11 on the selected leaf: the residue's
+          -- events come first and the leaf's after them (probe d6c), and the
+          -- consumed place `ℓ@π_d` becomes `⊘` whatever the leaf's class.
+          obtain ⟨ℓ, cell, hρ, hc, hcm⟩ := hfm.store.lookup hget
+          obtain ⟨cc, rfl, hmm⟩ := hcm
+          obtain ⟨hsplit, _⟩ := declaredPrefix_split P.decls en.ty pl.path πd πs hplan
+          have hleaf : Td.atPath P.decls πs = some T := by
+            rw [hsplit, Ty.atPath_append, htd] at hty; exact hty
+          obtain ⟨u', hgu, _⟩ := OwnSt.fullyOwned_get (t := u) πs hfo
+          have hgfull : en.st.get pl.path = some u' := by
+            rw [hsplit, OwnSt.get_append, hgd]; exact hgu
+          have hpl : cc.declaredPlan P.decls pl.path = some (πd, πs) := by
+            rw [ContentsMatches.declaredPlan_eq pl.path hmm hgfull hty]; exact hplan
+          obtain ⟨cd, hread, hsub⟩ := ContentsMatches.readAt πd hmm hgd htd
+          obtain ⟨leaf, rs, hdest, hlty, _⟩ :=
+            destructure_ok hwf.decls hsub.contentsTy (hsub.holeFree hfo) hleaf hres
+          obtain ⟨levs, hdc⟩ := dropCell_ok (D := P.decls) (ℓ := ℓ) hlty
+          obtain ⟨cc', hw, hmm'⟩ :=
+            ContentsMatches.writeAt πd hmm hgd htd (ContentsMatches.hole (T := Td))
+          have hev : eval M.toFloatOps (fuel + 1) P H φ (.drop pl)
+              = .ok (H.set ℓ (.full cc')) .unit (dropResidueEvents P.decls rs ++ levs) := by
+            simp [eval, hρ, hc, hpl, hread, hdest, hdc, hw]
           rw [hev]
           exact ⟨.unit, ⟨hfm.store.set hρ ⟨cc', rfl, hmm'⟩, hfm.record⟩,
             Untouched.trans_set Untouched.refl (Or.inr (List.mem_of_getElem? hρ))⟩
