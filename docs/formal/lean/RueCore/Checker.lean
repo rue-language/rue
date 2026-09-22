@@ -22,7 +22,28 @@ program theorems ask for.
 *records* `class(S)`, and this pass is the equation §3 writes for it, together
 with `3.8:18`/`3.9:31`'s `@copy` restriction, `3.9:44`'s destructor
 restriction, and the acyclicity that makes the equation solvable in one pass
-(`struct_class_unique`).
+(`struct_class_unique`). `checkEnums` is the same for the enum layer, where §3
+writes one equation and no restriction: `class(E)` is the payload join over
+every variant (`6.3:19`).
+
+## `match`, algorithmically
+
+(Match) §5.5 decides four things, and `check` decides each where the rule states
+it. **Arm count and order**: the arm list must be as long as the variant list,
+and arm `j` is variant `j`'s — that is exhaustiveness (`4.7:9`, `4.7:10`) with no
+coverage search. **Arity**: each arm's payload locals are the variant's declared
+components, which `armCtx` supplies, so a wrong arity is not expressible rather
+than rejected. **The per-arm leak check**: `NoResidualLinear` over the entries
+the arm pops, which is `letIn`'s check read over a whole payload. **The folded
+join**: `Ctx.joinAll` over the arms' outgoing contexts in declaration order.
+
+The one thing `check` must *choose* is the arms' shared type, since §5.5 states
+it as one `T` and lets (Sub-Never) coerce a diverging arm to it. `firstArmTy`
+takes the first arm's, and every other arm is compared against that — the same
+choice `ite` makes for its two arms, with the same cost: a `match` whose first
+arm is a `return` takes `R` for `T` and a sibling arm at another type is refused,
+where §5.5 would take the sibling's. The first arm is therefore checked twice,
+which costs time and nothing else.
 
 ## `return` and `@panic`, algorithmically
 
@@ -167,6 +188,34 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
         match checkArgs P R Γ args sd.fields with
         | some Γ' => some (.struct s, Γ')
         | none => none
+  | .mkEnum e k args =>
+      match P.decls.enums[e]? with
+      | none => none
+      | some ed =>
+        match ed.variants[k]? with
+        | none => none
+        | some Ts =>
+          match checkArgs P R Γ args Ts with
+          | some Γ' => some (.enum e, Γ')
+          | none => none
+  | .«match» scrut arms =>
+      match check P R Γ scrut with
+      | some (.enum e, Γ₀) =>
+        (match P.decls.enums[e]? with
+         | none => none
+         | some ed =>
+           if arms.length = ed.variants.length then
+             (match firstArmTy P R Γ₀ arms ed.variants with
+              | none => none
+              | some T =>
+                (match checkArms P R Γ₀ T arms ed.variants with
+                 | none => none
+                 | some Γs =>
+                   (match Ctx.joinAll P.decls Γs with
+                    | some Γ' => some (T, Γ')
+                    | none => none)))
+           else none)
+      | _ => none
   | .drop p =>
       match Γ[p.root]? with
       | none => none
@@ -256,6 +305,39 @@ def checkArgs (P : Program) (R : Ty) : Ctx → List Expr → List Ty → Option 
       | some (T', Γ₁) => if T' = T then checkArgs P R Γ₁ es Ts else none
       | none => none
   | _, _, _ => none
+
+/-- The type (Match) §5.5's arms must share, as the algorithm picks it: the
+**first** arm's, read under that arm's own payload locals. §5.5 states the
+premise as one type `T` for every arm and lets (Sub-Never) supply it for a
+diverging one, which an algorithm cannot do, so `check` fixes `T` here and
+compares the others against it — exactly what it does for `ite`'s two arms, with
+the same cost in completeness (module docstring): a `match` whose first arm is a
+`return` takes `R` for `T`, and a sibling arm at another type is refused. -/
+def firstArmTy (P : Program) (R : Ty) (Γ₀ : Ctx) :
+    List Expr → List (List Ty) → Option Ty
+  | e :: _, Ts :: _ => (check P R (armCtx Ts Γ₀) e).map Prod.fst
+  | _, _ => none
+
+/-- (Match) §5.5's arm premises as an algorithm: every arm from the same
+post-scrutinee state `Γ₀`, each under its variant's payload locals (`armCtx`),
+each at the type `T` the first arm fixed, and each discharging §5.6 for the
+locals it pops. The result is one outgoing context per arm, in declaration
+order, which is what `Ctx.joinAll` then folds. A count mismatch between the arms
+and the variants is the last clause's `none` — `check` has already required the
+counts to agree, so no program reaches it. -/
+def checkArms (P : Program) (R : Ty) (Γ₀ : Ctx) (T : Ty) :
+    List Expr → List (List Ty) → Option (List Ctx)
+  | [], [] => some []
+  | e :: es, Ts :: Tss =>
+      match check P R (armCtx Ts Γ₀) e with
+      | some (T', Γb) =>
+          if T' = T ∧ NoResidualLinear P.decls (Γb.take Ts.length) then
+            (match checkArms P R Γ₀ T es Tss with
+             | some Γs => some (Γb.drop Ts.length :: Γs)
+             | none => none)
+          else none
+      | none => none
+  | _, _ => none
 end
 
 mutual
@@ -396,6 +478,59 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
           cases h
           exact .mkStruct hsd (checkArgs_sound args hargs)
         · cases h
+  | .mkEnum e k args, Γ, T, Γ', h => by
+      simp only [check] at h
+      cases hed : P.decls.enums[e]? with
+      | none => simp only [hed] at h; cases h
+      | some ed =>
+        simp only [hed] at h
+        cases hv : ed.variants[k]? with
+        | none => simp only [hv] at h; cases h
+        | some Ts =>
+          simp only [hv] at h
+          cases hargs : checkArgs P R Γ args Ts with
+          | none => simp only [hargs] at h; cases h
+          | some Γ₁ =>
+              simp only [hargs] at h
+              cases h
+              exact .mkEnum hed hv (checkArgs_sound args hargs)
+  | .«match» scrut arms, Γ, T, Γ', h => by
+      simp only [check] at h
+      cases hscrut : check P R Γ scrut with
+      | none => simp only [hscrut] at h; cases h
+      | some p =>
+        obtain ⟨Tsc, Γ₀⟩ := p
+        simp only [hscrut] at h
+        cases Tsc with
+        | int w sg => simp at h
+        | float w => simp at h
+        | bool => simp at h
+        | unit => simp at h
+        | struct s' => simp at h
+        | enum e =>
+          simp only [] at h
+          cases hed : P.decls.enums[e]? with
+          | none => simp only [hed] at h; cases h
+          | some ed =>
+            simp only [hed] at h
+            by_cases hlen : arms.length = ed.variants.length
+            · simp only [if_pos hlen] at h
+              cases hfirst : firstArmTy P R Γ₀ arms ed.variants with
+              | none => simp only [hfirst] at h; cases h
+              | some T₁ =>
+                simp only [hfirst] at h
+                cases harms : checkArms P R Γ₀ T₁ arms ed.variants with
+                | none => simp only [harms] at h; cases h
+                | some Γs =>
+                  simp only [harms] at h
+                  cases hjoin : Ctx.joinAll P.decls Γs with
+                  | none => simp only [hjoin] at h; cases h
+                  | some Γj =>
+                      simp only [hjoin] at h
+                      cases h
+                      exact .«match» (check_sound scrut hscrut) hed hlen
+                        (checkArms_sound arms harms) hjoin
+            · simp only [if_neg hlen] at h; cases h
   | .drop pl, Γ, T, Γ', h => by
       simp only [check] at h
       split at h
@@ -508,6 +643,33 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
           exact .ret (check_sound e hchk) hnl rfl
         · cases h
 
+/-- Every `checkArms` acceptance is a real (Match) §5.5 arm-list derivation. -/
+theorem checkArms_sound {P : Program} {R : Ty} {Γ₀ : Ctx} {T : Ty} :
+    ∀ (es : List Expr) {Tss : List (List Ty)} {Γs : List Ctx},
+    checkArms P R Γ₀ T es Tss = some Γs → TypedArms P R Γ₀ es Tss T Γs
+  | [], Tss, Γs, h => by
+      cases Tss with
+      | nil => simp only [checkArms] at h; cases h; exact .noArms
+      | cons _ _ => simp only [checkArms] at h; simp at h
+  | e :: es, Tss, Γs, h => by
+      cases Tss with
+      | nil => simp only [checkArms] at h; simp at h
+      | cons Ts Tss' =>
+          simp only [checkArms] at h
+          split at h
+          · rename_i T' Γb hchk
+            split at h
+            · rename_i hcond
+              obtain ⟨hT, hres⟩ := hcond
+              subst hT
+              split at h
+              · rename_i Γs' harms
+                cases h
+                exact .arm (check_sound e hchk) hres (checkArms_sound es harms)
+              · cases h
+            · cases h
+          · cases h
+
 /-- Every `checkArgs` acceptance is a real (Call) §5.8 argument-list
 derivation. -/
 theorem checkArgs_sound {P : Program} {R : Ty} : ∀ (es : List Expr) {Γ : Ctx} {Ts Γ'},
@@ -561,12 +723,31 @@ def checkStructsFrom (D : Decls) : Nat → List StructDecl → Bool
 /-- §3's class assignment for a whole struct environment, as an algorithm.
 `WfStructs` is what it decides, and that is the premise `Ty.mult`'s lookup
 needs to be §3's join. -/
-def checkStructs (D : Decls) : Bool := checkStructsFrom D 0 D
+def checkStructs (D : Decls) : Bool := checkStructsFrom D 0 D.structs
+
+/-- §3's class assignment for one enum declaration, as an algorithm (`6.3:19`):
+every payload component names only an earlier enum, and the recorded class is the
+payload join over every variant. There is no attribute clause and no destructor
+clause — §3 gives an enum neither. -/
+def checkEnumDecl (D : Decls) (e : Nat) (ed : EnumDecl) : Bool :=
+  ed.variants.all
+      (fun Ts => Ts.all (fun T => match T with | .enum e' => decide (e' < e) | _ => true)) &&
+    decide (ed.cls = ed.payloadJoin D)
+
+/-- The enum declarations from index `k` on (helper). -/
+def checkEnumsFrom (D : Decls) : Nat → List EnumDecl → Bool
+  | _, [] => true
+  | e, ed :: rest => checkEnumDecl D e ed && checkEnumsFrom D (e + 1) rest
+
+/-- §3's class assignment for a whole enum environment, as an algorithm.
+`WfEnums` is what it decides, and that is the premise `Ty.mult`'s lookup needs to
+be `6.3:19`'s join at an enum type. -/
+def checkEnums (D : Decls) : Bool := checkEnumsFrom D 0 D.enums
 
 /-- A whole program as an algorithm: (Fn) §5.8 for every function, plus the
 entry point's empty parameter list (§6.12's top-level result is `main()`). -/
 def checkProgram (P : Program) : Bool :=
-  checkStructs P.decls && P.fns.all (checkFn P) &&
+  checkStructs P.decls && checkEnums P.decls && P.fns.all (checkFn P) &&
     (match P.fns[0]? with
      | some fd => fd.params.isEmpty
      | none => false)
@@ -625,8 +806,45 @@ theorem checkStructsFrom_sound : ∀ (D : Decls) (k : Nat) (L : List StructDecl)
 environment (`WfStructs`). -/
 theorem checkStructs_sound {D : Decls} (h : checkStructs D = true) : WfStructs D := by
   intro s sd hget
-  have := checkStructsFrom_sound D 0 D h s sd hget
+  have := checkStructsFrom_sound D 0 D.structs h s sd hget
   simpa using checkStructDecl_sound this
+
+/-- Every `checkEnumDecl` acceptance is §3's class assignment for that
+declaration (`6.3:19`). -/
+theorem checkEnumDecl_sound {D : Decls} {e : Nat} {ed : EnumDecl}
+    (h : checkEnumDecl D e ed = true) : ed.Wf D e := by
+  unfold checkEnumDecl at h
+  simp only [Bool.and_eq_true, List.all_eq_true, decide_eq_true_eq] at h
+  obtain ⟨hpayloads, hcls⟩ := h
+  refine ⟨?_, hcls⟩
+  intro e' Ts hTs hmem
+  have := hpayloads Ts hTs (Ty.enum e') hmem
+  simpa using this
+
+/-- `checkEnumsFrom` checks the declaration at every offset (helper). -/
+theorem checkEnumsFrom_sound : ∀ (D : Decls) (k : Nat) (L : List EnumDecl),
+    checkEnumsFrom D k L = true → ∀ (i : Nat) (ed : EnumDecl), L[i]? = some ed →
+      checkEnumDecl D (k + i) ed = true
+  | _, _, [], _, i, ed, hget => by simp at hget
+  | D, k, ed₀ :: rest, h, i, ed, hget => by
+      simp only [checkEnumsFrom, Bool.and_eq_true] at h
+      cases i with
+      | zero =>
+          simp only [List.getElem?_cons_zero, Option.some_inj] at hget
+          subst hget
+          simpa using h.1
+      | succ j =>
+          simp only [List.getElem?_cons_succ] at hget
+          have hk := checkEnumsFrom_sound D (k + 1) rest h.2 j ed hget
+          have heq : k + 1 + j = k + (j + 1) := by omega
+          rwa [heq] at hk
+
+/-- Every `checkEnums` acceptance is §3's class assignment for the whole enum
+environment (`WfEnums`). -/
+theorem checkEnums_sound {D : Decls} (h : checkEnums D = true) : WfEnums D := by
+  intro e ed hget
+  have := checkEnumsFrom_sound D 0 D.enums h e ed hget
+  simpa using checkEnumDecl_sound this
 
 /-- Every `checkProgram` acceptance is the `ProgramTyped` hypothesis the §7
 program theorems (`Soundness.lean`) take, so running the checker is enough to
@@ -634,8 +852,8 @@ know the safety theorems apply to a program. -/
 theorem checkProgram_sound {P : Program} (h : checkProgram P = true) : ProgramTyped P := by
   unfold checkProgram at h
   simp only [Bool.and_eq_true, List.all_eq_true] at h
-  obtain ⟨⟨hstructs, hall⟩, hentry⟩ := h
-  refine ⟨⟨checkStructs_sound hstructs,
+  obtain ⟨⟨⟨hstructs, henums⟩, hall⟩, hentry⟩ := h
+  refine ⟨⟨⟨checkStructs_sound hstructs, checkEnums_sound henums⟩,
     fun fd hmem => checkFn_sound (hall fd (by simpa using hmem))⟩, ?_⟩
   split at hentry
   · rename_i fd hfd
