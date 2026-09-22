@@ -1255,7 +1255,7 @@ type, `[S { x0: 1 }, if c { return 42; } else { … }]` prints only the `42`
 and no destructor line — and RUE-2316 is the decision issue for all of
 them. -/
 def linearLostAtArrayElem : Program :=
-  { structs := structEnv,
+  { decls := Decls.ofStructs structEnv,
     fns := [{ params := [], ret := .struct sLinearDtor,
               body := call 1 [mkArray (.struct sLinearDtor)
                                 [resLD (lit 1), ret (resLD (lit 2))]] },

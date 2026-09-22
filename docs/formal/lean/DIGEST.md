@@ -1159,16 +1159,19 @@ Read as "§7's bullets, conjoined", this would overstate the linear bullet by
 this theorem noticing. They are different in kind: the first is a gap in the
 calculus, the second is the calculus doing what it says.
 
-* **A pending argument (open).** A by-value argument value that a *later*
-  argument of the same call destroys by `return` is in no cell and no scope
-  record, so its drop is neither run nor monitored and none of the five
-  violations fires. That edge is the calculus as written — §6.9's unwinding
+* **A pending value (open).** A value already built for a **sibling
+  position** that a *later* sibling destroys by `return` is in no cell and no
+  scope record, so its drop is neither run nor monitored and none of the five
+  violations fires. The sibling positions are every list `evalArgs` walks — a
+  call's argument list, a struct literal's initializers, an array literal's
+  elements. That edge is the calculus as written — §6.9's unwinding
   rule walks only σ, and §5.7's strict-context bottom rule (`Strict-Bottom`
   there, which the fragment does not mechanize) imposes no discard check on
   siblings already evaluated — it is what the Rue compiler does, and closing
   it is an open spec decision (RUE-2316, the pending-argument decision).
-  `Dynamics.lean`'s "Pending arguments" section states it in full and
-  `Examples.lean`'s `linearLostAtCallArg` is the kernel-checked witness.
+  `Dynamics.lean`'s "Pending values" section states it in full;
+  `Examples.lean`'s `linearLostAtCallArg` is the kernel-checked witness at an
+  argument and `linearLostAtArrayElem` the one at an array element.
 * **A `@panic` (by design).** §6.12 abandons the configuration, and §5.7
   exempts the `⊥_panic` edge from §5.6's obligation, so a trap runs no scope
   drop at all: a live linear binding at a `@panic` is destroyed with no
@@ -4037,6 +4040,23 @@ RueCore.Violation.unbound : Violation
 RueCore.Violation.typeConfusion : Violation
 ```
 
+### `bitLen`
+
+*def* · module `RueCore.Float`
+
+The number of bits in `n`'s binary representation, `0` for `0`
+(helper).
+
+```lean
+def RueCore.bitLen (n : Nat) : Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (n : Nat), bitLen n = if n = 0 then 0 else n.log2 + 1
+```
+
 ### `cmpScaled`
 
 *def* · module `RueCore.Float`
@@ -4082,6 +4102,28 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (i : Int) (n : Nat),
   inBoundsIdx i n = (decide (0 ≤ i) && decide (i < ↑n))
+```
+
+### `roundDivHalfEven`
+
+*def* · module `RueCore.Float`
+
+Round `a / b` to a natural number, to nearest with ties to even
+(helper).
+
+```lean
+def RueCore.roundDivHalfEven (a b : Nat) : Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (a b : Nat),
+  roundDivHalfEven a b =
+    if 2 * (a % b) < b then a / b
+    else
+      if b < 2 * (a % b) then a / b + 1
+      else if a / b % 2 = 0 then a / b else a / b + 1
 ```
 
 ### `Attr.lift`
@@ -4299,20 +4341,29 @@ exponent is non-negative — comes back unchanged; otherwise the integral part
 def RueCore.FloatDatum.roundOp (op : FloatRoundOp) (f : FloatDatum) : FloatDatum
 ```
 
-### `FloatDatum.totalCmp`
+### `FloatDatum.totalRank`
 
 *def* · module `RueCore.Float`
 
-`(D-Total-Cmp)` §6.4: `-1`, `0`, `1` under `≺_w`. `k = 0` holds exactly
-when the two operands are the **same datum** — which is why `FloatDatum` is
-kept canonical — and that is total precisely where `≈` is not:
-`totalCmp f f = 0` for every `f`, a NaN included. `3.12:32` fixes only the
-*sign* of a non-zero result; the implementations return `-1`/`0`/`1`
-(verified against the compiler), and the model returns the same so that a
-printed `@total_cmp` has a comparable value.
+`≺_w`, the IEEE 754 `totalOrder` predicate of §6.4, as a rank: every
+negative NaN, then `-inf`, the negative finite values, `-0.0`, `+0.0`, the
+positive finite values, `+inf`, then every positive NaN (`3.12:32`). Within a
+sign the finite values are compared by magnitude, reversed on the negative
+side (helper).
 
 ```lean
-def RueCore.FloatDatum.totalCmp (a b : FloatDatum) : Int
+def RueCore.FloatDatum.totalRank : FloatDatum → Int
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+(FloatDatum.nan true).totalRank = -3
+(FloatDatum.inf true).totalRank = -2
+∀ (sig : Nat) (exp : Int), (FloatDatum.num true sig exp).totalRank = -1
+∀ (sig : Nat) (exp : Int), (FloatDatum.num false sig exp).totalRank = 1
+(FloatDatum.inf false).totalRank = 2
+(FloatDatum.nan false).totalRank = 3
 ```
 
 ### `FloatDatum.truncToInt`
@@ -4564,6 +4615,25 @@ Defining equations, as Lean derived them from the body:
   OwnSt.fieldAt ts f = ts[f]?.getD OwnSt.owned
 ```
 
+### `OwnSt.fieldStates`
+
+*def* · module `RueCore.Statics`
+
+The recorded states of a node's fields; a node with no record of its own
+has none, and every field of it is `owned` (helper).
+
+```lean
+def RueCore.OwnSt.fieldStates : OwnSt → List OwnSt
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (ts : List OwnSt), (OwnSt.fields ts).fieldStates = ts
+OwnSt.owned.fieldStates = []
+OwnSt.movedOut.fieldStates = []
+```
+
 ### `OwnSt.isOwned`
 
 *def* · module `RueCore.Statics`
@@ -4750,6 +4820,29 @@ Defining equations, as Lean derived them from the body:
     else FloatDatum.num x x_1 x_2
 ```
 
+### `log2Floor`
+
+*def* · module `RueCore.Float`
+
+`⌊log₂ (num/den)⌋` for a positive rational, exactly. `bitLen num - bitLen
+den` is within one of the answer, and one comparison settles it (helper).
+
+```lean
+def RueCore.log2Floor (num den : Nat) : Int
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (num den : Nat),
+  log2Floor num den =
+    if
+        den * 2 ^ (max 0 (↑(bitLen num) - ↑(bitLen den))).toNat ≤
+          num * 2 ^ (max 0 (-(↑(bitLen num) - ↑(bitLen den)))).toNat then
+      ↑(bitLen num) - ↑(bitLen den)
+    else ↑(bitLen num) - ↑(bitLen den) - 1
+```
+
 ### `magCmp`
 
 *def* · module `RueCore.Float`
@@ -4766,20 +4859,6 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (s₁ : Nat) (e₁ : Int) (s₂ : Nat) (e₂ : Int),
   magCmp s₁ e₁ s₂ e₂ = cmpScaled s₁ e₁ s₂ e₂
-```
-
-### `roundRat`
-
-*def* · module `RueCore.Float`
-
-`rnd_w` of the exact rational `(-1)^neg · num/den`: the nearest datum of
-`𝔽_w`, ties to even, with an exact zero (and an underflowing one) giving the
-zero of the sign asked for and an overflowing magnitude giving `±inf`
-(`3.12:23`: "the exact result too large for `𝔽_w` yields `±inf` of the exact
-result's sign"). `den` is assumed non-zero by every caller.
-
-```lean
-def RueCore.roundRat (w : FloatWidth) (neg : Bool) (num den : Nat) : FloatDatum
 ```
 
 ### `BinOp.resultTy`
@@ -4949,71 +5028,6 @@ Defining equations, as Lean derived them from the body:
 Examples.tI64 = Ty.int IntWidth.w64 Sign.signed
 ```
 
-### `Float.narrow`
-
-*def* · module `RueCore.Float`
-
-The narrowing half of `(D-Float-Cast)`: `rnd_32` of an `f64` datum
-(`3.12:19`), which yields `±inf` when the magnitude is too large for `𝔽_32`
-and carries a special across. A converted NaN is a *propagated* NaN, not one
-the conversion creates, so it keeps the operand's sign — measured against the
-compiler, which casts a negative `f64` NaN to a negative `f32` NaN. `σ_NaN`
-therefore never reaches this operation, and it takes no `σ` parameter.
-
-```lean
-def RueCore.Float.narrow (f : FloatDatum) : FloatDatum
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (a : Bool), Float.narrow (FloatDatum.nan a) = FloatDatum.nan a
-∀ (a : Bool), Float.narrow (FloatDatum.inf a) = FloatDatum.inf a
-∀ (a : Bool) (a_1 : Nat) (a_2 : Int),
-  Float.narrow (FloatDatum.num a a_1 a_2) =
-    if a_1 = 0 then FloatDatum.num a 0 0
-    else
-      match Float.ratOf false a_1 a_2 with
-      | (fst, num, den) => roundRat FloatWidth.w32 a num den
-```
-
-### `Float.ofInt`
-
-*def* · module `RueCore.Float`
-
-`(D-Int-To-Float)` §6.4: `rnd_w` of an exact integer (`3.12:16`).
-
-```lean
-def RueCore.Float.ofInt (w : FloatWidth) (n : Int) : FloatDatum
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (w : FloatWidth) (n : Int),
-  Float.ofInt w n = roundRat w (decide (n < 0)) n.natAbs 1
-```
-
-### `Float.ofLit`
-
-*def* · module `RueCore.Float`
-
-`3.12:9` on a literal: `rnd_w` of its exact decimal.
-
-```lean
-def RueCore.Float.ofLit (w : FloatWidth) (sig : Nat) (negExp : Bool) (e : Nat) :
-  FloatDatum
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (w : FloatWidth) (sig : Nat) (negExp : Bool) (e : Nat),
-  Float.ofLit w sig negExp e =
-    match { sig := sig, negExp := negExp, e := e }.exact with
-    | (num, den) => roundRat w false num den
-```
-
 ### `Float.subD`
 
 *def* · module `RueCore.Float`
@@ -5090,6 +5104,44 @@ Defining equations, as Lean derived them from the body:
     match f.truncToInt with
     | none => none
     | some t => if lo ≤ t ∧ t ≤ hi then some t else none
+```
+
+### `FloatDatum.totalCmp`
+
+*def* · module `RueCore.Float`
+
+`(D-Total-Cmp)` §6.4: `-1`, `0`, `1` under `≺_w`. `k = 0` holds exactly
+when the two operands are the **same datum** — which is why `FloatDatum` is
+kept canonical — and that is total precisely where `≈` is not:
+`totalCmp f f = 0` for every `f`, a NaN included. `3.12:32` fixes only the
+*sign* of a non-zero result; the implementations return `-1`/`0`/`1`
+(verified against the compiler), and the model returns the same so that a
+printed `@total_cmp` has a comparable value.
+
+```lean
+def RueCore.FloatDatum.totalCmp (a b : FloatDatum) : Int
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (n : Bool) (s₁ : Nat) (e₁ : Int) (neg : Bool) (s₂ : Nat) (e₂ : Int),
+  (FloatDatum.num n s₁ e₁).totalCmp (FloatDatum.num neg s₂ e₂) =
+    match
+      compare (FloatDatum.num n s₁ e₁).totalRank
+        (FloatDatum.num neg s₂ e₂).totalRank with
+    | Ordering.lt => -1
+    | Ordering.gt => 1
+    | Ordering.eq =>
+      if n = true then -magCmp s₁ e₁ s₂ e₂ else magCmp s₁ e₁ s₂ e₂
+∀ (a b : FloatDatum),
+  (∀ (n : Bool) (s₁ : Nat) (e₁ : Int) (neg : Bool) (s₂ : Nat) (e₂ : Int),
+      a = FloatDatum.num n s₁ e₁ → b = FloatDatum.num neg s₂ e₂ → False) →
+    a.totalCmp b =
+      match compare a.totalRank b.totalRank with
+      | Ordering.lt => -1
+      | Ordering.gt => 1
+      | Ordering.eq => 0
 ```
 
 ### `FloatIntrin`
@@ -5593,16 +5645,29 @@ produces (helper).
 def RueCore.Contents.readAt : Contents → List Nat → Except Violation Contents
 ```
 
-### `Contents.toVal`
-
-*def* · module `RueCore.Dynamics`
-
-The value a contents denotes, or `none` when a `⊘` sits somewhere in it —
-which is the read §6.3 leaves stuck and §7's no-use-after-move bullet forbids
-(helper).
+Defining equations, as Lean derived them from the body:
 
 ```lean
-def RueCore.Contents.toVal : Contents → Option Val
+∀ (x : Contents), x.readAt [] = Except.ok x
+∀ (head : Nat) (tail : List Nat),
+  Contents.hole.readAt (head :: tail) =
+    Except.error Violation.useAfterMove
+∀ (s : Nat) (cs : List Contents) (f : Nat) (π : List Nat),
+  (Contents.struct s cs).readAt (f :: π) =
+    match cs[f]? with
+    | some c => c.readAt π
+    | none => Except.error Violation.typeConfusion
+∀ (elem : Ty) (cs : List Contents) (f : Nat) (π : List Nat),
+  (Contents.array elem cs).readAt (f :: π) =
+    match cs[f]? with
+    | some c => c.readAt π
+    | none => Except.error Violation.typeConfusion
+∀ (x : Contents) (head : Nat) (tail : List Nat),
+  (x = Contents.hole → False) →
+    (∀ (s : Nat) (cs : List Contents), x = Contents.struct s cs → False) →
+      (∀ (elem : Ty) (cs : List Contents),
+          x = Contents.array elem cs → False) →
+        x.readAt (head :: tail) = Except.error Violation.typeConfusion
 ```
 
 ### `Contents.writeAt`
@@ -5617,6 +5682,30 @@ so every `eval` arm that writes has already read at the same path, and its
 
 ```lean
 def RueCore.Contents.writeAt : Contents → List Nat → Contents → Option Contents
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (x x_1 : Contents), x.writeAt [] x_1 = some x_1
+∀ (x : Contents) (s : Nat) (cs : List Contents) (f : Nat) (π : List Nat),
+  (Contents.struct s cs).writeAt (f :: π) x =
+    match cs[f]? with
+    | some c =>
+      Option.map (fun c' => Contents.struct s (cs.set f c'))
+        (c.writeAt π x)
+    | none => none
+∀ (x : Contents) (T : Ty) (cs : List Contents) (f : Nat) (π : List Nat),
+  (Contents.array T cs).writeAt (f :: π) x =
+    match cs[f]? with
+    | some c =>
+      Option.map (fun c' => Contents.array T (cs.set f c'))
+        (c.writeAt π x)
+    | none => none
+∀ (x x_1 : Contents) (head : Nat) (tail : List Nat),
+  (∀ (s : Nat) (cs : List Contents), x = Contents.struct s cs → False) →
+    (∀ (T : Ty) (cs : List Contents), x = Contents.array T cs → False) →
+      x.writeAt (head :: tail) x_1 = none
 ```
 
 ### `Ctx`
@@ -6058,9 +6147,10 @@ the surface's repeat form `[e; n]` (`7.1:36`–`7.1:39`). `indexRead p e` and
 `indexWrite p e₁ e₂` are the **dynamic**-index read `p[e]` and write
 `p[e₁] = e₂`: a constant index is a step of the place (`Place.idx`), so these
 two forms exist for the index §5's `Path` cannot track — §4.2's
-`Untrackable(OrdinaryDynamic)` plan, restricted to `class(T) = Copy` by §5.1's
-only successful rule for it and bounds-checked at run time by §6.5's
-(D-Index)/(D-Index-Trap).
+`Untrackable(OrdinaryDynamic)` plan for the read, restricted to
+`class(T) = Copy` by §5.1's only successful rule for it, and (Assign) §5.2's
+linear-overwrite premise for the write — both bounds-checked at run time by
+§6.5's (D-Index)/(D-Index-Trap).
 
 ```lean
 inductive RueCore.Expr : Type
@@ -6444,6 +6534,42 @@ Defining equations, as Lean derived them from the body:
 ∀ (w : IntWidth) (n : Int), bitsOf w n = (n % ↑w.modulus).toNat
 ```
 
+### `roundRat`
+
+*def* · module `RueCore.Float`
+
+`rnd_w` of the exact rational `(-1)^neg · num/den`: the nearest datum of
+`𝔽_w`, ties to even, with an exact zero (and an underflowing one) giving the
+zero of the sign asked for and an overflowing magnitude giving `±inf`
+(`3.12:23`: "the exact result too large for `𝔽_w` yields `±inf` of the exact
+result's sign"). `den` is assumed non-zero by every caller.
+
+```lean
+def RueCore.roundRat (w : FloatWidth) (neg : Bool) (num den : Nat) : FloatDatum
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (w : FloatWidth) (neg : Bool) (num den : Nat),
+  roundRat w neg num den =
+    if num = 0 then FloatDatum.num neg 0 0
+    else
+      have e0 := log2Floor num den;
+      have e := max w.eMin (e0 - ↑w.prec + 1);
+      have n' := num * 2 ^ (max 0 (-e)).toNat;
+      have d' := den * 2 ^ (max 0 e).toNat;
+      have m := roundDivHalfEven n' d';
+      match
+        if m = 2 ^ w.prec then (2 ^ (w.prec - 1), e + 1) else (m, e) with
+      | (m, e) =>
+        if m = 0 then FloatDatum.num neg 0 0
+        else
+          if w.eTop < e ∨ 2 ^ (w.eTop - e).toNat ≤ m then
+            FloatDatum.inf neg
+          else canonNum neg m e
+```
+
 ### `valOf`
 
 *def* · module `RueCore.Syntax`
@@ -6465,53 +6591,6 @@ Defining equations, as Lean derived them from the body:
   valOf w Sign.signed b =
     if 2 * (b % w.modulus) < w.modulus then ↑(b % w.modulus)
     else ↑(b % w.modulus) - ↑w.modulus
-```
-
-### `Contents.residualLinear`
-
-*def* · module `RueCore.Dynamics`
-
-§5.6's `residual-linear`, read on the **contents** rather than on Σ: does a
-live sub-value of a declared-`linear` struct type remain? This is the leak
-monitor §6.7's `endscope` and §6.9's frame teardown consult, and the overwrite
-monitor of §6.8. A `⊘` carries nothing (`3.8:60`'s skip), a live
-declared-`linear` struct carries the obligation itself (`3.8:74`), and
-otherwise the obligation is the disjunction over the live fields — exactly the
-recursion §5.6 writes for Σ, on the store's side of the invariant.
-
-At an **enum** the residue is the **active** variant's payload and nothing else:
-an enum declares no attribute to carry an obligation of its own, and the
-inactive variants have no storage (§6.11). That is weaker than §5.6's Σ-side
-clause, which reads `class(E) = Linear` over *every* variant because the tag is
-not a static fact — and weaker in the safe direction: a program the statics
-accept has no linear payload in any variant, so the monitor finds none under the
-tag either (`ContentsTy.residualLinear_false`, `Soundness.lean`). The gap is
-exactly probe e11, which the statics reject (E0406) and which this monitor would
-let run.
-
-```lean
-def RueCore.Contents.residualLinear (D : Decls) : Contents → Bool
-```
-
-### `Contents.toVals`
-
-*def* · module `RueCore.Dynamics`
-
-`toVal` over a field or element list (helper).
-
-```lean
-def RueCore.Contents.toVals : List Contents → Option (List Val)
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-Contents.toVals [] = some []
-∀ (c : Contents) (cs : List Contents),
-  Contents.toVals (c :: cs) =
-    match c.toVal, Contents.toVals cs with
-    | some v, some vs => some (v :: vs)
-    | x, x_1 => none
 ```
 
 ### `Ctx.SameSkel`
@@ -6757,29 +6836,69 @@ RueCore.Explain.Verdict.accept (ty : Ty) (ctxOut : Ctx) : Explain.Verdict
 RueCore.Explain.Verdict.reject (premise : String) : Explain.Verdict
 ```
 
-### `Float.exactOps`
+### `Float.narrow`
 
 *def* · module `RueCore.Float`
 
-The executable operations the corpus, the printer and the `#eval` demos
-run on: `σ_NaN` is **positive**, the AArch64 choice of `3.12:44` and Appendix
-B.1, which is the host this slice's corpus was checked against. Positive is
-`false` here, because `FloatDatum.nan` carries the sign as `neg` — the field
-is the *sign bit*, so `nanSign := false` is `+NaN` and `true` is `-NaN`, and
-`FloatDatum.totalRank (.nan false) = 3`, the top of `≺_w`. Flipping this one
-`Bool` is the whole of retargeting the instance to x86-64.
+The narrowing half of `(D-Float-Cast)`: `rnd_32` of an `f64` datum
+(`3.12:19`), which yields `±inf` when the magnitude is too large for `𝔽_32`
+and carries a special across. A converted NaN is a *propagated* NaN, not one
+the conversion creates, so it keeps the operand's sign — measured against the
+compiler, which casts a negative `f64` NaN to a negative `f32` NaN. `σ_NaN`
+therefore never reaches this operation, and it takes no `σ` parameter.
 
 ```lean
-def RueCore.Float.exactOps : FloatOps
+def RueCore.Float.narrow (f : FloatDatum) : FloatDatum
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-Float.exactOps =
-  { arith := Float.arith false, sqrt := Float.sqrtD false,
-    ofLit := Float.ofLit, ofInt := Float.ofInt, narrow := Float.narrow,
-    nanSign := false }
+∀ (a : Bool), Float.narrow (FloatDatum.nan a) = FloatDatum.nan a
+∀ (a : Bool), Float.narrow (FloatDatum.inf a) = FloatDatum.inf a
+∀ (a : Bool) (a_1 : Nat) (a_2 : Int),
+  Float.narrow (FloatDatum.num a a_1 a_2) =
+    if a_1 = 0 then FloatDatum.num a 0 0
+    else
+      match Float.ratOf false a_1 a_2 with
+      | (fst, num, den) => roundRat FloatWidth.w32 a num den
+```
+
+### `Float.ofInt`
+
+*def* · module `RueCore.Float`
+
+`(D-Int-To-Float)` §6.4: `rnd_w` of an exact integer (`3.12:16`).
+
+```lean
+def RueCore.Float.ofInt (w : FloatWidth) (n : Int) : FloatDatum
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (w : FloatWidth) (n : Int),
+  Float.ofInt w n = roundRat w (decide (n < 0)) n.natAbs 1
+```
+
+### `Float.ofLit`
+
+*def* · module `RueCore.Float`
+
+`3.12:9` on a literal: `rnd_w` of its exact decimal.
+
+```lean
+def RueCore.Float.ofLit (w : FloatWidth) (sig : Nat) (negExp : Bool) (e : Nat) :
+  FloatDatum
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (w : FloatWidth) (sig : Nat) (negExp : Bool) (e : Nat),
+  Float.ofLit w sig negExp e =
+    match { sig := sig, negExp := negExp, e := e }.exact with
+    | (num, den) => roundRat w false num den
 ```
 
 ### `FnDef`
@@ -6810,18 +6929,6 @@ The §5.5 branch join, at one path and its subtree (section docstring).
 
 ```lean
 def RueCore.OwnSt.join (D : Decls) : OwnSt → OwnSt → Ty → Option OwnSt
-```
-
-### `OwnSt.joinList`
-
-*def* · module `RueCore.Statics`
-
-The §5.5 join over a declaration's fields, slot by slot; where one arm has
-no record the other arm's is kept, subject to `ownedJoinOk` (helper).
-
-```lean
-def RueCore.OwnSt.joinList (D : Decls) :
-  List OwnSt → List OwnSt → List Ty → Option (List OwnSt)
 ```
 
 ### `Store`
@@ -7002,26 +7109,6 @@ place `⊘` and is skipped by the `⊘` case above, never dropped twice.
 def RueCore.dropContents (D : Decls) : Contents → Except Violation (List Event)
 ```
 
-### `dropEvents`
-
-*def* · module `RueCore.Dynamics`
-
-**§6.11's order, as a function**: the events dropping a cell's contents
-emits, written out rather than read off the walk. A `⊘` and a scalar emit none;
-a struct emits its user destructor's event first when its declaration has one
-(`3.9:28`) and then its fields' events in declaration order (`3.9:13`),
-recursively, every `⊘` skipped; an enum emits exactly its **active** variant's
-payload's events, in payload order, and none at all for a discriminant-only
-variant (`6.3:20`). An index the environment does not have emits
-nothing, which the walk itself refuses instead —
-`dropContents_struct_events` (`Soundness.lean`) is the theorem that the two
-agree on every well-typed contents, and it is the closed form RUE-2237's
-"dropped exactly once" quantifies over.
-
-```lean
-def RueCore.dropEvents (D : Decls) : Contents → List Event
-```
-
 ### `evalFintrin`
 
 *def* · module `RueCore.Dynamics`
@@ -7069,24 +7156,6 @@ Defining equations, as Lean derived them from the body:
 ∀ (w : IntWidth) (s : Sign) (x : Val),
   (∀ (w : IntWidth) (s : Sign) (n : Int), x = Val.int w s n → False) →
     evalIntCast w s x = OpRes.confused
-```
-
-### `evalUnOp`
-
-*def* · module `RueCore.Dynamics`
-
-§6.4's unary operators. `neg` is (D-Arith)'s unary case on an integer,
-trapping on `min_T` because `-min_T > max_T`, and `(D-Float-Neg)` on a float,
-which is **total**: a sign flip and nothing else, on `-0.0` and on a NaN
-alike (`3.12:24`). `not` on `bool` is total (§6.4's `Not`); `bitnot` inverts
-the `w`-bit pattern ((D-Bit)'s complement arm) and is total too. §5.8
-restricts the integer `neg` to a signed operand, so the unsigned case below is
-a shape no well-typed program produces; it is written as the same range check
-rather than as a refusal, because the exact result `-n` is what §6.4 computes
-and the check is what decides.
-
-```lean
-def RueCore.evalUnOp : UnOp → Val → OpRes
 ```
 
 ### `intResult`
@@ -7151,49 +7220,6 @@ in the compiler) no instance at `Expr.indexRead`/`Expr.indexWrite`.
 def RueCore.noLinearPrefix (D : Decls) : Ty → List Nat → Bool
 ```
 
-### `residualLinear`
-
-*def* · module `RueCore.Statics`
-
-`residual-linear(Σ, p, T)` (§5.6), on the state recorded at `p` and its
-declared type.
-
-* a `MovedOut` path carries nothing (`Σ(p) = MovedOut ⇒ false`);
-* a path that is wholly `Owned` carries a linear value exactly when
-  `class(T) = Linear`, because §3's class *is* the join that reaches `Linear`
-  through a declared-`linear` struct at some depth (`struct_carriesLinear_iff`)
-  — so the type-level test is the fixed point of §5.6's own recursion on a
-  subtree with no holes in it;
-* a **declared**-`linear` struct still `Owned` carries the obligation itself,
-  whatever its fields do (`3.8:74`; `3.8:75`'s empty `linear struct MustUse` is
-  the motivating case);
-* otherwise the obligation is the disjunction over the fields.
-
-Keying the leak check on the residual *state* rather than on the binding's type
-is the RUE-1591 model §5.6 states: after a partial move the obligation attaches
-to whatever linear content is still present, so consuming exactly the linear
-part of an infectious carrier and letting the rest drop is legal.
-
-```lean
-def RueCore.residualLinear (D : Decls) : OwnSt → Ty → Bool
-```
-
-### `residualLinearBelow`
-
-*def* · module `RueCore.Statics`
-
-§5.6's obligation read over the paths **strictly under** `p`: (@Drop)
-§5.3's last premise, "if `p` has a `MovedOut` descendant, no still-owned linear
-sub-place remains below `p`". `@drop(p)` discharges `p`'s own obligation
-(`3.9:39`), so the root's declared linearity is deliberately not read here;
-what it may not do is silently destroy a linear sub-place that a partial move
-has separated from it. Verified against the compiler: `@drop(v.x1)` then
-`@drop(v)` on a carrier whose `x0` is a live linear field is E0406.
-
-```lean
-def RueCore.residualLinearBelow (D : Decls) : OwnSt → Ty → Bool
-```
-
 ### `wrapInt`
 
 *def* · module `RueCore.Syntax`
@@ -7212,25 +7238,6 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (w : IntWidth) (s : Sign) (n : Int),
   wrapInt w s n = valOf w s (bitsOf w n)
-```
-
-### `Contents.residualLinearList`
-
-*def* · module `RueCore.Dynamics`
-
-The same over a field, payload or element list (helper).
-
-```lean
-def RueCore.Contents.residualLinearList (D : Decls) : List Contents → Bool
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (D : Decls), Contents.residualLinearList D [] = false
-∀ (D : Decls) (c : Contents) (cs : List Contents),
-  Contents.residualLinearList D (c :: cs) =
-    (Contents.residualLinear D c || Contents.residualLinearList D cs)
 ```
 
 ### `Decls.Names`
@@ -7336,30 +7343,6 @@ RueCore.EvalRes.stuck (why : Violation) : EvalRes
 RueCore.EvalRes.outOfFuel : EvalRes
 ```
 
-### `Examples.demoOps`
-
-*def* · module `RueCore.Examples`
-
-The model every demo runs at: `Float.exactOps` (`Float.lean`), the
-constructive instance the corpus and the printer also use. The witnesses in
-this file are *executable* demos, so they are pinned at one model rather than
-quantified over all of them; because `exactOps` is built from `Nat`/`Int`
-arithmetic and never touches Lean's `Float`, pinning them costs no axiom
-(`TRUST.md`). The float **trap** witnesses at the bottom of the file are the
-exception: they are stated over an arbitrary `FloatModel` and proved from its
-laws, which is what makes them claims about IEEE 754 rather than about this
-instance.
-
-```lean
-def RueCore.Examples.demoOps : FloatOps
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-Examples.demoOps = Float.exactOps
-```
-
 ### `Examples.panicPastLinear`
 
 *def* · module `RueCore.Examples`
@@ -7431,20 +7414,29 @@ RueCore.Explain.Step.mk (depth : Nat) (rule : String) (binders : List Ty)
   (res : Explain.StepRes) : Explain.Step
 ```
 
-### `NoResidualLinear`
+### `Float.exactOps`
 
-*def* · module `RueCore.Statics`
+*def* · module `RueCore.Float`
 
-§5.6's residual-linear condition, read over a whole frame: no binding has
-residual linear content left. This is the premise (Fn) §5.8 imposes on a
-function body's exit edges for its by-value parameters (`3.8:62`) and that
-§5.6's `⊥_exit` carries at an early `return`: at such an edge every open scope
-of the frame ends at once, so the check is frame-wide rather than
-per-binding.
+The executable operations the corpus, the printer and the `#eval` demos
+run on: `σ_NaN` is **positive**, the AArch64 choice of `3.12:44` and Appendix
+B.1, which is the host this slice's corpus was checked against. Positive is
+`false` here, because `FloatDatum.nan` carries the sign as `neg` — the field
+is the *sign bit*, so `nanSign := false` is `+NaN` and `true` is `-NaN`, and
+`FloatDatum.totalRank (.nan false) = 3`, the top of `≺_w`. Flipping this one
+`Bool` is the whole of retargeting the instance to x86-64.
 
 ```lean
-def RueCore.NoResidualLinear (D : Decls) (Γ : Ctx) : Prop :=
-  ∀ (en : Entry), en ∈ Γ → residualLinear D en.st en.ty = false
+def RueCore.Float.exactOps : FloatOps
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Float.exactOps =
+  { arith := Float.arith false, sqrt := Float.sqrtD false,
+    ofLit := Float.ofLit, ofInt := Float.ofInt, narrow := Float.narrow,
+    nanSign := false }
 ```
 
 ### `Program`
@@ -7580,26 +7572,6 @@ Defining equations, as Lean derived them from the body:
       | Except.ok evs' => Except.ok (evs ++ evs')
 ```
 
-### `dropEventsList`
-
-*def* · module `RueCore.Dynamics`
-
-The same over a field, payload or element list: the members' events
-concatenated in declaration order (`3.9:13`) or ascending index order
-(`3.9:15`), which is §6.11's `drop*`.
-
-```lean
-def RueCore.dropEventsList (D : Decls) : List Contents → List Event
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (D : Decls), dropEventsList D [] = []
-∀ (D : Decls) (c : Contents) (cs : List Contents),
-  dropEventsList D (c :: cs) = dropEvents D c ++ dropEventsList D cs
-```
-
 ### `evalBinOp`
 
 *def* · module `RueCore.Dynamics`
@@ -7632,6 +7604,46 @@ Defining equations, as Lean derived them from the body:
         (f₂ : FloatDatum),
         x = Val.float w₁ f₁ → x_1 = Val.float w₂ f₂ → False) →
       evalBinOp M op x x_1 = OpRes.confused
+```
+
+### `evalUnOp`
+
+*def* · module `RueCore.Dynamics`
+
+§6.4's unary operators. `neg` is (D-Arith)'s unary case on an integer,
+trapping on `min_T` because `-min_T > max_T`, and `(D-Float-Neg)` on a float,
+which is **total**: a sign flip and nothing else, on `-0.0` and on a NaN
+alike (`3.12:24`). `not` on `bool` is total (§6.4's `Not`); `bitnot` inverts
+the `w`-bit pattern ((D-Bit)'s complement arm) and is total too. §5.8
+restricts the integer `neg` to a signed operand, so the unsigned case below is
+a shape no well-typed program produces; it is written as the same range check
+rather than as a refusal, because the exact result `-n` is what §6.4 computes
+and the check is what decides.
+
+```lean
+def RueCore.evalUnOp : UnOp → Val → OpRes
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (w : IntWidth) (s : Sign) (n : Int),
+  evalUnOp UnOp.neg (Val.int w s n) = intResult w s (-n)
+∀ (w : FloatWidth) (f : FloatDatum),
+  evalUnOp UnOp.neg (Val.float w f) = OpRes.val (Val.float w f.negate)
+∀ (b : Bool), evalUnOp UnOp.not (Val.bool b) = OpRes.val (Val.bool !b)
+∀ (w : IntWidth) (s : Sign) (n : Int),
+  evalUnOp UnOp.bitnot (Val.int w s n) =
+    OpRes.val (Val.int w s (valOf w s (w.modulus - 1 - bitsOf w n)))
+∀ (x : UnOp) (x_1 : Val),
+  (∀ (w : IntWidth) (s : Sign) (n : Int),
+      x = UnOp.neg → x_1 = Val.int w s n → False) →
+    (∀ (w : FloatWidth) (f : FloatDatum),
+        x = UnOp.neg → x_1 = Val.float w f → False) →
+      (∀ (b : Bool), x = UnOp.not → x_1 = Val.bool b → False) →
+        (∀ (w : IntWidth) (s : Sign) (n : Int),
+            x = UnOp.bitnot → x_1 = Val.int w s n → False) →
+          evalUnOp x x_1 = OpRes.confused
 ```
 
 ### `fnCtx`
@@ -7824,6 +7836,30 @@ Examples.countdown =
                       (Examples.lit (-1))])) }] }
 ```
 
+### `Examples.demoOps`
+
+*def* · module `RueCore.Examples`
+
+The model every demo runs at: `Float.exactOps` (`Float.lean`), the
+constructive instance the corpus and the printer also use. The witnesses in
+this file are *executable* demos, so they are pinned at one model rather than
+quantified over all of them; because `exactOps` is built from `Nat`/`Int`
+arithmetic and never touches Lean's `Float`, pinning them costs no axiom
+(`TRUST.md`). The float **trap** witnesses at the bottom of the file are the
+exception: they are stated over an arbitrary `FloatModel` and proved from its
+laws, which is what makes them claims about IEEE 754 rather than about this
+instance.
+
+```lean
+def RueCore.Examples.demoOps : FloatOps
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Examples.demoOps = Float.exactOps
+```
+
 ### `Explain.Deriv.result`
 
 *def* · module `RueCore.Explain`
@@ -7883,19 +7919,6 @@ failed. `explain_result` proves the two agree.
 ```lean
 def RueCore.Explain.explain (P : Program) (R : Ty) (Γ : Ctx) :
   Expr → Explain.Deriv
-```
-
-### `Explain.explainArgs`
-
-*def* · module `RueCore.Explain`
-
-The instrumented mirror of `checkArgs` (§5.8's (Call) argument list):
-the sub-derivations in argument order, and the outgoing `Σ` when every
-argument checked at its parameter's type.
-
-```lean
-def RueCore.Explain.explainArgs (P : Program) (R : Ty) :
-  Ctx → List Expr → List Ty → Option Ctx × List Explain.Deriv
 ```
 
 ### `Program.entry`
@@ -7993,23 +8016,6 @@ enclosing function's declared return type (Return-Value) §5.7 checks a
 
 ```lean
 def RueCore.check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
-```
-
-### `checkArms`
-
-*def* · module `RueCore.Checker`
-
-(Match) §5.5's arm premises as an algorithm: every arm from the same
-post-scrutinee state `Γ₀`, each under its variant's payload locals (`armCtx`),
-each at the type `T` the first arm fixed, and each discharging §5.6 for the
-locals it pops. The result is one outgoing context per arm, in declaration
-order, which is what `Ctx.joinAll` then folds. A count mismatch between the arms
-and the variants is the last clause's `none` — `check` has already required the
-counts to agree, so no program reaches it.
-
-```lean
-def RueCore.checkArms (P : Program) (R : Ty) (Γ₀ : Ctx) (T : Ty) :
-  List Expr → List (List Ty) → Option (List Ctx)
 ```
 
 ### `checkNoCycle`
@@ -8111,30 +8117,6 @@ Defining equations, as Lean derived them from the body:
   overwriteOk D OwnSt.owned x = decide (Ty.mult D x ≠ Mult.linear)
 ∀ (D : Decls) (x : Ty) (ts : List OwnSt),
   overwriteOk D (OwnSt.fields ts) x = decide (Ty.mult D x ≠ Mult.linear)
-```
-
-### `residualLinearFields`
-
-*def* · module `RueCore.Statics`
-
-§5.6's field disjunction: a field slot no partial move touched is `owned`,
-so its clause is the type-level test (helper).
-
-```lean
-def RueCore.residualLinearFields (D : Decls) : List OwnSt → List Ty → Bool
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (D : Decls) (x : List Ty),
-  residualLinearFields D [] x =
-    x.any fun T => decide (Ty.mult D T = Mult.linear)
-∀ (D : Decls) (head : OwnSt) (tail : List OwnSt),
-  residualLinearFields D (head :: tail) [] = false
-∀ (D : Decls) (t : OwnSt) (ts : List OwnSt) (T : Ty) (Ts : List Ty),
-  residualLinearFields D (t :: ts) (T :: Ts) =
-    (residualLinear D t T || residualLinearFields D ts Ts)
 ```
 
 ### `Ctx.joinFold`
@@ -8279,6 +8261,41 @@ RueCore.Explain.ArgsTrace.mk (steps : List Explain.Step) (res : ArgsRes) :
   Explain.ArgsTrace
 ```
 
+### `Explain.explainArgs`
+
+*def* · module `RueCore.Explain`
+
+The instrumented mirror of `checkArgs` (§5.8's (Call) argument list):
+the sub-derivations in argument order, and the outgoing `Σ` when every
+argument checked at its parameter's type.
+
+```lean
+def RueCore.Explain.explainArgs (P : Program) (R : Ty) :
+  Ctx → List Expr → List Ty → Option Ctx × List Explain.Deriv
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (P : Program) (R : Ty) (x : Ctx),
+  Explain.explainArgs P R x [] [] = (some x, [])
+∀ (P : Program) (R : Ty) (x : Ctx) (e : Expr) (es : List Expr) (T : Ty)
+  (Ts : List Ty),
+  Explain.explainArgs P R x (e :: es) (T :: Ts) =
+    match (Explain.explain P R x e).result with
+    | some (T', Γ₁) =>
+      if T' = T then
+        have rest := Explain.explainArgs P R Γ₁ es Ts;
+        (rest.fst, Explain.explain P R x e :: rest.snd)
+      else (none, [Explain.explain P R x e])
+    | none => (none, [Explain.explain P R x e])
+∀ (P : Program) (R : Ty) (x : Ctx) (x_1 : List Expr) (x_2 : List Ty),
+  (x_1 = [] → x_2 = [] → False) →
+    (∀ (e : Expr) (es : List Expr) (T : Ty) (Ts : List Ty),
+        x_1 = e :: es → x_2 = T :: Ts → False) →
+      Explain.explainArgs P R x x_1 x_2 = (none, [])
+```
+
 ### `Explain.traceEval`
 
 *def* · module `RueCore.Explain`
@@ -8374,30 +8391,6 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (D : Decls) (ed : EnumDecl),
   checkEnumDecl D ed = decide (ed.cls = EnumDecl.payloadJoin D ed)
-```
-
-### `checkFn`
-
-*def* · module `RueCore.Checker`
-
-(Fn) §5.8 as an algorithm: the body checks at the declared return type
-from the entry context `Γ0;Σ0` (`fnCtx`), and its normal exit edge discharges
-§5.6's residual-linear obligation for the by-value parameters and every
-still-open body-local binding (`3.8:62`).
-
-```lean
-def RueCore.checkFn (P : Program) (fd : FnDef) : Bool
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (P : Program) (fd : FnDef),
-  checkFn P fd =
-    match check P fd.ret (fnCtx fd) fd.body with
-    | some (T, Γf) =>
-      decide (T = fd.ret) && decide (NoResidualLinear P.decls Γf)
-    | none => false
 ```
 
 ### `checkStructDecl`
@@ -8567,6 +8560,27 @@ def RueCore.Explain.traceArgs (tev : Store → Expr → Explain.Trace) :
   Store → List Expr → Explain.ArgsTrace
 ```
 
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (tev : Store → Expr → Explain.Trace) (x : Store),
+  Explain.traceArgs tev x [] = { steps := [], res := ArgsRes.ok x [] [] }
+∀ (tev : Store → Expr → Explain.Trace) (x : Store) (e : Expr)
+  (es : List Expr),
+  Explain.traceArgs tev x (e :: es) =
+    match (tev x e).res with
+    | EvalRes.ok H₁ v tr =>
+      have ts := Explain.traceArgs tev H₁ es;
+      match ts.res with
+      | ArgsRes.ok H₂ vs tr₂ =>
+        { steps := (tev x e).steps ++ ts.steps,
+          res := ArgsRes.ok H₂ (v :: vs) (tr ++ tr₂) }
+      | ArgsRes.abort r =>
+        { steps := (tev x e).steps ++ ts.steps,
+          res := ArgsRes.abort (EvalRes.withTrace tr r) }
+    | r => { steps := (tev x e).steps, res := ArgsRes.abort r }
+```
+
 ### `WfEnums`
 
 *def* · module `RueCore.Statics`
@@ -8631,43 +8645,6 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls), checkStructs D = D.structs.all (checkStructDecl D)
 ```
 
-### `dropRetire`
-
-*def* · module `RueCore.Dynamics`
-
-`drop-retire(H, ℓ)` (§6.1): run the binding's drop (§6.11 — a no-op on a
-`⊘` or `Copy` cell), then retire the allocation, so any later access to it is
-`useAfterDrop` rather than silently readable (the RUE-390 change). A live
-linear value here is §5.6's leak: the scope ends with an obligation
-undischarged, and the machine refuses (`3.8:32`). The monitor reads
-`Contents.residualLinear`, §5.6's own recursion on the store's side, because
-after a partial move the obligation attaches to whatever linear content is
-still present rather than to the binding's type (RUE-1591). This is the one
-scope-teardown path: `let`'s normal `endscope` (§6.7) and the frame unwind of
-`return` (§6.9) both run it.
-
-```lean
-def RueCore.dropRetire (D : Decls) (H : Store) (ℓ : Nat) :
-  Except Violation (Store × List Event)
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (D : Decls) (H : Store) (ℓ : Nat),
-  dropRetire D H ℓ =
-    match H[ℓ]? with
-    | none => Except.error Violation.unbound
-    | some Cell.dead => Except.error Violation.useAfterDrop
-    | some (Cell.full c) =>
-      if Contents.residualLinear D c = true then
-        Except.error Violation.linearLeak
-      else
-        match dropCell D ℓ c with
-        | Except.error w => Except.error w
-        | Except.ok evs => Except.ok (List.set H ℓ Cell.dead, evs)
-```
-
 ### `WfDecls`
 
 *inductive* · module `RueCore.Statics`
@@ -8709,77 +8686,6 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (D : Decls),
   checkDecls D = (checkStructs D && checkEnums D && checkNoCycle D)
-```
-
-### `unwindLocs`
-
-*def* · module `RueCore.Dynamics`
-
-`run-scope-drops` (§6.1): drop-retire a scope's cells in the order given,
-accumulating the drop events. Callers pass the record newest-first, which is
-the order §6.1 fixes for a scope's teardown (RAII).
-
-```lean
-def RueCore.unwindLocs (D : Decls) (H : Store) :
-  List Nat → Except Violation (Store × List Event)
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (D : Decls) (H : Store), unwindLocs D H [] = Except.ok (H, [])
-∀ (D : Decls) (H : Store) (ℓ : Nat) (rest : List Nat),
-  unwindLocs D H (ℓ :: rest) =
-    match dropRetire D H ℓ with
-    | Except.error w => Except.error w
-    | Except.ok (H₁, evs) =>
-      match unwindLocs D H₁ rest with
-      | Except.error w => Except.error w
-      | Except.ok (H₂, evs') => Except.ok (H₂, evs ++ evs')
-```
-
-### `checkProgram`
-
-*def* · module `RueCore.Checker`
-
-A whole program as an algorithm: §3 and `3.0:5` for the declarations, (Fn)
-§5.8 for every function, plus the entry point's empty parameter list (§6.12's
-top-level result is `main()`).
-
-```lean
-def RueCore.checkProgram (P : Program) : Bool
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (P : Program),
-  checkProgram P =
-    (checkDecls P.decls && P.fns.all (checkFn P) &&
-      match P.fns[0]? with
-      | some fd => fd.params.isEmpty
-      | none => false)
-```
-
-### `runAllScopeDrops`
-
-*def* · module `RueCore.Dynamics`
-
-`run-all-scope-drops(H, φ)` (§6.1, §6.9): the whole-frame teardown, run
-when a frame is popped — at a normal (D-Return-Value) and at an unwinding
-(D-Return). The frame's record lists its cells in creation order, so the
-teardown reads it backwards: newest binding first.
-
-```lean
-def RueCore.runAllScopeDrops (D : Decls) (H : Store) (φ : Frame) :
-  Except Violation (Store × List Event)
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (D : Decls) (H : Store) (φ : Frame),
-  runAllScopeDrops D H φ = unwindLocs D H φ.scope.reverse
 ```
 
 ### `AbortOk`
@@ -9006,6 +8912,215 @@ Defining equations, as Lean derived them from the body:
   mintParams x (v :: vs) =
     match mintParams (x ++ [Cell.full (Contents.ofVal v)]) vs with
     | (H', locs) => (H', List.length x :: locs)
+```
+
+### `Contents.residualLinear`
+
+*def* · module `RueCore.Dynamics`
+
+§5.6's `residual-linear`, read on the **contents** rather than on Σ: does a
+live sub-value of a declared-`linear` struct type remain? This is the leak
+monitor §6.7's `endscope` and §6.9's frame teardown consult, and the overwrite
+monitor of §6.8. A `⊘` carries nothing (`3.8:60`'s skip), a live
+declared-`linear` struct carries the obligation itself (`3.8:74`), and
+otherwise the obligation is the disjunction over the live fields — exactly the
+recursion §5.6 writes for Σ, on the store's side of the invariant.
+
+At an **enum** the residue is the **active** variant's payload and nothing else:
+an enum declares no attribute to carry an obligation of its own, and the
+inactive variants have no storage (§6.11). That is weaker than §5.6's Σ-side
+clause, which reads `class(E) = Linear` over *every* variant because the tag is
+not a static fact — and weaker in the safe direction: a program the statics
+accept has no linear payload in any variant, so the monitor finds none under the
+tag either (`ContentsTy.residualLinear_false`, `Soundness.lean`). The gap is
+exactly probe e11, which the statics reject (E0406) and which this monitor would
+let run.
+
+```lean
+def RueCore.Contents.residualLinear (D : Decls) : Contents → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls), Contents.residualLinear D Contents.hole = false
+∀ (D : Decls) (a : IntWidth) (a_1 : Sign) (a_2 : Int),
+  Contents.residualLinear D (Contents.int a a_1 a_2) = false
+∀ (D : Decls) (a : FloatWidth) (a_1 : FloatDatum),
+  Contents.residualLinear D (Contents.float a a_1) = false
+∀ (D : Decls) (a : Bool),
+  Contents.residualLinear D (Contents.bool a) = false
+∀ (D : Decls), Contents.residualLinear D Contents.unit = false
+∀ (D : Decls) (a : Nat) (a_1 : List Contents),
+  Contents.residualLinear D (Contents.struct a a_1) =
+    match D.structs[a]? with
+    | some sd =>
+      decide (sd.attr = Attr.linear) || Contents.residualLinearList D a_1
+    | none => false
+∀ (D : Decls) (a a_1 : Nat) (a_2 : List Contents),
+  Contents.residualLinear D (Contents.enum a a_1 a_2) =
+    Contents.residualLinearList D a_2
+∀ (D : Decls) (a : Ty) (a_1 : List Contents),
+  Contents.residualLinear D (Contents.array a a_1) =
+    Contents.residualLinearList D a_1
+```
+
+### `Contents.residualLinearList`
+
+*def* · module `RueCore.Dynamics`
+
+The same over a field, payload or element list (helper).
+
+```lean
+def RueCore.Contents.residualLinearList (D : Decls) : List Contents → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls), Contents.residualLinearList D [] = false
+∀ (D : Decls) (c : Contents) (cs : List Contents),
+  Contents.residualLinearList D (c :: cs) =
+    (Contents.residualLinear D c || Contents.residualLinearList D cs)
+```
+
+### `dropRetire`
+
+*def* · module `RueCore.Dynamics`
+
+`drop-retire(H, ℓ)` (§6.1): run the binding's drop (§6.11 — a no-op on a
+`⊘` or `Copy` cell), then retire the allocation, so any later access to it is
+`useAfterDrop` rather than silently readable (the RUE-390 change). A live
+linear value here is §5.6's leak: the scope ends with an obligation
+undischarged, and the machine refuses (`3.8:32`). The monitor reads
+`Contents.residualLinear`, §5.6's own recursion on the store's side, because
+after a partial move the obligation attaches to whatever linear content is
+still present rather than to the binding's type (RUE-1591). This is the one
+scope-teardown path: `let`'s normal `endscope` (§6.7) and the frame unwind of
+`return` (§6.9) both run it.
+
+```lean
+def RueCore.dropRetire (D : Decls) (H : Store) (ℓ : Nat) :
+  Except Violation (Store × List Event)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (H : Store) (ℓ : Nat),
+  dropRetire D H ℓ =
+    match H[ℓ]? with
+    | none => Except.error Violation.unbound
+    | some Cell.dead => Except.error Violation.useAfterDrop
+    | some (Cell.full c) =>
+      if Contents.residualLinear D c = true then
+        Except.error Violation.linearLeak
+      else
+        match dropCell D ℓ c with
+        | Except.error w => Except.error w
+        | Except.ok evs => Except.ok (List.set H ℓ Cell.dead, evs)
+```
+
+### `unwindLocs`
+
+*def* · module `RueCore.Dynamics`
+
+`run-scope-drops` (§6.1): drop-retire a scope's cells in the order given,
+accumulating the drop events. Callers pass the record newest-first, which is
+the order §6.1 fixes for a scope's teardown (RAII).
+
+```lean
+def RueCore.unwindLocs (D : Decls) (H : Store) :
+  List Nat → Except Violation (Store × List Event)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (H : Store), unwindLocs D H [] = Except.ok (H, [])
+∀ (D : Decls) (H : Store) (ℓ : Nat) (rest : List Nat),
+  unwindLocs D H (ℓ :: rest) =
+    match dropRetire D H ℓ with
+    | Except.error w => Except.error w
+    | Except.ok (H₁, evs) =>
+      match unwindLocs D H₁ rest with
+      | Except.error w => Except.error w
+      | Except.ok (H₂, evs') => Except.ok (H₂, evs ++ evs')
+```
+
+### `runAllScopeDrops`
+
+*def* · module `RueCore.Dynamics`
+
+`run-all-scope-drops(H, φ)` (§6.1, §6.9): the whole-frame teardown, run
+when a frame is popped — at a normal (D-Return-Value) and at an unwinding
+(D-Return). The frame's record lists its cells in creation order, so the
+teardown reads it backwards: newest binding first.
+
+```lean
+def RueCore.runAllScopeDrops (D : Decls) (H : Store) (φ : Frame) :
+  Except Violation (Store × List Event)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (H : Store) (φ : Frame),
+  runAllScopeDrops D H φ = unwindLocs D H φ.scope.reverse
+```
+
+### `Contents.toVal`
+
+*def* · module `RueCore.Dynamics`
+
+The value a contents denotes, or `none` when a `⊘` sits somewhere in it —
+which is the read §6.3 leaves stuck and §7's no-use-after-move bullet forbids
+(helper).
+
+```lean
+def RueCore.Contents.toVal : Contents → Option Val
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Contents.hole.toVal = none
+∀ (a : IntWidth) (a_1 : Sign) (a_2 : Int),
+  (Contents.int a a_1 a_2).toVal = some (Val.int a a_1 a_2)
+∀ (a : FloatWidth) (a_1 : FloatDatum),
+  (Contents.float a a_1).toVal = some (Val.float a a_1)
+∀ (a : Bool), (Contents.bool a).toVal = some (Val.bool a)
+Contents.unit.toVal = some Val.unit
+∀ (a : Nat) (a_1 : List Contents),
+  (Contents.struct a a_1).toVal =
+    Option.map (Val.struct a) (Contents.toVals a_1)
+∀ (a a_1 : Nat) (a_2 : List Contents),
+  (Contents.enum a a_1 a_2).toVal =
+    Option.map (Val.enum a a_1) (Contents.toVals a_2)
+∀ (a : Ty) (a_1 : List Contents),
+  (Contents.array a a_1).toVal =
+    Option.map (Val.array a) (Contents.toVals a_1)
+```
+
+### `Contents.toVals`
+
+*def* · module `RueCore.Dynamics`
+
+`toVal` over a field or element list (helper).
+
+```lean
+def RueCore.Contents.toVals : List Contents → Option (List Val)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Contents.toVals [] = some []
+∀ (c : Contents) (cs : List Contents),
+  Contents.toVals (c :: cs) =
+    match c.toVal, Contents.toVals cs with
+    | some v, some vs => some (v :: vs)
+    | x, x_1 => none
 ```
 
 ### `ContentsMatches`
@@ -9313,6 +9428,110 @@ RueCore.HasTys.cons {D : Decls} {v : Val} {vs : List Val} {T : Ty}
   {Ts : List Ty} : HasTy D v T → HasTys D vs Ts → HasTys D (v :: vs) (T :: Ts)
 ```
 
+### `NoResidualLinear`
+
+*def* · module `RueCore.Statics`
+
+§5.6's residual-linear condition, read over a whole frame: no binding has
+residual linear content left. This is the premise (Fn) §5.8 imposes on a
+function body's exit edges for its by-value parameters (`3.8:62`) and that
+§5.6's `⊥_exit` carries at an early `return`: at such an edge every open scope
+of the frame ends at once, so the check is frame-wide rather than
+per-binding.
+
+```lean
+def RueCore.NoResidualLinear (D : Decls) (Γ : Ctx) : Prop :=
+  ∀ (en : Entry), en ∈ Γ → residualLinear D en.st en.ty = false
+```
+
+### `checkArms`
+
+*def* · module `RueCore.Checker`
+
+(Match) §5.5's arm premises as an algorithm: every arm from the same
+post-scrutinee state `Γ₀`, each under its variant's payload locals (`armCtx`),
+each at the type `T` the first arm fixed, and each discharging §5.6 for the
+locals it pops. The result is one outgoing context per arm, in declaration
+order, which is what `Ctx.joinAll` then folds. A count mismatch between the arms
+and the variants is the last clause's `none` — `check` has already required the
+counts to agree, so no program reaches it.
+
+```lean
+def RueCore.checkArms (P : Program) (R : Ty) (Γ₀ : Ctx) (T : Ty) :
+  List Expr → List (List Ty) → Option (List Ctx)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (P : Program) (R : Ty) (Γ₀ : Ctx) (T : Ty),
+  checkArms P R Γ₀ T [] [] = some []
+∀ (P : Program) (R : Ty) (Γ₀ : Ctx) (T : Ty) (e : Expr) (es : List Expr)
+  (Ts : List Ty) (Tss : List (List Ty)),
+  checkArms P R Γ₀ T (e :: es) (Ts :: Tss) =
+    match check P R (armCtx Ts Γ₀) e with
+    | some (T', Γb) =>
+      if T' = T ∧ NoResidualLinear P.decls (List.take Ts.length Γb) then
+        match checkArms P R Γ₀ T es Tss with
+        | some Γs => some (List.drop Ts.length Γb :: Γs)
+        | none => none
+      else none
+    | none => none
+∀ (P : Program) (R : Ty) (Γ₀ : Ctx) (T : Ty) (x : List Expr)
+  (x_1 : List (List Ty)),
+  (x = [] → x_1 = [] → False) →
+    (∀ (e : Expr) (es : List Expr) (Ts : List Ty) (Tss : List (List Ty)),
+        x = e :: es → x_1 = Ts :: Tss → False) →
+      checkArms P R Γ₀ T x x_1 = none
+```
+
+### `checkFn`
+
+*def* · module `RueCore.Checker`
+
+(Fn) §5.8 as an algorithm: the body checks at the declared return type
+from the entry context `Γ0;Σ0` (`fnCtx`), and its normal exit edge discharges
+§5.6's residual-linear obligation for the by-value parameters and every
+still-open body-local binding (`3.8:62`).
+
+```lean
+def RueCore.checkFn (P : Program) (fd : FnDef) : Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (P : Program) (fd : FnDef),
+  checkFn P fd =
+    match check P fd.ret (fnCtx fd) fd.body with
+    | some (T, Γf) =>
+      decide (T = fd.ret) && decide (NoResidualLinear P.decls Γf)
+    | none => false
+```
+
+### `checkProgram`
+
+*def* · module `RueCore.Checker`
+
+A whole program as an algorithm: §3 and `3.0:5` for the declarations, (Fn)
+§5.8 for every function, plus the entry point's empty parameter list (§6.12's
+top-level result is `main()`).
+
+```lean
+def RueCore.checkProgram (P : Program) : Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (P : Program),
+  checkProgram P =
+    (checkDecls P.decls && P.fns.all (checkFn P) &&
+      match P.fns[0]? with
+      | some fd => fd.params.isEmpty
+      | none => false)
+```
+
 ### `OwnSt.fullyOwned`
 
 *def* · module `RueCore.Statics`
@@ -9353,6 +9572,39 @@ OwnSt.fullyOwnedList [] = true
 ∀ (t : OwnSt) (ts : List OwnSt),
   OwnSt.fullyOwnedList (t :: ts) =
     (t.fullyOwned && OwnSt.fullyOwnedList ts)
+```
+
+### `OwnSt.joinList`
+
+*def* · module `RueCore.Statics`
+
+The §5.5 join over a declaration's fields, slot by slot; where one arm has
+no record the other arm's is kept, subject to `ownedJoinOk` (helper).
+
+```lean
+def RueCore.OwnSt.joinList (D : Decls) :
+  List OwnSt → List OwnSt → List Ty → Option (List OwnSt)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (x x_1 : List OwnSt), OwnSt.joinList D x x_1 [] = some []
+∀ (D : Decls) (x : List OwnSt) (x_1 : List Ty),
+  (x_1 = [] → False) →
+    OwnSt.joinList D [] x x_1 =
+      if ownedJoinOkList D x x_1 = true then some x else none
+∀ (D : Decls) (x : List OwnSt) (x_1 : List Ty),
+  (x = [] → False) →
+    (x_1 = [] → False) →
+      OwnSt.joinList D x [] x_1 =
+        if ownedJoinOkList D x x_1 = true then some x else none
+∀ (D : Decls) (a : OwnSt) (as : List OwnSt) (b : OwnSt) (bs : List OwnSt)
+  (T : Ty) (Ts : List Ty),
+  OwnSt.joinList D (a :: as) (b :: bs) (T :: Ts) =
+    match OwnSt.join D a b T, OwnSt.joinList D as bs Ts with
+    | some e, some rest => some (e :: rest)
+    | x, x_1 => none
 ```
 
 ### `ProgramTyped`
@@ -9635,7 +9887,7 @@ RueCore.Typed.indexRead {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {p : Place}
                 Typed P R Γ (Expr.indexRead p e) T Γ₁
 ```
 
-**`Typed.indexWrite`** — (Assign) §5.2 at a dynamic index, `p[e₁] = e₂` (`7.1:30`, `4.11:12`): an in-place mutation that modifies the array without moving it. The root must be a `μ = mut` binding (§5 preamble), the index reduces before the right-hand side (§6.2: "`assign p = E` — right-hand side (`p`'s index subexpressions reduce first)") and Σ is threaded in that order, and the element type must be `Copy` — the same premise the read carries, for the same §4.2 reason. Three of (Assign)'s clauses are discharged rather than restated. `3.8:77`'s linear-overwrite premise is implied by `class(T) = Copy`, since a `Copy` type carries no linear value. `3.8:72`/`7.1:46` — "while one or more elements of an array are moved out, it is a compile-time error to assign into the array" — is `fully-owned(Σ, p)` on the post-RHS state. And `3.8:55`'s reinitialization is (Assign)'s own `Σ1[p ↦ Owned]`, taken at the **whole array** rather than at the element: `7.1:46` says an element write "does not reinstate per-element ownership", and on the `fully-owned` premise there is nothing to reinstate, so writing `Owned` at `p` is the rule as §5.2 states it and changes no path's state.
+**`Typed.indexWrite`** — (Assign) §5.2 at a dynamic index, `p[e₁] = e₂` (`7.1:30`, `4.11:12`): an in-place mutation that modifies the array without moving it. The root must be a `μ = mut` binding (§5 preamble), and the index reduces before the right-hand side (§6.2: "`assign p = E` — right-hand side (`p`'s index subexpressions reduce first)") with Σ threaded in that order. The destination is **not** a use, so the read's `class(T) = Copy` premise does not transfer here: §4.2's plans classify a value-context use, and what (Assign) demands of a destination is its own last premise, `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` — `overwriteOk`/`3.8:77`, the same premise `Typed.assign` carries, read at the **element** type on the post-RHS state. A runtime index can never establish `MovedOut` at the element, so the disjunction bites as its right half: an affine, even destructor-bearing, element type is admitted (and the machine's overwrite-drop below runs its glue), while a linear-carrying one is refused, which is the compiler's E0493. Two more of (Assign)'s clauses are discharged rather than restated. `3.8:72`/`7.1:46` — "while one or more elements of an array are moved out, it is a compile-time error to assign into the array" — is `fully-owned(Σ, p)` on the post-RHS state. And `3.8:55`'s reinitialization is (Assign)'s own `Σ1[p ↦ Owned]`, taken at the **whole array** rather than at the element: `7.1:46` says an element write "does not reinstate per-element ownership", and on the `fully-owned` premise there is nothing to reinstate, so writing `Owned` at `p` is the rule as §5.2 states it and changes no path's state. `en₀.st.get p.path = some u₀` constrains `u₀` nowhere, and deliberately: it is (Assign)'s own incoming `Σ(p)` lookup, whose content is that the destination path is *reachable* — `OwnSt.get` is `none` under a moved-out prefix — while every condition on the state itself is read after the operands have run, on `u₁`, because that is the state the write overwrites.
 
 ```lean
 RueCore.Typed.indexWrite {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx} {p : Place}
@@ -9645,13 +9897,13 @@ RueCore.Typed.indexWrite {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx} {p : Plac
     en₀.mu = true →
       en₀.st.get p.path = some u₀ →
         Ty.atPath P.decls en₀.ty p.path = some (T.array n) →
-          Ty.mult P.decls T = Mult.copy →
-            noLinearPrefix P.decls en₀.ty p.path = true →
-              Typed P R Γ e₁ (Ty.int w s) Γ₁ →
-                Typed P R Γ₁ e₂ T Γ₂ →
-                  Γ₂[p.root]? = some en₁ →
-                    en₁.st.get p.path = some u₁ →
-                      u₁.fullyOwned = true →
+          noLinearPrefix P.decls en₀.ty p.path = true →
+            Typed P R Γ e₁ (Ty.int w s) Γ₁ →
+              Typed P R Γ₁ e₂ T Γ₂ →
+                Γ₂[p.root]? = some en₁ →
+                  en₁.st.get p.path = some u₁ →
+                    u₁.fullyOwned = true →
+                      u₁ = OwnSt.movedOut ∨ Ty.mult P.decls T ≠ Mult.linear →
                         Typed P R Γ (Expr.indexWrite p e₁ e₂) Ty.unit
                           (List.set Γ₂ p.root
                             (en₁.setSt (en₁.st.setAt p.path OwnSt.owned)))
@@ -9878,6 +10130,70 @@ RueCore.WfProgram.mk {P : Program} (decls : WfDecls P.decls)
   (fns : ∀ (fd : FnDef), fd ∈ P.fns → WfFn P fd) : WfProgram P
 ```
 
+### `dropEvents`
+
+*def* · module `RueCore.Dynamics`
+
+**§6.11's order, as a function**: the events dropping a cell's contents
+emits, written out rather than read off the walk. A `⊘` and a scalar emit none;
+a struct emits its user destructor's event first when its declaration has one
+(`3.9:28`) and then its fields' events in declaration order (`3.9:13`),
+recursively, every `⊘` skipped; an enum emits exactly its **active** variant's
+payload's events, in payload order, and none at all for a discriminant-only
+variant (`6.3:20`). An index the environment does not have emits
+nothing, which the walk itself refuses instead —
+`dropContents_struct_events` (`Soundness.lean`) is the theorem that the two
+agree on every well-typed contents, and it is the closed form RUE-2237's
+"dropped exactly once" quantifies over.
+
+```lean
+def RueCore.dropEvents (D : Decls) : Contents → List Event
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls), dropEvents D Contents.hole = []
+∀ (D : Decls) (a : IntWidth) (a_1 : Sign) (a_2 : Int),
+  dropEvents D (Contents.int a a_1 a_2) = []
+∀ (D : Decls) (a : FloatWidth) (a_1 : FloatDatum),
+  dropEvents D (Contents.float a a_1) = []
+∀ (D : Decls) (a : Bool), dropEvents D (Contents.bool a) = []
+∀ (D : Decls), dropEvents D Contents.unit = []
+∀ (D : Decls) (a : Nat) (a_1 : List Contents),
+  dropEvents D (Contents.struct a a_1) =
+    (match D.structs[a]? with
+      | some sd =>
+        if sd.dtor = true then [Event.dtor a (Contents.struct a a_1)]
+        else []
+      | none => []) ++
+      dropEventsList D a_1
+∀ (D : Decls) (a a_1 : Nat) (a_2 : List Contents),
+  dropEvents D (Contents.enum a a_1 a_2) = dropEventsList D a_2
+∀ (D : Decls) (a : Ty) (a_1 : List Contents),
+  dropEvents D (Contents.array a a_1) = dropEventsList D a_1
+```
+
+### `dropEventsList`
+
+*def* · module `RueCore.Dynamics`
+
+The same over a field, payload or element list: the members' events
+concatenated in declaration order (`3.9:13`) or ascending index order
+(`3.9:15`), which is §6.11's `drop*`.
+
+```lean
+def RueCore.dropEventsList (D : Decls) : List Contents → List Event
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls), dropEventsList D [] = []
+∀ (D : Decls) (c : Contents) (cs : List Contents),
+  dropEventsList D (c :: cs) = dropEvents D c ++ dropEventsList D cs
+```
+
 ### `ownedJoinOk`
 
 *def* · module `RueCore.Statics`
@@ -9930,4 +10246,114 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls) (t : OwnSt) (ts : List OwnSt) (T : Ty) (Ts : List Ty),
   ownedJoinOkList D (t :: ts) (T :: Ts) =
     (ownedJoinOk D t T && ownedJoinOkList D ts Ts)
+```
+
+### `residualLinear`
+
+*def* · module `RueCore.Statics`
+
+`residual-linear(Σ, p, T)` (§5.6), on the state recorded at `p` and its
+declared type.
+
+* a `MovedOut` path carries nothing (`Σ(p) = MovedOut ⇒ false`);
+* a path that is wholly `Owned` carries a linear value exactly when
+  `class(T) = Linear`, because §3's class *is* the join that reaches `Linear`
+  through a declared-`linear` struct at some depth (`struct_carriesLinear_iff`)
+  — so the type-level test is the fixed point of §5.6's own recursion on a
+  subtree with no holes in it;
+* a **declared**-`linear` struct still `Owned` carries the obligation itself,
+  whatever its fields do (`3.8:74`; `3.8:75`'s empty `linear struct MustUse` is
+  the motivating case);
+* otherwise the obligation is the disjunction over the fields.
+
+Keying the leak check on the residual *state* rather than on the binding's type
+is the RUE-1591 model §5.6 states: after a partial move the obligation attaches
+to whatever linear content is still present, so consuming exactly the linear
+part of an infectious carrier and letting the rest drop is legal.
+
+```lean
+def RueCore.residualLinear (D : Decls) : OwnSt → Ty → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (x : Ty), residualLinear D OwnSt.movedOut x = false
+∀ (D : Decls) (x : Ty),
+  residualLinear D OwnSt.owned x = decide (Ty.mult D x = Mult.linear)
+∀ (D : Decls) (ts : List OwnSt) (s : Nat),
+  residualLinear D (OwnSt.fields ts) (Ty.struct s) =
+    match D.structs[s]? with
+    | some sd =>
+      decide (sd.attr = Attr.linear) ||
+        residualLinearFields D ts sd.fields
+    | none => false
+∀ (D : Decls) (ts : List OwnSt) (T : Ty) (n : Nat),
+  residualLinear D (OwnSt.fields ts) (T.array n) =
+    residualLinearFields D ts (List.replicate n T)
+∀ (D : Decls) (x : Ty) (ts : List OwnSt),
+  (∀ (s : Nat), x = Ty.struct s → False) →
+    (∀ (T : Ty) (n : Nat), x = T.array n → False) →
+      residualLinear D (OwnSt.fields ts) x = false
+```
+
+### `residualLinearFields`
+
+*def* · module `RueCore.Statics`
+
+§5.6's field disjunction: a field slot no partial move touched is `owned`,
+so its clause is the type-level test (helper).
+
+```lean
+def RueCore.residualLinearFields (D : Decls) : List OwnSt → List Ty → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (x : List Ty),
+  residualLinearFields D [] x =
+    x.any fun T => decide (Ty.mult D T = Mult.linear)
+∀ (D : Decls) (head : OwnSt) (tail : List OwnSt),
+  residualLinearFields D (head :: tail) [] = false
+∀ (D : Decls) (t : OwnSt) (ts : List OwnSt) (T : Ty) (Ts : List Ty),
+  residualLinearFields D (t :: ts) (T :: Ts) =
+    (residualLinear D t T || residualLinearFields D ts Ts)
+```
+
+### `residualLinearBelow`
+
+*def* · module `RueCore.Statics`
+
+§5.6's obligation read over the paths **strictly under** `p`: (@Drop)
+§5.3's last premise, "if `p` has a `MovedOut` descendant, no still-owned linear
+sub-place remains below `p`". `@drop(p)` discharges `p`'s own obligation
+(`3.9:39`), so the root's declared linearity is deliberately not read here;
+what it may not do is silently destroy a linear sub-place that a partial move
+has separated from it. Verified against the compiler: `@drop(v.x1)` then
+`@drop(v)` on a carrier whose `x0` is a live linear field is E0406.
+
+```lean
+def RueCore.residualLinearBelow (D : Decls) : OwnSt → Ty → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (x : Ty), residualLinearBelow D OwnSt.movedOut x = false
+∀ (D : Decls) (x : OwnSt) (s : Nat),
+  (x = OwnSt.movedOut → False) →
+    residualLinearBelow D x (Ty.struct s) =
+      match D.structs[s]? with
+      | some sd => residualLinearFields D x.fieldStates sd.fields
+      | none => false
+∀ (D : Decls) (x : OwnSt) (T : Ty) (n : Nat),
+  (x = OwnSt.movedOut → False) →
+    residualLinearBelow D x (T.array n) =
+      residualLinearFields D x.fieldStates (List.replicate n T)
+∀ (D : Decls) (x : OwnSt) (x_1 : Ty),
+  (x = OwnSt.movedOut → False) →
+    (∀ (s : Nat), x_1 = Ty.struct s → False) →
+      (∀ (T : Ty) (n : Nat), x_1 = T.array n → False) →
+        residualLinearBelow D x x_1 = false
 ```

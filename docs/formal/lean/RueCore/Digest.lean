@@ -164,8 +164,19 @@ def isTypeLike (type : Lean.Expr) : Bool := type.getForallBody.isSort
 /-- (helper) The most lines of body an entry prints for a definition that is
 not itself a type. Above the limit the entry is the signature and the
 doc-comment, and the body is read in the module named beside it: `eval`,
-`check` and `explain` are what the limit is for. -/
-def maxBodyLines : Nat := 15
+`check` and `explain` are what the limit is for.
+
+The limit is **20** because the array arms of RUE-2322 pushed seven
+definitions over the previous 15 — `Contents.readAt`, `Contents.writeAt`,
+`Contents.residualLinear`, `dropEvents`, `residualLinear`,
+`residualLinearBelow` and `OwnSt.fieldStates` — and three of those are the
+linearity predicates this file's own preamble promises to print ("a signature
+alone cannot tell `Ty.mult` from `fun _ => .copy` … the linearity claims below
+would be nearly vacuous"). 20 is the smallest value that prints all seven
+again, and it still leaves `eval`, `check`, `explain` and `traceEval` at their
+signatures. Raise it the same way — to the smallest value that keeps the
+preamble true — when a later slice adds arms again. -/
+def maxBodyLines : Nat := 20
 
 /-- (helper) Does this value read as the elaborator's output rather than as
 what was written — a `brecOn` application or a well-founded fixpoint? Such a
