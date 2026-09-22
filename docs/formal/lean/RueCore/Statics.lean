@@ -907,6 +907,92 @@ def Ctx.join (D : Decls) : Ctx → Ctx → Option Ctx
       | _, _ => none
   | _, _ => none
 
+/-! ### The join is symmetric; bracketing is not proved
+
+§5.5 writes `join(Σ1, …, Σn)` with no order and no bracketing, and the
+mechanization computes it as a left fold (below), so the two readings agree
+only to the extent that the binary join is commutative and associative.
+
+**Commutativity is proved.** `OwnSt.join_comm` holds of arbitrary states, and
+`Entry.join_comm`/`Ctx.join_comm` lift it to same-skeleton entries and contexts
+— which is every pair the rule joins, since the arms of a `match` or an `if`
+extend one incoming context and `Typed.skel_preserved` keeps their skeletons
+equal.
+
+**Associativity is not proved, and is false in the generality the statement
+would need.** `.fields` at a scalar type is a state no rule can write;
+`ownedJoinOk` refuses it while `residualLinear` sees nothing in it, so at `int`
+the two associations of `MovedOut`, `Owned`, `fields [Owned]` are `MovedOut`
+and ill-formed respectively (`Examples.lean` pins the pair). Over states that
+*are* well formed at their type it holds: it was checked exhaustively over a
+13-declaration fixture and every well-formed `OwnSt` to depth 3 — commutativity,
+associativity, and all six orders of three states, with no counterexample.
+Proving it needs a state-against-type well-formedness invariant the fragment
+does not carry today; that, and the permutation corollary for `Ctx.joinAll`
+that would follow from it, are owed on RUE-2325.
+-/
+
+mutual
+/-- **The §5.5 join is commutative**, at one path and its subtree. Joining is
+symmetric in the two arms: where one side is wholly `Owned` the result is the
+other side subject to `ownedJoinOk`, where one side is `MovedOut` the result is
+`MovedOut` subject to the other's residue, and two field records join slot by
+slot — each of which reads the same from either side. -/
+theorem OwnSt.join_comm (D : Decls) : ∀ (a b : OwnSt) (T : Ty),
+    OwnSt.join D a b T = OwnSt.join D b a T
+  | .owned, .owned, _ => rfl
+  | .owned, .movedOut, _ => rfl
+  | .owned, .fields _, _ => rfl
+  | .movedOut, .owned, _ => rfl
+  | .movedOut, .movedOut, _ => rfl
+  | .movedOut, .fields _, _ => rfl
+  | .fields _, .owned, _ => rfl
+  | .fields _, .movedOut, _ => rfl
+  | .fields as, .fields bs, T => by
+      cases T with
+      | struct s =>
+          cases hd : D.structs[s]? with
+          | none => simp [OwnSt.join, hd]
+          | some sd => simp [OwnSt.join, hd, OwnSt.joinList_comm D as bs sd.fields]
+      | _ => simp [OwnSt.join]
+
+/-- The same over a declaration's fields, slot by slot (helper). -/
+theorem OwnSt.joinList_comm (D : Decls) : ∀ (as bs : List OwnSt) (Ts : List Ty),
+    OwnSt.joinList D as bs Ts = OwnSt.joinList D bs as Ts
+  | as, bs, [] => by cases as <;> cases bs <;> rfl
+  | [], [], _ :: _ => rfl
+  | [], _ :: _, _ :: _ => rfl
+  | _ :: _, [], _ :: _ => rfl
+  | a :: as, b :: bs, T :: Ts => by
+      simp only [OwnSt.joinList, OwnSt.join_comm D a b T, OwnSt.joinList_comm D as bs Ts]
+end
+
+/-- **The §5.5 join is commutative on one entry**, whose skeleton the two arms
+share — the entry's declared type and `mut` mark come from the incoming
+context, so only the state differs. -/
+theorem Entry.join_comm {D : Decls} {a b : Entry} (hsk : a.skel = b.skel) :
+    Entry.join D a b = Entry.join D b a := by
+  simp only [Entry.skel, Prod.mk.injEq] at hsk
+  obtain ⟨hty, hmu⟩ := hsk
+  have hset : a.setSt = b.setSt := by
+    funext u
+    simp [Entry.setSt, hty, hmu]
+  simp only [Entry.join, hty, hset, OwnSt.join_comm D a.st b.st b.ty]
+
+/-- **The §5.5 join is commutative on a whole context**, pointwise, whenever
+the two arms carry the same skeleton — which `skel_preserved` guarantees of any
+two outgoing contexts of one incoming one (`Typed.skel_preserved`). So which
+arm the algorithm reads
+first is immaterial; what is not proved is the bracketing (section docstring). -/
+theorem Ctx.join_comm {D : Decls} : ∀ (Γ₁ Γ₂ : Ctx), Γ₁.skel = Γ₂.skel →
+    Ctx.join D Γ₁ Γ₂ = Ctx.join D Γ₂ Γ₁
+  | [], [], _ => rfl
+  | [], _ :: _, h => by simp [Ctx.skel] at h
+  | _ :: _, [], h => by simp [Ctx.skel] at h
+  | a :: as, b :: bs, h => by
+      simp only [Ctx.skel, List.map_cons, List.cons.injEq] at h
+      simp only [Ctx.join, Entry.join_comm h.1, Ctx.join_comm as bs h.2]
+
 /-! ### The n-way §5.5 join, and a `match` arm's own binders
 
 (Match) §5.5 writes `Σ' = join(Σ1, …, Σn)` over one outgoing state per arm.
@@ -920,10 +1006,15 @@ has at least one variant, the zero-arm `match` on an uninhabited scrutinee being
 a surface form elaboration never brings here (§2's reachability pruning,
 `10.5:4`).
 
-Nothing in the fold depends on the order it is taken in — the arms' states are
-joined, and the join is commutative and associative where it is defined — but
-the fold is what an algorithm computes and what `Matches.joinFold`
-(`Soundness.lean`) consumes, so it is the shape the rule carries.
+The fold is the *computation* §5.5's unordered `join(Σ1, …, Σn)` is read as,
+and it is what `Matches.joinFold` (`Soundness.lean`) consumes. That reading is
+exact in one half and checked in the other: the binary join is **commutative**,
+proved (`OwnSt.join_comm`, `Ctx.join_comm`), so which of two arms is taken
+first does not matter; **associativity**, which is what would make the
+bracketing immaterial and `Ctx.joinAll` invariant under a permutation of the
+arms, is checked exhaustively over a fixture rather than proved, and is false
+of states no rule can produce. The section above states both and RUE-2325 owes
+the proof.
 -/
 
 /-- One arm's entry context: (Match) §5.5's `Γ, x_{i1}:Ti1, …, x_{i,ai}:Ti_{ai} ;
