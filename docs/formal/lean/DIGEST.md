@@ -2523,6 +2523,14 @@ theorem RueCore.ContentsMatches.owned_array {D : Decls} {c : Contents} {T : Ty}
 
 Inversion of a field step (helper).
 
+The conclusion is a **disjunction** where it was a single existential before
+the array forms: a constant step reaches a struct field or an array element,
+and the two arms name different shapes. That is a genuine weakening of the
+statement — a caller now splits where it used to destructure — and it is
+forced, because `Ty.fieldAt` now has two arms. Its call sites (`soundness`'s
+`useCopy` and `useMove` cases) close both arms with the same two lines,
+because both hand the list lemmas a `List` and an index.
+
 ```lean
 theorem RueCore.Ty.fieldAt_inv {D : Decls} {T Tf : Ty} {f : Nat}
   (h : Ty.fieldAt D T f = some Tf) :
@@ -4746,9 +4754,10 @@ Types (§2, fragment). `int w s` is §2's `int(w, s)`; `struct s` names the
 declaration at index `s` of the program's struct environment and `enum e` the
 declaration at index `e` of its enum environment, which elaboration resolves
 the surface names to; `array T n` is §2's `[T; n]`, the
-fixed-length array of `n ≥ 0` elements of one type (`3.5:1`, `7.1:14` — the
-length is a compile-time constant, which elaboration has already folded, so
-the core sees a `Nat`).
+fixed-length array of `n ≥ 0` elements of one type (`3.5:1`, `3.5:3`,
+`7.1:3`); `3.5:2` is the premise that lets the core see a `Nat` — the length
+is a non-negative integer known at compile time, which elaboration has already
+folded (`7.1:14`'s `array_length` is the grammar it folds).
 
 ```lean
 inductive RueCore.Ty : Type
@@ -9393,7 +9402,7 @@ RueCore.HasTy.enum {D : Decls} {e k : Nat} {ed : EnumDecl} {Ts : List Ty}
       HasTys D vs Ts → HasTy D (Val.enum e k vs) (Ty.enum e)
 ```
 
-**`HasTy.array`** — §6.1's `[ v1, …, vn ]` well typed at `[T; n]` exactly when it has `n` elements and each is well typed at `T` ((Array-Intro) §5.8, read on values; `3.5:2`'s one shared element type is `List.replicate n T`). The value carries `T` because `class([T; n])` is not a function of the elements present — `3.8:74` (`Syntax.lean`).
+**`HasTy.array`** — §6.1's `[ v1, …, vn ]` well typed at `[T; n]` exactly when it has `n` elements and each is well typed at `T` ((Array-Intro) §5.8, read on values; `3.5:3`'s one shared element type is `List.replicate n T`). The value carries `T` because `class([T; n])` is not a function of the elements present — `3.8:74` (`Syntax.lean`).
 
 ```lean
 RueCore.HasTy.array {D : Decls} {T : Ty} {n : Nat} {vs : List Val} :
@@ -9852,7 +9861,7 @@ RueCore.Typed.match {P : Program} {R : Ty} {Γ Γ₀ Γ' : Ctx} {Γs : List Ctx}
             Typed P R Γ (scrut.match arms) T Γ'
 ```
 
-**`Typed.mkArray`** — (Array-Intro) §5.8: all `n` elements share one element type `T` (`3.5:2`, `7.1:3`), are typed left to right with Σ threaded, and the array owns all of them — which is why `class([T; n])` is §3's lift of `class(T)`. `n` is the literal's own length (`7.1:4` — the declared size must match), and `n = 0` is admitted: `[]` is the zero-sized `[T; 0]` and uses nothing. The element-type list is `List.replicate n T`, so this rule is (Struct-Intro)'s `TypedArgs` at a constant field list.
+**`Typed.mkArray`** — (Array-Intro) §5.8: all `n` elements share one element type `T` (`3.5:3`, `7.1:3`), are typed left to right with Σ threaded, and the array owns all of them — which is why `class([T; n])` is §3's lift of `class(T)`. `n` is the literal's own length (`7.1:4` — the declared size must match), and `n = 0` is admitted: `[]` is the zero-sized `[T; 0]` and uses nothing. The element-type list is `List.replicate n T`, so this rule is (Struct-Intro)'s `TypedArgs` at a constant field list.
 
 ```lean
 RueCore.Typed.mkArray {P : Program} {R : Ty} {Γ Γ' : Ctx} {T : Ty}
@@ -9871,7 +9880,7 @@ RueCore.Typed.repeatArray {P : Program} {R : Ty} {Γ Γ' : Ctx} {T : Ty}
       Typed P R Γ (Expr.repeatArray T e n) (T.array n) Γ'
 ```
 
-**`Typed.indexRead`** — (Use-Untrackable-Dynamic-Copy) §5.1, at the read `p[e]` whose index is not a compile-time constant: §4.2's `Untrackable(OrdinaryDynamic)` plan, and the *only* successful static rule for it. `class(T) = Copy` is the rule's own premise, and §4.2's "there is no successful static rule … when `class(T) ∈ {Affine,Linear}`" is that premise's absence rather than a rejection of its own (E0904, probe `a5`). `fully-owned(Σ, p)` is stronger than §5.1's `Σ(p) = Owned` and is `3.8:70`/`7.1:45`'s own rule: "it is a compile-time error … to index the array with a non-constant index" while an element is moved out, "because the compiler cannot know at compile time whether a runtime index denotes a moved-out element". `noLinearPrefix` keeps §4.2's `Untrackable(DeclaredLinearDynamic)` — ill-formed there — without an instance. The index is typed first and Σ threaded through it (§6.2's `E[e]`/`v[E]` contexts reduce the base and then the index), and the read copies, so the outgoing state is the index's. Whether the index is *in range* is dynamic (`7.1:10`, §6.5's (D-Index-Trap)), not a typing question.
+**`Typed.indexRead`** — (Use-Untrackable-Dynamic-Copy) §5.1, at the read `p[e]` whose index is not a compile-time constant: §4.2's `Untrackable(OrdinaryDynamic)` plan, and the *only* successful static rule for it. `class(T) = Copy` is the rule's own premise, and §4.2's "there is no successful static rule … when `class(T) ∈ {Affine,Linear}`" is that premise's absence rather than a rejection of its own (E0904, probe `a5`). `fully-owned(Σ, p)` is stronger than §5.1's `Σ(p) = Owned` and is `3.8:70`/`7.1:45`'s own rule: "it is a compile-time error … to index the array with a non-constant index" while an element is moved out, "because the compiler cannot know at compile time whether a runtime index denotes a moved-out element". `noLinearPrefix` keeps §4.2's `Untrackable(DeclaredLinearDynamic)` — ill-formed there — without an instance. The index is typed **first** and Σ threaded through it, and the base place is read on the resulting context; `eval` runs the two in the same order. `4.11:14` states the opposite for a full index *expression* — "the base expression is evaluated before the index expression" — and §6.2's `E[e]`/`v[E]` contexts are that order. It is unobservable here because the base is a `Place`, not an expression: reading a place runs nothing, allocates nothing and threads no Σ of its own, so the two orders agree on every program. The order becomes observable only when a base expression can have an effect, which is a form this fragment does not have. The read copies, so the outgoing state is the index's. Whether the index is *in range* is dynamic (`7.1:10`, §6.5's (D-Index-Trap)), not a typing question.
 
 ```lean
 RueCore.Typed.indexRead {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {p : Place}
@@ -10270,6 +10279,20 @@ Keying the leak check on the residual *state* rather than on the binding's type
 is the RUE-1591 model §5.6 states: after a partial move the obligation attaches
 to whatever linear content is still present, so consuming exactly the linear
 part of an infectious carrier and letting the rest drop is legal.
+
+**The array clause and §5.6's second disjunct.** An array's node carries no
+obligation of its own — it declares no attribute, and `3.8:74` makes a
+zero-length one vacuous — so the obligation is the disjunction over its `n`
+elements, each at the element type (`3.8:71`, §5.3's "the element type for an
+array of nonzero length"). §5.6 writes that clause with a second disjunct,
+"(untracked residue carries linear)", for the elements the tracked list does
+not reach. It is not absent here: `residualLinearFields`' `[], Ts` base case
+answers those slots at the **type** level, `Ts.any (·.mult D = .linear)`,
+which is the second disjunct's job done conservatively — it can only say
+"carries" where the calculus's own disjunct would. What would make the
+difference observable is a *dynamic-index* move, which leaves residue no path
+names (`3.8:70`); this part has no such move, so the two readings agree on
+every program it accepts. RUE-2327 is where the distinction starts to bite.
 
 ```lean
 def RueCore.residualLinear (D : Decls) : OwnSt → Ty → Bool
