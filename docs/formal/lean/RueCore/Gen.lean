@@ -153,19 +153,20 @@ the weights can be read and changed:
   sibling fields still drop at scope exit) and a binder next (the move that
   makes a second `match` on the same place the E0205 the compiler reports).
   That weight on its own starved the shape it is for, because the branch it
-  fires on is the rarer one: a `match` is drawn far more often where the scope
-  holds no enum place than where it holds one. So where the scope offers no
-  place of the drawn enum's type the draw **makes** one half the time —
-  `let v = <the temporary> in match v`, sometimes with one statement in
-  between — instead of matching a temporary. Measured: 111 of 185 `match` sites
-  at `--gen 200 --seed 7` and 533 of 895 at `--gen 1000 --seed 23` scrutinize a
-  place, where the weight alone reached 21 of 171 and 60 of 754; and the E0205
-  a second `match` on the same place is becomes the *deepest* refusal of 13 of
-  200 and 108 of 1,000 cases, where the weight alone reached 2 and 12. The
-  n-way **join** conflict stays rare at either setting — 1 case in 1,000 at
-  seed 23, the same order as the binary (If) join's — because it needs two arms
-  to disagree about an entry that carries a linear value and outlives the
-  `match`, which random arms seldom do;
+  fired on was the rarer one: with the weight alone only 25 of 171 `match` sites
+  at `--gen 200 --seed 7` and 73 of 754 at `--gen 1000 --seed 23` had an enum
+  place in scope at all. So where the scope offers no place of the drawn enum's
+  type the draw **makes** one half the time — `let v = <the temporary> in
+  match v`, sometimes with one statement in between — instead of matching a
+  temporary, and the arms are then typed under a scope that still holds the
+  consumed binding. Measured with it: 116 of 185 sites and 566 of 895 have a
+  place in scope, 111 and 533 scrutinize one (the weight alone reached 21 of 171
+  and 60 of 754), and the E0205 a second `match` on the same place is becomes
+  the *deepest* refusal of 13 of 200 and 108 of 1,000 cases, where the weight
+  alone reached 2 and 12. The n-way **join** conflict stays rare at either
+  setting — 1 case in 1,000 at seed 23, the same order as the binary (If)
+  join's — because it needs two arms to disagree about an entry that carries a
+  linear value and outlives the `match`, which random arms seldom do;
 * a `let` binder is biased toward a declaration that holds an enum in
   a field, which is what puts a projection of enum type in scope at all;
 * an arm's body is an ordinary drawn expression over the payload locals, so
