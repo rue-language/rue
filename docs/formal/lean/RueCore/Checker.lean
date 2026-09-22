@@ -42,10 +42,29 @@ join**: `Ctx.joinAll` over the arms' outgoing contexts in declaration order.
 The one thing `check` must *choose* is the arms' shared type, since §5.5 states
 it as one `T` and lets (Sub-Never) coerce a diverging arm to it. `firstArmTy`
 takes the first arm's, and every other arm is compared against that — the same
-choice `ite` makes for its two arms, with the same cost: a `match` whose first
-arm is a `return` takes `R` for `T` and a sibling arm at another type is refused,
-where §5.5 would take the sibling's. The first arm is therefore checked twice,
+choice `ite` makes for its two arms. The first arm is therefore checked twice,
 which costs time and nothing else.
+
+What the choice *does* cost is the two costs the `return`/`@panic` paragraphs
+below spell out, and `match` carries both. Neither is positional and neither is
+`firstArmTy`'s doing: `check` concludes a `return` or `@panic` at the enclosing
+`R` and at the state in force, wherever the form stands.
+
+The **type** cost, in any arm position. `let b: bool = match e { K0 => return 7,
+K1 => true, K2 => false }` is refused because `firstArmTy` reads `R` off the
+diverging first arm and `bool` is not `R`; put the `return` in the last arm
+instead and it is refused because that arm checks at `R` against the `bool` the
+first two fixed. §5.5 accepts both, and so does the Rue compiler — it runs them
+to `true 5` and `false 5`.
+
+The **state** cost, exactly as for `ite`. A diverging arm hands `Ctx.joinAll`
+the state in force at the form, where §5.7 gives it `⊥` and the join reads
+nothing from it. So `let v: T0 = …; let r = match e { K0 => { @drop(v);
+return 7 }, K1 => 2, K2 => 3 }; @drop(v); r` on a *linear* `T0` is refused: the
+diverging arm's `MovedOut` meets the other arms' `Owned` at a `Linear` type and
+the join is ill-formed. `Typed` derives that program (the `ret` rule may take a
+sibling's outgoing context), the machine runs it, and the Rue compiler accepts
+it and prints `1 2`.
 
 ## `return` and `@panic`, algorithmically
 
@@ -312,9 +331,16 @@ def checkArgs (P : Program) (R : Ty) : Ctx → List Expr → List Ty → Option 
 **first** arm's, read under that arm's own payload locals. §5.5 states the
 premise as one type `T` for every arm and lets (Sub-Never) supply it for a
 diverging one, which an algorithm cannot do, so `check` fixes `T` here and
-compares the others against it — exactly what it does for `ite`'s two arms, with
-the same cost in completeness (module docstring): a `match` whose first arm is a
-`return` takes `R` for `T`, and a sibling arm at another type is refused. -/
+compares the others against it — exactly what it does for `ite`'s two arms.
+
+The completeness this costs is **not** this function's and **not** positional.
+`check` concludes a `return`/`@panic` at the enclosing return type `R` and at
+the state in force, so a diverging arm is at `R` wherever it stands: first, it
+fixes `T := R` and the siblings are refused; last, the siblings fix `T` and it
+is refused. `match` carries the state half of the same choice as well — a
+diverging arm contributes its outgoing state to `Ctx.joinAll` where §5.7
+contributes `⊥`. Both costs are pre-existing, refused identically at `ite`, and
+the module docstring writes out a program for each. -/
 def firstArmTy (P : Program) (R : Ty) (Γ₀ : Ctx) :
     List Expr → List (List Ty) → Option Ty
   | e :: _, Ts :: _ => (check P R (armCtx Ts Γ₀) e).map Prod.fst
