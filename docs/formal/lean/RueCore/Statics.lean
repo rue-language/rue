@@ -46,7 +46,7 @@ every payload component of every variant (`6.3:19`), so `EnumDecl.Wf` is that
 equation and `WfEnums` its program-wide form. An enum declares no attribute and
 no destructor, so there is no `@copy`/`linear` clause to check and nothing for
 §6.11 to run before the payload (the compiler rejects `drop fn E(self)` with
-E0417).
+E0417: a destructor names a struct type).
 
 `carries_linear(T) ⟺ class(T) = Linear` is §5.3's own reading, so it is a
 definition here (`Ty.carriesLinear`); what §5.3 asks to be checked is the

@@ -246,8 +246,8 @@ def variantDecls : Nat → List (List Ty) → List String
 
 /-- One enum declaration as a Rue item (§2's `enum E { K1(T̄1), …, Kn(T̄n) }`),
 variants in declaration order. There is no attribute to print — §3 gives an enum
-none — and no `drop fn`: an enum declares no destructor (E0417), so the
-observation channel for an enum's drop is the destructor of whatever its payload
+none — and no `drop fn`: an enum declares no destructor (E0417 — a destructor names a
+struct type), so the observation channel for an enum's drop is the destructor of whatever its payload
 holds. -/
 def enumItem (e : Nat) (ed : EnumDecl) : String :=
   "enum " ++ tyName (.enum e) ++ " { " ++
