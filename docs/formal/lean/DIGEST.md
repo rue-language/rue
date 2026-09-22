@@ -4905,8 +4905,13 @@ Defining equations, as Lean derived them from the body:
 
 Whether a place's path has **no** index step. This is not a premise of any
 §5 rule: it is this part's own restriction, standing in for `3.8:68`'s
-root-index premise on (Use-Move) §5.1 and (@Drop) §5.3, which it implies, and
-lifted by RUE-2327 (module docstring, "Arrays").
+root-index premise on (Use-Move) §5.1 and (@Drop) §5.3, and lifted by RUE-2327
+(module docstring, "Arrays"). It reads the place's **constructors**, not the
+type each step is taken at, while `Place.path` and `Ty.fieldAt` are
+constructor-blind: a step spelled `.proj` at an array-typed node passes it, so
+it implies `3.8:68` only for places spelled with `.idx` — which is every place
+the printer and the generator produce, and the reason RUE-2327's replacement
+is keyed on the type.
 
 ```lean
 def RueCore.Place.noIdx : Place → Bool
@@ -6859,9 +6864,9 @@ An empty path selects the whole aggregate and retains nothing: the leaf "is not
 residue". A `⊘` with path left to walk is `useAfterMove`, as `readAt`'s is; a
 step that is not a field of what is stored is a shape no well-typed program
 produces. An **array** step of the selected path is refused here for the same
-reason: `Place.noIdx` (`Syntax.lean`) keeps this part from moving out of an
-element at all, so no accepted program navigates one. §5.1's array clause —
-retained elements in ascending index order — is stated in the next slice.
+reason: `linearResidue`'s array arm (`Syntax.lean`) has already refused the
+plan, so no accepted program navigates one. §5.1's array clause — retained
+elements in ascending index order — is stated in the next slice (RUE-2327).
 
 ```lean
 def RueCore.Contents.splitResidue (D : Decls) :
@@ -7500,9 +7505,10 @@ It is keyed on the retained field's **type**, not on Σ: the compiler reads the
 declared type of a sibling that has itself already been moved out (probe d5c,
 E0474 on a moved-out linear sibling), and `3.8:60` states the check
 "recursively through nested fields" of the declared-linear place, which is this
-recursion. An array step of the selected path refuses outright here, because
-`Place.noIdx` has already refused the place: §5.1's array clause — retained
-elements in ascending index order — is stated in the next slice.
+recursion. An array step of the selected path refuses outright here — this
+arm is the gate for such a plan, since `Place.noIdx` reads a place's spelling
+and not its type — and §5.1's array clause — retained elements in ascending
+index order — is stated in the next slice (RUE-2327).
 
 This is the premise that rejects a destructure before it can silently drop a
 linear sibling; the compiler reports E0474.
@@ -10420,7 +10426,7 @@ RueCore.Typed.indexRead {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {p : Place}
                 Typed P R Γ (Expr.indexRead p e) T Γ₁
 ```
 
-**`Typed.indexWrite`** — (Assign) §5.2 at a dynamic index, `p[e₁] = e₂` (`7.1:30`, `4.11:12`): an in-place mutation that modifies the array without moving it. The root must be a `μ = mut` binding (§5 preamble), and the index reduces before the right-hand side (§6.2: "`assign p = E` — right-hand side (`p`'s index subexpressions reduce first)") with Σ threaded in that order. The destination is **not** a use, so the read's `class(T) = Copy` premise does not transfer here: §4.2's plans classify a value-context use, and what (Assign) demands of a destination is its own last premise, `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` — `overwriteOk`/`3.8:77`, the same premise `Typed.assign` carries, read at the **element** type on the post-RHS state. A runtime index can never establish `MovedOut` at the element, so the disjunction bites as its right half: an affine, even destructor-bearing, element type is admitted (and the machine's overwrite-drop below runs its glue), while a linear-carrying one is refused, which is the compiler's E0493. Two more of (Assign)'s clauses are discharged rather than restated. `3.8:72`/`7.1:46` — "while one or more elements of an array are moved out, it is a compile-time error to assign into the array" — is `fully-owned(Σ, p)` on the post-RHS state. And `3.8:55`'s reinitialization is (Assign)'s own `Σ1[p ↦ Owned]`, taken at the **whole array** rather than at the element: `7.1:46` says an element write "does not reinstate per-element ownership", and on the `fully-owned` premise there is nothing to reinstate, so writing `Owned` at `p` is the rule as §5.2 states it and changes no path's state. `en₀.st.get p.path = some u₀` constrains `u₀` nowhere, and deliberately: it is (Assign)'s own incoming `Σ(p)` lookup, whose content is that the destination path is *reachable* — `OwnSt.get` is `none` under a moved-out prefix — while every condition on the state itself is read after the operands have run, on `u₁`, because that is the state the write overwrites.
+**`Typed.indexWrite`** — (Assign) §5.2 at a dynamic index, `p[e₁] = e₂` (`7.1:30`, `4.11:12`): an in-place mutation that modifies the array without moving it. The root must be a `μ = mut` binding (§5 preamble), and the index reduces before the right-hand side (§6.2: "`assign p = E` — right-hand side (`p`'s index subexpressions reduce first)") with Σ threaded in that order. The destination is **not** a use, so the read's `class(T) = Copy` premise does not transfer here: §4.2's plans classify a value-context use, and what (Assign) demands of a destination is its own last premise, `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` — `overwriteOk`/`3.8:77`, the same premise `Typed.assign` carries, read at the **element** type on the post-RHS state. A runtime index can never establish `MovedOut` at the element, so the disjunction bites as its right half: an affine, even destructor-bearing, element type is admitted (and the machine's overwrite-drop below runs its glue), while a linear-carrying one is refused, which is the compiler's E0493. There is **no plan premise**: §4.2's plans classify value-context uses, and an assignment destination is not one, so a dynamic-index write into an array field of a declared-`linear` struct (`v0.x0[i] = 9`) is admitted here exactly as the compiler admits it (second-review probe c3, which prints `1 9 2 7`). The write lands on an element the declared-`linear` place still owns whole — `fully-owned` below is what guards that — and consumes nothing, so `Untrackable(DeclaredLinearDynamic)` has no instance at a write; its one instance is the dynamic *read*, which `indexRead` refuses. The arrays part carried `declaredPrefix … = none` here as a restriction of its own; it is dropped with the destructure mechanized. Two more of (Assign)'s clauses are discharged rather than restated. `3.8:72`/`7.1:46` — "while one or more elements of an array are moved out, it is a compile-time error to assign into the array" — is `fully-owned(Σ, p)` on the post-RHS state. And `3.8:55`'s reinitialization is (Assign)'s own `Σ1[p ↦ Owned]`, taken at the **whole array** rather than at the element: `7.1:46` says an element write "does not reinstate per-element ownership", and on the `fully-owned` premise there is nothing to reinstate, so writing `Owned` at `p` is the rule as §5.2 states it and changes no path's state. `en₀.st.get p.path = some u₀` constrains `u₀` nowhere, and deliberately: it is (Assign)'s own incoming `Σ(p)` lookup, whose content is that the destination path is *reachable* — `OwnSt.get` is `none` under a moved-out prefix — while every condition on the state itself is read after the operands have run, on `u₁`, because that is the state the write overwrites.
 
 ```lean
 RueCore.Typed.indexWrite {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx} {p : Place}
@@ -10430,16 +10436,15 @@ RueCore.Typed.indexWrite {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx} {p : Plac
     en₀.mu = true →
       en₀.st.get p.path = some u₀ →
         Ty.atPath P.decls en₀.ty p.path = some (T.array n) →
-          declaredPrefix P.decls en₀.ty p.path = none →
-            Typed P R Γ e₁ (Ty.int w s) Γ₁ →
-              Typed P R Γ₁ e₂ T Γ₂ →
-                Γ₂[p.root]? = some en₁ →
-                  en₁.st.get p.path = some u₁ →
-                    u₁.fullyOwned = true →
-                      u₁ = OwnSt.movedOut ∨ Ty.mult P.decls T ≠ Mult.linear →
-                        Typed P R Γ (Expr.indexWrite p e₁ e₂) Ty.unit
-                          (List.set Γ₂ p.root
-                            (en₁.setSt (en₁.st.setAt p.path OwnSt.owned)))
+          Typed P R Γ e₁ (Ty.int w s) Γ₁ →
+            Typed P R Γ₁ e₂ T Γ₂ →
+              Γ₂[p.root]? = some en₁ →
+                en₁.st.get p.path = some u₁ →
+                  u₁.fullyOwned = true →
+                    u₁ = OwnSt.movedOut ∨ Ty.mult P.decls T ≠ Mult.linear →
+                      Typed P R Γ (Expr.indexWrite p e₁ e₂) Ty.unit
+                        (List.set Γ₂ p.root
+                          (en₁.setSt (en₁.st.setAt p.path OwnSt.owned)))
 ```
 
 **`Typed.dropCopy`** — (@Drop-Copy) §5.3: no drop glue, no ownership effect. §5.3 gives it neither of (@Drop)'s projection premises — a `Copy` place is moved by nothing — so only the `Ordinary` plan premise is added: §5.3 says the two `@drop` rules "are read the same way" as §5.1's two use rules, which is `declaredPrefix … = none`. The subtree condition is read the way the `Copy` use rule above reads it, for the same reason and at the same cost (none).
