@@ -726,7 +726,21 @@ declared type.
 Keying the leak check on the residual *state* rather than on the binding's type
 is the RUE-1591 model §5.6 states: after a partial move the obligation attaches
 to whatever linear content is still present, so consuming exactly the linear
-part of an infectious carrier and letting the rest drop is legal. -/
+part of an infectious carrier and letting the rest drop is legal.
+
+**The array clause and §5.6's second disjunct.** An array's node carries no
+obligation of its own — it declares no attribute, and `3.8:74` makes a
+zero-length one vacuous — so the obligation is the disjunction over its `n`
+elements, each at the element type (`3.8:71`, §5.3's "the element type for an
+array of nonzero length"). §5.6 writes that clause with a second disjunct,
+"(untracked residue carries linear)", for the elements the tracked list does
+not reach. It is not absent here: `residualLinearFields`' `[], Ts` base case
+answers those slots at the **type** level, `Ts.any (·.mult D = .linear)`,
+which is the second disjunct's job done conservatively — it can only say
+"carries" where the calculus's own disjunct would. What would make the
+difference observable is a *dynamic-index* move, which leaves residue no path
+names (`3.8:70`); this part has no such move, so the two readings agree on
+every program it accepts. RUE-2327 is where the distinction starts to bite. -/
 def residualLinear (D : Decls) : OwnSt → Ty → Bool
   | .movedOut, _ => false
   | .owned, T => decide (T.mult D = .linear)
@@ -734,12 +748,9 @@ def residualLinear (D : Decls) : OwnSt → Ty → Bool
       (match D.structs[s]? with
        | some sd => sd.attr = .linear || residualLinearFields D ts sd.fields
        | none => false)
-  -- An array's node carries no obligation of its own — it has no declared
-  -- attribute and `3.8:74` makes a zero-length one vacuous — so the
-  -- obligation is the disjunction over its `n` elements, each at the element
-  -- type (`3.8:71`, §5.3's "the element type for an array of nonzero
-  -- length"). A partially-written array node is reachable in this part
-  -- (`a[0] = …`); a partially *moved* one is RUE-2327's (`Syntax.lean`).
+  -- The array clause, and §5.6's second disjunct: see the docstring above. A
+  -- partially-written array node is reachable in this part (`a[0] = …`); a
+  -- partially *moved* one is RUE-2327's (`Syntax.lean`).
   | .fields ts, .array T n => residualLinearFields D ts (List.replicate n T)
   | .fields _, _ => false
 
