@@ -1621,7 +1621,9 @@ result has type `[T; n]`.
 Every element is a value-context use of `T` (`3.5:2` — one shared element type),
 typed left-to-right with Σ threaded, and the array owns all `n` elements;
 `class([T; n])` is given by §3 (`3.5:1` for the type form). The empty array `[]`
-(`n = 0`) is the `Copy`, zero-sized `[T; 0]` and uses nothing.
+(`n = 0`) is the zero-sized `[T; 0]` and uses nothing; §3's table classes it
+`Copy` when `class(T)` is and `Affine` otherwise — droppable because it carries
+nothing (`3.8:74`), but not duplicable (RUE-526).
 
 **Call.** A call's type is the callee's return type; its arguments are checked
 against the parameter list, each in its call-site mode. By-value arguments are
