@@ -2335,6 +2335,10 @@ def traceEval (M : FloatOps) (P : Program) :
                    H (r.withTrace tr))
           else refused ta.steps d Θ R (.call f args) "(D-Call) §6.9" H .typeConfusion
 
+-- The `letIn` arm's split tree grew past the default budget once `eval`'s
+-- `use`/`drop` arms gained the declared-linear redex (§6.3) on top of the
+-- array forms; the proof is unchanged, it only needs the room.
+set_option maxHeartbeats 1600000 in
 /-- **The trace is the machine.** Projecting a run to its final result
 reproduces `eval fuel P H φ e` exactly, so a rendered step table can never
 report an outcome — a value, an unwinding `return`, a §6.12 trap, a refusal,

@@ -1159,7 +1159,10 @@ theorem splitResidue_ok {D : Decls} : ∀ (πs : List Nat) {c : Contents} {T T' 
       | none => simp [Ty.atPath, hfa] at hpath
       | some Tf =>
         simp only [Ty.atPath, hfa] at hpath
-        obtain ⟨s, sd, rfl, hd, hf⟩ := Ty.fieldAt_inv hfa
+        -- An array step of the selected path is refused by `linearResidue` (its
+        -- array arm is `true`), so the array arm of `fieldAt_inv` is empty here.
+        rcases Ty.fieldAt_inv hfa with ⟨s, sd, rfl, hd, hf⟩ | ⟨n, rfl, _⟩
+        case inr => simp [linearResidue] at hres
         simp only [linearResidue, hd, hf, Bool.or_eq_false_iff] at hres
         cases hty with
         | hole => simp [Contents.holeFree] at hhf
@@ -1434,31 +1437,55 @@ theorem ContentsMatches.declaredPlan_eq {D : Decls} : ∀ (π : List Nat) {c : C
       | none => simp [Ty.atPath, hfa] at hty
       | some Tf =>
         simp only [Ty.atPath, hfa] at hty
-        obtain ⟨s, sd, rfl, hd, hf⟩ := Ty.fieldAt_inv hfa
-        have hdl : ∀ cs : List Contents,
-            (Contents.struct s cs).declaredLinear D = (Ty.struct s).declaredLinear D :=
-          fun _ => rfl
-        cases hm with
-        | owned hcty hhf =>
-            obtain ⟨cs, rfl, hl⟩ := ContentsMatches.owned_struct hd (.owned hcty hhf)
-            obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
-            simp only [OwnSt.get] at hg
-            have ih := ContentsMatches.declaredPlan_eq π
-              (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hmf)
-              hg hty
-            cases hrec : declaredPrefix D Tf π with
-            | none => simp only [Contents.declaredPlan, declaredPrefix, hcf, hfa, ih, hrec, hdl]
-            | some r => simp only [Contents.declaredPlan, declaredPrefix, hcf, hfa, ih, hrec]
-        | moved _ _ => simp [OwnSt.get] at hg
-        | @fields s' sd' cs ts hd' hl =>
-            have heq : sd' = sd := by rw [hd'] at hd; cases hd; rfl
-            subst heq
-            obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
-            simp only [OwnSt.get] at hg
-            have ih := ContentsMatches.declaredPlan_eq π hmf hg hty
-            cases hrec : declaredPrefix D Tf π with
-            | none => simp only [Contents.declaredPlan, declaredPrefix, hcf, hfa, ih, hrec, hdl]
-            | some r => simp only [Contents.declaredPlan, declaredPrefix, hcf, hfa, ih, hrec]
+        rcases Ty.fieldAt_inv hfa with ⟨s, sd, rfl, hd, hf⟩ | ⟨n, rfl, hf⟩
+        · have hdl : ∀ cs : List Contents,
+              (Contents.struct s cs).declaredLinear D = (Ty.struct s).declaredLinear D :=
+            fun _ => rfl
+          cases hm with
+          | owned hcty hhf =>
+              obtain ⟨cs, rfl, hl⟩ := ContentsMatches.owned_struct hd (.owned hcty hhf)
+              obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
+              simp only [OwnSt.get] at hg
+              have ih := ContentsMatches.declaredPlan_eq π
+                (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hmf)
+                hg hty
+              cases hrec : declaredPrefix D Tf π with
+              | none => simp only [Contents.declaredPlan, declaredPrefix, hcf, hfa, ih, hrec, hdl]
+              | some r => simp only [Contents.declaredPlan, declaredPrefix, hcf, hfa, ih, hrec]
+          | moved _ _ => simp [OwnSt.get] at hg
+          | @fields s' sd' cs ts hd' hl =>
+              have heq : sd' = sd := by rw [hd'] at hd; cases hd; rfl
+              subst heq
+              obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
+              simp only [OwnSt.get] at hg
+              have ih := ContentsMatches.declaredPlan_eq π hmf hg hty
+              cases hrec : declaredPrefix D Tf π with
+              | none => simp only [Contents.declaredPlan, declaredPrefix, hcf, hfa, ih, hrec, hdl]
+              | some r => simp only [Contents.declaredPlan, declaredPrefix, hcf, hfa, ih, hrec]
+        · -- An array step: neither side splits here (`Ty.declaredLinear` and
+          -- `Contents.declaredLinear` are `false` at an array), so both walk
+          -- into the element and agree by the induction hypothesis.
+          cases hm with
+          | owned hcty hhf =>
+              obtain ⟨cs, rfl, hl⟩ := ContentsMatches.owned_array (.owned hcty hhf)
+              obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
+              simp only [OwnSt.get] at hg
+              have ih := ContentsMatches.declaredPlan_eq π
+                (by simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hmf)
+                hg hty
+              cases hrec : declaredPrefix D Tf π with
+              | none => simp [Contents.declaredPlan, declaredPrefix, hcf, hfa, ih, hrec,
+                  Ty.declaredLinear]
+              | some r => simp only [Contents.declaredPlan, declaredPrefix, hcf, hfa, ih, hrec]
+          | moved _ _ => simp [OwnSt.get] at hg
+          | @elems _ _ cs ts hl =>
+              obtain ⟨cf, hcf, hmf⟩ := ContentsMatchesList.index f hl hf
+              simp only [OwnSt.get] at hg
+              have ih := ContentsMatches.declaredPlan_eq π hmf hg hty
+              cases hrec : declaredPrefix D Tf π with
+              | none => simp [Contents.declaredPlan, declaredPrefix, hcf, hfa, ih, hrec,
+                  Ty.declaredLinear]
+              | some r => simp only [Contents.declaredPlan, declaredPrefix, hcf, hfa, ih, hrec]
 
 /-- A `⊘` matches a `MovedOut` state at every type: nothing is stored, so
 nothing is claimed (helper). -/
