@@ -1026,7 +1026,15 @@ theorem ContentsMatches.owned_array {D : Decls} {c : Contents} {T : Ty} {n : Nat
           exact ⟨cs, rfl, ContentsMatchesList.of_owned hcs
             (by simpa only [Contents.holeFree] using hf)⟩
 
-/-- Inversion of a field step (helper). -/
+/-- Inversion of a field step (helper).
+
+The conclusion is a **disjunction** where it was a single existential before
+the array forms: a constant step reaches a struct field or an array element,
+and the two arms name different shapes. That is a genuine weakening of the
+statement — a caller now splits where it used to destructure — and it is
+forced, because `Ty.fieldAt` now has two arms. Its call sites (`soundness`'s
+`useCopy` and `useMove` cases) close both arms with the same two lines,
+because both hand the list lemmas a `List` and an index. -/
 theorem Ty.fieldAt_inv {D : Decls} {T Tf : Ty} {f : Nat} (h : T.fieldAt D f = some Tf) :
     (∃ s sd, T = .struct s ∧ D.structs[s]? = some sd ∧ sd.fields[f]? = some Tf) ∨
       (∃ n, T = .array Tf n ∧ (List.replicate n Tf)[f]? = some Tf) := by
