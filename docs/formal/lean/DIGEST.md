@@ -43,7 +43,7 @@ The theorems below are about a *fragment* of the core calculus
 rule by rule and form by form; its two coverage lines, quoted here so the
 boundary is visible before the statements are:
 
-- *Calculus rules → declarations*: 77 of 97 labeled §5/§6 rules are mechanized; 20 are *not yet mechanized*.
+- *Calculus rules → declarations*: 78 of 97 labeled §5/§6 rules are mechanized; 19 are *not yet mechanized*.
 - *Abstract syntax forms → declarations*: 30 of 35 §2 forms have a core image (9 of them partial); 5 are *not yet mechanized*.
 
 The forms that count as partial are `S`, `E`, `p [ e ]`, `e1 ⊕ e2`, `⊖ e`,
@@ -735,6 +735,69 @@ theorem RueCore.evalFintrin_float_res {D : Decls} (M : FloatModel) (k : FloatInt
     evalFintrin M.toFloatOps k (Val.float w f) = OpRes.trap PanicKind.overflow
 ```
 
+### `splitResidue_ok`
+
+*theorem* · module `RueCore.Soundness`
+
+**`split` never fails on a hole-free well-typed aggregate, and the leaf it
+exposes is a value.** §6.3's `split(H(ℓ)@π_d, π_s)` is total wherever
+(Use-Declared-Linear-Destructure) §5.1's premises hold: `fully-owned(Σ, d)` is
+what says the aggregate has no hole in it, `Γ ⊢ p : T` is what says every step
+of `π_s` is a field, and `¬ linear-residue(S, π_s)` is what makes every
+retained subtree droppable. The leaf is hole-free because the whole subtree
+was, which is what lets the use hand the context a `Val` (`ContentsTy.toVal`).
+
+```lean
+theorem RueCore.splitResidue_ok {D : Decls} (πs : List Nat) {c : Contents}
+  {T T' : Ty} :
+  ContentsTy D c T →
+    c.holeFree = true →
+      Ty.atPath D T πs = some T' →
+        linearResidue D T πs = false →
+          ∃ leaf rs,
+            Contents.splitResidue D c πs = Except.ok (leaf, rs) ∧
+              ContentsTy D leaf T' ∧ leaf.holeFree = true ∧ ResidueOk D rs
+```
+
+### `dropResidue_events`
+
+*theorem* · module `RueCore.Soundness`
+
+**The residue's drop never refuses, and emits §6.11's events in the
+traversal's order.** `dropResidue`'s linear monitor is unreachable on droppable
+residue (`ContentsTy.residualLinear_false`), and each subtree's own walk is the
+closed form `dropEvents` — so §6.3's `drop*` over `[r_1, …, r_m]` is exactly
+`dropResidueEvents`, which is the concatenation `3.8:33` asks for ("all
+droppable residue in that place is destroyed immediately, exactly once, in
+declaration/ascending-index order").
+
+```lean
+theorem RueCore.dropResidue_events {D : Decls} (hwf : WfDecls D)
+  {rs : List Contents} :
+  ResidueOk D rs → dropResidue D rs = Except.ok (dropResidueEvents D rs)
+```
+
+### `destructure_ok`
+
+*theorem* · module `RueCore.Soundness`
+
+**§6.3's `destructure` is total where §5.1 admits the redex**, and its
+trace is the residue's in closed form. This is the statement the two
+declared-linear `soundness` cases consume: the selected leaf comes back well
+typed at `Γ ⊢ p : T`'s type and hole-free — so a use hands on a `Val` and a
+`@drop` can run §6.11 on it — and the events are `dropResidueEvents`, with no
+`linearLeak` reachable.
+
+```lean
+theorem RueCore.destructure_ok {D : Decls} (hwf : WfDecls D) {c : Contents}
+  {T T' : Ty} {πs : List Nat} (hty : ContentsTy D c T)
+  (hhf : c.holeFree = true) (hpath : Ty.atPath D T πs = some T')
+  (hres : linearResidue D T πs = false) :
+  ∃ leaf rs,
+    Contents.destructure D c πs = Except.ok (leaf, dropResidueEvents D rs) ∧
+      ContentsTy D leaf T' ∧ leaf.holeFree = true
+```
+
 ### `ContentsMatches.readAt`
 
 *theorem* · module `RueCore.Soundness`
@@ -772,6 +835,32 @@ theorem RueCore.ContentsMatches.writeAt {D : Decls} (π : List Nat) {c sub' : Co
         ContentsMatches D sub' u' T' →
           ∃ c',
             c.writeAt π sub' = some c' ∧ ContentsMatches D c' (t.setAt π u') T
+```
+
+### `ContentsMatches.declaredPlan_eq`
+
+*theorem* · module `RueCore.Soundness`
+
+**The store's use plan is the type's use plan.** §6.3 has the machine
+consume a closed elaboration annotation `μ`; this fragment's `eval` recovers it
+from the stored aggregate instead (`Contents.declaredPlan`, `Dynamics.lean`),
+and this is the theorem that the two are the same wherever Σ and the store
+agree: at every path Σ has a state for, the declaration index the stored value
+carries is the one the declared type names, so the `Declared(d, π_s)` split the
+machine takes is `declaredPrefix`'s (`Syntax.lean`).
+
+It is what makes the six place cases of `soundness` fire the rule their
+`Typed` premise selected — the four ordinary ones because the plan is `none`
+on both sides, and the two declared ones because it is the same
+`some (π_d, π_s)`.
+
+```lean
+theorem RueCore.ContentsMatches.declaredPlan_eq {D : Decls} (π : List Nat)
+  {c : Contents} {t u : OwnSt} {T T' : Ty} :
+  ContentsMatches D c t T →
+    t.get π = some u →
+      Ty.atPath D T π = some T' →
+        Contents.declaredPlan D c π = declaredPrefix D T π
 ```
 
 ### `ContentsMatches.residualLinear_false`
@@ -1666,6 +1755,49 @@ theorem RueCore.wrapInt_inBounds (w : IntWidth) (s : Sign) (n : Int) :
   InBounds w s (wrapInt w s n)
 ```
 
+### `Ty.atPath_append`
+
+*theorem* · module `RueCore.Syntax`
+
+Navigating a concatenated path is navigating the two halves in turn. This
+is what lets §5.1's premises at `d` — reached by `π_d` — and the leaf's type —
+reached by `π_d · π_s` — be read off one another (helper).
+
+```lean
+theorem RueCore.Ty.atPath_append (D : Decls) (T : Ty) (π ρ : List Nat) :
+  Ty.atPath D T (π ++ ρ) = (Ty.atPath D T π).bind fun T' => Ty.atPath D T' ρ
+```
+
+### `declaredPrefix_split`
+
+*theorem* · module `RueCore.Syntax`
+
+**The plan really splits the path** (§4.2): `π = π_d · π_s` with `π_s`
+nonempty, so `d` is a *proper* prefix of `p` and the leaf really is under it.
+This is what lets §5.1's premises at `d` and §6.3's traversal from `d` be read
+against the one place the program wrote (helper).
+
+```lean
+theorem RueCore.declaredPrefix_split (D : Decls) (T : Ty) (π πd πs : List Nat) :
+  declaredPrefix D T π = some (πd, πs) → π = πd ++ πs ∧ πs ≠ []
+```
+
+### `declaredPrefix_declaredLinear`
+
+*theorem* · module `RueCore.Syntax`
+
+**The consumed place is a declared-`linear` struct** (§5.1's
+`Γ ⊢ d : S`, `S` declared `linear`). The rule states it as a premise; here it
+is a *consequence* of the plan, so `Typed.useDeclared`/`Typed.dropDeclared`
+need not carry it (helper).
+
+```lean
+theorem RueCore.declaredPrefix_declaredLinear (D : Decls) (T : Ty)
+  (π πd πs : List Nat) :
+  declaredPrefix D T π = some (πd, πs) →
+    ∃ Td, Ty.atPath D T πd = some Td ∧ Ty.declaredLinear D Td = true
+```
+
 ### `Mult.rank_le_join_left`
 
 *theorem* · module `RueCore.Statics`
@@ -1829,6 +1961,45 @@ theorem RueCore.payloadFold_congr {D D' : Decls} (Tss : List (List Ty)) (acc : M
       List.foldl
         (fun m Ts => List.foldl (fun m' T => m'.join (Ty.mult D' T)) m Ts) acc
         Tss
+```
+
+### `OwnSt.get_append`
+
+*theorem* · module `RueCore.Statics`
+
+`Σ`'s lookup along a concatenated path is the two lookups in turn. This is
+what lets (Use-Declared-Linear-Destructure) §5.1 state its ownership premise at
+`d` — reached by `π_d` — and still speak for the leaf at `π_d · π_s`
+(helper).
+
+```lean
+theorem RueCore.OwnSt.get_append (t : OwnSt) (π ρ : List Nat) :
+  t.get (π ++ ρ) = (t.get π).bind fun u => u.get ρ
+```
+
+### `OwnSt.fullyOwned_fieldAt`
+
+*theorem* · module `RueCore.Statics`
+
+Every field slot of a fully-owned node is fully owned (helper).
+
+```lean
+theorem RueCore.OwnSt.fullyOwned_fieldAt {ts : List OwnSt} (f : Nat) :
+  OwnSt.fullyOwnedList ts = true → (OwnSt.fieldAt ts f).fullyOwned = true
+```
+
+### `OwnSt.fullyOwned_get`
+
+*theorem* · module `RueCore.Statics`
+
+**A fully-owned node owns every path under it.** `fully-owned(Σ, d)`
+(§5 preamble) gives every place under `d` a state of its own, itself fully
+owned — which is why (Use-Declared-Linear-Destructure) §5.1 asks it of `d`
+alone and still knows the selected leaf is there, whole (helper).
+
+```lean
+theorem RueCore.OwnSt.fullyOwned_get {t : OwnSt} (π : List Nat) :
+  t.fullyOwned = true → ∃ u, t.get π = some u ∧ u.fullyOwned = true
 ```
 
 ### `OwnSt.joinList_comm`
@@ -2537,6 +2708,49 @@ theorem RueCore.Ty.fieldAt_inv {D : Decls} {T Tf : Ty} {f : Nat}
   (∃ s sd,
       T = Ty.struct s ∧ D.structs[s]? = some sd ∧ sd.fields[f]? = some Tf) ∨
     ∃ n, T = Tf.array n ∧ (List.replicate n Tf)[f]? = some Tf
+```
+
+### `residueOk_of_tys`
+
+*theorem* · module `RueCore.Soundness`
+
+A contents list well typed against types none of which is `Linear` is
+droppable residue (helper).
+
+```lean
+theorem RueCore.residueOk_of_tys {D : Decls} {cs : List Contents} {Ts : List Ty} :
+  ContentsTys D cs Ts →
+    (∀ (T : Ty), T ∈ Ts → Ty.mult D T ≠ Mult.linear) → ResidueOk D cs
+```
+
+### `splitFields_ok`
+
+*theorem* · module `RueCore.Soundness`
+
+**`split`'s struct step never fails, and its residue is droppable.** The
+fields before the selected slot and the fields after it are retained whole, and
+`anyLinearOther = false` — §5.1's residue test at this step — is what makes
+each of them non-`Linear`; the selected slot's own outcome is the hypothesis,
+which is `splitResidue_ok`'s induction step handed in rather than a mutual
+recursion (helper).
+
+```lean
+theorem RueCore.splitFields_ok {D : Decls} {πs : List Nat} {T' : Ty} (f : Nat)
+  {cs : List Contents} {Ts : List Ty} {Tf : Ty} :
+  ContentsTys D cs Ts →
+    Contents.holeFreeList cs = true →
+      Ts[f]? = some Tf →
+        anyLinearOther D Ts f = false →
+          (∀ (cf : Contents),
+              ContentsTy D cf Tf →
+                cf.holeFree = true →
+                  ∃ leaf rs,
+                    Contents.splitResidue D cf πs = Except.ok (leaf, rs) ∧
+                      ContentsTy D leaf T' ∧
+                        leaf.holeFree = true ∧ ResidueOk D rs) →
+            ∃ leaf rs,
+              Contents.splitFields D cs f πs = Except.ok (leaf, rs) ∧
+                ContentsTy D leaf T' ∧ leaf.holeFree = true ∧ ResidueOk D rs
 ```
 
 ### `ContentsMatches.holeFree`
@@ -4018,7 +4232,7 @@ RueCore.Violation.useAfterMove : Violation
 RueCore.Violation.useAfterDrop : Violation
 ```
 
-**`Violation.linearLeak`** — A scope exit — at a `let`'s end (§6.7) or on a frame's unwind (§6.9) — reaching a live linear value (§7: consumed exactly once; §5.6).
+**`Violation.linearLeak`** — A scope exit — at a `let`'s end (§6.7) or on a frame's unwind (§6.9) — reaching a live linear value (§7: consumed exactly once; §5.6); or a declared-linear destructure whose residue holds one, which §5.1's `¬ linear-residue(S, π_s)` premise forbids (`3.8:60`, E0474) and which §6.3 therefore leaves unchecked.
 
 ```lean
 RueCore.Violation.linearLeak : Violation
@@ -5932,9 +6146,12 @@ Examples.dCopy =
 *def* · module `RueCore.Examples`
 
 `S2`: `linear struct { x0: i64 }`, no destructor. Class `Linear`, drops
-silent. It is *declared* linear, so a projection out of it would select §4.2's
-`Declared(d, π)` plan — which this fragment rejects (RUE-2236) — and the
-obligation is discharged by a move of the whole value or by `@drop`.
+silent. It is *declared* linear, so a projection out of it selects §4.2's
+`Declared(d, π_s)` plan and §5.1's declared-linear destructure rule consumes
+the whole value for the leaf; the obligation is otherwise discharged by a move
+of the whole value or by `@drop`. This is a fixture declaration and not that
+rule's image, so it carries the section pointer rather than the label. The
+destructure cases have their own declarations (`destrDecls`, below).
 
 ```lean
 def RueCore.Examples.dLinear : StructDecl
@@ -6602,6 +6819,55 @@ Defining equations, as Lean derived them from the body:
     else ↑(b % w.modulus) - ↑w.modulus
 ```
 
+### `Contents.declaredPlan`
+
+*def* · module `RueCore.Dynamics`
+
+§6.3's use-plan annotation `μ`, recovered from the store: `some (π_d, π_s)`
+where the path has a proper prefix of declared-`linear` struct type — §4.2's
+`dl`, read on the stored aggregate — and `none` where it has none, which is the
+`Ordinary` annotation the rules below fall to.
+
+This is `declaredPrefix` (`Syntax.lean`) with the declaration index taken from
+the value rather than from the type, clause for clause, and
+`ContentsMatches.declaredPlan_eq` (`Soundness.lean`) is the proof that the two
+agree wherever the store and Σ agree. The module docstring says why the plan is
+recovered here rather than carried on the syntax as §6.3 writes it.
+
+An **array** node is not a struct declared `linear`, so it offers no split of
+its own and the walk continues into the element — the array clause of
+`Ty.declaredLinear` (`Syntax.lean`), read on the value.
+
+```lean
+def RueCore.Contents.declaredPlan (D : Decls) :
+  Contents → List Nat → Option (List Nat × List Nat)
+```
+
+### `Contents.splitResidue`
+
+*def* · module `RueCore.Dynamics`
+
+**§6.3's `split(H(ℓ)@π_d, π_s) = (v, [r_1, …, r_m])`**: expose the selected
+leaf and the ordered unselected residue. "`split` walks structs in declaration
+order[…]; at each selected step it recurses, and at each unselected step it
+appends the whole value", so the residue of a step is *the fields before the
+selected one*, then *whatever the recursion into it retained*, then *the fields
+after it* — nested residue before a later sibling (probe d14), and plain
+declaration order where the leaf is a direct field (probe d13).
+
+An empty path selects the whole aggregate and retains nothing: the leaf "is not
+residue". A `⊘` with path left to walk is `useAfterMove`, as `readAt`'s is; a
+step that is not a field of what is stored is a shape no well-typed program
+produces. An **array** step of the selected path is refused here for the same
+reason: `Place.noIdx` (`Syntax.lean`) keeps this part from moving out of an
+element at all, so no accepted program navigates one. §5.1's array clause —
+retained elements in ascending index order — is stated in the next slice.
+
+```lean
+def RueCore.Contents.splitResidue (D : Decls) :
+  Contents → List Nat → Except Violation (Contents × List Contents)
+```
+
 ### `Ctx.SameSkel`
 
 *def* · module `RueCore.Statics`
@@ -6952,6 +7218,38 @@ abbrev RueCore.Store : Type :=
   List Cell
 ```
 
+### `Ty.declaredLinear`
+
+*def* · module `RueCore.Syntax`
+
+Whether a type is a struct **declared** `linear` (`3.8:57`) — the mark
+§4.2's `dl` looks for along a path and §5.6's `3.8:74` clause reads at a
+binding. Linearity *by infection* (`3.8:58`) is deliberately **not** this
+predicate: a carrier reaches `Linear` through a field, its projections stay
+ordinary partial moves, and `3.8:60`'s second paragraph says so (helper).
+
+```lean
+def RueCore.Ty.declaredLinear (D : Decls) : Ty → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (s : Nat),
+  Ty.declaredLinear D (Ty.struct s) =
+    match D.structs[s]? with
+    | some sd => decide (sd.attr = Attr.linear)
+    | none => false
+∀ (D : Decls) (T' : Ty) (n : Nat),
+  Ty.declaredLinear D (T'.array n) = false
+∀ (D : Decls) (w : IntWidth) (s : Sign),
+  Ty.declaredLinear D (Ty.int w s) = false
+∀ (D : Decls) (w : FloatWidth), Ty.declaredLinear D (Ty.float w) = false
+∀ (D : Decls), Ty.declaredLinear D Ty.bool = false
+∀ (D : Decls), Ty.declaredLinear D Ty.unit = false
+∀ (D : Decls) (e : Nat), Ty.declaredLinear D (Ty.enum e) = false
+```
+
 ### `Ty.fieldAt`
 
 *def* · module `RueCore.Syntax`
@@ -7188,6 +7486,31 @@ Defining equations, as Lean derived them from the body:
     else OpRes.trap PanicKind.overflow
 ```
 
+### `linearResidue`
+
+*def* · module `RueCore.Syntax`
+
+**§5.1's `linear-residue(S, π_s)`**: the ordered residue traversal of
+`residue(S, π_s)` — "at a struct step, visit fields in declaration order,
+recurse into the selected field, and retain every unselected field" — asking
+whether one of the *retained* places carries a linear value. The traversal ends
+at the selected leaf, which is not residue, so the empty path is `false`.
+
+It is keyed on the retained field's **type**, not on Σ: the compiler reads the
+declared type of a sibling that has itself already been moved out (probe d5c,
+E0474 on a moved-out linear sibling), and `3.8:60` states the check
+"recursively through nested fields" of the declared-linear place, which is this
+recursion. An array step of the selected path refuses outright here, because
+`Place.noIdx` has already refused the place: §5.1's array clause — retained
+elements in ascending index order — is stated in the next slice.
+
+This is the premise that rejects a destructure before it can silently drop a
+linear sibling; the compiler reports E0474.
+
+```lean
+def RueCore.linearResidue (D : Decls) : Ty → List Nat → Bool
+```
+
 ### `noDtorPrefix`
 
 *def* · module `RueCore.Syntax`
@@ -7211,24 +7534,6 @@ answer rather than a placeholder.
 def RueCore.noDtorPrefix (D : Decls) : Ty → List Nat → Bool
 ```
 
-### `noLinearPrefix`
-
-*def* · module `RueCore.Syntax`
-
-No **proper prefix** of the path is a struct declared `linear`. This is not
-a premise of any §5 rule: it is the fragment's own restriction, standing in for
-the `Declared(d, π)` use plan §4.2 selects for such a path and
-(Use-Declared-Linear-Destructure) §5.1 discharges (RUE-2236, module
-docstring). An array is not a struct declared `linear`, so an array step
-imposes nothing and the walk continues into the element — but a
-declared-`linear` struct *above* an array step is still caught, which is what
-also gives §4.2's `Untrackable(DeclaredLinearDynamic)` (ill-formed there, E0904
-in the compiler) no instance at `Expr.indexRead`/`Expr.indexWrite`.
-
-```lean
-def RueCore.noLinearPrefix (D : Decls) : Ty → List Nat → Bool
-```
-
 ### `wrapInt`
 
 *def* · module `RueCore.Syntax`
@@ -7247,6 +7552,38 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (w : IntWidth) (s : Sign) (n : Int),
   wrapInt w s n = valOf w s (bitsOf w n)
+```
+
+### `Contents.splitFields`
+
+*def* · module `RueCore.Dynamics`
+
+`split`'s struct step, over one declaration's stored fields: retain the
+fields before the selected slot, recurse into it, and retain the fields after
+— which is §6.3's "visit fields in declaration order" written as a structural
+recursion rather than as a `take`/`drop` (helper).
+
+```lean
+def RueCore.Contents.splitFields (D : Decls) :
+  List Contents → Nat → List Nat → Except Violation (Contents × List Contents)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (x : Nat) (x_1 : List Nat),
+  Contents.splitFields D [] x x_1 = Except.error Violation.typeConfusion
+∀ (D : Decls) (x : List Nat) (c : Contents) (cs : List Contents),
+  Contents.splitFields D (c :: cs) 0 x =
+    match Contents.splitResidue D c x with
+    | Except.error w => Except.error w
+    | Except.ok (leaf, inner) => Except.ok (leaf, inner ++ cs)
+∀ (D : Decls) (x : List Nat) (c : Contents) (cs : List Contents)
+  (f : Nat),
+  Contents.splitFields D (c :: cs) f.succ x =
+    match Contents.splitFields D cs f x with
+    | Except.error w => Except.error w
+    | Except.ok (leaf, rest) => Except.ok (leaf, c :: rest)
 ```
 
 ### `Decls.Names`
@@ -7552,6 +7889,59 @@ the callee's `ρ` and survive the call untouched.
 def RueCore.Untouched (ρ : Env) (H H' : Store) : Prop :=
   List.length H ≤ List.length H' ∧
     ∀ (ℓ : Nat), ℓ < List.length H → ¬ℓ ∈ ρ → H'[ℓ]? = H[ℓ]?
+```
+
+### `declaredPrefix`
+
+*def* · module `RueCore.Syntax`
+
+**§4.2's `dl(Γ, p) = (d, π_s)`**: the declared-linear use plan, computed
+from the root's declared type and the path. `declaredPrefix D T π` is
+`some (π_d, π_s)` when `π_d` is the **longest proper prefix** of `π` whose type
+is a struct declared `linear` and `π_s` — nonempty, which is what makes the
+prefix proper — is the path from `d` to the selected leaf; it is `none` exactly
+when no such prefix exists, which is §4.2's `Ordinary` plan and the premise the
+four ordinary place rules carry (§5.1: they "are read only with an `Ordinary`
+plan").
+
+"Longest" is the recursion's shape: the deeper split wins, and the split at
+this node is the fallback. So `d` is the **smallest enclosing** declared-linear
+place, not necessarily the root binding (`3.8:33`: "when the access chain
+passes through several declared-`linear` levels, the smallest (innermost) one
+is destructured"), and a declared-linear ancestor above it keeps its own
+obligation (§5.6). A step that is not a field of the type reached so far makes
+the whole path untypeable (`Ty.atPath` is `none` there), so the fallback at
+such a node is harmless.
+
+§4.2's `dl` is "defined only when every index in the complete path is a
+compile-time constant". Every index a `Place` can carry here *is* a constant
+(`Place.idx`), and a dynamic index is not a path step at all
+(`Expr.indexRead`/`Expr.indexWrite`), so the side condition holds of every
+path this walks. An array step is not a struct declared `linear`, so it
+imposes no split of its own and the walk continues into the element — a
+declared-`linear` struct *above* an array step is still found, which is what
+leaves §4.2's `Untrackable(DeclaredLinearDynamic)` (ill-formed there, E0904 in
+the compiler) no instance at a dynamic index.
+
+```lean
+def RueCore.declaredPrefix (D : Decls) :
+  Ty → List Nat → Option (List Nat × List Nat)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (x : Ty), declaredPrefix D x [] = none
+∀ (D : Decls) (x : Ty) (f : Nat) (π : List Nat),
+  declaredPrefix D x (f :: π) =
+    match Ty.fieldAt D x f with
+    | some T' =>
+      match declaredPrefix D T' π with
+      | some r => some (f :: r.fst, r.snd)
+      | none =>
+        if Ty.declaredLinear D x = true then some ([], f :: π) else none
+    | none =>
+      if Ty.declaredLinear D x = true then some ([], f :: π) else none
 ```
 
 ### `dropContentsList`
@@ -8013,6 +8403,30 @@ def RueCore.WfNames (D : Decls) : Prop :=
   WellFounded fun d' d => D.Names d d'
 ```
 
+### `anyLinearOther`
+
+*def* · module `RueCore.Syntax`
+
+§5.1's residue traversal at one struct step, read on the **retained**
+fields: every field but the selected one, tested at its declared type
+(helper).
+
+```lean
+def RueCore.anyLinearOther (D : Decls) : List Ty → Nat → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (x : Nat), anyLinearOther D [] x = false
+∀ (D : Decls) (head : Ty) (Ts : List Ty),
+  anyLinearOther D (head :: Ts) 0 =
+    Ts.any fun T => decide (Ty.mult D T = Mult.linear)
+∀ (D : Decls) (T : Ty) (Ts : List Ty) (f : Nat),
+  anyLinearOther D (T :: Ts) f.succ =
+    (decide (Ty.mult D T = Mult.linear) || anyLinearOther D Ts f)
+```
+
 ### `check`
 
 *def* · module `RueCore.Checker`
@@ -8058,7 +8472,8 @@ The interpreter, over a `FloatOps` (`Float.lean`): §2 fixes `rnd_w` and
 `σ_NaN` per *target*, not per rule, so the machine takes them as a parameter
 and every theorem quantifies over a model that satisfies §7's laws. Rule
 correspondence, per case: `use` is
-(D-Use-Copy)/(D-Use-Move) (§6.3); `binop`, `unop`, `intCast` and
+(D-Use-Declared-Linear)/(D-Use-Copy)/(D-Use-Move) (§6.3), branching on the use
+plan before anything else; `binop`, `unop`, `intCast` and
 `fintrin` are §6.4's operator and intrinsic rules, computed by
 `evalBinOp`/`evalUnOp`/`evalIntCast`/`evalFintrin` above, the float half of
 them through the model `M`;
@@ -8802,6 +9217,35 @@ RueCore.FrameMatches.mk {D : Decls} {Γ : Ctx} {φ : Frame} {H : Store}
   FrameMatches D Γ φ H
 ```
 
+### `Contents.destructure`
+
+*def* · module `RueCore.Dynamics`
+
+**§6.3's `destructure(H, ℓ@π_d, π_s)`**, on the contents stored at the
+consumed place: `split` the aggregate, then apply `drop*` to the residue. The
+result is the selected leaf — "the result transferred to the context, not a
+value dropped by `destructure`" — and the residue's drop events. Writing `⊘`
+at `ℓ@π_d` is the caller's step, because §6.3 puts it *after* the residue's
+drops.
+
+```lean
+def RueCore.Contents.destructure (D : Decls) (c : Contents) (πs : List Nat) :
+  Except Violation (Contents × List Event)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (c : Contents) (πs : List Nat),
+  Contents.destructure D c πs =
+    match Contents.splitResidue D c πs with
+    | Except.error w => Except.error w
+    | Except.ok (leaf, rs) =>
+      match dropResidue D rs with
+      | Except.error w => Except.error w
+      | Except.ok evs => Except.ok (leaf, evs)
+```
+
 ### `Contents.holeFree`
 
 *def* · module `RueCore.Soundness`
@@ -8991,6 +9435,49 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls) (c : Contents) (cs : List Contents),
   Contents.residualLinearList D (c :: cs) =
     (Contents.residualLinear D c || Contents.residualLinearList D cs)
+```
+
+### `dropResidue`
+
+*def* · module `RueCore.Dynamics`
+
+§6.3's `drop*` applied to `[r_1, …, r_m]` **left to right**, so "each
+legally droppable residue is destroyed immediately and exactly once".
+
+The `residualLinear` test is the monitor this machine adds and §6.3 does not
+need: §5.1's `¬ linear-residue(S, π_s)` premise has already excluded a linear
+residue before the redex fires, so on a program `check` accepts the branch is
+unreachable (`ContentsMatches.destructure_ok`, `Soundness.lean`). On a program
+`check` rejects it turns the silent destruction of a linear value into a named
+refusal, which is what `3.8:60` (E0474) is about.
+
+The test is per element, immediately before that element's own drop, which is
+`unwindLocs`' shape at a scope record rather than `dropRetire`'s at one cell.
+Nothing is destroyed early by it: `dropContents` writes no store, the `⊘` at
+`ℓ@π_d` is the caller's step *after* `destructure` returns `.ok`, and a
+refusal discards the events, so an earlier residue's drop leaves no trace and
+no heap effect behind.
+
+```lean
+def RueCore.dropResidue (D : Decls) :
+  List Contents → Except Violation (List Event)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls), dropResidue D [] = Except.ok []
+∀ (D : Decls) (c : Contents) (cs : List Contents),
+  dropResidue D (c :: cs) =
+    if Contents.residualLinear D c = true then
+      Except.error Violation.linearLeak
+    else
+      match dropContents D c with
+      | Except.error w => Except.error w
+      | Except.ok evs =>
+        match dropResidue D cs with
+        | Except.error w => Except.error w
+        | Except.ok evs' => Except.ok (evs ++ evs')
 ```
 
 ### `dropRetire`
@@ -9317,6 +9804,21 @@ RueCore.ContentsTys.nil {D : Decls} : ContentsTys D [] []
 RueCore.ContentsTys.cons {D : Decls} {c : Contents} {cs : List Contents}
   {T : Ty} {Ts : List Ty} :
   ContentsTy D c T → ContentsTys D cs Ts → ContentsTys D (c :: cs) (T :: Ts)
+```
+
+### `ResidueOk`
+
+*def* · module `RueCore.Soundness`
+
+The residue `split` exposes is droppable: every retained subtree is well
+typed at a type whose class is not `Linear`. This is §5.1's
+`¬ linear-residue(S, π_s)` premise, read on the store side — and it is exactly
+what `dropResidue`'s monitor asks for (helper).
+
+```lean
+def RueCore.ResidueOk (D : Decls) (rs : List Contents) : Prop :=
+  ∀ (r : Contents),
+    r ∈ rs → ∃ Tr, ContentsTy D r Tr ∧ Ty.mult D Tr ≠ Mult.linear
 ```
 
 ### `EvalOk`
@@ -9647,7 +10149,10 @@ RueCore.ProgramTyped.mk {P : Program} (wf : WfProgram P)
 and the enclosing function's return type `R`.
 
 Rule names cite the calculus: `useCopy`/`useMove` are (Use-Copy)/(Use-Move)
-(§5.1); `binop` is (Arith) and (Ord) at once, `neg`/`notOp`/`bitnot` are
+(§5.1) and `useDeclared` is (Use-Declared-Linear-Destructure) §5.1, the
+declared-linear destructure §4.2 selects by the `Declared(d, π_s)` plan, with
+`dropDeclared` its `@drop` half (§5.3's "read the same way"); `binop` is
+(Arith) and (Ord) at once, `neg`/`notOp`/`bitnot` are
 (Neg)/(Not)/(BitNot), `intCast` is (Int-Cast) and `dbg` is (Dbg), all §5.8;
 `dropCopy`/`dropRes` are (@Drop-Copy)/(@Drop) (§5.3); `mkStruct` is
 (Struct-Intro) (§5.8), `mkEnum` is (Enum-Intro) (§5.5) and `mkArray` is
@@ -9690,7 +10195,7 @@ RueCore.Typed.unitLit {P : Program} {R : Ty} {Γ : Ctx} :
   Typed P R Γ Expr.unitLit Ty.unit Γ
 ```
 
-**`Typed.useCopy`** — (Use-Copy) §5.1: a use of a `Copy` place copies; Σ unchanged. `get` returning a state at all is `Owned-Base` for every proper prefix (`3.8:53`), since a path under a `MovedOut` prefix is absent from Σ. §5.1 states the node's own premise as `Σ(p) = Owned` and argues the subtree condition away: "every sub-place of a `Copy` type is itself `Copy`, so no descendant can be `MovedOut`, and the two premises coincide there". The rule here makes the subtree condition a premise instead of carrying that argument as an invariant of Σ. It restricts nothing a program can reach — no rule ever marks a sub-place of a `Copy` type `MovedOut`, since (Use-Move) and (@Drop) both demand a non-`Copy` type at the path they mark, and §3's `3.8:18` makes every field of a `@copy` declaration `Copy` — so `check` accepts the same programs either way. `noLinearPrefix` is the fragment's restriction, not a §5.1 premise (`Syntax.lean`).
+**`Typed.useCopy`** — (Use-Copy) §5.1: a use of a `Copy` place copies; Σ unchanged. `get` returning a state at all is `Owned-Base` for every proper prefix (`3.8:53`), since a path under a `MovedOut` prefix is absent from Σ. §5.1 states the node's own premise as `Σ(p) = Owned` and argues the subtree condition away: "every sub-place of a `Copy` type is itself `Copy`, so no descendant can be `MovedOut`, and the two premises coincide there". The rule here makes the subtree condition a premise instead of carrying that argument as an invariant of Σ. It restricts nothing a program can reach — no rule ever marks a sub-place of a `Copy` type `MovedOut`, since (Use-Move) and (@Drop) both demand a non-`Copy` type at the path they mark, and §3's `3.8:18` makes every field of a `@copy` declaration `Copy` — so `check` accepts the same programs either way. `declaredPrefix … = none` is §5.1's `plan_Γ(p) = Ordinary(Copy, T)`: the ordinary rules "are read only with an `Ordinary` plan", which is what keeps this rule from overlapping `useDeclared` when the selected leaf is `Copy` (`Syntax.lean`).
 
 ```lean
 RueCore.Typed.useCopy {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
@@ -9700,11 +10205,11 @@ RueCore.Typed.useCopy {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
       u.fullyOwned = true →
         Ty.atPath P.decls en.ty p.path = some T →
           Ty.mult P.decls T = Mult.copy →
-            noLinearPrefix P.decls en.ty p.path = true →
+            declaredPrefix P.decls en.ty p.path = none →
               Typed P R Γ (Expr.use p) T Γ
 ```
 
-**`Typed.useMove`** — (Use-Move) §5.1: a use of an `Affine`/`Linear` place moves it out — at a projection, the **partial move** of `3.8:22`, which marks exactly `p` and removes every path under it while leaving `p`'s siblings alone. `fully-owned(Σ, p)` is the premise (`3.8:26`: handing an aggregate with a hole to a new owner is ill-formed), and `noDtorPrefix` is `3.9:34`'s restriction (E0456). §4.2's third restriction, `3.8:68`'s root-index rule, is **strengthened** here to `Place.noIdx`: this part moves no array element at all, which is a restriction of the fragment and not of the calculus (RUE-2327; `Syntax.lean`, "Arrays").
+**`Typed.useMove`** — (Use-Move) §5.1: a use of an `Affine`/`Linear` place moves it out — at a projection, the **partial move** of `3.8:22`, which marks exactly `p` and removes every path under it while leaving `p`'s siblings alone. `fully-owned(Σ, p)` is the premise (`3.8:26`: handing an aggregate with a hole to a new owner is ill-formed), and `noDtorPrefix` is `3.9:34`'s restriction (E0456). §4.2's third restriction, `3.8:68`'s root-index rule, is **strengthened** here to `Place.noIdx`: this part moves no array element at all, which is a restriction of the fragment and not of the calculus (RUE-2327; `Syntax.lean`, "Arrays"). `declaredPrefix … = none` is §5.1's `Ordinary` plan premise, exactly as the `Copy` rule above carries it.
 
 ```lean
 RueCore.Typed.useMove {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
@@ -9715,11 +10220,30 @@ RueCore.Typed.useMove {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
         Ty.atPath P.decls en.ty p.path = some T →
           Ty.mult P.decls T ≠ Mult.copy →
             noDtorPrefix P.decls en.ty p.path = true →
-              noLinearPrefix P.decls en.ty p.path = true →
+              declaredPrefix P.decls en.ty p.path = none →
                 p.noIdx = true →
                   Typed P R Γ (Expr.use p) T
                     (List.set Γ p.root
                       (en.setSt (en.st.setAt p.path OwnSt.movedOut)))
+```
+
+**`Typed.useDeclared`** — **(Use-Declared-Linear-Destructure) §5.1**, the declared-linear destructure of `3.8:33`: a use of a place whose path has a proper prefix of declared-`linear` struct type consumes that prefix — the **smallest** enclosing one, `d` — and produces the selected leaf, destroying `d`'s droppable residue on the way (§6.3's `destructure`). The premises are the rule's, in its order. `declaredPrefix` is §4.2's `plan_Γ(p) = Declared(d, π_s)`, and it carries the rule's second premise with it: `Γ ⊢ d : S` with `S` declared `linear` is `declaredPrefix_declaredLinear` (`Syntax.lean`) rather than a premise here. `fully-owned(Σ, d)` is asked of `d`, not of `p` — the rule hands a new owner the leaf and destroys the rest, so the whole subtree must be there (`3.8:26`). `linearResidue = false` is `¬ linear-residue(S, π_s)`, the premise that rejects the access "before any residue can be silently dropped" (`3.8:60`, E0474). `noDtorPrefix` is read over the **whole** path, which is the rule's "no proper prefix `q` of `p` has a user-defined destructor — every enclosing value, including `d`" (`3.9:34`, E0456). And `T` is the leaf's type, bound by the rule's `Γ ⊢ p : T`. `Place.noIdx` is the array part's own restriction, carried here for the reason (Use-Move) carries it: a destructure moves the leaf out, and this part moves nothing out of an array element (RUE-2327; `Syntax.lean`, "Arrays"). So a plan whose **selected path** passes through an index step — `x.arr[0]` on a declared-`linear` `x`, probe d9b — is refused here although the calculus accepts it. A retained *array* in the residue needs nothing of the sort (probe d9). The Σ effect is §5.1's move effect, taken at `d`: `Σ[ d ↦ MovedOut, and every path strictly under d removed ]`. Nothing else in the context moves, so a declared-linear **ancestor** of `d` stays `Owned` and keeps its own obligation (§5.6's declared clause), and a sibling of `d` keeps its own state — which is what makes `h.l.a` consume `h.l` alone (probe d4). Because the rule is selected by the *plan* rather than by `class(T)`, it fires at a `Copy` leaf too: that is §4.2's "central override", and probe d1 is it.
+
+```lean
+RueCore.Typed.useDeclared {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
+  {en : Entry} {u : OwnSt} {πd πs : List Nat} {Td T : Ty} :
+  Γ[p.root]? = some en →
+    declaredPrefix P.decls en.ty p.path = some (πd, πs) →
+      en.st.get πd = some u →
+        u.fullyOwned = true →
+          Ty.atPath P.decls en.ty πd = some Td →
+            linearResidue P.decls Td πs = false →
+              Ty.atPath P.decls en.ty p.path = some T →
+                noDtorPrefix P.decls en.ty p.path = true →
+                  p.noIdx = true →
+                    Typed P R Γ (Expr.use p) T
+                      (List.set Γ p.root
+                        (en.setSt (en.st.setAt πd OwnSt.movedOut)))
 ```
 
 **`Typed.binop`** — (Arith) and (Ord) §5.8, in one rule because they differ only in the type they conclude at (`BinOp.resultTy`): both operands share one `int(w,s)`, typed left to right with Σ threaded (`4.2:1`), and the result is that same type for the arithmetic, bitwise and shift operators and `bool` for the ordering compares (`4.3:1`). The shift operators take their amount at the shifted operand's own type, which is `4.3a:9` and is why they need no second operand type here.
@@ -9880,7 +10404,7 @@ RueCore.Typed.repeatArray {P : Program} {R : Ty} {Γ Γ' : Ctx} {T : Ty}
       Typed P R Γ (Expr.repeatArray T e n) (T.array n) Γ'
 ```
 
-**`Typed.indexRead`** — (Use-Untrackable-Dynamic-Copy) §5.1, at the read `p[e]` whose index is not a compile-time constant: §4.2's `Untrackable(OrdinaryDynamic)` plan, and the *only* successful static rule for it. `class(T) = Copy` is the rule's own premise, and §4.2's "there is no successful static rule … when `class(T) ∈ {Affine,Linear}`" is that premise's absence rather than a rejection of its own (E0904, probe `a5`). `fully-owned(Σ, p)` is stronger than §5.1's `Σ(p) = Owned` and is `3.8:70`/`7.1:45`'s own rule: "it is a compile-time error … to index the array with a non-constant index" while an element is moved out, "because the compiler cannot know at compile time whether a runtime index denotes a moved-out element". `noLinearPrefix` keeps §4.2's `Untrackable(DeclaredLinearDynamic)` — ill-formed there — without an instance. The index is typed **first** and Σ threaded through it, and the base place is read on the resulting context; `eval` runs the two in the same order. `4.11:14` states the opposite for a full index *expression* — "the base expression is evaluated before the index expression" — and §6.2's `E[e]`/`v[E]` contexts are that order. It is unobservable here because the base is a `Place`, not an expression: reading a place runs nothing, allocates nothing and threads no Σ of its own, so the two orders agree on every program. The order becomes observable only when a base expression can have an effect, which is a form this fragment does not have. The read copies, so the outgoing state is the index's. Whether the index is *in range* is dynamic (`7.1:10`, §6.5's (D-Index-Trap)), not a typing question.
+**`Typed.indexRead`** — (Use-Untrackable-Dynamic-Copy) §5.1, at the read `p[e]` whose index is not a compile-time constant: §4.2's `Untrackable(OrdinaryDynamic)` plan, and the *only* successful static rule for it. `class(T) = Copy` is the rule's own premise, and §4.2's "there is no successful static rule … when `class(T) ∈ {Affine,Linear}`" is that premise's absence rather than a rejection of its own (E0904, probe `a5`). `fully-owned(Σ, p)` is stronger than §5.1's `Σ(p) = Owned` and is `3.8:70`/`7.1:45`'s own rule: "it is a compile-time error … to index the array with a non-constant index" while an element is moved out, "because the compiler cannot know at compile time whether a runtime index denotes a moved-out element". `declaredPrefix … = none` keeps §4.2's `Untrackable(DeclaredLinearDynamic)` — ill-formed there — without an instance: a base under a declared-`linear` prefix draws the `Declared` plan, and this rule refuses it. The index is typed **first** and Σ threaded through it, and the base place is read on the resulting context; `eval` runs the two in the same order. `4.11:14` states the opposite for a full index *expression* — "the base expression is evaluated before the index expression" — and §6.2's `E[e]`/`v[E]` contexts are that order. It is unobservable here because the base is a `Place`, not an expression: reading a place runs nothing, allocates nothing and threads no Σ of its own, so the two orders agree on every program. The order becomes observable only when a base expression can have an effect, which is a form this fragment does not have. The read copies, so the outgoing state is the index's. Whether the index is *in range* is dynamic (`7.1:10`, §6.5's (D-Index-Trap)), not a typing question.
 
 ```lean
 RueCore.Typed.indexRead {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {p : Place}
@@ -9892,7 +10416,7 @@ RueCore.Typed.indexRead {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {p : Place}
         u.fullyOwned = true →
           Ty.atPath P.decls en.ty p.path = some (T.array n) →
             Ty.mult P.decls T = Mult.copy →
-              noLinearPrefix P.decls en.ty p.path = true →
+              declaredPrefix P.decls en.ty p.path = none →
                 Typed P R Γ (Expr.indexRead p e) T Γ₁
 ```
 
@@ -9906,7 +10430,7 @@ RueCore.Typed.indexWrite {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx} {p : Plac
     en₀.mu = true →
       en₀.st.get p.path = some u₀ →
         Ty.atPath P.decls en₀.ty p.path = some (T.array n) →
-          noLinearPrefix P.decls en₀.ty p.path = true →
+          declaredPrefix P.decls en₀.ty p.path = none →
             Typed P R Γ e₁ (Ty.int w s) Γ₁ →
               Typed P R Γ₁ e₂ T Γ₂ →
                 Γ₂[p.root]? = some en₁ →
@@ -9918,7 +10442,7 @@ RueCore.Typed.indexWrite {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx} {p : Plac
                             (en₁.setSt (en₁.st.setAt p.path OwnSt.owned)))
 ```
 
-**`Typed.dropCopy`** — (@Drop-Copy) §5.3: no drop glue, no ownership effect. §5.3 gives it neither of (@Drop)'s projection premises — a `Copy` place is moved by nothing — so only `noLinearPrefix`, the fragment's own restriction, is added. The subtree condition is read the way (Use-Copy) above reads it, for the same reason and at the same cost (none).
+**`Typed.dropCopy`** — (@Drop-Copy) §5.3: no drop glue, no ownership effect. §5.3 gives it neither of (@Drop)'s projection premises — a `Copy` place is moved by nothing — so only the `Ordinary` plan premise is added: §5.3 says the two `@drop` rules "are read the same way" as §5.1's two use rules, which is `declaredPrefix … = none`. The subtree condition is read the way the `Copy` use rule above reads it, for the same reason and at the same cost (none).
 
 ```lean
 RueCore.Typed.dropCopy {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
@@ -9928,7 +10452,7 @@ RueCore.Typed.dropCopy {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
       u.fullyOwned = true →
         Ty.atPath P.decls en.ty p.path = some T →
           Ty.mult P.decls T = Mult.copy →
-            noLinearPrefix P.decls en.ty p.path = true →
+            declaredPrefix P.decls en.ty p.path = none →
               Typed P R Γ (Expr.drop p) Ty.unit Γ
 ```
 
@@ -9943,13 +10467,32 @@ RueCore.Typed.dropRes {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
         Ty.atPath P.decls en.ty p.path = some T →
           Ty.mult P.decls T ≠ Mult.copy →
             noDtorPrefix P.decls en.ty p.path = true →
-              noLinearPrefix P.decls en.ty p.path = true →
+              declaredPrefix P.decls en.ty p.path = none →
                 u.fullyOwned = true ∨
                     residualLinearBelow P.decls u T = false →
                   p.noIdx = true →
                     Typed P R Γ (Expr.drop p) Ty.unit
                       (List.set Γ p.root
                         (en.setSt (en.st.setAt p.path OwnSt.movedOut)))
+```
+
+**`Typed.dropDeclared`** — **(@Drop) §5.3 at a declared-linear plan**, the `@drop` half of the destructure. §5.3 states it in prose rather than as a fourth rule: the two `@drop` rules "are read the same way" as §5.1's two use rules, so "`@drop(p)` leaves `p` `MovedOut`, so where elaboration records `Declared(d, π)` for `p` the intrinsic consumes `d` and destroys its droppable residue exactly as a use does, rather than marking the projected leaf alone." So the premises are `Typed.useDeclared`'s, verbatim, and there is **no premise on the leaf's class**: §5.3 is explicit that the whole of `d` is consumed "for a `Copy` field `f` as much as for a droppable one", and the compiler agrees — after `@drop(d.f)` at a `Copy` field, a later use of `d` is E0205 (probe d6/d6b). That is the one place where `@drop` at a `Copy` place is not a no-op, and it is why this rule is not folded into `dropCopy`. The **prose spec** does not say it yet: `3.9:37-39` describe `@drop` at the named place only, and `3.9:39`'s "applied to a `@copy` value, it is a no-op" is about that place, not about a `Copy` leaf reached through a declared-`linear` prefix. The rule follows the calculus §5.3 and `3.8:33`'s destructure, which the compiler matches; RUE-2338 is the spec paragraph that is owed. What the dynamics adds over a use is only the leaf: §6.3's `destructure` runs the residue's drops, and then §6.11 drops the selected leaf itself (probe d6c fixes the order — residue first, leaf second). `Place.noIdx` is carried for the reason (@Drop) above carries it, and refuses a selected path through an index step (RUE-2327).
+
+```lean
+RueCore.Typed.dropDeclared {P : Program} {R : Ty} {Γ : Ctx} {p : Place}
+  {en : Entry} {u : OwnSt} {πd πs : List Nat} {Td T : Ty} :
+  Γ[p.root]? = some en →
+    declaredPrefix P.decls en.ty p.path = some (πd, πs) →
+      en.st.get πd = some u →
+        u.fullyOwned = true →
+          Ty.atPath P.decls en.ty πd = some Td →
+            linearResidue P.decls Td πs = false →
+              Ty.atPath P.decls en.ty p.path = some T →
+                noDtorPrefix P.decls en.ty p.path = true →
+                  p.noIdx = true →
+                    Typed P R Γ (Expr.drop p) Ty.unit
+                      (List.set Γ p.root
+                        (en.setSt (en.st.setAt πd OwnSt.movedOut)))
 ```
 
 **`Typed.letIn`** — (Let) + §5.6 scope exit: the binder enters `Owned`; at the body's end its residual state must not be an unconsumed linear value (the leak check). An `Owned` affine residue is dropped by the machine (§6.7); `MovedOut` needs nothing.
@@ -10201,6 +10744,27 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls), dropEventsList D [] = []
 ∀ (D : Decls) (c : Contents) (cs : List Contents),
   dropEventsList D (c :: cs) = dropEvents D c ++ dropEventsList D cs
+```
+
+### `dropResidueEvents`
+
+*def* · module `RueCore.Dynamics`
+
+**The residue's trace, in closed form**: the concatenation of §6.11's
+events over the retained subtrees, in the traversal's own order.
+`dropResidue_events` (`Soundness.lean`) is the theorem that `dropResidue` emits
+exactly this on well-typed residue, which is what keeps the drop-order
+statements closed under the new redex.
+
+```lean
+def RueCore.dropResidueEvents (D : Decls) (rs : List Contents) : List Event
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (rs : List Contents),
+  dropResidueEvents D rs = (List.map (dropEvents D) rs).flatten
 ```
 
 ### `ownedJoinOk`

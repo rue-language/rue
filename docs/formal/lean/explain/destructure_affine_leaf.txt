@@ -34,6 +34,8 @@ linear struct S18 { x0: i64, x1: S1 }
 drop fn S18(self) { @dbg(self.x0); }
 struct S19 { x0: i64, x1: S2 }
 linear struct S20 { x0: S19, x1: S1 }
+linear struct S21 { x0: [S1; 2], x1: i64 }
+linear struct S22 { x0: [S1; 2], x1: S1 }
 fn f0() -> i64 {
     {
         let v0: S11 = S11 { x0: 1, x1: S1 { x0: 2 } };

@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 224.
+- Theorems checked: 236.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -68,6 +68,9 @@ and diffs them against the committed copies.
 | `toIntIn_inf` | `RueCore.Float` | *none* |
 | `valOf_inBounds` | `RueCore.Syntax` | `Quot.sound`, `propext` |
 | `wrapInt_inBounds` | `RueCore.Syntax` | `Quot.sound`, `propext` |
+| `Ty.atPath_append` | `RueCore.Syntax` | `propext` |
+| `declaredPrefix_split` | `RueCore.Syntax` | `propext` |
+| `declaredPrefix_declaredLinear` | `RueCore.Syntax` | `propext` |
 | `Mult.rank_le_join_left` | `RueCore.Statics` | *none* |
 | `Mult.rank_le_join_right` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `Mult.eq_linear_of_rank` | `RueCore.Statics` | `propext` |
@@ -87,6 +90,9 @@ and diffs them against the committed copies.
 | `class_unique` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `struct_class_unique` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `enum_class_unique` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `OwnSt.get_append` | `RueCore.Statics` | `propext` |
+| `OwnSt.fullyOwned_fieldAt` | `RueCore.Statics` | `propext` |
+| `OwnSt.fullyOwned_get` | `RueCore.Statics` | `propext` |
 | `overwriteOk_iff` | `RueCore.Statics` | `propext` |
 | `OwnSt.join_comm` | `RueCore.Statics` | `propext` |
 | `OwnSt.joinList_comm` | `RueCore.Statics` | `propext` |
@@ -165,6 +171,11 @@ and diffs them against the committed copies.
 | `ContentsMatches.owned_struct` | `RueCore.Soundness` | `propext` |
 | `ContentsMatches.owned_array` | `RueCore.Soundness` | `propext` |
 | `Ty.fieldAt_inv` | `RueCore.Soundness` | `propext` |
+| `residueOk_of_tys` | `RueCore.Soundness` | `propext` |
+| `splitFields_ok` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `splitResidue_ok` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `dropResidue_events` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `destructure_ok` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `ContentsMatches.holeFree` | `RueCore.Soundness` | `propext` |
 | `ContentsMatchesList.holeFreeList` | `RueCore.Soundness` | `propext` |
 | `ContentsMatches.toVal` | `RueCore.Soundness` | `propext` |
@@ -175,6 +186,7 @@ and diffs them against the committed copies.
 | `OwnSt.isOwned_of_fullyOwned` | `RueCore.Soundness` | `propext` |
 | `ContentsMatches.readAt` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `ContentsMatches.writeAt` | `RueCore.Soundness` | `propext` |
+| `ContentsMatches.declaredPlan_eq` | `RueCore.Soundness` | `propext` |
 | `ContentsMatches.hole` | `RueCore.Soundness` | `propext` |
 | `residualLinearFields_false` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `ContentsMatches.residualLinear_false` | `RueCore.Soundness` | `Quot.sound`, `propext` |
