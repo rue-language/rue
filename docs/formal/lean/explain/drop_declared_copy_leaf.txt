@@ -3,9 +3,14 @@
 ════════════════════════════════════════════════════════════════════════════════
 @drop at a declared-linear plan consumes the whole place even at a Copy leaf:
 the residue is destroyed at the @drop and nothing is left to drop at scope
-exit.
+exit. The citation is the calculus §5.3 and 3.8:33's destructure, not §3.9:
+3.9:37-39 describe @drop at the named place only, and 3.9:39's no-op on a
+@copy value is about that place, not about a Copy leaf reached through a
+declared-linear prefix. The spec has no paragraph for the enclosing
+declared-linear place yet (RUE-2338); the compiler and the model already agree
+on this trace.
 
-Rules exercised: (@Drop) §5.3 · (D-Use-Declared-Linear) §6.3 · 3.8:33 · 3.9:38
+Rules exercised: (@Drop) §5.3 · (D-Use-Declared-Linear) §6.3 · 3.8:33
 
 ── The program ─────────────────────────────────────────────────────────────────
 
@@ -34,6 +39,8 @@ linear struct S18 { x0: i64, x1: S1 }
 drop fn S18(self) { @dbg(self.x0); }
 struct S19 { x0: i64, x1: S2 }
 linear struct S20 { x0: S19, x1: S1 }
+linear struct S21 { x0: [S1; 2], x1: i64 }
+linear struct S22 { x0: [S1; 2], x1: S1 }
 fn f0() -> i64 {
     {
         let v0: S11 = S11 { x0: 1, x1: S1 { x0: 2 } };
