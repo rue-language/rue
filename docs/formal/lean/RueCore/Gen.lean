@@ -49,10 +49,12 @@ and drops are unaffected by it: the defect is in the assignment path, and
 depth-2 use, `@drop` and assignment-under-a-live-value were all checked by
 hand against the compiler.
 
-One shape is not drawn at any depth, for the same "false failure" reason: a
-projection through a proper prefix of declared-`linear` struct type selects
-§4.2's `Declared(d, π)` plan, which the compiler applies and this fragment
-rejects instead (RUE-2236).
+One shape is not drawn at any depth, and it is a gap rather than a guard now
+that RUE-2236 has landed: a projection through a proper prefix of
+declared-`linear` struct type selects §4.2's `Declared(d, π_s)` plan, which
+(Use-Declared-Linear-Destructure) §5.1 and (D-Use-Declared-Linear) §6.3
+discharge — `projSlots` and `pathOk` simply never draw one. The seed cases
+cover the shape; drawing it is a follow-up.
 
 Calls and `return` are **not** generated yet: every generated case is a
 one-function program (`Program.entry`), so the shapes RUE-2233 added — a
@@ -309,7 +311,8 @@ def genEnv : Nat → Decls → G Decls
 /-- (helper) The field slots of a declaration whose type is `T` and which this
 fragment may project. A step is drawn only where §5.1 and §5.3 admit it: a
 path whose proper prefix is a struct declared `linear` is the declared-linear
-destructure this fragment does not mechanize (RUE-2236, `Syntax.lean`), and
+destructure of §4.2's `Declared(d, π_s)` plan (`Syntax.lean`), which the
+generator does not draw, and
 `3.9:34` forbids a *move* out of a value whose type declares a destructor — a
 `Copy` read of such a field stays legal. -/
 def projSlots (D : Decls) (s : Nat) (T : Ty) : List Nat :=
@@ -349,13 +352,20 @@ def paths2 (D : Decls) (T₀ : Ty) : List (List Nat) :=
 
 /-- (helper) Whether the four place rules admit a path from a binder of type
 `T₀` to a leaf of type `T`: the path types (`atPath`), no **proper prefix** is a
-struct declared `linear` — the fragment's own restriction, standing in for
-§4.2's `Declared(d, π)` plan (RUE-2236) — and, where the leaf is not `Copy` and
-so the rule is (Use-Move) or (@Drop) rather than their `Copy` twins, no proper
-prefix declares a destructor (`3.9:34`). This is `projSlots`' test read at a
-whole path rather than at one step, so it stays right at depth 2. -/
+struct declared `linear` — so §4.2 records the `Ordinary` plan and not the
+`Declared(d, π_s)` one (`declaredPrefix`, `Syntax.lean`) — and, where the leaf
+is not `Copy` and so the rule is (Use-Move) or (@Drop) rather than their `Copy`
+twins, no proper prefix declares a destructor (`3.9:34`). This is `projSlots`'
+test read at a whole path rather than at one step, so it stays right at depth
+2.
+
+The generator therefore draws **no** declared-linear destructure, although
+(Use-Declared-Linear-Destructure) §5.1 is now mechanized: `projSlots` already
+refuses to step into a declared-`linear` struct, so the shape is out of the
+grammar it draws from rather than filtered out of it. Drawing destructures is a
+follow-up. -/
 def pathOk (D : Decls) (T₀ : Ty) (π : List Nat) (T : Ty) : Bool :=
-  Ty.atPath D T₀ π == some T && noLinearPrefix D T₀ π &&
+  Ty.atPath D T₀ π == some T && (declaredPrefix D T₀ π).isNone &&
     (T.mult D == .copy || noDtorPrefix D T₀ π)
 
 /-- (helper) Every place of the wanted type one **or two** field steps under a

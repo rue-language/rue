@@ -1212,6 +1212,14 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   enclosing value, including `d`" (`3.9:34`, E0456). And `T` is the leaf's
   type, bound by the rule's `Γ ⊢ p : T`.
 
+  `Place.noIdx` is the array part's own restriction, carried here for the
+  reason (Use-Move) carries it: a destructure moves the leaf out, and this part
+  moves nothing out of an array element (RUE-2327; `Syntax.lean`, "Arrays").
+  So a plan whose **selected path** passes through an index step — `x.arr[0]`
+  on a declared-`linear` `x`, probe d9b — is refused here although the calculus
+  accepts it. A retained *array* in the residue needs nothing of the sort
+  (probe d9).
+
   The Σ effect is (Use-Move)'s, taken at `d`: `Σ[ d ↦ MovedOut, and every path
   strictly under d removed ]`. Nothing else in the context moves, so a
   declared-linear **ancestor** of `d` stays `Owned` and keeps its own
@@ -1227,6 +1235,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       linearResidue P.decls Td πs = false →
       en.ty.atPath P.decls p.path = some T →
       noDtorPrefix P.decls en.ty p.path = true →
+      p.noIdx = true →
       Typed P R Γ (.use p) T (Γ.set p.root (en.setSt (en.st.setAt πd .movedOut)))
   /-- (Arith) and (Ord) §5.8, in one rule because they differ only in the
   type they conclude at (`BinOp.resultTy`): both operands share one
@@ -1536,7 +1545,9 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
 
   What the dynamics adds over a use is only the leaf: §6.3's `destructure`
   runs the residue's drops, and then §6.11 drops the selected leaf itself
-  (probe d6c fixes the order — residue first, leaf second). -/
+  (probe d6c fixes the order — residue first, leaf second). `Place.noIdx` is
+  carried for the reason (@Drop) above carries it, and refuses a selected path
+  through an index step (RUE-2327). -/
   | dropDeclared {Γ p en u πd πs Td T} :
       Γ[p.root]? = some en →
       declaredPrefix P.decls en.ty p.path = some (πd, πs) →
@@ -1545,6 +1556,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       linearResidue P.decls Td πs = false →
       en.ty.atPath P.decls p.path = some T →
       noDtorPrefix P.decls en.ty p.path = true →
+      p.noIdx = true →
       Typed P R Γ (.drop p) .unit (Γ.set p.root (en.setSt (en.st.setAt πd .movedOut)))
   /-- (Let) + §5.6 scope exit: the binder enters `Owned`; at the body's end
   its residual state must not be an unconsumed linear value (the leak check).
