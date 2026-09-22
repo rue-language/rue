@@ -523,8 +523,8 @@ def cases : List Case := [
     prog := Examples.destrProg Examples.tI64 Examples.destructureTwoLevels
     },
   { name := "drop_declared_copy_leaf",
-    description := "@drop at a declared-linear plan consumes the whole place even at a Copy leaf: the residue is destroyed at the @drop and nothing is left to drop at scope exit.",
-    rules := ["(@Drop) §5.3", "(D-Use-Declared-Linear) §6.3", "3.8:33", "3.9:38"],
+    description := "@drop at a declared-linear plan consumes the whole place even at a Copy leaf: the residue is destroyed at the @drop and nothing is left to drop at scope exit. The citation is the calculus §5.3 and 3.8:33's destructure, not §3.9: 3.9:37-39 describe @drop at the named place only, and 3.9:39's no-op on a @copy value is about that place, not about a Copy leaf reached through a declared-linear prefix. The spec has no paragraph for the enclosing declared-linear place yet (RUE-2338); the compiler and the model already agree on this trace.",
+    rules := ["(@Drop) §5.3", "(D-Use-Declared-Linear) §6.3", "3.8:33"],
     prog := Examples.destrProg Examples.tI64 Examples.dropDeclaredCopyLeaf
     },
   { name := "drop_declared_residue_first",
