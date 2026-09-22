@@ -784,10 +784,21 @@ reinitialization idiom, where there is nothing to drop) or `T` carries no linear
 value. This closes the theorem-5 hole (RUE-387): without it, the overwrite-drop
 would implicitly consume a linear value that the program never explicitly consumed.
 The `Σ1` (rather than `Σ`) reading of the premise makes `p = e` legal when `e` itself
-consumes `p` (`x = f(x)`), matching the RHS-first drop order. Writing *into* an array
-while any element is moved out is rejected by a side condition (`3.8:72`); a runtime
-index can never establish `Σ1(p) = MovedOut`, so a linear element assignment through
-one is always rejected.
+consumes `p` (`x = f(x)`), matching the RHS-first drop order. **The array side condition, as a premise.** Writing *into* an array while any
+element is moved out is rejected (`3.8:72`, `7.1:46`, E0480). Stated as a
+premise of (Assign): where `Γ ⊢ p : T` reaches its leaf through an index step
+taken at some array place `a` — `a[c] = e` and `a[c].f = e` alike — the rule
+additionally demands `fully-owned(Σ1, a)`. That is **stronger** than the second
+premise read at `p`: `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` at `a[c]` would
+admit reinitializing exactly the element that was moved out, and `3.8:77`
+forbids it in as many words — "assigning into the array — to an element or
+through an element — is itself an error …, including at the exact constant
+index that was moved out" — because an element write does not reinstate
+per-element ownership (`7.1:46`). The recovery is the whole-array reassignment
+`a = […]`, which is this rule's ordinary case (no index step is *taken* at the
+array) and which makes every element `Owned` again. A runtime index can never
+establish `Σ1(p) = MovedOut`, so a linear element assignment through one is
+always rejected.
 
 ### 5.3 Sequencing, discard, and the linear leak check
 
