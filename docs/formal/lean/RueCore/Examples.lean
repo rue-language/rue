@@ -581,8 +581,8 @@ place, §6.11 drops the elements in **ascending index order**, and the
 dynamic-index forms carry §6.5's bounds trap. What no accepted program here
 does is *move* an element out or `@drop` one — `Place.noIdx` refuses both,
 which is this part's own restriction and RUE-2327's debt (`Syntax.lean`,
-"Arrays"). The probe names in the doc-comments (`a1`…`a11`) are the hand-run
-programs each case was checked against on the compiler. -/
+"Arrays"). The probe names in the doc-comments (`a1`…`a11`, `n4`, `n5`) are
+the hand-run programs each case was checked against on the compiler. -/
 
 /-- `[i64; n]`, the `Copy` array the index programs read and write
 (helper). -/
@@ -681,10 +681,24 @@ def arrayDynWriteTrap : Program :=
                 (seq (indexWrite (.var 0) (use (.var 1)) (lit 9))
                   (binop .add (use (.idx (.var 0) 0)) (use (.idx (.var 0) 1)))) }] }
 
+/-- Probe `n4`: a dynamic-index write at an **affine**, destructor-bearing
+element type. An assignment *destination* is not a use, so §4.2's plans — and
+the read's `class(T) = Copy` premise — do not reach it; what (Assign) §5.2
+demands is `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` (`3.8:77`), which `S1`
+satisfies. §6.8's overwrite-drop then runs the old element's destructor where
+the assignment is, so `f1(0)` gives `1`, then the scope exit's `9` and `2`,
+then the value `7`. The compiler prints exactly that. -/
+def arrayDynWriteAffine : Program :=
+  { decls := Decls.ofStructs structEnv,
+    fns := [{ params := [], ret := tI64, body := call 1 [lit 0] },
+            { params := [⟨tI64, false⟩], ret := tI64,
+              body := letIn true (mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)])
+                (seq (indexWrite (.var 0) (use (.var 1)) (resA (lit 9))) (lit 7)) }] }
+
 /-! ### What part 1 refuses
 
-Four of these are refusals the compiler makes too, at the code the probe
-table records. The fifth, `arrayElemMove`, is **this part's own**: the
+Five of these are refusals the compiler makes too, at the code the probe
+table records. The sixth, `arrayElemMove`, is **this part's own**: the
 compiler accepts it and drops the untouched elements ascending (probe `a7`),
 and RUE-2327 is the issue that lifts `Place.noIdx`. It is a witness that the
 fragment boundary is where the module docstring says it is, not a claim about
@@ -725,6 +739,22 @@ the step at all, so the place has no typing and no rule applies (E0902). It
 is the one index error that is never a trap. -/
 def arrayConstIndexOutOfRange : Expr :=
   letIn false (mkArray tI64 [lit 1, lit 2]) (use (.idx (.var 0) 2))
+
+/-- Probe `n5`: a dynamic-index write whose element type **carries** a linear
+value. This is the half of (Assign) §5.2's premise the dynamic index cannot
+escape: a runtime index never establishes `Σ1(p) = MovedOut`, so the
+disjunction reduces to `¬carries_linear(S4)`, which is false — `3.8:77`, and
+the compiler reports E0493. The machine agrees on its own terms: §6.8's
+overwrite-drop would destroy a linear value the program never consumed, which
+is the `linearOverwrite` monitor. -/
+def arrayDynWriteLinearElem : Program :=
+  { decls := Decls.ofStructs structEnv,
+    fns := [{ params := [], ret := tI64, body := call 1 [lit 0] },
+            { params := [⟨tI64, false⟩], ret := tI64,
+              body := letIn true (mkArray (.struct sCarry)
+                  [mkStruct sCarry [lit 1, resLD (lit 1)], mkStruct sCarry [lit 2, resLD (lit 2)]])
+                (seq (indexWrite (.var 0) (use (.var 1)) (mkStruct sCarry [lit 9, resLD (lit 9)]))
+                  (seq (drop (.var 0)) (lit 7))) }] }
 
 /-- Probe `a11`: an array of a **linear** element type left to scope exit.
 §5.6's `residual-linear` reads the array node as the disjunction over its `n`
@@ -799,17 +829,38 @@ example : run demoOps arrayBoundsTrap demoFuel = .panic .bounds [.dbg (v64 20)] 
 example : checkProgram arrayDynWriteTrap = true := by rfl
 example : run demoOps arrayDynWriteTrap demoFuel = .panic .bounds [.dbg (v64 10)] := by rfl
 
-/-- The four refusals the compiler makes too — `7.1:38`'s `Copy` repeat
+/-- **The destination is not a use, pinned** (probe `n4`): the dynamic-index
+write is admitted at an affine, destructor-bearing element type, and the
+overwrite-drop runs the old element's destructor at the assignment — `1`,
+then the scope exit's `9`, `2`, then the value `7`, which is what the
+compiler prints. -/
+example : checkProgram arrayDynWriteAffine = true := by rfl
+example : run demoOps arrayDynWriteAffine demoFuel
+    = .ok [.dead, .dead] (v64 7)
+        [.drop 1 (cA 1), .dtor sAffine (cA 1),
+         .drop 1 (.array (.struct sAffine) [cA 9, cA 2]),
+         .dtor sAffine (cA 9), .dtor sAffine (cA 2)] := by rfl
+
+/-- The five refusals the compiler makes too — `7.1:38`'s `Copy` repeat
 element (E0905), §5.1's missing rule for a non-`Copy` dynamic index (E0904),
-`7.1:9`'s compile-time constant-index bounds check (E0902), and §5.6's leak
-check reading the array node element by element (E0406) — and the one this
-part makes alone: `Place.noIdx` on a constant-index move, which the compiler
-accepts (probe `a7`, RUE-2327). -/
+`7.1:9`'s compile-time constant-index bounds check (E0902), §5.6's leak
+check reading the array node element by element (E0406), and `3.8:77`'s
+linear-overwrite premise at a dynamic-index write (E0493, probe `n5`) — and
+the one this part makes alone: `Place.noIdx` on a constant-index move, which
+the compiler accepts (probe `a7`, RUE-2327). -/
 example : checkProgram (prog tI64 arrayRepeatAffine) = false := by rfl
 example : checkProgram arrayDynIndexAffine = false := by rfl
 example : checkProgram (prog tI64 arrayConstIndexOutOfRange) = false := by rfl
 example : checkProgram (prog tI64 arrayLinearElemLeaked) = false := by rfl
+example : checkProgram arrayDynWriteLinearElem = false := by rfl
 example : checkProgram (prog tI64 arrayElemMove) = false := by rfl
+
+/-- The linear-overwrite refusal is the machine's too: `eval`'s
+`indexWrite` arm reads the residue of the element it is about to drop and
+refuses, which is the arm the old `class(T) = Copy` premise made
+unreachable. -/
+example : run demoOps arrayDynWriteLinearElem demoFuel
+    = .stuck .linearOverwrite := by rfl
 
 /-- The linear-element leak is refused dynamically too: the monitor reads the
 residue the scope exit is about to drop and finds a live linear value. -/

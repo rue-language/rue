@@ -266,7 +266,7 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
         if en₀.mu = true then
           match en₀.st.get p.path, en₀.ty.atPath P.decls p.path with
           | some _, some (.array T _) =>
-            if T.mult P.decls = .copy ∧ noLinearPrefix P.decls en₀.ty p.path then
+            if noLinearPrefix P.decls en₀.ty p.path then
               (match check P R Γ e₁ with
                | some (.int _ _, Γ₁) =>
                  (match check P R Γ₁ e₂ with
@@ -276,7 +276,7 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
                        | some en₁ =>
                          (match en₁.st.get p.path with
                           | some u₁ =>
-                              if u₁.fullyOwned then
+                              if u₁.fullyOwned ∧ overwriteOk P.decls u₁ T then
                                 some (.unit,
                                   Γ₂.set p.root (en₁.setSt (en₁.st.setAt p.path .owned)))
                               else none
@@ -657,8 +657,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
           split at h
           · rename_i u₀ Te n hg₀ hty₀
             split at h
-            · rename_i hpre
-              obtain ⟨hcopy, hlin⟩ := hpre
+            · rename_i hlin
               split at h
               · rename_i w sg Γ₁ hchk₁
                 split at h
@@ -671,10 +670,11 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
                       split at h
                       · rename_i u₁ hg₁
                         split at h
-                        · rename_i hfo
+                        · rename_i hpost
                           cases h
-                          exact .indexWrite hget₀ hmu hg₀ hty₀ hcopy hlin
-                            (check_sound e₁ hchk₁) (check_sound e₂ hchk₂) hget₁ hg₁ hfo
+                          exact .indexWrite hget₀ hmu hg₀ hty₀ hlin
+                            (check_sound e₁ hchk₁) (check_sound e₂ hchk₂) hget₁ hg₁
+                            hpost.1 (overwriteOk_iff.mp hpost.2)
                         · cases h
                       · cases h
                     · cases h

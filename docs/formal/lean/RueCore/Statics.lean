@@ -1344,31 +1344,44 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       Typed P R Γ (.indexRead p e) T Γ₁
   /-- (Assign) §5.2 at a dynamic index, `p[e₁] = e₂` (`7.1:30`, `4.11:12`): an
   in-place mutation that modifies the array without moving it. The root must be
-  a `μ = mut` binding (§5 preamble), the index reduces before the right-hand
-  side (§6.2: "`assign p = E` — right-hand side (`p`'s index subexpressions
-  reduce first)") and Σ is threaded in that order, and the element type must be
-  `Copy` — the same premise the read carries, for the same §4.2 reason.
+  a `μ = mut` binding (§5 preamble), and the index reduces before the
+  right-hand side (§6.2: "`assign p = E` — right-hand side (`p`'s index
+  subexpressions reduce first)") with Σ threaded in that order.
 
-  Three of (Assign)'s clauses are discharged rather than restated.
-  `3.8:77`'s linear-overwrite premise is implied by `class(T) = Copy`, since a
-  `Copy` type carries no linear value. `3.8:72`/`7.1:46` — "while one or more
-  elements of an array are moved out, it is a compile-time error to assign into
-  the array" — is `fully-owned(Σ, p)` on the post-RHS state. And `3.8:55`'s
-  reinitialization is (Assign)'s own `Σ1[p ↦ Owned]`, taken at the **whole
-  array** rather than at the element: `7.1:46` says an element write "does not
-  reinstate per-element ownership", and on the `fully-owned` premise there is
-  nothing to reinstate, so writing `Owned` at `p` is the rule as §5.2 states it
-  and changes no path's state. -/
+  The destination is **not** a use, so the read's `class(T) = Copy` premise
+  does not transfer here: §4.2's plans classify a value-context use, and what
+  (Assign) demands of a destination is its own last premise,
+  `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` — `overwriteOk`/`3.8:77`, the same
+  premise `Typed.assign` carries, read at the **element** type on the post-RHS
+  state. A runtime index can never establish `MovedOut` at the element, so the
+  disjunction bites as its right half: an affine, even destructor-bearing,
+  element type is admitted (and the machine's overwrite-drop below runs its
+  glue), while a linear-carrying one is refused, which is the compiler's E0493.
+
+  Two more of (Assign)'s clauses are discharged rather than restated.
+  `3.8:72`/`7.1:46` — "while one or more elements of an array are moved out, it
+  is a compile-time error to assign into the array" — is `fully-owned(Σ, p)` on
+  the post-RHS state. And `3.8:55`'s reinitialization is (Assign)'s own
+  `Σ1[p ↦ Owned]`, taken at the **whole array** rather than at the element:
+  `7.1:46` says an element write "does not reinstate per-element ownership",
+  and on the `fully-owned` premise there is nothing to reinstate, so writing
+  `Owned` at `p` is the rule as §5.2 states it and changes no path's state.
+
+  `en₀.st.get p.path = some u₀` constrains `u₀` nowhere, and deliberately: it
+  is (Assign)'s own incoming `Σ(p)` lookup, whose content is that the
+  destination path is *reachable* — `OwnSt.get` is `none` under a moved-out
+  prefix — while every condition on the state itself is read after the operands
+  have run, on `u₁`, because that is the state the write overwrites. -/
   | indexWrite {Γ Γ₁ Γ₂ p e₁ e₂ en₀ en₁ u₀ u₁ T n w s} :
       Γ[p.root]? = some en₀ → en₀.mu = true →
       en₀.st.get p.path = some u₀ →
       en₀.ty.atPath P.decls p.path = some (.array T n) →
-      T.mult P.decls = .copy →
       noLinearPrefix P.decls en₀.ty p.path = true →
       Typed P R Γ e₁ (.int w s) Γ₁ →
       Typed P R Γ₁ e₂ T Γ₂ →
       Γ₂[p.root]? = some en₁ →
       en₁.st.get p.path = some u₁ → u₁.fullyOwned = true →
+      (u₁ = .movedOut ∨ T.mult P.decls ≠ .linear) →
       Typed P R Γ (.indexWrite p e₁ e₂) .unit
         (Γ₂.set p.root (en₁.setSt (en₁.st.setAt p.path .owned)))
   /-- (@Drop-Copy) §5.3: no drop glue, no ownership effect. §5.3 gives it
@@ -1733,7 +1746,7 @@ theorem Typed.skel_preserved {P R} {Γ Γ' : Ctx} {e T} (h : Typed P R Γ e T Γ
   | mkArray _ ih => exact ih
   | repeatArray _ _ ih => exact ih
   | indexRead _ _ _ _ _ _ _ ih => exact ih
-  | indexWrite _ _ _ _ _ _ _ _ hget₁ _ _ ih₁ ih₂ =>
+  | indexWrite _ _ _ _ _ _ _ hget₁ _ _ _ ih₁ ih₂ =>
       exact (skel_set_setSt hget₁ _).trans (ih₂.trans ih₁)
   | mkEnum _ _ _ ih => exact ih
   | «match» _ _ _ _ hjoin ihs iharms =>
@@ -1782,7 +1795,7 @@ theorem TypedArgs.skel_preserved {P R} {Γ Γ' : Ctx} {es Ts} (h : TypedArgs P R
   | mkArray _ ih => exact ih
   | repeatArray _ _ ih => exact ih
   | indexRead _ _ _ _ _ _ _ ih => exact ih
-  | indexWrite _ _ _ _ _ _ _ _ hget₁ _ _ ih₁ ih₂ =>
+  | indexWrite _ _ _ _ _ _ _ hget₁ _ _ _ ih₁ ih₂ =>
       exact (skel_set_setSt hget₁ _).trans (ih₂.trans ih₁)
   | mkEnum _ _ _ ih => exact ih
   | «match» _ _ _ _ hjoin ihs iharms =>
@@ -1835,7 +1848,7 @@ theorem TypedArms.arm_skel {P R} {Γ₀ : Ctx} {arms Tss T} {Γs : List Ctx}
   | mkArray _ ih => exact ih
   | repeatArray _ _ ih => exact ih
   | indexRead _ _ _ _ _ _ _ ih => exact ih
-  | indexWrite _ _ _ _ _ _ _ _ hget₁ _ _ ih₁ ih₂ =>
+  | indexWrite _ _ _ _ _ _ _ hget₁ _ _ _ ih₁ ih₂ =>
       exact (skel_set_setSt hget₁ _).trans (ih₂.trans ih₁)
   | mkEnum _ _ _ ih => exact ih
   | «match» _ _ _ _ hjoin ihs iharms =>

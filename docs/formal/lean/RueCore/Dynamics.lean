@@ -1095,10 +1095,11 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
       -- (D-Assign) §6.8 at a dynamic index: §6.2 reduces the place's index
       -- subexpression first and then the right-hand side, and the bounds
       -- check fires where the path is navigated (`7.1:10`), after both. The
-      -- overwrite-drop of what was there runs as §6.8 says — on a `Copy`
-      -- element it emits nothing and the monitor lets it through, which is
-      -- what the statics' `class(T) = Copy` premise buys — and then the whole
-      -- array is written back with that one slot replaced.
+      -- overwrite-drop of what was there runs as §6.8 says — its glue on an
+      -- affine element, nothing on a `Copy` one, and the `linearOverwrite`
+      -- monitor where the residue is linear, which the statics' own
+      -- `overwriteOk`/`3.8:77` premise keeps out of a checked program — and
+      -- then the whole array is written back with that one slot replaced.
       (eval M fuel P H φ e₁).andThen fun H₁ iv =>
         (eval M fuel P H₁ φ e₂).andThen fun H₂ v =>
           match iv with

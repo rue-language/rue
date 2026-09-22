@@ -494,7 +494,9 @@ def indexNotInt (T : Ty) : String :=
 
 /-- §4.2's `Untrackable(OrdinaryDynamic)` plan has a successful rule only at a
 `Copy` element type: (Use-Untrackable-Dynamic-Copy) §5.1, and "there is no
-successful static rule … when `class(T) ∈ {Affine,Linear}`" (E0904). -/
+successful static rule … when `class(T) ∈ {Affine,Linear}`" (E0904). This is
+about a dynamic-index **read**, which is a use; the write's own refusal is
+`linearOverwrite` below, because an assignment destination is not one. -/
 def elementNotCopy (T : Ty) : String :=
   "the element type " ++ Print.tyName T ++ " is not `Copy`, and a dynamic index has " ++
   "no rule there: the compiler cannot know which element a runtime index moved " ++
@@ -544,7 +546,10 @@ def assignTargetLost : String :=
   "preservation (`Typed.skel_preserved`) forbids it"
 
 /-- (Assign) premise `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` (§5.2);
-prose `3.8:77` (the RUE-387 premise), keyed on the destination's type. -/
+prose `3.8:77` (the RUE-387 premise), keyed on the destination's type. At a
+dynamic index the destination's type is the **element** type, and a runtime
+index can never establish `MovedOut`, so this is the whole of what (Assign)
+refuses there. -/
 def linearOverwrite (T : Ty) : String :=
   "overwrite of a live linear value: the place is not MovedOut after the " ++
   "right-hand side and its type " ++ Print.tyName T ++ " carries a linear value " ++
@@ -983,7 +988,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
          if en₀.mu = true then
            match en₀.st.get pl.path, en₀.ty.atPath P.decls pl.path with
            | some _, some (.array T _) =>
-             if T.mult P.decls = .copy ∧ noLinearPrefix P.decls en₀.ty pl.path then
+             if noLinearPrefix P.decls en₀.ty pl.path then
                (let d₁ := explain P R Γ e₁
                 match d₁.result with
                 | some (.int _ _, Γ₁) =>
@@ -995,13 +1000,16 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                         | some en₁ =>
                           (match en₁.st.get pl.path with
                            | some u₁ =>
-                               if u₁.fullyOwned then
+                               if u₁.fullyOwned ∧ overwriteOk P.decls u₁ T then
                                  accepted rule Γ (.indexWrite pl e₁ e₂) .unit
                                    (Γ₂.set pl.root (en₁.setSt (en₁.st.setAt pl.path .owned)))
                                    [d₁, d₂]
-                               else
+                               else if !u₁.fullyOwned then
                                  rejected rule Γ (.indexWrite pl e₁ e₂)
                                    Premise.indexPartiallyMoved [d₁, d₂]
+                               else
+                                 rejected rule Γ (.indexWrite pl e₁ e₂)
+                                   (Premise.linearOverwrite T) [d₁, d₂]
                            | none =>
                                rejected rule Γ (.indexWrite pl e₁ e₂)
                                  Premise.assignTargetLost [d₁, d₂])
@@ -1016,9 +1024,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                 | some (T', _) =>
                     rejected rule Γ (.indexWrite pl e₁ e₂) (Premise.indexNotInt T') [d₁]
                 | none => rejected rule Γ (.indexWrite pl e₁ e₂) Premise.subDerivation [d₁])
-             else if !noLinearPrefix P.decls en₀.ty pl.path then
-               rejected rule Γ (.indexWrite pl e₁ e₂) Premise.declaredLinearPrefix []
-             else rejected rule Γ (.indexWrite pl e₁ e₂) (Premise.elementNotCopy T) []
+             else rejected rule Γ (.indexWrite pl e₁ e₂) Premise.declaredLinearPrefix []
            | some _, some T => rejected rule Γ (.indexWrite pl e₁ e₂) (Premise.notAnArray T) []
            | none, _ => rejected rule Γ (.indexWrite pl e₁ e₂) Premise.pathUnderMoved []
            | _, none => rejected rule Γ (.indexWrite pl e₁ e₂) Premise.pathNotField []
