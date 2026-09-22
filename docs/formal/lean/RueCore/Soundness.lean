@@ -2888,7 +2888,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           · simp only [if_neg hb]
             trivial
       | @indexWrite Γ Γ₁ Γ₂ p e₁ e₂ en₀ en₁ u₀ u₁ T n w sg hget₀ hmut hg₀ hty₀
-          h₁ h₂ hget₁ hg₁ hfo hover =>
+          h₁ h₂ hget₁ hg₁ hfo _ hover =>
           -- (D-Assign) §6.8 at a dynamic index: index, then right-hand side
           -- (§6.2), then the bounds check where the path is navigated. The
           -- overwrite-drop of the old element runs its glue, and the
@@ -3050,7 +3050,7 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           | panic pk tr => simp only [EvalRes.andThen]; trivial
           | stuck w => rw [hrb] at kb; exact kb.elim
           | outOfFuel => simp only [EvalRes.andThen]; trivial
-      | @assign Γ Γ₁ pl e en₀ en₁ u₀ u₁ T hget₀ hmut hg₀ hty₀ h hget₁ hg₁ hover =>
+      | @assign Γ Γ₁ pl e en₀ en₁ u₀ u₁ T hget₀ hmut hg₀ hty₀ h hget₁ hg₁ _ hover =>
           -- (D-Assign) §6.8 at a sub-position: drop what is live there (a `⊘`
           -- drops nothing — reinitialization, `3.8:55`), then store.
           simp only [eval]

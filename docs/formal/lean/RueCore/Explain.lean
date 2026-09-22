@@ -491,6 +491,14 @@ def moveAtIndex : String :=
   "an element move only \"applied directly to the root binding\"; the compiler reports " ++
   "E0904 \"cannot move out of indexed position\""
 
+/-- `3.8:72`/`7.1:46` (E0480): an assignment whose destination steps into an
+array demands the whole array (`assignArrayOk`, `Statics.lean`). -/
+def assignIntoPartialArray : String :=
+  "the destination writes into an array one of whose elements has been moved out, and " ++
+  "`3.8:72` forbids that \"to an element, or through an element\" alike — an element " ++
+  "write does not reinstate per-element ownership (`7.1:46`), so the whole array must " ++
+  "be reinitialized instead; the compiler reports E0480"
+
 /-- `7.1:38`: the element type of a repeat literal must be `Copy` (E0905). -/
 def repeatNotCopy (T : Ty) : String :=
   "the repeat form materializes `n` copies of one value, which is only well defined " ++
@@ -1072,13 +1080,18 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                         | some en₁ =>
                           (match en₁.st.get pl.path with
                            | some u₁ =>
-                               if u₁.fullyOwned ∧ overwriteOk P.decls u₁ T then
+                               if u₁.fullyOwned ∧
+                                   assignArrayOk P.decls en₁.st en₁.ty pl.path ∧
+                                   overwriteOk P.decls u₁ T then
                                  accepted rule Γ (.indexWrite pl e₁ e₂) .unit
                                    (Γ₂.set pl.root (en₁.setSt (en₁.st.setAt pl.path .owned)))
                                    [d₁, d₂]
                                else if !u₁.fullyOwned then
                                  rejected rule Γ (.indexWrite pl e₁ e₂)
                                    Premise.indexPartiallyMoved [d₁, d₂]
+                               else if !assignArrayOk P.decls en₁.st en₁.ty pl.path then
+                                 rejected rule Γ (.indexWrite pl e₁ e₂)
+                                   Premise.assignIntoPartialArray [d₁, d₂]
                                else
                                  rejected rule Γ (.indexWrite pl e₁ e₂)
                                    (Premise.linearOverwrite T) [d₁, d₂]
@@ -1183,9 +1196,13 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                   | some en₁ =>
                     (match en₁.st.get pl.path with
                      | some u₁ =>
-                         if overwriteOk P.decls u₁ T then
+                         if assignArrayOk P.decls en₁.st en₁.ty pl.path ∧
+                             overwriteOk P.decls u₁ T then
                            accepted "(Assign) §5.2, 3.8:77" Γ (.assign pl e) .unit
                              (Γ₁.set pl.root (en₁.setSt (en₁.st.setAt pl.path .owned))) [d]
+                         else if !assignArrayOk P.decls en₁.st en₁.ty pl.path then
+                           rejected "(Assign) §5.2, 3.8:77" Γ (.assign pl e)
+                             Premise.assignIntoPartialArray [d]
                          else
                            rejected "(Assign) §5.2, 3.8:77" Γ (.assign pl e)
                              (Premise.linearOverwrite T) [d]

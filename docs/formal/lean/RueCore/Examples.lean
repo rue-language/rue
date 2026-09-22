@@ -715,6 +715,33 @@ def arrayElemMove : Expr :=
     (letIn false (use (.idx (.var 0) 1))
       (seq (drop (.var 0)) (seq (dbg (lit 20)) (lit 7))))
 
+/-- **Reinitializing a moved element is refused** (probe `a5`, E0480): after
+`a[0]` is moved out and dropped, `a[0] = S1 { 9 }` writes into an array with a
+hole in it. `3.8:72`/`7.1:46` forbid that "to an element, or through an
+element" alike — an element write does not reinstate per-element ownership —
+and `assignArrayOk` (`Statics.lean`) is the premise. §5.2's own disjunction
+read at the element would have admitted exactly this write, which is the
+deviation its docstring records. -/
+def arrayElemReinit : Expr :=
+  letIn true (mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)])
+    (letIn false (use (.idx (.var 0) 0))
+      (seq (drop (.var 0))
+        (seq (assign (.idx (.var 1) 0) (resA (lit 9)))
+          (seq (dbg (lit 20)) (lit 7)))))
+
+/-- **The whole-array reassignment is the recovery path** (probe `b8`): the
+same program writing `a` rather than `a[0]` is (Assign)'s ordinary case —
+`arrayPrefix` finds no array the path steps *into* — and `7.1:46` names it as
+the way back ("the whole array **MUST** be reinitialized instead, which makes
+every element owned … again"). §6.8's overwrite-drop then runs over the old
+contents `[⊘, S1 { 2 }]`, skipping the hole. -/
+def arrayWholeReinit : Expr :=
+  letIn true (mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)])
+    (letIn false (use (.idx (.var 0) 0))
+      (seq (drop (.var 0))
+        (seq (assign (.var 1) (mkArray (.struct sAffine) [resA (lit 8), resA (lit 9)]))
+          (seq (dbg (lit 20)) (lit 7)))))
+
 /-- Probe `a2b`: the repeat form at an affine element type. `7.1:38`
 restricts `[e; n]` to a `Copy` element, because the form materializes `n`
 copies of one value; the compiler reports E0905. -/
@@ -852,6 +879,20 @@ example : run demoOps (prog tI64 arrayElemMove) demoFuel
         [.drop 1 (cA 2), .dtor sAffine (cA 2), .dbg (v64 20),
          .drop 0 (.array (.struct sAffine) [cA 1, .hole, cA 3]),
          .dtor sAffine (cA 1), .dtor sAffine (cA 3)] := by rfl
+
+/-- **The array side condition of (Assign)** (`3.8:72`, E0480): the element
+reinitialization is refused (probe `a5`) and the whole-array one is accepted
+(probe `b8`), with §6.8's overwrite-drop skipping the `⊘` in the old
+contents. -/
+example : checkProgram (prog tI64 arrayElemReinit) = false := by rfl
+example : checkProgram (prog tI64 arrayWholeReinit) = true := by rfl
+example : run demoOps (prog tI64 arrayWholeReinit) demoFuel
+    = .ok [.dead, .dead] (v64 7)
+        [.drop 1 (cA 1), .dtor sAffine (cA 1),
+         .drop 0 (.array (.struct sAffine) [.hole, cA 2]), .dtor sAffine (cA 2),
+         .dbg (v64 20),
+         .drop 0 (.array (.struct sAffine) [cA 8, cA 9]),
+         .dtor sAffine (cA 8), .dtor sAffine (cA 9)] := by rfl
 
 /-- The five refusals the compiler makes too — `7.1:38`'s `Copy` repeat
 element (E0905), §5.1's missing rule for a non-`Copy` dynamic index (E0904),

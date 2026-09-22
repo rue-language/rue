@@ -284,7 +284,9 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
                        | some en₁ =>
                          (match en₁.st.get p.path with
                           | some u₁ =>
-                              if u₁.fullyOwned ∧ overwriteOk P.decls u₁ T then
+                              if u₁.fullyOwned ∧
+                                  assignArrayOk P.decls en₁.st en₁.ty p.path ∧
+                                  overwriteOk P.decls u₁ T then
                                 some (.unit,
                                   Γ₂.set p.root (en₁.setSt (en₁.st.setAt p.path .owned)))
                               else none
@@ -342,7 +344,8 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
                   | some en₁ =>
                     (match en₁.st.get p.path with
                      | some u₁ =>
-                         if overwriteOk P.decls u₁ T then
+                         if assignArrayOk P.decls en₁.st en₁.ty p.path ∧
+                             overwriteOk P.decls u₁ T then
                            some (.unit,
                              Γ₁.set p.root (en₁.setSt (en₁.st.setAt p.path .owned)))
                          else none
@@ -698,7 +701,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
                         cases h
                         exact .indexWrite hget₀ hmu hg₀ hty₀
                           (check_sound e₁ hchk₁) (check_sound e₂ hchk₂) hget₁ hg₁
-                          hpost.1 (overwriteOk_iff.mp hpost.2)
+                          hpost.1 hpost.2.1 (overwriteOk_iff.mp hpost.2.2)
                       · cases h
                     · cases h
                   · cases h
@@ -776,7 +779,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
                     · rename_i hover
                       cases h
                       exact .assign hget₀ hmu hg₀ hty₀ (check_sound e hchk) hget₁ hg₁
-                        (overwriteOk_iff.mp hover)
+                        hover.1 (overwriteOk_iff.mp hover.2)
                     · cases h
                   · cases h
                 · cases h
