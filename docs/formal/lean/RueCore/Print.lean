@@ -135,6 +135,10 @@ def tyName : Ty → String
   | .unit => "()"
   | .struct s => "S" ++ toString s
   | .enum e => "E" ++ toString e
+  -- `7.1:14`'s `array_type`: the length is a compile-time constant, and
+  -- elaboration has already folded it, so the core's `Nat` prints as a
+  -- literal.
+  | .array T n => "[" ++ tyName T ++ "; " ++ toString n ++ "]"
 
 /-- The Rue spelling of a binary operator (§2's `⊕` and `⋚`) (helper). -/
 def binOpSym : BinOp → String
@@ -302,6 +306,16 @@ def tyOf (P : Program) (R : Ty) (Γ : List Ty) : Expr → Option Ty
              | [] => none)
           | _, _ => none)
        | _ => none)
+  | .mkArray T args => some (.array T args.length)
+  | .repeatArray T _ n => some (.array T n)
+  | .indexRead pl _ =>
+      (match Γ[pl.root]? with
+       | some T =>
+         (match T.atPath P.decls pl.path with
+          | some (.array Te _) => some Te
+          | _ => none)
+       | none => none)
+  | .indexWrite _ _ _ => some .unit
   | .drop _ => some .unit
   | .letIn _ e₁ e₂ => do
       let T₁ ← tyOf P R Γ e₁
@@ -331,6 +345,9 @@ surface spelling of `Place.proj (Place.proj (Place.var i) 0) 1` (helper). -/
 def place (Γ : List Ty) : Place → String
   | .var i => useName Γ i
   | .proj q f => place Γ q ++ "." ++ fieldName f
+  -- `Place.idx`, the constant index step: `x[0]` is the identity elaboration
+  -- of it (§5's `Path[c]`, `4.11:2`'s `index_expr`).
+  | .idx q c => place Γ q ++ "[" ++ toString c ++ "]"
 
 /-- Four spaces per nesting level (helper). -/
 def indent (n : Nat) : String := "".pushn ' ' (4 * n)
@@ -424,6 +441,29 @@ partial def expr (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) : Expr → St
       "match " ++ expr P R Γ lvl scrut ++ " {\n" ++
         String.join (matchArms P R Γ lvl name 0 arms variants) ++
       indent lvl ++ "}"
+  | .mkArray _ args =>
+      "[" ++ String.intercalate ", " (args.map (fun a => expr P R Γ lvl a)) ++ "]"
+  | .repeatArray _ e n =>
+      -- `7.1:36`'s repeat form. `7.1:37` makes the count a compile-time
+      -- constant, which the core carries as a `Nat`.
+      "[" ++ expr P R Γ lvl e ++ "; " ++ toString n ++ "]"
+  | .indexRead pl e =>
+      -- `4.11:4` admits any integer type in index position and nothing
+      -- downstream of the brackets names it, so — exactly as for `@dbg`'s
+      -- operand — the index gets a typed binder. A block binding one `Copy`
+      -- scalar changes no evaluation order and adds no drop point (§6.7).
+      let Ti := (tyOf P R Γ e).getD (.int .w64 .signed)
+      let j := tmpName lvl "i"
+      "{ let " ++ j ++ ": " ++ tyName Ti ++ " = " ++ expr P R Γ (lvl + 1) e ++ "; " ++
+        place Γ pl ++ "[" ++ j ++ "] }"
+  | .indexWrite pl e₁ e₂ =>
+      -- `7.1:30`/`4.11:12`'s element assignment, with the index typed the same
+      -- way. §6.2 reduces the index before the right-hand side, which is the
+      -- order the two statements are in.
+      let Ti := (tyOf P R Γ e₁).getD (.int .w64 .signed)
+      let j := tmpName lvl "i"
+      "{ let " ++ j ++ ": " ++ tyName Ti ++ " = " ++ expr P R Γ (lvl + 1) e₁ ++ "; " ++
+        place Γ pl ++ "[" ++ j ++ "] = " ++ expr P R Γ (lvl + 1) e₂ ++ "; }"
   | .drop pl => "@drop(" ++ place Γ pl ++ ")"
   | .letIn m e₁ e₂ =>
       let T₁ := (tyOf P R Γ e₁).getD (.int .w64 .signed)
@@ -488,7 +528,8 @@ def observeValue (D : Decls) (T : Ty) : String :=
   match T with
   | .int _ _ | .float _ | .bool => "    @dbg(result);\n"
   | .unit => ""
-  | .struct _ | .enum _ => if T.mult D = .linear then "    @drop(result);\n" else ""
+  | .struct _ | .enum _ | .array _ _ =>
+      if T.mult D = .linear then "    @drop(result);\n" else ""
 
 /-- One parameter per line of a signature, named the way the body's de Bruijn
 indices resolve: the first parameter is the outermost binder, so it is `v0`.

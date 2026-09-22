@@ -581,7 +581,31 @@ def cases : List Case := [
   { name := "f32_shortest_roundtrip",
     description := "An f32 prints the digits that identify it as an f32, not the digits of the f64 with the same value.",
     rules := ["(Dbg) §5.8", "3.12:40"],
-    prog := Examples.scalarProg Examples.tI64 Examples.f32Shortest }
+    prog := Examples.scalarProg Examples.tI64 Examples.f32Shortest },
+  { name := "array_copy_reads",
+    description := "An array literal and the repeat form at a Copy element type, read at three constant indices: 1 + 3 + 7.",
+    rules := ["(Array-Intro) §5.8", "(Use-Copy) §5.1", "(D-Array) §6.5", "7.1:38"],
+    prog := Examples.prog Examples.tI64 Examples.arrayCopyReads },
+  { name := "array_drop_order",
+    description := "An array of destructor-bearing elements left to scope exit: §6.11 drops the elements in ascending index order, so the destructors print 1, 2, 3 after the @dbg.",
+    rules := ["(Array-Intro) §5.8", "§6.11", "3.9:15", "3.8:73"],
+    prog := Examples.prog Examples.tI64 Examples.arrayAffineDropOrder },
+  { name := "array_elem_overwrite",
+    description := "A write at a constant index over a live affine element: §6.8's overwrite-drop runs the old element's destructor at the assignment, and the scope exit then drops the new element and the untouched one, ascending.",
+    rules := ["(Assign) §5.2", "§6.8 overwrite-drop", "§6.11", "3.8:55"],
+    prog := Examples.prog Examples.tI64 Examples.arrayElemOverwrite },
+  { name := "array_whole_drop",
+    description := "@drop of a whole affine array runs the same walk scope exit would — the elements ascending — and leaves a hole the scope exit skips.",
+    rules := ["(@Drop) §5.3", "§6.11", "3.9:15"],
+    prog := Examples.prog Examples.tI64 Examples.arrayWholeDrop },
+  { name := "array_bounds_trap",
+    description := "A dynamic-index read in bounds and then past the end: the bounds trap of (D-Index-Trap) §6.5 is a defined outcome, and §6.12 keeps the output the run produced before it, so the 20 prints and the process then exits 101.",
+    rules := ["(Use-Untrackable-Dynamic-Copy) §5.1", "(D-Index) §6.5", "(D-Index-Trap) §6.5", "§6.12", "7.1:10"],
+    prog := Examples.arrayBoundsTrap },
+  { name := "array_in_struct",
+    description := "An array held as a struct field, read through a projection, an index and a projection again: h.a[1].x0 + h.a[0].x1 = 5.",
+    rules := ["(Struct-Intro) §5.8", "(Array-Intro) §5.8", "(Use-Copy) §5.1", "3.8:68"],
+    prog := Examples.arrHolderProg Examples.tI64 Examples.arrayInStruct }
 ]
 
 /-! ## Witnesses for the refusals no `Examples.lean` program reaches -/
@@ -609,7 +633,7 @@ def dbgLine : Val → Option String
   | .int _ _ n => some (toString n)
   | .float w f => some (f.render w)
   | .bool b => some (if b then "true" else "false")
-  | .unit | .struct _ _ | .enum _ _ _ => none
+  | .unit | .struct _ _ | .enum _ _ _ | .array _ _ => none
 
 /-- The line a user destructor prints (`Print.structItem`): the struct's
 first field, when that field is an integer. A declaration whose first field is
@@ -646,7 +670,11 @@ def valueLines (D : Decls) (v : Val) : List String :=
   | .float w f => (dbgLine (.float w f)).toList
   | .bool b => (dbgLine (.bool b)).toList
   | .unit => []
-  | .struct _ _ | .enum _ _ _ =>
+  -- A struct, an enum or an array value: `main` lets it drop, so its lines are
+  -- the ones its own drop emits — a struct's fields in declaration order
+  -- (`3.9:13`), an enum's active payload (`6.3:20`), an array's elements in
+  -- ascending index order (`3.9:15`).
+  | .struct _ _ | .enum _ _ _ | .array _ _ =>
       match dropContents D (Contents.ofVal v) with
       | .ok evs => evs.filterMap eventLine
       | .error _ => []
@@ -656,6 +684,7 @@ def panicName : PanicKind → String
   | .divZero => "divZero"
   | .remZero => "remZero"
   | .castOverflow => "castOverflow"
+  | .bounds => "bounds"
   | .user => "user"
 
 def violationName : Violation → String

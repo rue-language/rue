@@ -118,6 +118,13 @@ partial def exprLine (P : Program) (R : Ty) : List Ty → Expr → String
             name ++ "." ++ Print.variantName k ++
               (if binders.isEmpty then "" else "(" ++ String.intercalate ", " binders ++ ")") ++
               " => " ++ exprLine P R (Ts.reverse ++ Γ) a)) ++ " }"
+  | Γ, .mkArray _ args =>
+      "[" ++ String.intercalate ", " (args.map (fun a => exprLine P R Γ a)) ++ "]"
+  | Γ, .repeatArray _ e n => "[" ++ exprLine P R Γ e ++ "; " ++ toString n ++ "]"
+  | Γ, .indexRead pl e => Print.place Γ pl ++ "[" ++ exprLine P R Γ e ++ "]"
+  | Γ, .indexWrite pl e₁ e₂ =>
+      "{ " ++ Print.place Γ pl ++ "[" ++ exprLine P R Γ e₁ ++ "] = " ++
+        exprLine P R Γ e₂ ++ "; }"
   | Γ, .drop pl => "@drop(" ++ Print.place Γ pl ++ ")"
   | Γ, .letIn m e₁ e₂ =>
       let T₁ := (Print.tyOf P R Γ e₁).getD (.int .w64 .signed)
@@ -154,6 +161,7 @@ def valTy : Val → Ty
   | .unit => .unit
   | .struct s _ => .struct s
   | .enum e _ _ => .enum e
+  | .array T vs => .array T vs.length
 
 /-- (helper) A value, as §6.1 writes it: a scalar as itself, a struct value
 as `{ v1, …, vk }_S` with its declaration's name. -/
@@ -169,6 +177,7 @@ partial def valLine : Val → String
       -- §6.1's `Kj⟨ v1, …, va ⟩`: the tag, and the payload when there is one.
       Print.tyName (.enum e) ++ "." ++ Print.variantName k ++
         (if vs.isEmpty then "⟨⟩" else "⟨" ++ String.intercalate ", " (vs.map valLine) ++ "⟩")
+  | .array _ vs => "[" ++ String.intercalate ", " (vs.map valLine) ++ "]"
 
 /-- (helper) Cell contents (§6.1's `c ::= v | ⊘`), as a tree: a `⊘` may sit
 at any node after a partial move (§4.2). -/
@@ -184,6 +193,7 @@ partial def contentsLine : Contents → String
   | .enum e k cs =>
       Print.tyName (.enum e) ++ "." ++ Print.variantName k ++
         (if cs.isEmpty then "⟨⟩" else "⟨" ++ String.intercalate ", " (cs.map contentsLine) ++ "⟩")
+  | .array _ cs => "[" ++ String.intercalate ", " (cs.map contentsLine) ++ "]"
 
 /-- (helper) A store cell: its contents, or the retired marker `†`. -/
 def cellLine : Cell → String
@@ -451,6 +461,52 @@ def declaredLinearPrefix : String :=
   "(3.8:33) — a rule this fragment does not mechanize (RUE-2236), so it rejects the " ++
   "place rather than claim one"
 
+/-- This part's own restriction: a move or a `@drop` at a path with an array
+index step is refused. It stands in for `3.8:68`'s root-index premise on
+(Use-Move) §5.1 and (@Drop) §5.3, which it implies, and RUE-2327 lifts it. -/
+def moveAtIndex : String :=
+  "the path has an array index step, and this part of the mechanization moves no " ++
+  "array element: `3.8:68` admits a constant-index move applied directly to the root " ++
+  "binding and the compiler accepts one, so this refusal is the fragment's own " ++
+  "restriction (RUE-2327) rather than a rule of the calculus"
+
+/-- `7.1:38`: the element type of a repeat literal must be `Copy` (E0905). -/
+def repeatNotCopy (T : Ty) : String :=
+  "the repeat form materializes `n` copies of one value, which is only well defined " ++
+  "at a `Copy` element type, and " ++ Print.tyName T ++ " is not one (7.1:38; the " ++
+  "compiler reports E0905)"
+
+/-- (Array-Intro) §5.8: every element shares the one element type (`3.5:2`,
+`7.1:3`). -/
+def elemTypeMismatch (T elem : Ty) : String :=
+  "an element has type " ++ Print.tyName T ++ " where the array's element type is " ++
+  Print.tyName elem ++ " — all elements share one type ((Array-Intro) §5.8; 3.5:2, 7.1:3)"
+
+/-- `4.11:3`: the base of an index expression must have an array type. -/
+def notAnArray (T : Ty) : String :=
+  "the indexed place has type " ++ Print.tyName T ++ ", which is not an array type " ++
+  "(4.11:3)"
+
+/-- `4.11:4`: an index expression must have an integer type. -/
+def indexNotInt (T : Ty) : String :=
+  "the index has type " ++ Print.tyName T ++ ", and an index must be an integer " ++
+  "(4.11:4)"
+
+/-- §4.2's `Untrackable(OrdinaryDynamic)` plan has a successful rule only at a
+`Copy` element type: (Use-Untrackable-Dynamic-Copy) §5.1, and "there is no
+successful static rule … when `class(T) ∈ {Affine,Linear}`" (E0904). -/
+def elementNotCopy (T : Ty) : String :=
+  "the element type " ++ Print.tyName T ++ " is not `Copy`, and a dynamic index has " ++
+  "no rule there: the compiler cannot know which element a runtime index moved " ++
+  "((Use-Untrackable-Dynamic-Copy) §5.1; 3.8:70, 7.1:28; the compiler reports E0904)"
+
+/-- `3.8:70`/`7.1:45`: a non-constant index may not be used while an element is
+moved out, because the compiler cannot know whether it denotes a moved-out
+one. -/
+def indexPartiallyMoved : String :=
+  "a path under the array is MovedOut, so a non-constant index may denote a " ++
+  "moved-out element — which the compiler cannot decide (3.8:70, 7.1:45)"
+
 /-- (@Drop) §5.3's last premise: a partially moved place may not be dropped
 whole while a linear sub-place under it is still owned. -/
 def dropStrandsLinear : String :=
@@ -711,9 +767,11 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                 (if u.fullyOwned then accepted "(Use-Copy) §5.1" Γ (.use pl) T Γ []
                  else rejected "(Use-Copy) §5.1" Γ (.use pl) (Premise.usePartiallyMoved T) [])
               else
-                (if u.fullyOwned ∧ noDtorPrefix P.decls en.ty pl.path then
+                (if u.fullyOwned ∧ noDtorPrefix P.decls en.ty pl.path ∧ pl.noIdx then
                    accepted "(Use-Move) §5.1" Γ (.use pl) T
                      (Γ.set pl.root (en.setSt (en.st.setAt pl.path .movedOut))) []
+                 else if !pl.noIdx then
+                   rejected "(Use-Move) §5.1" Γ (.use pl) Premise.moveAtIndex []
                  else if u.fullyOwned then
                    rejected "(Use-Move) §5.1" Γ (.use pl) Premise.moveUnderDtor []
                  else rejected "(Use-Move) §5.1" Γ (.use pl) (Premise.usePartiallyMoved T) [])
@@ -876,6 +934,95 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
       | some (T, _) =>
           rejected "(Match) §5.5" Γ (.«match» scrut arms) (Premise.scrutNotEnum T) [ds]
       | none => rejected "(Match) §5.5" Γ (.«match» scrut arms) Premise.subDerivation [ds]
+  | .mkArray T args =>
+      (match explainArgs P R Γ args (List.replicate args.length T) with
+       | (some Γ', kids) =>
+           accepted "(Array-Intro) §5.8" Γ (.mkArray T args) (.array T args.length) Γ' kids
+       | (none, kids) =>
+           rejected "(Array-Intro) §5.8" Γ (.mkArray T args)
+             (elemsPremise P R Γ args (List.replicate args.length T)) kids)
+  | .repeatArray T e n =>
+      let rule := "(Array-Intro) §5.8, through §2's repeat elaboration"
+      let d := explain P R Γ e
+      (match d.result with
+       | some (T', Γ') =>
+           if T' = T ∧ T.mult P.decls = .copy then
+             accepted rule Γ (.repeatArray T e n) (.array T n) Γ' [d]
+           else if T' = T then
+             rejected rule Γ (.repeatArray T e n) (Premise.repeatNotCopy T) [d]
+           else rejected rule Γ (.repeatArray T e n) (Premise.elemTypeMismatch T' T) [d]
+       | none => rejected rule Γ (.repeatArray T e n) Premise.subDerivation [d])
+  | .indexRead pl e =>
+      let rule := "(Use-Untrackable-Dynamic-Copy) §5.1"
+      let d := explain P R Γ e
+      (match d.result with
+       | some (.int _ _, Γ₁) =>
+         (match Γ₁[pl.root]? with
+          | none => rejected rule Γ (.indexRead pl e) Premise.unboundIndex [d]
+          | some en =>
+            match en.st.get pl.path, en.ty.atPath P.decls pl.path with
+            | some u, some (.array T _) =>
+                if u.fullyOwned ∧ T.mult P.decls = .copy ∧
+                    noLinearPrefix P.decls en.ty pl.path then
+                  accepted rule Γ (.indexRead pl e) T Γ₁ [d]
+                else if !noLinearPrefix P.decls en.ty pl.path then
+                  rejected rule Γ (.indexRead pl e) Premise.declaredLinearPrefix [d]
+                else if !u.fullyOwned then
+                  rejected rule Γ (.indexRead pl e) Premise.indexPartiallyMoved [d]
+                else rejected rule Γ (.indexRead pl e) (Premise.elementNotCopy T) [d]
+            | some _, some T => rejected rule Γ (.indexRead pl e) (Premise.notAnArray T) [d]
+            | none, _ => rejected rule Γ (.indexRead pl e) Premise.pathUnderMoved [d]
+            | _, none => rejected rule Γ (.indexRead pl e) Premise.pathNotField [d])
+       | some (T, _) => rejected rule Γ (.indexRead pl e) (Premise.indexNotInt T) [d]
+       | none => rejected rule Γ (.indexRead pl e) Premise.subDerivation [d])
+  | .indexWrite pl e₁ e₂ =>
+      let rule := "(Assign) §5.2 at a dynamic index"
+      (match Γ[pl.root]? with
+       | none => rejected rule Γ (.indexWrite pl e₁ e₂) Premise.unboundIndex []
+       | some en₀ =>
+         if en₀.mu = true then
+           match en₀.st.get pl.path, en₀.ty.atPath P.decls pl.path with
+           | some _, some (.array T _) =>
+             if T.mult P.decls = .copy ∧ noLinearPrefix P.decls en₀.ty pl.path then
+               (let d₁ := explain P R Γ e₁
+                match d₁.result with
+                | some (.int _ _, Γ₁) =>
+                  (let d₂ := explain P R Γ₁ e₂
+                   match d₂.result with
+                   | some (T', Γ₂) =>
+                     if T' = T then
+                       (match Γ₂[pl.root]? with
+                        | some en₁ =>
+                          (match en₁.st.get pl.path with
+                           | some u₁ =>
+                               if u₁.fullyOwned then
+                                 accepted rule Γ (.indexWrite pl e₁ e₂) .unit
+                                   (Γ₂.set pl.root (en₁.setSt (en₁.st.setAt pl.path .owned)))
+                                   [d₁, d₂]
+                               else
+                                 rejected rule Γ (.indexWrite pl e₁ e₂)
+                                   Premise.indexPartiallyMoved [d₁, d₂]
+                           | none =>
+                               rejected rule Γ (.indexWrite pl e₁ e₂)
+                                 Premise.assignTargetLost [d₁, d₂])
+                        | none =>
+                            rejected rule Γ (.indexWrite pl e₁ e₂)
+                              Premise.assignTargetLost [d₁, d₂])
+                     else
+                       rejected rule Γ (.indexWrite pl e₁ e₂)
+                         (Premise.assignTypeMismatch T' T) [d₁, d₂]
+                   | none =>
+                       rejected rule Γ (.indexWrite pl e₁ e₂) Premise.subDerivation [d₁, d₂])
+                | some (T', _) =>
+                    rejected rule Γ (.indexWrite pl e₁ e₂) (Premise.indexNotInt T') [d₁]
+                | none => rejected rule Γ (.indexWrite pl e₁ e₂) Premise.subDerivation [d₁])
+             else if !noLinearPrefix P.decls en₀.ty pl.path then
+               rejected rule Γ (.indexWrite pl e₁ e₂) Premise.declaredLinearPrefix []
+             else rejected rule Γ (.indexWrite pl e₁ e₂) (Premise.elementNotCopy T) []
+           | some _, some T => rejected rule Γ (.indexWrite pl e₁ e₂) (Premise.notAnArray T) []
+           | none, _ => rejected rule Γ (.indexWrite pl e₁ e₂) Premise.pathUnderMoved []
+           | _, none => rejected rule Γ (.indexWrite pl e₁ e₂) Premise.pathNotField []
+         else rejected rule Γ (.indexWrite pl e₁ e₂) Premise.notMutable [])
   | .drop pl =>
       match Γ[pl.root]? with
       | none => rejected "(@Drop-Copy)/(@Drop) §5.3" Γ (.drop pl) Premise.unboundIndex []
@@ -888,9 +1035,12 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                  else rejected "(@Drop-Copy) §5.3" Γ (.drop pl) (Premise.usePartiallyMoved T) [])
               else
                 (if u.isOwned ∧ noDtorPrefix P.decls en.ty pl.path ∧
-                    (u.fullyOwned = true ∨ residualLinearBelow P.decls u T = false) then
+                    (u.fullyOwned = true ∨ residualLinearBelow P.decls u T = false) ∧
+                    pl.noIdx then
                    accepted "(@Drop) §5.3" Γ (.drop pl) .unit
                      (Γ.set pl.root (en.setSt (en.st.setAt pl.path .movedOut))) []
+                 else if !pl.noIdx then
+                   rejected "(@Drop) §5.3" Γ (.drop pl) Premise.moveAtIndex []
                  else if !u.isOwned then
                    rejected "(@Drop) §5.3" Γ (.drop pl) Premise.dropMovedOut []
                  else if !noDtorPrefix P.decls en.ty pl.path then
@@ -1086,6 +1236,17 @@ def armsPremise (P : Program) (R : Ty) (Γ₀ : Ctx) (T : Ty) :
            else armsPremise P R Γ₀ T es Tss
        | none => Premise.subDerivation)
   | _, _ => Premise.subDerivation
+/-- The premise a rejected element list failed: the first element whose type is
+not the array's element type (`3.5:2`, `7.1:3`) — (Array-Intro) §5.8's only
+per-element premise, since the length is the literal's own. -/
+def elemsPremise (P : Program) (R : Ty) : Ctx → List Expr → List Ty → String
+  | _, [], [] => Premise.subDerivation
+  | Γ, e :: es, T :: Ts =>
+      (match (explain P R Γ e).result with
+       | some (T', Γ₁) =>
+           if T' = T then elemsPremise P R Γ₁ es Ts else Premise.elemTypeMismatch T' T
+       | none => Premise.subDerivation)
+  | _, _, _ => Premise.subDerivation
 end
 
 mutual
@@ -1189,6 +1350,7 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
         | bool => rfl
         | unit => rfl
         | struct s' => rfl
+        | array Te n => rfl
         | enum e =>
           dsimp only
           cases hed : P.decls.enums[e]? with
@@ -1207,6 +1369,28 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
                     dsimp only
                     cases hj : Ctx.joinAll P.decls Γs <;> rfl
             · simp only [if_neg hlen]; rfl
+  | .mkArray Te args, Γ => by
+      simp only [explain, check]
+      have hargs := explainArgs_result (P := P) (R := R) args Γ (List.replicate args.length Te)
+      revert hargs
+      cases explainArgs P R Γ args (List.replicate args.length Te) with
+      | mk res kids =>
+        intro hargs
+        cases res with
+        | none => rw [← hargs]; rfl
+        | some Γ' => rw [← hargs]; rfl
+  | .repeatArray Te e n, Γ => by
+      simp only [explain, check, explain_result e]
+      (repeat' split) <;>
+        first | rfl | (simp_all [accepted, Deriv.result] <;> grind)
+  | .indexRead pl e, Γ => by
+      simp only [explain, check, explain_result e]
+      (repeat' split) <;>
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+  | .indexWrite pl e₁ e₂, Γ => by
+      simp only [explain, check, explain_result e₁, explain_result e₂]
+      (repeat' split) <;>
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
   | .drop pl, Γ => by
       simp only [explain, check]
       (repeat' split) <;> first | rfl | simp_all [accepted, rejected, Deriv.result]
@@ -1234,6 +1418,7 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
         | unit => rfl
         | struct s' => rfl
         | enum e' => rfl
+        | array Te n => rfl
         | bool =>
             simp only [explain_result e₁, explain_result e₂]
             cases h₁ : check P R Γ₀ e₁ with
@@ -1750,6 +1935,124 @@ def traceEval (M : FloatOps) (P : Program) :
                       scopeNeverClosed H (r.withTrace tr₀)))
           | _ => confused t₀.steps d Θ R (.«match» scrut arms) "(D-Match) §6.6" H)
        | r => propagate t₀.steps d Θ R (.«match» scrut arms) "(D-Match) §6.6" H r)
+  | fuel + 1, d, Θ, R, H, φ, .mkArray T args =>
+      let ta := traceArgs (fun H' e' => traceEval M P fuel (d + 1) Θ R H' φ e') H args
+      (match ta.res with
+       | .abort r => didNotRun ta.steps d Θ R (.mkArray T args) "(D-Array) §6.5" H r
+       | .ok H₁ vs tr =>
+           traced ta.steps d Θ R (.mkArray T args) "(D-Array) §6.5" H H₁ []
+             (.value (.array T vs)) (.ok H₁ (.array T vs) tr))
+  | fuel + 1, d, Θ, R, H, φ, .repeatArray T e n =>
+      let rule := "(D-Array) §6.5, through §2's repeat elaboration (7.1:39)"
+      let t := traceEval M P fuel (d + 1) Θ R H φ e
+      (match t.res with
+       | .ok H₁ v tr =>
+           traced t.steps d Θ R (.repeatArray T e n) rule H H₁ []
+             (.value (.array T (List.replicate n v)))
+             (.ok H₁ (.array T (List.replicate n v)) tr)
+       | r => propagate t.steps d Θ R (.repeatArray T e n) rule H r)
+  | fuel + 1, d, Θ, R, H, φ, .indexRead pl e =>
+      let rule := "(D-Index) §6.5"
+      let t := traceEval M P fuel (d + 1) Θ R H φ e
+      (match t.res with
+       | .ok H₁ iv tr =>
+         (match iv with
+          | .int _ _ i =>
+            (match φ.env[pl.root]? with
+             | none => refused t.steps d Θ R (.indexRead pl e) rule H .unbound
+             | some ℓ =>
+               match H₁[ℓ]? with
+               | none => refused t.steps d Θ R (.indexRead pl e) rule H .unbound
+               | some .dead => refused t.steps d Θ R (.indexRead pl e) rule H .useAfterDrop
+               | some (.full c) =>
+                 match c.readAt pl.path with
+                 | .error w => refused t.steps d Θ R (.indexRead pl e) rule H w
+                 | .ok sub =>
+                   match sub with
+                   | .array _ cs =>
+                       if 0 ≤ i ∧ i < (cs.length : Int) then
+                         (match cs[i.toNat]? with
+                          | none =>
+                              refused t.steps d Θ R (.indexRead pl e) rule H .typeConfusion
+                          | some ec =>
+                            match ec.toVal with
+                            | none =>
+                                refused t.steps d Θ R (.indexRead pl e) rule H .useAfterMove
+                            | some v =>
+                                traced t.steps d Θ R (.indexRead pl e) rule H H₁ []
+                                  (.value v) (.ok H₁ v tr))
+                       else
+                         traced t.steps d Θ R (.indexRead pl e)
+                           "(D-Index-Trap) §6.5 — the bounds trap of §6.12" H H₁ []
+                           (.panicked .bounds) (.panic .bounds tr)
+                   | _ => confused t.steps d Θ R (.indexRead pl e) rule H)
+          | _ => confused t.steps d Θ R (.indexRead pl e) rule H)
+       | r => propagate t.steps d Θ R (.indexRead pl e) rule H r)
+  | fuel + 1, d, Θ, R, H, φ, .indexWrite pl e₁ e₂ =>
+      let rule := "(D-Assign) §6.8 at a dynamic index"
+      let t₁ := traceEval M P fuel (d + 1) Θ R H φ e₁
+      (match t₁.res with
+       | .ok H₁ iv tr₁ =>
+         let t₂ := traceEval M P fuel (d + 1) Θ R H₁ φ e₂
+         (match t₂.res with
+          | .ok H₂ v tr₂ =>
+            (match iv with
+             | .int _ _ i =>
+               (match φ.env[pl.root]? with
+                | none =>
+                    refused (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂) rule H .unbound
+                | some ℓ =>
+                  match H₂[ℓ]? with
+                  | none =>
+                      refused (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂) rule H .unbound
+                  | some .dead =>
+                      refused (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂) rule H
+                        .useAfterDrop
+                  | some (.full c) =>
+                    match c.readAt pl.path with
+                    | .error w =>
+                        refused (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂) rule H w
+                    | .ok sub =>
+                      match sub with
+                      | .array T' cs =>
+                          if 0 ≤ i ∧ i < (cs.length : Int) then
+                            (match cs[i.toNat]? with
+                             | none =>
+                                 refused (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂)
+                                   rule H .typeConfusion
+                             | some old =>
+                               if old.residualLinear P.decls then
+                                 refused (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂)
+                                   rule H .linearOverwrite
+                               else
+                                 match dropCell P.decls ℓ old with
+                                 | .error w =>
+                                     refused (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂)
+                                       rule H w
+                                 | .ok evs =>
+                                   match c.writeAt pl.path
+                                       (.array T' (cs.set i.toNat (Contents.ofVal v))) with
+                                   | none =>
+                                       refused (t₁.steps ++ t₂.steps) d Θ R
+                                         (.indexWrite pl e₁ e₂) rule H .typeConfusion
+                                   | some c' =>
+                                       traced (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂)
+                                         (if old.isHole then
+                                            rule ++ " (reinitialization, 3.8:55)"
+                                          else rule ++ " (overwrite-drop)")
+                                         H (H₂.set ℓ (.full c')) evs (.value .unit)
+                                         (.ok (H₂.set ℓ (.full c')) .unit (tr₁ ++ (tr₂ ++ evs))))
+                            else
+                              traced (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂)
+                                "(D-Index-Trap) §6.5 — the bounds trap of §6.12" H H₂ []
+                                (.panicked .bounds) (.panic .bounds (tr₁ ++ tr₂))
+                      | _ =>
+                          confused (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂) rule H)
+             | _ => confused (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂) rule H)
+          | r =>
+              propagate (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂) rule H
+                (r.withTrace tr₁))
+       | r => propagate t₁.steps d Θ R (.indexWrite pl e₁ e₂) rule H r)
   | fuel + 1, d, Θ, R, H, φ, .letIn m e₁ e₂ =>
       let t₁ := traceEval M P fuel (d + 1) Θ R H φ e₁
       match t₁.res with
@@ -1961,6 +2264,25 @@ theorem traceEval_res (M : FloatOps) {P : Program} : ∀ (fuel : Nat) (d : Nat) 
           simp only [traceEval, eval, EvalRes.andThen, ih]
           (repeat' split) <;>
             first | rfl | (simp_all [traced, tracedAs, didNotRun, refused, confused,
+              EvalRes.withTrace] <;> grind)
+      | mkArray Te args =>
+          simp only [traceEval, eval,
+            traceArgs_res (ev := fun H' e' => eval M fuel P H' φ e') (fun H' e' => ih _ _ _ _ _ e')]
+          (repeat' split) <;>
+            first | rfl | (simp_all [traced, didNotRun, EvalRes.withTrace] <;> grind)
+      | repeatArray Te e₁ n =>
+          simp only [traceEval, eval, EvalRes.andThen, ih]
+          (repeat' split) <;>
+            first | rfl | (simp_all [traced, EvalRes.withTrace] <;> grind)
+      | indexRead pl e₁ =>
+          simp only [traceEval, eval, EvalRes.andThen, ih]
+          (repeat' split) <;>
+            first | rfl | (simp_all [traced, confused, refused,
+              EvalRes.withTrace] <;> grind)
+      | indexWrite pl e₁ e₂ =>
+          simp only [traceEval, eval, EvalRes.andThen, ih]
+          (repeat' split) <;>
+            first | rfl | (simp_all [traced, confused, refused, propagate, didNotRun,
               EvalRes.withTrace] <;> grind)
       | letIn m e₁ e₂ =>
           simp only [traceEval, eval, EvalRes.andThen, ih]
