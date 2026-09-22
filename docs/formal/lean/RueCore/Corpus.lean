@@ -502,6 +502,45 @@ def cases : List Case := [
     rules := ["(Match) §5.5", "(D-Match) §6.6", "(D-EndScope) §6.7", "3.9:4"],
     prog := Examples.enumProg Examples.tI64 Examples.enumTwoPayloadBindings
     },
+  { name := "enum_payload_moved_into_call",
+    description := "A Linear payload moved into a call in the one arm of an if that matches: the other path leaves the enum Owned, so the §5.5 join is ill-formed (E0443); the executed path runs and the callee's @drop prints.",
+    rules := ["(Match) §5.5", "(If) §5.5 join", "(Call) §5.8", "3.8:50", "6.3:19"],
+    prog := Examples.enumPayloadMovedIntoCall
+    },
+  { name := "enum_arm_moves_affine_drops_linear",
+    description := "One arm, two payload components of different classes: the affine one is moved into an outer mut binding, whose overwrite-drop runs first, and the linear one is @dropped, which discharges class(E).",
+    rules := ["(Match) §5.5", "(Assign) §5.2", "(@Drop) §5.3", "§6.8 overwrite-drop", "6.3:19"],
+    prog := Examples.enumProg Examples.tI64 Examples.enumArmMovesAffineDropsLinear
+    },
+  { name := "enum_return_past_payload",
+    description := "A return out of an arm, past the arm's two payload locals and an outer binding: §6.9's unwind walks σ newest-first, and (D-Match) appended the payload cells to the innermost scope record.",
+    rules := ["(Match) §5.5", "(Return-Value) §5.7", "(D-Return) §6.9", "(D-Match) §6.6", "3.9:4"],
+    prog := Examples.enumProg Examples.tI64 Examples.enumReturnPastPayload
+    },
+  { name := "enum_temporary_scrutinee",
+    description := "A temporary scrutinee: the enum is built in scrutinee position and never bound, so the arm's payload binding is the only owner there is.",
+    rules := ["(Match) §5.5", "(Enum-Intro) §5.5", "(D-Match) §6.6", "6.3:17"],
+    prog := Examples.enumProg Examples.tI64 Examples.enumTemporaryScrutinee
+    },
+  { name := "enum_call_scrutinee",
+    description := "A call in scrutinee position: the enum comes back across a frame boundary and (D-Match) binds its payload in the caller's frame, so the payload's drop is owed to the caller's arm and not to the callee's pop.",
+    rules := ["(Match) §5.5", "(Call) §5.8", "(D-Call) §6.9", "(D-Match) §6.6"],
+    prog := Examples.enumCallScrutinee
+    },
+  { name := "enum_matched_twice_moving",
+    description := "Two matches on the same non-Copy binding: the first moved it out (3.8:33's destructured consumption), so the second is the use of a moved-out place (E0205) and the machine refuses with useAfterMove.",
+    rules := ["(Match) §5.5", "(Use-Move) §5.1", "3.8:33", "3.8:5"],
+    prog := Examples.enumProg Examples.tI64 Examples.enumMatchedTwiceMoving
+    },
+  { name := "enum_two_linear_values",
+    description := "Two values of one Linear-payload enum, one at each variant, each consumed by its own match: the K0 payload is @dropped and the K1 arm has none, and both obligations are met because the match consumed each value.",
+    rules := ["(Match) §5.5", "(@Drop) §5.3", "6.3:19", "6.3:14"],
+    prog := Examples.enumProg Examples.tI64 Examples.enumTwoLinearValues
+    },
+  { name := "enum_holder_partial_then_drop",
+    description := "The carrier a match partially moved, dropped explicitly: (@Drop) §5.3 asks only that the place be Owned, and §6.11's walk skips the ⊘ the match left at the enum field.",
+    rules := ["(Match) §5.5", "(@Drop) §5.3", "3.8:22", "§6.11", "3.9:13"],
+    prog := Examples.enumProg Examples.tI64 Examples.enumHolderPartialThenDrop
   { name := "destructure_copy_leaf",
     description := "A Copy field read out of a declared-linear struct: §4.2's central override consumes the whole struct for a Copy leaf, and the affine residue drops at the access rather than at scope exit.",
     rules := ["(Use-Declared-Linear-Destructure) §5.1", "(D-Use-Declared-Linear) §6.3", "3.8:33"],

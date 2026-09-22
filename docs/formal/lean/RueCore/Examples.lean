@@ -1022,6 +1022,12 @@ def eTag : EnumDecl := { variants := [[], []], cls := .copy }
 and its payload binding drops nothing at the arm's end. -/
 def eInt : EnumDecl := { variants := [[tI64], []], cls := .copy }
 
+/-- `E5`: `enum { K0(S1, S3), K1 }`. An `Affine` payload component beside a
+declared-`linear` one, which is what lets a single arm move the first out and
+`@drop` the second. `class(E5)` is `Linear` by `6.3:19`'s join over every
+component of every variant, so the value itself must be consumed. -/
+def eMixed : EnumDecl := { variants := [[.struct 1, .struct 3], []], cls := .linear }
+
 /-- `S11`: `struct { x0: E0, x1: S1 }`, no destructor. Class `Affine`; it is
 what makes a `match` scrutinee a **projection**, so the partial move the match
 takes is one field of a struct whose sibling still drops at scope exit. -/
@@ -1031,7 +1037,8 @@ def dHolder : StructDecl :=
 /-- The declaration environment the enum cases run in: the fixture structs plus
 `S11`, and the five enums above. -/
 def enumDecls : Decls :=
-  { structs := structEnv ++ [dHolder], enums := [eAffine, eLinear, ePair, eTag, eInt] }
+  { structs := structEnv ++ [dHolder],
+    enums := [eAffine, eLinear, ePair, eTag, eInt, eMixed] }
 
 /-- `E0`'s index. -/
 def eAffineIdx : Nat := 0
@@ -1043,12 +1050,18 @@ def ePairIdx : Nat := 2
 def eTagIdx : Nat := 3
 /-- `E4`'s index. -/
 def eIntIdx : Nat := 4
+/-- `E5`'s index. -/
+def eMixedIdx : Nat := 5
 /-- `S11`'s index. -/
 def sHolder : Nat := 11
 
 /-- A program over the enum declarations, entered at a no-parameter `main`
 returning `T`. -/
 def enumProg (T : Ty) (e : Expr) : Program := Program.entry enumDecls T e
+
+/-- A program over the enum declarations with more than one function, entered
+at function `0` as every fragment program is (§6.12). -/
+def enumProgFns (fns : List FnDef) : Program := { decls := enumDecls, fns := fns }
 
 /-- **Probe e1.** An affine payload with a destructor, matched and bound, and
 the binding dropped at the arm's end (`6.3:17`'s timing): `10`, then the
@@ -1134,6 +1147,116 @@ def enumTwoPayloadBindings : Expr :=
       («match» (use (.var 0)) [seq (dbg (lit 10)) (lit 5), lit 6])
       (seq (dbg (lit 20)) (use (.var 0))))
 
+/-! ### Eight more `match` shapes (RUE-2325)
+
+The shapes the generator does **not** reach, each run against the compiler
+before it was committed: a payload moved into a **call**, a `return` out of an
+arm, a call and a temporary in scrutinee position, two values of a `Linear`
+enum consumed one after the other, and an explicit `@drop` of the carrier a
+`match` partially moved. Two of them are refusals, and the code the compiler
+reports is named in the doc-comment. -/
+
+/-- A `Linear` payload moved into a **call** in the one arm of an `if` that
+matches: the `then` path consumes the enum, the `else` path leaves it, and
+`class(E1)` makes the `Owned` side residual, so §5.5's join is ill-formed
+(`3.8:50`, `6.3:19`; the compiler reports E0443). The callee takes the payload
+by value and discharges it with `@drop`, because `3.9:34` forbids moving a
+field out of a destructor-bearing value. The executed path runs: `1` from the
+callee's drop, then the value `5`. -/
+def enumPayloadMovedIntoCall : Program :=
+  enumProgFns
+    [{ params := [], ret := tI64,
+       body :=
+         letIn false (mkEnum eLinearIdx 0 [resLD (lit 1)])
+           (letIn false
+             (ite (boolLit true)
+               («match» (use (.var 0)) [call 1 [use (.var 0)], lit 6])
+               (lit 0))
+             (use (.var 0))) },
+     { params := [⟨.struct sLinearDtor, false⟩], ret := tI64,
+       body := seq (drop (.var 0)) (lit 5) }]
+
+/-- One arm, two payload components of different classes: the `Affine` one is
+**moved** into an outer `mut` binding — whose overwrite-drop (§6.8) runs on the
+value it replaces — and the `Linear` one is `@drop`ped, which is what
+discharges `class(E5)`'s obligation (`6.3:19`). `9`, `2`, `20`, then the moved
+value's `1` at the outer scope exit, then `5`. -/
+def enumArmMovesAffineDropsLinear : Expr :=
+  letIn true (resA (lit 9))
+    (letIn false (mkEnum eMixedIdx 0 [resA (lit 1), resLD (lit 2)])
+      (letIn false
+        («match» (use (.var 0))
+          [seq (assign (.var 3) (use (.var 1))) (seq (drop (.var 0)) (lit 5)),
+           lit 6])
+        (seq (dbg (lit 20)) (use (.var 0)))))
+
+/-- A `return` **out of an arm**, past the arm's two payload locals and an
+outer binding: (D-Return) §6.9's unwind walks σ newest-first, and (D-Match)
+§6.6 appended the payload cells to the innermost scope record, so they are the
+first two it finds — `10`, then component 2's `2`, then component 1's `1`,
+then the outer `3`, then the value `5`. The enum the match moved out drops
+nothing. -/
+def enumReturnPastPayload : Expr :=
+  letIn false (mkEnum ePairIdx 0 [resA (lit 1), resA (lit 2)])
+    (letIn false (resA (lit 3))
+      (letIn false
+        («match» (use (.var 1)) [seq (dbg (lit 10)) (ret (lit 5)), lit 6])
+        (seq (dbg (lit 20)) (use (.var 0)))))
+
+/-- A **temporary** scrutinee: the enum is built in scrutinee position and
+never bound, so nothing outside the `match` ever names it and the arm's payload
+binding is the only owner there is. `10`, the payload's `1` at the arm's end,
+`20`, then `5`. -/
+def enumTemporaryScrutinee : Expr :=
+  letIn false
+    («match» (mkEnum eAffineIdx 0 [resA (lit 1)]) [seq (dbg (lit 10)) (lit 5), lit 6])
+    (seq (dbg (lit 20)) (use (.var 0)))
+
+/-- A **call** in scrutinee position: (D-Call) §6.9 hands the enum value back
+across the frame boundary and (D-Match) §6.6 binds its payload in the caller's
+frame, so the payload's drop is owed to the caller's arm and not to the callee's
+pop. Same trace as the temporary: `10`, `1`, `20`, `5`. -/
+def enumCallScrutinee : Program :=
+  enumProgFns
+    [{ params := [], ret := tI64,
+       body :=
+         letIn false
+           («match» (call 1 []) [seq (dbg (lit 10)) (lit 5), lit 6])
+           (seq (dbg (lit 20)) (use (.var 0))) },
+     { params := [], ret := .enum eAffineIdx,
+       body := mkEnum eAffineIdx 0 [resA (lit 1)] }]
+
+/-- Two `match`es on the same non-`Copy` binding, each **moving** it: the first
+leaves the place `MovedOut` (`3.8:33`'s destructured consumption), so the second
+is the use of a moved-out place (`3.8:5`; the compiler reports E0205) and the
+machine refuses with `useAfterMove`. -/
+def enumMatchedTwiceMoving : Expr :=
+  letIn false (mkEnum eAffineIdx 0 [resA (lit 1)])
+    (letIn false («match» (use (.var 0)) [lit 5, lit 6])
+      (letIn false («match» (use (.var 1)) [lit 7, lit 8])
+        (binop .add (use (.var 1)) (use (.var 0)))))
+
+/-- Two values of the **same** `Linear`-payload enum, one at each variant, each
+consumed by its own `match`: the `K0` value's payload is `@drop`ped (`1`), the
+`K1` value's arm has no payload to discharge, and `class(E1)`'s obligation is
+met on both because the `match` consumed each value. Then `7`. -/
+def enumTwoLinearValues : Expr :=
+  letIn false (mkEnum eLinearIdx 0 [resLD (lit 1)])
+    (letIn false (mkEnum eLinearIdx 1 [])
+      (letIn false («match» (use (.var 1)) [seq (drop (.var 0)) (lit 5), lit 6])
+        (letIn false («match» (use (.var 1)) [seq (drop (.var 0)) (lit 5), lit 6])
+          (lit 7))))
+
+/-- The carrier a `match` partially moved, dropped **explicitly**: the match
+takes `3.8:22`'s partial move at `v0.x0`, leaving the holder `Owned` with one
+field `MovedOut`, and (@Drop) §5.3 then asks only `Σ(p) = Owned`, so the
+whole-value drop is legal and §6.11's walk skips the `⊘` at the enum position.
+The payload's `1` at the arm's end, the sibling's `2` at the explicit drop,
+then `7`. -/
+def enumHolderPartialThenDrop : Expr :=
+  letIn false (mkStruct sHolder [mkEnum eAffineIdx 0 [resA (lit 1)], resA (lit 2)])
+    (letIn false («match» (use (.proj (.var 0) 0)) [lit 5, lit 6])
+      (seq (drop (.var 1)) (lit 7)))
 /-! ## The declared-linear destructure (RUE-2236)
 
 §4.2's `Declared(d, π_s)` plan and the rule that discharges it,
@@ -1713,6 +1836,32 @@ example : ProgramTyped (enumProg tI64 enumArmDropsPayload) := checkProgram_sound
 example : ProgramTyped (enumProg tI64 enumCopyMatchedTwice) := checkProgram_sound (by rfl)
 example : ProgramTyped (enumProg tI64 enumMatchProjection) := checkProgram_sound (by rfl)
 example : ProgramTyped (enumProg tI64 enumTwoPayloadBindings) := checkProgram_sound (by rfl)
+
+/-- The accepted RUE-2325 shapes, each run against the compiler before it was
+committed: the two-class arm, the `return` out of an arm, the temporary and the
+call scrutinees, the two `Linear` values, and the explicit drop of a partially
+moved carrier. -/
+example : ProgramTyped (enumProg tI64 enumArmMovesAffineDropsLinear) :=
+  checkProgram_sound (by rfl)
+example : ProgramTyped (enumProg tI64 enumReturnPastPayload) := checkProgram_sound (by rfl)
+example : ProgramTyped (enumProg tI64 enumTemporaryScrutinee) := checkProgram_sound (by rfl)
+example : ProgramTyped enumCallScrutinee := checkProgram_sound (by rfl)
+example : ProgramTyped (enumProg tI64 enumTwoLinearValues) := checkProgram_sound (by rfl)
+example : ProgramTyped (enumProg tI64 enumHolderPartialThenDrop) := checkProgram_sound (by rfl)
+
+/-- A `Linear` payload moved into a **call** on one path of an `if` only: the
+same `3.8:50` join failure as probe e2, with the consuming context a call
+argument rather than a `@drop` (the compiler reports E0443). The refusal lies
+on a path the program does not take, so the machine runs the executed one and
+the case carries its `ok` outcome. -/
+example : checkProgram enumPayloadMovedIntoCall = false := by rfl
+
+/-- Two `match`es on the same non-`Copy` binding, each moving it: the second is
+the use of a moved-out place (`3.8:5`; the compiler reports E0205), and this
+refusal the machine *does* reach. -/
+example : checkProgram (enumProg tI64 enumMatchedTwiceMoving) = false := by rfl
+example : run Float.exactOps (enumProg tI64 enumMatchedTwiceMoving) demoFuel
+    = .stuck .useAfterMove := by rfl
 
 /-- (Match) §5.5's join with the enum consumed on one path only: `class(E)` is
 the payload join over every variant, so the `Owned` side is residual and the
