@@ -8,16 +8,17 @@ scoped for the mechanization spike:
 
 * Types: `int(w, s)` at every width `w ∈ {8, 16, 32, 64}` and both
   signednesses, `float(w)` at both widths (§2's `𝔽_w`, mechanized in
-  `Float.lean`), `bool`, `unit`, and the monomorphic struct and **enum** types
-  a declaration of the program's declaration environment names. Arrays (and
-  with them indexing and the element-wise `3.8:73` forms) are out of the
-  fragment and tracked in the project outline.
-* Places: §5's `Path ::= x | Path.f` — a root binding and a chain of field
-  projections (`Place`). Array index steps `Path[c]` are not in the fragment
-  (RUE-2235), so a place's every step is a field. An enum's payload is **not**
-  a path: §5.6 says outright that payload paths are not statically tracked, and
-  the only way into a payload is a `match` arm's binding, so `Place` gains no
-  enum step and `Ty.fieldAt` is `none` at an enum type.
+  `Float.lean`), `bool`, `unit`, the monomorphic struct and **enum** types
+  a declaration of the program's declaration environment names, and `[T; n]` —
+  the fixed-length array of §2, whose class is §3's lift of `class(T)`.
+* Places: §5's `Path ::= x | Path.f | Path[c]` — a root binding, a chain of
+  field projections, and **constant** array index steps (`Place`). §5's `Path`
+  tracks an index only when it is a compile-time constant, which is the whole
+  of §9's item 4; a *dynamic* index is not a path at all and reaches its
+  element through `Expr.indexRead`/`Expr.indexWrite` instead. An enum's payload
+  is **not** a path: §5.6 says outright that payload paths are not statically
+  tracked, and the only way into a payload is a `match` arm's binding, so
+  `Place` gains no enum step and `Ty.fieldAt` is `none` at an enum type.
 * Expressions: literals carrying their resolved type (`4.1:2`), place use
   (§4.2), the whole §2 `⊕`/`⋚` integer operator set and the `⊖` unary set
   (§5.8 with the §6.4 trap dynamics), `@intCast` (`4.13:24`–`4.13:28`),
@@ -25,7 +26,10 @@ scoped for the mechanization spike:
   the float intrinsics (§5.8's (Float-Arith), (Float-Neg), (Float-Ord),
   (Total-Cmp), (Int-To-Float), (Float-To-Int), (Float-Cast), (Float-Round),
   with the §6.4 dynamics), struct literals
-  (§5.8's (Struct-Intro)) and the projection that eliminates one,
+  (§5.8's (Struct-Intro)) and the projection that eliminates one, the array
+  literal of §5.8's (Array-Intro) with the surface repeat form, the
+  dynamic-index read and write whose bounds check is §6.5's
+  (D-Index)/(D-Index-Trap),
   `@drop` (§5.3), `let` (§5.6 scope exit), assignment at a place with
   reinitialization (§5.2), sequencing with the discard check (§5.3), `if` with
   the branch join (§5.5), enum construction and the `match` that eliminates it
@@ -44,9 +48,16 @@ the next milestones, not this slice's scope.
 ## Which projections this fragment may move
 
 §4.2 gives a projection in value context three plans, and the fragment
-mechanizes one of them. `Ordinary` — the partial move of `3.8:22` — is
-(Use-Copy)/(Use-Move) here. `Untrackable` needs an array index and so has no
-instance without arrays (RUE-2235). `Declared(d, π)`, the declared-linear
+mechanizes two of them. `Ordinary` — the partial move of `3.8:22` — is
+(Use-Copy)/(Use-Move) here. `Untrackable(OrdinaryDynamic)` is the dynamic
+index, whose one successful rule is
+(Use-Untrackable-Dynamic-Copy) §5.1: `Expr.indexRead` and
+`Expr.indexWrite` carry its `class(T) = Copy` premise, and §4.2's "there is no
+successful static rule … when `class(T) ∈ {Affine,Linear}`" is that premise's
+absence rather than a rule of its own (E0904).
+`Untrackable(DeclaredLinearDynamic)` is ill-formed by §4.2 and is refused here
+as part of the fragment's own `noLinearPrefix` restriction.
+`Declared(d, π)`, the declared-linear
 destructure of `3.8:33`, needs `(Use-Declared-Linear-Destructure)` §5.1 and
 its residue traversal, which is RUE-2236; until then a place whose path has a
 **proper prefix** of declared-`linear` struct type is rejected here
@@ -54,6 +65,43 @@ its residue traversal, which is RUE-2236; until then a place whose path has a
 rule of the calculus. A use of such a place *whole* is ordinary (the plan looks
 for a proper prefix), so a declared-linear struct is still moved, dropped and
 reinitialized by the rules below.
+
+## Arrays: this slice holds the array whole (RUE-2322, part 1)
+
+`[T; n]` is a value, a literal, a constant-index path step, and a
+dynamic-index read or write. What it is **not**, in this part, is a place a
+move or an `@drop` may take an element out of: `3.8:68`'s constant-index
+element move, the `MovedOut` element state it leaves, and `3.8:73`'s
+path-specific element drop are part 2 (RUE-2327). `Place.noIdx` is that
+restriction — a premise of (Use-Move) §5.1 and of (@Drop) §5.3 here and of
+neither in the calculus. It stands in for `3.8:68`'s own premise ("any index
+step in `p` is a constant `[c]` applied directly to the root binding"), which
+it implies, and the compiler accepts what it refuses: probe `a7`,
+`let s: S1 = a[1];`, compiles and drops the elements `2, 20, 1, 3`. A `Copy`
+read at a constant index, a write at one, and a `@drop` or a move of the
+**whole** array are all in, so the class §3 gives `[T; n]` is exercised at
+every value it takes.
+
+An array's ownership state is still a `Path ⇀ {Owned, MovedOut}` tree, and a
+constant-index **write** does reach an element path (`a[0] = …` records
+`OwnSt.fields [Owned]` at the array's node), so every §5 predicate that
+recurses into a node's children — §5.6's `residual-linear`, §5.5's join and
+`ownedJoinOk`, and `Soundness.lean`'s `ContentsMatches` — carries an array
+clause that reads the element type `n` times (`List.replicate n T`). None of
+them can see a `MovedOut` element in this part; they are written out rather
+than left to a permissive default, because a default answering "no
+obligation" would be the wrong answer the moment RUE-2327 lands.
+
+## An array value carries its element type
+
+`Val.array` and `Contents.array` carry `T`, for the reason `Val.int` carries
+`(w, s)`: the machine's drop and copy decisions read a value's class, and the
+class of `[T; n]` is **not** a function of the elements present. `3.8:74`
+grants a zero-length array of a non-`Copy` element type droppability but not
+duplicability, so §3 classes `[NC; 0]` `Affine` while the value `[]` holds
+nothing at all (RUE-526). Carrying `T` is what makes `Val.mult` agree with
+`Ty.mult` there; §6.1 writes the value as `[v1, …, vn]` because its `class` is
+never read in the same breath.
 
 ## An integer value carries its type
 
@@ -233,7 +281,10 @@ theorem wrapInt_inBounds (w : IntWidth) (s : Sign) (n : Int) : InBounds w s (wra
 /-- Types (§2, fragment). `int w s` is §2's `int(w, s)`; `struct s` names the
 declaration at index `s` of the program's struct environment and `enum e` the
 declaration at index `e` of its enum environment, which elaboration resolves
-the surface names to. -/
+the surface names to; `array T n` is §2's `[T; n]`, the
+fixed-length array of `n ≥ 0` elements of one type (`3.5:1`, `7.1:14` — the
+length is a compile-time constant, which elaboration has already folded, so
+the core sees a `Nat`). -/
 inductive Ty where
   | int (w : IntWidth) (s : Sign)
   | float (w : FloatWidth)
@@ -241,12 +292,13 @@ inductive Ty where
   | unit
   | struct (s : Nat)
   | enum (e : Nat)
+  | array (elem : Ty) (n : Nat)
 deriving DecidableEq, Repr
 
 /-- Whether a type is an integer type (§2's `int(w, s)`) (helper). -/
 def Ty.isInt : Ty → Bool
   | .int _ _ => true
-  | .float _ | .bool | .unit | .struct _ | .enum _ => false
+  | .float _ | .bool | .unit | .struct _ | .enum _ | .array _ _ => false
 
 /-- Whether a type is one `@dbg` renders, which §5.8's (Dbg) restricts to
 `int(w,s)`, `float(w)` and `bool` — the compiler's own restriction (E0702).
@@ -254,7 +306,7 @@ The `float(w)` case is `3.12:39`, and the text it produces is `3.12:40`–
 `3.12:42` (`FloatDatum.render`, `Float.lean`) (helper). -/
 def Ty.observable : Ty → Bool
   | .int _ _ | .float _ | .bool => true
-  | .unit | .struct _ | .enum _ => false
+  | .unit | .struct _ | .enum _ | .array _ _ => false
 
 /-- A monomorphic struct declaration: §2's `S { f1: T1, …, fk: Tk }` with its
 declared attribute (§3), whether it declares a destructor (`3.9`), and the
@@ -336,11 +388,25 @@ def Decls.enumClassOf (D : Decls) (e : Nat) : Mult :=
 both float types `Copy` and `3.8:2` lists them, so the core takes it
 directly); a struct type has the class its declaration records, and so does an
 enum type — whose record is the payload join over every variant (`6.3:19`),
-because the active variant is not a static fact. -/
+because the active variant is not a static fact.
+
+`class([T; n])` is §3's own four-line table, read as one `if`: `Copy` whenever
+`class(T)` is (which covers every `n`, the empty array included), `Affine`
+when `n = 0` and `class(T)` is not — a zero-length array of a non-`Copy`
+element type carries nothing, so `3.8:74` grants it droppability and says
+nothing about duplicability (RUE-526: an earlier table classed every `[T; 0]`
+`Copy` and over-granted contraction; the compiler agrees with the current
+reading, `let b = a; let c = a;` on an `[NC; 0]` is E0205) — and `class(T)`
+itself otherwise, which is §3's "infectiousness is just the join" with the
+element type as the only member. -/
 def Ty.mult (D : Decls) : Ty → Mult
   | .int _ _ | .float _ | .bool | .unit => .copy
   | .struct s => D.classOf s
   | .enum e => D.enumClassOf e
+  | .array T n =>
+      match Ty.mult D T with
+      | .copy => .copy
+      | m => if n = 0 then .affine else m
 
 /-- `carries_linear(T)` (§5.3): `class(T) = Linear`, which §5.3 states is the
 same predicate as "Linear lifted through the aggregates" because `class` *is*
@@ -350,40 +416,66 @@ abbrev Ty.carriesLinear (D : Decls) (T : Ty) : Prop := T.mult D = .linear
 
 /-! ## Places: §5's `Path`, and the type a path reaches -/
 
-/-- A place (§5's `Path ::= x | Path.f`, and §2's `p` production): a root
-binding named by its de Bruijn index, under a chain of field projections named
-by their declaration slot (`3.6:15` — elaboration resolves the surface field
-name to the slot). `Path[c]`, the array-element step, is not in the fragment
-(RUE-2235), so `3.8:68`'s root-index restriction has no instance here. -/
+/-- A place (§5's `Path ::= x | Path.f | Path[c]`, and §2's `p` production): a
+root binding named by its de Bruijn index, under a chain of field projections
+named by their declaration slot (`3.6:15` — elaboration resolves the surface
+field name to the slot) and **constant** array index steps. §5's `Path` tracks
+an index only when it is a compile-time constant (§9's item 4: "what keeps the
+ownership analysis decidable without dependent types"), so `Place.idx` carries
+a `Nat` rather than an expression, and a dynamic index is not a path
+(`Expr.indexRead`/`Expr.indexWrite`). -/
 inductive Place where
   | var (i : Nat)
   | proj (p : Place) (f : Nat)
+  | idx (p : Place) (c : Nat)
 deriving DecidableEq, Repr
 
 /-- The binding a place is rooted at (§5's `root(p)`) (helper). -/
 def Place.root : Place → Nat
   | .var i => i
-  | .proj p _ => p.root
+  | .proj p _ | .idx p _ => p.root
 
 /-- The projection steps of a place, from the root outward — the `π` §6.3
-navigates a stored aggregate with (helper). -/
+navigates a stored aggregate with, "field indices and already-reduced array
+indices". A field slot and a constant index are one kind of step here, and
+which one a step is is decided by the type it is taken at (`Ty.fieldAt`)
+(helper). -/
 def Place.path : Place → List Nat
   | .var _ => []
   | .proj p f => p.path ++ [f]
+  | .idx p c => p.path ++ [c]
 
-/-- The type of a declaration's field at a slot, or `none` when the type is
-not a struct or the slot is not a field (helper). -/
+/-- Whether a place's path has **no** index step. This is not a premise of any
+§5 rule: it is this part's own restriction, standing in for `3.8:68`'s
+root-index premise on (Use-Move) §5.1 and (@Drop) §5.3, which it implies, and
+lifted by RUE-2327 (module docstring, "Arrays"). -/
+def Place.noIdx : Place → Bool
+  | .var _ => true
+  | .proj p _ => p.noIdx
+  | .idx _ _ => false
+
+/-- The type one **step** of a path reaches: a declaration's field at a slot,
+or an array's element at a constant index within its length (`7.1:9` — a
+constant index is bounds-checked at compile time, so an out-of-range one has
+no type and therefore no derivation, which is probe `a9`'s E0902). `none`
+where the step is not a step of the type reached so far — an enum type among
+them, since a payload is not a path. The two kinds that do step share
+one function because §5's `Path` puts them on one production, and §6.3's `π`
+is likewise "field indices and already-reduced array indices" (helper). -/
 def Ty.fieldAt (D : Decls) : Ty → Nat → Option Ty
   | .struct s, f =>
       match D.structs[s]? with
       | some sd => sd.fields[f]?
       | none => none
+  | .array T n, c => if c < n then some T else none
   | .int _ _, _ | .float _, _ | .bool, _ | .unit, _ | .enum _, _ => none
 
-/-- `Γ ⊢ p : T` for a path read off the root's declared type: follow the field
-slots, failing where a step is not a field of the type reached so far. Types
+/-- `Γ ⊢ p : T` for a path read off the root's declared type: follow the
+steps — field slots and constant indices alike (`Ty.fieldAt`) — failing where
+a step is not a step of the type reached so far. Types
 are not flow-sensitive, so this is the whole of the place's typing (§5
-preamble: `Γ` is fixed at the binder). -/
+preamble: `Γ` is fixed at the binder), and a constant index out of range fails
+*here*, which is `7.1:9`'s compile-time bounds check. -/
 def Ty.atPath (D : Decls) : Ty → List Nat → Option Ty
   | T, [] => some T
   | T, f :: π =>
@@ -395,7 +487,16 @@ def Ty.atPath (D : Decls) : Ty → List Nat → Option Ty
 destructor: (Use-Move) §5.1's and (@Drop) §5.3's `3.9:34` premise (E0456).
 Moving or dropping the whole value is fine — the empty path has no proper
 prefix — because the restriction exists so that a destructor never observes a
-hole in the value it runs on. -/
+hole in the value it runs on.
+
+An **array** step declares no destructor of its own: `3.9:14` gives `[T; n]` a
+destructor exactly when `T` has one, and `3.9:34` speaks of a type that
+*declares* one, so the array node imposes nothing and the walk continues into
+the element. Verified: probe `a7` moves an element out of an `[S1; 3]` whose
+`S1` declares a destructor and the compiler accepts it. Nothing in this part
+reaches that arm — `Place.noIdx` refuses an index step on both rules that
+consult this predicate — and it is written out so RUE-2327 inherits the right
+answer rather than a placeholder. -/
 def noDtorPrefix (D : Decls) : Ty → List Nat → Bool
   | _, [] => true
   | T, f :: π =>
@@ -408,13 +509,18 @@ def noDtorPrefix (D : Decls) : Ty → List Nat → Bool
                   | some T' => noDtorPrefix D T' π
                   | none => true)
            | none => true)
+      | .array T' _ => noDtorPrefix D T' π
       | .int _ _ | .float _ | .bool | .unit | .enum _ => true
 
 /-- No **proper prefix** of the path is a struct declared `linear`. This is not
 a premise of any §5 rule: it is the fragment's own restriction, standing in for
 the `Declared(d, π)` use plan §4.2 selects for such a path and
 (Use-Declared-Linear-Destructure) §5.1 discharges (RUE-2236, module
-docstring). -/
+docstring). An array is not a struct declared `linear`, so an array step
+imposes nothing and the walk continues into the element — but a
+declared-`linear` struct *above* an array step is still caught, which is what
+also gives §4.2's `Untrackable(DeclaredLinearDynamic)` (ill-formed there, E0904
+in the compiler) no instance at `Expr.indexRead`/`Expr.indexWrite`. -/
 def noLinearPrefix (D : Decls) : Ty → List Nat → Bool
   | _, [] => true
   | T, f :: π =>
@@ -427,6 +533,7 @@ def noLinearPrefix (D : Decls) : Ty → List Nat → Bool
                   | some T' => noLinearPrefix D T' π
                   | none => true)
            | none => true)
+      | .array T' _ => noLinearPrefix D T' π
       | .int _ _ | .float _ | .bool | .unit | .enum _ => true
 
 /-! ## Operators -/
@@ -581,7 +688,19 @@ locals it binds are de Bruijn binders of its body, bound the way `letIn` binds
 its one binder (payload component 1 outermost, component `a_j` innermost, which
 is `fnCtx`'s order for a parameter list). No wildcard, no guard, no ordering:
 §5.5 makes each of those an elaboration obligation. Lean spells the
-constructor `«match»` because `match` is one of its own keywords. -/
+constructor `«match»` because `match` is one of its own keywords.
+
+`mkArray T args` is §2's `[ e1, …, en ]`, typed by (Array-Intro) §5.8; it
+carries the element type because `n = 0` leaves no element to read one off
+(`[]` is the zero-sized `[T; 0]`, and *which* `T` is elaboration's answer, the
+same way `intLit` carries the width `4.1:2` resolved). `repeatArray T e n` is
+the surface's repeat form `[e; n]` (`7.1:36`–`7.1:39`). `indexRead p e` and
+`indexWrite p e₁ e₂` are the **dynamic**-index read `p[e]` and write
+`p[e₁] = e₂`: a constant index is a step of the place (`Place.idx`), so these
+two forms exist for the index §5's `Path` cannot track — §4.2's
+`Untrackable(OrdinaryDynamic)` plan, restricted to `class(T) = Copy` by §5.1's
+only successful rule for it and bounds-checked at run time by §6.5's
+(D-Index)/(D-Index-Trap). -/
 inductive Expr where
   | intLit (w : IntWidth) (s : Sign) (n : Int)
   | floatLit (w : FloatWidth) (l : FloatLit)
@@ -597,6 +716,10 @@ inductive Expr where
   | mkStruct (s : Nat) (args : List Expr)
   | mkEnum (e : Nat) (k : Nat) (args : List Expr)
   | «match» (scrut : Expr) (arms : List Expr)
+  | mkArray (elem : Ty) (args : List Expr)
+  | repeatArray (elem : Ty) (e : Expr) (n : Nat)
+  | indexRead (p : Place) (e : Expr)
+  | indexWrite (p : Place) (e₁ e₂ : Expr)
   | drop (p : Place)
   | letIn (m : Bool) (e₁ e₂ : Expr)
   | assign (p : Place) (e : Expr)

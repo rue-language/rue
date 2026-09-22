@@ -47,7 +47,8 @@ Design commitments carried over from §6:
   to a new owner (`3.8:26`).
 * `@drop` and overwrite-drop do **not** retire (§6.8/§6.11): the binding
   stays reinitializable.
-* Arithmetic overflow, a zero divisor, an out-of-range `@intCast` and an
+* Arithmetic overflow, a zero divisor, an out-of-range or negative array
+  index, an out-of-range `@intCast` and an
   explicit `@panic` are *panics* (`↯` in §6.12), a defined outcome permitted
   by the safety theorem, not a violation. A panic carries the trace the run
   had already produced, because §6.12's observable output survives the trap
@@ -62,7 +63,8 @@ Design commitments carried over from §6:
 
 ## Places, partial moves, and §6.11's drop order
 
-A place is a root binding and a path of field steps (`Place`, `Syntax.lean`),
+A place is a root binding and a path of field and constant-index steps
+(`Place`, `Syntax.lean`),
 and §6.3 navigates it into the stored contents: `H(ℓ)@π` is `readAt` and
 `H[ℓ@π ↦ ⊘]` is `writeAt`. (D-Use-Move) writes `⊘` at exactly the
 sub-position moved — the whole cell for a whole-place use, one field for a
@@ -77,8 +79,13 @@ fields in declaration order (`3.9:13`), recursively, skipping every `⊘`. Every
 path that drops — `@drop` (§6.11), scope exit (§6.7), the overwrite (§6.8), a
 discarded temporary (§6.7), and the frame teardown (§6.9) — routes through it,
 so a trace carries that order wherever a drop happens.
-`dropContents_struct_events` (`Soundness.lean`) states the order as a theorem,
-in closed form.
+
+An **array**'s contents is its element type and one contents per element, and
+§6.11 drops those in **ascending index order** (`3.9:15`, `3.8:73`) with no
+destructor of its own to run first — `3.9:14` gives `[T; n]` a destructor
+exactly when `T` has one. A constant index is a step of `π` like a field slot
+(`Place.idx`, `Syntax.lean`), so `readAt`/`writeAt` navigate it with the same
+two lines; what a *dynamic* index needs instead is a bounds check, below.
 
 Both linear monitors read the **residue** rather than a type. §6.7's and
 §6.9's leak monitor refuses when the contents a scope exit reaches still holds
@@ -87,6 +94,18 @@ recursion), and §6.8's overwrite monitor refuses on the same reading of the
 position being written. A carrier whose linear field has been moved out
 therefore drops its remaining residue quietly, which is the RUE-1591 model and
 what the compiler does.
+
+## The bounds trap (§6.5, §6.12)
+
+§6.5 bounds-checks an array index "at the moment the path is navigated"
+(`7.1:10`), before the element is read: in range, (D-Index) yields `vi` and
+§6.3 copies it; out of range or negative, (D-Index-Trap) abandons the
+configuration to `↯bounds`, §6.12's own category, which the implementations
+report as `index out of bounds` and which exits 101 like every other trap. It
+is a **defined** outcome, not a violation: the safety theorem permits it
+exactly as it permits an overflow. Only `Expr.indexRead`/`Expr.indexWrite`
+can reach it — a constant index is checked by `Ty.atPath` at compile time
+(`7.1:9`), so `Place.idx` never traps.
 
 ## Pending arguments: the one edge no monitor covers
 
@@ -182,6 +201,7 @@ inductive Val where
   | unit
   | struct (s : Nat) (fields : List Val)
   | enum (e : Nat) (k : Nat) (payload : List Val)
+  | array (elem : Ty) (vs : List Val)
 deriving Repr
 
 /-- The dynamic image of `class(T)` (§3) on a value: scalars are `Copy`, a
@@ -189,6 +209,7 @@ struct value has the class its declaration records. -/
 def Val.mult (D : Decls) : Val → Mult
   | .struct s _ => D.classOf s
   | .enum e _ _ => D.enumClassOf e
+  | .array T vs => Ty.mult D (.array T vs.length)
   | .int _ _ _ | .float _ _ | .bool _ | .unit => .copy
 
 /-- Cell contents (§6.1's `c ::= v | ⊘`), as a **tree**: `⊘` may sit at any
@@ -205,6 +226,7 @@ inductive Contents where
   | unit
   | struct (s : Nat) (cs : List Contents)
   | enum (e : Nat) (k : Nat) (cs : List Contents)
+  | array (elem : Ty) (cs : List Contents)
 deriving Repr
 
 mutual
@@ -217,8 +239,9 @@ def Contents.ofVal : Val → Contents
   | .unit => .unit
   | .struct s vs => .struct s (Contents.ofVals vs)
   | .enum e k vs => .enum e k (Contents.ofVals vs)
+  | .array T vs => .array T (Contents.ofVals vs)
 
-/-- `ofVal` over a field list (helper). -/
+/-- `ofVal` over a field or element list (helper). -/
 def Contents.ofVals : List Val → List Contents
   | [] => []
   | v :: vs => Contents.ofVal v :: Contents.ofVals vs
@@ -236,8 +259,9 @@ def Contents.toVal : Contents → Option Val
   | .unit => some .unit
   | .struct s cs => (Contents.toVals cs).map (Val.struct s)
   | .enum e k cs => (Contents.toVals cs).map (Val.enum e k)
+  | .array T cs => (Contents.toVals cs).map (Val.array T)
 
-/-- `toVal` over a field list (helper). -/
+/-- `toVal` over a field or element list (helper). -/
 def Contents.toVals : List Contents → Option (List Val)
   | [] => some []
   | c :: cs =>
@@ -251,13 +275,15 @@ runs a drop, so that dropping an already moved-out place is the refusal §7's
 no-use-after-move bullet forbids rather than a silent no-op (helper). -/
 def Contents.isHole : Contents → Bool
   | .hole => true
-  | .int _ _ _ | .float _ _ | .bool _ | .unit | .struct _ _ | .enum _ _ _ => false
+  | .int _ _ _ | .float _ _ | .bool _ | .unit | .struct _ _ | .enum _ _ _
+  | .array _ _ => false
 
 /-- The dynamic image of `class(T)` (§3) on cell contents: a hole has nothing
 to drop, and a struct has the class its declaration records (helper). -/
 def Contents.mult (D : Decls) : Contents → Mult
   | .struct s _ => D.classOf s
   | .enum e _ _ => D.enumClassOf e
+  | .array T cs => Ty.mult D (.array T cs.length)
   | .hole | .int _ _ _ | .float _ _ | .bool _ | .unit => .copy
 
 mutual
@@ -285,8 +311,12 @@ def Contents.residualLinear (D : Decls) : Contents → Bool
        | some sd => sd.attr = .linear || Contents.residualLinearList D cs
        | none => false)
   | .enum _ _ cs => Contents.residualLinearList D cs
+  -- An array declares no attribute of its own, so its obligation is the
+  -- disjunction over its live elements — and a zero-length one carries
+  -- nothing at all, which is `3.8:74` read on the store's side.
+  | .array _ cs => Contents.residualLinearList D cs
 
-/-- The same over a field list (helper). -/
+/-- The same over a field, payload or element list (helper). -/
 def Contents.residualLinearList (D : Decls) : List Contents → Bool
   | [] => false
   | c :: cs => Contents.residualLinear D c || Contents.residualLinearList D cs
@@ -302,6 +332,10 @@ def Contents.writeAt : Contents → List Nat → Contents → Option Contents
   | .struct s cs, f :: π, new =>
       (match cs[f]? with
        | some c => (Contents.writeAt c π new).map fun c' => .struct s (cs.set f c')
+       | none => none)
+  | .array T cs, f :: π, new =>
+      (match cs[f]? with
+       | some c => (Contents.writeAt c π new).map fun c' => .array T (cs.set f c')
        | none => none)
   | _, _ :: _, _ => none
   -- An enum node has no field step: a payload is reached by a `match` arm's
@@ -353,7 +387,9 @@ inductive Event where
 deriving Repr
 
 /-- Defined traps (§6.12's `↯κ`), the categories the fragment reaches.
-`bounds` is the arrays', which are not here; `rem-zero` and `user` are §6.12's
+`bounds` is the array index's — a negative or out-of-range one (`7.1:11`,
+`4.11:9`), reported as `index out of bounds` and, like every trap, exiting
+101; `rem-zero` and `user` are §6.12's
 own spellings, and `cast-overflow` is the one §6.12 gains with `@intCast`
 (`4.13:28`) — the implementations report it as `integer cast overflow`,
 distinct from the arithmetic overflow, so the model keeps them apart. -/
@@ -362,6 +398,7 @@ inductive PanicKind where
   | divZero
   | remZero
   | castOverflow
+  | bounds
   | user
 deriving DecidableEq, Repr
 
@@ -395,6 +432,15 @@ def Contents.readAt : Contents → List Nat → Except Violation Contents
   | c, [] => .ok c
   | .hole, _ :: _ => .error .useAfterMove
   | .struct _ cs, f :: π =>
+      (match cs[f]? with
+       | some c => Contents.readAt c π
+       | none => .error .typeConfusion)
+  -- A **constant** index step (`Place.idx`): the element is at `cs[c]`, and
+  -- `Ty.atPath` has already checked `c < n` (`7.1:9`'s compile-time bounds
+  -- check), so a `none` here is the same unreachable shape the struct arm's
+  -- is. A *dynamic* index is not a path and is bounds-checked by `eval`'s own
+  -- arm instead (§6.5's (D-Index-Trap)).
+  | .array _ cs, f :: π =>
       (match cs[f]? with
        | some c => Contents.readAt c π
        | none => .error .typeConfusion)
@@ -509,9 +555,15 @@ def dropContents (D : Decls) : Contents → Except Violation (List Event)
           | .ok evs =>
               .ok ((if sd.dtor then [Event.dtor s (.struct s cs)] else []) ++ evs)
   | .enum _ _ cs => dropContentsList D cs
+  -- §6.11's `drop(H, [v1,…,vn]) = drop*(H, [v1,…,vn])`: an array declares no
+  -- destructor of its own — `3.9:14` gives `[T; n]` one exactly when `T` has
+  -- one — so the walk is the elements' own, in **ascending index order**
+  -- (`3.9:15`, `3.8:73`), every `⊘` skipped.
+  | .array _ cs => dropContentsList D cs
 
 /-- `drop*(H, [c1,…,ck])` (§6.11): fold `drop` over the contents left to right
-— for a struct's fields, declaration order (`3.9:13`). -/
+— for a struct's fields, declaration order (`3.9:13`); for an array's
+elements, ascending index order (`3.9:15`). -/
 def dropContentsList (D : Decls) : List Contents → Except Violation (List Event)
   | [] => .ok []
   | c :: cs =>
@@ -546,9 +598,11 @@ def dropEvents (D : Decls) : Contents → List Event
        | some sd => if sd.dtor then [Event.dtor s (.struct s cs)] else []
        | none => []) ++ dropEventsList D cs
   | .enum _ _ cs => dropEventsList D cs
+  | .array _ cs => dropEventsList D cs
 
-/-- The same over a field list: the fields' events concatenated in
-declaration order (`3.9:13`), which is §6.11's `drop*`. -/
+/-- The same over a field, payload or element list: the members' events
+concatenated in declaration order (`3.9:13`) or ascending index order
+(`3.9:15`), which is §6.11's `drop*`. -/
 def dropEventsList (D : Decls) : List Contents → List Event
   | [] => []
   | c :: cs => dropEvents D c ++ dropEventsList D cs
@@ -838,7 +892,11 @@ observable output (§5.8's (Dbg), §6.12's `Outcome`); `drop` is §6.11's
 explicit `@drop`; `letIn` is (D-Let) + (D-EndScope)'s drop-retire (§6.7);
 `assign` is (D-Assign), §6.8's overwrite-drop / reinitialization; `seq` is
 (D-Seq), discarding with a temporary drop (§6.7); `mkStruct` is (D-Struct)
-§6.5 after §6.2's left-to-right search through its initializers; `mkEnum` is
+§6.5 after §6.2's left-to-right search through its initializers and `mkArray`
+is (D-Array) §6.5 after the same search; `repeatArray` is §2's elaboration of
+the surface repeat form (`7.1:39`); `indexRead` and `indexWrite` are
+(D-Index)/(D-Index-Trap) §6.5 at a dynamic index, reading by §6.3's copy rule
+and writing by §6.8's overwrite; `mkEnum` is
 (D-Enum-Intro) §6.6 after the same search, and `«match»` is (D-Match) §6.6 —
 the tag switch, the payload cells bound as (D-Let) binds one, and their
 newest-first drop at the arm's end; `ite` is (D-If-T)/(D-If-F) after the §6.2
@@ -971,6 +1029,94 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
                  | .error w => .stuck w
                  | .ok (H₃, evs) => .ok H₃ v₂ evs)
         | _ => .stuck .typeConfusion
+  | fuel + 1, P, H, φ, .mkArray T args =>
+      -- (D-Array) §6.5: an array literal is a redex once every element is a
+      -- value; §6.2's `[ v1, …, v_{i-1}, E, e_{i+1}, … ]` context reduces them
+      -- left to right, threading `H`, exactly as a struct literal's
+      -- initializers are reduced. `n ≥ 0`, and the empty literal is the
+      -- zero-sized `[T; 0]`. There is no declaration to look up and so no
+      -- arity check: the value's length **is** the literal's.
+      (match evalArgs (fun H' e => eval M fuel P H' φ e) H args with
+       | .abort r => r
+       | .ok H₁ vs tr => EvalRes.withTrace tr (.ok H₁ (.array T vs) []))
+  | fuel + 1, P, H, φ, .repeatArray T e n =>
+      -- The surface repeat form, whose dynamics is §2's elaboration of it:
+      -- `7.1:39` evaluates the operand **exactly once** and copies its result
+      -- into each of the `n` slots, which is well defined because `7.1:38`
+      -- makes the element type `Copy`.
+      (eval M fuel P H φ e).andThen fun H' v => .ok H' (.array T (List.replicate n v)) []
+  | fuel + 1, P, H, φ, .indexRead p e =>
+      -- (D-Index)/(D-Index-Trap) §6.5 at a **dynamic** index: §6.2's `v[E]`
+      -- context reduces the index first, then the place is navigated and the
+      -- index is bounds-checked "at the moment the path is navigated"
+      -- (`7.1:10`) — before the element is read. In range, §6.3's ordinary
+      -- copy rule hands the element on and leaves the array alone, which is
+      -- the whole of the `class(T) = Copy` restriction §5.1 puts on this form.
+      (eval M fuel P H φ e).andThen fun H₁ iv =>
+        match iv with
+        | .int _ _ i =>
+          (match φ.env[p.root]? with
+           | none => .stuck .unbound
+           | some ℓ =>
+             match H₁[ℓ]? with
+             | none => .stuck .unbound
+             | some .dead => .stuck .useAfterDrop
+             | some (.full c) =>
+               match c.readAt p.path with
+               | .error w => .stuck w
+               | .ok sub =>
+                 match sub with
+                 | .array _ cs =>
+                     if 0 ≤ i ∧ i < (cs.length : Int) then
+                       (match cs[i.toNat]? with
+                        | none => .stuck .typeConfusion
+                        | some ec =>
+                          match ec.toVal with
+                          | none => .stuck .useAfterMove
+                          | some v => .ok H₁ v [])
+                     else .panic .bounds []
+                 | _ => .stuck .typeConfusion)
+        | _ => .stuck .typeConfusion
+  | fuel + 1, P, H, φ, .indexWrite p e₁ e₂ =>
+      -- (D-Assign) §6.8 at a dynamic index: §6.2 reduces the place's index
+      -- subexpression first and then the right-hand side, and the bounds
+      -- check fires where the path is navigated (`7.1:10`), after both. The
+      -- overwrite-drop of what was there runs as §6.8 says — on a `Copy`
+      -- element it emits nothing and the monitor lets it through, which is
+      -- what the statics' `class(T) = Copy` premise buys — and then the whole
+      -- array is written back with that one slot replaced.
+      (eval M fuel P H φ e₁).andThen fun H₁ iv =>
+        (eval M fuel P H₁ φ e₂).andThen fun H₂ v =>
+          match iv with
+          | .int _ _ i =>
+            (match φ.env[p.root]? with
+             | none => .stuck .unbound
+             | some ℓ =>
+               match H₂[ℓ]? with
+               | none => .stuck .unbound
+               | some .dead => .stuck .useAfterDrop
+               | some (.full c) =>
+                 match c.readAt p.path with
+                 | .error w => .stuck w
+                 | .ok sub =>
+                   match sub with
+                   | .array T' cs =>
+                       if 0 ≤ i ∧ i < (cs.length : Int) then
+                         (match cs[i.toNat]? with
+                          | none => .stuck .typeConfusion
+                          | some old =>
+                            if old.residualLinear P.decls then .stuck .linearOverwrite
+                            else
+                              match dropCell P.decls ℓ old with
+                              | .error w => .stuck w
+                              | .ok evs =>
+                                match c.writeAt p.path
+                                    (.array T' (cs.set i.toNat (Contents.ofVal v))) with
+                                | none => .stuck .typeConfusion
+                                | some c' => .ok (H₂.set ℓ (.full c')) .unit evs)
+                       else .panic .bounds []
+                   | _ => .stuck .typeConfusion)
+          | _ => .stuck .typeConfusion
   | _ + 1, P, H, φ, .drop p =>
       -- §6.11's explicit `@drop(p)`: run the drop of whatever the
       -- sub-position holds — the walk skips every already-`⊘` sub-place — and
