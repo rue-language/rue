@@ -335,6 +335,25 @@ Assignment of the class:
              = Copy   when there are no payload components  -- discriminant-only ⇒ empty join ⇒ Copy (6.3:19, 3.8:2)
 ```
 
+These equations are a definition by recursion, and the recursion is
+well-founded because the prose makes it so. A struct's fields and an enum's
+payload components may name other declared types — a struct field may be an
+enum, an enum payload a struct — so read literally the struct and enum
+equations are mutually recursive, and a by-value cycle such as
+`struct S { x0: E }` / `enum E { K(S), L }` would satisfy both at more than one
+assignment. `3.0:5` forbids exactly that: a declaration that contains itself by
+value, directly or through other declarations' fields, payloads, or array
+elements, is ill-formed (E0483 — the compiler reports the cycle, `S -> E -> S`).
+The **by-value "names" relation** over declarations — `S` names `T` when a
+field of `S`, a payload component of `S`, or the element type of such a field
+or component has type `T` — is therefore well-founded on every program the
+core admits, `class` is defined by recursion on it, and each declaration's
+class is the unique solution of its equation. A mechanization may record each
+declaration's class and check the equation instead of recomputing it, as long
+as the check is stated over the whole environment at once: checking structs
+given the enums' classes and enums given the structs' is the same condition
+only because no cycle exists.
+
 `class(float(w)) = Copy` is stated by the prose: `3.12:2a` classifies both
 float types as Copy and `3.8:2` lists them, so the core takes `Copy` directly
 (the derivation from `3.12:26`, `3.9:31`, and `3.8:58` that an earlier draft
@@ -3379,7 +3398,7 @@ as owed rather than discharged.
 | §2 elaboration inventory — *recorded as deferred, not subsumed* | 4.8:23–29 (`for`), 4.8:8/9/10/13, 4.8:27 (`continue`) |
 | §2 reachability-pruning assumption (+ §7's quantification) | 10.5:4, 6.3:12 |
 | §5.8 (Panic)/(Dbg) intrinsic statics | 3.4:2, 8.1–8.3 (`@panic`); 3.12:39 (`@dbg`'s float operand) |
-| §3 multiplicity lattice (with the destructor/linear-field well-formedness condition on declarations) | 3.8:1–3, 3.8:14/16/18/20, 3.8:30/32/37, 3.8:57/58, 3.8:74, 3.9:31, 3.9:44, 6.3:19 |
+| §3 multiplicity lattice (with the destructor/linear-field well-formedness condition on declarations, and the by-value well-foundedness that makes `class` a recursive definition) | 3.0:5, 3.8:1–3, 3.8:14/16/18/20, 3.8:30/32/37, 3.8:57/58, 3.8:74, 3.9:31, 3.9:44, 6.3:19 |
 | §4.2 definition of *use* (+ §5.1 premises) | 3.8:5, 3.8:7, 3.8:9, 3.8:11, 3.8:22, 3.8:26, 3.8:33, 3.8:53, 3.8:68, 3.9:34 |
 | §5.1 declared-linear projection destructure (smallest place, residue gate, and ownership transition) | 3.8:33, 3.8:60, 3.8:74, 3.9:34 |
 | §4.1/§5.4 equality borrows its operands | 4.3:3f |
