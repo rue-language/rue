@@ -315,6 +315,30 @@ def DeclId.ty : DeclId → Ty
   | .struct s => .struct s
   | .enum e => .enum e
 
+/-- The declarations a type names **by value** (`3.0:5`): a struct or an enum
+type names its own declaration, an array names whatever its element type names
+— `3.0:5` lists "array elements" beside struct fields and enum payloads, and
+an array's storage *is* its elements' (`3.5:4`), so `struct S { x0: [S; 1] }`
+is no less recursive than `struct S { x0: S }` and the compiler reports E0483
+for both — and a scalar names none (helper). -/
+def Ty.declIds : Ty → List DeclId
+  | .struct s => [.struct s]
+  | .enum e => [.enum e]
+  | .array T _ => T.declIds
+  | .int _ _ | .float _ | .bool | .unit => []
+
+/-- Two environments that give the same class to every declaration a type
+names by value give that type the same class: `class([T; n])` is §3's lift of
+`class(T)`, so peeling the array wrappers loses nothing (helper). -/
+theorem Ty.mult_congr_declIds {D D' : Decls} :
+    ∀ T : Ty, (∀ d ∈ T.declIds, d.ty.mult D = d.ty.mult D') → T.mult D = T.mult D'
+  | .struct s, h => h (.struct s) (by simp [Ty.declIds])
+  | .enum e, h => h (.enum e) (by simp [Ty.declIds])
+  | .array T _, h => by
+      simp only [Ty.mult,
+        Ty.mult_congr_declIds T (fun d hd => h d (by simpa only [Ty.declIds] using hd))]
+  | .int _ _, _ | .float _, _ | .bool, _ | .unit, _ => rfl
+
 /-- The types a declaration contains **by value** (`3.0:5`): a struct's fields
 and an enum's payload components, over every variant. An index the environment
 does not have contains nothing. -/
@@ -326,8 +350,12 @@ def Decls.byValue (D : Decls) : DeclId → List Ty
                | some ed => ed.variants.flatten
                | none => []
 
-/-- `3.0:5`'s relation, one step: `d` contains `d'` by value. -/
-def Decls.Names (D : Decls) (d d' : DeclId) : Prop := d'.ty ∈ D.byValue d
+/-- `3.0:5`'s relation, one step: `d` contains `d'` by value. A slot reaches
+its declaration **through any depth of array nesting** (`Ty.declIds`), because
+`3.0:5` names array elements beside fields and payloads; without that, a
+struct naming itself through an array element would satisfy `WfNames` and §3's
+equation would have more than one solution at it. -/
+def Decls.Names (D : Decls) (d d' : DeclId) : Prop := ∃ T ∈ D.byValue d, d' ∈ T.declIds
 
 /-- **`3.0:5` (E0483), mechanized**: the by-value "contains" relation over the
 declarations is well-founded, so no declaration reaches itself through a cycle
@@ -499,15 +527,8 @@ theorem class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
     refine WellFounded.induction (C := fun d => d.ty.mult D = d.ty.mult D') hwf.names d ?_
     clear d
     intro d ih
-    have hmem : ∀ T ∈ D.byValue d, T.mult D = T.mult D' := by
-      intro T hT
-      cases T with
-      | struct s' => exact ih (.struct s') hT
-      | enum e' => exact ih (.enum e') hT
-      | int _ _ => rfl
-      | float _ => rfl
-      | bool => rfl
-      | unit => rfl
+    have hmem : ∀ T ∈ D.byValue d, T.mult D = T.mult D' := fun T hT =>
+      Ty.mult_congr_declIds T (fun d' hd' => ih d' ⟨T, hT, hd'⟩)
     cases d with
     | struct s =>
         show D.classOf s = D'.classOf s
@@ -566,14 +587,7 @@ theorem class_unique {D D' : Decls} (hwf : WfDecls D) (hwf' : WfDecls D')
               exact payloadFold_congr ed.variants .copy hpmem
             simp only [Decls.enumClassOf, hd, hd']
             rw [(hwf.enums e ed hd).classIsJoin, (hwf'.enums e ed' hd').classIsJoin, hjoin]
-  intro T
-  cases T with
-  | struct s => exact key (.struct s)
-  | enum e => exact key (.enum e)
-  | int _ _ => rfl
-  | float _ => rfl
-  | bool => rfl
-  | unit => rfl
+  exact fun T => Ty.mult_congr_declIds T (fun d _ => key d)
 
 /-- **§3's class assignment for the struct layer has one solution**, the
 projection of `class_unique` §3's own sentence asks for. It needs the enum
@@ -720,6 +734,13 @@ def residualLinear (D : Decls) : OwnSt → Ty → Bool
       (match D.structs[s]? with
        | some sd => sd.attr = .linear || residualLinearFields D ts sd.fields
        | none => false)
+  -- An array's node carries no obligation of its own — it has no declared
+  -- attribute and `3.8:74` makes a zero-length one vacuous — so the
+  -- obligation is the disjunction over its `n` elements, each at the element
+  -- type (`3.8:71`, §5.3's "the element type for an array of nonzero
+  -- length"). A partially-written array node is reachable in this part
+  -- (`a[0] = …`); a partially *moved* one is RUE-2327's (`Syntax.lean`).
+  | .fields ts, .array T n => residualLinearFields D ts (List.replicate n T)
   | .fields _, _ => false
 
 /-- §5.6's field disjunction: a field slot no partial move touched is `owned`,
@@ -743,6 +764,8 @@ def residualLinearBelow (D : Decls) : OwnSt → Ty → Bool
       (match D.structs[s]? with
        | some sd => residualLinearFields D t.fieldStates sd.fields
        | none => false)
+  -- The array form of the same reading (`3.8:73` is the element-wise `3.8:60`).
+  | t, .array T n => residualLinearFields D t.fieldStates (List.replicate n T)
   | _, _ => false
 
 /-- §5.2's (Assign) premise `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` (`3.8:77`),
@@ -855,6 +878,8 @@ def ownedJoinOk (D : Decls) : OwnSt → Ty → Bool
       (match D.structs[s]? with
        | some sd => ownedJoinOkList D ts sd.fields
        | none => false)
+  -- The array node, read element by element (`3.8:73`).
+  | .fields ts, .array T n => ownedJoinOkList D ts (List.replicate n T)
   | .fields _, _ => false
 
 /-- The same over a declaration's fields; a slot no partial move touched is
@@ -878,6 +903,9 @@ def OwnSt.join (D : Decls) : OwnSt → OwnSt → Ty → Option OwnSt
            (match D.structs[s]? with
             | some sd => (OwnSt.joinList D as bs sd.fields).map OwnSt.fields
             | none => none)
+       -- The array node, joined element by element (`3.8:73`, the
+       -- element-wise form of the field join above).
+       | .array T' n => (OwnSt.joinList D as bs (List.replicate n T')).map OwnSt.fields
        | _ => none)
 
 /-- The §5.5 join over a declaration's fields, slot by slot; where one arm has
@@ -954,6 +982,7 @@ theorem OwnSt.join_comm (D : Decls) : ∀ (a b : OwnSt) (T : Ty),
           cases hd : D.structs[s]? with
           | none => simp [OwnSt.join, hd]
           | some sd => simp [OwnSt.join, hd, OwnSt.joinList_comm D as bs sd.fields]
+      | array T' n => simp [OwnSt.join, OwnSt.joinList_comm D as bs (List.replicate n T')]
       | _ => simp [OwnSt.join]
 
 /-- The same over a declaration's fields, slot by slot (helper). -/
@@ -1050,7 +1079,11 @@ Rule names cite the calculus: `useCopy`/`useMove` are (Use-Copy)/(Use-Move)
 (§5.1); `binop` is (Arith) and (Ord) at once, `neg`/`notOp`/`bitnot` are
 (Neg)/(Not)/(BitNot), `intCast` is (Int-Cast) and `dbg` is (Dbg), all §5.8;
 `dropCopy`/`dropRes` are (@Drop-Copy)/(@Drop) (§5.3); `mkStruct` is
-(Struct-Intro) (§5.8) and `mkEnum` is (Enum-Intro) (§5.5); `«match»` is (Match)
+(Struct-Intro) (§5.8), `mkEnum` is (Enum-Intro) (§5.5) and `mkArray` is
+(Array-Intro) (§5.8); `repeatArray` is the surface repeat form §2 elaborates
+away (`7.1:36`–`7.1:39`); `indexRead`/`indexWrite` are the dynamic index,
+typed by (Use-Untrackable-Dynamic-Copy) §5.1 and by (Assign) §5.2; `«match»`
+is (Match)
 (§5.5), whose arms fold in §5.6's check for their payload locals and whose
 outgoing states join n-way; `letIn` folds in §5.6's residual-linear scope-exit
 check; `assign` is (Assign) with the `3.8:77` linear-overwrite premise, keyed
@@ -1095,8 +1128,10 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   removes every path under it while leaving `p`'s siblings alone.
   `fully-owned(Σ, p)` is the premise (`3.8:26`: handing an aggregate with a
   hole to a new owner is ill-formed), and `noDtorPrefix` is `3.9:34`'s
-  restriction (E0456). §4.2's third restriction, `3.8:68`'s root-index rule,
-  has no instance without arrays. -/
+  restriction (E0456). §4.2's third restriction, `3.8:68`'s root-index rule, is
+  **strengthened** here to `Place.noIdx`: this part moves no array element at
+  all, which is a restriction of the fragment and not of the calculus
+  (RUE-2327; `Syntax.lean`, "Arrays"). -/
   | useMove {Γ p en u T} :
       Γ[p.root]? = some en →
       en.st.get p.path = some u → u.fullyOwned = true →
@@ -1104,6 +1139,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       T.mult P.decls ≠ .copy →
       noDtorPrefix P.decls en.ty p.path = true →
       noLinearPrefix P.decls en.ty p.path = true →
+      p.noIdx = true →
       Typed P R Γ (.use p) T (Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
   /-- (Arith) and (Ord) §5.8, in one rule because they differ only in the
   type they conclude at (`BinOp.resultTy`): both operands share one
@@ -1258,6 +1294,83 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       TypedArms P R Γ₀ arms ed.variants T Γs →
       Ctx.joinAll P.decls Γs = some Γ' →
       Typed P R Γ (.«match» scrut arms) T Γ'
+  /-- (Array-Intro) §5.8: all `n` elements share one element type `T`
+  (`3.5:2`, `7.1:3`), are typed left to right with Σ threaded, and the array
+  owns all of them — which is why `class([T; n])` is §3's lift of `class(T)`.
+  `n` is the literal's own length (`7.1:4` — the declared size must match), and
+  `n = 0` is admitted: `[]` is the zero-sized `[T; 0]` and uses nothing. The
+  element-type list is `List.replicate n T`, so this rule is
+  (Struct-Intro)'s `TypedArgs` at a constant field list. -/
+  | mkArray {Γ Γ' T args} :
+      TypedArgs P R Γ args (List.replicate args.length T) Γ' →
+      Typed P R Γ (.mkArray T args) (.array T args.length) Γ'
+  /-- The surface repeat form `[e; n]` (`7.1:36`–`7.1:39`), whose element type
+  `7.1:38` restricts to `Copy` (E0905, probe `a2b`).
+
+  §2's elaboration inventory gives this form **no core image**: it elaborates
+  to `let t = e; [t, …, t]`, "one evaluation of the operand, then `n`
+  value-context *copies* (§4.2)", precisely because the `Copy` restriction
+  makes those copies free. The form is kept here as a rule of its own so the
+  printer can emit the surface spelling the compiler's E0905 is about and so
+  the bridge exercises it; the premise and the dynamics are exactly that
+  elaboration's, and `Ty.mult P.decls T = .copy` is `7.1:38`. That the
+  calculus and this rule agree is by construction and not by a theorem — it is
+  named as a deviation in `../03-metatheory.md`. -/
+  | repeatArray {Γ Γ' T e n} :
+      Typed P R Γ e T Γ' → T.mult P.decls = .copy →
+      Typed P R Γ (.repeatArray T e n) (.array T n) Γ'
+  /-- (Use-Untrackable-Dynamic-Copy) §5.1, at the read `p[e]` whose index is
+  not a compile-time constant: §4.2's `Untrackable(OrdinaryDynamic)` plan, and
+  the *only* successful static rule for it. `class(T) = Copy` is the rule's own
+  premise, and §4.2's "there is no successful static rule … when
+  `class(T) ∈ {Affine,Linear}`" is that premise's absence rather than a
+  rejection of its own (E0904, probe `a5`). `fully-owned(Σ, p)` is stronger
+  than §5.1's `Σ(p) = Owned` and is `3.8:70`/`7.1:45`'s own rule: "it is a
+  compile-time error … to index the array with a non-constant index" while an
+  element is moved out, "because the compiler cannot know at compile time
+  whether a runtime index denotes a moved-out element". `noLinearPrefix` keeps
+  §4.2's `Untrackable(DeclaredLinearDynamic)` — ill-formed there — without an
+  instance. The index is typed first and Σ threaded through it (§6.2's
+  `E[e]`/`v[E]` contexts reduce the base and then the index), and the read
+  copies, so the outgoing state is the index's. Whether the index is *in range*
+  is dynamic (`7.1:10`, §6.5's (D-Index-Trap)), not a typing question. -/
+  | indexRead {Γ Γ₁ p e en u T n w s} :
+      Typed P R Γ e (.int w s) Γ₁ →
+      Γ₁[p.root]? = some en →
+      en.st.get p.path = some u → u.fullyOwned = true →
+      en.ty.atPath P.decls p.path = some (.array T n) →
+      T.mult P.decls = .copy →
+      noLinearPrefix P.decls en.ty p.path = true →
+      Typed P R Γ (.indexRead p e) T Γ₁
+  /-- (Assign) §5.2 at a dynamic index, `p[e₁] = e₂` (`7.1:30`, `4.11:12`): an
+  in-place mutation that modifies the array without moving it. The root must be
+  a `μ = mut` binding (§5 preamble), the index reduces before the right-hand
+  side (§6.2: "`assign p = E` — right-hand side (`p`'s index subexpressions
+  reduce first)") and Σ is threaded in that order, and the element type must be
+  `Copy` — the same premise the read carries, for the same §4.2 reason.
+
+  Three of (Assign)'s clauses are discharged rather than restated.
+  `3.8:77`'s linear-overwrite premise is implied by `class(T) = Copy`, since a
+  `Copy` type carries no linear value. `3.8:72`/`7.1:46` — "while one or more
+  elements of an array are moved out, it is a compile-time error to assign into
+  the array" — is `fully-owned(Σ, p)` on the post-RHS state. And `3.8:55`'s
+  reinitialization is (Assign)'s own `Σ1[p ↦ Owned]`, taken at the **whole
+  array** rather than at the element: `7.1:46` says an element write "does not
+  reinstate per-element ownership", and on the `fully-owned` premise there is
+  nothing to reinstate, so writing `Owned` at `p` is the rule as §5.2 states it
+  and changes no path's state. -/
+  | indexWrite {Γ Γ₁ Γ₂ p e₁ e₂ en₀ en₁ u₀ u₁ T n w s} :
+      Γ[p.root]? = some en₀ → en₀.mu = true →
+      en₀.st.get p.path = some u₀ →
+      en₀.ty.atPath P.decls p.path = some (.array T n) →
+      T.mult P.decls = .copy →
+      noLinearPrefix P.decls en₀.ty p.path = true →
+      Typed P R Γ e₁ (.int w s) Γ₁ →
+      Typed P R Γ₁ e₂ T Γ₂ →
+      Γ₂[p.root]? = some en₁ →
+      en₁.st.get p.path = some u₁ → u₁.fullyOwned = true →
+      Typed P R Γ (.indexWrite p e₁ e₂) .unit
+        (Γ₂.set p.root (en₁.setSt (en₁.st.setAt p.path .owned)))
   /-- (@Drop-Copy) §5.3: no drop glue, no ownership effect. §5.3 gives it
   neither of (@Drop)'s projection premises — a `Copy` place is moved by
   nothing — so only `noLinearPrefix`, the fragment's own restriction, is
@@ -1283,7 +1396,10 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   included — which is what makes `@drop` the one non-move discharge of a
   linear obligation (`3.9:39`) — so no monitor refuses the state it forbids
   and `soundness` does not consume it. It is here because the calculus has it
-  and the compiler enforces it (E0406). -/
+  and the compiler enforces it (E0406). `Place.noIdx` is this part's own
+  restriction, exactly as on (Use-Move) above: §5.3 records that `@drop(a[0])`
+  at the root *is* accepted by the compiler and drops exactly that element, so
+  refusing it is RUE-2327's debt and not the calculus's rule. -/
   | dropRes {Γ p en u T} :
       Γ[p.root]? = some en →
       en.st.get p.path = some u → u.isOwned = true →
@@ -1292,6 +1408,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       noDtorPrefix P.decls en.ty p.path = true →
       noLinearPrefix P.decls en.ty p.path = true →
       (u.fullyOwned = true ∨ residualLinearBelow P.decls u T = false) →
+      p.noIdx = true →
       Typed P R Γ (.drop p) .unit (Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
   /-- (Let) + §5.6 scope exit: the binder enters `Owned`; at the body's end
   its residual state must not be an unconsumed linear value (the leak check).
@@ -1599,7 +1716,7 @@ theorem Typed.skel_preserved {P R} {Γ Γ' : Ctx} {e T} (h : Typed P R Γ e T Γ
   | boolLit => rfl
   | unitLit => rfl
   | useCopy _ _ _ _ _ _ => rfl
-  | useMove hget _ _ _ _ _ _ => exact skel_set_setSt hget _
+  | useMove hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
   | binop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
   | floatBinop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
   | neg _ ih => exact ih
@@ -1613,6 +1730,11 @@ theorem Typed.skel_preserved {P R} {Γ Γ' : Ctx} {e T} (h : Typed P R Γ e T Γ
   | panic hskel => exact hskel
   | dbg _ _ ih => exact ih
   | mkStruct _ _ ih => exact ih
+  | mkArray _ ih => exact ih
+  | repeatArray _ _ ih => exact ih
+  | indexRead _ _ _ _ _ _ _ ih => exact ih
+  | indexWrite _ _ _ _ _ _ _ _ hget₁ _ _ ih₁ ih₂ =>
+      exact (skel_set_setSt hget₁ _).trans (ih₂.trans ih₁)
   | mkEnum _ _ _ ih => exact ih
   | «match» _ _ _ _ hjoin ihs iharms =>
       obtain ⟨Γ₁, rest, rfl, hsk⟩ := Ctx.joinAll_skel hjoin
@@ -1620,7 +1742,7 @@ theorem Typed.skel_preserved {P R} {Γ Γ' : Ctx} {e T} (h : Typed P R Γ e T Γ
   | noArms => trivial
   | arm _ _ _ ihbody iharms => exact ⟨skel_drop_armCtx ihbody, iharms⟩
   | dropCopy _ _ _ _ _ _ => rfl
-  | dropRes hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
+  | dropRes hget _ _ _ _ _ _ _ _ => exact skel_set_setSt hget _
   | letIn _ _ _ ih₁ ih₂ =>
       have := ih₂
       simp [Ctx.skel, List.map_cons] at this
@@ -1643,7 +1765,7 @@ theorem TypedArgs.skel_preserved {P R} {Γ Γ' : Ctx} {es Ts} (h : TypedArgs P R
   | boolLit => rfl
   | unitLit => rfl
   | useCopy _ _ _ _ _ _ => rfl
-  | useMove hget _ _ _ _ _ _ => exact skel_set_setSt hget _
+  | useMove hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
   | binop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
   | floatBinop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
   | neg _ ih => exact ih
@@ -1657,6 +1779,11 @@ theorem TypedArgs.skel_preserved {P R} {Γ Γ' : Ctx} {es Ts} (h : TypedArgs P R
   | panic hskel => exact hskel
   | dbg _ _ ih => exact ih
   | mkStruct _ _ ih => exact ih
+  | mkArray _ ih => exact ih
+  | repeatArray _ _ ih => exact ih
+  | indexRead _ _ _ _ _ _ _ ih => exact ih
+  | indexWrite _ _ _ _ _ _ _ _ hget₁ _ _ ih₁ ih₂ =>
+      exact (skel_set_setSt hget₁ _).trans (ih₂.trans ih₁)
   | mkEnum _ _ _ ih => exact ih
   | «match» _ _ _ _ hjoin ihs iharms =>
       obtain ⟨Γ₁, rest, rfl, hsk⟩ := Ctx.joinAll_skel hjoin
@@ -1664,7 +1791,7 @@ theorem TypedArgs.skel_preserved {P R} {Γ Γ' : Ctx} {es Ts} (h : TypedArgs P R
   | noArms => trivial
   | arm _ _ _ ihbody iharms => exact ⟨skel_drop_armCtx ihbody, iharms⟩
   | dropCopy _ _ _ _ _ _ => rfl
-  | dropRes hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
+  | dropRes hget _ _ _ _ _ _ _ _ => exact skel_set_setSt hget _
   | letIn _ _ _ ih₁ ih₂ =>
       have := ih₂
       simp [Ctx.skel, List.map_cons] at this
@@ -1691,7 +1818,7 @@ theorem TypedArms.arm_skel {P R} {Γ₀ : Ctx} {arms Tss T} {Γs : List Ctx}
   | boolLit => rfl
   | unitLit => rfl
   | useCopy _ _ _ _ _ _ => rfl
-  | useMove hget _ _ _ _ _ _ => exact skel_set_setSt hget _
+  | useMove hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
   | binop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
   | floatBinop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
   | neg _ ih => exact ih
@@ -1705,6 +1832,11 @@ theorem TypedArms.arm_skel {P R} {Γ₀ : Ctx} {arms Tss T} {Γs : List Ctx}
   | panic hskel => exact hskel
   | dbg _ _ ih => exact ih
   | mkStruct _ _ ih => exact ih
+  | mkArray _ ih => exact ih
+  | repeatArray _ _ ih => exact ih
+  | indexRead _ _ _ _ _ _ _ ih => exact ih
+  | indexWrite _ _ _ _ _ _ _ _ hget₁ _ _ ih₁ ih₂ =>
+      exact (skel_set_setSt hget₁ _).trans (ih₂.trans ih₁)
   | mkEnum _ _ _ ih => exact ih
   | «match» _ _ _ _ hjoin ihs iharms =>
       obtain ⟨Γ₁, rest, rfl, hsk⟩ := Ctx.joinAll_skel hjoin
@@ -1712,7 +1844,7 @@ theorem TypedArms.arm_skel {P R} {Γ₀ : Ctx} {arms Tss T} {Γs : List Ctx}
   | noArms => trivial
   | arm _ _ _ ihbody iharms => exact ⟨skel_drop_armCtx ihbody, iharms⟩
   | dropCopy _ _ _ _ _ _ => rfl
-  | dropRes hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
+  | dropRes hget _ _ _ _ _ _ _ _ => exact skel_set_setSt hget _
   | letIn _ _ _ ih₁ ih₂ =>
       have := ih₂
       simp [Ctx.skel, List.map_cons] at this
