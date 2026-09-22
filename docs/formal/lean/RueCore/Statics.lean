@@ -1179,10 +1179,10 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   removes every path under it while leaving `p`'s siblings alone.
   `fully-owned(Σ, p)` is the premise (`3.8:26`: handing an aggregate with a
   hole to a new owner is ill-formed), and `noDtorPrefix` is `3.9:34`'s
-  restriction (E0456). §4.2's third restriction, `3.8:68`'s root-index rule, is
-  **strengthened** here to `Place.noIdx`: this part moves no array element at
-  all, which is a restriction of the fragment and not of the calculus
-  (RUE-2327; `Syntax.lean`, "Arrays"). `declaredPrefix … = none` is §5.1's
+  restriction (E0456). `rootIdxOnly` is §4.2's third restriction, `3.8:68`'s
+  "element moves only at the root" (E0904): the move may take one element out
+  of the **root binding**'s array, and out of no array reached through a
+  further step (`Syntax.lean`). `declaredPrefix … = none` is §5.1's
   `Ordinary` plan premise, exactly as the `Copy` rule above carries it. -/
   | useMove {Γ p en u T} :
       Γ[p.root]? = some en →
@@ -1191,7 +1191,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       T.mult P.decls ≠ .copy →
       noDtorPrefix P.decls en.ty p.path = true →
       declaredPrefix P.decls en.ty p.path = none →
-      p.noIdx = true →
+      rootIdxOnly P.decls en.ty p.path = true →
       Typed P R Γ (.use p) T (Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
   /-- **(Use-Declared-Linear-Destructure) §5.1**, the declared-linear
   destructure of `3.8:33`: a use of a place whose path has a proper prefix of
@@ -1212,12 +1212,16 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   enclosing value, including `d`" (`3.9:34`, E0456). And `T` is the leaf's
   type, bound by the rule's `Γ ⊢ p : T`.
 
-  `Place.noIdx` is the array part's own restriction, carried here for the
-  reason (Use-Move) carries it: a destructure moves the leaf out, and this part
-  moves nothing out of an array element (RUE-2327; `Syntax.lean`, "Arrays").
-  So a plan whose **selected path** passes through an index step — `x.arr[0]`
-  on a declared-`linear` `x`, probe d9b — is refused here although the calculus
-  accepts it. A retained *array* in the residue needs nothing of the sort
+  `rootIdxOnly` is deliberately **not** a premise here, where (Use-Move)
+  carries it. §4.2's `dl` is explicit that "the selected path may pass through
+  nested structs and constant-index arrays", `3.8:71` says that consuming the
+  linear sub-places of an array reached through a field projection discharges
+  the array field's obligation, and the compiler accepts every shape that
+  admits: `x.arr[0]` on a declared-`linear` `x` (probe b3), `h.arr[0].x0`
+  whose *consumed* place is an element of an array reached through a field
+  (probe d1b), and `a[0][0].x0` whose consumed place sits at a nested index
+  (probe d2b) — although the same `a[0][0]` moved **ordinarily** is E0904
+  (probe e1). A retained *array* in the residue needs nothing of the sort
   (probe d9).
 
   The Σ effect is §5.1's move effect, taken at `d`: `Σ[ d ↦ MovedOut, and
@@ -1235,7 +1239,6 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       linearResidue P.decls Td πs = false →
       en.ty.atPath P.decls p.path = some T →
       noDtorPrefix P.decls en.ty p.path = true →
-      p.noIdx = true →
       Typed P R Γ (.use p) T (Γ.set p.root (en.setSt (en.st.setAt πd .movedOut)))
   /-- (Arith) and (Ord) §5.8, in one rule because they differ only in the
   type they conclude at (`BinOp.resultTy`): both operands share one
@@ -1527,10 +1530,10 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   included — which is what makes `@drop` the one non-move discharge of a
   linear obligation (`3.9:39`) — so no monitor refuses the state it forbids
   and `soundness` does not consume it. It is here because the calculus has it
-  and the compiler enforces it (E0406). `Place.noIdx` is this part's own
-  restriction, exactly as on (Use-Move) above: §5.3 records that `@drop(a[0])`
-  at the root *is* accepted by the compiler and drops exactly that element, so
-  refusing it is RUE-2327's debt and not the calculus's rule. -/
+  and the compiler enforces it (E0406). `rootIdxOnly` is §4.2's root-index
+  restriction, exactly as on (Use-Move) above: `@drop(a[0])` at the root drops
+  exactly that element (probe a8) while `@drop(h.a[0])` through a field is
+  E0904 (probe b18). -/
   | dropRes {Γ p en u T} :
       Γ[p.root]? = some en →
       en.st.get p.path = some u → u.isOwned = true →
@@ -1539,7 +1542,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       noDtorPrefix P.decls en.ty p.path = true →
       declaredPrefix P.decls en.ty p.path = none →
       (u.fullyOwned = true ∨ residualLinearBelow P.decls u T = false) →
-      p.noIdx = true →
+      rootIdxOnly P.decls en.ty p.path = true →
       Typed P R Γ (.drop p) .unit (Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
   /-- **(@Drop) §5.3 at a declared-linear plan**, the `@drop` half of the
   destructure. §5.3 states it in prose rather than as a fourth rule: the two
@@ -1564,9 +1567,10 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
 
   What the dynamics adds over a use is only the leaf: §6.3's `destructure`
   runs the residue's drops, and then §6.11 drops the selected leaf itself
-  (probe d6c fixes the order — residue first, leaf second). `Place.noIdx` is
-  carried for the reason (@Drop) above carries it, and refuses a selected path
-  through an index step (RUE-2327). -/
+  (probe d6c fixes the order — residue first, leaf second). `rootIdxOnly` is
+  **not** carried, for the reason `useDeclared` above does not carry it;
+  `@drop(a[0].x0)` on an `[T0; 2]` compiles and consumes the element (probe
+  d3). -/
   | dropDeclared {Γ p en u πd πs Td T} :
       Γ[p.root]? = some en →
       declaredPrefix P.decls en.ty p.path = some (πd, πs) →
@@ -1575,7 +1579,6 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       linearResidue P.decls Td πs = false →
       en.ty.atPath P.decls p.path = some T →
       noDtorPrefix P.decls en.ty p.path = true →
-      p.noIdx = true →
       Typed P R Γ (.drop p) .unit (Γ.set p.root (en.setSt (en.st.setAt πd .movedOut)))
   /-- (Let) + §5.6 scope exit: the binder enters `Owned`; at the body's end
   its residual state must not be an unconsumed linear value (the leak check).
@@ -1884,7 +1887,7 @@ theorem Typed.skel_preserved {P R} {Γ Γ' : Ctx} {e T} (h : Typed P R Γ e T Γ
   | unitLit => rfl
   | useCopy _ _ _ _ _ _ => rfl
   | useMove hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
-  | useDeclared hget _ _ _ _ _ _ _ _ => exact skel_set_setSt hget _
+  | useDeclared hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
   | binop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
   | floatBinop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
   | neg _ ih => exact ih
@@ -1911,7 +1914,7 @@ theorem Typed.skel_preserved {P R} {Γ Γ' : Ctx} {e T} (h : Typed P R Γ e T Γ
   | arm _ _ _ ihbody iharms => exact ⟨skel_drop_armCtx ihbody, iharms⟩
   | dropCopy _ _ _ _ _ _ => rfl
   | dropRes hget _ _ _ _ _ _ _ _ => exact skel_set_setSt hget _
-  | dropDeclared hget _ _ _ _ _ _ _ _ => exact skel_set_setSt hget _
+  | dropDeclared hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
   | letIn _ _ _ ih₁ ih₂ =>
       have := ih₂
       simp [Ctx.skel, List.map_cons] at this
@@ -1935,7 +1938,7 @@ theorem TypedArgs.skel_preserved {P R} {Γ Γ' : Ctx} {es Ts} (h : TypedArgs P R
   | unitLit => rfl
   | useCopy _ _ _ _ _ _ => rfl
   | useMove hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
-  | useDeclared hget _ _ _ _ _ _ _ _ => exact skel_set_setSt hget _
+  | useDeclared hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
   | binop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
   | floatBinop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
   | neg _ ih => exact ih
@@ -1962,7 +1965,7 @@ theorem TypedArgs.skel_preserved {P R} {Γ Γ' : Ctx} {es Ts} (h : TypedArgs P R
   | arm _ _ _ ihbody iharms => exact ⟨skel_drop_armCtx ihbody, iharms⟩
   | dropCopy _ _ _ _ _ _ => rfl
   | dropRes hget _ _ _ _ _ _ _ _ => exact skel_set_setSt hget _
-  | dropDeclared hget _ _ _ _ _ _ _ _ => exact skel_set_setSt hget _
+  | dropDeclared hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
   | letIn _ _ _ ih₁ ih₂ =>
       have := ih₂
       simp [Ctx.skel, List.map_cons] at this
@@ -1990,7 +1993,7 @@ theorem TypedArms.arm_skel {P R} {Γ₀ : Ctx} {arms Tss T} {Γs : List Ctx}
   | unitLit => rfl
   | useCopy _ _ _ _ _ _ => rfl
   | useMove hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
-  | useDeclared hget _ _ _ _ _ _ _ _ => exact skel_set_setSt hget _
+  | useDeclared hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
   | binop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
   | floatBinop _ _ _ ih₁ ih₂ => exact ih₂.trans ih₁
   | neg _ ih => exact ih
@@ -2017,7 +2020,7 @@ theorem TypedArms.arm_skel {P R} {Γ₀ : Ctx} {arms Tss T} {Γs : List Ctx}
   | arm _ _ _ ihbody iharms => exact ⟨skel_drop_armCtx ihbody, iharms⟩
   | dropCopy _ _ _ _ _ _ => rfl
   | dropRes hget _ _ _ _ _ _ _ _ => exact skel_set_setSt hget _
-  | dropDeclared hget _ _ _ _ _ _ _ _ => exact skel_set_setSt hget _
+  | dropDeclared hget _ _ _ _ _ _ _ => exact skel_set_setSt hget _
   | letIn _ _ _ ih₁ ih₂ =>
       have := ih₂
       simp [Ctx.skel, List.map_cons] at this

@@ -151,7 +151,7 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
             (match en.st.get πd, en.ty.atPath P.decls πd, en.ty.atPath P.decls p.path with
              | some u, some Td, some T =>
                  if u.fullyOwned ∧ linearResidue P.decls Td πs = false ∧
-                     noDtorPrefix P.decls en.ty p.path ∧ p.noIdx then
+                     noDtorPrefix P.decls en.ty p.path then
                    some (T, Γ.set p.root (en.setSt (en.st.setAt πd .movedOut)))
                  else none
              | _, _, _ => none)
@@ -161,7 +161,8 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
                  if T.mult P.decls = .copy then
                    (if u.fullyOwned then some (T, Γ) else none)
                  else
-                   (if u.fullyOwned ∧ noDtorPrefix P.decls en.ty p.path ∧ p.noIdx then
+                   (if u.fullyOwned ∧ noDtorPrefix P.decls en.ty p.path ∧
+                       rootIdxOnly P.decls en.ty p.path then
                       some (T, Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
                     else none)
              | _, _ => none)
@@ -303,7 +304,7 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
             (match en.st.get πd, en.ty.atPath P.decls πd, en.ty.atPath P.decls p.path with
              | some u, some Td, some _T =>
                  if u.fullyOwned ∧ linearResidue P.decls Td πs = false ∧
-                     noDtorPrefix P.decls en.ty p.path ∧ p.noIdx then
+                     noDtorPrefix P.decls en.ty p.path then
                    some (.unit, Γ.set p.root (en.setSt (en.st.setAt πd .movedOut)))
                  else none
              | _, _, _ => none)
@@ -315,7 +316,7 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
                  else
                    (if u.isOwned ∧ noDtorPrefix P.decls en.ty p.path ∧
                        (u.fullyOwned = true ∨ residualLinearBelow P.decls u T = false) ∧
-                       p.noIdx then
+                       rootIdxOnly P.decls en.ty p.path then
                       some (.unit, Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
                     else none)
              | _, _ => none)
@@ -462,8 +463,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
               split at h
               · rename_i hprem
                 cases h
-                exact .useDeclared hen hplan hgd hprem.1 htd hprem.2.1 hty hprem.2.2.1
-                  hprem.2.2.2
+                exact .useDeclared hen hplan hgd hprem.1 htd hprem.2.1 hty hprem.2.2
               · cases h
             · cases h
         | none =>
@@ -721,8 +721,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
               split at h
               · rename_i hprem
                 cases h
-                exact .dropDeclared hen hplan hgd hprem.1 htd hprem.2.1 hty hprem.2.2.1
-                  hprem.2.2.2
+                exact .dropDeclared hen hplan hgd hprem.1 htd hprem.2.1 hty hprem.2.2
               · cases h
             · cases h
         | none =>
