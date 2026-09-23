@@ -141,6 +141,9 @@ partial def exprLine (P : Program) (R : Ty) : List Ty → Expr → String
       "{ " ++ Print.place Γ pl ++
         dynTailLine P.decls (Print.placeTy P Γ pl) (idx.map (exprLine P R Γ)) πs ++ " = " ++
         exprLine P R Γ e ++ "; }"
+  | Γ, .indexDrop pl idx πs =>
+      "@drop(" ++ Print.place Γ pl ++
+        dynTailLine P.decls (Print.placeTy P Γ pl) (idx.map (exprLine P R Γ)) πs ++ ")"
   | Γ, .drop pl => "@drop(" ++ Print.place Γ pl ++ ")"
   | Γ, .letIn m e₁ e₂ =>
       let T₁ := (Print.tyOf P R Γ e₁).getD (.int .w64 .signed)
@@ -1162,6 +1165,36 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
            | none, _ => rejected rule Γ (.indexWrite pl idx πs e) Premise.pathUnderMoved []
            | _, none => rejected rule Γ (.indexWrite pl idx πs e) Premise.pathNotField []
          else rejected rule Γ (.indexWrite pl idx πs e) Premise.notMutable [])
+  | .indexDrop pl idx πs =>
+      let rule := "(@Drop-Copy) §5.3 below a dynamic index, with (Use-Untrackable-Dynamic-Copy) §5.1's premises"
+      let ri := explainIdx P R Γ idx
+      (match ri.1 with
+       | none => rejected rule Γ (.indexDrop pl idx πs) (idxPremise P R Γ idx) ri.2
+       | some (_, Γ₁) =>
+         (match Γ₁[pl.root]? with
+          | none => rejected rule Γ (.indexDrop pl idx πs) Premise.unboundIndex ri.2
+          | some en =>
+            match en.st.get pl.path, en.ty.atPath P.decls pl.path with
+            | some u, some Ta =>
+              (match Ta.atDyn P.decls πs with
+               | some T =>
+                   if idx.length = πs.length ∧ πs ≠ [] ∧ u.fullyOwned ∧
+                       T.mult P.decls = .copy ∧
+                       declaredPrefix P.decls en.ty pl.path = none ∧
+                       Ta.dynNoDeclared P.decls πs then
+                     accepted rule Γ (.indexDrop pl idx πs) .unit Γ₁ ri.2
+                   else if ¬(idx.length = πs.length ∧ πs ≠ []) then
+                     rejected rule Γ (.indexDrop pl idx πs) Premise.dynShape ri.2
+                   else if declaredPrefix P.decls en.ty pl.path ≠ none ∨
+                       !Ta.dynNoDeclared P.decls πs then
+                     rejected rule Γ (.indexDrop pl idx πs) Premise.declaredLinearPrefix ri.2
+                   else if !u.fullyOwned then
+                     rejected rule Γ (.indexDrop pl idx πs) Premise.indexPartiallyMoved ri.2
+                   else rejected rule Γ (.indexDrop pl idx πs) (Premise.elementNotCopy T) ri.2
+               | none =>
+                   rejected rule Γ (.indexDrop pl idx πs) (dynAtFailure P.decls Ta πs) ri.2)
+            | none, _ => rejected rule Γ (.indexDrop pl idx πs) Premise.pathUnderMoved ri.2
+            | _, none => rejected rule Γ (.indexDrop pl idx πs) Premise.pathNotField ri.2))
   | .drop pl =>
       match Γ[pl.root]? with
       | none => rejected "(@Drop-Copy)/(@Drop) §5.3" Γ (.drop pl) Premise.unboundIndex []
@@ -1580,6 +1613,10 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
         first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
   | .indexWrite pl idx πs e, Γ => by
       simp only [explain, check, explain_result e, explainIdx_result idx]
+      (repeat' split) <;>
+        first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
+  | .indexDrop pl idx πs, Γ => by
+      simp only [explain, check, explainIdx_result idx]
       (repeat' split) <;>
         first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
   | .drop pl, Γ => by
@@ -2226,6 +2263,16 @@ def traceEval (M : FloatOps) (P : Program) :
              | some v =>
                  traced ta.steps d Θ R (.indexRead pl idx πs) rule H H₁ []
                    (.value v) (.ok H₁ v tr))
+  | fuel + 1, d, Θ, R, H, φ, .indexDrop pl idx πs =>
+      -- The read's rows, then the drop's own: a `Copy` leaf owes no glue, so
+      -- the read's navigation and bounds trap are all the form does.
+      let rule := "@drop §6.11 at a Copy place below a dynamic index"
+      let t := traceEval M P fuel (d + 1) Θ R H φ (.indexRead pl idx πs)
+      (match t.res with
+       | .ok H₁ _ tr =>
+           traced t.steps d Θ R (.indexDrop pl idx πs) rule H H₁ [] (.value .unit)
+             (.ok H₁ .unit tr)
+       | r => propagate t.steps d Θ R (.indexDrop pl idx πs) rule H r)
   | fuel + 1, d, Θ, R, H, φ, .indexWrite pl idx πs e =>
       -- `5.2:14`'s order: the right-hand side's rows come first, then the
       -- indices', then this node's own row.
@@ -2508,6 +2555,10 @@ theorem traceEval_res (M : FloatOps) {P : Program} : ∀ (fuel : Nat) (d : Nat) 
           (repeat' split) <;>
             first | rfl | (simp_all [traced, didNotRun, refused,
               EvalRes.withTrace] <;> grind)
+      | indexDrop pl idx πs =>
+          simp only [traceEval, eval, EvalRes.andThen, ih]
+          (repeat' split) <;>
+            first | rfl | (simp_all [traced, EvalRes.withTrace] <;> grind)
       | indexWrite pl idx πs e₁ =>
           simp only [traceEval, eval, EvalRes.andThen, ih,
             traceArgs_res (ev := fun H' e' => eval M fuel P H' φ e') (fun H' e' => ih _ _ _ _ _ e')]

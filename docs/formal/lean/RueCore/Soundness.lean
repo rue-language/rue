@@ -2997,6 +2997,15 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
                 obtain ⟨v, hv, htyv⟩ := hleaf.toVal rfl
                 simp only [hdp, hrl, hv]
                 exact ⟨htyv, hfm₁, hu₁⟩
+      | @indexDrop Γ Γ₁ p idx πs T h =>
+          -- §6.11's `@drop` at a `Copy` place below a dynamic index is the
+          -- read with its value discarded: the read's own case gives the
+          -- indices, the navigation and the bounds trap, and a `Copy` leaf
+          -- owes nothing, so the value is `()` on the read's store.
+          simp only [eval]
+          refine EvalOk.bind (ih h hfm) ?_
+          intro H' v tr _ _ hfm'
+          exact ⟨.unit, hfm', Untouched.refl⟩
       | @indexWrite Γ Γ₁ Γ₂ p idx πs e en₀ en₁ u₀ u₁ Ts Ta T hget₀ hmut hg₀ hty₀ hdyn hlen _
           h₁ hta hint hget₁ hg₁ hfo _ hnlin =>
           -- (D-Assign) §6.8 below a dynamic index, in `5.2:14`'s order: the
@@ -3461,6 +3470,11 @@ theorem eval_succ (M : FloatOps) {P : Program} : ∀ (fuel : Nat) (H : Store) (�
             exact h rfl
           have heq := evalArgs_mono (fun H' e' hne => ih H' φ e' hne) H idx hargs
           simp only [eval, heq]
+      | indexDrop pl idx πs =>
+          simp only [eval] at h ⊢
+          refine EvalRes.andThen_mono (fun hne => ih H φ _ hne) ?_ h
+          intro H₁ v tr _ _
+          rfl
       | indexWrite pl idx πs e₁ =>
           simp only [eval] at h ⊢
           refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h

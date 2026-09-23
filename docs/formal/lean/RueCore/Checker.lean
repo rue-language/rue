@@ -305,6 +305,26 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
              | none => none)
           | _, _ => none
         else none
+  | .indexDrop p idx πs =>
+      -- (@Drop-Copy) §5.3 below a dynamic index: exactly the read's check,
+      -- at type `unit` (`Typed.indexDrop`).
+      match checkIdx P R Γ idx with
+      | some (_, Γ₁) =>
+        (match Γ₁[p.root]? with
+         | none => none
+         | some en =>
+           match en.st.get p.path, en.ty.atPath P.decls p.path with
+           | some u, some Ta =>
+             (match Ta.atDyn P.decls πs with
+              | some T =>
+                  if idx.length = πs.length ∧ πs ≠ [] ∧ u.fullyOwned ∧
+                      T.mult P.decls = .copy ∧
+                      declaredPrefix P.decls en.ty p.path = none ∧
+                      Ta.dynNoDeclared P.decls πs then some (.unit, Γ₁)
+                  else none
+              | none => none)
+           | _, _ => none)
+      | none => none
   | .drop p =>
       match Γ[p.root]? with
       | none => none
@@ -742,6 +762,28 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
           · cases h
         · cases h
 
+  | .indexDrop pl idx πs, Γ, T, Γ', h => by
+      simp only [check] at h
+      split at h
+      · rename_i Ts Γ₁ hidx
+        obtain ⟨hta, hint⟩ := checkIdx_sound idx hidx
+        split at h
+        · cases h
+        · rename_i en hen
+          split at h
+          · rename_i u Ta hg hty
+            split at h
+            · rename_i T₀ hdyn
+              split at h
+              · rename_i hprem
+                obtain ⟨hlen, hne, hfo, hcopy, hplan, hnd⟩ := hprem
+                cases h
+                exact .indexDrop
+                  (.indexRead hta hint hlen hne hen hg hfo hty hdyn hcopy hplan hnd)
+              · cases h
+            · cases h
+          · cases h
+      · cases h
   | .drop pl, Γ, T, Γ', h => by
       simp only [check] at h
       split at h

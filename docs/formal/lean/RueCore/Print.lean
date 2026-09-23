@@ -327,6 +327,7 @@ def tyOf (P : Program) (R : Ty) (Γ : List Ty) : Expr → Option Ty
           | none => none)
        | none => none)
   | .indexWrite _ _ _ _ => some .unit
+  | .indexDrop _ _ _ => some .unit
   | .drop _ => some .unit
   | .letIn _ e₁ e₂ => do
       let T₁ ← tyOf P R Γ e₁
@@ -489,6 +490,10 @@ partial def expr (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) : Expr → St
       -- which is the core form's, so the printed statement keeps it.
       "{ " ++ place Γ pl ++ dynTail P R Γ lvl (placeTy P Γ pl) 0 idx πs ++ " = " ++
         expr P R Γ (lvl + 1) e ++ "; }"
+  | .indexDrop pl idx πs =>
+      -- §5.3's `@drop(p)` at a `Copy` place below a dynamic index: the read's
+      -- place, with each index the same typed block, inside the intrinsic.
+      "@drop(" ++ place Γ pl ++ dynTail P R Γ lvl (placeTy P Γ pl) 0 idx πs ++ ")"
   | .drop pl => "@drop(" ++ place Γ pl ++ ")"
   | .letIn m e₁ e₂ =>
       let T₁ := (tyOf P R Γ e₁).getD (.int .w64 .signed)

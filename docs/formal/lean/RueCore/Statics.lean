@@ -2782,6 +2782,20 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
       T.mult P.decls ≠ .linear →
       Typed P R Γ (.indexWrite p idx πs e) .unit
         (Γ₂.set p.root (en₁.setSt (en₁.st.setAt p.path .owned)))
+  /-- (@Drop-Copy) §5.3 at a `Copy` place below a dynamic index,
+  `@drop(p[e₁]π₁…[eₖ]πₖ)`. §5.3's rule has no index premise and its prose
+  admits `@drop(a[i])` on a `Copy`-element array at a dynamic index; the
+  compiler accepts the form (probe d1), runs the indices and bounds-checks them
+  (probe d3 traps), and gives it exactly the read's premises: an affine or
+  linear place there is E0904, as its read is (probe d4). The premise is
+  therefore the read's whole derivation, (Use-Untrackable-Dynamic-Copy) §5.1
+  at the same place — `Copy` leaf, `fully-owned(Σ, p)`, no declared-`linear`
+  prefix, integer indices typed left to right — and the conclusion is the
+  read's outgoing context at type `unit`: a `Copy` place is moved by nothing,
+  so there is no ownership effect to add. -/
+  | indexDrop {Γ Γ₁ p idx πs T} :
+      Typed P R Γ (.indexRead p idx πs) T Γ₁ →
+      Typed P R Γ (.indexDrop p idx πs) .unit Γ₁
   /-- (@Drop-Copy) §5.3: no drop glue, no ownership effect. §5.3 gives it
   neither of (@Drop)'s projection premises — a `Copy` place is moved by
   nothing — so only the `Ordinary` plan premise is added: §5.3 says the two
@@ -3311,6 +3325,7 @@ theorem Typed.skel_preserved {P R} {Γ Γ' : Ctx} {e T} (h : Typed P R Γ e T Γ
   | mkArray _ ih => exact ih
   | repeatArray _ _ ih => exact ih
   | indexRead _ _ _ _ _ _ _ _ _ _ _ _ ih => exact ih
+  | indexDrop _ ih => exact ih
   | indexWrite _ _ _ _ _ _ _ _ _ _ hget₁ _ _ _ _ ih₁ ih₂ =>
       exact (skel_set_setSt hget₁ _).trans (ih₂.trans ih₁)
   | mkEnum _ _ _ ih => exact ih
@@ -3362,6 +3377,7 @@ theorem TypedArgs.skel_preserved {P R} {Γ Γ' : Ctx} {es Ts} (h : TypedArgs P R
   | mkArray _ ih => exact ih
   | repeatArray _ _ ih => exact ih
   | indexRead _ _ _ _ _ _ _ _ _ _ _ _ ih => exact ih
+  | indexDrop _ ih => exact ih
   | indexWrite _ _ _ _ _ _ _ _ _ _ hget₁ _ _ _ _ ih₁ ih₂ =>
       exact (skel_set_setSt hget₁ _).trans (ih₂.trans ih₁)
   | mkEnum _ _ _ ih => exact ih
@@ -3417,6 +3433,7 @@ theorem TypedArms.arm_skel {P R} {Γ₀ : Ctx} {arms Tss T} {Γs : List Ctx}
   | mkArray _ ih => exact ih
   | repeatArray _ _ ih => exact ih
   | indexRead _ _ _ _ _ _ _ _ _ _ _ _ ih => exact ih
+  | indexDrop _ ih => exact ih
   | indexWrite _ _ _ _ _ _ _ _ _ _ hget₁ _ _ _ _ ih₁ ih₂ =>
       exact (skel_set_setSt hget₁ _).trans (ih₂.trans ih₁)
   | mkEnum _ _ _ ih => exact ih
