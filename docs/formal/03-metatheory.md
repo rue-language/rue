@@ -202,12 +202,14 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   traces agree with the compiler's on every generated case but two shapes,
   neither of them the theorem's: the self-assignment `a[c] = a[c]` (refused by
   `3.8:72` as §5.2 orders it, accepted by the compiler since RUE-228 — a
-  reading still to decide, RUE-2346; one case at seed 7, two at seed 23) and a
-  dynamic index into a zero-length array field (an internal compiler error
-  where the model traps with `bounds`, RUE-2345; five cases at seed 23). Both
-  are seeded red. The generator reaches a
-  third, RUE-2344's read below a dynamic index after its field-reached array
-  moved, at other seeds. The
+  reading still to decide, RUE-2346; one case at seed 7, two at seed 23 and a
+  third there that the compiler's E0904 masks) and a dynamic index into a
+  zero-length array field (an internal compiler error where the model traps
+  with `bounds`, RUE-2345; five cases at seed 23). Both are seeded red. Those
+  two settings reach nothing else; wider runs at other seeds reach RUE-2344's
+  read below a dynamic index after its array moved (`gen_2_1694`,
+  `--gen 1695 --seed 2`) and two compiler defects filed from them, RUE-2347
+  and RUE-2348. The
   enum slice (RUE-2320) has done so: progress at a `match` is exhaustiveness
   (`RueCore.exhaustive_arm_exists` — a well-typed tag is an index the arm list
   has), and preservation over the n-way join is the fold of the binary one

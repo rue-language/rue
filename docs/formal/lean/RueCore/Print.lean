@@ -547,7 +547,17 @@ partial def expr (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) : Expr → St
 /-- The dynamic tail `[e₁]π₁…[eₖ]πₖ` of a place below a dynamic index, read
 off the type `T` of the part already printed: each index as a typed block,
 then its constant path, a slot printing as a field or a constant index by the
-type it is taken at (`Ty.fieldAt`'s own split) (helper). -/
+type it is taken at (`Ty.fieldAt`'s own split) (helper).
+
+The in-place block does **not** keep a dynamic index dynamic by itself. Where
+`e` is a literal, or anything else the compiler can fully evaluate at compile
+time, the compiler folds the block to a constant index (`8.2:4`): an
+out-of-range one is then E0902 rather than the core's run-time bounds trap,
+and a non-`Copy` read of it is a constant-index element move rather than
+E0904. Only the generator's discipline of binding every index in a `let`
+first (`Gen.bindIdx`) keeps the printed index dynamic, and that rests on the
+compiler's current reading of `8.2:4` (RUE-2349). A hand-written seed with a
+literal dynamic index would change meaning when printed. -/
 partial def dynTail (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) :
     Option Ty → Nat → List Expr → List (List Nat) → String
   | T, k, e :: idx, π :: πs =>
