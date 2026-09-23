@@ -176,3 +176,152 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Float array literals in a block whose value is an enum, a call, or a type
+# =============================================================================
+# A block whose tail is a dotted path, a call, or a type name may evaluate to a
+# type, so it is tried at compile time before inference. A float array literal
+# bound inside it has no context there and takes the `f64` default of 3.12:8;
+# neither that attempt nor the block's ordinary run-time meaning is changed by
+# the literal's element type (RUE-2348).
+
+[[case]]
+name = "float_array_let_in_enum_valued_block"
+spec = ["4.5:3", "4.5:6", "3.12:7"]
+description = "An annotated float array bound in a block whose value is an enum variant is dropped at the block's end (RUE-2348)"
+source = """
+enum E0 { K0, K1(i16) }
+fn main() -> i32 { let e: E0 = { let a: [f64; 1] = [1.1]; E0.K0 }; 0 }
+"""
+exit_code = 0
+
+[[case]]
+name = "f32_array_in_enum_payload_valued_block"
+spec = ["4.5:3", "3.12:7"]
+description = "An f32 array literal in a block whose value is an enum payload keeps its annotated width (RUE-2348)"
+source = """
+enum Shape { Empty, Count(i16) }
+fn main() -> i32 {
+    let s: Shape = {
+        let a: [f32; 2] = [1.1, 2.2];
+        @dbg(a[1]);
+        Shape.Count(2)
+    };
+    match s { Shape.Empty => 1, Shape.Count(n) => @intCast(n) }
+}
+"""
+expected_stdout = """
+2.2
+"""
+exit_code = 2
+
+[[case]]
+name = "nested_repeat_and_discarded_float_arrays_in_enum_valued_block"
+spec = ["4.5:3", "4.5:7", "3.12:7", "3.12:8"]
+description = "A nested float array, a float repeat form, and a discarded float array literal in an enum-valued block (RUE-2348)"
+source = """
+enum Shape { Empty, Count(i16) }
+fn main() -> i32 {
+    let s: Shape = {
+        let grid: [[f64; 2]; 1] = [[1.5, 2.5]];
+        let pair: [f64; 2] = [0.25; 2];
+        [9.5];
+        @dbg(grid[0][1] + pair[1]);
+        Shape.Empty
+    };
+    match s { Shape.Empty => 0, Shape.Count(n) => @intCast(n) }
+}
+"""
+expected_stdout = """
+2.75
+"""
+exit_code = 0
+
+[[case]]
+name = "unannotated_float_array_selects_the_enum_variant"
+spec = ["4.5:3", "3.12:8"]
+description = "An unannotated float array literal in an untyped enum-valued block is f64 and its elements decide the variant at run time (RUE-2348)"
+source = """
+enum Shape { Empty, Count(i16) }
+fn main() -> i32 {
+    let s = {
+        let a = [1.5, 2.5];
+        if a[1] > 2.0 { Shape.Count(7) } else { Shape.Empty }
+    };
+    match s { Shape.Empty => 1, Shape.Count(n) => @intCast(n) }
+}
+"""
+exit_code = 7
+
+[[case]]
+name = "float_array_in_enum_valued_match_arm_and_call_tail"
+spec = ["4.5:3", "3.12:8"]
+description = "Float arrays in a match arm block and in a block ending in a call, both enum-valued (RUE-2348)"
+source = """
+enum Shape { Empty, Count(i16) }
+fn make() -> Shape { Shape.Count(3) }
+fn main() -> i32 {
+    let a: Shape = match 1 {
+        1 => { let xs = [1.1]; Shape.Empty },
+        _ => Shape.Count(2),
+    };
+    let b: Shape = { let ys: [f32; 1] = [0.5]; make() };
+    let left: i32 = match a { Shape.Empty => 10, Shape.Count(n) => @intCast(n) };
+    let right: i32 = match b { Shape.Empty => 0, Shape.Count(n) => @intCast(n) };
+    left + right
+}
+"""
+exit_code = 13
+
+[[case]]
+name = "float_array_in_type_valued_block"
+spec = ["4.5:3", "3.12:8"]
+description = "A block that binds a float array and ends in a type name still names that type (RUE-2348)"
+source = """
+fn main() -> i32 {
+    let T = {
+        let a = [1.5];
+        i32
+    };
+    let x: T = 5;
+    x
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "annotated_f32_array_decides_a_type_valued_block"
+spec = ["4.5:3", "3.12:1", "3.12:7"]
+description = "An f32 array element compares at f32 width when it chooses a block's type: 16777217.0 rounds to 16777216.0 (RUE-2348)"
+source = """
+fn main() -> i32 {
+    let T = {
+        let a: [f32; 1] = [16777217.0];
+        if a[0] == 16777216.0 { i32 } else { i64 }
+    };
+    @dbg(@size_of(T));
+    0
+}
+"""
+expected_stdout = """
+4
+"""
+exit_code = 0
+
+[[case]]
+name = "type_array_in_enum_valued_block_rejected"
+spec = ["4.14:6"]
+description = "An array of type values in an enum-valued block is rejected as a run-time type value, not an internal error (RUE-2348)"
+source = """
+enum Shape { Empty, Count(i16) }
+fn main() -> i32 {
+    let s: Shape = {
+        let kinds = [i32, i64];
+        Shape.Empty
+    };
+    0
+}
+"""
+compile_fail = true
+error_contains = "type values cannot exist at runtime"
