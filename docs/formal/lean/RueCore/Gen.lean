@@ -26,15 +26,19 @@ payload join, `3.8:18`'s `@copy` restriction, and fields and payload
 components naming only declarations drawn earlier, which is `3.0:5`'s
 acyclicity); a struct literal supplies one initializer per declared field, an
 enum literal one argument per declared payload component of the variant its
-tag names (`6.3:16`), a `match` has **exactly one arm per variant in
-declaration order** typed under that variant's payload locals, and a
-projection names a declared slot at the type it is asked for. So `Print.tyOf`
-succeeds on every generated program, and whatever the verified checker
-rejects, it rejects for an ownership reason — a use after move, a use of a
-partially moved value, a linear leak, a linear discard or overwrite, a
-disagreeing join, a move out of a destructor-bearing value, a destructure whose
-residue carries a linear value — which is what the bridge's refusal table
-covers.
+tag names (`6.3:16`), an array literal one element per unit of its length and
+a repeat form only at a `Copy` element (`7.1:38`), a `match` has **exactly one
+arm per variant in declaration order** typed under that variant's payload
+locals, a projection names a declared slot at the type it is asked for, a
+constant index is within its array's length (`7.1:9`), and a read below a
+dynamic index is at a `Copy` leaf. So `Print.tyOf` succeeds on every generated
+program, and whatever the verified checker rejects, it rejects for an
+ownership reason — a use after move, a use of a partially moved value, a
+linear leak, a linear discard or overwrite, a disagreeing join, a move out of
+a destructor-bearing value, a destructure whose residue carries a linear
+value, a write into an array with a moved-out element, a dynamic index into
+one, a dynamic index under a declared-`linear` struct — which is what the
+bridge's refusal table covers.
 
 Exhaustiveness is a property of the *draw* rather than a premise the draw
 might miss: `expr` builds the arm list by mapping over the declaration's own
@@ -62,21 +66,27 @@ and drops are unaffected by it: the defect is in the assignment path, and
 depth-2 use, `@drop` and assignment-under-a-live-value were all checked by
 hand against the compiler.
 
+A step is a field slot or a **constant index** alike (`fieldSlots`), so a
+depth-2 place may be `a[c].f`, `h.arr[c]` or `a[c][c']` as well as `h.f.g`.
+
 A path through a **declared-`linear`** struct is drawn exactly as any other
 (RUE-2339). `pathOk` does not ask which of §4.2's plans a path selects, so
 where a proper prefix of it is a struct declared `linear` the checker takes the
 `Declared(d, π_s)` plan (`declaredPrefix`, `Syntax.lean`) and
 (Use-Declared-Linear-Destructure) §5.1, or the `@drop` read the same way,
-decides the case — residue check included. That puts a destructure in 18 of
-the 200 programs at `--gen 200 --seed 7` (34 sites, 7 of them two steps deep)
-and in 67 of the 1,000 at `--gen 1000 --seed 23` (99 sites, 25). The checker
-reaches a declared-plan rule in 8 and 48 of those programs and accepts 0 and
-13 of them; the deepest refusal is the linear-residue premise, the E0474 of
-`3.8:60`, in 0 and 2, and a declared-plan premise of any kind in 2 and 10. The
-rest are refused for the reasons any generated case is — most often a linear
-value leaked at a scope exit, a `match` arm or a discarded statement, or a use
-after the move — because a declared-`linear` binder has to be consumed
-explicitly and a random program seldom does.
+decides the case — residue check included. (The one plan-dependent test the
+draw makes is `3.8:68`'s root rule for an element move, which is the ordinary
+plan's premise and not the destructure's; `pathOk` says why.) That puts a
+destructure in 19 of the 200 programs at `--gen 200 --seed 7` (33 sites, 21 of
+them two steps deep) and in 78 of the 1,000 at `--gen 1000 --seed 23` (131
+sites, 74). The checker reaches a declared-plan rule in 11 and 42 of those
+programs and accepts 2 and 16 of them; the deepest refusal is the
+linear-residue premise, the E0474 of `3.8:60`, in none of either, and a
+declared-plan premise of any kind in 4 and 6. The rest are refused for the
+reasons any generated case is — most often a linear value leaked at a scope
+exit, a `match` arm or a discarded statement, or a use after the move —
+because a declared-`linear` binder has to be consumed explicitly and a random
+program seldom does.
 
 One shape of it is a compiler-red case until RUE-2335 is decided: a `@drop` of
 a declared-`linear` place after a destructure strictly under it, which the
@@ -87,8 +97,60 @@ the shape shows up as a bridge disagreement to be attributed to RUE-2335 by
 hand: nothing in the tree counts it. None of the 1,200 cases at the two
 settings above has it, because it needs two nested declared-`linear` levels
 and a `@drop` of the outer one after a use under the inner one, all rooted at
-one binder. It is reachable all the same, at about one accepted case in
-100,000 programs; the first is `gen_1_773`, at `--gen 774 --seed 1`.
+one binder. It is reachable all the same, and rarely: the first accepted case
+with it at seed 1 is `gen_1_151382` (`--gen 151383 --seed 1`, which the
+compiler refuses with E0406), and it is the only one in the first 300,000.
+
+## Arrays (RUE-2331)
+
+`[T; n]` is drawn as a field type and as a `let` binder type (`arrayOf`), over
+the element types those draws already make, `n ≤ 3` with `0` among them. Its
+values are literals and, at a `Copy` element, the repeat form `[e; n]`. Its
+places are drawn two ways:
+
+* **constant index** steps are steps of a place like field slots, so the
+  existing use, `@drop` and assignment draws reach `a[c]` reads, element moves,
+  element `@drop`s and one-step writes `a[c] = e`, and `h.arr[c]`,
+  `a[c].f` and `a[c][c']` as depth-2 places;
+* **dynamic index** forms (`dynPlaces`) are reads at a `Copy` leaf, writes and
+  `Copy` `@drop`s, at the element and below it — `a[i].f`, `h.arr[i].f`,
+  `a[i][j]`, `a[i].f[j]` — with at most two dynamic steps, each index bound by
+  a `let` first (`bindIdx` says why) and out of bounds one draw in five.
+
+The share of programs that reach each form, of 200 at `--gen 200 --seed 7` and
+of 1,000 at `--gen 1000 --seed 23`: an array literal 85 and 467 (a zero-length
+one 16 and 99), the repeat form 24 and 126; a constant-index `Copy` read 10 and
+58, a non-`Copy` element or path-under-element move 8 and 35, a `@drop` at a
+constant index 16 and 71, a constant-index write 5 and 19; a dynamic-index read
+30 and 170, write 17 and 65, `@drop` 19 and 82 — below the element (`a[i].f`)
+in 18 and 111, through a field (`h.arr[i]`) in 33 and 187, two dynamic steps
+(`a[i][j]`) in 6 and 35. The bounds trap ends 14 and 71 runs, 10 and 40 of them
+of programs the checker accepts.
+
+The array refusals, as the deepest refusal of a rejected program at the same
+two settings: `3.8:72`'s write into an array with a moved-out element (E0480)
+1 and 4; `3.8:70`'s dynamic index into one 1 and 6; §4.2's
+`DeclaredLinearDynamic`, a dynamic index under a declared-`linear` struct
+(E0904), 3 and 50; (Assign)'s linear overwrite at a dynamic-index write 1 and 3.
+Three array refusals are **not** drawn, each because the draw is typed to
+avoid it rather than because ownership might: `3.8:68`'s element move out of a
+non-root array (E0904, `pathOk`), the repeat form at a non-`Copy` element
+(E0905, `atom`), and a read below a dynamic index at a non-`Copy` leaf (E0904,
+`dynRead`). Nor are arrays drawn as an enum payload component or as a
+program's result type, whose draws keep their weights; the seed corpus has
+the shapes those would add.
+
+Three generated shapes disagree with the compiler today, and none is drawn
+around. A place below a dynamic index read after its field-reached array (or
+an ancestor of it) was moved is RUE-2344's shape: the model refuses it and the
+compiler accepts it. `a[c] = a[c]` is refused by the model, because (Assign)
+§5.2 runs the right-hand side first and the write then goes into an array with
+a moved-out element (`3.8:72`, `7.1:46`), while the compiler accepts it on
+purpose (RUE-228 made the self-assignment reinitialise the element), so the
+two readings wait on a decision. And a dynamic index into a **zero-length
+array field**, `h.arr[i]` at `arr: [T; 0]`, is an internal compiler error in
+code generation (`place_lower.rs`, "zero-sized places must be diverted"), where
+the model traps with `bounds`.
 
 Calls and `return` are **not** generated yet: every generated case is a
 one-function program (`Program.entry`), so the shapes RUE-2233 added — a
@@ -125,13 +187,18 @@ complete.
 
 Ownership. Moves, drops, assignments, `match` arms and scope exits are chosen
 at random, so a large minority of the programs are rejected by the checker and
-refused by the machine — 76 of 200 at `--gen 200 --seed 7` and 404 of 1,000 at
+refused by the machine — 74 of 200 at `--gen 200 --seed 7` and 391 of 1,000 at
 `--gen 1000 --seed 23`, the figures the weights below are tuned against. Both
 are recorded (`Corpus.caseJson` reads them off `checkProgram` and `run` as for
 any case), never filtered: a rejected program checks that the compiler rejects
 it too, an accepted one that the three implementations agree with the
-interpreter's trace. At those two settings 98 of 200 and 465 of 1,000 programs
+interpreter's trace. At those two settings 85 of 200 and 444 of 1,000 programs
 contain a `match`.
+
+Every figure in this module is a count over the programs `generate` returns at
+the setting named, read off `checkProgram`, `Explain.deepestFailure` (a case's
+"deepest refusal") and `run`; a figure "without" a weight is the same count
+over a copy of this module with that one draw removed.
 
 ## Bias
 
@@ -149,7 +216,7 @@ the weights can be read and changed:
   `Linear` is `Linear` whatever its attribute says (§3), which is how the
   linear-through-a-field shapes arise;
 * about two declarations in seven are declared `linear`, which puts one in
-  121 of the programs at `--gen 200 --seed 7` and 568 of 1,000 at
+  116 of the programs at `--gen 200 --seed 7` and 638 of 1,000 at
   `--gen 1000 --seed 23`, and a path through one is §4.2's declared-linear
   destructure (above, "How deep a place goes");
 * a sequence's discarded statement is mostly unit-typed, where `assign`
@@ -180,23 +247,47 @@ the weights can be read and changed:
   sibling fields still drop at scope exit) and a binder next (the move that
   makes a second `match` on the same place the E0205 the compiler reports).
   That weight on its own starved the shape it is for, because the branch it
-  fired on was the rarer one: with the weight alone only 16 of 164 `match` sites
-  at `--gen 200 --seed 7` and 89 of 771 at `--gen 1000 --seed 23` have an enum
+  fired on was the rarer one: with the weight alone only 17 of 163 `match` sites
+  at `--gen 200 --seed 7` and 108 of 807 at `--gen 1000 --seed 23` have an enum
   place in scope at all. So where the scope offers no place of the drawn enum's
   type the draw **makes** one half the time — `let v = <the temporary> in
   match v`, sometimes with one statement in between — instead of matching a
   temporary, and the arms are then typed under a scope that still holds the
-  consumed binding. Measured with it: 139 of 211 sites and 588 of 909 have a
-  place in scope, 127 and 552 scrutinize one (the weight alone reaches 13 of 164
-  and 68 of 771), and the E0205 a second `match` on the same place is becomes
-  the *deepest* refusal of 20 of 200 and 113 of 1,000 cases, where the weight
-  alone reaches 3 and 8. The n-way **join** conflict stays rare at either
-  setting — 1 case in 200 at seed 7 and 1 in 1,000 at seed 23, while the
-  binary (If) join is the deepest refusal of none —
+  consumed binding. Measured with it: 108 of 172 sites and 530 of 818 have a
+  place in scope, 101 and 502 scrutinize one (the weight alone reaches 11 of 163
+  and 87 of 807), and the E0205 a second `match` on the same place is — (Use-Move)
+  §5.1's `fully-owned` premise at an enum type — becomes the *deepest* refusal
+  of 20 of 200 and 87 of 1,000 cases, where the weight alone reaches 0 and 15.
+  The n-way **join** conflict stays rare at either setting — no case in 200 at
+  seed 7 and 1 in 1,000 at seed 23, while the binary (If) join is the deepest
+  refusal of none and 2 —
   because it needs two arms to disagree about an entry that carries a
   linear value and outlives the `match`, which random arms seldom do;
 * a `let` binder is biased toward a declaration that holds an enum in
   a field, which is what puts a projection of enum type in scope at all;
+* one field type in five and one `let` binder type in five is an **array**
+  (`arrayOf`), wrapped around the type the draw would have made anyway, so the
+  other weights keep their meaning; one array in four is nested, and the length
+  is small with `0` among them (`arrayLen`). At `--gen 200 --seed 7` 121 programs
+  declare a struct with an array field and 96 contain an array literal or
+  repeat form; at `--gen 1000 --seed 23`, 644 and 501;
+* an index is a **constant** step of a place like a field slot (`fieldSlots`),
+  so the use, `@drop` and assignment draws above reach `a[c]`, `a[c].f`,
+  `h.arr[c]` and `a[c][c']` with no draw of their own, held to `3.8:68`'s root
+  rule at a non-`Copy` leaf (`pathOk`) and to one step for an assignment
+  (`assignSlots`);
+* where the scope has an array to index, an **array statement** is weighted up
+  (`arrayStmt`: form 5 of `expr`, weight 6, and at fuel 0 half of the leaves),
+  because the type-directed draws alone reach an index form only where the
+  type they want is the element's: without it, 15 of 200 and 100 of 1,000
+  programs contain an index form, with it 56 and 300. The statement is a
+  dynamic-index write, read or `Copy` `@drop` (`dynUnit`) or a constant-index
+  read, `@drop`, write or element move, and an atom at a `Copy` type is a read
+  below a dynamic index one time in three where the scope offers one
+  (`dynRead`);
+* a dynamic index is out of bounds one draw in five, and always at a
+  zero-length array (`dynIdx`), and it is bound by a `let` first so that the
+  printed program keeps it dynamic (`bindIdx`);
 * an arm's body is an ordinary drawn expression over the payload locals, so
   what the arm does with a payload is whatever the existing weights do with
   any binder: move it into an outer `mut` binding or into a fresh aggregate,
@@ -673,16 +764,17 @@ def projPlaces (D : Decls) (Γ : Scope) (T : Ty) : List Place :=
 offers a path of two field steps it is taken half the time. Depth 2 is in the
 tail without it, because a two-step path needs a nesting declaration, a binder
 of the outer type in scope, and — for a move or a `@drop` of a non-`Copy` leaf
-— both prefixes free of a destructor. Measured on the current draws, `--gen 200
---seed 7` reaches 13 depth-2 places across 10 programs with the bias and 17
-across 8 without it, and `--gen 300 --seed 23` 18 across 13 with and 23 across
-16 without. The two runs diverge at the first pick the bias changes, so each
-pair compares two different sets of programs, and at these sizes that is
-noise. At larger sizes the bias still pays: `--gen 1000 --seed 23` reaches 76
-depth-2 places across 51 programs with it and 69 across 50 without, and
-`--gen 3000 --seed 101` 265 across 165 against 214 across 152. The weight is
-left as it is. This is one of the module's
-weights; it lives here rather than at the six draw sites. -/
+— both prefixes free of a destructor. A two-step place counts an index step as
+a step (`fieldSlots`). Measured on the current draws, `--gen 200 --seed 7`
+reaches 48 depth-2 places across 29 programs with the bias and 35 across 22
+without it, and `--gen 300 --seed 23` 54 across 37 with and 65 across 49
+without. The two runs diverge at the first pick the bias changes, so each pair
+compares two different sets of programs, and at these sizes that is noise. At
+larger sizes the bias pays in places, if not in programs: `--gen 1000 --seed
+23` reaches 210 depth-2 places across 134 programs with it and 198 across 139
+without, and `--gen 3000 --seed 101` 605 across 389 against 552 across 372.
+The weight is left as it is. This is one of the module's weights; it lives
+here rather than at the draw sites that pick a place. -/
 def pickPlace (default : Place) (ps : List Place) : G Place := do
   let deep := ps.filter (fun p => 2 ≤ p.path.length)
   if !deep.isEmpty && (← chance 1 2) then pick default deep else pick default ps
@@ -848,9 +940,10 @@ a dynamic index (weight 1).
 
 The read is here because `atom`'s read has to match the type the draw
 wants, and a wanted integer type is one of eight, so without a read whose type
-is the place's own the read is rare: at `--gen 200 --seed 7` `atom` alone reads
-below a dynamic index in 3 programs. `rhs` draws the written value and `other`
-a non-literal index, each under the scope it is given. -/
+is the place's own the read is rare: without it 11 of the 200 programs at
+`--gen 200 --seed 7` and 62 of the 1,000 at `--gen 1000 --seed 23` read below a
+dynamic index, with it 30 and 170. `rhs` draws the written value and `other` a
+non-literal index, each under the scope it is given. -/
 def dynUnit (D : Decls) (Γ : Scope) (den : Nat) (rhs : Scope → Ty → G Expr)
     (other : Scope → Ty → G Expr) : G (Option Expr) := do
   let ds := dynPlaces D Γ
