@@ -1341,16 +1341,16 @@ def dynMoveBelow : Program :=
                 (letIn false (indexRead (.var 0) [use (.var 1)] [[0]])
                   (seq (drop (.var 0)) (lit 7))) }] }
 
-/-- Probe q15, refused (E0904): `@drop(a[i])`. `@drop` takes a `Place`, and a
-dynamic index is not one, so the core has no image of the form at all; the use
-it would need — the whole affine element `a[i]` in value context — is refused
-by the same missing rule as q02. -/
+/-- Probe q15, refused (E0904): `@drop(a[i])` of an affine element.
+(@Drop-Copy) §5.3 is the only `@drop` rule at a place below a dynamic index
+(`Typed.indexDrop`), and it needs a `Copy` place: for an affine or linear place
+there the calculus has no rule, as it has none for the read (q02). -/
 def dynDropElem : Program :=
   { decls := Decls.ofStructs structEnv,
     fns := [{ params := [], ret := tI64, body := call 1 [lit 0] },
             { params := [⟨tI64, false⟩], ret := tI64,
               body := letIn false (aiPair 1 2 3 4)
-                (seq (indexRead (.var 0) [use (.var 1)] [[]]) (lit 7)) }] }
+                (seq (indexDrop (.var 0) [use (.var 1)] [[]]) (lit 7)) }] }
 
 /-- Probe q05, refused (E0493): a write to a leaf whose type carries a linear
 value, `a[i].x1 = S3 { 9 }` on an `[S4; 2]`. A place under a runtime index is
@@ -1398,6 +1398,71 @@ def dynReadDeclaredLinearElem : Program :=
                   (letIn false (use (.idx (.var 1) 0))
                     (letIn false (use (.idx (.var 2) 1))
                       (seq (drop (.var 0)) (seq (drop (.var 1)) (use (.var 2))))))) }] }
+
+/-- **`@drop` of a `Copy` place below a dynamic index** (review probes d1,
+d3): `@dbg(10); @drop(a[i].x1); @drop(a[i]); a[i].x0` on an `[S6; 2]`, first
+at `i = 1` and then at `i = 5`. (@Drop-Copy) §5.3 has no index premise, so the
+form is admitted with the read's premises (`Typed.indexDrop`); it does nothing
+to the array, but its index runs and is bounds-checked (`7.1:10`). The first
+call prints `10` and returns `3`; the second prints `10` and traps at the first
+`@drop`, and §6.12 keeps the output before it. -/
+def dynDropCopyTrap : Program :=
+  { decls := Decls.ofStructs structEnv,
+    fns := [{ params := [], ret := tI64, body := seq (dbg (call 1 [lit 1])) (call 1 [lit 5]) },
+            { params := [⟨tI64, false⟩], ret := tI64,
+              body := letIn false (pairArr 1 2 3 4)
+                (seq (dbg (lit 10))
+                  (seq (indexDrop (.var 0) [use (.var 1)] [[1]])
+                    (seq (indexDrop (.var 0) [use (.var 1)] [[]])
+                      (indexRead (.var 0) [use (.var 1)] [[0]])))) }] }
+
+/-- **Red: RUE-2341 at a dynamic index** (review probe w1). `h.arr[0].x0`
+destructures the declared-linear element `h.arr[0]`, which holes the array
+`h.arr` reached through a field, and `h.arr[i].x0 = S1 { 77 }` then writes
+below a dynamic index into it at `i = 0`. `3.8:72`/`7.1:46` forbid it, and
+`fully-owned` at `h.arr` refuses it (E0480). The compiler's check fires only
+when the root binding is the array, so it accepts the program, runs
+`S1 { 1 }`'s destructor a second time and never drops the `77`. The dynamic
+twin of `arrayWriteAfterDestructureViaField`; red until RUE-2341 is fixed. -/
+def dynWriteAfterDestructureViaField : Program :=
+  { decls := Decls.ofStructs (structEnv ++ [dDeclLinA, dArrOfDeclLin]),
+    fns := [{ params := [], ret := tI64, body := call 1 [lit 0] },
+            { params := [⟨tI64, false⟩], ret := tI64,
+              body := letIn true (mkStruct 12 [mkArray (.struct 11)
+                  [mkStruct 11 [resA (lit 1)], mkStruct 11 [resA (lit 3)]]])
+                (letIn false (use (.proj (.idx (.proj (.var 0) 0) 0) 0))
+                  (seq (drop (.var 0))
+                    (seq (dbg (lit 20))
+                      (seq (indexWrite (.proj (.var 1) 0) [use (.var 2)] [[0]] (resA (lit 77)))
+                        (seq (dbg (lit 30))
+                          (letIn false (use (.proj (.idx (.proj (.var 1) 0) 1) 0))
+                            (seq (drop (.var 0)) (lit 7)))))))) }] }
+
+/-- `S11`, in this program only: `struct { x0: [S8; 2], x1: i64 }`, an array
+of affine `S8 { S1, i64 }` elements held as a struct field beside a `Copy`
+sibling, so the field `h.x0` can be moved out while `h` stays partially owned
+(helper). -/
+def dArrHolderAI : StructDecl :=
+  { attr := .none, fields := [.array (.struct sAffineInt) 2, tI64], dtor := false,
+    cls := .affine }
+
+/-- **Red: a write below a dynamic index after the array field moved**
+(review probe u8, RUE-2344). `let t = h.x0; @drop(t)` moves the array out of
+`h` and destroys it (`10`, `30`), and `h.x0[i].x0 = S1 { 99 }` then writes into
+the moved array at `i = 1`. The array place `h.x0` is `MovedOut`, so
+`fully-owned` fails and the write is refused (E0205 on `h.x0`). The compiler
+move-checks a place below a dynamic index through a field against the wrong
+path, so it accepts the program, overwrite-drops the destroyed `S1 { 30 }` a
+second time and leaks the `99`. Red until RUE-2344 is fixed. -/
+def dynWriteAfterFieldMove : Program :=
+  { decls := Decls.ofStructs (structEnv ++ [dArrHolderAI]),
+    fns := [{ params := [], ret := tI64, body := call 1 [lit 1] },
+            { params := [⟨tI64, false⟩], ret := tI64,
+              body := letIn true (mkStruct 11 [aiPair 10 1 30 3, lit 5])
+                (letIn false (use (.proj (.var 0) 0))
+                  (seq (drop (.var 0))
+                    (seq (indexWrite (.proj (.var 1) 0) [use (.var 2)] [[0]] (resA (lit 99)))
+                      (lit 7)))) }] }
 
 /-! ### The places below a dynamic index, checked and run
 
@@ -1472,10 +1537,20 @@ example : run demoOps dynWriteDeclaredLinearElem demoFuel
     = .ok [.dead, .dead, .dead, .dead] (v64 6)
         [.drop 1 (.array (.struct sLinear) [.hole, .hole])] := by rfl
 
+/-- Review probes d1/d3: `@drop` of a `Copy` place below a dynamic index is
+admitted, does nothing in range, and traps on bounds exactly as the read. -/
+example : checkProgram dynDropCopyTrap = true := by rfl
+example : run demoOps dynDropCopyTrap demoFuel
+    = .panic .bounds [.dbg (v64 10), .dbg (v64 3), .dbg (v64 10)] := by rfl
+
+/-- The two red refusals the compiler does not make (RUE-2341, RUE-2344). -/
+example : checkProgram dynWriteAfterDestructureViaField = false := by rfl
+example : checkProgram dynWriteAfterFieldMove = false := by rfl
+
 /-- **The refusals**, each the compiler's too: a non-`Copy` leaf read (probe
-q02) and the whole-element use `@drop(a[i])` would need (probe q15), both
-E0904; a linear-carrying leaf written (probe q05, E0493); a read and a write
-after an element move (probes q06, E0205; q07, E0480); and a read below a
+q02) and `@drop(a[i])` of an affine element (probe q15), both E0904; a
+linear-carrying leaf written (probe q05, E0493); a read and a write after an
+element move (probes q06, E0205; q07, E0480); and a read below a
 declared-`linear` element (probe q11, E0904). -/
 example : checkProgram dynMoveBelow = false := by rfl
 example : checkProgram dynDropElem = false := by rfl
