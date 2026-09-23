@@ -102,8 +102,9 @@ compiler's E0904 masks) and a dynamic index into a zero-length array field
 (RUE-2345; five at seed 23) — and each such case is attributed by hand, the
 way RUE-2335's shape is. Those two are the only disagreements the acceptance
 settings (200 at seed 7, 1,000 at seed 23) reach. Wider runs at other seeds
-reach more: RUE-2344's shape (`gen_2_1694`, `--gen 1695 --seed 2`) and two
-compiler defects found and filed from them, RUE-2347 (a CFG verification
+reached RUE-2344's shape too (`gen_2_1694`, `--gen 1695 --seed 2`; it agrees
+now that RUE-2344 is fixed), and two compiler defects found and filed from
+them, RUE-2347 (a CFG verification
 error on a `match` in one `if` arm) and RUE-2348 (an internal error on a float
 array bound inside an enum-valued block). Any other generated disagreement is
 a finding to file.
