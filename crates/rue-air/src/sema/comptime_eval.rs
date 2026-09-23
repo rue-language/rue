@@ -244,15 +244,21 @@ impl super::comptime::ComptimeValue for ConstValue {
             _ => None,
         }
     }
+    /// The element type an array literal takes from this value when no
+    /// expected or resolved type names one. The result is interned as an
+    /// array child, so it must be a type the pool can hold there: an untyped
+    /// float literal takes the `f64` default of ADR-0065 §3 (as an untyped
+    /// integer takes `i64`), and a type or function value, whose
+    /// `comptime_type` the pool rejects as a structural child, has no array
+    /// element type (RUE-2348).
     fn value_type(&self) -> Option<Type> {
         match self {
             ConstValue::Integer(_) => Some(self.get_type()),
             ConstValue::Bool(_) => Some(Type::BOOL),
-            ConstValue::Type(_) | ConstValue::Function(_) => Some(Type::COMPTIME_TYPE),
-            ConstValue::Float(_) => Some(Type::COMPTIME_FLOAT),
+            ConstValue::Float(_) => Some(Type::F64),
             ConstValue::Aggregate(aggregate) => Some(aggregate.ty),
             ConstValue::Unit => Some(Type::UNIT),
-            ConstValue::String(_) => None,
+            ConstValue::Type(_) | ConstValue::Function(_) | ConstValue::String(_) => None,
         }
     }
     fn aggregate_struct(ty: Type, fields: Vec<Self>) -> Option<Self> {
@@ -3786,6 +3792,34 @@ mod binding_tests {
             comptime_scalar_pattern_decision(&target, &ConstValue::Unit),
             ComptimePatternDecision::HostPath
         );
+    }
+
+    #[test]
+    fn ordinary_value_types_are_array_children_the_type_pool_holds() {
+        // `value_type` is the element type an untyped array literal is
+        // interned with, so every answer must be a legal array child: an
+        // untyped float takes the `f64` default rather than
+        // `comptime_float`, and a type or function value has no element
+        // type at all (RUE-2348).
+        let interner = lasso::ThreadedRodeo::<lasso::Spur>::new();
+        let symbol = rue_rir::SymbolHandle::from(interner.get_or_intern("1.1"));
+        let pool = crate::TypeInternPool::new();
+        let expected = [
+            (ConstValue::Integer(3), Some(Type::I64)),
+            (ConstValue::Bool(true), Some(Type::BOOL)),
+            (ConstValue::Float(symbol), Some(Type::F64)),
+            (ConstValue::Unit, Some(Type::UNIT)),
+            (ConstValue::Type(Type::I32), None),
+            (ConstValue::Function(symbol), None),
+            (ConstValue::String(symbol), None),
+        ];
+        for (value, element) in expected {
+            let found = ComptimeValue::value_type(&value);
+            assert_eq!(found, element, "{value:?}");
+            if let Some(element) = found {
+                assert!(pool.try_intern_array(element, 1).is_ok(), "{value:?}");
+            }
+        }
     }
 
     #[test]
