@@ -32,8 +32,9 @@ projection names a declared slot at the type it is asked for. So `Print.tyOf`
 succeeds on every generated program, and whatever the verified checker
 rejects, it rejects for an ownership reason — a use after move, a use of a
 partially moved value, a linear leak, a linear discard or overwrite, a
-disagreeing join, a move out of a destructor-bearing value — which is what the
-bridge's refusal table covers.
+disagreeing join, a move out of a destructor-bearing value, a destructure whose
+residue carries a linear value — which is what the bridge's refusal table
+covers.
 
 Exhaustiveness is a property of the *draw* rather than a premise the draw
 might miss: `expr` builds the arm list by mapping over the declaration's own
@@ -480,19 +481,20 @@ def leastValue (D : Decls) : Nat → Ty → Expr
 bound `3.0:5`'s acyclicity makes sufficient. -/
 def declFuel (D : Decls) : Nat := D.structs.length + D.enums.length
 
-/-- (helper) The field slots of a declaration whose type is `T` and which this
-fragment may project. A step is drawn only where §5.1 and §5.3 admit it: a
-path whose proper prefix is a struct declared `linear` is the declared-linear
-destructure of §4.2's `Declared(d, π_s)` plan (`Syntax.lean`), which the
-generator does not draw (RUE-2339), and
-`3.9:34` forbids a *move* out of a value whose type declares a destructor — a
-`Copy` read of such a field stays legal. -/
+/-- (helper) The field slots of declaration `s` at type `T` that a drawn
+**assignment** may target, one step deep (module docstring, "How deep a place
+goes"). An assignment destination is not a use, so §4.2 computes no plan for
+it and a slot of a struct declared `linear` is offered like any other
+(RUE-2339); writing a field in place leaves the declared-`linear` value whole,
+and (Assign) §5.2's own premises decide the case. What the draw still refuses
+is `3.9:34`'s case, kept from when this test also served the use draw (`pathOk`
+is its reading at a whole path): a non-`Copy` field of a declaration that
+declares a destructor. -/
 def projSlots (D : Decls) (s : Nat) (T : Ty) : List Nat :=
   match D.structs[s]? with
   | none => []
   | some sd =>
-      if sd.attr == .linear then []
-      else if sd.dtor && T.mult D != .copy then []
+      if sd.dtor && T.mult D != .copy then []
       else (List.range sd.fields.length).filter (fun f => sd.fields[f]? == some T)
 
 /-- (helper) A place from a root binder and a path of field steps, read from
@@ -526,22 +528,32 @@ def paths2 (D : Decls) (T₀ : Ty) : List (List Nat) :=
             | some T' => (fieldSlots D T').map (fun g => [f, g])
             | none => [])
 
-/-- (helper) Whether the four place rules admit a path from a binder of type
-`T₀` to a leaf of type `T`: the path types (`atPath`), no **proper prefix** is a
-struct declared `linear` — so §4.2 records the `Ordinary` plan and not the
-`Declared(d, π_s)` one (`declaredPrefix`, `Syntax.lean`) — and, where the leaf
-is not `Copy` and so the rule is (Use-Move) or (@Drop) rather than their `Copy`
-twins, no proper prefix declares a destructor (`3.9:34`). This is `projSlots`'
-test read at a whole path rather than at one step, so it stays right at depth
-2.
+/-- (helper) Whether the place rules admit a path from a binder of type `T₀` to
+a leaf of type `T`: the path types (`atPath`) and, where the leaf is not `Copy`
+and so the rule is (Use-Move) or (@Drop) rather than their `Copy` twins, no
+proper prefix declares a destructor (`3.9:34`). This is `projSlots`' test read
+at a whole path rather than at one step, so it stays right at depth 2.
 
-The generator therefore draws **no** declared-linear destructure, although the
-rule §5.1 gives one is now mechanized: `projSlots` already refuses to step into
-a declared-`linear` struct, so the shape is out of the grammar it draws from
-rather than filtered out of it. Drawing destructures is RUE-2339. -/
+**Which of §4.2's two plans the path selects is not tested here** (RUE-2339).
+A path with no proper prefix of declared-`linear` struct type is the `Ordinary`
+partial move of `3.8:22`; one with such a prefix is the declared-linear
+destructure of `3.8:33`, which (Use-Declared-Linear-Destructure) §5.1 and
+(D-Use-Declared-Linear) §6.3 discharge (RUE-2236). Both are drawn from the one
+grammar and `declaredPrefix` (`Syntax.lean`) decides between them, which is
+what makes the plan's *selection* something the bridge checks rather than
+something the draw assumes.
+
+A destructure's own premises are left to chance with every other ownership
+choice in this module: a residue that carries a linear value is §5.1's
+`¬ linear-residue(S, π_s)` and the E0474 the compiler reports (`3.8:60`), and a
+destructor above the leaf is `3.9:34` and E0456 — which the declared plan
+demands even at a `Copy` leaf, where the ordinary rules do not. Both are
+`reject` verdicts of the kind the bridge's refusal table covers. So is not
+drawing around RUE-2335's shape, a `@drop` of a declared-`linear` place after a
+destructure under it: the model accepts it and the compiler does not, and a run
+counts such a case rather than the draw avoiding it (module docstring). -/
 def pathOk (D : Decls) (T₀ : Ty) (π : List Nat) (T : Ty) : Bool :=
-  Ty.atPath D T₀ π == some T && (declaredPrefix D T₀ π).isNone &&
-    (T.mult D == .copy || noDtorPrefix D T₀ π)
+  Ty.atPath D T₀ π == some T && (T.mult D == .copy || noDtorPrefix D T₀ π)
 
 /-- (helper) Every place of the wanted type one **or two** field steps under a
 binder in scope: the projections a use may name. -/
