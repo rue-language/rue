@@ -69,19 +69,26 @@ that seed and more than `i` cases. Its bias toward moves in one arm of an
 documented in the module.
 
 A generated program may declare its own **enums** as well as its own structs,
-and four in five do (161 of 200 at `--gen 200 --seed 7`, 787 of 1,000 at
-`--gen 1000 --seed 23`); such a program also draws enum construction and
+and about three in four do (154 of 200 at `--gen 200 --seed 7`, 771 of 1,000
+at `--gen 1000 --seed 23`); such a program also draws enum construction and
 `match` — one arm per variant in declaration order, each arm a block over that
 variant's payload locals, which it may move, `@drop`, read or leave. A little
-under half the cases contain a `match` (94 of 200 and 465 of 1,000 at those two
+under half the cases contain a `match` (98 of 200 and 465 of 1,000 at those two
 settings), and a `match` whose scrutinee is a **place** rather than a temporary
-is the majority of them (111 of 185 sites and 533 of 895), because a drawn
+is the majority of them (127 of 211 sites and 552 of 909), because a drawn
 `match` half the time binds its scrutinee to a `let` first where the scope
-holds no enum place. Two shapes are
-deliberately absent and the module says why: a `return` or `@panic` **inside an
-arm**, which `check` is incomplete on exactly as it is inside an `if` arm, and
-a path through a declared-`linear` prefix (RUE-2236, whose landing is what
-RUE-2339 re-enables the draw against).
+holds no enum place.
+
+A use or `@drop` is drawn through a struct declared `linear` exactly as through
+any other (RUE-2339), so the checker, not the draw, picks §4.2's declared-linear
+destructure: 18 of the 200 programs and 67 of the 1,000 contain one, the
+checker accepts 0 and 13 of those, and the destructure's own linear-residue
+premise (E0474) is the deepest refusal of 0 and 2. RUE-2335's shape — a
+`@drop` of a declared-`linear` place after a destructure under it, which the
+compiler rejects and the model accepts — is not drawn around but counted, and
+none of those 1,200 cases has it. One shape is deliberately absent and the
+module says why: a `return` or `@panic` **inside an arm**, which `check` is
+incomplete on exactly as it is inside an `if` arm.
 
 ```bash
 lake exe ruecore-corpus --gen 1000 --seed 7 > /tmp/gen.json   # seed cases, then 1000 generated
