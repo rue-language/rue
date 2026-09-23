@@ -621,8 +621,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          # The gate counts trunk commits merged since the newest plotted
-          # measurement, so it needs the measured commit in local history. The
+          # The gate counts trunk merges since the newest plotted measurement
+          # (RUE-2343), so it needs the measured commit in local history. The
           # default depth-1 checkout has none of them, and a gate that cannot
           # see the history fails rather than passing. (RUE-1258)
           fetch-depth: 0
