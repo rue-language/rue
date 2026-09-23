@@ -32,7 +32,7 @@ fn f1(v0: i64) -> i64 {
     {
         let mut v1: [S1; 2] = [S1 { x0: 1 }, S1 { x0: 2 }];
         {
-            { let t3i: i64 = v0; v1[t3i] = S1 { x0: 9 }; };
+            { v1[{ let t3i0: i64 = v0; t3i0 }] = S1 { x0: 9 }; };
             7
         }
     }
@@ -98,14 +98,10 @@ function body, checked from (Fn) §5.8's entry context.
         e       { { v1[v0] = S1 { x0: 9 }; }; 7 }
         Γ;Σ     [v1: [S1; 2] mut = Owned, v0: i64 = Owned]
         ⇒       i64  ⊣  [v1: [S1; 2] mut = Owned, v0: i64 = Owned]
-          (Assign) §5.2 at a dynamic index
+          (Assign) §5.2 below a dynamic index
             e       { v1[v0] = S1 { x0: 9 }; }
             Γ;Σ     [v1: [S1; 2] mut = Owned, v0: i64 = Owned]
             ⇒       ()  ⊣  [v1: [S1; 2] mut = Owned, v0: i64 = Owned]
-              (Use-Copy) §5.1
-                e       v0
-                Γ;Σ     [v1: [S1; 2] mut = Owned, v0: i64 = Owned]
-                ⇒       i64  ⊣  [v1: [S1; 2] mut = Owned, v0: i64 = Owned]
               (Struct-Intro) §5.8
                 e       S1 { x0: 9 }
                 Γ;Σ     [v1: [S1; 2] mut = Owned, v0: i64 = Owned]
@@ -114,6 +110,10 @@ function body, checked from (Fn) §5.8's entry context.
                     e       9
                     Γ;Σ     [v1: [S1; 2] mut = Owned, v0: i64 = Owned]
                     ⇒       i64  ⊣  [v1: [S1; 2] mut = Owned, v0: i64 = Owned]
+              (Use-Copy) §5.1
+                e       v0
+                Γ;Σ     [v1: [S1; 2] mut = Owned, v0: i64 = Owned]
+                ⇒       i64  ⊣  [v1: [S1; 2] mut = Owned, v0: i64 = Owned]
           (Lit) §5.8
             e       7
             Γ;Σ     [v1: [S1; 2] mut = Owned, v0: i64 = Owned]
@@ -171,22 +171,22 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   [ℓ0 = 0]
            →     [ℓ0 = 0, ℓ1 = [S1 { 1 }, S1 { 2 }]]
          result  value [S1 { 1 }, S1 { 2 }]
-  [10]  d7                (D-Use-Copy) §6.3
-         expr    v0
-         store   [ℓ0 = 0, ℓ1 = [S1 { 1 }, S1 { 2 }]]
-           →     [ℓ0 = 0, ℓ1 = [S1 { 1 }, S1 { 2 }]]
-         result  value 0
-  [11]  d8                  literal §6.3
+  [10]  d8                  literal §6.3
          expr    9
          store   [ℓ0 = 0, ℓ1 = [S1 { 1 }, S1 { 2 }]]
            →     [ℓ0 = 0, ℓ1 = [S1 { 1 }, S1 { 2 }]]
          result  value 9
-  [12]  d7                (D-Struct) §6.5
+  [11]  d7                (D-Struct) §6.5
          expr    S1 { x0: 9 }
          store   [ℓ0 = 0, ℓ1 = [S1 { 1 }, S1 { 2 }]]
            →     [ℓ0 = 0, ℓ1 = [S1 { 1 }, S1 { 2 }]]
          result  value S1 { 9 }
-  [13]  d6              (D-Assign) §6.8 at a dynamic index (overwrite-drop)
+  [12]  d7                (D-Use-Copy) §6.3
+         expr    v0
+         store   [ℓ0 = 0, ℓ1 = [S1 { 1 }, S1 { 2 }]]
+           →     [ℓ0 = 0, ℓ1 = [S1 { 1 }, S1 { 2 }]]
+         result  value 0
+  [13]  d6              (D-Assign) §6.8 below a dynamic index (overwrite-drop)
          expr    { v1[v0] = S1 { x0: 9 }; }
          store   [ℓ0 = 0, ℓ1 = [S1 { 1 }, S1 { 2 }]]
            →     [ℓ0 = 0, ℓ1 = [S1 { 9 }, S1 { 2 }]]
