@@ -1021,7 +1021,12 @@ before its indices (`5.2:14`) — both bounds-checked at run time at every
 dynamic step by §6.5's (D-Index)/(D-Index-Trap). The two lists are parallel
 rather than one list of pairs so that the index expressions are a `List Expr`,
 the nested occurrence `mkStruct`'s arguments already are, and every recursion
-over `Expr` handles them the way it handles arguments. -/
+over `Expr` handles them the way it handles arguments. `indexDrop p idx πs` is
+`@drop(p[e₁]π₁…[eₖ]πₖ)`, (@Drop-Copy) §5.3 at a `Copy` place below a dynamic
+index: §5.3 gives that rule no index premise, and its prose admits
+`@drop(a[i])` on a `Copy`-element array at a dynamic index. `drop` takes a
+constant `Place`, so the dynamic form is its own constructor, with the read's
+place and the read's premises; its value is `()`. -/
 inductive Expr where
   | intLit (w : IntWidth) (s : Sign) (n : Int)
   | floatLit (w : FloatWidth) (l : FloatLit)
@@ -1041,6 +1046,7 @@ inductive Expr where
   | repeatArray (elem : Ty) (e : Expr) (n : Nat)
   | indexRead (p : Place) (idx : List Expr) (πs : List (List Nat))
   | indexWrite (p : Place) (idx : List Expr) (πs : List (List Nat)) (e : Expr)
+  | indexDrop (p : Place) (idx : List Expr) (πs : List (List Nat))
   | drop (p : Place)
   | letIn (m : Bool) (e₁ e₂ : Expr)
   | assign (p : Place) (e : Expr)

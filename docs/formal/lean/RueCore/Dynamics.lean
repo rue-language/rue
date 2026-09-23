@@ -1408,6 +1408,15 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
                       match c.writeAt p.path sub' with
                       | none => .stuck .typeConfusion
                       | some c' => .ok (H₂.set ℓ (.full c')) .unit evs
+  | fuel + 1, P, H, φ, .indexDrop p idx πs =>
+      -- §6.11's `@drop(p)` at a `Copy` place below a dynamic index. A `Copy`
+      -- place owes no glue and changes no ownership, so what is left of the
+      -- form is the read's navigation: the indices left to right, then the
+      -- bounds check at every dynamic step (`7.1:10`), which traps exactly as
+      -- the read does (probe d3). In range, the leaf is left where it is and
+      -- the value is `()`. The redex *is* the read with its value discarded,
+      -- and it is evaluated as that.
+      (eval M fuel P H φ (.indexRead p idx πs)).andThen fun H' _ => .ok H' .unit []
   | _ + 1, P, H, φ, .drop p =>
       -- §6.11's explicit `@drop(p)`: at a `Declared(d, π_s)` plan it is the
       -- §6.3 destructure with the selected leaf dropped too — residue first,
