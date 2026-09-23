@@ -1483,15 +1483,18 @@ side, and the pairs that differ; last a tally of the shape
   oracle <-> native: …
 ```
 
-**Expect four disagreements, and expect a non-zero exit.** Each one is seeded
+**Expect three disagreements, and expect a non-zero exit.** Each one is seeded
 deliberately and stays until its issue is decided or fixed:
 `destructure_ancestor_dropped` (RUE-2335, a spec decision: the compiler reports
-E0406 where the model accepts); and `array_write_after_destructure_via_field`
-and its dynamic-index twin `array_dyn_write_after_destructure_via_field`
-(RUE-2341, a compiler defect: it accepts a write `3.8:72` forbids, then
-double-drops and leaks). `array_dyn_write_after_field_move` was red for
-RUE-2344 until that fix: the compiler now refuses a write below a dynamic index
-into the moved array field `h.x0` with E0205, as the model does. The fourth,
+E0406 where the model accepts); and `array_dyn_write_after_destructure_via_field`
+(RUE-2341, a compiler defect: it accepts a write below a dynamic index that
+`3.8:72` forbids, then double-drops and leaks). Two more were red until
+RUE-2344: `array_dyn_write_after_field_move`, a write below a dynamic index
+into the moved array field `h.x0`, which the compiler now refuses with E0205 as
+the model does; and `array_write_after_destructure_via_field`, the constant
+twin of the RUE-2341 case, which the compiler now refuses because the write's
+base `h.arr[0]` is consumed — with E0205 where `3.8:72` says E0480, a code the
+bridge does not compare and RUE-2341 still owns. The third,
 `i64_min_times_neg1`, is `min_T * -1` at `i64`. §6.4's (D-Arith-Trap), `3.1:6`
 and `8.1:3` make it an overflow trap and the model traps; the compiler's
 constant folder wraps it and the program exits 0. It is narrow — only `i64`,

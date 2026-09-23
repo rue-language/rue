@@ -3868,6 +3868,47 @@ compile_fail = true
 error_contains = "cannot assign into 'xs'"
 
 [[case]]
+name = "array_through_moved_element_write_rejected_as_partially_moved"
+spec = ["3.8:72"]
+description = "Assigning through the moved-out element itself is the partially-moved-array error (E0480), not a use-after-move of the element"
+source = """
+struct Big { value: i32 }
+
+fn consume(b: Big) -> i32 { b.value }
+
+fn main() -> i32 {
+    let mut xs = [Big { value: 1 }, Big { value: 2 }];
+    let a = consume(xs[0]);
+    xs[0].value = 9;
+    a
+}
+"""
+compile_fail = true
+expected_error_code = "E0480"
+error_contains = "cannot assign into 'xs'"
+
+[[case]]
+name = "array_dynamic_write_into_moved_element_rejected_as_partially_moved"
+spec = ["3.8:72"]
+description = "A dynamic-index write into a moved-out element of the root array is E0480"
+source = """
+struct Big { value: i32 }
+
+fn one() -> i64 { 0 }
+
+fn main() -> i32 {
+    let mut xs = [[Big { value: 1 }], [Big { value: 2 }]];
+    let t: [Big; 1] = xs[0];
+    let j = one();
+    xs[0][j] = Big { value: 9 };
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0480"
+error_contains = "cannot assign into 'xs'"
+
+[[case]]
 name = "array_whole_reinit_restores_ownership"
 spec = ["3.8:72"]
 description = "Reinitializing the whole array makes every element owned and usable again"

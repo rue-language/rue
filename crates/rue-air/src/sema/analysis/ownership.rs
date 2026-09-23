@@ -5324,9 +5324,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // carries no index (4.11:7, RUE-2008).
             self.check_traced_const_index_bounds(&trace, ctx)?;
 
-            // The base must still own its storage: `h.a[i].s = ...` after
-            // `h.a` moved writes into a destroyed array (RUE-2344).
-            self.reject_write_under_moved_place(trace.root_var, &trace.field_path(), ctx, span)?;
+            // The move path of the place this write projects out of, checked
+            // below once the partially-moved-array rule has had its say.
+            let base_path = trace.field_path();
 
             // Add the final field projection
             let base_type = trace.result_type();
@@ -5373,6 +5373,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // (`xs[0].f = ...` after an element of `xs` moved out) is
             // rejected (RUE-186, E0480), like a direct element write.
             self.reject_write_into_partially_moved_array(&trace, ctx, span, None)?;
+
+            // The base must still own its storage: `h.a[i].s = ...` after
+            // `h.a` moved writes into a destroyed array (RUE-2344). A moved-out
+            // element of the root array is E0480 above, not this E0205.
+            self.reject_write_under_moved_place(trace.root_var, &base_path, ctx, span)?;
 
             // RUE-387: writing a live linear value's field would silently drop
             // the old field value. Legal only when that exact field path was
@@ -5581,10 +5586,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ));
             }
 
-            // The array written into must still own its storage, read on the
-            // state after both operands ran: `h.a[i] = ...` after `h.a` moved
-            // writes into a destroyed array (RUE-2344).
-            self.reject_write_under_moved_place(trace.root_var, &trace.field_path(), ctx, span)?;
+            // The move path of the array written into, checked below on the
+            // state after both operands ran.
+            let base_path = trace.field_path();
 
             // Add the index projection. A non-negative constant index carries
             // its element path segment so field_path nests through it (RUE-279).
@@ -5630,6 +5634,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
                 reinitialized_path.as_deref(),
             )?;
+
+            // The array written into must still own its storage: `h.a[i] = ...`
+            // after `h.a` moved writes into a destroyed array (RUE-2344). A
+            // moved-out element of the root array is E0480 above, not this
+            // E0205.
+            self.reject_write_under_moved_place(trace.root_var, &base_path, ctx, span)?;
 
             // RUE-387: writing a live linear value into an array element would
             // silently drop the old element. Legal only when that exact

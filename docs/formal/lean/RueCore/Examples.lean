@@ -831,15 +831,17 @@ def dArrOfDeclLin : StructDecl :=
 def declLinArrProg (T : Ty) (e : Expr) : Program :=
   Program.entry (Decls.ofStructs (structEnv ++ [dDeclLinA, dArrOfDeclLin])) T e
 
-/-- **The red case** (review probe `w2`, RUE-2341). `h.arr[0].x0` destructures
+/-- **The case seeded red for RUE-2341** (review probe `w2`). `h.arr[0].x0` destructures
 the declared-linear element `h.arr[0]`, which holes the array `h.arr` even
 though the array is reached through a field. Then `h.arr[0].x0 = S1 { 77 }`
 writes through that element. `3.8:71`/`3.8:72` and `7.1:46` forbid this for an
 array anywhere in a place tree, and `assignArrayOk` refuses it (E0480).
-`overwriteOk` alone would not have refused it. The compiler's check only fires
-when the root binding is an array, so it accepts the program, runs `S1 { 1 }`'s
-destructor a second time, and never drops the `77`. The corpus keeps it red
-until RUE-2341 is fixed. -/
+`overwriteOk` alone would not have refused it. The compiler's E0480 check only
+fires when the root binding is an array (RUE-2341). It used to accept the
+program, run `S1 { 1 }`'s destructor a second time and never drop the `77`;
+since RUE-2344 it refuses the write with E0205 instead, because the write's
+base `h.arr[0]` is consumed and a destination under a moved place is refused.
+The verdicts now agree; the code is still RUE-2341's to correct. -/
 def arrayWriteAfterDestructureViaField : Expr :=
   letIn true (mkStruct 12 [mkArray (.struct 11)
       [mkStruct 11 [resA (lit 1)], mkStruct 11 [resA (lit 2)]]])
@@ -1131,7 +1133,8 @@ example : run demoOps (prog tI64 arrayWholeReinit) demoFuel
          .drop 0 (.array (.struct sAffine) [cA 8, cA 9]),
          .dtor sAffine (cA 8), .dtor sAffine (cA 9)] := by rfl
 
-/-- **The side condition through a field** (RUE-2341, red on the bridge): the
+/-- **The side condition through a field** (RUE-2341; the compiler refuses it
+with E0205 since RUE-2344, E0480 is owed): the
 write through a destructured element of an array reached through `h.arr` is
 refused. The refusal comes from `assignArrayOk`, not from `overwriteOk`. -/
 example : checkProgram (declLinArrProg tI64 arrayWriteAfterDestructureViaField) = false := by rfl
