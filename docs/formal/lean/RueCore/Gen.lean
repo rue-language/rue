@@ -81,11 +81,14 @@ explicitly and a random program seldom does.
 One shape of it is a compiler-red case until RUE-2335 is decided: a `@drop` of
 a declared-`linear` place after a destructure strictly under it, which the
 model accepts and the compiler rejects with E0406 (the seed case
-`destructure_ancestor_dropped`). The draw does **not** avoid it — that would
-write the compiler's current answer into the generator — so a run counts it
-instead, and none of the 1,200 cases at the two settings above has the shape:
-it needs two nested declared-`linear` levels and a `@drop` of the outer one
-after a use under the inner one, all rooted at one binder.
+`destructure_ancestor_dropped`). The draw does **not** avoid it; that would
+write the compiler's current answer into the generator. A generated case with
+the shape shows up as a bridge disagreement to be attributed to RUE-2335 by
+hand: nothing in the tree counts it. None of the 1,200 cases at the two
+settings above has it, because it needs two nested declared-`linear` levels
+and a `@drop` of the outer one after a use under the inner one, all rooted at
+one binder. It is reachable all the same, at about one accepted case in
+100,000 programs; the first is `gen_1_773`, at `--gen 774 --seed 1`.
 
 Calls and `return` are **not** generated yet: every generated case is a
 one-function program (`Program.entry`), so the shapes RUE-2233 added — a
@@ -188,8 +191,8 @@ the weights can be read and changed:
   and 68 of 771), and the E0205 a second `match` on the same place is becomes
   the *deepest* refusal of 20 of 200 and 113 of 1,000 cases, where the weight
   alone reaches 3 and 8. The n-way **join** conflict stays rare at either
-  setting — 1 case in 200 at seed 7 and 1 in 1,000 at seed 23, the same order
-  as the binary (If) join's, which is the deepest refusal of none of them —
+  setting — 1 case in 200 at seed 7 and 1 in 1,000 at seed 23, while the
+  binary (If) join is the deepest refusal of none —
   because it needs two arms to disagree about an entry that carries a
   linear value and outlives the `match`, which random arms seldom do;
 * a `let` binder is biased toward a declaration that holds an enum in
@@ -408,8 +411,11 @@ def genDecl (D : Decls) (s nEnums : Nat) : G StructDecl := do
   -- destructor. A draw the rules forbid falls back rather than being retried,
   -- so generation stays a pure function of the seed. A declaration drawn
   -- `linear` gets no destructor although one would be well-formed: `3.9:34`
-  -- refuses every path through a destructor-bearing prefix, so a destructor
-  -- would make each destructure of it the same E0456 (RUE-2339).
+  -- refuses every destructure of a destructor-bearing struct, so a destructor
+  -- would make each destructure of it the same E0456 (RUE-2339). Two shapes
+  -- are lost with it: a declared-`linear` destructor running in a random
+  -- program, and E0456 at the destructured place `d` itself. The seed corpus
+  -- keeps the second (`destructure_under_dtor`).
   let dtor := drawnDtor && base != .linear && drawn != .linear
   let attr := match drawn with
     | .copy => if base = .copy && !dtor then Attr.copy else Attr.none
@@ -572,10 +578,10 @@ choice in this module: a residue that carries a linear value is §5.1's
 `¬ linear-residue(S, π_s)` and the E0474 the compiler reports (`3.8:60`), and a
 destructor above the leaf is `3.9:34` and E0456 — which the declared plan
 demands even at a `Copy` leaf, where the ordinary rules do not. Both are
-`reject` verdicts of the kind the bridge's refusal table covers. So is not
-drawing around RUE-2335's shape, a `@drop` of a declared-`linear` place after a
-destructure under it: the model accepts it and the compiler does not, and a run
-counts such a case rather than the draw avoiding it (module docstring). -/
+`reject` verdicts of the kind the bridge's refusal table covers. RUE-2335's
+shape, a `@drop` of a declared-`linear` place after a destructure under it, is
+not drawn around either: the model accepts it and the compiler does not, so a
+generated case with it is a bridge disagreement (rare; module docstring). -/
 def pathOk (D : Decls) (T₀ : Ty) (π : List Nat) (T : Ty) : Bool :=
   Ty.atPath D T₀ π == some T && (T.mult D == .copy || noDtorPrefix D T₀ π)
 
@@ -596,10 +602,11 @@ of the outer type in scope, and — for a move or a `@drop` of a non-`Copy` leaf
 --seed 7` reaches 13 depth-2 places across 10 programs with the bias and 17
 across 8 without it, and `--gen 300 --seed 23` 18 across 13 with and 23 across
 16 without. The two runs diverge at the first pick the bias changes, so each
-pair compares two different sets of programs, and since the declared-`linear`
-prefixes were opened (RUE-2339) the comparison no longer favours the bias at
-these sizes; before, it did (4 across 3 against 3 across 3, and 13 across 8
-against 11 across 6). The weight is left as it is. This is one of the module's
+pair compares two different sets of programs, and at these sizes that is
+noise. At larger sizes the bias still pays: `--gen 1000 --seed 23` reaches 76
+depth-2 places across 51 programs with it and 69 across 50 without, and
+`--gen 3000 --seed 101` 265 across 165 against 214 across 152. The weight is
+left as it is. This is one of the module's
 weights; it lives here rather than at the six draw sites. -/
 def pickPlace (default : Place) (ps : List Place) : G Place := do
   let deep := ps.filter (fun p => 2 ≤ p.path.length)
