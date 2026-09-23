@@ -3530,6 +3530,355 @@ compile_fail = true
 expected_error_code = "E0205"
 error_contains = "use of moved value 'h.a[0]'"
 
+# RUE-2341: the partially-moved-array write rule (3.8:72, 7.1:46) applies to
+# the outermost array a write steps into, wherever it sits in the place tree
+# (3.8:71), not only to an array root binding. Before the fix each write below
+# was accepted: the overwrite-drop ran the moved-out part's destructor a second
+# time and the written value was never dropped.
+[[case]]
+name = "destructure_field_array_const_subfield_write_rejected"
+spec = ["3.8:72", "7.1:46", "3.8:71"]
+description = "After a declared-linear destructure consumes h.arr[0], writing h.arr[0].s is E0480, not E0205 (RUE-2341)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(1000 + self.x0); }
+linear struct T1 { s: S1 }
+struct HT { arr: [T1; 2] }
+
+fn zero() -> i64 { 0 }
+
+fn main() -> i32 {
+    let mut h = HT { arr: [T1 { s: S1 { x0: 1 } }, T1 { s: S1 { x0: 2 } }] };
+    let a: S1 = h.arr[0].s;
+    @drop(a);
+    h.arr[0].s = S1 { x0: 77 };
+    let b: S1 = h.arr[1].s;
+    @drop(b);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0480"
+error_contains = "cannot assign into 'h.arr'"
+
+[[case]]
+name = "destructure_field_array_const_element_write_rejected"
+spec = ["3.8:72", "7.1:46", "3.8:71"]
+description = "After a declared-linear destructure consumes h.arr[0], writing the whole element h.arr[0] is E0480 (RUE-2341)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(1000 + self.x0); }
+linear struct T1 { s: S1 }
+struct HT { arr: [T1; 2] }
+
+fn zero() -> i64 { 0 }
+
+fn main() -> i32 {
+    let mut h = HT { arr: [T1 { s: S1 { x0: 1 } }, T1 { s: S1 { x0: 2 } }] };
+    let a: S1 = h.arr[0].s;
+    @drop(a);
+    h.arr[0] = T1 { s: S1 { x0: 99 } };
+    let b: S1 = h.arr[1].s;
+    @drop(b);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0480"
+error_contains = "cannot assign into 'h.arr'"
+
+[[case]]
+name = "destructure_field_array_dyn_write_rejected"
+spec = ["3.8:72", "7.1:46", "3.8:71"]
+description = "After a declared-linear destructure consumes h.arr[0], a write below a dynamic index, h.arr[i].s.x0, is E0480 (RUE-2341)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(1000 + self.x0); }
+linear struct T1 { s: S1 }
+struct HT { arr: [T1; 2] }
+
+fn zero() -> i64 { 0 }
+
+fn main() -> i32 {
+    let mut h = HT { arr: [T1 { s: S1 { x0: 1 } }, T1 { s: S1 { x0: 2 } }] };
+    let a: S1 = h.arr[0].s;
+    @drop(a);
+    let i = zero();
+    h.arr[i].s.x0 = 77;
+    let b: S1 = h.arr[1].s;
+    @drop(b);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0480"
+error_contains = "cannot assign into 'h.arr'"
+
+[[case]]
+name = "field_array_dyn_subfield_write_after_part_move_rejected"
+spec = ["3.8:72", "7.1:46", "3.8:71"]
+description = "h.a[i].s = ... after h.a[0].s moved is E0480 (RUE-2341)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct H { a: [P; 2], b: [P; 2] }
+
+fn one() -> i64 { 1 }
+fn zero() -> i64 { 0 }
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+
+fn main() -> i32 {
+    let mut h = H { a: [mk(10), mk(11)], b: [mk(12), mk(13)] };
+    let t: S1 = h.a[0].s;
+    @drop(t);
+    let i = zero();
+    h.a[i].s = S1 { x0: 99 };
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0480"
+error_contains = "cannot assign into 'h.a'"
+
+[[case]]
+name = "field_array_dyn_element_write_after_part_move_rejected"
+spec = ["3.8:72", "7.1:46", "3.8:71"]
+description = "h.a[i] = ... after h.a[0].s moved is E0480 (RUE-2341)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct H { a: [P; 2], b: [P; 2] }
+
+fn one() -> i64 { 1 }
+fn zero() -> i64 { 0 }
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+
+fn main() -> i32 {
+    let mut h = H { a: [mk(10), mk(11)], b: [mk(12), mk(13)] };
+    let t: S1 = h.a[0].s;
+    @drop(t);
+    let i = zero();
+    h.a[i] = mk(99);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0480"
+error_contains = "cannot assign into 'h.a'"
+
+[[case]]
+name = "field_array_const_element_write_after_part_move_rejected"
+spec = ["3.8:72", "7.1:46", "3.8:71"]
+description = "h.a[0] = ... after h.a[0].s moved is E0480: an element write does not re-arm the element (RUE-2341)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct H { a: [P; 2], b: [P; 2] }
+
+fn one() -> i64 { 1 }
+fn zero() -> i64 { 0 }
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+
+fn main() -> i32 {
+    let mut h = H { a: [mk(10), mk(11)], b: [mk(12), mk(13)] };
+    let t: S1 = h.a[0].s;
+    @drop(t);
+    h.a[0] = mk(99);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0480"
+error_contains = "cannot assign into 'h.a'"
+
+[[case]]
+name = "field_array_const_subfield_write_after_part_move_rejected"
+spec = ["3.8:72", "7.1:46", "3.8:71"]
+description = "h.a[0].s = ... after h.a[0].s moved is E0480: a write through an element does not re-arm it (RUE-2341)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct H { a: [P; 2], b: [P; 2] }
+
+fn one() -> i64 { 1 }
+fn zero() -> i64 { 0 }
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+
+fn main() -> i32 {
+    let mut h = H { a: [mk(10), mk(11)], b: [mk(12), mk(13)] };
+    let t: S1 = h.a[0].s;
+    @drop(t);
+    h.a[0].s = S1 { x0: 99 };
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0480"
+error_contains = "cannot assign into 'h.a'"
+
+[[case]]
+name = "field_array_sibling_element_write_after_part_move_rejected"
+spec = ["3.8:72", "7.1:46", "3.8:71"]
+description = "A write through the unmoved sibling element h.a[1] is E0480 too: the whole array is not wholly owned (RUE-2341)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct H { a: [P; 2], b: [P; 2] }
+
+fn one() -> i64 { 1 }
+fn zero() -> i64 { 0 }
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+
+fn main() -> i32 {
+    let mut h = H { a: [mk(10), mk(11)], b: [mk(12), mk(13)] };
+    let t: S1 = h.a[0].s;
+    @drop(t);
+    h.a[1].c = 5;
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0480"
+error_contains = "cannot assign into 'h.a'"
+
+[[case]]
+name = "nested_field_array_dyn_write_after_part_move_rejected"
+spec = ["3.8:72", "7.1:46", "3.8:71"]
+description = "h.w.a[i].s = ... after h.w.a[0].s moved is E0480, one field deeper (RUE-2341)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct W { a: [P; 2] }
+struct H { w: W }
+
+fn zero() -> i64 { 0 }
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+
+fn main() -> i32 {
+    let mut h = H { w: W { a: [mk(10), mk(11)] } };
+    let t: S1 = h.w.a[0].s;
+    @drop(t);
+    let i = zero();
+    h.w.a[i].s = S1 { x0: 99 };
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0480"
+error_contains = "cannot assign into 'h.w.a'"
+
+[[case]]
+name = "field_nested_array_dyn_write_after_part_move_rejected"
+spec = ["3.8:72", "7.1:46", "3.8:71"]
+description = "g.m[0][i].s = ... after g.m[0][0].s moved is E0480 naming the outermost array g.m (RUE-2341)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct G { m: [[P; 2]; 2] }
+
+fn zero() -> i64 { 0 }
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+
+fn main() -> i32 {
+    let mut g = G { m: [[mk(10), mk(11)], [mk(12), mk(13)]] };
+    let t: S1 = g.m[0][0].s;
+    @drop(t);
+    let i = zero();
+    g.m[0][i].s = S1 { x0: 99 };
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0480"
+error_contains = "cannot assign into 'g.m'"
+
+[[case]]
+name = "field_array_whole_reinit_after_part_move_accepted"
+spec = ["3.8:72", "7.1:46"]
+description = "Reinitializing the whole array field after a part of an element moved is the recovery path; writes into it are legal again afterwards (RUE-2341)"
+source = """
+struct S1 { x0: i64 }
+struct P { c: i64, s: S1 }
+struct H { a: [P; 2] }
+
+fn zero() -> i64 { 0 }
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+fn take(s: S1) -> i64 { s.x0 }
+
+fn main() -> i32 {
+    let mut h = H { a: [mk(10), mk(11)] };
+    let t: i64 = take(h.a[0].s);
+    h.a = [mk(40), mk(41)];
+    let i = zero();
+    h.a[i].s = S1 { x0: 2 };
+    h.a[1].c = 0;
+    @dbg(t);
+    @dbg(h.a[0].s.x0 + h.a[1].c);
+    0
+}
+"""
+expected_stdout = "10\n2\n"
+exit_code = 0
+
+[[case]]
+name = "field_array_writes_into_wholly_owned_array_accepted"
+spec = ["3.8:72", "7.1:46"]
+description = "Writes into a wholly owned field-reached array, at a dynamic and a constant index, are accepted and drop the overwritten values once (RUE-2341)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct H { a: [P; 2] }
+
+fn zero() -> i64 { 0 }
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+
+fn main() -> i32 {
+    let mut h = H { a: [mk(10), mk(11)] };
+    let i = zero();
+    h.a[i].s = S1 { x0: 99 };
+    h.a[1] = mk(98);
+    @dbg(h.a[0].c);
+    0
+}
+"""
+expected_stdout = "10\n11\n10\n99\n98\n"
+exit_code = 0
+
+[[case]]
+name = "field_array_part_move_leaves_sibling_array_writable"
+spec = ["3.8:72", "3.8:71"]
+description = "A moved-out part of h.a does not affect writes into the sibling array h.b (RUE-2341)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct H { a: [P; 2], b: [P; 2] }
+
+fn one() -> i64 { 1 }
+fn zero() -> i64 { 0 }
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+
+fn main() -> i32 {
+    let mut h = H { a: [mk(10), mk(11)], b: [mk(12), mk(13)] };
+    let t: S1 = h.a[0].s;
+    @drop(t);
+    let i = zero();
+    h.b[i].s = S1 { x0: 99 };
+    h.b[1] = mk(98);
+    0
+}
+"""
+expected_stdout = "10\n12\n13\n11\n99\n98\n"
+exit_code = 0
+
 [[case]]
 name = "linear_array_elementwise_consumption"
 spec = ["3.8:71"]

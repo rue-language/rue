@@ -1357,3 +1357,97 @@ fn provider_body_dynamic_index_beside_moved_sibling_field_accepted() {
         .analyze(&source, "f")
         .expect("a moved sibling field does not affect a place below a dynamic index");
 }
+
+fn assert_partially_moved_array(error: &rue_error::CompileError, array: &str) {
+    assert!(
+        matches!(&error.kind, ErrorKind::AssignToPartiallyMovedArray { array: name } if name == array),
+        "expected E0480 naming '{array}', got: {error:?}"
+    );
+}
+
+// RUE-2341: the partially-moved-array write rule keyed on the root binding
+// being an array, so a write into a field-reached array with a moved-out part
+// was accepted, ran the moved part's destructor again and leaked the written
+// value. It now keys on the outermost array the destination steps into.
+#[test]
+fn provider_body_dynamic_index_write_into_partially_moved_field_array_rejected() {
+    let fixture = dynamic_index_field_array_fixture();
+    let source = format!(
+        "fn f(i: i64) -> i64 {{
+    let mut h = {DYNAMIC_INDEX_H};
+    let t = h.a[0].s;
+    h.a[i].s = NonCopy {{ x: 99 }};
+    0
+}}"
+    );
+    let error = fixture
+        .analyze(&source, "f")
+        .map(|_| ())
+        .expect_err("a write into a field-reached array with a moved-out part is E0480");
+    assert_partially_moved_array(&error, "h.a");
+}
+
+// RUE-2341: the constant forms, at the moved element and at a sibling one.
+#[test]
+fn provider_body_constant_index_writes_into_partially_moved_field_array_rejected() {
+    let fixture = dynamic_index_field_array_fixture();
+    for write in [
+        "h.a[0].s = NonCopy { x: 99 };",
+        "h.a[0] = P { c: 7, s: NonCopy { x: 99 } };",
+        "h.a[1].c = 7;",
+    ] {
+        let source = format!(
+            "fn f(i: i64) -> i64 {{
+    let mut h = {DYNAMIC_INDEX_H};
+    let t = h.a[0].s;
+    {write}
+    0
+}}"
+        );
+        let error = fixture
+            .analyze(&source, "f")
+            .map(|_| ())
+            .expect_err("a write into a field-reached array with a moved-out part is E0480");
+        assert_partially_moved_array(&error, "h.a");
+    }
+}
+
+// RUE-2341: `h.a[0].s.x = ...` after `h.a[0].s` moved is both a write under a
+// moved place (E0205) and a write into a partially moved array (E0480); the
+// array rule runs first.
+#[test]
+fn provider_body_partially_moved_field_array_rule_precedes_moved_base_rule() {
+    let fixture = dynamic_index_field_array_fixture();
+    let source = format!(
+        "fn f(i: i64) -> i64 {{
+    let mut h = {DYNAMIC_INDEX_H};
+    let t = h.a[0].s;
+    h.a[0].s.x = 99;
+    0
+}}"
+    );
+    let error = fixture
+        .analyze(&source, "f")
+        .map(|_| ())
+        .expect_err("a write under a moved part of an array is rejected");
+    assert_partially_moved_array(&error, "h.a");
+}
+
+// RUE-2341: reinitializing the whole array field is the recovery (7.1:46),
+// and afterwards writes into it are legal again.
+#[test]
+fn provider_body_partially_moved_field_array_whole_reinit_accepted() {
+    let fixture = dynamic_index_field_array_fixture();
+    let source = format!(
+        "fn f(i: i64) -> i64 {{
+    let mut h = {DYNAMIC_INDEX_H};
+    let t = h.a[0].s;
+    h.a = [P {{ c: 5, s: NonCopy {{ x: 50 }} }}, P {{ c: 6, s: NonCopy {{ x: 60 }} }}];
+    h.a[i].c = 7;
+    h.a[0].c
+}}"
+    );
+    fixture
+        .analyze(&source, "f")
+        .expect("reinitializing the whole array field re-arms writes into it");
+}
