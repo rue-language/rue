@@ -230,7 +230,7 @@ about a second of hashing next to a build the lane already paid for.
 `performance staleness (linux-x64)` owns the other gate: whether the published
 series is *already* stalled. That question is repository-wide rather than
 diff-shaped, so the job is ungated by the determinator and takes a
-`fetch-depth: 0` checkout, without which it counts no trunk commits and fails
+`fetch-depth: 0` checkout, without which it counts no trunk merges and fails
 instead of passing (RUE-1258). It stays compile-time only; ADR-0072 Decision 9
 deliberately leaves the runtime series out of it, and the CI contract now fails
 on a `--runtime-manifest` appearing there, on a `continue-on-error` bypass, and

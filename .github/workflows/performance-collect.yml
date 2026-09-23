@@ -47,7 +47,7 @@ on:
   # That asymmetry is a guard, not a convenience. The compile-time legs feed
   # ADR-0067's stall gate, which takes each platform's newest point by
   # `finished_at` and fails EVERY pull request, with no bypass, when trunk has
-  # moved more than five commits past it. A compile-time record published from a
+  # moved more than five merges past it. A compile-time record published from a
   # branch head is newer than every trunk point and is not on trunk, so it trips
   # that gate for the whole repository and keeps tripping it — and if the branch
   # is later deleted, the gate cannot even resolve the commit. The runtime series
