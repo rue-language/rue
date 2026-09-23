@@ -3,11 +3,11 @@
 ════════════════════════════════════════════════════════════════════════════════
 h.x1[i] at i = 0, where the field x1 is an [i64; 0]: every index into a
 zero-length array is out of bounds, so the read takes (D-Index-Trap) §6.5's
-bounds trap and nothing prints. The bridge is red on this one: the compiler
-reports an internal error in code generation (a zero-sized place reached
-through a field is not diverted to the zero-sized address), where a
-zero-length root binding traps correctly. That is RUE-2345. The case stays
-seeded until that is fixed.
+bounds trap and nothing prints. The bridge was red on this one until RUE-2345
+was fixed: the compiler reported an internal error in code generation (a
+zero-sized place reached through a field was not diverted to the zero-sized
+address). It now traps as the model does, and the case stays as the regression
+signal.
 
 Rules exercised: (Use-Untrackable-Dynamic-Copy) §5.1 · (D-Index-Trap) §6.5 · 7.1:11
 
