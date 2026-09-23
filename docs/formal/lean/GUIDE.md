@@ -1423,14 +1423,17 @@ side, and the pairs that differ; last a tally of the shape
   oracle <-> native: …
 ```
 
-**Expect one disagreement, on `i64_min_times_neg1`, and expect a non-zero
-exit.** That case is `min_T * -1` at `i64`. §6.4's (D-Arith-Trap), `3.1:6`
+**Expect three disagreements, and expect a non-zero exit.** Each one is seeded
+deliberately and stays until its issue is decided or fixed:
+`destructure_ancestor_dropped` (RUE-2335, a spec decision: the compiler reports
+E0406 where the model accepts) and `array_write_after_destructure_via_field`
+(RUE-2341, a compiler defect: it accepts a write `3.8:72` forbids, then
+double-drops and leaks). The third, `i64_min_times_neg1`, is `min_T * -1` at `i64`. §6.4's (D-Arith-Trap), `3.1:6`
 and `8.1:3` make it an overflow trap and the model traps; the compiler's
 constant folder wraps it and the program exits 0. It is narrow — only `i64`,
 only `*`, only with two literal operands; `{ let a: i64 = min; a * -1 }` and
 the same through two calls both trap — so it is the folder, and it is a
-compiler defect: RUE-2318. The case is seeded deliberately and stays until
-that is fixed. `cond_drop_affine` is the precedent: it first made the
+compiler defect: RUE-2318. `cond_drop_affine` is the precedent: it first made the
 compiler report an internal error instead of a verdict (`E9000`, a
 CFG-verification failure on the conditionally dropped affine residue), so the
 oracle, which shares that frontend, could not run it either. That was

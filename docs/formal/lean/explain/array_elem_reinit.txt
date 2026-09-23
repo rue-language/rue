@@ -49,7 +49,7 @@ fn f0() -> i64 {
 
 Verdict: REJECTED by the checker (§5).
 
-The premise that fails, in fn f0() -> i64, at (Assign) §5.2, 3.8:77:
+The premise that fails, in fn f0() -> i64, at (Assign) §5.2, 3.8:72, 7.1:46:
 
     on  { v0[0] = S1 { x0: 9 }; }
 
@@ -120,7 +120,7 @@ function body, checked from (Fn) §5.8's entry context.
                 ✗       this premise fails:
                         a premise's own derivation failed — the reason is the rejected
                         premise nested under this rule
-                  (Assign) §5.2, 3.8:77
+                  (Assign) §5.2, 3.8:72, 7.1:46
                     e       { v0[0] = S1 { x0: 9 }; }
                     Γ;Σ     [v1: S1 = MovedOut, v0: [S1; 2] mut = Owned{ x0: MovedOut }]
                     ✗       this premise fails:

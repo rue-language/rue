@@ -97,7 +97,7 @@ program, the four views side by side, and the pair(s) that disagree, with a
 tally at the end; `--report-json` writes the same findings as JSON so two runs
 can be diffed. It exits non-zero when any disagreement exists.
 
-**The seed corpus is red on two cases, and that is the bridge working.**
+**The seed corpus is red on three cases, and that is the bridge working.**
 `i64_min_times_neg1` is `min_T * -1` at `i64`, which §6.4's (D-Arith-Trap),
 `3.1:6` and `8.1:3` all make an overflow trap and which the model traps on.
 The compiler's constant folder wraps it instead and the program exits 0 —
@@ -109,8 +109,14 @@ defect, RUE-2318, and the case stays seeded until it is fixed, the way
 inner declared-`linear` place, §5.3's (@Drop) discharges the declared-`linear`
 **ancestor** `y` — `Σ(y) = Owned`, no still-owned linear sub-place remains
 below it — and the model runs the program, while the compiler reports E0406.
-Which of the two is right is a spec decision, RUE-2335. A red case
-is what the bridge is for; the model is not softened to match the compiler.
+Which of the two is right is a spec decision, RUE-2335.
+`array_write_after_destructure_via_field` is the third: a declared-`linear`
+destructure at `h.arr[0].x0` holes an array reached through a field, and a
+write through that element follows. `3.8:72` refuses it and so does
+`assignArrayOk`. The compiler accepts it, because its check fires only when the
+root binding is an array, then runs the moved-out element's destructor twice
+and leaks the written value. That is RUE-2341. A red case is what the bridge
+is for; the model is not softened to match the compiler.
 
 The mode is a `buck2 run` entry point and belongs to no test tier, so nothing
 in CI requests it until ADR-0097's gate is met (RUE-2241).

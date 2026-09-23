@@ -7397,13 +7397,11 @@ Two things §6.11 writes out are elided here, both unobservably.
   field. §6.11 says as much — it keeps the residual-versus-original
   distinction only so the rule stays honest if `3.9:34` is ever relaxed.
 
-One thing §6.11 does **not** write out and this walk must: the destructor case
-is stated over a *value* `{v1,…,vk}_S`, so the calculus says nothing about a
-destructor-bearing struct one of whose fields is `⊘`. `3.9:34` is exactly what
-makes that state unreachable — no partial move may be taken under a
-destructor-bearing value — and the walk therefore runs the destructor on
-whatever the cell holds, hole or not, rather than refusing a state no rule
-excludes. `Soundness.lean` proves the state is never reached.
+§6.11 is stated over cell contents, so its destructor case covers a
+destructor-bearing struct one of whose fields is `⊘`. `3.9:34` makes that
+state unreachable (no partial move may be taken under a destructor-bearing
+value), so the walk runs the destructor on whatever the cell holds.
+`Soundness.lean` proves the state is never reached.
 
 §6.11's **enum** case (`6.3:20`) reads the stored tag and recurses into the
 **active** variant's payload only, in payload order: an inactive variant's
@@ -9738,7 +9736,7 @@ RueCore.ContentsMatches.fields {D : Decls} {s : Nat} {sd : StructDecl}
       ContentsMatches D (Contents.struct s cs) (OwnSt.fields ts) (Ty.struct s)
 ```
 
-**`ContentsMatches.elems`** — The array form of the same clause: a node with per-element records holds the array its type names, element by element. In this part only a constant-index **write** reaches it (`a[0] = …` records `fields [Owned]`); a partially *moved* array is RUE-2327's, and this clause is what that slice will hang `3.8:73` on.
+**`ContentsMatches.elems`** — The array form of the same clause: a node with per-element records holds the array its type names, element by element. A constant-index **write** reaches it (`a[0] = …` records `fields [Owned]`), and so does an element move, whose `⊘` is what `3.8:73`'s per-path element drop reads.
 
 ```lean
 RueCore.ContentsMatches.elems {D : Decls} {T : Ty} {n : Nat}
@@ -10182,6 +10180,16 @@ ownership") — and the compiler agrees: `a[0] = …` after `a[0]` moved is E048
 (probe a5), and so is `a[1].x0 = …` after `a[0]` moved (probe b1) and
 `a[0].s = …` after `a[0].s` moved (probe b10). The model follows the spec; the
 deviation from the calculus as written is recorded in §5.2 itself.
+
+The premise applies to an array anywhere in the place tree (`3.8:71`), and
+there **the compiler does not follow it**. Once a declared-linear destructure
+has holed `h.arr[0]` through a struct root, the compiler accepts
+`h.arr[0].x0 = …`. It runs the moved-out element's destructor again and leaks
+the written value, because its check fires only when the root binding is an
+array. That is RUE-2341, seeded red as `array_write_after_destructure_via_field`.
+`overwriteOk` alone would admit the write; this premise is what refuses it.
+`soundness` does not use the premise. It is pinned by the refusal witnesses in
+`Examples.lean` and by that corpus case.
 
 Three things it deliberately does **not** forbid. Whole-array reassignment
 `a = […]` is (Assign)'s ordinary case and is the spec's own recovery path
@@ -10978,8 +10986,8 @@ answers those slots at the **type** level, `Ts.any (·.mult D = .linear)`,
 which is the second disjunct's job done conservatively — it can only say
 "carries" where the calculus's own disjunct would. What would make the
 difference observable is a *dynamic-index* move, which leaves residue no path
-names (`3.8:70`); this part has no such move, so the two readings agree on
-every program it accepts. RUE-2327 is where the distinction starts to bite.
+names (`3.8:70`). The fragment has no such move, so the two readings agree on
+every program it accepts (RUE-2342 owes the move and the disjunct).
 
 ```lean
 def RueCore.residualLinear (D : Decls) : OwnSt → Ty → Bool
