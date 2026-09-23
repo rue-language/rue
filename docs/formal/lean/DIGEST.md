@@ -11483,11 +11483,15 @@ ownership") — and the compiler agrees: `a[0] = …` after `a[0]` moved is E048
 deviation from the calculus as written is recorded in §5.2 itself.
 
 The premise applies to an array anywhere in the place tree (`3.8:71`), and
-there **the compiler does not follow it**. Once a declared-linear destructure
-has holed `h.arr[0]` through a struct root, the compiler accepts
-`h.arr[0].x0 = …`. It runs the moved-out element's destructor again and leaks
-the written value, because its check fires only when the root binding is an
-array. That is RUE-2341, seeded red as `array_write_after_destructure_via_field`.
+there **the compiler does not follow it**: its E0480 check fires only when the
+root binding is an array (RUE-2341). Once a declared-linear destructure has
+holed `h.arr[0]` through a struct root, it accepts a write *to* the element
+(`h.arr[0] = …`) and one below a dynamic index (`h.arr[i].x0 = …`, the red
+corpus case `array_dyn_write_after_destructure_via_field`), running the
+moved-out element's destructor again and leaking the written value. A write
+*through* the consumed element, `h.arr[0].x0 = …`
+(`array_write_after_destructure_via_field`), is refused since RUE-2344, but
+with E0205 — its base is a moved place — rather than this premise's E0480.
 `overwriteOk` alone would admit the write; this premise is what refuses it.
 `soundness` does not use the premise. It is pinned by the refusal witnesses in
 `Examples.lean` and by that corpus case.
