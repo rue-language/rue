@@ -2419,8 +2419,8 @@ theorem Contents.resolveDyn_ok {D : Decls} : ∀ (is : List Int) (πs : List (Li
       simp only [Ty.atDyn, Option.some.injEq] at hdyn
       subst hdyn
       exact Or.inr ⟨[], by cases c <;> rfl, rfl⟩
-  | [], _ :: _, _, _, _, _, _, hlen => by simp at hlen
-  | _ :: _, [], _, _, _, _, _, hlen => by simp at hlen
+  | [], _ :: _, _, _, _, _, _, hlen => by cases hlen
+  | _ :: _, [], _, _, _, _, _, hlen => by cases hlen
   | i :: is, π :: πs, c, Ta, T, hm, hdyn, hlen => by
       cases Ta with
       | int _ _ | float _ | bool | unit | struct _ | enum _ => simp [Ty.atDyn] at hdyn
