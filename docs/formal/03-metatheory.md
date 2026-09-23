@@ -205,7 +205,8 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   reading still to decide, RUE-2346; one case at seed 7, two at seed 23 and a
   third there that the compiler's E0904 masks) and a dynamic index into a
   zero-length array field (an internal compiler error where the model traps
-  with `bounds`, RUE-2345; five cases at seed 23). Both are seeded red. Those
+  with `bounds`, RUE-2345, fixed since; five cases at seed 23). Both are
+  seeded; the second agrees now that RUE-2345 is fixed. Those
   two settings reach nothing else; wider runs at other seeds reach RUE-2344's
   read below a dynamic index after its array moved (`gen_2_1694`,
   `--gen 1695 --seed 2`) and two compiler defects filed from them, RUE-2347

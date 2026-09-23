@@ -1116,16 +1116,17 @@ def arrayElemSelfAssign : Expr :=
       (seq (dbg (lit 100)) (lit 0)))
 
 /-- `H { x0: i8, x1: [i64; 0] }`: a struct holding a zero-length array field,
-for RUE-2345's red case. -/
+for RUE-2345's case. -/
 def dZeroArrHolder : StructDecl :=
   { attr := .none, fields := [.int .w8 .signed, .array tI64 0], dtor := false, cls := .affine }
 
-/-- **The red case** (RUE-2345): a dynamic-index read from a zero-length array
+/-- **The RUE-2345 case**: a dynamic-index read from a zero-length array
 **field**, `h.x1[i]` at `i = 0`. Every index into `[i64; 0]` is out of bounds,
-so the model takes (D-Index-Trap) §6.5's bounds trap (`7.1:11`). The compiler
-reports an internal error in code generation instead (`place_lower.rs`, "zero-sized
-places must be diverted to the canonical zero-sized address"); a zero-length
-root binding traps correctly (`arrayZeroLengthDynTrap`). -/
+so the model takes (D-Index-Trap) §6.5's bounds trap (`7.1:11`). Until RUE-2345
+the compiler reported an internal error in code generation instead
+(`place_lower.rs`, "zero-sized places must be diverted to the canonical
+zero-sized address"); it now traps too, as a zero-length root binding always
+did (`arrayZeroLengthDynTrap`). -/
 def arrayZeroLengthFieldDynRead : Program :=
   { decls := Decls.ofStructs (structEnv ++ [dZeroArrHolder]),
     fns := [{ params := [], ret := tI64,
@@ -1145,7 +1146,7 @@ example : run demoOps (prog tI64 arrayElemMoveFirst) demoFuel
 /-- **The self-assignment is refused** (RUE-2346's red case). -/
 example : checkProgram (prog tI64 arrayElemSelfAssign) = false := by rfl
 
-/-- **The zero-length field read is accepted and traps** (RUE-2345's red
+/-- **The zero-length field read is accepted and traps** (the RUE-2345
 case): nothing is printed before the trap. -/
 example : checkProgram arrayZeroLengthFieldDynRead = true := by rfl
 example : run demoOps arrayZeroLengthFieldDynRead demoFuel = .panic .bounds [] := by rfl
