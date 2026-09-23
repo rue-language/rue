@@ -1201,7 +1201,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                            accepted "(Assign) §5.2, 3.8:77" Γ (.assign pl e) .unit
                              (Γ₁.set pl.root (en₁.setSt (en₁.st.setAt pl.path .owned))) [d]
                          else if !assignArrayOk P.decls en₁.st en₁.ty pl.path then
-                           rejected "(Assign) §5.2, 3.8:77" Γ (.assign pl e)
+                           rejected "(Assign) §5.2, 3.8:72, 7.1:46" Γ (.assign pl e)
                              Premise.assignIntoPartialArray [d]
                          else
                            rejected "(Assign) §5.2, 3.8:77" Γ (.assign pl e)

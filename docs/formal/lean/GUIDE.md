@@ -85,7 +85,7 @@ For example, `(Use-Move)` in the calculus (§5.1) says: a use of a
     T.mult P.decls ≠ .copy →
     noDtorPrefix P.decls en.ty p.path = true →
     declaredPrefix P.decls en.ty p.path = none →
-    p.noIdx = true →
+    rootIdxOnly P.decls en.ty p.path = true →
     Typed P R Γ (.use p) T (Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
 ```
 
@@ -102,8 +102,8 @@ rules are read only with an `Ordinary` plan"; and `rootIdxOnly` is `3.8:68`'s
 declared type rather than by reading `.idx` versus `.proj` off the place, since
 it is the type at a node that makes a step an index step. The conclusion marks
 exactly `p`. The calculus's one remaining premise (`p not loaned`) concerns
-loans, which are outside the current
-fragment; `INDEX.md` lists which rules and sections are in and which are not.
+loans, which are outside the current fragment; `INDEX.md` lists which rules and
+sections are in and which are not.
 
 ## 2. The dynamics is a function
 

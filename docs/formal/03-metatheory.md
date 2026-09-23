@@ -76,11 +76,11 @@ path out and by nothing at all on the declared-linear destructure, which
 `3.8:71` admits at an array anywhere in a place tree. Writing into an array
 that has a moved-out element is refused as `3.8:72`/`7.1:46` refuse it
 (`RueCore.assignArrayOk`, E0480). What is still owed is any step **below** a
-dynamic index: §2's place
-grammar has `p [ e ]`, so `a[i].x0` is a place of the calculus and the compiler
+dynamic index: §2's place grammar has `p [ e ]`, so `a[i].x0` is a place of the
+calculus and the compiler
 reads and writes it, but `RueCore.Expr.indexRead` yields the element *value*
 and a dynamic index is not a `RueCore.Place` step, so neither the read nor the
-write has a form here (RUE-2331). No equality compare (it borrows its
+write has a form here (RUE-2342). No equality compare (it borrows its
 operands, `4.3:3f`, so `≈`'s float leaf has no instance here), no payload path
 into an enum (§5.6 tracks none, so `Place` has no enum step), no wildcard,
 repeated or guarded `match` pattern and no bool or integer scrutinee (all
@@ -222,7 +222,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   whole or a read through a moved element is `fully-owned`/(Owned-Base) again
   (`3.8:70`, `7.1:45`, E0205).
   **Owed:** any step below a dynamic index — `a[i].x0`, which the
-  compiler reads and writes and which has no form here (RUE-2331).
+  compiler reads and writes and which has no form here (RUE-2342).
 
 ## No double-free
 
@@ -365,7 +365,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   element is consumed on one path only (E0443), and §5.6's element-wise reading
   is what reports the ones left over (E0406). **Owed:** RUE-2316; any step
   below a dynamic index, and `3.8:70`'s untracked-residue disjunct
-  (RUE-2331).
+  (RUE-2342).
 
 ## Exclusivity / no aliased mutation
 

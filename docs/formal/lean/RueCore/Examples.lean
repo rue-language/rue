@@ -575,7 +575,7 @@ def overwriteFieldPastPartialLinear : Expr :=
             (mkStruct sCarryAffine [resLD (lit 5), resA (lit 6)]))
         (seq (drop (.var 0)) (lit 9))))
 
-/-! ## Arrays (RUE-2322, RUE-2322 part 2 in RUE-2327)
+/-! ## Arrays (RUE-2322, RUE-2327)
 
 `[T; n]` is a value, a literal, a constant-index path step, a dynamic-index
 read or write, and — since RUE-2327 — a place a move or an `@drop` takes one
@@ -815,6 +815,66 @@ def sArrHolderA : Nat := 11
 /-- A program over the fixture declarations plus `S11'`. -/
 def arrHolderAProg (T : Ty) (e : Expr) : Program :=
   Program.entry (Decls.ofStructs (structEnv ++ [dArrHolderA])) T e
+
+/-- `S11''`: `linear struct { x0: S1 }`, one affine, destructor-bearing field,
+so `h.arr[0].x0` selects through it and the declared-linear destructure
+consumes the *element* (`3.8:33`). -/
+def dDeclLinA : StructDecl :=
+  { attr := .linear, fields := [.struct sAffine], dtor := false, cls := .linear }
+
+/-- `S12''`: `struct { arr: [S11''; 2] }`, no attribute: `Linear` by infection,
+and the struct root an array of declared-linear elements is reached through. -/
+def dArrOfDeclLin : StructDecl :=
+  { attr := .none, fields := [.array (.struct 11) 2], dtor := false, cls := .linear }
+
+/-- A program over the fixture declarations plus `S11''` and `S12''`. -/
+def declLinArrProg (T : Ty) (e : Expr) : Program :=
+  Program.entry (Decls.ofStructs (structEnv ++ [dDeclLinA, dArrOfDeclLin])) T e
+
+/-- **The red case** (review probe `w2`, RUE-2341). `h.arr[0].x0` destructures
+the declared-linear element `h.arr[0]`, which holes the array `h.arr` even
+though the array is reached through a field. Then `h.arr[0].x0 = S1 { 77 }`
+writes through that element. `3.8:71`/`3.8:72` and `7.1:46` forbid this for an
+array anywhere in a place tree, and `assignArrayOk` refuses it (E0480).
+`overwriteOk` alone would not have refused it. The compiler's check only fires
+when the root binding is an array, so it accepts the program, runs `S1 { 1 }`'s
+destructor a second time, and never drops the `77`. The corpus keeps it red
+until RUE-2341 is fixed. -/
+def arrayWriteAfterDestructureViaField : Expr :=
+  letIn true (mkStruct 12 [mkArray (.struct 11)
+      [mkStruct 11 [resA (lit 1)], mkStruct 11 [resA (lit 2)]]])
+    (letIn false (use (.proj (.idx (.proj (.var 0) 0) 0) 0))
+      (seq (drop (.var 0))
+        (seq (dbg (lit 20))
+          (seq (assign (.proj (.idx (.proj (.var 1) 0) 0) 0) (resA (lit 77)))
+            (seq (dbg (lit 30))
+              (letIn false (use (.proj (.idx (.proj (.var 1) 0) 1) 0))
+                (seq (drop (.var 0)) (lit 7))))))))
+
+/-- `[[S1; 2]; 2]`, the nested array a dynamic-index write reaches through a
+constant index (helper). -/
+abbrev tArrArrA : Ty := .array (.array (.struct sAffine) 2) 2
+
+/-- The dynamic-index write `a[1][i] = S1 { 9 }` into a whole `[[S1; 2]; 2]`
+(probe `c8`). The place `a[1]` steps into the outer array, so `arrayPrefix`
+is `a` itself and `assignArrayOk` has something to check. It holds here: the
+array is whole. -/
+def dynWriteNestedWhole : Expr :=
+  letIn true (mkArray (.array (.struct sAffine) 2)
+      [mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)],
+       mkArray (.struct sAffine) [resA (lit 3), resA (lit 4)]])
+    (seq (indexWrite (.idx (.var 0) 1) (lit 0) (resA (lit 9))) (lit 7))
+
+/-- The same write after `a[0]` was moved out (probe `c8`, E0480). `3.8:72`
+forbids writing *through* an element of an array that has a hole.
+`assignArrayOk` on (IndexWrite) is the premise that refuses it. -/
+def dynWriteNestedAfterMove : Expr :=
+  letIn true (mkArray (.array (.struct sAffine) 2)
+      [mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)],
+       mkArray (.struct sAffine) [resA (lit 3), resA (lit 4)]])
+    (letIn false (use (.idx (.var 0) 0))
+      (seq (drop (.var 0))
+        (seq (indexWrite (.idx (.var 1) 1) (lit 0) (resA (lit 9))) (lit 7))))
 
 /-- Probe `a6`/`a6b`/`e4`, refused: an element move through a field, `h.a[0]`.
 `3.8:68` tracks element moves "only for indexing applied directly to an array
@@ -1070,6 +1130,18 @@ example : run demoOps (prog tI64 arrayWholeReinit) demoFuel
          .dbg (v64 20),
          .drop 0 (.array (.struct sAffine) [cA 8, cA 9]),
          .dtor sAffine (cA 8), .dtor sAffine (cA 9)] := by rfl
+
+/-- **The side condition through a field** (RUE-2341, red on the bridge): the
+write through a destructured element of an array reached through `h.arr` is
+refused. The refusal comes from `assignArrayOk`, not from `overwriteOk`. -/
+example : checkProgram (declLinArrProg tI64 arrayWriteAfterDestructureViaField) = false := by rfl
+
+/-- **The side condition on (IndexWrite)** (probe `c8`): with the outer array
+whole, a dynamic-index write through `a[1]` is accepted. After `a[0]` is moved
+out, the same write is refused. These two are the premise's only witnesses
+where `arrayPrefix` is not `none`. -/
+example : checkProgram (prog tI64 dynWriteNestedWhole) = true := by rfl
+example : checkProgram (prog tI64 dynWriteNestedAfterMove) = false := by rfl
 
 /-- **The six refusals the element move brings with it**, each one the
 compiler's too: `3.8:68`'s root-index rule through a field (probe `a6`) and at
@@ -1503,8 +1575,9 @@ def enumHolderPartialThenDrop : Expr :=
 §4.2's `Declared(d, π_s)` plan and the rule that discharges it,
 (Use-Declared-Linear-Destructure) §5.1, with §6.3's `split`/`destructure` under
 them. The nine accepted programs below are the probe table's d1, d2, d4, d5f,
-d6, d6c, d9, d13 and d14; the three rejections are d3, d7 and d12; d9b is the
-fragment's own refusal, a selected path through an index step (RUE-2327); and
+d6, d6c, d9, d13 and d14; the three rejections are d3, d7 and d12; d9b, a
+selected path through an index step, is accepted since RUE-2327
+(`destructureThroughIndex`); and
 `destructureAncestorDropped` is d5b, **seeded red** — the model accepts it and
 the compiler does not (RUE-2335). Every one was run against the compiler before
 it was committed, and the probe it reproduces is named in its doc-comment.
@@ -1585,7 +1658,7 @@ def dDestrArr : StructDecl :=
   { attr := .linear, fields := [.array (.struct 1) 2, tI64], dtor := false, cls := .linear }
 
 /-- `S22`: `linear struct { arr: [S1; 2], v: S1 }` — the declared-`linear`
-struct probe d9b selects *through*, at `x.arr[0]`, which this part refuses
+struct probe d9b selects *through*, at `x.arr[0]`, which RUE-2327 admits
 (`destructureThroughIndex`). -/
 def dDestrArrIdx : StructDecl :=
   { attr := .linear, fields := [.array (.struct 1) 2, .struct 1], dtor := false, cls := .linear }

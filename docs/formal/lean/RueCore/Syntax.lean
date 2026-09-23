@@ -123,8 +123,7 @@ What a **dynamic** index still cannot reach is any step below it. §2's place
 grammar has `p [ e ]`, so `a[i].x0` is a place of the calculus and the
 compiler reads and writes it; here `Expr.indexRead` yields the element *value*
 and a dynamic index is not a `Place` step, so neither `a[i].x0` nor
-`a[i].x0 = 50` has a form at all. That debt is RUE-2331's, with the
-generator's array draws.
+`a[i].x0 = 50` has a form at all. That debt is RUE-2342.
 
 An array's ownership state is a `Path ⇀ {Owned, MovedOut}` tree like a
 struct's, so every §5 predicate that recurses into a node's children — §5.6's

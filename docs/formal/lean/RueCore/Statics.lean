@@ -774,8 +774,8 @@ answers those slots at the **type** level, `Ts.any (·.mult D = .linear)`,
 which is the second disjunct's job done conservatively — it can only say
 "carries" where the calculus's own disjunct would. What would make the
 difference observable is a *dynamic-index* move, which leaves residue no path
-names (`3.8:70`); this part has no such move, so the two readings agree on
-every program it accepts. RUE-2327 is where the distinction starts to bite. -/
+names (`3.8:70`). The fragment has no such move, so the two readings agree on
+every program it accepts (RUE-2342 owes the move and the disjunct). -/
 def residualLinear (D : Decls) : OwnSt → Ty → Bool
   | .movedOut, _ => false
   | .owned, T => decide (T.mult D = .linear)
@@ -784,8 +784,8 @@ def residualLinear (D : Decls) : OwnSt → Ty → Bool
        | some sd => sd.attr = .linear || residualLinearFields D ts sd.fields
        | none => false)
   -- The array clause, and §5.6's second disjunct: see the docstring above. A
-  -- partially-written array node is reachable in this part (`a[0] = …`); a
-  -- partially *moved* one is RUE-2327's (`Syntax.lean`).
+  -- partially-written array node (`a[0] = …`) and a partially *moved* one
+  -- (`3.8:68`'s element move, `Syntax.lean`) both reach it.
   | .fields ts, .array T n => residualLinearFields D ts (List.replicate n T)
   | .fields _, _ => false
 
@@ -830,6 +830,16 @@ ownership") — and the compiler agrees: `a[0] = …` after `a[0]` moved is E048
 (probe a5), and so is `a[1].x0 = …` after `a[0]` moved (probe b1) and
 `a[0].s = …` after `a[0].s` moved (probe b10). The model follows the spec; the
 deviation from the calculus as written is recorded in §5.2 itself.
+
+The premise applies to an array anywhere in the place tree (`3.8:71`), and
+there **the compiler does not follow it**. Once a declared-linear destructure
+has holed `h.arr[0]` through a struct root, the compiler accepts
+`h.arr[0].x0 = …`. It runs the moved-out element's destructor again and leaks
+the written value, because its check fires only when the root binding is an
+array. That is RUE-2341, seeded red as `array_write_after_destructure_via_field`.
+`overwriteOk` alone would admit the write; this premise is what refuses it.
+`soundness` does not use the premise. It is pinned by the refusal witnesses in
+`Examples.lean` and by that corpus case.
 
 Three things it deliberately does **not** forbid. Whole-array reassignment
 `a = […]` is (Assign)'s ordinary case and is the spec's own recovery path
