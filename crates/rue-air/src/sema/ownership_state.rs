@@ -157,12 +157,20 @@ impl VariableMoveState {
         if let Some(span) = self.is_path_moved(path) {
             return Some(span);
         }
-        // Descendant direction: a longer stored moved path (`o.inner.s`) whose
-        // prefix is the queried whole-value path (`o.inner`).
+        self.moved_strict_descendant(path).map(|(_, span)| span)
+    }
+
+    /// The first recorded move strictly below `path` — a longer stored moved
+    /// path (`o.inner.s`) whose prefix is `path` (`o.inner`) — with its span.
+    ///
+    /// This is the descendant half of the core's `fully-owned` premise (§5.1,
+    /// spec 3.8:26): a place with a moved part below it cannot be used as a
+    /// whole, whether by value or through a `borrow`/`inout` loan (§5.4).
+    pub fn moved_strict_descendant(&self, path: &[Spur]) -> Option<(&[Spur], Span)> {
         self.partial_moves
             .iter()
             .find(|(moved, _)| moved.len() > path.len() && moved[..path.len()] == *path)
-            .map(|(_, span)| *span)
+            .map(|(moved, span)| (moved.as_slice(), *span))
     }
 
     /// Check if the entire variable (including all fields) is fully valid to use.
@@ -1203,6 +1211,12 @@ mod tests {
             Some(Span::new(1, 2))
         );
         assert_eq!(state.is_path_or_descendant_moved(&[a, c]), None);
+        // The descendant half names the moved sub-place itself.
+        assert_eq!(
+            state.moved_strict_descendant(&[a]),
+            Some(([a, b].as_slice(), Span::new(1, 2)))
+        );
+        assert_eq!(state.moved_strict_descendant(&[a, b]), None);
     }
 
     #[test]
