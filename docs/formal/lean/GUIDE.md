@@ -1235,7 +1235,9 @@ Change one thing and each premise answers in turn. Make the payload `linear`
 and leave it, and the §5.6 check at the arm's end is the leak
 (`enum_arm_leaks_payload`, E0406). Consume the enum in one arm of an `if`
 only, and the join has `MovedOut` against `Owned` at a `Linear` type
-(`enum_match_one_arm`, E0443). Match it twice, and the second scrutinee is the
+(`enum_match_one_arm`, E0443); at an `Affine` payload the same join is
+`MovedOut` and accepted (`enum_match_one_arm_affine`, which the compiler ICEd
+on until RUE-2347). Match it twice, and the second scrutinee is the
 use of a moved-out place (`enum_matched_twice_moving`, E0205). Make the
 scrutinee a field of a struct, and the move is `3.8:22`'s partial one, whose
 sibling still drops at scope exit (`enum_match_projection`, and
