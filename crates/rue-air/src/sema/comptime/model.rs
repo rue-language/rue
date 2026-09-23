@@ -19,7 +19,9 @@ pub trait ComptimeValue: Clone {
     /// Return the semantic type carried by a reduced value when the host can
     /// represent it without consulting syntax. This is the type source for
     /// aggregate construction; contextual hosts may still prefer their
-    /// resolved expression map for untyped literals.
+    /// resolved expression map for untyped literals. The answer becomes an
+    /// array element type, so a host whose type domain restricts array
+    /// children returns only types it can hold there.
     fn value_type(&self) -> Option<Self::Type> {
         self.as_integer_type()
             .or_else(|| self.as_float_type())
