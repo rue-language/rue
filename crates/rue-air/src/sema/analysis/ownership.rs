@@ -6816,7 +6816,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// base and its ancestors are checked; the destination itself may be
     /// moved, which is the reinitialization idiom (3.8:55), and the holes
     /// *below* an array are the partially-moved-array rule's to reject
-    /// (E0480, [`Self::reject_write_into_partially_moved_array`]).
+    /// (E0480, [`Self::reject_write_into_partially_moved_array`]). That rule
+    /// fires only when the array is the root binding today: a write into a
+    /// field-reached array that has a moved-out part is still accepted, and is
+    /// RUE-2341.
     fn reject_write_under_moved_place(
         &self,
         root_var: Spur,
@@ -6832,13 +6835,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         else {
             return Ok(());
         };
-        Err(use_after_move_path_error(
-            self.body_interner(),
-            root_var,
-            base_path,
-            span,
-            moved_span,
-        ))
+        // Not `use_after_move_path_error`: its help suggests a borrow, which
+        // cannot apply to an assignment target. The recovery here is 3.8:55's
+        // reinitialization of the moved place as a whole.
+        let path_str = super::format_move_path(self.body_interner(), root_var, base_path);
+        Err(
+            CompileError::new(ErrorKind::UseAfterMove(path_str.clone()), span)
+                .with_label("value moved here", moved_span)
+                .with_help(format!(
+                    "a place inside a moved value cannot be written; reinitialize the \
+                 moved value as a whole first, then assign into `{path_str}`"
+                )),
+        )
     }
 
     /// Reject a use of a place below a dynamic index unless the array the

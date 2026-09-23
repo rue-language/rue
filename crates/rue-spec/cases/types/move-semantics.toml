@@ -3041,7 +3041,7 @@ error_contains = "use of moved value 'xs[0]'"
 
 [[case]]
 name = "dyn_index_read_below_moved_field_array_rejected"
-spec = ["3.8:70", "3.8:26"]
+spec = ["3.8:53", "3.8:70", "3.8:26"]
 description = "A place below a dynamic index into a moved array field is a use of the moved array (RUE-2344)"
 source = """
 struct S1 { x0: i64 }
@@ -3069,7 +3069,7 @@ error_contains = "use of moved value 'h.a'"
 
 [[case]]
 name = "dyn_index_write_below_moved_field_array_rejected"
-spec = ["3.8:70", "3.8:26"]
+spec = ["3.8:53", "3.8:70", "3.8:26"]
 description = "A write below a dynamic index into a moved array field is rejected, not an overwrite-drop of a destroyed element (RUE-2344)"
 source = """
 struct S1 { x0: i64 }
@@ -3097,7 +3097,7 @@ error_contains = "use of moved value 'h.a'"
 
 [[case]]
 name = "dyn_index_element_write_into_moved_field_array_rejected"
-spec = ["3.8:70", "3.8:26"]
+spec = ["3.8:53", "3.8:70", "3.8:26"]
 description = "Writing a whole element at a dynamic index into a moved array field is rejected (RUE-2344)"
 source = """
 struct S1 { x0: i64 }
@@ -3125,7 +3125,7 @@ error_contains = "use of moved value 'h.a'"
 
 [[case]]
 name = "dyn_index_drop_below_moved_field_array_rejected"
-spec = ["3.8:70", "3.8:26"]
+spec = ["3.8:53", "3.8:70", "3.8:26"]
 description = "@drop of a Copy place below a dynamic index into a moved array field is rejected (RUE-2344)"
 source = """
 struct S1 { x0: i64 }
@@ -3153,7 +3153,7 @@ error_contains = "use of moved value 'h.a'"
 
 [[case]]
 name = "dyn_index_read_below_holed_field_array_rejected"
-spec = ["3.8:70", "3.8:26"]
+spec = ["3.8:53", "3.8:70", "3.8:26"]
 description = "A dynamic index cannot read an array field one of whose elements has a moved-out field (RUE-2344)"
 source = """
 struct S1 { x0: i64 }
@@ -3181,7 +3181,7 @@ error_contains = "moved-out element poisons the whole array"
 
 [[case]]
 name = "dyn_index_read_beside_moved_sibling_field"
-spec = ["3.8:70", "3.8:26"]
+spec = ["3.8:53", "3.8:70", "3.8:26"]
 description = "A moved sibling field does not affect a place below a dynamic index: h.a[i].b is not h.b (RUE-2344)"
 source = """
 struct S1 { x0: i64 }
@@ -3205,7 +3205,7 @@ exit_code = 0
 
 [[case]]
 name = "dyn_index_write_beside_moved_sibling_field"
-spec = ["3.8:70", "3.8:26"]
+spec = ["3.8:53", "3.8:70", "3.8:26"]
 description = "A write below a dynamic index is unaffected by a moved sibling of the array (RUE-2344)"
 source = """
 struct S1 { x0: i64 }
@@ -3230,7 +3230,7 @@ exit_code = 0
 
 [[case]]
 name = "dyn_index_move_out_below_field_array_rejected"
-spec = ["3.8:70", "3.8:26"]
+spec = ["3.8:53", "3.8:70", "3.8:26"]
 description = "Moving a non-Copy place out below a dynamic index stays E0904"
 source = """
 struct S1 { x0: i64 }
@@ -3256,7 +3256,7 @@ expected_error_code = "E0904"
 
 [[case]]
 name = "dyn_index_read_below_moved_nested_field_array_rejected"
-spec = ["3.8:70", "3.8:26"]
+spec = ["3.8:53", "3.8:70", "3.8:26"]
 description = "h.x.a[i].c after h.x.a moved is a use of the moved array (RUE-2344)"
 source = """
 struct S1 { x0: i64 }
@@ -3285,7 +3285,7 @@ error_contains = "use of moved value 'h.x.a'"
 
 [[case]]
 name = "dyn_index_read_below_moved_ancestor_rejected"
-spec = ["3.8:70", "3.8:26"]
+spec = ["3.8:53", "3.8:70", "3.8:26"]
 description = "h.x.a[i].c after h.x moved is a use of the moved ancestor (RUE-2344)"
 source = """
 struct S1 { x0: i64 }
@@ -3314,7 +3314,7 @@ error_contains = "use of moved value 'h.x.a'"
 
 [[case]]
 name = "dyn_index_write_below_moved_nested_field_array_rejected"
-spec = ["3.8:70", "3.8:26"]
+spec = ["3.8:53", "3.8:70", "3.8:26"]
 description = "h.x.a[i].s = ... after h.x.a moved is rejected (RUE-2344)"
 source = """
 struct S1 { x0: i64 }
@@ -3343,7 +3343,7 @@ error_contains = "use of moved value 'h.x.a'"
 
 [[case]]
 name = "dyn_index_drop_below_moved_nested_field_array_rejected"
-spec = ["3.8:70", "3.8:26"]
+spec = ["3.8:53", "3.8:70", "3.8:26"]
 description = "@drop(h.x.a[i].c) after h.x.a moved is rejected (RUE-2344)"
 source = """
 struct S1 { x0: i64 }
@@ -3372,7 +3372,7 @@ error_contains = "use of moved value 'h.x.a'"
 
 [[case]]
 name = "dyn_index_deeper_read_beside_moved_sibling_field"
-spec = ["3.8:70", "3.8:26"]
+spec = ["3.8:53", "3.8:70", "3.8:26"]
 description = "h.x.a[i].c is not h.x.c: a moved sibling one level deeper does not affect it (RUE-2344)"
 source = """
 struct S1 { x0: i64 }
@@ -3402,7 +3402,7 @@ exit_code = 0
 
 [[case]]
 name = "dyn_index_nested_read_below_moved_field_array_rejected"
-spec = ["3.8:70", "3.8:26"]
+spec = ["3.8:53", "3.8:70", "3.8:26"]
 description = "h.a[i][j].c after h.a moved is a use of the moved array (RUE-2344)"
 source = """
 struct S1 { x0: i64 }
@@ -3430,7 +3430,7 @@ error_contains = "use of moved value 'h.a'"
 
 [[case]]
 name = "dyn_index_nested_write_below_moved_field_array_rejected"
-spec = ["3.8:70", "3.8:26"]
+spec = ["3.8:53", "3.8:70", "3.8:26"]
 description = "h.a[i][j].c = ... after h.a moved is rejected (RUE-2344)"
 source = """
 struct S1 { x0: i64 }
@@ -3455,7 +3455,7 @@ error_contains = "use of moved value 'h.a'"
 
 [[case]]
 name = "dyn_index_nested_read_beside_moved_sibling_field"
-spec = ["3.8:70", "3.8:26"]
+spec = ["3.8:53", "3.8:70", "3.8:26"]
 description = "h.a[i][j].b is not h.b: a moved sibling does not affect a place below two dynamic indices (RUE-2344)"
 source = """
 struct S1 { x0: i64 }
