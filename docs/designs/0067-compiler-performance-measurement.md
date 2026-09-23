@@ -197,10 +197,12 @@ comparability, but a refusal that nobody sees stops the series while every job
 reports success — measurement that has quietly ceased is worse than no
 measurement, because it is still believed. Two gates enforce this. A change
 that moves a pinned input fails its own pull request, decided from that tree
-alone. A series that has stopped advancing — more than five merged trunk
-commits with no new plotted point on some platform — fails *every* pull
-request until it is resolved, because a stall is a repository-wide condition
-rather than a property of whichever change caused it. Neither has a bypass:
+alone. A series that has stopped advancing — more than five trunk merges with
+no new plotted point on some platform, counted in merges because collection
+is per push and one merge is one push however many commits it carries — fails
+*every* pull request until it is resolved, because a stall is a
+repository-wide condition rather than a property of whichever change caused
+it. Neither has a bypass:
 the remedy is declaring the next epoch, which needs no baseline and so is a
 small manifest change, and a genuine emergency is served by bypassing branch
 protection rather than by an escape hatch maintained for the purpose.

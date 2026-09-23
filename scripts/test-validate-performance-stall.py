@@ -82,10 +82,10 @@ def test_one_stalled_platform_is_enough() -> None:
 
 
 def test_a_burst_with_a_recent_newest_commit_is_not_a_stall() -> None:
-    # RUE-1258 recency guard: multi-commit queue merges can outrun the
+    # RUE-1258 recency guard: several merges landing in a burst can outrun the
     # per-push collector, but an actively collecting series always has a
-    # recent newest plotted commit. Only a count past the threshold AND an
-    # aged newest commit is a stall.
+    # recent newest plotted commit. Only a merge count past the threshold AND
+    # an aged newest commit is a stall.
     subject = data(("x86_64-linux", "a" * 40, "2026-08-08T00:00:00Z"))
     young = lambda commit: 60
     old = lambda commit: 3 * 60 * 60
@@ -94,6 +94,45 @@ def test_a_burst_with_a_recent_newest_commit_is_not_a_stall() -> None:
     assert [entry[2] for entry in behind] == [40]
     # Without an age source the count alone still decides, as before.
     assert stall.stalled(subject, fixed(40)) != []
+
+
+def test_a_twelve_commit_merge_past_a_day_old_point_is_not_stalled() -> None:
+    # RUE-2343: one queue merge on trunk is one missed collection opportunity,
+    # however many commits it rebases. Counting merges instead of commits
+    # stops a single big merge from reading as a stall on its own, even once
+    # the newest plotted point has aged well past the recency guard — this is
+    # the incident: PR #3188 added 12 commits in one merge to a point that had
+    # gone quiet, and every open pull request failed on a series that was
+    # actually healthy.
+    subject = data(("x86_64-linux", "a" * 40, "2026-08-08T00:00:00Z"))
+    day_old = lambda commit: 24 * 60 * 60
+    assert stall.stalled(subject, fixed(1), commit_age=day_old) == []
+
+
+def test_six_single_commit_merges_past_the_grace_window_is_stalled() -> None:
+    # Six separate merges, one commit each, are six missed collection
+    # opportunities once the newest plotted point has also aged past the
+    # grace window. Merge-counting fixes the false stall from one big merge
+    # without masking a real one made of several small merges.
+    subject = data(("x86_64-linux", "a" * 40, "2026-08-08T00:00:00Z"))
+    stale = lambda commit: 3 * 60 * 60
+    behind = stall.stalled(subject, fixed(6), commit_age=stale)
+    assert [entry[2] for entry in behind] == [6]
+
+
+def test_the_merge_grouping_function_counts_distinct_timestamps() -> None:
+    # The queue's rebase stamps every commit of one merge with the same
+    # committer time (RUE-2343); counting distinct `%ct` values counts merges
+    # without an API call. Verified against several hundred commits of real
+    # trunk history — see the RUE-2343 implementation report for the sampled
+    # groups and the PRs they matched.
+    twelve_commit_merge = ["1758000000"] * 12
+    assert stall.count_merge_groups(twelve_commit_merge) == 1
+
+    six_single_commit_merges = [str(1758000000 + i) for i in range(6)]
+    assert stall.count_merge_groups(six_single_commit_merges) == 6
+
+    assert stall.count_merge_groups([]) == 0
 
 
 def test_an_empty_dashboard_is_not_a_stall() -> None:
@@ -408,7 +447,7 @@ def test_an_epoch_publishing_its_index_is_healthy() -> None:
 
 
 def test_a_baseline_that_publishes_no_index_is_a_failure() -> None:
-    # Points keep arriving, so the commit-count rule is satisfied while the
+    # Points keep arriving, so the merge-count rule is satisfied while the
     # figure they exist to move is absent. This is the shape RUE-1475 took.
     missing = stall.unindexed(indexed_epoch(5, "b" * 40, [None, None, None]))
     assert missing == [("x86_64-linux", 5, 3)]
@@ -513,10 +552,12 @@ def test_a_new_epoch_is_given_room_to_pin() -> None:
     )
 
 
-def test_the_deadline_is_counted_in_points_not_trunk_commits() -> None:
-    # Commits do not arrive one at a time — the RUE-1522 stack put twelve on
-    # trunk in a single merge — so a commit-counted deadline can expire in the
-    # time one pull request takes to land. A stack costs one point.
+def test_the_deadline_is_counted_in_points_not_trunk_merges() -> None:
+    # A merge is an opportunity to collect, not a collected run — the
+    # RUE-1522 stack put twelve commits on trunk in a single merge, which
+    # already counts as one opportunity, but a merge whose collection fails
+    # still spends a merge-counted deadline without giving a maintainer a run
+    # to pin. A stack whose collection succeeds costs one point.
     late = stall.unpinned(
         collecting_epoch(6, None, [("a" * 40, True)] * 11), max_points=10
     )
@@ -559,7 +600,7 @@ def test_the_run_named_is_the_first_complete_one() -> None:
 
 def test_partial_points_never_start_the_deadline() -> None:
     # A partial run is never a baseline, so an epoch that has only ever
-    # collected partial runs has nothing to pin. That is the commit-count
+    # collected partial runs has nothing to pin. That is the merge-count
     # rule's business, not this one's.
     subject = collecting_epoch(6, None, [("a" * 40, False)] * 50)
     assert stall.unpinned(subject) == []
