@@ -222,9 +222,9 @@ the weights can be read and changed:
 * a sequence's discarded statement is mostly unit-typed, where `assign`
   (whose right-hand side may use the target binder itself, so
   reinitialisation after a move and overwrite of a live value both arise)
-  and `@drop` live; `@drop` prefers a binder §6.11 walks into — a struct or an
-  enum — but may name any binder, since the calculus allows `@drop` of a place
-  of any class;
+  and `@drop` live; `@drop` prefers a binder §6.11 walks into — a struct, an
+  enum or an array — but may name any binder, since the calculus allows `@drop`
+  of a place of any class;
 * integer literals are small, `0` among them, with an occasional `min_T` or
   `max_T` at the drawn type, so every arithmetic operator can trap — and the
   narrow types make that likely rather than rare;
