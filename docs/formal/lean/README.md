@@ -85,8 +85,10 @@ destructure: 18 of the 200 programs and 67 of the 1,000 contain one, the
 checker accepts 0 and 13 of those, and the destructure's own linear-residue
 premise (E0474) is the deepest refusal of 0 and 2. RUE-2335's shape — a
 `@drop` of a declared-`linear` place after a destructure under it, which the
-compiler rejects and the model accepts — is not drawn around but counted, and
-none of those 1,200 cases has it. One shape is deliberately absent and the
+compiler rejects and the model accepts — is not drawn around. None of those
+1,200 cases has it, but the draw reaches it at about one accepted case in
+100,000 programs (first: `gen_1_773`, `--gen 774 --seed 1`), and such a case is
+a bridge disagreement to attribute to RUE-2335 by hand. One shape is deliberately absent and the
 module says why: a `return` or `@panic` **inside an arm**, which `check` is
 incomplete on exactly as it is inside an `if` arm.
 
