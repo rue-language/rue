@@ -1305,10 +1305,13 @@ impl<'a> Verifier<'a> {
     /// compiler-owned slot (`raw_slots`) is the target's flag only when, on
     /// every reachable block:
     ///
-    /// * each drop of the target is preceded in its block by a store of zero
-    ///   to the slot with no other store to it in between, except a drop in
-    ///   the slot's own guard body (a block entered only through the true
-    ///   edges of `slot != 0` tests), which is the guarded exit drop itself;
+    /// * each drop of the target is reached, on every path, through a store of
+    ///   zero to the slot with no other write to it in between, except a drop
+    ///   in the slot's own guard body (a block entered only through the true
+    ///   edges of `slot != 0` tests), which is the guarded exit drop itself.
+    ///   The store is usually earlier in the drop's own block; a `match`
+    ///   clears the flag where it moves the scrutinee, before its switch, and
+    ///   drops the moved value in an arm (RUE-2347);
     /// * each nonzero store to the slot happens where the target has been
     ///   whole-written on every reaching path with no drop of it since (a
     ///   by-value parameter counts as written at entry);
@@ -1330,8 +1333,11 @@ impl<'a> Verifier<'a> {
     /// the proof; `entry_initialized` says the target is whole at function
     /// entry with no write in the graph, as a by-value parameter is. Two
     /// scans of the reachable instructions and one of the entry edges per
-    /// fact, one two-state solve for where the target is written, and one
-    /// per flag that has a guard-body drop.
+    /// fact, a walk up the dominator tree from each drop of the target (each
+    /// dominating block's instructions scanned once), one two-state solve
+    /// for where the target is written, one per candidate cleared outside
+    /// the block of a drop it covers, and one per flag that has a guard-body
+    /// drop.
     fn drop_flag_guarded_blocks(
         &self,
         raw_slots: &ahash::AHashSet<(u32, Type)>,
@@ -1385,8 +1391,15 @@ impl<'a> Verifier<'a> {
             raw_slot_numbers.contains(&slot).then_some((slot, write))
         };
 
-        // Candidates: every compiler-owned slot cleared before a drop of the
-        // target in the same block.
+        // Candidates: every compiler-owned slot whose nearest write dominating
+        // a drop of the target is a clearing, either earlier in the drop's own
+        // block or, failing that, the last write in the nearest dominating
+        // block that writes the slot. A `match` moves its scrutinee (clearing
+        // the flag) in the block that ends in the switch and drops it in an
+        // arm below it (RUE-2347). Candidacy only bounds the work; the
+        // discipline below is the proof.
+        let mut block_writes: Vec<Option<AHashMap<u32, Option<FlagWrite>>>> =
+            vec![None; block_count];
         let mut candidates = AHashSet::<u32>::new();
         for block in self.cfg.blocks() {
             if !reachable(block.id) {
@@ -1398,7 +1411,27 @@ impl<'a> Verifier<'a> {
                 if let Some((slot, write)) = flag_write(data) {
                     last_write.insert(slot, write);
                 } else if drops_target(data) {
-                    for (&slot, &write) in &last_write {
+                    let mut nearest = last_write.clone();
+                    let mut dominator = self.dominators().idom(block.id);
+                    while let Some(above) = dominator {
+                        let writes =
+                            block_writes[above.as_u32() as usize].get_or_insert_with(|| {
+                                let mut writes = AHashMap::new();
+                                for &value in &self.cfg.get_block(above).insts {
+                                    if let Some((slot, write)) =
+                                        flag_write(&self.cfg.get_inst(value).data)
+                                    {
+                                        writes.insert(slot, write);
+                                    }
+                                }
+                                writes
+                            });
+                        for (&slot, &write) in writes.iter() {
+                            nearest.entry(slot).or_insert(write);
+                        }
+                        dominator = self.dominators().idom(above);
+                    }
+                    for (&slot, &write) in &nearest {
                         if write == Some(FlagWrite::Cleared) {
                             candidates.insert(slot);
                         }
@@ -1485,6 +1518,32 @@ impl<'a> Verifier<'a> {
         };
         let written = self.solve_semantic_fact(target_written);
 
+        // Where a candidate is cleared on every reaching path at block entry,
+        // solved only for a candidate some drop needs it for: a drop whose
+        // own block does not write the slot before it.
+        const NOT_CLEARED: u8 = SEMANTIC_STATE_A;
+        const CLEARED: u8 = SEMANTIC_STATE_B;
+        let mut cleared_on_entry = AHashMap::<u32, Vec<u8>>::new();
+        let mut cleared_at_entry = |slot: u32, block: BlockId| -> bool {
+            let inputs = cleared_on_entry.entry(slot).or_insert_with(|| {
+                self.solve_semantic_fact(|block, mut state| {
+                    for &value in &self.cfg.get_block(block).insts {
+                        if let Some((written, write)) = flag_write(&self.cfg.get_inst(value).data)
+                            && written == slot
+                        {
+                            state = if write == Some(FlagWrite::Cleared) {
+                                CLEARED
+                            } else {
+                                NOT_CLEARED
+                            };
+                        }
+                    }
+                    state
+                })
+            });
+            inputs[block.as_u32() as usize] == CLEARED
+        };
+
         // The discipline, checked on every reachable block; a slot that breaks
         // it is no flag of the target. A guard-body drop is recorded for the
         // staleness solve below.
@@ -1526,8 +1585,10 @@ impl<'a> Verifier<'a> {
                     }
                 } else if drops_target(data) {
                     for &slot in &candidates {
-                        if last_write.get(&slot) == Some(&FlagWrite::Cleared) {
-                            continue;
+                        match last_write.get(&slot) {
+                            Some(FlagWrite::Cleared) => continue,
+                            None if cleared_at_entry(slot, block.id) => continue,
+                            _ => {}
                         }
                         if body_of == Some(slot) {
                             guard_drops.entry(slot).or_default().insert(value);
