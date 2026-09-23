@@ -136,7 +136,7 @@ program, the four views side by side, and the pair(s) that disagree, with a
 tally at the end; `--report-json` writes the same findings as JSON so two runs
 can be diffed. It exits non-zero when any disagreement exists.
 
-**The seed corpus is red on five cases, and that is the bridge working.**
+**The seed corpus is red on three cases, and that is the bridge working.**
 `i64_min_times_neg1` is `min_T * -1` at `i64`, which §6.4's (D-Arith-Trap),
 `3.1:6` and `8.1:3` all make an overflow trap and which the model traps on.
 The compiler's constant folder wraps it instead and the program exits 0 —
@@ -149,25 +149,25 @@ inner declared-`linear` place, §5.3's (@Drop) discharges the declared-`linear`
 **ancestor** `y` — `Σ(y) = Owned`, no still-owned linear sub-place remains
 below it — and the model runs the program, while the compiler reports E0406.
 Which of the two is right is a spec decision, RUE-2335.
-`array_dyn_write_after_destructure_via_field` is the third: a
-declared-`linear` destructure at `h.arr[0].x0` holes an array reached through a
-field, and a write below a dynamic index into it follows (`h.arr[i].x0 = …`).
-The model refuses it (E0480, `fully-owned` at `h.arr` fails). The compiler
-accepts it, because its E0480 check fires only when the root binding is an
-array, then runs the moved-out element's destructor twice and leaks the
-written value. That is RUE-2341.
-`array_elem_self_assign` is the fourth: `a[0] = a[0]` moves `a[0]` out on the
+`array_dyn_write_after_destructure_via_field` was red until RUE-2341 was
+fixed: a declared-`linear` destructure at `h.arr[0].x0` holes an array reached
+through a field, and a write below a dynamic index into it follows
+(`h.arr[i].x0 = …`). The model refuses it (E0480, `fully-owned` at `h.arr`
+fails). The compiler's E0480 check fired only when the root binding was an
+array, so it accepted the program, ran the moved-out element's destructor
+twice and leaked the written value; the check now keys on the outermost array
+the write steps into, and the compiler refuses it with E0480 too.
+`array_elem_self_assign` is the third: `a[0] = a[0]` moves `a[0]` out on the
 right-hand side, so the model refuses the write into the holed array
 (`3.8:72`, E0480), while the compiler accepts it on purpose since RUE-228;
-which is right is a decision, RUE-2346. `array_zero_length_field_dyn_read` is
-the fifth: a dynamic-index read from a zero-length array field traps with
-`bounds` in the model and is an internal compiler error in code generation,
-RUE-2345.
+which is right is a decision, RUE-2346. `array_zero_length_field_dyn_read` was
+red until RUE-2345 was fixed: a dynamic-index read from a zero-length array
+field traps with `bounds` in the model and was an internal compiler error in
+code generation; the compiler now traps too.
 `array_write_after_destructure_via_field`, the constant-index form
-(`h.arr[0].x0 = …`), was red for the same reason until RUE-2344: the compiler
-now refuses it, because the write's base `h.arr[0]` is consumed, though with
-E0205 rather than `3.8:72`'s E0480. The bridge compares verdicts, so it agrees;
-the code is RUE-2341's to correct.
+(`h.arr[0].x0 = …`), was red for the same reason until RUE-2344 made the
+compiler refuse it with E0205 (the write's base `h.arr[0]` is consumed); since
+RUE-2341 it reports `3.8:72`'s E0480.
 `array_dyn_write_after_field_move` was red until RUE-2344 was fixed too: the
 array field `h.x0` is moved out and dropped, and `h.x0[i].x0 = …` then writes
 into it. The model refuses it (E0205 on `h.x0`); the compiler move-checked a
