@@ -140,27 +140,33 @@ non-root array (E0904, `pathOk`), the repeat form at a non-`Copy` element
 program's result type, whose draws keep their weights; the seed corpus has
 the shapes those would add.
 
-Four generated shapes disagree with the compiler today, each seeded red, and
-none is drawn around — drawing around one would write the compiler's current
+The acceptance settings, `--gen 200 --seed 7` and `--gen 1000 --seed 23`,
+reach two shapes that disagree with the compiler, each seeded red, and neither
+is drawn around — drawing around one would write the compiler's current
 answer into the generator. A generated case with one of them is a bridge
 disagreement to attribute to its issue by hand, as RUE-2335's is (above);
-nothing in the tree counts them.
+nothing in the tree counts them. The list is what those settings reach, not
+every shape the draw can: wider runs at other seeds reach the third below and
+two compiler defects filed from them, RUE-2347 (a CFG verification error on a
+`match` in one `if` arm) and RUE-2348 (an internal error on a float array
+bound inside an enum-valued block). Any other generated disagreement is a
+finding to file.
 
 * `a[c] = a[c]` (seed `array_elem_self_assign`, RUE-2346): the model refuses
   it, because (Assign) §5.2 runs the right-hand side first and the write then
   goes into an array with a moved-out element (`3.8:72`, `7.1:46`), while the
   compiler accepts it on purpose (RUE-228). One case at `--gen 200 --seed 7`
-  (`gen_7_101`), two at `--gen 1000 --seed 23` (`gen_23_295`, `gen_23_868`).
+  (`gen_7_101`), three at `--gen 1000 --seed 23` (`gen_23_295`, `gen_23_868`,
+  and `gen_23_652`, whose verdicts agree because the compiler stops first at a
+  later E0904).
 * A dynamic index into a **zero-length array field**, `h.arr[i]` at
   `arr: [T; 0]` (seed `array_zero_length_field_dyn_read`, RUE-2345): an
   internal compiler error in code generation where the model traps with
   `bounds`. None at seed 7, five at seed 23 (`gen_23_108`, `112`, `126`,
   `636`, `718`).
 * A place below a dynamic index after its field-reached array (or an ancestor
-  of it) was moved (seed `array_dyn_write_after_field_move`, RUE-2344), and a
-  write into an array holed by a declared-`linear` destructure through a field
-  (`array_write_after_destructure_via_field`, RUE-2341): reachable, and none at
-  either setting.
+  of it) was moved (seed `array_dyn_write_after_field_move`, RUE-2344): none at
+  either setting; `gen_2_1694` (`--gen 1695 --seed 2`) is one.
 
 Calls and `return` are **not** generated yet: every generated case is a
 one-function program (`Program.entry`), so the shapes RUE-2233 added — a
@@ -897,11 +903,14 @@ def liftPlace (k : Nat) : Place → Place
 `let`** before the form that uses it, and hand the form the extended scope and
 the index uses. The binding is not decoration. The printer writes an index in
 place as a typed block, `a[{ let t: T = e; t }]`, and where `e` is a literal the
-compiler folds that block to a **constant** index, which `7.1:9` bounds-checks
-at compile time: an out-of-range one is E0902, not the run-time trap the core's
-dynamic form reaches (`--gen 200 --seed 7` had seven such cases before this
-existed). A `let`-bound index is not folded (`let i: i64 = 2; a[i]` traps at
-run time), so the core's dynamic index stays dynamic in the printed program.
+compiler folds that block to a **constant** index — `8.2:4` makes an
+expression that can be fully evaluated at compile time one — and bounds-checks
+it at compile time: an out-of-range one is E0902, not the run-time trap the
+core's dynamic form reaches (`--gen 200 --seed 7` had seven such cases before
+this existed). A `let`-bound index is not folded (`let i: i64 = 2; a[i]` traps
+at run time), so the core's dynamic index stays dynamic in the printed
+program. That rests on the compiler's current reading of `8.2:4`, whose list is
+open about an immutable `let` bound to a literal (RUE-2349).
 The price is evaluation order: the indices are evaluated before a write's
 right-hand side rather than after it (`5.2:14`), which the seed cases
 `array_dyn_write_rhs_first` and `array_dyn_write_trap_negative` cover

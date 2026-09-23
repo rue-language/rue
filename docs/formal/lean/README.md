@@ -86,17 +86,27 @@ slots, so the use, `@drop` and assignment draws reach `a[c]`, `a[c].f`,
 `h.arr[c]` and `a[c][c']`; places below a **dynamic** index — `a[i]`,
 `a[i].f`, `h.arr[i].f`, `a[i][j]` — are read at a `Copy` leaf, written, and
 `@drop`ped at a `Copy` leaf, with one index in five out of bounds. About half
-the programs contain an array literal (96 of 200, 501 of 1,000), 56 and 300 an
+the programs contain an array literal or repeat form (96 of 200, 501 of 1,000;
+a literal alone 85 and 467, a repeat form 24 and 126), 56 and 300 an
 index form, 43 and 248 a dynamic one, and the bounds trap ends 14 and 71 runs.
 Each index is bound by a `let` before the form that uses it, because the
 compiler folds a literal index in a block to a constant one and rejects an
-out-of-range constant at compile time (E0902, `7.1:9`). The draw does not
-avoid the shapes of the array red seeds, so generated cases of them appear at
-the rates the module measures — the self-assignment `a[c] = a[c]` (one case at
-`--gen 200 --seed 7`, two at `--gen 1000 --seed 23`), a dynamic index into a
-zero-length array field (five at seed 23), RUE-2344's and RUE-2341's shapes
-more rarely — and each such case is a bridge disagreement to attribute by hand
-to RUE-2346, RUE-2345, RUE-2344 or RUE-2341, the way RUE-2335's shape is.
+out-of-range constant at compile time (E0902): a block that can be fully
+evaluated at compile time is a constant index under `8.2:4`. That a
+`let`-bound index stays dynamic rests on the compiler's current reading of
+`8.2:4`'s open list, which is RUE-2349. The draw does not avoid the shapes of
+the array red seeds, so generated cases of them appear at the rates the module
+measures — the self-assignment `a[c] = a[c]` (RUE-2346; one case at
+`--gen 200 --seed 7`, three at `--gen 1000 --seed 23`, one of which the
+compiler's E0904 masks) and a dynamic index into a zero-length array field
+(RUE-2345; five at seed 23) — and each such case is attributed by hand, the
+way RUE-2335's shape is. Those two are the only disagreements the acceptance
+settings (200 at seed 7, 1,000 at seed 23) reach. Wider runs at other seeds
+reach more: RUE-2344's shape (`gen_2_1694`, `--gen 1695 --seed 2`) and two
+compiler defects found and filed from them, RUE-2347 (a CFG verification
+error on a `match` in one `if` arm) and RUE-2348 (an internal error on a float
+array bound inside an enum-valued block). Any other generated disagreement is
+a finding to file.
 
 A use or `@drop` is drawn through a struct declared `linear` exactly as through
 any other (RUE-2339), so the checker, not the draw, picks §4.2's declared-linear

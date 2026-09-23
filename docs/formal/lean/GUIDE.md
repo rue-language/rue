@@ -1387,12 +1387,13 @@ there is no separate flag, only the path's `MovedOut`.
 
 Three things follow, each a premise somewhere:
 
-* `v0[0]` and `v0[2]` are still readable and movable (`3.8:53`; `OwnSt.get`
+* `v0[0]` and `v0[2]` are still readable and movable (`3.8:68`: sibling
+  elements remain usable; `OwnSt.get`
   finds `Owned` at both), and `v0[1]` is not (E0205);
 * `fully-owned(Σ, v0)` is now **false**, so `let v2 = v0` is refused (`3.8:70`,
   `7.1:45`, E0205; `Examples.arrayWholeAfterElemMove`), and so is a read at a
-  **dynamic** index, which could name the hole (`3.8:70`; E0480 for a write,
-  `Examples.arrayDynWriteAfterElemMove`);
+  **dynamic** index, which could name the hole (`3.8:70`; E0205 for a read,
+  E0480 for a write, `Examples.arrayDynWriteAfterElemMove`);
 * a write into the array — `v0[1] = S1 { 9 }`, at the hole as much as at a
   sibling — is refused (`3.8:72`, `7.1:46`, E0480; `Examples.arrayElemReinit`):
   an element write does not give back per-element ownership, and the
@@ -1407,7 +1408,8 @@ index order, skipping every `⊘`:
 
 ```
   drop(ℓ0) = drop([S1 { 1 }, ⊘, S1 { 3 }])
-           = (an array declares no destructor of its own, 3.9:14)
+           = (an array has no `drop fn` of its own; dropping it drops its
+              elements in index order, 3.9:14–15)
              drop(S1 { 1 })  ++  drop(⊘)  ++  drop(S1 { 3 })
            = [dtor S1 (S1 { 1 })] ++ [] ++ [dtor S1 (S1 { 3 })]
 ```
