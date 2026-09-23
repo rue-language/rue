@@ -305,11 +305,17 @@ def isEnum : Ty → Bool
   | .enum _ => true
   | _ => false
 
+/-- (helper) Whether a type is an array type. -/
+def isArray : Ty → Bool
+  | .array _ _ => true
+  | _ => false
+
 /-- (helper) Whether a type is one §6.11 drops by walking into it: a struct,
-whose droppable fields go in declaration order (`3.9:13`), or an enum, whose
-**active** variant's payload goes and nothing else (`6.3:20`). This is the set
-a drawn `@drop` prefers, because a drop of a scalar observes nothing. -/
-def isAggregate (T : Ty) : Bool := isStruct T || isEnum T
+whose droppable fields go in declaration order (`3.9:13`), an enum, whose
+**active** variant's payload goes and nothing else (`6.3:20`), or an array,
+whose elements go in ascending index order (`3.9:15`). This is the set a drawn
+`@drop` prefers, because a drop of a scalar observes nothing. -/
+def isAggregate (T : Ty) : Bool := isStruct T || isEnum T || isArray T
 
 /-- (helper) An integer type: every width and signedness of §2's `int(w, s)`,
 with `i64` a little more likely so most cases stay at the width a reader
@@ -352,6 +358,22 @@ def floatLiteral (w : FloatWidth) : G Expr := do
     else { sig := k, negExp := true, e := 2 }
   return floatLit w l
 
+/-- (helper) An array length (`7.1:14`'s compile-time constant): small, so a
+program stays readable, and `0` among them — the zero-sized `[T; 0]`, whose
+class is `Affine` rather than the element's when the element is not `Copy`
+(§3's table), and at which every dynamic index is out of bounds. -/
+def arrayLen : G Nat := weighted 2 [(1, 0), (2, 1), (3, 2), (2, 3)]
+
+/-- (helper) An array type over a drawn element type, one level in four
+**nested** — `[[T; m]; n]`, which is what gives a place two index steps
+(`a[c][c']`, `a[i][j]`). A `unit` element is not wrapped: `[(); n]` is a
+well-formed type, but it holds nothing a program could observe. -/
+def arrayOf (T : Ty) : G Ty := do
+  if T == .unit then return T
+  let n ← arrayLen
+  if ← chance 1 4 then return .array (.array T (← arrayLen)) n
+  return .array T n
+
 /-! ## Struct and enum declarations
 
 A generated program declares its own structs and enums (`Syntax.lean`), and the
@@ -384,7 +406,7 @@ enums already in the environment: a scalar, an earlier struct declaration, or
 one of those enums — never `s` itself, a later struct, or a later enum, so the
 environment stays acyclic (`3.0:5`). The enum share is `0` for the structs
 drawn before any enum exists, which is every first-round declaration. -/
-def fieldTy (s nEnums : Nat) : G Ty := do
+def fieldTyBase (s nEnums : Nat) : G Ty := do
   let scalar : G Ty := do weighted (← intTy) [(4, ← intTy), (1, .bool), (1, .unit)]
   if s = 0 && nEnums = 0 then
     scalar
@@ -398,6 +420,16 @@ def fieldTy (s nEnums : Nat) : G Ty := do
       return .enum j
     else
       scalar
+
+/-- (helper) One field type of declaration `s`: `fieldTyBase`'s draw, wrapped
+in an array one time in five (`arrayOf`), which is what puts an array in a
+**field** — the `h.arr[c]` and `h.arr[i]` places, and `3.8:68`'s refusal of an
+element move out of an array reached through a projection. An array names the
+same earlier declarations its element does, so `3.0:5`'s order is kept. The
+wrap is drawn after the base, so the base's own weights keep their meaning. -/
+def fieldTy (s nEnums : Nat) : G Ty := do
+  let T ← fieldTyBase s nEnums
+  if ← chance 1 5 then arrayOf T else return T
 
 /-- (helper) One struct declaration, well-formed by construction. -/
 def genDecl (D : Decls) (s nEnums : Nat) : G StructDecl := do
@@ -477,11 +509,12 @@ def genEnums : Nat → Decls → G Decls
 /-- (helper) A canonical value of any type, for the one place a type-directed
 draw can run out of depth and still owe a well-typed expression: a literal at a
 scalar (§5.8's (Lit)), one initializer per **declared** field at a struct
-(`3.6:15`, (Struct-Intro) §5.8), and the first variant applied to its own
-payload at an enum (`6.3:16`, (Enum-Intro) §5.5). The fuel is
-`|structs| + |enums|`, which `3.0:5`'s acyclicity makes enough — the same bound
-`checkNoCycle` peels with — because a component names a declaration strictly
-earlier in the draw order.
+(`3.6:15`, (Struct-Intro) §5.8), the first variant applied to its own
+payload at an enum (`6.3:16`, (Enum-Intro) §5.5), and `n` least elements at
+`[T; n]` ((Array-Intro) §5.8). The fuel is `declFuel`: three rounds per
+declaration, because `3.0:5`'s acyclicity bounds the declaration chain — the
+bound `checkNoCycle` peels with — and a field or a binder wraps its type in at
+most two array levels (`arrayOf`), each of which spends a round too.
 
 Before this existed the depth-exhausted fallback was `mkStruct s []`, which is
 a struct literal missing its initializers: an **ill-typed** program, rejected
@@ -503,13 +536,13 @@ def leastValue (D : Decls) : Nat → Ty → Expr
       match D.enums[e]? with
       | some ed => mkEnum e 0 (((ed.variants[0]?).getD []).map (leastValue D fuel))
       | none => mkEnum e 0 []
-  -- Unreachable: no array type is drawn (RUE-2331). (Array-Intro) §5.8's own
-  -- literal would be `n` copies of the element's least value.
-  | _, .array T _ => mkArray T []
+  | 0, .array T _ => mkArray T []
+  | fuel + 1, .array T n => mkArray T (List.replicate n (leastValue D fuel T))
 
-/-- (helper) The fuel `leastValue` is called at: one round per declaration, the
-bound `3.0:5`'s acyclicity makes sufficient. -/
-def declFuel (D : Decls) : Nat := D.structs.length + D.enums.length
+/-- (helper) The fuel `leastValue` is called at: three rounds per declaration
+and three more for the binder's own array levels, which `3.0:5`'s acyclicity
+and `arrayOf`'s two-level bound make sufficient. -/
+def declFuel (D : Decls) : Nat := 3 * (D.structs.length + D.enums.length) + 3
 
 /-- (helper) The field slots of declaration `s` at type `T` that a drawn
 **assignment** may target, one step deep (module docstring, "How deep a place
@@ -527,29 +560,58 @@ def projSlots (D : Decls) (s : Nat) (T : Ty) : List Nat :=
       if sd.dtor && T.mult D != .copy then []
       else (List.range sd.fields.length).filter (fun f => sd.fields[f]? == some T)
 
-/-- (helper) A place from a root binder and a path of field steps, read from
-the root outward — the inverse of `Place.path` (`Syntax.lean`). -/
-def placeOfPath (i : Nat) (π : List Nat) : Place :=
-  π.foldl (fun p f => Place.proj p f) (.var i)
+/-- (helper) The one-step places a drawn **assignment** may target under binder
+`i` of type `T`, with the type each holds: a struct's slots `projSlots` offers,
+and every constant index `a[c]` of an array — (Assign) §5.2 takes an element
+destination with no index premise of its own, and `3.8:72`'s demand that the
+array be whole (`assignArrayOk`, E0480) is left to the checker like every other
+ownership outcome. A destination under an index is **one** step deep for the
+reason the struct slot is (module docstring, RUE-2319). -/
+def assignSlots (D : Decls) (i : Nat) : Ty → List (Place × Ty)
+  | .struct s =>
+      match D.structs[s]? with
+      | some sd =>
+          (List.range sd.fields.length).filterMap (fun f =>
+            match sd.fields[f]? with
+            | some Tf => if (projSlots D s Tf).contains f then some (.proj (.var i) f, Tf) else none
+            | none => none)
+      | none => []
+  | .array E n => (List.range n).map (fun c => (.idx (.var i) c, E))
+  | .int _ _ | .float _ | .bool | .unit | .enum _ => []
 
-/-- (helper) The field slots a type has, as single steps. -/
+/-- (helper) A place from a root binder of type `T₀` and a path of steps, read
+from the root outward — the inverse of `Place.path` (`Syntax.lean`). A step
+taken at an array is a constant index (`Place.idx`) and any other a field slot
+(`Place.proj`). `Place.path` is blind to the difference, and so is every rule
+that reads it (`rootIdxOnly`'s docstring says why), so this only makes the
+place say what the printed program says. -/
+def placeOfPath (D : Decls) (T₀ : Ty) (i : Nat) (π : List Nat) : Place :=
+  go (.var i) T₀ π
+where
+  go (p : Place) (T : Ty) : List Nat → Place
+    | [] => p
+    | f :: π =>
+        match T with
+        | .array E _ => go (.idx p f) E π
+        | _ => go (.proj p f) ((T.fieldAt D f).getD .unit) π
+
+/-- (helper) The steps a type has, as single steps: a struct's field slots, and
+an array's constant indices `0 … n-1` — §5's `Path[c]`, one production with
+`Path.f` (`Ty.fieldAt`). -/
 def fieldSlots (D : Decls) : Ty → List Nat
   | .struct s =>
       (match D.structs[s]? with
        | some sd => List.range sd.fields.length
        | none => [])
-  -- The generator draws no array types yet (RUE-2331), so an array's index
-  -- steps are deliberately not offered here: `placeOfPath` builds `Place.proj`
-  -- steps, and an index step is `Place.idx`.
-  | .array _ _ => []
-  -- An **enum** has no step either, and that one is the fragment's shape
+  | .array _ n => List.range n
+  -- An **enum** has no step, and that is the fragment's shape
   -- rather than a gap: §5.6 tracks no path into a payload, `Ty.fieldAt` is
   -- `none` at an enum type, and the only way to a payload component is a
   -- `match` arm's binding (`Syntax.lean`, `6.3:17`).
   | .int _ _ | .float _ | .bool | .unit | .enum _ => []
 
-/-- (helper) Every path of **one or two** field steps under a binder's
-declared type. Depth 2 is where the path machinery actually recurses —
+/-- (helper) Every path of **one or two** steps — field slots and constant
+indices alike — under a binder's declared type. Depth 2 is where the path machinery actually recurses —
 `OwnSt.get`/`setAt`'s padding, `readAt`/`writeAt`, and §6.11's nested `⊘`-skip
 — and one seed case (`deep_path`) is not coverage of it. -/
 def paths2 (D : Decls) (T₀ : Ty) : List (List Nat) :=
@@ -563,6 +625,17 @@ a leaf of type `T`: the path types (`atPath`) and, where the leaf is not `Copy`
 and so the rule is (Use-Move) or (@Drop) rather than their `Copy` twins, no
 proper prefix declares a destructor (`3.9:34`). This is `projSlots`' test read
 at a whole path rather than at one step, so it stays right at depth 2.
+
+A path with an **index** step is also held to `3.8:68`'s root rule
+(`rootIdxOnly`) at a non-`Copy` leaf: an element is moved or dropped out of the
+root binding's array (`a[c]`, `a[c].f`) and of no array reached through a
+further step (`h.arr[c]`, `a[c][c']`), which the compiler refuses with E0904.
+That premise is (Use-Move)'s and (@Drop)'s, so it is read only where no proper
+prefix is a struct declared `linear`: under the declared plan the same path is
+a destructure, which `3.8:71` and the compiler admit through any index
+(`h.arr[0].x0`). So E0904's element-move refusal is not drawn; a `Copy` read or
+`@drop` at `h.arr[c]` or `a[c][c']` is, since (Use-Copy) and (@Drop-Copy)
+carry no index premise.
 
 **Which of §4.2's two plans the path selects is not tested here** (RUE-2339).
 A path with no proper prefix of declared-`linear` struct type is the `Ordinary`
@@ -583,7 +656,9 @@ shape, a `@drop` of a declared-`linear` place after a destructure under it, is
 not drawn around either: the model accepts it and the compiler does not, so a
 generated case with it is a bridge disagreement (rare; module docstring). -/
 def pathOk (D : Decls) (T₀ : Ty) (π : List Nat) (T : Ty) : Bool :=
-  Ty.atPath D T₀ π == some T && (T.mult D == .copy || noDtorPrefix D T₀ π)
+  Ty.atPath D T₀ π == some T &&
+    (T.mult D == .copy ||
+      (noDtorPrefix D T₀ π && (rootIdxOnly D T₀ π || (declaredPrefix D T₀ π).isSome)))
 
 /-- (helper) Every place of the wanted type one **or two** field steps under a
 binder in scope: the projections a use may name. -/
@@ -591,7 +666,7 @@ def projPlaces (D : Decls) (Γ : Scope) (T : Ty) : List Place :=
   ((List.range Γ.length).map (fun i =>
     match Γ[i]? with
     | some b =>
-        ((paths2 D b.ty).filter (fun π => pathOk D b.ty π T)).map (placeOfPath i)
+        ((paths2 D b.ty).filter (fun π => pathOk D b.ty π T)).map (placeOfPath D b.ty i)
     | none => [])).flatten
 
 /-- (helper) Draw a place, biased toward the **deeper** one: where the list
@@ -620,9 +695,203 @@ def dropPlaces (D : Decls) (Γ : Scope) : List Place :=
     | some b =>
         (paths2 D b.ty).filterMap (fun π =>
           match Ty.atPath D b.ty π with
-          | some T => if pathOk D b.ty π T then some (placeOfPath i π) else none
+          | some T => if pathOk D b.ty π T then some (placeOfPath D b.ty i π) else none
           | none => none)
     | none => [])).flatten
+
+/-- (helper) Whether a path takes a step at an array node — a constant index —
+read off the type it starts at, as `rootIdxOnly` reads it. -/
+def idxStep (D : Decls) : Ty → List Nat → Bool
+  | _, [] => false
+  | .array _ _, _ :: _ => true
+  | T, f :: π =>
+      match T.fieldAt D f with
+      | some T' => idxStep D T' π
+      | none => false
+
+/-- (helper) A place **below a dynamic index** in `Expr.indexRead`'s shape
+(RUE-2342): the constant place `p` the first dynamic step indexes, the constant
+path `πs` after each dynamic step, the length of the array each dynamic step
+indexes (so an index can be drawn in or out of its bounds), and the leaf's type.
+-/
+structure DynPlace where
+  p : Place
+  πs : List (List Nat)
+  lens : List Nat
+  leaf : Ty
+
+/-- (helper) The dynamic tails under an array type, at most `fuel` dynamic
+steps: after each step a constant path of zero or one step (a field of the
+element, or a constant index of it), and a further dynamic step where that
+reaches an array again. So `a[i]`, `a[i].f`, `a[i][c]`, `a[i][j]` and
+`a[i].f[j]` are all shapes of it (`Ty.atDyn`'s grammar). -/
+def dynTails (D : Decls) : Nat → Ty → List (List (List Nat) × List Nat × Ty)
+  | 0, _ => []
+  | fuel + 1, .array E n =>
+      ([] :: (fieldSlots D E).map (fun f => [f])).flatMap (fun π =>
+        match E.atPath D π with
+        | some L => ([π], [n], L) :: (dynTails D fuel L).map (fun t => (π :: t.1, n :: t.2.1, t.2.2))
+        | none => [])
+  | _ + 1, .int _ _ | _ + 1, .float _ | _ + 1, .bool | _ + 1, .unit
+  | _ + 1, .struct _ | _ + 1, .enum _ => []
+
+/-- (helper) Every place below a dynamic index that the scope offers, with at
+most two dynamic steps: the array indexed first is a binder itself or one of
+its one- or two-step constant places (`h.arr`, `a[c]`), so `a[i]`,
+`a[i].f`, `h.arr[i].f` and `a[i][j]` are all offered. Nothing is filtered by
+ownership or by plan: `fully-owned` at `p`, `3.8:70`'s moved-out element, and
+§4.2's `DeclaredLinearDynamic` (a declared-`linear` struct above or below the
+index, E0904) are the checker's to refuse. -/
+def dynPlaces (D : Decls) (Γ : Scope) : List DynPlace :=
+  ((List.range Γ.length).map (fun i =>
+    match Γ[i]? with
+    | some b =>
+        ([] :: paths2 D b.ty).flatMap (fun π =>
+          match Ty.atPath D b.ty π with
+          | some Ta =>
+              (dynTails D 2 Ta).map (fun t =>
+                ({ p := placeOfPath D b.ty i π, πs := t.1, lens := t.2.1, leaf := t.2.2 } : DynPlace))
+          | none => [])
+    | none => [])).flatten
+
+/-- (helper) Draw a place below a dynamic index, biased toward the shapes
+RUE-2342 added: half the time one whose first array is reached through a step
+(`h.arr[i]`, `a[c][i]`), that has a second dynamic step (`a[i][j]`), or that
+goes below an index (`a[i].f`), where the list offers one. -/
+def pickDyn (d₀ : DynPlace) (ds : List DynPlace) : G DynPlace := do
+  let deep := ds.filter (fun d =>
+    !d.p.path.isEmpty || 2 ≤ d.πs.length || d.πs.any (fun π => !π.isEmpty))
+  if !deep.isEmpty && (← chance 1 2) then pick d₀ deep else pick d₀ ds
+
+/-- (helper) One index expression for a dynamic step into an array of length
+`n`, at an integer type of any width and signedness (`4.11:4`). A fair share is
+**out of bounds** so that (D-Index-Trap) §6.5 is exercised: one draw in five is
+`-1` (at a signed type, half the time) or `n`, seven in ten are a literal in
+`[0, n)` — which at `n = 0` is none, so the zero-sized array always traps —
+and one in ten is `other`'s arbitrary expression of the index type, a binder or
+a projection or a literal, whatever the draw it stands for finds. -/
+def dynIdx (other : Ty → G Expr) (n : Nat) : G Expr := do
+  let T ← intTy
+  match T with
+  | .int w sg =>
+      let k ← nat 1 10
+      if k ≤ 2 then
+        if sg == .signed && (← chance 1 2) then return intLit w sg (-1)
+        return intLit w sg n
+      if k ≤ 9 then
+        if n = 0 then return intLit w sg 0
+        return intLit w sg (← nat 0 (n - 1))
+      other T
+  | _ => return intLit .w64 .signed 0
+
+/-- (helper) A dynamic-index **read** of the wanted type, one draw in three
+where the scope offers a place below a dynamic index at that type: §4.2's
+`Untrackable(OrdinaryDynamic)` plan, whose only rule is
+(Use-Untrackable-Dynamic-Copy) §5.1, so it is drawn at a `Copy` leaf only.
+`other` draws an index expression that is not a literal. -/
+def dynRead (D : Decls) (Γ : Scope) (T : Ty) (other : Ty → G Expr) : G (Option Expr) := do
+  if T.mult D != .copy then return none
+  let ds := (dynPlaces D Γ).filter (fun d => d.leaf == T)
+  match ds with
+  | [] => return none
+  | d₀ :: _ =>
+      if !(← chance 1 3) then return none
+      let d ← pickDyn d₀ ds
+      return some (indexRead d.p (← d.lens.mapM (dynIdx other)) d.πs)
+
+/-- (helper) The dynamic forms at type `unit`, one draw in `den` where the
+scope offers a place for one, chosen by weight among those it offers: a write
+`p[i]… = e` below a dynamic index into a `mut` binder (weight 2; any leaf type,
+because (Assign) §5.2's linear-overwrite premise and `3.8:72`'s whole-array
+demand are the checker's), a **read** of an observable `Copy` leaf under
+`@dbg` (weight 2), and `@drop(p[i]…)` at a `Copy` leaf, (@Drop-Copy) §5.3 below
+a dynamic index (weight 1).
+
+The read is here because `atom`'s read has to match the type the draw
+wants, and a wanted integer type is one of eight, so without a read whose type
+is the place's own the read is rare: at `--gen 200 --seed 7` `atom` alone reads
+below a dynamic index in 3 programs. `rhs` draws the written value and `other`
+a non-literal index. -/
+def dynUnit (D : Decls) (Γ : Scope) (den : Nat) (rhs : Ty → G Expr)
+    (other : Ty → G Expr) : G (Option Expr) := do
+  let ds := dynPlaces D Γ
+  let ws := ds.filter (fun d => ((Γ[d.p.root]?).map Binder.mu).getD false)
+  let cs := ds.filter (fun d => d.leaf.mult D == .copy)
+  let rs := cs.filter (fun d => d.leaf.observable)
+  match ds with
+  | [] => return none
+  | d₀ :: _ =>
+      if !(← chance 1 den) then return none
+      let form ← weighted 0
+        [(if ws.isEmpty then 0 else 2, 0), (if rs.isEmpty then 0 else 2, 1),
+          (if cs.isEmpty then 0 else 1, 2)]
+      match form with
+      | 0 =>
+          let d ← pickDyn d₀ ws
+          let e ← rhs d.leaf
+          return some (indexWrite d.p (← d.lens.mapM (dynIdx other)) d.πs e)
+      | 1 =>
+          let d ← pickDyn d₀ rs
+          return some (dbg (indexRead d.p (← d.lens.mapM (dynIdx other)) d.πs))
+      | _ =>
+          if cs.isEmpty then return none
+          let d ← pickDyn d₀ cs
+          return some (indexDrop d.p (← d.lens.mapM (dynIdx other)) d.πs)
+
+/-- (helper) Every place one or two steps under a binder in scope whose path
+takes a **constant index** step, with the type it holds: `a[c]`, `a[c].f`,
+`h.arr[c]`, `a[c][c']`. -/
+def idxPlaces (D : Decls) (Γ : Scope) : List (Place × Ty) :=
+  ((List.range Γ.length).map (fun i =>
+    match Γ[i]? with
+    | some b =>
+        ((paths2 D b.ty).filter (idxStep D b.ty)).filterMap (fun π =>
+          (Ty.atPath D b.ty π).map (fun T => (placeOfPath D b.ty i π, T)))
+    | none => [])).flatten
+
+/-- (helper) Whether the scope offers an array to index: a place below a
+dynamic index or a constant-index place. Where it does, `expr` weights up an
+**array statement** (`arrayStmt`), the way it weights up a `match` where an
+enum place is in scope. -/
+def arrayInScope (D : Decls) (Γ : Scope) : Bool :=
+  !(dynPlaces D Γ).isEmpty || !(idxPlaces D Γ).isEmpty
+
+/-- (helper) A unit-typed statement at an array place in scope, the form `expr`
+weights up where one is (`arrayInScope`): one of `dynUnit`'s dynamic forms
+(weight 3), or at a constant-index place a `@dbg` read of an observable `Copy`
+leaf, a `@drop` (`pathOk`, so `3.8:68`'s root rule holds at a non-`Copy` leaf),
+a write `a[c] = e` one step under a `mut` binder (`assignSlots`), or an element
+move discarded as a statement, `a[c];` (`pathOk` again) — weight 1 each. The
+statement's ownership outcome is the checker's, as every other draw's is: an
+element moved twice, a write into an array with a moved-out element (E0480), a
+dynamic index into one (`3.8:70`), a linear element discarded (`3.8:64`). -/
+def arrayStmt (D : Decls) (Γ : Scope) (rhs : Ty → G Expr) (other : Ty → G Expr) :
+    G Expr := do
+  let ips := idxPlaces D Γ
+  let reads := ips.filter (fun pt => pt.2.observable)
+  let drops := ips.filter (fun pt =>
+    match Γ[pt.1.root]? with
+    | some b => pathOk D b.ty pt.1.path pt.2
+    | none => false)
+  let moves := drops.filter (fun pt => pt.2.mult D != .copy)
+  let writes := ((List.range Γ.length).filter (fun i => ((Γ[i]?).map Binder.mu).getD false)).flatMap
+    (fun i => match (Γ[i]?).map Binder.ty with
+      | some (.array E n) => assignSlots D i (.array E n)
+      | _ => [])
+  let dflt : Place × Ty := (.var 0, .unit)
+  let form ← weighted 0
+    [(if (dynPlaces D Γ).isEmpty then 0 else 3, 0), (if reads.isEmpty then 0 else 1, 1),
+      (if drops.isEmpty then 0 else 1, 2), (if writes.isEmpty then 0 else 1, 3),
+      (if moves.isEmpty then 0 else 1, 4)]
+  match form with
+  | 0 => return ((← dynUnit D Γ 1 rhs other).getD unitLit)
+  | 1 => return dbg (use (← pick dflt reads).1)
+  | 2 => return drop (← pick dflt drops).1
+  | 3 =>
+      let (pl, T) ← pick dflt writes
+      return assign pl (← rhs T)
+  | 4 => return seq (use (← pick dflt moves).1) unitLit
+  | _ => return unitLit
 
 /-- (helper) The binders an arm's body is drawn under: (Match) §5.5's payload
 locals on top of the enclosing scope, in `armCtx`'s order — the tuple
@@ -658,10 +927,10 @@ def enumPlaceInScope (D : Decls) (Γ : Scope) : Bool :=
     !(indicesWhere Γ (fun b => b.ty == .enum e)).isEmpty ||
       !(projPlaces D Γ (.enum e)).isEmpty)
 
-/-- (helper) The type of a fresh `let` binder: mostly aggregates, when the
-program declares any — structs a little more often than enums, since a struct
-is also what an enum's payload is usually made of. -/
-def binderTy (D : Decls) : G Ty := do
+/-- (helper) The type of a fresh `let` binder before `binderTy`'s array wrap:
+mostly aggregates, when the program declares any — structs a little more often
+than enums, since a struct is also what an enum's payload is usually made of. -/
+def binderTyBase (D : Decls) : G Ty := do
   let scalar : G Ty := do weighted (← intTy) [(2, ← intTy), (1, ← floatTy), (1, .bool)]
   let structTy : G Ty := do
     if D.structs.isEmpty then scalar
@@ -684,26 +953,44 @@ def binderTy (D : Decls) : G Ty := do
     else if k ≤ 7 then enumTy
     else scalar
 
+/-- (helper) The type of a fresh `let` binder: `binderTyBase`'s draw, wrapped in
+an array one time in five (`arrayOf`), so an array binder holds scalars,
+structs or enums in the proportions any binder does. The wrap is drawn after
+the base, so the base's weights keep their meaning. -/
+def binderTy (D : Decls) : G Ty := do
+  let T ← binderTyBase D
+  if ← chance 1 5 then arrayOf T else return T
+
 mutual
 /-- (helper) The smallest expression of a type: a literal, a use of a binder
-of that type, or a struct literal with a leaf per field. -/
+of that type, a struct, enum or array literal with a leaf per component, or —
+at a `Copy` type, one draw in three where the scope offers one — a read below a
+dynamic index (`dynRead`), whose index expressions are atoms one level down. -/
 def atom (D : Decls) (Γ : Scope) : Ty → Nat → G Expr
-  | .int w sg, _ => do
+  | .int w sg, depth => do
+      if let d + 1 := depth then
+        if let some e ← dynRead D Γ (.int w sg) (fun T => atom D Γ T d) then return e
       let projs := projPlaces D Γ (.int w sg)
       if !projs.isEmpty && (← chance 1 2) then return use (← pickPlace (.var 0) projs)
       let uses := indicesWhere Γ (fun b => b.ty == .int w sg)
       if !uses.isEmpty && (← chance 1 2) then return use (.var (← pick 0 uses))
       intLiteral w sg
-  | .float w, _ => do
+  | .float w, depth => do
+      if let d + 1 := depth then
+        if let some e ← dynRead D Γ (.float w) (fun T => atom D Γ T d) then return e
       let uses := indicesWhere Γ (fun b => b.ty == .float w)
       if !uses.isEmpty && (← chance 1 2) then return use (.var (← pick 0 uses))
       floatLiteral w
-  | .bool, _ => do
+  | .bool, depth => do
+      if let d + 1 := depth then
+        if let some e ← dynRead D Γ .bool (fun T => atom D Γ T d) then return e
       let uses := indicesWhere Γ (fun b => b.ty == .bool)
       if !uses.isEmpty && (← chance 1 2) then return use (.var (← pick 0 uses))
       return boolLit (← bool)
   | .unit, _ => return unitLit
   | .struct s, depth => do
+      if let d + 1 := depth then
+        if let some e ← dynRead D Γ (.struct s) (fun T => atom D Γ T d) then return e
       let projs := projPlaces D Γ (.struct s)
       if !projs.isEmpty && (← chance 1 2) then return use (← pickPlace (.var 0) projs)
       let uses := indicesWhere Γ (fun b => b.ty == .struct s)
@@ -716,6 +1003,8 @@ def atom (D : Decls) (Γ : Scope) : Ty → Nat → G Expr
       -- drawn uniformly over the declared variants, so a discriminant-only one
       -- (`6.3:14`) is as likely as a payload-carrying one at the same
       -- declaration.
+      if let d + 1 := depth then
+        if let some e' ← dynRead D Γ (.enum e) (fun T => atom D Γ T d) then return e'
       let projs := projPlaces D Γ (.enum e)
       if !projs.isEmpty && (← chance 1 2) then return use (← pickPlace (.var 0) projs)
       let uses := indicesWhere Γ (fun b => b.ty == .enum e)
@@ -725,13 +1014,21 @@ def atom (D : Decls) (Γ : Scope) : Ty → Nat → G Expr
           let k ← nat 0 (ed.variants.length - 1)
           return mkEnum e k (← ((ed.variants[k]?).getD []).mapM (fun T => atom D Γ T d))
       | _, _ => return leastValue D (declFuel D) (.enum e)
-  -- Unreachable: no array type is drawn (RUE-2331). The arm is still the
-  -- literal (Array-Intro) §5.8 concludes `[T; n]` at, one atom per element,
-  -- with the same depth-exhausted fallback the struct arm above has.
   | .array T n, depth => do
+      -- A use of an array place in scope — a projection (`h.arr`, `a[c]`) or a
+      -- binder, with the struct arm's weights — or (Array-Intro) §5.8's
+      -- literal, one atom per element, or at a `Copy` element one time in three
+      -- the repeat form `[e; n]` (`7.1:36`, `7.1:38`), which the checker
+      -- refuses at any other element class (E0905) and so is not drawn there.
+      let projs := projPlaces D Γ (.array T n)
+      if !projs.isEmpty && (← chance 1 2) then return use (← pickPlace (.var 0) projs)
+      let uses := indicesWhere Γ (fun b => b.ty == .array T n)
+      if !uses.isEmpty && (← chance 2 3) then return use (.var (← pick 0 uses))
       match depth with
-      | d + 1 => return mkArray T (← (List.replicate n T).mapM (fun T' => atom D Γ T' d))
-      | 0 => return mkArray T []
+      | d + 1 =>
+          if T.mult D == .copy && (← chance 1 3) then return repeatArray T (← atom D Γ T d) n
+          return mkArray T (← (List.replicate n T).mapM (fun T' => atom D Γ T' d))
+      | 0 => return leastValue D (declFuel D) (.array T n)
 
 /-- (helper) A leaf of the wanted type, one level at most: an atom, a `@drop`
 of a place, or an assignment of an atom to one. -/
@@ -744,22 +1041,21 @@ def leaf (D : Decls) (Γ : Scope) : Ty → Nat → G Expr
         [(1, 0), (if Γ.isEmpty then 0 else 6, 1), (if muts.isEmpty then 0 else 5, 2)]
       match form with
       | 1 =>
+          -- A dynamic-index form first, one draw in four where the scope has
+          -- a place for one (`dynUnit`); the rest keep their weights.
+          if let some e ← dynUnit D Γ 4 (fun T => atom D Γ T depth) (fun T => atom D Γ T depth) then
+            return e
           if !drops.isEmpty && (← chance 1 2) then return drop (← pickPlace (.var 0) drops)
           if !aggregates.isEmpty && (← chance 3 4) then return drop (.var (← pick 0 aggregates))
           return drop (.var (← nat 0 (Γ.length - 1)))
       | 2 =>
           let i ← pick 0 muts
           let b := Γ[i]?.getD ⟨.int .w64 .signed, true⟩
-          match b.ty with
-          | .struct s =>
-              let slots := (List.range ((D.structs[s]?).map (·.fields.length) |>.getD 0)).filter
-                (fun f => (projSlots D s ((D.structs[s]?).bind (·.fields[f]?) |>.getD .unit)).contains f)
-              if !slots.isEmpty && (← chance 1 2) then
-                let f ← pick 0 slots
-                let Tf := ((D.structs[s]?).bind (·.fields[f]?)).getD (.int .w64 .signed)
-                return assign (.proj (.var i) f) (← atom D Γ Tf depth)
-              return assign (.var i) (← atom D Γ b.ty depth)
-          | _ => return assign (.var i) (← atom D Γ b.ty depth)
+          let slots := assignSlots D i b.ty
+          if !slots.isEmpty && (← chance 1 2) then
+            let (pl, Tf) ← pick (.var i, b.ty) slots
+            return assign pl (← atom D Γ Tf depth)
+          return assign (.var i) (← atom D Γ b.ty depth)
       | _ => return unitLit
   | T, depth => atom D Γ T depth
 end
@@ -768,12 +1064,22 @@ end
 levels deep. The weights here are the bias the module docstring
 describes. -/
 def expr (D : Decls) : Scope → Ty → Nat → G Expr
-  | Γ, T, 0 => leaf D Γ T 2
+  | Γ, T, 0 => do
+      -- Out of fuel the draw is a leaf, and that is where most of a
+      -- program's binders are in scope: a `let` body is drawn one level down
+      -- from the `let`. So where the scope has an array to index, the leaf is
+      -- preceded by an array statement half the time (`arrayStmt`, its
+      -- operands atoms) — the fuel-0 counterpart of form 5 below.
+      if arrayInScope D Γ && (← chance 1 2) then
+        let s ← arrayStmt D Γ (fun T' => atom D Γ T' 2) (fun T' => atom D Γ T' 2)
+        return seq s (← leaf D Γ T 2)
+      leaf D Γ T 2
   | Γ, T, fuel + 1 => do
       if !Γ.isEmpty && (← chance 1 6) then return (← leaf D Γ T 2)
       let form ← weighted 3
         [(4, 0), (3, 1), (3, 2), (4, 3),
-          (if D.enums.isEmpty then 0 else if enumPlaceInScope D Γ then 14 else 3, 4)]
+          (if D.enums.isEmpty then 0 else if enumPlaceInScope D Γ then 14 else 3, 4),
+          (if arrayInScope D Γ then 6 else 0, 5)]
       match form with
       | 0 =>
           let T₁ ← binderTy D
@@ -793,6 +1099,13 @@ def expr (D : Decls) : Scope → Ty → Nat → G Expr
           let e₁ ← expr D Γ T fuel
           let e₂ ← expr D Γ T fuel
           return ite c e₁ e₂
+      | 5 =>
+          -- An array statement, then the rest at the wanted type: weighted up
+          -- where the scope has an array to index (`arrayStmt`), because the
+          -- type-directed draws reach an index form only where the type they
+          -- want is the element's.
+          let s ← arrayStmt D Γ (fun T' => expr D Γ T' fuel) (fun T' => expr D Γ T' fuel)
+          return seq s (← expr D Γ T fuel)
       | 4 =>
           -- (Match) §5.5 in expression position: the scrutinee at the drawn
           -- enum type, then **exactly one arm per variant in declaration
@@ -931,22 +1244,21 @@ def expr (D : Decls) : Scope → Ty → Nat → G Expr
           | .unit =>
               let muts := indicesWhere Γ (fun b => b.mu)
               let drops := dropPlaces D Γ
+              -- A dynamic-index write or `@drop`, one draw in four where the
+              -- scope has a place below a dynamic index (`dynUnit`).
+              if let some e ← dynUnit D Γ 4 (fun T => expr D Γ T fuel) (fun T => expr D Γ T fuel) then
+                return e
               -- A `@drop` or an assignment *at a projection* is the shape this
               -- slice is about (§4.2's partial move), so it is drawn first.
               if !drops.isEmpty && (← chance 2 5) then return drop (← pickPlace (.var 0) drops)
               if !muts.isEmpty && (← chance 3 4) then
                 let i ← pick 0 muts
                 let b := Γ[i]?.getD ⟨.int .w64 .signed, true⟩
-                match b.ty with
-                | .struct s =>
-                    let slots := (List.range ((D.structs[s]?).map (·.fields.length) |>.getD 0)).filter
-                      (fun f => (projSlots D s (((D.structs[s]?).bind (·.fields[f]?)).getD .unit)).contains f)
-                    if !slots.isEmpty && (← chance 1 2) then
-                      let f ← pick 0 slots
-                      let Tf := ((D.structs[s]?).bind (·.fields[f]?)).getD (.int .w64 .signed)
-                      return assign (.proj (.var i) f) (← expr D Γ Tf fuel)
-                    return assign (.var i) (← expr D Γ b.ty fuel)
-                | _ => return assign (.var i) (← expr D Γ b.ty fuel)
+                let slots := assignSlots D i b.ty
+                if !slots.isEmpty && (← chance 1 2) then
+                  let (pl, Tf) ← pick (.var i, b.ty) slots
+                  return assign pl (← expr D Γ Tf fuel)
+                return assign (.var i) (← expr D Γ b.ty fuel)
               if ← chance 1 3 then
                 let To ← weighted (← intTy) [(3, ← intTy), (2, ← floatTy), (1, .bool)]
                 return dbg (← expr D Γ To fuel)
@@ -962,8 +1274,17 @@ def expr (D : Decls) : Scope → Ty → Nat → G Expr
               match D.structs[s]? with
               | some sd => return mkStruct s (← sd.fields.mapM (fun T' => expr D Γ T' fuel))
               | none => return mkStruct s []
-          -- Unreachable for the same reason `atom`'s array arm is (RUE-2331).
-          | .array _ _ => leaf D Γ T 2
+          | .array E n =>
+              -- `atom`'s array draw one level up: a use of an array binder or
+              -- of an array place in scope, or a literal — the repeat form at a
+              -- `Copy` element one time in three — whose elements are drawn
+              -- expressions, left to right (§6.2).
+              let uses := indicesWhere Γ (fun b => b.ty == .array E n)
+              if !uses.isEmpty && (← chance 1 2) then return use (.var (← pick 0 uses))
+              let projs := projPlaces D Γ (.array E n)
+              if !projs.isEmpty && (← chance 1 3) then return use (← pickPlace (.var 0) projs)
+              if E.mult D == .copy && (← chance 1 3) then return repeatArray E (← expr D Γ E fuel) n
+              return mkArray E (← (List.replicate n E).mapM (fun T' => expr D Γ T' fuel))
 
 /-- (helper) Every subexpression, the expression itself first. -/
 def subexprs : Expr → List Expr
@@ -972,8 +1293,11 @@ def subexprs : Expr → List Expr
   | e@(.ite c e₁ e₂) => e :: subexprs c ++ subexprs e₁ ++ subexprs e₂
   | e@(assign _ e₁) | e@(ret e₁) | e@(unop _ e₁) | e@(intCast _ _ e₁)
   | e@(fintrin _ e₁) | e@(dbg e₁) => e :: subexprs e₁
-  | e@(call _ args) | e@(mkStruct _ args) | e@(mkEnum _ _ args) =>
+  | e@(call _ args) | e@(mkStruct _ args) | e@(mkEnum _ _ args) | e@(mkArray _ args)
+  | e@(indexRead _ args _) | e@(indexDrop _ args _) =>
       e :: (args.map subexprs).flatten
+  | e@(repeatArray _ e₁ _) => e :: subexprs e₁
+  | e@(indexWrite _ args _ e₁) => e :: subexprs e₁ ++ (args.map subexprs).flatten
   | e@(.«match» scrut arms) => e :: subexprs scrut ++ (arms.map subexprs).flatten
   | e => [e]
 
@@ -992,7 +1316,8 @@ def rulesIn (D : Decls) (Γ : List Ty) : Expr → List String
            (match T.atPath D pl.path with
             | some T' =>
                 (if T'.mult D == .copy then ["(Use-Copy) §5.1"] else ["(Use-Move) §5.1"]) ++
-                  (if pl.path.isEmpty then [] else ["§4.2 partial move", "3.8:22"])
+                  (if pl.path.isEmpty then [] else ["§4.2 partial move", "3.8:22"]) ++
+                  (if idxStep D T pl.path && T'.mult D != .copy then ["3.8:68"] else [])
             | none => [])
        | none => [])
   | binop op e₁ e₂ =>
@@ -1026,7 +1351,8 @@ def rulesIn (D : Decls) (Γ : List Ty) : Expr → List String
             | some T' =>
                 (if T'.mult D == .copy then ["(@Drop-Copy) §5.3"]
                  else ["(@Drop) §5.3", "§6.11"]) ++
-                  (if pl.path.isEmpty then [] else ["§4.2 partial move", "3.8:22"])
+                  (if pl.path.isEmpty then [] else ["§4.2 partial move", "3.8:22"]) ++
+                  (if idxStep D T pl.path && T'.mult D != .copy then ["3.8:68", "3.8:73"] else [])
             | none => [])
        | none => [])
   | letIn _ e₁ e₂ =>
@@ -1038,6 +1364,15 @@ def rulesIn (D : Decls) (Γ : List Ty) : Expr → List String
   | .ite c e₁ e₂ =>
       ["(If) §5.5 join"] ++ rulesIn D Γ c ++ rulesIn D Γ e₁ ++ rulesIn D Γ e₂
   | call _ args => ["(Call) §5.8", "(D-Call) §6.9"] ++ (args.map (rulesIn D Γ)).flatten
+  | mkArray _ args => ["(Array-Intro) §5.8", "(D-Array) §6.5"] ++ (args.map (rulesIn D Γ)).flatten
+  | repeatArray _ e₁ _ => ["(Array-Intro) §5.8", "(D-Array) §6.5", "7.1:38"] ++ rulesIn D Γ e₁
+  | indexRead _ idx _ =>
+      ["(Use-Untrackable-Dynamic-Copy) §5.1", "(D-Index) §6.5"] ++ (idx.map (rulesIn D Γ)).flatten
+  | indexWrite _ idx _ e₁ =>
+      ["(Assign) §5.2", "(D-Assign) §6.8", "(D-Index) §6.5", "5.2:14"] ++ rulesIn D Γ e₁ ++
+        (idx.map (rulesIn D Γ)).flatten
+  | indexDrop _ idx _ =>
+      ["(@Drop-Copy) §5.3", "(D-Index) §6.5"] ++ (idx.map (rulesIn D Γ)).flatten
   | ret e₁ => ["(Return-Value) §5.7", "(D-Return) §6.9"] ++ rulesIn D Γ e₁
   | _ => []
 
