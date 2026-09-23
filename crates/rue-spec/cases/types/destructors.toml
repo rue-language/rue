@@ -957,6 +957,255 @@ fn main() -> i32 {
 exit_code = 0
 expected_stdout = "1\n100\n11\n"
 
+# -----------------------------------------------------------------------------
+# Overwrite-drop of a place with moved-out parts (RUE-2319). The overwrite-drop
+# destroys the place's old contents the way a scope exit would (3.9:18): a
+# part moved out on every path is skipped at any depth, a part moved on some
+# path only is dropped behind its runtime drop flag, and the new value is
+# dropped once at scope exit.
+# -----------------------------------------------------------------------------
+
+[[case]]
+name = "reinit_moved_nested_field_drops_new_value_once"
+spec = ["3.8:55", "3.9:18"]
+description = "Reinitializing a moved field two projections deep drops nothing at the assignment, and the new value is dropped once at scope exit (RUE-2319)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct S7 { x0: S1, x1: S1 }
+struct S10 { x0: S7, x1: i64 }
+
+fn main() -> i32 {
+    let mut v0 = S10 { x0: S7 { x0: S1 { x0: 11 }, x1: S1 { x0: 22 } }, x1: 3 };
+    let v1: S1 = v0.x0.x1;
+    @drop(v1);                    // 22, the only drop of the moved-out value
+    @dbg(900);
+    v0.x0.x1 = S1 { x0: 88 };     // the place is moved out: nothing to drop
+    @dbg(901);
+    0
+}   // v0: 11, then the new 88
+"""
+exit_code = 0
+expected_stdout = "22\n900\n901\n11\n88\n"
+
+[[case]]
+name = "reinit_conditionally_moved_nested_field_uses_drop_flag"
+spec = ["3.8:55", "3.9:18"]
+description = "Reinitializing a nested field moved on some paths only drops the old value exactly when the executed path did not move it (RUE-2319)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct S7 { x0: S1, x1: S1 }
+struct S10 { x0: S7, x1: i64 }
+
+fn run(k: bool) {
+    let mut v0 = S10 { x0: S7 { x0: S1 { x0: 11 }, x1: S1 { x0: 22 } }, x1: 3 };
+    if k { let v1: S1 = v0.x0.x1; @drop(v1); }
+    @dbg(900);
+    v0.x0.x1 = S1 { x0: 88 };     // drops 22 only when k is false
+    @dbg(901);
+}
+
+fn main() -> i32 {
+    run(true);
+    run(false);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "22\n900\n901\n11\n88\n900\n22\n901\n11\n88\n"
+
+[[case]]
+name = "overwrite_field_skips_moved_subfield"
+spec = ["3.9:18", "3.8:55"]
+description = "Overwriting a field whose subfield was moved out drops only the field's live parts, never the moved-out subfield again (RUE-2319)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct H { p: P, k: i64 }
+
+fn main() -> i32 {
+    let mut h = H { p: P { c: 1, s: S1 { x0: 10 } }, k: 5 };
+    let t: S1 = h.p.s;
+    @drop(t);                            // 10
+    h.p = P { c: 2, s: S1 { x0: 20 } };  // h.p holds no live droppable part
+    @dbg(0);
+    0
+}   // 20
+"""
+exit_code = 0
+expected_stdout = "10\n0\n20\n"
+
+[[case]]
+name = "overwrite_array_field_skips_moved_element_part"
+spec = ["3.8:72", "3.8:73", "3.9:18"]
+description = "Whole-array reinitialization of an array field after an element's field moved out drops the live remainder once and the moved part never again (RUE-2319)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct H { a: [P; 2], k: S1 }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+
+fn main() -> i32 {
+    let mut h = H { a: [mk(10), mk(11)], k: S1 { x0: 12 } };
+    let t: S1 = h.a[0].s;
+    @drop(t);                    // 10
+    h.a = [mk(40), mk(41)];      // drops the live element 11 only
+    @dbg(0);
+    0
+}   // 40 41 12
+"""
+exit_code = 0
+expected_stdout = "10\n11\n0\n40\n41\n12\n"
+
+[[case]]
+name = "overwrite_nested_array_field_skips_moved_element_part"
+spec = ["3.8:72", "3.8:73", "3.9:18"]
+description = "Whole-array reinitialization two fields deep, and overwriting the struct that holds the array, skip the moved-out element part (RUE-2319)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct W { a: [P; 2] }
+struct H { w: W, v: W }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+
+fn main() -> i32 {
+    let mut h = H { w: W { a: [mk(15), mk(16)] }, v: W { a: [mk(25), mk(26)] } };
+    let t: S1 = h.w.a[0].s;
+    @drop(t);                          // 15
+    h.w.a = [mk(40), mk(41)];          // 16
+    let u: S1 = h.v.a[1].s;
+    @drop(u);                          // 26
+    h.v = W { a: [mk(50), mk(51)] };   // 25
+    @dbg(0);
+    0
+}   // 40 41 50 51
+"""
+exit_code = 0
+expected_stdout = "15\n16\n26\n25\n0\n40\n41\n50\n51\n"
+
+[[case]]
+name = "overwrite_array_of_arrays_field_skips_moved_element_part"
+spec = ["3.8:72", "3.8:73", "3.9:18"]
+description = "Reinitializing a field holding an array of arrays skips the part moved out of one inner element (RUE-2319)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct G { m: [[P; 2]; 2] }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+
+fn main() -> i32 {
+    let mut g = G { m: [[mk(60), mk(61)], [mk(62), mk(63)]] };
+    let t: S1 = g.m[0][0].s;
+    @drop(t);                                        // 60
+    g.m = [[mk(40), mk(41)], [mk(42), mk(43)]];      // 61 62 63
+    @dbg(0);
+    0
+}   // 40 41 42 43
+"""
+exit_code = 0
+expected_stdout = "60\n61\n62\n63\n0\n40\n41\n42\n43\n"
+
+[[case]]
+name = "overwrite_after_conditional_move_below_uses_drop_flag"
+spec = ["3.8:73", "3.9:18"]
+description = "Overwriting a field or array field after a part below it moved on some paths only drops that part exactly when the executed path did not move it (RUE-2319)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct H { p: P, a: [P; 2] }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+
+fn run(k: bool) {
+    let mut h = H { p: mk(10), a: [mk(30), mk(31)] };
+    if k {
+        let t: S1 = h.p.s; @drop(t);
+        let u: S1 = h.a[1].s; @drop(u);
+    }
+    @dbg(800);
+    h.p = mk(20);                 // drops 10 only when k is false
+    h.a = [mk(40), mk(41)];       // drops 30, and 31 only when k is false
+    @dbg(801);
+}
+
+fn main() -> i32 {
+    run(true);
+    run(false);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "10\n31\n800\n30\n801\n20\n40\n41\n800\n10\n30\n31\n801\n20\n40\n41\n"
+
+[[case]]
+name = "overwrite_after_conditional_move_below_uses_drop_flag_o2"
+spec = ["3.8:73", "3.9:18"]
+description = "The conditional move below an overwritten place at -O2 (RUE-2319)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct H { p: P, a: [P; 2] }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+
+fn run(k: bool) {
+    let mut h = H { p: mk(10), a: [mk(30), mk(31)] };
+    if k {
+        let t: S1 = h.p.s; @drop(t);
+        let u: S1 = h.a[1].s; @drop(u);
+    }
+    @dbg(800);
+    h.p = mk(20);
+    h.a = [mk(40), mk(41)];
+    @dbg(801);
+}
+
+fn main() -> i32 {
+    run(true);
+    run(false);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "10\n31\n800\n30\n801\n20\n40\n41\n800\n10\n30\n31\n801\n20\n40\n41\n"
+opt_level = 2
+
+[[case]]
+name = "reinit_moved_nested_field_in_loop"
+spec = ["3.8:55", "3.9:18"]
+description = "Moving a nested field out and reinitializing it on every loop iteration drops each value exactly once (RUE-2319)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct H { p: P, k: i64 }
+
+fn main() -> i32 {
+    let mut h = H { p: P { c: 1, s: S1 { x0: 10 } }, k: 5 };
+    let mut i = 0;
+    while i < 3 {
+        let t: S1 = h.p.s;
+        @drop(t);                              // 10, then 100, 101
+        h.p.s = S1 { x0: 100 + i };
+        i = i + 1;
+    }
+    @dbg(0);
+    0
+}   // 102
+"""
+exit_code = 0
+expected_stdout = "10\n100\n101\n0\n102\n"
+
 [[case]]
 name = "discarded_temporary_dropped_at_statement_end"
 spec = ["3.9:18"]
