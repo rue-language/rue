@@ -4771,6 +4771,44 @@ mod tests {
         assert!(!state.maybe_fields.contains_key(&target));
     }
 
+    /// RUE-2319: a write to a nested place re-initializes that place and
+    /// everything below it, and nothing above or beside it.
+    #[test]
+    fn clear_path_clears_the_place_and_its_descendants_only() {
+        let slot = MovedSlot::Local(1);
+        let mut state = MoveState::default();
+        state.mark_path(slot, vec![0, 1]);
+        state.mark_path(slot, vec![0, 1, 2]);
+        state.mark_path(slot, vec![0, 2]);
+        state.mark_path(slot, vec![1]);
+        state
+            .maybe_fields
+            .entry(slot)
+            .or_default()
+            .insert(vec![0, 1, 3]);
+
+        assert!(state.has_moved_path_below(slot, &[0]));
+        assert!(state.has_moved_path_below(slot, &[0, 1]));
+        assert!(!state.has_moved_path_below(slot, &[0, 2]));
+        assert!(!state.has_moved_path_below(slot, &[1]));
+
+        state.clear_path(slot, &[0, 1]);
+        assert_eq!(
+            state.moved_paths_of(slot),
+            AHashSet::from([vec![0, 2], vec![1]])
+        );
+        assert_eq!(
+            state.maybe_moved_paths_of(slot),
+            AHashSet::from([vec![0, 2], vec![1]])
+        );
+        assert!(!state.has_moved_path_below(slot, &[0, 1]));
+
+        state.clear_path(slot, &[0]);
+        state.clear_path(slot, &[1]);
+        assert!(!state.fields.contains_key(&slot));
+        assert!(!state.maybe_fields.contains_key(&slot));
+    }
+
     #[test]
     fn partitioned_move_state_join_preserves_definite_and_possible_paths() {
         let slot = MovedSlot::Param(3);
