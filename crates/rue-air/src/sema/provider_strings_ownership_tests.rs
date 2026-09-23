@@ -1571,6 +1571,16 @@ fn provider_body_loan_of_place_with_moved_part_below_rejected() {
                     .any(|help| help.to_string().contains("reinitialize")),
             "`{loan}`: the help must suggest reinitializing, not borrowing: {helps:?}"
         );
+        // Below an array element only the whole array can be reinitialized
+        // (3.8:72, 7.1:46): writing the moved part itself would be E0480.
+        if moved.starts_with("h.a[") {
+            assert!(
+                helps.iter().any(|help| help
+                    .to_string()
+                    .contains("reinitialize the whole array `h.a`")),
+                "`{loan}`: the help must name the whole array: {helps:?}"
+            );
+        }
     }
 }
 
