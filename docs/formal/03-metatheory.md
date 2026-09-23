@@ -199,13 +199,14 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   struct that names itself through an array element is refused rather than
   grounded. RUE-2331 then put the array forms under the generator, and at
   `--gen 200 --seed 7` and `--gen 1000 --seed 23` the model's verdicts and
-  traces agree with the compiler's on every generated case but three shapes,
-  none of them the theorem's: RUE-2344's read below a dynamic index after its
-  field-reached array moved (the compiler misses the move), the
-  self-assignment `a[c] = a[c]` (refused by `3.8:72` as §5.2 orders it,
-  accepted by the compiler since RUE-228 — a reading still to decide), and a
-  dynamic index into a zero-length array field (an internal compiler error;
-  the model traps with `bounds`). The
+  traces agree with the compiler's on every generated case but two shapes,
+  neither of them the theorem's: the self-assignment `a[c] = a[c]` (refused by
+  `3.8:72` as §5.2 orders it, accepted by the compiler since RUE-228 — a
+  reading still to decide; one case at seed 7, two at seed 23) and a dynamic
+  index into a zero-length array field (an internal compiler error where the
+  model traps with `bounds`; five cases at seed 23). The generator reaches a
+  third, RUE-2344's read below a dynamic index after its field-reached array
+  moved, at other seeds. The
   enum slice (RUE-2320) has done so: progress at a `match` is exhaustiveness
   (`RueCore.exhaustive_arm_exists` — a well-typed tag is an index the arm list
   has), and preservation over the n-way join is the fold of the binary one
