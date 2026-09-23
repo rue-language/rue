@@ -6,9 +6,9 @@
 use ahash::{AHashMap, AHashSet};
 use lasso::{Spur, ThreadedRodeo};
 use rue_air::{
-    AirArgMode, AirInstData, AirPattern, AirPlaceBase, AirPlaceRef, AirProjection, AirRef,
-    AnalyzedCallableKind, FrozenTypeInternPool, ParamSlotModes, SourceParamAbi, StructId, Type,
-    TypeKind, ValidatedAir,
+    AirArgMode, AirInstData, AirPattern, AirPlace, AirPlaceBase, AirPlaceRef, AirProjection,
+    AirRef, AnalyzedCallableKind, FrozenTypeInternPool, ParamSlotModes, SourceParamAbi, StructId,
+    Type, TypeKind, ValidatedAir,
 };
 use rue_error::{CompileError, CompileWarning, ErrorKind, WarningKind};
 use std::cell::RefCell;
@@ -503,54 +503,46 @@ impl MoveState {
         self.maybe_fields.remove(&slot);
     }
 
-    /// One top-level field of the slot was reassigned: that field (and
-    /// everything nested inside it) holds a fresh value again and must be
-    /// dropped at scope exit.
-    fn clear_field(&mut self, slot: MovedSlot, field: u32) {
-        let changed = self
+    /// The place at `prefix` (a field/constant-element path) was reassigned:
+    /// that place and everything nested inside it hold a fresh value again
+    /// and must be dropped at scope exit. Move facts on ancestors and
+    /// siblings of `prefix` are untouched.
+    fn clear_path(&mut self, slot: MovedSlot, prefix: &[u32]) {
+        let covered = |path: &FieldPath| path.starts_with(prefix);
+        let definite_paths: Vec<_> = self
             .fields
             .get(&slot)
-            .is_some_and(|paths| paths.iter().any(|path| path.first() == Some(&field)))
-            || self
-                .maybe_fields
-                .get(&slot)
-                .is_some_and(|paths| paths.iter().any(|path| path.first() == Some(&field)));
-        if changed {
-            let definite_paths: Vec<_> = self
-                .fields
-                .get(&slot)
-                .into_iter()
-                .flatten()
-                .filter(|path| path.first() == Some(&field))
-                .cloned()
-                .collect();
-            for path in &definite_paths {
-                self.set_fact(MoveFactKind::DefinitePath, slot, path, false);
-            }
-            let maybe_paths: Vec<_> = self
-                .maybe_fields
-                .get(&slot)
-                .into_iter()
-                .flatten()
-                .filter(|path| path.first() == Some(&field))
-                .cloned()
-                .collect();
-            for path in &maybe_paths {
-                self.set_fact(MoveFactKind::MaybePath, slot, path, false);
-            }
+            .into_iter()
+            .flatten()
+            .filter(|path| covered(path))
+            .cloned()
+            .collect();
+        for path in &definite_paths {
+            self.set_fact(MoveFactKind::DefinitePath, slot, path, false);
+        }
+        let maybe_paths: Vec<_> = self
+            .maybe_fields
+            .get(&slot)
+            .into_iter()
+            .flatten()
+            .filter(|path| covered(path))
+            .cloned()
+            .collect();
+        for path in &maybe_paths {
+            self.set_fact(MoveFactKind::MaybePath, slot, path, false);
         }
         #[cfg(test)]
         self.record_slot_path_visits(
             self.fields.get(&slot).map_or(0, |paths| paths.len())
                 + self.maybe_fields.get(&slot).map_or(0, |paths| paths.len()),
         );
-        Self::clear_field_from(&mut self.fields, slot, field);
-        Self::clear_field_from(&mut self.maybe_fields, slot, field);
+        Self::clear_path_from(&mut self.fields, slot, prefix);
+        Self::clear_path_from(&mut self.maybe_fields, slot, prefix);
     }
 
-    fn clear_field_from(paths_by_slot: &mut MovedPathMap, slot: MovedSlot, field: u32) {
+    fn clear_path_from(paths_by_slot: &mut MovedPathMap, slot: MovedSlot, prefix: &[u32]) {
         let remove_partition = if let Some(paths) = paths_by_slot.get_mut(&slot) {
-            paths.retain(|path| path.first() != Some(&field));
+            paths.retain(|path| !path.starts_with(prefix));
             paths.is_empty()
         } else {
             false
@@ -558,6 +550,15 @@ impl MoveState {
         if remove_partition {
             paths_by_slot.remove(&slot);
         }
+    }
+
+    /// Does any (possibly-)moved path of `slot` lie strictly below `prefix`?
+    fn has_moved_path_below(&self, slot: MovedSlot, prefix: &[u32]) -> bool {
+        self.maybe_fields.get(&slot).is_some_and(|paths| {
+            paths
+                .iter()
+                .any(|path| path.len() > prefix.len() && path.starts_with(prefix))
+        })
     }
 
     /// Was the slot's whole value moved out (on every tracked path)?
@@ -2748,55 +2749,59 @@ impl<'a> CfgBuilder<'a> {
                     );
                     self.emit(CfgInstData::Drop { value: old_val }, Type::UNIT, span);
                 }
+                let mut reinit_path: Option<(MovedSlot, FieldPath)> = None;
                 if air_place.projection_count() == 0 {
                     if let Some(base_key) = base_key {
                         self.emit_overwrite_drop(base_key, val_ty, span);
                     }
                 } else if let Some(base_key) = base_key {
-                    // A single top-level field OR constant-index element write:
-                    // skip the old-value drop when that path was definitely
-                    // moved out, and guard it with the path's runtime drop flag
-                    // when the move was path-dependent (RUE-156 x RUE-64
-                    // interaction). Constant array elements share the field-path
-                    // representation (index K -> segment K, RUE-186), so
-                    // `arr[0] = arr[0]` must not drop element 0 mid-write after
-                    // the RHS moved it out (RUE-228).
-                    let mut field_flag: Option<u32> = None;
-                    let single_path: Option<FieldPath> =
-                        match self.air.get_place_projections(air_place) {
-                            [AirProjection::Field { field_index, .. }] => Some(vec![*field_index]),
-                            [AirProjection::Index { index, .. }] => match self.air.get(*index).data
-                            {
-                                AirInstData::Const(k) => Some(vec![k as u32]),
-                                // A dynamic index can't identify a single element,
-                                // so there is no per-element move to skip: drop the
-                                // old value as usual.
-                                _ => None,
-                            },
-                            _ => None,
-                        };
-                    let field_moved = match single_path {
-                        Some(path) => {
-                            let path_key = (base_key, path);
-                            if self.moved.is_path_moved(&path_key) {
-                                true
-                            } else {
-                                if self.moved.is_path_maybe_moved(&path_key) {
-                                    field_flag = self.field_drop_flags.get(&path_key).copied();
-                                }
-                                false
-                            }
+                    // The projected place's old contents are dropped by the
+                    // same move-aware rules as a scope-exit drop (§6.8 runs
+                    // §6.11 over the old value), at any depth:
+                    // - the static prefix of the place (its field and
+                    //   constant-index segments up to the first dynamic
+                    //   index; constant elements share the field-path
+                    //   representation, RUE-186) names the paths whose move
+                    //   facts apply. The place itself or an ancestor moved
+                    //   out on every path holds nothing to drop (RUE-62,
+                    //   RUE-228: `arr[0] = arr[0]`); one moved on some path
+                    //   guards the drop with that path's runtime flag
+                    //   (RUE-156);
+                    // - a fully static place with (possibly-)moved paths
+                    //   below it drops only its live residue, skipping the
+                    //   moved-out parts (RUE-2319).
+                    let static_path = self.static_place_path(air_place);
+                    let fully_static = static_path.len() == air_place.projection_count();
+                    let mut moved = false;
+                    let mut guard_flags: Vec<u32> = Vec::new();
+                    for depth in 1..=static_path.len() {
+                        let path_key = (base_key, static_path[..depth].to_vec());
+                        if self.moved.is_path_moved(&path_key) {
+                            moved = true;
+                            break;
                         }
-                        None => false,
-                    };
+                        if self.moved.is_path_maybe_moved(&path_key)
+                            && let Some(&flag) = self.field_drop_flags.get(&path_key)
+                        {
+                            guard_flags.push(flag);
+                        }
+                    }
+                    let residue_path = (fully_static
+                        && self.moved.has_moved_path_below(base_key, &static_path))
+                    .then_some(static_path.as_slice());
                     self.emit_projected_overwrite_drop(
                         base_key,
+                        air_place.base_type,
                         cfg_place.duplicate_with_owner(),
-                        val_ty,
-                        field_moved,
-                        field_flag,
+                        old_ty,
+                        moved,
+                        &guard_flags,
+                        residue_path,
                         span,
                     );
+                    if fully_static {
+                        reinit_path = Some((base_key, static_path));
+                    }
                 }
                 self.emit(
                     CfgInstData::PlaceWrite {
@@ -2808,39 +2813,21 @@ impl<'a> CfgBuilder<'a> {
                 );
                 // A whole-variable write (no projections) re-initializes the
                 // slot, so a previously moved-out value must be dropped again
-                // at scope exit. Projected writes (one field/element) don't
-                // restore a fully moved-out variable — but a write to exactly
-                // one top-level field (`o.a = ...`) does re-initialize that
-                // field, so its per-field moved state is cleared (RUE-62).
+                // at scope exit. A fully static projected write (fields and
+                // constant indexes, any depth) re-initializes that place and
+                // everything below it: their moved state is cleared and their
+                // runtime drop flags re-armed (RUE-62, RUE-228, RUE-2319). A
+                // write through a dynamic index names no single path, and
+                // doesn't restore a fully moved-out variable.
                 if let Some(slot) = air_place.as_local() {
                     self.moved.clear_slot(MovedSlot::Local(slot));
                     self.update_drop_flag(MovedSlot::Local(slot), true, span);
                 } else if let Some(slot) = air_place.as_param() {
                     self.moved.clear_slot(MovedSlot::Param(slot));
                     self.update_drop_flag(MovedSlot::Param(slot), true, span);
-                } else if air_place.projection_count() == 1
-                    && let Some(base_key) = base_key
-                {
-                    match self.air.get_place_projections(air_place) {
-                        [AirProjection::Field { field_index, .. }] => {
-                            self.moved.clear_field(base_key, *field_index);
-                            // The field is re-initialized: re-arm its runtime
-                            // drop flag so scope-exit (and later overwrite)
-                            // drops fire again (RUE-156).
-                            self.update_field_drop_flag(base_key, &[*field_index], true, span);
-                        }
-                        // A constant-index element write re-initializes that
-                        // element: clear its moved state and re-arm its drop
-                        // flag so it is dropped once at scope exit (RUE-228).
-                        [AirProjection::Index { index, .. }] => {
-                            if let AirInstData::Const(k) = self.air.get(*index).data {
-                                let seg = k as u32;
-                                self.moved.clear_field(base_key, seg);
-                                self.update_field_drop_flag(base_key, &[seg], true, span);
-                            }
-                        }
-                        _ => {}
-                    }
+                } else if let Some((base_key, path)) = reinit_path {
+                    self.moved.clear_path(base_key, &path);
+                    self.rearm_field_drop_flags_below(base_key, &path, span);
                 }
                 ExprResult {
                     value: None,
@@ -4129,33 +4116,80 @@ impl<'a> CfgBuilder<'a> {
     /// as [`emit_overwrite_drop`]. `base_key` is the place's base slot: a
     /// statically moved-out base means the old projected value is gone, and
     /// a path-dependent whole-base move is guarded by the base's drop flag.
-    /// `field_moved` lets the caller suppress the drop when this exact
-    /// top-level field was statically moved out (RUE-62).
+    /// `moved` suppresses the drop when the place or one of its ancestors was
+    /// moved out on every path; `guard_flags` are the runtime drop flags of
+    /// the place and its ancestors moved on some path only (RUE-156),
+    /// outermost first. `residue_path`, when set, is the place's static path
+    /// inside the base: moved-out parts lie below it, so only its live
+    /// residue is dropped, exactly as at scope exit (RUE-2319).
+    #[allow(clippy::too_many_arguments)]
     fn emit_projected_overwrite_drop(
         &mut self,
         base_key: MovedSlot,
+        base_type: Type,
         place: Place,
         ty: Type,
-        field_moved: bool,
-        field_flag: Option<u32>,
+        moved: bool,
+        guard_flags: &[u32],
+        residue_path: Option<&[u32]>,
         span: rue_span::Span,
     ) {
-        if self.moved.is_slot_moved(base_key) || field_moved || !self.type_needs_drop(ty) {
+        if self.moved.is_slot_moved(base_key) || moved || !self.type_needs_drop(ty) {
             return;
         }
         self.emit_guarded(base_key, span, |b| {
-            if let Some(flag) = field_flag {
-                // The exact field was moved on some paths only: its per-path
-                // runtime flag (RUE-156) says whether the old value is live.
-                let cont = b.begin_flag_guard(flag, span);
-                let old_val = b.emit(CfgInstData::PlaceRead { place }, ty, span);
-                b.emit(CfgInstData::Drop { value: old_val }, Type::UNIT, span);
-                b.end_flag_guard(cont);
-            } else {
+            let conts: Vec<_> = guard_flags
+                .iter()
+                .map(|&flag| b.begin_flag_guard(flag, span))
+                .collect();
+            let partial = residue_path
+                .is_some_and(|path| b.emit_partial_drop_at(base_key, base_type, path, span));
+            if !partial {
                 let old_val = b.emit(CfgInstData::PlaceRead { place }, ty, span);
                 b.emit(CfgInstData::Drop { value: old_val }, Type::UNIT, span);
             }
+            for cont in conts.into_iter().rev() {
+                b.end_flag_guard(cont);
+            }
         });
+    }
+
+    /// The path segments (field indices, constant element indices) of
+    /// `place`'s projections up to its first dynamic index: the part of the
+    /// place that move facts, recorded per path, can name.
+    fn static_place_path(&self, place: &AirPlace) -> FieldPath {
+        let mut path = FieldPath::new();
+        for projection in self.air.get_place_projections(place) {
+            match projection {
+                AirProjection::Field { field_index, .. } => path.push(*field_index),
+                AirProjection::Index { index, .. } => match self.air.get(*index).data {
+                    AirInstData::Const(k) => path.push(k as u32),
+                    _ => break,
+                },
+            }
+        }
+        path
+    }
+
+    /// Re-arm the runtime drop flags (RUE-156) of `prefix` and every path
+    /// below it: a write to the place at `prefix` re-initializes all of
+    /// them. Sorted, so the emitted stores follow the source, not hash order.
+    fn rearm_field_drop_flags_below(
+        &mut self,
+        key: MovedSlot,
+        prefix: &[u32],
+        span: rue_span::Span,
+    ) {
+        let mut flags: Vec<(FieldPath, u32)> = self
+            .field_drop_flags
+            .iter()
+            .filter(|((slot, path), _)| *slot == key && path.starts_with(prefix))
+            .map(|((_, path), &flag)| (path.clone(), flag))
+            .collect();
+        flags.sort();
+        for (_, flag) in flags {
+            self.store_field_drop_flag(flag, true, span);
+        }
     }
 
     /// Path-granular drop of a partially-moved struct or array (RUE-62,
@@ -4723,7 +4757,7 @@ mod tests {
         assert_eq!(state.stats.slot_path_visits.get(), 1);
 
         state.stats.slot_path_visits.set(0);
-        state.clear_field(target, 777);
+        state.clear_path(target, &[777]);
         assert_eq!(state.stats.slot_path_visits.get(), 2);
         assert!(!state.fields.contains_key(&target));
         assert!(!state.maybe_fields.contains_key(&target));
