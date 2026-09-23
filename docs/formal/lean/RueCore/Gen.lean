@@ -62,11 +62,30 @@ and drops are unaffected by it: the defect is in the assignment path, and
 depth-2 use, `@drop` and assignment-under-a-live-value were all checked by
 hand against the compiler.
 
-One shape is not drawn at any depth, and it is a gap rather than a guard now
-that RUE-2236 has landed: a projection through a proper prefix of
-declared-`linear` struct type selects §4.2's `Declared(d, π_s)` plan, which
-§5.1 and §6.3 now discharge — `projSlots` and `pathOk` simply never draw one.
-The seed cases cover the shape; drawing it is RUE-2339.
+A path through a **declared-`linear`** struct is drawn exactly as any other
+(RUE-2339). `pathOk` does not ask which of §4.2's plans a path selects, so
+where a proper prefix of it is a struct declared `linear` the checker takes the
+`Declared(d, π_s)` plan (`declaredPrefix`, `Syntax.lean`) and
+(Use-Declared-Linear-Destructure) §5.1, or the `@drop` read the same way,
+decides the case — residue check included. That puts a destructure in 18 of
+the 200 programs at `--gen 200 --seed 7` (34 sites, 7 of them two steps deep)
+and in 67 of the 1,000 at `--gen 1000 --seed 23` (99 sites, 25). The checker
+reaches a declared-plan rule in 8 and 48 of those programs and accepts 0 and
+13 of them; the deepest refusal is the linear-residue premise, the E0474 of
+`3.8:60`, in 0 and 2, and a declared-plan premise of any kind in 2 and 10. The
+rest are refused for the reasons any generated case is — most often a linear
+value leaked at a scope exit, a `match` arm or a discarded statement, or a use
+after the move — because a declared-`linear` binder has to be consumed
+explicitly and a random program seldom does.
+
+One shape of it is a compiler-red case until RUE-2335 is decided: a `@drop` of
+a declared-`linear` place after a destructure strictly under it, which the
+model accepts and the compiler rejects with E0406 (the seed case
+`destructure_ancestor_dropped`). The draw does **not** avoid it — that would
+write the compiler's current answer into the generator — so a run counts it
+instead, and none of the 1,200 cases at the two settings above has the shape:
+it needs two nested declared-`linear` levels and a `@drop` of the outer one
+after a use under the inner one, all rooted at one binder.
 
 Calls and `return` are **not** generated yet: every generated case is a
 one-function program (`Program.entry`), so the shapes RUE-2233 added — a
@@ -103,12 +122,12 @@ complete.
 
 Ownership. Moves, drops, assignments, `match` arms and scope exits are chosen
 at random, so a large minority of the programs are rejected by the checker and
-refused by the machine — 86 of 200 at `--gen 200 --seed 7` and 411 of 1,000 at
+refused by the machine — 76 of 200 at `--gen 200 --seed 7` and 404 of 1,000 at
 `--gen 1000 --seed 23`, the figures the weights below are tuned against. Both
 are recorded (`Corpus.caseJson` reads them off `checkProgram` and `run` as for
 any case), never filtered: a rejected program checks that the compiler rejects
 it too, an accepted one that the three implementations agree with the
-interpreter's trace. At those two settings 94 of 200 and 465 of 1,000 programs
+interpreter's trace. At those two settings 98 of 200 and 465 of 1,000 programs
 contain a `match`.
 
 ## Bias
@@ -126,6 +145,10 @@ the weights can be read and changed:
   a drop is as often observable as not, and a declaration whose fields join to
   `Linear` is `Linear` whatever its attribute says (§3), which is how the
   linear-through-a-field shapes arise;
+* about two declarations in seven are declared `linear`, which puts one in
+  121 of the programs at `--gen 200 --seed 7` and 568 of 1,000 at
+  `--gen 1000 --seed 23`, and a path through one is §4.2's declared-linear
+  destructure (above, "How deep a place goes");
 * a sequence's discarded statement is mostly unit-typed, where `assign`
   (whose right-hand side may use the target binder itself, so
   reinitialisation after a move and overwrite of a live value both arise)
@@ -154,19 +177,20 @@ the weights can be read and changed:
   sibling fields still drop at scope exit) and a binder next (the move that
   makes a second `match` on the same place the E0205 the compiler reports).
   That weight on its own starved the shape it is for, because the branch it
-  fired on was the rarer one: with the weight alone only 25 of 171 `match` sites
-  at `--gen 200 --seed 7` and 73 of 754 at `--gen 1000 --seed 23` had an enum
+  fired on was the rarer one: with the weight alone only 16 of 164 `match` sites
+  at `--gen 200 --seed 7` and 89 of 771 at `--gen 1000 --seed 23` have an enum
   place in scope at all. So where the scope offers no place of the drawn enum's
   type the draw **makes** one half the time — `let v = <the temporary> in
   match v`, sometimes with one statement in between — instead of matching a
   temporary, and the arms are then typed under a scope that still holds the
-  consumed binding. Measured with it: 116 of 185 sites and 566 of 895 have a
-  place in scope, 111 and 533 scrutinize one (the weight alone reached 21 of 171
-  and 60 of 754), and the E0205 a second `match` on the same place is becomes
-  the *deepest* refusal of 13 of 200 and 108 of 1,000 cases, where the weight
-  alone reached 2 and 12. The n-way **join** conflict stays rare at either
-  setting — 1 case in 1,000 at seed 23, the same order as the binary (If)
-  join's — because it needs two arms to disagree about an entry that carries a
+  consumed binding. Measured with it: 139 of 211 sites and 588 of 909 have a
+  place in scope, 127 and 552 scrutinize one (the weight alone reaches 13 of 164
+  and 68 of 771), and the E0205 a second `match` on the same place is becomes
+  the *deepest* refusal of 20 of 200 and 113 of 1,000 cases, where the weight
+  alone reaches 3 and 8. The n-way **join** conflict stays rare at either
+  setting — 1 case in 200 at seed 7 and 1 in 1,000 at seed 23, the same order
+  as the binary (If) join's, which is the deepest refusal of none of them —
+  because it needs two arms to disagree about an entry that carries a
   linear value and outlives the `match`, which random arms seldom do;
 * a `let` binder is biased toward a declaration that holds an enum in
   a field, which is what puts a projection of enum type in scope at all;
@@ -567,12 +591,16 @@ def projPlaces (D : Decls) (Γ : Scope) (T : Ty) : List Place :=
 /-- (helper) Draw a place, biased toward the **deeper** one: where the list
 offers a path of two field steps it is taken half the time. Depth 2 is in the
 tail without it, because a two-step path needs a nesting declaration, a binder
-of the outer type in scope, and both prefixes free of a declared-`linear`
-attribute and of a destructor at once. Measured on the current draws, `--gen 200
---seed 7` reaches 4 depth-2 places across 3 programs with the bias and 3 across
-3 without it, and `--gen 300 --seed 23` 13 across 8 with and 11 across 6
-without. This is one of the module's weights; it lives here rather than at the
-six draw sites. -/
+of the outer type in scope, and — for a move or a `@drop` of a non-`Copy` leaf
+— both prefixes free of a destructor. Measured on the current draws, `--gen 200
+--seed 7` reaches 13 depth-2 places across 10 programs with the bias and 17
+across 8 without it, and `--gen 300 --seed 23` 18 across 13 with and 23 across
+16 without. The two runs diverge at the first pick the bias changes, so each
+pair compares two different sets of programs, and since the declared-`linear`
+prefixes were opened (RUE-2339) the comparison no longer favours the bias at
+these sizes; before, it did (4 across 3 against 3 across 3, and 13 across 8
+against 11 across 6). The weight is left as it is. This is one of the module's
+weights; it lives here rather than at the six draw sites. -/
 def pickPlace (default : Place) (ps : List Place) : G Place := do
   let deep := ps.filter (fun p => 2 ≤ p.path.length)
   if !deep.isEmpty && (← chance 1 2) then pick default deep else pick default ps
