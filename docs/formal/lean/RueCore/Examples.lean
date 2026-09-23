@@ -2325,7 +2325,8 @@ def countdown : Program :=
 The shape is a value already built for a **sibling position** that a later
 sibling destroys by `return`. The sibling positions are every list `evalArgs`
 walks: a call's argument list, a struct literal's initializers, an array
-literal's elements. Such a value lives in no cell and in no scope record
+literal's elements; and, since RUE-2342, an assignment's right-hand side while
+the target's dynamic indices run after it (`5.2:14`). Such a value lives in no cell and in no scope record
 between the subexpression that produced it and the aggregation that would
 have taken it — for an argument, the `mintParams` of §6.9's (D-Call). If a
 later sibling unwinds by `return`, (D-Return) §6.9 discards the evaluation
