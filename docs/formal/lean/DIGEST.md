@@ -1539,7 +1539,11 @@ calculus, the second is the calculus doing what it says.
   scope record, so its drop is neither run nor monitored and none of the five
   violations fires. The sibling positions are every list `evalArgs` walks — a
   call's argument list, a struct literal's initializers, an array literal's
-  elements. That edge is the calculus as written — §6.9's unwinding
+  elements — and an assignment's right-hand side while the target's indices
+  run after it (`5.2:14`). At the right-hand side only the affine half
+  applies: (Assign)'s leaf premise `class(T) ≠ Linear` keeps the abandoned
+  value from being linear, so `no_linear_discard` is not affected there. That
+  edge is the calculus as written — §6.9's unwinding
   rule walks only σ, and §5.7's strict-context bottom rule (`Strict-Bottom`
   there, which the fragment does not mechanize) imposes no discard check on
   siblings already evaluated — it is what the Rue compiler does, and closing
@@ -7441,7 +7445,12 @@ before its indices (`5.2:14`) — both bounds-checked at run time at every
 dynamic step by §6.5's (D-Index)/(D-Index-Trap). The two lists are parallel
 rather than one list of pairs so that the index expressions are a `List Expr`,
 the nested occurrence `mkStruct`'s arguments already are, and every recursion
-over `Expr` handles them the way it handles arguments.
+over `Expr` handles them the way it handles arguments. `indexDrop p idx πs` is
+`@drop(p[e₁]π₁…[eₖ]πₖ)`, (@Drop-Copy) §5.3 at a `Copy` place below a dynamic
+index: §5.3 gives that rule no index premise, and its prose admits
+`@drop(a[i])` on a `Copy`-element array at a dynamic index. `drop` takes a
+constant `Place`, so the dynamic form is its own constructor, with the read's
+place and the read's premises; its value is `()`.
 
 ```lean
 inductive RueCore.Expr : Type
@@ -7557,6 +7566,13 @@ RueCore.Expr.indexRead (p : Place) (idx : List Expr) (πs : List (List Nat)) :
 ```lean
 RueCore.Expr.indexWrite (p : Place) (idx : List Expr) (πs : List (List Nat))
   (e : Expr) : Expr
+```
+
+**`Expr.indexDrop`**
+
+```lean
+RueCore.Expr.indexDrop (p : Place) (idx : List Expr) (πs : List (List Nat)) :
+  Expr
 ```
 
 **`Expr.drop`**
@@ -11875,7 +11891,7 @@ RueCore.Typed.repeatArray {P : Program} {R : Ty} {Γ Γ' : Ctx} {T : Ty}
       Typed P R Γ (Expr.repeatArray T e n) (T.array n) Γ'
 ```
 
-**`Typed.indexRead`** — (Use-Untrackable-Dynamic-Copy) §5.1, at a read `p[e₁]π₁…[eₖ]πₖ` below one or more indices that are not compile-time constants: §4.2's `Untrackable(OrdinaryDynamic)` plan, and the *only* successful static rule for it. The place is `p` (a constant `Place`), then `k ≥ 1` dynamic steps, each followed by a constant path of field slots and constant indices, so `a[i]`, `a[i].x0`, `h.arr[i].x0`, `a[i][j]` and `a[i][0].x1` are all this form (probes q01, q08, q09, q10). `Place` stays constant-only: a dynamic step is never a path of Σ, which is what keeps Σ finite (`3.8:68`). The premises, in the order the rule reads them. * The index expressions are typed **left to right** at integer types, with Σ threaded (`TypedArgs` at a list of `int(w,s)`; `4.11:4` admits any integer type), and the place is read on the resulting context; `eval` runs them in the same order. `4.11:14` puts a full index expression's *base* before its index, and that is unobservable here because the base is a `Place`: reading one runs nothing and threads no Σ. * `fully-owned(Σ, p)` at the array the **first** dynamic step indexes — stronger than §5.1's `Σ(p) = Owned`, and `3.8:70`/`7.1:45`'s own rule: it is an error "to index the array with a non-constant index" while an element is moved out (E0205; probes q06, q19). It is `p`, not the root binding: `a[0][i]` after `a[1]` moved reads a whole `a[0]`, and the compiler accepts it (probe r01). A later dynamic step needs nothing more, because `fully-owned` at `p` is `fully-owned` at everything under it. * `Γ ⊢ p[…]… : T` is `Ty.atPath` to `p` and then `Ty.atDyn` through the dynamic tail, which fails unless every dynamic step is taken at an array. * `class(T) = Copy` is the rule's own premise, and §4.2's "there is no successful static rule … when `class(T) ∈ {Affine,Linear}`" is that premise's absence rather than a rejection of its own (E0904; probes q02, q15). * No declared-`linear` proper prefix anywhere along the complete path: `declaredPrefix … = none` above the first dynamic step and `Ty.dynNoDeclared` below it keep §4.2's `Untrackable(DeclaredLinearDynamic)` — ill-formed there — without an instance (E0904; probes q11, r07). The read copies, so the outgoing state is the indices'. Whether each index is *in range* is dynamic (`7.1:10`, §6.5's (D-Index-Trap)), not a typing question.
+**`Typed.indexRead`** — (Use-Untrackable-Dynamic-Copy) §5.1, at a read `p[e₁]π₁…[eₖ]πₖ` below one or more indices that are not compile-time constants: §4.2's `Untrackable(OrdinaryDynamic)` plan, and the *only* successful static rule for it. The place is `p` (a constant `Place`), then `k ≥ 1` dynamic steps, each followed by a constant path of field slots and constant indices, so `a[i]`, `a[i].x0`, `h.arr[i].x0`, `a[i][j]` and `a[i][0].x1` are all this form (probes q01, q08, q09, q10). `Place` stays constant-only: a dynamic step is never a path of Σ, which is what keeps Σ finite (`3.8:68`). The premises, in the order the rule reads them. * The index expressions are typed **left to right** at integer types, with Σ threaded (`TypedArgs` at a list of `int(w,s)`; `4.11:4` admits any integer type), and the place is read on the resulting context; `eval` runs them in the same order. `4.11:14` puts a full index expression's *base* before its index, and that is unobservable here because the base is a `Place`: reading one runs nothing and threads no Σ. * `fully-owned(Σ, p)` at the array the **first** dynamic step indexes — stronger than §5.1's `Σ(p) = Owned`, and `3.8:70`/`7.1:45`'s own rule: it is an error "to index the array with a non-constant index" while an element is moved out (E0205; probes q06, q19). It is `p`, not the root binding: `a[0][i]` after `a[1]` moved reads a whole `a[0]`, and the compiler accepts it (probe r01). A later dynamic step needs nothing more, because `fully-owned` at `p` is `fully-owned` at everything under it. A moved inner element under a second dynamic step is not merely untested but inexpressible: a nested element move such as `a[0][1]` is itself E0904 (`rootIdxOnly`; review probes a1–a3). * `Γ ⊢ p[…]… : T` is `Ty.atPath` to `p` and then `Ty.atDyn` through the dynamic tail, which fails unless every dynamic step is taken at an array. * `class(T) = Copy` is the rule's own premise, and §4.2's "there is no successful static rule … when `class(T) ∈ {Affine,Linear}`" is that premise's absence rather than a rejection of its own (E0904; probes q02, q15). * No declared-`linear` proper prefix anywhere along the complete path: `declaredPrefix … = none` above the first dynamic step and `Ty.dynNoDeclared` below it keep §4.2's `Untrackable(DeclaredLinearDynamic)` — ill-formed there — without an instance (E0904; probes q11, r07). The read copies, so the outgoing state is the indices'. Whether each index is *in range* is dynamic (`7.1:10`, §6.5's (D-Index-Trap)), not a typing question.
 
 ```lean
 RueCore.Typed.indexRead {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {p : Place}
@@ -11923,6 +11939,15 @@ RueCore.Typed.indexWrite {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx} {p : Plac
                                   (List.set Γ₂ p.root
                                     (en₁.setSt
                                       (en₁.st.setAt p.path OwnSt.owned)))
+```
+
+**`Typed.indexDrop`** — (@Drop-Copy) §5.3 at a `Copy` place below a dynamic index, `@drop(p[e₁]π₁…[eₖ]πₖ)`. §5.3's rule has no index premise and its prose admits `@drop(a[i])` on a `Copy`-element array at a dynamic index; the compiler accepts the form (probe d1), runs the indices and bounds-checks them (probe d3 traps), and gives it exactly the read's premises: an affine or linear place there is E0904, as its read is (probe d4). The premise is therefore the read's whole derivation, (Use-Untrackable-Dynamic-Copy) §5.1 at the same place — `Copy` leaf, `fully-owned(Σ, p)`, no declared-`linear` prefix, integer indices typed left to right — and the conclusion is the read's outgoing context at type `unit`: a `Copy` place is moved by nothing, so there is no ownership effect to add.
+
+```lean
+RueCore.Typed.indexDrop {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {p : Place}
+  {idx : List Expr} {πs : List (List Nat)} {T : Ty} :
+  Typed P R Γ (Expr.indexRead p idx πs) T Γ₁ →
+    Typed P R Γ (Expr.indexDrop p idx πs) Ty.unit Γ₁
 ```
 
 **`Typed.dropCopy`** — (@Drop-Copy) §5.3: no drop glue, no ownership effect. §5.3 gives it neither of (@Drop)'s projection premises — a `Copy` place is moved by nothing — so only the `Ordinary` plan premise is added: §5.3 says the two `@drop` rules "are read the same way" as §5.1's two use rules, which is `declaredPrefix … = none`. The subtree condition is read the way the `Copy` use rule above reads it, for the same reason and at the same cost (none).
@@ -12337,9 +12362,10 @@ not reach. It is not absent here: `residualLinearFields`' `[], Ts` base case
 answers those slots at the **type** level, `Ts.any (·.mult D = .linear)`, and
 that reading is **exact**, not conservative. An element Σ has no record for
 is one no path has touched, and nothing below a dynamic index is ever moved:
-the calculus has no rule for a move, a `@drop` or a declared-`linear` plan
-there (§4.2's `Untrackable` plans, E0904; probes q02, q11, q15 of RUE-2342),
-and a write there consumes nothing. So an untracked element is `Owned`, and
+the calculus has no rule for a move or a `@drop` of an affine or linear place
+there, nor for a declared-`linear` plan (§4.2's `Untrackable` plans, E0904;
+probes q02, q11, q15 of RUE-2342); a `@drop` of a `Copy` place there
+(`Typed.indexDrop`) moves nothing, and a write there consumes nothing. So an untracked element is `Owned`, and
 an `Owned` element carries a linear value exactly when `class(T) = Linear`.
 
 ```lean
