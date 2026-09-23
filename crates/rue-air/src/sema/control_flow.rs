@@ -1293,7 +1293,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         AHashMap<Spur, VariableMoveState>,
         AHashMap<Spur, VariableMoveState>,
     ) {
-        let node = self.loop_head_hints.enter(body);
+        let rir = std::ptr::from_ref(self.body_rir_ref()) as usize;
+        let node = self.loop_head_hints.enter((body, rir));
         let entry = ctx.ownership.moved_vars.clone();
         let head = match self.loop_head_hints.seed(node, &entry) {
             Some(seed) => {

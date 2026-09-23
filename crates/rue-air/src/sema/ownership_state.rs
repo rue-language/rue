@@ -444,7 +444,8 @@ pub(crate) struct LoopHeadHints {
 }
 
 struct LoopHeadHint {
-    body: rue_rir::InstRef,
+    /// The loop: its body instruction and the address of the RIR holding it.
+    body: (rue_rir::InstRef, usize),
     settled: Option<(
         AHashMap<Spur, VariableMoveState>,
         AHashMap<Spur, VariableMoveState>,
@@ -455,7 +456,9 @@ struct LoopHeadHint {
 impl LoopHeadHints {
     /// The node for a loop about to be analysed, at the next position in the
     /// innermost pass in progress, or a fresh root for an outermost loop.
-    pub fn enter(&mut self, body: rue_rir::InstRef) -> usize {
+    /// `body` names the loop by its body instruction and the address of the
+    /// RIR holding it.
+    pub fn enter(&mut self, body: (rue_rir::InstRef, usize)) -> usize {
         let fresh = LoopHeadHint {
             body,
             settled: None,
@@ -1472,18 +1475,18 @@ mod tests {
             .mark_path_moved(&[], Span::new(1, 2));
 
         let mut hints = LoopHeadHints::default();
-        let root = hints.enter(outer);
+        let root = hints.enter((outer, 0));
         hints.begin_pass(root);
-        let a = hints.enter(first);
+        let a = hints.enter((first, 0));
         assert!(hints.seed(a, &AHashMap::new()).is_none());
         hints.record(a, AHashMap::new(), moved_x.clone());
-        let b = hints.enter(second);
+        let b = hints.enter((second, 0));
         assert_ne!(a, b);
         hints.end_pass();
 
         // The parent's next pass reaches the same positions in order.
         hints.begin_pass(root);
-        assert_eq!(hints.enter(first), a);
+        assert_eq!(hints.enter((first, 0)), a);
         // An entry above the recorded one is seeded with the recorded head.
         // `y` owned and `y` moved on every path are incomparable; their join,
         // `y` moved on some path, is above both.
@@ -1494,7 +1497,7 @@ mod tests {
             .expect("entry above the recorded entry");
         assert!(seed.contains_key(&x) && seed.contains_key(&y));
         // A different loop at a recorded position starts afresh.
-        let c = hints.enter(first);
+        let c = hints.enter((first, 0));
         assert_eq!(c, b);
         assert!(hints.seed(c, &AHashMap::new()).is_none());
         hints.end_pass();
@@ -1504,7 +1507,7 @@ mod tests {
         assert!(hints.seed(a, &moved_x).is_none());
 
         // A new outermost loop starts a fresh nest.
-        assert_eq!(hints.enter(outer), 0);
+        assert_eq!(hints.enter((outer, 0)), 0);
         assert_eq!(hints.nodes.len(), 1);
     }
 
