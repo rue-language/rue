@@ -165,8 +165,9 @@ finding to file.
   `bounds`. None at seed 7, five at seed 23 (`gen_23_108`, `112`, `126`,
   `636`, `718`).
 * A place below a dynamic index after its field-reached array (or an ancestor
-  of it) was moved (seed `array_dyn_write_after_field_move`, RUE-2344): none at
-  either setting; `gen_2_1694` (`--gen 1695 --seed 2`) is one.
+  of it) was moved (seed `array_dyn_write_after_field_move`): none at either
+  setting; `gen_2_1694` (`--gen 1695 --seed 2`) reached it, and it agrees now
+  that RUE-2344 is fixed.
 
 Calls and `return` are **not** generated yet: every generated case is a
 one-function program (`Program.entry`), so the shapes RUE-2233 added — a
