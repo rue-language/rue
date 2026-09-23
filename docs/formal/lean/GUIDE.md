@@ -227,7 +227,7 @@ two bindings share a location.
 Per cell the agreement is now **recursive**, because both sides are trees. Σ's
 state for a binding is `OwnSt` — `owned`, `movedOut`, or `fields [t₁ … tₖ]`
 for a value some of whose fields have been moved out, which `explain/` and
-§5e's drawing spell `Owned{ x0: MovedOut }` — and the cell holds
+§5.5's drawing spell `Owned{ x0: MovedOut }` — and the cell holds
 `Contents`, the same shape with §6.1's `⊘` admitted at any node.
 `ContentsMatches` relates them path by path:
 
@@ -345,14 +345,39 @@ why a `reject` verdict in the bridge corpus is only trustworthy on shapes
 where `check` is complete, and why the generator emits no `return`
 (`Corpus.lean`, `Gen.lean`).
 
-## 5. A worked example: `reinit`
+## 5. Worked examples
+
+Each example is one corpus case (`Corpus.lean`), chosen to show one idea.
+Read 5.1 first: it walks a program through the checker, the interpreter and
+the theorem in full, and the later examples show only what is new.
+
+| Example | Corpus case | What it teaches |
+| --- | --- | --- |
+| 5.1 | `reinit` | reading a derivation and a run end to end; the overwrite premise of (Assign) |
+| 5.2 | `return_past_affine` | an early `return` unwinds the frame's scope record newest-first |
+| 5.3 | `panic_after_drop` | a trap keeps the output already printed and runs no drops |
+| 5.4 | `struct_nested_dtor_drop` | a struct's class, and §6.11's outer-then-fields drop order |
+| 5.5 | `partial_move_residue` | a partial move: Σ and the store as trees |
+| 5.6 | `destructure_residue_order` | a declared-linear destructure consumes the enclosing place |
+| 5.7 | `array_elem_move_rest_ascending` | an element move, and the residue dropped in index order |
+| 5.8 | `enum_match_affine` | a `match` consumes its scrutinee; where the payload drops |
+| 5.9 | `array_dyn_write_rhs_first` | an assignment evaluates its right-hand side before its index |
+| 5.10 | `float_to_int_trap_inf` | the one float trap, and where the IEEE assumption sits |
+
+Every corpus case is a smaller worked example: its printed source begins
+with a comment naming the case, the rules it exercises, and its expected
+outcome, and `corpus.json` (from `scripts/rue lean`, or `lake exe
+ruecore-corpus`) holds all of them. Slice issues of the "Formal core mechanization" project add one
+worked example each to this section as they land.
+
+### 5.1 `reinit`: reinitializing a linear binding
 
 The corpus case `reinit` (`Corpus.lean`) discharges a linear value, assigns a
 new one back in, and discharges that. It exercises `(@Drop)`, `(Assign)` with
 the `3.8:77` premise checked on the post-RHS state, reinitialization
 (`3.8:55`), and the scope-exit leak check (§5.6).
 
-### The program
+#### The program
 
 Core syntax, as `Examples.reinit` writes it:
 
@@ -395,7 +420,7 @@ fn main() -> i32 {
 }
 ```
 
-### The checker's derivation
+#### The checker's derivation
 
 `checkProgram` accepts, and `f0`'s body checks at `i64` with outgoing context
 `[]`. The
@@ -440,7 +465,7 @@ than the residual reading at (Assign): both disjuncts of §5.2's premise imply
 `residual-linear = false`, which is what keeps the machine's
 `linearOverwrite` monitor unreachable from a program `check` accepts.
 
-### The interpreter's run
+#### The interpreter's run
 
 `run` returns `.ok [dead] (.int 2) []`. Step by step, with the
 store `H` as a list of cells indexed by location and `ρ` mapping position 0
@@ -467,7 +492,7 @@ the value, `2`, and the bridge expectation in `corpus.json` is exactly that:
 Both tables above are generated for every corpus case: this one is
 `explain/reinit.txt`, printed by `lake exe ruecore-explain reinit`.
 
-### The theorem that covers it
+#### The theorem that covers it
 
 `checkProgram` accepted, so by `checkProgram_sound` the program is
 `ProgramTyped`, and `run_safe` applies (the initial frame invariant,
@@ -481,7 +506,7 @@ says the guard is never needed at run time for a program the checker accepts,
 because the checker has already demanded the `MovedOut` state that makes the
 overwrite-drop a no-op.
 
-## 5b. A second worked example: an early `return` and its unwind
+### 5.2 `return_past_affine`: an early `return` unwinds the frame
 
 The corpus case `return_past_affine` (`Corpus.lean`) is the shape RUE-1277
 added `(D-Return)`'s "in any evaluation context `E'`" for: a `return` under
@@ -489,7 +514,7 @@ two open `let` scopes, each holding a live affine resource. It is the smallest
 program where the frame's **scope record** σ, rather than the pending
 `endscope` markers, is what runs the drops.
 
-### The program
+#### The program
 
 ```lean
 letIn false (resA (lit 3))
@@ -511,7 +536,7 @@ fn f0() -> i64 {
 }
 ```
 
-### What the checker demands
+#### What the checker demands
 
 `Typed.ret` (`(Return-Value)` §5.7) has three premises. The operand is checked
 at the enclosing function's declared return type — `7 ⇒ i64`, and `i64` is
@@ -529,7 +554,7 @@ Change either to `S2` and the premise fails — that is the corpus case
 `return_past_linear`, which the compiler rejects with E0406 and the machine
 refuses with `linearLeak`.
 
-### The unwind, step by step
+#### The unwind, step by step
 
 The frame at the `return` is `φ = ⟨ρ ; σ⟩` with `ρ = [ℓ1, ℓ0]` (innermost
 binder first) and `σ = [ℓ0, ℓ1]` (creation order). The `let` cases built σ by
@@ -564,14 +589,108 @@ The bridge compares both against the real binary.
 `explain/return_past_affine.txt` is this table generated, with the store at
 every row.
 
-## 5c. A third worked example: a struct, its class, and §6.11's drop order
+### 5.3 `panic_after_drop`: a trap keeps its output and unwinds nothing
+
+The corpus case `panic_after_drop` is the smallest program where the
+*observable output* and the *trap* are both part of the answer. §6.12 halts
+the program at a trap, but the process has already printed whatever it
+printed, and `Outcome` — the thing the differential harness compares — is
+exit status **and** stdout. So the machine's `.panic` carries a trace, and
+the bridge compares it.
+
+#### The program
+
+```lean
+letIn false (resA (lit 7)) (seq (drop 0) (panic "boom"))
+```
+
+printed as
+
+```rue
+fn f0() -> i64 {
+    {
+        let v0: S1 = S1 { x0: 7 };
+        {
+            @drop(v0);
+            @panic("boom")
+        }
+    }
+}
+```
+
+`S1` declares a destructor (`drop fn S1(self) { @dbg(self.x0); }`), so its
+drop is observable; the `@drop` discharges the binding explicitly, and the
+`@panic` then abandons the program.
+
+#### What the checker demands, and what it does not
+
+`@panic` is `never`-typed (§5.7, `3.4:2`), and (Sub-Never) admits it wherever
+a value of any type is expected. `Typed.panic` folds both in exactly as
+`Typed.ret` does: it concludes at **any** type and at any outgoing context of
+the same skeleton, so `Ty` needs no `never` constructor and `HasTy` no case
+for it — sound because `never` has no values (`3.4:1`).
+
+The premise `Typed.ret` carries and `Typed.panic` does **not** is the
+interesting half. §5.7 gives `return` the provenance `⊥_exit`, which "carries
+the §5.6 scope-exit/drop obligation", so `Typed.ret` demands
+`NoOwnedLinear`: no binding of the frame may still be `Owned` at a linear
+type. `@panic` carries `⊥_panic`, which §5.7 exempts — "§5.6 performs no
+scope-exit check or drop on that edge" — so `Typed.panic` demands nothing.
+The two rules differ in one premise, and that premise is the whole difference
+between an exit that unwinds and an exit that abandons.
+
+| Node | Rule | Concludes |
+| --- | --- | --- |
+| `S1 { x0: 7 }` | (Struct-Intro) §5.8 | `⇒ S1` |
+| `@drop(v0)` | (@Drop) §5.3 | `⇒ unit`, and `v0` becomes `MovedOut` |
+| `@panic("boom")` | (Panic) §5.8 + (Sub-Never) §5.7 | `⇒ i64` — the type `check` picks is the enclosing return type, the same choice it makes for `return` (`Checker.lean`) |
+| `@drop(v0); @panic(…)` | (Seq) §5.3 | `⇒ i64`; the discarded `unit` carries no linear value |
+| `let v0 = …; …` | (Let) §5.3 + §5.6 | `⇒ i64`; `v0` is `MovedOut` at the body's end, so the leak check has nothing to ask |
+
+#### The run, step by step
+
+| Step | Rule | Store before | Effect | Store after | Events |
+| --- | --- | --- | --- | --- | --- |
+| 1–2 | literal, (D-Struct) §6.5 | `[]` | the literal becomes `{ 7 }_S1` | `[]` | |
+| 3 | `(D-Let) §6.7` | `[]` | mint `ℓ0` for `v0` | `[ℓ0 = S1 { 7 }]` | |
+| 4 | `@drop` §6.11 | `[ℓ0 = S1 { 7 }]` | the glue runs — the destructor is the observable half — and the cell is marked `⊘` rather than retired, so the binding stays reinitializable (§6.8/§6.11) | `[ℓ0 = ⊘]` | `drop ℓ0 = S1 { 7 }`; `run drop fn S1(S1 { 7 })` |
+| **5** | **`(D-Panic) §6.12`** | `[ℓ0 = ⊘]` | the configuration is abandoned: `↯user`. **No `endscope` runs** — the `let`'s (D-EndScope) never fires, and nothing unwinds σ, which is the dynamic face of §5.7's `⊥_panic` exemption | — | |
+| 6 | `(Panic-Lift) §6.2` | | the trap is carried out of the suspended `main() → f0()` context: **no frame is popped**, `run-all-scope-drops` never runs, and the callee's open scopes go with the configuration | — | |
+
+The result is `EvalRes.panic .user [drop ℓ0 …, dtor S1 …]` — the trap, and
+the two events that had already happened. `Corpus.outLines` projects the
+observable ones, so the exported expectation is
+
+```json
+{"kind": "panic", "panic": "user", "stdout": ["7"]}
+```
+
+and `crates/rue-oracle-diff` compares *both* halves: a native binary that
+trapped with the right category but lost the destructor line is a
+disagreement. Verified by hand before the expectation was written: the
+compiled program prints `7` on stdout, `panic: boom` on stderr, and exits
+101.
+
+#### Why the drop is the explicit one
+
+Note which drop shows. The `@drop(v0)` at step 4 is the one that ran; the
+binding's *scope exit* never happened, because step 5 abandoned the
+configuration. Take the `@drop` away and the destructor never runs at all —
+`panicPastAffine` in `Examples.lean` is that program, kernel-checked to an
+empty trace, and the compiler does the same (a live destructor-bearing
+binding prints nothing at a `@panic`). That is §5.7's exemption doing visible
+work: a `return` in the same position would have unwound the frame and
+printed the line through `run-all-scope-drops`, which is the previous worked
+example.
+
+### 5.4 `struct_nested_dtor_drop`: a struct's class and §6.11's drop order
 
 The corpus case `struct_nested_dtor_drop` is the smallest program where a
 struct's *fields* matter: a destructor-bearing struct holding a
 destructor-bearing struct, dropped at scope exit. It is where (Struct-Intro)
 §5.8, §3's join, and §6.11's order are all visible at once.
 
-### The declarations
+#### The declarations
 
 Two of the fixture declarations (`Examples.structEnv`) are in play. As the
 printer writes them:
@@ -604,7 +723,7 @@ statement those three buy — that the recorded class is determined rather than
 free: on well-formed declarations of the same shapes, exactly one assignment
 of classes satisfies §3's equations.
 
-### The program, and what the checker demands
+#### The program, and what the checker demands
 
 ```lean
 letIn false (mkStruct sOuter [lit 1, resA (lit 2)]) (lit 9)
@@ -639,7 +758,7 @@ The leak check is the one place the class is read: §5.6 rejects a binding
 still `Owned` at a `Linear` type. `S5` is `Affine`, so scope exit may drop it
 — and the machine then has to.
 
-### The drop, step by step
+#### The drop, step by step
 
 | Step | Rule | Store before | Effect | Store after | Events |
 | --- | --- | --- | --- | --- | --- |
@@ -670,176 +789,7 @@ it.) `dropValue_ok` says the walk never refuses on a well-typed value. And
 look at the value's own class and never inside it, and why RUE-2237's
 "dropped exactly once" has a walk of known shape to quantify over.
 
-## 5d. A fourth worked example: a trap, and the output that survives it
-
-The corpus case `panic_after_drop` is the smallest program where the
-*observable output* and the *trap* are both part of the answer. §6.12 halts
-the program at a trap, but the process has already printed whatever it
-printed, and `Outcome` — the thing the differential harness compares — is
-exit status **and** stdout. So the machine's `.panic` carries a trace, and
-the bridge compares it.
-
-### The program
-
-```lean
-letIn false (resA (lit 7)) (seq (drop 0) (panic "boom"))
-```
-
-printed as
-
-```rue
-fn f0() -> i64 {
-    {
-        let v0: S1 = S1 { x0: 7 };
-        {
-            @drop(v0);
-            @panic("boom")
-        }
-    }
-}
-```
-
-`S1` declares a destructor (`drop fn S1(self) { @dbg(self.x0); }`), so its
-drop is observable; the `@drop` discharges the binding explicitly, and the
-`@panic` then abandons the program.
-
-### What the checker demands, and what it does not
-
-`@panic` is `never`-typed (§5.7, `3.4:2`), and (Sub-Never) admits it wherever
-a value of any type is expected. `Typed.panic` folds both in exactly as
-`Typed.ret` does: it concludes at **any** type and at any outgoing context of
-the same skeleton, so `Ty` needs no `never` constructor and `HasTy` no case
-for it — sound because `never` has no values (`3.4:1`).
-
-The premise `Typed.ret` carries and `Typed.panic` does **not** is the
-interesting half. §5.7 gives `return` the provenance `⊥_exit`, which "carries
-the §5.6 scope-exit/drop obligation", so `Typed.ret` demands
-`NoOwnedLinear`: no binding of the frame may still be `Owned` at a linear
-type. `@panic` carries `⊥_panic`, which §5.7 exempts — "§5.6 performs no
-scope-exit check or drop on that edge" — so `Typed.panic` demands nothing.
-The two rules differ in one premise, and that premise is the whole difference
-between an exit that unwinds and an exit that abandons.
-
-| Node | Rule | Concludes |
-| --- | --- | --- |
-| `S1 { x0: 7 }` | (Struct-Intro) §5.8 | `⇒ S1` |
-| `@drop(v0)` | (@Drop) §5.3 | `⇒ unit`, and `v0` becomes `MovedOut` |
-| `@panic("boom")` | (Panic) §5.8 + (Sub-Never) §5.7 | `⇒ i64` — the type `check` picks is the enclosing return type, the same choice it makes for `return` (`Checker.lean`) |
-| `@drop(v0); @panic(…)` | (Seq) §5.3 | `⇒ i64`; the discarded `unit` carries no linear value |
-| `let v0 = …; …` | (Let) §5.3 + §5.6 | `⇒ i64`; `v0` is `MovedOut` at the body's end, so the leak check has nothing to ask |
-
-### The run, step by step
-
-| Step | Rule | Store before | Effect | Store after | Events |
-| --- | --- | --- | --- | --- | --- |
-| 1–2 | literal, (D-Struct) §6.5 | `[]` | the literal becomes `{ 7 }_S1` | `[]` | |
-| 3 | `(D-Let) §6.7` | `[]` | mint `ℓ0` for `v0` | `[ℓ0 = S1 { 7 }]` | |
-| 4 | `@drop` §6.11 | `[ℓ0 = S1 { 7 }]` | the glue runs — the destructor is the observable half — and the cell is marked `⊘` rather than retired, so the binding stays reinitializable (§6.8/§6.11) | `[ℓ0 = ⊘]` | `drop ℓ0 = S1 { 7 }`; `run drop fn S1(S1 { 7 })` |
-| **5** | **`(D-Panic) §6.12`** | `[ℓ0 = ⊘]` | the configuration is abandoned: `↯user`. **No `endscope` runs** — the `let`'s (D-EndScope) never fires, and nothing unwinds σ, which is the dynamic face of §5.7's `⊥_panic` exemption | — | |
-| 6 | `(Panic-Lift) §6.2` | | the trap is carried out of the suspended `main() → f0()` context: **no frame is popped**, `run-all-scope-drops` never runs, and the callee's open scopes go with the configuration | — | |
-
-The result is `EvalRes.panic .user [drop ℓ0 …, dtor S1 …]` — the trap, and
-the two events that had already happened. `Corpus.outLines` projects the
-observable ones, so the exported expectation is
-
-```json
-{"kind": "panic", "panic": "user", "stdout": ["7"]}
-```
-
-and `crates/rue-oracle-diff` compares *both* halves: a native binary that
-trapped with the right category but lost the destructor line is a
-disagreement. Verified by hand before the expectation was written: the
-compiled program prints `7` on stdout, `panic: boom` on stderr, and exits
-101.
-
-### Why the drop is the explicit one
-
-Note which drop shows. The `@drop(v0)` at step 4 is the one that ran; the
-binding's *scope exit* never happened, because step 5 abandoned the
-configuration. Take the `@drop` away and the destructor never runs at all —
-`panicPastAffine` in `Examples.lean` is that program, kernel-checked to an
-empty trace, and the compiler does the same (a live destructor-bearing
-binding prints nothing at a `@panic`). That is §5.7's exemption doing visible
-work: a `return` in the same position would have unwound the frame and
-printed the line through `run-all-scope-drops`, which is the previous worked
-example.
-
-## 5e. A fifth worked example: a float conversion, and the one float trap
-
-Floats are in the core (§2, §5.8, §6.4), and they are the one construct whose
-IEEE side the mechanization *assumes* rather than proves. The corpus case
-`float_to_int_trap_inf` is where that boundary is easiest to see, because it
-is the only trap a float program can reach.
-
-### The program
-
-```lean
-fintrin (.floatToInt .w32 .signed) (binop .div (flE .w64 1 0) (flE .w64 0 0))
-```
-
-printed as
-
-```rue
-fn f0() -> i32 {
-    { let t1c: f64 = (1.0 / 0.0); let t1k: i32 = @float_to_int(t1c); t1k }
-}
-```
-
-The two binders are the printer supplying types nothing downstream names:
-`@float_to_int` takes its result type from the *use* site (`3.12:17`) and
-fixes nothing about its operand, exactly as `@intCast` does not
-(`Print.lean`, "Integer typing"). A float literal would otherwise default to
-`f64` (`3.12:8`) — which is what is wanted here, but not at `f32`.
-
-### What the checker demands
-
-| Node | Rule | Concludes |
-| --- | --- | --- |
-| `1.0`, `0.0` | (Lit) §5.8 at `float(64)` | `⇒ f64`. `3.12:9` *rounds*, so an inexact decimal like `0.1` denotes the nearest `f64` rather than being rejected; the one premise is `3.12:10`, which refuses a literal whose value rounds to an **infinity** at the width (`E0206`) — `RueCore.FloatLit.RoundsFinite`, an exact comparison against `max_{𝔽_w}` plus half an ulp. An underflow to zero is legal |
-| `1.0 / 0.0` | (Float-Arith) §5.8 | `⇒ f64`. One `w` for both operands — `3.12:13` gives no implicit widening — and `BinOp.floatAdmits` is §5.8's "rejected by the absence of a rule" for `%` and the bitwise operators, written as a side condition because one constructor stands for (Float-Arith), (Float-Ord) and (Total-Cmp) |
-| `@float_to_int(…)` | (Float-To-Int) §5.8 | `⇒ i32`. Whether the value *survives* is dynamic, not a typing question (`3.12:18`) |
-
-### The run, step by step
-
-| Step | Rule | Effect |
-| --- | --- | --- |
-| 1–2 | (Lit) §6.3 | each literal becomes `M.ofLit`'s datum — `3.12:9`'s rounding, which is the **model's**, not this module's |
-| 3 | **`(D-Float-Arith) §6.4`** | `1.0 / 0.0 → +inf`. Not a trap: none of (D-Arith-Trap), (D-Div-Zero) or (D-Div-Overflow) is stated over a float redex, and `3.12:22` fixes the answer — a finite non-zero over a zero is the infinity of the xor sign |
-| 4 | **`(D-Float-To-Int-Trap) §6.4`** | `+inf` is neither truncatable nor in range, so the conversion traps. The category is `↯overflow`, the one §6.12 already lists (`8.1:7`), which is why the compiler reports `integer overflow` here and not a float-specific message |
-
-The exported expectation is
-
-```json
-{"kind": "panic", "panic": "overflow", "stdout": []}
-```
-
-and the compiled program exits 101 with `error: integer overflow` — checked
-case by case, like every other.
-
-### Where the assumption is, and where it is not
-
-Step 4 is a **theorem**: `floatToInt_partition` (`RueCore/Float.lean`) says
-the premises of `(D-Float-To-Int)` and `(D-Float-To-Int-Trap)` partition
-`𝔽_w`, which is what §7 asks for and what keeps progress intact. It is
-provable because §2 models a float as a *datum*, so truncation toward zero is
-exact integer arithmetic.
-
-Step 3 is an **assumption**: `FloatModel.div_by_zero`, `3.12:22` as §6.4
-quotes it. `Examples.floatDivZeroToInt_traps` is the two steps together,
-stated over an *arbitrary* `FloatModel` and proved from its laws — so the
-witness is a claim about IEEE 754 rather than about this package's instance,
-and it computes no float at all. That is also why it costs no axiom: Lean's
-own `Float` is defined over an `opaque` constant, and a theorem that so much
-as mentions one reports `Classical.choice`.
-
-The laws are **structure fields**, not `axiom` declarations, so a theorem
-that rests on one says so in its own statement and `TRUST.md` lists them in a
-section of their own. `Float.exactOps`, the instance the corpus runs, is
-constructive integer arithmetic; that it *satisfies* the laws is the residual
-assumption, and it is checked by running the float corpus against the
-compiler rather than proved.
-
-## 5f. A sixth worked example: a partial move, drawn
+### 5.5 `partial_move_residue`: a partial move, drawn
 
 The slice RUE-2231 adds is the one where both sides of the invariant stop
 being flat, so this example draws them. The corpus case is
@@ -851,7 +801,7 @@ drop fn S1(self) { @dbg(self.x0); }     // the observation channel
 struct S7 { x0: S1, x1: S1 }             // no destructor of its own
 ```
 
-### The program
+#### The program
 
 ```rue
 fn f0() -> i64 {
@@ -869,7 +819,7 @@ fn f0() -> i64 {
 in value context moves *exactly* that field. Everything the slice is about is
 visible in three snapshots.
 
-### Before the partial move
+#### Before the partial move
 
 Σ's state for `v0` and the contents of its cell, side by side:
 
@@ -883,7 +833,7 @@ Owned` and no path under `v0` is `MovedOut`, which is `fully-owned(Σ, v0)` (§5
 preamble). The cell holds the matching hole-free tree, which is
 `ContentsMatches`'s `owned` clause.
 
-### After it
+#### After it
 
 (Use-Move) §5.1 marks exactly `v0.x0` and removes every path under it; §6.3's
 (D-Use-Move) writes `H[ℓ0@[0] ↦ ⊘]` at exactly the same position:
@@ -916,7 +866,7 @@ Three things follow, and each is a premise somewhere:
   of this (`3.9:34`, E0456; the `partial_under_dtor` case), because a
   destructor runs on the whole value and would meet the `⊘`.
 
-### At scope exit
+#### At scope exit
 
 `v1`'s scope ends first: `@drop(v1)` already marked it, so its `endscope`
 drops nothing. Then `v0`'s scope ends, and §6.11's walk runs on the *cell
@@ -936,7 +886,7 @@ the moved field is dropped **once**, by its new owner. That single skip is
 fields' events concatenated in declaration order, a moved-out field
 contributing none.
 
-### What the checker demanded
+#### What the checker demanded
 
 `check` reads the same three snapshots: `en.st.get p.path` finds the state for
 `v0.x0` (and returns `none` — a rejection — when a *proper prefix* of the path
@@ -951,7 +901,7 @@ and the pinned trace beside it in `Examples.lean` are the kernel-checked form
 of this paragraph, and `scripts/rue exec` on the printed program prints
 `1`, `2`, `9`.
 
-## 5g. A seventh worked example: a declared-linear destructure, drawn
+### 5.6 `destructure_residue_order`: a declared-linear destructure
 
 The slice RUE-2236 adds is the one where a use of a *field* consumes something
 other than that field, so this example draws the transition. The corpus case is
@@ -963,7 +913,7 @@ drop fn S1(self) { @dbg(self.x0); }        // the observation channel
 linear struct S15 { x0: S1, x1: i64, x2: S1 }
 ```
 
-### The program
+#### The program
 
 ```rue
 fn f0() -> i64 {
@@ -983,7 +933,7 @@ change nothing. It does neither, and §4.2 says why: "a declared-linear
 destructure plan is the central override; it consumes the selected enclosing
 place even when `T` is `Copy`".
 
-### Selecting the plan
+#### Selecting the plan
 
 Elaboration computes §4.2's `dl(Γ, p)` from the root's declared type and the
 path, and `declaredPrefix` (`Syntax.lean`) is that function:
@@ -1001,7 +951,7 @@ path, and `declaredPrefix` (`Syntax.lean`) is that function:
 where no prefix carries the attribute the answer is `none`, which is §5.1's
 `Ordinary` plan and the premise (Use-Copy)/(Use-Move) carry.
 
-### The residue gate
+#### The residue gate
 
 Before anything can be destroyed, §5.1 asks `¬ linear-residue(S, π_s)`:
 
@@ -1026,7 +976,7 @@ to find it, it would have: `Examples.destructureNestedLinearResidue` puts the
 d22). It is a kernel-checked witness rather than a corpus case, so it has no
 `explain/` file.
 
-### The ownership transition
+#### The ownership transition
 
 The rule's Σ effect is (Use-Move)'s, taken at `d` rather than at `p`:
 
@@ -1044,7 +994,7 @@ The two sides move together, which is `ContentsMatches`: `MovedOut` on the Σ
 side, `⊘` on the store side, at the one path `π_d`. Nothing marks `v0.x1`,
 because `v0.x1` is not what was consumed.
 
-### The residue's drops, in order
+#### The residue's drops, in order
 
 §6.3 runs `split` and then `drop*`, and the order is the traversal's:
 
@@ -1063,7 +1013,7 @@ later sibling (`destructure_nested_residue`); where the form is `@drop` rather
 than a use, §6.11 then drops the selected leaf *after* the residue
 (`drop_declared_residue_first`).
 
-### What the checker demanded, and what the proof gives back
+#### What the checker demanded, and what the proof gives back
 
 `check` computes `declaredPrefix` first and only then looks anything up:
 `en.st.get π_d` and `u.fullyOwned` are `fully-owned(Σ, d)` at the *consumed*
@@ -1080,233 +1030,7 @@ subtree is non-`Linear`; and `dropResidue_events`, that the residue's trace is
 §6.11's events concatenated in the traversal's order. The `⊘` at `π_d` is then
 re-established exactly as (Use-Move)'s is.
 
-## 5h. An eighth worked example: a `match`, and the two drops it does not do
-
-Enums are the slice RUE-2320 adds and RUE-2325 generates, and the thing to
-watch is not the branch — that is `if` again — but the *payload*. The corpus
-case is `enum_match_affine`, over
-
-```rue
-struct S1 { x0: i64 }
-drop fn S1(self) { @dbg(self.x0); }     // the observation channel
-enum E0 { K0(S1), K1 }                   // class(E0) = Affine, through S1
-```
-
-`class(E0)` is the join over **every** payload component of **every** variant
-(`6.3:19`), not over the variant a value happens to hold: the active variant is
-a run-time fact, so §3 cannot read it. Here the join is `class(S1) = Affine`,
-so `E0` is `Affine` and a use of an `E0` place is a move.
-
-### The program
-
-```rue
-fn f0() -> i64 {
-    {
-        let v0: E0 = E0.K0(S1 { x0: 1 });
-        {
-            let v1: i64 = match v0 {
-                E0.K0(v1) => { @dbg(10); 5 },
-                E0.K1     => { 6 },
-            };
-            { @dbg(20); v1 }
-        }
-    }
-}
-```
-
-That is the core form; the printed program is the same with `@dbg`'s operand
-bound to a `let` (`Print.lean`'s typed blocks, and RUE-2336). It prints `10`,
-`1`, `20`, then the value `5`. The `1` is `S1`'s destructor, and **where** it
-falls is the whole example: between the `10` and the `20`, at the *arm's* end,
-not at `v0`'s scope exit and not twice.
-
-### What (Match) demands
-
-(Match) §5.5 has four premises, and the mechanization is each of them
-literally:
-
-* the scrutinee is typed first, at the enum type, and whatever typing it did to
-  Σ is what the arms start from. `class(E0)` is not `Copy`, so `v0` is typed by
-  (Use-Move) §5.1 — the `match` **consumes** it, because a scrutinee is a
-  value context and a use of a move-type place there moves it (`3.8:7`,
-  `3.8:76`, `6.3:17`; the declared-`linear` destructure of `3.8:33` is a
-  different rule, and `E0`'s class here is `Affine`);
-* exhaustiveness is `arms.length = ed.variants.length`, with arm `j` the arm
-  for variant `j`. There is no coverage search and no ordering side condition,
-  because the core form has no wildcards and no guards — those are elaboration
-  obligations §5.5 states (`4.7:9`, `4.7:10`). `exhaustive_arm_exists`
-  (`Soundness.lean`) is the one line progress needs: a variant index the
-  declaration has is an index the arm list has;
-* every arm is typed from the **same** post-scrutinee state, under its own
-  variant's payload locals (`armCtx`), and all arms at one type. An arm is a
-  branch, not a step in a sequence, so Σ is not threaded from arm to arm;
-* at the arm's end the payload locals leave scope under §5.6, and what is left
-  after popping them is that arm's contribution to `Σ' = join(Σ1, …, Σn)`.
-
-### Σ, at the four points that matter
-
-`Σ` is read here exactly as `explain/enum_match_affine.txt` renders it — a
-binder, its type, and its ownership state.
-
-```
-  before the match         [v0: E0 = Owned]
-  Σ0, after the scrutinee  [v0: E0 = MovedOut]          ← (Use-Move) §5.1
-  inside arm K0            [v1: S1 = Owned, v0: E0 = MovedOut]
-  inside arm K1            [v0: E0 = MovedOut]           ← no payload to bind
-```
-
-The payload local enters `Owned` and **unmarked**: §2 gives a pattern binding
-no `μ`, so nothing may assign to one, and the compiler's parser rejects `mut`
-there. Arm `K0` pops its one local at its end, arm `K1` pops none, and the two
-outgoing states are then joined:
-
-```
-  Σ1 = [v0: E0 = MovedOut]        (arm K0, after popping v1)
-  Σ2 = [v0: E0 = MovedOut]        (arm K1)
-  Σ' = join(Σ1, Σ2) = [v0: E0 = MovedOut]
-```
-
-`join(Σ1, …, Σn)` is unordered in the calculus and a **left fold** of the
-binary join here (`Ctx.joinAll`): the arms in declaration order, starting from
-the first arm's state. The binary join is proved commutative
-(`OwnSt.join_comm`) and associative (`OwnSt.join_assoc`) over states that are
-shapes of their types, so `Ctx.joinAll_perm` says the fold's arm order does not
-matter. Well-formedness is a premise rather than a consequence of the judgment,
-because (Return) and (Panic) conclude at any context (RUE-2340).
-
-### The run, step by step
-
-The row numbers are `explain/enum_match_affine.txt`'s.
-
-```
-  [5]  (D-Let) §6.7        let v0 = E0.K0⟨S1 { 1 }⟩ at ℓ0
-                           store  [ℓ0 = E0.K0⟨S1 { 1 }⟩]
-  [6]  (D-Use-Move) §6.3   v0
-                           store  [ℓ0 = ⊘]                        ← the scrutinee moved out
-  [7]  (D-Match) §6.6      bind E0.K0's payload to [ℓ1]
-                           store  [ℓ0 = ⊘, ℓ1 = S1 { 1 }]
-  [9]  (Dbg)               @dbg prints 10
-  [12] (D-EndScope) §6.6   endscope([ℓ1])
-                           events >> drop ℓ1 = S1 { 1 }; run drop fn S1(S1 { 1 })
-  [15] (Dbg)               @dbg prints 20
-  [19] (D-EndScope) §6.7   endscope([ℓ0])                          ← ℓ0 is ⊘: nothing drops
-```
-
-Row [7] is (D-Match): the tag `K0` selects the one covering arm, the payload
-components are bound to **fresh cells**, and those cells are appended to the
-innermost scope record *and* owed to an `endscope` marker around the arm's
-body — exactly as (D-Let) §6.7 binds one. That is why row [12] falls where it
-does: the drops run when the arm's body becomes a value, which is `6.3:17`'s
-timing, and not at some later frame pop. It is also why an unwinding `return`
-inside an arm still finds them in σ (`enum_return_past_payload`).
-
-### The two drops that do not happen
-
-Row [19] is the point. `v0`'s scope ends with its cell at `⊘`, so
-(D-EndScope) drops **nothing** there — and that is not an optimization, it is
-what keeps the payload from being dropped twice:
-
-* §6.11's enum case reads the run-time tag and recurses into the **active**
-  variant's payload only (`6.3:20`). An inactive variant's payload has no
-  storage, and a discriminant-only active variant drops nothing at all.
-  `enum_drop_unmatched` holds one of each: the `K0` value's active payload
-  does drop, and prints its `1`, while the `K1` binding beside it drops
-  nothing;
-* a payload a `match` binding already moved out left the enum place `⊘`, and
-  the walk skips every `⊘`. So the destructor at row [12] is the only one, and
-  `S1 { 1 }` is destroyed exactly once, by the owner the arm gave it.
-
-An enum has no destructor of its own to run before either (§3 gives it no
-`drop fn`; where one is written the compiler reports `[E0417]: unknown type
-'E0' in destructor` — destructor lookup does not see enums at all, so the
-diagnostic is about the name rather than about enums), so the payload's
-destructor is the entire observation channel at an enum drop.
-
-### What the checker demanded
-
-`check` reads the same four premises: `check` on the scrutinee, which yields
-the enum type and `Σ0`; `arms.length = ed.variants.length`; `checkArms`, which
-runs every arm from `Γ₀` under `armCtx` at the type `firstArmTy` fixed and
-requires `NoResidualLinear` over the entries the arm pops; and `Ctx.joinAll`.
-Its acceptance is a `Typed` derivation (`check_sound`), so `soundness` applies
-and `run` cannot reach a `Violation`.
-
-Change one thing and each premise answers in turn. Make the payload `linear`
-and leave it, and the §5.6 check at the arm's end is the leak
-(`enum_arm_leaks_payload`, E0406). Consume the enum in one arm of an `if`
-only, and the join has `MovedOut` against `Owned` at a `Linear` type
-(`enum_match_one_arm`, E0443); at an `Affine` payload the same join is
-`MovedOut` and accepted (`enum_match_one_arm_affine`, which the compiler ICEd
-on until RUE-2347). Match it twice, and the second scrutinee is the
-use of a moved-out place (`enum_matched_twice_moving`, E0205). Make the
-scrutinee a field of a struct, and the move is `3.8:22`'s partial one, whose
-sibling still drops at scope exit (`enum_match_projection`, and
-`enum_holder_partial_then_drop` for the explicit drop of the residue).
-
-`example : ProgramTyped (enumProg tI64 enumMatchAffine) := checkProgram_sound (by rfl)`
-in `Examples.lean` is the kernel-checked form of this paragraph, and
-`scripts/rue exec` on the printed program prints `10`, `1`, `20`, `5`.
-
-## 5i. A ninth worked example: the right-hand side before the index
-
-The corpus case `array_dyn_write_rhs_first` is the smallest program where the
-order of an assignment's operands is observable. `5.2:14` is normative: "the
-right-hand side `expression` is evaluated first … any index subexpressions
-appearing in the target … are evaluated after the right-hand side, in source
-order", and §6.2's `assign p = E` context says the same (RUE-305 corrected an
-earlier comment there that had it the other way round).
-
-### The program
-
-```lean
-letIn true (aiPair 1 2 3 4)
-  (seq (indexWrite (.var 0) [call 1 [lit 1]] [[0]] (call 2 [lit 9]))
-    (seq (dbg (lit 20)) (lit 7)))
-```
-
-`f1` is `id`, which prints its argument and returns it; `f2` is `mk`, which
-prints its argument and builds an `S1` of it. `indexWrite p idx πs e` is the
-place `p`, then one dynamic step per index in `idx`, each followed by the
-constant path at the same position of `πs` — here one step, then `.x0`. It
-prints as
-
-```rue
-let mut v0: [S8; 2] = [S8 { x0: S1 { x0: 1 }, x1: 2 }, S8 { x0: S1 { x0: 3 }, x1: 4 }];
-{ v0[{ let t3i0: i64 = f1(1); t3i0 }].x0 = f2(9); };
-```
-
-Each index is a typed block in place, so the printed statement keeps the
-surface's own order.
-
-### What the checker demands
-
-`Typed.indexWrite` types the right-hand side **first**, at the leaf type `S1`,
-and threads Σ from it into the index list (`TypedArgs` at integer types). Then
-it reads the array `v0` on the post-operand state: `fully-owned` there, and
-`assignArrayOk` above it (nothing to check, `v0` is the root). The last premise
-is (Assign) §5.2's `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` at the leaf, and a
-place under a runtime index is never `MovedOut`, so it is `class(S1) ≠ Linear`.
-
-### The run, step by step
-
-| Step | What happens | Events |
-| --- | --- | --- |
-| 1 | the right-hand side `mk(9)` runs and builds `S1 { 9 }` | `@dbg 9` |
-| 2 | the index `id(1)` runs | `@dbg 1` |
-| 3 | `dynPlace` resolves `v0[1].x0` to the constant path `[1, 0]`, bounds-checking `1 < 2` | |
-| 4 | §6.8's overwrite-drop of the old leaf `S1 { 3 }` | `drop`, `dtor S1 { 3 }` |
-| 5 | the store writes `S1 { 9 }` at `[1, 0]`, and the array back into `ℓ0` | |
-| 6 | `@dbg(20)`, then the scope exit drops `v0` ascending | `20`; `1`, `9` |
-
-So stdout is `9 1 3 20 1 9 7`, and the compiler prints the same.
-
-Had the index been out of range, step 3 would trap, and the `S1 { 9 }` built
-at step 1 would never be dropped: a trap runs no drops (§6.12), and the
-compiler does the same (`array_dyn_write_trap_negative`). Had the index
-`return`ed instead, the value would be lost the same way, which is RUE-2316's
-pending-value edge (`../03-metatheory.md`).
-
-## 5j. A tenth worked example: an element moved out, and the rest dropped ascending
+### 5.7 `array_elem_move_rest_ascending`: an element move and the ascending residue
 
 The array slice (RUE-2235) adds one thing the struct examples cannot show: a
 place whose step is an **index**, and a residue that §6.11 walks by position
@@ -1318,7 +1042,7 @@ struct S1 { x0: i64 }
 drop fn S1(self) { @dbg(self.x0); }     // the observation channel
 ```
 
-### The program
+#### The program
 
 ```rue
 fn f0() -> i64 {
@@ -1339,7 +1063,7 @@ as a field slot at a struct type and as a constant index at an array type. So
 the element move goes through **the same rules** as `v0.x1` would, and the
 only question the array adds is whether the index may be moved out of at all.
 
-### The path rules, premise by premise
+#### The path rules, premise by premise
 
 `use (v0[1])` is a use in value context at a non-`Copy` type, so the rule is
 (Use-Move) §5.1, read under §4.2's `Ordinary` plan (`[S1; 3]` is not a struct
@@ -1359,7 +1083,7 @@ compiler reports both as E0904 (`Examples.arrayElemMoveThroughField`,
 `arrayElemMoveNestedIndex`): `3.8:68` tracks an element move only where the
 index is applied directly to the binding.
 
-### Σ and the store, before and after
+#### Σ and the store, before and after
 
 Before the move, `v0` is `Owned` and its cell holds three whole elements:
 
@@ -1401,7 +1125,7 @@ Three things follow, each a premise somewhere:
   an element write does not give back per-element ownership, and the
   recovery is the whole-array assignment (`Examples.arrayWholeReinit`).
 
-### The residue's drops, in order
+#### The residue's drops, in order
 
 `@drop(v1)` runs `S1 { 2 }`'s destructor where it stands: `2`. Then `@dbg(20)`
 prints `20`. Then `v1`'s scope ends (already `MovedOut`, nothing to drop) and
@@ -1422,7 +1146,7 @@ drops `1` before `3` because `3.9:15` orders an array's elements by index.
 `dropContents_array_events` (`Soundness.lean`) is the walk in closed form: no
 event of the array's own, then each element's events, concatenated in order.
 
-### What the checker demanded, and what the proof gives back
+#### What the checker demanded, and what the proof gives back
 
 `check` accepted by reading exactly the four rows above, so `check_sound` turns
 the acceptance into a `Typed` derivation and `soundness` applies: `run` cannot
@@ -1438,13 +1162,306 @@ walk skips it). The kernel-checked form is the pair of examples beside
 
 which is the drop above, event for event, `.hole` being the `⊘`.
 
-### More worked examples
+### 5.8 `enum_match_affine`: a `match`, and the two drops it does not do
 
-Every corpus case is a smaller worked example: its printed source begins
-with a comment naming the case, the rules it exercises, and its expected
-outcome, and `corpus.json` (from `scripts/rue lean`, or `lake exe
-ruecore-corpus`) holds all of them. Slice issues of the "Formal core mechanization" project add one
-worked example each to this section as they land.
+Enums are the slice RUE-2320 adds and RUE-2325 generates, and the thing to
+watch is not the branch — that is `if` again — but the *payload*. The corpus
+case is `enum_match_affine`, over
+
+```rue
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }     // the observation channel
+enum E0 { K0(S1), K1 }                   // class(E0) = Affine, through S1
+```
+
+`class(E0)` is the join over **every** payload component of **every** variant
+(`6.3:19`), not over the variant a value happens to hold: the active variant is
+a run-time fact, so §3 cannot read it. Here the join is `class(S1) = Affine`,
+so `E0` is `Affine` and a use of an `E0` place is a move.
+
+#### The program
+
+```rue
+fn f0() -> i64 {
+    {
+        let v0: E0 = E0.K0(S1 { x0: 1 });
+        {
+            let v1: i64 = match v0 {
+                E0.K0(v1) => { @dbg(10); 5 },
+                E0.K1     => { 6 },
+            };
+            { @dbg(20); v1 }
+        }
+    }
+}
+```
+
+That is the core form; the printed program is the same with `@dbg`'s operand
+bound to a `let` (`Print.lean`'s typed blocks, and RUE-2336). It prints `10`,
+`1`, `20`, then the value `5`. The `1` is `S1`'s destructor, and **where** it
+falls is the whole example: between the `10` and the `20`, at the *arm's* end,
+not at `v0`'s scope exit and not twice.
+
+#### What (Match) demands
+
+(Match) §5.5 has four premises, and the mechanization is each of them
+literally:
+
+* the scrutinee is typed first, at the enum type, and whatever typing it did to
+  Σ is what the arms start from. `class(E0)` is not `Copy`, so `v0` is typed by
+  (Use-Move) §5.1 — the `match` **consumes** it, because a scrutinee is a
+  value context and a use of a move-type place there moves it (`3.8:7`,
+  `3.8:76`, `6.3:17`; the declared-`linear` destructure of `3.8:33` is a
+  different rule, and `E0`'s class here is `Affine`);
+* exhaustiveness is `arms.length = ed.variants.length`, with arm `j` the arm
+  for variant `j`. There is no coverage search and no ordering side condition,
+  because the core form has no wildcards and no guards — those are elaboration
+  obligations §5.5 states (`4.7:9`, `4.7:10`). `exhaustive_arm_exists`
+  (`Soundness.lean`) is the one line progress needs: a variant index the
+  declaration has is an index the arm list has;
+* every arm is typed from the **same** post-scrutinee state, under its own
+  variant's payload locals (`armCtx`), and all arms at one type. An arm is a
+  branch, not a step in a sequence, so Σ is not threaded from arm to arm;
+* at the arm's end the payload locals leave scope under §5.6, and what is left
+  after popping them is that arm's contribution to `Σ' = join(Σ1, …, Σn)`.
+
+#### Σ, at the four points that matter
+
+`Σ` is read here exactly as `explain/enum_match_affine.txt` renders it — a
+binder, its type, and its ownership state.
+
+```
+  before the match         [v0: E0 = Owned]
+  Σ0, after the scrutinee  [v0: E0 = MovedOut]          ← (Use-Move) §5.1
+  inside arm K0            [v1: S1 = Owned, v0: E0 = MovedOut]
+  inside arm K1            [v0: E0 = MovedOut]           ← no payload to bind
+```
+
+The payload local enters `Owned` and **unmarked**: §2 gives a pattern binding
+no `μ`, so nothing may assign to one, and the compiler's parser rejects `mut`
+there. Arm `K0` pops its one local at its end, arm `K1` pops none, and the two
+outgoing states are then joined:
+
+```
+  Σ1 = [v0: E0 = MovedOut]        (arm K0, after popping v1)
+  Σ2 = [v0: E0 = MovedOut]        (arm K1)
+  Σ' = join(Σ1, Σ2) = [v0: E0 = MovedOut]
+```
+
+`join(Σ1, …, Σn)` is unordered in the calculus and a **left fold** of the
+binary join here (`Ctx.joinAll`): the arms in declaration order, starting from
+the first arm's state. The binary join is proved commutative
+(`OwnSt.join_comm`) and associative (`OwnSt.join_assoc`) over states that are
+shapes of their types, so `Ctx.joinAll_perm` says the fold's arm order does not
+matter. Well-formedness is a premise rather than a consequence of the judgment,
+because (Return) and (Panic) conclude at any context (RUE-2340).
+
+#### The run, step by step
+
+The row numbers are `explain/enum_match_affine.txt`'s.
+
+```
+  [5]  (D-Let) §6.7        let v0 = E0.K0⟨S1 { 1 }⟩ at ℓ0
+                           store  [ℓ0 = E0.K0⟨S1 { 1 }⟩]
+  [6]  (D-Use-Move) §6.3   v0
+                           store  [ℓ0 = ⊘]                        ← the scrutinee moved out
+  [7]  (D-Match) §6.6      bind E0.K0's payload to [ℓ1]
+                           store  [ℓ0 = ⊘, ℓ1 = S1 { 1 }]
+  [9]  (Dbg)               @dbg prints 10
+  [12] (D-EndScope) §6.6   endscope([ℓ1])
+                           events >> drop ℓ1 = S1 { 1 }; run drop fn S1(S1 { 1 })
+  [15] (Dbg)               @dbg prints 20
+  [19] (D-EndScope) §6.7   endscope([ℓ0])                          ← ℓ0 is ⊘: nothing drops
+```
+
+Row [7] is (D-Match): the tag `K0` selects the one covering arm, the payload
+components are bound to **fresh cells**, and those cells are appended to the
+innermost scope record *and* owed to an `endscope` marker around the arm's
+body — exactly as (D-Let) §6.7 binds one. That is why row [12] falls where it
+does: the drops run when the arm's body becomes a value, which is `6.3:17`'s
+timing, and not at some later frame pop. It is also why an unwinding `return`
+inside an arm still finds them in σ (`enum_return_past_payload`).
+
+#### The two drops that do not happen
+
+Row [19] is the point. `v0`'s scope ends with its cell at `⊘`, so
+(D-EndScope) drops **nothing** there — and that is not an optimization, it is
+what keeps the payload from being dropped twice:
+
+* §6.11's enum case reads the run-time tag and recurses into the **active**
+  variant's payload only (`6.3:20`). An inactive variant's payload has no
+  storage, and a discriminant-only active variant drops nothing at all.
+  `enum_drop_unmatched` holds one of each: the `K0` value's active payload
+  does drop, and prints its `1`, while the `K1` binding beside it drops
+  nothing;
+* a payload a `match` binding already moved out left the enum place `⊘`, and
+  the walk skips every `⊘`. So the destructor at row [12] is the only one, and
+  `S1 { 1 }` is destroyed exactly once, by the owner the arm gave it.
+
+An enum has no destructor of its own to run before either (§3 gives it no
+`drop fn`; where one is written the compiler reports `[E0417]: unknown type
+'E0' in destructor` — destructor lookup does not see enums at all, so the
+diagnostic is about the name rather than about enums), so the payload's
+destructor is the entire observation channel at an enum drop.
+
+#### What the checker demanded
+
+`check` reads the same four premises: `check` on the scrutinee, which yields
+the enum type and `Σ0`; `arms.length = ed.variants.length`; `checkArms`, which
+runs every arm from `Γ₀` under `armCtx` at the type `firstArmTy` fixed and
+requires `NoResidualLinear` over the entries the arm pops; and `Ctx.joinAll`.
+Its acceptance is a `Typed` derivation (`check_sound`), so `soundness` applies
+and `run` cannot reach a `Violation`.
+
+Change one thing and each premise answers in turn. Make the payload `linear`
+and leave it, and the §5.6 check at the arm's end is the leak
+(`enum_arm_leaks_payload`, E0406). Consume the enum in one arm of an `if`
+only, and the join has `MovedOut` against `Owned` at a `Linear` type
+(`enum_match_one_arm`, E0443); at an `Affine` payload the same join is
+`MovedOut` and accepted (`enum_match_one_arm_affine`, which the compiler ICEd
+on until RUE-2347). Match it twice, and the second scrutinee is the
+use of a moved-out place (`enum_matched_twice_moving`, E0205). Make the
+scrutinee a field of a struct, and the move is `3.8:22`'s partial one, whose
+sibling still drops at scope exit (`enum_match_projection`, and
+`enum_holder_partial_then_drop` for the explicit drop of the residue).
+
+`example : ProgramTyped (enumProg tI64 enumMatchAffine) := checkProgram_sound (by rfl)`
+in `Examples.lean` is the kernel-checked form of this paragraph, and
+`scripts/rue exec` on the printed program prints `10`, `1`, `20`, `5`.
+
+### 5.9 `array_dyn_write_rhs_first`: the right-hand side before the index
+
+The corpus case `array_dyn_write_rhs_first` is the smallest program where the
+order of an assignment's operands is observable. `5.2:14` is normative: "the
+right-hand side `expression` is evaluated first … any index subexpressions
+appearing in the target … are evaluated after the right-hand side, in source
+order", and §6.2's `assign p = E` context says the same (RUE-305 corrected an
+earlier comment there that had it the other way round).
+
+#### The program
+
+```lean
+letIn true (aiPair 1 2 3 4)
+  (seq (indexWrite (.var 0) [call 1 [lit 1]] [[0]] (call 2 [lit 9]))
+    (seq (dbg (lit 20)) (lit 7)))
+```
+
+`f1` is `id`, which prints its argument and returns it; `f2` is `mk`, which
+prints its argument and builds an `S1` of it. `indexWrite p idx πs e` is the
+place `p`, then one dynamic step per index in `idx`, each followed by the
+constant path at the same position of `πs` — here one step, then `.x0`. It
+prints as
+
+```rue
+let mut v0: [S8; 2] = [S8 { x0: S1 { x0: 1 }, x1: 2 }, S8 { x0: S1 { x0: 3 }, x1: 4 }];
+{ v0[{ let t3i0: i64 = f1(1); t3i0 }].x0 = f2(9); };
+```
+
+Each index is a typed block in place, so the printed statement keeps the
+surface's own order.
+
+#### What the checker demands
+
+`Typed.indexWrite` types the right-hand side **first**, at the leaf type `S1`,
+and threads Σ from it into the index list (`TypedArgs` at integer types). Then
+it reads the array `v0` on the post-operand state: `fully-owned` there, and
+`assignArrayOk` above it (nothing to check, `v0` is the root). The last premise
+is (Assign) §5.2's `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` at the leaf, and a
+place under a runtime index is never `MovedOut`, so it is `class(S1) ≠ Linear`.
+
+#### The run, step by step
+
+| Step | What happens | Events |
+| --- | --- | --- |
+| 1 | the right-hand side `mk(9)` runs and builds `S1 { 9 }` | `@dbg 9` |
+| 2 | the index `id(1)` runs | `@dbg 1` |
+| 3 | `dynPlace` resolves `v0[1].x0` to the constant path `[1, 0]`, bounds-checking `1 < 2` | |
+| 4 | §6.8's overwrite-drop of the old leaf `S1 { 3 }` | `drop`, `dtor S1 { 3 }` |
+| 5 | the store writes `S1 { 9 }` at `[1, 0]`, and the array back into `ℓ0` | |
+| 6 | `@dbg(20)`, then the scope exit drops `v0` ascending | `20`; `1`, `9` |
+
+So stdout is `9 1 3 20 1 9 7`, and the compiler prints the same.
+
+Had the index been out of range, step 3 would trap, and the `S1 { 9 }` built
+at step 1 would never be dropped: a trap runs no drops (§6.12), and the
+compiler does the same (`array_dyn_write_trap_negative`). Had the index
+`return`ed instead, the value would be lost the same way, which is RUE-2316's
+pending-value edge (`../03-metatheory.md`).
+
+### 5.10 `float_to_int_trap_inf`: the one float trap, and where the float assumption sits
+
+Floats are in the core (§2, §5.8, §6.4), and they are the one construct whose
+IEEE side the mechanization *assumes* rather than proves. The corpus case
+`float_to_int_trap_inf` is where that boundary is easiest to see, because it
+is the only trap a float program can reach.
+
+#### The program
+
+```lean
+fintrin (.floatToInt .w32 .signed) (binop .div (flE .w64 1 0) (flE .w64 0 0))
+```
+
+printed as
+
+```rue
+fn f0() -> i32 {
+    { let t1c: f64 = (1.0 / 0.0); let t1k: i32 = @float_to_int(t1c); t1k }
+}
+```
+
+The two binders are the printer supplying types nothing downstream names:
+`@float_to_int` takes its result type from the *use* site (`3.12:17`) and
+fixes nothing about its operand, exactly as `@intCast` does not
+(`Print.lean`, "Integer typing"). A float literal would otherwise default to
+`f64` (`3.12:8`) — which is what is wanted here, but not at `f32`.
+
+#### What the checker demands
+
+| Node | Rule | Concludes |
+| --- | --- | --- |
+| `1.0`, `0.0` | (Lit) §5.8 at `float(64)` | `⇒ f64`. `3.12:9` *rounds*, so an inexact decimal like `0.1` denotes the nearest `f64` rather than being rejected; the one premise is `3.12:10`, which refuses a literal whose value rounds to an **infinity** at the width (`E0206`) — `RueCore.FloatLit.RoundsFinite`, an exact comparison against `max_{𝔽_w}` plus half an ulp. An underflow to zero is legal |
+| `1.0 / 0.0` | (Float-Arith) §5.8 | `⇒ f64`. One `w` for both operands — `3.12:13` gives no implicit widening — and `BinOp.floatAdmits` is §5.8's "rejected by the absence of a rule" for `%` and the bitwise operators, written as a side condition because one constructor stands for (Float-Arith), (Float-Ord) and (Total-Cmp) |
+| `@float_to_int(…)` | (Float-To-Int) §5.8 | `⇒ i32`. Whether the value *survives* is dynamic, not a typing question (`3.12:18`) |
+
+#### The run, step by step
+
+| Step | Rule | Effect |
+| --- | --- | --- |
+| 1–2 | (Lit) §6.3 | each literal becomes `M.ofLit`'s datum — `3.12:9`'s rounding, which is the **model's**, not this module's |
+| 3 | **`(D-Float-Arith) §6.4`** | `1.0 / 0.0 → +inf`. Not a trap: none of (D-Arith-Trap), (D-Div-Zero) or (D-Div-Overflow) is stated over a float redex, and `3.12:22` fixes the answer — a finite non-zero over a zero is the infinity of the xor sign |
+| 4 | **`(D-Float-To-Int-Trap) §6.4`** | `+inf` is neither truncatable nor in range, so the conversion traps. The category is `↯overflow`, the one §6.12 already lists (`8.1:7`), which is why the compiler reports `integer overflow` here and not a float-specific message |
+
+The exported expectation is
+
+```json
+{"kind": "panic", "panic": "overflow", "stdout": []}
+```
+
+and the compiled program exits 101 with `error: integer overflow` — checked
+case by case, like every other.
+
+#### Where the assumption is, and where it is not
+
+Step 4 is a **theorem**: `floatToInt_partition` (`RueCore/Float.lean`) says
+the premises of `(D-Float-To-Int)` and `(D-Float-To-Int-Trap)` partition
+`𝔽_w`, which is what §7 asks for and what keeps progress intact. It is
+provable because §2 models a float as a *datum*, so truncation toward zero is
+exact integer arithmetic.
+
+Step 3 is an **assumption**: `FloatModel.div_by_zero`, `3.12:22` as §6.4
+quotes it. `Examples.floatDivZeroToInt_traps` is the two steps together,
+stated over an *arbitrary* `FloatModel` and proved from its laws — so the
+witness is a claim about IEEE 754 rather than about this package's instance,
+and it computes no float at all. That is also why it costs no axiom: Lean's
+own `Float` is defined over an `opaque` constant, and a theorem that so much
+as mentions one reports `Classical.choice`.
+
+The laws are **structure fields**, not `axiom` declarations, so a theorem
+that rests on one says so in its own statement and `TRUST.md` lists them in a
+section of their own. `Float.exactOps`, the instance the corpus runs, is
+constructive integer arithmetic; that it *satisfies* the laws is the residual
+assumption, and it is checked by running the float corpus against the
+compiler rather than proved.
 
 ## 6. Running things yourself
 
@@ -1583,7 +1600,7 @@ reversed, *is* its environment. *A defect looks like:* that clause weakened to
 an inclusion, or dropped. Then a cell could sit in the record twice, or in the
 record after its `endscope` retired it, and a `return`'s unwind would
 drop-retire it a second time — the `useAfterDrop` that `no_use_after_drop` now
-rests on. Section 5b's step 9 is the walk that clause protects.
+rests on. Section 5.2's step 9 is the walk that clause protects.
 
 Fuel is the other place to look. The theorems say "for every fuel", and
 `outOfFuel` satisfies them for free, so check that `fuel_mono` and
