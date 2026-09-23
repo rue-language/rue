@@ -120,9 +120,10 @@ store-side plan is the type-side `declaredPrefix` (`Syntax.lean`) at every
 place a matched cell answers for, so the redex that fires is the one
 elaboration would have annotated. Every index a `Place` carries here is a
 **constant** step (`Place.idx`), so the stored aggregate answers for the whole
-path; carrying `μ` on the syntax is what RUE-2327 may need, where an index
-step may be selected and the plan is no longer decided by the struct steps
-alone.
+path. A selected path may pass through an index step
+(`Examples.destructureThroughIndex`), and `declaredPlan_eq` still needs no `μ`
+on the syntax: the plan is decided by the types along the path, index steps
+included.
 
 **The residue monitor.** §6.3 excludes a linear residue by the
 (Use-Declared-Linear-Destructure) premise "before this redex can fire", so the
@@ -638,13 +639,11 @@ Two things §6.11 writes out are elided here, both unobservably.
   field. §6.11 says as much — it keeps the residual-versus-original
   distinction only so the rule stays honest if `3.9:34` is ever relaxed.
 
-One thing §6.11 does **not** write out and this walk must: the destructor case
-is stated over a *value* `{v1,…,vk}_S`, so the calculus says nothing about a
-destructor-bearing struct one of whose fields is `⊘`. `3.9:34` is exactly what
-makes that state unreachable — no partial move may be taken under a
-destructor-bearing value — and the walk therefore runs the destructor on
-whatever the cell holds, hole or not, rather than refusing a state no rule
-excludes. `Soundness.lean` proves the state is never reached.
+§6.11 is stated over cell contents, so its destructor case covers a
+destructor-bearing struct one of whose fields is `⊘`. `3.9:34` makes that
+state unreachable (no partial move may be taken under a destructor-bearing
+value), so the walk runs the destructor on whatever the cell holds.
+`Soundness.lean` proves the state is never reached.
 
 §6.11's **enum** case (`6.3:20`) reads the stored tag and recurses into the
 **active** variant's payload only, in payload order: an inactive variant's

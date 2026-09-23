@@ -199,14 +199,13 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         "`Σ1(p) = MovedOut ∨ ¬carries_linear(T)` at the element type (`3.8:77`) "
         "instead; both are bounds-checked at run time by "
         "§6.5's (D-Index-Trap). A constant-index read, write and "
-        "`@drop` of the whole array are in; what is missing is the element "
-        "**move** of `3.8:68` and the `MovedOut` element state it leaves, so "
-        "`3.8:73`'s path-specific element drop has no instance yet — "
-        "`Place.noIdx` refuses a move or a `@drop` at an index path as a stated "
-        "restriction of the fragment — and any step **below** a dynamic index "
-        "(`a[i].x0`, read or written), which the compiler accepts and which has "
-        "no form here because `Expr.indexRead` yields the element value rather "
-        "than a place (RUE-2327 owes both)",
+        "`@drop` of the whole array are in, and so are `3.8:68`'s element "
+        "**move** at the root binding (`rootIdxOnly`), the `MovedOut` element "
+        "state it leaves, and `3.8:73`'s path-specific element drop. What is "
+        "missing is any step **below** a dynamic index (`a[i].x0`, read or "
+        "written), which the compiler accepts and which has no form here "
+        "because `Expr.indexRead` yields the element value rather than a place "
+        "(RUE-2342)",
     ),
     ("e", "lit"): (
         "yes",

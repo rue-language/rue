@@ -857,8 +857,8 @@ produces:
   declaration Σ's type names, matching field by field, with a slot no partial
   move touched read as `owned`; at an array type the same node (`elems`) holds
   the array element by element, against `n` copies of the element type. A
-  constant-index **write** is what reaches that clause in this part; a
-  partially *moved* array is RUE-2327's (`Syntax.lean`).
+  constant-index **write** and `3.8:68`'s element **move** both reach that
+  clause (`Syntax.lean`).
 
 An **enum** binding needs no clause of its own, and that is the content of
 "payload paths are not statically tracked" (§5.6): Σ's state at an enum is
@@ -890,10 +890,9 @@ inductive ContentsMatches (D : Decls) : Contents → OwnSt → Ty → Prop where
       D.structs[s]? = some sd → ContentsMatchesList D cs ts sd.fields →
       ContentsMatches D (.struct s cs) (.fields ts) (.struct s)
   /-- The array form of the same clause: a node with per-element records holds
-  the array its type names, element by element. In this part only a
-  constant-index **write** reaches it (`a[0] = …` records `fields [Owned]`); a
-  partially *moved* array is RUE-2327's, and this clause is what that slice
-  will hang `3.8:73` on. -/
+  the array its type names, element by element. A constant-index **write**
+  reaches it (`a[0] = …` records `fields [Owned]`), and so does an element
+  move, whose `⊘` is what `3.8:73`'s per-path element drop reads. -/
   | elems {T n cs ts} :
       ContentsMatchesList D cs ts (List.replicate n T) →
       ContentsMatches D (.array T cs) (.fields ts) (.array T n)

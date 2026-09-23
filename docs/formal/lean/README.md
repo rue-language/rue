@@ -491,12 +491,12 @@ both with §6.5's bounds trap, the **element-wise partial move** of `3.8:68` at
 a constant-index path — with `rootIdxOnly` for §4.2's "element moves only at
 the root", the `MovedOut` element state the move leaves, `3.8:73`'s
 path-specific element drop, and `3.8:72`'s refusal to assign into an array that
-has one — and top-level functions, by-value calls with
-frames and scope records, and `return` with its σ unwind. No step
+has one — and top-level functions, by-value calls with frames and scope
+records, and `return` with its σ unwind. No step
 **below** a dynamic index: `a[i].x0` is a place of §2's grammar that the
 compiler reads and writes, and it has no form here because `Expr.indexRead`
-yields the element value and a dynamic index is not a `Place` step (RUE-2331,
-with the generator's array draws) — no equality compare (it borrows its
+yields the element value and a dynamic index is not a `Place` step
+(RUE-2342) — no equality compare (it borrows its
 operands, so `≈`'s float leaf has no instance here), no path into an enum's
 payload (§5.6 tracks none) and none of the `match` shapes §5.5 makes
 elaboration obligations (wildcard, repeated or guarded patterns, a bool or
