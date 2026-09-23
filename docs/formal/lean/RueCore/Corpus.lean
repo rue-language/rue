@@ -439,7 +439,7 @@ def cases : List Case := [
     },
   { name := "overwrite_above_hole",
     description := "The parent of a moved-out leaf overwritten whole: §6.8's overwrite-drop walks the old value with §6.11's hole-skip, so only the live sibling is destroyed at the assignment and the moved leaf is not dropped again (RUE-2319).",
-    rules := ["(Assign) §5.2", "§6.8 overwrite-drop", "§6.11", "3.8:60"],
+    rules := ["(Assign) §5.2", "§6.8 overwrite-drop", "§6.11", "3.9:18"],
     prog := Examples.prog Examples.tI64 Examples.overwriteAboveHole
     },
   { name := "linear_field_residue",
