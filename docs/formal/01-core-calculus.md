@@ -770,6 +770,7 @@ ProjRead rule instead:
 ```
   Γ ; Σ ; Λ ⊢ e ⇒ T ⊣ Σ1       Γ ⊢ p : T       (mutability & loan side-conditions)
   Σ1(p) = MovedOut  ∨  ¬carries_linear(T)                  -- 3.8:77: no implicit linear drop-on-overwrite
+  p takes an index step at array place a  ⇒  fully-owned(Σ1, a)   -- 3.8:72, 7.1:46: a = the outermost such place
   p's prior value, if Owned and droppable, is dropped BEFORE the store (dynamic, §6)
   ─────────────────────────────────────────────────────────────────────────────── (Assign)
   Γ ; Σ ; Λ ⊢ (assign p = e) ⇒ unit ⊣ Σ1[ p ↦ Owned ]      -- reinitialization (3.8:55)
@@ -784,11 +785,15 @@ reinitialization idiom, where there is nothing to drop) or `T` carries no linear
 value. This closes the theorem-5 hole (RUE-387): without it, the overwrite-drop
 would implicitly consume a linear value that the program never explicitly consumed.
 The `Σ1` (rather than `Σ`) reading of the premise makes `p = e` legal when `e` itself
-consumes `p` (`x = f(x)`), matching the RHS-first drop order. **The array side condition, as a premise.** Writing *into* an array while any
-element is moved out is rejected (`3.8:72`, `7.1:46`, E0480). Stated as a
-premise of (Assign): where `Γ ⊢ p : T` reaches its leaf through an index step
-taken at some array place `a` — `a[c] = e` and `a[c].f = e` alike — the rule
-additionally demands `fully-owned(Σ1, a)`. That is **stronger** than the second
+consumes `p` (`x = f(x)`), matching the RHS-first drop order.
+
+**The array side condition, as a premise.** Writing *into* an array while any
+element is moved out is rejected (`3.8:72`, `7.1:46`, E0480). The third premise
+states it: where `Γ ⊢ p : T` reaches its leaf through an index step taken at an
+array place — `a[c] = e` and `a[c].f = e` alike — the rule demands
+`fully-owned(Σ1, a)` of the **outermost** such place `a`. (Any array place on
+the path would do, since `fully-owned` is hereditary; the outermost is the one
+the mechanization checks.) That is **stronger** than the second
 premise read at `p`: `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` at `a[c]` would
 admit reinitializing exactly the element that was moved out, and `3.8:77`
 forbids it in as many words — "assigning into the array — to an element or
@@ -1841,6 +1846,7 @@ them is a bug (RUE-305) — that is the point of pinning both.
   Allocation ids A ∈ AllocId                 -- abstract allocation identities (the RUE-390 ruling: allocations, not addresses)
   Locations      ℓ ∈ Loc ⊂ AllocId           -- binding allocations: one single-cell allocation per live let-binding or by-value parameter
   Cell contents  c ::= v | ⊘                 -- ⊘ = uninitialised / moved-out (the dynamic image of Σ's absence/MovedOut, §5)
+                   | { c1,…,ck }_S | [ c1,…,cn ] | Kj⟨ c1,…,ca ⟩   -- an aggregate holding contents, so a ⊘ can sit at any depth (§6.11)
   Allocations    a ::= [ c1, …, cn ]         -- live: n ≥ 0 cells (a binding allocation always has exactly one)
                      | †                      -- dead: the identity is spent, its storage gone, and it is never reused (§6.13)
   Store          H : AllocId ⇀ a             -- the allocation store
@@ -2719,12 +2725,8 @@ The aggregate rules are stated over **cell contents** rather than over values,
 and that is load-bearing. §6.1's value forms write an aggregate's members as
 values `v_i`, but what a cell holds after a partial move is a tree with holes
 in it: the `⊘` a (D-Use-Move) writes at `ℓ@π` sits at a field slot or an array
-element, not only at the root of the cell. So the members range over
-
-```
-  c ::= v | ⊘ | { c1,…,ck }_S | [ c1,…,cn ] | Kj⟨ c1,…,ca ⟩
-```
-
+element, not only at the root of the cell. So the members range over §6.1's
+cell contents `c`, whose aggregate forms hold contents rather than values,
 and the first rule's skip is therefore reached at **every** depth:
 `drop(H, [ v1, ⊘, v3 ])` drops `v1` and then `v3` and nothing else, which is
 `3.8:73`'s "elements that were moved out … are not dropped; … untouched
@@ -2741,7 +2743,7 @@ definition connecting the two):
 ```
   S declares  drop fn S(self) { e_dtor }        ℓ fresh
   ⟨ H[ℓ ↦ {c1,…,ck}_S] ; ⟨ [self↦(ℓ,ε)] ; [[]] ⟩ ; halt ; e_dtor ⟩  →*  ⟨ H1 ; _ ; halt ; ⟨⟩ ⟩
-  H1(ℓ) = { c1', …, ck' }_S             -- the residual fields; no ci' can be ⊘ (see the vacuity note below)
+  H1(ℓ) = { c1', …, ck' }_S             -- the residual fields; no ci or ci' can be ⊘ (see the vacuity note below)
 ```
 
 The destructor body runs in its own frame whose single scope record is
@@ -2752,12 +2754,13 @@ cell contents `c1',…,ck'` as the nested run left them — not the original
 `c1,…,ck` — drop in declaration order; the scratch cell `ℓ` is then retired.
 
 **The `⊘` case here is vacuous for well-formed programs** (RUE-1600), and the
-rule is written this way only so it stays honest if that ever changes. No `ci'`
-can be `⊘`: reaching this rule means `S` declares a destructor, and `3.9:34`
-forbids moving a field out of *any* value whose type declares one, `self`
-inside that type's own destructor included, while `3.9:33` forbids moving
-`self` as a whole — so a destructor body has no way to consume a sub-place of
-the value being dropped. Both halves are verified against the compiler:
+rule is written this way only so it stays honest if that ever changes. No `ci`
+and no `ci'` can be `⊘`: reaching this rule means `S` declares a destructor, and
+`3.9:34` forbids moving a field out of *any* value whose type declares one, so
+the operand reaches the rule hole-free. That includes `self` inside that type's
+own destructor, while `3.9:33` forbids moving `self` as a whole, so a
+destructor body has no way to consume a sub-place of the value being dropped
+either. Both halves are verified against the compiler:
 `eat(self.a)` inside `drop fn Outer` is E0456 ("cannot move field `a` out of a
 value of type 'Outer', which has a destructor"), and `eat(self)` is E0442
 ("cannot move `self` out of the destructor for 'Outer'"); `@drop(self.a)`
