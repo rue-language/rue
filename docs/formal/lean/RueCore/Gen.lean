@@ -160,10 +160,10 @@ finding to file.
   and `gen_23_652`, whose verdicts agree because the compiler stops first at a
   later E0904).
 * A dynamic index into a **zero-length array field**, `h.arr[i]` at
-  `arr: [T; 0]` (seed `array_zero_length_field_dyn_read`, RUE-2345): an
-  internal compiler error in code generation where the model traps with
-  `bounds`. None at seed 7, five at seed 23 (`gen_23_108`, `112`, `126`,
-  `636`, `718`).
+  `arr: [T; 0]` (seed `array_zero_length_field_dyn_read`): an internal
+  compiler error in code generation where the model traps with `bounds`,
+  until RUE-2345 was fixed; these agree now. None at seed 7, five at seed 23
+  (`gen_23_108`, `112`, `126`, `636`, `718`).
 * A place below a dynamic index after its field-reached array (or an ancestor
   of it) was moved (seed `array_dyn_write_after_field_move`): none at either
   setting; `gen_2_1694` (`--gen 1695 --seed 2`) reached it, and it agrees now

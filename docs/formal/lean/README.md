@@ -98,10 +98,10 @@ evaluated at compile time is a constant index under `8.2:4`. That a
 the array red seeds, so generated cases of them appear at the rates the module
 measures — the self-assignment `a[c] = a[c]` (RUE-2346; one case at
 `--gen 200 --seed 7`, three at `--gen 1000 --seed 23`, one of which the
-compiler's E0904 masks) and a dynamic index into a zero-length array field
-(RUE-2345; five at seed 23) — and each such case is attributed by hand, the
-way RUE-2335's shape is. Those two are the only disagreements the acceptance
-settings (200 at seed 7, 1,000 at seed 23) reach. Wider runs at other seeds
+compiler's E0904 masks), and each such case is attributed by hand, the way
+RUE-2335's shape is. That is the only disagreement the acceptance settings
+(200 at seed 7, 1,000 at seed 23) still reach: a dynamic index into a
+zero-length array field (five at seed 23) disagreed until RUE-2345 was fixed. Wider runs at other seeds
 reached RUE-2344's shape too (`gen_2_1694`, `--gen 1695 --seed 2`; it agrees
 now that RUE-2344 is fixed), and two compiler defects found and filed from
 them, RUE-2347 (a CFG verification
