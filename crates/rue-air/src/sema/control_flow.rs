@@ -4622,3 +4622,57 @@ mod pattern_materialization_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod loop_head_tests {
+    use super::*;
+
+    /// A nested loop's recheck runs inside its enclosing loop's recheck, and
+    /// both mark the errors they find; the note is still added once.
+    #[test]
+    fn previous_iteration_note_is_added_once() {
+        let error = CompileError::new(ErrorKind::UseAfterMove("d".into()), Span::new(0, 1));
+        let error = with_previous_iteration_note(with_previous_iteration_note(error));
+        assert_eq!(error.diagnostic().notes.len(), 1);
+    }
+
+    /// The fixpoint bound counts a variable's whole path and each of its
+    /// partially moved field paths.
+    #[test]
+    fn tracked_move_paths_counts_whole_and_field_paths() {
+        let mut interner = lasso::Rodeo::default();
+        let (s, a, b) = (
+            interner.get_or_intern("s"),
+            interner.get_or_intern("a"),
+            interner.get_or_intern("b"),
+        );
+        let mut moves = AHashMap::new();
+        let state: &mut VariableMoveState = moves.entry(s).or_default();
+        state.mark_path_moved(&[a], Span::new(0, 1));
+        state.mark_path_moved(&[b], Span::new(1, 2));
+        assert_eq!(tracked_move_paths(&moves), 3);
+    }
+
+    /// The back edge joins the fall-through with the continue states, and is
+    /// absent when neither reaches the loop head.
+    #[test]
+    fn reachable_backedge_moves_joins_fallthrough_and_continues() {
+        let mut interner = lasso::Rodeo::default();
+        let d = interner.get_or_intern("d");
+        let mut moved = AHashMap::new();
+        moved
+            .entry(d)
+            .or_insert_with(VariableMoveState::default)
+            .mark_path_moved(&[], Span::new(0, 1));
+        let owned = AHashMap::new();
+        assert!(reachable_backedge_moves(false, &owned, None).is_none());
+        assert_eq!(
+            reachable_backedge_moves(false, &owned, Some(moved.clone())),
+            Some(moved.clone())
+        );
+        let joined = reachable_backedge_moves(true, &owned, Some(moved)).expect("back edge");
+        let state = joined.get(&d).expect("moved on the continue edge");
+        assert!(state.full_move.is_some());
+        assert!(!state.full_move_on_all_paths);
+    }
+}

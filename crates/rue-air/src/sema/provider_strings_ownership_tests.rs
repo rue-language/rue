@@ -1188,6 +1188,139 @@ fn provider_body_break_path_move_is_moved_after_loop() {
     );
 }
 
+fn later_iteration_fixture() -> ProviderFixture {
+    let mut fixture = ProviderFixture::new();
+    let non_copy = fixture.declare_struct("NonCopy", vec![("x", SemanticImportType::I32)], false);
+    fixture.declare_function(
+        "consume",
+        vec![value_param("n", SemanticImportType::Nominal(non_copy))],
+        SemanticImportType::I32,
+    );
+    fixture.declare_function(
+        "stop",
+        vec![value_param("i", SemanticImportType::I32)],
+        SemanticImportType::Bool,
+    );
+    fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
+    fixture
+}
+
+// RUE-2354: a loop's exits are read at its loop-head state (3.8:80; formal
+// core §5.7, (Loop-Break)). The first iteration's `break` sees `n` owned, but
+// every later iteration's sees it moved by the previous iteration's
+// `consume(n)`, so the use after the loop is a use after move. Reading the
+// exits off the pass from the entry state accepted it and double-dropped.
+#[test]
+fn provider_body_later_iteration_break_sees_earlier_move() {
+    let fixture = later_iteration_fixture();
+    let error = fixture
+        .analyze(
+            "fn main() -> i32 {
+    let mut n = NonCopy { x: 1 };
+    let mut i = 0;
+    loop {
+        if stop(i) { break; }
+        i = i + 1;
+        n = NonCopy { x: i };
+        consume(n);
+    }
+    consume(n)
+}",
+            "main",
+        )
+        .map(|_| ())
+        .expect_err("a later iteration's break exits with `n` moved");
+    assert!(
+        matches!(&error.kind, ErrorKind::UseAfterMove { .. }),
+        "unexpected diagnostic: {error:?}"
+    );
+}
+
+// RUE-2354, the nested form: the inner loop is re-analysed inside the outer
+// loop's loop-head pass, and its own exits must again be read at its own
+// loop-head state, or the outer `break` after it carries a stale `n`.
+#[test]
+fn provider_body_nested_later_iteration_break_sees_earlier_move() {
+    let fixture = later_iteration_fixture();
+    let error = fixture
+        .analyze(
+            "fn main() -> i32 {
+    let mut n = NonCopy { x: 1 };
+    let mut m = NonCopy { x: 2 };
+    let mut j = 0;
+    loop {
+        m = NonCopy { x: j };
+        consume(m);
+        let mut i = 0;
+        loop {
+            if stop(i) { break; }
+            i = i + 1;
+            n = NonCopy { x: i };
+            consume(n);
+        }
+        if stop(j) { break; }
+        j = j + 1;
+        n = NonCopy { x: 3 };
+    }
+    consume(n)
+}",
+            "main",
+        )
+        .map(|_| ())
+        .expect_err("the inner loop exits with `n` moved on a later iteration");
+    assert!(
+        matches!(&error.kind, ErrorKind::UseAfterMove { .. }),
+        "unexpected diagnostic: {error:?}"
+    );
+}
+
+// The loop-head state admits reassign-then-move: `n` is moved at the head of
+// every later iteration and reinitialized before the body uses it, and a
+// reassignment after the loop restores it for the use there.
+#[test]
+fn provider_body_reassign_then_move_with_break_is_legal() {
+    let fixture = later_iteration_fixture();
+    fixture
+        .analyze(
+            "fn main() -> i32 {
+    let mut n = NonCopy { x: 1 };
+    let mut i = 0;
+    loop {
+        if stop(i) { break; }
+        i = i + 1;
+        n = NonCopy { x: i };
+        consume(n);
+    }
+    n = NonCopy { x: 7 };
+    consume(n)
+}",
+            "main",
+        )
+        .expect("every use of `n` follows a reinitialization");
+}
+
+// A while loop's condition-false exits are read at the loop-head state too:
+// a condition that reinitializes `n` leaves it owned on every exit, although
+// the body moved it on the back edge.
+#[test]
+fn provider_body_while_condition_reinit_leaves_exit_owned() {
+    let fixture = later_iteration_fixture();
+    fixture
+        .analyze(
+            "fn main() -> i32 {
+    let mut n = NonCopy { x: 1 };
+    let mut i = 0;
+    while { n = NonCopy { x: i }; i < 3 } {
+        i = i + 1;
+        consume(n);
+    }
+    consume(n)
+}",
+            "main",
+        )
+        .expect("the condition reinitializes `n` before every exit");
+}
+
 // Migrated from `tests::break_path_move_of_shadow_leaves_outer_owned`: the
 // exit join is per-binding, not per-name (RUE-522 × RUE-1293): the break
 // snapshot names the loop-local shadow, and pop_scope's restoration replayed
