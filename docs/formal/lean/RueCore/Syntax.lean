@@ -54,20 +54,21 @@ destructure of `3.8:33`, is `declaredPrefix` below: §4.2's `dl(Γ, p) =
 (d, π_s)`, the split of the path at its **longest proper prefix** of
 declared-`linear` struct type, which (Use-Declared-Linear-Destructure) §5.1 and
 (D-Use-Declared-Linear) §6.3 then discharge. `Untrackable(OrdinaryDynamic)` is
-the dynamic index *read*, whose one successful rule is
-(Use-Untrackable-Dynamic-Copy) §5.1: `Expr.indexRead` carries its
-`class(T) = Copy` premise, and §4.2's "there is no
+the dynamic index *read*, at the element or at any place below it, whose one
+successful rule is (Use-Untrackable-Dynamic-Copy) §5.1: `Expr.indexRead`
+carries its `class(T) = Copy` premise at the leaf, and §4.2's "there is no
 successful static rule … when `class(T) ∈ {Affine,Linear}`" is that premise's
 absence rather than a rule of its own (E0904). A dynamic-index *write* is not
 a use at all — §4.2 classifies value-context uses, and an assignment
 destination is neither — so `Expr.indexWrite` carries (Assign) §5.2's own
-`Σ1(p) = MovedOut ∨ ¬carries_linear(T)` at the element type instead
-(`3.8:77`, E0493), and an affine element is written in place.
+`Σ1(p) = MovedOut ∨ ¬carries_linear(T)` at the leaf type instead
+(`3.8:77`, E0493), and an affine leaf is written in place.
 `Untrackable(DeclaredLinearDynamic)` is ill-formed by §4.2, and its one
-instance here is the dynamic *read* under a declared-`linear` prefix, which
-(Use-Untrackable-Dynamic-Copy) refuses through `declaredPrefix … = none`
-(E0904); the dynamic *write* under such a prefix is not a use and is admitted,
-as the compiler admits it. A dynamic index is never a `Place` step, so no
+instance here is the dynamic *read* with a declared-`linear` proper prefix,
+above the dynamic index or below it, which (Use-Untrackable-Dynamic-Copy)
+refuses through `declaredPrefix … = none` and `Ty.dynNoDeclared` (E0904); the
+dynamic *write* under such a prefix is not a use and is admitted, as the
+compiler admits it. A dynamic index is never a `Place` step, so no
 plan is ever computed through one.
 
 The plan is therefore a **function of the type and the path**, and the four
@@ -119,11 +120,19 @@ writes at the element *is* `3.8:73`'s per-path drop flag, and §6.11's
 `⊘`-skip over an array's elements is the element-wise drop (probes `a1`,
 `a4`/`a4b`, `a8`, `b19`).
 
-What a **dynamic** index still cannot reach is any step below it. §2's place
-grammar has `p [ e ]`, so `a[i].x0` is a place of the calculus and the
-compiler reads and writes it; here `Expr.indexRead` yields the element *value*
-and a dynamic index is not a `Place` step, so neither `a[i].x0` nor
-`a[i].x0 = 50` has a form at all. That debt is RUE-2342.
+A **dynamic** index reaches below itself too (RUE-2342). §2's place grammar
+has `p [ e ]`, so `a[i].x0` is a place of the calculus and the compiler reads
+and writes it. Here `Expr.indexRead p idx πs` and `Expr.indexWrite p idx πs e`
+carry the constant place `p` the first dynamic step indexes, then one dynamic
+step per index expression, each followed by the constant path at the same
+position of `πs`: `a[i].x0`, `h.arr[i].x0`, `a[i][j]` and `a[i][0].x1` are all
+this form. `Place` stays constant-only, which is what keeps Σ finite
+(`3.8:68`): `Ty.atDyn` types the dynamic tail, and the machine resolves it to
+an ordinary constant path only once the indices are values
+(`Contents.resolveDyn`, `Dynamics.lean`). Nothing is ever *moved* below a
+dynamic index — the calculus has no rule for it (E0904) — so Σ gains nothing
+from these forms, and §5.6's untracked-residue disjunct is computed exactly
+(`residualLinear`, `Statics.lean`).
 
 An array's ownership state is a `Path ⇀ {Owned, MovedOut}` tree like a
 struct's, so every §5 predicate that recurses into a node's children — §5.6's
@@ -999,14 +1008,20 @@ constructor `«match»` because `match` is one of its own keywords.
 carries the element type because `n = 0` leaves no element to read one off
 (`[]` is the zero-sized `[T; 0]`, and *which* `T` is elaboration's answer, the
 same way `intLit` carries the width `4.1:2` resolved). `repeatArray T e n` is
-the surface's repeat form `[e; n]` (`7.1:36`–`7.1:39`). `indexRead p e` and
-`indexWrite p e₁ e₂` are the **dynamic**-index read `p[e]` and write
-`p[e₁] = e₂`: a constant index is a step of the place (`Place.idx`), so these
-two forms exist for the index §5's `Path` cannot track — §4.2's
-`Untrackable(OrdinaryDynamic)` plan for the read, restricted to
-`class(T) = Copy` by §5.1's only successful rule for it, and (Assign) §5.2's
-linear-overwrite premise for the write — both bounds-checked at run time by
-§6.5's (D-Index)/(D-Index-Trap). -/
+the surface's repeat form `[e; n]` (`7.1:36`–`7.1:39`). `indexRead p idx πs`
+and `indexWrite p idx πs e` are the **dynamic**-index read
+`p[e₁]π₁…[eₖ]πₖ` and write `p[e₁]π₁…[eₖ]πₖ = e`, with `idx = [e₁, …, eₖ]`
+and `πs = [π₁, …, πₖ]`, `k ≥ 1`, each `πⱼ` a constant path of field slots and
+constant indices: a constant index is a step of the place (`Place.idx`), so
+these two forms exist for the index §5's `Path` cannot track — §4.2's
+`Untrackable(OrdinaryDynamic)` plan for the read, restricted to a
+`class(T) = Copy` leaf by §5.1's only successful rule for it, and (Assign)
+§5.2's linear-overwrite premise for the write, whose right-hand side runs
+before its indices (`5.2:14`) — both bounds-checked at run time at every
+dynamic step by §6.5's (D-Index)/(D-Index-Trap). The two lists are parallel
+rather than one list of pairs so that the index expressions are a `List Expr`,
+the nested occurrence `mkStruct`'s arguments already are, and every recursion
+over `Expr` handles them the way it handles arguments. -/
 inductive Expr where
   | intLit (w : IntWidth) (s : Sign) (n : Int)
   | floatLit (w : FloatWidth) (l : FloatLit)

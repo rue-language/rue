@@ -770,12 +770,13 @@ elements, each at the element type (`3.8:71`, §5.3's "the element type for an
 array of nonzero length"). §5.6 writes that clause with a second disjunct,
 "(untracked residue carries linear)", for the elements the tracked list does
 not reach. It is not absent here: `residualLinearFields`' `[], Ts` base case
-answers those slots at the **type** level, `Ts.any (·.mult D = .linear)`,
-which is the second disjunct's job done conservatively — it can only say
-"carries" where the calculus's own disjunct would. What would make the
-difference observable is a *dynamic-index* move, which leaves residue no path
-names (`3.8:70`). The fragment has no such move, so the two readings agree on
-every program it accepts (RUE-2342 owes the move and the disjunct). -/
+answers those slots at the **type** level, `Ts.any (·.mult D = .linear)`, and
+that reading is **exact**, not conservative. An element Σ has no record for
+is one no path has touched, and nothing below a dynamic index is ever moved:
+the calculus has no rule for a move, a `@drop` or a declared-`linear` plan
+there (§4.2's `Untrackable` plans, E0904; probes q02, q11, q15 of RUE-2342),
+and a write there consumes nothing. So an untracked element is `Owned`, and
+an `Owned` element carries a linear value exactly when `class(T) = Linear`. -/
 def residualLinear (D : Decls) : OwnSt → Ty → Bool
   | .movedOut, _ => false
   | .owned, T => decide (T.mult D = .linear)

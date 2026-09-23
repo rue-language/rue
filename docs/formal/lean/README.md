@@ -507,11 +507,11 @@ a constant-index path — with `rootIdxOnly` for §4.2's "element moves only at
 the root", the `MovedOut` element state the move leaves, `3.8:73`'s
 path-specific element drop, and `3.8:72`'s refusal to assign into an array that
 has one — and top-level functions, by-value calls with frames and scope
-records, and `return` with its σ unwind. No step
-**below** a dynamic index: `a[i].x0` is a place of §2's grammar that the
-compiler reads and writes, and it has no form here because `Expr.indexRead`
-yields the element value and a dynamic index is not a `Place` step
-(RUE-2342) — no equality compare (it borrows its
+records, and `return` with its σ unwind. A dynamic index reaches below
+itself: `a[i].x0`, `h.arr[i].x0`, `a[i][j]` and `a[i][0].x1` are read and
+written as the compiler reads and writes them, with `Place` still
+constant-only, and a write evaluates its right-hand side before its indices
+(`5.2:14`). No equality compare (it borrows its
 operands, so `≈`'s float leaf has no instance here), no path into an enum's
 payload (§5.6 tracks none) and none of the `match` shapes §5.5 makes
 elaboration obligations (wildcard, repeated or guarded patterns, a bool or

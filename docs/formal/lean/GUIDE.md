@@ -1245,6 +1245,65 @@ sibling still drops at scope exit (`enum_match_projection`, and
 in `Examples.lean` is the kernel-checked form of this paragraph, and
 `scripts/rue exec` on the printed program prints `10`, `1`, `20`, `5`.
 
+## 5i. A ninth worked example: the right-hand side before the index
+
+The corpus case `array_dyn_write_rhs_first` is the smallest program where the
+order of an assignment's operands is observable. `5.2:14` is normative: "the
+right-hand side `expression` is evaluated first … any index subexpressions
+appearing in the target … are evaluated after the right-hand side, in source
+order", and §6.2's `assign p = E` context says the same (RUE-305 corrected an
+earlier comment there that had it the other way round).
+
+### The program
+
+```lean
+letIn true (aiPair 1 2 3 4)
+  (seq (indexWrite (.var 0) [call 1 [lit 1]] [[0]] (call 2 [lit 9]))
+    (seq (dbg (lit 20)) (lit 7)))
+```
+
+`f1` is `id`, which prints its argument and returns it; `f2` is `mk`, which
+prints its argument and builds an `S1` of it. `indexWrite p idx πs e` is the
+place `p`, then one dynamic step per index in `idx`, each followed by the
+constant path at the same position of `πs` — here one step, then `.x0`. It
+prints as
+
+```rue
+let mut v0: [S8; 2] = [S8 { x0: S1 { x0: 1 }, x1: 2 }, S8 { x0: S1 { x0: 3 }, x1: 4 }];
+{ v0[{ let t3i0: i64 = f1(1); t3i0 }].x0 = f2(9); };
+```
+
+Each index is a typed block in place, so the printed statement keeps the
+surface's own order.
+
+### What the checker demands
+
+`Typed.indexWrite` types the right-hand side **first**, at the leaf type `S1`,
+and threads Σ from it into the index list (`TypedArgs` at integer types). Then
+it reads the array `v0` on the post-operand state: `fully-owned` there, and
+`assignArrayOk` above it (nothing to check, `v0` is the root). The last premise
+is (Assign) §5.2's `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` at the leaf, and a
+place under a runtime index is never `MovedOut`, so it is `class(S1) ≠ Linear`.
+
+### The run, step by step
+
+| Step | What happens | Events |
+| --- | --- | --- |
+| 1 | the right-hand side `mk(9)` runs and builds `S1 { 9 }` | `@dbg 9` |
+| 2 | the index `id(1)` runs | `@dbg 1` |
+| 3 | `dynPlace` resolves `v0[1].x0` to the constant path `[1, 0]`, bounds-checking `1 < 2` | |
+| 4 | §6.8's overwrite-drop of the old leaf `S1 { 3 }` | `drop`, `dtor S1 { 3 }` |
+| 5 | the store writes `S1 { 9 }` at `[1, 0]`, and the array back into `ℓ0` | |
+| 6 | `@dbg(20)`, then the scope exit drops `v0` ascending | `20`; `1`, `9` |
+
+So stdout is `9 1 3 20 1 9 7`, and the compiler prints the same.
+
+Had the index been out of range, step 3 would trap, and the `S1 { 9 }` built
+at step 1 would never be dropped: a trap runs no drops (§6.12), and the
+compiler does the same (`array_dyn_write_trap_negative`). Had the index
+`return`ed instead, the value would be lost the same way, which is RUE-2316's
+pending-value edge (`../03-metatheory.md`).
+
 ### More worked examples
 
 Every corpus case is a smaller worked example: its printed source begins

@@ -189,23 +189,26 @@ SYNTAX_FORMS: Dict[Tuple[str, str], Tuple[str, List[str], str]] = {
         "(Use-Declared-Linear-Destructure) §5.1 consumes that prefix (`3.8:33`)",
     ),
     ("p", "p [ e ]"): (
-        "partial",
+        "yes",
         ["Place.idx", "Expr.indexRead", "Expr.indexWrite"],
-        "a **constant** index only, which is the whole of §5's `Path[c]` and of §9's "
-        "item 4; a dynamic index is not a path and has its own expression forms "
-        "(`Expr.indexRead`/`Expr.indexWrite`). The read is restricted to a `Copy` "
-        "element type by §5.1's (Use-Untrackable-Dynamic-Copy); the write is a "
-        "destination rather than a use and carries (Assign) §5.2's own "
-        "`Σ1(p) = MovedOut ∨ ¬carries_linear(T)` at the element type (`3.8:77`) "
-        "instead; both are bounds-checked at run time by "
-        "§6.5's (D-Index-Trap). A constant-index read, write and "
-        "`@drop` of the whole array are in, and so are `3.8:68`'s element "
-        "**move** at the root binding (`rootIdxOnly`), the `MovedOut` element "
-        "state it leaves, and `3.8:73`'s path-specific element drop. What is "
-        "missing is any step **below** a dynamic index (`a[i].x0`, read or "
-        "written), which the compiler accepts and which has no form here "
-        "because `Expr.indexRead` yields the element value rather than a place "
-        "(RUE-2342)",
+        "`Place.idx` is a **constant** index only, which is the whole of §5's "
+        "`Path[c]` and of §9's item 4, so Σ stays finite (`3.8:68`). A dynamic "
+        "index is not a path and has its own expression forms "
+        "(`Expr.indexRead`/`Expr.indexWrite`): a constant place, then one or "
+        "more dynamic steps, each followed by a constant path, so `a[i].x0`, "
+        "`h.arr[i].x0`, `a[i][j]` and `a[i][0].x1` are all in. The read is "
+        "restricted to a `Copy` leaf by §5.1's (Use-Untrackable-Dynamic-Copy), "
+        "with no declared-`linear` proper prefix anywhere on the path; the write "
+        "is a destination rather than a use, evaluates its right-hand side "
+        "before its indices (`5.2:14`), and carries (Assign) §5.2's own "
+        "`Σ1(p) = MovedOut ∨ ¬carries_linear(T)` at the leaf type (`3.8:77`) "
+        "instead; both are bounds-checked at every dynamic step by §6.5's "
+        "(D-Index-Trap). A constant-index read, write and `@drop` of the whole "
+        "array are in, and so are `3.8:68`'s element **move** at the root "
+        "binding (`rootIdxOnly`), the `MovedOut` element state it leaves, and "
+        "`3.8:73`'s path-specific element drop. A move, a `@drop` or a "
+        "declared-`linear` plan below a dynamic index has no rule in the "
+        "calculus either (§4.2's `Untrackable` plans, E0904)",
     ),
     ("e", "lit"): (
         "yes",

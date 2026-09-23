@@ -40,7 +40,10 @@ destructor, then its fields in declaration order, recursively, or an enum's
 fixed-length array `[T; n]` ((Array-Intro) §5.8, (D-Array) §6.5) with `class`
 as §3's four-line lift of `class(T)`, §6.11's **ascending** element order, the
 surface repeat form `[e; n]` at `7.1:38`'s `Copy` element type, and the
-dynamic-index read and write with (D-Index-Trap) §6.5's `bounds` trap; use
+dynamic-index read and write — at the element or at any place below it,
+`a[i].x0`, `a[i][j]`, `h.arr[i].x0` — with (D-Index-Trap) §6.5's `bounds`
+trap at every dynamic step and a write's right-hand side evaluated before its
+indices (`5.2:14`); use
 (copy/move), `@drop`, `let` with scope-exit drop, assignment with
 reinitialization, sequencing with the discard check, `if` with the §5.5 branch
 join, §2's whole integer operator set — `+ - * / %`, `& | ^`, `<< >>`,
@@ -75,12 +78,17 @@ only at the root" (`RueCore.rootIdxOnly`, E0904) on the two rules that move a
 path out and by nothing at all on the declared-linear destructure, which
 `3.8:71` admits at an array anywhere in a place tree. Writing into an array
 that has a moved-out element is refused as `3.8:72`/`7.1:46` refuse it
-(`RueCore.assignArrayOk`, E0480). What is still owed is any step **below** a
-dynamic index: §2's place grammar has `p [ e ]`, so `a[i].x0` is a place of the
-calculus and the compiler
-reads and writes it, but `RueCore.Expr.indexRead` yields the element *value*
-and a dynamic index is not a `RueCore.Place` step, so neither the read nor the
-write has a form here (RUE-2342). No equality compare (it borrows its
+(`RueCore.assignArrayOk`, E0480). A place **below** a dynamic index is in
+too: §2's place grammar has `p [ e ]`, and `RueCore.Expr.indexRead`/`indexWrite`
+carry a constant place `p`, then one or more dynamic steps, each followed by a
+constant path of field slots and constant indices. `RueCore.Place` stays
+constant-only, so Σ stays finite (`3.8:68`): a dynamic step resolves to a
+constant path only at run time (`RueCore.Contents.resolveDyn`). The read wants
+a `Copy` leaf, `fully-owned` at `p` and no declared-`linear` proper prefix
+anywhere along the path; the write wants `fully-owned` at `p`,
+`RueCore.assignArrayOk` above it and a leaf that carries no linear value,
+because a place under a runtime index is never `MovedOut` (`3.8:77`). No
+equality compare (it borrows its
 operands, `4.3:3f`, so `≈`'s float leaf has no instance here), no payload path
 into an enum (§5.6 tracks none, so `Place` has no enum step), no wildcard,
 repeated or guarded `match` pattern and no bool or integer scrutinee (all
@@ -212,7 +220,13 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   element at a constant index is a path like any other, so a read of one is
   covered; a *dynamic* index cannot be tracked as a path at all, and
   §5.1's (Use-Untrackable-Dynamic-Copy) asks `fully-owned(Σ, p)` of the whole
-  array for exactly that reason (`3.8:70`, `7.1:45`).
+  array for exactly that reason (`3.8:70`, `7.1:45`). A place **below** a
+  dynamic index reads the same way: the premise is at the array `p` the first
+  dynamic step indexes, so every element under it and every place below one is
+  hole-free, and each dynamic step either traps on its bound or lands on an
+  element the invariant covers (`RueCore.Contents.resolveDyn_ok`). It is `p`,
+  not the root: `a[0][i].x1` after a move of `a[1]` reads a whole `a[0]`, and
+  the compiler accepts it too (`RueCore.Examples.dynReadAfterSiblingMove`).
   A declared-linear destructure reads the same way, one place up: the rule's
   `fully-owned(Σ, d)` is asked of the **consumed** place, so the leaf it hands
   on and the residue it destroys are both hole-free
@@ -221,8 +235,6 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   it leaves (`RueCore.Examples.arrayElemMove`), so a use of the array as a
   whole or a read through a moved element is `fully-owned`/(Owned-Base) again
   (`3.8:70`, `7.1:45`, E0205).
-  **Owed:** any step below a dynamic index — `a[i].x0`, which the
-  compiler reads and writes and which has no form here (RUE-2342).
 
 ## No double-free
 
@@ -298,7 +310,8 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   different in kind, and only the first is a gap.
   - **A pending value (open, RUE-2316).** A value already built for a
     **sibling position** — a call's argument, a struct literal's initializer,
-    an array literal's element — is in no cell and no scope record between the
+    an array literal's element, and an assignment's right-hand side while the
+    target's indices run after it (`5.2:14`) — is in no cell and no scope record between the
     subexpression that produced it and the aggregation that would have taken
     it (§6.9's `mintParams` for an argument). If a *later* sibling
     unwinds by `return`, (D-Return) discards the evaluation context with
@@ -308,7 +321,9 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
     rule for an argument position, imposes no §5.3 discard check on siblings
     already evaluated — so the statics cannot reject it without ⊥ provenance
     they do not carry, and the Rue compiler behaves the same way (the
-    destructor does not run). The mechanization models the calculus rather
+    destructor does not run; for the right-hand side, probe r14 of RUE-2342,
+    `a[if c { return 5 } else { 0 }].s = mk(9)`, prints `9` and never runs the
+    new `S1`'s destructor). The mechanization models the calculus rather
     than patching it and states the gap instead: `Dynamics.lean`'s "Pending
     values" section, the `no_violation` docstring, and the kernel-checked
     witnesses `RueCore.Examples.linearLostAtCallArg`,
@@ -363,9 +378,14 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   An **array of linear elements** is consumed element-wise (`3.8:71`): each
   element move discharges that element's share, the §5.5 join refuses where an
   element is consumed on one path only (E0443), and §5.6's element-wise reading
-  is what reports the ones left over (E0406). **Owed:** RUE-2316; any step
-  below a dynamic index, and `3.8:70`'s untracked-residue disjunct
-  (RUE-2342).
+  is what reports the ones left over (E0406). §5.6's second disjunct for an
+  array, "(untracked residue carries linear)", needs nothing of its own: the
+  calculus has no dynamic-index move — a move, a `@drop` or a declared-`linear`
+  prefix below a dynamic index is refused (E0904) — so the elements Σ has no
+  record for are `Owned`, and `residualLinearFields`' `[], Ts` base case
+  answers them at the element type **exactly**. A write below a dynamic index
+  is refused wherever its leaf carries a linear value (`3.8:77`, E0493), since
+  a place under a runtime index is never `MovedOut`. **Owed:** RUE-2316.
 
 ## Exclusivity / no aliased mutation
 
