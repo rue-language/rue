@@ -3718,7 +3718,11 @@ calculus, the second is the calculus doing what it says.
   scope record, so its drop is neither run nor monitored and none of the five
   violations fires. The sibling positions are every list `evalArgs` walks — a
   call's argument list, a struct literal's initializers, an array literal's
-  elements. That edge is the calculus as written — §6.9's unwinding
+  elements — and an assignment's right-hand side while the target's indices
+  run after it (`5.2:14`). At the right-hand side only the affine half
+  applies: (Assign)'s leaf premise `class(T) ≠ Linear` keeps the abandoned
+  value from being linear, so `no_linear_discard` is not affected there. That
+  edge is the calculus as written — §6.9's unwinding
   rule walks only σ, and §5.7's strict-context bottom rule (`Strict-Bottom`
   there, which the fragment does not mechanize) imposes no discard check on
   siblings already evaluated — it is what the Rue compiler does, and closing

@@ -156,16 +156,23 @@ can reach it — a constant index is checked by `Ty.atPath` at compile time
 The general shape is a value already built for a **sibling position** that a
 later sibling destroys by `return`. Every list of subexpressions `evalArgs`
 walks has it: a call's argument list, a struct literal's initializers, and an
-array literal's elements. Such a value lives in no cell and in no scope
+array literal's elements. So does a fourth position, an assignment's
+right-hand side while the target's indices run after it (`5.2:14`, §6.2's
+`assign p[ v̄, E, … ] = v`), which `indexWrite` threads through `andThen`
+rather than `evalArgs`. Such a value lives in no cell and in no scope
 record — between the `use` that produced it and the `mintParams` that gives a
-by-value argument one (§6.9's (D-Call)), or between an initializer and the
-`mkStruct`/`mkArray` that would have aggregated it. If a later sibling unwinds
-by `return`, (D-Return) §6.9 discards the evaluation context — `g(v̄, …, E, …)`
-and the aggregate contexts `S { v̄, …, E, … }` and `[ v̄, …, E, … ]` with it —
-and runs `run-all-scope-drops` on the frame's records, which never named that
+by-value argument one (§6.9's (D-Call)), between an initializer and the
+`mkStruct`/`mkArray` that would have aggregated it, or between a right-hand
+side and the store that would have written it. If a later sibling unwinds
+by `return`, (D-Return) §6.9 discards the evaluation context — `g(v̄, …, E, …)`,
+the aggregate contexts `S { v̄, …, E, … }` and `[ v̄, …, E, … ]`, and
+`assign p[ v̄, E, … ] = v` with it — and runs `run-all-scope-drops` on the frame's records, which never named that
 value. Its drop is therefore neither run nor monitored, whatever its
 multiplicity class: an affine sibling emits no `dropTemp`, and a linear one is
-destroyed without a `linearDiscard`.
+destroyed without a `linearDiscard`. At the right-hand side only the affine
+half applies: (Assign)'s leaf premise `class(T) ≠ Linear` (`3.8:77`) keeps
+the abandoned value from being linear, so `no_linear_discard` is not affected
+by that position.
 
 That is the calculus as written, not a modelling slip. (D-Return) unwinds σ
 and nothing else, and §5's only bottom rule for an argument position — §5.7's
@@ -178,12 +185,13 @@ not have. §6.9's own justification for
 records" — is exactly true and exactly insufficient here, because a sibling
 temporary is not a bound cell. The Rue compiler behaves the same way (a
 destructor-bearing sibling's destructor does not run, at an argument, a
-struct initializer and an array element alike), so the bridge cannot see it
-either.
+struct initializer, an array element and an assignment's right-hand side
+alike — probe r14 of RUE-2342), so the bridge cannot see it either.
 
 `eval` models the calculus rather than patching it, so no monitor is added:
-`evalArgs` passes a `returned` abort on untouched — and because all three
-forms share that one function, all three share the edge. The shapes are
+`evalArgs` passes a `returned` abort on untouched — and because the three list
+forms share that one function, all three share the edge; `indexWrite`'s
+`andThen` passes it on the same way at the right-hand side. The shapes are
 pinned as kernel-checked witnesses in `Examples.lean`
 (`linearLostAtCallArg`, `affineLostAtCallArg`, `linearLostAtArrayElem`), the
 §7 claim is stated with
@@ -1384,7 +1392,9 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
       -- premise keeps out of a checked program — and then the store. A trap
       -- or an unwinding `return` in an index abandons the evaluated
       -- right-hand side undropped: a panic runs no drops (§6.12), and the
-      -- compiler does the same (probes r08, r14).
+      -- compiler does the same (probes r08, r14). The `return` case is
+      -- RUE-2316's pending-value edge at the right-hand side ("Pending
+      -- values" above), affine only because the leaf is never linear.
       (eval M fuel P H φ e).andThen fun H₁ v =>
         match evalArgs (fun H' e' => eval M fuel P H' φ e') H₁ idx with
         | .abort r => r
