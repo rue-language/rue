@@ -1255,3 +1255,105 @@ fn provider_body_partial_move_leaves_sibling_field_valid() {
         .expect("a partial move leaves the sibling field usable");
     assert_eq!(body.function.air.return_type(), Type::I32);
 }
+
+/// `H { a: [P; 2], b: NonCopy }` with `P { c: i64, s: NonCopy }`: an array
+/// field of move type beside a sibling field of move type (RUE-2344).
+fn dynamic_index_field_array_fixture() -> ProviderFixture {
+    let mut fixture = ProviderFixture::new();
+    let non_copy = fixture.declare_struct("NonCopy", vec![("x", SemanticImportType::I64)], false);
+    let p = fixture.declare_struct(
+        "P",
+        vec![
+            ("c", SemanticImportType::I64),
+            ("s", SemanticImportType::Nominal(non_copy.clone())),
+        ],
+        false,
+    );
+    fixture.declare_struct(
+        "H",
+        vec![
+            (
+                "a",
+                SemanticImportType::Array {
+                    element: Arc::new(SemanticImportType::Nominal(p)),
+                    len: 2,
+                },
+            ),
+            ("b", SemanticImportType::Nominal(non_copy)),
+        ],
+        false,
+    );
+    fixture.declare_function(
+        "f",
+        vec![value_param("i", SemanticImportType::I64)],
+        SemanticImportType::I64,
+    );
+    fixture
+}
+
+const DYNAMIC_INDEX_H: &str = "H { a: [P { c: 1, s: NonCopy { x: 10 } }, P { c: 3, s: NonCopy { x: 30 } }], b: NonCopy { x: 50 } }";
+
+fn assert_use_after_move_of(error: &rue_error::CompileError, place: &str) {
+    assert!(
+        matches!(&error.kind, ErrorKind::UseAfterMove(name) if name == place),
+        "expected use of moved value '{place}', got: {error:?}"
+    );
+}
+
+// RUE-2344: the move path of a place below a dynamic index names the array
+// that index selects from. Before the fix the path restarted after the index,
+// so `h.a[i].c` was checked as `h.c`: a read through the moved `h.a` passed.
+#[test]
+fn provider_body_dynamic_index_read_below_moved_field_array_rejected() {
+    let fixture = dynamic_index_field_array_fixture();
+    let source = format!(
+        "fn f(i: i64) -> i64 {{
+    let h = {DYNAMIC_INDEX_H};
+    let t = h.a;
+    h.a[i].c
+}}"
+    );
+    let error = fixture
+        .analyze(&source, "f")
+        .map(|_| ())
+        .expect_err("a read below a dynamic index into a moved array is a use-after-move");
+    assert_use_after_move_of(&error, "h.a");
+}
+
+// RUE-2344: the write form, which ran the overwrite-drop of a destroyed
+// element and leaked the written value.
+#[test]
+fn provider_body_dynamic_index_write_below_moved_field_array_rejected() {
+    let fixture = dynamic_index_field_array_fixture();
+    let source = format!(
+        "fn f(i: i64) -> i64 {{
+    let mut h = {DYNAMIC_INDEX_H};
+    let t = h.a;
+    h.a[i].s = NonCopy {{ x: 99 }};
+    0
+}}"
+    );
+    let error = fixture
+        .analyze(&source, "f")
+        .map(|_| ())
+        .expect_err("a write below a dynamic index into a moved array is a use-after-move");
+    assert_use_after_move_of(&error, "h.a");
+}
+
+// RUE-2344: `h.a[i].c` is not `h.c`, and `h.a[i].s.x` is not `h.s.x`; a moved
+// sibling of the array leaves both the read and the write legal.
+#[test]
+fn provider_body_dynamic_index_beside_moved_sibling_field_accepted() {
+    let fixture = dynamic_index_field_array_fixture();
+    let source = format!(
+        "fn f(i: i64) -> i64 {{
+    let mut h = {DYNAMIC_INDEX_H};
+    let t = h.b;
+    h.a[i].c = 7;
+    h.a[i].c + h.a[i].s.x
+}}"
+    );
+    fixture
+        .analyze(&source, "f")
+        .expect("a moved sibling field does not affect a place below a dynamic index");
+}

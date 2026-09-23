@@ -3040,6 +3040,497 @@ compile_fail = true
 error_contains = "use of moved value 'xs[0]'"
 
 [[case]]
+name = "dyn_index_read_below_moved_field_array_rejected"
+spec = ["3.8:70", "3.8:26"]
+description = "A place below a dynamic index into a moved array field is a use of the moved array (RUE-2344)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct H { a: [P; 2], k: i64 }
+
+fn one() -> i64 { 1 }
+fn mk() -> H {
+    H { a: [P { c: 1, s: S1 { x0: 10 } }, P { c: 3, s: S1 { x0: 30 } }], k: 5 }
+}
+
+fn main() -> i32 {
+    let h = mk();
+    let t: [P; 2] = h.a;
+    @drop(t);
+    let i = one();
+    @dbg(h.a[i].c);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.a'"
+
+[[case]]
+name = "dyn_index_write_below_moved_field_array_rejected"
+spec = ["3.8:70", "3.8:26"]
+description = "A write below a dynamic index into a moved array field is rejected, not an overwrite-drop of a destroyed element (RUE-2344)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct H { a: [P; 2], k: i64 }
+
+fn one() -> i64 { 1 }
+fn mk() -> H {
+    H { a: [P { c: 1, s: S1 { x0: 10 } }, P { c: 3, s: S1 { x0: 30 } }], k: 5 }
+}
+
+fn main() -> i32 {
+    let mut h = mk();
+    let t: [P; 2] = h.a;
+    @drop(t);
+    let i = one();
+    h.a[i].s = S1 { x0: 99 };
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.a'"
+
+[[case]]
+name = "dyn_index_element_write_into_moved_field_array_rejected"
+spec = ["3.8:70", "3.8:26"]
+description = "Writing a whole element at a dynamic index into a moved array field is rejected (RUE-2344)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct H { a: [P; 2], k: i64 }
+
+fn one() -> i64 { 1 }
+fn mk() -> H {
+    H { a: [P { c: 1, s: S1 { x0: 10 } }, P { c: 3, s: S1 { x0: 30 } }], k: 5 }
+}
+
+fn main() -> i32 {
+    let mut h = mk();
+    let t: [P; 2] = h.a;
+    @drop(t);
+    let i = one();
+    h.a[i] = P { c: 7, s: S1 { x0: 99 } };
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.a'"
+
+[[case]]
+name = "dyn_index_drop_below_moved_field_array_rejected"
+spec = ["3.8:70", "3.8:26"]
+description = "@drop of a Copy place below a dynamic index into a moved array field is rejected (RUE-2344)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct H { a: [P; 2], k: i64 }
+
+fn one() -> i64 { 1 }
+fn mk() -> H {
+    H { a: [P { c: 1, s: S1 { x0: 10 } }, P { c: 3, s: S1 { x0: 30 } }], k: 5 }
+}
+
+fn main() -> i32 {
+    let h = mk();
+    let t: [P; 2] = h.a;
+    @drop(t);
+    let i = one();
+    @drop(h.a[i].c);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.a'"
+
+[[case]]
+name = "dyn_index_read_below_holed_field_array_rejected"
+spec = ["3.8:70", "3.8:26"]
+description = "A dynamic index cannot read an array field one of whose elements has a moved-out field (RUE-2344)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct H { a: [P; 2], k: i64 }
+
+fn one() -> i64 { 1 }
+fn mk() -> H {
+    H { a: [P { c: 1, s: S1 { x0: 10 } }, P { c: 3, s: S1 { x0: 30 } }], k: 5 }
+}
+
+fn main() -> i32 {
+    let h = mk();
+    let t: S1 = h.a[0].s;
+    @drop(t);
+    let i = one();
+    @dbg(h.a[i].c);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "moved-out element poisons the whole array"
+
+[[case]]
+name = "dyn_index_read_beside_moved_sibling_field"
+spec = ["3.8:70", "3.8:26"]
+description = "A moved sibling field does not affect a place below a dynamic index: h.a[i].b is not h.b (RUE-2344)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+@copy struct P { c: i64, b: i64 }
+struct H { a: [P; 2], b: S1 }
+
+fn one() -> i64 { 1 }
+
+fn main() -> i32 {
+    let h = H { a: [P { c: 1, b: 2 }, P { c: 3, b: 4 }], b: S1 { x0: 10 } };
+    let t: S1 = h.b;
+    @drop(t);
+    let i = one();
+    @dbg(h.a[i].b);
+    0
+}
+"""
+expected_stdout = "10\n4\n"
+exit_code = 0
+
+[[case]]
+name = "dyn_index_write_beside_moved_sibling_field"
+spec = ["3.8:70", "3.8:26"]
+description = "A write below a dynamic index is unaffected by a moved sibling of the array (RUE-2344)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct H { a: [P; 2], b: S1 }
+
+fn one() -> i64 { 1 }
+
+fn main() -> i32 {
+    let mut h = H { a: [P { c: 1, s: S1 { x0: 10 } }, P { c: 3, s: S1 { x0: 30 } }], b: S1 { x0: 50 } };
+    let t: S1 = h.b;
+    @drop(t);
+    let i = one();
+    h.a[i].s = S1 { x0: 99 };
+    @dbg(h.a[i].c);
+    0
+}
+"""
+expected_stdout = "50\n30\n3\n10\n99\n"
+exit_code = 0
+
+[[case]]
+name = "dyn_index_move_out_below_field_array_rejected"
+spec = ["3.8:70", "3.8:26"]
+description = "Moving a non-Copy place out below a dynamic index stays E0904"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct H { a: [P; 2], k: i64 }
+
+fn one() -> i64 { 1 }
+fn mk() -> H {
+    H { a: [P { c: 1, s: S1 { x0: 10 } }, P { c: 3, s: S1 { x0: 30 } }], k: 5 }
+}
+
+fn main() -> i32 {
+    let h = mk();
+    let i = one();
+    let t: S1 = h.a[i].s;
+    @drop(t);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0904"
+
+[[case]]
+name = "dyn_index_read_below_moved_nested_field_array_rejected"
+spec = ["3.8:70", "3.8:26"]
+description = "h.x.a[i].c after h.x.a moved is a use of the moved array (RUE-2344)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct X { a: [P; 2], c: S1 }
+struct H { x: X, k: i64 }
+
+fn one() -> i64 { 1 }
+fn mk() -> H {
+    H { x: X { a: [P { c: 1, s: S1 { x0: 10 } }, P { c: 3, s: S1 { x0: 30 } }], c: S1 { x0: 50 } }, k: 5 }
+}
+
+fn main() -> i32 {
+    let h = mk();
+    let t: [P; 2] = h.x.a;
+    @drop(t);
+    let i = one();
+    @dbg(h.x.a[i].c);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.x.a'"
+
+[[case]]
+name = "dyn_index_read_below_moved_ancestor_rejected"
+spec = ["3.8:70", "3.8:26"]
+description = "h.x.a[i].c after h.x moved is a use of the moved ancestor (RUE-2344)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct X { a: [P; 2], c: S1 }
+struct H { x: X, k: i64 }
+
+fn one() -> i64 { 1 }
+fn mk() -> H {
+    H { x: X { a: [P { c: 1, s: S1 { x0: 10 } }, P { c: 3, s: S1 { x0: 30 } }], c: S1 { x0: 50 } }, k: 5 }
+}
+
+fn main() -> i32 {
+    let h = mk();
+    let t: X = h.x;
+    @drop(t);
+    let i = one();
+    @dbg(h.x.a[i].c);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.x.a'"
+
+[[case]]
+name = "dyn_index_write_below_moved_nested_field_array_rejected"
+spec = ["3.8:70", "3.8:26"]
+description = "h.x.a[i].s = ... after h.x.a moved is rejected (RUE-2344)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct X { a: [P; 2], c: S1 }
+struct H { x: X, k: i64 }
+
+fn one() -> i64 { 1 }
+fn mk() -> H {
+    H { x: X { a: [P { c: 1, s: S1 { x0: 10 } }, P { c: 3, s: S1 { x0: 30 } }], c: S1 { x0: 50 } }, k: 5 }
+}
+
+fn main() -> i32 {
+    let mut h = mk();
+    let t: [P; 2] = h.x.a;
+    @drop(t);
+    let i = one();
+    h.x.a[i].s = S1 { x0: 99 };
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.x.a'"
+
+[[case]]
+name = "dyn_index_drop_below_moved_nested_field_array_rejected"
+spec = ["3.8:70", "3.8:26"]
+description = "@drop(h.x.a[i].c) after h.x.a moved is rejected (RUE-2344)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct X { a: [P; 2], c: S1 }
+struct H { x: X, k: i64 }
+
+fn one() -> i64 { 1 }
+fn mk() -> H {
+    H { x: X { a: [P { c: 1, s: S1 { x0: 10 } }, P { c: 3, s: S1 { x0: 30 } }], c: S1 { x0: 50 } }, k: 5 }
+}
+
+fn main() -> i32 {
+    let h = mk();
+    let t: [P; 2] = h.x.a;
+    @drop(t);
+    let i = one();
+    @drop(h.x.a[i].c);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.x.a'"
+
+[[case]]
+name = "dyn_index_deeper_read_beside_moved_sibling_field"
+spec = ["3.8:70", "3.8:26"]
+description = "h.x.a[i].c is not h.x.c: a moved sibling one level deeper does not affect it (RUE-2344)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct X { a: [P; 2], c: S1 }
+struct H { x: X, k: i64 }
+
+fn one() -> i64 { 1 }
+fn mk() -> H {
+    H { x: X { a: [P { c: 1, s: S1 { x0: 10 } }, P { c: 3, s: S1 { x0: 30 } }], c: S1 { x0: 50 } }, k: 5 }
+}
+
+fn main() -> i32 {
+    let mut h = mk();
+    let t: S1 = h.x.c;
+    @drop(t);
+    let i = one();
+    @dbg(h.x.a[i].c);
+    h.x.a[i].c = 8;
+    @dbg(h.x.a[1].c);
+    0
+}
+"""
+expected_stdout = "50\n3\n8\n10\n30\n"
+exit_code = 0
+
+[[case]]
+name = "dyn_index_nested_read_below_moved_field_array_rejected"
+spec = ["3.8:70", "3.8:26"]
+description = "h.a[i][j].c after h.a moved is a use of the moved array (RUE-2344)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct H { a: [[P; 1]; 2], k: i64 }
+
+fn one() -> i64 { 1 }
+fn mk() -> H {
+    H { a: [[P { c: 1, s: S1 { x0: 10 } }], [P { c: 3, s: S1 { x0: 30 } }]], k: 5 }
+}
+
+fn main() -> i32 {
+    let h = mk();
+    let t: [[P; 1]; 2] = h.a;
+    @drop(t);
+    let i = one();
+    @dbg(h.a[i][i - 1].c);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.a'"
+
+[[case]]
+name = "dyn_index_nested_write_below_moved_field_array_rejected"
+spec = ["3.8:70", "3.8:26"]
+description = "h.a[i][j].c = ... after h.a moved is rejected (RUE-2344)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct H { a: [[P; 1]; 2], k: i64 }
+
+fn one() -> i64 { 1 }
+
+fn main() -> i32 {
+    let mut h = H { a: [[P { c: 1, s: S1 { x0: 10 } }], [P { c: 3, s: S1 { x0: 30 } }]], k: 5 };
+    let t: [[P; 1]; 2] = h.a;
+    @drop(t);
+    let i = one();
+    h.a[i][i - 1].s = S1 { x0: 99 };
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.a'"
+
+[[case]]
+name = "dyn_index_nested_read_beside_moved_sibling_field"
+spec = ["3.8:70", "3.8:26"]
+description = "h.a[i][j].b is not h.b: a moved sibling does not affect a place below two dynamic indices (RUE-2344)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+@copy struct P { c: i64, b: i64 }
+struct H { a: [[P; 2]; 2], b: S1 }
+
+fn one() -> i64 { 1 }
+fn mk() -> H {
+    H { a: [[P { c: 1, b: 2 }, P { c: 3, b: 4 }], [P { c: 5, b: 6 }, P { c: 7, b: 8 }]], b: S1 { x0: 10 } }
+}
+
+fn main() -> i32 {
+    let h = mk();
+    let t: S1 = h.b;
+    @drop(t);
+    let i = one();
+    @dbg(h.a[i][i].b);
+    @dbg(h.a[i][0].b);
+    0
+}
+"""
+expected_stdout = "10\n8\n6\n"
+exit_code = 0
+
+[[case]]
+name = "write_below_moved_field_rejected"
+spec = ["3.8:53", "3.8:55"]
+description = "Assigning to a field of a moved field writes into storage the binding no longer owns; only the moved place itself may be reinitialized"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct H { p: P, k: i64 }
+
+fn main() -> i32 {
+    let mut h = H { p: P { c: 1, s: S1 { x0: 10 } }, k: 5 };
+    let t: P = h.p;
+    @drop(t);
+    h.p.s = S1 { x0: 99 };
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.p'"
+
+[[case]]
+name = "write_below_moved_field_array_constant_index_rejected"
+spec = ["3.8:53", "3.8:70"]
+description = "A constant-index write into a moved array field is rejected (RUE-2344)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct H { a: [P; 2], k: i64 }
+
+fn one() -> i64 { 1 }
+fn mk() -> H {
+    H { a: [P { c: 1, s: S1 { x0: 10 } }, P { c: 3, s: S1 { x0: 30 } }], k: 5 }
+}
+
+fn main() -> i32 {
+    let mut h = mk();
+    let t: [P; 2] = h.a;
+    @drop(t);
+    h.a[0].c = 9;
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.a[0]'"
+
+[[case]]
 name = "linear_array_elementwise_consumption"
 spec = ["3.8:71"]
 description = "Moving every element out satisfies a linear array's must-consume obligation"

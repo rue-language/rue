@@ -470,7 +470,7 @@ fn main() -> i32 {
 
 {{ rule(id="3.8:53", cat="legality-rule") }}
 
-The base of a field projection is read in place context (3.8:76), but it must still own its storage. Accessing a field through a moved ancestor path is therefore a compile-time error even when the accessed field is itself a Copy type: the moved ancestor's storage is no longer owned by the variable, so nothing within it may be read.
+The base of a field projection is read in place context (3.8:76), but it must still own its storage. Accessing a field through a moved ancestor path is therefore a compile-time error even when the accessed field is itself a Copy type: the moved ancestor's storage is no longer owned by the variable, so nothing within it may be read. The same holds for the target of an assignment: assigning to a place strictly below a moved ancestor (`o.f.x = 1` after `o.f` was moved) is a compile-time error, because it would store into storage the variable no longer owns; only the moved place itself may be reinitialized (3.8:55). A place below a non-constant array index is accessed through the whole array that index selects from (3.8:70), so the array and each of its ancestors must own their storage, and a moved *sibling* of the array does not affect the access.
 
 {{ rule(id="3.8:54", cat="example") }}
 
