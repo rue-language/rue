@@ -106,7 +106,7 @@ program, the four views side by side, and the pair(s) that disagree, with a
 tally at the end; `--report-json` writes the same findings as JSON so two runs
 can be diffed. It exits non-zero when any disagreement exists.
 
-**The seed corpus is red on five cases, and that is the bridge working.**
+**The seed corpus is red on four cases, and that is the bridge working.**
 `i64_min_times_neg1` is `min_T * -1` at `i64`, which §6.4's (D-Arith-Trap),
 `3.1:6` and `8.1:3` all make an overflow trap and which the model traps on.
 The compiler's constant folder wraps it instead and the program exits 0 —
@@ -129,12 +129,13 @@ and leaks the written value. That is RUE-2341.
 with the write below a dynamic index (`h.arr[i].x0 = …`): the model refuses it
 (E0480, `fully-owned` at `h.arr` fails) and the compiler accepts it with the
 same double drop and leak, RUE-2341 again.
-`array_dyn_write_after_field_move` is the fifth: the array field `h.x0` is
-moved out and dropped, and `h.x0[i].x0 = …` then writes into it. The model
-refuses it (E0205 on `h.x0`); the compiler move-checks a place below a dynamic
-index through a field against the wrong path, accepts it, runs the destroyed
-element's destructor a second time and leaks the written value. That is
-RUE-2344. A red case is what the bridge is for; the model is not softened to
+`array_dyn_write_after_field_move` was a fifth until RUE-2344 was fixed: the
+array field `h.x0` is moved out and dropped, and `h.x0[i].x0 = …` then writes
+into it. The model refuses it (E0205 on `h.x0`); the compiler move-checked a
+place below a dynamic index through a field against the wrong path, accepted
+it, ran the destroyed element's destructor a second time and leaked the
+written value. It now refuses it with the same E0205, and the case stays as
+the regression signal. A red case is what the bridge is for; the model is not softened to
 match the compiler.
 
 The mode is a `buck2 run` entry point and belongs to no test tier, so nothing

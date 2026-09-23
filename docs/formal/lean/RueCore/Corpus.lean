@@ -796,7 +796,7 @@ def cases : List Case := [
     rules := ["(Assign) §5.2", "(Use-Declared-Linear-Destructure) §5.1", "3.8:71", "3.8:72", "7.1:46"],
     prog := Examples.dynWriteAfterDestructureViaField },
   { name := "array_dyn_write_after_field_move",
-    description := "The array field h.x0 is moved out and dropped, and h.x0[i].x0 = S1 { 99 } then writes below a dynamic index into it at i = 1. The array place is MovedOut, so the write is refused (E0205 on h.x0). The bridge is red on this one: the compiler move-checks the place against the wrong path, accepts it, runs the destroyed S1 { 30 }'s destructor a second time and leaks the 99 (RUE-2344, review probe u8). The case stays seeded until that is fixed.",
+    description := "The array field h.x0 is moved out and dropped, and h.x0[i].x0 = S1 { 99 } then writes below a dynamic index into it at i = 1. The array place is MovedOut, so the write is refused (E0205 on h.x0). The compiler once move-checked the place against the wrong path, accepted it, ran the destroyed S1 { 30 }'s destructor a second time and leaked the 99 (RUE-2344, review probe u8); it now refuses it with the same E0205, and the case stays as the regression signal.",
     rules := ["(Assign) §5.2", "(Use-Move) §5.1", "3.8:70", "3.8:72"],
     prog := Examples.dynWriteAfterFieldMove }
 ]
