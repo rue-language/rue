@@ -763,33 +763,72 @@ def pickDyn (d₀ : DynPlace) (ds : List DynPlace) : G DynPlace := do
     !d.p.path.isEmpty || 2 ≤ d.πs.length || d.πs.any (fun π => !π.isEmpty))
   if !deep.isEmpty && (← chance 1 2) then pick d₀ deep else pick d₀ ds
 
-/-- (helper) One index expression for a dynamic step into an array of length
-`n`, at an integer type of any width and signedness (`4.11:4`). A fair share is
-**out of bounds** so that (D-Index-Trap) §6.5 is exercised: one draw in five is
-`-1` (at a signed type, half the time) or `n`, seven in ten are a literal in
+/-- (helper) One index for a dynamic step into an array of length `n`, and the
+integer type it is drawn at — any width and signedness (`4.11:4`). A fair share
+is **out of bounds** so that (D-Index-Trap) §6.5 is exercised: one draw in five
+is `-1` (at a signed type, half the time) or `n`, seven in ten are a value in
 `[0, n)` — which at `n = 0` is none, so the zero-sized array always traps —
 and one in ten is `other`'s arbitrary expression of the index type, a binder or
 a projection or a literal, whatever the draw it stands for finds. -/
-def dynIdx (other : Ty → G Expr) (n : Nat) : G Expr := do
+def dynIdx (other : Ty → G Expr) (n : Nat) : G (Ty × Expr) := do
   let T ← intTy
   match T with
   | .int w sg =>
       let k ← nat 1 10
       if k ≤ 2 then
-        if sg == .signed && (← chance 1 2) then return intLit w sg (-1)
-        return intLit w sg n
+        if sg == .signed && (← chance 1 2) then return (T, intLit w sg (-1))
+        return (T, intLit w sg n)
       if k ≤ 9 then
-        if n = 0 then return intLit w sg 0
-        return intLit w sg (← nat 0 (n - 1))
-      other T
-  | _ => return intLit .w64 .signed 0
+        if n = 0 then return (T, intLit w sg 0)
+        return (T, intLit w sg (← nat 0 (n - 1)))
+      return (T, ← other T)
+  | _ => return (.int .w64 .signed, intLit .w64 .signed 0)
+
+/-- (helper) A place with its root moved `k` binders out, for a place drawn
+under `Γ` and used under `k` more binders. -/
+def liftPlace (k : Nat) : Place → Place
+  | .var i => .var (i + k)
+  | .proj p f => .proj (liftPlace k p) f
+  | .idx p c => .idx (liftPlace k p) c
+
+/-- (helper) Draw one index per dynamic step (`dynIdx`), each **bound by a
+`let`** before the form that uses it, and hand the form the extended scope and
+the index uses. The binding is not decoration. The printer writes an index in
+place as a typed block, `a[{ let t: T = e; t }]`, and where `e` is a literal the
+compiler folds that block to a **constant** index, which `7.1:9` bounds-checks
+at compile time: an out-of-range one is E0902, not the run-time trap the core's
+dynamic form reaches (`--gen 200 --seed 7` had seven such cases before this
+existed). A `let`-bound index is not folded (`let i: i64 = 2; a[i]` traps at
+run time), so the core's dynamic index stays dynamic in the printed program.
+The price is evaluation order: the indices are evaluated before a write's
+right-hand side rather than after it (`5.2:14`), which the seed cases
+`array_dyn_write_rhs_first` and `array_dyn_write_trap_negative` cover
+instead. Each index is drawn under the ones bound before it. -/
+def bindIdx (other : Scope → Ty → G Expr) : Scope → List Nat → G (List Expr × Scope)
+  | Γ, [] => return ([], Γ)
+  | Γ, n :: ns => do
+      let (T, e) ← dynIdx (other Γ) n
+      let (rest, Γ') ← bindIdx other ({ ty := T, mu := false } :: Γ) ns
+      return (e :: rest, Γ')
+
+/-- (helper) A dynamic-index form at place `d`, its indices bound first
+(`bindIdx`): `mk` builds the form from the extended scope, the place lifted
+under the new binders, and the index uses, first index outermost. -/
+def withIdx (Γ : Scope) (d : DynPlace) (other : Scope → Ty → G Expr)
+    (mk : Scope → Place → List Expr → G Expr) : G Expr := do
+  let (es, Γ') ← bindIdx other Γ d.lens
+  let k := es.length
+  let uses := (List.range k).map (fun j => use (.var (k - 1 - j)))
+  let body ← mk Γ' (liftPlace k d.p) uses
+  return es.foldr (fun e acc => letIn false e acc) body
 
 /-- (helper) A dynamic-index **read** of the wanted type, one draw in three
 where the scope offers a place below a dynamic index at that type: §4.2's
 `Untrackable(OrdinaryDynamic)` plan, whose only rule is
 (Use-Untrackable-Dynamic-Copy) §5.1, so it is drawn at a `Copy` leaf only.
 `other` draws an index expression that is not a literal. -/
-def dynRead (D : Decls) (Γ : Scope) (T : Ty) (other : Ty → G Expr) : G (Option Expr) := do
+def dynRead (D : Decls) (Γ : Scope) (T : Ty) (other : Scope → Ty → G Expr) :
+    G (Option Expr) := do
   if T.mult D != .copy then return none
   let ds := (dynPlaces D Γ).filter (fun d => d.leaf == T)
   match ds with
@@ -797,7 +836,7 @@ def dynRead (D : Decls) (Γ : Scope) (T : Ty) (other : Ty → G Expr) : G (Optio
   | d₀ :: _ =>
       if !(← chance 1 3) then return none
       let d ← pickDyn d₀ ds
-      return some (indexRead d.p (← d.lens.mapM (dynIdx other)) d.πs)
+      return some (← withIdx Γ d other (fun _ p idx => return indexRead p idx d.πs))
 
 /-- (helper) The dynamic forms at type `unit`, one draw in `den` where the
 scope offers a place for one, chosen by weight among those it offers: a write
@@ -811,9 +850,9 @@ The read is here because `atom`'s read has to match the type the draw
 wants, and a wanted integer type is one of eight, so without a read whose type
 is the place's own the read is rare: at `--gen 200 --seed 7` `atom` alone reads
 below a dynamic index in 3 programs. `rhs` draws the written value and `other`
-a non-literal index. -/
-def dynUnit (D : Decls) (Γ : Scope) (den : Nat) (rhs : Ty → G Expr)
-    (other : Ty → G Expr) : G (Option Expr) := do
+a non-literal index, each under the scope it is given. -/
+def dynUnit (D : Decls) (Γ : Scope) (den : Nat) (rhs : Scope → Ty → G Expr)
+    (other : Scope → Ty → G Expr) : G (Option Expr) := do
   let ds := dynPlaces D Γ
   let ws := ds.filter (fun d => ((Γ[d.p.root]?).map Binder.mu).getD false)
   let cs := ds.filter (fun d => d.leaf.mult D == .copy)
@@ -828,15 +867,15 @@ def dynUnit (D : Decls) (Γ : Scope) (den : Nat) (rhs : Ty → G Expr)
       match form with
       | 0 =>
           let d ← pickDyn d₀ ws
-          let e ← rhs d.leaf
-          return some (indexWrite d.p (← d.lens.mapM (dynIdx other)) d.πs e)
+          return some (← withIdx Γ d other (fun Γ' p idx => do
+            return indexWrite p idx d.πs (← rhs Γ' d.leaf)))
       | 1 =>
           let d ← pickDyn d₀ rs
-          return some (dbg (indexRead d.p (← d.lens.mapM (dynIdx other)) d.πs))
+          return some (← withIdx Γ d other (fun _ p idx => return dbg (indexRead p idx d.πs)))
       | _ =>
           if cs.isEmpty then return none
           let d ← pickDyn d₀ cs
-          return some (indexDrop d.p (← d.lens.mapM (dynIdx other)) d.πs)
+          return some (← withIdx Γ d other (fun _ p idx => return indexDrop p idx d.πs))
 
 /-- (helper) Every place one or two steps under a binder in scope whose path
 takes a **constant index** step, with the type it holds: `a[c]`, `a[c].f`,
@@ -865,7 +904,7 @@ move discarded as a statement, `a[c];` (`pathOk` again) — weight 1 each. The
 statement's ownership outcome is the checker's, as every other draw's is: an
 element moved twice, a write into an array with a moved-out element (E0480), a
 dynamic index into one (`3.8:70`), a linear element discarded (`3.8:64`). -/
-def arrayStmt (D : Decls) (Γ : Scope) (rhs : Ty → G Expr) (other : Ty → G Expr) :
+def arrayStmt (D : Decls) (Γ : Scope) (rhs : Scope → Ty → G Expr) (other : Scope → Ty → G Expr) :
     G Expr := do
   let ips := idxPlaces D Γ
   let reads := ips.filter (fun pt => pt.2.observable)
@@ -889,7 +928,7 @@ def arrayStmt (D : Decls) (Γ : Scope) (rhs : Ty → G Expr) (other : Ty → G E
   | 2 => return drop (← pick dflt drops).1
   | 3 =>
       let (pl, T) ← pick dflt writes
-      return assign pl (← rhs T)
+      return assign pl (← rhs Γ T)
   | 4 => return seq (use (← pick dflt moves).1) unitLit
   | _ => return unitLit
 
@@ -969,7 +1008,7 @@ dynamic index (`dynRead`), whose index expressions are atoms one level down. -/
 def atom (D : Decls) (Γ : Scope) : Ty → Nat → G Expr
   | .int w sg, depth => do
       if let d + 1 := depth then
-        if let some e ← dynRead D Γ (.int w sg) (fun T => atom D Γ T d) then return e
+        if let some e ← dynRead D Γ (.int w sg) (fun Γ' T => atom D Γ' T d) then return e
       let projs := projPlaces D Γ (.int w sg)
       if !projs.isEmpty && (← chance 1 2) then return use (← pickPlace (.var 0) projs)
       let uses := indicesWhere Γ (fun b => b.ty == .int w sg)
@@ -977,20 +1016,20 @@ def atom (D : Decls) (Γ : Scope) : Ty → Nat → G Expr
       intLiteral w sg
   | .float w, depth => do
       if let d + 1 := depth then
-        if let some e ← dynRead D Γ (.float w) (fun T => atom D Γ T d) then return e
+        if let some e ← dynRead D Γ (.float w) (fun Γ' T => atom D Γ' T d) then return e
       let uses := indicesWhere Γ (fun b => b.ty == .float w)
       if !uses.isEmpty && (← chance 1 2) then return use (.var (← pick 0 uses))
       floatLiteral w
   | .bool, depth => do
       if let d + 1 := depth then
-        if let some e ← dynRead D Γ .bool (fun T => atom D Γ T d) then return e
+        if let some e ← dynRead D Γ .bool (fun Γ' T => atom D Γ' T d) then return e
       let uses := indicesWhere Γ (fun b => b.ty == .bool)
       if !uses.isEmpty && (← chance 1 2) then return use (.var (← pick 0 uses))
       return boolLit (← bool)
   | .unit, _ => return unitLit
   | .struct s, depth => do
       if let d + 1 := depth then
-        if let some e ← dynRead D Γ (.struct s) (fun T => atom D Γ T d) then return e
+        if let some e ← dynRead D Γ (.struct s) (fun Γ' T => atom D Γ' T d) then return e
       let projs := projPlaces D Γ (.struct s)
       if !projs.isEmpty && (← chance 1 2) then return use (← pickPlace (.var 0) projs)
       let uses := indicesWhere Γ (fun b => b.ty == .struct s)
@@ -1004,7 +1043,7 @@ def atom (D : Decls) (Γ : Scope) : Ty → Nat → G Expr
       -- (`6.3:14`) is as likely as a payload-carrying one at the same
       -- declaration.
       if let d + 1 := depth then
-        if let some e' ← dynRead D Γ (.enum e) (fun T => atom D Γ T d) then return e'
+        if let some e' ← dynRead D Γ (.enum e) (fun Γ' T => atom D Γ' T d) then return e'
       let projs := projPlaces D Γ (.enum e)
       if !projs.isEmpty && (← chance 1 2) then return use (← pickPlace (.var 0) projs)
       let uses := indicesWhere Γ (fun b => b.ty == .enum e)
@@ -1043,7 +1082,7 @@ def leaf (D : Decls) (Γ : Scope) : Ty → Nat → G Expr
       | 1 =>
           -- A dynamic-index form first, one draw in four where the scope has
           -- a place for one (`dynUnit`); the rest keep their weights.
-          if let some e ← dynUnit D Γ 4 (fun T => atom D Γ T depth) (fun T => atom D Γ T depth) then
+          if let some e ← dynUnit D Γ 4 (fun Γ' T => atom D Γ' T depth) (fun Γ' T => atom D Γ' T depth) then
             return e
           if !drops.isEmpty && (← chance 1 2) then return drop (← pickPlace (.var 0) drops)
           if !aggregates.isEmpty && (← chance 3 4) then return drop (.var (← pick 0 aggregates))
@@ -1071,7 +1110,7 @@ def expr (D : Decls) : Scope → Ty → Nat → G Expr
       -- preceded by an array statement half the time (`arrayStmt`, its
       -- operands atoms) — the fuel-0 counterpart of form 5 below.
       if arrayInScope D Γ && (← chance 1 2) then
-        let s ← arrayStmt D Γ (fun T' => atom D Γ T' 2) (fun T' => atom D Γ T' 2)
+        let s ← arrayStmt D Γ (fun Γ' T' => atom D Γ' T' 2) (fun Γ' T' => atom D Γ' T' 2)
         return seq s (← leaf D Γ T 2)
       leaf D Γ T 2
   | Γ, T, fuel + 1 => do
@@ -1104,7 +1143,7 @@ def expr (D : Decls) : Scope → Ty → Nat → G Expr
           -- where the scope has an array to index (`arrayStmt`), because the
           -- type-directed draws reach an index form only where the type they
           -- want is the element's.
-          let s ← arrayStmt D Γ (fun T' => expr D Γ T' fuel) (fun T' => expr D Γ T' fuel)
+          let s ← arrayStmt D Γ (fun Γ' T' => expr D Γ' T' fuel) (fun Γ' T' => expr D Γ' T' fuel)
           return seq s (← expr D Γ T fuel)
       | 4 =>
           -- (Match) §5.5 in expression position: the scrutinee at the drawn
@@ -1246,7 +1285,7 @@ def expr (D : Decls) : Scope → Ty → Nat → G Expr
               let drops := dropPlaces D Γ
               -- A dynamic-index write or `@drop`, one draw in four where the
               -- scope has a place below a dynamic index (`dynUnit`).
-              if let some e ← dynUnit D Γ 4 (fun T => expr D Γ T fuel) (fun T => expr D Γ T fuel) then
+              if let some e ← dynUnit D Γ 4 (fun Γ' T => expr D Γ' T fuel) (fun Γ' T => expr D Γ' T fuel) then
                 return e
               -- A `@drop` or an assignment *at a projection* is the shape this
               -- slice is about (§4.2's partial move), so it is drawn first.
