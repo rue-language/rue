@@ -1750,6 +1750,144 @@ mod tests {
         }
     }
 
+    /// A dynamic index into a zero-length array reached through a field of a
+    /// sized frame root — `h.arr[i]` for `struct H { x: i64, arr: [i32; 0] }`
+    /// — lowers to the canonical zero-sized address with its bounds check
+    /// intact and no frame address formed (RUE-2345). The zero-sized field sits
+    /// at static slot offset 1 of a 1-slot root, one past its last slot; before
+    /// the fix only a zero-sized *root* was diverted, so both the local and the
+    /// by-value parameter shape underflowed the frame slot arithmetic.
+    #[test]
+    fn dynamic_index_into_zero_length_field_lowers_on_both_backends() {
+        // Two CFGs, one per root shape:
+        //
+        //     fn local(i: u64) -> i32 { let h = H { .. }; h.arr[i] }
+        //     fn param(h: H, i: u64) -> i32 { h.arr[i] }
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let empty_ty = Type::new_array(pool.intern_array_from_type(Type::I32, 0));
+        let holder_id = register_struct(
+            &pool,
+            &interner,
+            "H",
+            &[("x", Type::I64), ("arr", empty_ty)],
+        );
+        let holder_ty = Type::new_struct(holder_id);
+        let pool = pool.freeze();
+        let projections = |index| {
+            [
+                Projection::Field {
+                    struct_id: holder_id,
+                    field_index: 1,
+                },
+                Projection::Index {
+                    array_type: empty_ty,
+                    index,
+                },
+            ]
+        };
+
+        let mut local_cfg = Cfg::new(Type::I32, 1, 1, "local".to_string(), vec![false]);
+        let entry = local_cfg.new_block();
+        local_cfg.entry = entry;
+        storage_live(&mut local_cfg, entry, 0, holder_ty);
+        let index = value(
+            &mut local_cfg,
+            entry,
+            CfgInstData::Param { index: 0 },
+            Type::U64,
+        );
+        let element = local_cfg
+            .append_place_read(
+                entry,
+                PlaceBase::Local(0),
+                holder_ty,
+                projections(index),
+                Type::I32,
+                span(),
+            )
+            .unwrap();
+        storage_dead(&mut local_cfg, entry, 0, holder_ty);
+        local_cfg.set_return(entry, Some(element));
+
+        let mut param_cfg = Cfg::new(Type::I32, 0, 2, "param".to_string(), vec![false, false]);
+        let entry = param_cfg.new_block();
+        param_cfg.entry = entry;
+        let index = value(
+            &mut param_cfg,
+            entry,
+            CfgInstData::Param { index: 1 },
+            Type::U64,
+        );
+        let element = param_cfg
+            .append_place_read(
+                entry,
+                PlaceBase::Param(0),
+                holder_ty,
+                projections(index),
+                Type::I32,
+                span(),
+            )
+            .unwrap();
+        param_cfg.set_return(entry, Some(element));
+
+        for (cfg, shape) in [(&local_cfg, "local"), (&param_cfg, "by-value parameter")] {
+            let x86 = X86CfgLower::new_unchecked(cfg, &pool, &interner)
+                .lower()
+                .unwrap_or_else(|error| panic!("x86 {shape} field should lower: {error:?}"));
+            assert!(
+                x86.instructions().iter().any(|inst| matches!(
+                    inst,
+                    X86Inst::CallRel { symbol_id, .. }
+                        if x86.get_symbol(*symbol_id) == "__rue_bounds_check"
+                )),
+                "the {shape} field keeps its bounds trap edge"
+            );
+            assert!(
+                x86.instructions().iter().any(|inst| matches!(
+                    inst,
+                    X86Inst::MovRI64 { imm, .. } if *imm == ZERO_SIZED_PLACE_ADDR
+                )),
+                "the {shape} field is addressed at the canonical zero-sized address"
+            );
+            assert!(
+                !x86.instructions()
+                    .iter()
+                    .any(|inst| matches!(inst, X86Inst::Lea { .. })),
+                "a zero-length {shape} field must not form a frame address"
+            );
+
+            let arm = Aarch64CfgLower::new_unchecked(cfg, &pool, &interner, Target::Aarch64Linux)
+                .lower()
+                .unwrap_or_else(|error| panic!("AArch64 {shape} field should lower: {error:?}"));
+            assert!(
+                arm.instructions().iter().any(|inst| matches!(
+                    inst,
+                    Aarch64Inst::Bl { symbol_id, .. }
+                        if arm.get_symbol(*symbol_id) == "__rue_bounds_check"
+                )),
+                "the {shape} field keeps its bounds trap edge"
+            );
+            assert!(
+                arm.instructions().iter().any(|inst| matches!(
+                    inst,
+                    Aarch64Inst::MovImm { imm, .. } if *imm == ZERO_SIZED_PLACE_ADDR
+                )),
+                "the {shape} field is addressed at the canonical zero-sized address"
+            );
+            assert!(
+                !arm.instructions().iter().any(|inst| matches!(
+                    inst,
+                    Aarch64Inst::AddImm {
+                        src: Aarch64Operand::Physical(Aarch64Reg::Fp),
+                        ..
+                    }
+                )),
+                "a zero-length {shape} field must not form a frame address"
+            );
+        }
+    }
+
     /// Forming the address of a place with no storage yields
     /// [`ZERO_SIZED_PLACE_ADDR`] rather than frame slot arithmetic (RUE-605).
     ///
