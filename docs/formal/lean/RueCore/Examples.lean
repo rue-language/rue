@@ -502,6 +502,28 @@ def deepPath : Expr :=
   letIn false (mkStruct sNested [mkStruct sTwoAffine [resA (lit 1), resA (lit 2)], lit 3])
     (seq (drop (.proj (.proj (.var 0) 0) 1)) (lit 9))
 
+/-- Reinitialize a moved-out leaf two field steps deep: after `@drop(v.x0.x1)`
+the position is `⊘`, so (Assign) §5.2 over it runs §6.8's overwrite-drop on
+nothing and the stored value is owned again (`3.8:55`); the scope exit drops
+`v.x0.x0` and then the new leaf, in declaration order. The compiler ran the
+moved-out value's destructor a second time here and leaked the new one
+(RUE-2319). -/
+def reinitDeepPath : Expr :=
+  letIn true (mkStruct sNested [mkStruct sTwoAffine [resA (lit 1), resA (lit 2)], lit 3])
+    (seq (drop (.proj (.proj (.var 0) 0) 1))
+      (seq (assign (.proj (.proj (.var 0) 0) 1) (resA (lit 5))) (lit 9)))
+
+/-- Overwrite the **ancestor** of a moved-out leaf: after `@drop(v.x0.x1)`,
+assigning a whole new `S7` to `v.x0` runs §6.8's overwrite-drop over the old
+`v.x0`, whose §6.11 walk skips the `⊘` and drops only `v.x0.x0`; the new
+fields drop at scope exit. The compiler dropped the moved-out leaf again here
+(RUE-2319). -/
+def overwriteAboveHole : Expr :=
+  letIn true (mkStruct sNested [mkStruct sTwoAffine [resA (lit 1), resA (lit 2)], lit 3])
+    (seq (drop (.proj (.proj (.var 0) 0) 1))
+      (seq (assign (.proj (.var 0) 0) (mkStruct sTwoAffine [resA (lit 5), resA (lit 6)]))
+        (lit 9)))
+
 /-- The RUE-1591 idiom at a path: consume exactly the **linear** field of an
 infectious carrier and let the non-linear residue drop. §5.6's obligation is
 keyed on the residual state, so the scope exit is legal and the affine
@@ -2548,6 +2570,8 @@ def linearLostAtArrayElem : Program :=
 #eval run demoOps (prog tI64 partialMoveOneArm) demoFuel        -- ok: 9, dtors 1 then 2
 #eval run demoOps (prog tI64 partialMoveOtherArm) demoFuel      -- ok: 9, dtors 1 then 2
 #eval run demoOps (prog tI64 deepPath) demoFuel                 -- ok: 9, dtors 2 then 1
+#eval run demoOps (prog tI64 reinitDeepPath) demoFuel           -- ok: 9, dtors 2, 1, 5
+#eval run demoOps (prog tI64 overwriteAboveHole) demoFuel       -- ok: 9, dtors 2, 1, 5, 6
 #eval run demoOps (prog tI64 linearFieldResidue) demoFuel       -- ok: 9, dtors 1 then 2
 #eval run demoOps (prog tI64 joinWholeAgainstPartial) demoFuel  -- ok: 9, dtors 1 then 2
 #eval run demoOps linearLostAtCallArg demoFuel                  -- ok: 0, EMPTY trace
@@ -2592,6 +2616,8 @@ example : ProgramTyped (prog tI64 overwriteField) := checkProgram_sound (by rfl)
 example : ProgramTyped (prog tI64 partialMoveOneArm) := checkProgram_sound (by rfl)
 example : ProgramTyped (prog tI64 partialMoveOtherArm) := checkProgram_sound (by rfl)
 example : ProgramTyped (prog tI64 deepPath) := checkProgram_sound (by rfl)
+example : ProgramTyped (prog tI64 reinitDeepPath) := checkProgram_sound (by rfl)
+example : ProgramTyped (prog tI64 overwriteAboveHole) := checkProgram_sound (by rfl)
 example : ProgramTyped (prog tI64 linearFieldResidue) := checkProgram_sound (by rfl)
 example : ProgramTyped (prog tI64 joinWholeAgainstPartial) := checkProgram_sound (by rfl)
 
@@ -3338,6 +3364,30 @@ example : run demoOps (prog tI64 deepPath) demoFuel
          .drop 0 (.struct sNested
              [.struct sTwoAffine [.struct sAffine [c64 1], .hole], c64 3]),
          .dtor sAffine (.struct sAffine [c64 1])] := by rfl
+
+/-- A reinitialising assignment at that `⊘` two steps deep drops nothing
+(§6.8 over a hole), and the stored leaf is then dropped once, at scope exit,
+after its sibling (`3.8:55`, RUE-2319). -/
+example : run demoOps (prog tI64 reinitDeepPath) demoFuel
+    = .ok [.dead] (v64 9)
+        [.drop 0 (.struct sAffine [c64 2]), .dtor sAffine (.struct sAffine [c64 2]),
+         .drop 0 (.struct sNested
+             [.struct sTwoAffine [.struct sAffine [c64 1], .struct sAffine [c64 5]], c64 3]),
+         .dtor sAffine (.struct sAffine [c64 1]),
+         .dtor sAffine (.struct sAffine [c64 5])] := by rfl
+
+/-- The overwrite-drop of the hole's **parent** walks the old value with the
+same `⊘`-skip: only `v.x0.x0` is destroyed at the assignment, and the moved-out
+leaf is not dropped a second time (§6.8 runs §6.11, RUE-2319). -/
+example : run demoOps (prog tI64 overwriteAboveHole) demoFuel
+    = .ok [.dead] (v64 9)
+        [.drop 0 (.struct sAffine [c64 2]), .dtor sAffine (.struct sAffine [c64 2]),
+         .drop 0 (.struct sTwoAffine [.struct sAffine [c64 1], .hole]),
+         .dtor sAffine (.struct sAffine [c64 1]),
+         .drop 0 (.struct sNested
+             [.struct sTwoAffine [.struct sAffine [c64 5], .struct sAffine [c64 6]], c64 3]),
+         .dtor sAffine (.struct sAffine [c64 5]),
+         .dtor sAffine (.struct sAffine [c64 6])] := by rfl
 
 /-- A by-value parameter the callee never consumes is dropped at the frame
 pop ((D-Return-Value) §6.9), not at the caller. -/
