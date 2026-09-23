@@ -1878,6 +1878,23 @@ def enumMatchOneArm : Expr :=
         unitLit)
       (lit 7))
 
+/-- **Probe e2b.** The same one-arm `match` at the `Affine` enum `E0`, whose
+payload has a printing destructor, with both paths taken: the first value is
+matched on the `then` path (its payload binding drops `1` at the arm's end),
+the second is left on the `else` path and drops `2` at scope exit. §5.5's join
+sends each binding to `MovedOut`, which an `Affine` type allows, so the program
+is accepted and each payload drops exactly once. The compiler ICEd on this
+shape (RUE-2347): its CFG verifier did not see the drop flag the `match`
+clears before its switch as guarding the scope-exit drop. -/
+def enumMatchOneArmAffine : Expr :=
+  letIn false (mkEnum eAffineIdx 0 [resA (lit 1)])
+    (letIn false (mkEnum eAffineIdx 0 [resA (lit 2)])
+      (seq
+        (ite (boolLit true) («match» (use (.var 1)) [unitLit, unitLit]) unitLit)
+        (seq
+          (ite (boolLit false) («match» (use (.var 0)) [unitLit, unitLit]) unitLit)
+          (lit 9))))
+
 /-- **Probe e3.** An arm binds a `Linear` payload and leaves it: §5.6's check at
 the arm's end is the leak (E0406 on the binding), and it is `Typed.letIn`'s own
 premise read over a payload tuple (`6.3:17`). -/
@@ -2654,6 +2671,17 @@ the payload join over every variant, so the `Owned` side is residual and the
 join is ill-formed (`3.8:50`, `6.3:19`; the compiler reports E0443 — probe
 e2). -/
 example : checkProgram (enumProg tI64 enumMatchOneArm) = false := by rfl
+
+/-- The same join at the `Affine` enum `E0` is well-formed: `MovedOut` on one
+path and `Owned` on the other meet at `MovedOut`, which an `Affine` type
+allows (probe e2b). Each payload drops exactly once: the matched one's `1` at
+its arm's end, the unmatched one's `2` with its enum at scope exit, and nothing
+for the moved-out first binding. The compiler ICEd on it (RUE-2347). -/
+example : checkProgram (enumProg tI64 enumMatchOneArmAffine) = true := by rfl
+example : run demoOps (enumProg tI64 enumMatchOneArmAffine) demoFuel
+    = .ok [.dead, .dead, .dead] (v64 9)
+        [.drop 2 (cA 1), .dtor sAffine (cA 1),
+         .drop 1 (.enum eAffineIdx 0 [cA 2]), .dtor sAffine (cA 2)] := by rfl
 
 /-- (Match) §5.5's per-arm §5.6 obligation: an arm that binds a `Linear`
 payload and neither moves nor consumes it leaks (`6.3:17`, `3.8:32`; the

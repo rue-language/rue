@@ -477,6 +477,11 @@ def cases : List Case := [
     rules := ["(Match) §5.5", "(If) §5.5 join", "3.8:50", "6.3:19"],
     prog := Examples.enumProg Examples.tI64 Examples.enumMatchOneArm
     },
+  { name := "enum_match_one_arm_affine",
+    description := "An affine enum whose payload has a destructor, consumed by a match in one arm of an if and left live on the other, both paths taken: the §5.5 join sends each binding to MovedOut, which Affine allows, and each payload drops exactly once. The compiler ICEd on this (RUE-2347, E9000 in its CFG verifier); the case stays as the regression signal.",
+    rules := ["(Match) §5.5", "(If) §5.5 join", "3.9:2", "6.3:17"],
+    prog := Examples.enumProg Examples.tI64 Examples.enumMatchOneArmAffine
+    },
   { name := "enum_arm_leaks_payload",
     description := "An arm binds a linear payload and leaves it: §5.6's check at the arm's end is the leak (E0406 on the binding), and the machine refuses with linearLeak.",
     rules := ["(Match) §5.5", "§5.6 residual-linear leak check", "6.3:17", "3.8:32"],
