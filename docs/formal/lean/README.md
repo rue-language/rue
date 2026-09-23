@@ -90,12 +90,13 @@ the programs contain an array literal (96 of 200, 501 of 1,000), 56 and 300 an
 index form, 43 and 248 a dynamic one, and the bounds trap ends 14 and 71 runs.
 Each index is bound by a `let` before the form that uses it, because the
 compiler folds a literal index in a block to a constant one and rejects an
-out-of-range constant at compile time (E0902, `7.1:9`). Three generated shapes
-disagree with the compiler, and the module lists them: RUE-2344's read below a
-dynamic index after its field-reached array moved, the self-assignment
-`a[c] = a[c]` the compiler accepts on purpose (RUE-228) where `3.8:72` refuses
-it, and an internal compiler error at a dynamic index into a zero-length array
-field.
+out-of-range constant at compile time (E0902, `7.1:9`). The draw does not
+avoid the shapes of the array red seeds, so generated cases of them appear at
+the rates the module measures — the self-assignment `a[c] = a[c]` (one case at
+`--gen 200 --seed 7`, two at `--gen 1000 --seed 23`), a dynamic index into a
+zero-length array field (five at seed 23), RUE-2344's and RUE-2341's shapes
+more rarely — and each such case is a bridge disagreement to attribute by hand
+to RUE-2346, RUE-2345, RUE-2344 or RUE-2341, the way RUE-2335's shape is.
 
 A use or `@drop` is drawn through a struct declared `linear` exactly as through
 any other (RUE-2339), so the checker, not the draw, picks §4.2's declared-linear
@@ -124,7 +125,7 @@ program, the four views side by side, and the pair(s) that disagree, with a
 tally at the end; `--report-json` writes the same findings as JSON so two runs
 can be diffed. It exits non-zero when any disagreement exists.
 
-**The seed corpus is red on three cases, and that is the bridge working.**
+**The seed corpus is red on five cases, and that is the bridge working.**
 `i64_min_times_neg1` is `min_T * -1` at `i64`, which §6.4's (D-Arith-Trap),
 `3.1:6` and `8.1:3` all make an overflow trap and which the model traps on.
 The compiler's constant folder wraps it instead and the program exits 0 —
@@ -144,6 +145,13 @@ The model refuses it (E0480, `fully-owned` at `h.arr` fails). The compiler
 accepts it, because its E0480 check fires only when the root binding is an
 array, then runs the moved-out element's destructor twice and leaks the
 written value. That is RUE-2341.
+`array_elem_self_assign` is the fourth: `a[0] = a[0]` moves `a[0]` out on the
+right-hand side, so the model refuses the write into the holed array
+(`3.8:72`, E0480), while the compiler accepts it on purpose since RUE-228;
+which is right is a decision, RUE-2346. `array_zero_length_field_dyn_read` is
+the fifth: a dynamic-index read from a zero-length array field traps with
+`bounds` in the model and is an internal compiler error in code generation,
+RUE-2345.
 `array_write_after_destructure_via_field`, the constant-index form
 (`h.arr[0].x0 = …`), was red for the same reason until RUE-2344: the compiler
 now refuses it, because the write's base `h.arr[0]` is consumed, though with
