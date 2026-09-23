@@ -861,7 +861,10 @@ def dynUnit (D : Decls) (Γ : Scope) (den : Nat) (rhs : Scope → Ty → G Expr)
   | [] => return none
   | d₀ :: _ =>
       if !(← chance 1 den) then return none
-      let form ← weighted 0
+      -- `weighted` answers its default when every weight is zero, so the
+      -- default is a fourth form that draws nothing: a place whose root is not
+      -- `mut` and whose leaf is not `Copy` offers none of the three.
+      let form ← weighted 3
         [(if ws.isEmpty then 0 else 2, 0), (if rs.isEmpty then 0 else 2, 1),
           (if cs.isEmpty then 0 else 1, 2)]
       match form with
@@ -872,10 +875,10 @@ def dynUnit (D : Decls) (Γ : Scope) (den : Nat) (rhs : Scope → Ty → G Expr)
       | 1 =>
           let d ← pickDyn d₀ rs
           return some (← withIdx Γ d other (fun _ p idx => return dbg (indexRead p idx d.πs)))
-      | _ =>
-          if cs.isEmpty then return none
+      | 2 =>
           let d ← pickDyn d₀ cs
           return some (← withIdx Γ d other (fun _ p idx => return indexDrop p idx d.πs))
+      | _ => return none
 
 /-- (helper) Every place one or two steps under a binder in scope whose path
 takes a **constant index** step, with the type it holds: `a[c]`, `a[c].f`,
@@ -918,7 +921,7 @@ def arrayStmt (D : Decls) (Γ : Scope) (rhs : Scope → Ty → G Expr) (other : 
       | some (.array E n) => assignSlots D i (.array E n)
       | _ => [])
   let dflt : Place × Ty := (.var 0, .unit)
-  let form ← weighted 0
+  let form ← weighted 5
     [(if (dynPlaces D Γ).isEmpty then 0 else 3, 0), (if reads.isEmpty then 0 else 1, 1),
       (if drops.isEmpty then 0 else 1, 2), (if writes.isEmpty then 0 else 1, 3),
       (if moves.isEmpty then 0 else 1, 4)]
