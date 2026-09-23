@@ -5370,13 +5370,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             });
 
             // A write through an element of a partially moved array
-            // (`xs[0].f = ...` after an element of `xs` moved out) is
-            // rejected (RUE-186, E0480), like a direct element write.
+            // (`xs[0].f = ...` or `h.a[i].s = ...` after a part of `xs` or
+            // `h.a` moved out) is rejected (RUE-186, RUE-2341, E0480), like a
+            // direct element write.
             self.reject_write_into_partially_moved_array(&trace, ctx, span, None)?;
 
             // The base must still own its storage: `h.a[i].s = ...` after
             // `h.a` moved writes into a destroyed array (RUE-2344). A moved-out
-            // element of the root array is E0480 above, not this E0205.
+            // part of the array written through is E0480 above, not this E0205.
             self.reject_write_under_moved_place(trace.root_var, &base_path, ctx, span)?;
 
             // RUE-387: writing a live linear value's field would silently drop
@@ -5637,8 +5638,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
             // The array written into must still own its storage: `h.a[i] = ...`
             // after `h.a` moved writes into a destroyed array (RUE-2344). A
-            // moved-out element of the root array is E0480 above, not this
-            // E0205.
+            // moved-out part of the array written into is E0480 above, not
+            // this E0205.
             self.reject_write_under_moved_place(trace.root_var, &base_path, ctx, span)?;
 
             // RUE-387: writing a live linear value into an array element would
@@ -6816,10 +6817,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// base and its ancestors are checked; the destination itself may be
     /// moved, which is the reinitialization idiom (3.8:55), and the holes
     /// *below* an array are the partially-moved-array rule's to reject
-    /// (E0480, [`Self::reject_write_into_partially_moved_array`]). That rule
-    /// fires only when the array is the root binding today: a write into a
-    /// field-reached array that has a moved-out part is still accepted, and is
-    /// RUE-2341.
+    /// (E0480, [`Self::reject_write_into_partially_moved_array`]), which runs
+    /// first: a write into an array with a moved-out part reports E0480
+    /// wherever the array sits in the place tree.
     fn reject_write_under_moved_place(
         &self,
         root_var: Spur,
@@ -6896,15 +6896,30 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(())
     }
 
-    /// Reject a write into an array place while one or more of the root
-    /// array's elements are moved out (RUE-186, E0480). Re-arming
-    /// per-element ownership through an element (or through-element) write
-    /// is not supported in general — sema-side reinitialization and the
-    /// runtime drop flags would disagree — so the whole array must be
-    /// reinitialized instead. The sole exception is an immediate direct
-    /// same-element self-move, whose exact path is passed as `except_path` and
-    /// re-armed by the caller. Writes into arrays with no outstanding element
-    /// moves are unaffected.
+    /// Reject a write into an array that is not wholly owned (spec 3.8:71,
+    /// 3.8:72, 7.1:46; E0480; core §5.2's `assignArrayOk` on the destination's
+    /// `arrayPrefix`).
+    ///
+    /// The array checked is the *outermost* one the destination steps into,
+    /// wherever it sits in the place tree: the root binding for `xs[0].f`,
+    /// the field `h.a` for `h.a[i].s`, `h.w.a` for `h.w.a[0]`, and `g.m` (not
+    /// `g.m[0]`) for `g.m[0][i].s`. The write is rejected when any place
+    /// strictly below that array is moved out — an element, or a part of one
+    /// (`h.a[0].s`). Re-arming per-element ownership through an element (or
+    /// through-element) write is not supported — sema-side reinitialization
+    /// and the runtime drop flags would disagree, and the overwrite-drop
+    /// would run the moved-out part's destructor again — so the whole array
+    /// must be reinitialized instead (`h.a = [...]`, a write that does not
+    /// step into the array and so is not checked here).
+    ///
+    /// A move of the array itself or of an ancestor is not this rule's: the
+    /// write then lies under a moved place, which
+    /// [`Self::reject_write_under_moved_place`] rejects (E0205). This rule runs
+    /// first, so where both apply the hole below the array reports E0480.
+    ///
+    /// The sole exception is an immediate direct same-element self-move of a
+    /// root array (`a[c] = a[c]`), whose exact path is passed as `except_path`
+    /// and re-armed by the caller.
     fn reject_write_into_partially_moved_array(
         &self,
         trace: &PlaceTrace,
@@ -6912,14 +6927,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         except_path: Option<&[Spur]>,
     ) -> CompileResult<()> {
-        // The write must go through the root array (position-0 Index
-        // projection); element moves only exist for array roots.
-        if !matches!(
-            trace.projections.first().map(|p| &p.proj),
-            Some(AirProjection::Index { .. })
-        ) {
+        // The outermost array the destination steps into is the container
+        // of its first index projection. Every projection before that one is
+        // a field, so its move path is nameable.
+        let Some(first_index) = trace
+            .projections
+            .iter()
+            .position(|p| matches!(p.proj, AirProjection::Index { .. }))
+        else {
             return Ok(());
-        }
+        };
+        let Some(array_path) = trace.prefix_field_path(first_index) else {
+            return Ok(());
+        };
         let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) else {
             return Ok(());
         };
@@ -6927,19 +6947,22 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             if except_path.is_some_and(|except| p.as_slice() == except) {
                 return None;
             }
-            p.first()
-                .filter(|seg| is_index_segment(self.body_interner(), **seg))
-                .map(|_| *s)
+            (p.len() > array_path.len() && p[..array_path.len()] == array_path[..]).then_some(*s)
         });
         let Some(moved_span) = element_move_span else {
             return Ok(());
         };
-        let name = self.body_interner().resolve(&trace.root_var).to_string();
-        Err(
-            CompileError::new(ErrorKind::AssignToPartiallyMovedArray { array: name }, span)
-                .with_label("element moved out here", moved_span)
-                .with_help("reinitialize the whole array instead (`xs = [...]`)"),
+        let name = super::format_move_path(self.body_interner(), trace.root_var, &array_path);
+        Err(CompileError::new(
+            ErrorKind::AssignToPartiallyMovedArray {
+                array: name.clone(),
+            },
+            span,
         )
+        .with_label("element moved out here", moved_span)
+        .with_help(format!(
+            "reinitialize the whole array instead (`{name} = [...]`)"
+        )))
     }
 
     /// Return the path tracked by a direct constant-index array read, if any.
