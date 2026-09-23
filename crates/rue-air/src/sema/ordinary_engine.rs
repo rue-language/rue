@@ -26,7 +26,6 @@ use super::comptime::{
     ComptimeCallKey, ComptimeCallMemoLookup, ComptimeCompletedCallMemo, ComptimeMemoizedOutcome,
 };
 use super::context::{AnalysisContext, DivergenceKinds, ParamIndex, ParamInfo};
-use super::ownership_state::LoopHeadHints;
 use super::fact_mode::{
     ArrayLengthRequest, BodyAnalysisReadHost, ModulePrefixRequest, StructuredTypeSyntax,
     StructuredTypeSyntaxRequest, TypeSyntaxResult,
@@ -34,6 +33,7 @@ use super::fact_mode::{
 use super::info::{
     ConformanceAssertion, FunctionCallInfo, InterfaceFacts, MethodCallInfo, RequirementSignature,
 };
+use super::ownership_state::LoopHeadHints;
 use super::{
     AnalyzedBodyOwnerEvent, AnalyzedFunction, BodyAnalysisWork, ConstInfo, ConstValue,
     DeclarationTypeDependencyKind, DeclarationTypeDependencySourceKind, FunctionInfo,

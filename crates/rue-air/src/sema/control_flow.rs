@@ -1039,7 +1039,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // loop head. Break-only paths end at the loop exit and must not make
         // the back edge reject a move that runs at most once (RUE-1615).
         let backedge = if cond_result.continues {
-            reachable_backedge_moves(body_result.continues, &ctx.ownership.moved_vars, continue_moves)
+            reachable_backedge_moves(
+                body_result.continues,
+                &ctx.ownership.moved_vars,
+                continue_moves,
+            )
         } else {
             None
         };
@@ -1230,7 +1234,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         entry: AHashMap<Spur, VariableMoveState>,
         mut head: AHashMap<Spur, VariableMoveState>,
         first: LoopPassEdges,
-        mut pass: impl FnMut(&mut Self, &mut Air, &mut AnalysisContext<'a>) -> CompileResult<LoopPassEdges>,
+        mut pass: impl FnMut(
+            &mut Self,
+            &mut Air,
+            &mut AnalysisContext<'a>,
+        ) -> CompileResult<LoopPassEdges>,
     ) -> CompileResult<Option<AHashMap<Spur, VariableMoveState>>> {
         let mut edges = first;
         let mut rechecks = 0usize;
