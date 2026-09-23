@@ -74,6 +74,18 @@ namespace Explain
 The pieces every renderer shares: how a type, a value, a cell, a store, a
 context entry, and a drop event are spelled. -/
 
+/-- (helper) The dynamic tail `[e₁]π₁…[eₖ]πₖ` of a place below a dynamic
+index, on one line, from the rendered indices and the type of the part
+already printed (`Print.pathSuffix` spells each constant path). -/
+def dynTailLine (D : Decls) : Option Ty → List String → List (List Nat) → String
+  | T, s :: ss, π :: πs =>
+      let E := match T with
+        | some (.array E _) => some E
+        | _ => none
+      "[" ++ s ++ "]" ++ Print.pathSuffix D E π ++
+        dynTailLine D (E.bind fun E => E.atPath D π) ss πs
+  | _, _, _ => ""
+
 /-- (helper) A one-line rendering of a core expression, in the Rue surface
 syntax of `Print.expr` and with its `v<depth>` binder names, but with the
 block forms (`let`, assignment, sequencing, `if`) folded onto one line so a
@@ -122,10 +134,13 @@ partial def exprLine (P : Program) (R : Ty) : List Ty → Expr → String
   | Γ, .mkArray _ args =>
       "[" ++ String.intercalate ", " (args.map (fun a => exprLine P R Γ a)) ++ "]"
   | Γ, .repeatArray _ e n => "[" ++ exprLine P R Γ e ++ "; " ++ toString n ++ "]"
-  | Γ, .indexRead pl e => Print.place Γ pl ++ "[" ++ exprLine P R Γ e ++ "]"
-  | Γ, .indexWrite pl e₁ e₂ =>
-      "{ " ++ Print.place Γ pl ++ "[" ++ exprLine P R Γ e₁ ++ "] = " ++
-        exprLine P R Γ e₂ ++ "; }"
+  | Γ, .indexRead pl idx πs =>
+      Print.place Γ pl ++
+        dynTailLine P.decls (Print.placeTy P Γ pl) (idx.map (exprLine P R Γ)) πs
+  | Γ, .indexWrite pl idx πs e =>
+      "{ " ++ Print.place Γ pl ++
+        dynTailLine P.decls (Print.placeTy P Γ pl) (idx.map (exprLine P R Γ)) πs ++ " = " ++
+        exprLine P R Γ e ++ "; }"
   | Γ, .drop pl => "@drop(" ++ Print.place Γ pl ++ ")"
   | Γ, .letIn m e₁ e₂ =>
       let T₁ := (Print.tyOf P R Γ e₁).getD (.int .w64 .signed)
@@ -531,6 +546,14 @@ def elementNotCopy (T : Ty) : String :=
   "no rule there: the compiler cannot know which element a runtime index moved " ++
   "((Use-Untrackable-Dynamic-Copy) §5.1; 3.8:70, 7.1:28; the compiler reports E0904)"
 
+/-- The core form's own shape: a place below a dynamic index has one or more
+dynamic steps, each paired with the constant path after it. Elaboration never
+builds any other, so this is an ill-formed core term rather than a program
+the compiler would see. -/
+def dynShape : String :=
+  "the dynamic place has no dynamic step, or its index list and its constant-path " ++
+  "list do not pair up one to one (an ill-formed core term; elaboration never builds it)"
+
 /-- `3.8:70`/`7.1:45`: a non-constant index may not be used while an element is
 moved out, because the compiler cannot know whether it denotes a moved-out
 one. -/
@@ -798,6 +821,17 @@ partial def deepestFailure : Deriv → Option (String × Expr × List Ty × Stri
         | .reject why => some (r, e, binderTys Γ, why)
         | .accept _ _ => none
 
+/-- (helper) Why `Ty.atDyn` found no type for a dynamic tail: the first
+dynamic step taken at something other than an array (`4.11:3`), or a constant
+path that is not a path of the element it starts at. -/
+def dynAtFailure (D : Decls) : Ty → List (List Nat) → String
+  | .array E _, π :: πs =>
+      (match E.atPath D π with
+       | some T' => dynAtFailure D T' πs
+       | none => Premise.pathNotField)
+  | T, _ :: _ => Premise.notAnArray T
+  | _, [] => Premise.pathNotField
+
 /-- (helper) An accepting node. -/
 def accepted (rule : String) (Γ : Ctx) (e : Expr) (T : Ty) (Γ' : Ctx)
     (kids : List Deriv) : Deriv :=
@@ -1038,81 +1072,94 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
              rejected rule Γ (.repeatArray T e n) (Premise.repeatNotCopy T) [d]
            else rejected rule Γ (.repeatArray T e n) (Premise.elemTypeMismatch T' T) [d]
        | none => rejected rule Γ (.repeatArray T e n) Premise.subDerivation [d])
-  | .indexRead pl e =>
+  | .indexRead pl idx πs =>
       let rule := "(Use-Untrackable-Dynamic-Copy) §5.1"
-      let d := explain P R Γ e
-      (match d.result with
-       | some (.int _ _, Γ₁) =>
+      let ri := explainIdx P R Γ idx
+      (match ri.1 with
+       | none => rejected rule Γ (.indexRead pl idx πs) (idxPremise P R Γ idx) ri.2
+       | some (_, Γ₁) =>
          (match Γ₁[pl.root]? with
-          | none => rejected rule Γ (.indexRead pl e) Premise.unboundIndex [d]
+          | none => rejected rule Γ (.indexRead pl idx πs) Premise.unboundIndex ri.2
           | some en =>
             match en.st.get pl.path, en.ty.atPath P.decls pl.path with
-            | some u, some (.array T _) =>
-                if u.fullyOwned ∧ T.mult P.decls = .copy ∧
-                    declaredPrefix P.decls en.ty pl.path = none then
-                  accepted rule Γ (.indexRead pl e) T Γ₁ [d]
-                else if declaredPrefix P.decls en.ty pl.path ≠ none then
-                  rejected rule Γ (.indexRead pl e) Premise.declaredLinearPrefix [d]
-                else if !u.fullyOwned then
-                  rejected rule Γ (.indexRead pl e) Premise.indexPartiallyMoved [d]
-                else rejected rule Γ (.indexRead pl e) (Premise.elementNotCopy T) [d]
-            | some _, some T => rejected rule Γ (.indexRead pl e) (Premise.notAnArray T) [d]
-            | none, _ => rejected rule Γ (.indexRead pl e) Premise.pathUnderMoved [d]
-            | _, none => rejected rule Γ (.indexRead pl e) Premise.pathNotField [d])
-       | some (T, _) => rejected rule Γ (.indexRead pl e) (Premise.indexNotInt T) [d]
-       | none => rejected rule Γ (.indexRead pl e) Premise.subDerivation [d])
-  | .indexWrite pl e₁ e₂ =>
-      let rule := "(Assign) §5.2 at a dynamic index"
+            | some u, some Ta =>
+              (match Ta.atDyn P.decls πs with
+               | some T =>
+                   if idx.length = πs.length ∧ πs ≠ [] ∧ u.fullyOwned ∧
+                       T.mult P.decls = .copy ∧
+                       declaredPrefix P.decls en.ty pl.path = none ∧
+                       Ta.dynNoDeclared P.decls πs then
+                     accepted rule Γ (.indexRead pl idx πs) T Γ₁ ri.2
+                   else if ¬(idx.length = πs.length ∧ πs ≠ []) then
+                     rejected rule Γ (.indexRead pl idx πs) Premise.dynShape ri.2
+                   else if declaredPrefix P.decls en.ty pl.path ≠ none ∨
+                       !Ta.dynNoDeclared P.decls πs then
+                     rejected rule Γ (.indexRead pl idx πs) Premise.declaredLinearPrefix ri.2
+                   else if !u.fullyOwned then
+                     rejected rule Γ (.indexRead pl idx πs) Premise.indexPartiallyMoved ri.2
+                   else rejected rule Γ (.indexRead pl idx πs) (Premise.elementNotCopy T) ri.2
+               | none =>
+                   rejected rule Γ (.indexRead pl idx πs) (dynAtFailure P.decls Ta πs) ri.2)
+            | none, _ => rejected rule Γ (.indexRead pl idx πs) Premise.pathUnderMoved ri.2
+            | _, none => rejected rule Γ (.indexRead pl idx πs) Premise.pathNotField ri.2))
+  | .indexWrite pl idx πs e =>
+      let rule := "(Assign) §5.2 below a dynamic index"
       (match Γ[pl.root]? with
-       | none => rejected rule Γ (.indexWrite pl e₁ e₂) Premise.unboundIndex []
+       | none => rejected rule Γ (.indexWrite pl idx πs e) Premise.unboundIndex []
        | some en₀ =>
          if en₀.mu = true then
            match en₀.st.get pl.path, en₀.ty.atPath P.decls pl.path with
-           | some _, some (.array T _) =>
-               (let d₁ := explain P R Γ e₁
-                match d₁.result with
-                | some (.int _ _, Γ₁) =>
-                  (let d₂ := explain P R Γ₁ e₂
-                   match d₂.result with
-                   | some (T', Γ₂) =>
-                     if T' = T then
-                       (match Γ₂[pl.root]? with
-                        | some en₁ =>
-                          (match en₁.st.get pl.path with
-                           | some u₁ =>
-                               if u₁.fullyOwned ∧
-                                   assignArrayOk P.decls en₁.st en₁.ty pl.path ∧
-                                   overwriteOk P.decls u₁ T then
-                                 accepted rule Γ (.indexWrite pl e₁ e₂) .unit
-                                   (Γ₂.set pl.root (en₁.setSt (en₁.st.setAt pl.path .owned)))
-                                   [d₁, d₂]
-                               else if !u₁.fullyOwned then
-                                 rejected rule Γ (.indexWrite pl e₁ e₂)
-                                   Premise.indexPartiallyMoved [d₁, d₂]
-                               else if !assignArrayOk P.decls en₁.st en₁.ty pl.path then
-                                 rejected rule Γ (.indexWrite pl e₁ e₂)
-                                   Premise.assignIntoPartialArray [d₁, d₂]
-                               else
-                                 rejected rule Γ (.indexWrite pl e₁ e₂)
-                                   (Premise.linearOverwrite T) [d₁, d₂]
-                           | none =>
-                               rejected rule Γ (.indexWrite pl e₁ e₂)
-                                 Premise.assignTargetLost [d₁, d₂])
-                        | none =>
-                            rejected rule Γ (.indexWrite pl e₁ e₂)
-                              Premise.assignTargetLost [d₁, d₂])
-                     else
-                       rejected rule Γ (.indexWrite pl e₁ e₂)
-                         (Premise.assignTypeMismatch T' T) [d₁, d₂]
-                   | none =>
-                       rejected rule Γ (.indexWrite pl e₁ e₂) Premise.subDerivation [d₁, d₂])
-                | some (T', _) =>
-                    rejected rule Γ (.indexWrite pl e₁ e₂) (Premise.indexNotInt T') [d₁]
-                | none => rejected rule Γ (.indexWrite pl e₁ e₂) Premise.subDerivation [d₁])
-           | some _, some T => rejected rule Γ (.indexWrite pl e₁ e₂) (Premise.notAnArray T) []
-           | none, _ => rejected rule Γ (.indexWrite pl e₁ e₂) Premise.pathUnderMoved []
-           | _, none => rejected rule Γ (.indexWrite pl e₁ e₂) Premise.pathNotField []
-         else rejected rule Γ (.indexWrite pl e₁ e₂) Premise.notMutable [])
+           | some _, some Ta =>
+             (match Ta.atDyn P.decls πs with
+              | some T =>
+                (let d := explain P R Γ e
+                 match d.result with
+                 | some (T', Γ₁) =>
+                   if T' = T then
+                     (let ri := explainIdx P R Γ₁ idx
+                      match ri.1 with
+                      | some (_, Γ₂) =>
+                        (match Γ₂[pl.root]? with
+                         | some en₁ =>
+                           (match en₁.st.get pl.path with
+                            | some u₁ =>
+                                if idx.length = πs.length ∧ πs ≠ [] ∧ u₁.fullyOwned ∧
+                                    assignArrayOk P.decls en₁.st en₁.ty pl.path ∧
+                                    T.mult P.decls ≠ .linear then
+                                  accepted rule Γ (.indexWrite pl idx πs e) .unit
+                                    (Γ₂.set pl.root (en₁.setSt (en₁.st.setAt pl.path .owned)))
+                                    (d :: ri.2)
+                                else if ¬(idx.length = πs.length ∧ πs ≠ []) then
+                                  rejected rule Γ (.indexWrite pl idx πs e)
+                                    Premise.dynShape (d :: ri.2)
+                                else if !u₁.fullyOwned then
+                                  rejected rule Γ (.indexWrite pl idx πs e)
+                                    Premise.indexPartiallyMoved (d :: ri.2)
+                                else if !assignArrayOk P.decls en₁.st en₁.ty pl.path then
+                                  rejected rule Γ (.indexWrite pl idx πs e)
+                                    Premise.assignIntoPartialArray (d :: ri.2)
+                                else
+                                  rejected rule Γ (.indexWrite pl idx πs e)
+                                    (Premise.linearOverwrite T) (d :: ri.2)
+                            | none =>
+                                rejected rule Γ (.indexWrite pl idx πs e)
+                                  Premise.assignTargetLost (d :: ri.2))
+                         | none =>
+                             rejected rule Γ (.indexWrite pl idx πs e)
+                               Premise.assignTargetLost (d :: ri.2))
+                      | none =>
+                          rejected rule Γ (.indexWrite pl idx πs e)
+                            (idxPremise P R Γ₁ idx) (d :: ri.2))
+                   else
+                     rejected rule Γ (.indexWrite pl idx πs e)
+                       (Premise.assignTypeMismatch T' T) [d]
+                 | none =>
+                     rejected rule Γ (.indexWrite pl idx πs e) Premise.subDerivation [d])
+              | none =>
+                  rejected rule Γ (.indexWrite pl idx πs e) (dynAtFailure P.decls Ta πs) [])
+           | none, _ => rejected rule Γ (.indexWrite pl idx πs e) Premise.pathUnderMoved []
+           | _, none => rejected rule Γ (.indexWrite pl idx πs e) Premise.pathNotField []
+         else rejected rule Γ (.indexWrite pl idx πs e) Premise.notMutable [])
   | .drop pl =>
       match Γ[pl.root]? with
       | none => rejected "(@Drop-Copy)/(@Drop) §5.3" Γ (.drop pl) Premise.unboundIndex []
@@ -1293,6 +1340,31 @@ def explainArgs (P : Program) (R : Ty) : Ctx → List Expr → List Ty → Optio
            else (none, [d])
        | none => (none, [d]))
   | _, _, _ => (none, [])
+
+/-- The instrumented mirror of `checkIdx`: the index expressions'
+sub-derivations in evaluation order, and their integer types with the outgoing
+`Σ` when every one checked at an integer type (`4.11:4`). -/
+def explainIdx (P : Program) (R : Ty) : Ctx → List Expr → Option (List Ty × Ctx) × List Deriv
+  | Γ, [] => (some ([], Γ), [])
+  | Γ, e :: es =>
+      let d := explain P R Γ e
+      (match d.result with
+       | some (.int w s, Γ₁) =>
+           let rest := explainIdx P R Γ₁ es
+           ((match rest.1 with
+             | some (Ts, Γ₂) => some (.int w s :: Ts, Γ₂)
+             | none => none), d :: rest.2)
+       | _ => (none, [d]))
+
+/-- The premise a rejected index list failed: the first index whose
+derivation failed, or whose type is not an integer (`4.11:4`). -/
+def idxPremise (P : Program) (R : Ty) : Ctx → List Expr → String
+  | _, [] => Premise.subDerivation
+  | Γ, e :: es =>
+      (match (explain P R Γ e).result with
+       | some (.int _ _, Γ₁) => idxPremise P R Γ₁ es
+       | some (T, _) => Premise.indexNotInt T
+       | none => Premise.subDerivation)
 
 /-- The premise a rejected argument list failed: a count mismatch (`4.10:3`),
 or the first argument whose type is not its parameter's (`4.10:4`) — the two
@@ -1500,12 +1572,12 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
       simp only [explain, check, explain_result e]
       (repeat' split) <;>
         first | rfl | (simp_all [accepted, Deriv.result] <;> grind)
-  | .indexRead pl e, Γ => by
-      simp only [explain, check, explain_result e]
+  | .indexRead pl idx πs, Γ => by
+      simp only [explain, check, explainIdx_result idx]
       (repeat' split) <;>
         first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
-  | .indexWrite pl e₁ e₂, Γ => by
-      simp only [explain, check, explain_result e₁, explain_result e₂]
+  | .indexWrite pl idx πs e, Γ => by
+      simp only [explain, check, explain_result e, explainIdx_result idx]
       (repeat' split) <;>
         first | rfl | (simp_all [accepted, rejected, Deriv.result] <;> grind)
   | .drop pl, Γ => by
@@ -1567,6 +1639,23 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
   | .ret e, Γ => by
       simp only [explain, check, explain_result e]
       (repeat' split) <;> first | rfl | simp_all [accepted, Deriv.result]
+
+/-- **The index-list derivations are the checker's.** -/
+theorem explainIdx_result {P : Program} {R : Ty} : ∀ (es : List Expr) (Γ : Ctx),
+    (explainIdx P R Γ es).1 = checkIdx P R Γ es
+  | [], Γ => rfl
+  | e :: es, Γ => by
+      simp only [explainIdx, checkIdx, explain_result e]
+      cases hr : check P R Γ e with
+      | none => rfl
+      | some p =>
+        obtain ⟨T', Γ₁⟩ := p
+        cases T' with
+        | int w s =>
+            simp only []
+            rw [explainIdx_result es Γ₁]
+            rcases checkIdx P R Γ₁ es with _ | ⟨_, _⟩ <;> rfl
+        | float _ | bool | unit | struct _ | enum _ | array _ _ => rfl
 
 /-- **The argument-list derivations are the checker's** ((Call) §5.8). -/
 theorem explainArgs_result {P : Program} {R : Ty} : ∀ (es : List Expr) (Γ : Ctx) (Ts : List Ty),
@@ -2114,108 +2203,77 @@ def traceEval (M : FloatOps) (P : Program) :
              (.value (.array T (List.replicate n v)))
              (.ok H₁ (.array T (List.replicate n v)) tr)
        | r => propagate t.steps d Θ R (.repeatArray T e n) rule H r)
-  | fuel + 1, d, Θ, R, H, φ, .indexRead pl e =>
+  | fuel + 1, d, Θ, R, H, φ, .indexRead pl idx πs =>
       let rule := "(D-Index) §6.5"
-      let t := traceEval M P fuel (d + 1) Θ R H φ e
-      (match t.res with
-       | .ok H₁ iv tr =>
-         (match iv with
-          | .int _ _ i =>
-            (match φ.env[pl.root]? with
-             | none => refused t.steps d Θ R (.indexRead pl e) rule H .unbound
-             | some ℓ =>
-               match H₁[ℓ]? with
-               | none => refused t.steps d Θ R (.indexRead pl e) rule H .unbound
-               | some .dead => refused t.steps d Θ R (.indexRead pl e) rule H .useAfterDrop
-               | some (.full c) =>
-                 match c.readAt pl.path with
-                 | .error w => refused t.steps d Θ R (.indexRead pl e) rule H w
-                 | .ok sub =>
-                   match sub with
-                   | .array _ cs =>
-                       if inBoundsIdx i cs.length then
-                         (match cs[i.toNat]? with
-                          | none =>
-                              refused t.steps d Θ R (.indexRead pl e) rule H .typeConfusion
-                          | some ec =>
-                            match ec.toVal with
-                            | none =>
-                                refused t.steps d Θ R (.indexRead pl e) rule H .useAfterMove
-                            | some v =>
-                                traced t.steps d Θ R (.indexRead pl e) rule H H₁ []
-                                  (.value v) (.ok H₁ v tr))
-                       else
-                         traced t.steps d Θ R (.indexRead pl e)
-                           "(D-Index-Trap) §6.5 — the bounds trap of §6.12" H H₁ []
-                           (.panicked .bounds) (.panic .bounds tr)
-                   | _ => confused t.steps d Θ R (.indexRead pl e) rule H)
-          | _ => confused t.steps d Θ R (.indexRead pl e) rule H)
-       | r => propagate t.steps d Θ R (.indexRead pl e) rule H r)
-  | fuel + 1, d, Θ, R, H, φ, .indexWrite pl e₁ e₂ =>
-      let rule := "(D-Assign) §6.8 at a dynamic index"
-      let t₁ := traceEval M P fuel (d + 1) Θ R H φ e₁
+      let ta := traceArgs (fun H' e' => traceEval M P fuel (d + 1) Θ R H' φ e') H idx
+      (match ta.res with
+       | .abort r => didNotRun ta.steps d Θ R (.indexRead pl idx πs) rule H r
+       | .ok H₁ vs tr =>
+         match dynPlace H₁ φ pl vs πs with
+         | .stuck w => refused ta.steps d Θ R (.indexRead pl idx πs) rule H w
+         | .bounds =>
+             traced ta.steps d Θ R (.indexRead pl idx πs)
+               "(D-Index-Trap) §6.5 — the bounds trap of §6.12" H H₁ []
+               (.panicked .bounds) (.panic .bounds tr)
+         | .at _ _ sub ρ =>
+           match sub.readAt ρ with
+           | .error w => refused ta.steps d Θ R (.indexRead pl idx πs) rule H w
+           | .ok leaf =>
+             match leaf.toVal with
+             | none => refused ta.steps d Θ R (.indexRead pl idx πs) rule H .useAfterMove
+             | some v =>
+                 traced ta.steps d Θ R (.indexRead pl idx πs) rule H H₁ []
+                   (.value v) (.ok H₁ v tr))
+  | fuel + 1, d, Θ, R, H, φ, .indexWrite pl idx πs e =>
+      -- `5.2:14`'s order: the right-hand side's rows come first, then the
+      -- indices', then this node's own row.
+      let rule := "(D-Assign) §6.8 below a dynamic index"
+      let t₁ := traceEval M P fuel (d + 1) Θ R H φ e
       (match t₁.res with
-       | .ok H₁ iv tr₁ =>
-         let t₂ := traceEval M P fuel (d + 1) Θ R H₁ φ e₂
-         (match t₂.res with
-          | .ok H₂ v tr₂ =>
-            (match iv with
-             | .int _ _ i =>
-               (match φ.env[pl.root]? with
-                | none =>
-                    refused (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂) rule H .unbound
-                | some ℓ =>
-                  match H₂[ℓ]? with
-                  | none =>
-                      refused (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂) rule H .unbound
-                  | some .dead =>
-                      refused (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂) rule H
-                        .useAfterDrop
-                  | some (.full c) =>
-                    match c.readAt pl.path with
-                    | .error w =>
-                        refused (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂) rule H w
-                    | .ok sub =>
-                      match sub with
-                      | .array T' cs =>
-                          if inBoundsIdx i cs.length then
-                            (match cs[i.toNat]? with
-                             | none =>
-                                 refused (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂)
-                                   rule H .typeConfusion
-                             | some old =>
-                               if old.residualLinear P.decls then
-                                 refused (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂)
-                                   rule H .linearOverwrite
-                               else
-                                 match dropCell P.decls ℓ old with
-                                 | .error w =>
-                                     refused (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂)
-                                       rule H w
-                                 | .ok evs =>
-                                   match c.writeAt pl.path
-                                       (.array T' (cs.set i.toNat (Contents.ofVal v))) with
-                                   | none =>
-                                       refused (t₁.steps ++ t₂.steps) d Θ R
-                                         (.indexWrite pl e₁ e₂) rule H .typeConfusion
-                                   | some c' =>
-                                       traced (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂)
-                                         (if old.isHole then
-                                            rule ++ " (reinitialization, 3.8:55)"
-                                          else rule ++ " (overwrite-drop)")
-                                         H (H₂.set ℓ (.full c')) evs (.value .unit)
-                                         (.ok (H₂.set ℓ (.full c')) .unit (tr₁ ++ (tr₂ ++ evs))))
-                            else
-                              traced (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂)
-                                "(D-Index-Trap) §6.5 — the bounds trap of §6.12" H H₂ []
-                                (.panicked .bounds) (.panic .bounds (tr₁ ++ tr₂))
-                      | _ =>
-                          confused (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂) rule H)
-             | _ => confused (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂) rule H)
-          | r =>
-              propagate (t₁.steps ++ t₂.steps) d Θ R (.indexWrite pl e₁ e₂) rule H
+       | .ok H₁ v tr₁ =>
+         let ta := traceArgs (fun H' e' => traceEval M P fuel (d + 1) Θ R H' φ e') H₁ idx
+         (match ta.res with
+          | .ok H₂ vs tr₂ =>
+            (match dynPlace H₂ φ pl vs πs with
+             | .stuck w =>
+                 refused (t₁.steps ++ ta.steps) d Θ R (.indexWrite pl idx πs e) rule H w
+             | .bounds =>
+                 traced (t₁.steps ++ ta.steps) d Θ R (.indexWrite pl idx πs e)
+                   "(D-Index-Trap) §6.5 — the bounds trap of §6.12" H H₂ []
+                   (.panicked .bounds) (.panic .bounds (tr₁ ++ tr₂))
+             | .at ℓ c sub ρ =>
+               match sub.readAt ρ with
+               | .error w =>
+                   refused (t₁.steps ++ ta.steps) d Θ R (.indexWrite pl idx πs e) rule H w
+               | .ok old =>
+                 if old.residualLinear P.decls then
+                   refused (t₁.steps ++ ta.steps) d Θ R (.indexWrite pl idx πs e)
+                     rule H .linearOverwrite
+                 else
+                   match dropCell P.decls ℓ old with
+                   | .error w =>
+                       refused (t₁.steps ++ ta.steps) d Θ R (.indexWrite pl idx πs e) rule H w
+                   | .ok evs =>
+                     match sub.writeAt ρ (Contents.ofVal v) with
+                     | none =>
+                         refused (t₁.steps ++ ta.steps) d Θ R (.indexWrite pl idx πs e)
+                           rule H .typeConfusion
+                     | some sub' =>
+                       match c.writeAt pl.path sub' with
+                       | none =>
+                           refused (t₁.steps ++ ta.steps) d Θ R (.indexWrite pl idx πs e)
+                             rule H .typeConfusion
+                       | some c' =>
+                           traced (t₁.steps ++ ta.steps) d Θ R (.indexWrite pl idx πs e)
+                             (if old.isHole then
+                                rule ++ " (reinitialization, 3.8:55)"
+                              else rule ++ " (overwrite-drop)")
+                             H (H₂.set ℓ (.full c')) evs (.value .unit)
+                             (.ok (H₂.set ℓ (.full c')) .unit (tr₁ ++ (tr₂ ++ evs))))
+          | .abort r =>
+              didNotRun (t₁.steps ++ ta.steps) d Θ R (.indexWrite pl idx πs e) rule H
                 (r.withTrace tr₁))
-       | r => propagate t₁.steps d Θ R (.indexWrite pl e₁ e₂) rule H r)
+       | r => propagate t₁.steps d Θ R (.indexWrite pl idx πs e) rule H r)
   | fuel + 1, d, Θ, R, H, φ, .letIn m e₁ e₂ =>
       let t₁ := traceEval M P fuel (d + 1) Θ R H φ e₁
       match t₁.res with
@@ -2442,15 +2500,17 @@ theorem traceEval_res (M : FloatOps) {P : Program} : ∀ (fuel : Nat) (d : Nat) 
           simp only [traceEval, eval, EvalRes.andThen, ih]
           (repeat' split) <;>
             first | rfl | (simp_all [traced, EvalRes.withTrace] <;> grind)
-      | indexRead pl e₁ =>
-          simp only [traceEval, eval, EvalRes.andThen, ih]
+      | indexRead pl idx πs =>
+          simp only [traceEval, eval,
+            traceArgs_res (ev := fun H' e' => eval M fuel P H' φ e') (fun H' e' => ih _ _ _ _ _ e')]
           (repeat' split) <;>
-            first | rfl | (simp_all [traced, confused, refused,
+            first | rfl | (simp_all [traced, didNotRun, refused,
               EvalRes.withTrace] <;> grind)
-      | indexWrite pl e₁ e₂ =>
-          simp only [traceEval, eval, EvalRes.andThen, ih]
+      | indexWrite pl idx πs e₁ =>
+          simp only [traceEval, eval, EvalRes.andThen, ih,
+            traceArgs_res (ev := fun H' e' => eval M fuel P H' φ e') (fun H' e' => ih _ _ _ _ _ e')]
           (repeat' split) <;>
-            first | rfl | (simp_all [traced, confused, refused, propagate, didNotRun,
+            first | rfl | (simp_all [traced, refused, didNotRun,
               EvalRes.withTrace] <;> grind)
       | letIn m e₁ e₂ =>
           simp only [traceEval, eval, EvalRes.andThen, ih]

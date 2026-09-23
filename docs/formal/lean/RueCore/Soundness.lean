@@ -2347,6 +2347,114 @@ theorem matches_mintParams_app {D : Decls} :
             List.append_assoc, List.singleton_append]
           exact ih
 
+/-! ## Places below a dynamic index
+
+A dynamic form resolves, at run time, to an ordinary constant path under the
+array place `p` its first dynamic step indexes (`Contents.resolveDyn`,
+`Dynamics.lean`). The lemmas below are what make that resolution safe: under a
+`fully-owned` `p`, every dynamic step is taken at a hole-free array of the
+length its type names, so each step either traps on the bound or lands on an
+element `ContentsMatches` covers, and the resolved path is typed at the leaf. -/
+
+/-- An `Owned` node owns every path under it, and each of them is `Owned`
+(helper). -/
+theorem OwnSt.get_owned : ∀ π : List Nat, OwnSt.get .owned π = some .owned
+  | [] => rfl
+  | _ :: π => OwnSt.get_owned π
+
+/-- Writing a fully-owned state into a fresh field record pads with `owned`
+slots, so the record is fully owned (helper). -/
+theorem OwnSt.fullyOwnedList_setField_nil : ∀ (f : Nat) {u : OwnSt}, u.fullyOwned = true →
+    OwnSt.fullyOwnedList (OwnSt.setField [] f u) = true
+  | 0, u, h => by simp [OwnSt.setField, OwnSt.fullyOwnedList, h]
+  | f + 1, u, h => by
+      simp only [OwnSt.setField, OwnSt.fullyOwnedList, OwnSt.fullyOwned, Bool.true_and]
+      exact OwnSt.fullyOwnedList_setField_nil f h
+
+/-- Writing `Owned` anywhere under an `Owned` node leaves it fully owned: the
+state a whole-array reinitialization of an element's sub-position leaves
+(helper). -/
+theorem OwnSt.fullyOwned_setAt_owned : ∀ π : List Nat,
+    (OwnSt.setAt .owned π .owned).fullyOwned = true
+  | [] => rfl
+  | f :: π => by
+      simp only [OwnSt.setAt, OwnSt.fullyOwned]
+      exact OwnSt.fullyOwnedList_setField_nil f (OwnSt.fullyOwned_setAt_owned π)
+
+/-- A typed expression list has one type per member (helper). -/
+theorem TypedArgs.length_eq {P : Program} {R : Ty} : ∀ {es : List Expr} {Ts : List Ty}
+    {Γ Γ' : Ctx}, TypedArgs P R Γ es Ts Γ' → es.length = Ts.length
+  | [], _, _, _, h => by cases h; rfl
+  | _ :: _, _, _, _, h => by
+      cases h with
+      | cons _ h' => simp only [List.length_cons, TypedArgs.length_eq h']
+
+/-- Index values typed at integer types are integers, one per value (helper). -/
+theorem Val.ints_of_hasTys {D : Decls} : ∀ {vs : List Val} {Ts : List Ty},
+    HasTys D vs Ts → Ts.all Ty.isInt = true →
+      ∃ is, Val.ints vs = some is ∧ is.length = vs.length
+  | [], _, _, _ => ⟨[], rfl, rfl⟩
+  | _ :: _, _, .cons (T := T) hv hvs, hall => by
+      simp only [List.all_cons, Bool.and_eq_true] at hall
+      obtain ⟨hT, hrest⟩ := hall
+      cases T with
+      | int w s =>
+          obtain ⟨n, rfl, _⟩ := hv.int_inv
+          obtain ⟨is, his, hlen⟩ := Val.ints_of_hasTys hvs hrest
+          exact ⟨n :: is, by simp [Val.ints, his], by simp [hlen]⟩
+      | float _ | bool | unit | struct _ | enum _ | array _ _ => simp [Ty.isInt] at hT
+
+/-- **A dynamic tail under a whole, well-typed array place either traps on a
+bound or resolves to a constant path typed at the leaf** (§6.5's
+(D-Index)/(D-Index-Trap), `7.1:10`). Never a refusal: every dynamic step is
+taken at an array (`Ty.atDyn`), the array's length is its type's
+(`ContentsMatches.owned_array`), and an element of an `Owned` array is
+`Owned`, so the constant path after it reads by `ContentsMatches.readAt`
+(helper). -/
+theorem Contents.resolveDyn_ok {D : Decls} : ∀ (is : List Int) (πs : List (List Nat))
+    {c : Contents} {Ta T : Ty}, ContentsMatches D c .owned Ta → Ta.atDyn D πs = some T →
+    is.length = πs.length →
+      c.resolveDyn is πs = .bounds ∨ ∃ ρ, c.resolveDyn is πs = .ok ρ ∧ Ta.atPath D ρ = some T
+  | [], [], c, Ta, T, _, hdyn, _ => by
+      simp only [Ty.atDyn, Option.some.injEq] at hdyn
+      subst hdyn
+      exact Or.inr ⟨[], by cases c <;> rfl, rfl⟩
+  | [], _ :: _, _, _, _, _, _, hlen => by simp at hlen
+  | _ :: _, [], _, _, _, _, _, hlen => by simp at hlen
+  | i :: is, π :: πs, c, Ta, T, hm, hdyn, hlen => by
+      cases Ta with
+      | int _ _ | float _ | bool | unit | struct _ | enum _ => simp [Ty.atDyn] at hdyn
+      | array E n =>
+        simp only [Ty.atDyn] at hdyn
+        cases hE : E.atPath D π with
+        | none => simp [hE] at hdyn
+        | some T₁ =>
+          simp only [hE] at hdyn
+          obtain ⟨cs, rfl, hl⟩ := ContentsMatches.owned_array hm
+          have hcl : cs.length = n := by
+            simpa only [List.length_replicate] using hl.contentsTys.length_eq
+          by_cases hb : inBoundsIdx i cs.length = true
+          · obtain ⟨hi0, hin⟩ := inBoundsIdx_eq_true.mp hb
+            have hlt : i.toNat < n := by omega
+            have hTe : (List.replicate n E)[i.toNat]? = some E := by
+              rw [List.getElem?_eq_getElem (by simp only [List.length_replicate]; omega)]
+              simp
+            obtain ⟨ce, hce, hme⟩ := ContentsMatchesList.index i.toNat hl hTe
+            have hme' : ContentsMatches D ce .owned E := by
+              simpa only [OwnSt.fieldAt, List.getElem?_nil, Option.getD_none] using hme
+            obtain ⟨c', hr', hm'⟩ := ContentsMatches.readAt π hme' (OwnSt.get_owned π) hE
+            have hlen' : is.length = πs.length := by simpa using hlen
+            rcases Contents.resolveDyn_ok is πs hm' hdyn hlen' with hb' | ⟨ρ, hres, hty⟩
+            · left
+              simp [Contents.resolveDyn, hb, hce, hr', hb']
+            · right
+              refine ⟨i.toNat :: (π ++ ρ), by simp [Contents.resolveDyn, hb, hce, hr', hres], ?_⟩
+              simp only [Ty.atPath, Ty.fieldAt, if_pos hlt]
+              rw [Ty.atPath_append, hE]
+              simpa using hty
+          · left
+            simp [Contents.resolveDyn, hb]
+
 /-! ## What soundness promises about one evaluation -/
 
 /-- The promise for an evaluation that does **not** produce a value here: an
@@ -2849,103 +2957,103 @@ theorem soundness (M : FloatModel) {P : Program} (hwf : WfProgram P) :
           refine EvalOk.bind (ih h hfm) ?_
           intro H' v tr _ hty hfm'
           exact ⟨.array (HasTys.replicate hty n), hfm', Untouched.refl⟩
-      | @indexRead Γ Γ₁ p e en u T n w sg h hget hg hfo hty hcopy _ =>
-          -- (D-Index)/(D-Index-Trap) §6.5: the index reduces first (§6.2's
-          -- `v[E]`), the place is navigated, and the bound is tested before
-          -- the element is read (`7.1:10`). Out of range the machine **traps**
-          -- — a defined outcome `EvalOk` permits, not a refusal — and in range
-          -- the element is a hole-free well-typed contents, because
-          -- `fully-owned(Σ, p)` says the array has no hole in it.
+      | @indexRead Γ Γ₁ p idx πs Ts en u Ta T hta hint hlen _ hget hg hfo hty hdyn _ _ _ =>
+          -- (D-Index)/(D-Index-Trap) §6.5: the indices reduce first, left to
+          -- right (§6.2's `v[E]`), the place is navigated, and each bound is
+          -- tested at its step before the leaf is read (`7.1:10`). Out of
+          -- range the machine **traps** — a defined outcome `EvalOk` permits,
+          -- not a refusal — and in range the leaf is a hole-free well-typed
+          -- contents, because `fully-owned(Σ, p)` says the array has no hole
+          -- in it (`Contents.resolveDyn_ok`).
           simp only [eval]
-          refine EvalOk.bind (ih h hfm) ?_
-          intro H₁ iv tr _ htyi hfm₁
-          obtain ⟨i, rfl, _⟩ := htyi.int_inv
-          obtain ⟨ℓ, cell, hρ, hc, hcm⟩ := hfm₁.store.lookup hget
-          obtain ⟨cc, rfl, hmm⟩ := hcm
-          obtain ⟨sub, hread, hsub⟩ := ContentsMatches.readAt p.path hmm hg hty
-          obtain ⟨cs, rfl, hcts⟩ := ContentsTy.array_shape hsub.contentsTy (hsub.holeFree hfo)
-          have hfl : Contents.holeFreeList cs = true := by
-            simpa only [Contents.holeFree] using hsub.holeFree hfo
-          have hlen : cs.length = n := by
-            simpa only [List.length_replicate] using hcts.length_eq
-          simp only [hρ, hc, hread]
-          by_cases hb : inBoundsIdx i cs.length = true
-          · obtain ⟨hi0, hin⟩ := inBoundsIdx_eq_true.mp hb
-            simp only [if_pos hb]
-            cases hec : cs[i.toNat]? with
-            | none => exact absurd (List.getElem?_eq_none_iff.mp hec) (by omega)
-            | some ec =>
-                have hTe : (List.replicate n T)[i.toNat]? = some T := by
-                  rw [List.getElem?_eq_getElem (by simp only [List.length_replicate]; omega)]
-                  simp
-                obtain ⟨ec', hec', hcty⟩ := ContentsTys.index i.toNat hcts hTe
-                have hsame : ec' = ec := by rw [hec'] at hec; cases hec; rfl
-                subst hsame
-                obtain ⟨v, hv, htyv⟩ := hcty.toVal (Contents.holeFreeList_index hfl hec')
-                simp only [hv]
-                exact ⟨htyv, hfm₁, Untouched.refl⟩
-          · simp only [if_neg hb]
-            trivial
-      | @indexWrite Γ Γ₁ Γ₂ p e₁ e₂ en₀ en₁ u₀ u₁ T n w sg hget₀ hmut hg₀ hty₀
-          h₁ h₂ hget₁ hg₁ hfo _ hover =>
-          -- (D-Assign) §6.8 at a dynamic index: index, then right-hand side
-          -- (§6.2), then the bounds check where the path is navigated. The
-          -- overwrite-drop of the old element runs its glue, and the
-          -- `linearOverwrite` monitor lets it through because (Assign)'s own
-          -- `overwriteOk` premise says the element type carries no linear
-          -- value — `fully-owned(Σ, p)` rules the `MovedOut` disjunct out.
-          have hnlin : T.mult P.decls ≠ .linear := by
-            rcases hover with rfl | hnl
-            · simp [OwnSt.fullyOwned] at hfo
-            · exact hnl
+          have ka := hargs idx hta hfm
+          cases hra : evalArgs (fun H' e => eval M.toFloatOps fuel P H' φ e) H idx with
+          | abort r =>
+              rw [hra] at ka
+              dsimp only
+              exact EvalOk.of_abort ka
+          | ok H₁ vs tr =>
+              rw [hra] at ka
+              obtain ⟨hvs, hfm₁, hu₁⟩ := ka
+              dsimp only
+              obtain ⟨is, his, hislen⟩ := Val.ints_of_hasTys hvs hint
+              have hlen' : is.length = πs.length := by
+                rw [hislen, hvs.length_eq, ← hta.length_eq, hlen]
+              obtain ⟨ℓ, cell, hρ, hc, hcm⟩ := hfm₁.store.lookup hget
+              obtain ⟨cc, rfl, hmm⟩ := hcm
+              obtain ⟨sub, hread, hsub⟩ := ContentsMatches.readAt p.path hmm hg hty
+              have hso : ContentsMatches P.decls sub .owned Ta :=
+                .owned hsub.contentsTy (hsub.holeFree hfo)
+              refine EvalOk.withTrace ?_ tr
+              rcases Contents.resolveDyn_ok is πs hso hdyn hlen' with hb | ⟨ρ, hres, hρty⟩
+              · have hdp : dynPlace H₁ φ p vs πs = .bounds := by
+                  simp [dynPlace, his, hρ, hc, hread, hb]
+                simp only [hdp]
+                trivial
+              · have hdp : dynPlace H₁ φ p vs πs = .at ℓ cc sub ρ := by
+                  simp [dynPlace, his, hρ, hc, hread, hres]
+                obtain ⟨leaf, hrl, hleaf⟩ :=
+                  ContentsMatches.readAt ρ hso (OwnSt.get_owned ρ) hρty
+                obtain ⟨v, hv, htyv⟩ := hleaf.toVal rfl
+                simp only [hdp, hrl, hv]
+                exact ⟨htyv, hfm₁, hu₁⟩
+      | @indexWrite Γ Γ₁ Γ₂ p idx πs e en₀ en₁ u₀ u₁ Ts Ta T hget₀ hmut hg₀ hty₀ hdyn hlen _
+          h₁ hta hint hget₁ hg₁ hfo _ hnlin =>
+          -- (D-Assign) §6.8 below a dynamic index, in `5.2:14`'s order: the
+          -- right-hand side, then the indices, then the bounds checks where
+          -- the path is navigated. The overwrite-drop of the old leaf runs its
+          -- glue, and the `linearOverwrite` monitor lets it through because
+          -- (Assign)'s own premise says the leaf type carries no linear
+          -- value. The store writes the leaf into the whole array `p` and the
+          -- array back into the cell, and the array stays `Owned` whole —
+          -- which is `Σ1[p ↦ Owned]`.
           simp only [eval]
           refine EvalOk.bind (ih h₁ hfm) ?_
-          intro H₁ iv tr₁ _ htyi hfm₁
-          obtain ⟨i, rfl, _⟩ := htyi.int_inv
-          refine EvalOk.bind (ih h₂ hfm₁) ?_
-          intro H₂ v tr₂ _ htyv hfm₂
-          obtain ⟨ℓ, cell, hρ, hc, hcm⟩ := hfm₂.store.lookup hget₁
-          obtain ⟨cc, rfl, hmm⟩ := hcm
-          have hskel : Ctx.skel Γ₂ = Ctx.skel Γ := h₂.skel_preserved.trans h₁.skel_preserved
-          have htyeq : en₁.ty = en₀.ty := (skel_lookup hskel hget₀ hget₁).1
-          obtain ⟨sub, hread, hsub⟩ :=
-            ContentsMatches.readAt p.path hmm hg₁ (htyeq ▸ hty₀)
-          obtain ⟨cs, rfl, hcts⟩ := ContentsTy.array_shape hsub.contentsTy (hsub.holeFree hfo)
-          have hfl : Contents.holeFreeList cs = true := by
-            simpa only [Contents.holeFree] using hsub.holeFree hfo
-          have hlen : cs.length = n := by
-            simpa only [List.length_replicate] using hcts.length_eq
-          have hmem : ℓ ∈ φ.env := List.mem_of_getElem? hρ
-          simp only [hρ, hc, hread]
-          by_cases hb : inBoundsIdx i cs.length = true
-          · obtain ⟨hi0, hin⟩ := inBoundsIdx_eq_true.mp hb
-            simp only [if_pos hb]
-            cases hec : cs[i.toNat]? with
-            | none => exact absurd (List.getElem?_eq_none_iff.mp hec) (by omega)
-            | some old =>
-                have hTe : (List.replicate n T)[i.toNat]? = some T := by
-                  rw [List.getElem?_eq_getElem (by simp only [List.length_replicate]; omega)]
-                  simp
-                obtain ⟨old', hold', hocty⟩ := ContentsTys.index i.toNat hcts hTe
-                have hsame : old' = old := by rw [hold'] at hec; cases hec; rfl
-                subst hsame
-                have hnl : Contents.residualLinear P.decls old' = false :=
-                  ContentsTy.residualLinear_false hwf.decls hocty hnlin
-                obtain ⟨evs, hdc⟩ := dropCell_ok (D := P.decls) (ℓ := ℓ) hocty
-                obtain ⟨cc', hw, hmm'⟩ := ContentsMatches.writeAt p.path hmm hg₁
-                  (htyeq ▸ hty₀)
-                  (ContentsMatches.owned
-                    (.array (ContentsTys.set i.toNat hcts hTe htyv.contentsTy))
-                    (by
-                      show Contents.holeFreeList _ = true
-                      exact Contents.holeFreeList_set cs i.toNat hfl
-                        (Contents.holeFree_ofVal v)))
-                simp only [hnl, Bool.false_eq_true, if_neg, hdc, hw,
-                  not_false_eq_true]
+          intro H₁ v tr₁ _ htyv hfm₁
+          have ka := hargs idx hta hfm₁
+          cases hra : evalArgs (fun H' e' => eval M.toFloatOps fuel P H' φ e') H₁ idx with
+          | abort r =>
+              rw [hra] at ka
+              dsimp only
+              exact EvalOk.of_abort ka
+          | ok H₂ vs tr =>
+              rw [hra] at ka
+              obtain ⟨hvs, hfm₂, hu₂⟩ := ka
+              dsimp only
+              obtain ⟨is, his, hislen⟩ := Val.ints_of_hasTys hvs hint
+              have hlen' : is.length = πs.length := by
+                rw [hislen, hvs.length_eq, ← hta.length_eq, hlen]
+              obtain ⟨ℓ, cell, hρ, hc, hcm⟩ := hfm₂.store.lookup hget₁
+              obtain ⟨cc, rfl, hmm⟩ := hcm
+              have hskel : Ctx.skel Γ₂ = Ctx.skel Γ :=
+                (TypedArgs.skel_preserved hta).trans h₁.skel_preserved
+              have htyeq : en₁.ty = en₀.ty := (skel_lookup hskel hget₀ hget₁).1
+              have hty₁ : en₁.ty.atPath P.decls p.path = some Ta := htyeq ▸ hty₀
+              obtain ⟨sub, hread, hsub⟩ := ContentsMatches.readAt p.path hmm hg₁ hty₁
+              have hso : ContentsMatches P.decls sub .owned Ta :=
+                .owned hsub.contentsTy (hsub.holeFree hfo)
+              have hmem : ℓ ∈ φ.env := List.mem_of_getElem? hρ
+              refine EvalOk.withTrace ?_ tr
+              rcases Contents.resolveDyn_ok is πs hso hdyn hlen' with hb | ⟨ρ, hres, hρty⟩
+              · have hdp : dynPlace H₂ φ p vs πs = .bounds := by
+                  simp [dynPlace, his, hρ, hc, hread, hb]
+                simp only [hdp]
+                trivial
+              · have hdp : dynPlace H₂ φ p vs πs = .at ℓ cc sub ρ := by
+                  simp [dynPlace, his, hρ, hc, hread, hres]
+                obtain ⟨old, hrl, hold⟩ :=
+                  ContentsMatches.readAt ρ hso (OwnSt.get_owned ρ) hρty
+                have hnl : Contents.residualLinear P.decls old = false :=
+                  ContentsTy.residualLinear_false hwf.decls hold.contentsTy hnlin
+                obtain ⟨evs, hdc⟩ := dropCell_ok (D := P.decls) (ℓ := ℓ) hold.contentsTy
+                obtain ⟨sub', hw', hm'⟩ := ContentsMatches.writeAt ρ hso (OwnSt.get_owned ρ)
+                  hρty (ContentsMatches.ofVal htyv)
+                have hso' : ContentsMatches P.decls sub' .owned Ta :=
+                  .owned hm'.contentsTy (hm'.holeFree (OwnSt.fullyOwned_setAt_owned ρ))
+                obtain ⟨cc', hw, hmm'⟩ := ContentsMatches.writeAt p.path hmm hg₁ hty₁ hso'
+                simp only [hdp, hrl, hnl, Bool.false_eq_true, if_false, hdc, hw', hw]
                 exact ⟨.unit, ⟨hfm₂.store.set hρ ⟨cc', rfl, hmm'⟩, hfm₂.record⟩,
-                  Untouched.trans_set Untouched.refl (Or.inr hmem)⟩
-          · simp only [if_neg hb]
-            trivial
+                  Untouched.trans_set hu₂ (Or.inr hmem)⟩
       | @dropCopy Γ pl en u T hget hg hfo hty hcopy hplan =>
           obtain ⟨ℓ, cell, hρ, hc, hcm⟩ := hfm.store.lookup hget
           obtain ⟨cc, rfl, hmm⟩ := hcm
@@ -3346,18 +3454,23 @@ theorem eval_succ (M : FloatOps) {P : Program} : ∀ (fuel : Nat) (H : Store) (�
           refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
           intro H₁ v tr _ _
           rfl
-      | indexRead pl e₁ =>
-          simp only [eval] at h ⊢
-          refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
-          intro H₁ v tr _ _
-          rfl
-      | indexWrite pl e₁ e₂ =>
+      | indexRead pl idx πs =>
+          have hargs : evalArgs (fun H' e' => eval M n P H' φ e') H idx ≠ .abort .outOfFuel := by
+            intro hc
+            simp only [eval, hc] at h
+            exact h rfl
+          have heq := evalArgs_mono (fun H' e' hne => ih H' φ e' hne) H idx hargs
+          simp only [eval, heq]
+      | indexWrite pl idx πs e₁ =>
           simp only [eval] at h ⊢
           refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h
           intro H₁ v tr _ hkne
-          refine EvalRes.andThen_mono (fun hne => ih H₁ φ e₂ hne) ?_ hkne
-          intro H₂ v₂ tr₂ _ _
-          rfl
+          have hargs : evalArgs (fun H' e' => eval M n P H' φ e') H₁ idx ≠ .abort .outOfFuel := by
+            intro hc
+            simp only [hc] at hkne
+            exact hkne rfl
+          have heq := evalArgs_mono (fun H' e' hne => ih H' φ e' hne) H₁ idx hargs
+          simp only [heq]
       | letIn m e₁ e₂ =>
           simp only [eval] at h ⊢
           refine EvalRes.andThen_mono (fun hne => ih H φ e₁ hne) ?_ h

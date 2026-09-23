@@ -716,6 +716,44 @@ theorem declaredPrefix_split (D : Decls) : ∀ (T : Ty) (π πd πs : List Nat),
               obtain ⟨heq, hne⟩ := declaredPrefix_split D T' π πd' πs' hrec
               exact ⟨by simp [heq], hne⟩
 
+/-- **The type a place below a dynamic index reaches.** A dynamic form is
+`p[e₁]π₁[e₂]π₂…[eₖ]πₖ`: the constant place `p`, then `k ≥ 1` dynamic steps,
+each followed by a constant path `πⱼ` of field slots and constant indices
+(`Expr.indexRead`/`Expr.indexWrite`). `Ty.atDyn D Ta [π₁, …, πₖ]` walks that
+tail from `p`'s type `Ta`: each dynamic step must be taken at an array node,
+reaches its element type, and `πⱼ` is then read off the element as
+`Ty.atPath` reads any path. `none` where a dynamic step is taken at anything
+but an array, or where a constant path is not a path of the type reached so
+far — which is `Γ ⊢ p : T` failing for the complete place (helper). -/
+def Ty.atDyn (D : Decls) : Ty → List (List Nat) → Option Ty
+  | T, [] => some T
+  | .array E _, π :: πs =>
+      match E.atPath D π with
+      | some T' => T'.atDyn D πs
+      | none => none
+  | .int _ _, _ :: _ | .float _, _ :: _ | .bool, _ :: _ | .unit, _ :: _
+  | .struct _, _ :: _ | .enum _, _ :: _ => none
+
+/-- **No declared-`linear` proper prefix below the dynamic index** (§4.2's
+`Untrackable(DeclaredLinearDynamic)`, ill-formed there and E0904 in the
+compiler; probe q11). A proper prefix of the complete place that lies below
+the first dynamic step is an element `a[i]` itself or a prefix of one
+segment's constant path, and `declaredPrefix D E π = none` at each segment is
+exactly "neither the element nor any proper prefix of `π` under it is a struct
+declared `linear`" — the segment's own end is excluded, as a leaf is, and
+where a later segment follows, that end is an array, which is never declared
+`linear`. The prefixes **above** the first dynamic step are `p`'s own, and
+`declaredPrefix D T p.path = none` states them (helper). -/
+def Ty.dynNoDeclared (D : Decls) : Ty → List (List Nat) → Bool
+  | _, [] => true
+  | .array E _, π :: πs =>
+      (declaredPrefix D E π).isNone &&
+        (match E.atPath D π with
+         | some T' => T'.dynNoDeclared D πs
+         | none => true)
+  | .int _ _, _ :: _ | .float _, _ :: _ | .bool, _ :: _ | .unit, _ :: _
+  | .struct _, _ :: _ | .enum _, _ :: _ => true
+
 /-- **The consumed place is a declared-`linear` struct** (§5.1's
 `Γ ⊢ d : S`, `S` declared `linear`). The rule states it as a premise; here it
 is a *consequence* of the plan, so `Typed.useDeclared`/`Typed.dropDeclared`
@@ -986,8 +1024,8 @@ inductive Expr where
   | «match» (scrut : Expr) (arms : List Expr)
   | mkArray (elem : Ty) (args : List Expr)
   | repeatArray (elem : Ty) (e : Expr) (n : Nat)
-  | indexRead (p : Place) (e : Expr)
-  | indexWrite (p : Place) (e₁ e₂ : Expr)
+  | indexRead (p : Place) (idx : List Expr) (πs : List (List Nat))
+  | indexWrite (p : Place) (idx : List Expr) (πs : List (List Nat)) (e : Expr)
   | drop (p : Place)
   | letIn (m : Bool) (e₁ e₂ : Expr)
   | assign (p : Place) (e : Expr)
