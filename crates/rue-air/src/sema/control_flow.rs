@@ -374,6 +374,12 @@ fn fill_witness_hole(slots: &[Witness], index: usize, filling: Witness) -> Vec<W
     filled
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Loop-body passes run on this thread, for the nesting-cost test.
+    pub(crate) static LOOP_PASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// The move states one pass over a loop body reaches at the loop's own
 /// edges: its back edge (the fall-through joined with the `continue` states,
 /// `None` when no path returns to the loop head) and its exit (the join over
@@ -1299,6 +1305,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         pass: impl FnOnce(&mut Self) -> CompileResult<T>,
     ) -> CompileResult<T> {
         self.loop_head_hints.begin_pass(node);
+        #[cfg(test)]
+        LOOP_PASSES.with(|passes| passes.set(passes.get() + 1));
         let result = pass(self);
         self.loop_head_hints.end_pass();
         result

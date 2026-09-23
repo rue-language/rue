@@ -1455,6 +1455,60 @@ mod tests {
     }
 
     #[test]
+    fn loop_head_hints_address_loops_by_position_across_parent_passes() {
+        let s = syms(&["x", "y"]);
+        let (x, y) = (s[0], s[1]);
+        let outer = rue_rir::InstRef::from_raw(1);
+        let (first, second) = (rue_rir::InstRef::from_raw(2), rue_rir::InstRef::from_raw(3));
+        let mut moved_x = AHashMap::new();
+        moved_x
+            .entry(x)
+            .or_insert_with(VariableMoveState::default)
+            .mark_path_moved(&[], Span::new(0, 1));
+        let mut moved_y = AHashMap::new();
+        moved_y
+            .entry(y)
+            .or_insert_with(VariableMoveState::default)
+            .mark_path_moved(&[], Span::new(1, 2));
+
+        let mut hints = LoopHeadHints::default();
+        let root = hints.enter(outer);
+        hints.begin_pass(root);
+        let a = hints.enter(first);
+        assert!(hints.seed(a, &AHashMap::new()).is_none());
+        hints.record(a, AHashMap::new(), moved_x.clone());
+        let b = hints.enter(second);
+        assert_ne!(a, b);
+        hints.end_pass();
+
+        // The parent's next pass reaches the same positions in order.
+        hints.begin_pass(root);
+        assert_eq!(hints.enter(first), a);
+        // An entry above the recorded one is seeded with the recorded head.
+        // `y` owned and `y` moved on every path are incomparable; their join,
+        // `y` moved on some path, is above both.
+        assert!(hints.seed(a, &moved_y).is_none());
+        let maybe_moved_y = union_move_maps(&AHashMap::new(), &moved_y);
+        let seed = hints
+            .seed(a, &maybe_moved_y)
+            .expect("entry above the recorded entry");
+        assert!(seed.contains_key(&x) && seed.contains_key(&y));
+        // A different loop at a recorded position starts afresh.
+        let c = hints.enter(first);
+        assert_eq!(c, b);
+        assert!(hints.seed(c, &AHashMap::new()).is_none());
+        hints.end_pass();
+
+        // An entry that is not above the recorded one gets no seed.
+        hints.record(a, moved_y.clone(), moved_y.clone());
+        assert!(hints.seed(a, &moved_x).is_none());
+
+        // A new outermost loop starts a fresh nest.
+        assert_eq!(hints.enter(outer), 0);
+        assert_eq!(hints.nodes.len(), 1);
+    }
+
+    #[test]
     fn recheck_fork_carries_moves_and_clears_operand_markers() {
         let s = syms(&["x"]);
         let x = s[0];

@@ -1321,6 +1321,45 @@ fn provider_body_while_condition_reinit_leaves_exit_owned() {
         .expect("the condition reinitializes `n` before every exit");
 }
 
+// Settling a loop's head can take a second pass, which re-analyses every
+// loop nested in the body. Each level here needs one (its binding is moved
+// at the head of its later iterations, and the parent reinitializes it after
+// the loop, so the parent's entry never covers it). Settled heads are reused
+// across the enclosing rechecks, so the passes grow quadratically with the
+// depth rather than doubling per level (RUE-2354).
+#[test]
+fn provider_body_nested_loop_head_rechecks_stay_polynomial() {
+    const DEPTH: usize = 16;
+    let fixture = later_iteration_fixture();
+    let mut source = String::from("fn main() -> i32 {\n");
+    for level in 0..DEPTH {
+        source.push_str(&format!("let mut v{level} = NonCopy {{ x: 0 }};\n"));
+    }
+    for level in 0..DEPTH {
+        source.push_str(&format!(
+            "let mut c{level} = 0;\nloop {{\nif stop(c{level}) {{ break; }}\n\
+             c{level} = c{level} + 1;\nv{level} = NonCopy {{ x: 1 }};\nconsume(v{level});\n"
+        ));
+    }
+    for level in (0..DEPTH).rev() {
+        source.push_str("}\n");
+        if level > 0 {
+            source.push_str(&format!("v{level} = NonCopy {{ x: 2 }};\n"));
+        }
+    }
+    source.push_str("0\n}");
+
+    super::control_flow::LOOP_PASSES.with(|passes| passes.set(0));
+    fixture
+        .analyze(&source, "main")
+        .expect("every use follows a reinitialization");
+    let passes = super::control_flow::LOOP_PASSES.with(std::cell::Cell::get);
+    assert!(
+        passes <= 2 * DEPTH * DEPTH,
+        "{passes} loop passes for {DEPTH} nested loops"
+    );
+}
+
 // Migrated from `tests::break_path_move_of_shadow_leaves_outer_owned`: the
 // exit join is per-binding, not per-name (RUE-522 × RUE-1293): the break
 // snapshot names the loop-local shadow, and pop_scope's restoration replayed
