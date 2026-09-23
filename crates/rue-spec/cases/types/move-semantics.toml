@@ -4850,3 +4850,496 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E0205", "previous iteration of the loop"]
+
+# RUE-2350: a `borrow`/`inout` argument, a by-reference method receiver and an
+# equality operand loan the whole place (3.8:76, core calculus §5.4), so the
+# loaned place must be fully owned, as a by-value use's is (3.8:26): a part
+# moved out anywhere below it is rejected, naming that part. Before the fix only
+# the place and its ancestors were checked: a borrow read the destroyed part,
+# and an inout write ran its destructor a second time and leaked the new value.
+
+[[case]]
+name = "borrow_arg_field_with_moved_part_rejected"
+spec = ["3.8:26", "3.8:76", "6.1:18", "6.1:26", "4.10:11"]
+description = "A borrow argument at a struct field with a moved-out field below it is a use of that field, not a read of the destroyed value (RUE-2350)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P {
+    c: i64,
+    s: S1,
+    fn set(inout self) { self.s = S1 { x0: 88 }; }
+    fn get(borrow self) -> i64 { self.s.x0 }
+}
+struct Q { p: P }
+struct H { a: [P; 2], p: P, q: Q, m: [[P; 2]; 2] }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+fn mkh() -> H {
+    H { a: [mk(10), mk(11)], p: mk(17), q: Q { p: mk(18) }, m: [[mk(40), mk(41)], [mk(42), mk(43)]] }
+}
+fn setp(inout p: P) { p.s = S1 { x0: 77 }; }
+fn readp(borrow p: P) -> i64 { p.s.x0 }
+
+fn main() -> i32 {
+    let h = mkh();
+    let t: S1 = h.p.s;
+    @drop(t);
+    readp(borrow h.p);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.p.s'"
+
+[[case]]
+name = "inout_arg_element_with_moved_part_rejected"
+spec = ["3.8:26", "3.8:76", "3.8:70", "6.1:18", "6.1:26", "4.10:11"]
+description = "An inout argument at a field-reached array element with a moved-out field is rejected, not a second drop of that field (RUE-2350)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P {
+    c: i64,
+    s: S1,
+    fn set(inout self) { self.s = S1 { x0: 88 }; }
+    fn get(borrow self) -> i64 { self.s.x0 }
+}
+struct Q { p: P }
+struct H { a: [P; 2], p: P, q: Q, m: [[P; 2]; 2] }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+fn mkh() -> H {
+    H { a: [mk(10), mk(11)], p: mk(17), q: Q { p: mk(18) }, m: [[mk(40), mk(41)], [mk(42), mk(43)]] }
+}
+fn setp(inout p: P) { p.s = S1 { x0: 77 }; }
+fn readp(borrow p: P) -> i64 { p.s.x0 }
+
+fn main() -> i32 {
+    let mut h = mkh();
+    let t: S1 = h.a[0].s;
+    @drop(t);
+    setp(inout h.a[0]);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.a[0].s'"
+
+[[case]]
+name = "inout_arg_root_array_element_with_moved_part_rejected"
+spec = ["3.8:26", "3.8:76", "3.8:70", "6.1:18", "6.1:26", "4.10:11"]
+description = "An inout argument at an element of a root array with a moved-out field is rejected (RUE-2350)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P {
+    c: i64,
+    s: S1,
+    fn set(inout self) { self.s = S1 { x0: 88 }; }
+    fn get(borrow self) -> i64 { self.s.x0 }
+}
+struct Q { p: P }
+struct H { a: [P; 2], p: P, q: Q, m: [[P; 2]; 2] }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+fn mkh() -> H {
+    H { a: [mk(10), mk(11)], p: mk(17), q: Q { p: mk(18) }, m: [[mk(40), mk(41)], [mk(42), mk(43)]] }
+}
+fn setp(inout p: P) { p.s = S1 { x0: 77 }; }
+fn readp(borrow p: P) -> i64 { p.s.x0 }
+
+fn main() -> i32 {
+    let mut a: [P; 2] = [mk(10), mk(11)];
+    let t: S1 = a[0].s;
+    @drop(t);
+    setp(inout a[0]);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'a[0].s'"
+
+[[case]]
+name = "inout_arg_nested_field_with_moved_part_rejected"
+spec = ["3.8:26", "3.8:76", "6.1:18", "6.1:26", "4.10:11"]
+description = "An inout argument one field deeper (h.q.p) with a moved-out field below it is rejected (RUE-2350)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P {
+    c: i64,
+    s: S1,
+    fn set(inout self) { self.s = S1 { x0: 88 }; }
+    fn get(borrow self) -> i64 { self.s.x0 }
+}
+struct Q { p: P }
+struct H { a: [P; 2], p: P, q: Q, m: [[P; 2]; 2] }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+fn mkh() -> H {
+    H { a: [mk(10), mk(11)], p: mk(17), q: Q { p: mk(18) }, m: [[mk(40), mk(41)], [mk(42), mk(43)]] }
+}
+fn setp(inout p: P) { p.s = S1 { x0: 77 }; }
+fn readp(borrow p: P) -> i64 { p.s.x0 }
+
+fn main() -> i32 {
+    let mut h = mkh();
+    let t: S1 = h.q.p.s;
+    @drop(t);
+    setp(inout h.q.p);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.q.p.s'"
+
+[[case]]
+name = "borrow_arg_nested_array_element_with_moved_part_rejected"
+spec = ["3.8:26", "3.8:76", "3.8:70", "6.1:18", "6.1:26", "4.10:11"]
+description = "A borrow argument at an element of a nested array with a moved-out field is rejected (RUE-2350)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P {
+    c: i64,
+    s: S1,
+    fn set(inout self) { self.s = S1 { x0: 88 }; }
+    fn get(borrow self) -> i64 { self.s.x0 }
+}
+struct Q { p: P }
+struct H { a: [P; 2], p: P, q: Q, m: [[P; 2]; 2] }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+fn mkh() -> H {
+    H { a: [mk(10), mk(11)], p: mk(17), q: Q { p: mk(18) }, m: [[mk(40), mk(41)], [mk(42), mk(43)]] }
+}
+fn setp(inout p: P) { p.s = S1 { x0: 77 }; }
+fn readp(borrow p: P) -> i64 { p.s.x0 }
+
+fn main() -> i32 {
+    let h = mkh();
+    let t: S1 = h.m[1][0].s;
+    @drop(t);
+    readp(borrow h.m[1][0]);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.m[1][0].s'"
+
+[[case]]
+name = "borrow_arg_with_moved_part_two_levels_below_rejected"
+spec = ["3.8:26", "3.8:76", "6.1:18", "6.1:26", "4.10:11"]
+description = "A borrow argument is rejected when the moved-out part is two levels below the loaned place (RUE-2350)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P {
+    c: i64,
+    s: S1,
+    fn set(inout self) { self.s = S1 { x0: 88 }; }
+    fn get(borrow self) -> i64 { self.s.x0 }
+}
+struct Q { p: P }
+struct H { a: [P; 2], p: P, q: Q, m: [[P; 2]; 2] }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+fn mkh() -> H {
+    H { a: [mk(10), mk(11)], p: mk(17), q: Q { p: mk(18) }, m: [[mk(40), mk(41)], [mk(42), mk(43)]] }
+}
+fn setp(inout p: P) { p.s = S1 { x0: 77 }; }
+fn readp(borrow p: P) -> i64 { p.s.x0 }
+fn readq(borrow q: Q) -> i64 { q.p.s.x0 }
+
+fn main() -> i32 {
+    let h = mkh();
+    let t: S1 = h.q.p.s;
+    @drop(t);
+    readq(borrow h.q);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.q.p.s'"
+
+[[case]]
+name = "inout_arg_array_field_with_moved_part_below_element_rejected"
+spec = ["3.8:26", "3.8:76", "3.8:70", "6.1:18", "6.1:26", "4.10:11"]
+description = "An inout argument at an array field is rejected when a field of one of its elements is moved out (RUE-2350)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P {
+    c: i64,
+    s: S1,
+    fn set(inout self) { self.s = S1 { x0: 88 }; }
+    fn get(borrow self) -> i64 { self.s.x0 }
+}
+struct Q { p: P }
+struct H { a: [P; 2], p: P, q: Q, m: [[P; 2]; 2] }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+fn mkh() -> H {
+    H { a: [mk(10), mk(11)], p: mk(17), q: Q { p: mk(18) }, m: [[mk(40), mk(41)], [mk(42), mk(43)]] }
+}
+fn setp(inout p: P) { p.s = S1 { x0: 77 }; }
+fn readp(borrow p: P) -> i64 { p.s.x0 }
+fn seta(inout a: [P; 2]) { a[0].s = S1 { x0: 79 }; }
+
+fn main() -> i32 {
+    let mut h = mkh();
+    let t: S1 = h.a[0].s;
+    @drop(t);
+    seta(inout h.a);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.a[0].s'"
+
+[[case]]
+name = "borrow_arg_with_conditionally_moved_part_rejected"
+spec = ["3.8:26", "3.8:76", "6.1:18", "6.1:26", "4.10:11"]
+description = "A part moved on one branch only still rejects a later borrow of the place above it (RUE-2350)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P {
+    c: i64,
+    s: S1,
+    fn set(inout self) { self.s = S1 { x0: 88 }; }
+    fn get(borrow self) -> i64 { self.s.x0 }
+}
+struct Q { p: P }
+struct H { a: [P; 2], p: P, q: Q, m: [[P; 2]; 2] }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+fn mkh() -> H {
+    H { a: [mk(10), mk(11)], p: mk(17), q: Q { p: mk(18) }, m: [[mk(40), mk(41)], [mk(42), mk(43)]] }
+}
+fn setp(inout p: P) { p.s = S1 { x0: 77 }; }
+fn readp(borrow p: P) -> i64 { p.s.x0 }
+fn cond() -> bool { true }
+
+fn main() -> i32 {
+    let h = mkh();
+    if cond() {
+        let t: S1 = h.p.s;
+        @drop(t);
+    }
+    readp(borrow h.p);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.p.s'"
+
+[[case]]
+name = "inout_self_receiver_with_moved_part_rejected"
+spec = ["3.8:26", "3.8:76", "6.4:24", "6.4:29", "6.1:18", "6.1:26", "4.10:11"]
+description = "An inout self method receiver at an array element with a moved-out field is rejected (RUE-2350)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P {
+    c: i64,
+    s: S1,
+    fn set(inout self) { self.s = S1 { x0: 88 }; }
+    fn get(borrow self) -> i64 { self.s.x0 }
+}
+struct Q { p: P }
+struct H { a: [P; 2], p: P, q: Q, m: [[P; 2]; 2] }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+fn mkh() -> H {
+    H { a: [mk(10), mk(11)], p: mk(17), q: Q { p: mk(18) }, m: [[mk(40), mk(41)], [mk(42), mk(43)]] }
+}
+fn setp(inout p: P) { p.s = S1 { x0: 77 }; }
+fn readp(borrow p: P) -> i64 { p.s.x0 }
+
+fn main() -> i32 {
+    let mut h = mkh();
+    let t: S1 = h.a[0].s;
+    @drop(t);
+    h.a[0].set();
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.a[0].s'"
+
+[[case]]
+name = "borrow_self_receiver_with_moved_part_rejected"
+spec = ["3.8:26", "3.8:76", "6.4:24", "6.4:29", "6.1:18", "6.1:26", "4.10:11"]
+description = "A borrow self method receiver at a struct field with a moved-out field is rejected (RUE-2350)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P {
+    c: i64,
+    s: S1,
+    fn set(inout self) { self.s = S1 { x0: 88 }; }
+    fn get(borrow self) -> i64 { self.s.x0 }
+}
+struct Q { p: P }
+struct H { a: [P; 2], p: P, q: Q, m: [[P; 2]; 2] }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+fn mkh() -> H {
+    H { a: [mk(10), mk(11)], p: mk(17), q: Q { p: mk(18) }, m: [[mk(40), mk(41)], [mk(42), mk(43)]] }
+}
+fn setp(inout p: P) { p.s = S1 { x0: 77 }; }
+fn readp(borrow p: P) -> i64 { p.s.x0 }
+
+fn main() -> i32 {
+    let h = mkh();
+    let t: S1 = h.p.s;
+    @drop(t);
+    h.p.get();
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.p.s'"
+
+[[case]]
+name = "equality_operand_with_moved_part_rejected"
+spec = ["3.8:26", "3.8:76", "4.3:3f"]
+description = "An equality operand borrows the whole place, so a moved-out field below it is rejected (RUE-2350)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P {
+    c: i64,
+    s: S1,
+    fn set(inout self) { self.s = S1 { x0: 88 }; }
+    fn get(borrow self) -> i64 { self.s.x0 }
+}
+struct Q { p: P }
+struct H { a: [P; 2], p: P, q: Q, m: [[P; 2]; 2] }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+fn mkh() -> H {
+    H { a: [mk(10), mk(11)], p: mk(17), q: Q { p: mk(18) }, m: [[mk(40), mk(41)], [mk(42), mk(43)]] }
+}
+fn setp(inout p: P) { p.s = S1 { x0: 77 }; }
+fn readp(borrow p: P) -> i64 { p.s.x0 }
+
+fn main() -> i32 {
+    let h = mkh();
+    let t: S1 = h.a[0].s;
+    @drop(t);
+    if h.a[0] == h.a[1] { @dbg(1); }
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.a[0].s'"
+
+[[case]]
+name = "generic_inout_arg_with_moved_part_rejected"
+spec = ["3.8:26", "3.8:76", "6.1:18", "6.1:26", "4.10:11"]
+description = "The by-reference argument of a generic function is checked the same way (RUE-2350)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P {
+    c: i64,
+    s: S1,
+    fn set(inout self) { self.s = S1 { x0: 88 }; }
+    fn get(borrow self) -> i64 { self.s.x0 }
+}
+struct Q { p: P }
+struct H { a: [P; 2], p: P, q: Q, m: [[P; 2]; 2] }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+fn mkh() -> H {
+    H { a: [mk(10), mk(11)], p: mk(17), q: Q { p: mk(18) }, m: [[mk(40), mk(41)], [mk(42), mk(43)]] }
+}
+fn setp(inout p: P) { p.s = S1 { x0: 77 }; }
+fn readp(borrow p: P) -> i64 { p.s.x0 }
+fn gset(comptime T: type, inout x: T) {}
+
+fn main() -> i32 {
+    let mut h = mkh();
+    let t: S1 = h.a[0].s;
+    @drop(t);
+    gset(P, inout h.a[0]);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.a[0].s'"
+
+# The controls: reinitializing the moved part first (3.8:55) makes the place
+# fully owned again, and a moved sibling or a moved part of another element
+# does not affect the loan. `B` has no destructor, so these observe only the
+# values read, not drop order.
+[[case]]
+name = "loan_after_reinit_of_moved_part_accepted"
+spec = ["3.8:26", "3.8:55", "6.1:18", "6.1:26"]
+description = "Reinitializing the moved-out part makes the place above it borrowable again (RUE-2350)"
+source = """
+struct B { x0: i64 }
+struct P { c: i64, s: B }
+struct Q { p: P }
+struct H { a: [P; 2], p: P, q: Q }
+
+fn mk(n: i64) -> P { P { c: n, s: B { x0: n } } }
+fn setp(inout p: P) { p.s = B { x0: p.s.x0 + 1 }; }
+fn readp(borrow p: P) -> i64 { p.s.x0 }
+fn readq(borrow q: Q) -> i64 { q.p.s.x0 }
+fn eat(b: B) -> i64 { b.x0 }
+
+fn main() -> i32 {
+    let mut h = H { a: [mk(10), mk(11)], p: mk(17), q: Q { p: mk(18) } };
+    let x = eat(h.p.s);
+    h.p.s = B { x0: 20 };
+    let y = eat(h.q.p.s);
+    h.q.p.s = B { x0: 30 };
+    setp(inout h.p);
+    let total: i64 = x + y + readp(borrow h.p) + readq(borrow h.q);
+    @intCast(total)
+}
+"""
+exit_code = 86
+
+[[case]]
+name = "loan_beside_moved_sibling_part_accepted"
+spec = ["3.8:22", "3.8:26", "6.1:18", "6.1:26"]
+description = "A part moved out of a sibling place does not affect a loan of its neighbour (RUE-2350)"
+source = """
+struct B { x0: i64 }
+struct P { c: i64, s: B }
+struct Q { p: P }
+struct H { a: [P; 2], p: P, q: Q }
+
+fn mk(n: i64) -> P { P { c: n, s: B { x0: n } } }
+fn setp(inout p: P) { p.s = B { x0: p.s.x0 + 1 }; }
+fn readp(borrow p: P) -> i64 { p.s.x0 }
+fn readq(borrow q: Q) -> i64 { q.p.s.x0 }
+fn eat(b: B) -> i64 { b.x0 }
+
+fn main() -> i32 {
+    let mut h = H { a: [mk(10), mk(11)], p: mk(17), q: Q { p: mk(18) } };
+    let x = eat(h.q.p.s);
+    let y = eat(h.a[1].s);
+    setp(inout h.a[0]);
+    let total: i64 = x + y + readp(borrow h.p) + readp(borrow h.a[0]) + h.q.p.c;
+    @intCast(total)
+}
+"""
+exit_code = 75
