@@ -319,14 +319,14 @@ def tyOf (P : Program) (R : Ty) (Γ : List Ty) : Expr → Option Ty
        | _ => none)
   | .mkArray T args => some (.array T args.length)
   | .repeatArray T _ n => some (.array T n)
-  | .indexRead pl _ =>
+  | .indexRead pl _ πs =>
       (match Γ[pl.root]? with
        | some T =>
          (match T.atPath P.decls pl.path with
-          | some (.array Te _) => some Te
-          | _ => none)
+          | some Ta => Ta.atDyn P.decls πs
+          | none => none)
        | none => none)
-  | .indexWrite _ _ _ => some .unit
+  | .indexWrite _ _ _ _ => some .unit
   | .drop _ => some .unit
   | .letIn _ e₁ e₂ => do
       let T₁ ← tyOf P R Γ e₁
@@ -359,6 +359,22 @@ def place (Γ : List Ty) : Place → String
   -- `Place.idx`, the constant index step: `x[0]` is the identity elaboration
   -- of it (§5's `Path[c]`, `4.11:2`'s `index_expr`).
   | .idx q c => place Γ q ++ "[" ++ toString c ++ "]"
+
+/-- A constant path printed from the type it starts at: a slot is a field
+`.x<f>` at a struct and a constant index `[c]` at an array, which is how
+`Ty.fieldAt` reads the same `Nat` (helper). -/
+def pathSuffix (D : Decls) : Option Ty → List Nat → String
+  | _, [] => ""
+  | T, f :: π =>
+      (match T with
+       | some (.array _ _) => "[" ++ toString f ++ "]"
+       | _ => "." ++ fieldName f) ++
+      pathSuffix D (T.bind fun T => T.fieldAt D f) π
+
+/-- The declared type a constant place reaches, read off the binder types
+(helper). -/
+def placeTy (P : Program) (Γ : List Ty) (pl : Place) : Option Ty :=
+  (Γ[pl.root]?).bind fun T => T.atPath P.decls pl.path
 
 /-- Four spaces per nesting level (helper). -/
 def indent (n : Nat) : String := "".pushn ' ' (4 * n)
@@ -458,23 +474,21 @@ partial def expr (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) : Expr → St
       -- `7.1:36`'s repeat form. `7.1:37` makes the count a compile-time
       -- constant, which the core carries as a `Nat`.
       "[" ++ expr P R Γ lvl e ++ "; " ++ toString n ++ "]"
-  | .indexRead pl e =>
-      -- `4.11:4` admits any integer type in index position and nothing
-      -- downstream of the brackets names it, so — exactly as for `@dbg`'s
-      -- operand — the index gets a typed binder. A block binding one `Copy`
-      -- scalar changes no evaluation order and adds no drop point (§6.7).
-      let Ti := (tyOf P R Γ e).getD (.int .w64 .signed)
-      let j := tmpName lvl "i"
-      "{ let " ++ j ++ ": " ++ tyName Ti ++ " = " ++ expr P R Γ (lvl + 1) e ++ "; " ++
-        place Γ pl ++ "[" ++ j ++ "] }"
-  | .indexWrite pl e₁ e₂ =>
-      -- `7.1:30`/`4.11:12`'s element assignment, with the index typed the same
-      -- way. §6.2 reduces the index before the right-hand side, which is the
-      -- order the two statements are in.
-      let Ti := (tyOf P R Γ e₁).getD (.int .w64 .signed)
-      let j := tmpName lvl "i"
-      "{ let " ++ j ++ ": " ++ tyName Ti ++ " = " ++ expr P R Γ (lvl + 1) e₁ ++ "; " ++
-        place Γ pl ++ "[" ++ j ++ "] = " ++ expr P R Γ (lvl + 1) e₂ ++ "; }"
+  | .indexRead pl idx πs =>
+      -- `p[e₁]π₁…[eₖ]πₖ`, spelled as the surface writes it. `4.11:4` admits
+      -- any integer type in index position and nothing downstream of the
+      -- brackets names it, so — exactly as for `@dbg`'s operand — each index
+      -- is a typed block `{ let t: T = e; t }` in place. A block binding one
+      -- `Copy` scalar changes no evaluation order and adds no drop point
+      -- (§6.7), and the blocks run left to right, which is §6.2's order.
+      place Γ pl ++ dynTail P R Γ lvl (placeTy P Γ pl) 0 idx πs
+  | .indexWrite pl idx πs e =>
+      -- `7.1:30`/`4.11:12`'s element assignment, with each index typed the
+      -- same way, in place. The surface statement's own order is `5.2:14`'s —
+      -- the right-hand side first, then the target's indices left to right —
+      -- which is the core form's, so the printed statement keeps it.
+      "{ " ++ place Γ pl ++ dynTail P R Γ lvl (placeTy P Γ pl) 0 idx πs ++ " = " ++
+        expr P R Γ (lvl + 1) e ++ "; }"
   | .drop pl => "@drop(" ++ place Γ pl ++ ")"
   | .letIn m e₁ e₂ =>
       let T₁ := (tyOf P R Γ e₁).getD (.int .w64 .signed)
@@ -511,6 +525,23 @@ partial def expr (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) : Expr → St
       fnName f ++ "(" ++
         String.intercalate ", " (args.map (fun a => expr P R Γ lvl a)) ++ ")"
   | .ret e => "return " ++ expr P R Γ lvl e
+
+/-- The dynamic tail `[e₁]π₁…[eₖ]πₖ` of a place below a dynamic index, read
+off the type `T` of the part already printed: each index as a typed block,
+then its constant path, a slot printing as a field or a constant index by the
+type it is taken at (`Ty.fieldAt`'s own split) (helper). -/
+partial def dynTail (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) :
+    Option Ty → Nat → List Expr → List (List Nat) → String
+  | T, k, e :: idx, π :: πs =>
+      let Ti := (tyOf P R Γ e).getD (.int .w64 .signed)
+      let j := tmpName lvl ("i" ++ toString k)
+      let E := match T with
+        | some (.array E _) => some E
+        | _ => none
+      "[{ let " ++ j ++ ": " ++ tyName Ti ++ " = " ++ expr P R Γ (lvl + 1) e ++ "; " ++ j ++
+        " }]" ++ pathSuffix P.decls E π ++
+        dynTail P R Γ lvl (E.bind fun E => E.atPath P.decls π) (k + 1) idx πs
+  | _, _, _, _ => ""
 
 /-- One printed arm per variant: the variant path with its payload binders, then
 the arm body as a block. The binder for payload component `j` is `v<|Γ| + j>`,

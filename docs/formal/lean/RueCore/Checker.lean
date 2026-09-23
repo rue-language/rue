@@ -255,46 +255,54 @@ def check (P : Program) (R : Ty) (Γ : Ctx) : Expr → Option (Ty × Ctx)
       | some (T', Γ') =>
           if T' = T ∧ T.mult P.decls = .copy then some (.array T n, Γ') else none
       | none => none
-  | .indexRead p e =>
-      match check P R Γ e with
-      | some (.int _ _, Γ₁) =>
+  | .indexRead p idx πs =>
+      match checkIdx P R Γ idx with
+      | some (_, Γ₁) =>
         (match Γ₁[p.root]? with
          | none => none
          | some en =>
            match en.st.get p.path, en.ty.atPath P.decls p.path with
-           | some u, some (.array T _) =>
-               if u.fullyOwned ∧ T.mult P.decls = .copy ∧
-                   declaredPrefix P.decls en.ty p.path = none then some (T, Γ₁)
-               else none
+           | some u, some Ta =>
+             (match Ta.atDyn P.decls πs with
+              | some T =>
+                  if idx.length = πs.length ∧ πs ≠ [] ∧ u.fullyOwned ∧
+                      T.mult P.decls = .copy ∧
+                      declaredPrefix P.decls en.ty p.path = none ∧
+                      Ta.dynNoDeclared P.decls πs then some (T, Γ₁)
+                  else none
+              | none => none)
            | _, _ => none)
-      | _ => none
-  | .indexWrite p e₁ e₂ =>
+      | none => none
+  | .indexWrite p idx πs e =>
       match Γ[p.root]? with
       | none => none
       | some en₀ =>
         if en₀.mu = true then
           match en₀.st.get p.path, en₀.ty.atPath P.decls p.path with
-          | some _, some (.array T _) =>
-              (match check P R Γ e₁ with
-               | some (.int _ _, Γ₁) =>
-                 (match check P R Γ₁ e₂ with
-                  | some (T', Γ₂) =>
-                    if T' = T then
-                      (match Γ₂[p.root]? with
-                       | some en₁ =>
-                         (match en₁.st.get p.path with
-                          | some u₁ =>
-                              if u₁.fullyOwned ∧
-                                  assignArrayOk P.decls en₁.st en₁.ty p.path ∧
-                                  overwriteOk P.decls u₁ T then
-                                some (.unit,
-                                  Γ₂.set p.root (en₁.setSt (en₁.st.setAt p.path .owned)))
-                              else none
-                          | none => none)
-                       | none => none)
-                    else none
-                  | none => none)
-               | _ => none)
+          | some _, some Ta =>
+            (match Ta.atDyn P.decls πs with
+             | some T =>
+               (match check P R Γ e with
+                | some (T', Γ₁) =>
+                  if T' = T then
+                    (match checkIdx P R Γ₁ idx with
+                     | some (_, Γ₂) =>
+                       (match Γ₂[p.root]? with
+                        | some en₁ =>
+                          (match en₁.st.get p.path with
+                           | some u₁ =>
+                               if idx.length = πs.length ∧ πs ≠ [] ∧ u₁.fullyOwned ∧
+                                   assignArrayOk P.decls en₁.st en₁.ty p.path ∧
+                                   T.mult P.decls ≠ .linear then
+                                 some (.unit,
+                                   Γ₂.set p.root (en₁.setSt (en₁.st.setAt p.path .owned)))
+                               else none
+                           | none => none)
+                        | none => none)
+                     | none => none)
+                  else none
+                | none => none)
+             | none => none)
           | _, _ => none
         else none
   | .drop p =>
@@ -396,6 +404,20 @@ def checkArgs (P : Program) (R : Ty) : Ctx → List Expr → List Ty → Option 
       | some (T', Γ₁) => if T' = T then checkArgs P R Γ₁ es Ts else none
       | none => none
   | _, _, _ => none
+
+/-- The index expressions of a place below a dynamic index, as an algorithm:
+each is checked at whatever integer type it has (`4.11:4`), left to right with
+Σ threaded, and their types are returned for `Typed.indexRead`/`indexWrite`'s
+`TypedArgs` premise. -/
+def checkIdx (P : Program) (R : Ty) : Ctx → List Expr → Option (List Ty × Ctx)
+  | Γ, [] => some ([], Γ)
+  | Γ, e :: es =>
+      match check P R Γ e with
+      | some (.int w s, Γ₁) =>
+        (match checkIdx P R Γ₁ es with
+         | some (Ts, Γ₂) => some (.int w s :: Ts, Γ₂)
+         | none => none)
+      | _ => none
 
 /-- The type (Match) §5.5's arms must share, as the algorithm picks it: the
 **first** arm's, read under that arm's own payload locals. §5.5 states the
@@ -660,23 +682,28 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
           exact .repeatArray (check_sound e hchk) hcopy
         · cases h
       · cases h
-  | .indexRead pl e, Γ, T, Γ', h => by
+  | .indexRead pl idx πs, Γ, T, Γ', h => by
       simp only [check] at h
       split at h
-      · rename_i w sg Γ₁ hchk
+      · rename_i Ts Γ₁ hidx
+        obtain ⟨hta, hint⟩ := checkIdx_sound idx hidx
         split at h
         · cases h
         · rename_i en hen
           split at h
-          · rename_i u Te n hg hty
+          · rename_i u Ta hg hty
             split at h
-            · rename_i hprem
-              cases h
-              exact .indexRead (check_sound e hchk) hen hg hprem.1 hty hprem.2.1 hprem.2.2
+            · rename_i T₀ hdyn
+              split at h
+              · rename_i hprem
+                obtain ⟨hlen, hne, hfo, hcopy, hplan, hnd⟩ := hprem
+                cases h
+                exact .indexRead hta hint hlen hne hen hg hfo hty hdyn hcopy hplan hnd
+              · cases h
             · cases h
           · cases h
       · cases h
-  | .indexWrite pl e₁ e₂, Γ, T, Γ', h => by
+  | .indexWrite pl idx πs e, Γ, T, Γ', h => by
       simp only [check] at h
       split at h
       · cases h
@@ -684,24 +711,28 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
         split at h
         · rename_i hmu
           split at h
-          · rename_i u₀ Te n hg₀ hty₀
+          · rename_i u₀ Ta hg₀ hty₀
             split at h
-            · rename_i w sg Γ₁ hchk₁
+            · rename_i T₀ hdyn
               split at h
-              · rename_i T' Γ₂ hchk₂
+              · rename_i T' Γ₁ hchk
                 split at h
                 · rename_i hT
                   subst hT
                   split at h
-                  · rename_i en₁ hget₁
+                  · rename_i Ts Γ₂ hidx
+                    obtain ⟨hta, hint⟩ := checkIdx_sound idx hidx
                     split at h
-                    · rename_i u₁ hg₁
+                    · rename_i en₁ hget₁
                       split at h
-                      · rename_i hpost
-                        cases h
-                        exact .indexWrite hget₀ hmu hg₀ hty₀
-                          (check_sound e₁ hchk₁) (check_sound e₂ hchk₂) hget₁ hg₁
-                          hpost.1 hpost.2.1 (overwriteOk_iff.mp hpost.2.2)
+                      · rename_i u₁ hg₁
+                        split at h
+                        · rename_i hpost
+                          obtain ⟨hlen, hne, hfo, harr, hnl⟩ := hpost
+                          cases h
+                          exact .indexWrite hget₀ hmu hg₀ hty₀ hdyn hlen hne
+                            (check_sound e hchk) hta hint hget₁ hg₁ hfo harr hnl
+                        · cases h
                       · cases h
                     · cases h
                   · cases h
@@ -710,6 +741,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
             · cases h
           · cases h
         · cases h
+
   | .drop pl, Γ, T, Γ', h => by
       simp only [check] at h
       split at h
@@ -833,6 +865,27 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
           subst hT
           exact .ret (check_sound e hchk) hnl rfl
         · cases h
+
+/-- Every `checkIdx` acceptance is a real index-list derivation at integer
+types. -/
+theorem checkIdx_sound {P : Program} {R : Ty} : ∀ (es : List Expr) {Γ : Ctx} {Ts Γ'},
+    checkIdx P R Γ es = some (Ts, Γ') → TypedArgs P R Γ es Ts Γ' ∧ Ts.all Ty.isInt = true
+  | [], Γ, Ts, Γ', h => by
+      simp only [checkIdx, Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨rfl, rfl⟩ := h
+      exact ⟨.nil, rfl⟩
+  | e :: es, Γ, Ts, Γ', h => by
+      simp only [checkIdx] at h
+      split at h
+      · rename_i w sg Γ₁ hchk
+        split at h
+        · rename_i Ts' Γ₂ hrest
+          simp only [Option.some.injEq, Prod.mk.injEq] at h
+          obtain ⟨rfl, rfl⟩ := h
+          obtain ⟨hta, hint⟩ := checkIdx_sound es hrest
+          exact ⟨.cons (check_sound e hchk) hta, by simp [Ty.isInt, hint]⟩
+        · cases h
+      · cases h
 
 /-- Every `checkArms` acceptance is a real (Match) §5.5 arm-list derivation. -/
 theorem checkArms_sound {P : Program} {R : Ty} {Γ₀ : Ctx} {T : Ty} :

@@ -668,7 +668,7 @@ def arrayBoundsTrap : Program :=
     fns := [{ params := [], ret := tI64, body := seq (dbg (call 1 [lit 1])) (call 1 [lit 5]) },
             { params := [⟨tI64, false⟩], ret := tI64,
               body := letIn false (mkArray tI64 [lit 10, lit 20, lit 30])
-                (indexRead (.var 0) (use (.var 1))) }] }
+                (indexRead (.var 0) [use (.var 1)] [[]]) }] }
 
 /-- Probe `a10`: a **dynamic**-index write, then the same write at `-1`.
 (Assign) §6.8 at a dynamic index overwrite-drops the old element — nothing,
@@ -680,7 +680,7 @@ def arrayDynWriteTrap : Program :=
     fns := [{ params := [], ret := tI64, body := seq (dbg (call 1 [lit 1])) (call 1 [lit (-1)]) },
             { params := [⟨tI64, false⟩], ret := tI64,
               body := letIn true (mkArray tI64 [lit 1, lit 2])
-                (seq (indexWrite (.var 0) (use (.var 1)) (lit 9))
+                (seq (indexWrite (.var 0) [use (.var 1)] [[]] (lit 9))
                   (binop .add (use (.idx (.var 0) 0)) (use (.idx (.var 0) 1)))) }] }
 
 /-- Probe `n4`: a dynamic-index write at an **affine**, destructor-bearing
@@ -695,7 +695,7 @@ def arrayDynWriteAffine : Program :=
     fns := [{ params := [], ret := tI64, body := call 1 [lit 0] },
             { params := [⟨tI64, false⟩], ret := tI64,
               body := letIn true (mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)])
-                (seq (indexWrite (.var 0) (use (.var 1)) (resA (lit 9))) (lit 7)) }] }
+                (seq (indexWrite (.var 0) [use (.var 1)] [[]] (resA (lit 9))) (lit 7)) }] }
 
 /-! ### The element-wise partial move, and what the array fragment refuses
 
@@ -863,7 +863,7 @@ def dynWriteNestedWhole : Expr :=
   letIn true (mkArray (.array (.struct sAffine) 2)
       [mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)],
        mkArray (.struct sAffine) [resA (lit 3), resA (lit 4)]])
-    (seq (indexWrite (.idx (.var 0) 1) (lit 0) (resA (lit 9))) (lit 7))
+    (seq (indexWrite (.idx (.var 0) 1) [lit 0] [[]] (resA (lit 9))) (lit 7))
 
 /-- The same write after `a[0]` was moved out (probe `c8`, E0480). `3.8:72`
 forbids writing *through* an element of an array that has a hole.
@@ -874,7 +874,7 @@ def dynWriteNestedAfterMove : Expr :=
        mkArray (.struct sAffine) [resA (lit 3), resA (lit 4)]])
     (letIn false (use (.idx (.var 0) 0))
       (seq (drop (.var 0))
-        (seq (indexWrite (.idx (.var 1) 1) (lit 0) (resA (lit 9))) (lit 7))))
+        (seq (indexWrite (.idx (.var 1) 1) [lit 0] [[]] (resA (lit 9))) (lit 7))))
 
 /-- Probe `a6`/`a6b`/`e4`, refused: an element move through a field, `h.a[0]`.
 `3.8:68` tracks element moves "only for indexing applied directly to an array
@@ -934,7 +934,7 @@ def arrayDynWriteAfterElemMove : Program :=
               body := letIn true (mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)])
                 (letIn false (use (.idx (.var 0) 0))
                   (seq (drop (.var 0))
-                    (seq (indexWrite (.var 1) (use (.var 2)) (resA (lit 9))) (lit 7)))) }] }
+                    (seq (indexWrite (.var 1) [use (.var 2)] [[]] (resA (lit 9))) (lit 7)))) }] }
 
 /-- Probe `a2b`: the repeat form at an affine element type. `7.1:38`
 restricts `[e; n]` to a `Copy` element, because the form materializes `n`
@@ -953,7 +953,7 @@ def arrayDynIndexAffine : Program :=
     fns := [{ params := [], ret := tI64, body := call 1 [lit 0] },
             { params := [⟨tI64, false⟩], ret := tI64,
               body := letIn false (mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)])
-                (letIn false (indexRead (.var 0) (use (.var 1)))
+                (letIn false (indexRead (.var 0) [use (.var 1)] [[]])
                   (seq (drop (.var 0)) (lit 0))) }] }
 
 /-- Probe `a9`: a constant index out of range. `7.1:9` bounds-checks a
@@ -976,7 +976,7 @@ def arrayDynWriteLinearElem : Program :=
             { params := [⟨tI64, false⟩], ret := tI64,
               body := letIn true (mkArray (.struct sCarry)
                   [mkStruct sCarry [lit 1, resLD (lit 1)], mkStruct sCarry [lit 2, resLD (lit 2)]])
-                (seq (indexWrite (.var 0) (use (.var 1)) (mkStruct sCarry [lit 9, resLD (lit 9)]))
+                (seq (indexWrite (.var 0) [use (.var 1)] [[]] (mkStruct sCarry [lit 9, resLD (lit 9)]))
                   (seq (drop (.var 0)) (lit 7))) }] }
 
 /-- Probe `a11`: an array of a **linear** element type left to scope exit.
@@ -2286,7 +2286,7 @@ compiler agrees (it prints `1 9 2 7`). The dynamic *read* of the same place is
 what (Use-Untrackable-Dynamic-Copy) refuses. -/
 def dynWriteUnderDeclared : Expr :=
   letIn true (mkStruct sDestrArr [mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)], lit 7])
-    (seq (indexWrite (.proj (.var 0) 0) (lit 0) (resA (lit 9)))
+    (seq (indexWrite (.proj (.var 0) 0) [lit 0] [[]] (resA (lit 9)))
       (use (.proj (.var 0) 1)))
 
 example : checkProgram (destrProg tI64 dynWriteUnderDeclared) = true := by rfl

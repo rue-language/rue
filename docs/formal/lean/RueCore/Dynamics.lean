@@ -515,6 +515,81 @@ theorem inBoundsIdx_eq_true {i : Int} {n : Nat} :
     inBoundsIdx i n = true ↔ (0 ≤ i ∧ i < (n : Int)) := by
   simp [inBoundsIdx]
 
+/-- Where the dynamic tail of a place lands: the constant path it resolves to
+once every index is a value and in range, §6.5's bounds trap, or a refusal
+(helper). -/
+inductive DynStep where
+  | ok (ρ : List Nat)
+  | bounds
+  | stuck (w : Violation)
+
+/-- **Resolve a dynamic tail** `[i₁]π₁…[iₖ]πₖ` against the contents it is taken
+in, to the constant path it denotes: §6.5's (D-Index)/(D-Index-Trap) at each
+dynamic step, "at the moment the path is navigated" (`7.1:10`). The steps are
+taken left to right, each bounds-checked at the array it indexes before the
+next is looked at; the index *values* were all computed before the first
+check, which is the compiler's order too (probe r11: `a[id(5)][id(0)]` prints
+`5` and `0`, then traps). Once resolved, the place is an ordinary constant
+path, and §6.3's `readAt` and §6.8's `writeAt` take it from there (helper). -/
+def Contents.resolveDyn : Contents → List Int → List (List Nat) → DynStep
+  | _, [], [] => .ok []
+  | .array _ cs, i :: is, π :: πs =>
+      if inBoundsIdx i cs.length then
+        (match cs[i.toNat]? with
+         | none => .stuck .typeConfusion
+         | some c =>
+           match c.readAt π with
+           | .error w => .stuck w
+           | .ok c' =>
+             match c'.resolveDyn is πs with
+             | .ok ρ => .ok (i.toNat :: (π ++ ρ))
+             | r => r)
+      else .bounds
+  | _, _, _ => .stuck .typeConfusion
+
+/-- The index values of a dynamic place, as integers; `none` where one is not
+an integer, which no well-typed program produces (helper). -/
+def Val.ints : List Val → Option (List Int)
+  | [] => some []
+  | .int _ _ i :: vs =>
+      match Val.ints vs with
+      | some is => some (i :: is)
+      | none => none
+  | _ :: _ => none
+
+/-- Where a place below a dynamic index lands in the store: the root's cell,
+its contents, the contents at the constant place `p`, and the constant path
+the dynamic tail resolved to under it — or the bounds trap, or a refusal
+(helper). -/
+inductive DynPlace where
+  | at (ℓ : Nat) (c sub : Contents) (ρ : List Nat)
+  | bounds
+  | stuck (w : Violation)
+
+/-- **Navigate a place below a dynamic index** (§6.3's `H(ℓ)@π` with §6.5's
+bounds check at every dynamic step), once its index values `vs` are known.
+One function for the read and the write, and for `eval` and its instrumented
+mirror (`Explain.lean`), so the four test the same thing (helper). -/
+def dynPlace (H : Store) (φ : Frame) (p : Place) (vs : List Val) (πs : List (List Nat)) :
+    DynPlace :=
+  match Val.ints vs with
+  | none => .stuck .typeConfusion
+  | some is =>
+    match φ.env[p.root]? with
+    | none => .stuck .unbound
+    | some ℓ =>
+      match H[ℓ]? with
+      | none => .stuck .unbound
+      | some .dead => .stuck .useAfterDrop
+      | some (.full c) =>
+        match c.readAt p.path with
+        | .error w => .stuck w
+        | .ok sub =>
+          match sub.resolveDyn is πs with
+          | .ok ρ => .at ℓ c sub ρ
+          | .bounds => .bounds
+          | .stuck w => .stuck w
+
 /-- Whether the contents stored at a position is a struct **declared**
 `linear`: the same mark `Ty.declaredLinear` (`Syntax.lean`) reads, read off the
 declaration index §6.1's `{ v1, …, vk }_S` carries rather than off a type
@@ -1275,79 +1350,63 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
       -- into each of the `n` slots, which is well defined because `7.1:38`
       -- makes the element type `Copy`.
       (eval M fuel P H φ e).andThen fun H' v => .ok H' (.array T (List.replicate n v)) []
-  | fuel + 1, P, H, φ, .indexRead p e =>
-      -- (D-Index)/(D-Index-Trap) §6.5 at a **dynamic** index: §6.2's `v[E]`
-      -- context reduces the index first, then the place is navigated and the
-      -- index is bounds-checked "at the moment the path is navigated"
-      -- (`7.1:10`) — before the element is read. In range, §6.3's ordinary
-      -- copy rule hands the element on and leaves the array alone, which is
-      -- the whole of the `class(T) = Copy` restriction §5.1 puts on this form.
-      (eval M fuel P H φ e).andThen fun H₁ iv =>
-        match iv with
-        | .int _ _ i =>
-          (match φ.env[p.root]? with
-           | none => .stuck .unbound
-           | some ℓ =>
-             match H₁[ℓ]? with
-             | none => .stuck .unbound
-             | some .dead => .stuck .useAfterDrop
-             | some (.full c) =>
-               match c.readAt p.path with
-               | .error w => .stuck w
-               | .ok sub =>
-                 match sub with
-                 | .array _ cs =>
-                     if inBoundsIdx i cs.length then
-                       (match cs[i.toNat]? with
-                        | none => .stuck .typeConfusion
-                        | some ec =>
-                          match ec.toVal with
-                          | none => .stuck .useAfterMove
-                          | some v => .ok H₁ v [])
-                     else .panic .bounds []
-                 | _ => .stuck .typeConfusion)
-        | _ => .stuck .typeConfusion
-  | fuel + 1, P, H, φ, .indexWrite p e₁ e₂ =>
-      -- (D-Assign) §6.8 at a dynamic index: §6.2 reduces the place's index
-      -- subexpression first and then the right-hand side, and the bounds
-      -- check fires where the path is navigated (`7.1:10`), after both. The
-      -- overwrite-drop of what was there runs as §6.8 says — its glue on an
-      -- affine element, nothing on a `Copy` one, and the `linearOverwrite`
-      -- monitor where the residue is linear, which the statics' own
-      -- `overwriteOk`/`3.8:77` premise keeps out of a checked program — and
-      -- then the whole array is written back with that one slot replaced.
-      (eval M fuel P H φ e₁).andThen fun H₁ iv =>
-        (eval M fuel P H₁ φ e₂).andThen fun H₂ v =>
-          match iv with
-          | .int _ _ i =>
-            (match φ.env[p.root]? with
-             | none => .stuck .unbound
-             | some ℓ =>
-               match H₂[ℓ]? with
-               | none => .stuck .unbound
-               | some .dead => .stuck .useAfterDrop
-               | some (.full c) =>
-                 match c.readAt p.path with
-                 | .error w => .stuck w
-                 | .ok sub =>
-                   match sub with
-                   | .array T' cs =>
-                       if inBoundsIdx i cs.length then
-                         (match cs[i.toNat]? with
-                          | none => .stuck .typeConfusion
-                          | some old =>
-                            if old.residualLinear P.decls then .stuck .linearOverwrite
-                            else
-                              match dropCell P.decls ℓ old with
-                              | .error w => .stuck w
-                              | .ok evs =>
-                                match c.writeAt p.path
-                                    (.array T' (cs.set i.toNat (Contents.ofVal v))) with
-                                | none => .stuck .typeConfusion
-                                | some c' => .ok (H₂.set ℓ (.full c')) .unit evs)
-                       else .panic .bounds []
-                   | _ => .stuck .typeConfusion)
-          | _ => .stuck .typeConfusion
+  | fuel + 1, P, H, φ, .indexRead p idx πs =>
+      -- (D-Index)/(D-Index-Trap) §6.5 at a place below one or more **dynamic**
+      -- indices: §6.2's `v[E]` contexts reduce the index expressions left to
+      -- right first, then the place is navigated and each index is
+      -- bounds-checked "at the moment the path is navigated" (`7.1:10`) —
+      -- before anything is read. In range, §6.3's ordinary copy rule hands
+      -- the leaf on and leaves the array alone, which is the whole of the
+      -- `class(T) = Copy` restriction §5.1 puts on this form.
+      (match evalArgs (fun H' e => eval M fuel P H' φ e) H idx with
+       | .abort r => r
+       | .ok H₁ vs tr =>
+         EvalRes.withTrace tr <|
+           match dynPlace H₁ φ p vs πs with
+           | .stuck w => .stuck w
+           | .bounds => .panic .bounds []
+           | .at _ _ sub ρ =>
+             match sub.readAt ρ with
+             | .error w => .stuck w
+             | .ok leaf =>
+               match leaf.toVal with
+               | none => .stuck .useAfterMove
+               | some v => .ok H₁ v [])
+  | fuel + 1, P, H, φ, .indexWrite p idx πs e =>
+      -- (D-Assign) §6.8 below a dynamic index, in `5.2:14`'s order: the
+      -- right-hand side first, then the index expressions left to right
+      -- (§6.2's `assign p = E` and `assign p[ v̄, E, … ] = v`), then the
+      -- navigation with the bounds check at every dynamic step (`7.1:10`),
+      -- then the overwrite-drop of what the leaf held — its glue on an
+      -- affine leaf, nothing on a `Copy` one, and the `linearOverwrite`
+      -- monitor where the residue is linear, which the statics' `3.8:77`
+      -- premise keeps out of a checked program — and then the store. A trap
+      -- or an unwinding `return` in an index abandons the evaluated
+      -- right-hand side undropped: a panic runs no drops (§6.12), and the
+      -- compiler does the same (probes r08, r14).
+      (eval M fuel P H φ e).andThen fun H₁ v =>
+        match evalArgs (fun H' e' => eval M fuel P H' φ e') H₁ idx with
+        | .abort r => r
+        | .ok H₂ vs tr =>
+          EvalRes.withTrace tr <|
+            match dynPlace H₂ φ p vs πs with
+            | .stuck w => .stuck w
+            | .bounds => .panic .bounds []
+            | .at ℓ c sub ρ =>
+              match sub.readAt ρ with
+              | .error w => .stuck w
+              | .ok old =>
+                if old.residualLinear P.decls then .stuck .linearOverwrite
+                else
+                  match dropCell P.decls ℓ old with
+                  | .error w => .stuck w
+                  | .ok evs =>
+                    match sub.writeAt ρ (Contents.ofVal v) with
+                    | none => .stuck .typeConfusion
+                    | some sub' =>
+                      match c.writeAt p.path sub' with
+                      | none => .stuck .typeConfusion
+                      | some c' => .ok (H₂.set ℓ (.full c')) .unit evs
   | _ + 1, P, H, φ, .drop p =>
       -- §6.11's explicit `@drop(p)`: at a `Declared(d, π_s)` plan it is the
       -- §6.3 destructure with the selected leaf dropped too — residue first,

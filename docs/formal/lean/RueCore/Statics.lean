@@ -2674,91 +2674,112 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   | repeatArray {Γ Γ' T e n} :
       Typed P R Γ e T Γ' → T.mult P.decls = .copy →
       Typed P R Γ (.repeatArray T e n) (.array T n) Γ'
-  /-- (Use-Untrackable-Dynamic-Copy) §5.1, at the read `p[e]` whose index is
-  not a compile-time constant: §4.2's `Untrackable(OrdinaryDynamic)` plan, and
-  the *only* successful static rule for it. `class(T) = Copy` is the rule's own
-  premise, and §4.2's "there is no successful static rule … when
-  `class(T) ∈ {Affine,Linear}`" is that premise's absence rather than a
-  rejection of its own (E0904, probe `a5`). `fully-owned(Σ, p)` is stronger
-  than §5.1's `Σ(p) = Owned` and is `3.8:70`/`7.1:45`'s own rule: "it is a
-  compile-time error … to index the array with a non-constant index" while an
-  element is moved out, "because the compiler cannot know at compile time
-  whether a runtime index denotes a moved-out element". `declaredPrefix … =
-  none` keeps §4.2's `Untrackable(DeclaredLinearDynamic)` — ill-formed there —
-  without an instance: a base under a declared-`linear` prefix draws the
-  `Declared` plan, and this rule refuses it. The index is typed **first** and Σ threaded through it, and the
-  base place is read on the resulting context; `eval` runs the two in the same
-  order. `4.11:14` states the opposite for a full index *expression* — "the
-  base expression is evaluated before the index expression" — and §6.2's
-  `E[e]`/`v[E]` contexts are that order. It is unobservable here because the
-  base is a `Place`, not an expression: reading a place runs nothing, allocates
-  nothing and threads no Σ of its own, so the two orders agree on every
-  program. The order becomes observable only when a base expression can have
-  an effect, which is a form this fragment does not have. The read copies, so
-  the outgoing state is the index's. Whether the index is *in range*
-  is dynamic (`7.1:10`, §6.5's (D-Index-Trap)), not a typing question. -/
-  | indexRead {Γ Γ₁ p e en u T n w s} :
-      Typed P R Γ e (.int w s) Γ₁ →
+  /-- (Use-Untrackable-Dynamic-Copy) §5.1, at a read `p[e₁]π₁…[eₖ]πₖ` below one
+  or more indices that are not compile-time constants: §4.2's
+  `Untrackable(OrdinaryDynamic)` plan, and the *only* successful static rule
+  for it. The place is `p` (a constant `Place`), then `k ≥ 1` dynamic steps,
+  each followed by a constant path of field slots and constant indices, so
+  `a[i]`, `a[i].x0`, `h.arr[i].x0`, `a[i][j]` and `a[i][0].x1` are all this
+  form (probes q01, q08, q09, q10). `Place` stays constant-only: a dynamic step
+  is never a path of Σ, which is what keeps Σ finite (`3.8:68`).
+
+  The premises, in the order the rule reads them.
+  * The index expressions are typed **left to right** at integer types, with Σ
+    threaded (`TypedArgs` at a list of `int(w,s)`; `4.11:4` admits any integer
+    type), and the place is read on the resulting context; `eval` runs them in
+    the same order. `4.11:14` puts a full index expression's *base* before its
+    index, and that is unobservable here because the base is a `Place`: reading
+    one runs nothing and threads no Σ.
+  * `fully-owned(Σ, p)` at the array the **first** dynamic step indexes —
+    stronger than §5.1's `Σ(p) = Owned`, and `3.8:70`/`7.1:45`'s own rule: it
+    is an error "to index the array with a non-constant index" while an element
+    is moved out (E0205; probes q06, q19). It is `p`, not the root binding:
+    `a[0][i]` after `a[1]` moved reads a whole `a[0]`, and the compiler accepts
+    it (probe r01). A later dynamic step needs nothing more, because
+    `fully-owned` at `p` is `fully-owned` at everything under it.
+  * `Γ ⊢ p[…]… : T` is `Ty.atPath` to `p` and then `Ty.atDyn` through the
+    dynamic tail, which fails unless every dynamic step is taken at an array.
+  * `class(T) = Copy` is the rule's own premise, and §4.2's "there is no
+    successful static rule … when `class(T) ∈ {Affine,Linear}`" is that
+    premise's absence rather than a rejection of its own (E0904; probes q02,
+    q15).
+  * No declared-`linear` proper prefix anywhere along the complete path:
+    `declaredPrefix … = none` above the first dynamic step and
+    `Ty.dynNoDeclared` below it keep §4.2's
+    `Untrackable(DeclaredLinearDynamic)` — ill-formed there — without an
+    instance (E0904; probes q11, r07).
+
+  The read copies, so the outgoing state is the indices'. Whether each index
+  is *in range* is dynamic (`7.1:10`, §6.5's (D-Index-Trap)), not a typing
+  question. -/
+  | indexRead {Γ Γ₁ p idx πs Ts en u Ta T} :
+      TypedArgs P R Γ idx Ts Γ₁ → Ts.all Ty.isInt = true →
+      idx.length = πs.length → πs ≠ [] →
       Γ₁[p.root]? = some en →
       en.st.get p.path = some u → u.fullyOwned = true →
-      en.ty.atPath P.decls p.path = some (.array T n) →
+      en.ty.atPath P.decls p.path = some Ta →
+      Ta.atDyn P.decls πs = some T →
       T.mult P.decls = .copy →
       declaredPrefix P.decls en.ty p.path = none →
-      Typed P R Γ (.indexRead p e) T Γ₁
-  /-- (Assign) §5.2 at a dynamic index, `p[e₁] = e₂` (`7.1:30`, `4.11:12`): an
-  in-place mutation that modifies the array without moving it. The root must be
-  a `μ = mut` binding (§5 preamble), and the index reduces before the
-  right-hand side (§6.2: "`assign p = E` — right-hand side (`p`'s index
-  subexpressions reduce first)") with Σ threaded in that order.
+      Ta.dynNoDeclared P.decls πs = true →
+      Typed P R Γ (.indexRead p idx πs) T Γ₁
+  /-- (Assign) §5.2 below a dynamic index, `p[e₁]π₁…[eₖ]πₖ = e` (`7.1:30`,
+  `4.11:12`): an in-place mutation that modifies the array without moving it.
+  The root must be a `μ = mut` binding (§5 preamble).
+
+  **The right-hand side is typed first**, then the index expressions left to
+  right, with Σ threaded in that order: `5.2:14` is normative ("the right-hand
+  side `expression` is evaluated first … any index subexpressions appearing in
+  the target … are evaluated after the right-hand side, in source order"),
+  §6.2's `assign p = E` context says the same, and the compiler agrees (probes
+  q14, q20, r10).
 
   The destination is **not** a use, so the read's `class(T) = Copy` premise
-  does not transfer here: §4.2's plans classify a value-context use, and what
-  (Assign) demands of a destination is its own last premise,
-  `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` — `overwriteOk`/`3.8:77`, the same
-  premise `Typed.assign` carries, read at the **element** type on the post-RHS
-  state. A runtime index can never establish `MovedOut` at the element, so the
-  disjunction bites as its right half: an affine, even destructor-bearing,
-  element type is admitted (and the machine's overwrite-drop below runs its
-  glue), while a linear-carrying one is refused, which is the compiler's E0493.
+  does not transfer here: what (Assign) demands of a destination is its own
+  last premise, `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` at the leaf. A place
+  under a runtime index can never be proven `MovedOut` (`3.8:77`), so the
+  disjunction is its right half, `class(T) ≠ Linear`: an affine, even
+  destructor-bearing, leaf is admitted and the machine's overwrite-drop runs
+  its glue (probe q04), while a linear-carrying one is E0493 (probe q05).
 
-  There is **no plan premise**: §4.2's plans classify value-context uses,
-  and an assignment destination is not one, so a dynamic-index write into an
-  array field of a declared-`linear` struct (`v0.x0[i] = 9`) is admitted here
-  exactly as the compiler admits it (second-review probe c3, which prints
-  `1 9 2 7`). The write lands on an element the declared-`linear` place still
-  owns whole — `fully-owned` below is what guards that — and consumes nothing,
-  so `Untrackable(DeclaredLinearDynamic)` has no instance at a write; its one
-  instance is the dynamic *read*, which `indexRead` refuses. The arrays part
-  carried `declaredPrefix … = none` here as a restriction of its own; it is
-  dropped with the destructure mechanized.
+  There is **no plan premise**: §4.2's plans classify value-context uses, and
+  an assignment destination is not one. The compiler admits a dynamic-index
+  write under a declared-`linear` prefix above the index (`v0.x0[i] = 9`,
+  second-review probe c3; `v.arr[i].x1 = 9`, probe r06) **and** below it
+  (`a[i].x0 = 5` on `[L; 2]` with `L` declared `linear`, probe r05, which
+  prints `6`). The write lands on a leaf the declared-`linear` place still
+  owns whole — `fully-owned` below guards that — and consumes nothing, so
+  `Untrackable(DeclaredLinearDynamic)` has no instance at a write.
 
-  Two more of (Assign)'s clauses are discharged rather than restated.
-  `3.8:72`/`7.1:46` — "while one or more elements of an array are moved out, it
-  is a compile-time error to assign into the array" — is `fully-owned(Σ, p)` on
-  the post-RHS state at the array being written, and `assignArrayOk` at any
-  array the path stepped through to reach it (`a[1][i] = …` after a move of
-  `a[0]` is E0480, probe c8). And `3.8:55`'s reinitialization is (Assign)'s own
-  `Σ1[p ↦ Owned]`, taken at the **whole array** rather than at the element:
-  `7.1:46` says an element write "does not reinstate per-element ownership",
-  and on the `fully-owned` premise there is nothing to reinstate, so writing
-  `Owned` at `p` is the rule as §5.2 states it and changes no path's state.
+  `3.8:72`/`7.1:46` — "while one or more elements of an array are moved out,
+  it is a compile-time error to assign into the array" — is `fully-owned(Σ, p)`
+  on the post-operand state at the array the first dynamic step indexes, and
+  `assignArrayOk` at any array the constant place stepped through to reach it
+  (`a[0][i].k = 5` after a move of `a[1]` is E0480, probe r02; `a[i].k = 5`
+  after `a[0]` moved, probes q07, q18). And `3.8:55`'s reinitialization is
+  (Assign)'s own `Σ1[p ↦ Owned]`, taken at the **whole array** `p`: `7.1:46`
+  says an element write "does not reinstate per-element ownership", and on
+  the `fully-owned` premise there is nothing to reinstate, so writing `Owned`
+  at `p` changes no path's state.
 
   `en₀.st.get p.path = some u₀` constrains `u₀` nowhere, and deliberately: it
   is (Assign)'s own incoming `Σ(p)` lookup, whose content is that the
   destination path is *reachable* — `OwnSt.get` is `none` under a moved-out
   prefix — while every condition on the state itself is read after the operands
   have run, on `u₁`, because that is the state the write overwrites. -/
-  | indexWrite {Γ Γ₁ Γ₂ p e₁ e₂ en₀ en₁ u₀ u₁ T n w s} :
+  | indexWrite {Γ Γ₁ Γ₂ p idx πs e en₀ en₁ u₀ u₁ Ts Ta T} :
       Γ[p.root]? = some en₀ → en₀.mu = true →
       en₀.st.get p.path = some u₀ →
-      en₀.ty.atPath P.decls p.path = some (.array T n) →
-      Typed P R Γ e₁ (.int w s) Γ₁ →
-      Typed P R Γ₁ e₂ T Γ₂ →
+      en₀.ty.atPath P.decls p.path = some Ta →
+      Ta.atDyn P.decls πs = some T →
+      idx.length = πs.length → πs ≠ [] →
+      Typed P R Γ e T Γ₁ →
+      TypedArgs P R Γ₁ idx Ts Γ₂ → Ts.all Ty.isInt = true →
       Γ₂[p.root]? = some en₁ →
       en₁.st.get p.path = some u₁ → u₁.fullyOwned = true →
       assignArrayOk P.decls en₁.st en₁.ty p.path = true →
-      (u₁ = .movedOut ∨ T.mult P.decls ≠ .linear) →
-      Typed P R Γ (.indexWrite p e₁ e₂) .unit
+      T.mult P.decls ≠ .linear →
+      Typed P R Γ (.indexWrite p idx πs e) .unit
         (Γ₂.set p.root (en₁.setSt (en₁.st.setAt p.path .owned)))
   /-- (@Drop-Copy) §5.3: no drop glue, no ownership effect. §5.3 gives it
   neither of (@Drop)'s projection premises — a `Copy` place is moved by
@@ -3288,8 +3309,8 @@ theorem Typed.skel_preserved {P R} {Γ Γ' : Ctx} {e T} (h : Typed P R Γ e T Γ
   | mkStruct _ _ ih => exact ih
   | mkArray _ ih => exact ih
   | repeatArray _ _ ih => exact ih
-  | indexRead _ _ _ _ _ _ _ ih => exact ih
-  | indexWrite _ _ _ _ _ _ hget₁ _ _ _ _ ih₁ ih₂ =>
+  | indexRead _ _ _ _ _ _ _ _ _ _ _ _ ih => exact ih
+  | indexWrite _ _ _ _ _ _ _ _ _ _ hget₁ _ _ _ _ ih₁ ih₂ =>
       exact (skel_set_setSt hget₁ _).trans (ih₂.trans ih₁)
   | mkEnum _ _ _ ih => exact ih
   | «match» _ _ _ _ hjoin ihs iharms =>
@@ -3339,8 +3360,8 @@ theorem TypedArgs.skel_preserved {P R} {Γ Γ' : Ctx} {es Ts} (h : TypedArgs P R
   | mkStruct _ _ ih => exact ih
   | mkArray _ ih => exact ih
   | repeatArray _ _ ih => exact ih
-  | indexRead _ _ _ _ _ _ _ ih => exact ih
-  | indexWrite _ _ _ _ _ _ hget₁ _ _ _ _ ih₁ ih₂ =>
+  | indexRead _ _ _ _ _ _ _ _ _ _ _ _ ih => exact ih
+  | indexWrite _ _ _ _ _ _ _ _ _ _ hget₁ _ _ _ _ ih₁ ih₂ =>
       exact (skel_set_setSt hget₁ _).trans (ih₂.trans ih₁)
   | mkEnum _ _ _ ih => exact ih
   | «match» _ _ _ _ hjoin ihs iharms =>
@@ -3394,8 +3415,8 @@ theorem TypedArms.arm_skel {P R} {Γ₀ : Ctx} {arms Tss T} {Γs : List Ctx}
   | mkStruct _ _ ih => exact ih
   | mkArray _ ih => exact ih
   | repeatArray _ _ ih => exact ih
-  | indexRead _ _ _ _ _ _ _ ih => exact ih
-  | indexWrite _ _ _ _ _ _ hget₁ _ _ _ _ ih₁ ih₂ =>
+  | indexRead _ _ _ _ _ _ _ _ _ _ _ _ ih => exact ih
+  | indexWrite _ _ _ _ _ _ _ _ _ _ hget₁ _ _ _ _ ih₁ ih₂ =>
       exact (skel_set_setSt hget₁ _).trans (ih₂.trans ih₁)
   | mkEnum _ _ _ ih => exact ih
   | «match» _ _ _ _ hjoin ihs iharms =>
