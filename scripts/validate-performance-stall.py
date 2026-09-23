@@ -8,19 +8,38 @@ next epoch, which is a small manifest change, and a genuine emergency is served
 by bypassing branch protection rather than by machinery kept here for the
 purpose.
 
-"Stalled" is measured in merged trunk commits rather than wall-clock, because
-commit count degrades gracefully across quiet weekends while a clock does not.
+"Stalled" is measured in trunk merges rather than wall-clock, because a merge
+count degrades gracefully across quiet weekends while a clock does not, and in
+merges rather than commits, because collection publishes once per push to
+trunk (`performance-collect.yml`, `on: push`) and the merge queue turns one
+merge into one push regardless of how many commits it rebases onto trunk: a
+twelve-commit merge is one missed collection opportunity, not twelve
+(RUE-2343). The queue's rebase stamps every commit of one merge with the same
+committer time, which is what distinguishes a merge here without an API call.
+Verified against several hundred commits of real trunk history: the newest
+plotted commit's timestamp groups matched the PRs GitHub reports for every
+sampled commit and boundary, including the incident's own 12-commit merge.
+Almost every push is one merge and one timestamp group, but a minority of
+pushes bundle more than one queue-ready PR into a single push, and each PR
+keeps its own rebase timestamp — that push then reads as two or three merges
+rather than one. The overcount is small and safe in this gate's direction: it
+can only make a healthy series look more behind than it is, never less, and
+the threshold and recency guard below both have room to absorb it. No offline
+signal recovers push boundaries exactly, because the gap between two merges
+bundled into one push is not reliably smaller than the gap between two
+genuinely separate pushes.
+
 Collection legitimately lags trunk by minutes, and a single failed collection
 should not block the repository, so the threshold tolerates both. The count
-alone misreads one healthy situation: a merge burst, where multi-commit queue
-merges land faster than the per-push collector publishes and every open pull
+alone misreads one healthy situation: several merges landing in quick
+succession, faster than the per-push collector publishes, so every open pull
 request fails on a series that is actively advancing (three retriggers in one
 night, 2026-08-16). A recency guard absorbs that case — a count past the
 threshold only fails when the newest plotted commit is also older than the
 grace window, which a burst never produces and a dead collector always does.
 
 Three things can stop, and all three are checked here. Points can stop arriving,
-which is what the commit-count rule catches. Points can also keep arriving while
+which is what the merge-count rule catches. Points can also keep arriving while
 the headline index they exist to move goes missing, in two ways that look
 identical on the page and are opposite in the manifest. An epoch whose declared
 baseline resolves to nothing publishes a ratio for no workload (RUE-1486). An
@@ -47,11 +66,11 @@ import sys
 import time
 from pathlib import Path
 
-# Five merged trunk commits with no new plotted point, per platform (RUE-1258).
+# Five trunk merges with no new plotted point, per platform (RUE-1258).
 # Low enough to catch a real stall within hours at the current merge rate; high
 # enough that one failed collection, or collection simply lagging a merge, never
 # blocks a pull request.
-DEFAULT_MAX_COMMITS = 5
+DEFAULT_MAX_MERGES = 5
 
 # The recency guard: a series whose newest plotted commit is younger than this
 # is actively collecting, whatever the commit count says. Two hours covers the
@@ -60,14 +79,17 @@ DEFAULT_GRACE_SECONDS = 2 * 60 * 60
 
 # Complete runs an epoch may collect before it must have pinned a baseline
 # (RUE-1533). Counted in the epoch's own collected points rather than in trunk
-# commits, which is what every other rule here counts, for two reasons.
+# merges, which is what the stall rule above counts, for two reasons.
 #
-# Trunk commits are the right unit for "collection stopped", where the question
-# is how far the series has fallen behind the tree. They are the wrong unit for
-# "a maintainer has not done something yet", because commits do not arrive one
-# at a time: the RUE-1522 stack put twelve on trunk in a single merge, so a
-# twenty-commit deadline can expire in the time it takes one pull request to
-# land. Points arrive once per collection, so a stack costs one.
+# Trunk merges are the right unit for "collection stopped", where the question
+# is how far the series has fallen behind the tree regardless of whether a
+# push produced anything usable. They are the wrong unit for "a maintainer has
+# not done something yet", because a merge is an opportunity to collect, not a
+# collected run: the RUE-1522 stack put twelve commits on trunk in a single
+# merge, which already counts as one opportunity, but a merge whose collection
+# fails still spends a merge-counted deadline without ever giving a maintainer
+# a run to pin. Points arrive once per successful collection, so only a run
+# that could actually be pinned spends this deadline.
 #
 # Points also measure from inside the epoch. A deadline counted from the
 # measured commit to trunk gives an epoch declared while collection is behind
@@ -241,36 +263,52 @@ def unpinned(
 
 def stalled(
     data: dict,
-    commits_since,
+    merges_since,
     commit_age=None,
-    max_commits: int = DEFAULT_MAX_COMMITS,
+    max_merges: int = DEFAULT_MAX_MERGES,
     grace_seconds: int = DEFAULT_GRACE_SECONDS,
 ) -> list[tuple[str, str, int]]:
-    """Return (platform, commit, commits_behind) for every stalled platform.
+    """Return (platform, commit, merges_behind) for every stalled platform.
 
-    `commits_since` maps a commit to the number of trunk commits merged after
-    it; `commit_age` maps a commit to its age in seconds. Both are injected
-    rather than called directly so the rule is testable without a repository.
-    A count past the threshold fails only when the newest plotted commit has
-    also outlived the grace window: an actively collecting series always has
-    a recent newest commit, however fast trunk is moving.
+    `merges_since` maps a commit to the number of trunk merges after it;
+    `commit_age` maps a commit to its age in seconds. Both are injected rather
+    than called directly so the rule is testable without a repository. A count
+    past the threshold fails only when the newest plotted commit has also
+    outlived the grace window: an actively collecting series always has a
+    recent newest commit, however fast trunk is moving.
     """
     behind = []
     for platform, commit, _ in newest_plotted(data):
-        count = commits_since(commit)
-        if count > max_commits:
+        count = merges_since(commit)
+        if count > max_merges:
             if commit_age is not None and commit_age(commit) <= grace_seconds:
                 continue
             behind.append((platform, commit, count))
     return behind
 
 
-def git_commits_since(repo: Path, ref: str):
-    """Count trunk commits merged after a given commit."""
+def count_merge_groups(timestamps: list[str]) -> int:
+    """Count trunk merges from a list of commit committer timestamps (`%ct`).
+
+    The merge queue's rebase stamps every commit of one merge with the same
+    committer time, so the number of distinct values counts merges without an
+    API call (RUE-2343). Verified against real trunk history: almost every
+    push is one merge and one timestamp group; a minority bundle more than one
+    queue-ready pull request into a single push, and each keeps its own
+    rebase timestamp, so that push reads as more than one merge here. See
+    `scripts/validate-performance-stall.py`'s module docstring for why that
+    overcount is small and safe in this gate's direction.
+    """
+    return len(set(timestamps))
+
+
+def git_merges_since(repo: Path, ref: str):
+    """Count trunk merges after a given commit, from committer-timestamp
+    groups (RUE-2343; see `count_merge_groups`)."""
 
     def count(commit: str) -> int:
         result = subprocess.run(
-            ["git", "-C", str(repo), "rev-list", "--count", f"{commit}..{ref}"],
+            ["git", "-C", str(repo), "log", "--format=%ct", f"{commit}..{ref}"],
             capture_output=True,
             text=True,
         )
@@ -279,10 +317,10 @@ def git_commits_since(repo: Path, ref: str):
             # measured commit. Distinguished from "not stalled" on purpose: a
             # gate that cannot see the history must say so rather than pass.
             raise HistoryUnavailable(
-                f"could not count commits between {commit[:12]} and {ref}: "
+                f"could not count merges between {commit[:12]} and {ref}: "
                 f"{result.stderr.strip()}"
             )
-        return int(result.stdout.strip())
+        return count_merge_groups(result.stdout.split())
 
     return count
 
@@ -306,7 +344,7 @@ def git_commit_age(repo: Path):
     return age
 
 
-def report(behind: list[tuple[str, str, int]], max_commits: int) -> str:
+def report(behind: list[tuple[str, str, int]], max_merges: int) -> str:
     lines = [
         "The published performance series has stopped advancing.",
         "",
@@ -314,7 +352,7 @@ def report(behind: list[tuple[str, str, int]], max_commits: int) -> str:
     for platform, commit, count in behind:
         lines.append(
             f"  {platform}: newest plotted point is {commit[:12]}, "
-            f"{count} trunk commits behind (threshold {max_commits})"
+            f"{count} trunk merges behind (threshold {max_merges})"
         )
     lines += [
         "",
@@ -436,7 +474,14 @@ def main() -> int:
         default="origin/trunk",
         help="the branch a stall is measured against (default: origin/trunk)",
     )
-    parser.add_argument("--max-commits", type=int, default=DEFAULT_MAX_COMMITS)
+    parser.add_argument(
+        "--max-merges",
+        "--max-commits",  # RUE-2343: pre-rename name, kept as an alias.
+        dest="max_merges",
+        type=int,
+        default=DEFAULT_MAX_MERGES,
+        help="trunk merges with no new plotted point before a platform is stalled",
+    )
     parser.add_argument(
         "--grace-minutes",
         type=int,
@@ -469,9 +514,9 @@ def main() -> int:
     try:
         behind = stalled(
             data,
-            git_commits_since(args.repo, args.ref),
+            git_merges_since(args.repo, args.ref),
             git_commit_age(args.repo),
-            args.max_commits,
+            args.max_merges,
             args.grace_minutes * 60,
         )
     except HistoryUnavailable as error:
@@ -484,7 +529,7 @@ def main() -> int:
         return 2
 
     if behind:
-        print(report(behind, args.max_commits), file=sys.stderr)
+        print(report(behind, args.max_merges), file=sys.stderr)
         return 1
 
     missing = unindexed(data)
