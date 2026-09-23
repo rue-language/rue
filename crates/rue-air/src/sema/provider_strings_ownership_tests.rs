@@ -1492,7 +1492,11 @@ fn loan_of_partially_moved_place_fixture() -> ProviderFixture {
     ] {
         fixture.declare_function(
             name,
-            vec![mode_param("p", SemanticImportType::Nominal(p.clone()), mode)],
+            vec![mode_param(
+                "p",
+                SemanticImportType::Nominal(p.clone()),
+                mode,
+            )],
             SemanticImportType::I64,
         );
     }
@@ -1559,7 +1563,9 @@ fn provider_body_loan_of_place_with_moved_part_below_rejected() {
         assert_use_after_move_of(&error, moved);
         let helps = &error.diagnostic().helps;
         assert!(
-            helps.iter().all(|help| !help.to_string().contains("borrow"))
+            helps
+                .iter()
+                .all(|help| !help.to_string().contains("borrow"))
                 && helps
                     .iter()
                     .any(|help| help.to_string().contains("reinitialize")),
