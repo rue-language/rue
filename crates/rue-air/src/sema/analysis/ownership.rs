@@ -3803,6 +3803,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let mut marker_depth = trace.projections.len();
             if is_byref_arg_use {
                 self.reject_read_through_moved_path(&trace, ctx, span)?;
+                self.reject_loan_of_partially_moved_place(&trace, ctx, span)?;
             } else if is_declared_linear {
                 // For a declared-linear struct, field access destructures and
                 // so consumes that struct's whole value (3.8:33).
@@ -3879,10 +3880,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // Copy leaf read below which only cares about ancestors.
                 if let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) {
                     // An exact or ancestor move always makes this place dead.
-                    // The @drop exception waives only the descendant half of
-                    // the ordinary check; at a branch join an exact move and
-                    // a descendant move can both be present on different
-                    // incoming paths.
+                    // The @drop exception waives only the descendant half
+                    // (`reject_moved_part_below`); at a branch join an exact
+                    // move and a descendant move can both be present on
+                    // different incoming paths.
                     if let Some(moved_span) = state.is_path_moved(&field_path) {
                         return Err(super::use_after_move_path_error(
                             self.body_interner(),
@@ -3892,23 +3893,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             moved_span,
                         ));
                     }
-                    let has_strict_descendant = state.partial_moves.iter().any(|(path, _)| {
-                        path.len() > field_path.len() && path.starts_with(&field_path)
-                    });
-                    if ctx.ownership.drop_intrinsic_operand != Some(trace.root_var)
-                        || !has_strict_descendant
-                    {
-                        if let Some(moved_span) = state.is_path_or_descendant_moved(&field_path) {
-                            return Err(super::use_after_move_path_error(
-                                self.body_interner(),
-                                trace.root_var,
-                                &field_path,
-                                span,
-                                moved_span,
-                            ));
-                        }
-                    }
                 }
+                self.reject_moved_part_below(trace.root_var, &field_path, ctx, span)?;
 
                 // Mark this field path as moved
                 self.reject_move_of_call_loaned_root(trace.root_var, span, ctx)?;
@@ -4355,6 +4341,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             if is_byref_arg_use {
                 self.reject_read_through_moved_path(&trace, ctx, span)?;
                 self.check_read_through_moved_element(&trace, ctx, span)?;
+                self.reject_loan_of_partially_moved_place(&trace, ctx, span)?;
             } else if let Some(declared_depth) = trackable_declared_depth {
                 self.reject_accessor_place_move(&trace, elem_type, span)?;
                 self.reject_field_move_out_of_destructor_type(&trace, span)?;
@@ -6515,7 +6502,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let elem_path = vec![self.intern_index_path_segment(k as u64)?];
         if let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) {
             // Whole-element move: reject if the element itself or an ancestor
-            // was already moved. A descendant move is also rejected except
+            // was already moved. A descendant move is rejected below, except
             // for the matching explicit-@drop residue walk.
             if let Some(moved_span) = state.is_path_moved(&elem_path) {
                 return Err(use_after_move_path_error(
@@ -6526,23 +6513,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     moved_span,
                 ));
             }
-            let has_strict_descendant = state
-                .partial_moves
-                .iter()
-                .any(|(path, _)| path.len() > elem_path.len() && path.starts_with(&elem_path));
-            if (ctx.ownership.drop_intrinsic_operand != Some(trace.root_var)
-                || !has_strict_descendant)
-                && let Some(moved_span) = state.is_path_or_descendant_moved(&elem_path)
-            {
-                return Err(use_after_move_path_error(
-                    self.body_interner(),
-                    trace.root_var,
-                    &elem_path,
-                    span,
-                    moved_span,
-                ));
-            }
         }
+        self.reject_moved_part_below(trace.root_var, &elem_path, ctx, span)?;
         self.reject_move_of_call_loaned_root(trace.root_var, span, ctx)?;
         ctx.ownership
             .moved_vars
@@ -6621,7 +6593,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
     /// Every legality check a **read** through a traced place performs, in the
     /// order a value-context read reports them (spec 3.8:5, 3.8:53, 3.8:70,
-    /// 4.11:7).
+    /// 4.11:7), and the `fully-owned` check a loan adds (3.8:26, core §5.4).
     ///
     /// Reading a place is reading a place: the checks cannot depend on which
     /// mode asked for the value. A projection-mode read — a comparison operand
@@ -6629,8 +6601,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// concatenation — borrows what it reads instead of moving it, so it has
     /// none of the move-out rejections `analyze_field_get` and
     /// `analyze_index_get` interleave with these, and it calls the set as a
-    /// whole here. Those two call the same four functions individually, at the
-    /// points where their own move-out rejections order around them.
+    /// whole here. Those two call the same functions individually, at the
+    /// points where their own move-out rejections order around them; their
+    /// by-value move-outs make the `fully-owned` check through
+    /// [`Self::reject_moved_part_below`] too.
     ///
     /// Before RUE-2006 the traced reader ran none of them: `x.a == y.a` read
     /// through a moved `x` (a read of memory a destructor may already have
@@ -6645,7 +6619,28 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         self.reject_read_through_moved_root(trace, ctx, span)?;
         self.check_read_through_moved_element(trace, ctx, span)?;
         self.check_traced_const_index_bounds(trace, ctx)?;
-        self.reject_read_through_moved_path(trace, ctx, span)
+        self.reject_read_through_moved_path(trace, ctx, span)?;
+        self.reject_loan_of_partially_moved_place(trace, ctx, span)
+    }
+
+    /// Reject a borrowing read of a traced place — a `borrow`/`inout`
+    /// argument, a method receiver, an equality operand — that has a moved
+    /// part below it (core §5.4: the loaned place must be `fully-owned`, as a
+    /// by-value use's is under 3.8:26). The loan reaches the whole place, so
+    /// it would read, and for `inout` overwrite and drop, the moved part
+    /// (RUE-2350). The exact-and-ancestor half is
+    /// [`Self::reject_read_through_moved_path`]'s; a place below a dynamic
+    /// index is checked there against its wholly owned array.
+    fn reject_loan_of_partially_moved_place(
+        &self,
+        trace: &PlaceTrace,
+        ctx: &AnalysisContext,
+        span: Span,
+    ) -> CompileResult<()> {
+        if trace.has_untrackable_index() {
+            return Ok(());
+        }
+        self.reject_moved_part_below(trace.root_var, &trace.field_path(), ctx, span)
     }
 
     /// Reject any use of a place whose root binding has been moved as a whole
@@ -6703,6 +6698,57 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             span,
             moved_span,
         ))
+    }
+
+    /// Reject a whole-value use of a place that has a moved-out part below
+    /// it: the descendant half of the core's `fully-owned` premise (§5.1,
+    /// spec 3.8:26). The exact-and-ancestor half is the caller's, checked
+    /// first with its own diagnostic.
+    ///
+    /// One rule for every whole-value use of a statically named place: a move
+    /// out of it by value (a field or a constant-index element), and a loan of
+    /// it as a `borrow`/`inout` argument, a method receiver, an equality
+    /// operand or any other borrowing read (§5.4: the loaned place must be
+    /// fully owned). A loan of `h.p` after `h.p.s` moved would otherwise read
+    /// the destroyed `h.p.s`, and an `inout` loan's write to it would run that
+    /// value's destructor a second time (RUE-2350). A place below a dynamic
+    /// index is not named here: its array must be wholly owned, which
+    /// [`Self::reject_dynamic_index_into_moved_array`] checks.
+    ///
+    /// The one exception is `@drop`'s operand, which disposes of the residue
+    /// of a partially moved place (3.9).
+    fn reject_moved_part_below(
+        &self,
+        root_var: Spur,
+        path: &[Spur],
+        ctx: &AnalysisContext,
+        span: Span,
+    ) -> CompileResult<()> {
+        if ctx.ownership.drop_intrinsic_operand == Some(root_var) {
+            return Ok(());
+        }
+        let Some((moved_path, moved_span)) = ctx
+            .ownership
+            .moved_vars
+            .get(&root_var)
+            .and_then(|state| state.moved_strict_descendant(path))
+        else {
+            return Ok(());
+        };
+        // Not `use_after_move_path_error`: its help suggests a borrow, and a
+        // borrow of the place fails for the same reason. The recovery is
+        // 3.8:55's reinitialization of the moved part.
+        let interner = self.body_interner();
+        let place = super::format_move_path(interner, root_var, path);
+        let moved = super::format_move_path(interner, root_var, moved_path);
+        Err(
+            CompileError::new(ErrorKind::UseAfterMove(moved.clone()), span)
+                .with_label("value moved here", moved_span)
+                .with_help(format!(
+                    "`{place}` is used as a whole here, so every part of it must be \
+                     owned; reinitialize `{moved}` first (`{moved} = ...`)"
+                )),
+        )
     }
 
     /// Reject a constant index that leaves its array anywhere in a traced
