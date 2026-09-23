@@ -419,7 +419,7 @@ Every declaration of the mechanization with the calculus rules, sections, and pr
 | `RueCore.Float` | `RueCore.Float.ofInt` | def | (D-Int-To-Float), §6.4 | `3.12:16` |
 | `RueCore.Float` | `RueCore.Float.narrow` | def | (D-Float-Cast) | `3.12:19` |
 | `RueCore.Float` | `RueCore.Float.exactOps` | def | — | `3.12:44` |
-| `RueCore.Gen` | Gen.lean (module) | module | (Match), (If), §2, §3, §4.2, §5.1, §5.5, §5.6, §5.7, §6.3, §6.11 | `6.3:19`, `3.8:18`, `3.0:5`, `6.3:16`, `4.2:1`, `3.8:22`, `6.3:17`, `3.12:44`, `3.12:42`, `3.9:44`, `3.9:31` |
+| `RueCore.Gen` | Gen.lean (module) | module | (Match), (If), §2, §3, §4.2, §5.1, §5.5, §5.6, §5.7, §6.3, §6.11 | `6.3:19`, `3.8:18`, `3.0:5`, `6.3:16`, `4.2:1`, `3.8:22`, `6.3:17`, `3.12:44`, `3.12:42`, `3.9:44`, `3.9:34`, `3.9:31` |
 | `RueCore.Gen` | `RueCore.Gen.isAggregate` | def | §6.11 | `3.9:13`, `6.3:20` |
 | `RueCore.Gen` | `RueCore.Gen.intTy` | def | §2 | — |
 | `RueCore.Gen` | `RueCore.Gen.intLiteral` | def | §6.4 | — |
@@ -1024,7 +1024,7 @@ Every heading of the calculus. A citation of a section counts for that section o
 | `3.9:28` | Dynamics.lean (module), `RueCore.dropContents`, `RueCore.dropEvents`, Soundness.lean (module), `RueCore.dropContents_events`, `RueCore.dropContents_struct_events`, `RueCore.StructDecl` |
 | `3.9:31` | Checker.lean (module), `RueCore.checkStructDecl`, Gen.lean (module), Print.lean (module), Statics.lean (module), `RueCore.StructDecl.Wf`, Syntax.lean (module), `RueCore.Attr.lift` |
 | `3.9:33` | `RueCore.dropContents` |
-| `3.9:34` | Corpus.lean (module), `RueCore.Corpus.dtorLine`, `RueCore.dropContents`, Examples.lean (module), `RueCore.Examples.dLinearDtor`, `RueCore.Examples.partialUnderDtor`, `RueCore.Examples.overwritePastPartialLinear`, `RueCore.Examples.enumPayloadMovedIntoCall`, `RueCore.Examples.dDestrDtor`, `RueCore.Examples.destructureUnderDtor`, `RueCore.Explain.Premise.moveUnderDtor`, `RueCore.Gen.projSlots`, `RueCore.Gen.pathOk`, Statics.lean (module), `RueCore.Typed.useMove`, `RueCore.Typed.useDeclared`, `RueCore.Typed.dropRes`, `RueCore.noDtorPrefix` |
+| `3.9:34` | Corpus.lean (module), `RueCore.Corpus.dtorLine`, `RueCore.dropContents`, Examples.lean (module), `RueCore.Examples.dLinearDtor`, `RueCore.Examples.partialUnderDtor`, `RueCore.Examples.overwritePastPartialLinear`, `RueCore.Examples.enumPayloadMovedIntoCall`, `RueCore.Examples.dDestrDtor`, `RueCore.Examples.destructureUnderDtor`, `RueCore.Explain.Premise.moveUnderDtor`, Gen.lean (module), `RueCore.Gen.projSlots`, `RueCore.Gen.pathOk`, Statics.lean (module), `RueCore.Typed.useMove`, `RueCore.Typed.useDeclared`, `RueCore.Typed.dropRes`, `RueCore.noDtorPrefix` |
 | `3.9:37` | `RueCore.Typed.dropDeclared` |
 | `3.9:39` | Print.lean (module), `RueCore.residualLinearBelow`, `RueCore.Typed.dropRes`, `RueCore.Typed.dropDeclared` |
 | `3.9:44` | Checker.lean (module), `RueCore.checkStructDecl`, `RueCore.Examples.dDestrDtor`, Gen.lean (module), Statics.lean (module), `RueCore.StructDecl.Wf` |
