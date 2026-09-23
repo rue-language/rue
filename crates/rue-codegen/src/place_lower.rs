@@ -699,7 +699,9 @@ fn lower_place_addr_plan_with_bounds<B: PlaceLowerBackend + ?Sized>(
     // itself is a constant. The index math below is deliberately skipped: a
     // zero-sized element has a zero stride, so no index can move the address.
     let root_count = resolved_root_count(b, place);
-    if resolved_projected_slot_count(b, place) == 0 || frame_place_has_no_storage(b, place, root_count) {
+    if resolved_projected_slot_count(b, place) == 0
+        || frame_place_has_no_storage(b, place, root_count)
+    {
         b.emit_zero_sized_place_addr(dst);
         return;
     }
