@@ -26,6 +26,7 @@ use super::comptime::{
     ComptimeCallKey, ComptimeCallMemoLookup, ComptimeCompletedCallMemo, ComptimeMemoizedOutcome,
 };
 use super::context::{AnalysisContext, DivergenceKinds, ParamIndex, ParamInfo};
+use super::ownership_state::LoopHeadHints;
 use super::fact_mode::{
     ArrayLengthRequest, BodyAnalysisReadHost, ModulePrefixRequest, StructuredTypeSyntax,
     StructuredTypeSyntaxRequest, TypeSyntaxResult,
@@ -643,6 +644,9 @@ pub(crate) struct OrdinaryBodyEngine<'h, H: OrdinaryBodyAnalysisHost> {
     /// 6.8:11), so one verification per body answers every call relying on
     /// it.
     pub(super) verified_conformances: AHashSet<(Type, StructId)>,
+    /// The loop-head states settled for the loop nest being analysed, reused
+    /// across the enclosing loops' rechecks (RUE-2354).
+    pub(super) loop_head_hints: LoopHeadHints,
 }
 
 #[cfg(test)]
@@ -709,6 +713,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             storage,
             comptime_reduction_memo: ComptimeCompletedCallMemo::new(),
             verified_conformances: AHashSet::new(),
+            loop_head_hints: LoopHeadHints::default(),
         }
     }
 

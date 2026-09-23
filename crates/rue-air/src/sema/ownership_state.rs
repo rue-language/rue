@@ -409,6 +409,112 @@ pub(crate) fn union_move_maps(
     merged
 }
 
+/// A move map ordered by the ownership join: `lower` is below `upper` when
+/// joining it into `upper` changes nothing (every path `lower` moves,
+/// `upper` moves too, and `upper` claims no must-move fact `lower` lacks).
+pub(crate) fn move_map_below(
+    lower: &AHashMap<Spur, VariableMoveState>,
+    upper: &AHashMap<Spur, VariableMoveState>,
+) -> bool {
+    union_move_maps(upper, lower) == *upper
+}
+
+/// The loop-head states settled for a nest of loops, kept across the
+/// enclosing loops' rechecks so that each nested loop is settled once per
+/// pass of its parent rather than from scratch (RUE-2354).
+///
+/// Settling a loop's head can take a recheck pass beyond the one from the
+/// entry state, and every pass re-analyses the loops nested in the body. A
+/// nested loop settled from scratch in each of them makes the work
+/// exponential in the nesting depth. Instead, each loop analysis is a node
+/// addressed by its position in the nest — the ordinal among the loops its
+/// parent's pass analyses — and records the entry and head states it
+/// settled. When a later pass of the parent reaches the same position with
+/// an entry state at or above the recorded entry, the recorded head joined
+/// with the new entry is a lower bound of the new head (the body's move
+/// transfer is monotone), so the loop starts its iteration there and a
+/// single pass usually confirms it. A position whose loop differs discards
+/// the record, and the tree is cleared when an outermost loop starts.
+#[derive(Default)]
+pub(crate) struct LoopHeadHints {
+    nodes: Vec<LoopHeadHint>,
+    /// One `(node, next child ordinal)` entry per loop pass in progress,
+    /// innermost last.
+    passes: Vec<(usize, usize)>,
+}
+
+struct LoopHeadHint {
+    body: rue_rir::InstRef,
+    settled: Option<(
+        AHashMap<Spur, VariableMoveState>,
+        AHashMap<Spur, VariableMoveState>,
+    )>,
+    children: Vec<usize>,
+}
+
+impl LoopHeadHints {
+    /// The node for a loop about to be analysed, at the next position in the
+    /// innermost pass in progress, or a fresh root for an outermost loop.
+    pub fn enter(&mut self, body: rue_rir::InstRef) -> usize {
+        let fresh = LoopHeadHint {
+            body,
+            settled: None,
+            children: Vec::new(),
+        };
+        let Some((parent, next_child)) = self.passes.last_mut() else {
+            self.nodes.clear();
+            self.nodes.push(fresh);
+            return 0;
+        };
+        let (parent, ordinal) = (*parent, *next_child);
+        *next_child += 1;
+        if let Some(&child) = self.nodes[parent].children.get(ordinal) {
+            if self.nodes[child].body == body {
+                return child;
+            }
+            self.nodes[child] = fresh;
+            return child;
+        }
+        let child = self.nodes.len();
+        self.nodes.push(fresh);
+        self.nodes[parent].children.push(child);
+        child
+    }
+
+    /// Mark the start of one pass over `node`'s body: the loops it analyses
+    /// are `node`'s children, numbered from the first.
+    pub fn begin_pass(&mut self, node: usize) {
+        self.passes.push((node, 0));
+    }
+
+    /// Mark the end of the pass [`Self::begin_pass`] started.
+    pub fn end_pass(&mut self) {
+        self.passes.pop();
+    }
+
+    /// The state to start `node`'s loop-head iteration from, when an earlier
+    /// pass settled it from an entry state at or below `entry`: the recorded
+    /// head joined with `entry`.
+    pub fn seed(
+        &self,
+        node: usize,
+        entry: &AHashMap<Spur, VariableMoveState>,
+    ) -> Option<AHashMap<Spur, VariableMoveState>> {
+        let (settled_entry, settled_head) = self.nodes[node].settled.as_ref()?;
+        move_map_below(settled_entry, entry).then(|| union_move_maps(entry, settled_head))
+    }
+
+    /// Record the head state `node`'s loop settled at from `entry`.
+    pub fn record(
+        &mut self,
+        node: usize,
+        entry: AHashMap<Spur, VariableMoveState>,
+        head: AHashMap<Spur, VariableMoveState>,
+    ) {
+        self.nodes[node].settled = Some((entry, head));
+    }
+}
+
 /// How a call argument (or method receiver) loans its root variable for the
 /// duration of the call — the two by-ref modes tracked in
 /// [`OwnershipState::call_loaned_roots`]. Carried in the loan frame so the

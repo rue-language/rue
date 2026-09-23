@@ -930,8 +930,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let moves_before_loop = ctx.ownership.moved_vars.clone();
-        let pass = self.analyze_while_loop_pass(air, cond, body, ctx)?;
+        let (node, entry, head) = self.enter_loop_head(body, ctx);
+        let pass = self.run_loop_pass(node, |this| {
+            this.analyze_while_loop_pass(air, cond, body, ctx)
+        })?;
 
         // A while loop discards its body's result value on every iteration;
         // discarding a value that carries a linear value would implicitly
@@ -939,7 +941,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         self.reject_discarded_linear_value(pass.body_result.ty, body)?;
 
         let exit_moves =
-            self.settle_loop_head(air, ctx, &moves_before_loop, pass.edges, |this, air, ctx| {
+            self.settle_loop_head(node, air, ctx, entry, head, pass.edges, |this, air, ctx| {
                 Ok(this.analyze_while_loop_pass(air, cond, body, ctx)?.edges)
             })?;
         if let Some(exit_moves) = exit_moves {
@@ -1069,8 +1071,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Infinite loop: `loop { body }` - type `()` if the body contains a
         // break targeting this loop (the loop can exit), `!` otherwise
         // (spec 4.8:17 / 4.8:21).
-        let moves_before_loop = ctx.ownership.moved_vars.clone();
-        let pass = self.analyze_infinite_loop_pass(air, body, iter_borrow, ctx)?;
+        let (node, entry, head) = self.enter_loop_head(body, ctx);
+        let pass = self.run_loop_pass(node, |this| {
+            this.analyze_infinite_loop_pass(air, body, iter_borrow, ctx)
+        })?;
         // Loop classification is purely syntactic (spec 4.8:21): a loop
         // containing a targeting `break` is unit-typed even when that break
         // is unreachable.
@@ -1094,7 +1098,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // breakless loop is `!`-typed and the code after it unreachable; its
         // state is left as the fall-through, which nothing can observe.
         let exit_moves =
-            self.settle_loop_head(air, ctx, &moves_before_loop, pass.edges, |this, air, ctx| {
+            self.settle_loop_head(node, air, ctx, entry, head, pass.edges, |this, air, ctx| {
                 Ok(this
                     .analyze_infinite_loop_pass(air, body, iter_borrow, ctx)?
                     .edges)
@@ -1196,28 +1200,32 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// The head state is the entry state joined with the states at the
     /// body's reachable back edges, to a fixpoint: a value an earlier
     /// iteration moved and did not restore is moved at the head of every
-    /// later one. `first` is the edges of the pass already run from the entry
-    /// state, whose AIR the caller keeps. While the head keeps growing, the
-    /// loop is re-analysed from it by `pass` against a scratch fork of `ctx`
-    /// and a rolled-back `Air`. Such a pass exists for its checks and its
-    /// edges only: a use of a value moved by a previous iteration errors
-    /// there, and its exit states are the loop's, because a `break` taken
-    /// on a later iteration sees the moves earlier iterations made
-    /// (RUE-2354). A loop whose back edge adds nothing to the entry state —
-    /// the common case — takes no further pass.
+    /// later one. `first` is the edges of the pass the caller already ran
+    /// from `head` — the entry state, or a lower bound of the loop-head state
+    /// (see [`Self::enter_loop_head`]) — and whose AIR it keeps. While the
+    /// head keeps growing, the loop is re-analysed from it by `pass` against
+    /// a scratch fork of `ctx` and a rolled-back `Air`. Such a pass exists
+    /// for its checks and its edges only: a use of a value moved by a
+    /// previous iteration errors there, and its exit states are the loop's,
+    /// because a `break` taken on a later iteration sees the moves earlier
+    /// iterations made (RUE-2354). A loop whose back edge adds nothing to
+    /// the state its first pass started from — the common case — takes no
+    /// further pass.
     ///
     /// Terminates: each step joins the head with a back-edge state, which
     /// only adds moved paths or clears must-move facts, over the finitely
-    /// many paths the head tracks.
+    /// many paths the head tracks. Records the settled head for `node`.
+    #[allow(clippy::too_many_arguments)]
     fn settle_loop_head<'a>(
         &mut self,
+        node: usize,
         air: &mut Air,
         ctx: &AnalysisContext<'a>,
-        entry: &AHashMap<Spur, VariableMoveState>,
+        entry: AHashMap<Spur, VariableMoveState>,
+        mut head: AHashMap<Spur, VariableMoveState>,
         first: LoopPassEdges,
         mut pass: impl FnMut(&mut Self, &mut Air, &mut AnalysisContext<'a>) -> CompileResult<LoopPassEdges>,
     ) -> CompileResult<Option<AHashMap<Spur, VariableMoveState>>> {
-        let mut head = entry.clone();
         let mut edges = first;
         let mut rechecks = 0usize;
         while let Some(backedge) = &edges.backedge {
@@ -1243,14 +1251,57 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let mut scratch_ctx = ctx.fork_for_loop_recheck();
             scratch_ctx.ownership.moved_vars = head.clone();
             let recovered_before = self.body_analysis_recovered_errors_mut().len();
-            let result = pass(self, air, &mut scratch_ctx);
+            let result = self.run_loop_pass(node, |this| pass(this, air, &mut scratch_ctx));
             air.rollback(checkpoint);
             for error in &mut self.body_analysis_recovered_errors_mut()[recovered_before..] {
                 *error = with_previous_iteration_note(error.clone());
             }
             edges = result.map_err(with_previous_iteration_note)?;
         }
+        self.loop_head_hints.record(node, entry, head);
         Ok(edges.exit)
+    }
+
+    /// Start a loop's analysis: its node in the loop nest's settled heads,
+    /// its entry state, and the state its first pass starts from. That is
+    /// the entry state, unless an earlier pass of an enclosing loop settled
+    /// this loop from an entry at or below this one; then it is that head
+    /// joined with the entry, a lower bound of this loop-head state, and
+    /// `ctx` is moved to it. Only an enclosing loop's recheck, whose AIR is
+    /// discarded, revisits a loop, so the kept AIR always comes from a pass
+    /// at the entry state.
+    fn enter_loop_head(
+        &mut self,
+        body: InstRef,
+        ctx: &mut AnalysisContext,
+    ) -> (
+        usize,
+        AHashMap<Spur, VariableMoveState>,
+        AHashMap<Spur, VariableMoveState>,
+    ) {
+        let node = self.loop_head_hints.enter(body);
+        let entry = ctx.ownership.moved_vars.clone();
+        let head = match self.loop_head_hints.seed(node, &entry) {
+            Some(seed) => {
+                ctx.ownership.moved_vars = seed.clone();
+                seed
+            }
+            None => entry.clone(),
+        };
+        (node, entry, head)
+    }
+
+    /// Run one pass over the body of the loop at `node`, numbering the loops
+    /// it analyses as that node's children.
+    fn run_loop_pass<T>(
+        &mut self,
+        node: usize,
+        pass: impl FnOnce(&mut Self) -> CompileResult<T>,
+    ) -> CompileResult<T> {
+        self.loop_head_hints.begin_pass(node);
+        let result = pass(self);
+        self.loop_head_hints.end_pass();
+        result
     }
 
     /// Validate an integer pattern literal against the scrutinee type and
