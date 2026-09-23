@@ -4214,6 +4214,11 @@ mod tests {
             // One owner-root fact and one exact-value fact per moved value
             // all read the same flag; its every-path clearing is solved once.
             assert_eq!(work.flag_clearing_solves, 1, "{work:?}");
+            // Each fact is checked without the drop-flag exemption first and
+            // only a failing one builds the flag proof, so most facts are
+            // solved once. Without that first check every fact would be
+            // solved twice, about 2 * ROUNDS.
+            assert!(work.fact_solves < 2 * ROUNDS, "{work:?}");
         });
     }
 
