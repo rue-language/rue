@@ -1950,7 +1950,8 @@ same order §5 threads Σ through). This is fixed by a grammar of single-hole
       | match E { … }                                    -- scrutinee
       | let x = E ; e2                                   -- bound expression (e2 not entered until E is a value)
       | E ; e2                                           -- discarded expression
-      | assign p = E                                     -- right-hand side (p's index subexpressions reduce first, below)
+      | assign p = E                                     -- right-hand side FIRST (5.2:14), before any index of p
+      | assign p[ v̄, E, e … ] = v                       -- then p's index subexpressions, left to right (below)
       | return E
       | endscope(ℓ̄) in E                                 -- the administrative scope-close form of §6.7 (RUE-1277: without
                                                          --   this context, a let's body could never take a step)
@@ -1958,7 +1959,16 @@ same order §5 threads Σ through). This is fixed by a grammar of single-hole
 
 A place `p` used in value context (the `e ::= p` production) is a redex once its
 index subexpressions are values; the contexts `E[e]`/`v[E]` reduce those indices
-left-to-right first (as `resolve_path` does). The two structural
+left-to-right first (as `resolve_path` does). An assignment **target** is the
+other way round (`5.2:14`, normative, with its worked example
+`arr[tap(1)] = tap(2)` printing `2` then `1`): `assign p = E` reduces the
+right-hand side to a value first, then `p`'s index subexpressions left to right
+(`assign p[ v̄, E, e … ] = v`), and only then is the place resolved — every
+bounds check at its step — for (D-Assign)'s overwrite-drop and store (§6.8). A
+trap or an unwinding `return` in an index therefore abandons an
+already-evaluated right-hand side, which no rule drops (§6.12: a panic runs no
+drops; §6.9: a `return` drops the frame's cells, not the values held in the
+context it discards). The two structural
 rules that drive every reduction:
 
 ```
