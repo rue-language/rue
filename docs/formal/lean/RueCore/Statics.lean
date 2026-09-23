@@ -1164,8 +1164,8 @@ theorem Entry.join_comm {D : Decls} {a b : Entry} (hsk : a.skel = b.skel) :
 /-- **The §5.5 join is commutative on a whole context**, pointwise, whenever
 the two arms carry the same skeleton — which `skel_preserved` guarantees of any
 two outgoing contexts of one incoming one (`Typed.skel_preserved`). So which
-arm the algorithm reads
-first is immaterial; what is not proved is the bracketing (section docstring). -/
+arm the algorithm reads first is immaterial; `Ctx.join_assoc` gives the
+bracketing, and `Ctx.joinAll_perm` the arm order of the n-way fold. -/
 theorem Ctx.join_comm {D : Decls} : ∀ (Γ₁ Γ₂ : Ctx), Γ₁.skel = Γ₂.skel →
     Ctx.join D Γ₁ Γ₂ = Ctx.join D Γ₂ Γ₁
   | [], [], _ => rfl
@@ -1872,8 +1872,9 @@ theorem OwnSt.wf_fields_array (D : Decls) (T' : Ty) (n : Nat) (xs : List OwnSt) 
 mutual
 /-- **The §5.5 join is associative**, at one path and its subtree, over states
 that are shapes of their type (`OwnSt.wf`) and under §3's class assignment for
-the struct layer (`WfStructs`). Both premises are needed and the section
-docstring above says which counterexample each rules out; `WfStructs` is one a
+the struct layer (`WfStructs`, of which only the class-is-join clause is read).
+Neither premise can be dropped: the section docstring above says which
+counterexample each rules out; `WfStructs` is one a
 well-formed program already carries (`checkStructs_sound`).
 
 The nine outer cases reduce to three shapes. Where an arm is wholly `Owned` the

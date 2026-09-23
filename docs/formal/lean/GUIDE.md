@@ -1169,9 +1169,10 @@ outgoing states are then joined:
 `join(Σ1, …, Σn)` is unordered in the calculus and a **left fold** of the
 binary join here (`Ctx.joinAll`): the arms in declaration order, starting from
 the first arm's state. The binary join is proved commutative
-(`OwnSt.join_comm`), so which of two arms goes first does not matter;
-associativity is checked exhaustively over a fixture rather than proved, and
-`Statics.lean`'s join section says exactly why (RUE-2337 owes the proof).
+(`OwnSt.join_comm`) and associative (`OwnSt.join_assoc`) over states that are
+shapes of their types, so `Ctx.joinAll_perm` says the fold's arm order does not
+matter. Well-formedness is a premise rather than a consequence of the judgment,
+because (Return) and (Panic) conclude at any context (RUE-2340).
 
 ### The run, step by step
 
