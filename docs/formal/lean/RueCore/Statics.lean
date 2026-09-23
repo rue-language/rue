@@ -773,9 +773,10 @@ not reach. It is not absent here: `residualLinearFields`' `[], Ts` base case
 answers those slots at the **type** level, `Ts.any (·.mult D = .linear)`, and
 that reading is **exact**, not conservative. An element Σ has no record for
 is one no path has touched, and nothing below a dynamic index is ever moved:
-the calculus has no rule for a move, a `@drop` or a declared-`linear` plan
-there (§4.2's `Untrackable` plans, E0904; probes q02, q11, q15 of RUE-2342),
-and a write there consumes nothing. So an untracked element is `Owned`, and
+the calculus has no rule for a move or a `@drop` of an affine or linear place
+there, nor for a declared-`linear` plan (§4.2's `Untrackable` plans, E0904;
+probes q02, q11, q15 of RUE-2342); a `@drop` of a `Copy` place there
+(`Typed.indexDrop`) moves nothing, and a write there consumes nothing. So an untracked element is `Owned`, and
 an `Owned` element carries a linear value exactly when `class(T) = Linear`. -/
 def residualLinear (D : Decls) : OwnSt → Ty → Bool
   | .movedOut, _ => false
@@ -2697,7 +2698,10 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
     is moved out (E0205; probes q06, q19). It is `p`, not the root binding:
     `a[0][i]` after `a[1]` moved reads a whole `a[0]`, and the compiler accepts
     it (probe r01). A later dynamic step needs nothing more, because
-    `fully-owned` at `p` is `fully-owned` at everything under it.
+    `fully-owned` at `p` is `fully-owned` at everything under it. A moved
+    inner element under a second dynamic step is not merely untested but
+    inexpressible: a nested element move such as `a[0][1]` is itself E0904
+    (`rootIdxOnly`; review probes a1–a3).
   * `Γ ⊢ p[…]… : T` is `Ty.atPath` to `p` and then `Ty.atDyn` through the
     dynamic tail, which fails unless every dynamic step is taken at an array.
   * `class(T) = Copy` is the rule's own premise, and §4.2's "there is no

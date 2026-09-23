@@ -15,7 +15,8 @@ scoped for the mechanization spike:
   field projections, and **constant** array index steps (`Place`). §5's `Path`
   tracks an index only when it is a compile-time constant, which is the whole
   of §9's item 4; a *dynamic* index is not a path at all and reaches its
-  element through `Expr.indexRead`/`Expr.indexWrite` instead. An enum's payload
+  element through `Expr.indexRead`/`Expr.indexWrite`/`Expr.indexDrop` instead.
+  An enum's payload
   is **not** a path: §5.6 says outright that payload paths are not statically
   tracked, and the only way into a payload is a `match` arm's binding, so
   `Place` gains no enum step and `Ty.fieldAt` is `none` at an enum type.
@@ -58,7 +59,9 @@ the dynamic index *read*, at the element or at any place below it, whose one
 successful rule is (Use-Untrackable-Dynamic-Copy) §5.1: `Expr.indexRead`
 carries its `class(T) = Copy` premise at the leaf, and §4.2's "there is no
 successful static rule … when `class(T) ∈ {Affine,Linear}`" is that premise's
-absence rather than a rule of its own (E0904). A dynamic-index *write* is not
+absence rather than a rule of its own (E0904). `@drop` there is (@Drop-Copy)
+§5.3 at a `Copy` place, `Expr.indexDrop`, under the read's premises; an affine
+or linear place below a dynamic index has no `@drop` rule either (E0904). A dynamic-index *write* is not
 a use at all — §4.2 classifies value-context uses, and an assignment
 destination is neither — so `Expr.indexWrite` carries (Assign) §5.2's own
 `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` at the leaf type instead
@@ -129,8 +132,9 @@ position of `πs`: `a[i].x0`, `h.arr[i].x0`, `a[i][j]` and `a[i][0].x1` are all
 this form. `Place` stays constant-only, which is what keeps Σ finite
 (`3.8:68`): `Ty.atDyn` types the dynamic tail, and the machine resolves it to
 an ordinary constant path only once the indices are values
-(`Contents.resolveDyn`, `Dynamics.lean`). Nothing is ever *moved* below a
-dynamic index — the calculus has no rule for it (E0904) — so Σ gains nothing
+(`Contents.resolveDyn`, `Dynamics.lean`). `Expr.indexDrop p idx πs` is
+`@drop` of a `Copy` place there, which moves nothing. Nothing is ever *moved*
+below a dynamic index — the calculus has no rule for it (E0904) — so Σ gains nothing
 from these forms, and §5.6's untracked-residue disjunct is computed exactly
 (`residualLinear`, `Statics.lean`).
 

@@ -106,7 +106,7 @@ program, the four views side by side, and the pair(s) that disagree, with a
 tally at the end; `--report-json` writes the same findings as JSON so two runs
 can be diffed. It exits non-zero when any disagreement exists.
 
-**The seed corpus is red on three cases, and that is the bridge working.**
+**The seed corpus is red on five cases, and that is the bridge working.**
 `i64_min_times_neg1` is `min_T * -1` at `i64`, which §6.4's (D-Arith-Trap),
 `3.1:6` and `8.1:3` all make an overflow trap and which the model traps on.
 The compiler's constant folder wraps it instead and the program exits 0 —
@@ -124,8 +124,18 @@ destructure at `h.arr[0].x0` holes an array reached through a field, and a
 write through that element follows. `3.8:72` refuses it and so does
 `assignArrayOk`. The compiler accepts it, because its check fires only when the
 root binding is an array, then runs the moved-out element's destructor twice
-and leaks the written value. That is RUE-2341. A red case is what the bridge
-is for; the model is not softened to match the compiler.
+and leaks the written value. That is RUE-2341.
+`array_dyn_write_after_destructure_via_field` is the fourth, the same shape
+with the write below a dynamic index (`h.arr[i].x0 = …`): the model refuses it
+(E0480, `fully-owned` at `h.arr` fails) and the compiler accepts it with the
+same double drop and leak, RUE-2341 again.
+`array_dyn_write_after_field_move` is the fifth: the array field `h.x0` is
+moved out and dropped, and `h.x0[i].x0 = …` then writes into it. The model
+refuses it (E0205 on `h.x0`); the compiler move-checks a place below a dynamic
+index through a field against the wrong path, accepts it, runs the destroyed
+element's destructor a second time and leaks the written value. That is
+RUE-2344. A red case is what the bridge is for; the model is not softened to
+match the compiler.
 
 The mode is a `buck2 run` entry point and belongs to no test tier, so nothing
 in CI requests it until ADR-0097's gate is met (RUE-2241).
@@ -500,16 +510,16 @@ join, the whole §2 integer operator set (`+ - * / %`, `& | ^`, `<< >>`,
 §6.4's trap-free dynamics and the one-operand float intrinsics
 (`@int_to_float`, `@float_to_int`, `@float_cast`, and the five of `3.12:34`),
 `@intCast`, `@panic`, `@dbg`, the surface repeat form `[e; n]` at `7.1:38`'s
-`Copy` element type, the dynamic-index read at a `Copy` element type and the
-dynamic-index write at any element type §5.2's linear-overwrite premise admits,
-both with §6.5's bounds trap, the **element-wise partial move** of `3.8:68` at
+`Copy` element type, the dynamic-index read and `@drop` at a `Copy` element
+type and the dynamic-index write at any element type §5.2's linear-overwrite
+premise admits, all with §6.5's bounds trap, the **element-wise partial move** of `3.8:68` at
 a constant-index path — with `rootIdxOnly` for §4.2's "element moves only at
 the root", the `MovedOut` element state the move leaves, `3.8:73`'s
 path-specific element drop, and `3.8:72`'s refusal to assign into an array that
 has one — and top-level functions, by-value calls with frames and scope
 records, and `return` with its σ unwind. A dynamic index reaches below
 itself: `a[i].x0`, `h.arr[i].x0`, `a[i][j]` and `a[i][0].x1` are read and
-written as the compiler reads and writes them, with `Place` still
+written as the compiler reads and writes them, and dropped when they are `Copy`, with `Place` still
 constant-only, and a write evaluates its right-hand side before its indices
 (`5.2:14`). No equality compare (it borrows its
 operands, so `≈`'s float leaf has no instance here), no path into an enum's
