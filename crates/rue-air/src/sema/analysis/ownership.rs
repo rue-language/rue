@@ -1584,18 +1584,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         };
         // The receiver is a place that is read here and, for an `inout`
         // accessor, written through: `xs[5].cell_mut().value = 7` reaches the
-        // same element `xs[5]` names. Its chain must be checked now,
+        // same element `xs[5]` names. Its chain must be bounds-checked now,
         // because the receiver's projections are replaced below by the
         // accessor result's own base and no later check can see them
         // (4.11:7, RUE-2008).
-        //
-        // The receiver is also loaned for the accessor result's lifetime, so
-        // it must be fully owned (core §5.8, (Accessor-Call)): not moved, not
-        // under a moved ancestor, with no moved part below it. This is the
-        // only point where its place is still nameable; the rebased trace
-        // below names the yielded place relative to the accessor result, so
-        // the traced-read move checks skip it (`via_accessor`).
-        self.check_traced_place_read(&receiver_trace, ctx, receiver_span)?;
+        self.check_traced_const_index_bounds(&receiver_trace, ctx)?;
         let root = receiver_trace.root_var;
         let accessor_loan_kind = if info.returns_inout {
             CallLoanKind::Inout
@@ -1689,6 +1682,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             self.reject_accessor_loan_against_expression_ledgers(root, loan_kind, span, ctx)?;
             ctx.ownership.expression_loans.push((root, span, loan_kind));
         }
+        // The receiver is loaned for the accessor result's lifetime, so it
+        // must be fully owned (core §5.8, (Accessor-Call)): not moved, not
+        // under a moved ancestor, with no moved part below it. This is the
+        // last point where its place is nameable; the rebased trace below
+        // names the yielded place relative to the accessor result, so the
+        // traced-read move checks skip it (`via_accessor`). It runs after the
+        // loan-conflict checks so that a move completed earlier in the same
+        // full expression keeps reporting that conflict (6.6:10, E0259).
+        self.check_traced_place_read(&receiver_trace, ctx, receiver_span)?;
         ctx.accessor_call_insts.insert(inst_ref, (method, root));
         ctx.referenced_methods.insert((struct_id, method));
         self.record_body_method_dependency((struct_id, method))?;
