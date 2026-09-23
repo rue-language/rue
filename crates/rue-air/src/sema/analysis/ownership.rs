@@ -1584,11 +1584,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         };
         // The receiver is a place that is read here and, for an `inout`
         // accessor, written through: `xs[5].cell_mut().value = 7` reaches the
-        // same element `xs[5]` names. Its chain must be bounds-checked now,
+        // same element `xs[5]` names. Its chain must be checked now,
         // because the receiver's projections are replaced below by the
         // accessor result's own base and no later check can see them
         // (4.11:7, RUE-2008).
-        self.check_traced_const_index_bounds(&receiver_trace, ctx)?;
+        //
+        // The receiver is also loaned for the accessor result's lifetime, so
+        // it must be fully owned (core §5.8, (Accessor-Call)): not moved, not
+        // under a moved ancestor, with no moved part below it. This is the
+        // only point where its place is still nameable; the rebased trace
+        // below names the yielded place relative to the accessor result, so
+        // the traced-read move checks skip it (`via_accessor`).
+        self.check_traced_place_read(&receiver_trace, ctx, receiver_span)?;
         let root = receiver_trace.root_var;
         let accessor_loan_kind = if info.returns_inout {
             CallLoanKind::Inout
@@ -6631,13 +6638,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// (RUE-2350). The exact-and-ancestor half is
     /// [`Self::reject_read_through_moved_path`]'s; a place below a dynamic
     /// index is checked there against its wholly owned array.
+    ///
+    /// A trace rebased on an accessor result (`via_accessor`) names its place
+    /// relative to that result, not to the root, so its path cannot be looked
+    /// up in the root's move state. It needs no lookup: the accessor's
+    /// receiver was checked fully owned when the call was expanded (core
+    /// §5.8), and a place yielded by an accessor cannot be moved out of.
     fn reject_loan_of_partially_moved_place(
         &self,
         trace: &PlaceTrace,
         ctx: &AnalysisContext,
         span: Span,
     ) -> CompileResult<()> {
-        if trace.has_untrackable_index() {
+        if trace.via_accessor || trace.has_untrackable_index() {
             return Ok(());
         }
         self.reject_moved_part_below(trace.root_var, &trace.field_path(), ctx, span)
@@ -6674,13 +6687,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ///
     /// A place below a dynamic index is read against the array that index
     /// selects from, which must be wholly owned — see
-    /// [`Self::reject_dynamic_index_into_moved_array`].
+    /// [`Self::reject_dynamic_index_into_moved_array`]. A place reached
+    /// through an accessor result is covered by the check of the accessor's
+    /// receiver, as for [`Self::reject_loan_of_partially_moved_place`].
     fn reject_read_through_moved_path(
         &self,
         trace: &PlaceTrace,
         ctx: &AnalysisContext,
         span: Span,
     ) -> CompileResult<()> {
+        if trace.via_accessor {
+            return Ok(());
+        }
         if trace.has_untrackable_index() {
             return self.reject_dynamic_index_into_moved_array(trace, ctx, span);
         }
@@ -6737,16 +6755,32 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         };
         // Not `use_after_move_path_error`: its help suggests a borrow, and a
         // borrow of the place fails for the same reason. The recovery is
-        // 3.8:55's reinitialization of the moved part.
+        // 3.8:55's reinitialization of the moved part — unless the part lies
+        // below an array element, where a write into the array is refused
+        // (3.8:72, E0480) and only the whole outermost array can be
+        // reinitialized (7.1:46).
         let interner = self.body_interner();
         let place = super::format_move_path(interner, root_var, path);
         let moved = super::format_move_path(interner, root_var, moved_path);
+        let reinit = match moved_path
+            .iter()
+            .position(|seg| super::is_index_segment(interner, *seg))
+        {
+            Some(first_index) => {
+                let array = super::format_move_path(interner, root_var, &moved_path[..first_index]);
+                format!(
+                    "reinitialize the whole array `{array}` first (`{array} = ...`): a part \
+                     below an array element cannot be reinitialized on its own"
+                )
+            }
+            None => format!("reinitialize `{moved}` first (`{moved} = ...`)"),
+        };
         Err(
             CompileError::new(ErrorKind::UseAfterMove(moved.clone()), span)
                 .with_label("value moved here", moved_span)
                 .with_help(format!(
                     "`{place}` is used as a whole here, so every part of it must be \
-                     owned; reinitialize `{moved}` first (`{moved} = ...`)"
+                     owned; {reinit}"
                 )),
         )
     }
@@ -6816,13 +6850,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// (RUE-186). A constant index at the root array checks exactly that
     /// element's path. A dynamic index anywhere in the chain reads any
     /// element of the array it indexes, so that array must be wholly owned
-    /// ([`Self::reject_dynamic_index_into_moved_array`]).
+    /// ([`Self::reject_dynamic_index_into_moved_array`]). A place reached
+    /// through an accessor result is covered by the check of the accessor's
+    /// receiver, as for [`Self::reject_loan_of_partially_moved_place`].
     fn check_read_through_moved_element(
         &self,
         trace: &PlaceTrace,
         ctx: &AnalysisContext,
         span: Span,
     ) -> CompileResult<()> {
+        if trace.via_accessor {
+            return Ok(());
+        }
         if trace.has_untrackable_index() {
             return self.reject_dynamic_index_into_moved_array(trace, ctx, span);
         }

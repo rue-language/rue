@@ -4926,7 +4926,7 @@ fn main() -> i32 {
 """
 compile_fail = true
 expected_error_code = "E0205"
-error_contains = "use of moved value 'h.a[0].s'"
+error_contains = ["use of moved value 'h.a[0].s'", "reinitialize the whole array `h.a`"]
 
 [[case]]
 name = "inout_arg_root_array_element_with_moved_part_rejected"
@@ -4961,7 +4961,7 @@ fn main() -> i32 {
 """
 compile_fail = true
 expected_error_code = "E0205"
-error_contains = "use of moved value 'a[0].s'"
+error_contains = ["use of moved value 'a[0].s'", "reinitialize the whole array `a`"]
 
 [[case]]
 name = "inout_arg_nested_field_with_moved_part_rejected"
@@ -5031,7 +5031,7 @@ fn main() -> i32 {
 """
 compile_fail = true
 expected_error_code = "E0205"
-error_contains = "use of moved value 'h.m[1][0].s'"
+error_contains = ["use of moved value 'h.m[1][0].s'", "reinitialize the whole array `h.m`"]
 
 [[case]]
 name = "borrow_arg_with_moved_part_two_levels_below_rejected"
@@ -5103,7 +5103,7 @@ fn main() -> i32 {
 """
 compile_fail = true
 expected_error_code = "E0205"
-error_contains = "use of moved value 'h.a[0].s'"
+error_contains = ["use of moved value 'h.a[0].s'", "reinitialize the whole array `h.a`"]
 
 [[case]]
 name = "borrow_arg_with_conditionally_moved_part_rejected"
@@ -5176,7 +5176,7 @@ fn main() -> i32 {
 """
 compile_fail = true
 expected_error_code = "E0205"
-error_contains = "use of moved value 'h.a[0].s'"
+error_contains = ["use of moved value 'h.a[0].s'", "reinitialize the whole array `h.a`"]
 
 [[case]]
 name = "borrow_self_receiver_with_moved_part_rejected"
@@ -5246,7 +5246,7 @@ fn main() -> i32 {
 """
 compile_fail = true
 expected_error_code = "E0205"
-error_contains = "use of moved value 'h.a[0].s'"
+error_contains = ["use of moved value 'h.a[0].s'", "reinitialize the whole array `h.a`"]
 
 [[case]]
 name = "generic_inout_arg_with_moved_part_rejected"
@@ -5282,7 +5282,7 @@ fn main() -> i32 {
 """
 compile_fail = true
 expected_error_code = "E0205"
-error_contains = "use of moved value 'h.a[0].s'"
+error_contains = ["use of moved value 'h.a[0].s'", "reinitialize the whole array `h.a`"]
 
 # The controls: reinitializing the moved part first (3.8:55) makes the place
 # fully owned again, and a moved sibling or a moved part of another element
@@ -5343,3 +5343,344 @@ fn main() -> i32 {
 }
 """
 exit_code = 75
+
+# RUE-2350: an accessor call loans its whole receiver (6.6:8, core calculus
+# §5.8 (Accessor-Call)), so the receiver must be fully owned, including a
+# receiver reached through a field. A place reached through the accessor's
+# result is named relative to that result, so a moved part of an unrelated
+# place of the same root does not affect it.
+
+[[case]]
+name = "accessor_receiver_with_moved_part_borrow_result_rejected"
+spec = ["3.8:26", "3.8:76", "6.6:8"]
+description = "A borrow accessor's receiver must be fully owned: its result cannot be borrowed after a part of the receiver moved (RUE-2350)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct Q { p: P }
+struct Acc {
+    p: P,
+    z: S1,
+    q: Q,
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn sref(borrow self) -> borrow S1 { yield self.p.s; }
+    fn qref(borrow self) -> borrow Q { yield self.q; }
+}
+struct H { acc: Acc, p: P }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+fn mka() -> Acc { Acc { p: mk(17), z: S1 { x0: 50 }, q: Q { p: mk(18) } } }
+fn setp(inout p: P) { p.s = S1 { x0: 77 }; }
+fn readp(borrow p: P) -> i64 { p.s.x0 }
+
+fn main() -> i32 {
+    let a = mka();
+    let t: S1 = a.p.s;
+    @drop(t);
+    readp(borrow a.pref());
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'a.p.s'"
+
+[[case]]
+name = "accessor_receiver_with_moved_part_inout_result_rejected"
+spec = ["3.8:26", "3.8:76", "6.6:8"]
+description = "An inout accessor's receiver must be fully owned: its result cannot be passed inout after a part of the receiver moved (RUE-2350)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct Q { p: P }
+struct Acc {
+    p: P,
+    z: S1,
+    q: Q,
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn sref(borrow self) -> borrow S1 { yield self.p.s; }
+    fn qref(borrow self) -> borrow Q { yield self.q; }
+}
+struct H { acc: Acc, p: P }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+fn mka() -> Acc { Acc { p: mk(17), z: S1 { x0: 50 }, q: Q { p: mk(18) } } }
+fn setp(inout p: P) { p.s = S1 { x0: 77 }; }
+fn readp(borrow p: P) -> i64 { p.s.x0 }
+
+fn main() -> i32 {
+    let mut a = mka();
+    let t: S1 = a.p.s;
+    @drop(t);
+    setp(inout a.pmut());
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'a.p.s'"
+
+[[case]]
+name = "accessor_receiver_with_moved_field_rejected"
+spec = ["3.8:26", "3.8:76", "6.6:8"]
+description = "An accessor's receiver whose yielded field was moved as a whole is rejected (RUE-2350)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct Q { p: P }
+struct Acc {
+    p: P,
+    z: S1,
+    q: Q,
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn sref(borrow self) -> borrow S1 { yield self.p.s; }
+    fn qref(borrow self) -> borrow Q { yield self.q; }
+}
+struct H { acc: Acc, p: P }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+fn mka() -> Acc { Acc { p: mk(17), z: S1 { x0: 50 }, q: Q { p: mk(18) } } }
+fn setp(inout p: P) { p.s = S1 { x0: 77 }; }
+fn readp(borrow p: P) -> i64 { p.s.x0 }
+
+fn main() -> i32 {
+    let mut a = mka();
+    let t: P = a.p;
+    @drop(t);
+    setp(inout a.pmut());
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'a.p'"
+
+[[case]]
+name = "accessor_field_receiver_with_moved_part_rejected"
+spec = ["3.8:26", "3.8:76", "6.6:8"]
+description = "An accessor on a field-reached receiver (h.acc) is rejected after a part of that receiver moved (RUE-2350)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct Q { p: P }
+struct Acc {
+    p: P,
+    z: S1,
+    q: Q,
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn sref(borrow self) -> borrow S1 { yield self.p.s; }
+    fn qref(borrow self) -> borrow Q { yield self.q; }
+}
+struct H { acc: Acc, p: P }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+fn mka() -> Acc { Acc { p: mk(17), z: S1 { x0: 50 }, q: Q { p: mk(18) } } }
+fn setp(inout p: P) { p.s = S1 { x0: 77 }; }
+fn readp(borrow p: P) -> i64 { p.s.x0 }
+
+fn main() -> i32 {
+    let h = H { acc: mka(), p: mk(60) };
+    let t: S1 = h.acc.p.s;
+    @drop(t);
+    readp(borrow h.acc.pref());
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.acc.p.s'"
+
+[[case]]
+name = "accessor_field_receiver_equality_with_nested_moved_part_rejected"
+spec = ["3.8:26", "3.8:76", "6.6:8"]
+description = "An equality operand through an accessor on a field-reached receiver is rejected when a part two levels below the receiver moved (RUE-2350)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct Q { p: P }
+struct Acc {
+    p: P,
+    z: S1,
+    q: Q,
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn sref(borrow self) -> borrow S1 { yield self.p.s; }
+    fn qref(borrow self) -> borrow Q { yield self.q; }
+}
+struct H { acc: Acc, p: P }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+fn mka() -> Acc { Acc { p: mk(17), z: S1 { x0: 50 }, q: Q { p: mk(18) } } }
+fn setp(inout p: P) { p.s = S1 { x0: 77 }; }
+fn readp(borrow p: P) -> i64 { p.s.x0 }
+
+fn main() -> i32 {
+    let h = H { acc: mka(), p: mk(60) };
+    let b = mka();
+    let t: S1 = h.acc.q.p.s;
+    @drop(t);
+    if h.acc.qref().p == b.q.p { @dbg(1); }
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'h.acc.q.p.s'"
+
+[[case]]
+name = "accessor_yielding_moved_place_rejected"
+spec = ["3.8:26", "3.8:76", "6.6:8"]
+description = "An accessor that yields the moved place itself cannot be read through (RUE-2350)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct Q { p: P }
+struct Acc {
+    p: P,
+    z: S1,
+    q: Q,
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn sref(borrow self) -> borrow S1 { yield self.p.s; }
+    fn qref(borrow self) -> borrow Q { yield self.q; }
+}
+struct H { acc: Acc, p: P }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+fn mka() -> Acc { Acc { p: mk(17), z: S1 { x0: 50 }, q: Q { p: mk(18) } } }
+fn setp(inout p: P) { p.s = S1 { x0: 77 }; }
+fn readp(borrow p: P) -> i64 { p.s.x0 }
+
+fn main() -> i32 {
+    let a = mka();
+    let t: S1 = a.p.s;
+    @drop(t);
+    @dbg(a.sref().x0);
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'a.p.s'"
+
+[[case]]
+name = "accessor_receiver_with_moved_sibling_part_rejected"
+spec = ["3.8:26", "3.8:76", "6.6:8"]
+description = "The whole receiver is loaned, so a moved part beside the yielded place also rejects the call (RUE-2350)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct Q { p: P }
+struct Acc {
+    p: P,
+    z: S1,
+    q: Q,
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn sref(borrow self) -> borrow S1 { yield self.p.s; }
+    fn qref(borrow self) -> borrow Q { yield self.q; }
+}
+struct H { acc: Acc, p: P }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+fn mka() -> Acc { Acc { p: mk(17), z: S1 { x0: 50 }, q: Q { p: mk(18) } } }
+fn setp(inout p: P) { p.s = S1 { x0: 77 }; }
+fn readp(borrow p: P) -> i64 { p.s.x0 }
+
+fn main() -> i32 {
+    let a = mka();
+    let b = mka();
+    let t: S1 = a.z;
+    @drop(t);
+    if a.pref() == b.pref() { @dbg(1); }
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0205"
+error_contains = "use of moved value 'a.z'"
+
+[[case]]
+name = "accessor_result_beside_moved_part_of_root_accepted"
+spec = ["3.8:26", "3.8:76", "6.6:8"]
+description = "A hole in h.p does not affect a loan of h.acc.qref().p: the accessor's receiver h.acc is fully owned (RUE-2350)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct Q { p: P }
+struct Acc {
+    p: P,
+    z: S1,
+    q: Q,
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn sref(borrow self) -> borrow S1 { yield self.p.s; }
+    fn qref(borrow self) -> borrow Q { yield self.q; }
+}
+struct H { acc: Acc, p: P }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+fn mka() -> Acc { Acc { p: mk(17), z: S1 { x0: 50 }, q: Q { p: mk(18) } } }
+fn setp(inout p: P) { p.s = S1 { x0: 77 }; }
+fn readp(borrow p: P) -> i64 { p.s.x0 }
+
+fn main() -> i32 {
+    let h = H { acc: mka(), p: mk(60) };
+    let b = mka();
+    let t: S1 = h.p.s;
+    @drop(t);
+    @dbg(readp(borrow h.acc.qref().p));
+    @dbg(h.acc.qref().p == b.q.p);
+    0
+}
+"""
+expected_stdout = "60\n18\ntrue\n17\n50\n18\n17\n50\n18\n"
+exit_code = 0
+
+[[case]]
+name = "accessor_result_beside_moved_field_of_root_accepted"
+spec = ["3.8:26", "3.8:76", "6.6:8"]
+description = "A moved h.p does not affect a read of h.acc.qref().p.c (RUE-2350)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct Q { p: P }
+struct Acc {
+    p: P,
+    z: S1,
+    q: Q,
+    fn pref(borrow self) -> borrow P { yield self.p; }
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn sref(borrow self) -> borrow S1 { yield self.p.s; }
+    fn qref(borrow self) -> borrow Q { yield self.q; }
+}
+struct H { acc: Acc, p: P }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+fn mka() -> Acc { Acc { p: mk(17), z: S1 { x0: 50 }, q: Q { p: mk(18) } } }
+fn setp(inout p: P) { p.s = S1 { x0: 77 }; }
+fn readp(borrow p: P) -> i64 { p.s.x0 }
+
+fn main() -> i32 {
+    let h = H { acc: mka(), p: mk(60) };
+    let t: P = h.p;
+    @drop(t);
+    @dbg(h.acc.qref().p.c == 18);
+    0
+}
+"""
+expected_stdout = "60\ntrue\n17\n50\n18\n"
+exit_code = 0
