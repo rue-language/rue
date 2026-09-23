@@ -85,7 +85,10 @@ mentions the operand type at all:
 * the operand and the result of `@intCast`, whose target type `4.13:26` takes
   from the *use* site;
 * the operand of `@dbg`, which renders whatever it is given;
-* an integer expression discarded by a sequence.
+* an integer expression discarded by a sequence — and an array one, whose
+  empty literal `[]` has no element to type it (E0903 without an annotation);
+  that block's value is the binding itself, so the array is still dropped at
+  the end of the statement (§6.7).
 
 Each of those prints as a **typed block**: `{ let t<n>a: T = e₁; let t<n>b: T =
 e₂; t<n>a < t<n>b }` and its three siblings, where the annotation is the type
@@ -515,6 +518,16 @@ partial def expr (P : Program) (R : Ty) (Γ : List Ty) (lvl : Nat) : Expr → St
         | some (.float w) =>
             "let " ++ tmpName lvl "d" ++ ": " ++ tyName (.float w) ++ " = " ++
               expr P R Γ (lvl + 1) e₁ ++ ";"
+        | some (.array T n) =>
+            -- An empty literal `[]` has no element to read a type off, and a
+            -- discarded operand has no context to supply one (E0903), so a
+            -- discarded array is a typed block whose value is the binding
+            -- itself: it is moved out as the block's value and dropped at the
+            -- end of the statement, which is (Seq)'s temporary drop (§6.7), not
+            -- at the close of the enclosing block, where a `let` would drop it.
+            let d := tmpName lvl "d"
+            "{ let " ++ d ++ ": " ++ tyName (.array T n) ++ " = " ++
+              expr P R Γ (lvl + 1) e₁ ++ "; " ++ d ++ " };"
         | _ => expr P R Γ (lvl + 1) e₁ ++ ";"
       "{\n" ++
       indent (lvl + 1) ++ discard ++ "\n" ++
