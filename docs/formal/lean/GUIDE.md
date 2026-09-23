@@ -1615,23 +1615,23 @@ side, and the pairs that differ; last a tally of the shape
   oracle <-> native: …
 ```
 
-**Expect five disagreements, and expect a non-zero exit.** Each one is seeded
+**Expect three disagreements, and expect a non-zero exit.** Each one is seeded
 deliberately and stays until its issue is decided or fixed:
 `destructure_ancestor_dropped` (RUE-2335, a spec decision: the compiler reports
-E0406 where the model accepts); and `array_dyn_write_after_destructure_via_field`
-(RUE-2341, a compiler defect: it accepts a write below a dynamic index that
-`3.8:72` forbids, then double-drops and leaks); `array_elem_self_assign`
-(RUE-2346, a decision: the model refuses `a[0] = a[0]` under `3.8:72` and the
-compiler accepts it since RUE-228); and `array_zero_length_field_dyn_read`
-(RUE-2345, a compiler defect: a dynamic-index read from a zero-length array
-field is an internal error where the model traps with `bounds`). Two more were red until
-RUE-2344: `array_dyn_write_after_field_move`, a write below a dynamic index
-into the moved array field `h.x0`, which the compiler now refuses with E0205 as
-the model does; and `array_write_after_destructure_via_field`, the constant
-twin of the RUE-2341 case, which the compiler now refuses because the write's
-base `h.arr[0]` is consumed — with E0205 where `3.8:72` says E0480, a code the
-bridge does not compare and RUE-2341 still owns. The fifth,
-`i64_min_times_neg1`, is `min_T * -1` at `i64`. §6.4's (D-Arith-Trap), `3.1:6`
+E0406 where the model accepts); and `array_elem_self_assign` (RUE-2346, a
+decision: the model refuses `a[0] = a[0]` under `3.8:72` and the compiler
+accepts it since RUE-228). Four more were red until their fixes:
+`array_dyn_write_after_destructure_via_field` (RUE-2341: the compiler accepted
+a write below a dynamic index into a field-reached array with a moved-out
+element, then double-dropped and leaked; it now refuses it with E0480 as the
+model does); `array_dyn_write_after_field_move` (RUE-2344: a write below a
+dynamic index into the moved array field `h.x0`, which the compiler now
+refuses with E0205 as the model does);
+`array_write_after_destructure_via_field`, the constant twin of the RUE-2341
+case, refused since RUE-2344 and with `3.8:72`'s E0480 since RUE-2341; and
+`array_zero_length_field_dyn_read` (RUE-2345: a dynamic-index read from a
+zero-length array field was an internal compiler error; it now traps with
+`bounds` as the model does). The third current one, `i64_min_times_neg1`, is `min_T * -1` at `i64`. §6.4's (D-Arith-Trap), `3.1:6`
 and `8.1:3` make it an overflow trap and the model traps; the compiler's
 constant folder wraps it and the program exits 0. It is narrow — only `i64`,
 only `*`, only with two literal operands; `{ let a: i64 = min; a * -1 }` and
