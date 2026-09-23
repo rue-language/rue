@@ -469,12 +469,6 @@ pub(crate) struct OwnershipState {
     /// and the continue states join the fall-through as the back-edge state
     /// (RUE-1293; formal core §5.7, (Loop-Break)) — see [`LoopEdgeStates`].
     pub loop_break_stack: Vec<LoopEdgeStates>,
-    /// True while re-running a loop's condition/body to validate the loop's
-    /// back edge (see [`Self::fork_for_recheck`]). The recheck pass starts
-    /// from a move state that already includes every move the loop performs,
-    /// so nested loops analyzed within it don't need (and must not trigger)
-    /// their own recheck — that would make nested loops exponential.
-    pub in_loop_move_recheck: bool,
     /// While analyzing the value of an `inout`/`borrow` call argument, the ROOT
     /// variable of the place being passed by reference (set by
     /// `analyze_call_args_coerced`; for `f(borrow o.f)` this is `o`). A by-ref argument
@@ -574,13 +568,11 @@ impl OwnershipState {
         }
     }
 
-    /// The ownership half of the loop back-edge recheck fork: everything
-    /// carries over — a value moved anywhere in a loop's condition or body is
-    /// already moved when the back edge re-enters the loop — except the two
-    /// per-operand markers, which can never be live between whole-expression
-    /// analyses (a by-ref argument's value is a place, and index
-    /// subexpressions are analyzed with the root cleared), and the recheck
-    /// flag itself, which stops nested loops from forking their own recheck.
+    /// The ownership half of the loop-head recheck fork: everything carries
+    /// over — the caller then seeds `moved_vars` with the loop-head state —
+    /// except the two per-operand markers, which can never be live between
+    /// whole-expression analyses (a by-ref argument's value is a place, and
+    /// index subexpressions are analyzed with the root cleared).
     /// The enclosing calls' loan frames stay visible because an argument
     /// value may contain a loop (`f(inout x, { while … })`).
     pub fn fork_for_recheck(&self) -> Self {
@@ -588,7 +580,6 @@ impl OwnershipState {
             moved_vars: self.moved_vars.clone(),
             moved_scope_stack: self.moved_scope_stack.clone(),
             loop_break_stack: self.loop_break_stack.clone(),
-            in_loop_move_recheck: true,
             byref_arg_root: None,
             drop_intrinsic_operand: None,
             call_loaned_roots: self.call_loaned_roots.clone(),
@@ -1374,7 +1365,6 @@ mod tests {
             .push(vec![(x, CallLoanKind::Inout, false)]);
 
         let fork = state.fork_for_recheck();
-        assert!(fork.in_loop_move_recheck);
         assert!(fork.byref_arg_root.is_none());
         assert!(fork.drop_intrinsic_operand.is_none());
         assert_eq!(fork.moved_vars, state.moved_vars);
