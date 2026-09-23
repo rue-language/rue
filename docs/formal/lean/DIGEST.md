@@ -3123,7 +3123,7 @@ theorem RueCore.inBoundsIdx_eq_true {i : Int} {n : Nat} :
 *theorem* · module `RueCore.Dynamics`
 
 A field list's events are its fields' events concatenated, left to right:
-the flattening `dropValue_struct_events` states the order with (helper).
+the flattening `dropContents_struct_events` states the order with (helper).
 
 ```lean
 theorem RueCore.dropEventsList_eq_flatten (D : Decls) (cs : List Contents) :
@@ -8851,7 +8851,7 @@ RueCore.EvalRes.outOfFuel : EvalRes
 
 The same past a live **linear** binding, which is the class where
 `Typed.panic` and `Typed.ret` actually differ: `ret` would need
-`NoOwnedLinear` here and `panic` does not, so the judgment derives this
+`NoResidualLinear` here and `panic` does not, so the judgment derives this
 program (`panicPastLinear_typed`) and the machine runs it to a trap with an
 empty trace. `check` rejects it all the same — its state choice hands the
 `let`'s leak check the incoming `Owned` state — which is the third thing the
@@ -12066,7 +12066,7 @@ RueCore.Typed.call {P : Program} {R : Ty} {Γ Γ' : Ctx} {f : Nat}
       Typed P R Γ (Expr.call f args) fd.ret Γ'
 ```
 
-**`Typed.ret`** — (Return-Value) §5.7 with (Sub-Never) folded in: the operand is checked against the enclosing function's declared return type `R`; §5.6's `⊥_exit` obligation is the frame-wide residual-linear premise (no binding of the current frame is still `Owned` at a linear type — `3.8:62`, and (Fn) §5.8's second clause, which is why an early `return` past a live linear is rejected). The conclusion is at an arbitrary type, which is (Sub-Never) §5.7 applied to `never`, and at an arbitrary outgoing context of the same skeleton, which is `⊥`: §5.5's join reads no state from a diverging arm, so the context may be taken to be whatever the join needs. (Return-Bottom) is subsumed — a `return` whose operand itself diverges types by this rule with the operand at `R`.
+**`Typed.ret`** — (Return-Value) §5.7 with (Sub-Never) folded in: the operand is checked against the enclosing function's declared return type `R`; §5.6's `⊥_exit` obligation is the frame-wide residual-linear premise (no binding of the current frame still carries residual linear content — `3.8:62`, and (Fn) §5.8's second clause, which is why an early `return` past a live linear is rejected). The conclusion is at an arbitrary type, which is (Sub-Never) §5.7 applied to `never`, and at an arbitrary outgoing context of the same skeleton, which is `⊥`: §5.5's join reads no state from a diverging arm, so the context may be taken to be whatever the join needs. (Return-Bottom) is subsumed — a `return` whose operand itself diverges types by this rule with the operand at `R`.
 
 ```lean
 RueCore.Typed.ret {P : Program} {R : Ty} {Γ Γ₁ Γ' : Ctx} {e : Expr} {T : Ty} :

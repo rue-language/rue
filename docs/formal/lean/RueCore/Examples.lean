@@ -1785,7 +1785,7 @@ def panicPastAffine : Expr :=
 
 /-- The same past a live **linear** binding, which is the class where
 `Typed.panic` and `Typed.ret` actually differ: `ret` would need
-`NoOwnedLinear` here and `panic` does not, so the judgment derives this
+`NoResidualLinear` here and `panic` does not, so the judgment derives this
 program (`panicPastLinear_typed`) and the machine runs it to a trap with an
 empty trace. `check` rejects it all the same — its state choice hands the
 `let`'s leak check the incoming `Owned` state — which is the third thing the
@@ -2544,7 +2544,7 @@ def linearLostAtArrayElem : Program :=
 #eval run demoOps (prog tI64 linearConsumed) demoFuel           -- ok: 7, trace: []
 #eval run demoOps (prog tI64 linearLeaked) demoFuel             -- STUCK: linearLeak
 #eval run demoOps (prog tI64 useAfterMove) demoFuel             -- STUCK: useAfterMove
-#eval run demoOps (prog tI64 reinit) demoFuel                   -- ok: 2, trace: []
+#eval run demoOps (prog tI64 reinit) demoFuel                   -- ok: 2, trace: two drops, no output
 #eval run demoOps (prog tI64 linearHalfConsumed) demoFuel       -- STUCK: linearLeak
 #eval run demoOps (scalarProg tI64 overflow) demoFuel           -- panic: overflow
 #eval run demoOps (scalarProg tI64 divZero) demoFuel            -- panic: divZero
