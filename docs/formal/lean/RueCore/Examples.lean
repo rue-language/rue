@@ -1446,14 +1446,15 @@ def dArrHolderAI : StructDecl :=
   { attr := .none, fields := [.array (.struct sAffineInt) 2, tI64], dtor := false,
     cls := .affine }
 
-/-- **Red: a write below a dynamic index after the array field moved**
+/-- **A write below a dynamic index after the array field moved**
 (review probe u8, RUE-2344). `let t = h.x0; @drop(t)` moves the array out of
 `h` and destroys it (`10`, `30`), and `h.x0[i].x0 = S1 { 99 }` then writes into
 the moved array at `i = 1`. The array place `h.x0` is `MovedOut`, so
-`fully-owned` fails and the write is refused (E0205 on `h.x0`). The compiler
-move-checks a place below a dynamic index through a field against the wrong
-path, so it accepts the program, overwrite-drops the destroyed `S1 { 30 }` a
-second time and leaks the `99`. Red until RUE-2344 is fixed. -/
+`fully-owned` fails and the write is refused (E0205 on `h.x0`). Before
+RUE-2344 the compiler move-checked a place below a dynamic index through a
+field against the wrong path, so it accepted the program, overwrite-dropped
+the destroyed `S1 { 30 }` a second time and leaked the `99`; it now refuses it
+with the same E0205. -/
 def dynWriteAfterFieldMove : Program :=
   { decls := Decls.ofStructs (structEnv ++ [dArrHolderAI]),
     fns := [{ params := [], ret := tI64, body := call 1 [lit 1] },
@@ -1543,7 +1544,8 @@ example : checkProgram dynDropCopyTrap = true := by rfl
 example : run demoOps dynDropCopyTrap demoFuel
     = .panic .bounds [.dbg (v64 10), .dbg (v64 3), .dbg (v64 10)] := by rfl
 
-/-- The two red refusals the compiler does not make (RUE-2341, RUE-2344). -/
+/-- Two refusals the bridge seeded red: the compiler still accepts the first
+(RUE-2341) and refuses the second since RUE-2344. -/
 example : checkProgram dynWriteAfterDestructureViaField = false := by rfl
 example : checkProgram dynWriteAfterFieldMove = false := by rfl
 
