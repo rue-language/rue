@@ -493,8 +493,9 @@ def Contents.readAt : Contents → List Nat → Except Violation Contents
   -- A **constant** index step (`Place.idx`): the element is at `cs[c]`, and
   -- `Ty.atPath` has already checked `c < n` (`7.1:9`'s compile-time bounds
   -- check), so a `none` here is the same unreachable shape the struct arm's
-  -- is. A *dynamic* index is not a path and is bounds-checked by `eval`'s own
-  -- arm instead (§6.5's (D-Index-Trap)).
+  -- is. A *dynamic* index is not a path: `Contents.resolveDyn` bounds-checks
+  -- it (§6.5's (D-Index-Trap)) and only then hands this function the constant
+  -- path it resolved to.
   | .array _ cs, f :: π =>
       (match cs[f]? with
        | some c => Contents.readAt c π
