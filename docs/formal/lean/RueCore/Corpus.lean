@@ -478,7 +478,7 @@ def cases : List Case := [
     prog := Examples.enumProg Examples.tI64 Examples.enumMatchOneArm
     },
   { name := "enum_match_one_arm_affine",
-    description := "An affine enum whose payload has a destructor, consumed by a match in one arm of an if and left live on the other, both paths taken: the §5.5 join sends each binding to MovedOut, which Affine allows, and each payload drops exactly once. The compiler ICEd on this (RUE-2347, E9000 in its CFG verifier); the case stays as the regression signal.",
+    description := "Two affine enums whose payloads have destructors, each matched in the then arm of an if with a literal condition: the first binding takes the then path and is consumed there, the second takes the else path and stays live to scope exit. The §5.5 join sends each binding to MovedOut, which Affine allows, and each payload drops exactly once. The compiler ICEd on this (RUE-2347, E9000 in its CFG verifier); the case stays as the regression signal.",
     rules := ["(Match) §5.5", "(If) §5.5 join", "3.9:2", "6.3:17"],
     prog := Examples.enumProg Examples.tI64 Examples.enumMatchOneArmAffine
     },

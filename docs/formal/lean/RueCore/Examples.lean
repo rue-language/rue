@@ -1879,9 +1879,10 @@ def enumMatchOneArm : Expr :=
       (lit 7))
 
 /-- **Probe e2b.** The same one-arm `match` at the `Affine` enum `E0`, whose
-payload has a printing destructor, with both paths taken: the first value is
-matched on the `then` path (its payload binding drops `1` at the arm's end),
-the second is left on the `else` path and drops `2` at scope exit. §5.5's join
+payload has a printing destructor, for two bindings whose literal conditions
+send them opposite ways: the first takes the `then` path and is matched there
+(its payload binding drops `1` at the arm's end), the second takes the `else`
+path and drops `2` at scope exit. §5.5's join
 sends each binding to `MovedOut`, which an `Affine` type allows, so the program
 is accepted and each payload drops exactly once. The compiler ICEd on this
 shape (RUE-2347): its CFG verifier did not see the drop flag the `match`

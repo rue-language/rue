@@ -1529,7 +1529,7 @@ opt_level = 3
 
 [[case]]
 name = "match_in_one_if_arm_suppresses_scope_exit_on_that_path_only"
-spec = ["3.9:2", "4.7:33", "4.7:34"]
+spec = ["3.9:2", "4.7:33", "4.7:34", "6.3:17"]
 description = "A match on a destructor-bearing binding in one arm of an if moves it on that path only: the scope-exit drop runs only on the other path, so each payload is dropped exactly once whether or not the arm binds it, in either arm, through a nested enum, and for a payload-free variant (RUE-2347)"
 source = """
 struct Guard { v: i32 }
@@ -1590,7 +1590,7 @@ expected_stdout = "1\n1\n2\n2\n3\n1\n4\n2\n5\n2\n6\n1\n7\n1\n8\n2\n0\n2\n"
 
 [[case]]
 name = "match_in_one_if_arm_suppresses_scope_exit_on_that_path_only_o2"
-spec = ["3.9:2", "4.7:33", "4.7:34"]
+spec = ["3.9:2", "4.7:33", "4.7:34", "6.3:17"]
 description = "The match in one if arm at -O2, where store-to-load forwarding makes both drops name the value itself (RUE-2347)"
 source = """
 struct Guard { v: i32 }
@@ -1652,7 +1652,7 @@ opt_level = 2
 
 [[case]]
 name = "match_in_one_if_arm_suppresses_scope_exit_on_that_path_only_o3"
-spec = ["3.9:2", "4.7:33", "4.7:34"]
+spec = ["3.9:2", "4.7:33", "4.7:34", "6.3:17"]
 description = "The match in one if arm at -O3, where store-to-load forwarding makes both drops name the value itself (RUE-2347)"
 source = """
 struct Guard { v: i32 }
@@ -1711,6 +1711,50 @@ fn main() -> i32 {
 exit_code = 0
 expected_stdout = "1\n1\n2\n2\n3\n1\n4\n2\n5\n2\n6\n1\n7\n1\n8\n2\n0\n2\n"
 opt_level = 3
+
+[[case]]
+name = "match_in_one_if_arm_drop_timing_by_arm_pattern"
+spec = ["4.7:30", "4.7:34", "6.3:17"]
+description = "When the one-arm match of RUE-2347 drops what it moved, by arm pattern. A whole-value wildcard arm `_` drops the scrutinee before its body runs; this pins current behaviour, which the unconditional match shares, not a rule the specification states. A `_` payload position (4.7:30) and a named payload binding (6.3:17) drop the payload at the arm's end. On the path that skips the match the value drops at scope exit."
+source = """
+struct Guard { v: i32 }
+
+drop fn Guard(self) { @dbg(self.v); }
+
+enum Slot { Empty, Full(Guard) }
+
+fn pick(x: bool) -> bool { x }
+
+fn whole_wildcard(b: bool) {
+    let s = Slot.Full(Guard { v: 1 });
+    if pick(b) { match s { Slot.Empty => { @dbg(40); }, _ => { @dbg(41); }, } }
+    @dbg(49);
+}
+
+fn payload_wildcard(b: bool) {
+    let s = Slot.Full(Guard { v: 2 });
+    if pick(b) { match s { Slot.Empty => { @dbg(50); }, Slot.Full(_) => { @dbg(51); }, } }
+    @dbg(59);
+}
+
+fn payload_binding(b: bool) {
+    let s = Slot.Full(Guard { v: 3 });
+    if pick(b) { match s { Slot.Empty => { @dbg(60); }, Slot.Full(g) => { @dbg(61); }, } }
+    @dbg(69);
+}
+
+fn main() -> i32 {
+    whole_wildcard(true);
+    whole_wildcard(false);
+    payload_wildcard(true);
+    payload_wildcard(false);
+    payload_binding(true);
+    payload_binding(false);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n41\n49\n49\n1\n51\n2\n59\n59\n2\n61\n3\n69\n69\n3\n"
 
 [[case]]
 name = "drop_intrinsic_discharges_linear"

@@ -63,6 +63,35 @@ enum EntryEdge {
     Other,
 }
 
+/// A write to a compiler-owned slot that the drop-flag discipline allows: a
+/// `Store` of zero or of a nonzero constant at the type the slot is loaded at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlagWrite {
+    Cleared,
+    Armed,
+}
+
+/// What the drop-flag guards know about compiler-owned slots independently of
+/// any one consumption fact, so every fact of a verifier run shares it
+/// (RUE-2290, RUE-2347).
+struct DropFlagSlots {
+    /// Every reachable `Load` outside a declared storage region, with the type
+    /// it is loaded at.
+    raw_slots: ahash::AHashSet<(u32, Type)>,
+    /// The slot numbers of `raw_slots`.
+    slot_numbers: ahash::AHashSet<u32>,
+    /// Each block's last write to each compiler-owned slot it writes, in the
+    /// order the slots are first written; `None` is a write the discipline
+    /// does not allow.
+    block_writes: Vec<Vec<(u32, Option<FlagWrite>)>>,
+    /// The compiler-owned slots cleared anywhere reachable, in first-seen
+    /// order: only these can be a drop's flag.
+    cleared_slots: Vec<u32>,
+    /// Per slot, solved on first use: whether it is cleared on every path
+    /// into each block.
+    cleared_on_entry: std::cell::RefCell<ahash::AHashMap<u32, std::rc::Rc<Vec<bool>>>>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RootFact {
     Unresolved,
@@ -87,6 +116,7 @@ struct SemanticWork {
     root_edges: usize,
     root_updates: usize,
     root_dependency_visits: usize,
+    flag_clearing_solves: usize,
 }
 
 #[cfg(test)]
@@ -104,6 +134,7 @@ std::thread_local! {
             root_edges: 0,
             root_updates: 0,
             root_dependency_visits: 0,
+            flag_clearing_solves: 0,
         })
     };
 }
@@ -638,9 +669,13 @@ impl<'a> Verifier<'a> {
         // number of terminator operand references (including edge arguments),
         // overall semantic time is
         // O(B + E + I + P + A + F * (B + E + I + O + T)); the drop-flag guard
-        // scan of each consumption fact is within its O(B + E + I) share.
-        // Auxiliary memory is O(B + V + P + A + F) plus the entry-edge table,
-        // O(E); no state dimension is multiplied by F.
+        // scan and the second check it enables run only for a consumption
+        // fact that fails without them, and are within its share plus a
+        // lookup per cleared flag slot at each of the fact's drops.
+        // The target-independent flag facts are shared: one scan, and one
+        // O(B + E + W) solve per cleared slot, W the flag writes. Auxiliary
+        // memory is O(B + V + P + A + F) plus the entry-edge table, O(E), and
+        // O(W + B) per solved flag slot; no state dimension is multiplied by F.
         for key in storage_keys {
             self.verify_storage_fact(key)?;
         }
@@ -672,11 +707,20 @@ impl<'a> Verifier<'a> {
                 });
             }
         }
+        // The drop-flag facts that do not depend on the target, computed once
+        // and shared by every consumption fact (RUE-2347).
+        let flag_slots = self.drop_flag_slots(raw_slots);
         for &value in &droppable_values {
-            self.verify_exact_drop_fact(value, &raw_slots, &entry_edges)?;
+            self.verify_exact_drop_fact(value, &flag_slots, &entry_edges)?;
         }
         for root in owner_roots {
-            self.verify_owner_root_fact(root, &drop_roots, &value_roots, &raw_slots, &entry_edges)?;
+            self.verify_owner_root_fact(
+                root,
+                &drop_roots,
+                &value_roots,
+                &flag_slots,
+                &entry_edges,
+            )?;
         }
         Ok(())
     }
@@ -1156,21 +1200,25 @@ impl<'a> Verifier<'a> {
         Ok(())
     }
 
+    /// The exact-value consumption fact of `target`. It is first checked with
+    /// no drop-flag exemption, and only a failure pays for the drop-flag proof
+    /// and a second check under it: the exemption only ever turns a block
+    /// fresh, so it cannot make a passing fact fail.
     fn verify_exact_drop_fact(
         &self,
         target: CfgValue,
-        raw_slots: &ahash::AHashSet<(u32, Type)>,
+        flag_slots: &DropFlagSlots,
         entry_edges: &[Vec<EntryEdge>],
     ) -> Result<(), CfgVerificationError> {
-        const FRESH: u8 = SEMANTIC_STATE_A;
-        const CONSUMED: u8 = SEMANTIC_STATE_B;
-
+        let Err(error) = self.verify_exact_drop_fact_under(target, &[]) else {
+            return Ok(());
+        };
         // Store-to-load forwarding can make both the explicit and the guarded
         // exit drop name the value itself rather than a load of its slot; the
         // value's whole write is then its store into that slot, or its own
         // definition.
         let guarded = self.drop_flag_guarded_blocks(
-            raw_slots,
+            flag_slots,
             entry_edges,
             false,
             &|data| matches!(data, CfgInstData::Drop { value: dropped } if *dropped == target),
@@ -1180,8 +1228,24 @@ impl<'a> Verifier<'a> {
                     || matches!(data, CfgInstData::Store { value, .. } if *value == target)
             },
         );
+        if !guarded.contains(&true) {
+            return Err(error);
+        }
+        self.verify_exact_drop_fact_under(target, &guarded)
+    }
+
+    /// The exact-value fact with the blocks in `guarded` (indexed by block;
+    /// missing entries are unguarded) starting fresh.
+    fn verify_exact_drop_fact_under(
+        &self,
+        target: CfgValue,
+        guarded: &[bool],
+    ) -> Result<(), CfgVerificationError> {
+        const FRESH: u8 = SEMANTIC_STATE_A;
+        const CONSUMED: u8 = SEMANTIC_STATE_B;
+        let guarded = |block: BlockId| guarded.get(block.as_u32() as usize) == Some(&true);
         let inputs = self.solve_semantic_fact(|block, mut state| {
-            if guarded[block.as_u32() as usize] {
+            if guarded(block) {
                 state = FRESH;
             }
             if self
@@ -1211,7 +1275,7 @@ impl<'a> Verifier<'a> {
                 continue;
             }
             let mut state = inputs[block.id.as_u32() as usize];
-            if guarded[block.id.as_u32() as usize] {
+            if guarded(block.id) {
                 state = FRESH;
             }
             if block
@@ -1292,6 +1356,128 @@ impl<'a> Verifier<'a> {
         Ok(())
     }
 
+    /// Every write to a compiler-owned slot, through any channel: a `Store` of
+    /// a constant at the type the slot is loaded at is a clearing or an arming;
+    /// a `Store` of anything else, or at another type, an `Alloc`, or a
+    /// `PlaceWrite` based on the slot is a write the discipline does not allow
+    /// (`None`), and the slot exempts nothing.
+    fn flag_write(
+        &self,
+        flag_slots: &DropFlagSlots,
+        data: &CfgInstData,
+    ) -> Option<(u32, Option<FlagWrite>)> {
+        let (slot, write) = match data {
+            CfgInstData::Store {
+                slot,
+                value: stored,
+            } => {
+                if !flag_slots.slot_numbers.contains(slot) {
+                    return None;
+                }
+                let stored = self.cfg.get_inst(*stored);
+                let write = if flag_slots.raw_slots.contains(&(*slot, stored.ty)) {
+                    match stored.data {
+                        CfgInstData::Const(0) => Some(FlagWrite::Cleared),
+                        CfgInstData::Const(_) => Some(FlagWrite::Armed),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                (*slot, write)
+            }
+            CfgInstData::Alloc { slot, .. } => (*slot, None),
+            CfgInstData::PlaceWrite { place, .. } => match place.base {
+                PlaceBase::Local(slot) => (slot, None),
+                PlaceBase::Param(_) | PlaceBase::Accessor(_) | PlaceBase::Indirect(_) => {
+                    return None;
+                }
+            },
+            _ => return None,
+        };
+        flag_slots
+            .slot_numbers
+            .contains(&slot)
+            .then_some((slot, write))
+    }
+
+    /// One scan of the reachable instructions for the drop-flag facts that do
+    /// not depend on the target: each block's writes to compiler-owned slots,
+    /// and which slots are ever cleared.
+    fn drop_flag_slots(&self, raw_slots: ahash::AHashSet<(u32, Type)>) -> DropFlagSlots {
+        let slot_numbers = raw_slots.iter().map(|&(slot, _)| slot).collect();
+        let mut flag_slots = DropFlagSlots {
+            raw_slots,
+            slot_numbers,
+            block_writes: vec![Vec::new(); self.cfg.block_count()],
+            cleared_slots: Vec::new(),
+            cleared_on_entry: Default::default(),
+        };
+        if flag_slots.slot_numbers.is_empty() {
+            return flag_slots;
+        }
+        let mut cleared = ahash::AHashSet::new();
+        for block in self.cfg.blocks() {
+            if !self.dominators().is_reachable(block.id) {
+                continue;
+            }
+            let mut writes: Vec<(u32, Option<FlagWrite>)> = Vec::new();
+            for &value in &block.insts {
+                let Some((slot, write)) =
+                    self.flag_write(&flag_slots, &self.cfg.get_inst(value).data)
+                else {
+                    continue;
+                };
+                if write == Some(FlagWrite::Cleared) && cleared.insert(slot) {
+                    flag_slots.cleared_slots.push(slot);
+                }
+                match writes.iter_mut().find(|(written, _)| *written == slot) {
+                    Some(entry) => entry.1 = write,
+                    None => writes.push((slot, write)),
+                }
+            }
+            flag_slots.block_writes[block.id.as_u32() as usize] = writes;
+        }
+        flag_slots
+    }
+
+    /// Whether `slot` is cleared on every path into `block`: its last write on
+    /// each reaching path is a clearing, and some write reaches (the entry
+    /// counts as not cleared). One two-state solve per slot per verifier run,
+    /// over the per-block write summaries, shared by every fact.
+    fn flag_cleared_at_entry(&self, flag_slots: &DropFlagSlots, slot: u32, block: BlockId) -> bool {
+        const NOT_CLEARED: u8 = SEMANTIC_STATE_A;
+        const CLEARED: u8 = SEMANTIC_STATE_B;
+        let known = flag_slots.cleared_on_entry.borrow().get(&slot).cloned();
+        let inputs = match known {
+            Some(inputs) => inputs,
+            None => {
+                #[cfg(test)]
+                SEMANTIC_WORK.with(|work| work.borrow_mut().flag_clearing_solves += 1);
+                let states = self.solve_semantic_fact(|block, mut state| {
+                    for &(written, write) in &flag_slots.block_writes[block.as_u32() as usize] {
+                        if written == slot {
+                            state = if write == Some(FlagWrite::Cleared) {
+                                CLEARED
+                            } else {
+                                NOT_CLEARED
+                            };
+                        }
+                    }
+                    state
+                });
+                let inputs =
+                    std::rc::Rc::new(states.iter().map(|&state| state == CLEARED).collect());
+                flag_slots
+                    .cleared_on_entry
+                    .borrow_mut()
+                    .insert(slot, std::rc::Rc::clone(&inputs));
+                inputs
+            }
+        };
+        inputs[block.as_u32() as usize]
+    }
+
     /// The blocks a runtime drop flag proves to see an owned target (RUE-2290),
     /// indexed by block.
     ///
@@ -1302,7 +1488,7 @@ impl<'a> Verifier<'a> {
     /// facts are path-insensitive, so without this they would see the guarded
     /// exit drop as a use after the explicit drop. The flag is not declared to
     /// the verifier, so the exemption is earned rather than assumed. A
-    /// compiler-owned slot (`raw_slots`) is the target's flag only when, on
+    /// compiler-owned slot (`flag_slots`) is the target's flag only when, on
     /// every reachable block:
     ///
     /// * each drop of the target is reached, on every path, through a store of
@@ -1331,16 +1517,18 @@ impl<'a> Verifier<'a> {
     /// `drops_target` and `writes_target` name the fact's own notion of a drop
     /// and a whole write, so the owner-root and the exact-value facts share
     /// the proof; `entry_initialized` says the target is whole at function
-    /// entry with no write in the graph, as a by-value parameter is. Two
-    /// scans of the reachable instructions and one of the entry edges per
-    /// fact, a walk up the dominator tree from each drop of the target (each
-    /// dominating block's instructions scanned once), one two-state solve
-    /// for where the target is written, one per candidate cleared outside
-    /// the block of a drop it covers, and one per flag that has a guard-body
-    /// drop.
+    /// entry with no write in the graph, as a by-value parameter is. What does
+    /// not depend on the target (`flag_slots`: each block's flag writes, the
+    /// cleared slots, and the per-slot every-path clearing solve) is computed
+    /// once per verifier run and shared by every fact. It runs only for a
+    /// fact that fails without the exemption. Per fact: nothing when
+    /// no slot is ever cleared; otherwise two scans of the reachable
+    /// instructions and one of the entry edges, a lookup per cleared slot at
+    /// each drop of the target, one two-state solve for where the target is
+    /// written, and one per flag that has a guard-body drop.
     fn drop_flag_guarded_blocks(
         &self,
-        raw_slots: &ahash::AHashSet<(u32, Type)>,
+        flag_slots: &DropFlagSlots,
         entry_edges: &[Vec<EntryEdge>],
         entry_initialized: bool,
         drops_target: &dyn Fn(&CfgInstData) -> bool,
@@ -1348,58 +1536,20 @@ impl<'a> Verifier<'a> {
     ) -> Vec<bool> {
         use ahash::{AHashMap, AHashSet};
 
-        #[derive(Clone, Copy, PartialEq, Eq)]
-        enum FlagWrite {
-            Cleared,
-            Armed,
-        }
         let block_count = self.cfg.block_count();
+        let mut guarded = vec![false; block_count];
+        if flag_slots.cleared_slots.is_empty() {
+            return guarded;
+        }
         let reachable = |block: BlockId| self.dominators().is_reachable(block);
-        let raw_slot_numbers: AHashSet<u32> = raw_slots.iter().map(|&(slot, _)| slot).collect();
-        // Every write to a compiler-owned slot, through any channel: a `Store`
-        // of a constant at the type the slot is loaded at is a clearing or an
-        // arming; a `Store` of anything else, or at another type, an `Alloc`,
-        // or a `PlaceWrite` based on the slot is a write the discipline does
-        // not allow, and the slot exempts nothing.
-        let flag_write = |data: &CfgInstData| -> Option<(u32, Option<FlagWrite>)> {
-            let (slot, write) = match data {
-                CfgInstData::Store {
-                    slot,
-                    value: stored,
-                } => {
-                    let stored = self.cfg.get_inst(*stored);
-                    let write = if raw_slots.contains(&(*slot, stored.ty)) {
-                        match stored.data {
-                            CfgInstData::Const(0) => Some(FlagWrite::Cleared),
-                            CfgInstData::Const(_) => Some(FlagWrite::Armed),
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    };
-                    (*slot, write)
-                }
-                CfgInstData::Alloc { slot, .. } => (*slot, None),
-                CfgInstData::PlaceWrite { place, .. } => match place.base {
-                    PlaceBase::Local(slot) => (slot, None),
-                    PlaceBase::Param(_) | PlaceBase::Accessor(_) | PlaceBase::Indirect(_) => {
-                        return None;
-                    }
-                },
-                _ => return None,
-            };
-            raw_slot_numbers.contains(&slot).then_some((slot, write))
-        };
+        let flag_write = |data: &CfgInstData| self.flag_write(flag_slots, data);
 
-        // Candidates: every compiler-owned slot whose nearest write dominating
-        // a drop of the target is a clearing, either earlier in the drop's own
-        // block or, failing that, the last write in the nearest dominating
-        // block that writes the slot. A `match` moves its scrutinee (clearing
-        // the flag) in the block that ends in the switch and drops it in an
-        // arm below it (RUE-2347). Candidacy only bounds the work; the
-        // discipline below is the proof.
-        let mut block_writes: Vec<Option<AHashMap<u32, Option<FlagWrite>>>> =
-            vec![None; block_count];
+        // Candidates: every compiler-owned slot that some drop of the target
+        // sees cleared, either by the last write to it earlier in the drop's
+        // own block or, with none there, on every path into that block. A
+        // `match` moves its scrutinee (clearing the flag) in the block that
+        // ends in the switch and drops it in an arm below it (RUE-2347).
+        // Candidacy only bounds the work; the discipline below is the proof.
         let mut candidates = AHashSet::<u32>::new();
         for block in self.cfg.blocks() {
             if !reachable(block.id) {
@@ -1411,35 +1561,18 @@ impl<'a> Verifier<'a> {
                 if let Some((slot, write)) = flag_write(data) {
                     last_write.insert(slot, write);
                 } else if drops_target(data) {
-                    let mut nearest = last_write.clone();
-                    let mut dominator = self.dominators().idom(block.id);
-                    while let Some(above) = dominator {
-                        let writes =
-                            block_writes[above.as_u32() as usize].get_or_insert_with(|| {
-                                let mut writes = AHashMap::new();
-                                for &value in &self.cfg.get_block(above).insts {
-                                    if let Some((slot, write)) =
-                                        flag_write(&self.cfg.get_inst(value).data)
-                                    {
-                                        writes.insert(slot, write);
-                                    }
-                                }
-                                writes
-                            });
-                        for (&slot, &write) in writes.iter() {
-                            nearest.entry(slot).or_insert(write);
-                        }
-                        dominator = self.dominators().idom(above);
-                    }
-                    for (&slot, &write) in &nearest {
-                        if write == Some(FlagWrite::Cleared) {
+                    for &slot in &flag_slots.cleared_slots {
+                        let cleared = match last_write.get(&slot) {
+                            Some(write) => *write == Some(FlagWrite::Cleared),
+                            None => self.flag_cleared_at_entry(flag_slots, slot, block.id),
+                        };
+                        if cleared {
                             candidates.insert(slot);
                         }
                     }
                 }
             }
         }
-        let mut guarded = vec![false; block_count];
         if candidates.is_empty() {
             return guarded;
         }
@@ -1518,32 +1651,6 @@ impl<'a> Verifier<'a> {
         };
         let written = self.solve_semantic_fact(target_written);
 
-        // Where a candidate is cleared on every reaching path at block entry,
-        // solved only for a candidate some drop needs it for: a drop whose
-        // own block does not write the slot before it.
-        const NOT_CLEARED: u8 = SEMANTIC_STATE_A;
-        const CLEARED: u8 = SEMANTIC_STATE_B;
-        let mut cleared_on_entry = AHashMap::<u32, Vec<u8>>::new();
-        let mut cleared_at_entry = |slot: u32, block: BlockId| -> bool {
-            let inputs = cleared_on_entry.entry(slot).or_insert_with(|| {
-                self.solve_semantic_fact(|block, mut state| {
-                    for &value in &self.cfg.get_block(block).insts {
-                        if let Some((written, write)) = flag_write(&self.cfg.get_inst(value).data)
-                            && written == slot
-                        {
-                            state = if write == Some(FlagWrite::Cleared) {
-                                CLEARED
-                            } else {
-                                NOT_CLEARED
-                            };
-                        }
-                    }
-                    state
-                })
-            });
-            inputs[block.as_u32() as usize] == CLEARED
-        };
-
         // The discipline, checked on every reachable block; a slot that breaks
         // it is no flag of the target. A guard-body drop is recorded for the
         // staleness solve below.
@@ -1587,7 +1694,9 @@ impl<'a> Verifier<'a> {
                     for &slot in &candidates {
                         match last_write.get(&slot) {
                             Some(FlagWrite::Cleared) => continue,
-                            None if cleared_at_entry(slot, block.id) => continue,
+                            None if self.flag_cleared_at_entry(flag_slots, slot, block.id) => {
+                                continue;
+                            }
                             _ => {}
                         }
                         if body_of == Some(slot) {
@@ -1642,19 +1751,22 @@ impl<'a> Verifier<'a> {
         guarded
     }
 
+    /// The owner-root consumption fact of `root`, checked first with no
+    /// drop-flag exemption like [`Self::verify_exact_drop_fact`].
     fn verify_owner_root_fact(
         &self,
         root: OwnerRoot,
         drop_roots: &[Option<OwnerRoot>],
         value_roots: &[Option<OwnerRoot>],
-        raw_slots: &ahash::AHashSet<(u32, Type)>,
+        flag_slots: &DropFlagSlots,
         entry_edges: &[Vec<EntryEdge>],
     ) -> Result<(), CfgVerificationError> {
-        const FRESH: u8 = SEMANTIC_STATE_A;
-        const CONSUMED: u8 = SEMANTIC_STATE_B;
-
+        let Err(error) = self.verify_owner_root_fact_under(root, drop_roots, value_roots, &[])
+        else {
+            return Ok(());
+        };
         let guarded = self.drop_flag_guarded_blocks(
-            raw_slots,
+            flag_slots,
             entry_edges,
             !matches!(root, OwnerRoot::Local { .. }),
             &|data| {
@@ -1663,8 +1775,26 @@ impl<'a> Verifier<'a> {
             },
             &|_, data| self.whole_write_root(data) == Some(root),
         );
+        if !guarded.contains(&true) {
+            return Err(error);
+        }
+        self.verify_owner_root_fact_under(root, drop_roots, value_roots, &guarded)
+    }
+
+    /// The owner-root fact with the blocks in `guarded` (indexed by block;
+    /// missing entries are unguarded) starting fresh.
+    fn verify_owner_root_fact_under(
+        &self,
+        root: OwnerRoot,
+        drop_roots: &[Option<OwnerRoot>],
+        value_roots: &[Option<OwnerRoot>],
+        guarded: &[bool],
+    ) -> Result<(), CfgVerificationError> {
+        const FRESH: u8 = SEMANTIC_STATE_A;
+        const CONSUMED: u8 = SEMANTIC_STATE_B;
+        let guarded = |block: BlockId| guarded.get(block.as_u32() as usize) == Some(&true);
         let inputs = self.solve_semantic_fact(|block, mut state| {
-            if guarded[block.as_u32() as usize] {
+            if guarded(block) {
                 state = FRESH;
             }
             for &value in &self.cfg.get_block(block).insts {
@@ -1686,7 +1816,7 @@ impl<'a> Verifier<'a> {
                 continue;
             }
             let mut state = inputs[block.id.as_u32() as usize];
-            if guarded[block.id.as_u32() as usize] {
+            if guarded(block.id) {
                 state = FRESH;
             }
             for &(parameter, _) in &block.params {
@@ -3963,6 +4093,128 @@ mod tests {
                 .contains("after it was already dropped on a reaching path"),
             "{error}"
         );
+    }
+
+    /// `rounds` sequential `match`es of one flag-guarded binding (RUE-2347's
+    /// review): each round whole-writes and arms the binding, moves it with
+    /// the flag cleared before a branch, and drops the moved value in both
+    /// arms; the scope exit is guarded by the flag.
+    fn sequential_match_drops_cfg(rounds: usize) -> (Cfg, FrozenTypeInternPool) {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let owner = register_nonzero_droppable_struct(&pool, &interner, "RematchedOwner");
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(
+            Type::UNIT,
+            2,
+            1,
+            "sequential_matches".to_string(),
+            vec![false],
+        );
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::StorageLive {
+                slot: 0,
+                local_ty: owner,
+            },
+            Type::UNIT,
+        );
+        let mut current = entry;
+        for round in 0..rounds {
+            let owned = init_nonzero_owner(&mut cfg, current, owner, round as i64);
+            push(
+                &mut cfg,
+                current,
+                CfgInstData::Store {
+                    slot: 0,
+                    value: owned,
+                },
+                Type::UNIT,
+            );
+            let armed = push(&mut cfg, current, CfgInstData::Const(1), Type::I32);
+            push(
+                &mut cfg,
+                current,
+                CfgInstData::Store {
+                    slot: 1,
+                    value: armed,
+                },
+                Type::UNIT,
+            );
+            let moved = push(&mut cfg, current, CfgInstData::Load { slot: 0 }, owner);
+            let cleared = push(&mut cfg, current, CfgInstData::Const(0), Type::I32);
+            push(
+                &mut cfg,
+                current,
+                CfgInstData::Store {
+                    slot: 1,
+                    value: cleared,
+                },
+                Type::UNIT,
+            );
+            let which = push(
+                &mut cfg,
+                current,
+                CfgInstData::Param { index: 0 },
+                Type::BOOL,
+            );
+            let first_arm = cfg.new_block();
+            let second_arm = cfg.new_block();
+            let next = cfg.new_block();
+            cfg.set_branch(current, which, first_arm, [], second_arm, []);
+            for arm in [first_arm, second_arm] {
+                push(
+                    &mut cfg,
+                    arm,
+                    CfgInstData::Drop { value: moved },
+                    Type::UNIT,
+                );
+                cfg.set_goto(arm, next, []);
+            }
+            current = next;
+        }
+        let exit_drop = cfg.new_block();
+        let exit = cfg.new_block();
+        let flag = push(&mut cfg, current, CfgInstData::Load { slot: 1 }, Type::I32);
+        let zero = push(&mut cfg, current, CfgInstData::Const(0), Type::I32);
+        let live = push(&mut cfg, current, CfgInstData::Ne(flag, zero), Type::BOOL);
+        cfg.set_branch(current, live, exit_drop, [], exit, []);
+        let remaining = push(&mut cfg, exit_drop, CfgInstData::Load { slot: 0 }, owner);
+        push(
+            &mut cfg,
+            exit_drop,
+            CfgInstData::Drop { value: remaining },
+            Type::UNIT,
+        );
+        cfg.set_goto(exit_drop, exit, []);
+        push(
+            &mut cfg,
+            exit,
+            CfgInstData::StorageDead {
+                slot: 0,
+                local_ty: owner,
+            },
+            Type::UNIT,
+        );
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+        (cfg, pool)
+    }
+
+    #[test]
+    fn semantic_verifier_solves_each_flag_clearing_once_across_facts() {
+        const ROUNDS: usize = 32;
+        let (cfg, pool) = sequential_match_drops_cfg(ROUNDS);
+        super::SEMANTIC_WORK.with(|work| *work.borrow_mut() = Default::default());
+        cfg.finish(&pool).unwrap();
+        super::SEMANTIC_WORK.with(|work| {
+            let work = *work.borrow();
+            // One owner-root fact and one exact-value fact per moved value
+            // all read the same flag; its every-path clearing is solved once.
+            assert_eq!(work.flag_clearing_solves, 1, "{work:?}");
+        });
     }
 
     #[test]
