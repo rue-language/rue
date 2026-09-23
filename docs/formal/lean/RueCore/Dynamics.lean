@@ -137,8 +137,6 @@ refuses with `useAfterMove` rather than dropping nothing, because
 `Contents.mult ⊘ = .copy` would otherwise make the redex succeed in silence
 (`Examples.dropDeclaredHoleLeaf`).
 
-## Pending arguments: the one edge no monitor covers
-
 ## The bounds trap (§6.5, §6.12)
 
 §6.5 bounds-checks an array index "at the moment the path is navigated"
@@ -147,8 +145,8 @@ refuses with `useAfterMove` rather than dropping nothing, because
 configuration to `↯bounds`, §6.12's own category, which the implementations
 report as `index out of bounds` and which exits 101 like every other trap. It
 is a **defined** outcome, not a violation: the safety theorem permits it
-exactly as it permits an overflow. Only `Expr.indexRead`/`Expr.indexWrite`
-can reach it — a constant index is checked by `Ty.atPath` at compile time
+exactly as it permits an overflow. Only the dynamic-index forms
+(`Expr.indexRead`, `Expr.indexWrite`, `Expr.indexDrop`) can reach it — a constant index is checked by `Ty.atPath` at compile time
 (`7.1:9`), so `Place.idx` never traps.
 
 ## Pending values: the one edge no monitor covers
