@@ -3800,6 +3800,30 @@ expected_error_code = "E0480"
 error_contains = "cannot assign into 'g.m'"
 
 [[case]]
+name = "field_nested_array_inner_element_write_after_part_move_rejected"
+spec = ["3.8:72", "7.1:46", "3.8:71"]
+description = "g.m[0] = [..] after g.m[0][0].s moved is E0480: the write steps into g.m, which is not wholly owned (RUE-2341; this double-dropped before)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct P { c: i64, s: S1 }
+struct G { m: [[P; 2]; 2] }
+
+fn mk(n: i64) -> P { P { c: n, s: S1 { x0: n } } }
+
+fn main() -> i32 {
+    let mut g = G { m: [[mk(10), mk(11)], [mk(12), mk(13)]] };
+    let t: S1 = g.m[0][0].s;
+    @drop(t);
+    g.m[0] = [mk(20), mk(21)];
+    0
+}
+"""
+compile_fail = true
+expected_error_code = "E0480"
+error_contains = "cannot assign into 'g.m'"
+
+[[case]]
 name = "field_array_whole_reinit_after_part_move_accepted"
 spec = ["3.8:72", "7.1:46"]
 description = "Reinitializing the whole array field after a part of an element moved is the recovery path; writes into it are legal again afterwards (RUE-2341)"
