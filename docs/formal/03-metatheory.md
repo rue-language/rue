@@ -191,10 +191,21 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   taking no parameters — which `RueCore.checkProgram_sound` decides.
 - **Covers:** the fragment above. **Owed:** every remaining Phase C slice
   re-establishes this theorem for its forms (RUE-2233 through RUE-2237). The
-  array slice (RUE-2322) has done so, and it also widened `3.0:5`'s own
-  relation: `RueCore.Decls.Names` reaches a declaration through
-  `RueCore.Ty.declIds`, which peels array wrappers, so a struct that names
-  itself through an array element is refused rather than grounded. The
+  array slice (RUE-2235) has done so for all of its forms — `[T; n]` and its
+  literals (RUE-2322), the constant-index element move and its `MovedOut`
+  element state (RUE-2327), and places below a dynamic index (RUE-2342) — and
+  it also widened `3.0:5`'s own relation: `RueCore.Decls.Names` reaches a
+  declaration through `RueCore.Ty.declIds`, which peels array wrappers, so a
+  struct that names itself through an array element is refused rather than
+  grounded. RUE-2331 then put the array forms under the generator, and at
+  `--gen 200 --seed 7` and `--gen 1000 --seed 23` the model's verdicts and
+  traces agree with the compiler's on every generated case but three shapes,
+  none of them the theorem's: RUE-2344's read below a dynamic index after its
+  field-reached array moved (the compiler misses the move), the
+  self-assignment `a[c] = a[c]` (refused by `3.8:72` as §5.2 orders it,
+  accepted by the compiler since RUE-228 — a reading still to decide), and a
+  dynamic index into a zero-length array field (an internal compiler error;
+  the model traps with `bounds`). The
   enum slice (RUE-2320) has done so: progress at a `match` is exhaustiveness
   (`RueCore.exhaustive_arm_exists` — a well-typed tag is an index the arm list
   has), and preservation over the n-way join is the fold of the binary one

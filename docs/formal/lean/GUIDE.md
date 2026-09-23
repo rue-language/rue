@@ -1304,6 +1304,136 @@ compiler does the same (`array_dyn_write_trap_negative`). Had the index
 `return`ed instead, the value would be lost the same way, which is RUE-2316's
 pending-value edge (`../03-metatheory.md`).
 
+## 5j. A tenth worked example: an element moved out, and the rest dropped ascending
+
+The array slice (RUE-2235) adds one thing the struct examples cannot show: a
+place whose step is an **index**, and a residue that §6.11 walks by position
+rather than by field. The corpus case is `array_elem_move_rest_ascending`,
+over the fixture declaration
+
+```rue
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }     // the observation channel
+```
+
+### The program
+
+```rue
+fn f0() -> i64 {
+    {
+        let v0: [S1; 3] = [S1 { x0: 1 }, S1 { x0: 2 }, S1 { x0: 3 }];
+        {
+            let v1: S1 = v0[1];          // an ELEMENT move: 3.8:68
+            { @drop(v1); { @dbg(20); 7 } }
+        }
+    }
+}
+```
+
+In the core, `v0[1]` is `Place.idx (Place.var 0) 1` (`Examples.arrayElemMove`).
+Its path is `[1]`: `Place.path` does not tell an index step from a field step,
+and neither does anything that navigates by it — `Ty.fieldAt` reads the step
+as a field slot at a struct type and as a constant index at an array type. So
+the element move goes through **the same rules** as `v0.x1` would, and the
+only question the array adds is whether the index may be moved out of at all.
+
+### The path rules, premise by premise
+
+`use (v0[1])` is a use in value context at a non-`Copy` type, so the rule is
+(Use-Move) §5.1, read under §4.2's `Ordinary` plan (`[S1; 3]` is not a struct
+declared `linear`, so `declaredPrefix` is `none`). Its premises, as `check`
+reads them:
+
+| Premise | Here | Where |
+| --- | --- | --- |
+| `Γ ⊢ v0[1] : S1` | `[S1; 3]` stepped at `1 < 3` is `S1`; an index `≥ 3` would have no type, which is `7.1:9`'s compile-time bounds check (E0902) | `Ty.atPath` |
+| `Σ(v0[1]) = Owned`, `fully-owned` | nothing under `v0` has moved yet | `OwnSt.get`, `fullyOwned` |
+| no proper prefix declares a destructor (`3.9:34`) | the only proper prefix is `v0`, and an array declares none — `S1`'s destructor is the **leaf**'s, which is allowed | `noDtorPrefix` |
+| an index step only off the root (`3.8:68`) | the step is the first off the root binding | `rootIdxOnly` |
+
+The last one is the array's own. `h.arr[1]`, an element of an array reached
+through a field, and `a[1][0]`, an element of an element, both fail it, and the
+compiler reports both as E0904 (`Examples.arrayElemMoveThroughField`,
+`arrayElemMoveNestedIndex`): `3.8:68` tracks an element move only where the
+index is applied directly to the binding.
+
+### Σ and the store, before and after
+
+Before the move, `v0` is `Owned` and its cell holds three whole elements:
+
+```
+  Σ(v0)                      H(ℓ0)
+  Owned                      [S1 { 1 }, S1 { 2 }, S1 { 3 }]
+```
+
+(Use-Move) marks exactly `v0[1]`, and (D-Use-Move) §6.3 writes `⊘` at exactly
+the same position:
+
+```
+  Σ(v0)                                H(ℓ0)
+  Owned{ x0: Owned, x1: MovedOut }     [
+    ├─ [0]  Owned      ← v0[0]           S1 { 1 },
+    ├─ [1]  MovedOut   ← v0[1]           ⊘,
+    └─ [2]  Owned      ← v0[2]           S1 { 3 }
+                                       ]
+                                       H(ℓ1) = S1 { 2 }    ← v1, the moved element
+```
+
+`Owned{ x0: Owned, x1: MovedOut }` is how `explain/array_elem_move_rest_ascending.txt`
+renders the state, and it names positions the way it names fields: `x1` is
+position `1`, here index `1`. The slot the brace leaves out, index `2`, is
+`Owned`. This is `3.8:73`'s per-element drop flag, and it is the whole of it:
+there is no separate flag, only the path's `MovedOut`.
+
+Three things follow, each a premise somewhere:
+
+* `v0[0]` and `v0[2]` are still readable and movable (`3.8:53`; `OwnSt.get`
+  finds `Owned` at both), and `v0[1]` is not (E0205);
+* `fully-owned(Σ, v0)` is now **false**, so `let v2 = v0` is refused (`3.8:70`,
+  `7.1:45`, E0205; `Examples.arrayWholeAfterElemMove`), and so is a read at a
+  **dynamic** index, which could name the hole (`3.8:70`; E0480 for a write,
+  `Examples.arrayDynWriteAfterElemMove`);
+* a write into the array — `v0[1] = S1 { 9 }`, at the hole as much as at a
+  sibling — is refused (`3.8:72`, `7.1:46`, E0480; `Examples.arrayElemReinit`):
+  an element write does not give back per-element ownership, and the
+  recovery is the whole-array assignment (`Examples.arrayWholeReinit`).
+
+### The residue's drops, in order
+
+`@drop(v1)` runs `S1 { 2 }`'s destructor where it stands: `2`. Then `@dbg(20)`
+prints `20`. Then `v1`'s scope ends (already `MovedOut`, nothing to drop) and
+`v0`'s, and §6.11's walk runs on the **cell contents**, elements in ascending
+index order, skipping every `⊘`:
+
+```
+  drop(ℓ0) = drop([S1 { 1 }, ⊘, S1 { 3 }])
+           = (an array declares no destructor of its own, 3.9:14)
+             drop(S1 { 1 })  ++  drop(⊘)  ++  drop(S1 { 3 })
+           = [dtor S1 (S1 { 1 })] ++ [] ++ [dtor S1 (S1 { 3 })]
+```
+
+So stdout is `2`, `20`, `1`, `3`, then `main`'s `7`, and the compiler prints
+the same. The moved element is dropped once, by its new owner; the residue
+drops `1` before `3` because `3.9:15` orders an array's elements by index.
+`dropContents_array_events` (`Soundness.lean`) is the walk in closed form: no
+event of the array's own, then each element's events, concatenated in order.
+
+### What the checker demanded, and what the proof gives back
+
+`check` accepted by reading exactly the four rows above, so `check_sound` turns
+the acceptance into a `Typed` derivation and `soundness` applies: `run` cannot
+reach `useAfterMove` (the `⊘` at `[1]` is never read) or `useAfterDrop` (the
+walk skips it). The kernel-checked form is the pair of examples beside
+`arrayElemMove` in `Examples.lean`: `checkProgram … = true` and the pinned trace
+
+```lean
+[.drop 1 (cA 2), .dtor sAffine (cA 2), .dbg (v64 20),
+ .drop 0 (.array (.struct sAffine) [cA 1, .hole, cA 3]),
+ .dtor sAffine (cA 1), .dtor sAffine (cA 3)]
+```
+
+which is the drop above, event for event, `.hole` being the `⊘`.
+
 ### More worked examples
 
 Every corpus case is a smaller worked example: its printed source begins

@@ -715,6 +715,33 @@ def arrayElemMove : Expr :=
     (letIn false (use (.idx (.var 0) 1))
       (seq (drop (.var 0)) (seq (dbg (lit 20)) (lit 7))))
 
+/-- **The element move at the first position** (RUE-2235's seed shape: move
+`a[0]`, then drop the rest at scope exit). The hole is where §6.11's ascending
+walk starts, so the scope exit skips first and then drops `2` and `3` in
+order (`3.8:73`, `3.9:15`). -/
+def arrayElemMoveFirst : Expr :=
+  letIn false (mkArray (.struct sAffine) [resA (lit 1), resA (lit 2), resA (lit 3)])
+    (letIn false (use (.idx (.var 0) 0))
+      (seq (drop (.var 0)) (seq (dbg (lit 20)) (lit 7))))
+
+/-- **A zero-length array is `Affine` at a non-`Copy` element** (§3's
+four-line table, `3.8:74`; RUE-526): `[S1; 0]` carries nothing, so it is
+droppable, but not duplicable, and a second move of it is E0205. -/
+def arrayZeroLengthMovedTwice : Expr :=
+  letIn false (mkArray (.struct sAffine) [])
+    (letIn false (use (.var 0))
+      (letIn false (use (.var 1)) (lit 7)))
+
+/-- **Every dynamic index into a zero-length array is out of bounds**
+(`7.1:11`): `@dbg(10)` and then `a[i]` at `i = 0` on an `[i64; 0]`, which
+(D-Index-Trap) §6.5 abandons to `↯bounds` with the `10` already printed
+(§6.12). The index is a `let`-bound binder, so the printed program keeps it
+dynamic (a literal index would be `7.1:9`'s compile-time E0902). -/
+def arrayZeroLengthDynTrap : Expr :=
+  letIn false (mkArray tI64 [])
+    (seq (dbg (lit 10))
+      (letIn false (lit 0) (indexRead (.var 1) [use (.var 0)] [[]])))
+
 /-- **The element move in one arm of an `if`** (probe `a4`/`a4b`): the §5.5
 join meets `MovedOut` at the element against `Owned`, and `ownedJoinOk`'s array
 clause admits it because `S1` is not `Linear` (`3.8:50`). The outgoing state has
@@ -1075,6 +1102,26 @@ example : run demoOps (prog tI64 arrayElemMove) demoFuel
         [.drop 1 (cA 2), .dtor sAffine (cA 2), .dbg (v64 20),
          .drop 0 (.array (.struct sAffine) [cA 1, .hole, cA 3]),
          .dtor sAffine (cA 1), .dtor sAffine (cA 3)] := by rfl
+
+/-- **The element move at the first position**: `a[0]`'s own drop, then `20`,
+then the scope exit over `[⊘, 2, 3]`. -/
+example : checkProgram (prog tI64 arrayElemMoveFirst) = true := by rfl
+example : run demoOps (prog tI64 arrayElemMoveFirst) demoFuel
+    = .ok [.dead, .dead] (v64 7)
+        [.drop 1 (cA 1), .dtor sAffine (cA 1), .dbg (v64 20),
+         .drop 0 (.array (.struct sAffine) [.hole, cA 2, cA 3]),
+         .dtor sAffine (cA 2), .dtor sAffine (cA 3)] := by rfl
+
+/-- **`[S1; 0]` is moved once and not twice**: the checker refuses the second
+move, and the machine refuses it too. -/
+example : checkProgram (prog tI64 arrayZeroLengthMovedTwice) = false := by rfl
+example : run demoOps (prog tI64 arrayZeroLengthMovedTwice) demoFuel = .stuck .useAfterMove := by rfl
+
+/-- **The zero-length array's bounds trap**: accepted, and the run is `10` and
+then `↯bounds`. -/
+example : checkProgram (prog tI64 arrayZeroLengthDynTrap) = true := by rfl
+example : run demoOps (prog tI64 arrayZeroLengthDynTrap) demoFuel
+    = .panic .bounds [.dbg (v64 10)] := by rfl
 
 /-- **A destructure whose consumed place is an array element** (probe `b4`):
 the plan is `([0], [x0])`, the element becomes `MovedOut`, and the sibling is

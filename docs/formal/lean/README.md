@@ -69,26 +69,44 @@ that seed and more than `i` cases. Its bias toward moves in one arm of an
 documented in the module.
 
 A generated program may declare its own **enums** as well as its own structs,
-and about three in four do (154 of 200 at `--gen 200 --seed 7`, 771 of 1,000
+and about three in four do (153 of 200 at `--gen 200 --seed 7`, 794 of 1,000
 at `--gen 1000 --seed 23`); such a program also draws enum construction and
 `match` — one arm per variant in declaration order, each arm a block over that
 variant's payload locals, which it may move, `@drop`, read or leave. A little
-under half the cases contain a `match` (98 of 200 and 465 of 1,000 at those two
+under half the cases contain a `match` (85 of 200 and 444 of 1,000 at those two
 settings), and a `match` whose scrutinee is a **place** rather than a temporary
-is the majority of them (127 of 211 sites and 552 of 909), because a drawn
+is the majority of them (101 of 172 sites and 502 of 818), because a drawn
 `match` half the time binds its scrutinee to a `let` first where the scope
 holds no enum place.
 
+A generated program may hold **arrays** too (RUE-2331): one field type in five
+and one `let` binder type in five is `[T; n]`, `n ≤ 3` with `0` among them, and
+one in four of those is nested. Constant indices are place steps like field
+slots, so the use, `@drop` and assignment draws reach `a[c]`, `a[c].f`,
+`h.arr[c]` and `a[c][c']`; places below a **dynamic** index — `a[i]`,
+`a[i].f`, `h.arr[i].f`, `a[i][j]` — are read at a `Copy` leaf, written, and
+`@drop`ped at a `Copy` leaf, with one index in five out of bounds. About half
+the programs contain an array literal (96 of 200, 501 of 1,000), 56 and 300 an
+index form, 43 and 248 a dynamic one, and the bounds trap ends 14 and 71 runs.
+Each index is bound by a `let` before the form that uses it, because the
+compiler folds a literal index in a block to a constant one and rejects an
+out-of-range constant at compile time (E0902, `7.1:9`). Three generated shapes
+disagree with the compiler, and the module lists them: RUE-2344's read below a
+dynamic index after its field-reached array moved, the self-assignment
+`a[c] = a[c]` the compiler accepts on purpose (RUE-228) where `3.8:72` refuses
+it, and an internal compiler error at a dynamic index into a zero-length array
+field.
+
 A use or `@drop` is drawn through a struct declared `linear` exactly as through
 any other (RUE-2339), so the checker, not the draw, picks §4.2's declared-linear
-destructure: 18 of the 200 programs and 67 of the 1,000 contain one, the
-checker accepts 0 and 13 of those, and the destructure's own linear-residue
-premise (E0474) is the deepest refusal of 0 and 2. RUE-2335's shape — a
+destructure: 19 of the 200 programs and 78 of the 1,000 contain one, the
+checker accepts 2 and 16 of those, and the destructure's own linear-residue
+premise (E0474) is the deepest refusal of none of either. RUE-2335's shape — a
 `@drop` of a declared-`linear` place after a destructure under it, which the
 compiler rejects and the model accepts — is not drawn around. None of those
-1,200 cases has it, but the draw reaches it at about one accepted case in
-100,000 programs (first: `gen_1_773`, `--gen 774 --seed 1`), and such a case is
-a bridge disagreement to attribute to RUE-2335 by hand. One shape is deliberately absent and the
+1,200 cases has it, but the draw reaches it, rarely (first at seed 1:
+`gen_1_151382`, `--gen 151383 --seed 1`, the only one in the first 300,000),
+and such a case is a bridge disagreement to attribute to RUE-2335 by hand. One shape is deliberately absent and the
 module says why: a `return` or `@panic` **inside an arm**, which `check` is
 incomplete on exactly as it is inside an `if` arm.
 
@@ -477,7 +495,7 @@ a slice author writes:
 | `RueCore/Examples.lean` | `#eval` demos; kernel-checked acceptance/rejection of example programs | — |
 | `RueCore/Print.lean` | core syntax → Rue source, the program's struct and enum declarations included, and the observation channel (a `drop fn` per destructor-bearing declaration) | §2 elaboration inventory, 3.9 |
 | `RueCore/Corpus.lean` | the bridge corpus: each case's checker verdict and interpreter outcome, exported as JSON (`lake exe ruecore-corpus`) | §5, §6, §7 witnesses |
-| `RueCore/Gen.lean` | a seeded, type-directed generator of fragment programs — struct **and enum** declarations, enum construction, and `match` in §5.5's canonical form — appended to the corpus by `lake exe ruecore-corpus --gen N --seed S` | programs, not rules |
+| `RueCore/Gen.lean` | a seeded, type-directed generator of fragment programs — struct **and enum** declarations, enum construction, `match` in §5.5's canonical form, and **arrays**: `[T; n]` fields and binders, literal and repeat forms, constant-index reads, writes, element moves and `@drop`s, and dynamic-index reads, writes and `Copy` `@drop`s at and below the element, in and out of bounds — appended to the corpus by `lake exe ruecore-corpus --gen N --seed S` | programs, not rules |
 | `RueCore/Explain.lean` | instrumented mirrors of `check` and `eval` — derivation trees with the failing premise named, and step tables with stores and drop events — with the lemmas tying both to the proved definitions | §5, §6 as an explanation |
 | `RueCore/Explain/Text.lean`, `RueCore/Explain/Html.lean` | the terminal and self-contained-page renderings (`lake exe ruecore-explain`); the checked-in text is in `explain/` | — |
 | `RueCore/Digest.lean`, `RueCore/DigestMain.lean` | the statement digest and the trust report, walked out of the compiled environment (`lake exe ruecore-digest`) | the claim inventory and its trust boundary |
