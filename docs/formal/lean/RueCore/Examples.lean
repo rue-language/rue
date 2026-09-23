@@ -1103,6 +1103,35 @@ example : run demoOps (prog tI64 arrayElemMove) demoFuel
          .drop 0 (.array (.struct sAffine) [cA 1, .hole, cA 3]),
          .dtor sAffine (cA 1), .dtor sAffine (cA 3)] := by rfl
 
+/-- **The red case** (RUE-2346): `a[0] = a[0]` on an `[S1; 2]`. (Assign) §5.2
+types the right-hand side first, so `a[0]` is moved out before the write, and
+the write then goes into an array with a moved-out element, which `3.8:72` and
+`7.1:46` forbid (E0480). The compiler accepts it on purpose (RUE-228 made an
+element self-assignment reinitialise the element) and prints `100`, `1`, `2`.
+Which reading is right is a decision, RUE-2346. -/
+def arrayElemSelfAssign : Expr :=
+  letIn true (mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)])
+    (seq (assign (.idx (.var 0) 0) (use (.idx (.var 0) 0)))
+      (seq (dbg (lit 100)) (lit 0)))
+
+/-- `H { x0: i8, x1: [i64; 0] }`: a struct holding a zero-length array field,
+for RUE-2345's red case. -/
+def dZeroArrHolder : StructDecl :=
+  { attr := .none, fields := [.int .w8 .signed, .array tI64 0], dtor := false, cls := .affine }
+
+/-- **The red case** (RUE-2345): a dynamic-index read from a zero-length array
+**field**, `h.x1[i]` at `i = 0`. Every index into `[i64; 0]` is out of bounds,
+so the model takes (D-Index-Trap) §6.5's bounds trap (`7.1:11`). The compiler
+reports an internal error in code generation instead (`place_lower.rs`, "zero-sized
+places must be diverted to the canonical zero-sized address"); a zero-length
+root binding traps correctly (`arrayZeroLengthDynTrap`). -/
+def arrayZeroLengthFieldDynRead : Program :=
+  { decls := Decls.ofStructs (structEnv ++ [dZeroArrHolder]),
+    fns := [{ params := [], ret := tI64,
+              body := letIn false (mkStruct 11 [.intLit .w8 .signed 8, mkArray tI64 []])
+                (letIn false (.intLit .w32 .signed 0)
+                  (seq (dbg (indexRead (.proj (.var 1) 1) [use (.var 0)] [[]])) (lit 0))) }] }
+
 /-- **The element move at the first position**: `a[0]`'s own drop, then `20`,
 then the scope exit over `[⊘, 2, 3]`. -/
 example : checkProgram (prog tI64 arrayElemMoveFirst) = true := by rfl
@@ -1111,6 +1140,14 @@ example : run demoOps (prog tI64 arrayElemMoveFirst) demoFuel
         [.drop 1 (cA 1), .dtor sAffine (cA 1), .dbg (v64 20),
          .drop 0 (.array (.struct sAffine) [.hole, cA 2, cA 3]),
          .dtor sAffine (cA 2), .dtor sAffine (cA 3)] := by rfl
+
+/-- **The self-assignment is refused** (RUE-2346's red case). -/
+example : checkProgram (prog tI64 arrayElemSelfAssign) = false := by rfl
+
+/-- **The zero-length field read is accepted and traps** (RUE-2345's red
+case): nothing is printed before the trap. -/
+example : checkProgram arrayZeroLengthFieldDynRead = true := by rfl
+example : run demoOps arrayZeroLengthFieldDynRead demoFuel = .panic .bounds [] := by rfl
 
 /-- **`[S1; 0]` is moved once and not twice**: the checker refuses the second
 move, and the machine refuses it too. -/

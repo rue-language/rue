@@ -810,7 +810,15 @@ def cases : List Case := [
   { name := "array_zero_length_dyn_trap",
     description := "Every dynamic index into a zero-length array is out of bounds: @dbg(10), then a[i] at i = 0 on an [i64; 0] takes (D-Index-Trap) §6.5's bounds trap, and §6.12 keeps the 10 printed before it. The index is let-bound, so it stays a run-time index.",
     rules := ["(Use-Untrackable-Dynamic-Copy) §5.1", "(D-Index-Trap) §6.5", "§6.12", "7.1:11"],
-    prog := Examples.prog Examples.tI64 Examples.arrayZeroLengthDynTrap }
+    prog := Examples.prog Examples.tI64 Examples.arrayZeroLengthDynTrap },
+  { name := "array_elem_self_assign",
+    description := "a[0] = a[0] on an [S1; 2]: (Assign) §5.2 evaluates the right-hand side first, which moves a[0] out, and the write then goes into an array with a moved-out element, which 3.8:72 and 7.1:46 forbid (E0480). The bridge is red on this one: the compiler accepts it on purpose (RUE-228 made element self-assignment reinitialise the element) and prints 100, 1, 2. Which reading is right is RUE-2346. The case stays seeded until that is decided.",
+    rules := ["(Assign) §5.2", "(Use-Move) §5.1", "3.8:72", "7.1:46", "5.2:14"],
+    prog := Examples.prog Examples.tI64 Examples.arrayElemSelfAssign },
+  { name := "array_zero_length_field_dyn_read",
+    description := "h.x1[i] at i = 0, where the field x1 is an [i64; 0]: every index into a zero-length array is out of bounds, so the read takes (D-Index-Trap) §6.5's bounds trap and nothing prints. The bridge is red on this one: the compiler reports an internal error in code generation (a zero-sized place reached through a field is not diverted to the zero-sized address), where a zero-length root binding traps correctly. That is RUE-2345. The case stays seeded until that is fixed.",
+    rules := ["(Use-Untrackable-Dynamic-Copy) §5.1", "(D-Index-Trap) §6.5", "7.1:11"],
+    prog := Examples.arrayZeroLengthFieldDynRead }
 ]
 
 /-! ## Witnesses for the refusals no `Examples.lean` program reaches -/

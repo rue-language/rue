@@ -140,17 +140,27 @@ non-root array (E0904, `pathOk`), the repeat form at a non-`Copy` element
 program's result type, whose draws keep their weights; the seed corpus has
 the shapes those would add.
 
-Three generated shapes disagree with the compiler today, and none is drawn
-around. A place below a dynamic index read after its field-reached array (or
-an ancestor of it) was moved is RUE-2344's shape: the model refuses it and the
-compiler accepts it. `a[c] = a[c]` is refused by the model, because (Assign)
-§5.2 runs the right-hand side first and the write then goes into an array with
-a moved-out element (`3.8:72`, `7.1:46`), while the compiler accepts it on
-purpose (RUE-228 made the self-assignment reinitialise the element), so the
-two readings wait on a decision. And a dynamic index into a **zero-length
-array field**, `h.arr[i]` at `arr: [T; 0]`, is an internal compiler error in
-code generation (`place_lower.rs`, "zero-sized places must be diverted"), where
-the model traps with `bounds`.
+Four generated shapes disagree with the compiler today, each seeded red, and
+none is drawn around — drawing around one would write the compiler's current
+answer into the generator. A generated case with one of them is a bridge
+disagreement to attribute to its issue by hand, as RUE-2335's is (above);
+nothing in the tree counts them.
+
+* `a[c] = a[c]` (seed `array_elem_self_assign`, RUE-2346): the model refuses
+  it, because (Assign) §5.2 runs the right-hand side first and the write then
+  goes into an array with a moved-out element (`3.8:72`, `7.1:46`), while the
+  compiler accepts it on purpose (RUE-228). One case at `--gen 200 --seed 7`
+  (`gen_7_101`), two at `--gen 1000 --seed 23` (`gen_23_295`, `gen_23_868`).
+* A dynamic index into a **zero-length array field**, `h.arr[i]` at
+  `arr: [T; 0]` (seed `array_zero_length_field_dyn_read`, RUE-2345): an
+  internal compiler error in code generation where the model traps with
+  `bounds`. None at seed 7, five at seed 23 (`gen_23_108`, `112`, `126`,
+  `636`, `718`).
+* A place below a dynamic index after its field-reached array (or an ancestor
+  of it) was moved (seed `array_dyn_write_after_field_move`, RUE-2344), and a
+  write into an array holed by a declared-`linear` destructure through a field
+  (`array_write_after_destructure_via_field`, RUE-2341): reachable, and none at
+  either setting.
 
 Calls and `return` are **not** generated yet: every generated case is a
 one-function program (`Program.entry`), so the shapes RUE-2233 added — a
