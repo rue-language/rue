@@ -798,7 +798,19 @@ def cases : List Case := [
   { name := "array_dyn_write_after_field_move",
     description := "The array field h.x0 is moved out and dropped, and h.x0[i].x0 = S1 { 99 } then writes below a dynamic index into it at i = 1. The array place is MovedOut, so the write is refused (E0205 on h.x0). The compiler once move-checked the place against the wrong path, accepted it, ran the destroyed S1 { 30 }'s destructor a second time and leaked the 99 (RUE-2344, review probe u8); it now refuses it with the same E0205, and the case stays as the regression signal.",
     rules := ["(Assign) §5.2", "(Use-Move) §5.1", "3.8:70", "3.8:72"],
-    prog := Examples.dynWriteAfterFieldMove }
+    prog := Examples.dynWriteAfterFieldMove },
+  { name := "array_elem_move_first_rest_ascending",
+    description := "RUE-2235's seed shape: a[0] is moved out of an [S1; 3] and dropped where the @drop is, and the scope exit then walks the array skip, 2, 3 — the hole at the position the ascending walk starts from (3.8:68, 3.8:73, 3.9:15).",
+    rules := ["(Use-Move) §5.1", "§6.11", "3.8:68", "3.8:73", "3.9:15"],
+    prog := Examples.prog Examples.tI64 Examples.arrayElemMoveFirst },
+  { name := "array_zero_length_moved_twice",
+    description := "A zero-length array of a non-Copy element is Affine, not Copy (§3's array table, 3.8:74): [S1; 0] carries nothing, so it drops, but it does not duplicate, and moving it a second time is refused (E0205).",
+    rules := ["(Use-Move) §5.1", "(Array-Intro) §5.8", "3.8:74"],
+    prog := Examples.prog Examples.tI64 Examples.arrayZeroLengthMovedTwice },
+  { name := "array_zero_length_dyn_trap",
+    description := "Every dynamic index into a zero-length array is out of bounds: @dbg(10), then a[i] at i = 0 on an [i64; 0] takes (D-Index-Trap) §6.5's bounds trap, and §6.12 keeps the 10 printed before it. The index is let-bound, so it stays a run-time index.",
+    rules := ["(Use-Untrackable-Dynamic-Copy) §5.1", "(D-Index-Trap) §6.5", "§6.12", "7.1:11"],
+    prog := Examples.prog Examples.tI64 Examples.arrayZeroLengthDynTrap }
 ]
 
 /-! ## Witnesses for the refusals no `Examples.lean` program reaches -/
