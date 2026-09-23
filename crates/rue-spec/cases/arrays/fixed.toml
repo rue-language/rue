@@ -351,6 +351,189 @@ fn main() -> i32 {
 """
 runtime_error = "index out of bounds"
 
+[[case]]
+name = "runtime_index_zero_length_local_traps"
+spec = ["7.1:10", "7.1:11", "8.2:1"]
+description = "Control: a dynamic read from a zero-length array binding traps at run time, since every index is out of range for `[T; 0]`."
+source = """
+fn main() -> i32 {
+    let a: [i64; 0] = [];
+    let i: i32 = 0;
+    let t: i64 = a[i];
+    @intCast(t)
+}
+"""
+runtime_error = "index out of bounds"
+
+[[case]]
+name = "runtime_index_zero_length_field_read_traps"
+spec = ["7.1:10", "7.1:11", "8.2:1"]
+description = "RUE-2345: a dynamic read from a zero-length array reached through a struct field compiles and traps before any element address is formed."
+source = """
+struct H { x: i8, arr: [i64; 0] }
+fn main() -> i32 {
+    let h: H = H { x: 8, arr: [] };
+    let i: i32 = 0;
+    let t: i64 = h.arr[i];
+    @intCast(t)
+}
+"""
+runtime_error = "index out of bounds"
+
+[[case]]
+name = "runtime_index_zero_length_field_write_traps"
+spec = ["7.1:10", "7.1:11", "8.2:1"]
+description = "RUE-2345: a dynamic write into a zero-length array field traps before the store."
+source = """
+struct H { x: i8, arr: [i64; 0] }
+fn main() -> i32 {
+    let mut h: H = H { x: 8, arr: [] };
+    let i: i32 = 0;
+    h.arr[i] = 5;
+    @intCast(h.x)
+}
+"""
+runtime_error = "index out of bounds"
+
+[[case]]
+name = "runtime_index_zero_length_field_compound_assign_traps"
+spec = ["7.1:10", "7.1:11", "8.2:1"]
+description = "RUE-2345: a compound assignment through a dynamic index into a zero-length array field traps."
+source = """
+struct H { x: i8, arr: [i64; 0] }
+fn main() -> i32 {
+    let mut h: H = H { x: 8, arr: [] };
+    let i: i32 = 0;
+    h.arr[i] += 1;
+    @intCast(h.x)
+}
+"""
+runtime_error = "index out of bounds"
+
+[[case]]
+name = "runtime_index_zero_length_field_copy_drop_traps"
+spec = ["7.1:10", "7.1:11", "8.2:1"]
+description = "RUE-2345: `@drop` of a Copy element read through a dynamic index into a zero-length array field evaluates the index and traps."
+source = """
+struct H { x: i8, arr: [i64; 0] }
+fn main() -> i32 {
+    let h: H = H { x: 8, arr: [] };
+    let i: i32 = 0;
+    @drop(h.arr[i]);
+    @intCast(h.x)
+}
+"""
+runtime_error = "index out of bounds"
+
+[[case]]
+name = "runtime_index_zero_length_inner_dimension_field_traps"
+spec = ["7.1:10", "7.1:11", "8.2:1"]
+description = "RUE-2345: an in-range outer index followed by a dynamic index into a zero-length inner dimension of a field traps at the inner level."
+source = """
+struct H { x: i8, arr: [[i64; 0]; 2] }
+fn main() -> i32 {
+    let h: H = H { x: 8, arr: [[], []] };
+    let i: i32 = 1;
+    let j: i32 = 0;
+    let t: i64 = h.arr[i][j];
+    @intCast(t)
+}
+"""
+runtime_error = "index out of bounds"
+
+[[case]]
+name = "runtime_index_zero_length_inner_dimension_static_outer_field_traps"
+spec = ["7.1:10", "7.1:11", "8.2:1"]
+description = "RUE-2345: a constant outer index followed by a dynamic index into a zero-length inner dimension of a field traps."
+source = """
+struct H { x: i8, arr: [[i64; 0]; 2] }
+fn main() -> i32 {
+    let h: H = H { x: 8, arr: [[], []] };
+    let i: i32 = 0;
+    let t: i64 = h.arr[0][i];
+    @intCast(t)
+}
+"""
+runtime_error = "index out of bounds"
+
+[[case]]
+name = "runtime_index_zero_length_outer_dimension_field_traps"
+spec = ["7.1:10", "7.1:11", "8.2:1"]
+description = "RUE-2345: a dynamic index into a zero-length outer dimension of a field traps before the inner element is reached."
+source = """
+struct H { x: i8, arr: [[i64; 2]; 0] }
+fn main() -> i32 {
+    let h: H = H { x: 8, arr: [] };
+    let i: i32 = 0;
+    let t: i64 = h.arr[i][1];
+    @intCast(t)
+}
+"""
+runtime_error = "index out of bounds"
+
+[[case]]
+name = "runtime_index_zero_length_nested_field_traps"
+spec = ["7.1:10", "7.1:11", "8.2:1"]
+description = "RUE-2345: a dynamic index into a zero-length array two fields deep traps."
+source = """
+struct G { y: i64, arr: [i64; 0] }
+struct H { x: i8, g: G }
+fn main() -> i32 {
+    let h: H = H { x: 8, g: G { y: 3, arr: [] } };
+    let i: i32 = 0;
+    let t: i64 = h.g.arr[i];
+    @intCast(t)
+}
+"""
+runtime_error = "index out of bounds"
+
+[[case]]
+name = "runtime_index_zero_length_param_field_traps"
+spec = ["7.1:10", "7.1:11", "8.2:1"]
+description = "RUE-2345: a dynamic index into a zero-length array field of a by-value parameter traps."
+source = """
+struct H { x: i8, arr: [i64; 0] }
+fn get(h: H, i: i32) -> i64 { h.arr[i] }
+fn main() -> i32 {
+    let t: i64 = get(H { x: 8, arr: [] }, 0);
+    @intCast(t)
+}
+"""
+runtime_error = "index out of bounds"
+
+[[case]]
+name = "runtime_index_zero_sized_element_field"
+spec = ["7.1:10", "7.1:11", "8.2:1"]
+description = "RUE-2345: an in-range dynamic index into a field array of zero-sized elements reads and writes without disturbing the sized fields around it."
+source = """
+@copy struct S {}
+struct H { x: i8, arr: [S; 3], y: i64 }
+fn main() -> i32 {
+    let mut h: H = H { x: 8, arr: [S {}, S {}, S {}], y: 34 };
+    let i: i32 = 2;
+    let s: S = h.arr[i];
+    h.arr[i] = s;
+    @intCast(h.x) + @intCast(h.y)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "runtime_index_zero_sized_element_field_out_of_bounds"
+spec = ["7.1:10", "7.1:11", "8.2:1"]
+description = "RUE-2345: an out-of-range dynamic index into a field array of zero-sized elements still traps."
+source = """
+@copy struct S {}
+struct H { x: i8, arr: [S; 3] }
+fn main() -> i32 {
+    let h: H = H { x: 8, arr: [S {}, S {}, S {}] };
+    let i: i32 = 3;
+    let s: S = h.arr[i];
+    @intCast(h.x)
+}
+"""
+runtime_error = "index out of bounds"
+
 # =============================================================================
 # Mutable Array Element Assignment
 # =============================================================================
