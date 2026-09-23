@@ -786,7 +786,19 @@ def cases : List Case := [
   { name := "array_dyn_write_declared_linear_elem",
     description := "a[i].x0 = 5 on an array of declared-linear elements: an assignment destination is not a use, so no declared-linear plan is drawn and the write is admitted; the elements are then moved out and destructured, 1 + 5 (probe r05).",
     rules := ["(Assign) §5.2", "(Use-Declared-Linear-Destructure) §5.1", "3.8:33", "3.8:68"],
-    prog := Examples.dynWriteDeclaredLinearElem }
+    prog := Examples.dynWriteDeclaredLinearElem },
+  { name := "array_dyn_drop_copy_trap_after_output",
+    description := "@dbg(10); @drop(a[i].x1); @drop(a[i]); a[i].x0 on a Copy-element array, at i = 1 and then at i = 5: (@Drop-Copy) §5.3 has no index premise, so the drop is admitted with the read's premises and does nothing in range, but its index is bounds-checked, so the second call traps at the first @drop after printing 10, 3, 10 (review probes d1, d3).",
+    rules := ["(@Drop-Copy) §5.3", "(Use-Untrackable-Dynamic-Copy) §5.1", "(D-Index-Trap) §6.5", "§6.12", "7.1:10"],
+    prog := Examples.dynDropCopyTrap },
+  { name := "array_dyn_write_after_destructure_via_field",
+    description := "A declared-linear destructure at h.arr[0].x0 holes an array reached through a field, and a write below a dynamic index, h.arr[i].x0 = S1 { 77 } at i = 0, follows. 3.8:72 and 7.1:46 forbid it (E0480): fully-owned at h.arr fails. The bridge is red on this one: the compiler accepts it, runs the moved-out element's destructor twice and leaks the written value (RUE-2341, review probe w1). The case stays seeded until that is fixed.",
+    rules := ["(Assign) §5.2", "(Use-Declared-Linear-Destructure) §5.1", "3.8:71", "3.8:72", "7.1:46"],
+    prog := Examples.dynWriteAfterDestructureViaField },
+  { name := "array_dyn_write_after_field_move",
+    description := "The array field h.x0 is moved out and dropped, and h.x0[i].x0 = S1 { 99 } then writes below a dynamic index into it at i = 1. The array place is MovedOut, so the write is refused (E0205 on h.x0). The bridge is red on this one: the compiler move-checks the place against the wrong path, accepts it, runs the destroyed S1 { 30 }'s destructor a second time and leaks the 99 (RUE-2344, review probe u8). The case stays seeded until that is fixed.",
+    rules := ["(Assign) §5.2", "(Use-Move) §5.1", "3.8:70", "3.8:72"],
+    prog := Examples.dynWriteAfterFieldMove }
 ]
 
 /-! ## Witnesses for the refusals no `Examples.lean` program reaches -/
