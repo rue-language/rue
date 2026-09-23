@@ -3640,6 +3640,166 @@ mod tests {
         (cfg, pool)
     }
 
+    /// How `match_scrutinee_drop_cfg` deviates from the builder's shape.
+    #[derive(Default, Clone, Copy)]
+    struct MatchDropShape {
+        /// Both drops name the initial value itself, as store-to-load
+        /// forwarding leaves them at `-O2`.
+        forwarded: bool,
+        /// One arm re-arms the flag before joining the other arm's drop. The
+        /// target is still whole-written on that path, so only the check that
+        /// the clearing reaches the drop on every path can reject it.
+        rearm_on_one_arm: bool,
+    }
+
+    /// The CFG `build.rs` emits for a `match` on a destructor-bearing binding
+    /// in one arm of an `if` (RUE-2347): the flag in slot 1 is armed at the
+    /// binding, cleared where the `match` moves its scrutinee (before the
+    /// switch, here a branch on a second parameter), and the moved value is
+    /// dropped in an arm below that block; the scope-exit drop is guarded by
+    /// the flag.
+    fn match_scrutinee_drop_cfg(shape: MatchDropShape) -> (Cfg, FrozenTypeInternPool) {
+        let MatchDropShape {
+            forwarded,
+            rearm_on_one_arm,
+        } = shape;
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let owner = register_nonzero_droppable_struct(&pool, &interner, "MatchedOwner");
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(
+            Type::UNIT,
+            2,
+            2,
+            "match_scrutinee_drop".to_string(),
+            vec![false, false],
+        );
+        let entry = cfg.new_block();
+        let scrutinize = cfg.new_block();
+        let first_arm = cfg.new_block();
+        let second_arm = cfg.new_block();
+        let skip = cfg.new_block();
+        let join = cfg.new_block();
+        let exit_drop = cfg.new_block();
+        let exit = cfg.new_block();
+        cfg.entry = entry;
+
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::StorageLive {
+                slot: 0,
+                local_ty: owner,
+            },
+            Type::UNIT,
+        );
+        let owned = init_nonzero_owner(&mut cfg, entry, owner, 5);
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: owned,
+            },
+            Type::UNIT,
+        );
+        let armed = push(&mut cfg, entry, CfgInstData::Const(1), Type::I32);
+        push(
+            &mut cfg,
+            entry,
+            CfgInstData::Store {
+                slot: 1,
+                value: armed,
+            },
+            Type::UNIT,
+        );
+        let cond = push(&mut cfg, entry, CfgInstData::Param { index: 0 }, Type::BOOL);
+        cfg.set_branch(entry, cond, scrutinize, [], skip, []);
+
+        let moved = if forwarded {
+            owned
+        } else {
+            push(&mut cfg, scrutinize, CfgInstData::Load { slot: 0 }, owner)
+        };
+        let cleared = push(&mut cfg, scrutinize, CfgInstData::Const(0), Type::I32);
+        push(
+            &mut cfg,
+            scrutinize,
+            CfgInstData::Store {
+                slot: 1,
+                value: cleared,
+            },
+            Type::UNIT,
+        );
+        let which = push(
+            &mut cfg,
+            scrutinize,
+            CfgInstData::Param { index: 1 },
+            Type::BOOL,
+        );
+        cfg.set_branch(scrutinize, which, first_arm, [], second_arm, []);
+
+        push(
+            &mut cfg,
+            first_arm,
+            CfgInstData::Drop { value: moved },
+            Type::UNIT,
+        );
+        cfg.set_goto(first_arm, join, []);
+        if rearm_on_one_arm {
+            let armed = push(&mut cfg, second_arm, CfgInstData::Const(1), Type::I32);
+            push(
+                &mut cfg,
+                second_arm,
+                CfgInstData::Store {
+                    slot: 1,
+                    value: armed,
+                },
+                Type::UNIT,
+            );
+            cfg.set_goto(second_arm, first_arm, []);
+        } else {
+            push(
+                &mut cfg,
+                second_arm,
+                CfgInstData::Drop { value: moved },
+                Type::UNIT,
+            );
+            cfg.set_goto(second_arm, join, []);
+        }
+        cfg.set_goto(skip, join, []);
+
+        let flag = push(&mut cfg, join, CfgInstData::Load { slot: 1 }, Type::I32);
+        let zero = push(&mut cfg, join, CfgInstData::Const(0), Type::I32);
+        let live = push(&mut cfg, join, CfgInstData::Ne(flag, zero), Type::BOOL);
+        cfg.set_branch(join, live, exit_drop, [], exit, []);
+
+        let remaining = if forwarded {
+            owned
+        } else {
+            push(&mut cfg, exit_drop, CfgInstData::Load { slot: 0 }, owner)
+        };
+        push(
+            &mut cfg,
+            exit_drop,
+            CfgInstData::Drop { value: remaining },
+            Type::UNIT,
+        );
+        cfg.set_goto(exit_drop, exit, []);
+
+        push(
+            &mut cfg,
+            exit,
+            CfgInstData::StorageDead {
+                slot: 0,
+                local_ty: owner,
+            },
+            Type::UNIT,
+        );
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+        (cfg, pool)
+    }
+
     /// A shape the flag must not exempt. Each rejection here would also be
     /// rejected with the drop-flag exemption absent, so what a rejecting test
     /// pins is that the clause it deviates on is load-bearing: stubbing that
@@ -3750,6 +3910,52 @@ mod tests {
     #[test]
     fn semantic_verifier_rejects_forwarded_guarded_drop_without_the_clearing() {
         let (cfg, pool) = forwarded_conditional_drop_cfg(false);
+        let error = cfg.finish(&pool).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("after it was already dropped on a reaching path"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn semantic_verifier_accepts_guarded_exit_drop_after_a_match_arm_drops_the_scrutinee() {
+        let (cfg, pool) = match_scrutinee_drop_cfg(MatchDropShape::default());
+        cfg.finish(&pool).unwrap();
+    }
+
+    #[test]
+    fn semantic_verifier_accepts_forwarded_guarded_exit_drop_after_a_match_arm_drops_the_scrutinee()
+    {
+        let (cfg, pool) = match_scrutinee_drop_cfg(MatchDropShape {
+            forwarded: true,
+            ..Default::default()
+        });
+        cfg.finish(&pool).unwrap();
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_match_arm_drop_reached_by_a_path_that_rearms_the_flag() {
+        let (cfg, pool) = match_scrutinee_drop_cfg(MatchDropShape {
+            rearm_on_one_arm: true,
+            ..Default::default()
+        });
+        let error = cfg.finish(&pool).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("reads already-consumed owner root"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_forwarded_match_arm_drop_reached_by_a_path_that_rearms_the_flag() {
+        let (cfg, pool) = match_scrutinee_drop_cfg(MatchDropShape {
+            forwarded: true,
+            rearm_on_one_arm: true,
+        });
         let error = cfg.finish(&pool).unwrap_err();
         assert!(
             error
