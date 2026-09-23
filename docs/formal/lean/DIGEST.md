@@ -44,10 +44,10 @@ rule by rule and form by form; its two coverage lines, quoted here so the
 boundary is visible before the statements are:
 
 - *Calculus rules → declarations*: 78 of 97 labeled §5/§6 rules are mechanized; 19 are *not yet mechanized*.
-- *Abstract syntax forms → declarations*: 30 of 35 §2 forms have a core image (9 of them partial); 5 are *not yet mechanized*.
+- *Abstract syntax forms → declarations*: 30 of 35 §2 forms have a core image (8 of them partial); 5 are *not yet mechanized*.
 
-The forms that count as partial are `S`, `E`, `p [ e ]`, `e1 ⊕ e2`, `⊖ e`,
-`e1 ⋚ e2`, `g ( a1, ..., am )`, `@panic ( s )`,
+The forms that count as partial are `S`, `E`, `e1 ⊕ e2`, `⊖ e`, `e1 ⋚ e2`,
+`g ( a1, ..., am )`, `@panic ( s )`,
 `match e0 { pat1 => e1, ..., patk => ek }`. Each is a restricted or
 abstract stand-in rather than the form itself, and `INDEX.md` says in the
 row what is missing. A form the fragment abstracts away rather than models
@@ -7428,14 +7428,20 @@ constructor `«match»` because `match` is one of its own keywords.
 carries the element type because `n = 0` leaves no element to read one off
 (`[]` is the zero-sized `[T; 0]`, and *which* `T` is elaboration's answer, the
 same way `intLit` carries the width `4.1:2` resolved). `repeatArray T e n` is
-the surface's repeat form `[e; n]` (`7.1:36`–`7.1:39`). `indexRead p e` and
-`indexWrite p e₁ e₂` are the **dynamic**-index read `p[e]` and write
-`p[e₁] = e₂`: a constant index is a step of the place (`Place.idx`), so these
-two forms exist for the index §5's `Path` cannot track — §4.2's
-`Untrackable(OrdinaryDynamic)` plan for the read, restricted to
-`class(T) = Copy` by §5.1's only successful rule for it, and (Assign) §5.2's
-linear-overwrite premise for the write — both bounds-checked at run time by
-§6.5's (D-Index)/(D-Index-Trap).
+the surface's repeat form `[e; n]` (`7.1:36`–`7.1:39`). `indexRead p idx πs`
+and `indexWrite p idx πs e` are the **dynamic**-index read
+`p[e₁]π₁…[eₖ]πₖ` and write `p[e₁]π₁…[eₖ]πₖ = e`, with `idx = [e₁, …, eₖ]`
+and `πs = [π₁, …, πₖ]`, `k ≥ 1`, each `πⱼ` a constant path of field slots and
+constant indices: a constant index is a step of the place (`Place.idx`), so
+these two forms exist for the index §5's `Path` cannot track — §4.2's
+`Untrackable(OrdinaryDynamic)` plan for the read, restricted to a
+`class(T) = Copy` leaf by §5.1's only successful rule for it, and (Assign)
+§5.2's linear-overwrite premise for the write, whose right-hand side runs
+before its indices (`5.2:14`) — both bounds-checked at run time at every
+dynamic step by §6.5's (D-Index)/(D-Index-Trap). The two lists are parallel
+rather than one list of pairs so that the index expressions are a `List Expr`,
+the nested occurrence `mkStruct`'s arguments already are, and every recursion
+over `Expr` handles them the way it handles arguments.
 
 ```lean
 inductive RueCore.Expr : Type
@@ -12328,12 +12334,13 @@ elements, each at the element type (`3.8:71`, §5.3's "the element type for an
 array of nonzero length"). §5.6 writes that clause with a second disjunct,
 "(untracked residue carries linear)", for the elements the tracked list does
 not reach. It is not absent here: `residualLinearFields`' `[], Ts` base case
-answers those slots at the **type** level, `Ts.any (·.mult D = .linear)`,
-which is the second disjunct's job done conservatively — it can only say
-"carries" where the calculus's own disjunct would. What would make the
-difference observable is a *dynamic-index* move, which leaves residue no path
-names (`3.8:70`). The fragment has no such move, so the two readings agree on
-every program it accepts (RUE-2342 owes the move and the disjunct).
+answers those slots at the **type** level, `Ts.any (·.mult D = .linear)`, and
+that reading is **exact**, not conservative. An element Σ has no record for
+is one no path has touched, and nothing below a dynamic index is ever moved:
+the calculus has no rule for a move, a `@drop` or a declared-`linear` plan
+there (§4.2's `Untrackable` plans, E0904; probes q02, q11, q15 of RUE-2342),
+and a write there consumes nothing. So an untracked element is `Owned`, and
+an `Owned` element carries a linear value exactly when `class(T) = Linear`.
 
 ```lean
 def RueCore.residualLinear (D : Decls) : OwnSt → Ty → Bool
