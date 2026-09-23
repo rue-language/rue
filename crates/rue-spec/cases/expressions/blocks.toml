@@ -180,11 +180,10 @@ exit_code = 42
 # =============================================================================
 # Float array literals in a block whose value is an enum, a call, or a type
 # =============================================================================
-# A block whose tail is a dotted path, a call, or a type name may evaluate to a
-# type, so it is tried at compile time before inference. A float array literal
-# bound inside it has no context there and takes the `f64` default of 3.12:8;
-# neither that attempt nor the block's ordinary run-time meaning is changed by
-# the literal's element type (RUE-2348).
+# A float array literal bound inside a block whose value is an enum variant, an
+# enum payload, a call result, or a type name has no other type context, so an
+# unannotated one takes the `f64` default of 3.12:8. The literal's element type
+# does not change what the block evaluates to (RUE-2348).
 
 [[case]]
 name = "float_array_let_in_enum_valued_block"
@@ -241,7 +240,7 @@ exit_code = 0
 [[case]]
 name = "unannotated_float_array_selects_the_enum_variant"
 spec = ["4.5:3", "3.12:8"]
-description = "An unannotated float array literal in an untyped enum-valued block is f64 and its elements decide the variant at run time (RUE-2348)"
+description = "An unannotated float array literal in an untyped enum-valued block: its elements decide the variant at run time (RUE-2348)"
 source = """
 enum Shape { Empty, Count(i16) }
 fn main() -> i32 {
