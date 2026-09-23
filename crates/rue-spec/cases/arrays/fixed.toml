@@ -503,7 +503,7 @@ runtime_error = "index out of bounds"
 
 [[case]]
 name = "runtime_index_zero_sized_element_field"
-spec = ["7.1:10", "7.1:11", "8.2:1"]
+spec = ["7.1:10", "7.1:11", "7.1:12", "8.2:1"]
 description = "RUE-2345: an in-range dynamic index into a field array of zero-sized elements reads and writes without disturbing the sized fields around it."
 source = """
 @copy struct S {}
@@ -538,6 +538,39 @@ runtime_error = "index out of bounds"
 # Mutable Array Element Assignment
 # =============================================================================
 
+
+[[case]]
+name = "runtime_index_zero_length_field_multi_slot_element_traps"
+spec = ["7.1:10", "7.1:11", "8.2:1"]
+description = "RUE-2345: a dynamic read of a field of a multi-slot element from a zero-length array field traps; the element's own slot count must not decide the diversion."
+source = """
+struct P { a: i64, b: i64 }
+struct H { x: i8, z: [P; 0] }
+fn main() -> i32 {
+    let h: H = H { x: 8, z: [] };
+    let i: i32 = 0;
+    let t: i64 = h.z[i].a;
+    @intCast(t)
+}
+"""
+runtime_error = "index out of bounds"
+
+[[case]]
+name = "runtime_index_zero_length_borrow_field_traps_when_inlined"
+spec = ["7.1:10", "7.1:11", "8.2:1"]
+description = "RUE-2345: at -O2 a `borrow` parameter's zero-length array field is inlined into a local place, which must be diverted too; the read traps."
+source = """
+struct H { x: i8, arr: [i64; 0] }
+fn get(borrow h: H, i: i32) -> i64 { h.arr[i] }
+fn main() -> i32 {
+    let h: H = H { x: 8, arr: [] };
+    let i: i32 = 0;
+    let t: i64 = get(borrow h, i);
+    @intCast(t)
+}
+"""
+runtime_error = "index out of bounds"
+opt_level = 2
 [[case]]
 name = "mutable_array_assign"
 spec = ["7.1:12"]
