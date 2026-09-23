@@ -549,9 +549,9 @@ def elementNotCopy (T : Ty) : String :=
   "reports E0904)"
 
 /-- The core form's own shape: a place below a dynamic index has one or more
-dynamic steps, each paired with the constant path after it. Elaboration never
-builds any other, so this is an ill-formed core term rather than a program
-the compiler would see. -/
+dynamic steps, each paired with the constant path after it (§2's `p [ e ]`
+production, iterated). Elaboration never builds any other, so this is an
+ill-formed core term rather than a program the compiler would see. -/
 def dynShape : String :=
   "the dynamic place has no dynamic step, or its index list and its constant-path " ++
   "list do not pair up one to one (an ill-formed core term; elaboration never builds it)"
@@ -1642,7 +1642,7 @@ theorem explain_result {P : Program} {R : Ty} : ∀ (e : Expr) (Γ : Ctx),
       simp only [explain, check, explain_result e]
       (repeat' split) <;> first | rfl | simp_all [accepted, Deriv.result]
 
-/-- **The index-list derivations are the checker's.** -/
+/-- **The index-list derivations are the checker's** (helper). -/
 theorem explainIdx_result {P : Program} {R : Ty} : ∀ (es : List Expr) (Γ : Ctx),
     (explainIdx P R Γ es).1 = checkIdx P R Γ es
   | [], Γ => rfl

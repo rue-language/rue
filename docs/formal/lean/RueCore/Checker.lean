@@ -867,7 +867,7 @@ theorem check_sound {P : Program} {R : Ty} : ∀ (e : Expr) {Γ : Ctx} {T Γ'},
         · cases h
 
 /-- Every `checkIdx` acceptance is a real index-list derivation at integer
-types. -/
+types (`4.11:4`) (helper). -/
 theorem checkIdx_sound {P : Program} {R : Ty} : ∀ (es : List Expr) {Γ : Ctx} {Ts Γ'},
     checkIdx P R Γ es = some (Ts, Γ') → TypedArgs P R Γ es Ts Γ' ∧ Ts.all Ty.isInt = true
   | [], Γ, Ts, Γ', h => by
