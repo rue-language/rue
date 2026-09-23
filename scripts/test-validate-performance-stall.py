@@ -135,6 +135,45 @@ def test_the_merge_grouping_function_counts_distinct_timestamps() -> None:
     assert stall.count_merge_groups([]) == 0
 
 
+def test_merges_are_counted_from_real_history() -> None:
+    # RUE-2343: one twelve-commit merge and six single-commit merges after the
+    # plotted commit are seven merges, where the commit count said eighteen.
+    # An unknown commit is history the gate cannot see, which must raise
+    # rather than read as "not stalled".
+    import os
+    import subprocess
+
+    with TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+
+        def git(*args: str, when: int | None = None) -> str:
+            env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+            if when is not None:
+                env["GIT_COMMITTER_DATE"] = f"@{when} +0000"
+                env["GIT_AUTHOR_DATE"] = f"@{when} +0000"
+            return subprocess.run(
+                ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                check=True, capture_output=True, text=True, env=env,
+            ).stdout.strip()
+
+        git("init", "-q", "-b", "trunk")
+        git("commit", "-q", "--allow-empty", "-m", "plotted", when=1758000000)
+        plotted = git("rev-parse", "HEAD")
+        for i in range(12):
+            git("commit", "-q", "--allow-empty", "-m", f"merge a, commit {i}", when=1758000100)
+        for i in range(6):
+            git("commit", "-q", "--allow-empty", "-m", f"merge {i}", when=1758000200 + i)
+
+        merges_since = stall.git_merges_since(repo, "trunk")
+        assert merges_since(plotted) == 7
+        try:
+            merges_since("0" * 40)
+        except stall.HistoryUnavailable:
+            pass
+        else:
+            raise AssertionError("an unknown commit must raise HistoryUnavailable")
+
+
 def test_an_empty_dashboard_is_not_a_stall() -> None:
     # The honest first state of a suite that has not collected yet. Failing
     # here would block the repository the day collection is introduced.

@@ -16,18 +16,16 @@ merge into one push regardless of how many commits it rebases onto trunk: a
 twelve-commit merge is one missed collection opportunity, not twelve
 (RUE-2343). The queue's rebase stamps every commit of one merge with the same
 committer time, which is what distinguishes a merge here without an API call.
-Verified against several hundred commits of real trunk history: the newest
-plotted commit's timestamp groups matched the PRs GitHub reports for every
-sampled commit and boundary, including the incident's own 12-commit merge.
-Almost every push is one merge and one timestamp group, but a minority of
-pushes bundle more than one queue-ready PR into a single push, and each PR
-keeps its own rebase timestamp — that push then reads as two or three merges
-rather than one. The overcount is small and safe in this gate's direction: it
-can only make a healthy series look more behind than it is, never less, and
-the threshold and recency guard below both have room to absorb it. No offline
-signal recovers push boundaries exactly, because the gap between two merges
-bundled into one push is not reliably smaller than the gap between two
-genuinely separate pushes.
+Checked against 1,500 trunk commits and the 997 pushes that triggered
+collection over them (RUE-2343 review): no timestamp spans two pushes, and 19
+pushes carry more than one group, because the queue batches several ready
+entries into one push and each keeps its own rebase time. Those read as more
+merges than pushes, which errs toward failing. The opposite error is possible
+but was not observed: two queue entries rebased in the same second and pushed
+separately would share a timestamp and count once, delaying a stall by at most
+that one merge. No offline signal recovers push boundaries exactly, because
+the gap between two entries batched into one push is not reliably smaller than
+the gap between two separate pushes.
 
 Collection legitimately lags trunk by minutes, and a single failed collection
 should not block the repository, so the threshold tolerates both. The count
@@ -81,15 +79,12 @@ DEFAULT_GRACE_SECONDS = 2 * 60 * 60
 # (RUE-1533). Counted in the epoch's own collected points rather than in trunk
 # merges, which is what the stall rule above counts, for two reasons.
 #
-# Trunk merges are the right unit for "collection stopped", where the question
-# is how far the series has fallen behind the tree regardless of whether a
-# push produced anything usable. They are the wrong unit for "a maintainer has
-# not done something yet", because a merge is an opportunity to collect, not a
-# collected run: the RUE-1522 stack put twelve commits on trunk in a single
-# merge, which already counts as one opportunity, but a merge whose collection
-# fails still spends a merge-counted deadline without ever giving a maintainer
-# a run to pin. Points arrive once per successful collection, so only a run
-# that could actually be pinned spends this deadline.
+# Trunk history is the right unit for "collection stopped", where the question
+# is how far the series has fallen behind the tree. It is the wrong unit for
+# "a maintainer has not done something yet", because commits do not arrive one
+# at a time: the RUE-1522 stack put twelve on trunk in a single merge, so a
+# twenty-commit deadline can expire in the time it takes one pull request to
+# land. Points arrive once per collection, so a stack costs one.
 #
 # Points also measure from inside the epoch. A deadline counted from the
 # measured commit to trunk gives an epoch declared while collection is behind
@@ -292,12 +287,8 @@ def count_merge_groups(timestamps: list[str]) -> int:
 
     The merge queue's rebase stamps every commit of one merge with the same
     committer time, so the number of distinct values counts merges without an
-    API call (RUE-2343). Verified against real trunk history: almost every
-    push is one merge and one timestamp group; a minority bundle more than one
-    queue-ready pull request into a single push, and each keeps its own
-    rebase timestamp, so that push reads as more than one merge here. See
-    `scripts/validate-performance-stall.py`'s module docstring for why that
-    overcount is small and safe in this gate's direction.
+    API call (RUE-2343). The module docstring gives what this was checked
+    against and the two ways it can differ from the number of pushes.
     """
     return len(set(timestamps))
 
@@ -308,7 +299,10 @@ def git_merges_since(repo: Path, ref: str):
 
     def count(commit: str) -> int:
         result = subprocess.run(
-            ["git", "-C", str(repo), "log", "--format=%ct", f"{commit}..{ref}"],
+            # `-c log.showSignature=false`: user config must not add lines to
+            # the output that would be read as timestamps.
+            ["git", "-C", str(repo), "-c", "log.showSignature=false", "log",
+             "--format=%ct", f"{commit}..{ref}"],
             capture_output=True,
             text=True,
         )

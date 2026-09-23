@@ -488,7 +488,7 @@ def validate(
         "runs-on: ubuntu-latest",
         "scripts/validate-performance-stall.py",
         "//crates/rue-bench:rue-bench",
-        "fetch-depth: 0",  # RUE-1258: it counts trunk commits
+        "fetch-depth: 0",  # RUE-1258/RUE-2343: it counts trunk merges
         "staleness-inputs",  # RUE-1542: the live epoch, not the whole store
         "check-baselines",  # RUE-1543
     ):
