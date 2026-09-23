@@ -146,27 +146,60 @@ fn resolved_root_count<B: PlaceLowerBackend + ?Sized>(b: &B, place: &ResolvedPla
     b.ctx().type_slot_count(place.base_type)
 }
 
-/// Whether `place` projects out of a frame-resident root that owns no slot: a
-/// local or by-value parameter of a zero-sized type such as `[i32; 0]`.
+/// Whether `place` is frame-resident and passes through a sub-object that owns
+/// no slot: a local or by-value parameter whose root, or some field or element
+/// its projection chain selects on the way to the leaf, is zero-sized — `a[i]`
+/// of a local `a: [i32; 0]`, or `h.arr[i]` / `h.g.arr[i]` of a local or
+/// by-value parameter whose field `arr` is a `[i32; 0]`.
 ///
 /// The zero-sized diversions elsewhere in this module key on the *selected*
 /// sub-object, but a dynamic index into a zero-length array selects a sized
-/// element (`a[i]` of `[i32; 0]` is one `i32` slot) out of a root with no
-/// storage at all. The frame arithmetic has nothing to anchor on — the root's
-/// slot range is empty, and a by-value parameter of this type has no storage
-/// plan entry to home — so the access is diverted to the canonical zero-sized
-/// address (RUE-605, RUE-2207). The value is never reached: every level that
-/// makes the root zero-sized while the leaf is not is a zero-length array, and
-/// its bounds check, already emitted by [`resolved_offsets`], traps first. A
-/// by-reference parameter or an indirect base carries a real pointer whatever
-/// its pointee's size, so those keep their ordinary addressing.
-fn frame_root_is_zero_sized(place: &ResolvedPlace, root_count: u32) -> bool {
-    root_count == 0
-        && matches!(
-            place.base,
-            crate::value_plan::PlaceBasePlan::Local(_)
-                | crate::value_plan::PlaceBasePlan::Param { by_ref: false, .. }
-        )
+/// element (`a[i]` of `[i32; 0]` is one `i32` slot) out of a sub-object with no
+/// storage at all. The frame arithmetic has nothing to anchor on — a zero-sized
+/// root's slot range is empty, a by-value parameter of such a type has no
+/// storage plan entry to home, and a zero-sized field sits at a static slot
+/// offset that can lie one past its root's last slot — so the access is
+/// diverted to the canonical zero-sized address (RUE-605, RUE-2207, RUE-2345).
+/// The value is never reached: every level that holds a sized leaf inside a
+/// zero-sized sub-object is a zero-length array, and its bounds check, already
+/// emitted by [`resolved_offsets`], traps first. A by-reference parameter or an
+/// indirect base carries a real pointer whatever its pointee's size, so those
+/// keep their ordinary addressing.
+fn frame_place_has_no_storage<B: PlaceLowerBackend + ?Sized>(
+    b: &B,
+    place: &ResolvedPlace,
+    root_count: u32,
+) -> bool {
+    matches!(
+        place.base,
+        crate::value_plan::PlaceBasePlan::Local(_)
+            | crate::value_plan::PlaceBasePlan::Param { by_ref: false, .. }
+    ) && (root_count == 0
+        || place
+            .projections
+            .iter()
+            .any(|projection| projection_selected_slot_count(b, projection) == 0))
+}
+
+/// Slot count of the sub-object one projection selects out of the type it
+/// carries.
+fn projection_selected_slot_count<B: PlaceLowerBackend + ?Sized>(
+    b: &B,
+    projection: &crate::value_plan::ProjectionPlan,
+) -> u32 {
+    match *projection {
+        crate::value_plan::ProjectionPlan::Field {
+            struct_id,
+            field_index,
+        } => {
+            let struct_def = b.ctx().type_pool.struct_def(struct_id);
+            b.ctx()
+                .type_slot_count(struct_def.fields[field_index as usize].ty)
+        }
+        crate::value_plan::ProjectionPlan::Index { array_type, .. } => {
+            b.ctx().array_element_slot_count(array_type)
+        }
+    }
 }
 
 /// Slot count of the sub-object the projection chain selects.
@@ -181,17 +214,7 @@ fn resolved_projected_slot_count<B: PlaceLowerBackend + ?Sized>(
 ) -> u32 {
     match place.projections.last() {
         None => resolved_root_count(b, place),
-        Some(crate::value_plan::ProjectionPlan::Field {
-            struct_id,
-            field_index,
-        }) => {
-            let struct_def = b.ctx().type_pool.struct_def(*struct_id);
-            b.ctx()
-                .type_slot_count(struct_def.fields[*field_index as usize].ty)
-        }
-        Some(crate::value_plan::ProjectionPlan::Index { array_type, .. }) => {
-            b.ctx().array_element_slot_count(*array_type)
-        }
+        Some(projection) => projection_selected_slot_count(b, projection),
     }
 }
 
@@ -199,13 +222,14 @@ fn resolved_projected_slot_count<B: PlaceLowerBackend + ?Sized>(
 ///
 /// The root occupies slots `base_slot ..= base_slot + root_count - 1` and slot
 /// numbers descend in address, so the field at static slot offset `k` starts at
-/// `base_slot + root_count - 1 - k`. A place with at least one slot always has
-/// `k + slot_count <= root_count`, hence `k <= root_count - 1`, so the
-/// subtraction is in range. A zero-sized place is the only shape that can push
-/// `k` past the end, and every caller diverts those to
-/// [`ZERO_SIZED_PLACE_ADDR`] before reaching here (RUE-605) — so an underflow
-/// is a violated invariant, reported as an ICE rather than silently wrapping to
-/// a wild slot in release builds.
+/// `base_slot + root_count - 1 - k`. A place whose every projected sub-object
+/// has at least one slot has `k + slot_count <= root_count`, hence
+/// `k <= root_count - 1`, so the subtraction is in range. Only a zero-sized
+/// place, or one that passes through a zero-sized sub-object (a sized element
+/// of a zero-length array field), can push `k` past the end, and every caller
+/// diverts those to [`ZERO_SIZED_PLACE_ADDR`] before reaching here (RUE-605,
+/// RUE-2345) — so an underflow is a violated invariant, reported as an ICE
+/// rather than silently wrapping to a wild slot in release builds.
 fn projected_low_slot(base_slot: u32, root_count: u32, static_slot_offset: u32) -> u32 {
     (base_slot + root_count)
         .checked_sub(1 + static_slot_offset)
@@ -224,7 +248,7 @@ fn resolved_access<B: PlaceLowerBackend + ?Sized>(
     offsets: ResolvedProjectionOffsets,
 ) -> ProjectedAccess {
     let root_count = resolved_root_count(b, place);
-    if frame_root_is_zero_sized(place, root_count) {
+    if frame_place_has_no_storage(b, place, root_count) {
         let addr = b.alloc_vreg();
         b.emit_zero_sized_place_addr(addr);
         return ProjectedAccess::PointerAddr(addr);
@@ -675,7 +699,7 @@ fn lower_place_addr_plan_with_bounds<B: PlaceLowerBackend + ?Sized>(
     // itself is a constant. The index math below is deliberately skipped: a
     // zero-sized element has a zero stride, so no index can move the address.
     let root_count = resolved_root_count(b, place);
-    if resolved_projected_slot_count(b, place) == 0 || frame_root_is_zero_sized(place, root_count) {
+    if resolved_projected_slot_count(b, place) == 0 || frame_place_has_no_storage(b, place, root_count) {
         b.emit_zero_sized_place_addr(dst);
         return;
     }
