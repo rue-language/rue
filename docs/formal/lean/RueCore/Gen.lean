@@ -121,9 +121,9 @@ the weights can be read and changed:
   `if`, which is how join disagreements arise;
 * `let` binders are mostly structs and mostly `mut`, so linear values
   reach scope exit and assignments have targets;
-* about half of the declarations carry a destructor, so a drop is as often
-  observable as not, and a declaration whose fields join to `Linear` is
-  `Linear` whatever its attribute says (§3), which is how the
+* about half of the declarations not declared `linear` carry a destructor, so
+  a drop is as often observable as not, and a declaration whose fields join to
+  `Linear` is `Linear` whatever its attribute says (§3), which is how the
   linear-through-a-field shapes arise;
 * a sequence's discarded statement is mostly unit-typed, where `assign`
   (whose right-hand side may use the target binder itself, so
@@ -332,9 +332,11 @@ payload component names only a declaration drawn **before** it, which is
 `3.0:5`'s acyclicity (E0483) restricted to the draw order; a struct's recorded
 class is §3's join lifted by the attribute and an enum's is `6.3:19`'s payload
 join over every variant, with no attribute to lift; a destructor is dropped
-from the draw when a field carries a linear value (`3.9:44`), and a `@copy`
-draw is downgraded to no attribute when the join is not already `Copy` or the
-declaration has a destructor (`3.8:18`, `3.9:31`). So whatever the checker
+from the draw when a field carries a linear value (`3.9:44`) or the
+declaration is declared `linear` (a choice rather than a rule: `3.9:34` would
+refuse every destructure of it), and a `@copy` draw is downgraded to no
+attribute when the join is not already `Copy` or the declaration has a
+destructor (`3.8:18`, `3.9:31`). So whatever the checker
 rejects, it rejects for an ownership reason, never for an ill-formed
 declaration.
 
@@ -379,8 +381,11 @@ def genDecl (D : Decls) (s nEnums : Nat) : G StructDecl := do
   -- `3.9:44` (E0462): a destructor is only legal when no field carries a
   -- linear value; `3.8:18`/`3.9:31`: `@copy` needs a `Copy` join and no
   -- destructor. A draw the rules forbid falls back rather than being retried,
-  -- so generation stays a pure function of the seed.
-  let dtor := drawnDtor && base != .linear
+  -- so generation stays a pure function of the seed. A declaration drawn
+  -- `linear` gets no destructor although one would be well-formed: `3.9:34`
+  -- refuses every path through a destructor-bearing prefix, so a destructor
+  -- would make each destructure of it the same E0456 (RUE-2339).
+  let dtor := drawnDtor && base != .linear && drawn != .linear
   let attr := match drawn with
     | .copy => if base = .copy && !dtor then Attr.copy else Attr.none
     | a => a
