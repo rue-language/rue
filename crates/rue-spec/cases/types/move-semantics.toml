@@ -5684,3 +5684,223 @@ fn main() -> i32 {
 """
 expected_stdout = "60\ntrue\n17\n50\n18\n"
 exit_code = 0
+
+# A `break` taken on a later iteration exits with the moves earlier iterations
+# left unrestored: the body is typed at the loop-head state, the entry joined
+# with the back-edge states, and the post-loop state is the join over the
+# exits read there (3.8:79, 3.8:80; RUE-2354). Here the third iteration's
+# `break` exits with `d` moved by the second iteration's `eat(d)`, so the use
+# after the loop would destroy that value twice.
+[[case]]
+name = "later_iteration_break_sees_earlier_iteration_move"
+spec = ["3.8:79", "3.8:80"]
+description = "A break on a later iteration exits with a value an earlier iteration moved; the post-loop use is E0205."
+source = """
+struct D { x: i32 }
+drop fn D(self) { @dbg(self.x); }
+fn eat(d: D) -> i32 { d.x }
+fn stop(i: i32) -> bool { i == 2 }
+
+fn main() -> i32 {
+    let mut d = D { x: 1 };
+    let mut i: i32 = 0;
+    loop {
+        if stop(i) { break; }
+        i = i + 1;
+        d = D { x: 10 + i };
+        eat(d);
+    }
+    eat(d)
+}
+"""
+compile_fail = true
+error_contains = ["E0205", "use of moved value"]
+
+# The same exit through a `continue` edge: the move rides the continue into
+# the next iteration, whose `break` exits with it (3.8:79, 3.8:80).
+[[case]]
+name = "later_iteration_break_sees_continue_path_move"
+spec = ["3.8:79", "3.8:80"]
+description = "A break on a later iteration exits with a value moved on an earlier iteration's continue path."
+source = """
+struct D { x: i32 }
+drop fn D(self) { @dbg(self.x); }
+fn eat(d: D) -> i32 { d.x }
+fn stop(i: i32) -> bool { i == 2 }
+
+fn main() -> i32 {
+    let mut d = D { x: 1 };
+    let mut i: i32 = 0;
+    loop {
+        if stop(i) { break; }
+        i = i + 1;
+        if i == 1 { d = D { x: 10 }; eat(d); continue; }
+    }
+    eat(d)
+}
+"""
+compile_fail = true
+error_contains = ["E0205", "use of moved value"]
+
+# A nested loop's exits are read at its own loop-head state on every pass of
+# the enclosing loop, including the passes at the enclosing loop-head state.
+[[case]]
+name = "nested_later_iteration_break_sees_earlier_iteration_move"
+spec = ["3.8:79", "3.8:80"]
+description = "An inner loop's later-iteration break carries its move through the outer loop's break."
+source = """
+struct D { x: i32 }
+drop fn D(self) { @dbg(self.x); }
+fn eat(d: D) -> i32 { d.x }
+fn stop(i: i32) -> bool { i == 2 }
+
+fn main() -> i32 {
+    let mut d = D { x: 1 };
+    let mut e = D { x: 2 };
+    let mut j: i32 = 0;
+    loop {
+        e = D { x: 20 + j };
+        eat(e);
+        let mut i: i32 = 0;
+        loop {
+            if stop(i) { break; }
+            i = i + 1;
+            d = D { x: 10 + i };
+            eat(d);
+        }
+        if j == 1 { break; }
+        j = j + 1;
+        d = D { x: 30 };
+    }
+    eat(d)
+}
+"""
+compile_fail = true
+error_contains = ["E0205", "use of moved value"]
+
+# The while form: its breaks are read at the loop-head state too.
+[[case]]
+name = "while_later_iteration_break_sees_earlier_iteration_move"
+spec = ["3.8:79", "3.8:80"]
+description = "A while loop's later-iteration break exits with a value an earlier iteration moved."
+source = """
+struct D { x: i32 }
+drop fn D(self) { @dbg(self.x); }
+fn eat(d: D) -> i32 { d.x }
+fn stop(i: i32) -> bool { i == 2 }
+
+fn main() -> i32 {
+    let mut d = D { x: 1 };
+    let mut i: i32 = 0;
+    while i < 5 {
+        if stop(i) { break; }
+        i = i + 1;
+        d = D { x: 10 + i };
+        eat(d);
+    }
+    eat(d)
+}
+"""
+compile_fail = true
+error_contains = ["E0205", "use of moved value"]
+
+# The for form: the iterator-exhaustion exit after the last iteration sees
+# that iteration's move (3.8:80).
+[[case]]
+name = "for_exhaustion_exit_sees_earlier_iteration_move"
+spec = ["3.8:79", "3.8:80"]
+description = "A for loop's exhaustion exit after an iteration that moved a value leaves it moved."
+source = """
+struct D { x: i32 }
+drop fn D(self) { @dbg(self.x); }
+fn eat(d: D) -> i32 { d.x }
+
+fn main() -> i32 {
+    let mut d = D { x: 1 };
+    let xs = [1, 2, 3];
+    for v in xs {
+        d = D { x: 10 + v };
+        eat(d);
+    }
+    eat(d)
+}
+"""
+compile_fail = true
+error_contains = ["E0205", "use of moved value"]
+
+# Reassign-then-move is legal: the value is moved at the head of every later
+# iteration and reinitialized before the body uses it (3.8:79). Breakless,
+# exited by `return`.
+[[case]]
+name = "reassign_then_move_breakless_is_legal"
+spec = ["3.8:55", "3.8:79"]
+description = "Reinitializing before the move in every iteration is legal in a breakless loop."
+source = """
+struct Data { x: i32 }
+fn consume(d: Data) -> i32 { d.x }
+
+fn main() -> i32 {
+    let mut d = Data { x: 0 };
+    let mut i = 0;
+    loop {
+        if i == 3 { return 7; }
+        i = i + 1;
+        d = Data { x: 1 };
+        consume(d);
+    }
+}
+"""
+exit_code = 7
+
+# With a `break` and a reinitialization before the use after the loop, every
+# value is destroyed exactly once.
+[[case]]
+name = "reassign_then_move_with_break_is_legal"
+spec = ["3.8:55", "3.8:79", "3.8:80"]
+description = "Reinitializing before the move in every iteration and after the loop is legal."
+source = """
+struct D { x: i32 }
+drop fn D(self) { @dbg(self.x); }
+fn eat(d: D) -> i32 { d.x }
+fn stop(i: i32) -> bool { i == 2 }
+
+fn main() -> i32 {
+    let mut d = D { x: 1 };
+    let mut i: i32 = 0;
+    loop {
+        if stop(i) { break; }
+        i = i + 1;
+        d = D { x: 10 + i };
+        eat(d);
+    }
+    d = D { x: 7 };
+    eat(d)
+}
+"""
+expected_stdout = "1\n11\n12\n7\n"
+exit_code = 7
+
+# A while loop's condition-false exits are read at the loop-head state: a
+# condition that reinitializes the value leaves it owned on every exit,
+# although the body moved it on the back edge (3.8:80).
+[[case]]
+name = "while_condition_reinit_leaves_exit_owned"
+spec = ["3.8:55", "3.8:79", "3.8:80"]
+description = "A while condition that reinitializes a value before every check leaves it owned after the loop."
+source = """
+struct D { x: i32 }
+drop fn D(self) { @dbg(self.x); }
+fn eat(d: D) -> i32 { d.x }
+
+fn main() -> i32 {
+    let mut d = D { x: 1 };
+    let mut i: i32 = 0;
+    while { d = D { x: 20 + i }; i < 3 } {
+        i = i + 1;
+        eat(d);
+    }
+    eat(d)
+}
+"""
+expected_stdout = "1\n20\n21\n22\n23\n"
+exit_code = 23
