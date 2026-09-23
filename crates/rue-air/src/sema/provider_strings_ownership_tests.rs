@@ -1451,3 +1451,145 @@ fn provider_body_partially_moved_field_array_whole_reinit_accepted() {
         .analyze(&source, "f")
         .expect("reinitializing the whole array field re-arms writes into it");
 }
+
+/// `H { a: [P; 2], p: P, q: Q }` with `P { c: i64, s: NonCopy }` and
+/// `Q { p: P }`, plus by-reference functions and receivers over `P`
+/// (RUE-2350).
+fn loan_of_partially_moved_place_fixture() -> ProviderFixture {
+    let mut fixture = ProviderFixture::new();
+    let non_copy = fixture.declare_struct("NonCopy", vec![("x", SemanticImportType::I64)], false);
+    let p = fixture.declare_struct(
+        "P",
+        vec![
+            ("c", SemanticImportType::I64),
+            ("s", SemanticImportType::Nominal(non_copy)),
+        ],
+        false,
+    );
+    let q = fixture.declare_struct(
+        "Q",
+        vec![("p", SemanticImportType::Nominal(p.clone()))],
+        false,
+    );
+    fixture.declare_struct(
+        "H",
+        vec![
+            (
+                "a",
+                SemanticImportType::Array {
+                    element: Arc::new(SemanticImportType::Nominal(p.clone())),
+                    len: 2,
+                },
+            ),
+            ("p", SemanticImportType::Nominal(p.clone())),
+            ("q", SemanticImportType::Nominal(q.clone())),
+        ],
+        false,
+    );
+    for (name, mode) in [
+        ("setp", SemanticParameterMode::Inout),
+        ("readp", SemanticParameterMode::Borrow),
+    ] {
+        fixture.declare_function(
+            name,
+            vec![mode_param("p", SemanticImportType::Nominal(p.clone()), mode)],
+            SemanticImportType::I64,
+        );
+    }
+    fixture.declare_function(
+        "readq",
+        vec![mode_param(
+            "q",
+            SemanticImportType::Nominal(q),
+            SemanticParameterMode::Borrow,
+        )],
+        SemanticImportType::I64,
+    );
+    for (name, mode) in [
+        ("set", SemanticParameterMode::Inout),
+        ("get", SemanticParameterMode::Borrow),
+    ] {
+        fixture.declare_method_with(
+            &p,
+            name,
+            Vec::new(),
+            SemanticImportType::I64,
+            MethodShape {
+                self_mode: mode,
+                ..MethodShape::default()
+            },
+        );
+    }
+    fixture.declare_function("f", Vec::new(), SemanticImportType::I64);
+    fixture
+}
+
+const LOAN_H: &str = "H { a: [P { c: 1, s: NonCopy { x: 10 } }, P { c: 2, s: NonCopy { x: 11 } }], p: P { c: 3, s: NonCopy { x: 17 } }, q: Q { p: P { c: 4, s: NonCopy { x: 18 } } } }";
+
+// RUE-2350: a `borrow`/`inout` argument, method receiver or equality operand
+// loans the whole place, so a moved part below it is a use of that part
+// (core §5.4, 3.8:26). The by-reference path checked only the place and its
+// ancestors: a borrow read the destroyed part and an inout write dropped it a
+// second time. The diagnostic names the moved sub-place, and its help does
+// not suggest a borrow, which is what fails.
+#[test]
+fn provider_body_loan_of_place_with_moved_part_below_rejected() {
+    let fixture = loan_of_partially_moved_place_fixture();
+    for (moved, loan) in [
+        ("h.p.s", "readp(borrow h.p)"),
+        ("h.p.s", "setp(inout h.p)"),
+        ("h.a[0].s", "readp(borrow h.a[0])"),
+        ("h.a[0].s", "setp(inout h.a[0])"),
+        ("h.q.p.s", "readq(borrow h.q)"),
+        ("h.a[1].s", "h.a[1].set()"),
+        ("h.p.s", "h.p.get()"),
+        ("h.a[0].s", "if h.a[0] == h.a[1] { 1 } else { 0 }"),
+    ] {
+        let source = format!(
+            "fn f() -> i64 {{
+    let mut h = {LOAN_H};
+    let t = {moved};
+    {loan}
+}}"
+        );
+        let error = fixture
+            .analyze(&source, "f")
+            .map(|_| ())
+            .expect_err("a loan of a place with a moved part below it is a use-after-move");
+        assert_use_after_move_of(&error, moved);
+        let helps = &error.diagnostic().helps;
+        assert!(
+            helps.iter().all(|help| !help.to_string().contains("borrow"))
+                && helps
+                    .iter()
+                    .any(|help| help.to_string().contains("reinitialize")),
+            "`{loan}`: the help must suggest reinitializing, not borrowing: {helps:?}"
+        );
+    }
+}
+
+// RUE-2350: the controls. A moved sibling (`h.q.p.s` beside `h.p`, `h.a[1].s`
+// beside `h.a[0]`) leaves the loan legal, as does reinitializing the moved
+// part first (3.8:55), and a Copy leaf beside the hole is still readable.
+#[test]
+fn provider_body_loan_beside_or_after_reinit_of_moved_part_accepted() {
+    let fixture = loan_of_partially_moved_place_fixture();
+    for (moved, loan) in [
+        ("h.q.p.s", "readp(borrow h.p)"),
+        ("h.a[1].s", "setp(inout h.a[0])"),
+        ("h.p.s", "h.p.s = NonCopy { x: 99 }; readp(borrow h.p)"),
+        ("h.q.p.s", "h.q.p.s = NonCopy { x: 99 }; readq(borrow h.q)"),
+        ("h.p.s", "h.p.c"),
+    ] {
+        let source = format!(
+            "fn f() -> i64 {{
+    let mut h = {LOAN_H};
+    let t = {moved};
+    {loan}
+}}"
+        );
+        fixture
+            .analyze(&source, "f")
+            .unwrap_or_else(|error| panic!("`{loan}` after `{moved}` moved: {error:?}"));
+    }
+}
