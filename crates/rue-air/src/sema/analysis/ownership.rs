@@ -222,20 +222,25 @@ impl PlaceTrace {
     /// projection through a constant index nests under the right element
     /// (`arr[0].s` → `["0", "s"]`, matching whole-element moves — RUE-279).
     ///
-    /// A **dynamic** (or negative) index cannot be named, so it resets the
-    /// path: segments before it are dropped and collection continues after it.
-    /// A runtime index cannot identify one statically tracked element, so the
-    /// caller uses the conservative whole-array E0904 rejection. Constant
-    /// indices remain distinct, preserving nested partial moves without
-    /// rejecting moves from sibling elements.
+    /// A **dynamic** (or negative) index cannot be named, so the path stops
+    /// there: it names the array the first dynamic step indexes (`h.a[i].c`
+    /// → `["a"]`), the deepest place the trace can name that contains the
+    /// accessed one. Every move check of an untrackable place reads that
+    /// array's state — the place may be any of its elements (3.8:70) — and a
+    /// path that kept the segments after the index instead would name a
+    /// different place: `h.a[i].b` is not `h.b` (RUE-2344). Moves through an
+    /// untrackable place are rejected outright (E0904), so it never names a
+    /// move to record. Constant indices remain distinct, preserving nested
+    /// partial moves without rejecting moves from sibling elements.
     fn field_path(&self) -> Vec<Spur> {
         let mut path = Vec::new();
         for p in &self.projections {
             match p.proj {
                 AirProjection::Index { .. } => match p.index_segment {
                     Some(seg) => path.push(seg),
-                    // Dynamic/negative index: unnameable element — restart.
-                    None => path.clear(),
+                    // Dynamic/negative index: unnameable element — stop at
+                    // the array it indexes.
+                    None => break,
                 },
                 AirProjection::Field { .. } => {
                     if let Some(name) = p.field_name {
@@ -253,9 +258,9 @@ impl PlaceTrace {
     ///
     /// Unlike `field_path`, an unnameable segment (a dynamic/negative index,
     /// or a field projection with no recorded name) makes the whole prefix
-    /// unnameable (`None`) instead of restarting the path: callers use this
-    /// to name a place they are about to record a move for, and a restarted
-    /// path would name a DIFFERENT place (RUE-1632).
+    /// unnameable (`None`) instead of stopping at the enclosing array: callers
+    /// use this to name a place they are about to record a move for, and the
+    /// enclosing array is a DIFFERENT, larger place (RUE-1632).
     fn prefix_field_path(&self, depth: usize) -> Option<Vec<Spur>> {
         let mut path = Vec::with_capacity(depth);
         for p in &self.projections[..depth] {
@@ -4234,12 +4239,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // reached neither move check below — the byref branch checks its
             // own path and the non-Copy branch records an element move — so
             // `moved.field[i]` after `let b = moved` slipped through. Check the
-            // base place's move state here for every index read. `field_path()`
-            // names this element (constant index) or the base up to a dynamic
-            // index, so `is_path_moved` catches a full move of the root, a
-            // moved field/element prefix, or this exact constant element,
-            // without flagging a *sibling* element (`arr[1]` after `arr[0]`
-            // moved has a disjoint path).
+            // base place's move state here for every index read. For a
+            // constant index `field_path()` names this element, so
+            // `is_path_moved` catches a full move of the root, a moved
+            // field/element prefix, or this exact constant element, without
+            // flagging a *sibling* element (`arr[1]` after `arr[0]` moved has
+            // a disjoint path). Below a dynamic index the array that index
+            // selects from must be wholly owned (3.8:70, RUE-2344).
             self.reject_read_through_moved_path(&trace, ctx, span)?;
 
             // Get array info from the parent type (before the last projection)
@@ -5318,6 +5324,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // carries no index (4.11:7, RUE-2008).
             self.check_traced_const_index_bounds(&trace, ctx)?;
 
+            // The base must still own its storage: `h.a[i].s = ...` after
+            // `h.a` moved writes into a destroyed array (RUE-2344).
+            self.reject_write_under_moved_place(trace.root_var, &trace.field_path(), ctx, span)?;
+
             // Add the final field projection
             let base_type = trace.result_type();
             let struct_id = match base_type.as_struct() {
@@ -5570,6 +5580,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     self.body_rir_ref().get(index).span,
                 ));
             }
+
+            // The array written into must still own its storage, read on the
+            // state after both operands ran: `h.a[i] = ...` after `h.a` moved
+            // writes into a destroyed array (RUE-2344).
+            self.reject_write_under_moved_place(trace.root_var, &trace.field_path(), ctx, span)?;
 
             // Add the index projection. A non-negative constant index carries
             // its element path segment so field_path nests through it (RUE-279).
@@ -6650,12 +6665,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// `x` is itself Copy. `is_path_moved` matches the exact path and every
     /// ancestor prefix; a sibling's move (`o.g`) leaves a disjoint path and is
     /// not affected.
+    ///
+    /// A place below a dynamic index is read against the array that index
+    /// selects from, which must be wholly owned — see
+    /// [`Self::reject_dynamic_index_into_moved_array`].
     fn reject_read_through_moved_path(
         &self,
         trace: &PlaceTrace,
         ctx: &AnalysisContext,
         span: Span,
     ) -> CompileResult<()> {
+        if trace.has_untrackable_index() {
+            return self.reject_dynamic_index_into_moved_array(trace, ctx, span);
+        }
         let field_path = trace.field_path();
         let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) else {
             return Ok(());
@@ -6734,18 +6756,23 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 
     /// Reject a read through an array element that is (or may be) moved out
-    /// (RUE-186). Element moves only exist for indices rooted directly at an
-    /// array variable, so only a position-0 `Index` projection can read
-    /// through one. A constant index checks exactly that element's path; a
-    /// dynamic index conservatively fails on ANY outstanding partial move of
-    /// the root (sema can't know which element is read — soundness).
+    /// (RUE-186). A constant index at the root array checks exactly that
+    /// element's path. A dynamic index anywhere in the chain reads any
+    /// element of the array it indexes, so that array must be wholly owned
+    /// ([`Self::reject_dynamic_index_into_moved_array`]).
     fn check_read_through_moved_element(
         &self,
         trace: &PlaceTrace,
         ctx: &AnalysisContext,
         span: Span,
     ) -> CompileResult<()> {
+        if trace.has_untrackable_index() {
+            return self.reject_dynamic_index_into_moved_array(trace, ctx, span);
+        }
         let Some(first) = trace.projections.first() else {
+            return Ok(());
+        };
+        let Some(k) = first.const_index.filter(|&k| k >= 0) else {
             return Ok(());
         };
         if !matches!(first.proj, AirProjection::Index { .. }) {
@@ -6754,34 +6781,99 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) else {
             return Ok(());
         };
-        match first.const_index {
-            Some(k) if k >= 0 => {
-                let elem_path = vec![self.intern_index_path_segment(k as u64)?];
-                if let Some(moved_span) = state.is_path_moved(&elem_path) {
-                    return Err(use_after_move_path_error(
-                        self.body_interner(),
-                        trace.root_var,
-                        &elem_path,
-                        span,
-                        moved_span,
-                    ));
-                }
-            }
-            _ => {
-                if let Some(moved_span) = state.is_any_part_moved() {
-                    return Err(use_after_move_path_error(
-                        self.body_interner(),
-                        trace.root_var,
-                        &[],
-                        span,
-                        moved_span,
-                    )
-                    .with_note(
-                        "the index is not a compile-time constant, so any \
-                         moved-out element poisons the whole array",
-                    ));
-                }
-            }
+        let elem_path = vec![self.intern_index_path_segment(k as u64)?];
+        if let Some(moved_span) = state.is_path_moved(&elem_path) {
+            return Err(use_after_move_path_error(
+                self.body_interner(),
+                trace.root_var,
+                &elem_path,
+                span,
+                moved_span,
+            ));
+        }
+        Ok(())
+    }
+
+    /// Reject an assignment whose destination lies under a moved place (core
+    /// §5.2's (Assign) reads the destination through `Owned-Base`, 3.8:53).
+    ///
+    /// `base_path` is the move path of the place the destination projects out
+    /// of — [`PlaceTrace::field_path`] of the write's base trace, so below a
+    /// dynamic index it is the array that index selects from. Writing into a
+    /// moved place would store into storage the binding no longer owns: the
+    /// destination's overwrite-drop runs the destructor of a value that was
+    /// already moved out, and the written value is never dropped. Only the
+    /// base and its ancestors are checked; the destination itself may be
+    /// moved, which is the reinitialization idiom (3.8:55), and the holes
+    /// *below* an array are the partially-moved-array rule's to reject
+    /// (E0480, [`Self::reject_write_into_partially_moved_array`]).
+    fn reject_write_under_moved_place(
+        &self,
+        root_var: Spur,
+        base_path: &[Spur],
+        ctx: &AnalysisContext,
+        span: Span,
+    ) -> CompileResult<()> {
+        let Some(moved_span) = ctx
+            .ownership
+            .moved_vars
+            .get(&root_var)
+            .and_then(|state| state.is_path_moved(base_path))
+        else {
+            return Ok(());
+        };
+        Err(use_after_move_path_error(
+            self.body_interner(),
+            root_var,
+            base_path,
+            span,
+            moved_span,
+        ))
+    }
+
+    /// Reject a use of a place below a dynamic index unless the array the
+    /// first dynamic step indexes is wholly owned (spec 3.8:70, 3.8:26; core
+    /// §5.1's `fully-owned` premise on (Use-Untrackable-Dynamic-Copy)).
+    ///
+    /// The runtime index may select any element, so the array itself, every
+    /// ancestor of it, and every place under it must be unmoved: `h.a[i].c`
+    /// after `h.a` moved reads destroyed storage, and after `h.a[0].s` moved
+    /// it may read through the hole. The array is named by
+    /// [`PlaceTrace::field_path`], which stops at the first dynamic index; a
+    /// moved sibling of that array (`h.b` beside `h.a`) is disjoint from it
+    /// and does not affect the read (RUE-2344). For an array root the array
+    /// is the root binding itself, so any outstanding move of it rejects.
+    fn reject_dynamic_index_into_moved_array(
+        &self,
+        trace: &PlaceTrace,
+        ctx: &AnalysisContext,
+        span: Span,
+    ) -> CompileResult<()> {
+        let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) else {
+            return Ok(());
+        };
+        let array_path = trace.field_path();
+        if let Some(moved_span) = state.is_path_moved(&array_path) {
+            return Err(use_after_move_path_error(
+                self.body_interner(),
+                trace.root_var,
+                &array_path,
+                span,
+                moved_span,
+            ));
+        }
+        if let Some(moved_span) = state.is_path_or_descendant_moved(&array_path) {
+            return Err(use_after_move_path_error(
+                self.body_interner(),
+                trace.root_var,
+                &array_path,
+                span,
+                moved_span,
+            )
+            .with_note(
+                "the index is not a compile-time constant, so any \
+                 moved-out element poisons the whole array",
+            ));
         }
         Ok(())
     }
