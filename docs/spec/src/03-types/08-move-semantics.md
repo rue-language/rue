@@ -433,7 +433,7 @@ fn main() -> i32 {
 
 {{ rule(id="3.8:26", cat="legality-rule") }}
 
-A struct with any moved fields cannot be used as a whole value. It is a compile-time error to move or pass the struct after any of its non-Copy fields have been moved.
+A struct with any moved fields cannot be used as a whole value. It is a compile-time error to move or pass the struct after any of its non-Copy fields have been moved. The rule applies to a place at any depth — a field or constant-index element with a part moved out anywhere below it — and to passing it by reference as well as by value: a `borrow` or `inout` argument, a `borrow self` or `inout self` receiver, and an equality operand (4.3:3f) are place contexts (3.8:76), but each loans the whole place, so the loaned place must be fully owned (core calculus `docs/formal/01-core-calculus.md` §5.4). Reinitializing the moved part (3.8:55) makes the place usable again.
 
 {{ rule(id="3.8:27", cat="example") }}
 
