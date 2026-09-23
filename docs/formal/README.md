@@ -207,7 +207,7 @@ shape.
   transcription of §2–§7 for a growing fragment, with the safety theorem
   proved over a definitional interpreter that has the same shape as
   `rue-oracle`. `lean/GUIDE.md` is the reader's guide for a contributor
-  with no Lean (one program worked from source to theorem), `lean/INDEX.md`
+  with no Lean (worked examples from source to theorem), `lean/INDEX.md`
   the generated index from every §5/§6 rule to the declaration that
   mechanizes it or *not yet mechanized*, and `lean/README.md` has the build
   commands (`scripts/rue lean`).

@@ -390,8 +390,9 @@ build's own outputs, beside `digest.md`, `corpus.json`, `axioms.txt`, and the
 ## How to read this, with no Lean
 
 `GUIDE.md` is the full reader's guide: each Lean artifact in the calculus's
-own terms, one program worked from Rue source through the checker and the
-interpreter to the theorem that covers it, and how to run and trust things.
+own terms, ten worked examples taken from Rue source through the checker and
+the interpreter to the theorem that covers them, and how to run and trust
+things.
 `INDEX.md` (generated) maps every labeled rule and section of the calculus's
 §5 and §6 to the declaration that mechanizes it, or says *not yet
 mechanized*. The short version:
