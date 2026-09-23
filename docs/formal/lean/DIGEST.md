@@ -4155,6 +4155,89 @@ theorem RueCore.mintParams_locs_length (H : Store) (vs : List Val) :
   (mintParams H vs).snd.length = vs.length
 ```
 
+### `OwnSt.get_owned`
+
+*theorem* · module `RueCore.Soundness`
+
+An `Owned` node owns every path under it, and each of them is `Owned`
+(helper).
+
+```lean
+theorem RueCore.OwnSt.get_owned (π : List Nat) : OwnSt.owned.get π = some OwnSt.owned
+```
+
+### `OwnSt.fullyOwnedList_setField_nil`
+
+*theorem* · module `RueCore.Soundness`
+
+Writing a fully-owned state into a fresh field record pads with `owned`
+slots, so the record is fully owned (helper).
+
+```lean
+theorem RueCore.OwnSt.fullyOwnedList_setField_nil (f : Nat) {u : OwnSt} :
+  u.fullyOwned = true → OwnSt.fullyOwnedList (OwnSt.setField [] f u) = true
+```
+
+### `OwnSt.fullyOwned_setAt_owned`
+
+*theorem* · module `RueCore.Soundness`
+
+Writing `Owned` anywhere under an `Owned` node leaves it fully owned: the
+state a whole-array reinitialization of an element's sub-position leaves
+(helper).
+
+```lean
+theorem RueCore.OwnSt.fullyOwned_setAt_owned (π : List Nat) :
+  (OwnSt.owned.setAt π OwnSt.owned).fullyOwned = true
+```
+
+### `TypedArgs.length_eq`
+
+*theorem* · module `RueCore.Soundness`
+
+A typed expression list has one type per member (helper).
+
+```lean
+theorem RueCore.TypedArgs.length_eq {P : Program} {R : Ty} {es : List Expr}
+  {Ts : List Ty} {Γ Γ' : Ctx} :
+  TypedArgs P R Γ es Ts Γ' → es.length = Ts.length
+```
+
+### `Val.ints_of_hasTys`
+
+*theorem* · module `RueCore.Soundness`
+
+Index values typed at integer types are integers, one per value (helper).
+
+```lean
+theorem RueCore.Val.ints_of_hasTys {D : Decls} {vs : List Val} {Ts : List Ty} :
+  HasTys D vs Ts →
+    Ts.all Ty.isInt = true →
+      ∃ is, Val.ints vs = some is ∧ is.length = vs.length
+```
+
+### `Contents.resolveDyn_ok`
+
+*theorem* · module `RueCore.Soundness`
+
+**A dynamic tail under a whole, well-typed array place either traps on a
+bound or resolves to a constant path typed at the leaf** (§6.5's
+(D-Index)/(D-Index-Trap), `7.1:10`). Never a refusal: every dynamic step is
+taken at an array (`Ty.atDyn`), the array's length is its type's
+(`ContentsMatches.owned_array`), and an element of an `Owned` array is
+`Owned`, so the constant path after it reads by `ContentsMatches.readAt`
+(helper).
+
+```lean
+theorem RueCore.Contents.resolveDyn_ok {D : Decls} (is : List Int)
+  (πs : List (List Nat)) {c : Contents} {Ta T : Ty} :
+  ContentsMatches D c OwnSt.owned Ta →
+    Ty.atDyn D Ta πs = some T →
+      is.length = πs.length →
+        c.resolveDyn is πs = DynStep.bounds ∨
+          ∃ ρ, c.resolveDyn is πs = DynStep.ok ρ ∧ Ty.atPath D Ta ρ = some T
+```
+
 ### `EvalOk.mono_store`
 
 *theorem* · module `RueCore.Soundness`
@@ -4397,6 +4480,20 @@ theorem RueCore.EvalRes.absorb_ne_returned {r : EvalRes} {k : Store → Val → 
   r.absorb k ≠ EvalRes.returned H v tr
 ```
 
+### `checkIdx_sound`
+
+*theorem* · module `RueCore.Checker`
+
+Every `checkIdx` acceptance is a real index-list derivation at integer
+types (`4.11:4`) (helper).
+
+```lean
+theorem RueCore.checkIdx_sound {P : Program} {R : Ty} (es : List Expr) {Γ : Ctx}
+  {Ts : List Ty} {Γ' : Ctx} :
+  checkIdx P R Γ es = some (Ts, Γ') →
+    TypedArgs P R Γ es Ts Γ' ∧ Ts.all Ty.isInt = true
+```
+
 ### `Ty.grounded_declIds`
 
 *theorem* · module `RueCore.Checker`
@@ -4470,6 +4567,17 @@ is accessible outright (helper).
 ```lean
 theorem RueCore.Decls.acc_of_empty {D : Decls} {d : DeclId} (h : D.byValue d = []) :
   Acc (fun a b => D.Names b a) d
+```
+
+### `Explain.explainIdx_result`
+
+*theorem* · module `RueCore.Explain`
+
+**The index-list derivations are the checker's** (helper).
+
+```lean
+theorem RueCore.Explain.explainIdx_result {P : Program} {R : Ty} (es : List Expr)
+  (Γ : Ctx) : (Explain.explainIdx P R Γ es).fst = checkIdx P R Γ es
 ```
 
 ## Definitions the statements depend on
@@ -5351,6 +5459,38 @@ BinOp.ge.isCompare = true
     (x = BinOp.le → False) →
       (x = BinOp.gt → False) →
         (x = BinOp.ge → False) → x.isCompare = false
+```
+
+### `DynStep`
+
+*inductive* · module `RueCore.Dynamics`
+
+Where the dynamic tail of a place lands: the constant path it resolves to
+once every index is a value and in range, §6.5's bounds trap, or a refusal
+(helper).
+
+```lean
+inductive RueCore.DynStep : Type
+```
+
+Constructors:
+
+**`DynStep.ok`**
+
+```lean
+RueCore.DynStep.ok (ρ : List Nat) : DynStep
+```
+
+**`DynStep.bounds`**
+
+```lean
+RueCore.DynStep.bounds : DynStep
+```
+
+**`DynStep.stuck`**
+
+```lean
+RueCore.DynStep.stuck (w : Violation) : DynStep
 ```
 
 ### `Float.addD`
@@ -6531,6 +6671,28 @@ Defining equations, as Lean derived them from the body:
 ∀ (st : List Bool × List Bool), Ty.grounded st Ty.unit = true
 ```
 
+### `Ty.isInt`
+
+*def* · module `RueCore.Syntax`
+
+Whether a type is an integer type (§2's `int(w, s)`) (helper).
+
+```lean
+def RueCore.Ty.isInt : Ty → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (a : IntWidth) (a_1 : Sign), (Ty.int a a_1).isInt = true
+∀ (a : FloatWidth), (Ty.float a).isInt = false
+Ty.bool.isInt = false
+Ty.unit.isInt = false
+∀ (a : Nat), (Ty.struct a).isInt = false
+∀ (a : Nat), (Ty.enum a).isInt = false
+∀ (a : Ty) (a_1 : Nat), (a.array a_1).isInt = false
+```
+
 ### `Ty.observable`
 
 *def* · module `RueCore.Syntax`
@@ -6771,6 +6933,23 @@ Defining equations, as Lean derived them from the body:
       (∀ (elem : Ty) (cs : List Contents),
           x = Contents.array elem cs → False) →
         x.readAt (head :: tail) = Except.error Violation.typeConfusion
+```
+
+### `Contents.resolveDyn`
+
+*def* · module `RueCore.Dynamics`
+
+**Resolve a dynamic tail** `[i₁]π₁…[iₖ]πₖ` against the contents it is taken
+in, to the constant path it denotes: §6.5's (D-Index)/(D-Index-Trap) at each
+dynamic step, "at the moment the path is navigated" (`7.1:10`). The steps are
+taken left to right, each bounds-checked at the array it indexes before the
+next is looked at; the index *values* were all computed before the first
+check, which is the compiler's order too (probe r11: `a[id(5)][id(0)]` prints
+`5` and `0`, then traps). Once resolved, the place is an ordinary constant
+path, and §6.3's `readAt` and §6.8's `writeAt` take it from there (helper).
+
+```lean
+def RueCore.Contents.resolveDyn : Contents → List Int → List (List Nat) → DynStep
 ```
 
 ### `Contents.writeAt`
@@ -7363,13 +7542,15 @@ RueCore.Expr.repeatArray (elem : Ty) (e : Expr) (n : Nat) : Expr
 **`Expr.indexRead`**
 
 ```lean
-RueCore.Expr.indexRead (p : Place) (e : Expr) : Expr
+RueCore.Expr.indexRead (p : Place) (idx : List Expr) (πs : List (List Nat)) :
+  Expr
 ```
 
 **`Expr.indexWrite`**
 
 ```lean
-RueCore.Expr.indexWrite (p : Place) (e₁ e₂ : Expr) : Expr
+RueCore.Expr.indexWrite (p : Place) (idx : List Expr) (πs : List (List Nat))
+  (e : Expr) : Expr
 ```
 
 **`Expr.drop`**
@@ -7621,6 +7802,31 @@ RueCore.OpRes.trap (k : PanicKind) : OpRes
 
 ```lean
 RueCore.OpRes.confused : OpRes
+```
+
+### `Val.ints`
+
+*def* · module `RueCore.Dynamics`
+
+The index values of a dynamic place, as integers; `none` where one is not
+an integer, which no well-typed program produces (helper).
+
+```lean
+def RueCore.Val.ints : List Val → Option (List Int)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+Val.ints [] = some []
+∀ (w : IntWidth) (s : Sign) (i : Int) (vs : List Val),
+  Val.ints (Val.int w s i :: vs) =
+    match Val.ints vs with
+    | some is => some (i :: is)
+    | none => none
+∀ (head : Val) (tail : List Val),
+  (∀ (w : IntWidth) (s : Sign) (i : Int), head = Val.int w s i → False) →
+    Val.ints (head :: tail) = none
 ```
 
 ### `bitsOf`
@@ -9335,6 +9541,91 @@ Defining equations, as Lean derived them from the body:
     List.foldl (fun m T => m.join (Ty.mult D T)) Mult.copy sd.fields
 ```
 
+### `Ty.atDyn`
+
+*def* · module `RueCore.Syntax`
+
+**The type a place below a dynamic index reaches.** A dynamic form is
+`p[e₁]π₁[e₂]π₂…[eₖ]πₖ`: the constant place `p`, then `k ≥ 1` dynamic steps,
+each followed by a constant path `πⱼ` of field slots and constant indices
+(`Expr.indexRead`/`Expr.indexWrite`). `Ty.atDyn D Ta [π₁, …, πₖ]` walks that
+tail from `p`'s type `Ta`: each dynamic step must be taken at an array node,
+reaches its element type, and `πⱼ` is then read off the element as
+`Ty.atPath` reads any path. `none` where a dynamic step is taken at anything
+but an array, or where a constant path is not a path of the type reached so
+far — which is `Γ ⊢ p : T` failing for the complete place (helper).
+
+```lean
+def RueCore.Ty.atDyn (D : Decls) : Ty → List (List Nat) → Option Ty
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (x : Ty), Ty.atDyn D x [] = some x
+∀ (D : Decls) (E : Ty) (n : Nat) (π : List Nat) (πs : List (List Nat)),
+  Ty.atDyn D (E.array n) (π :: πs) =
+    match Ty.atPath D E π with
+    | some T' => Ty.atDyn D T' πs
+    | none => none
+∀ (D : Decls) (w : IntWidth) (s : Sign) (head : List Nat)
+  (tail : List (List Nat)), Ty.atDyn D (Ty.int w s) (head :: tail) = none
+∀ (D : Decls) (w : FloatWidth) (head : List Nat) (tail : List (List Nat)),
+  Ty.atDyn D (Ty.float w) (head :: tail) = none
+∀ (D : Decls) (head : List Nat) (tail : List (List Nat)),
+  Ty.atDyn D Ty.bool (head :: tail) = none
+∀ (D : Decls) (head : List Nat) (tail : List (List Nat)),
+  Ty.atDyn D Ty.unit (head :: tail) = none
+∀ (D : Decls) (s : Nat) (head : List Nat) (tail : List (List Nat)),
+  Ty.atDyn D (Ty.struct s) (head :: tail) = none
+∀ (D : Decls) (e : Nat) (head : List Nat) (tail : List (List Nat)),
+  Ty.atDyn D (Ty.enum e) (head :: tail) = none
+```
+
+### `Ty.dynNoDeclared`
+
+*def* · module `RueCore.Syntax`
+
+**No declared-`linear` proper prefix below the dynamic index** (§4.2's
+`Untrackable(DeclaredLinearDynamic)`, ill-formed there and E0904 in the
+compiler; probe q11). A proper prefix of the complete place that lies below
+the first dynamic step is an element `a[i]` itself or a prefix of one
+segment's constant path, and `declaredPrefix D E π = none` at each segment is
+exactly "neither the element nor any proper prefix of `π` under it is a struct
+declared `linear`" — the segment's own end is excluded, as a leaf is, and
+where a later segment follows, that end is an array, which is never declared
+`linear`. The prefixes **above** the first dynamic step are `p`'s own, and
+`declaredPrefix D T p.path = none` states them (helper).
+
+```lean
+def RueCore.Ty.dynNoDeclared (D : Decls) : Ty → List (List Nat) → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (x : Ty), Ty.dynNoDeclared D x [] = true
+∀ (D : Decls) (E : Ty) (n : Nat) (π : List Nat) (πs : List (List Nat)),
+  Ty.dynNoDeclared D (E.array n) (π :: πs) =
+    ((declaredPrefix D E π).isNone &&
+      match Ty.atPath D E π with
+      | some T' => Ty.dynNoDeclared D T' πs
+      | none => true)
+∀ (D : Decls) (w : IntWidth) (s : Sign) (head : List Nat)
+  (tail : List (List Nat)),
+  Ty.dynNoDeclared D (Ty.int w s) (head :: tail) = true
+∀ (D : Decls) (w : FloatWidth) (head : List Nat) (tail : List (List Nat)),
+  Ty.dynNoDeclared D (Ty.float w) (head :: tail) = true
+∀ (D : Decls) (head : List Nat) (tail : List (List Nat)),
+  Ty.dynNoDeclared D Ty.bool (head :: tail) = true
+∀ (D : Decls) (head : List Nat) (tail : List (List Nat)),
+  Ty.dynNoDeclared D Ty.unit (head :: tail) = true
+∀ (D : Decls) (s : Nat) (head : List Nat) (tail : List (List Nat)),
+  Ty.dynNoDeclared D (Ty.struct s) (head :: tail) = true
+∀ (D : Decls) (e : Nat) (head : List Nat) (tail : List (List Nat)),
+  Ty.dynNoDeclared D (Ty.enum e) (head :: tail) = true
+```
+
 ### `Val.mult`
 
 *def* · module `RueCore.Dynamics`
@@ -9695,6 +9986,36 @@ Defining equations, as Lean derived them from the body:
       Explain.explainArgs P R x x_1 x_2 = (none, [])
 ```
 
+### `Explain.explainIdx`
+
+*def* · module `RueCore.Explain`
+
+The instrumented mirror of `checkIdx`: the index expressions'
+sub-derivations in evaluation order, and their integer types with the outgoing
+`Σ` when every one checked at an integer type (`4.11:4`).
+
+```lean
+def RueCore.Explain.explainIdx (P : Program) (R : Ty) :
+  Ctx → List Expr → Option (List Ty × Ctx) × List Explain.Deriv
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (P : Program) (R : Ty) (x : Ctx),
+  Explain.explainIdx P R x [] = (some ([], x), [])
+∀ (P : Program) (R : Ty) (x : Ctx) (e : Expr) (es : List Expr),
+  Explain.explainIdx P R x (e :: es) =
+    match (Explain.explain P R x e).result with
+    | some (Ty.int w s, Γ₁) =>
+      have rest := Explain.explainIdx P R Γ₁ es;
+      (match rest.fst with
+        | some (Ts, Γ₂) => some (Ty.int w s :: Ts, Γ₂)
+        | none => none,
+        Explain.explain P R x e :: rest.snd)
+    | x_1 => (none, [Explain.explain P R x e])
+```
+
 ### `Explain.traceEval`
 
 *def* · module `RueCore.Explain`
@@ -9790,6 +10111,34 @@ Defining equations, as Lean derived them from the body:
 ```lean
 ∀ (D : Decls) (ed : EnumDecl),
   checkEnumDecl D ed = decide (ed.cls = EnumDecl.payloadJoin D ed)
+```
+
+### `checkIdx`
+
+*def* · module `RueCore.Checker`
+
+The index expressions of a place below a dynamic index, as an algorithm:
+each is checked at whatever integer type it has (`4.11:4`), left to right with
+Σ threaded, and their types are returned for `Typed.indexRead`/`indexWrite`'s
+`TypedArgs` premise.
+
+```lean
+def RueCore.checkIdx (P : Program) (R : Ty) :
+  Ctx → List Expr → Option (List Ty × Ctx)
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (P : Program) (R : Ty) (x : Ctx), checkIdx P R x [] = some ([], x)
+∀ (P : Program) (R : Ty) (x : Ctx) (e : Expr) (es : List Expr),
+  checkIdx P R x (e :: es) =
+    match check P R x e with
+    | some (Ty.int w s, Γ₁) =>
+      match checkIdx P R Γ₁ es with
+      | some (Ts, Γ₂) => some (Ty.int w s :: Ts, Γ₂)
+      | none => none
+    | x => none
 ```
 
 ### `checkStructDecl`
@@ -11520,42 +11869,54 @@ RueCore.Typed.repeatArray {P : Program} {R : Ty} {Γ Γ' : Ctx} {T : Ty}
       Typed P R Γ (Expr.repeatArray T e n) (T.array n) Γ'
 ```
 
-**`Typed.indexRead`** — (Use-Untrackable-Dynamic-Copy) §5.1, at the read `p[e]` whose index is not a compile-time constant: §4.2's `Untrackable(OrdinaryDynamic)` plan, and the *only* successful static rule for it. `class(T) = Copy` is the rule's own premise, and §4.2's "there is no successful static rule … when `class(T) ∈ {Affine,Linear}`" is that premise's absence rather than a rejection of its own (E0904, probe `a5`). `fully-owned(Σ, p)` is stronger than §5.1's `Σ(p) = Owned` and is `3.8:70`/`7.1:45`'s own rule: "it is a compile-time error … to index the array with a non-constant index" while an element is moved out, "because the compiler cannot know at compile time whether a runtime index denotes a moved-out element". `declaredPrefix … = none` keeps §4.2's `Untrackable(DeclaredLinearDynamic)` — ill-formed there — without an instance: a base under a declared-`linear` prefix draws the `Declared` plan, and this rule refuses it. The index is typed **first** and Σ threaded through it, and the base place is read on the resulting context; `eval` runs the two in the same order. `4.11:14` states the opposite for a full index *expression* — "the base expression is evaluated before the index expression" — and §6.2's `E[e]`/`v[E]` contexts are that order. It is unobservable here because the base is a `Place`, not an expression: reading a place runs nothing, allocates nothing and threads no Σ of its own, so the two orders agree on every program. The order becomes observable only when a base expression can have an effect, which is a form this fragment does not have. The read copies, so the outgoing state is the index's. Whether the index is *in range* is dynamic (`7.1:10`, §6.5's (D-Index-Trap)), not a typing question.
+**`Typed.indexRead`** — (Use-Untrackable-Dynamic-Copy) §5.1, at a read `p[e₁]π₁…[eₖ]πₖ` below one or more indices that are not compile-time constants: §4.2's `Untrackable(OrdinaryDynamic)` plan, and the *only* successful static rule for it. The place is `p` (a constant `Place`), then `k ≥ 1` dynamic steps, each followed by a constant path of field slots and constant indices, so `a[i]`, `a[i].x0`, `h.arr[i].x0`, `a[i][j]` and `a[i][0].x1` are all this form (probes q01, q08, q09, q10). `Place` stays constant-only: a dynamic step is never a path of Σ, which is what keeps Σ finite (`3.8:68`). The premises, in the order the rule reads them. * The index expressions are typed **left to right** at integer types, with Σ threaded (`TypedArgs` at a list of `int(w,s)`; `4.11:4` admits any integer type), and the place is read on the resulting context; `eval` runs them in the same order. `4.11:14` puts a full index expression's *base* before its index, and that is unobservable here because the base is a `Place`: reading one runs nothing and threads no Σ. * `fully-owned(Σ, p)` at the array the **first** dynamic step indexes — stronger than §5.1's `Σ(p) = Owned`, and `3.8:70`/`7.1:45`'s own rule: it is an error "to index the array with a non-constant index" while an element is moved out (E0205; probes q06, q19). It is `p`, not the root binding: `a[0][i]` after `a[1]` moved reads a whole `a[0]`, and the compiler accepts it (probe r01). A later dynamic step needs nothing more, because `fully-owned` at `p` is `fully-owned` at everything under it. * `Γ ⊢ p[…]… : T` is `Ty.atPath` to `p` and then `Ty.atDyn` through the dynamic tail, which fails unless every dynamic step is taken at an array. * `class(T) = Copy` is the rule's own premise, and §4.2's "there is no successful static rule … when `class(T) ∈ {Affine,Linear}`" is that premise's absence rather than a rejection of its own (E0904; probes q02, q15). * No declared-`linear` proper prefix anywhere along the complete path: `declaredPrefix … = none` above the first dynamic step and `Ty.dynNoDeclared` below it keep §4.2's `Untrackable(DeclaredLinearDynamic)` — ill-formed there — without an instance (E0904; probes q11, r07). The read copies, so the outgoing state is the indices'. Whether each index is *in range* is dynamic (`7.1:10`, §6.5's (D-Index-Trap)), not a typing question.
 
 ```lean
 RueCore.Typed.indexRead {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {p : Place}
-  {e : Expr} {en : Entry} {u : OwnSt} {T : Ty} {n : Nat} {w : IntWidth}
-  {s : Sign} :
-  Typed P R Γ e (Ty.int w s) Γ₁ →
-    Γ₁[p.root]? = some en →
-      en.st.get p.path = some u →
-        u.fullyOwned = true →
-          Ty.atPath P.decls en.ty p.path = some (T.array n) →
-            Ty.mult P.decls T = Mult.copy →
-              declaredPrefix P.decls en.ty p.path = none →
-                Typed P R Γ (Expr.indexRead p e) T Γ₁
+  {idx : List Expr} {πs : List (List Nat)} {Ts : List Ty} {en : Entry}
+  {u : OwnSt} {Ta T : Ty} :
+  TypedArgs P R Γ idx Ts Γ₁ →
+    Ts.all Ty.isInt = true →
+      idx.length = πs.length →
+        πs ≠ [] →
+          Γ₁[p.root]? = some en →
+            en.st.get p.path = some u →
+              u.fullyOwned = true →
+                Ty.atPath P.decls en.ty p.path = some Ta →
+                  Ty.atDyn P.decls Ta πs = some T →
+                    Ty.mult P.decls T = Mult.copy →
+                      declaredPrefix P.decls en.ty p.path = none →
+                        Ty.dynNoDeclared P.decls Ta πs = true →
+                          Typed P R Γ (Expr.indexRead p idx πs) T Γ₁
 ```
 
-**`Typed.indexWrite`** — (Assign) §5.2 at a dynamic index, `p[e₁] = e₂` (`7.1:30`, `4.11:12`): an in-place mutation that modifies the array without moving it. The root must be a `μ = mut` binding (§5 preamble), and the index reduces before the right-hand side (§6.2: "`assign p = E` — right-hand side (`p`'s index subexpressions reduce first)") with Σ threaded in that order. The destination is **not** a use, so the read's `class(T) = Copy` premise does not transfer here: §4.2's plans classify a value-context use, and what (Assign) demands of a destination is its own last premise, `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` — `overwriteOk`/`3.8:77`, the same premise `Typed.assign` carries, read at the **element** type on the post-RHS state. A runtime index can never establish `MovedOut` at the element, so the disjunction bites as its right half: an affine, even destructor-bearing, element type is admitted (and the machine's overwrite-drop below runs its glue), while a linear-carrying one is refused, which is the compiler's E0493. There is **no plan premise**: §4.2's plans classify value-context uses, and an assignment destination is not one, so a dynamic-index write into an array field of a declared-`linear` struct (`v0.x0[i] = 9`) is admitted here exactly as the compiler admits it (second-review probe c3, which prints `1 9 2 7`). The write lands on an element the declared-`linear` place still owns whole — `fully-owned` below is what guards that — and consumes nothing, so `Untrackable(DeclaredLinearDynamic)` has no instance at a write; its one instance is the dynamic *read*, which `indexRead` refuses. The arrays part carried `declaredPrefix … = none` here as a restriction of its own; it is dropped with the destructure mechanized. Two more of (Assign)'s clauses are discharged rather than restated. `3.8:72`/`7.1:46` — "while one or more elements of an array are moved out, it is a compile-time error to assign into the array" — is `fully-owned(Σ, p)` on the post-RHS state at the array being written, and `assignArrayOk` at any array the path stepped through to reach it (`a[1][i] = …` after a move of `a[0]` is E0480, probe c8). And `3.8:55`'s reinitialization is (Assign)'s own `Σ1[p ↦ Owned]`, taken at the **whole array** rather than at the element: `7.1:46` says an element write "does not reinstate per-element ownership", and on the `fully-owned` premise there is nothing to reinstate, so writing `Owned` at `p` is the rule as §5.2 states it and changes no path's state. `en₀.st.get p.path = some u₀` constrains `u₀` nowhere, and deliberately: it is (Assign)'s own incoming `Σ(p)` lookup, whose content is that the destination path is *reachable* — `OwnSt.get` is `none` under a moved-out prefix — while every condition on the state itself is read after the operands have run, on `u₁`, because that is the state the write overwrites.
+**`Typed.indexWrite`** — (Assign) §5.2 below a dynamic index, `p[e₁]π₁…[eₖ]πₖ = e` (`7.1:30`, `4.11:12`): an in-place mutation that modifies the array without moving it. The root must be a `μ = mut` binding (§5 preamble). **The right-hand side is typed first**, then the index expressions left to right, with Σ threaded in that order: `5.2:14` is normative ("the right-hand side `expression` is evaluated first … any index subexpressions appearing in the target … are evaluated after the right-hand side, in source order"), §6.2's `assign p = E` context says the same, and the compiler agrees (probes q14, q20, r10). The destination is **not** a use, so the read's `class(T) = Copy` premise does not transfer here: what (Assign) demands of a destination is its own last premise, `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` at the leaf. A place under a runtime index can never be proven `MovedOut` (`3.8:77`), so the disjunction is its right half, `class(T) ≠ Linear`: an affine, even destructor-bearing, leaf is admitted and the machine's overwrite-drop runs its glue (probe q04), while a linear-carrying one is E0493 (probe q05). There is **no plan premise**: §4.2's plans classify value-context uses, and an assignment destination is not one. The compiler admits a dynamic-index write under a declared-`linear` prefix above the index (`v0.x0[i] = 9`, second-review probe c3; `v.arr[i].x1 = 9`, probe r06) **and** below it (`a[i].x0 = 5` on `[L; 2]` with `L` declared `linear`, probe r05, which prints `6`). The write lands on a leaf the declared-`linear` place still owns whole — `fully-owned` below guards that — and consumes nothing, so `Untrackable(DeclaredLinearDynamic)` has no instance at a write. `3.8:72`/`7.1:46` — "while one or more elements of an array are moved out, it is a compile-time error to assign into the array" — is `fully-owned(Σ, p)` on the post-operand state at the array the first dynamic step indexes, and `assignArrayOk` at any array the constant place stepped through to reach it (`a[0][i].k = 5` after a move of `a[1]` is E0480, probe r02; `a[i].k = 5` after `a[0]` moved, probes q07, q18). And `3.8:55`'s reinitialization is (Assign)'s own `Σ1[p ↦ Owned]`, taken at the **whole array** `p`: `7.1:46` says an element write "does not reinstate per-element ownership", and on the `fully-owned` premise there is nothing to reinstate, so writing `Owned` at `p` changes no path's state. `en₀.st.get p.path = some u₀` constrains `u₀` nowhere, and deliberately: it is (Assign)'s own incoming `Σ(p)` lookup, whose content is that the destination path is *reachable* — `OwnSt.get` is `none` under a moved-out prefix — while every condition on the state itself is read after the operands have run, on `u₁`, because that is the state the write overwrites.
 
 ```lean
 RueCore.Typed.indexWrite {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx} {p : Place}
-  {e₁ e₂ : Expr} {en₀ en₁ : Entry} {u₀ u₁ : OwnSt} {T : Ty} {n : Nat}
-  {w : IntWidth} {s : Sign} :
+  {idx : List Expr} {πs : List (List Nat)} {e : Expr} {en₀ en₁ : Entry}
+  {u₀ u₁ : OwnSt} {Ts : List Ty} {Ta T : Ty} :
   Γ[p.root]? = some en₀ →
     en₀.mu = true →
       en₀.st.get p.path = some u₀ →
-        Ty.atPath P.decls en₀.ty p.path = some (T.array n) →
-          Typed P R Γ e₁ (Ty.int w s) Γ₁ →
-            Typed P R Γ₁ e₂ T Γ₂ →
-              Γ₂[p.root]? = some en₁ →
-                en₁.st.get p.path = some u₁ →
-                  u₁.fullyOwned = true →
-                    assignArrayOk P.decls en₁.st en₁.ty p.path = true →
-                      u₁ = OwnSt.movedOut ∨ Ty.mult P.decls T ≠ Mult.linear →
-                        Typed P R Γ (Expr.indexWrite p e₁ e₂) Ty.unit
-                          (List.set Γ₂ p.root
-                            (en₁.setSt (en₁.st.setAt p.path OwnSt.owned)))
+        Ty.atPath P.decls en₀.ty p.path = some Ta →
+          Ty.atDyn P.decls Ta πs = some T →
+            idx.length = πs.length →
+              πs ≠ [] →
+                Typed P R Γ e T Γ₁ →
+                  TypedArgs P R Γ₁ idx Ts Γ₂ →
+                    Ts.all Ty.isInt = true →
+                      Γ₂[p.root]? = some en₁ →
+                        en₁.st.get p.path = some u₁ →
+                          u₁.fullyOwned = true →
+                            assignArrayOk P.decls en₁.st en₁.ty p.path =
+                                true →
+                              Ty.mult P.decls T ≠ Mult.linear →
+                                Typed P R Γ (Expr.indexWrite p idx πs e)
+                                  Ty.unit
+                                  (List.set Γ₂ p.root
+                                    (en₁.setSt
+                                      (en₁.st.setAt p.path OwnSt.owned)))
 ```
 
 **`Typed.dropCopy`** — (@Drop-Copy) §5.3: no drop glue, no ownership effect. §5.3 gives it neither of (@Drop)'s projection premises — a `Copy` place is moved by nothing — so only the `Ordinary` plan premise is added: §5.3 says the two `@drop` rules "are read the same way" as §5.1's two use rules, which is `declaredPrefix … = none`. The subtree condition is read the way the `Copy` use rule above reads it, for the same reason and at the same cost (none).
