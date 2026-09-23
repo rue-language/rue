@@ -1528,6 +1528,191 @@ expected_stdout = "1\n10\n20\n3\n30\n2\n"
 opt_level = 3
 
 [[case]]
+name = "match_in_one_if_arm_suppresses_scope_exit_on_that_path_only"
+spec = ["3.9:2", "4.7:33", "4.7:34"]
+description = "A match on a destructor-bearing binding in one arm of an if moves it on that path only: the scope-exit drop runs only on the other path, so each payload is dropped exactly once whether or not the arm binds it, in either arm, through a nested enum, and for a payload-free variant (RUE-2347)"
+source = """
+struct Guard { v: i32 }
+
+drop fn Guard(self) { @dbg(self.v); }
+
+enum Slot { Empty, Full(Guard) }
+
+enum Outer { Nothing, Some(Slot) }
+
+fn pick(x: bool) -> bool { x }
+
+// The match moves `s` on the then path only; the scope-exit drop of `s`
+// runs on the else path only.
+fn in_then_arm(b: bool, v: i32) -> i32 {
+    let s = Slot.Full(Guard { v: v });
+    if pick(b) { match s { Slot.Empty => 0, Slot.Full(g) => 1 } } else { 2 }
+}
+
+fn in_then_arm_unbound(b: bool, v: i32) -> i32 {
+    let s = Slot.Full(Guard { v: v });
+    if pick(b) { match s { Slot.Empty => 0, Slot.Full(_) => 1 } } else { 2 }
+}
+
+fn in_else_arm(b: bool, v: i32) -> i32 {
+    let s = Slot.Full(Guard { v: v });
+    if pick(b) { 2 } else { match s { Slot.Empty => 0, Slot.Full(g) => 1 } }
+}
+
+fn nested(b: bool, v: i32) -> i32 {
+    let o = Outer.Some(Slot.Full(Guard { v: v }));
+    if pick(b) {
+        match o { Outer.Nothing => 0, Outer.Some(Slot.Empty) => 0, Outer.Some(Slot.Full(g)) => 1 }
+    } else { 2 }
+}
+
+fn empty_variant(b: bool) -> i32 {
+    let s = Slot.Empty;
+    if pick(b) { match s { Slot.Empty => 0, Slot.Full(g) => 1 } } else { 2 }
+}
+
+fn main() -> i32 {
+    @dbg(in_then_arm(true, 1));
+    @dbg(in_then_arm(false, 2));
+    @dbg(in_then_arm_unbound(true, 3));
+    @dbg(in_then_arm_unbound(false, 4));
+    @dbg(in_else_arm(true, 5));
+    @dbg(in_else_arm(false, 6));
+    @dbg(nested(true, 7));
+    @dbg(nested(false, 8));
+    @dbg(empty_variant(true));
+    @dbg(empty_variant(false));
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n1\n2\n2\n3\n1\n4\n2\n5\n2\n6\n1\n7\n1\n8\n2\n0\n2\n"
+
+[[case]]
+name = "match_in_one_if_arm_suppresses_scope_exit_on_that_path_only_o2"
+spec = ["3.9:2", "4.7:33", "4.7:34"]
+description = "The match in one if arm at -O2, where store-to-load forwarding makes both drops name the value itself (RUE-2347)"
+source = """
+struct Guard { v: i32 }
+
+drop fn Guard(self) { @dbg(self.v); }
+
+enum Slot { Empty, Full(Guard) }
+
+enum Outer { Nothing, Some(Slot) }
+
+fn pick(x: bool) -> bool { x }
+
+// The match moves `s` on the then path only; the scope-exit drop of `s`
+// runs on the else path only.
+fn in_then_arm(b: bool, v: i32) -> i32 {
+    let s = Slot.Full(Guard { v: v });
+    if pick(b) { match s { Slot.Empty => 0, Slot.Full(g) => 1 } } else { 2 }
+}
+
+fn in_then_arm_unbound(b: bool, v: i32) -> i32 {
+    let s = Slot.Full(Guard { v: v });
+    if pick(b) { match s { Slot.Empty => 0, Slot.Full(_) => 1 } } else { 2 }
+}
+
+fn in_else_arm(b: bool, v: i32) -> i32 {
+    let s = Slot.Full(Guard { v: v });
+    if pick(b) { 2 } else { match s { Slot.Empty => 0, Slot.Full(g) => 1 } }
+}
+
+fn nested(b: bool, v: i32) -> i32 {
+    let o = Outer.Some(Slot.Full(Guard { v: v }));
+    if pick(b) {
+        match o { Outer.Nothing => 0, Outer.Some(Slot.Empty) => 0, Outer.Some(Slot.Full(g)) => 1 }
+    } else { 2 }
+}
+
+fn empty_variant(b: bool) -> i32 {
+    let s = Slot.Empty;
+    if pick(b) { match s { Slot.Empty => 0, Slot.Full(g) => 1 } } else { 2 }
+}
+
+fn main() -> i32 {
+    @dbg(in_then_arm(true, 1));
+    @dbg(in_then_arm(false, 2));
+    @dbg(in_then_arm_unbound(true, 3));
+    @dbg(in_then_arm_unbound(false, 4));
+    @dbg(in_else_arm(true, 5));
+    @dbg(in_else_arm(false, 6));
+    @dbg(nested(true, 7));
+    @dbg(nested(false, 8));
+    @dbg(empty_variant(true));
+    @dbg(empty_variant(false));
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n1\n2\n2\n3\n1\n4\n2\n5\n2\n6\n1\n7\n1\n8\n2\n0\n2\n"
+opt_level = 2
+
+[[case]]
+name = "match_in_one_if_arm_suppresses_scope_exit_on_that_path_only_o3"
+spec = ["3.9:2", "4.7:33", "4.7:34"]
+description = "The match in one if arm at -O3, where store-to-load forwarding makes both drops name the value itself (RUE-2347)"
+source = """
+struct Guard { v: i32 }
+
+drop fn Guard(self) { @dbg(self.v); }
+
+enum Slot { Empty, Full(Guard) }
+
+enum Outer { Nothing, Some(Slot) }
+
+fn pick(x: bool) -> bool { x }
+
+// The match moves `s` on the then path only; the scope-exit drop of `s`
+// runs on the else path only.
+fn in_then_arm(b: bool, v: i32) -> i32 {
+    let s = Slot.Full(Guard { v: v });
+    if pick(b) { match s { Slot.Empty => 0, Slot.Full(g) => 1 } } else { 2 }
+}
+
+fn in_then_arm_unbound(b: bool, v: i32) -> i32 {
+    let s = Slot.Full(Guard { v: v });
+    if pick(b) { match s { Slot.Empty => 0, Slot.Full(_) => 1 } } else { 2 }
+}
+
+fn in_else_arm(b: bool, v: i32) -> i32 {
+    let s = Slot.Full(Guard { v: v });
+    if pick(b) { 2 } else { match s { Slot.Empty => 0, Slot.Full(g) => 1 } }
+}
+
+fn nested(b: bool, v: i32) -> i32 {
+    let o = Outer.Some(Slot.Full(Guard { v: v }));
+    if pick(b) {
+        match o { Outer.Nothing => 0, Outer.Some(Slot.Empty) => 0, Outer.Some(Slot.Full(g)) => 1 }
+    } else { 2 }
+}
+
+fn empty_variant(b: bool) -> i32 {
+    let s = Slot.Empty;
+    if pick(b) { match s { Slot.Empty => 0, Slot.Full(g) => 1 } } else { 2 }
+}
+
+fn main() -> i32 {
+    @dbg(in_then_arm(true, 1));
+    @dbg(in_then_arm(false, 2));
+    @dbg(in_then_arm_unbound(true, 3));
+    @dbg(in_then_arm_unbound(false, 4));
+    @dbg(in_else_arm(true, 5));
+    @dbg(in_else_arm(false, 6));
+    @dbg(nested(true, 7));
+    @dbg(nested(false, 8));
+    @dbg(empty_variant(true));
+    @dbg(empty_variant(false));
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n1\n2\n2\n3\n1\n4\n2\n5\n2\n6\n1\n7\n1\n8\n2\n0\n2\n"
+opt_level = 3
+
+[[case]]
 name = "drop_intrinsic_discharges_linear"
 spec = ["3.9:39"]
 description = "@drop satisfies a linear value's must-consume obligation: no E0406, program runs"
