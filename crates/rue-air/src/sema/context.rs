@@ -707,16 +707,16 @@ impl<'a> AnalysisContext<'a> {
         }
     }
 
-    /// Create a scratch copy of this context for the loop back-edge move check.
+    /// Create a scratch copy of this context for a loop-head recheck.
     ///
-    /// A value moved anywhere in a loop's condition or body is already moved
-    /// when the back edge re-enters the loop. After analyzing a loop once, the
-    /// loop is re-analyzed against a fork of the context (and a scratch `Air`)
-    /// whose starting move state is the *post-body* state; any use of a moved
-    /// value then surfaces as a `UseAfterMove` error pointing at the move from
-    /// the "previous iteration". One re-run reaches a fixpoint: analysis is
-    /// deterministic, so re-running from the post-body state marks exactly the
-    /// same moves again.
+    /// A value an earlier iteration moved and did not restore is already
+    /// moved when the back edge re-enters the loop. After analyzing a loop
+    /// once from its entry state, the loop is re-analyzed against a fork of
+    /// the context (and a scratch `Air`) seeded with the loop-head state, the
+    /// entry joined with the back-edge states, until that state settles; a
+    /// use of a moved value then surfaces as a `UseAfterMove` error pointing
+    /// at the move from the "previous iteration", and the loop's exit state
+    /// is read off the settled pass (see `settle_loop_head`).
     ///
     /// Output accumulators (warnings, referenced functions/methods) start
     /// empty so the discarded pass doesn't duplicate entries in the real
