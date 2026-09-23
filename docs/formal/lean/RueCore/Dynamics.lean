@@ -902,7 +902,7 @@ def dropResidueEvents (D : Decls) (rs : List Contents) : List Event :=
   (rs.map (dropEvents D)).flatten
 
 /-- A field list's events are its fields' events concatenated, left to right:
-the flattening `dropValue_struct_events` states the order with (helper). -/
+the flattening `dropContents_struct_events` states the order with (helper). -/
 theorem dropEventsList_eq_flatten (D : Decls) :
     ∀ cs : List Contents, dropEventsList D cs = (cs.map (dropEvents D)).flatten
   | [] => rfl

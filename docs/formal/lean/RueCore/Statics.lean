@@ -2952,7 +2952,7 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop wh
   /-- (Return-Value) §5.7 with (Sub-Never) folded in: the operand is checked
   against the enclosing function's declared return type `R`; §5.6's `⊥_exit`
   obligation is the frame-wide residual-linear premise (no binding of the
-  current frame is still `Owned` at a linear type — `3.8:62`, and (Fn) §5.8's
+  current frame still carries residual linear content — `3.8:62`, and (Fn) §5.8's
   second clause, which is why an early `return` past a live linear is
   rejected). The conclusion is at an arbitrary type, which is (Sub-Never)
   §5.7 applied to `never`, and at an arbitrary outgoing context of the same
