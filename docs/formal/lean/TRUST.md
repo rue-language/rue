@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 295.
+- Theorems checked: 303.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -289,6 +289,12 @@ and diffs them against the committed copies.
 | `matches_mintParams` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `mintParams_locs_length` | `RueCore.Soundness` | `propext` |
 | `matches_mintParams_app` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `OwnSt.get_owned` | `RueCore.Soundness` | `propext` |
+| `OwnSt.fullyOwnedList_setField_nil` | `RueCore.Soundness` | `propext` |
+| `OwnSt.fullyOwned_setAt_owned` | `RueCore.Soundness` | `propext` |
+| `TypedArgs.length_eq` | `RueCore.Soundness` | `propext` |
+| `Val.ints_of_hasTys` | `RueCore.Soundness` | `propext` |
+| `Contents.resolveDyn_ok` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `EvalOk.mono_store` | `RueCore.Soundness` | `propext` |
 | `AbortOk.mono_store` | `RueCore.Soundness` | `propext` |
 | `EvalOk.withTrace` | `RueCore.Soundness` | `propext` |
@@ -320,6 +326,7 @@ and diffs them against the committed copies.
 | `no_linear_overwrite` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `no_linear_discard` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `check_sound` | `RueCore.Checker` | `propext` |
+| `checkIdx_sound` | `RueCore.Checker` | `propext` |
 | `checkArms_sound` | `RueCore.Checker` | `propext` |
 | `checkArgs_sound` | `RueCore.Checker` | `propext` |
 | `Ty.grounded_declIds` | `RueCore.Checker` | `propext` |
@@ -342,6 +349,7 @@ and diffs them against the committed copies.
 | `Examples.floatToInt_nan_traps` | `RueCore.Examples` | `propext` |
 | `Examples.floatDivZeroToInt_traps` | `RueCore.Examples` | `Quot.sound`, `propext` |
 | `Explain.explain_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
+| `Explain.explainIdx_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
 | `Explain.explainArgs_result` | `RueCore.Explain` | `Quot.sound`, `propext` |
 | `Explain.traceArgs_res` | `RueCore.Explain` | `propext` |
 | `Explain.traceEval_res` | `RueCore.Explain` | `Quot.sound`, `propext` |
