@@ -537,14 +537,16 @@ def indexNotInt (T : Ty) : String :=
   "(4.11:4)"
 
 /-- §4.2's `Untrackable(OrdinaryDynamic)` plan has a successful rule only at a
-`Copy` element type: (Use-Untrackable-Dynamic-Copy) §5.1, and "there is no
-successful static rule … when `class(T) ∈ {Affine,Linear}`" (E0904). This is
-about a dynamic-index **read**, which is a use; the write's own refusal is
+`Copy` leaf type: (Use-Untrackable-Dynamic-Copy) §5.1, and "there is no
+successful static rule … when `class(T) ∈ {Affine,Linear}`" (E0904). The leaf
+is the element itself or a place below it (`a[i]`, `a[i].x0`). This is about a
+dynamic-index **read**, which is a use; the write's own refusal is
 `linearOverwrite` below, because an assignment destination is not one. -/
 def elementNotCopy (T : Ty) : String :=
-  "the element type " ++ Print.tyName T ++ " is not `Copy`, and a dynamic index has " ++
-  "no rule there: the compiler cannot know which element a runtime index moved " ++
-  "((Use-Untrackable-Dynamic-Copy) §5.1; 3.8:70, 7.1:28; the compiler reports E0904)"
+  "the type " ++ Print.tyName T ++ " read below the dynamic index is not `Copy`, and a " ++
+  "dynamic index has no rule there: the compiler cannot know which element a runtime " ++
+  "index moved ((Use-Untrackable-Dynamic-Copy) §5.1; 3.8:70, 7.1:28; the compiler " ++
+  "reports E0904)"
 
 /-- The core form's own shape: a place below a dynamic index has one or more
 dynamic steps, each paired with the constant path after it. Elaboration never
@@ -562,13 +564,13 @@ def indexPartiallyMoved : String :=
   "moved-out element — which the compiler cannot decide (3.8:70, 7.1:45)"
 
 /-- §4.2's `Untrackable(DeclaredLinearDynamic)`, which the calculus declares
-ill-formed: a **dynamic** index *read* at a place whose path already has a
-proper prefix of declared-`linear` struct type. (Use-Untrackable-Dynamic-Copy)
-§5.1 carries `declaredPrefix … = none` to keep it without an instance. A
-dynamic-index *write* is not a use and carries no plan premise
-(`Typed.indexWrite`). -/
+ill-formed: a **dynamic** index *read* at a place with a proper prefix of
+declared-`linear` struct type, above the dynamic index or below it.
+(Use-Untrackable-Dynamic-Copy) §5.1 carries `declaredPrefix … = none` and
+`Ty.dynNoDeclared` to keep it without an instance. A dynamic-index *write* is
+not a use and carries no plan premise (`Typed.indexWrite`). -/
 def declaredLinearPrefix : String :=
-  "a proper prefix of the base place is a struct declared `linear`, so a dynamic index " ++
+  "a proper prefix of the place is a struct declared `linear`, so a dynamic index " ++
   "read here would be §4.2's `Untrackable(DeclaredLinearDynamic)` plan — which the " ++
   "calculus declares ill-formed, because no static rule can know whether the runtime " ++
   "index names a place the destructure of 3.8:33 already consumed (3.8:33, 3.8:70; " ++
@@ -612,9 +614,9 @@ def assignTargetLost : String :=
 
 /-- (Assign) premise `Σ1(p) = MovedOut ∨ ¬carries_linear(T)` (§5.2);
 prose `3.8:77` (the RUE-387 premise), keyed on the destination's type. At a
-dynamic index the destination's type is the **element** type, and a runtime
-index can never establish `MovedOut`, so this is the whole of what (Assign)
-refuses there. -/
+dynamic index the destination's type is the **leaf** type, and a place under a
+runtime index can never be proven `MovedOut`, so this is the whole of what
+(Assign)'s last premise refuses there. -/
 def linearOverwrite (T : Ty) : String :=
   "overwrite of a live linear value: the place is not MovedOut after the " ++
   "right-hand side and its type " ++ Print.tyName T ++ " carries a linear value " ++
