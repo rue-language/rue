@@ -2,6 +2,7 @@ import RueCore.Float
 import RueCore.Syntax
 import RueCore.Statics
 import RueCore.Dynamics
+import RueCore.Step
 import RueCore.Soundness
 import RueCore.Examples
 import RueCore.Print

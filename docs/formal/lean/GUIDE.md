@@ -209,6 +209,26 @@ agree on every program). It is owed by RUE-2289 and required before the
 mechanization gates anything (`../03-metatheory.md`, "How to read a theorem
 here").
 
+**Two presentations of one dynamics.** The relation exists too:
+`Step.lean` defines `Step`, §6's `C → C'` itself, one constructor per §6
+rule with the rule's name in its doc-comment, over a configuration built from
+the same store and frame `eval` uses. The two are kept for different jobs.
+`Step` is what §6 *says*, so a reader checks it against the calculus rule by
+rule, and §7's own phrasing ("no reduction sequence reaches a stuck
+configuration") is a statement about it. `eval` is what can be *run* and
+*proved about*: the safety theorem is a fuel induction over it, and the bridge
+compares its results with the compiler's. Neither alone is enough: a theorem
+about `eval` says nothing about §6 unless the two agree, and `Step` cannot be
+run against a compiler or carry the safety proof as cheaply. The adequacy
+theorems (RUE-2289's parts 2 and 3) are the bridge between them; until they
+land, `Step`'s own theorems are the cheap ones — it is deterministic, a
+finished configuration takes no step, and a stuck one is stuck on one of §6's
+four violations, never on one of `eval`'s three monitors
+(`../03-metatheory.md`). One reading differs from §6's text in form: §6.2's
+evaluation context `E` and §6.1's stack `K` are one list of frames in `Step`,
+so the rule that searches into a context is two constructors, one entering
+the hole and one plugging a value back in.
+
 ### Fuel, and why the theorems quantify over it
 
 Lean accepts a function only if it can see that the function terminates.
