@@ -968,6 +968,18 @@ compile_fail = true
 error_contains = ["E0206", "expected finite f32 literal, found 1e39"]
 
 [[case]]
+name = "const_comptime_call_array_argument_float_literal_not_finite_rejected"
+spec = ["3.12:10", "6.5:2"]
+description = "An array literal argument of a comptime call in a constant initializer holds its elements to their finite range too: `f([1e39])` is E0206, not a constant equal to inf (RUE-2392)"
+source = """
+fn first(comptime a: [f32; 1]) -> f32 { a[0] }
+const X: f32 = first([1e39]);
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected finite f32 literal, found 1e39"]
+
+[[case]]
 name = "const_struct_field_float_literal_not_finite_rejected"
 spec = ["3.12:10", "6.5:2"]
 description = "A float literal struct field that is not finite at its declared f32 field type is E0206 (RUE-2392)"
