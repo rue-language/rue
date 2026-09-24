@@ -457,6 +457,19 @@ pub trait ComptimeTypeAlgebra: ComptimeDomain {
                     .map(|element| self.get_or_create_array_type(element, length))
             })
     }
+    /// The type declared for one child slot of a structural literal whose
+    /// type is `parent`: an array's element type, a struct field's type, or
+    /// an enum variant's payload type. The engine evaluates each child with
+    /// this as its expected result, so a nested literal is typed by the slot
+    /// it fills rather than by the literal that contains it. `None` means
+    /// the host cannot name the slot; the child then has no expected result.
+    fn comptime_child_slot_type(
+        &mut self,
+        _parent: &Self::Type,
+        _slot: ComptimeChildSlot<'_, Self::Name>,
+    ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
+        Ok(None)
+    }
     /// Resolve the concrete float type of an operand expression. This is
     /// separate from `const_expr_type` so comparisons inspect their operands
     /// rather than their boolean result expression.
@@ -2056,6 +2069,72 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         }
     }
 
+    /// Evaluate a structural literal's child against the type of the slot it
+    /// fills, restoring the enclosing expected result afterwards. The
+    /// enclosing expected result is the type of the literal itself, so a
+    /// child evaluated under it would type a nested array literal as its
+    /// parent (RUE-2390). Every array element, struct field and enum payload
+    /// goes through here.
+    fn eval_in_slot(
+        &mut self,
+        child: InstRef,
+        slot: Option<H::Type>,
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<H::Value, H::Failure> {
+        let enclosing = std::mem::replace(&mut env.expected_result, slot);
+        let value = self.eval(child, env);
+        env.expected_result = enclosing;
+        value
+    }
+
+    /// The type the host declares for `slot` of a literal of type `parent`,
+    /// or none when the literal's own type is not known yet.
+    fn child_slot_type(
+        &mut self,
+        parent: Option<&H::Type>,
+        slot: ComptimeChildSlot<'_, H::Name>,
+    ) -> ComptimeHostResult<Option<H::Type>, H::Failure> {
+        match parent {
+            Some(parent) => self.host.comptime_child_slot_type(parent, slot),
+            None => Ok(None),
+        }
+    }
+
+    /// The element slot type of an array literal: the element type of its
+    /// contextual type, which is the expected result or, for a host that
+    /// retains expression types, the literal's own resolved type.
+    fn array_element_slot_type(
+        &mut self,
+        env: &ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+        inst_ref: InstRef,
+    ) -> ComptimeHostResult<Option<H::Type>, H::Failure> {
+        let contextual = env.expected_result.clone().or_else(|| {
+            self.host
+                .const_expr_type(&self.program_key(), env, inst_ref)
+        });
+        self.child_slot_type(contextual.as_ref(), ComptimeChildSlot::ArrayElement)
+    }
+
+    /// Reduce an enum variant's payload in source order, each argument
+    /// against the declared type of its payload position.
+    fn eval_enum_payload(
+        &mut self,
+        enum_type: &H::Type,
+        variant: &H::Name,
+        args: &[rue_rir::RirCallArg],
+        env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
+    ) -> ComptimeOutcome<Vec<H::Value>, H::Failure> {
+        let mut payload = Vec::with_capacity(args.len());
+        for (index, arg) in args.iter().enumerate() {
+            let slot = host_value!(self.child_slot_type(
+                Some(enum_type),
+                ComptimeChildSlot::EnumPayload { variant, index },
+            ));
+            payload.push(outcome_value!(self.eval_in_slot(arg.value, slot, env)));
+        }
+        ComptimeOutcome::Known(payload)
+    }
+
     fn evaluate_method_call(
         &mut self,
         inst_ref: InstRef,
@@ -2082,19 +2161,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             };
             if let Some(type_value) = type_value {
                 if self.host.type_is_enum(&type_value) {
-                    let previous_expected = env.expected_result.take();
-                    let mut payload = Vec::with_capacity(args.len());
-                    for arg in &args {
-                        let value = match self.eval(arg.value, env) {
-                            ComptimeOutcome::Known(value) => value,
-                            other => {
-                                env.expected_result = previous_expected;
-                                return Self::discard_rejection(other);
-                            }
-                        };
-                        payload.push(value);
-                    }
-                    env.expected_result = previous_expected;
+                    let payload =
+                        outcome_value!(self.eval_enum_payload(&type_value, &method, &args, env));
                     let site = self.semantic_site(inst_ref, ComptimeSiteKind::Member, span);
                     return self.host.resolve_comptime_enum_variant_with_payload(
                         type_value, method, payload, &site, span,
@@ -2114,19 +2182,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             if let Some(enum_type) = receiver.as_type()
                 && self.host.type_is_enum(&enum_type)
             {
-                let previous_expected = env.expected_result.take();
-                let mut payload = Vec::with_capacity(args.len());
-                for arg in &args {
-                    let value = match self.eval(arg.value, env) {
-                        ComptimeOutcome::Known(value) => value,
-                        other => {
-                            env.expected_result = previous_expected;
-                            return Self::discard_rejection(other);
-                        }
-                    };
-                    payload.push(value);
-                }
-                env.expected_result = previous_expected;
+                let payload =
+                    outcome_value!(self.eval_enum_payload(&enum_type, &method, &args, env));
                 let site = self.semantic_site(inst_ref, ComptimeSiteKind::Member, span);
                 return self.host.resolve_comptime_enum_variant_with_payload(
                     enum_type, method, payload, &site, span,
@@ -4444,7 +4501,8 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             // array value literal and is not comptime-foldable here (`None`).
             InstData::ArrayRepeat { value, count } => {
                 let (value, count) = (*value, count.clone());
-                let value = outcome_value!(self.eval(value, env));
+                let element_slot = host_value!(self.array_element_slot_type(env, inst_ref));
+                let value = outcome_value!(self.eval_in_slot(value, element_slot, env));
                 let len = match count {
                     RepeatCount::Literal(n) => n,
                     RepeatCount::Named(sym) => {
@@ -4711,30 +4769,38 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     .iter()
                     .map(|field| (field.0, field.1))
                     .collect();
-                let mut values = Vec::with_capacity(field_inits.len());
-                for (name, field) in field_inits {
-                    values.push((
-                        self.name_from_rir(name.into()),
-                        outcome_value!(self.eval(field, env)),
-                    ));
-                }
+                // The struct's type names each field's slot, so it resolves
+                // before the fields reduce against those slots.
                 let type_name = self.name_from_rir((*type_name).into());
-                let ty = match host_value!(self.host.resolve_comptime_struct_type(
+                let ty = host_value!(self.host.resolve_comptime_struct_type(
                     &self.program_key(),
                     type_name,
                     span,
-                )) {
-                    Some(ty) => ty,
-                    None => return ComptimeOutcome::RuntimeDependent,
+                ));
+                let mut values = Vec::with_capacity(field_inits.len());
+                for (name, field) in field_inits {
+                    let name = self.name_from_rir(name.into());
+                    let slot = host_value!(
+                        self.child_slot_type(ty.as_ref(), ComptimeChildSlot::StructField(&name))
+                    );
+                    values.push((name, outcome_value!(self.eval_in_slot(field, slot, env))));
+                }
+                let Some(ty) = ty else {
+                    return ComptimeOutcome::RuntimeDependent;
                 };
                 self.host.resolve_comptime_struct(ty, values, &site)
             }
             InstData::ArrayInit { elements } => {
                 let site = self.diagnostic_site(span);
                 let array_elements = self.program_rir().array_elements(elements).to_vec();
+                let element_slot = host_value!(self.array_element_slot_type(env, inst_ref));
                 let mut values = Vec::with_capacity(array_elements.len());
                 for element in array_elements {
-                    values.push(outcome_value!(self.eval(element, env)));
+                    values.push(outcome_value!(self.eval_in_slot(
+                        element,
+                        element_slot.clone(),
+                        env
+                    )));
                 }
                 let Some(ty) = self.host.resolve_comptime_array_type(
                     &self.program_key(),
