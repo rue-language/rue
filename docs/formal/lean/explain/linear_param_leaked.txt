@@ -92,25 +92,25 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 5
-  [3]   d3        (D-Struct) §6.5
+  [3]   d3        (D-Struct) §6.5 (mint #0)
          expr    S2 { x0: 5 }
          store   (empty)
-           →     (empty)
-         result  value S2 { 5 }
+           →     [ℓ0 = †]
+         result  value S2 { 5 }#0
   [4]   d3        (D-Call) §6.9 (push the frame)
-         expr    fn f1(v0: S2) -> i64  with [ℓ0]
-         store   (empty)
-           →     [ℓ0 = S2 { 5 }]
+         expr    fn f1(v0: S2) -> i64  with [ℓ1]
+         store   [ℓ0 = †]
+           →     [ℓ0 = †, ℓ1 = S2 { 5 }#0]
          result  value ()
   [5]   d4          literal §6.3
          expr    1
-         store   [ℓ0 = S2 { 5 }]
-           →     [ℓ0 = S2 { 5 }]
+         store   [ℓ0 = †, ℓ1 = S2 { 5 }#0]
+           →     [ℓ0 = †, ℓ1 = S2 { 5 }#0]
          result  value 1
   [6]   d2      (D-Return-Value) §6.9 (pop the frame)
          expr    f1(S2 { x0: 5 })
-         store   [ℓ0 = S2 { 5 }]
-           →     [ℓ0 = S2 { 5 }]
+         store   [ℓ0 = †, ℓ1 = S2 { 5 }#0]
+           →     [ℓ0 = †, ℓ1 = S2 { 5 }#0]
          result  REFUSED (linearLeak)
                  a scope exit or a frame teardown reached a live linear value: a
                  linear obligation was never discharged (endscope §6.7 /
@@ -119,7 +119,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
   [7]   d0  (D-Return-Value) §6.9 (pop the frame)
          expr    f0()
          store   (empty)
-           →     [ℓ0 = S2 { 5 }]
+           →     [ℓ0 = †, ℓ1 = S2 { 5 }#0]
          result  REFUSED (linearLeak)
                  a scope exit or a frame teardown reached a live linear value: a
                  linear obligation was never discharged (endscope §6.7 /

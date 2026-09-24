@@ -113,51 +113,51 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 1
-  [3]   d3        (D-Struct) §6.5
+  [3]   d3        (D-Struct) §6.5 (mint #0)
          expr    S2 { x0: 1 }
          store   (empty)
-           →     (empty)
-         result  value S2 { 1 }
+           →     [ℓ0 = †]
+         result  value S2 { 1 }#0
   [4]   d3        (D-Let) §6.7 (mint the binding)
-         expr    let mut v0 = S2 { 1 } at ℓ0
-         store   (empty)
-           →     [ℓ0 = S2 { 1 }]
-         result  value S2 { 1 }
+         expr    let mut v0 = S2 { 1 }#0 at ℓ1
+         store   [ℓ0 = †]
+           →     [ℓ0 = †, ℓ1 = S2 { 1 }#0]
+         result  value S2 { 1 }#0
   [5]   d6              literal §6.3
          expr    2
-         store   [ℓ0 = S2 { 1 }]
-           →     [ℓ0 = S2 { 1 }]
+         store   [ℓ0 = †, ℓ1 = S2 { 1 }#0]
+           →     [ℓ0 = †, ℓ1 = S2 { 1 }#0]
          result  value 2
-  [6]   d5            (D-Struct) §6.5
+  [6]   d5            (D-Struct) §6.5 (mint #2)
          expr    S2 { x0: 2 }
-         store   [ℓ0 = S2 { 1 }]
-           →     [ℓ0 = S2 { 1 }]
-         result  value S2 { 2 }
+         store   [ℓ0 = †, ℓ1 = S2 { 1 }#0]
+           →     [ℓ0 = †, ℓ1 = S2 { 1 }#0, ℓ2 = †]
+         result  value S2 { 2 }#2
   [7]   d4          (D-Assign) §6.8
          expr    { v0 = S2 { x0: 2 }; }
-         store   [ℓ0 = S2 { 1 }]
-           →     [ℓ0 = S2 { 1 }]
+         store   [ℓ0 = †, ℓ1 = S2 { 1 }#0]
+           →     [ℓ0 = †, ℓ1 = S2 { 1 }#0, ℓ2 = †]
          result  REFUSED (linearOverwrite)
                  an overwrite-drop of a live linear value: the assignment would
                  consume a linear value the program never consumed (§6.8; 3.8:77; §7)
   [8]   d3        (D-Seq) §6.7 — a premise did not complete
          expr    { { v0 = S2 { x0: 2 }; }; { @drop(v0); 0 } }
-         store   [ℓ0 = S2 { 1 }]
-           →     [ℓ0 = S2 { 1 }]
+         store   [ℓ0 = †, ℓ1 = S2 { 1 }#0]
+           →     [ℓ0 = †, ℓ1 = S2 { 1 }#0, ℓ2 = †]
          result  REFUSED (linearOverwrite)
                  an overwrite-drop of a live linear value: the assignment would
                  consume a linear value the program never consumed (§6.8; 3.8:77; §7)
   [9]   d2      (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the frame's scope record instead; a trap runs no drop at all)
          expr    { let mut v0: S2 = S2 { x0: 1 }; { { v0 = S2 { x0: 2 }; }; { @drop(v0); 0 } } }
          store   (empty)
-           →     [ℓ0 = S2 { 1 }]
+           →     [ℓ0 = †, ℓ1 = S2 { 1 }#0, ℓ2 = †]
          result  REFUSED (linearOverwrite)
                  an overwrite-drop of a live linear value: the assignment would
                  consume a linear value the program never consumed (§6.8; 3.8:77; §7)
   [10]  d0  (D-Return-Value) §6.9 (pop the frame)
          expr    f0()
          store   (empty)
-           →     [ℓ0 = S2 { 1 }]
+           →     [ℓ0 = †, ℓ1 = S2 { 1 }#0, ℓ2 = †]
          result  REFUSED (linearOverwrite)
                  an overwrite-drop of a live linear value: the assignment would
                  consume a linear value the program never consumed (§6.8; 3.8:77; §7)

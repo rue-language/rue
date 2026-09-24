@@ -123,65 +123,65 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 8
-  [3]   d4          (D-Array) §6.5
+  [3]   d4          (D-Array) §6.5 (mint #0)
          expr    []
          store   (empty)
-           →     (empty)
-         result  value []
-  [4]   d3        (D-Struct) §6.5
+           →     [ℓ0 = †]
+         result  value []#0
+  [4]   d3        (D-Struct) §6.5 (mint #1)
          expr    S11 { x0: 8, x1: [] }
          store   (empty)
-           →     (empty)
-         result  value S11 { 8, [] }
+           →     [ℓ0 = †, ℓ1 = †]
+         result  value S11 { 8, []#0 }#1
   [5]   d3        (D-Let) §6.7 (mint the binding)
-         expr    let v0 = S11 { 8, [] } at ℓ0
-         store   (empty)
-           →     [ℓ0 = S11 { 8, [] }]
-         result  value S11 { 8, [] }
+         expr    let v0 = S11 { 8, []#0 }#1 at ℓ2
+         store   [ℓ0 = †, ℓ1 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = S11 { 8, []#0 }#1]
+         result  value S11 { 8, []#0 }#1
   [6]   d4          literal §6.3
          expr    0
-         store   [ℓ0 = S11 { 8, [] }]
-           →     [ℓ0 = S11 { 8, [] }]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = S11 { 8, []#0 }#1]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = S11 { 8, []#0 }#1]
          result  value 0
   [7]   d4          (D-Let) §6.7 (mint the binding)
-         expr    let v1 = 0 at ℓ1
-         store   [ℓ0 = S11 { 8, [] }]
-           →     [ℓ0 = S11 { 8, [] }, ℓ1 = 0]
+         expr    let v1 = 0 at ℓ3
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = S11 { 8, []#0 }#1]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = S11 { 8, []#0 }#1, ℓ3 = 0]
          result  value 0
   [8]   d7                (D-Use-Copy) §6.3
          expr    v1
-         store   [ℓ0 = S11 { 8, [] }, ℓ1 = 0]
-           →     [ℓ0 = S11 { 8, [] }, ℓ1 = 0]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = S11 { 8, []#0 }#1, ℓ3 = 0]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = S11 { 8, []#0 }#1, ℓ3 = 0]
          result  value 0
   [9]   d6              (D-Index-Trap) §6.5 — the bounds trap of §6.12
          expr    v0.x1[v1]
-         store   [ℓ0 = S11 { 8, [] }, ℓ1 = 0]
-           →     [ℓ0 = S11 { 8, [] }, ℓ1 = 0]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = S11 { 8, []#0 }#1, ℓ3 = 0]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = S11 { 8, []#0 }#1, ℓ3 = 0]
          result  PANIC (bounds) — a defined trap, §6.12
   [10]  d5            (Dbg) §5.8, the observable output of §6.12 — a premise did not complete
          expr    @dbg(v0.x1[v1])
-         store   [ℓ0 = S11 { 8, [] }, ℓ1 = 0]
-           →     [ℓ0 = S11 { 8, [] }, ℓ1 = 0]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = S11 { 8, []#0 }#1, ℓ3 = 0]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = S11 { 8, []#0 }#1, ℓ3 = 0]
          result  PANIC (bounds) — a defined trap, §6.12
   [11]  d4          (D-Seq) §6.7 — a premise did not complete
          expr    { @dbg(v0.x1[v1]); 0 }
-         store   [ℓ0 = S11 { 8, [] }, ℓ1 = 0]
-           →     [ℓ0 = S11 { 8, [] }, ℓ1 = 0]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = S11 { 8, []#0 }#1, ℓ3 = 0]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = S11 { 8, []#0 }#1, ℓ3 = 0]
          result  PANIC (bounds) — a defined trap, §6.12
   [12]  d3        (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the frame's scope record instead; a trap runs no drop at all)
          expr    { let v1: i32 = 0; { @dbg(v0.x1[v1]); 0 } }
-         store   [ℓ0 = S11 { 8, [] }]
-           →     [ℓ0 = S11 { 8, [] }, ℓ1 = 0]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = S11 { 8, []#0 }#1]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = S11 { 8, []#0 }#1, ℓ3 = 0]
          result  PANIC (bounds) — a defined trap, §6.12
   [13]  d2      (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the frame's scope record instead; a trap runs no drop at all)
          expr    { let v0: S11 = S11 { x0: 8, x1: [] }; { let v1: i32 = 0; { @dbg(v0.x1[v1]); 0 …
          store   (empty)
-           →     [ℓ0 = S11 { 8, [] }, ℓ1 = 0]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = S11 { 8, []#0 }#1, ℓ3 = 0]
          result  PANIC (bounds) — a defined trap, §6.12
   [14]  d0  (Panic-Lift) §6.2 — the callee trapped, so no frame is popped: §6.12 abandons the configuration and `run-all-scope-drops` never runs
          expr    f0()
          store   (empty)
-           →     [ℓ0 = S11 { 8, [] }, ℓ1 = 0]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = S11 { 8, []#0 }#1, ℓ3 = 0]
          result  PANIC (bounds) — a defined trap, §6.12
 
 ────────────────────────────────────────────────────────────────────────────────

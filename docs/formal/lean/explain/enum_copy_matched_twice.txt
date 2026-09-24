@@ -249,210 +249,210 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value ()
-  [2]   d3        (D-Enum-Intro) §6.6
+  [2]   d3        (D-Enum-Intro) §6.6 (mint #0)
          expr    E3.K1
          store   (empty)
-           →     (empty)
-         result  value E3.K1⟨⟩
+           →     [ℓ0 = †]
+         result  value E3.K1⟨⟩#0
   [3]   d3        (D-Let) §6.7 (mint the binding)
-         expr    let v0 = E3.K1⟨⟩ at ℓ0
-         store   (empty)
-           →     [ℓ0 = E3.K1⟨⟩]
-         result  value E3.K1⟨⟩
+         expr    let v0 = E3.K1⟨⟩#0 at ℓ1
+         store   [ℓ0 = †]
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0]
+         result  value E3.K1⟨⟩#0
   [4]   d5            literal §6.3
          expr    4
-         store   [ℓ0 = E3.K1⟨⟩]
-           →     [ℓ0 = E3.K1⟨⟩]
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0]
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0]
          result  value 4
-  [5]   d4          (D-Enum-Intro) §6.6
+  [5]   d4          (D-Enum-Intro) §6.6 (mint #2)
          expr    E4.K0(4)
-         store   [ℓ0 = E3.K1⟨⟩]
-           →     [ℓ0 = E3.K1⟨⟩]
-         result  value E4.K0⟨4⟩
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0]
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †]
+         result  value E4.K0⟨4⟩#2
   [6]   d4          (D-Let) §6.7 (mint the binding)
-         expr    let v1 = E4.K0⟨4⟩ at ℓ1
-         store   [ℓ0 = E3.K1⟨⟩]
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩]
-         result  value E4.K0⟨4⟩
+         expr    let v1 = E4.K0⟨4⟩#2 at ℓ3
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †]
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2]
+         result  value E4.K0⟨4⟩#2
   [7]   d6              (D-Use-Copy) §6.3
          expr    v0
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩]
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩]
-         result  value E3.K1⟨⟩
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2]
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2]
+         result  value E3.K1⟨⟩#0
   [8]   d6              (D-Match) §6.6 (bind the arm's payload)
          expr    bind E3.K1's payload to []
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩]
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩]
-         result  value E3.K1⟨⟩
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2]
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2]
+         result  value E3.K1⟨⟩#0
   [9]   d6              literal §6.3
          expr    2
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩]
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩]
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2]
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2]
          result  value 2
   [10]  d5            (D-EndScope) §6.6 (end the arm)
          expr    endscope([])
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩]
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩]
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2]
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2]
          result  value 2
   [11]  d5            (D-Let) §6.7 (mint the binding)
-         expr    let v2 = 2 at ℓ2
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩]
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2]
+         expr    let v2 = 2 at ℓ4
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2]
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2]
          result  value 2
   [12]  d7                (D-Use-Copy) §6.3
          expr    v0
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2]
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2]
-         result  value E3.K1⟨⟩
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2]
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2]
+         result  value E3.K1⟨⟩#0
   [13]  d7                (D-Match) §6.6 (bind the arm's payload)
          expr    bind E3.K1's payload to []
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2]
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2]
-         result  value E3.K1⟨⟩
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2]
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2]
+         result  value E3.K1⟨⟩#0
   [14]  d7                literal §6.3
          expr    20
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2]
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2]
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2]
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2]
          result  value 20
   [15]  d6              (D-EndScope) §6.6 (end the arm)
          expr    endscope([])
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2]
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2]
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2]
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2]
          result  value 20
   [16]  d6              (D-Let) §6.7 (mint the binding)
-         expr    let v3 = 20 at ℓ3
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2]
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20]
+         expr    let v3 = 20 at ℓ5
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2]
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20]
          result  value 20
   [17]  d8                  (D-Use-Copy) §6.3
          expr    v1
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20]
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20]
-         result  value E4.K0⟨4⟩
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20]
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20]
+         result  value E4.K0⟨4⟩#2
   [18]  d8                  (D-Match) §6.6 (bind the arm's payload)
-         expr    bind E4.K0's payload to [ℓ4]
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20]
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = 4]
-         result  value E4.K0⟨4⟩
+         expr    bind E4.K0's payload to [ℓ6]
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20]
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
+         result  value E4.K0⟨4⟩#2
   [19]  d8                  (D-Use-Copy) §6.3
          expr    v4
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = 4]
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = 4]
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
          result  value 4
   [20]  d7                (D-EndScope) §6.6 (end the arm)
-         expr    endscope([ℓ4])
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = 4]
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired)]
+         expr    endscope([ℓ6])
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
          result  value 4
   [21]  d7                (D-Let) §6.7 (mint the binding)
-         expr    let v4 = 4 at ℓ5
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired)]
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4]
+         expr    let v4 = 4 at ℓ7
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
          result  value 4
   [22]  d9                  (D-Use-Copy) §6.3
          expr    v1
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4]
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4]
-         result  value E4.K0⟨4⟩
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
+         result  value E4.K0⟨4⟩#2
   [23]  d9                  (D-Match) §6.6 (bind the arm's payload)
-         expr    bind E4.K0's payload to [ℓ6]
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4]
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
-         result  value E4.K0⟨4⟩
+         expr    bind E4.K0's payload to [ℓ8]
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
+         result  value E4.K0⟨4⟩#2
   [24]  d10                  (D-Use-Copy) §6.3
          expr    v5
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
          result  value 4
   [25]  d10                  literal §6.3
          expr    100
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
          result  value 100
   [26]  d9                  (D-Arith) §6.4
          expr    (v5 + 100)
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
          result  value 104
   [27]  d8                  (D-EndScope) §6.6 (end the arm)
-         expr    endscope([ℓ6])
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
+         expr    endscope([ℓ8])
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
          result  value 104
   [28]  d8                  (D-Let) §6.7 (mint the binding)
-         expr    let v5 = 104 at ℓ7
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
+         expr    let v5 = 104 at ℓ9
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
          result  value 104
   [29]  d11                  (D-Use-Copy) §6.3
          expr    v2
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
          result  value 2
   [30]  d11                  (D-Use-Copy) §6.3
          expr    v3
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
          result  value 20
   [31]  d10                  (D-Arith) §6.4
          expr    (v2 + v3)
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
          result  value 22
   [32]  d10                  (D-Use-Copy) §6.3
          expr    v4
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
          result  value 4
   [33]  d9                  (D-Arith) §6.4
          expr    ((v2 + v3) + v4)
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
          result  value 26
   [34]  d9                  (D-Use-Copy) §6.3
          expr    v5
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
          result  value 104
   [35]  d8                  (D-Arith) §6.4
          expr    (((v2 + v3) + v4) + v5)
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
          result  value 130
   [36]  d7                (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ7])
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
+         expr    endscope([ℓ9])
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
          result  value 130
   [37]  d6              (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ5])
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = 4…
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = †…
+         expr    endscope([ℓ7])
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
          result  value 130
   [38]  d5            (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ3])
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = 20, ℓ4 = † (retired), ℓ5 = †…
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = † (retired), ℓ4 = † (retired…
+         expr    endscope([ℓ5])
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = 20, ℓ6 =…
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = †, ℓ6 = …
          result  value 130
   [39]  d4          (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ2])
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = 2, ℓ3 = † (retired), ℓ4 = † (retired…
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = † (retired), ℓ3 = † (retired), ℓ4 = …
+         expr    endscope([ℓ4])
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = 2, ℓ5 = †, ℓ6 = …
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = †, ℓ5 = †, ℓ6 = …
          result  value 130
   [40]  d3        (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ1])
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = E4.K0⟨4⟩, ℓ2 = † (retired), ℓ3 = † (retired), ℓ4 = …
-           →     [ℓ0 = E3.K1⟨⟩, ℓ1 = † (retired), ℓ2 = † (retired), ℓ3 = † (retired), ℓ4…
+         expr    endscope([ℓ3])
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = E4.K0⟨4⟩#2, ℓ4 = †, ℓ5 = †, ℓ6 = …
+           →     [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †…
          result  value 130
   [41]  d2      (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ0])
-         store   [ℓ0 = E3.K1⟨⟩, ℓ1 = † (retired), ℓ2 = † (retired), ℓ3 = † (retired), ℓ4…
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = † (retired), ℓ3 = † (retired)…
+         expr    endscope([ℓ1])
+         store   [ℓ0 = †, ℓ1 = E3.K1⟨⟩#0, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = †…
          result  value 130
   [42]  d0  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([])
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = † (retired), ℓ3 = † (retired)…
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = † (retired), ℓ3 = † (retired)…
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = †…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = †…
          result  value 130
 
 ────────────────────────────────────────────────────────────────────────────────

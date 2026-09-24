@@ -895,8 +895,8 @@ theorem RueCore.Config.Stuck.no_step {M : FloatOps} {P : Program} {C C' : Config
 
 **§6's stuck states only** (RUE-2314): a configuration `step` finds stuck
 is stuck on `useAfterMove`, `useAfterDrop`, `unbound` or `typeConfusion` —
-never on `linearLeak`, `linearOverwrite` or `linearDiscard`, the three
-monitors `eval` adds and §6.3, §6.7 and §6.8 do not have.
+never on `linearLeak`, `linearOverwrite`, `linearDiscard` or `ownedUnderCopy`,
+the four monitors `eval` adds and §6.3, §6.5, §6.7 and §6.8 do not have.
 
 ```lean
 theorem RueCore.step_stuck_isStuckState {M : FloatOps} {P : Program} {C : Config}
@@ -1048,7 +1048,7 @@ theorem RueCore.demo_dropMoved_runs (M : FloatOps) :
       Config.init
       (Config.run H { env := [], scope := [] } []
         (Focus.ret (Val.int IntWidth.w32 Sign.signed 0))
-        [Event.drop 1 demoSc, Event.dtor 0 demoSc])
+        [Event.drop 2 (demoSc 0), Event.dtor 0 (demoSc 0)])
 ```
 
 ### `demo_loopInLet_runs`
@@ -1093,13 +1093,13 @@ theorem RueCore.demo_breakDrops_runs (M : FloatOps) :
         Config.init
         (Config.run H { env := [], scope := [] } []
           (Focus.ret (Val.int IntWidth.w32 Sign.signed 3))
-          [Event.drop 0 demoSc, Event.dtor 0 demoSc]) ∧
+          [Event.drop 1 (demoSc 0), Event.dtor 0 (demoSc 0)]) ∧
       run M
           (demoProgram
             ((Expr.letIn false demoS Expr.brk).loop.seq (demoI32 3)))
           100 =
         EvalRes.ok H (Val.int IntWidth.w32 Sign.signed 3)
-          [Event.drop 0 demoSc, Event.dtor 0 demoSc]
+          [Event.drop 1 (demoSc 0), Event.dtor 0 (demoSc 0)]
 ```
 
 ### `demo_loopTurns_runs`
@@ -1116,12 +1116,14 @@ theorem RueCore.demo_loopTurns_runs (M : FloatOps) :
     Steps M (demoProgram demoCountingLoop) Config.init
         (Config.run H { env := [], scope := [] } []
           (Focus.ret (Val.int IntWidth.w32 Sign.signed 2))
-          [Event.drop 1 demoSc, Event.dtor 0 demoSc, Event.drop 2 demoSc,
-            Event.dtor 0 demoSc, Event.drop 3 demoSc, Event.dtor 0 demoSc]) ∧
+          [Event.drop 2 (demoSc 1), Event.dtor 0 (demoSc 1),
+            Event.drop 4 (demoSc 3), Event.dtor 0 (demoSc 3),
+            Event.drop 6 (demoSc 5), Event.dtor 0 (demoSc 5)]) ∧
       run M (demoProgram demoCountingLoop) 200 =
         EvalRes.ok H (Val.int IntWidth.w32 Sign.signed 2)
-          [Event.drop 1 demoSc, Event.dtor 0 demoSc, Event.drop 2 demoSc,
-            Event.dtor 0 demoSc, Event.drop 3 demoSc, Event.dtor 0 demoSc]
+          [Event.drop 2 (demoSc 1), Event.dtor 0 (demoSc 1),
+            Event.drop 4 (demoSc 3), Event.dtor 0 (demoSc 3),
+            Event.drop 6 (demoSc 5), Event.dtor 0 (demoSc 5)]
 ```
 
 ### `demo_returnInLet_runs`
@@ -1142,14 +1144,14 @@ theorem RueCore.demo_returnInLet_runs (M : FloatOps) :
         Config.init
         (Config.run H { env := [], scope := [] } []
           (Focus.ret (Val.int IntWidth.w32 Sign.signed 5))
-          [Event.drop 0 demoSc, Event.dtor 0 demoSc]) ∧
+          [Event.drop 1 (demoSc 0), Event.dtor 0 (demoSc 0)]) ∧
       run M
           (demoProgram
             (Expr.letIn false demoS
               (Expr.letIn false (demoI32 5).ret (demoI32 0))))
           100 =
         EvalRes.ok H (Val.int IntWidth.w32 Sign.signed 5)
-          [Event.drop 0 demoSc, Event.dtor 0 demoSc]
+          [Event.drop 1 (demoSc 0), Event.dtor 0 (demoSc 0)]
 ```
 
 ### `demo_returnInMatch_runs`
@@ -1170,16 +1172,16 @@ theorem RueCore.demo_returnInMatch_runs (M : FloatOps) :
         Config.init
         (Config.run H { env := [], scope := [] } []
           (Focus.ret (Val.int IntWidth.w32 Sign.signed 4))
-          [Event.drop 1 demoSc, Event.dtor 0 demoSc, Event.drop 0 demoSc,
-            Event.dtor 0 demoSc]) ∧
+          [Event.drop 4 (demoSc 2), Event.dtor 0 (demoSc 2),
+            Event.drop 1 (demoSc 0), Event.dtor 0 (demoSc 0)]) ∧
       run M
           (demoProgram
             (Expr.letIn false demoS
               ((Expr.mkEnum 0 0 [demoS]).match [(demoI32 4).ret, demoI32 0])))
           100 =
         EvalRes.ok H (Val.int IntWidth.w32 Sign.signed 4)
-          [Event.drop 1 demoSc, Event.dtor 0 demoSc, Event.drop 0 demoSc,
-            Event.dtor 0 demoSc]
+          [Event.drop 4 (demoSc 2), Event.dtor 0 (demoSc 2),
+            Event.drop 1 (demoSc 0), Event.dtor 0 (demoSc 0)]
 ```
 
 ### `demo_loopIter_drops`
@@ -1195,11 +1197,11 @@ but it is one §6.10's rule covers.
 ```lean
 theorem RueCore.demo_loopIter_drops (M : FloatOps) (e : Expr) :
   Step M (demoProgram e)
-    (Config.run [Cell.full demoSc] { env := [0], scope := [0] }
+    (Config.run [Cell.full (demoSc 0)] { env := [0], scope := [0] }
       [Kont.loop Expr.brk { env := [], scope := [] }] (Focus.ret Val.unit) [])
     (Config.run [Cell.dead] { env := [], scope := [] }
       [Kont.loop Expr.brk { env := [], scope := [] }] (Focus.eval Expr.brk)
-      [Event.drop 0 demoSc, Event.dtor 0 demoSc])
+      [Event.drop 0 (demoSc 0), Event.dtor 0 (demoSc 0)])
 ```
 
 ### `dropContents_events`
@@ -1262,11 +1264,11 @@ theorem adds is that the walk emits exactly that map, in that order.
 
 ```lean
 theorem RueCore.dropContents_struct_events {D : Decls} {s : Nat} {sd : StructDecl}
-  {cs : List Contents} (hd : D.structs[s]? = some sd)
-  (h : ContentsTy D (Contents.struct s cs) (Ty.struct s)) :
-  dropContents D (Contents.struct s cs) =
+  {i : Nat} {cs : List Contents} (hd : D.structs[s]? = some sd)
+  (h : ContentsTy D (Contents.struct s i cs) (Ty.struct s)) :
+  dropContents D (Contents.struct s i cs) =
     Except.ok
-      ((if sd.dtor = true then [Event.dtor s (Contents.struct s cs)]
+      ((if sd.dtor = true then [Event.dtor s (Contents.struct s i cs)]
         else []) ++
         (List.map (dropEvents D) cs).flatten)
 ```
@@ -1285,9 +1287,10 @@ out by a `match` binding left the enum place `⊘`, which `dropEvents .hole = []
 skips.
 
 ```lean
-theorem RueCore.dropContents_enum_events {D : Decls} {e k : Nat} {cs : List Contents}
-  (h : ContentsTy D (Contents.enum e k cs) (Ty.enum e)) :
-  dropContents D (Contents.enum e k cs) =
+theorem RueCore.dropContents_enum_events {D : Decls} {e k i : Nat}
+  {cs : List Contents}
+  (h : ContentsTy D (Contents.enum e k i cs) (Ty.enum e)) :
+  dropContents D (Contents.enum e k i cs) =
     Except.ok (List.map (dropEvents D) cs).flatten
 ```
 
@@ -1306,9 +1309,10 @@ form RUE-2237's "dropped exactly once" quantifies over at an array, and it is
 theorem.
 
 ```lean
-theorem RueCore.dropContents_array_events {D : Decls} {T : Ty} {n : Nat}
-  {cs : List Contents} (h : ContentsTy D (Contents.array T cs) (T.array n)) :
-  dropContents D (Contents.array T cs) =
+theorem RueCore.dropContents_array_events {D : Decls} {T : Ty} {n i : Nat}
+  {cs : List Contents}
+  (h : ContentsTy D (Contents.array T i cs) (T.array n)) :
+  dropContents D (Contents.array T i cs) =
     Except.ok (List.map (dropEvents D) cs).flatten
 ```
 
@@ -1322,13 +1326,13 @@ fields' drops emit, in declaration order. This is the induction step;
 `dropContents_struct_events` is the closed form.
 
 ```lean
-theorem RueCore.dropContents_order {D : Decls} {s : Nat} {sd : StructDecl}
+theorem RueCore.dropContents_order {D : Decls} {s i : Nat} {sd : StructDecl}
   {cs : List Contents} {evs : List Event} (hd : D.structs[s]? = some sd)
-  (h : dropContents D (Contents.struct s cs) = Except.ok evs) :
+  (h : dropContents D (Contents.struct s i cs) = Except.ok evs) :
   ∃ fevs,
     dropContentsList D cs = Except.ok fevs ∧
       evs =
-        (if sd.dtor = true then [Event.dtor s (Contents.struct s cs)]
+        (if sd.dtor = true then [Event.dtor s (Contents.struct s i cs)]
           else []) ++
           fevs
 ```
@@ -2297,6 +2301,117 @@ know the safety theorems apply to a program.
 ```lean
 theorem RueCore.checkProgram_sound {P : Program} (h : checkProgram P = true) :
   ProgramTyped P
+```
+
+### `eval_conserves`
+
+*theorem* · module `RueCore.Trace`
+
+**The conservation law** (§7's no-double-free, the invariant half): every
+evaluation, of every expression from every copy-closed store, at every fuel,
+keeps `Cons` — no identity is ever duplicated, only moved, consumed, or
+minted fresh. By fuel induction over `eval`, one case per form, each closed by
+its ledger above. It reads no typing derivation: copy closure is what the
+machine maintains itself, and `DtorNotCopy` (inside `TraceMeasure`, for
+`dtorIds`) is the one fact it needs about the declarations.
+
+```lean
+theorem RueCore.eval_conserves (M : FloatOps) {P : Program} {F : Event → List Nat}
+  (hF : TraceMeasure P.decls F) (fuel : Nat) (H : Store) (φ : Frame)
+  (e : Expr) : StoreCC P.decls H → Cons P.decls F H [] (eval M fuel P H φ e)
+```
+
+### `freed_once`
+
+*theorem* · module `RueCore.Trace`
+
+**No value is freed twice, on any run** (§6.11): each owned identity
+occurs at most once among the trees the trace's `drop` and `dropTemp` markers
+free. Stated for every program with well-formed declarations; typing is not
+needed, because the machine refuses the one shape — an owned value hidden
+under a `Copy` node — that would let a copy duplicate it (`Contents.copyClosed`).
+
+```lean
+theorem RueCore.freed_once (M : FloatOps) (P : Program) (fuel a : Nat) :
+  List.count a (freedIds P.decls (run M P fuel).trace) ≤ 1
+```
+
+### `dtor_once`
+
+*theorem* · module `RueCore.Trace`
+
+**No destructor runs twice on one value, on any run** (§6.11, `3.9:28`):
+each identity occurs at most once among the values the trace's `dtor` events
+ran on. It needs only that a destructor-bearing struct is not `Copy`
+(`3.9:31`), which `WfDecls` gives (`WfDecls.dtorNotCopy`).
+
+```lean
+theorem RueCore.dtor_once (M : FloatOps) {P : Program} (hdt : DtorNotCopy P.decls)
+  (fuel a : Nat) : List.count a (dtorIds (run M P fuel).trace) ≤ 1
+```
+
+### `no_double_free`
+
+*theorem* · module `RueCore.Trace`
+
+**No double free** (§7): a well-typed program's run is never refused, so
+its trace is the whole run's (`no_violation`), and in that trace every value
+identity is freed at most once and has its destructor run at most once. The
+first conjunct is what makes the other two a statement about the program
+rather than about a refusal: a refused run carries no trace at all.
+
+§7 argues the bullet from three mechanisms, and each is a case of the
+conservation law `eval_conserves` proves: a move leaves `⊘` behind (§6.3), so
+the old owner no longer owns what it handed on; §6.11's walk skips every `⊘`
+("this single skip is what makes double-free impossible"), so a moved-out
+position is never dropped through the old owner; and a `match` binding takes
+the payload whole into the arm's cells, so the scrutinee's owner is gone.
+The declared-linear destructure (§6.3) consumes its place the same way: the
+leaf is handed on, the residue is dropped once, and the place becomes `⊘`.
+
+```lean
+theorem RueCore.no_double_free (M : FloatModel) {P : Program} (h : ProgramTyped P)
+  (fuel : Nat) :
+  (∀ (w : Violation), run M.toFloatOps P fuel ≠ EvalRes.stuck w) ∧
+    (∀ (a : Nat),
+        List.count a (freedIds P.decls (run M.toFloatOps P fuel).trace) ≤ 1) ∧
+      ∀ (a : Nat), List.count a (dtorIds (run M.toFloatOps P fuel).trace) ≤ 1
+```
+
+### `dupProgram_step_double_free`
+
+*theorem* · module `RueCore.Trace`
+
+**§6's relation, with no monitor, frees one identity twice**: `S1 #0` is
+destroyed through `p.x0` and again through `q.x0`, so `dtorIds` names `0`
+twice.
+
+```lean
+theorem RueCore.dupProgram_step_double_free (M : FloatOps) :
+  ∃ H,
+    Steps M dupProgram Config.init
+        (Config.run H { env := [], scope := [] } []
+          (Focus.ret (Val.int IntWidth.w64 Sign.signed 0))
+          [Event.drop 2
+              (Contents.struct 1 0 [Contents.int IntWidth.w64 Sign.signed 1]),
+            Event.dtor 1
+              (Contents.struct 1 0 [Contents.int IntWidth.w64 Sign.signed 1]),
+            Event.drop 3
+              (Contents.struct 1 0 [Contents.int IntWidth.w64 Sign.signed 1]),
+            Event.dtor 1
+              (Contents.struct 1 0
+                [Contents.int IntWidth.w64 Sign.signed 1])]) ∧
+      dtorIds
+          [Event.drop 2
+              (Contents.struct 1 0 [Contents.int IntWidth.w64 Sign.signed 1]),
+            Event.dtor 1
+              (Contents.struct 1 0 [Contents.int IntWidth.w64 Sign.signed 1]),
+            Event.drop 3
+              (Contents.struct 1 0 [Contents.int IntWidth.w64 Sign.signed 1]),
+            Event.dtor 1
+              (Contents.struct 1 0
+                [Contents.int IntWidth.w64 Sign.signed 1])] =
+        [0, 0]
 ```
 
 ### `Examples.dynReadAffine_refused`
@@ -4532,8 +4647,8 @@ Inversion of value typing at a struct type (helper).
 ```lean
 theorem RueCore.HasTy.struct_inv {D : Decls} {v : Val} {s : Nat}
   (h : HasTy D v (Ty.struct s)) :
-  ∃ sd vs,
-    v = Val.struct s vs ∧ D.structs[s]? = some sd ∧ HasTys D vs sd.fields
+  ∃ sd i vs,
+    v = Val.struct s i vs ∧ D.structs[s]? = some sd ∧ HasTys D vs sd.fields
 ```
 
 ### `HasTy.enum_inv`
@@ -4547,8 +4662,8 @@ half progress at a `match` needs (helper).
 ```lean
 theorem RueCore.HasTy.enum_inv {D : Decls} {v : Val} {e : Nat}
   (h : HasTy D v (Ty.enum e)) :
-  ∃ k ed Ts vs,
-    v = Val.enum e k vs ∧
+  ∃ k ed Ts i vs,
+    v = Val.enum e k i vs ∧
       D.enums[e]? = some ed ∧ ed.variants[k]? = some Ts ∧ HasTys D vs Ts
 ```
 
@@ -4561,7 +4676,7 @@ Inversion of value typing at an array type (helper).
 ```lean
 theorem RueCore.HasTy.array_inv {D : Decls} {v : Val} {T : Ty} {n : Nat}
   (h : HasTy D v (T.array n)) :
-  ∃ vs, v = Val.array T vs ∧ HasTys D vs (List.replicate n T)
+  ∃ i vs, v = Val.array T i vs ∧ HasTys D vs (List.replicate n T)
 ```
 
 ### `ContentsTys.length_eq`
@@ -4583,8 +4698,8 @@ Inversion of contents typing at a struct type, for a contents that is not
 a hole (helper).
 
 ```lean
-theorem RueCore.ContentsTy.struct_inv {D : Decls} {s : Nat} {cs : List Contents}
-  {T : Ty} (h : ContentsTy D (Contents.struct s cs) T) :
+theorem RueCore.ContentsTy.struct_inv {D : Decls} {s i : Nat} {cs : List Contents}
+  {T : Ty} (h : ContentsTy D (Contents.struct s i cs) T) :
   ∃ sd, T = Ty.struct s ∧ D.structs[s]? = some sd ∧ ContentsTys D cs sd.fields
 ```
 
@@ -4596,8 +4711,9 @@ Inversion of contents typing at an array type, for a contents that is not
 a hole (helper).
 
 ```lean
-theorem RueCore.ContentsTy.array_inv {D : Decls} {T : Ty} {cs : List Contents}
-  {T₀ : Ty} (h : ContentsTy D (Contents.array T cs) T₀) :
+theorem RueCore.ContentsTy.array_inv {D : Decls} {T : Ty} {i : Nat}
+  {cs : List Contents} {T₀ : Ty}
+  (h : ContentsTy D (Contents.array T i cs) T₀) :
   ∃ n, T₀ = T.array n ∧ ContentsTys D cs (List.replicate n T)
 ```
 
@@ -4612,7 +4728,7 @@ against `cs.length` (helper).
 ```lean
 theorem RueCore.ContentsTy.array_shape {D : Decls} {c : Contents} {T : Ty} {n : Nat}
   (h : ContentsTy D c (T.array n)) (hf : c.holeFree = true) :
-  ∃ cs, c = Contents.array T cs ∧ ContentsTys D cs (List.replicate n T)
+  ∃ i cs, c = Contents.array T i cs ∧ ContentsTys D cs (List.replicate n T)
 ```
 
 ### `ContentsTys.index`
@@ -4767,6 +4883,115 @@ theorem RueCore.ContentsTy.mult_eq {D : Decls} {c : Contents} {T : Ty}
   Contents.mult D c = Ty.mult D T
 ```
 
+### `Mult.eq_copy_of_rank`
+
+*theorem* · module `RueCore.Soundness`
+
+A class of rank `0` is `Copy` (helper).
+
+```lean
+theorem RueCore.Mult.eq_copy_of_rank {m : Mult} (h : m.rank = 0) : m = Mult.copy
+```
+
+### `StructDecl.Wf.field_copy`
+
+*theorem* · module `RueCore.Soundness`
+
+**A `Copy` struct's fields are `Copy`** (`3.8:18`): the class is the
+attribute's lift of the field join, only `@copy` lifts to `Copy`, and a
+well-formed `@copy` declaration's join is already `Copy` (helper).
+
+```lean
+theorem RueCore.StructDecl.Wf.field_copy {D : Decls} {sd : StructDecl}
+  (h : StructDecl.Wf D sd) (hcls : sd.cls = Mult.copy) (T : Ty) :
+  T ∈ sd.fields → Ty.mult D T = Mult.copy
+```
+
+### `EnumDecl.Wf.payload_copy`
+
+*theorem* · module `RueCore.Soundness`
+
+**A `Copy` enum's payloads are `Copy`** (`6.3:19`): the class is the join
+over every payload component of every variant (helper).
+
+```lean
+theorem RueCore.EnumDecl.Wf.payload_copy {D : Decls} {ed : EnumDecl}
+  (h : EnumDecl.Wf D ed) (hcls : ed.cls = Mult.copy) (Ts : List Ty) :
+  Ts ∈ ed.variants → ∀ (T : Ty), T ∈ Ts → Ty.mult D T = Mult.copy
+```
+
+### `Ty.array_copy_elem`
+
+*theorem* · module `RueCore.Soundness`
+
+**A `Copy` array's element type is `Copy`** (§3's array lift) (helper).
+
+```lean
+theorem RueCore.Ty.array_copy_elem {D : Decls} {T : Ty} {n : Nat}
+  (h : Ty.mult D (T.array n) = Mult.copy) : Ty.mult D T = Mult.copy
+```
+
+### `ContentsTy.allCopy`
+
+*theorem* · module `RueCore.Soundness`
+
+Well-typed contents at a `Copy` type is `Copy` all the way down (helper).
+
+```lean
+theorem RueCore.ContentsTy.allCopy {D : Decls} {c : Contents} {T : Ty}
+  (hwf : WfDecls D) (h : ContentsTy D c T) (hc : Ty.mult D T = Mult.copy) :
+  Contents.allCopy D c = true
+```
+
+### `ContentsTys.allCopyList`
+
+*theorem* · module `RueCore.Soundness`
+
+The same over a field list (helper).
+
+```lean
+theorem RueCore.ContentsTys.allCopyList {D : Decls} {cs : List Contents}
+  {Ts : List Ty} (hwf : WfDecls D) (h : ContentsTys D cs Ts)
+  (hc : ∀ (T : Ty), T ∈ Ts → Ty.mult D T = Mult.copy) :
+  Contents.allCopyList D cs = true
+```
+
+### `ContentsTy.copyClosed`
+
+*theorem* · module `RueCore.Soundness`
+
+**Well-typed contents is copy-closed**, so the machine's copy-closure
+monitor (`Contents.copyClosed`) lets every checked program's aggregates through
+(helper).
+
+```lean
+theorem RueCore.ContentsTy.copyClosed {D : Decls} {c : Contents} {T : Ty}
+  (hwf : WfDecls D) (h : ContentsTy D c T) : Contents.copyClosed D c = true
+```
+
+### `ContentsTys.copyClosedList`
+
+*theorem* · module `RueCore.Soundness`
+
+The same over a field list (helper).
+
+```lean
+theorem RueCore.ContentsTys.copyClosedList {D : Decls} {cs : List Contents}
+  {Ts : List Ty} (hwf : WfDecls D) (h : ContentsTys D cs Ts) :
+  Contents.copyClosedList D cs = true
+```
+
+### `HasTy.copyClosed`
+
+*theorem* · module `RueCore.Soundness`
+
+A well-typed value is copy-closed (helper).
+
+```lean
+theorem RueCore.HasTy.copyClosed {D : Decls} {v : Val} {T : Ty} (hwf : WfDecls D)
+  (h : HasTy D v T) : Contents.copyClosed D (Contents.ofVal v) = true
+```
+
 ### `ContentsTys.residualLinearList_false`
 
 *theorem* · module `RueCore.Soundness`
@@ -4912,7 +5137,7 @@ struct, and every slot of it is `owned` (helper).
 theorem RueCore.ContentsMatches.owned_struct {D : Decls} {c : Contents} {s : Nat}
   {sd : StructDecl} (hd : D.structs[s]? = some sd)
   (h : ContentsMatches D c OwnSt.owned (Ty.struct s)) :
-  ∃ cs, c = Contents.struct s cs ∧ ContentsMatchesList D cs [] sd.fields
+  ∃ i cs, c = Contents.struct s i cs ∧ ContentsMatchesList D cs [] sd.fields
 ```
 
 ### `ContentsMatches.owned_array`
@@ -4925,8 +5150,9 @@ and every element of it is `owned` (helper).
 ```lean
 theorem RueCore.ContentsMatches.owned_array {D : Decls} {c : Contents} {T : Ty}
   {n : Nat} (h : ContentsMatches D c OwnSt.owned (T.array n)) :
-  ∃ cs,
-    c = Contents.array T cs ∧ ContentsMatchesList D cs [] (List.replicate n T)
+  ∃ i cs,
+    c = Contents.array T i cs ∧
+      ContentsMatchesList D cs [] (List.replicate n T)
 ```
 
 ### `Ty.fieldAt_inv`
@@ -5905,6 +6131,23 @@ theorem RueCore.EvalOk.weaken {D : Decls} {T R : Ty} {o₁ o' : Option Ctx}
   (h : EvalOk D T R o₁ B φ H r) : EvalOk D T R o' B φ H r
 ```
 
+### `introVal_ok`
+
+*theorem* · module `RueCore.Soundness`
+
+**Aggregate introduction keeps the promise** ((D-Struct), (D-Array) §6.5,
+(D-Enum-Intro) §6.6, the repeat form): a well-typed aggregate passes the
+copy-closure monitor (`HasTy.copyClosed`), and the identity it mints reserves
+one `†` slot above the store, which no binding names — so the frame still
+matches and nothing it names was touched (helper).
+
+```lean
+theorem RueCore.introVal_ok {D : Decls} {T R : Ty} {Γ : Ctx} {B : List Ctx}
+  {φ : Frame} {H₀ H : Store} {mk : Nat → Val} (hwf : WfDecls D)
+  (hty : HasTy D (mk (List.length H)) T) (hfm : FrameMatches D Γ φ H)
+  (hu : Untouched φ.env H₀ H) : EvalOk D T R (some Γ) B φ H₀ (introVal D H mk)
+```
+
 ### `Matches.length_eq`
 
 *theorem* · module `RueCore.Soundness`
@@ -6296,6 +6539,1295 @@ is accessible outright (helper).
 ```lean
 theorem RueCore.Decls.acc_of_empty {D : Decls} {d : DeclId} (h : D.byValue d = []) :
   Acc (fun a b => D.Names b a) d
+```
+
+### `dtorIds_append`
+
+*theorem* · module `RueCore.Trace`
+
+`dtorIds` distributes over concatenation (helper).
+
+```lean
+theorem RueCore.dtorIds_append (l₁ l₂ : List Event) :
+  dtorIds (l₁ ++ l₂) = dtorIds l₁ ++ dtorIds l₂
+```
+
+### `dtorIds_nil`
+
+*theorem* · module `RueCore.Trace`
+
+`dtorIds` of the empty trace (helper).
+
+```lean
+theorem RueCore.dtorIds_nil : dtorIds [] = []
+```
+
+### `Contents.own_of_mult`
+
+*theorem* · module `RueCore.Trace`
+
+A `Copy` node owns nothing (helper).
+
+```lean
+theorem RueCore.Contents.own_of_mult {D : Decls} {c : Contents}
+  (h : Contents.mult D c = Mult.copy) : Contents.own D c = []
+```
+
+### `Contents.allCopy_mult`
+
+*theorem* · module `RueCore.Trace`
+
+An all-`Copy` contents is `Copy` at its root (helper).
+
+```lean
+theorem RueCore.Contents.allCopy_mult {D : Decls} {c : Contents}
+  (h : Contents.allCopy D c = true) : Contents.mult D c = Mult.copy
+```
+
+### `Contents.allCopy_own`
+
+*theorem* · module `RueCore.Trace`
+
+An all-`Copy` contents owns nothing (helper).
+
+```lean
+theorem RueCore.Contents.allCopy_own {D : Decls} {c : Contents}
+  (h : Contents.allCopy D c = true) : Contents.own D c = []
+```
+
+### `Contents.allCopyList_own`
+
+*theorem* · module `RueCore.Trace`
+
+An all-`Copy` list owns nothing (helper).
+
+```lean
+theorem RueCore.Contents.allCopyList_own {D : Decls} {cs : List Contents} :
+  Contents.allCopyList D cs = true → Contents.ownList D cs = []
+```
+
+### `Contents.copyClosed_allCopy`
+
+*theorem* · module `RueCore.Trace`
+
+A copy-closed node that is `Copy` is `Copy` all the way down (helper).
+
+```lean
+theorem RueCore.Contents.copyClosed_allCopy {D : Decls} {c : Contents}
+  (hc : Contents.copyClosed D c = true) (hm : Contents.mult D c = Mult.copy) :
+  Contents.allCopy D c = true
+```
+
+### `Contents.allCopy_copyClosed`
+
+*theorem* · module `RueCore.Trace`
+
+All-`Copy` contents is copy-closed (helper).
+
+```lean
+theorem RueCore.Contents.allCopy_copyClosed {D : Decls} {c : Contents} :
+  Contents.allCopy D c = true → Contents.copyClosed D c = true
+```
+
+### `Contents.allCopyList_copyClosedList`
+
+*theorem* · module `RueCore.Trace`
+
+The same over a list (helper).
+
+```lean
+theorem RueCore.Contents.allCopyList_copyClosedList {D : Decls} {cs : List Contents} :
+  Contents.allCopyList D cs = true → Contents.copyClosedList D cs = true
+```
+
+### `Contents.copyClosedList_index`
+
+*theorem* · module `RueCore.Trace`
+
+A member of a copy-closed list is copy-closed (helper).
+
+```lean
+theorem RueCore.Contents.copyClosedList_index {D : Decls} {cs : List Contents}
+  {f : Nat} {c : Contents} :
+  Contents.copyClosedList D cs = true →
+    cs[f]? = some c → Contents.copyClosed D c = true
+```
+
+### `Contents.allCopyList_index`
+
+*theorem* · module `RueCore.Trace`
+
+A member of an all-`Copy` list is all-`Copy` (helper).
+
+```lean
+theorem RueCore.Contents.allCopyList_index {D : Decls} {cs : List Contents} {f : Nat}
+  {c : Contents} :
+  Contents.allCopyList D cs = true →
+    cs[f]? = some c → Contents.allCopy D c = true
+```
+
+### `Contents.copyClosedList_set`
+
+*theorem* · module `RueCore.Trace`
+
+Writing a copy-closed member keeps a copy-closed list so (helper).
+
+```lean
+theorem RueCore.Contents.copyClosedList_set {D : Decls} {cs : List Contents} (f : Nat)
+  {c : Contents} :
+  Contents.copyClosedList D cs = true →
+    Contents.copyClosed D c = true →
+      Contents.copyClosedList D (cs.set f c) = true
+```
+
+### `Contents.allCopyList_set`
+
+*theorem* · module `RueCore.Trace`
+
+Writing an all-`Copy` member keeps an all-`Copy` list so (helper).
+
+```lean
+theorem RueCore.Contents.allCopyList_set {D : Decls} {cs : List Contents} (f : Nat)
+  {c : Contents} :
+  Contents.allCopyList D cs = true →
+    Contents.allCopy D c = true → Contents.allCopyList D (cs.set f c) = true
+```
+
+### `Contents.ownList_set_count`
+
+*theorem* · module `RueCore.Trace`
+
+**Replacing one member, counted**: the list's owned identities lose the
+old member's and gain the new one's (helper).
+
+```lean
+theorem RueCore.Contents.ownList_set_count {D : Decls} (a : Nat) {cs : List Contents}
+  {f : Nat} {c : Contents} (c' : Contents) :
+  cs[f]? = some c →
+    List.count a (Contents.ownList D (cs.set f c')) +
+        List.count a (Contents.own D c) =
+      List.count a (Contents.ownList D cs) + List.count a (Contents.own D c')
+```
+
+### `Contents.ofVal_toVal`
+
+*theorem* · module `RueCore.Trace`
+
+A value's stored image read back is the value (helper).
+
+```lean
+theorem RueCore.Contents.ofVal_toVal {c : Contents} {v : Val} :
+  c.toVal = some v → Contents.ofVal v = c
+```
+
+### `Contents.ofVals_toVals`
+
+*theorem* · module `RueCore.Trace`
+
+The same over a list (helper).
+
+```lean
+theorem RueCore.Contents.ofVals_toVals {cs : List Contents} {vs : List Val} :
+  Contents.toVals cs = some vs → Contents.ofVals vs = cs
+```
+
+### `Contents.readAt_allCopy`
+
+*theorem* · module `RueCore.Trace`
+
+A position read out of an all-`Copy` contents is all-`Copy` (helper).
+
+```lean
+theorem RueCore.Contents.readAt_allCopy {D : Decls} (π : List Nat)
+  {c sub : Contents} :
+  Contents.allCopy D c = true →
+    c.readAt π = Except.ok sub → Contents.allCopy D sub = true
+```
+
+### `Contents.readAt_copyClosed`
+
+*theorem* · module `RueCore.Trace`
+
+A position read out of a copy-closed contents is copy-closed (helper).
+
+```lean
+theorem RueCore.Contents.readAt_copyClosed {D : Decls} (π : List Nat)
+  {c sub : Contents} :
+  Contents.copyClosed D c = true →
+    c.readAt π = Except.ok sub → Contents.copyClosed D sub = true
+```
+
+### `Contents.writeAt_allCopy`
+
+*theorem* · module `RueCore.Trace`
+
+Writing all-`Copy` contents into all-`Copy` contents keeps it so (helper).
+
+```lean
+theorem RueCore.Contents.writeAt_allCopy {D : Decls} (π : List Nat)
+  {c new c' : Contents} :
+  Contents.allCopy D c = true →
+    Contents.allCopy D new = true →
+      c.writeAt π new = some c' → Contents.allCopy D c' = true
+```
+
+### `Contents.writeAt_copyClosed`
+
+*theorem* · module `RueCore.Trace`
+
+**A `⊘` write keeps copy closure** (§6.3's `H[ℓ@π ↦ ⊘]`): `⊘` is
+all-`Copy`, so it may sit under any node (helper).
+
+```lean
+theorem RueCore.Contents.writeAt_copyClosed {D : Decls} (π : List Nat)
+  {c new c' : Contents} :
+  Contents.copyClosed D c = true →
+    Contents.allCopy D new = true →
+      c.writeAt π new = some c' → Contents.copyClosed D c' = true
+```
+
+### `Contents.writeAt_own`
+
+*theorem* · module `RueCore.Trace`
+
+**A write at a path, counted**: the contents after the write owns what it
+owned before, less what sat at the path, plus what was written. This is §6.3's
+move (write `⊘`, hand the old sub-tree on) and §6.8's store (drop the old
+sub-tree, write the new value) read as a ledger. Below a `Copy` node both
+sides own nothing there, which is where copy closure is needed (helper).
+
+```lean
+theorem RueCore.Contents.writeAt_own {D : Decls} (a : Nat) (π : List Nat)
+  {c sub new c' : Contents} :
+  Contents.copyClosed D c = true →
+    c.readAt π = Except.ok sub →
+      c.writeAt π new = some c' →
+        List.count a (Contents.own D c') + List.count a (Contents.own D sub) ≤
+          List.count a (Contents.own D c) + List.count a (Contents.own D new)
+```
+
+### `storeOwn_append`
+
+*theorem* · module `RueCore.Trace`
+
+Growing the store appends what the new cells own (helper).
+
+```lean
+theorem RueCore.storeOwn_append (D : Decls) (H ext : Store) :
+  storeOwn D (H ++ ext) = storeOwn D H ++ storeOwn D ext
+```
+
+### `storeOwn_set_count`
+
+*theorem* · module `RueCore.Trace`
+
+**Replacing one cell, counted** (helper).
+
+```lean
+theorem RueCore.storeOwn_set_count (D : Decls) (a : Nat) {H : Store} {ℓ : Nat}
+  {x : Cell} (y : Cell) :
+  H[ℓ]? = some x →
+    List.count a (storeOwn D (List.set H ℓ y)) + List.count a (Cell.own D x) =
+      List.count a (storeOwn D H) + List.count a (Cell.own D y)
+```
+
+### `StoreCC.append`
+
+*theorem* · module `RueCore.Trace`
+
+Growing the store by a copy-closed cell keeps it copy-closed (helper).
+
+```lean
+theorem RueCore.StoreCC.append {D : Decls} {H ext : Store} (h : StoreCC D H)
+  (he : StoreCC D ext) : StoreCC D (H ++ ext)
+```
+
+### `StoreCC.single`
+
+*theorem* · module `RueCore.Trace`
+
+A store of one copy-closed cell is copy-closed (helper).
+
+```lean
+theorem RueCore.StoreCC.single {D : Decls} {c : Contents}
+  (h : Contents.copyClosed D c = true) : StoreCC D [Cell.full c]
+```
+
+### `StoreCC.dead`
+
+*theorem* · module `RueCore.Trace`
+
+A `†` cell is copy-closed (helper).
+
+```lean
+theorem RueCore.StoreCC.dead {D : Decls} : StoreCC D [Cell.dead]
+```
+
+### `StoreCC.set`
+
+*theorem* · module `RueCore.Trace`
+
+Writing a copy-closed cell keeps the store copy-closed (helper).
+
+```lean
+theorem RueCore.StoreCC.set {D : Decls} {H : Store} {ℓ : Nat} {c : Contents}
+  (h : StoreCC D H) (hc : Contents.copyClosed D c = true) :
+  StoreCC D (List.set H ℓ (Cell.full c))
+```
+
+### `StoreCC.set_dead`
+
+*theorem* · module `RueCore.Trace`
+
+Retiring a cell keeps the store copy-closed (helper).
+
+```lean
+theorem RueCore.StoreCC.set_dead {D : Decls} {H : Store} {ℓ : Nat} (h : StoreCC D H) :
+  StoreCC D (List.set H ℓ Cell.dead)
+```
+
+### `WfDecls.dtorNotCopy`
+
+*theorem* · module `RueCore.Trace`
+
+`WfDecls` gives it: only `@copy` lifts to `Copy`, and a `@copy`
+declaration declares no destructor (`3.8:18`, `3.9:31`) (helper).
+
+```lean
+theorem RueCore.WfDecls.dtorNotCopy {D : Decls} (h : WfDecls D) : DtorNotCopy D
+```
+
+### `dropContents_freed`
+
+*theorem* · module `RueCore.Trace`
+
+§6.11's walk emits only destructor events, so it frees nothing a marker
+would count (helper).
+
+```lean
+theorem RueCore.dropContents_freed {D : Decls} {c : Contents} {evs : List Event} :
+  dropContents D c = Except.ok evs → List.flatMap (Event.freed D) evs = []
+```
+
+### `dropContentsList_freed`
+
+*theorem* · module `RueCore.Trace`
+
+The same over a list (helper).
+
+```lean
+theorem RueCore.dropContentsList_freed {D : Decls} {cs : List Contents}
+  {evs : List Event} :
+  dropContentsList D cs = Except.ok evs →
+    List.flatMap (Event.freed D) evs = []
+```
+
+### `dropContents_allCopy_dtor`
+
+*theorem* · module `RueCore.Trace`
+
+An all-`Copy` contents runs no destructor (`3.9:31`) (helper).
+
+```lean
+theorem RueCore.dropContents_allCopy_dtor {D : Decls} (hdt : DtorNotCopy D)
+  {c : Contents} {evs : List Event} :
+  Contents.allCopy D c = true →
+    dropContents D c = Except.ok evs → dtorIds evs = []
+```
+
+### `dropContentsList_allCopy_dtor`
+
+*theorem* · module `RueCore.Trace`
+
+The same over a list (helper).
+
+```lean
+theorem RueCore.dropContentsList_allCopy_dtor {D : Decls} (hdt : DtorNotCopy D)
+  {cs : List Contents} {evs : List Event} :
+  Contents.allCopyList D cs = true →
+    dropContentsList D cs = Except.ok evs → dtorIds evs = []
+```
+
+### `dropContents_dtor`
+
+*theorem* · module `RueCore.Trace`
+
+**§6.11's walk runs each owned node's destructor at most once**: the
+identities its destructor events name are, as a multiset, among the ones the
+dropped contents owns. A `⊘` owns nothing and emits nothing (`3.8:60`'s skip);
+a `Copy` node emits nothing either, because a destructor-bearing struct is
+never `Copy` (helper).
+
+```lean
+theorem RueCore.dropContents_dtor {D : Decls} (hdt : DtorNotCopy D) (a : Nat)
+  {c : Contents} {evs : List Event} :
+  Contents.copyClosed D c = true →
+    dropContents D c = Except.ok evs →
+      List.count a (dtorIds evs) ≤ List.count a (Contents.own D c)
+```
+
+### `dropContentsList_dtor`
+
+*theorem* · module `RueCore.Trace`
+
+The same over a list (helper).
+
+```lean
+theorem RueCore.dropContentsList_dtor {D : Decls} (hdt : DtorNotCopy D) (a : Nat)
+  {cs : List Contents} {evs : List Event} :
+  Contents.copyClosedList D cs = true →
+    dropContentsList D cs = Except.ok evs →
+      List.count a (dtorIds evs) ≤ List.count a (Contents.ownList D cs)
+```
+
+### `freed_measure`
+
+*theorem* · module `RueCore.Trace`
+
+**`freedIds` is countable**: a marker frees exactly the tree it names, and
+the walk under it names nothing more (helper).
+
+```lean
+theorem RueCore.freed_measure (D : Decls) : TraceMeasure D (Event.freed D)
+```
+
+### `dtor_measure`
+
+*theorem* · module `RueCore.Trace`
+
+**`dtorIds` is countable**: a destructor runs on an owned node of the
+dropped tree, once per node (helper).
+
+```lean
+theorem RueCore.dtor_measure {D : Decls} (hdt : DtorNotCopy D) :
+  TraceMeasure D Event.dtorIds
+```
+
+### `dropCell_measure`
+
+*theorem* · module `RueCore.Trace`
+
+A binding's drop (`dropCell`, §6.11), counted: nothing for a `Copy` cell,
+the marker and the walk otherwise (helper).
+
+```lean
+theorem RueCore.dropCell_measure {D : Decls} {F : Event → List Nat}
+  (hF : TraceMeasure D F) {ℓ : Nat} {c : Contents} {evs : List Event}
+  (hc : Contents.copyClosed D c = true) (h : dropCell D ℓ c = Except.ok evs) :
+  IdLe (List.flatMap F evs) (Contents.own D c)
+```
+
+### `dropRetire_measure`
+
+*theorem* · module `RueCore.Trace`
+
+`drop-retire` (§6.1), counted: the cell's owned identities leave the store
+and at most those reach the trace (helper).
+
+```lean
+theorem RueCore.dropRetire_measure {D : Decls} {F : Event → List Nat}
+  (hF : TraceMeasure D F) {H H' : Store} {ℓ : Nat} {evs : List Event}
+  (hcc : StoreCC D H) (h : dropRetire D H ℓ = Except.ok (H', evs)) :
+  (∀ (a : Nat),
+      List.count a (storeOwn D H') + List.count a (List.flatMap F evs) ≤
+        List.count a (storeOwn D H)) ∧
+    List.length H' = List.length H ∧ StoreCC D H'
+```
+
+### `unwindLocs_measure`
+
+*theorem* · module `RueCore.Trace`
+
+`run-scope-drops` (§6.1), counted (helper).
+
+```lean
+theorem RueCore.unwindLocs_measure {D : Decls} {F : Event → List Nat}
+  (hF : TraceMeasure D F) {H H' : Store} {ls : List Nat} {evs : List Event} :
+  StoreCC D H →
+    unwindLocs D H ls = Except.ok (H', evs) →
+      (∀ (a : Nat),
+          List.count a (storeOwn D H') + List.count a (List.flatMap F evs) ≤
+            List.count a (storeOwn D H)) ∧
+        List.length H' = List.length H ∧ StoreCC D H'
+```
+
+### `dropResidue_measure`
+
+*theorem* · module `RueCore.Trace`
+
+`drop*` over a destructure's residue (§6.3), counted (helper).
+
+```lean
+theorem RueCore.dropResidue_measure {D : Decls} {F : Event → List Nat}
+  (hF : TraceMeasure D F) {rs : List Contents} {evs : List Event} :
+  Contents.copyClosedList D rs = true →
+    dropResidue D rs = Except.ok evs →
+      IdLe (List.flatMap F evs) (Contents.ownList D rs)
+```
+
+### `Contents.ownList_append`
+
+*theorem* · module `RueCore.Trace`
+
+`ownList` distributes over concatenation (helper).
+
+```lean
+theorem RueCore.Contents.ownList_append (D : Decls) (l₁ l₂ : List Contents) :
+  Contents.ownList D (l₁ ++ l₂) =
+    Contents.ownList D l₁ ++ Contents.ownList D l₂
+```
+
+### `Contents.copyClosedList_append`
+
+*theorem* · module `RueCore.Trace`
+
+`copyClosedList` distributes over concatenation (helper).
+
+```lean
+theorem RueCore.Contents.copyClosedList_append (D : Decls) (l₁ l₂ : List Contents) :
+  Contents.copyClosedList D (l₁ ++ l₂) =
+    (Contents.copyClosedList D l₁ && Contents.copyClosedList D l₂)
+```
+
+### `Contents.allCopyList_append`
+
+*theorem* · module `RueCore.Trace`
+
+`allCopyList` distributes over concatenation (helper).
+
+```lean
+theorem RueCore.Contents.allCopyList_append (D : Decls) (l₁ l₂ : List Contents) :
+  Contents.allCopyList D (l₁ ++ l₂) =
+    (Contents.allCopyList D l₁ && Contents.allCopyList D l₂)
+```
+
+### `Contents.splitResidue_allCopy`
+
+*theorem* · module `RueCore.Trace`
+
+`split` of an all-`Copy` contents is all-`Copy` (helper).
+
+```lean
+theorem RueCore.Contents.splitResidue_allCopy {D : Decls} (π : List Nat)
+  {c leaf : Contents} {rs : List Contents} :
+  Contents.allCopy D c = true →
+    Contents.splitResidue D c π = Except.ok (leaf, rs) →
+      Contents.allCopy D leaf = true ∧ Contents.allCopyList D rs = true
+```
+
+### `Contents.splitFields_allCopy`
+
+*theorem* · module `RueCore.Trace`
+
+The same at `split`'s field step (helper).
+
+```lean
+theorem RueCore.Contents.splitFields_allCopy {D : Decls} (cs : List Contents)
+  (f : Nat) (π : List Nat) {leaf : Contents} {rs : List Contents} :
+  Contents.allCopyList D cs = true →
+    Contents.splitFields D cs f π = Except.ok (leaf, rs) →
+      Contents.allCopy D leaf = true ∧ Contents.allCopyList D rs = true
+```
+
+### `Contents.splitResidue_own`
+
+*theorem* · module `RueCore.Trace`
+
+**`split`, counted** (§6.3): the leaf and the residue together own at most
+what the consumed place owned — the nodes on the path between them are
+consumed — and both stay copy-closed (helper).
+
+```lean
+theorem RueCore.Contents.splitResidue_own {D : Decls} (a : Nat) (π : List Nat)
+  {c leaf : Contents} {rs : List Contents} :
+  Contents.copyClosed D c = true →
+    Contents.splitResidue D c π = Except.ok (leaf, rs) →
+      List.count a (Contents.own D leaf) +
+            List.count a (Contents.ownList D rs) ≤
+          List.count a (Contents.own D c) ∧
+        Contents.copyClosed D leaf = true ∧
+          Contents.copyClosedList D rs = true
+```
+
+### `Contents.splitFields_own`
+
+*theorem* · module `RueCore.Trace`
+
+The same at `split`'s field step (helper).
+
+```lean
+theorem RueCore.Contents.splitFields_own {D : Decls} (a : Nat) (cs : List Contents)
+  (f : Nat) (π : List Nat) {leaf : Contents} {rs : List Contents} :
+  Contents.copyClosedList D cs = true →
+    Contents.splitFields D cs f π = Except.ok (leaf, rs) →
+      List.count a (Contents.own D leaf) +
+            List.count a (Contents.ownList D rs) ≤
+          List.count a (Contents.ownList D cs) ∧
+        Contents.copyClosed D leaf = true ∧
+          Contents.copyClosedList D rs = true
+```
+
+### `Contents.destructure_measure`
+
+*theorem* · module `RueCore.Trace`
+
+**§6.3's `destructure`, counted**: the leaf it hands on and the residue
+drops it runs together account for at most what the consumed place owned
+(helper).
+
+```lean
+theorem RueCore.Contents.destructure_measure {D : Decls} {F : Event → List Nat}
+  (hF : TraceMeasure D F) {cd leaf : Contents} {πs : List Nat}
+  {evs : List Event} (hcc : Contents.copyClosed D cd = true)
+  (h : Contents.destructure D cd πs = Except.ok (leaf, evs)) :
+  (∀ (a : Nat),
+      List.count a (Contents.own D leaf) + List.count a (List.flatMap F evs) ≤
+        List.count a (Contents.own D cd)) ∧
+    Contents.copyClosed D leaf = true
+```
+
+### `Fresh.count_trans`
+
+*theorem* · module `RueCore.Trace`
+
+`Fresh` over three stores that only grew is the two ranges back to back
+(helper).
+
+```lean
+theorem RueCore.Fresh.count_trans {H H₁ H₂ : Store}
+  (h₁ : List.length H ≤ List.length H₁) (h₂ : List.length H₁ ≤ List.length H₂)
+  (a : Nat) :
+  List.count a (Fresh H H₂) =
+    List.count a (Fresh H H₁) + List.count a (Fresh H₁ H₂)
+```
+
+### `Fresh.count_trans_range`
+
+*theorem* · module `RueCore.Trace`
+
+A trap's range composes the same way (helper).
+
+```lean
+theorem RueCore.Fresh.count_trans_range {H H₁ : Store}
+  (h₁ : List.length H ≤ List.length H₁) (N a : Nat) :
+  List.count a
+      (List.range' (List.length H) (List.length H₁ - List.length H + N)) =
+    List.count a (Fresh H H₁) + List.count a (List.range' (List.length H₁) N)
+```
+
+### `Fresh.self`
+
+*theorem* · module `RueCore.Trace`
+
+Nothing was minted between a store and itself (helper).
+
+```lean
+theorem RueCore.Fresh.self (H : Store) : Fresh H H = []
+```
+
+### `Fresh.snoc`
+
+*theorem* · module `RueCore.Trace`
+
+One reserved slot mints one identity, the old length (helper).
+
+```lean
+theorem RueCore.Fresh.snoc (H : Store) (c : Cell) :
+  Fresh H (H ++ [c]) = [List.length H]
+```
+
+### `Cons.weaken`
+
+*theorem* · module `RueCore.Trace`
+
+Holding more does not break the law (helper).
+
+```lean
+theorem RueCore.Cons.weaken {D : Decls} {F : Event → List Nat} {H : Store}
+  {X Y : List Nat} {r : EvalRes} (h : Cons D F H X r)
+  (hXY : ∀ (a : Nat), List.count a X ≤ List.count a Y) : Cons D F H Y r
+```
+
+### `Cons.prefix`
+
+*theorem* · module `RueCore.Trace`
+
+**Composition**: an evaluation from `H₁` whose own law holds, run after a
+step from `H` to `H₁` that emitted `tr` and left `Y` held, satisfies the law
+from `H` with the step's trace prefixed — §6.2's search, as a ledger
+(helper).
+
+```lean
+theorem RueCore.Cons.prefix {D : Decls} {F : Event → List Nat} {H H₁ : Store}
+  {X Y : List Nat} {tr : List Event} {r : EvalRes}
+  (hle : List.length H ≤ List.length H₁)
+  (hI :
+    ∀ (a : Nat),
+      List.count a (storeOwn D H₁) + List.count a Y +
+          List.count a (List.flatMap F tr) ≤
+        List.count a (storeOwn D H) + List.count a X +
+          List.count a (Fresh H H₁))
+  (hr : Cons D F H₁ Y r) : Cons D F H X (EvalRes.withTrace tr r)
+```
+
+### `Cons.shift`
+
+*theorem* · module `RueCore.Trace`
+
+A step that emitted nothing: the law transports back along it (helper).
+
+```lean
+theorem RueCore.Cons.shift {D : Decls} {F : Event → List Nat} {H H₁ : Store}
+  {X Y : List Nat} {r : EvalRes} (hle : List.length H ≤ List.length H₁)
+  (hI :
+    ∀ (a : Nat),
+      List.count a (storeOwn D H₁) + List.count a Y ≤
+        List.count a (storeOwn D H) + List.count a X +
+          List.count a (Fresh H H₁))
+  (hr : Cons D F H₁ Y r) : Cons D F H X r
+```
+
+### `Cons.bind`
+
+*theorem* · module `RueCore.Trace`
+
+**§6.2's search, as a ledger**: an operand that keeps the law, sequenced
+into a context that keeps it holding the operand's value, keeps it
+(helper).
+
+```lean
+theorem RueCore.Cons.bind {D : Decls} {F : Event → List Nat} {H : Store}
+  {X : List Nat} {r : EvalRes} {k : Store → Val → EvalRes}
+  (hr : Cons D F H X r)
+  (hk :
+    ∀ (H₁ : Store) (v : Val) (tr : List Event),
+      r = EvalRes.ok H₁ v tr →
+        StoreCC D H₁ →
+          Contents.copyClosed D (Contents.ofVal v) = true →
+            Cons D F H₁ (Val.own D v) (k H₁ v)) :
+  Cons D F H X (r.andThen k)
+```
+
+### `Cons.absorb`
+
+*theorem* · module `RueCore.Trace`
+
+§6.9's call boundary, as a ledger: the same, with an unwinding `return`
+becoming the call's value (helper).
+
+```lean
+theorem RueCore.Cons.absorb {D : Decls} {F : Event → List Nat} {H : Store}
+  {X : List Nat} {r : EvalRes} {k : Store → Val → EvalRes}
+  (hr : Cons D F H X r)
+  (hk :
+    ∀ (H₁ : Store) (v : Val) (tr : List Event),
+      r = EvalRes.ok H₁ v tr →
+        StoreCC D H₁ →
+          Contents.copyClosed D (Contents.ofVal v) = true →
+            Cons D F H₁ (Val.own D v) (k H₁ v)) :
+  Cons D F H X (r.absorb k)
+```
+
+### `Cons.pure`
+
+*theorem* · module `RueCore.Trace`
+
+A value produced where the store is, owning nothing held (helper).
+
+```lean
+theorem RueCore.Cons.pure {D : Decls} {F : Event → List Nat} {H : Store}
+  {X : List Nat} {v : Val} (hcc : StoreCC D H)
+  (hv : Contents.copyClosed D (Contents.ofVal v) = true)
+  (ho : ∀ (a : Nat), List.count a (Val.own D v) ≤ List.count a X) :
+  Cons D F H X (EvalRes.ok H v [])
+```
+
+### `Val.scalar_own`
+
+*theorem* · module `RueCore.Trace`
+
+A scalar's ledger (helper).
+
+```lean
+theorem RueCore.Val.scalar_own {D : Decls} {v : Val} (h : v.scalar) :
+  Val.own D v = [] ∧ Contents.copyClosed D (Contents.ofVal v) = true
+```
+
+### `Cons.scalar`
+
+*theorem* · module `RueCore.Trace`
+
+A scalar produced where the store is keeps the law (helper).
+
+```lean
+theorem RueCore.Cons.scalar {D : Decls} {F : Event → List Nat} {H : Store}
+  {X : List Nat} {v : Val} (hcc : StoreCC D H) (hs : v.scalar) :
+  Cons D F H X (EvalRes.ok H v [])
+```
+
+### `Cons.opRes`
+
+*theorem* · module `RueCore.Trace`
+
+An operator's outcome keeps the law when its value is a scalar (helper).
+
+```lean
+theorem RueCore.Cons.opRes {D : Decls} {F : Event → List Nat} {H : Store}
+  {X : List Nat} {o : OpRes} (hcc : StoreCC D H)
+  (hs : ∀ (v : Val), o = OpRes.val v → v.scalar) :
+  Cons D F H X (OpRes.toRes H o)
+```
+
+### `intResult_scalar`
+
+*theorem* · module `RueCore.Trace`
+
+`range_check`'s value is a scalar (helper).
+
+```lean
+theorem RueCore.intResult_scalar {w : IntWidth} {s : Sign} {n : Int} {v : Val}
+  (h : intResult w s n = OpRes.val v) : v.scalar
+```
+
+### `binOpInt_scalar`
+
+*theorem* · module `RueCore.Trace`
+
+§6.4's integer rules produce a scalar (helper).
+
+```lean
+theorem RueCore.binOpInt_scalar {op : BinOp} {w : IntWidth} {s : Sign} {n₁ n₂ : Int}
+  {v : Val} (h : binOpInt op w s n₁ n₂ = OpRes.val v) : v.scalar
+```
+
+### `binOpFloat_scalar`
+
+*theorem* · module `RueCore.Trace`
+
+§6.4's float rules produce a scalar (helper).
+
+```lean
+theorem RueCore.binOpFloat_scalar {M : FloatOps} {op : BinOp} {w : FloatWidth}
+  {a b : FloatDatum} {v : Val} (h : binOpFloat M op w a b = OpRes.val v) :
+  v.scalar
+```
+
+### `evalBinOp_scalar`
+
+*theorem* · module `RueCore.Trace`
+
+§6.4's binary operators produce a scalar (helper).
+
+```lean
+theorem RueCore.evalBinOp_scalar {M : FloatOps} {op : BinOp} {a b v : Val}
+  (h : evalBinOp M op a b = OpRes.val v) : v.scalar
+```
+
+### `evalUnOp_scalar`
+
+*theorem* · module `RueCore.Trace`
+
+§6.4's unary operators produce a scalar (helper).
+
+```lean
+theorem RueCore.evalUnOp_scalar {op : UnOp} {a v : Val}
+  (h : evalUnOp op a = OpRes.val v) : v.scalar
+```
+
+### `evalIntCast_scalar`
+
+*theorem* · module `RueCore.Trace`
+
+`@intCast` produces a scalar (helper).
+
+```lean
+theorem RueCore.evalIntCast_scalar {w : IntWidth} {s : Sign} {a v : Val}
+  (h : evalIntCast w s a = OpRes.val v) : v.scalar
+```
+
+### `evalFintrin_scalar`
+
+*theorem* · module `RueCore.Trace`
+
+§6.4's float intrinsics produce a scalar (helper).
+
+```lean
+theorem RueCore.evalFintrin_scalar {M : FloatOps} {k : FloatIntrin} {a v : Val}
+  (h : evalFintrin M k a = OpRes.val v) : v.scalar
+```
+
+### `Contents.mult_ofVal`
+
+*theorem* · module `RueCore.Trace`
+
+A value's stored image has the value's class (helper).
+
+```lean
+theorem RueCore.Contents.mult_ofVal (D : Decls) (v : Val) :
+  Contents.mult D (Contents.ofVal v) = Val.mult D v
+```
+
+### `Val.own_of_copy`
+
+*theorem* · module `RueCore.Trace`
+
+A `Copy` value owns nothing (helper).
+
+```lean
+theorem RueCore.Val.own_of_copy {D : Decls} {v : Val} (h : Val.mult D v = Mult.copy) :
+  Val.own D v = []
+```
+
+### `Contents.ownList_ofVals_cons`
+
+*theorem* · module `RueCore.Trace`
+
+`ownList` over `ofVals` of a cons (helper).
+
+```lean
+theorem RueCore.Contents.ownList_ofVals_cons (D : Decls) (v : Val) (vs : List Val) :
+  Contents.ownList D (Contents.ofVals (v :: vs)) =
+    Val.own D v ++ Contents.ownList D (Contents.ofVals vs)
+```
+
+### `Contents.ownList_replicate`
+
+*theorem* · module `RueCore.Trace`
+
+`n` copies of a `Copy` value own nothing (helper).
+
+```lean
+theorem RueCore.Contents.ownList_replicate {D : Decls} {v : Val}
+  (h : Val.mult D v = Mult.copy) (n : Nat) :
+  Contents.ownList D (Contents.ofVals (List.replicate n v)) = []
+```
+
+### `storeOwn_mintParams`
+
+*theorem* · module `RueCore.Trace`
+
+The store `mintParams` leaves owns the store's identities and the
+arguments' (§6.9's (D-Call), §6.6's (D-Match)) (helper).
+
+```lean
+theorem RueCore.storeOwn_mintParams (D : Decls) (H : Store) (vs : List Val) :
+  storeOwn D (mintParams H vs).fst =
+    storeOwn D H ++ Contents.ownList D (Contents.ofVals vs)
+```
+
+### `StoreCC.mintParams`
+
+*theorem* · module `RueCore.Trace`
+
+The cells `mintParams` adds are copy-closed when the arguments are
+(helper).
+
+```lean
+theorem RueCore.StoreCC.mintParams {D : Decls} {H : Store} {vs : List Val}
+  (h : StoreCC D H)
+  (hv : Contents.copyClosedList D (Contents.ofVals vs) = true) :
+  StoreCC D (mintParams H vs).fst
+```
+
+### `mintParams_length`
+
+*theorem* · module `RueCore.Trace`
+
+The store `mintParams` leaves is the old one grown (helper).
+
+```lean
+theorem RueCore.mintParams_length (H : Store) (vs : List Val) :
+  List.length (mintParams H vs).fst = List.length H + vs.length
+```
+
+### `Contents.own_struct_le`
+
+*theorem* · module `RueCore.Trace`
+
+An aggregate owns at most its members' identities and its own (helper).
+
+```lean
+theorem RueCore.Contents.own_struct_le (D : Decls) (s i : Nat) (cs : List Contents)
+  (a : Nat) :
+  List.count a (Contents.own D (Contents.struct s i cs)) ≤
+    List.count a (Contents.ownList D cs) + List.count a [i]
+```
+
+### `Contents.own_enum_le`
+
+*theorem* · module `RueCore.Trace`
+
+The same at an enum (helper).
+
+```lean
+theorem RueCore.Contents.own_enum_le (D : Decls) (e k i : Nat) (cs : List Contents)
+  (a : Nat) :
+  List.count a (Contents.own D (Contents.enum e k i cs)) ≤
+    List.count a (Contents.ownList D cs) + List.count a [i]
+```
+
+### `Contents.own_array_le`
+
+*theorem* · module `RueCore.Trace`
+
+The same at an array (helper).
+
+```lean
+theorem RueCore.Contents.own_array_le (D : Decls) (T : Ty) (i : Nat)
+  (cs : List Contents) (a : Nat) :
+  List.count a (Contents.own D (Contents.array T i cs)) ≤
+    List.count a (Contents.ownList D cs) + List.count a [i]
+```
+
+### `Contents.enum_payload`
+
+*theorem* · module `RueCore.Trace`
+
+An enum owns at least its payload, and a copy-closed one's payload is
+copy-closed — what (D-Match) §6.6 hands the arm's cells (helper).
+
+```lean
+theorem RueCore.Contents.enum_payload {D : Decls} {e k i : Nat} {cs : List Contents}
+  (h : Contents.copyClosed D (Contents.enum e k i cs) = true) (a : Nat) :
+  List.count a (Contents.ownList D cs) ≤
+      List.count a (Contents.own D (Contents.enum e k i cs)) ∧
+    Contents.copyClosedList D cs = true
+```
+
+### `Cons.intro`
+
+*theorem* · module `RueCore.Trace`
+
+**Aggregate introduction, as a ledger** (`introVal`): the new value owns at
+most its members and the one identity just minted, which is the one index the
+store grew by (helper).
+
+```lean
+theorem RueCore.Cons.intro {D : Decls} {F : Event → List Nat} {H : Store}
+  {Y : List Nat} {mk : Nat → Val} (hcc : StoreCC D H)
+  (ho :
+    ∀ (a : Nat),
+      List.count a (Val.own D (mk (List.length H))) ≤
+        List.count a Y + List.count a [List.length H]) :
+  Cons D F H Y (introVal D H mk)
+```
+
+### `dynPlace_at`
+
+*theorem* · module `RueCore.Trace`
+
+What `dynPlace` lands on is a live cell and a read of it (helper).
+
+```lean
+theorem RueCore.dynPlace_at {H : Store} {φ : Frame} {p : Place} {vs : List Val}
+  {πs : List (List Nat)} {ℓ : Nat} {c sub : Contents} {ρ : List Nat}
+  (h : dynPlace H φ p vs πs = DynPlace.at ℓ c sub ρ) :
+  H[ℓ]? = some (Cell.full c) ∧ c.readAt p.path = Except.ok sub
+```
+
+### `evalArgs_cons`
+
+*theorem* · module `RueCore.Trace`
+
+**An argument list keeps the law** (§6.2's left-to-right search through
+`g(v̄, …, E, …)`, `S{ v̄, …, E, … }` and `[ v̄, …, E, … ]`): each argument's
+value is held while the next one runs, and an abort abandons the ones already
+built — which only loses identities, never duplicates one (helper).
+
+```lean
+theorem RueCore.evalArgs_cons {D : Decls} {F : Event → List Nat}
+  {ev : Store → Expr → EvalRes}
+  (hev : ∀ (H : Store) (e : Expr), StoreCC D H → Cons D F H [] (ev H e))
+  (H : Store) (es : List Expr) :
+  StoreCC D H → ArgsCons D F H (evalArgs ev H es)
+```
+
+### `Fresh.set`
+
+*theorem* · module `RueCore.Trace`
+
+Writing a cell mints nothing (helper).
+
+```lean
+theorem RueCore.Fresh.set (H : Store) (ℓ : Nat) (x : Cell) :
+  Fresh H (List.set H ℓ x) = []
+```
+
+### `Val.own_unit`
+
+*theorem* · module `RueCore.Trace`
+
+`()` owns nothing (helper).
+
+```lean
+theorem RueCore.Val.own_unit (D : Decls) : Val.own D Val.unit = []
+```
+
+### `Cons.move`
+
+*theorem* · module `RueCore.Trace`
+
+**(D-Use-Move) §6.3, as a ledger**: the value handed on owns what the
+place owned, and the place now holds `⊘` — so the identity moved, it did not
+multiply (helper).
+
+```lean
+theorem RueCore.Cons.move {D : Decls} {F : Event → List Nat} {H : Store}
+  {X : List Nat} {ℓ : Nat} {c c' sub : Contents} {π : List Nat} {v : Val}
+  (hcc : StoreCC D H) (hc : H[ℓ]? = some (Cell.full c))
+  (hr : c.readAt π = Except.ok sub) (hw : c.writeAt π Contents.hole = some c')
+  (hv : sub.toVal = some v) :
+  Cons D F H X (EvalRes.ok (List.set H ℓ (Cell.full c')) v [])
+```
+
+### `Cons.destructure`
+
+*theorem* · module `RueCore.Trace`
+
+**(D-Use-Declared-Linear) §6.3, as a ledger**: the leaf handed on and the
+residue dropped together account for the consumed place, which becomes `⊘`
+(helper).
+
+```lean
+theorem RueCore.Cons.destructure {D : Decls} {F : Event → List Nat}
+  (hF : TraceMeasure D F) {H : Store} {X : List Nat} {ℓ : Nat}
+  {c c' cd leaf : Contents} {πd πs : List Nat} {v : Val} {evs : List Event}
+  (hcc : StoreCC D H) (hc : H[ℓ]? = some (Cell.full c))
+  (hr : c.readAt πd = Except.ok cd)
+  (hd : Contents.destructure D cd πs = Except.ok (leaf, evs))
+  (hv : leaf.toVal = some v) (hw : c.writeAt πd Contents.hole = some c') :
+  Cons D F H X (EvalRes.ok (List.set H ℓ (Cell.full c')) v evs)
+```
+
+### `Cons.dropPlace`
+
+*theorem* · module `RueCore.Trace`
+
+**§6.11's `@drop`, as a ledger**: the place's residue is dropped and the
+place becomes `⊘`, so what the trace frees leaves the store (helper).
+
+```lean
+theorem RueCore.Cons.dropPlace {D : Decls} {F : Event → List Nat}
+  (hF : TraceMeasure D F) {H : Store} {X : List Nat} {ℓ : Nat}
+  {c c' sub : Contents} {π : List Nat} {evs : List Event} (hcc : StoreCC D H)
+  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.readAt π = Except.ok sub)
+  (hd : dropCell D ℓ sub = Except.ok evs)
+  (hw : c.writeAt π Contents.hole = some c') :
+  Cons D F H X (EvalRes.ok (List.set H ℓ (Cell.full c')) Val.unit evs)
+```
+
+### `Cons.dropDeclared`
+
+*theorem* · module `RueCore.Trace`
+
+**§6.11's `@drop` at a declared plan, as a ledger**: the residue, then the
+leaf, then `⊘` at the consumed place (helper).
+
+```lean
+theorem RueCore.Cons.dropDeclared {D : Decls} {F : Event → List Nat}
+  (hF : TraceMeasure D F) {H : Store} {X : List Nat} {ℓ : Nat}
+  {c c' cd leaf : Contents} {πd πs : List Nat} {evs levs : List Event}
+  (hcc : StoreCC D H) (hc : H[ℓ]? = some (Cell.full c))
+  (hr : c.readAt πd = Except.ok cd)
+  (hd : Contents.destructure D cd πs = Except.ok (leaf, evs))
+  (hl : dropCell D ℓ leaf = Except.ok levs)
+  (hw : c.writeAt πd Contents.hole = some c') :
+  Cons D F H X
+    (EvalRes.ok (List.set H ℓ (Cell.full c')) Val.unit (evs ++ levs))
+```
+
+### `Cons.assign`
+
+*theorem* · module `RueCore.Trace`
+
+**(D-Assign) §6.8, as a ledger**: the old contents at the place is dropped
+and the held value takes its position (helper).
+
+```lean
+theorem RueCore.Cons.assign {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
+  {H : Store} {Y : List Nat} {ℓ : Nat} {c c' old : Contents} {π : List Nat}
+  {v : Val} {evs : List Event} (hcc : StoreCC D H)
+  (hc : H[ℓ]? = some (Cell.full c)) (hr : c.readAt π = Except.ok old)
+  (hd : dropCell D ℓ old = Except.ok evs)
+  (hw : c.writeAt π (Contents.ofVal v) = some c')
+  (hc' : Contents.copyClosed D c' = true) :
+  Cons D F H (Val.own D v ++ Y)
+    (EvalRes.ok (List.set H ℓ (Cell.full c')) Val.unit evs)
+```
+
+### `Cons.assignDyn`
+
+*theorem* · module `RueCore.Trace`
+
+**(D-Assign) below a dynamic index, as a ledger**: the same, at the leaf
+the index resolved to, one level down (helper).
+
+```lean
+theorem RueCore.Cons.assignDyn {D : Decls} {F : Event → List Nat}
+  (hF : TraceMeasure D F) {H : Store} {Y : List Nat} {ℓ : Nat}
+  {c c' sub sub' old : Contents} {π ρ : List Nat} {v : Val} {evs : List Event}
+  (hcc : StoreCC D H) (hc : H[ℓ]? = some (Cell.full c))
+  (hr : c.readAt π = Except.ok sub) (hr' : sub.readAt ρ = Except.ok old)
+  (hd : dropCell D ℓ old = Except.ok evs)
+  (hw' : sub.writeAt ρ (Contents.ofVal v) = some sub')
+  (hw : c.writeAt π sub' = some c') (hc' : Contents.copyClosed D c' = true) :
+  Cons D F H (Val.own D v ++ Y)
+    (EvalRes.ok (List.set H ℓ (Cell.full c')) Val.unit evs)
+```
+
+### `Cons.unwind`
+
+*theorem* · module `RueCore.Trace`
+
+A scope teardown after a value (`endscope` §6.7, the frame pop §6.9), as
+a ledger (helper).
+
+```lean
+theorem RueCore.Cons.unwind {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
+  {H : Store} {v : Val} {ls : List Nat} (hcc : StoreCC D H)
+  (hv : Contents.copyClosed D (Contents.ofVal v) = true) :
+  Cons D F H (Val.own D v)
+    (match unwindLocs D H ls with
+    | Except.error w => EvalRes.stuck w
+    | Except.ok (H', evs) => EvalRes.ok H' v evs)
+```
+
+### `range'_count`
+
+*theorem* · module `RueCore.Trace`
+
+An index occurs in a range once when it lies in it, and not at all
+otherwise (helper). Core's `List.count_range'` costs `Classical.choice`, and so
+does `omega` on a conjunction or a disequation, so this proof avoids both.
+
+```lean
+theorem RueCore.range'_count (a n s : Nat) :
+  List.count a (List.range' s n) = if s ≤ a ∧ a < s + n then 1 else 0
+```
+
+### `range'_count_le_one`
+
+*theorem* · module `RueCore.Trace`
+
+An index occurs in a range at most once (helper).
+
+```lean
+theorem RueCore.range'_count_le_one (s n a : Nat) : List.count a (List.range' s n) ≤ 1
+```
+
+### `run_trace_once`
+
+*theorem* · module `RueCore.Trace`
+
+**The law, over a whole program** (§6.12's top-level result): a run starts
+from the empty store, so everything its trace projects to was minted during
+the run — a range of store indices, each once. Every projection `F` the law
+can count therefore names each identity at most once (helper).
+
+```lean
+theorem RueCore.run_trace_once (M : FloatOps) {P : Program} {F : Event → List Nat}
+  (hF : TraceMeasure P.decls F) (fuel a : Nat) :
+  List.count a (List.flatMap F (run M P fuel).trace) ≤ 1
 ```
 
 ### `Examples.eval_loop_ok`
@@ -6732,6 +8264,18 @@ RueCore.FloatWidth.w32 : FloatWidth
 RueCore.FloatWidth.w64 : FloatWidth
 ```
 
+### `IdLe`
+
+*def* · module `RueCore.Trace`
+
+Multiset inclusion, read by counts: every identity occurs in `l₁` at most
+as often as in `l₂` (helper).
+
+```lean
+def RueCore.IdLe (l₁ l₂ : List Nat) : Prop :=
+  ∀ (a : Nat), List.count a l₁ ≤ List.count a l₂
+```
+
 ### `IntWidth`
 
 *inductive* · module `RueCore.Syntax`
@@ -7044,6 +8588,12 @@ RueCore.Violation.unbound : Violation
 
 ```lean
 RueCore.Violation.typeConfusion : Violation
+```
+
+**`Violation.ownedUnderCopy`** — An owned value under a `Copy` node (§3: a `Copy` type's fields, payloads and elements are `Copy`, `3.8:18`, `6.3:19`) — the shape a copy would duplicate an owner through, which §7's no-double-free bullet forbids. The copy-closure monitor (`Contents.copyClosed`) refuses it where it could be built: at aggregate introduction and at an assignment (RUE-2323).
+
+```lean
+RueCore.Violation.ownedUnderCopy : Violation
 ```
 
 ### `bitLen`
@@ -7822,7 +9372,7 @@ RueCore.Ty.array (elem : Ty) (n : Nat) : Ty
 
 Whether a violation is one of **§6's own stuck states** — a read of a `⊘`
 or `†` cell, an unbound index, a wrong-shaped operand — rather than one of the
-three monitors `eval` adds, which §6.3, §6.7 and §6.8 do not have.
+four monitors `eval` adds, which §6.3, §6.5, §6.7 and §6.8 do not have.
 
 ```lean
 def RueCore.Violation.isStuckState : Violation → Bool
@@ -7838,6 +9388,7 @@ Violation.typeConfusion.isStuckState = true
 Violation.linearLeak.isStuckState = false
 Violation.linearOverwrite.isStuckState = false
 Violation.linearDiscard.isStuckState = false
+Violation.ownedUnderCopy.isStuckState = false
 ```
 
 ### `canonAux`
@@ -7963,7 +9514,9 @@ node, not only at the root, because (D-Use-Move) §6.3 writes `H[ℓ@π ↦ ⊘]
 exactly the sub-position a partial move takes (§4.2, `3.8:22`). A hole-free
 contents is a value (`toVal`), and a value written into a cell becomes the
 hole-free tree of the same shape (`ofVal`); the two are inverse, which is what
-lets §6.11's walk and §6.3's navigation share one representation.
+lets §6.11's walk and §6.3's navigation share one representation. An aggregate
+node keeps its value's identity, so a stored value and the value read back
+out of it are the same value.
 
 ```lean
 inductive RueCore.Contents : Type
@@ -8004,19 +9557,19 @@ RueCore.Contents.unit : Contents
 **`Contents.struct`**
 
 ```lean
-RueCore.Contents.struct (s : Nat) (cs : List Contents) : Contents
+RueCore.Contents.struct (s id : Nat) (cs : List Contents) : Contents
 ```
 
 **`Contents.enum`**
 
 ```lean
-RueCore.Contents.enum (e k : Nat) (cs : List Contents) : Contents
+RueCore.Contents.enum (e k id : Nat) (cs : List Contents) : Contents
 ```
 
 **`Contents.array`**
 
 ```lean
-RueCore.Contents.array (elem : Ty) (cs : List Contents) : Contents
+RueCore.Contents.array (elem : Ty) (id : Nat) (cs : List Contents) : Contents
 ```
 
 ### `DeclId.ty`
@@ -8571,16 +10124,19 @@ Ty.unit.observable = false
 
 *inductive* · module `RueCore.Dynamics`
 
-Machine values (§6.1's `v`), fragment forms only. `struct s vs` is §6.1's
-`{ v1, …, vk }_S`: the declaration's index and one value per field, in
+Machine values (§6.1's `v`), fragment forms only. `struct s i vs` is §6.1's
+`{ v1, …, vk }_S`: the declaration's index, the value's **identity** `i`
+(minted at introduction, `introVal`; §6.1 has none, and the module docstring
+says why the machine adds it), and one value per field, in
 declaration order — the order `3.9:13` drops them in. `float w f` is §6.1's `f_T` at `T = float(w)`: §2's
 datum, not a bit pattern (`Float.lean`). A struct value names its declaration rather than
 carrying its class, so the machine's drop decisions are value-driven — it
 reads the tag the value carries — while the class and the destructor come from
 the program's declarations, as the compiled program's drop glue does.
 
-`enum e k vs` is §6.1's `Kj⟨ v1, …, va ⟩`: the declaration's index, the
-**0-based variant tag** `Kj`, and the active variant's payload. `vs = []` is
+`enum e k i vs` is §6.1's `Kj⟨ v1, …, va ⟩`: the declaration's index, the
+**0-based variant tag** `Kj`, the identity, and the active variant's payload;
+`array T i vs` is `[ v1, …, vn ]` with its element type and identity. `vs = []` is
 §6.1's bare tag, the discriminant-only case, which `6.3:15` lets an
 implementation store as a plain discriminant. The tag is what §6.6's (D-Match)
 switches on and what §6.11's enum case reads to find the one payload to drop.
@@ -8618,19 +10174,19 @@ RueCore.Val.unit : Val
 **`Val.struct`**
 
 ```lean
-RueCore.Val.struct (s : Nat) (fields : List Val) : Val
+RueCore.Val.struct (s id : Nat) (fields : List Val) : Val
 ```
 
 **`Val.enum`**
 
 ```lean
-RueCore.Val.enum (e k : Nat) (payload : List Val) : Val
+RueCore.Val.enum (e k id : Nat) (payload : List Val) : Val
 ```
 
 **`Val.array`**
 
 ```lean
-RueCore.Val.array (elem : Ty) (vs : List Val) : Val
+RueCore.Val.array (elem : Ty) (id : Nat) (vs : List Val) : Val
 ```
 
 ### `canonNum`
@@ -8875,10 +10431,12 @@ Contents.hole.isHole = true
   (Contents.float a a_1).isHole = false
 ∀ (a : Bool), (Contents.bool a).isHole = false
 Contents.unit.isHole = false
-∀ (a : Nat) (a_1 : List Contents), (Contents.struct a a_1).isHole = false
 ∀ (a a_1 : Nat) (a_2 : List Contents),
-  (Contents.enum a a_1 a_2).isHole = false
-∀ (a : Ty) (a_1 : List Contents), (Contents.array a a_1).isHole = false
+  (Contents.struct a a_1 a_2).isHole = false
+∀ (a a_1 a_2 : Nat) (a_3 : List Contents),
+  (Contents.enum a a_1 a_2 a_3).isHole = false
+∀ (a : Ty) (a_1 : Nat) (a_2 : List Contents),
+  (Contents.array a a_1 a_2).isHole = false
 ```
 
 ### `Contents.readAt`
@@ -8892,31 +10450,6 @@ produces (helper).
 
 ```lean
 def RueCore.Contents.readAt : Contents → List Nat → Except Violation Contents
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (x : Contents), x.readAt [] = Except.ok x
-∀ (head : Nat) (tail : List Nat),
-  Contents.hole.readAt (head :: tail) =
-    Except.error Violation.useAfterMove
-∀ (s : Nat) (cs : List Contents) (f : Nat) (π : List Nat),
-  (Contents.struct s cs).readAt (f :: π) =
-    match cs[f]? with
-    | some c => c.readAt π
-    | none => Except.error Violation.typeConfusion
-∀ (elem : Ty) (cs : List Contents) (f : Nat) (π : List Nat),
-  (Contents.array elem cs).readAt (f :: π) =
-    match cs[f]? with
-    | some c => c.readAt π
-    | none => Except.error Violation.typeConfusion
-∀ (x : Contents) (head : Nat) (tail : List Nat),
-  (x = Contents.hole → False) →
-    (∀ (s : Nat) (cs : List Contents), x = Contents.struct s cs → False) →
-      (∀ (elem : Ty) (cs : List Contents),
-          x = Contents.array elem cs → False) →
-        x.readAt (head :: tail) = Except.error Violation.typeConfusion
 ```
 
 ### `Contents.resolveDyn`
@@ -8948,30 +10481,6 @@ so every `eval` arm that writes has already read at the same path, and its
 
 ```lean
 def RueCore.Contents.writeAt : Contents → List Nat → Contents → Option Contents
-```
-
-Defining equations, as Lean derived them from the body:
-
-```lean
-∀ (x x_1 : Contents), x.writeAt [] x_1 = some x_1
-∀ (x : Contents) (s : Nat) (cs : List Contents) (f : Nat) (π : List Nat),
-  (Contents.struct s cs).writeAt (f :: π) x =
-    match cs[f]? with
-    | some c =>
-      Option.map (fun c' => Contents.struct s (cs.set f c'))
-        (c.writeAt π x)
-    | none => none
-∀ (x : Contents) (T : Ty) (cs : List Contents) (f : Nat) (π : List Nat),
-  (Contents.array T cs).writeAt (f :: π) x =
-    match cs[f]? with
-    | some c =>
-      Option.map (fun c' => Contents.array T (cs.set f c'))
-        (c.writeAt π x)
-    | none => none
-∀ (x x_1 : Contents) (head : Nat) (tail : List Nat),
-  (∀ (s : Nat) (cs : List Contents), x = Contents.struct s cs → False) →
-    (∀ (T : Ty) (cs : List Contents), x = Contents.array T cs → False) →
-      x.writeAt (head :: tail) x_1 = none
 ```
 
 ### `Ctx`
@@ -9087,7 +10596,10 @@ a Rue program can *observe*: the user destructor `S` declares (`3.9`), which
 in §6.11's order: the destructor, then the fields in declaration order, each
 recursively, with every `⊘` skipped. A binding's drop carries the *contents*
 it ran on, because after a partial move what is dropped is a tree with holes in
-it rather than a value; a discarded temporary is always a whole value.
+it rather than a value; a discarded temporary is always a whole value. Every
+aggregate in what an event carries has its identity, so the trace records
+*which* values were dropped and destroyed; `no_double_free` (`Trace.lean`) is
+the theorem that no identity is freed, or destroyed, twice.
 
 ```lean
 inductive RueCore.Event : Type
@@ -9891,6 +11403,22 @@ Val.ints [] = some []
     Val.ints (head :: tail) = none
 ```
 
+### `Val.scalar`
+
+*def* · module `RueCore.Trace`
+
+A scalar owns nothing and is copy-closed (helper).
+
+```lean
+def RueCore.Val.scalar : Val → Prop :=
+  match x✝ with
+  | Val.int w s n => True
+  | Val.float w f => True
+  | Val.bool b => True
+  | Val.unit => True
+  | x => False
+```
+
 ### `bitsOf`
 
 *def* · module `RueCore.Syntax`
@@ -9912,16 +11440,17 @@ Defining equations, as Lean derived them from the body:
 
 *def* · module `RueCore.Step`
 
-The contents `S{}` leaves in a cell (helper).
+The contents `S{}` leaves in a cell, at the identity it was minted with
+(helper).
 
 ```lean
-def RueCore.demoSc : Contents
+def RueCore.demoSc (i : Nat) : Contents
 ```
 
 Defining equations, as Lean derived them from the body:
 
 ```lean
-demoSc = Contents.struct 0 []
+∀ (i : Nat), demoSc i = Contents.struct 0 i []
 ```
 
 ### `roundRat`
@@ -10216,6 +11745,28 @@ Defining equations, as Lean derived them from the body:
       List.map
         (fun ed => ed.variants.all fun Ts => Ts.all (Ty.grounded st))
         D.enums)
+```
+
+### `Event.dtorIds`
+
+*def* · module `RueCore.Trace`
+
+The identity of the value a user destructor ran on (§6.11, `3.9:28`) —
+every `dtor` event carries the struct it ran on (helper).
+
+```lean
+def RueCore.Event.dtorIds : Event → List Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (s s_1 i : Nat) (cs : List Contents),
+  (Event.dtor s (Contents.struct s_1 i cs)).dtorIds = [i]
+∀ (x : Event),
+  (∀ (s s_1 i : Nat) (cs : List Contents),
+      x = Event.dtor s (Contents.struct s_1 i cs) → False) →
+    x.dtorIds = []
 ```
 
 ### `Examples.flE`
@@ -11173,6 +12724,19 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls) (n : Nat), D.peel n.succ = D.peelStep (D.peel n)
 ```
 
+### `DtorNotCopy`
+
+*def* · module `RueCore.Trace`
+
+A destructor-bearing struct is not `Copy` (`3.9:31`): the one fact about
+the declarations the conservation law reads (helper).
+
+```lean
+def RueCore.DtorNotCopy (D : Decls) : Prop :=
+  ∀ (s : Nat) (sd : StructDecl),
+    D.structs[s]? = some sd → sd.dtor = true → D.classOf s ≠ Mult.copy
+```
+
 ### `Entry.join`
 
 *def* · module `RueCore.Statics`
@@ -11436,6 +13000,25 @@ Float.exactOps =
   { arith := Float.arith false, sqrt := Float.sqrtD false,
     ofLit := Float.ofLit, ofInt := Float.ofInt, narrow := Float.narrow,
     nanSign := false }
+```
+
+### `Fresh`
+
+*def* · module `RueCore.Trace`
+
+The identities minted between two stores: the indices the store grew by,
+since `introVal` takes the next index (helper).
+
+```lean
+def RueCore.Fresh (H H' : Store) : List Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (H H' : Store),
+  Fresh H H' =
+    List.range' (List.length H) (List.length H' - List.length H)
 ```
 
 ### `Kont.toCall`
@@ -11715,6 +13298,45 @@ Defining equations, as Lean derived them from the body:
       match dropContentsList D cs with
       | Except.error w => Except.error w
       | Except.ok evs' => Except.ok (evs ++ evs')
+```
+
+### `dtorIds`
+
+*def* · module `RueCore.Trace`
+
+The identities the trace's destructors ran on, in trace order: what §7's
+no-double-free bullet counts at a destructor (`3.9:28`).
+
+```lean
+def RueCore.dtorIds (tr : List Event) : List Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (tr : List Event), dtorIds tr = List.flatMap Event.dtorIds tr
+```
+
+### `dupDecls`
+
+*def* · module `RueCore.Trace`
+
+`S0 = @copy struct { x0: i64 }` and `S1 = struct { x0: i64 }` with a
+destructor (helper).
+
+```lean
+def RueCore.dupDecls : Decls
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+dupDecls =
+  Decls.ofStructs
+    [{ attr := Attr.copy, fields := [Ty.int IntWidth.w64 Sign.signed],
+        dtor := false, cls := Mult.copy },
+      { attr := Attr.none, fields := [Ty.int IntWidth.w64 Sign.signed],
+        dtor := true, cls := Mult.affine }]
 ```
 
 ### `dynPlace`
@@ -12008,12 +13630,12 @@ def RueCore.Contents.mult (D : Decls) : Contents → Mult
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (D : Decls) (s : Nat) (cs : List Contents),
-  Contents.mult D (Contents.struct s cs) = D.classOf s
-∀ (D : Decls) (e k : Nat) (cs : List Contents),
-  Contents.mult D (Contents.enum e k cs) = D.enumClassOf e
-∀ (D : Decls) (T : Ty) (cs : List Contents),
-  Contents.mult D (Contents.array T cs) = Ty.mult D (T.array cs.length)
+∀ (D : Decls) (s id : Nat) (cs : List Contents),
+  Contents.mult D (Contents.struct s id cs) = D.classOf s
+∀ (D : Decls) (e k id : Nat) (cs : List Contents),
+  Contents.mult D (Contents.enum e k id cs) = D.enumClassOf e
+∀ (D : Decls) (T : Ty) (id : Nat) (cs : List Contents),
+  Contents.mult D (Contents.array T id cs) = Ty.mult D (T.array cs.length)
 ∀ (D : Decls), Contents.mult D Contents.hole = Mult.copy
 ∀ (D : Decls) (w : IntWidth) (s : Sign) (n : Int),
   Contents.mult D (Contents.int w s n) = Mult.copy
@@ -12070,6 +13692,31 @@ Defining equations, as Lean derived them from the body:
     List.foldl
       (fun m Ts => List.foldl (fun m' T => m'.join (Ty.mult D T)) m Ts)
       Mult.copy ed.variants
+```
+
+### `EvalRes.trace`
+
+*def* · module `RueCore.Trace`
+
+The trace a result carries: everything the run emitted, for a value, an
+unwinding `return` or `break`, and a trap; nothing for a refusal or exhausted
+fuel (helper).
+
+```lean
+def RueCore.EvalRes.trace : EvalRes → List Event
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (H : Store) (v : Val) (tr : List Event), (EvalRes.ok H v tr).trace = tr
+∀ (H : Store) (v : Val) (tr : List Event),
+  (EvalRes.returned H v tr).trace = tr
+∀ (H : Store) (scope : List Nat) (tr : List Event),
+  (EvalRes.broke H scope tr).trace = tr
+∀ (k : PanicKind) (tr : List Event), (EvalRes.panic k tr).trace = tr
+∀ (why : Violation), (EvalRes.stuck why).trace = []
+EvalRes.outOfFuel.trace = []
 ```
 
 ### `EvalRes.withTrace`
@@ -12204,6 +13851,29 @@ Constructors:
 ```lean
 RueCore.Explain.Trace.mk (steps : List Explain.Step) (res : EvalRes) :
   Explain.Trace
+```
+
+### `OpRes.toRes`
+
+*def* · module `RueCore.Dynamics`
+
+An operator's outcome as an evaluation result, at the store the operands
+left: a value carries no events, a trap carries none of its own (the events
+the operands emitted are prefixed by `andThen`), and a refusal is named
+(helper).
+
+```lean
+def RueCore.OpRes.toRes (H : Store) : OpRes → EvalRes
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (H : Store) (a : Val), OpRes.toRes H (OpRes.val a) = EvalRes.ok H a []
+∀ (H : Store) (a : PanicKind),
+  OpRes.toRes H (OpRes.trap a) = EvalRes.panic a []
+∀ (H : Store),
+  OpRes.toRes H OpRes.confused = EvalRes.stuck Violation.typeConfusion
 ```
 
 ### `Out.SkelOk`
@@ -12401,12 +14071,12 @@ def RueCore.Val.mult (D : Decls) : Val → Mult
 Defining equations, as Lean derived them from the body:
 
 ```lean
-∀ (D : Decls) (s : Nat) (fields : List Val),
-  Val.mult D (Val.struct s fields) = D.classOf s
-∀ (D : Decls) (e k : Nat) (payload : List Val),
-  Val.mult D (Val.enum e k payload) = D.enumClassOf e
-∀ (D : Decls) (T : Ty) (vs : List Val),
-  Val.mult D (Val.array T vs) = Ty.mult D (T.array vs.length)
+∀ (D : Decls) (s id : Nat) (fields : List Val),
+  Val.mult D (Val.struct s id fields) = D.classOf s
+∀ (D : Decls) (e k id : Nat) (payload : List Val),
+  Val.mult D (Val.enum e k id payload) = D.enumClassOf e
+∀ (D : Decls) (T : Ty) (id : Nat) (vs : List Val),
+  Val.mult D (Val.array T id vs) = Ty.mult D (T.array vs.length)
 ∀ (D : Decls) (w : IntWidth) (s : Sign) (n : Int),
   Val.mult D (Val.int w s n) = Mult.copy
 ∀ (D : Decls) (w : FloatWidth) (f : FloatDatum),
@@ -12541,10 +14211,12 @@ them through the model `M`;
 `panic` is (D-Panic) §6.12; `dbg` appends the operand's rendering to the
 observable output (§5.8's (Dbg), §6.12's `Outcome`); `drop` is §6.11's
 explicit `@drop`; `letIn` is (D-Let) + (D-EndScope)'s drop-retire (§6.7);
-`assign` is (D-Assign), §6.8's overwrite-drop / reinitialization; `seq` is
+`assign` is (D-Assign), §6.8's overwrite-drop / reinitialization, with the
+copy-closure monitor on what it stores; `seq` is
 (D-Seq), discarding with a temporary drop (§6.7); `mkStruct` is (D-Struct)
 §6.5 after §6.2's left-to-right search through its initializers and `mkArray`
-is (D-Array) §6.5 after the same search; `repeatArray` is §2's elaboration of
+is (D-Array) §6.5 after the same search, each minting its value's identity
+(`introVal`); `repeatArray` is §2's elaboration of
 the surface repeat form (`7.1:39`); `indexRead` and `indexWrite` are
 (D-Index)/(D-Index-Trap) §6.5 at a dynamic index, reading by §6.3's copy rule
 and writing by §6.8's overwrite; `mkEnum` is
@@ -13049,6 +14721,30 @@ Defining equations, as Lean derived them from the body:
       | Except.ok evs => Except.ok (Event.drop ℓ c :: evs)
 ```
 
+### `dupProgram`
+
+*def* · module `RueCore.Trace`
+
+The program above (helper).
+
+```lean
+def RueCore.dupProgram : Program
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+dupProgram =
+  Program.entry dupDecls (Ty.int IntWidth.w64 Sign.signed)
+    (Expr.letIn false
+      (Expr.mkStruct 0
+        [Expr.mkStruct 1 [Expr.intLit IntWidth.w64 Sign.signed 1]])
+      (Expr.letIn false (Expr.use (Place.var 0))
+        ((Expr.drop ((Place.var 1).proj 0)).seq
+          ((Expr.drop ((Place.var 0).proj 0)).seq
+            (Expr.intLit IntWidth.w64 Sign.signed 0)))))
+```
+
 ### `evalArgs`
 
 *def* · module `RueCore.Dynamics`
@@ -13530,6 +15226,28 @@ def RueCore.AbortOk (D : Decls) (R : Ty) (B : List Ctx) (φ : Frame) (H : Store)
   | EvalRes.outOfFuel => True
 ```
 
+### `ArgsCons`
+
+*def* · module `RueCore.Trace`
+
+The law's promise about an argument list (helper).
+
+```lean
+def RueCore.ArgsCons (D : Decls) (F : Event → List Nat) (H : Store) :
+  ArgsRes → Prop :=
+  match x✝ with
+  | ArgsRes.ok H' vs tr =>
+    List.length H ≤ List.length H' ∧
+      StoreCC D H' ∧
+        Contents.copyClosedList D (Contents.ofVals vs) = true ∧
+          ∀ (a : Nat),
+            List.count a (storeOwn D H') +
+                  List.count a (Contents.ownList D (Contents.ofVals vs)) +
+                List.count a (List.flatMap F tr) ≤
+              List.count a (storeOwn D H) + List.count a (Fresh H H')
+  | ArgsRes.abort r => Cons D F H [] r
+```
+
 ### `ArgsOk`
 
 *def* · module `RueCore.Soundness`
@@ -13576,6 +15294,40 @@ def RueCore.BrokeOk (D : Decls) (B : List Ctx) (φ : Frame) (H H' : Store)
               H' ∧
             (∀ (ℓ : Nat), ℓ ∈ locs → List.length H ≤ ℓ) ∧
               Untouched φ.env H H'
+```
+
+### `Cell.own`
+
+*def* · module `RueCore.Trace`
+
+A cell's owned identities: a retired cell, or a reserved identity slot,
+holds none (helper).
+
+```lean
+def RueCore.Cell.own (D : Decls) : Cell → List Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (c : Contents), Cell.own D (Cell.full c) = Contents.own D c
+∀ (D : Decls), Cell.own D Cell.dead = []
+```
+
+### `storeOwn`
+
+*def* · module `RueCore.Trace`
+
+The store's owned identities, cell by cell (helper).
+
+```lean
+def RueCore.storeOwn (D : Decls) (H : Store) : List Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (H : Store), storeOwn D H = List.flatMap (Cell.own D) H
 ```
 
 ### `CellMatches`
@@ -13647,6 +15399,188 @@ RueCore.FrameMatches.mk {D : Decls} {Γ : Ctx} {φ : Frame} {H : Store}
   FrameMatches D Γ φ H
 ```
 
+### `Cons`
+
+*def* · module `RueCore.Trace`
+
+**The conservation law, for one evaluation** from store `H`, holding the
+owned identities `X` besides it (a pending operand's value): the result's
+store, its value and the trace's projection `F` together own at most what `H`
+and `X` owned, plus what was minted on the way — each identity counted, as a
+multiset. The store and the value stay copy-closed. A trap carries no store,
+so its minted range is existential; a refusal and exhausted fuel promise
+nothing (helper).
+
+```lean
+def RueCore.Cons (D : Decls) (F : Event → List Nat) (H : Store) (X : List Nat) :
+  EvalRes → Prop :=
+  match x✝ with
+  | EvalRes.ok H' v tr =>
+    List.length H ≤ List.length H' ∧
+      StoreCC D H' ∧
+        Contents.copyClosed D (Contents.ofVal v) = true ∧
+          ∀ (a : Nat),
+            List.count a (storeOwn D H') + List.count a (Val.own D v) +
+                List.count a (List.flatMap F tr) ≤
+              List.count a (storeOwn D H) + List.count a X +
+                List.count a (Fresh H H')
+  | EvalRes.returned H' v tr =>
+    List.length H ≤ List.length H' ∧
+      StoreCC D H' ∧
+        Contents.copyClosed D (Contents.ofVal v) = true ∧
+          ∀ (a : Nat),
+            List.count a (storeOwn D H') + List.count a (Val.own D v) +
+                List.count a (List.flatMap F tr) ≤
+              List.count a (storeOwn D H) + List.count a X +
+                List.count a (Fresh H H')
+  | EvalRes.broke H' scope tr =>
+    List.length H ≤ List.length H' ∧
+      StoreCC D H' ∧
+        ∀ (a : Nat),
+          List.count a (storeOwn D H') + List.count a (List.flatMap F tr) ≤
+            List.count a (storeOwn D H) + List.count a X +
+              List.count a (Fresh H H')
+  | EvalRes.panic k tr =>
+    ∃ N,
+      ∀ (a : Nat),
+        List.count a (List.flatMap F tr) ≤
+          List.count a (storeOwn D H) + List.count a X +
+            List.count a (List.range' (List.length H) N)
+  | EvalRes.stuck why => True
+  | EvalRes.outOfFuel => True
+```
+
+### `Contents.allCopy`
+
+*def* · module `RueCore.Dynamics`
+
+Whether every node of a contents is `Copy` — a `⊘` and a scalar are, and an
+aggregate is when its own class is and each member is (helper).
+
+```lean
+def RueCore.Contents.allCopy (D : Decls) : Contents → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls), Contents.allCopy D Contents.hole = true
+∀ (D : Decls) (a : IntWidth) (a_1 : Sign) (a_2 : Int),
+  Contents.allCopy D (Contents.int a a_1 a_2) = true
+∀ (D : Decls) (a : FloatWidth) (a_1 : FloatDatum),
+  Contents.allCopy D (Contents.float a a_1) = true
+∀ (D : Decls) (a : Bool), Contents.allCopy D (Contents.bool a) = true
+∀ (D : Decls), Contents.allCopy D Contents.unit = true
+∀ (D : Decls) (a a_1 : Nat) (a_2 : List Contents),
+  Contents.allCopy D (Contents.struct a a_1 a_2) =
+    (decide (D.classOf a = Mult.copy) && Contents.allCopyList D a_2)
+∀ (D : Decls) (a a_1 a_2 : Nat) (a_3 : List Contents),
+  Contents.allCopy D (Contents.enum a a_1 a_2 a_3) =
+    (decide (D.enumClassOf a = Mult.copy) && Contents.allCopyList D a_3)
+∀ (D : Decls) (a : Ty) (a_1 : Nat) (a_2 : List Contents),
+  Contents.allCopy D (Contents.array a a_1 a_2) =
+    (decide (Ty.mult D (a.array a_2.length) = Mult.copy) &&
+      Contents.allCopyList D a_2)
+```
+
+### `Contents.allCopyList`
+
+*def* · module `RueCore.Dynamics`
+
+`allCopy` over a field, payload or element list (helper).
+
+```lean
+def RueCore.Contents.allCopyList (D : Decls) : List Contents → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls), Contents.allCopyList D [] = true
+∀ (D : Decls) (c : Contents) (cs : List Contents),
+  Contents.allCopyList D (c :: cs) =
+    (Contents.allCopy D c && Contents.allCopyList D cs)
+```
+
+### `Contents.copyClosed`
+
+*def* · module `RueCore.Dynamics`
+
+**Copy closure**: no non-`Copy` value sits under a `Copy` node. §3 makes
+it a fact about types — a `Copy` type's fields, payloads and elements are
+`Copy` (`3.8:18`, `6.3:19`, §3's array lift) — and the machine relies on it
+wherever it duplicates a value: (D-Use-Copy), the dynamic-index read and the
+repeat form copy a `Copy` value whole, which is sound only when nothing owned
+hides inside it. A struct literal, an enum literal or an array literal whose
+class is `Copy` but whose members are not, or an assignment that writes an
+owned value under a `Copy` node, is a shape no well-typed program produces;
+the machine refuses it (`typeConfusion`) rather than build a duplicable
+owner, and `soundness` proves a checked program never reaches the refusal
+(`HasTy.copyClosed`, `ContentsTy.copyClosed`, `Soundness.lean`). It is a
+**monitor** in the module docstring's sense — §6's (D-Struct) would build the
+value — and it is what makes `no_double_free`'s conservation law hold without
+a typing derivation (`Trace.lean`) (helper).
+
+```lean
+def RueCore.Contents.copyClosed (D : Decls) : Contents → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls), Contents.copyClosed D Contents.hole = true
+∀ (D : Decls) (a : IntWidth) (a_1 : Sign) (a_2 : Int),
+  Contents.copyClosed D (Contents.int a a_1 a_2) = true
+∀ (D : Decls) (a : FloatWidth) (a_1 : FloatDatum),
+  Contents.copyClosed D (Contents.float a a_1) = true
+∀ (D : Decls) (a : Bool), Contents.copyClosed D (Contents.bool a) = true
+∀ (D : Decls), Contents.copyClosed D Contents.unit = true
+∀ (D : Decls) (a a_1 : Nat) (a_2 : List Contents),
+  Contents.copyClosed D (Contents.struct a a_1 a_2) =
+    if D.classOf a = Mult.copy then Contents.allCopyList D a_2
+    else Contents.copyClosedList D a_2
+∀ (D : Decls) (a a_1 a_2 : Nat) (a_3 : List Contents),
+  Contents.copyClosed D (Contents.enum a a_1 a_2 a_3) =
+    if D.enumClassOf a = Mult.copy then Contents.allCopyList D a_3
+    else Contents.copyClosedList D a_3
+∀ (D : Decls) (a : Ty) (a_1 : Nat) (a_2 : List Contents),
+  Contents.copyClosed D (Contents.array a a_1 a_2) =
+    if Ty.mult D (a.array a_2.length) = Mult.copy then
+      Contents.allCopyList D a_2
+    else Contents.copyClosedList D a_2
+```
+
+### `Contents.copyClosedList`
+
+*def* · module `RueCore.Dynamics`
+
+`copyClosed` over a field, payload or element list (helper).
+
+```lean
+def RueCore.Contents.copyClosedList (D : Decls) : List Contents → Bool
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls), Contents.copyClosedList D [] = true
+∀ (D : Decls) (c : Contents) (cs : List Contents),
+  Contents.copyClosedList D (c :: cs) =
+    (Contents.copyClosed D c && Contents.copyClosedList D cs)
+```
+
+### `StoreCC`
+
+*def* · module `RueCore.Trace`
+
+Every live cell of the store is copy-closed (helper).
+
+```lean
+def RueCore.StoreCC (D : Decls) (H : Store) : Prop :=
+  ∀ (ℓ : Nat) (c : Contents),
+    H[ℓ]? = some (Cell.full c) → Contents.copyClosed D c = true
+```
+
 ### `Contents.destructure`
 
 *def* · module `RueCore.Dynamics`
@@ -13696,12 +15630,12 @@ Contents.hole.holeFree = false
 ∀ (w : FloatWidth) (f : FloatDatum), (Contents.float w f).holeFree = true
 ∀ (b : Bool), (Contents.bool b).holeFree = true
 Contents.unit.holeFree = true
-∀ (s : Nat) (cs : List Contents),
-  (Contents.struct s cs).holeFree = Contents.holeFreeList cs
-∀ (elem : Ty) (cs : List Contents),
-  (Contents.array elem cs).holeFree = Contents.holeFreeList cs
-∀ (e k : Nat) (cs : List Contents),
-  (Contents.enum e k cs).holeFree = Contents.holeFreeList cs
+∀ (s id : Nat) (cs : List Contents),
+  (Contents.struct s id cs).holeFree = Contents.holeFreeList cs
+∀ (elem : Ty) (id : Nat) (cs : List Contents),
+  (Contents.array elem id cs).holeFree = Contents.holeFreeList cs
+∀ (e k id : Nat) (cs : List Contents),
+  (Contents.enum e k id cs).holeFree = Contents.holeFreeList cs
 ```
 
 ### `Contents.holeFreeList`
@@ -13743,15 +15677,15 @@ Defining equations, as Lean derived them from the body:
   Contents.ofVal (Val.float a a_1) = Contents.float a a_1
 ∀ (a : Bool), Contents.ofVal (Val.bool a) = Contents.bool a
 Contents.ofVal Val.unit = Contents.unit
-∀ (a : Nat) (a_1 : List Val),
-  Contents.ofVal (Val.struct a a_1) =
-    Contents.struct a (Contents.ofVals a_1)
 ∀ (a a_1 : Nat) (a_2 : List Val),
-  Contents.ofVal (Val.enum a a_1 a_2) =
-    Contents.enum a a_1 (Contents.ofVals a_2)
-∀ (a : Ty) (a_1 : List Val),
-  Contents.ofVal (Val.array a a_1) =
-    Contents.array a (Contents.ofVals a_1)
+  Contents.ofVal (Val.struct a a_1 a_2) =
+    Contents.struct a a_1 (Contents.ofVals a_2)
+∀ (a a_1 a_2 : Nat) (a_3 : List Val),
+  Contents.ofVal (Val.enum a a_1 a_2 a_3) =
+    Contents.enum a a_1 a_2 (Contents.ofVals a_3)
+∀ (a : Ty) (a_1 : Nat) (a_2 : List Val),
+  Contents.ofVal (Val.array a a_1 a_2) =
+    Contents.array a a_1 (Contents.ofVals a_2)
 ```
 
 ### `Contents.ofVals`
@@ -13770,6 +15704,41 @@ Defining equations, as Lean derived them from the body:
 Contents.ofVals [] = []
 ∀ (v : Val) (vs : List Val),
   Contents.ofVals (v :: vs) = Contents.ofVal v :: Contents.ofVals vs
+```
+
+### `introVal`
+
+*def* · module `RueCore.Dynamics`
+
+**Aggregate introduction mints a value identity** ((D-Struct) and (D-Array)
+§6.5, (D-Enum-Intro) §6.6, and the repeat form): the new value's identity is
+`H.length`, the next index of the store, and that index is reserved by
+appending `†`. §6.1 draws every identity from one pool — "a fresh identity is
+one not in `dom(H)`; dead allocations stay in the domain as `†`, so an
+identity is never reused" — so a reserved index is a name no later mint, and
+no later binding, can take. The reserved slot holds no storage and nothing
+binds it; it is never read. The identity travels with the value — through
+`Contents.ofVal`/`toVal` into and out of cells, into a callee's parameter
+cells and a `match` arm's payload cells — and the drop trace records it
+(`Event`), which is what `no_double_free` (`Trace.lean`) counts.
+
+The copy-closure monitor (`Contents.copyClosed`) runs here, on the finished
+value (helper).
+
+```lean
+def RueCore.introVal (D : Decls) (H : Store) (mk : Nat → Val) : EvalRes
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (H : Store) (mk : Nat → Val),
+  introVal D H mk =
+    if
+        Contents.copyClosed D (Contents.ofVal (mk (List.length H))) =
+          true then
+      EvalRes.ok (H ++ [Cell.dead]) (mk (List.length H)) []
+    else EvalRes.stuck Violation.ownedUnderCopy
 ```
 
 ### `mintParams`
@@ -13795,6 +15764,154 @@ Defining equations, as Lean derived them from the body:
   mintParams x (v :: vs) =
     match mintParams (x ++ [Cell.full (Contents.ofVal v)]) vs with
     | (H', locs) => (H', List.length x :: locs)
+```
+
+### `Contents.own`
+
+*def* · module `RueCore.Trace`
+
+The identities of a contents' **owned** nodes: every non-`Copy` aggregate
+in it, `⊘` skipped (§6.11's skip) and nothing below a `Copy` node, since a
+`Copy` value is duplicated freely and has no drop glue.
+
+```lean
+def RueCore.Contents.own (D : Decls) : Contents → List Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls), Contents.own D Contents.hole = []
+∀ (D : Decls) (w : IntWidth) (s : Sign) (n : Int),
+  Contents.own D (Contents.int w s n) = []
+∀ (D : Decls) (w : FloatWidth) (f : FloatDatum),
+  Contents.own D (Contents.float w f) = []
+∀ (D : Decls) (b : Bool), Contents.own D (Contents.bool b) = []
+∀ (D : Decls), Contents.own D Contents.unit = []
+∀ (D : Decls) (s i : Nat) (cs : List Contents),
+  Contents.own D (Contents.struct s i cs) =
+    if D.classOf s = Mult.copy then [] else i :: Contents.ownList D cs
+∀ (D : Decls) (e k i : Nat) (cs : List Contents),
+  Contents.own D (Contents.enum e k i cs) =
+    if D.enumClassOf e = Mult.copy then [] else i :: Contents.ownList D cs
+∀ (D : Decls) (T : Ty) (i : Nat) (cs : List Contents),
+  Contents.own D (Contents.array T i cs) =
+    if Ty.mult D (T.array cs.length) = Mult.copy then []
+    else i :: Contents.ownList D cs
+```
+
+### `Contents.ownList`
+
+*def* · module `RueCore.Trace`
+
+`own` over a field, payload or element list (helper).
+
+```lean
+def RueCore.Contents.ownList (D : Decls) : List Contents → List Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls), Contents.ownList D [] = []
+∀ (D : Decls) (c : Contents) (cs : List Contents),
+  Contents.ownList D (c :: cs) = Contents.own D c ++ Contents.ownList D cs
+```
+
+### `Val.own`
+
+*def* · module `RueCore.Trace`
+
+A value's owned identities: its stored image's (helper).
+
+```lean
+def RueCore.Val.own (D : Decls) (v : Val) : List Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (v : Val), Val.own D v = Contents.own D (Contents.ofVal v)
+```
+
+### `Event.freed`
+
+*def* · module `RueCore.Trace`
+
+The owned identities a `drop` or `dropTemp` marker frees: the whole tree
+§6.11's walk goes through. A destructor event frees nothing of its own — it is
+nested under a marker, or under a destructure's residue drop — and a `@dbg`
+frees nothing (helper).
+
+```lean
+def RueCore.Event.freed (D : Decls) : Event → List Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (ℓ : Nat) (c : Contents),
+  Event.freed D (Event.drop ℓ c) = Contents.own D c
+∀ (D : Decls) (v : Val), Event.freed D (Event.dropTemp v) = Val.own D v
+∀ (D : Decls) (s : Nat) (c : Contents),
+  Event.freed D (Event.dtor s c) = []
+∀ (D : Decls) (v : Val), Event.freed D (Event.dbg v) = []
+```
+
+### `TraceMeasure`
+
+*inductive* · module `RueCore.Trace`
+
+What the conservation law asks of a projection `F` of the trace onto
+identities: §6.11's walk projects to at most what the dropped contents owns,
+with a binding's `drop` marker or a temporary's `dropTemp` marker on top, and
+a `@dbg` projects to nothing. `freedIds` and `dtorIds` are the two projections
+§7's bullet is about (`freed_measure`, `dtor_measure`) (helper).
+
+```lean
+inductive RueCore.TraceMeasure (D : Decls) (F : Event → List Nat) : Prop
+```
+
+Constructors:
+
+**`TraceMeasure.mk`**
+
+```lean
+RueCore.TraceMeasure.mk {D : Decls} {F : Event → List Nat}
+  (walk :
+    ∀ {c : Contents} {evs : List Event},
+      Contents.copyClosed D c = true →
+        dropContents D c = Except.ok evs →
+          IdLe (List.flatMap F evs) (Contents.own D c))
+  (marker :
+    ∀ {ℓ : Nat} {c : Contents} {evs : List Event},
+      Contents.copyClosed D c = true →
+        dropContents D c = Except.ok evs →
+          IdLe (F (Event.drop ℓ c) ++ List.flatMap F evs) (Contents.own D c))
+  (temp :
+    ∀ {v : Val} {evs : List Event},
+      Contents.copyClosed D (Contents.ofVal v) = true →
+        dropContents D (Contents.ofVal v) = Except.ok evs →
+          IdLe (F (Event.dropTemp v) ++ List.flatMap F evs) (Val.own D v))
+  (dbg : ∀ (v : Val), F (Event.dbg v) = []) : TraceMeasure D F
+```
+
+### `freedIds`
+
+*def* · module `RueCore.Trace`
+
+The identities the trace's markers free, in trace order: what §7's
+no-double-free bullet counts at a drop.
+
+```lean
+def RueCore.freedIds (D : Decls) (tr : List Event) : List Nat
+```
+
+Defining equations, as Lean derived them from the body:
+
+```lean
+∀ (D : Decls) (tr : List Event),
+  freedIds D tr = List.flatMap (Event.freed D) tr
 ```
 
 ### `Contents.residualLinear`
@@ -13834,18 +15951,18 @@ Defining equations, as Lean derived them from the body:
 ∀ (D : Decls) (a : Bool),
   Contents.residualLinear D (Contents.bool a) = false
 ∀ (D : Decls), Contents.residualLinear D Contents.unit = false
-∀ (D : Decls) (a : Nat) (a_1 : List Contents),
-  Contents.residualLinear D (Contents.struct a a_1) =
+∀ (D : Decls) (a a_1 : Nat) (a_2 : List Contents),
+  Contents.residualLinear D (Contents.struct a a_1 a_2) =
     match D.structs[a]? with
     | some sd =>
-      decide (sd.attr = Attr.linear) || Contents.residualLinearList D a_1
+      decide (sd.attr = Attr.linear) || Contents.residualLinearList D a_2
     | none => false
-∀ (D : Decls) (a a_1 : Nat) (a_2 : List Contents),
-  Contents.residualLinear D (Contents.enum a a_1 a_2) =
+∀ (D : Decls) (a a_1 a_2 : Nat) (a_3 : List Contents),
+  Contents.residualLinear D (Contents.enum a a_1 a_2 a_3) =
+    Contents.residualLinearList D a_3
+∀ (D : Decls) (a : Ty) (a_1 : Nat) (a_2 : List Contents),
+  Contents.residualLinear D (Contents.array a a_1 a_2) =
     Contents.residualLinearList D a_2
-∀ (D : Decls) (a : Ty) (a_1 : List Contents),
-  Contents.residualLinear D (Contents.array a a_1) =
-    Contents.residualLinearList D a_1
 ```
 
 ### `Contents.residualLinearList`
@@ -14017,15 +16134,15 @@ Contents.hole.toVal = none
   (Contents.float a a_1).toVal = some (Val.float a a_1)
 ∀ (a : Bool), (Contents.bool a).toVal = some (Val.bool a)
 Contents.unit.toVal = some Val.unit
-∀ (a : Nat) (a_1 : List Contents),
-  (Contents.struct a a_1).toVal =
-    Option.map (Val.struct a) (Contents.toVals a_1)
 ∀ (a a_1 : Nat) (a_2 : List Contents),
-  (Contents.enum a a_1 a_2).toVal =
-    Option.map (Val.enum a a_1) (Contents.toVals a_2)
-∀ (a : Ty) (a_1 : List Contents),
-  (Contents.array a a_1).toVal =
-    Option.map (Val.array a) (Contents.toVals a_1)
+  (Contents.struct a a_1 a_2).toVal =
+    Option.map (Val.struct a a_1) (Contents.toVals a_2)
+∀ (a a_1 a_2 : Nat) (a_3 : List Contents),
+  (Contents.enum a a_1 a_2 a_3).toVal =
+    Option.map (Val.enum a a_1 a_2) (Contents.toVals a_3)
+∀ (a : Ty) (a_1 : Nat) (a_2 : List Contents),
+  (Contents.array a a_1 a_2).toVal =
+    Option.map (Val.array a a_1) (Contents.toVals a_2)
 ```
 
 ### `Contents.toVals`
@@ -14405,7 +16522,7 @@ RueCore.Step.argsPlug {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
     (Config.run H φ K (Focus.args t (vs ++ [v]) es) tr)
 ```
 
-**`Step.mkStruct`** — (D-Struct) §6.5: every initializer is a value.
+**`Step.mkStruct`** — (D-Struct) §6.5: every initializer is a value. The value's identity is minted as `eval` mints it (`introVal`): the next index of the store, reserved with `†`.
 
 ```lean
 RueCore.Step.mkStruct {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
@@ -14414,10 +16531,11 @@ RueCore.Step.mkStruct {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
   P.decls.structs[s]? = some sd →
     sd.fields.length = vs.length →
       Step M P (Config.run H φ K (Focus.args (ArgsTag.struct s) vs []) tr)
-        (Config.run H φ K (Focus.ret (Val.struct s vs)) tr)
+        (Config.run (H ++ [Cell.dead]) φ K
+          (Focus.ret (Val.struct s (List.length H) vs)) tr)
 ```
 
-**`Step.mkEnum`** — (D-Enum-Intro) §6.6: every payload component is a value.
+**`Step.mkEnum`** — (D-Enum-Intro) §6.6: every payload component is a value; the identity is minted as at (D-Struct).
 
 ```lean
 RueCore.Step.mkEnum {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
@@ -14427,16 +16545,18 @@ RueCore.Step.mkEnum {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
     ed.variants[k]? = some Ts →
       Ts.length = vs.length →
         Step M P (Config.run H φ K (Focus.args (ArgsTag.enum e k) vs []) tr)
-          (Config.run H φ K (Focus.ret (Val.enum e k vs)) tr)
+          (Config.run (H ++ [Cell.dead]) φ K
+            (Focus.ret (Val.enum e k (List.length H) vs)) tr)
 ```
 
-**`Step.mkArray`** — (D-Array) §6.5: every element is a value.
+**`Step.mkArray`** — (D-Array) §6.5: every element is a value; the identity is minted as at (D-Struct).
 
 ```lean
 RueCore.Step.mkArray {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {T : Ty} {vs : List Val} :
   Step M P (Config.run H φ K (Focus.args (ArgsTag.array T) vs []) tr)
-    (Config.run H φ K (Focus.ret (Val.array T vs)) tr)
+    (Config.run (H ++ [Cell.dead]) φ K
+      (Focus.ret (Val.array T (List.length H) vs)) tr)
 ```
 
 **`Step.repeatEnter`** — (Search) §6.2 into the repeat form's operand (`7.1:39`).
@@ -14455,7 +16575,8 @@ RueCore.Step.repeatArray {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
   {K : List Kont} {tr : List Event} {T : Ty} {n : Nat} {v : Val} :
   Val.mult P.decls v = Mult.copy →
     Step M P (Config.run H φ (Kont.repeatArray T n :: K) (Focus.ret v) tr)
-      (Config.run H φ K (Focus.ret (Val.array T (List.replicate n v))) tr)
+      (Config.run (H ++ [Cell.dead]) φ K
+        (Focus.ret (Val.array T (List.length H) (List.replicate n v))) tr)
 ```
 
 **`Step.indexRead`** — (D-Index) §6.5 at a dynamic place, every index in range, and (D-Use-Untrackable-Dynamic-Copy) §6.3 reads the `Copy` leaf, leaving the storage live. §6.3 has no rule for a non-`Copy` leaf here, so that configuration is stuck (`typeConfusion`).
@@ -14556,12 +16677,12 @@ RueCore.Step.matchEnter {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
 
 ```lean
 RueCore.Step.match {M : FloatOps} {P : Program} {H : Store} {φ : Frame}
-  {K : List Kont} {tr : List Event} {arms : List Expr} {e k : Nat}
+  {K : List Kont} {tr : List Event} {arms : List Expr} {e k i : Nat}
   {vs : List Val} {body : Expr} {H' : Store} {ls : List Nat} :
   arms[k]? = some body →
     mintParams H vs = (H', ls) →
       Step M P
-        (Config.run H φ (Kont.match arms :: K) (Focus.ret (Val.enum e k vs))
+        (Config.run H φ (Kont.match arms :: K) (Focus.ret (Val.enum e k i vs))
           tr)
         (Config.run H' { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls }
           (Kont.endscope ls :: K) (Focus.eval body) tr)
@@ -14870,19 +16991,20 @@ RueCore.ContentsMatches.moved {D : Decls} {c : Contents} {T : Ty} :
 
 ```lean
 RueCore.ContentsMatches.fields {D : Decls} {s : Nat} {sd : StructDecl}
-  {cs : List Contents} {ts : List OwnSt} :
+  {i : Nat} {cs : List Contents} {ts : List OwnSt} :
   D.structs[s]? = some sd →
     ContentsMatchesList D cs ts sd.fields →
-      ContentsMatches D (Contents.struct s cs) (OwnSt.fields ts) (Ty.struct s)
+      ContentsMatches D (Contents.struct s i cs) (OwnSt.fields ts)
+        (Ty.struct s)
 ```
 
 **`ContentsMatches.elems`** — The array form of the same clause: a node with per-element records holds the array its type names, element by element. A constant-index **write** reaches it (`a[0] = …` records `fields [Owned]`), and so does an element move, whose `⊘` is what `3.8:73`'s per-path element drop reads.
 
 ```lean
-RueCore.ContentsMatches.elems {D : Decls} {T : Ty} {n : Nat}
+RueCore.ContentsMatches.elems {D : Decls} {T : Ty} {n i : Nat}
   {cs : List Contents} {ts : List OwnSt} :
   ContentsMatchesList D cs ts (List.replicate n T) →
-    ContentsMatches D (Contents.array T cs) (OwnSt.fields ts) (T.array n)
+    ContentsMatches D (Contents.array T i cs) (OwnSt.fields ts) (T.array n)
 ```
 
 ### `ContentsMatchesList`
@@ -14967,29 +17089,30 @@ RueCore.ContentsTy.unit {D : Decls} : ContentsTy D Contents.unit Ty.unit
 **`ContentsTy.struct`**
 
 ```lean
-RueCore.ContentsTy.struct {D : Decls} {s : Nat} {sd : StructDecl}
+RueCore.ContentsTy.struct {D : Decls} {s : Nat} {sd : StructDecl} {i : Nat}
   {cs : List Contents} :
   D.structs[s]? = some sd →
     ContentsTys D cs sd.fields →
-      ContentsTy D (Contents.struct s cs) (Ty.struct s)
+      ContentsTy D (Contents.struct s i cs) (Ty.struct s)
 ```
 
 **`ContentsTy.enum`** — §6.1's tagged value stored in a cell, typed the way `HasTy.enum` types the value. A payload position is never `⊘` in a reachable state (no path reaches one — `Dynamics.lean`), but nothing here needs that: `ContentsTy` admits `⊘` at every node and `holeFree` is what the rules that want a value ask for.
 
 ```lean
 RueCore.ContentsTy.enum {D : Decls} {e k : Nat} {ed : EnumDecl} {Ts : List Ty}
-  {cs : List Contents} :
+  {i : Nat} {cs : List Contents} :
   D.enums[e]? = some ed →
     ed.variants[k]? = some Ts →
-      ContentsTys D cs Ts → ContentsTy D (Contents.enum e k cs) (Ty.enum e)
+      ContentsTys D cs Ts → ContentsTy D (Contents.enum e k i cs) (Ty.enum e)
 ```
 
 **`ContentsTy.array`** — An array's stored contents: `n` positions, each well typed at the element type, with §6.1's `⊘` admitted at any of them.
 
 ```lean
-RueCore.ContentsTy.array {D : Decls} {T : Ty} {n : Nat} {cs : List Contents} :
+RueCore.ContentsTy.array {D : Decls} {T : Ty} {n i : Nat}
+  {cs : List Contents} :
   ContentsTys D cs (List.replicate n T) →
-    ContentsTy D (Contents.array T cs) (T.array n)
+    ContentsTy D (Contents.array T i cs) (T.array n)
 ```
 
 ### `ContentsTys`
@@ -15204,26 +17327,27 @@ RueCore.HasTy.unit {D : Decls} : HasTy D Val.unit Ty.unit
 **`HasTy.struct`**
 
 ```lean
-RueCore.HasTy.struct {D : Decls} {s : Nat} {sd : StructDecl} {vs : List Val} :
+RueCore.HasTy.struct {D : Decls} {s : Nat} {sd : StructDecl} {i : Nat}
+  {vs : List Val} :
   D.structs[s]? = some sd →
-    HasTys D vs sd.fields → HasTy D (Val.struct s vs) (Ty.struct s)
+    HasTys D vs sd.fields → HasTy D (Val.struct s i vs) (Ty.struct s)
 ```
 
 **`HasTy.enum`** — §6.1's `Kj⟨ v1, …, va ⟩` at `E`: the tag names a variant of the declaration — which is what progress at a `match` reads (`exhaustive_arm_exists`) — and the payload is well typed at that variant's declared component types ((Enum-Intro) §5.5, read on values). Nothing relates the value to the *other* variants: `class(E)` does (§3), and that is a fact about the type.
 
 ```lean
 RueCore.HasTy.enum {D : Decls} {e k : Nat} {ed : EnumDecl} {Ts : List Ty}
-  {vs : List Val} :
+  {i : Nat} {vs : List Val} :
   D.enums[e]? = some ed →
     ed.variants[k]? = some Ts →
-      HasTys D vs Ts → HasTy D (Val.enum e k vs) (Ty.enum e)
+      HasTys D vs Ts → HasTy D (Val.enum e k i vs) (Ty.enum e)
 ```
 
 **`HasTy.array`** — §6.1's `[ v1, …, vn ]` well typed at `[T; n]` exactly when it has `n` elements and each is well typed at `T` ((Array-Intro) §5.8, read on values; `3.5:3`'s one shared element type is `List.replicate n T`). The value carries `T` because `class([T; n])` is not a function of the elements present — `3.8:74` (`Syntax.lean`).
 
 ```lean
-RueCore.HasTy.array {D : Decls} {T : Ty} {n : Nat} {vs : List Val} :
-  HasTys D vs (List.replicate n T) → HasTy D (Val.array T vs) (T.array n)
+RueCore.HasTy.array {D : Decls} {T : Ty} {n i : Nat} {vs : List Val} :
+  HasTys D vs (List.replicate n T) → HasTy D (Val.array T i vs) (T.array n)
 ```
 
 ### `HasTys`
@@ -16387,18 +18511,18 @@ Defining equations, as Lean derived them from the body:
   dropEvents D (Contents.float a a_1) = []
 ∀ (D : Decls) (a : Bool), dropEvents D (Contents.bool a) = []
 ∀ (D : Decls), dropEvents D Contents.unit = []
-∀ (D : Decls) (a : Nat) (a_1 : List Contents),
-  dropEvents D (Contents.struct a a_1) =
+∀ (D : Decls) (a a_1 : Nat) (a_2 : List Contents),
+  dropEvents D (Contents.struct a a_1 a_2) =
     (match D.structs[a]? with
       | some sd =>
-        if sd.dtor = true then [Event.dtor a (Contents.struct a a_1)]
+        if sd.dtor = true then [Event.dtor a (Contents.struct a a_1 a_2)]
         else []
       | none => []) ++
-      dropEventsList D a_1
-∀ (D : Decls) (a a_1 : Nat) (a_2 : List Contents),
-  dropEvents D (Contents.enum a a_1 a_2) = dropEventsList D a_2
-∀ (D : Decls) (a : Ty) (a_1 : List Contents),
-  dropEvents D (Contents.array a a_1) = dropEventsList D a_1
+      dropEventsList D a_2
+∀ (D : Decls) (a a_1 a_2 : Nat) (a_3 : List Contents),
+  dropEvents D (Contents.enum a a_1 a_2 a_3) = dropEventsList D a_3
+∀ (D : Decls) (a : Ty) (a_1 : Nat) (a_2 : List Contents),
+  dropEvents D (Contents.array a a_1 a_2) = dropEventsList D a_2
 ```
 
 ### `dropEventsList`

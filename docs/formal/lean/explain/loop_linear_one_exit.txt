@@ -139,50 +139,50 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 1
-  [3]   d3        (D-Struct) §6.5
+  [3]   d3        (D-Struct) §6.5 (mint #0)
          expr    S3 { x0: 1 }
          store   (empty)
-           →     (empty)
-         result  value S3 { 1 }
+           →     [ℓ0 = †]
+         result  value S3 { 1 }#0
   [4]   d3        (D-Let) §6.7 (mint the binding)
-         expr    let v0 = S3 { 1 } at ℓ0
-         store   (empty)
-           →     [ℓ0 = S3 { 1 }]
-         result  value S3 { 1 }
+         expr    let v0 = S3 { 1 }#0 at ℓ1
+         store   [ℓ0 = †]
+           →     [ℓ0 = †, ℓ1 = S3 { 1 }#0]
+         result  value S3 { 1 }#0
   [5]   d6              literal §6.3
          expr    false
-         store   [ℓ0 = S3 { 1 }]
-           →     [ℓ0 = S3 { 1 }]
+         store   [ℓ0 = †, ℓ1 = S3 { 1 }#0]
+           →     [ℓ0 = †, ℓ1 = S3 { 1 }#0]
          result  value false
   [6]   d6              (D-Break) §6.10
          expr    break
-         store   [ℓ0 = S3 { 1 }]
-           →     [ℓ0 = S3 { 1 }]
+         store   [ℓ0 = †, ℓ1 = S3 { 1 }#0]
+           →     [ℓ0 = †, ℓ1 = S3 { 1 }#0]
          result  BREAK — unwinding to the enclosing loop (§6.10)
   [7]   d5            (D-If-F) §6.6
          expr    if false { { @drop(v0); break } } else { break }
-         store   [ℓ0 = S3 { 1 }]
-           →     [ℓ0 = S3 { 1 }]
+         store   [ℓ0 = †, ℓ1 = S3 { 1 }#0]
+           →     [ℓ0 = †, ℓ1 = S3 { 1 }#0]
          result  BREAK — unwinding to the enclosing loop (§6.10)
   [8]   d4          (D-Break) §6.10 (unwind to the loop)
          expr    unwind-drops([])
-         store   [ℓ0 = S3 { 1 }]
-           →     [ℓ0 = S3 { 1 }]
+         store   [ℓ0 = †, ℓ1 = S3 { 1 }#0]
+           →     [ℓ0 = †, ℓ1 = S3 { 1 }#0]
          result  value ()
   [9]   d4          literal §6.3
          expr    0
-         store   [ℓ0 = S3 { 1 }]
-           →     [ℓ0 = S3 { 1 }]
+         store   [ℓ0 = †, ℓ1 = S3 { 1 }#0]
+           →     [ℓ0 = †, ℓ1 = S3 { 1 }#0]
          result  value 0
   [10]  d3        (D-Seq) §6.7
          expr    { loop { if false { { @drop(v0); break } } else { break } }; 0 }
-         store   [ℓ0 = S3 { 1 }]
-           →     [ℓ0 = S3 { 1 }]
+         store   [ℓ0 = †, ℓ1 = S3 { 1 }#0]
+           →     [ℓ0 = †, ℓ1 = S3 { 1 }#0]
          result  value 0
   [11]  d2      (D-EndScope) §6.7 (retire the binding)
          expr    { let v0: S3 = S3 { x0: 1 }; { loop { if false { { @drop(v0); break } } else { …
-         store   [ℓ0 = S3 { 1 }]
-           →     [ℓ0 = S3 { 1 }]
+         store   [ℓ0 = †, ℓ1 = S3 { 1 }#0]
+           →     [ℓ0 = †, ℓ1 = S3 { 1 }#0]
          result  REFUSED (linearLeak)
                  a scope exit or a frame teardown reached a live linear value: a
                  linear obligation was never discharged (endscope §6.7 /
@@ -191,7 +191,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
   [12]  d0  (D-Return-Value) §6.9 (pop the frame)
          expr    f0()
          store   (empty)
-           →     [ℓ0 = S3 { 1 }]
+           →     [ℓ0 = †, ℓ1 = S3 { 1 }#0]
          result  REFUSED (linearLeak)
                  a scope exit or a frame teardown reached a live linear value: a
                  linear obligation was never discharged (endscope §6.7 /

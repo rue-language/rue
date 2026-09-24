@@ -150,74 +150,74 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 1
-  [3]   d3        (D-Struct) §6.5
+  [3]   d3        (D-Struct) §6.5 (mint #0)
          expr    S3 { x0: 1 }
          store   (empty)
-           →     (empty)
-         result  value S3 { 1 }
+           →     [ℓ0 = †]
+         result  value S3 { 1 }#0
   [4]   d3        (D-Let) §6.7 (mint the binding)
-         expr    let v0 = S3 { 1 } at ℓ0
-         store   (empty)
-           →     [ℓ0 = S3 { 1 }]
-         result  value S3 { 1 }
-  [5]   d5            (D-Enum-Intro) §6.6
+         expr    let v0 = S3 { 1 }#0 at ℓ1
+         store   [ℓ0 = †]
+           →     [ℓ0 = †, ℓ1 = S3 { 1 }#0]
+         result  value S3 { 1 }#0
+  [5]   d5            (D-Enum-Intro) §6.6 (mint #2)
          expr    E3.K1
-         store   [ℓ0 = S3 { 1 }]
-           →     [ℓ0 = S3 { 1 }]
-         result  value E3.K1⟨⟩
+         store   [ℓ0 = †, ℓ1 = S3 { 1 }#0]
+           →     [ℓ0 = †, ℓ1 = S3 { 1 }#0, ℓ2 = †]
+         result  value E3.K1⟨⟩#2
   [6]   d5            (D-Match) §6.6 (bind the arm's payload)
          expr    bind E3.K1's payload to []
-         store   [ℓ0 = S3 { 1 }]
-           →     [ℓ0 = S3 { 1 }]
-         result  value E3.K1⟨⟩
+         store   [ℓ0 = †, ℓ1 = S3 { 1 }#0, ℓ2 = †]
+           →     [ℓ0 = †, ℓ1 = S3 { 1 }#0, ℓ2 = †]
+         result  value E3.K1⟨⟩#2
   [7]   d5            literal §6.3
          expr    2
-         store   [ℓ0 = S3 { 1 }]
-           →     [ℓ0 = S3 { 1 }]
+         store   [ℓ0 = †, ℓ1 = S3 { 1 }#0, ℓ2 = †]
+           →     [ℓ0 = †, ℓ1 = S3 { 1 }#0, ℓ2 = †]
          result  value 2
   [8]   d4          (D-EndScope) §6.6 (end the arm)
          expr    endscope([])
-         store   [ℓ0 = S3 { 1 }]
-           →     [ℓ0 = S3 { 1 }]
+         store   [ℓ0 = †, ℓ1 = S3 { 1 }#0, ℓ2 = †]
+           →     [ℓ0 = †, ℓ1 = S3 { 1 }#0, ℓ2 = †]
          result  value 2
   [9]   d4          (D-Let) §6.7 (mint the binding)
-         expr    let v1 = 2 at ℓ1
-         store   [ℓ0 = S3 { 1 }]
-           →     [ℓ0 = S3 { 1 }, ℓ1 = 2]
+         expr    let v1 = 2 at ℓ3
+         store   [ℓ0 = †, ℓ1 = S3 { 1 }#0, ℓ2 = †]
+           →     [ℓ0 = †, ℓ1 = S3 { 1 }#0, ℓ2 = †, ℓ3 = 2]
          result  value 2
   [10]  d5            @drop §6.11
          expr    @drop(v0)
-         store   [ℓ0 = S3 { 1 }, ℓ1 = 2]
-           →     [ℓ0 = ⊘, ℓ1 = 2]
-         events  >> drop ℓ0 = S3 { 1 }; run drop fn S3(S3 { 1 })
+         store   [ℓ0 = †, ℓ1 = S3 { 1 }#0, ℓ2 = †, ℓ3 = 2]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = †, ℓ3 = 2]
+         events  >> drop ℓ1 = S3 { 1 }#0; run drop fn S3(S3 { 1 }#0)
          result  value ()
   [11]  d5            (D-Use-Copy) §6.3
          expr    v1
-         store   [ℓ0 = ⊘, ℓ1 = 2]
-           →     [ℓ0 = ⊘, ℓ1 = 2]
+         store   [ℓ0 = †, ℓ1 = ⊘, ℓ2 = †, ℓ3 = 2]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = †, ℓ3 = 2]
          result  value 2
   [12]  d4          (D-Seq) §6.7
          expr    { @drop(v0); v1 }
-         store   [ℓ0 = S3 { 1 }, ℓ1 = 2]
-           →     [ℓ0 = ⊘, ℓ1 = 2]
+         store   [ℓ0 = †, ℓ1 = S3 { 1 }#0, ℓ2 = †, ℓ3 = 2]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = †, ℓ3 = 2]
          result  value 2
   [13]  d3        (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ1])
-         store   [ℓ0 = ⊘, ℓ1 = 2]
-           →     [ℓ0 = ⊘, ℓ1 = † (retired)]
+         expr    endscope([ℓ3])
+         store   [ℓ0 = †, ℓ1 = ⊘, ℓ2 = †, ℓ3 = 2]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = †, ℓ3 = †]
          result  value 2
   [14]  d2      (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ0])
-         store   [ℓ0 = ⊘, ℓ1 = † (retired)]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         expr    endscope([ℓ1])
+         store   [ℓ0 = †, ℓ1 = ⊘, ℓ2 = †, ℓ3 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †]
          result  value 2
   [15]  d0  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([])
-         store   [ℓ0 = † (retired), ℓ1 = † (retired)]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †]
          result  value 2
 
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: ok — value 2
-         drop trace: drop ℓ0 = S3 { 1 }; run drop fn S3(S3 { 1 })
+         drop trace: drop ℓ1 = S3 { 1 }#0; run drop fn S3(S3 { 1 }#0)
 

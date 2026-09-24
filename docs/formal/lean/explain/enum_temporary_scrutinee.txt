@@ -143,86 +143,86 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 1
-  [3]   d5            (D-Struct) §6.5
+  [3]   d5            (D-Struct) §6.5 (mint #0)
          expr    S1 { x0: 1 }
          store   (empty)
-           →     (empty)
-         result  value S1 { 1 }
-  [4]   d4          (D-Enum-Intro) §6.6
+           →     [ℓ0 = †]
+         result  value S1 { 1 }#0
+  [4]   d4          (D-Enum-Intro) §6.6 (mint #1)
          expr    E0.K0(S1 { x0: 1 })
          store   (empty)
-           →     (empty)
-         result  value E0.K0⟨S1 { 1 }⟩
+           →     [ℓ0 = †, ℓ1 = †]
+         result  value E0.K0⟨S1 { 1 }#0⟩#1
   [5]   d4          (D-Match) §6.6 (bind the arm's payload)
-         expr    bind E0.K0's payload to [ℓ0]
-         store   (empty)
-           →     [ℓ0 = S1 { 1 }]
-         result  value E0.K0⟨S1 { 1 }⟩
+         expr    bind E0.K0's payload to [ℓ2]
+         store   [ℓ0 = †, ℓ1 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = S1 { 1 }#0]
+         result  value E0.K0⟨S1 { 1 }#0⟩#1
   [6]   d6              literal §6.3
          expr    10
-         store   [ℓ0 = S1 { 1 }]
-           →     [ℓ0 = S1 { 1 }]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = S1 { 1 }#0]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = S1 { 1 }#0]
          result  value 10
   [7]   d5            (Dbg) §5.8, the observable output of §6.12
          expr    @dbg(10)
-         store   [ℓ0 = S1 { 1 }]
-           →     [ℓ0 = S1 { 1 }]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = S1 { 1 }#0]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = S1 { 1 }#0]
          events  >> @dbg prints 10
          result  value ()
   [8]   d5            literal §6.3
          expr    5
-         store   [ℓ0 = S1 { 1 }]
-           →     [ℓ0 = S1 { 1 }]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = S1 { 1 }#0]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = S1 { 1 }#0]
          result  value 5
   [9]   d4          (D-Seq) §6.7
          expr    { @dbg(10); 5 }
-         store   [ℓ0 = S1 { 1 }]
-           →     [ℓ0 = S1 { 1 }]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = S1 { 1 }#0]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = S1 { 1 }#0]
          result  value 5
   [10]  d3        (D-EndScope) §6.6 (end the arm)
-         expr    endscope([ℓ0])
-         store   [ℓ0 = S1 { 1 }]
-           →     [ℓ0 = † (retired)]
-         events  >> drop ℓ0 = S1 { 1 }; run drop fn S1(S1 { 1 })
+         expr    endscope([ℓ2])
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = S1 { 1 }#0]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †]
+         events  >> drop ℓ2 = S1 { 1 }#0; run drop fn S1(S1 { 1 }#0)
          result  value 5
   [11]  d3        (D-Let) §6.7 (mint the binding)
-         expr    let v0 = 5 at ℓ1
-         store   [ℓ0 = † (retired)]
-           →     [ℓ0 = † (retired), ℓ1 = 5]
+         expr    let v0 = 5 at ℓ3
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5]
          result  value 5
   [12]  d5            literal §6.3
          expr    20
-         store   [ℓ0 = † (retired), ℓ1 = 5]
-           →     [ℓ0 = † (retired), ℓ1 = 5]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5]
          result  value 20
   [13]  d4          (Dbg) §5.8, the observable output of §6.12
          expr    @dbg(20)
-         store   [ℓ0 = † (retired), ℓ1 = 5]
-           →     [ℓ0 = † (retired), ℓ1 = 5]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5]
          events  >> @dbg prints 20
          result  value ()
   [14]  d4          (D-Use-Copy) §6.3
          expr    v0
-         store   [ℓ0 = † (retired), ℓ1 = 5]
-           →     [ℓ0 = † (retired), ℓ1 = 5]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5]
          result  value 5
   [15]  d3        (D-Seq) §6.7
          expr    { @dbg(20); v0 }
-         store   [ℓ0 = † (retired), ℓ1 = 5]
-           →     [ℓ0 = † (retired), ℓ1 = 5]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5]
          result  value 5
   [16]  d2      (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ1])
-         store   [ℓ0 = † (retired), ℓ1 = 5]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         expr    endscope([ℓ3])
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †]
          result  value 5
   [17]  d0  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([])
-         store   [ℓ0 = † (retired), ℓ1 = † (retired)]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †]
          result  value 5
 
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: ok — value 5
-         drop trace: @dbg prints 10; drop ℓ0 = S1 { 1 }; run drop fn S1(S1 { 1 }); @dbg prints 20
+         drop trace: @dbg prints 10; drop ℓ2 = S1 { 1 }#0; run drop fn S1(S1 { 1 }#0); @dbg prints 20
 

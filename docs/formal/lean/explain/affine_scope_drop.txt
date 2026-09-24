@@ -83,34 +83,34 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 7
-  [3]   d3        (D-Struct) §6.5
+  [3]   d3        (D-Struct) §6.5 (mint #0)
          expr    S1 { x0: 7 }
          store   (empty)
-           →     (empty)
-         result  value S1 { 7 }
+           →     [ℓ0 = †]
+         result  value S1 { 7 }#0
   [4]   d3        (D-Let) §6.7 (mint the binding)
-         expr    let v0 = S1 { 7 } at ℓ0
-         store   (empty)
-           →     [ℓ0 = S1 { 7 }]
-         result  value S1 { 7 }
+         expr    let v0 = S1 { 7 }#0 at ℓ1
+         store   [ℓ0 = †]
+           →     [ℓ0 = †, ℓ1 = S1 { 7 }#0]
+         result  value S1 { 7 }#0
   [5]   d3        literal §6.3
          expr    1
-         store   [ℓ0 = S1 { 7 }]
-           →     [ℓ0 = S1 { 7 }]
+         store   [ℓ0 = †, ℓ1 = S1 { 7 }#0]
+           →     [ℓ0 = †, ℓ1 = S1 { 7 }#0]
          result  value 1
   [6]   d2      (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ0])
-         store   [ℓ0 = S1 { 7 }]
-           →     [ℓ0 = † (retired)]
-         events  >> drop ℓ0 = S1 { 7 }; run drop fn S1(S1 { 7 })
+         expr    endscope([ℓ1])
+         store   [ℓ0 = †, ℓ1 = S1 { 7 }#0]
+           →     [ℓ0 = †, ℓ1 = †]
+         events  >> drop ℓ1 = S1 { 7 }#0; run drop fn S1(S1 { 7 }#0)
          result  value 1
   [7]   d0  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([])
-         store   [ℓ0 = † (retired)]
-           →     [ℓ0 = † (retired)]
+         store   [ℓ0 = †, ℓ1 = †]
+           →     [ℓ0 = †, ℓ1 = †]
          result  value 1
 
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: ok — value 1
-         drop trace: drop ℓ0 = S1 { 7 }; run drop fn S1(S1 { 7 })
+         drop trace: drop ℓ1 = S1 { 7 }#0; run drop fn S1(S1 { 7 }#0)
 

@@ -121,61 +121,61 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value ()
-  [2]   d4          (D-Enum-Intro) §6.6
+  [2]   d4          (D-Enum-Intro) §6.6 (mint #0)
          expr    E3.K1
          store   (empty)
-           →     (empty)
-         result  value E3.K1⟨⟩
+           →     [ℓ0 = †]
+         result  value E3.K1⟨⟩#0
   [3]   d4          (D-Match) §6.6 (bind the arm's payload)
          expr    bind E3.K1's payload to []
-         store   (empty)
-           →     (empty)
-         result  value E3.K1⟨⟩
+         store   [ℓ0 = †]
+           →     [ℓ0 = †]
+         result  value E3.K1⟨⟩#0
   [4]   d4          literal §6.3
          expr    true
-         store   (empty)
-           →     (empty)
+         store   [ℓ0 = †]
+           →     [ℓ0 = †]
          result  value true
   [5]   d3        (D-EndScope) §6.6 (end the arm)
          expr    endscope([])
-         store   (empty)
-           →     (empty)
+         store   [ℓ0 = †]
+           →     [ℓ0 = †]
          result  value true
   [6]   d3        (D-Let) §6.7 (mint the binding)
-         expr    let v0 = true at ℓ0
-         store   (empty)
-           →     [ℓ0 = true]
+         expr    let v0 = true at ℓ1
+         store   [ℓ0 = †]
+           →     [ℓ0 = †, ℓ1 = true]
          result  value true
   [7]   d5            (D-Use-Copy) §6.3
          expr    v0
-         store   [ℓ0 = true]
-           →     [ℓ0 = true]
+         store   [ℓ0 = †, ℓ1 = true]
+           →     [ℓ0 = †, ℓ1 = true]
          result  value true
   [8]   d4          (Dbg) §5.8, the observable output of §6.12
          expr    @dbg(v0)
-         store   [ℓ0 = true]
-           →     [ℓ0 = true]
+         store   [ℓ0 = †, ℓ1 = true]
+           →     [ℓ0 = †, ℓ1 = true]
          events  >> @dbg prints true
          result  value ()
   [9]   d4          literal §6.3
          expr    5
-         store   [ℓ0 = true]
-           →     [ℓ0 = true]
+         store   [ℓ0 = †, ℓ1 = true]
+           →     [ℓ0 = †, ℓ1 = true]
          result  value 5
   [10]  d3        (D-Seq) §6.7
          expr    { @dbg(v0); 5 }
-         store   [ℓ0 = true]
-           →     [ℓ0 = true]
+         store   [ℓ0 = †, ℓ1 = true]
+           →     [ℓ0 = †, ℓ1 = true]
          result  value 5
   [11]  d2      (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ0])
-         store   [ℓ0 = true]
-           →     [ℓ0 = † (retired)]
+         expr    endscope([ℓ1])
+         store   [ℓ0 = †, ℓ1 = true]
+           →     [ℓ0 = †, ℓ1 = †]
          result  value 5
   [12]  d0  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([])
-         store   [ℓ0 = † (retired)]
-           →     [ℓ0 = † (retired)]
+         store   [ℓ0 = †, ℓ1 = †]
+           →     [ℓ0 = †, ℓ1 = †]
          result  value 5
 
 ────────────────────────────────────────────────────────────────────────────────

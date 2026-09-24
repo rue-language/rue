@@ -123,40 +123,40 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 1
-  [3]   d4          (D-Struct) §6.5
+  [3]   d4          (D-Struct) §6.5 (mint #0)
          expr    S3 { x0: 1 }
          store   (empty)
-           →     (empty)
-         result  value S3 { 1 }
-  [4]   d3        (D-Enum-Intro) §6.6
+           →     [ℓ0 = †]
+         result  value S3 { 1 }#0
+  [4]   d3        (D-Enum-Intro) §6.6 (mint #1)
          expr    E1.K0(S3 { x0: 1 })
          store   (empty)
-           →     (empty)
-         result  value E1.K0⟨S3 { 1 }⟩
+           →     [ℓ0 = †, ℓ1 = †]
+         result  value E1.K0⟨S3 { 1 }#0⟩#1
   [5]   d3        (D-Let) §6.7 (mint the binding)
-         expr    let v0 = E1.K0⟨S3 { 1 }⟩ at ℓ0
-         store   (empty)
-           →     [ℓ0 = E1.K0⟨S3 { 1 }⟩]
-         result  value E1.K0⟨S3 { 1 }⟩
+         expr    let v0 = E1.K0⟨S3 { 1 }#0⟩#1 at ℓ2
+         store   [ℓ0 = †, ℓ1 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = E1.K0⟨S3 { 1 }#0⟩#1]
+         result  value E1.K0⟨S3 { 1 }#0⟩#1
   [6]   d4          (D-Use-Move) §6.3
          expr    v0
-         store   [ℓ0 = E1.K0⟨S3 { 1 }⟩]
-           →     [ℓ0 = ⊘]
-         result  value E1.K0⟨S3 { 1 }⟩
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = E1.K0⟨S3 { 1 }#0⟩#1]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘]
+         result  value E1.K0⟨S3 { 1 }#0⟩#1
   [7]   d4          (D-Match) §6.6 (bind the arm's payload)
-         expr    bind E1.K0's payload to [ℓ1]
-         store   [ℓ0 = ⊘]
-           →     [ℓ0 = ⊘, ℓ1 = S3 { 1 }]
-         result  value E1.K0⟨S3 { 1 }⟩
+         expr    bind E1.K0's payload to [ℓ3]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = S3 { 1 }#0]
+         result  value E1.K0⟨S3 { 1 }#0⟩#1
   [8]   d4          literal §6.3
          expr    5
-         store   [ℓ0 = ⊘, ℓ1 = S3 { 1 }]
-           →     [ℓ0 = ⊘, ℓ1 = S3 { 1 }]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = S3 { 1 }#0]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = S3 { 1 }#0]
          result  value 5
   [9]   d3        (D-EndScope) §6.6 (end the arm)
          expr    match v0 { E1.K0(v1) => 5, E1.K1 => 6 }
-         store   [ℓ0 = ⊘, ℓ1 = S3 { 1 }]
-           →     [ℓ0 = ⊘, ℓ1 = S3 { 1 }]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = S3 { 1 }#0]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = S3 { 1 }#0]
          result  REFUSED (linearLeak)
                  a scope exit or a frame teardown reached a live linear value: a
                  linear obligation was never discharged (endscope §6.7 /
@@ -165,7 +165,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
   [10]  d2      (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the frame's scope record instead; a trap runs no drop at all)
          expr    { let v0: E1 = E1.K0(S3 { x0: 1 }); match v0 { E1.K0(v1) => 5, E1.K1 => 6 } }
          store   (empty)
-           →     [ℓ0 = ⊘, ℓ1 = S3 { 1 }]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = S3 { 1 }#0]
          result  REFUSED (linearLeak)
                  a scope exit or a frame teardown reached a live linear value: a
                  linear obligation was never discharged (endscope §6.7 /
@@ -174,7 +174,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
   [11]  d0  (D-Return-Value) §6.9 (pop the frame)
          expr    f0()
          store   (empty)
-           →     [ℓ0 = ⊘, ℓ1 = S3 { 1 }]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = S3 { 1 }#0]
          result  REFUSED (linearLeak)
                  a scope exit or a frame teardown reached a live linear value: a
                  linear obligation was never discharged (endscope §6.7 /

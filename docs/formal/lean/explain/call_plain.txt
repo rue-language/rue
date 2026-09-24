@@ -110,12 +110,12 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
   [8]   d2      (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([ℓ1, ℓ0])
          store   [ℓ0 = 2, ℓ1 = 3]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+           →     [ℓ0 = †, ℓ1 = †]
          result  value 5
   [9]   d0  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([])
-         store   [ℓ0 = † (retired), ℓ1 = † (retired)]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         store   [ℓ0 = †, ℓ1 = †]
+           →     [ℓ0 = †, ℓ1 = †]
          result  value 5
 
 ────────────────────────────────────────────────────────────────────────────────

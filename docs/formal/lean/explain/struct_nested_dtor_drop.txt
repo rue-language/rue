@@ -97,39 +97,39 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 2
-  [4]   d4          (D-Struct) §6.5
+  [4]   d4          (D-Struct) §6.5 (mint #0)
          expr    S1 { x0: 2 }
          store   (empty)
-           →     (empty)
-         result  value S1 { 2 }
-  [5]   d3        (D-Struct) §6.5
+           →     [ℓ0 = †]
+         result  value S1 { 2 }#0
+  [5]   d3        (D-Struct) §6.5 (mint #1)
          expr    S5 { x0: 1, x1: S1 { x0: 2 } }
          store   (empty)
-           →     (empty)
-         result  value S5 { 1, S1 { 2 } }
+           →     [ℓ0 = †, ℓ1 = †]
+         result  value S5 { 1, S1 { 2 }#0 }#1
   [6]   d3        (D-Let) §6.7 (mint the binding)
-         expr    let v0 = S5 { 1, S1 { 2 } } at ℓ0
-         store   (empty)
-           →     [ℓ0 = S5 { 1, S1 { 2 } }]
-         result  value S5 { 1, S1 { 2 } }
+         expr    let v0 = S5 { 1, S1 { 2 }#0 }#1 at ℓ2
+         store   [ℓ0 = †, ℓ1 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = S5 { 1, S1 { 2 }#0 }#1]
+         result  value S5 { 1, S1 { 2 }#0 }#1
   [7]   d3        literal §6.3
          expr    9
-         store   [ℓ0 = S5 { 1, S1 { 2 } }]
-           →     [ℓ0 = S5 { 1, S1 { 2 } }]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = S5 { 1, S1 { 2 }#0 }#1]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = S5 { 1, S1 { 2 }#0 }#1]
          result  value 9
   [8]   d2      (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ0])
-         store   [ℓ0 = S5 { 1, S1 { 2 } }]
-           →     [ℓ0 = † (retired)]
-         events  >> drop ℓ0 = S5 { 1, S1 { 2 } }; run drop fn S5(S5 { 1, S1 { 2 } }); run drop fn S1(S1 { 2 })
+         expr    endscope([ℓ2])
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = S5 { 1, S1 { 2 }#0 }#1]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †]
+         events  >> drop ℓ2 = S5 { 1, S1 { 2 }#0 }#1; run drop fn S5(S5 { 1, S1 { 2 }#0 }#1); run drop fn S1(S1 { 2 }#0)
          result  value 9
   [9]   d0  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([])
-         store   [ℓ0 = † (retired)]
-           →     [ℓ0 = † (retired)]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †]
          result  value 9
 
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: ok — value 9
-         drop trace: drop ℓ0 = S5 { 1, S1 { 2 } }; run drop fn S5(S5 { 1, S1 { 2 } }); run drop fn S1(S1 { 2 })
+         drop trace: drop ℓ2 = S5 { 1, S1 { 2 }#0 }#1; run drop fn S5(S5 { 1, S1 { 2 }#0 }#1); run drop fn S1(S1 { 2 }#0)
 
