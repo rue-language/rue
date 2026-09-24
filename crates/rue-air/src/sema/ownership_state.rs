@@ -553,8 +553,8 @@ impl CallLoanKind {
 
 pub(crate) struct FullExpressionBoundary {
     loans: usize,
-    shared_reads: Vec<(Spur, Span)>,
-    exclusive_uses: Vec<(Spur, Span)>,
+    shared_reads: Vec<(LedgerRoot, Span)>,
+    exclusive_uses: Vec<(LedgerRoot, Span)>,
 }
 
 #[derive(Clone, Copy)]
@@ -634,14 +634,28 @@ pub(crate) struct OwnershipState {
     /// truncates this to its pre-statement length after every statement, so
     /// an entry's extent is exactly the enclosing full expression. An
     /// incompatible use of a listed root within that extent is E0259.
-    pub expression_loans: Vec<(Spur, Span, CallLoanKind)>,
+    pub expression_loans: Vec<(LedgerRoot, Span, CallLoanKind)>,
     /// Ordinary shared reads in the current full expression. An exclusive
     /// accessor result conflicts with these reads in either evaluation order.
-    pub expression_shared_reads: Vec<(Spur, Span)>,
+    pub expression_shared_reads: Vec<(LedgerRoot, Span)>,
     /// Completed exclusive uses in the current full expression. An accessor
     /// result conflicts with a prior use of the same root even when that use
     /// was a nested call whose own loan frame has already ended.
-    pub expression_exclusive_uses: Vec<(Spur, Span)>,
+    pub expression_exclusive_uses: Vec<(LedgerRoot, Span)>,
+}
+
+/// The binding an accessor-ledger entry is about (ADR-0062, spec 6.6:10).
+///
+/// Ledger entries are compared by binding, not by name: a nested `let` that
+/// shadows a loaned root inside the loan's full expression
+/// (`use2(a.pmut().c, { let a = 5; a == 5 })`) is a different variable, so
+/// using it is no access of the loaned root. A local is identified by its
+/// frame slot; a parameter, which no other parameter can shadow, by its name
+/// alone (`slot: None`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LedgerRoot {
+    pub name: Spur,
+    pub slot: Option<u32>,
 }
 
 impl OwnershipState {
@@ -755,13 +769,16 @@ impl OwnershipState {
     pub(crate) fn nested_expression_loans(
         &self,
         boundary: &FullExpressionBoundary,
-    ) -> Vec<(Spur, Span, CallLoanKind)> {
+    ) -> Vec<(LedgerRoot, Span, CallLoanKind)> {
         self.expression_loans[boundary.loans..].to_vec()
     }
 
     /// Re-register loans harvested by [`Self::nested_expression_loans`] into
     /// the enclosing full expression (RUE-1678).
-    pub(crate) fn readmit_expression_loans(&mut self, loans: Vec<(Spur, Span, CallLoanKind)>) {
+    pub(crate) fn readmit_expression_loans(
+        &mut self,
+        loans: Vec<(LedgerRoot, Span, CallLoanKind)>,
+    ) {
         self.expression_loans.extend(loans);
     }
 
@@ -1435,7 +1452,10 @@ mod tests {
     #[test]
     fn expression_ledgers_checkpoint_nest_and_readmit() {
         let s = syms(&["r"]);
-        let r = s[0];
+        let r = LedgerRoot {
+            name: s[0],
+            slot: None,
+        };
         let mut state = OwnershipState::default();
 
         // Rollback discards records made after the checkpoint.
