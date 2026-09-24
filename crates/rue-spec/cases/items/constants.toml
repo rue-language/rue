@@ -732,3 +732,117 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Nested aggregate constants (4.14:26, 4.14:27, 6.5:2) — RUE-2390
+# =============================================================================
+
+# Each element, field or payload of a constant's aggregate initializer is
+# evaluated against the type of the slot it fills, so a nested literal takes
+# its slot's type at every depth, as `let` does at run time.
+
+[[case]]
+name = "const_nested_array_of_arrays"
+spec = ["6.5:1", "6.5:2", "4.14:26", "4.14:27"]
+description = "An array-of-arrays constant reduces at two and three levels, each inner literal typed as its element slot (RUE-2390)"
+source = """
+const A: [[i32; 2]; 2] = [[1, 2], [3, 4]];
+const B: [[[i64; 2]; 1]; 2] = [[[5, 6]], [[7, 8]]];
+fn main() -> i32 {
+    if A[1][0] == 3 && A[0][1] == 2 && B[1][0][1] == 8 && B[0][0][0] == 5 { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "const_nested_array_repeat_forms"
+spec = ["6.5:2", "4.14:26"]
+description = "Repeat initializers nest in a constant: a repeat of a repeat, a repeat of an array literal, and repeats inside an array literal (RUE-2390)"
+source = """
+const Z: [[i32; 2]; 3] = [[0; 2]; 3];
+const R: [[i32; 2]; 3] = [[3, 4]; 3];
+const M: [[u8; 2]; 2] = [[3; 2], [4; 2]];
+fn main() -> i32 {
+    if Z[2][1] == 0 && R[2][0] == 3 && R[1][1] == 4 && M[0][1] == 3 && M[1][0] == 4 { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "const_struct_field_array"
+spec = ["6.5:2", "4.14:26", "4.14:27"]
+description = "A Copy struct constant whose field is an array reduces, the field's literal typed as the field (RUE-2390)"
+source = """
+@copy struct S { a: [i32; 2], b: i32 }
+const C: S = S { a: [1, 40], b: 2 };
+fn main() -> i32 { C.a[1] + C.b }
+"""
+exit_code = 42
+
+[[case]]
+name = "const_enum_payload_array"
+spec = ["6.5:2", "4.14:26", "4.14:27"]
+description = "An enum constant whose payload is an array, flat or nested, types the payload literal as the variant's payload type rather than defaulting its elements (RUE-2390)"
+source = """
+enum E { A([i32; 2]), B }
+enum F { A([[i32; 2]; 2]), B }
+const C: E = E.A([1, 40]);
+const D: F = F.A([[1, 2], [3, 4]]);
+fn main() -> i32 {
+    let c = match C { E.A(a) => a[1], E.B => 0 };
+    let d = match D { F.A(a) => a[1][0] - a[0][0], F.B => 0 };
+    c + d
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "const_nested_aggregates_mixed"
+spec = ["6.5:2", "4.14:26", "4.14:27"]
+description = "An array of structs whose field is an array of arrays, one built by repeats, keeps every declared width (RUE-2390)"
+source = """
+@copy struct P { v: [[u8; 2]; 2] }
+const A: [P; 2] = [P { v: [[1, 2], [3, 4]] }, P { v: [[5; 2]; 2] }];
+fn main() -> i32 {
+    let x: u8 = A[1].v[1][0] + A[0].v[1][0];
+    @intCast(x * 5 + 2)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "const_nested_float_array_integer_elements"
+spec = ["3.12:11", "6.5:2", "4.14:26"]
+description = "Integer literals fill float slots at any depth of a constant, as in a flat float array constant (RUE-2389, RUE-2390)"
+source = """
+const F: [[f32; 2]; 1] = [[1, 2]];
+@copy struct S { a: [f64; 2] }
+const C: S = S { a: [3, 4] };
+fn main() -> i32 {
+    if F[0][1] == 2.0 && C.a[0] == 3.0 { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "const_nested_array_element_of_wrong_type_rejected"
+spec = ["6.5:2", "4.14:26"]
+description = "A nested element that is not an integer is still a type mismatch against its element slot, not a generic reduction failure (RUE-2390)"
+source = """
+const A: [[i32; 2]; 2] = [[1, 2], [true, 4]];
+fn main() -> i32 { A[1][1] }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i32, found bool"]
+
+[[case]]
+name = "const_nested_typed_array_of_other_width_rejected"
+spec = ["3.11:8", "6.5:2", "4.14:26"]
+description = "A typed array constant nested as an element keeps its type, so an [i64; 2] does not fill an [i32; 2] slot (RUE-2390)"
+source = """
+const B: [i64; 2] = [1, 2];
+const A: [[i32; 2]; 1] = [B];
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected [i32; 2], found [i64; 2]"]
