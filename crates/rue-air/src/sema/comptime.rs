@@ -2798,9 +2798,18 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         }
     }
 
-    /// Whether an instruction is a chain operator whose first operand is also
-    /// one.
-    fn is_operator_chain(&self, instruction: &InstData) -> bool {
+    /// Whether `eval` hands an instruction to [`Self::eval_operator_chain`]:
+    /// its outcome is the pending operand handoff, or it is a chain operator
+    /// whose first operand is also one.
+    #[inline(never)]
+    fn enters_operator_chain(&self, inst_ref: InstRef, instruction: &InstData) -> bool {
+        if self
+            .evaluated_operand
+            .as_ref()
+            .is_some_and(|(operand, _)| *operand == inst_ref)
+        {
+            return true;
+        }
         self.chain_operand(instruction).is_some_and(|operand| {
             self.chain_operand(&self.program_rir().get(operand).data)
                 .is_some()
@@ -2829,6 +2838,12 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         root: InstRef,
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
+        // An operator inside a chain being walked: its outcome is ready.
+        if let Some((operand, _)) = &self.evaluated_operand
+            && *operand == root
+        {
+            return self.evaluated_operand.take().expect("operand outcome").1;
+        }
         // Each entered operator with the region operations it marked. The
         // innermost operator comes last.
         let mut entered: Vec<(InstRef, Vec<InstRef>)> = Vec::new();
@@ -2973,11 +2988,6 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         env: &mut ComptimeEnv<'_, H::Value, H::Type, H::Name, H::File, H::CanonicalIdentity>,
     ) -> ComptimeOutcome<H::Value, H::Failure> {
         host_value!(self.host.check_canceled());
-        if let Some((operand, _)) = &self.evaluated_operand
-            && *operand == inst_ref
-        {
-            return self.evaluated_operand.take().expect("operand outcome").1;
-        }
         let (data, span) = {
             let source = self.program_rir().get(inst_ref);
             (source.data.clone(), source.span)
@@ -2996,9 +3006,14 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             } => self.eval_branch(cond, then_block, else_block, env),
             // An operator whose first operand is another operator walks that
             // chain iteratively, and marks its own declared integer region
-            // there (RUE-2366). A lone operator keeps the direct path, which
-            // spends no chain frame per level of right nesting.
-            ref data if self.is_operator_chain(data) => self.eval_operator_chain(inst_ref, env),
+            // there; an operator inside a chain receives its outcome from
+            // that walk (RUE-2366). A lone operator keeps the direct path,
+            // which spends no chain frame per level of right nesting. Both
+            // decisions live in out-of-line helpers so this trampoline's
+            // frame stays small.
+            ref data if self.enters_operator_chain(inst_ref, data) => {
+                self.eval_operator_chain(inst_ref, env)
+            }
             // A region that can read a declared binding is marked for the
             // declared integer check at its root; an operation already in a
             // region, or any other instruction, dispatches directly.
