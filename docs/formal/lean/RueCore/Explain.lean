@@ -851,22 +851,30 @@ def joinConflictEntry (D : Decls) (lhs rhs : String) : Ctx → Ctx → Option St
 way `joinConflictEntry` names the two-arm case — by **index**, because a
 `match` has n arms and no then- or else-arm. `j` is the index of the arm the
 fold is about to join, so the accumulator is arm `0` alone at `j = 1` and the
-join of arms `0`–`j-1` above it. -/
-def joinFoldConflict (D : Decls) : Nat → Ctx → List Ctx → Option String
+join of arms `0`–`j-1` above it. `one` and `many` name the things joined —
+`arm`/`arms` at a `match`, `exit`/`exits` at (Loop-Break) §5.7's join over a
+loop's `break` exits. -/
+def joinFoldConflict (D : Decls) (one many : String) : Nat → Ctx → List Ctx → Option String
   | _, _, [] => none
   | j, acc, Γ :: Γs =>
       match Ctx.join D acc Γ with
-      | some acc' => joinFoldConflict D (j + 1) acc' Γs
+      | some acc' => joinFoldConflict D one many (j + 1) acc' Γs
       | none =>
           joinConflictEntry D
-            (if j == 1 then "arm 0" else "arms 0–" ++ toString (j - 1))
-            ("arm " ++ toString j) acc Γ
+            (if j == 1 then one ++ " 0" else many ++ " 0–" ++ toString (j - 1))
+            (one ++ " " ++ toString j) acc Γ
 
 /-- (helper) The same over the whole arm list, which is the fold `Ctx.joinAll`
 takes (helper). -/
 def joinAllConflict (D : Decls) : List Ctx → Option String
   | [] => none
-  | Γ :: Γs => joinFoldConflict D 1 Γ Γs
+  | Γ :: Γs => joinFoldConflict D "arm" "arms" 1 Γ Γs
+
+/-- (helper) The same over a loop's exits, (Loop-Break) §5.7's join over the
+`outside_loop` states of its `break`s, numbered in delivery order. -/
+def exitJoinConflict (D : Decls) : List Ctx → Option String
+  | [] => none
+  | Γ :: Γs => joinFoldConflict D "exit" "exits" 1 Γ Γs
 
 /-! ## Derivations -/
 
@@ -1577,7 +1585,7 @@ def explain (P : Program) (R : Ty) (Γ : Ctx) : Expr → Deriv
                     | none =>
                         rejected rule Γ (.loop e)
                           (Premise.exitJoinConflict
-                            (joinAllConflict P.decls ((Γb₀ :: Γbs).map (Ctx.outsideLoop Γh))))
+                            (exitJoinConflict P.decls ((Γb₀ :: Γbs).map (Ctx.outsideLoop Γh))))
                           [d]
                   else rejected rule Γ (.loop e) Premise.breakLeak [d]
             else if Ωe.norm = none ∨ NoResidualLinear P.decls Γh then

@@ -152,7 +152,7 @@ exactly as it permits an overflow. Only the dynamic-index forms
 ## Pending values: the one edge no monitor covers
 
 The general shape is a value already built for a **sibling position** that a
-later sibling destroys by `return`. Every list of subexpressions `evalArgs`
+later sibling destroys by `return` or by `break`. Every list of subexpressions `evalArgs`
 walks has it: a call's argument list, a struct literal's initializers, and an
 array literal's elements. So does a fourth position, an assignment's
 right-hand side while the target's indices run after it (`5.2:14`, §6.2's
@@ -165,15 +165,16 @@ side and the store that would have written it. If a later sibling unwinds
 by `return`, (D-Return) §6.9 discards the evaluation context — `g(v̄, …, E, …)`,
 the aggregate contexts `S { v̄, …, E, … }` and `[ v̄, …, E, … ]`, and
 `assign p[ v̄, E, … ] = v` with it — and runs `run-all-scope-drops` on the frame's records, which never named that
-value. Its drop is therefore neither run nor monitored, whatever its
+value; if it unwinds by `break`, (D-Break) §6.10 discards the same context
+(`E'`) and the loop's `unwind-drops` walks the same records. Its drop is therefore neither run nor monitored, whatever its
 multiplicity class: an affine sibling emits no `dropTemp`, and a linear one is
 destroyed without a `linearDiscard`. At the right-hand side only the affine
 half applies: (Assign)'s leaf premise `class(T) ≠ Linear` (`3.8:77`) keeps
 the abandoned value from being linear, so `no_linear_discard` is not affected
 by that position.
 
-That is the calculus as written, not a modelling slip. (D-Return) unwinds σ
-and nothing else, and §5's only bottom rule for an argument position — §5.3's
+That is the calculus as written, not a modelling slip. (D-Return) and
+(D-Break) unwind σ and nothing else, and §5's only bottom rule for an argument position — §5.3's
 strict-context bottom rule, `Strict-Bottom` there, which `Typed.consBot` and
 the other `-Bottom` variants mechanize — carries `⊥;Δ_e` outward without imposing §5.3's discard check on
 the siblings already evaluated, so the statics accept the program exactly as
@@ -186,16 +187,17 @@ struct initializer, an array element and an assignment's right-hand side
 alike — probe r14 of RUE-2342), so the bridge cannot see it either.
 
 `eval` models the calculus rather than patching it, so no monitor is added:
-`evalArgs` passes a `returned` abort on untouched — and because the three list
+`evalArgs` passes a `returned` or `broke` abort on untouched — and because the three list
 forms share that one function, all three share the edge; `indexWrite`'s
 `andThen` passes it on the same way at the right-hand side. The shapes are
 pinned as kernel-checked witnesses in `Examples.lean`
-(`linearLostAtCallArg`, `affineLostAtCallArg`, `linearLostAtArrayElem`), the
+(`linearLostAtCallArg`, `affineLostAtCallArg`, `linearLostAtArrayElem`, and
+`linearLostAtBreakArg` for the `break` case, which the compiler matches), the
 §7 claim is stated with
 the carve-out named (`Soundness.lean`'s `no_violation`,
 `docs/formal/03-metatheory.md`), and closing it is an open spec decision
-(RUE-2316, the pending-argument decision) — it needs a rule, in §5.7 or
-§6.9, before a monitor here would mean anything.
+(RUE-2316, the pending-argument decision) — it needs a rule, in §5.7, §6.9
+or §6.10, before a monitor here would mean anything.
 
 ## Frames, scope records, and unwinding (§6.1, §6.9)
 

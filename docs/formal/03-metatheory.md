@@ -345,10 +345,11 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
     target's indices run after it (`5.2:14`) — is in no cell and no scope
     record between the subexpression that produced it and the aggregation that would have taken
     it (§6.9's `mintParams` for an argument). If a *later* sibling
-    unwinds by `return`, (D-Return) discards the evaluation context with
-    the pending values in it and unwinds only σ, so that value's drop is
-    neither run nor monitored. This is the calculus as written — (D-Return)
-    §6.9 unwinds σ and nothing else, and (Strict-Bottom) §5.7, the only bottom
+    unwinds by `return` or `break`, (D-Return) §6.9 or (D-Break) §6.10
+    discards the evaluation context with the pending values in it and
+    unwinds only σ, so that value's drop is neither run nor monitored. This
+    is the calculus as written — (D-Return) and (D-Break) unwind σ and
+    nothing else, and (Strict-Bottom) §5.7, the only bottom
     rule for an argument position, imposes no §5.3 discard check on siblings
     already evaluated — so the statics cannot reject it without ⊥ provenance
     they do not carry, and the Rue compiler behaves the same way (the
@@ -361,10 +362,12 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
     than patching it and states the gap instead: `Dynamics.lean`'s "Pending
     values" section, the `no_violation` docstring, and the kernel-checked
     witnesses `RueCore.Examples.linearLostAtCallArg`,
-    `affineLostAtCallArg` and `linearLostAtArrayElem` — the last at an array
-    element rather than an argument — all of which `checkProgram` accepts and
+    `affineLostAtCallArg`, `linearLostAtArrayElem` — at an array element
+    rather than an argument — and `linearLostAtBreakArg`, the same loss by a
+    `break` (the RUE-2369 review's probe q30, which the compiler matches),
+    all of which `checkProgram` accepts and
     all of which end with an empty drop trace. Closing it needs a rule, in
-    §5.7 or §6.9, and is tracked as RUE-2316. A `@panic` *sibling* of a
+    §5.7, §6.9 or §6.10, and is tracked as RUE-2316. A `@panic` *sibling* of a
     pending value reaches the identical state, by this route as well as the
     next.
   - **A `@panic` (by design).** §6.12 abandons the configuration and §5.7

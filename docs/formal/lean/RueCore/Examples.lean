@@ -2456,7 +2456,7 @@ def countdown : Program :=
 /-! ## The one edge no monitor covers (RUE-2316)
 
 The shape is a value already built for a **sibling position** that a later
-sibling destroys by `return`. The sibling positions are every list `evalArgs`
+sibling destroys by `return` or by `break`. The sibling positions are every list `evalArgs`
 walks: a call's argument list, a struct literal's initializers, an array
 literal's elements; and, since RUE-2342, an assignment's right-hand side while
 the target's dynamic indices run after it (`5.2:14`). Such a value lives in no cell and in no scope record
@@ -2464,7 +2464,8 @@ between the subexpression that produced it and the aggregation that would
 have taken it — for an argument, the `mintParams` of §6.9's (D-Call). If a
 later sibling unwinds by `return`, (D-Return) §6.9 discards the evaluation
 context — the pending values with it — and runs `run-all-scope-drops` on the
-frame's records, which never named that value. Its drop is neither run nor
+frame's records, which never named that value; a `break` does the same with
+(D-Break) §6.10 and the loop's `unwind-drops`. Its drop is neither run nor
 monitored.
 
 `Dynamics.lean`'s "Pending values" section says why `eval` models it that
@@ -2472,7 +2473,7 @@ way rather than patching it: the calculus has the gap — the unwinding rule
 walks only σ, and §5.3's strict-context bottom rule (`Strict-Bottom` there,
 which `Typed.consBot` and the other `-Bottom` variants mechanize) imposes no discard check on the siblings
 already evaluated — and the Rue compiler behaves the same. Closing it
-is an open spec decision, RUE-2316. These three programs are the
+is an open spec decision, RUE-2316. These four programs are the
 kernel-checked witnesses, and the reason `no_violation`'s docstring names the
 carve-out. -/
 
@@ -2492,6 +2493,19 @@ def linearLostAtCallArg : Program :=
               body := letIn false (resL (lit 7)) (call 1 [use (.var 0), ret (lit 0)]) },
             { params := [⟨.struct sLinear, false⟩, ⟨tI64, false⟩], ret := tI64,
               body := seq (drop (.var 1)) (use (.var 0)) }] }
+
+/-- The same loss by a **`break`** (§6.10's (D-Break), RUE-2369): the second
+argument breaks out of the enclosing loop, so the linear `S3 { 3 }` already
+built for the first is discarded with the evaluation context, and the loop's
+`unwind-drops` walks a scope record that never named it. The destructor never
+runs and no monitor fires. The compiler agrees: the printed program prints
+only `0` (the RUE-2369 review's probe q30). -/
+def linearLostAtBreakArg : Program :=
+  { decls := Decls.ofStructs structEnv,
+    fns := [{ params := [], ret := tI64,
+              body := seq (loop (seq (call 1 [resLD (lit 3), brk]) unitLit)) (lit 0) },
+            { params := [⟨.struct sLinearDtor, false⟩, ⟨tI64, false⟩], ret := tI64,
+              body := seq (drop (.var 1)) (lit 0) }] }
 
 /-- The affine twin, where the same loss is *observable*: `S1` declares a
 destructor, so a drop of it is the trace event the printed program turns into
@@ -2857,12 +2871,17 @@ example : checkProgram (destrProg tI64 dropDeclaredHoleLeaf) = false := by rfl
 example : run demoOps (destrProg tI64 dropDeclaredHoleLeaf) demoFuel
     = .stuck .useAfterMove := by rfl
 
-/-! The two RUE-2316 witnesses are accepted — which is the point: the §7
+/-! The RUE-2316 witnesses are accepted — which is the point: the §7
 theorems apply to them, and the run below still loses the resource. -/
 
 example : ProgramTyped linearLostAtCallArg := checkProgram_sound (by rfl)
 example : ProgramTyped affineLostAtCallArg := checkProgram_sound (by rfl)
 example : ProgramTyped linearLostAtArrayElem := checkProgram_sound (by rfl)
+example : ProgramTyped linearLostAtBreakArg := checkProgram_sound (by rfl)
+
+/-- The `break` witness: the linear `S3 { 3 }` is destroyed with an empty
+trace — no `drop`, no `dtor`, no `Violation` — and the loop yields `()`. -/
+example : run demoOps linearLostAtBreakArg demoFuel = .ok [] (v64 0) [] := by rfl
 
 /-- The linear value is destroyed with an empty trace: no `drop`, no
 `dropTemp`, no `dtor`, and no `Violation`. `no_linear_leak` holds of this
