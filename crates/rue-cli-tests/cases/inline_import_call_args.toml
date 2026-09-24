@@ -1,0 +1,149 @@
+# RUE-2401: a call through an inline `@import("x.rue").f(..)` constrains its
+# arguments to the callee's parameters exactly as `const m = @import("x.rue");
+# m.f(..)` does. Inference typed every `@import` as an unresolved-module
+# sentinel, so the member lookup found no callee and each literal argument
+# defaulted on its own: `f(3)` with `x: usize` was E0206 "expected u64, found
+# i32". A generic callee also missed the comptime-argument fact pass, whose
+# receiver lookup only understood name-rooted module paths. Both now resolve
+# the import through the canonical-import lookup semantic analysis uses.
+
+[section]
+id = "cli.inline_import_call_args"
+name = "Inline-import call argument constraints (RUE-2401)"
+description = "A call through an inline @import constrains its arguments to the callee's parameter types."
+
+[[case]]
+name = "inline_import_nongeneric_usize"
+description = "@import(\"x.rue\").f(3) with f(x: usize) compiles and runs (RUE-2401's repro)."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 { let n = @import("x.rue").f(3); @intCast(n) }
+""" },
+    { path = "x.rue", source = """
+pub fn f(x: usize) -> usize { x }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "inline_import_let_bound_nongeneric"
+description = "A local `let m = @import(..)` binding reaches the same member-call path."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 { let m = @import("x.rue"); let n = m.f(5000000000); if n > 1 { 3 } else { 1 } }
+""" },
+    { path = "x.rue", source = """
+pub fn f(x: usize) -> usize { x }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "inline_import_generic_type_param"
+description = "A generic callee's `x: T` takes the comptime type argument through an inline import."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 { let n = @import("x.rue").g(u64, 5000000000); if n > 1 { 3 } else { 1 } }
+""" },
+    { path = "x.rue", source = """
+pub fn g(comptime T: type, x: T) -> T { x }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "inline_import_comptime_value_param"
+description = "A callee with a comptime value parameter constrains its runtime argument through an inline import."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 { let n = @import("x.rue").h(1, 2); @intCast(n) }
+""" },
+    { path = "x.rue", source = """
+pub fn h(comptime n: usize, x: usize) -> usize { n + x }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "inline_import_float_param"
+description = "A float literal at an f32 parameter is f32 through an inline import (3.12:11)."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 { let v = @import("x.rue").fl(1.5); if v > 1.0 { 3 } else { 1 } }
+""" },
+    { path = "x.rue", source = """
+pub fn fl(x: f32) -> f32 { x }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "inline_import_array_param"
+description = "An array literal at a [usize; 2] parameter takes the element type through an inline import."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 { let n = @import("x.rue").arr([1, 2]); @intCast(n) }
+""" },
+    { path = "x.rue", source = """
+pub fn arr(a: [usize; 2]) -> usize { a[0] + a[1] }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "inline_import_assoc_fn"
+description = "@import(\"x.rue\").S.new(..) constrains the associated function's argument (a literal past i32 range)."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 { let s = @import("x.rue").S.new(5000000000); if s.get() > 1 { 3 } else { 1 } }
+""" },
+    { path = "x.rue", source = """
+pub struct S {
+    a: usize,
+    fn new(a: usize) -> S { S { a: a } }
+    fn get(self) -> usize { self.a }
+}
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "inline_import_nested_reexport_generic"
+description = "A generic callee through a re-exported module hop off an inline import."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 { @intCast(@import("mid.rue").inner.mn(i64, 3, 7)) }
+""" },
+    { path = "mid.rue", source = """
+pub const inner = @import("inner.rue");
+""" },
+    { path = "inner.rue", source = """
+pub fn mn(comptime T: type, a: T, b: T) -> T { if a < b { a } else { b } }
+""" },
+]
+exit_code = 3
+
+[[case]]
+name = "inline_import_std_cmp_max"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+description = "The std form: @import(\"std\").cmp.max(u8, 1, 2)."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 { let n: u8 = @import("std").cmp.max(u8, 1, 2); @intCast(n) }
+""" },
+]
+exit_code = 2
+
+[[case]]
+name = "inline_import_generic_literal_out_of_range"
+description = "The constraint is real: a literal past the substituted parameter type is E0800, as with a const-bound module."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 { let n = @import("x.rue").g(u8, 300); @intCast(n) }
+""" },
+    { path = "x.rue", source = """
+pub fn g(comptime T: type, x: T) -> T { x }
+""" },
+]
+compile_fail = true
+error_contains = ["E0800", "out of range for type 'u8'"]
