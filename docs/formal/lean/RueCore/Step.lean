@@ -620,4 +620,307 @@ inductive Steps (M : FloatOps) (P : Program) : Config → Config → Prop where
   | refl (C : Config) : Steps M P C C
   | step {C₁ C₂ C₃ : Config} : Step M P C₁ C₂ → Steps M P C₂ C₃ → Steps M P C₁ C₃
 
+/-! ## The relation as a function
+
+`step` computes the one configuration `Step` allows, or says why there is
+none. Its purpose is the enumeration the issue asks for: every configuration is
+terminal, takes a step, or is stuck on one of §6's own violations, and
+`step_iff` is the proof that the function and the relation agree. -/
+
+/-- What `step` finds at a configuration: the next one, a terminal one
+(`Config.Terminal`), or a stuck one, named by the `Violation` §6 leaves it
+at (helper). -/
+inductive StepOut where
+  | next (C : Config)
+  | halted
+  | stuck (w : Violation)
+deriving Repr
+
+/-- `step` at an expression in focus: the literal rules of §6.3, the place
+rules of §6.3 and §6.11, (D-Panic) §6.12, (D-Loop-Enter) and (D-Break)
+§6.10, and every (Search) enter rule of §6.2 (helper). -/
+def stepEval (M : FloatOps) (P : Program) (H : Store) (φ : Frame) (K : List Kont)
+    (tr : List Event) : Expr → StepOut
+  | .intLit w s n => .next (.run H φ K (.ret (.int w s n)) tr)
+  | .floatLit w l => .next (.run H φ K (.ret (.float w (M.ofLit w l.sig l.negExp l.e))) tr)
+  | .boolLit b => .next (.run H φ K (.ret (.bool b)) tr)
+  | .unitLit => .next (.run H φ K (.ret .unit) tr)
+  | .use p =>
+    match rootCell H φ p.root with
+    | .error w => .stuck w
+    | .ok (ℓ, c) =>
+      match c.declaredPlan P.decls p.path with
+      | some (πd, πs) =>
+        match c.readAt πd with
+        | .error w => .stuck w
+        | .ok cd =>
+          match plainDestructure P.decls cd πs with
+          | .error w => .stuck w
+          | .ok (leaf, evs) =>
+            match leaf.toVal with
+            | none => .stuck .useAfterMove
+            | some v =>
+              match c.writeAt πd .hole with
+              | none => .stuck .typeConfusion
+              | some c' => .next (.run (H.set ℓ (.full c')) φ K (.ret v) (tr ++ evs))
+      | none =>
+        match c.readAt p.path with
+        | .error w => .stuck w
+        | .ok sub =>
+          match sub.toVal with
+          | none => .stuck .useAfterMove
+          | some v =>
+            if v.mult P.decls = .copy then .next (.run H φ K (.ret v) tr)
+            else
+              match c.writeAt p.path .hole with
+              | none => .stuck .typeConfusion
+              | some c' => .next (.run (H.set ℓ (.full c')) φ K (.ret v) tr)
+  | .binop op e₁ e₂ => .next (.run H φ (.binopL op e₂ :: K) (.eval e₁) tr)
+  | .unop op e => .next (.run H φ (.unop op :: K) (.eval e) tr)
+  | .intCast w s e => .next (.run H φ (.intCast w s :: K) (.eval e) tr)
+  | .fintrin k e => .next (.run H φ (.fintrin k :: K) (.eval e) tr)
+  | .panic _ => .next (.panic .user tr)
+  | .dbg e => .next (.run H φ (.dbg :: K) (.eval e) tr)
+  | .mkStruct s args => .next (.run H φ K (.args (.struct s) [] args) tr)
+  | .mkEnum e k args => .next (.run H φ K (.args (.enum e k) [] args) tr)
+  | .«match» scrut arms => .next (.run H φ (.«match» arms :: K) (.eval scrut) tr)
+  | .mkArray T args => .next (.run H φ K (.args (.array T) [] args) tr)
+  | .repeatArray T e n => .next (.run H φ (.repeatArray T n :: K) (.eval e) tr)
+  | .indexRead p idx πs => .next (.run H φ K (.args (.indexRead p πs) [] idx) tr)
+  | .indexWrite p idx πs e => .next (.run H φ (.indexWriteRhs p idx πs :: K) (.eval e) tr)
+  | .indexDrop p idx πs => .next (.run H φ K (.args (.indexDrop p πs) [] idx) tr)
+  | .drop p =>
+    match rootCell H φ p.root with
+    | .error w => .stuck w
+    | .ok (ℓ, c) =>
+      match c.declaredPlan P.decls p.path with
+      | some (πd, πs) =>
+        match c.readAt πd with
+        | .error w => .stuck w
+        | .ok cd =>
+          match plainDestructure P.decls cd πs with
+          | .error w => .stuck w
+          | .ok (leaf, evs) =>
+            if leaf.isHole then .stuck .useAfterMove
+            else
+              match dropCell P.decls ℓ leaf with
+              | .error w => .stuck w
+              | .ok levs =>
+                match c.writeAt πd .hole with
+                | none => .stuck .typeConfusion
+                | some c' =>
+                  .next (.run (H.set ℓ (.full c')) φ K (.ret .unit) (tr ++ (evs ++ levs)))
+      | none =>
+        match c.readAt p.path with
+        | .error w => .stuck w
+        | .ok sub =>
+          if sub.isHole then .stuck .useAfterMove
+          else if sub.mult P.decls = .copy then .next (.run H φ K (.ret .unit) tr)
+          else
+            match dropCell P.decls ℓ sub with
+            | .error w => .stuck w
+            | .ok evs =>
+              match c.writeAt p.path .hole with
+              | none => .stuck .typeConfusion
+              | some c' => .next (.run (H.set ℓ (.full c')) φ K (.ret .unit) (tr ++ evs))
+  | .letIn _ e₁ e₂ => .next (.run H φ (.letIn e₂ :: K) (.eval e₁) tr)
+  | .assign p e => .next (.run H φ (.assign p :: K) (.eval e) tr)
+  | .seq e₁ e₂ => .next (.run H φ (.seq e₂ :: K) (.eval e₁) tr)
+  | .ite c e₁ e₂ => .next (.run H φ (.ite e₁ e₂ :: K) (.eval c) tr)
+  | .call f args => .next (.run H φ K (.args (.call f) [] args) tr)
+  | .ret e => .next (.run H φ (.ret :: K) (.eval e) tr)
+  | .loop e => .next (.run H φ (.loop e φ :: K) (.eval e) tr)
+  | .brk =>
+    match Kont.toLoop K with
+    | none => .stuck .typeConfusion
+    | some (φs, K') =>
+      match plainUnwind P.decls H (φ.scope.drop φs.scope.length).reverse with
+      | .error w => .stuck w
+      | .ok (H', evs) => .next (.run H' φs K' (.ret .unit) (tr ++ evs))
+
+/-- `step` at a completed argument list: (D-Struct), (D-Enum-Intro),
+(D-Array), (D-Call), and (D-Index)/(D-Index-Trap) with (D-Assign) at a
+dynamic place (helper). -/
+def stepArgs (P : Program) (H : Store) (φ : Frame) (K : List Kont) (tr : List Event)
+    (vs : List Val) : ArgsTag → StepOut
+  | .struct s =>
+    match P.decls.structs[s]? with
+    | none => .stuck .unbound
+    | some sd =>
+      if sd.fields.length = vs.length then .next (.run H φ K (.ret (.struct s vs)) tr)
+      else .stuck .typeConfusion
+  | .enum e k =>
+    match P.decls.enums[e]? with
+    | none => .stuck .unbound
+    | some ed =>
+      match ed.variants[k]? with
+      | none => .stuck .typeConfusion
+      | some Ts =>
+        if Ts.length = vs.length then .next (.run H φ K (.ret (.enum e k vs)) tr)
+        else .stuck .typeConfusion
+  | .array T => .next (.run H φ K (.ret (.array T vs)) tr)
+  | .call f =>
+    match P.fns[f]? with
+    | none => .stuck .unbound
+    | some fd =>
+      if fd.params.length = vs.length then
+        match mintParams H vs with
+        | (H', ls) =>
+          .next (.run H' { env := ls.reverse, scope := ls } (.call φ :: K) (.eval fd.body) tr)
+      else .stuck .typeConfusion
+  | .indexRead p πs =>
+    match dynPlace H φ p vs πs with
+    | .stuck w => .stuck w
+    | .bounds => .next (.panic .bounds tr)
+    | .at _ _ sub ρ =>
+      match sub.readAt ρ with
+      | .error w => .stuck w
+      | .ok leaf =>
+        match leaf.toVal with
+        | none => .stuck .useAfterMove
+        | some v => .next (.run H φ K (.ret v) tr)
+  | .indexDrop p πs =>
+    match dynPlace H φ p vs πs with
+    | .stuck w => .stuck w
+    | .bounds => .next (.panic .bounds tr)
+    | .at _ _ sub ρ =>
+      match sub.readAt ρ with
+      | .error w => .stuck w
+      | .ok leaf =>
+        match leaf.toVal with
+        | none => .stuck .useAfterMove
+        | some _ => .next (.run H φ K (.ret .unit) tr)
+  | .indexWrite p πs v =>
+    match dynPlace H φ p vs πs with
+    | .stuck w => .stuck w
+    | .bounds => .next (.panic .bounds tr)
+    | .at ℓ c sub ρ =>
+      match sub.readAt ρ with
+      | .error w => .stuck w
+      | .ok old =>
+        match dropCell P.decls ℓ old with
+        | .error w => .stuck w
+        | .ok evs =>
+          match sub.writeAt ρ (Contents.ofVal v) with
+          | none => .stuck .typeConfusion
+          | some sub' =>
+            match c.writeAt p.path sub' with
+            | none => .stuck .typeConfusion
+            | some c' => .next (.run (H.set ℓ (.full c')) φ K (.ret .unit) (tr ++ evs))
+
+/-- An operator's outcome as a step: a value plugs the hole, a trap is
+(Panic-Lift) §6.2, and a wrong-shaped operand is stuck (helper). -/
+def OpRes.toStep (H : Store) (φ : Frame) (K : List Kont) (tr : List Event) : OpRes → StepOut
+  | .val v => .next (.run H φ K (.ret v) tr)
+  | .trap κ => .next (.panic κ tr)
+  | .confused => .stuck .typeConfusion
+
+/-- `step` at a value returning into the top frame: every (Search) plug rule
+of §6.2 and the redexes that fire there — §6.4's operators, (D-Match),
+(D-If-T)/(D-If-F), (D-Let), (D-EndScope), (D-Seq), (D-Assign),
+(D-Return-Value), (D-Return) and (D-Loop-Iter) (helper). -/
+def stepRet (M : FloatOps) (P : Program) (H : Store) (φ : Frame) (K : List Kont)
+    (tr : List Event) (v : Val) : Kont → StepOut
+  | .binopL op e₂ => .next (.run H φ (.binopR op v :: K) (.eval e₂) tr)
+  | .binopR op v₁ => (evalBinOp M op v₁ v).toStep H φ K tr
+  | .unop op => (evalUnOp op v).toStep H φ K tr
+  | .intCast w s => (evalIntCast w s v).toStep H φ K tr
+  | .fintrin k => (evalFintrin M k v).toStep H φ K tr
+  | .dbg => .next (.run H φ K (.ret .unit) (tr ++ [.dbg v]))
+  | .args t vs es => .next (.run H φ K (.args t (vs ++ [v]) es) tr)
+  | .repeatArray T n => .next (.run H φ K (.ret (.array T (List.replicate n v))) tr)
+  | .indexWriteRhs p idx πs => .next (.run H φ K (.args (.indexWrite p πs v) [] idx) tr)
+  | .«match» arms =>
+    match v with
+    | .enum _ k vs =>
+      match arms[k]? with
+      | none => .stuck .typeConfusion
+      | some body =>
+        match mintParams H vs with
+        | (H', ls) =>
+          .next (.run H' { env := ls.reverse ++ φ.env, scope := φ.scope ++ ls }
+            (.endscope ls φ :: K) (.eval body) tr)
+    | _ => .stuck .typeConfusion
+  | .letIn e₂ =>
+    .next (.run (H ++ [.full (Contents.ofVal v)])
+      { env := H.length :: φ.env, scope := φ.scope ++ [H.length] }
+      (.endscope [H.length] φ :: K) (.eval e₂) tr)
+  | .seq e₂ =>
+    if v.mult P.decls = .copy then .next (.run H φ K (.eval e₂) tr)
+    else
+      match dropContents P.decls (Contents.ofVal v) with
+      | .error w => .stuck w
+      | .ok evs => .next (.run H φ K (.eval e₂) (tr ++ (.dropTemp v :: evs)))
+  | .ite e₁ e₂ =>
+    match v with
+    | .bool true => .next (.run H φ K (.eval e₁) tr)
+    | .bool false => .next (.run H φ K (.eval e₂) tr)
+    | _ => .stuck .typeConfusion
+  | .assign p =>
+    match rootCell H φ p.root with
+    | .error w => .stuck w
+    | .ok (ℓ, c) =>
+      match c.readAt p.path with
+      | .error w => .stuck w
+      | .ok old =>
+        match dropCell P.decls ℓ old with
+        | .error w => .stuck w
+        | .ok evs =>
+          match c.writeAt p.path (Contents.ofVal v) with
+          | none => .stuck .typeConfusion
+          | some c' => .next (.run (H.set ℓ (.full c')) φ K (.ret .unit) (tr ++ evs))
+  | .ret =>
+    match Kont.toCall K with
+    | none => .stuck .typeConfusion
+    | some (φs, K') =>
+      match plainUnwind P.decls H φ.scope.reverse with
+      | .error w => .stuck w
+      | .ok (H', evs) => .next (.run H' φs K' (.ret v) (tr ++ evs))
+  | .endscope ℓs φs =>
+    match plainUnwind P.decls H ℓs.reverse with
+    | .error w => .stuck w
+    | .ok (H', evs) => .next (.run H' φs K (.ret v) (tr ++ evs))
+  | .loop e φs => .next (.run H φs (.loop e φs :: K) (.eval e) tr)
+  | .call φs =>
+    match plainUnwind P.decls H φ.scope.reverse with
+    | .error w => .stuck w
+    | .ok (H', evs) => .next (.run H' φs K (.ret v) (tr ++ evs))
+
+/-- **`Step` as a function**: the one step a configuration takes, or why it
+takes none — `halted` at a terminal configuration (§6.12's (Result-Ok) and
+(Result-Panic)), `stuck w` where §6 has no rule. `step_iff` is the proof that
+it is `Step`. -/
+def step (M : FloatOps) (P : Program) : Config → StepOut
+  | .panic _ _ => .halted
+  | .run H φ K (.eval e) tr => stepEval M P H φ K tr e
+  | .run H φ K (.args t vs (e :: es)) tr => .next (.run H φ (.args t vs es :: K) (.eval e) tr)
+  | .run H φ K (.args t vs []) tr => stepArgs P H φ K tr vs t
+  | .run _ _ [] (.ret _) _ => .halted
+  | .run H φ (k :: K) (.ret v) tr => stepRet M P H φ K tr v k
+
+/-! ## The sanity theorems -/
+
+/-- Every `Step` is the one `step` computes (§6). -/
+theorem Step.step_eq {M : FloatOps} {P : Program} {C C' : Config} (h : Step M P C C') :
+    step M P C = .next C' := by
+  cases h <;> simp_all [step, stepEval, stepArgs, stepRet, OpRes.toStep]
+
+/-- **Determinism** of §6's reduction on the fragment: a configuration takes
+at most one step. The rules' left-hand sides fix the focus and the top frame,
+and the pairs that share one — (D-Use-Copy)/(D-Use-Move)/(D-Use-Declared-Linear),
+(D-Seq)'s two cases, (D-If-T)/(D-If-F), an operator's value and trap rules,
+(D-Index)/(D-Index-Trap) — are split by premises that are functions of the
+configuration. -/
+theorem Step.det {M : FloatOps} {P : Program} {C C₁ C₂ : Config}
+    (h₁ : Step M P C C₁) (h₂ : Step M P C C₂) : C₁ = C₂ := by
+  have e₁ := h₁.step_eq
+  rw [h₂.step_eq] at e₁
+  exact (StepOut.next.inj e₁).symm
+
+/-- A terminal configuration takes no step: `✓n` and `↯κ` are final (§6.12). -/
+theorem Step.terminal {M : FloatOps} {P : Program} {C C' : Config}
+    (hC : C.Terminal) : ¬ Step M P C C' := by
+  intro h
+  cases h <;> simp [Config.Terminal] at hC
+
 end RueCore
