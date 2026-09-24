@@ -294,61 +294,77 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   [ℓ0 = 1, ℓ1 = S11 { ⊘, 5 }, ℓ2 = ⊘]
            →     [ℓ0 = 1, ℓ1 = S11 { ⊘, 5 }, ℓ2 = ⊘]
          result  REFUSED (typeConfusion)
-                 an operator met a wrong-shaped value, or a call's argument count did
-                 not match its callee's parameter list; the statics (§5) exclude
-                 both, and `soundness` (§7) is the proof
+                 an operator met a wrong-shaped value, a call's argument count did
+                 not match its callee's parameter list, or a dynamic-index read, a
+                 dynamic-index @drop or a repeat met a non-Copy value
+                 ((D-Use-Untrackable-Dynamic-Copy) §6.3, 7.1:38); the statics (§5)
+                 exclude all three, and `soundness` (§7) is the proof
   [23]  d7                (D-Seq) §6.7 — a premise did not complete
          expr    { { v1.x0[v0].x0 = S1 { x0: 99 }; }; 7 }
          store   [ℓ0 = 1, ℓ1 = S11 { ⊘, 5 }, ℓ2 = ⊘]
            →     [ℓ0 = 1, ℓ1 = S11 { ⊘, 5 }, ℓ2 = ⊘]
          result  REFUSED (typeConfusion)
-                 an operator met a wrong-shaped value, or a call's argument count did
-                 not match its callee's parameter list; the statics (§5) exclude
-                 both, and `soundness` (§7) is the proof
+                 an operator met a wrong-shaped value, a call's argument count did
+                 not match its callee's parameter list, or a dynamic-index read, a
+                 dynamic-index @drop or a repeat met a non-Copy value
+                 ((D-Use-Untrackable-Dynamic-Copy) §6.3, 7.1:38); the statics (§5)
+                 exclude all three, and `soundness` (§7) is the proof
   [24]  d6              (D-Seq) §6.7
          expr    { @drop(v2); { { v1.x0[v0].x0 = S1 { x0: 99 }; }; 7 } }
          store   [ℓ0 = 1, ℓ1 = S11 { ⊘, 5 }, ℓ2 = [S8 { S1 { 10 }, 1 }, S8 { S1 { 30 }, …
            →     [ℓ0 = 1, ℓ1 = S11 { ⊘, 5 }, ℓ2 = ⊘]
          result  REFUSED (typeConfusion)
-                 an operator met a wrong-shaped value, or a call's argument count did
-                 not match its callee's parameter list; the statics (§5) exclude
-                 both, and `soundness` (§7) is the proof
+                 an operator met a wrong-shaped value, a call's argument count did
+                 not match its callee's parameter list, or a dynamic-index read, a
+                 dynamic-index @drop or a repeat met a non-Copy value
+                 ((D-Use-Untrackable-Dynamic-Copy) §6.3, 7.1:38); the statics (§5)
+                 exclude all three, and `soundness` (§7) is the proof
   [25]  d5            (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the frame's scope record instead; a trap runs no drop at all)
          expr    { let v2: [S8; 2] = v1.x0; { @drop(v2); { { v1.x0[v0].x0 = S1 { x0: 99 }; }; 7 …
          store   [ℓ0 = 1, ℓ1 = S11 { [S8 { S1 { 10 }, 1 }, S8 { S1 { 30 }, 3 }], 5 }]
            →     [ℓ0 = 1, ℓ1 = S11 { ⊘, 5 }, ℓ2 = ⊘]
          result  REFUSED (typeConfusion)
-                 an operator met a wrong-shaped value, or a call's argument count did
-                 not match its callee's parameter list; the statics (§5) exclude
-                 both, and `soundness` (§7) is the proof
+                 an operator met a wrong-shaped value, a call's argument count did
+                 not match its callee's parameter list, or a dynamic-index read, a
+                 dynamic-index @drop or a repeat met a non-Copy value
+                 ((D-Use-Untrackable-Dynamic-Copy) §6.3, 7.1:38); the statics (§5)
+                 exclude all three, and `soundness` (§7) is the proof
   [26]  d4          (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the frame's scope record instead; a trap runs no drop at all)
          expr    { let mut v1: S11 = S11 { x0: [S8 { x0: S1 { x0: 10 }, x1: 1 }, S8 { x0: S1 { x…
          store   [ℓ0 = 1]
            →     [ℓ0 = 1, ℓ1 = S11 { ⊘, 5 }, ℓ2 = ⊘]
          result  REFUSED (typeConfusion)
-                 an operator met a wrong-shaped value, or a call's argument count did
-                 not match its callee's parameter list; the statics (§5) exclude
-                 both, and `soundness` (§7) is the proof
+                 an operator met a wrong-shaped value, a call's argument count did
+                 not match its callee's parameter list, or a dynamic-index read, a
+                 dynamic-index @drop or a repeat met a non-Copy value
+                 ((D-Use-Untrackable-Dynamic-Copy) §6.3, 7.1:38); the statics (§5)
+                 exclude all three, and `soundness` (§7) is the proof
   [27]  d2      (D-Return-Value) §6.9 (pop the frame)
          expr    f1(1)
          store   (empty)
            →     [ℓ0 = 1, ℓ1 = S11 { ⊘, 5 }, ℓ2 = ⊘]
          result  REFUSED (typeConfusion)
-                 an operator met a wrong-shaped value, or a call's argument count did
-                 not match its callee's parameter list; the statics (§5) exclude
-                 both, and `soundness` (§7) is the proof
+                 an operator met a wrong-shaped value, a call's argument count did
+                 not match its callee's parameter list, or a dynamic-index read, a
+                 dynamic-index @drop or a repeat met a non-Copy value
+                 ((D-Use-Untrackable-Dynamic-Copy) §6.3, 7.1:38); the statics (§5)
+                 exclude all three, and `soundness` (§7) is the proof
   [28]  d0  (D-Return-Value) §6.9 (pop the frame)
          expr    f0()
          store   (empty)
            →     [ℓ0 = 1, ℓ1 = S11 { ⊘, 5 }, ℓ2 = ⊘]
          result  REFUSED (typeConfusion)
-                 an operator met a wrong-shaped value, or a call's argument count did
-                 not match its callee's parameter list; the statics (§5) exclude
-                 both, and `soundness` (§7) is the proof
+                 an operator met a wrong-shaped value, a call's argument count did
+                 not match its callee's parameter list, or a dynamic-index read, a
+                 dynamic-index @drop or a repeat met a non-Copy value
+                 ((D-Use-Untrackable-Dynamic-Copy) §6.3, 7.1:38); the statics (§5)
+                 exclude all three, and `soundness` (§7) is the proof
 
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: REFUSED (typeConfusion)
-         an operator met a wrong-shaped value, or a call's argument count did
-         not match its callee's parameter list; the statics (§5) exclude
-         both, and `soundness` (§7) is the proof
+         an operator met a wrong-shaped value, a call's argument count did
+         not match its callee's parameter list, or a dynamic-index read, a
+         dynamic-index @drop or a repeat met a non-Copy value
+         ((D-Use-Untrackable-Dynamic-Copy) §6.3, 7.1:38); the statics (§5)
+         exclude all three, and `soundness` (§7) is the proof
 
