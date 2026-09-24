@@ -2142,9 +2142,10 @@ def violationPremise : Violation → String
       "a dangling index or a callee the program does not have: elaboration resolves " ++
       "names before the core (§2), so no elaborated program reaches this"
   | .typeConfusion =>
-      "an operator met a wrong-shaped value, or a call's argument count did not match " ++
-      "its callee's parameter list; the statics (§5) exclude both, and `soundness` " ++
-      "(§7) is the proof"
+      "an operator met a wrong-shaped value, a call's argument count did not match " ++
+      "its callee's parameter list, or a dynamic-index read, a dynamic-index @drop or " ++
+      "a repeat met a non-Copy value ((D-Use-Untrackable-Dynamic-Copy) §6.3, 7.1:38); " ++
+      "the statics (§5) exclude all three, and `soundness` (§7) is the proof"
 
 /-- What one node produced: a value, a value an unwinding `return` handed
 past it (§6.9), a defined trap (§6.12), a refusal (§6's stuck states) with
@@ -2636,9 +2637,11 @@ def traceEval (M : FloatOps) (P : Program) :
       let t := traceEval M P fuel (d + 1) Θ R H φ e
       (match t.res with
        | .ok H₁ v tr =>
-           traced t.steps d Θ R (.repeatArray T e n) rule H H₁ []
-             (.value (.array T (List.replicate n v)))
-             (.ok H₁ (.array T (List.replicate n v)) tr)
+           if v.mult P.decls = .copy then
+             traced t.steps d Θ R (.repeatArray T e n) rule H H₁ []
+               (.value (.array T (List.replicate n v)))
+               (.ok H₁ (.array T (List.replicate n v)) tr)
+           else refused t.steps d Θ R (.repeatArray T e n) rule H .typeConfusion
        | r => propagate t.steps d Θ R (.repeatArray T e n) rule H r)
   | fuel + 1, d, Θ, R, H, φ, .indexRead pl idx πs =>
       let rule := "(D-Index) §6.5"
@@ -2659,8 +2662,10 @@ def traceEval (M : FloatOps) (P : Program) :
              match leaf.toVal with
              | none => refused ta.steps d Θ R (.indexRead pl idx πs) rule H .useAfterMove
              | some v =>
-                 traced ta.steps d Θ R (.indexRead pl idx πs) rule H H₁ []
-                   (.value v) (.ok H₁ v tr))
+                 if v.mult P.decls = .copy then
+                   traced ta.steps d Θ R (.indexRead pl idx πs) rule H H₁ []
+                     (.value v) (.ok H₁ v tr)
+                 else refused ta.steps d Θ R (.indexRead pl idx πs) rule H .typeConfusion)
   | fuel + 1, d, Θ, R, H, φ, .indexDrop pl idx πs =>
       -- The read's rows, then the drop's own: a `Copy` leaf owes no glue, so
       -- the read's navigation and bounds trap are all the form does.
@@ -2969,7 +2974,7 @@ theorem traceEval_res (M : FloatOps) {P : Program} : ∀ (fuel : Nat) (d : Nat) 
       | repeatArray Te e₁ n =>
           simp only [traceEval, eval, EvalRes.andThen, ih]
           (repeat' split) <;>
-            first | rfl | (simp_all [traced, EvalRes.withTrace] <;> grind)
+            first | rfl | (simp_all [traced, refused, EvalRes.withTrace] <;> grind)
       | indexRead pl idx πs =>
           simp only [traceEval, eval,
             traceArgs_res (ev := fun H' e' => eval M fuel P H' φ e') (fun H' e' => ih _ _ _ _ _ e')]
