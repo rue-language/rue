@@ -197,10 +197,13 @@ from then on — `S1 { 1 }#3` in a step table, `.struct s 3 [...]` in Lean. The
 identity is the store's next index, reserved by appending a `†` slot that no
 binding ever names (§6.1: "a fresh identity is one not in `dom(H)`"), so the
 stores in the tables below have `†` slots between the bindings, and a
-binding's location is the next index after them. Nothing branches on an
-identity and nothing prints one, so the bridge compares exactly what it
-compared before. What it buys is section 4's last theorem, `no_double_free`:
-in a checked program's trace, no identity is freed twice.
+binding's location is the next index after them. Nothing in `eval` branches on
+an identity, and the printer and the corpus never print one, so the bridge
+compares exactly what it compared before; the step tables below print `#n`
+only for the reader's benefit. What it buys is section 4's last theorem,
+`no_double_free`: in a checked program's trace, no identity has its
+destructor run twice, and no identity appears twice among the
+`drop`/`dropTemp` free events.
 
 A `Violation` is a refusal: `useAfterMove` (reading a `⊘` cell),
 `useAfterDrop` (touching a `†` cell), `linearLeak` (a scope exit or a frame
@@ -453,11 +456,15 @@ theorem no_double_free (M : FloatModel) (h : ProgramTyped P) (fuel : Nat) :
       (∀ a, (dtorIds (run M.toFloatOps P fuel).trace).count a ≤ 1)
 ```
 
-In words: the run is never refused, and in its trace no value identity is
-freed twice and no value has its destructor run twice. `freedIds` reads the
-non-`Copy` identities out of each `drop`/`dropTemp` marker's tree, and
-`dtorIds` the identity of each value a destructor ran on. A `Copy` value is
-duplicated freely and frees nothing, so neither counts it.
+In words: the run is never refused, and in its trace no identity has its
+destructor run twice, and no identity appears twice among the
+`drop`/`dropTemp` free events. `freedIds` reads the non-`Copy` identities out
+of each `drop`/`dropTemp` marker's tree, and `dtorIds` the identity of each
+value a destructor ran on. A `Copy` value is duplicated freely and frees
+nothing, so neither counts it. A declared-linear destructure's residue is
+freed with no marker of its own (`dropResidue`), so it is outside `freedIds`
+until RUE-2328 gives it one; `dtorIds` still catches it when the residue has
+a destructor.
 
 The proof is a **conservation law**, `eval_conserves`, by the same fuel
 induction as `soundness`: what the final store, the result and the trace own,
