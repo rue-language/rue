@@ -1004,6 +1004,7 @@ def violationName : Violation → String
   | .linearDiscard => "linearDiscard"
   | .unbound => "unbound"
   | .typeConfusion => "typeConfusion"
+  | .ownedUnderCopy => "ownedUnderCopy"
 
 /-- The stdout the bridge compares, for a completed run: one line per
 observable event the run executed — a user destructor or a `@dbg`

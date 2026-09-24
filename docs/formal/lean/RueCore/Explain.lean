@@ -2157,6 +2157,11 @@ def violationPremise : Violation → String
       "its callee's parameter list, or a dynamic-index read, a dynamic-index @drop or " ++
       "a repeat met a non-Copy value ((D-Use-Untrackable-Dynamic-Copy) §6.3, 7.1:38); " ++
       "the statics (§5) exclude all three, and `soundness` (§7) is the proof"
+  | .ownedUnderCopy =>
+      "an owned value under a Copy node: a Copy type's fields, payloads and elements " ++
+      "are Copy (§3, 3.8:18, 6.3:19), so a copy of this aggregate would duplicate an " ++
+      "owner; the machine's copy-closure monitor refuses it (§7 “no double free”), and " ++
+      "`soundness` proves a checked program never reaches it"
 
 /-- What one node produced: a value, a value an unwinding `return` handed
 past it (§6.9), a defined trap (§6.12), a refusal (§6's stuck states) with
@@ -2310,7 +2315,7 @@ def tracedIntro (P : Program) (kids : List Step) (d : Nat) (Θ : List Ty) (R : T
   if (Contents.ofVal (mk H₁.length)).copyClosed P.decls then
     traced kids d Θ R e (rule ++ " (mint " ++ idTag H₁.length ++ ")") H (H₁ ++ [.dead]) []
       (.value (mk H₁.length)) (.ok (H₁ ++ [.dead]) (mk H₁.length) tr)
-  else refused kids d Θ R e rule H .typeConfusion
+  else refused kids d Θ R e rule H .ownedUnderCopy
 
 /-- (helper) An operator that met a wrong-shaped value. §5 excludes it and
 `soundness` (§7) proves so; it is here because `eval` is total. -/
@@ -2755,7 +2760,7 @@ def traceEval (M : FloatOps) (P : Program) :
                              (.ok (H₂.set ℓ (.full c')) .unit (tr₁ ++ (tr₂ ++ evs)))
                          else
                            refused (t₁.steps ++ ta.steps) d Θ R (.indexWrite pl idx πs e)
-                             rule H .typeConfusion)
+                             rule H .ownedUnderCopy)
           | .abort r =>
               didNotRun (t₁.steps ++ ta.steps) d Θ R (.indexWrite pl idx πs e) rule H
                 (r.withTrace tr₁))
@@ -2820,7 +2825,7 @@ def traceEval (M : FloatOps) (P : Program) :
                                (.ok (H₁.set ℓ (.full c')) .unit (tr ++ evs))
                            else
                              refused t.steps d Θ R (.assign pl e) "(D-Assign) §6.8" H
-                               .typeConfusion)
+                               .ownedUnderCopy)
       | r => propagate t.steps d Θ R (.assign pl e) "(D-Assign) §6.8" H r
   | fuel + 1, d, Θ, R, H, φ, .seq e₁ e₂ =>
       let t₁ := traceEval M P fuel (d + 1) Θ R H φ e₁

@@ -564,6 +564,12 @@ inductive Violation where
   does not match the callee's parameter list (impossible for well-typed
   programs; §5.8, `4.10:3`). -/
   | typeConfusion
+  /-- An owned value under a `Copy` node (§3: a `Copy` type's fields, payloads
+  and elements are `Copy`, `3.8:18`, `6.3:19`) — the shape a copy would
+  duplicate an owner through, which §7's no-double-free bullet forbids. The
+  copy-closure monitor (`Contents.copyClosed`) refuses it where it could be
+  built: at aggregate introduction and at an assignment (RUE-2323). -/
+  | ownedUnderCopy
 deriving DecidableEq, Repr
 
 /-- `H(ℓ)@π` (§6.3): follow a path into the stored contents. Reaching a `⊘`
@@ -1286,7 +1292,7 @@ The copy-closure monitor (`Contents.copyClosed`) runs here, on the finished
 value (helper). -/
 def introVal (D : Decls) (H : Store) (mk : Nat → Val) : EvalRes :=
   if (Contents.ofVal (mk H.length)).copyClosed D then .ok (H ++ [.dead]) (mk H.length) []
-  else .stuck .typeConfusion
+  else .stuck .ownedUnderCopy
 
 /-- The interpreter, over a `FloatOps` (`Float.lean`): §2 fixes `rnd_w` and
 `σ_NaN` per *target*, not per rule, so the machine takes them as a parameter
@@ -1552,7 +1558,7 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
                       | none => .stuck .typeConfusion
                       | some c' =>
                         if c'.copyClosed P.decls then .ok (H₂.set ℓ (.full c')) .unit evs
-                        else .stuck .typeConfusion
+                        else .stuck .ownedUnderCopy
   | fuel + 1, P, H, φ, .indexDrop p idx πs =>
       -- §6.11's `@drop(p)` at a `Copy` place below a dynamic index. A `Copy`
       -- place owes no glue and changes no ownership, so what is left of the
@@ -1653,7 +1659,7 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
                       | some c' =>
                           -- The copy-closure monitor (`Contents.copyClosed`).
                           if c'.copyClosed P.decls then .ok (H₁.set ℓ (.full c')) .unit evs
-                          else .stuck .typeConfusion
+                          else .stuck .ownedUnderCopy
   | fuel + 1, P, H, φ, .seq e₁ e₂ =>
       (eval M fuel P H φ e₁).andThen fun H₁ v₁ =>
         match v₁.mult P.decls with

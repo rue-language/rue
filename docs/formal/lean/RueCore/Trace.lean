@@ -1,4 +1,6 @@
 import RueCore.Soundness
+import RueCore.Checker
+import RueCore.Step
 
 /-!
 # RueCore.Trace — theorems over the drop trace (§7)
@@ -112,10 +114,12 @@ def Event.dtorIds : Event → List Nat
   | .dtor _ (.struct _ i _) => [i]
   | _ => []
 
-/-- The identities the trace's markers free, in trace order. -/
+/-- The identities the trace's markers free, in trace order: what §7's
+no-double-free bullet counts at a drop. -/
 def freedIds (D : Decls) (tr : List Event) : List Nat := tr.flatMap (Event.freed D)
 
-/-- The identities the trace's destructors ran on, in trace order. -/
+/-- The identities the trace's destructors ran on, in trace order: what §7's
+no-double-free bullet counts at a destructor (`3.9:28`). -/
 def dtorIds (tr : List Event) : List Nat := tr.flatMap Event.dtorIds
 
 /-- `dtorIds` distributes over concatenation (helper). -/
@@ -1970,8 +1974,8 @@ theorem eval_conserves (M : FloatOps) {P : Program} {F : Event → List Nat}
 /-! ## §7: no double free -/
 
 /-- An index occurs in a range once when it lies in it, and not at all
-otherwise (helper; core's `List.count_range'` costs `Classical.choice`, and so
-does `omega` on a conjunction or a disequation, so this proof avoids both). -/
+otherwise (helper). Core's `List.count_range'` costs `Classical.choice`, and so
+does `omega` on a conjunction or a disequation, so this proof avoids both. -/
 theorem range'_count (a : Nat) : ∀ (n s : Nat),
     (List.range' s n).count a = if s ≤ a ∧ a < s + n then 1 else 0
   | 0, s => by
@@ -2077,5 +2081,74 @@ theorem no_double_free (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel
       (∀ a, (dtorIds (run M.toFloatOps P fuel).trace).count a ≤ 1) :=
   ⟨no_violation M h fuel, freed_once M.toFloatOps P fuel,
     dtor_once M.toFloatOps h.wf.decls.dtorNotCopy fuel⟩
+
+/-! ## Witnesses: what the monitor stands between
+
+The one shape the conservation law needs excluded is an owned value under a
+`Copy` node. Here it is, built by an ill-typed program: a `@copy` struct `S0`
+whose `i64` field is given an `S1`, which declares a destructor. The program
+copies the `S0` and then drops the field through both copies:
+
+```rue
+let p = S0 { x0: S1 { x0: 1 } };  // ill-typed: x0 is an i64
+let q = p;                        // S0 is Copy, so this copies
+@drop(p.x0);
+@drop(q.x0);
+0
+```
+
+The checker rejects it; `eval` refuses it at the literal with
+`ownedUnderCopy`; and `Step`, which follows §6's rules and has no monitor,
+runs it to the end and runs `S1`'s destructor on the **same identity twice**.
+So the identity count is not vacuous: without the monitor, or without the
+typing that keeps a checked program away from it, the trace shows a double
+free. -/
+
+/-- `S0 = @copy struct { x0: i64 }` and `S1 = struct { x0: i64 }` with a
+destructor (helper). -/
+def dupDecls : Decls :=
+  Decls.ofStructs
+    [{ attr := .copy, fields := [.int .w64 .signed], dtor := false, cls := .copy },
+     { attr := .none, fields := [.int .w64 .signed], dtor := true, cls := .affine }]
+
+/-- The program above (helper). -/
+def dupProgram : Program :=
+  Program.entry dupDecls (.int .w64 .signed)
+    (.letIn false (.mkStruct 0 [.mkStruct 1 [.intLit .w64 .signed 1]])
+      (.letIn false (.use (.var 0))
+        (.seq (.drop (.proj (.var 1) 0))
+          (.seq (.drop (.proj (.var 0) 0)) (.intLit .w64 .signed 0)))))
+
+/-- The checker rejects it (§5.8's (Struct-Intro): the field is an `i64`). -/
+example : checkProgram dupProgram = false := by rfl
+
+/-- `eval` refuses it where the owned value would go under the `Copy` node
+(`Contents.copyClosed`). -/
+example : run Float.exactOps dupProgram 100 = .stuck .ownedUnderCopy := by rfl
+
+/-- **§6's relation, with no monitor, frees one identity twice**: `S1 #0` is
+destroyed through `p.x0` and again through `q.x0`, so `dtorIds` names `0`
+twice. -/
+theorem dupProgram_step_double_free (M : FloatOps) :
+    ∃ H, Steps M dupProgram Config.init
+      (.run H { env := [], scope := [] } [] (.ret (.int .w64 .signed 0))
+        [.drop 2 (.struct 1 0 [.int .w64 .signed 1]), .dtor 1 (.struct 1 0 [.int .w64 .signed 1]),
+         .drop 3 (.struct 1 0 [.int .w64 .signed 1]), .dtor 1 (.struct 1 0 [.int .w64 .signed 1])]) ∧
+      dtorIds [.drop 2 (.struct 1 0 [.int .w64 .signed 1]),
+        .dtor 1 (.struct 1 0 [.int .w64 .signed 1]),
+        .drop 3 (.struct 1 0 [.int .w64 .signed 1]),
+        .dtor 1 (.struct 1 0 [.int .w64 .signed 1])] = [0, 0] :=
+  ⟨_, stepN_steps (n := 100), rfl⟩
+
+/-- The same monitor at an assignment: `let mut p = S0 { 1 }; p.x0 = S1 { 2 }; 0`
+writes an owned value under the `Copy` node, and `eval` refuses the write
+((D-Assign) §6.8). -/
+example :
+    run Float.exactOps
+      (Program.entry dupDecls (.int .w64 .signed)
+        (.letIn true (.mkStruct 0 [.intLit .w64 .signed 1])
+          (.seq (.assign (.proj (.var 0) 0) (.mkStruct 1 [.intLit .w64 .signed 2]))
+            (.intLit .w64 .signed 0)))) 100
+      = .stuck .ownedUnderCopy := by rfl
 
 end RueCore
