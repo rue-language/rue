@@ -1465,7 +1465,7 @@ error_contains = ["E0259", "as an `inout self` receiver while an accessor result
 
 [[case]]
 name = "inout_self_method_on_exclusive_accessor_result_uses_its_loan"
-spec = ["6.6:8", "6.6:10"]
+spec = ["6.6:8", "6.6:10", "6.6:15"]
 description = "An `inout self` method on an exclusive accessor result mutates the yielded place through the accessor's own loan; it is not a second exclusive use of the root (RUE-2358)."
 source = """
 struct P {
@@ -1494,7 +1494,7 @@ exit_code = 0
 
 [[case]]
 name = "inout_self_method_on_field_and_element_accessor_results_drops_replaced_values"
-spec = ["6.6:8", "6.6:10"]
+spec = ["6.6:8", "6.6:10", "6.6:15"]
 description = "A field-reached receiver and an element accessor result take `inout self` calls through their loans; each assignment in the method drops the value it replaces exactly once (RUE-2358)."
 source = """
 struct Tag { n: i64 }
@@ -1610,6 +1610,158 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E0259", "as an `inout self` receiver while an accessor result borrows it"]
+
+[[case]]
+name = "compare_operand_conflicts_with_later_exclusive_accessor_method"
+spec = ["6.6:10", "6.6:16"]
+description = "An `==` operand borrows its place, so the root's shared read conflicts with a later exclusive accessor result whose `inout self` method mutates it (E0259, RUE-2358)."
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+struct B {
+    s: StrBuf,
+
+    fn bumpclone(inout self) -> StrBuf {
+        self.s.push(120);
+        let r: StrBuf = "x";
+        r
+    }
+}
+struct W {
+    b: B,
+
+    fn bmut(inout self) -> inout B { yield self.b; }
+}
+fn bc(inout b: B) -> StrBuf { b.bumpclone() }
+fn main() -> i32 {
+    let mut w = W { b: B { s: "x" } };
+    let same = w.b.s == w.bmut().bumpclone();
+    @dbg(same);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "for an exclusive accessor result after a shared read"]
+
+[[case]]
+name = "compare_operand_conflicts_with_earlier_exclusive_accessor_method"
+spec = ["6.6:10", "6.6:16"]
+description = "The reverse operand order is rejected too: the shared read of the root overlaps the live exclusive accessor loan (E0259, RUE-2358)."
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+struct B {
+    s: StrBuf,
+
+    fn bumpclone(inout self) -> StrBuf {
+        self.s.push(120);
+        let r: StrBuf = "x";
+        r
+    }
+}
+struct W {
+    b: B,
+
+    fn bmut(inout self) -> inout B { yield self.b; }
+}
+fn bc(inout b: B) -> StrBuf { b.bumpclone() }
+fn main() -> i32 {
+    let mut w = W { b: B { s: "x" } };
+    let same = w.bmut().bumpclone() == w.b.s;
+    @dbg(same);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "by a shared read"]
+
+[[case]]
+name = "compare_operand_conflicts_with_exclusive_accessor_inout_argument"
+spec = ["6.6:10", "6.6:16"]
+description = "An `==` operand beside an exclusive accessor result passed `inout` conflicts with that loan (E0259, RUE-2358)."
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+struct B {
+    s: StrBuf,
+
+    fn bumpclone(inout self) -> StrBuf {
+        self.s.push(120);
+        let r: StrBuf = "x";
+        r
+    }
+}
+struct W {
+    b: B,
+
+    fn bmut(inout self) -> inout B { yield self.b; }
+}
+fn bc(inout b: B) -> StrBuf { b.bumpclone() }
+fn main() -> i32 {
+    let mut w = W { b: B { s: "x" } };
+    let same = w.b.s == bc(inout w.bmut());
+    @dbg(same);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "for an exclusive accessor result after a shared read"]
+
+[[case]]
+name = "compare_operand_conflicts_with_exclusive_accessor_field"
+spec = ["6.6:10", "6.6:16"]
+description = "A field of an exclusive accessor result compared with a plain read of the same root conflicts, like the `+` form (E0259, RUE-2358)."
+source = """
+struct P {
+    c: i64,
+
+    fn get(borrow self) -> i64 { self.c }
+}
+struct Acc {
+    p: P,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+}
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 } };
+    @dbg(a.pmut().c == a.p.c);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "by a shared read"]
+
+[[case]]
+name = "compare_operands_with_shared_or_no_exclusive_accessor_accepted"
+spec = ["6.6:10"]
+description = "Shared accessor results coexist with a compared shared read of the root, and an exclusive accessor result compared with a value involves no second use of the root (RUE-2358)."
+source = """
+struct P {
+    c: i64,
+
+    fn get(borrow self) -> i64 { self.c }
+}
+struct Acc {
+    p: P,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn pref(borrow self) -> borrow P { yield self.p; }
+}
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 } };
+    @dbg(a.pref().c == a.p.c);
+    @dbg(a.p.c == a.pref().get());
+    @dbg(a.pmut().c == 1);
+    @dbg(a.pmut().get() < 5);
+    0
+}
+"""
+expected_stdout = "true\ntrue\ntrue\ntrue\n"
+exit_code = 0
 
 [[case]]
 name = "accessor_read_before_inout_call_is_legal"

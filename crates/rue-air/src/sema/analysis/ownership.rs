@@ -7480,7 +7480,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
                 ctx,
             ),
-            _ => Ok(()),
+            // A by-value receiver is a move, checked on the move path; callers
+            // pass only the by-ref receiver modes.
+            _ => {
+                debug_assert!(false, "by-ref receiver check called for {receiver_mode:?}");
+                Ok(())
+            }
         }
     }
 
