@@ -121,69 +121,69 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 2
-  [4]   d5            (D-Struct) §6.5
+  [4]   d5            (D-Struct) §6.5 (mint #0)
          expr    S6 { x0: 1, x1: 2 }
          store   (empty)
-           →     (empty)
-         result  value S6 { 1, 2 }
+           →     [ℓ0 = †]
+         result  value S6 { 1, 2 }#0
   [5]   d6              literal §6.3
          expr    3
-         store   (empty)
-           →     (empty)
+         store   [ℓ0 = †]
+           →     [ℓ0 = †]
          result  value 3
   [6]   d6              literal §6.3
          expr    4
-         store   (empty)
-           →     (empty)
+         store   [ℓ0 = †]
+           →     [ℓ0 = †]
          result  value 4
-  [7]   d5            (D-Struct) §6.5
+  [7]   d5            (D-Struct) §6.5 (mint #1)
          expr    S6 { x0: 3, x1: 4 }
-         store   (empty)
-           →     (empty)
-         result  value S6 { 3, 4 }
-  [8]   d4          (D-Array) §6.5
+         store   [ℓ0 = †]
+           →     [ℓ0 = †, ℓ1 = †]
+         result  value S6 { 3, 4 }#1
+  [8]   d4          (D-Array) §6.5 (mint #2)
          expr    [S6 { x0: 1, x1: 2 }, S6 { x0: 3, x1: 4 }]
          store   (empty)
-           →     (empty)
-         result  value [S6 { 1, 2 }, S6 { 3, 4 }]
-  [9]   d3        (D-Struct) §6.5
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †]
+         result  value [S6 { 1, 2 }#0, S6 { 3, 4 }#1]#2
+  [9]   d3        (D-Struct) §6.5 (mint #3)
          expr    S11 { x0: [S6 { x0: 1, x1: 2 }, S6 { x0: 3, x1: 4 }] }
          store   (empty)
-           →     (empty)
-         result  value S11 { [S6 { 1, 2 }, S6 { 3, 4 }] }
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †]
+         result  value S11 { [S6 { 1, 2 }#0, S6 { 3, 4 }#1]#2 }#3
   [10]  d3        (D-Let) §6.7 (mint the binding)
-         expr    let v0 = S11 { [S6 { 1, 2 }, S6 { 3, 4 }] } at ℓ0
-         store   (empty)
-           →     [ℓ0 = S11 { [S6 { 1, 2 }, S6 { 3, 4 }] }]
-         result  value S11 { [S6 { 1, 2 }, S6 { 3, 4 }] }
+         expr    let v0 = S11 { [S6 { 1, 2 }#0, S6 { 3, 4 }#1]#2 }#3 at ℓ4
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = S11 { [S6 { 1, 2 }#0, S6 { 3, 4 }…
+         result  value S11 { [S6 { 1, 2 }#0, S6 { 3, 4 }#1]#2 }#3
   [11]  d4          (D-Use-Copy) §6.3
          expr    v0.x0[1].x0
-         store   [ℓ0 = S11 { [S6 { 1, 2 }, S6 { 3, 4 }] }]
-           →     [ℓ0 = S11 { [S6 { 1, 2 }, S6 { 3, 4 }] }]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = S11 { [S6 { 1, 2 }#0, S6 { 3, 4 }…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = S11 { [S6 { 1, 2 }#0, S6 { 3, 4 }…
          result  value 3
   [12]  d4          (D-Use-Copy) §6.3
          expr    v0.x0[0].x1
-         store   [ℓ0 = S11 { [S6 { 1, 2 }, S6 { 3, 4 }] }]
-           →     [ℓ0 = S11 { [S6 { 1, 2 }, S6 { 3, 4 }] }]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = S11 { [S6 { 1, 2 }#0, S6 { 3, 4 }…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = S11 { [S6 { 1, 2 }#0, S6 { 3, 4 }…
          result  value 2
   [13]  d3        (D-Arith) §6.4
          expr    (v0.x0[1].x0 + v0.x0[0].x1)
-         store   [ℓ0 = S11 { [S6 { 1, 2 }, S6 { 3, 4 }] }]
-           →     [ℓ0 = S11 { [S6 { 1, 2 }, S6 { 3, 4 }] }]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = S11 { [S6 { 1, 2 }#0, S6 { 3, 4 }…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = S11 { [S6 { 1, 2 }#0, S6 { 3, 4 }…
          result  value 5
   [14]  d2      (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ0])
-         store   [ℓ0 = S11 { [S6 { 1, 2 }, S6 { 3, 4 }] }]
-           →     [ℓ0 = † (retired)]
-         events  >> drop ℓ0 = S11 { [S6 { 1, 2 }, S6 { 3, 4 }] }
+         expr    endscope([ℓ4])
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = S11 { [S6 { 1, 2 }#0, S6 { 3, 4 }…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †]
+         events  >> drop ℓ4 = S11 { [S6 { 1, 2 }#0, S6 { 3, 4 }#1]#2 }#3
          result  value 5
   [15]  d0  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([])
-         store   [ℓ0 = † (retired)]
-           →     [ℓ0 = † (retired)]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †]
          result  value 5
 
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: ok — value 5
-         drop trace: drop ℓ0 = S11 { [S6 { 1, 2 }, S6 { 3, 4 }] }
+         drop trace: drop ℓ4 = S11 { [S6 { 1, 2 }#0, S6 { 3, 4 }#1]#2 }#3
 

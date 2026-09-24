@@ -307,72 +307,72 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
   [41]  d18                  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([ℓ4])
          store   [ℓ0 = 4, ℓ1 = 3, ℓ2 = 2, ℓ3 = 1, ℓ4 = 0]
-           →     [ℓ0 = 4, ℓ1 = 3, ℓ2 = 2, ℓ3 = 1, ℓ4 = † (retired)]
+           →     [ℓ0 = 4, ℓ1 = 3, ℓ2 = 2, ℓ3 = 1, ℓ4 = †]
          result  value 0
   [42]  d17                  (D-Arith) §6.4
          expr    (v0 + f1((v0 + (-1))))
          store   [ℓ0 = 4, ℓ1 = 3, ℓ2 = 2, ℓ3 = 1]
-           →     [ℓ0 = 4, ℓ1 = 3, ℓ2 = 2, ℓ3 = 1, ℓ4 = † (retired)]
+           →     [ℓ0 = 4, ℓ1 = 3, ℓ2 = 2, ℓ3 = 1, ℓ4 = †]
          result  value 1
   [43]  d16                  (D-If-F) §6.6
          expr    if (v0 < 1) { 0 } else { (v0 + f1((v0 + (-1)))) }
          store   [ℓ0 = 4, ℓ1 = 3, ℓ2 = 2, ℓ3 = 1]
-           →     [ℓ0 = 4, ℓ1 = 3, ℓ2 = 2, ℓ3 = 1, ℓ4 = † (retired)]
+           →     [ℓ0 = 4, ℓ1 = 3, ℓ2 = 2, ℓ3 = 1, ℓ4 = †]
          result  value 1
   [44]  d14                  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([ℓ3])
-         store   [ℓ0 = 4, ℓ1 = 3, ℓ2 = 2, ℓ3 = 1, ℓ4 = † (retired)]
-           →     [ℓ0 = 4, ℓ1 = 3, ℓ2 = 2, ℓ3 = † (retired), ℓ4 = † (retired)]
+         store   [ℓ0 = 4, ℓ1 = 3, ℓ2 = 2, ℓ3 = 1, ℓ4 = †]
+           →     [ℓ0 = 4, ℓ1 = 3, ℓ2 = 2, ℓ3 = †, ℓ4 = †]
          result  value 1
   [45]  d13                  (D-Arith) §6.4
          expr    (v0 + f1((v0 + (-1))))
          store   [ℓ0 = 4, ℓ1 = 3, ℓ2 = 2]
-           →     [ℓ0 = 4, ℓ1 = 3, ℓ2 = 2, ℓ3 = † (retired), ℓ4 = † (retired)]
+           →     [ℓ0 = 4, ℓ1 = 3, ℓ2 = 2, ℓ3 = †, ℓ4 = †]
          result  value 3
   [46]  d12                  (D-If-F) §6.6
          expr    if (v0 < 1) { 0 } else { (v0 + f1((v0 + (-1)))) }
          store   [ℓ0 = 4, ℓ1 = 3, ℓ2 = 2]
-           →     [ℓ0 = 4, ℓ1 = 3, ℓ2 = 2, ℓ3 = † (retired), ℓ4 = † (retired)]
+           →     [ℓ0 = 4, ℓ1 = 3, ℓ2 = 2, ℓ3 = †, ℓ4 = †]
          result  value 3
   [47]  d10                  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([ℓ2])
-         store   [ℓ0 = 4, ℓ1 = 3, ℓ2 = 2, ℓ3 = † (retired), ℓ4 = † (retired)]
-           →     [ℓ0 = 4, ℓ1 = 3, ℓ2 = † (retired), ℓ3 = † (retired), ℓ4 = † (retired)]
+         store   [ℓ0 = 4, ℓ1 = 3, ℓ2 = 2, ℓ3 = †, ℓ4 = †]
+           →     [ℓ0 = 4, ℓ1 = 3, ℓ2 = †, ℓ3 = †, ℓ4 = †]
          result  value 3
   [48]  d9                  (D-Arith) §6.4
          expr    (v0 + f1((v0 + (-1))))
          store   [ℓ0 = 4, ℓ1 = 3]
-           →     [ℓ0 = 4, ℓ1 = 3, ℓ2 = † (retired), ℓ3 = † (retired), ℓ4 = † (retired)]
+           →     [ℓ0 = 4, ℓ1 = 3, ℓ2 = †, ℓ3 = †, ℓ4 = †]
          result  value 6
   [49]  d8                  (D-If-F) §6.6
          expr    if (v0 < 1) { 0 } else { (v0 + f1((v0 + (-1)))) }
          store   [ℓ0 = 4, ℓ1 = 3]
-           →     [ℓ0 = 4, ℓ1 = 3, ℓ2 = † (retired), ℓ3 = † (retired), ℓ4 = † (retired)]
+           →     [ℓ0 = 4, ℓ1 = 3, ℓ2 = †, ℓ3 = †, ℓ4 = †]
          result  value 6
   [50]  d6              (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([ℓ1])
-         store   [ℓ0 = 4, ℓ1 = 3, ℓ2 = † (retired), ℓ3 = † (retired), ℓ4 = † (retired)]
-           →     [ℓ0 = 4, ℓ1 = † (retired), ℓ2 = † (retired), ℓ3 = † (retired), ℓ4 = † (…
+         store   [ℓ0 = 4, ℓ1 = 3, ℓ2 = †, ℓ3 = †, ℓ4 = †]
+           →     [ℓ0 = 4, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †]
          result  value 6
   [51]  d5            (D-Arith) §6.4
          expr    (v0 + f1((v0 + (-1))))
          store   [ℓ0 = 4]
-           →     [ℓ0 = 4, ℓ1 = † (retired), ℓ2 = † (retired), ℓ3 = † (retired), ℓ4 = † (…
+           →     [ℓ0 = 4, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †]
          result  value 10
   [52]  d4          (D-If-F) §6.6
          expr    if (v0 < 1) { 0 } else { (v0 + f1((v0 + (-1)))) }
          store   [ℓ0 = 4]
-           →     [ℓ0 = 4, ℓ1 = † (retired), ℓ2 = † (retired), ℓ3 = † (retired), ℓ4 = † (…
+           →     [ℓ0 = 4, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †]
          result  value 10
   [53]  d2      (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([ℓ0])
-         store   [ℓ0 = 4, ℓ1 = † (retired), ℓ2 = † (retired), ℓ3 = † (retired), ℓ4 = † (…
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = † (retired), ℓ3 = † (retired)…
+         store   [ℓ0 = 4, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †]
          result  value 10
   [54]  d0  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([])
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = † (retired), ℓ3 = † (retired)…
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = † (retired), ℓ3 = † (retired)…
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †]
          result  value 10
 
 ────────────────────────────────────────────────────────────────────────────────

@@ -219,141 +219,141 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   [ℓ0 = 0]
            →     [ℓ0 = 0]
          result  value 1
-  [5]   d8                  (D-Struct) §6.5
+  [5]   d8                  (D-Struct) §6.5 (mint #1)
          expr    S1 { x0: 1 }
          store   [ℓ0 = 0]
-           →     [ℓ0 = 0]
-         result  value S1 { 1 }
-  [6]   d7                (D-Struct) §6.5
+           →     [ℓ0 = 0, ℓ1 = †]
+         result  value S1 { 1 }#1
+  [6]   d7                (D-Struct) §6.5 (mint #2)
          expr    S11 { x0: S1 { x0: 1 } }
          store   [ℓ0 = 0]
-           →     [ℓ0 = 0]
-         result  value S11 { S1 { 1 } }
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †]
+         result  value S11 { S1 { 1 }#1 }#2
   [7]   d9                  literal §6.3
          expr    3
-         store   [ℓ0 = 0]
-           →     [ℓ0 = 0]
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †]
          result  value 3
-  [8]   d8                  (D-Struct) §6.5
+  [8]   d8                  (D-Struct) §6.5 (mint #3)
          expr    S1 { x0: 3 }
-         store   [ℓ0 = 0]
-           →     [ℓ0 = 0]
-         result  value S1 { 3 }
-  [9]   d7                (D-Struct) §6.5
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †]
+         result  value S1 { 3 }#3
+  [9]   d7                (D-Struct) §6.5 (mint #4)
          expr    S11 { x0: S1 { x0: 3 } }
-         store   [ℓ0 = 0]
-           →     [ℓ0 = 0]
-         result  value S11 { S1 { 3 } }
-  [10]  d6              (D-Array) §6.5
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †]
+         result  value S11 { S1 { 3 }#3 }#4
+  [10]  d6              (D-Array) §6.5 (mint #5)
          expr    [S11 { x0: S1 { x0: 1 } }, S11 { x0: S1 { x0: 3 } }]
          store   [ℓ0 = 0]
-           →     [ℓ0 = 0]
-         result  value [S11 { S1 { 1 } }, S11 { S1 { 3 } }]
-  [11]  d5            (D-Struct) §6.5
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †]
+         result  value [S11 { S1 { 1 }#1 }#2, S11 { S1 { 3 }#3 }#4]#5
+  [11]  d5            (D-Struct) §6.5 (mint #6)
          expr    S12 { x0: [S11 { x0: S1 { x0: 1 } }, S11 { x0: S1 { x0: 3 } }] }
          store   [ℓ0 = 0]
-           →     [ℓ0 = 0]
-         result  value S12 { [S11 { S1 { 1 } }, S11 { S1 { 3 } }] }
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †]
+         result  value S12 { [S11 { S1 { 1 }#1 }#2, S11 { S1 { 3 }#3 }#4]#5 }#6
   [12]  d5            (D-Let) §6.7 (mint the binding)
-         expr    let mut v1 = S12 { [S11 { S1 { 1 } }, S11 { S1 { 3 } }] } at ℓ1
-         store   [ℓ0 = 0]
-           →     [ℓ0 = 0, ℓ1 = S12 { [S11 { S1 { 1 } }, S11 { S1 { 3 } }] }]
-         result  value S12 { [S11 { S1 { 1 } }, S11 { S1 { 3 } }] }
+         expr    let mut v1 = S12 { [S11 { S1 { 1 }#1 }#2, S11 { S1 { 3 }#3 }#4]#5 }#6 at ℓ7
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [S1…
+         result  value S12 { [S11 { S1 { 1 }#1 }#2, S11 { S1 { 3 }#3 }#4]#5 }#6
   [13]  d6              (D-Use-Declared-Linear) §6.3
          expr    v1.x0[0].x0
-         store   [ℓ0 = 0, ℓ1 = S12 { [S11 { S1 { 1 } }, S11 { S1 { 3 } }] }]
-           →     [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }]
-         result  value S1 { 1 }
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [S1…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
+         result  value S1 { 1 }#1
   [14]  d6              (D-Let) §6.7 (mint the binding)
-         expr    let v2 = S1 { 1 } at ℓ2
-         store   [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }]
-           →     [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = S1 { 1 }]
-         result  value S1 { 1 }
+         expr    let v2 = S1 { 1 }#1 at ℓ8
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
+         result  value S1 { 1 }#1
   [15]  d7                @drop §6.11
          expr    @drop(v2)
-         store   [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = S1 { 1 }]
-           →     [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = ⊘]
-         events  >> drop ℓ2 = S1 { 1 }; run drop fn S1(S1 { 1 })
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
+         events  >> drop ℓ8 = S1 { 1 }#1; run drop fn S1(S1 { 1 }#1)
          result  value ()
   [16]  d9                  literal §6.3
          expr    20
-         store   [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = ⊘]
-           →     [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = ⊘]
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
          result  value 20
   [17]  d8                  (Dbg) §5.8, the observable output of §6.12
          expr    @dbg(20)
-         store   [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = ⊘]
-           →     [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = ⊘]
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
          events  >> @dbg prints 20
          result  value ()
   [18]  d11                  literal §6.3
          expr    77
-         store   [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = ⊘]
-           →     [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = ⊘]
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
          result  value 77
-  [19]  d10                  (D-Struct) §6.5
+  [19]  d10                  (D-Struct) §6.5 (mint #9)
          expr    S1 { x0: 77 }
-         store   [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = ⊘]
-           →     [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = ⊘]
-         result  value S1 { 77 }
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
+         result  value S1 { 77 }#9
   [20]  d10                  (D-Use-Copy) §6.3
          expr    v0
-         store   [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = ⊘]
-           →     [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = ⊘]
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
          result  value 0
   [21]  d9                  (D-Assign) §6.8 below a dynamic index
          expr    { v1.x0[v0].x0 = S1 { x0: 77 }; }
-         store   [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = ⊘]
-           →     [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = ⊘]
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
   [22]  d8                  (D-Seq) §6.7 — a premise did not complete
          expr    { { v1.x0[v0].x0 = S1 { x0: 77 }; }; { @dbg(30); { let v3: S1 = v1.x0[1].x0; { …
-         store   [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = ⊘]
-           →     [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = ⊘]
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
   [23]  d7                (D-Seq) §6.7
          expr    { @dbg(20); { { v1.x0[v0].x0 = S1 { x0: 77 }; }; { @dbg(30); { let v3: S1 = v1.…
-         store   [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = ⊘]
-           →     [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = ⊘]
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
   [24]  d6              (D-Seq) §6.7
          expr    { @drop(v2); { @dbg(20); { { v1.x0[v0].x0 = S1 { x0: 77 }; }; { @dbg(30); { let…
-         store   [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = S1 { 1 }]
-           →     [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = ⊘]
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
   [25]  d5            (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the frame's scope record instead; a trap runs no drop at all)
          expr    { let v2: S1 = v1.x0[0].x0; { @drop(v2); { @dbg(20); { { v1.x0[v0].x0 = S1 { x0…
-         store   [ℓ0 = 0, ℓ1 = S12 { [S11 { S1 { 1 } }, S11 { S1 { 3 } }] }]
-           →     [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = ⊘]
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [S1…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
   [26]  d4          (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the frame's scope record instead; a trap runs no drop at all)
          expr    { let mut v1: S12 = S12 { x0: [S11 { x0: S1 { x0: 1 } }, S11 { x0: S1 { x0: 3 }…
          store   [ℓ0 = 0]
-           →     [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = ⊘]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
   [27]  d2      (D-Return-Value) §6.9 (pop the frame)
          expr    f1(0)
          store   (empty)
-           →     [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = ⊘]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
   [28]  d0  (D-Return-Value) §6.9 (pop the frame)
          expr    f0()
          store   (empty)
-           →     [ℓ0 = 0, ℓ1 = S12 { [⊘, S11 { S1 { 3 } }] }, ℓ2 = ⊘]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = S12 { [⊘,…
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)

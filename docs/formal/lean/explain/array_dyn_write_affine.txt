@@ -146,80 +146,80 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   [ℓ0 = 0]
            →     [ℓ0 = 0]
          result  value 1
-  [5]   d6              (D-Struct) §6.5
+  [5]   d6              (D-Struct) §6.5 (mint #1)
          expr    S1 { x0: 1 }
          store   [ℓ0 = 0]
-           →     [ℓ0 = 0]
-         result  value S1 { 1 }
+           →     [ℓ0 = 0, ℓ1 = †]
+         result  value S1 { 1 }#1
   [6]   d7                literal §6.3
          expr    2
-         store   [ℓ0 = 0]
-           →     [ℓ0 = 0]
+         store   [ℓ0 = 0, ℓ1 = †]
+           →     [ℓ0 = 0, ℓ1 = †]
          result  value 2
-  [7]   d6              (D-Struct) §6.5
+  [7]   d6              (D-Struct) §6.5 (mint #2)
          expr    S1 { x0: 2 }
-         store   [ℓ0 = 0]
-           →     [ℓ0 = 0]
-         result  value S1 { 2 }
-  [8]   d5            (D-Array) §6.5
+         store   [ℓ0 = 0, ℓ1 = †]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †]
+         result  value S1 { 2 }#2
+  [8]   d5            (D-Array) §6.5 (mint #3)
          expr    [S1 { x0: 1 }, S1 { x0: 2 }]
          store   [ℓ0 = 0]
-           →     [ℓ0 = 0]
-         result  value [S1 { 1 }, S1 { 2 }]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †]
+         result  value [S1 { 1 }#1, S1 { 2 }#2]#3
   [9]   d5            (D-Let) §6.7 (mint the binding)
-         expr    let mut v1 = [S1 { 1 }, S1 { 2 }] at ℓ1
-         store   [ℓ0 = 0]
-           →     [ℓ0 = 0, ℓ1 = [S1 { 1 }, S1 { 2 }]]
-         result  value [S1 { 1 }, S1 { 2 }]
+         expr    let mut v1 = [S1 { 1 }#1, S1 { 2 }#2]#3 at ℓ4
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = [S1 { 1 }#1, S1 { 2 }#2]#3]
+         result  value [S1 { 1 }#1, S1 { 2 }#2]#3
   [10]  d8                  literal §6.3
          expr    9
-         store   [ℓ0 = 0, ℓ1 = [S1 { 1 }, S1 { 2 }]]
-           →     [ℓ0 = 0, ℓ1 = [S1 { 1 }, S1 { 2 }]]
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = [S1 { 1 }#1, S1 { 2 }#2]#3]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = [S1 { 1 }#1, S1 { 2 }#2]#3]
          result  value 9
-  [11]  d7                (D-Struct) §6.5
+  [11]  d7                (D-Struct) §6.5 (mint #5)
          expr    S1 { x0: 9 }
-         store   [ℓ0 = 0, ℓ1 = [S1 { 1 }, S1 { 2 }]]
-           →     [ℓ0 = 0, ℓ1 = [S1 { 1 }, S1 { 2 }]]
-         result  value S1 { 9 }
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = [S1 { 1 }#1, S1 { 2 }#2]#3]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = [S1 { 1 }#1, S1 { 2 }#2]#3, ℓ5 = …
+         result  value S1 { 9 }#5
   [12]  d7                (D-Use-Copy) §6.3
          expr    v0
-         store   [ℓ0 = 0, ℓ1 = [S1 { 1 }, S1 { 2 }]]
-           →     [ℓ0 = 0, ℓ1 = [S1 { 1 }, S1 { 2 }]]
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = [S1 { 1 }#1, S1 { 2 }#2]#3, ℓ5 = …
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = [S1 { 1 }#1, S1 { 2 }#2]#3, ℓ5 = …
          result  value 0
   [13]  d6              (D-Assign) §6.8 below a dynamic index (overwrite-drop)
          expr    { v1[v0] = S1 { x0: 9 }; }
-         store   [ℓ0 = 0, ℓ1 = [S1 { 1 }, S1 { 2 }]]
-           →     [ℓ0 = 0, ℓ1 = [S1 { 9 }, S1 { 2 }]]
-         events  >> drop ℓ1 = S1 { 1 }; run drop fn S1(S1 { 1 })
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = [S1 { 1 }#1, S1 { 2 }#2]#3]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = [S1 { 9 }#5, S1 { 2 }#2]#3, ℓ5 = …
+         events  >> drop ℓ4 = S1 { 1 }#1; run drop fn S1(S1 { 1 }#1)
          result  value ()
   [14]  d6              literal §6.3
          expr    7
-         store   [ℓ0 = 0, ℓ1 = [S1 { 9 }, S1 { 2 }]]
-           →     [ℓ0 = 0, ℓ1 = [S1 { 9 }, S1 { 2 }]]
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = [S1 { 9 }#5, S1 { 2 }#2]#3, ℓ5 = …
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = [S1 { 9 }#5, S1 { 2 }#2]#3, ℓ5 = …
          result  value 7
   [15]  d5            (D-Seq) §6.7
          expr    { { v1[v0] = S1 { x0: 9 }; }; 7 }
-         store   [ℓ0 = 0, ℓ1 = [S1 { 1 }, S1 { 2 }]]
-           →     [ℓ0 = 0, ℓ1 = [S1 { 9 }, S1 { 2 }]]
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = [S1 { 1 }#1, S1 { 2 }#2]#3]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = [S1 { 9 }#5, S1 { 2 }#2]#3, ℓ5 = …
          result  value 7
   [16]  d4          (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ1])
-         store   [ℓ0 = 0, ℓ1 = [S1 { 9 }, S1 { 2 }]]
-           →     [ℓ0 = 0, ℓ1 = † (retired)]
-         events  >> drop ℓ1 = [S1 { 9 }, S1 { 2 }]; run drop fn S1(S1 { 9 }); run drop fn S1(S1 { 2 })
+         expr    endscope([ℓ4])
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = [S1 { 9 }#5, S1 { 2 }#2]#3, ℓ5 = …
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †]
+         events  >> drop ℓ4 = [S1 { 9 }#5, S1 { 2 }#2]#3; run drop fn S1(S1 { 9 }#5); run drop fn S1(S1 { 2 }#2)
          result  value 7
   [17]  d2      (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([ℓ0])
-         store   [ℓ0 = 0, ℓ1 = † (retired)]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †]
          result  value 7
   [18]  d0  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([])
-         store   [ℓ0 = † (retired), ℓ1 = † (retired)]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †]
          result  value 7
 
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: ok — value 7
-         drop trace: drop ℓ1 = S1 { 1 }; run drop fn S1(S1 { 1 }); drop ℓ1 = [S1 { 9 }, S1 { 2 }]; run drop fn S1(S1 { 9 }); run drop fn S1(S1 { 2 })
+         drop trace: drop ℓ4 = S1 { 1 }#1; run drop fn S1(S1 { 1 }#1); drop ℓ4 = [S1 { 9 }#5, S1 { 2 }#2]#3; run drop fn S1(S1 { 9 }#5); run drop fn S1(S1 { 2 }#2)
 

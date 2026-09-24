@@ -94,44 +94,44 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 8
-  [3]   d3        (D-Struct) §6.5
+  [3]   d3        (D-Struct) §6.5 (mint #0)
          expr    S1 { x0: 8 }
          store   (empty)
-           →     (empty)
-         result  value S1 { 8 }
+           →     [ℓ0 = †]
+         result  value S1 { 8 }#0
   [4]   d3        (D-Let) §6.7 (mint the binding)
-         expr    let v0 = S1 { 8 } at ℓ0
-         store   (empty)
-           →     [ℓ0 = S1 { 8 }]
-         result  value S1 { 8 }
+         expr    let v0 = S1 { 8 }#0 at ℓ1
+         store   [ℓ0 = †]
+           →     [ℓ0 = †, ℓ1 = S1 { 8 }#0]
+         result  value S1 { 8 }#0
   [5]   d4          @drop §6.11
          expr    @drop(v0)
-         store   [ℓ0 = S1 { 8 }]
-           →     [ℓ0 = ⊘]
-         events  >> drop ℓ0 = S1 { 8 }; run drop fn S1(S1 { 8 })
+         store   [ℓ0 = †, ℓ1 = S1 { 8 }#0]
+           →     [ℓ0 = †, ℓ1 = ⊘]
+         events  >> drop ℓ1 = S1 { 8 }#0; run drop fn S1(S1 { 8 }#0)
          result  value ()
   [6]   d4          literal §6.3
          expr    2
-         store   [ℓ0 = ⊘]
-           →     [ℓ0 = ⊘]
+         store   [ℓ0 = †, ℓ1 = ⊘]
+           →     [ℓ0 = †, ℓ1 = ⊘]
          result  value 2
   [7]   d3        (D-Seq) §6.7
          expr    { @drop(v0); 2 }
-         store   [ℓ0 = S1 { 8 }]
-           →     [ℓ0 = ⊘]
+         store   [ℓ0 = †, ℓ1 = S1 { 8 }#0]
+           →     [ℓ0 = †, ℓ1 = ⊘]
          result  value 2
   [8]   d2      (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ0])
-         store   [ℓ0 = ⊘]
-           →     [ℓ0 = † (retired)]
+         expr    endscope([ℓ1])
+         store   [ℓ0 = †, ℓ1 = ⊘]
+           →     [ℓ0 = †, ℓ1 = †]
          result  value 2
   [9]   d0  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([])
-         store   [ℓ0 = † (retired)]
-           →     [ℓ0 = † (retired)]
+         store   [ℓ0 = †, ℓ1 = †]
+           →     [ℓ0 = †, ℓ1 = †]
          result  value 2
 
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: ok — value 2
-         drop trace: drop ℓ0 = S1 { 8 }; run drop fn S1(S1 { 8 })
+         drop trace: drop ℓ1 = S1 { 8 }#0; run drop fn S1(S1 { 8 }#0)
 

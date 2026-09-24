@@ -100,40 +100,40 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 6
-  [4]   d3        (D-Struct) §6.5
+  [4]   d3        (D-Struct) §6.5 (mint #0)
          expr    S6 { x0: 5, x1: 6 }
          store   (empty)
-           →     (empty)
-         result  value S6 { 5, 6 }
+           →     [ℓ0 = †]
+         result  value S6 { 5, 6 }#0
   [5]   d3        (D-Let) §6.7 (mint the binding)
-         expr    let v0 = S6 { 5, 6 } at ℓ0
-         store   (empty)
-           →     [ℓ0 = S6 { 5, 6 }]
-         result  value S6 { 5, 6 }
+         expr    let v0 = S6 { 5, 6 }#0 at ℓ1
+         store   [ℓ0 = †]
+           →     [ℓ0 = †, ℓ1 = S6 { 5, 6 }#0]
+         result  value S6 { 5, 6 }#0
   [6]   d4          (D-Use-Copy) §6.3
          expr    v0.x0
-         store   [ℓ0 = S6 { 5, 6 }]
-           →     [ℓ0 = S6 { 5, 6 }]
+         store   [ℓ0 = †, ℓ1 = S6 { 5, 6 }#0]
+           →     [ℓ0 = †, ℓ1 = S6 { 5, 6 }#0]
          result  value 5
   [7]   d4          (D-Use-Copy) §6.3
          expr    v0.x0
-         store   [ℓ0 = S6 { 5, 6 }]
-           →     [ℓ0 = S6 { 5, 6 }]
+         store   [ℓ0 = †, ℓ1 = S6 { 5, 6 }#0]
+           →     [ℓ0 = †, ℓ1 = S6 { 5, 6 }#0]
          result  value 5
   [8]   d3        (D-Arith) §6.4
          expr    (v0.x0 + v0.x0)
-         store   [ℓ0 = S6 { 5, 6 }]
-           →     [ℓ0 = S6 { 5, 6 }]
+         store   [ℓ0 = †, ℓ1 = S6 { 5, 6 }#0]
+           →     [ℓ0 = †, ℓ1 = S6 { 5, 6 }#0]
          result  value 10
   [9]   d2      (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ0])
-         store   [ℓ0 = S6 { 5, 6 }]
-           →     [ℓ0 = † (retired)]
+         expr    endscope([ℓ1])
+         store   [ℓ0 = †, ℓ1 = S6 { 5, 6 }#0]
+           →     [ℓ0 = †, ℓ1 = †]
          result  value 10
   [10]  d0  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([])
-         store   [ℓ0 = † (retired)]
-           →     [ℓ0 = † (retired)]
+         store   [ℓ0 = †, ℓ1 = †]
+           →     [ℓ0 = †, ℓ1 = †]
          result  value 10
 
 ────────────────────────────────────────────────────────────────────────────────

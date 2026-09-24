@@ -107,30 +107,30 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 1
-  [3]   d5            (D-Struct) §6.5
+  [3]   d5            (D-Struct) §6.5 (mint #0)
          expr    S3 { x0: 1 }
          store   (empty)
-           →     (empty)
-         result  value S3 { 1 }
+           →     [ℓ0 = †]
+         result  value S3 { 1 }#0
   [4]   d5            (D-Let) §6.7 (mint the binding)
-         expr    let v0 = S3 { 1 } at ℓ0
-         store   (empty)
-           →     [ℓ0 = S3 { 1 }]
-         result  value S3 { 1 }
+         expr    let v0 = S3 { 1 }#0 at ℓ1
+         store   [ℓ0 = †]
+           →     [ℓ0 = †, ℓ1 = S3 { 1 }#0]
+         result  value S3 { 1 }#0
   [5]   d5            (D-Break) §6.10
          expr    break
-         store   [ℓ0 = S3 { 1 }]
-           →     [ℓ0 = S3 { 1 }]
+         store   [ℓ0 = †, ℓ1 = S3 { 1 }#0]
+           →     [ℓ0 = †, ℓ1 = S3 { 1 }#0]
          result  BREAK — unwinding to the enclosing loop (§6.10)
   [6]   d4          (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the frame's scope record instead; a trap runs no drop at all)
          expr    { let v0: S3 = S3 { x0: 1 }; break }
          store   (empty)
-           →     [ℓ0 = S3 { 1 }]
+           →     [ℓ0 = †, ℓ1 = S3 { 1 }#0]
          result  BREAK — unwinding to the enclosing loop (§6.10)
   [7]   d3        (D-Break) §6.10 (unwind to the loop)
          expr    loop { { let v0: S3 = S3 { x0: 1 }; break } }
-         store   [ℓ0 = S3 { 1 }]
-           →     [ℓ0 = S3 { 1 }]
+         store   [ℓ0 = †, ℓ1 = S3 { 1 }#0]
+           →     [ℓ0 = †, ℓ1 = S3 { 1 }#0]
          result  REFUSED (linearLeak)
                  a scope exit or a frame teardown reached a live linear value: a
                  linear obligation was never discharged (endscope §6.7 /
@@ -139,7 +139,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
   [8]   d2      (D-Seq) §6.7 — a premise did not complete
          expr    { loop { { let v0: S3 = S3 { x0: 1 }; break } }; 0 }
          store   (empty)
-           →     [ℓ0 = S3 { 1 }]
+           →     [ℓ0 = †, ℓ1 = S3 { 1 }#0]
          result  REFUSED (linearLeak)
                  a scope exit or a frame teardown reached a live linear value: a
                  linear obligation was never discharged (endscope §6.7 /
@@ -148,7 +148,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
   [9]   d0  (D-Return-Value) §6.9 (pop the frame)
          expr    f0()
          store   (empty)
-           →     [ℓ0 = S3 { 1 }]
+           →     [ℓ0 = †, ℓ1 = S3 { 1 }#0]
          result  REFUSED (linearLeak)
                  a scope exit or a frame teardown reached a live linear value: a
                  linear obligation was never discharged (endscope §6.7 /

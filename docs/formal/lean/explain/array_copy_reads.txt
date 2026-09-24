@@ -132,70 +132,70 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 3
-  [5]   d3        (D-Array) §6.5
+  [5]   d3        (D-Array) §6.5 (mint #0)
          expr    [1, 2, 3]
          store   (empty)
-           →     (empty)
-         result  value [1, 2, 3]
+           →     [ℓ0 = †]
+         result  value [1, 2, 3]#0
   [6]   d3        (D-Let) §6.7 (mint the binding)
-         expr    let v0 = [1, 2, 3] at ℓ0
-         store   (empty)
-           →     [ℓ0 = [1, 2, 3]]
-         result  value [1, 2, 3]
+         expr    let v0 = [1, 2, 3]#0 at ℓ1
+         store   [ℓ0 = †]
+           →     [ℓ0 = †, ℓ1 = [1, 2, 3]#0]
+         result  value [1, 2, 3]#0
   [7]   d5            literal §6.3
          expr    7
-         store   [ℓ0 = [1, 2, 3]]
-           →     [ℓ0 = [1, 2, 3]]
+         store   [ℓ0 = †, ℓ1 = [1, 2, 3]#0]
+           →     [ℓ0 = †, ℓ1 = [1, 2, 3]#0]
          result  value 7
-  [8]   d4          (D-Array) §6.5, through §2's repeat elaboration (7.1:39)
+  [8]   d4          (D-Array) §6.5, through §2's repeat elaboration (7.1:39) (mint #2)
          expr    [7; 2]
-         store   [ℓ0 = [1, 2, 3]]
-           →     [ℓ0 = [1, 2, 3]]
-         result  value [7, 7]
+         store   [ℓ0 = †, ℓ1 = [1, 2, 3]#0]
+           →     [ℓ0 = †, ℓ1 = [1, 2, 3]#0, ℓ2 = †]
+         result  value [7, 7]#2
   [9]   d4          (D-Let) §6.7 (mint the binding)
-         expr    let v1 = [7, 7] at ℓ1
-         store   [ℓ0 = [1, 2, 3]]
-           →     [ℓ0 = [1, 2, 3], ℓ1 = [7, 7]]
-         result  value [7, 7]
+         expr    let v1 = [7, 7]#2 at ℓ3
+         store   [ℓ0 = †, ℓ1 = [1, 2, 3]#0, ℓ2 = †]
+           →     [ℓ0 = †, ℓ1 = [1, 2, 3]#0, ℓ2 = †, ℓ3 = [7, 7]#2]
+         result  value [7, 7]#2
   [10]  d6              (D-Use-Copy) §6.3
          expr    v0[0]
-         store   [ℓ0 = [1, 2, 3], ℓ1 = [7, 7]]
-           →     [ℓ0 = [1, 2, 3], ℓ1 = [7, 7]]
+         store   [ℓ0 = †, ℓ1 = [1, 2, 3]#0, ℓ2 = †, ℓ3 = [7, 7]#2]
+           →     [ℓ0 = †, ℓ1 = [1, 2, 3]#0, ℓ2 = †, ℓ3 = [7, 7]#2]
          result  value 1
   [11]  d6              (D-Use-Copy) §6.3
          expr    v0[2]
-         store   [ℓ0 = [1, 2, 3], ℓ1 = [7, 7]]
-           →     [ℓ0 = [1, 2, 3], ℓ1 = [7, 7]]
+         store   [ℓ0 = †, ℓ1 = [1, 2, 3]#0, ℓ2 = †, ℓ3 = [7, 7]#2]
+           →     [ℓ0 = †, ℓ1 = [1, 2, 3]#0, ℓ2 = †, ℓ3 = [7, 7]#2]
          result  value 3
   [12]  d5            (D-Arith) §6.4
          expr    (v0[0] + v0[2])
-         store   [ℓ0 = [1, 2, 3], ℓ1 = [7, 7]]
-           →     [ℓ0 = [1, 2, 3], ℓ1 = [7, 7]]
+         store   [ℓ0 = †, ℓ1 = [1, 2, 3]#0, ℓ2 = †, ℓ3 = [7, 7]#2]
+           →     [ℓ0 = †, ℓ1 = [1, 2, 3]#0, ℓ2 = †, ℓ3 = [7, 7]#2]
          result  value 4
   [13]  d5            (D-Use-Copy) §6.3
          expr    v1[1]
-         store   [ℓ0 = [1, 2, 3], ℓ1 = [7, 7]]
-           →     [ℓ0 = [1, 2, 3], ℓ1 = [7, 7]]
+         store   [ℓ0 = †, ℓ1 = [1, 2, 3]#0, ℓ2 = †, ℓ3 = [7, 7]#2]
+           →     [ℓ0 = †, ℓ1 = [1, 2, 3]#0, ℓ2 = †, ℓ3 = [7, 7]#2]
          result  value 7
   [14]  d4          (D-Arith) §6.4
          expr    ((v0[0] + v0[2]) + v1[1])
-         store   [ℓ0 = [1, 2, 3], ℓ1 = [7, 7]]
-           →     [ℓ0 = [1, 2, 3], ℓ1 = [7, 7]]
+         store   [ℓ0 = †, ℓ1 = [1, 2, 3]#0, ℓ2 = †, ℓ3 = [7, 7]#2]
+           →     [ℓ0 = †, ℓ1 = [1, 2, 3]#0, ℓ2 = †, ℓ3 = [7, 7]#2]
          result  value 11
   [15]  d3        (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ1])
-         store   [ℓ0 = [1, 2, 3], ℓ1 = [7, 7]]
-           →     [ℓ0 = [1, 2, 3], ℓ1 = † (retired)]
+         expr    endscope([ℓ3])
+         store   [ℓ0 = †, ℓ1 = [1, 2, 3]#0, ℓ2 = †, ℓ3 = [7, 7]#2]
+           →     [ℓ0 = †, ℓ1 = [1, 2, 3]#0, ℓ2 = †, ℓ3 = †]
          result  value 11
   [16]  d2      (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ0])
-         store   [ℓ0 = [1, 2, 3], ℓ1 = † (retired)]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         expr    endscope([ℓ1])
+         store   [ℓ0 = †, ℓ1 = [1, 2, 3]#0, ℓ2 = †, ℓ3 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †]
          result  value 11
   [17]  d0  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([])
-         store   [ℓ0 = † (retired), ℓ1 = † (retired)]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †]
          result  value 11
 
 ────────────────────────────────────────────────────────────────────────────────

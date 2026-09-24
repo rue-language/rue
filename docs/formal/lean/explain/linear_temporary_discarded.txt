@@ -85,15 +85,15 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 3
-  [3]   d3        (D-Struct) §6.5
+  [3]   d3        (D-Struct) §6.5 (mint #0)
          expr    S2 { x0: 3 }
          store   (empty)
-           →     (empty)
-         result  value S2 { 3 }
+           →     [ℓ0 = †]
+         result  value S2 { 3 }#0
   [4]   d2      (D-Seq) §6.7
          expr    { S2 { x0: 3 }; 4 }
          store   (empty)
-           →     (empty)
+           →     [ℓ0 = †]
          result  REFUSED (linearDiscard)
                  a sequence discarded a linear value: no §6 rule fires here — §5.3's
                  discard check (3.8:64) should have rejected the program, so the
@@ -101,7 +101,7 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
   [5]   d0  (D-Return-Value) §6.9 (pop the frame)
          expr    f0()
          store   (empty)
-           →     (empty)
+           →     [ℓ0 = †]
          result  REFUSED (linearDiscard)
                  a sequence discarded a linear value: no §6 rule fires here — §5.3's
                  discard check (3.8:64) should have rejected the program, so the

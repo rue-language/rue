@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 421.
+- Theorems checked: 531.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -286,6 +286,15 @@ and diffs them against the committed copies.
 | `ContentsTy.toVal` | `RueCore.Soundness` | `propext` |
 | `ContentsTys.toVals` | `RueCore.Soundness` | `propext` |
 | `ContentsTy.mult_eq` | `RueCore.Soundness` | `propext` |
+| `Mult.eq_copy_of_rank` | `RueCore.Soundness` | `propext` |
+| `StructDecl.Wf.field_copy` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `EnumDecl.Wf.payload_copy` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `Ty.array_copy_elem` | `RueCore.Soundness` | `propext` |
+| `ContentsTy.allCopy` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `ContentsTys.allCopyList` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `ContentsTy.copyClosed` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `ContentsTys.copyClosedList` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `HasTy.copyClosed` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `dropContents_events` | `RueCore.Soundness` | `propext` |
 | `dropContentsList_events` | `RueCore.Soundness` | `propext` |
 | `dropContents_ok` | `RueCore.Soundness` | `propext` |
@@ -404,6 +413,7 @@ and diffs them against the committed copies.
 | `EvalOk.bind` | `RueCore.Soundness` | `propext` |
 | `EvalOk.bindSame` | `RueCore.Soundness` | `propext` |
 | `EvalOk.weaken` | `RueCore.Soundness` | `propext` |
+| `introVal_ok` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `Matches.length_eq` | `RueCore.Soundness` | `propext` |
 | `Ctx.SameSkel.of_forall` | `RueCore.Soundness` | *none* |
 | `LoopHead.enter` | `RueCore.Soundness` | `Quot.sound`, `propext` |
@@ -456,6 +466,106 @@ and diffs them against the committed copies.
 | `checkNoCycle_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
 | `checkDecls_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
 | `checkProgram_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
+| `dtorIds_append` | `RueCore.Trace` | `propext` |
+| `dtorIds_nil` | `RueCore.Trace` | `propext` |
+| `Contents.own_of_mult` | `RueCore.Trace` | `propext` |
+| `Contents.allCopy_mult` | `RueCore.Trace` | `propext` |
+| `Contents.allCopy_own` | `RueCore.Trace` | `propext` |
+| `Contents.allCopyList_own` | `RueCore.Trace` | `propext` |
+| `Contents.copyClosed_allCopy` | `RueCore.Trace` | `propext` |
+| `Contents.allCopy_copyClosed` | `RueCore.Trace` | `propext` |
+| `Contents.allCopyList_copyClosedList` | `RueCore.Trace` | `propext` |
+| `Contents.copyClosedList_index` | `RueCore.Trace` | `propext` |
+| `Contents.allCopyList_index` | `RueCore.Trace` | `propext` |
+| `Contents.copyClosedList_set` | `RueCore.Trace` | `propext` |
+| `Contents.allCopyList_set` | `RueCore.Trace` | `propext` |
+| `Contents.ownList_set_count` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Contents.ofVal_toVal` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Contents.ofVals_toVals` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Contents.readAt_allCopy` | `RueCore.Trace` | `propext` |
+| `Contents.readAt_copyClosed` | `RueCore.Trace` | `propext` |
+| `Contents.writeAt_allCopy` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Contents.writeAt_copyClosed` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Contents.writeAt_own` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `storeOwn_append` | `RueCore.Trace` | `propext` |
+| `storeOwn_set_count` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `StoreCC.append` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `StoreCC.single` | `RueCore.Trace` | `propext` |
+| `StoreCC.dead` | `RueCore.Trace` | `propext` |
+| `StoreCC.set` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `StoreCC.set_dead` | `RueCore.Trace` | `propext` |
+| `WfDecls.dtorNotCopy` | `RueCore.Trace` | `propext` |
+| `dropContents_freed` | `RueCore.Trace` | `propext` |
+| `dropContentsList_freed` | `RueCore.Trace` | `propext` |
+| `dropContents_allCopy_dtor` | `RueCore.Trace` | `propext` |
+| `dropContentsList_allCopy_dtor` | `RueCore.Trace` | `propext` |
+| `dropContents_dtor` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `dropContentsList_dtor` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `freed_measure` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `dtor_measure` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `dropCell_measure` | `RueCore.Trace` | `propext` |
+| `dropRetire_measure` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `unwindLocs_measure` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `dropResidue_measure` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Contents.ownList_append` | `RueCore.Trace` | `propext` |
+| `Contents.copyClosedList_append` | `RueCore.Trace` | `propext` |
+| `Contents.allCopyList_append` | `RueCore.Trace` | `propext` |
+| `Contents.splitResidue_allCopy` | `RueCore.Trace` | `propext` |
+| `Contents.splitFields_allCopy` | `RueCore.Trace` | `propext` |
+| `Contents.splitResidue_own` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Contents.splitFields_own` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Contents.destructure_measure` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Fresh.count_trans` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Fresh.count_trans_range` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Fresh.self` | `RueCore.Trace` | `propext` |
+| `Fresh.snoc` | `RueCore.Trace` | `propext` |
+| `Cons.weaken` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Cons.prefix` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Cons.shift` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Cons.bind` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Cons.absorb` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Cons.pure` | `RueCore.Trace` | `propext` |
+| `Val.scalar_own` | `RueCore.Trace` | `propext` |
+| `Cons.scalar` | `RueCore.Trace` | `propext` |
+| `Cons.opRes` | `RueCore.Trace` | `propext` |
+| `intResult_scalar` | `RueCore.Trace` | `propext` |
+| `binOpInt_scalar` | `RueCore.Trace` | `propext` |
+| `binOpFloat_scalar` | `RueCore.Trace` | `propext` |
+| `evalBinOp_scalar` | `RueCore.Trace` | `propext` |
+| `evalUnOp_scalar` | `RueCore.Trace` | `propext` |
+| `evalIntCast_scalar` | `RueCore.Trace` | `propext` |
+| `evalFintrin_scalar` | `RueCore.Trace` | `propext` |
+| `Contents.mult_ofVal` | `RueCore.Trace` | `propext` |
+| `Val.own_of_copy` | `RueCore.Trace` | `propext` |
+| `Contents.ownList_ofVals_cons` | `RueCore.Trace` | `propext` |
+| `Contents.ownList_replicate` | `RueCore.Trace` | `propext` |
+| `storeOwn_mintParams` | `RueCore.Trace` | `propext` |
+| `StoreCC.mintParams` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `mintParams_length` | `RueCore.Trace` | `propext` |
+| `Contents.own_struct_le` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Contents.own_enum_le` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Contents.own_array_le` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Contents.enum_payload` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Cons.intro` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `dynPlace_at` | `RueCore.Trace` | `propext` |
+| `evalArgs_cons` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Fresh.set` | `RueCore.Trace` | `propext` |
+| `Val.own_unit` | `RueCore.Trace` | `propext` |
+| `Cons.move` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Cons.destructure` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Cons.dropPlace` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Cons.dropDeclared` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Cons.assign` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Cons.assignDyn` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `Cons.unwind` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `eval_conserves` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `range'_count` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `range'_count_le_one` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `run_trace_once` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `freed_once` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `dtor_once` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `no_double_free` | `RueCore.Trace` | `Quot.sound`, `propext` |
+| `dupProgram_step_double_free` | `RueCore.Trace` | `Quot.sound`, `propext` |
 | `Examples.dynReadAffine_refused` | `RueCore.Examples` | `propext` |
 | `Examples.dynDropAffine_refused` | `RueCore.Examples` | `propext` |
 | `Examples.repeatAffine_refused` | `RueCore.Examples` | `propext` |

@@ -158,12 +158,12 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
   [13]  d2      (D-EndScope) §6.7 (retire the binding)
          expr    endscope([ℓ0])
          store   [ℓ0 = 0.33333334]
-           →     [ℓ0 = † (retired)]
+           →     [ℓ0 = †]
          result  value 0
   [14]  d0  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([])
-         store   [ℓ0 = † (retired)]
-           →     [ℓ0 = † (retired)]
+         store   [ℓ0 = †]
+           →     [ℓ0 = †]
          result  value 0
 
 ────────────────────────────────────────────────────────────────────────────────

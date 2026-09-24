@@ -204,221 +204,221 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 1
-  [3]   d3        (D-Struct) §6.5
+  [3]   d3        (D-Struct) §6.5 (mint #0)
          expr    S1 { x0: 1 }
          store   (empty)
-           →     (empty)
-         result  value S1 { 1 }
+           →     [ℓ0 = †]
+         result  value S1 { 1 }#0
   [4]   d3        (D-Let) §6.7 (mint the binding)
-         expr    let v0 = S1 { 1 } at ℓ0
-         store   (empty)
-           →     [ℓ0 = S1 { 1 }]
-         result  value S1 { 1 }
+         expr    let v0 = S1 { 1 }#0 at ℓ1
+         store   [ℓ0 = †]
+           →     [ℓ0 = †, ℓ1 = S1 { 1 }#0]
+         result  value S1 { 1 }#0
   [5]   d4          literal §6.3
          expr    0
-         store   [ℓ0 = S1 { 1 }]
-           →     [ℓ0 = S1 { 1 }]
+         store   [ℓ0 = †, ℓ1 = S1 { 1 }#0]
+           →     [ℓ0 = †, ℓ1 = S1 { 1 }#0]
          result  value 0
   [6]   d4          (D-Let) §6.7 (mint the binding)
-         expr    let mut v1 = 0 at ℓ1
-         store   [ℓ0 = S1 { 1 }]
-           →     [ℓ0 = S1 { 1 }, ℓ1 = 0]
+         expr    let mut v1 = 0 at ℓ2
+         store   [ℓ0 = †, ℓ1 = S1 { 1 }#0]
+           →     [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 0]
          result  value 0
   [7]   d9                  (D-Use-Copy) §6.3
          expr    v1
-         store   [ℓ0 = S1 { 1 }, ℓ1 = 0]
-           →     [ℓ0 = S1 { 1 }, ℓ1 = 0]
+         store   [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 0]
+           →     [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 0]
          result  value 0
   [8]   d9                  literal §6.3
          expr    2
-         store   [ℓ0 = S1 { 1 }, ℓ1 = 0]
-           →     [ℓ0 = S1 { 1 }, ℓ1 = 0]
+         store   [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 0]
+           →     [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 0]
          result  value 2
   [9]   d8                  ordering compare §6.4
          expr    (v1 >= 2)
-         store   [ℓ0 = S1 { 1 }, ℓ1 = 0]
-           →     [ℓ0 = S1 { 1 }, ℓ1 = 0]
+         store   [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 0]
+           →     [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 0]
          result  value false
   [10]  d8                  literal §6.3
          expr    ()
-         store   [ℓ0 = S1 { 1 }, ℓ1 = 0]
-           →     [ℓ0 = S1 { 1 }, ℓ1 = 0]
+         store   [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 0]
+           →     [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 0]
          result  value ()
   [11]  d7                (D-If-F) §6.6
          expr    if (v1 >= 2) { break } else { () }
-         store   [ℓ0 = S1 { 1 }, ℓ1 = 0]
-           →     [ℓ0 = S1 { 1 }, ℓ1 = 0]
+         store   [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 0]
+           →     [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 0]
          result  value ()
   [12]  d10                  (D-Use-Copy) §6.3
          expr    v1
-         store   [ℓ0 = S1 { 1 }, ℓ1 = 0]
-           →     [ℓ0 = S1 { 1 }, ℓ1 = 0]
+         store   [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 0]
+           →     [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 0]
          result  value 0
   [13]  d10                  literal §6.3
          expr    1
-         store   [ℓ0 = S1 { 1 }, ℓ1 = 0]
-           →     [ℓ0 = S1 { 1 }, ℓ1 = 0]
+         store   [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 0]
+           →     [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 0]
          result  value 1
   [14]  d9                  (D-Arith) §6.4
          expr    (v1 + 1)
-         store   [ℓ0 = S1 { 1 }, ℓ1 = 0]
-           →     [ℓ0 = S1 { 1 }, ℓ1 = 0]
+         store   [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 0]
+           →     [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 0]
          result  value 1
   [15]  d8                  (D-Assign) §6.8 (overwrite-drop)
          expr    { v1 = (v1 + 1); }
-         store   [ℓ0 = S1 { 1 }, ℓ1 = 0]
-           →     [ℓ0 = S1 { 1 }, ℓ1 = 1]
+         store   [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 0]
+           →     [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 1]
          result  value ()
   [16]  d10                  @drop §6.11
          expr    @drop(v0)
-         store   [ℓ0 = S1 { 1 }, ℓ1 = 1]
-           →     [ℓ0 = ⊘, ℓ1 = 1]
-         events  >> drop ℓ0 = S1 { 1 }; run drop fn S1(S1 { 1 })
+         store   [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 1]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
+         events  >> drop ℓ1 = S1 { 1 }#0; run drop fn S1(S1 { 1 }#0)
          result  value ()
   [17]  d10                  (D-Break) §6.10
          expr    break
-         store   [ℓ0 = ⊘, ℓ1 = 1]
-           →     [ℓ0 = ⊘, ℓ1 = 1]
+         store   [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
          result  BREAK — unwinding to the enclosing loop (§6.10)
   [18]  d9                  (D-Seq) §6.7
          expr    { @drop(v0); break }
-         store   [ℓ0 = S1 { 1 }, ℓ1 = 1]
-           →     [ℓ0 = ⊘, ℓ1 = 1]
+         store   [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 1]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
          result  BREAK — unwinding to the enclosing loop (§6.10)
   [19]  d8                  (D-Break) §6.10 (unwind to the loop)
          expr    unwind-drops([])
-         store   [ℓ0 = ⊘, ℓ1 = 1]
-           →     [ℓ0 = ⊘, ℓ1 = 1]
+         store   [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
          result  value ()
   [20]  d7                (D-Seq) §6.7
          expr    { { v1 = (v1 + 1); }; loop { { @drop(v0); break } } }
-         store   [ℓ0 = S1 { 1 }, ℓ1 = 0]
-           →     [ℓ0 = ⊘, ℓ1 = 1]
+         store   [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 0]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
          result  value ()
   [21]  d6              (D-Seq) §6.7
          expr    { if (v1 >= 2) { break } else { () }; { { v1 = (v1 + 1); }; loop { { @drop(v0);…
-         store   [ℓ0 = S1 { 1 }, ℓ1 = 0]
-           →     [ℓ0 = ⊘, ℓ1 = 1]
+         store   [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 0]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
          result  value ()
   [22]  d10                  (D-Use-Copy) §6.3
          expr    v1
-         store   [ℓ0 = ⊘, ℓ1 = 1]
-           →     [ℓ0 = ⊘, ℓ1 = 1]
+         store   [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
          result  value 1
   [23]  d10                  literal §6.3
          expr    2
-         store   [ℓ0 = ⊘, ℓ1 = 1]
-           →     [ℓ0 = ⊘, ℓ1 = 1]
+         store   [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
          result  value 2
   [24]  d9                  ordering compare §6.4
          expr    (v1 >= 2)
-         store   [ℓ0 = ⊘, ℓ1 = 1]
-           →     [ℓ0 = ⊘, ℓ1 = 1]
+         store   [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
          result  value false
   [25]  d9                  literal §6.3
          expr    ()
-         store   [ℓ0 = ⊘, ℓ1 = 1]
-           →     [ℓ0 = ⊘, ℓ1 = 1]
+         store   [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
          result  value ()
   [26]  d8                  (D-If-F) §6.6
          expr    if (v1 >= 2) { break } else { () }
-         store   [ℓ0 = ⊘, ℓ1 = 1]
-           →     [ℓ0 = ⊘, ℓ1 = 1]
+         store   [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
          result  value ()
   [27]  d11                  (D-Use-Copy) §6.3
          expr    v1
-         store   [ℓ0 = ⊘, ℓ1 = 1]
-           →     [ℓ0 = ⊘, ℓ1 = 1]
+         store   [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
          result  value 1
   [28]  d11                  literal §6.3
          expr    1
-         store   [ℓ0 = ⊘, ℓ1 = 1]
-           →     [ℓ0 = ⊘, ℓ1 = 1]
+         store   [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
          result  value 1
   [29]  d10                  (D-Arith) §6.4
          expr    (v1 + 1)
-         store   [ℓ0 = ⊘, ℓ1 = 1]
-           →     [ℓ0 = ⊘, ℓ1 = 1]
+         store   [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
          result  value 2
   [30]  d9                  (D-Assign) §6.8 (overwrite-drop)
          expr    { v1 = (v1 + 1); }
-         store   [ℓ0 = ⊘, ℓ1 = 1]
-           →     [ℓ0 = ⊘, ℓ1 = 2]
+         store   [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 2]
          result  value ()
   [31]  d11                  @drop §6.11
          expr    @drop(v0)
-         store   [ℓ0 = ⊘, ℓ1 = 2]
-           →     [ℓ0 = ⊘, ℓ1 = 2]
+         store   [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 2]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 2]
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
   [32]  d10                  (D-Seq) §6.7 — a premise did not complete
          expr    { @drop(v0); break }
-         store   [ℓ0 = ⊘, ℓ1 = 2]
-           →     [ℓ0 = ⊘, ℓ1 = 2]
+         store   [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 2]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 2]
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
   [33]  d9                  (D-Loop-Iter) §6.10 — a premise did not complete
          expr    loop { { @drop(v0); break } }
-         store   [ℓ0 = ⊘, ℓ1 = 2]
-           →     [ℓ0 = ⊘, ℓ1 = 2]
+         store   [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 2]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 2]
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
   [34]  d8                  (D-Seq) §6.7
          expr    { { v1 = (v1 + 1); }; loop { { @drop(v0); break } } }
-         store   [ℓ0 = ⊘, ℓ1 = 1]
-           →     [ℓ0 = ⊘, ℓ1 = 2]
+         store   [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 2]
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
   [35]  d7                (D-Seq) §6.7
          expr    { if (v1 >= 2) { break } else { () }; { { v1 = (v1 + 1); }; loop { { @drop(v0);…
-         store   [ℓ0 = ⊘, ℓ1 = 1]
-           →     [ℓ0 = ⊘, ℓ1 = 2]
+         store   [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 2]
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
   [36]  d6              (D-Loop-Iter) §6.10 — a premise did not complete
          expr    loop { { if (v1 >= 2) { break } else { () }; { { v1 = (v1 + 1); }; loop { { @dr…
-         store   [ℓ0 = ⊘, ℓ1 = 1]
-           →     [ℓ0 = ⊘, ℓ1 = 2]
+         store   [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 1]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 2]
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
   [37]  d5            (D-Loop-Iter) §6.10 (re-enter the body)
          expr    loop { { if (v1 >= 2) { break } else { () }; { { v1 = (v1 + 1); }; loop { { @dr…
-         store   [ℓ0 = S1 { 1 }, ℓ1 = 0]
-           →     [ℓ0 = ⊘, ℓ1 = 2]
+         store   [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 0]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 2]
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
   [38]  d4          (D-Seq) §6.7 — a premise did not complete
          expr    { loop { { if (v1 >= 2) { break } else { () }; { { v1 = (v1 + 1); }; loop { { @…
-         store   [ℓ0 = S1 { 1 }, ℓ1 = 0]
-           →     [ℓ0 = ⊘, ℓ1 = 2]
+         store   [ℓ0 = †, ℓ1 = S1 { 1 }#0, ℓ2 = 0]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 2]
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
   [39]  d3        (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the frame's scope record instead; a trap runs no drop at all)
          expr    { let mut v1: i64 = 0; { loop { { if (v1 >= 2) { break } else { () }; { { v1 = …
-         store   [ℓ0 = S1 { 1 }]
-           →     [ℓ0 = ⊘, ℓ1 = 2]
+         store   [ℓ0 = †, ℓ1 = S1 { 1 }#0]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 2]
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
   [40]  d2      (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the frame's scope record instead; a trap runs no drop at all)
          expr    { let v0: S1 = S1 { x0: 1 }; { let mut v1: i64 = 0; { loop { { if (v1 >= 2) { b…
          store   (empty)
-           →     [ℓ0 = ⊘, ℓ1 = 2]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 2]
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
   [41]  d0  (D-Return-Value) §6.9 (pop the frame)
          expr    f0()
          store   (empty)
-           →     [ℓ0 = ⊘, ℓ1 = 2]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 2]
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)

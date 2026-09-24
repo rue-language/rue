@@ -101,50 +101,50 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 5
-  [3]   d3        (D-Struct) §6.5
+  [3]   d3        (D-Struct) §6.5 (mint #0)
          expr    S0 { x0: 5 }
          store   (empty)
-           →     (empty)
-         result  value S0 { 5 }
+           →     [ℓ0 = †]
+         result  value S0 { 5 }#0
   [4]   d3        (D-Let) §6.7 (mint the binding)
-         expr    let v0 = S0 { 5 } at ℓ0
-         store   (empty)
-           →     [ℓ0 = S0 { 5 }]
-         result  value S0 { 5 }
+         expr    let v0 = S0 { 5 }#0 at ℓ1
+         store   [ℓ0 = †]
+           →     [ℓ0 = †, ℓ1 = S0 { 5 }#0]
+         result  value S0 { 5 }#0
   [5]   d4          @drop §6.11 (Copy: no glue)
          expr    @drop(v0)
-         store   [ℓ0 = S0 { 5 }]
-           →     [ℓ0 = S0 { 5 }]
+         store   [ℓ0 = †, ℓ1 = S0 { 5 }#0]
+           →     [ℓ0 = †, ℓ1 = S0 { 5 }#0]
          result  value ()
   [6]   d5            (D-Use-Copy) §6.3
          expr    v0.x0
-         store   [ℓ0 = S0 { 5 }]
-           →     [ℓ0 = S0 { 5 }]
+         store   [ℓ0 = †, ℓ1 = S0 { 5 }#0]
+           →     [ℓ0 = †, ℓ1 = S0 { 5 }#0]
          result  value 5
   [7]   d5            (D-Use-Copy) §6.3
          expr    v0.x0
-         store   [ℓ0 = S0 { 5 }]
-           →     [ℓ0 = S0 { 5 }]
+         store   [ℓ0 = †, ℓ1 = S0 { 5 }#0]
+           →     [ℓ0 = †, ℓ1 = S0 { 5 }#0]
          result  value 5
   [8]   d4          (D-Arith) §6.4
          expr    (v0.x0 + v0.x0)
-         store   [ℓ0 = S0 { 5 }]
-           →     [ℓ0 = S0 { 5 }]
+         store   [ℓ0 = †, ℓ1 = S0 { 5 }#0]
+           →     [ℓ0 = †, ℓ1 = S0 { 5 }#0]
          result  value 10
   [9]   d3        (D-Seq) §6.7
          expr    { @drop(v0); (v0.x0 + v0.x0) }
-         store   [ℓ0 = S0 { 5 }]
-           →     [ℓ0 = S0 { 5 }]
+         store   [ℓ0 = †, ℓ1 = S0 { 5 }#0]
+           →     [ℓ0 = †, ℓ1 = S0 { 5 }#0]
          result  value 10
   [10]  d2      (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ0])
-         store   [ℓ0 = S0 { 5 }]
-           →     [ℓ0 = † (retired)]
+         expr    endscope([ℓ1])
+         store   [ℓ0 = †, ℓ1 = S0 { 5 }#0]
+           →     [ℓ0 = †, ℓ1 = †]
          result  value 10
   [11]  d0  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([])
-         store   [ℓ0 = † (retired)]
-           →     [ℓ0 = † (retired)]
+         store   [ℓ0 = †, ℓ1 = †]
+           →     [ℓ0 = †, ℓ1 = †]
          result  value 10
 
 ────────────────────────────────────────────────────────────────────────────────

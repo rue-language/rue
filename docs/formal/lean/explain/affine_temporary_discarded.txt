@@ -83,34 +83,34 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 3
-  [3]   d3        (D-Struct) §6.5
+  [3]   d3        (D-Struct) §6.5 (mint #0)
          expr    S1 { x0: 3 }
          store   (empty)
-           →     (empty)
-         result  value S1 { 3 }
+           →     [ℓ0 = †]
+         result  value S1 { 3 }#0
   [4]   d3        (D-Seq) §6.7 (drop the temporary)
-         expr    drop(S1 { 3 })
-         store   (empty)
-           →     (empty)
-         events  >> drop temporary S1 { 3 }; run drop fn S1(S1 { 3 })
+         expr    drop(S1 { 3 }#0)
+         store   [ℓ0 = †]
+           →     [ℓ0 = †]
+         events  >> drop temporary S1 { 3 }#0; run drop fn S1(S1 { 3 }#0)
          result  value ()
   [5]   d3        literal §6.3
          expr    4
-         store   (empty)
-           →     (empty)
+         store   [ℓ0 = †]
+           →     [ℓ0 = †]
          result  value 4
   [6]   d2      (D-Seq) §6.7
          expr    { S1 { x0: 3 }; 4 }
          store   (empty)
-           →     (empty)
+           →     [ℓ0 = †]
          result  value 4
   [7]   d0  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([])
-         store   (empty)
-           →     (empty)
+         store   [ℓ0 = †]
+           →     [ℓ0 = †]
          result  value 4
 
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: ok — value 4
-         drop trace: drop temporary S1 { 3 }; run drop fn S1(S1 { 3 })
+         drop trace: drop temporary S1 { 3 }#0; run drop fn S1(S1 { 3 }#0)
 

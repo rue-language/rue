@@ -180,206 +180,206 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   [ℓ0 = 0]
            →     [ℓ0 = 0]
          result  value 1
-  [5]   d9                  (D-Struct) §6.5
+  [5]   d9                  (D-Struct) §6.5 (mint #1)
          expr    S1 { x0: 1 }
          store   [ℓ0 = 0]
-           →     [ℓ0 = 0]
-         result  value S1 { 1 }
+           →     [ℓ0 = 0, ℓ1 = †]
+         result  value S1 { 1 }#1
   [6]   d9                  literal §6.3
          expr    2
-         store   [ℓ0 = 0]
-           →     [ℓ0 = 0]
+         store   [ℓ0 = 0, ℓ1 = †]
+           →     [ℓ0 = 0, ℓ1 = †]
          result  value 2
-  [7]   d8                  (D-Struct) §6.5
+  [7]   d8                  (D-Struct) §6.5 (mint #2)
          expr    S8 { x0: S1 { x0: 1 }, x1: 2 }
          store   [ℓ0 = 0]
-           →     [ℓ0 = 0]
-         result  value S8 { S1 { 1 }, 2 }
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †]
+         result  value S8 { S1 { 1 }#1, 2 }#2
   [8]   d10                  literal §6.3
          expr    3
-         store   [ℓ0 = 0]
-           →     [ℓ0 = 0]
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †]
          result  value 3
-  [9]   d9                  (D-Struct) §6.5
+  [9]   d9                  (D-Struct) §6.5 (mint #3)
          expr    S1 { x0: 3 }
-         store   [ℓ0 = 0]
-           →     [ℓ0 = 0]
-         result  value S1 { 3 }
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †]
+         result  value S1 { 3 }#3
   [10]  d9                  literal §6.3
          expr    4
-         store   [ℓ0 = 0]
-           →     [ℓ0 = 0]
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †]
          result  value 4
-  [11]  d8                  (D-Struct) §6.5
+  [11]  d8                  (D-Struct) §6.5 (mint #4)
          expr    S8 { x0: S1 { x0: 3 }, x1: 4 }
-         store   [ℓ0 = 0]
-           →     [ℓ0 = 0]
-         result  value S8 { S1 { 3 }, 4 }
-  [12]  d7                (D-Array) §6.5
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †]
+         result  value S8 { S1 { 3 }#3, 4 }#4
+  [12]  d7                (D-Array) §6.5 (mint #5)
          expr    [S8 { x0: S1 { x0: 1 }, x1: 2 }, S8 { x0: S1 { x0: 3 }, x1: 4 }]
          store   [ℓ0 = 0]
-           →     [ℓ0 = 0]
-         result  value [S8 { S1 { 1 }, 2 }, S8 { S1 { 3 }, 4 }]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †]
+         result  value [S8 { S1 { 1 }#1, 2 }#2, S8 { S1 { 3 }#3, 4 }#4]#5
   [13]  d7                (D-Let) §6.7 (mint the binding)
-         expr    let mut v1 = [S8 { S1 { 1 }, 2 }, S8 { S1 { 3 }, 4 }] at ℓ1
-         store   [ℓ0 = 0]
-           →     [ℓ0 = 0, ℓ1 = [S8 { S1 { 1 }, 2 }, S8 { S1 { 3 }, 4 }]]
-         result  value [S8 { S1 { 1 }, 2 }, S8 { S1 { 3 }, 4 }]
+         expr    let mut v1 = [S8 { S1 { 1 }#1, 2 }#2, S8 { S1 { 3 }#3, 4 }#4]#5 at ℓ6
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †]
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S8 { S1 { 1 }#1,…
+         result  value [S8 { S1 { 1 }#1, 2 }#2, S8 { S1 { 3 }#3, 4 }#4]#5
   [14]  d10                  literal §6.3
          expr    9
-         store   [ℓ0 = 0, ℓ1 = [S8 { S1 { 1 }, 2 }, S8 { S1 { 3 }, 4 }]]
-           →     [ℓ0 = 0, ℓ1 = [S8 { S1 { 1 }, 2 }, S8 { S1 { 3 }, 4 }]]
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S8 { S1 { 1 }#1,…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S8 { S1 { 1 }#1,…
          result  value 9
-  [15]  d9                  (D-Struct) §6.5
+  [15]  d9                  (D-Struct) §6.5 (mint #7)
          expr    S1 { x0: 9 }
-         store   [ℓ0 = 0, ℓ1 = [S8 { S1 { 1 }, 2 }, S8 { S1 { 3 }, 4 }]]
-           →     [ℓ0 = 0, ℓ1 = [S8 { S1 { 1 }, 2 }, S8 { S1 { 3 }, 4 }]]
-         result  value S1 { 9 }
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S8 { S1 { 1 }#1,…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S8 { S1 { 1 }#1,…
+         result  value S1 { 9 }#7
   [16]  d9                  (D-Use-Copy) §6.3
          expr    v0
-         store   [ℓ0 = 0, ℓ1 = [S8 { S1 { 1 }, 2 }, S8 { S1 { 3 }, 4 }]]
-           →     [ℓ0 = 0, ℓ1 = [S8 { S1 { 1 }, 2 }, S8 { S1 { 3 }, 4 }]]
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S8 { S1 { 1 }#1,…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S8 { S1 { 1 }#1,…
          result  value 0
   [17]  d8                  (D-Assign) §6.8 below a dynamic index (overwrite-drop)
          expr    { v1[v0].x0 = S1 { x0: 9 }; }
-         store   [ℓ0 = 0, ℓ1 = [S8 { S1 { 1 }, 2 }, S8 { S1 { 3 }, 4 }]]
-           →     [ℓ0 = 0, ℓ1 = [S8 { S1 { 9 }, 2 }, S8 { S1 { 3 }, 4 }]]
-         events  >> drop ℓ1 = S1 { 1 }; run drop fn S1(S1 { 1 })
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S8 { S1 { 1 }#1,…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S8 { S1 { 9 }#7,…
+         events  >> drop ℓ6 = S1 { 1 }#1; run drop fn S1(S1 { 1 }#1)
          result  value ()
   [18]  d8                  literal §6.3
          expr    7
-         store   [ℓ0 = 0, ℓ1 = [S8 { S1 { 9 }, 2 }, S8 { S1 { 3 }, 4 }]]
-           →     [ℓ0 = 0, ℓ1 = [S8 { S1 { 9 }, 2 }, S8 { S1 { 3 }, 4 }]]
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S8 { S1 { 9 }#7,…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S8 { S1 { 9 }#7,…
          result  value 7
   [19]  d7                (D-Seq) §6.7
          expr    { { v1[v0].x0 = S1 { x0: 9 }; }; 7 }
-         store   [ℓ0 = 0, ℓ1 = [S8 { S1 { 1 }, 2 }, S8 { S1 { 3 }, 4 }]]
-           →     [ℓ0 = 0, ℓ1 = [S8 { S1 { 9 }, 2 }, S8 { S1 { 3 }, 4 }]]
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S8 { S1 { 1 }#1,…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S8 { S1 { 9 }#7,…
          result  value 7
   [20]  d6              (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ1])
-         store   [ℓ0 = 0, ℓ1 = [S8 { S1 { 9 }, 2 }, S8 { S1 { 3 }, 4 }]]
-           →     [ℓ0 = 0, ℓ1 = † (retired)]
-         events  >> drop ℓ1 = [S8 { S1 { 9 }, 2 }, S8 { S1 { 3 }, 4 }]; run drop fn S1(S1 { 9 }); run drop fn S1(S1 { 3 })
+         expr    endscope([ℓ6])
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = [S8 { S1 { 9 }#7,…
+           →     [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †]
+         events  >> drop ℓ6 = [S8 { S1 { 9 }#7, 2 }#2, S8 { S1 { 3 }#3, 4 }#4]#5; run drop fn S1(S1 { 9 }#7); run drop fn S1(S1 { 3 }#3)
          result  value 7
   [21]  d4          (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([ℓ0])
-         store   [ℓ0 = 0, ℓ1 = † (retired)]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         store   [ℓ0 = 0, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †]
          result  value 7
   [22]  d3        (Dbg) §5.8, the observable output of §6.12
          expr    @dbg(f1(0))
          store   (empty)
-           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †]
          events  >> @dbg prints 7
          result  value ()
   [23]  d4          literal §6.3
          expr    (-1)
-         store   [ℓ0 = † (retired), ℓ1 = † (retired)]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †]
          result  value -1
   [24]  d4          (D-Call) §6.9 (push the frame)
-         expr    fn f1(v0: i64) -> i64  with [ℓ2]
-         store   [ℓ0 = † (retired), ℓ1 = † (retired)]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1]
+         expr    fn f1(v0: i64) -> i64  with [ℓ8]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
          result  value ()
   [25]  d9                  literal §6.3
          expr    1
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
          result  value 1
-  [26]  d8                  (D-Struct) §6.5
+  [26]  d8                  (D-Struct) §6.5 (mint #9)
          expr    S1 { x0: 1 }
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1]
-         result  value S1 { 1 }
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
+         result  value S1 { 1 }#9
   [27]  d8                  literal §6.3
          expr    2
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
          result  value 2
-  [28]  d7                (D-Struct) §6.5
+  [28]  d7                (D-Struct) §6.5 (mint #10)
          expr    S8 { x0: S1 { x0: 1 }, x1: 2 }
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1]
-         result  value S8 { S1 { 1 }, 2 }
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
+         result  value S8 { S1 { 1 }#9, 2 }#10
   [29]  d9                  literal §6.3
          expr    3
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
          result  value 3
-  [30]  d8                  (D-Struct) §6.5
+  [30]  d8                  (D-Struct) §6.5 (mint #11)
          expr    S1 { x0: 3 }
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1]
-         result  value S1 { 3 }
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
+         result  value S1 { 3 }#11
   [31]  d8                  literal §6.3
          expr    4
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
          result  value 4
-  [32]  d7                (D-Struct) §6.5
+  [32]  d7                (D-Struct) §6.5 (mint #12)
          expr    S8 { x0: S1 { x0: 3 }, x1: 4 }
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1]
-         result  value S8 { S1 { 3 }, 4 }
-  [33]  d6              (D-Array) §6.5
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
+         result  value S8 { S1 { 3 }#11, 4 }#12
+  [33]  d6              (D-Array) §6.5 (mint #13)
          expr    [S8 { x0: S1 { x0: 1 }, x1: 2 }, S8 { x0: S1 { x0: 3 }, x1: 4 }]
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1]
-         result  value [S8 { S1 { 1 }, 2 }, S8 { S1 { 3 }, 4 }]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
+         result  value [S8 { S1 { 1 }#9, 2 }#10, S8 { S1 { 3 }#11, 4 }#12]#13
   [34]  d6              (D-Let) §6.7 (mint the binding)
-         expr    let mut v1 = [S8 { S1 { 1 }, 2 }, S8 { S1 { 3 }, 4 }] at ℓ3
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1, ℓ3 = [S8 { S1 { 1 }, 2 },…
-         result  value [S8 { S1 { 1 }, 2 }, S8 { S1 { 3 }, 4 }]
+         expr    let mut v1 = [S8 { S1 { 1 }#9, 2 }#10, S8 { S1 { 3 }#11, 4 }#12]#13 at ℓ14
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
+         result  value [S8 { S1 { 1 }#9, 2 }#10, S8 { S1 { 3 }#11, 4 }#12]#13
   [35]  d9                  literal §6.3
          expr    9
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1, ℓ3 = [S8 { S1 { 1 }, 2 },…
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1, ℓ3 = [S8 { S1 { 1 }, 2 },…
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
          result  value 9
-  [36]  d8                  (D-Struct) §6.5
+  [36]  d8                  (D-Struct) §6.5 (mint #15)
          expr    S1 { x0: 9 }
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1, ℓ3 = [S8 { S1 { 1 }, 2 },…
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1, ℓ3 = [S8 { S1 { 1 }, 2 },…
-         result  value S1 { 9 }
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
+         result  value S1 { 9 }#15
   [37]  d8                  (D-Use-Copy) §6.3
          expr    v0
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1, ℓ3 = [S8 { S1 { 1 }, 2 },…
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1, ℓ3 = [S8 { S1 { 1 }, 2 },…
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
          result  value -1
   [38]  d7                (D-Index-Trap) §6.5 — the bounds trap of §6.12
          expr    { v1[v0].x0 = S1 { x0: 9 }; }
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1, ℓ3 = [S8 { S1 { 1 }, 2 },…
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1, ℓ3 = [S8 { S1 { 1 }, 2 },…
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
          result  PANIC (bounds) — a defined trap, §6.12
   [39]  d6              (D-Seq) §6.7 — a premise did not complete
          expr    { { v1[v0].x0 = S1 { x0: 9 }; }; 7 }
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1, ℓ3 = [S8 { S1 { 1 }, 2 },…
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1, ℓ3 = [S8 { S1 { 1 }, 2 },…
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
          result  PANIC (bounds) — a defined trap, §6.12
   [40]  d5            (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the frame's scope record instead; a trap runs no drop at all)
          expr    { let mut v1: [S8; 2] = [S8 { x0: S1 { x0: 1 }, x1: 2 }, S8 { x0: S1 { x0: 3 },…
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1, ℓ3 = [S8 { S1 { 1 }, 2 },…
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
          result  PANIC (bounds) — a defined trap, §6.12
   [41]  d3        (Panic-Lift) §6.2 — the callee trapped, so no frame is popped: §6.12 abandons the configuration and `run-all-scope-drops` never runs
          expr    f1((-1))
-         store   [ℓ0 = † (retired), ℓ1 = † (retired)]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1, ℓ3 = [S8 { S1 { 1 }, 2 },…
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
          result  PANIC (bounds) — a defined trap, §6.12
   [42]  d2      (D-Seq) §6.7
          expr    { @dbg(f1(0)); f1((-1)) }
          store   (empty)
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1, ℓ3 = [S8 { S1 { 1 }, 2 },…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
          result  PANIC (bounds) — a defined trap, §6.12
   [43]  d0  (Panic-Lift) §6.2 — the callee trapped, so no frame is popped: §6.12 abandons the configuration and `run-all-scope-drops` never runs
          expr    f0()
          store   (empty)
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = -1, ℓ3 = [S8 { S1 { 1 }, 2 },…
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †, ℓ4 = †, ℓ5 = †, ℓ6 = †, ℓ7 = †, ℓ8 = -…
          result  PANIC (bounds) — a defined trap, §6.12
 
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: PANIC (bounds) — a defined trap, §6.12
-         trace up to the trap: drop ℓ1 = S1 { 1 }; run drop fn S1(S1 { 1 }); drop ℓ1 = [S8 { S1 { 9 }, 2 }, S8 { S1 { 3 }, 4 }]; run drop fn S1(S1 { 9 }); run drop fn S1(S1 { 3 }); @dbg prints 7
+         trace up to the trap: drop ℓ6 = S1 { 1 }#1; run drop fn S1(S1 { 1 }#1); drop ℓ6 = [S8 { S1 { 9 }#7, 2 }#2, S8 { S1 { 3 }#3, 4 }#4]#5; run drop fn S1(S1 { 9 }#7); run drop fn S1(S1 { 3 }#3); @dbg prints 7
 

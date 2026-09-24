@@ -93,23 +93,23 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   [ℓ0 = 4]
            →     [ℓ0 = 4]
          result  value 4
-  [5]   d3        (D-Struct) §6.5
+  [5]   d3        (D-Struct) §6.5 (mint #1)
          expr    S1 { x0: v0 }
          store   [ℓ0 = 4]
-           →     [ℓ0 = 4]
-         result  value S1 { 4 }
+           →     [ℓ0 = 4, ℓ1 = †]
+         result  value S1 { 4 }#1
   [6]   d2      (D-EndScope) §6.7 (retire the binding)
          expr    endscope([ℓ0])
-         store   [ℓ0 = 4]
-           →     [ℓ0 = † (retired)]
-         result  value S1 { 4 }
+         store   [ℓ0 = 4, ℓ1 = †]
+           →     [ℓ0 = †, ℓ1 = †]
+         result  value S1 { 4 }#1
   [7]   d0  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([])
-         store   [ℓ0 = † (retired)]
-           →     [ℓ0 = † (retired)]
-         result  value S1 { 4 }
+         store   [ℓ0 = †, ℓ1 = †]
+           →     [ℓ0 = †, ℓ1 = †]
+         result  value S1 { 4 }#1
 
 ────────────────────────────────────────────────────────────────────────────────
-Outcome: ok — value S1 { 4 }
+Outcome: ok — value S1 { 4 }#1
          drop trace: (no drops)
 

@@ -137,106 +137,106 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   [ℓ0 = 1]
            →     [ℓ0 = 1]
          result  value 30
-  [7]   d7                (D-Array) §6.5
+  [7]   d7                (D-Array) §6.5 (mint #1)
          expr    [10, 20, 30]
          store   [ℓ0 = 1]
-           →     [ℓ0 = 1]
-         result  value [10, 20, 30]
+           →     [ℓ0 = 1, ℓ1 = †]
+         result  value [10, 20, 30]#1
   [8]   d7                (D-Let) §6.7 (mint the binding)
-         expr    let v1 = [10, 20, 30] at ℓ1
-         store   [ℓ0 = 1]
-           →     [ℓ0 = 1, ℓ1 = [10, 20, 30]]
-         result  value [10, 20, 30]
+         expr    let v1 = [10, 20, 30]#1 at ℓ2
+         store   [ℓ0 = 1, ℓ1 = †]
+           →     [ℓ0 = 1, ℓ1 = †, ℓ2 = [10, 20, 30]#1]
+         result  value [10, 20, 30]#1
   [9]   d8                  (D-Use-Copy) §6.3
          expr    v0
-         store   [ℓ0 = 1, ℓ1 = [10, 20, 30]]
-           →     [ℓ0 = 1, ℓ1 = [10, 20, 30]]
+         store   [ℓ0 = 1, ℓ1 = †, ℓ2 = [10, 20, 30]#1]
+           →     [ℓ0 = 1, ℓ1 = †, ℓ2 = [10, 20, 30]#1]
          result  value 1
   [10]  d7                (D-Index) §6.5
          expr    v1[v0]
-         store   [ℓ0 = 1, ℓ1 = [10, 20, 30]]
-           →     [ℓ0 = 1, ℓ1 = [10, 20, 30]]
+         store   [ℓ0 = 1, ℓ1 = †, ℓ2 = [10, 20, 30]#1]
+           →     [ℓ0 = 1, ℓ1 = †, ℓ2 = [10, 20, 30]#1]
          result  value 20
   [11]  d6              (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ1])
-         store   [ℓ0 = 1, ℓ1 = [10, 20, 30]]
-           →     [ℓ0 = 1, ℓ1 = † (retired)]
+         expr    endscope([ℓ2])
+         store   [ℓ0 = 1, ℓ1 = †, ℓ2 = [10, 20, 30]#1]
+           →     [ℓ0 = 1, ℓ1 = †, ℓ2 = †]
          result  value 20
   [12]  d4          (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([ℓ0])
-         store   [ℓ0 = 1, ℓ1 = † (retired)]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         store   [ℓ0 = 1, ℓ1 = †, ℓ2 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †]
          result  value 20
   [13]  d3        (Dbg) §5.8, the observable output of §6.12
          expr    @dbg(f1(1))
          store   (empty)
-           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †]
          events  >> @dbg prints 20
          result  value ()
   [14]  d4          literal §6.3
          expr    5
-         store   [ℓ0 = † (retired), ℓ1 = † (retired)]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †]
          result  value 5
   [15]  d4          (D-Call) §6.9 (push the frame)
-         expr    fn f1(v0: i64) -> i64  with [ℓ2]
-         store   [ℓ0 = † (retired), ℓ1 = † (retired)]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5]
+         expr    fn f1(v0: i64) -> i64  with [ℓ3]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5]
          result  value ()
   [16]  d7                literal §6.3
          expr    10
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5]
          result  value 10
   [17]  d7                literal §6.3
          expr    20
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5]
          result  value 20
   [18]  d7                literal §6.3
          expr    30
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5]
          result  value 30
-  [19]  d6              (D-Array) §6.5
+  [19]  d6              (D-Array) §6.5 (mint #4)
          expr    [10, 20, 30]
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5]
-         result  value [10, 20, 30]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5, ℓ4 = †]
+         result  value [10, 20, 30]#4
   [20]  d6              (D-Let) §6.7 (mint the binding)
-         expr    let v1 = [10, 20, 30] at ℓ3
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5, ℓ3 = [10, 20, 30]]
-         result  value [10, 20, 30]
+         expr    let v1 = [10, 20, 30]#4 at ℓ5
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5, ℓ4 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5, ℓ4 = †, ℓ5 = [10, 20, 30]#4]
+         result  value [10, 20, 30]#4
   [21]  d7                (D-Use-Copy) §6.3
          expr    v0
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5, ℓ3 = [10, 20, 30]]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5, ℓ3 = [10, 20, 30]]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5, ℓ4 = †, ℓ5 = [10, 20, 30]#4]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5, ℓ4 = †, ℓ5 = [10, 20, 30]#4]
          result  value 5
   [22]  d6              (D-Index-Trap) §6.5 — the bounds trap of §6.12
          expr    v1[v0]
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5, ℓ3 = [10, 20, 30]]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5, ℓ3 = [10, 20, 30]]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5, ℓ4 = †, ℓ5 = [10, 20, 30]#4]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5, ℓ4 = †, ℓ5 = [10, 20, 30]#4]
          result  PANIC (bounds) — a defined trap, §6.12
   [23]  d5            (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the frame's scope record instead; a trap runs no drop at all)
          expr    { let v1: [i64; 3] = [10, 20, 30]; v1[v0] }
-         store   [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5, ℓ3 = [10, 20, 30]]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5, ℓ4 = †, ℓ5 = [10, 20, 30]#4]
          result  PANIC (bounds) — a defined trap, §6.12
   [24]  d3        (Panic-Lift) §6.2 — the callee trapped, so no frame is popped: §6.12 abandons the configuration and `run-all-scope-drops` never runs
          expr    f1(5)
-         store   [ℓ0 = † (retired), ℓ1 = † (retired)]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5, ℓ3 = [10, 20, 30]]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5, ℓ4 = †, ℓ5 = [10, 20, 30]#4]
          result  PANIC (bounds) — a defined trap, §6.12
   [25]  d2      (D-Seq) §6.7
          expr    { @dbg(f1(1)); f1(5) }
          store   (empty)
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5, ℓ3 = [10, 20, 30]]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5, ℓ4 = †, ℓ5 = [10, 20, 30]#4]
          result  PANIC (bounds) — a defined trap, §6.12
   [26]  d0  (Panic-Lift) §6.2 — the callee trapped, so no frame is popped: §6.12 abandons the configuration and `run-all-scope-drops` never runs
          expr    f0()
          store   (empty)
-           →     [ℓ0 = † (retired), ℓ1 = † (retired), ℓ2 = 5, ℓ3 = [10, 20, 30]]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = 5, ℓ4 = †, ℓ5 = [10, 20, 30]#4]
          result  PANIC (bounds) — a defined trap, §6.12
 
 ────────────────────────────────────────────────────────────────────────────────

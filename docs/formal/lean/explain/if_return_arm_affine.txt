@@ -139,69 +139,69 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          store   (empty)
            →     (empty)
          result  value 7
-  [3]   d3        (D-Struct) §6.5
+  [3]   d3        (D-Struct) §6.5 (mint #0)
          expr    S1 { x0: 7 }
          store   (empty)
-           →     (empty)
-         result  value S1 { 7 }
+           →     [ℓ0 = †]
+         result  value S1 { 7 }#0
   [4]   d3        (D-Let) §6.7 (mint the binding)
-         expr    let v0 = S1 { 7 } at ℓ0
-         store   (empty)
-           →     [ℓ0 = S1 { 7 }]
-         result  value S1 { 7 }
+         expr    let v0 = S1 { 7 }#0 at ℓ1
+         store   [ℓ0 = †]
+           →     [ℓ0 = †, ℓ1 = S1 { 7 }#0]
+         result  value S1 { 7 }#0
   [5]   d5            literal §6.3
          expr    false
-         store   [ℓ0 = S1 { 7 }]
-           →     [ℓ0 = S1 { 7 }]
+         store   [ℓ0 = †, ℓ1 = S1 { 7 }#0]
+           →     [ℓ0 = †, ℓ1 = S1 { 7 }#0]
          result  value false
   [6]   d5            literal §6.3
          expr    5
-         store   [ℓ0 = S1 { 7 }]
-           →     [ℓ0 = S1 { 7 }]
+         store   [ℓ0 = †, ℓ1 = S1 { 7 }#0]
+           →     [ℓ0 = †, ℓ1 = S1 { 7 }#0]
          result  value 5
   [7]   d4          (D-If-F) §6.6
          expr    if false { { @drop(v0); return 0 } } else { 5 }
-         store   [ℓ0 = S1 { 7 }]
-           →     [ℓ0 = S1 { 7 }]
+         store   [ℓ0 = †, ℓ1 = S1 { 7 }#0]
+           →     [ℓ0 = †, ℓ1 = S1 { 7 }#0]
          result  value 5
   [8]   d4          (D-Let) §6.7 (mint the binding)
-         expr    let v1 = 5 at ℓ1
-         store   [ℓ0 = S1 { 7 }]
-           →     [ℓ0 = S1 { 7 }, ℓ1 = 5]
+         expr    let v1 = 5 at ℓ2
+         store   [ℓ0 = †, ℓ1 = S1 { 7 }#0]
+           →     [ℓ0 = †, ℓ1 = S1 { 7 }#0, ℓ2 = 5]
          result  value 5
   [9]   d5            @drop §6.11
          expr    @drop(v0)
-         store   [ℓ0 = S1 { 7 }, ℓ1 = 5]
-           →     [ℓ0 = ⊘, ℓ1 = 5]
-         events  >> drop ℓ0 = S1 { 7 }; run drop fn S1(S1 { 7 })
+         store   [ℓ0 = †, ℓ1 = S1 { 7 }#0, ℓ2 = 5]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 5]
+         events  >> drop ℓ1 = S1 { 7 }#0; run drop fn S1(S1 { 7 }#0)
          result  value ()
   [10]  d5            (D-Use-Copy) §6.3
          expr    v1
-         store   [ℓ0 = ⊘, ℓ1 = 5]
-           →     [ℓ0 = ⊘, ℓ1 = 5]
+         store   [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 5]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 5]
          result  value 5
   [11]  d4          (D-Seq) §6.7
          expr    { @drop(v0); v1 }
-         store   [ℓ0 = S1 { 7 }, ℓ1 = 5]
-           →     [ℓ0 = ⊘, ℓ1 = 5]
+         store   [ℓ0 = †, ℓ1 = S1 { 7 }#0, ℓ2 = 5]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 5]
          result  value 5
   [12]  d3        (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ1])
-         store   [ℓ0 = ⊘, ℓ1 = 5]
-           →     [ℓ0 = ⊘, ℓ1 = † (retired)]
+         expr    endscope([ℓ2])
+         store   [ℓ0 = †, ℓ1 = ⊘, ℓ2 = 5]
+           →     [ℓ0 = †, ℓ1 = ⊘, ℓ2 = †]
          result  value 5
   [13]  d2      (D-EndScope) §6.7 (retire the binding)
-         expr    endscope([ℓ0])
-         store   [ℓ0 = ⊘, ℓ1 = † (retired)]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         expr    endscope([ℓ1])
+         store   [ℓ0 = †, ℓ1 = ⊘, ℓ2 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †]
          result  value 5
   [14]  d0  (D-Return-Value) §6.9 (pop the frame)
          expr    run-all-scope-drops([])
-         store   [ℓ0 = † (retired), ℓ1 = † (retired)]
-           →     [ℓ0 = † (retired), ℓ1 = † (retired)]
+         store   [ℓ0 = †, ℓ1 = †, ℓ2 = †]
+           →     [ℓ0 = †, ℓ1 = †, ℓ2 = †]
          result  value 5
 
 ────────────────────────────────────────────────────────────────────────────────
 Outcome: ok — value 5
-         drop trace: drop ℓ0 = S1 { 7 }; run drop fn S1(S1 { 7 })
+         drop trace: drop ℓ1 = S1 { 7 }#0; run drop fn S1(S1 { 7 }#0)
 
