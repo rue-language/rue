@@ -840,6 +840,13 @@ lean_package(
         "RueCore.FloatModel.cast_nan",
         "RueCore.Explain.explain_result",
         "RueCore.Explain.traceEval_res",
+        "RueCore.Step.det",
+        "RueCore.Step.terminal",
+        "RueCore.step_iff",
+        "RueCore.Config.trichotomy",
+        "RueCore.step_stuck_isStuckState",
+        "RueCore.unwindLocs_plain",
+        "RueCore.destructure_plain",
     ],
 )
 

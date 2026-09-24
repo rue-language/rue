@@ -439,8 +439,9 @@ inductive Step (M : FloatOps) (P : Program) : Config → Config → Prop where
   | repeatArray {H φ K tr T n v} :
       Step M P (.run H φ (.repeatArray T n :: K) (.ret v) tr)
         (.run H φ K (.ret (.array T (List.replicate n v))) tr)
-  /-- (D-Index) §6.5 at a dynamic place, every index in range: §6.3's copy
-  rule reads the leaf. -/
+  /-- (D-Index) §6.5 at a dynamic place, every index in range, and
+  (D-Use-Untrackable-Dynamic-Copy) §6.3 reads the `Copy` leaf, leaving the
+  storage live. -/
   | indexRead {H φ K tr p πs vs ℓ c sub ρ leaf v} :
       dynPlace H φ p vs πs = .at ℓ c sub ρ →
       sub.readAt ρ = .ok leaf →
@@ -1324,5 +1325,47 @@ theorem destructure_plain {D : Decls} {c : Contents} {πs : List Nat}
     · rename_i heq'
       rw [dropResidue_plain heq']
       exact h
+
+/-! ## Running the relation -/
+
+/-- Take up to `n` steps of `step`, stopping early at a configuration that
+takes none (helper). -/
+def stepN (M : FloatOps) (P : Program) : Nat → Config → Config
+  | 0, C => C
+  | n + 1, C =>
+    match step M P C with
+    | .next C' => stepN M P n C'
+    | .halted | .stuck _ => C
+
+/-- Whatever `stepN` reaches, `→*` reaches (§6.12's `→*`), so a run of the
+function is a derivation of the relation (helper). -/
+theorem stepN_steps {M : FloatOps} {P : Program} : ∀ {n : Nat} {C : Config},
+    Steps M P C (stepN M P n C)
+  | 0, C => .refl C
+  | n + 1, C => by
+      simp only [stepN]
+      split
+      · rename_i C' h
+        exact .step (step_iff.mpr h) stepN_steps
+      · exact .refl C
+      · exact .refl C
+
+/-- A two-line program, `let x = 40; x + 2`, as the entry point returning
+`i32` (helper). -/
+def letAddProgram : Program :=
+  Program.entry (Decls.ofStructs []) (.int .w32 .signed)
+    (.letIn false (.intLit .w32 .signed 40) (.binop .add (.use (.var 0)) (.intLit .w32 .signed 2)))
+
+/-- **The relation runs a program to the same answer `eval` does**, a check
+the two presentations can be compared on before the adequacy theorems say
+they always agree: from §6.12's initial configuration, `→*` reaches `✓42`
+through (D-Call), (D-Let), (D-Use-Copy), (D-Arith), (D-EndScope) and
+(D-Return-Value), with the `let`'s cell retired and nothing printed; and
+`run` answers the same value, store and trace. -/
+theorem letAddProgram_runs (M : FloatOps) :
+    Steps M letAddProgram Config.init
+      (.run [.dead] { env := [], scope := [] } [] (.ret (.int .w32 .signed 42)) []) ∧
+    run M letAddProgram 100 = .ok [.dead] (.int .w32 .signed 42) [] :=
+  ⟨stepN_steps (n := 30), rfl⟩
 
 end RueCore
