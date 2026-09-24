@@ -2128,6 +2128,12 @@ premises run before the node itself, so the table reads top to bottom as the
 machine ran). Each row carries the store before and after, the drop events
 the node emitted, and what the node produced. -/
 
+/-- (helper) The copy-closure monitor's premise, `ownedUnderCopy`
+(`Dynamics.lean`), as one literal: a chain of `++` here costs the digest's
+equation generator more than its heartbeat limit allows. -/
+def ownedUnderCopyPremise : String :=
+  "an owned value under a Copy node: a Copy type's fields, payloads and elements are Copy (§3, 3.8:18, 6.3:19), so a copy of this aggregate would duplicate an owner; the machine's copy-closure monitor refuses it (§7 “no double free”), and `soundness` proves a checked program never reaches it"
+
 /-- The machine's refusal, in §6's words, with the §7 bullet it violates
 and the prose paragraph behind it. -/
 def violationPremise : Violation → String
@@ -2157,11 +2163,7 @@ def violationPremise : Violation → String
       "its callee's parameter list, or a dynamic-index read, a dynamic-index @drop or " ++
       "a repeat met a non-Copy value ((D-Use-Untrackable-Dynamic-Copy) §6.3, 7.1:38); " ++
       "the statics (§5) exclude all three, and `soundness` (§7) is the proof"
-  | .ownedUnderCopy =>
-      "an owned value under a Copy node: a Copy type's fields, payloads and elements " ++
-      "are Copy (§3, 3.8:18, 6.3:19), so a copy of this aggregate would duplicate an " ++
-      "owner; the machine's copy-closure monitor refuses it (§7 “no double free”), and " ++
-      "`soundness` proves a checked program never reaches it"
+  | .ownedUnderCopy => ownedUnderCopyPremise
 
 /-- What one node produced: a value, a value an unwinding `return` handed
 past it (§6.9), a defined trap (§6.12), a refusal (§6's stuck states) with
@@ -2406,9 +2408,11 @@ theorem traceArgs_res {tev : Store → Expr → Trace} {ev : Store → Expr → 
       | _ => rfl
 
 /-- An aggregate's introduction row carries `introVal`'s result, with the
-arguments' trace prefixed (helper). -/
-theorem tracedIntro_res (P : Program) (kids : List Step) (d : Nat) (Θ : List Ty) (R : Ty)
-    (e : Expr) (rule : String) (H H₁ : Store) (tr : List Event) (mk : Nat → Val) :
+arguments' trace prefixed (helper). Private, so the statement digest does not
+reach the renderers through it (`violationPremise`'s equations are more than
+the digest's heartbeat limit allows). -/
+private theorem tracedIntro_res (P : Program) (kids : List Step) (d : Nat) (Θ : List Ty)
+    (R : Ty) (e : Expr) (rule : String) (H H₁ : Store) (tr : List Event) (mk : Nat → Val) :
     (tracedIntro P kids d Θ R e rule H H₁ tr mk).res = (introVal P.decls H₁ mk).withTrace tr := by
   unfold tracedIntro introVal
   split <;> simp [traced, refused, EvalRes.withTrace]
