@@ -503,6 +503,39 @@ impl MoveState {
         self.maybe_fields.remove(&slot);
     }
 
+    /// Loop-head approximation (RUE-2356): the slot's whole-value move is no
+    /// longer known to hold on every path. Callers only do this for a slot
+    /// with a runtime drop flag, which then decides its drops.
+    fn forget_slot_move(&mut self, slot: MovedSlot) {
+        if self.slots.remove(&slot) {
+            self.set_fact(MoveFactKind::Whole, slot, &[], false);
+        }
+    }
+
+    /// Loop-head approximation (RUE-2356): the field path may or may not be
+    /// moved out, so it leaves the definite set and joins the possible one.
+    /// Callers only do this for a path with a runtime drop flag, which then
+    /// decides its drops.
+    fn weaken_path(&mut self, slot: MovedSlot, path: &[u32]) {
+        let mut remove_partition = false;
+        if let Some(paths) = self.fields.get_mut(&slot)
+            && paths.remove(path)
+        {
+            remove_partition = paths.is_empty();
+            self.set_fact(MoveFactKind::DefinitePath, slot, path, false);
+        }
+        if remove_partition {
+            self.fields.remove(&slot);
+        }
+        if !self.is_path_maybe_moved(&(slot, path.to_vec())) {
+            self.set_fact(MoveFactKind::MaybePath, slot, path, true);
+            self.maybe_fields
+                .entry(slot)
+                .or_default()
+                .insert(path.to_vec());
+        }
+    }
+
     /// The place at `prefix` (a field/constant-element path) was reassigned:
     /// that place and everything nested inside it hold a fresh value again
     /// and must be dropped at scope exit. Move facts on ancestors and
@@ -706,6 +739,11 @@ pub struct CfgBuilder<'a> {
     /// the AIR whose moved type needs drop (pre-scanned), i.e. candidates
     /// for a per-field drop flag.
     ever_field_moved: AHashSet<MovedPathKey>,
+    /// Every whole-slot and droppable field-path MarkMoved in the AIR, in
+    /// instruction order: `(instruction index, slot, path)`, with `None`
+    /// for a whole-slot move. A loop header weakens the move facts of the
+    /// sites that precede the loop instruction (RUE-2356).
+    move_sites: Vec<(u32, MovedSlot, Option<FieldPath>)>,
     /// Slots (and struct field paths of any depth, RUE-62/RUE-157) whose
     /// contents have definitely been moved out on every path reaching the
     /// current lowering position. Drop elaboration skips these (the new
@@ -1015,6 +1053,7 @@ impl<'a> CfgBuilder<'a> {
             field_drop_flags: AHashMap::new(),
             ever_moved: AHashSet::new(),
             ever_field_moved: AHashSet::new(),
+            move_sites: Vec::new(),
             moved: MoveState::default(),
             return_cleanup_regions: AHashMap::new(),
             return_cleanup_exit: None,
@@ -1059,11 +1098,13 @@ impl<'a> CfgBuilder<'a> {
                 match place {
                     None => {
                         builder.ever_moved.insert(key);
+                        builder.move_sites.push((i as u32, key, None));
                     }
                     Some(place_ref) => {
                         if builder.type_needs_drop(inst.ty) {
                             let path = builder.moved_field_path(*place_ref);
-                            builder.ever_field_moved.insert((key, path));
+                            builder.ever_field_moved.insert((key, path.clone()));
+                            builder.move_sites.push((i as u32, key, Some(path)));
                         }
                     }
                 }
@@ -2260,6 +2301,10 @@ impl<'a> CfgBuilder<'a> {
                 // Jump to header
                 self.goto_no_args(self.current_block, header_block);
 
+                // The header joins the entry edge with the back edges, so
+                // the condition and body see the loop-head state (RUE-2356).
+                self.weaken_moves_at_loop_head(air_ref);
+
                 // Lower condition in header — BEFORE pushing this while's loop
                 // context, so a break/continue inside the condition resolves via
                 // loop_stack.last() to the ENCLOSING loop, not to the while being
@@ -2354,6 +2399,10 @@ impl<'a> CfgBuilder<'a> {
                 // entry point and the continue target.
                 let body_block = self.cfg.new_block();
                 let exit_block = self.cfg.new_block();
+
+                // The body block is the loop head: it joins the entry edge
+                // with the back edges (RUE-2356).
+                self.weaken_moves_at_loop_head(air_ref);
 
                 // The exit is only reached via break, and different breaks
                 // may have different move states; join those states below.
@@ -3991,6 +4040,43 @@ impl<'a> CfgBuilder<'a> {
         for live_slot in loop_slots {
             self.emit_drop_for_slot(&live_slot, span);
         }
+    }
+
+    /// Approximate a loop head's move state (RUE-2356; calculus §5.7).
+    ///
+    /// The body is lowered once, but its head is also reached from the back
+    /// edges, whose move state can differ from the entry state: a place
+    /// owned at entry may be moved by the previous iteration, and one moved
+    /// at entry may be reinitialized by it. Either way the place is owned on
+    /// some paths into the head and moved on others, so its static fact
+    /// must not decide its drops; its runtime drop flag does.
+    ///
+    /// Every move site inside the loop, and every one that can leave a place
+    /// moved at entry, precedes the loop instruction (AIR operands refer
+    /// backward), so the facts of those sites' slots and paths are weakened
+    /// here: a whole slot's definite move is forgotten, and a field path
+    /// becomes "maybe moved". Only places with a runtime drop flag are
+    /// weakened; every other place has no drop to decide. A site after the
+    /// loop cannot affect the head, so straight-line code is unchanged.
+    fn weaken_moves_at_loop_head(&mut self, loop_ref: AirRef) {
+        let sites = std::mem::take(&mut self.move_sites);
+        let end = sites.partition_point(|(index, _, _)| *index < loop_ref.as_u32());
+        // Whole slots first: a path of a slot that stays definitely moved
+        // is subsumed by the whole-slot fact and keeps no path facts.
+        for (_, key, _) in sites[..end].iter().filter(|(_, _, path)| path.is_none()) {
+            if self.drop_flags.contains_key(key) {
+                self.moved.forget_slot_move(*key);
+            }
+        }
+        for (_, key, path) in &sites[..end] {
+            if let Some(path) = path
+                && !self.moved.is_slot_moved(*key)
+                && self.field_drop_flags.contains_key(&(*key, path.clone()))
+            {
+                self.moved.weaken_path(*key, path);
+            }
+        }
+        self.move_sites = sites;
     }
 
     /// Emit the drop body produced by `emit_body` behind an `if flag != 0`
