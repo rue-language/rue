@@ -451,6 +451,11 @@ pub(crate) fn durable_value_fit_failure(
 /// The E0206 a completed call's value makes with its callee's declared
 /// return type, if its own type differs (RUE-2364).
 ///
+/// Both places a call's value is typed at its declared return type use it:
+/// a child call's frame when it finishes, and the comptime-call query that
+/// reduces a call as its own root for array lengths, type arguments and
+/// memoized calls (RUE-2381).
+///
 /// A call's value leaves the callee typed at the declared return type, so
 /// its own type must be checked first, as the body type checker checks a
 /// function's tail. Only a value typed at a scalar type is checked here:
