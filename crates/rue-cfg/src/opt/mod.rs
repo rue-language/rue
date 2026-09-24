@@ -363,7 +363,7 @@ fn run_cleanup_to_fixpoint_with_limit(
                 let simplify_progress = simplify_made_progress(simplify_stats);
                 stats.add_simplify(simplify_stats);
                 let (forward_progress, peephole_progress, cse_progress) = if revisit_clones {
-                    let forward_stats = forward::run(cfg)?;
+                    let forward_stats = forward::run(cfg, type_pool)?;
                     let forward_progress = forward_made_progress(forward_stats);
                     stats.add_forward(forward_stats);
                     let peephole_stats = peephole::run(cfg)?;
@@ -665,7 +665,7 @@ pub fn optimize_with_budget(
                 // Both rules are trap-exact — a load never traps and the forwarded
                 // value is already computed — so the orphaned loads fall to DCE.
                 if matches!(level, OptLevel::O2 | OptLevel::O3) {
-                    let forward_stats = forward::run(&mut cfg)?;
+                    let forward_stats = forward::run(&mut cfg, type_pool)?;
                     stats.add_forward(forward_stats);
                     // Forwarding can expose constants in a branch condition
                     // without changing the Load instruction itself. Fold and

@@ -101,6 +101,32 @@
 //! slot that really does hold one type, which is every slot a non-zero-sized
 //! local owns.
 //!
+//! ## Owner roots: a moved value keeps the slot it moved into
+//!
+//! Forwarding substitutes values, and the CFG's ownership facts are keyed by
+//! where a value came from. The verifier gives a whole-slot `Load` (or whole
+//! `PlaceRead`) of a local the *owner root* of that slot, a block parameter
+//! the root its incoming arguments agree on, and it treats a `Drop` of an
+//! owned value as consuming that root until the next whole write of the slot.
+//! A move `let t = b` is `v = load b; alloc t = v`, and `t`'s later drop is
+//! `drop (load t)`, rooted at `t`. Forwarding `load t` to `v` re-roots that
+//! drop at `b`. That is harmless while `b` cannot be written again before the
+//! drop, but a mutated `b` can be reinitialized in between: `let t = b;
+//! b = S { .. };` then drops `t` at scope end *after* `b`'s reinit, so the
+//! forwarded drop consumes `b`'s fresh value in the ownership model, and in a
+//! loop the next iteration's `load b` reads a root the verifier (correctly)
+//! calls consumed (RUE-2380).
+//!
+//! So neither rule forwards a load of a value whose type needs drop to a
+//! replacement rooted at a *different* local that is not [`SlotWrites::One`]
+//! (the only local that can be reinitialized after the move is one with more
+//! than one whole write). A single-write root cannot be rewritten while a
+//! value moved out of it is still live: its one write is its declaration, and
+//! a loop re-executes that only after the local's storage ended. A parameter
+//! root needs no check: a by-value parameter is immutable, and a writable one
+//! cannot be moved out of. Each accepted substitution keeps this property, so
+//! chains resolved below keep it too.
+//!
 //! ## Applying substitutions and cleanup
 //!
 //! Both rules record `subst[load] = value`; all substitutions apply in one
@@ -113,8 +139,9 @@
 //! sweeps the orphaned loads on its own. They are left as plain `Load`
 //! instructions, not dummied out.
 
-use crate::{BlockId, Cfg, CfgInstData, CfgValue, PlaceBase};
-use ahash::AHashSet;
+use crate::{BlockId, Cfg, CfgInstData, CfgValue, PlaceBase, Terminator};
+use ahash::{AHashMap, AHashSet};
+use rue_air::FrozenTypeInternPool;
 
 use super::dce;
 use super::slot_facts::{self, SlotWrites};
@@ -142,6 +169,10 @@ pub struct Stats {
     /// the stored value's type differs from the load's (RUE-2086 — a slot
     /// shared between a zero-sized local and the local that reuses its index).
     pub loads_declined_type_mismatch: u64,
+    /// Loads of an owned value a rule had a candidate for but declined to
+    /// forward because the candidate is rooted at a different local that can
+    /// be reinitialized (RUE-2380; module docs, "Owner roots").
+    pub loads_declined_reinitializable_root: u64,
 }
 
 /// Whether `value`'s type is a raw pointer.
@@ -160,7 +191,7 @@ fn is_pointer_typed(cfg: &Cfg, value: CfgValue) -> bool {
 /// CSE. Ownership-boundary values are always preserved: they describe a
 /// semantic transfer across an inline boundary, not an optional optimization
 /// policy.
-pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
+pub fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, crate::CfgEditError> {
     let mut stats = Stats::default();
     let num_locals = cfg.num_locals() as usize;
 
@@ -249,6 +280,7 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
     // on later rewriting, so one scan suffices.
     // ------------------------------------------------------------------
     let slot_class = slot_facts::classify_slot_writes(cfg, Some(&reachable));
+    let mut roots = OwnerRoots::default();
 
     // ------------------------------------------------------------------
     // Forward rewriting walk. One pass over every block-attached instruction
@@ -313,6 +345,17 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
                             stats.loads_declined_type_mismatch += 1;
                             continue;
                         }
+                        if roots.reinitializable_other_root(
+                            cfg,
+                            type_pool,
+                            &slot_class,
+                            &reachable,
+                            slot,
+                            write_value,
+                        ) {
+                            stats.loads_declined_reinitializable_root += 1;
+                            continue;
+                        }
                         subst[value.as_u32() as usize] = Some(write_value);
                         stats.loads_forwarded_single_write += 1;
                         if write_block != block_id {
@@ -328,6 +371,17 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
                             // load's.
                             if cfg.get_inst(stored).ty != load_ty {
                                 stats.loads_declined_type_mismatch += 1;
+                                continue;
+                            }
+                            if roots.reinitializable_other_root(
+                                cfg,
+                                type_pool,
+                                &slot_class,
+                                &reachable,
+                                slot,
+                                stored,
+                            ) {
+                                stats.loads_declined_reinitializable_root += 1;
                                 continue;
                             }
                             subst[value.as_u32() as usize] = Some(stored);
@@ -417,6 +471,104 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
     Ok(stats)
 }
 
+/// Owner-root queries for the "Owner roots" rule in the module docs.
+///
+/// The block-parameter incoming table is built on the first query that meets
+/// a block parameter, so a function without owned forwards through a phi pays
+/// nothing for it.
+#[derive(Default)]
+struct OwnerRoots {
+    incoming: Option<AHashMap<CfgValue, Vec<CfgValue>>>,
+}
+
+impl OwnerRoots {
+    /// Whether forwarding a `Load` of `load_slot` to `candidate` would re-root
+    /// an owned value at a different local that can be written again.
+    ///
+    /// The candidate's roots mirror the verifier's provenance: a whole-slot
+    /// `Load` or whole-local `PlaceRead` roots at that local, and a block
+    /// parameter at every root among its incoming arguments (transitively).
+    /// Any other value has no local root. Taking every incoming root, rather
+    /// than only roots all arguments agree on, is the conservative side.
+    fn reinitializable_other_root(
+        &mut self,
+        cfg: &Cfg,
+        type_pool: &FrozenTypeInternPool,
+        slot_class: &[SlotWrites],
+        reachable: &dce::BitSet,
+        load_slot: u32,
+        candidate: CfgValue,
+    ) -> bool {
+        if !super::classify::materializes_owned_value(cfg, type_pool, candidate) {
+            return false;
+        }
+        let reinitializable = |slot: u32| {
+            slot != load_slot
+                && !matches!(slot_class.get(slot as usize), Some(SlotWrites::One { .. }))
+        };
+        let mut visited = AHashSet::new();
+        let mut stack = vec![candidate];
+        while let Some(value) = stack.pop() {
+            if !visited.insert(value) {
+                continue;
+            }
+            match &cfg.get_inst(value).data {
+                CfgInstData::Load { slot } => {
+                    if reinitializable(*slot) {
+                        return true;
+                    }
+                }
+                CfgInstData::PlaceRead { place } => {
+                    if let Some(slot) = place.as_local()
+                        && reinitializable(slot)
+                    {
+                        return true;
+                    }
+                }
+                CfgInstData::BlockParam { .. } => {
+                    let incoming = self
+                        .incoming
+                        .get_or_insert_with(|| block_param_incoming(cfg, reachable));
+                    if let Some(args) = incoming.get(&value) {
+                        stack.extend(args.iter().copied());
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+}
+
+/// Every reachable edge argument, keyed by the block parameter it binds.
+fn block_param_incoming(cfg: &Cfg, reachable: &dce::BitSet) -> AHashMap<CfgValue, Vec<CfgValue>> {
+    let mut incoming: AHashMap<CfgValue, Vec<CfgValue>> = AHashMap::new();
+    let mut bind = |target: BlockId, args: &[CfgValue]| {
+        for (&(param, _), &arg) in cfg.get_block(target).params.iter().zip(args) {
+            incoming.entry(param).or_default().push(arg);
+        }
+    };
+    for block in cfg.blocks() {
+        if !reachable.contains(block.id.as_u32()) {
+            continue;
+        }
+        let terminator = &block.terminator;
+        match terminator {
+            Terminator::Goto { target, .. } => bind(*target, cfg.get_goto_args(terminator)),
+            Terminator::Branch {
+                then_block,
+                else_block,
+                ..
+            } => {
+                bind(*then_block, cfg.get_branch_then_args(terminator));
+                bind(*else_block, cfg.get_branch_else_args(terminator));
+            }
+            _ => {}
+        }
+    }
+    incoming
+}
+
 /// Walk `subst` chains to the surviving value. A forwarded value can itself be
 /// a forwarded load (`let a = 5; let b = a;`), so resolution is iterative;
 /// chains are acyclic because a stored value is always defined before its store.
@@ -452,6 +604,10 @@ mod tests {
                 },
             )
             .0
+    }
+
+    fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
+        super::run(cfg, &TypeInternPool::new().freeze())
     }
 
     fn make_cfg(num_locals: u32) -> Cfg {
