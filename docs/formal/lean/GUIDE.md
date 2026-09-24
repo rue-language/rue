@@ -1819,12 +1819,9 @@ and the pairs that differ. Last comes a tally:
   oracle <-> native: …
 ```
 
-**Expect two disagreements, and a non-zero exit.** Each is seeded
-deliberately and stays until its issue is decided or fixed:
+**Expect one disagreement, and a non-zero exit.** It is seeded
+deliberately and stays until its issue is decided:
 
-- `destructure_ancestor_dropped`: after a destructure under it, `@drop` of
-  the declared-`linear` ancestor. The model accepts; the compiler reports
-  E0406. Which is right is a spec decision: RUE-2335.
 - `array_elem_self_assign`: `a[0] = a[0]`. The model refuses the write into
   the holed array under `3.8:72`; the compiler accepts it on purpose since
   RUE-228. Which is right is a decision: RUE-2346.

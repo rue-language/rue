@@ -95,18 +95,18 @@ exit, a `match` arm or a discarded statement, or a use after the move —
 because a declared-`linear` binder has to be consumed explicitly and a random
 program seldom does.
 
-One shape of it is a compiler-red case until RUE-2335 is decided: a `@drop` of
-a declared-`linear` place after a destructure strictly under it, which the
-model accepts and the compiler rejects with E0406 (the seed case
-`destructure_ancestor_dropped`). The draw does **not** avoid it; that would
-write the compiler's current answer into the generator. A generated case with
-the shape shows up as a bridge disagreement to be attributed to RUE-2335 by
-hand: nothing in the tree counts it. None of the 1,200 cases at the two
+One shape of it was a compiler-red case until RUE-2335 was fixed: a `@drop`
+of a declared-`linear` place after a destructure strictly under it, which the
+model accepts and the compiler rejected with E0406 (the seed case
+`destructure_ancestor_dropped`). The draw does **not** avoid it, and did not
+while it was red; that would have written the compiler's answer into the
+generator. None of the 1,200 cases at the two
 settings above has it, because it needs two nested declared-`linear` levels
 and a `@drop` of the outer one after a use under the inner one, all rooted at
 one binder. It is reachable all the same, and rarely: on the draws before
 loops (RUE-2330), the first accepted case with it at seed 1 was
-`gen_1_151382`, which the compiler refused with E0406, and it was the only one
+`gen_1_151382`, which the compiler refused with E0406 before RUE-2335, and it
+was the only one
 in the first 300,000. Drawing loops changed which program every setting
 produces from its first loop draw on, so that name no longer holds that
 program.
@@ -154,7 +154,7 @@ the shapes those would add.
 Three generated shapes have disagreed with the compiler, each seeded, and none
 is drawn around — drawing around one would write the compiler's current
 answer into the generator. A generated case with one of them is a bridge
-disagreement to attribute to its issue by hand, as RUE-2335's is (above);
+disagreement to attribute to its issue by hand, as RUE-2335's was (above);
 nothing in the tree counts them. On the current draws the acceptance settings,
 `--gen 200 --seed 7` and `--gen 1000 --seed 23`, reach one of them, the
 self-assignment, in four cases, and in every one the compiler stops first at
@@ -849,8 +849,8 @@ destructor above the leaf is `3.9:34` and E0456 — which the declared plan
 demands even at a `Copy` leaf, where the ordinary rules do not. Both are
 `reject` verdicts of the kind the bridge's refusal table covers. RUE-2335's
 shape, a `@drop` of a declared-`linear` place after a destructure under it, is
-not drawn around either: the model accepts it and the compiler does not, so a
-generated case with it is a bridge disagreement (rare; module docstring). -/
+not drawn around either: the model accepts it, and the compiler has too since
+RUE-2335 was fixed (rare; module docstring). -/
 def pathOk (D : Decls) (T₀ : Ty) (π : List Nat) (T : Ty) : Bool :=
   Ty.atPath D T₀ π == some T &&
     (T.mult D == .copy ||

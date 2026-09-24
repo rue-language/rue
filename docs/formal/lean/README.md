@@ -99,9 +99,8 @@ out-of-range constant at compile time (E0902): a block that can be fully
 evaluated at compile time is a constant index under `8.2:4`. That a
 `let`-bound index stays dynamic rests on the compiler's current reading of
 `8.2:4`'s open list, which is RUE-2349. The draw does not avoid the shapes of
-the array red seeds, so a generated case of one is attributed by hand, the way
-RUE-2335's shape is: the self-assignment `a[c] = a[c]` (RUE-2346) is the one
-still red. On the current draws the acceptance settings (200 at seed 7, 1,000
+the array red seeds, so a generated case of one is attributed by hand: the
+self-assignment `a[c] = a[c]` (RUE-2346) is the one still red. On the current draws the acceptance settings (200 at seed 7, 1,000
 at seed 23) reach the self-assignment in four cases (`gen_7_145`, `gen_7_159`,
 `gen_7_181`, `gen_23_752`), each masked by an E0406 the compiler reports
 first, so every one of the 1,200 cases agrees with the compiler; a wider run
@@ -122,10 +121,10 @@ destructure: 22 of the 200 programs and 109 of the 1,000 contain one, the
 checker accepts 2 and 6 of those, and the destructure's own linear-residue
 premise (E0474) is the deepest refusal of 1 and 6. RUE-2335's shape — a
 `@drop` of a declared-`linear` place after a destructure under it, which the
-compiler rejects and the model accepts — is not drawn around. None of those
-1,200 cases has it, but the draw reaches it, rarely (on the draws before
-loops, first at seed 1 in `gen_1_151382`, the only one in the first 300,000),
-and such a case is a bridge disagreement to attribute to RUE-2335 by hand.
+compiler rejected until RUE-2335 was fixed and the model accepts — is not
+drawn around. None of those 1,200 cases has it, but the draw reaches it,
+rarely (on the draws before loops, first at seed 1 in `gen_1_151382`, the only
+one in the first 300,000).
 
 A generated program may hold **loops** too (RUE-2330): half of them do (102 of
 200, 480 of 1,000). A loop is either **counted** — a `mut` counter, a guard
@@ -160,12 +159,13 @@ program, the four views side by side, and the pair(s) that disagree, with a
 tally at the end; `--report-json` writes the same findings as JSON so two runs
 can be diffed. It exits non-zero when any disagreement exists.
 
-**The seed corpus is red on two cases, and that is the bridge working.**
-`destructure_ancestor_dropped` is the first: after `y.x0.x0` destructures the
-inner declared-`linear` place, §5.3's (@Drop) discharges the declared-`linear`
-**ancestor** `y` — `Σ(y) = Owned`, no still-owned linear sub-place remains
-below it — and the model runs the program, while the compiler reports E0406.
-Which of the two is right is a spec decision, RUE-2335.
+**The seed corpus is red on one case, and that is the bridge working.**
+`destructure_ancestor_dropped` was red until RUE-2335 was fixed: after
+`y.x0.x0` destructures the inner declared-`linear` place, §5.3's (@Drop)
+discharges the declared-`linear` **ancestor** `y` — `Σ(y) = Owned`, no
+still-owned linear sub-place remains below it — and the model runs the
+program, while the compiler reported E0406, reading `y`'s own obligation as a
+residue below it. The compiler now accepts it and runs the model's trace.
 `array_dyn_write_after_destructure_via_field` was red until RUE-2341 was
 fixed: a declared-`linear` destructure at `h.arr[0].x0` holes an array reached
 through a field, and a write below a dynamic index into it follows
@@ -174,7 +174,7 @@ fails). The compiler's E0480 check fired only when the root binding was an
 array, so it accepted the program, ran the moved-out element's destructor
 twice and leaked the written value; the check now keys on the outermost array
 the write steps into, and the compiler refuses it with E0480 too.
-`array_elem_self_assign` is the second: `a[0] = a[0]` moves `a[0]` out on the
+`array_elem_self_assign` is the red one: `a[0] = a[0]` moves `a[0]` out on the
 right-hand side, so the model refuses the write into the holed array
 (`3.8:72`, E0480), while the compiler accepts it on purpose since RUE-228;
 which is right is a decision, RUE-2346. `array_zero_length_field_dyn_read` was

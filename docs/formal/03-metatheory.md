@@ -413,9 +413,9 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   keeps a *linear* residue out of that destruction, and the machine's own
   residue monitor makes the excluded state a named refusal rather than a
   silent drop. A declared-linear **ancestor** keeps its own obligation, which
-  §5.6's declared clause checks — the one place the model and the compiler
-  currently disagree (RUE-2335, the seeded-red corpus case
-  `destructure_ancestor_dropped`). For an **enum** the obligation is the
+  §5.6's declared clause checks and which (@Drop) discharges once no
+  still-owned linear sub-place remains below it (the corpus case
+  `destructure_ancestor_dropped`, red until RUE-2335 was fixed). For an **enum** the obligation is the
   type's, over every variant (`6.3:19`, `RueCore.enum_carriesLinear_iff`),
   because the active variant is not a static fact: a value of the other
   variant is still must-consume, which is what the compiler reports as
