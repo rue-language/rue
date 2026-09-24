@@ -2469,8 +2469,8 @@ monitored.
 
 `Dynamics.lean`'s "Pending values" section says why `eval` models it that
 way rather than patching it: the calculus has the gap — the unwinding rule
-walks only σ, and §5.3's (Strict-Bottom), which `Typed.consBot` and the other
-`-Bottom` variants mechanize, imposes no discard check on the siblings
+walks only σ, and §5.3's strict-context bottom rule (`Strict-Bottom` there,
+which `Typed.consBot` and the other `-Bottom` variants mechanize) imposes no discard check on the siblings
 already evaluated — and the Rue compiler behaves the same. Closing it
 is an open spec decision, RUE-2316. These three programs are the
 kernel-checked witnesses, and the reason `no_violation`'s docstring names the

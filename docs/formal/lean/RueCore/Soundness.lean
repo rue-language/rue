@@ -2751,8 +2751,9 @@ theorem args_sound (M : FloatModel) {P : Program} {fuel : Nat}
 definitional-interpreter form).
 
 A well-typed expression, run at any fuel in any frame and store agreeing with
-its incoming context, yields a well-typed value with the outgoing context's
-agreement restored, a value handed back by an unwinding `return` (§6.9), a
+its incoming context, yields a well-typed value with the agreement restored at
+the normal outgoing state of its §5.3 result `Ω` — and no value at all when
+`Ω` is §5.7's `⊥` — a value handed back by an unwinding `return` (§6.9), a
 *defined* panic (§6.12), or `outOfFuel` — never `.stuck`, so never a
 `Violation`: no use-after-move, no use-after-drop, no linear leak, no linear
 overwrite, no linear discard (§7's decomposed bullets). The theorem is
@@ -3951,8 +3952,8 @@ calculus, the second is the calculus doing what it says.
   applies: (Assign)'s leaf premise `class(T) ≠ Linear` keeps the abandoned
   value from being linear, so `no_linear_discard` is not affected there. That
   edge is the calculus as written — §6.9's unwinding
-  rule walks only σ, and §5.3's (Strict-Bottom) — `Typed.consBot` and the
-  other `-Bottom` variants here — imposes no discard check on siblings
+  rule walks only σ, and §5.3's strict-context bottom rule (`Strict-Bottom`
+  there, `Typed.consBot` and the other `-Bottom` variants here) imposes no discard check on siblings
   already evaluated — it is what the Rue compiler does, and closing
   it is an open spec decision (RUE-2316, the pending-argument decision).
   `Dynamics.lean`'s "Pending values" section states it in full;

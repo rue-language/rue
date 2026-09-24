@@ -174,8 +174,8 @@ by that position.
 
 That is the calculus as written, not a modelling slip. (D-Return) unwinds σ
 and nothing else, and §5's only bottom rule for an argument position — §5.3's
-(Strict-Bottom), which `Typed.consBot` and the other `-Bottom` variants
-mechanize — carries `⊥;Δ_e` outward without imposing §5.3's discard check on
+strict-context bottom rule, `Strict-Bottom` there, which `Typed.consBot` and
+the other `-Bottom` variants mechanize — carries `⊥;Δ_e` outward without imposing §5.3's discard check on
 the siblings already evaluated, so the statics accept the program exactly as
 the calculus does. §6.9's own justification for
 (D-Return) — "every bound cell is also registered in the frame's scope
