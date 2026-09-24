@@ -368,6 +368,19 @@ impl LoopEdgeStates {
         record_edge_snapshot(&mut self.continue_snaps, moves, depth);
     }
 
+    /// Take in the snapshots another analysis of the same loop body recorded
+    /// (a loop-head recheck's fork of this record): the loop's edges fire on
+    /// every iteration, so its edge states join over all of them.
+    pub fn absorb(&mut self, other: LoopEdgeStates) {
+        self.broke |= other.broke;
+        for (moves, depth) in other.break_snaps {
+            record_edge_snapshot(&mut self.break_snaps, &moves, depth);
+        }
+        for (moves, depth) in other.continue_snaps {
+            record_edge_snapshot(&mut self.continue_snaps, &moves, depth);
+        }
+    }
+
     /// The union-merge of every break snapshot — the loop's exit ownership
     /// state — or `None` when the loop has no break; and of every continue
     /// snapshot — the back edge's addition to the fall-through state.

@@ -647,6 +647,12 @@ pub(crate) struct OrdinaryBodyEngine<'h, H: OrdinaryBodyAnalysisHost> {
     /// The loop-head states settled for the loop nest being analysed, reused
     /// across the enclosing loops' rechecks (RUE-2354).
     pub(super) loop_head_hints: LoopHeadHints,
+    /// How many loop-head rechecks (discarded passes) are in progress.
+    pub(super) loop_recheck_depth: usize,
+    /// The spans of moves that a loop's later-iteration exit, and not its
+    /// first iteration's, leaves unrestored; recorded outside rechecks only,
+    /// so a use after the loop can say why the value is moved (RUE-2354).
+    pub(super) later_iteration_exit_moves: AHashSet<Span>,
 }
 
 #[cfg(test)]
@@ -714,6 +720,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             comptime_reduction_memo: ComptimeCompletedCallMemo::new(),
             verified_conformances: AHashSet::new(),
             loop_head_hints: LoopHeadHints::default(),
+            loop_recheck_depth: 0,
+            later_iteration_exit_moves: AHashSet::new(),
         }
     }
 

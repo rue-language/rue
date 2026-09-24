@@ -432,6 +432,63 @@ fn tracked_move_paths(moves: &AHashMap<Spur, VariableMoveState>) -> usize {
         .sum()
 }
 
+/// The spans of the moves a loop's settled exit state carries that its exit
+/// state from the entry pass does not: moves made on one iteration that a
+/// later iteration's exit leaves unrestored. A use after the loop that
+/// reports one of them gets a note saying so (RUE-2354).
+fn record_later_iteration_exit_moves(
+    spans: &mut AHashSet<Span>,
+    first_exit: Option<&AHashMap<Spur, VariableMoveState>>,
+    settled_exit: &AHashMap<Spur, VariableMoveState>,
+) {
+    let default = VariableMoveState::default();
+    for (symbol, settled) in settled_exit {
+        let first = first_exit
+            .and_then(|exit| exit.get(symbol))
+            .unwrap_or(&default);
+        if let Some(span) = settled.full_move
+            && first.full_move.is_none()
+        {
+            spans.insert(span);
+        }
+        for (path, span) in &settled.partial_moves {
+            if first.is_path_moved(path).is_none() {
+                spans.insert(*span);
+            }
+        }
+    }
+}
+
+/// The note for a use after a loop of a value that one of the loop's
+/// later-iteration exits leaves moved.
+pub(crate) const LATER_ITERATION_EXIT_NOTE: &str =
+    "the loop can exit on a later iteration, after this move";
+
+/// Add [`LATER_ITERATION_EXIT_NOTE`] to a use-after-move error whose move is
+/// one of `spans`, once.
+pub(crate) fn with_later_iteration_exit_note(
+    spans: &AHashSet<Span>,
+    error: CompileError,
+) -> CompileError {
+    if !matches!(error.kind, ErrorKind::UseAfterMove(_)) {
+        return error;
+    }
+    let diagnostic = error.diagnostic();
+    let moved_here = diagnostic
+        .labels
+        .iter()
+        .any(|label| label.message == "value moved here" && spans.contains(&label.span));
+    if !moved_here
+        || diagnostic
+            .notes
+            .iter()
+            .any(|note| note.0 == LATER_ITERATION_EXIT_NOTE)
+    {
+        return error;
+    }
+    error.with_note(LATER_ITERATION_EXIT_NOTE)
+}
+
 /// Mark an error found at a loop-head state that differs from the loop's
 /// entry state. A nested loop's recheck inside an enclosing loop's recheck
 /// reports the same cause, so the note is added once.
@@ -1230,7 +1287,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         &mut self,
         node: usize,
         air: &mut Air,
-        ctx: &AnalysisContext<'a>,
+        ctx: &mut AnalysisContext<'a>,
         entry: AHashMap<Spur, VariableMoveState>,
         mut head: AHashMap<Spur, VariableMoveState>,
         first: LoopPassEdges,
@@ -1240,6 +1297,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             &mut AnalysisContext<'a>,
         ) -> CompileResult<LoopPassEdges>,
     ) -> CompileResult<Option<AHashMap<Spur, VariableMoveState>>> {
+        let first_exit = first.exit.clone();
         let mut edges = first;
         let mut rechecks = 0usize;
         while let Some(backedge) = &edges.backedge {
@@ -1265,15 +1323,53 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let mut scratch_ctx = ctx.fork_for_loop_recheck();
             scratch_ctx.ownership.moved_vars = head.clone();
             let recovered_before = self.body_analysis_recovered_errors_mut().len();
+            self.loop_recheck_depth += 1;
             let result = self.run_loop_pass(node, |this| pass(this, air, &mut scratch_ctx));
+            self.loop_recheck_depth -= 1;
             air.rollback(checkpoint);
             for error in &mut self.body_analysis_recovered_errors_mut()[recovered_before..] {
                 *error = with_previous_iteration_note(error.clone());
             }
             edges = result.map_err(with_previous_iteration_note)?;
+            // The pass's own edges are in `edges`, but a `break` or
+            // `continue` in a while condition targets an ENCLOSING loop, and
+            // the recheck recorded its later-iteration state on that loop's
+            // record in the fork. Carry those records back, or the enclosing
+            // loop's exit and back-edge joins would see only the edge's
+            // first-iteration state (RUE-2354).
+            let rechecked_edges = std::mem::take(&mut scratch_ctx.ownership.loop_break_stack);
+            debug_assert_eq!(rechecked_edges.len(), ctx.ownership.loop_break_stack.len());
+            for (edges, rechecked) in ctx
+                .ownership
+                .loop_break_stack
+                .iter_mut()
+                .zip(rechecked_edges)
+            {
+                edges.absorb(rechecked);
+            }
+        }
+        if rechecks > 0
+            && self.loop_recheck_depth == 0
+            && let Some(exit) = &edges.exit
+        {
+            record_later_iteration_exit_moves(
+                &mut self.later_iteration_exit_moves,
+                first_exit.as_ref(),
+                exit,
+            );
         }
         self.loop_head_hints.record(node, entry, head);
         Ok(edges.exit)
+    }
+
+    /// Note on a use-after-move error that its move is left unrestored by a
+    /// loop's later-iteration exit (see `record_later_iteration_exit_moves`).
+    pub(crate) fn note_later_iteration_exit(&self, error: CompileError) -> CompileError {
+        if self.later_iteration_exit_moves.is_empty() {
+            error
+        } else {
+            with_later_iteration_exit_note(&self.later_iteration_exit_moves, error)
+        }
     }
 
     /// Start a loop's analysis: its node in the loop nest's settled heads,
