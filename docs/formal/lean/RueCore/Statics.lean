@@ -2743,7 +2743,15 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   /-- (Strict-Bottom) §5.3 at a `match` scrutinee: a scrutinee that diverges
   reaches no arm, so no arm is typed. `T_E` is the arms' common type, which
   nothing then constrains, so the rule concludes at any type — the reading of
-  §5.7's (Sub-Never) the `⊥` rules share. -/
+  §5.7's (Sub-Never) the `⊥` rules share.
+
+  **Premises omitted, deliberately.** (Strict-Bottom) as §5.3 writes it keeps
+  only the hole's premise, so this rule has none of the construct's own
+  syntactic premises either: not that the enum is declared, and not
+  (Match)'s exhaustiveness (one arm per variant). No arm is reached, so no arm
+  is read; `check` keeps neither premise either, but the compiler reports a
+  missing arm in a `match` whose scrutinee diverges (E0600), so this is one of
+  the dead-code shapes `Checker.lean`'s docstring lists. -/
   | matchBot {Γ Δ₀ scrut arms e T} :
       Typed P R Γ scrut (.enum e) ⟨none, Δ₀⟩ →
       Typed P R Γ (.«match» scrut arms) T ⟨none, Δ₀⟩
@@ -2897,14 +2905,23 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
   /-- (Strict-Bottom) §5.3 at a dynamic-index write's right-hand side, which
   `5.2:14` evaluates first: it diverges, so neither the indices nor the
   destination are reached. `T_E` is `unit`, and (Strict-Bottom) puts no type
-  on the hole, so nothing else is premised. -/
+  on the hole, so nothing else is premised.
+
+  **Premises omitted, deliberately.** (Strict-Bottom) as §5.3 writes it keeps
+  only the hole's premise, so this rule has none of the construct's own
+  syntactic premises either: not the `μ = mut` root, not the root's scope,
+  and not the index list's shape. The destination is never written; `check`
+  still demands the root and its mark, as `assignBot`'s docstring says. -/
   | indexWriteBotRhs {Γ Δ p idx πs e T} :
       Typed P R Γ e T ⟨none, Δ⟩ →
       Typed P R Γ (.indexWrite p idx πs e) .unit ⟨none, Δ⟩
   /-- (Strict-Bottom) §5.3 at a dynamic-index write's index list: the
   right-hand side ran and is a value in the evaluation context, so it is typed
   at the leaf's type, and an index diverges; the destination is never reached
-  (the RHS value is the pending value `Dynamics.lean` describes, RUE-2316). -/
+  (the RHS value is the pending value `Dynamics.lean` describes, RUE-2316).
+  The premises that name the leaf's type are kept, because the RHS is typed
+  at it; (Assign)'s `μ = mut` and the index list's shape are omitted, for
+  `indexWriteBotRhs`'s reason. -/
   | indexWriteBotIdx {Γ Γ₁ Δ₁ Δ₂ p idx πs e en₀ Ts Ta T} :
       Γ[p.root]? = some en₀ →
       en₀.ty.atPath P.decls p.path = some Ta →
@@ -3069,7 +3086,18 @@ inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop wh
         ⟨some (Γ₁.set p.root (en₁.setSt (en₁.st.setAt p.path .owned))), Δ⟩
   /-- (Strict-Bottom) §5.3 at an assignment's right-hand side: it diverges, so
   nothing is stored and no premise about the destination is read. `T_E` is
-  `unit`, and (Strict-Bottom) puts no type on the hole. -/
+  `unit`, and (Strict-Bottom) puts no type on the hole.
+
+  **Premises omitted, deliberately.** (Strict-Bottom) as §5.3 writes it keeps
+  only the hole's premise, so this rule has none of the construct's own
+  syntactic premises either: not (Assign)'s `μ = mut` root, and not even
+  that the root is in scope (`Γ[p.root]?`) — the calculus assumes well-scoped
+  syntax, elaborated before §5. So `Typed` derives `let x = 1; x = return 2`,
+  which the compiler rejects (E0203). The destination is never written, so
+  nothing unsound follows, and `check` still demands the root and its mark,
+  so it refuses the shape: `check ⊊ Typed` here. Whether (Strict-Bottom)
+  should keep a construct's syntactic premises is a question for the
+  calculus. -/
   | assignBot {Γ Δ p e T} :
       Typed P R Γ e T ⟨none, Δ⟩ →
       Typed P R Γ (.assign p e) .unit ⟨none, Δ⟩
@@ -3901,11 +3929,17 @@ def Out.WfArms (D : Decls) (Γ₀ : Ctx) (os : List (Option Ctx)) : Prop :=
 
 /-- **The shape invariant is preserved judgment-wide** (RUE-2340): from a
 well-formed incoming context, every normal outgoing state a derivation
-concludes at is well-formed. This discharges `Ctx.Wf`, the premise §5.5's
-associativity carries (`Ctx.joinAll_perm`), for every arm of every `match`
-and `if` a derivation reaches from `fnCtx`. It holds because §5.3's `Ω` gives
-§5.7's `⊥` no state: before the judgment carried `Ω`, `return` and `@panic`
-concluded at an arbitrary context and the statement was false. -/
+concludes at is well-formed. With `fnCtx_wf` it discharges `Ctx.Wf`, the
+premise §5.5's associativity carries (`Ctx.joinAll_perm`), at every normal
+outgoing state of a function body (`Typed.wf_fnCtx`). The induction that
+proves it carries the invariant into every arm of every `match` and `if` it
+passes through, which is where associativity is read; what is stated as a
+theorem is that outgoing-state form, not a separate corollary per join. It
+holds because §5.3's `Ω` gives §5.7's `⊥` no state: before the judgment
+carried `Ω`, `return` and `@panic` concluded at an arbitrary context and the
+statement was false. It reads `Ω.norm` only; the delivered states in `Ω.brk`
+are empty until the loop slice (RUE-2369), which must extend it — and
+`Out.SkelOk` — to them, since (Loop-Break) §5.7 joins them. -/
 theorem Typed.wf {P R} {Γ : Ctx} {e T} {Ω : Out} (h : Typed P R Γ e T Ω) :
     Out.WfPres P.decls Γ Ω := by
   induction h using Typed.rec
@@ -4000,5 +4034,21 @@ theorem Typed.wf {P R} {Γ : Ctx} {e T} {Ω : Out} (h : Typed P R Γ e T Ω) :
   | nil => intro hw _ h; cases h; exact hw
   | cons _ _ ih ihs => intro hw _ h; exact ihs (ih hw _ rfl) _ h
   | consBot _ _ _ => intro _ _ h; cases h
+
+/-- (Fn) §5.8's entry context is well-formed: every parameter enters
+`Owned`, a shape of every type (helper). -/
+theorem fnCtx_wf (D : Decls) (fd : FnDef) : Ctx.Wf D (fnCtx fd) := by
+  intro en hen
+  simp only [fnCtx, List.mem_reverse, List.mem_map] at hen
+  obtain ⟨p, _, rfl⟩ := hen
+  exact Entry.wf_owned D p.ty p.mu
+
+/-- **The shape invariant holds at every normal outgoing state of a function
+body** (RUE-2340): `Typed.wf` from (Fn) §5.8's entry context, which
+`fnCtx_wf` makes well-formed. This is the end-to-end form: no `Ctx.Wf`
+hypothesis is left for a caller to supply. -/
+theorem Typed.wf_fnCtx {P R} {fd : FnDef} {e T} {Ω : Out}
+    (h : Typed P R (fnCtx fd) e T Ω) : ∀ Γ', Ω.norm = some Γ' → Ctx.Wf P.decls Γ' :=
+  h.wf (fnCtx_wf P.decls fd)
 
 end RueCore

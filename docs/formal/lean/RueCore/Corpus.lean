@@ -23,12 +23,14 @@ One array of case objects. Fields:
 * `verdict` — `{"accept": {"type": <Rue type name>}}` when the checker
   accepts the program — every function well-formed by (Fn) §5.8 and the
   entry point taking no parameters (`checkProgram`) — so §7's theorems apply
-  to it and the compiler must accept it; or `{"reject": {}}` (the compiler
+  to it and the compiler must accept it (with the dead-code exclusion below);
+  or `{"reject": {}}` (the compiler
   must reject it with an ownership diagnostic). The type is the entry
   function's declared return type.
 
   An `accept` verdict is backed by a proof (`checkProgram_sound` plus §7), so
-  a compiler that rejects one is wrong. A `reject` verdict is **not**: it is
+  a compiler that rejects one is wrong — unless the program has syntax after
+  a diverging form, which the calculus leaves unchecked (below). A `reject` verdict is **not**: it is
   the absence of an acceptance from an algorithm that is narrower than the
   rule, so it is only trustworthy on shapes where `check` is complete. Since
   `check` carries §5.7's `⊥` (RUE-2368) the one shape it is not complete on is
@@ -37,6 +39,14 @@ One array of case objects. Fields:
   would be a *false* bridge failure, so no seed case has it and `Gen.lean`
   emits neither `return` nor `@panic`. A diverging arm beside a continuing one
   is no longer such a shape, and five seed cases below exercise it.
+
+  The `accept` half has one exclusion of its own: **syntax after a diverging
+  form**. §5.3's (Seq-Bottom), (Let-Bottom) and (Strict-Bottom) type nothing
+  past a `return` or `@panic`, so the checker accepts dead code the compiler
+  may reject — §5.3 lets a surface checker report errors in unreachable
+  source (`Checker.lean`, "Dead code"). For a program with syntax after a
+  diverging form, then, a compiler rejection is not a compiler defect. No
+  seed case has that shape, and a generator must not produce it (RUE-2369).
 * `expected` — the interpreter's outcome for an accepted program:
   `{"kind": "ok", "stdout": [<line>...], "exit": 0}`, where the lines are the
   run's **observable events** in trace order — one per user destructor and one

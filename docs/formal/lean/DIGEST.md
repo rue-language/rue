@@ -43,7 +43,7 @@ The theorems below are about a *fragment* of the core calculus
 rule by rule and form by form; its two coverage lines, quoted here so the
 boundary is visible before the statements are:
 
-- *Calculus rules → declarations*: 81 of 97 labeled §5/§6 rules are mechanized; 16 are *not yet mechanized*.
+- *Calculus rules → declarations*: 82 of 97 labeled §5/§6 rules are mechanized; 15 are *not yet mechanized*.
 - *Abstract syntax forms → declarations*: 30 of 35 §2 forms have a core image (8 of them partial); 5 are *not yet mechanized*.
 
 The forms that count as partial are `S`, `E`, `e1 ⊕ e2`, `⊖ e`, `e1 ⋚ e2`,
@@ -690,15 +690,36 @@ theorem RueCore.Typed.skel_preserved {P : Program} {R : Ty} {Γ : Ctx} {e : Expr
 
 **The shape invariant is preserved judgment-wide** (RUE-2340): from a
 well-formed incoming context, every normal outgoing state a derivation
-concludes at is well-formed. This discharges `Ctx.Wf`, the premise §5.5's
-associativity carries (`Ctx.joinAll_perm`), for every arm of every `match`
-and `if` a derivation reaches from `fnCtx`. It holds because §5.3's `Ω` gives
-§5.7's `⊥` no state: before the judgment carried `Ω`, `return` and `@panic`
-concluded at an arbitrary context and the statement was false.
+concludes at is well-formed. With `fnCtx_wf` it discharges `Ctx.Wf`, the
+premise §5.5's associativity carries (`Ctx.joinAll_perm`), at every normal
+outgoing state of a function body (`Typed.wf_fnCtx`). The induction that
+proves it carries the invariant into every arm of every `match` and `if` it
+passes through, which is where associativity is read; what is stated as a
+theorem is that outgoing-state form, not a separate corollary per join. It
+holds because §5.3's `Ω` gives §5.7's `⊥` no state: before the judgment
+carried `Ω`, `return` and `@panic` concluded at an arbitrary context and the
+statement was false. It reads `Ω.norm` only; the delivered states in `Ω.brk`
+are empty until the loop slice (RUE-2369), which must extend it — and
+`Out.SkelOk` — to them, since (Loop-Break) §5.7 joins them.
 
 ```lean
 theorem RueCore.Typed.wf {P : Program} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty}
   {Ω : Out} (h : Typed P R Γ e T Ω) : Out.WfPres P.decls Γ Ω
+```
+
+### `Typed.wf_fnCtx`
+
+*theorem* · module `RueCore.Statics`
+
+**The shape invariant holds at every normal outgoing state of a function
+body** (RUE-2340): `Typed.wf` from (Fn) §5.8's entry context, which
+`fnCtx_wf` makes well-formed. This is the end-to-end form: no `Ctx.Wf`
+hypothesis is left for a caller to supply.
+
+```lean
+theorem RueCore.Typed.wf_fnCtx {P : Program} {R : Ty} {fd : FnDef} {e : Expr} {T : Ty}
+  {Ω : Out} (h : Typed P R (fnCtx fd) e T Ω) (Γ' : Ctx) :
+  Ω.norm = some Γ' → Ctx.Wf P.decls Γ'
 ```
 
 ### `dropContents_events`
@@ -3284,6 +3305,17 @@ theorem RueCore.Ctx.joinOpts_wf {D : Decls} {os : List (Option Ctx)} {Γ' : Ctx}
   {S : List (Ty × Bool)} (h : Ctx.joinOpts D os = some (some Γ'))
   (hinv : ∀ (Γ : Ctx), Γ ∈ List.filterMap id os → Γ.skel = S ∧ Ctx.Wf D Γ) :
   Ctx.Wf D Γ'
+```
+
+### `fnCtx_wf`
+
+*theorem* · module `RueCore.Statics`
+
+(Fn) §5.8's entry context is well-formed: every parameter enters
+`Owned`, a shape of every type (helper).
+
+```lean
+theorem RueCore.fnCtx_wf (D : Decls) (fd : FnDef) : Ctx.Wf D (fnCtx fd)
 ```
 
 ### `inBoundsIdx_eq_true`
@@ -12469,7 +12501,7 @@ RueCore.Typed.match {P : Program} {R : Ty} {Γ Γ₀ : Ctx} {Δ₀ : List Ctx}
             Typed P R Γ (scrut.match arms) T { norm := o, brk := Δs ++ Δ₀ }
 ```
 
-**`Typed.matchBot`** — (Strict-Bottom) §5.3 at a `match` scrutinee: a scrutinee that diverges reaches no arm, so no arm is typed. `T_E` is the arms' common type, which nothing then constrains, so the rule concludes at any type — the reading of §5.7's (Sub-Never) the `⊥` rules share.
+**`Typed.matchBot`** — (Strict-Bottom) §5.3 at a `match` scrutinee: a scrutinee that diverges reaches no arm, so no arm is typed. `T_E` is the arms' common type, which nothing then constrains, so the rule concludes at any type — the reading of §5.7's (Sub-Never) the `⊥` rules share. **Premises omitted, deliberately.** (Strict-Bottom) as §5.3 writes it keeps only the hole's premise, so this rule has none of the construct's own syntactic premises either: not that the enum is declared, and not (Match)'s exhaustiveness (one arm per variant). No arm is reached, so no arm is read; `check` keeps neither premise either, but the compiler reports a missing arm in a `match` whose scrutinee diverges (E0600), so this is one of the dead-code shapes `Checker.lean`'s docstring lists.
 
 ```lean
 RueCore.Typed.matchBot {P : Program} {R : Ty} {Γ : Ctx} {Δ₀ : List Ctx}
@@ -12570,7 +12602,7 @@ RueCore.Typed.indexWrite {P : Program} {R : Ty} {Γ Γ₁ Γ₂ : Ctx}
                                     brk := Δ₂ ++ Δ₁ }
 ```
 
-**`Typed.indexWriteBotRhs`** — (Strict-Bottom) §5.3 at a dynamic-index write's right-hand side, which `5.2:14` evaluates first: it diverges, so neither the indices nor the destination are reached. `T_E` is `unit`, and (Strict-Bottom) puts no type on the hole, so nothing else is premised.
+**`Typed.indexWriteBotRhs`** — (Strict-Bottom) §5.3 at a dynamic-index write's right-hand side, which `5.2:14` evaluates first: it diverges, so neither the indices nor the destination are reached. `T_E` is `unit`, and (Strict-Bottom) puts no type on the hole, so nothing else is premised. **Premises omitted, deliberately.** (Strict-Bottom) as §5.3 writes it keeps only the hole's premise, so this rule has none of the construct's own syntactic premises either: not the `μ = mut` root, not the root's scope, and not the index list's shape. The destination is never written; `check` still demands the root and its mark, as `assignBot`'s docstring says.
 
 ```lean
 RueCore.Typed.indexWriteBotRhs {P : Program} {R : Ty} {Γ : Ctx} {Δ : List Ctx}
@@ -12580,7 +12612,7 @@ RueCore.Typed.indexWriteBotRhs {P : Program} {R : Ty} {Γ : Ctx} {Δ : List Ctx}
       { norm := none, brk := Δ }
 ```
 
-**`Typed.indexWriteBotIdx`** — (Strict-Bottom) §5.3 at a dynamic-index write's index list: the right-hand side ran and is a value in the evaluation context, so it is typed at the leaf's type, and an index diverges; the destination is never reached (the RHS value is the pending value `Dynamics.lean` describes, RUE-2316).
+**`Typed.indexWriteBotIdx`** — (Strict-Bottom) §5.3 at a dynamic-index write's index list: the right-hand side ran and is a value in the evaluation context, so it is typed at the leaf's type, and an index diverges; the destination is never reached (the RHS value is the pending value `Dynamics.lean` describes, RUE-2316). The premises that name the leaf's type are kept, because the RHS is typed at it; (Assign)'s `μ = mut` and the index list's shape are omitted, for `indexWriteBotRhs`'s reason.
 
 ```lean
 RueCore.Typed.indexWriteBotIdx {P : Program} {R : Ty} {Γ Γ₁ : Ctx}
@@ -12721,7 +12753,7 @@ RueCore.Typed.assign {P : Program} {R : Ty} {Γ Γ₁ : Ctx} {Δ : List Ctx}
                         brk := Δ }
 ```
 
-**`Typed.assignBot`** — (Strict-Bottom) §5.3 at an assignment's right-hand side: it diverges, so nothing is stored and no premise about the destination is read. `T_E` is `unit`, and (Strict-Bottom) puts no type on the hole.
+**`Typed.assignBot`** — (Strict-Bottom) §5.3 at an assignment's right-hand side: it diverges, so nothing is stored and no premise about the destination is read. `T_E` is `unit`, and (Strict-Bottom) puts no type on the hole. **Premises omitted, deliberately.** (Strict-Bottom) as §5.3 writes it keeps only the hole's premise, so this rule has none of the construct's own syntactic premises either: not (Assign)'s `μ = mut` root, and not even that the root is in scope (`Γ[p.root]?`) — the calculus assumes well-scoped syntax, elaborated before §5. So `Typed` derives `let x = 1; x = return 2`, which the compiler rejects (E0203). The destination is never written, so nothing unsound follows, and `check` still demands the root and its mark, so it refuses the shape: `check ⊊ Typed` here. Whether (Strict-Bottom) should keep a construct's syntactic premises is a question for the calculus.
 
 ```lean
 RueCore.Typed.assignBot {P : Program} {R : Ty} {Γ : Ctx} {Δ : List Ctx}

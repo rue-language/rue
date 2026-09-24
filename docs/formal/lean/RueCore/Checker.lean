@@ -73,19 +73,55 @@ past a live linear binding (`panic_past_linear`, `Examples.panicPastLinear`).
 ## What completeness still costs
 
 `check_sound` holds, and completeness — `Typed` implies `check` succeeds — is
-still **false**, at one shape: an operator whose operand is `never`. §5.3's
-(Strict-Bottom) concludes at the construct's own type `T_E`, and for an
-operator that type is read off the operand's: `(return 1) + 2` is typed at
-`i64` by `binopBot` with the operand coerced to `i64`, and at every other
-integer type the same way. `check` has no type to name there, so it refuses
-a `never` operand to an operator (`+`, `-`, `!`, `~`) rather than guess
-(`Explain`'s `Premise.neverOperand`). It refuses one to a cast, a float
-intrinsic, `@dbg` and a repeat form as well, where the form does fix `T_E` and
-a derivation exists; that is a simplification of the algorithm, not a limit of
-the rules. A `never` *right* operand is fine — the left one has already fixed
-the type — as is a `never` argument, field, element, condition or scrutinee,
-whose position names its own type. Nothing a reader would write turns on it, and the compiler reports the
-unreachable operand anyway; `Gen.lean` emits no `return` or `@panic` at all.
+still **false**. Every shape where `check` refuses a derivable program is a
+`never` operand in a position `check` reads a type off, or a syntactic premise
+it keeps where a `-Bottom` rule drops it:
+
+* **A `never` operator operand**, read left to right: the left operand of a
+  binary operator, and the operand of `-`, `!` and `~`. (Strict-Bottom) §5.3
+  concludes at the construct's own type `T_E`; for `+` or `-` that type is read
+  off the operand's, so `(return 1) + 2` is derivable at every integer type
+  and `check` has no one type to name. For `!` (always `bool`) and a
+  comparison (`(return 1) < 2` is `bool` at every width) `T_E` is fixed, and
+  the refusal is a simplification of the algorithm, not a limit of the rules.
+* **A `never` operand to a form that fixes `T_E` itself**: `@intCast`,
+  `@int_to_float`, the float intrinsics, `@dbg` and the repeat form. A
+  derivation exists; `check` refuses for simplicity.
+* **A `never` index expression**, in a read, a write or a `@drop` below a
+  dynamic index (`a[return 8]`): `checkIdx` requires each index at an integer
+  type, and `TypedArgs.consBot` needs none.
+* **An assignment whose right-hand side diverges into a root `check` refuses**:
+  `assignBot`, `indexWriteBotRhs` and `indexWriteBotIdx` omit (Assign)'s
+  `μ = mut` root (their docstrings say why), and `check` still demands it.
+
+A `never` *right* operand is fine — the left one has already fixed the type —
+as is a `never` call argument, struct field, array element, condition or
+scrutinee, whose position names its own type. Nothing a reader would write
+turns on these, and `Gen.lean` emits no `return` or `@panic`.
+
+## Dead code: accepted here, rejected by the compiler
+
+The converse gap is new with `⊥`, and it is the calculus's, not the
+algorithm's. (Seq-Bottom), (Let-Bottom) and (Strict-Bottom) type **nothing**
+past a diverging subexpression, so code after a `return` or `@panic` — the
+tail of a sequence or a `let`, a later argument or operand, the arms of a
+branch whose condition or scrutinee diverges — is not checked at all. §5.3
+says so: "the surface checker may still analyze `e2` to issue
+unreachable-code diagnostics and report ordinary errors in unreachable source,
+but that analysis does not create a reachable ownership path". The compiler
+does analyze it, and rejects ill-formed dead code: a type error (E0206), a
+use after move (E0205), a linear leak or discard (E0406, E0478), an
+assignment to an unmarked binding (E0203) and a missing `match` arm (E0600)
+after a `return` or `@panic` are all compile errors there, while `check`
+accepts every one (the RUE-2368 review's probes q02–q07, q15, q17, q18, q23,
+q25, q28). Such programs are well-typed by the calculus and run safely; the
+compiler is within §5.3's licence to reject them. So an `accept` verdict says
+nothing about the compiler's verdict on a program with syntax after a
+diverging form, and `Corpus.lean`'s verdict contract excludes that shape.
+Whether the core should say more about errors in unreachable code is a
+question for the calculus, not settled here. No seed and no generated case
+has the shape today; a generator that emits `break` (RUE-2369) must not put
+syntax after a diverging form, or the bridge must skip such cases.
 -/
 
 namespace RueCore
