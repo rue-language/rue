@@ -52,15 +52,26 @@ struct LoopContext {
     /// this depth.
     scope_depth: usize,
     /// Move state snapshots from break edges targeting this loop, joined with
-    /// `MoveState::intersect` when the loop is popped. Continue edges are
-    /// intentionally not recorded: they do not reach the loop exit.
+    /// `MoveState::intersect` when the loop is popped.
     break_state: Option<MoveState>,
+    /// The joined move state of the continue edges targeting this loop. They
+    /// do not reach the loop exit, but they are back edges into the loop
+    /// head, which a `while` loop's exit state is checked against (RUE-2356).
+    continue_state: Option<MoveState>,
 }
 
 impl LoopContext {
     /// Add one targeted break edge to the loop exit join.
     fn record_break(&mut self, state: MoveState) {
         self.break_state = Some(match self.break_state.take() {
+            None => state,
+            Some(previous) => previous.intersect(&state),
+        });
+    }
+
+    /// Add one continue edge to the back-edge join.
+    fn record_continue(&mut self, state: MoveState) {
+        self.continue_state = Some(match self.continue_state.take() {
             None => state,
             Some(previous) => previous.intersect(&state),
         });
@@ -506,22 +517,27 @@ impl MoveState {
     /// Loop-head approximation (RUE-2356): the slot's whole-value move is no
     /// longer known to hold on every path. Callers only do this for a slot
     /// with a runtime drop flag, which then decides its drops.
-    fn forget_slot_move(&mut self, slot: MovedSlot) {
-        if self.slots.remove(&slot) {
+    /// Returns whether the slot was definitely moved.
+    fn forget_slot_move(&mut self, slot: MovedSlot) -> bool {
+        let removed = self.slots.remove(&slot);
+        if removed {
             self.set_fact(MoveFactKind::Whole, slot, &[], false);
         }
+        removed
     }
 
     /// Loop-head approximation (RUE-2356): the field path may or may not be
     /// moved out, so it leaves the definite set and joins the possible one.
     /// Callers only do this for a path with a runtime drop flag, which then
-    /// decides its drops.
-    fn weaken_path(&mut self, slot: MovedSlot, path: &[u32]) {
+    /// decides its drops. Returns whether the path was definitely moved.
+    fn weaken_path(&mut self, slot: MovedSlot, path: &[u32]) -> bool {
         let mut remove_partition = false;
+        let mut was_definite = false;
         if let Some(paths) = self.fields.get_mut(&slot)
             && paths.remove(path)
         {
             remove_partition = paths.is_empty();
+            was_definite = true;
             self.set_fact(MoveFactKind::DefinitePath, slot, path, false);
         }
         if remove_partition {
@@ -534,6 +550,7 @@ impl MoveState {
                 .or_default()
                 .insert(path.to_vec());
         }
+        was_definite
     }
 
     /// The place at `prefix` (a field/constant-element path) was reassigned:
@@ -741,9 +758,18 @@ pub struct CfgBuilder<'a> {
     ever_field_moved: AHashSet<MovedPathKey>,
     /// Every whole-slot and droppable field-path MarkMoved in the AIR, in
     /// instruction order: `(instruction index, slot, path)`, with `None`
-    /// for a whole-slot move. A loop header weakens the move facts of the
-    /// sites that precede the loop instruction (RUE-2356).
+    /// for a whole-slot move. Loop heads weaken these facts (RUE-2356).
     move_sites: Vec<(u32, MovedSlot, Option<FieldPath>)>,
+    /// Every instruction that (re)initializes a slot or a place inside one
+    /// (`Alloc`, `Store`, `ParamStore`, and `PlaceWrite` to a local or
+    /// parameter base), in instruction order. Together with `move_sites`
+    /// it names the slots a loop can change (RUE-2356).
+    write_sites: Vec<(u32, MovedSlot)>,
+    /// Per instruction, the smallest instruction index in the expression
+    /// tree it roots. AIR operands refer backward, so a loop's condition
+    /// and body lie in `[subtree_start[loop], loop)`. Empty when the
+    /// function has no move sites, since only loop heads read it.
+    subtree_start: Vec<u32>,
     /// Slots (and struct field paths of any depth, RUE-62/RUE-157) whose
     /// contents have definitely been moved out on every path reaching the
     /// current lowering position. Drop elaboration skips these (the new
@@ -1054,6 +1080,8 @@ impl<'a> CfgBuilder<'a> {
             ever_moved: AHashSet::new(),
             ever_field_moved: AHashSet::new(),
             move_sites: Vec::new(),
+            write_sites: Vec::new(),
+            subtree_start: Vec::new(),
             moved: MoveState::default(),
             return_cleanup_regions: AHashMap::new(),
             return_cleanup_exit: None,
@@ -1109,6 +1137,10 @@ impl<'a> CfgBuilder<'a> {
                     }
                 }
             }
+        }
+
+        if !builder.move_sites.is_empty() {
+            builder.scan_loop_head_inputs();
         }
 
         // Owned by-value params are "initialized" at entry: arm their drop
@@ -2303,7 +2335,7 @@ impl<'a> CfgBuilder<'a> {
 
                 // The header joins the entry edge with the back edges, so
                 // the condition and body see the loop-head state (RUE-2356).
-                self.weaken_moves_at_loop_head(air_ref);
+                let weakened = self.weaken_moves_at_loop_head(air_ref);
 
                 // Lower condition in header — BEFORE pushing this while's loop
                 // context, so a break/continue inside the condition resolves via
@@ -2327,7 +2359,7 @@ impl<'a> CfgBuilder<'a> {
                 // The false branch leaves the loop without entering the body,
                 // so its state is the state after evaluating the condition.
                 // This is a real exit edge even when the loop has no break.
-                let moved_after_condition = self.moved.clone();
+                let mut moved_after_condition = self.moved.clone();
 
                 // Push loop context with current scope depth. Pushed AFTER the
                 // condition (see above) so break/continue in the BODY target this
@@ -2339,6 +2371,7 @@ impl<'a> CfgBuilder<'a> {
                     exit: exit_block,
                     scope_depth: self.scope_stack.len(),
                     break_state: None,
+                    continue_state: None,
                 });
 
                 // Branch: if true go to body, if false exit
@@ -2362,15 +2395,24 @@ impl<'a> CfgBuilder<'a> {
                 let body_result = self.lower_inst(*body);
 
                 // After body, go back to header (unless diverged)
-                if !matches!(body_result.continuation, Continuation::Diverged) {
+                let falls_through = !matches!(body_result.continuation, Continuation::Diverged);
+                if falls_through {
                     self.goto_no_args(self.current_block, header_block);
                 }
 
-                let break_state = self
-                    .loop_stack
-                    .pop()
-                    .expect("while loop context missing")
-                    .break_state;
+                let loop_ctx = self.loop_stack.pop().expect("while loop context missing");
+                let back_edge_state = match (falls_through, loop_ctx.continue_state) {
+                    (false, continue_state) => continue_state,
+                    (true, None) => Some(self.moved.clone()),
+                    (true, Some(continue_state)) => Some(self.moved.intersect(&continue_state)),
+                };
+                self.restore_loop_head_facts(
+                    &mut moved_after_condition,
+                    &weakened,
+                    back_edge_state.as_ref(),
+                    *cond,
+                );
+                let break_state = loop_ctx.break_state;
                 self.moved = match break_state {
                     Some(break_state) => moved_after_condition.intersect(&break_state),
                     None => moved_after_condition,
@@ -2401,7 +2443,8 @@ impl<'a> CfgBuilder<'a> {
                 let exit_block = self.cfg.new_block();
 
                 // The body block is the loop head: it joins the entry edge
-                // with the back edges (RUE-2356).
+                // with the back edges (RUE-2356). The exit state is the join
+                // of the break states, which already reflect it.
                 self.weaken_moves_at_loop_head(air_ref);
 
                 // The exit is only reached via break, and different breaks
@@ -2419,6 +2462,7 @@ impl<'a> CfgBuilder<'a> {
                     exit: exit_block,
                     scope_depth: self.scope_stack.len(),
                     break_state: None,
+                    continue_state: None,
                 });
 
                 // Lower body
@@ -2657,6 +2701,11 @@ impl<'a> CfgBuilder<'a> {
                 let header_block = loop_ctx.header;
                 self.emit_drops_for_loop_exit(target_depth, span);
 
+                let continue_state = self.moved.clone();
+                self.loop_stack
+                    .last_mut()
+                    .expect("continue outside loop")
+                    .record_continue(continue_state);
                 self.goto_no_args(self.current_block, header_block);
 
                 ExprResult {
@@ -4051,32 +4100,155 @@ impl<'a> CfgBuilder<'a> {
     /// some paths into the head and moved on others, so its static fact
     /// must not decide its drops; its runtime drop flag does.
     ///
-    /// Every move site inside the loop, and every one that can leave a place
-    /// moved at entry, precedes the loop instruction (AIR operands refer
-    /// backward), so the facts of those sites' slots and paths are weakened
-    /// here: a whole slot's definite move is forgotten, and a field path
-    /// becomes "maybe moved". Only places with a runtime drop flag are
-    /// weakened; every other place has no drop to decide. A site after the
-    /// loop cannot affect the head, so straight-line code is unchanged.
-    fn weaken_moves_at_loop_head(&mut self, loop_ref: AirRef) {
+    /// The loop can only change the facts of a slot it moves or writes,
+    /// and its condition and body are the instructions from its subtree
+    /// start up to the loop instruction (AIR operands refer backward). For
+    /// each such slot, the facts its move sites before the loop instruction
+    /// can have left (moves before the loop and inside it) are weakened: a
+    /// whole slot's definite move is forgotten, and a field path becomes
+    /// "maybe moved". Only places with a runtime drop flag are weakened;
+    /// every other place has no drop to decide. Code outside loops, and
+    /// slots a loop never touches, keep their static facts.
+    ///
+    /// Returns the facts that held at loop entry and were weakened, for
+    /// [`Self::restore_loop_head_facts`].
+    fn weaken_moves_at_loop_head(
+        &mut self,
+        loop_ref: AirRef,
+    ) -> Vec<(MovedSlot, Option<FieldPath>)> {
+        let mut weakened = Vec::new();
+        if self.move_sites.is_empty() {
+            return weakened;
+        }
+        let end = loop_ref.as_u32();
+        let start = self.subtree_start[end as usize];
+        let in_loop = |index: u32| (start..end).contains(&index);
+        let mut touched: AHashSet<MovedSlot> = self
+            .write_sites
+            .iter()
+            .filter(|(index, _)| in_loop(*index))
+            .map(|(_, key)| *key)
+            .collect();
+        touched.extend(
+            self.move_sites
+                .iter()
+                .filter(|(index, _, _)| in_loop(*index))
+                .map(|(_, key, _)| *key),
+        );
+        if touched.is_empty() {
+            return weakened;
+        }
         let sites = std::mem::take(&mut self.move_sites);
-        let end = sites.partition_point(|(index, _, _)| *index < loop_ref.as_u32());
+        let before_loop = &sites[..sites.partition_point(|(index, _, _)| *index < end)];
         // Whole slots first: a path of a slot that stays definitely moved
         // is subsumed by the whole-slot fact and keeps no path facts.
-        for (_, key, _) in sites[..end].iter().filter(|(_, _, path)| path.is_none()) {
-            if self.drop_flags.contains_key(key) {
-                self.moved.forget_slot_move(*key);
+        for (_, key, _) in before_loop.iter().filter(|(_, _, path)| path.is_none()) {
+            if touched.contains(key)
+                && self.drop_flags.contains_key(key)
+                && self.moved.forget_slot_move(*key)
+            {
+                weakened.push((*key, None));
             }
         }
-        for (_, key, path) in &sites[..end] {
+        for (_, key, path) in before_loop {
             if let Some(path) = path
+                && touched.contains(key)
                 && !self.moved.is_slot_moved(*key)
                 && self.field_drop_flags.contains_key(&(*key, path.clone()))
+                && self.moved.weaken_path(*key, path)
             {
-                self.moved.weaken_path(*key, path);
+                weakened.push((*key, Some(path.clone())));
             }
         }
         self.move_sites = sites;
+        weakened
+    }
+
+    /// Put back into a `while` loop's condition-false exit state the facts
+    /// the loop head weakened that hold on every path into it after all
+    /// (RUE-2356), so code after the loop keeps its static drop decisions.
+    ///
+    /// A fact weakened at the head held at loop entry. If the body's back
+    /// edges (its fall-through and its continues) establish it too, lowered
+    /// from the weakened head, it holds whatever the head state was, so it
+    /// holds at the head on every iteration. The condition then leaves it
+    /// alone unless it moves or writes the fact's slot.
+    fn restore_loop_head_facts(
+        &self,
+        exit_state: &mut MoveState,
+        weakened: &[(MovedSlot, Option<FieldPath>)],
+        back_edge_state: Option<&MoveState>,
+        cond: AirRef,
+    ) {
+        if weakened.is_empty() {
+            return;
+        }
+        let cond_end = cond.as_u32();
+        let cond_start = self.subtree_start[cond_end as usize];
+        let in_cond = |index: u32| (cond_start..=cond_end).contains(&index);
+        let touched_by_cond = |key: MovedSlot| {
+            self.write_sites
+                .iter()
+                .any(|(index, written)| *written == key && in_cond(*index))
+                || self
+                    .move_sites
+                    .iter()
+                    .any(|(index, moved, _)| *moved == key && in_cond(*index))
+        };
+        for (key, path) in weakened {
+            if touched_by_cond(*key) {
+                continue;
+            }
+            match path {
+                None => {
+                    if back_edge_state.is_none_or(|state| state.is_slot_moved(*key)) {
+                        exit_state.mark_slot(*key);
+                    }
+                }
+                Some(path) => {
+                    if !exit_state.is_slot_moved(*key)
+                        && back_edge_state
+                            .is_none_or(|state| state.is_path_moved(&(*key, path.clone())))
+                    {
+                        exit_state.mark_path(*key, path.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Record the slot-writing instructions and each instruction's subtree
+    /// start, which [`Self::weaken_moves_at_loop_head`] uses to find the
+    /// slots a loop moves or reinitializes (RUE-2356).
+    fn scan_loop_head_inputs(&mut self) {
+        let air = self.air;
+        let mut subtree_start = Vec::with_capacity(air.len());
+        for index in 0..air.len() {
+            let air_ref = AirRef::from_raw(index as u32);
+            let mut start = index as u32;
+            air_operands(air, air_ref, |operand| {
+                // Operands refer backward (AIR validation), so their
+                // subtree starts are already known.
+                start = start.min(subtree_start[operand.as_u32() as usize]);
+            });
+            subtree_start.push(start);
+            let written = match &air.get(air_ref).data {
+                AirInstData::Alloc { slot, .. } | AirInstData::Store { slot, .. } => {
+                    Some(MovedSlot::Local(*slot))
+                }
+                AirInstData::ParamStore { param_slot, .. } => Some(MovedSlot::Param(*param_slot)),
+                AirInstData::PlaceWrite { place, .. } => match air.get_place(*place).base {
+                    AirPlaceBase::Local(slot) => Some(MovedSlot::Local(slot)),
+                    AirPlaceBase::Param(slot) => Some(MovedSlot::Param(slot)),
+                    AirPlaceBase::Accessor(_) | AirPlaceBase::Indirect(_) => None,
+                },
+                _ => None,
+            };
+            if let Some(key) = written {
+                self.write_sites.push((index as u32, key));
+            }
+        }
+        self.subtree_start = subtree_start;
     }
 
     /// Emit the drop body produced by `emit_body` behind an `if flag != 0`
@@ -4782,6 +4954,127 @@ impl<'a> CfgBuilder<'a> {
     }
 }
 
+/// Call `f` on every instruction operand of `air_ref`, including the index
+/// and base operands of the places it reads or writes. The match is
+/// exhaustive so a new instruction kind must say what it refers to.
+fn air_operands(air: &ValidatedAir, air_ref: AirRef, mut f: impl FnMut(AirRef)) {
+    let place_operands = |place_ref: AirPlaceRef, f: &mut dyn FnMut(AirRef)| {
+        let place = air.get_place(place_ref);
+        match place.base {
+            AirPlaceBase::Accessor(operand) | AirPlaceBase::Indirect(operand) => f(operand),
+            AirPlaceBase::Local(_) | AirPlaceBase::Param(_) => {}
+        }
+        for projection in air.get_place_projections(place) {
+            if let AirProjection::Index { index, .. } = projection {
+                f(*index);
+            }
+        }
+    };
+    match &air.get(air_ref).data {
+        AirInstData::Const(_)
+        | AirInstData::BoolConst(_)
+        | AirInstData::StringConst(_)
+        | AirInstData::UnitConst
+        | AirInstData::TypeConst(_)
+        | AirInstData::Break
+        | AirInstData::Continue
+        | AirInstData::Load { .. }
+        | AirInstData::Param { .. }
+        | AirInstData::FnRef { .. }
+        | AirInstData::StorageLive { .. }
+        | AirInstData::StorageDead { .. } => {}
+        AirInstData::Add(a, b)
+        | AirInstData::Sub(a, b)
+        | AirInstData::Mul(a, b)
+        | AirInstData::WrappingAdd(a, b)
+        | AirInstData::WrappingSub(a, b)
+        | AirInstData::WrappingMul(a, b)
+        | AirInstData::Div(a, b)
+        | AirInstData::Mod(a, b)
+        | AirInstData::Eq(a, b)
+        | AirInstData::Ne(a, b)
+        | AirInstData::Lt(a, b)
+        | AirInstData::Gt(a, b)
+        | AirInstData::Le(a, b)
+        | AirInstData::Ge(a, b)
+        | AirInstData::And(a, b)
+        | AirInstData::Or(a, b)
+        | AirInstData::BitAnd(a, b)
+        | AirInstData::BitOr(a, b)
+        | AirInstData::BitXor(a, b)
+        | AirInstData::Shl(a, b)
+        | AirInstData::Shr(a, b)
+        | AirInstData::Loop { cond: a, body: b } => {
+            f(*a);
+            f(*b);
+        }
+        AirInstData::Neg(value)
+        | AirInstData::Not(value)
+        | AirInstData::BitNot(value)
+        | AirInstData::InfiniteLoop { body: value }
+        | AirInstData::Alloc { init: value, .. }
+        | AirInstData::Store { value, .. }
+        | AirInstData::ParamStore { value, .. }
+        | AirInstData::EnumPayloadGet { base: value, .. }
+        | AirInstData::IntCast { value, .. }
+        | AirInstData::Drop { value } => f(*value),
+        AirInstData::Ret(value) => {
+            if let Some(value) = value {
+                f(*value);
+            }
+        }
+        AirInstData::Branch {
+            cond,
+            then_value,
+            else_value,
+        } => {
+            f(*cond);
+            f(*then_value);
+            if let Some(value) = else_value {
+                f(*value);
+            }
+        }
+        AirInstData::Match { scrutinee, arms } => {
+            f(*scrutinee);
+            for (_, body) in air.get_match_arms(arms) {
+                f(body);
+            }
+        }
+        AirInstData::Call { args, .. }
+        | AirInstData::AccessorCall { args, .. }
+        | AirInstData::CallGeneric { args, .. } => {
+            for arg in air.get_call_args(args) {
+                f(arg.value);
+            }
+        }
+        AirInstData::CallIndirect { callee, args } => {
+            f(*callee);
+            for arg in air.get_call_args(args) {
+                f(arg.value);
+            }
+        }
+        AirInstData::Intrinsic { args, .. } => air.get_intrinsic_args(args).for_each(f),
+        AirInstData::Block { statements, value } => {
+            air.get_block_statements(statements).for_each(&mut f);
+            f(*value);
+        }
+        AirInstData::StructInit { fields, .. } => air.get_struct_fields(fields).for_each(f),
+        AirInstData::ArrayInit { elements, .. } => air.get_array_elements(elements).for_each(f),
+        AirInstData::EnumVariant { payload, .. } => air.get_enum_payload(payload).for_each(f),
+        AirInstData::PlaceRead { place } => place_operands(*place, &mut f),
+        AirInstData::PlaceWrite { place, value } => {
+            place_operands(*place, &mut f);
+            f(*value);
+        }
+        AirInstData::MarkMoved { value, place, .. } => {
+            f(*value);
+            if let Some(place) = place {
+                place_operands(*place, &mut f);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4937,6 +5230,7 @@ mod tests {
             exit: BlockId::from_raw(1),
             scope_depth: 0,
             break_state: None,
+            continue_state: None,
         };
         context.record_break(left);
         context.record_break(right);
