@@ -920,7 +920,14 @@ fn accessor_result_receiver_fixture() -> ProviderFixture {
 #[test]
 fn method_on_accessor_result_uses_its_loan() {
     let fixture = accessor_result_receiver_fixture();
-    for call in ["a.pmut().set()", "a.pmut().get()", "a.pref().get()"] {
+    for call in [
+        "a.pmut().set()",
+        "a.pmut().get()",
+        "a.pref().get()",
+        // A shadowing local is a different binding from the loaned root.
+        "use2(a.pmut().get(), { let a = 5; if a == 5 { 1 } else { 2 } })",
+        "use2(a.pmut().get(), { let a = 5; a })",
+    ] {
         let source = format!(
             "fn f() -> i64 {{
     let mut a = Acc {{ p: P {{ c: 1 }} }};

@@ -7496,21 +7496,36 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
     }
 
-    /// Record a projection-mode read of a place rooted at a local or
-    /// parameter as a shared use of that root, rejecting it if it overlaps an
-    /// exclusive accessor result in the same full expression (spec 6.6:10,
-    /// E0259).
+    /// Record a borrowing use of a place rooted at a local or parameter in
+    /// the accessor-loan ledgers, rejecting it if it overlaps an incompatible
+    /// accessor result in the same full expression (spec 6.6:10, E0259).
     ///
-    /// A projection-mode read borrows its place for the operation that
-    /// consumes it: the operands of `==` and the ordering operators (4.3:3f),
-    /// `@dbg`, and `@assert`. Like a value-context read, it cannot overlap an
-    /// exclusive accessor result in either order. Otherwise
-    /// `w.b.s == w.bmut().bump()` would read `w.b.s` after the accessor result
-    /// mutated it. A place reached through an accessor result roots at no
-    /// plain variable, and it reads through that result's own loan.
-    pub(super) fn record_projection_shared_read(
+    /// These operations borrow their place instead of reading it on the
+    /// value path, so the value path's shared-read record never sees them:
+    /// - projection-mode operands (`analyze_inst_for_projection`): `==`, `!=`
+    ///   and the ordering operators (4.3:3f), `StrBuf` `+`, `print` and
+    ///   `println`, the `@assert` and `@panic` messages, `@assert_eq` and
+    ///   `@assert_ne`, and `@parse_*`;
+    /// - the `@dbg` operand, the `for` collection, and `@raw` operands, which
+    ///   are shared uses;
+    /// - `@raw_mut` and `@field_ptr` operands, which take a mutable address and
+    ///   so are exclusive uses (`exclusive`).
+    ///
+    /// Like a value-context read, a shared use cannot overlap an exclusive
+    /// accessor result in either order. Otherwise `w.b.s == w.bmut().bump()`
+    /// would read `w.b.s` after the accessor result mutated it. A place reached
+    /// through an accessor result roots at no plain variable; it is used
+    /// through that result's own loan.
+    ///
+    /// The use is recorded before the place's index subexpressions are
+    /// analyzed. That is sound because a loan taken inside an index
+    /// subexpression either ends with that subexpression's own nested full
+    /// expression or stays in `expression_loans`, where the recorded use
+    /// meets it when the later accessor is expanded.
+    pub(super) fn record_borrowed_place_use(
         &self,
         inst_ref: InstRef,
+        exclusive: bool,
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<()> {
@@ -7522,9 +7537,24 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         {
             return Ok(());
         }
+        if exclusive {
+            self.reject_accessor_loan_conflict(root, "as a mutable address", span, ctx)?;
+            self.record_completed_exclusive_use(root, span, ctx);
+            return Ok(());
+        }
         self.reject_accessor_shared_loan_conflict(root, "by a shared read", span, ctx)?;
+        // A projected chain re-enters here at each level (`a.p.c`, `a.p`,
+        // `a`); one record per root and full expression is enough, since the
+        // ledger is only ever searched for the root.
         let key = Self::ledger_root(root, ctx);
-        ctx.ownership.expression_shared_reads.push((key, span));
+        if !ctx
+            .ownership
+            .expression_shared_reads
+            .iter()
+            .any(|(read_root, _)| *read_root == key)
+        {
+            ctx.ownership.expression_shared_reads.push((key, span));
+        }
         Ok(())
     }
 
