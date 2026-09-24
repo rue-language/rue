@@ -1868,24 +1868,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
         };
 
-        // A projection-mode read borrows its place for the operation that
-        // consumes it -- the operands of `==` and the ordering operators
-        // (4.3:3f), `@dbg`, `@assert`. That is a shared use of the root, so,
-        // like a value-context read, it cannot overlap an exclusive accessor
-        // result in the same full expression in either order (spec 6.6:10,
-        // E0259): `w.b.s == w.bmut().bump()` would otherwise read `w.b.s`
-        // after the accessor result mutated it. A place reached through an
-        // accessor result roots at no plain variable here; it reads through
-        // that result's own loan.
-        if let Some(root) = super::root_variable_of(self.body_rir_ref(), inst_ref)
-            && ctx.ownership.byref_arg_root != Some(root)
-            && (ctx.locals.contains_key(&root) || ctx.has_param(root))
-        {
-            self.reject_accessor_shared_loan_conflict(root, "by a shared read", inst.span, ctx)?;
-            ctx.ownership
-                .expression_shared_reads
-                .push((root, inst.span));
-        }
+        // A projection-mode read is a shared use of its place's root
+        // (spec 6.6:10).
+        self.record_projection_shared_read(inst_ref, inst.span, ctx)?;
 
         // For VarRef, we handle it specially: check for full moves but don't mark as moved
         if let InstData::VarRef { name, .. } = &inst.data {
