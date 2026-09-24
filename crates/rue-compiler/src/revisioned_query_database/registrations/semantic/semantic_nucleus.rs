@@ -1685,7 +1685,20 @@ $runtime
                                                     },
                                                 )
                                                 }
+                                                // The projection drops the value's own type and every
+                                                // consumer types it at the declared return type, so
+                                                // check it here first, as a child call's frame is
+                                                // checked when it finishes (RUE-2381).
                                                 Ok(EvaluatedSemanticConst::Value(value)) => {
+                                                    if let Some(failure) =
+                                                        crate::durable_comptime::durable_call_result_mismatch(
+                                                            &value,
+                                                            &expected_type,
+                                                        )
+                                                    {
+                                                        return Ok(QueryOutput::success(Value::Failure(failure))
+                                                            .with_terminal_kind(QueryTerminalKind::Failure));
+                                                    }
                                                     let value = Arc::unwrap_or_clone(value);
                                                     Value::ComptimeCall(
                                                         crate::semantic_query_nucleus::ComptimeCallProjection {
