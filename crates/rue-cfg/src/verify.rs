@@ -4174,6 +4174,9 @@ mod tests {
         guarded: bool,
         /// The arm writes the moved place again after the move.
         rewritten: bool,
+        /// The arm writes only a scalar inside the moved field after the
+        /// move, which leaves the rest of the field moved out.
+        subfield_rewritten: bool,
         /// The moved value is a discarded temporary the arm drops at once,
         /// instead of the initializer of another local.
         temporary: bool,
@@ -4367,6 +4370,40 @@ mod tests {
                 Type::UNIT,
             );
         }
+        if shape.subfield_rewritten {
+            let field_index = shape
+                .moved_field
+                .expect("a subfield write needs a moved field");
+            let TypeKind::Struct(owner_id) = owner.kind() else {
+                unreachable!()
+            };
+            let subfield = cfg
+                .make_place(
+                    PlaceBase::Local(0),
+                    pair,
+                    [
+                        Projection::Field {
+                            struct_id: pair_id,
+                            field_index,
+                        },
+                        Projection::Field {
+                            struct_id: owner_id,
+                            field_index: 0,
+                        },
+                    ],
+                )
+                .unwrap();
+            let scalar = push(&mut cfg, move_arm, CfgInstData::Const(5), Type::I64);
+            push(
+                &mut cfg,
+                move_arm,
+                CfgInstData::PlaceWrite {
+                    place: subfield,
+                    value: scalar,
+                },
+                Type::UNIT,
+            );
+        }
         cfg.set_goto(move_arm, join, []);
         cfg.set_goto(skip_arm, join, []);
 
@@ -4435,6 +4472,19 @@ mod tests {
     fn semantic_verifier_accepts_flag_guarded_drop_after_conditional_move() {
         assert_move_accepted(ConditionalMoveShape {
             guarded: true,
+            ..ConditionalMoveShape::default()
+        });
+    }
+
+    #[test]
+    fn semantic_verifier_rejects_unguarded_drop_after_a_write_inside_the_moved_place() {
+        // Writing `x.a.payload` after moving `x.a` rewrites only part of it;
+        // the rest of `x.a` is still moved out, so dropping `x.a` is not
+        // owed.
+        assert_moved_out_drop_rejected(ConditionalMoveShape {
+            moved_field: Some(0),
+            dropped_field: Some(0),
+            subfield_rewritten: true,
             ..ConditionalMoveShape::default()
         });
     }
