@@ -55,7 +55,7 @@ or a destructure's residue, `linearOverwrite` at an assignment, and
 rely on §5 to have excluded the linear case, so `Step` executes them too:
 `plainDropRetire`, `plainUnwind` and `plainDestructure` are the interpreter's
 helpers with the monitor removed, and (D-Assign) and (D-Seq) below carry no
-linearity premise. `step_stuck_inSix` proves the relation's stuck states are
+linearity premise. `step_stuck_isStuckState` proves the relation's stuck states are
 named by §6's own four violations only; `unwindLocs_plain` and
 `destructure_plain` prove that where a monitor lets a drop through, the plain
 drop does the same thing.

@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 374.
+- Theorems checked: 405.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -218,6 +218,37 @@ and diffs them against the committed copies.
 | `Typed.wf_fnCtx` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `inBoundsIdx_eq_true` | `RueCore.Dynamics` | `propext` |
 | `dropEventsList_eq_flatten` | `RueCore.Dynamics` | `propext` |
+| `Step.step_eq` | `RueCore.Step` | `propext` |
+| `Step.det` | `RueCore.Step` | `propext` |
+| `Step.terminal` | `RueCore.Step` | `propext` |
+| `stepEval_complete` | `RueCore.Step` | `propext` |
+| `stepArgs_complete` | `RueCore.Step` | `Quot.sound`, `propext` |
+| `stepRet_complete` | `RueCore.Step` | `propext` |
+| `step_iff` | `RueCore.Step` | `Quot.sound`, `propext` |
+| `stepEval_ne_halted` | `RueCore.Step` | `propext` |
+| `stepArgs_ne_halted` | `RueCore.Step` | `Quot.sound`, `propext` |
+| `stepRet_ne_halted` | `RueCore.Step` | `propext` |
+| `step_halted_iff` | `RueCore.Step` | `Quot.sound`, `propext` |
+| `Config.trichotomy` | `RueCore.Step` | `Quot.sound`, `propext` |
+| `Config.Stuck.no_step` | `RueCore.Step` | `propext` |
+| `Contents.readAt_err` | `RueCore.Step` | `propext` |
+| `Contents.splitResidue_err` | `RueCore.Step` | `propext` |
+| `Contents.splitFields_err` | `RueCore.Step` | `propext` |
+| `dropContents_err` | `RueCore.Step` | `propext` |
+| `dropContentsList_err` | `RueCore.Step` | `propext` |
+| `dropCell_err` | `RueCore.Step` | `propext` |
+| `plainUnwind_err` | `RueCore.Step` | `propext` |
+| `plainDestructure_err` | `RueCore.Step` | `propext` |
+| `rootCell_err` | `RueCore.Step` | `propext` |
+| `Contents.resolveDyn_err` | `RueCore.Step` | `propext` |
+| `dynPlace_err` | `RueCore.Step` | `propext` |
+| `step_stuck_isStuckState` | `RueCore.Step` | `Quot.sound`, `propext` |
+| `dropRetire_plain` | `RueCore.Step` | `propext` |
+| `unwindLocs_plain` | `RueCore.Step` | `propext` |
+| `dropResidue_plain` | `RueCore.Step` | `propext` |
+| `destructure_plain` | `RueCore.Step` | `propext` |
+| `stepN_steps` | `RueCore.Step` | `Quot.sound`, `propext` |
+| `letAddProgram_runs` | `RueCore.Step` | `Quot.sound`, `propext` |
 | `HasTys.length_eq` | `RueCore.Soundness` | `propext` |
 | `HasTy.mult_eq` | `RueCore.Soundness` | `propext` |
 | `HasTy.int_inv` | `RueCore.Soundness` | `propext` |
