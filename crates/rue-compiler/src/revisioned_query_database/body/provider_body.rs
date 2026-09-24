@@ -56,14 +56,17 @@ pub(in crate::revisioned_query_database) fn collect_published_body_references(
             // These are precisely the ownership sites from which CFG cleanup
             // elaboration can emit an implicit destroy: a live local, an
             // overwritten local/parameter/place, or a discarded statement
-            // result. Publishing their value types here keeps DropGlue rooted
+            // or loop-body result (the body's value is discarded at every
+            // back edge, RUE-2378). Publishing their value types here keeps DropGlue rooted
             // in the reached body that owns the obligation without duplicating
             // CFG's path-sensitive drop elaboration.
             I::Alloc { init: value, .. }
             | I::Store { value, .. }
             | I::ParamStore { value, .. }
             | I::PlaceWrite { value, .. }
-            | I::Drop { value } => collect_drop_obligation(*value, references),
+            | I::Drop { value }
+            | I::Loop { body: value, .. }
+            | I::InfiniteLoop { body: value } => collect_drop_obligation(*value, references),
             I::Block { statements, .. } => {
                 for &statement in statements.iter() {
                     collect_drop_obligation(statement, references);
