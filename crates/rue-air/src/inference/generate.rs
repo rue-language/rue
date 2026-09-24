@@ -1382,7 +1382,9 @@ impl<'a> ConstraintGenerator<'a> {
         if !spine.fields.is_empty() {
             return None;
         }
-        let module = self.lazy?.import_module(self.interner.resolve(&spine.path))?;
+        let module = self
+            .lazy?
+            .import_module(self.interner.resolve(&spine.path))?;
         Some(Type::new_module(module))
     }
 
@@ -4490,7 +4492,9 @@ impl<'a> ConstraintGenerator<'a> {
     /// shadow an intrinsic root.
     fn inline_import_member_file(&self, module: InstRef) -> Option<FileId> {
         let spine = decode_inline_import_spine(self.rir, self.interner, module)?;
-        let root = self.lazy?.import_module(self.interner.resolve(&spine.path))?;
+        let root = self
+            .lazy?
+            .import_module(self.interner.resolve(&spine.path))?;
         let mut file_id = self.module_file_id(root)?;
         for field in spine.fields {
             file_id = self.module_file(self.module_binding_type((file_id, field))?)?;
