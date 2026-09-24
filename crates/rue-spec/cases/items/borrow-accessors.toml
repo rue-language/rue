@@ -2000,6 +2000,88 @@ compile_fail = true
 error_contains = ["E0259", "after a shared read"]
 
 [[case]]
+name = "field_ptr_read_beside_shared_accessor_result_is_legal"
+spec = ["6.6:10", "9.1:12"]
+description = "Taking a field's address is a shared use of the root, so reading through `@field_ptr` beside a shared accessor result is legal, even on an immutable binding (RUE-2358)."
+source = """
+struct P {
+    c: i64,
+}
+struct Acc {
+    p: P,
+    k: i64,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn cmut(inout self) -> inout i64 { yield self.p.c; }
+    fn cref(borrow self) -> borrow i64 { yield self.p.c; }
+}
+fn use2(x: i64, y: i64) -> i64 { x + y }
+fn main() -> i32 {
+    let a = Acc { p: P { c: 1 }, k: 1 };
+    let r = use2(a.cref(), checked { @ptr_read(@field_ptr(a.k)) });
+    @dbg(r);
+    0
+}
+"""
+expected_stdout = "2\n"
+exit_code = 0
+
+[[case]]
+name = "raw_mut_inside_exclusive_accessor_loan_rejected"
+spec = ["6.6:10", "9.1:12"]
+description = "Taking a mutable address of the root inside an exclusive accessor loan's full expression is a shared use of it that overlaps the loan (E0259, RUE-2358)."
+source = """
+struct P {
+    c: i64,
+}
+struct Acc {
+    p: P,
+    k: i64,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn cmut(inout self) -> inout i64 { yield self.p.c; }
+    fn cref(borrow self) -> borrow i64 { yield self.p.c; }
+}
+fn use2(x: i64, y: i64) -> i64 { x + y }
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 }, k: 1 };
+    a.cmut() += checked { @ptr_write(@raw_mut(a.p.c), 40); 1 };
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "by a shared read"]
+
+[[case]]
+name = "parameter_shadowed_by_local_inside_accessor_loan_is_not_the_root"
+spec = ["6.6:10"]
+description = "A local that shadows the loaned parameter inside the accessor loan's full expression is a different binding: using it is no use of the parameter (RUE-2358)."
+source = """
+struct P {
+    c: i64,
+}
+struct Acc {
+    p: P,
+    k: i64,
+
+    fn pmut(inout self) -> inout P { yield self.p; }
+    fn cmut(inout self) -> inout i64 { yield self.p.c; }
+    fn cref(borrow self) -> borrow i64 { yield self.p.c; }
+}
+fn use2(x: i64, y: i64) -> i64 { x + y }
+fn h(inout a: Acc) -> i64 {
+    use2(a.pmut().c, { let a = 5; @dbg(a); a })
+}
+fn main() -> i32 {
+    let mut a = Acc { p: P { c: 1 }, k: 1 };
+    @dbg(h(inout a));
+    0
+}
+"""
+expected_stdout = "5\n6\n"
+exit_code = 0
+
+[[case]]
 name = "accessor_read_before_inout_call_is_legal"
 spec = ["6.6:8", "6.6:10"]
 description = "The accessor loan ends with its full expression: reading the result in a prior statement, then calling with `inout`, is legal (RUE-1593)."
