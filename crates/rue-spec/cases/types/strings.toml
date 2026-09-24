@@ -945,6 +945,22 @@ fn main() -> i32 {
 exit_code = 0
 expected_stdout = "42\n"
 
+# The mismatch diagnostic names the intrinsic once (RUE-2397: some call sites
+# passed the spelling with its `@`, and the message printed '@@to_string').
+[[case]]
+name = "to_string_non_numeric_argument_names_the_intrinsic_once"
+spec = ["3.7:22"]
+real_std = true
+source = """
+const std = @import("std");
+fn main() -> i32 {
+    let s = @to_string(true);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["[E0702]", "intrinsic '@to_string' expects"]
+
 # 3.7:22 — @to_string names StrBuf in its result type without rooting the
 # trusted module itself, so the file must import std lexically. The import need
 # not be used and StrBuf need not be bound to a name (RUE-1276); contrast

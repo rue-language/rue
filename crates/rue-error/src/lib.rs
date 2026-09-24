@@ -4019,7 +4019,9 @@ pub enum ErrorKind {
         expected: usize,
         found: usize,
     },
-    #[error("intrinsic '@{name}' expects {expected}, found {found}", name = .0.name, expected = .0.expected, found = .0.found)]
+    // Some call sites pass the spelling with its `@` already; strip it so the
+    // message names the intrinsic once.
+    #[error("intrinsic '@{name}' expects {expected}, found {found}", name = .0.name.trim_start_matches('@'), expected = .0.expected, found = .0.found)]
     IntrinsicTypeMismatch(Box<IntrinsicTypeMismatchError>),
     #[error(
         "cannot infer the target type of '@{0}'; add a type annotation \
