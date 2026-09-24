@@ -1967,4 +1967,115 @@ theorem eval_conserves (M : FloatOps) {P : Program} {F : Event → List Nat}
         simp only [eval]
         exact ⟨Nat.le_refl _, hcc, fun a => by simp⟩
 
+/-! ## §7: no double free -/
+
+/-- An index occurs in a range once when it lies in it, and not at all
+otherwise (helper; core's `List.count_range'` costs `Classical.choice`, and so
+does `omega` on a conjunction or a disequation, so this proof avoids both). -/
+theorem range'_count (a : Nat) : ∀ (n s : Nat),
+    (List.range' s n).count a = if s ≤ a ∧ a < s + n then 1 else 0
+  | 0, s => by
+      simp only [List.range'_zero, List.count_nil]
+      rw [if_neg (fun h => Nat.lt_irrefl a (Nat.lt_of_lt_of_le h.2 (by simpa using h.1)))]
+  | n + 1, s => by
+      rw [List.range'_succ, List.count_cons, range'_count a n (s + 1)]
+      by_cases h₁ : s = a
+      · subst h₁
+        have e2 : s ≤ s ∧ s < s + (n + 1) := ⟨Nat.le_refl s, by omega⟩
+        rw [if_neg (fun h => Nat.not_succ_le_self s h.1), if_pos e2,
+          if_pos (show (s == s) = true from decide_eq_true rfl)]
+      · have : (s == a) = false := beq_false_of_ne h₁
+        rw [this, if_neg Bool.false_ne_true, Nat.add_zero]
+        have hlt : s < a ∨ a < s := Nat.lt_or_gt_of_ne h₁
+        clear h₁ this
+        by_cases h₂ : s + 1 ≤ a ∧ a < s + 1 + n
+        · obtain ⟨h₃, h₄⟩ := h₂
+          rw [if_pos ⟨by omega, by omega⟩, if_pos ⟨by omega, by omega⟩]
+        · rw [if_neg h₂, if_neg (fun h => h₂ ⟨by
+            obtain ⟨h₃, _⟩ := h
+            exact hlt.elim id (fun h'' => absurd h₃ (Nat.not_le_of_gt h'')), by omega⟩)]
+
+/-- An index occurs in a range at most once (helper). -/
+theorem range'_count_le_one (s n a : Nat) : (List.range' s n).count a ≤ 1 := by
+  rw [range'_count]; split <;> omega
+
+/-- **The law, over a whole program** (§6.12's top-level result): a run starts
+from the empty store, so everything its trace projects to was minted during
+the run — a range of store indices, each once. Every projection `F` the law
+can count therefore names each identity at most once (helper). -/
+theorem run_trace_once (M : FloatOps) {P : Program} {F : Event → List Nat}
+    (hF : TraceMeasure P.decls F) (fuel : Nat) :
+    ∀ a, ((run M P fuel).trace.flatMap F).count a ≤ 1 := by
+  intro a
+  have h := eval_conserves M hF fuel [] { env := [], scope := [] } (.call 0 [])
+    (fun ℓ c hc => by simp at hc)
+  unfold run
+  generalize eval M fuel P [] { env := [], scope := [] } (.call 0 []) = r at h ⊢
+  cases r with
+  | ok H v tr =>
+      have := h.2.2.2 a
+      have := range'_count_le_one 0 (H.length - 0) a
+      simp only [EvalRes.trace, storeOwn, Fresh, List.length_nil, List.flatMap_nil,
+        List.count_nil] at *
+      omega
+  | returned H v tr =>
+      have := h.2.2.2 a
+      have := range'_count_le_one 0 (H.length - 0) a
+      simp only [EvalRes.trace, storeOwn, Fresh, List.length_nil, List.flatMap_nil,
+        List.count_nil] at *
+      omega
+  | broke H sc tr =>
+      have := h.2.2 a
+      have := range'_count_le_one 0 (H.length - 0) a
+      simp only [EvalRes.trace, storeOwn, Fresh, List.length_nil, List.flatMap_nil,
+        List.count_nil] at *
+      omega
+  | panic k tr =>
+      obtain ⟨N, hN⟩ := h
+      have := hN a
+      have := range'_count_le_one 0 N a
+      simp only [EvalRes.trace, storeOwn, List.length_nil, List.flatMap_nil,
+        List.count_nil] at *
+      omega
+  | stuck w => simp [EvalRes.trace]
+  | outOfFuel => simp [EvalRes.trace]
+
+/-- **No value is freed twice, on any run** (§6.11): each owned identity
+occurs at most once among the trees the trace's `drop` and `dropTemp` markers
+free. Stated for every program with well-formed declarations; typing is not
+needed, because the machine refuses the one shape — an owned value hidden
+under a `Copy` node — that would let a copy duplicate it (`Contents.copyClosed`). -/
+theorem freed_once (M : FloatOps) (P : Program) (fuel : Nat) :
+    ∀ a, (freedIds P.decls (run M P fuel).trace).count a ≤ 1 :=
+  run_trace_once M (freed_measure P.decls) fuel
+
+/-- **No destructor runs twice on one value, on any run** (§6.11, `3.9:28`):
+each identity occurs at most once among the values the trace's `dtor` events
+ran on. It needs only that a destructor-bearing struct is not `Copy`
+(`3.9:31`), which `WfDecls` gives (`WfDecls.dtorNotCopy`). -/
+theorem dtor_once (M : FloatOps) {P : Program} (hdt : DtorNotCopy P.decls) (fuel : Nat) :
+    ∀ a, (dtorIds (run M P fuel).trace).count a ≤ 1 :=
+  run_trace_once M (dtor_measure hdt) fuel
+
+/-- **No double free** (§7): a well-typed program's run is never refused, so
+its trace is the whole run's (`no_violation`), and in that trace every value
+identity is freed at most once and has its destructor run at most once. The
+first conjunct is what makes the other two a statement about the program
+rather than about a refusal: a refused run carries no trace at all.
+
+§7 argues the bullet from three mechanisms, and each is a case of the
+conservation law `eval_conserves` proves: a move leaves `⊘` behind (§6.3), so
+the old owner no longer owns what it handed on; §6.11's walk skips every `⊘`
+("this single skip is what makes double-free impossible"), so a moved-out
+position is never dropped through the old owner; and a `match` binding takes
+the payload whole into the arm's cells, so the scrutinee's owner is gone.
+The declared-linear destructure (§6.3) consumes its place the same way: the
+leaf is handed on, the residue is dropped once, and the place becomes `⊘`. -/
+theorem no_double_free (M : FloatModel) {P : Program} (h : ProgramTyped P) (fuel : Nat) :
+    (∀ w, run M.toFloatOps P fuel ≠ .stuck w) ∧
+      (∀ a, (freedIds P.decls (run M.toFloatOps P fuel).trace).count a ≤ 1) ∧
+      (∀ a, (dtorIds (run M.toFloatOps P fuel).trace).count a ≤ 1) :=
+  ⟨no_violation M h fuel, freed_once M.toFloatOps P fuel,
+    dtor_once M.toFloatOps h.wf.decls.dtorNotCopy fuel⟩
+
 end RueCore

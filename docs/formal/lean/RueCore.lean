@@ -4,6 +4,7 @@ import RueCore.Statics
 import RueCore.Dynamics
 import RueCore.Step
 import RueCore.Soundness
+import RueCore.Trace
 import RueCore.Examples
 import RueCore.Print
 import RueCore.Corpus
