@@ -3698,12 +3698,15 @@ impl<'h, H: OrdinaryBodyAnalysisHost> ComptimeRejections for OrdinaryBodyEngine<
             site.span(),
         )
     }
-    fn float_literal_not_finite(
+    fn admit_comptime_float_literal(
         &self,
-        kind: ErrorKind,
+        literal: &str,
+        width: super::comptime::ComptimeFloatWidth,
         site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Self::Failure {
-        CompileError::new(kind, site.span())
+    ) -> ComptimeHostResult<(), Self::Failure> {
+        crate::finite_float_literal(literal, width.air_type(), false, || literal.to_owned())
+            .map(|_| ())
+            .map_err(|kind| ComptimeHostError::HostFailure(CompileError::new(kind, site.span())))
     }
     fn cannot_negate(
         &self,

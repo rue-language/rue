@@ -2357,12 +2357,13 @@ impl ComptimeRejections for FakeHost {
     ) -> Self::Failure {
         FAKE_FAILURE
     }
-    fn float_literal_not_finite(
+    fn admit_comptime_float_literal(
         &self,
-        _kind: rue_error::ErrorKind,
+        _literal: &str,
+        _width: ComptimeFloatWidth,
         _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
-    ) -> Self::Failure {
-        FAKE_FAILURE
+    ) -> ComptimeHostResult<(), Self::Failure> {
+        Ok(())
     }
     fn cannot_negate(
         &self,
