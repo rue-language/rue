@@ -97,17 +97,21 @@ pub fn run_with_budget(
                 continue;
             };
             // Charge the same value axis used by inlining: every cloned
-            // block parameter and instruction consumes one budget unit.
+            // block parameter and instruction consumes one budget unit,
+            // except a `MoveOut` marker, which lowers to nothing.
             let body_size: u64 = lp
                 .body
                 .iter()
                 .map(|&b| {
                     let block = cfg.get_block(b);
+                    let charged_insts = block
+                        .insts
+                        .iter()
+                        .filter(|&&v| !matches!(cfg.get_inst(v).data, CfgInstData::MoveOut { .. }))
+                        .count();
                     u64::try_from(block.params.len())
                         .ok()
-                        .and_then(|params| {
-                            params.checked_add(u64::try_from(block.insts.len()).ok()?)
-                        })
+                        .and_then(|params| params.checked_add(u64::try_from(charged_insts).ok()?))
                         .unwrap_or(u64::MAX)
                 })
                 .try_fold(0u64, |a, b| a.checked_add(b))
@@ -1067,7 +1071,7 @@ fn unroll_one(
             })?;
             let data = remap_data(&i.operands, cfg, &i.data, &map, Some((trip.slot, raw)))?;
             let nv = map[&v];
-            cfg.get_inst_mut(nv).data = data;
+            cfg.set_inst_data(nv, data);
             if let Some(contract) = &i.call_contract {
                 cfg.set_call_contract(nv, contract.clone());
             }

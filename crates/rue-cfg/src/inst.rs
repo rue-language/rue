@@ -675,13 +675,17 @@ pub enum CfgInstData {
     /// Marks that the value at `place` was moved out: the new owner drops
     /// it, so this function must not until the place is written again
     /// (RUE-2367). The place is a local or parameter slot, optionally
-    /// projected through struct fields, exactly as the moved read named it.
+    /// projected through struct fields and constant indices, exactly as the
+    /// moved read named it.
     ///
     /// It has no runtime effect and lowers to nothing. It exists so the CFG
     /// verifier can check the drop-flag discipline: a drop of a place moved
     /// out on some reaching path must sit under that place's runtime drop
     /// flag. Optimizations keep it in place and otherwise ignore it; it
-    /// reads and writes no memory.
+    /// reads and writes no memory. Nor does it count as code size: the
+    /// growth and size-eligibility heuristics read
+    /// [`Cfg::charged_value_count`], which leaves it out, so the marker never
+    /// changes an inlining or unrolling decision.
     MoveOut {
         place: Place,
     },
@@ -895,6 +899,10 @@ pub struct Cfg {
     /// than wrapping `len() as u32` onto an existing identity. Spec C.1:2
     /// requires a diagnostic (`E1401`), not a wrapped index.
     capacity_exceeded: Option<&'static str>,
+    /// How many arena values are [`CfgInstData::MoveOut`] markers. The arena
+    /// is append-only, so [`Cfg::add_inst`] and [`Cfg::set_inst_data`] keep
+    /// this exact; [`Cfg::charged_value_count`] subtracts it.
+    move_out_values: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1187,6 +1195,7 @@ impl Clone for Cfg {
             address_taken_params: self.address_taken_params.clone(),
             source_param_abi: self.source_param_abi.clone(),
             capacity_exceeded: self.capacity_exceeded,
+            move_out_values: self.move_out_values,
         }
     }
 }
@@ -1524,6 +1533,7 @@ impl Cfg {
             address_taken_params: AHashSet::new(),
             source_param_abi: Vec::new(),
             capacity_exceeded: None,
+            move_out_values: 0,
         }
     }
 
@@ -1750,8 +1760,19 @@ impl Cfg {
             return CfgValue::from_raw(0);
         };
         let value = CfgValue::from_raw(index);
+        self.move_out_values += usize::from(matches!(inst.data, CfgInstData::MoveOut { .. }));
         self.values.push(inst);
         value
+    }
+
+    /// Replace an instruction's data. Use this rather than writing through
+    /// [`Self::get_inst_mut`] whenever the new or old data may be a
+    /// [`CfgInstData::MoveOut`], so the marker count stays exact.
+    pub(crate) fn set_inst_data(&mut self, value: CfgValue, data: CfgInstData) {
+        let slot = &mut self.values[value.0 as usize].data;
+        self.move_out_values -= usize::from(matches!(slot, CfgInstData::MoveOut { .. }));
+        self.move_out_values += usize::from(matches!(data, CfgInstData::MoveOut { .. }));
+        *slot = data;
     }
 
     pub(crate) fn set_call_contract(&mut self, value: CfgValue, contract: CfgCallContract) {
@@ -1790,6 +1811,24 @@ impl Cfg {
     #[inline]
     pub fn value_count(&self) -> usize {
         self.values.len()
+    }
+
+    /// The number of values that count as code size: every arena value
+    /// except the [`CfgInstData::MoveOut`] markers, which lower to nothing.
+    /// Inline and unroll growth and the inlining size-eligibility caps read
+    /// this, so adding the marker changed no optimization decision
+    /// (RUE-2367).
+    #[inline]
+    pub fn charged_value_count(&self) -> usize {
+        debug_assert_eq!(
+            self.move_out_values,
+            self.values
+                .iter()
+                .filter(|inst| matches!(inst.data, CfgInstData::MoveOut { .. }))
+                .count(),
+            "the MoveOut count drifted from the arena"
+        );
+        self.values.len() - self.move_out_values
     }
 
     /// The attached values whose every use is a by-reference call argument.

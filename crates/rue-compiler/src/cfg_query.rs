@@ -2868,9 +2868,9 @@ pub(crate) fn apply_general_inlining(
         let size_eligible = match batch_opt_level {
             rue_cfg::OptLevel::O2 => {
                 !has_returning_calls.get(function).copied().unwrap_or(true)
-                    && phase2_size_eligible(record.cfg.value_count())
+                    && phase2_size_eligible(record.cfg.charged_value_count())
             }
-            rue_cfg::OptLevel::O3 => phase3_size_eligible(record.cfg.value_count()),
+            rue_cfg::OptLevel::O3 => phase3_size_eligible(record.cfg.charged_value_count()),
             rue_cfg::OptLevel::O0 | rue_cfg::OptLevel::O1 => false,
         };
         if !size_eligible {
@@ -3419,6 +3419,8 @@ fn whole_program_unreachable_checked<
     ))
 }
 
+// Both caps are compared with `Cfg::charged_value_count`, which leaves out the
+// `MoveOut` markers: they lower to nothing and must not change eligibility.
 const PHASE2_VALUE_CAP: usize = 32;
 /// O3 admits larger bodies after measuring the checked-in standalone examples:
 /// their O0 CFG bodies range from 23 to 75 values. A 96-value cap covers that
