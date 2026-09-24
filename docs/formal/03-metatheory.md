@@ -286,8 +286,9 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 ## No double-free
 
 - **Theorem:** `RueCore.no_double_free` (`lean/RueCore/Trace.lean`).
-- **In words:** a well-typed program's run is never refused, and in its trace
-  no value is freed twice and no value has its destructor run twice.
+- **In words:** a well-typed program's run is never refused, and in its
+  trace no identity has its destructor run twice, and no identity appears
+  twice among the `drop`/`dropTemp` free events.
 - **What is counted.** §6.1 gives values no identity, so the machine adds
   one (RUE-2323): aggregate introduction — (D-Struct) and (D-Array) §6.5,
   (D-Enum-Intro) §6.6, the repeat form — **mints** a value identity, the
@@ -304,7 +305,10 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
 
   Each identity occurs at most once in each (`List.count a ≤ 1`). A `Copy`
   value is duplicated freely and has no drop glue, so its copies share an
-  identity and neither projection counts them.
+  identity and neither projection counts them. A declared-linear
+  destructure's residue is a third case: `RueCore.dropResidue` frees it with
+  no `drop`/`dropTemp` marker, so it is outside `freedIds` until RUE-2328
+  adds one; `dtorIds` already catches it when the residue has a destructor.
 - **Proof.** `RueCore.eval_conserves` is a conservation law, proved by fuel
   induction over `eval`, one case per form. The owned identities of the final
   store, of the result value and of the trace's projection together are, as
@@ -324,7 +328,7 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
     every well-typed value (`RueCore.ContentsTy.copyClosed`). The machine
     also enforces it with a fourth monitor beside the linear three,
     `ownedUnderCopy`, at aggregate introduction and at an assignment. The law
-    therefore holds for every run of any program with well-formed
+    therefore holds for every finished run of any program with well-formed
     declarations: `RueCore.freed_once`, and `RueCore.dtor_once`, which uses
     `3.9:31`, "a destructor-bearing struct is not `Copy`".
   - **Typing**, which enters through `RueCore.no_violation`. A checked

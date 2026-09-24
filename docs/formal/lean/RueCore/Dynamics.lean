@@ -418,7 +418,7 @@ repeat form copy a `Copy` value whole, which is sound only when nothing owned
 hides inside it. A struct literal, an enum literal or an array literal whose
 class is `Copy` but whose members are not, or an assignment that writes an
 owned value under a `Copy` node, is a shape no well-typed program produces;
-the machine refuses it (`typeConfusion`) rather than build a duplicable
+the machine refuses it (`ownedUnderCopy`) rather than build a duplicable
 owner, and `soundness` proves a checked program never reaches the refusal
 (`HasTy.copyClosed`, `ContentsTy.copyClosed`, `Soundness.lean`). It is a
 **monitor** in the module docstring's sense — §6's (D-Struct) would build the
