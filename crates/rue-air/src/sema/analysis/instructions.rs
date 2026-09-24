@@ -367,7 +367,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         // source literal is held to the finite-range rule.
                         let spelling = self.body_interner().resolve(&content.spur()).to_owned();
                         let data = self.materialize_float_const(
-                            FloatConstSource::ComputedValue {
+                            FloatConstSource::ComptimeResult {
                                 spelling: &spelling,
                             },
                             ty,

@@ -1032,7 +1032,7 @@ $runtime
                                                             };
                                                             let compatible = typed.ty.as_ref().is_none_or(|found| {
                                                                 found == &ty
-                                                                    || (matches!(found, crate::durable_semantics::DurableType::ComptimeFloat | crate::durable_semantics::DurableType::I32)
+                                                                    || (matches!(found, crate::durable_semantics::DurableType::ComptimeFloat)
                                                                         && matches!(ty, crate::durable_semantics::DurableType::F32 | crate::durable_semantics::DurableType::F64)
                                                                         && matches!(value, crate::durable_semantics::DurableConstValue::Float(_)))
                                                                     // A string literal's durable value is reconstructed through
@@ -1093,7 +1093,55 @@ $runtime
                                                                         .into(),
                                                                 })
                                                             } else {
-                                                                let kind = match (&ty, &value) {
+                                                                // The type the value already carries, when it
+                                                                // is a scalar one: a typed constant (`A` with
+                                                                // `const A: i8`), arithmetic on one, or a call's
+                                                                // value at its callee's return type. Such a
+                                                                // value is not a literal, so the mismatch is the
+                                                                // body path's E0206 between the two types
+                                                                // (`let k: i32 = a;` with `a: i8`), not E0800.
+                                                                let typed_scalar = typed.ty.as_ref().filter(|found| {
+                                                                    *found != &ty
+                                                                        && (crate::durable_comptime::durable_int_width(found).is_some()
+                                                                            || matches!(
+                                                                                found,
+                                                                                crate::durable_semantics::DurableType::Bool
+                                                                                    | crate::durable_semantics::DurableType::F32
+                                                                                    | crate::durable_semantics::DurableType::F64
+                                                                            ))
+                                                                });
+                                                                let kind = if let Some(found) = typed_scalar {
+                                                                    rue_error::ErrorKind::TypeMismatch {
+                                                                        expected: durable_type_diagnostic_name(&ty),
+                                                                        found: durable_type_diagnostic_name(found),
+                                                                    }
+                                                                } else { match (&ty, &value) {
+                                                                    // An untyped literal that cannot take the
+                                                                    // declared type at all reads as the body
+                                                                    // path's inference reports it, from the
+                                                                    // literal's side: `let x: bool = 1;` is
+                                                                    // "expected integer type, found bool" and
+                                                                    // `let x: i32 = 1.5;` is "expected
+                                                                    // comptime_float, found i32".
+                                                                    (_, crate::durable_semantics::DurableConstValue::Integer(_))
+                                                                        if typed.ty.is_none()
+                                                                            && crate::durable_comptime::durable_int_width(&ty).is_none()
+                                                                            && !matches!(ty, crate::durable_semantics::DurableType::F32 | crate::durable_semantics::DurableType::F64) =>
+                                                                    {
+                                                                        rue_error::ErrorKind::TypeMismatch {
+                                                                            expected: "integer type".to_owned(),
+                                                                            found: durable_type_diagnostic_name(&ty),
+                                                                        }
+                                                                    }
+                                                                    (_, crate::durable_semantics::DurableConstValue::Float(_))
+                                                                        if float_initializer_is_literal
+                                                                            && !matches!(ty, crate::durable_semantics::DurableType::F32 | crate::durable_semantics::DurableType::F64) =>
+                                                                    {
+                                                                        rue_error::ErrorKind::TypeMismatch {
+                                                                            expected: "comptime_float".to_owned(),
+                                                                            found: durable_type_diagnostic_name(&ty),
+                                                                        }
+                                                                    }
                                                                     // One code for "does not fit", whatever
                                                                     // the sign: E0800, as spec 6.5:5 states
                                                                     // and the body path reports.
@@ -1122,7 +1170,7 @@ $runtime
                                                                         expected: durable_type_diagnostic_name(&ty),
                                                                         found: inferred_const_type_name(&value).to_owned(),
                                                                     },
-                                                                };
+                                                                } };
                                                                 Value::Failure(Failure::Diagnostic(kind))
                                                             }
                                                         }
