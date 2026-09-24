@@ -5803,7 +5803,20 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if !self.type_requires_consumption(ty) {
             return Ok(());
         }
-        let Some(residue) = self.residual_linear_place(ty, Some(state), &mut path.to_vec())? else {
+        // Core §5.3 (@Drop), fourth premise: only a still-owned linear
+        // sub-place strictly BELOW the operand blocks the discard. The
+        // operand's own obligation — including a declared-`linear` struct's,
+        // whose obligation is the value itself (3.8:74) — is what `@drop`
+        // discharges (3.9:39), so a declared-linear operand is walked through
+        // its fields rather than reported as its own residue (RUE-2335).
+        let mut path = path.to_vec();
+        let residue = match ty.as_struct() {
+            Some(struct_id) if self.struct_declared_linear(struct_id) => {
+                self.residual_linear_fields(struct_id, Some(state), &mut path)?
+            }
+            _ => self.residual_linear_place(ty, Some(state), &mut path)?,
+        };
+        let Some(residue) = residue else {
             return Ok(());
         };
         let name = self.body_interner().resolve(&symbol);
@@ -6095,6 +6108,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if self.struct_declared_linear(struct_id) {
             return Ok(Some(path.clone()));
         }
+        self.residual_linear_fields(struct_id, state, path)
+    }
+
+    /// The struct clause of [`Self::residual_linear_place`]: the first
+    /// linear-carrying field of the struct at `path` that still holds residual
+    /// linear content, in declaration order. It does not consult the struct's
+    /// own declared-`linear` obligation, which is the caller's to decide.
+    fn residual_linear_fields(
+        &self,
+        struct_id: StructId,
+        state: Option<&VariableMoveState>,
+        path: &mut Vec<Spur>,
+    ) -> CompileResult<Option<Vec<Spur>>> {
         let def = self.body_type_pool().struct_def(struct_id);
         for field in def.fields.iter() {
             if !self.type_carries_linear(field.ty) {
