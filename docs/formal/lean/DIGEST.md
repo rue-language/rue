@@ -43,7 +43,7 @@ The theorems below are about a *fragment* of the core calculus
 rule by rule and form by form; its two coverage lines, quoted here so the
 boundary is visible before the statements are:
 
-- *Calculus rules → declarations*: 78 of 97 labeled §5/§6 rules are mechanized; 19 are *not yet mechanized*.
+- *Calculus rules → declarations*: 82 of 97 labeled §5/§6 rules are mechanized; 15 are *not yet mechanized*.
 - *Abstract syntax forms → declarations*: 30 of 35 §2 forms have a core image (8 of them partial); 5 are *not yet mechanized*.
 
 The forms that count as partial are `S`, `E`, `e1 ⊕ e2`, `⊖ e`, `e1 ⋚ e2`,
@@ -617,28 +617,6 @@ theorem RueCore.OwnSt.setAt_wf {D : Decls} (T' : Ty) (u : OwnSt)
     Ty.atPath D T π = some T' → OwnSt.wf D (t.setAt π u) T = true
 ```
 
-### `TypedArms.at_index`
-
-*theorem* · module `RueCore.Statics`
-
-*(no doc-comment)*
-
-```lean
-theorem RueCore.TypedArms.at_index {P : Program} {R : Ty} {Γ₀ : Ctx} {T : Ty}
-  {arms : List Expr} {Tss : List (List Ty)} {os : List (Option Ctx)}
-  {Δs : List Ctx} :
-  TypedArms P R Γ₀ arms Tss T os Δs →
-    ∀ (k : Nat) {body : Expr} {Ts : List Ty},
-      arms[k]? = some body →
-        Tss[k]? = some Ts →
-          ∃ ob Δb,
-            Typed P R (armCtx Ts Γ₀) body T { norm := ob, brk := Δb } ∧
-              ∀ (Γb : Ctx),
-                ob = some Γb →
-                  NoResidualLinear P.decls (List.take Ts.length Γb) ∧
-                    some (List.drop Ts.length Γb) ∈ os
-```
-
 ### `Ctx.joinFold_perm`
 
 *theorem* · module `RueCore.Statics`
@@ -704,6 +682,23 @@ This is the fused context's image of §5's convention that `Γ` is fixed while
 ```lean
 theorem RueCore.Typed.skel_preserved {P : Program} {R : Ty} {Γ : Ctx} {e : Expr}
   {T : Ty} {Ω : Out} (h : Typed P R Γ e T Ω) : Out.SkelOk Γ Ω
+```
+
+### `Typed.wf`
+
+*theorem* · module `RueCore.Statics`
+
+**The shape invariant is preserved judgment-wide** (RUE-2340): from a
+well-formed incoming context, every normal outgoing state a derivation
+concludes at is well-formed. This discharges `Ctx.Wf`, the premise §5.5's
+associativity carries (`Ctx.joinAll_perm`), for every arm of every `match`
+and `if` a derivation reaches from `fnCtx`. It holds because §5.3's `Ω` gives
+§5.7's `⊥` no state: before the judgment carried `Ω`, `return` and `@panic`
+concluded at an arbitrary context and the statement was false.
+
+```lean
+theorem RueCore.Typed.wf {P : Program} {R : Ty} {Γ : Ctx} {e : Expr} {T : Ty}
+  {Ω : Out} (h : Typed P R Γ e T Ω) : Out.WfPres P.decls Γ Ω
 ```
 
 ### `dropContents_events`
@@ -1564,9 +1559,9 @@ calculus, the second is the calculus doing what it says.
   applies: (Assign)'s leaf premise `class(T) ≠ Linear` keeps the abandoned
   value from being linear, so `no_linear_discard` is not affected there. That
   edge is the calculus as written — §6.9's unwinding
-  rule walks only σ, and §5.7's strict-context bottom rule (`Strict-Bottom`
-  there, which the fragment does not mechanize) imposes no discard check on
-  siblings already evaluated — it is what the Rue compiler does, and closing
+  rule walks only σ, and §5.3's (Strict-Bottom) — `Typed.consBot` and the
+  other `-Bottom` variants here — imposes no discard check on siblings
+  already evaluated — it is what the Rue compiler does, and closing
   it is an open spec decision (RUE-2316, the pending-argument decision).
   `Dynamics.lean`'s "Pending values" section states it in full;
   `Examples.lean`'s `linearLostAtCallArg` is the kernel-checked witness at an
@@ -2914,6 +2909,33 @@ theorem RueCore.OwnSt.wfList_fieldStates_array {D : Decls} {t : OwnSt} {T₁ : T
   OwnSt.wfList D t.fieldStates (List.replicate n T₁) = true
 ```
 
+### `TypedArms.at_index`
+
+*theorem* · module `RueCore.Statics`
+
+**(Match) §5.5's premises for the arm a tag selects.** Read at the variant
+index `k`: the arm's body is typed under that variant's payload locals, and
+when it continues its locals are discharged by §5.6 at the arm's end and what
+it contributes to the n-way join is one of the states the join was taken
+over. This is the inversion `soundness` performs once (D-Match) §6.6 has read
+the tag (helper).
+
+```lean
+theorem RueCore.TypedArms.at_index {P : Program} {R : Ty} {Γ₀ : Ctx} {T : Ty}
+  {arms : List Expr} {Tss : List (List Ty)} {os : List (Option Ctx)}
+  {Δs : List Ctx} :
+  TypedArms P R Γ₀ arms Tss T os Δs →
+    ∀ (k : Nat) {body : Expr} {Ts : List Ty},
+      arms[k]? = some body →
+        Tss[k]? = some Ts →
+          ∃ ob Δb,
+            Typed P R (armCtx Ts Γ₀) body T { norm := ob, brk := Δb } ∧
+              ∀ (Γb : Ctx),
+                ob = some Γb →
+                  NoResidualLinear P.decls (List.take Ts.length Γb) ∧
+                    some (List.drop Ts.length Γb) ∈ os
+```
+
 ### `exhaustive_arm_exists`
 
 *theorem* · module `RueCore.Statics`
@@ -3171,6 +3193,96 @@ The same, for an expression list (helper).
 theorem RueCore.TypedArgs.skel_of {P : Program} {R : Ty} {Γ Γ' : Ctx} {es : List Expr}
   {Ts : List Ty} {Δ : List Ctx}
   (h : TypedArgs P R Γ es Ts { norm := some Γ', brk := Δ }) : Γ'.skel = Γ.skel
+```
+
+### `skel_lookup`
+
+*theorem* · module `RueCore.Statics`
+
+Two contexts with one skeleton agree on every entry's type and mark
+(helper).
+
+```lean
+theorem RueCore.skel_lookup {Γ Γ' : Ctx} (h : Γ'.skel = Γ.skel) {i : Nat}
+  {en en' : Entry} (h1 : Γ[i]? = some en) (h2 : Γ'[i]? = some en') :
+  en'.ty = en.ty ∧ en'.mu = en.mu
+```
+
+### `Entry.wf_owned`
+
+*theorem* · module `RueCore.Statics`
+
+(helper) Every state `fnCtx`/`armCtx`/`let` push is `Owned`, a shape of
+every type.
+
+```lean
+theorem RueCore.Entry.wf_owned (D : Decls) (T : Ty) (m : Bool) :
+  Entry.wf D { ty := T, mu := m, st := OwnSt.owned } = true
+```
+
+### `Ctx.Wf.cons_owned`
+
+*theorem* · module `RueCore.Statics`
+
+(helper) A `let` binder enters `Owned`, so pushing it keeps a frame
+well-formed.
+
+```lean
+theorem RueCore.Ctx.Wf.cons_owned {D : Decls} {Γ : Ctx} (h : Ctx.Wf D Γ) (T : Ty)
+  (m : Bool) : Ctx.Wf D ({ ty := T, mu := m, st := OwnSt.owned } :: Γ)
+```
+
+### `Ctx.Wf.set_setAt`
+
+*theorem* · module `RueCore.Statics`
+
+(helper) Re-marking one entry at a path of its type with a state that is
+a shape of that path's type keeps a frame well-formed — (Use-Move),
+(Use-Declared-Linear-Destructure), (@Drop) and (Assign) all write this way.
+
+```lean
+theorem RueCore.Ctx.Wf.set_setAt {D : Decls} {Γ : Ctx} {i : Nat} {en : Entry}
+  {π : List Nat} {u : OwnSt} {T' : Ty} (hΓ : Ctx.Wf D Γ)
+  (hget : Γ[i]? = some en) (hty : Ty.atPath D en.ty π = some T')
+  (hu : OwnSt.wf D u T' = true) :
+  Ctx.Wf D (List.set Γ i (en.setSt (en.st.setAt π u)))
+```
+
+### `Ctx.Wf.armCtx`
+
+*theorem* · module `RueCore.Statics`
+
+(helper) A `match` arm's entry context is well-formed when `Σ0` is.
+
+```lean
+theorem RueCore.Ctx.Wf.armCtx {D : Decls} {Γ₀ : Ctx} (Ts : List Ty)
+  (h : Ctx.Wf D Γ₀) : Ctx.Wf D (armCtx Ts Γ₀)
+```
+
+### `Ctx.joinOpt_wf`
+
+*theorem* · module `RueCore.Statics`
+
+(helper) The two-arm join over `Ω` keeps the invariant.
+
+```lean
+theorem RueCore.Ctx.joinOpt_wf {D : Decls} {a b : Option Ctx} {Γ' : Ctx}
+  {S : List (Ty × Bool)} (h : Ctx.joinOpt D a b = some (some Γ'))
+  (ha : ∀ (x : Ctx), a = some x → x.skel = S ∧ Ctx.Wf D x)
+  (hb : ∀ (x : Ctx), b = some x → x.skel = S ∧ Ctx.Wf D x) : Ctx.Wf D Γ'
+```
+
+### `Ctx.joinOpts_wf`
+
+*theorem* · module `RueCore.Statics`
+
+(helper) The n-way join over `Ω` keeps the invariant.
+
+```lean
+theorem RueCore.Ctx.joinOpts_wf {D : Decls} {os : List (Option Ctx)} {Γ' : Ctx}
+  {S : List (Ty × Bool)} (h : Ctx.joinOpts D os = some (some Γ'))
+  (hinv : ∀ (Γ : Ctx), Γ ∈ List.filterMap id os → Γ.skel = S ∧ Ctx.Wf D Γ) :
+  Ctx.Wf D Γ'
 ```
 
 ### `inBoundsIdx_eq_true`
@@ -4147,19 +4259,6 @@ theorem RueCore.Matches.unwindPrefix {D : Decls} (hwf : WfDecls D) (n : Nat) (Γ
           Matches D (List.drop n Γ) (List.drop n ρ) H' ∧
             List.length H' = List.length H ∧
               ∀ (ℓ : Nat), ¬ℓ ∈ List.take n ρ → H'[ℓ]? = H[ℓ]?
-```
-
-### `skel_lookup`
-
-*theorem* · module `RueCore.Soundness`
-
-Two contexts with one skeleton agree on every entry's type and mark
-(helper).
-
-```lean
-theorem RueCore.skel_lookup {Γ Γ' : Ctx} (h : Γ'.skel = Γ.skel) {i : Nat}
-  {en en' : Entry} (h1 : Γ[i]? = some en) (h2 : Γ'[i]? = some en') :
-  en'.ty = en.ty ∧ en'.mu = en.mu
 ```
 
 ### `ownedJoinOkList_matches`
@@ -9210,11 +9309,11 @@ The same past a live **linear** binding, which is the class where
 `Typed.panic` and `Typed.ret` actually differ: `ret` would need
 `NoResidualLinear` here and `panic` does not, so the judgment derives this
 program (`panicPastLinear_typed`) and the machine runs it to a trap with an
-empty trace. `check` rejects it all the same — its state choice hands the
-`let`'s leak check the incoming `Owned` state — which is the third thing the
-algorithm's narrowness costs (`Checker.lean`). The compiler accepts and runs
-it: `panic: boom`, exit 101, nothing on stdout, so `S3`'s destructor does not
-run there either (verified by hand).
+empty trace. `check` accepts it too, since it carries §5.7's `⊥`: the `let`'s
+tail diverges, so no scope exit is reached on a normal path (before RUE-2368
+`check` handed that scope exit the incoming `Owned` state and refused). The
+compiler accepts and runs it: `panic: boom`, exit 101, nothing on stdout, so
+`S3`'s destructor does not run there either (verified by hand).
 
 ```lean
 def RueCore.Examples.panicPastLinear : Expr
@@ -11637,6 +11736,18 @@ its declared type; `Ctx.Wf` reads that invariant over a whole frame, the way
 ```lean
 def RueCore.Ctx.Wf (D : Decls) (Γ : Ctx) : Prop :=
   ∀ (en : Entry), en ∈ Γ → Entry.wf D en = true
+```
+
+### `Out.WfPres`
+
+*def* · module `RueCore.Statics`
+
+(helper) `Typed.wf`'s statement for one judgment: a well-formed incoming
+context gives a well-formed normal outgoing state.
+
+```lean
+def RueCore.Out.WfPres (D : Decls) (Γ : Ctx) (Ω : Out) : Prop :=
+  Ctx.Wf D Γ → ∀ (Γ' : Ctx), Ω.norm = some Γ' → Ctx.Wf D Γ'
 ```
 
 ### `Entry.wf`
