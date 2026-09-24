@@ -485,3 +485,97 @@ compile_fail = true
 error_contains = [
     "integer overflow evaluating multiplication at type i32: the result 4000000000 does not fit in i32",
 ]
+
+# =============================================================================
+# Declared integer types in constant initializer blocks (8.1:3, 3.1:6) — RUE-2353
+# =============================================================================
+
+[[case]]
+name = "const_block_declared_let_overflow_is_compile_error"
+spec = ["8.1:3", "3.1:6", "6.5:12"]
+description = "Arithmetic on a `let` annotated `i8` in a constant initializer block overflows at i8, as the same arithmetic traps at run time, so the constant is a compile-time error (E1200) rather than the widened value 200"
+source = """
+const K: i32 = { let x: i8 = 100; x + 100 };
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E1200", "integer overflow evaluating addition at type i8: the result 200 does not fit in i8"]
+
+[[case]]
+name = "const_block_unannotated_let_carries_the_declared_type"
+spec = ["8.1:3", "3.1:6", "6.5:12"]
+description = "An unannotated `let` bound to arithmetic on an `i8` binding is an i8, so arithmetic on it overflows at i8 (E1200)"
+source = """
+const K: bool = { let x: i8 = 100; let y = x + 1; y + 100 > 0 };
+fn main() -> i32 { if K { 42 } else { 7 } }
+"""
+compile_fail = true
+error_contains = ["E1200", "integer overflow evaluating addition at type i8: the result 201 does not fit in i8"]
+
+[[case]]
+name = "const_block_declared_type_chain_overflow_is_compile_error"
+spec = ["8.1:3", "3.1:6", "6.5:12"]
+description = "The declared type flows through a chain of unannotated `let` bindings, so the chain overflows at i8 where run time traps (E1200)"
+source = """
+const K: bool = { let x: i8 = 100; let y = x + 10; let z = y * 1; z + 20 > 0 };
+fn main() -> i32 { if K { 42 } else { 7 } }
+"""
+compile_fail = true
+error_contains = ["E1200", "integer overflow evaluating addition at type i8: the result 130 does not fit in i8"]
+
+[[case]]
+name = "const_block_declared_type_literal_operand_overflow_is_compile_error"
+spec = ["8.1:3", "3.1:6", "6.5:12"]
+description = "Literal operands of arithmetic on an `i8` binding are i8 as well, so `100 + 100` overflows at i8 even though the whole expression's value would fit (E1200)"
+source = """
+const K: bool = { let x: i8 = 100; x - (100 + 100) < 0 };
+fn main() -> i32 { if K { 42 } else { 7 } }
+"""
+compile_fail = true
+error_contains = ["E1200", "integer overflow evaluating addition at type i8: the result 200 does not fit in i8"]
+
+[[case]]
+name = "const_block_declared_unsigned_underflow_is_compile_error"
+spec = ["8.1:3", "3.1:13", "6.5:12"]
+description = "Subtraction below zero on a `let` annotated `u8` is an overflow at u8 (E1200), as at run time"
+source = """
+const K: bool = { let x: u8 = 1; x - 2 == 0 };
+fn main() -> i32 { if K { 42 } else { 7 } }
+"""
+compile_fail = true
+error_contains = ["E1200", "integer overflow evaluating subtraction at type u8: the result -1 does not fit in u8"]
+
+[[case]]
+name = "const_block_declared_minimum_remainder_is_compile_error"
+spec = ["8.1:3", "3.1:6", "6.5:12"]
+description = "The minimum of a `let` annotated `i8` remainder -1 overflows at i8 (E1200), as at run time"
+source = """
+const K: bool = { let x: i8 = -128; x % -1 == 0 };
+fn main() -> i32 { if K { 42 } else { 7 } }
+"""
+compile_fail = true
+error_contains = ["E1200", "integer overflow evaluating remainder at type i8"]
+
+[[case]]
+name = "const_block_declared_type_controls_are_accepted"
+spec = ["8.1:3", "3.1:6", "6.5:2"]
+description = "Operations on declared bindings that do not overflow their type keep their values: a chain that stays in range, comparisons, and shifts"
+source = """
+const A: bool = { let x: i8 = 100; let y = x + 20; y + 7 == 127 };
+const B: bool = { let x: i8 = 100; x > 50 && x == 100 };
+const C: bool = { let x: u8 = 200; let y = x >> 1; y == 100 };
+const D: i32 = { let x: i8 = 100; let y = x - 20; if y * 1 < 81 { 1 } else { 0 } };
+fn main() -> i32 { if A && B && C && D == 1 { 42 } else { 7 } }
+"""
+exit_code = 42
+
+[[case]]
+name = "const_block_unknown_let_annotation_type"
+spec = ["3.12:3", "5.1:8"]
+description = "An unknown type in a `let` annotation inside a constant initializer block is the unknown-type error (E0204) run time reports"
+source = """
+const K: i32 = { let x: comptime_int = 5; 42 };
+fn main() -> i32 { K }
+"""
+compile_fail = true
+error_contains = ["E0204", "unknown type 'comptime_int'"]

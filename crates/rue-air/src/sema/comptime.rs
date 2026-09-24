@@ -2790,9 +2790,10 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
 
     /// The result an integer operation reports: its computed `result` at
     /// `ty`, unless the operation belongs to a region checked at a declared
-    /// type that the computed value does not fit. Then it is the same
-    /// operation at the declared type, which overflows exactly as run time
-    /// traps. A value that fits is unchanged.
+    /// type and overflows there (a result outside the type, or `MIN % -1`).
+    /// Then it is the same operation at the declared type, which reports the
+    /// overflow run time traps on. The operands already fit the declared
+    /// type, and a result that does not overflow keeps its computed value.
     fn declared_integer_result(
         &self,
         inst_ref: InstRef,
@@ -2807,11 +2808,14 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let Some(integer) = self.host.type_integer_semantics(declared) else {
             return (result, ty);
         };
-        match result.checked() {
-            Some(value) if !integer.fits_i128(value) => {
-                (at_declared(integer), Some(declared.clone()))
-            }
-            _ => (result, ty),
+        if result.checked().is_none() {
+            return (result, ty);
+        }
+        let report = at_declared(integer);
+        if report.checked().is_none() {
+            (report, Some(declared.clone()))
+        } else {
+            (result, ty)
         }
     }
 
