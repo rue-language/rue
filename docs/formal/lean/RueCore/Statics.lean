@@ -2341,12 +2341,12 @@ unordered `join(Σ1, …, Σn)` the calculus writes.
 Its premise — every arm's outgoing context a shape of its declared types
 (`Ctx.Wf`) — is one the rules that *write* keep: `OwnSt.setAt_wf` for (Use-Move)
 §5.1, (@Drop) §5.3 and (Assign) §5.2, `Ctx.joinAll_wf` for a nested (Match), and
-`fnCtx`/`armCtx` push `Owned`. What does not keep it is §5.7's `⊥`: (Return) and
-(Panic) conclude at *any* context with the incoming skeleton, so a judgment-wide
-`Ctx.Wf` preservation theorem is false as those rules stand, and the invariant
-stays an explicit premise here. Constraining the two `⊥` contexts — or proving
-that a derivation may always be rebuilt to pick a well-formed one — is a rule
-decision, RUE-2340.
+`fnCtx`/`armCtx` push `Owned`. §5.7's `⊥` has no state to break it: the
+judgment carries §5.3's `Ω`, so a diverging arm contributes nothing to the
+join, and `Typed.wf` (end of this module) proves the invariant preserved
+judgment-wide. The theorems below keep `Ctx.Wf` as a premise, which `Typed.wf`
+discharges for every derivation from a well-formed context (RUE-2340: when ⊥
+concluded at an arbitrary context, that preservation theorem was false).
 -/
 
 /-- One arm's entry context: (Match) §5.5's `Γ, x_{i1}:Ti1, …, x_{i,ai}:Ti_{ai} ;
@@ -3189,6 +3189,12 @@ inductive TypedArms (P : Program) (R : Ty) : Ctx → List Expr → List (List Ty
       TypedArms P R Γ₀ (e :: es) (Ts :: Tss) T (none :: os) (Δb ++ Δs)
 end
 
+/-- **(Match) §5.5's premises for the arm a tag selects.** Read at the variant
+index `k`: the arm's body is typed under that variant's payload locals, and
+when it continues its locals are discharged by §5.6 at the arm's end and what
+it contributes to the n-way join is one of the states the join was taken
+over. This is the inversion `soundness` performs once (D-Match) §6.6 has read
+the tag (helper). -/
 theorem TypedArms.at_index {P : Program} {R : Ty} {Γ₀ : Ctx} {T : Ty} :
     ∀ {arms : List Expr} {Tss : List (List Ty)} {os : List (Option Ctx)} {Δs : List Ctx},
       TypedArms P R Γ₀ arms Tss T os Δs →
@@ -3782,5 +3788,217 @@ theorem Typed.skel_of {P R} {Γ Γ' : Ctx} {e T} {Δ : List Ctx}
 theorem TypedArgs.skel_of {P R} {Γ Γ' : Ctx} {es Ts} {Δ : List Ctx}
     (h : TypedArgs P R Γ es Ts ⟨some Γ', Δ⟩) : Γ'.skel = Γ.skel :=
   h.skel_preserved Γ' rfl
+
+/-- Two contexts with one skeleton agree on every entry's type and mark
+(helper). -/
+theorem skel_lookup {Γ Γ' : Ctx} (h : Ctx.skel Γ' = Ctx.skel Γ) {i : Nat} {en en'}
+    (h1 : Γ[i]? = some en) (h2 : Γ'[i]? = some en') :
+    en'.ty = en.ty ∧ en'.mu = en.mu := by
+  have hm : (Ctx.skel Γ')[i]? = (Ctx.skel Γ)[i]? := by rw [h]
+  simp only [Ctx.skel, List.getElem?_map, h1, h2, Option.map_some,
+    Option.some_inj] at hm
+  exact ⟨congrArg Prod.fst hm, congrArg Prod.snd hm⟩
+
+/-! ### The shape invariant, judgment-wide (RUE-2340)
+
+`Ctx.Wf` — every entry's ownership state a shape of its declared type — is
+the premise §5.5's associativity (`OwnSt.join_assoc`, `Ctx.joinAll_perm`)
+carries. With §5.7's `⊥` an arbitrary context of the incoming skeleton, as it
+was before the judgment carried `Ω`, a judgment-wide preservation theorem was
+false: a `return` arm could feed the join a state no rule writes. §5.3's `Ω`
+gives `⊥` no state at all, so every normal outgoing state is one a rule
+wrote, and `Typed.wf` below proves the invariant is preserved. The premise is
+then discharged once, for every derivation from a well-formed context. -/
+
+/-- (helper) Every state `fnCtx`/`armCtx`/`let` push is `Owned`, a shape of
+every type. -/
+theorem Entry.wf_owned (D : Decls) (T : Ty) (m : Bool) :
+    Entry.wf D { ty := T, mu := m, st := .owned } = true := by
+  simp [Entry.wf, OwnSt.wf]
+
+/-- (helper) A `let` binder enters `Owned`, so pushing it keeps a frame
+well-formed. -/
+theorem Ctx.Wf.cons_owned {D : Decls} {Γ : Ctx} (h : Ctx.Wf D Γ) (T : Ty) (m : Bool) :
+    Ctx.Wf D ({ ty := T, mu := m, st := .owned } :: Γ) := by
+  intro en hen
+  rcases List.mem_cons.mp hen with rfl | hm
+  · exact Entry.wf_owned D T m
+  · exact h en hm
+
+/-- (helper) Re-marking one entry at a path of its type with a state that is
+a shape of that path's type keeps a frame well-formed — (Use-Move),
+(Use-Declared-Linear-Destructure), (@Drop) and (Assign) all write this way. -/
+theorem Ctx.Wf.set_setAt {D : Decls} {Γ : Ctx} {i : Nat} {en : Entry} {π : List Nat}
+    {u : OwnSt} {T' : Ty} (hΓ : Ctx.Wf D Γ) (hget : Γ[i]? = some en)
+    (hty : en.ty.atPath D π = some T') (hu : OwnSt.wf D u T' = true) :
+    Ctx.Wf D (Γ.set i (en.setSt (en.st.setAt π u))) := by
+  intro en' hmem
+  rcases List.mem_or_eq_of_mem_set hmem with hm | rfl
+  · exact hΓ en' hm
+  · have hen : Entry.wf D en = true := hΓ en (List.mem_of_getElem? hget)
+    exact OwnSt.setAt_wf T' u hu π en.st en.ty hen hty
+
+/-- (helper) A `match` arm's entry context is well-formed when `Σ0` is. -/
+theorem Ctx.Wf.armCtx {D : Decls} {Γ₀ : Ctx} (Ts : List Ty) (h : Ctx.Wf D Γ₀) :
+    Ctx.Wf D (armCtx Ts Γ₀) := by
+  intro en hmem
+  unfold RueCore.armCtx at hmem
+  simp only [List.mem_append, List.mem_reverse, List.mem_map] at hmem
+  rcases hmem with ⟨T, _, rfl⟩ | hm
+  · exact Entry.wf_owned D T false
+  · exact h en hm
+
+/-- (helper) The two-arm join over `Ω` keeps the invariant. -/
+theorem Ctx.joinOpt_wf {D : Decls} {a b : Option Ctx} {Γ' : Ctx} {S : List (Ty × Bool)}
+    (h : Ctx.joinOpt D a b = some (some Γ'))
+    (ha : ∀ x, a = some x → x.skel = S ∧ Ctx.Wf D x)
+    (hb : ∀ x, b = some x → x.skel = S ∧ Ctx.Wf D x) : Ctx.Wf D Γ' := by
+  cases a with
+  | none => simp only [Ctx.joinOpt, Option.some.injEq] at h; exact (hb _ h).2
+  | some x =>
+    cases b with
+    | none =>
+        simp only [Ctx.joinOpt, Option.some.injEq] at h
+        cases h; exact (ha _ rfl).2
+    | some y =>
+        simp only [Ctx.joinOpt] at h
+        cases hj : Ctx.join D x y with
+        | none => rw [hj] at h; cases h
+        | some z =>
+            rw [hj] at h
+            simp only [Option.map_some, Option.some.injEq] at h
+            cases h
+            exact Ctx.join_wf x y _ ((ha _ rfl).1.trans (hb _ rfl).1.symm) (ha _ rfl).2
+              (hb _ rfl).2 hj
+
+/-- (helper) The n-way join over `Ω` keeps the invariant. -/
+theorem Ctx.joinOpts_wf {D : Decls} {os : List (Option Ctx)} {Γ' : Ctx} {S : List (Ty × Bool)}
+    (h : Ctx.joinOpts D os = some (some Γ'))
+    (hinv : ∀ Γ ∈ os.filterMap id, Γ.skel = S ∧ Ctx.Wf D Γ) : Ctx.Wf D Γ' := by
+  unfold Ctx.joinOpts at h
+  revert hinv
+  cases hf : os.filterMap id with
+  | nil => rw [hf] at h; simp at h
+  | cons Γ₁ Γs =>
+      rw [hf] at h
+      intro hinv
+      cases hj : Ctx.joinFold D Γ₁ Γs with
+      | none => simp [hj] at h
+      | some z =>
+          simp only [hj, Option.map_some, Option.some.injEq] at h
+          cases h
+          obtain ⟨hsk, hw⟩ := hinv Γ₁ List.mem_cons_self
+          exact Ctx.joinFold_wf Γs Γ₁ _ (fun Γ hΓ => hinv Γ (List.mem_cons_of_mem _ hΓ)) hsk hw hj
+
+/-- (helper) `Typed.wf`'s statement for one judgment: a well-formed incoming
+context gives a well-formed normal outgoing state. -/
+def Out.WfPres (D : Decls) (Γ : Ctx) (Ω : Out) : Prop :=
+  Ctx.Wf D Γ → ∀ Γ', Ω.norm = some Γ' → Ctx.Wf D Γ'
+
+/-- (helper) The same for a `match`'s arms: every continuing arm's state. -/
+def Out.WfArms (D : Decls) (Γ₀ : Ctx) (os : List (Option Ctx)) : Prop :=
+  Ctx.Wf D Γ₀ → ∀ Γ ∈ os.filterMap id, Ctx.Wf D Γ
+
+/-- **The shape invariant is preserved judgment-wide** (RUE-2340): from a
+well-formed incoming context, every normal outgoing state a derivation
+concludes at is well-formed. This discharges `Ctx.Wf`, the premise §5.5's
+associativity carries (`Ctx.joinAll_perm`), for every arm of every `match`
+and `if` a derivation reaches from `fnCtx`. It holds because §5.3's `Ω` gives
+§5.7's `⊥` no state: before the judgment carried `Ω`, `return` and `@panic`
+concluded at an arbitrary context and the statement was false. -/
+theorem Typed.wf {P R} {Γ : Ctx} {e T} {Ω : Out} (h : Typed P R Γ e T Ω) :
+    Out.WfPres P.decls Γ Ω := by
+  induction h using Typed.rec
+    (motive_2 := fun Γ _ _ Ω _ => Out.WfPres P.decls Γ Ω)
+    (motive_3 := fun Γ₀ _ _ _ os _ _ => Out.WfArms P.decls Γ₀ os) with
+  | intLit _ => intro hw _ h; cases h; exact hw
+  | boolLit => intro hw _ h; cases h; exact hw
+  | unitLit => intro hw _ h; cases h; exact hw
+  | floatLit _ => intro hw _ h; cases h; exact hw
+  | useCopy _ _ _ _ _ _ => intro hw _ h; cases h; exact hw
+  | dropCopy _ _ _ _ _ _ => intro hw _ h; cases h; exact hw
+  | useMove hget _ _ hty _ _ _ _ =>
+      intro hw _ h; cases h; exact hw.set_setAt hget hty (by simp [OwnSt.wf])
+  | useDeclared hget _ _ _ htd _ _ _ =>
+      intro hw _ h; cases h; exact hw.set_setAt hget htd (by simp [OwnSt.wf])
+  | dropRes hget _ _ hty _ _ _ _ _ =>
+      intro hw _ h; cases h; exact hw.set_setAt hget hty (by simp [OwnSt.wf])
+  | dropDeclared hget _ _ _ htd _ _ _ =>
+      intro hw _ h; cases h; exact hw.set_setAt hget htd (by simp [OwnSt.wf])
+  | binop _ _ _ ih₁ ih₂ => intro hw _ h; exact ih₂ (ih₁ hw _ rfl) _ h
+  | floatBinop _ _ _ ih₁ ih₂ => intro hw _ h; exact ih₂ (ih₁ hw _ rfl) _ h
+  | binopBot _ _ _ => intro _ _ h; cases h
+  | floatBinopBot _ _ _ => intro _ _ h; cases h
+  | neg _ ih => exact ih
+  | floatNeg _ ih => exact ih
+  | notOp _ ih => exact ih
+  | bitnot _ ih => exact ih
+  | intCast _ ih => exact ih
+  | intToFloat _ ih => exact ih
+  | floatIntrin _ _ ih => exact ih
+  | panic => intro _ _ h; cases h
+  | dbg _ _ ih => exact ih
+  | mkStruct _ _ ih => exact ih
+  | mkEnum _ _ _ ih => exact ih
+  | mkArray _ ih => exact ih
+  | repeatArray _ _ ih => exact ih
+  | indexRead _ _ _ _ _ _ _ _ _ _ _ _ ih => intro hw _ h; cases h; exact ih hw _ rfl
+  | indexReadBot _ _ _ _ _ _ _ _ => intro _ _ h; cases h
+  | indexDrop _ ih => exact ih
+  | indexWrite hget₀ _ _ hty₀ _ _ _ h₁ hta _ hget₁ _ _ _ _ ih₁ ih₂ =>
+      intro hw _ h
+      cases h
+      have hsk : Ctx.skel _ = Ctx.skel _ := hta.skel_of.trans h₁.skel_of
+      have hty₁ := (skel_lookup hsk hget₀ hget₁).1 ▸ hty₀
+      exact (ih₂ (ih₁ hw _ rfl) _ rfl).set_setAt hget₁ hty₁ (by simp [OwnSt.wf])
+  | indexWriteBotRhs _ _ => intro _ _ h; cases h
+  | indexWriteBotIdx _ _ _ _ _ _ _ _ => intro _ _ h; cases h
+  | «match» _ _ _ harms hjoin ihs iharms =>
+      intro hw _ h
+      cases h
+      have hw₀ := ihs hw _ rfl
+      exact Ctx.joinOpts_wf hjoin fun Γ hΓ =>
+        ⟨Ctx.SameSkel.mem harms.arm_skel Γ hΓ, iharms hw₀ Γ hΓ⟩
+  | matchBot _ _ => intro _ _ h; cases h
+  | noArms => intro _ _ h; simp at h
+  | arm _ _ _ ihbody iharms =>
+      intro hw Γ hΓ
+      simp only [List.filterMap_cons, id, List.mem_cons] at hΓ
+      rcases hΓ with rfl | hΓ
+      · intro en hen
+        exact ihbody (hw.armCtx _) _ rfl en (List.mem_of_mem_drop hen)
+      · exact iharms hw Γ hΓ
+  | armDiv _ _ _ iharms =>
+      intro hw Γ hΓ
+      exact iharms hw Γ hΓ
+  | letIn _ _ _ ih₁ ih₂ =>
+      intro hw _ h
+      cases h
+      have hw₁ := ih₁ hw _ rfl
+      intro en hen
+      exact ih₂ (hw₁.cons_owned _ _) _ rfl en (List.mem_cons_of_mem _ hen)
+  | letInDiv _ _ _ _ => intro _ _ h; cases h
+  | letBot _ _ => intro _ _ h; cases h
+  | assign hget₀ _ _ hty₀ h₁ hget₁ _ _ _ ih =>
+      intro hw _ h
+      cases h
+      have hty₁ := (skel_lookup h₁.skel_of hget₀ hget₁).1 ▸ hty₀
+      exact (ih hw _ rfl).set_setAt hget₁ hty₁ (by simp [OwnSt.wf])
+  | assignBot _ _ => intro _ _ h; cases h
+  | seq _ _ _ ih₁ ih₂ => intro hw _ h; exact ih₂ (ih₁ hw _ rfl) _ h
+  | seqBot _ _ => intro _ _ h; cases h
+  | ite _ h₁ h₂ hjoin ihc ih₁ ih₂ =>
+      intro hw _ h
+      cases h
+      have hw₀ := ihc hw _ rfl
+      exact Ctx.joinOpt_wf hjoin (fun x hx => ⟨h₁.skel_preserved x hx, ih₁ hw₀ x hx⟩)
+        (fun x hx => ⟨h₂.skel_preserved x hx, ih₂ hw₀ x hx⟩)
+  | iteBot _ _ => intro _ _ h; cases h
+  | call _ _ ih => exact ih
+  | ret _ _ _ => intro _ _ h; cases h
+  | retBot _ _ => intro _ _ h; cases h
+  | nil => intro hw _ h; cases h; exact hw
+  | cons _ _ ih ihs => intro hw _ h; exact ihs (ih hw _ rfl) _ h
+  | consBot _ _ _ => intro _ _ h; cases h
 
 end RueCore

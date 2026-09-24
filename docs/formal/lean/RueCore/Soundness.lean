@@ -1929,15 +1929,6 @@ theorem runAllScopeDrops_ok {D Γ φ H} (hwf : WfDecls D) (hfm : FrameMatches D 
 
 /-! ## Skeleton transport and join weakening -/
 
-/-- Two contexts with one skeleton agree on every entry's type and mark
-(helper). -/
-theorem skel_lookup {Γ Γ' : Ctx} (h : Ctx.skel Γ' = Ctx.skel Γ) {i : Nat} {en en'}
-    (h1 : Γ[i]? = some en) (h2 : Γ'[i]? = some en') :
-    en'.ty = en.ty ∧ en'.mu = en.mu := by
-  have hm : (Ctx.skel Γ')[i]? = (Ctx.skel Γ)[i]? := by rw [h]
-  simp only [Ctx.skel, List.getElem?_map, h1, h2, Option.map_some,
-    Option.some_inj] at hm
-  exact ⟨congrArg Prod.fst hm, congrArg Prod.snd hm⟩
 
 mutual
 /-- **Joining a wholly-`Owned` arm with `t` yields `t`, and the `Owned` arm's
