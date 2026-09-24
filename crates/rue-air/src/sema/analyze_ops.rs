@@ -552,7 +552,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     Self::resolved_integer_type(ctx, inst_ref, inst.span, "bitwise NOT operator")?;
 
                 // Bitwise NOT operates on integer types only
-                if !ty.is_integer() && !ty.is_error() && !ty.is_never() {
+                if !ty.coerces_into(Type::is_integer) {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
                             expected: "integer type".to_string(),
@@ -600,7 +600,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// bool, and every other type. `<error>`/`never` pass through so a prior
     /// error isn't masked by a spurious second diagnostic.
     fn require_negatable(&self, ty: Type, span: rue_span::Span) -> CompileResult<()> {
-        if ty.is_signed() || ty.is_float() || ty.is_error() || ty.is_never() {
+        if ty.coerces_into(|ty| ty.is_signed() || ty.is_float()) {
             return Ok(());
         }
         let note = if ty.is_unsigned() {
