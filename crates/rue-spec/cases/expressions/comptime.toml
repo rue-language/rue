@@ -1872,6 +1872,61 @@ fn main() -> i32 {
 """
 exit_code = 42
 
+# A call's value is checked against its callee's declared return type wherever
+# the call is reduced, not only in a const initializer: a call computing a
+# comptime type argument and a call in a `comptime {}` block are E0206 as in a
+# body. The type argument used to take the unchecked value (RUE-2381).
+
+[[case]]
+name = "comptime_type_argument_call_result_mismatch_rejected"
+spec = ["4.14:2", "6.1:5"]
+description = "A u8 shift returned from a u64 function is E0206 when the call computes a type constructor's argument in a struct field, a signature, or a `-> T` return at T = u64 - RUE-2381"
+source = """
+fn n(comptime s: u8) -> u64 { 1 << s }
+fn sh(comptime T: type, comptime s: u8) -> T { 1 << s }
+fn Arr(comptime k: u64) -> type { struct { a: [u8; k] } }
+struct S { x: Arr(n(8)) }
+struct R { x: Arr(sh(u64, 8)) }
+fn f(x: Arr(n(8))) -> u8 { x.a[0] }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected u64, found u8"]
+
+[[case]]
+name = "comptime_block_call_result_mismatch_rejected"
+spec = ["4.14:2", "6.1:5"]
+description = "A u8 shift returned from a u64 function is E0206 in a `comptime {}` block, directly and as a type constructor's argument"
+source = """
+fn n(comptime s: u8) -> u64 { 1 << s }
+fn Arr(comptime k: u64) -> type { struct { a: [u8; k] } }
+fn main() -> i32 {
+    let k = comptime { n(8) };
+    let T = comptime { Arr(n(8)) };
+    @intCast(k)
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected u64, found u8"]
+
+[[case]]
+name = "comptime_type_argument_call_matching_return_types_accepted"
+spec = ["4.14:2", "6.1:5"]
+description = "Calls whose values have the declared return type compute type arguments and `comptime {}` values: a u64 shift, `-> T` at T = u64, and a nested call"
+source = """
+fn n(comptime s: u64) -> u64 { 1 << s }
+fn id(comptime T: type, comptime v: T) -> T { v }
+fn m(comptime s: u64) -> u64 { n(s) + 1 }
+fn Arr(comptime k: u64) -> type { struct { a: [u8; k] } }
+struct S { x: Arr(n(2)), y: Arr(id(u64, 3)), z: Arr(m(1)) }
+fn main() -> i32 {
+    let s = S { x: Arr(4) { a: [1; 4] }, y: Arr(3) { a: [2; 3] }, z: Arr(3) { a: [3; 3] } };
+    let k: u64 = comptime { m(5) };
+    if k == 33 { @intCast(s.x.a[3] + s.y.a[2] + s.z.a[2]) } else { 1 }
+}
+"""
+exit_code = 6
+
 # 4.14:2 binds a comptime function's *recursive self call* exactly as it binds
 # any other call: the value reached through `f(n - 1)` is the value the same
 # body produces when reduced directly. The self call used to opt out of the
