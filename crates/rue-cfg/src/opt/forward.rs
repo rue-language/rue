@@ -120,12 +120,16 @@
 //! So neither rule forwards a load of a value whose type needs drop to a
 //! replacement rooted at a *different* local that is not [`SlotWrites::One`]
 //! (the only local that can be reinitialized after the move is one with more
-//! than one whole write). A single-write root cannot be rewritten while a
+//! than one whole write), or at a writable parameter. A single-write root cannot be rewritten while a
 //! value moved out of it is still live: its one write is its declaration, and
 //! a loop re-executes that only after the local's storage ended. A parameter
-//! root needs no check: a by-value parameter is immutable, and a writable one
-//! cannot be moved out of. Each accepted substitution keeps this property, so
-//! chains resolved below keep it too.
+//! root counts as reinitializable exactly when the parameter is writable: a
+//! `mut self` receiver is owned, by value and reassignable, so `let t = self;
+//! self = S { .. };` re-roots `t`'s drop exactly as a mutated local does. An
+//! `inout` parameter is writable too but cannot be moved out of, so treating
+//! it the same costs nothing, and any other parameter is never written. Each
+//! accepted substitution keeps this property, so chains resolved below keep it
+//! too.
 //!
 //! ## Applying substitutions and cleanup
 //!
@@ -170,8 +174,9 @@ pub struct Stats {
     /// shared between a zero-sized local and the local that reuses its index).
     pub loads_declined_type_mismatch: u64,
     /// Loads of an owned value a rule had a candidate for but declined to
-    /// forward because the candidate is rooted at a different local that can
-    /// be reinitialized (RUE-2380; module docs, "Owner roots").
+    /// forward because the candidate is rooted at a different local or a
+    /// parameter that can be reinitialized (RUE-2380; module docs, "Owner
+    /// roots").
     pub loads_declined_reinitializable_root: u64,
 }
 
@@ -483,12 +488,14 @@ struct OwnerRoots {
 
 impl OwnerRoots {
     /// Whether forwarding a `Load` of `load_slot` to `candidate` would re-root
-    /// an owned value at a different local that can be written again.
+    /// an owned value at a different local, or a parameter, that can be
+    /// written again.
     ///
     /// The candidate's roots mirror the verifier's provenance: a whole-slot
-    /// `Load` or whole-local `PlaceRead` roots at that local, and a block
-    /// parameter at every root among its incoming arguments (transitively).
-    /// Any other value has no local root. Taking every incoming root, rather
+    /// `Load` or whole-local `PlaceRead` roots at that local, a `Param` or
+    /// whole-parameter `PlaceRead` at that parameter, and a block parameter at
+    /// every root among its incoming arguments (transitively).
+    /// Any other value has no root. Taking every incoming root, rather
     /// than only roots all arguments agree on, is the conservative side.
     fn reinitializable_other_root(
         &mut self,
@@ -522,6 +529,16 @@ impl OwnerRoots {
                     if let Some(slot) = place.as_local()
                         && reinitializable(slot)
                     {
+                        return true;
+                    }
+                    if let Some(param) = place.as_param()
+                        && cfg.is_param_writable(param)
+                    {
+                        return true;
+                    }
+                }
+                CfgInstData::Param { index } => {
+                    if cfg.is_param_writable(*index) {
                         return true;
                     }
                 }
@@ -1628,5 +1645,107 @@ mod tests {
             })
             .unwrap();
         assert_eq!(drop_operand, dropped);
+    }
+
+    #[test]
+    fn test_owned_move_not_rerooted_at_reassigned_mut_self() {
+        // `fn f(mut self) { let t = self; self = ..; drop t }`: a `mut self`
+        // receiver is a by-value, writable parameter the verifier roots as
+        // `WritableParam`, so the reassignment reinitializes it exactly as a
+        // store reinitializes a mutated local.
+        let (pool, owning, _) = owning_and_plain_struct_pool();
+        let mut cfg = Cfg::new(
+            Type::UNIT,
+            1,
+            2,
+            "test".to_string(),
+            rue_air::ParamSlotModes::new(vec![false, false], vec![true, false]),
+        );
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let receiver = push(&mut cfg, CfgInstData::Param { index: 0 }, owning);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: receiver,
+            },
+            Type::UNIT,
+        );
+        let fresh = push(&mut cfg, CfgInstData::Param { index: 1 }, owning);
+        push(
+            &mut cfg,
+            CfgInstData::ParamStore {
+                param_slot: 0,
+                value: fresh,
+            },
+            Type::UNIT,
+        );
+        let dropped = push(&mut cfg, CfgInstData::Load { slot: 0 }, owning);
+        push(&mut cfg, CfgInstData::Drop { value: dropped }, Type::UNIT);
+        cfg.set_terminator(cfg.entry, Terminator::Return { value: None });
+
+        let stats = super::run(&mut cfg, &pool).unwrap();
+        assert_eq!(stats.loads_declined_reinitializable_root, 1);
+        assert_eq!(stats.loads_forwarded_single_write, 0);
+        assert_eq!(drop_operand(&cfg), dropped);
+    }
+
+    #[test]
+    fn test_owned_move_not_rerooted_by_block_local_rule() {
+        // Rule 2: `let mut t = ..; t = b; b = ..; drop t` in one block, both
+        // locals mutated. `t`'s last store is the move-out `load b`, rooted
+        // at the reinitialized `b`, so `load t` stays.
+        let (pool, owning, _) = owning_and_plain_struct_pool();
+        let mut cfg = Cfg::new(Type::UNIT, 2, 3, "test".to_string(), vec![false; 3]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let first = push(&mut cfg, CfgInstData::Param { index: 0 }, owning);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: first,
+            },
+            Type::UNIT,
+        );
+        let placeholder = push(&mut cfg, CfgInstData::Param { index: 2 }, owning);
+        push(
+            &mut cfg,
+            CfgInstData::Alloc {
+                slot: 1,
+                init: placeholder,
+            },
+            Type::UNIT,
+        );
+        let moved = push(&mut cfg, CfgInstData::Load { slot: 0 }, owning);
+        push(
+            &mut cfg,
+            CfgInstData::Store {
+                slot: 1,
+                value: moved,
+            },
+            Type::UNIT,
+        );
+        let fresh = push(&mut cfg, CfgInstData::Param { index: 1 }, owning);
+        push(
+            &mut cfg,
+            CfgInstData::Store {
+                slot: 0,
+                value: fresh,
+            },
+            Type::UNIT,
+        );
+        let dropped = push(&mut cfg, CfgInstData::Load { slot: 1 }, owning);
+        push(&mut cfg, CfgInstData::Drop { value: dropped }, Type::UNIT);
+        cfg.set_terminator(cfg.entry, Terminator::Return { value: None });
+
+        let stats = super::run(&mut cfg, &pool).unwrap();
+        // The move-out `load b` itself still forwards to `b`'s first write,
+        // an immutable parameter.
+        assert_eq!(stats.loads_forwarded_block_local, 1);
+        assert_eq!(stats.loads_forwarded_single_write, 0);
+        assert_eq!(stats.loads_declined_reinitializable_root, 1);
+        assert_eq!(drop_operand(&cfg), dropped);
     }
 }
