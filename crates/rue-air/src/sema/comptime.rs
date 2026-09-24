@@ -2688,11 +2688,11 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let mut untyped_leaves = Vec::new();
         let mut declared = seed;
         let mut opaque = false;
-        let mut negated = false;
+        let mut negates_value = false;
         let mut pending = vec![root];
         while let Some(inst_ref) = pending.pop() {
-            let data = &self.program_rir().get(inst_ref).data;
-            match data {
+            let node = &self.program_rir().get(inst_ref).data;
+            match node {
                 InstData::Add { lhs, rhs }
                 | InstData::Sub { lhs, rhs }
                 | InstData::Mul { lhs, rhs }
@@ -2712,13 +2712,13 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     operations.push(inst_ref);
                     pending.extend([*rhs, *lhs]);
                 }
-                InstData::Neg { operand } => {
+                InstData::Neg { operand: negated } => {
                     operations.push(inst_ref);
-                    if let InstData::IntConst(magnitude) = self.program_rir().get(*operand).data {
+                    if let InstData::IntConst(magnitude) = self.program_rir().get(*negated).data {
                         untyped_leaves.push(-(magnitude as i128));
                     } else {
-                        negated = true;
-                        pending.push(*operand);
+                        negates_value = true;
+                        pending.push(*negated);
                     }
                 }
                 InstData::IntConst(value) => untyped_leaves.push(*value as i128),
@@ -2750,7 +2750,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
         let checked = declared.filter(|ty| {
             !opaque
                 && self.host.type_integer_semantics(ty).is_some_and(|integer| {
-                    !(negated && integer.is_unsigned())
+                    !(negates_value && integer.is_unsigned())
                         && untyped_leaves.iter().all(|leaf| integer.fits_i128(*leaf))
                 })
         });
