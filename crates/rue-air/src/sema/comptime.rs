@@ -4781,7 +4781,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                 for (name, field) in field_inits {
                     let name = self.name_from_rir(name.into());
                     let slot = host_value!(
-                        self.child_slot_type(ty.as_ref(), ComptimeChildSlot::StructField(&name))
+                        self.child_slot_type(ty.as_ref(), ComptimeChildSlot::Field(&name))
                     );
                     values.push((name, outcome_value!(self.eval_in_slot(field, slot, env))));
                 }
