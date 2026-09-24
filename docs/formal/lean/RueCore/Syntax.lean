@@ -43,7 +43,7 @@ scoped for the mechanization spike:
   elaboration resolves the name and the field order (`3.6:15`).
 
 No borrows/loans (Λ is ambiently empty in the current core anyway — §5
-preamble), no by-reference parameters, no loops, no accessor calls: those are
+preamble), no by-reference parameters, no `continue`, no accessor calls: those are
 the next milestones, not this slice's scope.
 
 ## Which projections this fragment may move
