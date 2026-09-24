@@ -424,6 +424,8 @@ impl<'a>
             const_module_members: AHashMap::new(),
             defining_file: Some(ctx.current_file_id),
             expected_result: None,
+            declared_integer_locals: AHashMap::new(),
+            declared_integer_checks: AHashMap::new(),
         }
     }
 }
