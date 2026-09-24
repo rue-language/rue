@@ -525,6 +525,14 @@ impl<'a> Verifier<'a> {
     }
 
     fn verify(mut self) -> Result<(), CfgVerificationError> {
+        // The growth heuristics subtract the recorded count, so a write that
+        // bypassed `set_inst_data` would silently skew inlining.
+        let (recorded, counted) = self.cfg.move_out_counts();
+        if recorded != counted {
+            return Err(self.error(format_args!(
+                "the CFG records {recorded} MoveOut values but its arena holds {counted}"
+            )));
+        }
         self.verify_block_table_and_attachments()?;
         self.verify_targets_and_slices()?;
         // Every target is in bounds and every payload slice is valid by this
@@ -4474,6 +4482,27 @@ mod tests {
             guarded: true,
             ..ConditionalMoveShape::default()
         });
+    }
+
+    #[test]
+    fn verifier_rejects_a_move_out_count_that_drifted_from_the_arena() {
+        let (mut cfg, pool) = conditional_move_cfg(ConditionalMoveShape {
+            guarded: true,
+            ..ConditionalMoveShape::default()
+        });
+        let marker = (0..cfg.value_count() as u32)
+            .map(CfgValue::from_raw)
+            .find(|&value| matches!(cfg.get_inst(value).data, CfgInstData::MoveOut { .. }))
+            .unwrap();
+        // Writing through `get_inst_mut` bypasses `set_inst_data`.
+        cfg.get_inst_mut(marker).data = CfgInstData::Const(0);
+        let error = cfg.finish(&pool).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("records 1 MoveOut values but its arena holds 0"),
+            "{error}"
+        );
     }
 
     #[test]
