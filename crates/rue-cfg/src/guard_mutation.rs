@@ -69,6 +69,17 @@ impl ValidatedCfg {
     /// accepts; the builder emits such guards where it cannot see that a
     /// move is always followed by a reinitialization (a loop head joining
     /// the entry and a back edge).
+    ///
+    /// The analysis reads only `Store`s of a literal `Const 0` as clearing
+    /// the flag, so it panics unless every write to the flag slot is a
+    /// `Store` of `Const 0` or `Const 1`, the only writes the builder emits
+    /// (`build.rs`, `update_drop_flag`). Without that check a builder change
+    /// that cleared a flag some other way would turn a harmful guard
+    /// deletion into a "benign" one here.
+    ///
+    /// # Panics
+    ///
+    /// When the flag slot receives any other write.
     #[doc(hidden)]
     pub fn drop_flag_guard_may_skip(&self, guard: BlockId) -> bool {
         let Terminator::Branch { cond, .. } = &self.get_block(guard).terminator else {
@@ -86,6 +97,28 @@ impl ValidatedCfg {
         let Some((load, flag)) = flag else {
             return false;
         };
+        for block in self.blocks() {
+            for &value in &block.insts {
+                let data = &self.get_inst(value).data;
+                let written = match data {
+                    CfgInstData::Store { slot, .. } | CfgInstData::Alloc { slot, .. } => {
+                        *slot == flag
+                    }
+                    CfgInstData::PlaceWrite { place, .. } => {
+                        place.base == crate::inst::PlaceBase::Local(flag)
+                    }
+                    _ => false,
+                };
+                let flag_value = matches!(data, CfgInstData::Store { value: stored, .. }
+                    if matches!(self.get_inst(*stored).data, CfgInstData::Const(0 | 1)));
+                assert!(
+                    !written || flag_value,
+                    "drop flag slot {flag} receives {value} in block {}, which is not a Store \
+                     of Const 0 or Const 1",
+                    block.id
+                );
+            }
+        }
         // The flag's last write in a block, from its start to `until`.
         let last_write = |block: BlockId, until: Option<crate::inst::CfgValue>| {
             let mut last = None;

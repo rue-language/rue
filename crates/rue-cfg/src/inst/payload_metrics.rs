@@ -34,13 +34,13 @@ impl Cfg {
                 CfgInstData::Call { args, .. } | CfgInstData::CallIndirect { args, .. } => {
                     account(7, args.extent(), std::mem::size_of::<CfgCallArg>())
                 }
-                CfgInstData::PlaceRead { place } | CfgInstData::PlaceWrite { place, .. } => {
-                    account(
-                        9,
-                        place.projections.extent(),
-                        std::mem::size_of::<Projection>(),
-                    )
-                }
+                CfgInstData::PlaceRead { place }
+                | CfgInstData::PlaceWrite { place, .. }
+                | CfgInstData::MoveOut { place } => account(
+                    9,
+                    place.projections.extent(),
+                    std::mem::size_of::<Projection>(),
+                ),
                 _ => {}
             }
         }
