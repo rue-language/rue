@@ -43,7 +43,7 @@ The theorems below are about a *fragment* of the core calculus
 rule by rule and form by form; its two coverage lines, quoted here so the
 boundary is visible before the statements are:
 
-- *Calculus rules → declarations*: 82 of 97 labeled §5/§6 rules are mechanized; 15 are *not yet mechanized*.
+- *Calculus rules → declarations*: 81 of 97 labeled §5/§6 rules are mechanized; 16 are *not yet mechanized*.
 - *Abstract syntax forms → declarations*: 30 of 35 §2 forms have a core image (8 of them partial); 5 are *not yet mechanized*.
 
 The forms that count as partial are `S`, `E`, `e1 ⊕ e2`, `⊖ e`, `e1 ⋚ e2`,
