@@ -36,98 +36,56 @@ and arm `j` is variant `j`'s — that is exhaustiveness (`4.7:9`, `4.7:10`) with
 coverage search. **Arity**: each arm's payload locals are the variant's declared
 components, which `armCtx` supplies, so a wrong arity is not expressible rather
 than rejected. **The per-arm leak check**: `NoResidualLinear` over the entries
-the arm pops, which is `letIn`'s check read over a whole payload. **The folded
-join**: `Ctx.joinAll` over the arms' outgoing contexts in declaration order.
+the arm pops, which is `letIn`'s check read over a whole payload, for an arm
+that continues. **The folded join**: `Ctx.joinOpts`, the fold `Ctx.joinAll`
+over the continuing arms' outgoing contexts in declaration order.
 
 The one thing `check` must *choose* is the arms' shared type, since §5.5 states
 it as one `T` and lets (Sub-Never) coerce a diverging arm to it. `firstArmTy`
-takes the first arm's, and every other arm is compared against that — the same
-choice `ite` makes for its two arms. The first arm is therefore checked twice,
-which costs time and nothing else.
+takes the first arm's that has one — skipping an arm whose type is `never` —
+and every other arm is compared against that (`CTy.fitsC`), the same choice
+`ite` makes for its two arms (`CTy.meet`). The arms are therefore checked
+twice, which costs time and nothing else.
 
-What the choice *does* cost is the two costs the `return`/`@panic` paragraphs
-below spell out, and `match` carries both. Neither is positional and neither is
-`firstArmTy`'s doing: `check` concludes a `return` or `@panic` at the enclosing
-`R` and at the state in force, wherever the form stands.
+## `⊥`, algorithmically
 
-The **type** cost, in any arm position. `let b: bool = match e { K0 => return 7,
-K1 => true, K2 => false }` is refused because `firstArmTy` reads `R` off the
-diverging first arm and `bool` is not `R`; put the `return` in the last arm
-instead and it is refused because that arm checks at `R` against the `bool` the
-first two fixed. §5.5 accepts both, and so does the Rue compiler — it runs them
-to `true 5` and `false 5`.
+`check` computes §5.3's outgoing result `Ω` (`Out`) and a type that may be
+`never` (`CTy`). A form the rules type at `⊥` — `return`, `@panic`, and every
+`-Bottom` rule — produces `⟨none, Δ⟩`, and the forms that consume a result
+stop exactly where the rules do: a diverging operand ends a strict context
+((Strict-Bottom) §5.3), a diverging prefix ends a sequence or a `let`
+((Seq-Bottom), (Let-Bottom)), and a branch joins only the arms that continue
+(`Ctx.joinOpt`, `Ctx.joinOpts`, §5.5). A `never` result is one whose rule
+concludes at every type, and `check_sound` says so: `check P R Γ e = some (c,
+Ω)` gives a derivation at every type `c` admits (`CTy.fits`).
 
-The **state** cost, exactly as for `ite`. A diverging arm hands `Ctx.joinAll`
-the state in force at the form, where §5.7 gives it `⊥` and the join reads
-nothing from it. So `let v: T0 = …; let r = match e { K0 => { @drop(v);
-return 7 }, K1 => 2, K2 => 3 }; @drop(v); r` on a *linear* `T0` is refused: the
-diverging arm's `MovedOut` meets the other arms' `Owned` at a `Linear` type and
-the join is ill-formed. `Typed` derives that program (the `ret` rule may take a
-sibling's outgoing context), the machine runs it, and the Rue compiler accepts
-it and prints `1 2`.
+Before RUE-2368 `check` had no `⊥`: it concluded a `return` or `@panic` at the
+enclosing return type `R` and at the state in force, and handed that state to
+the join, where §5.7 contributes nothing. That refused five shapes the
+judgment derives and the compiler accepts, and they are seeded now
+(`Corpus.lean`): a `return` arm after the arm dropped a binding the other arm
+keeps (`if_return_arm_affine`), the same at a `match` over a linear binding
+(`match_return_arm_linear`), a `match` whose first arm is a `return` and whose
+type is its second arm's (`match_never_first_arm`), a `@panic` arm beside an
+arm that consumes a linear binding (`if_panic_arm_linear`), and a `@panic`
+past a live linear binding (`panic_past_linear`, `Examples.panicPastLinear`).
 
-## `return` and `@panic`, algorithmically
+## What completeness still costs
 
-§5.7 types `return e` at `never` and (Sub-Never) coerces it to whatever the
-context needs, with a divergent outgoing state `⊥` that a join reads nothing
-from; (Panic) §5.8 gives `@panic(s)` the same treatment. `Typed.ret` and
-`Typed.panic` fold both in by concluding at *any* type and *any*
-same-skeleton outgoing context, so an algorithm has to pick. `check` picks the
-enclosing function's return type `R` and the state in force at the form — for
-`return`, after the operand; for `@panic`, the incoming state, since the
-message is a literal the form carries. That is the choice that makes the
-shapes the fragment writes go through: a body that ends in `return` or
-`@panic`, and an `if` whose arms are one of those and a value of the
-function's return type.
-
-The paragraphs below spell the cost out for `return`, and `@panic` carries
-the same two: `1 + @panic("x")` inside a `bool`-returning function has a
-derivation and `check` rejects it, and a `@panic` arm of an `if` contributes
-its incoming state to §5.5's join where §5.7 excludes it. `@panic` carries a
-**third** that `return` does not, and it is the shape `Typed.panic`'s missing
-residual-linear premise exists for; the state paragraph below names it. The
-generator emits neither form (`Gen.lean`).
-
-That choice is a *restriction* of the rule, so `check_sound` still holds, and
-it is where completeness is lost. Both halves of the choice cost something,
-and the second costs more than the first.
-
-The **type** choice: `1 + return true` inside a `bool`-returning function has
-a derivation and `check` rejects it, because the algorithm never re-types a
-`return` at the type its context wants. Contrived, and no program a reader
-would write.
-
-The **state** choice: §5.7 gives a diverging arm the outgoing state `⊥`, which
-§5.5's join reads *nothing* from. `check` hands the join the state in force
-after the operand instead, so a `return` arm does contribute — conservatively
-— and a binding that arm moved out is `MovedOut` after the `if`, hence
-unusable. `main() -> int { let x = mk 5; (if c { @drop(x); return 0 } else { 5 }); @drop(x) }`
-is the shape: `Typed` derives it (the `ret` rule may take the other arm's
-outgoing context), the machine runs it, the Rue compiler accepts it, and
-`check` rejects it. That is a program a reader would write, so the rejection
-is not merely incomplete — it is *wrong* about the program, and anything that
-reads a `reject` verdict as "the compiler must reject this too"
-(`Corpus.lean`'s verdict contract) must not be handed that shape.
-
-The state choice costs `@panic` one shape more, and it is the only one where
-(Panic) and (Return-Value) differ at all: a `@panic` past a **live linear**
-binding. `return` there would fail §5.6's frame-wide obligation, which
-`Typed.ret` carries as a premise; `@panic` carries `⊥_panic`, which §5.7
-exempts, so `Typed.panic` has no such premise and the judgment derives the
-program. `check` hands the enclosing `let` the state in force at the form
-instead of `⊥`, sees the binding still `Owned` at a `Linear` type, and
-refuses. The Rue compiler accepts it, runs it, and does not run the
-destructor either — `Examples.panicPastLinear` is the program, with the
-derivation, the rejection and the run all pinned. The same shape in one arm
-of an `if`, and as a sibling of a linear call argument, behave the same way.
-At an **affine** binding there is nothing to see: `Typed.letIn`'s premise is
-already vacuous at a non-linear type, so `panic` and `ret` agree.
-
-So completeness — `Typed` implies `check` succeeds — is not open here: it is
-**false**, and the counterexamples above are why. What is deferred is a
-`check` that carries §5.7's ⊥ provenance (a `div` flag on the result, excluded
-from the join) and closes both; until then the fragment's corpus and generator
-stay off the shapes it gets wrong (`Corpus.lean`, `Gen.lean`).
+`check_sound` holds, and completeness — `Typed` implies `check` succeeds — is
+still **false**, at one shape: an operator whose operand is `never`. §5.3's
+(Strict-Bottom) concludes at the construct's own type `T_E`, and for an
+operator that type is read off the operand's: `(return 1) + 2` is typed at
+`i64` by `binopBot` with the operand coerced to `i64`, and at every other
+integer type the same way. `check` has no type to name there, so it refuses
+a `never` operand to an operator (`+`, `-`, `!`, `~`) rather than guess
+(`Explain`'s `Premise.neverOperand`). It refuses one to a cast, a float
+intrinsic, `@dbg` and a repeat form as well, where the form does fix `T_E` and
+a derivation exists; that is a simplification of the algorithm, not a limit of
+the rules. A `never` *right* operand is fine — the left one has already fixed
+the type — as is a `never` argument, field, element, condition or scrutinee,
+whose position names its own type. Nothing a reader would write turns on it, and the compiler reports the
+unreachable operand anyway; `Gen.lean` emits no `return` or `@panic` at all.
 -/
 
 namespace RueCore

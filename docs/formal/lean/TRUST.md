@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 303.
+- Theorems checked: 322.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -169,9 +169,14 @@ and diffs them against the committed copies.
 | `Ctx.joinAll_perm` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `Ctx.joinFold_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `Ctx.joinAll_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `Out.skelOk_none` | `RueCore.Statics` | *none* |
+| `Ctx.joinOpt_skel` | `RueCore.Statics` | `propext` |
+| `Ctx.joinOpts_skel` | `RueCore.Statics` | `propext` |
 | `Typed.skel_preserved` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `TypedArgs.skel_preserved` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `TypedArms.arm_skel` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `Typed.skel_of` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `TypedArgs.skel_of` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `inBoundsIdx_eq_true` | `RueCore.Dynamics` | `propext` |
 | `dropEventsList_eq_flatten` | `RueCore.Dynamics` | `propext` |
 | `HasTys.length_eq` | `RueCore.Soundness` | `propext` |
@@ -284,6 +289,9 @@ and diffs them against the committed copies.
 | `Matches.join_right` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `Matches.joinFold` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `Matches.joinAll` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `Ctx.joinOpts_mem` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `Matches.joinOpt_left` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `Matches.joinOpt_right` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `mintParams_store` | `RueCore.Soundness` | `propext` |
 | `mintParams_fresh` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `matches_mintParams` | `RueCore.Soundness` | `Quot.sound`, `propext` |
@@ -295,13 +303,18 @@ and diffs them against the committed copies.
 | `TypedArgs.length_eq` | `RueCore.Soundness` | `propext` |
 | `Val.ints_of_hasTys` | `RueCore.Soundness` | `propext` |
 | `Contents.resolveDyn_ok` | `RueCore.Soundness` | `Quot.sound`, `propext` |
+| `EvalOk.ok_inv` | `RueCore.Soundness` | `propext` |
+| `ArgsOk.ok_inv` | `RueCore.Soundness` | `propext` |
 | `EvalOk.mono_store` | `RueCore.Soundness` | `propext` |
 | `AbortOk.mono_store` | `RueCore.Soundness` | `propext` |
 | `EvalOk.withTrace` | `RueCore.Soundness` | `propext` |
 | `AbortOk.withTrace` | `RueCore.Soundness` | `propext` |
 | `EvalOk.of_abort` | `RueCore.Soundness` | `propext` |
 | `EvalOk.toAbort` | `RueCore.Soundness` | `propext` |
+| `EvalOk.bot_abort` | `RueCore.Soundness` | `propext` |
+| `EvalOk.bot_andThen` | `RueCore.Soundness` | `propext` |
 | `EvalOk.bind` | `RueCore.Soundness` | `propext` |
+| `EvalOk.bindSame` | `RueCore.Soundness` | `propext` |
 | `EvalOk.weaken` | `RueCore.Soundness` | `propext` |
 | `args_sound` | `RueCore.Soundness` | `propext` |
 | `soundness` | `RueCore.Soundness` | `Quot.sound`, `propext` |
@@ -325,12 +338,18 @@ and diffs them against the committed copies.
 | `no_linear_leak` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `no_linear_overwrite` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `no_linear_discard` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `check_sound` | `RueCore.Checker` | `propext` |
-| `checkIdx_sound` | `RueCore.Checker` | `propext` |
-| `checkArms_sound` | `RueCore.Checker` | `propext` |
-| `checkArgs_sound` | `RueCore.Checker` | `propext` |
+| `CTy.eq_of_fits` | `RueCore.Checker` | `propext` |
+| `CTy.fits_self` | `RueCore.Checker` | `propext` |
+| `CTy.fits_never` | `RueCore.Checker` | *none* |
+| `CTy.fits_pick` | `RueCore.Checker` | `propext` |
+| `CTy.fitsC_fits` | `RueCore.Checker` | `propext` |
+| `CTy.meet_fits` | `RueCore.Checker` | `propext` |
+| `check_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
+| `checkIdx_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
+| `checkArms_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
+| `checkArgs_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
 | `Ty.grounded_declIds` | `RueCore.Checker` | `propext` |
-| `checkFn_sound` | `RueCore.Checker` | `propext` |
+| `checkFn_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
 | `checkStructDecl_sound` | `RueCore.Checker` | `propext` |
 | `checkStructs_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
 | `checkEnumDecl_sound` | `RueCore.Checker` | `propext` |

@@ -1787,11 +1787,11 @@ def panicPastAffine : Expr :=
 `Typed.panic` and `Typed.ret` actually differ: `ret` would need
 `NoResidualLinear` here and `panic` does not, so the judgment derives this
 program (`panicPastLinear_typed`) and the machine runs it to a trap with an
-empty trace. `check` rejects it all the same — its state choice hands the
-`let`'s leak check the incoming `Owned` state — which is the third thing the
-algorithm's narrowness costs (`Checker.lean`). The compiler accepts and runs
-it: `panic: boom`, exit 101, nothing on stdout, so `S3`'s destructor does not
-run there either (verified by hand). -/
+empty trace. `check` accepts it too, since it carries §5.7's `⊥`: the `let`'s
+tail diverges, so no scope exit is reached on a normal path (before RUE-2368
+`check` handed that scope exit the incoming `Owned` state and refused). The
+compiler accepts and runs it: `panic: boom`, exit 101, nothing on stdout, so
+`S3`'s destructor does not run there either (verified by hand). -/
 def panicPastLinear : Expr :=
   letIn false (resLD (lit 7)) (panic "boom")
 
@@ -2469,9 +2469,9 @@ monitored.
 
 `Dynamics.lean`'s "Pending values" section says why `eval` models it that
 way rather than patching it: the calculus has the gap — the unwinding rule
-walks only σ, and §5.7's strict-context bottom rule (`Strict-Bottom` there,
-which the fragment does not mechanize) imposes no discard check on the
-siblings already evaluated — and the Rue compiler behaves the same. Closing it
+walks only σ, and §5.3's (Strict-Bottom), which `Typed.consBot` and the other
+`-Bottom` variants mechanize, imposes no discard check on the siblings
+already evaluated — and the Rue compiler behaves the same. Closing it
 is an open spec decision, RUE-2316. These three programs are the
 kernel-checked witnesses, and the reason `no_violation`'s docstring names the
 carve-out. -/
@@ -2643,13 +2643,12 @@ example : checkProgram (prog tI64 joinLinearFieldOneArm) = false := by rfl
 
 Each `checkProgram … = false` below is a program the **judgment** cannot derive
 either, not merely one `check` is incomplete on — each was checked by hand
-against `Typed`, and each is a shape where the two coincide, with no diverging
-arm and no type choice for `check` to get wrong. The distinction is real and
-has a name: an arm that drops a linear binding and returns, beside arms that
-leave it, is `checkProgram = false` and *is* `Typed`-derivable, because
-`Typed.ret` may pick the outgoing context the join needs and `Ctx.join Γ Γ` is
-`Γ` (`Checker.lean`'s state-cost paragraph — the Rue compiler accepts that
-program and prints `1 2`). No witness here has that shape.
+against `Typed`, and each is a shape where the two coincide. An arm that drops
+a linear binding and returns, beside arms that leave it, was once the shape
+where they did not: `check` gave the `return` arm a state, and the join
+refused it. The judgment carries §5.3's `Ω` now, a diverging arm contributes
+nothing to the join, and `check` accepts that program as the Rue compiler does
+(`Corpus.lean`'s `match_return_arm_linear`, which prints `1 2`).
 -/
 
 /-- §3's class assignment holds of the enum declarations too (`6.3:19`), so
@@ -3550,6 +3549,63 @@ retired cell refuses instead of retiring it twice (§6.9). `FrameMatches` is
 what excludes this state for a well-typed program. -/
 example : eval demoOps demoFuel (scalarProg tI64 unitLit) [.dead] { env := [0], scope := [0] }
     (ret (lit 1)) = .stuck .useAfterDrop := by rfl
+
+/-! ## A diverging arm contributes nothing to the join (RUE-2368)
+
+§5.5 excludes a diverging arm's state from the branch join, and §5.7 types it
+`never`, which (Sub-Never) coerces to its siblings' type. The judgment has
+always derived these programs: before it carried §5.3's `Ω` it let a
+`return` or `@panic` conclude at *any* context, and a derivation could pick
+the sibling's. `check` could not pick, and refused all five, which is the
+incompleteness `Checker.lean`'s docstring recorded. Now that `check` carries
+`⊥` it accepts them, and the compiler does too. Each was run against the
+compiler before it was seeded. -/
+
+/-- A `return` in one arm of an `if`, after that arm dropped a binding: the
+arm is `⊥`, so the join is the other arm's state, in which the binding is still
+`Owned`, and it is dropped after the `if`. The condition is `false`, so the
+run takes the other arm: `S1`'s destructor prints `7`, then the value `5`. -/
+def ifReturnArmAffine : Expr :=
+  letIn false (resA (lit 7))
+    (letIn false (ite (boolLit false) (seq (drop (.var 0)) (ret (lit 0))) (lit 5))
+      (seq (drop (.var 1)) (use (.var 0))))
+
+/-- The same at a `match` over a **linear** binding: arm `K0` consumes it and
+returns, arm `K1` leaves it, and the join over the one continuing arm leaves it
+`Owned` for the `@drop` after the `match`. §5.5's join with the `return` arm's
+`MovedOut` state in it would be a linear disagreement (E0443), which is what
+the old `check` refused. The run takes `K1`: `S3`'s destructor prints `1`, then
+the value `2`. -/
+def matchReturnArmLinear : Expr :=
+  letIn false (resLD (lit 1))
+    (letIn false
+      («match» (mkEnum eTagIdx 1 []) [seq (drop (.var 0)) (ret (lit 7)), lit 2])
+      (seq (drop (.var 1)) (use (.var 0))))
+
+/-- A `match` whose **first** arm diverges, typed by its second: the arms share
+one type §5.5 fixes and (Sub-Never) supplies for the `return`, so the `match`
+is `bool` although the enclosing function returns `i64`. The old `check` read
+the type off the first arm, which was the function's return type, and refused.
+The run takes `K1`: `true`, then `5`. -/
+def matchNeverFirstArm : Expr :=
+  letIn false
+    («match» (mkEnum eTagIdx 1 []) [ret (lit 7), boolLit true])
+    (seq (dbg (use (.var 0))) (lit 5))
+
+/-- A `@panic` in one arm of an `if` whose other arm consumes a **linear**
+binding: the panic arm is `⊥` and excluded, so the binding is `MovedOut` after
+the `if` and the `let` owes nothing at its scope exit. The old `check` gave the
+panic arm the incoming state, where the binding is still `Owned`, and the join
+was a linear disagreement. The run takes the consuming arm: `S3`'s destructor
+prints `1`, then the value `3`. -/
+def ifPanicArmLinear : Expr :=
+  letIn false (resLD (lit 1))
+    (ite (boolLit true) (seq (drop (.var 0)) (lit 3)) (panic "x"))
+
+example : checkProgram (prog tI64 ifReturnArmAffine) = true := by rfl
+example : checkProgram (enumProg tI64 matchReturnArmLinear) = true := by rfl
+example : checkProgram (enumProg tI64 matchNeverFirstArm) = true := by rfl
+example : checkProgram (prog tI64 ifPanicArmLinear) = true := by rfl
 
 #eval checkProgram (scalarProg tI64 scalars)
 #eval checkProgram (prog tI64 linearLeaked)

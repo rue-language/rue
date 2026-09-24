@@ -29,16 +29,14 @@ One array of case objects. Fields:
 
   An `accept` verdict is backed by a proof (`checkProgram_sound` plus §7), so
   a compiler that rejects one is wrong. A `reject` verdict is **not**: it is
-  the absence of an acceptance from an algorithm that is deliberately
-  narrower than the rule, so it is only trustworthy on shapes where `check`
-  is complete. It is not complete on the two never-typed forms, `return` and
-  `@panic`: a diverging arm of an `if` contributes its own state to §5.5's
-  join, where §5.7 excludes a diverging arm's state entirely, so a binding
-  that arm moved out is unusable after the `if` and a program the calculus
-  derives — and the compiler accepts — is rejected here (`Checker.lean`,
-  "what completeness costs"). That shape would be a *false* bridge failure,
-  so nothing produces it: the seed cases below use `return` and `@panic` only
-  where `check` is complete, and `Gen.lean` emits neither.
+  the absence of an acceptance from an algorithm that is narrower than the
+  rule, so it is only trustworthy on shapes where `check` is complete. Since
+  `check` carries §5.7's `⊥` (RUE-2368) the one shape it is not complete on is
+  an operator whose operand is `never`, such as `(return 1) + 2`, where it
+  names no type (`Checker.lean`, "what completeness still costs"). That shape
+  would be a *false* bridge failure, so no seed case has it and `Gen.lean`
+  emits neither `return` nor `@panic`. A diverging arm beside a continuing one
+  is no longer such a shape, and five seed cases below exercise it.
 * `expected` — the interpreter's outcome for an accepted program:
   `{"kind": "ok", "stdout": [<line>...], "exit": 0}`, where the lines are the
   run's **observable events** in trace order — one per user destructor and one
@@ -833,7 +831,27 @@ def cases : List Case := [
   { name := "array_zero_length_field_dyn_read",
     description := "h.x1[i] at i = 0, where the field x1 is an [i64; 0]: every index into a zero-length array is out of bounds, so the read takes (D-Index-Trap) §6.5's bounds trap and nothing prints. The bridge was red on this one until RUE-2345 was fixed: the compiler reported an internal error in code generation (a zero-sized place reached through a field was not diverted to the zero-sized address). It now traps as the model does, and the case stays as the regression signal.",
     rules := ["(Use-Untrackable-Dynamic-Copy) §5.1", "(D-Index-Trap) §6.5", "7.1:11"],
-    prog := Examples.arrayZeroLengthFieldDynRead }
+    prog := Examples.arrayZeroLengthFieldDynRead },
+  { name := "if_return_arm_affine",
+    description := "A return in one arm of an if, after that arm dropped an affine binding: the arm is ⊥, so §5.5's join is the other arm's state and the binding is still Owned for the @drop after the if. The checker refused this before it carried §5.7's ⊥ (RUE-2368); the compiler accepts it. The run takes the other arm: the destructor prints 7, then the value 5.",
+    rules := ["(If) §5.5", "(Return-Value) §5.7", "(Sub-Never) §5.7", "(@Drop) §5.3", "3.8:51"],
+    prog := Examples.prog Examples.tI64 Examples.ifReturnArmAffine },
+  { name := "match_return_arm_linear",
+    description := "A match arm that consumes a linear binding and returns, beside an arm that leaves it: the returning arm is ⊥ and excluded from the join, so the binding is Owned after the match and the @drop there consumes it. A join that read the returning arm's MovedOut state would be a linear disagreement (E0443), which the checker reported before RUE-2368. The run takes K1: the destructor prints 1, then the value 2.",
+    rules := ["(Match) §5.5", "(Return-Value) §5.7", "(Sub-Never) §5.7", "(@Drop) §5.3", "3.8:51"],
+    prog := Examples.enumProg Examples.tI64 Examples.matchReturnArmLinear },
+  { name := "match_never_first_arm",
+    description := "A match whose first arm is a return and whose second is true: (Sub-Never) coerces the return to bool, so the match is bool inside an i64 function. The checker once read the arms' type off the first arm and refused; it now takes the first arm that has a type. The run takes K1: true, then 5.",
+    rules := ["(Match) §5.5", "(Sub-Never) §5.7", "(Return-Value) §5.7", "(Dbg) §5.8"],
+    prog := Examples.enumProg Examples.tI64 Examples.matchNeverFirstArm },
+  { name := "if_panic_arm_linear",
+    description := "A @panic in one arm of an if whose other arm consumes a linear binding: the panic arm is ⊥ and excluded, so the binding is MovedOut after the if and the let owes nothing at its scope exit. The checker once gave the panic arm the incoming Owned state, a linear join disagreement. The run takes the consuming arm: the destructor prints 1, then the value 3.",
+    rules := ["(If) §5.5", "(Panic) §5.8", "(Sub-Never) §5.7", "(@Drop) §5.3", "3.8:51"],
+    prog := Examples.prog Examples.tI64 Examples.ifPanicArmLinear },
+  { name := "panic_past_linear",
+    description := "A @panic past a live linear binding whose type declares a destructor: §5.7 exempts the ⊥_panic edge from §5.6's obligation and §6.12 runs no drop, so the value is consumed zero times with no violation and nothing prints before the trap. The let's tail is ⊥, so the checker reads no scope exit; before RUE-2368 it refused. The compiler accepts it.",
+    rules := ["(Panic) §5.8", "(Let) §5.3", "(D-Panic) §6.12", "3.8:51"],
+    prog := Examples.prog Examples.tI64 Examples.panicPastLinear }
 ]
 
 /-! ## Witnesses for the refusals no `Examples.lean` program reaches -/

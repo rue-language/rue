@@ -50,10 +50,15 @@ in parentheses.
 `Statics.lean` writes the same judgment as
 
 ```lean
-inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Ctx → Prop
+inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop
 ```
 
-Read `Typed P R Γ e T Γ'` as the judgment above. `P` is the program: its
+Read `Typed P R Γ e T Ω` as the judgment above, with §5.3's outgoing result
+`Ω` for `Σ'`: `Ω` (`Out`) is a normal outgoing state `some Σ'`, or `none` for
+§5.7's `⊥` when evaluation never continues past `e`, together with the edge
+deliveries `Δ` a later rule reads a state from. (The fragment records only
+`⟨break, Σ⟩` deliveries, and has no `break` yet, so `Δ` is always empty; a
+`return` discharges its obligation where it fires.) `P` is the program: its
 functions are where (Call) §5.8 looks up a callee's signature, and its
 declarations (`P.decls`) are what types are read against. `R` is the enclosing
 function's declared return type, which (Return-Value) §5.7 checks a `return`
@@ -76,16 +81,18 @@ Four things differ in shape and not in content:
 - **Each rule is a constructor.** `Typed.useMove` *is* (Use-Move): its
   arguments are the rule's premises, its result is the rule's conclusion, and
   its doc-comment names the rule and the prose paragraph it encodes. A program
-  `e` is well-typed exactly when a value of type `Typed P R [] e T Γ'` exists
-  for some `T` and `Γ'`; that is what "there is a derivation" means.
+  `e` is well-typed exactly when a value of type `Typed P R [] e T Ω` exists
+  for some `T` and `Ω`; that is what "there is a derivation" means.
 - **`never` is folded into the rules that produce it.** §5.7 types
   `return e` at `never` and lets (Sub-Never) coerce it to whatever the context
   needs, with a divergent outgoing state `⊥`. `Ty` has no `never`: a `never`
   value does not exist (`3.4:1`), so nothing is ever typed at it dynamically.
-  Instead `Typed.ret` and `Typed.panic` conclude at *any* type and at *any*
-  outgoing context of the same skeleton, which is what `never` and `⊥`
-  license. `INDEX.md` records (Sub-Never) at `Typed.ret` and `Typed.panic`,
-  and at (Match), whose arms may diverge.
+  Instead `Typed.ret`, `Typed.panic` and the `-Bottom` rules §5.7 types at
+  `never` conclude at *any* type, and at `⊥`. The `⊥` itself is in the
+  judgment: a branch joins only the arms that continue, and nothing is typed
+  past a diverging subexpression, as §5.3's (Strict-Bottom), (Seq-Bottom) and
+  (Let-Bottom) say. `INDEX.md` records (Sub-Never) at the rules that fold it
+  in.
 
 For example, (Use-Move) §5.1 says: a use of a `fully-owned`, non-`Copy` place
 has the place's type and marks the place `MovedOut`, removing every path under
@@ -100,7 +107,7 @@ it. In Lean:
     noDtorPrefix P.decls en.ty p.path = true →
     declaredPrefix P.decls en.ty p.path = none →
     rootIdxOnly P.decls en.ty p.path = true →
-    Typed P R Γ (.use p) T (Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut)))
+    Typed P R Γ (.use p) T ⟨some (Γ.set p.root (en.setSt (en.st.setAt p.path .movedOut))), []⟩
 ```
 
 Premise by premise:
@@ -124,7 +131,8 @@ Premise by premise:
    versus `.proj` off the place, because it is the type at a node that makes a
    step an index step.
 
-The conclusion marks exactly `p`. The calculus's one remaining premise,
+The conclusion marks exactly `p`, and its `Ω` is `⟨some Σ', []⟩`: the use
+continues, and makes no delivery. The calculus's one remaining premise,
 `p not loaned`, concerns loans, which are outside the fragment; `INDEX.md`
 lists which rules and sections are in.
 
@@ -332,8 +340,8 @@ signature.
 
 ```lean
 theorem soundness (M : FloatModel) (hwf : WfProgram P) :
-    ∀ fuel, Typed P R Γ e T Γ' → FrameMatches P.decls Γ φ H →
-      EvalOk P.decls T R Γ' φ H (eval M.toFloatOps fuel P H φ e)
+    ∀ fuel, Typed P R Γ e T Ω → FrameMatches P.decls Γ φ H →
+      EvalOk P.decls T R Ω.norm φ H (eval M.toFloatOps fuel P H φ e)
 ```
 
 (implicit arguments omitted). `M` is any float model that satisfies the IEEE
@@ -344,8 +352,10 @@ of them.
 existentials, which lets the proof discharge §6.2's operand search once and
 reuse it at every form. It says:
 
-- on `.ok`, the value has the expression's type, the invariant holds at the
-  outgoing context `Γ'`, and the cells outside the frame are untouched;
+- on `.ok`, the normal outgoing state `Ω.norm` is some `Σ'`, the value has the
+  expression's type, the invariant holds at `Σ'`, and the cells outside the
+  frame are untouched — and when `Ω` is `⊥` there is no `.ok` at all, so an
+  expression the rules type as divergent never completes normally;
 - on `.returned`, the value has the enclosing function's return type `R`, and
   the cells outside the frame are untouched;
 - on `.panic` and `.outOfFuel`, nothing;
@@ -369,7 +379,7 @@ The named corollaries (`no_use_after_move`, `no_linear_leak`, …) each restate
 **From a program to the theorem.** The theorem quantifies over derivations.
 To apply it to a *program* you need to know a derivation exists, and
 `Checker.lean` is how you find out. `check P R Γ e` runs the §5 rules as an
-algorithm, returning the type and outgoing context or rejecting.
+algorithm, returning the type (possibly `never`) and `Ω`, or rejecting.
 `checkProgram P` lifts that to (Fn) §5.8 for every function, plus the entry
 point's empty parameter list. `check_sound` and `checkProgram_sound` prove
 that every acceptance is backed by a real derivation; the second produces the
@@ -384,27 +394,23 @@ So for any program, run `checkProgram`:
   is one. A rejection can also be a plain type error, such as an out-of-range
   literal, which `eval` runs without complaint.
 
-**Completeness is false, by design.** Not every derivable program is
-accepted: `check` is deliberately narrower than the rules at `return` and
-`@panic`, and `Checker.lean`'s module docstring says what that costs.
+**Completeness is false, at one shape.** Not every derivable program is
+accepted. `check` carries §5.7's `⊥`, so a diverging arm contributes nothing
+to a join and a `@panic` past a live linear binding reaches no scope exit, as
+the rules say; what it does not do is name a type for an operator whose
+operand is `never`. `(return 1) + 2` is derivable — §5.3's (Strict-Bottom)
+types it at the operator's own type, whatever integer type the `return` is
+coerced to — and `check` refuses it rather than guess. `Checker.lean`'s module
+docstring lists the forms. Nothing a reader would write turns on it.
 
-- `1 + return true` in a `bool`-returning function, which the rule re-types
-  and the algorithm does not. This one is contrived.
-- A `return` arm of an `if`. `check` hands §5.5's join the arm's state after
-  the operand, where §5.7 gives a diverging arm `⊥` and the join reads nothing
-  from it, so a binding the arm moved out is unusable after the `if`.
-  `main() -> int { let x = mk 5; (if c { @drop(x); return 0 } else { 5 }); @drop(x) }`
-  (with `mk 5` a struct literal) is derivable, runnable, accepted by the
-  compiler, and rejected here. This one is a program a reader would write,
-  so a `reject` here is wrong about the program, not merely incomplete.
-- `@panic` has the same two, and one more: a `@panic` past a live **linear**
-  binding. The judgment derives it, because §5.7 exempts `⊥_panic` from
-  §5.6's obligation; `check` sees the binding still `Owned` at a `Linear`
-  type and rejects it (`Examples.panicPastLinear`).
-
-That is why a `reject` verdict in the bridge corpus is trustworthy only on
-shapes where `check` is complete, and why the generator emits neither
-`return` nor `@panic` (`Corpus.lean`, `Gen.lean`).
+Before RUE-2368 the checker had no `⊥` and was narrower: it refused a `return`
+arm of an `if` or a `match` whose sibling kept a binding the arm moved, a
+`match` whose first arm diverges, a `@panic` arm beside an arm that consumed a
+linear binding, and a `@panic` past a live linear binding. The compiler
+accepts all five, and the corpus seeds them now (`if_return_arm_affine`,
+`match_return_arm_linear`, `match_never_first_arm`, `if_panic_arm_linear`,
+`panic_past_linear`). The generator still emits neither `return` nor `@panic`
+(`Gen.lean`).
 
 ## 5. Worked examples
 
@@ -1186,8 +1192,9 @@ fold** of the binary join over the arms in declaration order, starting from
 the first arm's state. The binary join is proved commutative
 (`OwnSt.join_comm`) and associative (`OwnSt.join_assoc`) over well-formed
 states, so `Ctx.joinAll_perm` says the fold's order does not matter. Its
-well-formedness hypothesis is needed because (Return) and (Panic) conclude at
-any context.
+well-formedness hypothesis is one every derivation from a well-formed context
+meets (`Typed.wf`): a diverging arm, which could once conclude at any context,
+contributes no state at all.
 
 Change one thing and each premise answers in turn:
 

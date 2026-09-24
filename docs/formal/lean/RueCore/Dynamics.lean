@@ -173,12 +173,11 @@ the abandoned value from being linear, so `no_linear_discard` is not affected
 by that position.
 
 That is the calculus as written, not a modelling slip. (D-Return) unwinds σ
-and nothing else, and §5's only bottom rule for an argument position — §5.7's
-strict-context rule, `Strict-Bottom` there, which this fragment does not
-mechanize because it has no ⊥ provenance to propagate — carries `⊥;δ_e`
-outward without imposing §5.3's discard check on the siblings already
-evaluated; the statics cannot reject the program without provenance they do
-not have. §6.9's own justification for
+and nothing else, and §5's only bottom rule for an argument position — §5.3's
+(Strict-Bottom), which `Typed.consBot` and the other `-Bottom` variants
+mechanize — carries `⊥;Δ_e` outward without imposing §5.3's discard check on
+the siblings already evaluated, so the statics accept the program exactly as
+the calculus does. §6.9's own justification for
 (D-Return) — "every bound cell is also registered in the frame's scope
 records" — is exactly true and exactly insufficient here, because a sibling
 temporary is not a bound cell. The Rue compiler behaves the same way (a
