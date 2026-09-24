@@ -604,9 +604,8 @@ error_contains = ["E0204", "unknown type 'comptime_int'"]
 # literal the declared type can contextualize: a value of another type is the
 # E0206 type mismatch `let k: i32 = a;` with `a: i8` is at run time, whether or
 # not its value would fit. The const path used to judge it by range alone, so
-# a fitting value was E0800 "literal out of range" and an i32 constant was
-# accepted at an f32 annotation. A block whose tail is a `let` binding's value
-# is not covered here: it needs inference (RUE-2360).
+# a fitting value was E0800 "literal out of range". A block whose tail is a
+# `let` binding's value is not covered here: it needs inference (RUE-2360).
 
 [[case]]
 name = "const_typed_integer_constant_at_wider_type_rejected"
@@ -656,17 +655,12 @@ fn main() -> i32 { K }
 compile_fail = true
 error_contains = ["E0206", "expected i32, found u8"]
 
-[[case]]
-name = "const_typed_integer_constant_at_float_type_rejected"
-spec = ["3.11:8", "3.12:11"]
-description = "An i32 constant is not an integer literal, so it does not convert to f32: E0206, where it used to be accepted"
-source = """
-const A: i32 = 5;
-const K: f32 = A;
-fn main() -> i32 { 0 }
-"""
-compile_fail = true
-error_contains = ["E0206", "expected f32, found i32"]
+# Documented gap: an i32 constant at a float type (`const A: i32 = 5;
+# const K: f32 = A;`) is still accepted, where run time is E0206 (3.11:8).
+# Untyped integer arithmetic at a float const (`-1`, `1 + 2`) is typed i32 by
+# the evaluator, which has no integer type to give it, and must stay accepted
+# as run time accepts it; the two are not told apart at the const site
+# (RUE-2360).
 
 [[case]]
 name = "const_typed_float_constant_at_other_width_rejected"
@@ -721,3 +715,20 @@ fn main() -> i32 { X }
 """
 compile_fail = true
 error_contains = ["E0206", "expected comptime_float, found i32"]
+
+[[case]]
+name = "const_untyped_integer_arithmetic_at_float_type_accepted"
+spec = ["3.12:11", "3.11:8", "6.5:5"]
+description = "Untyped integer arithmetic at a float const is accepted with the value run time gives: a negated literal, a sum, a difference and a negated parenthesized literal at f32 and f64, and a negated literal in a `comptime {}` block"
+source = """
+const A: f64 = -1;
+const B: f64 = 1 + 2;
+const C: f32 = 0 - 1;
+const D: f32 = -(2);
+const E: f32 = 3 - 5;
+const F: f64 = comptime { -1 };
+fn main() -> i32 {
+    if A == -1.0 && B == 3.0 && C == -1.0 && D == -2.0 && E == -2.0 && F == -1.0 { 42 } else { 1 }
+}
+"""
+exit_code = 42

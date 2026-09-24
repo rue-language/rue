@@ -1032,7 +1032,13 @@ $runtime
                                                             };
                                                             let compatible = typed.ty.as_ref().is_none_or(|found| {
                                                                 found == &ty
-                                                                    || (matches!(found, crate::durable_semantics::DurableType::ComptimeFloat)
+                                                                    // `I32` here is also untyped integer arithmetic
+                                                                    // (`-1`, `1 + 2`) the evaluator defaulted: a
+                                                                    // float declared type gives it no integer type
+                                                                    // to take, and run time accepts it at f32/f64.
+                                                                    // A declared-i32 constant looks the same at
+                                                                    // this point and is admitted too (RUE-2360).
+                                                                    || (matches!(found, crate::durable_semantics::DurableType::ComptimeFloat | crate::durable_semantics::DurableType::I32)
                                                                         && matches!(ty, crate::durable_semantics::DurableType::F32 | crate::durable_semantics::DurableType::F64)
                                                                         && matches!(value, crate::durable_semantics::DurableConstValue::Float(_)))
                                                                     // A string literal's durable value is reconstructed through
@@ -1100,15 +1106,29 @@ $runtime
                                                                 // value is not a literal, so the mismatch is the
                                                                 // body path's E0206 between the two types
                                                                 // (`let k: i32 = a;` with `a: i8`), not E0800.
+                                                                // Untyped arithmetic the evaluator defaulted
+                                                                // (`1 + 2` as i32, `1.5 + 1.0` as f64) carries
+                                                                // a type too and takes this wording, where run
+                                                                // time words it from the literal's side; the
+                                                                // two are not told apart here (RUE-2360).
                                                                 let typed_scalar = typed.ty.as_ref().filter(|found| {
                                                                     *found != &ty
                                                                         && (crate::durable_comptime::durable_int_width(found).is_some()
-                                                                            || matches!(
+                                                                            || matches!(found, crate::durable_semantics::DurableType::Bool)
+                                                                            // A float the evaluator computed at
+                                                                            // its default width (`1.5 + 1.0` as
+                                                                            // f64) is named only against another
+                                                                            // float width; elsewhere the value
+                                                                            // keeps the `comptime_float` wording.
+                                                                            || (matches!(
                                                                                 found,
-                                                                                crate::durable_semantics::DurableType::Bool
-                                                                                    | crate::durable_semantics::DurableType::F32
+                                                                                crate::durable_semantics::DurableType::F32
                                                                                     | crate::durable_semantics::DurableType::F64
-                                                                            ))
+                                                                            ) && matches!(
+                                                                                ty,
+                                                                                crate::durable_semantics::DurableType::F32
+                                                                                    | crate::durable_semantics::DurableType::F64
+                                                                            )))
                                                                 });
                                                                 let kind = match (&ty, &value, typed_scalar) {
                                                                     (_, _, Some(found)) => rue_error::ErrorKind::TypeMismatch {
