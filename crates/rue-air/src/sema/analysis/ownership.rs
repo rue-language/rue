@@ -7451,6 +7451,39 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(())
     }
 
+    /// Reject a by-ref method receiver that conflicts with an accessor-result
+    /// loan on its root in the same full expression (ADR-0062, E0259).
+    ///
+    /// `receiver_accessor_loan` is the loan the receiver place is reached
+    /// through, if any: `Some(true)` for an exclusive (`-> inout`) accessor
+    /// result, `Some(false)` for a shared (`-> borrow`) one. Calling a method
+    /// on that place uses the accessor's own loan rather than taking a new
+    /// one of the root, so it is a conflict only when an `inout self`
+    /// receiver would mutate through a shared result -- the same rule an
+    /// assignment through an accessor place follows (spec 6.6:8, 6.6:10).
+    pub(crate) fn reject_receiver_accessor_loan_conflict(
+        &self,
+        root: Spur,
+        receiver_mode: AirArgMode,
+        receiver_accessor_loan: Option<bool>,
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<()> {
+        match (receiver_mode, receiver_accessor_loan) {
+            (AirArgMode::Inout, Some(true)) | (AirArgMode::Borrow, Some(_)) => Ok(()),
+            (AirArgMode::Inout, _) => {
+                self.reject_accessor_loan_conflict(root, "as an `inout self` receiver", span, ctx)
+            }
+            (AirArgMode::Borrow, None) => self.reject_accessor_shared_loan_conflict(
+                root,
+                "as a `borrow self` receiver",
+                span,
+                ctx,
+            ),
+            _ => Ok(()),
+        }
+    }
+
     /// Check the completed-use ledgers that a nested full-expression boundary
     /// temporarily hides. Direct accessor calls and arm-loan readmission both
     /// use this check so evaluation order has one conflict rule.
