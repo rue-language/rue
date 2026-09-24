@@ -1879,7 +1879,7 @@ exit_code = 42
 
 [[case]]
 name = "comptime_type_argument_call_result_mismatch_rejected"
-spec = ["4.14:2", "6.1:5"]
+spec = ["4.14:23", "6.1:5"]
 description = "A u8 shift returned from a u64 function is E0206 when the call computes a type constructor's argument in a struct field, a signature, or a `-> T` return at T = u64 - RUE-2381"
 source = """
 fn n(comptime s: u8) -> u64 { 1 << s }
@@ -1896,13 +1896,11 @@ error_contains = ["E0206", "expected u64, found u8"]
 [[case]]
 name = "comptime_block_call_result_mismatch_rejected"
 spec = ["4.14:2", "6.1:5"]
-description = "A u8 shift returned from a u64 function is E0206 in a `comptime {}` block, directly and as a type constructor's argument"
+description = "A u8 shift returned from a u64 function is E0206 in a `comptime {}` block"
 source = """
 fn n(comptime s: u8) -> u64 { 1 << s }
-fn Arr(comptime k: u64) -> type { struct { a: [u8; k] } }
 fn main() -> i32 {
     let k = comptime { n(8) };
-    let T = comptime { Arr(n(8)) };
     @intCast(k)
 }
 """
@@ -1910,8 +1908,23 @@ compile_fail = true
 error_contains = ["E0206", "expected u64, found u8"]
 
 [[case]]
+name = "comptime_type_argument_call_result_mismatch_rejected_in_let_annotation"
+spec = ["4.14:23", "6.1:5"]
+description = "A u8 shift returned from a u64 function is E0206 when the call computes a type constructor's argument in a `let` annotation, not the length 1 - RUE-2381"
+source = """
+fn n(comptime s: u8) -> u64 { 1 << s }
+fn Arr(comptime k: u64) -> type { struct { a: [u8; k] } }
+fn main() -> i32 {
+    let x: Arr(n(8)) = Arr(1) { a: [0; 1] };
+    @intCast(x.a[0])
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected u64, found u8"]
+
+[[case]]
 name = "comptime_type_argument_call_matching_return_types_accepted"
-spec = ["4.14:2", "6.1:5"]
+spec = ["4.14:23", "4.14:2", "6.1:5"]
 description = "Calls whose values have the declared return type compute type arguments and `comptime {}` values: a u64 shift, `-> T` at T = u64, and a nested call"
 source = """
 fn n(comptime s: u64) -> u64 { 1 << s }
