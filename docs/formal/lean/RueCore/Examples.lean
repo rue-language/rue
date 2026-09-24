@@ -3607,6 +3607,140 @@ example : checkProgram (enumProg tI64 matchReturnArmLinear) = true := by rfl
 example : checkProgram (enumProg tI64 matchNeverFirstArm) = true := by rfl
 example : checkProgram (prog tI64 ifPanicArmLinear) = true := by rfl
 
+/-! ## Loops and `break` (§5.7, §6.10; RUE-2369)
+
+Each program below was run against the compiler before it was seeded
+(`Corpus.lean` prints it), and each calls every function it declares and has
+no syntax after a `break`, `return` or `@panic` in the same block (RUE-2376).
+They are the loop shapes the RUE-2321 probes l1, l6b, l4, l6 and l8 named. -/
+
+/-- **A move inside a loop whose every path breaks** (RUE-1615, probe l1): the
+body drops the linear binding and breaks, so it reaches no back edge,
+`B_h = ∅` and the loop-head state is the entry state. The move is checked only
+against the exit, where the binding is `MovedOut`, and the let owes nothing at
+its end. The compiler once reported "moved in a previous iteration" here. The
+destructor prints `1`, then the value `5`. -/
+def loopMoveEveryPathBreaks : Expr :=
+  letIn false (resLD (lit 1))
+    (seq (loop (seq (drop (.var 0)) brk)) (lit 5))
+
+/-- **A linear binding consumed on one exit only** (the RUE-1614 shape inside a
+loop, probe l6b): the two `break` sites deliver `MovedOut` and `Owned` for the
+binding, and §5.7's exit join is §5.5's, which is undefined on a
+linear-carrying path that disagrees (`3.8:50`, `3.8:80`; the compiler reports
+E0443). The machine takes the exit that keeps the binding, and the `let`'s
+scope exit then meets a live linear value: `linearLeak`. -/
+def loopLinearOneExit : Expr :=
+  letIn false (resLD (lit 1))
+    (seq (loop (ite (boolLit false) (seq (drop (.var 0)) brk) brk)) (lit 0))
+
+/-- **A loop with no `break` never completes** (Loop-Div-Backedge, §6.10): its
+body is `()`, so it re-enters itself at every turn and each turn spends fuel.
+It is `never`-typed, and (Sub-Never) lets it stand as an `i64` function's
+body. -/
+def infiniteLoop : Expr := loop unitLit
+
+/-- **A `break` past a live loop-local binding** (probe l4): the body binds an
+affine `S1 { 7 }` and either counts or breaks. On the counting turn the
+binding drops at the body's end (§6.7); on the breaking turn the `break`
+discards that `endscope` and the loop's unwind drops it instead (§6.10's
+`unwind-drops`, RUE-1277). Both drops print `7`; then the value `1`. -/
+def loopBreakPastLocal : Expr :=
+  letIn true (lit 0)
+    (seq
+      (loop
+        (letIn false (resA (lit 7))
+          (ite (binop .gt (use (.var 1)) (lit 0)) brk
+            (assign (.var 1) (binop .add (use (.var 1)) (lit 1))))))
+      (use (.var 0)))
+
+/-- **Two exits joined** (probe l6): an affine binding is dropped before one
+`break` and kept at the other. §5.5's join sends it to `MovedOut` after the
+loop, and the machine, which keeps the path-specific state, still drops it at
+the `let`'s end on the path that kept it (`3.8:60`'s asymmetry): the scope
+exit's destructor prints `9`, and the value is `5`. -/
+def loopTwoExits : Expr :=
+  letIn false (resA (lit 9))
+    (seq (loop (ite (boolLit false) (seq (drop (.var 0)) brk) brk)) (lit 5))
+
+/-- The body of `loopReassignThenMove`'s loop, under `n` (index `0`) and `d`
+(index `1`): break once `n > 1`, otherwise assign `d`, drop it, and count
+(helper). -/
+def reassignBody : Expr :=
+  seq (ite (binop .gt (use (.var 0)) (lit 1)) brk unitLit)
+    (seq (assign (.var 1) (resA (binop .add (use (.var 0)) (lit 10))))
+      (seq (drop (.var 1))
+        (assign (.var 0) (binop .add (use (.var 0)) (lit 1)))))
+
+/-- **Reassign-then-move across the back edge** (probe l8, the compiler's
+`reassign_before_move_ok`): each turn assigns `d` before it drops it. The
+back edge leaves `d` `MovedOut`, so the loop-head state is not the entry
+state — it is their join, `MovedOut`, which the checker reaches on its second
+iteration — and at that head (Assign) reinitializes `d` before the body uses
+it. An earlier calculus demanded every back-edge state equal the entry state
+and rejected this. The first turn's assignment overwrites the live `S1 { 1 }`
+(`1`), the drops print `10` and `11`, and the value is `2`. -/
+def loopReassignThenMove : Expr :=
+  letIn true (resA (lit 1))
+    (letIn true (lit 0)
+      (seq (loop reassignBody) (use (.var 0))))
+
+example : checkProgram (prog tI64 loopMoveEveryPathBreaks) = true := by rfl
+example : checkProgram (prog tI64 loopLinearOneExit) = false := by rfl
+example : checkProgram (prog tI64 infiniteLoop) = true := by rfl
+example : checkProgram (prog tI64 loopBreakPastLocal) = true := by rfl
+example : checkProgram (prog tI64 loopTwoExits) = true := by rfl
+example : checkProgram (prog tI64 loopReassignThenMove) = true := by rfl
+
+/-- The refusal the rejected shape reaches: the kept exit leaves the linear
+binding live at the `let`'s scope exit. -/
+example : run demoOps (prog tI64 loopLinearOneExit) demoFuel = .stuck .linearLeak := by rfl
+
+/-- The loop-head iteration for `loopReassignThenMove`, read at its loop:
+one step from the entry state marks `d` `MovedOut`, so one step is not a
+fixpoint and a bound of one refuses; the second step leaves that head
+unchanged, so it is the head. -/
+def reassignEntry : Ctx :=
+  [{ ty := tI64, mu := true, st := .owned }, { ty := .struct sAffine, mu := true, st := .owned }]
+
+example :
+    headIter (Decls.ofStructs structEnv)
+      (fun Γ' => (check (prog tI64 loopReassignThenMove) tI64 Γ' reassignBody).map
+        (fun r => r.2.norm)) reassignEntry 1 reassignEntry = none := by rfl
+
+example :
+    headIter (Decls.ofStructs structEnv)
+      (fun Γ' => (check (prog tI64 loopReassignThenMove) tI64 Γ' reassignBody).map
+        (fun r => r.2.norm)) reassignEntry 2 reassignEntry
+      = some [{ ty := tI64, mu := true, st := .owned },
+              { ty := .struct sAffine, mu := true, st := .movedOut }] := by rfl
+
+/-- (D-Loop-Iter) §6.10, as an equation: a body that completes re-enters the
+loop at one unit of fuel less (helper). -/
+theorem eval_loop_ok {M : FloatOps} {P : Program} {n : Nat} {H H₁ : Store} {φ : Frame}
+    {e : Expr} {v : Val} {tr : List Event} (h : eval M n P H φ e = .ok H₁ v tr) :
+    eval M (n + 1) P H φ (.loop e) = (eval M n P H₁ φ (.loop e)).withTrace tr := by
+  simp only [eval, h]
+
+/-- **The fuel counts iterations**: an infinite loop exhausts every bound. Each
+turn runs the body at one unit less and re-enters at one unit less, so no fuel
+completes it — `outOfFuel` is its answer at every bound, which is what
+`Corpus.lean`'s export leaves out. -/
+theorem infiniteLoop_outOfFuel (M : FloatOps) (P : Program) :
+    ∀ (fuel : Nat) (H : Store) (φ : Frame), eval M fuel P H φ infiniteLoop = .outOfFuel := by
+  intro fuel
+  induction fuel with
+  | zero => intro H φ; rfl
+  | succ n ih =>
+      intro H φ
+      cases n with
+      | zero => rfl
+      | succ m =>
+          rw [infiniteLoop, eval_loop_ok (H₁ := H) (v := .unit) (tr := []) rfl]
+          have := ih H φ
+          rw [infiniteLoop] at this
+          rw [this]; rfl
+
 #eval checkProgram (scalarProg tI64 scalars)
 #eval checkProgram (prog tI64 linearLeaked)
 
