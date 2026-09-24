@@ -907,7 +907,7 @@ Every declaration of the mechanization with the calculus rules, sections, and pr
 | `RueCore.Step` | `RueCore.Step.mkArray` | constructor | (D-Array), §6.5 | — |
 | `RueCore.Step` | `RueCore.Step.repeatEnter` | constructor | (Search), §6.2 | `7.1:39` |
 | `RueCore.Step` | `RueCore.Step.repeatArray` | constructor | — | `7.1:39` |
-| `RueCore.Step` | `RueCore.Step.indexRead` | constructor | (D-Index), §6.3, §6.5 | — |
+| `RueCore.Step` | `RueCore.Step.indexRead` | constructor | (D-Index), (D-Use-Untrackable-Dynamic-Copy), §6.3, §6.5 | — |
 | `RueCore.Step` | `RueCore.Step.indexReadTrap` | constructor | (D-Index-Trap), (Panic-Lift), §6.2, §6.5 | — |
 | `RueCore.Step` | `RueCore.Step.indexDrop` | constructor | (D-Index), §6.5, §6.11 | — |
 | `RueCore.Step` | `RueCore.Step.indexDropTrap` | constructor | (D-Index-Trap), §6.5 | — |
@@ -1101,7 +1101,7 @@ Coverage: 32 of 35 §2 forms have a core image (8 of them partial); 3 are *not y
 
 Every labeled inference rule of §5 and §6, in the calculus's order.
 
-Coverage: 92 of 97 labeled §5/§6 rules are mechanized; 5 are *not yet mechanized*.
+Coverage: 93 of 97 labeled §5/§6 rules are mechanized; 4 are *not yet mechanized*.
 
 | Section | Rule | Mechanized by |
 | --- | --- | --- |
@@ -1156,7 +1156,7 @@ Coverage: 92 of 97 labeled §5/§6 rules are mechanized; 5 are *not yet mechaniz
 | §6.2 | `(Search)` | Step.lean (module), `RueCore.Step`, `RueCore.Step.binopEnter`, `RueCore.Step.binopMid`, `RueCore.Step.unopEnter`, `RueCore.Step.intCastEnter`, `RueCore.Step.fintrinEnter`, `RueCore.Step.dbgEnter`, `RueCore.Step.structEnter`, `RueCore.Step.enumEnter`, `RueCore.Step.arrayEnter`, `RueCore.Step.callEnter`, `RueCore.Step.indexReadEnter`, `RueCore.Step.indexDropEnter`, `RueCore.Step.indexWriteEnter`, `RueCore.Step.indexWriteRhs`, `RueCore.Step.argsPush`, `RueCore.Step.argsPlug`, `RueCore.Step.repeatEnter`, `RueCore.Step.matchEnter`, `RueCore.Step.iteEnter`, `RueCore.Step.letEnter`, `RueCore.Step.seqEnter`, `RueCore.Step.assignEnter`, `RueCore.Step.retEnter`, `RueCore.stepEval`, `RueCore.stepRet` |
 | §6.2 | `(Panic-Lift)` | `RueCore.Explain.trapLiftsPastCall`, Step.lean (module), `RueCore.Step`, `RueCore.Step.binopTrap`, `RueCore.Step.unopTrap`, `RueCore.Step.intCastTrap`, `RueCore.Step.fintrinTrap`, `RueCore.Step.panic`, `RueCore.Step.indexReadTrap`, `RueCore.OpRes.toStep` |
 | §6.3 | `(D-Use-Declared-Linear)` | Dynamics.lean (module), `RueCore.eval`, Explain.lean (module), `RueCore.Gen.pathOk`, Soundness.lean (module), `RueCore.plainDestructure`, `RueCore.Step.useDeclared`, `RueCore.Step.det`, Syntax.lean (module) |
-| §6.3 | `(D-Use-Untrackable-Dynamic-Copy)` | *not yet mechanized* |
+| §6.3 | `(D-Use-Untrackable-Dynamic-Copy)` | `RueCore.Step.indexRead` |
 | §6.3 | `(D-Use-Copy)` | `RueCore.eval`, Soundness.lean (module), `RueCore.ContentsTy.toVal`, `RueCore.ContentsTy.mult_eq`, `RueCore.Step.useCopy`, `RueCore.Step.det`, `RueCore.letAddProgram_runs` |
 | §6.3 | `(D-Use-Move)` | Dynamics.lean (module), `RueCore.Contents`, `RueCore.Contents.writeAt`, `RueCore.eval`, `RueCore.Examples.arrayElemMove`, Soundness.lean (module), `RueCore.ContentsTy.toVal`, `RueCore.Step.useMove`, `RueCore.Step.det`, Syntax.lean (module) |
 | §6.3 | `(D-Use-Shared-Read)` | *not yet mechanized* |
