@@ -3385,9 +3385,7 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                         && self.host.type_float_width(&ty).is_some()
                     {
                         let text = (-(magnitude as i128)).to_string();
-                        return match host_value!(
-                            self.host.float_value_from_text(&text, Some(ty))
-                        ) {
+                        return match host_value!(self.host.float_value_from_text(&text, Some(ty))) {
                             Some(value) => ComptimeOutcome::Known(value),
                             None => ComptimeOutcome::RuntimeDependent,
                         };
