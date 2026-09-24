@@ -2,9 +2,10 @@
  i64_min_times_neg1
 ════════════════════════════════════════════════════════════════════════════════
 min_T * -1 at i64: an overflow trap, because -min_T is one past max_T. The
-bridge found the compiler's constant folder wrapping this one and exiting 0
-where every non-constant spelling of it traps (RUE-2318); the case stays as
-the regression signal, so the seed run is red on it until that is fixed.
+bridge found the compiler wrapping this one and exiting 0: it lowered a
+checked multiply by a constant power of two as a left shift checked by
+shifting back, and took the bit pattern of min_T, 2^63, for one (RUE-2318).
+The compiler traps now, and the case stays as the regression signal.
 
 Rules exercised: (Arith) §5.8 · (D-Arith-Trap) §6.4 · 8.1:3
 

@@ -1702,10 +1702,11 @@ def i8DivMinByNegOne : Expr :=
 past `max_T` at every signed width (`8.1:3` lists multiplication among the
 operations that may overflow).
 
-**The compiler disagrees with this one**, and the model is right: its
-constant folder wraps the product and the program prints `min_T` and exits 0,
-where every non-constant spelling of the same multiplication traps. RUE-2318.
-The corpus seeds the shape so the bridge is red on it until that is fixed. -/
+The compiler disagreed with this one until RUE-2318 was fixed, and the model
+was right: it lowered a checked multiply by a constant power of two as a left
+shift checked by shifting back, took `min_T`'s bit pattern `2^63` for one, and
+so printed `min_T` and exited 0. It traps now; the corpus keeps the shape as
+the regression signal. -/
 def i64MinTimesNeg1 : Expr :=
   binop .mul (intLit .w64 .signed (intMin .w64 .signed)) (intLit .w64 .signed (-1))
 
@@ -2367,7 +2368,8 @@ the program and runs it to `10`, `2`, `20`, `3`, `30`, `1`.
 was dropped" — it treats the ancestor's obligation as undischargeable by
 `@drop` once an inner declared-linear place has been destructured out of it.
 One of the two is wrong and the calculus is what says which; the case is seeded
-red exactly as `i64_min_times_neg1` is, and RUE-2335 is the decision. -/
+red exactly as `i64_min_times_neg1` was until RUE-2318, and RUE-2335 is the
+decision. -/
 def destructureAncestorDropped : Expr :=
   letIn false (mkStruct sDestrOuter [mkStruct sDestrPair [lit 1, resA (lit 2)], resA (lit 3)])
     (seq (dbg (lit 10))
@@ -3222,9 +3224,8 @@ example : run demoOps (scalarProg (.int .w8 .signed) i8RemMinByNegOne) demoFuel
     = .panic .overflow [] := by rfl
 
 /-- `min_T * -1` traps at `i64` as it does at every other signed width. The
-compiler's constant folder does not (RUE-2318); the model is not changed to
-match it, and `Corpus`'s `i64_min_times_neg1` is the case that says so to the
-bridge. -/
+compiler did not until RUE-2318 was fixed; `Corpus`'s `i64_min_times_neg1` is
+the case that says so to the bridge. -/
 example : run demoOps (scalarProg tI64 i64MinTimesNeg1) demoFuel
     = .panic .overflow [] := by rfl
 example : run demoOps (scalarProg (.int .w8 .signed) i8RemZero) demoFuel

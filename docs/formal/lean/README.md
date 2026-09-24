@@ -141,15 +141,8 @@ program, the four views side by side, and the pair(s) that disagree, with a
 tally at the end; `--report-json` writes the same findings as JSON so two runs
 can be diffed. It exits non-zero when any disagreement exists.
 
-**The seed corpus is red on three cases, and that is the bridge working.**
-`i64_min_times_neg1` is `min_T * -1` at `i64`, which §6.4's (D-Arith-Trap),
-`3.1:6` and `8.1:3` all make an overflow trap and which the model traps on.
-The compiler's constant folder wraps it instead and the program exits 0 —
-only at `i64`, only for `*`, and only when both operands are literals; every
-non-constant spelling of the same multiplication traps. That is a compiler
-defect, RUE-2318, and the case stays seeded until it is fixed, the way
-`cond_drop_affine` stayed after the ICE it found (RUE-2290) was.
-`destructure_ancestor_dropped` is the second: after `y.x0.x0` destructures the
+**The seed corpus is red on two cases, and that is the bridge working.**
+`destructure_ancestor_dropped` is the first: after `y.x0.x0` destructures the
 inner declared-`linear` place, §5.3's (@Drop) discharges the declared-`linear`
 **ancestor** `y` — `Σ(y) = Owned`, no still-owned linear sub-place remains
 below it — and the model runs the program, while the compiler reports E0406.
@@ -162,13 +155,20 @@ fails). The compiler's E0480 check fired only when the root binding was an
 array, so it accepted the program, ran the moved-out element's destructor
 twice and leaked the written value; the check now keys on the outermost array
 the write steps into, and the compiler refuses it with E0480 too.
-`array_elem_self_assign` is the third: `a[0] = a[0]` moves `a[0]` out on the
+`array_elem_self_assign` is the second: `a[0] = a[0]` moves `a[0]` out on the
 right-hand side, so the model refuses the write into the holed array
 (`3.8:72`, E0480), while the compiler accepts it on purpose since RUE-228;
 which is right is a decision, RUE-2346. `array_zero_length_field_dyn_read` was
 red until RUE-2345 was fixed: a dynamic-index read from a zero-length array
 field traps with `bounds` in the model and was an internal compiler error in
 code generation; the compiler now traps too.
+`i64_min_times_neg1` was red until RUE-2318 was fixed: `min_T * -1` at
+`i64`, which §6.4's (D-Arith-Trap), `3.1:6` and `8.1:3` all make an overflow
+trap and which the model traps on. The compiler lowered a checked multiply by
+a constant power of two as a left shift checked by shifting back, and took
+`i64::MIN`'s bit pattern, `2^63`, for one, so the product wrapped and the
+program exited 0; a signed minimum now takes the ordinary checked multiply and
+the compiler traps too.
 `array_write_after_destructure_via_field`, the constant-index form
 (`h.arr[0].x0 = …`), was red for the same reason until RUE-2344 made the
 compiler refuse it with E0205 (the write's base `h.arr[0]` is consumed); since
