@@ -1599,14 +1599,9 @@ and the pairs that differ. Last comes a tally:
   oracle <-> native: …
 ```
 
-**Expect three disagreements, and a non-zero exit.** Each is seeded
+**Expect two disagreements, and a non-zero exit.** Each is seeded
 deliberately and stays until its issue is decided or fixed:
 
-- `i64_min_times_neg1`: `min_T * -1` at `i64`. §6.4's (D-Arith-Trap),
-  `3.1:6` and `8.1:3` make it an overflow trap and the model traps; the
-  compiler's constant folder wraps it and the program exits 0. It happens only
-  at `i64`, only for `*`, and only with two literal operands, so it is a
-  compiler defect in the folder: RUE-2318.
 - `destructure_ancestor_dropped`: after a destructure under it, `@drop` of
   the declared-`linear` ancestor. The model accepts; the compiler reports
   E0406. Which is right is a spec decision: RUE-2335.
