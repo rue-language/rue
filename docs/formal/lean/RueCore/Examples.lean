@@ -1278,6 +1278,58 @@ example : checkProgram (prog tI64 arrayConstIndexOutOfRange) = false := by rfl
 example : checkProgram (prog tI64 arrayLinearElemLeaked) = false := by rfl
 example : checkProgram arrayDynWriteLinearElem = false := by rfl
 
+/-- Review probe T1 (RUE-2324 review, RUE-2400): `let a = [S1{1}, S1{2}];
+let x = a[i]; 0` with an affine element under a dynamic index. The statics
+reject it (E0904: §5.1's only rule at `Untrackable(OrdinaryDynamic)` wants
+`class(T) = Copy`), and the machine refuses it too: before RUE-2400 `eval`
+copied the affine leaf out and left the array live, so three destructors ran
+for two constructed values. -/
+def dynReadAffineCopied : Expr :=
+  letIn false (mkArray (.struct sAffine) [resA (lit 1), resA (lit 2)])
+    (letIn false (indexRead (.var 0) [lit 0] [[]]) (lit 0))
+
+/-- Review probe T3 (RUE-2400): `let a = [S1{1}]; @drop(a[i]); @dbg(1); 0`.
+`@drop` below a dynamic index has only the `Copy` rule (E0904 otherwise);
+before RUE-2400 `eval` stepped it to `()` and dropped the leaf only at scope
+exit, after the `@dbg`, where §6.11 would drop it at the `@drop`. -/
+def dynDropAffineSkipped : Expr :=
+  letIn false (mkArray (.struct sAffine) [resA (lit 1)])
+    (seq (indexDrop (.var 0) [lit 0] [[]]) (seq (dbg (lit 1)) (lit 0)))
+
+/-- The review's repeat probe (RUE-2400): `let a = [S1{1}; 2]; 0`. `7.1:38`
+wants a `Copy` element (E0905); before RUE-2400 `eval` replicated the value,
+so two destructors ran for one constructed `S1`. -/
+def repeatAffineDuplicated : Expr :=
+  letIn false (repeatArray (.struct sAffine) (resA (lit 1)) 2) (lit 0)
+
+example : checkProgram (prog tI64 dynReadAffineCopied) = false := by rfl
+example : checkProgram (prog tI64 dynDropAffineSkipped) = false := by rfl
+example : checkProgram (prog tI64 repeatAffineDuplicated) = false := by rfl
+
+/-- (RUE-2400) The dynamic-index read of an affine leaf is refused by the
+machine as well as the statics: (D-Use-Untrackable-Dynamic-Copy) §6.3 is the
+only rule there and it wants `class(T) = Copy`, so `eval` answers
+`typeConfusion` instead of duplicating the leaf. -/
+theorem dynReadAffine_refused (M : FloatOps) :
+    run M (prog tI64 dynReadAffineCopied) demoFuel = .stuck .typeConfusion := by rfl
+
+/-- (RUE-2400) `@drop(a[i])` of an affine leaf is refused by the machine: the
+dynamic `@drop` is the read with its value discarded, so it inherits the
+read's `Copy` check, and no `@dbg` output or destructor event is produced. -/
+theorem dynDropAffine_refused (M : FloatOps) :
+    run M (prog tI64 dynDropAffineSkipped) demoFuel = .stuck .typeConfusion := by rfl
+
+/-- (RUE-2400) The repeat form at an affine operand is refused by the
+machine: §2's elaboration `let t = v; [t, t]` would be stuck at the second use
+of `t`, and `eval` answers `typeConfusion` rather than replicating `v`. -/
+theorem repeatAffine_refused (M : FloatOps) :
+    run M (prog tI64 repeatAffineDuplicated) demoFuel = .stuck .typeConfusion := by rfl
+
+/-- The existing repeat (probe `a2b`) and dynamic-read (probe `a5`)
+refusal fixtures run to the same refusal. -/
+example : run demoOps (prog tI64 arrayRepeatAffine) demoFuel = .stuck .typeConfusion := by rfl
+example : run demoOps arrayDynIndexAffine demoFuel = .stuck .typeConfusion := by rfl
+
 /-- The linear-overwrite refusal is the machine's too: `eval`'s
 `indexWrite` arm reads the residue of the element it is about to drop and
 refuses, which is the arm the old `class(T) = Copy` premise made
@@ -1669,6 +1721,10 @@ element move (probes q06, E0205; q07, E0480); and a read below a
 declared-`linear` element (probe q11, E0904). -/
 example : checkProgram dynMoveBelow = false := by rfl
 example : checkProgram dynDropElem = false := by rfl
+/-- The machine refuses q02 and q15 as well (RUE-2400): the dynamic read and
+the dynamic `@drop` of an affine leaf both answer `typeConfusion`. -/
+example : run demoOps dynMoveBelow demoFuel = .stuck .typeConfusion := by rfl
+example : run demoOps dynDropElem demoFuel = .stuck .typeConfusion := by rfl
 example : checkProgram dynWriteLinearLeaf = false := by rfl
 example : checkProgram dynReadAfterElemMove = false := by rfl
 example : checkProgram dynWriteAfterElemMove = false := by rfl
