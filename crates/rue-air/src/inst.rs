@@ -2106,8 +2106,12 @@ impl Air {
                             format!("place reference {place_ref} is outside the place store"),
                         )
                     })?;
+                // Every operand the canonical walk names refers backward, so
+                // the checks below may read any of them.
+                for operand in self.place_operands(place) {
+                    check_ref(operand)?;
+                }
                 if let AirPlaceBase::Accessor(call) = place.base {
-                    check_ref(call)?;
                     if !matches!(self.get(call).data, AirInstData::AccessorCall { .. }) {
                         return Err(fail(
                             Some(index),
@@ -2124,7 +2128,6 @@ impl Air {
                     }
                 }
                 if let AirPlaceBase::Indirect(pointer) = place.base {
-                    check_ref(pointer)?;
                     let pointer_ty = self.get(pointer).ty;
                     if !pointer_ty.is_ptr() {
                         return Err(fail(
@@ -2168,7 +2171,6 @@ impl Air {
                                     ),
                                 ));
                             }
-                            check_ref(operand)?;
                             let operand_ty = self.instructions[operand.as_u32() as usize].ty;
                             if !operand_ty.is_integer() {
                                 return Err(fail(
