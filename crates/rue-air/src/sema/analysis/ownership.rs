@@ -3839,12 +3839,28 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // use-after-move (RUE-279). At the root the full-move check
                 // above covers the place itself; a descendant can still be
                 // moved there by a nested declared-`linear` destructure
-                // (`y.mid.inner.a`), after which consuming `y` through
-                // `y.mid` would hand out the hole and drop the destructured
-                // residue a second time (RUE-2335).
+                // (`y.h.l.a`, `y.mid.inner.a`), after which consuming `y`
+                // through `y.h` or `y.mid` would hand out the hole and drop
+                // the destructured residue a second time (RUE-2335).
+                //
+                // Only a hole ON the selected path is reported here. A hole
+                // in an unselected field lies inside residue that carries a
+                // linear value by type (the moved place is itself declared
+                // `linear`), so §5.1's `¬ linear-residue` premise rejects the
+                // access below with E0474, which names the premise no
+                // reinitialization can satisfy.
                 if let Some(state) = ctx.ownership.moved_vars.get(&trace.root_var) {
                     if destructured_path.is_empty() {
-                        if let Some((moved_path, moved_span)) = state.moved_strict_descendant(&[]) {
+                        let selected_path = trace.field_path();
+                        if let Some((moved_path, moved_span)) = state
+                            .partial_moves
+                            .iter()
+                            .find(|(moved, _)| {
+                                !moved.is_empty()
+                                    && moved.iter().zip(&selected_path).all(|(m, s)| m == s)
+                            })
+                            .map(|(moved, span)| (moved.as_slice(), *span))
+                        {
                             return Err(self.moved_part_below_error(
                                 trace.root_var,
                                 &[],

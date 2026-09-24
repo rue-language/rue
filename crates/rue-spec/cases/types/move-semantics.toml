@@ -2629,8 +2629,8 @@ error_contains = "linear value 'y' must be consumed"
 
 [[case]]
 name = "declared_linear_sibling_destructure_after_inner_destructure_rejected"
-spec = ["3.8:26", "3.8:33"]
-description = "Destructuring a declared-linear ancestor through a sibling field after its declared-linear field was destructured uses a partially moved value (RUE-2335)"
+spec = ["3.8:33", "3.8:60"]
+description = "Destructuring a declared-linear ancestor through a sibling field after its declared-linear field was destructured is rejected by the linear-residue premise, which no reinitialization satisfies (RUE-2335)"
 source = """
 struct S1 { x0: i64 }
 drop fn S1(self) { @dbg(self.x0); }
@@ -2649,7 +2649,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = "use of moved value 'y.inner'"
+error_contains = "accessing field 'z' of linear struct 'L2' would implicitly drop linear field 'inner'"
 
 [[case]]
 name = "drop_of_declared_linear_ancestor_after_inner_reinit"
@@ -2701,6 +2701,128 @@ fn main() -> i32 {
 """
 exit_code = 0
 expected_stdout = "2\n20\n3\n4\n1\n"
+
+# RUE-2335: a declared-linear destructure of the root binding requires the
+# whole root to be owned. Consuming `y` through its affine field `y.h` after a
+# nested destructure of `y.h.l` would hand the hole to `eath` and run `S1 { 2 }`'s
+# destructor a second time.
+[[case]]
+name = "declared_linear_root_destructure_through_affine_field_with_hole_rejected"
+spec = ["3.8:26", "3.8:33"]
+description = "Moving an affine field out of a declared-linear root after a declared-linear place under that field was destructured uses a partially moved value (RUE-2335)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct S2 { x0: i64 }
+drop fn S2(self) { @dbg(self.x0); }
+linear struct L { a: i64, b: S1 }
+struct H { l: L, t: S1 }
+linear struct Y { h: H, z: S2 }
+
+fn eath(h: H) -> i64 { @dbg(77); @drop(h); 0 }
+
+fn main() -> i32 {
+    let y: Y = Y { h: H { l: L { a: 1, b: S1 { x0: 2 } }, t: S1 { x0: 5 } }, z: S2 { x0: 3 } };
+    @dbg(10);
+    let v: i64 = y.h.l.a;   // destructures y.h.l: drops b, prints 2
+    @dbg(20);
+    let n: i64 = eath(y.h); // destructures y, whose y.h.l is already moved out
+    @dbg(30);
+    0
+}
+"""
+compile_fail = true
+error_contains = "use of moved value 'y.h.l'"
+
+[[case]]
+name = "declared_linear_root_destructure_through_affine_field_with_hole_rejected_o2"
+spec = ["3.8:26", "3.8:33"]
+description = "Moving an affine field out of a declared-linear root after a declared-linear place under that field was destructured uses a partially moved value at -O2 (RUE-2335)"
+opt_level = 2
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct S2 { x0: i64 }
+drop fn S2(self) { @dbg(self.x0); }
+linear struct L { a: i64, b: S1 }
+struct H { l: L, t: S1 }
+linear struct Y { h: H, z: S2 }
+
+fn eath(h: H) -> i64 { @dbg(77); @drop(h); 0 }
+
+fn main() -> i32 {
+    let y: Y = Y { h: H { l: L { a: 1, b: S1 { x0: 2 } }, t: S1 { x0: 5 } }, z: S2 { x0: 3 } };
+    @dbg(10);
+    let v: i64 = y.h.l.a;   // destructures y.h.l: drops b, prints 2
+    @dbg(20);
+    let n: i64 = eath(y.h); // destructures y, whose y.h.l is already moved out
+    @dbg(30);
+    0
+}
+"""
+compile_fail = true
+error_contains = "use of moved value 'y.h.l'"
+
+[[case]]
+name = "declared_linear_root_destructure_through_affine_field_with_hole_rejected_o3"
+spec = ["3.8:26", "3.8:33"]
+description = "Moving an affine field out of a declared-linear root after a declared-linear place under that field was destructured uses a partially moved value at -O3 (RUE-2335)"
+opt_level = 3
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct S2 { x0: i64 }
+drop fn S2(self) { @dbg(self.x0); }
+linear struct L { a: i64, b: S1 }
+struct H { l: L, t: S1 }
+linear struct Y { h: H, z: S2 }
+
+fn eath(h: H) -> i64 { @dbg(77); @drop(h); 0 }
+
+fn main() -> i32 {
+    let y: Y = Y { h: H { l: L { a: 1, b: S1 { x0: 2 } }, t: S1 { x0: 5 } }, z: S2 { x0: 3 } };
+    @dbg(10);
+    let v: i64 = y.h.l.a;   // destructures y.h.l: drops b, prints 2
+    @dbg(20);
+    let n: i64 = eath(y.h); // destructures y, whose y.h.l is already moved out
+    @dbg(30);
+    0
+}
+"""
+compile_fail = true
+error_contains = "use of moved value 'y.h.l'"
+
+[[case]]
+name = "declared_linear_root_destructure_after_inner_reinit"
+spec = ["3.8:33", "3.8:55"]
+description = "Three declared-linear levels: reinitializing the destructured innermost place makes the root fully owned again, so moving the middle place out destructures the root and drops its residue once (RUE-2335)"
+source = """
+struct S1 { x0: i64 }
+drop fn S1(self) { @dbg(self.x0); }
+struct S2 { x0: i64 }
+drop fn S2(self) { @dbg(self.x0); }
+struct S3 { x0: i64 }
+drop fn S3(self) { @dbg(self.x0); }
+linear struct L { a: i64, b: S1 }
+linear struct L2 { inner: L, z: S2 }
+linear struct L3 { mid: L2, w: S3 }
+
+fn eatl2(m: L2) -> i64 { @dbg(77); @drop(m); 0 }
+
+fn main() -> i32 {
+    let mut y: L3 = L3 { mid: L2 { inner: L { a: 1, b: S1 { x0: 2 } }, z: S2 { x0: 3 } }, w: S3 { x0: 4 } };
+    @dbg(10);
+    let v: i64 = y.mid.inner.a;
+    y.mid.inner = L { a: 5, b: S1 { x0: 6 } };
+    let m: L2 = y.mid;
+    @dbg(20);
+    let n: i64 = eatl2(m);
+    @dbg(99);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "10\n2\n4\n20\n77\n6\n3\n99\n"
 
 [[case]]
 name = "drop_of_declared_linear_grandparent_with_partially_moved_linear_child_rejected"
