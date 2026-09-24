@@ -107,7 +107,14 @@ evaluation of the operand and then `n` value-context copies, which `7.1:38`'s
 printer can emit the surface spelling the compiler's E0905 is about and the
 bridge exercises it. Its premise and its dynamics *are* that elaboration's,
 but that they are is by construction and not by a theorem: this is the one
-place where the mechanization has a form the calculus's core does not.
+place where the mechanization has a form the calculus's core does not. The
+machine arm checks the `Copy` premise on the operand's value and refuses a
+non-`Copy` one with `typeConfusion`, where the elaboration would be stuck at
+the second use of `t`; the dynamic-index read and `@drop` check their leaf the
+same way, as (D-Use-Untrackable-Dynamic-Copy) §6.3 requires
+(`RueCore.repeatAffine_refused`, `RueCore.dynReadAffine_refused`,
+`RueCore.dynDropAffine_refused`). `soundness` discharges all three checks from
+the typing rules' own `Copy` premises.
 
 **The trap inventory, and what a trap carries.** Every §6.12 category the
 fragment reaches is a `PanicKind`: `overflow` (`+ - *`, `neg`, `min_T / -1`,
