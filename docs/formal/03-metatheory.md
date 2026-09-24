@@ -239,8 +239,11 @@ the build fails otherwise (`toolchains/lean/defs.bzl`).
   (`RueCore.LoopHead.reenter`, resting on `RueCore.Ctx.join_absorb`), a
   `break`'s exit is `RueCore.loop_exit_ok`, and nontermination is fuel's.
   RUE-2330 then put loops under the generator, which changed the programs both
-  settings produce; on those draws no case reaches the RUE-2346
-  self-assignment, and every one of the 1,200 agrees with the compiler.
+  settings produce; on those draws four cases reach the RUE-2346
+  self-assignment (`gen_7_145`, `gen_7_159`, `gen_7_181`, `gen_23_752`), each
+  masked by an E0406 the compiler reports first, so every one of the 1,200
+  agrees with the compiler. A wider run reaches it unmasked (`gen_101_207`,
+  `--gen 400 --seed 101`), an allowed RUE-2346 disagreement.
 
 ## No use-after-move
 
