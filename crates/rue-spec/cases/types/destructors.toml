@@ -2820,6 +2820,212 @@ fn main() -> i32 {
 exit_code = 0
 expected_stdout = "88\n100\n"
 
+[[case]]
+name = "loop_body_tail_value_dropped_each_iteration_o{level}"
+spec = ["3.9:1", "3.9:18", "4.8:18"]
+description = "A `loop` body's tail value is discarded at the back edge and dropped there on every iteration (RUE-2378)"
+source = """
+struct S { v: i64 }
+
+drop fn S(self) {
+    @dbg(self.v);
+}
+
+fn main() -> i32 {
+    let mut i: i64 = 0;
+    loop { if i > 1 { break; } i = i + 1; S { v: i } }
+    @dbg(0);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n2\n0\n"
+params = [
+  { level = "0", opt_level = 0 },
+  { level = "2", opt_level = 2 },
+  { level = "3", opt_level = 3 },
+]
+
+[[case]]
+name = "while_body_tail_value_dropped_each_iteration_o{level}"
+spec = ["3.9:1", "3.9:18", "4.8:5"]
+description = "A `while` body's tail value is discarded at the back edge and dropped there on every iteration (RUE-2378)"
+source = """
+struct S { v: i64 }
+
+drop fn S(self) {
+    @dbg(self.v);
+}
+
+fn make(v: i64) -> S { S { v: v } }
+
+fn main() -> i32 {
+    let mut i: i64 = 0;
+    while i < 2 { i = i + 1; make(i) }
+    @dbg(0);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n2\n0\n"
+params = [
+  { level = "0", opt_level = 0 },
+  { level = "2", opt_level = 2 },
+  { level = "3", opt_level = 3 },
+]
+
+[[case]]
+name = "loop_body_tail_aggregate_dropped_o{level}"
+spec = ["3.9:1", "3.9:18", "4.8:5"]
+description = "A loop body's tail struct, enum variant or array containing a destructor-bearing value is dropped at the back edge (RUE-2378)"
+source = """
+struct S { v: i64 }
+
+drop fn S(self) {
+    @dbg(self.v);
+}
+
+struct W { a: i64, s: S }
+
+enum E { A(S), B }
+
+fn main() -> i32 {
+    let mut i: i64 = 0;
+    while i < 1 { i = i + 1; W { a: 5, s: S { v: 1 } } }
+    i = 0;
+    while i < 1 { i = i + 1; E.A(S { v: 2 }) }
+    i = 0;
+    while i < 1 { i = i + 1; [S { v: 3 }, S { v: 4 }] }
+    @dbg(0);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n2\n3\n4\n0\n"
+params = [
+  { level = "0", opt_level = 0 },
+  { level = "2", opt_level = 2 },
+  { level = "3", opt_level = 3 },
+]
+
+[[case]]
+name = "loop_body_tail_after_scope_locals_o{level}"
+spec = ["3.9:1", "3.9:18", "4.8:5"]
+description = "A loop body's tail value, from a nested block or moved out of a body local, is dropped at the back edge after the body's locals, as for a discarded block statement (RUE-2378)"
+source = """
+struct S { v: i64 }
+
+drop fn S(self) {
+    @dbg(self.v);
+}
+
+fn main() -> i32 {
+    let mut i: i64 = 0;
+    while i < 2 { i = i + 1; { let t = S { v: 10 + i }; S { v: i } } }
+    i = 0;
+    while i < 1 { i = i + 1; let a = S { v: 30 }; let b = S { v: 31 }; b }
+    @dbg(0);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "11\n1\n12\n2\n30\n31\n0\n"
+params = [
+  { level = "0", opt_level = 0 },
+  { level = "2", opt_level = 2 },
+  { level = "3", opt_level = 3 },
+]
+
+[[case]]
+name = "loop_body_tail_with_continue_o{level}"
+spec = ["3.9:1", "3.9:18", "4.8:18", "4.8:21"]
+description = "Only the iterations that reach a loop body's tail drop its value; a `continue` skips the tail and has nothing to drop (RUE-2378)"
+source = """
+struct S { v: i64 }
+
+drop fn S(self) {
+    @dbg(self.v);
+}
+
+fn main() -> i32 {
+    let mut i: i64 = 0;
+    loop {
+        i = i + 1;
+        if i > 4 { break; }
+        if i % 2 == 0 { continue; }
+        S { v: i }
+    }
+    @dbg(0);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "1\n3\n0\n"
+params = [
+  { level = "0", opt_level = 0 },
+  { level = "2", opt_level = 2 },
+  { level = "3", opt_level = 3 },
+]
+
+[[case]]
+name = "nested_loop_body_tail_values_dropped_o{level}"
+spec = ["3.9:1", "3.9:18", "4.8:5"]
+description = "Inner and outer loop body tail values are each dropped at their own loop's back edge (RUE-2378)"
+source = """
+struct S { v: i64 }
+
+drop fn S(self) {
+    @dbg(self.v);
+}
+
+fn main() -> i32 {
+    let mut i: i64 = 0;
+    while i < 2 {
+        i = i + 1;
+        let mut j: i64 = 0;
+        while j < 2 { j = j + 1; S { v: 10 * i + j } }
+        S { v: i }
+    }
+    @dbg(0);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "11\n12\n1\n21\n22\n2\n0\n"
+params = [
+  { level = "0", opt_level = 0 },
+  { level = "2", opt_level = 2 },
+  { level = "3", opt_level = 3 },
+]
+
+[[case]]
+name = "loop_body_tail_if_match_value_dropped_o{level}"
+spec = ["3.9:1", "3.9:18", "4.8:5"]
+description = "An if or match in loop-body tail position whose arms produce a destructor-bearing value has that value dropped at the back edge (RUE-2378)"
+source = """
+struct S { v: i64 }
+
+drop fn S(self) {
+    @dbg(self.v);
+}
+
+fn main() -> i32 {
+    let mut i: i64 = 0;
+    while i < 2 { i = i + 1; if i % 2 == 0 { S { v: i } } else { S { v: 100 + i } } }
+    i = 0;
+    while i < 2 { i = i + 1; match i { 1 => S { v: 201 }, _ => S { v: 200 + i } } }
+    @dbg(0);
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "101\n2\n201\n202\n0\n"
+params = [
+  { level = "0", opt_level = 0 },
+  { level = "2", opt_level = 2 },
+  { level = "3", opt_level = 3 },
+]
+
 # =============================================================================
 # Destructor Legality Rules (RUE-158 / RUE-159)
 # =============================================================================
