@@ -6,9 +6,9 @@
 use ahash::{AHashMap, AHashSet};
 use lasso::{Spur, ThreadedRodeo};
 use rue_air::{
-    AirArgMode, AirInstData, AirPattern, AirPlace, AirPlaceBase, AirPlaceRef, AirProjection,
-    AirRef, AnalyzedCallableKind, FrozenTypeInternPool, ParamSlotModes, SourceParamAbi, StructId,
-    Type, TypeKind, ValidatedAir,
+    AirArgMode, AirInstData, AirOperand, AirPattern, AirPlace, AirPlaceBase, AirPlaceRef,
+    AirProjection, AirRef, AnalyzedCallableKind, FrozenTypeInternPool, ParamSlotModes,
+    SourceParamAbi, StructId, Type, TypeKind, ValidatedAir,
 };
 use rue_error::{CompileError, CompileWarning, ErrorKind, WarningKind};
 use std::cell::RefCell;
@@ -4122,22 +4122,12 @@ impl<'a> CfgBuilder<'a> {
         }
         let end = loop_ref.as_u32();
         let start = self.subtree_start[end as usize];
-        let in_loop = |index: u32| (start..end).contains(&index);
-        let mut touched: AHashSet<MovedSlot> = self
-            .write_sites
-            .iter()
-            .filter(|(index, _)| in_loop(*index))
-            .map(|(_, key)| *key)
-            .collect();
-        touched.extend(
-            self.move_sites
-                .iter()
-                .filter(|(index, _, _)| in_loop(*index))
-                .map(|(_, key, _)| *key),
-        );
+        let touched: AHashSet<MovedSlot> = self.sites_in(start..end).map(|(_, key)| key).collect();
         if touched.is_empty() {
             return weakened;
         }
+        // Take the sites out only to read them while `self.moved` is
+        // mutated below; they are put back unchanged.
         let sites = std::mem::take(&mut self.move_sites);
         let before_loop = &sites[..sites.partition_point(|(index, _, _)| *index < end)];
         // Whole slots first: a path of a slot that stays definitely moved
@@ -4164,6 +4154,27 @@ impl<'a> CfgBuilder<'a> {
         weakened
     }
 
+    /// The write and move sites whose instruction index lies in `range`.
+    /// Both lists are in instruction order, so each is sliced, not scanned.
+    fn sites_in(&self, range: std::ops::Range<u32>) -> impl Iterator<Item = (u32, MovedSlot)> + '_ {
+        let writes = &self.write_sites[self
+            .write_sites
+            .partition_point(|(index, _)| *index < range.start)
+            ..self
+                .write_sites
+                .partition_point(|(index, _)| *index < range.end)];
+        let moves = &self.move_sites[self
+            .move_sites
+            .partition_point(|(index, _, _)| *index < range.start)
+            ..self
+                .move_sites
+                .partition_point(|(index, _, _)| *index < range.end)];
+        writes
+            .iter()
+            .copied()
+            .chain(moves.iter().map(|(index, key, _)| (*index, *key)))
+    }
+
     /// Put back into a `while` loop's condition-false exit state the facts
     /// the loop head weakened that hold on every path into it after all
     /// (RUE-2356), so code after the loop keeps its static drop decisions.
@@ -4185,18 +4196,12 @@ impl<'a> CfgBuilder<'a> {
         }
         let cond_end = cond.as_u32();
         let cond_start = self.subtree_start[cond_end as usize];
-        let in_cond = |index: u32| (cond_start..=cond_end).contains(&index);
-        let touched_by_cond = |key: MovedSlot| {
-            self.write_sites
-                .iter()
-                .any(|(index, written)| *written == key && in_cond(*index))
-                || self
-                    .move_sites
-                    .iter()
-                    .any(|(index, moved, _)| *moved == key && in_cond(*index))
-        };
+        let touched_by_cond: AHashSet<MovedSlot> = self
+            .sites_in(cond_start..cond_end + 1)
+            .map(|(_, key)| key)
+            .collect();
         for (key, path) in weakened {
-            if touched_by_cond(*key) {
+            if touched_by_cond.contains(key) {
                 continue;
             }
             match path {
@@ -4226,11 +4231,27 @@ impl<'a> CfgBuilder<'a> {
         for index in 0..air.len() {
             let air_ref = AirRef::from_raw(index as u32);
             let mut start = index as u32;
-            air_operands(air, air_ref, |operand| {
-                // Operands refer backward (AIR validation), so their
-                // subtree starts are already known.
+            // Operands refer backward (AIR validation checks each one
+            // through this same walk), so their subtree starts are known.
+            let mut visit = |operand: AirRef| {
                 start = start.min(subtree_start[operand.as_u32() as usize]);
-            });
+            };
+            air.try_for_each_operand(
+                &air.get(air_ref).data,
+                |error| -> std::convert::Infallible {
+                    panic!("validated AIR payload failed to decode: {error}")
+                },
+                |operand| {
+                    match operand {
+                        AirOperand::Value(value) => visit(value),
+                        AirOperand::Place(place) => air
+                            .place_operands(air.get_place(place))
+                            .for_each(&mut visit),
+                    }
+                    Ok(())
+                },
+            )
+            .unwrap_or_else(|never| match never {});
             subtree_start.push(start);
             let written = match &air.get(air_ref).data {
                 AirInstData::Alloc { slot, .. } | AirInstData::Store { slot, .. } => {
@@ -4949,127 +4970,6 @@ impl<'a> CfgBuilder<'a> {
                     rue_span::Span::default(),
                 ));
                 None
-            }
-        }
-    }
-}
-
-/// Call `f` on every instruction operand of `air_ref`, including the index
-/// and base operands of the places it reads or writes. The match is
-/// exhaustive so a new instruction kind must say what it refers to.
-fn air_operands(air: &ValidatedAir, air_ref: AirRef, mut f: impl FnMut(AirRef)) {
-    let place_operands = |place_ref: AirPlaceRef, f: &mut dyn FnMut(AirRef)| {
-        let place = air.get_place(place_ref);
-        match place.base {
-            AirPlaceBase::Accessor(operand) | AirPlaceBase::Indirect(operand) => f(operand),
-            AirPlaceBase::Local(_) | AirPlaceBase::Param(_) => {}
-        }
-        for projection in air.get_place_projections(place) {
-            if let AirProjection::Index { index, .. } = projection {
-                f(*index);
-            }
-        }
-    };
-    match &air.get(air_ref).data {
-        AirInstData::Const(_)
-        | AirInstData::BoolConst(_)
-        | AirInstData::StringConst(_)
-        | AirInstData::UnitConst
-        | AirInstData::TypeConst(_)
-        | AirInstData::Break
-        | AirInstData::Continue
-        | AirInstData::Load { .. }
-        | AirInstData::Param { .. }
-        | AirInstData::FnRef { .. }
-        | AirInstData::StorageLive { .. }
-        | AirInstData::StorageDead { .. } => {}
-        AirInstData::Add(a, b)
-        | AirInstData::Sub(a, b)
-        | AirInstData::Mul(a, b)
-        | AirInstData::WrappingAdd(a, b)
-        | AirInstData::WrappingSub(a, b)
-        | AirInstData::WrappingMul(a, b)
-        | AirInstData::Div(a, b)
-        | AirInstData::Mod(a, b)
-        | AirInstData::Eq(a, b)
-        | AirInstData::Ne(a, b)
-        | AirInstData::Lt(a, b)
-        | AirInstData::Gt(a, b)
-        | AirInstData::Le(a, b)
-        | AirInstData::Ge(a, b)
-        | AirInstData::And(a, b)
-        | AirInstData::Or(a, b)
-        | AirInstData::BitAnd(a, b)
-        | AirInstData::BitOr(a, b)
-        | AirInstData::BitXor(a, b)
-        | AirInstData::Shl(a, b)
-        | AirInstData::Shr(a, b)
-        | AirInstData::Loop { cond: a, body: b } => {
-            f(*a);
-            f(*b);
-        }
-        AirInstData::Neg(value)
-        | AirInstData::Not(value)
-        | AirInstData::BitNot(value)
-        | AirInstData::InfiniteLoop { body: value }
-        | AirInstData::Alloc { init: value, .. }
-        | AirInstData::Store { value, .. }
-        | AirInstData::ParamStore { value, .. }
-        | AirInstData::EnumPayloadGet { base: value, .. }
-        | AirInstData::IntCast { value, .. }
-        | AirInstData::Drop { value } => f(*value),
-        AirInstData::Ret(value) => {
-            if let Some(value) = value {
-                f(*value);
-            }
-        }
-        AirInstData::Branch {
-            cond,
-            then_value,
-            else_value,
-        } => {
-            f(*cond);
-            f(*then_value);
-            if let Some(value) = else_value {
-                f(*value);
-            }
-        }
-        AirInstData::Match { scrutinee, arms } => {
-            f(*scrutinee);
-            for (_, body) in air.get_match_arms(arms) {
-                f(body);
-            }
-        }
-        AirInstData::Call { args, .. }
-        | AirInstData::AccessorCall { args, .. }
-        | AirInstData::CallGeneric { args, .. } => {
-            for arg in air.get_call_args(args) {
-                f(arg.value);
-            }
-        }
-        AirInstData::CallIndirect { callee, args } => {
-            f(*callee);
-            for arg in air.get_call_args(args) {
-                f(arg.value);
-            }
-        }
-        AirInstData::Intrinsic { args, .. } => air.get_intrinsic_args(args).for_each(f),
-        AirInstData::Block { statements, value } => {
-            air.get_block_statements(statements).for_each(&mut f);
-            f(*value);
-        }
-        AirInstData::StructInit { fields, .. } => air.get_struct_fields(fields).for_each(f),
-        AirInstData::ArrayInit { elements, .. } => air.get_array_elements(elements).for_each(f),
-        AirInstData::EnumVariant { payload, .. } => air.get_enum_payload(payload).for_each(f),
-        AirInstData::PlaceRead { place } => place_operands(*place, &mut f),
-        AirInstData::PlaceWrite { place, value } => {
-            place_operands(*place, &mut f);
-            f(*value);
-        }
-        AirInstData::MarkMoved { value, place, .. } => {
-            f(*value);
-            if let Some(place) = place {
-                place_operands(*place, &mut f);
             }
         }
     }

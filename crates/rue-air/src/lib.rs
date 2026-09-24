@@ -66,10 +66,11 @@ pub use inference::{
 pub use inst::{
     AIR_PAYLOAD_FAMILY_NAMES, Air, AirArgMode, AirArrayElements, AirBlockStatements, AirBuildError,
     AirBuildErrorKind, AirCallArg, AirCallArgs, AirConstValueWords, AirDisplay, AirEditor,
-    AirEnumPayload, AirInst, AirInstData, AirIntrinsicArgs, AirMatchArms, AirParamMode, AirPattern,
-    AirPayloadError, AirPayloadStorageStats, AirPlace, AirPlaceBase, AirPlaceRef, AirProjection,
-    AirRef, AirSourceOrder, AirStructFields, AirTypeArgs, AirValidationContext, AirValidationError,
-    AirValidationErrorKind, ArrayInitShape, MAX_AIR_INSTRUCTIONS_PER_BODY, ValidatedAir,
+    AirEnumPayload, AirInst, AirInstData, AirIntrinsicArgs, AirMatchArms, AirOperand, AirParamMode,
+    AirPattern, AirPayloadError, AirPayloadStorageStats, AirPlace, AirPlaceBase, AirPlaceRef,
+    AirProjection, AirRef, AirSourceOrder, AirStructFields, AirTypeArgs, AirValidationContext,
+    AirValidationError, AirValidationErrorKind, ArrayInitShape, MAX_AIR_INSTRUCTIONS_PER_BODY,
+    ValidatedAir,
 };
 pub use integer_semantics::IntegerType;
 pub use intern_pool::{

@@ -1761,6 +1761,168 @@ impl AirEditor {
     }
 }
 
+/// One operand of an AIR instruction, as [`Air::try_for_each_operand`]
+/// reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AirOperand {
+    /// An instruction result the instruction consumes.
+    Value(AirRef),
+    /// A place the instruction reads or writes. The place's own operands
+    /// (an accessor or indirect base, and index projections) are reached
+    /// through [`Air::place_operands`].
+    Place(AirPlaceRef),
+}
+
+impl Air {
+    /// Call `f` on every operand of `data`, in evaluation order: the
+    /// canonical operand walk. AIR validation checks every operand through
+    /// it, and CFG construction uses it to find each loop's instruction
+    /// range (RUE-2356), so the two cannot disagree about what an
+    /// instruction refers to. The match is exhaustive: a new instruction
+    /// kind must say what it refers to. A malformed payload range is
+    /// reported through `payload_error`.
+    pub fn try_for_each_operand<E>(
+        &self,
+        data: &AirInstData,
+        payload_error: impl Fn(AirPayloadError) -> E,
+        mut f: impl FnMut(AirOperand) -> Result<(), E>,
+    ) -> Result<(), E> {
+        use AirOperand::{Place, Value};
+        let mut words = |start: u32, extent: u32, family: &'static str| -> Result<(), E> {
+            for &raw in self
+                .try_get_words(start, extent, family)
+                .map_err(&payload_error)?
+            {
+                f(Value(AirRef::from_raw(raw)))?;
+            }
+            Ok(())
+        };
+        match data {
+            AirInstData::Const(_)
+            | AirInstData::BoolConst(_)
+            | AirInstData::StringConst(_)
+            | AirInstData::UnitConst
+            | AirInstData::TypeConst(_)
+            | AirInstData::Break
+            | AirInstData::Continue
+            | AirInstData::Load { .. }
+            | AirInstData::Param { .. }
+            | AirInstData::FnRef { .. }
+            | AirInstData::StorageLive { .. }
+            | AirInstData::StorageDead { .. } => Ok(()),
+            AirInstData::Add(a, b)
+            | AirInstData::Sub(a, b)
+            | AirInstData::Mul(a, b)
+            | AirInstData::WrappingAdd(a, b)
+            | AirInstData::WrappingSub(a, b)
+            | AirInstData::WrappingMul(a, b)
+            | AirInstData::Div(a, b)
+            | AirInstData::Mod(a, b)
+            | AirInstData::Eq(a, b)
+            | AirInstData::Ne(a, b)
+            | AirInstData::Lt(a, b)
+            | AirInstData::Gt(a, b)
+            | AirInstData::Le(a, b)
+            | AirInstData::Ge(a, b)
+            | AirInstData::And(a, b)
+            | AirInstData::Or(a, b)
+            | AirInstData::BitAnd(a, b)
+            | AirInstData::BitOr(a, b)
+            | AirInstData::BitXor(a, b)
+            | AirInstData::Shl(a, b)
+            | AirInstData::Shr(a, b)
+            | AirInstData::Loop { cond: a, body: b } => {
+                f(Value(*a))?;
+                f(Value(*b))
+            }
+            AirInstData::Neg(value)
+            | AirInstData::Not(value)
+            | AirInstData::BitNot(value)
+            | AirInstData::InfiniteLoop { body: value }
+            | AirInstData::Alloc { init: value, .. }
+            | AirInstData::Store { value, .. }
+            | AirInstData::ParamStore { value, .. }
+            | AirInstData::EnumPayloadGet { base: value, .. }
+            | AirInstData::IntCast { value, .. }
+            | AirInstData::Drop { value } => f(Value(*value)),
+            AirInstData::Ret(value) => value.map_or(Ok(()), |value| f(Value(value))),
+            AirInstData::Branch {
+                cond,
+                then_value,
+                else_value,
+            } => {
+                f(Value(*cond))?;
+                f(Value(*then_value))?;
+                else_value.map_or(Ok(()), |value| f(Value(value)))
+            }
+            AirInstData::Match { scrutinee, arms } => {
+                f(Value(*scrutinee))?;
+                for (_, body) in self.try_get_match_arms(arms).map_err(&payload_error)? {
+                    f(Value(body))?;
+                }
+                Ok(())
+            }
+            AirInstData::Call { args, .. }
+            | AirInstData::AccessorCall { args, .. }
+            | AirInstData::CallGeneric { args, .. } => {
+                for arg in self.try_get_call_args(args).map_err(&payload_error)? {
+                    f(Value(arg.value))?;
+                }
+                Ok(())
+            }
+            AirInstData::CallIndirect { callee, args } => {
+                f(Value(*callee))?;
+                for arg in self.try_get_call_args(args).map_err(&payload_error)? {
+                    f(Value(arg.value))?;
+                }
+                Ok(())
+            }
+            AirInstData::Intrinsic { args, .. } => {
+                words(args.start, args.extent, "intrinsic arguments")
+            }
+            AirInstData::Block { statements, value } => {
+                words(statements.start, statements.extent, "block statements")?;
+                f(Value(*value))
+            }
+            AirInstData::StructInit { fields, .. } => {
+                words(fields.start, fields.extent, "struct fields")
+            }
+            AirInstData::ArrayInit { elements, .. } => {
+                words(elements.start, elements.extent, "array elements")
+            }
+            AirInstData::EnumVariant { payload, .. } => {
+                words(payload.start, payload.extent, "enum payload")
+            }
+            AirInstData::PlaceRead { place } => f(Place(*place)),
+            AirInstData::PlaceWrite { place, value } => {
+                f(Place(*place))?;
+                f(Value(*value))
+            }
+            AirInstData::MarkMoved { value, place, .. } => {
+                f(Value(*value))?;
+                place.map_or(Ok(()), |place| f(Place(place)))
+            }
+        }
+    }
+
+    /// The operands of a place: its accessor or indirect base producer, then
+    /// the index operands of its projections, outermost first.
+    pub fn place_operands<'a>(&'a self, place: &'a AirPlace) -> impl Iterator<Item = AirRef> + 'a {
+        let base = match place.base {
+            AirPlaceBase::Accessor(operand) | AirPlaceBase::Indirect(operand) => Some(operand),
+            AirPlaceBase::Local(_) | AirPlaceBase::Param(_) => None,
+        };
+        base.into_iter().chain(
+            self.get_place_projections(place)
+                .iter()
+                .filter_map(|projection| match projection {
+                    AirProjection::Index { index, .. } => Some(*index),
+                    AirProjection::Field { .. } => None,
+                }),
+        )
+    }
+}
+
 impl ValidatedAir {
     pub(crate) fn from_semantic_air(
         air: Air,
@@ -2043,6 +2205,17 @@ impl Air {
             // That is exactly what `Type::can_coerce_to` already means, so
             // reuse it rather than restating the exemption.
             let agree = |a: Type, b: Type| a.can_coerce_to(&b) || b.can_coerce_to(&a);
+            // Every operand refers backward and every place is well formed.
+            // This is the canonical operand walk, so the checks below may
+            // read any operand's type.
+            self.try_for_each_operand(
+                &inst.data,
+                |error| fail(Some(index), error.to_string()),
+                |operand| match operand {
+                    AirOperand::Value(value) => check_ref(value),
+                    AirOperand::Place(place) => check_place(place).map(|_| ()),
+                },
+            )?;
             // Only valid for a reference that `check_ref` has already
             // accepted: it proves the index is inside the instruction store.
             let operand_ty = |value: AirRef| self.instructions[value.as_u32() as usize].ty;
@@ -2106,8 +2279,6 @@ impl Air {
                 | AirInstData::BitXor(a, b)
                 | AirInstData::Shl(a, b)
                 | AirInstData::Shr(a, b) => {
-                    check_ref(*a)?;
-                    check_ref(*b)?;
                     operands_agree(*a, *b)?;
                     result_agrees(*a)?;
                     result_agrees(*b)?;
@@ -2127,48 +2298,16 @@ impl Air {
                 | AirInstData::Gt(a, b)
                 | AirInstData::Le(a, b)
                 | AirInstData::Ge(a, b) => {
-                    check_ref(*a)?;
-                    check_ref(*b)?;
                     if !(operand_ty(*a).is_integer() && operand_ty(*b).is_integer()) {
                         operands_agree(*a, *b)?;
                     }
                     result_is_bool()?;
                 }
                 AirInstData::Neg(value) | AirInstData::Not(value) | AirInstData::BitNot(value) => {
-                    check_ref(*value)?;
                     result_agrees(*value)?;
-                }
-                AirInstData::Drop { value } => check_ref(*value)?,
-                AirInstData::Branch {
-                    cond,
-                    then_value,
-                    else_value,
-                } => {
-                    check_ref(*cond)?;
-                    check_ref(*then_value)?;
-                    if let Some(value) = else_value {
-                        check_ref(*value)?;
-                    }
-                }
-                AirInstData::Loop { cond, body } => {
-                    check_ref(*cond)?;
-                    check_ref(*body)?;
-                }
-                AirInstData::InfiniteLoop { body } => check_ref(*body)?,
-                AirInstData::Alloc { init, .. }
-                | AirInstData::Store { value: init, .. }
-                | AirInstData::ParamStore { value: init, .. } => check_ref(*init)?,
-                AirInstData::Ret(value) => {
-                    if let Some(value) = value {
-                        check_ref(*value)?;
-                    }
-                }
-                AirInstData::PlaceRead { place } => {
-                    check_place(*place)?;
                 }
                 AirInstData::PlaceWrite { place, value } => {
                     let place_ty = check_place(*place)?;
-                    check_ref(*value)?;
                     let value_ty = operand_ty(*value);
                     if !agree(place_ty, value_ty) {
                         return Err(fail(
@@ -2182,12 +2321,11 @@ impl Air {
                     }
                 }
                 AirInstData::EnumPayloadGet {
-                    base,
                     enum_id,
                     variant_index,
                     field_index,
+                    ..
                 } => {
-                    check_ref(*base)?;
                     validate_type(Type::new_enum(*enum_id)).map_err(|reason| {
                         fail(Some(index), format!("invalid enum identity: {reason}"))
                     })?;
@@ -2201,29 +2339,20 @@ impl Air {
                         ));
                     }
                 }
-                AirInstData::IntCast { value, from_ty } => {
-                    check_ref(*value)?;
+                AirInstData::IntCast { from_ty, .. } => {
                     validate_type(*from_ty).map_err(|reason| {
                         fail(Some(index), format!("invalid cast source type: {reason}"))
                     })?;
-                }
-                AirInstData::MarkMoved { value, place, .. } => {
-                    check_ref(*value)?;
-                    if let Some(place) = place {
-                        check_place(*place)?;
-                    }
                 }
                 _ => {}
             }
             match &inst.data {
                 AirInstData::Match { scrutinee, arms } => {
-                    check_ref(*scrutinee)?;
                     let scrutinee_ty = self.instructions[scrutinee.as_u32() as usize].ty;
-                    for (pattern, body) in self
+                    for (pattern, _) in self
                         .try_get_match_arms(arms)
                         .map_err(|e| fail(Some(index), e.to_string()))?
                     {
-                        check_ref(body)?;
                         match pattern {
                             AirPattern::Wildcard => {}
                             AirPattern::Int(_) if !scrutinee_ty.is_integer() => {
@@ -2271,36 +2400,20 @@ impl Air {
                         }
                     }
                 }
-                AirInstData::Call { name, args, .. } | AirInstData::AccessorCall { name, args } => {
+                AirInstData::Call { name, .. } | AirInstData::AccessorCall { name, .. } => {
                     context
                         .validate_symbol(*name)
                         .map_err(|reason| fail(Some(index), reason))?;
-                    for arg in self
-                        .try_get_call_args(args)
-                        .map_err(|e| fail(Some(index), e.to_string()))?
-                    {
-                        check_ref(arg.value)?;
-                    }
                 }
                 AirInstData::FnRef { name } => {
                     context
                         .validate_symbol(*name)
                         .map_err(|reason| fail(Some(index), reason))?;
                 }
-                AirInstData::CallIndirect { callee, args } => {
-                    check_ref(*callee)?;
-                    for arg in self
-                        .try_get_call_args(args)
-                        .map_err(|e| fail(Some(index), e.to_string()))?
-                    {
-                        check_ref(arg.value)?;
-                    }
-                }
                 AirInstData::CallGeneric {
                     name,
                     type_args,
                     value_args,
-                    args,
                     ..
                 } => {
                     context
@@ -2331,32 +2444,11 @@ impl Air {
                                 )
                             })?;
                     }
-                    for arg in self
-                        .try_get_call_args(args)
-                        .map_err(|e| fail(Some(index), e.to_string()))?
-                    {
-                        check_ref(arg.value)?;
-                    }
                 }
-                AirInstData::Intrinsic { name, args, .. } => {
+                AirInstData::Intrinsic { name, .. } => {
                     context
                         .validate_symbol(*name)
                         .map_err(|reason| fail(Some(index), reason))?;
-                    for &raw in self
-                        .try_get_words(args.start, args.extent, "intrinsic arguments")
-                        .map_err(|e| fail(Some(index), e.to_string()))?
-                    {
-                        check_ref(AirRef::from_raw(raw))?;
-                    }
-                }
-                AirInstData::Block { statements, value } => {
-                    for &raw in self
-                        .try_get_words(statements.start, statements.extent, "block statements")
-                        .map_err(|e| fail(Some(index), e.to_string()))?
-                    {
-                        check_ref(AirRef::from_raw(raw))?;
-                    }
-                    check_ref(*value)?;
                 }
                 AirInstData::StructInit {
                     struct_id,
@@ -2371,12 +2463,6 @@ impl Air {
                             Some(index),
                             "struct initialization result type has a different identity".into(),
                         ));
-                    }
-                    for &raw in self
-                        .try_get_words(fields.start, fields.extent, "struct fields")
-                        .map_err(|e| fail(Some(index), e.to_string()))?
-                    {
-                        check_ref(AirRef::from_raw(raw))?;
                     }
                     let order: Vec<_> = self
                         .try_get_words(source_order.start, source_order.extent, "source order")
@@ -2413,12 +2499,6 @@ impl Air {
                             "array repeat carries exactly one element reference".into(),
                         ));
                     }
-                    for &raw in self
-                        .try_get_words(elements.start, elements.extent, "array elements")
-                        .map_err(|e| fail(Some(index), e.to_string()))?
-                    {
-                        check_ref(AirRef::from_raw(raw))?;
-                    }
                 }
                 AirInstData::EnumVariant {
                     enum_id,
@@ -2442,12 +2522,6 @@ impl Air {
                                 payload.len()
                             ),
                         ));
-                    }
-                    for &raw in self
-                        .try_get_words(payload.start, payload.extent, "enum payload")
-                        .map_err(|e| fail(Some(index), e.to_string()))?
-                    {
-                        check_ref(AirRef::from_raw(raw))?;
                     }
                 }
                 _ => {}
