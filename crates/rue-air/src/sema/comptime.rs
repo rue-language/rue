@@ -3273,6 +3273,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                                 .float_value_from_text(&v.to_string(), Some(ty.clone()))
                         ) {
                             Some(value) => ComptimeOutcome::Known(value),
+                            // A domain without float values. Only the ordinary
+                            // body host resolves types, and it always builds
+                            // one, so this is not reached today.
                             None => ComptimeOutcome::RuntimeDependent,
                         };
                     }

@@ -60,9 +60,41 @@ pub(crate) enum FloatConstSource<'a> {
     /// therefore a source literal passed through unchanged (`comptime { 1e39
     /// }` at `f32`), held to the literal rule of spec 3.12:10 as the same
     /// literal written directly is.
+    ///
+    /// Only a literal that reaches the result unchanged is caught. A literal
+    /// an operation consumed inside the block (`comptime { 1e39 - 0.0 }` at
+    /// `f32`) has already been read at the operation's width, and its result
+    /// is an ordinary computed infinity here, where run time rejects the
+    /// literal operand itself.
     ComptimeResult {
         spelling: &'a str,
     },
+}
+
+/// A comptime float spelling for a diagnostic. A literal's comptime value
+/// is its canonical `<digits>e<exponent>` text (`34028236e31`), which is not
+/// what the user wrote; one leading digit before the point reads as the
+/// literal did (`3.4028236e38`). Any other spelling is returned unchanged.
+fn scientific_float_spelling(spelling: &str) -> String {
+    let (sign, unsigned) = spelling
+        .strip_prefix('-')
+        .map_or(("", spelling), |rest| ("-", rest));
+    let Some((digits, exponent)) = unsigned.split_once('e') else {
+        return spelling.to_owned();
+    };
+    let Ok(exponent) = exponent.parse::<i64>() else {
+        return spelling.to_owned();
+    };
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return spelling.to_owned();
+    }
+    let (lead, rest) = digits.split_at(1);
+    let exponent = exponent.saturating_add(i64::try_from(rest.len()).unwrap_or(i64::MAX));
+    if rest.is_empty() {
+        format!("{sign}{lead}e{exponent}")
+    } else {
+        format!("{sign}{lead}.{rest}e{exponent}")
+    }
 }
 
 /// Where a string value came from when it is materialized into AIR.
@@ -221,7 +253,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 (
                     crate::finite_float_literal_bits(spelling, ty),
                     format!("finite {type_name} literal"),
-                    spelling.to_owned(),
+                    scientific_float_spelling(spelling),
                 )
             }
             FloatConstSource::ComptimeResult { spelling } => (
