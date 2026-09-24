@@ -617,7 +617,7 @@ Every declaration of the mechanization with the calculus rules, sections, and pr
 | `RueCore.Soundness` | `RueCore.no_linear_leak` | theorem | §6.7, §6.9, §7 | — |
 | `RueCore.Soundness` | `RueCore.no_linear_overwrite` | theorem | (Assign), §5.2, §7 | `3.8:77` |
 | `RueCore.Soundness` | `RueCore.no_linear_discard` | theorem | §7 | `3.8:64` |
-| `RueCore.Statics` | Statics.lean (module) | module | (Struct-Intro), (Call), (Return-Value), (Sub-Never), (Assign), (Return-Bottom), (Match), (Use-Move), (@Drop), (Fn), (Loop-Break), §2, §3, §5, §5.1, §5.2, §5.3, §5.5, §5.6, §5.7, §5.8, §6.11, §6.12 | `3.8:18`, `3.9:31`, `3.9:44`, `3.9:34`, `3.0:5`, `6.3:19`, `3.4:1`, `3.8:2`, `3.8:60`, `10.5:4` |
+| `RueCore.Statics` | Statics.lean (module) | module | (Struct-Intro), (Call), (Return-Value), (Sub-Never), (Assign), (Return-Bottom), (Match), (Use-Move), (@Drop), (Fn), §2, §3, §5, §5.1, §5.2, §5.3, §5.5, §5.6, §5.7, §5.8, §6.11, §6.12 | `3.8:18`, `3.9:31`, `3.9:44`, `3.9:34`, `3.0:5`, `6.3:19`, `3.4:1`, `3.8:2`, `3.8:60`, `10.5:4` |
 | `RueCore.Statics` | `RueCore.Mult.rank_le_join_left` | theorem | §3 | — |
 | `RueCore.Statics` | `RueCore.Mult.rank_le_join_right` | theorem | §3 | — |
 | `RueCore.Statics` | `RueCore.Mult.eq_linear_of_rank` | theorem | §3 | — |
@@ -914,7 +914,7 @@ Coverage: 30 of 35 §2 forms have a core image (8 of them partial); 5 are *not y
 
 Every labeled inference rule of §5 and §6, in the calculus's order.
 
-Coverage: 82 of 97 labeled §5/§6 rules are mechanized; 15 are *not yet mechanized*.
+Coverage: 81 of 97 labeled §5/§6 rules are mechanized; 16 are *not yet mechanized*.
 
 | Section | Rule | Mechanized by |
 | --- | --- | --- |
@@ -940,7 +940,7 @@ Coverage: 82 of 97 labeled §5/§6 rules are mechanized; 15 are *not yet mechani
 | §5.7 | `(Break)` | *not yet mechanized* |
 | §5.7 | `(Loop-Div-Backedge)` | *not yet mechanized* |
 | §5.7 | `(Loop-Div)` | *not yet mechanized* |
-| §5.7 | `(Loop-Break)` | Statics.lean (module) |
+| §5.7 | `(Loop-Break)` | *not yet mechanized* |
 | §5.7 | `(Sub-Never)` | Checker.lean (module), `RueCore.CTy`, `RueCore.CTy.fits`, `RueCore.CTy.meet`, `RueCore.firstArmTy`, `RueCore.CTy.fits_never`, `RueCore.check_sound`, Examples.lean (module), `RueCore.Examples.matchNeverFirstArm`, `RueCore.Explain.Premise.armTypeMismatchC`, `RueCore.Print.tyOf`, Statics.lean (module), `RueCore.Ctx.joinOpt`, `RueCore.Typed`, `RueCore.Typed.panic`, `RueCore.Typed.match`, `RueCore.Typed.matchBot`, `RueCore.Typed.letBot`, `RueCore.Typed.seqBot`, `RueCore.Typed.ite`, `RueCore.Typed.ret`, `RueCore.Typed.retBot` |
 | §5.8 | `(Lit)` | Examples.lean (module), `RueCore.Explain.Premise.floatLitInfinite`, `RueCore.FloatLit.RoundsFinite`, `RueCore.Gen.leastValue`, `RueCore.Typed.intLit`, `RueCore.Typed.boolLit`, `RueCore.Typed.unitLit`, `RueCore.Typed.floatLit` |
 | §5.8 | `(Arith)` | `RueCore.Explain.Premise.operandNotInt`, `RueCore.Explain.Premise.operandWidthMismatch`, `RueCore.Explain.binopRule`, `RueCore.Typed`, `RueCore.Typed.binop`, `RueCore.Typed.binopBot`, `RueCore.Typed.floatBinop`, `RueCore.BinOp`, `RueCore.BinOp.intAdmits`, `RueCore.BinOp.floatAdmits`, `RueCore.BinOp.resultTy` |

@@ -2389,7 +2389,7 @@ mechanization: "check each edge where it fires — so long as the sets `B` and
 `return` where it fires (`Typed.ret` carries (Fn) §5.8's residual-linear
 obligation at the edge), and §5.7 exempts a `@panic` from §5.6, so neither
 needs a consumer and neither is recorded. The deliveries that do need one are
-`⟨break, Σ⟩`, which (Loop-Break) §5.7 joins at the loop's exit; the fragment
+`⟨break, Σ⟩`, which §5.7's break-exited loop rule joins at the loop's exit; the fragment
 has no loop yet (RUE-2369), so no rule makes one and `brk` is always empty.
 It is threaded through every rule anyway, as §5.3's **Threading** paragraph
 says — a premise's deliveries are unioned into the conclusion's — so that
