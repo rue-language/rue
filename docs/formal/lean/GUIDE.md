@@ -684,24 +684,30 @@ monitor unreachable from a program `check` accepts.
 
 #### The run
 
-`run` returns `.ok` with value `2`, final store `[dead]`, and the two
-`drop ℓ0` events as its trace. Step by step, with the store `H` as a list of
-cells indexed by location and `ρ` mapping position 0 to its location:
+`run` returns `.ok` with value `2`, final store `[dead, dead, dead]`, and the
+two `drop ℓ1` events as its trace. Step by step, with the store `H` as a list
+of cells indexed by location and `ρ` mapping position 0 to its location. Each
+struct literal mints its value's identity (section 2), which reserves a `†`
+slot, so `v0`'s cell is location 1, not 0:
 
 | Step | Store before | Effect | Store after | Trace |
 | --- | --- | --- | --- | --- |
-| `mkStruct sLinear [lit 1]`, (D-Struct) §6.5 | `[]` | a value `{ 1 }_S2`, no store effect | `[]` | |
-| (D-Let): mint a cell for `v0` | `[]` | allocate location 0, `ρ = [0]` | `[full S2 { 1 }]` | |
-| `drop (.var 0)`, §6.11 | `[full S2 { 1 }]` | the drop glue runs (`S2` declares no destructor, so nothing is observable), and the contents become `⊘` | `[full ⊘]` | `drop ℓ0 = S2 { 1 }` |
-| (D-Seq) discard | | `unit` is `Copy`: no drop | `[full ⊘]` | |
-| `mkStruct sLinear [lit 2]` | | a value | `[full ⊘]` | |
-| `assign (.var 0)`, (D-Assign) §6.8 | `[full ⊘]` | the position is `⊘`, so nothing is dropped; reinitialize | `[full S2 { 2 }]` | |
-| inner (D-Seq) discard | | `unit` is `Copy`: no drop | `[full S2 { 2 }]` | |
-| `drop (.var 0)`, §6.11 | `[full S2 { 2 }]` | the glue runs again; the contents become `⊘` | `[full ⊘]` | `drop ℓ0 = S2 { 2 }` |
-| (D-EndScope): retire `v0` | `[full ⊘]` | the contents are `⊘`, so nothing to drop; retire the cell | `[dead]` | |
+| `mkStruct sLinear [lit 1]`, (D-Struct) §6.5 | `[]` | a value `{ 1 }_S2` with identity `#0`, reserving slot 0 | `[dead]` | |
+| (D-Let): mint a cell for `v0` | `[dead]` | allocate location 1, `ρ = [1]` | `[dead, full S2 { 1 }#0]` | |
+| `drop (.var 0)`, §6.11 | `[dead, full S2 { 1 }#0]` | the drop glue runs (`S2` declares no destructor, so nothing is observable), and the contents become `⊘` | `[dead, full ⊘]` | `drop ℓ1 = S2 { 1 }#0` |
+| (D-Seq) discard | | `unit` is `Copy`: no drop | `[dead, full ⊘]` | |
+| `mkStruct sLinear [lit 2]` | | a value with identity `#2`, reserving slot 2 | `[dead, full ⊘, dead]` | |
+| `assign (.var 0)`, (D-Assign) §6.8 | `[dead, full ⊘, dead]` | the position is `⊘`, so nothing is dropped; reinitialize | `[dead, full S2 { 2 }#2, dead]` | |
+| inner (D-Seq) discard | | `unit` is `Copy`: no drop | `[dead, full S2 { 2 }#2, dead]` | |
+| `drop (.var 0)`, §6.11 | `[dead, full S2 { 2 }#2, dead]` | the glue runs again; the contents become `⊘` | `[dead, full ⊘, dead]` | `drop ℓ1 = S2 { 2 }#2` |
+| (D-EndScope): retire `v0` | `[dead, full ⊘, dead]` | the contents are `⊘`, so nothing to drop; retire the cell | `[dead, dead, dead]` | |
+
+The two drops name two identities, `#0` and `#2`: the reinitialization put a
+new value in the old place, and each value was freed once, which is what
+`no_double_free` counts.
 
 No event is **observable**. `S2` declares no destructor, so the two
-`drop ℓ0` events project to no stdout line (`Corpus.eventLine`), and the
+`drop ℓ1` events project to no stdout line (`Corpus.eventLine`), and the
 scope exit finds a `⊘`. The printed program's only output line is the value,
 `2`, and the bridge expectation in `corpus.json` is exactly that:
 `{"kind": "ok", "stdout": ["2"], "exit": 0}`.
@@ -773,20 +779,22 @@ which the compiler rejects with E0406 and the machine refuses with
 
 #### The run
 
-At the `return` the frame is `φ = ⟨ρ ; σ⟩` with `ρ = [ℓ1, ℓ0]` (innermost
-binder first) and `σ = [ℓ0, ℓ1]` (creation order). Each `let` appended to σ,
-so σ reversed is ρ: the `record` invariant of section 3.
+At the `return` the frame is `φ = ⟨ρ ; σ⟩` with `ρ = [ℓ3, ℓ1]` (innermost
+binder first) and `σ = [ℓ1, ℓ3]` (creation order). Each `let` appended to σ,
+so σ reversed is ρ: the `record` invariant of section 3. The even locations
+are the `†` slots the two struct literals reserved for their identities,
+`#0` and `#2` (section 2); nothing binds them.
 
 | Row | Rule | Store before | Effect | Store after | Events |
 | --- | --- | --- | --- | --- | --- |
 | 1 | (D-Call) §6.9 (push the frame) | `[]` | `f0` takes no arguments, so no parameter cell is minted; `σ = []` | `[]` | |
-| 2–4 | literal, (D-Struct) §6.5, (D-Let) §6.7 | `[]` | mint `ℓ0 = S1 { 3 }`; `ρ = [ℓ0]`, `σ = [ℓ0]` | `[ℓ0 = S1 { 3 }]` | |
-| 5–7 | literal, (D-Struct) §6.5, (D-Let) §6.7 | `[ℓ0 = …]` | mint `ℓ1 = S1 { 4 }`; `ρ = [ℓ1, ℓ0]`, `σ = [ℓ0, ℓ1]` | `[ℓ0 = S1 { 3 }, ℓ1 = S1 { 4 }]` | |
+| 2–4 | literal, (D-Struct) §6.5, (D-Let) §6.7 | `[]` | mint identity `#0` at `ℓ0`, then `ℓ1 = S1 { 3 }#0`; `ρ = [ℓ1]`, `σ = [ℓ1]` | `[ℓ0 = †, ℓ1 = S1 { 3 }#0]` | |
+| 5–7 | literal, (D-Struct) §6.5, (D-Let) §6.7 | `[ℓ0 = †, ℓ1 = …]` | mint identity `#2` at `ℓ2`, then `ℓ3 = S1 { 4 }#2`; `ρ = [ℓ3, ℓ1]`, `σ = [ℓ1, ℓ3]` | `[ℓ0 = †, ℓ1 = S1 { 3 }#0, ℓ2 = †, ℓ3 = S1 { 4 }#2]` | |
 | 8 | literal | | the operand `7` becomes a value | | |
-| **9** | **(D-Return) §6.9 (unwind the frame)** | `[ℓ0 = S1 { 3 }, ℓ1 = S1 { 4 }]` | `run-all-scope-drops(H, φ)` walks `σ` **newest-first**: drop-retire `ℓ1`, then `ℓ0` | `[ℓ0 = †, ℓ1 = †]` | `drop ℓ1 = S1 { 4 }`; `run drop fn S1(S1 { 4 })`; `drop ℓ0 = S1 { 3 }`; `run drop fn S1(S1 { 3 })` |
+| **9** | **(D-Return) §6.9 (unwind the frame)** | `[…, ℓ1 = S1 { 3 }#0, …, ℓ3 = S1 { 4 }#2]` | `run-all-scope-drops(H, φ)` walks `σ` **newest-first**: drop-retire `ℓ3`, then `ℓ1` | `[ℓ0 = †, ℓ1 = †, ℓ2 = †, ℓ3 = †]` | `drop ℓ3 = S1 { 4 }#2`; `run drop fn S1(S1 { 4 }#2)`; `drop ℓ1 = S1 { 3 }#0`; `run drop fn S1(S1 { 3 }#0)` |
 | 10 | inner (D-EndScope): does not run | | the `return` discarded the evaluation context, and the pending `endscope` markers with it; the result travels out unchanged | | |
 | 11 | outer (D-EndScope): does not run | | the same | | |
-| 12 | (D-Return-Main) §6.9 (absorb) | `[ℓ0 = †, ℓ1 = †]` | the call boundary turns the unwound `return` into the call's value. `f0` is the bottom of the stack, so this is (D-Return-Main); at an inner call the same row is (D-Return)'s hand-off, which is why the generated table labels it with both | | |
+| 12 | (D-Return-Main) §6.9 (absorb) | `[ℓ0 = †, …, ℓ3 = †]` | the call boundary turns the unwound `return` into the call's value. `f0` is the bottom of the stack, so this is (D-Return-Main); at an inner call the same row is (D-Return)'s hand-off, which is why the generated table labels it with both | | |
 
 **The drops run once, not twice.** Rows 10 and 11 are the `endscope`s the
 normal path would have run. They see a `.returned` result and pass it on,
@@ -796,7 +804,7 @@ a value. Their cells were already retired at row 9; had either tried again,
 with `useAfterDrop`. The `record` invariant is what proves it cannot.
 
 **The order is newest-first, and it is observable.** The trace is
-`drop ℓ1`, then `drop ℓ0`, each followed by `S1`'s destructor, so the printed
+`drop ℓ3`, then `drop ℓ1`, each followed by `S1`'s destructor, so the printed
 program prints `4`, then `3`, then its value `7`. Two spec rules are at work:
 `3.9:18` says *that* a `return` drops every live binding of every enclosing
 scope, and `3.9:4` says *in what order* ("reverse declaration order (last
@@ -856,14 +864,14 @@ accepts a `@panic` past a live linear binding too, since it carries `⊥`
 
 | Row | Rule | Store before | Effect | Store after | Events |
 | --- | --- | --- | --- | --- | --- |
-| 2–3 | literal, (D-Struct) §6.5 | `[]` | the literal becomes `{ 7 }_S1` | `[]` | |
-| 4 | (D-Let) §6.7 | `[]` | mint `ℓ0` for `v0` | `[ℓ0 = S1 { 7 }]` | |
-| 5 | `@drop` §6.11 | `[ℓ0 = S1 { 7 }]` | the glue runs, with the destructor as its observable half, and the cell is marked `⊘` rather than retired, so the binding stays reinitializable (§6.8, §6.11) | `[ℓ0 = ⊘]` | `drop ℓ0 = S1 { 7 }`; `run drop fn S1(S1 { 7 })` |
-| **6** | **(D-Panic) §6.12** | `[ℓ0 = ⊘]` | the configuration is abandoned with `↯user` | | |
+| 2–3 | literal, (D-Struct) §6.5 | `[]` | the literal becomes `{ 7 }_S1` with identity `#0`, reserving `ℓ0` | `[ℓ0 = †]` | |
+| 4 | (D-Let) §6.7 | `[ℓ0 = †]` | mint `ℓ1` for `v0` | `[ℓ0 = †, ℓ1 = S1 { 7 }#0]` | |
+| 5 | `@drop` §6.11 | `[ℓ0 = †, ℓ1 = S1 { 7 }#0]` | the glue runs, with the destructor as its observable half, and the cell is marked `⊘` rather than retired, so the binding stays reinitializable (§6.8, §6.11) | `[ℓ0 = †, ℓ1 = ⊘]` | `drop ℓ1 = S1 { 7 }#0`; `run drop fn S1(S1 { 7 }#0)` |
+| **6** | **(D-Panic) §6.12** | `[ℓ0 = †, ℓ1 = ⊘]` | the configuration is abandoned with `↯user` | | |
 | 7–8 | (D-Seq), then the `let`'s (D-EndScope) | | both pass the trap on. The body did not complete, so the scope never closes and nothing unwinds σ: the dynamic face of §5.7's `⊥_panic` exemption | | |
 | 9 | (Panic-Lift) §6.2 | | the trap is carried out of the suspended `main() → f0()` context: **no frame is popped**, `run-all-scope-drops` never runs, and the callee's open scopes go with the configuration | | |
 
-The result is `EvalRes.panic .user [drop ℓ0 …, dtor S1 …]`: the trap, and the
+The result is `EvalRes.panic .user [drop ℓ1 …, dtor S1 …]`: the trap, and the
 two events that had already happened. `Corpus.outLines` projects the
 observable ones, so the exported expectation is
 
@@ -940,10 +948,10 @@ it, and the machine then must.
 
 | Row | Rule | Store before | Effect | Store after | Events |
 | --- | --- | --- | --- | --- | --- |
-| 2–5 | literals, (D-Struct) §6.5 | `[]` | the inner literal becomes `{ 2 }_S1`, then the outer `{ 1, { 2 }_S1 }_S5`, a redex only once **all** its components are values | `[]` | |
-| 6 | (D-Let) §6.7 | `[]` | mint `ℓ0` for `v0` | `[ℓ0 = S5 { 1, S1 { 2 } }]` | |
+| 2–5 | literals, (D-Struct) §6.5 | `[]` | the inner literal becomes `{ 2 }_S1` with identity `#0`, then the outer `{ 1, { 2 }_S1 }_S5` with `#1`, a redex only once **all** its components are values; each identity reserves a `†` slot | `[ℓ0 = †, ℓ1 = †]` | |
+| 6 | (D-Let) §6.7 | `[ℓ0 = †, ℓ1 = †]` | mint `ℓ2` for `v0` | `[…, ℓ2 = S5 { 1, S1 { 2 }#0 }#1]` | |
 | 7 | literal | | the body's `9` | | |
-| **8** | **(D-EndScope) §6.7 → `drop-retire` → §6.11** | `[ℓ0 = S5 { 1, S1 { 2 } }]` | the cell holds a live non-`Linear` value, so the monitor lets it through and §6.11's walk runs: **`S5`'s destructor first**, then the fields in **declaration order**: `x0` is an `int` and drops nothing, `x1` is an `S1` and runs *its* destructor | `[ℓ0 = †]` | `drop ℓ0 = S5 { 1, S1 { 2 } }`; `run drop fn S5(…)`; `run drop fn S1(S1 { 2 })` |
+| **8** | **(D-EndScope) §6.7 → `drop-retire` → §6.11** | `[…, ℓ2 = S5 { 1, S1 { 2 }#0 }#1]` | the cell holds a live non-`Linear` value, so the monitor lets it through and §6.11's walk runs: **`S5`'s destructor first**, then the fields in **declaration order**: `x0` is an `int` and drops nothing, `x1` is an `S1` and runs *its* destructor | `[…, ℓ2 = †]` | `drop ℓ2 = S5 { 1, S1 { 2 }#0 }#1`; `run drop fn S5(…#1)`; `run drop fn S1(S1 { 2 }#0)` |
 | 9 | (D-Return-Value) §6.9 | | the frame pops with an empty record | | |
 
 So the program prints `1` (the outer destructor), then `2` (the inner), then
@@ -999,21 +1007,25 @@ is `MovedOut`); `en.ty.atPath` types the place; `u.fullyOwned` is `3.8:26`;
 hole-free tree (`ContentsMatches`'s `owned` clause):
 
 ```
-  Σ(v0)                      H(ℓ0)
-  Owned                      S7 { S1 { 1 }, S1 { 2 } }
+  Σ(v0)                      H(ℓ3)
+  Owned                      S7 { S1 { 1 }#0, S1 { 2 }#1 }#2
 ```
 
-(Use-Move) marks exactly `v0.x0` and removes every path under it, and
-(D-Use-Move) §6.3 writes `H[ℓ0@[0] ↦ ⊘]` at the same position:
+(`ℓ0`–`ℓ2` are the `†` slots the three literals reserved for their
+identities, `#0`–`#2`; section 2.) (Use-Move) marks exactly `v0.x0` and removes
+every path under it, and (D-Use-Move) §6.3 writes `H[ℓ3@[0] ↦ ⊘]` at the same
+position:
 
 ```
-  Σ(v0)                           H(ℓ0)
+  Σ(v0)                           H(ℓ3)
   Owned{ x0: MovedOut }           S7 {
     ├─ x0  MovedOut   ← v0.x0         ⊘,
-    └─ x1  Owned      ← v0.x1         S1 { 2 }
-                                  }
-                                  H(ℓ1) = S1 { 1 }    ← v1, the moved value
+    └─ x1  Owned      ← v0.x1         S1 { 2 }#1
+                                  }#2
+                                  H(ℓ4) = S1 { 1 }#0    ← v1, the moved value
 ```
+
+The moved value keeps its identity, `#0`: it changed owners, not identity.
 
 `Owned{ x0: MovedOut }` is how the explainer writes `OwnSt.fields [.movedOut,
 .owned]`: a node that still owns its storage, with one field taken out from
@@ -1039,14 +1051,16 @@ drops nothing. Then `v0`'s scope ends, and §6.11's walk runs on the *cell
 contents*, skipping every `⊘`:
 
 ```
-  drop(ℓ0) = drop(S7 { ⊘, S1 { 2 } })
+  drop(ℓ3) = drop(S7 { ⊘, S1 { 2 }#1 }#2)
            = (S7 declares no destructor)
-             drop(⊘)  ++  drop(S1 { 2 })
-           = []       ++  [dtor S1 (S1 { 2 })]
+             drop(⊘)  ++  drop(S1 { 2 }#1)
+           = []       ++  [dtor S1 (S1 { 2 }#1)]
 ```
 
 So the output is `1` (from `@drop(v1)`), `2` (from the residue), then `9`,
-and the moved field is dropped **once**, by its new owner. That skip is §7's
+and the moved field is dropped **once**, by its new owner: the trace's
+destructors name `#0` and `#1`, once each, which is what `no_double_free`
+counts. That skip is §7's
 double-free argument, and it is `dropContents_struct_events` from example 4.
 By the chain in the section 5 introduction, `run` cannot reach the
 `useAfterMove` a second drop of `S1 { 1 }` would be.
@@ -1124,11 +1138,16 @@ because `v0.x1` is not what was consumed.
 §6.3 runs `split` and then `drop*`, and the order is the traversal's:
 
 ```
-  split(S15 { S1 { 1 }, 5, S1 { 2 } }, [1]) = ( 5 , [ S1 { 1 }, S1 { 2 } ] )
-  drop*(H, [ S1 { 1 }, S1 { 2 } ])          = [ dtor S1 (S1 { 1 })
-                                              , dtor S1 (S1 { 2 }) ]
-  then H[ℓ0 ↦ ⊘]
+  split(S15 { S1 { 1 }#0, 5, S1 { 2 }#1 }#2, [1]) = ( 5 , [ S1 { 1 }#0, S1 { 2 }#1 ] )
+  drop*(H, [ S1 { 1 }#0, S1 { 2 }#1 ])            = [ dtor S1 (S1 { 1 }#0)
+                                                    , dtor S1 (S1 { 2 }#1) ]
+  then H[ℓ3 ↦ ⊘]
 ```
+
+(`v0` is at `ℓ3` because the three literals reserved `ℓ0`–`ℓ2` for their
+identities; section 2.) The consumed aggregate's own identity, `#2`, is
+dropped by no event and freed with the place: the residue's destructors name
+`#0` and `#1`, and nothing names any of them again.
 
 `MovedOut` on the Σ side and `⊘` on the store side, at the one path `π_d`,
 is `ContentsMatches` again. The output is `10`, `1`, `2`, `20`, then the
@@ -1191,14 +1210,17 @@ it, and the compiler reports both as E0904
 After the move, Σ and the cell look like example 5's, one index down:
 
 ```
-  Σ(v0)                                H(ℓ0)
+  Σ(v0)                                H(ℓ4)
   Owned{ x0: Owned, x1: MovedOut }     [
-    ├─ [0]  Owned      ← v0[0]           S1 { 1 },
+    ├─ [0]  Owned      ← v0[0]           S1 { 1 }#0,
     ├─ [1]  MovedOut   ← v0[1]           ⊘,
-    └─ [2]  Owned      ← v0[2]           S1 { 3 }
-                                       ]
-                                       H(ℓ1) = S1 { 2 }    ← v1, the moved element
+    └─ [2]  Owned      ← v0[2]           S1 { 3 }#2
+                                       ]#3
+                                       H(ℓ5) = S1 { 2 }#1    ← v1, the moved element
 ```
+
+(`ℓ0`–`ℓ3` are the four identities' reserved slots: three elements and the
+array; section 2.)
 
 The explainer names positions the way it names fields: `x1` is index `1`.
 This is `3.8:73`'s per-element drop flag, and it is the whole of it: there is
@@ -1222,11 +1244,11 @@ array's own:
 index order, skipping every `⊘`:
 
 ```
-  drop(ℓ0) = drop([S1 { 1 }, ⊘, S1 { 3 }])
+  drop(ℓ4) = drop([S1 { 1 }#0, ⊘, S1 { 3 }#2]#3)
            = (an array has no `drop fn` of its own; dropping it drops its
               elements in index order, 3.9:14–15)
-             drop(S1 { 1 })  ++  drop(⊘)  ++  drop(S1 { 3 })
-           = [dtor S1 (S1 { 1 })] ++ [] ++ [dtor S1 (S1 { 3 })]
+             drop(S1 { 1 }#0)  ++  drop(⊘)  ++  drop(S1 { 3 }#2)
+           = [dtor S1 (S1 { 1 }#0)] ++ [] ++ [dtor S1 (S1 { 3 }#2)]
 ```
 
 So stdout is `2`, `20`, `1`, `3`, then `main`'s `7`. The pinned trace beside
@@ -1234,10 +1256,12 @@ So stdout is `2`, `20`, `1`, `3`, then `main`'s `7`. The pinned trace beside
 the `⊘`:
 
 ```lean
-[.drop 1 (cA 2), .dtor sAffine (cA 2), .dbg (v64 20),
- .drop 0 (.array (.struct sAffine) [cA 1, .hole, cA 3]),
- .dtor sAffine (cA 1), .dtor sAffine (cA 3)]
+[.drop 5 (cA 1 2), .dtor sAffine (cA 1 2), .dbg (v64 20),
+ .drop 4 (.array (.struct sAffine) 3 [cA 0 1, .hole, cA 2 3]),
+ .dtor sAffine (cA 0 1), .dtor sAffine (cA 2 3)]
 ```
+
+`cA i n` is `S1 { n }` with identity `i`.
 
 #### What the proof needs
 
@@ -1340,18 +1364,24 @@ Change one thing and each premise answers in turn:
 #### The run
 
 ```
-  [5]  (D-Let) §6.7        let v0 = E0.K0⟨S1 { 1 }⟩ at ℓ0
-                           store  [ℓ0 = E0.K0⟨S1 { 1 }⟩]
+  [3]  (D-Struct) §6.5     mint #0, reserving ℓ0
+  [4]  (D-Enum-Intro) §6.6 mint #1, reserving ℓ1
+  [5]  (D-Let) §6.7        let v0 = E0.K0⟨S1 { 1 }#0⟩#1 at ℓ2
+                           store  [ℓ0 = †, ℓ1 = †, ℓ2 = E0.K0⟨S1 { 1 }#0⟩#1]
   [6]  (D-Use-Move) §6.3   v0
-                           store  [ℓ0 = ⊘]                        ← the scrutinee moved out
-  [7]  (D-Match) §6.6      bind E0.K0's payload to [ℓ1]
-                           store  [ℓ0 = ⊘, ℓ1 = S1 { 1 }]
+                           store  [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘]          ← the scrutinee moved out
+  [7]  (D-Match) §6.6      bind E0.K0's payload to [ℓ3]
+                           store  [ℓ0 = †, ℓ1 = †, ℓ2 = ⊘, ℓ3 = S1 { 1 }#0]
   [9]  (Dbg)               @dbg prints 10
-  [12] (D-EndScope) §6.6   endscope([ℓ1])
-                           events >> drop ℓ1 = S1 { 1 }; run drop fn S1(S1 { 1 })
+  [12] (D-EndScope) §6.6   endscope([ℓ3])
+                           events >> drop ℓ3 = S1 { 1 }#0; run drop fn S1(S1 { 1 }#0)
   [15] (Dbg)               @dbg prints 20
-  [19] (D-EndScope) §6.7   endscope([ℓ0])                          ← ℓ0 is ⊘: nothing drops
+  [19] (D-EndScope) §6.7   endscope([ℓ2])                          ← ℓ2 is ⊘: nothing drops
 ```
+
+The payload keeps its identity, `#0`, as it moves from the enum into the
+arm's cell, and the enum's own identity, `#1`, is consumed by the match and
+never dropped: the arm's cell is the payload's one owner.
 
 Row [7] is (D-Match): the tag `K0` selects the covering arm, and the payload
 is bound to **fresh cells**, appended to the innermost scope record *and*
@@ -1419,11 +1449,11 @@ run-time index is never `MovedOut`, so this is `class(S1) ≠ Linear`.
 
 | What happens, in order | Events |
 | --- | --- |
-| the right-hand side `mk(9)` runs and builds `S1 { 9 }` | `@dbg 9` |
+| the right-hand side `mk(9)` runs and builds `S1 { 9 }#7` | `@dbg 9` |
 | the index `id(1)` runs | `@dbg 1` |
 | `dynPlace` resolves `v0[1].x0` to the constant path `[1, 0]`, bounds-checking `1 < 2` | |
-| §6.8's overwrite-drop of the old leaf `S1 { 3 }` | `drop`, `dtor S1 { 3 }` |
-| the store writes `S1 { 9 }` at `ℓ0`'s path `[1, 0]` | |
+| §6.8's overwrite-drop of the old leaf `S1 { 3 }#2` | `drop`, `dtor S1 { 3 }#2` |
+| the store writes `S1 { 9 }#7` at `ℓ5`'s path `[1, 0]` (`v0` is at `ℓ5`: the five literals reserved `ℓ0`–`ℓ4`) | |
 | `@dbg(20)`, then the scope exit drops `v0`, elements ascending | `20`; `1`, `9` |
 
 So stdout is `9 1 3 20 1 9 7`, and the compiler prints the same.
@@ -1634,14 +1664,15 @@ numbers them:
 
 | Row | Rule | Store before | Effect | Store after | Events |
 | --- | --- | --- | --- | --- | --- |
-| 4 | (D-Let) §6.7 | `[]` | mint `ℓ0` for `v0` | `[ℓ0 = S3 { 1 }]` | |
-| 5 | `@drop` §6.11 | `[ℓ0 = S3 { 1 }]` | the glue runs, and the cell is marked `⊘` | `[ℓ0 = ⊘]` | `drop ℓ0 = S3 { 1 }`; `run drop fn S3(S3 { 1 })` |
-| 6 | (D-Break) §6.10 | `[ℓ0 = ⊘]` | the `break` fires (`EvalRes.broke`) | `[ℓ0 = ⊘]` | |
-| 7 | (D-Seq) §6.7 | `[ℓ0 = S3 { 1 }]` | the sequence `{ @drop(v0); break }` passes the `break` on | `[ℓ0 = ⊘]` | |
-| **8** | **(D-Break) §6.10 (unwind to the loop)** | `[ℓ0 = ⊘]` | the loop catches it and drops the cells the body opened, newest first. The body opened none, so `unwind-drops([])` does nothing, and the loop's value is `()` | `[ℓ0 = ⊘]` | |
-| 9 | literal §6.3 | `[ℓ0 = ⊘]` | the value `5` | `[ℓ0 = ⊘]` | |
-| 10 | (D-Seq) §6.7 | `[ℓ0 = S3 { 1 }]` | the sequence `{ loop { … }; 5 }` ends with `5` | `[ℓ0 = ⊘]` | |
-| 11 | (D-EndScope) §6.7 | `[ℓ0 = ⊘]` | `v0`'s cell is already `⊘`, so its scope exit drops nothing | `[ℓ0 = †]` | |
+| 3 | (D-Struct) §6.5 | `[]` | the literal mints identity `#0`, reserving `ℓ0` | `[ℓ0 = †]` | |
+| 4 | (D-Let) §6.7 | `[ℓ0 = †]` | mint `ℓ1` for `v0` | `[ℓ0 = †, ℓ1 = S3 { 1 }#0]` | |
+| 5 | `@drop` §6.11 | `[…, ℓ1 = S3 { 1 }#0]` | the glue runs, and the cell is marked `⊘` | `[…, ℓ1 = ⊘]` | `drop ℓ1 = S3 { 1 }#0`; `run drop fn S3(S3 { 1 }#0)` |
+| 6 | (D-Break) §6.10 | `[…, ℓ1 = ⊘]` | the `break` fires (`EvalRes.broke`) | `[…, ℓ1 = ⊘]` | |
+| 7 | (D-Seq) §6.7 | `[…, ℓ1 = S3 { 1 }#0]` | the sequence `{ @drop(v0); break }` passes the `break` on | `[…, ℓ1 = ⊘]` | |
+| **8** | **(D-Break) §6.10 (unwind to the loop)** | `[…, ℓ1 = ⊘]` | the loop catches it and drops the cells the body opened, newest first. The body opened none, so `unwind-drops([])` does nothing, and the loop's value is `()` | `[…, ℓ1 = ⊘]` | |
+| 9 | literal §6.3 | `[…, ℓ1 = ⊘]` | the value `5` | `[…, ℓ1 = ⊘]` | |
+| 10 | (D-Seq) §6.7 | `[…, ℓ1 = S3 { 1 }#0]` | the sequence `{ loop { … }; 5 }` ends with `5` | `[…, ℓ1 = ⊘]` | |
+| 11 | (D-EndScope) §6.7 | `[…, ℓ1 = ⊘]` | `v0`'s cell is already `⊘`, so its scope exit drops nothing | `[ℓ0 = †, ℓ1 = †]` | |
 
 A row for a compound form (rows 7 and 10) records the store at the form's
 start, before its parts ran, which is why its "before" still shows `S3 { 1 }`.

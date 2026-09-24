@@ -268,7 +268,8 @@ def render (name description : String) (rules : List String) (P : Program) : Str
        ("One row per evaluated node, in execution order — a node's premises run before " ++
         "the node itself, so the table reads top to bottom as the machine ran. A " ++
         "callee's rows are nested deeper than its call's. Rows that drop something are " ++
-        "highlighted.") ++
+        "highlighted. #n after an aggregate is its identity, minted when it was built; " ++
+        "a † cell is a retired binding or an identity's reserved slot.") ++
      "<table class=\"trace\"><thead><tr><th>#</th><th>node</th><th>store before</th>" ++
      "<th>store after</th><th>drop events</th><th>result</th></tr></thead><tbody>" ++
      String.intercalate "" ((numbered 1 t.steps).map (fun p => stepRow P p.1 p.2)) ++
