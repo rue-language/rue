@@ -143,6 +143,9 @@ pub struct OptimizationStats {
     pub forward_loads_single_write: u64,
     pub forward_loads_block_local: u64,
     pub forward_rule1_dominance_pairs_checked: u64,
+    /// Owned loads forwarding declined because the candidate is rooted at a
+    /// reinitializable local or parameter (RUE-2380).
+    pub forward_loads_declined_reinitializable_root: u64,
     pub forward_dominator_computations: u64,
     pub cse_insts_scanned: u64,
     pub cse_duplicates_replaced: u64,
@@ -214,6 +217,8 @@ impl OptimizationStats {
         self.forward_loads_single_write += pass.loads_forwarded_single_write;
         self.forward_loads_block_local += pass.loads_forwarded_block_local;
         self.forward_rule1_dominance_pairs_checked += pass.rule1_dominance_pairs_checked;
+        self.forward_loads_declined_reinitializable_root +=
+            pass.loads_declined_reinitializable_root;
         self.forward_dominator_computations += pass.dominator_computations;
     }
 

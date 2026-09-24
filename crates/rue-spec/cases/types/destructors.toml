@@ -2784,7 +2784,8 @@ opt_level = 3
 # A loop-carried local moved out and reinitialized in one iteration (RUE-2380).
 # The moved-out value belongs to its new binding, whose drop at scope end runs
 # after the reinit; the optimizer must keep it that binding's drop rather than
-# a second consumption of the reinitialized local.
+# a second consumption of the reinitialized local. A `mut self` receiver is
+# reassignable the same way, with or without a loop.
 # -----------------------------------------------------------------------------
 
 [[case]]
@@ -3155,6 +3156,170 @@ fn main() -> i32 {
 """
 exit_code = 0
 expected_stdout = "1\n21\n12\n0\n23\n2\n0\n32\n3\n51\n42\n52\n43\n0\n53\n61\n4\n62\n71\n0\n72\n"
+opt_level = 3
+
+[[case]]
+name = "mut_self_move_out_then_reinit"
+spec = ["3.9:2", "3.9:18", "3.8:55", "6.4:35"]
+description = "A `mut self` receiver moved out and then reassigned, in straight-line code, in a `while` loop, through an `if` value, and after an earlier reassignment, drops each value exactly once (RUE-2380)"
+source = """
+struct S {
+    v: i64,
+
+    fn straight(mut self) -> i64 {
+        let t = self;
+        self = S { v: 11 };
+        @dbg(0);
+        let u = t;
+        self.v
+    }   // 1, then 11 as the receiver
+
+    fn in_while(mut self) -> i64 {
+        let mut i: i64 = 0;
+        while i < 2 { i = i + 1; let t = self; self = S { v: 20 + i }; }   // 2, then 21
+        @dbg(0);
+        self.v
+    }   // 22
+
+    fn through_if(mut self, k: i64) -> i64 {
+        let t = if k > 0 { self } else { self };
+        self = S { v: 31 };
+        @dbg(0);
+        let u = t;
+        self.v
+    }   // 3, then 31
+
+    fn reassigned_twice(mut self) -> i64 {
+        self = S { v: 41 };            // drops 4
+        let t = self;
+        self = S { v: 42 };
+        @dbg(0);
+        let u = t;
+        self.v
+    }   // 41, then 42
+}
+
+drop fn S(self) { @dbg(self.v); }
+
+fn main() -> i32 {
+    @dbg(S { v: 1 }.straight());
+    @dbg(S { v: 2 }.in_while());
+    @dbg(S { v: 3 }.through_if(1));
+    @dbg(S { v: 4 }.reassigned_twice());
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "0\n1\n11\n11\n2\n21\n0\n22\n22\n0\n3\n31\n31\n4\n0\n41\n42\n42\n"
+
+[[case]]
+name = "mut_self_move_out_then_reinit_o2"
+spec = ["3.9:2", "3.9:18", "3.8:55", "6.4:35"]
+description = "The same at -O2: a `mut self` receiver moved out and then reassigned, in straight-line code, in a `while` loop, through an `if` value, and after an earlier reassignment, drops each value exactly once (RUE-2380)"
+source = """
+struct S {
+    v: i64,
+
+    fn straight(mut self) -> i64 {
+        let t = self;
+        self = S { v: 11 };
+        @dbg(0);
+        let u = t;
+        self.v
+    }   // 1, then 11 as the receiver
+
+    fn in_while(mut self) -> i64 {
+        let mut i: i64 = 0;
+        while i < 2 { i = i + 1; let t = self; self = S { v: 20 + i }; }   // 2, then 21
+        @dbg(0);
+        self.v
+    }   // 22
+
+    fn through_if(mut self, k: i64) -> i64 {
+        let t = if k > 0 { self } else { self };
+        self = S { v: 31 };
+        @dbg(0);
+        let u = t;
+        self.v
+    }   // 3, then 31
+
+    fn reassigned_twice(mut self) -> i64 {
+        self = S { v: 41 };            // drops 4
+        let t = self;
+        self = S { v: 42 };
+        @dbg(0);
+        let u = t;
+        self.v
+    }   // 41, then 42
+}
+
+drop fn S(self) { @dbg(self.v); }
+
+fn main() -> i32 {
+    @dbg(S { v: 1 }.straight());
+    @dbg(S { v: 2 }.in_while());
+    @dbg(S { v: 3 }.through_if(1));
+    @dbg(S { v: 4 }.reassigned_twice());
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "0\n1\n11\n11\n2\n21\n0\n22\n22\n0\n3\n31\n31\n4\n0\n41\n42\n42\n"
+opt_level = 2
+
+[[case]]
+name = "mut_self_move_out_then_reinit_o3"
+spec = ["3.9:2", "3.9:18", "3.8:55", "6.4:35"]
+description = "The same at -O3: a `mut self` receiver moved out and then reassigned, in straight-line code, in a `while` loop, through an `if` value, and after an earlier reassignment, drops each value exactly once (RUE-2380)"
+source = """
+struct S {
+    v: i64,
+
+    fn straight(mut self) -> i64 {
+        let t = self;
+        self = S { v: 11 };
+        @dbg(0);
+        let u = t;
+        self.v
+    }   // 1, then 11 as the receiver
+
+    fn in_while(mut self) -> i64 {
+        let mut i: i64 = 0;
+        while i < 2 { i = i + 1; let t = self; self = S { v: 20 + i }; }   // 2, then 21
+        @dbg(0);
+        self.v
+    }   // 22
+
+    fn through_if(mut self, k: i64) -> i64 {
+        let t = if k > 0 { self } else { self };
+        self = S { v: 31 };
+        @dbg(0);
+        let u = t;
+        self.v
+    }   // 3, then 31
+
+    fn reassigned_twice(mut self) -> i64 {
+        self = S { v: 41 };            // drops 4
+        let t = self;
+        self = S { v: 42 };
+        @dbg(0);
+        let u = t;
+        self.v
+    }   // 41, then 42
+}
+
+drop fn S(self) { @dbg(self.v); }
+
+fn main() -> i32 {
+    @dbg(S { v: 1 }.straight());
+    @dbg(S { v: 2 }.in_while());
+    @dbg(S { v: 3 }.through_if(1));
+    @dbg(S { v: 4 }.reassigned_twice());
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "0\n1\n11\n11\n2\n21\n0\n22\n22\n0\n3\n31\n31\n4\n0\n41\n42\n42\n"
 opt_level = 3
 
 [[case]]
