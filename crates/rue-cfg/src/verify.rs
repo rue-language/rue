@@ -582,6 +582,9 @@ impl<'a> Verifier<'a> {
         let mut droppable_value_set = AHashSet::<CfgValue>::new();
         let mut droppable_values = Vec::new();
         let mut static_roots = vec![RootFact::Unknown; self.cfg.value_count()];
+        // The block defining each reachable value, where its exact-value
+        // consumption fact starts (see `verify_exact_drop_fact_under`).
+        let mut defining_blocks = vec![None; self.cfg.value_count()];
 
         for block in self.cfg.blocks() {
             if !self.dominators().is_reachable(block.id) {
@@ -589,8 +592,10 @@ impl<'a> Verifier<'a> {
             }
             for &(parameter, _) in &block.params {
                 static_roots[parameter.as_u32() as usize] = RootFact::Unresolved;
+                defining_blocks[parameter.as_u32() as usize] = Some(block.id);
             }
             for &value in &block.insts {
+                defining_blocks[value.as_u32() as usize] = Some(block.id);
                 let inst = self.cfg.get_inst(value);
                 match inst.data {
                     CfgInstData::StorageLive { slot, local_ty }
@@ -711,7 +716,8 @@ impl<'a> Verifier<'a> {
         // and shared by every consumption fact (RUE-2347).
         let flag_slots = self.drop_flag_slots(raw_slots);
         for &value in &droppable_values {
-            self.verify_exact_drop_fact(value, &flag_slots, &entry_edges)?;
+            let start = defining_blocks[value.as_u32() as usize].unwrap_or(self.cfg.entry);
+            self.verify_exact_drop_fact(value, start, &flag_slots, &entry_edges)?;
         }
         for root in owner_roots {
             self.verify_owner_root_fact(
@@ -923,17 +929,33 @@ impl<'a> Verifier<'a> {
         roots
     }
 
-    fn solve_semantic_fact(&self, mut transfer: impl FnMut(BlockId, u8) -> u8) -> Vec<u8> {
+    fn solve_semantic_fact(&self, transfer: impl FnMut(BlockId, u8) -> u8) -> Vec<u8> {
+        self.solve_semantic_fact_from(self.cfg.entry, transfer, None)
+    }
+
+    /// Solve a two-state fact forward from `start`, which is entered in
+    /// state A. Blocks not reachable from `start` keep input 0 (no state).
+    /// When `reached` is given, every block that received a state is pushed
+    /// onto it once, so a caller can check only those blocks.
+    fn solve_semantic_fact_from(
+        &self,
+        start: BlockId,
+        mut transfer: impl FnMut(BlockId, u8) -> u8,
+        mut reached: Option<&mut Vec<BlockId>>,
+    ) -> Vec<u8> {
         use std::collections::VecDeque;
 
         let block_count = self.cfg.block_count();
         let mut inputs = vec![0u8; block_count];
         let mut queued = vec![false; block_count];
         let mut queue = VecDeque::new();
-        let entry = self.cfg.entry.as_u32() as usize;
-        inputs[entry] = SEMANTIC_STATE_A;
-        queued[entry] = true;
-        queue.push_back(self.cfg.entry);
+        let start_index = start.as_u32() as usize;
+        inputs[start_index] = SEMANTIC_STATE_A;
+        queued[start_index] = true;
+        queue.push_back(start);
+        if let Some(reached) = reached.as_deref_mut() {
+            reached.push(start);
+        }
 
         #[cfg(test)]
         SEMANTIC_WORK.with(|work| {
@@ -959,6 +981,11 @@ impl<'a> Verifier<'a> {
                 let target_index = target.as_u32() as usize;
                 let merged = inputs[target_index] | output;
                 if merged != inputs[target_index] {
+                    if inputs[target_index] == 0
+                        && let Some(reached) = reached.as_deref_mut()
+                    {
+                        reached.push(target);
+                    }
                     inputs[target_index] = merged;
                     if !queued[target_index] {
                         queued[target_index] = true;
@@ -1207,10 +1234,11 @@ impl<'a> Verifier<'a> {
     fn verify_exact_drop_fact(
         &self,
         target: CfgValue,
+        start: BlockId,
         flag_slots: &DropFlagSlots,
         entry_edges: &[Vec<EntryEdge>],
     ) -> Result<(), CfgVerificationError> {
-        let Err(error) = self.verify_exact_drop_fact_under(target, &[]) else {
+        let Err(error) = self.verify_exact_drop_fact_under(target, start, &[]) else {
             return Ok(());
         };
         // Store-to-load forwarding can make both the explicit and the guarded
@@ -1231,46 +1259,62 @@ impl<'a> Verifier<'a> {
         if !guarded.contains(&true) {
             return Err(error);
         }
-        self.verify_exact_drop_fact_under(target, &guarded)
+        self.verify_exact_drop_fact_under(target, start, &guarded)
     }
 
     /// The exact-value fact with the blocks in `guarded` (indexed by block;
     /// missing entries are unguarded) starting fresh.
+    ///
+    /// The fact is solved and checked only over the blocks reachable from
+    /// `start`, the block defining `target`. SSA definitions dominate their
+    /// uses, so no other block can use or drop `target`, and the value is
+    /// fresh at its definition whatever reaches the block. This keeps each
+    /// fact's cost proportional to the region its value can reach instead
+    /// of the whole CFG.
     fn verify_exact_drop_fact_under(
         &self,
         target: CfgValue,
+        start: BlockId,
         guarded: &[bool],
     ) -> Result<(), CfgVerificationError> {
         const FRESH: u8 = SEMANTIC_STATE_A;
         const CONSUMED: u8 = SEMANTIC_STATE_B;
         let guarded = |block: BlockId| guarded.get(block.as_u32() as usize) == Some(&true);
-        let inputs = self.solve_semantic_fact(|block, mut state| {
-            if guarded(block) {
-                state = FRESH;
-            }
-            if self
-                .cfg
-                .get_block(block)
-                .params
-                .iter()
-                .any(|&(parameter, _)| parameter == target)
-            {
-                state = FRESH;
-            }
-            for &value in &self.cfg.get_block(block).insts {
-                if value == target {
+        let mut reached = Vec::new();
+        let inputs = self.solve_semantic_fact_from(
+            start,
+            |block, mut state| {
+                if guarded(block) {
                     state = FRESH;
                 }
-                if let CfgInstData::Drop { value: dropped } = self.cfg.get_inst(value).data
-                    && dropped == target
+                if self
+                    .cfg
+                    .get_block(block)
+                    .params
+                    .iter()
+                    .any(|&(parameter, _)| parameter == target)
                 {
-                    state = CONSUMED;
+                    state = FRESH;
                 }
-            }
-            state
-        });
+                for &value in &self.cfg.get_block(block).insts {
+                    if value == target {
+                        state = FRESH;
+                    }
+                    if let CfgInstData::Drop { value: dropped } = self.cfg.get_inst(value).data
+                        && dropped == target
+                    {
+                        state = CONSUMED;
+                    }
+                }
+                state
+            },
+            Some(&mut reached),
+        );
 
-        for block in self.cfg.blocks() {
+        // Block order, so the first error reported is the one a scan of
+        // the whole CFG would find.
+        reached.sort_unstable_by_key(|block| block.as_u32());
+        for block in reached.into_iter().map(|block| self.cfg.get_block(block)) {
             if !self.dominators().is_reachable(block.id) {
                 continue;
             }
