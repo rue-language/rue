@@ -118,6 +118,13 @@ def freedIds (D : Decls) (tr : List Event) : List Nat := tr.flatMap (Event.freed
 /-- The identities the trace's destructors ran on, in trace order. -/
 def dtorIds (tr : List Event) : List Nat := tr.flatMap Event.dtorIds
 
+/-- `dtorIds` distributes over concatenation (helper). -/
+theorem dtorIds_append (l₁ l₂ : List Event) : dtorIds (l₁ ++ l₂) = dtorIds l₁ ++ dtorIds l₂ := by
+  simp [dtorIds, List.flatMap_append]
+
+/-- `dtorIds` of the empty trace (helper). -/
+@[simp] theorem dtorIds_nil : dtorIds [] = [] := rfl
+
 /-- The trace a result carries: everything the run emitted, for a value, an
 unwinding `return` or `break`, and a trap; nothing for a refusal or exhausted
 fuel (helper). -/
@@ -532,5 +539,489 @@ theorem StoreCC.set_dead {D : Decls} {H : Store} {ℓ : Nat} (h : StoreCC D H) :
     rw [List.getElem?_set] at hc'
     split at hc' <;> simp_all
   · rw [List.getElem?_set_ne he] at hc'; exact h ℓ' c' hc'
+
+/-! ## §6.11's walk, counted -/
+
+/-- A destructor-bearing struct is not `Copy` (`3.9:31`): the one fact about
+the declarations the conservation law reads (helper). -/
+def DtorNotCopy (D : Decls) : Prop :=
+  ∀ (s : Nat) (sd : StructDecl), D.structs[s]? = some sd → sd.dtor = true → D.classOf s ≠ .copy
+
+/-- `WfDecls` gives it: only `@copy` lifts to `Copy`, and a `@copy`
+declaration declares no destructor (`3.8:18`, `3.9:31`) (helper). -/
+theorem WfDecls.dtorNotCopy {D : Decls} (h : WfDecls D) : DtorNotCopy D := by
+  intro s sd hd hdt hc
+  have hcls : sd.cls = .copy := by simpa only [Decls.classOf, hd] using hc
+  have hw := h.structs s sd hd
+  have hattr : sd.attr = .copy := by
+    have hj := hw.classIsJoin
+    rw [hcls] at hj
+    cases ha : sd.attr with
+    | copy => rfl
+    | linear => rw [ha] at hj; cases hj
+    | none =>
+        rw [ha] at hj
+        simp only [Attr.lift] at hj
+        split at hj <;> cases hj
+  rw [(hw.copyWf hattr).2] at hdt
+  cases hdt
+
+mutual
+/-- §6.11's walk emits only destructor events, so it frees nothing a marker
+would count (helper). -/
+theorem dropContents_freed {D : Decls} : ∀ {c : Contents} {evs : List Event},
+    dropContents D c = .ok evs → evs.flatMap (Event.freed D) = []
+  | .hole, _, h | .int _ _ _, _, h | .float _ _, _, h | .bool _, _, h | .unit, _, h => by
+      simp [dropContents] at h; subst h; rfl
+  | .struct s i cs, evs, h => by
+      simp only [dropContents] at h
+      split at h
+      · cases h
+      · split at h
+        · cases h
+        · rename_i evs' hl
+          cases h
+          split <;> simp [Event.freed, dropContentsList_freed hl]
+  | .enum _ _ _ cs, _, h => by simp only [dropContents] at h; exact dropContentsList_freed h
+  | .array _ _ cs, _, h => by simp only [dropContents] at h; exact dropContentsList_freed h
+
+/-- The same over a list (helper). -/
+theorem dropContentsList_freed {D : Decls} : ∀ {cs : List Contents} {evs : List Event},
+    dropContentsList D cs = .ok evs → evs.flatMap (Event.freed D) = []
+  | [], _, h => by simp [dropContentsList] at h; subst h; rfl
+  | c :: cs, _, h => by
+      simp only [dropContentsList] at h
+      split at h
+      · cases h
+      · rename_i e₁ h₁
+        split at h
+        · cases h
+        · rename_i e₂ h₂
+          cases h
+          simp [List.flatMap_append, dropContents_freed h₁, dropContentsList_freed h₂]
+end
+
+mutual
+/-- An all-`Copy` contents runs no destructor (`3.9:31`) (helper). -/
+theorem dropContents_allCopy_dtor {D : Decls} (hdt : DtorNotCopy D) :
+    ∀ {c : Contents} {evs : List Event},
+      c.allCopy D = true → dropContents D c = .ok evs → dtorIds evs = []
+  | .hole, _, _, h | .int _ _ _, _, _, h | .float _ _, _, _, h | .bool _, _, _, h
+  | .unit, _, _, h => by
+      simp [dropContents] at h; subst h; rfl
+  | .struct s i cs, evs, hac, h => by
+      simp only [Contents.allCopy, Bool.and_eq_true, decide_eq_true_eq] at hac
+      simp only [dropContents] at h
+      split at h
+      · cases h
+      · rename_i sd hd
+        split at h
+        · cases h
+        · rename_i evs' hl
+          cases h
+          have hnd : sd.dtor = false := by
+            cases hsd : sd.dtor
+            · rfl
+            · exact absurd hac.1 (hdt s sd hd hsd)
+          rw [hnd]
+          simpa using dropContentsList_allCopy_dtor hdt hac.2 hl
+  | .enum _ _ _ cs, _, hac, h => by
+      simp only [Contents.allCopy, Bool.and_eq_true] at hac
+      simp only [dropContents] at h; exact dropContentsList_allCopy_dtor hdt hac.2 h
+  | .array _ _ cs, _, hac, h => by
+      simp only [Contents.allCopy, Bool.and_eq_true] at hac
+      simp only [dropContents] at h; exact dropContentsList_allCopy_dtor hdt hac.2 h
+
+/-- The same over a list (helper). -/
+theorem dropContentsList_allCopy_dtor {D : Decls} (hdt : DtorNotCopy D) :
+    ∀ {cs : List Contents} {evs : List Event},
+      Contents.allCopyList D cs = true → dropContentsList D cs = .ok evs → dtorIds evs = []
+  | [], _, _, h => by simp [dropContentsList] at h; subst h; rfl
+  | c :: cs, _, hac, h => by
+      simp only [Contents.allCopyList, Bool.and_eq_true] at hac
+      simp only [dropContentsList] at h
+      split at h
+      · cases h
+      · rename_i e₁ h₁
+        split at h
+        · cases h
+        · rename_i e₂ h₂
+          cases h
+          rw [dtorIds_append, dropContents_allCopy_dtor hdt hac.1 h₁,
+            dropContentsList_allCopy_dtor hdt hac.2 h₂]; rfl
+end
+
+mutual
+/-- **§6.11's walk runs each owned node's destructor at most once**: the
+identities its destructor events name are, as a multiset, among the ones the
+dropped contents owns. A `⊘` owns nothing and emits nothing (`3.8:60`'s skip);
+a `Copy` node emits nothing either, because a destructor-bearing struct is
+never `Copy` (helper). -/
+theorem dropContents_dtor {D : Decls} (hdt : DtorNotCopy D) (a : Nat) :
+    ∀ {c : Contents} {evs : List Event},
+      c.copyClosed D = true → dropContents D c = .ok evs →
+        (dtorIds evs).count a ≤ (c.own D).count a
+  | .hole, _, _, h | .int _ _ _, _, _, h | .float _ _, _, _, h | .bool _, _, _, h
+  | .unit, _, _, h => by
+      simp [dropContents] at h; subst h; simp [dtorIds]
+  | .struct s i cs, evs, hcc, h => by
+      by_cases hc : D.classOf s = .copy
+      · have hac : (Contents.struct s i cs).allCopy D = true :=
+          Contents.copyClosed_allCopy hcc (by simpa [Contents.mult] using hc)
+        rw [dropContents_allCopy_dtor hdt hac h]; simp
+      · simp only [Contents.copyClosed, if_neg hc] at hcc
+        simp only [dropContents] at h
+        split at h
+        · cases h
+        · rename_i sd hd
+          split at h
+          · cases h
+          · rename_i evs' hl
+            cases h
+            have ih := dropContentsList_dtor hdt a hcc hl
+            simp only [Contents.own, if_neg hc, List.count_cons]
+            rw [dtorIds_append]
+            split
+            · simp only [dtorIds, List.flatMap_cons, List.flatMap_nil, Event.dtorIds,
+                List.append_nil, List.count_append, List.count_singleton] at ih ⊢
+              split <;> simp_all <;> omega
+            · simp only [dtorIds_nil, List.nil_append]
+              omega
+  | .enum e k i cs, evs, hcc, h => by
+      by_cases hc : D.enumClassOf e = .copy
+      · have hac : (Contents.enum e k i cs).allCopy D = true :=
+          Contents.copyClosed_allCopy hcc (by simpa [Contents.mult] using hc)
+        rw [dropContents_allCopy_dtor hdt hac h]; simp
+      · simp only [Contents.copyClosed, if_neg hc] at hcc
+        simp only [dropContents] at h
+        have ih := dropContentsList_dtor hdt a hcc h
+        simp only [Contents.own, if_neg hc, List.count_cons]
+        omega
+  | .array T i cs, evs, hcc, h => by
+      by_cases hc : Ty.mult D (.array T cs.length) = .copy
+      · have hac : (Contents.array T i cs).allCopy D = true :=
+          Contents.copyClosed_allCopy hcc (by simpa [Contents.mult] using hc)
+        rw [dropContents_allCopy_dtor hdt hac h]; simp
+      · simp only [Contents.copyClosed, if_neg hc] at hcc
+        simp only [dropContents] at h
+        have ih := dropContentsList_dtor hdt a hcc h
+        simp only [Contents.own, if_neg hc, List.count_cons]
+        omega
+
+/-- The same over a list (helper). -/
+theorem dropContentsList_dtor {D : Decls} (hdt : DtorNotCopy D) (a : Nat) :
+    ∀ {cs : List Contents} {evs : List Event},
+      Contents.copyClosedList D cs = true → dropContentsList D cs = .ok evs →
+        (dtorIds evs).count a ≤ (Contents.ownList D cs).count a
+  | [], _, _, h => by simp [dropContentsList] at h; subst h; simp [dtorIds]
+  | c :: cs, _, hcc, h => by
+      simp only [Contents.copyClosedList, Bool.and_eq_true] at hcc
+      simp only [dropContentsList] at h
+      split at h
+      · cases h
+      · rename_i e₁ h₁
+        split at h
+        · cases h
+        · rename_i e₂ h₂
+          cases h
+          have i₁ := dropContents_dtor hdt a hcc.1 h₁
+          have i₂ := dropContentsList_dtor hdt a hcc.2 h₂
+          rw [dtorIds_append, List.count_append]
+          simp only [Contents.ownList, List.count_append]
+          omega
+end
+
+/-! ## A trace projection the law can count -/
+
+/-- What the conservation law asks of a projection `F` of the trace onto
+identities: §6.11's walk projects to at most what the dropped contents owns,
+with a binding's `drop` marker or a temporary's `dropTemp` marker on top, and
+a `@dbg` projects to nothing. `freedIds` and `dtorIds` are the two projections
+§7's bullet is about (`freed_measure`, `dtor_measure`) (helper). -/
+structure TraceMeasure (D : Decls) (F : Event → List Nat) : Prop where
+  /-- §6.11's walk, with no marker: a destructure's residue drop (§6.3). -/
+  walk : ∀ {c : Contents} {evs : List Event}, c.copyClosed D = true →
+    dropContents D c = .ok evs → IdLe (evs.flatMap F) (c.own D)
+  /-- A binding's drop: its `drop ℓ c` marker, then the walk (§6.11). -/
+  marker : ∀ {ℓ : Nat} {c : Contents} {evs : List Event}, c.copyClosed D = true →
+    dropContents D c = .ok evs → IdLe (F (.drop ℓ c) ++ evs.flatMap F) (c.own D)
+  /-- A discarded temporary: its `dropTemp v` marker, then the walk (§6.7). -/
+  temp : ∀ {v : Val} {evs : List Event}, (Contents.ofVal v).copyClosed D = true →
+    dropContents D (Contents.ofVal v) = .ok evs → IdLe (F (.dropTemp v) ++ evs.flatMap F) (v.own D)
+  /-- `@dbg` frees nothing. -/
+  dbg : ∀ v, F (.dbg v) = []
+
+/-- **`freedIds` is countable**: a marker frees exactly the tree it names, and
+the walk under it names nothing more (helper). -/
+theorem freed_measure (D : Decls) : TraceMeasure D (Event.freed D) where
+  walk := fun _ h a => by rw [dropContents_freed h]; simp
+  marker := fun _ h a => by rw [List.count_append, dropContents_freed h]; simp [Event.freed]
+  temp := fun _ h a => by rw [List.count_append, dropContents_freed h]; simp [Event.freed]
+  dbg := fun _ => rfl
+
+/-- **`dtorIds` is countable**: a destructor runs on an owned node of the
+dropped tree, once per node (helper). -/
+theorem dtor_measure {D : Decls} (hdt : DtorNotCopy D) : TraceMeasure D Event.dtorIds where
+  walk := fun hc h a => dropContents_dtor hdt a hc h
+  marker := fun hc h a => by
+    simpa [Event.dtorIds, dtorIds] using dropContents_dtor hdt a hc h
+  temp := fun hc h a => by
+    simpa [Event.dtorIds, dtorIds] using dropContents_dtor hdt a hc h
+  dbg := fun _ => rfl
+
+/-- A binding's drop (`dropCell`, §6.11), counted: nothing for a `Copy` cell,
+the marker and the walk otherwise (helper). -/
+theorem dropCell_measure {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
+    {ℓ : Nat} {c : Contents} {evs : List Event} (hc : c.copyClosed D = true)
+    (h : dropCell D ℓ c = .ok evs) : IdLe (evs.flatMap F) (c.own D) := by
+  unfold dropCell at h
+  split at h
+  · cases h; intro a; simp
+  · split at h
+    · cases h
+    · rename_i evs' hw
+      cases h
+      intro a
+      have := hF.marker (ℓ := ℓ) hc hw a
+      simpa using this
+
+/-- `drop-retire` (§6.1), counted: the cell's owned identities leave the store
+and at most those reach the trace (helper). -/
+theorem dropRetire_measure {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
+    {H H' : Store} {ℓ : Nat} {evs : List Event} (hcc : StoreCC D H)
+    (h : dropRetire D H ℓ = .ok (H', evs)) :
+    (∀ a, (storeOwn D H').count a + (evs.flatMap F).count a ≤ (storeOwn D H).count a) ∧
+      H'.length = H.length ∧ StoreCC D H' := by
+  unfold dropRetire at h
+  split at h
+  · cases h
+  · cases h
+  · rename_i c hc
+    split at h
+    · cases h
+    · split at h
+      · cases h
+      · rename_i evs' hd
+        cases h
+        refine ⟨fun a => ?_, by simp, hcc.set_dead⟩
+        have h1 := storeOwn_set_count D a Cell.dead hc
+        have h2 := dropCell_measure hF (hcc ℓ c hc) hd a
+        simp only [Cell.own] at h1
+        simp at h1
+        omega
+
+/-- `run-scope-drops` (§6.1), counted (helper). -/
+theorem unwindLocs_measure {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F) :
+    ∀ {H H' : Store} {ls : List Nat} {evs : List Event}, StoreCC D H →
+      unwindLocs D H ls = .ok (H', evs) →
+      (∀ a, (storeOwn D H').count a + (evs.flatMap F).count a ≤ (storeOwn D H).count a) ∧
+        H'.length = H.length ∧ StoreCC D H'
+  | H, H', [], evs, hcc, h => by
+      simp [unwindLocs] at h; obtain ⟨rfl, rfl⟩ := h
+      exact ⟨fun a => by simp, rfl, hcc⟩
+  | H, H', ℓ :: ls, evs, hcc, h => by
+      simp only [unwindLocs] at h
+      split at h
+      · cases h
+      · rename_i H₁ evs₁ h₁
+        split at h
+        · cases h
+        · rename_i H₂ evs₂ h₂
+          cases h
+          obtain ⟨i₁, l₁, c₁⟩ := dropRetire_measure hF hcc h₁
+          obtain ⟨i₂, l₂, c₂⟩ := unwindLocs_measure hF c₁ h₂
+          refine ⟨fun a => ?_, by omega, c₂⟩
+          have := i₁ a; have := i₂ a
+          simp only [List.flatMap_append, List.count_append]
+          omega
+
+/-- `drop*` over a destructure's residue (§6.3), counted (helper). -/
+theorem dropResidue_measure {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F) :
+    ∀ {rs : List Contents} {evs : List Event}, Contents.copyClosedList D rs = true →
+      dropResidue D rs = .ok evs → IdLe (evs.flatMap F) (Contents.ownList D rs)
+  | [], _, _, h => by simp [dropResidue] at h; subst h; intro a; simp
+  | r :: rs, evs, hcc, h => by
+      simp only [Contents.copyClosedList, Bool.and_eq_true] at hcc
+      simp only [dropResidue] at h
+      split at h
+      · cases h
+      · split at h
+        · cases h
+        · rename_i e₁ h₁
+          split at h
+          · cases h
+          · rename_i e₂ h₂
+            cases h
+            intro a
+            have := hF.walk hcc.1 h₁ a
+            have := dropResidue_measure hF hcc.2 h₂ a
+            simp only [List.flatMap_append, List.count_append, Contents.ownList]
+            omega
+
+/-! ## §6.3's `split`, counted -/
+
+/-- `ownList` distributes over concatenation (helper). -/
+theorem Contents.ownList_append (D : Decls) :
+    ∀ (l₁ l₂ : List Contents), Contents.ownList D (l₁ ++ l₂)
+      = Contents.ownList D l₁ ++ Contents.ownList D l₂
+  | [], _ => rfl
+  | c :: l₁, l₂ => by simp [Contents.ownList, Contents.ownList_append D l₁ l₂]
+
+/-- `copyClosedList` distributes over concatenation (helper). -/
+theorem Contents.copyClosedList_append (D : Decls) :
+    ∀ (l₁ l₂ : List Contents), Contents.copyClosedList D (l₁ ++ l₂)
+      = (Contents.copyClosedList D l₁ && Contents.copyClosedList D l₂)
+  | [], _ => by simp [Contents.copyClosedList]
+  | c :: l₁, l₂ => by
+      simp [Contents.copyClosedList, Contents.copyClosedList_append D l₁ l₂, Bool.and_assoc]
+
+/-- `allCopyList` distributes over concatenation (helper). -/
+theorem Contents.allCopyList_append (D : Decls) :
+    ∀ (l₁ l₂ : List Contents), Contents.allCopyList D (l₁ ++ l₂)
+      = (Contents.allCopyList D l₁ && Contents.allCopyList D l₂)
+  | [], _ => by simp [Contents.allCopyList]
+  | c :: l₁, l₂ => by
+      simp [Contents.allCopyList, Contents.allCopyList_append D l₁ l₂, Bool.and_assoc]
+
+mutual
+/-- `split` of an all-`Copy` contents is all-`Copy` (helper). -/
+theorem Contents.splitResidue_allCopy {D : Decls} : ∀ (π : List Nat) {c leaf : Contents}
+    {rs : List Contents}, c.allCopy D = true → c.splitResidue D π = .ok (leaf, rs) →
+    leaf.allCopy D = true ∧ Contents.allCopyList D rs = true
+  | [], c, leaf, rs, h, hs => by
+      simp [Contents.splitResidue] at hs; obtain ⟨rfl, rfl⟩ := hs; exact ⟨h, rfl⟩
+  | f :: π, c, leaf, rs, h, hs => by
+      cases c with
+      | struct s i cs =>
+          simp only [Contents.allCopy, Bool.and_eq_true] at h
+          simp only [Contents.splitResidue] at hs
+          exact Contents.splitFields_allCopy cs f π h.2 hs
+      | array T i cs =>
+          simp only [Contents.allCopy, Bool.and_eq_true] at h
+          simp only [Contents.splitResidue] at hs
+          exact Contents.splitFields_allCopy cs f π h.2 hs
+      | _ => simp [Contents.splitResidue] at hs
+
+/-- The same at `split`'s field step (helper). -/
+theorem Contents.splitFields_allCopy {D : Decls} : ∀ (cs : List Contents) (f : Nat)
+    (π : List Nat) {leaf : Contents} {rs : List Contents}, Contents.allCopyList D cs = true →
+    Contents.splitFields D cs f π = .ok (leaf, rs) →
+    leaf.allCopy D = true ∧ Contents.allCopyList D rs = true
+  | [], _, _, _, _, _, hs => by simp [Contents.splitFields] at hs
+  | c :: cs, 0, π, leaf, rs, h, hs => by
+      simp only [Contents.allCopyList, Bool.and_eq_true] at h
+      simp only [Contents.splitFields] at hs
+      split at hs
+      · cases hs
+      · rename_i leaf' inner hsr
+        cases hs
+        obtain ⟨hl, hi⟩ := Contents.splitResidue_allCopy π h.1 hsr
+        exact ⟨hl, by rw [Contents.allCopyList_append, hi, h.2]; rfl⟩
+  | c :: cs, f + 1, π, leaf, rs, h, hs => by
+      simp only [Contents.allCopyList, Bool.and_eq_true] at h
+      simp only [Contents.splitFields] at hs
+      split at hs
+      · cases hs
+      · rename_i leaf' rest hsf
+        cases hs
+        obtain ⟨hl, hr⟩ := Contents.splitFields_allCopy cs f π h.2 hsf
+        exact ⟨hl, by simp [Contents.allCopyList, h.1, hr]⟩
+end
+
+mutual
+/-- **`split`, counted** (§6.3): the leaf and the residue together own at most
+what the consumed place owned — the nodes on the path between them are
+consumed — and both stay copy-closed (helper). -/
+theorem Contents.splitResidue_own {D : Decls} (a : Nat) : ∀ (π : List Nat) {c leaf : Contents}
+    {rs : List Contents}, c.copyClosed D = true → c.splitResidue D π = .ok (leaf, rs) →
+    (leaf.own D).count a + (Contents.ownList D rs).count a ≤ (c.own D).count a ∧
+      leaf.copyClosed D = true ∧ Contents.copyClosedList D rs = true
+  | [], c, leaf, rs, h, hs => by
+      simp [Contents.splitResidue] at hs; obtain ⟨rfl, rfl⟩ := hs
+      exact ⟨by simp [Contents.ownList], h, rfl⟩
+  | f :: π, c, leaf, rs, h, hs => by
+      cases c with
+      | struct s i cs =>
+          simp only [Contents.splitResidue] at hs
+          simp only [Contents.copyClosed] at h
+          split at h
+          · rename_i hc
+            obtain ⟨hl, hr⟩ := Contents.splitFields_allCopy cs f π h hs
+            refine ⟨?_, Contents.allCopy_copyClosed hl, Contents.allCopyList_copyClosedList hr⟩
+            simp [Contents.allCopy_own hl, Contents.allCopyList_own hr]
+          · rename_i hc
+            obtain ⟨hn, hl, hr⟩ := Contents.splitFields_own a cs f π h hs
+            refine ⟨?_, hl, hr⟩
+            simp only [Contents.own, if_neg hc, List.count_cons]
+            omega
+      | array T i cs =>
+          simp only [Contents.splitResidue] at hs
+          simp only [Contents.copyClosed] at h
+          split at h
+          · rename_i hc
+            obtain ⟨hl, hr⟩ := Contents.splitFields_allCopy cs f π h hs
+            refine ⟨?_, Contents.allCopy_copyClosed hl, Contents.allCopyList_copyClosedList hr⟩
+            simp [Contents.allCopy_own hl, Contents.allCopyList_own hr]
+          · rename_i hc
+            obtain ⟨hn, hl, hr⟩ := Contents.splitFields_own a cs f π h hs
+            refine ⟨?_, hl, hr⟩
+            simp only [Contents.own, if_neg hc, List.count_cons]
+            omega
+      | _ => simp [Contents.splitResidue] at hs
+
+/-- The same at `split`'s field step (helper). -/
+theorem Contents.splitFields_own {D : Decls} (a : Nat) : ∀ (cs : List Contents) (f : Nat)
+    (π : List Nat) {leaf : Contents} {rs : List Contents},
+    Contents.copyClosedList D cs = true → Contents.splitFields D cs f π = .ok (leaf, rs) →
+    (leaf.own D).count a + (Contents.ownList D rs).count a
+        ≤ (Contents.ownList D cs).count a ∧
+      leaf.copyClosed D = true ∧ Contents.copyClosedList D rs = true
+  | [], _, _, _, _, _, hs => by simp [Contents.splitFields] at hs
+  | c :: cs, 0, π, leaf, rs, h, hs => by
+      simp only [Contents.copyClosedList, Bool.and_eq_true] at h
+      simp only [Contents.splitFields] at hs
+      split at hs
+      · cases hs
+      · rename_i leaf' inner hsr
+        cases hs
+        obtain ⟨hn, hl, hi⟩ := Contents.splitResidue_own a π h.1 hsr
+        refine ⟨?_, hl, by rw [Contents.copyClosedList_append, hi, h.2]; rfl⟩
+        simp only [Contents.ownList_append, Contents.ownList, List.count_append]
+        omega
+  | c :: cs, f + 1, π, leaf, rs, h, hs => by
+      simp only [Contents.copyClosedList, Bool.and_eq_true] at h
+      simp only [Contents.splitFields] at hs
+      split at hs
+      · cases hs
+      · rename_i leaf' rest hsf
+        cases hs
+        obtain ⟨hn, hl, hr⟩ := Contents.splitFields_own a cs f π h.2 hsf
+        refine ⟨?_, hl, by simp [Contents.copyClosedList, h.1, hr]⟩
+        simp only [Contents.ownList, List.count_append]
+        omega
+end
+
+/-- **§6.3's `destructure`, counted**: the leaf it hands on and the residue
+drops it runs together account for at most what the consumed place owned
+(helper). -/
+theorem Contents.destructure_measure {D : Decls} {F : Event → List Nat} (hF : TraceMeasure D F)
+    {cd leaf : Contents} {πs : List Nat} {evs : List Event} (hcc : cd.copyClosed D = true)
+    (h : cd.destructure D πs = .ok (leaf, evs)) :
+    (∀ a, (leaf.own D).count a + (evs.flatMap F).count a ≤ (cd.own D).count a) ∧
+      leaf.copyClosed D = true := by
+  unfold Contents.destructure at h
+  split at h
+  · cases h
+  · rename_i leaf' rs hs
+    split at h
+    · cases h
+    · rename_i evs' hd
+      cases h
+      have hl := (Contents.splitResidue_own 0 πs hcc hs).2.1
+      have hr := (Contents.splitResidue_own 0 πs hcc hs).2.2
+      refine ⟨fun a => ?_, hl⟩
+      have := (Contents.splitResidue_own a πs hcc hs).1
+      have := dropResidue_measure hF hr hd a
+      omega
 
 end RueCore
