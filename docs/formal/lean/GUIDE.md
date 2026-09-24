@@ -246,8 +246,7 @@ metatheory row and `Step.lean`'s module docstring give the same list:
   `Copy` is stuck, the premise of the rule each cites.
 
 On programs `check` rejects, `Step` follows §6 where `eval` does not: `@drop`
-of a `⊘` place is §6.11's no-op where `eval` refuses it, and the three
-non-`Copy` forms are stuck where `eval` copies.
+of a `⊘` place is §6.11's no-op where `eval` refuses it.
 
 ### Fuel, and why the theorems quantify over it
 

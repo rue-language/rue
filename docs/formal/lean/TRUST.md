@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 416.
+- Theorems checked: 421.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -216,6 +216,8 @@ and diffs them against the committed copies.
 | `TypedArms.brk_nil` | `RueCore.Statics` | `propext` |
 | `fnCtx_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `Typed.wf_fnCtx` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `Contents.toVals_length` | `RueCore.Dynamics` | `propext` |
+| `Contents.mult_toVal` | `RueCore.Dynamics` | `Quot.sound`, `propext` |
 | `inBoundsIdx_eq_true` | `RueCore.Dynamics` | `propext` |
 | `dropEventsList_eq_flatten` | `RueCore.Dynamics` | `propext` |
 | `Step.step_eq` | `RueCore.Step` | `propext` |
@@ -454,6 +456,9 @@ and diffs them against the committed copies.
 | `checkNoCycle_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
 | `checkDecls_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
 | `checkProgram_sound` | `RueCore.Checker` | `Quot.sound`, `propext` |
+| `Examples.dynReadAffine_refused` | `RueCore.Examples` | `propext` |
+| `Examples.dynDropAffine_refused` | `RueCore.Examples` | `propext` |
+| `Examples.repeatAffine_refused` | `RueCore.Examples` | `propext` |
 | `Examples.panicPastLinear_typed` | `RueCore.Examples` | `propext` |
 | `Examples.countdown_at_17` | `RueCore.Examples` | `propext` |
 | `Examples.floatToInt_inf_traps` | `RueCore.Examples` | `propext` |

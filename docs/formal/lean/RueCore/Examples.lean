@@ -1309,19 +1309,24 @@ example : checkProgram (prog tI64 repeatAffineDuplicated) = false := by rfl
 /-- (RUE-2400) The dynamic-index read of an affine leaf is refused by the
 machine as well as the statics: (D-Use-Untrackable-Dynamic-Copy) §6.3 is the
 only rule there and it wants `class(T) = Copy`, so `eval` answers
-`typeConfusion` instead of duplicating the leaf. -/
+`typeConfusion` instead of duplicating the leaf. `Step.demo_dynamicRead_stuck`
+is the same program, stuck at the same rule in `Step`. -/
 theorem dynReadAffine_refused (M : FloatOps) :
     run M (prog tI64 dynReadAffineCopied) demoFuel = .stuck .typeConfusion := by rfl
 
 /-- (RUE-2400) `@drop(a[i])` of an affine leaf is refused by the machine: the
 dynamic `@drop` is the read with its value discarded, so it inherits the
-read's `Copy` check, and no `@dbg` output or destructor event is produced. -/
+read's `Copy` check, and no `@dbg` output or destructor event is produced.
+`Step.demo_dynamicDrop_stuck` is the same program, stuck at the same rule in
+`Step`. -/
 theorem dynDropAffine_refused (M : FloatOps) :
     run M (prog tI64 dynDropAffineSkipped) demoFuel = .stuck .typeConfusion := by rfl
 
 /-- (RUE-2400) The repeat form at an affine operand is refused by the
 machine: §2's elaboration `let t = v; [t, t]` would be stuck at the second use
-of `t`, and `eval` answers `typeConfusion` rather than replicating `v`. -/
+of `t`, and `eval` answers `typeConfusion` rather than replicating `v`.
+`Step.demo_repeat_stuck` is the same program, stuck at the same rule in
+`Step`. -/
 theorem repeatAffine_refused (M : FloatOps) :
     run M (prog tI64 repeatAffineDuplicated) demoFuel = .stuck .typeConfusion := by rfl
 
