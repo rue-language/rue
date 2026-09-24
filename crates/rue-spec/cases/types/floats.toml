@@ -714,6 +714,7 @@ fn main() -> i32 {
 """
 compile_fail = true
 expected_error_code = "E0206"
+error_contains = "finite"
 
 # =============================================================================
 # No implicit conversions (3.12:13, 3.12:14)
