@@ -506,3 +506,37 @@ fn main() -> i32 { 0 }
 """
 aux_files = { "dep.rue" = "pub fn unused(value: f32) -> f64 { value }\n" }
 exit_code = 0
+
+[[case]]
+name = "comptime_call_result_non_finite_literal_points_at_the_literal"
+description = "A float literal a comptime call returns at a type parameter's type is reported on the literal in the callee, as run time reports it, not on the constant that reduces the call (RUE-2406)."
+source = """
+fn mk(comptime T: type) -> T { 1e39 }
+const A: f32 = mk(f32);
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected finite f32 literal, found 1e39", "test.rue:1:32"]
+
+[[case]]
+name = "type_constructor_non_finite_float_argument_points_at_the_literal"
+description = "A float literal argument of a type constructor that is not finite at its parameter's type is reported on the argument (RUE-2411)."
+source = """
+fn Mk(comptime v: f32) -> type { struct { x: i32 } }
+const A = Mk(1e39);
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected finite f32 literal, found 1e39", "test.rue:2:14"]
+
+[[case]]
+name = "comptime_block_non_finite_array_element_points_at_the_literal"
+description = "A float literal element of a `comptime {}` block's array value that is not finite at the element type is reported on the element (RUE-2406)."
+source = """
+fn main() -> i32 {
+    let a: [f32; 2] = comptime { [1.0, 1e39] };
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected finite f32 literal, found 1e39", "test.rue:2:40"]

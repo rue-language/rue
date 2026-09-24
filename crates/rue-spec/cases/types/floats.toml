@@ -716,6 +716,47 @@ compile_fail = true
 expected_error_code = "E0206"
 error_contains = "finite"
 
+[[case]]
+name = "float_literal_returned_at_comptime_type_parameter_not_finite_rejected"
+spec = ["3.12:10", "4.14:5"]
+description = "A float literal returned at a comptime type parameter's type gets that type, so a literal that rounds to an infinity at f32 is E0206 whether the call runs or reduces for a constant (RUE-2406)"
+source = """
+fn mk(comptime T: type) -> T { 1e39 }
+const A: f32 = mk(f32);
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+expected_error_code = "E0206"
+error_contains = "expected finite f32 literal, found 1e39"
+
+[[case]]
+name = "float_literal_argument_at_comptime_type_parameter_not_finite_rejected"
+spec = ["3.12:10", "4.14:5"]
+description = "A float literal argument of a `comptime v: T` parameter gets the type `T` is bound to, so `id(f32, 1e39)` reducing for a constant is E0206, as it is at run time (RUE-2406)"
+source = """
+fn id(comptime T: type, comptime v: T) -> T { v }
+const A: f32 = id(f32, 1e39);
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+expected_error_code = "E0206"
+error_contains = "expected finite f32 literal, found 1e39"
+
+[[case]]
+name = "float_literal_at_comptime_type_parameter_finite_and_computed_infinity_accepted"
+spec = ["3.12:10", "4.14:5"]
+description = "The largest finite f32 is accepted as a literal at a comptime type parameter's type, and a computation that overflows there is an infinity, not a literal error (RUE-2406)"
+source = """
+fn id(comptime T: type, comptime v: T) -> T { v }
+fn over(comptime T: type) -> T { 1e38 * 10.0 }
+const MAX: f32 = id(f32, 3.4028235e38);
+const INF: f32 = over(f32);
+fn main() -> i32 {
+    if INF > MAX && MAX > 3.4e38 { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
 # =============================================================================
 # No implicit conversions (3.12:13, 3.12:14)
 # =============================================================================
