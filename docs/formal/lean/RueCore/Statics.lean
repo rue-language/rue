@@ -58,20 +58,17 @@ every variant rather than the active one.
 
 ## Divergence, without a `never` type
 
-§5.7 types `return e` at `never` and lets (Sub-Never) coerce it to any type,
-with a divergent outgoing state `⊥` that §5.5's join excludes. The fragment
-folds both into one rule at each never-typed form: `Typed.ret` and
-`Typed.panic` conclude at **any** type `T` and with **any** outgoing context
-of the same skeleton, which is exactly what a `never` value and a `⊥` state
-license a context to assume. `Ty` therefore needs no `never` constructor and
-`HasTy` (`Soundness.lean`) no case for it — sound because `never` has no
-values (`3.4:1`), so nothing is ever typed at it dynamically. Adding the
-constructor would buy nothing here and cost something: every rule that demands
-two equal types (§5.5's arms, (Assign)'s target) would have to admit a
-subsumption it can never observe. (Return-Bottom) needs no rule of its own for
-the same reason: a `return` whose operand itself diverges is typed by this
-rule with the operand at `R`. `INDEX.md` records (Sub-Never) as mechanized at
-these two forms, the only never-typed forms the fragment has.
+§5.7 types `return e`, `@panic`, `break` and a `break`-less `loop` at `never`
+and lets (Sub-Never) coerce them to any type, with a divergent outgoing state
+`⊥` that §5.5's join excludes. The judgment carries §5.3's outgoing result
+`Ω` (`Out`), whose `norm = none` is that `⊥`; the fragment folds the type
+half into each never-typed rule, which concludes at **any** type `T`. `Ty`
+therefore needs no `never` constructor and `HasTy` (`Soundness.lean`) no case
+for it — sound because `never` has no values (`3.4:1`), so nothing is ever
+typed at it dynamically. Adding the constructor would buy nothing here and
+cost something: every rule that demands two equal types (§5.5's arms,
+(Assign)'s target) would have to admit a subsumption it can never observe.
+`INDEX.md` records (Sub-Never) as mechanized at the rules that fold it in.
 
 The two differ in one premise, and the difference is §5.7's provenance.
 `return` carries `⊥_exit`, which is the §5.6 scope-exit obligation taken
@@ -2589,12 +2586,12 @@ mechanization: "check each edge where it fires — so long as the sets `B` and
 `return` where it fires (`Typed.ret` carries (Fn) §5.8's residual-linear
 obligation at the edge), and §5.7 exempts a `@panic` from §5.6, so neither
 needs a consumer and neither is recorded. The deliveries that do need one are
-`⟨break, Σ⟩`, which §5.7's break-exited loop rule joins at the loop's exit; the fragment
-has no loop yet (RUE-2369), so no rule makes one and `brk` is always empty.
-It is threaded through every rule anyway, as §5.3's **Threading** paragraph
-says — a premise's deliveries are unioned into the conclusion's — so that
-adding `break` adds rules and changes none. The list is the calculus's set:
-order and repetition carry no meaning. -/
+`⟨break, Σ⟩`, which (Loop-Break) §5.7 joins at the loop's exit: (Break)
+(`Typed.brk`) makes one, recording the whole context in force at the edge, and
+every rule carries its premises' deliveries into its conclusion, as §5.3's
+**Threading** paragraph says, until the innermost enclosing loop consumes
+them. The list is the calculus's set: order and repetition carry no meaning
+(`Ctx.joinAll_perm` is why the exit join may read it in order). -/
 
 /-- §5.3's outgoing result `Ω`: `norm = some Σ'` is `Σ';Δ` and `norm = none`
 is `⊥;Δ`, with `brk` the recorded deliveries `Δ` (section docstring). -/
@@ -2717,7 +2714,9 @@ outgoing states join n-way; `letIn` folds in §5.6's residual-linear scope-exit
 check; `assign` is (Assign) with the `3.8:77` linear-overwrite premise, keyed
 on the destination's type (`overwriteOk`), on the *post-RHS* state; `seq` is (Seq) with the `3.8:64` discard check; `ite` is (If)
 with the §5.5 join; `call` is (Call) by value (§5.8); `ret` is (Return-Value)
-and `panic` is (Panic), each with (Sub-Never) folded in (§5.7, §5.8). -/
+and `panic` is (Panic), each with (Sub-Never) folded in (§5.7, §5.8); `brk` is
+(Break), `loopDiv` is (Loop-Div-Backedge) and (Loop-Div), and `loopBreak` and
+`loopBreakDiv` are (Loop-Break) with and without a reachable exit (§5.7). -/
 inductive Typed (P : Program) (R : Ty) : Ctx → Expr → Ty → Out → Prop where
   /-- (Lit) §5.8: an integer literal at the `int(w,s)` elaboration resolved
   for it (`4.1:2`), denoting a value of that type (§6.1's `n_T` bound). -/

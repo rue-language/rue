@@ -448,7 +448,8 @@ mechanized*. The short version:
   `example : checkProgram ... = false := by rfl` is a kernel-checked
   rejection.
 - **Fuel is not a loophole.** `eval` is fuel-indexed, because a recursive
-  callee's body is not a subexpression of the call, and the theorems quantify
+  callee's body is not a subexpression of the call and a `loop` re-enters
+  its body (each turn spends fuel), and the theorems quantify
   over every fuel — which `outOfFuel` would satisfy for free. `fuel_mono` and
   `no_masking` are why it is not free: raising the bound never changes an
   answer, and no bound turns a violation into exhaustion for a program some
@@ -515,10 +516,10 @@ a slice author writes:
 | --- | --- | --- |
 | `RueCore/Float.lean` | §2's datum set `𝔽_w` with the operations §6.4 computes exactly, `3.12:40`–`3.12:42`'s shortest round-trip rendering, the `FloatOps`/`FloatModel` interface and its named IEEE laws, and the constructive instance `Float.exactOps` | §2, §6.4, §7's float lemma |
 | `RueCore/Syntax.lean` | multiplicity lattice and its join, §2's declaration environment `D` — struct declarations with their attribute, fields and destructor, and **enum** declarations with one payload tuple per variant — types including `[T; n]`, `class(T)` with §3's four-line array table (`3.8:74`), **places** (§5's `Path`, field steps and **constant** index steps) with the type a path reaches, §4.2's use plan `dl(Γ,p)` (`declaredPrefix`) and §5.1's residue test (`linearResidue`) over it, and §4.2's restrictions on which projections may be moved, expressions | §2, §3, §4.2 |
-| `RueCore/Statics.lean` | §3's class assignment as a checked equation, for both layers, grounded by `3.0:5`'s joint acyclicity read through array nesting (`WfStructs`/`WfEnums`/`WfNames` over `Ty.declIds`, the unconditional `class_unique` and its two projections, `struct_carriesLinear_iff`/`enum_carriesLinear_iff`), the fused flow-sensitive `Γ;Σ` context with Σ **keyed by path** (`OwnSt`, `fullyOwned`, §5.6's recursive `residualLinear`, whose array clause reads the element type `n` times), the ownership-threading judgment `Typed` (parameterized by the program and the enclosing return type, and concluding at §5.3's outgoing result `Ω` with the `-Bottom` rules and the join over the arms that continue) — the ordinary place rules and the **declared-linear destructure** of §5.1 beside them — the §5.5 branch join over paths and its n-way fold at a `match` (proved commutative and, over states that are shapes of their declared types (`OwnSt.wf`), associative, so the fold is invariant under a permutation of the arms, `Ctx.joinAll_perm`, and every derivation preserves that shape invariant, `Typed.wf`), (Fn) and whole-program well-formedness, skeleton preservation | §3, §4.2, §5.1–§5.3, §5.5–§5.8 |
-| `RueCore/Dynamics.lean` | store/frame machine as a fuel-indexed definitional interpreter with observation traces (drops, destructors, `@dbg`); cell **contents as a tree with `⊘` at any node**, navigated by a path (§6.3's `H(ℓ)@π` and `H[ℓ@π ↦ ⊘]`, a constant index being a step like a field slot); §6.3's `split`/`destructure` for the declared-linear redex, with a residue monitor; §6.11's recursive drop (destructor, then fields in declaration order, an enum's active variant's payload, and an array's elements in ascending index order, every `⊘` skipped); frames with scope records and their unwinds; violations as named refusals; §6.4's operator rules, §6.5's bounds trap at a dynamic index, and every §6.12 trap the fragment reaches, each carrying the trace up to it | §6.1–§6.12 |
-| `RueCore/Soundness.lean` | value typing, the per-frame agreement invariant `FrameMatches`, frame locality `Untouched`, **the safety theorem** — with progress at a `match` resting on exhaustiveness and preservation on the folded join — the fuel lemmas, and per-§7-bullet corollaries over a whole program | §7 |
-| `RueCore/Checker.lean` | decidable checker `check`/`checkProgram` + `check_sound`/`checkProgram_sound` (every acceptance is a derivation), and `checkDecls` — §3's two class equations plus `3.0:5`'s acyclicity, decided by peeling the declarations | §3, §5 as an algorithm |
+| `RueCore/Statics.lean` | §3's class assignment as a checked equation, for both layers, grounded by `3.0:5`'s joint acyclicity read through array nesting (`WfStructs`/`WfEnums`/`WfNames` over `Ty.declIds`, the unconditional `class_unique` and its two projections, `struct_carriesLinear_iff`/`enum_carriesLinear_iff`), the fused flow-sensitive `Γ;Σ` context with Σ **keyed by path** (`OwnSt`, `fullyOwned`, §5.6's recursive `residualLinear`, whose array clause reads the element type `n` times), the ownership-threading judgment `Typed` (parameterized by the program and the enclosing return type, and concluding at §5.3's outgoing result `Ω` with the `-Bottom` rules and the join over the arms that continue) — the ordinary place rules and the **declared-linear destructure** of §5.1 beside them — the §5.5 branch join over paths and its n-way fold at a `match` (proved commutative and, over states that are shapes of their declared types (`OwnSt.wf`), associative, so the fold is invariant under a permutation of the arms, `Ctx.joinAll_perm`, idempotent and absorbing its right arm, `Ctx.join_absorb`, and every derivation preserves that shape invariant, `Typed.wf`), §5.7's loop-head equation `LoopHead` with its re-entry lemma, (Fn) and whole-program well-formedness, skeleton preservation | §3, §4.2, §5.1–§5.3, §5.5–§5.8 |
+| `RueCore/Dynamics.lean` | store/frame machine as a fuel-indexed definitional interpreter with observation traces (drops, destructors, `@dbg`); cell **contents as a tree with `⊘` at any node**, navigated by a path (§6.3's `H(ℓ)@π` and `H[ℓ@π ↦ ⊘]`, a constant index being a step like a field slot); §6.3's `split`/`destructure` for the declared-linear redex, with a residue monitor; §6.11's recursive drop (destructor, then fields in declaration order, an enum's active variant's payload, and an array's elements in ascending index order, every `⊘` skipped); frames with scope records and their unwinds, `return`'s and `break`'s; loops, each turn spending fuel; violations as named refusals; §6.4's operator rules, §6.5's bounds trap at a dynamic index, and every §6.12 trap the fragment reaches, each carrying the trace up to it | §6.1–§6.12 |
+| `RueCore/Soundness.lean` | value typing, the per-frame agreement invariant `FrameMatches`, frame locality `Untouched`, **the safety theorem** — with progress at a `match` resting on exhaustiveness, preservation on the folded join, and a loop's back edge and exits on the head equation (`LoopHead.enter`, `LoopHead.backEdge`, `loop_exit_ok`) — the fuel lemmas, and per-§7-bullet corollaries over a whole program | §7 |
+| `RueCore/Checker.lean` | decidable checker `check`/`checkProgram` + `check_sound`/`checkProgram_sound` (every acceptance is a derivation), with §5.7's loop head found by a bounded iteration (`headIter`) and re-verified, and `checkDecls` — §3's two class equations plus `3.0:5`'s acyclicity, decided by peeling the declarations | §3, §5 as an algorithm |
 | `RueCore/Examples.lean` | `#eval` demos; kernel-checked acceptance/rejection of example programs | — |
 | `RueCore/Print.lean` | core syntax → Rue source, the program's struct and enum declarations included, and the observation channel (a `drop fn` per destructor-bearing declaration) | §2 elaboration inventory, 3.9 |
 | `RueCore/Corpus.lean` | the bridge corpus: each case's checker verdict and interpreter outcome, exported as JSON (`lake exe ruecore-corpus`) | §5, §6, §7 witnesses |
@@ -565,7 +566,8 @@ a constant-index path — with `rootIdxOnly` for §4.2's "element moves only at
 the root", the `MovedOut` element state the move leaves, `3.8:73`'s
 path-specific element drop, and `3.8:72`'s refusal to assign into an array that
 has one — and top-level functions, by-value calls with frames and scope
-records, and `return` with its σ unwind. A dynamic index reaches below
+records, `return` with its σ unwind, and `loop` with its nullary `break`,
+typed at §5.7's loop-head state and unwound by §6.10's (D-Break). A dynamic index reaches below
 itself: `a[i].x0`, `h.arr[i].x0`, `a[i][j]` and `a[i][0].x1` are read and
 written as the compiler reads and writes them, and dropped when they are `Copy`, with `Place` still
 constant-only, and a write evaluates its right-hand side before its indices
@@ -574,21 +576,39 @@ operands, so `≈`'s float leaf has no instance here), no path into an enum's
 payload (§5.6 tracks none) and none of the `match` shapes §5.5 makes
 elaboration obligations (wildcard, repeated or guarded patterns, a bool or
 integer scrutinee, a zero-arm `match`), no
-borrows, no `inout`/`borrow` parameters, no accessor calls, no loops (see the
-outline doc for the milestone ladder that adds them).
+borrows, no `inout`/`borrow` parameters, no accessor calls, no `continue`
+(see the outline doc for the milestone ladder that adds them).
+
+### Loops
+
+`loop e` and the nullary `break` (§5.7, §6.10, RUE-2369) type the body once,
+at the **loop-head state**: the entry state joined with the state the body
+leaves at its back edge (`LoopHead`). The head is on both sides of its own
+definition, so the rules take it as a premise and `check` finds the least one
+by iterating from the entry state (`headIter`), then checks the equation.
+`soundness` re-enters the loop at its head with the same body derivation
+(`LoopHead.reenter`, resting on `Ctx.join_absorb`), which is the back-edge
+proof. A `break` delivers the whole context where it fires; the loop drops the
+bindings its body opened (`Ctx.loopLocals`, §6.10's unwind) and joins the rest
+over every exit (`Ctx.outsideLoop`, `3.8:80`). A `break`-less loop is
+`never`-typed and checks the `⟨diverge, Σ_h⟩` edge frame-wide
+(`03-metatheory.md` records the reading). Six seeds cover the shapes
+(`Examples.lean`, "Loops and `break`"); the generator draws no loops yet
+(RUE-2330).
 
 ## The main theorem
 
 ```
 theorem soundness (hwf : WfProgram P) :
   ∀ fuel, Typed P R Γ e T Ω → FrameMatches P.decls Γ φ H →
-    EvalOk P.decls T R Ω.norm φ H (eval fuel P H φ e)
+    EvalOk P.decls T R Ω.norm Ω.brk φ H (eval fuel P H φ e)
 ```
 
 `EvalOk` is a predicate on the result: a well-typed value with the agreement
 restored at `Ω`'s normal outgoing state and the frame's neighbours untouched
 (and no value at all when `Ω` is §5.7's `⊥`); or a value
-an unwinding `return` handed back; or a *defined* panic; or `outOfFuel`. It is
+an unwinding `return` handed back; or an unwinding `break` that fired at one
+of `Ω`'s delivered states; or a *defined* panic; or `outOfFuel`. It is
 `False` on `.stuck`, which is the whole point — no `Violation`
 (`useAfterMove`, `useAfterDrop`, `linearLeak`, `linearOverwrite`,
 `linearDiscard`, …) is reachable. The interpreter is total, so this is

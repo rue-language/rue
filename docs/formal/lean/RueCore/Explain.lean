@@ -2261,14 +2261,14 @@ def refused (kids : List Step) (d : Nat) (Θ : List Ty) (R : Ty) (e : Expr) (rul
 
 /-- (helper) The label for a `let` whose body did not complete: `(D-Let)`
 has already fired — its own row is above — and `(D-EndScope)` never ran, so
-the binding's drop never ran either (§6.7). An early `return` is the one
-outcome where the drop still runs, because `run-all-scope-drops` (§6.9)
-walks the frame's record instead; a trap (§6.12) abandons the configuration
-and runs neither. -/
+the binding's drop never ran either (§6.7). An early `return` and a `break`
+are the outcomes where the drop still runs, because `run-all-scope-drops`
+(§6.9) and the loop's `unwind-drops` (§6.10) walk the frame's record instead;
+a trap (§6.12) abandons the configuration and runs neither. -/
 def scopeNeverClosed : String :=
   "(D-EndScope) §6.7 — the body did not complete, so this scope never closed " ++
-  "(an early return runs the drop through the frame's scope record instead; a " ++
-  "trap runs no drop at all)"
+  "(an early return or a break runs the drop through the frame's scope record " ++
+  "instead; a trap runs no drop at all)"
 
 /-- (helper) The label for a call whose callee did not complete because it
 **trapped**. No frame is popped there: §6.2's (Panic-Lift) carries `↯κ` out

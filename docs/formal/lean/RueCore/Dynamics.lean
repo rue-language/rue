@@ -199,11 +199,18 @@ the carve-out named (`Soundness.lean`'s `no_violation`,
 
 ## Frames, scope records, and unwinding (§6.1, §6.9)
 
-§6.1's frame is `φ = ⟨ρ ; σ⟩` with `σ` a *stack* of open scope records. The
-fragment's forms open exactly one scope per frame — `push-scope` belongs to
-§6.10's loops, which are not here, while (D-Let) §6.7 and (D-Match) §6.6 both
-**append** their cells to the innermost record rather than pushing a new one —
-so `Frame` carries that one record. The stack returns with loops.
+§6.1's frame is `φ = ⟨ρ ; σ⟩` with `σ` a *stack* of open scope records.
+(D-Let) §6.7 and (D-Match) §6.6 both **append** their cells to the innermost
+record rather than pushing a new one, so `Frame` carries that one record.
+§6.10's loop does push a scope, `push-scope(φ)`, and `unwind-drops(H, φ', φ)`
+runs the drops of every scope open in `φ'` that is not open in `φ`. The
+fragment keeps one record and reads the loop's boundary as its **length**
+at the loop's entry: a loop body appends to the record like any other form, a
+`break` hands the loop the record of the frame it fired in
+(`EvalRes.broke`), and the cells past the loop's length are exactly the
+scopes §6.10 would pop — which the loop drop-retires newest-first. A body that
+completes has closed its own scopes on the way (§6.7's `endscope`), so
+(D-Loop-Iter)'s `run-scope-drops` has nothing left to run.
 
 A `match` arm's payload cells are registered exactly as a `let`'s cell is, in
 both books: appended to the record *and* owed to the arm's `endscope` marker
@@ -1213,7 +1220,11 @@ newest-first drop at the arm's end; `ite` is (D-If-T)/(D-If-F) after the §6.2
 search for the scrutinee; `call` is (D-Call)
 followed by (D-Return-Value) when the body completes normally, and by
 (D-Return)'s absorption when it does not; `ret` is (D-Return), which runs the
-frame's scope drops and hands the value past every enclosing form.
+frame's scope drops and hands the value past every enclosing form; `loop` is
+(D-Loop-Enter) and (D-Loop-Iter) §6.10, re-entering the body at one unit of
+fuel less after every turn that completes, and (D-Break)'s unwind when the
+body breaks; `brk` is (D-Break), which hands its loop the frame's scope
+record.
 
 Every operand is sequenced with `andThen`, which is §6.2's search through an
 evaluation context; the callee's body is sequenced with `absorb`, the one
