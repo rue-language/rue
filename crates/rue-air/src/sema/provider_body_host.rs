@@ -4273,6 +4273,12 @@ where
     fn inference_function_by_file(&self, key: (FileId, Spur)) -> Option<Spur> {
         self.function_for_file_symbol(key.0, key.1)
     }
+    fn inference_import_module(&self, import_path: &str) -> Option<ModuleId> {
+        // Compiler preflight already accepted every `@import` site, so the
+        // span only matters for an error inference discards: semantic
+        // analysis resolves the same site again and owns its diagnostic.
+        DeclarationFacts::resolve_canonical_import(self, import_path, Span::default()).ok()
+    }
 }
 
 impl<P, S, K, M> TypeSyntaxHost for ProviderBodyHost<'_, P, S, K, M>
