@@ -222,14 +222,14 @@ marks a drop event. The run enters at f0(), as `Dynamics.run` does.
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
-  [14]  d3        (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return runs the drop through the frame's scope record instead; a trap runs no drop at all)
+  [14]  d3        (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the frame's scope record instead; a trap runs no drop at all)
          expr    { let v1: i64 = match v0 { E0.K0(v1) => 5, E0.K1 => 6 }; { let v2: i64 = match …
          store   [ℓ0 = E0.K0⟨S1 { 1 }⟩]
            →     [ℓ0 = ⊘, ℓ1 = † (retired), ℓ2 = 5]
          result  REFUSED (useAfterMove)
                  a read of a cell holding ⊘: the value was already moved out of this
                  place ((D-Use-Move) §6.3; 3.8:5; §7 “no use after move”)
-  [15]  d2      (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return runs the drop through the frame's scope record instead; a trap runs no drop at all)
+  [15]  d2      (D-EndScope) §6.7 — the body did not complete, so this scope never closed (an early return or a break runs the drop through the frame's scope record instead; a trap runs no drop at all)
          expr    { let v0: E0 = E0.K0(S1 { x0: 1 }); { let v1: i64 = match v0 { E0.K0(v1) => 5, …
          store   (empty)
            →     [ℓ0 = ⊘, ℓ1 = † (retired), ℓ2 = 5]
