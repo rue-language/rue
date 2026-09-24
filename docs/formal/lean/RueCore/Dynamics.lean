@@ -1384,16 +1384,29 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
       -- The surface repeat form, whose dynamics is §2's elaboration of it:
       -- `7.1:39` evaluates the operand **exactly once** and copies its result
       -- into each of the `n` slots, which is well defined because `7.1:38`
-      -- makes the element type `Copy`.
-      (eval M fuel P H φ e).andThen fun H' v => .ok H' (.array T (List.replicate n v)) []
+      -- makes the element type `Copy`. The machine reads that premise off the
+      -- value: the elaboration `let t = v; [t, …, t]` would move `t` at its
+      -- first use and be stuck at the second when `class(v) ≠ Copy`, so a
+      -- non-`Copy` operand refuses with `typeConfusion` rather than duplicating
+      -- a value §6 would destroy once (RUE-2400). A checked program never
+      -- reaches the refusal: `Typed.repeatArray`'s `T.mult = .copy` premise and
+      -- `HasTy.mult_eq` give it (`soundness`).
+      (eval M fuel P H φ e).andThen fun H' v =>
+        if v.mult P.decls = .copy then .ok H' (.array T (List.replicate n v)) []
+        else .stuck .typeConfusion
   | fuel + 1, P, H, φ, .indexRead p idx πs =>
       -- (D-Index)/(D-Index-Trap) §6.5 at a place below one or more **dynamic**
       -- indices: §6.2's `v[E]` contexts reduce the index expressions left to
       -- right first, then the place is navigated and each index is
       -- bounds-checked "at the moment the path is navigated" (`7.1:10`) —
-      -- before anything is read. In range, §6.3's ordinary copy rule hands
-      -- the leaf on and leaves the array alone, which is the whole of the
-      -- `class(T) = Copy` restriction §5.1 puts on this form.
+      -- before anything is read. In range, (D-Use-Untrackable-Dynamic-Copy)
+      -- §6.3 hands the leaf on and leaves the array alone. That rule's premise
+      -- `class(T) = Copy` is read off the value: §6.3 has no rule for a
+      -- non-`Copy` leaf under a dynamic index, so the machine refuses with
+      -- `typeConfusion` instead of copying an affine value out of a place it
+      -- leaves live (RUE-2400). A checked program never reaches the refusal:
+      -- `Typed.indexRead`'s `T.mult = .copy` premise and `HasTy.mult_eq` give
+      -- it (`soundness`).
       (match evalArgs (fun H' e => eval M fuel P H' φ e) H idx with
        | .abort r => r
        | .ok H₁ vs tr =>
@@ -1407,7 +1420,9 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
              | .ok leaf =>
                match leaf.toVal with
                | none => .stuck .useAfterMove
-               | some v => .ok H₁ v [])
+               | some v =>
+                   if v.mult P.decls = .copy then .ok H₁ v []
+                   else .stuck .typeConfusion)
   | fuel + 1, P, H, φ, .indexWrite p idx πs e =>
       -- (D-Assign) §6.8 below a dynamic index, in `5.2:14`'s order: the
       -- right-hand side first, then the index expressions left to right
@@ -1452,7 +1467,10 @@ def eval (M : FloatOps) : Nat → Program → Store → Frame → Expr → EvalR
       -- bounds check at every dynamic step (`7.1:10`), which traps exactly as
       -- the read does (probe d3). In range, the leaf is left where it is and
       -- the value is `()`. The redex *is* the read with its value discarded,
-      -- and it is evaluated as that.
+      -- and it is evaluated as that — so it inherits the read's `Copy` check:
+      -- a non-`Copy` leaf refuses with `typeConfusion` rather than stepping to
+      -- `()` where §6.11's `@drop` would drop the leaf and write `⊘`
+      -- (RUE-2400; the statics make that form E0904).
       (eval M fuel P H φ (.indexRead p idx πs)).andThen fun H' _ => .ok H' .unit []
   | _ + 1, P, H, φ, .drop p =>
       -- §6.11's explicit `@drop(p)`: at a `Declared(d, π_s)` plan it is the
