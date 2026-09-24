@@ -1020,16 +1020,8 @@ $runtime
                                                             // is expected (ADR-0065 §3): it becomes the
                                                             // float value nearest to it, exactly as the
                                                             // body path converts `let x: f64 = 3;`.
-                                                            let value = match (&ty, value) {
-                                                                (
-                                                                    crate::durable_semantics::DurableType::F32
-                                                                    | crate::durable_semantics::DurableType::F64,
-                                                                    crate::durable_semantics::DurableConstValue::Integer(integer),
-                                                                ) => crate::durable_semantics::DurableConstValue::Float(Arc::from(
-                                                                    integer.to_string(),
-                                                                )),
-                                                                (_, value) => value,
-                                                            };
+                                                            let value = crate::durable_comptime::durable_integer_as_float(&value, &ty)
+                                                                .unwrap_or(value);
                                                             let compatible = typed.ty.as_ref().is_none_or(|found| {
                                                                 found == &ty
                                                                     // `I32` here is also untyped integer arithmetic
