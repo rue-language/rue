@@ -938,7 +938,7 @@ impl crate::durable_comptime::DurableComptimeSemanticAuthority
         })?
         else {
             return Err(rue_air::SemanticProviderError::Failure(
-                super::provider_body::unknown_module_member_failure(
+                crate::durable_comptime::unknown_module_member_failure(
                     &rue_air::module_display_name(module.as_str()),
                     member,
                 ),

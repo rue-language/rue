@@ -652,11 +652,14 @@ pub(crate) fn semantic_type_syntax_failure(
         F::UnknownModuleMember { module, member, .. } => {
             unknown_module_member_failure(&module, &member)
         }
-        F::ValueWhereTypeExpected { parameter, .. } => {
-            SemanticNucleusFailure::Resolution(Arc::from(format!(
-                "argument for comptime parameter `{parameter}` must be a type"
-            )))
-        }
+        F::ValueWhereTypeExpected {
+            constructor,
+            argument,
+            parameter,
+            ..
+        } => SemanticNucleusFailure::Resolution(Arc::from(format!(
+            "argument '{argument}' of type constructor '{constructor}' must be a type (this parameter is `comptime {parameter}: type`)"
+        ))),
         F::UnknownConstructor {
             constructor,
             expectation: rue_air::SemanticComptimeCallExpectation::Type,
@@ -678,7 +681,7 @@ pub(crate) fn semantic_type_syntax_failure(
             expectation: rue_air::SemanticComptimeCallExpectation::Type,
             ..
         } => SemanticNucleusFailure::Resolution(Arc::from(format!(
-            "type constructor `{constructor}` expects {expected} comptime type argument(s), but {found} provided"
+            "type constructor '{constructor}' expects {expected} comptime type argument(s), but {found} were provided"
         ))),
         F::InvalidConstructorArity {
             constructor,
@@ -697,9 +700,11 @@ pub(crate) fn semantic_type_syntax_failure(
                 if found == 1 { "was" } else { "were" },
             ),
         }),
-        F::NotTypeConstructor { constructor, .. } => SemanticNucleusFailure::Resolution(Arc::from(
-            format!("function `{constructor}` is not a type"),
-        )),
+        F::NotTypeConstructor { constructor, .. } => {
+            SemanticNucleusFailure::Resolution(Arc::from(format!(
+                "'{constructor}' is not a type: only a function returning `type` (a type constructor) can be applied as a type here"
+            )))
+        }
         F::TypeWhereValueExpected { constructor, .. } => {
             SemanticNucleusFailure::Diagnostic(ErrorKind::ComptimeEvaluationFailed {
                 reason: format!(
@@ -786,8 +791,17 @@ pub(crate) fn semantic_type_syntax_failure(
     }
 }
 
-/// An unknown member of a module, with the module's member help when one
-/// applies.
+/// Carry E0707 as a nucleus failure, with the prelude `help:` line attached
+/// when the miss is really a free function written as a module member.
+///
+/// The nucleus holds an [`rue_error::ErrorKind`] rather than a `CompileError` — its span
+/// is stamped downstream — so the advice rides the `DiagnosticWithHelp`
+/// carrier instead of `CompileError::with_help`. Both halves come from
+/// `rue_air`, so this path and the body-analysis path cannot word the same
+/// diagnostic differently (RUE-2164).
+///
+/// `module_display` must already be `rue_air::module_display_name`'s
+/// rendering.
 pub(crate) fn unknown_module_member_failure(
     module_display: &str,
     member: &str,

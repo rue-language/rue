@@ -6,24 +6,6 @@
 
 use super::super::*;
 
-/// Carry E0707 as a nucleus failure, with the prelude `help:` line attached
-/// when the miss is really a free function written as a module member.
-///
-/// The nucleus holds an [`ErrorKind`] rather than a `CompileError` — its span
-/// is stamped downstream — so the advice rides the `DiagnosticWithHelp`
-/// carrier instead of `CompileError::with_help`. Both halves come from
-/// `rue_air`, so this path and the body-analysis path cannot word the same
-/// diagnostic differently (RUE-2164).
-///
-/// `module_display` must already be `rue_air::module_display_name`'s
-/// rendering.
-pub(super) fn unknown_module_member_failure(
-    module_display: &str,
-    member: &str,
-) -> crate::semantic_query_nucleus::SemanticNucleusFailure {
-    crate::durable_comptime::unknown_module_member_failure(module_display, member)
-}
-
 fn collect_body_type_reference(
     ty: &rue_air::SemanticImportType<crate::StableDefinitionKey, crate::ModuleId>,
     references: &mut BTreeSet<crate::body_query::BodyReference>,

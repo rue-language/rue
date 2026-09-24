@@ -2876,7 +2876,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
             );
         }
         let saved_locals = env.locals.clone();
-        let saved_declared = env.declared_integer_locals.clone();
+        let saved_declared = (!env.declared_integer_locals.is_empty())
+            .then(|| env.declared_integer_locals.clone())
+            .unwrap_or_default();
         let mut result = H::Value::unit();
         for (i, stmt_ref) in stmt_refs.iter().copied().enumerate() {
             let is_tail = i + 1 == stmt_refs.len();
@@ -2950,10 +2952,34 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
     /// initializer's arithmetic region, so an initializer operation that
     /// leaves the annotated type is the overflow run time traps on.
     ///
+    /// Only an annotation that names a primitive integer type directly seeds
+    /// the region; see [`Self::names_primitive_integer`].
+    ///
     /// The binding carries the annotated type, or for an unannotated `let`
     /// the type its initializer's region is checked at, when the value is an
     /// integer that fits it. Otherwise it carries none, and every operation
     /// that reads it is unchecked, as on trunk.
+    /// Whether a `let` annotation names a primitive integer type directly
+    /// (`i8` through `u64`, `isize`, `usize`). Only such an annotation
+    /// declares a width: run time does not yet apply an annotation spelled as
+    /// a comptime type parameter, a module path or a type-constructor call to
+    /// the initializer (RUE-2209), so checking at it would reject programs
+    /// run time accepts. Those spellings can declare a width once run time
+    /// honours them.
+    fn names_primitive_integer(&self, annotation: rue_rir::RirTypeSyntaxRef) -> bool {
+        let program = self.program_key();
+        let type_syntax = self.host.program_rir(&program).type_syntax();
+        let Some(rue_rir::RirTypeSyntaxNode::Named(symbol)) = type_syntax.node(annotation) else {
+            return false;
+        };
+        let Some(symbol) = type_syntax.symbol(*symbol) else {
+            return false;
+        };
+        let name = self.host.name_from_symbol(&program, (*symbol).into());
+        crate::Type::from_primitive_name(&self.host.display_name(&name))
+            .is_some_and(|ty| ty.integer_semantics().is_some())
+    }
+
     fn eval_let(
         &mut self,
         init: InstRef,
@@ -2972,11 +2998,9 @@ impl<'e, H: ComptimeHost> ComptimeEngine<'e, H> {
                     &values,
                     span,
                 ) {
-                    ComptimeOutcome::Known(ty) => self
-                        .host
-                        .type_integer_semantics(&ty)
-                        .is_some()
-                        .then_some(ty),
+                    ComptimeOutcome::Known(ty) => (self.names_primitive_integer(annotation)
+                        && self.host.type_integer_semantics(&ty).is_some())
+                    .then_some(ty),
                     // An annotation that does not reduce here leaves the
                     // binding unchecked, as on trunk.
                     ComptimeOutcome::RuntimeDependent | ComptimeOutcome::UnsupportedContext => None,
