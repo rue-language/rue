@@ -4720,3 +4720,142 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E0206", "expected finite f32 literal, found 3.4028236e38"]
+
+[[case]]
+name = "comptime_block_array_element_float_literal_not_finite_rejected"
+spec = ["3.12:10", "4.14:3"]
+description = "An element literal of a `comptime {}` block's array value is held to its element type's finite range, as the same array written directly is: `comptime { [1e39] }` at `[f32; 1]` is E0206, not an array holding inf (RUE-2406)"
+source = """
+fn main() -> i32 {
+    let a: [f32; 1] = comptime { [1e39] };
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected finite f32 literal, found 1e39"]
+
+[[case]]
+name = "comptime_block_nested_aggregate_float_literal_not_finite_rejected"
+spec = ["3.12:10", "4.14:3"]
+description = "A float literal nested in a `comptime {}` block's aggregate value, an inner array element or a Copy struct's field, is held to its slot's finite range (RUE-2406)"
+source = """
+@copy
+struct P { x: f32, y: [f32; 1] }
+fn main() -> i32 {
+    let p: P = comptime { P { x: 1.0, y: [-1e39] } };
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected finite f32 literal, found -1e39"]
+
+[[case]]
+name = "comptime_call_result_float_literal_not_finite_in_const_rejected"
+spec = ["3.12:10", "4.14:5"]
+description = "A float literal a comptime call returns at its declared return type is held to that type's finite range when the call reduces for a constant, from a branch or a match arm, as run time holds the same body (RUE-2406)"
+source = """
+fn pick(comptime T: type, comptime n: i32) -> T {
+    match n {
+        0 => 1.0,
+        _ => if n > 1 { 1e39 } else { 2.0 },
+    }
+}
+const A: f32 = pick(f32, 2);
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected finite f32 literal, found 1e39"]
+
+[[case]]
+name = "comptime_call_let_annotated_float_literal_not_finite_in_const_rejected"
+spec = ["3.12:10", "4.14:5"]
+description = "A float literal bound by a `let` annotated with a comptime type parameter is held to that type's finite range when the call reduces for a constant: `let y: T = 1e39;` at `T = f32` is E0206 (RUE-2406)"
+source = """
+fn mk(comptime T: type) -> T {
+    let y: T = 1e39;
+    y
+}
+const A: f32 = mk(f32);
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected finite f32 literal, found 1e39"]
+
+[[case]]
+name = "comptime_value_argument_float_literal_not_finite_in_const_rejected"
+spec = ["3.12:10", "4.14:5"]
+description = "A float literal argument of a `comptime v: f32` parameter is held to f32's finite range when the call reduces for a constant, negated or not, as it is when the call is written in a body (RUE-2406)"
+source = """
+fn id(comptime v: f32) -> f32 { v }
+const A: f32 = id(-1e39);
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected finite f32 literal, found -1e39"]
+
+[[case]]
+name = "type_constructor_float_argument_not_finite_rejected"
+spec = ["3.12:10", "4.14:22"]
+description = "A float literal argument of a type constructor's `comptime v: f32` parameter is held to f32's finite range: `Mk(1e39)` is E0206, not the instance `Mk(inf)` (RUE-2411)"
+source = """
+fn Mk(comptime v: f32) -> type { struct { x: i32 } }
+const A = Mk(1e39);
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected finite f32 literal, found 1e39"]
+
+[[case]]
+name = "type_constructor_generic_float_argument_not_finite_rejected"
+spec = ["3.12:10", "4.14:22"]
+description = "A float literal argument of a type constructor's `comptime v: T` parameter is held to the finite range of the type `T` was bound to: `Mk(f64, -1e400)` is E0206 (RUE-2411)"
+source = """
+fn Mk(comptime T: type, comptime v: T) -> type { struct { x: i32 } }
+const A = Mk(f64, -1e400);
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0206", "expected finite f64 literal, found -1e400"]
+
+[[case]]
+name = "comptime_finite_float_literals_in_typed_positions_accepted"
+spec = ["3.12:10", "4.14:5", "4.14:22"]
+description = "The largest finite f32 is accepted in every typed comptime position the finite-literal rule covers: a block's array element, a type constructor argument, a value argument, a `let` annotation and a call's result; a literal finite only at f64 is accepted at f64 (RUE-2406, RUE-2411)"
+source = """
+fn id(comptime T: type, comptime v: T) -> T { v }
+fn mk(comptime T: type) -> T {
+    let y: T = 3.4028235e38;
+    y
+}
+fn Mk(comptime v: f32) -> type { struct { x: i32 } }
+const A: f32 = id(f32, 3.4028235e38);
+const B: f32 = mk(f32);
+const W: f64 = id(f64, 1e39);
+const N: f32 = id(f32, -3.4028235e38);
+const K = Mk(3.4028235e38);
+fn main() -> i32 {
+    let arr: [f32; 1] = comptime { [3.4028235e38] };
+    let k: K = K { x: 1 };
+    if A == B && arr[0] == A && W > 1e38 && N == -A && k.x == 1 { 42 } else { 1 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_computed_float_overflow_in_typed_positions_is_infinity"
+spec = ["3.12:10", "4.14:5"]
+description = "The finite-literal rule is about literals: an operation that overflows f32 in a typed comptime position (a block's array element, a `let` annotation, a call's result) is an infinity, not an error (RUE-2406)"
+source = """
+fn over(comptime T: type) -> T {
+    let y: T = 1e38 * 10.0;
+    y
+}
+fn wide(comptime T: type) -> T { 1e38 * 4.0 }
+const A: f32 = over(f32);
+const B: f32 = wide(f32);
+fn main() -> i32 {
+    let arr: [f32; 1] = comptime { [1e38 * 10.0] };
+    if A > 3.4028235e38 && B == A && arr[0] == A { 42 } else { 1 }
+}
+"""
+exit_code = 42
