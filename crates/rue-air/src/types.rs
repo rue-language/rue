@@ -1322,7 +1322,21 @@ impl Type {
     /// - Error can coerce to any type (for error recovery during type checking)
     /// - Otherwise, types must be equal
     pub fn can_coerce_to(&self, target: &Type) -> bool {
-        self.is_never() || self.is_error() || self == target
+        self.coerces_into(|ty| ty == target)
+    }
+
+    /// Check if a value of this type is accepted where an operand must belong
+    /// to a class of types — an index or an `@intCast` operand must be an
+    /// integer, a `match` scrutinee an integer, `bool`, or enum.
+    ///
+    /// The class's members are accepted, and so are `!` and `<error>` under
+    /// the same rules as [`Type::can_coerce_to`]: the never type coerces to
+    /// every type (spec 3.4:3-4), so a diverging operand satisfies any class,
+    /// and the recovery type never adds a second diagnostic. Checking the
+    /// class through this one predicate keeps every operand check from
+    /// rejecting `!` before applying the coercion.
+    pub fn coerces_into(&self, class: impl FnOnce(&Type) -> bool) -> bool {
+        self.is_never() || self.is_error() || class(self)
     }
 
     /// Check if this is an unsigned integer type.

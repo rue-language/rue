@@ -1424,7 +1424,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         // cannot record a `type`-valued projection and defer
                         // the failure to whole-body AIR validation.
                         let index_type = air.get(index_result.air_ref).ty;
-                        if !index_type.is_integer() {
+                        if !index_type.coerces_into(Type::is_integer) {
                             return Err(CompileError::new(
                                 ErrorKind::TypeMismatch {
                                     expected: "integer type".to_string(),
@@ -2168,6 +2168,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             ));
         }
+
+        // An annotation fixes the binding's type. A diverging initializer
+        // (`let t: i64 = return 5;`) has type `!`, which coerces to the
+        // annotated type (spec 3.4:4); the binding takes the annotation so the
+        // uses after it are checked against `i64`, as inference types them,
+        // rather than against `!`.
+        let var_type = match annotation_type {
+            Some(annotation) if !init_result.continues => annotation,
+            _ => var_type,
+        };
 
         // Check if @allow(unused_variable) directive is present
         let directives = self.body_rir_ref().directives(directives);
@@ -4638,7 +4648,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // parameter has been substituted. Reject that value here as well so a
         // `type`-typed AIR operand cannot reach an index projection.
         let index_type = air.get(index_result.air_ref).ty;
-        if !index_type.is_integer() {
+        if !index_type.coerces_into(Type::is_integer) {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "integer type".to_string(),
@@ -4764,7 +4774,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if !base_result.continues {
             ctx.divergence_kinds = divergence_before_index;
         }
-        if !index_result.ty.is_integer() && !index_result.ty.is_error() {
+        if !index_result.ty.coerces_into(Type::is_integer) {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "an integer".to_string(),
@@ -4873,7 +4883,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if !base_result.continues {
             ctx.divergence_kinds = divergence_before_index;
         }
-        if !index_result.ty.is_integer() && !index_result.ty.is_error() {
+        if !index_result.ty.coerces_into(Type::is_integer) {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "an integer".to_string(),
@@ -4963,7 +4973,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if !base_result.continues {
             ctx.divergence_kinds = divergence_before_index;
         }
-        if !index_result.ty.is_integer() && !index_result.ty.is_error() {
+        if !index_result.ty.coerces_into(Type::is_integer) {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "an integer".to_string(),
@@ -5618,7 +5628,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 Self::restore_reachable_loop_edges(ctx, &reachable_edges_before_index);
                 ctx.divergence_kinds = divergence_before_index;
             }
-            if !index_result.ty.is_integer() && !index_result.ty.is_error() {
+            if !index_result.ty.coerces_into(Type::is_integer) {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "integer type".to_string(),

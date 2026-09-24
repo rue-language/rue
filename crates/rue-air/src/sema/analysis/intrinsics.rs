@@ -2439,7 +2439,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let from_ty = arg_result.ty;
 
         // Argument must be an integer type
-        if !from_ty.is_integer() {
+        if !from_ty.coerces_into(Type::is_integer) {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: intrinsic_name.to_string(),
@@ -2491,7 +2491,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ty: target_ty,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, target_ty))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            target_ty,
+            arg_result.continues,
+        ))
     }
 
     /// Analyze the `@bitCast` intrinsic (RUE-952, spec 4.13:118-4.13:123).
@@ -2532,7 +2536,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let arg_result = self.analyze_inst(air, args[0].value, ctx)?;
         let from_ty = arg_result.ty;
 
-        if !from_ty.is_integer() {
+        if !from_ty.coerces_into(Type::is_integer) {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: intrinsic_name.to_string(),
@@ -2567,11 +2571,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
         };
 
-        // Same-width only (E0950). Both types are integers here, so both widths
-        // are present.
+        // Same-width only (E0950). A diverging operand (`!`) coerces to the
+        // target type (spec 3.4:4), so only an integer operand has a width to
+        // compare.
         let from_bits = from_ty.int_bit_width().unwrap_or(0);
         let to_bits = target_ty.int_bit_width().unwrap_or(0);
-        if from_bits != to_bits {
+        if from_ty.is_integer() && from_bits != to_bits {
             return Err(CompileError::new(
                 ErrorKind::BitCastWidthMismatch {
                     from: self.format_type_name(from_ty),
@@ -2594,7 +2599,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             target_ty,
             span,
         )?;
-        Ok(AnalysisResult::new(air_ref, target_ty))
+        Ok(AnalysisResult::with_continues(
+            air_ref,
+            target_ty,
+            arg_result.continues,
+        ))
     }
 
     /// Analyze @test_preview_gate intrinsic.
@@ -2804,7 +2813,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // `f32`/`f64` format as their shortest round-trip decimal (ADR-0065).
         let arg_result = self.analyze_inst(air, args[0].value, ctx)?;
         let arg_type = arg_result.ty;
-        if !arg_type.is_integer() && !arg_type.is_float() && !arg_type.is_error() {
+        if !arg_type.coerces_into(|ty| ty.is_integer() || ty.is_float()) {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "@to_string".to_string(),
@@ -3194,7 +3203,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // silently (it never reaches codegen) — mirroring the other arithmetic
         // intrinsics.
         for (ty, arg) in [(lty, &args[0]), (rty, &args[1])] {
-            if !ty.is_integer() && !ty.is_error() {
+            if !ty.coerces_into(Type::is_integer) {
                 return Err(CompileError::new(
                     ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                         name: format!("@{display}"),
