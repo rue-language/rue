@@ -1110,12 +1110,11 @@ $runtime
                                                                                     | crate::durable_semantics::DurableType::F64
                                                                             ))
                                                                 });
-                                                                let kind = if let Some(found) = typed_scalar {
-                                                                    rue_error::ErrorKind::TypeMismatch {
+                                                                let kind = match (&ty, &value, typed_scalar) {
+                                                                    (_, _, Some(found)) => rue_error::ErrorKind::TypeMismatch {
                                                                         expected: durable_type_diagnostic_name(&ty),
                                                                         found: durable_type_diagnostic_name(found),
-                                                                    }
-                                                                } else { match (&ty, &value) {
+                                                                    },
                                                                     // An untyped literal that cannot take the
                                                                     // declared type at all reads as the body
                                                                     // path's inference reports it, from the
@@ -1123,7 +1122,7 @@ $runtime
                                                                     // "expected integer type, found bool" and
                                                                     // `let x: i32 = 1.5;` is "expected
                                                                     // comptime_float, found i32".
-                                                                    (_, crate::durable_semantics::DurableConstValue::Integer(_))
+                                                                    (_, crate::durable_semantics::DurableConstValue::Integer(_), None)
                                                                         if typed.ty.is_none()
                                                                             && crate::durable_comptime::durable_int_width(&ty).is_none()
                                                                             && !matches!(ty, crate::durable_semantics::DurableType::F32 | crate::durable_semantics::DurableType::F64) =>
@@ -1133,7 +1132,7 @@ $runtime
                                                                             found: durable_type_diagnostic_name(&ty),
                                                                         }
                                                                     }
-                                                                    (_, crate::durable_semantics::DurableConstValue::Float(_))
+                                                                    (_, crate::durable_semantics::DurableConstValue::Float(_), None)
                                                                         if float_initializer_is_literal
                                                                             && !matches!(ty, crate::durable_semantics::DurableType::F32 | crate::durable_semantics::DurableType::F64) =>
                                                                     {
@@ -1145,7 +1144,7 @@ $runtime
                                                                     // One code for "does not fit", whatever
                                                                     // the sign: E0800, as spec 6.5:5 states
                                                                     // and the body path reports.
-                                                                    (_, crate::durable_semantics::DurableConstValue::Integer(value))
+                                                                    (_, crate::durable_semantics::DurableConstValue::Integer(value), None)
                                                                         if crate::durable_comptime::durable_int_width(&ty).is_some() =>
                                                                     {
                                                                         rue_error::ErrorKind::LiteralOutOfRange {
@@ -1155,7 +1154,8 @@ $runtime
                                                                     }
                                                                     (crate::durable_semantics::DurableType::F32
                                                                     | crate::durable_semantics::DurableType::F64,
-                                                                    crate::durable_semantics::DurableConstValue::Float(text))
+                                                                    crate::durable_semantics::DurableConstValue::Float(text),
+                                                                    None)
                                                                         if float_initializer_is_literal =>
                                                                     {
                                                                         rue_error::ErrorKind::TypeMismatch {
@@ -1170,7 +1170,7 @@ $runtime
                                                                         expected: durable_type_diagnostic_name(&ty),
                                                                         found: inferred_const_type_name(&value).to_owned(),
                                                                     },
-                                                                } };
+                                                                };
                                                                 Value::Failure(Failure::Diagnostic(kind))
                                                             }
                                                         }
