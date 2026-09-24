@@ -3,9 +3,8 @@
 ════════════════════════════════════════════════════════════════════════════════
 After an inner declared-linear place is destructured, @drop of the
 declared-linear ancestor discharges it and §6.11 drops exactly the ancestor's
-own residue. The bridge is red on this one: the compiler rejects it with
-E0406, and which of the two is right is RUE-2335. The case stays seeded until
-that is decided.
+own residue. The bridge was red on this one until RUE-2335 was fixed: the
+compiler rejected it with E0406. It stays seeded as a regression signal.
 
 Rules exercised: (Use-Declared-Linear-Destructure) §5.1 · (@Drop) §5.3 · §5.6 declared clause · 3.8:74
 
