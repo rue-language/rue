@@ -15,7 +15,7 @@ statements are.
 - Toolchain: Lean 4.33.1 (the pin in `lean-toolchain` and in
   `toolchains/lean/defs.bzl`, held equal by
   `scripts/validate-lean-toolchain-pin.py`).
-- Theorems checked: 322.
+- Theorems checked: 329.
 - Proofs depending on `sorryAx`: 0.
 - Axioms declared by this package: 0.
 - Distinct axioms used: `Quot.sound`, `propext`.
@@ -177,6 +177,14 @@ and diffs them against the committed copies.
 | `TypedArms.arm_skel` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `Typed.skel_of` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `TypedArgs.skel_of` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `skel_lookup` | `RueCore.Statics` | `propext` |
+| `Entry.wf_owned` | `RueCore.Statics` | `propext` |
+| `Ctx.Wf.cons_owned` | `RueCore.Statics` | `propext` |
+| `Ctx.Wf.set_setAt` | `RueCore.Statics` | `propext` |
+| `Ctx.Wf.armCtx` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `Ctx.joinOpt_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `Ctx.joinOpts_wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
+| `Typed.wf` | `RueCore.Statics` | `Quot.sound`, `propext` |
 | `inBoundsIdx_eq_true` | `RueCore.Dynamics` | `propext` |
 | `dropEventsList_eq_flatten` | `RueCore.Dynamics` | `propext` |
 | `HasTys.length_eq` | `RueCore.Soundness` | `propext` |
@@ -278,7 +286,6 @@ and diffs them against the committed copies.
 | `Matches.unwind` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `Matches.unwindPrefix` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `runAllScopeDrops_ok` | `RueCore.Soundness` | `Quot.sound`, `propext` |
-| `skel_lookup` | `RueCore.Soundness` | `propext` |
 | `ownedJoinOk_matches` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `ownedJoinOkList_matches` | `RueCore.Soundness` | `Quot.sound`, `propext` |
 | `OwnSt.join_matches` | `RueCore.Soundness` | `Quot.sound`, `propext` |
