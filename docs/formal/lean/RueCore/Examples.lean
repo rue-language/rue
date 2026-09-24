@@ -2092,8 +2092,8 @@ them. The nine accepted programs below are the probe table's d1, d2, d4, d5f,
 d6, d6c, d9, d13 and d14; the three rejections are d3, d7 and d12; d9b, a
 selected path through an index step, is accepted since RUE-2327
 (`destructureThroughIndex`); and
-`destructureAncestorDropped` is d5b, **seeded red** — the model accepts it and
-the compiler does not (RUE-2335). Every one was run against the compiler before
+`destructureAncestorDropped` is d5b, which was **seeded red** until RUE-2335
+was fixed — the model accepted it and the compiler did not. Every one was run against the compiler before
 it was committed, and the probe it reproduces is named in its doc-comment.
 
 The declarations live in their own environment rather than in `structEnv`, so
@@ -2358,18 +2358,18 @@ def destructureThroughIndex : Expr :=
       (letIn false (use (.idx (.proj (.var 0) 0) 0))
         (seq (dbg (lit 20)) (lit 4))))
 
-/-- **The red case** (probe d5b, RUE-2335). After `y.x0.x0` destructures `y.x0`,
+/-- **The case that was red** (probe d5b, RUE-2335). After `y.x0.x0` destructures `y.x0`,
 the ancestor `y` is still `Owned` with its own residue, and §5.3's (@Drop)
 discharges it: `Σ(y) = Owned` holds, no still-owned linear sub-place remains
 below it, and §6.11's `⊘`-skip drops exactly `y.x1`. The model therefore accepts
 the program and runs it to `10`, `2`, `20`, `3`, `30`, `1`.
 
-**The compiler rejects it** with E0406, "linear value 'y' must be consumed but
-was dropped" — it treats the ancestor's obligation as undischargeable by
-`@drop` once an inner declared-linear place has been destructured out of it.
-One of the two is wrong and the calculus is what says which; the case is seeded
-red exactly as `i64_min_times_neg1` was until RUE-2318, and RUE-2335 is the
-decision. -/
+**The compiler rejected it** with E0406, "linear value 'y' must be consumed but
+was dropped", until RUE-2335: it read the ancestor's own obligation as a
+residue below the `@drop` operand, although (@Drop)'s last premise reads only
+the paths strictly under `p`. It now accepts the program and prints the
+model's trace; the case stays seeded as a regression signal, as
+`i64_min_times_neg1` does since RUE-2318. -/
 def destructureAncestorDropped : Expr :=
   letIn false (mkStruct sDestrOuter [mkStruct sDestrPair [lit 1, resA (lit 2)], resA (lit 3)])
     (seq (dbg (lit 10))
@@ -2781,8 +2781,8 @@ example : ProgramTyped (destrProg tI64 destructureResidueOrder) := checkProgram_
 example : ProgramTyped (destrProg tI64 destructureNestedResidue) := checkProgram_sound (by rfl)
 example : ProgramTyped (destrProg tI64 destructureArrayResidue) := checkProgram_sound (by rfl)
 
-/-- The red case is accepted too, which is what makes it red: the §7 theorems
-apply to it and the compiler refuses it (RUE-2335, `destructureAncestorDropped`). -/
+/-- The case that was red until RUE-2335 is accepted, so the §7 theorems apply
+to it (`destructureAncestorDropped`). -/
 example : ProgramTyped (destrProg tI64 destructureAncestorDropped) := checkProgram_sound (by rfl)
 
 /-- `¬ linear-residue(S, π_s)` (§5.1, `3.8:60`, E0474): the residue is a
