@@ -1460,6 +1460,13 @@ mod tests {
         };
 
         let accepted = [
+            // A diverging `@bitCast` operand coerces to the source width the
+            // result asks for (RUE-2375).
+            (
+                IntrinsicOperation::BitCast,
+                vec![value(Type::NEVER)],
+                Type::U64,
+            ),
             (
                 IntrinsicOperation::IntToFloat,
                 vec![value(Type::NEVER)],
@@ -1672,7 +1679,7 @@ mod tests {
             (
                 IntrinsicOperation::BitCast,
                 vec![value(Type::NEVER)],
-                Type::U64,
+                Type::BOOL,
             ),
         ];
         for (operation, args, result) in rejected {
