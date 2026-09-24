@@ -8,6 +8,7 @@ thread_local! {
     static TICKET_EVENTS: RefCell<Vec<(usize, bool)>> = const { RefCell::new(Vec::new()) };
     static PRODUCER_CALLS: RefCell<Vec<(usize, usize, u32)>> = const { RefCell::new(Vec::new()) };
     static INTEGER_HINTS: RefCell<Vec<Option<FakeType>>> = const { RefCell::new(Vec::new()) };
+    static RESOLVED_ARRAY_TYPES: RefCell<Vec<FakeType>> = const { RefCell::new(Vec::new()) };
     static FINISH_ARITH_OPERATIONS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static METHOD_FAILURES: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
     static TYPE_RESOLUTION_CALLS: Cell<usize> = const { Cell::new(0) };
@@ -1373,6 +1374,21 @@ impl ComptimeProgramFacts for FakeHost {
 }
 
 impl ComptimeTypeAlgebra for FakeHost {
+    /// A fake array type `FakeType(n)` with `n` in 21..=29 has element type
+    /// `FakeType(n - 1)`, so nesting depth is visible in the types the engine
+    /// resolves arrays at.
+    fn comptime_child_slot_type(
+        &mut self,
+        parent: &Self::Type,
+        slot: ComptimeChildSlot<'_, Self::Name>,
+    ) -> ComptimeHostResult<Option<Self::Type>, Self::Failure> {
+        Ok(match slot {
+            ComptimeChildSlot::ArrayElement if (21..=29).contains(&parent.0) => {
+                Some(FakeType(parent.0 - 1))
+            }
+            _ => None,
+        })
+    }
     fn unsupported_anon_method_type_param(
         &self,
         _method_name: &str,
@@ -1599,6 +1615,15 @@ impl ComptimeTypeAlgebra for FakeHost {
 }
 
 impl ComptimeValueAlgebra for FakeHost {
+    fn resolve_comptime_array(
+        &mut self,
+        ty: Self::Type,
+        _elements: Vec<Self::Value>,
+        _site: &ComptimeDiagnosticSite<Self::ProgramKey>,
+    ) -> ComptimeOutcome<Self::Value, Self::Failure> {
+        RESOLVED_ARRAY_TYPES.with(|types| types.borrow_mut().push(ty));
+        ComptimeOutcome::Known(FakeValue::Unit)
+    }
     fn resolve_comptime_named_value(
         &mut self,
         file: Self::File,
@@ -6267,4 +6292,56 @@ fn completed_memo_distinguishes_callable_target_and_ordered_args() {
         ComptimeCallMemoLookup::Memoized(ComptimeMemoizedOutcome::Trap(value))
             if *value == trap
     ));
+}
+
+/// A nested array literal is resolved at its slot's type, not at the type of
+/// the literal containing it: `[[[1]]]` at a three-level array type resolves
+/// its innermost array at the innermost element type (RUE-2390).
+#[test]
+fn nested_array_literal_resolves_at_its_element_slot_type() {
+    let mut editor = rue_rir::RirEditor::new();
+    let mut literal = editor.add_inst(rue_rir::Inst {
+        data: InstData::IntConst(1),
+        span: Span::new(0, 1),
+    });
+    for depth in 0..3 {
+        literal = editor
+            .add_array_init(&[literal], Span::new(0, 2 + depth))
+            .expect("array literal payload");
+    }
+    let interner = lasso::ThreadedRodeo::new();
+    let mut host = FakeHost {
+        programs: vec![editor.finish()],
+        type_symbol: SymbolHandle::new(interner.get_or_intern("T")),
+        constant: None,
+        dependencies: Vec::new(),
+        call_plans: AHashMap::new(),
+        recursive: None,
+        enter_count: 0,
+        finish_outcome: FakeFinishOutcome::Identity,
+        finished: Vec::new(),
+        float_evaluations: Cell::new(0),
+    };
+    let mut env = ComptimeEnv::<FakeValue, FakeType, FakeName, FakeFile, FakeIdentity>::new();
+    RESOLVED_ARRAY_TYPES.with(|types| types.borrow_mut().clear());
+
+    assert!(matches!(
+        ComptimeEngine::new(&mut host).evaluate(
+            ComptimeFrame {
+                expected_result: Some(FakeType(23)),
+                ..ComptimeFrame::expression(0, literal)
+            },
+            &mut env,
+        ),
+        ComptimeOutcome::Known(FakeValue::Unit)
+    ));
+    // Children resolve first, innermost outwards, and the enclosing
+    // expected result is restored once the literal's children are done.
+    RESOLVED_ARRAY_TYPES.with(|types| {
+        assert_eq!(
+            types.borrow().as_slice(),
+            [FakeType(21), FakeType(22), FakeType(23)]
+        );
+    });
+    assert_eq!(env.expected_result, None);
 }
